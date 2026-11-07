@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // CheckShellCommand checks a known shell program. Only the two shipped command
@@ -58,7 +59,7 @@ var shippedShellPatterns = func() map[string]string {
 
 var (
 	shellResolutionVariable = regexp.MustCompile(`(?:^|[^a-zA-Z0-9_])(?:PATH|BASH_ENV|ENV)(?:$|[^a-zA-Z0-9_])`)
-	shellCleanOccurrence    = regexp.MustCompile(shellCommandStart + `git\s+clean\b`)
+	shellCleanOccurrence    = regexp.MustCompile(shellCommandStart + `git[ \t]+clean\b`)
 	// Output conversions from bash(1) printf and printf(3). %n assigns a
 	// variable, including with width/length modifiers, so is never inert.
 	shellPrintfOutput = regexp.MustCompile(`^(?:[^%]|%%|%[-+ #0']*(?:[0-9]+|\*)?(?:\.(?:[0-9]+|\*))?[hlLjzt]*[cCsSdiouxXeEfFgGaAbqQ])*$`)
@@ -87,14 +88,26 @@ func proveShellRules(source string) *shellRuleProof {
 // grant a data proof. Braces/parentheses can surround a literal preview in a
 // function, but cannot grant a data proof.
 func shellProofWords(source string) ([]shellProofWord, bool) {
+	// bash(1), DEFINITIONS: a blank is space or tab; newline is a
+	// metacharacter, not a blank. Other C0 controls and DEL are not modeled
+	// here, even inside quotes. Refuse the whole source (also invalid UTF-8)
+	// so neither preview nor data proofs can replace whole-script matching.
+	if !utf8.ValidString(source) {
+		return nil, false
+	}
+	for _, c := range source {
+		if c < ' ' && c != '\t' && c != '\n' || c == '\x7f' {
+			return nil, false
+		}
+	}
 	var words []shellProofWord
 	for i := 0; i < len(source); {
 		c := source[i]
-		if strings.ContainsRune(" \t\r", rune(c)) {
+		if strings.ContainsRune(" \t", rune(c)) {
 			i++
 			continue
 		}
-		if strings.ContainsRune(";|&()<>\n", rune(c)) || (c == '{' || c == '}') && (i+1 == len(source) || strings.ContainsRune(" \t\r\n;", rune(source[i+1]))) {
+		if strings.ContainsRune(";|&()<>\n", rune(c)) || (c == '{' || c == '}') && (i+1 == len(source) || strings.ContainsRune(" \t\n;", rune(source[i+1]))) {
 			end := i + 1
 			if end < len(source) && source[end] == c && strings.ContainsRune(";|&<>", rune(c)) {
 				end++
@@ -114,7 +127,7 @@ func shellProofWords(source string) ([]shellProofWord, bool) {
 		quoted, unquoted := false, false
 		for i < len(source) {
 			c = source[i]
-			if quote == 0 && strings.ContainsRune(" \t\r\n;|&()<>", rune(c)) {
+			if quote == 0 && strings.ContainsRune(" \t\n;|&()<>", rune(c)) {
 				break
 			}
 			if c == '\\' && quote != '\'' {

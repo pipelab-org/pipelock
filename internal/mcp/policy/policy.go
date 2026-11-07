@@ -1766,6 +1766,9 @@ func expandBraces(s string) string {
 // conservative assignment-value boundary: x=nc can later execute through $x.
 // Neither : nor a word character separates a shell word. This is a text policy,
 // not proof that every matched word is executed.
+// The broader regex whitespace class also matches CR and FF, which bash does
+// not treat as word boundaries. Retain those conservative blocking matches;
+// shellProofWords refuses unsupported controls before granting any exception.
 const shellCommandStart = `(?:^|[\s;|&()<>\x60\x22\x27/=])`
 
 // DefaultToolPolicyRules returns the built-in set of tool call policy rules

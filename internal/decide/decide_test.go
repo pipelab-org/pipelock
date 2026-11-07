@@ -64,6 +64,10 @@ func TestDecide_ShellExecution(t *testing.T) {
 		{name: "printed cleanup example", command: "grep -F 'git clean -fdx' docs || true", want: Allow},
 		{name: "preview followed by cleanup", command: "git clean -fdn; git clean -fd", want: Deny},
 		{name: "preview with path override", command: "PATH=./tools:$PATH; git clean -fdn", want: Deny},
+		{name: "cleanup exclusion with control", command: "git clean -fd --exclude=x\r-n", want: Deny},
+		{name: "cleanup pathspec with control", command: "git clean -fd :!x\r--dry-run", want: Deny},
+		{name: "printed example with control", command: "echo 'git reset --hard\r'", want: Deny},
+		{name: "cleanup preview with tab", command: "git clean -fd\t-n", want: Allow},
 		{name: "printed command piped to shell", command: "echo 'git reset --hard' | sh", want: Deny},
 		{
 			name:    "API key in curl command",

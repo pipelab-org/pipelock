@@ -4,6 +4,7 @@
 package policy
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,6 +16,85 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+func TestShellProofUnsupportedCharacters(t *testing.T) {
+	pc := defaultConfigWithIncomplete(t, config.ActionBlock)
+	characters := []string{"\x7f", "\xff", "\xc0\xaf", "\xed\xa0\x80", "\xe2\x82"}
+	for c := byte(0); c < ' '; c++ {
+		if c != '\t' && c != '\n' {
+			characters = append(characters, string([]byte{c}))
+		}
+	}
+	positions := []struct{ name, command string }{
+		{"attached short separator", "git clean -fd%s-n"},
+		{"attached long separator", "git clean -fd%s--dry-run"},
+		{"short separator", "git clean -fd %s-n"},
+		{"long separator", "git clean -fd %s--dry-run"},
+		{"exclude short", "git clean -fd --exclude=x%s-n"},
+		{"exclude long", "git clean -fd --exclude=x%s--dry-run"},
+		{"exclude value", "git clean -fdn --exclude=x%sy"},
+		{"pathspec short", "git clean -fd :!x%s-n"},
+		{"pathspec long", "git clean -fd :!x%s--dry-run"},
+		{"operand", "git clean -fd x%s-n"},
+		{"quoted operand", "git clean -fdn 'x%sy'"},
+		{"double quoted operand", "git clean -fdn \"x%sy\""},
+		{"path override", "P%sATH=./tools; git clean -fdn"},
+		{"environment override", "BASH%s_ENV=setup; git clean -fdn"},
+		{"shell override", "E%sNV=setup; git clean -fdn"},
+		{"directory override", "CD%sPATH=./tools; cd workspace; git clean -fdn"},
+		{"builtin override", "en%sable -f tool git; git clean -fdn"},
+		{"hash override", "ha%ssh -p ./tools/git git; git clean -fdn"},
+		{"alias override", "al%sias git=tool; git clean -fdn"},
+		{"source override", "sou%srce setup; git clean -fdn"},
+		{"function override", "g%sit() { tool; }; git clean -fdn"},
+		{"trap override", "tr%sap handler EXIT; git clean -fdn"},
+		{"allowlist command", "ec%sho 'git reset --hard'"},
+		{"allowlist argument", "echo x%sy; echo 'git reset --hard'"},
+		{"allowlist quoted", "echo 'git reset --hard%s'"},
+		{"allowlist double quoted", "echo \"git reset --hard%s\""},
+		{"reverse shell data", "echo 'nc -e sh%s'"},
+		{"operator", "echo x;%secho 'git reset --hard'"},
+		{"brace boundary", "preview() {%s git clean -fdn; }; preview"},
+	}
+	for _, character := range characters {
+		for _, position := range positions {
+			t.Run(fmt.Sprintf("%x/%s", character, position.name), func(t *testing.T) {
+				command := fmt.Sprintf(position.command, character)
+				if words, ok := shellProofWords(command); ok || words != nil {
+					t.Fatal("unsupported source retained word proof")
+				}
+				if proveShellRules(command) != nil {
+					t.Fatal("unsupported source retained shell proof")
+				}
+				// The generic tool reader is the whole-script fallback, and
+				// must still match when the shell-specific proofs are refused.
+				for _, v := range []Verdict{pc.CheckToolCall("bash", []string{command}), pc.CheckShellCommand(command, nil)} {
+					if !v.Matched || v.Action != config.ActionBlock {
+						t.Fatalf("unsupported source lost whole-script block: %+v", v)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestShellProofBlanksAndNewlines(t *testing.T) {
+	pc := defaultConfigWithIncomplete(t, config.ActionBlock)
+	for _, command := range []string{
+		"git\tclean\t-fd\t-n", "git clean -fd\t--dry-run",
+		"git clean -fdn\necho sample", "echo 'git reset --hard\nexample'",
+		"echo 'git reset --hard café'", "echo 'git reset --hard \ufffd'",
+	} {
+		t.Run(command, func(t *testing.T) {
+			if v := pc.CheckShellCommand(command, nil); v.Matched {
+				t.Fatalf("supported source lost shell exception: %+v", v)
+			}
+		})
+	}
+	if v := pc.CheckShellCommand("git clean -fd\n-n", nil); !v.Matched || v.Action != config.ActionBlock {
+		t.Fatalf("newline became a blank: %+v", v)
+	}
+}
+
 func TestShellCommandBoundaries(t *testing.T) {
 	pc := defaultConfigWithIncomplete(t, config.ActionBlock)
 	commands := map[string][]string{
@@ -23,7 +103,7 @@ func TestShellCommandBoundaries(t *testing.T) {
 	}
 	for name, commands := range commands {
 		for _, command := range commands {
-			for _, prefix := range []string{"", " ", "\t", "\n", ";", "|", "&", "(", ")", "<", ">", "`", "$(", "\"", "'", "/usr/bin/", "./", "x="} {
+			for _, prefix := range []string{"", " ", "\t", "\n", "\r", "\f", ";", "|", "&", "(", ")", "<", ">", "`", "$(", "\"", "'", "/usr/bin/", "./", "x="} {
 				t.Run(name+"/"+prefix+command, func(t *testing.T) {
 					pattern := regexp.MustCompile(shippedShellPatterns[name])
 					if !pattern.MatchString(prefix + command) {
