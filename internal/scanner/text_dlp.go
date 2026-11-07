@@ -755,6 +755,10 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 		if emit {
 			s.EmitTextDLPWarnMatches(ctx, append(result.InformationalMatches[:len(result.InformationalMatches):len(result.InformationalMatches)], result.Matches...))
 		}
+		if ctx.Err() != nil {
+			result.Incomplete = true
+			result.Clean = false
+		}
 		return result
 	}
 	// Partition even literal inputs: an early card match must not stop
