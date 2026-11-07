@@ -30,7 +30,8 @@ func TestWatchMetadataDialReload(t *testing.T) {
 			beforeCalls, beforeObservations := calls, observations
 			_, err := dial(t.Context(), "tcp", addr)
 			if watch {
-				if !errors.Is(err, sentinel) || calls != beforeCalls+1 || observations != beforeObservations+1 {
+				var refused *MetadataDialBlockError
+				if !errors.As(err, &refused) || calls != beforeCalls || observations != beforeObservations+1 {
 					t.Fatalf("watch dial=%d observed=%d err=%v", calls, observations, err)
 				}
 			} else {

@@ -599,6 +599,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// request_policy runs before the contract gate so a contract allow can
 	// never suppress an operation-policy block.
 	connectRPInput := requestPolicyInput{
+		Config:      cfg,
 		Host:        host,
 		Method:      http.MethodConnect,
 		Path:        "/",
@@ -2113,6 +2114,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// request_policy runs before the contract gate so a contract allow can
 	// never suppress an operation-policy block.
 	rpInput := requestPolicyInput{
+		Config:      cfg,
 		Host:        r.URL.Hostname(),
 		Method:      r.Method,
 		Path:        r.URL.EscapedPath(),

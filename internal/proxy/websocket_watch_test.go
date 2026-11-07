@@ -21,53 +21,63 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 )
 
-func TestWatchWebSocketFrameLimit(t *testing.T) {
+func TestWatchWebSocketResponseFrameLimit(t *testing.T) {
 	for _, watch := range []bool{false, true} {
 		t.Run(map[bool]string{false: "enforced", true: "watch"}[watch], func(t *testing.T) {
-			backend, closeBackend := wsEchoServer(t)
-			defer closeBackend()
+			payload := bytes.Repeat([]byte("ordinary message "), 12)
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, _, _, err := ws.UpgradeHTTP(r, w)
+				if err != nil {
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				_ = wsutil.WriteServerMessage(conn, ws.OpText, payload)
+			}))
+			defer backend.Close()
 			addr, closeProxy := setupWSProxy(t, func(cfg *config.Config) { cfg.WatchOnly = watch; cfg.WebSocketProxy.MaxMessageBytes = 64 })
 			defer closeProxy()
-			conn := dialWS(t, addr, backend)
+			conn := dialWS(t, addr, strings.TrimPrefix(backend.URL, "http://"))
 			defer func() { _ = conn.Close() }()
 			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-			payload := bytes.Repeat([]byte("ordinary message "), 12)
-			if err := wsutil.WriteClientMessage(conn, ws.OpText, payload); err != nil {
-				t.Fatal(err)
-			}
 			got, _, err := wsutil.ReadServerData(conn)
 			if watch {
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !bytes.Equal(got, payload) {
-					t.Fatalf("message changed: %q", got)
+				if err != nil || !bytes.Equal(got, payload) {
+					t.Fatalf("response changed: %q %v", got, err)
 				}
 			} else if err == nil {
-				t.Fatal("oversize enforcement disappeared")
+				t.Fatal("oversize response enforcement disappeared")
 			}
 		})
 	}
 }
 
-func TestWatchWebSocketFragmentsOverLimit(t *testing.T) {
-	backend, closeBackend := wsEchoServer(t)
-	defer closeBackend()
+func TestWatchWebSocketResponseFragmentsOverLimit(t *testing.T) {
+	pieces := []string{"The quarterly report ", "is ready to be read ", "and contains ordinary prose."}
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, _, err := ws.UpgradeHTTP(r, w)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for i, piece := range pieces {
+			opcode := ws.OpContinuation
+			if i == 0 {
+				opcode = ws.OpText
+			}
+			if err := ws.WriteFrame(conn, ws.NewFrame(opcode, i == len(pieces)-1, []byte(piece))); err != nil {
+				return
+			}
+		}
+	}))
+	defer backend.Close()
 	addr, closeProxy := setupWSProxy(t, func(cfg *config.Config) { cfg.WatchOnly = true; cfg.WebSocketProxy.MaxMessageBytes = 32 })
 	defer closeProxy()
-	conn := dialWS(t, addr, backend)
+	conn := dialWS(t, addr, strings.TrimPrefix(backend.URL, "http://"))
 	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-	pieces := []string{"The quarterly report ", "is ready to be read ", "and contains ordinary prose."}
-	writeMaskedClientFrame(t, conn, false, ws.OpText, []byte(pieces[0]))
-	writeMaskedClientFrame(t, conn, false, ws.OpContinuation, []byte(pieces[1]))
-	writeMaskedClientFrame(t, conn, true, ws.OpContinuation, []byte(pieces[2]))
 	got, _, err := wsutil.ReadServerData(conn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != strings.Join(pieces, "") {
-		t.Fatalf("fragment bytes changed: %q", got)
+	if err != nil || string(got) != strings.Join(pieces, "") {
+		t.Fatalf("response fragment changed: %q %v", got, err)
 	}
 }
 
@@ -133,22 +143,19 @@ func TestWatchWebSocketReloadDisposition(t *testing.T) {
 	p := &Proxy{}
 	p.cfgPtr.Store(cfg)
 	relay := &wsRelay{proxy: p, cfg: cfg}
-	if relay.watchOnly() {
-		t.Fatal("default watch mode")
-	}
 	on := *cfg
 	on.WatchOnly = true
 	p.cfgPtr.Store(&on)
-	if !relay.watchOnly() || relay.enforceEnabled() {
-		t.Fatal("enable not followed")
+	if relay.watchOnly() || !relay.enforceEnabled() {
+		t.Fatal("reload replaced admitted enforce mode")
 	}
-	p.cfgPtr.Store(&on)
-	if !relay.watchOnly() {
-		t.Fatal("unchanged reload lost mode")
+	nextRelay := &wsRelay{proxy: p, cfg: &on}
+	if !nextRelay.watchOnly() || nextRelay.enforceEnabled() {
+		t.Fatal("new admission did not use watch mode")
 	}
 	p.cfgPtr.Store(cfg)
-	if relay.watchOnly() || !relay.enforceEnabled() {
-		t.Fatal("disable not followed")
+	if !nextRelay.watchOnly() {
+		t.Fatal("reload replaced admitted watch mode")
 	}
 }
 
@@ -269,22 +276,21 @@ func TestWatchWebSocketRequiredReceiptUnavailable(t *testing.T) {
 		cfg.FlightRecorder.RequireReceipts = true
 	})
 	defer closeProxy()
-	conn := dialWS(t, addr, backend)
-	defer func() { _ = conn.Close() }()
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSHello)); err != nil {
-		t.Fatal(err)
+	conn, err := dialWSConn(addr, backend)
+	if conn != nil {
+		_ = conn.Close()
 	}
-	got, _, err := wsutil.ReadServerData(conn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != testWSHello {
-		t.Fatalf("changed payload: %q", got)
+	if err == nil {
+		t.Fatal("watch handshake succeeded without required receipt")
 	}
 }
 
 func TestWatchWebSocketSubprotocolPreserved(t *testing.T) {
+	testWebSocketSubprotocolPreserved(t, true)
+}
+
+func testWebSocketSubprotocolPreserved(t *testing.T, watch bool) {
+	t.Helper()
 	const protocol = "agent-stream"
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upgrader := ws.HTTPUpgrader{Protocol: func(p string) bool { return p == protocol }}
@@ -299,7 +305,7 @@ func TestWatchWebSocketSubprotocolPreserved(t *testing.T) {
 		}
 	}))
 	defer backend.Close()
-	addr, closeProxy := setupWSProxy(t, func(cfg *config.Config) { cfg.WatchOnly = true })
+	addr, closeProxy := setupWSProxy(t, func(cfg *config.Config) { cfg.WatchOnly = watch })
 	defer closeProxy()
 	dialer := ws.Dialer{Protocols: []string{protocol}, Timeout: 5 * time.Second}
 	target := "ws" + strings.TrimPrefix(backend.URL, "http")

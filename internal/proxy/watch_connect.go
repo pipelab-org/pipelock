@@ -48,6 +48,10 @@ func (p *Proxy) handleWatchConnect(w http.ResponseWriter, r *http.Request, o wat
 		writeBlockedError(w, blockInfoFor(blockreason.DLPMatch, scannerLabelBodyDLP), "enforced in watch-only: core credential floor", http.StatusForbidden)
 		return
 	}
+	if !o.receipt(inspection, config.ActionAllow, "watch_only", "CONNECT admitted") && cfg.FlightRecorder.RequireReceipts {
+		http.Error(w, "enforced in watch-only: required receipt unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, "CONNECT unavailable", http.StatusInternalServerError)
@@ -67,8 +71,13 @@ func (p *Proxy) handleWatchConnect(w http.ResponseWriter, r *http.Request, o wat
 		var sniErr error
 		reader, _, category, sniErr = verifySNI(reader, conn, host, sniReadTimeoutDefault)
 		if sniErr != nil {
-			o.observe("sni", "TLS SNI verification would refuse tunnel", config.ActionBlock, 0, false)
+			o.observe("sni", "TLS SNI verification refused tunnel", config.ActionBlock, 0, true)
+			return
 		}
+	}
+	if cfg.ForwardProxy.SNIRequireTLSEnabled() && (category == sniCategoryNotTLS || category == sniCategoryNoExtension) {
+		o.observe("sni", "TLS required for CONNECT", config.ActionBlock, 0, true)
+		return
 	}
 	if cfg.TLSInterception.Enabled && !isPassthrough(host, cfg.TLSInterception.PassthroughDomains) && category != "not_tls" {
 		if cache := p.certCachePtr.Load(); cache != nil {
@@ -82,7 +91,8 @@ func (p *Proxy) handleWatchConnect(w http.ResponseWriter, r *http.Request, o wat
 			}
 			return
 		}
-		o.observe("tls", "TLS certificate cache unavailable", "uninspected", 0, false)
+		o.observe("tls", "TLS certificate cache unavailable", config.ActionBlock, 0, true)
+		return
 	}
 	dialCtx := context.WithValue(r.Context(), watchModeContextKey{}, o)
 	upstream, err := p.ssrfSafeDialContext(dialCtx, "tcp", target)
@@ -95,7 +105,7 @@ func (p *Proxy) handleWatchConnect(w http.ResponseWriter, r *http.Request, o wat
 		client: wrapBuffered(conn, reader), target: upstream,
 		idleTimeout: time.Duration(cfg.ForwardProxy.IdleTimeoutSeconds) * time.Second,
 		ks:          p.ks, clockStart: time.Now(),
-		watchOnly: func() bool { current := p.cfgPtr.Load(); return current != nil && current.WatchOnly },
+		watchOnly: func() bool { return cfg.WatchOnly },
 		observe:   func(reason string, enforced bool) { o.observe("connect", reason, "terminate", 0, enforced) },
 	}
 	bytes := relay.run()

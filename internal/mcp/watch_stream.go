@@ -19,6 +19,10 @@ func (sw *syncWriter) WithRawMessage(write func(io.Writer) error) error {
 }
 
 func forwardWatchUninspected(first []byte, firstErr error, reader transport.MessageReader, writer transport.MessageWriter, opts MCPProxyOpts) error {
+	if !opts.watchInbound {
+		opts.recordWatch("mcp_protocol", "outbound message exceeds inspection ceiling", config.ActionBlock, 0, true)
+		return errors.New("outbound inspection limit enforced in watch-only")
+	}
 	raw, ok := writer.(interface {
 		WithRawMessage(func(io.Writer) error) error
 	})

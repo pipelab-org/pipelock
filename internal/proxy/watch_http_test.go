@@ -67,7 +67,7 @@ func TestWatchOnlyHTTPPreservesRepresentations(t *testing.T) {
 				cfg.WatchOnly = true
 				cfg.Internal = nil
 				cfg.RequestBodyScanning.Enabled = true
-				cfg.RequestBodyScanning.MaxBodyBytes = 4
+				cfg.RequestBodyScanning.MaxBodyBytes = 1024
 				cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{Name: "Watch Probe", Regex: `watchprobe-[0-9]{8}`, Severity: config.SeverityHigh})
 				sc := scanner.MustNew(cfg)
 				defer sc.Close()
@@ -177,12 +177,12 @@ func TestWatchOnlyURLInspectionLimit(t *testing.T) {
 	if !scanner.IsURLInspectionLimitResult(floor) {
 		t.Fatalf("fixture does not reach inspection limit: %+v", floor)
 	}
-	if urlResultBlocks(cfg, sc, target, floor) {
-		t.Fatal("watch-only blocked inspection limit")
+	if !urlResultBlocks(cfg, sc, target, floor) {
+		t.Fatal("watch-only released incomplete URL inspection")
 	}
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
-	if watchRequestDecision(req, watchHTTPOptions{Config: cfg, Scanner: sc, Logger: audit.NewNop(), Metrics: metrics.New(), Transport: TransportForward}) {
-		t.Fatal("watch-only classified inspection limit as credential")
+	if !watchRequestDecision(req, watchHTTPOptions{Config: cfg, Scanner: sc, Logger: audit.NewNop(), Metrics: metrics.New(), Transport: TransportForward}) {
+		t.Fatal("watch-only released incomplete URL inspection")
 	}
 	cfg.WatchOnly = false
 	if !urlResultBlocks(cfg, sc, target, floor) {
@@ -254,8 +254,8 @@ func TestWatchOnlyRequiredReceiptUnavailable(t *testing.T) {
 			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("unchanged")), Request: r}, nil
 		}),
 	})
-	if w.Code != http.StatusOK || w.Body.String() != "unchanged" {
-		t.Fatalf("required receipt interrupted watch: %d %q", w.Code, w.Body.String())
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("required receipt did not refuse watch: %d %q", w.Code, w.Body.String())
 	}
 	stats := httptest.NewRecorder()
 	m.StatsHandler().ServeHTTP(stats, req)
@@ -265,7 +265,7 @@ func TestWatchOnlyRequiredReceiptUnavailable(t *testing.T) {
 	if err := json.Unmarshal(stats.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Bytes != int64(len("unchanged")) {
+	if body.Bytes != 0 {
 		t.Fatalf("uninspected bytes=%d", body.Bytes)
 	}
 }

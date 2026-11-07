@@ -88,8 +88,16 @@ func auditFloorRequest(t *testing.T, target, surface, value string) *http.Reques
 	return req
 }
 
-func driveAuditFloor(t *testing.T, transport, kind, surface string, enforce bool) auditFloorOutcome {
+func driveAuditFloor(t *testing.T, transport, kind, surface string, enforce bool, watch ...bool) auditFloorOutcome {
 	t.Helper()
+	configure := func(enforce bool, host string) func(*config.Config) {
+		return func(cfg *config.Config) {
+			auditFloorConfig(enforce, host)(cfg)
+			if len(watch) > 0 {
+				cfg.WatchOnly = watch[0]
+			}
+		}
+	}
 	value := auditFloorValue(kind)
 	if kind == "blocklist" {
 		value = "hello"
@@ -116,7 +124,7 @@ func driveAuditFloor(t *testing.T, transport, kind, surface string, enforce bool
 	case "forward", "fetch":
 		upstream := newIPv4Server(t, counting)
 		t.Cleanup(upstream.Close)
-		_, p, cleanup := setupForwardProxyWithInstance(t, auditFloorConfig(enforce, blocked("127.0.0.1")))
+		_, p, cleanup := setupForwardProxyWithInstance(t, configure(enforce, blocked("127.0.0.1")))
 		t.Cleanup(cleanup)
 		w := httptest.NewRecorder()
 		if transport == "forward" {
@@ -137,7 +145,7 @@ func driveAuditFloor(t *testing.T, transport, kind, surface string, enforce bool
 		return auditFloorHTTPOutcome(w, hits.Load())
 	case "intercept":
 		cfg := config.Defaults()
-		auditFloorConfig(enforce, blocked("peer.example"))(cfg)
+		configure(enforce, blocked("peer.example"))(cfg)
 		cfg.ApplyDefaults()
 		cfg.Internal = nil
 		sc := scanner.MustNew(cfg)
@@ -155,7 +163,7 @@ func driveAuditFloor(t *testing.T, transport, kind, surface string, enforce bool
 		return auditFloorHTTPOutcome(w, hits.Load())
 	case "reverse":
 		cfg := reverseParityBaseConfig(t)
-		auditFloorConfig(enforce, blocked("reverse.example"))(cfg)
+		configure(enforce, blocked("reverse.example"))(cfg)
 		rp, _, _ := newReverseParityHarness(t, cfg, counting)
 		w := httptest.NewRecorder()
 		req := auditFloorRequest(t, "http://reverse.example/x", surface, value)
@@ -165,7 +173,7 @@ func driveAuditFloor(t *testing.T, transport, kind, surface string, enforce bool
 	case "connect":
 		backend := newIPv4Server(t, counting)
 		t.Cleanup(backend.Close)
-		proxyAddr, cleanup := setupForwardProxy(t, auditFloorConfig(enforce, blocked("127.0.0.1")))
+		proxyAddr, cleanup := setupForwardProxy(t, configure(enforce, blocked("127.0.0.1")))
 		t.Cleanup(cleanup)
 		conn := dialProxy(t, proxyAddr)
 		t.Cleanup(func() { _ = conn.Close() })
@@ -184,7 +192,7 @@ func driveAuditFloor(t *testing.T, transport, kind, surface string, enforce bool
 	case "websocket":
 		backendAddr, backendCleanup := wsEchoServer(t)
 		t.Cleanup(backendCleanup)
-		proxyAddr, proxyCleanup := setupWSProxy(t, auditFloorConfig(enforce, blocked("127.0.0.1")))
+		proxyAddr, proxyCleanup := setupWSProxy(t, configure(enforce, blocked("127.0.0.1")))
 		t.Cleanup(proxyCleanup)
 		var conn net.Conn
 		var err error

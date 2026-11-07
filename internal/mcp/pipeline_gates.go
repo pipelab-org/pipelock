@@ -534,7 +534,7 @@ func EvaluateMCPInputGates(
 				eval.ContentVerdict.Error = floorVerdict.Error
 			}
 			for _, match := range floorVerdict.Matches {
-				if scanner.IsCoreCriticalMatch(match) || scanner.IsHostnameExfilMatch(match) {
+				if scanner.IsCoreCriticalMatch(match) || scanner.IsHostnameExfilMatch(match) || match.IsInspectionLimit() || match.PatternName == uninspectableSplitSecretFieldsReason {
 					eval.ContentVerdict.Clean = false
 					eval.ContentVerdict.Action = config.ActionBlock
 					eval.ContentVerdict.Matches = append(eval.ContentVerdict.Matches, match)
@@ -823,7 +823,7 @@ func evaluateMCPInputGatesStdio(
 				eval.ContentVerdict.Error = floorVerdict.Error
 			}
 			for _, match := range floorVerdict.Matches {
-				if scanner.IsCoreCriticalMatch(match) || scanner.IsHostnameExfilMatch(match) {
+				if scanner.IsCoreCriticalMatch(match) || scanner.IsHostnameExfilMatch(match) || match.IsInspectionLimit() || match.PatternName == uninspectableSplitSecretFieldsReason {
 					eval.ContentVerdict.Clean = false
 					eval.ContentVerdict.Action = config.ActionBlock
 					eval.ContentVerdict.Matches = append(eval.ContentVerdict.Matches, match)

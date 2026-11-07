@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -51,19 +50,11 @@ func TestWatchHTTPStreamSpoolCleanup(t *testing.T) {
 			client.WatchOnly = opts.watchOnly
 			var output bytes.Buffer
 			err := forwardWatchHTTPInput(t.Context(), first, &transport.UninspectedMessageChunkError{}, reader, client, transport.NewStdioWriter(&output), io.Discard, opts)
-			if tc.secret || tc.incomplete {
-				if err == nil || calls.Load() != 0 {
-					t.Fatalf("refused request escaped: calls=%d err=%v", calls.Load(), err)
-				}
-			} else {
-				if err != nil {
-					t.Fatal(err)
-				}
-				got := <-received
-				if got != string(first)+string(last) || !strings.Contains(output.String(), `"result":{}`) {
-					t.Fatalf("stream changed: body=%q response=%q", got, output.String())
-				}
+
+			if err == nil || calls.Load() != 0 {
+				t.Fatalf("uninspected outbound request escaped: calls=%d err=%v", calls.Load(), err)
 			}
+
 			files, readErr := os.ReadDir(dir)
 			if readErr != nil || len(files) != 0 {
 				t.Fatalf("spool retained: files=%v err=%v", files, readErr)

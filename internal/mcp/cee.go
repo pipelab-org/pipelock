@@ -505,7 +505,7 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 				}
 				if opts.watchOnly {
 					for _, match := range matches {
-						if config.IsCoreDLPPatternName(match.PatternName) {
+						if config.IsCoreDLPPatternName(match.PatternName) || match.IsInspectionLimit() {
 							primary = match
 							break
 						}

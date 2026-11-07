@@ -10,9 +10,12 @@ import (
 	"io"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -27,6 +30,8 @@ func (o MCPProxyOpts) snapshotWatchPolicy() MCPProxyOpts {
 	}
 	o.WatchOnly = o.watchOnly()
 	o.WatchOnlyFn = nil
+	o.RequireReceipts = o.requireReceipts()
+	o.RequireReceiptsFn = nil
 	o.Scanner = o.scanner()
 	o.ScannerFn = nil
 	o.PolicyHash = o.receiptPolicyHash()
@@ -78,7 +83,7 @@ func (o MCPProxyOpts) observeInputGate(eval *MCPInputEvaluation, n int) bool {
 
 func watchCoreMatches(matches []scanner.TextDLPMatch) bool {
 	for _, match := range matches {
-		if !match.Warn && scanner.IsCoreCriticalMatch(match) {
+		if !match.Warn && (scanner.IsCoreCriticalMatch(match) || scanner.IsHostnameExfilMatch(match) || match.IsInspectionLimit() || match.PatternName == uninspectableSplitSecretFieldsReason) {
 			return true
 		}
 	}
@@ -86,11 +91,11 @@ func watchCoreMatches(matches []scanner.TextDLPMatch) bool {
 }
 
 func watchCoreInput(v InputVerdict) bool {
-	if watchCoreMatches(v.Matches) {
+	if v.Error != "" || watchCoreMatches(v.Matches) {
 		return true
 	}
 	for _, finding := range v.URLFindings {
-		if scanner.IsCoreCredentialResult(finding) {
+		if scanner.IsCoreCriticalResult(finding) || scanner.IsHostnameExfilResult(finding) {
 			return true
 		}
 	}
@@ -100,17 +105,51 @@ func watchCoreInput(v InputVerdict) bool {
 // watchInputDecision uses the existing gate evaluator on the original message.
 // Changes such as redaction, redirects and envelope injection are observed but
 // never applied to the message that this decision returns.
-func watchInputDecision(msg []byte, logW io.Writer, sessionKey string, opts MCPProxyOpts) httpInputDecision {
+func watchInputDecision(msg []byte, logW io.Writer, sessionKey string, opts MCPProxyOpts) (result httpInputDecision) {
 	opts.WatchOnly, opts.WatchOnlyFn = true, nil
-	result := httpInputDecision{ForwardMessage: msg}
+	result = httpInputDecision{ForwardMessage: msg}
 	frame := ParseMCPFrame(msg)
+	denialAudit := mcpInputBlockAudit(InputVerdict{})
+	defer func() {
+		result.Blocked = inputMCPDenial(opts, denialAudit, result.Blocked)
+	}()
+	receiptHandled := false
+	receiptLayer, receiptPattern := "watch_only", "forwarded original message"
+	defer func() {
+		if receiptHandled {
+			return
+		}
+		verdict := config.ActionWarn
+		if result.Blocked != nil {
+			verdict = config.ActionBlock
+			if receiptPattern == "forwarded original message" {
+				receiptPattern = result.Blocked.ErrorMessage
+			}
+		}
+		if err := emitWatchReceipt(opts, logW, frame, verdict, receiptLayer, receiptPattern); err != nil && opts.requireReceipts() && result.Blocked == nil {
+			denialAudit = mcpReceiptMcpInputDenialAudit()
+			opts.recordWatch("receipt", "required receipt unavailable", config.ActionBlock, 0, true)
+			result.Blocked = &BlockedRequest{ID: frame.ID, IsNotification: isRPCNotification(frame.ID), ErrorCode: -32007, ErrorMessage: requiredReceiptFailureMessage(err), ErrorData: mcpBlockReasonData(blockreason.ReceiptEmissionFailed)}
+		}
+	}()
+	if opts.scanner() == nil {
+		denialAudit = mcpOperationalBlockAudit(scanner.AuditScannerUnavailable, "mcp_input", "MCP scanner unavailable")
+		receiptLayer = "scanner_unavailable"
+		opts.recordWatch(receiptLayer, "scanner unavailable", config.ActionBlock, 0, true)
+		result.Blocked = &BlockedRequest{ID: frame.ID, IsNotification: isRPCNotification(frame.ID), ErrorMessage: "scanner unavailable, enforced in watch-only"}
+		return result
+	}
 	if err := opts.checkServerIdentity(); err != nil {
+		denialAudit = mcpInputGateBlockAudit(scanner.AuditAgentIdentity, "MCP server identity is no longer authorized", audit.BlockClassProtective)
+		receiptLayer = "identity"
 		opts.recordWatch("identity", "server identity no longer authorized", config.ActionBlock, 0, true)
 		result.Blocked = &BlockedRequest{ID: frame.ID, IsNotification: isRPCNotification(frame.ID), ErrorMessage: "server identity no longer authorized"}
 		return result
 	}
 	stripped, authorityRef, authorityErr := extractInboundMCPAuthority(msg)
 	if err := authorizeMCP(opts.warnContext(), authorityRef, authorityErr, frame, opts); err != nil {
+		denialAudit = mcpAuthorityDenialAudit()
+		receiptLayer = "authority"
 		opts.recordWatch("authority", "external action grant refused", config.ActionBlock, 0, true)
 		result.Blocked = authorityBlockedRequest(frame)
 		return result
@@ -122,7 +161,13 @@ func watchInputDecision(msg []byte, logW io.Writer, sessionKey string, opts MCPP
 	if opts.KillSwitch != nil {
 		if d := opts.KillSwitch.IsActiveMCP(msg); d.Active {
 			opts.recordWatch("kill_switch", "operator kill switch", config.ActionBlock, 0, true)
-			result.Blocked = &BlockedRequest{ID: frame.ID, IsNotification: isRPCNotification(frame.ID), ErrorCode: -32004, ErrorMessage: d.Message}
+			if manager := opts.deferManager(); manager != nil {
+				manager.ResolveAll(config.ActionBlock, deferred.SourceKillSwitch)
+			}
+			denialAudit = mcpKillMcpInputDenialAudit()
+			batch := refuseKillSwitchRequest(opts, logW, frame, d)
+			receiptHandled = true
+			result.Blocked = &BlockedRequest{ID: frame.ID, IsNotification: isRPCNotification(frame.ID), ErrorCode: -32004, ErrorMessage: d.Message, SyntheticResponse: batch}
 			return result
 		}
 	}
@@ -134,10 +179,33 @@ func watchInputDecision(msg []byte, logW io.Writer, sessionKey string, opts MCPP
 	// Always scan the original content for the immutable floor, including when
 	// inspection of its JSON shape was incomplete or configurable scanning is off.
 	floor := opts.scanner().ScanTextForDLP(opts.warnContext(), string(msg))
-	core := watchCoreInput(eval.ContentVerdict) || watchCoreMatches(floor.Matches) || watchCoreMatches(eval.A2AResult.DLPFindings)
+	core := floor.Err() != nil || watchCoreInput(eval.ContentVerdict) || watchCoreMatches(floor.Matches) || watchCoreMatches(eval.A2AResult.DLPFindings) || eval.A2AResult.InspectionIncomplete || eval.A2AResult.ScanError != ""
+	for _, finding := range eval.A2AResult.URLFindings {
+		core = core || scanner.IsCoreCriticalResult(finding) || scanner.IsHostnameExfilResult(finding)
+	}
+	if frame.IsBatch || frame.KeyValidationErr != nil || frameParseErrFailsClosed(frame.ParseErr) {
+		core = true
+	}
+	receiptLayer, receiptPattern, _ = pickAttribution(eval)
+	observed := append(inputVerdictReasons(eval.ContentVerdict), eval.DoWReason, eval.BindingReason, eval.ChainReason)
+	observed = append(observed, eval.PolicyVerdict.Rules...)
+	for _, reason := range observed {
+		if reason != "" {
+			receiptPattern += "; would-block: " + reason
+		}
+	}
+	if receiptPattern == "" {
+		receiptPattern = "forwarded original message"
+	}
 	if core {
-		opts.recordWatch("dlp", "core credential floor", config.ActionBlock, 0, true)
-		result.Blocked = &BlockedRequest{ID: frame.ID, IsNotification: isRPCNotification(frame.ID), ErrorMessage: "pipelock: core credential floor enforced in watch-only"}
+		denialAudit = mcpInputBlockAudit(eval.ContentVerdict)
+		receiptLayer = mcpReceiptLayerInput
+		receiptPattern = joinInputVerdictReasons(eval.ContentVerdict)
+		if receiptPattern == "" {
+			receiptPattern = "audit-mode security floor"
+		}
+		opts.recordWatch("dlp", "audit-mode security floor", config.ActionBlock, 0, true)
+		result.Blocked = &BlockedRequest{ID: frame.ID, IsNotification: isRPCNotification(frame.ID), ErrorMessage: "pipelock: audit-mode security floor enforced in watch-only"}
 		return result
 	}
 	if eval.ContentVerdict.Error != "" {
@@ -184,7 +252,7 @@ func watchInputDecision(msg []byte, logW io.Writer, sessionKey string, opts MCPP
 		sessionKey: sessionKey, entropyPayload: msg, frame: frame, cee: opts.cee(), sc: opts.scanner(), logW: logW,
 		matchedPattern: &pattern, blockKind: &kind, watchOnly: true, onWatch: opts.recordWatch,
 	}); reason != "" {
-		if config.IsCoreDLPPatternName(pattern) {
+		if config.IsCoreDLPPatternName(pattern) || (scanner.TextDLPMatch{PatternName: pattern}).IsInspectionLimit() || kind == ceeBlockKindSessionCapacity || kind == ceeBlockKindOwnerMismatch {
 			opts.recordWatch("cross_request", "core credential floor", config.ActionBlock, 0, true)
 			result.Blocked = &BlockedRequest{ID: frame.ID, IsNotification: isRPCNotification(frame.ID), ErrorMessage: "pipelock: core credential floor enforced in watch-only"}
 			return result
@@ -217,48 +285,72 @@ func watchInputDecision(msg []byte, logW io.Writer, sessionKey string, opts MCPP
 		TransformKind: capture.TransformJoinedFields, RawFindings: findings,
 		EffectiveAction: config.ActionWarn, Outcome: capture.OutcomeWarned, SkipReason: "watch_only",
 	})
-	emitWatchReceipt(opts, logW, frame, len(msg))
 	return result
 }
 
-func emitWatchReceipt(opts MCPProxyOpts, logW io.Writer, frame MCPFrame, n int) {
-	decision := MCPDecision{Receipt: receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionWarn, Layer: "watch_only", Pattern: "watch-only forwarded original message", Transport: opts.Transport, Target: "mcp://message", MCPMethod: frame.Method, RequestID: canonicalID(frame.ID)}}
-	// Required receipt failures are observed in this mode. They never turn the
-	// successful forwarding decision into a signed blocked decision.
-	required := opts.requireReceipts()
-	opts.RequireReceipts, opts.RequireReceiptsFn = false, nil
-	if _, err := opts.emitReceiptDecision(decision); err != nil {
-		opts.recordWatch("receipt", "receipt emission failed", "uninspected", int64(n), false)
+func emitWatchReceipt(opts MCPProxyOpts, logW io.Writer, frame MCPFrame, verdict, layer, pattern string) error {
+	target := frame.ToolCallName
+	if target == "" {
+		target = frame.Method
+	}
+	if target == "" {
+		target = "mcp://message"
+	}
+	surface := opts.Transport
+	if surface == "" {
+		surface = transportMCPStdio
+	}
+	decision := MCPDecision{Receipt: receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: verdict, Layer: layer, Pattern: pattern, Transport: surface, Target: target, MCPMethod: frame.Method, ToolName: frame.ToolCallName, RequestID: canonicalID(frame.ID)}, RequireReceipt: opts.requireReceipts(), RequiredMode: opts.requireReceipts()}
+	_, err := opts.emitReceiptDecision(decision)
+	if err != nil {
+		opts.recordWatch("receipt", "receipt emission failed", config.ActionBlock, 0, opts.requireReceipts())
 		if logW != nil {
 			_, _ = fmt.Fprintln(logW, "pipelock: watch-only receipt emission failed")
 		}
-	} else if required && opts.receiptEmitter() == nil && opts.ReceiptGroup == nil {
-		opts.recordWatch("receipt", "required receipt unavailable", "uninspected", int64(n), false)
 	}
+	return err
 }
 
 func forwardWatchResponse(line []byte, writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) (bool, error) {
 	opts.WatchOnly, opts.WatchOnlyFn = true, nil
 	frame := ParseMCPFrame(line)
+	if opts.scanner() == nil {
+		opts.recordWatch("scanner_unavailable", "scanner unavailable", config.ActionBlock, 0, true)
+		_ = emitWatchReceipt(opts, logW, frame, config.ActionBlock, "scanner_unavailable", "scanner unavailable")
+		dropMCPDenial(opts, mcpOperationalBlockAudit(scanner.AuditScannerUnavailable, "mcp_response", "MCP scanner unavailable"), "response")
+		return true, fmt.Errorf("scanner unavailable, enforced in watch-only")
+	}
 	if err := opts.checkServerIdentity(); err != nil {
 		opts.recordWatch("identity", "server identity no longer authorized", config.ActionBlock, 0, true)
+		_ = emitWatchReceipt(opts, logW, frame, config.ActionBlock, "identity", "server identity no longer authorized")
+		dropMCPDenial(opts, mcpIdentityMcpResponseDenialAudit(), "response")
 		return true, err
 	}
 	if opts.KillSwitch != nil {
 		if d := opts.KillSwitch.IsActiveMCP(line); d.Active {
 			opts.recordWatch("kill_switch", "operator kill switch", config.ActionBlock, 0, true)
+			if manager := opts.deferManager(); manager != nil {
+				manager.ResolveAll(config.ActionBlock, deferred.SourceKillSwitch)
+			}
+			_ = emitWatchReceipt(opts, logW, frame, config.ActionBlock, "kill_switch", "operator kill switch")
 			if frame.ID == nil {
+				dropMCPDenial(opts, mcpKillMcpResponseDenialAudit(), "response")
 				return true, nil
 			}
-			return true, writer.WriteMessage(blockSessionDenyResponse(frame.ID, "kill switch enforced in watch-only"))
+			return true, writeMCPDenial(opts, mcpKillMcpResponseDenialAudit(), writer, blockSessionDenyResponse(frame.ID, "kill switch enforced in watch-only"))
 		}
+	}
+	var findings []string
+	observe := func(layer, reason, action string, n int64, enforced bool) {
+		opts.recordWatch(layer, reason, action, n, enforced)
+		findings = append(findings, layer+": "+reason+" ("+action+")")
 	}
 	trackedMethod := ""
 	if tracker != nil && isResponse(line) {
 		if tracked, ok := tracker.Consume(frame.ID); ok {
 			trackedMethod = tracked.Method
 		} else if tracker.Seeded() {
-			opts.recordWatch("mcp_correlation", "unsolicited response", config.ActionBlock, 0, false)
+			observe("mcp_correlation", "unsolicited response", config.ActionBlock, 0, false)
 		}
 	}
 	sc := opts.scanner()
@@ -271,11 +363,13 @@ func forwardWatchResponse(line []byte, writer transport.MessageWriter, logW io.W
 	isA2A := a2aOpts != nil && a2aOpts.Cfg != nil && a2aOpts.Cfg.Enabled && (IsA2AMethod(trackedMethod) || isAgentCardResultShape(line))
 	core := isA2A && watchCoreMatches(verdict.DLPMatches)
 	if core {
-		opts.recordWatch("dlp", "core credential floor", config.ActionBlock, 0, true)
+		observe("dlp", "core credential floor", config.ActionBlock, 0, true)
+		_ = emitWatchReceipt(opts, logW, frame, config.ActionBlock, "dlp", "core credential floor")
 		if frame.ID == nil {
+			dropMCPDenial(opts, mcpResponseContentDenialAudit("core credential floor"), "response")
 			return true, nil
 		}
-		return true, writer.WriteMessage(blockResponseReason(frame.ID, "core credential floor enforced in watch-only"))
+		return true, writeMCPDenial(opts, mcpResponseContentDenialAudit("core credential floor"), writer, blockResponseReason(frame.ID, "core credential floor enforced in watch-only"))
 	}
 	found := !verdict.Clean
 	observedAction := verdict.Action
@@ -284,9 +378,13 @@ func forwardWatchResponse(line []byte, writer transport.MessageWriter, logW io.W
 	}
 	taintKinds := ResponseTaintFindingKinds(verdict)
 	if verdict.Error != "" {
-		opts.recordWatch("mcp_response", verdict.Error, "uninspected", int64(len(line)), false)
+		observe("mcp_response", verdict.Error, "uninspected", int64(len(line)), false)
 	} else if !verdict.Clean {
-		opts.recordWatch("mcp_response", "response scanner finding", observedAction, 0, false)
+		names := matchNames(verdict.Matches)
+		for _, match := range verdict.DLPMatches {
+			names = append(names, match.PatternName)
+		}
+		observe("mcp_response", "response scanner finding: "+strings.Join(names, ", "), observedAction, 0, false)
 	}
 	if cfg := opts.toolCfg(); cfg != nil {
 		toolResult := tools.ScanToolsForMethodContext(opts.warnContext(), line, sc, cfg.WithServerMode(opts.ServerName, opts.ServerBinding, opts.ServerBindingMode, opts.ServerRevision), trackedMethod)
@@ -295,15 +393,15 @@ func forwardWatchResponse(line []byte, writer transport.MessageWriter, logW io.W
 			observedAction = config.StricterAction(observedAction, cfg.Action)
 			found = true
 			if toolResult.ResourceLimit != "" {
-				opts.recordWatch("mcp_tools", toolResult.ResourceLimit, "uninspected", int64(len(line)), false)
+				observe("mcp_tools", toolResult.ResourceLimit, "uninspected", int64(len(line)), false)
 			} else {
-				opts.recordWatch("mcp_tools", "tool definition finding", cfg.Action, 0, false)
+				observe("mcp_tools", "tool definition finding", cfg.Action, 0, false)
 			}
 		}
 		if toolResult.IsToolsList && cfg.Baseline != nil {
 			reservation, err := cfg.Baseline.ReserveToolInventory(toolResult.ToolNames, toolResult.ToolDefs)
 			if err != nil {
-				opts.recordWatch("mcp_tools", "inventory unavailable", "uninspected", int64(len(line)), false)
+				observe("mcp_tools", "inventory unavailable", "uninspected", int64(len(line)), false)
 			} else {
 				defer reservation.Release()
 				_ = reservation.Commit(toolResult.Clean)
@@ -313,20 +411,20 @@ func forwardWatchResponse(line []byte, writer transport.MessageWriter, logW io.W
 	if cfg := opts.provenanceCfg(); cfg != nil && cfg.Enabled && isToolsListResponse(line) {
 		pv := VerifyToolsListProvenance(line, cfg)
 		if pv.Block {
-			opts.recordWatch("provenance", pv.Error, pv.Action, 0, false)
+			observe("provenance", pv.Error, pv.Action, 0, false)
 			found = true
 		}
 	}
 	mediaResult := applyMCPResponseMediaPolicy(line, opts.mediaPolicy(), opts.Transport)
 	if mediaResult.Blocked {
-		opts.recordWatch("media", mediaResult.BlockReason, config.ActionBlock, 0, false)
+		observe("media", mediaResult.BlockReason, config.ActionBlock, 0, false)
 		found = true
 	} else if mediaResult.Changed {
-		opts.recordWatch("media", "response media rewrite", config.ActionStrip, 0, false)
+		observe("media", "response media rewrite", config.ActionStrip, 0, false)
 		found = true
 	}
 	if frame.IsBatch || frame.KeyValidationErr != nil {
-		opts.recordWatch("mcp_protocol", "response shape refused by enforced mode", config.ActionBlock, 0, false)
+		observe("mcp_protocol", "response shape refused by enforced mode", config.ActionBlock, 0, false)
 	}
 	opts.captureObserver().ObserveResponseVerdict(context.Background(), &capture.ResponseVerdictRecord{
 		Subsurface: "response_mcp", Transport: opts.Transport, SessionID: captureSessionID(opts.Transport),
@@ -343,11 +441,17 @@ func forwardWatchResponse(line []byte, writer transport.MessageWriter, logW io.W
 		}
 	}
 	if len(verdict.Unscanned) > 0 {
-		opts.recordWatch("mcp_response", "response fields uninspected", "uninspected", int64(len(line)), false)
+		observe("mcp_response", "response fields uninspected", "uninspected", int64(len(line)), false)
 	}
 	observeMCPResponseFindings(opts, taintKinds)
-	emitWatchReceipt(opts, logW, frame, len(line))
-	if err := writer.WriteMessage(line); err != nil {
+	pattern := "response observed"
+	if len(findings) > 0 {
+		pattern += ": " + strings.Join(findings, "; ")
+	}
+	if err := emitWatchReceipt(opts, logW, frame, config.ActionWarn, "mcp_response", pattern); err != nil && opts.requireReceipts() {
+		return true, err
+	}
+	if err := writeMCPResponseDisposition(opts, mcpDenialAudit{}, writer, line, false); err != nil {
 		return found, fmt.Errorf("forwarding watch-only MCP response: %w", err)
 	}
 	return found, nil
@@ -355,7 +459,7 @@ func forwardWatchResponse(line []byte, writer transport.MessageWriter, logW io.W
 
 func watchCoreFragments(matches []scanner.DLPMatch) bool {
 	for _, match := range matches {
-		if config.IsCoreDLPPatternName(match.PatternName) {
+		if config.IsCoreDLPPatternName(match.PatternName) || match.IsInspectionLimit() {
 			return true
 		}
 	}

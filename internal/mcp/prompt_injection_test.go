@@ -332,7 +332,7 @@ func (r *policyReloadMessageReader) ReadMessage() ([]byte, error) {
 	return r.MessageReader.ReadMessage()
 }
 
-func TestMCPReceiptPolicySnapshotSurvivesReload(t *testing.T) {
+func TestMCPReceiptPolicySnapshotAtAdmission(t *testing.T) {
 	for _, mode := range []string{config.ActionBlock, config.ActionWarn, config.ActionAllow} {
 		t.Run(mode, func(t *testing.T) {
 			h := newMCPDecisionReceiptHarness(t)
@@ -372,20 +372,24 @@ func TestMCPReceiptPolicySnapshotSurvivesReload(t *testing.T) {
 			}
 			records := mcpV2Receipts(t, h)
 			wantCount := 1
-			if mode == config.ActionBlock {
+			if nextMode == config.ActionBlock {
 				wantCount++
 			}
 			if len(records) != wantCount {
 				t.Fatalf("receipts=%d want=%d; log=%s", len(records), wantCount, log.String())
 			}
-			for _, record := range records {
+			for i, record := range records {
 				var d struct {
 					RuleID string `json:"rule_id"`
 				}
 				if err := json.Unmarshal(record.Payload, &d); err != nil {
 					t.Fatal(err)
 				}
-				if record.PolicyHash != "sha256:"+oldHash || strings.Contains(d.RuleID, "wording disabled") != (mode == config.ActionAllow) || strings.Contains(d.RuleID, "wording warn-only") != (mode == config.ActionWarn) {
+				wantHash, wantMode := oldHash, mode
+				if i < len(records)-1 {
+					wantHash, wantMode = strings.Repeat("b", 64), nextMode
+				}
+				if record.PolicyHash != "sha256:"+wantHash || strings.Contains(d.RuleID, "wording disabled") != (wantMode == config.ActionAllow) || strings.Contains(d.RuleID, "wording warn-only") != (wantMode == config.ActionWarn) {
 					t.Fatalf("receipt changed after reload: hash=%q reason=%q", record.PolicyHash, d.RuleID)
 				}
 			}

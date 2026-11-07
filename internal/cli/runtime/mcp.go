@@ -278,7 +278,6 @@ func applyMCPA2AOpts(opts *mcp.MCPProxyOpts, cfg *config.Config, baseline *mcp.C
 // taint and action lookups use only its ArmingName, so a name that was never
 // proven arms nothing.
 func applyMCPResponseSuppressOpts(opts *mcp.MCPProxyOpts, cfg *config.Config, res identity.Resolution) {
-	opts.WatchOnly = cfg.WatchOnly
 	opts.ServerName = res.Name
 	opts.PolicyServerName = res.ArmingName
 	opts.ServerBindingMode = res.BindingMode
@@ -286,6 +285,7 @@ func applyMCPResponseSuppressOpts(opts *mcp.MCPProxyOpts, cfg *config.Config, re
 	trust := config.ResponseTrustUntrusted
 	taintTrusted := false
 	if cfg != nil {
+		opts.WatchOnly = cfg.WatchOnly
 		opts.Suppress = cfg.Suppress
 		if configuredTrust, ok := cfg.MCPResponseTrustForServer(res.ArmingName); ok {
 			trust = configuredTrust
@@ -1369,9 +1369,10 @@ Key-free evidence capture:
 			// receipt_emission_failed - a silent, total block. Refuse to start
 			// so the misconfiguration surfaces here, not as an all-blocked
 			// proxy at runtime.
-			if cfg.FlightRecorder.RequireReceipts && !cfg.WatchOnly && !receiptEmitterReady(receiptEmitter) {
-				return fmt.Errorf("flight_recorder.require_receipts is enabled but no healthy signed receipt emitter is active: set flight_recorder.enabled, flight_recorder.dir, and flight_recorder.signing_key_path (run 'pipelock init'), fix any receipt-chain resume error, or disable require_receipts")
+			if err := validateMCPRequiredReceipts(cfg, receiptEmitter); err != nil {
+				return err
 			}
+
 			heartbeatCtx, heartbeatCancel := context.WithCancel(cmd.Context())
 			defer heartbeatCancel()
 			var mcpLn net.Listener
@@ -1474,7 +1475,7 @@ Key-free evidence capture:
 				mcp.NewWatchMetadataSafeDialContext(func() *scanner.Scanner { return sc },
 					func() bool { return watchReload.current.Load().WatchOnly },
 					func(reason string) {
-						auditLogger.LogWatchOnly("mcp", "ssrf_metadata", reason, config.ActionBlock, 0, false)
+						auditLogger.LogWatchOnly("mcp", "ssrf_metadata", reason, config.ActionBlock, 0, true)
 						mcpMetrics.RecordWatchOnly("mcp", "ssrf_metadata", config.ActionBlock, 0)
 					}), launchIdentity, cmd.ErrOrStderr())
 			captureProfile := resolved.Name
@@ -2182,4 +2183,11 @@ func startMCPContractWatch(ctx context.Context, loader *contractruntime.Loader, 
 		return func() {}
 	}
 	return stop
+}
+
+func validateMCPRequiredReceipts(cfg *config.Config, emitter *receipt.Emitter) error {
+	if cfg.FlightRecorder.RequireReceipts && !receiptEmitterReady(emitter) {
+		return fmt.Errorf("flight_recorder.require_receipts is enabled but no healthy signed receipt emitter is active: set flight_recorder.enabled, flight_recorder.dir, and flight_recorder.signing_key_path (run 'pipelock init'), fix any receipt-chain resume error, or disable require_receipts")
+	}
+	return nil
 }

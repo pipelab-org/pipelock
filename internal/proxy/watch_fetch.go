@@ -17,6 +17,9 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+// maxFetchRedirects is the existing fetch-client redirect-chain ceiling.
+const maxFetchRedirects = 5
+
 func (p *Proxy) handleWatchFetch(w http.ResponseWriter, r *http.Request, o watchHTTPOptions) {
 	cfg, sc, agent := o.Config, o.Scanner, o.Agent
 	if r.Method != http.MethodGet {
@@ -53,19 +56,46 @@ func (p *Proxy) handleWatchFetch(w http.ResponseWriter, r *http.Request, o watch
 		writeJSON(w, http.StatusForbidden, FetchResponse{URL: rawURL, Blocked: true, Error: "enforced in watch-only: core credential floor"})
 		return
 	}
+	if !o.receipt(req, config.ActionAllow, "watch_only", "fetch admitted without policy rewriting") && cfg.FlightRecorder.RequireReceipts {
+		writeJSON(w, http.StatusServiceUnavailable, FetchResponse{Blocked: true, Error: "enforced in watch-only: required receipt unavailable"})
+		return
+	}
 	req = req.WithContext(context.WithValue(req.Context(), watchModeContextKey{}, o))
 	client := *p.client
-	client.CheckRedirect = func(next *http.Request, _ []*http.Request) error {
+	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		refuse := func(layer, reason string) error {
+			err := newRedirectBlockedRequest(layer, reason)
+			err.target = next.URL.String()
+			return err
+		}
+		if len(via) >= maxFetchRedirects {
+			return refuse("redirect", fmt.Sprintf("too many redirects (max %d)", maxFetchRedirects))
+		}
+		access := r.Clone(next.Context())
+		access.URL = next.URL
+		if err := watchAuthorityError(access, o); err != nil {
+			return refuse(blockLayerAuthority, "redirect authority refused")
+		}
 		if o.killed() {
-			return fmt.Errorf("enforced in watch-only: kill switch active")
+			return refuse("kill_switch", killSwitchActiveReason)
 		}
 		if watchRequestDecision(next, o) {
-			return fmt.Errorf("enforced in watch-only: core credential floor")
+			return refuse("redirect", "audit safety floor")
+		}
+		if !o.receipt(next, config.ActionAllow, "watch_only", "redirect admitted") && cfg.FlightRecorder.RequireReceipts {
+			return refuse(receiptEmissionFailedLayer, "required receipt unavailable")
 		}
 		return nil
 	}
 	resp, err := client.Do(req)
 	if err != nil {
+		if info, reason, blocked := o.upstreamRefusal(req, err); blocked {
+			writeBlockedJSON(w, info, http.StatusForbidden, FetchResponse{
+				URL: rawURL, Agent: agent, Blocked: true, BlockReason: reason,
+				Error: "enforced in watch-only: " + reason,
+			})
+			return
+		}
 		o.observe("upstream", "fetch upstream unavailable", config.ActionBlock, 0, true)
 		writeJSON(w, http.StatusBadGateway, FetchResponse{URL: rawURL, Error: "upstream unavailable"})
 		return

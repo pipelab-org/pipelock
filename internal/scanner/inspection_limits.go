@@ -37,14 +37,6 @@ func IsURLInspectionLimitResult(r Result) bool {
 	return !r.Allowed && r.Scanner == ScannerCoreDLP && r.Reason == urlInspectionLimitReason
 }
 
-// IsCoreCredentialResult distinguishes a detected core credential from the
-// inspection refusals that share the immutable core scanner in enforce mode.
-// Observation may forward those incomplete inspections, but not a detected
-// credential. IsCoreCriticalResult retains its existing fail-closed meaning.
-func IsCoreCredentialResult(r Result) bool {
-	return IsCoreCriticalResult(r) && r.Reason != urlInspectionLimitReason && r.Reason != querySubsequenceLimitReason
-}
-
 // urlPercentDecodeConverges reports whether every percent-encoded URL
 // component reaches a fixed point within maxDecodeRounds under both the form
 // (query) and RFC 3986 (path, fragment, userinfo) unescapers. The URL

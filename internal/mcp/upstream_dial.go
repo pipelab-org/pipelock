@@ -22,8 +22,8 @@ func NewMetadataSafeDialContext(scannerFn func() *scanner.Scanner) func(ctx cont
 	return NewWatchMetadataSafeDialContext(scannerFn, nil, nil)
 }
 
-// NewWatchMetadataSafeDialContext observes the existing destination refusal in
-// watch-only mode while retaining the same resolution and dialing behavior.
+// NewWatchMetadataSafeDialContext reports metadata refusals in watch-only mode
+// while retaining the same mandatory metadata floor in both modes.
 // The mode is sampled per dial, so a reload applies to subsequent connections.
 func NewWatchMetadataSafeDialContext(scannerFn func() *scanner.Scanner, watchOnly func() bool, onWouldBlock func(string)) func(context.Context, string, string) (net.Conn, error) {
 	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
@@ -42,13 +42,10 @@ func newWatchMetadataSafeDialContext(scannerFn func() *scanner.Scanner, dialCont
 		watch := watchOnly != nil && watchOnly()
 		metadataRefusal := func(host string, ip net.IP) error {
 			err := mcpMetadataDialBlock(host, ip)
-			if !watch {
-				return err
-			}
-			if onWouldBlock != nil {
+			if watch && onWouldBlock != nil {
 				onWouldBlock(err.Error())
 			}
-			return nil
+			return err
 		}
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {

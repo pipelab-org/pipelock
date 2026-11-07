@@ -1163,10 +1163,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 				ContractAgent:            edition.ProfileDefault,
 				DialContext: verifiedDialContext(mcp.NewWatchMetadataSafeDialContext(mcpScannerFn,
 					func() bool { return s.proxy.CurrentConfig().WatchOnly },
-					func(reason string) {
-						s.logger.LogWatchOnly("mcp_http", "ssrf_metadata", reason, config.ActionBlock, 0, false)
-						s.metrics.RecordWatchOnly("mcp_http", "ssrf_metadata", config.ActionBlock, 0)
-					}), mcpResolution, s.opts.Stderr),
+					s.recordMCPMetadataRefusal), mcpResolution, s.opts.Stderr),
 			}
 			applyMCPDoWOpts(&listenerOpts, mcpDoWWiring, true)
 			if s.opts.MCPAuthTokenFile != "" {
@@ -1578,4 +1575,9 @@ func (s *Server) shutdownAgentServers() {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: agent listener drain incomplete; receipts for this run will not be sealed as complete: %v\n", err)
 		}
 	}
+}
+
+func (s *Server) recordMCPMetadataRefusal(reason string) {
+	s.logger.LogWatchOnly("mcp_http", "ssrf_metadata", reason, config.ActionBlock, 0, true)
+	s.metrics.RecordWatchOnly("mcp_http", "ssrf_metadata", config.ActionBlock, 0)
 }

@@ -151,7 +151,12 @@ func watchResponseBody(ctx context.Context, resp *http.Response, o watchResponse
 		}
 		return nil
 	}
-	a2aResult := watchA2AResponse(ctx, resp, body, o, o.A2ACardBaseline)
+	a2aResult := watchA2AResult{}
+	if !incomplete {
+		a2aResult = watchA2AResponse(ctx, resp, body, o, o.A2ACardBaseline)
+	}
+	// A size-limited prefix is not a complete A2A document. Its parse failure
+	// must not turn the explicit response-size relaxation into a refusal.
 	if a2aResult.Core {
 		_ = resp.Body.Close()
 		return errWatchResponseCoreFloor

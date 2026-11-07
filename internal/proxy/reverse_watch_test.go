@@ -84,13 +84,14 @@ func TestWatchReverseCredentialAndKillFloors(t *testing.T) {
 	}
 }
 
-func TestWatchReverseUninspectableRequestReplayed(t *testing.T) {
+func TestWatchReverseUninspectableRequestRefused(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.WatchOnly = true
 	cfg.Internal = nil
 	cfg.RequestBodyScanning.MaxBodyBytes = 32
 	payload := bytes.Repeat([]byte("ordinary request "), 20)
 	srv := reverseTestSetup(t, cfg, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("uninspectable request reached upstream")
 		got, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Error(err)
@@ -102,7 +103,7 @@ func TestWatchReverseUninspectableRequestReplayed(t *testing.T) {
 	})
 	resp := testPost(t, srv.URL, "text/plain", string(payload))
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
 }

@@ -1044,8 +1044,8 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 		Transport: transport,
 		Timeout:   time.Duration(cfg.FetchProxy.TimeoutSeconds) * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) (retErr error) {
-			if len(via) >= 5 {
-				return fmt.Errorf("too many redirects (max 5)")
+			if len(via) >= maxFetchRedirects {
+				return fmt.Errorf("too many redirects (max %d)", maxFetchRedirects)
 			}
 			originalURL := via[0].URL.String()
 			redirectURL := req.URL.String()
@@ -1236,6 +1236,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			// request_policy runs before the contract gate so a contract
 			// allow can never suppress an operation-policy block.
 			if rpRes := p.applyRequestPolicy(requestPolicyInput{
+				Config:      currentCfg,
 				Host:        req.URL.Hostname(),
 				Method:      req.Method,
 				Path:        req.URL.EscapedPath(),
@@ -4821,11 +4822,7 @@ func (p *Proxy) SafeDialer() func(ctx context.Context, network, addr string) (ne
 // at connection time, closing the DNS-rebinding gap the cloned default dialer
 // left open.
 func (p *Proxy) MetadataSafeDialer() func(ctx context.Context, network, addr string) (net.Conn, error) {
-	inner := mcp.NewWatchMetadataSafeDialContext(p.scannerPtr.Load,
-		func() bool { cfg := p.cfgPtr.Load(); return cfg != nil && cfg.WatchOnly },
-		func(reason string) {
-			watchObservation(p.logger, p.metrics, "reverse", "ssrf_metadata", reason, config.ActionBlock, 0, false)
-		})
+	inner := mcp.NewMetadataSafeDialContext(p.scannerPtr.Load)
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		// Bind the rebind snapshot to this dial's port so a snapshot taken
 		// for a different port cannot label this block as a rebind.
@@ -4834,6 +4831,9 @@ func (p *Proxy) MetadataSafeDialer() func(ctx context.Context, network, addr str
 		}
 		conn, err := inner(ctx, network, addr)
 		if err != nil {
+			if o, ok := ctx.Value(watchModeContextKey{}).(watchHTTPOptions); ok {
+				o.observe("ssrf_metadata", err.Error(), config.ActionBlock, 0, true)
+			}
 			// Translate the MCP dialer's typed metadata refusal into the proxy's
 			// own ssrfDialBlockError so the reverse errorHandler surfaces
 			// ssrf_metadata in the block-reason header and receipt, identical to
@@ -5118,22 +5118,21 @@ func isLocalInterfaceIP(ip net.IP) (bool, error) {
 
 func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	watchOpts, watching := ctx.Value(watchModeContextKey{}).(watchHTTPOptions)
-	if !watching {
-		if cfg := p.cfgPtr.Load(); cfg != nil && cfg.WatchOnly {
-			watching = true
-			watchOpts = watchHTTPOptions{Config: cfg, Logger: p.logger, Metrics: p.metrics, Transport: "dial"}
+	dialRefusal := func(err error) error {
+		if watching {
+			watchOpts.observe(scanner.ScannerSSRF, err.Error(), config.ActionBlock, 0, true)
 		}
-	}
-	observeDeny := func(err error) bool {
-		if !watching {
-			return false
-		}
-		watchOpts.observe(scanner.ScannerSSRF, err.Error(), config.ActionBlock, 0, false)
-		return true
+		return err
 	}
 	currentSc, _ := ctx.Value(ctxKeyAgentScanner).(*scanner.Scanner)
+	if currentSc == nil && watching {
+		currentSc = watchOpts.Scanner
+	}
 	if currentSc == nil {
 		currentSc = p.scannerPtr.Load()
+	}
+	if currentSc == nil {
+		return nil, fmt.Errorf("outbound scanner unavailable")
 	}
 
 	host, port, err := net.SplitHostPort(addr)
@@ -5157,13 +5156,11 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 		if err := p.blockIfConfiguredMetricsTarget(ctx, host, port, ip); err != nil {
 			return nil, err
 		}
-		if err := blockIfNonOverridableSSRFTarget(ctx, host, ip); err != nil && !observeDeny(err) {
-			return nil, err
+		if err := blockIfNonOverridableSSRFTarget(ctx, host, ip); err != nil {
+			return nil, dialRefusal(err)
 		}
 		if currentSc.IsInternalIP(ip) && !currentSc.IsIPAllowlisted(ip) && !guardGranted {
-			if err := newSSRFDialBlockError(ctx, host, ip, ssrfDialBlockDetail(host, ip)); !observeDeny(err) {
-				return nil, err
-			}
+			return nil, dialRefusal(newSSRFDialBlockError(ctx, host, ip, ssrfDialBlockDetail(host, ip)))
 		}
 		return p.dialer.DialContext(ctx, network, addr)
 	}
@@ -5193,8 +5190,8 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 		if err := p.blockIfConfiguredMetricsTarget(ctx, host, port, ip); err != nil {
 			return nil, err
 		}
-		if err := blockIfNonOverridableSSRFTarget(ctx, host, ip); err != nil && !observeDeny(err) {
-			return nil, err
+		if err := blockIfNonOverridableSSRFTarget(ctx, host, ip); err != nil {
+			return nil, dialRefusal(err)
 		}
 		if currentSc.IsInternalIP(ip) {
 			if isTrusted || currentSc.IsIPAllowlisted(ip) {
@@ -5206,9 +5203,7 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 			if guardGranted && ssrfDialSnapshotContains(ctx, host, ip) {
 				continue
 			}
-			if err := newSSRFDialBlockError(ctx, host, ip, ssrfDialBlockDetail(host, ip)); !observeDeny(err) {
-				return nil, err
-			}
+			return nil, dialRefusal(newSSRFDialBlockError(ctx, host, ip, ssrfDialBlockDetail(host, ip)))
 		}
 	}
 
@@ -6338,6 +6333,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// X-HTTP-Method-Override) never reach the upstream, so they must not drive
 	// request_policy matching. Leave Headers/ContentType unset.
 	if rpRes := p.applyRequestPolicy(requestPolicyInput{
+		Config:    cfg,
 		Host:      parsed.Hostname(),
 		Method:    http.MethodGet,
 		Path:      parsed.EscapedPath(),

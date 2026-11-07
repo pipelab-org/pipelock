@@ -12,24 +12,15 @@ import (
 
 	"github.com/gobwas/ws"
 	"github.com/luckyPipewrench/pipelock/internal/config"
-	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
-// watchOnly follows reloads without mutating the configuration snapshot shared
-// by the two relay pumps. Other policy remains pinned to the admitted session.
+// watchOnly uses the policy admitted with this connection. A config reload
+// changes subsequent connections; operator kill-switch state remains live.
 func (r *wsRelay) watchOnly() bool {
-	if r.proxy != nil {
-		if cfg := r.proxy.cfgPtr.Load(); cfg != nil {
-			return cfg.WatchOnly
-		}
-	}
 	return r.cfg != nil && r.cfg.WatchOnly
 }
 
 func (r *wsRelay) recordWatch(scannerName, reason, action string, uninspectedBytes int64, enforced bool) {
-	if r.watchReceiptGap {
-		uninspectedBytes = 0
-	}
 	if r.proxy == nil {
 		return
 	}
@@ -108,52 +99,36 @@ func (r *wsRelay) enforceEnabled() bool {
 	return !r.watchOnly() && (r.cfg.Enforce == nil || *r.cfg.Enforce)
 }
 
-// forwardWatchFragment preserves fragmentation while scanning each bounded
-// payload plus the existing cross-message overlap. Full-message parsers cannot
-// certify an incomplete fragment, so the forwarded bytes stay uninspected.
-func (r *wsRelay) forwardWatchFragment(ctx context.Context, hdr ws.Header, tail *[]byte, outbound bool) (int64, bool, error) {
-	src, dst := r.upstreamConn, r.clientConn
-	if outbound {
-		src, dst = r.clientConn, r.upstreamConn
-	}
+// forwardWatchResponseFragment preserves inbound fragmentation while scanning
+// each bounded payload plus the existing cross-message overlap. Outbound
+// fragments use the normal complete-message scanner before any delivery.
+func (r *wsRelay) forwardWatchResponseFragment(ctx context.Context, hdr ws.Header, tail *[]byte) (int64, error) {
 	raw := make([]byte, int(hdr.Length))
-	if _, err := io.ReadFull(src, raw); err != nil {
-		return 0, false, err
+	if _, err := io.ReadFull(r.upstreamConn, raw); err != nil {
+		return 0, err
 	}
 	payload := bytes.Clone(raw)
 	if hdr.Masked {
 		ws.Cipher(payload, hdr.Mask, 0)
 	}
-	log := r.proxy.logger.With("agent", r.agent).WithCorrelation(r.correlation)
 	scanInput := append(bytes.Clone(*tail), payload...)
-	if outbound {
-		result := r.scanner.ScanTextForDLP(ctx, string(scanInput))
-		matches, _ := r.scanner.FilterTextDLPMatchesForDestination(result.Matches, r.targetURL, "websocket_frame")
-		for _, match := range matches {
-			r.recordWatch(scannerLabelBodyDLP, match.PatternName, config.ActionBlock, 0, scanner.IsCoreCriticalMatch(match))
-		}
-		if containsCoreFloorMatch(matches) {
-			return 0, r.handleClientTextFindings(log, matches, nil), nil
-		}
-	} else {
-		result := r.scanner.ScanResponseWithSuppress(ctx, string(scanInput), r.targetURL, r.cfg.Suppress)
-		for _, match := range result.Matches {
-			r.recordWatch(responseScanLayer, match.PatternName, r.scanner.ResponseAction(), 0, false)
-		}
+	result := r.scanner.ScanResponseWithSuppress(ctx, string(scanInput), r.targetURL, r.cfg.Suppress)
+	for _, match := range result.Matches {
+		r.recordWatch(responseScanLayer, match.PatternName, r.scanner.ResponseAction(), 0, false)
 	}
 	if err := ctx.Err(); err != nil {
-		return 0, false, err
+		return 0, err
 	}
 	*tail = updateWSCrossMessageTail(*tail, payload)
-	if err := ws.WriteHeader(dst, hdr); err != nil {
-		return 0, false, err
+	if err := ws.WriteHeader(r.clientConn, hdr); err != nil {
+		return 0, err
 	}
-	n, err := dst.Write(raw)
+	n, err := r.clientConn.Write(raw)
 	if err == nil && n != len(raw) {
 		err = io.ErrShortWrite
 	}
 	r.recordWatch("ws_protocol", "fragmented message inspected per frame", "uninspected", int64(n), false)
-	return int64(n), false, err
+	return int64(n), err
 }
 
 func (r *wsRelay) enforcementConfig() *config.Config {

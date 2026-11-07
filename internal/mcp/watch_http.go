@@ -62,8 +62,12 @@ func serveWatchMCPHTTP(w http.ResponseWriter, r *http.Request, upstreamURL strin
 		return
 	}
 	var body io.Reader
-	streamedRequest := false
-	if r.Body != nil {
+	if r.Method == http.MethodPost && (r.Body == nil || r.Body == http.NoBody) {
+		opts.recordWatch("mcp_protocol", "empty MCP request body", config.ActionBlock, 0, true)
+		http.Error(w, "empty MCP request body", http.StatusBadRequest)
+		return
+	}
+	if r.Body != nil && r.Body != http.NoBody {
 		prefix, err := io.ReadAll(io.LimitReader(r.Body, int64(transport.MaxLineSize)+1))
 		if err != nil {
 			opts.recordWatch("transport", "request read failed", config.ActionBlock, 0, true)
@@ -81,19 +85,9 @@ func serveWatchMCPHTTP(w http.ResponseWriter, r *http.Request, upstreamURL strin
 			}
 			body = bytes.NewReader(decision.ForwardMessage)
 		} else {
-			if opts.AuthorityVerifier != nil {
-				opts.recordWatch("authority", "oversized request cannot verify external grant", config.ActionBlock, 0, true)
-				http.Error(w, "external action grant required", http.StatusForbidden)
-				return
-			}
-			streamedRequest = true
-			// The ceiling limits inspection memory, not forwarding memory.
-			if watchCoreMatches(opts.scanner().ScanTextForDLP(r.Context(), string(prefix)).Matches) {
-				opts.recordWatch("dlp", "core credential floor", config.ActionBlock, 0, true)
-				http.Error(w, "core credential floor enforced in watch-only", http.StatusForbidden)
-				return
-			}
-			body = &watchCountingReader{reader: io.MultiReader(bytes.NewReader(prefix), r.Body), opts: opts, reason: "request exceeds inspection ceiling"}
+			opts.recordWatch("mcp_protocol", "outbound message exceeds inspection ceiling", config.ActionBlock, 0, true)
+			http.Error(w, "outbound inspection limit enforced in watch-only", http.StatusRequestEntityTooLarge)
+			return
 		}
 	}
 	upReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, body)
@@ -126,7 +120,7 @@ func serveWatchMCPHTTP(w http.ResponseWriter, r *http.Request, upstreamURL strin
 		http.Error(w, "upstream refused", http.StatusForbidden)
 		return
 	}
-	if r.ContentLength < 0 || streamedRequest {
+	if r.ContentLength < 0 {
 		upReq.ContentLength = r.ContentLength
 	}
 	upResp, err := client.Do(upReq)

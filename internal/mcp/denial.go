@@ -121,9 +121,14 @@ func writeMCPDenial(opts MCPProxyOpts, descriptor mcpDenialAudit, writer transpo
 // sendMCPDenial is the stdio input handoff adapter. Notification suppression is
 // downstream of finalization, so notifications leave the same canonical event.
 func sendMCPDenial(opts MCPProxyOpts, descriptor mcpDenialAudit, br BlockedRequest, out chan<- BlockedRequest) {
-	d := newMCPDenial(opts, descriptor, "input", nil)
-	br.terminal = d.decision
-	adaptiveBlockedRequest(opts, descriptor, &br)
+	var d *mcpDenial
+	if br.terminal != nil {
+		d = &mcpDenial{decision: br.terminal}
+	} else {
+		d = newMCPDenial(opts, descriptor, "input", nil)
+		br.terminal = d.decision
+		adaptiveBlockedRequest(opts, descriptor, &br)
+	}
 	_ = finishMCPDenial(d, mcpDeniedDelivery(func([]byte) error { out <- br; return nil }))
 }
 

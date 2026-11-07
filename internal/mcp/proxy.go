@@ -168,7 +168,6 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	if opts.ServerIdentityFn != nil && !opts.watchOnly() {
 		writer = &serverIdentityMessageWriter{writer: writer, opts: opts}
 	}
-	sc := opts.scanner()
 	approver := opts.Approver
 	toolCfg := opts.toolCfg()
 	if toolCfg != nil && (opts.validateToolHeaders || opts.toolContractDiscovery) {
@@ -186,7 +185,6 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	receiptEmitter := opts.receiptEmitter()
 	v2ReceiptEmitter := opts.v2ReceiptEmitter()
 	provenanceCfg := opts.provenanceCfg()
-	respScanOpts := opts.responseScanOptions()
 	resetFile := opts.AdaptiveResetFile
 	taintOpts := opts
 	taintOpts.TaintCfg = opts.taintCfg()
@@ -209,9 +207,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 
 	for {
 		line, err := reader.ReadMessage()
+		opts := liveWatchOpts.snapshotWatchPolicy()
+		sc := opts.scanner()
+		respScanOpts := opts.responseScanOptions()
 		var uninspected *transport.UninspectedMessageChunkError
-		if errors.As(err, &uninspected) && liveWatchOpts.watchOnly() {
-			watchOpts := liveWatchOpts.snapshotWatchPolicy()
+		if errors.As(err, &uninspected) && opts.watchOnly() {
+			watchOpts := opts
 			watchOpts.watchInbound = true
 			if forwardErr := forwardWatchUninspected(line, err, reader, writer, watchOpts); forwardErr != nil {
 				return foundInjection, forwardErr
@@ -243,7 +244,6 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			return foundInjection, fmt.Errorf("reading input: %w", err)
 		}
 		lineNum++
-		opts = liveWatchOpts.snapshotWatchPolicy()
 		if !mcpWatchCapacityAvailable(opts, len(line)) {
 			return foundInjection, session.ErrCapacity
 		}

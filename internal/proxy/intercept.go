@@ -2040,6 +2040,7 @@ func newInterceptHandler(
 		// never suppress an operation-policy block.
 		if ic.Proxy != nil {
 			rpInput := requestPolicyInput{
+				Config:      ic.Config,
 				Host:        r.URL.Hostname(),
 				Method:      r.Method,
 				Path:        r.URL.EscapedPath(),

@@ -55,6 +55,7 @@ const defaultRequestPolicyMaxBodyBytes = 5 * 1024 * 1024
 // route-matched operation predicate needs a body, applyRequestPolicy treats the
 // operation as opaque and applies request_policy.on_opaque_operation.
 type requestPolicyInput struct {
+	Config      *config.Config // admitted configuration, retained across reload
 	Host        string
 	Method      string // base HTTP method as seen on the wire
 	Path        string
@@ -245,22 +246,33 @@ func (p *Proxy) prepareRequestPolicyBody(r *http.Request, in *requestPolicyInput
 		in.BodyRead = true
 		return requestPolicyResult{}
 	}
-	limit := p.requestPolicyBodyLimit()
+	cfg := in.Config
+	if cfg == nil {
+		cfg, _ = r.Context().Value(ctxKeyAgentConfig).(*config.Config)
+	}
+	if cfg == nil {
+		cfg = p.cfgPtr.Load()
+	}
+	in.Config = cfg
+	limit := defaultRequestPolicyMaxBodyBytes
+	if cfg != nil && cfg.RequestBodyScanning.MaxBodyBytes > 0 {
+		limit = cfg.RequestBodyScanning.MaxBodyBytes
+	}
 	sourceBody := r.Body
 	buf, err := io.ReadAll(io.LimitReader(r.Body, int64(limit)+1))
 	if err != nil {
-		if cfg := p.cfgPtr.Load(); cfg != nil && cfg.WatchOnly {
+		if cfg != nil && cfg.WatchOnly {
 			r.Body = &watchRequestReplayBody{Reader: io.MultiReader(bytes.NewReader(buf), sourceBody), source: sourceBody}
 		}
 		return p.requestPolicyReadBlocked(*in, fmt.Sprintf("request body could not be inspected: %v", err))
 	}
 	if len(buf) > limit {
-		if cfg := p.cfgPtr.Load(); cfg != nil && cfg.WatchOnly {
+		if cfg != nil && cfg.WatchOnly {
 			r.Body = &watchRequestReplayBody{Reader: io.MultiReader(bytes.NewReader(buf), sourceBody), source: sourceBody}
 		}
 		return p.requestPolicyReadBlocked(*in, fmt.Sprintf("request body exceeds max_body_bytes (%d)", limit))
 	}
-	if cfg := p.cfgPtr.Load(); cfg != nil && cfg.WatchOnly {
+	if cfg != nil && cfg.WatchOnly {
 		r.Body = &watchRequestReplayBody{Reader: bytes.NewReader(buf), source: sourceBody}
 	} else {
 		r.Body = io.NopCloser(bytes.NewReader(buf))
@@ -388,7 +400,11 @@ func (p *Proxy) finalizeRequestPolicyDecision(in requestPolicyInput, d reqpolicy
 	if !d.Matched() {
 		return requestPolicyResult{}
 	}
-	if cfg := p.cfgPtr.Load(); cfg != nil && cfg.WatchOnly {
+	cfg := in.Config
+	if cfg == nil {
+		cfg = p.cfgPtr.Load()
+	}
+	if cfg != nil && cfg.WatchOnly {
 		watchObservation(p.logger, p.metrics, in.Transport, blockLayerRequestPolicy, d.RuleName, d.Action, 0, false)
 		return requestPolicyResult{}
 	}

@@ -12,9 +12,9 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
-// watchA2AResult separates a definite credential floor from incomplete
-// inspection. The caller counts uninspected bytes as its replay reader forwards
-// them, so refusal and an unread response never count as forwarded traffic.
+// watchA2AResult carries the audit-mode security floor. Core includes
+// incomplete inspections that audit mode refuses; Uninspected describes the
+// inspection gap without claiming that refused bytes were forwarded.
 type watchA2AResult struct {
 	Core        bool
 	Uninspected string
@@ -88,7 +88,7 @@ func watchA2AResponse(ctx context.Context, resp *http.Response, body []byte, o w
 // observeWatchA2A retains the existing scanner classifications and resolved
 // actions. It never calls a blocked-event writer or modifies payload bytes.
 func observeWatchA2A(result mcp.A2AScanResult, layer, fallbackAction string, observe func(string, string, string, int64, bool)) watchA2AResult {
-	outcome := watchA2AResult{Core: containsCoreFloorMatch(result.DLPFindings)}
+	outcome := watchA2AResult{Core: containsCoreFloorMatch(result.DLPFindings) || scanner.HasInspectionLimit(result.DLPFindings)}
 	action := result.Action
 	if action == "" {
 		action = fallbackAction
@@ -97,13 +97,8 @@ func observeWatchA2A(result mcp.A2AScanResult, layer, fallbackAction string, obs
 		action = config.ActionBlock
 	}
 	for _, finding := range result.URLFindings {
-		core := scanner.IsCoreCredentialResult(finding)
+		core := scanner.IsCoreCriticalResult(finding)
 		outcome.Core = outcome.Core || core
-		if scanner.IsCoreCriticalResult(finding) && !core {
-			outcome.Uninspected = "A2A URL inspection limit reached"
-			observe(layer, outcome.Uninspected, "uninspected", 0, false)
-			continue
-		}
 		findingAction := action
 		if core {
 			findingAction = config.ActionBlock
@@ -111,7 +106,7 @@ func observeWatchA2A(result mcp.A2AScanResult, layer, fallbackAction string, obs
 		observe(layer, finding.Scanner+": "+finding.Reason, findingAction, 0, core)
 	}
 	for _, finding := range result.DLPFindings {
-		core := !finding.Warn && scanner.IsCoreCriticalMatch(finding)
+		core := (!finding.Warn && scanner.IsCoreCriticalMatch(finding)) || scanner.HasInspectionLimit([]scanner.TextDLPMatch{finding})
 		findingAction := action
 		if core {
 			findingAction = config.ActionBlock
@@ -129,7 +124,8 @@ func observeWatchA2A(result mcp.A2AScanResult, layer, fallbackAction string, obs
 		if result.ScanError != "" {
 			outcome.Uninspected = "A2A scanner could not complete inspection"
 		}
-		observe(layer, outcome.Uninspected, "uninspected", 0, false)
+		outcome.Core = true
+		observe(layer, outcome.Uninspected, config.ActionBlock, 0, true)
 	} else if !result.Clean && len(result.URLFindings) == 0 && len(result.DLPFindings) == 0 && len(result.InjectFindings) == 0 && result.EntropyFinding == nil && result.Reason != "" {
 		observe(layer, result.Reason, action, 0, false)
 	}

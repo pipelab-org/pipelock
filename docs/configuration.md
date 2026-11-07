@@ -61,7 +61,7 @@ A valid expired path or query entropy exclusion, request-body entropy warning ro
 version: 1                    # Config schema version (currently 1)
 mode: balanced                # "strict", "balanced", or "audit"
 enforce: true                 # false = ordinary findings warn; independent controls can block
-watch_only: false             # true = observe policy; core credentials, kill switch, and access controls still enforce
+watch_only: false             # true = observe policy; audit-mode secret and host protections still enforce
 explain_blocks: false         # true = include fix hints in block responses
 ```
 
@@ -71,7 +71,7 @@ explain_blocks: false         # true = include fix hints in block responses
 | `version` | int | `1` | Config schema version |
 | `mode` | string | `"balanced"` | Operating mode (see [Modes](#modes)) |
 | `enforce` | bool | `true` | When false, normal policy blocks become warnings; core credentials, SSRF, fail-closed transport checks, and adaptive escalation can still block |
-| `watch_only` | bool | `false` | Explicit observation mode; overrides ordinary enforcement while retaining the core credential floor, kill switch, and access controls. See [Watch-only](#watch-only). |
+| `watch_only` | bool | `false` | Explicit observation mode; overrides ordinary enforcement while retaining audit-mode secret and host protections, kill switches, and access controls. See [Watch-only](#watch-only). |
 | `explain_blocks` | bool | `false` | Include actionable hints in block responses |
 
 ### Sentry Crash Reporting
@@ -120,13 +120,15 @@ explain_blocks: true
 watch_only: true
 ```
 
-Findings whose configured action is already `warn` or `allow` use `watch_only_observation` events. Findings that would intervene use `would_block` audit events with `scanner`, `reason`, and `would_have_been_action`. An adaptive escalation uses `would_escalate`. Inspection failures use `uninspected`, with the reason and the number of bytes forwarded without complete inspection. A successful transfer alone does not establish inspection coverage.
+Watch-only is never weaker than `enforce: false` for protections that guard secrets or the host. Existing audit-mode refusals remain enforced: the core credential floor (including credentials encoded in hostnames), incomplete outbound inspection, URL decode and query-search bounds, enabled request-body size and encoding checks, and the applicable SSRF guards. Subdomain-entropy findings remain observations. Configured private MCP upstreams remain supported; cloud metadata destinations stay blocked.
 
-The core credential floor, kill switch, and access controls remain enforced. Access controls include listener authentication, trusted-origin checks, API and administrator authentication, and listener bind restrictions. Upstream connection failures and messages that cannot be forwarded still fail. These exceptions are logged as `watch_only_enforced` with the message `enforced in watch-only`. The credential floor applies to detected credentials; bytes reported as uninspected have no detection guarantee.
+Kill switches, caller and server identity checks, authority grants, CONNECT SNI verification, listener authentication and origin checks, protocol validation, feature gates, connection limits, and `flight_recorder.require_receipts` also remain enforced. These refusals emit `watch_only_enforced` events with the message `enforced in watch-only`. Required receipt recording must be available at startup and before protected forwarding, including after a reload.
 
-Forward and intercepted HTTP retain the original payload and policy-controlled headers. HTTP hop-by-hop handling and consumption of proxy authentication, authority metadata, and untrusted client-identity assertions still apply. Fetch retains its text-in-JSON API. An intercepted WebSocket Upgrade can use a transparent relay; its frame bytes are then counted as uninspected.
+Watch-only records ordinary response, injection, tool-policy, request-policy, budget, and contract refusals as `would_block`. Adaptive escalation is recorded as `would_escalate` without raising enforcement. It also relaxes response size ceilings and size-exempt limits, SSE event drops or terminations, and response Range/206/304 refusals. Findings already configured as `warn` or `allow` use `watch_only_observation`. Relaxed response inspection failures use `uninspected` with the reason and forwarded-byte count; a successful transfer doesn't establish inspection coverage. Existing response-side credential floors, including field-aware A2A checks, still apply.
 
-MCP stdio-to-HTTP and stdio-to-WebSocket bridges retain payload bytes while translating transport framing. An oversized stdio message sent to HTTP is spooled to a private temporary file with mode `0600`, then removed on completion or failure. A storage failure can prevent forwarding. Encoded or otherwise uninspectable upstream bytes may still be unusable to a stdio client expecting JSON. Uninspected byte counters describe incomplete inspections; overlapping scanner layers can count the same bytes more than once.
+Forward and intercepted HTTP preserve admitted payloads and policy-controlled headers. HTTP hop-by-hop handling and consumption of proxy authentication, authority metadata, and untrusted client-identity assertions still apply. Fetch retains its text-in-JSON API and redirect limit, and rechecks each destination. The WebSocket endpoint uses its scanning relay and existing header allowlist, including for negotiated subprotocols. An unsupported upgrade or outbound frame that can't be inspected is refused. CONNECT remains an opaque tunnel unless TLS interception is enabled; watch-only preserves its existing destination and SNI checks.
+
+MCP stdio-to-HTTP and stdio-to-WebSocket bridges retain admitted payload bytes while translating transport framing. Oversized or incomplete outbound messages are refused. Relaxed response bytes may still be unusable to a stdio client expecting JSON. Overlapping scanner layers can count the same uninspected response bytes more than once.
 
 The setting is reloadable in either direction. A `watch_only_mode` event announces the transition. `pipelock doctor` reports the configured setting; `/stats` reports the running setting as `watch_only`, plus `watch_only_uninspected_bytes`. Prometheus exposes `pipelock_watch_only`, `pipelock_watch_only_events_total`, and `pipelock_watch_only_uninspected_bytes_total` on the configured metrics listener. Receipt reasons carry a signed `watch_only` marker while their verdict continues to describe the actual decision.
 

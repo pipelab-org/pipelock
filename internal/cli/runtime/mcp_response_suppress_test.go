@@ -139,11 +139,15 @@ func TestMCPResponseLogFieldsShowsEffectivePosture(t *testing.T) {
 
 func TestApplyMCPResponseSuppressOpts_NilConfigKeepsExistingRules(t *testing.T) {
 	opts := mcp.MCPProxyOpts{
-		Suppress: []config.SuppressEntry{{Rule: "stale", Path: "mcp://stale/response"}},
+		WatchOnly: true,
+		Suppress:  []config.SuppressEntry{{Rule: "stale", Path: "mcp://stale/response"}},
 	}
 
 	applyMCPResponseSuppressOpts(&opts, nil, identity.Legacy(testMCPServerName))
 
+	if !opts.WatchOnly {
+		t.Fatal("nil config must retain the admitted watch-only mode")
+	}
 	if opts.ServerName != testMCPServerName {
 		t.Fatalf("ServerName = %q, want %s", opts.ServerName, testMCPServerName)
 	}

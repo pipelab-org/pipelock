@@ -18,8 +18,8 @@ import (
 func watchMCPHeaders(ctx context.Context, headers http.Header, target string, opts MCPProxyOpts) bool {
 	sc := opts.scanner()
 	if sc == nil {
-		opts.recordWatch("mcp_headers", "scanner unavailable", "uninspected", int64(watchHeaderBytes(headers)), false)
-		return false
+		opts.recordWatch("mcp_headers", "scanner unavailable", config.ActionBlock, 0, true)
+		return true
 	}
 	if result := scanMCPListenerHeadersForTarget(ctx, headers, sc, opts.requestBodyCfg(), target); result != nil {
 		reason, pattern := listenerHeaderBlockClassification(result)
@@ -29,7 +29,9 @@ func watchMCPHeaders(ctx context.Context, headers http.Header, target string, op
 	core := false
 	add := func(value string) {
 		joined = append(joined, value)
-		matches := sc.ScanTextForDLP(ctx, value).Matches
+		verdict := sc.ScanTextForDLP(ctx, value)
+		core = core || verdict.Err() != nil
+		matches := verdict.Matches
 		core = core || watchCoreMatches(matches)
 		if scanner.HasInspectionLimit(matches) {
 			opts.recordWatch("mcp_headers", "header inspection limit", "uninspected", int64(len(value)), false)
@@ -63,25 +65,15 @@ func watchMCPHeaders(ctx context.Context, headers http.Header, target string, op
 		}
 		core = core || watchCoreMatches(result.DLPFindings)
 		for _, finding := range result.URLFindings {
-			core = core || scanner.IsCoreCredentialResult(finding)
+			core = core || scanner.IsCoreCriticalResult(finding) || scanner.IsHostnameExfilResult(finding)
 		}
 		if result.InspectionIncomplete || result.ScanError != "" || result.BudgetExceeded {
-			opts.recordWatch("a2a_headers", "header inspection incomplete", "uninspected", int64(watchHeaderBytes(headers)), false)
+			core = true
+			opts.recordWatch("a2a_headers", "header inspection incomplete", config.ActionBlock, 0, true)
 		}
 	}
 	if core {
 		opts.recordWatch("dlp", "core credential floor in request headers", config.ActionBlock, 0, true)
 	}
 	return core
-}
-
-func watchHeaderBytes(headers http.Header) int {
-	n := 0
-	for name, values := range headers {
-		n += len(name)
-		for _, value := range values {
-			n += len(value)
-		}
-	}
-	return n
 }

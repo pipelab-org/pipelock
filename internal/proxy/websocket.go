@@ -81,7 +81,6 @@ type wsRelay struct {
 	maxMsg          int
 	scanText        bool
 	allowBinary     bool
-	watchReceiptGap bool
 
 	upstreamIncomplete bool // written only by upstreamToClient, read after it returns
 	// upstreamCancelled records that the upstream direction ended because the
@@ -205,8 +204,7 @@ func (r *wsRelay) recordCredentialAudienceAllow(allow scanner.CredentialAudience
 // handleClientMessageBodyResult checks first.
 func (r *wsRelay) blockOnCredentialAudienceReceiptFailure(log *audit.Logger, err error) bool {
 	if r.watchOnly() {
-		r.recordWatch(receiptEmissionFailedLayer, err.Error(), "uninspected", 0, false)
-		return false
+		r.recordWatch(receiptEmissionFailedLayer, "required receipt unavailable", config.ActionBlock, 0, true)
 	}
 	blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 	log.LogBlocked(newHTTPAuditContext(r.auditProvenanceCtx(), log, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent}), blockedErr.layer, blockedErr.detail)
@@ -325,26 +323,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	cfg := resolved.Config
 	sc, releaseScanner, scOK := p.pinResolvedScanner(resolved)
 	defer releaseScanner()
-	if cfg.WatchOnly && (!scOK || r.Header.Get("Sec-WebSocket-Extensions") != "" || r.Header.Get("Sec-WebSocket-Protocol") != "") {
-		target, parseErr := url.Parse(extractTargetURL(r))
-		if parseErr == nil && (target.Scheme == "ws" || target.Scheme == "wss") {
-			if target.Scheme == "ws" {
-				target.Scheme = schemeHTTP
-			} else {
-				target.Scheme = schemeHTTPS
-			}
-			req := r.Clone(r.Context())
-			req.URL, req.Host = target, target.Host
-			serveWatchHTTP(w, req, watchHTTPOptions{
-				Config: cfg, Scanner: sc, Logger: p.logger, Metrics: p.metrics,
-				Transport: TransportWS, Upstream: p.client.Transport, Proxy: p,
-				Agent: id.Name, ActorAuth: id.Auth, Budget: resolved.Budget,
-				ClientIP: clientIP, RequestID: requestID, KillSwitch: p.ks,
-				MaxResponseBytes: p.responseScanBodyLimit(cfg),
-			})
-			return
-		}
-	}
+
 	agent := id.Name
 	if agent == "" {
 		agent = agentAnonymous
@@ -387,6 +366,9 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	authorityRef, authorityCarrierErr := consumeAuthorityHeader(r)
 	r, correlation := attachRequestCorrelation(r, cfg, sc)
 	if !scOK {
+		if cfg.WatchOnly {
+			watchObservation(p.logger, p.metrics, TransportWS, scannerLabelUnavailable, scannerPatternUnavailable, config.ActionBlock, 0, true)
+		}
 		p.recordDecision(config.ActionBlock, scannerLabelUnavailable, scannerPatternUnavailable, TransportWS, requestID)
 		emitWebSocketReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
@@ -405,7 +387,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if p.watchWSRefusal(cfg, !cfg.WebSocketProxy.Enabled, "ws_protocol", "WebSocket proxy disabled", config.ActionBlock) {
+	if !cfg.WebSocketProxy.Enabled {
+		if cfg.WatchOnly {
+			watchObservation(p.logger, p.metrics, TransportWS, "ws_protocol", "WebSocket proxy disabled", config.ActionBlock, 0, true)
+		}
 		writeBlockedError(w,
 			blockInfoFor(blockreason.NotEnabled, "").WithRequestID(requestID),
 			"WebSocket proxy not enabled", http.StatusNotFound)
@@ -456,7 +441,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(wsScanCtx)
 	result := sc.ScanWebSocket(wsScanCtx, targetURL)
 	p.metrics.RecordURLDecisions(TransportWS, result.Decisions)
-	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportWS, "WS", targetURL, requestID, agent, selectedReceiptShard); p.watchWSRefusal(cfg, err != nil, receiptEmissionFailedLayer, fmt.Sprint(err), "uninspected") {
+	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportWS, "WS", targetURL, requestID, agent, selectedReceiptShard); err != nil {
+		if cfg.WatchOnly {
+			watchObservation(p.logger, p.metrics, TransportWS, receiptEmissionFailedLayer, "required receipt unavailable", config.ActionBlock, 0, true)
+		}
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 		log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 		writeBlockedError(w,
@@ -658,7 +646,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Check connection semaphore.
 	sem := getWSSemaphore(cfg.WebSocketProxy.MaxConcurrentConnections)
 	acquired := sem.TryAcquire()
-	if p.watchWSRefusal(cfg, !acquired, "budget", "WebSocket connection ceiling", config.ActionBlock) {
+	if !acquired {
+		if cfg.WatchOnly {
+			watchObservation(p.logger, p.metrics, TransportWS, "budget", "WebSocket connection ceiling", config.ActionBlock, 0, true)
+		}
 		writeBlockedError(w,
 			blockInfoFor(blockreason.RateLimit, scanner.ScannerRateLimit).WithRequestID(requestID),
 			"too many active WebSocket connections", http.StatusServiceUnavailable)
@@ -674,10 +665,13 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// DLP-scan forwarded header values regardless of destination or enforce mode.
 	// In audit mode, findings are logged as anomalies but traffic is allowed.
 	wsHeaderBlockedResult, wsHeaderHardBlock, wsHeaderAction, wsHeaderReason, wsHeaderPattern, wsHeaderReceiptErr := p.dlpScanWSHeaders(r.Context(), fwdHeaders, sc, cfg, targetURL, actx)
-	if !cfg.WatchOnly && refuseTextDLPScanError(w, log, actx, requestID, wsHeaderReceiptErr) {
+	if refuseTextDLPScanError(w, log, actx, requestID, wsHeaderReceiptErr) {
 		return
 	}
-	if p.watchWSRefusal(cfg, wsHeaderReceiptErr != nil, receiptEmissionFailedLayer, fmt.Sprint(wsHeaderReceiptErr), "uninspected") {
+	if wsHeaderReceiptErr != nil {
+		if cfg.WatchOnly {
+			watchObservation(p.logger, p.metrics, TransportWS, receiptEmissionFailedLayer, "required receipt unavailable", config.ActionBlock, 0, true)
+		}
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(wsHeaderReceiptErr)
 		log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 		writeBlockedError(w,
@@ -908,6 +902,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// to per-frame evaluation in the relay; only route-only rules gate the
 	// handshake here.
 	if rpRes := p.applyRequestPolicy(requestPolicyInput{
+		Config:      cfg,
 		Host:        parsed.Hostname(),
 		Method:      http.MethodGet,
 		Path:        parsed.EscapedPath(),
@@ -986,14 +981,23 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var clientConn net.Conn
+	negotiateProtocol := cfg.WatchOnly && len(r.Header.Values("Sec-WebSocket-Protocol")) > 0
+	selectedProtocol := ""
+	if negotiateProtocol {
+		if err := validateWSClientHandshake(r); err != nil {
+			writeBlockedError(w, blockInfoFor(blockreason.BadRequest, "websocket"), "invalid WebSocket handshake", http.StatusBadRequest)
+			return
+		}
+	}
 	upgradeClient := func() bool {
 		// Upgrade writes directly to the hijacked connection, so its explicit
 		// reply headers must carry the confirmed receipt ID. Copy no other fields.
 		replyHeaders := make(http.Header)
 		blockreason.SetRecordedReceipt(replyHeaders, w.Header().Get(blockreason.HeaderRecordedReceipt))
 		upgrader := ws.HTTPUpgrader{
-			Timeout: 10 * time.Second,
-			Header:  replyHeaders,
+			Timeout:  10 * time.Second,
+			Header:   replyHeaders,
+			Protocol: func(value string) bool { return selectedProtocol != "" && value == selectedProtocol },
 		}
 		var upgradeErr error
 		clientConn, _, _, upgradeErr = upgrader.Upgrade(r, w)
@@ -1005,7 +1009,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		clientConn = p.withAdaptiveClose(clientConn, refusalOpts)
 		return true
 	}
-	if !cfg.FlightRecorder.RequireReceipts || cfg.WatchOnly {
+	if !cfg.FlightRecorder.RequireReceipts && !negotiateProtocol {
 		if !upgradeClient() {
 			return
 		}
@@ -1195,15 +1199,11 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	watchReceiptGap := false
-	if cfg.FlightRecorder.RequireReceipts && cfg.WatchOnly {
+	if cfg.FlightRecorder.RequireReceipts {
 		if err := p.emitRequiredReceipt(withReceiptConfig(admissionReceipt, cfg)); err != nil {
-			watchReceiptGap = true
-			p.watchWSRefusal(cfg, true, receiptEmissionFailedLayer, "required receipt unavailable", "uninspected")
-		}
-	}
-	if cfg.FlightRecorder.RequireReceipts && !cfg.WatchOnly {
-		if err := p.emitRequiredReceipt(withReceiptConfig(admissionReceipt, cfg)); err != nil {
+			if cfg.WatchOnly {
+				watchObservation(p.logger, p.metrics, TransportWS, receiptEmissionFailedLayer, "required receipt unavailable", config.ActionBlock, 0, true)
+			}
 			blockedErr := newReceiptEmissionBlockedRequest(err)
 			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordWSBlocked()
@@ -1219,7 +1219,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	outcomeBytes := int64(-1)
 	outcomeReason := "incomplete"
 	outcomeEmitted := false
-	if cfg.FlightRecorder.RequireReceipts && !cfg.WatchOnly {
+	if cfg.FlightRecorder.RequireReceipts {
 		defer func() {
 			if !outcomeEmitted {
 				p.emitOutcomeReceipt(cfg, admissionReceipt, outcomeStatus, outcomeBytes, outcomeReason)
@@ -1227,7 +1227,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 
-	if cfg.FlightRecorder.RequireReceipts && !cfg.WatchOnly {
+	if cfg.FlightRecorder.RequireReceipts && !negotiateProtocol {
 		// Upgrade the client connection only after the required intent receipt is
 		// durable. A 101 response is client egress; under require_receipts it must
 		// not be written before fsync succeeds.
@@ -1236,7 +1236,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 		defer safeClose(clientConn, "ws.clientConn", log)
 	}
-	if clientConn == nil {
+	if clientConn == nil && !negotiateProtocol {
 		log.LogError(actx, fmt.Errorf("websocket client connection unavailable after admission"))
 		return
 	}
@@ -1246,7 +1246,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// trusted caller before sending the handshake. Requests refused by the
 	// admission checks above cannot taint even that caller's evidence.
 	p.taintIssuerSessionForStream(cfg, agent, clientIP, id.Auth, parsed)
-	upstreamConn, dialErr := p.wsDialUpstream(r.Context(), targetURL, fwdHeaders, cfg)
+	upstreamConn, protocol, dialErr := p.wsDialUpstreamHandshake(r.Context(), targetURL, fwdHeaders, cfg)
 	if dialErr != nil {
 		if cfg.WatchOnly {
 			p.logger.LogWatchOnly(TransportWS, "upstream", "upstream WebSocket could not be reached", config.ActionBlock, 0, true)
@@ -1267,28 +1267,43 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				RequestID: requestID,
 				Agent:     agent,
 			})
-			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation, ssrfErr.blockInfo().WithRequestID(requestID).CloseFramePayload())
+			if clientConn == nil {
+				writeBlockedError(w, ssrfErr.blockInfo().WithRequestID(requestID), "WebSocket upstream destination refused", http.StatusForbidden)
+			} else {
+				plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation, ssrfErr.blockInfo().WithRequestID(requestID).CloseFramePayload())
+			}
 			outcomeStatus = strconv.Itoa(int(ws.StatusPolicyViolation))
 			outcomeBytes = 0
 			outcomeReason = string(ssrfErr.reason)
 			return
 		}
 		log.LogError(actx, fmt.Errorf("upstream dial: %w", dialErr))
-		plwsutil.WriteCloseFrame(clientConn, ws.StatusInternalServerError, "upstream dial failed")
+		if clientConn == nil {
+			writeBlockedError(w, blockInfoFor(blockreason.BadRequest, "websocket"), "WebSocket upstream handshake refused", http.StatusBadGateway)
+		} else {
+			plwsutil.WriteCloseFrame(clientConn, ws.StatusInternalServerError, "upstream dial failed")
+		}
 		outcomeStatus = strconv.Itoa(int(ws.StatusInternalServerError))
 		outcomeBytes = 0
 		outcomeReason = "upstream_dial_failed"
 		return
 	}
 	defer safeClose(upstreamConn, "ws.upstreamConn", log)
+	if negotiateProtocol {
+		selectedProtocol = protocol
+		if !upgradeClient() {
+			return
+		}
+		defer safeClose(clientConn, "ws.clientConn", log)
+	}
 	upstreamConn = p.withAdaptiveClose(upstreamConn, refusalOpts)
 	wsAirlockSessions = retainAirlockSessions(wsAirlockSessions, p.airlockSessionForIdentity(cfg, agent, clientIP, id.Auth))
 	for _, wsSess := range wsAirlockSessions {
 		// Register airlock cancel for WebSocket connections. When the session
 		// escalates to hard/drain, closing both ends terminates the relay.
 		wsSess.AirlockForScope(wsScope).RegisterCancel(func() {
-			if current := p.cfgPtr.Load(); current != nil && current.WatchOnly {
-				p.watchWSRefusal(current, true, "airlock", "active WebSocket quarantine", config.ActionBlock)
+			if cfg.WatchOnly {
+				p.watchWSRefusal(cfg, true, "airlock", "active WebSocket quarantine", config.ActionBlock)
 				return
 			}
 			safeClose(clientConn, "airlock.ws.clientConn", log)
@@ -1335,7 +1350,6 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		maxMsg:          cfg.WebSocketProxy.MaxMessageBytes,
 		scanText:        scanTextFrames,
 		allowBinary:     cfg.WebSocketProxy.AllowBinaryFrames,
-		watchReceiptGap: watchReceiptGap,
 		rec:             wsRec,
 		taintSessionKey: responseTaintSessionKey(cfg, agent, clientIP, id.Auth),
 	}
@@ -1351,11 +1365,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stats := relay.run(r.Context())
-	if relay.watchReceiptGap {
-		count := stats.clientToServer + stats.serverToClient
-		p.logger.LogWatchOnly(TransportWS, receiptEmissionFailedLayer, "required receipt unavailable", "uninspected", count, false)
-		p.metrics.RecordWatchOnly(TransportWS, receiptEmissionFailedLayer, "uninspected", count)
-	}
+
 	licenseRevoked := errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked)
 	if licenseRevoked {
 		stats.blocked = true
@@ -1424,13 +1434,6 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 // Follows the allowlist approach: forward known-safe headers, strip everything else.
 func (p *Proxy) buildWSForwardHeaders(r *http.Request, parsed *url.URL, cfg *config.Config, _ *scanner.Scanner) http.Header {
 	fwd := make(http.Header)
-	if cfg.WatchOnly {
-		fwd = r.Header.Clone()
-		for _, name := range []string{"Connection", "Upgrade", "Sec-WebSocket-Key", "Sec-WebSocket-Version", "Sec-WebSocket-Extensions"} {
-			fwd.Del(name)
-		}
-		return fwd
-	}
 
 	// Authorization (required by most authenticated WS APIs).
 	if v := r.Header.Get("Authorization"); v != "" {
@@ -1525,11 +1528,7 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 		}
 		result := sc.ScanTextForDLP(ctx, scanVal)
 		if err := result.Err(); err != nil {
-			if !cfg.WatchOnly {
-				return false, false, "", "", "", err
-			}
-			p.logger.LogWatchOnly(TransportWS, scanner.ScannerDLP, err.Error(), "uninspected", int64(len(scanVal)), false)
-			p.metrics.RecordWatchOnly(TransportWS, scanner.ScannerDLP, "uninspected", int64(len(scanVal)))
+			return false, false, "", "", "", err
 		}
 		if !result.Clean {
 			matches, allows := sc.FilterHeaderDLPMatches(result.Matches, targetURL, key, scanVal)
@@ -1561,7 +1560,7 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 		}
 		action, hardBlock := headerDLPDecision(result, cfg)
 		if cfg.WatchOnly {
-			hardBlock = containsCoreFloorMatch(allMatches)
+			hardBlock = shouldHardBlockRequestDLP(allMatches, cfg)
 		}
 		receiptPattern := fmt.Sprintf("DLP match in %s header: %s", result.HeaderName, strings.Join(names, ", "))
 		return true, hardBlock, action, result.withAudienceExplanation(receiptPattern), receiptPattern, nil
@@ -1598,22 +1597,70 @@ func isHostAllowlisted(hostname string, allowlist []string) bool {
 	return false
 }
 
+var errWSHandshakeValidated = errors.New("WebSocket handshake validated")
+
+// validateWSClientHandshake uses the same RFC 6455 parser as the relay before
+// subprotocol negotiation dials upstream. OnBeforeUpgrade stops the parser
+// after validation, so this check never upgrades either network connection.
+func validateWSClientHandshake(r *http.Request) error {
+	candidate := r.Clone(r.Context())
+	candidate.Body, candidate.GetBody = nil, nil
+	candidate.ContentLength = 0
+	candidate.TransferEncoding, candidate.Trailer = nil, nil
+	var wire bytes.Buffer
+	if err := candidate.Write(&wire); err != nil {
+		return err
+	}
+	upgrader := ws.Upgrader{
+		Protocol:        func([]byte) bool { return false },
+		OnBeforeUpgrade: func() (ws.HandshakeHeader, error) { return nil, errWSHandshakeValidated },
+	}
+	_, err := upgrader.Upgrade(struct {
+		io.Reader
+		io.Writer
+	}{bytes.NewReader(wire.Bytes()), io.Discard})
+	if errors.Is(err, errWSHandshakeValidated) {
+		return nil
+	}
+	return err
+}
+
 // wsDialUpstream dials the upstream WebSocket server using the SSRF-safe dialer.
 func (p *Proxy) wsDialUpstream(ctx context.Context, targetURL string, fwdHeaders http.Header, cfg *config.Config) (net.Conn, error) {
+	conn, _, err := p.wsDialUpstreamHandshake(ctx, targetURL, fwdHeaders, cfg)
+	return conn, err
+}
+
+func (p *Proxy) wsDialUpstreamHandshake(ctx context.Context, targetURL string, fwdHeaders http.Header, cfg *config.Config) (net.Conn, string, error) {
 	timeout := time.Duration(cfg.WebSocketProxy.MaxConnectionSeconds) * time.Second
 	dialCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// Let the WebSocket implementation validate the selected protocol against
+	// the offers, then mirror that selection on the downstream handshake.
+	headers := fwdHeaders.Clone()
+	var protocols []string
+	if cfg.WatchOnly {
+		for _, field := range headers.Values("Sec-WebSocket-Protocol") {
+			for _, value := range strings.Split(field, ",") {
+				if value = strings.TrimSpace(value); value != "" {
+					protocols = append(protocols, value)
+				}
+			}
+		}
+		headers.Del("Sec-WebSocket-Protocol")
+	}
 	dialer := ws.Dialer{
 		NetDial:    p.ssrfSafeDialContext,
-		Header:     ws.HandshakeHeaderHTTP(fwdHeaders),
+		Header:     ws.HandshakeHeaderHTTP(headers),
+		Protocols:  protocols,
 		Timeout:    30 * time.Second,
 		Extensions: nil, // disable permessage-deflate; relay does not handle compressed frames
 	}
 
-	conn, reader, _, err := dialer.Dial(dialCtx, targetURL)
+	conn, reader, handshake, err := dialer.Dial(dialCtx, targetURL)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if reader != nil {
 		buffered := reader.Buffered()
@@ -1622,15 +1669,15 @@ func (p *Proxy) wsDialUpstream(ctx context.Context, targetURL string, fwdHeaders
 			if peekErr != nil {
 				ws.PutReader(reader)
 				_ = conn.Close()
-				return nil, fmt.Errorf("preserve post-handshake WebSocket bytes: %w", peekErr)
+				return nil, "", fmt.Errorf("preserve post-handshake WebSocket bytes: %w", peekErr)
 			}
 			preserved := bytes.Clone(prefix)
 			ws.PutReader(reader)
-			return &wsDialPrefixedConn{Conn: conn, prefix: bytes.NewReader(preserved)}, nil
+			return &wsDialPrefixedConn{Conn: conn, prefix: bytes.NewReader(preserved)}, handshake.Protocol, nil
 		}
 		ws.PutReader(reader)
 	}
-	return conn, nil
+	return conn, handshake.Protocol, nil
 }
 
 // wsDialPrefixedConn drains bytes received alongside the upstream HTTP upgrade
@@ -1805,6 +1852,7 @@ func (r *wsRelay) auditProvenanceCtx() context.Context {
 
 func (r *wsRelay) applyFrameRequestPolicy(log *audit.Logger, msg []byte) bool {
 	in := requestPolicyInput{
+		Config:      r.cfg,
 		Host:        r.hostname,
 		Method:      http.MethodGet,
 		Path:        r.reqPolicyPath,
@@ -1850,7 +1898,7 @@ func (r *wsRelay) scanClientMessageBodyWithSurface(ctx context.Context, msg []by
 	}
 
 	bodyReq := BodyScanRequest{
-		AuditMode:       !r.enforceEnabled() && !r.watchOnly(),
+		AuditMode:       !r.enforceEnabled(),
 		Body:            bytes.NewReader(msg),
 		Method:          http.MethodGet,
 		ContentType:     contentType,
@@ -1949,7 +1997,7 @@ func (r *wsRelay) enforceClientCEE(ctx context.Context, log *audit.Logger, msg [
 		})
 	}
 
-	if (r.watchOnly() && ceeRes.FragmentHit && config.IsCoreDLPPatternName(ceeRes.BlockKind)) || r.watchRefusal(ceeRes.Blocked, "cross_request", ceeRes.Reason, config.ActionBlock) {
+	if ceeRes.Blocked {
 		log.LogWSBlocked(audit.WSBlockedEvent{
 			Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: "cross_request",
 			Reason: ceeRes.Reason, ClientIP: r.clientIP, RequestID: r.requestID,
@@ -1995,7 +2043,7 @@ func (r *wsRelay) enforceClientCEE(ctx context.Context, log *audit.Logger, msg [
 // instead of across the JSON envelope. Non-JSON messages keep only the raw
 // outbound stream, exactly as before.
 func (r *wsRelay) clientCEEFragmentLeaves(msg []byte, text bool) (map[string][]ceeJSONLeaf, map[string][]byte, string) {
-	if !text || r.proxy == nil || !wsMessageLooksLikeJSON(msg) || !ceeJSONBodyPartitioningEnabled(r.proxy.cfgPtr.Load()) {
+	if !text || r.proxy == nil || !wsMessageLooksLikeJSON(msg) || !ceeJSONBodyPartitioningEnabled(r.cfg) {
 		return nil, nil, ""
 	}
 	var partitionKey []byte
@@ -2088,11 +2136,11 @@ func (r *wsRelay) handleClientTextResult(ctx context.Context, log *audit.Logger,
 	if r.handleClientTextFindings(log, dlpResult.Matches, addrFindings) {
 		return true, true
 	}
-	if dlpResult.Incomplete && r.watchOnly() && ctx.Err() == nil {
-		r.recordWatch(scannerLabelBodyDLP, "text inspection incomplete", "uninspected", int64(len(scanInput)), false)
-		return false, false
-	}
+
 	if dlpResult.Incomplete || ctx.Err() != nil {
+		if dlpResult.Incomplete && r.watchOnly() {
+			r.recordWatch(scannerLabelBodyDLP, "text inspection incomplete", config.ActionBlock, 0, true)
+		}
 		return true, errors.Is(ctx.Err(), context.DeadlineExceeded)
 	}
 	return false, false
@@ -2277,9 +2325,9 @@ func isFragmentLabel(label string) bool {
 
 func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scanner.TextDLPMatch, addrFindings []addressprotect.Finding) (blocked bool) {
 	if r.watchOnly() {
-		core := containsCoreFloorMatch(dlpMatches)
+		core := shouldHardBlockCriticalDLP(dlpMatches, false)
 		for _, match := range dlpMatches {
-			r.recordWatch(scannerLabelBodyDLP, match.PatternName, config.ActionBlock, 0, !match.Warn && scanner.IsCoreCriticalMatch(match))
+			r.recordWatch(scannerLabelBodyDLP, match.PatternName, config.ActionBlock, 0, shouldHardBlockCriticalDLP([]scanner.TextDLPMatch{match}, false))
 			signal := session.SignalBlock
 			if match.Warn {
 				signal = session.SignalWarning
@@ -2587,17 +2635,15 @@ func wsMergeRedactionReport(dst **redact.Report, src *redact.Report) {
 
 func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []byte, result BodyScanResult) (blocked bool) {
 	if r.watchOnly() && !result.Clean {
-		core := containsCoreFloorMatch(result.DLPMatches)
+		core := shouldHardBlockCriticalDLP(result.DLPMatches, false) || isFailClosedBodyResult(result, bodyBytes)
 		action := result.Action
 		if action == "" || core {
 			action = config.ActionBlock
 		}
-		if isFailClosedBodyResult(result, bodyBytes) && !core {
-			r.recordWatch(scannerLabelBodyDLP, result.Reason, "uninspected", int64(len(bodyBytes)), false)
-		} else {
+		{
 			reported := false
 			for _, match := range result.DLPMatches {
-				r.recordWatch(scannerLabelBodyDLP, match.PatternName, action, 0, !match.Warn && scanner.IsCoreCriticalMatch(match))
+				r.recordWatch(scannerLabelBodyDLP, match.PatternName, action, 0, shouldHardBlockCriticalDLP([]scanner.TextDLPMatch{match}, false))
 				signal := session.SignalBlock
 				if match.Warn {
 					signal = session.SignalWarning
@@ -2625,7 +2671,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			return false
 		}
 	}
-	if result.CredentialAudienceReceiptErr != nil && !r.watchOnly() {
+	if result.CredentialAudienceReceiptErr != nil {
 		return r.blockOnCredentialAudienceReceiptFailure(log, result.CredentialAudienceReceiptErr)
 	}
 	if result.Clean {
@@ -2912,8 +2958,6 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 	}()
 	defer r.recoverRelayPanic(cancel, &blocked)
 	frag := &plwsutil.FragmentState{MaxBytes: r.maxMsg}
-	var watchFragmentTail []byte
-	var watchFragmentActive bool
 	var crossMsgTail []byte // rolling tail for text-message DLP scanning
 	var crossMsgCardTail []byte
 	var crossMsgNumberTail []byte
@@ -2980,7 +3024,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		// block_all check: if the session has escalated to a level with
 		// block_all=true, close the WebSocket immediately. This prevents
 		// clean frames from flowing after escalation during long-lived connections.
-		if !watchFragmentActive && r.watchRefusal(decide.UpgradeAction("", r.escalationLevel(), &r.cfg.AdaptiveEnforcement) == config.ActionBlock, adaptiveSessionDeny, "session escalation", "escalate") {
+		if r.watchRefusal(decide.UpgradeAction("", r.escalationLevel(), &r.cfg.AdaptiveEnforcement) == config.ActionBlock, adaptiveSessionDeny, "session escalation", "escalate") {
 			sessionKey := sessionKeyFor(r.cfg, r.agent, r.clientIP, r.actorAuth)
 			recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: r.clientIP, RequestID: r.requestID})
 			r.terminalOnce.Do(func() {
@@ -3027,41 +3071,6 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		}
 		r.touch()
 
-		if (r.watchOnly() || watchFragmentActive) && !frag.Active && hdr.Length >= 0 && (hdr.Length > int64(r.maxMsg) || hdr.Rsv1()) {
-			reason := plwsutil.ReasonMessageTooLarge
-			if hdr.Rsv1() {
-				reason = "compressed frame"
-			}
-			n, copyErr := r.forwardUninspectedFrame(r.clientConn, r.upstreamConn, hdr, reason)
-			bytesTransferred += n
-			if copyErr != nil {
-				return
-			}
-			frag.Reset()
-			if !hdr.OpCode.IsControl() {
-				watchFragmentActive = !hdr.Fin
-			}
-			continue
-		}
-
-		// A mode reload takes effect at the next message boundary. A fragment
-		// already admitted under the earlier mode cannot change delivery paths
-		// without losing its buffered prefix or inventing a new continuation.
-		if (r.watchOnly() || watchFragmentActive) && !frag.Active && hdr.Length >= 0 && !hdr.OpCode.IsControl() && (!hdr.Fin || hdr.OpCode == ws.OpContinuation) {
-			n, frameBlocked, copyErr := r.forwardWatchFragment(ctx, hdr, &watchFragmentTail, true)
-			bytesTransferred += n
-			if frameBlocked {
-				blocked = true
-				return
-			}
-			if copyErr != nil {
-				return
-			}
-			watchFragmentActive = !hdr.Fin
-			frag.Reset()
-			continue
-		}
-
 		// Guard against OOM: reject frames exceeding limits before allocating.
 		if hdr.OpCode.IsControl() && hdr.Length > plwsutil.MaxControlPayload {
 			r.writeClientClose(ws.StatusProtocolError, "control frame too large")
@@ -3069,6 +3078,9 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			return
 		}
 		if !hdr.OpCode.IsControl() && hdr.Length > int64(r.maxMsg) {
+			if r.watchOnly() {
+				r.recordWatch("ws_protocol", plwsutil.ReasonMessageTooLarge, config.ActionBlock, 0, true)
+			}
 			r.writeClientClose(ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
 			r.writeUpstreamClose(ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
 			blocked = true
@@ -3078,6 +3090,9 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		// Reject compressed frames (RSV1 = permessage-deflate indicator).
 		// Compressed bytes bypass DLP pattern matching entirely.
 		if hdr.Rsv1() {
+			if r.watchOnly() {
+				r.recordWatch("ws_protocol", "compressed frames not supported", config.ActionBlock, 0, true)
+			}
 			r.writeClientClose(ws.StatusProtocolError, "compressed frames not supported")
 			r.writeUpstreamClose(ws.StatusProtocolError, "compressed frames not supported")
 			blocked = true
@@ -3146,7 +3161,10 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		// Binary frames.
 		if hdr.OpCode == ws.OpBinary || (hdr.OpCode == ws.OpContinuation && frag.Active && frag.Opcode == ws.OpBinary) {
 			binaryFrames++
-			if r.watchRefusal(!r.allowBinary, "ws_protocol", "binary frames not allowed", config.ActionBlock) {
+			if !r.allowBinary {
+				if r.watchOnly() {
+					r.recordWatch("ws_protocol", "binary frames not allowed", config.ActionBlock, 0, true)
+				}
 				log.LogWSBlocked(audit.WSBlockedEvent{
 					Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: "ws_protocol",
 					Reason: "binary frames not allowed", ClientIP: r.clientIP, RequestID: r.requestID,
@@ -3238,10 +3256,10 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			textFrames++
 
 			// UTF-8 validation per RFC 6455.
-			if !utf8.Valid(msg) && r.watchOnly() {
-				r.recordWatch("ws_protocol", "invalid UTF-8", "uninspected", int64(len(msg)), false)
-			}
-			if !utf8.Valid(msg) && !r.watchOnly() {
+			if !utf8.Valid(msg) {
+				if r.watchOnly() {
+					r.recordWatch("ws_protocol", "invalid UTF-8", config.ActionBlock, 0, true)
+				}
 				r.writeClientClose(ws.StatusInvalidFramePayloadData, "invalid UTF-8")
 				r.writeUpstreamClose(ws.StatusInvalidFramePayloadData, "invalid UTF-8")
 				blocked = true
@@ -3354,7 +3372,10 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 					return
 				}
 			}
-			if r.watchRefusal(fieldTail.Incomplete(frame), "ws_protocol", crossMessageIncompleteReason, "uninspected") {
+			if fieldTail.Incomplete(frame) {
+				if r.watchOnly() {
+					r.recordWatch("ws_protocol", crossMessageIncompleteReason, config.ActionBlock, 0, true)
+				}
 				r.blockCrossMessageIncomplete(log, audit.DirectionClientToServer)
 				blocked = true
 				return
@@ -3428,6 +3449,17 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 		} else if !scanResult.Clean {
 			for _, match := range scanResult.Matches {
 				r.recordWatch(responseScanLayer, match.PatternName, r.scanner.ResponseAction(), 0, false)
+			}
+		}
+		if !scanResult.Clean && r.cfg.FlightRecorder.RequireReceipts {
+			err := r.proxy.emitAllowPathReceipt(r.cfg, withReceiptShard(receipt.EmitOpts{
+				ActionID: receipt.NewActionID(), ParentActionID: r.requestActionID,
+				Verdict: config.ActionWarn, Layer: responseScanLayer,
+				Pattern: strings.Join(responseMatchNames(scanResult.Matches), ", "), Transport: TransportWS,
+				Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
+			}, r.receiptShard))
+			if err != nil {
+				return nil, r.blockOnCredentialAudienceReceiptFailure(log, err)
 			}
 		}
 		return msg, false
@@ -3772,12 +3804,8 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		// already admitted under the earlier mode cannot change delivery paths
 		// without losing its buffered prefix or inventing a new continuation.
 		if (r.watchOnly() || watchFragmentActive) && !frag.Active && hdr.Length >= 0 && !hdr.OpCode.IsControl() && (!hdr.Fin || hdr.OpCode == ws.OpContinuation) {
-			n, frameBlocked, copyErr := r.forwardWatchFragment(ctx, hdr, &watchFragmentTail, false)
+			n, copyErr := r.forwardWatchResponseFragment(ctx, hdr, &watchFragmentTail)
 			bytesTransferred += n
-			if frameBlocked {
-				blocked = true
-				return
-			}
 			if copyErr != nil {
 				return
 			}

@@ -1606,6 +1606,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			rpQuery = u.RawQuery
 		}
 		rpInput := requestPolicyInput{
+			Config:      cfg,
 			Host:        rpHost,
 			Method:      r.Method,
 			Path:        rpPath,

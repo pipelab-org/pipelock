@@ -36,6 +36,7 @@ func TestWatchUninspectedMessage(t *testing.T) {
 			var out bytes.Buffer
 			opts := testOpts(testInputScanner(t))
 			opts.WatchOnly = true
+			opts.watchInbound = !secret
 			err := forwardWatchUninspected(first, &transport.UninspectedMessageChunkError{}, reader, transport.NewStdioWriter(&out), opts)
 			if secret {
 				if err == nil || strings.Contains(out.String(), fakeAWSKey()) {
