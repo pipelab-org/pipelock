@@ -748,13 +748,22 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	outcomeReason := "incomplete"
 	clientHijacked := false
 	defer func() {
-		if cfg.FlightRecorder.RequireReceipts && !clientHijacked {
-			flushResponseBeforeOutcome(w)
+		aborted := recover()
+		var flushErr error
+		if cfg.FlightRecorder.RequireReceipts && !clientHijacked && aborted == nil {
+			flushErr = flushResponseBeforeOutcome(w, r, cfg)
+			if flushErr != nil {
+				outcomeReason, outcomeBytes = receiptReasonIncomplete, -1
+			}
 		}
 		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
 			outcomeReason = "license_revoked"
 		}
 		p.emitOutcomeReceipt(cfg, allowReceipt, outcomeStatus, outcomeBytes, outcomeReason)
+		if aborted != nil {
+			panic(aborted)
+		}
+		_ = httpstream.Abort(r.Context(), flushErr)
 	}()
 
 	// Bound the outbound dial, then let the established tunnel live until it
@@ -2345,13 +2354,22 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	outcomeBytes := int64(-1)
 	outcomeReason := "incomplete"
 	defer func() {
-		if cfg.FlightRecorder.RequireReceipts {
-			flushResponseBeforeOutcome(w)
+		aborted := recover()
+		var flushErr error
+		if cfg.FlightRecorder.RequireReceipts && aborted == nil {
+			flushErr = flushResponseBeforeOutcome(w, r, cfg)
+			if flushErr != nil {
+				outcomeReason, outcomeBytes = receiptReasonIncomplete, -1
+			}
 		}
 		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
 			outcomeReason = "license_revoked"
 		}
 		p.emitOutcomeReceipt(cfg, forwardAllowReceipt, outcomeStatus, outcomeBytes, outcomeReason)
+		if aborted != nil {
+			panic(aborted)
+		}
+		_ = httpstream.Abort(r.Context(), flushErr)
 	}()
 	emitForwardAllowReceipt := func() {
 		if !cfg.FlightRecorder.RequireReceipts {

@@ -1739,10 +1739,19 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	if cfg.FlightRecorder.RequireReceipts {
 		outcomeTracker = newReverseOutcomeTracker(cfg, withReceiptConfig(reverseAllowReceipt, cfg))
 		defer func() {
-			if forwardWriter == nil || !forwardWriter.hijacked {
-				flushResponseBeforeOutcome(w)
+			aborted := recover()
+			var flushErr error
+			if (forwardWriter == nil || !forwardWriter.hijacked) && aborted == nil {
+				flushErr = flushResponseBeforeOutcome(w, r, cfg)
+				if flushErr != nil {
+					outcomeTracker.RecordFlushError()
+				}
 			}
 			outcomeTracker.EmitOnce(rp)
+			if aborted != nil {
+				panic(aborted)
+			}
+			_ = httpstream.Abort(r.Context(), flushErr)
 		}()
 	}
 	ctx = context.WithValue(r.Context(), ctxKeyReverseActionID, reverseActionID)
@@ -1953,6 +1962,18 @@ func (t *reverseOutcomeTracker) RecordObserved(status int, bytesTransferred int6
 	t.bytesTransferred = bytesTransferred
 	t.reason = reason
 	t.bytesExact = &exact
+}
+
+// RecordFlushError retains the response status but cannot attest an exact
+// downstream byte count after a buffered write failed.
+func (t *reverseOutcomeTracker) RecordFlushError() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.emitted {
+		t.reason, t.bytesTransferred = receiptReasonIncomplete, -1
+		exact := false
+		t.bytesExact = &exact
+	}
 }
 
 func (t *reverseOutcomeTracker) EmitOnce(rp *ReverseProxyHandler) {

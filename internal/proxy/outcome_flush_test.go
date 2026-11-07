@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -114,7 +115,11 @@ func TestOutcomeResponseFlushBeforeReceipt(t *testing.T) {
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					stop := context.AfterFunc(r.Context(), func() { close(cancelled) })
 					defer stop()
-					handler.ServeHTTP(w, r)
+					writer := &outcomeFlushWriter{ResponseWriter: w}
+					handler.ServeHTTP(writer, r)
+					if len(writer.deadlines) != 2 || writer.deadlines[0].IsZero() || !writer.deadlines[1].IsZero() {
+						t.Errorf("successful flush did not restore the unlimited write deadline: %v", writer.deadlines)
+					}
 					close(done)
 				}))
 				t.Cleanup(srv.Close)
@@ -159,8 +164,15 @@ func TestOutcomeResponseFlushBeforeReceipt(t *testing.T) {
 					}
 					switch surface {
 					case "fetch":
+						var encoded []byte
+						encoded, requestErr = io.ReadAll(resp.Body)
+						if requestErr == nil && (resp.ContentLength != int64(len(encoded)) || len(resp.TransferEncoding) != 0) {
+							requestErr = errors.New("fetch response missing exact framing")
+						}
 						var body FetchResponse
-						requestErr = json.NewDecoder(resp.Body).Decode(&body)
+						if requestErr == nil {
+							requestErr = json.Unmarshal(encoded, &body)
+						}
 						if requestErr == nil && body.Content != "ok" {
 							requestErr = errors.New("unexpected fetch content: " + body.Content)
 						}
@@ -442,5 +454,192 @@ func TestForwardBufferedOutcomeFraming(t *testing.T) {
 				t.Fatalf("outcome pattern = %q, want %q", outcome.Pattern, want)
 			}
 		})
+	}
+}
+
+// outcomeFlushWriter disconnects only after net/http accepted the buffered body.
+// Its deadline calls also expose accidental changes to a server write deadline.
+type outcomeFlushWriter struct {
+	http.ResponseWriter
+	disconnect func()
+	writes     int
+	deadlines  []time.Time
+}
+
+func (w *outcomeFlushWriter) Write(body []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(body)
+	if err == nil {
+		w.writes += n
+	}
+	return n, err
+}
+
+func (w *outcomeFlushWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *outcomeFlushWriter) SetWriteDeadline(deadline time.Time) error {
+	w.deadlines = append(w.deadlines, deadline)
+	return http.NewResponseController(w.ResponseWriter).SetWriteDeadline(deadline)
+}
+
+func (w *outcomeFlushWriter) FlushError() error {
+	if w.disconnect != nil {
+		w.disconnect()
+	}
+	return http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func outcomeFlushHandler(t *testing.T, surface string) (http.Handler, *receiptProxyHelper, string) {
+	t.Helper()
+	// Stay below net/http's buffer so Write succeeds, while net.Pipe ensures
+	// the final flush cannot complete without a client read.
+	payload := strings.Repeat("ordinary response ", 64)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+		_, _ = io.WriteString(w, payload)
+	}))
+	t.Cleanup(origin.Close)
+	rph := newReceiptProxyHelper(t)
+	t.Cleanup(func() { _ = rph.rec.Close() })
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.APIAllowlist = nil
+	cfg.FlightRecorder.RequireReceipts = true
+	cfg.ForwardProxy.Enabled = true
+	cfg.ForwardProxy.IdleTimeoutSeconds = 1
+	cfg.ResponseScanning.Enabled = true
+	sc := scanner.MustNew(cfg)
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New(), WithReceiptEmitter(rph.emitter))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.Close)
+	switch surface {
+	case "fetch":
+		return p.buildHandler(p.buildMux()), rph, "/fetch?url=" + url.QueryEscape(origin.URL)
+	case "reverse":
+		u, err := url.Parse(origin.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var cfgPtr atomic.Pointer[config.Config]
+		var scPtr atomic.Pointer[scanner.Scanner]
+		cfgPtr.Store(cfg)
+		scPtr.Store(sc)
+		rp := NewReverseProxy(u, &cfgPtr, &scPtr, p.logger, p.metrics, killswitch.New(cfg), nil, nil)
+		rp.SetReceiptEmitter(&p.receiptEmitterPtr)
+		return rp, rph, "/data"
+	case "intercept":
+		rt := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader(payload)), Request: r}, nil
+		})
+		ic := &InterceptContext{Config: cfg, Scanner: sc, Logger: p.logger, Metrics: p.metrics, TargetHost: testLoopbackIP, TargetPort: "443", Proxy: p}
+		return newInterceptHandler(ic, rt), rph, "https://" + testLoopbackIP + "/data"
+	default:
+		return p.buildHandler(p.buildMux()), rph, origin.URL
+	}
+}
+
+func runOutcomeFlushFailure(t *testing.T, surface string, disconnect bool, writeTimeout time.Duration) {
+	t.Helper()
+	handler, rph, target := outcomeFlushHandler(t, surface)
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = client.Close() })
+	ln := newSingleConnListener(server)
+	finished := make(chan *outcomeFlushWriter, 1)
+	srv := &http.Server{
+		ReadHeaderTimeout: time.Second,
+		WriteTimeout:      writeTimeout,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writer := &outcomeFlushWriter{ResponseWriter: w}
+			if disconnect {
+				writer.disconnect = func() { _ = client.Close() }
+			}
+			defer func() { finished <- writer }()
+			handler.ServeHTTP(writer, r)
+		}),
+	}
+	served := make(chan error, 1)
+	go func() { served <- srv.Serve(ln) }()
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = srv.Close()
+		select {
+		case err := <-served:
+			if !errors.Is(err, http.ErrServerClosed) {
+				t.Errorf("server exit: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Error("server did not exit")
+		}
+	})
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Close = true
+	if surface == "forward" {
+		err = req.WriteProxy(client)
+	} else {
+		err = req.Write(client)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case writer := <-finished:
+		if writer.writes == 0 {
+			t.Fatal("test did not reach a successful buffered write")
+		}
+		if writeTimeout > 0 && len(writer.deadlines) != 0 {
+			t.Fatalf("changed existing server write deadline: %v", writer.deadlines)
+		}
+		if !disconnect && writeTimeout == 0 && (len(writer.deadlines) != 1 || writer.deadlines[0].IsZero()) {
+			t.Fatalf("missing bounded flush deadline: %v", writer.deadlines)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("outcome recording remained blocked on a client that never reads")
+	}
+	var found bool
+	for _, rcpt := range rph.findReceipts(t) {
+		ar := rcpt.ActionRecord
+		if ar.DecisionPhase != receipt.DecisionPhaseOutcome {
+			continue
+		}
+		found = true
+		if err := receipt.VerifyWithKey(rcpt, rph.pubHex); err != nil {
+			t.Fatal(err)
+		}
+		wantReason, wantVerdict := receiptReasonIncomplete, config.ActionAllow
+		if surface == "fetch" {
+			wantReason, wantVerdict = "delivery_error", config.ActionWarn
+		} else if !strings.Contains(ar.Pattern, "bytes=unknown") {
+			t.Errorf("failed flush attested a byte count: %q", ar.Pattern)
+		}
+		if ar.Verdict != wantVerdict || !strings.Contains(ar.Pattern, "reason="+wantReason) {
+			t.Errorf("failed flush outcome: verdict=%s pattern=%q", ar.Verdict, ar.Pattern)
+		}
+	}
+	if !found {
+		t.Fatal("missing durable outcome after flush failure")
+	}
+}
+
+func TestOutcomeFlushDeliveryError(t *testing.T) {
+	for _, surface := range []string{"fetch", "forward", "reverse"} {
+		t.Run(surface, func(t *testing.T) { runOutcomeFlushFailure(t, surface, true, 0) })
+	}
+}
+
+func TestOutcomeFlushStalledClient(t *testing.T) {
+	for _, surface := range []string{"fetch", "forward", "reverse"} {
+		t.Run(surface, func(t *testing.T) { runOutcomeFlushFailure(t, surface, false, 0) })
+	}
+}
+
+func TestOutcomeFlushPreservesServerWriteDeadline(t *testing.T) {
+	for _, surface := range []string{"fetch", "forward", "reverse"} {
+		t.Run(surface, func(t *testing.T) { runOutcomeFlushFailure(t, surface, false, 100*time.Millisecond) })
 	}
 }

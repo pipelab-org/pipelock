@@ -2163,10 +2163,15 @@ func newInterceptHandler(
 		// Outcomes run on the inner HTTP writer, before any stream abort.
 		// Release buffered bytes before synchronous required receipt storage.
 		emitOutcome := func(opts receipt.EmitOpts, verdict string, status int, transferred int64, reason string) {
+			var flushErr error
 			if ic.Config.FlightRecorder.RequireReceipts {
-				flushResponseBeforeOutcome(w)
+				flushErr = flushResponseBeforeOutcome(w, r, ic.Config)
+				if flushErr != nil {
+					reason, transferred = receiptReasonIncomplete, -1
+				}
 			}
 			interceptEmitOutcomeReceipt(ic, opts, verdict, status, transferred, reason)
+			_ = httpstream.Abort(r.Context(), flushErr)
 		}
 		requiredIntentEmitted := false
 		if ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {

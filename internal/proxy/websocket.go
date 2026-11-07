@@ -1149,12 +1149,21 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	outcomeEmitted := false
 	if cfg.FlightRecorder.RequireReceipts {
 		defer func() {
+			aborted := recover()
+			var flushErr error
 			if !outcomeEmitted {
-				if clientConn == nil {
-					flushResponseBeforeOutcome(w)
+				if clientConn == nil && aborted == nil {
+					flushErr = flushResponseBeforeOutcome(w, r, cfg)
+					if flushErr != nil {
+						outcomeReason, outcomeBytes = receiptReasonIncomplete, -1
+					}
 				}
 				p.emitOutcomeReceipt(cfg, admissionReceipt, outcomeStatus, outcomeBytes, outcomeReason)
 			}
+			if aborted != nil {
+				panic(aborted)
+			}
+			_ = httpstream.Abort(r.Context(), flushErr)
 		}()
 	}
 

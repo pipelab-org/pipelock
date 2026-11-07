@@ -316,3 +316,84 @@ func TestInterceptBufferedOutcomeFraming(t *testing.T) {
 		})
 	}
 }
+
+func TestInterceptOutcomeFlushDeliveryError(t *testing.T) {
+	runOutcomeFlushFailure(t, "intercept", true, 0)
+}
+
+func TestInterceptOutcomeFlushStalledClient(t *testing.T) {
+	runOutcomeFlushFailure(t, "intercept", false, 0)
+}
+
+func TestInterceptOutcomeFlushPreservesServerWriteDeadline(t *testing.T) {
+	runOutcomeFlushFailure(t, "intercept", false, 100*time.Millisecond)
+}
+
+func TestInterceptTunnelOutcomeFlushStalledClient(t *testing.T) {
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.FlightRecorder.RequireReceipts = true
+	cfg.ForwardProxy.IdleTimeoutSeconds = 1
+	cfg.ResponseScanning.Enabled = true
+	sc := scanner.MustNew(cfg)
+	rph := newReceiptProxyHelper(t)
+	t.Cleanup(func() { _ = rph.rec.Close() })
+	observed := make(chan receipt.ActionRecord, 1)
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder: rph.rec, PrivKey: rph.priv, ConfigHash: coverageTestConfigHash,
+		Principal: coverageTestPrincipal, Actor: coverageTestActor,
+		OnReceipt: func(rcpt *receipt.Receipt) {
+			if rcpt.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome {
+				observed <- rcpt.ActionRecord
+			}
+		},
+	})
+	p, err := New(cfg, logger, sc, m, WithReceiptEmitter(emitter))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.Close)
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = client.Close() })
+	tlsClient := tls.Client(client, &tls.Config{RootCAs: pool, ServerName: testLoopbackIP})
+	done := make(chan error, 1)
+	rt := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader(strings.Repeat("ordinary response ", 64))), Request: r}, nil
+	})
+	go func() {
+		done <- interceptTunnel(t.Context(), server, &InterceptContext{
+			Config: cfg, Scanner: sc, Logger: logger, Metrics: m, CertCache: cache,
+			TargetHost: testLoopbackIP, TargetPort: "443", Proxy: p, UpstreamRT: rt,
+		})
+	}()
+	t.Cleanup(func() {
+		_ = client.Close()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("tunnel exit: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Error("tunnel did not exit")
+		}
+	})
+	if err := tlsClient.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+testLoopbackIP+"/data", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Close = true
+	if err := req.Write(tlsClient); err != nil {
+		t.Fatal(err)
+	}
+	// After the TLS handshake and request, the client never reads a response.
+	select {
+	case ar := <-observed:
+		if ar.Verdict != config.ActionAllow || ar.Pattern != "status=200 bytes=unknown reason=incomplete" {
+			t.Fatalf("stalled tunnel outcome = %+v", ar)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("inner HTTP flush prevented outcome storage")
+	}
+}

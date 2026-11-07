@@ -1751,10 +1751,34 @@ func receiptOutcomePattern(status string, bytesTransferred int64, reason string)
 }
 
 // flushResponseBeforeOutcome releases buffered response bytes before synchronous
-// outcome recording. A flush failure must neither suppress the outcome nor change
-// its evidence fields; delivery and receipt failures retain their own handling.
-func flushResponseBeforeOutcome(w http.ResponseWriter) {
-	_ = http.NewResponseController(w).Flush()
+// outcome recording. The caller records any delivery failure before aborting.
+func flushResponseBeforeOutcome(w http.ResponseWriter, r *http.Request, cfg *config.Config) error {
+	controller := http.NewResponseController(w)
+	server, _ := r.Context().Value(http.ServerContextKey).(*http.Server)
+	// A positive server WriteTimeout already bounds this write. Leave its
+	// deadline untouched: resetting it here could extend an earlier deadline.
+	bounded := server == nil || server.WriteTimeout <= 0
+	if bounded {
+		// forward_proxy.idle_timeout_seconds bounds inactivity on established
+		// tunnels. Reuse it for a client that stops reading the final response,
+		// including the inner HTTP writer of an intercepted CONNECT tunnel.
+		timeout := time.Duration(cfg.ForwardProxy.IdleTimeoutSeconds) * time.Second
+		if err := controller.SetWriteDeadline(time.Now().Add(timeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			return err
+		}
+	}
+	err := controller.Flush()
+	if errors.Is(err, http.ErrNotSupported) {
+		err = nil
+	}
+	if bounded && err == nil {
+		// Successful callers may continue writing (or reuse the connection).
+		// These servers had no write deadline before this flush.
+		if resetErr := controller.SetWriteDeadline(time.Time{}); resetErr != nil && !errors.Is(resetErr, http.ErrNotSupported) {
+			return resetErr
+		}
+	}
+	return err
 }
 
 func (p *Proxy) emitOutcomeReceipt(cfg *config.Config, opts receipt.EmitOpts, status string, bytesTransferred int64, reason string) {
@@ -5444,7 +5468,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	// Count the representation sent by the refusal projection, including
 	// partial writes, rather than the detector body it may discard.
-	delivery := &fetchDeliveryWriter{ResponseWriter: w}
+	delivery := &fetchDeliveryWriter{ResponseWriter: w, frameJSON: cfg.FlightRecorder.RequireReceipts && r.Method != http.MethodHead}
 	w = p.withAdaptiveRefusal(delivery, adaptiveRefusalOptions{config: cfg, agent: agent, clientIP: clientIP, auth: id.Auth, host: func() string { return refusalTargetHost(r) }, transport: TransportFetch})
 	// Carry the provenance grade on the request from the moment identity is
 	// resolved. Every audit context below derives from r.Context(), so setting
@@ -6499,8 +6523,13 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// -1 signs bytes=unknown on paths that end before the body is read.
 	capturedBytes := int64(-1)
 	defer func() {
-		if cfg.FlightRecorder.RequireReceipts {
-			flushResponseBeforeOutcome(w)
+		aborted := recover()
+		var flushErr error
+		if cfg.FlightRecorder.RequireReceipts && aborted == nil {
+			flushErr = flushResponseBeforeOutcome(w, r, cfg)
+			if flushErr != nil {
+				delivery.err = flushErr
+			}
 		}
 		verdict := config.ActionAllow
 		// A policy denial describes withheld upstream content, even if its
@@ -6523,6 +6552,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		// read bytes= see the same unit before and after this field existed.
 		pattern := receiptOutcomePattern(outcomeStatus, capturedBytes, outcomeReason) + " delivered_bytes=" + strconv.FormatInt(delivery.bytes, 10)
 		p.emitOutcomeReceiptWithPattern(cfg, opts, pattern)
+		if aborted != nil {
+			panic(aborted)
+		}
+		_ = httpstream.Abort(r.Context(), flushErr)
 	}()
 
 	responseencoding.RequestIdentity(req.Header)
