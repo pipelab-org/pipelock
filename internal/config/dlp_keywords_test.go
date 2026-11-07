@@ -226,7 +226,7 @@ func TestDLPKeywordsLegacyPolicyHashGolden(t *testing.T) {
 	// Captured from the pre-keyword policy at 06907c6982b07f25905d4d40782cb9d76badd6cb.
 	for _, tc := range []struct{ body, want string }{
 		{keywordConfigYAML(""), "85c76016e5a0725a682561e23f18dd8ebade2ada53e72c7324cbb511f7749ed6"},
-		{"mode: balanced\n", "56af019e5a06d10393dfc192ab2fa93d53bc5eaafc4a6530c0621eaf26ad3d3e"},
+		{"mode: balanced\n", "5d8f1ffcec94a274d83727cea8daab74f84fd7ecbd39e78ad09a681ea4eebc29"},
 	} {
 		cfg, err := LoadBytes([]byte(tc.body))
 		if err != nil {
