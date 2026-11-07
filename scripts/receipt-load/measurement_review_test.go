@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testexec"
 )
 
 func TestReviewSummaryRefusesInvalidPopulation(t *testing.T) {
@@ -561,9 +563,7 @@ func TestRunPreservesHarnessExitCode(t *testing.T) {
 		"make": "#!/bin/sh\nexit 0\n",
 		"go":   "#!/bin/sh\nif [ \"$1\" = run ]; then exit 1; fi\nprintf '#!/bin/sh\\nexit 4\\n' > \"$3\"\nchmod 700 \"$3\"\n",
 	} {
-		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o700); err != nil { // #nosec G306 -- executable tool fixture.
-			t.Fatal(err)
-		}
+		testexec.WriteExecutable(t, filepath.Join(root, name), []byte(body), 0o700)
 	}
 	cmd := exec.CommandContext(t.Context(), "bash", "./run.sh", filepath.Join(root, "out")) // #nosec G204 -- fixed launcher with output under t.TempDir.
 	cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"))

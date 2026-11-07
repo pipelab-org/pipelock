@@ -21,6 +21,8 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+
+	"github.com/luckyPipewrench/pipelock/internal/testexec"
 )
 
 func TestReleaseVerifierFixtureMain(t *testing.T) {
@@ -1379,9 +1381,7 @@ HTTP_CODE=200; http_code "$args"
 				"sleep": "exit 0\n",
 			}
 			for name, body := range stubs {
-				if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/usr/bin/env bash\n"+body), 0o700); err != nil { // #nosec G306 -- executable registry fixtures.
-					t.Fatal(err)
-				}
+				testexec.WriteExecutable(t, filepath.Join(bin, name), []byte("#!/usr/bin/env bash\n"+body), 0o700)
 			}
 			cmd := exec.CommandContext(t.Context(), "bash", filepath.Join(root, "scripts/release-verifier-install-gate.sh"), "--tag", "v3.4.0") // #nosec G204 -- checked-in script in an isolated fixture.
 			cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "TARGET="+tc.target, "FAILURE="+tc.failure, "RUST_VERSION="+strings.TrimPrefix(stagedVerifierSourceRef(t, root, "Rust"), "verifier-v"))
