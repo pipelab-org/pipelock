@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 
@@ -103,6 +104,11 @@ func (r *wsRelay) enforceEnabled() bool {
 // each bounded payload plus the existing cross-message overlap. Outbound
 // fragments use the normal complete-message scanner before any delivery.
 func (r *wsRelay) forwardWatchResponseFragment(ctx context.Context, hdr ws.Header, tail *[]byte) (int64, error) {
+	// The relay routes frames above maxMsg to the uninspected stream path;
+	// keep the bound local so the buffer can never exceed it.
+	if hdr.Length < 0 || hdr.Length > int64(r.maxMsg) {
+		return 0, fmt.Errorf("watch-only response fragment length %d outside 0..%d", hdr.Length, r.maxMsg)
+	}
 	raw := make([]byte, int(hdr.Length))
 	if _, err := io.ReadFull(r.upstreamConn, raw); err != nil {
 		return 0, err
