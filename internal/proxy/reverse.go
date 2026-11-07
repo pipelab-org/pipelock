@@ -1735,9 +1735,15 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		responseReceiptState.admissionReceiptID = reverseAllowReceipt.ActionID
 	}
 	var outcomeTracker *reverseOutcomeTracker
+	var forwardWriter *reverseInformationalGuardWriter
 	if cfg.FlightRecorder.RequireReceipts {
 		outcomeTracker = newReverseOutcomeTracker(cfg, withReceiptConfig(reverseAllowReceipt, cfg))
-		defer outcomeTracker.EmitOnce(rp)
+		defer func() {
+			if forwardWriter == nil || !forwardWriter.hijacked {
+				flushResponseBeforeOutcome(w)
+			}
+			outcomeTracker.EmitOnce(rp)
+		}()
 	}
 	ctx = context.WithValue(r.Context(), ctxKeyReverseActionID, reverseActionID)
 	if outcomeTracker != nil {
@@ -1778,12 +1784,13 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// Forward to upstream. Response scanning happens in modifyResponse.
 	// Envelope signing happens in the signing RoundTripper wrapping
 	// rp.proxy.Transport so @target-uri reflects the post-Director URL.
-	rp.proxy.ServeHTTP(&reverseInformationalGuardWriter{
+	forwardWriter = &reverseInformationalGuardWriter{
 		ResponseWriter: w,
 		onWriteError: func(status int, written int64, err error) {
 			outcomeTracker.Record(status, written, httpstream.Reason(r.Context(), err))
 		},
-	}, r)
+	}
+	rp.proxy.ServeHTTP(forwardWriter, r)
 }
 
 // reverseInformationalGuardWriter keeps an upstream's 1xx informational
@@ -1796,6 +1803,7 @@ type reverseInformationalGuardWriter struct {
 	onWriteError func(int, int64, error)
 	status       int
 	written      int64
+	hijacked     bool
 }
 
 func (w *reverseInformationalGuardWriter) Write(p []byte) (int, error) {
@@ -1825,6 +1833,14 @@ func (w *reverseInformationalGuardWriter) WriteHeader(code int) {
 // Unwrap lets http.ResponseController reach the real writer for flush and
 // hijack, which the reverse proxy needs for streaming and upgrades.
 func (w *reverseInformationalGuardWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *reverseInformationalGuardWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, rw, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if err == nil {
+		w.hijacked = true
+	}
+	return conn, rw, err
+}
 
 // reverseSigningRoundTripper wraps the base transport used by
 // httputil.ReverseProxy so envelope signing runs AFTER Director has

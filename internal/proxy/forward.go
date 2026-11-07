@@ -746,7 +746,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	outcomeStatus := "unknown"
 	outcomeBytes := int64(-1)
 	outcomeReason := "incomplete"
+	clientHijacked := false
 	defer func() {
+		if cfg.FlightRecorder.RequireReceipts && !clientHijacked {
+			flushResponseBeforeOutcome(w)
+		}
 		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
 			outcomeReason = "license_revoked"
 		}
@@ -815,6 +819,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer safeClose(clientConn, "clientConn", p.logger)
+	clientHijacked = true
 	// Hijacked tunnels no longer participate in net/http cancellation. Close
 	// both sockets on revocation, including while waiting for a TLS ClientHello.
 	// Capture the current upstream: interception later clears targetConn.
@@ -2340,6 +2345,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	outcomeBytes := int64(-1)
 	outcomeReason := "incomplete"
 	defer func() {
+		if cfg.FlightRecorder.RequireReceipts {
+			flushResponseBeforeOutcome(w)
+		}
 		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
 			outcomeReason = "license_revoked"
 		}
@@ -2845,6 +2853,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// scanned response that is not the upstream response (corrupted JSON /
 		// HTML / model output), which violates fail-closed in spirit.
 		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+		bufferedBudgetTruncated := false
 		if readErr != nil {
 			p.logger.LogError(actx, readErr)
 			writeBlockedError(w,
@@ -2883,6 +2892,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				// existing truncation policy. Trim back to the budget and let
 				// the post-write budget_truncated anomaly log fire as before.
 				respBody = respBody[:maxBytes]
+				bufferedBudgetTruncated = true
 			} else {
 				// Could not fully inspect the response within the configured
 				// scan cap - block fail-closed, matching intercept/reverse.
@@ -3414,6 +3424,16 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// Scan passed - now copy upstream headers and write response.
 		copyResponseHeaders(w.Header(), resp.Header)
+		// The final buffered representation has a known length (including any
+		// stripping or redaction). Explicit framing lets the client finish the
+		// body before the deferred outcome write. Preserve framing for no-body
+		// responses and budget-truncated delivery.
+		if cfg.FlightRecorder.RequireReceipts && r.Method != http.MethodHead && resp.StatusCode >= http.StatusOK &&
+			resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotModified &&
+			!bufferedBudgetTruncated && (budgetRemaining < 0 || int64(len(respBody)) < budgetRemaining) {
+			w.Header().Del("Transfer-Encoding")
+			w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
+		}
 		w.WriteHeader(resp.StatusCode)
 		n, _ := w.Write(respBody)
 		written := int64(n)

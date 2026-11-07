@@ -243,6 +243,7 @@ func TestForwardIncompleteResponseReceipts(t *testing.T) {
 			}
 			pattern := string(blockreason.ResponseIncomplete)
 			var foundBlock, foundOutcome bool
+			waitForTransportOutcomeReceipt(t, rph.dir, TransportForward)
 			for _, record := range rph.findReceipts(t) {
 				if record.ActionRecord.Verdict == config.ActionBlock && record.ActionRecord.Layer == "browser_cache" && record.ActionRecord.Pattern == string(blockreason.ResponseIncomplete) {
 					foundBlock = true

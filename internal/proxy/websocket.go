@@ -1150,6 +1150,9 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if cfg.FlightRecorder.RequireReceipts {
 		defer func() {
 			if !outcomeEmitted {
+				if clientConn == nil {
+					flushResponseBeforeOutcome(w)
+				}
 				p.emitOutcomeReceipt(cfg, admissionReceipt, outcomeStatus, outcomeBytes, outcomeReason)
 			}
 		}()

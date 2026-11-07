@@ -1750,6 +1750,13 @@ func receiptOutcomePattern(status string, bytesTransferred int64, reason string)
 	return fmt.Sprintf("status=%s bytes=%s reason=%s", status, bytesValue, reason)
 }
 
+// flushResponseBeforeOutcome releases buffered response bytes before synchronous
+// outcome recording. A flush failure must neither suppress the outcome nor change
+// its evidence fields; delivery and receipt failures retain their own handling.
+func flushResponseBeforeOutcome(w http.ResponseWriter) {
+	_ = http.NewResponseController(w).Flush()
+}
+
 func (p *Proxy) emitOutcomeReceipt(cfg *config.Config, opts receipt.EmitOpts, status string, bytesTransferred int64, reason string) {
 	opts.Verdict = config.ActionAllow
 	p.emitOutcomeReceiptWithPattern(cfg, opts, receiptOutcomePattern(status, bytesTransferred, reason))
@@ -6492,6 +6499,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// -1 signs bytes=unknown on paths that end before the body is read.
 	capturedBytes := int64(-1)
 	defer func() {
+		if cfg.FlightRecorder.RequireReceipts {
+			flushResponseBeforeOutcome(w)
+		}
 		verdict := config.ActionAllow
 		// A policy denial describes withheld upstream content, even if its
 		// diagnostic response could not be delivered. Other failures are

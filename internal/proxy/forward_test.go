@@ -1939,6 +1939,7 @@ func TestForwardProxy_RequireReceiptsSuccessEmitsIntentOutcomePair(t *testing.T)
 		t.Fatalf("%s is empty", blockreason.HeaderRecordedReceipt)
 	}
 
+	waitForTransportOutcomeReceipt(t, rph.dir, TransportForward)
 	receipts := rph.findReceipts(t)
 	if len(receipts) != 2 {
 		t.Fatalf("receipt count = %d, want intent/outcome pair", len(receipts))
@@ -2052,6 +2053,7 @@ func TestForwardProxy_RequireReceiptsCompressedBlockOutcomeStatus(t *testing.T) 
 		t.Fatalf("status = %d, want 403", resp.StatusCode)
 	}
 
+	waitForTransportOutcomeReceipt(t, rph.dir, TransportForward)
 	receipts := rph.findReceipts(t)
 	var intent, outcome receipt.Receipt
 	for _, rcpt := range receipts {
@@ -2107,6 +2109,7 @@ func TestForwardProxy_RequireReceiptsA2ASSEWarnOutcomeStatus(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
+	waitForTransportOutcomeReceipt(t, rph.dir, TransportForward)
 	receipts := rph.findReceipts(t)
 	var intent, outcome receipt.Receipt
 	for _, rcpt := range receipts {

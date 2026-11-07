@@ -101,6 +101,9 @@ func reverseReceiptParitySetupWithCaptureAndShield(t *testing.T, cfg *config.Con
 	t.Cleanup(srv.Close)
 
 	return srv, dir, func() {
+		// A flushed response can arrive before deferred outcome recording.
+		// Drain the handler before sealing its evidence store.
+		srv.Close()
 		if err := rec.Close(); err != nil {
 			t.Fatalf("recorder close: %v", err)
 		}
@@ -108,6 +111,11 @@ func reverseReceiptParitySetupWithCaptureAndShield(t *testing.T, cfg *config.Con
 }
 
 func waitForReverseOutcomeReceipt(t *testing.T, dir string) {
+	t.Helper()
+	waitForTransportOutcomeReceipt(t, dir, TransportReverse)
+}
+
+func waitForTransportOutcomeReceipt(t *testing.T, dir, transport string) {
 	t.Helper()
 	testwait.For(t, waitForReceiptTimeout, func() bool {
 		entries, err := os.ReadDir(filepath.Clean(dir))
@@ -123,13 +131,13 @@ func waitForReverseOutcomeReceipt(t *testing.T, dir string) {
 				continue
 			}
 			for _, rcpt := range receipts {
-				if rcpt.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome && rcpt.ActionRecord.Transport == TransportReverse {
+				if rcpt.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome && rcpt.ActionRecord.Transport == transport {
 					return true
 				}
 			}
 		}
 		return false
-	}, "reverse outcome receipt in %s", dir)
+	}, "%s outcome receipt in %s", transport, dir)
 }
 
 func TestReverseProxy_BlockReceiptHeaderMatchesRecordedAction(t *testing.T) {
@@ -1258,6 +1266,7 @@ func TestReverseProxy_RequireReceiptsOutcomeV1FailureLogsReceiptChannelBroken(t 
 	if got := hits.Load(); got != 1 {
 		t.Fatalf("upstream hits = %d, want 1", got)
 	}
+	proxySrv.Close()
 	receipts := extractReceiptsFromDir(t, rph.dir)
 	if len(receipts) != 1 {
 		t.Fatalf("receipt count after outcome failure = %d, want durable intent only", len(receipts))
@@ -1341,6 +1350,7 @@ func TestReverseProxy_RequireReceiptsOutcomeV2FailureEmitsGapMarker(t *testing.T
 	if got := hits.Load(); got != 1 {
 		t.Fatalf("upstream hits = %d, want 1", got)
 	}
+	proxySrv.Close()
 	marker := requireReceiptEmissionFailedLayer(t, rph.findReceipts(t))
 	if !strings.Contains(marker.ActionRecord.Pattern, "outcome receipt emission failed") {
 		t.Fatalf("marker pattern = %q, want outcome receipt emission failed", marker.ActionRecord.Pattern)
