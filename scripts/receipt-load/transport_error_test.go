@@ -128,6 +128,7 @@ func TestTransportErrorTextLimit(t *testing.T) {
 		{"long", strings.Repeat("a", 301), strings.Repeat("a", 300)},
 		{"partial rune", strings.Repeat("a", 299) + "é", strings.Repeat("a", 299)},
 		{"invalid utf8", "failure\xff", "failure\uFFFD"},
+		{"fake credential", "Get \"http://r1.load.example/ok?wk=k&" + workloadTokenParam + "=" + fakeToken + "\": EOF", "Get \"http://r1.load.example/ok?wk=k&" + workloadTokenParam + "=[redacted-value]\": EOF"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var out requestOutcome

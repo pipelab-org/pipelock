@@ -153,7 +153,10 @@ func (p loadParams) issue(ctx context.Context, slot int, base time.Time) (reques
 func (out *requestOutcome) setTransportError(err error) {
 	out.transportErr = true
 	out.transportErrKind = classifyTransportError(err)
-	out.transportErrText = strings.ToValidUTF8(err.Error(), "\uFFFD")
+	// Blocked requests carry the fake credential in their URL; keep it out of
+	// result.json the same way the proxy log redacts it.
+	text := strings.ReplaceAll(err.Error(), fakeToken, "[redacted-value]")
+	out.transportErrText = strings.ToValidUTF8(text, "\uFFFD")
 	if len(out.transportErrText) > maxTransportErrorText {
 		// Drop a partial final rune so JSON encoding preserves the byte cap.
 		out.transportErrText = strings.ToValidUTF8(out.transportErrText[:maxTransportErrorText], "")
