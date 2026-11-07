@@ -2,13 +2,12 @@
 # Copyright 2026 Pipelock contributors
 # SPDX-License-Identifier: Apache-2.0
 #
-# Pull-request CI runs only the Go floor version (see ci.yaml's
-# test-oss-go127/test-enterprise-go127/test-replay-go127 jobs, which are
-# skipped on pull_request unless scripts/ci_go_toolchain.py finds a Go
-# toolchain change). Pushes to main and the release workflow are the only two
-# places every supported Go
-# minor is still exercised together, and AGENTS.md promises "CI tests Go 1.26
-# and 1.27". This asserts release.yaml's release-tests matrix is a superset of
+# Pull-request CI runs the Go 1.27 race suites only for a Go toolchain change
+# (see ci.yaml's test-oss-go127/test-enterprise-go127 jobs and
+# scripts/ci_go_toolchain.py); test-replay-go127 runs on every pull request.
+# Pushes to main and the release workflow are the only two places every
+# supported Go minor is still exercised together, and AGENTS.md promises
+# "CI tests Go 1.26 and 1.27". This asserts release.yaml's release-tests matrix is a superset of
 # the Go minors ci.yaml's producer jobs actually install, so trimming a
 # version from one workflow without the other fails here.
 #

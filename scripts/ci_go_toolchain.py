@@ -17,9 +17,10 @@ CI installs it with actions/setup-go. A change is a toolchain change when it:
 * touches scripts/check-go-matrix.sh, which keeps the CI and release Go
   versions in step, or this script, which decides when they are proven;
 * changes a setup-go step in a workflow or local composite action: its
-  ``uses`` ref, ``if`` condition, ``with`` inputs, and the matrix entries an input reads
-  (release.yaml pins ``go-version: ${{ matrix.go.version }}``, so a version
-  bump edits only ``matrix.go``, while its shard list is not read by setup-go);
+  ``uses`` ref, ``if`` condition, ``with`` inputs, and the matrix entries an
+  input reads (release.yaml pins ``go-version: ${{ matrix.go.version }}``, so a
+  version bump edits only ``matrix.go``, while its shard list is not read by
+  setup-go);
 * changes a ``GOTOOLCHAIN`` setting in any workflow, job, or step environment,
   or a ``run`` script that mentions GOTOOLCHAIN.
 
