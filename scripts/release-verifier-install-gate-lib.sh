@@ -171,8 +171,8 @@ print(3 if outage else 2)
 		fi
 		# Only a proven transport outage is retried. Match ci-retry.sh's
 		# three-attempt linear backoff without retrying integrity failures.
+		printf 'registry read attempt %d failed:\n%s\n' "$attempt" "$output" >&2
 		if ((status != 3 || attempt == 3)); then
-			printf '%s\n' "$output" >&2
 			return "$status"
 		fi
 		sleep "$((attempt * 5))"

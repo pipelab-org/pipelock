@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -1479,7 +1480,7 @@ if [[ $SCENARIO == signature ]]; then
   exit 22
 fi
 if [[ $SCENARIO == outage || $attempt == 1 ]]; then
-  printf '{"error":{"code":"ETIMEDOUT","message":"fixture registry unavailable"}}'
+  printf '{"error":{"code":"ETIMEDOUT","message":"fixture registry unavailable attempt %s"}}' "$attempt"
   if [[ $TOOL == curl ]]; then printf '\n000'; exit 28; fi
   exit 1
 fi
@@ -1528,8 +1529,22 @@ exit 0
 				if stdout.Len() != 0 {
 					t.Fatalf("captured output escaped to stdout: %q", stdout.String())
 				}
+				failedAttempts := wantAttempts
 				if scenario == "transient" {
-					if string(data) != "{\"verified\":true}\n" || stderr.Len() != 0 {
+					failedAttempts--
+				}
+				for attempt := 1; attempt <= failedAttempts; attempt++ {
+					detail := "fixture-package"
+					if scenario != "signature" {
+						detail = fmt.Sprintf("fixture registry unavailable attempt %d", attempt)
+					}
+					want := fmt.Sprintf("registry read attempt %d failed:\n", attempt)
+					if !strings.Contains(stderr.String(), want) || !strings.Contains(stderr.String(), detail) {
+						t.Fatalf("missing attempt %d diagnostic %q: stderr=%q", attempt, detail, stderr.String())
+					}
+				}
+				if scenario == "transient" {
+					if string(data) != "{\"verified\":true}\n" {
 						t.Fatalf("recovered report=%q, stderr=%q", data, stderr.String())
 					}
 				} else {
