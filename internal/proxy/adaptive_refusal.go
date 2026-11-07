@@ -118,6 +118,7 @@ func refusalURLHost(raw string) string {
 
 func (w *adaptiveRefusalWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
+// WriteHeader applies an adaptive refusal before committing response headers.
 func (w *adaptiveRefusalWriter) WriteHeader(status int) {
 	if w.wroteHeader {
 		return

@@ -213,6 +213,7 @@ func TestWebSocketContentEntropyConfigExplicitlyDropsHTTPWarnRoutes(t *testing.T
 	}
 }
 
+// TestInterceptEntropyWarnReceiptPreservesProvenanceAndDoesNotFollowRedirect checks receipt provenance and redirect isolation.
 func TestInterceptEntropyWarnReceiptPreservesProvenanceAndDoesNotFollowRedirect(t *testing.T) {
 	for _, requireReceipts := range []bool{false, true} {
 		t.Run(fmt.Sprintf("require_receipts_%t", requireReceipts), func(t *testing.T) {

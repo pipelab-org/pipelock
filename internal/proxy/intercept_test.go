@@ -802,6 +802,7 @@ func interceptAndRequest(
 	return resp
 }
 
+// interceptAndRequestWithProxy sends a request through an intercepted TLS tunnel with the supplied proxy.
 func interceptAndRequestWithProxy(
 	t *testing.T,
 	upstream *httptest.Server,
@@ -2598,6 +2599,7 @@ type errorReader struct {
 	err error
 }
 
+// Read waits for pending receipt observation when the response body ends.
 func (e *errorReader) Read(p []byte) (int, error) {
 	if e.n <= 0 {
 		return 0, e.err
@@ -2613,6 +2615,7 @@ func (e *errorReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+// Close releases the underlying receipt-waiting response body.
 func (e *errorReader) Close() error { return nil }
 
 func TestInterceptTunnel_ResponseReadError(t *testing.T) {
@@ -3885,6 +3888,7 @@ type interceptReceiptWaitBody struct {
 	wait func(bool)
 }
 
+// Read waits for pending receipt observation when the response body ends.
 func (b *interceptReceiptWaitBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
 	if err != nil {
@@ -3893,6 +3897,7 @@ func (b *interceptReceiptWaitBody) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// Close releases the underlying receipt-waiting response body.
 func (b *interceptReceiptWaitBody) Close() error {
 	err := b.ReadCloser.Close()
 	b.wait(true)
@@ -4007,6 +4012,7 @@ func TestInterceptTunnel_RequireReceiptsEmitsIntentBeforeOutcome(t *testing.T) {
 	}
 }
 
+// TestInterceptTunnel_RequireReceiptsIntentIsDurableBeforeRoundTrip checks durable admission before upstream dispatch.
 func TestInterceptTunnel_RequireReceiptsIntentIsDurableBeforeRoundTrip(t *testing.T) {
 	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
 	cfg.FlightRecorder.RequireReceipts = true
@@ -4068,6 +4074,7 @@ func TestInterceptTunnel_RequireReceiptsIntentIsDurableBeforeRoundTrip(t *testin
 	}
 }
 
+// TestInterceptTunnel_RequireReceiptsUpstreamErrorEmitsOutcome checks outcome recording after upstream failure.
 func TestInterceptTunnel_RequireReceiptsUpstreamErrorEmitsOutcome(t *testing.T) {
 	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
 	cfg.FlightRecorder.RequireReceipts = true
@@ -4105,6 +4112,7 @@ func TestInterceptTunnel_RequireReceiptsUpstreamErrorEmitsOutcome(t *testing.T) 
 	}
 }
 
+// TestInterceptTunnel_SSRFDialBlockEmitsSSRFOutcome checks that the dial block retains its SSRF reason.
 func TestInterceptTunnel_SSRFDialBlockEmitsSSRFOutcome(t *testing.T) {
 	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
 	cfg.FlightRecorder.RequireReceipts = true
@@ -4146,6 +4154,7 @@ func TestInterceptTunnel_SSRFDialBlockEmitsSSRFOutcome(t *testing.T) {
 	}
 }
 
+// TestInterceptTunnel_RequireReceiptsResponseBlockEmitsOutcome checks outcome recording for a denied response.
 func TestInterceptTunnel_RequireReceiptsResponseBlockEmitsOutcome(t *testing.T) {
 	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 	cfg.FlightRecorder.RequireReceipts = true

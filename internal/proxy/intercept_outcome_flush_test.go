@@ -31,6 +31,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+// TestInterceptOutcomeResponseFlushBeforeReceipt checks delivery while outcome storage is blocked.
 func TestInterceptOutcomeResponseFlushBeforeReceipt(t *testing.T) {
 	for _, surface := range []string{"buffered", "exempt", "sse"} {
 		for _, fail := range []bool{false, true} {
@@ -255,6 +256,7 @@ func TestInterceptOutcomeResponseFlushBeforeReceipt(t *testing.T) {
 	}
 }
 
+// TestInterceptBufferedOutcomeFraming checks exact lengths and bodyless response exclusions.
 func TestInterceptBufferedOutcomeFraming(t *testing.T) {
 	for _, tc := range []struct {
 		name                 string
@@ -317,18 +319,22 @@ func TestInterceptBufferedOutcomeFraming(t *testing.T) {
 	}
 }
 
+// TestInterceptOutcomeFlushDeliveryError checks receipts after a client disconnects during the final flush.
 func TestInterceptOutcomeFlushDeliveryError(t *testing.T) {
 	runOutcomeFlushFailure(t, "intercept", true, 0)
 }
 
+// TestInterceptOutcomeFlushStalledClient checks that a stalled client cannot prevent outcome recording.
 func TestInterceptOutcomeFlushStalledClient(t *testing.T) {
 	runOutcomeFlushFailure(t, "intercept", false, 0)
 }
 
+// TestInterceptOutcomeFlushPreservesServerWriteDeadline checks that the existing server deadline stays in force.
 func TestInterceptOutcomeFlushPreservesServerWriteDeadline(t *testing.T) {
 	runOutcomeFlushFailure(t, "intercept", false, 100*time.Millisecond)
 }
 
+// TestInterceptTunnelOutcomeFlushStalledClient checks bounded delivery on the inner TLS HTTP server.
 func TestInterceptTunnelOutcomeFlushStalledClient(t *testing.T) {
 	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 	cfg.FlightRecorder.RequireReceipts = true
@@ -398,6 +404,7 @@ func TestInterceptTunnelOutcomeFlushStalledClient(t *testing.T) {
 	}
 }
 
+// TestInterceptOutcomeSyntheticResponseBeforeReceipt checks diagnostic delivery before outcome storage.
 func TestInterceptOutcomeSyntheticResponseBeforeReceipt(t *testing.T) {
 	for _, condition := range []string{"upstream_error", "blocked"} {
 		t.Run(condition, func(t *testing.T) { testOutcomeSyntheticResponseBeforeReceipt(t, "intercept", condition) })

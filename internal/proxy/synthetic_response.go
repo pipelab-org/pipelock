@@ -37,8 +37,10 @@ type syntheticErrorWriter struct {
 	status int
 }
 
+// WriteHeader records the status without committing the buffered diagnostic.
 func (w *syntheticErrorWriter) WriteHeader(status int) { w.status = status }
 
+// Write frames the complete diagnostic body before forwarding it.
 func (w *syntheticErrorWriter) Write(body []byte) (int, error) {
 	return writeSyntheticResponse(w.ResponseWriter, w.status, body)
 }

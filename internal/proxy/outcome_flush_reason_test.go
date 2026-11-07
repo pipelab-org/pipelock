@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+// TestOutcomeFlushRetainsFailureDetails checks that flush errors preserve earlier stream failures.
 func TestOutcomeFlushRetainsFailureDetails(t *testing.T) {
 	for _, reason := range []string{httpstream.Cancelled, receiptReasonSSEStreamCancelled, "response_scan_error", receiptEmissionFailedLayer, "fetch_failed", "future_failure", receiptReasonExemptOverCapUnscanned} {
 		t.Run(reason, func(t *testing.T) {
@@ -31,6 +32,7 @@ func TestOutcomeFlushRetainsFailureDetails(t *testing.T) {
 	}
 }
 
+// TestOutcomeFlushRetainsUpstreamFailure checks upstream failure evidence when delivery also fails.
 func TestOutcomeFlushRetainsUpstreamFailure(t *testing.T) {
 	for _, surface := range []string{"fetch", "forward", "intercept"} {
 		t.Run(surface, func(t *testing.T) {

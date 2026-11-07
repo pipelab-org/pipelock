@@ -208,6 +208,7 @@ func TestFullResponsePolicyWebSocketUpgrade(t *testing.T) {
 	}
 }
 
+// TestForwardIncompleteResponseReceipts checks receipt reasons for incomplete upstream responses.
 func TestForwardIncompleteResponseReceipts(t *testing.T) {
 	for _, status := range []int{http.StatusNotModified, http.StatusPartialContent} {
 		t.Run(http.StatusText(status), func(t *testing.T) {

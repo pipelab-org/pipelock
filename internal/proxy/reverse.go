@@ -1843,6 +1843,7 @@ func (w *reverseInformationalGuardWriter) WriteHeader(code int) {
 // hijack, which the reverse proxy needs for streaming and upgrades.
 func (w *reverseInformationalGuardWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
+// Hijack delegates the upgrade and records when HTTP response flushing no longer applies.
 func (w *reverseInformationalGuardWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	conn, rw, err := http.NewResponseController(w.ResponseWriter).Hijack()
 	if err == nil {
@@ -2338,6 +2339,7 @@ func reverseResponseReceiptStateFrom(resp *http.Response) *reverseResponseReceip
 	return state
 }
 
+// modifyResponse scans and transforms an upstream response before the reverse proxy forwards it.
 func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// ReverseProxy already aborts on body-copy errors under net/http. Observe
 	// the final body handed to it, including raw media, oversize tails and SSE
@@ -2884,8 +2886,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 					}
 				} else {
 					_ = resp.Body.Close()
-					resp.Body = io.NopCloser(bytes.NewReader(body))
-					resp.ContentLength = int64(len(body))
+					setBufferedReverseResponseBody(resp, body, cfg)
 				}
 				// sc.ResponseScanningEnabled(), not the raw flag: generic MIME
 				// that sniffed as non-media is still text the core floor must
@@ -2927,8 +2928,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			}
 			// Media responses do not go through text injection
 			// scanning - rewrap the body and return.
-			resp.Body = io.NopCloser(bytes.NewReader(body))
-			resp.ContentLength = int64(len(body))
+			setBufferedReverseResponseBody(resp, body, cfg)
 			rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
 				strconv.Itoa(resp.StatusCode))
 			recordReverseOutcome(resp.StatusCode, int64(len(body)), outcomeReason)
@@ -3001,8 +3001,7 @@ responseScanning:
 				}
 			} else {
 				_ = resp.Body.Close()
-				resp.Body = io.NopCloser(bytes.NewReader(body))
-				resp.ContentLength = int64(len(body))
+				setBufferedReverseResponseBody(resp, body, cfg)
 			}
 		}
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
@@ -3418,8 +3417,7 @@ responseScanning:
 
 	// Empty body: nothing to scan.
 	if len(body) == 0 && !isSVGResponse {
-		resp.Body = io.NopCloser(bytes.NewReader(body))
-		resp.ContentLength = 0
+		setBufferedReverseResponseBody(resp, body, cfg)
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
 			strconv.Itoa(resp.StatusCode))
 		recordReverseOutcome(resp.StatusCode, 0, "complete")
@@ -3530,8 +3528,7 @@ responseScanning:
 		resp.Header.Del("Digest")
 	}
 	if !sc.ResponseScanningEnabled() {
-		resp.Body = io.NopCloser(bytes.NewReader(body))
-		resp.ContentLength = int64(len(body))
+		setBufferedReverseResponseBody(resp, body, cfg)
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
 		recordReverseOutcome(resp.StatusCode, int64(len(body)), shieldOutcomeReason)
 		return nil
@@ -3591,8 +3588,7 @@ responseScanning:
 	}
 
 	if result.Clean {
-		resp.Body = io.NopCloser(bytes.NewReader(body))
-		resp.ContentLength = int64(len(body))
+		setBufferedReverseResponseBody(resp, body, cfg)
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
 			strconv.Itoa(resp.StatusCode))
 		recordReverseOutcome(resp.StatusCode, int64(len(body)), shieldOutcomeReason)
@@ -3672,8 +3668,7 @@ responseScanning:
 			// validators that no longer match the stripped content
 			// (matches forward.go:860-863).
 			stripped := []byte(result.TransformedContent)
-			resp.Body = io.NopCloser(bytes.NewReader(stripped))
-			resp.ContentLength = int64(len(stripped))
+			setBufferedReverseResponseBody(resp, stripped, cfg)
 			resp.Header.Set("Content-Length", strconv.Itoa(len(stripped)))
 			resp.Header.Del("Etag")
 			resp.Header.Del("Content-Md5")
@@ -3710,12 +3705,25 @@ responseScanning:
 	}
 
 	// Warn mode: pass through unchanged.
-	resp.Body = io.NopCloser(bytes.NewReader(body))
-	resp.ContentLength = int64(len(body))
+	setBufferedReverseResponseBody(resp, body, cfg)
 	rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
 		strconv.Itoa(resp.StatusCode))
 	recordReverseOutcome(resp.StatusCode, int64(len(body)), shieldOutcomeReason)
 	return nil
+}
+
+// setBufferedReverseResponseBody installs a complete representation and its exact
+// framing so required outcome storage cannot delay an HTTP/1 client's EOF.
+func setBufferedReverseResponseBody(resp *http.Response, body []byte, cfg *config.Config) {
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	resp.ContentLength = int64(len(body))
+	if cfg.FlightRecorder.RequireReceipts && resp.Request.Method != http.MethodHead &&
+		resp.StatusCode >= http.StatusOK && resp.StatusCode != http.StatusNoContent &&
+		resp.StatusCode != http.StatusNotModified {
+		resp.Header.Del("Transfer-Encoding")
+		resp.TransferEncoding = nil
+		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	}
 }
 
 // errorHandler writes a JSON error when the upstream is unreachable.

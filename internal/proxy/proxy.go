@@ -1736,6 +1736,7 @@ const (
 	receiptEmissionFailedLayer = "receipt_emission_failed"
 )
 
+// receiptOutcomePattern formats the status, byte count, and close reason signed by an outcome receipt.
 func receiptOutcomePattern(status string, bytesTransferred int64, reason string) string {
 	if status == "" {
 		status = "unknown"
@@ -1762,7 +1763,11 @@ func flushResponseBeforeOutcome(w http.ResponseWriter, r *http.Request, cfg *con
 		// forward_proxy.idle_timeout_seconds bounds inactivity on established
 		// tunnels. Reuse it for a client that stops reading the final response,
 		// including the inner HTTP writer of an intercepted CONNECT tunnel.
-		timeout := time.Duration(cfg.ForwardProxy.IdleTimeoutSeconds) * time.Second
+		timeoutSeconds := cfg.ForwardProxy.IdleTimeoutSeconds
+		if timeoutSeconds <= 0 {
+			timeoutSeconds = config.Defaults().ForwardProxy.IdleTimeoutSeconds
+		}
+		timeout := time.Duration(timeoutSeconds) * time.Second
 		if err := controller.SetWriteDeadline(time.Now().Add(timeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
 			return err
 		}

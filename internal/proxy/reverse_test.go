@@ -1703,6 +1703,7 @@ func TestReverseProxy_GenericNonMediaUnscannedNotLabeledComplete(t *testing.T) {
 	}
 }
 
+// TestReverseProxy_GenericNonMediaCleanStillFlowsWhenScanningDisabled checks core scanning of generic media declarations.
 func TestReverseProxy_GenericNonMediaCleanStillFlowsWhenScanningDisabled(t *testing.T) {
 	const clean = "opaque application payload"
 	cfg := reverseTestConfig()

@@ -61,6 +61,7 @@ func reverseReceiptParitySetupWithPublicKey(t *testing.T, cfg *config.Config, up
 	return proxySrv, dir, closeRecorder, pubKey
 }
 
+// reverseReceiptParitySetupWithCaptureAndShield builds a reverse proxy with receipt, capture, and shield observers.
 func reverseReceiptParitySetupWithCaptureAndShield(t *testing.T, cfg *config.Config, upstreamHandler http.HandlerFunc, obs capture.CaptureObserver, se *shield.Engine, onPublicKey func(ed25519.PublicKey)) (proxySrv *httptest.Server, dir string, closeRecorder func()) {
 	t.Helper()
 
@@ -110,11 +111,13 @@ func reverseReceiptParitySetupWithCaptureAndShield(t *testing.T, cfg *config.Con
 	}
 }
 
+// waitForReverseOutcomeReceipt waits for reverse outcome storage before inspecting evidence.
 func waitForReverseOutcomeReceipt(t *testing.T, dir string) {
 	t.Helper()
 	waitForTransportOutcomeReceipt(t, dir, TransportReverse)
 }
 
+// waitForTransportOutcomeReceipt waits for the selected transport outcome to reach storage.
 func waitForTransportOutcomeReceipt(t *testing.T, dir, transport string) {
 	t.Helper()
 	testwait.For(t, waitForReceiptTimeout, func() bool {
@@ -571,6 +574,7 @@ func TestReverseProxy_RequireReceiptsBlocksMissingEmitterBeforeEgress(t *testing
 	}
 }
 
+// TestReverseProxy_RequireReceiptsSuccessEmitsSingleAllow checks the required admission and outcome records.
 func TestReverseProxy_RequireReceiptsSuccessEmitsSingleAllow(t *testing.T) {
 	var hits atomic.Int32
 	cfg := reverseTestConfig()
@@ -633,6 +637,7 @@ func TestReverseProxy_RequireReceiptsSuccessEmitsSingleAllow(t *testing.T) {
 	}
 }
 
+// TestReverseProxy_RequireReceiptsUpstreamErrorEmitsOutcome checks outcome recording after upstream failure.
 func TestReverseProxy_RequireReceiptsUpstreamErrorEmitsOutcome(t *testing.T) {
 	cfg := reverseTestConfig()
 	cfg.ResponseScanning.Enabled = false
@@ -720,6 +725,7 @@ func TestReverseProxy_RequireReceiptsUpstreamErrorEmitsOutcome(t *testing.T) {
 	}
 }
 
+// TestReverseProxy_RequireReceiptsMediaBlockEmitsOutcome checks the outcome of a media-policy denial.
 func TestReverseProxy_RequireReceiptsMediaBlockEmitsOutcome(t *testing.T) {
 	var hits atomic.Int32
 	cfg := reverseTestConfig()
@@ -1204,6 +1210,7 @@ func TestReverseProxy_RequireReceiptsV2FailureBlocksBeforeEgress(t *testing.T) {
 	assertMetricsContain(t, m, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="reverse"} 1`)
 }
 
+// TestReverseProxy_RequireReceiptsOutcomeV1FailureLogsReceiptChannelBroken checks evidence-channel failure logging.
 func TestReverseProxy_RequireReceiptsOutcomeV1FailureLogsReceiptChannelBroken(t *testing.T) {
 	var hits atomic.Int32
 	var rec *recorder.Recorder
@@ -1295,6 +1302,7 @@ func TestReverseProxy_RequireReceiptsOutcomeV1FailureLogsReceiptChannelBroken(t 
 	assertMetricsContain(t, m, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
 }
 
+// TestReverseProxy_RequireReceiptsOutcomeV2FailureEmitsGapMarker checks gap evidence after outcome storage failure.
 func TestReverseProxy_RequireReceiptsOutcomeV2FailureEmitsGapMarker(t *testing.T) {
 	var hits atomic.Int32
 	cfg := reverseTestConfig()

@@ -2547,11 +2547,12 @@ func newInterceptHandler(
 				return
 			}
 			written, copyErr := httpstream.Copy(w, resp.Body)
+			// Account before outcome emission, which may abort on a failed flush.
+			ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
 			recordResponseScanExemptOverCapUnscanned(ic.Metrics, ic.Logger, actx, r.URL.Hostname(), TransportConnect, written, maxResp)
 			if copyErr != nil {
 				reason := recordStreamError(r.Context(), ic.Logger, actx, copyErr)
 				emitOutcome(allowReceipt, config.ActionAllow, resp.StatusCode, written, reason)
-				ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
 				_ = httpstream.Abort(r.Context(), copyErr)
 				return
 			}
@@ -2561,11 +2562,6 @@ func newInterceptHandler(
 			// streamed a body past the scan ceiling unscanned, or that the
 			// stream broke before the body was delivered.
 			exemptCloseReason := streamCloseReason(copyErr, written, maxResp, "complete")
-			emitOutcome(allowReceipt, config.ActionAllow, resp.StatusCode, written, exemptCloseReason)
-			// Account streamed bytes against the per-domain data budget so a
-			// trusted download still decrements it (no scan-size cap: the host
-			// is trusted to carry large files).
-			ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
 			// Funnel through the same success bookkeeping as the scanned allow
 			// path: capture verdict (no scan ran, findings empty) and the allowed
 			// metric. Unassessed delivery does not earn adaptive recovery.
@@ -2587,6 +2583,7 @@ func newInterceptHandler(
 				})
 			}
 			ic.Metrics.RecordAllowed(time.Since(reqStart), agentAnonymous)
+			emitOutcome(allowReceipt, config.ActionAllow, resp.StatusCode, written, exemptCloseReason)
 			return
 		}
 
@@ -2695,17 +2692,16 @@ func newInterceptHandler(
 						return
 					}
 					written, copyErr := httpstream.Copy(w, io.MultiReader(bytes.NewReader(respBody), resp.Body))
+					// Account before outcome emission on both copy success and failure.
+					ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
 					if copyErr != nil {
 						reason := recordStreamError(r.Context(), ic.Logger, actx, copyErr)
 						emitOutcome(passthroughOutcome, config.ActionAllow, resp.StatusCode, written, reason)
-						ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
 						_ = httpstream.Abort(r.Context(), copyErr)
 						return
 					}
 					recordDeliveredIssuerCookies(ic, r, resp, copyErr == nil)
 					recordDeliveredIssuerQuery(ic, resp, nil, true)
-					emitOutcome(passthroughOutcome, config.ActionAllow, resp.StatusCode, written, streamCloseReason(copyErr, written, 0, "unscannable_passthrough"))
-					ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
 					if ic.Proxy != nil {
 						ic.Proxy.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
 							Subsurface:        "response_intercept",
@@ -2724,6 +2720,7 @@ func newInterceptHandler(
 						})
 					}
 					ic.Metrics.RecordAllowed(time.Since(reqStart), agentAnonymous)
+					emitOutcome(passthroughOutcome, config.ActionAllow, resp.StatusCode, written, streamCloseReason(copyErr, written, 0, "unscannable_passthrough"))
 					return
 				}
 				var scanFailure *sizeExemptResponseReadError
