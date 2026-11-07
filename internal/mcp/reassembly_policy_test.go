@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -16,12 +17,14 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
-func policyPartialBody() string {
-	return strings.Repeat("30", 1<<22) + strings.Repeat("!0", 80)
-}
+// The unlabeled encoded record exhausts the existing keyword-source mapping
+// allowance. The scanner package covers the full decoded-byte allowance; these
+// tests exercise delivery of the same partial-inspection evidence on each surface.
+var policyPartialBody = sync.OnceValue(func() string {
+	return strings.Repeat("7!8!", 300000) + strings.Repeat("3!3!", 16)
+})
 
-// Each inbound surface is its own top-level test so the CI shard planner can
-// place the 8 MiB allowance witnesses on different shards.
+// Each inbound surface retains its own hook, delivery and evidence assertions.
 func TestReassemblyPolicyInboundMCPResponse(t *testing.T) {
 	runReassemblyPolicyInbound(t, "mcp-response")
 }
@@ -41,7 +44,7 @@ func TestReassemblyPolicyInboundA2ASSE(t *testing.T) {
 func runReassemblyPolicyInbound(t *testing.T, surface string) {
 	t.Helper()
 	if testing.Short() {
-		t.Skip("large allowance witness")
+		t.Skip("encoded allowance witness")
 	}
 	cfg := config.Defaults()
 	cfg.Internal = nil
@@ -55,6 +58,7 @@ func runReassemblyPolicyInbound(t *testing.T, surface string) {
 	if len(cfg.DLP.Patterns) != 1 {
 		t.Fatal("AWS control absent")
 	}
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{Name: "Labeled record", Regex: `[0-9]{16}`, Severity: config.SeverityHigh, Keywords: []string{"lookup"}})
 	cfg.ResponseScanning.Action = config.ActionBlock
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()

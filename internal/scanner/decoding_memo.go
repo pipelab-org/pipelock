@@ -33,6 +33,8 @@ type decodingMemo struct {
 	reassemblyPatternSelected  bool
 	reassemblyPatterns         textDLPPatternSet
 	assembledBytes             int
+	assembledKeywordReplays    map[assembledReplayKey][]assembledKeywordCandidate
+	assembledAllowance         *assembledAllowance
 	reassemblyBudget           assembledBudget
 	assembledProjectionTable   []assembledProjectionEntry
 	assembledProjectionStorage *assembledProjectionStorage
@@ -45,8 +47,10 @@ type decodingMemo struct {
 	reassemblyPending          []string
 	reassemblyViewKinds        map[string]assembledViewKind
 	reassemblyTextRoots        map[string]bool
+	reassemblyParents          map[string]string
 	reassemblyIncomplete       bool
 	assembledCharged           map[string]*assembledCharges
+	assembledChargeRegistry    *assembledChargeRegistry
 	reassemblyInspected        int
 	reassemblyProduced         map[assembledIdentity]struct{}
 	reassemblyPlan             *reassemblyPlan

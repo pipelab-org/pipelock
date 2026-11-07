@@ -118,17 +118,10 @@ func (m *decodingMemo) reassemblyObserveView(text string, kind assembledViewKind
 	if m.reassemblyPlan != nil && len(text) < m.reassemblyPlan.assembled.nestedMinimum {
 		return
 	}
-	if m.reassemblyViewKinds == nil {
-		m.reassemblyViewKinds = make(map[string]assembledViewKind)
+	if !m.reassemblySetKind(text, kind) {
+		return
 	}
-	old, known := m.reassemblyViewKinds[text]
-	if !known || kind < old {
-		m.reassemblyViewKinds[text] = kind
-	}
-	id, fresh := m.reassemblyRemember(text)
-	if known && !old.textual() && kind.textual() && id < m.reassemblyInspected {
-		m.reassemblyInspect(id)
-	}
+	_, fresh := m.reassemblyRemember(text)
 	if !fresh || m.reassemblyDeferred {
 		return
 	}
@@ -149,11 +142,8 @@ func (m *decodingMemo) reassemblyInspect(view int) {
 	}
 	text := m.reassemblyPending[view]
 	budget := &m.reassemblyBudget
-	*budget = assembledBudget{memo: m, used: m.assembledBytes, produced: m.reassemblyProduced, patterns: m.reassemblyPatterns, decoderOnly: !m.reassemblyViewKinds[text].textual(), charged: m.assembledCharged}
+	*budget = assembledBudget{memo: m, used: m.assembledBytes, produced: m.reassemblyProduced, patterns: m.reassemblyPatterns, decoderOnly: !m.reassemblyViewKinds[text].textual(), charged: m.assembledCharged, registry: m.assembledChargeRegistry}
 	skip := m.assembledSkip(view)
-	if skip == 31 {
-		return
-	}
 	r := assembledLayer(m.reassemblyPlan, text, budget, skip)
 	if m.reassemblyPlan.assembled.nestedHex && skip&1 == 0 && !budget.incomplete && assembledOuterAdmits(m.reassemblyPlan, text, 0) {
 		if m.reassemblyNestedDeferred {
@@ -165,6 +155,7 @@ func (m *decodingMemo) reassemblyInspect(view int) {
 	}
 	m.assembledBytes = budget.used
 	m.assembledCharged = budget.charged
+	m.assembledChargeRegistry = budget.registry
 	if r.incomplete {
 		m.reassemblyIncomplete = true
 		if !m.inbound {
@@ -179,10 +170,18 @@ func (m *decodingMemo) reassemblyInspect(view int) {
 // counts. Exact value identities enter the terminal producer before scanning,
 // so one matched value cannot create the same finding twice.
 func finishAssembled(result TextDLPResult, memos ...*decodingMemo) TextDLPResult {
+	var fallback assembledAllowance
 	for _, m := range memos {
 		if m == nil || m.reassemblyPlan == nil {
 			continue
 		}
+		if m.assembledAllowance == nil {
+			m.assembledAllowance = &fallback
+		}
+		allowance := m.assembledAllowance
+		m.assembledBytes = max(m.assembledBytes, allowance.used)
+		m.assembledCharged = allowance.charged
+		m.assembledChargeRegistry = allowance.registry
 		m.reassemblyProduced = make(map[assembledIdentity]struct{})
 		for id, p := range m.reassemblyPlan.patterns {
 			for _, matches := range [][]TextDLPMatch{result.Matches, result.InformationalMatches} {
@@ -204,10 +203,11 @@ func finishAssembled(result TextDLPResult, memos ...*decodingMemo) TextDLPResult
 				break
 			}
 			budget := &m.reassemblyBudget
-			*budget = assembledBudget{memo: m, used: m.assembledBytes, produced: m.reassemblyProduced, patterns: m.reassemblyPatterns, decoderOnly: !m.reassemblyViewKinds[text].textual(), charged: m.assembledCharged}
+			*budget = assembledBudget{memo: m, used: m.assembledBytes, produced: m.reassemblyProduced, patterns: m.reassemblyPatterns, decoderOnly: !m.reassemblyViewKinds[text].textual(), charged: m.assembledCharged, registry: m.assembledChargeRegistry}
 			more := assembledNestedHexAdmitted(m.reassemblyPlan, text, budget)
 			m.assembledBytes = budget.used
 			m.assembledCharged = budget.charged
+			m.assembledChargeRegistry = budget.registry
 			m.reassemblyFindings = append(m.reassemblyFindings, more.findings...)
 			if more.incomplete {
 				m.reassemblyIncomplete = true
@@ -225,6 +225,9 @@ func finishAssembled(result TextDLPResult, memos ...*decodingMemo) TextDLPResult
 			}
 		}
 		m.reassemblyFindings = nil
+		allowance.used = m.assembledBytes
+		allowance.charged = m.assembledCharged
+		allowance.registry = m.assembledChargeRegistry
 		if m.inbound && m.reassemblyIncomplete && !slices.ContainsFunc(result.Matches, func(match TextDLPMatch) bool { return match.PatternName == PartialEncodedContentPattern }) {
 			result.Matches = append(result.Matches, partialEncodedContentMatch())
 		}

@@ -8,9 +8,31 @@ import "sort"
 // Coordinates are decoded-byte offsets in one RFC 4648 codec and phase of
 // an exact source view. Sorted disjoint intervals retain holes, so confirming
 // a later window cannot pay for an unvisited earlier window.
+// One text scan owns one terminal allowance across all of its typed views.
+type assembledAllowance struct {
+	used     int
+	charged  map[string]*assembledCharges
+	registry *assembledChargeRegistry
+}
+
 type (
 	assembledInterval struct{ start, end int }
-	assembledCharges  struct{ lanes [5][8][]assembledInterval }
+	assembledCharges  struct {
+		lanes     [5][8][]assembledInterval
+		canonical [5]*assembledCharges
+	}
+	assembledChargeKey struct {
+		projection assembledProjection
+		codec      int
+	}
+	assembledChargeEntry struct {
+		source  string
+		charges *assembledCharges
+	}
+	assembledChargeRegistry struct {
+		entries map[assembledChargeKey][]assembledChargeEntry
+		size    int
+	}
 )
 
 func (b *assembledBudget) chargesFor(text string) *assembledCharges {
@@ -20,7 +42,26 @@ func (b *assembledBudget) chargesFor(text string) *assembledCharges {
 	if c := b.charged[text]; c != nil {
 		return c
 	}
+	if len(b.charged) >= maxDecodeCandidates {
+		return nil
+	}
 	c := new(assembledCharges)
+	if b.registry == nil {
+		b.registry = &assembledChargeRegistry{entries: make(map[assembledChargeKey][]assembledChargeEntry)}
+	}
+	for codec, projection := range assembledFingerprint(text) {
+		key := assembledChargeKey{projection, codec}
+		for _, entry := range b.registry.entries[key] {
+			if assembledSameProjection(text, entry.source, codec) {
+				c.canonical[codec] = entry.charges
+				break
+			}
+		}
+		if c.canonical[codec] == nil && b.registry.size < maxDecodeCandidates {
+			b.registry.entries[key] = append(b.registry.entries[key], assembledChargeEntry{text, c})
+			b.registry.size++
+		}
+	}
 	b.charged[text] = c
 	return c
 }
@@ -34,6 +75,9 @@ func (b *assembledBudget) charge(c *assembledCharges, codec, phase, offset int) 
 		}
 		b.used++
 		return true
+	}
+	if canonical := c.canonical[codec]; canonical != nil {
+		c = canonical
 	}
 	lane := &c.lanes[codec][phase]
 	// Complete lanes advance sequentially. Extending the last interval needs

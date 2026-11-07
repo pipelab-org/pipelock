@@ -746,7 +746,8 @@ func uninspectableEncodedContentMatch() TextDLPMatch {
 func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, opts textDLPOptions) TextDLPResult {
 	shared := sharedDecodesFrom(ctx)
 	terminalInbound := !opts.scanSecretLeak || inboundDirection(ctx)
-	originalDecodes := decodingMemo{shared: shared, reassemblyDeferred: true, reassemblyInbound: terminalInbound}
+	allowance := &assembledAllowance{}
+	originalDecodes := decodingMemo{shared: shared, reassemblyDeferred: true, reassemblyInbound: terminalInbound, assembledAllowance: allowance}
 	defer originalDecodes.releaseProjection()
 	if !s.hasGenericCardPatterns() {
 		emit := opts.emitWarns
@@ -768,7 +769,7 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 	opts.emitWarns = false
 	opts.patterns = textDLPNonCardPatterns
 	original := s.scanTextForDLPWithDecodes(ctx, text, opts, &originalDecodes)
-	typedDecodes := decodingMemo{shared: shared, reassemblyDeferred: true, reassemblyInbound: terminalInbound}
+	typedDecodes := decodingMemo{shared: shared, reassemblyDeferred: true, reassemblyInbound: terminalInbound, assembledAllowance: allowance}
 	defer typedDecodes.releaseProjection()
 	terminalMemos := []*decodingMemo{&originalDecodes}
 	cardDecodes := &originalDecodes
@@ -831,7 +832,7 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 			continue
 		}
 		seenRuns[run] = struct{}{}
-		runDecodes := decodingMemo{shared: shared, reassemblyDeferred: true, reassemblyInbound: terminalInbound}
+		runDecodes := decodingMemo{shared: shared, reassemblyDeferred: true, reassemblyInbound: terminalInbound, assembledAllowance: allowance}
 		runResult := s.scanTextForDLPWithDecodes(ctx, run.Digits, opts, &runDecodes)
 		runResult = finishAssembled(runResult, &runDecodes)
 		runDecodes.releaseProjection()
@@ -1776,7 +1777,7 @@ func noteTextSegmentDecodeBudget(views []string, decodes *decodingMemo) {
 	for _, text := range views {
 		kind := decodes.reassemblyDerivedKind(text)
 		for _, seg := range textDLPSegments(text) {
-			decodes.reassemblySetKind(seg, kind)
+			decodes.reassemblySegment(text, seg, kind)
 			if decodes.inspectionIncomplete() {
 				return
 			}
@@ -1801,7 +1802,7 @@ func (s *Scanner) decodeTextSegmentsWithDecodes(text string, decodes *decodingMe
 
 	var matches []TextDLPMatch
 	for _, seg := range segments {
-		decodes.reassemblySetKind(seg, kind)
+		decodes.reassemblySegment(text, seg, kind)
 		if len(seg) < 10 {
 			continue // too short to be a meaningful encoded secret
 		}

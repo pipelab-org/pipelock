@@ -739,7 +739,7 @@ func (s *Scanner) decodeAndMatchCoreWithDecodes(text string, decodes *decodingMe
 func (s *Scanner) decodeCoreDLPTextSegmentsWithDecodes(text string, decodes *decodingMemo) []TextDLPMatch {
 	kind := decodes.reassemblyDerivedKind(text)
 	for _, seg := range textDLPSegments(text) {
-		decodes.reassemblySetKind(seg, kind)
+		decodes.reassemblySegment(text, seg, kind)
 		if len(seg) < 10 {
 			continue
 		}

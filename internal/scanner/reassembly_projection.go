@@ -65,8 +65,9 @@ func assembledSameProjection(a, b string, codec int) bool {
 }
 
 // Equal projections have equal symbol values, phase streams, literal cues,
-// decoded bytes and regex/validator decisions. Raw coordinates affect provenance
-// only. Hex and base32 fold through the RFC value tables; base64 does not fold.
+// decoded bytes and regex/validator decisions. Keyword decisions still depend
+// on each source context and replay only the retained validated candidates.
+// Hex and base32 fold through the RFC value tables; base64 does not fold.
 // A hash collision costs comparison time and never suppresses scanning.
 // Linear probing follows the open-addressing construction in CLRS, section
 // 11.4. At most maxDecodeCandidates codec entries occupy a half-full table.
@@ -148,6 +149,7 @@ func (m *decodingMemo) assembledSkip(view int) uint8 {
 			return assembledSameProjection(text, m.reassemblyPending[entry.view], codec)
 		}
 		if first.ready && first.key == key && matches(*first) {
+			m.replayKeywords(view, first.view, codec)
 			skip |= 1 << uint(codec)
 			continue
 		}
@@ -155,6 +157,7 @@ func (m *decodingMemo) assembledSkip(view int) uint8 {
 			at := assembledProjectionSlot(key, codec, len(m.assembledProjectionTable))
 			for entry := m.assembledProjectionTable[at]; entry.ready; entry = m.assembledProjectionTable[at] {
 				if int(entry.codec) == codec && entry.key == key && matches(entry) {
+					m.replayKeywords(view, entry.view, codec)
 					skip |= 1 << uint(codec)
 					break
 				}

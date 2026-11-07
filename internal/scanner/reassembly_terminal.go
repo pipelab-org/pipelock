@@ -261,6 +261,7 @@ type (
 		patterns    textDLPPatternSet
 		decoderOnly bool
 		charged     map[string]*assembledCharges
+		registry    *assembledChargeRegistry
 		used        int
 		incomplete  bool
 		produced    map[assembledIdentity]struct{}
@@ -329,6 +330,7 @@ type assembledLane struct {
 	view          string
 	keyword       *keywordCandidateContext
 	keywordMapped bool
+	retained      bool
 }
 
 func (s *assembledScan) searchLane(codec, phase, id int) {
@@ -379,6 +381,7 @@ func (s *assembledScan) searchLane(codec, phase, id int) {
 		copyPattern.keywords = nil // Context is checked per candidate below.
 		matchPattern = &copyPattern
 	}
+	accepted := false
 	matchPattern.firstAcceptedSpan(lane.view, func(begin, finish int) bool {
 		if pattern.withoutLeftBoundary != nil {
 			loc := pattern.withoutLeftBoundary.FindStringIndex(lane.view[begin:finish])
@@ -387,6 +390,12 @@ func (s *assembledScan) searchLane(codec, phase, id int) {
 			}
 			finish = begin + loc[1]
 			begin += loc[0]
+		}
+		if pattern.keywords != nil {
+			s.rememberKeyword(lane, codec, phase, id, begin, finish)
+			if accepted || s.budget.incomplete {
+				return false
+			}
 		}
 		if pattern.keywords != nil && s.budget.produced != nil {
 			key := assembledIdentity{pattern: id, value: sha256.Sum256([]byte(lane.view[begin:finish]))}
@@ -399,7 +408,8 @@ func (s *assembledScan) searchLane(codec, phase, id int) {
 		}
 		s.encoding = reassemblyCodecs[codec].name
 		s.viewLabel = fmt.Sprintf("reassembly:%s:phase_%d", s.encoding, phase)
-		return s.produce(id, lane.view, begin, finish)
+		accepted = s.produce(id, lane.view, begin, finish)
+		return accepted && pattern.keywords == nil
 	})
 }
 

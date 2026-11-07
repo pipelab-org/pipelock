@@ -197,6 +197,7 @@ type reassemblyRef struct {
 }
 
 type reassemblyPlan struct {
+	keywords  bool
 	patterns  []*compiledPattern
 	required  [][]string
 	assembled *assembledPlan
@@ -205,6 +206,7 @@ type reassemblyPlan struct {
 func newReassemblyPlan(patterns []*compiledPattern) (*reassemblyPlan, error) {
 	p := &reassemblyPlan{patterns: patterns}
 	for _, pattern := range patterns {
+		p.keywords = p.keywords || pattern.keywords != nil
 		tree, err := syntax.Parse(strings.TrimPrefix(pattern.re.String(), "(?i)"), syntax.Perl)
 		if err != nil {
 			return nil, fmt.Errorf("parse required literals: %w", err)
