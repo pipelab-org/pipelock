@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -74,7 +75,7 @@ class StableMtimesTest(unittest.TestCase):
                          "testdata/listed/entry.txt", "other", "other/unchanged.txt")
         }
 
-    def test_object_identity_controls_files_and_ancestor_directories(self) -> None:
+    def test_contents_stamp_files_and_entry_lists_stamp_directories(self) -> None:
         first = self.clone("first")
         self.stamp(first)
         before = self.mtimes(first)
@@ -86,11 +87,35 @@ class StableMtimesTest(unittest.TestCase):
         changed = self.clone("changed")
         self.stamp(changed)
         after = self.mtimes(changed)
+        # A content change moves only the file: like a filesystem, a
+        # directory's timestamp follows its entries, not what is below them.
         self.assertEqual(
             {path for path in before if before[path] != after[path]},
-            {".", "testdata", "testdata/value.txt"},
+            {"testdata/value.txt"},
         )
         self.assertTrue(all(value < time.time_ns() - 2_000_000_000 for value in after.values()))
+        self.write("testdata/listed/added.txt", "added")
+        self.commit()
+        added = self.clone("added")
+        self.stamp(added)
+        listed = self.mtimes(added)
+        self.assertEqual({path for path in after if after[path] != listed[path]}, {"testdata/listed"})
+        # Same entry count, different name or mode: the stamp follows both,
+        # not just how many entries there are.
+        listed_stamp = (added / "testdata/listed").stat().st_mtime_ns
+        (self.repo / "testdata/listed/added.txt").rename(self.repo / "testdata/listed/renamed.txt")
+        self.commit()
+        renamed = self.clone("renamed")
+        self.stamp(renamed)
+        self.assertNotEqual((renamed / "testdata/listed").stat().st_mtime_ns, listed_stamp)
+        (self.repo / "testdata/listed/renamed.txt").chmod(0o755)
+        self.commit()
+        executable = self.clone("executable")
+        self.stamp(executable)
+        self.assertNotEqual(
+            (executable / "testdata/listed").stat().st_mtime_ns,
+            (renamed / "testdata/listed").stat().st_mtime_ns,
+        )
 
     def content_mtime(self, text: str) -> int:
         digest = hashlib.sha256(text.encode()).hexdigest().encode()
@@ -198,6 +223,18 @@ class StableMtimesTest(unittest.TestCase):
         self.assertNotIn("if", steps[index - 1])
         self.assertEqual(sum("ci_stable_mtimes.py" in str(job) for job in jobs.values()), 1)
 
+    def test_workflow_writes_coverage_profiles_outside_the_checkout(self) -> None:
+        # go test creates -coverprofile when it starts; a new entry in the
+        # checkout root would change the root's mtime under running tests.
+        jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8"))["jobs"]
+        step = next(s for s in jobs["test-unit-go126"]["steps"] if s.get("name") == "Run tests (no race)")
+        profiles = re.findall(r"-coverprofile=(\S+)", step["run"])
+        self.assertEqual(len(profiles), 2, profiles)
+        for profile in profiles:
+            variable = re.fullmatch(r'"\$(\w+)"', profile)
+            self.assertIsNotNone(variable, profile)
+            self.assertRegex(step["run"], rf'\n\s*{variable.group(1)}="\$RUNNER_TEMP/[^"/]+"\n')
+
     @unittest.skipUnless(shutil.which("go"), "go is not on PATH; real test-cache round trip requires Go")
     def test_real_go_cache_round_trip(self) -> None:
         self.write("go.mod", "module cache.example/fixture\n\ngo 1.20\n")
@@ -205,6 +242,14 @@ class StableMtimesTest(unittest.TestCase):
         self.write("fixture_test.go", '''package fixture
 import ("os"; "testing")
 func TestValue(t *testing.T) {
+    data, err := os.ReadFile("testdata/value.txt")
+    if err != nil || string(data) != "good" { t.Fatalf("value=%q err=%v", data, err) }
+}
+func TestAncestors(t *testing.T) {
+    // Secure-open helpers stat every ancestor of the path they read.
+    for _, dir := range []string{".", "testdata"} {
+        if _, err := os.Stat(dir); err != nil { t.Fatal(err) }
+    }
     data, err := os.ReadFile("testdata/value.txt")
     if err != nil || string(data) != "good" { t.Fatalf("value=%q err=%v", data, err) }
 }
@@ -230,18 +275,29 @@ func TestDirectory(t *testing.T) {
         # checkout at that path, rather than asserting portability Go doesn't offer.
         first = self.clone("checkout")
         self.stamp(first)
-        for selector in ("TestValue", "TestDirectory"):
+        for selector in ("TestValue", "TestAncestors", "TestDirectory"):
             result = run(first, selector)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertNotIn("(cached)", result.stdout)
         first.rename(self.base / "saved-first")
         second = self.clone("checkout")
         self.stamp(second)
-        for selector in ("TestValue", "TestDirectory"):
+        for selector in ("TestValue", "TestAncestors", "TestDirectory"):
             result = run(second, selector)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("(cached)", result.stdout, "fresh checkout must reuse the cached result")
         second.rename(self.base / "saved-second")
+        # A commit elsewhere in the tree changes no input of these tests, so a
+        # pull request touching other files must still reuse main's results.
+        self.write("other/unchanged.txt", "changed elsewhere")
+        self.commit()
+        elsewhere = self.clone("checkout")
+        self.stamp(elsewhere)
+        for selector in ("TestValue", "TestAncestors", "TestDirectory"):
+            result = run(elsewhere, selector)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("(cached)", result.stdout, "an unrelated commit must not invalidate the result")
+        elsewhere.rename(self.base / "saved-elsewhere")
         self.write("testdata/value.txt", "evil")  # Same size, different blob.
         self.commit()
         changed = self.clone("checkout")
