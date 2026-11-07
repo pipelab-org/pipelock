@@ -10,9 +10,17 @@ on:
     types: [checks_requested]
     branches: [main]
 
+# A new run cancels an in-progress run on the same ref, main included. Each
+# main push carries the full race suite (about an hour), so main runs queued
+# behind one another; GitHub already cancelled superseded runs that were still
+# pending, and the newest main commit runs the complete suite over all earlier
+# changes. A release candidate whose main run was superseded needs that run
+# rerun before its CI proof. Rerunning an older commit can cancel a newer run
+# on the same ref, so exact-candidate proof needs a quiet main branch.
+# ci-timing-trend.yaml skips cancelled runs.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -494,6 +502,9 @@ jobs:
 
       - name: Download dependencies
         run: bash scripts/ci-retry.sh go mod download
+
+      - name: Stabilize tracked input timestamps
+        run: python3 scripts/ci_stable_mtimes.py
 
       - name: Run tests (no race)
         env:
