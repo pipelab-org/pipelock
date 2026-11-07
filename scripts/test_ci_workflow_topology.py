@@ -32,7 +32,7 @@ SHARDS = {
     "rest-0", "rest-1", "rest-2", "rest-3", "rest-4", "rest-5", "rest-6", "rest-7",
 }
 MINORS = ("126", "127")
-POLICY_OUTPUT = "${{ needs.changed-files.outputs.ci_policy }}"
+POLICY_OUTPUT = "${{ needs.changed-files.outputs.go_toolchain }}"
 DOCS_OUTPUT = "${{ needs.changed-files.outputs.docs_only }}"
 # Set only on a merge group whose candidate tree a green pull request run of
 # this workflow already tested (scripts/ci_queue_reuse.py decides).
@@ -50,14 +50,14 @@ SKIP_CARVEOUT_PRODUCERS = {"test-oss-go127", "test-enterprise-go127"}
 # The COMPLETE approved predicate, not a fragment of it. A substring test here
 # is the weak form and was reproduced as a bypass: appending
 # `&& github.event.action != 'opened'` keeps the fragment, still skips an opened
-# pull request whose CI policy DID change, and the aggregate gate accepts any
+# pull request whose Go toolchain DID change, and the aggregate gate accepts any
 # skipped producer on a pull request. Compare the whole normalized string so a
 # broadened predicate cannot keep the approved words while changing when the
 # producer actually skips.
 SKIP_CARVEOUT_CONDITION = (
     "${{ !cancelled() && needs.security-scan.result == 'success' "
     "&& (github.event_name == 'pull_request' || github.event_name == 'merge_group') "
-    "&& needs.changed-files.outputs.ci_policy == 'true' "
+    "&& needs.changed-files.outputs.go_toolchain == 'true' "
     "&& needs.changed-files.outputs.queue_tree_tested != 'true' }}"
 )
 # Go 1.26 race lane: main pushes only, never merge-group validation.
@@ -193,7 +193,7 @@ def gate_script_is_safe(run: str) -> bool:
 
 
 def execute_gate(
-    run: str, results: dict[str, str], event_name: str, ci_policy: str = "false", docs_only: str = "false",
+    run: str, results: dict[str, str], event_name: str, go_toolchain: str = "false", docs_only: str = "false",
     queue_tree: str = "false",
 ) -> int:
     """Run a safe aggregate gate as GitHub's bash shell would run it."""
@@ -204,7 +204,7 @@ def execute_gate(
             [
                 "/usr/bin/bash", "-eo", "pipefail", "-c",
                 substitute_needs_results(
-                    run.replace(POLICY_OUTPUT, ci_policy).replace(DOCS_OUTPUT, docs_only).replace(TREE_OUTPUT, queue_tree),
+                    run.replace(POLICY_OUTPUT, go_toolchain).replace(DOCS_OUTPUT, docs_only).replace(TREE_OUTPUT, queue_tree),
                     results,
                 ),
             ],
@@ -227,7 +227,7 @@ def gate_execution_errors(aggregate: str, run: str, dependencies: set[str]) -> l
     """Return failures from executing every aggregate result state.
 
     Go 1.27 may accept a skipped shard producer, which runs only on a pull
-    request that changes CI policy.  Every other omitted, unknown, cancelled,
+    request that changes the Go toolchain.  Every other omitted, unknown, cancelled,
     or failed producer result must red the aggregate required check.
     """
     errors = []
@@ -254,14 +254,14 @@ def gate_execution_errors(aggregate: str, run: str, dependencies: set[str]) -> l
     if aggregate == SKIP_CARVEOUT_AGGREGATE:
         skipped = successful | dict.fromkeys(SKIP_CARVEOUT_PRODUCERS, "skipped")
         for policy in ("true", "", "unknown", "TRUE"):
-            cases.append((f"skipped race producers, ci_policy={policy!r}",
+            cases.append((f"skipped race producers, go_toolchain={policy!r}",
                           skipped, "pull_request", policy, 1))
         for producer in sorted(SKIP_CARVEOUT_PRODUCERS):
-            cases.append((f"{producer}=skipped with ci_policy=true",
+            cases.append((f"{producer}=skipped with go_toolchain=true",
                           successful | {producer: "skipped"}, "pull_request", "true", 1))
-        cases.append(("CI-policy change proved", successful, "pull_request", "true", 0))
+        cases.append(("Go toolchain change proved", successful, "pull_request", "true", 0))
         for policy in ("", "unknown", "TRUE"):
-            cases.append((f"invalid ci_policy={policy!r}", successful, "pull_request", policy, 1))
+            cases.append((f"invalid go_toolchain={policy!r}", successful, "pull_request", policy, 1))
         for result in ("failure", "cancelled", "", "unknown", "skipped"):
             cases.append((f"skipped race producers, changed-files={result!r}",
                           skipped | {"changed-files": result}, "pull_request", "false", 1))
@@ -284,7 +284,7 @@ def gate_execution_errors(aggregate: str, run: str, dependencies: set[str]) -> l
         for producer in sorted(dependencies - DOCS_CARVEOUT_PRODUCERS - {"changed-files"}):
             docs_cases.append((f"{producer}=skipped on a documentation-only change",
                                skipped | {producer: "skipped"}, "pull_request", "true", 1))
-    # Ordinary cases run with docs_only false; docs cases with CI policy false.
+    # Ordinary cases run with docs_only false; docs cases with the Go toolchain unchanged.
     all_cases = [(d, v, e, p, x, "false") for d, v, e, p, x in cases]
     all_cases += [(d, v, e, "false", x, docs) for d, v, e, docs, x in docs_cases]
     all_cases += [
@@ -292,7 +292,7 @@ def gate_execution_errors(aggregate: str, run: str, dependencies: set[str]) -> l
         for d, v, e, p, x, docs in all_cases if e == "pull_request"
     ]
     # Queue-tree reuse: a merge group may skip the same producers the docs or
-    # CI-policy carve-out covers, but only on an exact "true" from a successful
+    # Go toolchain carve-out covers, but only on an exact "true" from a successful
     # classifier, and never on a pull request or push.
     reuse_producers = (
         SKIP_CARVEOUT_PRODUCERS if aggregate == SKIP_CARVEOUT_AGGREGATE
@@ -347,7 +347,7 @@ def skip_carveout_errors(jobs: dict) -> list[str]:
     The aggregate independently checks detector success and an explicit false
     output on pull requests before accepting a skip. Pinning this predicate
     prevents an additional producer-side condition from skipping a required
-    CI-policy run.
+    Go toolchain run.
     """
     errors = []
     approved = " ".join(SKIP_CARVEOUT_CONDITION.split())
@@ -356,7 +356,7 @@ def skip_carveout_errors(jobs: dict) -> list[str]:
         normalized = " ".join(condition.split()) if isinstance(condition, str) else None
         if normalized != approved:
             errors.append(
-                f"{producer} changed its approved event / CI-policy path predicate, "
+                f"{producer} changed its approved event / Go toolchain predicate, "
                 f"so the {SKIP_CARVEOUT_AGGREGATE} gate's skipped "
                 f"carve-out is unjustified"
             )
@@ -374,7 +374,7 @@ def race_lane_errors(jobs: dict) -> list[str]:
     for producer in sorted(RACE_PRODUCERS):
         if jobs.get(producer, {}).get("if") != RACE_LANE_CONDITION:
             errors.append(f"{producer} must run on main pushes only")
-    # Every race matrix, including the Go 1.27 one CI-policy pull requests run,
+    # Every race matrix, including the Go 1.27 one Go toolchain pull requests run,
     # shares the account's runners with pull requests that are waiting.
     for producer in sorted(RACE_PRODUCERS | SKIP_CARVEOUT_PRODUCERS):
         job = jobs.get(producer, {})
@@ -731,7 +731,7 @@ class CIWorkflowTopologyTest(unittest.TestCase):
         errors = skip_carveout_errors(broken)
         self.assertEqual(len(errors), 1)
         self.assertIn("test-oss-go127", errors[0])
-        self.assertIn("CI-policy path", errors[0])
+        self.assertIn("Go toolchain predicate", errors[0])
 
     def test_pull_request_only_swallow_fails_the_contract(self):
         # A gate that reds every failure on a push and returns zero for the SAME
@@ -784,7 +784,7 @@ test "${{ needs.test-replay-go127.result }}" = "success"
         broadened = original.replace("}}", "&& github.event.action != 'opened' }}")
         self.assertNotEqual(original, broadened, "mutation did not change the fixture")
         self.assertIn(
-            "needs.changed-files.outputs.ci_policy == 'true'",
+            "needs.changed-files.outputs.go_toolchain == 'true'",
             broadened,
             "the mutation must KEEP the approved words, or it does not test the substring weakness",
         )

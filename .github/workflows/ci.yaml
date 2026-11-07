@@ -118,14 +118,17 @@ jobs:
             < "${diff_file}"
 
   # Merge groups use the same test selection as pull requests on the combined
-  # commit. The classifier compares the queue base/head, including CI policy.
+  # commit. The classifier compares the queue base/head, including Go toolchain changes.
   # The full Go 1.26 race lane remains main-push-only; cache writes stay main-push-only.
   #
   # The Go 1.27 race lane is skipped by default (see the producer jobs
-  # below), but a PR that changes CI policy, Go pins, or the guard that checks
-  # them must still prove both versions before merge -- the whole reason the
-  # 1.27 lane is skipped elsewhere is that it never catches anything OTHER
-  # than a real toolchain change, and this is exactly that case. Uses a
+  # below), but a change to the Go toolchain -- module files, Go pins, setup-go
+  # steps, GOTOOLCHAIN, or the guard that checks them -- must still prove both
+  # versions before merge. The whole reason the 1.27 lane is skipped elsewhere
+  # is that it never catches anything OTHER than a real toolchain change, so
+  # scripts/ci_go_toolchain.py decides exactly that and nothing wider: shard
+  # plans, weights, retry wrappers and coverage settings are checked by the
+  # script unit tests in lint-policy and by the race lane on main. Uses a
   # job-level output (not a workflow-level `paths:` trigger filter) because a
   # `paths:`-filtered workflow run is entirely skipped rather than reporting a
   # check, and a skipped workflow leaves a required check permanently pending
@@ -142,7 +145,7 @@ jobs:
       actions: read
       pull-requests: read
     outputs:
-      ci_policy: ${{ steps.check.outputs.ci_policy }}
+      go_toolchain: ${{ steps.check.outputs.go_toolchain }}
       docs_only: ${{ steps.docs.outputs.docs_only }}
       queue_tree_tested: ${{ steps.reuse.outputs.queue_tree_tested || 'false' }}
       tested_tree: ${{ steps.tree.outputs.tested_tree }}
@@ -154,25 +157,26 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Detect CI-policy file changes
+      # The toolchain detector compares parsed setup-go steps, so PyYAML is a
+      # real dependency here, installed hash-pinned as in lint-policy.
+      - name: Install pinned script dependencies
+        run: pip install --require-hashes -r .github/requirements-scripts-test.txt
+
+      - name: Detect Go toolchain changes
         id: check
         env:
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
-          changed="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" -- \
-            .github/workflows/ go.mod go.sum scripts/check-go-matrix.sh \
-            scripts/ci_test_packages.py scripts/ci_test_durations.py \
-            scripts/ci_changed_tests.go scripts/ci_test_durations.json \
-            scripts/ci-test-with-retry.sh scripts/run-race-test.sh Makefile codecov.yml)"
-          if [ -n "$changed" ]; then
-            echo "PR touches CI-policy files:"
-            printf '%s\n' "$changed"
-            echo "ci_policy=true" >> "$GITHUB_OUTPUT"
+          toolchain="$(python3 "${GITHUB_WORKSPACE:-$PWD}/scripts/ci_go_toolchain.py" "${BASE_SHA}" "${HEAD_SHA}")"
+          if [ "$toolchain" = true ]; then
+            echo "Change touches the Go toolchain; the Go 1.27 race matrices run"
+            echo "go_toolchain=true" >> "$GITHUB_OUTPUT"
           else
-            echo "PR touches no CI-policy files"
-            echo "ci_policy=false" >> "$GITHUB_OUTPUT"
+            test "$toolchain" = false
+            echo "Change does not touch the Go toolchain"
+            echo "go_toolchain=false" >> "$GITHUB_OUTPUT"
           fi
 
           # Benchmark compilation is substantial, so limit PR smoke to Go and
@@ -610,12 +614,12 @@ jobs:
 
   test-oss-go127:
     needs: [security-scan, changed-files]
-    # Runs only on pull requests or merge groups that touch CI policy / Go pins (see the
-    # changed-files job). release.yaml proves every shard on the pinned Go 1.27
+    # Runs only on pull requests or merge groups that change the Go toolchain
+    # (see the changed-files job). release.yaml proves every shard on the pinned Go 1.27
     # before a tag. Running it on every PR and main push only ever caught timing
     # flakes, never a version-specific failure, while its race jobs were the
     # largest share of runner queue time for every overlapping run.
-    if: ${{ !cancelled() && needs.security-scan.result == 'success' && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changed-files.outputs.ci_policy == 'true' && needs.changed-files.outputs.queue_tree_tested != 'true' }}
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changed-files.outputs.go_toolchain == 'true' && needs.changed-files.outputs.queue_tree_tested != 'true' }}
     runs-on: ubuntu-latest
     name: race-oss (1.27, ${{ matrix.shard }})
     # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
@@ -782,12 +786,12 @@ jobs:
 
   test-enterprise-go127:
     needs: [security-scan, changed-files]
-    # Runs only on pull requests or merge groups that touch CI policy / Go pins (see the
-    # changed-files job). release.yaml proves every shard on the pinned Go 1.27
+    # Runs only on pull requests or merge groups that change the Go toolchain
+    # (see the changed-files job). release.yaml proves every shard on the pinned Go 1.27
     # before a tag. Running it on every PR and main push only ever caught timing
     # flakes, never a version-specific failure, while its race jobs were the
     # largest share of runner queue time for every overlapping run.
-    if: ${{ !cancelled() && needs.security-scan.result == 'success' && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changed-files.outputs.ci_policy == 'true' && needs.changed-files.outputs.queue_tree_tested != 'true' }}
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changed-files.outputs.go_toolchain == 'true' && needs.changed-files.outputs.queue_tree_tested != 'true' }}
     runs-on: ubuntu-latest
     name: race-enterprise (1.27, ${{ matrix.shard }})
     # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
@@ -1137,10 +1141,10 @@ jobs:
     runs-on: ubuntu-latest
     # "test (1.27)" is a required check name on every PR (see the branch
     # ruleset), so it must exist even when the Go 1.27 race producers skip.
-    # On a pull request or merge group, require policy detection and a boolean
+    # On a pull request or merge group, require toolchain detection and a boolean
     # output. Only an explicit false justifies skipped race producers, or, on
     # a merge group alone, the classifier's proof that a green pull request run
-    # already tested this exact tree. On a push, the policy detector and race
+    # already tested this exact tree. On a push, the toolchain detector and race
     # producers intentionally skip.
     # Security scan and replay evidence must succeed on every event.
     name: test (1.27)
@@ -1164,8 +1168,8 @@ jobs:
           test "${{ needs.security-scan.result }}" = "success"
           if [ "$EVENT_NAME" != "push" ]; then
             test "${{ needs.changed-files.result }}" = "success"
-            if [ "${{ needs.changed-files.outputs.ci_policy }}" != "false" ]; then
-              test "${{ needs.changed-files.outputs.ci_policy }}" = "true"
+            if [ "${{ needs.changed-files.outputs.go_toolchain }}" != "false" ]; then
+              test "${{ needs.changed-files.outputs.go_toolchain }}" = "true"
             fi
           fi
 
@@ -1176,7 +1180,7 @@ jobs:
             fi
             if [ "$EVENT_NAME" != "push" ]; then
               if [ "$EVENT_NAME" != "merge_group" ] || [ "${{ needs.changed-files.outputs.queue_tree_tested }}" != "true" ]; then
-                test "${{ needs.changed-files.outputs.ci_policy }}" = "false"
+                test "${{ needs.changed-files.outputs.go_toolchain }}" = "false"
               fi
             fi
           fi
@@ -1188,7 +1192,7 @@ jobs:
             fi
             if [ "$EVENT_NAME" != "push" ]; then
               if [ "$EVENT_NAME" != "merge_group" ] || [ "${{ needs.changed-files.outputs.queue_tree_tested }}" != "true" ]; then
-                test "${{ needs.changed-files.outputs.ci_policy }}" = "false"
+                test "${{ needs.changed-files.outputs.go_toolchain }}" = "false"
               fi
             fi
           fi
@@ -2041,7 +2045,7 @@ jobs:
         run: |
           set -euo pipefail
           # test (1.27) accepts skipped upper-lane producers on a pull request
-          # because changed-files decided no CI-policy file changed. A failed or
+          # because changed-files decided the Go toolchain did not change. A failed or
           # cancelled classifier skips them too, so a pull request needs a
           # successful classifier here before that skip counts as intentional.
           if [ "$EVENT_NAME" != push ] && [ "$CHANGED_FILES_RESULT" != success ]; then
