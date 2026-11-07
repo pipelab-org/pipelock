@@ -501,6 +501,7 @@ jobs:
           restore-keys: |
             go-test-v2-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-
             go-test-v2-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-
+            go-test-v1-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-
             go-test-v1-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-
 
       - name: Verify dependencies
@@ -609,9 +610,11 @@ jobs:
       # Go marks a cache entry used by touching it, so files still older than
       # the start marker were restored and never needed. Dropping them keeps
       # each day's entry to what that day's tree uses instead of every day's
-      # leftovers. Go touches an entry only when it is over an hour old, so an
-      # entry saved less than an hour earlier can be pruned while in use; that
-      # costs a rebuild later, never a wrong result.
+      # leftovers. Go refreshes a used entry's mtime only when it is at least an
+      # hour old (mtimeInterval in cmd/go/internal/cache), so an entry written
+      # less than an hour before this run can be in use without being touched.
+      # The cutoff therefore sits an hour before the start marker; anything
+      # newer is kept.
       - name: Prune unused Go cache entries
         if: ${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.go-cache.outputs.cache-hit != 'true' }}
         env:
@@ -619,7 +622,8 @@ jobs:
         run: |
           set -euo pipefail
           before="$(du -sh "$GO_CACHE_DIR" | cut -f1)"
-          find "$GO_CACHE_DIR" -type f ! -newer "$RUNNER_TEMP/go-cache-start" -delete
+          touch -r "$RUNNER_TEMP/go-cache-start" -d '-1 hour' "$RUNNER_TEMP/go-cache-cutoff"
+          find "$GO_CACHE_DIR" -type f ! -newer "$RUNNER_TEMP/go-cache-cutoff" -delete
           echo "Go cache: ${before} before pruning, $(du -sh "$GO_CACHE_DIR" | cut -f1) after"
 
       - name: Save Go build and test-result cache
