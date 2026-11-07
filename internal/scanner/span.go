@@ -98,6 +98,18 @@ func (p *compiledPattern) matchSpan(text string) (start, end int, ok bool) {
 	return p.matchSpanInView(text, text)
 }
 
+// admitsView applies the compiled pattern's necessary conditions to an exact
+// view. Both ordinary matching and decoded-lane matching use the same gates.
+func (p *compiledPattern) admitsView(text string) bool {
+	if p.requiresEquals && strings.IndexByte(text, '=') < 0 {
+		return false
+	}
+	if p.minASCIIDigits > 0 && !hasMinimumASCIIDigits(text, p.minASCIIDigits) {
+		return false
+	}
+	return p.shapeGate.admits(text)
+}
+
 // matchSpanInView returns the credential span rather than a raw-text delimiter
 // consumed by an RE2-compatible left-boundary expression. source is the view
 // before separators were removed or fields were concatenated. A mid-word
@@ -110,13 +122,7 @@ func (p *compiledPattern) matchSpanInView(text, source string) (start, end int, 
 		pattern.keywordContext = &keywordCandidateContext{logical: logical}
 		return pattern.matchSpanInView(text, source)
 	}
-	if p.requiresEquals && strings.IndexByte(text, '=') < 0 {
-		return 0, 0, false
-	}
-	if p.minASCIIDigits > 0 && !hasMinimumASCIIDigits(text, p.minASCIIDigits) {
-		return 0, 0, false
-	}
-	if !p.shapeGate.admits(text) {
+	if !p.admitsView(text) {
 		return 0, 0, false
 	}
 	if p.withoutLeftBoundary == nil {

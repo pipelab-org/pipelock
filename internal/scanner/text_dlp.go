@@ -456,8 +456,8 @@ func CardRunAction(matches []TextDLPMatch, action string) string {
 
 // TextDLPResult describes the outcome of scanning text for DLP patterns.
 type TextDLPResult struct {
-	// Clean means a complete scan with no enforcing finding. Matches may still
-	// contain informational evidence.
+	// Clean means no enforcing finding. Matches may still contain
+	// informational evidence, including a partial inbound encoded scan.
 	Clean                bool           `json:"clean"`
 	Matches              []TextDLPMatch `json:"matches,omitempty"`
 	InformationalMatches []TextDLPMatch `json:"informational_matches,omitempty"` // warn-mode matches (non-blocking)
@@ -745,9 +745,17 @@ func uninspectableEncodedContentMatch() TextDLPMatch {
 
 func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, opts textDLPOptions) TextDLPResult {
 	shared := sharedDecodesFrom(ctx)
-	originalDecodes := decodingMemo{shared: shared}
+	terminalInbound := !opts.scanSecretLeak || inboundDirection(ctx)
+	originalDecodes := decodingMemo{shared: shared, reassemblyDeferred: true, reassemblyInbound: terminalInbound}
+	defer originalDecodes.releaseProjection()
 	if !s.hasGenericCardPatterns() {
-		return s.scanTextForDLPWithDecodes(ctx, text, opts, &originalDecodes)
+		emit := opts.emitWarns
+		opts.emitWarns = false
+		result := finishAssembled(s.scanTextForDLPWithDecodes(ctx, text, opts, &originalDecodes), &originalDecodes)
+		if emit {
+			s.EmitTextDLPWarnMatches(ctx, append(result.InformationalMatches[:len(result.InformationalMatches):len(result.InformationalMatches)], result.Matches...))
+		}
+		return result
 	}
 	// Partition even literal inputs: an early card match must not stop
 	// segment decoding for unrelated credentials that callers still enforce
@@ -756,10 +764,13 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 	opts.emitWarns = false
 	opts.patterns = textDLPNonCardPatterns
 	original := s.scanTextForDLPWithDecodes(ctx, text, opts, &originalDecodes)
-	typedDecodes := decodingMemo{shared: shared}
+	typedDecodes := decodingMemo{shared: shared, reassemblyDeferred: true, reassemblyInbound: terminalInbound}
+	defer typedDecodes.releaseProjection()
+	terminalMemos := []*decodingMemo{&originalDecodes}
 	cardDecodes := &originalDecodes
 	if text != cardView {
 		cardDecodes = &typedDecodes
+		terminalMemos = append(terminalMemos, &typedDecodes)
 	}
 	opts.patterns = textDLPCardPatterns
 	opts.scanSecretLeak = false
@@ -816,8 +827,10 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 			continue
 		}
 		seenRuns[run] = struct{}{}
-		runDecodes := decodingMemo{shared: shared}
+		runDecodes := decodingMemo{shared: shared, reassemblyDeferred: true, reassemblyInbound: terminalInbound}
 		runResult := s.scanTextForDLPWithDecodes(ctx, run.Digits, opts, &runDecodes)
+		runResult = finishAssembled(runResult, &runDecodes)
+		runDecodes.releaseProjection()
 		for i := range runResult.Matches {
 			if run.RetryOnly && !runResult.Matches[i].cardPrefixRetry {
 				continue
@@ -833,6 +846,7 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 			original.InformationalMatches = append(original.InformationalMatches, runResult.InformationalMatches[i])
 		}
 	}
+	original = finishAssembled(original, terminalMemos...)
 	original.Clean = !HasEnforcingMatch(original.Matches)
 	if emit {
 		s.EmitTextDLPWarnMatches(ctx, append(original.InformationalMatches[:len(original.InformationalMatches):len(original.InformationalMatches)], original.Matches...))
@@ -866,6 +880,15 @@ func (s *Scanner) scanTextForDLPDetectors(ctx context.Context, text string, opts
 	if decodes != nil {
 		decodes.inbound = !opts.scanSecretLeak || inboundDirection(ctx)
 	}
+	if decodes != nil {
+		decodes.reassemblyPlan = s.reassemblyPlan
+		if !decodes.reassemblyPatternSelected {
+			decodes.reassemblyPatterns = opts.patterns
+			decodes.reassemblyPatternSelected = true
+		} else if decodes.reassemblyPatterns != opts.patterns {
+			decodes.reassemblyPatterns = textDLPAllPatterns
+		}
+	}
 	result := s.scanTextForDLPDetectorsInner(ctx, text, opts, decodes)
 	if opts.scanSecretLeak && !inboundDirection(ctx) && decodes.inspectionIncomplete() && !HasInspectionLimit(result.Matches) {
 		result.Matches = append(result.Matches, uninspectableEncodedContentMatch())
@@ -885,8 +908,27 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 			noteTextSegmentDecodeBudget(budgetViews, decodes)
 		}()
 	}
+	imageSource := text
 	text = exciseImagesRetainingDecodedForDLP(text)
+	if text != imageSource && decodes != nil {
+		imageText := exciseVerifiedImageDataURLs(imageSource)
+		decodes.reassemblyDerive(imageSource, imageText)
+		decodes.reassemblyObserve(imageText)
+		decodes.reassemblySetKind(text, assembledDecoderView)
+	}
+	// Join the existing verified-image policy before registering terminal input:
+	// inspect retained image bytes and surrounding text, never the removed
+	// base64 carrier whose alphabet runs can consume the terminal allowance.
+	if decodes != nil {
+		if len(text) > maxDecodeTotalBytes {
+			decodes.decode(text, true)
+		} else {
+			decodes.reassemblyObserve(text)
+		}
+	}
+	beforeRedaction := text
 	text = redactOfficialAWSExampleCredentialsForDocs(text)
+	decodes.reassemblyDerive(beforeRedaction, text)
 	cleaned := decodes.normalize(text)
 	if decodes != nil {
 		priorKeywordUnit, priorKeywordInput := decodes.keywordUnit, decodes.keywordInput
@@ -915,6 +957,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	}
 	// Build the complete budget view set before the core-only return.
 	for _, view := range segmentDecodeViews {
+		decodes.reassemblyDerive(text, view.text)
 		budgetViews = append(budgetViews, view.text)
 	}
 
@@ -1721,7 +1764,9 @@ func noteTextSegmentDecodeBudget(views []string, decodes *decodingMemo) {
 		return
 	}
 	for _, text := range views {
+		kind := decodes.reassemblyDerivedKind(text)
 		for _, seg := range textDLPSegments(text) {
+			decodes.reassemblySetKind(seg, kind)
 			if decodes.inspectionIncomplete() {
 				return
 			}
@@ -1742,9 +1787,11 @@ func (s *Scanner) decodeTextSegmentsWithDecodes(text string, decodes *decodingMe
 	// wrap encoded secrets in JSON, YAML, CSV, or multipart text, so quotes,
 	// braces, colons, and commas must not stay attached to the encoded token.
 	segments := textDLPSegments(text)
+	kind := decodes.reassemblyDerivedKind(text)
 
 	var matches []TextDLPMatch
 	for _, seg := range segments {
+		decodes.reassemblySetKind(seg, kind)
 		if len(seg) < 10 {
 			continue // too short to be a meaningful encoded secret
 		}
