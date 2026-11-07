@@ -19,8 +19,8 @@ var priorArgPatterns = map[string][]string{
 		`(?i)\brm\s+(--\s+)?(-[a-z]*[rf]\b|--(?:recursive|force)\b)`,
 	},
 	// Destructive Git Operation
-	`(?i)(\bgit\s+)?(push(?:\s+[^\s;|&]+)*?\s+(--force(?:[\s;&|()<>]|$)|-[a-z]*f[a-z]*\b|\+[^\s;|&]+)|reset(?:\s+[^\s;|&]+)*?\s+--hard\b|clean(?:\s+[^\s;|&]+)*?\s+(-[a-z]*(f[a-z]*d|d[a-z]*f)[a-z]*\b|-[a-z]*f[a-z]*(?:\s+[^\s;|&]+)*?\s+-[a-z]*d[a-z]*\b|-[a-z]*d[a-z]*(?:\s+[^\s;|&]+)*?\s+-[a-z]*f[a-z]*\b))`: {
-		`(?i)(\bgit\s+)?(push\s+(--force(\s|$)|-f\b)|reset\s+--hard\b|clean\s+-fd\b)`,
+	`(?i)(?:^|[\s;|&()<>\x60\x22\x27/=])(git\s+)?(push(?:\s+[^\s;|&]+)*?\s+(--force(?:[\s;&|()<>]|$)|-[a-z]*f[a-z]*\b|\+[^\s;|&]+)|reset(?:\s+[^\s;|&]+)*?\s+--hard\b|clean(?:\s+[^\s;|&]+)*?\s+(-[a-z]*(f[a-z]*d|d[a-z]*f)[a-z]*\b|-[a-z]*f[a-z]*(?:\s+[^\s;|&]+)*?\s+-[a-z]*d[a-z]*\b|-[a-z]*d[a-z]*(?:\s+[^\s;|&]+)*?\s+-[a-z]*f[a-z]*\b))`: {
+		`(?i)(?:^|[\s;|&()<>\x60\x22\x27/=])(git\s+)?(push\s+(--force(\s|$)|-f\b)|reset\s+--hard\b|clean\s+-fd\b)`,
 	},
 	// Detached Process Spawning
 	`(?i)(\bnohup\s+|\bdisown\b|\bsetsid\s+|\bscreen\s+(-\S+\s+)*-[dDm]|\btmux(?:\s+[^\s;|&]+)*?\s+(new-session|new)(?:\s+[^\s;|&]+)*?\s+-[a-z]*d)`: {
@@ -47,8 +47,8 @@ var priorArgPatterns = map[string][]string{
 		`(?i)\b(chmod\s+(-R|--recursive)\s+(777|666)|chmod\s+(777|666)\s+(-R|--recursive)|chown\s+(-R|--recursive))\b`,
 	},
 	// Reverse Shell
-	`(?i)(bash\s+-i\s+>&|/dev/tcp/|mkfifo\s+|nc\s+-e|ncat\s+-e|\b(?:nc|ncat|netcat)(?:\s+[^\s;|&]+)*?\s+-[a-z0-9]*e\b|\b(?:nc|ncat|netcat)(?:\s+[^\s;|&]+)*?\s+((?-i:-[a-z0-9]*c)\b|--(?:sh-|lua-)?exec\b)|\bbash(?:\s+-[a-z]+)*?\s+-[a-z]*i[a-z]*(?:\s+-[a-z]+)*?\s+>&|/dev/udp/)`: {
-		`(?i)(bash\s+-i\s+>&|/dev/tcp/|mkfifo\s+|nc\s+-e|ncat\s+-e)`,
+	`(?i)((?:^|[\s;|&()<>\x60\x22\x27/=])bash\s+-i\s+>&|/dev/tcp/|(?:^|[\s;|&()<>\x60\x22\x27/=])mkfifo\s+|(?:^|[\s;|&()<>\x60\x22\x27/=])nc\s+-e|(?:^|[\s;|&()<>\x60\x22\x27/=])ncat\s+-e|(?:^|[\s;|&()<>\x60\x22\x27/=])(?:nc|ncat|netcat)(?:\s+[^\s;|&]+)*?\s+-[a-z0-9]*e\b|(?:^|[\s;|&()<>\x60\x22\x27/=])(?:nc|ncat|netcat)(?:\s+[^\s;|&]+)*?\s+((?-i:-[a-z0-9]*c)\b|--(?:sh-|lua-)?exec\b)|(?:^|[\s;|&()<>\x60\x22\x27/=])bash(?:\s+-[a-z]+)*?\s+-[a-z]*i[a-z]*(?:\s+-[a-z]+)*?\s+>&|/dev/udp/)`: {
+		`(?i)((?:^|[\s;|&()<>\x60\x22\x27/=])bash\s+-i\s+>&|/dev/tcp/|(?:^|[\s;|&()<>\x60\x22\x27/=])mkfifo\s+|(?:^|[\s;|&()<>\x60\x22\x27/=])nc\s+-e|(?:^|[\s;|&()<>\x60\x22\x27/=])ncat\s+-e)`,
 	},
 }
 
