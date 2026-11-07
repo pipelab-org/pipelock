@@ -87,6 +87,15 @@ func TestLocalPathIdentity_RepeatedWhitespaceValue(t *testing.T) {
 	if v := f.policy(true).CheckToolCallWithArgs(testWriteTool, values, raw); !slices.Contains(v.Rules, testShellProfileRule) {
 		t.Fatalf("repeated alias was not resolved: %+v", v)
 	}
+	// The lookup list holds the repeated value once, whatever its spellings.
+	candidates := identityCandidates(nil, values)
+	if n := len(candidates); n != 1 || candidates[0] != alias {
+		t.Fatalf("identity candidates = %d %q, want the alias once", n, candidates)
+	}
+	withPath := identityCandidates([]string{alias}, values)
+	if len(withPath) != len(uniqueStrings(withPath)) {
+		t.Fatalf("identity candidates repeat a value: %q", withPath)
+	}
 }
 
 func TestLocalPathIdentity_ContentCandidateBoundary(t *testing.T) {

@@ -370,10 +370,7 @@ func (pc *Config) expandToolPaths(values []string, raw json.RawMessage, fileTool
 	// oversized values. Single-line content that also names a local path remains
 	// a candidate; excluding it would let an unrecognized pathname key bypass
 	// the baseline identity check.
-	// Each distinct candidate is resolved once; a value repeated many times
-	// in one call costs one filesystem lookup. Rule matching still sees every
-	// submitted value.
-	expanded, notes := pc.localPaths.expandNoted(uniqueStrings(append(withPathSpellings(paths, true), values...)), false)
+	expanded, notes := pc.localPaths.expandNoted(identityCandidates(paths, values), false)
 	seen := make(map[string]bool)
 	out := slices.Clone(values)
 	for _, value := range values {
@@ -386,6 +383,14 @@ func (pc *Config) expandToolPaths(values []string, raw json.RawMessage, fileTool
 		}
 	}
 	return out, notes, false
+}
+
+// identityCandidates is the local identity lookup list: pathname-field values
+// with their spellings, then every submitted value as written. Each distinct
+// candidate appears once, so a value repeated many times in one call costs one
+// filesystem lookup. Rule matching still sees every submitted value.
+func identityCandidates(pathnames, values []string) []string {
+	return uniqueStrings(append(withPathSpellings(pathnames, true), values...))
 }
 
 // uniqueStrings returns values without repeats, keeping first-seen order.
