@@ -487,14 +487,20 @@ jobs:
           # and never used; the save step prunes it.
           touch "$RUNNER_TEMP/go-cache-start"
 
+      # v2 entries hold test results recorded with stable input timestamps
+      # (scripts/ci_stable_mtimes.py); v1 results were recorded against
+      # checkout times and can never match, so a v2 key makes the first main
+      # push save usable results instead of waiting for the next UTC day.
+      # The v1 fallback still supplies compiled packages until then.
       - name: Restore Go build and test-result cache
         id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ steps.go-cache-key.outputs.dir }}
-          key: go-test-v1-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-${{ steps.go-cache-key.outputs.day }}
+          key: go-test-v2-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-${{ steps.go-cache-key.outputs.day }}
           restore-keys: |
-            go-test-v1-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-
+            go-test-v2-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-
+            go-test-v2-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-
             go-test-v1-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-
 
       - name: Verify dependencies
@@ -621,7 +627,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ steps.go-cache-key.outputs.dir }}
-          key: go-test-v1-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-${{ steps.go-cache-key.outputs.day }}
+          key: go-test-v2-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-${{ steps.go-cache-key.outputs.day }}
 
   test-oss-go127:
     needs: [security-scan, changed-files]
