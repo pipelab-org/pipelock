@@ -170,6 +170,7 @@ class GoToolchainTest(unittest.TestCase):
 
     def test_setup_go_changes_are_toolchain_changes(self) -> None:
         for old, new in (("go-version: '1.26'", "go-version: '1.27'"),
+                         ("name: Set up Go", "name: Set up Go\n        if: false"),
                          ("go-version: '1.26'", "go-version-file: go.mod"),
                          ("go-version: '1.26'", "go-version: '1.26'\n          check-latest: true"),
                          ("setup-go@1111111111111111111111111111111111111111",
@@ -178,6 +179,57 @@ class GoToolchainTest(unittest.TestCase):
                 self.reset_ci()
                 self.edit(".github/workflows/ci.yaml", old, new)
                 self.assert_changed(new)
+
+    def test_removing_the_last_record_from_a_retained_scope_is_a_change(self) -> None:
+        setup = ("      - name: Set up Go\n"
+                 "        uses: actions/setup-go@1111111111111111111111111111111111111111 # v7\n"
+                 "        with:\n          go-version: '1.26'\n")
+        for where in ("setup-go", "workflow", "job", "step", "run", "composite"):
+            with self.subTest(where=where):
+                self.reset_ci()
+                path = ".github/workflows/ci.yaml"
+                before = CI
+                after = CI.replace(setup, "")
+                if where == "workflow":
+                    before = "env: {GOTOOLCHAIN: local}\n" + after
+                elif where == "job":
+                    before = after.replace("  test:\n", "  test:\n    env: {GOTOOLCHAIN: local}\n")
+                elif where == "step":
+                    before = after.replace("      - run: go test ./...\n",
+                                           "      - run: go test ./...\n        env: {GOTOOLCHAIN: local}\n")
+                elif where == "run":
+                    before = after.replace("      - run: go test ./...\n",
+                                           "      - run: GOTOOLCHAIN=local go test ./...\n")
+                elif where == "composite":
+                    path = ".github/actions/go/action.yml"
+                    before = "runs:\n  using: composite\n  steps:\n" + setup
+                    after = "runs:\n  using: composite\n  steps:\n    - run: go version\n      shell: bash\n"
+                self.write(path, before)
+                self.commit("record present")
+                self.base = self.rev()
+                self.write(path, after)
+                self.assert_changed(f"remove last {where} record")
+
+    def test_workflow_paths_are_read_without_git_quoting_or_word_splitting(self) -> None:
+        for name in ("go pins.yaml", "go-é.yml"):
+            with self.subTest(name=name):
+                self.base = self.rev()
+                path = f".github/workflows/{name}"
+                self.write(path, CI.replace("'1.26'", "'1.28'"))
+                self.assert_changed(f"add {name}")
+                self.base = self.rev()
+                self.write(path, CI.replace("'1.26'", "'1.29'"))
+                self.assert_changed(f"edit {name}")
+
+    def test_renaming_a_job_cannot_hide_switching_to_a_known_pin(self) -> None:
+        self.write(".github/workflows/known.yaml", CI.replace("'1.26'", "'1.27'"))
+        self.commit("known pin")
+        self.base = self.rev()
+        renamed = CI.replace("  test:\n", "  renamed-test:\n")
+        self.write(".github/workflows/ci.yaml", renamed)
+        self.assert_unchanged("rename with identical records")
+        self.write(".github/workflows/ci.yaml", renamed.replace("'1.26'", "'1.27'"))
+        self.assert_changed("rename and switch to known pin")
 
     def test_templated_matrix_pin_is_a_toolchain_change(self) -> None:
         # The bump edits only the matrix; no line mentions go-version.
@@ -212,6 +264,7 @@ class GoToolchainTest(unittest.TestCase):
         self.edit(".github/workflows/ci.yaml", "      - run: go test ./...\n",
                   "      - run: go test ./...\n  bench:\n    steps:\n"
                   "      - uses: actions/setup-go@1111111111111111111111111111111111111111\n"
+                  "        if: steps.sources.outputs.changed == 'true'\n"
                   "        with:\n          go-version: '1.26'\n      - run: go test -bench=. ./...\n")
         self.assert_unchanged("new job, same pin")
 

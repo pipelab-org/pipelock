@@ -17,7 +17,7 @@ CI installs it with actions/setup-go. A change is a toolchain change when it:
 * touches scripts/check-go-matrix.sh, which keeps the CI and release Go
   versions in step, or this script, which decides when they are proven;
 * changes a setup-go step in a workflow or local composite action: its
-  ``uses`` ref, its ``with`` inputs, and the matrix entries an input reads
+  ``uses`` ref, ``if`` condition, ``with`` inputs, and the matrix entries an input reads
   (release.yaml pins ``go-version: ${{ matrix.go.version }}``, so a version
   bump edits only ``matrix.go``, while its shard list is not read by setup-go);
 * changes a ``GOTOOLCHAIN`` setting in any workflow, job, or step environment,
@@ -25,6 +25,8 @@ CI installs it with actions/setup-go. A change is a toolchain change when it:
 
 An existing job must keep exactly the setup-go steps and GOTOOLCHAIN settings
 it had. A new job counts only when it brings one no job had at the base.
+Simultaneous scope removals and additions must preserve the removed records
+exactly, or a rename could hide a switch to a version already used elsewhere.
 
 Setup-go steps are compared parsed, not as text, the way check-go-matrix.sh
 reads pins: renaming or reordering steps, editing shard lists, timeouts, or
@@ -111,7 +113,7 @@ def step_records(steps: object, matrix: object) -> list[str]:
             continue
         if is_setup_go(step):
             inputs = step.get("with") if isinstance(step.get("with"), dict) else {}
-            entry = {"uses": step["uses"], "with": inputs}
+            entry = {"uses": step["uses"], "with": inputs, "if": step.get("if")}
             if MATRIX_REF_RE.search(canonical(inputs)):
                 entry["matrix"] = referenced_matrix(inputs, matrix)
             records.append(canonical(["setup-go", entry]))
@@ -138,8 +140,9 @@ def file_records(path: str, text: str) -> dict[str, Counter[str]]:
     runs = doc.get("runs")
     if isinstance(runs, dict):
         top.update(step_records(runs.get("steps"), None))
-    if top:
-        scopes[path] = top
+    # Retain empty scopes: removing their last record still changes the
+    # toolchain of a workflow, job or composite action that continues to run.
+    scopes[path] = top
     jobs = doc.get("jobs")
     if isinstance(jobs, dict):
         for job_id, job in jobs.items():
@@ -151,15 +154,14 @@ def file_records(path: str, text: str) -> dict[str, Counter[str]]:
             strategy = job.get("strategy")
             matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
             records.update(step_records(job.get("steps"), matrix))
-            if records:
-                scopes[f"{path}#{job_id}"] = records
+            scopes[f"{path}#{job_id}"] = records
     return scopes
 
 
 def revision_records(rev: str, run_git: Git) -> dict[str, Counter[str]]:
-    listed = run_git(["ls-tree", "-r", "--name-only", rev, "--", ".github/"])
+    listed = run_git(["ls-tree", "-rz", "--name-only", rev, "--", ".github/"])
     scopes: dict[str, Counter[str]] = {}
-    for path in sorted(p for p in listed.splitlines() if STEP_FILES_RE.match(p)):
+    for path in sorted(p for p in listed.split("\0") if STEP_FILES_RE.match(p)):
         scopes.update(file_records(path, run_git(["show", f"{rev}:{path}"])))
     return scopes
 
@@ -170,10 +172,20 @@ def compare(before: dict[str, Counter[str]], after: dict[str, Counter[str]]) -> 
     A scope at both revisions must keep exactly its records. A new scope
     changes the toolchain only when it brings a record no base scope has: a
     new job that installs a Go version CI already installs runs nothing new.
-    A removed scope cannot introduce a toolchain; check-go-matrix.sh owns
-    whether the remaining jobs still cover every supported Go minor.
+    A removed scope alone cannot introduce a toolchain; check-go-matrix.sh
+    owns whether the remaining jobs still cover every supported Go minor.
+    When scopes are both removed and added, match their complete record sets
+    before allowing known pins: job and workflow renames must not hide changes.
     """
-    known = set().union(*before.values()) if before else set()
+    def installation(record: str) -> str:
+        # A new conditional job using a known installation adds no version.
+        # Existing jobs still compare their complete records, including if.
+        kind, value = json.loads(record)
+        if kind == "setup-go":
+            value.pop("if", None)
+        return canonical([kind, value])
+
+    known = {installation(record) for records in before.values() for record in records}
     reasons = []
     for scope in sorted(after):
         if scope in before:
@@ -182,17 +194,29 @@ def compare(before: dict[str, Counter[str]], after: dict[str, Counter[str]]) -> 
             for record in sorted((after[scope] - before[scope]).elements()):
                 reasons.append(f"{scope} added: {record}")
         else:
-            reasons += [f"{scope} (new) added: {record}" for record in sorted(set(after[scope]) - known)]
+            reasons += [f"{scope} (new) added: {record}" for record in sorted(after[scope])
+                        if installation(record) not in known]
+    removed = Counter(
+        canonical(sorted(before[scope].elements()))
+        for scope in before.keys() - after.keys() if before[scope]
+    )
+    added = Counter(
+        canonical(sorted(after[scope].elements()))
+        for scope in after.keys() - before.keys() if after[scope]
+    )
+    if removed - added and added - removed:
+        reasons.append("removed and added toolchain scopes do not preserve the same records")
     return reasons
 
 
 def toolchain_changed(base: str, head: str, run_git: Git = git) -> tuple[bool, list[str]]:
     merge_base = run_git(["merge-base", base, head]).strip()
-    touched = run_git(["diff", "--name-only", merge_base, head, "--", *TOOLCHAIN_PATHS]).split()
+    touched = run_git(["diff", "-z", "--name-only", merge_base, head, "--", *TOOLCHAIN_PATHS]).split("\0")
+    touched = [path for path in touched if path]
     if touched:
         return True, [f"toolchain file changed: {path}" for path in touched]
     step_files = [
-        path for path in run_git(["diff", "--name-only", merge_base, head, "--", ".github/"]).split()
+        path for path in run_git(["diff", "-z", "--name-only", merge_base, head, "--", ".github/"]).split("\0")
         if STEP_FILES_RE.match(path)
     ]
     if not step_files:
