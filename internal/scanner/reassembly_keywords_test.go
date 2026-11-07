@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"encoding/base64"
 	"encoding/hex"
 	"strings"
 	"testing"
@@ -291,5 +292,33 @@ func TestReassemblyKeywordLargeUnlabeledValue(t *testing.T) {
 	result := sc.ScanTextForDLP(t.Context(), body)
 	if !result.Clean || len(result.Matches) != 0 {
 		t.Fatalf("unlabeled value gained a finding: %+v", result)
+	}
+}
+
+// An HTML-decoded root reaches the input through identity edges in every
+// lane's source graph. Those edges must not spend the keyword budget per lane,
+// or an unlabeled value is refused instead of passing.
+func TestReassemblyKeywordHTMLWrappedUnlabeledValue(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{Name: "Labeled record", Regex: `[0-9]{16}`, Severity: config.SeverityHigh, Keywords: []string{"lookup"}})
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	encoded := reassemblyBang(base64.StdEncoding.EncodeToString([]byte(strings.Repeat("x", 6000) + "3333333333333333")))
+	unlabeled := sc.ScanTextForDLP(t.Context(), "&lt;p&gt; "+encoded+" &amp;")
+	if !unlabeled.Clean || len(unlabeled.Matches) != 0 {
+		t.Fatalf("unlabeled HTML-wrapped value was refused or matched: %+v", unlabeled.Matches)
+	}
+	labeled := sc.ScanTextForDLP(t.Context(), "&lt;p&gt; "+encoded+" lookup &amp;")
+	found := false
+	for _, m := range labeled.Matches {
+		if m.PatternName == "Uninspectable encoded content" {
+			t.Fatalf("labeled HTML-wrapped value lost context: %+v", labeled.Matches)
+		}
+		found = found || m.PatternName == "Labeled record"
+	}
+	if !found {
+		t.Fatalf("labeled HTML-wrapped value was not detected: %+v", labeled.Matches)
 	}
 }

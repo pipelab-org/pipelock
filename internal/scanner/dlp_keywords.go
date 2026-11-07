@@ -180,6 +180,13 @@ func (n *keywordDecodeSource) visitOneSource(start, end int, visit func(string, 
 	if n.parent == nil {
 		return visit(n.text, start, end)
 	}
+	if n.encoding == "identity" && n.parent.text == n.text {
+		// Identity edges keep every byte position. Building and charging a
+		// per-byte map for each graph that binds the same parent spends the
+		// scan's keyword budget on copies and turns unlabeled values into
+		// inspection refusals.
+		return n.parent.visitSources(start, end, visit)
+	}
 	if !n.mapped {
 		n.mapped = true
 		parentCost := 2 * keywordSpanBytes
