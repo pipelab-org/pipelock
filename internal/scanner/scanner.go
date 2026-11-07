@@ -729,7 +729,22 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		s.keywordPatterns = s.keywordPatterns || keywords != nil
 	}
 
-	s.reassemblyPlan, err = newReassemblyPlan(s.dlpPatterns)
+	// The terminal shares the immutable core's compiled rules. Configured
+	// copies of the same rule do not create a second terminal producer.
+	terminalPatterns := append([]*compiledPattern(nil), s.dlpPatterns...)
+	for _, core := range s.core.dlpPatterns {
+		found := false
+		for i, pattern := range terminalPatterns {
+			if pattern.name == core.name && pattern.re.String() == core.re.String() {
+				terminalPatterns[i] = core
+				found = true
+			}
+		}
+		if !found {
+			terminalPatterns = append(terminalPatterns, core)
+		}
+	}
+	s.reassemblyPlan, err = newReassemblyPlan(terminalPatterns)
 	if err != nil {
 		return nil, fmt.Errorf("compile encoded-content terminal: %w", err)
 	}
