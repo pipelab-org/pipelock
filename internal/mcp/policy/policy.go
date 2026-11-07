@@ -273,9 +273,9 @@ var filePathArgumentKey = regexp.MustCompile(fileTargetKeyPattern + "|" + fileDe
 // reads only the top-level keys its arg_key selects, as ExtractStringsForKeys
 // does; an unscoped rule reads a pathname key at any depth, since a tool may
 // nest its operands (an operation object, a list of operations). Every string
-// under a pathname key is a value of that key; strings under any other key are
-// content and never gain a pathname spelling. Nesting past the shared extraction
-// bound under a pathname key is reported rather than skipped, so the caller
+// under a pathname key is a value of that key; strings under other keys do not
+// receive its whitespace-preserving pathname reading. Nesting past the shared
+// extraction bound under a pathname key is reported rather than skipped, so the caller
 // fails closed as it does for a scoped rule. ok is false when raw is not a JSON
 // object, so no key tells path from content.
 func pathnameValues(raw json.RawMessage, scope *regexp.Regexp) (paths []string, truncated, ok bool) {
@@ -340,8 +340,10 @@ func pathnameValues(raw json.RawMessage, scope *regexp.Regexp) (paths []string, 
 	return paths, truncated, true
 }
 
-// expandToolPaths preserves every submitted value but derives file spellings
-// only from pathname fields. A scoped rule cannot acquire paths from other keys.
+// expandToolPaths retains baseline path checks for whitespace-free values and
+// adds whitespace-preserving spellings for explicit pathname fields. A scoped
+// rule cannot acquire paths from other keys. All values share one local identity
+// pass so hard-link inspection does not repeat for each reading.
 // Arguments with no JSON key to tell path from content keep every value as a
 // candidate path, as a call without raw arguments does.
 func (pc *Config) expandToolPaths(values []string, raw json.RawMessage, fileTool bool, scope *regexp.Regexp) ([]string, []string, bool) {
@@ -359,7 +361,13 @@ func (pc *Config) expandToolPaths(values []string, raw json.RawMessage, fileTool
 			paths = keyed
 		}
 	}
-	expanded, notes := pc.localPaths.expandNoted(paths, true)
+	paths = withPathSpellings(paths, true)
+	for _, value := range values {
+		if !strings.ContainsAny(value, " \t\x00\n\r") {
+			paths = append(paths, value)
+		}
+	}
+	expanded, notes := pc.localPaths.expandNoted(paths, false)
 	seen := make(map[string]bool)
 	out := slices.Clone(values)
 	for _, value := range values {

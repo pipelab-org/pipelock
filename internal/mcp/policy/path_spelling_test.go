@@ -421,13 +421,15 @@ func TestPolicy_NestedFilePathScope(t *testing.T) {
 }
 
 // A link behind a nested pathname resolves exactly as a top-level one does,
-// with and without local path identity, and a value under another key is not
-// resolved.
+// with and without local path identity. Unlisted fields keep the baseline
+// conservative identity check as well.
 func TestPolicy_NestedFilePathLocalIdentity(t *testing.T) {
 	f := newLocalPathFixture(t)
 	f.write(t, filepath.Join(f.home, ".bashrc"))
 	alias := filepath.Join(f.ws, "notes.txt")
 	f.link(t, filepath.Join(f.home, ".bashrc"), alias)
+	spacedAlias := filepath.Join(f.ws, "notes with spaces.txt")
+	f.link(t, filepath.Join(f.home, ".bashrc"), spacedAlias)
 	for _, tt := range []struct {
 		name  string
 		input map[string]any
@@ -436,7 +438,9 @@ func TestPolicy_NestedFilePathLocalIdentity(t *testing.T) {
 		{"top_level", map[string]any{"source": "/p/a", "destination": alias}, true},
 		{"nested", map[string]any{"operation": map[string]any{"source": "/p/a", "destination": alias}}, true},
 		{"listed", map[string]any{"operations": []any{map[string]any{"destination": "/p/b"}, map[string]any{"destination": alias}}}, true},
-		{"other_key", map[string]any{"operation": map[string]any{"note": alias}}, false},
+		{"other_key", map[string]any{"operation": map[string]any{"note": alias}}, true},
+		{"spaced_path", map[string]any{"destination": spacedAlias}, true},
+		{"spaced_note", map[string]any{"note": spacedAlias}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			raw, err := json.Marshal(tt.input)
@@ -457,15 +461,25 @@ func TestPolicy_NestedFilePathLocalIdentity(t *testing.T) {
 
 func TestPolicy_FileContentPathSpellings(t *testing.T) {
 	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: DefaultToolPolicyRules()})
-	for _, content := range []string{"/etc/cache space/../cron.d/job", "/etc/cache/../cron.d/job", "file:etc/cron.d/job?notes=1"} {
-		raw, err := json.Marshal(map[string]string{"path": "/project/notes.txt", "content": content})
+	for _, tt := range []struct {
+		content string
+		want    bool
+	}{
+		{"/etc/cache space/../cron.d/job", false},
+		{"notes about /etc/cache/../cron.d/job", false},
+		// Bare path-shaped values retain the checks already applied before
+		// explicit pathname fields acquired whitespace-preserving readings.
+		{"/etc/cache/../cron.d/job", true},
+		{"file:etc/cron.d/job?notes=1", true},
+	} {
+		raw, err := json.Marshal(map[string]string{"path": "/project/notes.txt", "content": tt.content})
 		if err != nil {
 			t.Fatal(err)
 		}
 		values, _ := ArgValues(raw)
 		v := pc.CheckToolCallWithArgs("write_file", values, raw)
-		if v.Matched {
-			t.Errorf("content=%q: verdict=%+v", content, v)
+		if v.Matched != tt.want {
+			t.Errorf("content=%q: verdict=%+v, want match %v", tt.content, v, tt.want)
 		}
 	}
 	pc = New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: []config.ToolPolicyRule{{Name: "submitted content", ToolPattern: "write_file", ArgPattern: `cache space/\.\./cron`}}})
@@ -609,6 +623,10 @@ func TestPolicy_FileArgumentPathScope(t *testing.T) {
 		{"copy_file", map[string]any{"source": "/etc/cache space/../shadow", "destination": "/project/notes.txt"}},
 		{"move_file", map[string]any{"source": "/project/notes.txt", "destination": "/etc/cache space/../shadow"}},
 		{"filesystem.write_file", map[string]any{"path": "/etc/cache space/../shadow", "content": "notes"}},
+		{"write_file", map[string]any{"location": "/etc/x/../cron.d/job", "content": "notes"}},
+		{"write_file", map[string]any{"relative_path": "/etc/x/../cron.d/job", "content": "notes"}},
+		{"write_file", map[string]any{"output": "file:etc/cron.d/job?notes=1", "content": "notes"}},
+		{"write_file", map[string]any{"operation": map[string]any{"location": "/etc/x/../cron.d/job"}}},
 	} {
 		raw, err := json.Marshal(tt.args)
 		if err != nil {
