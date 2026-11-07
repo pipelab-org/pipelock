@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -117,7 +118,7 @@ func TestHarnessExitCodes(t *testing.T) {
 	})
 	// Unknown failures cannot acquire the setup exemption merely because they
 	// returned no result. A result-write failure also loses that exemption.
-	for _, err := range []error{nil, errors.New("unknown"), errors.Join(&setupError{os.ErrPermission}, errors.New("unknown")), errors.New("write result: " + (&setupError{os.ErrPermission}).Error())} {
+	for _, err := range []error{nil, errors.New("unknown"), fmt.Errorf("wrapped: %w", &setupError{os.ErrPermission}), errors.Join(&setupError{os.ErrPermission}, errors.New("unknown")), errors.New("write result: " + (&setupError{os.ErrPermission}).Error())} {
 		if code := modeExitCode(nil, err); code != 1 {
 			t.Fatalf("unknown error %v exited %d, want integrity 1", err, code)
 		}

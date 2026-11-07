@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"time"
@@ -102,8 +103,8 @@ func (e *setupError) Unwrap() error { return e.err }
 
 func isSetupFailure(err error) bool {
 	// A joined or wrapped error could include a later, unclassified failure.
-	_, direct := err.(*setupError) //nolint:errorlint // Only the direct setup marker proves setup-only failure.
-	return direct
+	// Only the direct setup marker proves setup-only failure.
+	return reflect.TypeOf(err) == reflect.TypeFor[*setupError]()
 }
 
 func modeExitCode(res *result, err error) int {
