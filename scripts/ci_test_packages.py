@@ -99,7 +99,7 @@ UNIT_REST_SHARDS = ("rest-0", "rest-1", "rest-2")
 # ceil(794.9 * 1.10) = 875s leaves a 10% operating margin. That run's slowest
 # package took 776.138s. Keep the 600s runtime warnings in ci.yaml as the
 # recovery target, then lower this ceiling after re-measuring the test cuts.
-# This doesn't extend the 900s package or 1260s whole-attempt timeouts.
+# The race lane's package timeout is a separate hang detector (25m, 1860s attempt).
 SHARD_BUDGET_SECONDS = 875
 # Rest shards run their packages two at a time (-p=2), so summed package time
 # overstates wall time by about that factor.
@@ -857,7 +857,8 @@ def runnable_changed_tests(
 # Measurement deadline inside the job's 48-minute ceiling, leaving room for
 # checkout, module download and compilation before measuring starts.
 MEASURE_DEADLINE_SECONDS = 40 * 60
-# go test's own -timeout, as on the race lane.
+# go test's own -timeout for changed-test measurement. The full race lane allows
+# 25 minutes as a hang detector; this pass keeps 15 so it fits its 48-minute job.
 MEASURE_PACKAGE_TIMEOUT_SECONDS = 15 * 60
 # Don't start a package with less time than this left.
 MEASURE_MIN_START_SECONDS = 60

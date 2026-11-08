@@ -85,6 +85,80 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
         self.assertIn('git -C "$AEB_ROOT" rev-parse HEAD', verify)
         self.assertIn('= "$AEB_REF"', verify)
 
+    def test_benchmark_origin_is_the_canonical_url_after_the_repository_move(self):
+        """The pinned runner refuses any origin but its original repository URL.
+
+        The checkout fetches from the repository's new home, so without this
+        step every scheduled run fails the runner's corpus identity check. The
+        step must prove both URLs serve the same pinned release before it
+        renames origin, and must run before the portable runner.
+        """
+        name = "Name the benchmark origin the runner treats as canonical"
+        script = step_run_script(self.workflow, name)
+        self.assertIn('canonical_url="https://github.com/luckyPipewrench/agent-egress-bench.git"', script)
+        self.assertIn('canonical_tag="$(timeout 60 git ls-remote "$canonical_url" "$tag_ref" | awk -v ref="$tag_ref"', script)
+        self.assertIn('checkout_tag="$(timeout 60 git ls-remote "$checkout_url" "$tag_ref" | awk -v ref="$tag_ref"', script)
+        self.assertIn('-z "$canonical_tag" || "$canonical_tag" != "$checkout_tag" || "$canonical_tag" != "$local_tag"', script)
+        self.assertIn('local_tag="$(git -C "$AEB_ROOT" rev-parse "$tag_ref")"', script)
+        self.assertIn('git -C "$AEB_ROOT" remote set-url origin "$canonical_url"', script)
+        self.assertLess(
+            self.workflow.index(f"      - name: {name}\n"),
+            self.workflow.index("      - name: Run portable canonical benchmark\n"),
+        )
+        self.assertGreater(
+            self.workflow.index(f"      - name: {name}\n"),
+            self.workflow.index("      - name: Check out pinned Agent Egress Bench\n"),
+        )
+
+    def run_origin_step(self, canonical, checkout, local):
+        """Run the origin step against a fake git that serves the given ls-remote lines."""
+        script = step_run_script(self.workflow, "Name the benchmark origin the runner treats as canonical")
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp, "bin")
+            bin_dir.mkdir()
+            state = Path(tmp, "origin")
+            state.write_text("https://github.com/pipelab-org/agent-egress-bench.git\n", encoding="utf-8")
+            fake = bin_dir / "git"
+            fake.write_text(
+                "#!/bin/sh\n"
+                'if [ "$1" = ls-remote ]; then\n'
+                '  case "$2" in *luckyPipewrench*) printf "%b" "$CANONICAL" ;; *) printf "%b" "$CHECKOUT" ;; esac; exit 0\n'
+                "fi\n"
+                'if [ "$1" = -C ]; then shift 2; fi\n'
+                'case "$1" in\n'
+                '  rev-parse) printf "%s\\n" "$LOCAL" ;;\n'
+                '  remote) if [ "$2" = set-url ]; then printf "%s\\n" "$4" > "$STATE"; else cat "$STATE"; fi ;;\n'
+                "esac\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", AEB_ROOT=tmp,
+                       AEB_RELEASE_TAG="v1.1.0", CANONICAL=canonical, CHECKOUT=checkout,
+                       LOCAL=local, STATE=str(state))
+            result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30)
+            return result, state.read_text(encoding="utf-8").strip()
+
+    def test_origin_step_refuses_a_moved_or_nested_tag(self):
+        good, moved = "a" * 40, "b" * 40
+        line = lambda sha, ref="refs/tags/v1.1.0": f"{sha}\\t{ref}\\n"
+        original = "https://github.com/pipelab-org/agent-egress-bench.git"
+        cases = {
+            "remote tag moved after checkout": (line(moved), line(moved), good),
+            "remotes disagree": (line(good), line(moved), good),
+            "nested ref listed first": (line(good, "refs/tags/a/refs/tags/v1.1.0") + line(moved),
+                                         line(good, "refs/tags/a/refs/tags/v1.1.0") + line(moved), good),
+            "tag missing": ("", "", good),
+        }
+        for name, (canonical, checkout, local) in cases.items():
+            with self.subTest(name=name):
+                result, origin = self.run_origin_step(canonical, checkout, local)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(origin, original)
+        result, origin = self.run_origin_step(line(good), line(good), good)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(origin, "https://github.com/luckyPipewrench/agent-egress-bench.git")
+        self.assertIn("Benchmark tag mismatch", self.run_origin_step(line(moved), line(moved), good)[0].stdout)
+
     def test_benchmark_release_tag_is_bound_to_the_pinned_commit(self):
         """The release label must be checked, not asserted.
 

@@ -346,8 +346,8 @@ jobs:
     if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     name: race-oss (1.26, ${{ matrix.shard }})
-    # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
-    timeout-minutes: 48
+    # Two 31-minute whole-command attempts, kill grace, plus setup and upload.
+    timeout-minutes: 68
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -400,8 +400,16 @@ jobs:
           # attempt deadline: only go test's timeout panic names the test that
           # hung. With a 20m timeout and a 21m attempt, compile time let the
           # attempt deadline win and the shard died without naming anything.
-          bash scripts/ci-test-with-retry.sh --packages "$packages" --attempt-timeout-seconds 1260 -- \
-            go test -race -p="$package_parallelism" -parallel=2 -timeout=15m -count=1 ${test_selector:+"$test_selector"} -json \
+          # The package timeout is a hang detector, not a performance gate.
+          # Hosted runner speed varies: unchanged scanner and mcp shards averaged
+          # 450s to 765s across main runs on Nov 7, and the tests running when
+          # the 15m timeout fired had been going for seconds. The tradeoff: a
+          # package can now grow past 15 minutes and still pass, including a
+          # product slowdown. Growth is flagged, not blocked, by the 600s warning
+          # and the weekly drift job; changed tests are still budget-checked on
+          # pull requests, and scan speed is measured by the benchmark gate.
+          bash scripts/ci-test-with-retry.sh --packages "$packages" --attempt-timeout-seconds 1860 -- \
+            go test -race -p="$package_parallelism" -parallel=2 -timeout=25m -count=1 ${test_selector:+"$test_selector"} -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-oss.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/go-test-oss.json
@@ -648,8 +656,8 @@ jobs:
     if: ${{ !cancelled() && needs.security-scan.result == 'success' && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changed-files.outputs.go_toolchain == 'true' && needs.changed-files.outputs.queue_tree_tested != 'true' }}
     runs-on: ubuntu-latest
     name: race-oss (1.27, ${{ matrix.shard }})
-    # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
-    timeout-minutes: 48
+    # Two 31-minute whole-command attempts, kill grace, plus setup and upload.
+    timeout-minutes: 68
     strategy:
       fail-fast: false
       # Size for GitHub Team's 60 standard concurrent jobs:
@@ -699,8 +707,8 @@ jobs:
           if [[ "$TEST_SHARD" == proxy-* ]]; then
             package_parallelism=1
           fi
-          bash scripts/ci-test-with-retry.sh --packages "$packages" --attempt-timeout-seconds 1260 -- \
-            go test -race -p="$package_parallelism" -parallel=2 -timeout=15m -count=1 ${test_selector:+"$test_selector"} -json \
+          bash scripts/ci-test-with-retry.sh --packages "$packages" --attempt-timeout-seconds 1860 -- \
+            go test -race -p="$package_parallelism" -parallel=2 -timeout=25m -count=1 ${test_selector:+"$test_selector"} -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-oss.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/go-test-oss.json
@@ -730,8 +738,8 @@ jobs:
     if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     name: race-enterprise (1.26, ${{ matrix.shard }})
-    # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
-    timeout-minutes: 48
+    # Two 31-minute whole-command attempts, kill grace, plus setup and upload.
+    timeout-minutes: 68
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -784,8 +792,16 @@ jobs:
           # attempt deadline: only go test's timeout panic names the test that
           # hung. With a 20m timeout and a 21m attempt, compile time let the
           # attempt deadline win and the shard died without naming anything.
-          bash scripts/ci-test-with-retry.sh --packages "$packages" --attempt-timeout-seconds 1260 -- \
-            go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=15m -count=1 ${test_selector:+"$test_selector"} -json \
+          # The package timeout is a hang detector, not a performance gate.
+          # Hosted runner speed varies: unchanged scanner and mcp shards averaged
+          # 450s to 765s across main runs on Nov 7, and the tests running when
+          # the 15m timeout fired had been going for seconds. The tradeoff: a
+          # package can now grow past 15 minutes and still pass, including a
+          # product slowdown. Growth is flagged, not blocked, by the 600s warning
+          # and the weekly drift job; changed tests are still budget-checked on
+          # pull requests, and scan speed is measured by the benchmark gate.
+          bash scripts/ci-test-with-retry.sh --packages "$packages" --attempt-timeout-seconds 1860 -- \
+            go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=25m -count=1 ${test_selector:+"$test_selector"} -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-enterprise.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/go-test-enterprise.json
@@ -820,8 +836,8 @@ jobs:
     if: ${{ !cancelled() && needs.security-scan.result == 'success' && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changed-files.outputs.go_toolchain == 'true' && needs.changed-files.outputs.queue_tree_tested != 'true' }}
     runs-on: ubuntu-latest
     name: race-enterprise (1.27, ${{ matrix.shard }})
-    # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
-    timeout-minutes: 48
+    # Two 31-minute whole-command attempts, kill grace, plus setup and upload.
+    timeout-minutes: 68
     strategy:
       fail-fast: false
       # Size for GitHub Team's 60 standard concurrent jobs:
@@ -871,8 +887,8 @@ jobs:
           if [[ "$TEST_SHARD" == proxy-* ]]; then
             package_parallelism=1
           fi
-          bash scripts/ci-test-with-retry.sh --packages "$packages" --attempt-timeout-seconds 1260 -- \
-            go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=15m -count=1 ${test_selector:+"$test_selector"} -json \
+          bash scripts/ci-test-with-retry.sh --packages "$packages" --attempt-timeout-seconds 1860 -- \
+            go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=25m -count=1 ${test_selector:+"$test_selector"} -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-enterprise.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/go-test-enterprise.json
@@ -1007,7 +1023,7 @@ jobs:
     needs: [security-scan]
     runs-on: ubuntu-latest
     name: changed-test race (1.26, ${{ matrix.variant }})
-    # Reuse the complete race lane's job ceiling; package runs keep -timeout=15m.
+    # One 21-minute attempt and its retry; package runs keep -timeout=15m.
     timeout-minutes: 48
     strategy:
       fail-fast: false

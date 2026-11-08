@@ -67,7 +67,7 @@ class DurationTest(unittest.TestCase):
     def test_parallelism_matches_ci_race_shape(self):
         ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
         self.assertEqual(RACE_PARALLELISM, 2)
-        self.assertEqual(ci.count("-parallel=2 -timeout=15m"), 4)
+        self.assertEqual(ci.count("-parallel=2 -timeout=25m"), 4)
 
     def test_parallel_leaves_and_retry_deduplication(self):
         events = [

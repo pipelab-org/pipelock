@@ -59,6 +59,31 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Name the benchmark origin the runner treats as canonical
+        # The pinned runner accepts only its original repository URL as the
+        # canonical corpus origin and fetches tags from that URL itself. The
+        # repository moved to pipelab-org, and GitHub redirects the original URL
+        # there. Point origin at the original URL only after proving both URLs
+        # serve the same pinned release, so a stale redirect fails here instead
+        # of measuring a different corpus. Each lookup is bounded so a stalled
+        # transfer leaves time for the diagnostics steps.
+        shell: bash
+        run: |
+          set -euo pipefail
+          canonical_url="https://github.com/luckyPipewrench/agent-egress-bench.git"
+          checkout_url="https://github.com/pipelab-org/agent-egress-bench.git"
+          tag_ref="refs/tags/${AEB_RELEASE_TAG}"
+          # ls-remote matches patterns from the tail, so select the exact ref.
+          canonical_tag="$(timeout 60 git ls-remote "$canonical_url" "$tag_ref" | awk -v ref="$tag_ref" '$2 == ref { print $1 }')"
+          checkout_tag="$(timeout 60 git ls-remote "$checkout_url" "$tag_ref" | awk -v ref="$tag_ref" '$2 == ref { print $1 }')"
+          local_tag="$(git -C "$AEB_ROOT" rev-parse "$tag_ref")"
+          if [[ -z "$canonical_tag" || "$canonical_tag" != "$checkout_tag" || "$canonical_tag" != "$local_tag" ]]; then
+            echo "::error title=Benchmark tag mismatch::$tag_ref canonical=${canonical_tag:-missing} checkout=${checkout_tag:-missing} local=$local_tag"
+            exit 1
+          fi
+          git -C "$AEB_ROOT" remote set-url origin "$canonical_url"
+          test "$(git -C "$AEB_ROOT" remote get-url origin)" = "$canonical_url"
+
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
