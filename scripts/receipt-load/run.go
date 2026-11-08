@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -172,6 +173,15 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 		return err
 	}
 	proxyAddr := fmt.Sprintf("127.0.0.1:%d", port)
+	if os.Getenv("RECEIPT_LOAD_EVIDENCE_DIR") != "" {
+		ports, marshalErr := json.Marshal(map[string]any{"proxy_port": port, "sink_address": sink.addr()})
+		if marshalErr != nil {
+			return marshalErr
+		}
+		if writeErr := os.WriteFile(filepath.Join(dirs.root, "listener-ports.json"), ports, 0o600); writeErr != nil {
+			return writeErr
+		}
+	}
 	proxy, err := startProxy(ctx, opt.binary, dirs, childEnv, configPath, proxyAddr)
 	if err != nil {
 		return err

@@ -371,6 +371,7 @@ jobs:
 
       - name: Run tests (OSS race)
         env:
+          RECEIPT_LOAD_EVIDENCE_DIR: ${{ runner.temp }}/receipt-load-evidence
           TEST_LABEL: OSS race Go 1.26 ${{ matrix.shard }}
           TEST_SHARD: ${{ matrix.shard }}
           # Advisory test-step budget: warns when a shard drifts so its weights
@@ -432,6 +433,15 @@ jobs:
           name: go-test-json-oss-go126-${{ matrix.shard }}
           path: /tmp/go-test-oss.json
           retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Upload receipt-load failure evidence
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: receipt-load-test-oss-go126-${{ matrix.shard }}
+          path: ${{ runner.temp }}/receipt-load-evidence
+          retention-days: 7
           if-no-files-found: ignore
 
   # Fast suite: every test package, no race detector, under both build variants.
@@ -523,6 +533,7 @@ jobs:
 
       - name: Run tests (no race)
         env:
+          RECEIPT_LOAD_EVIDENCE_DIR: ${{ runner.temp }}/receipt-load-evidence
           TEST_LABEL: ${{ matrix.variant }} Go 1.26 ${{ matrix.shard }}
           TEST_SHARD: ${{ matrix.shard }}
           VARIANT: ${{ matrix.variant }}
@@ -646,6 +657,15 @@ jobs:
           path: ${{ steps.go-cache-key.outputs.dir }}
           key: go-test-v2-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
 
+      - name: Upload receipt-load failure evidence
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: receipt-load-${{ matrix.variant }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/receipt-load-evidence
+          retention-days: 7
+          if-no-files-found: ignore
+
   test-oss-go127:
     needs: [security-scan, changed-files]
     # Runs only on pull requests or merge groups that change the Go toolchain
@@ -688,6 +708,7 @@ jobs:
 
       - name: Run tests (OSS)
         env:
+          RECEIPT_LOAD_EVIDENCE_DIR: ${{ runner.temp }}/receipt-load-evidence
           TEST_LABEL: OSS Go 1.27 ${{ matrix.shard }}
           TEST_SHARD: ${{ matrix.shard }}
           # Advisory test-step budget: warns when a shard drifts toward the
@@ -733,6 +754,15 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+      - name: Upload receipt-load failure evidence
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: receipt-load-test-oss-go127-${{ matrix.shard }}
+          path: ${{ runner.temp }}/receipt-load-evidence
+          retention-days: 7
+          if-no-files-found: ignore
+
   test-enterprise-go126:
     needs: [security-scan]
     if: ${{ github.event_name == 'push' }}
@@ -763,6 +793,7 @@ jobs:
 
       - name: Run tests (enterprise race)
         env:
+          RECEIPT_LOAD_EVIDENCE_DIR: ${{ runner.temp }}/receipt-load-evidence
           TEST_LABEL: enterprise race Go 1.26 ${{ matrix.shard }}
           TEST_SHARD: ${{ matrix.shard }}
           # Advisory test-step budget: warns when a shard drifts so its weights
@@ -826,6 +857,15 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+      - name: Upload receipt-load failure evidence
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: receipt-load-test-enterprise-go126-${{ matrix.shard }}
+          path: ${{ runner.temp }}/receipt-load-evidence
+          retention-days: 7
+          if-no-files-found: ignore
+
   test-enterprise-go127:
     needs: [security-scan, changed-files]
     # Runs only on pull requests or merge groups that change the Go toolchain
@@ -868,6 +908,7 @@ jobs:
 
       - name: Run tests (enterprise)
         env:
+          RECEIPT_LOAD_EVIDENCE_DIR: ${{ runner.temp }}/receipt-load-evidence
           TEST_LABEL: enterprise Go 1.27 ${{ matrix.shard }}
           TEST_SHARD: ${{ matrix.shard }}
           # Advisory test-step budget: warns when a shard drifts toward the
@@ -911,6 +952,15 @@ jobs:
           name: go-test-json-enterprise-go127-${{ matrix.shard }}
           path: /tmp/go-test-enterprise.json
           retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Upload receipt-load failure evidence
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: receipt-load-test-enterprise-go127-${{ matrix.shard }}
+          path: ${{ runner.temp }}/receipt-load-evidence
+          retention-days: 7
           if-no-files-found: ignore
 
   test-subprocess-coverage:
@@ -1078,6 +1128,7 @@ jobs:
         env:
           # Both revisions must use setup-go's toolchain, without auto-upgrades.
           GOTOOLCHAIN: local
+          RECEIPT_LOAD_EVIDENCE_DIR: ${{ runner.temp }}/receipt-load-evidence
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           HEAD_SHA: ${{ github.sha }}
           VARIANT: ${{ matrix.variant }}
@@ -1104,6 +1155,15 @@ jobs:
             changed-tests-${{ matrix.variant }}.base.json
             changed-tests-${{ matrix.variant }}.base.selection.json
           retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Upload receipt-load failure evidence
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: receipt-load-changed-race-${{ matrix.variant }}
+          path: ${{ runner.temp }}/receipt-load-evidence
+          retention-days: 7
           if-no-files-found: ignore
 
   test-go126:
