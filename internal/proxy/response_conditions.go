@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 // applyFullResponsePolicy prepares an outbound request when headers are supplied,
@@ -106,4 +107,13 @@ func writeUnsupportedRange(w http.ResponseWriter, requestID string) {
 // so buffered upstream bodies with trailers must not get an explicit length.
 func responseHasTrailers(resp *http.Response) bool {
 	return len(resp.Trailer) != 0 || len(resp.Header.Values("Trailer")) != 0
+}
+
+// applyFullResponsePolicyForConfig preserves range and cache semantics while
+// watching. The caller reports partial representations as uninspected.
+func applyFullResponsePolicyForConfig(cfg *config.Config, headers http.Header, resp *http.Response) bool {
+	if cfg != nil && cfg.WatchOnly {
+		return true
+	}
+	return applyFullResponsePolicy(headers, resp)
 }

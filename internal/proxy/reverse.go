@@ -653,7 +653,7 @@ func (rp *ReverseProxyHandler) snapshotRuntime() reverseRuntimeSnapshot {
 		defer rp.reloadMu.RUnlock()
 	}
 	snap := reverseRuntimeSnapshot{
-		cfg: deferredWatchConfig(rp.cfgPtr.Load()),
+		cfg: rp.cfgPtr.Load(),
 		sc:  rp.scPtr.Load(),
 	}
 	if rp.editionPtr != nil {
@@ -808,6 +808,10 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		agent = resolvedIdentity.Name
 		agentAuth = string(resolvedIdentity.Auth)
 	}
+	if cfg != nil && cfg.WatchOnly {
+		rp.serveWatchOnly(w, r, snap, resolvedIdentity, clientIP, requestID)
+		return
+	}
 	w = rp.owner.withAdaptiveRefusal(w, adaptiveRefusalOptions{config: cfg, agent: agent, clientIP: clientIP, auth: resolvedIdentity.Auth, host: func() string { return rp.upstream.Hostname() }, transport: TransportReverse})
 	emitReverseReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptShard(opts, selectedReceiptShard)
@@ -868,7 +872,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// bound agent.
 	r = r.WithContext(withCorrelation(context.WithValue(r.Context(), ctxKeyAgentAuth, agentAuth), correlation))
 	targetURL := reverseTargetURL(rp.upstream, r)
-	if unsupportedInspectionRange(r) {
+	if rp.watchRefusal(cfg, unsupportedInspectionRange(r), "browser_cache", unsupportedRangeMessage, "uninspected") {
 		rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), "browser_cache", unsupportedRangeMessage)
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "browser_cache")
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
@@ -2010,7 +2014,8 @@ func (t *reverseOutcomeTracker) EmitOnce(rp *ReverseProxyHandler) {
 // and signing before handing the request off to the base transport.
 // Errors from InjectAndSign fail closed and block the outbound request.
 func (t *reverseSigningRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	applyFullResponsePolicy(req.Header, nil)
+	cfg, _ := req.Context().Value(ctxKeyReverseEnvelopeCfg).(*config.Config)
+	applyFullResponsePolicyForConfig(cfg, req.Header, nil)
 	// Use the emitter snapshot from admission time, not the current
 	// global atomic. A reload between ServeHTTP and RoundTrip must
 	// not flip the signing decision for an in-flight request.
@@ -2357,11 +2362,8 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// httputil.ReverseProxy copies response headers after this hook. Reserve the
 	// recorded-receipt namespace before any response branch can reach the
 	// caller.
-	blockreason.StripRecordedReceipt(resp.Header)
 	responseBodyLimit := rp.responseScanBodyLimit()
-	stripUpstreamPipelockNamespace(resp)
 	cfg, _ := resp.Request.Context().Value(ctxKeyReverseEnvelopeCfg).(*config.Config)
-	cfg = deferredWatchConfig(cfg)
 	sc, _ := resp.Request.Context().Value(ctxKeyReverseScanner).(*scanner.Scanner)
 	if cfg == nil || sc == nil {
 		snap := rp.snapshotRuntime()
@@ -2372,6 +2374,18 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			sc = snap.sc
 		}
 	}
+	if cfg != nil && cfg.WatchOnly {
+		err := watchResponseBody(resp.Request.Context(), resp, watchResponseOptions{
+			Config: cfg, Scanner: sc, Logger: rp.logger, Metrics: rp.metrics,
+			Transport: TransportReverse, MaxBytes: int64(responseBodyLimit), Shield: rp.shieldEngine,
+		})
+		if err == nil {
+			rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
+		}
+		return err
+	}
+	blockreason.StripRecordedReceipt(resp.Header)
+	stripUpstreamPipelockNamespace(resp)
 	responseReceiptState := reverseResponseReceiptStateFrom(resp)
 	defer func() {
 		if responseReceiptState == nil {
@@ -3744,6 +3758,10 @@ func setBufferedReverseResponseBody(resp *http.Response, body []byte, cfg *confi
 // The concrete error is logged server-side but not exposed to the client
 // to avoid leaking internal topology (dial addresses, TLS state, DNS).
 func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, errWatchResponseCoreFloor) {
+		writeReverseProxyBlock(w, http.StatusForbidden, blockInfoFor(blockreason.DLPMatch, scannerLabelBodyDLP), "enforced in watch-only: core credential floor")
+		return
+	}
 	clientIP, _ := r.Context().Value(ctxKeyClientIP).(string)
 	requestID, _ := r.Context().Value(ctxKeyRequestID).(string)
 	outcomeTracker := reverseOutcomeFromContext(r.Context())

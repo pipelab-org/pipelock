@@ -124,7 +124,16 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// through to enforce-default-deny.
 	resolved, id, envEmitter, snapshotContractLoader, r, releaseLicense := p.resolveAgentRuntimeFromRequest(r)
 	defer releaseLicense()
-	cfg := deferredWatchConfig(resolved.Config)
+	cfg := resolved.Config
+	if cfg.WatchOnly {
+		sc, release, _ := p.pinResolvedScanner(resolved)
+		defer release()
+		p.handleWatchConnect(w, r, watchHTTPOptions{
+			Config: cfg, Scanner: sc, Logger: p.logger, Metrics: p.metrics, Transport: TransportConnect,
+			Proxy: p, Agent: id.Name, ActorAuth: id.Auth, Budget: resolved.Budget, ClientIP: clientIP, RequestID: requestID, KillSwitch: p.ks,
+		})
+		return
+	}
 
 	agent := id.Name
 	if agent == "" {

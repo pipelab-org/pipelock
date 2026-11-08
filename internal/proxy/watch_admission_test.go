@@ -61,7 +61,7 @@ func TestWatchDisabledBodyScanningParity(t *testing.T) {
 }
 
 func TestWatchUpstreamRefusalEvidence(t *testing.T) {
-	for _, surface := range []string{TransportForward, TransportFetch} {
+	for _, surface := range []string{TransportForward, "intercept", TransportReverse, TransportFetch} {
 		for _, tc := range []struct {
 			name   string
 			err    error

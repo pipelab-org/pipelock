@@ -108,6 +108,8 @@ type tunnelRelay struct {
 	idleTimeout    time.Duration
 	deadline       time.Time
 	ks             *killswitch.Controller
+	watchOnly      func() bool
+	observe        func(string, bool)
 
 	clockStart   time.Time
 	lastActivity atomic.Int64 // monotonic nanoseconds since clockStart of the last byte seen in either direction
@@ -163,6 +165,7 @@ func (tr *tunnelRelay) watchdog(done <-chan struct{}) {
 	if tr.idleTimeout > 0 && tr.idleTimeout < interval {
 		interval = tr.idleTimeout
 	}
+	var observedIdle bool
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -172,6 +175,9 @@ func (tr *tunnelRelay) watchdog(done <-chan struct{}) {
 			return
 		case <-ticker.C:
 			if tr.ks != nil && tr.ks.IsActive() {
+				if tr.observe != nil {
+					tr.observe("kill switch active", true)
+				}
 				tr.closeBoth()
 				return
 			}
@@ -182,8 +188,17 @@ func (tr *tunnelRelay) watchdog(done <-chan struct{}) {
 			if tr.idleTimeout > 0 {
 				idleFor := time.Since(tr.clockStart) - time.Duration(tr.lastActivity.Load())
 				if idleFor >= tr.idleTimeout {
-					tr.closeBoth()
-					return
+					if tr.watchOnly != nil && tr.watchOnly() {
+						if !observedIdle && tr.observe != nil {
+							tr.observe("CONNECT idle timeout", false)
+						}
+						observedIdle = true
+					} else {
+						tr.closeBoth()
+						return
+					}
+				} else {
+					observedIdle = false
 				}
 			}
 		}

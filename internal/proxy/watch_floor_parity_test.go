@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/authority"
@@ -42,7 +44,7 @@ func TestWatchAuditFloorHTTPParity(t *testing.T) {
 		{name: "query subsequence bound", query: watchQueryLimitFixture()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			for _, surface := range []string{TransportForward} {
+			for _, surface := range []string{TransportForward, TransportReverse, "intercept"} {
 				for _, watch := range []bool{false, true} {
 					t.Run(fmt.Sprintf("%s/watch=%t", surface, watch), func(t *testing.T) {
 						var hits atomic.Int32
@@ -172,6 +174,38 @@ func TestWatchFetchRedirectLimit(t *testing.T) {
 	auditProxy.handleFetch(audit, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+url.QueryEscape(upstream.URL), nil))
 	if audit.Code != out.Code {
 		t.Fatalf("watch-only redirect cap status %d differs from audit %d", out.Code, audit.Code)
+	}
+}
+
+func TestWatchConnectAuthorityParity(t *testing.T) {
+	for _, payload := range [][]byte{buildClientHello("other.vendor.example"), []byte("not TLS")} {
+		upstream := listenEcho(t)
+		defer func() { _ = upstream.Close() }()
+		proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+			cfg.WatchOnly = true
+			cfg.ForwardProxy.SNIRequireTLS = ptrBool(true)
+		})
+		defer cleanup()
+		conn := dialProxy(t, proxyAddr)
+		defer func() { _ = conn.Close() }()
+		_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+		target := upstream.Addr().String()
+		_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+		reader := bufio.NewReader(conn)
+		resp, err := http.ReadResponse(reader, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("CONNECT status=%d", resp.StatusCode)
+		}
+		_, _ = conn.Write(payload)
+		buf := make([]byte, len(payload))
+		n, err := io.ReadFull(reader, buf)
+		if err == nil || n != 0 {
+			t.Fatalf("authority failure relayed %d bytes", n)
+		}
 	}
 }
 
@@ -312,6 +346,8 @@ func TestWatchA2AResponseCeilingRemainsObservation(t *testing.T) {
 func TestWatchAuditFloorTransportParity(t *testing.T) {
 	surfaces := map[string][]string{
 		"fetch": {"url"}, "forward": {"url", "header", "body"},
+		"intercept": {"url", "header", "body"}, "reverse": {"url", "header", "body"},
+		"connect": {"header"},
 	}
 	for transport, list := range surfaces {
 		for _, surface := range list {

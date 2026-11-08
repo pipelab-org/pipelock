@@ -4,12 +4,15 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
@@ -19,15 +22,83 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
-
+	"github.com/luckyPipewrench/pipelock/internal/authority"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
+
+func TestWatchReviewSubmitGate(t *testing.T) {
+	for _, watch := range []bool{false, true} {
+		t.Run(fmt.Sprint(watch), func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.WatchOnly = watch
+			cfg.Enforce = ptrBool(false)
+			cfg.ReverseProxy.Profile = config.ReverseProxyProfileSubmit
+			cfg.ReverseProxy.AllowedPaths = []config.ReverseProxyPathRule{{Exact: "/submit"}}
+			var calls atomic.Int32
+			srv := reverseTestSetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) { calls.Add(1); w.WriteHeader(http.StatusOK) })
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/submit", nil)
+			req.RequestURI = ""
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusMethodNotAllowed || calls.Load() != 0 {
+				t.Fatalf("status=%d upstream=%d", resp.StatusCode, calls.Load())
+			}
+		})
+	}
+}
+
+func TestWatchReviewCONNECTCapacity(t *testing.T) {
+	sem := getTunnelSemaphore()
+	acquired := 0
+	for sem.TryAcquire() {
+		acquired++
+	}
+	defer func() {
+		for range acquired {
+			sem.Release()
+		}
+	}()
+	_, p, cleanup := setupForwardProxyWithInstance(t, func(c *config.Config) { c.WatchOnly = true })
+	defer cleanup()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodConnect, "http://127.0.0.1:443", nil)
+	req.Host = "127.0.0.1:443"
+	p.handleConnect(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body)
+	}
+}
+
+func TestWatchReviewCONNECTDialFailure(t *testing.T) {
+	upstream := listenEcho(t)
+	target := upstream.Addr().String()
+	_ = upstream.Close()
+	address, cleanup := setupForwardProxy(t, func(c *config.Config) { c.WatchOnly = true; c.ForwardProxy.SNIVerification = ptrBool(false) })
+	defer cleanup()
+	conn := dialProxy(t, address)
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+}
 
 func TestWatchReviewEvidenceHeaders(t *testing.T) {
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -182,6 +253,107 @@ func TestWatchReviewA2ASSEWithoutGeneric(t *testing.T) {
 	}
 }
 
+func TestWatchReviewCONNECTLifecycle(t *testing.T) {
+	for _, mode := range []string{"reload", "license"} {
+		t.Run(mode, func(t *testing.T) {
+			upstream := listenEcho(t)
+			defer func() { _ = upstream.Close() }()
+			_, p, cleanup := setupForwardProxyWithInstance(t, func(c *config.Config) {
+				c.WatchOnly = true
+				c.ForwardProxy.SNIVerification = ptrBool(false)
+				c.ForwardProxy.IdleTimeoutSeconds = 1
+			})
+			defer cleanup()
+			ctx, cancel := context.WithCancelCause(t.Context())
+			defer cancel(nil)
+			server := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { p.handleConnect(w, r.WithContext(ctx)) }))
+			defer server.Close()
+			conn := dialProxy(t, server.Listener.Addr().String())
+			defer func() { _ = conn.Close() }()
+			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+			target := upstream.Addr().String()
+			_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+			reader := bufio.NewReader(conn)
+			resp, err := http.ReadResponse(reader, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d", resp.StatusCode)
+			}
+			if _, err := io.WriteString(conn, "ready"); err != nil {
+				t.Fatal(err)
+			}
+			echoed := make([]byte, len("ready"))
+			if _, err := io.ReadFull(reader, echoed); err != nil {
+				t.Fatal(err)
+			}
+			if string(echoed) != "ready" {
+				t.Fatal("tunnel did not establish")
+			}
+			if mode == "license" {
+				cancel(errAgentLicenseRevoked)
+			} else {
+				next := *p.CurrentConfig()
+				next.WatchOnly = false
+				nextScanner := scanner.MustNew(&next)
+				if !p.Reload(&next, nextScanner) {
+					t.Fatal("reload failed")
+				}
+			}
+			_, err = reader.ReadByte()
+			var netErr net.Error
+			if err == nil || errors.As(err, &netErr) && netErr.Timeout() {
+				t.Fatalf("tunnel not closed: %v", err)
+			}
+		})
+	}
+}
+
+type watchReviewDialer struct {
+	call func(context.Context) (net.Conn, error)
+}
+
+func (d watchReviewDialer) DialContext(ctx context.Context, _, _ string) (net.Conn, error) {
+	return d.call(ctx)
+}
+
+func TestWatchReviewCONNECTAdmission(t *testing.T) {
+	_, p, cleanup := setupForwardProxyWithInstance(t, func(c *config.Config) { c.WatchOnly = true; c.ForwardProxy.SNIVerification = ptrBool(false) })
+	defer cleanup()
+	var verified authority.Request
+	p.authorityVerifier = proxyAuthorityVerifierFunc(func(_ context.Context, r authority.Request) authority.Result {
+		verified = r
+		return authority.Result{Decision: authority.DecisionAllow, Reason: authority.ReasonMatched}
+	})
+	var deadline bool
+	p.dialer = watchReviewDialer{call: func(ctx context.Context) (net.Conn, error) {
+		_, deadline = ctx.Deadline()
+		if _, ok := ctx.Value(watchModeContextKey{}).(watchHTTPOptions); !ok {
+			t.Error("watch dial context missing")
+		}
+		return nil, errors.New("test dial failure")
+	}}
+	server := newIPv4Server(t, http.HandlerFunc(p.handleConnect))
+	defer server.Close()
+	conn := dialProxy(t, server.Listener.Addr().String())
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	_, _ = fmt.Fprintf(conn, "CONNECT 127.0.0.1:443 HTTP/1.1\r\nHost: 127.0.0.1:443\r\n%s: grant\r\n\r\n", authority.HTTPHeader)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadGateway || !deadline {
+		t.Fatalf("status=%d dial deadline=%v", resp.StatusCode, deadline)
+	}
+	if verified.Destination != "https://127.0.0.1:443/" || verified.AuthorityRef != "grant" {
+		t.Fatalf("authority=%+v", verified)
+	}
+}
+
 func TestWatchReviewRequiredReceiptPersistence(t *testing.T) {
 	var hits atomic.Int32
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -228,6 +400,39 @@ func TestWatchReviewResponseAdaptive(t *testing.T) {
 	}
 }
 
+func TestWatchReviewInterceptedCONNECTPlaintext(t *testing.T) {
+	upstream := listenEcho(t)
+	defer func() { _ = upstream.Close() }()
+	_, p, cleanup := setupForwardProxyWithInstance(t, func(c *config.Config) { c.WatchOnly = true })
+	defer cleanup()
+	cfg := p.CurrentConfig().Clone()
+	cfg.TLSInterception.Enabled = true
+	cfg.ForwardProxy.SNIRequireTLS = ptrBool(false)
+	server := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p.handleWatchConnect(w, r, watchHTTPOptions{Config: cfg, Scanner: p.scannerPtr.Load(), Proxy: p, Logger: p.logger, Metrics: p.metrics, Transport: TransportConnect})
+	}))
+	defer server.Close()
+	conn := dialProxy(t, server.Listener.Addr().String())
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	target := upstream.Addr().String()
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	_, _ = io.WriteString(conn, "plain uninspected content")
+	_, err = reader.ReadByte()
+	if err == nil {
+		t.Fatal("plaintext relayed for intercepted target")
+	}
+}
+
 func TestWatchReviewSSEFindingReceipt(t *testing.T) {
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -255,6 +460,24 @@ func TestWatchReviewSSEFindingReceipt(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if len(body) != 0 || syncs.Load() < 2 {
 		t.Fatalf("finding released without persistence: body=%q syncs=%d", body, syncs.Load())
+	}
+}
+
+func TestWatchReviewNormalizedAuthority(t *testing.T) {
+	_, p, cleanup := setupForwardProxyWithInstance(t, func(c *config.Config) { c.WatchOnly = true })
+	defer cleanup()
+	var got authority.Request
+	p.authorityVerifier = proxyAuthorityVerifierFunc(func(_ context.Context, r authority.Request) authority.Result {
+		got = r
+		return authority.Result{Decision: authority.DecisionDeny, Reason: authority.ReasonActionMismatch}
+	})
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodConnect, "http://127.0.0.1:443", nil)
+	req.Host = "127.0.0.1:443"
+	req.Header.Set(authority.HTTPHeader, "grant")
+	w := httptest.NewRecorder()
+	p.handleConnect(w, req)
+	if w.Code != http.StatusForbidden || got.Destination != "https://127.0.0.1:443/" || got.AuthorityRef != "grant" {
+		t.Fatalf("status=%d authority=%+v", w.Code, got)
 	}
 }
 

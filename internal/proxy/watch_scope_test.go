@@ -40,7 +40,7 @@ func TestWatchDeferredConfigSnapshot(t *testing.T) {
 }
 
 func TestWatchDeferredSurfaceParity(t *testing.T) {
-	for _, transport := range []string{"connect", "intercept", "reverse", "websocket"} {
+	for _, transport := range []string{"websocket"} {
 		for _, enforce := range []bool{false, true} {
 			for _, kind := range []string{"core", "operator", "blocklist"} {
 				surface := "url"
@@ -75,7 +75,7 @@ func TestWatchDeferredRequestReceiptConfig(t *testing.T) {
 		{http.MethodGet, "http://api.vendor.example/", true},
 		{http.MethodGet, "http://api.vendor.example/ws", true},
 		{http.MethodGet, "/fetch?url=https://api.vendor.example", true},
-		{http.MethodConnect, "api.vendor.example:443", false},
+		{http.MethodConnect, "api.vendor.example:443", true},
 		{http.MethodGet, "/ws?url=wss://api.vendor.example", false},
 	} {
 		req := httptest.NewRequestWithContext(t.Context(), tc.method, tc.target, nil)
