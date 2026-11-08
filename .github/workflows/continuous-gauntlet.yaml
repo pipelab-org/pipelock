@@ -65,15 +65,16 @@ jobs:
         # repository moved to pipelab-org, and GitHub redirects the original URL
         # there. Point origin at the original URL only after proving both URLs
         # serve the same pinned release, so a stale redirect fails here instead
-        # of measuring a different corpus.
+        # of measuring a different corpus. Each lookup is bounded so a stalled
+        # transfer leaves time for the diagnostics steps.
         shell: bash
         run: |
           set -euo pipefail
           canonical_url="https://github.com/luckyPipewrench/agent-egress-bench.git"
           checkout_url="https://github.com/pipelab-org/agent-egress-bench.git"
           tag_ref="refs/tags/${AEB_RELEASE_TAG}"
-          canonical_tag="$(git ls-remote "$canonical_url" "$tag_ref")"
-          checkout_tag="$(git ls-remote "$checkout_url" "$tag_ref")"
+          canonical_tag="$(timeout 60 git ls-remote "$canonical_url" "$tag_ref")"
+          checkout_tag="$(timeout 60 git ls-remote "$checkout_url" "$tag_ref")"
           test -n "$canonical_tag"
           test "$canonical_tag" = "$checkout_tag"
           git -C "$AEB_ROOT" remote set-url origin "$canonical_url"
