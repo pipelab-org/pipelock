@@ -6,6 +6,7 @@ package audit
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -79,5 +80,40 @@ func TestWatchOnlyCatalogDoesNotClaimObservationBlocked(t *testing.T) {
 	}
 	if len(wanted) != 0 {
 		t.Fatalf("missing descriptors: %v", wanted)
+	}
+}
+
+func TestWatchOnlyReasonDropsInspectedContent(t *testing.T) {
+	secret := "sk-live-" + "abcdefghijklmnop"
+	for _, reason := range []string{
+		`high entropy query key "` + secret + `" (4.20 > 3.00 threshold)`,
+		`nested URL in query parameter "` + secret + `": SSRF blocked`,
+		`high entropy subdomain label "a\"` + secret + `" (4.1 > 3.0 threshold)`,
+		`unterminated "` + secret,
+	} {
+		logger, sink := newLoggerWithEmitter(t)
+		var buf bytes.Buffer
+		logger.zl = logger.zl.Output(&buf)
+		logger.LogWatchOnlyRequest("req-1", "forward", "entropy", reason, "block", 0, false)
+		if strings.Contains(buf.String(), secret) {
+			t.Fatalf("local event echoed inspected content: %s", buf.String())
+		}
+		ev, ok := sink.lastEvent()
+		if !ok || strings.Contains(fmt.Sprint(ev.Fields), secret) {
+			t.Fatalf("emitted event echoed inspected content: %+v", ev)
+		}
+		if ev.Fields["request_id"] != "req-1" {
+			t.Fatalf("request ID missing from emitted event: %+v", ev.Fields)
+		}
+		var entry map[string]any
+		if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+			t.Fatal(err)
+		}
+		if entry["request_id"] != "req-1" || !strings.Contains(entry["reason"].(string), "[redacted]") {
+			t.Fatalf("diagnostic lost: %+v", entry)
+		}
+	}
+	if got := RedactWatchOnlyReason("response inspection ceiling exceeded"); got != "response inspection ceiling exceeded" {
+		t.Fatalf("plain reason changed: %q", got)
 	}
 }

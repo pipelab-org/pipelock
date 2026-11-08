@@ -4,13 +4,50 @@
 package audit
 
 import (
+	"strings"
+
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/eventcatalog"
 )
 
+const redactedReasonSegment = `"[redacted]"`
+
+// RedactWatchOnlyReason drops request-derived text from a diagnostic reason.
+// Scanner reasons quote the inspected component with %q (a high-entropy query
+// key, a nested-URL parameter, a subdomain label), and that component can be a
+// credential. Every quoted segment is replaced, so a reason keeps its stage and
+// threshold but never the bytes that triggered it.
+func RedactWatchOnlyReason(reason string) string {
+	if !strings.Contains(reason, `"`) {
+		return reason
+	}
+	var b strings.Builder
+	b.Grow(len(reason))
+	for i := 0; i < len(reason); i++ {
+		if reason[i] != '"' {
+			b.WriteByte(reason[i])
+			continue
+		}
+		b.WriteString(redactedReasonSegment)
+		for i++; i < len(reason) && reason[i] != '"'; i++ {
+			if reason[i] == '\\' {
+				i++
+			}
+		}
+	}
+	return b.String()
+}
+
 // LogWatchOnly records observation separately from enforcement. Callers pass
 // scanner names and diagnostic reasons, never inspected payload bytes.
 func (l *Logger) LogWatchOnly(transport, scannerName, reason, action string, uninspectedBytes int64, enforced bool) {
+	l.LogWatchOnlyRequest("", transport, scannerName, reason, action, uninspectedBytes, enforced)
+}
+
+// LogWatchOnlyRequest is LogWatchOnly for a request that has an ID, so
+// concurrent requests with the same finding can be told apart and matched to
+// their receipts.
+func (l *Logger) LogWatchOnlyRequest(requestID, transport, scannerName, reason, action string, uninspectedBytes int64, enforced bool) {
 	if l == nil {
 		return
 	}
@@ -32,9 +69,10 @@ func (l *Logger) LogWatchOnly(transport, scannerName, reason, action string, uni
 		boolField("enforced", enforced).
 		str("transport", transport).
 		str("scanner", scannerName).
-		str("reason", reason).
+		str("reason", RedactWatchOnlyReason(reason)).
 		str("would_have_been_action", action).
-		int64Field("uninspected_bytes", uninspectedBytes)
+		int64Field("uninspected_bytes", uninspectedBytes).
+		optStr("request_id", requestID)
 	e.msg(message)
 	if l.emitter != nil {
 		l.emitEvent(event, e.fields)
