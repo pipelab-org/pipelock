@@ -4,6 +4,7 @@
 package transport
 
 import (
+	"bufio"
 	"errors"
 	"io"
 	"strings"
@@ -61,6 +62,34 @@ func TestSSEReaderLineEndingsMatchEventStreamFormat(t *testing.T) {
 					t.Fatalf("events = %q, want %q", got, tc.want)
 				}
 			})
+		}
+	}
+}
+
+// A CR at the end of one read sets a pending-LF flag; the next read must clear
+// it even when it does not start with LF. A stale flag would swallow the next
+// real blank line, merging two events.
+func TestSSELineSplitterClearsPendingLF(t *testing.T) {
+	in := "data: a\rdata: b\n\ndata: c\n\n"
+	sc := bufio.NewScanner(iotest.OneByteReader(strings.NewReader(in)))
+	sc.Split(newSSELineSplitter())
+	var got []string
+	for sc.Scan() {
+		got = append(got, sc.Text())
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"data: a", "data: b", "", "data: c", ""}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("lines = %q, want %q", got, want)
+	}
+}
+
+func TestLineEndIndex(t *testing.T) {
+	for in, want := range map[string]int{"": -1, "abc": -1, "a\nb": 1, "a\rb": 1, "ab\r\n": 2, "a\nb\r": 1, "\r": 0, "\n": 0} {
+		if got := lineEndIndex([]byte(in)); got != want {
+			t.Errorf("lineEndIndex(%q) = %d, want %d", in, got, want)
 		}
 	}
 }

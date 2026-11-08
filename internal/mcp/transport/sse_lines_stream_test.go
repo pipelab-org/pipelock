@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 package transport
 
 import (
@@ -11,7 +14,7 @@ import (
 	"time"
 )
 
-func TestReviewCRBoundaryDoesNotWaitForAnotherRead(t *testing.T) {
+func TestSSELineSplitterCRBoundaryDoesNotWaitForAnotherRead(t *testing.T) {
 	split := newSSELineSplitter()
 	advance, token, err := split([]byte("data: x\r"), false)
 	if err != nil || advance != 8 || string(token) != "data: x" {
@@ -24,7 +27,7 @@ func TestReviewCRBoundaryDoesNotWaitForAnotherRead(t *testing.T) {
 }
 
 // A complete CR-delimited event must arrive while the upstream is still open.
-func TestReviewCRDelimitedLiveEvent(t *testing.T) {
+func TestSSELineSplitterCRDelimitedLiveEvent(t *testing.T) {
 	reader, writer := net.Pipe()
 	defer func() { _ = reader.Close() }()
 	defer func() { _ = writer.Close() }()
@@ -57,7 +60,7 @@ func TestReviewCRDelimitedLiveEvent(t *testing.T) {
 	}
 }
 
-func TestReviewSplitCRLFNoExtraBoundary(t *testing.T) {
+func TestSSELineSplitterSplitCRLFNoExtraBoundary(t *testing.T) {
 	split := newSSELineSplitter()
 	advance, token, err := split([]byte("a\r"), false)
 	if advance != 2 || string(token) != "a" || err != nil {
@@ -69,7 +72,7 @@ func TestReviewSplitCRLFNoExtraBoundary(t *testing.T) {
 	}
 }
 
-func TestReviewEmptyAndBOMStreams(t *testing.T) {
+func TestSSELineSplitterEmptyAndBOMStreams(t *testing.T) {
 	for _, input := range []string{"", "\xef", "\xef\xbb", "\xef\xbb\xbf"} {
 		_, err := NewSSEReader(iotest.OneByteReader(strings.NewReader(input))).ReadMessage()
 		if !errors.Is(err, io.EOF) {
@@ -78,7 +81,7 @@ func TestReviewEmptyAndBOMStreams(t *testing.T) {
 	}
 }
 
-func TestReviewLineLimit(t *testing.T) {
+func TestSSELineSplitterLineLimit(t *testing.T) {
 	for _, tc := range []struct {
 		n         int
 		wantError bool

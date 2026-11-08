@@ -44,7 +44,7 @@ func newSSELineSplitter() func(data []byte, atEOF bool) (int, []byte, error) {
 		if len(rest) == 0 && skip > 0 {
 			return skip, nil, nil
 		}
-		if i := bytes.IndexAny(rest, "\r\n"); i >= 0 {
+		if i := lineEndIndex(rest); i >= 0 {
 			if rest[i] == '\n' {
 				return skip + i + 1, rest[:i], nil
 			}
@@ -63,4 +63,22 @@ func newSSELineSplitter() func(data []byte, atEOF bool) (int, []byte, error) {
 		}
 		return skip, nil, nil
 	}
+}
+
+// lineEndIndex returns the index of the first CR or LF in b, or -1. It finds
+// LF with one IndexByte pass and looks for CR only before it: bytes.IndexAny
+// with a two-byte set is far slower on long lines that arrive in small reads,
+// where the scanner re-scans the growing buffer on every read.
+func lineEndIndex(b []byte) int {
+	end := len(b)
+	if lf := bytes.IndexByte(b, '\n'); lf >= 0 {
+		end = lf
+	}
+	if cr := bytes.IndexByte(b[:end], '\r'); cr >= 0 {
+		return cr
+	}
+	if end < len(b) {
+		return end
+	}
+	return -1
 }
