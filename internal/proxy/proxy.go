@@ -2961,7 +2961,6 @@ type ceeEntropySnapshot struct {
 }
 
 type ceeAdmitRequest struct {
-	WatchOnly            bool
 	ActorAuth            envelope.ActorAuth
 	Outbound             []byte
 	BodyFragmentPayloads map[string][]byte
@@ -2991,9 +2990,6 @@ func (p *Proxy) admitCurrentCEE(ctx context.Context, req ceeAdmitRequest) ceeAdm
 	cfg := p.cfgPtr.Load()
 	if cfg == nil {
 		return ceeAdmission{}
-	}
-	if !req.WatchOnly {
-		cfg = deferredWatchConfig(cfg)
 	}
 	ceeCfg := ceeEffectiveConfig(cfg.CrossRequestDetection, cfg.EnforceEnabled())
 	if !ceeCfg.Enabled {
@@ -3027,7 +3023,7 @@ func (p *Proxy) admitCurrentCEE(ctx context.Context, req ceeAdmitRequest) ceeAdm
 func (p *Proxy) currentCEEEntropy(identity identitykey.CEEIdentity) ceeEntropySnapshot {
 	p.reloadMu.RLock()
 	defer p.reloadMu.RUnlock()
-	cfg := deferredWatchConfig(p.cfgPtr.Load())
+	cfg := p.cfgPtr.Load()
 	if cfg == nil {
 		return ceeEntropySnapshot{}
 	}
@@ -5295,7 +5291,7 @@ func (p *Proxy) buildHandler(mux *http.ServeMux) http.Handler {
 						requestID,
 						r.Method,
 						r.URL.String(),
-					), watchRequestConfig(p.cfgPtr.Load(), r))) {
+					), p.cfgPtr.Load())) {
 						blockreason.SetRecordedReceipt(w.Header(), actionID)
 					}
 					writeBlockedError(w,

@@ -30,6 +30,13 @@ import (
 // that codecov/patch flagged at 0%.
 func TestWSProxy_HandshakeSigned(t *testing.T) {
 	t.Parallel()
+	for _, watch := range []bool{false, true} {
+		t.Run(fmt.Sprint(watch), func(t *testing.T) { testWSHandshakeSigned(t, watch) })
+	}
+}
+
+func testWSHandshakeSigned(t *testing.T, watch bool) {
+	t.Helper()
 
 	var gotSig, gotSigInput, gotMediation string
 	var handshakes int32
@@ -63,6 +70,7 @@ func TestWSProxy_HandshakeSigned(t *testing.T) {
 	}()
 
 	cfg := config.Defaults()
+	cfg.WatchOnly = watch
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil

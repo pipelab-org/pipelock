@@ -358,7 +358,6 @@ func watchAdmit(r *http.Request, o watchHTTPOptions) watchAdmission {
 			}
 			payloads := extractOutboundPayloads(r, ceeJSONBodyPartitioningEnabled(cfg), sessionKey, partitionKey)
 			cee := p.admitCurrentCEE(r.Context(), ceeAdmitRequest{
-				WatchOnly: true,
 				ActorAuth: o.ActorAuth, Outbound: payloads.outbound,
 				BodyFragmentPayloads: payloads.bodyFragmentPayloads, BodyFragmentLeaves: payloads.bodyFragmentLeaves, PartitionReason: payloads.partitionReason,
 				KeyPayload: queryParamKeys(r.URL), PathPayload: pathSegments(r.URL), TargetURL: r.URL.String(), Agent: o.Agent, ClientIP: o.ClientIP, RequestID: o.RequestID, IncludeFragments: true,

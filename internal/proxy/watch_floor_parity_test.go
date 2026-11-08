@@ -347,7 +347,7 @@ func TestWatchAuditFloorTransportParity(t *testing.T) {
 	surfaces := map[string][]string{
 		"fetch": {"url"}, "forward": {"url", "header", "body"},
 		"intercept": {"url", "header", "body"}, "reverse": {"url", "header", "body"},
-		"connect": {"header"},
+		"websocket": {"url", "header", "body"}, "connect": {"header"},
 	}
 	for transport, list := range surfaces {
 		for _, surface := range list {

@@ -4520,8 +4520,16 @@ func TestWSProxyCEEEntropyBlocked(t *testing.T) {
 }
 
 func TestWebSocketHandshake_CEEPathFragmentsBlockSecondUpgrade(t *testing.T) {
+	for _, watch := range []bool{false, true} {
+		t.Run(fmt.Sprint(watch), func(t *testing.T) { testWSCEEPathFragmentsBlock(t, watch) })
+	}
+}
+
+func testWSCEEPathFragmentsBlock(t *testing.T, watch bool) {
+	t.Helper()
 	backendAddr, handshakes, _, _ := websocketBoundaryBackend(t)
 	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		cfg.WatchOnly = watch
 		cfg.CrossRequestDetection.Enabled = true
 		cfg.CrossRequestDetection.Action = config.ActionBlock
 		cfg.CrossRequestDetection.EntropyBudget.Enabled = false

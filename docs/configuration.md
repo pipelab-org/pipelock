@@ -127,15 +127,10 @@ Kill switches, caller and server identity checks, authority grants, CONNECT SNI 
 Watch-only records ordinary response, injection, tool-policy, request-policy, budget, and contract refusals as `would_block`. Adaptive escalation is recorded as `would_escalate` without raising enforcement. It also relaxes response size ceilings and size-exempt limits, SSE event drops or terminations, and response Range/206/304 refusals. Findings already configured as `warn` or `allow` use `watch_only_observation`. Relaxed response inspection failures use `uninspected` with the reason and forwarded-byte count; a successful transfer doesn't establish inspection coverage. Existing response-side credential floors, including field-aware A2A checks, still apply.
 
 In this release, watch-only applies to plain forward HTTP, fetch, CONNECT,
-TLS interception, and reverse proxy. WebSocket and MCP retain their normal
-`enforce` behavior and scanning even when `watch_only` is set.
+TLS interception, reverse proxy, and WebSocket. MCP retains its normal policy
+and scanning even when `watch_only` is set.
 
-Forward, intercepted, and reverse HTTP preserve admitted payloads and
-policy-controlled headers. HTTP hop-by-hop handling and consumption of proxy
-authentication, authority metadata, and untrusted client-identity assertions
-still apply. Fetch retains its text-in-JSON API and redirect limit, and rechecks
-each destination. CONNECT remains an opaque tunnel unless TLS interception is
-enabled; watch-only preserves its existing destination and SNI checks.
+Forward and intercepted HTTP preserve admitted payloads and policy-controlled headers. HTTP hop-by-hop handling and consumption of proxy authentication, authority metadata, and untrusted client-identity assertions still apply. Fetch retains its text-in-JSON API and redirect limit, and rechecks each destination. The WebSocket endpoint uses its scanning relay and existing header allowlist, including for negotiated subprotocols. An unsupported upgrade or outbound frame that can't be inspected is refused. CONNECT remains an opaque tunnel unless TLS interception is enabled; watch-only preserves its existing destination and SNI checks.
 
 The setting is reloadable in either direction. A `watch_only_mode` event announces the transition. `pipelock doctor` reports the configured setting; `/stats` reports the running setting as `watch_only`, plus `watch_only_uninspected_bytes`. Prometheus exposes `pipelock_watch_only`, `pipelock_watch_only_events_total`, and `pipelock_watch_only_uninspected_bytes_total` on the configured metrics listener. Receipt reasons carry a signed `watch_only` marker while their verdict continues to describe the actual decision.
 
@@ -944,7 +939,6 @@ When a route-matched operation predicate or batch endpoint needs a body that can
 A matched rule records a decision metric and an audit event with bounded, operator-defined labels only, never body or matched content. An enforced (non-shadow) `block` returns HTTP 403 with the `request_policy_deny` block reason and, when a receipt emitter is configured, a correlated receipt. `warn` and `shadow` matches are logged and counted, then forwarded.
 
 ## WebSocket Proxy
-
 
 Before the upstream handshake, Pipelock scans the complete supplied target URL, including userinfo and fragments. Core credential findings in those components refuse the handshake with HTTP 403, even when enforcement is disabled. Admission and session evidence use the same URL.
 
