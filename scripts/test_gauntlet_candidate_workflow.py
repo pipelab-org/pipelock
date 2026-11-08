@@ -85,6 +85,29 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
         self.assertIn('git -C "$AEB_ROOT" rev-parse HEAD', verify)
         self.assertIn('= "$AEB_REF"', verify)
 
+    def test_benchmark_origin_is_the_canonical_url_after_the_repository_move(self):
+        """The pinned runner refuses any origin but its original repository URL.
+
+        The checkout fetches from the repository's new home, so without this
+        step every scheduled run fails the runner's corpus identity check. The
+        step must prove both URLs serve the same pinned release before it
+        renames origin, and must run before the portable runner.
+        """
+        name = "Name the benchmark origin the runner treats as canonical"
+        script = step_run_script(self.workflow, name)
+        self.assertIn('canonical_url="https://github.com/luckyPipewrench/agent-egress-bench.git"', script)
+        self.assertIn('test "$canonical_tag" = "$checkout_tag"', script)
+        self.assertIn('test -n "$canonical_tag"', script)
+        self.assertIn('git -C "$AEB_ROOT" remote set-url origin "$canonical_url"', script)
+        self.assertLess(
+            self.workflow.index(f"      - name: {name}\n"),
+            self.workflow.index("      - name: Run portable canonical benchmark\n"),
+        )
+        self.assertGreater(
+            self.workflow.index(f"      - name: {name}\n"),
+            self.workflow.index("      - name: Check out pinned Agent Egress Bench\n"),
+        )
+
     def test_benchmark_release_tag_is_bound_to_the_pinned_commit(self):
         """The release label must be checked, not asserted.
 

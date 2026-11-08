@@ -59,6 +59,26 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Name the benchmark origin the runner treats as canonical
+        # The pinned runner accepts only its original repository URL as the
+        # canonical corpus origin and fetches tags from that URL itself. The
+        # repository moved to pipelab-org, and GitHub redirects the original URL
+        # there. Point origin at the original URL only after proving both URLs
+        # serve the same pinned release, so a stale redirect fails here instead
+        # of measuring a different corpus.
+        shell: bash
+        run: |
+          set -euo pipefail
+          canonical_url="https://github.com/luckyPipewrench/agent-egress-bench.git"
+          checkout_url="https://github.com/pipelab-org/agent-egress-bench.git"
+          tag_ref="refs/tags/${AEB_RELEASE_TAG}"
+          canonical_tag="$(git ls-remote "$canonical_url" "$tag_ref")"
+          checkout_tag="$(git ls-remote "$checkout_url" "$tag_ref")"
+          test -n "$canonical_tag"
+          test "$canonical_tag" = "$checkout_tag"
+          git -C "$AEB_ROOT" remote set-url origin "$canonical_url"
+          test "$(git -C "$AEB_ROOT" remote get-url origin)" = "$canonical_url"
+
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
