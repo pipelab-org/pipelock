@@ -119,6 +119,10 @@ func TestForwardProxy_ShieldOversize_BlocksWithTheExplainingReason(t *testing.T)
 		t.Errorf("forward block body = %s, want it to contain %q", respBody, wantReason)
 	}
 
+	// The response reaches the client before the outcome receipt is written
+	// (required receipts flush first), so wait for that receipt before closing
+	// the recorder and reading the store.
+	waitForTransportOutcomeReceipt(t, dir, TransportForward)
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
