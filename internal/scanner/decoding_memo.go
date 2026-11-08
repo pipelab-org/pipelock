@@ -22,9 +22,10 @@ type decodingMemoKey struct {
 	keyword    bool
 }
 
-// decodingMemo shares immutable decoded and normalized views within one scan. It never
-// stores findings, policy decisions or state on the Scanner. Its retention
-// limits stop caching, not decoding or detection.
+// decodingMemo shares immutable decoded and normalized views within one scan.
+// Findings and scan policy remain request-scoped. The compiled terminal plan
+// separately retains bounded, context-independent proofs of no lane admission.
+// Retention limits stop caching, not decoding or detection.
 //
 // incomplete records that some decode or HTML entity chain in this scan
 // stopped at a depth or work bound with decodable work left. It is a property of the
@@ -138,6 +139,8 @@ type decodedMatchKey struct {
 	text     string
 	encoding string
 	core     bool
+	// Normalized core keys cannot alias source-context lookup keys.
+	normalizedCore bool
 	// cardOnly marks a configured-pattern result restricted to card rules.
 	cardOnly bool
 }
@@ -161,8 +164,11 @@ func (k decodedMatchKey) match(normalized string, lowered *dlpLoweredBytes) []Te
 // that reads it. The same retention limits as one scan stop caching, never
 // decoding.
 type sharedDecodes struct {
-	mu    sync.Mutex
-	store decodingMemo
+	mu            sync.Mutex
+	store         decodingMemo
+	lowered       map[string]int
+	loweredValues []dlpLoweredBytes
+	loweredBytes  int
 }
 
 type sharedDecodesKey struct{}
@@ -182,6 +188,10 @@ func WithSharedDecodes(ctx context.Context) (context.Context, func()) {
 	return context.WithValue(ctx, sharedDecodesKey{}, shared), func() {
 		shared.mu.Lock()
 		shared.store.reset()
+		clear(shared.lowered)
+		clear(shared.loweredValues)
+		shared.loweredValues = shared.loweredValues[:0]
+		shared.loweredBytes = 0
 		shared.mu.Unlock()
 		sharedDecodesPool.Put(shared)
 	}
@@ -219,20 +229,69 @@ func (s *sharedDecodes) decode(key decodingMemoKey) ([]decodedResult, bool) {
 }
 
 func (s *sharedDecodes) matchDecoded(key decodedMatchKey) []TextDLPMatch {
+	var normalized string
+	if key.core {
+		// Core matching consumes only normalized bytes. Configured matching
+		// also consumes key.text as source context, and retains its exact key.
+		normalized = s.normalize(key.text)
+		key.text = normalized
+		key.normalizedCore = true
+	}
 	s.mu.Lock()
 	cached, ok := s.store.decodedMatches[key]
 	s.mu.Unlock()
 	if ok {
 		return slices.Clone(cached)
 	}
-	normalized := s.normalize(key.text)
-	var lowered dlpLoweredBytes
-	lowered.add(normalized)
+	if !key.core {
+		normalized = s.normalize(key.text)
+	}
+	lowered := s.loweredFor(normalized)
 	matches := key.match(normalized, &lowered)
 	s.mu.Lock()
 	s.store.retainDecodedMatches(key, matches)
 	s.mu.Unlock()
 	return slices.Clone(matches)
+}
+
+var loweredViewSize = int(reflect.TypeFor[dlpLoweredBytes]().Size())
+
+// Return a value copy so releasing/recycling a message's store cannot mutate
+// the byte summary an in-flight matcher is using.
+func (s *sharedDecodes) loweredFor(text string) dlpLoweredBytes {
+	s.mu.Lock()
+	if index, ok := s.lowered[text]; ok {
+		value := s.loweredValues[index]
+		s.mu.Unlock()
+		return value
+	}
+	s.mu.Unlock()
+	var value dlpLoweredBytes
+	value.add(text)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if index, ok := s.lowered[text]; ok {
+		return s.loweredValues[index]
+	}
+	capacity := cap(s.loweredValues)
+	if len(s.loweredValues) == capacity {
+		capacity = min(maxDecodeCandidates, max(1, 2*capacity))
+	}
+	if len(s.loweredValues) >= maxDecodeCandidates || len(text) > maxDecodeTotalBytes-s.loweredBytes-capacity*loweredViewSize {
+		return value
+	}
+	if s.lowered == nil {
+		s.lowered = make(map[string]int)
+	}
+	if capacity > cap(s.loweredValues) {
+		values := make([]dlpLoweredBytes, len(s.loweredValues), capacity)
+		copy(values, s.loweredValues)
+		s.loweredValues = values
+	}
+	s.lowered[strings.Clone(text)] = len(s.loweredValues)
+	s.loweredValues = append(s.loweredValues, value)
+	s.loweredBytes += len(text)
+	return value
 }
 
 func (s *sharedDecodes) normalize(text string) string {

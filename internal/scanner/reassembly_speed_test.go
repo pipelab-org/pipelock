@@ -6,11 +6,13 @@ package scanner
 import (
 	"context"
 	"encoding/base64"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 func TestReassemblySymbolAdmission(t *testing.T) {
@@ -271,5 +273,81 @@ func TestReassemblyEmptyPatternScope(t *testing.T) {
 				t.Fatal("shared card coverage changed", result)
 			}
 		})
+	}
+}
+
+func TestSharedDecodedCoreNormalization(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	sc := MustNew(cfg)
+	defer sc.Close()
+	ctx, release := WithSharedDecodes(context.Background())
+	defer release()
+	shared := sharedDecodesFrom(ctx)
+	plain := inspectionLimitAWSKey()
+	separated := plain[:4] + "\u200b" + plain[4:]
+	first := shared.matchDecoded(decodedMatchKey{scanner: sc, text: plain, encoding: encodingBase64, core: true})
+	second := shared.matchDecoded(decodedMatchKey{scanner: sc, text: separated, encoding: encodingBase64, core: true})
+	if len(first) == 0 || !reflect.DeepEqual(first, second) || len(shared.store.decodedMatches) != 1 {
+		t.Fatal("core normalization changed findings or repeated matching")
+	}
+	if _, ok := (&decodingMemo{shared: shared}).cachedDecodedMatches(decodedMatchKey{scanner: sc, text: plain, encoding: encodingBase64, core: true}); ok {
+		t.Fatal("normalized cache key aliased a raw-source lookup")
+	}
+	shared.matchDecoded(decodedMatchKey{scanner: sc, text: plain, encoding: encodingBase64})
+	shared.matchDecoded(decodedMatchKey{scanner: sc, text: separated, encoding: encodingBase64})
+	if len(shared.store.decodedMatches) != 3 {
+		t.Fatal("configured source identity was lost")
+	}
+	// One normalization leaves a Cyrillic base letter; the next turns it into
+	// an ASCII credential byte. A normalized cache key must not skip that pass.
+	raw := plain[:4] + "\u0401" + plain[5:]
+	once := normalize.ForDLP(raw)
+	before := shared.matchDecoded(decodedMatchKey{scanner: sc, text: raw, encoding: encodingHex, core: true})
+	after := shared.matchDecoded(decodedMatchKey{scanner: sc, text: once, encoding: encodingHex, core: true})
+	if len(before) != 0 || len(after) == 0 {
+		t.Fatal("normalization depth was lost", before, after)
+	}
+}
+
+func TestSharedLoweredCopiesAndBounds(t *testing.T) {
+	ctx, release := WithSharedDecodes(context.Background())
+	shared := sharedDecodesFrom(ctx)
+	text := "Text with mixed CASE and \u212a characters."
+	var want dlpLoweredBytes
+	want.add(text)
+	first := shared.loweredFor(text)
+	second := shared.loweredFor(text)
+	if first != want || second != want || len(shared.loweredValues) != 1 {
+		t.Fatal("shared byte summary differs")
+	}
+	start := make(chan struct{})
+	done := make(chan dlpLoweredBytes, 2)
+	large := strings.Repeat(text, 1024)
+	var largeWant dlpLoweredBytes
+	largeWant.add(large)
+	for range 2 {
+		go func() { <-start; done <- shared.loweredFor(large) }()
+	}
+	close(start)
+	for range 2 {
+		if got := <-done; got != largeWant {
+			t.Fatal("concurrent summary changed")
+		}
+	}
+	release()
+	if first != want || second != want {
+		t.Fatal("released cache mutated a matcher copy")
+	}
+	var full sharedDecodes
+	full.loweredBytes = maxDecodeTotalBytes
+	if got := full.loweredFor(text); got != want || len(full.loweredValues) != 0 {
+		t.Fatal("cache byte limit changed computation")
+	}
+	full.loweredBytes = 0
+	full.loweredValues = make([]dlpLoweredBytes, maxDecodeCandidates)
+	if got := full.loweredFor(text); got != want || len(full.lowered) != 0 {
+		t.Fatal("cache entry limit changed computation")
 	}
 }
