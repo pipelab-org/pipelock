@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -616,6 +617,8 @@ func (s *Scanner) scanCoreDLPWithDecodes(text string, decodes *decodingMemo) []T
 				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
 				credentialAudienceRegistryHosts:     p.credentialAudienceRegistryHosts,
 				span:                                newMatchSpan(start, end, ViewDLPNormalized, p.name, "", ""),
+				valueIdentity:                       sha256.Sum256([]byte(cleaned[start:end])),
+				hasValueIdentity:                    true,
 			})
 		}
 	}
@@ -689,6 +692,8 @@ func (s *Scanner) matchCoreDLPPatternsLowered(text, encoding string, lowered *dl
 				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
 				credentialAudienceRegistryHosts:     p.credentialAudienceRegistryHosts,
 				span:                                newMatchSpan(start, end, dlpViewLabel(encoding), p.name, "", ""),
+				valueIdentity:                       sha256.Sum256([]byte(text[start:end])),
+				hasValueIdentity:                    true,
 			})
 		}
 	}
@@ -713,6 +718,8 @@ func (s *Scanner) matchCoreDLPWhitespaceView(compacted, source string, offsets [
 				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
 				credentialAudienceRegistryHosts:     p.credentialAudienceRegistryHosts,
 				span:                                newMatchSpan(start, end, dlpViewLabel("whitespace"), p.name, "", ""),
+				valueIdentity:                       sha256.Sum256([]byte(compacted[start:end])),
+				hasValueIdentity:                    true,
 			})
 		}
 	}
@@ -730,7 +737,9 @@ func (s *Scanner) decodeAndMatchCoreWithDecodes(text string, decodes *decodingMe
 }
 
 func (s *Scanner) decodeCoreDLPTextSegmentsWithDecodes(text string, decodes *decodingMemo) []TextDLPMatch {
+	kind := decodes.reassemblyDerivedKind(text)
 	for _, seg := range textDLPSegments(text) {
+		decodes.reassemblySegment(text, seg, kind)
 		if len(seg) < 10 {
 			continue
 		}
