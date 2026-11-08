@@ -2375,6 +2375,14 @@ func (p *Proxy) CurrentConfig() *config.Config {
 	return p.cfgPtr.Load()
 }
 
+// WatchOnlyGeneration is the watch-only mode generation, advanced under the
+// reload lock at each mode change. Long-lived handlers that observe findings
+// snapshot it with the policy they inspect under, so a finding that completes
+// after a change is not scored into the next trial.
+func (p *Proxy) WatchOnlyGeneration() uint64 {
+	return p.watchModeGeneration.Load()
+}
+
 // ReloadLock exposes the proxy reload lock for long-lived handlers that need
 // coherent config/scanner/emitter snapshots with Reload publication.
 func (p *Proxy) ReloadLock() *sync.RWMutex {

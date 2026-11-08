@@ -16,9 +16,11 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 const watchReloadTarget = "https://api.vendor.example/resource"
@@ -195,5 +197,41 @@ func TestWatchOnlyInterceptRetainsAuthorityBoundary(t *testing.T) {
 		if w.Code != http.StatusForbidden || hits.Load() != 0 {
 			t.Fatalf("watch=%t crossed CONNECT authority boundary: status=%d upstream=%d", enabled, w.Code, hits.Load())
 		}
+	}
+}
+
+// The in-process MCP listener fences its observations to the proxy's mode
+// generation: it advances only when the mode changes, and a session retained
+// across the change rejects a signal admitted under the previous generation.
+func TestWatchOnlyGenerationFencesRetainedSessions(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SessionProfiling.Enabled = true
+	cfg.AdaptiveEnforcement = *watchAdaptiveConfig()
+	sc := scanner.MustNew(cfg)
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+	if err != nil {
+		sc.Close()
+		t.Fatal(err)
+	}
+	defer p.Close()
+	scope := adaptiveScopeForHost("api.vendor.example")
+	held := p.sessionMgrPtr.Load().GetOrCreate("held")
+	admitted := p.WatchOnlyGeneration()
+	if changed := p.Reload(p.cfgPtr.Load().Clone(), scanner.MustNew(cfg)); !changed || p.WatchOnlyGeneration() != admitted {
+		t.Fatalf("an unchanged mode advanced the generation: %d -> %d (reload=%v)", admitted, p.WatchOnlyGeneration(), changed)
+	}
+	next := p.cfgPtr.Load().Clone()
+	next.WatchOnly = true
+	if !p.Reload(next, scanner.MustNew(next)) || p.WatchOnlyGeneration() == admitted {
+		t.Fatalf("a mode change did not advance the generation (%d)", p.WatchOnlyGeneration())
+	}
+	held.ObserveWatchOnlySignalAt(admitted, scope, session.SignalBlock, watchAdaptiveConfig(), decide.EscalationParams{})
+	if held.watchAdaptive != nil && held.watchAdaptive.ScopedThreatScore(scope) != 0 {
+		t.Fatal("a signal from the previous mode generation scored the next trial")
+	}
+	held.ObserveWatchOnlySignalAt(p.WatchOnlyGeneration(), scope, session.SignalBlock, watchAdaptiveConfig(), decide.EscalationParams{})
+	if held.watchAdaptive == nil || held.watchAdaptive.ScopedThreatScore(scope) == 0 {
+		t.Fatal("a current-generation signal was not scored")
 	}
 }

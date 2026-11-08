@@ -1102,6 +1102,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 			listenerOpts := mcp.MCPProxyOpts{
 				WatchOnly:                    cfg.WatchOnly,
 				WatchOnlyFn:                  func() bool { return s.proxy.CurrentConfig().WatchOnly },
+				WatchOnlyGenerationFn:        s.proxy.WatchOnlyGeneration,
 				ListenerBearerToken:          s.mcpListenerBearerToken,
 				ListenerAllowedOrigins:       s.opts.MCPAllowedOrigins,
 				ListenerAllowUnauthenticated: s.opts.MCPAllowUnauthenticated,
