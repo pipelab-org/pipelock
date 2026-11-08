@@ -73,11 +73,14 @@ jobs:
           canonical_url="https://github.com/luckyPipewrench/agent-egress-bench.git"
           checkout_url="https://github.com/pipelab-org/agent-egress-bench.git"
           tag_ref="refs/tags/${AEB_RELEASE_TAG}"
-          canonical_tag="$(timeout 60 git ls-remote "$canonical_url" "$tag_ref")"
-          checkout_tag="$(timeout 60 git ls-remote "$checkout_url" "$tag_ref")"
-          test -n "$canonical_tag"
-          test "$canonical_tag" = "$checkout_tag"
-          test "${canonical_tag%%[[:space:]]*}" = "$(git -C "$AEB_ROOT" rev-parse "$tag_ref")"
+          # ls-remote matches patterns from the tail, so select the exact ref.
+          canonical_tag="$(timeout 60 git ls-remote "$canonical_url" "$tag_ref" | awk -v ref="$tag_ref" '$2 == ref { print $1 }')"
+          checkout_tag="$(timeout 60 git ls-remote "$checkout_url" "$tag_ref" | awk -v ref="$tag_ref" '$2 == ref { print $1 }')"
+          local_tag="$(git -C "$AEB_ROOT" rev-parse "$tag_ref")"
+          if [[ -z "$canonical_tag" || "$canonical_tag" != "$checkout_tag" || "$canonical_tag" != "$local_tag" ]]; then
+            echo "::error title=Benchmark tag mismatch::$tag_ref canonical=${canonical_tag:-missing} checkout=${checkout_tag:-missing} local=$local_tag"
+            exit 1
+          fi
           git -C "$AEB_ROOT" remote set-url origin "$canonical_url"
           test "$(git -C "$AEB_ROOT" remote get-url origin)" = "$canonical_url"
 
