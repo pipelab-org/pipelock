@@ -33,6 +33,8 @@ func TestSignInBearer_RequestHeaderScan(t *testing.T) {
 	other := signInTestJWT(t, map[string]any{"iss": "https://auth.vendor.example", "client_id": "app_other"})
 	wrongClient := signInTestJWT(t, map[string]any{"iss": "https://auth.openai.com", "client_id": "app_other"})
 	grok := signInTestJWT(t, map[string]any{"iss": "https://auth.x.ai", "client_id": "b1a00492-073a-47ea-816f-4c329264a828"})
+	grokWrongClient := signInTestJWT(t, map[string]any{"iss": "https://auth.x.ai", "client_id": "app_other"})
+	grokWrongIssuer := signInTestJWT(t, map[string]any{"iss": "https://auth.openai.com", "client_id": "b1a00492-073a-47ea-816f-4c329264a828"})
 	const target = "https://chatgpt.com/backend-api/codex/responses"
 
 	for _, mode := range []string{config.HeaderModeSensitive, config.HeaderModeAll} {
@@ -60,6 +62,8 @@ func TestSignInBearer_RequestHeaderScan(t *testing.T) {
 			}, target, false, true, ""},
 			{"grok at api.x.ai", http.Header{"Authorization": {"Bearer " + grok}, "User-Agent": {"x"}}, "https://api.x.ai/v1/chat/completions", true, false, ""},
 			{"grok at the cli chat proxy", http.Header{"Authorization": {"Bearer " + grok}, "User-Agent": {"x"}}, "https://cli-chat-proxy.grok.com/v1/responses", true, false, ""},
+			{"grok client id mismatch at api.x.ai", http.Header{"Authorization": {"Bearer " + grokWrongClient}, "User-Agent": {"x"}}, "https://api.x.ai/v1/chat/completions", false, false, "JWT Token"},
+			{"grok issuer mismatch at the cli chat proxy", http.Header{"Authorization": {"Bearer " + grokWrongIssuer}, "User-Agent": {"x"}}, "https://cli-chat-proxy.grok.com/v1/responses", false, false, "JWT Token"},
 			{"codex issuer with another client id", http.Header{"Authorization": {"Bearer " + wrongClient}, "User-Agent": {"x"}}, target, false, false, "JWT Token"},
 			{"chatgpt.com outside the backend API", http.Header{"Authorization": {"Bearer " + codex}, "User-Agent": {"x"}}, "https://chatgpt.com/api/other", false, false, "JWT Token"},
 			{"foreign token", http.Header{"Authorization": {"Bearer " + other}, "User-Agent": {"x"}}, target, false, false, ""},
@@ -88,6 +92,18 @@ func TestSignInBearer_RequestHeaderScan(t *testing.T) {
 				clean := result == nil || result.Clean
 				if clean != tc.clean {
 					t.Fatalf("clean=%t want %t result=%#v allows=%#v", clean, tc.clean, result, allows)
+				}
+				// A clean result alone would also pass if the scan were skipped; the
+				// sign-in allowance for this destination must have been recorded.
+				if tc.clean {
+					host := strings.SplitN(strings.TrimPrefix(tc.target, "https://"), "/", 2)[0]
+					recorded := false
+					for _, a := range allows {
+						recorded = recorded || (a.PatternName == "JWT Token" && a.Destination == host)
+					}
+					if !recorded {
+						t.Fatalf("no JWT Token allowance recorded for %s: %#v", host, allows)
+					}
 				}
 				if tc.want != "" {
 					found := false
