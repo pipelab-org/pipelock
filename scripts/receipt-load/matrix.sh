@@ -63,7 +63,9 @@ if ((warmup_requests > 1000)); then
   warmup_requests=1000
 fi
 
-# A cell that fails integrity or performance still has a result.json worth
+# Exit codes 1 (integrity), 2 (usage), 3 (performance), and 4 (harness)
+# all fail a cell; scope.exit retains the exact status. A cell that fails
+# integrity, performance, or harness setup still has a result.json worth
 # keeping, so a failing cell is recorded and the matrix carries on. The script
 # exits non-zero at the end if any cell failed.
 failed=0

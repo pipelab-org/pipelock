@@ -38,8 +38,12 @@ func localCommand(ctx context.Context, binary, dir string, env []string, args ..
 	return cmd
 }
 
+var listenTCP = func(ctx context.Context) (net.Listener, error) {
+	return (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+}
+
 func freePort(ctx context.Context) (int, error) {
-	l, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+	l, err := listenTCP(ctx)
 	if err != nil {
 		return 0, err
 	}

@@ -1352,9 +1352,26 @@ func TestInterceptTunnel_CredentialEndpointAdmission(t *testing.T) {
 	key := "sk-" + "ant-" + strings.Repeat("a", 24)
 	discord := "M" + strings.Repeat("a", 23) + "." + strings.Repeat("b", 6) + "." + strings.Repeat("c", 27)
 	for _, tc := range []struct {
-		name, host, path, body, header, value string
-		allow                                 bool
+		name, host, path, body, header, value, contentType string
+		allow                                              bool
 	}{
+		{name: "/api/oauth/profile", host: "api.anthropic.com", path: "/api/oauth/profile", header: "Authorization", value: "Bearer " + key, allow: true},
+		{name: "/api/oauth/validate", host: "api.anthropic.com", path: "/api/oauth/validate", header: "Authorization", value: "Bearer " + key, allow: true},
+		{name: "/api/oauth/claude_cli/roles", host: "api.anthropic.com", path: "/api/oauth/claude_cli/roles", header: "Authorization", value: "Bearer " + key, allow: true},
+		{name: "/api/oauth/claude_cli/create_api_key", host: "api.anthropic.com", path: "/api/oauth/claude_cli/create_api_key", header: "Authorization", value: "Bearer " + key, allow: true},
+		{name: "/api/claude_code/settings", host: "api.anthropic.com", path: "/api/claude_code/settings", header: "Authorization", value: "Bearer " + key, allow: true},
+		{name: "/api/claude_code/policy_limits", host: "api.anthropic.com", path: "/api/claude_code/policy_limits", header: "Authorization", value: "Bearer " + key, allow: true},
+		{name: "/api/claude_code/metrics", host: "api.anthropic.com", path: "/api/claude_code/metrics", header: "Authorization", value: "Bearer " + key, allow: true},
+		{name: "/api/claude_code/organizations/metrics_enabled", host: "api.anthropic.com", path: "/api/claude_code/organizations/metrics_enabled", header: "Authorization", value: "Bearer " + key, allow: true},
+		{name: "/api/event_logging/v2/batch", host: "api.anthropic.com", path: "/api/event_logging/v2/batch", header: "Authorization", value: "Bearer " + key, allow: true},
+		{name: "API profile", host: "api.anthropic.com", path: "/api/claude_cli_profile", header: "X-Api-Key", value: key, allow: true},
+		{name: "MCP proxy", host: "mcp-proxy.anthropic.com", path: "/v1/mcp/server-id", header: "Authorization", value: "Bearer " + key, allow: true},
+		{name: "refresh", host: "platform.claude.com", path: "/v1/oauth/token", body: `{"grant_type":"refresh_token","refresh_token":"` + key + `"}`, contentType: "application/json", allow: true},
+		{name: "revoke", host: "platform.claude.com", path: "/v1/oauth/token/revoke", body: `{"token_type_hint":"refresh_token","token":"` + key + `"}`, contentType: "application/json", allow: true},
+		{name: "refresh wrong host", host: "api.vendor.example", path: "/v1/oauth/token", body: `{"grant_type":"refresh_token","refresh_token":"` + key + `"}`, contentType: "application/json"},
+		{name: "refresh extra field", host: "platform.claude.com", path: "/v1/oauth/token", body: `{"grant_type":"refresh_token","refresh_token":"` + key + `","extra":"` + key + `"}`, contentType: "application/json"},
+		{name: "settings query", host: "api.anthropic.com", path: "/api/claude_code/settings?value=" + key},
+		{name: "MCP body", host: "mcp-proxy.anthropic.com", path: "/v1/mcp/server-id", body: key},
 		{name: "body credential", host: "api.anthropic.com", path: "/v1/messages", body: key},
 		{name: "documented header", host: "api.anthropic.com", path: "/v1/messages", header: "X-Api-Key", value: key, allow: true},
 		{name: "wrong header route", host: "api.anthropic.com", path: "/unrelated", header: "X-Api-Key", value: key},
@@ -1392,7 +1409,11 @@ func TestInterceptTunnel_CredentialEndpointAdmission(t *testing.T) {
 			if tc.header != "" {
 				req.Header.Set(tc.header, tc.value)
 			}
-			req.Header.Set("Content-Type", "text/plain")
+			if tc.contentType != "" {
+				req.Header.Set("Content-Type", tc.contentType)
+			} else {
+				req.Header.Set("Content-Type", "text/plain")
+			}
 
 			dialer := &net.Dialer{}
 			upstreamRT := upstream.Client().Transport.(*http.Transport).Clone()

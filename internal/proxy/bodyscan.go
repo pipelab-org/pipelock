@@ -562,6 +562,29 @@ func blockingBodyFinding(result BodyScanResult, hostname string, cfg *config.Con
 	return bodyBlockCauseUnknown
 }
 
+// oauthRemainderHasCredential runs the ordinary body DLP views over the body
+// with the one designated OAuth credential blanked. Any other Anthropic key
+// those views can see, including one split across a value and the next key,
+// denies the OAuth carrier so the whole body keeps its normal DLP result.
+func oauthRemainderHasCredential(ctx context.Context, req BodyScanRequest, buf, raw []byte) bool {
+	if len(raw) == 0 || bytes.Count(buf, raw) != 1 {
+		return true
+	}
+	blank := bytes.Replace(buf, raw, []byte(`""`), 1)
+	extracted := extractBodyTextForDLP(blank, req)
+	var matches []scanner.TextDLPMatch
+	for _, view := range bodyDLPExtractionViews(blank, extracted, nil) {
+		matches = append(matches, scanBodyTextViewsForDLPWithAudience(ctx, req.Scanner, view, req.suppressTarget(), nil, nil, false, nil, "body", nil)...)
+	}
+	matches = append(matches, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, extracted.ProviderOpaqueTexts, req.suppressTarget(), nil, nil, false, nil, "body", nil)...)
+	for _, match := range matches {
+		if match.PatternName == "Anthropic API Key" {
+			return true
+		}
+	}
+	return ctx.Err() != nil
+}
+
 // bodyBlockCauseLabel returns the scanner label for a blocking finding, or
 // current when no single finding blocks.
 func bodyBlockCauseLabel(cause bodyBlockCause, current string) string {
@@ -904,6 +927,15 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		}
 	}
 
+	oauthCredential := ""
+	var oauthRaw []byte
+	if req.RedactMatcher != nil && req.audienceSurface() == "body" {
+		audienceSurface, oauthCredential, oauthRaw = req.Scanner.OAuthCredentialAudience(ctx, buf, req.suppressTarget(), req.Method, req.ContentType)
+		if oauthCredential != "" && oauthRemainderHasCredential(ctx, req, buf, oauthRaw) {
+			audienceSurface, oauthCredential = "body", ""
+		}
+	}
+
 	// RFC 8484 DNS-over-HTTPS POST. A strict DNS message is read as its
 	// names, record payloads and fixed-width fields. Those pieces join the
 	// ordinary body DLP pipeline below, so suppressions, disabled patterns,
@@ -984,6 +1016,13 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		if report != nil {
 			buf = rewritten
 			redactReport = report
+		}
+	}
+
+	if req.audienceSurface() == "body" {
+		audienceSurface, oauthCredential, oauthRaw = req.Scanner.OAuthCredentialAudience(ctx, buf, req.suppressTarget(), req.Method, req.ContentType)
+		if oauthCredential != "" && oauthRemainderHasCredential(ctx, req, buf, oauthRaw) {
+			audienceSurface, oauthCredential = "body", ""
 		}
 	}
 
@@ -1084,6 +1123,12 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	}
 	if dnsInspection.Parsed {
 		entropyTexts = dnsInspection.EntropyTexts
+	}
+	if oauthCredential != "" {
+		// The designated refresh or revocation credential is a high-entropy
+		// secret by design and already passed its audience check; score the
+		// rest of the body only.
+		entropyTexts = slices.DeleteFunc(slices.Clone(entropyTexts), func(text string) bool { return text == oauthCredential })
 	}
 	finding := scanBodyTextsForContentEntropy(entropyTexts, req)
 	for _, token := range dlpExtracted.HeaderTokens {

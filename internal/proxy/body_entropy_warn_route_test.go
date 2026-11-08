@@ -6,6 +6,7 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -212,6 +213,7 @@ func TestWebSocketContentEntropyConfigExplicitlyDropsHTTPWarnRoutes(t *testing.T
 	}
 }
 
+// TestInterceptEntropyWarnReceiptPreservesProvenanceAndDoesNotFollowRedirect checks receipt provenance and redirect isolation.
 func TestInterceptEntropyWarnReceiptPreservesProvenanceAndDoesNotFollowRedirect(t *testing.T) {
 	for _, requireReceipts := range []bool{false, true} {
 		t.Run(fmt.Sprintf("require_receipts_%t", requireReceipts), func(t *testing.T) {
@@ -260,6 +262,9 @@ func TestInterceptEntropyWarnReceiptPreservesProvenanceAndDoesNotFollowRedirect(
 				t.Fatalf("intercept RoundTrip calls = %d, want 1 (redirects are not followed internally)", got)
 			}
 
+			if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+				t.Fatalf("read response body: %v", err)
+			}
 			var warningReceiptFound bool
 			for _, rcpt := range rph.findReceipts(t) {
 				ar := rcpt.ActionRecord

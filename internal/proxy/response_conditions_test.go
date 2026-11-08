@@ -208,6 +208,7 @@ func TestFullResponsePolicyWebSocketUpgrade(t *testing.T) {
 	}
 }
 
+// TestForwardIncompleteResponseReceipts checks receipt reasons for incomplete upstream responses.
 func TestForwardIncompleteResponseReceipts(t *testing.T) {
 	for _, status := range []int{http.StatusNotModified, http.StatusPartialContent} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
@@ -243,6 +244,7 @@ func TestForwardIncompleteResponseReceipts(t *testing.T) {
 			}
 			pattern := string(blockreason.ResponseIncomplete)
 			var foundBlock, foundOutcome bool
+			waitForTransportOutcomeReceipt(t, rph.dir, TransportForward)
 			for _, record := range rph.findReceipts(t) {
 				if record.ActionRecord.Verdict == config.ActionBlock && record.ActionRecord.Layer == "browser_cache" && record.ActionRecord.Pattern == string(blockreason.ResponseIncomplete) {
 					foundBlock = true

@@ -132,16 +132,11 @@ func parseErrorFallback() blockreason.Info {
 	return blockreason.MustNew(blockreason.ParseError, blockreason.SeverityWarn, blockreason.RetryNone)
 }
 
-// writeBlockedError is a drop-in replacement for http.Error that first sets
-// the X-Pipelock-Block-Reason header set so agents can react intelligently.
-// Headers must be set before WriteHeader; http.Error calls WriteHeader
-// internally, so SetHeaders runs first.
-//
-// Existing call sites that pass a free-text reason string in the body
-// continue to work; only the header set is added.
+// writeBlockedError adds machine-readable block metadata before writing the
+// framed diagnostic body with http.Error's text headers and trailing newline.
 func writeBlockedError(w http.ResponseWriter, info blockreason.Info, body string, status int) {
 	info.SetHeaders(w.Header())
-	http.Error(w, body, status)
+	writeHTTPError(w, body, status)
 }
 
 func setBodyBlockHint(w http.ResponseWriter, scannerLabel string) {

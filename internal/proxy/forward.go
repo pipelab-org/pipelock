@@ -746,11 +746,24 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	outcomeStatus := "unknown"
 	outcomeBytes := int64(-1)
 	outcomeReason := "incomplete"
+	clientHijacked := false
 	defer func() {
+		aborted := recover()
+		var flushErr error
+		if cfg.FlightRecorder.RequireReceipts && !clientHijacked && aborted == nil {
+			flushErr = flushResponseBeforeOutcome(w, r, cfg)
+			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason, config.ActionAllow) {
+				outcomeReason, outcomeBytes = receiptReasonIncomplete, -1
+			}
+		}
 		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
 			outcomeReason = "license_revoked"
 		}
 		p.emitOutcomeReceipt(cfg, allowReceipt, outcomeStatus, outcomeBytes, outcomeReason)
+		if aborted != nil {
+			panic(aborted)
+		}
+		_ = httpstream.Abort(r.Context(), flushErr)
 	}()
 
 	// Bound the outbound dial, then let the established tunnel live until it
@@ -785,7 +798,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		p.logger.LogError(targetCtx, err)
-		http.Error(w, "tunnel dial failed", http.StatusBadGateway)
+		writeHTTPError(w, "tunnel dial failed", http.StatusBadGateway)
 		outcomeStatus = strconv.Itoa(http.StatusBadGateway)
 		outcomeReason = "dial_failed"
 		return
@@ -801,7 +814,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		p.logger.LogError(targetCtx,
 			fmt.Errorf("response writer does not support hijacking"))
-		http.Error(w, "hijack not supported", http.StatusInternalServerError)
+		writeHTTPError(w, "hijack not supported", http.StatusInternalServerError)
 		outcomeStatus = strconv.Itoa(http.StatusInternalServerError)
 		outcomeReason = "hijack_unsupported"
 		return
@@ -815,6 +828,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer safeClose(clientConn, "clientConn", p.logger)
+	clientHijacked = true
 	// Hijacked tunnels no longer participate in net/http cancellation. Close
 	// both sockets on revocation, including while waiting for a TLS ClientHello.
 	// Capture the current upstream: interception later clears targetConn.
@@ -2340,10 +2354,22 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	outcomeBytes := int64(-1)
 	outcomeReason := "incomplete"
 	defer func() {
+		aborted := recover()
+		var flushErr error
+		if cfg.FlightRecorder.RequireReceipts && aborted == nil {
+			flushErr = flushResponseBeforeOutcome(w, r, cfg)
+			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason, config.ActionAllow) {
+				outcomeReason, outcomeBytes = receiptReasonIncomplete, -1
+			}
+		}
 		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
 			outcomeReason = "license_revoked"
 		}
 		p.emitOutcomeReceipt(cfg, forwardAllowReceipt, outcomeStatus, outcomeBytes, outcomeReason)
+		if aborted != nil {
+			panic(aborted)
+		}
+		_ = httpstream.Abort(r.Context(), flushErr)
 	}()
 	emitForwardAllowReceipt := func() {
 		if !cfg.FlightRecorder.RequireReceipts {
@@ -2428,7 +2454,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		p.logger.LogError(actx, err)
-		http.Error(w, "forward proxy fetch failed", http.StatusBadGateway)
+		writeHTTPError(w, "forward proxy fetch failed", http.StatusBadGateway)
 		outcomeStatus = strconv.Itoa(http.StatusBadGateway)
 		outcomeReason = "fetch_failed"
 		return
@@ -2845,6 +2871,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// scanned response that is not the upstream response (corrupted JSON /
 		// HTML / model output), which violates fail-closed in spirit.
 		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+		bufferedBudgetTruncated := false
 		if readErr != nil {
 			p.logger.LogError(actx, readErr)
 			writeBlockedError(w,
@@ -2883,6 +2910,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				// existing truncation policy. Trim back to the budget and let
 				// the post-write budget_truncated anomaly log fire as before.
 				respBody = respBody[:maxBytes]
+				bufferedBudgetTruncated = true
 			} else {
 				// Could not fully inspect the response within the configured
 				// scan cap - block fail-closed, matching intercept/reverse.
@@ -3055,7 +3083,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if shieldSummary != nil {
 			setShieldRewriteHeader(resp.Header, shieldSummary)
-			resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(respBody)))
+			if !responseHasTrailers(resp) {
+				resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(respBody)))
+			}
 			resp.Header.Del("ETag")
 			resp.Header.Del("Digest")
 			resp.Header.Del("Content-MD5")
@@ -3092,7 +3122,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		applyRelabeledContentType(resp.Header, mediaVerdict)
 		if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
 			respBody = mediaVerdict.Body
-			resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(respBody)))
+			if !responseHasTrailers(resp) {
+				resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(respBody)))
+			}
 			// Clear body-derived validators. Content-MD5 describes a
 			// hash of the upstream bytes - stale after metadata
 			// stripping, and a validating client or intermediary
@@ -3414,6 +3446,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// Scan passed - now copy upstream headers and write response.
 		copyResponseHeaders(w.Header(), resp.Header)
+		// The final buffered representation has a known length (including any
+		// stripping or redaction). Explicit framing lets the client finish the
+		// body before the deferred outcome write. Preserve framing for no-body
+		// responses, upstream trailers, and budget-truncated delivery.
+		if cfg.FlightRecorder.RequireReceipts && r.Method != http.MethodHead && resp.StatusCode >= http.StatusOK &&
+			resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotModified &&
+			!responseHasTrailers(resp) &&
+			!bufferedBudgetTruncated && (budgetRemaining < 0 || int64(len(respBody)) <= budgetRemaining) {
+			w.Header().Del("Transfer-Encoding")
+			w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
+		}
 		w.WriteHeader(resp.StatusCode)
 		n, _ := w.Write(respBody)
 		written := int64(n)

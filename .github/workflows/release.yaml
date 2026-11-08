@@ -225,6 +225,7 @@ jobs:
           rustup toolchain install 1.95.0 --profile minimal
           rustup default 1.95.0
 
+      # Every nonzero install-gate code blocks publication; only 3 is retryable.
       - name: Install and verify customer receipt verifiers
         run: scripts/release-verifier-install-gate.sh --tag "$GITHUB_REF_NAME"
 
