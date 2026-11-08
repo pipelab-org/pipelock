@@ -194,6 +194,7 @@ func filterCredentialAudienceAt(candidates []credentialAudienceCandidate, target
 			!releaseGrantSASCandidateAllowed(candidate, host, target, surface, now) &&
 			!registryBasicAllowed(candidate, host, target, surface) &&
 			!registryBearerAllowed(candidate, host, target, surface) &&
+			!signInBearerAllowed(candidate, host, target, surface) &&
 			!githubBlobSASCandidateAllowed(candidate, host, target, surface, now) {
 			continue
 		}
