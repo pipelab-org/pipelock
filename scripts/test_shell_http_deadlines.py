@@ -58,7 +58,7 @@ class ShellHTTPDeadlineTests(unittest.TestCase):
     def test_release_registry_requests_bound_a_silent_peer(self):
         source = (ROOT / "scripts/release-verifier-install-gate.sh").read_text()
         commands = re.findall(
-            r'"\$CI_RETRY" (curl [^\n]*?)\)"', source.replace("\\\n", "")
+            r'registry_read (curl [^\n]*?)\)"', source.replace("\\\n", "")
         )
         # npm supplies verified provenance; only crates.io and PyPI use curl.
         self.assertEqual(len(commands), 2)

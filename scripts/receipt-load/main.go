@@ -7,6 +7,8 @@
 // aggregate receipt accounting and authenticated per-action/chain links. The
 // per-request destination workload also checks each planned request left its
 // expected receipt families. Neither mode distinguishes v2 decision phases.
+// Exit codes are 0 success, 1 integrity/unknown, 2 usage, 3 performance, and
+// 4 setup failure before receipt evidence (see README.md).
 package main
 
 import (
@@ -16,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"time"
@@ -26,6 +29,7 @@ const (
 	exitIntegrity = 1
 	exitUsage     = 2
 	exitPerf      = 3
+	exitHarness   = 4
 )
 
 func main() { os.Exit(realMain(os.Args[1:])) }
@@ -50,6 +54,9 @@ func realMain(args []string) int {
 	opt, modes, lockFile, err := parseFlags(args)
 	if err != nil {
 		logf("%v", err)
+		if isSetupFailure(err) {
+			return exitHarness
+		}
 		return exitUsage
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -59,7 +66,7 @@ func realMain(args []string) int {
 		release, lockErr := holdLock(lockFile)
 		if lockErr != nil {
 			logf("lock %q: %v", lockFile, lockErr)
-			return exitUsage
+			return exitHarness
 		}
 		defer release()
 	}
@@ -72,20 +79,45 @@ func runModes(ctx context.Context, opt options, modes []string) int {
 	code := exitOK
 	for _, mode := range modes {
 		res, err := runMode(ctx, opt, mode)
-		switch {
-		case res == nil:
+		if res == nil {
 			logf("%q: %v", mode, err)
-			code = exitIntegrity
-		case res.Integrity.Verdict != verdictPass || err != nil:
-			code = exitIntegrity
-		case res.Performance.Verdict != perfMeasured && code == exitOK:
-			code = exitPerf
+		}
+		next := modeExitCode(res, err)
+		// Integrity takes precedence over harness failure, then performance.
+		if next == exitIntegrity || (next == exitHarness && code != exitIntegrity) || (next == exitPerf && code == exitOK) {
+			code = next
 		}
 		if ctx.Err() != nil {
 			break
 		}
 	}
 	return code
+}
+
+// setupError is only attached when receipt emission cannot yet have been attempted.
+// An unmarked error (even without a result) is an integrity failure.
+type setupError struct{ err error }
+
+func (e *setupError) Error() string { return e.err.Error() }
+func (e *setupError) Unwrap() error { return e.err }
+
+func isSetupFailure(err error) bool {
+	// A joined or wrapped error could include a later, unclassified failure.
+	// Only the direct setup marker proves setup-only failure.
+	return reflect.TypeOf(err) == reflect.TypeFor[*setupError]()
+}
+
+func modeExitCode(res *result, err error) int {
+	if isSetupFailure(err) {
+		return exitHarness
+	}
+	if res == nil || err != nil || res.Integrity.Verdict != verdictPass {
+		return exitIntegrity
+	}
+	if res.Performance.Verdict != perfMeasured {
+		return exitPerf
+	}
+	return exitOK
 }
 
 func parseFlags(args []string) (options, []string, string, error) {
@@ -124,14 +156,14 @@ func parseFlags(args []string) (options, []string, string, error) {
 		return options{}, nil, "", err
 	}
 	if info, statErr := os.Stat(absBinary); statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-		return options{}, nil, "", fmt.Errorf("binary %q is %w", absBinary, errNotExecutable)
+		return options{}, nil, "", &setupError{fmt.Errorf("binary %q is %w", absBinary, errNotExecutable)}
 	}
 	absOut, err := filepath.Abs(*out)
 	if err != nil {
 		return options{}, nil, "", err
 	}
 	if err := os.MkdirAll(absOut, 0o750); err != nil {
-		return options{}, nil, "", err
+		return options{}, nil, "", &setupError{err}
 	}
 	var list []string
 	for _, mode := range strings.Split(*modes, ",") {

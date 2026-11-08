@@ -113,3 +113,68 @@ if ts.get("repository", {}).get("url") != f"git+https://github.com/{repository}.
     raise SystemExit("tagged verifier package repository does not match publisher")
 PY
 }
+
+# curl exit codes: https://curl.se/docs/manpage.html#EXIT
+# npm fetch errors copy system code into code/errno and expose timeout types:
+# https://github.com/npm/minipass-fetch/blob/main/lib/fetch-error.js
+# https://github.com/npm/minipass-fetch/blob/main/lib/index.js (request-timeout)
+# https://github.com/npm/minipass-fetch/blob/main/lib/body.js (body-timeout)
+# https://github.com/npm/agent/blob/main/lib/errors.js (EIDLETIMEOUT)
+# https://github.com/node-modules/agentkeepalive/blob/master/lib/agent.js (ERR_SOCKET_TIMEOUT)
+# The CLI may omit errno/type; a bare FETCH_ERROR remains unclassified.
+# https://github.com/npm/cli/blob/latest/lib/utils/output-error.js
+# HTTP E5xx means a server error
+# (RFC 9110 section 15.6). Everything else, including invalid JSON, fails closed.
+registry_read() {
+	local tool="$1" output status http_code attempt classification
+	for attempt in 1 2 3; do
+		status=0
+		if [[ "$tool" == curl ]]; then
+			output="$("$@" --write-out '\n%{http_code}')" || status=$?
+			http_code="${output##*$'\n'}"
+			output="${output%$'\n'*}"
+			if ((status == 0)); then
+				printf '%s\n' "$output"
+				return 0
+			fi
+			case "$status" in
+				5|6|7|28|52|55|56) status=3 ;;
+				22) if [[ "$http_code" =~ ^5[0-9][0-9]$ ]]; then status=3; else status=2; fi ;;
+				*) status=2 ;;
+			esac
+		else
+			output="$("$@")" || status=$?
+			if ((status == 0)); then
+				if [[ "$tool" != npm || "$2" != view ]]; then
+					printf '%s\n' "$output"
+					return 0
+				fi
+				python3 -c 'import json, sys; value=json.load(sys.stdin); isinstance(value, str) or sys.exit(2); print(value)' <<<"$output" || return 2
+				return 0
+			fi
+			if ! classification="$(python3 -c '
+import json, re, sys
+try:
+    error = json.load(sys.stdin)["error"]
+    code = error["code"]
+    timeouts = {"ETIMEDOUT", "EIDLETIMEOUT", "ERR_SOCKET_TIMEOUT"}
+    fetch_timeout = code == "FETCH_ERROR" and (error.get("errno") in timeouts or error.get("type") in {"request-timeout", "body-timeout"})
+    outage = fetch_timeout or code in timeouts or code in {"ECONNREFUSED", "ECONNRESET", "EAI_AGAIN", "ENOTFOUND", "ENETUNREACH", "EHOSTUNREACH"} or re.fullmatch(r"E5[0-9][0-9]", code)
+except (ValueError, KeyError, TypeError):
+    outage = False
+print(3 if outage else 2)
+' <<<"$output")"; then
+				printf '%s\n' "$output" >&2
+				return 2
+			fi
+			if [[ "$classification" == 3 ]]; then status=3; else status=2; fi
+		fi
+		# Only a proven transport outage is retried. Match ci-retry.sh's
+		# three-attempt linear backoff without retrying integrity failures.
+		printf 'registry read attempt %d failed:\n%s\n' "$attempt" "$output" >&2
+		if ((status != 3 || attempt == 3)); then
+			return "$status"
+		fi
+		sleep "$((attempt * 5))"
+	done
+}

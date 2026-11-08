@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -21,6 +22,8 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+
+	"github.com/luckyPipewrench/pipelock/internal/testexec"
 )
 
 func TestReleaseVerifierFixtureMain(t *testing.T) {
@@ -1267,5 +1270,293 @@ func TestReleaseVerifierTaggedRepositoryChecksEachManifest(t *testing.T) {
 				t.Fatalf("manifest repository mismatch error = %v, output = %q", err, output)
 			}
 		})
+	}
+}
+
+func TestReleaseVerifierRegistryExitCodes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires bash")
+	}
+	for _, tc := range []struct {
+		name, target, failure, wantText string
+		code                            int
+	}{
+		{"npm-refused", "npm", "refused", "could not reach npm", 3},
+		{"npm-server", "npm", "server", "could not reach npm", 3},
+		{"npm-timeout", "npm", "timeout", "could not reach npm", 3},
+		{"npm-fetch-not-timeout", "npm", "fetch-not-timeout", "could not reach npm", 2},
+		{"npm-bare-fetch-error", "npm", "bare-fetch-error", "could not reach npm", 2},
+		{"npm-socket-timeout", "npm", "socket-timeout", "could not reach npm", 3},
+		{"npm-idle-timeout", "npm", "idle-timeout", "could not reach npm", 3},
+		{"npm-fetch-errno-timeout", "npm", "fetch-errno-timeout", "could not reach npm", 3},
+		{"npm-fetch-errno-socket-timeout", "npm", "fetch-errno-socket-timeout", "could not reach npm", 3},
+		{"npm-fetch-errno-idle-timeout", "npm", "fetch-errno-idle-timeout", "could not reach npm", 3},
+		{"npm-fetch-body-timeout", "npm", "fetch-body-timeout", "could not reach npm", 3},
+		{"npm-fetch-request-timeout", "npm", "fetch-request-timeout", "could not reach npm", 3},
+		{"crates-refused", "crates", "refused", "could not reach crates.io", 3},
+		{"crates-server", "crates", "server", "could not reach crates.io", 3},
+		{"crates-timeout", "crates", "timeout", "could not reach crates.io", 3},
+		{"pypi-refused", "pypi", "refused", "could not reach PyPI", 3},
+		{"pypi-server", "pypi", "server", "could not reach PyPI", 3},
+		{"pypi-timeout", "pypi", "timeout", "could not reach PyPI", 3},
+		{"npm-digest", "npm", "mismatch", "npm integrity", 2},
+		{"crates-checksum", "crates", "mismatch", "crates.io checksum", 2},
+		{"pypi-digest", "pypi", "mismatch", "does not bind the pinned wheel digest", 2},
+		{"python-tag", "git", "mismatch", "inventory requires", 2},
+		{"npm-unknown", "npm", "unknown", "could not reach npm", 2},
+		{"npm-classifier", "npm", "classifier", "could not reach npm", 2},
+		{"crates-unknown", "crates", "unknown", "could not reach crates.io", 2},
+		{"pypi-malformed", "pypi", "malformed", "JSONDecodeError", 2},
+		{"npm-provenance-after-scratch", "install", "provenance", "expected one verified npm package", 2},
+		{"npm-audit-timeout-after-scratch", "install", "audit-timeout", "could not verify npm signatures", 3},
+		{"npm-signature-details", "install", "audit-signature", "fixture-package missing signature", 2},
+		{"pypi-unclassified", "pypi", "parser", "unclassified parser failure", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := stageReleaseVerifierInventoryTest(t)
+			if err := os.Chmod(filepath.Join(root, "scripts", "ci-retry.sh"), 0o700); err != nil { // #nosec G302 -- executable checked-in script fixture.
+				t.Fatal(err)
+			}
+			workflow := filepath.Join(root, ".github", "workflows", "publish-verifiers.yaml")
+			if err := os.MkdirAll(filepath.Dir(workflow), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(workflow, []byte("environment: verifier-release\nid-token: write\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			commitReleaseVerifierFixture(t, root, ".github/workflows/publish-verifiers.yaml")
+			commit := releaseVerifierFixtureHEAD(t, root)
+			runReleaseVerifierGit(t, root, "tag", stagedVerifierSourceRef(t, root, "TypeScript"))
+			rewriteStagedVerifierInventory(t, root, func(inventory map[string]interface{}) {
+				inventory["release_blocked"] = false
+				setStagedVerifierSourceCommits(t, inventory, commit, "TypeScript", "Rust")
+				for _, entry := range inventory["verifiers"].([]interface{}) {
+					v := entry.(map[string]interface{})
+					switch v["language"] {
+					case "TypeScript":
+						v["artifact_digest"] = "sha512-YWJj"
+					case "Rust":
+						v["artifact_digest"] = strings.Repeat("a", 64)
+					case "Python":
+						v["artifact_digest"] = "sha256:" + strings.Repeat("b", 64)
+						v["publisher"].(map[string]interface{})["source_commit"] = strings.Repeat("c", 40)
+					}
+				}
+			})
+			bin := t.TempDir()
+			git, err := exec.LookPath("git")
+			if err != nil {
+				t.Fatal(err)
+			}
+			python, err := exec.LookPath("python3")
+			if err != nil {
+				t.Fatal(err)
+			}
+			stubs := map[string]string{
+				"python3": "if [[ $FAILURE == classifier && $1 == -c && $2 == *'outage ='* ]]; then exit 3; fi\nif [[ $FAILURE == parser && $# == 4 && $1 == - && $2 == 0.4.1 ]]; then echo 'unclassified parser failure' >&2; exit 64; fi\nexec " + strconv.Quote(python) + " \"$@\"\n",
+				"git":     "if [[ $1 == ls-remote ]]; then\nif [[ $TARGET == git ]]; then printf '%040d\\trefs/tags/v0.4.1\\n' 0; else printf '%s\\trefs/tags/v0.4.1\\n' " + strings.Repeat("c", 40) + "; fi\nelse exec " + strconv.Quote(git) + " \"$@\"; fi\n",
+				"npm": `if [[ $1 == --version ]]; then echo 11.12.0; exit 0; fi
+if [[ $TARGET == install ]]; then
+  if [[ $1 == install ]]; then
+    while (($#)); do
+      if [[ $1 == --prefix ]]; then printf '{}' >"$2/package-lock.json"; break; fi
+      shift
+    done
+    echo '{}'; exit 0
+  fi
+  if [[ $1 == audit ]]; then
+    printf 'audit\n' >>"$INVOCATIONS"
+    if [[ $FAILURE == audit-timeout ]]; then echo '{"error":{"code":"ERR_SOCKET_TIMEOUT"}}'; exit 1; fi
+    if [[ $FAILURE == audit-signature ]]; then echo '{"error":{"code":"EINTEGRITY","message":"fixture-package missing signature"}}'; exit 1; fi
+    echo '{}'; exit 0
+  fi
+fi
+if [[ $TARGET == npm ]]; then
+  printf 'view\n' >>"$INVOCATIONS"
+  case $FAILURE in
+    refused|classifier) echo '{"error":{"code":"ECONNREFUSED"}}'; exit 1 ;;
+    fetch-request-timeout) echo '{"error":{"code":"FETCH_ERROR","type":"request-timeout"}}'; exit 1 ;;
+    fetch-body-timeout) echo '{"error":{"code":"FETCH_ERROR","type":"body-timeout"}}'; exit 1 ;;
+    fetch-errno-timeout) echo '{"error":{"code":"FETCH_ERROR","errno":"ETIMEDOUT"}}'; exit 1 ;;
+    idle-timeout) echo '{"error":{"code":"EIDLETIMEOUT"}}'; exit 1 ;;
+    socket-timeout) echo '{"error":{"code":"ERR_SOCKET_TIMEOUT"}}'; exit 1 ;;
+    bare-fetch-error) echo '{"error":{"code":"FETCH_ERROR"}}'; exit 1 ;;
+    fetch-not-timeout) echo '{"error":{"code":"FETCH_ERROR","type":"invalid-json","errno":"FETCH_ERROR"}}'; exit 1 ;;
+    fetch-errno-idle-timeout) echo '{"error":{"code":"FETCH_ERROR","errno":"EIDLETIMEOUT"}}'; exit 1 ;;
+    fetch-errno-socket-timeout) echo '{"error":{"code":"FETCH_ERROR","errno":"ERR_SOCKET_TIMEOUT"}}'; exit 1 ;;
+    timeout) echo '{"error":{"code":"ETIMEDOUT"}}'; exit 1 ;;
+    server) echo '{"error":{"code":"E503"}}'; exit 1 ;;
+    unknown) echo '{"error":{"code":"E401"}}'; exit 1 ;;
+    mismatch) if [[ "$*" == *--json* ]]; then echo '"sha512-ZGVm"'; else echo sha512-ZGVm; fi; exit 0 ;;
+  esac
+fi
+if [[ "$*" == *--json* ]]; then echo '"sha512-YWJj"'; else echo sha512-YWJj; fi
+`,
+				"curl": `http_code() { [[ "$*" == *--write-out* ]] && printf '\n%s' "$HTTP_CODE"; return 0; }
+args="$*"
+target=crates
+[[ "$*" == *pypi.org* ]] && target=pypi
+if [[ $TARGET == "$target" ]]; then
+  printf '%s\n' "$target" >>"$INVOCATIONS"
+  case $FAILURE in
+    refused) HTTP_CODE=000; http_code "$args"; exit 7 ;;
+    timeout) HTTP_CODE=000; http_code "$args"; exit 28 ;;
+    server) HTTP_CODE=503; http_code "$args"; exit 22 ;;
+    unknown) HTTP_CODE=000; http_code "$args"; exit 35 ;;
+    malformed) printf invalid-json; HTTP_CODE=200; http_code "$args"; exit 0 ;;
+  esac
+fi
+if [[ $target == crates ]]; then
+  digest=` + strings.Repeat("a", 64) + `
+  [[ $TARGET == crates && $FAILURE == mismatch ]] && digest=` + strings.Repeat("d", 64) + `
+  printf '{"vers":"%s","cksum":"%s"}' "$RUST_VERSION" "$digest"
+else
+  digest=` + strings.Repeat("b", 64) + `
+  [[ $TARGET == pypi && $FAILURE == mismatch ]] && digest=` + strings.Repeat("d", 64) + `
+  printf '{"urls":[{"packagetype":"bdist_wheel","filename":"pipelock_verify-0.4.1-py3-none-any.whl","digests":{"sha256":"%s"}}]}' "$digest"
+fi
+HTTP_CODE=200; http_code "$args"
+`,
+				"sleep": "exit 0\n",
+				"node":  "exit 0\n",
+				"cargo": "exit 99\n",
+				"go": `if [[ $1 == env ]]; then echo go1.26.10; fi
+if [[ $1 == run ]]; then
+  while (($#)); do
+    if [[ $1 == --out-dir ]]; then printf '%064d' 0 >"$2/candidate-receipt-public-key.txt"; break; fi
+    shift
+  done
+fi
+exit 0
+`,
+			}
+			for name, body := range stubs {
+				testexec.WriteExecutable(t, filepath.Join(bin, name), []byte("#!/usr/bin/env bash\n"+body), 0o700)
+			}
+			cmd := exec.CommandContext(t.Context(), "bash", filepath.Join(root, "scripts/release-verifier-install-gate.sh"), "--tag", "v3.4.0") // #nosec G204 -- checked-in script in an isolated fixture.
+			scratchParent := t.TempDir()
+			invocations := filepath.Join(t.TempDir(), "invocations")
+			cmd.Env = append(os.Environ(), "INVOCATIONS="+invocations, "TMPDIR="+scratchParent, "PATH="+bin+":"+os.Getenv("PATH"), "TARGET="+tc.target, "FAILURE="+tc.failure, "RUST_VERSION="+strings.TrimPrefix(stagedVerifierSourceRef(t, root, "Rust"), "verifier-v"))
+			out, err := cmd.CombinedOutput()
+			left, readErr := os.ReadDir(scratchParent)
+			if readErr != nil || len(left) != 0 {
+				t.Fatalf("scratch cleanup: entries=%v error=%v", left, readErr)
+			}
+			if tc.target != "git" {
+				calls, readErr := os.ReadFile(filepath.Clean(invocations))
+				wantAttempts := 1
+				if tc.code == 3 {
+					wantAttempts = 3
+				}
+				if readErr != nil || len(strings.Fields(string(calls))) != wantAttempts {
+					t.Fatalf("registry attempts=%q, error=%v; want %d", calls, readErr, wantAttempts)
+				}
+			}
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != tc.code || !strings.Contains(string(out), tc.wantText) {
+				t.Fatalf("exit=%v, want %d and %q; output:\n%s", err, tc.code, tc.wantText, out)
+			}
+		})
+	}
+}
+
+func TestReleaseVerifierRegistryReadReportsAndRetries(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires bash")
+	}
+	for _, tool := range []string{"npm", "curl"} {
+		for _, scenario := range []string{"signature", "outage", "transient"} {
+			t.Run(tool+"/"+scenario, func(t *testing.T) {
+				root := t.TempDir()
+				calls := filepath.Join(root, "calls")
+				report := filepath.Join(root, "report.json")
+				for name, body := range map[string]string{
+					"sleep": "exit 0\n",
+					tool: `printf 'attempt\n' >>"$INVOCATIONS"
+attempt=$(wc -l <"$INVOCATIONS")
+if [[ $SCENARIO == signature ]]; then
+  printf '{"error":{"code":"EINTEGRITY","package":"fixture-package","message":"missing signature"}}'
+  [[ $TOOL == curl ]] && printf '\n400'
+  exit 22
+fi
+if [[ $SCENARIO == outage || $attempt == 1 ]]; then
+  printf '{"error":{"code":"ETIMEDOUT","message":"fixture registry unavailable attempt %s"}}' "$attempt"
+  if [[ $TOOL == curl ]]; then printf '\n000'; exit 28; fi
+  exit 1
+fi
+printf '{"verified":true}'
+[[ $TOOL == curl ]] && printf '\n200'
+exit 0
+`,
+				} {
+					testexec.WriteExecutable(t, filepath.Join(root, name), []byte("#!/usr/bin/env bash\n"+body), 0o700)
+				}
+				lib, err := filepath.Abs("release-verifier-install-gate-lib.sh")
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Keep the function's stdout redirected exactly as the signature audit caller does.
+				cmd := exec.CommandContext(t.Context(), "bash", "-c", `source "$1"; registry_read "$TOOL" audit signatures --json >"$REPORT"`, "registry-test", lib) // #nosec G204 -- fixed shell program and checked-in library with isolated fixture paths.
+				cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"), "INVOCATIONS="+calls, "REPORT="+report, "SCENARIO="+scenario, "TOOL="+tool)
+				var stdout, stderr bytes.Buffer
+				cmd.Stdout, cmd.Stderr = &stdout, &stderr
+				err = cmd.Run()
+				wantCode, wantAttempts := 2, 1
+				switch scenario {
+				case "outage":
+					wantCode, wantAttempts = 3, 3
+				case "transient":
+					wantCode, wantAttempts = 0, 2
+				}
+				if wantCode == 0 {
+					if err != nil {
+						t.Fatalf("recovered outage: %v; %s", err, stderr.String())
+					}
+				} else {
+					var exit *exec.ExitError
+					if !errors.As(err, &exit) || exit.ExitCode() != wantCode {
+						t.Fatalf("exit=%v, want %d", err, wantCode)
+					}
+				}
+				data, readErr := os.ReadFile(filepath.Clean(calls))
+				if readErr != nil || len(strings.Fields(string(data))) != wantAttempts {
+					t.Fatalf("attempts=%q, error=%v; want %d", data, readErr, wantAttempts)
+				}
+				data, readErr = os.ReadFile(filepath.Clean(report))
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if stdout.Len() != 0 {
+					t.Fatalf("captured output escaped to stdout: %q", stdout.String())
+				}
+				failedAttempts := wantAttempts
+				if scenario == "transient" {
+					failedAttempts--
+				}
+				for attempt := 1; attempt <= failedAttempts; attempt++ {
+					detail := "fixture-package"
+					if scenario != "signature" {
+						detail = fmt.Sprintf("fixture registry unavailable attempt %d", attempt)
+					}
+					want := fmt.Sprintf("registry read attempt %d failed:\n", attempt)
+					if !strings.Contains(stderr.String(), want) || !strings.Contains(stderr.String(), detail) {
+						t.Fatalf("missing attempt %d diagnostic %q: stderr=%q", attempt, detail, stderr.String())
+					}
+				}
+				if scenario == "transient" {
+					if string(data) != "{\"verified\":true}\n" {
+						t.Fatalf("recovered report=%q, stderr=%q", data, stderr.String())
+					}
+				} else {
+					detail := "fixture registry unavailable"
+					if scenario == "signature" {
+						detail = "fixture-package"
+					}
+					if len(data) != 0 || !strings.Contains(stderr.String(), detail) {
+						t.Fatalf("failure report=%q, stderr=%q; want stderr detail %q", data, stderr.String(), detail)
+					}
+				}
+			})
+		}
 	}
 }

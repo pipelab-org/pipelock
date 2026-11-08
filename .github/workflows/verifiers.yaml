@@ -499,6 +499,7 @@ jobs:
             base="$DRIFT_BEFORE"
           fi
           git cat-file -e "${base}^{commit}"
+          # Source contradictions (2) and all other nonzero exits fail this job.
           scripts/release-verifier-install-gate.sh --source-drift-only --base "$base"
 
   # Containment direct-egress conformance gate: packages pipelock's

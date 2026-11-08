@@ -108,18 +108,27 @@ func TestBundleLogBoundaries(t *testing.T) {
 	}
 }
 
-func TestUnavailableProcessStatsPreserveIntegrity(t *testing.T) {
+func TestUnavailableProcessStatsStopBeforeWorkload(t *testing.T) {
 	old := readProcessStat
 	readProcessStat = func(string) ([]byte, error) { return nil, os.ErrNotExist }
 	t.Cleanup(func() { readProcessStat = old })
 	opt := smallOptions(t, realPipelock(t))
 	opt.requests, opt.warmup = 10, 2
-	res, err := runMode(context.Background(), opt, modeRequired)
-	if err != nil {
-		t.Fatalf("process stats aborted integrity collection: %v", err)
+	if code := runModes(t.Context(), opt, []string{modeRequired}); code != exitIntegrity {
+		t.Fatalf("process stats failure exited %d, want integrity 1", code)
 	}
-	if res.Integrity.Verdict != verdictPass || !res.Integrity.Shutdown.Clean || res.Performance.Verdict != perfInvalid || !hasReason(res.Performance.Reasons, "measurement unavailable") {
-		t.Fatalf("result: %+v", res)
+	// Even without workload requests, required-mode startup already emitted
+	// session_open. Losing process measurements cannot erase that obligation.
+	observed, err := scanRecorder(filepath.Join(opt.out, modeRequired, "recorder"), newWorkload(opt.seed, opt.warmup, opt.requests), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(observed.opens) == 0 {
+		t.Fatal("proxy startup produced no session_open receipt")
+	}
+	res := readResult(t, filepath.Join(opt.out, modeRequired))
+	if res.Integrity.Verdict == verdictPass || res.Integrity.Verify.Ran || res.Performance.Verdict != perfInvalid {
+		t.Fatalf("process stats failure reached evidence evaluation: %+v", res)
 	}
 }
 

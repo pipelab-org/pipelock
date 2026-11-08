@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testexec"
 )
 
 func TestReviewSummaryRefusesInvalidPopulation(t *testing.T) {
@@ -48,7 +50,7 @@ func TestReviewSummaryRefusesInvalidPopulation(t *testing.T) {
 }
 
 func TestReviewShellFailures(t *testing.T) {
-	for _, code := range []string{"0", "7"} {
+	for _, code := range []string{"0", "4", "7"} {
 		t.Run("scope-exit-"+code, func(t *testing.T) {
 			root := t.TempDir()
 			scope := filepath.Join(root, "systemd-run")
@@ -89,8 +91,10 @@ func TestReviewShellFailures(t *testing.T) {
 		cmd := exec.CommandContext(ctx, "bash", "./run.sh")
 		cmd.Args = append(cmd.Args, filepath.Join(root, "out"))
 		cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"), "RECEIPT_LOAD_REQUESTS=1")
-		if log, err := cmd.CombinedOutput(); err == nil {
-			t.Fatalf("build failure passed: %s", log)
+		log, err := cmd.CombinedOutput()
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 4 {
+			t.Fatalf("build failure exit=%v, want harness error 4: %s", err, log)
 		}
 	})
 }
@@ -203,7 +207,7 @@ func TestReviewRunForwardsVerifyTimeout(t *testing.T) {
 			argv := filepath.Join(root, "argv")
 			stubs := map[string]string{
 				"make": "#!/bin/sh\nexit 0\n",
-				"go":   "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + argv + "\"\nexit 0\n",
+				"go":   "#!/bin/sh\ncat >\"$3\" <<'SH'\n#!/bin/sh\nprintf './scripts/receipt-load\\n' > \"" + argv + "\"\nprintf '%s\\n' \"$@\" >> \"" + argv + "\"\nSH\nchmod 700 \"$3\"\n",
 			}
 			for name, body := range stubs {
 				path := filepath.Join(root, name)
@@ -550,5 +554,37 @@ func TestMatrixRefusesInvalidReleaseSettings(t *testing.T) {
 				t.Fatalf("invalid settings created output: %v", err)
 			}
 		})
+	}
+}
+
+func TestRunPreservesHarnessExitCode(t *testing.T) {
+	for _, code := range []int{1, 2, 3, 4} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			root := t.TempDir()
+			marker := filepath.Join(root, "ran")
+			harness := filepath.Join(root, "harness")
+			testexec.WriteExecutable(t, harness, []byte("#!/bin/sh\nprintf ran >\"$HARNESS_MARKER\"\nexit "+strconv.Itoa(code)+"\n"), 0o700)
+			writeRunBuildStubs(t, root)
+			cmd := exec.CommandContext(t.Context(), "bash", "./run.sh", filepath.Join(root, "out")) // #nosec G204 -- fixed launcher with output under t.TempDir.
+			cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"), "HARNESS_STUB="+harness, "HARNESS_MARKER="+marker)
+			out, err := cmd.CombinedOutput()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != code {
+				t.Fatalf("run.sh exit=%v, want harness exit %d; %s", err, code, out)
+			}
+			if data, err := os.ReadFile(filepath.Clean(marker)); err != nil || string(data) != "ran" {
+				t.Fatalf("harness did not run: marker=%q, error=%v", data, err)
+			}
+		})
+	}
+}
+
+func writeRunBuildStubs(t *testing.T, root string) {
+	t.Helper()
+	for name, body := range map[string]string{
+		"make": "#!/bin/sh\nexit 0\n",
+		"go":   "#!/bin/sh\n[ \"$1\" = build ] || exit 99\ncp \"$HARNESS_STUB\" \"$3\"\n",
+	} {
+		testexec.WriteExecutable(t, filepath.Join(root, name), []byte(body), 0o700)
 	}
 }
