@@ -1096,16 +1096,16 @@ def measure_changed_tests(
                 measured.append(package)
             return result
 
-        def keep_skipped_records(sides: tuple[dict, ...]) -> None:
+        def keep_skipped_records(sides: tuple[dict, ...], unmeasured: dict[str, list[str]]) -> None:
             # Tree weights are keyed by test name. If a measured package, or a
             # new test's zero base, shares a name with a skipped package, it
             # must not lower that skipped test's recorded weight on any side.
-            for package in skipped:
+            for package, names in unmeasured.items():
                 tree = tree_for_package(package)
                 if tree is None:
                     continue
                 recorded = plan.get("trees", {}).get(tree, {})
-                for name in selected[package]:
+                for name in names:
                     for side in sides:
                         weights = side["trees"].get(tree, {})
                         if name in weights:
@@ -1130,7 +1130,8 @@ def measure_changed_tests(
         head_only: dict = {"trees": {}, "packages": {}}
         for result in head_results.values():
             merge_overrides(head_only, result)
-        keep_skipped_records((head_only,))
+        skipped_heads = {pkg: selected[pkg] for pkg in skipped}
+        keep_skipped_records((head_only,), skipped_heads)
         paired = base_pair_needed(tags, head_only, plan)
         if paired:
             for package in new_order:
@@ -1174,7 +1175,8 @@ def measure_changed_tests(
             "skipped": skipped,
         }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         selection_path(base_path).write_text(json.dumps({
-            "selected": {pkg: base_selected[pkg] for pkg in sorted(base_measured)},
+            "selected": {pkg: base_selected[pkg] for pkg in sorted(base_measured | set(skipped) | set(base_skipped))
+                         if pkg in base_selected},
             "whole": [pkg for pkg in whole if pkg in base_measured],
             "skipped": sorted(pkg for pkg in [*skipped, *base_skipped] if pkg in base_selected),
         }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -1211,7 +1213,10 @@ def measure_changed_tests(
             introduced["trees"][tree] = sorted(set(introduced["trees"][tree]))
         introduced["packages"] = sorted(set(introduced["packages"]))
         # Applied after the zero-base charge so a shared name keeps its recorded base.
-        keep_skipped_records((overrides, base_overrides))
+        keep_skipped_records((overrides, base_overrides), skipped_heads)
+        # A missed base keeps only its existing names; newly added names still
+        # have a zero base. Its measured head must not be raised to the record.
+        keep_skipped_records((base_overrides,), {pkg: base_selected[pkg] for pkg in base_skipped})
         print(f"Paired measurement wall time: {clock() - started:.3f}s "
               f"(shared deadline {deadline_seconds:.0f}s; base={base_seconds:.3f}s/{len(base_selected)} packages, "
               f"head={head_seconds:.3f}s/{len(selected)} packages)")

@@ -743,7 +743,7 @@ func TestParent(t *testing.T) {
             self.assertEqual(partial_overrides([target]), budget.call_args.args[2])
             self.assertEqual(partial_overrides([base]), budget.call_args.args[3])
             selection = json.loads(base.with_suffix(".selection.json").read_text())
-            self.assertEqual(selection["selected"], {})
+            self.assertEqual(selection["selected"], {first: ["TestFirst"], second: ["TestSecond"]})
             self.assertEqual(selection["skipped"], [first, second])
             self.assertEqual(json.loads(target.with_suffix(".selection.json").read_text())["skipped"], [second])
         # The first head ran (105s left) and is kept. The second head could not
@@ -814,6 +814,58 @@ func TestParent(t *testing.T) {
                                           deadline_seconds=100, clock=lambda: now[0])
         self.assertEqual(budget.call_args.args[2]["trees"]["proxy"]["TestShared"], 90.0)
         self.assertEqual(budget.call_args.args[3]["trees"]["proxy"]["TestShared"], 90.0)
+
+    def test_skipped_base_keeps_shared_name_record_without_replacing_head(self):
+        first, second = "example.test/internal/proxy", "example.test/internal/proxy/inner"
+        for head, expected in ((1000.0, 0), (850.0, 0)):
+            with self.subTest(head=head):
+                tests = [{"package": "./" + pkg.split("/", 1)[1], "file": "x_test.go",
+                          "name": "TestShared", "new": False} for pkg in (first, second)]
+                plan = {"trees": {"proxy": {"TestShared": 900.0}},
+                        "names": {tree: [] for tree in planner.TEST_SPLITS}, "packages": {}, "inventory": []}
+                plan["names"]["proxy"] = ["TestShared"]
+                now = [0.0]
+                commands = []
+
+                def resolve(tests, tags, import_paths):
+                    import_paths.update({test["package"]: pkg for test, pkg in zip(tests, (first, second))})
+                    return {first: ["TestShared"], second: ["TestShared"]}
+
+                def run(command, stream, root, remaining):
+                    package = command[-1]
+                    commands.append((package, root))
+                    seconds = head if package == second else 1.0
+                    for event in ({"Action": "run", "Test": "TestShared"},
+                                  {"Action": "pass", "Test": "TestShared", "Elapsed": seconds},
+                                  {"Action": "pass", "Elapsed": seconds}):
+                        stream.write(json.dumps({"Package": package, **event}) + "\n")
+                    now[0] += 50.0
+                    return 0
+
+                with tempfile.TemporaryDirectory() as directory, \
+                     patch.object(planner, "measurement_base", return_value=nullcontext(Path("base"))), \
+                     patch.object(planner, "runnable_changed_tests", side_effect=resolve), \
+                     patch.object(planner, "prediction_plan", return_value=plan), \
+                     patch.object(planner, "list_packages", return_value=[first, second]), \
+                     patch.object(planner, "run_measurement", side_effect=run), \
+                     patch("scripts.ci_test_durations.load_durations", return_value=plan["trees"]), \
+                     patch.object(planner, "check_budget", wraps=planner.check_budget) as budget, \
+                     redirect_stdout(io.StringIO()) as output, redirect_stderr(io.StringIO()):
+                    target = Path(directory) / "changed.json"
+                    status = planner.measure_changed_tests(tests, "", target, "base-sha",
+                                                           deadline_seconds=200, clock=lambda: now[0])
+                    self.assertEqual(status, expected, output.getvalue())
+                    measured_head, base = budget.call_args.args[2:4]
+                    self.assertEqual(measured_head["trees"]["proxy"]["TestShared"], head)
+                    self.assertEqual(base["trees"]["proxy"]["TestShared"], 900.0)
+                    self.assertEqual(partial_overrides([target]), measured_head)
+                    self.assertEqual(partial_overrides([target.with_suffix(".base.json")]), base)
+                    selection = json.loads(target.with_suffix(".base.selection.json").read_text())
+                    self.assertEqual(selection["selected"][second], ["TestShared"])
+                    self.assertEqual(selection["skipped"], [second])
+                    self.assertIn("Changed test base not re-measured", output.getvalue())
+                    self.assertEqual("Shard already over budget" in output.getvalue(), head > 900.0)
+                self.assertEqual(commands, [(first, planner.ROOT), (second, planner.ROOT), (first, Path("base"))])
 
     def test_skipped_name_keeps_recorded_weight_even_if_inventory_misses_it(self):
         # The declaration inventory can miss a name; a skipped package's
@@ -907,7 +959,7 @@ func TestParent(t *testing.T) {
             replayed = partial_overrides([target.with_suffix(".base.json")])
         self.assertEqual(commands, [(first, planner.ROOT), (second, planner.ROOT), (first, Path("base"))])
         self.assertIn(f"::warning title=Changed test base not re-measured::{second}", out.getvalue())
-        self.assertEqual(base_selection["selected"], {first: ["TestOldA"]})
+        self.assertEqual(base_selection["selected"], {first: ["TestOldA"], second: ["TestOldB"]})
         self.assertEqual(base_selection["skipped"], [second])
         head, base = budget.call_args.args[2], budget.call_args.args[3]
         self.assertEqual(head["trees"]["proxy"], {"TestNewA": 1, "TestOldA": 1})
