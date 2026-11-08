@@ -285,6 +285,7 @@ func applyMCPResponseSuppressOpts(opts *mcp.MCPProxyOpts, cfg *config.Config, re
 	trust := config.ResponseTrustUntrusted
 	taintTrusted := false
 	if cfg != nil {
+		opts.WatchOnly = cfg.WatchOnly
 		opts.Suppress = cfg.Suppress
 		if configuredTrust, ok := cfg.MCPResponseTrustForServer(res.ArmingName); ok {
 			trust = configuredTrust
@@ -1088,11 +1089,6 @@ Key-free evidence capture:
 			defer auditLogger.Close()
 			wirePromptInjectionAudit(sc, auditLogger)
 			announcePromptInjectionPolicy(cfg, auditLogger, cmd.ErrOrStderr())
-			upstreamDialContext := verifiedDialContext(
-				mcp.NewMetadataSafeDialContext(func() *scanner.Scanner { return sc }),
-				launchIdentity,
-				cmd.ErrOrStderr(),
-			)
 
 			ks := killswitch.New(cfg)
 
@@ -1373,9 +1369,10 @@ Key-free evidence capture:
 			// receipt_emission_failed - a silent, total block. Refuse to start
 			// so the misconfiguration surfaces here, not as an all-blocked
 			// proxy at runtime.
-			if cfg.FlightRecorder.RequireReceipts && !receiptEmitterReady(receiptEmitter) {
-				return fmt.Errorf("flight_recorder.require_receipts is enabled but no healthy signed receipt emitter is active: set flight_recorder.enabled, flight_recorder.dir, and flight_recorder.signing_key_path (run 'pipelock init'), fix any receipt-chain resume error, or disable require_receipts")
+			if err := validateMCPRequiredReceipts(cfg, receiptEmitter); err != nil {
+				return err
 			}
+
 			heartbeatCtx, heartbeatCancel := context.WithCancel(cmd.Context())
 			defer heartbeatCancel()
 			var mcpLn net.Listener
@@ -1472,6 +1469,15 @@ Key-free evidence capture:
 				})
 			}
 			captureConfigHash := cfg.CanonicalPolicyHash()
+			watchReload := startMCPWatchReload(heartbeatCtx, configFile, cfg, auditLogger, mcpMetrics, cmd.ErrOrStderr())
+			defer watchReload.close()
+			upstreamDialContext := verifiedDialContext(
+				mcp.NewWatchMetadataSafeDialContext(func() *scanner.Scanner { return sc },
+					func() bool { return watchReload.current.Load().WatchOnly },
+					func(reason string) {
+						auditLogger.LogWatchOnly("mcp", "ssrf_metadata", reason, config.ActionBlock, 0, true)
+						mcpMetrics.RecordWatchOnly("mcp", "ssrf_metadata", config.ActionBlock, 0)
+					}), launchIdentity, cmd.ErrOrStderr())
 			captureProfile := resolved.Name
 			if captureProfile == "" {
 				captureProfile = edition.ProfileDefault
@@ -1604,6 +1610,7 @@ Key-free evidence capture:
 					}
 					applyMCPA2AOpts(&listenerOpts, cfg, a2aCardBaseline, upstreamURL)
 					applyMCPResponseSuppressOpts(&listenerOpts, cfg, launchIdentity)
+					applyMCPWatchReloadOpts(&listenerOpts, watchReload)
 					listenerOpts.ServerBinding = serverBinding
 					listenerOpts.ServerIdentityHeadersFn = listenerIdentityHeadersFn(launchIdentity, launchTransport, func() mcp.ServerIdentity {
 						return mcp.ServerIdentity{Name: launchIdentity.Name, PolicyName: launchIdentity.ArmingName, Binding: serverBinding, BindingMode: launchIdentity.BindingMode, Revision: launchIdentity.Revision}
@@ -1661,6 +1668,7 @@ Key-free evidence capture:
 					applyMCPDoWOpts(&wsOpts, dowWiring, false)
 					applyMCPA2AOpts(&wsOpts, cfg, a2aCardBaseline, upstreamURL)
 					applyMCPResponseSuppressOpts(&wsOpts, cfg, launchIdentity)
+					applyMCPWatchReloadOpts(&wsOpts, watchReload)
 					wsOpts.ServerBinding = serverBinding
 					wsOpts = mcpReceiptParityOpts(wsOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 					wsOpts.ReceiptGroup = receiptGroup
@@ -1718,6 +1726,7 @@ Key-free evidence capture:
 				applyMCPDoWOpts(&httpOpts, dowWiring, false)
 				applyMCPA2AOpts(&httpOpts, cfg, a2aCardBaseline, upstreamURL)
 				applyMCPResponseSuppressOpts(&httpOpts, cfg, launchIdentity)
+				applyMCPWatchReloadOpts(&httpOpts, watchReload)
 				httpOpts.ServerBinding = serverBinding
 				httpOpts = mcpReceiptParityOpts(httpOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 				httpOpts.ReceiptGroup = receiptGroup
@@ -1912,6 +1921,7 @@ Key-free evidence capture:
 				applyMCPDoWOpts(&proxyOpts, dowWiring, false)
 				applyMCPA2AOpts(&proxyOpts, cfg, a2aCardBaseline, "")
 				applyMCPResponseSuppressOpts(&proxyOpts, cfg, launchIdentity)
+				applyMCPWatchReloadOpts(&proxyOpts, watchReload)
 				proxyOpts.ServerBinding = serverBinding
 				proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 				proxyOpts.ReceiptGroup = receiptGroup
@@ -2070,6 +2080,7 @@ Key-free evidence capture:
 			applyMCPDoWOpts(&proxyOpts, dowWiring, false)
 			applyMCPA2AOpts(&proxyOpts, cfg, a2aCardBaseline, "")
 			applyMCPResponseSuppressOpts(&proxyOpts, cfg, launchIdentity)
+			applyMCPWatchReloadOpts(&proxyOpts, watchReload)
 			proxyOpts.ServerBinding = serverBinding
 			proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 			proxyOpts.ReceiptGroup = receiptGroup
@@ -2172,4 +2183,11 @@ func startMCPContractWatch(ctx context.Context, loader *contractruntime.Loader, 
 		return func() {}
 	}
 	return stop
+}
+
+func validateMCPRequiredReceipts(cfg *config.Config, emitter *receipt.Emitter) error {
+	if cfg.FlightRecorder.RequireReceipts && !receiptEmitterReady(emitter) {
+		return fmt.Errorf("flight_recorder.require_receipts is enabled but no healthy signed receipt emitter is active: set flight_recorder.enabled, flight_recorder.dir, and flight_recorder.signing_key_path (run 'pipelock init'), fix any receipt-chain resume error, or disable require_receipts")
+	}
+	return nil
 }

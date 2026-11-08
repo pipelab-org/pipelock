@@ -256,6 +256,8 @@ func RunHTTPListenerProxy(
 	// once here so we do not re-run opts.redactionConfig() three times.
 	baseRedactionCfg := opts.redactionConfig()
 	baseOpts := MCPProxyOpts{
+		WatchOnly: opts.WatchOnly, WatchOnlyFn: opts.WatchOnlyFn,
+		WatchOnlyGenerationFn: opts.WatchOnlyGenerationFn, PolicyConfigFn: opts.PolicyConfigFn,
 		Scanner:                   opts.scanner(),
 		ScannerFn:                 opts.ScannerFn,
 		ReloadMu:                  opts.ReloadMu,
@@ -368,6 +370,9 @@ func RunHTTPListenerProxy(
 		if loopbackListener && opts.ListenerBearerToken == "" && opts.ListenerBearerTokenFn == nil &&
 			!listenerLoopbackHostAllowed(r.Host, ln.Addr()) {
 			denialAudit = mcpListenerAdmissionDenialAudit()
+			if opts.watchOnly() {
+				opts.recordWatch("listener_access", "host not allowed", config.ActionBlock, 0, true)
+			}
 			http.Error(w, "host not allowed", http.StatusForbidden)
 			return
 		}
@@ -387,6 +392,9 @@ func RunHTTPListenerProxy(
 		w.Header().Set("Cache-Control", "no-store")
 		if !listenerOriginAllowed(r.Header.Values("Origin"), opts.ListenerAllowedOrigins) {
 			denialAudit = mcpListenerAdmissionDenialAudit()
+			if opts.watchOnly() {
+				opts.recordWatch("listener_access", "origin not allowed", config.ActionBlock, 0, true)
+			}
 			http.Error(w, "origin not allowed", http.StatusForbidden)
 			return
 		}
@@ -459,12 +467,18 @@ func RunHTTPListenerProxy(
 		// bound port. Authenticated listeners may use deployment-specific names.
 		if loopbackListener && listenerToken == "" && !listenerLoopbackHostAllowed(r.Host, ln.Addr()) {
 			denialAudit = mcpListenerAdmissionDenialAudit()
+			if opts.watchOnly() {
+				opts.recordWatch("listener_access", "host not allowed", config.ActionBlock, 0, true)
+			}
 			http.Error(w, "host not allowed", http.StatusForbidden)
 			return
 		}
 		if listenerToken != "" && !authorized && listenerPrincipal.key == "" {
 			w.Header().Set("Proxy-Authenticate", `Bearer realm="pipelock-mcp"`)
 			denialAudit = mcpListenerAdmissionDenialAudit()
+			if opts.watchOnly() {
+				opts.recordWatch("listener_access", "proxy authentication required", config.ActionBlock, 0, true)
+			}
 			http.Error(w, "proxy authentication required", http.StatusProxyAuthRequired)
 			return
 		}
@@ -500,6 +514,7 @@ func RunHTTPListenerProxy(
 		// can still trigger a rejection or be scanned while a different value is
 		// forwarded, making the security log describe bytes the upstream never saw.
 		applyOperatorPinnedServiceHeaders(r.Header, opts.UpstreamHeaders)
+
 		methodNotAllowed := func() {
 			// RFC 9110 requires a 405 to advertise the methods the listener accepts.
 			w.Header().Set("Allow", strings.Join([]string{
@@ -548,6 +563,45 @@ func RunHTTPListenerProxy(
 			denialAudit = mcpListenerProtocolDenialAudit()
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("invalid or duplicate A2A service header")))
+			return
+		}
+
+		if r.Method != http.MethodPost && r.Method != http.MethodGet && r.Method != http.MethodDelete && r.Method != http.MethodOptions {
+			methodNotAllowed()
+			return
+		}
+		if opts.watchOnly() {
+			watchOpts := opts.snapshotWatchPolicy()
+			state := newMCPListenerTransientState()
+			bound := false
+			if listenerPrincipal.key != "" {
+				if existing, ok := listenerClients.stateForPrincipal(listenerPrincipal); ok {
+					state = existing
+					bound = true
+				}
+				watchOpts.AuthorityActor = listenerPrincipal.actor
+				watchOpts.DoWSubjectKey = trustedDoWSubjectKeyFor(listenerPrincipal.billingKey, listenerPrincipal.trust, opts)
+			} else if token := r.Header.Get(listenerSessionTokenHeader); token != "" {
+				if existing, ok := listenerClients.stateForToken(token); ok {
+					state = existing
+					bound = true
+				}
+			} else if !listenerRequiresStateToken(opts) {
+				if existing, _ := listenerClients.stateForLegacySessionWithCapacity(r.Header.Get("Mcp-Session-Id")); existing != nil {
+					state = existing
+					bound = true
+				}
+			}
+			watchOpts.watchListener = &watchListenerState{states: listenerClients, state: state, bound: bound, requireToken: listenerRequiresStateToken(opts), principal: listenerPrincipal.key != ""}
+			watchOpts.Rec = state.recorder
+			watchOpts.watchSessionKey = state.key
+			watchOpts.ToolCfg = listenerClients.toolConfigAtDriftEpoch(state, watchOpts.toolCfg(), listenerClients.upstreamDriftEpoch())
+			watchOpts.ToolCfgFn = nil
+			if !bound && listenerHasStatefulControls(opts) {
+				watchOpts.recordWatch("session_binding", "stateful inspection unavailable for this caller", "uninspected", 0, false)
+			}
+			watchOpts.WarnContext = r.Context()
+			serveWatchMCPHTTP(w, r, upstreamURL, upstreamStreamClient, safeLogW, watchOpts)
 			return
 		}
 

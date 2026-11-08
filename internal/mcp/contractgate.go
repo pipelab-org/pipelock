@@ -71,8 +71,37 @@ func evaluateMCPUpstreamGate(ctx context.Context, upstreamURL string, opts MCPPr
 }
 
 func evaluateMCPUpstreamGateForMethod(ctx context.Context, upstreamURL, method string, opts MCPProxyOpts) (out mcpContractGateOutput, err error) {
-	loader := opts.contractLoader()
+	opts = opts.snapshotWatchPolicy()
 	gateURL := mcpUpstreamGateURL(upstreamURL)
+	metadataBlocked := false
+	if opts.watchOnly() {
+		defer func() {
+			if opts.KillSwitch != nil && opts.KillSwitch.IsActive() {
+				opts.recordWatch("kill_switch", "operator kill switch", config.ActionBlock, 0, true)
+				out.Verdict, out.Reason, err = config.ActionBlock, "kill switch enforced in watch-only", nil
+				return
+			}
+			if sc := opts.scanner(); sc != nil {
+				floor := sc.ScanURLCoreFloorWithContext(ctx, gateURL)
+				if scanner.IsCoreCriticalResult(floor) {
+					opts.recordWatch("dlp", "core credential floor", config.ActionBlock, 0, true)
+					out.Verdict, out.Reason, err = config.ActionBlock, "core credential floor enforced in watch-only", nil
+					return
+				}
+			}
+			if metadataBlocked {
+				opts.recordWatch("ssrf_metadata", "cloud metadata endpoint", config.ActionBlock, 0, true)
+				return
+			}
+			if err != nil {
+				opts.recordWatch("contract", "upstream evaluation unavailable", "uninspected", 0, false)
+			} else if out.Verdict != config.ActionAllow {
+				opts.recordWatch("contract", out.Reason, out.Verdict, 0, false)
+			}
+			out.Verdict, err = config.ActionAllow, nil
+		}()
+	}
+	loader := opts.contractLoader()
 	var scanResult scanner.Result
 	var scannerVerdict string
 	var scannerMatched bool
@@ -97,6 +126,7 @@ func evaluateMCPUpstreamGateForMethod(ctx context.Context, upstreamURL, method s
 		// contract is configured. Preserve the historical no-loader allow
 		// fallback for other upstream scanner results in this narrow path.
 		if scannerMatched && scanResult.Scanner == scanner.ScannerSSRFMetadata {
+			metadataBlocked = true
 			if method == "" {
 				method = http.MethodPost
 			}

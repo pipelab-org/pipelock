@@ -163,11 +163,13 @@ func isRequest(msg []byte) bool {
 // mid-stream terminates already-open sessions immediately.
 // Returns true if any response security finding was detected.
 func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) (bool, error) {
+	liveWatchOpts := opts
 	opts = opts.snapshotScanPolicy()
-	if opts.ServerIdentityFn != nil {
+	sessionOpts := opts
+	wasWatchOnly := opts.watchOnly()
+	if opts.ServerIdentityFn != nil && !opts.watchOnly() {
 		writer = &serverIdentityMessageWriter{writer: writer, opts: opts}
 	}
-	sc := opts.scanner()
 	approver := opts.Approver
 	toolCfg := opts.toolCfg()
 	if toolCfg != nil && (opts.validateToolHeaders || opts.toolContractDiscovery) {
@@ -185,7 +187,6 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	receiptEmitter := opts.receiptEmitter()
 	v2ReceiptEmitter := opts.v2ReceiptEmitter()
 	provenanceCfg := opts.provenanceCfg()
-	respScanOpts := opts.responseScanOptions()
 	resetFile := opts.AdaptiveResetFile
 	taintOpts := opts
 	taintOpts.TaintCfg = opts.taintCfg()
@@ -208,6 +209,20 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 
 	for {
 		line, err := reader.ReadMessage()
+		// Refresh the mode at the message boundary. Enforcement retains the
+		// admitted scanner and derives its hash from that same pinned policy.
+		opts := liveWatchOpts.messageWatchPolicy(&sessionOpts, &wasWatchOnly)
+		sc := opts.scanner()
+		respScanOpts := opts.responseScanOptions()
+		var uninspected *transport.UninspectedMessageChunkError
+		if errors.As(err, &uninspected) && opts.watchOnly() {
+			watchOpts := opts
+			watchOpts.watchInbound = true
+			if forwardErr := forwardWatchUninspected(line, err, reader, writer, watchOpts); forwardErr != nil {
+				return foundInjection, forwardErr
+			}
+			continue
+		}
 		if err != nil {
 			// A clean stream end is io.EOF; a proxy-initiated connection
 			// teardown surfaces net.ErrClosed ("use of closed network
@@ -233,6 +248,17 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			return foundInjection, fmt.Errorf("reading input: %w", err)
 		}
 		lineNum++
+		if !mcpWatchCapacityAvailable(opts, len(line)) {
+			return foundInjection, session.ErrCapacity
+		}
+		if opts.watchOnly() {
+			found, err := forwardWatchResponse(line, writer, logW, tracker, opts)
+			foundInjection = foundInjection || found
+			if err != nil {
+				return foundInjection, err
+			}
+			continue
+		}
 		var denialAudit mcpDenialAudit
 		if err := opts.checkServerIdentity(); err != nil {
 			dropMCPDenial(opts, mcpIdentityMcpResponseDenialAudit(), "response")
@@ -1815,8 +1841,13 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		invocationKey := session.NextInvocationKey("mcp-stdio")
 		rec = opts.Store.GetOrCreate(invocationKey)
 		if rec == nil {
-			dropMCPDenial(opts, mcpStartupDenialAudit(mcpListenerCapacityDenialAudit()), "startup")
-			return session.ErrCapacity
+			if opts.watchOnly() {
+				opts.watchMissingRecorder = true
+				opts.recordWatch("session", "session inspection capacity unavailable", "uninspected", 0, false)
+			} else {
+				dropMCPDenial(opts, mcpStartupDenialAudit(mcpListenerCapacityDenialAudit()), "startup")
+				return session.ErrCapacity
+			}
 		}
 		defer opts.Store.Delete(invocationKey)
 	}
@@ -2128,14 +2159,14 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		defer serverIn.Close() //nolint:errcheck // best-effort close on stdin forward
 		inputCfg := opts.inputCfg()
 		if inputCfg != nil && inputCfg.Enabled {
-			clientReader := transport.NewStdioReader(clientIn)
+			clientReader := transport.NewWatchStdioReader(clientIn, opts.watchOnly)
 			serverWriter := transport.NewStdioWriter(serverIn)
 			ForwardScannedInput(clientReader, serverWriter, safeLogW, inputCfg.Action, inputCfg.OnParseError, blockedCh, bindingCfg, tracker, inputOpts)
 		} else if opts.policyCfg() != nil || bindingCfg != nil || opts.chainMatcher() != nil {
 			// Policy checking, session binding, or chain detection enabled but content scanning disabled.
 			// Route through ForwardScannedInput with pass-through content scanning.
 			// Use onParseError="block" (fail-closed) so malformed JSON can't bypass policy.
-			clientReader := transport.NewStdioReader(clientIn)
+			clientReader := transport.NewWatchStdioReader(clientIn, opts.watchOnly)
 			serverWriter := transport.NewStdioWriter(serverIn)
 			disabledInputOpts := inputOpts
 			disabledInputOpts.stdioInputScanDisabled = true
@@ -2144,7 +2175,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 			// No content scanning, but still route through ForwardScannedInput
 			// so request IDs are tracked for confused deputy protection.
 			// ActionWarn = pass-through, ActionBlock on parse error = fail-closed.
-			clientReader := transport.NewStdioReader(clientIn)
+			clientReader := transport.NewWatchStdioReader(clientIn, opts.watchOnly)
 			serverWriter := transport.NewStdioWriter(serverIn)
 			noScanOpts := inputOpts
 			noScanOpts.PolicyCfg = nil
@@ -2177,7 +2208,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// Scan and forward server output to client. Apply the optional per-read
 	// response timeout (no-op when disabled) so a dead upstream that accepts a
 	// request but never replies fails closed instead of hanging the agent.
-	serverReader := opts.withResponseTimeout(transport.NewStdioReader(serverOut))
+	serverReader := opts.withResponseTimeout(transport.NewWatchStdioReader(serverOut, opts.watchOnly))
 
 	fwdOpts := opts
 	fwdOpts.Rec = rec

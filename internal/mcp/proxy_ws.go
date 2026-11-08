@@ -82,8 +82,13 @@ func RunWSProxy(
 		invocationKey := session.NextInvocationKey("mcp-ws")
 		rec = opts.Store.GetOrCreate(invocationKey)
 		if rec == nil {
-			dropMCPDenial(startupAuditOpts, mcpStartupDenialAudit(mcpListenerCapacityDenialAudit()), "startup")
-			return session.ErrCapacity
+			if opts.watchOnly() {
+				opts.watchMissingRecorder = true
+				startupAuditOpts.recordWatch("session", "session inspection capacity unavailable", "uninspected", 0, false)
+			} else {
+				dropMCPDenial(startupAuditOpts, mcpStartupDenialAudit(mcpListenerCapacityDenialAudit()), "startup")
+				return session.ErrCapacity
+			}
 		}
 		defer opts.Store.Delete(invocationKey)
 	}
@@ -136,7 +141,7 @@ func RunWSProxy(
 	wsOpts.WarnContext = innerCtx
 	wsOpts.sessionExit = sessionExit
 
-	clientReader := transport.NewStdioReader(clientIn)
+	clientReader := transport.NewWatchStdioReader(clientIn, opts.watchOnly)
 
 	var wg sync.WaitGroup
 	var lastScanErr error
@@ -173,6 +178,7 @@ func RunWSProxy(
 		if err != nil {
 			return fmt.Errorf("connecting to upstream: %w", err)
 		}
+		wsClient.WatchOnly = opts.watchOnly
 		go func(client *transport.WSClient) {
 			select {
 			case <-ctx.Done():
@@ -211,6 +217,23 @@ func RunWSProxy(
 	var stdinErr error
 	for {
 		msg, readErr := readMCPInputMessage(innerCtx, clientIn, clientReader)
+		var uninspected *transport.UninspectedMessageChunkError
+		if errors.As(readErr, &uninspected) && wsOpts.watchOnly() {
+			if wsOpts.AuthorityVerifier != nil {
+				wsOpts.recordWatch("authority", "oversized request cannot verify external grant", config.ActionBlock, 0, true)
+				stdinErr = errors.New("external action grant required in watch-only")
+				break
+			}
+			if err := startUpstream(); err != nil {
+				stdinErr = err
+				break
+			}
+			if err := forwardWatchUninspected(msg, readErr, watchContextMessageReader{innerCtx, clientReader}, wsClient, wsOpts.snapshotWatchPolicy()); err != nil {
+				stdinErr = err
+				break
+			}
+			continue
+		}
 		if readErr != nil {
 			if innerCtx.Err() == nil && !errors.Is(readErr, io.EOF) &&
 				(!sessionExit.inProgress() || !isSessionExitCloseErr(readErr)) {

@@ -1100,6 +1100,8 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 				mcpCaptureObs = s.captureWriter
 			}
 			listenerOpts := mcp.MCPProxyOpts{
+				WatchOnly:                    cfg.WatchOnly,
+				WatchOnlyFn:                  func() bool { return s.proxy.CurrentConfig().WatchOnly },
 				ListenerBearerToken:          s.mcpListenerBearerToken,
 				ListenerAllowedOrigins:       s.opts.MCPAllowedOrigins,
 				ListenerAllowUnauthenticated: s.opts.MCPAllowUnauthenticated,
@@ -1137,6 +1139,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 				RequireReceiptsFn:        mcpRequireReceiptsFn,
 				V2ReceiptEmitterFn:       s.liveV2ReceiptEmitter,
 				PolicyHashFn:             mcpConfigHashFn,
+				PolicyConfigFn:           s.proxy.CurrentConfig,
 				EnvelopeEmitterFn:        s.liveEnvelopeEmitter,
 				RedactionCfgFn:           mcpRedactionCfgFn,
 				TaintCfgFn:               mcpTaintCfgFn,
@@ -1159,7 +1162,9 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 				FrozenToolStableKey:      s.opts.MCPUpstream,
 				ContractLoaderPtr:        s.proxy.ContractLoaderPtr(),
 				ContractAgent:            edition.ProfileDefault,
-				DialContext:              verifiedDialContext(mcp.NewMetadataSafeDialContext(mcpScannerFn), mcpResolution, s.opts.Stderr),
+				DialContext: verifiedDialContext(mcp.NewWatchMetadataSafeDialContext(mcpScannerFn,
+					func() bool { return s.proxy.CurrentConfig().WatchOnly },
+					s.recordMCPMetadataRefusal), mcpResolution, s.opts.Stderr),
 			}
 			applyMCPDoWOpts(&listenerOpts, mcpDoWWiring, true)
 			if s.opts.MCPAuthTokenFile != "" {
@@ -1571,4 +1576,9 @@ func (s *Server) shutdownAgentServers() {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: agent listener drain incomplete; receipts for this run will not be sealed as complete: %v\n", err)
 		}
 	}
+}
+
+func (s *Server) recordMCPMetadataRefusal(reason string) {
+	s.logger.LogWatchOnly("mcp_http", "ssrf_metadata", reason, config.ActionBlock, 0, true)
+	s.metrics.RecordWatchOnly("mcp_http", "ssrf_metadata", config.ActionBlock, 0)
 }

@@ -534,7 +534,7 @@ func EvaluateMCPInputGates(
 				eval.ContentVerdict.Error = floorVerdict.Error
 			}
 			for _, match := range floorVerdict.Matches {
-				if scanner.IsCoreCriticalMatch(match) || scanner.IsHostnameExfilMatch(match) {
+				if scanner.IsCoreCriticalMatch(match) || scanner.IsHostnameExfilMatch(match) || match.IsInspectionLimit() || match.PatternName == uninspectableSplitSecretFieldsReason {
 					eval.ContentVerdict.Clean = false
 					eval.ContentVerdict.Action = config.ActionBlock
 					eval.ContentVerdict.Matches = append(eval.ContentVerdict.Matches, match)
@@ -567,7 +567,9 @@ func EvaluateMCPInputGates(
 	// contained tools/call is denied before it crosses the MCP boundary, so it
 	// must not emit evidence for a crossing that never occurred.
 	if applyMCPAirlockGate(opts, &eval, method) {
-		return eval
+		if !opts.observeInputGate(&eval, len(msg)) {
+			return eval
+		}
 	}
 	if IsA2AMethod(method) {
 		// Cross-agent contamination: a contaminated session emitting an
@@ -588,7 +590,9 @@ func EvaluateMCPInputGates(
 				eval.A2AEffectiveAction = action
 				if action == config.ActionBlock {
 					eval.BlockingGate = blockingGateA2ABody
-					return eval
+					if !opts.observeInputGate(&eval, len(msg)) {
+						return eval
+					}
 				}
 			}
 		}
@@ -610,7 +614,9 @@ func EvaluateMCPInputGates(
 	// DoW. Applies to tools/call by tool name and to A2A methods by the
 	// namespaced method identity.
 	if applyDoWGate(opts, &eval, enforcementIdentity, frame, msg) {
-		return eval
+		if !opts.observeInputGate(&eval, len(msg)) {
+			return eval
+		}
 	}
 
 	// session binding. HTTP listener traffic shares a listener-level baseline.
@@ -647,7 +653,9 @@ func EvaluateMCPInputGates(
 			eval.ChainReason = "chain:" + cv.PatternName
 			if cv.Action == config.ActionBlock {
 				eval.BlockingGate = blockingGateChain
-				return eval
+				if !opts.observeInputGate(&eval, len(msg)) {
+					return eval
+				}
 			}
 		}
 	}
@@ -658,7 +666,9 @@ func EvaluateMCPInputGates(
 	// ordering in scanHTTPInputDecision and ForwardScannedInput.
 	if eval.ContentVerdict.Error != "" {
 		eval.BlockingGate = blockingGateParseError
-		return eval
+		if !opts.observeInputGate(&eval, len(msg)) {
+			return eval
+		}
 	}
 
 	// taint. Applies to tools/call and A2A method identities. PolicyAsk
@@ -678,15 +688,23 @@ func EvaluateMCPInputGates(
 			eval.TaintAuditDecision = eval.TaintDecision
 			eval.TaintAuditDecisionSet = true
 			eval.BlockingGate = blockingGateTaintBlock
-			return eval
+			if !opts.observeInputGate(&eval, len(msg)) {
+				return eval
+			}
 		case session.PolicyAsk:
+			if opts.watchOnly() {
+				opts.recordWatch("taint", eval.TaintDecision.Result.Reason, config.ActionAsk, 0, false)
+				break
+			}
 			eval.TaintAuditDecision = eval.TaintDecision
 			eval.TaintAuditDecisionSet = true
 			preview := strings.TrimSpace(fmt.Sprintf("%s %s", taintIdentity, eval.TaintDecision.ActionRef))
 			approved, hasApprover := taintDecisionRequiresApproval(opts, taintIdentity, taintApprovalReason(eval.TaintDecision), preview)
 			if !hasApprover || !approved {
 				eval.BlockingGate = blockingGateTaintAskDenied
-				return eval
+				if !opts.observeInputGate(&eval, len(msg)) {
+					return eval
+				}
 			}
 			approveTaintDecision(&eval.TaintDecision)
 			eval.TaintApproved = true
@@ -805,7 +823,7 @@ func evaluateMCPInputGatesStdio(
 				eval.ContentVerdict.Error = floorVerdict.Error
 			}
 			for _, match := range floorVerdict.Matches {
-				if scanner.IsCoreCriticalMatch(match) || scanner.IsHostnameExfilMatch(match) {
+				if scanner.IsCoreCriticalMatch(match) || scanner.IsHostnameExfilMatch(match) || match.IsInspectionLimit() || match.PatternName == uninspectableSplitSecretFieldsReason {
 					eval.ContentVerdict.Clean = false
 					eval.ContentVerdict.Action = config.ActionBlock
 					eval.ContentVerdict.Matches = append(eval.ContentVerdict.Matches, match)
@@ -835,7 +853,9 @@ func evaluateMCPInputGatesStdio(
 		}
 	}
 	if applyMCPAirlockGate(opts, &eval, method) {
-		return eval
+		if !opts.observeInputGate(&eval, len(msg)) {
+			return eval
+		}
 	}
 	if IsA2AMethod(method) {
 		observeCrossAgentEmit(&eval, opts, session.CrossAgentBoundaryA2ARequest)
@@ -850,7 +870,9 @@ func evaluateMCPInputGatesStdio(
 				eval.A2AEffectiveAction = action
 				if action == config.ActionBlock {
 					eval.BlockingGate = blockingGateA2ABody
-					return eval
+					if !opts.observeInputGate(&eval, len(msg)) {
+						return eval
+					}
 				}
 			}
 		}
@@ -890,7 +912,9 @@ func evaluateMCPInputGatesStdio(
 	// DoW. Applies to tools/call by tool name and to A2A methods by the
 	// namespaced method identity.
 	if applyDoWGate(opts, &eval, enforcementIdentity, frame, msg) {
-		return eval
+		if !opts.observeInputGate(&eval, len(msg)) {
+			return eval
+		}
 	}
 
 	// session binding callable check. Overrides the batch pre-check when it
@@ -925,7 +949,9 @@ func evaluateMCPInputGatesStdio(
 		if toolCallName == "" || !opts.ToolFreezer.IsToolAllowed(opts.FrozenToolStableKey, toolCallName) {
 			eval.FrozenToolName = toolCallName
 			eval.BlockingGate = blockingGateFrozenTool
-			return eval
+			if !opts.observeInputGate(&eval, len(msg)) {
+				return eval
+			}
 		}
 	}
 
@@ -941,7 +967,9 @@ func evaluateMCPInputGatesStdio(
 			eval.ChainReason = "chain:" + cv.PatternName
 			if cv.Action == config.ActionBlock {
 				eval.BlockingGate = blockingGateChain
-				return eval
+				if !opts.observeInputGate(&eval, len(msg)) {
+					return eval
+				}
 			}
 		}
 	}
@@ -949,7 +977,9 @@ func evaluateMCPInputGatesStdio(
 	// parse-error short-circuit.
 	if eval.ContentVerdict.Error != "" {
 		eval.BlockingGate = blockingGateParseError
-		return eval
+		if !opts.observeInputGate(&eval, len(msg)) {
+			return eval
+		}
 	}
 
 	// taint. Applies to tools/call and A2A method identities. PolicyAsk
@@ -969,15 +999,23 @@ func evaluateMCPInputGatesStdio(
 			eval.TaintAuditDecision = eval.TaintDecision
 			eval.TaintAuditDecisionSet = true
 			eval.BlockingGate = blockingGateTaintBlock
-			return eval
+			if !opts.observeInputGate(&eval, len(msg)) {
+				return eval
+			}
 		case session.PolicyAsk:
+			if opts.watchOnly() {
+				opts.recordWatch("taint", eval.TaintDecision.Result.Reason, config.ActionAsk, 0, false)
+				break
+			}
 			eval.TaintAuditDecision = eval.TaintDecision
 			eval.TaintAuditDecisionSet = true
 			preview := strings.TrimSpace(fmt.Sprintf("%s %s", taintIdentity, eval.TaintDecision.ActionRef))
 			approved, hasApprover := taintDecisionRequiresApproval(opts, taintIdentity, taintApprovalReason(eval.TaintDecision), preview)
 			if !hasApprover || !approved {
 				eval.BlockingGate = blockingGateTaintAskDenied
-				return eval
+				if !opts.observeInputGate(&eval, len(msg)) {
+					return eval
+				}
 			}
 			approveTaintDecision(&eval.TaintDecision)
 			eval.TaintApproved = true

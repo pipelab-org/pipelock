@@ -306,6 +306,11 @@ func startDrainLifecycle(t *testing.T, cancel context.CancelFunc, release func()
 // Unread and half-sent sockets have reached no receipt producer. Exercise both
 // on each runtime auxiliary listener and prove that the run still seals.
 func TestServer_AuxiliaryUnreadConnectionsSeal(t *testing.T) {
+	// The acceptance barrier needs a response, not host-specific closed-port behavior.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
 	for _, listener := range []string{"reverse proxy", "MCP", "scan API"} {
 		t.Run(listener, func(t *testing.T) {
 			dir, cfgPath := drainReceiptConfig(t, 1)
@@ -321,7 +326,7 @@ func TestServer_AuxiliaryUnreadConnectionsSeal(t *testing.T) {
 				if listener == "reverse proxy" {
 					o.ReverseProxy = true
 					o.ReverseListen = serverTestEphemeralListen
-					o.ReverseUpstream = serverTestUpstreamURL
+					o.ReverseUpstream = upstream.URL
 				}
 			})
 			prefix := "pipelock: reverse proxy listening on "

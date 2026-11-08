@@ -182,14 +182,20 @@ func RunHTTPProxy(
 	if opts.Store != nil {
 		rec = opts.Store.GetOrCreate(invocationKey)
 		if rec == nil {
-			dropMCPDenial(opts, mcpStartupDenialAudit(mcpListenerCapacityDenialAudit()), "startup")
-			return session.ErrCapacity
+			if opts.watchOnly() {
+				opts.watchMissingRecorder = true
+				opts.recordWatch("session", "session inspection capacity unavailable", "uninspected", 0, false)
+			} else {
+				dropMCPDenial(opts, mcpStartupDenialAudit(mcpListenerCapacityDenialAudit()), "startup")
+				return session.ErrCapacity
+			}
 		}
 		defer opts.Store.Delete(invocationKey)
 	}
 	defer recordMCPBaselineSample(opts, rec)
 
 	httpClient := transport.NewHTTPClientWithDialer(upstreamURL, extraHeaders, opts.DialContext)
+	httpClient.WatchOnly = opts.watchOnly
 	httpClient.ResponseKeyValidator = jsonrpc.ValidateMessageKeys
 	var upstreamMu sync.Mutex
 
@@ -255,7 +261,7 @@ func RunHTTPProxy(
 	bridgeHeaders := &mcpBridgeHeaders{client: httpClient, state: contractState, opts: fwdOpts, log: safeLogW}
 	bridgeHeaders.opts.ToolCfg = fwdToolCfg
 
-	clientReader := transport.NewStdioReader(clientIn)
+	clientReader := transport.NewWatchStdioReader(clientIn, opts.watchOnly)
 
 	var wg sync.WaitGroup
 	var getStreamOnce sync.Once
@@ -263,6 +269,14 @@ func RunHTTPProxy(
 
 	for {
 		msg, err := readMCPInputMessage(ctx, clientIn, clientReader)
+		var uninspected *transport.UninspectedMessageChunkError
+		if errors.As(err, &uninspected) && fwdOpts.watchOnly() {
+			if streamErr := forwardWatchHTTPInput(ctx, msg, err, clientReader, httpClient, safeClientOut, safeLogW, fwdOpts.snapshotWatchPolicy()); streamErr != nil {
+				lastScanErr = streamErr
+				break
+			}
+			continue
+		}
 		if err != nil {
 			if errors.Is(err, io.EOF) || (sessionExit.inProgress() && (isSessionExitCloseErr(err) || errors.Is(err, context.Canceled))) {
 				break
@@ -662,6 +676,10 @@ func RunHTTPProxy(
 		}
 
 		requestHeaders, headerErr := bridgeHeaders.prepare(ctx, decision.ForwardMessage)
+		if headerErr != nil && fwdOpts.watchOnly() {
+			fwdOpts.recordWatch("header_contract", "upstream header contract refused", config.ActionBlock, 0, false)
+			headerErr = nil
+		}
 		if headerErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: header contract refused: %q\n", headerErr.Error())
 			denialAudit, message, reason := bridgeHeaderRefusal(headerErr)

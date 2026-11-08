@@ -278,8 +278,10 @@ func ForwardScannedInput(
 	tracker *RequestTracker,
 	opts MCPProxyOpts,
 ) {
+	liveWatchOpts := opts
 	opts = opts.snapshotScanPolicy()
-	sc := opts.scanner()
+	sessionOpts := opts
+	wasWatchOnly := opts.watchOnly()
 	policyCfg := opts.policyCfg()
 	ks := opts.KillSwitch
 	auditLogger := opts.AuditLogger
@@ -290,7 +292,6 @@ func ForwardScannedInput(
 	obs := opts.captureObserver()
 	redactionCfg := opts.redactionConfig()
 	receiptEmitter := opts.receiptEmitter()
-	policyHash := opts.receiptPolicyHash()
 	envelopeEmitter := opts.envelopeEmitter()
 	redirectRT := opts.redirectRT()
 	resolverRuntime := opts.deferResolverRuntime()
@@ -319,34 +320,50 @@ func ForwardScannedInput(
 		return writer.WriteMessage(msg)
 	}
 
-	// Helper: record an adaptive signal and handle escalation side-effects.
-	// Eliminates repeated nil/enabled guards at every call site.
-	hadAdaptiveFinding := false
-	recordAdaptiveFinding := func(sig session.SignalType, scannerName, reason string) {
-		hadAdaptiveFinding = true
-		if adaptiveCfg != nil && adaptiveCfg.Enabled {
-			recordMCPAdaptiveSignal(opts, rec, sig, decide.EscalationParams{
-				Threshold:     adaptiveCfg.EscalationThreshold,
-				Logger:        auditLogger,
-				Metrics:       m,
-				ConsoleWriter: logW,
-				Session:       "default",
-				DenialScanner: scannerName,
-				DenialReason:  reason,
-				PolicyHash:    policyHash,
-			})
-		}
-	}
-	recordAdaptiveSignal := func(sig session.SignalType) {
-		recordAdaptiveFinding(sig, "", "")
-	}
-
 	// lineNum counts non-empty messages, not raw lines. StdioReader skips
 	// empty lines internally, so this is a message index.
 	lineNum := 0
 
 	for {
 		line, err := reader.ReadMessage()
+		// Refresh the mode at the message boundary. Enforcement retains the
+		// admitted scanner and derives its hash from that same pinned policy.
+		opts := liveWatchOpts.messageWatchPolicy(&sessionOpts, &wasWatchOnly)
+		sc := opts.scanner()
+		policyHash := opts.receiptPolicyHash()
+		// Helper: record an adaptive signal and handle escalation side-effects.
+		// Eliminates repeated nil/enabled guards at every call site.
+		hadAdaptiveFinding := false
+		recordAdaptiveFinding := func(sig session.SignalType, scannerName, reason string) {
+			hadAdaptiveFinding = true
+			if adaptiveCfg != nil && adaptiveCfg.Enabled {
+				recordMCPAdaptiveSignal(opts, rec, sig, decide.EscalationParams{
+					Threshold:     adaptiveCfg.EscalationThreshold,
+					Logger:        auditLogger,
+					Metrics:       m,
+					ConsoleWriter: logW,
+					Session:       "default",
+					DenialScanner: scannerName,
+					DenialReason:  reason,
+					PolicyHash:    policyHash,
+				})
+			}
+		}
+		recordAdaptiveSignal := func(sig session.SignalType) {
+			recordAdaptiveFinding(sig, "", "")
+		}
+
+		var uninspected *transport.UninspectedMessageChunkError
+		if errors.As(err, &uninspected) && opts.watchOnly() {
+			forwardMu.Lock()
+			forwardErr := forwardWatchUninspected(line, err, reader, writer, opts)
+			forwardMu.Unlock()
+			if forwardErr != nil {
+				_, _ = fmt.Fprintf(logW, "pipelock: watch-only message stopped: %v\n", forwardErr)
+				return
+			}
+			continue
+		}
 		if err != nil {
 			expectedClose := opts.sessionExit.inProgress() && isSessionExitCloseErr(err)
 			if !errors.Is(err, io.EOF) && !expectedClose {
@@ -355,6 +372,26 @@ func ForwardScannedInput(
 			return
 		}
 		lineNum++
+		if !mcpWatchCapacityAvailable(opts, len(line)) {
+			_, _ = fmt.Fprintln(logW, "pipelock: session capacity unavailable after enabling enforcement")
+			return
+		}
+		if opts.watchOnly() {
+			decision := watchInputDecision(line, logW, "default", opts)
+			if decision.Blocked != nil {
+				sendMCPDenial(opts, mcpDenialAudit{}, *decision.Blocked, blockedCh)
+				continue
+			}
+			frame := ParseMCPFrame(line)
+			if tracker != nil && isTrackableRequest(line, frame.ID) {
+				tracker.TrackRequest(frame.ID, frame.Method)
+			}
+			if err := forwardMessage(decision.ForwardMessage); err != nil {
+				_, _ = fmt.Fprintf(logW, "pipelock: watch-only input forward failed: %v\n", err)
+				return
+			}
+			continue
+		}
 		var denialAudit mcpDenialAudit
 		hadAdaptiveFinding = false
 		var deferredGeneration uint64

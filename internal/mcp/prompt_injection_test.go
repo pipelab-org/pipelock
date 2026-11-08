@@ -332,6 +332,8 @@ func (r *policyReloadMessageReader) ReadMessage() ([]byte, error) {
 	return r.MessageReader.ReadMessage()
 }
 
+// Restored from main: without watch-only, a stdio session keeps the scanner
+// and receipt policy it was admitted with across a reload.
 func TestMCPReceiptPolicySnapshotSurvivesReload(t *testing.T) {
 	for _, mode := range []string{config.ActionBlock, config.ActionWarn, config.ActionAllow} {
 		t.Run(mode, func(t *testing.T) {

@@ -297,6 +297,9 @@ func mcpCEEFragmentSessionKey(sessionKey, path string) string {
 }
 
 type ceeRecordMCPOptions struct {
+	watchOnly bool
+	onWatch   func(string, string, string, int64, bool)
+
 	denialAudit      *mcpDenialAudit
 	sessionKey       string
 	entropyPayload   []byte
@@ -399,7 +402,12 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 				if opts.denialAudit != nil {
 					*opts.denialAudit = mcpCeeEntropyDenialAudit()
 				}
-				return ceeEntropyBlockClientReason
+				if !opts.watchOnly {
+					return ceeEntropyBlockClientReason
+				}
+				if opts.onWatch != nil {
+					opts.onWatch("cross_request_entropy", reason, config.ActionBlock, 0, false)
+				}
 			}
 			// Warn mode: emit structured anomaly event for audit trail.
 			if opts.logger != nil {
@@ -495,6 +503,14 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 						}
 					}
 				}
+				if opts.watchOnly {
+					for _, match := range matches {
+						if config.IsCoreDLPPatternName(match.PatternName) || match.IsInspectionLimit() {
+							primary = match
+							break
+						}
+					}
+				}
 				findingKey, kind := mcpCEEFragmentFindingKey(path, payload, primary.PatternName)
 				if !inspectionLimit && mcpCEEFragmentFindingAlreadyRecorded(kind, findingKey, seenSingletonFindings, seenArgumentFindings) {
 					continue
@@ -510,7 +526,17 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 					operatorReason = fmt.Sprintf("cross-request fragment refused: %s; reduce nesting or number size in the JSON tool arguments at their source (typed JSON number and depth limits are fixed)", primary.PatternName)
 				}
 				_, _ = fmt.Fprintf(opts.logW, "pipelock: CEE: %s (session=%s)\n", operatorReason, opts.sessionKey)
-				if ceeCfg.Action == config.ActionBlock || inspectionLimit {
+				if opts.watchOnly && !watchCoreFragments(matches) {
+					if opts.onWatch != nil {
+						action, count := ceeCfg.Action, int64(0)
+						if inspectionLimit {
+							action, count = "uninspected", int64(len(opts.entropyPayload))
+						}
+						opts.onWatch("cross_request_fragment", operatorReason, action, count, false)
+					}
+					continue
+				}
+				if ceeCfg.Action == config.ActionBlock || inspectionLimit || (opts.watchOnly && watchCoreFragments(matches)) {
 					if opts.matchedPattern != nil {
 						*opts.matchedPattern = primary.PatternName
 					}

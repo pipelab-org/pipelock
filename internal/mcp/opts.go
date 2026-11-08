@@ -133,6 +133,24 @@ func (o MCPProxyOpts) minSubjectTrust() config.DoWSubjectTrust {
 // Required: Scanner (dereferenced unconditionally in all scan paths).
 // Optional (nil-safe): all other fields - functions check before use.
 type MCPProxyOpts struct {
+	// WatchOnly observes configured policy without altering forwarded messages.
+	// WatchOnlyFn follows reloads; a message snapshots it before inspection.
+	WatchOnly   bool
+	WatchOnlyFn func() bool
+	// WatchOnlyGenerationFn is read under ReloadMu and invalidates in-flight
+	// simulated observations after a standalone mode change.
+	WatchOnlyGenerationFn func() uint64
+	watchGeneration       uint64
+	watchReloadMu         *sync.RWMutex
+	// PolicyConfigFn supplies the scanner policy under ReloadMu so a session
+	// can resume its pinned policy with only watch_only changed.
+	PolicyConfigFn           func() *config.Config
+	watchEnforcingPolicyHash string
+	watchSessionKey          string
+	watchInbound             bool
+	watchMissingRecorder     bool
+	watchListener            *watchListenerState
+
 	// ListenerShutdownTimeout bounds graceful HTTP listener shutdown. Zero uses
 	// the existing five-second grace period.
 	ListenerShutdownTimeout time.Duration
@@ -722,6 +740,14 @@ func (o MCPProxyOpts) snapshotScanPolicy() MCPProxyOpts {
 		defer o.ReloadMu.RUnlock()
 	}
 	o.Scanner = o.scanner()
+	if o.PolicyConfigFn != nil {
+		if cfg := o.PolicyConfigFn(); cfg != nil {
+			pinned := cfg.Clone()
+			pinned.WatchOnly = false
+			o.watchEnforcingPolicyHash = pinned.CanonicalPolicyHash()
+		}
+		o.PolicyConfigFn = nil
+	}
 	o.PolicyHash = o.receiptPolicyHash()
 	o.ScannerFn = nil
 	o.PolicyHashFn = nil
@@ -941,7 +967,7 @@ func (o MCPProxyOpts) withReceiptPolicyHash(opts receipt.EmitOpts) receipt.EmitO
 	if opts.PolicyHash == "" {
 		opts.PolicyHash = o.receiptPolicyHash()
 	}
-	return receipt.WithPromptInjectionMode(opts, o.scanner().PromptInjectionMode())
+	return receipt.WithWatchOnly(receipt.WithPromptInjectionMode(opts, o.scanner().PromptInjectionMode()), o.watchOnly())
 }
 
 func (o MCPProxyOpts) deferManager() *deferred.Manager {
