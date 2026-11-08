@@ -21,7 +21,7 @@ func deferredWatchConfig(cfg *config.Config) *config.Config {
 }
 
 func watchRequestConfig(cfg *config.Config, r *http.Request) *config.Config {
-	if r.Method == http.MethodConnect || r.URL.Path == "/ws" {
+	if r.Method == http.MethodConnect || (!r.URL.IsAbs() && r.URL.Path == "/ws") {
 		return deferredWatchConfig(cfg)
 	}
 	return cfg

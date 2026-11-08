@@ -73,6 +73,7 @@ func TestWatchDeferredRequestReceiptConfig(t *testing.T) {
 		watch          bool
 	}{
 		{http.MethodGet, "http://api.vendor.example/", true},
+		{http.MethodGet, "http://api.vendor.example/ws", true},
 		{http.MethodGet, "/fetch?url=https://api.vendor.example", true},
 		{http.MethodConnect, "api.vendor.example:443", false},
 		{http.MethodGet, "/ws?url=wss://api.vendor.example", false},
