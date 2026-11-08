@@ -85,7 +85,11 @@ func TestWatchReverseNestedSSRFRefusal(t *testing.T) {
 	cfg.Internal = nil
 	var reached atomic.Bool
 	srv := reverseTestSetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) { reached.Store(true); w.WriteHeader(http.StatusOK) })
-	resp, err := http.Get(srv.URL + "/go" + watchNestedMetadataQuery) //nolint:noctx // test server
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/go"+watchNestedMetadataQuery, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
