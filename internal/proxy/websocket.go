@@ -374,7 +374,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	r, correlation := attachRequestCorrelation(r, cfg, sc)
 	if !scOK {
 		if cfg.WatchOnly {
-			watchObservation(p.logger, p.metrics, TransportWS, scannerLabelUnavailable, scannerPatternUnavailable, config.ActionBlock, 0, true)
+			watchObservation(p.logger, p.metrics, TransportWS, scannerLabelUnavailable, scannerPatternUnavailable, config.ActionBlock, true)
 		}
 		p.recordDecision(config.ActionBlock, scannerLabelUnavailable, scannerPatternUnavailable, TransportWS, requestID)
 		emitWebSocketReceipt(receipt.EmitOpts{
@@ -396,7 +396,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	if !cfg.WebSocketProxy.Enabled {
 		if cfg.WatchOnly {
-			watchObservation(p.logger, p.metrics, TransportWS, "ws_protocol", "WebSocket proxy disabled", config.ActionBlock, 0, true)
+			watchObservation(p.logger, p.metrics, TransportWS, "ws_protocol", "WebSocket proxy disabled", config.ActionBlock, true)
 		}
 		writeBlockedError(w,
 			blockInfoFor(blockreason.NotEnabled, "").WithRequestID(requestID),
@@ -450,7 +450,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	p.metrics.RecordURLDecisions(TransportWS, result.Decisions)
 	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportWS, "WS", targetURL, requestID, agent, selectedReceiptShard); err != nil {
 		if cfg.WatchOnly {
-			watchObservation(p.logger, p.metrics, TransportWS, receiptEmissionFailedLayer, "required receipt unavailable", config.ActionBlock, 0, true)
+			watchObservation(p.logger, p.metrics, TransportWS, receiptEmissionFailedLayer, "required receipt unavailable", config.ActionBlock, true)
 		}
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 		log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
@@ -668,7 +668,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	acquired := sem.TryAcquire()
 	if !acquired {
 		if cfg.WatchOnly {
-			watchObservation(p.logger, p.metrics, TransportWS, "budget", "WebSocket connection ceiling", config.ActionBlock, 0, true)
+			watchObservation(p.logger, p.metrics, TransportWS, "budget", "WebSocket connection ceiling", config.ActionBlock, true)
 		}
 		writeBlockedError(w,
 			blockInfoFor(blockreason.RateLimit, scanner.ScannerRateLimit).WithRequestID(requestID),
@@ -690,7 +690,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	if wsHeaderReceiptErr != nil {
 		if cfg.WatchOnly {
-			watchObservation(p.logger, p.metrics, TransportWS, receiptEmissionFailedLayer, "required receipt unavailable", config.ActionBlock, 0, true)
+			watchObservation(p.logger, p.metrics, TransportWS, receiptEmissionFailedLayer, "required receipt unavailable", config.ActionBlock, true)
 		}
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(wsHeaderReceiptErr)
 		log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
@@ -1224,7 +1224,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if cfg.FlightRecorder.RequireReceipts {
 		if err := p.emitRequiredReceipt(withReceiptConfig(admissionReceipt, cfg)); err != nil {
 			if cfg.WatchOnly {
-				watchObservation(p.logger, p.metrics, TransportWS, receiptEmissionFailedLayer, "required receipt unavailable", config.ActionBlock, 0, true)
+				watchObservation(p.logger, p.metrics, TransportWS, receiptEmissionFailedLayer, "required receipt unavailable", config.ActionBlock, true)
 			}
 			blockedErr := newReceiptEmissionBlockedRequest(err)
 			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
