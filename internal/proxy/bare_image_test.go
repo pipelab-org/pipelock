@@ -24,7 +24,7 @@ func TestScanRequestBodyBareBase64Images(t *testing.T) {
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	clean := testimage.SmallPNG(t, "")
-	key := "AKIA" + "ABCDEFGHIJKLMNOP"
+	key := strings.Join([]string{"AKIA", "ABCDEFGHIJKLMNOP"}, "")
 	for _, shape := range []string{"anthropic", "openai", "mcp"} {
 		for _, dirty := range []bool{false, true} {
 			name := shape + "/clean"
@@ -63,6 +63,7 @@ func TestScanRequestBodyBareBase64Images(t *testing.T) {
 }
 
 func TestBareBase64ImageHTTPTransports(t *testing.T) {
+	key := strings.Join([]string{"AKIA", "ABCDEFGHIJKLMNOP"}, "")
 	for _, transport := range []string{"forward", "intercept"} {
 		for _, shape := range []string{"anthropic", "openai"} {
 			for _, dirty := range []bool{false, true} {
@@ -73,7 +74,7 @@ func TestBareBase64ImageHTTPTransports(t *testing.T) {
 				t.Run(name, func(t *testing.T) {
 					body := testimage.Carrier(t, shape, "png", testimage.SmallPNG(t, ""))
 					if dirty {
-						body = `{"image":` + body + `,"credential":"` + "AKIA" + "ABCDEFGHIJKLMNOP" + `"}`
+						body = `{"image":` + body + `,"credential":"` + key + `"}`
 					}
 					var hits atomic.Int32
 					received := make(chan string, 1)

@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -13,7 +14,7 @@ import (
 
 func TestMCPBareBase64Images(t *testing.T) {
 	sc := testScanner(t)
-	key := "AKIA" + "ABCDEFGHIJKLMNOP"
+	key := strings.Join([]string{"AKIA", "ABCDEFGHIJKLMNOP"}, "")
 	clean := testimage.SmallPNG(t, "")
 	for _, shape := range []string{"anthropic", "openai", "mcp"} {
 		tests := []struct {
@@ -52,7 +53,7 @@ func TestMCPBareBase64Images(t *testing.T) {
 
 func TestA2ABareBase64Images(t *testing.T) {
 	sc := testA2AScanner(t)
-	key := "AKIA" + "ABCDEFGHIJKLMNOP"
+	key := strings.Join([]string{"AKIA", "ABCDEFGHIJKLMNOP"}, "")
 	for _, dirty := range []bool{false, true} {
 		literal := ""
 		if dirty {
@@ -69,7 +70,7 @@ func TestA2ABareBase64Images(t *testing.T) {
 
 func TestA2ABareBase64ImageSiblingPath(t *testing.T) {
 	carrier := testimage.Carrier(t, "mcp", "png", testimage.SmallPNG(t, ""))
-	key := "AKIA" + "ABCDEFGHIJKLMNOP"
+	key := strings.Join([]string{"AKIA", "ABCDEFGHIJKLMNOP"}, "")
 	body := []byte(`{"a":` + carrier + `,"a.data":"` + key + `"}`)
 	if r := ScanA2AResponseBody(context.Background(), body, testA2AScanner(t), enabledA2ACfg()); r.Clean {
 		t.Fatal("sibling credential lost behind an image with the same display path")

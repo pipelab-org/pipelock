@@ -52,7 +52,7 @@ func TestBareBase64ImageBoundaries(t *testing.T) {
 	cfg.DLP.ScanEnv = false
 	sc := MustNew(cfg)
 	t.Cleanup(sc.Close)
-	key := "AKIA" + "ABCDEFGHIJKLMNOP"
+	key := strings.Join([]string{"AKIA", "ABCDEFGHIJKLMNOP"}, "")
 	valid := base64.StdEncoding.EncodeToString(pngWithBase64AWSLikeRun(t))
 	embedded := base64.StdEncoding.EncodeToString(pngWithLiteralInTextChunk(t, key))
 	carrier := func(data, mime string) string {
@@ -110,7 +110,7 @@ func TestImageDataURLMislabeledPNGOrJPEG(t *testing.T) {
 	cfg.DLP.ScanEnv = false
 	sc := MustNew(cfg)
 	t.Cleanup(sc.Close)
-	key := "AKIA" + "ABCDEFGHIJKLMNOP"
+	key := strings.Join([]string{"AKIA", "ABCDEFGHIJKLMNOP"}, "")
 	clean := base64.StdEncoding.EncodeToString(pngWithBase64AWSLikeRun(t))
 	dirty := base64.StdEncoding.EncodeToString(pngWithLiteralInTextChunk(t, key))
 	body := func(mime, data string) string {
