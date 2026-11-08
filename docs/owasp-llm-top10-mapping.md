@@ -4,7 +4,7 @@ How Pipelock addresses the [OWASP Top 10 for Large Language Model Applications (
 
 | Threat | Coverage | Status |
 |--------|----------|--------|
-| LLM01 Prompt Injection | Strong | Shipped |
+| LLM01 Prompt Injection | Partial | Shipped |
 | LLM02 Sensitive Information Disclosure | Strong | Shipped |
 | LLM03 Supply Chain Vulnerabilities | Partial | Shipped |
 | LLM04 Data and Model Poisoning | N/A | Out of scope |
@@ -28,7 +28,7 @@ How Pipelock addresses the [OWASP Top 10 for Large Language Model Applications (
 - **MCP input scanning:** client requests are scanned for injection patterns in tool arguments before reaching the MCP server. Catches injection payloads being sent *to* tools, not just returned *from* them.
 - **Content extraction:** HTML is converted to clean text via go-readability, removing scripts, styles, and hidden elements that could carry injection payloads.
 
-**Coverage: Strong.** This is Pipelock's core feature. Injection scanning covers all network transports (fetch, forward proxy, WebSocket, MCP stdio, MCP HTTP/SSE).
+**Coverage: Partial.** Pipelock detects injection patterns only in mediated traffic on supported fetch, forward proxy, reverse proxy, WebSocket and MCP paths; pattern matching can miss novel or rephrased instructions.
 
 **Gap:** Regex-based detection can miss novel injection patterns. Future: classifier-based detection (see roadmap).
 
@@ -154,11 +154,11 @@ How Pipelock addresses the [OWASP Top 10 for Large Language Model Applications (
 
 Pipelock provides coverage for **7 of 10** threats in the OWASP Top 10 for LLM Applications:
 
-- **Strong (3):** LLM01 (Prompt Injection), LLM02 (Sensitive Information Disclosure), LLM06 (Excessive Agency)
+- **Strong (2):** LLM02 (Sensitive Information Disclosure), LLM06 (Excessive Agency)
 - **Moderate (2):** LLM05 (Improper Output Handling), LLM07 (System Prompt Leakage)
-- **Partial (2):** LLM03 (Supply Chain), LLM10 (Unbounded Consumption)
+- **Partial (3):** LLM01 (Prompt Injection), LLM03 (Supply Chain), LLM10 (Unbounded Consumption)
 - **Out of scope (3):** LLM04 (Data/Model Poisoning), LLM08 (Vector/Embedding), LLM09 (Misinformation)
 
-The 3 strong areas map directly to Pipelock's core capabilities: injection scanning, DLP/exfiltration prevention, and least-privilege enforcement. The 3 out-of-scope threats are about model internals and output truthfulness, which sit at a different layer than network-level security.
+The 2 strong areas cover DLP/exfiltration prevention and least-privilege enforcement. The 3 out-of-scope threats are about model internals and output truthfulness, which sit at a different layer than network-level security.
 
 For coverage of the OWASP Top 10 for Agentic Applications (ASI01-ASI10), see [owasp-mapping.md](owasp-mapping.md). For the broader OWASP Agentic AI Threats framework (T1-T15), see [owasp-agentic-top15-mapping.md](owasp-agentic-top15-mapping.md). For a competitive feature comparison, see [comparison.md](comparison.md).
