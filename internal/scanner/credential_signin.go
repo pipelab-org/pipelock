@@ -45,7 +45,13 @@ var signInBearerRoutes = []signInBearerRoute{
 // Authorization Bearer value, over https, at an exact route host and under
 // its path prefix, when the token's iss and client_id equal that route's.
 func signInBearerAllowed(candidate credentialAudienceCandidate, host, target, surface string) bool {
-	if candidate.patternName != "JWT Token" || surface != CredentialAudienceAuthorizationHeaderSurface {
+	// The claims are read from the header value, so they describe the matched
+	// token only when the match is in that raw value. The whitespace view only
+	// joins fields, and the single-token shape below leaves nothing to join. A
+	// token visible only after decoding (percent, base64, hex) could sit beside
+	// a genuine sign-in token and borrow its claims.
+	if candidate.patternName != "JWT Token" || surface != CredentialAudienceAuthorizationHeaderSurface ||
+		(candidate.encoded != "" && candidate.encoded != "whitespace") {
 		return false
 	}
 	parsed, err := url.Parse(target)

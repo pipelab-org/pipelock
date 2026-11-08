@@ -6,6 +6,7 @@ package proxy
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -57,6 +58,9 @@ func TestSignInBearer_RequestHeaderScan(t *testing.T) {
 			{"foreign token", http.Header{"Authorization": {"Bearer " + other}, "User-Agent": {"x"}}, target, false, false},
 			{"other host", http.Header{"Authorization": {"Bearer " + codex}, "User-Agent": {"x"}}, "https://api.vendor.example/backend-api/codex", false, false},
 			{"wss target", http.Header{"Authorization": {"Bearer " + codex}, "User-Agent": {"x"}}, "wss://chatgpt.com/backend-api/codex/responses", false, false},
+			{"percent-encoded foreign token ahead of the sign-in token", http.Header{
+				"Authorization": {"Bearer " + percentEncodeAll(other) + codex}, "User-Agent": {"x"},
+			}, target, false, false},
 			{"unrelated secret beside token", http.Header{
 				"Authorization": {"Bearer " + codex + " AKIA" + strings.Repeat("A", 16)}, "User-Agent": {"x"},
 			}, target, false, false},
@@ -78,4 +82,13 @@ func TestSignInBearer_RequestHeaderScan(t *testing.T) {
 			})
 		}
 	}
+}
+
+// percentEncodeAll encodes every byte, so the value carries no plaintext token.
+func percentEncodeAll(v string) string {
+	var b strings.Builder
+	for i := 0; i < len(v); i++ {
+		fmt.Fprintf(&b, "%%%02X", v[i])
+	}
+	return b.String()
 }
