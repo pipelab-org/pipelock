@@ -16,8 +16,10 @@ import (
 
 func smallOptions(t *testing.T, binary string) options {
 	t.Helper()
+	out := t.TempDir()
+	retainOnFailure(t, out)
 	return options{
-		binary: binary, out: t.TempDir(), rules: rulesEmpty, requests: 40, warmup: 10, concurrency: 4,
+		binary: binary, out: out, rules: rulesEmpty, requests: 40, warmup: 10, concurrency: 4,
 		chains: 1, seed: 1, window: 50 * time.Millisecond, readyTimeout: 10 * time.Second, shutdownTimeout: 20 * time.Second,
 	}
 }
