@@ -469,6 +469,19 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		// its observation, but attribute the actual refusal to the credential.
 		result = sc.ScanURLCoreFloor(scanURL)
 	}
+	// A relay that follows a URL-shaped query value reaches that destination
+	// without this proxy dialing it. The URL scan stops at its first failing
+	// stage and watch-only releases non-core findings, so check the nested SSRF
+	// floor on its own, as the HTTP watch path does.
+	if cfg.WatchOnly && !urlBlocked && !result.Allowed {
+		nested := result
+		if !scanner.IsNestedSSRFResult(nested) {
+			nested = sc.ScanNestedSSRFFloor(r.Context(), scanURL)
+		}
+		if scanner.IsNestedSSRFResult(nested) {
+			result, urlBlocked = nested, true
+		}
+	}
 	// Capture observer: record WebSocket URL verdict for policy replay.
 	{
 		findings := urlResultToFindings(result)

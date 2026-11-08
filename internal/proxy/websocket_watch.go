@@ -31,7 +31,7 @@ func (r *wsRelay) recordWatch(scannerName, reason, action string, uninspectedByt
 		return
 	}
 	if r.proxy.logger != nil {
-		r.proxy.logger.LogWatchOnly(TransportWS, scannerName, reason, action, uninspectedBytes, enforced)
+		r.proxy.logger.LogWatchOnlyRequest(r.requestID, TransportWS, scannerName, reason, action, uninspectedBytes, enforced)
 	}
 	if r.proxy.metrics != nil {
 		r.proxy.metrics.RecordWatchOnly(TransportWS, scannerName, action, uninspectedBytes)
