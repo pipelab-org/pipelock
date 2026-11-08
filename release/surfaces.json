@@ -1734,6 +1734,24 @@
       "expected": "2.1.310",
       "count": 3,
       "reason": "Fixed Anthropic client artifact used as the endpoint source, verified by its own version output and SHA-256 in this document; not the current Pipelock release."
+    },
+    {
+      "id": "docs-provider-key-codex-signin-source",
+      "path": "docs/security/provider-key-dlp-coverage.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?0\\.167\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "0.167.0",
+      "count": 1,
+      "reason": "Fixed OpenAI Codex client tag used as the sign-in bearer source in this document; not the current Pipelock release.",
+      "format": "version"
+    },
+    {
+      "id": "docs-provider-key-xai-signin-source",
+      "path": "docs/security/provider-key-dlp-coverage.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?8\\.0\\.51)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "8.0.51",
+      "count": 1,
+      "reason": "Fixed CLIProxyAPI tag used as the xAI sign-in bearer source in this document; not the current Pipelock release.",
+      "format": "version"
     }
   ],
   "external": [
