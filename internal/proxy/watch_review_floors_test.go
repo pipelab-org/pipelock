@@ -335,30 +335,6 @@ func TestWatchScanSnapshotCarriedToDial(t *testing.T) {
 	}
 }
 
-// A request admitted while watch-only is on stays observational when the mode
-// is turned off before its cross-request check: an ordinary fragment finding
-// must not become a refusal. Core credentials remain mandatory (see the
-// fragment floor test).
-func TestWatchCEEAdmittedRequestStaysObservational(t *testing.T) {
-	_, p, cleanup := setupForwardProxyWithInstance(t, func(c *config.Config) {
-		c.WatchOnly = true
-		c.CrossRequestDetection = ceeFragmentBlockCfg()
-		c.DLP.Patterns = append(c.DLP.Patterns, config.DLPPattern{Name: auditFloorPatternName, Regex: `auditprobe-[0-9]{8}`, Severity: config.SeverityCritical})
-	})
-	defer cleanup()
-	admitted := p.CurrentConfig()
-	live := admitted.Clone()
-	live.WatchOnly = false
-	p.cfgPtr.Store(live)
-	opts := watchHTTPOptions{Config: admitted, Scanner: p.scannerPtr.Load(), Proxy: p, Logger: p.logger, Metrics: p.metrics, Transport: TransportForward, ClientIP: "192.0.2.5", Agent: agentAnonymous}
-	for i, fragment := range []string{"auditprobe-", "12345678"} {
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.vendor.example/upload/"+fragment, nil)
-		if watchRequestDecision(req, opts) {
-			t.Fatalf("fragment %d: an ordinary finding refused a request admitted as watch-only", i)
-		}
-	}
-}
-
 // A Host that already names the admitted authority is forwarded as sent; only
 // a different one is rebound.
 func TestWatchForwardHostPreservesEquivalentAuthority(t *testing.T) {

@@ -2992,12 +2992,7 @@ func (p *Proxy) admitCurrentCEE(ctx context.Context, req ceeAdmitRequest) ceeAdm
 	if cfg == nil {
 		return ceeAdmission{}
 	}
-	if req.WatchOnly {
-		// The request was admitted as watch-only. If the mode was disabled
-		// meanwhile, ordinary findings stay observations for this request;
-		// only the mandatory refusals below can still end it.
-		cfg = admittedWatchConfig(cfg)
-	} else {
+	if !req.WatchOnly {
 		cfg = deferredWatchConfig(cfg)
 	}
 	ceeCfg := ceeEffectiveConfig(cfg.CrossRequestDetection, cfg.EnforceEnabled())
