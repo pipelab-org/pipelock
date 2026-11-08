@@ -34,7 +34,9 @@ Branch naming:
 
 ### Pre-Commit Checklist
 
-Before committing, run targeted tests with `-race` for changed packages and affected consumers in both build modes, plus lint for new issues. For example, for a change confined to `internal/gitprotect`:
+Before committing, run the tests for the behavior you changed and lint for new issues, in both build modes. How much to run depends on the package.
+
+Most packages are quick, so run the whole package with `-race`. For a change confined to `internal/gitprotect`:
 
 ```bash
 go test -race -count=1 ./internal/gitprotect
@@ -43,9 +45,18 @@ golangci-lint run --new-from-rev=HEAD ./...
 golangci-lint run --build-tags enterprise --new-from-rev=HEAD ./...
 ```
 
-Choose the packages for your change; the example isn't a fixed test list. For workflow, script, or documentation changes, run the relevant policy checks instead of unrelated Go tests. Required CI checks must pass before merge. CI owns the full OSS and enterprise race suites on pushes to `main` and before releases; CI-policy pull requests also run the Go 1.27 race suites before merge.
+The heavy trees CI splits across shards (`HEAVY_TREES` in `scripts/ci_test_packages.py`: `internal/proxy`, `internal/scanner`, `internal/mcp` and `internal/cli/runtime`) take many minutes to race as a whole. In those trees, select the tests for the touched behavior with `-run` and race that selection. If you changed code that runs concurrently, include the tests that exercise it, not only the tests you edited:
 
-Full-repository checks are optional locally:
+```bash
+go test -race -count=1 -run 'TestRedirect' ./internal/proxy
+go test -race -count=1 -tags enterprise -run 'TestRedirect' ./internal/proxy
+```
+
+Don't race a whole heavy tree locally. On a pull request, CI runs every test without the race detector in both build modes and races the test functions the pull request changes while its time budget lasts; changed tests in packages that only edited existing tests can go unraced when that budget runs out. The full OSS and enterprise race suites run on pushes to `main`, and pull requests that change the Go toolchain also run the Go 1.27 race suites ([Pull Requests](#pull-requests) has the details).
+
+Choose the packages and tests for your change; the examples aren't fixed lists. For workflow, script, or documentation changes, run the relevant policy checks instead of unrelated Go tests. Required CI checks must pass before merge.
+
+Full-repository checks are optional locally. `make test` races the heavy trees too, so it takes a long time and needs a machine with plenty of memory:
 
 ```bash
 make test
