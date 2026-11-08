@@ -65,7 +65,7 @@ func newAssembledPlan(p *reassemblyPlan) (*assembledPlan, error) {
 		a.nestedMinimum = (minimum*8 + 5) / 6
 	}
 	for codec := range a.raw {
-		a.raw[codec] = reassemblyAC{codec: codec, nodes: []reassemblyACNode{{}}}
+		a.raw[codec] = reassemblyAC{codec: codec, building: []reassemblyBuildNode{{}}}
 	}
 
 	for id, pattern := range p.patterns {
@@ -271,6 +271,7 @@ type (
 		used        int
 		incomplete  bool
 		produced    map[assembledIdentity]struct{}
+		admitted    bool
 	}
 	assembledScan struct {
 		p         *reassemblyPlan
@@ -353,6 +354,7 @@ func (s *assembledScan) searchLane(codec, phase, id int) {
 		return
 	}
 	s.checked[codec][id] |= phaseBit
+	s.budget.admitted = true
 	lane := s.lanes[codec][phase]
 	if lane == nil {
 		if s.charges == nil {

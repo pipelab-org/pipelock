@@ -30,6 +30,8 @@ type decodingMemoKey struct {
 // stopped at a depth or work bound with decodable work left. It is a property of the
 // scan, not of one view, so it survives cache hits and unretained decodes.
 type decodingMemo struct {
+	reassemblyKindInsensitive  bool
+	reassemblyPatternLimit     textDLPPatternSet
 	reassemblyPatternSelected  bool
 	reassemblyPatterns         textDLPPatternSet
 	assembledBytes             int
@@ -47,6 +49,8 @@ type decodingMemo struct {
 	reassemblyPending          []string
 	reassemblyViewKinds        map[string]assembledViewKind
 	reassemblyTextRoots        map[string]bool
+	reassemblyDecoded          map[decodingMemoKey]assembledViewKind
+	reassemblyDecodedBytes     int
 	reassemblyParents          map[string]string
 	reassemblyIncomplete       bool
 	assembledCharged           map[string]*assembledCharges
@@ -83,6 +87,27 @@ type decodingMemo struct {
 	compactSource, compactText string
 	compactOffsets             []int
 	compactReady               bool
+}
+
+// Complete text scans own these memos until finalization. Resetting every field
+// before reuse releases payloads and prevents one scan's state crossing into
+// another; retained projection metadata has its own cleared storage pool.
+var textDecodingMemoPool = sync.Pool{New: func() any { return &decodingMemo{} }}
+
+func textDecodingMemo(shared *sharedDecodes, inbound bool, allowance *assembledAllowance, kindInsensitive bool) *decodingMemo {
+	memo, _ := textDecodingMemoPool.Get().(*decodingMemo)
+	if memo == nil {
+		memo = &decodingMemo{}
+	}
+	*memo = decodingMemo{shared: shared, reassemblyDeferred: true, reassemblyInbound: inbound, assembledAllowance: allowance, reassemblyKindInsensitive: kindInsensitive}
+	memo.assembledStorage()
+	return memo
+}
+
+func (m *decodingMemo) releaseTextDecodingMemo() {
+	m.releaseProjection()
+	*m = decodingMemo{}
+	textDecodingMemoPool.Put(m)
 }
 
 // compactWhitespace returns compactTextDLPWhitespaceWithOffsets(text) when
@@ -317,7 +342,20 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 			m.incomplete = true
 		}
 		if complete || m.inbound {
-			m.reassemblyObserveDecoded(text, decoded)
+			kind := m.reassemblyViewKinds[text]
+			previous, observed := m.reassemblyDecoded[key]
+			if !observed || !previous.textual() && kind.textual() {
+				m.reassemblyObserveDecoded(text, decoded)
+				if observed || len(m.reassemblyDecoded) < maxDecodeCandidates && len(text) <= maxDecodeTotalBytes-m.reassemblyDecodedBytes {
+					if m.reassemblyDecoded == nil {
+						m.reassemblyDecoded = make(map[decodingMemoKey]assembledViewKind)
+					}
+					m.reassemblyDecoded[key] = kind
+					if !observed {
+						m.reassemblyDecodedBytes += len(text)
+					}
+				}
+			}
 		}
 		return decoded
 	}

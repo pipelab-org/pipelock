@@ -746,13 +746,14 @@ func uninspectableEncodedContentMatch() TextDLPMatch {
 func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, opts textDLPOptions) TextDLPResult {
 	shared := sharedDecodesFrom(ctx)
 	terminalInbound := !opts.scanSecretLeak || inboundDirection(ctx)
+	kindInsensitive := s.reassemblyPlan != nil && s.reassemblyPlan.kindInsensitive
 	allowance := &assembledAllowance{}
-	originalDecodes := decodingMemo{shared: shared, reassemblyDeferred: true, reassemblyInbound: terminalInbound, assembledAllowance: allowance}
-	defer originalDecodes.releaseProjection()
+	originalDecodes := textDecodingMemo(shared, terminalInbound, allowance, kindInsensitive)
+	defer originalDecodes.releaseTextDecodingMemo()
 	if !s.hasGenericCardPatterns() {
 		emit := opts.emitWarns
 		opts.emitWarns = false
-		result := finishAssembled(s.scanTextForDLPWithDecodes(ctx, text, opts, &originalDecodes), &originalDecodes)
+		result := finishAssembled(s.scanTextForDLPWithDecodes(ctx, text, opts, originalDecodes), originalDecodes)
 		if emit {
 			s.EmitTextDLPWarnMatches(ctx, append(result.InformationalMatches[:len(result.InformationalMatches):len(result.InformationalMatches)], result.Matches...))
 		}
@@ -768,14 +769,20 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 	emit := opts.emitWarns
 	opts.emitWarns = false
 	opts.patterns = textDLPNonCardPatterns
-	original := s.scanTextForDLPWithDecodes(ctx, text, opts, &originalDecodes)
-	typedDecodes := decodingMemo{shared: shared, reassemblyDeferred: true, reassemblyInbound: terminalInbound, assembledAllowance: allowance}
-	defer typedDecodes.releaseProjection()
-	terminalMemos := []*decodingMemo{&originalDecodes}
-	cardDecodes := &originalDecodes
+	// Separate text/card memos never widen their pattern sets. A shared memo
+	// retains the all-pattern upper bound until both passes have finished.
 	if text != cardView {
-		cardDecodes = &typedDecodes
-		terminalMemos = append(terminalMemos, &typedDecodes)
+		originalDecodes.reassemblyPatternLimit = textDLPNonCardPatterns
+	}
+	original := s.scanTextForDLPWithDecodes(ctx, text, opts, originalDecodes)
+	terminalMemos := []*decodingMemo{originalDecodes}
+	cardDecodes := originalDecodes
+	if text != cardView {
+		typedDecodes := textDecodingMemo(shared, terminalInbound, allowance, kindInsensitive)
+		defer typedDecodes.releaseTextDecodingMemo()
+		typedDecodes.reassemblyPatternLimit = textDLPCardPatterns
+		cardDecodes = typedDecodes
+		terminalMemos = append(terminalMemos, typedDecodes)
 	}
 	opts.patterns = textDLPCardPatterns
 	opts.scanSecretLeak = false
@@ -832,10 +839,11 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 			continue
 		}
 		seenRuns[run] = struct{}{}
-		runDecodes := decodingMemo{shared: shared, reassemblyDeferred: true, reassemblyInbound: terminalInbound, assembledAllowance: allowance}
-		runResult := s.scanTextForDLPWithDecodes(ctx, run.Digits, opts, &runDecodes)
-		runResult = finishAssembled(runResult, &runDecodes)
-		runDecodes.releaseProjection()
+		runDecodes := textDecodingMemo(shared, terminalInbound, allowance, kindInsensitive)
+		runDecodes.reassemblyPatternLimit = textDLPCardPatterns
+		runResult := s.scanTextForDLPWithDecodes(ctx, run.Digits, opts, runDecodes)
+		runResult = finishAssembled(runResult, runDecodes)
+		runDecodes.releaseTextDecodingMemo()
 		for i := range runResult.Matches {
 			if run.RetryOnly && !runResult.Matches[i].cardPrefixRetry {
 				continue

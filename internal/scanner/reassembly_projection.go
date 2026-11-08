@@ -76,7 +76,14 @@ func assembledSameProjection(a, b string, codec int) bool {
 // sync.Pool recycles only cleared storage, as described by Go's sync package.
 // A scan retains its owner until all of that scan's terminal consumers finish.
 // The array stores integers and fingerprints; it owns no graph payloads.
-type assembledProjectionStorage struct{ table []assembledProjectionEntry }
+type assembledProjectionStorage struct {
+	table   []assembledProjectionEntry
+	kinds   map[string]assembledViewKind
+	seen    map[string]int
+	decoded map[decodingMemoKey]assembledViewKind
+	roots   map[string]bool
+	pending []string
+}
 
 var assembledProjectionPool = sync.Pool{New: func() any { return &assembledProjectionStorage{} }}
 
@@ -84,6 +91,38 @@ func (m *decodingMemo) releaseProjection() {
 	if storage := m.assembledProjectionStorage; storage != nil {
 		clear(m.assembledProjectionTable)
 		storage.table = m.assembledProjectionTable
+		storage.kinds = m.reassemblyViewKinds
+		storage.seen = m.reassemblySeen
+		storage.decoded = m.reassemblyDecoded
+		storage.roots = m.reassemblyTextRoots
+		storage.pending = m.reassemblyPending[:0]
+		// Oversized scans still run completely; only recycled metadata is capped.
+		if len(m.reassemblyViewKinds) > maxDecodeCandidates {
+			storage.kinds = nil
+		}
+		if len(m.reassemblySeen) > maxDecodeCandidates {
+			storage.seen = nil
+		}
+		if len(m.reassemblyDecoded) > maxDecodeCandidates {
+			storage.decoded = nil
+		}
+		if len(m.reassemblyTextRoots) > maxDecodeCandidates {
+			storage.roots = nil
+		}
+		if cap(m.reassemblyPending) > maxDecodeCandidates {
+			storage.pending = nil
+		}
+		clear(m.reassemblyViewKinds)
+		clear(m.reassemblySeen)
+		clear(m.reassemblyDecoded)
+		clear(m.reassemblyTextRoots)
+		clear(m.reassemblyPending)
+		m.reassemblyViewKinds = nil
+		m.reassemblySeen = nil
+		m.reassemblyDecoded = nil
+		m.reassemblyDecodedBytes = 0
+		m.reassemblyTextRoots = nil
+		m.reassemblyPending = nil
 		m.assembledProjectionTable = nil
 		m.assembledProjectionStorage = nil
 		assembledProjectionPool.Put(storage)
@@ -97,14 +136,7 @@ func assembledProjectionSlot(key assembledProjection, codec int, slots int) int 
 }
 
 func (m *decodingMemo) assembledGrowProjection() {
-	if m.assembledProjectionStorage == nil {
-		storage, _ := assembledProjectionPool.Get().(*assembledProjectionStorage)
-		if storage == nil {
-			storage = &assembledProjectionStorage{}
-		}
-		m.assembledProjectionStorage = storage
-		m.assembledProjectionTable = storage.table
-	}
+	m.assembledStorage()
 	if 2*(m.assembledProjectionEntries+1) <= len(m.assembledProjectionTable) {
 		return
 	}
@@ -122,6 +154,32 @@ func (m *decodingMemo) assembledGrowProjection() {
 		next[at] = entry
 	}
 	m.assembledProjectionTable = next
+}
+
+func (m *decodingMemo) assembledStorage() {
+	if m.assembledProjectionStorage == nil {
+		storage, _ := assembledProjectionPool.Get().(*assembledProjectionStorage)
+		if storage == nil {
+			storage = &assembledProjectionStorage{}
+		}
+		m.assembledProjectionStorage = storage
+		m.assembledProjectionTable = storage.table
+		if m.reassemblyViewKinds == nil {
+			m.reassemblyViewKinds = storage.kinds
+		}
+		if m.reassemblySeen == nil {
+			m.reassemblySeen = storage.seen
+		}
+		if m.reassemblyDecoded == nil {
+			m.reassemblyDecoded = storage.decoded
+		}
+		if m.reassemblyTextRoots == nil {
+			m.reassemblyTextRoots = storage.roots
+		}
+		if m.reassemblyPending == nil {
+			m.reassemblyPending = storage.pending
+		}
+	}
 }
 
 func (m *decodingMemo) assembledSkip(view int) uint8 {

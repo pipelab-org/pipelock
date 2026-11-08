@@ -21,6 +21,14 @@ func (m *decodingMemo) reassemblySetKind(text string, kind assembledViewKind) bo
 	if m == nil || !m.reassemblyDeferred && m.reassemblyPlan == nil {
 		return false
 	}
+	// produce rejects binary ancestry only for decoder-disallowed patterns;
+	// keyword-free plans admitting both kinds need no ancestry state.
+	if m.reassemblyKindInsensitive {
+		return true
+	}
+	if m.reassemblyViewKinds == nil {
+		m.assembledStorage()
+	}
 	if m.reassemblyViewKinds == nil {
 		m.reassemblyViewKinds = make(map[string]assembledViewKind)
 	}
@@ -39,6 +47,14 @@ func (m *decodingMemo) reassemblySetKind(text string, kind assembledViewKind) bo
 // Text transformations inherit a binary origin. An independently established
 // text path to exactly the same bytes can still supply textual eligibility.
 func (m *decodingMemo) reassemblyDerive(source, text string) {
+	if m != nil && m.reassemblyKindInsensitive {
+		return
+	}
+	if m != nil && source == text {
+		if _, known := m.reassemblyViewKinds[text]; known {
+			return
+		}
+	}
 	if !m.reassemblySetKind(text, m.reassemblyDerivedKind(source)) {
 		return
 	}
@@ -61,7 +77,7 @@ func (m *decodingMemo) reassemblyParent(source, text string) {
 // A parent keeps its origin while its segments are decoded. Resolve it once
 // before walking those segments instead of hashing the parent for every edge.
 func (m *decodingMemo) reassemblyDerivedKind(source string) assembledViewKind {
-	if m == nil {
+	if m == nil || m.reassemblyKindInsensitive {
 		return assembledTextView
 	}
 	kind, known := m.reassemblyViewKinds[source]
@@ -81,6 +97,9 @@ func partialEncodedContentMatch() TextDLPMatch {
 
 // Segments retain the source ancestry used by keyword-window decisions.
 func (m *decodingMemo) reassemblySegment(source, segment string, kind assembledViewKind) {
+	if m != nil && m.reassemblyKindInsensitive {
+		return
+	}
 	if m.reassemblySetKind(segment, kind) {
 		m.reassemblyParent(source, segment)
 	}
