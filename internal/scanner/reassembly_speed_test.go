@@ -38,9 +38,13 @@ func TestReassemblySymbolAdmission(t *testing.T) {
 			}
 			// Run the unscreened terminal independently to prove the rejected
 			// input really cannot produce a finding, not merely that it skips.
-			raw := reassemblyTerminal(p, tc.input, &assembledBudget{})
+			budget := &assembledBudget{}
+			raw := reassemblyTerminal(p, tc.input, budget)
 			if (len(raw.findings) > 0) != tc.want || raw.incomplete {
 				t.Fatal("unscreened control", raw)
+			}
+			if !tc.want && budget.admitted {
+				t.Fatal("below-bound input admitted a terminal candidate")
 			}
 			memo := &decodingMemo{reassemblyPlan: p, reassemblyDeferred: true}
 			defer memo.releaseProjection()
