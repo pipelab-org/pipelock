@@ -61,6 +61,7 @@ func reverseReceiptParitySetupWithPublicKey(t *testing.T, cfg *config.Config, up
 	return proxySrv, dir, closeRecorder, pubKey
 }
 
+// reverseReceiptParitySetupWithCaptureAndShield builds a reverse proxy with receipt, capture, and shield observers.
 func reverseReceiptParitySetupWithCaptureAndShield(t *testing.T, cfg *config.Config, upstreamHandler http.HandlerFunc, obs capture.CaptureObserver, se *shield.Engine, onPublicKey func(ed25519.PublicKey)) (proxySrv *httptest.Server, dir string, closeRecorder func()) {
 	t.Helper()
 
@@ -101,13 +102,23 @@ func reverseReceiptParitySetupWithCaptureAndShield(t *testing.T, cfg *config.Con
 	t.Cleanup(srv.Close)
 
 	return srv, dir, func() {
+		// A flushed response can arrive before deferred outcome recording.
+		// Drain the handler before sealing its evidence store.
+		srv.Close()
 		if err := rec.Close(); err != nil {
 			t.Fatalf("recorder close: %v", err)
 		}
 	}
 }
 
+// waitForReverseOutcomeReceipt waits for reverse outcome storage before inspecting evidence.
 func waitForReverseOutcomeReceipt(t *testing.T, dir string) {
+	t.Helper()
+	waitForTransportOutcomeReceipt(t, dir, TransportReverse)
+}
+
+// waitForTransportOutcomeReceipt waits for the selected transport outcome to reach storage.
+func waitForTransportOutcomeReceipt(t *testing.T, dir, transport string) {
 	t.Helper()
 	testwait.For(t, waitForReceiptTimeout, func() bool {
 		entries, err := os.ReadDir(filepath.Clean(dir))
@@ -123,13 +134,13 @@ func waitForReverseOutcomeReceipt(t *testing.T, dir string) {
 				continue
 			}
 			for _, rcpt := range receipts {
-				if rcpt.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome && rcpt.ActionRecord.Transport == TransportReverse {
+				if rcpt.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome && rcpt.ActionRecord.Transport == transport {
 					return true
 				}
 			}
 		}
 		return false
-	}, "reverse outcome receipt in %s", dir)
+	}, "%s outcome receipt in %s", transport, dir)
 }
 
 func TestReverseProxy_BlockReceiptHeaderMatchesRecordedAction(t *testing.T) {
@@ -563,6 +574,7 @@ func TestReverseProxy_RequireReceiptsBlocksMissingEmitterBeforeEgress(t *testing
 	}
 }
 
+// TestReverseProxy_RequireReceiptsSuccessEmitsSingleAllow checks the required admission and outcome records.
 func TestReverseProxy_RequireReceiptsSuccessEmitsSingleAllow(t *testing.T) {
 	var hits atomic.Int32
 	cfg := reverseTestConfig()
@@ -595,6 +607,7 @@ func TestReverseProxy_RequireReceiptsSuccessEmitsSingleAllow(t *testing.T) {
 	}
 
 	waitForReceiptOrTimeout(t, dir)
+	waitForReverseOutcomeReceipt(t, dir)
 	closeRec()
 	receipts := extractReceiptsFromDir(t, dir)
 	var allowCount int
@@ -624,6 +637,7 @@ func TestReverseProxy_RequireReceiptsSuccessEmitsSingleAllow(t *testing.T) {
 	}
 }
 
+// TestReverseProxy_RequireReceiptsUpstreamErrorEmitsOutcome checks outcome recording after upstream failure.
 func TestReverseProxy_RequireReceiptsUpstreamErrorEmitsOutcome(t *testing.T) {
 	cfg := reverseTestConfig()
 	cfg.ResponseScanning.Enabled = false
@@ -654,7 +668,11 @@ func TestReverseProxy_RequireReceiptsUpstreamErrorEmitsOutcome(t *testing.T) {
 	emPtr.Store(emitter)
 	handler.SetReceiptEmitter(&emPtr)
 
-	proxySrv := newIPv4Server(t, handler)
+	done := make(chan struct{})
+	proxySrv := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(done)
+		handler.ServeHTTP(w, r)
+	}))
 	t.Cleanup(proxySrv.Close)
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, proxySrv.URL+"/unreachable", nil)
@@ -676,7 +694,9 @@ func TestReverseProxy_RequireReceiptsUpstreamErrorEmitsOutcome(t *testing.T) {
 		t.Fatalf("upstream transport calls = %d, want 1", got)
 	}
 
-	waitForReceiptOrTimeout(t, dir)
+	// Exact framing lets EOF precede outcome storage. Wait for this handler,
+	// rather than the admission receipt, before closing its recorder.
+	integrityWait(t, done)
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder close: %v", err)
 	}
@@ -705,6 +725,7 @@ func TestReverseProxy_RequireReceiptsUpstreamErrorEmitsOutcome(t *testing.T) {
 	}
 }
 
+// TestReverseProxy_RequireReceiptsMediaBlockEmitsOutcome checks the outcome of a media-policy denial.
 func TestReverseProxy_RequireReceiptsMediaBlockEmitsOutcome(t *testing.T) {
 	var hits atomic.Int32
 	cfg := reverseTestConfig()
@@ -738,6 +759,7 @@ func TestReverseProxy_RequireReceiptsMediaBlockEmitsOutcome(t *testing.T) {
 	}
 
 	waitForReceiptOrTimeout(t, dir)
+	waitForReverseOutcomeReceipt(t, dir)
 	closeRec()
 	receipts := extractReceiptsFromDir(t, dir)
 	admission := findReverseAdmissionAllowReceipt(t, receipts)
@@ -865,6 +887,7 @@ func TestReverseProxy_RequireReceiptsMediaPassthroughLabeledUnscanned(t *testing
 			}
 
 			waitForReceiptOrTimeout(t, dir)
+			waitForReverseOutcomeReceipt(t, dir)
 			closeRec()
 			receipts := extractReceiptsFromDir(t, dir)
 			var outcome receipt.Receipt
@@ -1187,6 +1210,7 @@ func TestReverseProxy_RequireReceiptsV2FailureBlocksBeforeEgress(t *testing.T) {
 	assertMetricsContain(t, m, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="reverse"} 1`)
 }
 
+// TestReverseProxy_RequireReceiptsOutcomeV1FailureLogsReceiptChannelBroken checks evidence-channel failure logging.
 func TestReverseProxy_RequireReceiptsOutcomeV1FailureLogsReceiptChannelBroken(t *testing.T) {
 	var hits atomic.Int32
 	var rec *recorder.Recorder
@@ -1258,6 +1282,7 @@ func TestReverseProxy_RequireReceiptsOutcomeV1FailureLogsReceiptChannelBroken(t 
 	if got := hits.Load(); got != 1 {
 		t.Fatalf("upstream hits = %d, want 1", got)
 	}
+	proxySrv.Close()
 	receipts := extractReceiptsFromDir(t, rph.dir)
 	if len(receipts) != 1 {
 		t.Fatalf("receipt count after outcome failure = %d, want durable intent only", len(receipts))
@@ -1277,6 +1302,7 @@ func TestReverseProxy_RequireReceiptsOutcomeV1FailureLogsReceiptChannelBroken(t 
 	assertMetricsContain(t, m, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
 }
 
+// TestReverseProxy_RequireReceiptsOutcomeV2FailureEmitsGapMarker checks gap evidence after outcome storage failure.
 func TestReverseProxy_RequireReceiptsOutcomeV2FailureEmitsGapMarker(t *testing.T) {
 	var hits atomic.Int32
 	cfg := reverseTestConfig()
@@ -1341,6 +1367,7 @@ func TestReverseProxy_RequireReceiptsOutcomeV2FailureEmitsGapMarker(t *testing.T
 	if got := hits.Load(); got != 1 {
 		t.Fatalf("upstream hits = %d, want 1", got)
 	}
+	proxySrv.Close()
 	marker := requireReceiptEmissionFailedLayer(t, rph.findReceipts(t))
 	if !strings.Contains(marker.ActionRecord.Pattern, "outcome receipt emission failed") {
 		t.Fatalf("marker pattern = %q, want outcome receipt emission failed", marker.ActionRecord.Pattern)

@@ -268,6 +268,7 @@ func TestProxy_SafeDialerBlocksInternalIP(t *testing.T) {
 	}
 }
 
+// TestSubmitProfile_SafeDialerCoreCIDRBlockPreservesSSRFReason checks the original dial-policy reason in receipts.
 func TestSubmitProfile_SafeDialerCoreCIDRBlockPreservesSSRFReason(t *testing.T) {
 	cfg, upstreamURL := submitProfileTestConfig("http://submit-rebind.test:1")
 	cfg.Internal = nil
@@ -318,6 +319,7 @@ func TestSubmitProfile_SafeDialerCoreCIDRBlockPreservesSSRFReason(t *testing.T) 
 	}
 
 	waitForReceiptOrTimeout(t, dir)
+	waitForReverseOutcomeReceipt(t, dir)
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder close: %v", err)
 	}

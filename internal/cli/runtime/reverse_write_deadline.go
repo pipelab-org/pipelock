@@ -159,10 +159,15 @@ func (w *progressDeadlineWriter) WriteHeader(code int) {
 // failed arm skips the flush: Flush has no error return, and the next Write
 // reports the same failure.
 func (w *progressDeadlineWriter) Flush() {
+	_ = w.FlushError()
+}
+
+// FlushError preserves deadline and transport failures for ResponseController.
+func (w *progressDeadlineWriter) FlushError() error {
 	if err := w.arm(); err != nil {
-		return
+		return err
 	}
-	_ = w.rc.Flush()
+	return w.rc.Flush()
 }
 
 // Unwrap lets http.ResponseController (used by httputil.ReverseProxy for

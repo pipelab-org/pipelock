@@ -32,10 +32,15 @@ func (w *fetchDeliveryWriter) Write(b []byte) (int, error) {
 
 func (w *fetchDeliveryWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// encodeJSON returns the final encoding or delivery error after committing the
-// status. Callers recording delivery must observe this result before completion.
+// encodeJSON returns an encoding or delivery error. It commits headers only
+// after encoding the complete synthetic body, including the trailing newline.
 func encodeJSON(w http.ResponseWriter, status int, data any) error {
+	body, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	body = append(body, '\n')
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	return json.NewEncoder(w).Encode(data)
+	_, err = writeSyntheticResponse(w, status, body)
+	return err
 }

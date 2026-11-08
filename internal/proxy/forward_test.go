@@ -1910,6 +1910,7 @@ func TestForwardProxy_ReceiptFailureWithoutRequireStillForwards(t *testing.T) {
 	assertMetricsNotContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="forward"} 1`)
 }
 
+// TestForwardProxy_RequireReceiptsSuccessEmitsIntentOutcomePair checks the durable admission and outcome pair.
 func TestForwardProxy_RequireReceiptsSuccessEmitsIntentOutcomePair(t *testing.T) {
 	var hits atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1939,6 +1940,7 @@ func TestForwardProxy_RequireReceiptsSuccessEmitsIntentOutcomePair(t *testing.T)
 		t.Fatalf("%s is empty", blockreason.HeaderRecordedReceipt)
 	}
 
+	waitForTransportOutcomeReceipt(t, rph.dir, TransportForward)
 	receipts := rph.findReceipts(t)
 	if len(receipts) != 2 {
 		t.Fatalf("receipt count = %d, want intent/outcome pair", len(receipts))
@@ -2031,6 +2033,7 @@ func TestForwardProxy_BudgetTruncatedResponseStillEmitsAllowReceipt(t *testing.T
 	}
 }
 
+// TestForwardProxy_RequireReceiptsCompressedBlockOutcomeStatus checks the blocked response status in the outcome.
 func TestForwardProxy_RequireReceiptsCompressedBlockOutcomeStatus(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Encoding", "gzip")
@@ -2052,6 +2055,7 @@ func TestForwardProxy_RequireReceiptsCompressedBlockOutcomeStatus(t *testing.T) 
 		t.Fatalf("status = %d, want 403", resp.StatusCode)
 	}
 
+	waitForTransportOutcomeReceipt(t, rph.dir, TransportForward)
 	receipts := rph.findReceipts(t)
 	var intent, outcome receipt.Receipt
 	for _, rcpt := range receipts {
@@ -2076,6 +2080,7 @@ func TestForwardProxy_RequireReceiptsCompressedBlockOutcomeStatus(t *testing.T) 
 	}
 }
 
+// TestForwardProxy_RequireReceiptsA2ASSEWarnOutcomeStatus checks the outcome of a warned A2A stream.
 func TestForwardProxy_RequireReceiptsA2ASSEWarnOutcomeStatus(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -2107,6 +2112,7 @@ func TestForwardProxy_RequireReceiptsA2ASSEWarnOutcomeStatus(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
+	waitForTransportOutcomeReceipt(t, rph.dir, TransportForward)
 	receipts := rph.findReceipts(t)
 	var intent, outcome receipt.Receipt
 	for _, rcpt := range receipts {

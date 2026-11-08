@@ -1736,6 +1736,7 @@ const (
 	receiptEmissionFailedLayer = "receipt_emission_failed"
 )
 
+// receiptOutcomePattern formats the status, byte count, and close reason signed by an outcome receipt.
 func receiptOutcomePattern(status string, bytesTransferred int64, reason string) string {
 	if status == "" {
 		status = "unknown"
@@ -1748,6 +1749,41 @@ func receiptOutcomePattern(status string, bytesTransferred int64, reason string)
 		bytesValue = strconv.FormatInt(bytesTransferred, 10)
 	}
 	return fmt.Sprintf("status=%s bytes=%s reason=%s", status, bytesValue, reason)
+}
+
+// flushResponseBeforeOutcome releases buffered response bytes before synchronous
+// outcome recording. The caller records any delivery failure before aborting.
+func flushResponseBeforeOutcome(w http.ResponseWriter, r *http.Request, cfg *config.Config) error {
+	controller := http.NewResponseController(w)
+	server, _ := r.Context().Value(http.ServerContextKey).(*http.Server)
+	// A positive server WriteTimeout already bounds this write. Leave its
+	// deadline untouched: resetting it here could extend an earlier deadline.
+	bounded := server == nil || server.WriteTimeout <= 0
+	if bounded {
+		// forward_proxy.idle_timeout_seconds bounds inactivity on established
+		// tunnels. Reuse it for a client that stops reading the final response,
+		// including the inner HTTP writer of an intercepted CONNECT tunnel.
+		timeoutSeconds := cfg.ForwardProxy.IdleTimeoutSeconds
+		if timeoutSeconds <= 0 {
+			timeoutSeconds = config.Defaults().ForwardProxy.IdleTimeoutSeconds
+		}
+		timeout := time.Duration(timeoutSeconds) * time.Second
+		if err := controller.SetWriteDeadline(time.Now().Add(timeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			return err
+		}
+	}
+	err := controller.Flush()
+	if errors.Is(err, http.ErrNotSupported) {
+		err = nil
+	}
+	if bounded && err == nil {
+		// Successful callers may continue writing (or reuse the connection).
+		// These servers had no write deadline before this flush.
+		if resetErr := controller.SetWriteDeadline(time.Time{}); resetErr != nil && !errors.Is(resetErr, http.ErrNotSupported) {
+			return resetErr
+		}
+	}
+	return err
 }
 
 func (p *Proxy) emitOutcomeReceipt(cfg *config.Config, opts receipt.EmitOpts, status string, bytesTransferred int64, reason string) {
@@ -6492,19 +6528,26 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// -1 signs bytes=unknown on paths that end before the body is read.
 	capturedBytes := int64(-1)
 	defer func() {
-		verdict := config.ActionAllow
+		aborted := recover()
 		// A policy denial describes withheld upstream content, even if its
 		// diagnostic response could not be delivered. Other failures are
 		// observations, not claims of retrospective prevention.
-		denied := delivery.Header().Get(blockreason.HeaderReason) != ""
-		switch {
-		case denied:
+		verdict := config.ActionAllow
+		if delivery.Header().Get(blockreason.HeaderReason) != "" {
 			verdict = config.ActionBlock
-		case delivery.err != nil:
+		} else if outcomeReason != "complete" {
+			verdict = config.ActionWarn
+		}
+		var flushErr error
+		if cfg.FlightRecorder.RequireReceipts && aborted == nil {
+			flushErr = flushResponseBeforeOutcome(w, r, cfg)
+			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason, verdict) {
+				delivery.err = flushErr
+			}
+		}
+		if delivery.err != nil && outcomeReasonClaimsDelivery(outcomeReason, verdict) {
 			verdict = config.ActionWarn
 			outcomeReason = "delivery_error"
-		case outcomeReason != "complete":
-			verdict = config.ActionWarn
 		}
 		opts := fetchAllowReceipt
 		opts.Verdict = verdict
@@ -6513,6 +6556,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		// read bytes= see the same unit before and after this field existed.
 		pattern := receiptOutcomePattern(outcomeStatus, capturedBytes, outcomeReason) + " delivered_bytes=" + strconv.FormatInt(delivery.bytes, 10)
 		p.emitOutcomeReceiptWithPattern(cfg, opts, pattern)
+		if aborted != nil {
+			panic(aborted)
+		}
+		_ = httpstream.Abort(r.Context(), flushErr)
 	}()
 
 	responseencoding.RequestIdentity(req.Header)
