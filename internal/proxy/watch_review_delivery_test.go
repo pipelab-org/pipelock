@@ -202,7 +202,11 @@ func TestWatchFetchAbortsBrokenStream(t *testing.T) {
 	})
 	server := httptest.NewServer(http.HandlerFunc(p.handleFetch))
 	defer server.Close()
-	resp, err := http.Get(server.URL + "/fetch?url=" + url.QueryEscape("http://api.vendor.example/data")) //nolint:noctx // test server
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL+"/fetch?url="+url.QueryEscape("http://api.vendor.example/data"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		// The abort reached the client before any of the response did.
 		return
