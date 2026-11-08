@@ -182,7 +182,12 @@ func filterCredentialAudienceAt(candidates []credentialAudienceCandidate, target
 
 	var allows []CredentialAudienceAllow
 	for i, candidate := range candidates {
-		restAllowed := audienceSurfacePermitted(surface, candidate.authorizationOnly, candidate.carrierMask) &&
+		// The body carrier is earned by parsing the provider's OAuth request.
+		// It cannot grant body carriage to another Bearer-enabled pattern.
+		oauthAllowed := surface == credentialAudienceAnthropicOAuthSurface &&
+			candidate.patternName == "Anthropic API Key" &&
+			candidate.carrierMask&config.CredentialAudienceCarrierAuthorizationBearer != 0
+		restAllowed := (audienceSurfacePermitted(surface, candidate.authorizationOnly, candidate.carrierMask) || oauthAllowed) &&
 			len(candidate.hosts) > 0 && destination.MatchesDomainList(host, candidate.hosts) &&
 			audienceAPIEndpointAllowed(candidate, host, target, surface)
 		if !restAllowed && !gitTransportAllowed(candidate, host, target, surface) &&
@@ -201,6 +206,8 @@ func filterCredentialAudienceAt(candidates []credentialAudienceCandidate, target
 			recordSurface = "url"
 		case credentialAudienceDiscordGatewaySurface:
 			recordSurface = "websocket_frame"
+		case credentialAudienceAnthropicOAuthSurface:
+			recordSurface = "body"
 		}
 		allows = append(allows, CredentialAudienceAllow{
 			PatternName: candidate.patternName,
