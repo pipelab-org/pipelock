@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 )
 
@@ -31,4 +32,19 @@ func sseStreamReason(reason string) string {
 		return receiptReasonSSEStreamCancelled
 	}
 	return reason
+}
+
+// outcomeReasonClaimsDelivery identifies allowed outcomes that claim delivery.
+// Flush failures must retain block verdicts and failure or inspection reasons.
+func outcomeReasonClaimsDelivery(reason, verdict string) bool {
+	if verdict != config.ActionAllow {
+		return false
+	}
+	switch reason {
+	case "", "complete", "sse_stream", "sse_stream_unscanned", "unscannable_passthrough",
+		mediaUnscannedOutcome, "non_shieldable_passthrough", "strip":
+		return true
+	default:
+		return false
+	}
 }
