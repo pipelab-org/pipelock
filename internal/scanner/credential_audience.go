@@ -53,6 +53,10 @@ type credentialAudienceCandidate struct {
 	gitHosts          []string
 	registryHosts     []string
 	headerValue       string
+	// encoded is the decoding view the match came from; empty for the raw
+	// value. A carrier that reads claims from the header value can only bind
+	// them to a match found in that raw value.
+	encoded string
 }
 
 // CredentialAudienceAuthorizationHeaderSurface distinguishes Authorization from other
@@ -194,6 +198,7 @@ func filterCredentialAudienceAt(candidates []credentialAudienceCandidate, target
 			!releaseGrantSASCandidateAllowed(candidate, host, target, surface, now) &&
 			!registryBasicAllowed(candidate, host, target, surface) &&
 			!registryBearerAllowed(candidate, host, target, surface) &&
+			!signInBearerAllowed(candidate, host, target, surface) &&
 			!githubBlobSASCandidateAllowed(candidate, host, target, surface, now) {
 			continue
 		}
@@ -806,6 +811,7 @@ func (s *Scanner) filterTextDLPMatchesForDestination(matches []TextDLPMatch, tar
 		candidates[i].gitHosts = match.credentialAudienceGitHosts
 		candidates[i].registryHosts = match.credentialAudienceRegistryHosts
 		candidates[i].headerValue = headerValue
+		candidates[i].encoded = match.Encoded
 	}
 	keep, allows := filterCredentialAudienceAt(candidates, target, surface, s.currentTime())
 	filtered := make([]TextDLPMatch, 0, len(matches))
