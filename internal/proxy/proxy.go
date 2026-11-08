@@ -1032,7 +1032,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	}
 
 	p.client = &http.Client{
-		Transport: transport,
+		Transport: killSwitchEgressTransport{next: transport, ks: p.ks},
 		Timeout:   time.Duration(cfg.FetchProxy.TimeoutSeconds) * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) (retErr error) {
 			if len(via) >= 5 {
