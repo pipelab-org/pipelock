@@ -641,7 +641,7 @@ func newInterceptHandler(
 				reqHost, reqPort = r.Host, "443"
 			}
 			if !strings.EqualFold(reqHost, ic.TargetHost) || reqPort != ic.TargetPort {
-				watchObservation(ic.Logger, ic.Metrics, "intercept", "tls_authority_mismatch", "request authority differs from CONNECT authority", config.ActionBlock, 0, true)
+				watchObservation(ic.Logger, ic.Metrics, "intercept", "tls_authority_mismatch", "request authority differs from CONNECT authority", config.ActionBlock, true)
 				writeBlockedError(w, blockInfoFor(blockreason.AuthorityMismatch, ""), "enforced in watch-only: authority mismatch", http.StatusForbidden)
 				return
 			}
