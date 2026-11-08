@@ -31,6 +31,8 @@ func signInTestJWT(t *testing.T, claims map[string]any) string {
 func TestSignInBearer_RequestHeaderScan(t *testing.T) {
 	codex := signInTestJWT(t, map[string]any{"iss": "https://auth.openai.com", "client_id": "app_EMoamEEZ73f0CkXaXp7hrann"})
 	other := signInTestJWT(t, map[string]any{"iss": "https://auth.vendor.example", "client_id": "app_other"})
+	wrongClient := signInTestJWT(t, map[string]any{"iss": "https://auth.openai.com", "client_id": "app_other"})
+	grok := signInTestJWT(t, map[string]any{"iss": "https://auth.x.ai", "client_id": "b1a00492-073a-47ea-816f-4c329264a828"})
 	const target = "https://chatgpt.com/backend-api/codex/responses"
 
 	for _, mode := range []string{config.HeaderModeSensitive, config.HeaderModeAll} {
@@ -46,31 +48,35 @@ func TestSignInBearer_RequestHeaderScan(t *testing.T) {
 			headers http.Header
 			target  string
 			clean   bool
-			allOnly bool // the carrier header is outside the sensitive list
-			wantJWT bool // the JWT finding itself must remain, not just another block
+			allOnly bool   // the carrier header is outside the sensitive list
+			want    string // this finding itself must remain, not just another block
 		}{
 			{"codex client headers", http.Header{
 				"Authorization": {"Bearer " + codex}, "User-Agent": {"codex_cli_rs/0.167.0"}, "Chatgpt-Account-Id": {"acct-1"},
-			}, target, true, false, false},
-			{"authorization only", http.Header{"Authorization": {"Bearer " + codex}}, target, true, false, false},
+			}, target, true, false, ""},
+			{"authorization only", http.Header{"Authorization": {"Bearer " + codex}}, target, true, false, ""},
 			{"same token copied to another header", http.Header{
 				"Authorization": {"Bearer " + codex}, "X-Copy": {codex}, "User-Agent": {"codex_cli_rs/0.167.0"},
-			}, target, false, true, false},
-			{"foreign token", http.Header{"Authorization": {"Bearer " + other}, "User-Agent": {"x"}}, target, false, false, false},
-			{"other host", http.Header{"Authorization": {"Bearer " + codex}, "User-Agent": {"x"}}, "https://api.vendor.example/backend-api/codex", false, false, false},
-			{"wss target", http.Header{"Authorization": {"Bearer " + codex}, "User-Agent": {"x"}}, "wss://chatgpt.com/backend-api/codex/responses", false, false, false},
+			}, target, false, true, ""},
+			{"grok at api.x.ai", http.Header{"Authorization": {"Bearer " + grok}, "User-Agent": {"x"}}, "https://api.x.ai/v1/chat/completions", true, false, ""},
+			{"grok at the cli chat proxy", http.Header{"Authorization": {"Bearer " + grok}, "User-Agent": {"x"}}, "https://cli-chat-proxy.grok.com/v1/responses", true, false, ""},
+			{"codex issuer with another client id", http.Header{"Authorization": {"Bearer " + wrongClient}, "User-Agent": {"x"}}, target, false, false, "JWT Token"},
+			{"chatgpt.com outside the backend API", http.Header{"Authorization": {"Bearer " + codex}, "User-Agent": {"x"}}, "https://chatgpt.com/api/other", false, false, "JWT Token"},
+			{"foreign token", http.Header{"Authorization": {"Bearer " + other}, "User-Agent": {"x"}}, target, false, false, ""},
+			{"other host", http.Header{"Authorization": {"Bearer " + codex}, "User-Agent": {"x"}}, "https://api.vendor.example/backend-api/codex", false, false, ""},
+			{"wss target", http.Header{"Authorization": {"Bearer " + codex}, "User-Agent": {"x"}}, "wss://chatgpt.com/backend-api/codex/responses", false, false, ""},
 			{"percent-encoded foreign token ahead of the sign-in token", http.Header{
 				"Authorization": {"Bearer " + percentEncodeAll(other) + codex}, "User-Agent": {"x"},
-			}, target, false, false, true},
+			}, target, false, false, "JWT Token"},
 			{"base64 foreign token ahead of the sign-in token", http.Header{
 				"Authorization": {"Bearer " + base64.StdEncoding.EncodeToString([]byte(other+"!")) + codex}, "User-Agent": {"x"},
-			}, target, false, false, true},
+			}, target, false, false, "JWT Token"},
 			{"unrelated secret beside token", http.Header{
 				"Authorization": {"Bearer " + codex + " AKIA" + strings.Repeat("A", 16)}, "User-Agent": {"x"},
-			}, target, false, false, false},
+			}, target, false, false, "AWS Access ID"},
 			{"secret split across headers", http.Header{
 				"Authorization": {"Bearer " + codex + "AKIA" + strings.Repeat("A", 8)}, "X-Split": {"C" + strings.Repeat("A", 7)},
-			}, target, false, true, false},
+			}, target, false, true, ""},
 		} {
 			if tc.allOnly && mode != config.HeaderModeAll {
 				continue
@@ -83,13 +89,13 @@ func TestSignInBearer_RequestHeaderScan(t *testing.T) {
 				if clean != tc.clean {
 					t.Fatalf("clean=%t want %t result=%#v allows=%#v", clean, tc.clean, result, allows)
 				}
-				if tc.wantJWT {
+				if tc.want != "" {
 					found := false
 					for _, m := range result.DLPMatches {
-						found = found || m.PatternName == "JWT Token"
+						found = found || m.PatternName == tc.want
 					}
 					if !found {
-						t.Fatalf("decoded foreign JWT finding was dropped: %#v", result.DLPMatches)
+						t.Fatalf("%s finding was dropped: %#v", tc.want, result.DLPMatches)
 					}
 				}
 			})
