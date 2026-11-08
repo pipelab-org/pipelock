@@ -257,3 +257,55 @@ func TestWatchFetchResponseObservationParity(t *testing.T) {
 		t.Errorf("fetch response not charged to domain budget: %+v", result)
 	}
 }
+
+type watchFlushReceiptWriter struct {
+	*httptest.ResponseRecorder
+	flushErr error
+	flushes  int
+}
+
+func (w *watchFlushReceiptWriter) FlushError() error {
+	w.flushes++
+	return w.flushErr
+}
+
+func TestWatchFetchRequiredDeliveryFlush(t *testing.T) {
+	for _, limit := range []int64{2, 1024} {
+		for _, fail := range []bool{false, true} {
+			t.Run(strconv.FormatInt(limit, 10)+"/"+strconv.FormatBool(fail), func(t *testing.T) {
+				_, p, cleanup := setupForwardProxyWithInstance(t, func(c *config.Config) { c.WatchOnly = true })
+				defer cleanup()
+				p.responseBodyLimit = limit
+				helper := newReceiptProxyHelperWithMetrics(t, p.metrics)
+				p.receiptEmitterPtr.Store(helper.emitter)
+				cfg := p.CurrentConfig().Clone()
+				cfg.FlightRecorder.RequireReceipts = true
+				p.client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Request: r, Body: io.NopCloser(strings.NewReader("complete response"))}, nil
+				})
+				w := &watchFlushReceiptWriter{ResponseRecorder: httptest.NewRecorder()}
+				if fail {
+					w.flushErr = io.ErrClosedPipe
+				}
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://proxy.example/fetch?url=http://api.vendor.example/data", nil)
+				p.handleWatchFetch(w, req, watchHTTPOptions{Config: cfg, Scanner: p.scannerPtr.Load(), Proxy: p, Logger: p.logger, Metrics: p.metrics, Transport: TransportFetch})
+				want := 2
+				if fail {
+					want = 1
+				}
+				if got := len(helper.findReceipts(t)); got != want || w.flushes != 1 {
+					t.Fatalf("receipts=%d want=%d flushes=%d", got, want, w.flushes)
+				}
+				if !fail {
+					var response FetchResponse
+					if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+						t.Fatal(err)
+					}
+					if response.Content != "complete response" {
+						t.Fatalf("changed response: %s", w.Body)
+					}
+				}
+			})
+		}
+	}
+}

@@ -167,6 +167,9 @@ func (p *Proxy) handleWatchFetch(w http.ResponseWriter, r *http.Request, o watch
 		}
 		_, _ = io.WriteString(w, `"}`)
 	}
+	if delivered.err == nil && cfg.FlightRecorder.RequireReceipts {
+		delivered.err = flushResponseBeforeOutcome(w, r, cfg)
+	}
 	if delivered.err == nil {
 		if !responseFinding.Load() && responseSession != nil {
 			responseSession.ObserveWatchOnlyClean(adaptiveScopeForHost(resp.Request.URL.Hostname()), &cfg.AdaptiveEnforcement)
