@@ -52,7 +52,7 @@ go test -race -count=1 -run 'TestRedirect' ./internal/proxy
 go test -race -count=1 -tags enterprise -run 'TestRedirect' ./internal/proxy
 ```
 
-Don't race a whole heavy tree locally. On a pull request, CI runs every test without the race detector in both build modes and races the test functions the pull request changes. The full OSS and enterprise race suites run on pushes to `main`, and CI-policy pull requests also run the Go 1.27 race suites before merge.
+Don't race a whole heavy tree locally. On a pull request, CI runs every test without the race detector in both build modes and races the test functions the pull request changes while its time budget lasts; changed tests in packages that only edited existing tests can go unraced when that budget runs out. The full OSS and enterprise race suites run on pushes to `main`, and pull requests that change the Go toolchain also run the Go 1.27 race suites ([Pull Requests](#pull-requests) has the details).
 
 Choose the packages and tests for your change; the examples aren't fixed lists. For workflow, script, or documentation changes, run the relevant policy checks instead of unrelated Go tests. Required CI checks must pass before merge.
 
