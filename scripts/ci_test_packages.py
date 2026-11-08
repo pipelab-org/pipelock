@@ -1054,9 +1054,12 @@ def measure_changed_tests(
         # head the bases cannot change the verdict and are not run. Otherwise
         # measure the bases while time remains, new-test packages first. A
         # new-test base that misses the deadline keeps its recorded weight, the
-        # comparator the gate used before paired runs; an edited-only package
-        # whose head or base misses it keeps its recorded weight on both sides,
-        # so that pair stays comparable. Pairing every new-test package first
+        # comparator the gate used before paired runs. An edited-only package
+        # whose head misses the deadline keeps its recorded weight on both
+        # sides. One whose head ran but whose base misses the deadline keeps
+        # that head and the recorded base: the base is what excuses an
+        # over-budget head, and dropping the head would let the recorded
+        # weight pass in its place. Pairing every new-test package first
         # spent the deadline on whole rest packages' bases before the last new
         # test was reached.
         new_order = sorted(pkg for pkg in selected if pkg in new)
@@ -1141,11 +1144,11 @@ def measure_changed_tests(
                 if package not in head_results or package not in base_selected:
                     continue
                 if remaining_seconds() < MEASURE_MIN_START_SECONDS:
-                    # Without its base, a lone head would compare against the
-                    # recorded base weight; drop it so the pair stays comparable.
-                    del head_results[package]
-                    measured.remove(package)
-                    skipped.append(package)
+                    # The head already ran. Discarding it puts the recorded
+                    # weight back on both sides, so a shard this measurement
+                    # pushed over budget passes. Keep the head and leave the
+                    # base at its recorded weight.
+                    base_skipped.append(package)
                     continue
                 merge_overrides(base_overrides, measure(package, base_side=True))
         else:
@@ -1189,7 +1192,11 @@ def measure_changed_tests(
                 base_overrides["packages"][package] = 0.0
                 introduced["packages"].append(package)
         for package in base_skipped:
-            if package not in whole:
+            # Edited-only packages stay on the ordinary comparison: measured
+            # head against the recorded base. Only a package that added tests
+            # charges a whole-package increase as new work, because that
+            # increase includes tests the record does not know.
+            if package not in whole or package not in new:
                 continue
             # Without a paired base, a whole-package increase cannot be
             # dismissed as timing noise: it includes newly added tests. Charge

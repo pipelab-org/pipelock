@@ -396,6 +396,69 @@ class ChangedTestRunnerTest(unittest.TestCase):
             self.assertEqual(planner.check_budget("", budget, over, {"trees": {}, "packages": {package: budget + 100}},
                                                   plan, introduced={"trees": {}, "packages": []}), 0)
 
+    def test_edited_head_over_budget_still_fails_when_its_base_cannot_start(self):
+        # The head is the evidence the gate already paid for. A missed base
+        # must not replace it with the recorded weight and pass.
+        self.pairing.stop()
+        budget = planner.SHARD_BUDGET_SECONDS
+        cases = (
+            ("rest", "example.test/internal/rest", False),
+            ("tree", "example.test/internal/proxy", True),
+        )
+        for kind, package, tree in cases:
+            for recorded, measured, expected in (
+                (400.0, budget + 50, 1),
+                (budget + 100, budget + 150, 0),
+                (budget - 1, budget - 1, 0),
+            ):
+                with self.subTest(kind=kind, recorded=recorded, measured=measured):
+                    now = [0.0]
+                    names = {name: [] for name in planner.TEST_SPLITS}
+                    plan = {"trees": {}, "names": names, "packages": {}, "inventory": []}
+                    if tree:
+                        plan["trees"] = {"proxy": {"TestChanged": recorded}}
+                        plan["names"]["proxy"] = ["TestChanged"]
+                    else:
+                        plan["packages"] = {package: recorded}
+                        plan["inventory"] = [package]
+                    tests = [{"package": "./" + package.split("/", 1)[1], "file": "x_test.go",
+                              "name": "TestChanged", "new": False}]
+
+                    def resolve(tests, tags, import_paths, package=package):
+                        import_paths[tests[0]["package"]] = package
+                        return {package: ["TestChanged"]}
+
+                    def run(command, stream, root, remaining, package=package, measured=measured):
+                        for event in ({"Action": "run", "Test": "TestChanged"},
+                                      {"Action": "pass", "Test": "TestChanged", "Elapsed": measured},
+                                      {"Action": "pass", "Elapsed": measured}):
+                            stream.write(json.dumps({"Package": package, **event}) + "\n")
+                        now[0] += 50.0
+                        return 0
+
+                    with tempfile.TemporaryDirectory() as directory, \
+                         patch.object(planner, "measurement_base", return_value=nullcontext(Path("base"))), \
+                         patch.object(planner, "runnable_changed_tests", side_effect=resolve), \
+                         patch.object(planner, "prediction_plan", return_value=plan), \
+                         patch.object(planner, "list_packages", return_value=[package]), \
+                         patch.object(planner, "run_measurement", side_effect=run), \
+                         redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()):
+                        target = Path(directory) / "changed.json"
+                        # 100s runs the head (50s) and leaves the base short of the start floor.
+                        # The under-budget case has the same clock; it must not run the base at all.
+                        status = planner.measure_changed_tests(
+                            tests, "", target, "base-sha", deadline_seconds=100, clock=lambda: now[0])
+                        self.assertEqual(status, expected, out.getvalue())
+                        if measured != recorded:
+                            self.assertIn(f"{measured:.3f}s", out.getvalue())
+                        if expected == 0 and measured <= budget:
+                            self.assertIn("base measurement cannot change the verdict", out.getvalue())
+                            self.assertEqual(target.with_suffix(".base.json").read_text(), "")
+                        elif expected == 1:
+                            self.assertIn("Changed test base not re-measured", out.getvalue())
+                            self.assertGreater(target.stat().st_size, 0)
+                            self.assertIn("OVER", out.getvalue())
+
     def test_skipped_selected_test_completes_and_keeps_recorded_weight(self):
         # An environment-gated test that always calls t.Skip in CI costs only
         # its skip there; editing it must not fail measurement, and a skip is
@@ -599,7 +662,7 @@ func TestParent(t *testing.T) {
             return 0
         return first, second, tests, resolve, now, commands, run, deadline
 
-    def test_deadline_skips_edited_package_on_both_sides(self):
+    def test_deadline_keeps_edited_head_when_its_base_cannot_start(self):
         first, second, tests, resolve, now, commands, run, deadline = self.paired_deadline_run(
             new_second=False, deadline=170.0)
         with tempfile.TemporaryDirectory() as directory, \
@@ -615,15 +678,18 @@ func TestParent(t *testing.T) {
             self.assertEqual(planner.measure_changed_tests(tests, "", target, "base-sha", deadline_seconds=deadline,
                                                            clock=lambda: now[0]), 0)
             selection = json.loads(target.with_suffix(".selection.json").read_text(encoding="utf-8"))
-        self.assertEqual(selection["skipped"], [second])
-        # Both heads run, then the first base (70s left); the second base cannot
-        # start (20s left), so its head is dropped and it keeps its record.
+            base_selection = json.loads(target.with_suffix(".base.selection.json").read_text(encoding="utf-8"))
+        self.assertEqual(selection["skipped"], [])
+        self.assertEqual(base_selection["skipped"], [second])
+        # Both heads run, then the first base (70s left). The second base cannot
+        # start (20s left); its head stays, compared with the recorded base.
         self.assertEqual(commands, [(first, planner.ROOT), (second, planner.ROOT), (first, Path("base"))])
-        self.assertIn(f"::warning title=Changed test not re-measured::{second}", out.getvalue())
+        self.assertIn(f"::warning title=Changed test base not re-measured::{second}", out.getvalue())
+        self.assertNotIn("Changed test not re-measured", out.getvalue())
         head, base = budget.call_args.args[2], budget.call_args.args[3]
         self.assertEqual(head["trees"].get("proxy"), {"TestFirst": 1})
         self.assertEqual(base["trees"].get("proxy"), {"TestFirst": 1})
-        self.assertNotIn("scanner", head["trees"])
+        self.assertEqual(head["trees"].get("scanner"), {"TestSecond": 1})
         self.assertNotIn("scanner", base["trees"])
 
     def test_deadline_refuses_unmeasured_new_tests(self):
@@ -659,7 +725,7 @@ func TestParent(t *testing.T) {
                                               clock=lambda: next(readings, deadline - 30))
         self.assertEqual(commands, [])
 
-    def test_deadline_drops_a_head_whose_base_cannot_start(self):
+    def test_deadline_keeps_a_measured_head_when_no_base_can_start(self):
         first, second, tests, resolve, now, commands, run, deadline = self.paired_deadline_run(
             new_second=False, step=50.0, deadline=105.0)
         with tempfile.TemporaryDirectory() as directory, \
@@ -679,14 +745,14 @@ func TestParent(t *testing.T) {
             selection = json.loads(base.with_suffix(".selection.json").read_text())
             self.assertEqual(selection["selected"], {})
             self.assertEqual(selection["skipped"], [first, second])
-            self.assertEqual(sorted(json.loads(target.with_suffix(".selection.json").read_text())["skipped"]),
-                             [first, second])
-        # The first head ran (105s left). The second head could not start (55s
-        # left), so it gets no base; the first base could not start either, so
-        # the first head is dropped rather than compared with a recorded base.
+            self.assertEqual(json.loads(target.with_suffix(".selection.json").read_text())["skipped"], [second])
+        # The first head ran (105s left) and is kept. The second head could not
+        # start (55s left). The first base could not start either.
         self.assertEqual(commands, [(first, planner.ROOT)])
-        self.assertNotIn("scanner", budget.call_args.args[3]["trees"])
+        self.assertEqual(budget.call_args.args[2]["trees"].get("proxy"), {"TestFirst": 1})
+        self.assertNotIn("proxy", budget.call_args.args[3]["trees"])
         self.assertNotIn("scanner", budget.call_args.args[2]["trees"])
+        self.assertNotIn("scanner", budget.call_args.args[3]["trees"])
 
     def test_deadline_all_edited_packages_skipped_with_nested_output(self):
         first, second, tests, resolve, now, commands, run, _ = self.paired_deadline_run(new_second=False)
@@ -742,8 +808,10 @@ func TestParent(t *testing.T) {
              patch.object(planner, "list_packages", return_value=[first, second]), \
              patch.object(planner, "run_measurement", side_effect=run), \
              patch.object(planner, "check_budget", return_value=0) as budget, redirect_stdout(io.StringIO()):
+            # 100s measures the first head only. The second head never starts, so
+            # its recorded weight must survive the first package's measurement.
             planner.measure_changed_tests(tests, "", Path(directory) / "changed.json", "base-sha",
-                                          deadline_seconds=150, clock=lambda: now[0])
+                                          deadline_seconds=100, clock=lambda: now[0])
         self.assertEqual(budget.call_args.args[2]["trees"]["proxy"]["TestShared"], 90.0)
         self.assertEqual(budget.call_args.args[3]["trees"]["proxy"]["TestShared"], 90.0)
 
@@ -759,8 +827,10 @@ func TestParent(t *testing.T) {
              patch.object(planner, "exact_names_regex", side_effect=lambda names: "^(?:" + "|".join(names) + ")$"), \
              patch.object(planner, "run_measurement", side_effect=run), \
              patch.object(planner, "check_budget", return_value=0) as budget, redirect_stdout(io.StringIO()):
+            # 100s measures the first head only, so the skipped scanner test is
+            # the one whose recorded weight has to be kept.
             planner.measure_changed_tests(tests, "", Path(directory) / "changed.json", "base-sha",
-                                          deadline_seconds=deadline, clock=lambda: now[0])
+                                          deadline_seconds=100, clock=lambda: now[0])
         self.assertEqual(budget.call_args.args[2]["trees"]["scanner"], {"TestSecond": 70.0})
         self.assertEqual(budget.call_args.args[3]["trees"]["scanner"], {"TestSecond": 70.0})
 
