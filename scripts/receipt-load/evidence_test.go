@@ -30,7 +30,13 @@ type evidenceIdentities struct {
 	Nonce         string            `json:"workload_nonce"`
 	ListenerPorts []string          `json:"listener_ports"`
 	Problems      []identityProblem `json:"problems"`
-	ScanError     string            `json:"scan_error,omitempty"`
+	// Attribution is "aggregate" when the run's receipts cannot be tied to
+	// individual workload identities; Problems is then empty and result.json
+	// carries the aggregate counts.
+	Attribution   string         `json:"attribution"`
+	OrphanCounts  map[string]int `json:"orphan_counts,omitempty"`
+	OrphanSamples []string       `json:"orphan_samples,omitempty"`
+	ScanError     string         `json:"scan_error,omitempty"`
 }
 type evidenceManifest struct {
 	CopiedBytes int64    `json:"copied_bytes"`
@@ -50,17 +56,14 @@ func retainEvidence(root, source, name string) error {
 		return err
 	}
 	manifest := evidenceManifest{Truncated: []string{}, Errors: []string{}}
-	entries, err := os.ReadDir(source)
+	runs, err := evidenceRuns(source)
 	if err != nil {
 		return err
 	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		run := filepath.Join(source, entry.Name())
-		for _, file := range []string{"proxy.log", "listener-ports.json"} {
-			copyEvidenceFile(run, dir, entry.Name(), file, &manifest)
+	for _, name := range runs {
+		run := filepath.Join(source, name)
+		for _, file := range []string{"proxy.log", "listener-ports.json", "result.json"} {
+			copyEvidenceFile(run, dir, name, file, &manifest)
 		}
 		recorder := filepath.Join(run, "recorder")
 		walkErr := filepath.WalkDir(recorder, func(path string, d os.DirEntry, walkErr error) error {
@@ -76,7 +79,7 @@ func retainEvidence(root, source, name string) error {
 			}
 			// Recorder JSONL only: never traverse or copy private signing-key files.
 			if d.Type().IsRegular() && ((filepath.Dir(rel) == "recorder" && strings.HasPrefix(d.Name(), "evidence-") && strings.HasSuffix(d.Name(), ".jsonl")) || (strings.HasPrefix(filepath.ToSlash(rel), "recorder/ael/") && strings.HasSuffix(filepath.ToSlash(rel), "/recorders/pipelock.jsonl"))) {
-				copyEvidenceFile(run, dir, entry.Name(), rel, &manifest)
+				copyEvidenceFile(run, dir, name, rel, &manifest)
 			}
 			return nil
 		})
@@ -98,13 +101,29 @@ func retainEvidence(root, source, name string) error {
 		if pool := res.Inputs.Workload.DestinationPool; pool != nil && len(pool.Ports) > 0 {
 			plan.destinations = newDestinationPlan(plan.total(), pool.Ports)
 		}
-		ids := evidenceIdentities{Nonce: plan.runNonce, Problems: []identityProblem{}}
+		ids := evidenceIdentities{Nonce: plan.runNonce, Problems: []identityProblem{}, Attribution: "identity"}
 		if plan.destinations != nil {
 			ids.ListenerPorts = plan.destinations.Ports
 		}
-		obs, scanErr := scanRecorder(filepath.Join(run, "recorder"), plan, "")
+		// Single-sink runs correlate receipts by the sink address, so scan with
+		// the one the run recorded rather than an empty address.
+		obs, scanErr := scanRecorder(filepath.Join(run, "recorder"), plan, recordedSinkAddress(run, &manifest))
 		if scanErr != nil {
 			ids.ScanError = scanErr.Error()
+		}
+		if obs != nil {
+			ids.OrphanSamples = obs.orphanSamples
+			for k := range kindCount {
+				if obs.orphans[k] > 0 {
+					if ids.OrphanCounts == nil {
+						ids.OrphanCounts = map[string]int{}
+					}
+					ids.OrphanCounts[k.String()] = obs.orphans[k]
+				}
+			}
+			if obs.aggregate != nil {
+				ids.Attribution = "aggregate"
+			}
 		}
 		if obs != nil && obs.aggregate == nil {
 			for slot := range plan.total() {
@@ -134,14 +153,63 @@ func retainEvidence(root, source, name string) error {
 			return err
 		}
 		// Metadata and all copied files share the same bound; manifest is kept separately.
-		copyEvidenceBytes(dir, filepath.Join(entry.Name(), "missing-identities.json"), b, &manifest)
-
+		copyEvidenceBytes(dir, filepath.Join(name, "missing-identities.json"), b, &manifest)
 	}
 	b, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, "manifest.json"), b, 0o600)
+}
+
+// evidenceRuns lists every run directory under source, relative to it. Some
+// tests nest their output below the directory registered for retention, so a
+// run is any directory holding result.json or proxy.log, at any depth.
+func evidenceRuns(source string) ([]string, error) {
+	var runs []string
+	err := filepath.WalkDir(source, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if d.Name() == "recorder" {
+			return filepath.SkipDir
+		}
+		for _, marker := range []string{"result.json", "proxy.log"} {
+			if info, statErr := os.Lstat(filepath.Join(path, marker)); statErr == nil && info.Mode().IsRegular() {
+				rel, relErr := filepath.Rel(source, path)
+				if relErr != nil {
+					return relErr
+				}
+				runs = append(runs, rel)
+				break
+			}
+		}
+		return nil
+	})
+	return runs, err
+}
+
+// recordedSinkAddress reads the sink address a run saved in listener-ports.json.
+func recordedSinkAddress(run string, m *evidenceManifest) string {
+	raw, err := os.ReadFile(filepath.Clean(filepath.Join(run, "listener-ports.json")))
+	if os.IsNotExist(err) {
+		return ""
+	}
+	if err != nil {
+		m.Errors = append(m.Errors, err.Error())
+		return ""
+	}
+	var ports struct {
+		SinkAddress string `json:"sink_address"`
+	}
+	if err := json.Unmarshal(raw, &ports); err != nil {
+		m.Errors = append(m.Errors, "listener-ports.json: "+err.Error())
+		return ""
+	}
+	return ports.SinkAddress
 }
 
 func copyEvidenceBytes(dir, rel string, b []byte, m *evidenceManifest) {
@@ -278,6 +346,70 @@ func TestRetainEvidence(t *testing.T) {
 	}
 }
 
+// A single-sink run nested below the registered directory: retention must find
+// it, correlate receipts through the recorded sink address, and keep orphans.
+func TestRetainEvidenceSingleSinkNestedRun(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		listenerPorts string
+		wantProblems  bool
+	}{
+		{"recorded sink address", `{"proxy_port":1234,"sink_address":"` + synthSink + `"}`, false},
+		{"no recorded address", "", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			source := t.TempDir()
+			run := filepath.Join(source, "nested", modeRequired)
+			plan := newWorkload(1, 2, 40)
+			plan.runNonce = "abcd"
+			receipts := append(perfectReceipts(plan, modeRequired),
+				synthReceipt{kind: kindV1Outcome, slot: 5, actionID: "stray", target: sinkTarget(synthSink, "wk=s1-m999999")})
+			writeSynthRecorder(t, filepath.Join(run, "recorder"), plan, synthSink, receipts)
+			res := result{Mode: modeRequired, Requests: 40, WarmupRequests: 2}
+			res.Inputs.Workload = workloadReport{Seed: plan.seed, Tag: plan.tag()}
+			raw, err := json.Marshal(res)
+			if err != nil {
+				t.Fatal(err)
+			}
+			files := map[string]string{"result.json": string(raw)}
+			if tt.listenerPorts != "" {
+				files["listener-ports.json"] = tt.listenerPorts
+			}
+			for name, content := range files {
+				if err := os.WriteFile(filepath.Join(run, name), []byte(content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			root := t.TempDir()
+			if err := retainEvidence(root, source, t.Name()); err != nil {
+				t.Fatal(err)
+			}
+			dirs, err := os.ReadDir(root)
+			if err != nil || len(dirs) != 1 {
+				t.Fatalf("directories: %v %v", dirs, err)
+			}
+			out := filepath.Join(root, dirs[0].Name(), "nested", modeRequired)
+			if _, err := os.Stat(filepath.Join(out, "result.json")); err != nil {
+				t.Fatalf("result.json not retained: %v", err)
+			}
+			raw, err = os.ReadFile(filepath.Clean(filepath.Join(out, "missing-identities.json")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ids evidenceIdentities
+			if err := json.Unmarshal(raw, &ids); err != nil {
+				t.Fatal(err)
+			}
+			if got := len(ids.Problems) > 0; got != tt.wantProblems {
+				t.Fatalf("problems=%d want any=%v: %+v scan=%s", len(ids.Problems), tt.wantProblems, ids.Problems, ids.ScanError)
+			}
+			if !tt.wantProblems && (ids.OrphanCounts["v1_outcome"] != 1 || len(ids.OrphanSamples) == 0 || ids.Attribution != "identity") {
+				t.Fatalf("orphan evidence: %+v", ids)
+			}
+		})
+	}
+}
+
 func TestEvidenceFailureHelper(t *testing.T) {
 	if os.Getenv("RECEIPT_EVIDENCE_HELPER") != "1" {
 		return
@@ -298,8 +430,13 @@ func TestEvidenceFailureCleanup(t *testing.T) {
 	root := t.TempDir()
 	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestEvidenceFailureHelper$") // #nosec G204 G702 -- rerun this test binary with a fixed selector.
 	cmd.Env = append(os.Environ(), "RECEIPT_EVIDENCE_HELPER=1", "RECEIPT_LOAD_EVIDENCE_DIR="+root)
-	if out, err := cmd.CombinedOutput(); err == nil {
+	out, err := cmd.CombinedOutput()
+	if err == nil {
 		t.Fatalf("helper unexpectedly passed: %s", out)
+	}
+	// A failure before the intended one would also leave evidence behind.
+	if !strings.Contains(string(out), "intentional failure to exercise cleanup") {
+		t.Fatalf("helper failed before reaching its intended failure: %s", out)
 	}
 	dirs, err := os.ReadDir(root)
 	if err != nil || len(dirs) != 1 {

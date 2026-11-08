@@ -353,8 +353,6 @@ jobs:
       max-parallel: 6
       matrix:
         shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'proxy-5', 'proxy-6', 'proxy-7', 'proxy-8', 'scanner-0', 'scanner-1', 'scanner-2', 'scanner-3', 'scanner-4', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'mcp-6', 'mcp-7', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3', 'rest-4', 'rest-5', 'rest-6', 'rest-7']
-    env:
-      RECEIPT_LOAD_EVIDENCE_DIR: ${{ runner.temp }}/receipt-load-evidence
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -373,6 +371,7 @@ jobs:
 
       - name: Run tests (OSS race)
         env:
+          RECEIPT_LOAD_EVIDENCE_DIR: ${{ runner.temp }}/receipt-load-evidence
           TEST_LABEL: OSS race Go 1.26 ${{ matrix.shard }}
           TEST_SHARD: ${{ matrix.shard }}
           # Advisory test-step budget: warns when a shard drifts so its weights
@@ -445,7 +444,6 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-
   # Fast suite: every test package, no race detector, under both build variants.
   # This is what pull requests wait on. Without -race the same tests run five to
   # eleven times faster (the scanner tree: about 40s against 7m50s), so whole
@@ -472,7 +470,6 @@ jobs:
   # caches under its size limit by evicting the least recently used entries,
   # so superseded saves age out first. A pull request can read main's entries
   # but cannot write any main reads.
-
   test-unit-go126:
     needs: [security-scan, changed-files]
     # Skipped only on a documentation-only pull request; see changed-files.
@@ -486,8 +483,6 @@ jobs:
         variant: ['oss', 'enterprise']
         # Must equal scripts/ci_test_packages.py --list-unit-shards (UNIT_SPLITS).
         shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'scanner-0', 'scanner-1', 'mcp-0', 'mcp-1', 'mcp-2', 'runtime', 'rest-0', 'rest-1', 'rest-2']
-    env:
-      RECEIPT_LOAD_EVIDENCE_DIR: ${{ runner.temp }}/receipt-load-evidence
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -538,6 +533,7 @@ jobs:
 
       - name: Run tests (no race)
         env:
+          RECEIPT_LOAD_EVIDENCE_DIR: ${{ runner.temp }}/receipt-load-evidence
           TEST_LABEL: ${{ matrix.variant }} Go 1.26 ${{ matrix.shard }}
           TEST_SHARD: ${{ matrix.shard }}
           VARIANT: ${{ matrix.variant }}
@@ -694,8 +690,6 @@ jobs:
       max-parallel: 10
       matrix:
         shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'proxy-5', 'proxy-6', 'proxy-7', 'proxy-8', 'scanner-0', 'scanner-1', 'scanner-2', 'scanner-3', 'scanner-4', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'mcp-6', 'mcp-7', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3', 'rest-4', 'rest-5', 'rest-6', 'rest-7']
-    env:
-      RECEIPT_LOAD_EVIDENCE_DIR: ${{ runner.temp }}/receipt-load-evidence
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -714,6 +708,7 @@ jobs:
 
       - name: Run tests (OSS)
         env:
+          RECEIPT_LOAD_EVIDENCE_DIR: ${{ runner.temp }}/receipt-load-evidence
           TEST_LABEL: OSS Go 1.27 ${{ matrix.shard }}
           TEST_SHARD: ${{ matrix.shard }}
           # Advisory test-step budget: warns when a shard drifts toward the
@@ -780,8 +775,6 @@ jobs:
       max-parallel: 6
       matrix:
         shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'proxy-5', 'proxy-6', 'proxy-7', 'proxy-8', 'scanner-0', 'scanner-1', 'scanner-2', 'scanner-3', 'scanner-4', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'mcp-6', 'mcp-7', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3', 'rest-4', 'rest-5', 'rest-6', 'rest-7']
-    env:
-      RECEIPT_LOAD_EVIDENCE_DIR: ${{ runner.temp }}/receipt-load-evidence
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -800,6 +793,7 @@ jobs:
 
       - name: Run tests (enterprise race)
         env:
+          RECEIPT_LOAD_EVIDENCE_DIR: ${{ runner.temp }}/receipt-load-evidence
           TEST_LABEL: enterprise race Go 1.26 ${{ matrix.shard }}
           TEST_SHARD: ${{ matrix.shard }}
           # Advisory test-step budget: warns when a shard drifts so its weights
@@ -896,8 +890,6 @@ jobs:
       max-parallel: 10
       matrix:
         shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'proxy-5', 'proxy-6', 'proxy-7', 'proxy-8', 'scanner-0', 'scanner-1', 'scanner-2', 'scanner-3', 'scanner-4', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'mcp-6', 'mcp-7', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3', 'rest-4', 'rest-5', 'rest-6', 'rest-7']
-    env:
-      RECEIPT_LOAD_EVIDENCE_DIR: ${{ runner.temp }}/receipt-load-evidence
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -916,6 +908,7 @@ jobs:
 
       - name: Run tests (enterprise)
         env:
+          RECEIPT_LOAD_EVIDENCE_DIR: ${{ runner.temp }}/receipt-load-evidence
           TEST_LABEL: enterprise Go 1.27 ${{ matrix.shard }}
           TEST_SHARD: ${{ matrix.shard }}
           # Advisory test-step budget: warns when a shard drifts toward the
