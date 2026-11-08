@@ -201,7 +201,15 @@ func ScanGenericSSEStreamWithOptions(
 			return err
 		})
 	}
+	var warnedFinding error
 	forwardUninspected := func(reason string) error {
+		// A finding already reported for this event is recorded before its
+		// bytes leave, as on the inspected path.
+		if warnedFinding != nil && opts.ConfirmFinding != nil {
+			if err := opts.ConfirmFinding(warnedFinding); err != nil {
+				return err
+			}
+		}
 		n, err := writeOriginal(reader.RawMessage())
 		watchRecord("sse", reason, "uninspected", int64(n), false)
 		return err
@@ -226,7 +234,6 @@ func ScanGenericSSEStreamWithOptions(
 	// duplicate this recorder exists to stop.
 	observedCore := newSSEObservedCoreRecorder(opts)
 
-	var warnedFinding error
 	onFinding := func(err error) {
 		warnedFinding = errors.Join(warnedFinding, err)
 		if opts.WatchOnly {
@@ -255,13 +262,21 @@ streamLoop:
 		}
 
 		if opts.WatchOnly && reader.Uninspected() {
+			// The event is already on the wire. Its payload, not its framing,
+			// is what max_event_bytes bounds, so the configured action is
+			// recorded only when the payload itself is over the limit.
+			if size := reader.PayloadBytes(); size > maxEventBytes {
+				onFinding(fmt.Errorf("%w: %w (size=%d, limit=%d)", ErrSSEStreamFinding, ErrSSEEventTooLarge, size, maxEventBytes))
+			}
 			tail, cardTail, payloadTail, cardPayloadTail = "", "", "", ""
 			numberTail, numberCardTail = "", ""
 			injectionTail, payloadInjectionTail = sseInjectionTail{}, sseInjectionTail{}
 			fieldTail, fieldInjectionTail = extract.NewFieldTails(""), extract.NewFieldTails("")
 			continue
 		}
-		if opts.WatchOnly && opts.WatchEvent != nil {
+		// A frame with no data (a comment-only keep-alive) carries no A2A
+		// document; its original bytes are forwarded below unchanged.
+		if opts.WatchOnly && opts.WatchEvent != nil && len(event) > 0 {
 			if err := opts.WatchEvent(event); err != nil {
 				return err
 			}
