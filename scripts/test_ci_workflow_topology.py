@@ -631,19 +631,20 @@ def topology_errors(jobs: dict) -> list[str]:
 class CIWorkflowTopologyTest(unittest.TestCase):
     def test_receipt_load_failure_artifacts(self):
         jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
-        for name in ("test-unit-go126", "test-oss-go126", "test-oss-go127", "test-enterprise-go126", "test-enterprise-go127"):
+        for name in ("test-unit-go126", "test-oss-go126", "test-oss-go127", "test-enterprise-go126", "test-enterprise-go127", "test-changed-race-go126"):
             with self.subTest(job=name):
                 job = jobs[name]
                 # runner is not an allowed context in job-level env; GitHub rejects
                 # the whole workflow, so the setting must live on the test step.
                 self.assertNotIn("RECEIPT_LOAD_EVIDENCE_DIR", job.get("env", {}))
-                tests = [s for s in job["steps"] if str(s.get("name", "")).startswith("Run tests")]
+                tests = [s for s in job["steps"] if "RECEIPT_LOAD_EVIDENCE_DIR" in s.get("env", {})]
                 self.assertEqual(len(tests), 1)
                 self.assertEqual(tests[0]["env"]["RECEIPT_LOAD_EVIDENCE_DIR"], "${{ runner.temp }}/receipt-load-evidence")
                 steps = [s for s in job["steps"] if s.get("name") == "Upload receipt-load failure evidence"]
                 self.assertEqual(len(steps), 1)
                 self.assertEqual(steps[0]["if"], "${{ failure() }}")
-                self.assertIn("${{ matrix.shard }}", steps[0]["with"]["name"])
+                matrix = job["strategy"]["matrix"]
+                self.assertTrue(all("${{ matrix.%s }}" % key in steps[0]["with"]["name"] for key in matrix if key != "include"))
                 self.assertEqual(steps[0]["with"]["retention-days"], 7)
 
     def setUp(self):

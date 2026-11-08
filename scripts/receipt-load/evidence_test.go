@@ -56,7 +56,7 @@ func retainEvidence(root, source, name string) error {
 		return err
 	}
 	manifest := evidenceManifest{Truncated: []string{}, Errors: []string{}}
-	runs, err := evidenceRuns(source)
+	runs, err := evidenceRuns(source, &manifest)
 	if err != nil {
 		return err
 	}
@@ -164,12 +164,20 @@ func retainEvidence(root, source, name string) error {
 
 // evidenceRuns lists every run directory under source, relative to it. Some
 // tests nest their output below the directory registered for retention, so a
-// run is any directory holding result.json or proxy.log, at any depth.
-func evidenceRuns(source string) ([]string, error) {
+// run is any directory holding result.json or proxy.log, at any depth. An
+// unreadable descendant is recorded and skipped so readable runs are kept.
+func evidenceRuns(source string, m *evidenceManifest) ([]string, error) {
 	var runs []string
 	err := filepath.WalkDir(source, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return err
+			if path == source {
+				return err
+			}
+			m.Errors = append(m.Errors, err.Error())
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if !d.IsDir() {
 			return nil
@@ -407,6 +415,34 @@ func TestRetainEvidenceSingleSinkNestedRun(t *testing.T) {
 				t.Fatalf("orphan evidence: %+v", ids)
 			}
 		})
+	}
+}
+
+func TestEvidenceRunsSkipsUnreadableDirectory(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads directories regardless of mode")
+	}
+	source := t.TempDir()
+	for _, run := range []string{"a-readable", "b-locked/inner"} {
+		if err := os.MkdirAll(filepath.Join(source, run), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(source, run, "proxy.log"), []byte("log\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	locked := filepath.Join(source, "b-locked")
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o750) }) // #nosec G302 -- restore a test directory so TempDir cleanup can remove it.
+	manifest := evidenceManifest{}
+	runs, err := evidenceRuns(source, &manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0] != "a-readable" || len(manifest.Errors) != 1 {
+		t.Fatalf("runs=%v errors=%v", runs, manifest.Errors)
 	}
 }
 
