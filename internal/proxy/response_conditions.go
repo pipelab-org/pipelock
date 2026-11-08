@@ -100,3 +100,10 @@ func openEndedByteRange(value string) bool {
 func writeUnsupportedRange(w http.ResponseWriter, requestID string) {
 	writeBlockedError(w, blockInfoFor(blockreason.ResponseIncomplete, "browser_cache").WithRequestID(requestID), unsupportedRangeMessage, http.StatusForbidden)
 }
+
+// responseHasTrailers checks both the transport's trailer map and an explicit
+// announcement. HTTP/1 trailers require chunked framing (RFC 9112 section 7.1.2),
+// so buffered upstream bodies with trailers must not get an explicit length.
+func responseHasTrailers(resp *http.Response) bool {
+	return len(resp.Trailer) != 0 || len(resp.Header.Values("Trailer")) != 0
+}

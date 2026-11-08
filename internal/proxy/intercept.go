@@ -2810,7 +2810,9 @@ func newInterceptHandler(
 			// the body is no longer the original.
 			if shieldSummary != nil {
 				setShieldRewriteHeader(resp.Header, shieldSummary)
-				resp.Header.Set("Content-Length", strconv.Itoa(len(respBody)))
+				if !responseHasTrailers(resp) {
+					resp.Header.Set("Content-Length", strconv.Itoa(len(respBody)))
+				}
 				resp.Header.Del("ETag")
 				resp.Header.Del("Last-Modified")
 				resp.Header.Del("Digest")
@@ -2858,7 +2860,9 @@ func newInterceptHandler(
 		applyRelabeledContentType(resp.Header, mediaVerdict)
 		if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
 			respBody = mediaVerdict.Body
-			resp.Header.Set("Content-Length", strconv.Itoa(len(respBody)))
+			if !responseHasTrailers(resp) {
+				resp.Header.Set("Content-Length", strconv.Itoa(len(respBody)))
+			}
 			// Delete body-derived validators. Content-MD5 is often
 			// set alongside ETag and describes a hash of the upstream
 			// bytes - stale after metadata stripping, and a client or
@@ -3153,7 +3157,9 @@ func newInterceptHandler(
 					respBody = []byte(scanResult.TransformedContent)
 					// Update Content-Length to match stripped body; prevents HTTP/1.1
 					// framing errors from a stale upstream Content-Length header.
-					resp.Header.Set("Content-Length", strconv.Itoa(len(respBody)))
+					if !responseHasTrailers(resp) {
+						resp.Header.Set("Content-Length", strconv.Itoa(len(respBody)))
+					}
 					resp.Header.Del("ETag")
 					resp.Header.Del("Last-Modified")
 					resp.Header.Del("Digest")
@@ -3215,9 +3221,11 @@ func newInterceptHandler(
 		removeHopByHopHeaders(w.Header())
 		// The final scanned representation has a known length. Explicit
 		// framing lets the client finish before outcome storage completes.
-		// Intercept does not truncate buffered bodies to a byte budget.
+		// Preserve upstream trailer framing. Intercept does not truncate
+		// buffered bodies to a byte budget.
 		if ic.Config.FlightRecorder.RequireReceipts && r.Method != http.MethodHead && resp.StatusCode >= http.StatusOK &&
-			resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotModified {
+			resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotModified &&
+			!responseHasTrailers(resp) {
 			w.Header().Del("Transfer-Encoding")
 			w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
 		}

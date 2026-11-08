@@ -2867,7 +2867,9 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			applyRelabeledContentType(resp.Header, verdict)
 			if verdict.StripResult != nil && verdict.StripResult.Changed() {
 				body = verdict.Body
-				resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+				if !responseHasTrailers(resp) {
+					resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+				}
 				// Clear body-derived validators. Content-MD5
 				// describes a hash of the upstream bytes - stale
 				// after metadata stripping, and a validating client
@@ -3525,7 +3527,9 @@ responseScanning:
 	}
 	if shieldChanged {
 		setShieldRewriteHeader(resp.Header, shieldSummary)
-		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		if !responseHasTrailers(resp) {
+			resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		}
 		resp.Header.Del("ETag")
 		resp.Header.Del("Content-MD5")
 		resp.Header.Del("Digest")
@@ -3672,7 +3676,9 @@ responseScanning:
 			// (matches forward.go:860-863).
 			stripped := []byte(result.TransformedContent)
 			setBufferedReverseResponseBody(resp, stripped, cfg)
-			resp.Header.Set("Content-Length", strconv.Itoa(len(stripped)))
+			if !responseHasTrailers(resp) {
+				resp.Header.Set("Content-Length", strconv.Itoa(len(stripped)))
+			}
 			resp.Header.Del("Etag")
 			resp.Header.Del("Content-Md5")
 			resp.Header.Del("Digest")
@@ -3717,12 +3723,14 @@ responseScanning:
 
 // setBufferedReverseResponseBody installs a complete representation and its exact
 // framing so required outcome storage cannot delay an HTTP/1 client's EOF.
+// Upstream trailers retain their framing because HTTP/1 trailers need chunking.
 func setBufferedReverseResponseBody(resp *http.Response, body []byte, cfg *config.Config) {
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	resp.ContentLength = int64(len(body))
 	if cfg.FlightRecorder.RequireReceipts && resp.Request.Method != http.MethodHead &&
 		resp.StatusCode >= http.StatusOK && resp.StatusCode != http.StatusNoContent &&
-		resp.StatusCode != http.StatusNotModified {
+		resp.StatusCode != http.StatusNotModified &&
+		!responseHasTrailers(resp) {
 		resp.Header.Del("Transfer-Encoding")
 		resp.TransferEncoding = nil
 		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))

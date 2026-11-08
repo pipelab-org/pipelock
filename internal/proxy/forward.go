@@ -3083,7 +3083,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if shieldSummary != nil {
 			setShieldRewriteHeader(resp.Header, shieldSummary)
-			resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(respBody)))
+			if !responseHasTrailers(resp) {
+				resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(respBody)))
+			}
 			resp.Header.Del("ETag")
 			resp.Header.Del("Digest")
 			resp.Header.Del("Content-MD5")
@@ -3120,7 +3122,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		applyRelabeledContentType(resp.Header, mediaVerdict)
 		if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
 			respBody = mediaVerdict.Body
-			resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(respBody)))
+			if !responseHasTrailers(resp) {
+				resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(respBody)))
+			}
 			// Clear body-derived validators. Content-MD5 describes a
 			// hash of the upstream bytes - stale after metadata
 			// stripping, and a validating client or intermediary
@@ -3445,9 +3449,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// The final buffered representation has a known length (including any
 		// stripping or redaction). Explicit framing lets the client finish the
 		// body before the deferred outcome write. Preserve framing for no-body
-		// responses and budget-truncated delivery.
+		// responses, upstream trailers, and budget-truncated delivery.
 		if cfg.FlightRecorder.RequireReceipts && r.Method != http.MethodHead && resp.StatusCode >= http.StatusOK &&
 			resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotModified &&
+			!responseHasTrailers(resp) &&
 			!bufferedBudgetTruncated && (budgetRemaining < 0 || int64(len(respBody)) <= budgetRemaining) {
 			w.Header().Del("Transfer-Encoding")
 			w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
