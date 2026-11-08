@@ -247,6 +247,7 @@ func TestAnthropicOAuthRemainderSplitCredential(t *testing.T) {
 	}{
 		{name: "clean refresh", body: fmt.Sprintf(`{"grant_type":"refresh_token","refresh_token":%q}`, key), wantClean: true},
 		{name: "split second key", body: fmt.Sprintf(`{"grant_type":"refresh_token","refresh_token":%q,"z":%q,%q:1}`, key, head, tail)},
+		{name: "escaped credential", body: `{"grant_type":"refresh_token","refresh_token":"sk\u002d` + strings.TrimPrefix(key, "sk-") + `"}`, wantClean: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, result := scanRequestBody(t.Context(), BodyScanRequest{

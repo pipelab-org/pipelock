@@ -566,12 +566,11 @@ func blockingBodyFinding(result BodyScanResult, hostname string, cfg *config.Con
 // with the one designated OAuth credential blanked. Any other Anthropic key
 // those views can see, including one split across a value and the next key,
 // denies the OAuth carrier so the whole body keeps its normal DLP result.
-func oauthRemainderHasCredential(ctx context.Context, req BodyScanRequest, buf []byte, credential string) bool {
-	quoted, err := json.Marshal(credential)
-	if err != nil || bytes.Count(buf, quoted) != 1 {
+func oauthRemainderHasCredential(ctx context.Context, req BodyScanRequest, buf, raw []byte) bool {
+	if len(raw) == 0 || bytes.Count(buf, raw) != 1 {
 		return true
 	}
-	blank := bytes.Replace(buf, quoted, []byte(`""`), 1)
+	blank := bytes.Replace(buf, raw, []byte(`""`), 1)
 	extracted := extractBodyTextForDLP(blank, req)
 	var matches []scanner.TextDLPMatch
 	for _, view := range bodyDLPExtractionViews(blank, extracted, nil) {
@@ -929,9 +928,10 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	}
 
 	oauthCredential := ""
+	var oauthRaw []byte
 	if req.RedactMatcher != nil && req.audienceSurface() == "body" {
-		audienceSurface, oauthCredential = req.Scanner.OAuthCredentialAudience(ctx, buf, req.suppressTarget(), req.Method, req.ContentType)
-		if oauthCredential != "" && oauthRemainderHasCredential(ctx, req, buf, oauthCredential) {
+		audienceSurface, oauthCredential, oauthRaw = req.Scanner.OAuthCredentialAudience(ctx, buf, req.suppressTarget(), req.Method, req.ContentType)
+		if oauthCredential != "" && oauthRemainderHasCredential(ctx, req, buf, oauthRaw) {
 			audienceSurface, oauthCredential = "body", ""
 		}
 	}
@@ -1020,8 +1020,8 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	}
 
 	if req.audienceSurface() == "body" {
-		audienceSurface, oauthCredential = req.Scanner.OAuthCredentialAudience(ctx, buf, req.suppressTarget(), req.Method, req.ContentType)
-		if oauthCredential != "" && oauthRemainderHasCredential(ctx, req, buf, oauthCredential) {
+		audienceSurface, oauthCredential, oauthRaw = req.Scanner.OAuthCredentialAudience(ctx, buf, req.suppressTarget(), req.Method, req.ContentType)
+		if oauthCredential != "" && oauthRemainderHasCredential(ctx, req, buf, oauthRaw) {
 			audienceSurface, oauthCredential = "body", ""
 		}
 	}
