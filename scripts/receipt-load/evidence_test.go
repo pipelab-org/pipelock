@@ -419,9 +419,6 @@ func TestRetainEvidenceSingleSinkNestedRun(t *testing.T) {
 }
 
 func TestEvidenceRunsSkipsUnreadableDirectory(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root reads directories regardless of mode")
-	}
 	source := t.TempDir()
 	for _, run := range []string{"a-readable", "b-locked/inner"} {
 		if err := os.MkdirAll(filepath.Join(source, run), 0o750); err != nil {
@@ -436,6 +433,10 @@ func TestEvidenceRunsSkipsUnreadableDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o750) }) // #nosec G302 -- restore a test directory so TempDir cleanup can remove it.
+	// Root or CAP_DAC_READ_SEARCH can still read it; probe instead of guessing.
+	if _, err := os.ReadDir(locked); err == nil {
+		t.Skip("this process can read a mode-0 directory")
+	}
 	manifest := evidenceManifest{}
 	runs, err := evidenceRuns(source, &manifest)
 	if err != nil {
