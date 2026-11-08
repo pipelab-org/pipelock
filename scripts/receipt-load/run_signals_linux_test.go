@@ -14,12 +14,86 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/testexec"
 )
+
+// runSignalProcess keeps diagnostics readable while the command is running.
+// Its stdout pipe belongs to the test, so Wait cannot close it before a read.
+type runSignalProcess struct {
+	t       *testing.T
+	cmd     *exec.Cmd
+	mu      sync.Mutex
+	stderr  bytes.Buffer
+	done    chan struct{}
+	waitErr error
+}
+
+func newRunSignalProcess(t *testing.T) *runSignalProcess {
+	t.Helper()
+	run := &runSignalProcess{t: t, done: make(chan struct{})}
+	t.Cleanup(func() {
+		if run.cmd != nil && run.cmd.Process != nil {
+			_ = run.cmd.Process.Kill()
+			<-run.done
+		}
+		if t.Failed() {
+			t.Log(run.diagnostics())
+		}
+	})
+	return run
+}
+
+func (r *runSignalProcess) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stderr.Write(p)
+}
+
+func (r *runSignalProcess) diagnostics() string {
+	status := "not started"
+	if r.cmd != nil && r.cmd.Process != nil {
+		status = "running (exit status unavailable)"
+		select {
+		case <-r.done:
+			status = fmt.Sprintf("%v (wait error=%v)", r.cmd.ProcessState, r.waitErr)
+		default:
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return fmt.Sprintf("wrapper exit=%s; wrapper/stub stderr=%s", status, r.stderr.String())
+}
+
+func (r *runSignalProcess) fatalf(format string, args ...any) {
+	r.t.Helper()
+	r.t.Fatalf("%s; %s", fmt.Sprintf(format, args...), r.diagnostics())
+}
+
+func (r *runSignalProcess) start(cmd *exec.Cmd) *os.File {
+	r.t.Helper()
+	stdout, writer, err := os.Pipe()
+	if err != nil {
+		r.fatalf("stdout pipe: %v", err)
+	}
+	r.t.Cleanup(func() { _ = stdout.Close() })
+	cmd.Stdout, cmd.Stderr = writer, r
+	r.cmd = cmd
+	err = cmd.Start()
+	_ = writer.Close()
+	if err != nil {
+		r.fatalf("start wrapper: %v", err)
+	}
+	go func() {
+		r.waitErr = cmd.Wait()
+		close(r.done)
+	}()
+	return stdout
+}
 
 func TestRunForwardsSignalsAndWaitsForHarness(t *testing.T) {
 	for _, tc := range []struct {
@@ -35,11 +109,12 @@ func TestRunForwardsSignalsAndWaitsForHarness(t *testing.T) {
 		{"interrupt-launch-window", syscall.SIGINT, 130, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			run := newRunSignalProcess(t)
 			python, err := exec.LookPath("python3")
 			if err != nil {
-				t.Fatal(err)
+				run.fatalf("%v", err)
 			}
-			root := t.TempDir()
 			marker := filepath.Join(root, "stopped")
 			release := newRunReleaseFIFO(t, root)
 			harness := filepath.Join(root, "harness")
@@ -47,30 +122,31 @@ func TestRunForwardsSignalsAndWaitsForHarness(t *testing.T) {
 from pathlib import Path
 
 parent = os.getppid()
-
-def stop(signum, frame):
-    # The wrapper and scratch binary must survive through report finalization.
-    assert os.getppid() == parent
-    os.kill(parent, 0)
-    assert Path(sys.argv[0]).exists()
-    Path(os.environ["HARNESS_MARKER"]).write_text(str(signum))
-    release = os.open(os.environ["HARNESS_RELEASE"], os.O_RDWR)
-    print("started", flush=True)
-    assert os.read(release, 1) == b"x"
-    os.close(release)
-    if os.environ["HARNESS_CODE"] == "3":
-        sys.exit(3)
+signals = {signal.SIGTERM, signal.SIGINT}
+# Block before announcing readiness: the wrapper may forward immediately.
+# sigwait keeps buffered I/O out of asynchronous Python signal handlers.
+signal.pthread_sigmask(signal.SIG_BLOCK, signals)
+for signum in signals:
+    # Non-interactive bash starts background jobs with SIGINT ignored.
     signal.signal(signum, signal.SIG_DFL)
-    os.kill(os.getpid(), signum)
-
-signal.signal(signal.SIGTERM, stop)
-signal.signal(signal.SIGINT, stop)
 print(os.getpid(), sys.argv[0], flush=True)
 if "HARNESS_READY" in os.environ:
     with open(os.environ["HARNESS_READY"], "w") as ready:
         ready.write("ready\n")
-while True:
-    signal.pause()
+signum = signal.sigwait(signals)
+# The wrapper and scratch binary must survive through report finalization.
+assert os.getppid() == parent, "wrapper exited before finalization"
+os.kill(parent, 0)
+assert Path(sys.argv[0]).exists(), "scratch binary removed before finalization"
+Path(os.environ["HARNESS_MARKER"]).write_text(str(signum))
+release = os.open(os.environ["HARNESS_RELEASE"], os.O_RDWR)
+print("started", flush=True)
+assert os.read(release, 1) == b"x", "finalization release missing"
+os.close(release)
+if os.environ["HARNESS_CODE"] == "3":
+    sys.exit(3)
+signal.pthread_sigmask(signal.SIG_UNBLOCK, {signum})
+os.kill(os.getpid(), signum)
 `), 0o700)
 			writeRunBuildStubs(t, root)
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -80,7 +156,7 @@ while True:
 			if tc.launch {
 				ready := filepath.Join(root, "ready")
 				if err := syscall.Mkfifo(ready, 0o600); err != nil {
-					t.Fatal(err)
+					run.fatalf("%v", err)
 				}
 				// Stop at the assignment with the harness ready to receive signals.
 				startup := filepath.Join(root, "bash-startup")
@@ -94,64 +170,54 @@ trap before_assignment DEBUG
 `), 0o700)
 				cmd.Env = append(cmd.Env, "BASH_ENV="+startup, "HARNESS_READY="+ready, "LAUNCH_SIGNAL="+strconv.Itoa(int(tc.signal)))
 			}
-			stdout, err := cmd.StdoutPipe()
-			if err != nil {
-				t.Fatal(err)
-			}
-			var stderr bytes.Buffer
-			cmd.Stderr = &stderr
-			if err := cmd.Start(); err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = cmd.Process.Kill() })
+			stdout := run.start(cmd)
 			var pid int
 			var binary string
 			if _, err := fmt.Fscanln(stdout, &pid, &binary); err != nil {
-				t.Fatal(err)
+				run.fatalf("%v", err)
 			}
 			child, err := os.FindProcess(pid)
 			if err != nil {
-				t.Fatal(err)
+				run.fatalf("%v", err)
 			}
 			defer func() { _ = child.Kill() }()
 			stopCleanup := context.AfterFunc(ctx, func() { _ = child.Kill() })
 			defer stopCleanup()
 			if !tc.launch {
 				if err := cmd.Process.Signal(tc.signal); err != nil {
-					t.Fatal(err)
+					run.fatalf("%v", err)
 				}
 			}
 			var started string
 			if _, err := fmt.Fscanln(stdout, &started); err != nil || started != "started" {
-				t.Fatalf("signal handler did not start: marker=%q, error=%v", started, err)
+				run.fatalf("harness did not begin finalization: marker=%q, error=%v", started, err)
 			}
 			if data, err := os.ReadFile(filepath.Clean(marker)); err != nil || string(data) != strconv.Itoa(int(tc.signal)) {
-				t.Fatalf("signal marker=%q, error=%v", data, err)
+				run.fatalf("signal marker=%q, error=%v", data, err)
 			}
-			waited := make(chan error, 1)
-			go func() { waited <- cmd.Wait() }()
-			assertRunStillFinalizing(t, cmd, waited, binary)
+			assertRunStillFinalizing(t, run, binary)
 			releaseRunFixture(t, release)
-			err = <-waited
+			<-run.done
+			err = run.waitErr
 			var exit *exec.ExitError
 			if !errors.As(err, &exit) || exit.ExitCode() != tc.code {
-				t.Fatalf("run.sh exit=%v, want %d; stderr=%s", err, tc.code, stderr.String())
+				run.fatalf("run.sh exit=%v, want %d", err, tc.code)
 			}
 			if data, err := os.ReadFile(filepath.Clean(marker)); err != nil || string(data) != strconv.Itoa(int(tc.signal)) {
-				t.Fatalf("harness did not finalize before wrapper exit: marker=%q, error=%v", data, err)
+				run.fatalf("harness did not finalize before wrapper exit: marker=%q, error=%v", data, err)
 			}
 			if err := child.Signal(syscall.Signal(0)); !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
-				t.Fatalf("harness still running after wrapper exit: %v", err)
+				run.fatalf("harness still running after wrapper exit: %v", err)
 			}
 			if paths, err := filepath.Glob(filepath.Join(root, "receipt-load.*")); err != nil || len(paths) != 0 {
-				t.Fatalf("scratch cleanup: paths=%v, error=%v", paths, err)
+				run.fatalf("scratch cleanup: paths=%v, error=%v", paths, err)
 			}
 		})
 	}
 }
 
 // Keep finalization blocked long enough to observe a wrapper that abandons wait.
-func assertRunStillFinalizing(t *testing.T, cmd *exec.Cmd, waited <-chan error, binary string) {
+func assertRunStillFinalizing(t *testing.T, run *runSignalProcess, binary string) {
 	t.Helper()
 	observation := time.NewTimer(250 * time.Millisecond)
 	defer observation.Stop()
@@ -159,14 +225,14 @@ func assertRunStillFinalizing(t *testing.T, cmd *exec.Cmd, waited <-chan error, 
 	defer poll.Stop()
 	for {
 		select {
-		case err := <-waited:
-			t.Fatalf("wrapper exited before harness release: %v", err)
+		case <-run.done:
+			run.fatalf("wrapper exited before harness release: %v", run.waitErr)
 		case <-poll.C:
-			if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
-				t.Fatalf("wrapper did not survive finalization: %v", err)
+			if err := run.cmd.Process.Signal(syscall.Signal(0)); err != nil {
+				run.fatalf("wrapper did not survive finalization: %v", err)
 			}
 			if _, err := os.Stat(filepath.Clean(binary)); err != nil {
-				t.Fatalf("scratch binary removed before harness release: %v", err)
+				run.fatalf("scratch binary removed before harness release: %v", err)
 			}
 		case <-observation.C:
 			return
