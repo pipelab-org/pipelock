@@ -84,7 +84,7 @@ func TestScanTextForDLP_ImageDataURLDoesNotMaskSecrets(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := s.ScanTextForDLP(context.Background(), tt.text)
-			if !hasTextDLPPattern(result.Matches, "AWS Access ID") {
+			if !hasAWSAccessIDMatch(result) {
 				t.Fatalf("expected AWS Access ID finding, got clean=%v matches=%+v", result.Clean, result.Matches)
 			}
 		})
@@ -117,7 +117,7 @@ func TestScanTextForDLP_LiteralSecretInsideVerifiedImageStillBlocks(t *testing.T
 			}
 			imageURL := "data:image/" + tt.media + ";base64," + base64.StdEncoding.EncodeToString(tt.image)
 			result := s.ScanTextForDLP(context.Background(), imageURL)
-			if !hasTextDLPPattern(result.Matches, "AWS Access ID") {
+			if !hasAWSAccessIDMatch(result) {
 				t.Fatalf("secret embedded in verified image not detected: clean=%v matches=%+v", result.Clean, result.Matches)
 			}
 		})
@@ -341,15 +341,6 @@ func TestCompleteJPEGValidationEdges(t *testing.T) {
 			}
 		})
 	}
-}
-
-func hasTextDLPPattern(matches []TextDLPMatch, pattern string) bool {
-	for _, match := range matches {
-		if match.PatternName == pattern {
-			return true
-		}
-	}
-	return false
 }
 
 func randomPNG(t *testing.T, seed uint64) []byte {

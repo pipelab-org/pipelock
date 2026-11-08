@@ -84,7 +84,7 @@ func TestBareBase64ImageBoundaries(t *testing.T) {
 				} else {
 					r = sc.ScanTextForDLP(ctx, tt.body)
 				}
-				if !hasTextDLPPattern(r.Matches, "AWS Access ID") {
+				if !hasAWSAccessIDMatch(r) {
 					t.Fatalf("inbound=%v missing AWS finding: %+v", inbound, r)
 				}
 			}
@@ -122,7 +122,7 @@ func TestImageDataURLMislabeledPNGOrJPEG(t *testing.T) {
 				if r := scan(context.Background(), body(mime, clean)); !r.Clean {
 					t.Fatalf("mislabeled image denied: %+v", r.Matches)
 				}
-				if r := scan(context.Background(), body(mime, dirty)); !hasTextDLPPattern(r.Matches, "AWS Access ID") {
+				if r := scan(context.Background(), body(mime, dirty)); !hasAWSAccessIDMatch(r) {
 					t.Fatalf("literal inside mislabeled image lost: %+v", r)
 				}
 			}
@@ -130,7 +130,7 @@ func TestImageDataURLMislabeledPNGOrJPEG(t *testing.T) {
 	}
 	// GIF and WebP labels were added with this contract and stay type-bound.
 	for _, mime := range []string{"image/gif", "image/webp"} {
-		if r := sc.ScanTextForDLP(context.Background(), body(mime, clean)); !hasTextDLPPattern(r.Matches, "AWS Access ID") {
+		if r := sc.ScanTextForDLP(context.Background(), body(mime, clean)); !hasAWSAccessIDMatch(r) {
 			t.Fatalf("%s label accepted PNG bytes: %+v", mime, r)
 		}
 	}
