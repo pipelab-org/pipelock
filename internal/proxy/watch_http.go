@@ -8,6 +8,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httputil"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -41,19 +43,112 @@ type watchHTTPOptions struct {
 	Upstream         http.RoundTripper
 	Proxy            *Proxy
 	Agent            string
+	AgentLabel       string
 	ClientIP         string
 	RequestID        string
 	KillSwitch       *killswitch.Controller
 	MaxResponseBytes int64
+
+	// ReceiptShard is the receipt chain chosen at admission. With several
+	// chains a receipt without it cannot be emitted.
+	ReceiptShard receipt.EmitOpts
+	// EnvelopeEmitter signs the outbound request when mediation envelopes are
+	// enabled, exactly as the enforcing forward and fetch paths do.
+	EnvelopeEmitter *envelope.Emitter
+	// ActionID correlates the signed envelope with the admission receipt.
+	ActionID string
+	// Generation is the watch-only mode generation the request was admitted
+	// under. Shadow-score updates from an older generation are discarded.
+	Generation uint64
+
+	findings       *watchFindingLog
+	requestFinding *atomic.Bool
 }
 
 type watchModeContextKey struct{}
 
+// errWatchReceiptUnavailable refuses release of a response whose finding could
+// not be recorded in a required receipt.
+var errWatchReceiptUnavailable = errors.New("enforced in watch-only: required receipt unavailable")
+
+type watchFinding struct{ layer, reason, action string }
+
+// watchFindingLog collects the would-block findings of one exchange so they can
+// be recorded in signed receipts before the affected traffic is released.
+type watchFindingLog struct {
+	mu    sync.Mutex
+	items []watchFinding
+	seen  map[watchFinding]struct{}
+}
+
+// watchFindingAction reports whether an observed action is a policy finding
+// (as opposed to an inspection gap, an escalation edge or a clean decision).
+func watchFindingAction(action string) bool {
+	switch action {
+	case config.ActionBlock, config.ActionStrip, config.ActionAsk, config.ActionWarn:
+		return true
+	}
+	return false
+}
+
+func (l *watchFindingLog) add(layer, reason, action string) {
+	if l == nil || !watchFindingAction(action) {
+		return
+	}
+	f := watchFinding{layer: layer, reason: reason, action: action}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, dup := l.seen[f]; dup {
+		return
+	}
+	if l.seen == nil {
+		l.seen = make(map[watchFinding]struct{})
+	}
+	l.seen[f] = struct{}{}
+	l.items = append(l.items, f)
+}
+
+func (l *watchFindingLog) drain() []watchFinding {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	items := l.items
+	l.items = nil
+	return items
+}
+
 func (o watchHTTPOptions) observe(layer, reason, action string, count int64, enforced bool) {
-	watchObservation(o.Logger, o.Metrics, o.Transport, layer, reason, action, count, enforced)
+	if !enforced && watchFindingAction(action) {
+		if o.requestFinding != nil {
+			o.requestFinding.Store(true)
+		}
+		o.findings.add(layer, reason, action)
+	}
+	watchObservationFor(o.RequestID, o.Logger, o.Metrics, o.Transport, layer, reason, action, count, enforced)
+}
+
+func (o watchHTTPOptions) agentLabel() string {
+	if o.AgentLabel != "" {
+		return o.AgentLabel
+	}
+	return agentAnonymous
+}
+
+// recordRefusal counts an enforced watch-only refusal in the ordinary blocked
+// request counters, so /stats and requests_total include it once.
+func (o watchHTTPOptions) recordRefusal(r *http.Request, layer string, start time.Time) {
+	if o.Metrics != nil {
+		o.Metrics.RecordBlocked(r.URL.Hostname(), layer, time.Since(start), o.agentLabel())
+	}
 }
 
 func (o watchHTTPOptions) receipt(r *http.Request, verdict, layer, reason string) bool {
+	return o.receiptWithID(r, receipt.NewActionID(), verdict, layer, reason)
+}
+
+func (o watchHTTPOptions) receiptWithID(r *http.Request, actionID, verdict, layer, reason string) bool {
 	if o.Proxy == nil || o.Proxy.receiptEmitterPtr.Load() == nil {
 		if o.Config.FlightRecorder.RequireReceipts {
 			o.observe(receiptEmissionFailedLayer, "receipt recorder unavailable", config.ActionBlock, 0, true)
@@ -61,11 +156,11 @@ func (o watchHTTPOptions) receipt(r *http.Request, verdict, layer, reason string
 		}
 		return true
 	}
-	opts := withReceiptConfig(receipt.EmitOpts{
-		ActionID: receipt.NewActionID(), Verdict: verdict,
-		Layer: layer, Pattern: "watch-only: " + reason, Transport: o.Transport,
+	opts := withReceiptShard(withReceiptConfig(receipt.EmitOpts{
+		ActionID: actionID, Verdict: verdict,
+		Layer: layer, Pattern: "watch-only: " + audit.RedactWatchOnlyReason(reason), Transport: o.Transport,
 		Method: r.Method, Target: r.URL.String(), RequestID: o.RequestID, Agent: o.Agent,
-	}, o.Config)
+	}, o.Config), o.ReceiptShard)
 	if err := o.Proxy.emitAllowPathReceipt(o.Config, opts); err != nil {
 		action := "uninspected"
 		if o.Config.FlightRecorder.RequireReceipts {
@@ -77,6 +172,17 @@ func (o watchHTTPOptions) receipt(r *http.Request, verdict, layer, reason string
 	return true
 }
 
+// confirmFindings records each pending would-block finding in a signed receipt.
+// With required receipts, a finding that cannot be recorded refuses release.
+func (o watchHTTPOptions) confirmFindings(r *http.Request) bool {
+	for _, f := range o.findings.drain() {
+		if !o.receipt(r, config.ActionWarn, f.layer, f.reason) && o.Config.FlightRecorder.RequireReceipts {
+			return false
+		}
+	}
+	return true
+}
+
 func (o watchHTTPOptions) killed() bool {
 	if o.KillSwitch == nil {
 		return false
@@ -84,9 +190,28 @@ func (o watchHTTPOptions) killed() bool {
 	return o.KillSwitch.IsActive()
 }
 
+// watchAdmission is the outcome of the request-side checks. Core is true when
+// an audit-mode floor or access control refuses the request; Result is the URL
+// scan, kept so the allowed destination's resolved addresses can be carried to
+// the dial.
+type watchAdmission struct {
+	Core   bool
+	Result scanner.Result
+}
+
 // watchRequestDecision joins the existing scanners and policy evaluator. It
 // runs before any egress and retains the audit-mode secret and host floor.
 func watchRequestDecision(r *http.Request, o watchHTTPOptions) bool {
+	return watchAdmit(r, o).Core
+}
+
+func (o *watchHTTPOptions) refuse(layer, reason string) {
+	if o.Refusal != nil && o.Refusal.refusalLayer == "" {
+		o.Refusal.refusalLayer, o.Refusal.refusalReason = layer, reason
+	}
+}
+
+func watchAdmit(r *http.Request, o watchHTTPOptions) watchAdmission {
 	sc, cfg := o.Scanner, o.Config
 	if o.Budget != nil {
 		if err := o.Budget.CheckAdmission(r.URL.Hostname()); err != nil {
@@ -96,7 +221,7 @@ func watchRequestDecision(r *http.Request, o watchHTTPOptions) bool {
 
 	if sc == nil {
 		o.observe(scannerLabelUnavailable, scannerPatternUnavailable, config.ActionBlock, 0, true)
-		return true
+		return watchAdmission{Core: true}
 	}
 	result := sc.Scan(r.Context(), r.URL.String())
 
@@ -107,6 +232,21 @@ func watchRequestDecision(r *http.Request, o watchHTTPOptions) bool {
 	}
 	if core && !scanner.IsCoreCriticalResult(result) {
 		o.observe(coreResult.Scanner, coreResult.Reason, config.ActionBlock, 0, true)
+	}
+	// A relay that follows a URL-shaped query value reaches that destination
+	// without this proxy dialing it, so the dial-time SSRF guard cannot refuse
+	// it. The full scan stops at its first failing stage, so check the nested
+	// SSRF floor on its own whenever the scan did not already report it.
+	if !result.Allowed {
+		nested := result
+		if !scanner.IsNestedSSRFResult(nested) {
+			nested = sc.ScanNestedSSRFFloor(r.Context(), r.URL.String())
+		}
+		if scanner.IsNestedSSRFResult(nested) {
+			core = true
+			o.observe(nested.Scanner, nested.Reason, config.ActionBlock, 0, true)
+			o.refuse(nested.Scanner, nested.Reason)
+		}
 	}
 	core = watchA2AHeaders(r, o) || core
 	scanHeaders := r.Header
@@ -125,6 +265,7 @@ func watchRequestDecision(r *http.Request, o watchHTTPOptions) bool {
 		}
 	}
 	headers := scanRequestHeadersForTarget(r.Context(), scanHeaders, cfg, sc, r.URL.String())
+	headerFinding, headerSignal := false, session.SignalWarning
 	if headers != nil && !headers.Clean {
 		for _, match := range headers.DLPMatches {
 			enforced := shouldHardBlockRequestDLP([]scanner.TextDLPMatch{match}, cfg)
@@ -132,6 +273,12 @@ func watchRequestDecision(r *http.Request, o watchHTTPOptions) bool {
 			action := headers.Action
 			if enforced {
 				action = config.ActionBlock
+			}
+			// Same mapping as the enforcing path: a finding that would block
+			// is a block signal, anything else a warning.
+			headerFinding = true
+			if action == config.ActionBlock {
+				headerSignal = session.SignalBlock
 			}
 			o.observe("dlp_header", match.PatternName, action, 0, enforced)
 		}
@@ -144,8 +291,15 @@ func watchRequestDecision(r *http.Request, o watchHTTPOptions) bool {
 	if coverage == nil {
 		coverage = &watchRequestCoverage{}
 	}
-	if watchRequestBody(r.Context(), r, watchRequestOptions{Coverage: coverage, Config: cfg, Scanner: sc, Logger: o.Logger, Metrics: o.Metrics, Transport: o.Transport}) {
+	if watchRequestBody(r.Context(), r, watchRequestOptions{Coverage: coverage, Config: cfg, Scanner: sc, Logger: o.Logger, Metrics: o.Metrics, Transport: o.Transport, RequestID: o.RequestID, Proxy: o.Proxy, Observe: o.observe}) {
 		core = true
+	}
+	if gitPush := evaluateGitPushAllowlist(cfg.GitProtection, r.Method, r.URL); gitPush.Block {
+		// The Git push allowlist is a destination access control that the
+		// enforcing path applies in every mode, so it is not an observation.
+		core = true
+		o.observe("git_protection", gitPush.Reason, config.ActionBlock, 0, true)
+		o.refuse("git_protection", gitPush.Reason)
 	}
 	if o.Proxy != nil {
 		p := o.Proxy
@@ -156,16 +310,20 @@ func watchRequestDecision(r *http.Request, o watchHTTPOptions) bool {
 		})
 		// Read the existing session state; observation never raises its enforcement
 		// level or enters airlock. Findings remain distinct from enforced signals.
+		scope := adaptiveScopeForHost(r.URL.Hostname())
 		if sm := p.sessionMgrPtr.Load(); sm != nil {
 			rec := sm.GetOrCreate(sessionKeyFor(cfg, o.Agent, o.ClientIP, o.ActorAuth))
 			if rec == nil {
 				o.observe(sessionCapacityLayer, "session observation capacity exhausted", "uninspected", 0, false)
 			} else {
-				td := evaluateHTTPTaint(cfg, rec, r.Method, r.URL)
-				if td.Result.Decision != session.PolicyAllow {
-					o.observe("taint", td.Result.Reason, td.Result.Decision.String(), 0, false)
+				if headerFinding && cfg.AdaptiveEnforcement.Enabled && !isAdaptiveExempt(r.URL.Hostname(), cfg.AdaptiveEnforcement.ExemptDomains) {
+					if changed, from, to := rec.ObserveWatchOnlySignalAt(o.Generation, scope, headerSignal, &cfg.AdaptiveEnforcement, decide.EscalationParams{
+						Threshold: cfg.AdaptiveEnforcement.EscalationThreshold, ClientIP: o.ClientIP, RequestID: o.RequestID,
+					}); changed {
+						o.observe(adaptiveEnforcementLayer, "adaptive level would change from "+from+" to "+to, "escalate", 0, false)
+					}
 				}
-				level := rec.EffectiveEscalationLevel(adaptiveScopeForHost(r.URL.Hostname()))
+				level := rec.EffectiveEscalationLevel(scope)
 				action := config.ActionAllow
 				if !result.Allowed {
 					action = config.ActionWarn
@@ -173,9 +331,17 @@ func watchRequestDecision(r *http.Request, o watchHTTPOptions) bool {
 				if decide.UpgradeAction(action, level, &cfg.AdaptiveEnforcement) != action {
 					o.observe(adaptiveEnforcementLayer, "adaptive action upgrade observed", "escalate", 0, false)
 				}
-				tier := airlockTierForScope(rec, adaptiveScopeForHost(r.URL.Hostname()))
+				tier := airlockTierForScope(rec, scope)
 				if allowed, reason := ClassifyAction(tier, r.Method, o.Transport, true); !allowed {
 					o.observe("airlock", reason, config.ActionBlock, 0, false)
+				}
+			}
+			// Taint is recorded and read under the key the response observer
+			// writes, so exposure from an earlier response informs this request.
+			if taintRec := sm.GetOrCreate(responseTaintSessionKey(cfg, o.Agent, o.ClientIP, o.ActorAuth)); taintRec != nil {
+				td := evaluateHTTPTaint(cfg, taintRec, r.Method, r.URL)
+				if td.Result.Decision != session.PolicyAllow {
+					o.observe("taint", td.Result.Reason, td.Result.Decision.String(), 0, false)
 				}
 			}
 		}
@@ -202,6 +368,7 @@ func watchRequestDecision(r *http.Request, o watchHTTPOptions) bool {
 			Host:   r.URL.Hostname(), Method: r.Method, Path: r.URL.EscapedPath(), Query: r.URL.RawQuery,
 			ContentType: r.Header.Get("Content-Type"), Headers: r.Header, Transport: o.Transport, Target: r.URL.String(),
 			RequestID: o.RequestID, Agent: o.Agent, AuditCtx: audit.NewMethodLogContext(r.Method),
+			WatchObserve: o.observe,
 		}
 		_ = p.prepareRequestPolicyBody(r, &in)
 		_ = p.applyRequestPolicy(in)
@@ -235,7 +402,40 @@ func watchRequestDecision(r *http.Request, o watchHTTPOptions) bool {
 			o.observe(coverage.layer, coverage.reason, "uninspected", int64(n), false)
 		}}
 	}
-	return core
+	return watchAdmission{Core: core, Result: result}
+}
+
+// watchOutboundContext binds an admitted destination to the dial: a hostname
+// the scan resolved and the policy granted must reach the same addresses at
+// connection time, which the scan snapshot carries.
+func watchOutboundContext(ctx context.Context, o watchHTTPOptions, target *http.Request, adm watchAdmission) context.Context {
+	ctx = context.WithValue(ctx, watchModeContextKey{}, o)
+	return withAllowedSSRFDialScanSnapshot(ctx, o.Scanner, target.URL.Hostname(), effectiveURLPort(target.URL), adm.Result)
+}
+
+// signWatchOutbound attaches the mediation envelope (and RFC 9421 signature
+// when a signer is installed) to an admitted request, as the enforcing forward
+// and fetch paths do. A signing failure refuses the request.
+func (o watchHTTPOptions) signWatchOutbound(out *http.Request, method string) error {
+	if o.EnvelopeEmitter == nil {
+		return nil
+	}
+	agent := o.Agent
+	if agent == "" {
+		agent = agentAnonymous
+	}
+	if err := o.EnvelopeEmitter.InjectAndSign(out, nil, envelope.BuildOpts{
+		ActionID:   o.ActionID,
+		Action:     string(receipt.ClassifyHTTP(method)),
+		Verdict:    config.ActionAllow,
+		SideEffect: string(receipt.SideEffectFromMethod(method)),
+		Actor:      agent,
+		ActorAuth:  o.ActorAuth,
+		PolicyHash: envelope.PolicyHashFromHex(o.Config.CanonicalPolicyHash()),
+	}); err != nil {
+		return newEnvelopeBlockedRequest(err)
+	}
+	return nil
 }
 
 // serveWatchHTTP keeps the original representation while invoking the same
@@ -243,15 +443,20 @@ func watchRequestDecision(r *http.Request, o watchHTTPOptions) bool {
 // handling; uninspectable upgrades are refused before any stream is relayed.
 func serveWatchHTTP(w http.ResponseWriter, r *http.Request, o watchHTTPOptions) {
 	start := time.Now()
+	if o.ActionID == "" {
+		o.ActionID = receipt.NewActionID()
+	}
+	o.findings, o.requestFinding = &watchFindingLog{}, new(atomic.Bool)
 	if o.Proxy != nil && !o.InboundVerified {
 		if err := o.Proxy.verifyInboundEnvelope(r, o.Config); err != nil {
 			o.observe(blockLayerMediationEnvelope, inboundEnvelopeFailurePattern(err), config.ActionBlock, 0, true)
+			o.recordRefusal(r, blockLayerMediationEnvelope, start)
 			writeBlockedError(w, blockInfoFor(blockreason.EnvelopeVerifyFailed, blockLayerMediationEnvelope), "enforced in watch-only: inbound authentication failed", http.StatusForbidden)
 			return
 		}
 	}
 
-	if !watchAuthorityAllowed(w, r, o) {
+	if !watchAuthorityAllowed(w, r, o, start) {
 		return
 	}
 	envelope.StripInbound(r.Header)
@@ -264,47 +469,73 @@ func serveWatchHTTP(w http.ResponseWriter, r *http.Request, o watchHTTPOptions) 
 	}
 	o.DeferClean = true
 	o.Refusal = &watchRequestCoverage{}
-	if watchRequestDecision(r, o) {
+	adm := watchAdmit(r, o)
+	if adm.Core {
 		layer, reason, code := scannerLabelBodyDLP, "audit safety floor", blockreason.DLPMatch
 		if o.Refusal.refusalLayer != "" {
 			layer, reason = o.Refusal.refusalLayer, o.Refusal.refusalReason
-			if layer == scanner.ScannerParser || layer == scanner.ScannerContext {
-				code = blockreason.ParseError
+			code = reasonFromScanner(layer)
+			if layer == "git_protection" {
+				code = blockreason.RequestPolicyDeny
 			}
 		}
 		o.receipt(r, config.ActionBlock, layer, reason)
+		o.recordRefusal(r, layer, start)
 		writeBlockedError(w, blockInfoFor(code, layer).WithRequestID(o.RequestID), "enforced in watch-only: "+reason, http.StatusForbidden)
 		return
 	}
 	if o.killed() {
 		o.observe("kill_switch", killSwitchActiveReason, config.ActionBlock, 0, true)
+		o.recordRefusal(r, "kill_switch", start)
 		writeBlockedError(w, blockInfoFor(blockreason.KillSwitchActive, "kill_switch"), "enforced in watch-only: kill switch active", http.StatusServiceUnavailable)
 		return
 	}
-	r = r.WithContext(context.WithValue(r.Context(), watchModeContextKey{}, o))
-	receiptOK := o.receipt(r, config.ActionAllow, "watch_only", "request admitted without policy rewriting")
-	if !receiptOK && o.Config.FlightRecorder.RequireReceipts {
+	r = r.WithContext(watchOutboundContext(r.Context(), o, r, adm))
+	findingsOK := o.confirmFindings(r)
+	receiptOK := o.receiptWithID(r, o.ActionID, config.ActionAllow, "watch_only", "request admitted without policy rewriting")
+	if (!findingsOK || !receiptOK) && o.Config.FlightRecorder.RequireReceipts {
 		o.observe(receiptEmissionFailedLayer, "required receipt unavailable", config.ActionBlock, 0, true)
+		o.recordRefusal(r, receiptEmissionFailedLayer, start)
 		http.Error(w, "enforced in watch-only: required receipt unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	// Evidence gaps for this exchange are counted when bytes are delivered.
+	evidenceOK := receiptOK && findingsOK
 	var responseFinding atomic.Bool
-	var responseSession *SessionState
-	if o.Proxy != nil && o.Config.SessionProfiling.Enabled {
+	var responseKinds watchKinds
+	var responseSession, taintSession *SessionState
+	if o.Proxy != nil {
 		if sm := o.Proxy.sessionMgrPtr.Load(); sm != nil {
-			responseSession = sm.GetOrCreate(sessionKeyFor(o.Config, o.Agent, o.ClientIP, o.ActorAuth))
+			taintSession = sm.GetOrCreate(responseTaintSessionKey(o.Config, o.Agent, o.ClientIP, o.ActorAuth))
+			if o.Config.SessionProfiling.Enabled {
+				responseSession = sm.GetOrCreate(sessionKeyFor(o.Config, o.Agent, o.ClientIP, o.ActorAuth))
+			}
 		}
 	}
 	var deliveredResponse *http.Response
 	failed := false
+	var upstream http.RoundTripper = o.Upstream
+	if upstream == nil {
+		upstream = http.DefaultTransport
+	}
+	// A silent upstream must not hold the request open after headers. The
+	// no-progress bound is the one the reverse and intercept paths use; streams
+	// and upgrades stay exempt inside the wrapper.
+	if seconds := o.Config.FetchProxy.TimeoutSeconds; seconds > 0 {
+		upstream = watchStallTransport{base: upstream, stall: time.Duration(seconds) * time.Second}
+	}
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(req *httputil.ProxyRequest) {
 			req.Out.RequestURI = ""
 			req.Out.URL.RawQuery = req.In.URL.RawQuery
+			// The scanned URL authority is the destination policy admitted. An
+			// HTTP/2 request can carry a different Host alongside an absolute
+			// target, which a virtual-host gateway would route on.
+			req.Out.Host = req.Out.URL.Host
 			// Proxy identity assertions were consumed by stripInternalIdentity;
 			// Rewrite must not manufacture a replacement identity.
 		},
-		Transport: watchEvidenceTransport{base: o.Upstream},
+		Transport: watchEvidenceTransport{base: upstream, sign: func(out *http.Request) error { return o.signWatchOutbound(out, r.Method) }},
 		ModifyResponse: func(resp *http.Response) error {
 			deliveredResponse = resp
 			if resp.Request == nil {
@@ -314,8 +545,10 @@ func serveWatchHTTP(w http.ResponseWriter, r *http.Request, o watchHTTPOptions) 
 				o.observe("websocket", "upgraded stream requires a scanning relay", config.ActionBlock, 0, true)
 				return errors.New("enforced in watch-only: uninspectable upgraded stream")
 			}
-			opts := watchResponseOptions{ExternalByteAccounting: !receiptOK, Config: o.Config, Scanner: o.Scanner, Logger: o.Logger, Metrics: o.Metrics, Transport: o.Transport, MaxBytes: o.MaxResponseBytes}
+			opts := watchResponseOptions{ExternalByteAccounting: !evidenceOK, Config: o.Config, Scanner: o.Scanner, Logger: o.Logger, Metrics: o.Metrics, Transport: o.Transport, MaxBytes: o.MaxResponseBytes, RequestID: o.RequestID}
 			opts.OnObservation = o.responseObserver(r, responseSession, &responseFinding)
+			opts.OnFinding = o.findings.add
+			opts.OnKinds = responseKinds.merge
 			if o.Config.FlightRecorder.RequireReceipts {
 				opts.ConfirmFinding = func(finding error) error {
 					if !o.receipt(r, config.ActionWarn, LayerSSEStream, finding.Error()) {
@@ -329,21 +562,36 @@ func serveWatchHTTP(w http.ResponseWriter, r *http.Request, o watchHTTPOptions) 
 				opts.A2ACardBaseline = o.Proxy.a2aCardBaseline
 			}
 			err := watchResponseBody(r.Context(), resp, opts)
-			if err == nil && !receiptOK && resp.Body != nil {
+			if err != nil {
+				return err
+			}
+			// A buffered response finding is released only once recorded.
+			if !o.confirmFindings(r) && o.Config.FlightRecorder.RequireReceipts {
+				_ = resp.Body.Close()
+				return errWatchReceiptUnavailable
+			}
+			if !evidenceOK && resp.Body != nil {
 				opts.ExternalByteAccounting = false
 				resp.Body = newWatchUninspectedBody(resp.Body, resp.Body, opts, receiptEmissionFailedLayer, "required decision evidence unavailable")
 			}
-			return err
+			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			failed = true
+			if errors.Is(err, errWatchReceiptUnavailable) {
+				o.recordRefusal(r, receiptEmissionFailedLayer, start)
+				http.Error(w, err.Error(), http.StatusServiceUnavailable)
+				return
+			}
 			if info, reason, blocked := o.upstreamRefusal(r, err); blocked {
+				o.recordRefusal(r, info.Layer, start)
 				writeBlockedError(w, info, "enforced in watch-only: "+reason, http.StatusForbidden)
 				return
 			}
 			if errors.Is(err, errWatchResponseCoreFloor) {
 				o.observe(scannerLabelA2A, "core credential floor", config.ActionBlock, 0, true)
 				o.receipt(r, config.ActionBlock, scannerLabelA2A, "audit safety floor enforced")
+				o.recordRefusal(r, scannerLabelA2A, start)
 				http.Error(w, "enforced in watch-only: audit safety floor", http.StatusForbidden)
 				return
 			}
@@ -363,12 +611,35 @@ func serveWatchHTTP(w http.ResponseWriter, r *http.Request, o watchHTTPOptions) 
 		_ = o.Budget.RecordRequest(r.URL.Hostname(), 0)
 		_ = o.Budget.RecordBytes(delivered.bytes)
 	}
-	if !failed && !responseFinding.Load() && responseSession != nil {
-		responseSession.ObserveWatchOnlyClean(adaptiveScopeForHost(r.URL.Hostname()), &o.Config.AdaptiveEnforcement)
+	if deliveredResponse != nil && deliveredResponse.Request != nil && taintSession != nil {
+		observeHTTPResponseFindings(taintSession, o.Config, deliveredResponse.Request.URL.String(), responseTaintContentType(deliveredResponse.Header), "forward_response", responseKinds.list())
+	}
+	// Clean credit is withheld for the whole exchange when either direction
+	// recorded a finding: it would decay the very score that recorded it.
+	if !failed && !responseFinding.Load() && !o.requestFinding.Load() && responseSession != nil {
+		responseSession.ObserveWatchOnlyCleanAt(o.Generation, adaptiveScopeForHost(r.URL.Hostname()), &o.Config.AdaptiveEnforcement)
 	}
 	if !failed {
-		o.Metrics.RecordAllowed(time.Since(start), agentAnonymous)
+		o.Metrics.RecordAllowed(time.Since(start), o.agentLabel())
 	}
+}
+
+// watchKinds accumulates the finding kinds of one response for taint.
+type watchKinds struct {
+	mu    sync.Mutex
+	kinds []session.HostileFindingKind
+}
+
+func (k *watchKinds) merge(kinds []session.HostileFindingKind) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.kinds = session.MergeFindingKinds(k.kinds, kinds)
+}
+
+func (k *watchKinds) list() []session.HostileFindingKind {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return append([]session.HostileFindingKind(nil), k.kinds...)
 }
 
 // responseObserver feeds the existing shadow scoring for response findings.
@@ -392,14 +663,15 @@ func (o watchHTTPOptions) responseObserver(r *http.Request, responseSession *Ses
 		default:
 			return
 		}
-		if changed, from, to := responseSession.ObserveWatchOnlySignal(adaptiveScopeForHost(r.URL.Hostname()), signal, &o.Config.AdaptiveEnforcement, decide.EscalationParams{DenialScanner: layer, PolicyHash: o.Config.CanonicalPolicyHash()}); changed {
+		if changed, from, to := responseSession.ObserveWatchOnlySignalAt(o.Generation, adaptiveScopeForHost(r.URL.Hostname()), signal, &o.Config.AdaptiveEnforcement, decide.EscalationParams{DenialScanner: layer, PolicyHash: o.Config.CanonicalPolicyHash()}); changed {
 			o.observe(adaptiveEnforcementLayer, "adaptive level would change from "+from+" to "+to, "escalate", 0, false)
 		}
 	}
 }
 
-func watchAuthorityAllowed(w http.ResponseWriter, r *http.Request, o watchHTTPOptions) bool {
+func watchAuthorityAllowed(w http.ResponseWriter, r *http.Request, o watchHTTPOptions, start time.Time) bool {
 	if err := watchAuthorityError(r, o); err != nil {
+		o.recordRefusal(r, blockLayerAuthority, start)
 		writeBlockedError(w, blockInfoFor(blockreason.AuthorityMismatch, blockLayerAuthority), "enforced in watch-only: authority verification failed", http.StatusForbidden)
 		return false
 	}
@@ -444,6 +716,9 @@ func (o watchHTTPOptions) upstreamRefusal(r *http.Request, err error) (blockreas
 			}
 		}
 		o.receipt(target, config.ActionBlock, blockedErr.layer, blockedErr.decisivePattern())
+		if blockedErr.layer == blockLayerMediationEnvelope && !strings.HasPrefix(blockedErr.reason, "redirect blocked") {
+			return blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer).WithRequestID(o.RequestID), blockedErr.reason, true
+		}
 		return redirectBlockedInfo(blockedErr).WithRequestID(o.RequestID), blockedErr.reason, true
 	}
 	return blockreason.Info{}, "", false

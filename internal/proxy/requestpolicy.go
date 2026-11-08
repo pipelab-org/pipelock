@@ -74,6 +74,11 @@ type requestPolicyInput struct {
 	// that treat an unavailable recorder as a successful no-op are invalid here.
 	Emit func(receipt.EmitOpts) error
 
+	// WatchObserve records a watch-only would-block decision through the
+	// request's recorder, so it carries the request ID and reaches receipts.
+	// Nil records a plain observation.
+	WatchObserve func(layer, reason, action string, count int64, enforced bool)
+
 	// DeferBodyPredicate evaluates route-only rules and skips body-predicate
 	// (GraphQL / discriminator) evaluation for this call. The WebSocket
 	// handshake sets it: the upgrade carries no operation body, so a body
@@ -405,7 +410,11 @@ func (p *Proxy) finalizeRequestPolicyDecision(in requestPolicyInput, d reqpolicy
 		cfg = p.cfgPtr.Load()
 	}
 	if cfg != nil && cfg.WatchOnly {
-		watchObservation(p.logger, p.metrics, in.Transport, blockLayerRequestPolicy, d.RuleName, d.Action, 0, false)
+		if in.WatchObserve != nil {
+			in.WatchObserve(blockLayerRequestPolicy, d.RuleName, d.Action, 0, false)
+		} else {
+			watchObservation(p.logger, p.metrics, in.Transport, blockLayerRequestPolicy, d.RuleName, d.Action, 0, false)
+		}
 		return requestPolicyResult{}
 	}
 	p.metrics.RecordRequestPolicyDecision(d.RuleName, d.Action)

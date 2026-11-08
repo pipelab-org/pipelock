@@ -20,6 +20,18 @@ func deferredWatchConfig(cfg *config.Config) *config.Config {
 	return effective
 }
 
+// admittedWatchConfig keeps watch-only semantics for a request admitted under
+// them after a reload turned the mode off. The configured snapshot is never
+// mutated.
+func admittedWatchConfig(cfg *config.Config) *config.Config {
+	if cfg == nil || cfg.WatchOnly {
+		return cfg
+	}
+	effective := cfg.Clone()
+	effective.WatchOnly = true
+	return effective
+}
+
 func watchRequestConfig(cfg *config.Config, r *http.Request) *config.Config {
 	if r.Method == http.MethodConnect || (!r.URL.IsAbs() && r.URL.Path == "/ws") {
 		return deferredWatchConfig(cfg)

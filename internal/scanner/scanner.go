@@ -1855,6 +1855,8 @@ const defaultNestedURLResolveBudget = ssrfLookupCeiling
 
 const nestedURLReasonPrefix = "nested URL in query parameter"
 
+const nestedURLBudgetReasonPrefix = "nested URL destinations exceeded"
+
 // nestedURLCandidate is one query component text that may be a nested URL, with
 // the parameter key it came from for the block reason.
 type nestedURLCandidate struct {
@@ -1920,6 +1922,35 @@ func nestedURLCandidatesWithDecodes(rawQuery string, maxLen int, decodes *decodi
 // itself carries a nested URL is not expanded. Non-URL text, relative paths, and
 // non-http(s) schemes are ignored. All nested DNS lookups share one deadline.
 func (s *Scanner) checkNestedURLs(ctx context.Context, parsed *url.URL) Result {
+	return s.checkNestedURLsMode(ctx, parsed, false)
+}
+
+// ScanNestedSSRFFloor evaluates only the SSRF guards for URL-shaped query
+// components: the core literal-IP floor and, when internal ranges or grants are
+// configured, DNS resolution. Allowlist and blocklist policy are left to the
+// full scan. The full scan stops at its first failing stage, so a caller that
+// forwards the request despite an earlier configured finding runs this on its
+// own: otherwise a blocklist hit on the outer host would hide a nested metadata
+// destination. Exhausting the shared resolution budget is refused, matching the
+// full scan.
+func (s *Scanner) ScanNestedSSRFFloor(ctx context.Context, rawURL string) Result {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return Result{Allowed: true}
+	}
+	return s.checkNestedURLsMode(ctx, parsed, true)
+}
+
+// IsNestedSSRFResult reports whether r is a nested-destination refusal for an
+// SSRF reason, including an exhausted resolution budget.
+func IsNestedSSRFResult(r Result) bool {
+	if r.Allowed || (!strings.HasPrefix(r.Reason, nestedURLReasonPrefix) && !strings.HasPrefix(r.Reason, nestedURLBudgetReasonPrefix)) {
+		return false
+	}
+	return r.Scanner == ScannerSSRF || r.Scanner == ScannerSSRFMetadata || r.Scanner == ScannerCoreSSRF
+}
+
+func (s *Scanner) checkNestedURLsMode(ctx context.Context, parsed *url.URL, ssrfOnly bool) Result {
 	if !s.scanNestedURLs || parsed == nil || parsed.RawQuery == "" {
 		return Result{Allowed: true}
 	}
@@ -1939,7 +1970,7 @@ func (s *Scanner) checkNestedURLs(ctx context.Context, parsed *url.URL) Result {
 	// destination and must cost one resolution, not one per occurrence.
 	seen := make(map[string]struct{}, len(candidates))
 	for _, c := range candidates {
-		result := s.checkNestedURLValue(nestedCtx, c.key, c.text, runDNSSSRF, seen)
+		result := s.checkNestedURLValue(nestedCtx, c.key, c.text, runDNSSSRF, ssrfOnly, seen)
 		if result.Allowed {
 			continue
 		}
@@ -1953,7 +1984,7 @@ func (s *Scanner) checkNestedURLs(ctx context.Context, parsed *url.URL) Result {
 			// how checkSSRF already classifies an outer-host resolver failure.
 			return Result{
 				Allowed: false,
-				Reason:  fmt.Sprintf("nested URL destinations exceeded the shared resolution budget (%s)", s.nestedURLResolveBudget),
+				Reason:  fmt.Sprintf(nestedURLBudgetReasonPrefix+" the shared resolution budget (%s)", s.nestedURLResolveBudget),
 				Scanner: ScannerSSRF,
 				Score:   1.0,
 				Class:   ClassInfrastructureError,
@@ -1964,7 +1995,7 @@ func (s *Scanner) checkNestedURLs(ctx context.Context, parsed *url.URL) Result {
 	return Result{Allowed: true}
 }
 
-func (s *Scanner) checkNestedURLValue(ctx context.Context, key, text string, runDNSSSRF bool, seen map[string]struct{}) Result {
+func (s *Scanner) checkNestedURLValue(ctx context.Context, key, text string, runDNSSSRF, ssrfOnly bool, seen map[string]struct{}) Result {
 	nestedParsed, err := url.Parse(text)
 	if err != nil {
 		return Result{Allowed: true}
@@ -2001,11 +2032,13 @@ func (s *Scanner) checkNestedURLValue(ctx context.Context, key, text string, run
 		}
 		seen[dedupKey] = struct{}{}
 	}
-	if result := s.checkAllowlist(nestedDest); !result.Allowed {
-		return prefixNestedURLResult(key, result)
-	}
-	if result := s.checkBlocklist(nestedHost); !result.Allowed {
-		return prefixNestedURLResult(key, result)
+	if !ssrfOnly {
+		if result := s.checkAllowlist(nestedDest); !result.Allowed {
+			return prefixNestedURLResult(key, result)
+		}
+		if result := s.checkBlocklist(nestedHost); !result.Allowed {
+			return prefixNestedURLResult(key, result)
+		}
 	}
 	if result := s.checkCoreSSRFLiteral(nestedDest); !result.Allowed {
 		return prefixNestedURLResult(key, result)

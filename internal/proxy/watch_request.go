@@ -20,7 +20,13 @@ import (
 // watchObservation uses the audit and metric channels without manufacturing a
 // blocked request. Reasons must be diagnostics, never matched payload bytes.
 func watchObservation(logger *audit.Logger, m *metrics.Metrics, transport, layer, reason, action string, count int64, enforced bool) {
-	logger.LogWatchOnly(transport, layer, reason, action, count, enforced)
+	watchObservationFor("", logger, m, transport, layer, reason, action, count, enforced)
+}
+
+// watchObservationFor is watchObservation for a request with an ID, so the
+// event can be matched to its receipts when requests share a finding.
+func watchObservationFor(requestID string, logger *audit.Logger, m *metrics.Metrics, transport, layer, reason, action string, count int64, enforced bool) {
+	logger.LogWatchOnlyRequest(requestID, transport, layer, reason, action, count, enforced)
 	m.RecordWatchOnly(transport, layer, action, count)
 }
 
@@ -36,6 +42,22 @@ type watchRequestOptions struct {
 	Logger    *audit.Logger
 	Metrics   *metrics.Metrics
 	Transport string
+	RequestID string
+	// Proxy supplies the live redaction runtime. Without it (unit tests only)
+	// redaction observation has no runtime to consult.
+	Proxy *Proxy
+	// Observe routes observations through the request's recorder, so findings
+	// reach receipts, the request ID and the clean-credit guard. Nil falls back
+	// to a plain observation.
+	Observe func(layer, reason, action string, count int64, enforced bool)
+}
+
+func (o watchRequestOptions) observe(layer, reason, action string, count int64, enforced bool) {
+	if o.Observe != nil {
+		o.Observe(layer, reason, action, count, enforced)
+		return
+	}
+	watchObservationFor(o.RequestID, o.Logger, o.Metrics, o.Transport, layer, reason, action, count, enforced)
 }
 
 // watchRequestReplayBody keeps ownership of the source while replaying the bounded
@@ -62,7 +84,7 @@ func watchUninspectedRequestRead(opts watchRequestOptions, layer, reason string)
 		return nil
 	}
 	return func(n int) {
-		watchObservation(opts.Logger, opts.Metrics, opts.Transport, layer, reason, "uninspected", int64(n), false)
+		opts.observe(layer, reason, "uninspected", int64(n), false)
 	}
 }
 
@@ -74,7 +96,7 @@ func watchRequestBody(ctx context.Context, r *http.Request, opts watchRequestOpt
 		if enforced && opts.Coverage != nil {
 			opts.Coverage.refusalLayer, opts.Coverage.refusalReason = layer, reason
 		}
-		watchObservation(opts.Logger, opts.Metrics, opts.Transport, layer, reason, action, 0, enforced)
+		opts.observe(layer, reason, action, 0, enforced)
 	}
 	if r.Body == nil || r.Body == http.NoBody {
 		return false
@@ -149,14 +171,29 @@ func watchRequestBody(ctx context.Context, r *http.Request, opts watchRequestOpt
 	if result.EntropyFinding != nil {
 		observe(scannerLabelBodyEntropy, result.Reason, result.Action, false)
 	}
-	if !result.Clean && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 && result.EntropyFinding == nil {
+	if len(result.AddressFindings) > 0 {
+		// An address-policy finding is a decision, not an inspection gap: it
+		// must not be counted as uninspected bytes.
+		action := result.Action
+		if action == "" {
+			action = cfg.RequestBodyScanning.Action
+		}
+		observe(scannerLabelAddressProtection, "address poisoning finding", action, false)
+	}
+	if !result.Clean && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 && result.EntropyFinding == nil && len(result.AddressFindings) == 0 {
 		observe(scannerLabelBodyDLP, result.Reason, "uninspected", false)
 		r.Body = &watchRequestReplayBody{Reader: bytes.NewReader(raw), source: source, onRead: watchUninspectedRequestRead(opts, scannerLabelBodyDLP, result.Reason)}
 	}
 	// Redaction operates on a separate copy solely to observe its decision.
 	// The credential floor above saw the original, never the redacted body.
 	if cfg.Redaction.Enabled {
+		// The enforcing forward path resolves the runtime that matches the
+		// admitted configuration. Without a proxy (unit tests only) none can
+		// match, which yields the fail-closed sentinel.
 		redaction := currentRedactionRuntimeForConfig(cfg, nil)
+		if opts.Proxy != nil {
+			redaction = opts.Proxy.currentRedactionRuntimeFor(cfg)
+		}
 		applyBodyScanRedaction(&req, redaction)
 		req.Body = bytes.NewReader(raw)
 		rewritten, redactedResult := scanRequestBody(ctx, req)

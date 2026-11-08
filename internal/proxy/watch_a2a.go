@@ -10,6 +10,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // watchA2AResult carries the audit-mode security floor. Core includes
@@ -18,6 +19,7 @@ import (
 type watchA2AResult struct {
 	Core        bool
 	Uninspected string
+	Kinds       []session.HostileFindingKind
 }
 
 func watchA2AHeaders(r *http.Request, o watchHTTPOptions) bool {
@@ -43,9 +45,7 @@ func watchA2ARequest(ctx context.Context, r *http.Request, body []byte, o watchR
 		return watchA2AResult{}
 	}
 	result := mcp.ScanA2ARequestBody(ctx, body, o.Scanner, &o.Config.A2AScanning, a2aContentEntropyOptions(r.URL.Hostname(), o.Config))
-	return observeWatchA2A(result, scannerLabelA2A, o.Config.A2AScanning.Action, func(layer, reason, action string, count int64, enforced bool) {
-		watchObservation(o.Logger, o.Metrics, o.Transport, layer, reason, action, count, enforced)
-	})
+	return observeWatchA2A(result, scannerLabelA2A, o.Config.A2AScanning.Action, o.observe)
 }
 
 func watchA2AResponse(ctx context.Context, resp *http.Response, body []byte, o watchResponseOptions, baseline *mcp.CardBaseline) watchA2AResult {
@@ -89,6 +89,9 @@ func watchA2AResponse(ctx context.Context, resp *http.Response, body []byte, o w
 // actions. It never calls a blocked-event writer or modifies payload bytes.
 func observeWatchA2A(result mcp.A2AScanResult, layer, fallbackAction string, observe func(string, string, string, int64, bool)) watchA2AResult {
 	outcome := watchA2AResult{Core: containsCoreFloorMatch(result.DLPFindings) || scanner.HasInspectionLimit(result.DLPFindings)}
+	if !result.Clean {
+		outcome.Kinds = mcp.A2ATaintFindingKinds(result)
+	}
 	action := result.Action
 	if action == "" {
 		action = fallbackAction

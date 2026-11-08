@@ -626,15 +626,19 @@ type contextDialer interface {
 
 // Proxy is the Pipelock fetch proxy server.
 type Proxy struct {
-	cfgPtr               atomic.Pointer[config.Config]
-	issuerCookieRuntime  atomic.Pointer[issuerCookieRuntime]
-	scannerPtr           atomic.Pointer[scanner.Scanner]
-	editionPtr           atomic.Pointer[editionSnapshot]
-	sessionMgrPtr        atomic.Pointer[SessionManager]         // nil when profiling disabled
-	certCachePtr         atomic.Pointer[certgen.CertCache]      // nil when TLS interception disabled
-	entropyTrackerPtr    atomic.Pointer[scanner.EntropyTracker] // nil when entropy budget disabled
-	fragmentBufferPtr    atomic.Pointer[scanner.FragmentBuffer] // nil when fragment reassembly disabled
-	redactionRuntimePtr  atomic.Pointer[redactionRuntime]       // nil when redaction disabled
+	cfgPtr              atomic.Pointer[config.Config]
+	issuerCookieRuntime atomic.Pointer[issuerCookieRuntime]
+	scannerPtr          atomic.Pointer[scanner.Scanner]
+	editionPtr          atomic.Pointer[editionSnapshot]
+	sessionMgrPtr       atomic.Pointer[SessionManager]         // nil when profiling disabled
+	certCachePtr        atomic.Pointer[certgen.CertCache]      // nil when TLS interception disabled
+	entropyTrackerPtr   atomic.Pointer[scanner.EntropyTracker] // nil when entropy budget disabled
+	fragmentBufferPtr   atomic.Pointer[scanner.FragmentBuffer] // nil when fragment reassembly disabled
+	redactionRuntimePtr atomic.Pointer[redactionRuntime]       // nil when redaction disabled
+	// watchModeGeneration advances at each watch-only mode change. A request
+	// carries the generation it was admitted under, so a callback that
+	// completes after the change cannot update the next trial's simulation.
+	watchModeGeneration  atomic.Uint64
 	redactMatcherPtr     atomic.Pointer[redact.Matcher]         // nil when redaction disabled
 	reqPolicyPtr         atomic.Pointer[reqpolicy.Matcher]      // nil when request_policy disabled
 	contractLoaderPtr    atomic.Pointer[contractruntime.Loader] // nil when learn_lock is disabled
@@ -2798,8 +2802,11 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	}
 	p.metrics.SetWatchOnly(cfg.WatchOnly)
 	if oldCfg == nil || oldCfg.WatchOnly != cfg.WatchOnly {
+		// Advance the generation before clearing history so a request admitted
+		// under the previous mode cannot repopulate the new trial's scores.
+		generation := p.watchModeGeneration.Add(1)
 		if sm := p.sessionMgrPtr.Load(); sm != nil {
-			sm.ResetWatchOnlyAdaptive()
+			sm.AdvanceWatchOnlyGeneration(generation)
 		}
 		p.logger.LogWatchOnlyMode(cfg.WatchOnly)
 	}
@@ -2985,7 +2992,12 @@ func (p *Proxy) admitCurrentCEE(ctx context.Context, req ceeAdmitRequest) ceeAdm
 	if cfg == nil {
 		return ceeAdmission{}
 	}
-	if !req.WatchOnly {
+	if req.WatchOnly {
+		// The request was admitted as watch-only. If the mode was disabled
+		// meanwhile, ordinary findings stay observations for this request;
+		// only the mandatory refusals below can still end it.
+		cfg = admittedWatchConfig(cfg)
+	} else {
 		cfg = deferredWatchConfig(cfg)
 	}
 	ceeCfg := ceeEffectiveConfig(cfg.CrossRequestDetection, cfg.EnforceEnabled())
@@ -5561,7 +5573,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		defer release()
 		p.handleWatchFetch(w, r, watchHTTPOptions{
 			Config: cfg, Scanner: sc, Logger: p.logger, Metrics: p.metrics, Transport: TransportFetch,
-			Proxy: p, Agent: id.Name, ActorAuth: id.Auth, Budget: resolved.Budget, ClientIP: clientIP, RequestID: requestID, KillSwitch: p.ks,
+			Proxy: p, Agent: id.Name, AgentLabel: id.Profile, ActorAuth: id.Auth, Budget: resolved.Budget, ClientIP: clientIP, RequestID: requestID, KillSwitch: p.ks,
+			ReceiptShard: selectedReceiptShard, EnvelopeEmitter: envEmitter, ActionID: actionID, Generation: p.watchModeGeneration.Load(),
 		})
 		return
 	}

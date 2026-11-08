@@ -505,6 +505,35 @@ func (s *SessionState) watchAdaptiveLocked(cfg *config.AdaptiveEnforcement) *Ses
 func (s *SessionState) ObserveWatchOnlySignal(scope string, sig session.SignalType, cfg *config.AdaptiveEnforcement, ep decide.EscalationParams) (bool, string, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.observeWatchOnlySignalLocked(scope, sig, cfg, ep)
+}
+
+// ObserveWatchOnlySignalAt is ObserveWatchOnlySignal for a callback that may
+// complete after the mode changed. An update admitted under an older mode
+// generation is discarded; a newer one starts a fresh simulation.
+func (s *SessionState) ObserveWatchOnlySignalAt(generation uint64, scope string, sig session.SignalType, cfg *config.AdaptiveEnforcement, ep decide.EscalationParams) (bool, string, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.admitWatchGenerationLocked(generation) {
+		return false, "", ""
+	}
+	return s.observeWatchOnlySignalLocked(scope, sig, cfg, ep)
+}
+
+// admitWatchGenerationLocked fences simulated state to the mode generation. It
+// reports false for a stale generation; a newer one resets the recorder.
+func (s *SessionState) admitWatchGenerationLocked(generation uint64) bool {
+	if generation < s.watchGeneration {
+		return false
+	}
+	if generation > s.watchGeneration {
+		s.watchGeneration = generation
+		s.watchAdaptive = nil
+	}
+	return true
+}
+
+func (s *SessionState) observeWatchOnlySignalLocked(scope string, sig session.SignalType, cfg *config.AdaptiveEnforcement, ep decide.EscalationParams) (bool, string, string) {
 	observed := s.watchAdaptiveLocked(cfg)
 	if observed == nil {
 		return false, "", ""
@@ -523,6 +552,19 @@ func (s *SessionState) ObserveWatchOnlySignal(scope string, sig session.SignalTy
 func (s *SessionState) ObserveWatchOnlyClean(scope string, cfg *config.AdaptiveEnforcement) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.observeWatchOnlyCleanLocked(scope, cfg)
+}
+
+// ObserveWatchOnlyCleanAt is ObserveWatchOnlyClean fenced to a mode generation.
+func (s *SessionState) ObserveWatchOnlyCleanAt(generation uint64, scope string, cfg *config.AdaptiveEnforcement) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.admitWatchGenerationLocked(generation) {
+		s.observeWatchOnlyCleanLocked(scope, cfg)
+	}
+}
+
+func (s *SessionState) observeWatchOnlyCleanLocked(scope string, cfg *config.AdaptiveEnforcement) {
 	observed := s.watchAdaptiveLocked(cfg)
 	if observed == nil {
 		return
@@ -550,6 +592,17 @@ func (s *SessionState) ResetWatchOnlyAdaptive() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.watchAdaptive = nil
+}
+
+// AdvanceWatchOnlyGeneration publishes a new mode generation to every retained
+// session and discards its simulated history. Callbacks admitted under an
+// earlier generation are rejected from then on.
+func (sm *SessionManager) AdvanceWatchOnlyGeneration(generation uint64) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	for _, sess := range sm.sessions {
+		sess.SyncWatchOnlyGeneration(generation)
+	}
 }
 
 // ResetWatchOnlyAdaptive clears observations for each retained session. Session

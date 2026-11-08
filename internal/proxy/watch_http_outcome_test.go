@@ -166,12 +166,18 @@ func TestWatchReviewHTTPResponseScoreActions(t *testing.T) {
 				}
 			}
 			rec := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(cfg, opts.Agent, opts.ClientIP, opts.ActorAuth))
-			signal := session.SignalBlock
-			if action == config.ActionWarn {
-				signal = session.SignalWarning
-			}
-			if rec.watchAdaptive == nil || rec.watchAdaptive.ScopedThreatScore(adaptiveScopeForHost("api.vendor.example")) < session.SignalPoints[signal] {
+			if rec.watchAdaptive == nil {
 				t.Fatal("response findings absent from shadow score")
+			}
+			score := rec.watchAdaptive.ScopedThreatScore(adaptiveScopeForHost("api.vendor.example"))
+			if action == config.ActionWarn {
+				// A warning must score as a warning: a block-sized score would
+				// also clear a lower bound of zero.
+				if score != session.SignalPoints[session.SignalWarning] {
+					t.Fatalf("warning scored %v, want exactly %v", score, session.SignalPoints[session.SignalWarning])
+				}
+			} else if score < session.SignalPoints[session.SignalBlock] {
+				t.Fatalf("%s scored %v, below a block signal %v", action, score, session.SignalPoints[session.SignalBlock])
 			}
 		})
 	}

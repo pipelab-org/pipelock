@@ -14,17 +14,26 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 // maxFetchRedirects is the existing fetch-client redirect-chain ceiling.
 const maxFetchRedirects = 5
 
 func (p *Proxy) handleWatchFetch(w http.ResponseWriter, r *http.Request, o watchHTTPOptions) {
+	start := time.Now()
 	cfg, sc, agent := o.Config, o.Scanner, o.Agent
+	if o.ActionID == "" {
+		o.ActionID = receipt.NewActionID()
+	}
+	o.findings, o.requestFinding = &watchFindingLog{}, new(atomic.Bool)
 	delivered := &watchDeliveryWriter{ResponseWriter: w}
 	w = delivered
 	if r.Method != http.MethodGet {
@@ -41,32 +50,62 @@ func (p *Proxy) handleWatchFetch(w http.ResponseWriter, r *http.Request, o watch
 
 	if o.killed() {
 		o.observe("kill_switch", killSwitchActiveReason, config.ActionBlock, 0, true)
+		o.recordRefusal(req, "kill_switch", start)
 		writeJSON(w, http.StatusServiceUnavailable, FetchResponse{Blocked: true, Error: "enforced in watch-only: kill switch active"})
 		return
 	}
 	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
 		o.observe(blockLayerMediationEnvelope, inboundEnvelopeFailurePattern(err), config.ActionBlock, 0, true)
+		o.recordRefusal(req, blockLayerMediationEnvelope, start)
 		writeJSON(w, http.StatusForbidden, FetchResponse{Blocked: true, Error: "enforced in watch-only: inbound authentication failed"})
 		return
 	}
 	access := r.Clone(r.Context())
 	access.URL = req.URL
-	if !watchAuthorityAllowed(w, access, o) {
+	if !watchAuthorityAllowed(w, access, o, start) {
 		return
 	}
 	req.Header.Set("User-Agent", cfg.FetchProxy.UserAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain,*/*;q=0.8")
 	o.DeferClean = true
-	if watchRequestDecision(req, o) {
-		o.receipt(req, config.ActionBlock, scannerLabelBodyDLP, "core credential floor enforced")
-		writeJSON(w, http.StatusForbidden, FetchResponse{URL: audit.RedactContentBearingURL(rawURL), Blocked: true, Error: "enforced in watch-only: core credential floor"})
+	o.Refusal = &watchRequestCoverage{}
+	adm := watchAdmit(req, o)
+	if adm.Core {
+		layer, reason := scannerLabelBodyDLP, "core credential floor"
+		if o.Refusal.refusalLayer != "" {
+			layer, reason = o.Refusal.refusalLayer, o.Refusal.refusalReason
+		}
+		o.receipt(req, config.ActionBlock, layer, reason+" enforced")
+		o.recordRefusal(req, layer, start)
+		writeJSON(w, http.StatusForbidden, FetchResponse{URL: audit.RedactContentBearingURL(rawURL), Blocked: true, Error: "enforced in watch-only: " + reason})
 		return
 	}
-	if !o.receipt(req, config.ActionAllow, "watch_only", "fetch admitted without policy rewriting") && cfg.FlightRecorder.RequireReceipts {
+	findingsOK := o.confirmFindings(req)
+	admissionReceipt := o.receiptWithID(req, o.ActionID, config.ActionAllow, "watch_only", "fetch admitted without policy rewriting")
+	if (!admissionReceipt || !findingsOK) && cfg.FlightRecorder.RequireReceipts {
+		o.recordRefusal(req, receiptEmissionFailedLayer, start)
 		writeJSON(w, http.StatusServiceUnavailable, FetchResponse{Blocked: true, Error: "enforced in watch-only: required receipt unavailable"})
 		return
 	}
-	req = req.WithContext(context.WithValue(req.Context(), watchModeContextKey{}, o))
+	// The destination policy admitted is the one dialed, redirected from, and
+	// signed over: carry the scan snapshot, request identity and the envelope
+	// snapshot to every hop.
+	ctx := watchOutboundContext(req.Context(), o, req, adm)
+	ctx = context.WithValue(ctx, ctxKeyClientIP, o.ClientIP)
+	ctx = context.WithValue(ctx, ctxKeyRequestID, o.RequestID)
+	ctx = context.WithValue(ctx, ctxKeyAgent, agent)
+	ctx = context.WithValue(ctx, ctxKeyReceiptShard, o.ReceiptShard)
+	ctx = context.WithValue(ctx, ctxKeyEnvelopeEmitter, envelopeEmitterSnapshot{emitter: o.EnvelopeEmitter})
+	req = req.WithContext(ctx)
+	if err := o.signWatchOutbound(req, http.MethodGet); err != nil {
+		info, reason, _ := o.upstreamRefusal(req, err)
+		o.recordRefusal(req, info.Layer, start)
+		writeBlockedJSON(w, info, http.StatusForbidden, FetchResponse{
+			URL: audit.RedactContentBearingURL(rawURL), Agent: agent, Blocked: true, BlockReason: reason,
+			Error: "enforced in watch-only: " + reason,
+		})
+		return
+	}
 	client := *p.client
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
 		refuse := func(layer, reason string) error {
@@ -85,17 +124,27 @@ func (p *Proxy) handleWatchFetch(w http.ResponseWriter, r *http.Request, o watch
 		if o.killed() {
 			return refuse("kill_switch", killSwitchActiveReason)
 		}
-		if watchRequestDecision(next, o) {
-			return refuse("redirect", "audit safety floor")
+		hop := o
+		hop.Refusal = &watchRequestCoverage{}
+		hopAdmission := watchAdmit(next, hop)
+		if hopAdmission.Core {
+			layer, reason := "redirect", "audit safety floor"
+			if hop.Refusal.refusalLayer != "" {
+				layer, reason = hop.Refusal.refusalLayer, hop.Refusal.refusalReason
+			}
+			return refuse(layer, reason)
 		}
-		if !o.receipt(next, config.ActionAllow, "watch_only", "redirect admitted") && cfg.FlightRecorder.RequireReceipts {
+		*next = *next.WithContext(watchOutboundContext(next.Context(), o, next, hopAdmission))
+		hopFindingsOK := o.confirmFindings(next)
+		if (!o.receipt(next, config.ActionAllow, "watch_only", "redirect admitted") || !hopFindingsOK) && cfg.FlightRecorder.RequireReceipts {
 			return refuse(receiptEmissionFailedLayer, "required receipt unavailable")
 		}
-		return nil
+		return p.refreshEnvelopeForRedirect(next, via, cfg)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
 		if info, reason, blocked := o.upstreamRefusal(req, err); blocked {
+			o.recordRefusal(req, info.Layer, start)
 			writeBlockedJSON(w, info, http.StatusForbidden, FetchResponse{
 				URL: audit.RedactContentBearingURL(rawURL), Agent: agent, Blocked: true, BlockReason: reason,
 				Error: "enforced in watch-only: " + reason,
@@ -113,20 +162,50 @@ func (p *Proxy) handleWatchFetch(w http.ResponseWriter, r *http.Request, o watch
 	}
 	limit := p.responseScanBodyLimit(cfg)
 	var responseFinding atomic.Bool
-	var responseSession *SessionState
-	if cfg.SessionProfiling.Enabled {
-		if sm := p.sessionMgrPtr.Load(); sm != nil {
+	var responseKinds watchKinds
+	var responseSession, taintSession *SessionState
+	if sm := p.sessionMgrPtr.Load(); sm != nil {
+		taintSession = sm.GetOrCreate(responseTaintSessionKey(cfg, agent, o.ClientIP, o.ActorAuth))
+		if cfg.SessionProfiling.Enabled {
 			responseSession = sm.GetOrCreate(sessionKeyFor(cfg, agent, o.ClientIP, o.ActorAuth))
 		}
 	}
 	responseOpts := watchResponseOptions{
 		Config: cfg, Scanner: sc, Logger: p.logger, Metrics: p.metrics,
-		Transport: TransportFetch, MaxBytes: limit, Shield: p.shieldEngine,
-		OnObservation: o.responseObserver(resp.Request, responseSession, &responseFinding),
+		Transport: TransportFetch, MaxBytes: limit, Shield: p.shieldEngine, RequestID: o.RequestID,
+		A2ACardBaseline: p.a2aCardBaseline,
+		OnObservation:   o.responseObserver(resp.Request, responseSession, &responseFinding),
+		OnFinding:       o.findings.add,
+		OnKinds:         responseKinds.merge,
 	}
+	// Exposure is recorded for any response that arrived, delivered or not.
+	defer func() {
+		if taintSession == nil {
+			return
+		}
+		observeHTTPResponseFindings(taintSession, cfg, resp.Request.URL.String(), responseTaintContentType(resp.Header), "fetch_response", responseKinds.list())
+	}()
 	if err := watchResponseBody(r.Context(), resp, responseOpts); err != nil {
+		if errors.Is(err, errWatchResponseCoreFloor) {
+			// The response safety floor is a refusal, not an upstream failure.
+			o.observe(scannerLabelA2A, "core credential floor", config.ActionBlock, 0, true)
+			o.receipt(req, config.ActionBlock, scannerLabelA2A, "audit safety floor enforced")
+			o.recordRefusal(req, scannerLabelA2A, start)
+			writeBlockedJSON(w, blockInfoFor(blockreason.DLPMatch, scannerLabelA2A).WithRequestID(o.RequestID), http.StatusForbidden, FetchResponse{
+				URL: audit.RedactContentBearingURL(rawURL), Agent: agent, Blocked: true, BlockReason: "audit safety floor",
+				Error: "enforced in watch-only: audit safety floor",
+			})
+			return
+		}
 		writeJSON(w, http.StatusBadGateway, FetchResponse{URL: audit.RedactContentBearingURL(rawURL), Error: "upstream response unavailable"})
 		return
+	}
+	// The uninspected-byte count follows bytes the client accepts, not bytes
+	// read into the buffer: a client can disconnect after buffering.
+	var uninspected *watchUninspectedBody
+	if held, ok := resp.Body.(*watchUninspectedBody); ok {
+		held.holdAccounting()
+		uninspected = held
 	}
 	var consumed int
 	source := resp.Body
@@ -144,10 +223,50 @@ func (p *Proxy) handleWatchFetch(w http.ResponseWriter, r *http.Request, o watch
 		return
 	}
 	meta := FetchResponse{URL: rawURL, Agent: agent, StatusCode: resp.StatusCode, ContentType: responseContentType(resp.Header)}
-	if int64(len(prefix)) <= limit {
-		surface := deriveFetchResponse(prefix, meta.ContentType, resp.Request.URL)
+	var surface fetchResponseSurface
+	withinLimit := int64(len(prefix)) <= limit
+	if withinLimit {
+		surface = deriveFetchResponse(prefix, meta.ContentType, resp.Request.URL)
 		meta.Content, meta.Title = surface.content, surface.title
+		// Readability can join text the raw body keeps apart (an instruction
+		// split across tags), so the delivered text is scanned as well. Other
+		// representations are the raw body, which was already scanned.
+		if surface.html && sc.ResponseScanningEnabled() {
+			scanned := scanFetchResponse(r.Context(), sc, cfg, surface, resp.Request.URL.String())
+			action := sc.ResponseAction()
+			if isResponseScanExempt(resp.Request.URL.Hostname(), cfg.ResponseScanning.ExemptDomains) {
+				action = config.ActionWarn
+			}
+			for _, result := range []*scanner.ResponseScanResult{&scanned.result, scanned.hidden} {
+				if result == nil || result.Clean {
+					continue
+				}
+				if result.Failed() {
+					responseOpts.record(responseScanLayer, result.ScanError, "uninspected", 0, false)
+					continue
+				}
+				for _, match := range result.Matches {
+					responseOpts.record(responseScanLayer, match.PatternName, action, 0, false)
+				}
+				responseOpts.kinds(responseScanFindingKinds(*result))
+			}
+		}
+	}
+	// Every response finding is recorded in a signed receipt before release.
+	if !o.confirmFindings(req) && cfg.FlightRecorder.RequireReceipts {
+		o.recordRefusal(req, receiptEmissionFailedLayer, start)
+		writeJSON(w, http.StatusServiceUnavailable, FetchResponse{URL: audit.RedactContentBearingURL(rawURL), Blocked: true, Error: "enforced in watch-only: required receipt unavailable"})
+		return
+	}
+	if withinLimit {
 		writeJSON(w, http.StatusOK, meta)
+		if uninspected != nil {
+			committed := int64(consumed)
+			if delivered.err != nil {
+				committed = 0
+			}
+			uninspected.commit(committed)
+		}
 	} else {
 		// The fetch API returns JSON text. Stream the complete over-limit source
 		// through JSON escaping instead of allocating an unbounded content string.
@@ -162,7 +281,19 @@ func (p *Proxy) handleWatchFetch(w http.ResponseWriter, r *http.Request, o watch
 		if _, err := io.WriteString(w, `,"content":"`); err != nil {
 			return
 		}
-		if err := writeWatchJSONString(w, io.MultiReader(bytes.NewReader(prefix), resp.Body)); err != nil {
+		streamErr := writeWatchJSONString(w, io.MultiReader(bytes.NewReader(prefix), resp.Body))
+		if uninspected != nil {
+			uninspected.commit(int64(consumed))
+		}
+		if streamErr != nil {
+			if delivered.err == nil {
+				// The upstream body failed after a 200 and partial JSON were
+				// sent. Ending the response normally would present invalid JSON
+				// as complete, so record the failed delivery and abort it.
+				o.observe("upstream", "upstream body failed after the fetch response began", "terminate", 0, true)
+				o.recordRefusal(req, "upstream", start)
+				panic(http.ErrAbortHandler)
+			}
 			return
 		}
 		_, _ = io.WriteString(w, `"}`)
@@ -171,9 +302,11 @@ func (p *Proxy) handleWatchFetch(w http.ResponseWriter, r *http.Request, o watch
 		delivered.err = flushResponseBeforeOutcome(w, r, cfg)
 	}
 	if delivered.err == nil {
-		if !responseFinding.Load() && responseSession != nil {
-			responseSession.ObserveWatchOnlyClean(adaptiveScopeForHost(resp.Request.URL.Hostname()), &cfg.AdaptiveEnforcement)
+		// Clean credit is withheld when either direction recorded a finding.
+		if !responseFinding.Load() && !o.requestFinding.Load() && responseSession != nil {
+			responseSession.ObserveWatchOnlyCleanAt(o.Generation, adaptiveScopeForHost(resp.Request.URL.Hostname()), &cfg.AdaptiveEnforcement)
 		}
+		o.Metrics.RecordAllowed(time.Since(start), o.agentLabel())
 		o.receipt(req, config.ActionAllow, "watch_only", "fetch delivered without policy rewriting")
 	}
 }

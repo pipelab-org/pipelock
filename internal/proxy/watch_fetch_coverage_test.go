@@ -116,8 +116,10 @@ func TestWatchFetchStreamWriteFailures(t *testing.T) {
 			})
 			w := &watchCoverageWriter{ResponseRecorder: httptest.NewRecorder(), failAt: failAt}
 			p.handleFetch(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://proxy.example/fetch?url=http://api.vendor.example/data", nil))
-			if receipts := helper.findReceipts(t); len(receipts) != 1 {
-				t.Fatalf("failed delivery recorded %d receipts, want admission only", len(receipts))
+			// Admission plus the response-ceiling finding recorded before the
+			// body was released; no delivery receipt follows a failed write.
+			if receipts := helper.findReceipts(t); len(receipts) != 2 {
+				t.Fatalf("failed delivery recorded %d receipts, want admission and finding", len(receipts))
 			}
 			if w.calls != failAt || !closed {
 				t.Fatalf("continued after failure: calls=%d failAt=%d closed=%v", w.calls, failAt, closed)
@@ -292,6 +294,10 @@ func TestWatchFetchRequiredDeliveryFlush(t *testing.T) {
 				want := 2
 				if fail {
 					want = 1
+				}
+				if limit == 2 {
+					// The ceiling finding is recorded before the body is released.
+					want++
 				}
 				if got := len(helper.findReceipts(t)); got != want || w.flushes != 1 {
 					t.Fatalf("receipts=%d want=%d flushes=%d", got, want, w.flushes)

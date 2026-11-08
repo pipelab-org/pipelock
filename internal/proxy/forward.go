@@ -1066,8 +1066,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		defer release()
 		serveWatchHTTP(w, r, watchHTTPOptions{
 			Config: cfg, Scanner: sc, Logger: p.logger, Metrics: p.metrics,
-			Transport: TransportForward, Upstream: p.client.Transport, Proxy: p, Agent: id.Name, ActorAuth: id.Auth, Budget: resolved.Budget,
+			Transport: TransportForward, Upstream: p.client.Transport, Proxy: p, Agent: id.Name, AgentLabel: id.Profile, ActorAuth: id.Auth, Budget: resolved.Budget,
 			ClientIP: clientIP, RequestID: requestID, KillSwitch: p.ks, MaxResponseBytes: p.responseScanBodyLimit(cfg),
+			ReceiptShard: selectedReceiptShard, EnvelopeEmitter: envEmitter, ActionID: actionID, Generation: p.watchModeGeneration.Load(),
 		})
 		return
 	}
