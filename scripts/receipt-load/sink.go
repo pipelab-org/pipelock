@@ -45,7 +45,7 @@ func startSink(ctx context.Context, plan workload, mode string) (*sink, error) {
 		var listener net.Listener
 		err := ctx.Err()
 		if err == nil {
-			listener, err = (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+			listener, err = listenTCP(ctx)
 		}
 		if err != nil {
 			for _, opened := range listeners {

@@ -144,6 +144,13 @@ func fakeMain(behavior string, args []string) int {
 			}
 			_ = file.Close()
 		}
+		if behavior == "noready" {
+			signals := make(chan os.Signal, 1)
+			signal.Notify(signals, syscall.SIGTERM)
+			defer signal.Stop(signals)
+			<-signals
+			return 0
+		}
 		if behavior == "exitfast" {
 			return 9
 		}
