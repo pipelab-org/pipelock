@@ -1203,6 +1203,10 @@ DLP decoding accepts hex, percent-encoding, standard and URL-safe base64, RFC 46
 
 These views also feed inbound prompt-injection scanning, with its existing recursion ceiling. Text DLP is shared by request bodies, scanned headers, WebSocket text, and MCP arguments; response injection scanning is shared by fetch, scanned forward/TLS-intercepted responses, WebSocket text, and MCP responses. CONNECT traffic without TLS interception has no body view. Structured numeric response leaves remain limited to known-value matching; they aren't fed to pattern DLP or injection scanning.
 
+Text DLP adds a terminal for separator-separated RFC 4648 encodings beyond the short-token normalizer limit. Built-in patterns and configured patterns with qualifying required literals inspect decoder outputs as well as input and text-preserving views. Configured patterns admitted only through finite character shapes inspect input and exact text-preserving views; binary decoder descendants and decoded images don't receive that additional shape-only inspection. Other configured grammars keep their existing coverage. See [encoded-content inspection](bypass-resistance.md#encoding-evasion) for the mechanism and cost limits.
+
+The terminal charges distinct decoded byte offsets per exact source view, alphabet and phase against an 8 MiB allowance. Outbound exhaustion refuses with `Uninspectable encoded content`. Inbound exhaustion adds the informational warning `Partial encoded content inspection` and keeps forwarding when no other finding enforces. That warning can appear with `clean: true`; it records partial inspection, not an assurance that every encoded value was checked. The existing warning hook carries it to audit and signed receipts where available. There is no separate configuration switch for this terminal.
+
 The decode graph keeps its existing candidate and byte budgets. Unfinished outbound decoding produces an inspection refusal rather than a clean result. DLP doesn't decode IIS `%uXXXX` escapes, Crockford base32, z-base-32, base58, ascii85, rot13, or reversed text.
 
 ## Seed Phrase Detection

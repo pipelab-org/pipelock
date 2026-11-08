@@ -42,7 +42,14 @@ type keywordDecodeSources struct {
 	incomplete  bool
 }
 
+type keywordSourceOccurrences struct {
+	offsets []int
+	from    int
+	done    bool
+}
+
 type keywordWorkBudget struct {
+	occurrences   map[keywordProjectionKey]*keywordSourceOccurrences
 	sourceVersion uint64
 	used          int
 	nodes         int
@@ -50,6 +57,7 @@ type keywordWorkBudget struct {
 }
 
 type keywordDecodeSource struct {
+	reassembly         *assembledKeywordBits
 	logicalVersion     uint64
 	logicals           []string
 	variants           []*keywordDecodeSource
@@ -179,14 +187,31 @@ func (n *keywordDecodeSource) visitOneSource(start, end int, visit func(string, 
 	if n.parent == nil {
 		return visit(n.text, start, end)
 	}
+	if n.encoding == "identity" && n.parent.text == n.text {
+		// Identity edges keep every byte position. Building and charging a
+		// per-byte map for each graph that binds the same parent spends the
+		// scan's keyword budget on copies and turns unlabeled values into
+		// inspection refusals.
+		return n.parent.visitSources(start, end, visit)
+	}
 	if !n.mapped {
 		n.mapped = true
-		if len(n.text) > maxDecodeTotalBytes/keywordSpanBytes || len(n.parent.text) > maxDecodeTotalBytes/(2*keywordSpanBytes) || !n.owner.charge(len(n.text)*keywordSpanBytes+len(n.parent.text)*(2*keywordSpanBytes)) {
+		parentCost := 2 * keywordSpanBytes
+		if n.reassembly != nil {
+			// RFC replay scans the raw source directly. It retains only the
+			// decoded offsets, without the generic decoder's raw span arrays.
+			parentCost = 1
+		}
+		if len(n.text) > maxDecodeTotalBytes/keywordSpanBytes || len(n.parent.text) > maxDecodeTotalBytes/parentCost || !n.owner.charge(len(n.text)*keywordSpanBytes+len(n.parent.text)*parentCost) {
 			n.owner.incomplete = true
 			n.owner.budget.incomplete = true
 			return false
 		}
-		n.offsets = keywordDecodeOffsets(n.parent.text, n.text, n.encoding)
+		if n.reassembly != nil {
+			n.offsets = n.reassembly.offsets(n.parent.text, n.text)
+		} else {
+			n.offsets = keywordDecodeOffsets(n.parent.text, n.text, n.encoding)
+		}
 	}
 	if len(n.offsets) != len(n.text) {
 		n.owner.incomplete = true
@@ -201,6 +226,10 @@ func (n *keywordDecodeSource) visitOneSource(start, end int, visit func(string, 
 type keywordProjectionKey struct{ source, view string }
 
 type keywordCandidateContext struct {
+	presence map[*config.DLPKeywordMatcher]bool
+	// exactDecoded uses candidate offsets from an unnormalized decoded view.
+	exactDecoded       bool
+	exactSources       map[string]*string
 	sourceUnavailable  bool
 	projections        map[keywordProjectionKey][]keywordByteSpan
 	logical            string
@@ -214,6 +243,9 @@ type keywordCandidateContext struct {
 }
 
 func (c *keywordCandidateContext) matches(gate *config.DLPKeywordMatcher, view string, start, end int) (matched bool) {
+	if c.exactDecoded && c.exactSources == nil {
+		c.exactSources = make(map[string]*string)
+	}
 	if c.memo != nil {
 		incomplete := c.memo.incomplete
 		budgetIncomplete := c.memo.keywordBudget != nil && c.memo.keywordBudget.incomplete
@@ -225,6 +257,13 @@ func (c *keywordCandidateContext) matches(gate *config.DLPKeywordMatcher, view s
 				}
 			}
 		}()
+	}
+	logical := c.logical
+	if logical == "" {
+		logical = view
+	}
+	if !c.exactDecoded && !c.keywordPossible(gate, logical, true) {
+		return false
 	}
 	if len(c.alternatives) > 0 {
 		if c.projections == nil {
@@ -249,12 +288,10 @@ func (c *keywordCandidateContext) matches(gate *config.DLPKeywordMatcher, view s
 		}
 		return false
 	}
-	logical := c.logical
-	if logical == "" {
-		logical = view
-	}
 	ls, le, ok := start, end, true
-	if view != logical {
+	if c.exactDecoded {
+		ls, le, ok = c.assembledNormalizedSpan(view, logical, start, end)
+	} else if view != logical {
 		ls, le, ok = c.projectionSpan(logical, view, start, end)
 	}
 	if c.offsets != nil {
@@ -274,11 +311,13 @@ func (c *keywordCandidateContext) matches(gate *config.DLPKeywordMatcher, view s
 	}
 	original := config.DLPKeywordContext(c.decoded.text)
 	ds, de, mapped := start, end, true
-	if original != view {
-		ds, de, mapped = c.projectionSpan(original, view, start, end)
-	}
-	if mapped {
-		ds, de, mapped = keywordNormalizedSpan(c.decoded.text, original, ds, de)
+	if !c.exactDecoded {
+		if original != view {
+			ds, de, mapped = c.projectionSpan(original, view, start, end)
+		}
+		if mapped {
+			ds, de, mapped = keywordNormalizedSpan(c.decoded.text, original, ds, de)
+		}
 	}
 	if !mapped {
 		return c.unavailableURLContext(gate)
@@ -296,29 +335,66 @@ func (c *keywordCandidateContext) matches(gate *config.DLPKeywordMatcher, view s
 			// keeps exact coordinates for a view decoded from those tags.
 			source = root
 		}
-		for from := 0; from <= len(source)-len(root); {
-			// Overlapping occurrences can revisit the same root bytes. Charge
-			// each comparison to the existing keyword inspection budget.
-			if !c.decoded.owner.charge(len(root) + keywordSpanBytes) {
-				return false
-			}
-			at := strings.Index(source[from:], root)
-			if at < 0 {
-				break
-			}
-			at += from
+		return c.decoded.owner.visitOccurrences(source, root, func(at int) bool {
 			found = true
-			if gate.Matches(source, at+rs, at+re) {
-				return true
+			if c.exactDecoded {
+				return c.assembledSourceKeyword(gate, source, at+rs, at+re)
 			}
-			from = at + 1
-		}
-		return false
+			return gate.Matches(source, at+rs, at+re)
+		})
 	})
 	if !matched && (!found || c.decoded.owner.incomplete || c.decoded.owner.budget.incomplete) {
 		return c.unavailableURLContext(gate)
 	}
 	return matched
+}
+
+// visitOccurrences reuses exact substring positions across candidate windows.
+// Discovery is incremental, so a successful early window never requires a
+// complete source search. Both retained positions and replay work use the
+// existing keyword allowance; exhaustion keeps the ordinary refusal policy.
+func (s *keywordDecodeSources) visitOccurrences(source, root string, visit func(int) bool) bool {
+	if source == root {
+		return s.charge(keywordSpanBytes) && visit(0)
+	}
+	key := keywordProjectionKey{source: source, view: root}
+	entry := s.budget.occurrences[key]
+	if entry == nil {
+		cost := int(reflect.TypeFor[keywordProjectionKey]().Size() + reflect.TypeFor[keywordSourceOccurrences]().Size())
+		if !s.charge(cost) {
+			return false
+		}
+		entry = &keywordSourceOccurrences{}
+		if s.budget.occurrences == nil {
+			s.budget.occurrences = make(map[keywordProjectionKey]*keywordSourceOccurrences)
+		}
+		s.budget.occurrences[key] = entry
+	}
+	for _, at := range entry.offsets {
+		if !s.charge(keywordSpanBytes) {
+			return false
+		}
+		if visit(at) {
+			return true
+		}
+	}
+	for !entry.done && entry.from <= len(source)-len(root) {
+		if !s.charge(len(root) + keywordSpanBytes) {
+			return false
+		}
+		at := strings.Index(source[entry.from:], root)
+		if at < 0 {
+			entry.done = true
+			break
+		}
+		at += entry.from
+		entry.offsets = append(entry.offsets, at)
+		entry.from = at + 1
+		if visit(at) {
+			return true
+		}
+	}
+	return false
 }
 
 // urlKeywordContext holds only views already produced by this URL's DLP scan.
