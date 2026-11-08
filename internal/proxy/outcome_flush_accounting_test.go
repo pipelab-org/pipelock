@@ -4,10 +4,12 @@
 package proxy
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -242,6 +244,25 @@ func TestInterceptOutcomeFlushAccountsBudget(t *testing.T) {
 
 // TestReverseBufferedOutcomeFraming checks complete bodies and HTTP framing exclusions.
 func TestReverseBufferedOutcomeFraming(t *testing.T) {
+	t.Run("writer_controls", func(t *testing.T) {
+		client, server := net.Pipe()
+		t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+		for _, success := range []bool{false, true} {
+			inner := &outcomeHijackWriter{issuedRedirectFlushWriter: &issuedRedirectFlushWriter{ResponseRecorder: httptest.NewRecorder(), err: io.ErrClosedPipe}, conn: client, buffer: bufio.NewReadWriter(bufio.NewReader(client), bufio.NewWriter(client))}
+			if !success {
+				inner.conn, inner.buffer, inner.hijackErr = nil, nil, io.ErrClosedPipe
+			}
+			guard := &reverseInformationalGuardWriter{ResponseWriter: inner}
+			if err := http.NewResponseController(guard).Flush(); !errors.Is(err, io.ErrClosedPipe) {
+				t.Fatalf("guard hid flush failure: %v", err)
+			}
+			conn, buffer, err := http.NewResponseController(guard).Hijack()
+			if conn != inner.conn || buffer != inner.buffer || !errors.Is(err, inner.hijackErr) || guard.hijacked != success {
+				t.Fatalf("hijack success=%t conn=%v buffer=%v err=%v recorded=%t", success, conn, buffer, err, guard.hijacked)
+			}
+		}
+	})
+
 	for _, tc := range []struct {
 		name, method         string
 		status               int
@@ -254,6 +275,7 @@ func TestReverseBufferedOutcomeFraming(t *testing.T) {
 		{"no_content", http.MethodGet, http.StatusNoContent, true, false},
 		{"receipts_off", http.MethodGet, http.StatusOK, false, false},
 		{"streamed_media", http.MethodGet, http.StatusOK, true, false},
+		{"buffered_media", http.MethodGet, http.StatusOK, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Defaults()
@@ -261,6 +283,9 @@ func TestReverseBufferedOutcomeFraming(t *testing.T) {
 			cfg.FlightRecorder.RequireReceipts = tc.required
 			cfg.ResponseScanning.Enabled = true
 			cfg.MediaPolicy.Enabled = ptrBool(false)
+			if tc.name == "buffered_media" {
+				cfg.ResponseScanning.SizeExemptDomains = []string{"api.vendor.example"}
+			}
 			sc := scanner.MustNew(cfg)
 			t.Cleanup(sc.Close)
 			var cfgPtr atomic.Pointer[config.Config]
@@ -277,7 +302,7 @@ func TestReverseBufferedOutcomeFraming(t *testing.T) {
 				payload = ""
 			}
 			resp := &http.Response{StatusCode: tc.status, Header: http.Header{"Content-Type": {"text/plain"}}, ContentLength: -1, Body: io.NopCloser(strings.NewReader(payload)), Request: httptest.NewRequestWithContext(t.Context(), tc.method, target.String(), nil)}
-			if tc.name == "streamed_media" {
+			if tc.name == "streamed_media" || tc.name == "buffered_media" {
 				resp.Header.Set("Content-Type", "audio/mpeg")
 			}
 			if err := rp.modifyResponse(resp); err != nil {
@@ -303,4 +328,16 @@ func TestReverseBufferedOutcomeFraming(t *testing.T) {
 			}
 		})
 	}
+}
+
+// outcomeHijackWriter exposes controlled upgrade results and a failing flush.
+type outcomeHijackWriter struct {
+	*issuedRedirectFlushWriter
+	conn      net.Conn
+	buffer    *bufio.ReadWriter
+	hijackErr error
+}
+
+func (w *outcomeHijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.conn, w.buffer, w.hijackErr
 }

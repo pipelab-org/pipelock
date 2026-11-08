@@ -752,7 +752,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		var flushErr error
 		if cfg.FlightRecorder.RequireReceipts && !clientHijacked && aborted == nil {
 			flushErr = flushResponseBeforeOutcome(w, r, cfg)
-			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason) {
+			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason, config.ActionAllow) {
 				outcomeReason, outcomeBytes = receiptReasonIncomplete, -1
 			}
 		}
@@ -2358,7 +2358,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		var flushErr error
 		if cfg.FlightRecorder.RequireReceipts && aborted == nil {
 			flushErr = flushResponseBeforeOutcome(w, r, cfg)
-			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason) {
+			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason, config.ActionAllow) {
 				outcomeReason, outcomeBytes = receiptReasonIncomplete, -1
 			}
 		}
@@ -3448,7 +3448,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// responses and budget-truncated delivery.
 		if cfg.FlightRecorder.RequireReceipts && r.Method != http.MethodHead && resp.StatusCode >= http.StatusOK &&
 			resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotModified &&
-			!bufferedBudgetTruncated && (budgetRemaining < 0 || int64(len(respBody)) < budgetRemaining) {
+			!bufferedBudgetTruncated && (budgetRemaining < 0 || int64(len(respBody)) <= budgetRemaining) {
 			w.Header().Del("Transfer-Encoding")
 			w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
 		}

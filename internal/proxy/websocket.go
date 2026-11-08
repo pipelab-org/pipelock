@@ -1154,7 +1154,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			if !outcomeEmitted {
 				if clientConn == nil && aborted == nil {
 					flushErr = flushResponseBeforeOutcome(w, r, cfg)
-					if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason) {
+					if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason, config.ActionAllow) {
 						outcomeReason, outcomeBytes = receiptReasonIncomplete, -1
 					}
 				}

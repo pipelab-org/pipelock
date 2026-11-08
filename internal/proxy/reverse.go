@@ -1747,6 +1747,9 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 					outcomeTracker.RecordFlushError()
 				}
 			}
+			if aborted != nil {
+				outcomeTracker.RecordFlushError()
+			}
 			outcomeTracker.EmitOnce(rp)
 			if aborted != nil {
 				panic(aborted)
@@ -1970,7 +1973,7 @@ func (t *reverseOutcomeTracker) RecordObserved(status int, bytesTransferred int6
 func (t *reverseOutcomeTracker) RecordFlushError() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if !t.emitted && outcomeReasonClaimsDelivery(t.reason) {
+	if !t.emitted && outcomeReasonClaimsDelivery(t.reason, config.ActionAllow) {
 		t.reason, t.bytesTransferred = receiptReasonIncomplete, -1
 		exact := false
 		t.bytesExact = &exact

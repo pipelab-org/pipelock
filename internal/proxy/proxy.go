@@ -6529,26 +6529,25 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	capturedBytes := int64(-1)
 	defer func() {
 		aborted := recover()
-		var flushErr error
-		if cfg.FlightRecorder.RequireReceipts && aborted == nil {
-			flushErr = flushResponseBeforeOutcome(w, r, cfg)
-			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason) {
-				delivery.err = flushErr
-			}
-		}
-		verdict := config.ActionAllow
 		// A policy denial describes withheld upstream content, even if its
 		// diagnostic response could not be delivered. Other failures are
 		// observations, not claims of retrospective prevention.
-		denied := delivery.Header().Get(blockreason.HeaderReason) != ""
-		switch {
-		case denied:
+		verdict := config.ActionAllow
+		if delivery.Header().Get(blockreason.HeaderReason) != "" {
 			verdict = config.ActionBlock
-		case delivery.err != nil && outcomeReasonClaimsDelivery(outcomeReason):
+		} else if outcomeReason != "complete" {
+			verdict = config.ActionWarn
+		}
+		var flushErr error
+		if cfg.FlightRecorder.RequireReceipts && aborted == nil {
+			flushErr = flushResponseBeforeOutcome(w, r, cfg)
+			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason, verdict) {
+				delivery.err = flushErr
+			}
+		}
+		if delivery.err != nil && outcomeReasonClaimsDelivery(outcomeReason, verdict) {
 			verdict = config.ActionWarn
 			outcomeReason = "delivery_error"
-		case outcomeReason != "complete":
-			verdict = config.ActionWarn
 		}
 		opts := fetchAllowReceipt
 		opts.Verdict = verdict

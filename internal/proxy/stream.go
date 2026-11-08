@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 )
 
@@ -33,10 +34,12 @@ func sseStreamReason(reason string) string {
 	return reason
 }
 
-// outcomeReasonClaimsDelivery identifies the success markers emitted by the
-// forward, intercept and reverse outcome producers. A flush failure may replace
-// these delivery claims, but must retain existing failure and inspection reasons.
-func outcomeReasonClaimsDelivery(reason string) bool {
+// outcomeReasonClaimsDelivery identifies allowed outcomes that claim delivery.
+// Flush failures must retain block verdicts and failure or inspection reasons.
+func outcomeReasonClaimsDelivery(reason, verdict string) bool {
+	if verdict != config.ActionAllow {
+		return false
+	}
 	switch reason {
 	case "", "complete", "sse_stream", "sse_stream_unscanned", "unscannable_passthrough",
 		mediaUnscannedOutcome, "non_shieldable_passthrough", "strip":

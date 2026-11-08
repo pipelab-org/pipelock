@@ -402,7 +402,8 @@ func TestForwardBufferedOutcomeFraming(t *testing.T) {
 		{name: "no_content", method: http.MethodGet, status: http.StatusNoContent, budget: -1},
 		{name: "not_modified", method: http.MethodGet, status: http.StatusNotModified, budget: -1},
 		{name: "budget_truncated", method: http.MethodGet, status: http.StatusOK, body: "ordinary response body", budget: 8},
-		{name: "budget_exhausted", method: http.MethodGet, status: http.StatusOK, body: "ok", budget: 2},
+		{name: "budget_equal", method: http.MethodGet, status: http.StatusOK, body: "ok", budget: 2, wantLength: true},
+		{name: "budget_one_under", method: http.MethodGet, status: http.StatusOK, body: "ok", budget: 3, wantLength: true},
 		{name: "budget_available", method: http.MethodGet, status: http.StatusOK, body: "ok", budget: 8, wantLength: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -527,6 +528,7 @@ func outcomeFlushHandler(t *testing.T, surface string) (http.Handler, *receiptPr
 	cfg.APIAllowlist = nil
 	cfg.FlightRecorder.RequireReceipts = true
 	cfg.ForwardProxy.Enabled = true
+	cfg.WebSocketProxy.Enabled = true
 	cfg.ForwardProxy.IdleTimeoutSeconds = 1
 	cfg.ResponseScanning.Enabled = true
 	sc := scanner.MustNew(cfg)
@@ -536,6 +538,8 @@ func outcomeFlushHandler(t *testing.T, surface string) (http.Handler, *receiptPr
 	}
 	t.Cleanup(p.Close)
 	switch surface {
+	case "websocket":
+		return p.buildHandler(p.buildMux()), rph, "/ws?url=" + url.QueryEscape("ws"+strings.TrimPrefix(origin.URL, "http"))
 	case "fetch":
 		return p.buildHandler(p.buildMux()), rph, "/fetch?url=" + url.QueryEscape(origin.URL)
 	case "reverse":
