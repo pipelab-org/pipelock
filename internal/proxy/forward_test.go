@@ -2181,11 +2181,23 @@ func TestForwardProxy_RequireReceiptsOutcomeEmitFailureDoesNotFailRequest(t *tes
 	if receipts[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
 		t.Fatalf("receipt phase = %q, want %q", receipts[0].ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
 	}
-	auditLog, err := os.ReadFile(filepath.Clean(auditPath))
-	if err != nil {
-		t.Fatalf("read audit log: %v", err)
-	}
-	for _, want := range []string{"event=receipt_channel_broken", "audit_gap=true", "phase=outcome", "layer=outcome"} {
+	// The response reaches the client before the outcome receipt is attempted,
+	// so the failure is logged after the body is read. Wait for it.
+	wantAudit := []string{"event=receipt_channel_broken", "audit_gap=true", "phase=outcome", "layer=outcome"}
+	var auditLog []byte
+	testwait.For(t, waitForReceiptTimeout, func() bool {
+		auditLog, err = os.ReadFile(filepath.Clean(auditPath))
+		if err != nil {
+			return false
+		}
+		for _, want := range wantAudit {
+			if !strings.Contains(string(auditLog), want) {
+				return false
+			}
+		}
+		return true
+	}, "outcome receipt failure in audit log %s", auditPath)
+	for _, want := range wantAudit {
 		if !strings.Contains(string(auditLog), want) {
 			t.Fatalf("audit log %q missing %q", string(auditLog), want)
 		}
