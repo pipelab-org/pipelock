@@ -114,3 +114,29 @@ func TestSignInBearerAllowedOnlyForJWTPattern(t *testing.T) {
 		t.Fatal("undecodable payload allowed")
 	}
 }
+
+// signInBearerAllowed decides the scheme and header shape itself, so a caller
+// that reaches it with a wss target or a malformed header value is refused here
+// and not only by the callers' own checks.
+func TestSignInBearerAllowedSchemeAndHeaderShape(t *testing.T) {
+	t.Parallel()
+	codex := registryJWT(t, map[string]any{"iss": "https://auth.openai.com", "client_id": "app_EMoamEEZ73f0CkXaXp7hrann"})
+	const surface = CredentialAudienceAuthorizationHeaderSurface
+	for _, tc := range []struct {
+		name, target, value string
+		allow               bool
+	}{
+		{"https bearer", "https://chatgpt.com/backend-api/codex", "Bearer " + codex, true},
+		{"wss target", "wss://chatgpt.com/backend-api/codex", "Bearer " + codex, false},
+		{"http target", "http://chatgpt.com/backend-api/codex", "Bearer " + codex, false},
+		{"basic scheme", "https://chatgpt.com/backend-api/codex", "Basic " + codex, false},
+		{"extra field", "https://chatgpt.com/backend-api/codex", "Bearer " + codex + " extra", false},
+		{"bare token", "https://chatgpt.com/backend-api/codex", codex, false},
+		{"empty value", "https://chatgpt.com/backend-api/codex", "", false},
+	} {
+		c := credentialAudienceCandidate{patternName: "JWT Token", headerValue: tc.value}
+		if got := signInBearerAllowed(c, "chatgpt.com", tc.target, surface); got != tc.allow {
+			t.Errorf("%s: allowed=%t want %t", tc.name, got, tc.allow)
+		}
+	}
+}
