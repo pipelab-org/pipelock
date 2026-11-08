@@ -1792,6 +1792,11 @@ func deescalationDuration(tier string, timers *config.AirlockTimers) time.Durati
 
 // logSessionAdmin logs a session admin API operation if a logger is available.
 func (h *SessionAPIHandler) logSessionAdmin(action, clientIP, sessionKey, result string, statusCode int) {
+	if (action == "auth_failure" || action == "auth_rate_limited") && h.stateConfig != nil {
+		if cfg := h.stateConfig(); cfg != nil && cfg.WatchOnly {
+			watchObservation(h.logger, h.metrics, "admin", "authentication", "session API access refused", config.ActionBlock, 0, true)
+		}
+	}
 	if h.logger != nil {
 		h.logger.LogSessionAdmin(action, clientIP, sessionKey, result, statusCode)
 	}

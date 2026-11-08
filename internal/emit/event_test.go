@@ -180,6 +180,12 @@ func TestEventSeverity_NoUnexpectedEntries(t *testing.T) {
 		EventInterceptHTTP:          true,
 		EventToolRedirect:           true,
 		EventAuthorityVerification:  true,
+		"would_block":               true,
+		"would_escalate":            true,
+		"uninspected":               true,
+		"watch_only_enforced":       true,
+		"watch_only_mode":           true,
+		"watch_only_observation":    true,
 	}
 
 	for k := range EventSeverity {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -173,6 +174,12 @@ type SessionState struct {
 	// block do not keep adding SignalBlock. Bounded; unknown fingerprints
 	// past the cap still score (fail closed).
 	classifiedDenials map[string]struct{}
+
+	// watchAdaptive is an isolated recorder for would-escalate decisions.
+	// It reuses the same bounded scopes, denial deduplication, and scoring
+	// rules, but is never returned to a consumer of enforcement state.
+	watchAdaptive   *SessionState
+	watchGeneration uint64
 
 	// Behavioral baseline accumulation - collected per-session for
 	// baseline learning and deviation checking.
@@ -474,6 +481,84 @@ func adaptiveDeescalationCheckInterval(cfg *config.AdaptiveEnforcement) time.Dur
 func adaptiveBlockAllCheck(cfg *config.AdaptiveEnforcement) func(int) bool {
 	return func(level int) bool {
 		return decide.UpgradeAction("", level, cfg) == config.ActionBlock
+	}
+}
+
+// watchAdaptiveLocked returns the private observation recorder under s.mu.
+// Configuration changes reset simulated history; unchanged reloads preserve it.
+func (s *SessionState) watchAdaptiveLocked(cfg *config.AdaptiveEnforcement) *SessionState {
+	if cfg == nil || !cfg.Enabled {
+		s.watchAdaptive = nil
+		return nil
+	}
+	if s.watchAdaptive == nil || !reflect.DeepEqual(s.watchAdaptive.adaptiveCfg.Load(), cfg) {
+		holder := new(atomic.Pointer[config.AdaptiveEnforcement])
+		holder.Store(cfg)
+		s.watchAdaptive = &SessionState{adaptiveCfg: holder}
+	}
+	return s.watchAdaptive
+}
+
+// ObserveWatchOnlySignal simulates the existing adaptive decision without
+// touching enforcing scores, levels, airlocks, or denial fingerprints.
+// The returned labels describe a would-escalate edge, never an actual one.
+func (s *SessionState) ObserveWatchOnlySignal(scope string, sig session.SignalType, cfg *config.AdaptiveEnforcement, ep decide.EscalationParams) (bool, string, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	observed := s.watchAdaptiveLocked(cfg)
+	if observed == nil {
+		return false, "", ""
+	}
+	scope = normalizeAdaptiveScope(scope)
+	observed.TryAutoRecover(adaptiveLevelDuration(cfg), nil)
+	observed.TryAutoRecoverScopes(adaptiveLevelDuration(cfg), nil)
+	if session.ClassifiedDenialSignal(sig) && !shouldScoreClassifiedDenial(observed, scope, ep) {
+		return false, "", ""
+	}
+	return observed.RecordScopedSignal(scope, sig, cfg.EscalationThreshold)
+}
+
+// ObserveWatchOnlyClean applies the same destination-scoped decay and recovery
+// to simulated scores. It never grants clean-request credit to enforcement.
+func (s *SessionState) ObserveWatchOnlyClean(scope string, cfg *config.AdaptiveEnforcement) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	observed := s.watchAdaptiveLocked(cfg)
+	if observed == nil {
+		return
+	}
+	observed.TryAutoRecover(adaptiveLevelDuration(cfg), nil)
+	observed.TryAutoRecoverScopes(adaptiveLevelDuration(cfg), nil)
+	observed.RecordScopedCleanWithRecovery(scope, cfg.DecayPerCleanRequest, cfg.CleanRequestsToDeescalate, nil)
+}
+
+// SyncWatchOnlyGeneration also resets a recorder retained by an active MCP
+// session after its store entry was removed. The caller serializes this with
+// mode publication and rejects older in-flight generations before calling.
+func (s *SessionState) SyncWatchOnlyGeneration(generation uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.watchGeneration != generation {
+		s.watchGeneration = generation
+		s.watchAdaptive = nil
+	}
+}
+
+// ResetWatchOnlyAdaptive discards simulation history at an operator mode change.
+// Enforcing state is deliberately preserved.
+func (s *SessionState) ResetWatchOnlyAdaptive() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.watchAdaptive = nil
+}
+
+// ResetWatchOnlyAdaptive clears observations for each retained session. Session
+// deletion/TTL expiry already drops the private recorder with its parent.
+func (sm *SessionManager) ResetWatchOnlyAdaptive() {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	for _, sess := range sm.sessions {
+		sess.ResetWatchOnlyAdaptive()
 	}
 }
 
@@ -1090,6 +1175,7 @@ func (s *SessionState) resetWhileLocked(cancelInFlight bool) (prevScore float64,
 	}
 	s.scopes = nil
 	s.classifiedDenials = nil
+	s.watchAdaptive = nil
 	s.domainWindows = nil
 	s.lastBurstAt = time.Time{}
 	s.lastActivity = time.Now()
@@ -1993,6 +2079,7 @@ func (sm *SessionManager) RecordIPDomain(clientIP, domain string, cfg *config.Se
 // next operation. Pass nil for adaptiveCfg to clear adaptive enforcement
 // (e.g., when it is disabled via hot reload).
 func (sm *SessionManager) UpdateConfig(cfg *config.SessionProfiling, adaptiveCfg *config.AdaptiveEnforcement, airlockCfg *config.Airlock) {
+	previousAdaptive := sm.adaptiveCfgPtr.Load()
 	sm.cfgPtr.Store(cfg)
 	sm.adaptiveCfgPtr.Store(adaptiveCfg)
 	sm.airlockCfgPtr.Store(airlockCfg)
@@ -2004,6 +2091,9 @@ func (sm *SessionManager) UpdateConfig(cfg *config.SessionProfiling, adaptiveCfg
 	// - No change → flags stay the same (recompute is idempotent)
 	sm.mu.RLock()
 	for _, sess := range sm.sessions {
+		if !reflect.DeepEqual(previousAdaptive, adaptiveCfg) {
+			sess.ResetWatchOnlyAdaptive()
+		}
 		if adaptiveCfg == nil || !adaptiveCfg.Enabled {
 			sess.SetBlockAll(false)
 			sess.recomputeScopedBlockAll(nil)
@@ -2992,6 +3082,10 @@ func (a *storeAdapter) GetOrCreate(key string) session.Recorder {
 		return nil
 	}
 	return sess
+}
+
+func (a *storeAdapter) ResetWatchOnlyAdaptive() {
+	a.sm.ResetWatchOnlyAdaptive()
 }
 
 func (a *storeAdapter) Delete(key string) {

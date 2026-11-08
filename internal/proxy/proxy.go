@@ -706,7 +706,16 @@ func WithKillSwitch(ks *killswitch.Controller) Option {
 
 // WithKillSwitchAPI sets the kill switch API handler for registering routes.
 func WithKillSwitchAPI(api *killswitch.APIHandler) Option {
-	return func(p *Proxy) { p.ksAPI = api }
+	return func(p *Proxy) {
+		p.ksAPI = api
+		if api != nil {
+			api.SetAccessDeniedObserver(func() {
+				if cfg := p.cfgPtr.Load(); cfg != nil && cfg.WatchOnly {
+					watchObservation(p.logger, p.metrics, "admin", "authentication", "kill switch API access refused", config.ActionBlock, 0, true)
+				}
+			})
+		}
+	}
 }
 
 // WithCaptureObserver sets the policy capture observer for recording verdicts
@@ -1035,8 +1044,8 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 		Transport: transport,
 		Timeout:   time.Duration(cfg.FetchProxy.TimeoutSeconds) * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) (retErr error) {
-			if len(via) >= 5 {
-				return fmt.Errorf("too many redirects (max 5)")
+			if len(via) >= maxFetchRedirects {
+				return fmt.Errorf("too many redirects (max %d)", maxFetchRedirects)
 			}
 			originalURL := via[0].URL.String()
 			redirectURL := req.URL.String()
@@ -1227,6 +1236,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			// request_policy runs before the contract gate so a contract
 			// allow can never suppress an operation-policy block.
 			if rpRes := p.applyRequestPolicy(requestPolicyInput{
+				Config:      currentCfg,
 				Host:        req.URL.Hostname(),
 				Method:      req.Method,
 				Path:        req.URL.EscapedPath(),
@@ -1310,6 +1320,10 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 
 	p.tlsTransport = newTLSInterceptTransport(p.ssrfSafeDialContext, m.RecordTLSHandshake, nil)
 
+	p.metrics.SetWatchOnly(cfg.WatchOnly)
+	if cfg.WatchOnly {
+		p.logger.LogWatchOnlyMode(true)
+	}
 	return p, nil
 }
 
@@ -2782,6 +2796,13 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		p.cfgPtr.Store(cfg)
 		p.contractLoaderPtr.Store(contractLoader)
 	}
+	p.metrics.SetWatchOnly(cfg.WatchOnly)
+	if oldCfg == nil || oldCfg.WatchOnly != cfg.WatchOnly {
+		if sm := p.sessionMgrPtr.Load(); sm != nil {
+			sm.ResetWatchOnlyAdaptive()
+		}
+		p.logger.LogWatchOnlyMode(cfg.WatchOnly)
+	}
 	// Move the active-manifest watcher onto the loader just published and
 	// stop the replaced loader's watcher.
 	p.syncContractWatcher()
@@ -2933,6 +2954,7 @@ type ceeEntropySnapshot struct {
 }
 
 type ceeAdmitRequest struct {
+	WatchOnly            bool
 	ActorAuth            envelope.ActorAuth
 	Outbound             []byte
 	BodyFragmentPayloads map[string][]byte
@@ -2962,6 +2984,9 @@ func (p *Proxy) admitCurrentCEE(ctx context.Context, req ceeAdmitRequest) ceeAdm
 	cfg := p.cfgPtr.Load()
 	if cfg == nil {
 		return ceeAdmission{}
+	}
+	if !req.WatchOnly {
+		cfg = deferredWatchConfig(cfg)
 	}
 	ceeCfg := ceeEffectiveConfig(cfg.CrossRequestDetection, cfg.EnforceEnabled())
 	if !ceeCfg.Enabled {
@@ -2995,7 +3020,7 @@ func (p *Proxy) admitCurrentCEE(ctx context.Context, req ceeAdmitRequest) ceeAdm
 func (p *Proxy) currentCEEEntropy(identity identitykey.CEEIdentity) ceeEntropySnapshot {
 	p.reloadMu.RLock()
 	defer p.reloadMu.RUnlock()
-	cfg := p.cfgPtr.Load()
+	cfg := deferredWatchConfig(p.cfgPtr.Load())
 	if cfg == nil {
 		return ceeEntropySnapshot{}
 	}
@@ -3685,7 +3710,54 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 	key := sessionKeyFor(cfg, agent, clientIP, opts.ActorAuth)
 	sess := sm.GetOrCreate(key)
 	if sess == nil {
+		if cfg.WatchOnly {
+			watchObservation(log, p.metrics, "session", sessionCapacityLayer, session.ErrCapacity.Error(), "uninspected", 0, false)
+			return SessionResult{}
+		}
+
 		return SessionResult{capacityDenied: true, Blocked: true, Detail: session.ErrCapacity.Error()}
+	}
+
+	if cfg.WatchOnly {
+		anomalies := sess.RecordRequest(hostname, &cfg.SessionProfiling)
+		for _, anomaly := range anomalies {
+			watchObservation(log, p.metrics, "session", "session_profiling", anomaly.Detail, cfg.SessionProfiling.AnomalyAction, 0, false)
+		}
+		if cfg.AdaptiveEnforcement.Enabled && !isAdaptiveExempt(hostname, cfg.AdaptiveEnforcement.ExemptDomains) {
+			ep := decide.EscalationParams{Threshold: cfg.AdaptiveEnforcement.EscalationThreshold, Session: key, ClientIP: clientIP, RequestID: requestID}
+			observeSignal := func(sig session.SignalType, params decide.EscalationParams) {
+				if changed, from, to := sess.ObserveWatchOnlySignal(scope, sig, &cfg.AdaptiveEnforcement, params); changed {
+					watchObservation(log, p.metrics, "session", adaptiveEnforcementLayer, fmt.Sprintf("adaptive level would change from %s to %s", from, to), "escalate", 0, false)
+				}
+			}
+			switch {
+			case result.IsAdaptiveNeutral():
+			case result.IsConfigMismatch():
+				observeSignal(session.SignalNearMiss, classifiedDenialParams(ep, result.Scanner, result.Reason, cfg.CanonicalPolicyHash()))
+			case !result.Allowed:
+				observeSignal(adaptiveBlockSignal(result, &cfg.AdaptiveEnforcement), classifiedDenialParams(ep, result.Scanner, result.Reason, cfg.CanonicalPolicyHash()))
+			case result.Score > 0:
+				observeSignal(session.SignalWarning, ep)
+			case !deferClean:
+				sess.ObserveWatchOnlyClean(scope, &cfg.AdaptiveEnforcement)
+			}
+			for _, anomaly := range anomalies {
+				if sig, ok := signalForSessionAnomaly(anomaly.Type, opts.ActorAuth.TrustedForIdentity()); ok && anomaly.Score > 0 {
+					if cfg.SessionProfiling.AnomalyAction != config.ActionBlock {
+						sig = session.SignalWarning
+					}
+					observeSignal(sig, ep)
+				}
+			}
+		}
+		if baseline := sm.CheckBaselineFailClosed(baselineAgentKeyForSessionKey(key), sess); baseline != nil {
+			watchObservation(log, p.metrics, "session", "baseline", baselineDecisionDetail(baseline), baseline.Action, 0, false)
+		}
+		level := sess.EffectiveEscalationLevel(scope)
+		if decide.UpgradeAction(config.ActionWarn, level, &cfg.AdaptiveEnforcement) != config.ActionWarn {
+			watchObservation(log, p.metrics, "session", adaptiveEnforcementLayer, "adaptive upgrade observed", "escalate", 0, false)
+		}
+		return SessionResult{recorder: sess}
 	}
 
 	// On-entry de-escalation: recover sessions stuck at block_all.
@@ -4790,9 +4862,7 @@ func (p *Proxy) SafeDialer() func(ctx context.Context, network, addr string) (ne
 // at connection time, closing the DNS-rebinding gap the cloned default dialer
 // left open.
 func (p *Proxy) MetadataSafeDialer() func(ctx context.Context, network, addr string) (net.Conn, error) {
-	inner := mcp.NewMetadataSafeDialContext(func() *scanner.Scanner {
-		return p.scannerPtr.Load()
-	})
+	inner := mcp.NewMetadataSafeDialContext(p.scannerPtr.Load)
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		// Bind the rebind snapshot to this dial's port so a snapshot taken
 		// for a different port cannot label this block as a rebind.
@@ -4801,6 +4871,9 @@ func (p *Proxy) MetadataSafeDialer() func(ctx context.Context, network, addr str
 		}
 		conn, err := inner(ctx, network, addr)
 		if err != nil {
+			if o, ok := ctx.Value(watchModeContextKey{}).(watchHTTPOptions); ok {
+				o.observe("ssrf_metadata", err.Error(), config.ActionBlock, 0, true)
+			}
 			// Translate the MCP dialer's typed metadata refusal into the proxy's
 			// own ssrfDialBlockError so the reverse errorHandler surfaces
 			// ssrf_metadata in the block-reason header and receipt, identical to
@@ -5084,9 +5157,22 @@ func isLocalInterfaceIP(ip net.IP) (bool, error) {
 }
 
 func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	watchOpts, watching := ctx.Value(watchModeContextKey{}).(watchHTTPOptions)
+	dialRefusal := func(err error) error {
+		if watching {
+			watchOpts.observe(scanner.ScannerSSRF, err.Error(), config.ActionBlock, 0, true)
+		}
+		return err
+	}
 	currentSc, _ := ctx.Value(ctxKeyAgentScanner).(*scanner.Scanner)
+	if currentSc == nil && watching {
+		currentSc = watchOpts.Scanner
+	}
 	if currentSc == nil {
 		currentSc = p.scannerPtr.Load()
+	}
+	if currentSc == nil {
+		return nil, fmt.Errorf("outbound scanner unavailable")
 	}
 
 	host, port, err := net.SplitHostPort(addr)
@@ -5111,10 +5197,10 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 			return nil, err
 		}
 		if err := blockIfNonOverridableSSRFTarget(ctx, host, ip); err != nil {
-			return nil, err
+			return nil, dialRefusal(err)
 		}
 		if currentSc.IsInternalIP(ip) && !currentSc.IsIPAllowlisted(ip) && !guardGranted {
-			return nil, newSSRFDialBlockError(ctx, host, ip, ssrfDialBlockDetail(host, ip))
+			return nil, dialRefusal(newSSRFDialBlockError(ctx, host, ip, ssrfDialBlockDetail(host, ip)))
 		}
 		return p.dialer.DialContext(ctx, network, addr)
 	}
@@ -5145,7 +5231,7 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 			return nil, err
 		}
 		if err := blockIfNonOverridableSSRFTarget(ctx, host, ip); err != nil {
-			return nil, err
+			return nil, dialRefusal(err)
 		}
 		if currentSc.IsInternalIP(ip) {
 			if isTrusted || currentSc.IsIPAllowlisted(ip) {
@@ -5157,7 +5243,7 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 			if guardGranted && ssrfDialSnapshotContains(ctx, host, ip) {
 				continue
 			}
-			return nil, newSSRFDialBlockError(ctx, host, ip, ssrfDialBlockDetail(host, ip))
+			return nil, dialRefusal(newSSRFDialBlockError(ctx, host, ip, ssrfDialBlockDetail(host, ip)))
 		}
 	}
 
@@ -5185,6 +5271,9 @@ func (p *Proxy) buildHandler(mux *http.ServeMux) http.Handler {
 		// Kill switch: deny all requests when active (except exempt endpoints/IPs).
 		if p.ks != nil {
 			if d := p.ks.IsActiveHTTP(r); d.Active {
+				if cfg := p.cfgPtr.Load(); cfg != nil && cfg.WatchOnly {
+					watchObservation(p.logger, p.metrics, schemeHTTP, "kill_switch", "operator kill switch", config.ActionBlock, 0, true)
+				}
 				clientIP, requestID := requestMeta(r)
 				p.logger.LogKillSwitchDeny(schemeHTTP, r.URL.Path, d.Source, d.Message, clientIP, requestID)
 				p.metrics.RecordKillSwitchDenial(schemeHTTP, r.URL.Path)
@@ -5194,12 +5283,12 @@ func (p *Proxy) buildHandler(mux *http.ServeMux) http.Handler {
 					// so emit a forward receipt here to keep the
 					// audit chain unbroken.
 					actionID := receipt.NewActionID()
-					if p.emitRecordedReceipt(forwardKillSwitchReceiptOpts(
+					if p.emitRecordedReceipt(withReceiptConfig(forwardKillSwitchReceiptOpts(
 						actionID,
 						requestID,
 						r.Method,
 						r.URL.String(),
-					)) {
+					), watchRequestConfig(p.cfgPtr.Load(), r))) {
 						blockreason.SetRecordedReceipt(w.Header(), actionID)
 					}
 					writeBlockedError(w,
@@ -5467,6 +5556,16 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	resolved, id, envEmitter, snapshotContractLoader, r, releaseLicense := p.resolveAgentRuntimeFromRequest(r)
 	defer releaseLicense()
 	cfg := resolved.Config
+	if cfg.WatchOnly {
+		sc, release, _ := p.pinResolvedScanner(resolved)
+		defer release()
+		p.handleWatchFetch(w, r, watchHTTPOptions{
+			Config: cfg, Scanner: sc, Logger: p.logger, Metrics: p.metrics, Transport: TransportFetch,
+			Proxy: p, Agent: id.Name, ActorAuth: id.Auth, Budget: resolved.Budget, ClientIP: clientIP, RequestID: requestID, KillSwitch: p.ks,
+		})
+		return
+	}
+
 	agent := id.Name
 	if agent == "" {
 		agent = agentAnonymous
@@ -6274,6 +6373,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// X-HTTP-Method-Override) never reach the upstream, so they must not drive
 	// request_policy matching. Leave Headers/ContentType unset.
 	if rpRes := p.applyRequestPolicy(requestPolicyInput{
+		Config:    cfg,
 		Host:      parsed.Hostname(),
 		Method:    http.MethodGet,
 		Path:      parsed.EscapedPath(),
@@ -7501,6 +7601,7 @@ func extractRawURLParam(rawQuery string) string {
 // map; when disabled, Subsystems is omitted and Status is always "healthy"
 // (preserving the legacy shape).
 type healthResponse struct {
+	WatchOnly              bool                  `json:"watch_only"`
 	Status                 string                `json:"status"`
 	Version                string                `json:"version"`
 	Mode                   string                `json:"mode"`
@@ -7551,6 +7652,7 @@ func (p *Proxy) handleHealth(w http.ResponseWriter, r *http.Request) {
 		UptimeSeconds: time.Since(p.startTime).Seconds(),
 	}
 	if cfg != nil {
+		resp.WatchOnly = cfg.WatchOnly
 		resp.Mode = cfg.Mode
 		resp.DLPPatterns = len(cfg.DLP.Patterns)
 		resp.ResponseScanEnabled = cfg.ResponseScanning.Enabled

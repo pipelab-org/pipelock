@@ -21,6 +21,7 @@ var ErrIncompleteResponse = errors.New("incomplete upstream response")
 // next SSE event. Multi-line data: fields are concatenated with newlines
 // per the SSE specification.
 type SSEReader struct {
+	watch         *watchSSEReader
 	scanner       *bufio.Scanner
 	maxEventBytes int
 	lastEventID   string
@@ -67,6 +68,9 @@ func (sr *SSEReader) LastRetry() string {
 // parsed but not included in the returned payload.
 // Returns io.EOF when no more events are available.
 func (sr *SSEReader) ReadMessage() ([]byte, error) {
+	if sr.watch != nil {
+		return sr.readWatchMessage()
+	}
 	var data []string
 	eventBytes := 0
 	hasData := false

@@ -61,6 +61,7 @@ A valid expired path or query entropy exclusion, request-body entropy warning ro
 version: 1                    # Config schema version (currently 1)
 mode: balanced                # "strict", "balanced", or "audit"
 enforce: true                 # false = ordinary findings warn; independent controls can block
+watch_only: false             # true = observe policy; audit-mode secret and host protections still enforce
 explain_blocks: false         # true = include fix hints in block responses
 ```
 
@@ -70,6 +71,7 @@ explain_blocks: false         # true = include fix hints in block responses
 | `version` | int | `1` | Config schema version |
 | `mode` | string | `"balanced"` | Operating mode (see [Modes](#modes)) |
 | `enforce` | bool | `true` | When false, normal policy blocks become warnings; core credentials, SSRF, fail-closed transport checks, and adaptive escalation can still block |
+| `watch_only` | bool | `false` | Explicit observation mode; overrides ordinary enforcement while retaining audit-mode secret and host protections, kill switches, and access controls. See [Watch-only](#watch-only). |
 | `explain_blocks` | bool | `false` | Include actionable hints in block responses |
 
 ### Sentry Crash Reporting
@@ -109,6 +111,33 @@ explain_blocks: true
 | **audit** | With `enforce: false`, warns on ordinary findings. Core credentials, SSRF, fail-closed transport checks, and explicit tool-policy rules can still block. The audit preset sets `enforce: false` and disables adaptive escalation. | Evaluation before enforcement |
 
 `mode: audit` alone leaves `enforce` at its default of `true`, so ordinary URL DLP, entropy and blocklist findings still block. Use the bundled `audit` preset for an observation trial. Changing only the mode name doesn't select that preset or change its scanning actions. Where this reference describes what "audit mode" does, it means `enforce: false`.
+
+### Watch-only
+
+`watch_only: true` selects observation for the configured proxy policy. It takes precedence over `enforce`, including `enforce: true`. Omitted, YAML null, and `false` keep the existing enforcement behavior. The setting does not enable a listener, route an agent through the proxy, or enable TLS interception by itself.
+
+```yaml
+watch_only: true
+```
+
+Watch-only is never weaker than `enforce: false` for protections that guard secrets or the host. Existing audit-mode refusals remain enforced: the core credential floor (including credentials encoded in hostnames), incomplete outbound inspection, URL decode and query-search bounds, enabled request-body size and encoding checks, and the applicable SSRF guards. Subdomain-entropy findings remain observations. Configured private MCP upstreams remain supported; cloud metadata destinations stay blocked.
+
+Kill switches, caller and server identity checks, authority grants, CONNECT SNI verification, listener authentication and origin checks, protocol validation, feature gates, connection limits, and `flight_recorder.require_receipts` also remain enforced. These refusals emit `watch_only_enforced` events with the message `enforced in watch-only`. Required receipt recording must be available at startup and before protected forwarding, including after a reload.
+
+Watch-only records ordinary response, injection, tool-policy, request-policy, budget, and contract refusals as `would_block`. Adaptive escalation is recorded as `would_escalate` without raising enforcement. It also relaxes response size ceilings and size-exempt limits, SSE event drops or terminations, and response Range/206/304 refusals. Findings already configured as `warn` or `allow` use `watch_only_observation`. Relaxed response inspection failures use `uninspected` with the reason and forwarded-byte count; a successful transfer doesn't establish inspection coverage. Existing response-side credential floors, including field-aware A2A checks, still apply.
+
+In this release, watch-only applies to plain forward HTTP and fetch. CONNECT,
+TLS interception, reverse proxy, WebSocket, and MCP retain their normal
+`enforce` behavior and scanning even when `watch_only` is set.
+
+Plain forward HTTP preserves admitted payloads and policy-controlled headers.
+HTTP hop-by-hop handling and consumption of proxy authentication, authority
+metadata, and untrusted client-identity assertions still apply. Fetch retains
+its text-in-JSON API and redirect limit, and rechecks each destination.
+
+The setting is reloadable in either direction. A `watch_only_mode` event announces the transition. `pipelock doctor` reports the configured setting; `/stats` reports the running setting as `watch_only`, plus `watch_only_uninspected_bytes`. Prometheus exposes `pipelock_watch_only`, `pipelock_watch_only_events_total`, and `pipelock_watch_only_uninspected_bytes_total` on the configured metrics listener. Receipt reasons carry a signed `watch_only` marker while their verdict continues to describe the actual decision.
+
+See [observing before enforcement](guides/false-positive-tuning.md#observing-before-enforcement) for the rollout workflow.
 
 ## API Allowlist
 
@@ -913,6 +942,7 @@ When a route-matched operation predicate or batch endpoint needs a body that can
 A matched rule records a decision metric and an audit event with bounded, operator-defined labels only, never body or matched content. An enforced (non-shadow) `block` returns HTTP 403 with the `request_policy_deny` block reason and, when a receipt emitter is configured, a correlated receipt. `warn` and `shadow` matches are logged and counted, then forwarded.
 
 ## WebSocket Proxy
+
 
 Before the upstream handshake, Pipelock scans the complete supplied target URL, including userinfo and fragments. Core credential findings in those components refuse the handshake with HTTP 403, even when enforcement is disabled. Admission and session evidence use the same URL.
 

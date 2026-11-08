@@ -440,9 +440,10 @@ type RequestPolicyDiscriminator struct {
 // Config is the top-level Pipelock configuration.
 type Config struct {
 	Version                  int                     `yaml:"version"`
-	Mode                     string                  `yaml:"mode"`           // strict, balanced, audit
-	Enforce                  *bool                   `yaml:"enforce"`        // nil = true (default); false = detect & log without blocking
-	ExplainBlocks            *bool                   `yaml:"explain_blocks"` // nil = false (default); true = include hints in block responses
+	Mode                     string                  `yaml:"mode"`                                  // strict, balanced, audit
+	WatchOnly                bool                    `yaml:"watch_only" json:"WatchOnly,omitempty"` // observe policy without modifying traffic; credential floor, kill switch, and access controls remain enforced
+	Enforce                  *bool                   `yaml:"enforce"`                               // nil = true (default); false = detect & log without blocking
+	ExplainBlocks            *bool                   `yaml:"explain_blocks"`                        // nil = false (default); true = include hints in block responses
 	APIAllowlist             []string                `yaml:"api_allowlist"`
 	Suppress                 []SuppressEntry         `yaml:"suppress"`
 	FetchProxy               FetchProxy              `yaml:"fetch_proxy"`

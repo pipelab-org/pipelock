@@ -69,6 +69,16 @@ const passthroughChunkSize = 4096
 // scanning contract for exempt domains and suppress rules without coupling
 // this package to proxy logging or receipt emission.
 type GenericSSEScanOptions struct {
+	// WatchOnly records policy findings and preserves the original event bytes.
+	WatchOnly bool
+	// WatchEvent observes a complete MCP event before its original wire bytes
+	// are delivered. Only retained floors may return an error.
+	WatchEvent func([]byte) error
+	// WatchEventDelivered commits state only after the inspected event is written.
+	WatchEventDelivered func()
+	// OnWatchOnly records would-block, enforced-floor and uninspected decisions.
+	OnWatchOnly func(scannerName, reason, action string, uninspectedBytes int64, enforced bool)
+
 	// Target is the URL/path used to evaluate suppress rules.
 	Target string
 	// Suppress contains global suppress rules from pipelock.yaml.
@@ -145,7 +155,16 @@ func ScanGenericSSEStreamWithOptions(
 	opts GenericSSEScanOptions,
 ) error {
 	if cfg == nil || !cfg.Enabled {
+		if opts.WatchOnly {
+			return passthroughWatchSSE(ctx, body, w, flusher, sc, opts)
+		}
 		return passthroughSSE(ctx, body, w, flusher)
+	}
+	originalAction := cfg.Action
+	if opts.WatchOnly {
+		copyCfg := *cfg
+		copyCfg.Action = config.ActionWarn
+		cfg = &copyCfg
 	}
 	// Server-sent events are responses: a decode bound must not refuse them.
 	ctx = scanner.WithInboundDirection(ctx)
@@ -156,6 +175,37 @@ func ScanGenericSSEStreamWithOptions(
 	}
 
 	reader := transport.NewSSEReader(body)
+	watchRecord := func(scannerName, reason, action string, n int64, enforced bool) {
+		if opts.OnWatchOnly != nil {
+			opts.OnWatchOnly(scannerName, reason, action, n, enforced)
+		}
+	}
+	writeOriginal := func(raw []byte) (int, error) {
+		n, err := w.Write(raw)
+		if err == nil && n != len(raw) {
+			err = io.ErrShortWrite
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return n, err
+	}
+	if opts.WatchOnly {
+		reader = transport.NewWatchSSEReader(body, maxEventBytes, func(raw []byte) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+
+			n, err := writeOriginal(raw)
+			watchRecord("sse", "event exceeds inspection ceiling", "uninspected", int64(n), false)
+			return err
+		})
+	}
+	forwardUninspected := func(reason string) error {
+		n, err := writeOriginal(reader.RawMessage())
+		watchRecord("sse", reason, "uninspected", int64(n), false)
+		return err
+	}
 	var tail string
 	var cardTail string
 	var injectionTail sseInjectionTail
@@ -179,10 +229,14 @@ func ScanGenericSSEStreamWithOptions(
 	var warnedFinding error
 	onFinding := func(err error) {
 		warnedFinding = errors.Join(warnedFinding, err)
+		if opts.WatchOnly {
+			watchRecord("sse", err.Error(), originalAction, 0, false)
+		}
 		if opts.OnFinding != nil {
 			opts.OnFinding(err)
 		}
 	}
+streamLoop:
 	for {
 		warnedFinding = nil
 		select {
@@ -200,6 +254,18 @@ func ScanGenericSSEStreamWithOptions(
 			return fmt.Errorf("sse stream read: %w", err)
 		}
 
+		if opts.WatchOnly && reader.Uninspected() {
+			tail, cardTail, payloadTail, cardPayloadTail = "", "", "", ""
+			numberTail, numberCardTail = "", ""
+			injectionTail, payloadInjectionTail = sseInjectionTail{}, sseInjectionTail{}
+			fieldTail, fieldInjectionTail = extract.NewFieldTails(""), extract.NewFieldTails("")
+			continue
+		}
+		if opts.WatchOnly && opts.WatchEvent != nil {
+			if err := opts.WatchEvent(event); err != nil {
+				return err
+			}
+		}
 		if len(event) > maxEventBytes {
 			findingErr := fmt.Errorf("%w: %w (size=%d, limit=%d)",
 				ErrSSEStreamFinding, ErrSSEEventTooLarge, len(event), maxEventBytes)
@@ -228,6 +294,12 @@ func ScanGenericSSEStreamWithOptions(
 		// verbatim, which is the correct behavior for opt-out.
 		if !utf8.Valid(event) || !utf8.ValidString(canonicalSSEEventText(event, reader)) {
 			findingErr := fmt.Errorf("%w: %w", ErrSSEStreamFinding, ErrSSEInvalidUTF8)
+			if opts.WatchOnly {
+				if err := forwardUninspected(ErrSSEInvalidUTF8.Error()); err != nil {
+					return err
+				}
+				continue
+			}
 			if cfg.Action == config.ActionWarn {
 				onFinding(findingErr)
 				reader.ClearInvalidLastEventID()
@@ -262,6 +334,12 @@ func ScanGenericSSEStreamWithOptions(
 		injectResult := sc.ScanResponseWithSuppress(ctx, text, opts.Target, opts.Suppress)
 		observedCore.record(injectResult)
 		if injectResult.Failed() {
+			if opts.WatchOnly {
+				if err := forwardUninspected(injectResult.ScanError); err != nil {
+					return err
+				}
+				continue streamLoop
+			}
 			return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, injectResult.ScanError)
 		}
 		for _, view := range []string{rollingInjectionText, idDataInjectionText} {
@@ -271,6 +349,12 @@ func ScanGenericSSEStreamWithOptions(
 			result := sc.ScanResponseWithSuppress(ctx, view, opts.Target, opts.Suppress)
 			observedCore.record(result)
 			if result.Failed() {
+				if opts.WatchOnly {
+					if err := forwardUninspected(result.ScanError); err != nil {
+						return err
+					}
+					continue streamLoop
+				}
 				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, result.ScanError)
 			}
 			injectResult.Clean = injectResult.Clean && result.Clean
@@ -303,7 +387,7 @@ func ScanGenericSSEStreamWithOptions(
 		}
 		if len(dlpResult.Matches) > 0 {
 			findingErr := sseDLPFindingError(dlpResult.Matches, "dlp")
-			if scanner.CardRunAction(dlpResult.Matches, cfg.Action) == config.ActionWarn {
+			if sseDLPAction(dlpResult.Matches, cfg.Action, opts) == config.ActionWarn {
 				onFinding(findingErr)
 				clearDLPTailAfterCurrent = !scanner.OnlyInformational(dlpResult.Matches)
 				skipTailDLP = clearDLPTailAfterCurrent
@@ -324,6 +408,12 @@ func ScanGenericSSEStreamWithOptions(
 				result := sc.ScanResponseWithSuppress(ctx, view, opts.Target, opts.Suppress)
 				observedCore.record(result)
 				if result.Failed() {
+					if opts.WatchOnly {
+						if err := forwardUninspected(result.ScanError); err != nil {
+							return err
+						}
+						continue streamLoop
+					}
 					return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, result.ScanError)
 				}
 				if result.Clean {
@@ -339,6 +429,12 @@ func ScanGenericSSEStreamWithOptions(
 				result := sc.ScanResponseWithSuppress(ctx, view.Joined, opts.Target, opts.Suppress)
 				observedCore.record(result)
 				if result.Failed() {
+					if opts.WatchOnly {
+						if err := forwardUninspected(result.ScanError); err != nil {
+							return err
+						}
+						continue streamLoop
+					}
 					return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, result.ScanError)
 				}
 				if result.Clean {
@@ -386,7 +482,7 @@ func ScanGenericSSEStreamWithOptions(
 			}
 			if len(tailDLPResult.Matches) > 0 {
 				findingErr := sseDLPFindingError(tailDLPResult.Matches, "cross-event dlp")
-				if scanner.CardRunAction(tailDLPResult.Matches, cfg.Action) == config.ActionWarn {
+				if sseDLPAction(tailDLPResult.Matches, cfg.Action, opts) == config.ActionWarn {
 					onFinding(findingErr)
 					resetDLPTail = !scanner.OnlyInformational(tailDLPResult.Matches)
 				} else {
@@ -402,7 +498,7 @@ func ScanGenericSSEStreamWithOptions(
 			droppedDLP.record(droppedMatches)
 			if len(result.Matches) > 0 {
 				findingErr := sseDLPFindingError(result.Matches, "cross-event dlp")
-				if scanner.CardRunAction(result.Matches, cfg.Action) == config.ActionWarn {
+				if sseDLPAction(result.Matches, cfg.Action, opts) == config.ActionWarn {
 					onFinding(findingErr)
 					resetDLPTail = !scanner.OnlyInformational(result.Matches)
 				} else {
@@ -418,7 +514,7 @@ func ScanGenericSSEStreamWithOptions(
 			droppedDLP.record(droppedMatches)
 			if len(result.Matches) > 0 {
 				findingErr := sseDLPFindingError(result.Matches, "cross-event dlp")
-				if scanner.CardRunAction(result.Matches, cfg.Action) == config.ActionWarn {
+				if sseDLPAction(result.Matches, cfg.Action, opts) == config.ActionWarn {
 					onFinding(findingErr)
 					resetDLPTail = !scanner.OnlyInformational(result.Matches)
 				} else {
@@ -445,7 +541,7 @@ func ScanGenericSSEStreamWithOptions(
 					continue
 				}
 				findingErr := sseDLPFindingError(result.Matches, "cross-event dlp")
-				if scanner.CardRunAction(result.Matches, cfg.Action) == config.ActionWarn {
+				if sseDLPAction(result.Matches, cfg.Action, opts) == config.ActionWarn {
 					onFinding(findingErr)
 					resetFieldTail = true
 					break
@@ -459,6 +555,12 @@ func ScanGenericSSEStreamWithOptions(
 		// A finding on this event skips another tail scan. It must not skip
 		// the field-limit close; both tails can be skipped on one event.
 		if fieldInjectionTail.Incomplete(frame) || fieldTail.Incomplete(frame) {
+			if opts.WatchOnly {
+				if err := forwardUninspected("cross-event JSON field limits"); err != nil {
+					return err
+				}
+				continue
+			}
 			return fmt.Errorf("%w: cross-event inspection incomplete: event exceeds JSON field limits", ErrSSEStreamScanError)
 		}
 		// Any finding reported for this event clears the field tails so the
@@ -546,7 +648,13 @@ func ScanGenericSSEStreamWithOptions(
 				return fmt.Errorf("sse finding confirmation: %w", err)
 			}
 		}
-		if werr := writeSSEEvent(w, event, reader.LastEventID(), reader.LastEventType(), reader.LastRetry()); werr != nil {
+		var werr error
+		if opts.WatchOnly {
+			_, werr = writeOriginal(reader.RawMessage())
+		} else {
+			werr = writeSSEEvent(w, event, reader.LastEventID(), reader.LastEventType(), reader.LastRetry())
+		}
+		if werr != nil {
 			// Downstream consumer went away (e.g. the io.Pipe in the
 			// reverse-proxy hijack was closed by the client). Returning
 			// here breaks the loop and lets the goroutine close the
@@ -556,6 +664,9 @@ func ScanGenericSSEStreamWithOptions(
 		}
 		if flusher != nil {
 			flusher.Flush()
+		}
+		if opts.WatchOnly && opts.WatchEventDelivered != nil {
+			opts.WatchEventDelivered()
 		}
 	}
 }
@@ -989,4 +1100,12 @@ func (r *sseObservedCoreRecorder) record(result scanner.ResponseScanResult) {
 // deduplication this exists for.
 func sseObservedCoreKey(observed scanner.ObservedCoreMatch) string {
 	return observed.Match.PatternName + "\x00" + observed.Host + "\x00" + observed.Match.MatchText
+}
+
+// sseDLPAction observes inbound DLP findings without strengthening response policy.
+func sseDLPAction(matches []scanner.TextDLPMatch, action string, opts GenericSSEScanOptions) string {
+	if opts.WatchOnly {
+		return config.ActionWarn
+	}
+	return scanner.CardRunAction(matches, action)
 }

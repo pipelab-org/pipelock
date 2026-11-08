@@ -608,6 +608,9 @@ func newInterceptHandler(
 	ic *InterceptContext,
 	upstream http.RoundTripper,
 ) http.Handler {
+	scoped := *ic
+	scoped.Config = deferredWatchConfig(ic.Config)
+	ic = &scoped
 	target := net.JoinHostPort(ic.TargetHost, ic.TargetPort)
 	// Initialize the shared budget before taking request-local context copies.
 	_ = interceptSizeExemptScanBudget(ic)
@@ -1998,6 +2001,7 @@ func newInterceptHandler(
 		// never suppress an operation-policy block.
 		if ic.Proxy != nil {
 			rpInput := requestPolicyInput{
+				Config:      ic.Config,
 				Host:        r.URL.Hostname(),
 				Method:      r.Method,
 				Path:        r.URL.EscapedPath(),

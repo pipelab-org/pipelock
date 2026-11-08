@@ -653,7 +653,7 @@ func (rp *ReverseProxyHandler) snapshotRuntime() reverseRuntimeSnapshot {
 		defer rp.reloadMu.RUnlock()
 	}
 	snap := reverseRuntimeSnapshot{
-		cfg: rp.cfgPtr.Load(),
+		cfg: deferredWatchConfig(rp.cfgPtr.Load()),
 		sc:  rp.scPtr.Load(),
 	}
 	if rp.editionPtr != nil {
@@ -1603,6 +1603,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			rpQuery = u.RawQuery
 		}
 		rpInput := requestPolicyInput{
+			Config:      cfg,
 			Host:        rpHost,
 			Method:      r.Method,
 			Path:        rpPath,
@@ -2360,6 +2361,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	responseBodyLimit := rp.responseScanBodyLimit()
 	stripUpstreamPipelockNamespace(resp)
 	cfg, _ := resp.Request.Context().Value(ctxKeyReverseEnvelopeCfg).(*config.Config)
+	cfg = deferredWatchConfig(cfg)
 	sc, _ := resp.Request.Context().Value(ctxKeyReverseScanner).(*scanner.Scanner)
 	if cfg == nil || sc == nil {
 		snap := rp.snapshotRuntime()

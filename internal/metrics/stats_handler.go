@@ -36,7 +36,9 @@ func (m *Metrics) StatsHandler() http.HandlerFunc {
 		m.mu.Lock()
 		total := m.allowedCount + m.blockedCount
 		stats := statsResponse{
-			UptimeSeconds: time.Since(m.startTime).Seconds(),
+			WatchOnly:        m.watchOnlyEnabled,
+			UninspectedBytes: m.watchOnlyUninspectedBytes,
+			UptimeSeconds:    time.Since(m.startTime).Seconds(),
 			Requests: requestStats{
 				Total:   total,
 				Allowed: m.allowedCount,
@@ -91,6 +93,8 @@ func (m *Metrics) StatsHandler() http.HandlerFunc {
 }
 
 type statsResponse struct {
+	WatchOnly         bool                     `json:"watch_only"`
+	UninspectedBytes  int64                    `json:"watch_only_uninspected_bytes"`
 	UptimeSeconds     float64                  `json:"uptime_seconds"`
 	Requests          requestStats             `json:"requests"`
 	Tunnels           int64                    `json:"tunnels"`

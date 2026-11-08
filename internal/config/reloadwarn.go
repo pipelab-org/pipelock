@@ -118,8 +118,15 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
-	// Enforce disabled
-	if old.EnforceEnabled() && !updated.EnforceEnabled() {
+	// Watch-only is an explicit operator-selected observation mode. Its
+	// transition is reported separately from changing the legacy audit knob.
+	if old.WatchOnly != updated.WatchOnly {
+		warnings = append(warnings, advisoryReloadWarning("watch_only",
+			fmt.Sprintf("watch-only changed from %t to %t; core credential floor, kill switch, and access controls remain enforced", old.WatchOnly, updated.WatchOnly)))
+	}
+
+	// Enforce disabled independently of the watch-only override.
+	if (old.Enforce == nil || *old.Enforce) && updated.Enforce != nil && !*updated.Enforce {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "enforce",
 			Message: "enforcement disabled — switching to detect-only mode",

@@ -17,9 +17,10 @@ func WithPromptInjectionMode(opts EmitOpts, mode string) EmitOpts {
 	return opts
 }
 
-// PromptInjectionPattern adds the bound wording policy to an existing signed
-// reason field at emission, after callers have finalized their decision reason.
+// PromptInjectionPattern adds the bound watch-only and wording policies to an
+// existing signed reason after callers have finalized their decision reason.
 func (opts EmitOpts) PromptInjectionPattern(pattern string) string {
+	pattern = opts.WatchOnlyPattern(pattern)
 	switch opts.promptInjectionMode {
 	case config.ActionAllow:
 		return appendPolicyReason(pattern, "prompt_injection_detection: wording disabled")

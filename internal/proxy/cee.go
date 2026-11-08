@@ -682,6 +682,10 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 	targetURL, agent := opts.TargetURL, opts.Agent
 	clientIP, requestID := opts.ClientIP, opts.RequestID
 	ceeCfg := opts.Config
+	watchOnly := opts.IdentityConfig != nil && opts.IdentityConfig.WatchOnly
+	if watchOnly {
+		ceeCfg = opts.IdentityConfig.CrossRequestDetection
+	}
 	et, fb, sc := opts.Entropy, opts.Fragments, opts.Scanner
 	logger, m := opts.Logger, opts.Metrics
 	if len(outbound) == 0 && len(keyPayload) == 0 && (pathPayload == nil || (len(pathPayload.segments) == 0 && !pathPayload.depthExceeded)) {
@@ -713,14 +717,18 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 			detail := fmt.Sprintf("entropy budget exceeded: %.0f/%.0f bits",
 				et.CurrentUsage(identity), et.Budget())
 			actx := newHTTPAuditContext(ctx, logger, httpAuditEvent{Method: "CEE", TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
-			if ceeCfg.EntropyBudget.Action == config.ActionBlock {
+			if watchOnly {
+				watchObservation(logger, m, "cross_request", "cross_request_entropy", detail, ceeCfg.EntropyBudget.Action, 0, false)
+			} else if ceeCfg.EntropyBudget.Action == config.ActionBlock {
 				logger.LogBlocked(actx, "cross_request_entropy", detail)
 				result.Blocked = true
 				result.Reason = ceereason.ClientEntropyBudget
 				result.BlockKind = ceeBlockKindEntropyBudget
 				return result
 			}
-			logger.LogAnomaly(actx, "cross_request_entropy", detail, 0)
+			if !watchOnly {
+				logger.LogAnomaly(actx, "cross_request_entropy", detail, 0)
+			}
 		}
 	}
 
@@ -733,7 +741,11 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 		detail := fmt.Sprintf("URL path exceeds CEE depth cap (%d segments); request cannot be safely inspected",
 			scanner.MaxPathPositions)
 		actx := newHTTPAuditContext(ctx, logger, httpAuditEvent{Method: "CEE", TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
-		logger.LogBlocked(actx, "cross_request_path_depth", detail)
+		if opts.IdentityConfig != nil && opts.IdentityConfig.WatchOnly {
+			watchObservation(logger, m, "cross_request", "cross_request_path_depth", detail, config.ActionBlock, 0, true)
+		} else {
+			logger.LogBlocked(actx, "cross_request_path_depth", detail)
+		}
 		result.Blocked = true
 		result.FragmentHit = true
 		result.Reason = ceereason.ClientInspectionDepth
@@ -743,9 +755,11 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 
 	// Fragment reassembly DLP check (legacy raw, body fields, keys, paths).
 	sctx := ceeStreamContext{
-		SessionKey: sessionKey,
-		Identity:   identity,
-		TargetURL:  targetURL, Agent: agent, ClientIP: clientIP, RequestID: requestID,
+		WatchOnly:   opts.IdentityConfig != nil && opts.IdentityConfig.WatchOnly,
+		WouldAction: ceeCfg.Action,
+		SessionKey:  sessionKey,
+		Identity:    identity,
+		TargetURL:   targetURL, Agent: agent, ClientIP: clientIP, RequestID: requestID,
 		Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m,
 	}
 	if fb != nil && ceeCfg.FragmentReassembly.Enabled {
@@ -844,17 +858,19 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 // every fragment stream needs. It exists so adding a stream does not lengthen
 // three positional signatures again (CLAUDE.md options-struct convention).
 type ceeStreamContext struct {
-	SessionKey string
-	Identity   identitykey.CEEIdentity
-	TargetURL  string
-	Agent      string
-	ClientIP   string
-	RequestID  string
-	Config     config.CrossRequestDetection
-	Fragments  *scanner.FragmentBuffer
-	Scanner    *scanner.Scanner
-	Logger     *audit.Logger
-	Metrics    *metrics.Metrics
+	WatchOnly   bool
+	WouldAction string
+	SessionKey  string
+	Identity    identitykey.CEEIdentity
+	TargetURL   string
+	Agent       string
+	ClientIP    string
+	RequestID   string
+	Config      config.CrossRequestDetection
+	Fragments   *scanner.FragmentBuffer
+	Scanner     *scanner.Scanner
+	Logger      *audit.Logger
+	Metrics     *metrics.Metrics
 }
 
 func ceeFragmentScan(ctx context.Context, bufferKey string, data []byte, sctx ceeStreamContext) *ceeResult {
@@ -905,7 +921,11 @@ func ceeFragmentEvaluate(ctx context.Context, appendResult scanner.FragmentAppen
 		m.RecordCrossRequestPathDepthExceeded()
 		detail := fmt.Sprintf("URL path exceeds CEE depth cap (%d segments); request cannot be safely inspected", scanner.MaxPathPositions)
 		actx := newHTTPAuditContext(ctx, logger, httpAuditEvent{Method: "CEE", TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
-		logger.LogBlocked(actx, "cross_request_path_depth", detail)
+		if sctx.WatchOnly {
+			watchObservation(logger, m, "cross_request", "cross_request_path_depth", detail, config.ActionBlock, 0, true)
+		} else {
+			logger.LogBlocked(actx, "cross_request_path_depth", detail)
+		}
 		return &ceeResult{
 			Blocked:     true,
 			FragmentHit: true,
@@ -920,7 +940,11 @@ func ceeFragmentEvaluate(ctx context.Context, appendResult scanner.FragmentAppen
 		// that policy changed when nothing did.
 		detail := "fragment reassembly stream belongs to another identity; request cannot be safely inspected"
 		actx := newHTTPAuditContext(ctx, logger, httpAuditEvent{Method: "CEE", TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
-		logger.LogBlocked(actx, "cross_request_fragment_owner_mismatch", detail)
+		if sctx.WatchOnly {
+			watchObservation(logger, m, "cross_request", "cross_request_fragment_owner_mismatch", detail, config.ActionBlock, 0, true)
+		} else {
+			logger.LogBlocked(actx, "cross_request_fragment_owner_mismatch", detail)
+		}
 		return &ceeResult{
 			Blocked:     true,
 			FragmentHit: true,
@@ -932,7 +956,11 @@ func ceeFragmentEvaluate(ctx context.Context, appendResult scanner.FragmentAppen
 		m.RecordCrossRequestFragmentCapacityExceeded()
 		detail := "fragment reassembly session capacity exhausted; increase cross_request_detection.fragment_reassembly.max_sessions or reduce active sessions"
 		actx := newHTTPAuditContext(ctx, logger, httpAuditEvent{Method: "CEE", TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
-		logger.LogBlocked(actx, "cross_request_fragment_capacity", detail)
+		if sctx.WatchOnly {
+			watchObservation(logger, m, "cross_request", "cross_request_fragment_capacity", detail, config.ActionBlock, 0, true)
+		} else {
+			logger.LogBlocked(actx, "cross_request_fragment_capacity", detail)
+		}
 		return &ceeResult{
 			Blocked:     true,
 			FragmentHit: true,
@@ -955,6 +983,26 @@ func ceeFragmentEvaluate(ctx context.Context, appendResult scanner.FragmentAppen
 				break
 			}
 		}
+	}
+
+	if sctx.WatchOnly {
+		core := inspectionLimit
+		for _, match := range matches {
+			if config.IsCoreDLPPatternName(match.PatternName) {
+				core = true
+				primary = match
+				break
+			}
+		}
+		action := sctx.WouldAction
+		if action == "" {
+			action = config.ActionBlock
+		}
+		if core {
+			action = config.ActionBlock
+		}
+		watchObservation(logger, m, "cross_request", "cross_request_fragment", primary.PatternName, action, 0, core)
+		return &ceeResult{Blocked: core, FragmentHit: true, Reason: ceereason.ClientFragmentMatch, BlockKind: primary.PatternName}
 	}
 	detail := fmt.Sprintf("fragment reassembly DLP match: %s", primary.PatternName)
 	actx := newHTTPAuditContext(ctx, logger, httpAuditEvent{Method: "CEE", TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})

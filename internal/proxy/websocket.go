@@ -306,7 +306,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// independent and unchanged.
 	resolved, id, envEmitter, snapshotContractLoader, r, releaseLicense := p.resolveAgentRuntimeFromRequest(r)
 	defer releaseLicense()
-	cfg := resolved.Config
+	cfg := deferredWatchConfig(resolved.Config)
 	agent := id.Name
 	if agent == "" {
 		agent = agentAnonymous
@@ -847,6 +847,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// to per-frame evaluation in the relay; only route-only rules gate the
 	// handshake here.
 	if rpRes := p.applyRequestPolicy(requestPolicyInput{
+		Config:      cfg,
 		Host:        parsed.Hostname(),
 		Method:      http.MethodGet,
 		Path:        parsed.EscapedPath(),
@@ -1704,6 +1705,7 @@ func (r *wsRelay) auditProvenanceCtx() context.Context {
 
 func (r *wsRelay) applyFrameRequestPolicy(log *audit.Logger, msg []byte) bool {
 	in := requestPolicyInput{
+		Config:      r.cfg,
 		Host:        r.hostname,
 		Method:      http.MethodGet,
 		Path:        r.reqPolicyPath,

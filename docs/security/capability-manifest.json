@@ -166,6 +166,10 @@
         },
         {
           "kind": "config_section",
+          "value": "watch_only"
+        },
+        {
+          "kind": "config_section",
           "value": "fetch_proxy"
         },
         {

@@ -291,10 +291,11 @@ func (f ForwardProxy) SNIRequireTLSEnabled() bool {
 	return *f.SNIRequireTLS
 }
 
-// EnforceEnabled returns whether blocking is enabled.
-// Defaults to true when Enforce is nil (not set in config).
+// EnforceEnabled returns whether ordinary policy blocking is enabled.
+// Watch-only overrides Enforce; credential and operator floors are separate.
+// Otherwise it defaults to true when Enforce is nil (not set in config).
 func (c *Config) EnforceEnabled() bool {
-	return c.Enforce == nil || *c.Enforce
+	return !c.WatchOnly && (c.Enforce == nil || *c.Enforce)
 }
 
 // ExplainBlocksEnabled returns whether block responses include hints.

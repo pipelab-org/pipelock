@@ -124,7 +124,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// through to enforce-default-deny.
 	resolved, id, envEmitter, snapshotContractLoader, r, releaseLicense := p.resolveAgentRuntimeFromRequest(r)
 	defer releaseLicense()
-	cfg := resolved.Config
+	cfg := deferredWatchConfig(resolved.Config)
+
 	agent := id.Name
 	if agent == "" {
 		agent = agentAnonymous
@@ -589,6 +590,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// request_policy runs before the contract gate so a contract allow can
 	// never suppress an operation-policy block.
 	connectRPInput := requestPolicyInput{
+		Config:      cfg,
 		Host:        host,
 		Method:      http.MethodConnect,
 		Path:        "/",
@@ -1059,6 +1061,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	resolved, id, envEmitter, snapshotContractLoader, r, releaseLicense := p.resolveAgentRuntimeFromRequest(r)
 	defer releaseLicense()
 	cfg := resolved.Config
+	if cfg.WatchOnly {
+		sc, release, _ := p.pinResolvedScanner(resolved)
+		defer release()
+		serveWatchHTTP(w, r, watchHTTPOptions{
+			Config: cfg, Scanner: sc, Logger: p.logger, Metrics: p.metrics,
+			Transport: TransportForward, Upstream: p.client.Transport, Proxy: p, Agent: id.Name, ActorAuth: id.Auth, Budget: resolved.Budget,
+			ClientIP: clientIP, RequestID: requestID, KillSwitch: p.ks, MaxResponseBytes: p.responseScanBodyLimit(cfg),
+		})
+		return
+	}
+
 	agent := id.Name
 	if agent == "" {
 		agent = agentAnonymous
@@ -2106,6 +2119,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// request_policy runs before the contract gate so a contract allow can
 	// never suppress an operation-policy block.
 	rpInput := requestPolicyInput{
+		Config:      cfg,
 		Host:        r.URL.Hostname(),
 		Method:      r.Method,
 		Path:        r.URL.EscapedPath(),
