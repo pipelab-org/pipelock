@@ -178,6 +178,16 @@ func (p *Proxy) handleWatchFetch(w http.ResponseWriter, r *http.Request, o watch
 		OnFinding:       o.findings.add,
 		OnKinds:         responseKinds.merge,
 	}
+	// Streamed findings are confirmed per event before delivery, as on the
+	// forward path.
+	if cfg.FlightRecorder.RequireReceipts {
+		responseOpts.ConfirmFinding = func(finding error) error {
+			if !o.receipt(req, config.ActionWarn, LayerSSEStream, finding.Error()) {
+				return errWatchReceiptUnavailable
+			}
+			return nil
+		}
+	}
 	// Exposure is recorded for any response that arrived, delivered or not.
 	defer func() {
 		if taintSession == nil {
@@ -185,9 +195,12 @@ func (p *Proxy) handleWatchFetch(w http.ResponseWriter, r *http.Request, o watch
 		}
 		observeHTTPResponseFindings(taintSession, cfg, resp.Request.URL.String(), responseTaintContentType(resp.Header), "fetch_response", responseKinds.list())
 	}()
-	if err := watchResponseBody(r.Context(), resp, responseOpts); err != nil {
-		if errors.Is(err, errWatchResponseCoreFloor) {
-			// The response safety floor is a refusal, not an upstream failure.
+	// A response refusal arrives either from watchResponseBody or, for a
+	// streamed body scanned in the background, as the body read error. Either
+	// way it is a refusal, not an upstream failure.
+	refuseResponse := func(err error) {
+		switch {
+		case errors.Is(err, errWatchResponseCoreFloor):
 			o.observe(scannerLabelA2A, "core credential floor", config.ActionBlock, 0, true)
 			o.receipt(req, config.ActionBlock, scannerLabelA2A, "audit safety floor enforced")
 			o.recordRefusal(req, scannerLabelA2A, start)
@@ -195,9 +208,15 @@ func (p *Proxy) handleWatchFetch(w http.ResponseWriter, r *http.Request, o watch
 				URL: audit.RedactContentBearingURL(rawURL), Agent: agent, Blocked: true, BlockReason: "audit safety floor",
 				Error: "enforced in watch-only: audit safety floor",
 			})
-			return
+		case errors.Is(err, errWatchReceiptUnavailable):
+			o.recordRefusal(req, receiptEmissionFailedLayer, start)
+			writeJSON(w, http.StatusServiceUnavailable, FetchResponse{URL: audit.RedactContentBearingURL(rawURL), Blocked: true, Error: errWatchReceiptUnavailable.Error()})
+		default:
+			writeJSON(w, http.StatusBadGateway, FetchResponse{URL: audit.RedactContentBearingURL(rawURL), Error: "upstream response unavailable"})
 		}
-		writeJSON(w, http.StatusBadGateway, FetchResponse{URL: audit.RedactContentBearingURL(rawURL), Error: "upstream response unavailable"})
+	}
+	if err := watchResponseBody(r.Context(), resp, responseOpts); err != nil {
+		refuseResponse(err)
 		return
 	}
 	// The uninspected-byte count follows bytes the client accepts, not bytes
@@ -219,7 +238,7 @@ func (p *Proxy) handleWatchFetch(w http.ResponseWriter, r *http.Request, o watch
 	}()
 	prefix, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, FetchResponse{URL: audit.RedactContentBearingURL(rawURL), Error: "upstream response unavailable"})
+		refuseResponse(err)
 		return
 	}
 	meta := FetchResponse{URL: rawURL, Agent: agent, StatusCode: resp.StatusCode, ContentType: responseContentType(resp.Header)}
@@ -252,7 +271,9 @@ func (p *Proxy) handleWatchFetch(w http.ResponseWriter, r *http.Request, o watch
 			}
 		}
 	}
-	// Every response finding is recorded in a signed receipt before release.
+	// Buffered response findings are recorded in signed receipts before release;
+	// with required receipts a failed write refuses it. Streamed findings were
+	// confirmed per event above.
 	if !o.confirmFindings(req) && cfg.FlightRecorder.RequireReceipts {
 		o.recordRefusal(req, receiptEmissionFailedLayer, start)
 		writeJSON(w, http.StatusServiceUnavailable, FetchResponse{URL: audit.RedactContentBearingURL(rawURL), Blocked: true, Error: "enforced in watch-only: required receipt unavailable"})
