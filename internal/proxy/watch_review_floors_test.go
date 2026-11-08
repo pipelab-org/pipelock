@@ -5,11 +5,14 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/destination"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -380,4 +384,71 @@ func TestWatchForwardHostPreservesEquivalentAuthority(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A guard-granted hostname that resolves to an internal address is dialed on
+// the strength of its scan snapshot. Watch-only forward, fetch and each fetch
+// redirect hop carry that snapshot to the dial; without it the connection is
+// refused as a private address.
+func TestWatchGrantedInternalDestinationDials(t *testing.T) {
+	var hits atomic.Int32
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		_, _ = io.WriteString(w, "granted")
+	}))
+	defer backend.Close()
+	port := backend.Listener.Addr().(*net.TCPAddr).Port
+	portText := strconv.Itoa(port)
+	host := "guard.internal.example"
+
+	cfg := config.Defaults()
+	cfg.WatchOnly = true
+	cfg.Internal = nil
+	cfg.DNS.HostOverrides = map[string][]string{host: {"127.0.0.1"}}
+	cfg.FetchProxy.TimeoutSeconds = 5
+	grantPort, err := destination.ParsePort(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := destination.NewGrant(destination.NetworkTCP, host, grantPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grants, err := destination.NewGrantSet(grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc, err := scanner.NewWithOptions(cfg, scanner.Options{DestinationGrants: grants})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sc.Close()
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	target := "http://" + host + ":" + portText
+
+	t.Run("forward", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		serveWatchHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, target+"/final", nil), watchHTTPOptions{
+			Config: cfg, Scanner: sc, Logger: audit.NewNop(), Metrics: p.metrics, Transport: TransportForward, Proxy: p, Upstream: p.client.Transport, MaxResponseBytes: 1024})
+		if w.Code != http.StatusOK || w.Body.String() != "granted" {
+			t.Fatalf("granted destination refused at the dial: status=%d body=%q", w.Code, w.Body)
+		}
+	})
+	t.Run("fetch and redirect hop", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		p.handleWatchFetch(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://proxy.example/fetch?url="+url.QueryEscape(target+"/start"), nil), watchHTTPOptions{
+			Config: cfg, Scanner: sc, Proxy: p, Logger: audit.NewNop(), Metrics: p.metrics, Transport: TransportFetch})
+		var out FetchResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || w.Code != http.StatusOK || out.Content != "granted" {
+			t.Fatalf("granted destination refused through fetch or its redirect: status=%d %+v %v", w.Code, out, err)
+		}
+	})
 }
