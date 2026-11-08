@@ -19,6 +19,7 @@ var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 // reader's view of fields and event boundaries diverge from the client's.
 func newSSELineSplitter() func(data []byte, atEOF bool) (int, []byte, error) {
 	first := true
+	pendingLF := false
 	return func(data []byte, atEOF bool) (int, []byte, error) {
 		if atEOF && len(data) == 0 {
 			return 0, nil, nil
@@ -33,25 +34,29 @@ func newSSELineSplitter() func(data []byte, atEOF bool) (int, []byte, error) {
 				skip = len(utf8BOM)
 			}
 		}
+		if pendingLF {
+			pendingLF = false
+			if len(data) > skip && data[skip] == '\n' {
+				skip++
+			}
+		}
 		rest := data[skip:]
+		if len(rest) == 0 && skip > 0 {
+			return skip, nil, nil
+		}
 		if i := bytes.IndexAny(rest, "\r\n"); i >= 0 {
 			if rest[i] == '\n' {
 				return skip + i + 1, rest[:i], nil
 			}
-			// CR: a CRLF pair is one line end, so wait for the next byte
-			// unless the stream has ended.
-			if i+1 < len(rest) {
-				if rest[i+1] == '\n' {
-					return skip + i + 2, rest[:i], nil
-				}
-				return skip + i + 1, rest[:i], nil
+			// Emit CR immediately; a following LF belongs to this line
+			// ending even if it arrives in a later read.
+			if i+1 < len(rest) && rest[i+1] == '\n' {
+				return skip + i + 2, rest[:i], nil
 			}
-			if atEOF {
-				return skip + i + 1, rest[:i], nil
+			if i+1 == len(rest) {
+				pendingLF = true
 			}
-			// Keep the BOM decision: consume it now so it is not
-			// re-examined, then ask for more data.
-			return skip, nil, nil
+			return skip + i + 1, rest[:i], nil
 		}
 		if atEOF {
 			return len(data), rest, nil
