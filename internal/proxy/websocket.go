@@ -2673,13 +2673,6 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			reported := false
 			for _, match := range result.DLPMatches {
 				r.recordWatch(scannerLabelBodyDLP, match.PatternName, action, 0, shouldHardBlockCriticalDLP([]scanner.TextDLPMatch{match}, false))
-				if !core && !match.IsInformational() {
-					signal := session.SignalBlock
-					if match.Warn {
-						signal = session.SignalWarning
-					}
-					r.recordFinding(signal, log, scannerLabelBodyDLP, match.PatternName)
-				}
 				reported = true
 			}
 			for _, match := range result.InjectionMatches {
@@ -2698,9 +2691,6 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 				r.recordWatch(scannerLabelBodyDLP, result.Reason, action, 0, core)
 			}
 		}
-		if !core {
-			return false
-		}
 	}
 	if result.CredentialAudienceReceiptErr != nil {
 		return r.blockOnCredentialAudienceReceiptFailure(log, result.CredentialAudienceReceiptErr)
@@ -2709,6 +2699,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		return false
 	}
 
+	// Watch-only uses the same resolved action and one scoring event per message.
 	scannerLabel := scannerLabelBodyDLP
 	receiptLayer := audit.ScannerDLP
 	closeReason := "DLP violation"
@@ -2848,6 +2839,9 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 	case config.ActionBlock:
 		if !hardBlock && !r.enforceEnabled() && action == originalAction && len(result.AddressFindings) > 0 {
 			r.recordFinding(session.SignalWarning, log, scannerLabelAddressProtection, receiptPattern)
+			if r.watchOnly() {
+				return false
+			}
 			names := make([]string, len(result.AddressFindings))
 			for i, f := range result.AddressFindings {
 				names[i] = f.Explanation
@@ -2867,6 +2861,9 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		}
 		if !result.IsEntropyOnly() && !result.IsInformationalCardRuns() && !result.IsIncompleteFileWarningOnly() {
 			r.recordFinding(decide.UpgradedWarningSignal(originalAction, session.SignalBlock), log, scannerLabel, receiptPattern)
+		}
+		if r.watchOnly() && !hardBlock {
+			return false
 		}
 		blockReason := reason
 		blockPattern := receiptPattern
@@ -2909,6 +2906,9 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		recordIncompleteFileObservation(observeMetrics, log, newHTTPAuditContext(r.auditProvenanceCtx(), log, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent}), action, r.metricAgent, result)
 		if !result.IsEntropyOnly() && !result.IsInformationalCardRuns() && !result.IsIncompleteFileWarningOnly() {
 			r.recordFinding(session.SignalWarning, log, scannerLabel, receiptPattern)
+		}
+		if r.watchOnly() {
+			return false
 		}
 		if len(result.DLPMatches) > 0 {
 			log.LogWSScan(audit.WSScanEvent{

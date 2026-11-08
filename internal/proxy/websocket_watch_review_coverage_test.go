@@ -140,7 +140,11 @@ func TestWatchWebSocketNoncoreScoring(t *testing.T) {
 				matches := []scanner.TextDLPMatch{{PatternName: "custom-pattern", Severity: config.SeverityMedium, Warn: warn}}
 				var blocked bool
 				if body {
-					blocked = relay.handleClientMessageBodyResult(relay.proxy.logger, []byte("matching data"), BodyScanResult{DLPMatches: matches, Action: config.ActionBlock})
+					action := config.ActionBlock
+					if warn {
+						action = config.ActionWarn
+					}
+					blocked = relay.handleClientMessageBodyResult(relay.proxy.logger, []byte("matching data"), BodyScanResult{DLPMatches: matches, Action: action})
 				} else {
 					blocked = relay.handleClientTextFindings(relay.proxy.logger, matches, nil)
 				}
