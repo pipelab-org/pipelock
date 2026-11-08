@@ -6,8 +6,10 @@ package proxy
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -438,6 +440,21 @@ func (o watchHTTPOptions) signWatchOutbound(out *http.Request, method string) er
 	return nil
 }
 
+// watchForwardHost keeps the client's Host header when it already names the
+// admitted authority (same host, same effective port), so the forwarded
+// representation is unchanged, and otherwise binds it to the admitted URL.
+func watchForwardHost(inHost string, admitted *url.URL) string {
+	host, port := inHost, effectiveURLPort(admitted)
+	if h, p, err := net.SplitHostPort(inHost); err == nil {
+		host, port = h, p
+	}
+	host = strings.TrimSuffix(strings.Trim(host, "[]"), ".")
+	if strings.EqualFold(host, strings.TrimSuffix(admitted.Hostname(), ".")) && port == effectiveURLPort(admitted) {
+		return inHost
+	}
+	return admitted.Host
+}
+
 // serveWatchHTTP keeps the original representation while invoking the same
 // scanner functions as enforcement. ReverseProxy owns RFC hop-by-hop handling
 // handling; uninspectable upgrades are refused before any stream is relayed.
@@ -531,7 +548,7 @@ func serveWatchHTTP(w http.ResponseWriter, r *http.Request, o watchHTTPOptions) 
 			// The scanned URL authority is the destination policy admitted. An
 			// HTTP/2 request can carry a different Host alongside an absolute
 			// target, which a virtual-host gateway would route on.
-			req.Out.Host = req.Out.URL.Host
+			req.Out.Host = watchForwardHost(req.In.Host, req.Out.URL)
 			// Proxy identity assertions were consumed by stripInternalIdentity;
 			// Rewrite must not manufacture a replacement identity.
 		},

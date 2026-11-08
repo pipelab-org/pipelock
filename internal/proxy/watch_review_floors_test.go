@@ -354,3 +354,30 @@ func TestWatchCEEAdmittedRequestStaysObservational(t *testing.T) {
 		}
 	}
 }
+
+// A Host that already names the admitted authority is forwarded as sent; only
+// a different one is rebound.
+func TestWatchForwardHostPreservesEquivalentAuthority(t *testing.T) {
+	for _, tc := range []struct {
+		name, inHost, target, want string
+	}{
+		{name: "same host", inHost: "api.vendor.example", target: "https://api.vendor.example/x", want: "api.vendor.example"},
+		{name: "explicit default port", inHost: "api.vendor.example:443", target: "https://api.vendor.example/x", want: "api.vendor.example:443"},
+		{name: "elided default port", inHost: "api.vendor.example", target: "https://api.vendor.example:443/x", want: "api.vendor.example"},
+		{name: "case and trailing dot", inHost: "API.Vendor.Example.", target: "https://api.vendor.example/x", want: "API.Vendor.Example."},
+		{name: "different host", inHost: "admin.internal.example", target: "http://api.vendor.example/x", want: "api.vendor.example"},
+		{name: "different port", inHost: "api.vendor.example:8443", target: "https://api.vendor.example/x", want: "api.vendor.example"},
+		{name: "host with suffix", inHost: "api.vendor.example.evil.example", target: "https://api.vendor.example/x", want: "api.vendor.example"},
+		{name: "ipv6", inHost: "[2001:db8::1]:8080", target: "http://[2001:db8::1]:8080/x", want: "[2001:db8::1]:8080"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u, err := url.Parse(tc.target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := watchForwardHost(tc.inHost, u); got != tc.want {
+				t.Fatalf("Host = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
