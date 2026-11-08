@@ -57,7 +57,8 @@ func TestFetchKillSwitchStopsRedirectHop(t *testing.T) {
 			}))
 			defer origin.Close()
 
-			p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New(), WithKillSwitch(ks))
+			m := metrics.New()
+			p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), m, WithKillSwitch(ks))
 			if err != nil {
 				t.Fatalf("proxy.New: %v", err)
 			}
@@ -75,6 +76,13 @@ func TestFetchKillSwitchStopsRedirectHop(t *testing.T) {
 			if !tc.wantFinal {
 				if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), killSwitchActiveReason) {
 					t.Fatalf("want 403 naming the kill switch, got %d %.200s", w.Code, w.Body.String())
+				}
+				// The egress denial is counted like an arrival-time denial.
+				scrape := httptest.NewRecorder()
+				m.PrometheusHandler().ServeHTTP(scrape, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+				want := `pipelock_kill_switch_denials_total{endpoint="` + killSwitchEgressEndpoint + `",transport="` + TransportFetch + `"} 1`
+				if !strings.Contains(scrape.Body.String(), want) {
+					t.Fatalf("egress denial not counted; want %s", want)
 				}
 			}
 		})

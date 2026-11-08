@@ -44,6 +44,9 @@ func TestKillSwitchEgressRedirectEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer p.Close()
+			// Forward never follows redirects (they return to the client), so the
+			// forward case checks the first-hop denial and its receipt target; the
+			// fetch case is the one that exercises a refused redirect hop.
 			if mode == "forward" {
 				inner := p.client.Transport
 				p.client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) { ks.SetAPI(true); return inner.RoundTrip(req) })

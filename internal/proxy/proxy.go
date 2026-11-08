@@ -1035,7 +1035,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	}
 
 	p.client = &http.Client{
-		Transport: killSwitchEgressTransport{next: transport, ks: p.ks},
+		Transport: killSwitchEgressTransport{next: transport, ks: p.ks, onDeny: p.recordEgressKillSwitchDeny},
 		Timeout:   time.Duration(cfg.FetchProxy.TimeoutSeconds) * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) (retErr error) {
 			if len(via) >= 5 {
