@@ -28,7 +28,7 @@ How Pipelock addresses the [OWASP Top 10 for Large Language Model Applications (
 - **MCP input scanning:** client requests are scanned for injection patterns in tool arguments before reaching the MCP server. Catches injection payloads being sent *to* tools, not just returned *from* them.
 - **Content extraction:** HTML is converted to clean text via go-readability, removing scripts, styles, and hidden elements that could carry injection payloads.
 
-**Coverage: Partial.** Pipelock detects injection patterns only in mediated traffic on supported fetch, forward proxy, WebSocket and MCP paths; pattern matching can miss novel or rephrased instructions.
+**Coverage: Partial.** Pipelock detects injection patterns only in mediated traffic on supported fetch, forward proxy, reverse proxy, WebSocket and MCP paths; pattern matching can miss novel or rephrased instructions.
 
 **Gap:** Regex-based detection can miss novel injection patterns. Future: classifier-based detection (see roadmap).
 
