@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
@@ -15,15 +16,19 @@ import (
 )
 
 func (p *Proxy) handleWatchConnect(w http.ResponseWriter, r *http.Request, o watchHTTPOptions) {
+	start := time.Now()
 	cfg, sc, agent := o.Config, o.Scanner, o.Agent
+	o.findings, o.requestFinding = &watchFindingLog{}, new(atomic.Bool)
 
 	if o.killed() {
 		o.observe("kill_switch", killSwitchActiveReason, config.ActionBlock, 0, true)
+		o.recordRefusal(r, "kill_switch", start)
 		writeBlockedError(w, blockInfoFor(blockreason.KillSwitchActive, "kill_switch"), "enforced in watch-only: kill switch active", http.StatusServiceUnavailable)
 		return
 	}
 	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
 		o.observe(blockLayerMediationEnvelope, inboundEnvelopeFailurePattern(err), config.ActionBlock, 0, true)
+		o.recordRefusal(r, blockLayerMediationEnvelope, start)
 		writeBlockedError(w, blockInfoFor(blockreason.EnvelopeVerifyFailed, blockLayerMediationEnvelope), "enforced in watch-only: inbound authentication failed", http.StatusForbidden)
 		return
 	}
@@ -41,15 +46,20 @@ func (p *Proxy) handleWatchConnect(w http.ResponseWriter, r *http.Request, o wat
 		return
 	}
 	inspection.URL = parsed.URL
-	if !watchAuthorityAllowed(w, inspection, o) {
+	if !watchAuthorityAllowed(w, inspection, o, start) {
 		return
 	}
-	if watchRequestDecision(inspection, o) {
+	adm := watchAdmit(inspection, o)
+	if adm.Core {
 		o.receipt(inspection, config.ActionBlock, scannerLabelBodyDLP, "core credential floor enforced")
+		o.recordRefusal(inspection, scannerLabelBodyDLP, start)
 		writeBlockedError(w, blockInfoFor(blockreason.DLPMatch, scannerLabelBodyDLP), "enforced in watch-only: core credential floor", http.StatusForbidden)
 		return
 	}
-	if !o.receipt(inspection, config.ActionAllow, "watch_only", "CONNECT admitted") && cfg.FlightRecorder.RequireReceipts {
+	findingsOK := o.confirmFindings(inspection)
+	admitted := o.receipt(inspection, config.ActionAllow, "watch_only", "CONNECT admitted")
+	if (!admitted || !findingsOK) && cfg.FlightRecorder.RequireReceipts {
+		o.recordRefusal(inspection, receiptEmissionFailedLayer, start)
 		http.Error(w, "enforced in watch-only: required receipt unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -59,7 +69,10 @@ func (p *Proxy) handleWatchConnect(w http.ResponseWriter, r *http.Request, o wat
 		return
 	}
 	defer sem.Release()
-	dialCtx, cancelDial := context.WithTimeout(context.WithValue(r.Context(), watchModeContextKey{}, o), time.Duration(cfg.ForwardProxy.MaxTunnelSeconds)*time.Second)
+	// The scan snapshot of the admitted destination reaches the dial, so a
+	// granted hostname that resolves to an internal address is not refused for
+	// lack of it.
+	dialCtx, cancelDial := context.WithTimeout(watchOutboundContext(r.Context(), o, inspection, adm), time.Duration(cfg.ForwardProxy.MaxTunnelSeconds)*time.Second)
 	defer cancelDial()
 	upstream, err := p.ssrfSafeDialContext(dialCtx, "tcp", target)
 	if err != nil {

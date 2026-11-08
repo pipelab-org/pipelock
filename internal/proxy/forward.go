@@ -130,7 +130,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		defer release()
 		p.handleWatchConnect(w, r, watchHTTPOptions{
 			Config: cfg, Scanner: sc, Logger: p.logger, Metrics: p.metrics, Transport: TransportConnect,
-			Proxy: p, Agent: id.Name, ActorAuth: id.Auth, Budget: resolved.Budget, ClientIP: clientIP, RequestID: requestID, KillSwitch: p.ks,
+			Proxy: p, Agent: id.Name, AgentLabel: id.Profile, ActorAuth: id.Auth, Budget: resolved.Budget, ClientIP: clientIP, RequestID: requestID, KillSwitch: p.ks,
+			ReceiptShard: p.admitReceiptShard(), Generation: p.watchModeGeneration.Load(),
 		})
 		return
 	}

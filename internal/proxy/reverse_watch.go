@@ -11,12 +11,13 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
 // serveWatchOnly joins the shared HTTP observation path. The standard reverse
 // proxy director adds the configured upstream prefix without cleaning the
 // caller's path or replacing the original Accept-Encoding header.
-func (rp *ReverseProxyHandler) serveWatchOnly(w http.ResponseWriter, r *http.Request, snap reverseRuntimeSnapshot, identity edition.AgentIdentity, clientIP, requestID string) {
+func (rp *ReverseProxyHandler) serveWatchOnly(w http.ResponseWriter, r *http.Request, snap reverseRuntimeSnapshot, identity edition.AgentIdentity, clientIP, requestID string, shard receipt.EmitOpts) {
 	cfg := snap.cfg
 	if err := verifyInboundEnvelope(r, cfg, snap.inboundVerifier); err != nil {
 		rp.recordWatch(blockLayerMediationEnvelope, inboundEnvelopeFailurePattern(err), config.ActionBlock, 0, true)
@@ -31,12 +32,19 @@ func (rp *ReverseProxyHandler) serveWatchOnly(w http.ResponseWriter, r *http.Req
 	req := r.Clone(context.WithValue(r.Context(), ctxKeyReverseEnvelopeCfg, cfg))
 	(&httputil.ProxyRequest{In: r, Out: req}).SetURL(rp.upstream)
 	req.Host = rp.upstream.Host
-	serveWatchHTTP(w, req, watchHTTPOptions{
+	opts := watchHTTPOptions{
 		Config: cfg, Scanner: snap.sc, Logger: rp.logger, Metrics: rp.metrics,
-		Transport: TransportReverse, Upstream: rp.proxy.Transport, Proxy: rp.owner,
-		Agent: identity.Name, ActorAuth: identity.Auth, ClientIP: clientIP, RequestID: requestID,
+		// The reverse transport already signs the outbound request and bounds
+		// a silent upstream, so neither is repeated here.
+		Transport: TransportReverse, Upstream: rp.proxy.Transport, UpstreamBounded: true, Proxy: rp.owner,
+		Agent: identity.Name, AgentLabel: identity.Profile, ActorAuth: identity.Auth, ClientIP: clientIP, RequestID: requestID,
 		InboundVerified: true, KillSwitch: rp.ks, MaxResponseBytes: int64(rp.responseScanBodyLimit()),
-	})
+		ReceiptShard: shard,
+	}
+	if rp.owner != nil {
+		opts.Generation = rp.owner.watchModeGeneration.Load()
+	}
+	serveWatchHTTP(w, req, opts)
 }
 
 func (rp *ReverseProxyHandler) watchRefusal(cfg *config.Config, refuse bool, scannerName, reason, action string) bool {

@@ -809,7 +809,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		agentAuth = string(resolvedIdentity.Auth)
 	}
 	if cfg != nil && cfg.WatchOnly {
-		rp.serveWatchOnly(w, r, snap, resolvedIdentity, clientIP, requestID)
+		rp.serveWatchOnly(w, r, snap, resolvedIdentity, clientIP, requestID, selectedReceiptShard)
 		return
 	}
 	w = rp.owner.withAdaptiveRefusal(w, adaptiveRefusalOptions{config: cfg, agent: agent, clientIP: clientIP, auth: resolvedIdentity.Auth, host: func() string { return rp.upstream.Hostname() }, transport: TransportReverse})

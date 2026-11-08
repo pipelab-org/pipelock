@@ -647,12 +647,21 @@ func newInterceptHandler(
 			}
 
 			r.URL.Scheme, r.URL.Host, r.RequestURI = schemeHTTPS, target, ""
-			serveWatchHTTP(w, r, watchHTTPOptions{
+			watchOpts := watchHTTPOptions{
 				Intercept: ic, Config: ic.Config, Scanner: ic.Scanner, Logger: ic.Logger,
-				Metrics: ic.Metrics, Transport: "intercept", Upstream: upstream, Proxy: ic.Proxy, Agent: ic.Agent, ActorAuth: ic.ActorAuth,
+				Metrics: ic.Metrics, Transport: "intercept", Upstream: upstream, Proxy: ic.Proxy, Agent: ic.Agent, AgentLabel: ic.Profile, ActorAuth: ic.ActorAuth,
 				ClientIP: ic.ClientIP, RequestID: ic.RequestID, KillSwitch: ic.KillSwitch,
 				MaxResponseBytes: ic.Config.TLSInterception.MaxResponseBytes,
-			})
+				EnvelopeEmitter:  ic.EnvelopeEmitter,
+			}
+			if ic.Proxy != nil {
+				watchOpts.ReceiptShard = ic.Proxy.admitReceiptShard()
+				watchOpts.Generation = ic.Proxy.watchModeGeneration.Load()
+				if !ic.EnvelopeEmitterSet && watchOpts.EnvelopeEmitter == nil {
+					watchOpts.EnvelopeEmitter = ic.Proxy.currentEnvelopeEmitter()
+				}
+			}
+			serveWatchHTTP(w, r, watchOpts)
 			return
 		}
 

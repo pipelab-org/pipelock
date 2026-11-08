@@ -31,18 +31,21 @@ import (
 )
 
 type watchHTTPOptions struct {
-	DeferClean       bool
-	Refusal          *watchRequestCoverage
-	Intercept        *InterceptContext
-	Budget           edition.BudgetChecker
-	ActorAuth        envelope.ActorAuth
-	InboundVerified  bool
-	Config           *config.Config
-	Scanner          *scanner.Scanner
-	Logger           *audit.Logger
-	Metrics          *metrics.Metrics
-	Transport        string
-	Upstream         http.RoundTripper
+	DeferClean      bool
+	Refusal         *watchRequestCoverage
+	Intercept       *InterceptContext
+	Budget          edition.BudgetChecker
+	ActorAuth       envelope.ActorAuth
+	InboundVerified bool
+	Config          *config.Config
+	Scanner         *scanner.Scanner
+	Logger          *audit.Logger
+	Metrics         *metrics.Metrics
+	Transport       string
+	Upstream        http.RoundTripper
+	// UpstreamBounded marks an upstream that already applies the no-progress
+	// bound (the reverse handler's transport does), so it is not wrapped twice.
+	UpstreamBounded  bool
 	Proxy            *Proxy
 	Agent            string
 	AgentLabel       string
@@ -538,7 +541,7 @@ func serveWatchHTTP(w http.ResponseWriter, r *http.Request, o watchHTTPOptions) 
 	// A silent upstream must not hold the request open after headers. The
 	// no-progress bound is the one the reverse and intercept paths use; streams
 	// and upgrades stay exempt inside the wrapper.
-	if seconds := o.Config.FetchProxy.TimeoutSeconds; seconds > 0 {
+	if seconds := o.Config.FetchProxy.TimeoutSeconds; seconds > 0 && !o.UpstreamBounded {
 		upstream = watchStallTransport{base: upstream, stall: time.Duration(seconds) * time.Second}
 	}
 	rp := &httputil.ReverseProxy{
