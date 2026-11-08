@@ -284,6 +284,8 @@ def partial_overrides(paths: list[Path]) -> dict:
     """
     whole: set[str] = set()
     measured: list[Path] = []
+    previous = load_durations()
+    preserved: dict[str, dict[str, float]] = {}
     for path in paths:
         empty = not path.read_bytes().strip()
         if not empty and not artifact_complete(path):
@@ -293,6 +295,16 @@ def partial_overrides(paths: list[Path]) -> dict:
         except (OSError, json.JSONDecodeError) as error:
             raise ValueError(f"partial stream {path} needs its selection file "
                              f"{selection_path(path).name}: {error}") from error
+        # A sibling's measurement of a shared name cannot replace the
+        # recorded weight of a package this selection left unmeasured.
+        for package in selection.get("skipped", []):
+            tree = tree_for_package(package)
+            if tree is None:
+                continue
+            recorded = previous.get(tree, {})
+            for name in selection.get("selected", {}).get(package, []):
+                if name in recorded:
+                    preserved.setdefault(tree, {})[name] = recorded[name]
         if empty:
             # The deadline can leave every selected package unmeasured; its
             # stream is then empty by design. An empty stream with any package
@@ -305,7 +317,7 @@ def partial_overrides(paths: list[Path]) -> dict:
         measured.append(path)
     paths = measured
     if not paths:
-        return {"trees": {}, "packages": {}}
+        return {"trees": preserved, "packages": {}}
     packages: dict[str, float] = {}
     for path in paths:
         for package, seconds in collect_packages([path]).items():
@@ -314,7 +326,11 @@ def partial_overrides(paths: list[Path]) -> dict:
                                  "measure the whole package to replace its total")
             # Several streams of one package keep the slowest run.
             packages[package] = max(packages.get(package, 0.0), seconds)
-    result = {"trees": collect(paths, load_durations()), "packages": packages}
+    result = {"trees": collect(paths, previous), "packages": packages}
+    for tree, tests in preserved.items():
+        weights = result["trees"].setdefault(tree, {})
+        for name, seconds in tests.items():
+            weights[name] = max(weights.get(name, 0.0), seconds)
     # Reuse the planner's finite, non-negative weight validation for imported
     # partial JSON too; invalid numbers must never make a budget compare green.
     from ci_test_packages import _seconds_map

@@ -993,6 +993,16 @@ def merge_overrides(into: dict, more: dict) -> None:
     into["packages"].update(more.get("packages", {}))
 
 
+def base_pair_needed(tags: str, head: dict, plan: dict) -> bool:
+    """Whether any shard's head load is over the budget.
+
+    check_budget fails only a shard whose head load exceeds the budget; the
+    base decides whether such a shard's excess is this change's or inherited.
+    When every shard fits at head, no base measurement can change the verdict.
+    """
+    return any(load > SHARD_BUDGET_SECONDS for load in predicted_loads(tags, head, plan).values())
+
+
 def measure_changed_tests(
     tests: list[dict[str, str]], tags: str, json_out: Path, base: str,
     deadline_seconds: float = MEASURE_DEADLINE_SECONDS, clock=time.monotonic,
@@ -1038,19 +1048,26 @@ def measure_changed_tests(
                 base_selected[package] = existing
         base_path = json_out.with_suffix(".base.json")
         # A new test has no recorded weight, so its head run is the one
-        # measurement the gate can't do without. Measure every package with new
-        # tests at head first, then their bases while time remains, then pair
-        # each edited-only package base-then-head. A base that misses the
-        # deadline keeps its recorded weight, the comparator the gate used
-        # before paired runs; a skipped edited-only pair keeps its recorded
-        # weight on both sides, so that pair stays comparable. Pairing every
-        # new-test package first spent the deadline on whole rest packages'
-        # bases before the last new test was reached.
+        # measurement the gate can't do without. Measure every head first,
+        # packages with new tests before edited-only ones. The gate fails only a
+        # shard whose head load is over the budget, so when every shard fits at
+        # head the bases cannot change the verdict and are not run. Otherwise
+        # measure the bases while time remains, new-test packages first. A
+        # new-test base that misses the deadline keeps its recorded weight, the
+        # comparator the gate used before paired runs. An edited-only package
+        # whose head misses the deadline keeps its recorded weight on both
+        # sides. One whose head ran but whose base misses the deadline keeps
+        # that head and the recorded base: the base is what excuses an
+        # over-budget head, and dropping the head would let the recorded
+        # weight pass in its place. Pairing every new-test package first
+        # spent the deadline on whole rest packages' bases before the last new
+        # test was reached.
         new_order = sorted(pkg for pkg in selected if pkg in new)
         edited_order = sorted(pkg for pkg in selected if pkg not in new)
         overrides: dict = {"trees": {}, "packages": {}}
         base_overrides: dict = {"trees": {}, "packages": {}}
-        head_streams: list[Path] = []
+        head_results: dict[str, dict] = {}
+        head_stream_of: dict[str, Path] = {}
         base_streams: list[Path] = []
         measured: list[str] = []
         skipped: list[str] = []
@@ -1075,9 +1092,28 @@ def measure_changed_tests(
                 base_measured.add(package)
             else:
                 head_seconds += clock() - pair_started
-                head_streams.append(stream)
+                head_stream_of[package] = stream
                 measured.append(package)
             return result
+
+        def keep_skipped_records(sides: tuple[dict, ...], unmeasured: dict[str, list[str]]) -> None:
+            # Tree weights are keyed by test name. If a measured package, or a
+            # new test's zero base, shares a name with a skipped package, it
+            # must not lower that skipped test's recorded weight on any side.
+            for package, names in unmeasured.items():
+                tree = tree_for_package(package)
+                if tree is None:
+                    continue
+                recorded = plan.get("trees", {}).get(tree, {})
+                for name in names:
+                    for side in sides:
+                        weights = side["trees"].get(tree, {})
+                        if name in weights:
+                            weights[name] = max(weights[name], float(recorded.get(name, 0.0)))
+                        elif name in recorded:
+                            # The cheap declaration inventory can miss a name; an
+                            # explicit override keeps its recorded load counted.
+                            side["trees"].setdefault(tree, {})[name] = float(recorded[name])
 
         for package in new_order:
             if remaining_seconds() < MEASURE_MIN_START_SECONDS:
@@ -1085,29 +1121,42 @@ def measure_changed_tests(
                     f"measurement deadline reached before {package}; new tests have no recorded "
                     f"weight, so they can't be left unmeasured: {sorted(new[package])}. Split the "
                     "pull request or record their weights from a full race run.")
-            merge_overrides(overrides, measure(package, base_side=False))
-        for package in new_order:
-            if package not in base_selected:
-                continue
-            if remaining_seconds() < MEASURE_MIN_START_SECONDS:
-                base_skipped.append(package)
-                continue
-            merge_overrides(base_overrides, measure(package, base_side=True))
+            head_results[package] = measure(package, base_side=False)
         for package in edited_order:
-            pair_base_overrides = None
-            if remaining_seconds() >= MEASURE_MIN_START_SECONDS and package in base_selected:
-                pair_base_overrides = measure(package, base_side=True)
             if remaining_seconds() < MEASURE_MIN_START_SECONDS:
-                if pair_base_overrides is not None:
-                    # Without its head, a lone base would compare against the
-                    # recorded head weight; drop it so the pair stays comparable.
-                    base_streams.pop()
-                    base_measured.discard(package)
                 skipped.append(package)
                 continue
-            merge_overrides(overrides, measure(package, base_side=False))
-            if pair_base_overrides is not None:
-                merge_overrides(base_overrides, pair_base_overrides)
+            head_results[package] = measure(package, base_side=False)
+        head_only: dict = {"trees": {}, "packages": {}}
+        for result in head_results.values():
+            merge_overrides(head_only, result)
+        skipped_heads = {pkg: selected[pkg] for pkg in skipped}
+        keep_skipped_records((head_only,), skipped_heads)
+        paired = base_pair_needed(tags, head_only, plan)
+        if paired:
+            for package in new_order:
+                if package not in base_selected:
+                    continue
+                if remaining_seconds() < MEASURE_MIN_START_SECONDS:
+                    base_skipped.append(package)
+                    continue
+                merge_overrides(base_overrides, measure(package, base_side=True))
+            for package in edited_order:
+                if package not in head_results or package not in base_selected:
+                    continue
+                if remaining_seconds() < MEASURE_MIN_START_SECONDS:
+                    # The head already ran. Discarding it puts the recorded
+                    # weight back on both sides, so a shard this measurement
+                    # pushed over budget passes. Keep the head and leave the
+                    # base at its recorded weight.
+                    base_skipped.append(package)
+                    continue
+                merge_overrides(base_overrides, measure(package, base_side=True))
+        else:
+            print("Every shard fits the budget at head; base measurement cannot change the verdict and was not run")
+        for result in head_results.values():
+            merge_overrides(overrides, result)
+        head_streams = [head_stream_of[pkg] for pkg in measured]
         for target, streams in ((json_out, head_streams), (base_path, base_streams)):
             target.parent.mkdir(parents=True, exist_ok=True)
             with target.open("w", encoding="utf-8") as stream:
@@ -1126,7 +1175,8 @@ def measure_changed_tests(
             "skipped": skipped,
         }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         selection_path(base_path).write_text(json.dumps({
-            "selected": {pkg: base_selected[pkg] for pkg in sorted(base_measured)},
+            "selected": {pkg: base_selected[pkg] for pkg in sorted(base_measured | set(skipped) | set(base_skipped))
+                         if pkg in base_selected},
             "whole": [pkg for pkg in whole if pkg in base_measured],
             "skipped": sorted(pkg for pkg in [*skipped, *base_skipped] if pkg in base_selected),
         }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -1144,7 +1194,11 @@ def measure_changed_tests(
                 base_overrides["packages"][package] = 0.0
                 introduced["packages"].append(package)
         for package in base_skipped:
-            if package not in whole:
+            # Edited-only packages stay on the ordinary comparison: measured
+            # head against the recorded base. Only a package that added tests
+            # charges a whole-package increase as new work, because that
+            # increase includes tests the record does not know.
+            if package not in whole or package not in new:
                 continue
             # Without a paired base, a whole-package increase cannot be
             # dismissed as timing noise: it includes newly added tests. Charge
@@ -1158,27 +1212,16 @@ def measure_changed_tests(
         for tree in introduced["trees"]:
             introduced["trees"][tree] = sorted(set(introduced["trees"][tree]))
         introduced["packages"] = sorted(set(introduced["packages"]))
-        # Tree weights are keyed by test name. If a measured package, or a new
-        # test's zero base, shares a name with a skipped package, it must not
-        # lower that skipped test's recorded weight on either side. Applied
-        # after the zero-base charge so a shared name keeps its recorded base.
-        for package in skipped:
-            tree = tree_for_package(package)
-            recorded = plan.get("trees", {}).get(tree, {}) if tree is not None else {}
-            if tree is None:
-                continue
-            for name in selected[package]:
-                for side in (overrides, base_overrides):
-                    weights = side["trees"].get(tree, {})
-                    if name in weights:
-                        weights[name] = max(weights[name], float(recorded.get(name, 0.0)))
-                    elif name in recorded:
-                        # The cheap declaration inventory can miss a name; an
-                        # explicit override keeps its recorded load counted.
-                        side["trees"].setdefault(tree, {})[name] = float(recorded[name])
+        # Applied after the zero-base charge so a shared name keeps its recorded base.
+        keep_skipped_records((overrides, base_overrides), skipped_heads)
+        # A missed base keeps only its existing names; newly added names still
+        # have a zero base. Its measured head must not be raised to the record.
+        keep_skipped_records((base_overrides,), {pkg: base_selected[pkg] for pkg in base_skipped})
         print(f"Paired measurement wall time: {clock() - started:.3f}s "
               f"(shared deadline {deadline_seconds:.0f}s; base={base_seconds:.3f}s/{len(base_selected)} packages, "
               f"head={head_seconds:.3f}s/{len(selected)} packages)")
+        if not paired:
+            return check_budget(tags, SHARD_BUDGET_SECONDS, overrides, None, plan)
         return check_budget(
             tags, SHARD_BUDGET_SECONDS, overrides, base_overrides, plan, introduced=introduced,
         )
