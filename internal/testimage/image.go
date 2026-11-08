@@ -6,6 +6,7 @@ package testimage
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -16,7 +17,6 @@ import (
 	"image/gif"
 	"image/jpeg"
 	"image/png"
-	"math/rand/v2"
 	"regexp"
 	"strconv"
 	"testing"
@@ -29,7 +29,6 @@ func Payload(t testing.TB, format string) []byte {
 	t.Helper()
 	shape := regexp.MustCompile(`(?i)(AKIA|ASIA)[A-Z0-9]{16}`)
 	for seed := uint64(0); seed < 64; seed++ {
-		rng := rand.New(rand.NewPCG(seed, 1)) //nolint:gosec // Deterministic synthetic image noise, never security material.
 		var out bytes.Buffer
 		var err error
 		switch format {
@@ -39,9 +38,7 @@ func Payload(t testing.TB, format string) []byte {
 				size = 1280
 			}
 			img := image.NewRGBA(image.Rect(0, 0, size, size))
-			for i := range img.Pix {
-				img.Pix[i] = byte(rng.Uint32() & 0xff)
-			}
+			fillImageNoise(img.Pix, seed)
 			for i := 3; i < len(img.Pix); i += 4 {
 				img.Pix[i] = 255
 			}
@@ -52,9 +49,7 @@ func Payload(t testing.TB, format string) []byte {
 			}
 		case "gif":
 			img := image.NewPaletted(image.Rect(0, 0, 1152, 1152), palette.Plan9)
-			for i := range img.Pix {
-				img.Pix[i] = byte(rng.Uint32() & 0xff)
-			}
+			fillImageNoise(img.Pix, seed)
 			err = gif.Encode(&out, img, nil)
 		case "webp":
 			// Complete 2x2 VP8 keyframe, followed by a RIFF unknown chunk. WebP
@@ -64,9 +59,7 @@ func Payload(t testing.TB, format string) []byte {
 				0x30, 1, 0, 0x9d, 1, 0x2a, 2, 0, 2, 0, 2, 0, 0x34, 0x25, 0xa4, 0, 3, 0x70, 0, 0xfe, 0xfb, 0x94, 0, 0,
 			})
 			noise := make([]byte, 2<<20)
-			for i := range noise {
-				noise[i] = byte(rng.Uint32() & 0xff)
-			}
+			fillImageNoise(noise, seed)
 			out.WriteString("JUNK")
 			if err = binary.Write(&out, binary.LittleEndian, fixtureSize(t, len(noise))); err == nil {
 				out.Write(noise)
@@ -152,4 +145,15 @@ func fixtureSize(t testing.TB, n int) uint32 {
 		t.Fatalf("fixture size: %v", err)
 	}
 	return value
+}
+
+// fillImageNoise expands a deterministic seed into synthetic image noise.
+func fillImageNoise(dst []byte, seed uint64) {
+	var input [16]byte
+	binary.LittleEndian.PutUint64(input[:8], seed)
+	for counter := uint64(0); len(dst) > 0; counter++ {
+		binary.LittleEndian.PutUint64(input[8:], counter)
+		block := sha256.Sum256(input[:])
+		dst = dst[copy(dst, block[:]):]
+	}
 }

@@ -14,6 +14,7 @@ import (
 )
 
 func TestBareBase64Images(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig()
 	cfg.DLP.ScanEnv = false
 	sc := MustNew(cfg)
@@ -26,6 +27,7 @@ func TestBareBase64Images(t *testing.T) {
 		}
 		for _, carrier := range []string{"anthropic", "openai", "mcp"} {
 			t.Run(format+"/"+carrier, func(t *testing.T) {
+				t.Parallel()
 				body := testimage.Carrier(t, carrier, format, payload)
 				for _, surface := range []struct {
 					name string
@@ -34,6 +36,7 @@ func TestBareBase64Images(t *testing.T) {
 					{"outbound", sc.ScanTextForDLP}, {"body", sc.ScanRequestBodyTextForDLP}, {"inbound", sc.ScanTextForDLPInbound},
 				} {
 					t.Run(surface.name, func(t *testing.T) {
+						t.Parallel()
 						if r := surface.scan(context.Background(), body); !r.Clean {
 							t.Fatalf("image denied: %+v", r)
 						}
@@ -65,6 +68,7 @@ func TestBareBase64ImageBoundaries(t *testing.T) {
 		{"type mismatch", carrier(valid, "image/jpeg")},
 		{"unsupported type", carrier(valid, "image/svg+xml")},
 		{"decoded secret", carrier(embedded, "image/png")},
+		{"key after image end", carrier(base64.StdEncoding.EncodeToString(append(pngWithBase64AWSLikeRun(t), []byte(key)...)), "image/png")},
 		{"text claim", `image/png ` + key},
 		{"duplicate declaration", `{"media_type":"image/jpeg","media_type":"image/png","data":"` + valid + `"}`},
 		{"non-string declaration", `{"media_type":"image/png","media_type":null,"data":"` + valid + `"}`},
@@ -134,6 +138,21 @@ func TestImageDataURLMislabeledPNGOrJPEG(t *testing.T) {
 
 func BenchmarkBareBase64ImageDLP(b *testing.B) {
 	body := testimage.Carrier(b, "anthropic", "png", testimage.Payload(b, "png"))
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = false
+	sc := MustNew(cfg)
+	b.Cleanup(sc.Close)
+	b.SetBytes(int64(len(body)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		sc.ScanTextForDLP(b.Context(), body)
+	}
+}
+
+func BenchmarkImageDataURLDLP(b *testing.B) {
+	payload := testimage.Payload(b, "png")
+	body := `{"image":"data:image/png;base64,` + base64.StdEncoding.EncodeToString(payload) + `"}`
 	cfg := testConfig()
 	cfg.DLP.ScanEnv = false
 	sc := MustNew(cfg)

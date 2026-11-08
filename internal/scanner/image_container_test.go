@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"image"
 	"image/gif"
+	"math"
 	"testing"
 )
 
@@ -53,7 +54,12 @@ func TestCompleteGIFValidation(t *testing.T) {
 func TestCompleteWebPValidation(t *testing.T) {
 	chunk := func(kind string, data []byte) []byte {
 		out := append([]byte(kind), 0, 0, 0, 0)
-		binary.LittleEndian.PutUint32(out[4:8], uint32(len(data))) //nolint:gosec // bounded fixture
+		size := int64(len(data))
+		if size < 0 || size > math.MaxUint32 {
+			t.Fatal("fixture chunk exceeds uint32 size")
+			return nil
+		}
+		binary.LittleEndian.PutUint32(out[4:8], uint32(size))
 		out = append(out, data...)
 		if len(data)%2 != 0 {
 			out = append(out, 0)
@@ -65,7 +71,12 @@ func TestCompleteWebPValidation(t *testing.T) {
 		for _, c := range chunks {
 			out = append(out, c...)
 		}
-		binary.LittleEndian.PutUint32(out[4:8], uint32(len(out)-8)) //nolint:gosec // bounded fixture
+		size := int64(len(out)) - 8
+		if size < 0 || size > math.MaxUint32 {
+			t.Fatal("fixture RIFF size is outside uint32 range")
+			return nil
+		}
+		binary.LittleEndian.PutUint32(out[4:8], uint32(size))
 		return out
 	}
 	lossless := chunk("VP8L", []byte{0x2f, 0, 0, 0, 0, 0})

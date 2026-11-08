@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/testimage"
 )
 
 func TestPolicyPatternClasses(t *testing.T) {
@@ -207,24 +208,31 @@ func TestPolicyVerifiedImageViews(t *testing.T) {
 	cfg.DLP.ScanEnv = false
 	sc := MustNew(cfg)
 	defer sc.Close()
-	image := dataURLForPNGBytes(t, randomPNG(t, 23))
-	body := `{"image":"` + image + `","message":"ordinary text"}`
-	memo := &decodingMemo{reassemblyDeferred: true}
-	defer memo.releaseProjection()
-	result := sc.scanTextForDLPWithDecodes(t.Context(), body, textDLPOptions{patterns: textDLPAllPatterns, scanSecretLeak: true}, memo)
-	result = finishAssembled(result, memo)
-	if slices.Contains(memo.reassemblyPending, body) {
-		t.Fatal("removed image carrier entered terminal inspection")
-	}
-	text := exciseVerifiedImageDataURLs(body)
-	retained := exciseImagesRetainingDecodedForDLP(body)
-	if !slices.Contains(memo.reassemblyPending, text) || !slices.Contains(memo.reassemblyPending, retained) {
-		t.Fatal("image removal lost text or retained binary inspection")
-	}
-	if !memo.reassemblyViewKinds[text].textual() || memo.reassemblyViewKinds[retained].textual() {
-		t.Fatal("image removal changed view eligibility")
-	}
-	if !result.Clean || result.Incomplete || HasInspectionLimit(result.Matches) {
-		t.Fatal("verified image changed admission", result)
+	for _, carrier := range []string{"data URL", "anthropic", "openai", "mcp"} {
+		t.Run(carrier, func(t *testing.T) {
+			image := dataURLForPNGBytes(t, randomPNG(t, 23))
+			body := `{"image":"` + image + `","message":"ordinary text"}`
+			if carrier != "data URL" {
+				body = testimage.Carrier(t, carrier, "png", testimage.SmallPNG(t, ""))
+			}
+			memo := &decodingMemo{reassemblyDeferred: true}
+			defer memo.releaseProjection()
+			result := sc.scanTextForDLPWithDecodes(t.Context(), body, textDLPOptions{patterns: textDLPAllPatterns, scanSecretLeak: true}, memo)
+			result = finishAssembled(result, memo)
+			if slices.Contains(memo.reassemblyPending, body) {
+				t.Fatal("removed image carrier entered terminal inspection")
+			}
+			text := exciseVerifiedImageDataURLs(body)
+			retained := exciseImagesRetainingDecodedForDLP(body)
+			if !slices.Contains(memo.reassemblyPending, text) || !slices.Contains(memo.reassemblyPending, retained) {
+				t.Fatal("image removal lost text or retained binary inspection")
+			}
+			if !memo.reassemblyViewKinds[text].textual() || memo.reassemblyViewKinds[retained].textual() {
+				t.Fatal("image removal changed view eligibility")
+			}
+			if !result.Clean || result.Incomplete || HasInspectionLimit(result.Matches) {
+				t.Fatal("verified image changed admission", result)
+			}
+		})
 	}
 }
