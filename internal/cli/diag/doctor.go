@@ -433,15 +433,15 @@ func checkDoctorTLSInterception(cfg *config.Config) doctorReportCheck {
 			Next:       "fix ca_cert/ca_key paths or rerun TLS/contain CA setup",
 		}
 	}
-	if !doctorGlobalEnforce(cfg) {
+	if !doctorInterceptedEnforce(cfg) {
 		return doctorReportCheck{
 			Name:       "tls_interception",
 			Surface:    doctorSurfaceHTTP,
 			Status:     doctorStatusWarn,
 			Configured: true,
 			Reachable:  true,
-			Detail:     doctorObservationDetail(cfg, "CA material is readable, but global enforce=false means findings on intercepted bodies are not blocking"),
-			Next:       doctorObservationNext(cfg, "set enforce=true before claiming blocking enforcement on intercepted HTTPS"),
+			Detail:     "CA material is readable, but global enforce=false means findings on intercepted bodies are not blocking",
+			Next:       "set enforce=true before claiming blocking enforcement on intercepted HTTPS",
 		}
 	}
 	return doctorReportCheck{
@@ -540,10 +540,10 @@ func checkDoctorBrowserShield(cfg *config.Config) doctorReportCheck {
 		detail = "enabled, but HTTPS Browser Shield coverage needs TLS interception or plaintext response bodies"
 		next = "enable TLS interception or limit the claim to plaintext/fetch-visible bodies"
 		enforcing = false
-	case !doctorGlobalEnforce(cfg):
+	case !doctorInterceptedEnforce(cfg):
 		status = doctorStatusWarn
-		detail = doctorObservationDetail(cfg, "enabled with TLS interception, but global enforce=false means findings are not blocking")
-		next = doctorObservationNext(cfg, "set enforce=true before claiming blocking enforcement on browser responses")
+		detail = "enabled with TLS interception, but global enforce=false means findings are not blocking"
+		next = "set enforce=true before claiming blocking enforcement on browser responses"
 		enforcing = false
 	}
 	return doctorReportCheck{
@@ -1093,6 +1093,13 @@ func doctorObservationNext(cfg *config.Config, legacy string) string {
 
 func doctorGlobalEnforce(cfg *config.Config) bool {
 	return cfg.EnforceEnabled()
+}
+
+// doctorInterceptedEnforce is the enforcement intercepted HTTPS gets. Watch-only
+// covers plain forward HTTP and fetch, so TLS interception (and the Browser
+// Shield that rides on it) keeps the configured enforce setting.
+func doctorInterceptedEnforce(cfg *config.Config) bool {
+	return cfg.EnforceConfigured()
 }
 
 // doctorRootBannerMessage returns a non-empty advisory string when the

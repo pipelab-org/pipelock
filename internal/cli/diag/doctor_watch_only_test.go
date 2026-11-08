@@ -6,6 +6,8 @@ package diag
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -51,5 +53,41 @@ func TestDoctorWatchOnly(t *testing.T) {
 		if strings.Contains(buf.String(), "Watch-only: enabled") != enabled {
 			t.Fatal("text output mode missing or spurious")
 		}
+	}
+}
+
+// watch_only covers plain forward HTTP and fetch. Intercepted HTTPS and the
+// Browser Shield on it still apply the configured policy, so doctor must keep
+// reporting them as enforcing when enforce is on.
+func TestDoctorWatchOnlyKeepsInterceptedHTTPSEnforcement(t *testing.T) {
+	dir := t.TempDir()
+	caCert, caKey := filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca.key")
+	for _, path := range []string{caCert, caKey} {
+		if err := os.WriteFile(path, []byte("x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	enforceOff := false
+	for _, tc := range []struct {
+		name    string
+		enforce *bool
+		want    bool
+	}{
+		{name: "enforce on", want: true},
+		{name: "enforce off", enforce: &enforceOff},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.WatchOnly = true
+			cfg.Enforce = tc.enforce
+			cfg.TLSInterception = config.TLSInterception{Enabled: true, CACertPath: caCert, CAKeyPath: caKey}
+			cfg.BrowserShield.Enabled = true
+			if check := checkDoctorTLSInterception(cfg); check.Enforcing != tc.want {
+				t.Fatalf("tls_interception = %+v, want enforcing=%v", check, tc.want)
+			}
+			if check := checkDoctorBrowserShield(cfg); check.Enforcing != tc.want {
+				t.Fatalf("browser_shield = %+v, want enforcing=%v", check, tc.want)
+			}
+		})
 	}
 }

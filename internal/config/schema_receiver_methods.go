@@ -295,7 +295,14 @@ func (f ForwardProxy) SNIRequireTLSEnabled() bool {
 // Watch-only overrides Enforce; credential and operator floors are separate.
 // Otherwise it defaults to true when Enforce is nil (not set in config).
 func (c *Config) EnforceEnabled() bool {
-	return !c.WatchOnly && (c.Enforce == nil || *c.Enforce)
+	return !c.WatchOnly && c.EnforceConfigured()
+}
+
+// EnforceConfigured returns the enforce setting without the watch-only
+// override, for surfaces watch-only does not cover (tool-call hooks and the
+// commands that evaluate the same decision): they keep the operator's setting.
+func (c *Config) EnforceConfigured() bool {
+	return c.Enforce == nil || *c.Enforce
 }
 
 // ExplainBlocksEnabled returns whether block responses include hints.

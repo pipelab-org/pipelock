@@ -403,9 +403,9 @@ func buildDecision(cfg *config.Config, evidence []Evidence) Decision {
 	// mode never releases incomplete typed inspection or the core credential
 	// floor, matching the proxy transports.
 	mustBlock := slices.ContainsFunc(evidence, func(e Evidence) bool { return e.core || e.inspectionIncomplete })
-	if !mustBlock && (strictest == config.ActionWarn || !cfg.EnforceEnabled()) {
+	if !mustBlock && (strictest == config.ActionWarn || !cfg.EnforceConfigured()) {
 		verb := "warning"
-		if !cfg.EnforceEnabled() {
+		if !cfg.EnforceConfigured() {
 			verb = "detected (enforce off)"
 		}
 		return Decision{

@@ -1147,3 +1147,37 @@ func evidenceContainsPattern(evidence []Evidence, pattern string) bool {
 	}
 	return false
 }
+
+// watch_only observes plain forward HTTP and fetch only. A tool-call hook is
+// another surface: it keeps the configured enforce setting, so a block-level
+// tool policy rule still denies when watch_only is set alongside enforce: true.
+func TestDecide_WatchOnlyKeepsHookEnforcement(t *testing.T) {
+	enforceOff := false
+	for _, tc := range []struct {
+		name    string
+		enforce *bool
+		want    Outcome
+	}{
+		{name: "enforce default", enforce: nil, want: Deny},
+		{name: "enforce off", enforce: &enforceOff, want: Allow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.DLP.ScanEnv = false
+			cfg.WatchOnly = true
+			cfg.Enforce = tc.enforce
+			cfg.MCPToolPolicy = config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: policy.DefaultToolPolicyRules()}
+			cfg.ApplyDefaults()
+			cfg.Internal = nil
+			sc := scanner.MustNew(cfg)
+			defer sc.Close()
+			decision := Decide(context.Background(), cfg, sc, policy.New(cfg.MCPToolPolicy), Action{
+				Source: "cursor", Kind: EventShellExecution,
+				Shell: &ShellPayload{Command: "rm -rf /tmp/test", CWD: "/tmp"},
+			})
+			if decision.Outcome != tc.want {
+				t.Fatalf("outcome = %s, want %s; evidence = %+v", decision.Outcome, tc.want, decision.Evidence)
+			}
+		})
+	}
+}
