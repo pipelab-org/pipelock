@@ -77,6 +77,7 @@ jobs:
           checkout_tag="$(timeout 60 git ls-remote "$checkout_url" "$tag_ref")"
           test -n "$canonical_tag"
           test "$canonical_tag" = "$checkout_tag"
+          test "${canonical_tag%%[[:space:]]*}" = "$(git -C "$AEB_ROOT" rev-parse "$tag_ref")"
           git -C "$AEB_ROOT" remote set-url origin "$canonical_url"
           test "$(git -C "$AEB_ROOT" remote get-url origin)" = "$canonical_url"
 

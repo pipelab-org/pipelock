@@ -97,6 +97,7 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
         script = step_run_script(self.workflow, name)
         self.assertIn('canonical_url="https://github.com/luckyPipewrench/agent-egress-bench.git"', script)
         self.assertIn('test "$canonical_tag" = "$checkout_tag"', script)
+        self.assertIn('test "${canonical_tag%%[[:space:]]*}" = "$(git -C "$AEB_ROOT" rev-parse "$tag_ref")"', script)
         self.assertIn('canonical_tag="$(timeout 60 git ls-remote', script)
         self.assertIn('checkout_tag="$(timeout 60 git ls-remote', script)
         self.assertIn('test -n "$canonical_tag"', script)
