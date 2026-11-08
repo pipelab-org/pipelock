@@ -18,6 +18,7 @@ func TestDecodedLengthAdmission(t *testing.T) {
 		{`.{3}`, "", "éé", "ééé"},
 		{`MARK(?:[0-9]{4})?`, "", "MAR", "MARK"},
 		{`f{3}`, "", "ff", "ﬀf"},
+		{`.{8}`, "", "\xff\xfe\xfd\xfc\xfb\xfa\xf9", "\ufdfa"},
 	} {
 		t.Run(tc.expression, func(t *testing.T) {
 			p := &compiledPattern{name: "Record", re: regexp.MustCompile(tc.expression)}
@@ -39,6 +40,12 @@ func TestDecodedLengthAdmission(t *testing.T) {
 				}
 				if input == tc.at && len(got) == 0 {
 					t.Fatal("boundary witness was not detected")
+				}
+				if input == tc.at && sc.dlpPreFilter.rejectsUnnormalizedLength(input) {
+					t.Fatal("normalization-expanding witness was declined")
+				}
+				if input == tc.below && len(input) < sc.dlpPreFilter.minimumRunes && !sc.dlpPreFilter.rejectsUnnormalizedLength(input) {
+					t.Fatal("non-expanding short witness was not declined")
 				}
 				if input == tc.below && admitted {
 					t.Fatal("below-bound witness did not skip")

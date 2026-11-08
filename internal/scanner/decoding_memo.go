@@ -121,7 +121,6 @@ func (m *decodingMemo) releaseTextDecodingMemo() {
 // result. Callers only read the offsets.
 func (m *decodingMemo) compactWhitespace(text string) (string, []int) {
 	if m != nil && m.compactReady && m.compactSource == text {
-		m.replayTransform(text, m.compactText, assembledPayloadWhitespace)
 		m.reassemblyDerive(text, m.compactText)
 		return m.compactText, m.compactOffsets
 	}
@@ -251,6 +250,13 @@ func (s *sharedDecodes) decode(key decodingMemoKey) ([]decodedResult, bool, bool
 }
 
 func (s *sharedDecodes) matchDecoded(key decodedMatchKey) []TextDLPMatch {
+	filter := key.scanner.dlpPreFilter
+	if key.core {
+		filter = key.scanner.core.dlpPreFilter
+	}
+	if filter.rejectsUnnormalizedLength(key.text) {
+		return nil
+	}
 	var normalized string
 	if key.core {
 		// Core matching consumes only normalized bytes. Configured matching
@@ -267,10 +273,6 @@ func (s *sharedDecodes) matchDecoded(key decodedMatchKey) []TextDLPMatch {
 	}
 	if !key.core {
 		normalized = s.normalize(key.text)
-	}
-	filter := key.scanner.dlpPreFilter
-	if key.core {
-		filter = key.scanner.core.dlpPreFilter
 	}
 	if !key.cardOnly && !filter.admitsLength(normalized) {
 		s.mu.Lock()

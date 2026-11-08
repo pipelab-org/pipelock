@@ -4,8 +4,6 @@
 package scanner
 
 import (
-	"strings"
-
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
@@ -186,27 +184,6 @@ func (m *decodingMemo) observeDecodedRecipe(key decodingMemoKey, views []decoded
 	}
 }
 
-func (m *decodingMemo) replayTransform(source, text string, operation assembledPayloadOperation) {
-	if m == nil || source == text || !m.reassemblyDeferred && m.reassemblyPlan == nil {
-		return
-	}
-	parent := m.replayPayload(source)
-	if parent == nil {
-		return
-	}
-	payload := &assembledPayload{parent: parent, operation: operation}
-	if operation == assembledPayloadSegment {
-		payload.start = strings.Index(source, text)
-		payload.end = payload.start + len(text)
-		if payload.start < 0 {
-			m.markIncomplete()
-			m.reassemblyIncomplete = true
-			return
-		}
-	}
-	m.addReplayPayload(text, payload)
-}
-
 // Computed projections join the same retention budget as decoded and
 // normalized cache entries. A full cache switches ownership to a recipe,
 // without changing which bytes the scanner inspects.
@@ -222,10 +199,6 @@ func (m *decodingMemo) rememberGraphTransform(source, text string, operation ass
 		parent = m.payloadSource(source)
 	}
 	payload := &assembledPayload{parent: parent, operation: operation}
-	if operation == assembledPayloadSegment {
-		payload.start = strings.Index(source, text)
-		payload.end = payload.start + len(text)
-	}
 	m.addReplayPayload(text, payload)
 	return text
 }

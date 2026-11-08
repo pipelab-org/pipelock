@@ -1795,16 +1795,20 @@ func noteTextSegmentDecodeBudget(views []string, decodes *decodingMemo) {
 		return
 	}
 	for _, text := range views {
-		kind := decodes.reassemblyDerivedKind(text)
+		source := decodes.reassemblySegmentSource(text)
 		for _, seg := range textDLPSegments(text) {
-			decodes.reassemblySegment(text, seg, kind)
+			source.observe(seg)
 			if decodes.inspectionIncomplete() {
-				return
+				break
 			}
 			if len(seg) < 10 {
 				continue
 			}
 			decodes.decode(seg, true)
+		}
+		source.release()
+		if decodes.inspectionIncomplete() {
+			return
 		}
 	}
 }
@@ -1818,11 +1822,12 @@ func (s *Scanner) decodeTextSegmentsWithDecodes(text string, decodes *decodingMe
 	// wrap encoded secrets in JSON, YAML, CSV, or multipart text, so quotes,
 	// braces, colons, and commas must not stay attached to the encoded token.
 	segments := textDLPSegments(text)
-	kind := decodes.reassemblyDerivedKind(text)
+	source := decodes.reassemblySegmentSource(text)
+	defer source.release()
 
 	var matches []TextDLPMatch
 	for _, seg := range segments {
-		decodes.reassemblySegment(text, seg, kind)
+		source.observe(seg)
 		if len(seg) < 10 {
 			continue // too short to be a meaningful encoded secret
 		}

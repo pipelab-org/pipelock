@@ -4,6 +4,8 @@
 package scanner
 
 import (
+	"strings"
+
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -76,31 +78,37 @@ func (m *decodingMemo) reassemblyParent(source, text string) {
 	source, text = m.canonicalPayload(source), m.canonicalPayload(text)
 	if source != text && m.reassemblyPlan != nil && m.reassemblyPlan.keywords {
 		if _, known := m.viewKind(source); known {
-			child, parent := m.replayPayload(text), m.replayPayload(source)
-			if child != nil || parent != nil {
-				if _, exists := m.viewParent(text); exists {
-					return
-				}
-				if parent == nil {
-					parent = m.payloadSource(source)
-				}
-				if child != nil {
-					child.contextParent = parent
-				} else {
-					if m.reassemblyReplayParents == nil {
-						m.reassemblyReplayParents = make(map[string]*assembledPayload)
-					}
-					m.reassemblyReplayParents[text] = parent
-				}
-				return
-			}
-			if m.reassemblyParents == nil {
-				m.reassemblyParents = make(map[string]string)
-			}
-			if _, exists := m.reassemblyParents[text]; !exists {
-				m.reassemblyParents[text] = source
-			}
+			m.reassemblyParentFrom(source, text, m.replayPayload(source))
 		}
+	}
+}
+
+// The segment walker already resolved its parent's identity and kind. Reuse
+// those exact results instead of hashing a whole document for each segment.
+func (m *decodingMemo) reassemblyParentFrom(source, text string, parent *assembledPayload) {
+	child := m.replayPayload(text)
+	if child != nil || parent != nil {
+		if _, exists := m.viewParent(text); exists {
+			return
+		}
+		if parent == nil {
+			parent = m.payloadSource(source)
+		}
+		if child != nil {
+			child.contextParent = parent
+		} else {
+			if m.reassemblyReplayParents == nil {
+				m.reassemblyReplayParents = make(map[string]*assembledPayload)
+			}
+			m.reassemblyReplayParents[text] = parent
+		}
+		return
+	}
+	if m.reassemblyParents == nil {
+		m.reassemblyParents = make(map[string]string)
+	}
+	if _, exists := m.reassemblyParents[text]; !exists {
+		m.reassemblyParents[text] = source
 	}
 }
 
@@ -127,11 +135,66 @@ func partialEncodedContentMatch() TextDLPMatch {
 
 // Segments retain the source ancestry used by keyword-window decisions.
 func (m *decodingMemo) reassemblySegment(source, segment string, kind assembledViewKind) {
-	m.replayTransform(source, segment, assembledPayloadSegment)
-	if m != nil && m.reassemblyKindInsensitive {
+	parent := m.reassemblySegmentSource(source)
+	defer parent.release()
+	parent.kind = kind
+	parent.observe(segment)
+}
+
+type assembledSegmentSource struct {
+	memo            *decodingMemo
+	text            string
+	replay          *assembledPayload
+	kind            assembledViewKind
+	known, borrowed bool
+}
+
+func (m *decodingMemo) reassemblySegmentSource(text string) assembledSegmentSource {
+	source := assembledSegmentSource{memo: m, text: text, kind: assembledTextView}
+	if m == nil {
+		return source
+	}
+	source.text = m.canonicalPayload(text)
+	source.replay = m.replayPayload(text)
+	if !m.reassemblyKindInsensitive {
+		kind, known := m.viewKind(text)
+		source.known = known
+		if known && !kind.textual() {
+			source.kind = assembledDecoderView
+		}
+	}
+	// The caller's segment slice already keeps these bytes alive. Borrow them
+	// only for this walk; a deferred release also covers early match returns.
+	if source.replay != nil && source.replay.current == "" {
+		source.replay.current, source.borrowed = text, true
+	}
+	return source
+}
+
+func (s *assembledSegmentSource) release() {
+	if s.borrowed {
+		s.replay.current = ""
+	}
+}
+
+func (s *assembledSegmentSource) observe(segment string) {
+	m := s.memo
+	if m == nil {
 		return
 	}
-	if m.reassemblySetKind(segment, kind) {
-		m.reassemblyParent(source, segment)
+	if s.replay != nil && segment != s.text {
+		start := strings.Index(s.text, segment)
+		if start < 0 {
+			m.markIncomplete()
+			m.reassemblyIncomplete = true
+			return
+		}
+		m.addReplayPayload(segment, &assembledPayload{parent: s.replay, operation: assembledPayloadSegment, start: start, end: start + len(segment)})
+	}
+	if m.reassemblyKindInsensitive {
+		return
+	}
+	if m.reassemblySetKind(segment, s.kind) && s.known && s.text != segment && m.reassemblyPlan != nil && m.reassemblyPlan.keywords {
+		m.reassemblyParentFrom(s.text, m.canonicalPayload(segment), s.replay)
 	}
 }

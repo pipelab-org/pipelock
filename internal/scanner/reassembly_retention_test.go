@@ -6,6 +6,7 @@ package scanner
 import (
 	"encoding/base64"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -177,4 +178,74 @@ func terminalRetainedBytes(m *decodingMemo, roots map[string]bool) int {
 		}
 	}
 	return decodedBytes
+}
+
+func TestReassemblyReplayPreservesKeywordDecisions(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.DLP.Patterns = []config.DLPPattern{{Name: "Labeled marker", Regex: `MARK[0-9]{4}`, Severity: config.SeverityHigh, Keywords: []string{"lookup"}}}
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	for _, label := range []string{"lookup", "ordinary"} {
+		inner := strings.Repeat("a!", 4200) + reassemblyBang(base64.RawStdEncoding.EncodeToString([]byte(" "+label+" MARK1234 ")))
+		body := base64.StdEncoding.EncodeToString([]byte(inner))
+		for _, inbound := range []bool{false, true} {
+			for _, shared := range []bool{false, true} {
+				var want TextDLPResult
+				for _, full := range []bool{false, true} {
+					ctx, release := WithSharedDecodes(t.Context())
+					memo := &decodingMemo{reassemblyDeferred: true, inbound: inbound, reassemblyInbound: inbound}
+					if shared {
+						memo.shared = sharedDecodesFrom(ctx)
+					}
+					if full {
+						if shared {
+							memo.shared.store.retainedBytes = maxDecodeTotalBytes
+						} else {
+							memo.retainedBytes = maxDecodeTotalBytes
+						}
+					}
+					got := sc.scanTextForDLPWithDecodes(ctx, body, textDLPOptions{scanSecretLeak: !inbound}, memo)
+					got = finishAssembled(got, memo)
+					memo.releaseProjection()
+					release()
+					if !full {
+						want = got
+					} else if !reflect.DeepEqual(got, want) {
+						t.Fatalf("cache exhaustion changed keyword result (label=%s inbound=%v shared=%v): got %+v want %+v", label, inbound, shared, got, want)
+					}
+					if got.Clean != (label != "lookup") || HasInspectionLimit(got.Matches) {
+						t.Fatalf("invalid keyword witness: label=%s inbound=%v shared=%v result=%+v", label, inbound, shared, got)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestReassemblySegmentReplayBorrowEndsWithWalk(t *testing.T) {
+	p := reassemblyMarkerPlan(t)
+	memo := &decodingMemo{reassemblyPlan: p, reassemblyDeferred: true, retainedBytes: maxDecodeTotalBytes}
+	defer memo.releaseProjection()
+	encoded := reassemblyBang(base64.RawStdEncoding.EncodeToString([]byte("MARK1234")))
+	raw := " " + encoded + "/ordinary "
+	memo.reassemblyObserve(raw)
+	compacted, _ := memo.compactWhitespace(raw)
+	source := memo.reassemblySegmentSource(compacted)
+	if source.replay == nil || source.replay.current != compacted {
+		t.Fatal("walk did not borrow its caller-owned source")
+	}
+	for range 2 {
+		source.observe(encoded)
+		memo.decode(encoded, true)
+	}
+	source.release()
+	if source.replay.current != "" {
+		t.Fatal("walk retained its borrowed payload")
+	}
+	result := finishAssembled(TextDLPResult{Clean: true}, memo)
+	if result.Clean || HasInspectionLimit(result.Matches) {
+		t.Fatal("released segment recipe lost detection", result)
+	}
 }

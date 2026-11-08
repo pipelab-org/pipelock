@@ -565,3 +565,22 @@ func patternMinimumRunes(p *compiledPattern) int {
 func (pf *dlpPreFilter) admitsLength(text string) bool {
 	return pf.minimumRunes <= 0 || utf8.RuneCountInString(text) >= pf.minimumRunes
 }
+
+// ForDLP leaves ASCII unchanged or deletes controls, and repairs each malformed
+// UTF-8 byte to one U+FFFD (normalizeSegmented). Neither path expands rune
+// count. Valid non-ASCII must keep the full path: NFKC can expand a ligature
+// into several runes. This only declines pure matching, never graph observation.
+func (pf *dlpPreFilter) rejectsUnnormalizedLength(text string) bool {
+	if len(text) >= pf.minimumRunes {
+		return false
+	}
+	for at := 0; at < len(text); at++ {
+		if text[at] < utf8.RuneSelf {
+			continue
+		}
+		if _, size := utf8.DecodeRuneInString(text[at:]); size > 1 {
+			return false
+		}
+	}
+	return true
+}
