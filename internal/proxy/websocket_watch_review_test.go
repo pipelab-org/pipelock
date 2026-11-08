@@ -105,7 +105,6 @@ func TestWatchWebSocketAllProtocolFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := config.Defaults()
-	cfg.WatchOnly = true
 	got := (&Proxy{}).buildWSForwardHeaders(r, target, cfg, nil)
 	if strings.Join(got.Values("Sec-WebSocket-Protocol"), ",") != "first,second,third" {
 		t.Fatalf("lost offers: %v", got)

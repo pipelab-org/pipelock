@@ -988,7 +988,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var clientConn net.Conn
-	negotiateProtocol := cfg.WatchOnly && len(r.Header.Values("Sec-WebSocket-Protocol")) > 0
+	negotiateProtocol := len(r.Header.Values("Sec-WebSocket-Protocol")) > 0
 	selectedProtocol := ""
 	if negotiateProtocol {
 		if err := validateWSClientHandshake(r); err != nil {
@@ -1469,16 +1469,12 @@ func (p *Proxy) buildWSForwardHeaders(r *http.Request, parsed *url.URL, cfg *con
 	}
 
 	// Subprotocol negotiation.
-	if cfg.WatchOnly {
-		for _, field := range r.Header.Values("Sec-WebSocket-Protocol") {
-			for _, offer := range strings.Split(field, ",") {
-				if offer = strings.TrimSpace(offer); offer != "" {
-					fwd.Add("Sec-WebSocket-Protocol", offer)
-				}
+	for _, field := range r.Header.Values("Sec-WebSocket-Protocol") {
+		for _, offer := range strings.Split(field, ",") {
+			if offer = strings.TrimSpace(offer); offer != "" {
+				fwd.Add("Sec-WebSocket-Protocol", offer)
 			}
 		}
-	} else if value := r.Header.Get("Sec-WebSocket-Protocol"); value != "" {
-		fwd.Set("Sec-WebSocket-Protocol", value)
 	}
 
 	// Origin policy.
@@ -1545,7 +1541,7 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 	}
 	for _, key := range headerNames {
 		val := headers.Get(key)
-		if cfg.WatchOnly {
+		if cfg.WatchOnly || key == "Sec-WebSocket-Protocol" {
 			val = strings.Join(headers.Values(key), "\n")
 		}
 		if val == "" {
@@ -1669,16 +1665,14 @@ func (p *Proxy) wsDialUpstreamHandshake(ctx context.Context, targetURL string, f
 	// the offers, then mirror that selection on the downstream handshake.
 	headers := fwdHeaders.Clone()
 	var protocols []string
-	if cfg.WatchOnly {
-		for _, field := range headers.Values("Sec-WebSocket-Protocol") {
-			for _, value := range strings.Split(field, ",") {
-				if value = strings.TrimSpace(value); value != "" {
-					protocols = append(protocols, value)
-				}
+	for _, field := range headers.Values("Sec-WebSocket-Protocol") {
+		for _, value := range strings.Split(field, ",") {
+			if value = strings.TrimSpace(value); value != "" {
+				protocols = append(protocols, value)
 			}
 		}
-		headers.Del("Sec-WebSocket-Protocol")
 	}
+	headers.Del("Sec-WebSocket-Protocol")
 	dialer := ws.Dialer{
 		NetDial:    p.ssrfSafeDialContext,
 		Header:     ws.HandshakeHeaderHTTP(headers),
