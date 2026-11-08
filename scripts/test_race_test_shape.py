@@ -109,7 +109,7 @@ def ci_race_shape_errors(ci: str) -> list[str]:
         if (
             direct_count
             and '-p="$package_parallelism" -parallel=2' in job
-            and "-timeout=15m -count=1" in job
+            and "-timeout=25m -count=1" in job
             and 'ci_test_packages.py --shard "$TEST_SHARD" --selector' in job
             and '${test_selector:+"$test_selector"}' in job
         ):
@@ -184,7 +184,7 @@ class TestRaceTestShape(unittest.TestCase):
         self.assertEqual(count, 1)
         drifted = ci.replace(original, shortened, 1)
         self.assertIn(
-            f"{name}: job budget must be at least 48 minutes",
+            f"{name}: job budget must be at least 68 minutes",
             ci_retry_budget_errors(drifted),
         )
 
@@ -204,8 +204,9 @@ class TestRaceTestShape(unittest.TestCase):
         ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
         name = "test-oss-go126"
         original = job_block(ci, name)
-        # The pre-fix shape: a 20m package timeout inside a 1260s attempt.
-        crowded, count = re.subn(r"-timeout=15m\b", "-timeout=20m", original)
+        # A package timeout one minute inside the attempt deadline, the shape
+        # that once let the attempt deadline win before go test named the hang.
+        crowded, count = re.subn(r"-timeout=25m\b", "-timeout=30m", original)
         self.assertEqual(count, 1)
         self.assertIn(
             f"{name}: attempt deadline must exceed the package timeout by 300 seconds so go test names a hung test",
@@ -216,10 +217,10 @@ class TestRaceTestShape(unittest.TestCase):
         ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
         name = "test-oss-go127"
         original = job_block(ci, name)
-        longer, count = re.subn(r"--attempt-timeout-seconds [0-9]+", "--attempt-timeout-seconds 1800", original)
+        longer, count = re.subn(r"--attempt-timeout-seconds [0-9]+", "--attempt-timeout-seconds 2400", original)
         self.assertEqual(count, 1)
         self.assertIn(
-            f"{name}: job budget must be at least 66 minutes",
+            f"{name}: job budget must be at least 86 minutes",
             ci_retry_budget_errors(ci.replace(original, longer, 1)),
         )
 
