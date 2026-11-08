@@ -37,8 +37,8 @@ func (s *assembledScan) keywordPossible(pattern *compiledPattern, lane *assemble
 		if m.keywordPresent(pattern.keywords, m.keywordUnit, false, true) {
 			return true
 		}
-		for source, steps := s.text, 0; steps <= len(m.reassemblyParents); steps++ {
-			parent, ok := m.reassemblyParents[source]
+		for source, steps := s.text, 0; steps <= m.parentLimit(); steps++ {
+			parent, ok := m.viewParent(source)
 			if !ok {
 				break
 			}

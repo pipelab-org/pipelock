@@ -16,15 +16,16 @@ import (
 // Separate byte segments may choose different members, a conservative superset.
 // The high bit marks the regex-derived minimum run.
 type assembledShape struct {
-	id       int
-	minimum  int
-	window   int
-	local    *regexp.Regexp
-	validate *compiledPattern
-	segments [8][9][4]uint64
-	members  [256]bool
-	masks    [5][8][64]uint64
-	bias     [5]uint64
+	id           int
+	minimum      int
+	window       int
+	local        *regexp.Regexp
+	validate     *compiledPattern
+	validateRule bool
+	segments     [8][9][4]uint64
+	members      [256]bool
+	masks        [5][8][64]uint64
+	bias         [5]uint64
 }
 
 const (

@@ -34,7 +34,7 @@ type assembledPlan struct {
 	literalBytes   []int
 }
 
-func newAssembledPlan(p *reassemblyPlan) (*assembledPlan, error) {
+func compileAssembledPlan(p *reassemblyPlan) (*assembledPlan, error) {
 	a := &assembledPlan{verify: make([]*regexp.Regexp, len(p.patterns)), literalBytes: make([]int, len(p.patterns))}
 	a.active = make([]bool, len(p.patterns))
 	a.decoderAllowed = make([]bool, len(p.patterns))
@@ -104,12 +104,7 @@ func newAssembledPlan(p *reassemblyPlan) (*assembledPlan, error) {
 				if err != nil {
 					return nil, err
 				}
-				if pattern.name == "IBAN" || pattern.name == "Bitcoin WIF Private Key" {
-					validation := *pattern
-					validation.keywords = nil
-					validation.keywordContext = nil
-					shape.validate = &validation
-				}
+				shape.validateRule = pattern.name == "IBAN" || pattern.name == "Bitcoin WIF Private Key"
 				a.shapes = append(a.shapes, shape)
 			}
 		}
@@ -186,7 +181,6 @@ func newAssembledPlan(p *reassemblyPlan) (*assembledPlan, error) {
 	for codec := range a.raw {
 		a.raw[codec].build()
 	}
-	a.buildShapeGroups(p)
 	return a, nil
 }
 

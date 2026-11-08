@@ -27,42 +27,73 @@ type (
 	}
 	assembledChargeEntry struct {
 		source  string
+		replay  *assembledPayload
 		charges *assembledCharges
 	}
 	assembledChargeRegistry struct {
 		entries map[assembledChargeKey][]assembledChargeEntry
 		size    int
+		replays map[*assembledPayload]*assembledCharges
 	}
 )
 
 func (b *assembledBudget) chargesFor(text string) *assembledCharges {
-	if b.charged == nil {
-		b.charged = make(map[string]*assembledCharges)
+	var replay *assembledPayload
+	if b.memo != nil {
+		replay = b.memo.replayPayload(text)
 	}
-	if c := b.charged[text]; c != nil {
-		return c
-	}
-	if len(b.charged) >= maxDecodeCandidates {
-		return nil
-	}
-	c := new(assembledCharges)
 	if b.registry == nil {
 		b.registry = &assembledChargeRegistry{entries: make(map[assembledChargeKey][]assembledChargeEntry)}
 	}
+	if replay != nil {
+		if c := b.registry.replays[replay]; c != nil {
+			return c
+		}
+	}
+	if b.charged == nil {
+		b.charged = make(map[string]*assembledCharges)
+	}
+	if c := b.charged[text]; replay == nil && c != nil {
+		return c
+	}
+	if len(b.charged)+len(b.registry.replays) >= maxDecodeCandidates {
+		return nil
+	}
+	c := new(assembledCharges)
 	for codec, projection := range assembledFingerprint(text) {
 		key := assembledChargeKey{projection, codec}
 		for _, entry := range b.registry.entries[key] {
-			if assembledSameProjection(text, entry.source, codec) {
+			source := entry.source
+			if entry.replay != nil {
+				var ok bool
+				source, ok = entry.replay.materialize()
+				if !ok {
+					b.incomplete = true
+					continue
+				}
+			}
+			if assembledSameProjection(text, source, codec) {
 				c.canonical[codec] = entry.charges
 				break
 			}
 		}
 		if c.canonical[codec] == nil && b.registry.size < maxDecodeCandidates {
-			b.registry.entries[key] = append(b.registry.entries[key], assembledChargeEntry{text, c})
+			entry := assembledChargeEntry{source: text, replay: replay, charges: c}
+			if replay != nil {
+				entry.source = ""
+			}
+			b.registry.entries[key] = append(b.registry.entries[key], entry)
 			b.registry.size++
 		}
 	}
-	b.charged[text] = c
+	if replay == nil {
+		b.charged[text] = c
+	} else {
+		if b.registry.replays == nil {
+			b.registry.replays = make(map[*assembledPayload]*assembledCharges)
+		}
+		b.registry.replays[replay] = c
+	}
 	return c
 }
 

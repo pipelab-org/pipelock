@@ -6,6 +6,7 @@ package scanner
 import (
 	"context"
 	"encoding/base64"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -39,6 +40,26 @@ func TestCardMatchKeepsEncodedCredentialInspection(t *testing.T) {
 					t.Fatalf("encoded credential hidden: %+v", result)
 				}
 			})
+		}
+	}
+}
+
+func TestCardPatternCandidatesMatchFullPrefilter(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{Name: "Prefixed card", Regex: `4111[0-9]{12}`, Validator: config.ValidatorLuhn, Severity: config.SeverityHigh})
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	card := "4111" + strings.Repeat("1", 12)
+	for _, text := range []string{"", "ordinary response", card, "prefix " + card + " suffix", card[:len(card)-1], card[:len(card)-1] + "2"} {
+		var lowered dlpLoweredBytes
+		lowered.add(text)
+		all := sc.matchDLPPatternsLowered(text, encodingBase64, text, &lowered, textDLPAllPatterns)
+		want := textDLPCardPatterns.selectMatches(all)
+		got := sc.matchDLPPatternsLowered(text, encodingBase64, text, nil, textDLPCardPatterns)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("card partition changed findings for %q: got %+v want %+v", text, got, want)
 		}
 	}
 }

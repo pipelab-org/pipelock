@@ -18,8 +18,19 @@ type reassemblyResult struct {
 // reassemblyRemember joins the existing per-scan view graph. The projection index
 // holds only these stable IDs, never another owning reference to a payload.
 func (m *decodingMemo) reassemblyRemember(text string) (int, bool) {
-	if id, ok := m.reassemblySeen[text]; ok {
+	text = m.canonicalPayload(text)
+	if id, ok := m.findView(text); ok {
 		return id, false
+	}
+	if payload := m.replayPayload(text); payload != nil {
+		id := len(m.reassemblyPending)
+		if m.reassemblyPendingReplay == nil {
+			m.reassemblyPendingReplay = make(map[int]*assembledPayload)
+		}
+		m.reassemblyPendingReplay[id] = payload
+		payload.pending = id
+		m.reassemblyPending = append(m.reassemblyPending, "")
+		return id, true
 	}
 	if m.reassemblySeen == nil {
 		m.assembledStorage()
@@ -78,12 +89,16 @@ func (m *decodingMemo) reassemblyObserveDecoded(text string, decoded []decodedRe
 		}
 	}
 	pending := []string{text}
-	textRoot := m.reassemblyViewKinds[text].textual()
+	textRoot := m.textualView(text)
 	if textRoot {
-		if m.reassemblyTextRoots == nil {
-			m.reassemblyTextRoots = make(map[string]bool)
+		if payload := m.replayPayload(text); payload != nil {
+			payload.textRoot = true
+		} else {
+			if m.reassemblyTextRoots == nil {
+				m.reassemblyTextRoots = make(map[string]bool)
+			}
+			m.reassemblyTextRoots[text] = true
 		}
-		m.reassemblyTextRoots[text] = true
 	}
 	eligible := make(map[string]struct{})
 	for head := 0; head < len(pending) && len(remaining) > 0; head++ {
@@ -125,7 +140,7 @@ func (m *decodingMemo) reassemblyObserve(text string) {
 	if m == nil {
 		return
 	}
-	kind, known := m.reassemblyViewKinds[text]
+	kind, known := m.viewKind(text)
 	if !known {
 		kind = assembledInputView
 	}
@@ -180,9 +195,30 @@ func assembledEnoughSymbols(text string, minimum int) bool {
 }
 
 func (m *decodingMemo) reassemblyDrain() {
+	var borrowed *assembledDecodeRecipe
+	defer func() {
+		if borrowed != nil {
+			borrowed.current = nil
+		}
+	}()
 	for m.reassemblyInspected < len(m.reassemblyPending) {
 		id := m.reassemblyInspected
 		m.reassemblyInspected++
+		var recipe *assembledDecodeRecipe
+		if payload := m.reassemblyPendingReplay[id]; payload != nil {
+			recipe = payload.decode
+		}
+		if recipe != borrowed {
+			if borrowed != nil {
+				borrowed.current = nil
+			}
+			borrowed = recipe
+			if recipe != nil {
+				if source, ok := recipe.source.materialize(); ok {
+					recipe.current, _ = decodeEncodingsBudgetMode(source, recipe.includeURL, recipe.minPrefix, recipe.inbound)
+				}
+			}
+		}
 		m.reassemblyInspect(id)
 	}
 }
@@ -191,13 +227,15 @@ func (m *decodingMemo) reassemblyInspect(view int) {
 	if m.reassemblyPlan == nil || m.reassemblyIncomplete || m.incomplete && !m.inbound {
 		return
 	}
-	text := m.reassemblyPending[view]
-	key := assembledEmptyKey{m.reassemblyPlan, text, m.reassemblyPatterns, !m.reassemblyViewKinds[text].textual()}
+	text := m.pendingText(view)
+	release := m.borrowPending(view, text)
+	defer release()
+	key := assembledEmptyKey{m.reassemblyPlan, text, m.reassemblyPatterns, !m.textualView(text)}
 	if m.reassemblyPlan.emptyTerminal(key, false) {
 		return
 	}
 	budget := &m.reassemblyBudget
-	*budget = assembledBudget{memo: m, used: m.assembledBytes, produced: m.reassemblyProduced, patterns: m.reassemblyPatterns, decoderOnly: !m.reassemblyViewKinds[text].textual(), charged: m.assembledCharged, registry: m.assembledChargeRegistry}
+	*budget = assembledBudget{memo: m, used: m.assembledBytes, produced: m.reassemblyProduced, patterns: m.reassemblyPatterns, decoderOnly: !m.textualView(text), charged: m.assembledCharged, registry: m.assembledChargeRegistry}
 	skip := m.assembledSkip(view)
 	r := assembledLayer(m.reassemblyPlan, text, budget, skip)
 	nested := m.reassemblyPlan.assembled.nestedHex && skip&1 == 0 && !budget.incomplete && assembledOuterAdmits(m.reassemblyPlan, text, 0)
@@ -209,7 +247,7 @@ func (m *decodingMemo) reassemblyInspect(view int) {
 			assembledMerge(&r, more)
 		}
 	}
-	if skip == 0 && !nested && !budget.admitted && !budget.incomplete {
+	if skip == 0 && !nested && !budget.admitted && !budget.incomplete && m.reassemblyPendingReplay[view] == nil {
 		m.reassemblyPlan.emptyTerminal(key, true)
 	}
 	m.assembledBytes = budget.used
@@ -293,13 +331,15 @@ func finishAssembled(result TextDLPResult, memos ...*decodingMemo) TextDLPResult
 		m.reassemblyDrain()
 		m.reassemblyNestedDeferred = false
 		for _, view := range m.reassemblyNestedPending {
-			text := m.reassemblyPending[view]
+			text := m.pendingText(view)
 			if m.incomplete && !m.inbound {
 				break
 			}
+			release := m.borrowPending(view, text)
 			budget := &m.reassemblyBudget
-			*budget = assembledBudget{memo: m, used: m.assembledBytes, produced: m.reassemblyProduced, patterns: m.reassemblyPatterns, decoderOnly: !m.reassemblyViewKinds[text].textual(), charged: m.assembledCharged, registry: m.assembledChargeRegistry}
+			*budget = assembledBudget{memo: m, used: m.assembledBytes, produced: m.reassemblyProduced, patterns: m.reassemblyPatterns, decoderOnly: !m.textualView(text), charged: m.assembledCharged, registry: m.assembledChargeRegistry}
 			more := assembledNestedHexAdmitted(m.reassemblyPlan, text, budget)
+			release()
 			m.assembledBytes = budget.used
 			m.assembledCharged = budget.charged
 			m.assembledChargeRegistry = budget.registry

@@ -925,6 +925,8 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	text = exciseImagesRetainingDecodedForDLP(text)
 	if text != imageSource && decodes != nil {
 		imageText := exciseVerifiedImageDataURLs(imageSource)
+		imageText = decodes.rememberGraphTransform(imageSource, imageText, assembledPayloadImageText)
+		text = decodes.rememberGraphTransform(imageSource, text, assembledPayloadImageDecoded)
 		decodes.reassemblyDerive(imageSource, imageText)
 		decodes.reassemblyObserve(imageText)
 		decodes.reassemblySetKind(text, assembledDecoderView)
@@ -941,6 +943,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	}
 	beforeRedaction := text
 	text = redactOfficialAWSExampleCredentialsForDocs(text)
+	text = decodes.rememberGraphTransform(beforeRedaction, text, assembledPayloadRedactExamples)
 	decodes.reassemblyDerive(beforeRedaction, text)
 	cleaned := decodes.normalize(text)
 	if decodes != nil {
@@ -956,6 +959,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	segmentViewsFor := func(source string) []spanTextView {
 		views := textDLPEncodingSegmentViews(source)
 		for _, view := range views {
+			decodes.rememberGraphTransform(source, view.text, assembledPayloadWhitespace)
 			decodes.reassemblyDerive(source, view.text)
 		}
 		return views
@@ -1414,7 +1418,15 @@ func (s *Scanner) matchDLPPatternsWithDecodes(text, encoding, source string, dec
 func (s *Scanner) matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource string, lowered *dlpLoweredBytes, patterns textDLPPatternSet, decodes *decodingMemo) []TextDLPMatch {
 	var matches []TextDLPMatch
 	var shape dlpShapeSummary
-	for _, idx := range s.dlpPreFilter.patternsToCheckWith(text, lowered) {
+	var candidates []int
+	if patterns == textDLPCardPatterns {
+		// The compiled partition is exact. Run every card rule's ordinary
+		// admission and validator instead of screening unrelated prefixes.
+		candidates = s.dlpCardPatternIndices
+	} else {
+		candidates = s.dlpPreFilter.patternsToCheckWith(text, lowered)
+	}
+	for _, idx := range candidates {
 		p := s.dlpPatterns[idx]
 		if !patterns.includes(p.genericCard) {
 			continue

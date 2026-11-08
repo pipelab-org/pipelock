@@ -31,36 +31,40 @@ type decodingMemoKey struct {
 // stopped at a depth or work bound with decodable work left. It is a property of the
 // scan, not of one view, so it survives cache hits and unretained decodes.
 type decodingMemo struct {
-	reassemblyKindInsensitive  bool
-	reassemblyPatternLimit     textDLPPatternSet
-	reassemblyPatternSelected  bool
-	reassemblyPatterns         textDLPPatternSet
-	assembledBytes             int
-	assembledKeywordReplays    map[assembledReplayKey][]assembledKeywordCandidate
-	assembledAllowance         *assembledAllowance
-	reassemblyBudget           assembledBudget
-	assembledProjectionTable   []assembledProjectionEntry
-	assembledProjectionStorage *assembledProjectionStorage
-	assembledProjectionFirst   [5]assembledProjectionEntry
-	assembledProjectionEntries int
-	reassemblyDeferred         bool
-	reassemblyNestedDeferred   bool
-	reassemblyNestedPending    []int
-	reassemblyInbound          bool
-	reassemblyPending          []string
-	reassemblyViewKinds        map[string]assembledViewKind
-	reassemblyTextRoots        map[string]bool
-	reassemblyDecoded          map[decodingMemoKey]assembledViewKind
-	reassemblyDecodedBytes     int
-	reassemblyParents          map[string]string
-	reassemblyIncomplete       bool
-	assembledCharged           map[string]*assembledCharges
-	assembledChargeRegistry    *assembledChargeRegistry
-	reassemblyInspected        int
-	reassemblyProduced         map[assembledIdentity]struct{}
-	reassemblyPlan             *reassemblyPlan
-	reassemblySeen             map[string]int
-	reassemblyFindings         []TextDLPMatch
+	reassemblyReplayPayloads     map[assembledPayloadKey][]*assembledPayload
+	reassemblyReplayPayloadCount int
+	reassemblyPendingReplay      map[int]*assembledPayload
+	reassemblyReplayParents      map[string]*assembledPayload
+	reassemblyKindInsensitive    bool
+	reassemblyPatternLimit       textDLPPatternSet
+	reassemblyPatternSelected    bool
+	reassemblyPatterns           textDLPPatternSet
+	assembledBytes               int
+	assembledKeywordReplays      map[assembledReplayKey][]assembledKeywordCandidate
+	assembledAllowance           *assembledAllowance
+	reassemblyBudget             assembledBudget
+	assembledProjectionTable     []assembledProjectionEntry
+	assembledProjectionStorage   *assembledProjectionStorage
+	assembledProjectionFirst     [5]assembledProjectionEntry
+	assembledProjectionEntries   int
+	reassemblyDeferred           bool
+	reassemblyNestedDeferred     bool
+	reassemblyNestedPending      []int
+	reassemblyInbound            bool
+	reassemblyPending            []string
+	reassemblyViewKinds          map[string]assembledViewKind
+	reassemblyTextRoots          map[string]bool
+	reassemblyDecoded            map[decodingMemoKey]assembledViewKind
+	reassemblyDecodedBytes       int
+	reassemblyParents            map[string]string
+	reassemblyIncomplete         bool
+	assembledCharged             map[string]*assembledCharges
+	assembledChargeRegistry      *assembledChargeRegistry
+	reassemblyInspected          int
+	reassemblyProduced           map[assembledIdentity]struct{}
+	reassemblyPlan               *reassemblyPlan
+	reassemblySeen               map[string]int
+	reassemblyFindings           []TextDLPMatch
 
 	keywordPresence map[keywordPresenceKey]bool
 	keywordMode     bool
@@ -117,6 +121,7 @@ func (m *decodingMemo) releaseTextDecodingMemo() {
 // result. Callers only read the offsets.
 func (m *decodingMemo) compactWhitespace(text string) (string, []int) {
 	if m != nil && m.compactReady && m.compactSource == text {
+		m.replayTransform(text, m.compactText, assembledPayloadWhitespace)
 		m.reassemblyDerive(text, m.compactText)
 		return m.compactText, m.compactOffsets
 	}
@@ -125,7 +130,10 @@ func (m *decodingMemo) compactWhitespace(text string) (string, []int) {
 		compacted, offsets = compactTextDLPWhitespaceWithOffsets(text)
 	}
 	if m != nil {
-		m.compactSource, m.compactText, m.compactOffsets, m.compactReady = text, compacted, offsets, true
+		compacted = m.rememberGraphTransform(text, compacted, assembledPayloadWhitespace)
+		if m.replayPayload(text) == nil && m.replayPayload(compacted) == nil && m.reservePayloadBytes(cap(offsets)*int(reflect.TypeFor[int]().Size())) {
+			m.compactSource, m.compactText, m.compactOffsets, m.compactReady = m.canonicalPayload(text), compacted, offsets, true
+		}
 		m.reassemblyDerive(text, compacted)
 	}
 	return compacted, offsets
@@ -185,6 +193,16 @@ func WithSharedDecodes(ctx context.Context) (context.Context, func()) {
 	if shared == nil {
 		shared = &sharedDecodes{}
 	}
+	shared.mu.Lock()
+	// A caller may still hold a released context. Its immutable computations
+	// remain valid, but any entries it added belong to the old borrow.
+	shared.store.reset()
+	clear(shared.lowered)
+	clear(shared.loweredValues)
+	shared.loweredValues = shared.loweredValues[:0]
+	shared.loweredBytes = 0
+	shared.store.retainedBytes = cap(shared.loweredValues) * loweredViewSize
+	shared.mu.Unlock()
 	return context.WithValue(ctx, sharedDecodesKey{}, shared), func() {
 		shared.mu.Lock()
 		shared.store.reset()
@@ -214,18 +232,22 @@ func sharedDecodesFrom(ctx context.Context) *sharedDecodes {
 	return shared
 }
 
-func (s *sharedDecodes) decode(key decodingMemoKey) ([]decodedResult, bool) {
+func (s *sharedDecodes) decode(key decodingMemoKey) ([]decodedResult, bool, bool) {
 	s.mu.Lock()
 	cached, ok := s.store.views[key]
 	s.mu.Unlock()
 	if ok {
-		return cached.views, cached.complete
+		return cached.views, cached.complete, true
 	}
 	decoded, complete := decodeEncodingsBudgetMode(key.text, key.includeURL, key.minPrefix, key.inbound)
 	s.mu.Lock()
 	s.store.retainDecode(key, decoded, complete)
+	cached, retained := s.store.views[key]
 	s.mu.Unlock()
-	return decoded, complete
+	if retained {
+		return cached.views, cached.complete, true
+	}
+	return decoded, complete, false
 }
 
 func (s *sharedDecodes) matchDecoded(key decodedMatchKey) []TextDLPMatch {
@@ -246,7 +268,20 @@ func (s *sharedDecodes) matchDecoded(key decodedMatchKey) []TextDLPMatch {
 	if !key.core {
 		normalized = s.normalize(key.text)
 	}
-	lowered := s.loweredFor(normalized)
+	filter := key.scanner.dlpPreFilter
+	if key.core {
+		filter = key.scanner.core.dlpPreFilter
+	}
+	if !key.cardOnly && !filter.admitsLength(normalized) {
+		s.mu.Lock()
+		s.store.retainDecodedMatches(key, nil)
+		s.mu.Unlock()
+		return nil
+	}
+	var lowered dlpLoweredBytes
+	if !key.cardOnly {
+		lowered = s.loweredFor(normalized)
+	}
 	matches := key.match(normalized, &lowered)
 	s.mu.Lock()
 	s.store.retainDecodedMatches(key, matches)
@@ -280,6 +315,10 @@ func (s *sharedDecodes) loweredFor(text string) dlpLoweredBytes {
 	if len(s.loweredValues) >= maxDecodeCandidates || len(text) > maxDecodeTotalBytes-s.loweredBytes-capacity*loweredViewSize {
 		return value
 	}
+	cost := len(text) + (capacity-cap(s.loweredValues))*loweredViewSize
+	if cost > maxDecodeTotalBytes-s.store.retainedBytes {
+		return value
+	}
 	if s.lowered == nil {
 		s.lowered = make(map[string]int)
 	}
@@ -291,6 +330,7 @@ func (s *sharedDecodes) loweredFor(text string) dlpLoweredBytes {
 	s.lowered[strings.Clone(text)] = len(s.loweredValues)
 	s.loweredValues = append(s.loweredValues, value)
 	s.loweredBytes += len(text)
+	s.store.retainedBytes += cost
 	return value
 }
 
@@ -304,6 +344,9 @@ func (s *sharedDecodes) normalize(text string) string {
 	normalized = normalize.ForDLP(text)
 	s.mu.Lock()
 	s.store.retainNormalized(text, normalized)
+	if cached, retained := s.store.normalized[text]; retained {
+		normalized = cached
+	}
 	s.mu.Unlock()
 	return normalized
 }
@@ -332,6 +375,7 @@ func (m *decodingMemo) inspectionIncomplete() bool {
 // pass limit.
 func (m *decodingMemo) decodeHTML(text string) string {
 	decoded, converged := decodeHTMLEntitiesChecked(text)
+	decoded = m.rememberGraphTransform(text, decoded, assembledPayloadHTML)
 	m.reassemblyDerive(text, decoded)
 	if !converged {
 		m.markIncomplete()
@@ -357,8 +401,8 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 			if !cached.complete {
 				m.incomplete = true
 			}
-			if (cached.complete || m.inbound) && m.reassemblyViewKinds[text].textual() && !m.reassemblyTextRoots[text] {
-				m.reassemblyObserveDecoded(text, cached.views)
+			if (cached.complete || m.inbound) && m.textualView(text) && !m.isTextRoot(text) {
+				m.observeDecodedRecipe(key, cached.views, true)
 			}
 			return cached.views
 		}
@@ -386,7 +430,8 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 		}
 		m.incomplete = m.incomplete || !complete
 		if complete || m.inbound {
-			m.reassemblyObserveDecoded(text, views)
+			_, retained := m.views[key]
+			m.observeDecodedRecipe(key, views, retained)
 		}
 		return views
 	}
@@ -396,16 +441,16 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 	}
 	key := decodingMemoKey{text: text, includeURL: includeURL, minPrefix: minPrefix, inbound: m.inbound}
 	if m.shared != nil {
-		decoded, complete := m.shared.decode(key)
+		decoded, complete, retained := m.shared.decode(key)
 		if !complete {
 			m.incomplete = true
 		}
 		if complete || m.inbound {
-			kind := m.reassemblyViewKinds[text]
+			kind, _ := m.viewKind(text)
 			previous, observed := m.reassemblyDecoded[key]
 			if !observed || !previous.textual() && kind.textual() {
-				m.reassemblyObserveDecoded(text, decoded)
-				if observed || len(m.reassemblyDecoded) < maxDecodeCandidates && len(text) <= maxDecodeTotalBytes-m.reassemblyDecodedBytes {
+				m.observeDecodedRecipe(key, decoded, retained)
+				if m.replayPayload(text) == nil && (observed || len(m.reassemblyDecoded) < maxDecodeCandidates && len(text) <= maxDecodeTotalBytes-m.reassemblyDecodedBytes) {
 					if m.reassemblyDecoded == nil {
 						m.reassemblyDecoded = make(map[decodingMemoKey]assembledViewKind)
 					}
@@ -422,8 +467,8 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 		if !cached.complete {
 			m.incomplete = true
 		}
-		if (cached.complete || m.inbound) && m.reassemblyViewKinds[text].textual() && !m.reassemblyTextRoots[text] {
-			m.reassemblyObserveDecoded(text, cached.views)
+		if (cached.complete || m.inbound) && m.textualView(text) && !m.isTextRoot(text) {
+			m.observeDecodedRecipe(key, cached.views, true)
 		}
 		return cached.views
 	}
@@ -431,12 +476,13 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 	if !complete {
 		m.incomplete = true
 	}
+	m.retainDecode(key, decoded, complete)
+	_, retained := m.views[key]
 	// An existing outbound refusal already decides this scan. Inbound keeps
 	// its partial-view contract and never turns this skip into a refusal.
 	if complete || m.inbound {
-		m.reassemblyObserveDecoded(text, decoded)
+		m.observeDecodedRecipe(key, decoded, retained)
 	}
-	m.retainDecode(key, decoded, complete)
 	return decoded
 }
 
@@ -472,6 +518,9 @@ func (m *decodingMemo) retainDecode(key decodingMemoKey, decoded []decodedResult
 func (m *decodingMemo) normalize(text string) string {
 	normalized := m.normalizeUntracked(text)
 	if m != nil {
+		if !m.normalizedRetained(text) {
+			m.replayTransformUnretained(text, normalized, assembledPayloadNormalize)
+		}
 		m.reassemblyDerive(text, normalized)
 	}
 	return normalized
@@ -601,7 +650,7 @@ func (m *decodingMemo) retainDecodedMatches(key decodedMatchKey, matches []TextD
 	}
 	// The retained slice holds its whole backing array, spare capacity included.
 	cost := len(key.text) + len(key.encoding) + cap(matches)*textDLPMatchSize
-	if key.text == "" || len(m.decodedMatches) >= maxDecodeCandidates || cost > maxDecodeTotalBytes-m.decodedMatchesBytes {
+	if key.text == "" || len(m.decodedMatches) >= maxDecodeCandidates || cost > maxDecodeTotalBytes-m.decodedMatchesBytes || cost > maxDecodeTotalBytes-m.retainedBytes {
 		return
 	}
 	if m.decodedMatches == nil {
@@ -609,6 +658,7 @@ func (m *decodingMemo) retainDecodedMatches(key decodedMatchKey, matches []TextD
 	}
 	m.decodedMatches[key] = matches
 	m.decodedMatchesBytes += cost
+	m.retainedBytes += cost
 }
 
 func (m *decodingMemo) keywordBudgetForScan() *keywordWorkBudget {

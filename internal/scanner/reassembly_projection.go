@@ -88,6 +88,13 @@ type assembledProjectionStorage struct {
 var assembledProjectionPool = sync.Pool{New: func() any { return &assembledProjectionStorage{} }}
 
 func (m *decodingMemo) releaseProjection() {
+	clear(m.reassemblyReplayPayloads)
+	clear(m.reassemblyPendingReplay)
+	clear(m.reassemblyReplayParents)
+	m.reassemblyReplayPayloads = nil
+	m.reassemblyPendingReplay = nil
+	m.reassemblyReplayParents = nil
+	m.reassemblyReplayPayloadCount = 0
 	if storage := m.assembledProjectionStorage; storage != nil {
 		clear(m.assembledProjectionTable)
 		storage.table = m.assembledProjectionTable
@@ -191,7 +198,7 @@ func (m *decodingMemo) assembledSkip(view int) uint8 {
 	if m.assembledProjectionEntries >= maxDecodeCandidates {
 		return 0
 	}
-	text := m.reassemblyPending[view]
+	text := m.pendingText(view)
 	fingerprint := assembledFingerprint(text)
 	var skip uint8
 	for codec, key := range fingerprint {
@@ -201,10 +208,10 @@ func (m *decodingMemo) assembledSkip(view int) uint8 {
 				m.markIncomplete()
 				return false
 			}
-			if m.reassemblyViewKinds[text].textual() && !entry.textual {
+			if m.textualView(text) && !entry.textual {
 				return false
 			}
-			return assembledSameProjection(text, m.reassemblyPending[entry.view], codec)
+			return assembledSameProjection(text, m.pendingText(entry.view), codec)
 		}
 		if first.ready && first.key == key && matches(*first) {
 			m.replayKeywords(view, first.view, codec)
@@ -230,7 +237,7 @@ func (m *decodingMemo) assembledSkip(view int) uint8 {
 		if skip&(1<<uint(codec)) != 0 || m.assembledProjectionEntries >= maxDecodeCandidates {
 			continue
 		}
-		entry := assembledProjectionEntry{key: key, view: view, ready: true, codec: uint8(codec), textual: m.reassemblyViewKinds[text].textual()}
+		entry := assembledProjectionEntry{key: key, view: view, ready: true, codec: uint8(codec), textual: m.textualView(text)}
 		if !first.ready {
 			*first = entry
 		} else {
