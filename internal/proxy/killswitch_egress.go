@@ -35,8 +35,12 @@ func (t killSwitchEgressTransport) RoundTrip(req *http.Request) (*http.Response,
 			if req.Body != nil {
 				_ = req.Body.Close()
 			}
-			return nil, newBlockedRequestError("kill_switch", killSwitchActiveReason,
+			blocked := newBlockedRequestError("kill_switch", killSwitchActiveReason,
 				"kill switch active at egress (source "+d.Source+"): "+d.Message)
+			if req.URL != nil {
+				blocked.target = req.URL.String()
+			}
+			return nil, blocked
 		}
 	}
 	return t.next.RoundTrip(req)

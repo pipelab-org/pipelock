@@ -297,6 +297,9 @@ func newReceiptEmissionBlockedRequest(err error) *blockedRequestError {
 }
 
 func redirectBlockedInfo(blockedErr *blockedRequestError) blockreason.Info {
+	if blockedErr != nil && blockedErr.layer == "kill_switch" {
+		return blockInfoFor(blockreason.KillSwitchActive, "kill_switch")
+	}
 	if blockedErr != nil && blockedErr.layer == blockLayerContract {
 		reason := strings.TrimPrefix(blockedErr.reason, "redirect blocked: ")
 		if info, ok := contractBlockInfo(reason); ok {
