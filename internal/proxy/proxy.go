@@ -715,7 +715,7 @@ func WithKillSwitchAPI(api *killswitch.APIHandler) Option {
 		if api != nil {
 			api.SetAccessDeniedObserver(func() {
 				if cfg := p.cfgPtr.Load(); cfg != nil && cfg.WatchOnly {
-					watchObservation(p.logger, p.metrics, "admin", "authentication", "kill switch API access refused", config.ActionBlock, 0, true)
+					watchObservation(p.logger, p.metrics, "admin", "authentication", "kill switch API access refused", config.ActionBlock, true)
 				}
 			})
 		}
@@ -3718,7 +3718,7 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 	sess := sm.GetOrCreate(key)
 	if sess == nil {
 		if cfg.WatchOnly {
-			watchObservation(log, p.metrics, "session", sessionCapacityLayer, session.ErrCapacity.Error(), "uninspected", 0, false)
+			watchObservation(log, p.metrics, "session", sessionCapacityLayer, session.ErrCapacity.Error(), "uninspected", false)
 			return SessionResult{}
 		}
 
@@ -3728,13 +3728,13 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 	if cfg.WatchOnly {
 		anomalies := sess.RecordRequest(hostname, &cfg.SessionProfiling)
 		for _, anomaly := range anomalies {
-			watchObservation(log, p.metrics, "session", "session_profiling", anomaly.Detail, cfg.SessionProfiling.AnomalyAction, 0, false)
+			watchObservation(log, p.metrics, "session", "session_profiling", anomaly.Detail, cfg.SessionProfiling.AnomalyAction, false)
 		}
 		if cfg.AdaptiveEnforcement.Enabled && !isAdaptiveExempt(hostname, cfg.AdaptiveEnforcement.ExemptDomains) {
 			ep := decide.EscalationParams{Threshold: cfg.AdaptiveEnforcement.EscalationThreshold, Session: key, ClientIP: clientIP, RequestID: requestID}
 			observeSignal := func(sig session.SignalType, params decide.EscalationParams) {
 				if changed, from, to := sess.ObserveWatchOnlySignal(scope, sig, &cfg.AdaptiveEnforcement, params); changed {
-					watchObservation(log, p.metrics, "session", adaptiveEnforcementLayer, fmt.Sprintf("adaptive level would change from %s to %s", from, to), "escalate", 0, false)
+					watchObservation(log, p.metrics, "session", adaptiveEnforcementLayer, fmt.Sprintf("adaptive level would change from %s to %s", from, to), "escalate", false)
 				}
 			}
 			switch {
@@ -3758,11 +3758,11 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 			}
 		}
 		if baseline := sm.CheckBaselineFailClosed(baselineAgentKeyForSessionKey(key), sess); baseline != nil {
-			watchObservation(log, p.metrics, "session", "baseline", baselineDecisionDetail(baseline), baseline.Action, 0, false)
+			watchObservation(log, p.metrics, "session", "baseline", baselineDecisionDetail(baseline), baseline.Action, false)
 		}
 		level := sess.EffectiveEscalationLevel(scope)
 		if decide.UpgradeAction(config.ActionWarn, level, &cfg.AdaptiveEnforcement) != config.ActionWarn {
-			watchObservation(log, p.metrics, "session", adaptiveEnforcementLayer, "adaptive upgrade observed", "escalate", 0, false)
+			watchObservation(log, p.metrics, "session", adaptiveEnforcementLayer, "adaptive upgrade observed", "escalate", false)
 		}
 		return SessionResult{recorder: sess}
 	}
@@ -5279,7 +5279,7 @@ func (p *Proxy) buildHandler(mux *http.ServeMux) http.Handler {
 		if p.ks != nil {
 			if d := p.ks.IsActiveHTTP(r); d.Active {
 				if cfg := p.cfgPtr.Load(); cfg != nil && cfg.WatchOnly {
-					watchObservation(p.logger, p.metrics, schemeHTTP, "kill_switch", "operator kill switch", config.ActionBlock, 0, true)
+					watchObservation(p.logger, p.metrics, schemeHTTP, "kill_switch", "operator kill switch", config.ActionBlock, true)
 				}
 				clientIP, requestID := requestMeta(r)
 				p.logger.LogKillSwitchDeny(schemeHTTP, r.URL.Path, d.Source, d.Message, clientIP, requestID)

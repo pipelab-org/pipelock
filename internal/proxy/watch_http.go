@@ -531,7 +531,7 @@ func serveWatchHTTP(w http.ResponseWriter, r *http.Request, o watchHTTPOptions) 
 	}
 	var deliveredResponse *http.Response
 	failed := false
-	var upstream http.RoundTripper = o.Upstream
+	upstream := o.Upstream
 	if upstream == nil {
 		upstream = http.DefaultTransport
 	}

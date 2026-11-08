@@ -413,7 +413,7 @@ func (p *Proxy) finalizeRequestPolicyDecision(in requestPolicyInput, d reqpolicy
 		if in.WatchObserve != nil {
 			in.WatchObserve(blockLayerRequestPolicy, d.RuleName, d.Action, 0, false)
 		} else {
-			watchObservation(p.logger, p.metrics, in.Transport, blockLayerRequestPolicy, d.RuleName, d.Action, 0, false)
+			watchObservation(p.logger, p.metrics, in.Transport, blockLayerRequestPolicy, d.RuleName, d.Action, false)
 		}
 		return requestPolicyResult{}
 	}

@@ -1794,7 +1794,7 @@ func deescalationDuration(tier string, timers *config.AirlockTimers) time.Durati
 func (h *SessionAPIHandler) logSessionAdmin(action, clientIP, sessionKey, result string, statusCode int) {
 	if (action == "auth_failure" || action == "auth_rate_limited") && h.stateConfig != nil {
 		if cfg := h.stateConfig(); cfg != nil && cfg.WatchOnly {
-			watchObservation(h.logger, h.metrics, "admin", "authentication", "session API access refused", config.ActionBlock, 0, true)
+			watchObservation(h.logger, h.metrics, "admin", "authentication", "session API access refused", config.ActionBlock, true)
 		}
 	}
 	if h.logger != nil {

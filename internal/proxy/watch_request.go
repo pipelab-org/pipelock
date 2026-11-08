@@ -19,8 +19,8 @@ import (
 
 // watchObservation uses the audit and metric channels without manufacturing a
 // blocked request. Reasons must be diagnostics, never matched payload bytes.
-func watchObservation(logger *audit.Logger, m *metrics.Metrics, transport, layer, reason, action string, count int64, enforced bool) {
-	watchObservationFor("", logger, m, transport, layer, reason, action, count, enforced)
+func watchObservation(logger *audit.Logger, m *metrics.Metrics, transport, layer, reason, action string, enforced bool) {
+	watchObservationFor("", logger, m, transport, layer, reason, action, 0, enforced)
 }
 
 // watchObservationFor is watchObservation for a request with an ID, so the
