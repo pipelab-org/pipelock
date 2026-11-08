@@ -7,7 +7,7 @@
 language: "en-US"
 
 reviews:
-  profile: "assertive"             # broader coverage; path_instructions below temper speculative nits
+  profile: "chill"                 # balanced feedback; assertive produced mostly minor and trivial findings
   request_changes_workflow: false  # advisory review; merge requirements are enforced separately
   high_level_summary: true         # one automated summary; maintainers own decisions
   poem: false
