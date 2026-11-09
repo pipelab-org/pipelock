@@ -296,23 +296,27 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 	}
 	// Digest each distinct ID-shaped path segment before locking, so that
 	// holding s.mu costs one map lookup per candidate rather than HMAC work.
+	// Incomplete requests cannot use provenance, so skip this additional work
+	// after the existing request-token bound or an unread body is known.
 	var pathIDs []issuerPathIDCandidate
-	seenSegments := make(map[string]struct{})
-	for _, segment := range strings.Split(target.Path, "/") {
-		if _, seen := seenSegments[segment]; seen {
-			continue
+	if bodyKnown && !overflow {
+		seenSegments := make(map[string]struct{})
+		for _, segment := range strings.Split(target.Path, "/") {
+			if _, seen := seenSegments[segment]; seen {
+				continue
+			}
+			candidates := s.serverIDCandidates(mac, originTarget, segment)
+			if candidates.n == 0 {
+				continue
+			}
+			seenSegments[segment] = struct{}{}
+			var words [][32]byte
+			_ = issuerSentTokens(segment, func(token string) bool {
+				words = append(words, issuerDigestFields(mac, "sent_host", host, token))
+				return true
+			})
+			pathIDs = append(pathIDs, issuerPathIDCandidate{ids: candidates, words: words})
 		}
-		seenSegments[segment] = struct{}{}
-		candidates := s.serverIDCandidates(mac, originTarget, segment)
-		if candidates.n == 0 {
-			continue
-		}
-		var words [][32]byte
-		_ = issuerSentTokens(segment, func(token string) bool {
-			words = append(words, issuerDigestFields(mac, "sent_host", host, token))
-			return true
-		})
-		pathIDs = append(pathIDs, issuerPathIDCandidate{ids: candidates, words: words})
 	}
 
 	s.mu.Lock()
