@@ -7,6 +7,28 @@ import (
 	"testing"
 )
 
+func TestLogBlockedDetailIssuerIDEvidence(t *testing.T) {
+	for _, reason := range []string{"", "history_unread_body"} {
+		t.Run(reason, func(t *testing.T) {
+			logger, sink := newLoggerWithEmitter(t)
+			defer logger.Close()
+			logger.LogBlockedDetail(NewMethodLogContext("GET"), "entropy", "high entropy path segment", BlockDetail{IssuerIDEvidence: reason})
+			event, ok := sink.lastEvent()
+			if !ok {
+				t.Fatal("missing operator event")
+			}
+			value, present := event.Fields["issuer_id_evidence"]
+			if reason == "" {
+				if present {
+					t.Fatal("legacy event acquired an evidence status")
+				}
+			} else if value != reason {
+				t.Fatalf("operator reason = %v", value)
+			}
+		})
+	}
+}
+
 // TestLogBlockedDetail_InfrastructureErrorOmitsMITRETechnique pins the
 // headline label fix from issue #440: a DNS resolver wobble blocked by the
 // SSRF layer must not emit mitre_technique=T1046, because the resolver had no

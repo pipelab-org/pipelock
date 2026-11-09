@@ -124,7 +124,7 @@ func TestIssuerSentIncompleteCallerLocal(t *testing.T) {
 				for i := 0; i < issuerSentMaxEntries; i++ {
 					var digest [32]byte
 					digest[0], digest[1] = byte(i), byte(i>>8)
-					s.sent[sender][digest] = struct{}{}
+					s.sent[sender][digest] = issuerSentAgentFirst
 				}
 				body = []byte(agentBlob)
 			}

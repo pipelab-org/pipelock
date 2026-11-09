@@ -1090,7 +1090,11 @@ func newInterceptHandler(
 				default:
 					interceptRecordFinding(ic, session.SignalBlock, urlResult.Scanner, urlResult.Reason)
 				}
-				ic.Logger.LogBlockedDetail(actx, urlResult.Scanner, urlResult.Reason, auditDetailFromResult(urlResult))
+				detail := auditDetailFromResult(urlResult)
+				if urlResult.Scanner == scanner.ScannerEntropy && strings.HasPrefix(urlResult.Reason, "high entropy path segment ") {
+					detail.IssuerIDEvidence = ic.issuerIDBlockReason()
+				}
+				ic.Logger.LogBlockedDetail(actx, urlResult.Scanner, urlResult.Reason, detail)
 				ic.Metrics.RecordTLSRequestBlocked("url_scan")
 				_ = interceptEmitReceipt(ic, receipt.EmitOpts{
 					ActionID:  actionID,

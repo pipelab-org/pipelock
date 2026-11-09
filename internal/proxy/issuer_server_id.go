@@ -8,6 +8,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/json"
+	"hash"
 	"net/http"
 	"net/url"
 	"strings"
@@ -23,10 +24,10 @@ import (
 // JSON response, such as a mail filter or message ID, that the agent then
 // names as one segment of a URL path back to that same origin. The path
 // entropy gate reads such an ID as a possible payload. It is relieved for one
-// segment only when the origin introduced the value: the exact string never
-// appeared in anything this session sent to that origin. A string the agent
-// sent and the origin stored and returned is a reflection, not an issue, so
-// it stays scored.
+// segment only when the origin introduced the value before this session sent
+// it to that host. Using an allowed ID retains that ordering in send history.
+// A string the agent sent first and the origin returned is a reflection, not
+// an issue, so it stays scored.
 //
 // Evidence is in-memory and session-bound like the rest of the issuer store.
 // A session whose sent traffic cannot be fully read stops minting IDs, so a
@@ -61,6 +62,15 @@ const (
 // ':' and '@'. Percent escapes are handled by URL parsing, not admitted as
 // literal ID bytes. The same alphabet applies to every origin.
 const issuerIDDelimiters = "!$&'()*+,;=:@"
+
+// Only explicit server-first history preserves introduction. An existing
+// unknown or agent-first entry cannot acquire it from a later response or use.
+type issuerSentProvenance uint8
+
+const (
+	issuerSentAgentFirst issuerSentProvenance = iota
+	issuerSentServerFirst
+)
 
 // issuerServerIDShaped reports whether value can name one literal ASCII URL
 // path segment. Slashes, escapes, whitespace and controls cannot occur, so the
@@ -138,8 +148,8 @@ func emitSentFormRun(run string, emit func(string) bool) bool {
 }
 
 // sentDigest binds a sent token to the host alone. A value sent to a host over
-// any scheme or port has reached that host, so it must never mint as an ID
-// the host issued, whatever port the ID is later used on.
+// any scheme or port has reached that host. Unless an allowed ID introduced
+// it first, it cannot establish introduction on another port either.
 func (s *issuerQueryStore) sentDigest(target *url.URL, value string) ([32]byte, bool) {
 	host := issuerSentHost(target)
 	if host == "" {
@@ -174,18 +184,25 @@ func (s *issuerQueryStore) admitIDSessionLocked(session string) bool {
 		s.idCapacityReported = true
 		return false
 	}
-	s.sent[session] = make(map[[32]byte]struct{})
+	s.sent[session] = make(map[[32]byte]issuerSentProvenance)
 	return true
 }
 
 // taintSentLocked revokes only this caller's IDs when its outgoing history
 // is incomplete. Neither hosts nor other callers acquire this taint.
 func (s *issuerQueryStore) taintSentLocked(session string) {
-	if !s.admitIDSessionLocked(session) || s.sentUnreadable[session] {
+	s.taintSentForReasonLocked(session, issuerHistoryUnknown)
+}
+
+func (s *issuerQueryStore) taintSentForReasonLocked(session string, reason issuerIDHistoryBlock) {
+	if !s.admitIDSessionLocked(session) || s.sentUnreadable[session] != issuerHistoryComplete {
 		return
 	}
+	if reason == issuerHistoryComplete {
+		reason = issuerHistoryUnknown
+	}
 	delete(s.ids, session)
-	s.sentUnreadable[session] = true
+	s.sentUnreadable[session] = reason
 	if s.observeIDBlock != nil {
 		s.observeIDBlock(metrics.IssuerIDBlockSession, !s.idBlockReported)
 	}
@@ -210,7 +227,7 @@ func (p *Proxy) newObservedIssuerQueryStore() *issuerQueryStore {
 // Neither a response nor a lookup can turn missing history into authority.
 func (s *issuerQueryStore) mintBlockedLocked(session string, target *url.URL) bool {
 	_, ok := s.sentDigest(target, "")
-	return !ok || s.sent[session] == nil || s.sentUnreadable[session]
+	return !ok || s.sent[session] == nil || s.sentUnreadable[session] != issuerHistoryComplete
 }
 
 // recordSent records every token a request carries to its origin: path
@@ -277,26 +294,71 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 			break
 		}
 	}
+	// Digest each distinct ID-shaped path segment before locking, so that
+	// holding s.mu costs one map lookup per candidate rather than HMAC work.
+	var pathIDs []issuerPathIDCandidate
+	seenSegments := make(map[string]struct{})
+	for _, segment := range strings.Split(target.Path, "/") {
+		if _, seen := seenSegments[segment]; seen {
+			continue
+		}
+		seenSegments[segment] = struct{}{}
+		candidates := s.serverIDCandidates(mac, originTarget, segment)
+		if candidates.n == 0 {
+			continue
+		}
+		var words [][32]byte
+		_ = issuerSentTokens(segment, func(token string) bool {
+			words = append(words, issuerDigestFields(mac, "sent_host", host, token))
+			return true
+		})
+		pathIDs = append(pathIDs, issuerPathIDCandidate{ids: candidates, words: words})
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.admitIDSessionLocked(session) || s.sentUnreadable[session] {
+	if !s.admitIDSessionLocked(session) || s.sentUnreadable[session] != issuerHistoryComplete {
 		return
 	}
-	if !bodyKnown || overflow {
-		s.taintSentLocked(session)
+	if !bodyKnown {
+		s.taintSentForReasonLocked(session, issuerHistoryUnreadBody)
 		return
+	}
+	if overflow {
+		s.taintSentForReasonLocked(session, issuerHistoryRequestLimit)
+		return
+	}
+	// Determine provenance while holding the same lock as history insertion.
+	// Only an exact, currently allowed path ID (or its addressing delimiter)
+	// can preserve server-first words. This adds flags to tokens already being
+	// recorded, never entries at mint time or authority from arbitrary bodies.
+	serverFirst := make(map[[32]byte]struct{})
+	for _, pathID := range pathIDs {
+		if _, issued := s.serverIDMatchLocked(session, pathID.ids); !issued {
+			continue
+		}
+		for _, word := range pathID.words {
+			serverFirst[word] = struct{}{}
+		}
 	}
 	sent := s.sent[session]
 	for _, digest := range digests {
 		if _, exists := sent[digest]; exists {
 			continue
 		}
-		if len(sent) >= issuerSentMaxEntries || s.sentEntries >= issuerSentAllMaxEntries {
-			s.taintSentLocked(session)
+		if len(sent) >= issuerSentMaxEntries {
+			s.taintSentForReasonLocked(session, issuerHistorySessionLimit)
 			return
 		}
-		sent[digest] = struct{}{}
+		if s.sentEntries >= issuerSentAllMaxEntries {
+			s.taintSentForReasonLocked(session, issuerHistoryTotalLimit)
+			return
+		}
+		provenance := issuerSentAgentFirst
+		if _, introduced := serverFirst[digest]; introduced {
+			provenance = issuerSentServerFirst
+		}
+		sent[digest] = provenance
 		s.sentEntries++
 	}
 }
@@ -396,8 +458,7 @@ func appendJSONStrings(texts []string, body []byte) []string {
 }
 
 // mintServerID records value as an ID the origin in target issued, unless
-// the session sent that exact value to the origin or its sent traffic is
-// unreadable.
+// the session sent it first or its sent traffic is unreadable.
 func (s *issuerQueryStore) mintServerID(session string, target *url.URL, value string, _ time.Time) {
 	if s == nil || s.disabled || session == "" || !issuerServerIDShaped(value) {
 		return
@@ -415,22 +476,48 @@ func (s *issuerQueryStore) mintServerID(session string, target *url.URL, value s
 	if s.mintBlockedLocked(session, target) {
 		return
 	}
-	if _, reflected := s.sent[session][sentDigest]; reflected {
+	issued := s.ids[session]
+	if _, exists := issued[idDigest]; exists {
+		// A freshly delivered listing refreshes the same allowance; it
+		// does not introduce another value or consume another slot.
+		s.touchIDLocked(issued, idDigest)
 		return
 	}
-	issued := s.ids[session]
-	for _, existing := range issued {
-		if hmac.Equal(existing[:], idDigest[:]) {
-			return
-		}
+	if provenance, sent := s.sent[session][sentDigest]; sent && provenance != issuerSentServerFirst {
+		return
 	}
 	if !s.idIntroducedLocked(session, target, value) {
 		return
 	}
-	if len(issued) >= issuerCookieMaxEntries {
-		issued = issued[1:]
+	if issued == nil {
+		issued = make(map[[32]byte]uint64)
+		s.ids[session] = issued
 	}
-	s.ids[session] = append(issued, idDigest)
+	if len(issued) >= issuerCookieMaxEntries {
+		delete(issued, leastRecentIssuerID(issued))
+	}
+	s.touchIDLocked(issued, idDigest)
+}
+
+// touchIDLocked marks an allowance as the most recently delivered or used.
+// It changes retention order only, never which IDs are allowed.
+func (s *issuerQueryStore) touchIDLocked(issued map[[32]byte]uint64, digest [32]byte) {
+	s.idClock++
+	issued[digest] = s.idClock
+}
+
+// leastRecentIssuerID names the allowance to evict when a new ID needs a
+// slot. Every touch takes a distinct clock value, so the choice is unique.
+func leastRecentIssuerID(issued map[[32]byte]uint64) [32]byte {
+	var oldest [32]byte
+	first := true
+	var oldestUse uint64
+	for digest, lastUse := range issued {
+		if first || lastUse < oldestUse {
+			oldest, oldestUse, first = digest, lastUse, false
+		}
+	}
+	return oldest
 }
 
 // issuerServerIDIntroducible reports whether value carries any word that
@@ -446,20 +533,19 @@ func issuerServerIDIntroducible(value string) bool {
 	return found
 }
 
-// idIntroducedLocked requires at least one eligible word the caller never sent
-// to this host. An exact reflection contains only recorded words; recombining
-// already-sent words is conservatively refused too. IDs consisting solely of
-// short fields have no introduction proof and keep ordinary entropy scoring.
-// This uses existing history without adding delimiter-specific state or cost.
+// idIntroducedLocked requires an eligible word that is unsent or whose first
+// send used an already allowed ID. Agent-first words never become introduction
+// proof, including when used inside another issued ID. IDs consisting solely
+// of short fields keep ordinary entropy scoring.
 func (s *issuerQueryStore) idIntroducedLocked(session string, target *url.URL, value string) bool {
 	introduced := false
 	mac := hmac.New(sha256.New, s.key[:])
 	host := issuerSentHost(target)
 	_ = issuerSentTokens(value, func(token string) bool {
 		digest := issuerDigestFields(mac, "sent_host", host, token)
-		_, sent := s.sent[session][digest]
-		introduced = !sent
-		return sent
+		provenance, sent := s.sent[session][digest]
+		introduced = !sent || provenance == issuerSentServerFirst
+		return !introduced
 	})
 	return introduced
 }
@@ -474,38 +560,63 @@ func (s *issuerQueryStore) serverIDIssued(session string, target *url.URL, segme
 	if s == nil || s.disabled || session == "" {
 		return false
 	}
-	relative := strings.TrimSuffix(segment, ":")
-	exact := issuerServerIDShaped(segment)
-	hasRelativeDelimiter := relative != segment && issuerServerIDShaped(relative)
-	if !exact && !hasRelativeDelimiter {
-		return false
-	}
-	var digest, relativeDigest [32]byte
-	if exact {
-		var ok bool
-		digest, ok = s.originDigest("server_id", target, segment)
-		if !ok {
-			return false
-		}
-	}
-	if hasRelativeDelimiter {
-		var ok bool
-		relativeDigest, ok = s.originDigest("server_id", target, relative)
-		if !ok {
-			return false
-		}
-	}
+	candidates := s.serverIDCandidates(hmac.New(sha256.New, s.key[:]), target, segment)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.mintBlockedLocked(session, target) {
+	digest, issued := s.serverIDMatchLocked(session, candidates)
+	if !issued || s.mintBlockedLocked(session, target) {
 		return false
 	}
-	for _, existing := range s.ids[session] {
-		if (exact && hmac.Equal(existing[:], digest[:])) || (hasRelativeDelimiter && hmac.Equal(existing[:], relativeDigest[:])) {
-			return true
+	// Evict inactive IDs rather than a frequently used directory or item.
+	s.touchIDLocked(s.ids[session], digest)
+	return true
+}
+
+// issuerIDCandidates holds the allowance digests one path segment can name at
+// one origin: the segment itself, and the ID before one addressing colon.
+type issuerIDCandidates struct {
+	digests [2][32]byte
+	n       int
+}
+
+// issuerPathIDCandidate pairs a request path segment's allowance digests with
+// the sent-history digests of its words.
+type issuerPathIDCandidate struct {
+	ids   issuerIDCandidates
+	words [][32]byte
+}
+
+// serverIDCandidates is the one exact matching rule shared by relief and send
+// provenance. It reads no store state, so callers compute it before locking.
+// A target that is not a valid https origin yields no candidates.
+func (s *issuerQueryStore) serverIDCandidates(mac hash.Hash, target *url.URL, segment string) issuerIDCandidates {
+	var c issuerIDCandidates
+	host, port, ok := issuerCookieOrigin(target)
+	if !ok {
+		return c
+	}
+	scheme := strings.ToLower(target.Scheme)
+	if issuerServerIDShaped(segment) {
+		c.digests[c.n] = issuerDigestFields(mac, "server_id", scheme, host, port, segment)
+		c.n++
+	}
+	if relative := strings.TrimSuffix(segment, ":"); relative != segment && issuerServerIDShaped(relative) {
+		c.digests[c.n] = issuerDigestFields(mac, "server_id", scheme, host, port, relative)
+		c.n++
+	}
+	return c
+}
+
+// serverIDMatchLocked reads existing authority only; the caller holds s.mu
+// and checks history before granting anything.
+func (s *issuerQueryStore) serverIDMatchLocked(session string, c issuerIDCandidates) ([32]byte, bool) {
+	issued := s.ids[session]
+	for _, digest := range c.digests[:c.n] {
+		if _, ok := issued[digest]; ok {
+			return digest, true
 		}
 	}
-	return false
+	return [32]byte{}, false
 }
 
 // recordIssuerRequestSent records what an allowed request is about to send
@@ -583,5 +694,5 @@ func (p *Proxy) taintIssuerSessionForStream(cfg *config.Config, agent, clientIP 
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	store.taintSentLocked(session)
+	store.taintSentForReasonLocked(session, issuerHistoryStream)
 }

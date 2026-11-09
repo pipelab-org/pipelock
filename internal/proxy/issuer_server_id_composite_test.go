@@ -93,7 +93,7 @@ func TestCompositeIDShapeAndLimits(t *testing.T) {
 	origin := mustIssuerQueryURL(t, "https://api.vendor.example/sites")
 	s.recordSent("reader", origin, nil, []byte(strings.Repeat("opaque-object-id,", issuerSentMaxTokensPerRequest+1)), true, time.Now())
 	s.mintServerID("reader", origin, compositeSiteID, time.Now())
-	if s.serverIDIssued("reader", origin, compositeSiteID) || !s.sentUnreadable["reader"] {
+	if s.serverIDIssued("reader", origin, compositeSiteID) || s.sentUnreadable["reader"] == issuerHistoryComplete {
 		t.Fatal("token expansion limit did not fail closed")
 	}
 }
@@ -108,7 +108,7 @@ func TestCompositeIDListKeepsHistoryReadable(t *testing.T) {
 	}
 	s := newTestServerIDStore(t)
 	s.recordSent("reader", origin, nil, []byte("ids="+strings.Join(list, ",")), true, time.Now())
-	if s.sentUnreadable["reader"] {
+	if s.sentUnreadable["reader"] != issuerHistoryComplete {
 		t.Fatal("a 400-item list tainted the session")
 	}
 	s.mintServerID("reader", origin, list[10]+","+list[11]+","+list[12], time.Now())

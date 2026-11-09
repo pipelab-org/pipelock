@@ -71,13 +71,16 @@ type issuerQueryStore struct {
 	// deliveries coordinates only matching follow-ups while headers are being
 	// flushed. It never grants authority and does not evict delivered evidence.
 	deliveries map[string]*issuedRedirectDeliverySet
-	// ids holds keyed digests of object IDs an origin introduced in a JSON
-	// response; sent holds digests of every token the session sent to an
-	// origin, so a reflected value is never minted as an ID; sentUnreadable
-	// marks a session whose outgoing traffic could not be fully recorded.
-	ids            map[string][][32]byte
-	sent           map[string]map[[32]byte]struct{}
-	sentUnreadable map[string]bool
+	// ids maps keyed digests of object IDs an origin introduced in a JSON
+	// response to idClock at their last delivery or use, so the least recently
+	// used is evicted and every lookup is constant time under s.mu. sent holds
+	// digests of every token the session sent to an origin, retaining whether
+	// an allowed ID introduced it first; sentUnreadable marks a session whose
+	// outgoing traffic could not be fully recorded.
+	ids            map[string]map[[32]byte]uint64
+	idClock        uint64
+	sent           map[string]map[[32]byte]issuerSentProvenance
+	sentUnreadable map[string]issuerIDHistoryBlock
 	// ID history is retained independently of query-evidence LRU eviction.
 	// Capacity denies new buckets or taints only the caller adding history;
 	// it never revokes an existing peer's IDs.
@@ -100,11 +103,11 @@ func newIssuerQueryStoreWithReader(reader io.Reader) *issuerQueryStore {
 		paths:     make(map[string][][32]byte),
 		documents: make(map[string][][32]byte),
 		locations: make(map[string][]issuedLocationEntry),
-		ids:       make(map[string][][32]byte),
-		sent:      make(map[string]map[[32]byte]struct{}),
+		ids:       make(map[string]map[[32]byte]uint64),
+		sent:      make(map[string]map[[32]byte]issuerSentProvenance),
 		used:      make(map[string]time.Time),
 
-		sentUnreadable: make(map[string]bool),
+		sentUnreadable: make(map[string]issuerIDHistoryBlock),
 	}
 	if _, err := io.ReadFull(reader, s.key[:]); err != nil {
 		s.disabled = true
