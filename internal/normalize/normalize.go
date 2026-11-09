@@ -580,12 +580,36 @@ func isDLPControl(r rune) bool {
 //
 //pipelock:provenance-transform dlp_normalize
 func ForDLP(s string) string {
-	// Printable ASCII is unchanged by every step below. Other input runs the
-	// full pipeline between stable code points (see segmentTable).
-	if isPrintableASCII(s) {
-		return s
+	// Within ASCII, isDLPControl removes only C0 and DEL. Every remaining
+	// byte is unchanged by the subsequent Unicode stages.
+	for i := range len(s) {
+		if s[i] >= utf8.RuneSelf {
+			return normalizeSegmented(s, &segmentTablesOnce().dlp, forDLPFull)
+		}
+		if s[i] < ' ' || s[i] == 0x7f {
+			return forDLPASCIIControls(s, i)
+		}
 	}
-	return normalizeSegmented(s, &segmentTablesOnce().dlp, forDLPFull)
+	return s
+}
+
+func forDLPASCIIControls(s string, first int) string {
+	// Check the entire input before stripping: deletion could otherwise join
+	// Unicode neighbours whose normalization depends on their adjacency.
+	for i := first + 1; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return normalizeSegmented(s, &segmentTablesOnce().dlp, forDLPFull)
+		}
+	}
+	var out strings.Builder
+	out.Grow(len(s) - 1)
+	out.WriteString(s[:first])
+	for i := first + 1; i < len(s); i++ {
+		if s[i] >= ' ' && s[i] != 0x7f {
+			out.WriteByte(s[i])
+		}
+	}
+	return out.String()
 }
 
 // forDLPFull is the complete ForDLP pipeline without fast paths. It is the

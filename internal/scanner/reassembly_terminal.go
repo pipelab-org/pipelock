@@ -34,7 +34,7 @@ type assembledPlan struct {
 	literalBytes   []int
 }
 
-func newAssembledPlan(p *reassemblyPlan) (*assembledPlan, error) {
+func compileAssembledPlan(p *reassemblyPlan) (*assembledPlan, error) {
 	a := &assembledPlan{verify: make([]*regexp.Regexp, len(p.patterns)), literalBytes: make([]int, len(p.patterns))}
 	a.active = make([]bool, len(p.patterns))
 	a.decoderAllowed = make([]bool, len(p.patterns))
@@ -65,7 +65,7 @@ func newAssembledPlan(p *reassemblyPlan) (*assembledPlan, error) {
 		a.nestedMinimum = (minimum*8 + 5) / 6
 	}
 	for codec := range a.raw {
-		a.raw[codec] = reassemblyAC{codec: codec, nodes: []reassemblyACNode{{}}}
+		a.raw[codec] = reassemblyAC{codec: codec, building: []reassemblyBuildNode{{}}}
 	}
 
 	for id, pattern := range p.patterns {
@@ -104,12 +104,7 @@ func newAssembledPlan(p *reassemblyPlan) (*assembledPlan, error) {
 				if err != nil {
 					return nil, err
 				}
-				if pattern.name == "IBAN" || pattern.name == "Bitcoin WIF Private Key" {
-					validation := *pattern
-					validation.keywords = nil
-					validation.keywordContext = nil
-					shape.validate = &validation
-				}
+				shape.validateRule = pattern.name == "IBAN" || pattern.name == "Bitcoin WIF Private Key"
 				a.shapes = append(a.shapes, shape)
 			}
 		}
@@ -186,7 +181,6 @@ func newAssembledPlan(p *reassemblyPlan) (*assembledPlan, error) {
 	for codec := range a.raw {
 		a.raw[codec].build()
 	}
-	a.buildShapeGroups(p)
 	return a, nil
 }
 
@@ -263,14 +257,16 @@ type assembledIdentity struct {
 
 type (
 	assembledBudget struct {
-		memo        *decodingMemo
-		patterns    textDLPPatternSet
-		decoderOnly bool
-		charged     map[string]*assembledCharges
-		registry    *assembledChargeRegistry
-		used        int
-		incomplete  bool
-		produced    map[assembledIdentity]struct{}
+		memo          *decodingMemo
+		patterns      textDLPPatternSet
+		decoderOnly   bool
+		charged       map[string]*assembledCharges
+		registry      *assembledChargeRegistry
+		used          int
+		incomplete    bool
+		produced      map[assembledIdentity]struct{}
+		admitted      bool
+		admissionOnly bool
 	}
 	assembledScan struct {
 		p         *reassemblyPlan
@@ -341,6 +337,10 @@ type assembledLane struct {
 }
 
 func (s *assembledScan) searchLane(codec, phase, id int) {
+	if s.budget.admissionOnly {
+		s.budget.admitted = true
+		return
+	}
 	if s.budget.incomplete {
 		s.result.incomplete = true
 		return
@@ -353,6 +353,7 @@ func (s *assembledScan) searchLane(codec, phase, id int) {
 		return
 	}
 	s.checked[codec][id] |= phaseBit
+	s.budget.admitted = true
 	lane := s.lanes[codec][phase]
 	if lane == nil {
 		if s.charges == nil {
@@ -441,6 +442,14 @@ func (s *assembledScan) produce(id int, view string, begin, finish int) bool {
 	return true
 }
 
+// admitsAssembledView runs the same context-independent admission grammar as
+// matching, without decoding lanes or spending their inspection allowance.
+func (p *reassemblyPlan) admitsAssembledView(text string) bool {
+	probe := assembledBudget{admissionOnly: true}
+	assembledLayer(p, text, &probe, 0)
+	return probe.admitted || p.assembled.nestedHex && assembledOuterAdmits(p, text, 0)
+}
+
 func assembledLayer(p *reassemblyPlan, text string, budget *assembledBudget, skip uint8) reassemblyResult {
 	patternSet := budget.patterns
 	if patternSet != textDLPAllPatterns && patternSet != textDLPCardPatterns {
@@ -513,6 +522,9 @@ func assembledLayer(p *reassemblyPlan, text string, budget *assembledBudget, ski
 						cue(phase, hit.pattern, &hit)
 					}
 				}
+			}
+			if budget.admissionOnly && budget.admitted {
+				return reassemblyResult{}
 			}
 		}
 	}

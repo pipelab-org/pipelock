@@ -737,19 +737,23 @@ func (s *Scanner) decodeAndMatchCoreWithDecodes(text string, decodes *decodingMe
 }
 
 func (s *Scanner) decodeCoreDLPTextSegmentsWithDecodes(text string, decodes *decodingMemo) []TextDLPMatch {
-	kind := decodes.reassemblyDerivedKind(text)
-	for _, seg := range textDLPSegments(text) {
-		decodes.reassemblySegment(text, seg, kind)
+	source := decodes.reassemblySegmentSource(text)
+	defer source.release()
+	var matches []TextDLPMatch
+	walkTextDLPSegments(text, func(seg string, start int) bool {
+		source.observeAt(seg, start)
 		if len(seg) < 10 {
-			continue
+			return true
 		}
 		for _, d := range decodes.decode(seg, true) {
 			if m := decodes.matchDecodedCore(s, d.text, d.encoding); len(m) > 0 {
-				return m
+				matches = m
+				return false
 			}
 		}
-	}
-	return nil
+		return true
+	})
+	return matches
 }
 
 // isCoreCIDRBlocked checks whether an IP falls within any core internal CIDR.

@@ -18,8 +18,22 @@ type reassemblyResult struct {
 // reassemblyRemember joins the existing per-scan view graph. The projection index
 // holds only these stable IDs, never another owning reference to a payload.
 func (m *decodingMemo) reassemblyRemember(text string) (int, bool) {
-	if id, ok := m.reassemblySeen[text]; ok {
+	text = m.canonicalPayload(text)
+	if id, ok := m.findView(text); ok {
 		return id, false
+	}
+	if payload := m.replayPayload(text); payload != nil {
+		id := len(m.reassemblyPending)
+		if m.reassemblyPendingReplay == nil {
+			m.reassemblyPendingReplay = make(map[int]*assembledPayload)
+		}
+		m.reassemblyPendingReplay[id] = payload
+		payload.pending = id
+		m.reassemblyPending = append(m.reassemblyPending, "")
+		return id, true
+	}
+	if m.reassemblySeen == nil {
+		m.assembledStorage()
 	}
 	if m.reassemblySeen == nil {
 		m.reassemblySeen = make(map[string]int)
@@ -41,6 +55,30 @@ func (m *decodingMemo) reassemblyObserveDecoded(text string, decoded []decodedRe
 	if len(decoded) == 0 {
 		return
 	}
+	if m.reassemblyKindInsensitive {
+		for _, view := range decoded {
+			m.reassemblyObserveView(view.text, assembledTextView)
+		}
+		return
+	}
+	if m.reassemblyPlan != nil {
+		minimum := m.reassemblyPlan.assembled.nestedMinimum
+		longEnough := false
+		for _, view := range decoded {
+			longEnough = longEnough || len(view.text) >= minimum
+		}
+		if !longEnough {
+			return
+		}
+	}
+	// Only the textual escape transforms can give an existing decoder result
+	// textual ancestry. Without their introducers every result is binary.
+	if !strings.ContainsAny(text, "%+&\\") {
+		for _, view := range decoded {
+			m.reassemblyObserveView(view.text, assembledDecoderView)
+		}
+		return
+	}
 	// This selects from already admitted graph results; it adds no decoder,
 	// candidate, budget, or terminal recursion. Exact byte equality also admits
 	// a textual path when a binary path happened to reach the same result first.
@@ -51,12 +89,16 @@ func (m *decodingMemo) reassemblyObserveDecoded(text string, decoded []decodedRe
 		}
 	}
 	pending := []string{text}
-	textRoot := m.reassemblyViewKinds[text].textual()
+	textRoot := m.textualView(text)
 	if textRoot {
-		if m.reassemblyTextRoots == nil {
-			m.reassemblyTextRoots = make(map[string]bool)
+		if payload := m.replayPayload(text); payload != nil {
+			payload.textRoot = true
+		} else {
+			if m.reassemblyTextRoots == nil {
+				m.reassemblyTextRoots = make(map[string]bool)
+			}
+			m.reassemblyTextRoots[text] = true
 		}
-		m.reassemblyTextRoots[text] = true
 	}
 	eligible := make(map[string]struct{})
 	for head := 0; head < len(pending) && len(remaining) > 0; head++ {
@@ -98,7 +140,7 @@ func (m *decodingMemo) reassemblyObserve(text string) {
 	if m == nil {
 		return
 	}
-	kind, known := m.reassemblyViewKinds[text]
+	kind, known := m.viewKind(text)
 	if !known {
 		kind = assembledInputView
 	}
@@ -121,6 +163,23 @@ func (m *decodingMemo) reassemblyObserveView(text string, kind assembledViewKind
 	if !m.reassemblySetKind(text, kind) {
 		return
 	}
+	if m.reassemblyPlan != nil && !assembledEnoughSymbols(text, m.reassemblyPlan.assembled.nestedMinimum) {
+		return
+	}
+	if m.reassemblyPlan != nil && m.reassemblyPlan.emptyTerminal(assembledEmptyKey{m.reassemblyPlan, text, m.reassemblyPatternLimit, false}, false) {
+		return
+	}
+	// The decoder or transform still owns these bytes. Prove empty admission
+	// here so a later memory-pressure pass need not replay them just to prove
+	// the same absence. Kind and keyword ancestry remain independently live.
+	if m.reassemblyPlan != nil {
+		if payload := m.replayPayload(text); payload != nil && !payload.admitted {
+			if !m.reassemblyPlan.admitsAssembledView(text) {
+				return
+			}
+			payload.admitted = true
+		}
+	}
 	_, fresh := m.reassemblyRemember(text)
 	if !fresh || m.reassemblyDeferred {
 		return
@@ -128,10 +187,49 @@ func (m *decodingMemo) reassemblyObserveView(text string, kind assembledViewKind
 	m.reassemblyDrain()
 }
 
+// Each admitted match needs nestedMinimum symbols even in RFC 4648's widest
+// alphabet. The union over all five alphabets can only overcount a lane.
+// Outer hex and the admitted escape transforms cannot expand its symbol count.
+func assembledEnoughSymbols(text string, minimum int) bool {
+	if minimum <= 0 {
+		return true
+	}
+	for i := range len(text) {
+		if reassemblyAlphabet[text[i]] {
+			minimum--
+			if minimum == 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (m *decodingMemo) reassemblyDrain() {
+	var borrowed *assembledDecodeRecipe
+	defer func() {
+		if borrowed != nil {
+			borrowed.current = nil
+		}
+	}()
 	for m.reassemblyInspected < len(m.reassemblyPending) {
 		id := m.reassemblyInspected
 		m.reassemblyInspected++
+		var recipe *assembledDecodeRecipe
+		if payload := m.reassemblyPendingReplay[id]; payload != nil {
+			recipe = payload.decode
+		}
+		if recipe != borrowed {
+			if borrowed != nil {
+				borrowed.current = nil
+			}
+			borrowed = recipe
+			if recipe != nil {
+				if source, ok := recipe.source.materialize(); ok {
+					recipe.current, _ = decodeEncodingsBudgetMode(source, recipe.includeURL, recipe.minPrefix, recipe.inbound)
+				}
+			}
+		}
 		m.reassemblyInspect(id)
 	}
 }
@@ -140,18 +238,28 @@ func (m *decodingMemo) reassemblyInspect(view int) {
 	if m.reassemblyPlan == nil || m.reassemblyIncomplete || m.incomplete && !m.inbound {
 		return
 	}
-	text := m.reassemblyPending[view]
+	text := m.pendingText(view)
+	release := m.borrowPending(view, text)
+	defer release()
+	key := assembledEmptyKey{m.reassemblyPlan, text, m.reassemblyPatterns, !m.textualView(text)}
+	if m.reassemblyPlan.emptyTerminal(key, false) {
+		return
+	}
 	budget := &m.reassemblyBudget
-	*budget = assembledBudget{memo: m, used: m.assembledBytes, produced: m.reassemblyProduced, patterns: m.reassemblyPatterns, decoderOnly: !m.reassemblyViewKinds[text].textual(), charged: m.assembledCharged, registry: m.assembledChargeRegistry}
+	*budget = assembledBudget{memo: m, used: m.assembledBytes, produced: m.reassemblyProduced, patterns: m.reassemblyPatterns, decoderOnly: !m.textualView(text), charged: m.assembledCharged, registry: m.assembledChargeRegistry}
 	skip := m.assembledSkip(view)
 	r := assembledLayer(m.reassemblyPlan, text, budget, skip)
-	if m.reassemblyPlan.assembled.nestedHex && skip&1 == 0 && !budget.incomplete && assembledOuterAdmits(m.reassemblyPlan, text, 0) {
+	nested := m.reassemblyPlan.assembled.nestedHex && skip&1 == 0 && !budget.incomplete && assembledOuterAdmits(m.reassemblyPlan, text, 0)
+	if nested {
 		if m.reassemblyNestedDeferred {
 			m.reassemblyNestedPending = append(m.reassemblyNestedPending, view)
 		} else {
 			more := assembledNestedHexAdmitted(m.reassemblyPlan, text, budget)
 			assembledMerge(&r, more)
 		}
+	}
+	if skip == 0 && !nested && !budget.admitted && !budget.incomplete && m.reassemblyPendingReplay[view] == nil {
+		m.reassemblyPlan.emptyTerminal(key, true)
 	}
 	m.assembledBytes = budget.used
 	m.assembledCharged = budget.charged
@@ -165,14 +273,58 @@ func (m *decodingMemo) reassemblyInspect(view int) {
 	m.reassemblyFindings = append(m.reassemblyFindings, r.findings...)
 }
 
+type assembledEmptyKey struct {
+	plan        *reassemblyPlan
+	text        string
+	patterns    textDLPPatternSet
+	decoderOnly bool
+}
+
+// Only complete inspections that admitted no lane and no nested terminal are
+// reusable without replaying candidates, keyword context or allowance charges.
+func (s *reassemblyPlan) emptyTerminal(key assembledEmptyKey, remember bool) bool {
+	if !remember {
+		s.emptyMu.RLock()
+		_, ok := s.emptyTerminals[key]
+		s.emptyMu.RUnlock()
+		return ok
+	}
+	s.emptyMu.Lock()
+	defer s.emptyMu.Unlock()
+	if _, ok := s.emptyTerminals[key]; ok {
+		return true
+	}
+	if remember && len(s.emptyTerminals) < maxDecodeCandidates && len(key.text) <= maxDecodeTotalBytes-s.emptyTerminalBytes {
+		if s.emptyTerminals == nil {
+			s.emptyTerminals = make(map[assembledEmptyKey]struct{})
+		}
+		// A segment must not retain the larger response it was sliced from.
+		key.text = strings.Clone(key.text)
+		s.emptyTerminals[key] = struct{}{}
+		s.emptyTerminalBytes += len(key.text)
+	}
+	return false
+}
+
 // finishAssembled gives the complete text scan sole ownership of terminal
 // production. Regular producers keep their existing ordering and occurrence
 // counts. Exact value identities enter the terminal producer before scanning,
 // so one matched value cannot create the same finding twice.
 func finishAssembled(result TextDLPResult, memos ...*decodingMemo) TextDLPResult {
+	// Held replay bytes serve one inspection only; none outlive it.
+	defer func() {
+		for _, m := range memos {
+			if m != nil {
+				m.reassemblyRecipeCache.release()
+			}
+		}
+	}()
 	var fallback assembledAllowance
 	for _, m := range memos {
 		if m == nil || m.reassemblyPlan == nil {
+			continue
+		}
+		if len(m.reassemblyPending) == 0 && !m.inspectionIncomplete() {
 			continue
 		}
 		if m.assembledAllowance == nil {
@@ -198,13 +350,15 @@ func finishAssembled(result TextDLPResult, memos ...*decodingMemo) TextDLPResult
 		m.reassemblyDrain()
 		m.reassemblyNestedDeferred = false
 		for _, view := range m.reassemblyNestedPending {
-			text := m.reassemblyPending[view]
+			text := m.pendingText(view)
 			if m.incomplete && !m.inbound {
 				break
 			}
+			release := m.borrowPending(view, text)
 			budget := &m.reassemblyBudget
-			*budget = assembledBudget{memo: m, used: m.assembledBytes, produced: m.reassemblyProduced, patterns: m.reassemblyPatterns, decoderOnly: !m.reassemblyViewKinds[text].textual(), charged: m.assembledCharged, registry: m.assembledChargeRegistry}
+			*budget = assembledBudget{memo: m, used: m.assembledBytes, produced: m.reassemblyProduced, patterns: m.reassemblyPatterns, decoderOnly: !m.textualView(text), charged: m.assembledCharged, registry: m.assembledChargeRegistry}
 			more := assembledNestedHexAdmitted(m.reassemblyPlan, text, budget)
+			release()
 			m.assembledBytes = budget.used
 			m.assembledCharged = budget.charged
 			m.assembledChargeRegistry = budget.registry
