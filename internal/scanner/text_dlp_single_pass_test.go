@@ -40,7 +40,15 @@ func singlePassScanners(t *testing.T) map[string]*Scanner {
 	}
 	defaults := config.Defaults()
 	defaults.Internal = nil
-	out := map[string]*Scanner{"defaults": MustNew(defaults), "custom": build(false), "custom-keywords": build(true)}
+	// Custom patterns may reuse an inspection-limit name. A card pattern named
+	// that way must not stand in for the non-card pass's limit refusal.
+	reserved := config.Defaults()
+	reserved.Internal = nil
+	reserved.DLP.ScanEnv = false
+	reserved.DLP.Patterns = append(reserved.DLP.Patterns, config.DLPPattern{
+		Name: UninspectableJSONNumberPattern, Regex: `[0-9]{16}`, Validator: config.ValidatorLuhn, Severity: config.SeverityLow,
+	})
+	out := map[string]*Scanner{"defaults": MustNew(defaults), "custom": build(false), "custom-keywords": build(true), "reserved-name": MustNew(reserved)}
 	t.Cleanup(func() {
 		for _, s := range out {
 			s.Close()
