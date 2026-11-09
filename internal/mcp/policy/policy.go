@@ -269,7 +269,9 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 // paths are the move/copy and multi-file reader carriers exercised by policy.
 // location, relative_path and output follow TestPolicy_FileArgumentPathScope's
 // alternate pathname contract, including filenames containing whitespace.
-var filePathArgumentKey = regexp.MustCompile(fileTargetKeyPattern + "|" + fileDestinationKeyPattern + `|(?i)^(source|source_?path|paths|location|relative_path|output)$`)
+var fileDestinationArgumentKey = regexp.MustCompile(fileTargetKeyPattern + "|" + fileDestinationKeyPattern + `|(?i)^(location|relative_path|output)$`)
+
+var filePathArgumentKey = regexp.MustCompile(fileDestinationArgumentKey.String() + `|(?i)^(source|source_?path|paths)$`)
 
 // pathnameValues returns the string values under pathname keys. A scoped rule
 // uses its operator-supplied arg_key to select top-level pathname candidates,
@@ -492,6 +494,12 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 	strictest := ""
 	redirectProfile := ""
 	var resolutionPolicy config.DeferResolutionPolicy
+	var destinationViews []argView
+	destinationArgs, destinationShape, destinationProved := fileWriteDestinationArgs(toolName, proofArgs, proofShape)
+	if destinationProved && !checkInput && !slices.Equal(argStrings, extract.AllStringsFromJSON(proofShape)) {
+		// A key/value pass can narrow only the strings this JSON describes.
+		destinationProved = false
+	}
 
 	for _, rule := range pc.Rules {
 		// Check tool name against both normalization views.
@@ -505,6 +513,18 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 		// than falling back to unscoped matching; structural validators need raw
 		// JSON, so they fail closed instead.
 		ruleViews := views
+		if destinationProved && destinationScopedWriteRule(rule) {
+			if destinationViews == nil {
+				if !checkInput {
+					keys, _ := jsonObjectKeys(proofShape)
+					destinationArgs = append(destinationArgs, keys...)
+				}
+				expanded, notes, _ := pc.expandToolPaths(destinationArgs, destinationShape, true, nil)
+				linkNotes = appendUniqueNotes(linkNotes, notes)
+				destinationViews = buildArgViews(expanded, false, nil, false)
+			}
+			ruleViews = destinationViews
+		}
 		patchInspection := patchTargetsOrdinary
 		patchFallbackArgs := argStrings
 		credentialDestinations := argStrings
@@ -1996,10 +2016,12 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 		{
 			// Shell commands writing into cron/systemd/init/launchd persistence paths.
 			// Covers cp, mv, install, ln (destination-aware via (\S+\s+)+ prefix),
-			// tee, sed -i, and shell redirects. Read operations pass through.
+			// tee, sed -i, dd of=, and shell redirects. Read operations pass through.
+			// GNU coreutils documents dd's destination operand as of=FILE:
+			// https://www.gnu.org/software/coreutils/manual/html_node/dd-invocation.html
 			Name:        "Persistence Path Write via Command",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)(>{1,2}\s*[^;|&]*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\b(tee|sed\s+-i)\s+[^;|&]*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\b(cp|mv|install|ln)\b\s+(\S+\s+)+\S*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/))`,
+			ArgPattern:  `(?i)(>{1,2}\s*[^;|&]*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\b(tee|sed\s+-i)\s+[^;|&]*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\b(cp|mv|install|ln)\b\s+(\S+\s+)+\S*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\bdd\b[^;|&]*\bof=\s*[^;|&]*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/))`,
 			Action:      config.ActionBlock,
 		},
 		{
@@ -2031,7 +2053,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			// profile named by another.
 			Name:        "Shell Profile Write via Command",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)(>{1,2}[^;|&]*(?:^|[/\s])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(tee|sed\s+-i)[^;|&]*(?:^|[/\s])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(cp|mv|install|ln)\b\s+(\S+\s+)+(?:\S*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\s*$|\balias\s+\w+=|>{1,2}[^;|&]*/etc/profile\b|\b(tee|sed\s+-i)[^;|&]*/etc/profile\b|\b(cp|mv|install|ln)\b\s+(\S+\s+)+\S*/etc/profile\s*$|\b(?:ln|link)\b(?:\s+[^\s;|&]+)+\s+(?:[^\s;|&]*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(?:ln|link)\b(?:\s+[^\s;|&]+)*\s+(?:[^\s;|&]*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b[^\s;|&]*(?:\s+[^\s;|&]+)+|\bcp(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b(?:\s+[^\s;|&]+)*\s+(?:[^\s;|&]*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\bcp(?:\s+[^\s;|&]+)+?\s+(?:[^\s;|&]*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b[^\s;|&]*(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b|\b(?:ln|link)\b(?:\s+[^\s;|&]+)+\s+[^\s;|&]*/etc/profile\b|\b(?:ln|link)\b(?:\s+[^\s;|&]+)*\s+[^\s;|&]*/etc/profile\b[^\s;|&]*(?:\s+[^\s;|&]+)+|\bcp(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b(?:\s+[^\s;|&]+)*\s+[^\s;|&]*/etc/profile\b|\bcp(?:\s+[^\s;|&]+)+?\s+[^\s;|&]*/etc/profile\b[^\s;|&]*(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b)`,
+			ArgPattern:  `(?i)(>{1,2}[^;|&]*(?:^|[/\s])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(tee|sed\s+-i)[^;|&]*(?:^|[/\s])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(cp|mv|install|ln)\b\s+(\S+\s+)+(?:\S*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\s*$|\balias\s+\w+=|>{1,2}[^;|&]*/etc/profile\b|\b(tee|sed\s+-i)[^;|&]*/etc/profile\b|\b(cp|mv|install|ln)\b\s+(\S+\s+)+\S*/etc/profile\s*$|\b(?:ln|link)\b(?:\s+[^\s;|&]+)+\s+(?:[^\s;|&]*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(?:ln|link)\b(?:\s+[^\s;|&]+)*\s+(?:[^\s;|&]*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b[^\s;|&]*(?:\s+[^\s;|&]+)+|\bcp(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b(?:\s+[^\s;|&]+)*\s+(?:[^\s;|&]*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\bcp(?:\s+[^\s;|&]+)+?\s+(?:[^\s;|&]*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b[^\s;|&]*(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b|\b(?:ln|link)\b(?:\s+[^\s;|&]+)+\s+[^\s;|&]*/etc/profile\b|\b(?:ln|link)\b(?:\s+[^\s;|&]+)*\s+[^\s;|&]*/etc/profile\b[^\s;|&]*(?:\s+[^\s;|&]+)+|\bcp(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b(?:\s+[^\s;|&]+)*\s+[^\s;|&]*/etc/profile\b|\bcp(?:\s+[^\s;|&]+)+?\s+[^\s;|&]*/etc/profile\b[^\s;|&]*(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b|\bdd\b[^;|&]*\bof=\s*[^;|&]*((?:^|[\\/])\.(?:bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b))`,
 			Action:      config.ActionBlock,
 		},
 		{
