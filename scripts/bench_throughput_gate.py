@@ -139,13 +139,23 @@ def compare(base_text: str, head_text: str, fail_pct: float, warn_pct: float, ro
 
 
 def failure_detail(output: Path, limit: int = 4000) -> str:
-    """The tail of every non-empty sample stderr, such as a compiler error."""
+    """The tail of every non-empty sample output.
+
+    A compiler error goes to stderr; a benchmark's own b.Fatal goes to stdout.
+    """
     parts = []
-    for path in sorted(output.glob("*-*.stderr")):
+    for path in sorted([*output.glob("*-[0-9]*.stderr"), *output.glob("*-[0-9]*.txt")]):
         text = path.read_text(errors="replace").strip()
         if text:
             parts.append(f"{path.name}:\n{text[-limit:]}")
     return "\n\n".join(parts)[-limit:]
+
+
+def fenced(text: str) -> str:
+    """A Markdown code block that no backtick run inside text can close."""
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}\n{text}\n{fence}"
 
 
 def summary(rows: list[dict], fail_pct: float, warn_pct: float) -> str:
@@ -186,7 +196,7 @@ def main() -> int:
     except (bench_run.RunError, GateError, subprocess.CalledProcessError, OSError) as exc:
         detail = failure_detail(args.output)
         (args.output / "throughput-summary.md").write_text(
-            f"## Text DLP throughput gate\n\nNot decided: {exc}\n" + (f"\n```\n{detail}\n```\n" if detail else ""))
+            f"## Text DLP throughput gate\n\nNot decided: {exc}\n" + (f"\n{fenced(detail)}\n" if detail else ""))
         print(f"throughput-gate: {exc}", file=sys.stderr)
         if detail:
             print(detail, file=sys.stderr)
