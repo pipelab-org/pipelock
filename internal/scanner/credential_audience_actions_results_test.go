@@ -399,7 +399,7 @@ func TestActionsResultsSASCarrier(t *testing.T) {
 			}
 		})
 	}
-	for _, mask := range []uint16{0, config.CredentialAudienceCarrierURLQuery, config.CredentialAudienceCarrierReleaseGrantSAS} {
+	for _, mask := range []uint32{0, config.CredentialAudienceCarrierURLQuery, config.CredentialAudienceCarrierReleaseGrantSAS} {
 		candidate := credentialAudienceCandidate{carrierMask: mask}
 		got := githubBlobSASCandidateAllowed(candidate, actionsResultsHost, target, credentialAudienceURLQuerySurface, now)
 		if got != (mask == config.CredentialAudienceCarrierReleaseGrantSAS) {

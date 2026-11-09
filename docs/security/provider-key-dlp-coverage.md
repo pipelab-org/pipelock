@@ -85,7 +85,7 @@ Coding clients that sign in with OAuth send the access token, a JWT, as the `Aut
 | `api.x.ai` | `/v1/...` | `https://auth.x.ai` | `b1a00492-073a-47ea-816f-4c329264a828` | [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) `v8.0.51`: `internal/auth/xai/types.go` |
 | `cli-chat-proxy.grok.com` | `/v1/...` | `https://auth.x.ai` | `b1a00492-073a-47ea-816f-4c329264a828` | Same |
 
-Pipelock can't verify the token's signature, so the claims are a routing check, not proof of origin. A JWT from any other issuer or client stays blocked at these hosts, and a token with forged claims can reach only the issuer's own API host. Subdomains, other paths, escaped or dot path segments, cleartext, other headers, URL queries, and bodies don't qualify.
+Pipelock can't verify the token's signature, so the claims are a routing check, not proof of origin. A JWT whose `iss` or `client_id` claim names another issuer or client stays blocked at these hosts. A token from another issuer that copies the listed claims passes this check, but it can reach only the listed host and path for those claims. Subdomains, other paths, escaped or dot path segments, cleartext, other headers, URL queries, and bodies don't qualify.
 
 ### Download grant bounds
 

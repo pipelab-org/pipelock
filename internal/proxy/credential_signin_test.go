@@ -11,7 +11,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -57,6 +59,9 @@ func TestSignInBearer_RequestHeaderScan(t *testing.T) {
 				"Authorization": {"Bearer " + codex}, "User-Agent": {"codex_cli_rs/0.167.0"}, "Chatgpt-Account-Id": {"acct-1"},
 			}, target, true, false, ""},
 			{"authorization only", http.Header{"Authorization": {"Bearer " + codex}}, target, true, false, ""},
+			{"trailing garbage", http.Header{"Authorization": {"Bearer " + codex + "!"}}, target, false, false, "JWT Token"},
+			{"token elsewhere", http.Header{"Authorization": {"Bearer !" + codex}}, target, false, false, "JWT Token"},
+			{"second token", http.Header{"Authorization": {"Bearer " + codex + "!" + other}}, target, false, false, "JWT Token"},
 			{"same token copied to another header", http.Header{
 				"Authorization": {"Bearer " + codex}, "X-Copy": {codex}, "User-Agent": {"codex_cli_rs/0.167.0"},
 			}, target, false, true, ""},
@@ -116,6 +121,72 @@ func TestSignInBearer_RequestHeaderScan(t *testing.T) {
 				}
 			})
 		}
+		t.Run(mode+"/reload", func(t *testing.T) {
+			testSignInBearerHeaderReload(t, cfg, codex, target)
+		})
+	}
+}
+
+func testSignInBearerHeaderReload(t *testing.T, cfg *config.Config, token, target string) {
+	t.Helper()
+	p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.Close)
+	check := func(t *testing.T, allow bool) {
+		t.Helper()
+		var allows []scanner.CredentialAudienceAllow
+		result := scanRequestHeadersForTargetWithAudience(t.Context(), http.Header{
+			"Authorization": {"Bearer " + token}, "User-Agent": {"client"},
+		}, p.cfgPtr.Load(), p.scannerPtr.Load(), target, nil,
+			func(a scanner.CredentialAudienceAllow) error { allows = append(allows, a); return nil })
+		clean := result == nil || result.Clean
+		recorded := false
+		for _, a := range allows {
+			recorded = recorded || a.PatternName == "JWT Token"
+		}
+		if clean != allow || recorded != allow {
+			t.Fatalf("clean=%t recorded=%t want %t", clean, recorded, allow)
+		}
+		if !allow {
+			found := false
+			for _, m := range result.DLPMatches {
+				found = found || m.PatternName == "JWT Token"
+			}
+			if !found {
+				t.Fatal("custom JWT finding missing")
+			}
+		}
+	}
+	check(t, true)
+	for _, step := range []struct {
+		name   string
+		custom bool
+	}{
+		{"unrelated reload", false},
+		{"replace built-in", true},
+		{"retain replacement", true},
+		{"restore built-in", false},
+	} {
+		t.Run(step.name, func(t *testing.T) {
+			next := cfg.Clone()
+			if step.custom {
+				for i := range next.DLP.Patterns {
+					if next.DLP.Patterns[i].Name == "JWT Token" {
+						next.DLP.Patterns[i].Regex += `|custom-[a-z]+`
+					}
+				}
+			}
+			next.ApplyDefaults()
+			if err := next.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			if !p.Reload(next, scanner.MustNew(next)) {
+				t.Fatal("reload refused")
+			}
+			check(t, !step.custom)
+		})
 	}
 }
 
@@ -126,4 +197,45 @@ func percentEncodeAll(v string) string {
 		fmt.Fprintf(&b, "%%%02X", v[i])
 	}
 	return b.String()
+}
+
+func TestRegistryBearer_RequestHeaderScan(t *testing.T) {
+	host := config.RegistryBearerHosts()[0]
+	token := signInTestJWT(t, map[string]any{"aud": host, "access": []any{map[string]any{"type": "repository"}}})
+	for _, mode := range []string{config.HeaderModeSensitive, config.HeaderModeAll} {
+		cfg := config.Defaults()
+		cfg.Internal = nil
+		cfg.RequestBodyScanning.ScanHeaders = true
+		cfg.RequestBodyScanning.HeaderMode = mode
+		sc := scanner.MustNew(cfg)
+		t.Cleanup(sc.Close)
+		for _, tc := range []struct {
+			name, value string
+			allow       bool
+		}{
+			{"whole token", "Bearer " + token, true},
+			{"trailing garbage", "Bearer " + token + "!", false},
+			{"token elsewhere", "Bearer !" + token, false},
+			{"other secret", "Bearer " + token + " AKIA" + strings.Repeat("A", 16), false},
+		} {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				var allows []scanner.CredentialAudienceAllow
+				result := scanRequestHeadersForTargetWithAudience(t.Context(), http.Header{
+					"Authorization": {tc.value}, "User-Agent": {"client"},
+				}, cfg, sc, "https://"+host+"/v2/", nil,
+					func(a scanner.CredentialAudienceAllow) error { allows = append(allows, a); return nil })
+				clean := result == nil || result.Clean
+				if clean != tc.allow {
+					t.Fatalf("clean=%t want %t", clean, tc.allow)
+				}
+				recorded := false
+				for _, a := range allows {
+					recorded = recorded || a.PatternName == "JWT Token"
+				}
+				if recorded != tc.allow {
+					t.Fatalf("JWT allowance=%t want %t", recorded, tc.allow)
+				}
+			})
+		}
+	}
 }

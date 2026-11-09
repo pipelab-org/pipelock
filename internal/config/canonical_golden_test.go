@@ -463,7 +463,8 @@ const (
 	// audience added platform.claude.com and mcp-proxy.anthropic.com
 	// (Claude Code first-party credential endpoints). The default
 	// pattern corpus is part of the canonical policy view.
-	goldenHashDefaults = "75f25791a3c011d532dccb4b143b3bc35083b757e9d62796a50955ce321d25ed"
+	// Re-bumped for the compiled sign-in bearer carrier on the JWT pattern.
+	goldenHashDefaults = "aaa69c20b466da8e99b1af8c1ee67aa10167abe9248941de90df64e23ebc42b4"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -709,7 +710,8 @@ const (
 	// audience added platform.claude.com and mcp-proxy.anthropic.com
 	// (Claude Code first-party credential endpoints). The default
 	// pattern corpus is part of the canonical policy view.
-	goldenHashRichConfig = "9b9b5fe7d208752f94b36ad9a5ba8c409086052fc020eb0d7b8ccdfdbaad8ec8"
+	// Re-bumped with goldenHashDefaults for the sign-in bearer carrier.
+	goldenHashRichConfig = "941a0679fef814e2030e8736d32983fbd6ec5674d3ebd6021cf1bfa17de6a595"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1280,11 +1282,11 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 	}{
 		// These fixtures inherit the default credential audiences and sensitive
 		// headers, including Api-Key. The hashes include the structured Discord
-		// Gateway carrier and the publisher SDK Together host, matching the
-		// default and rich-config goldens above.
+		// Gateway carrier, the publisher SDK Together host and the JWT sign-in
+		// bearer carrier, matching the default and rich-config goldens above.
 		// They inherit the RFC 9110 default URI limit of 8000 octets.
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "cbea0950f1b877eba93dd0baa67394ae8d47ea14d1ac7e9dc309604f22a065a1"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "64f268562607b1b5467558847bdbb41346c668e5c5ffc0e40559358e64bf8260"},
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "ba2cd65c3708db0faa29ce29a9c82015e0b6a7cb499849d26b6f2b24f1394f67"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "4679f249c6c0852349f58617b5773094ca364da0a67a3637499f0c4f17d94f0d"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

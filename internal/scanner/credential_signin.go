@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"net/url"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 // signInBearerRoute is one provider API that accepts a sign-in access token,
@@ -32,9 +34,10 @@ type signInBearerRoute struct {
 //
 // The proxy cannot verify the token's signature. A token earns a route only
 // when its own iss and client_id claims name that provider and client, so a
-// JWT from any other issuer or client keeps the block, and a forged token can
-// reach only the issuer's own API host. The registry bearer rule makes the
-// same trade.
+// JWT whose claims name another issuer or client keeps the block. A token
+// from another issuer that copies these claims passes, but it can reach only
+// the route host and path those claims name. The registry bearer rule makes
+// the same trade.
 var signInBearerRoutes = []signInBearerRoute{
 	{host: "chatgpt.com", prefix: "/backend-api", issuer: "https://auth.openai.com", clientID: "app_EMoamEEZ73f0CkXaXp7hrann"},
 	{host: "api.x.ai", prefix: "/v1", issuer: "https://auth.x.ai", clientID: "b1a00492-073a-47ea-816f-4c329264a828"},
@@ -50,7 +53,7 @@ func signInBearerAllowed(candidate credentialAudienceCandidate, host, target, su
 	// joins fields, and the single-token shape below leaves nothing to join. A
 	// token visible only after decoding (percent, base64, hex) could sit beside
 	// a genuine sign-in token and borrow its claims.
-	if candidate.patternName != "JWT Token" || surface != CredentialAudienceAuthorizationHeaderSurface ||
+	if candidate.carrierMask&config.CredentialAudienceCarrierSignInBearer == 0 || surface != CredentialAudienceAuthorizationHeaderSurface ||
 		(candidate.encoded != "" && candidate.encoded != "whitespace") {
 		return false
 	}
@@ -67,11 +70,11 @@ func signInBearerAllowed(candidate credentialAudienceCandidate, host, target, su
 			return false
 		}
 	}
-	fields := strings.Fields(candidate.headerValue)
-	if len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") {
+	token, ok := matchedBearerToken(candidate)
+	if !ok {
 		return false
 	}
-	parts := strings.Split(fields[1], ".")
+	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return false
 	}

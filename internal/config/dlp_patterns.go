@@ -32,7 +32,7 @@ const (
 // provider accepts only the schemes its clients document. Google's Bearer-only
 // rule predates the mask and stays on CredentialAudienceAuthorizationOnly.
 const (
-	CredentialAudienceCarrierAuthorizationBearer uint16 = 1 << iota
+	CredentialAudienceCarrierAuthorizationBearer uint32 = 1 << iota
 	CredentialAudienceCarrierAuthorizationToken
 	CredentialAudienceCarrierAuthorizationBasic
 	CredentialAudienceCarrierPrivateToken
@@ -81,6 +81,10 @@ const (
 	// validated client Identify (op 2) or Resume (op 6) JSON frame over WSS.
 	// https://docs.discord.com/developers/events/gateway-events
 	CredentialAudienceCarrierDiscordGateway
+	// CredentialAudienceCarrierSignInBearer accepts a provider sign-in JWT
+	// only as the whole HTTPS Authorization bearer at its compiled API route;
+	// see scanner.signInBearerRoutes for the provider contracts.
+	CredentialAudienceCarrierSignInBearer
 )
 
 // githubTokenAudienceMask is the GitHub carriers: Authorization with the
@@ -408,7 +412,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// "ey..."-ish fragments tripped it. Keep only narrow, case-sensitive
 	// JSON-object prefixes so the precision fix does not drop compact
 	// JWTs serialized with whitespace.
-	{Name: "JWT Token", Regex: `(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,})\.(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,}|(?-i:e30=?))\.[a-zA-Z0-9_\-=]{10,}`, Severity: SeverityHigh, CredentialAudienceHosts: githubDownloadGrantAudienceHosts, CredentialAudienceRegistryHosts: githubRegistryHosts, CredentialAudienceCarrierMask: CredentialAudienceCarrierURLQuery | CredentialAudienceCarrierRegistryBearer | CredentialAudienceCarrierRegistryBasic},
+	{Name: "JWT Token", Regex: `(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,})\.(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,}|(?-i:e30=?))\.[a-zA-Z0-9_\-=]{10,}`, Severity: SeverityHigh, CredentialAudienceHosts: githubDownloadGrantAudienceHosts, CredentialAudienceRegistryHosts: githubRegistryHosts, CredentialAudienceCarrierMask: CredentialAudienceCarrierURLQuery | CredentialAudienceCarrierRegistryBearer | CredentialAudienceCarrierRegistryBasic | CredentialAudienceCarrierSignInBearer},
 
 	// Cryptocurrency private keys
 	// Bitcoin WIF: base58check. Uncompressed (5 + 50 base58 = 51 chars) or

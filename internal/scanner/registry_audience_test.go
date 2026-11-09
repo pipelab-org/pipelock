@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
@@ -183,6 +184,9 @@ func TestRegistryBearerRejectsMalformedRequests(t *testing.T) {
 		{"basic scheme", "https://ghcr.io/v2/", "Basic " + jwt},
 		{"extra field", "https://ghcr.io/v2/", "Bearer " + jwt + " x"},
 		{"missing value", "https://ghcr.io/v2/", ""},
+		{"trailing garbage", "https://ghcr.io/v2/", "Bearer " + jwt + "!"},
+		{"prefix garbage", "https://ghcr.io/v2/", "Bearer !" + jwt},
+		{"different token", "https://ghcr.io/v2/", "Bearer " + registryJWT(t, map[string]any{"aud": "ghcr.io", "access": []any{"other"}})},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -210,9 +214,11 @@ func TestRegistryAllowGuardsDirect(t *testing.T) {
 		headerValue:   registryBasic("octocat", gh),
 	}
 	bearer := credentialAudienceCandidate{
-		carrierMask:   config.CredentialAudienceCarrierRegistryBearer,
-		registryHosts: []string{"ghcr.io"},
-		headerValue:   "Bearer " + jwt,
+		carrierMask:      config.CredentialAudienceCarrierRegistryBearer,
+		registryHosts:    []string{"ghcr.io"},
+		headerValue:      "Bearer " + jwt,
+		valueIdentity:    sha256.Sum256([]byte(jwt)),
+		hasValueIdentity: true,
 	}
 	if !registryBasicAllowed(basic, "ghcr.io", "https://ghcr.io/token", credentialAudienceAuthorizationBasicSurface) {
 		t.Fatal("positive basic control refused")

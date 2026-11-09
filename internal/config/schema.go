@@ -1353,7 +1353,7 @@ type DLPPattern struct {
 	Compiled                            bool     `yaml:"-"`                   // true for patterns created in Defaults()
 	CredentialAudienceHosts             []string `yaml:"-"`                   // compiled built-ins only; strict YAML rejects attempts to configure it
 	CredentialAudienceAuthorizationOnly bool     `yaml:"-"`                   // compiled built-ins only; restricts audience allowance to Authorization headers
-	CredentialAudienceCarrierMask       uint16   `yaml:"-"`                   // compiled built-ins only; which surfaces may carry the credential
+	CredentialAudienceCarrierMask       uint32   `yaml:"-"`                   // compiled built-ins only; which surfaces may carry the credential
 	CredentialAudienceGitHosts          []string `yaml:"-"`                   // compiled built-ins only; hosts of the git-over-HTTPS Basic rule
 	CredentialAudienceRegistryHosts     []string `yaml:"-"`                   // compiled built-ins only; hosts of the package-registry Basic or bearer rule
 	// CredentialURLWhitespaceGrammar is set only by the built-in default
