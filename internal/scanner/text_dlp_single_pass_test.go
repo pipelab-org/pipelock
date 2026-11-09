@@ -60,13 +60,16 @@ func singlePassScanners(t *testing.T) map[string]*Scanner {
 	return out
 }
 
+// singlePassCard is a Luhn-valid test card number, assembled at runtime.
+var singlePassCard = "4111" + strings.Repeat("1", 12)
+
 // singlePassSecrets are synthetic credentials assembled at runtime.
 func singlePassSecrets() map[string]string {
 	return map[string]string{
 		"anthropic": "sk-" + "ant-" + "api03-" + strings.Repeat("A", 24),
 		"aws":       "AKIA" + strings.Repeat("V", 16),
 		"github":    "ghp_" + strings.Repeat("K", 36),
-		"card":      "4111 1111 1111 1111",
+		"card":      singlePassCard[:4] + " " + singlePassCard[4:8] + " " + singlePassCard[8:12] + " " + singlePassCard[12:],
 		"warn":      "demo-" + strings.Repeat("q", 20),
 		"plain":     "pt_" + strings.Repeat("Q", 12),
 		"canary":    "canary-" + strings.Repeat("z", 20),
@@ -87,9 +90,9 @@ func singlePassCarriers() map[string]func(string) string {
 		"dots":     func(s string) string { return strings.ReplaceAll(s, "-", ".") + ".evil.example" },
 		"entities": func(s string) string { return strings.ReplaceAll(s, "-", "&#45;") },
 		"nested":   func(s string) string { return base64.StdEncoding.EncodeToString([]byte(hex.EncodeToString([]byte(s)))) },
-		"two":      func(s string) string { return "first " + s + " then payment 4111111111111111 end" },
+		"two":      func(s string) string { return "first " + s + " then payment " + singlePassCard + " end" },
 		"cardfirst": func(s string) string {
-			return "payment 4111111111111111 then " + base64.StdEncoding.EncodeToString([]byte(s))
+			return "payment " + singlePassCard + " then " + base64.StdEncoding.EncodeToString([]byte(s))
 		},
 	}
 }
@@ -150,13 +153,16 @@ func singlePassInputs() []singlePassInput {
 			add(sName+"/"+cName+"/cardview", text, text+"\x1f")
 		}
 	}
-	// Outbound inspection limits (entity depth, percent depth) sit between
-	// the non-card and card findings; receipts report the first match.
+	// Outbound inspection limits (entity depth, percent depth, decode work)
+	// sit between the non-card and card findings; receipts report the first
+	// match, and a reserved-name card pattern must not suppress the refusal.
 	for name, limit := range map[string]string{
 		"entities": "&" + strings.Repeat("amp;", 40) + "#104;ello world",
-		"percent":  strings.Repeat("%25", 40) + "41",
+		"percent":  percentEncodeN("A", maxDecodeRounds+20),
+		"work":     decodeBudgetNestedText(),
 	} {
-		add("limit/"+name, "payment 4111111111111111 note: "+limit, "payment 4111111111111111 note: "+limit)
+		text := "payment " + singlePassCard + " note: " + limit
+		add("limit/"+name, text, text)
 	}
 	size := 96 << 10
 	if testing.Short() {
