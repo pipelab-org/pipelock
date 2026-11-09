@@ -927,7 +927,16 @@ func (s *Scanner) scanTextForDLPDetectors(ctx context.Context, text string, opts
 	}
 	result := s.scanTextForDLPDetectorsInner(ctx, text, opts, decodes)
 	if opts.scanSecretLeak && !inboundDirection(ctx) && decodes.inspectionIncomplete() && !HasInspectionLimit(result.Matches) {
-		result.Matches = append(result.Matches, uninspectableEncodedContentMatch())
+		at := len(result.Matches)
+		if opts.mergedClasses {
+			// Two passes added the refusal at the end of the non-card pass,
+			// ahead of every card finding. Receipt content reports the first
+			// match as its reason, so the merged pass keeps that position.
+			if card := slices.IndexFunc(result.Matches, func(m TextDLPMatch) bool { return m.genericCard }); card >= 0 {
+				at = card
+			}
+		}
+		result.Matches = slices.Insert(result.Matches, at, uninspectableEncodedContentMatch())
 		result.Clean = false
 	}
 	return result

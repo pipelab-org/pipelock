@@ -142,6 +142,14 @@ func singlePassInputs() []singlePassInput {
 			add(sName+"/"+cName+"/cardview", text, text+"\x1f")
 		}
 	}
+	// Outbound inspection limits (entity depth, percent depth) sit between
+	// the non-card and card findings; receipts report the first match.
+	for name, limit := range map[string]string{
+		"entities": "&" + strings.Repeat("amp;", 40) + "#104;ello world",
+		"percent":  strings.Repeat("%25", 40) + "41",
+	} {
+		add("limit/"+name, "payment 4111111111111111 note: "+limit, "payment 4111111111111111 note: "+limit)
+	}
 	size := 96 << 10
 	if testing.Short() {
 		size = 16 << 10
