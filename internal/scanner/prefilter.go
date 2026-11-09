@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"regexp"
 	"regexp/syntax"
 	"slices"
 	"sort"
@@ -32,8 +33,9 @@ type dlpPreFilter struct {
 
 	// shapeClass is the union of every pattern's shape-gate class and
 	// shapeBypass the union of their bypass runes; see shapeRejects.
-	shapeClass  asciiByteSet
-	shapeBypass []rune
+	minimumRunes int
+	shapeClass   asciiByteSet
+	shapeBypass  []rune
 }
 
 // dlpShapeSummary is one text's longest run of shapeClass bytes and whether
@@ -55,6 +57,12 @@ type dlpPrefix struct {
 // It extracts the longest literal prefix from each pattern's regex source.
 func newDLPPreFilter(patterns []*compiledPattern) *dlpPreFilter {
 	pf := &dlpPreFilter{}
+	for id, pattern := range patterns {
+		minimum := patternMinimumRunes(pattern)
+		if id == 0 || minimum < pf.minimumRunes {
+			pf.minimumRunes = minimum
+		}
+	}
 	prefixes := make(map[string][]int)
 
 	bypass := make(map[rune]struct{})
@@ -498,12 +506,18 @@ func (pf *dlpPreFilter) candidatesWith(text string, lowered *dlpLoweredBytes) []
 // Returns nil only when both candidates and alwaysRun are empty.
 // Indices are returned in ascending order for deterministic match reporting.
 func (pf *dlpPreFilter) patternsToCheck(text string) []int {
+	if !pf.admitsLength(text) {
+		return nil
+	}
 	return pf.mergeAlwaysRun(pf.candidates(text))
 }
 
 // patternsToCheckWith is patternsToCheck for a text whose lowered bytes are
 // already recorded.
 func (pf *dlpPreFilter) patternsToCheckWith(text string, lowered *dlpLoweredBytes) []int {
+	if !pf.admitsLength(text) {
+		return nil
+	}
 	if len(pf.prefixes) == 0 {
 		return pf.mergeAlwaysRun(nil)
 	}
@@ -526,4 +540,47 @@ func (pf *dlpPreFilter) mergeAlwaysRun(hits []int) []int {
 		}
 	}
 	return unique
+}
+
+// A regexp match consumes at least shapeMinLen runes. Boundary variants can
+// remove a consumed left delimiter, so they participate in the same minimum.
+func patternMinimumRunes(p *compiledPattern) int {
+	minimum := 0
+	for id, re := range []*regexp.Regexp{p.re, p.withoutLeftBoundary} {
+		if re == nil {
+			continue
+		}
+		tree, err := syntax.Parse(re.String(), syntax.Perl)
+		if err != nil {
+			return 0
+		}
+		n := shapeMinLen(tree)
+		if id == 0 || n < minimum {
+			minimum = n
+		}
+	}
+	return minimum
+}
+
+func (pf *dlpPreFilter) admitsLength(text string) bool {
+	return pf.minimumRunes <= 0 || utf8.RuneCountInString(text) >= pf.minimumRunes
+}
+
+// ForDLP leaves ASCII unchanged or deletes controls, and repairs each malformed
+// UTF-8 byte to one U+FFFD (normalizeSegmented). Neither path expands rune
+// count. Valid non-ASCII must keep the full path: NFKC can expand a ligature
+// into several runes. This only declines pure matching, never graph observation.
+func (pf *dlpPreFilter) rejectsUnnormalizedLength(text string) bool {
+	if len(text) >= pf.minimumRunes {
+		return false
+	}
+	for at := 0; at < len(text); at++ {
+		if text[at] < utf8.RuneSelf {
+			continue
+		}
+		if _, size := utf8.DecodeRuneInString(text[at:]); size > 1 {
+			return false
+		}
+	}
+	return true
 }

@@ -297,6 +297,9 @@ func newReceiptEmissionBlockedRequest(err error) *blockedRequestError {
 }
 
 func redirectBlockedInfo(blockedErr *blockedRequestError) blockreason.Info {
+	if blockedErr != nil && blockedErr.layer == "kill_switch" {
+		return blockInfoFor(blockreason.KillSwitchActive, "kill_switch")
+	}
 	if blockedErr != nil && blockedErr.layer == blockLayerContract {
 		reason := strings.TrimPrefix(blockedErr.reason, "redirect blocked: ")
 		if info, ok := contractBlockInfo(reason); ok {
@@ -1032,7 +1035,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	}
 
 	p.client = &http.Client{
-		Transport: transport,
+		Transport: killSwitchEgressTransport{next: transport, ks: p.ks, onDeny: p.recordEgressKillSwitchDeny},
 		Timeout:   time.Duration(cfg.FetchProxy.TimeoutSeconds) * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) (retErr error) {
 			if len(via) >= 5 {

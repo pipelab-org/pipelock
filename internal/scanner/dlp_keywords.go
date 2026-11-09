@@ -484,7 +484,7 @@ func (n *keywordDecodeSource) logicalContexts() []string {
 	variants := append([]*keywordDecodeSource{n}, n.variants...)
 	for _, edge := range variants {
 		switch edge.encoding {
-		case "identity", "projection", encodingURL, encodingHTML, encodingJSONUnicode, keywordURLPercent, keywordPercentDrop, keywordPercentEscapeDrop, keywordQueryValues:
+		case "identity", "projection", encodingURL, encodingHTML, encodingJSONUnicode, keywordURLPercent, keywordPercentDrop, keywordPercentEscapeDrop, keywordQueryValues, keywordSegment:
 			for _, text := range edge.parent.logicalContexts() {
 				switch edge.encoding {
 				case keywordQueryValues:

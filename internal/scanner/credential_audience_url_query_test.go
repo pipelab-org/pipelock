@@ -356,7 +356,8 @@ func TestFilterTextDLPMatchesForDestination_GitHubReleaseGrantJWTOnlyInQuery(t *
 }
 
 // No other built-in audience gained query carriage. The JWT built-in is the
-// only pattern on CredentialAudienceCarrierURLQuery; the Azure SAS Token
+// only pattern on CredentialAudienceCarrierURLQuery (it also carries the
+// registry and sign-in bearer bits, none of which grants query carriage); the Azure SAS Token
 // built-in is the only pattern on the separate ReleaseGrantSAS carrier, and
 // shares the JWT's exact host list because it is granted only alongside that
 // same JWT grant, never on its own.
@@ -367,7 +368,7 @@ func TestBuiltInAudiencesQueryCarriageIsJWTOnly(t *testing.T) {
 		hasReleaseSAS := p.CredentialAudienceCarrierMask&config.CredentialAudienceCarrierReleaseGrantSAS != 0
 		switch p.Name {
 		case jwtPatternName:
-			if !hasQuery || hasReleaseSAS || p.CredentialAudienceCarrierMask != config.CredentialAudienceCarrierURLQuery|config.CredentialAudienceCarrierRegistryBearer|config.CredentialAudienceCarrierRegistryBasic ||
+			if !hasQuery || hasReleaseSAS || p.CredentialAudienceCarrierMask != config.CredentialAudienceCarrierURLQuery|config.CredentialAudienceCarrierRegistryBearer|config.CredentialAudienceCarrierRegistryBasic|config.CredentialAudienceCarrierSignInBearer ||
 				len(p.CredentialAudienceHosts) != 1 || p.CredentialAudienceHosts[0] != githubReleaseAssetsHost {
 				t.Errorf("JWT audience = hosts %v mask %d", p.CredentialAudienceHosts, p.CredentialAudienceCarrierMask)
 			}

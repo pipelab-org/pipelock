@@ -131,10 +131,8 @@ func TestLocalPathIdentity_ContentCandidateBoundary(t *testing.T) {
 			if truncated || slices.Contains(got, profile) != tt.want {
 				t.Fatalf("expanded=%q truncated=%v, want protected identity=%v", got, truncated, tt.want)
 			}
-			if tt.want {
-				if v := pc.CheckToolCallWithArgs(testWriteTool, values, raw); !slices.Contains(v.Rules, testShellProfileRule) {
-					t.Fatalf("content naming a protected alias lost the conservative match: %+v", v)
-				}
+			if v := pc.CheckToolCallWithArgs(testWriteTool, values, raw); slices.Contains(v.Rules, testShellProfileRule) {
+				t.Fatalf("scalar document text became a write destination: %+v", v)
 			}
 		})
 	}

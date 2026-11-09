@@ -323,6 +323,7 @@ type Scanner struct {
 	reassemblyPlan            *reassemblyPlan
 	canaryTokens              []compiledCanaryToken
 	dlpPreFilter              *dlpPreFilter
+	dlpCardPatternIndices     []int
 	entropyThreshold          float64
 	subdomainEntropyThreshold float64
 	entropyMinLen             int
@@ -483,7 +484,7 @@ type compiledPattern struct {
 	core                                bool     // name belongs to the immutable floor: exemptDomains is never honored
 	credentialAudienceHosts             []string // compiled built-ins only; empty means no audience exception
 	credentialAudienceAuthorizationOnly bool     // compiled built-ins only; limits the allow to Authorization headers
-	credentialAudienceCarrierMask       uint16   // compiled built-ins only; which headers may carry the credential
+	credentialAudienceCarrierMask       uint32   // compiled built-ins only; which headers may carry the credential
 	credentialAudienceGitHosts          []string // compiled built-ins only; hosts of the git-over-HTTPS Basic rule
 	credentialAudienceRegistryHosts     []string // compiled built-ins only; hosts of the package-registry rule
 	bundle                              string   // empty for built-in/config patterns
@@ -751,6 +752,11 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 
 	// Build prefix pre-filter for fast DLP short-circuiting on clean input.
 	s.dlpPreFilter = newDLPPreFilter(s.dlpPatterns)
+	for id, pattern := range s.dlpPatterns {
+		if pattern.genericCard {
+			s.dlpCardPatternIndices = append(s.dlpCardPatternIndices, id)
+		}
+	}
 	windowBudget := newKnownValueWindowBudget(windowBudgetEntries)
 	canaryTokens, err := compileCanaryTokens(cfg.CanaryTokens, windowBudget)
 	if err != nil {
@@ -926,13 +932,13 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 	// Each pattern set gets its own pre-filter because opt-space and
 	// vowel-fold transforms change which keywords appear in content.
 	if len(s.responsePatterns) > 0 {
-		s.responsePreFilter = newResponsePreFilter(s.responsePatterns)
+		s.responsePreFilter = reusableResponsePreFilter(s.responsePatterns, responseSyntaxPrimary)
 	}
 	if len(s.responseOptSpacePatterns) > 0 {
-		s.responseOptSpacePreFilter = newResponsePreFilter(s.responseOptSpacePatterns)
+		s.responseOptSpacePreFilter = reusableResponsePreFilter(s.responseOptSpacePatterns, responseSyntaxOptionalSpace)
 	}
 	if len(s.responseVowelFoldPatterns) > 0 {
-		s.responseVowelFoldPreFilter = newResponsePreFilter(s.responseVowelFoldPatterns)
+		s.responseVowelFoldPreFilter = reusableResponsePreFilter(s.responseVowelFoldPatterns, responseSyntaxVowelFold)
 	}
 
 	// Build address protection checker if enabled.

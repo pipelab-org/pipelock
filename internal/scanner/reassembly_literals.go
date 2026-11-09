@@ -8,6 +8,7 @@ import (
 	"math"
 	"regexp/syntax"
 	"strings"
+	"sync"
 	"unicode"
 )
 
@@ -59,8 +60,19 @@ type (
 		out  []reassemblyNeedle
 	}
 	reassemblyAC struct {
-		nodes []reassemblyACNode
-		codec int
+		nodes    []reassemblyACNode
+		codec    int
+		building []reassemblyBuildNode
+		edges    []reassemblyBuildEdge
+	}
+	reassemblyBuildNode struct {
+		edge int
+		out  []reassemblyNeedle
+	}
+	reassemblyBuildEdge struct {
+		next   int
+		value  int16
+		target uint32
 	}
 )
 
@@ -71,27 +83,47 @@ func (a *reassemblyAC) add(value []byte, n reassemblyNeedle) {
 		if v < 0 {
 			panic("nonalphabet core")
 		}
-		next := a.nodes[state].next[v]
+		next := uint32(0)
+		for at := a.building[state].edge; at > 0; at = a.edges[at-1].next {
+			if edge := a.edges[at-1]; edge.value == v {
+				next = edge.target
+				break
+			}
+		}
 		if next == 0 {
-			if len(a.nodes) > math.MaxInt32 {
+			if len(a.building) > math.MaxInt32 {
 				panic("literal automaton exceeds address space")
 			}
-			next = uint32(len(a.nodes) & math.MaxInt32)
-			a.nodes = append(a.nodes, reassemblyACNode{})
-			a.nodes[state].next[v] = next
+			next = uint32(len(a.building) & math.MaxInt32)
+			a.building = append(a.building, reassemblyBuildNode{})
+			a.edges = append(a.edges, reassemblyBuildEdge{a.building[state].edge, v, next})
+			a.building[state].edge = len(a.edges)
 		}
 		state = next
 	}
 	n.length = len(value)
-	for _, old := range a.nodes[state].out {
+	for _, old := range a.building[state].out {
 		if old == n {
 			return
 		}
 	}
-	a.nodes[state].out = append(a.nodes[state].out, n)
+	a.building[state].out = append(a.building[state].out, n)
 }
 
 func (a *reassemblyAC) build() {
+	// Build with adjacency lists (CLRS section 22.1), then allocate the dense
+	// scan table once at its exact size. Trie IDs and transition order stay
+	// unchanged without repeatedly copying 64-entry rows during slice growth.
+	a.nodes = make([]reassemblyACNode, len(a.building))
+	for id, node := range a.building {
+		a.nodes[id].out = node.out
+		for at := node.edge; at > 0; at = a.edges[at-1].next {
+			edge := a.edges[at-1]
+			a.nodes[id].next[edge.value] = edge.target
+		}
+	}
+	a.building = nil
+	a.edges = nil
 	var q []uint32
 	for _, n := range a.nodes[0].next {
 		if n != 0 {
@@ -197,10 +229,14 @@ type reassemblyRef struct {
 }
 
 type reassemblyPlan struct {
-	keywords  bool
-	patterns  []*compiledPattern
-	required  [][]string
-	assembled *assembledPlan
+	emptyMu            sync.RWMutex
+	emptyTerminals     map[assembledEmptyKey]struct{}
+	emptyTerminalBytes int
+	keywords           bool
+	kindInsensitive    bool
+	patterns           []*compiledPattern
+	required           [][]string
+	assembled          *assembledPlan
 }
 
 func newReassemblyPlan(patterns []*compiledPattern) (*reassemblyPlan, error) {
@@ -221,6 +257,12 @@ func newReassemblyPlan(patterns []*compiledPattern) (*reassemblyPlan, error) {
 	p.assembled, err = newAssembledPlan(p)
 	if err != nil {
 		return nil, fmt.Errorf("compile reassembly plan: %w", err)
+	}
+	p.kindInsensitive = !p.keywords
+	for id, active := range p.assembled.active {
+		if active && !p.assembled.decoderAllowed[id] {
+			p.kindInsensitive = false
+		}
 	}
 	return p, nil
 }

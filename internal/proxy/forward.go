@@ -2498,6 +2498,19 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// matching to be skipped; all other response controls remain below.
 	fwdAuthenticatedArtifact := false
 	if artifact, artifactErr := verifyAuthenticatedArtifact(outReq.Context(), outReq, resp, p.client.Transport, time.Duration(cfg.FetchProxy.TimeoutSeconds)*time.Second, cfg.ResponseScanning.AuthenticatedArtifacts); artifactErr != nil {
+		if blockedErr, ok := blockedRequestErrorFrom(artifactErr); ok && blockedErr.layer == "kill_switch" {
+			p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+			p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
+			emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
+				ActionID: actionID, RequestID: requestID, Agent: agent, Method: r.Method,
+				Target: redirectReceiptTarget(blockedErr, targetURL), Layer: blockedErr.layer,
+				Pattern: blockedErr.decisivePattern(), Taint: forwardTaint,
+			})))
+			writeBlockedError(w, redirectBlockedInfo(blockedErr).WithRequestID(requestID),
+				"blocked: "+blockedErr.reason, http.StatusForbidden)
+			outcomeStatus, outcomeReason = strconv.Itoa(http.StatusForbidden), blockedErr.layer
+			return
+		}
 		p.logger.LogBlocked(actx, "authenticated_artifact", artifactErr.Error())
 		p.metrics.RecordBlocked(r.URL.Hostname(), "authenticated_artifact", time.Since(start), agentLabel)
 		emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{ActionID: actionID, Verdict: config.ActionBlock, Layer: "authenticated_artifact", Pattern: artifactErr.Error(), Transport: "forward", Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}))

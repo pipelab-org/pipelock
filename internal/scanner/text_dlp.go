@@ -340,7 +340,7 @@ type TextDLPMatch struct {
 	span                                MatchSpan
 	credentialAudienceHosts             []string
 	credentialAudienceAuthorizationOnly bool
-	credentialAudienceCarrierMask       uint16
+	credentialAudienceCarrierMask       uint32
 	credentialAudienceGitHosts          []string
 	credentialAudienceRegistryHosts     []string
 }
@@ -746,13 +746,14 @@ func uninspectableEncodedContentMatch() TextDLPMatch {
 func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, opts textDLPOptions) TextDLPResult {
 	shared := sharedDecodesFrom(ctx)
 	terminalInbound := !opts.scanSecretLeak || inboundDirection(ctx)
+	kindInsensitive := s.reassemblyPlan != nil && s.reassemblyPlan.kindInsensitive
 	allowance := &assembledAllowance{}
-	originalDecodes := decodingMemo{shared: shared, reassemblyDeferred: true, reassemblyInbound: terminalInbound, assembledAllowance: allowance}
-	defer originalDecodes.releaseProjection()
+	originalDecodes := textDecodingMemo(shared, terminalInbound, allowance, kindInsensitive)
+	defer originalDecodes.releaseTextDecodingMemo()
 	if !s.hasGenericCardPatterns() {
 		emit := opts.emitWarns
 		opts.emitWarns = false
-		result := finishAssembled(s.scanTextForDLPWithDecodes(ctx, text, opts, &originalDecodes), &originalDecodes)
+		result := finishAssembled(s.scanTextForDLPWithDecodes(ctx, text, opts, originalDecodes), originalDecodes)
 		if emit {
 			s.EmitTextDLPWarnMatches(ctx, append(result.InformationalMatches[:len(result.InformationalMatches):len(result.InformationalMatches)], result.Matches...))
 		}
@@ -768,14 +769,20 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 	emit := opts.emitWarns
 	opts.emitWarns = false
 	opts.patterns = textDLPNonCardPatterns
-	original := s.scanTextForDLPWithDecodes(ctx, text, opts, &originalDecodes)
-	typedDecodes := decodingMemo{shared: shared, reassemblyDeferred: true, reassemblyInbound: terminalInbound, assembledAllowance: allowance}
-	defer typedDecodes.releaseProjection()
-	terminalMemos := []*decodingMemo{&originalDecodes}
-	cardDecodes := &originalDecodes
+	// Separate text/card memos never widen their pattern sets. A shared memo
+	// retains the all-pattern upper bound until both passes have finished.
 	if text != cardView {
-		cardDecodes = &typedDecodes
-		terminalMemos = append(terminalMemos, &typedDecodes)
+		originalDecodes.reassemblyPatternLimit = textDLPNonCardPatterns
+	}
+	original := s.scanTextForDLPWithDecodes(ctx, text, opts, originalDecodes)
+	terminalMemos := []*decodingMemo{originalDecodes}
+	cardDecodes := originalDecodes
+	if text != cardView {
+		typedDecodes := textDecodingMemo(shared, terminalInbound, allowance, kindInsensitive)
+		defer typedDecodes.releaseTextDecodingMemo()
+		typedDecodes.reassemblyPatternLimit = textDLPCardPatterns
+		cardDecodes = typedDecodes
+		terminalMemos = append(terminalMemos, typedDecodes)
 	}
 	opts.patterns = textDLPCardPatterns
 	opts.scanSecretLeak = false
@@ -832,10 +839,11 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 			continue
 		}
 		seenRuns[run] = struct{}{}
-		runDecodes := decodingMemo{shared: shared, reassemblyDeferred: true, reassemblyInbound: terminalInbound, assembledAllowance: allowance}
-		runResult := s.scanTextForDLPWithDecodes(ctx, run.Digits, opts, &runDecodes)
-		runResult = finishAssembled(runResult, &runDecodes)
-		runDecodes.releaseProjection()
+		runDecodes := textDecodingMemo(shared, terminalInbound, allowance, kindInsensitive)
+		runDecodes.reassemblyPatternLimit = textDLPCardPatterns
+		runResult := s.scanTextForDLPWithDecodes(ctx, run.Digits, opts, runDecodes)
+		runResult = finishAssembled(runResult, runDecodes)
+		runDecodes.releaseTextDecodingMemo()
 		for i := range runResult.Matches {
 			if run.RetryOnly && !runResult.Matches[i].cardPrefixRetry {
 				continue
@@ -917,6 +925,8 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	text = exciseImagesRetainingDecodedForDLP(text)
 	if text != imageSource && decodes != nil {
 		imageText := exciseVerifiedImageDataURLs(imageSource)
+		imageText = decodes.rememberGraphTransform(imageSource, imageText, assembledPayloadImageText)
+		text = decodes.rememberGraphTransform(imageSource, text, assembledPayloadImageDecoded)
 		decodes.reassemblyDerive(imageSource, imageText)
 		decodes.reassemblyObserve(imageText)
 		decodes.reassemblySetKind(text, assembledDecoderView)
@@ -933,6 +943,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	}
 	beforeRedaction := text
 	text = redactOfficialAWSExampleCredentialsForDocs(text)
+	text = decodes.rememberGraphTransform(beforeRedaction, text, assembledPayloadRedactExamples)
 	decodes.reassemblyDerive(beforeRedaction, text)
 	cleaned := decodes.normalize(text)
 	if decodes != nil {
@@ -948,6 +959,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	segmentViewsFor := func(source string) []spanTextView {
 		views := textDLPEncodingSegmentViews(source)
 		for _, view := range views {
+			decodes.rememberGraphTransform(source, view.text, assembledPayloadWhitespace)
 			decodes.reassemblyDerive(source, view.text)
 		}
 		return views
@@ -1406,7 +1418,15 @@ func (s *Scanner) matchDLPPatternsWithDecodes(text, encoding, source string, dec
 func (s *Scanner) matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource string, lowered *dlpLoweredBytes, patterns textDLPPatternSet, decodes *decodingMemo) []TextDLPMatch {
 	var matches []TextDLPMatch
 	var shape dlpShapeSummary
-	for _, idx := range s.dlpPreFilter.patternsToCheckWith(text, lowered) {
+	var candidates []int
+	if patterns == textDLPCardPatterns {
+		// The compiled partition is exact. Run every card rule's ordinary
+		// admission and validator instead of screening unrelated prefixes.
+		candidates = s.dlpCardPatternIndices
+	} else {
+		candidates = s.dlpPreFilter.patternsToCheckWith(text, lowered)
+	}
+	for _, idx := range candidates {
 		p := s.dlpPatterns[idx]
 		if !patterns.includes(p.genericCard) {
 			continue
@@ -1775,16 +1795,20 @@ func noteTextSegmentDecodeBudget(views []string, decodes *decodingMemo) {
 		return
 	}
 	for _, text := range views {
-		kind := decodes.reassemblyDerivedKind(text)
-		for _, seg := range textDLPSegments(text) {
-			decodes.reassemblySegment(text, seg, kind)
+		source := decodes.reassemblySegmentSource(text)
+		walkTextDLPSegments(text, func(seg string, start int) bool {
+			source.observeAt(seg, start)
 			if decodes.inspectionIncomplete() {
-				return
+				return false
 			}
-			if len(seg) < 10 {
-				continue
+			if len(seg) >= 10 {
+				decodes.decode(seg, true)
 			}
-			decodes.decode(seg, true)
+			return true
+		})
+		source.release()
+		if decodes.inspectionIncomplete() {
+			return
 		}
 	}
 }
@@ -1797,24 +1821,24 @@ func (s *Scanner) decodeTextSegmentsWithDecodes(text string, decodes *decodingMe
 	// Split on URL-like and structured-data delimiters. Request bodies often
 	// wrap encoded secrets in JSON, YAML, CSV, or multipart text, so quotes,
 	// braces, colons, and commas must not stay attached to the encoded token.
-	segments := textDLPSegments(text)
-	kind := decodes.reassemblyDerivedKind(text)
-
+	source := decodes.reassemblySegmentSource(text)
+	defer source.release()
 	var matches []TextDLPMatch
-	for _, seg := range segments {
-		decodes.reassemblySegment(text, seg, kind)
+	walkTextDLPSegments(text, func(seg string, start int) bool {
+		source.observeAt(seg, start)
 		if len(seg) < 10 {
-			continue // too short to be a meaningful encoded secret
+			return true
 		}
 		for _, d := range decodes.decode(seg, true) {
 			if m := decodes.matchDecodedFor(s, d.text, d.encoding, patterns); len(m) > 0 {
 				matches = append(matches, m...)
 				if hasEnforcedMatch(m) {
-					return matches
+					return false
 				}
 			}
 		}
-	}
+		return true
+	})
 	return matches
 }
 
@@ -1900,36 +1924,59 @@ func isHexText(s string) bool {
 // there. The piece step claims no replay operation: published text_segment
 // replay keeps '#' inside a segment.
 func textDLPSegments(text string) []string {
-	segments := strings.FieldsFunc(text, isTextDLPEncodingDelimiter)
-	// RFC 4648 section 4 includes '/' in the base64 alphabet. Retain the
-	// existing encoded-run recognizer's whole runs beside URL-like pieces,
-	// so path separators do not destroy a standard-base64 carrier.
+	segments := make([]string, 0)
+	walkTextDLPSegments(text, func(segment string, _ int) bool { segments = append(segments, segment); return true })
+	return segments
+}
+
+// walkTextDLPSegments retains offsets while following the same whole-segment,
+// fragment-piece, and appended encoded-run order as textDLPSegments.
+func walkTextDLPSegments(text string, visit func(string, int) bool) {
+	emit := func(start, end int) bool {
+		segment := text[start:end]
+		if !visit(segment, start) {
+			return false
+		}
+		if !strings.Contains(segment, "#") {
+			return true
+		}
+		seen := make(map[string]bool)
+		return walkDelimitedTextSpans(segment, isURLFragmentDelimiter, func(a, z int) bool {
+			piece := segment[a:z]
+			if seen[piece] {
+				return true
+			}
+			seen[piece] = true
+			return visit(piece, start+a)
+		})
+	}
+	if !walkDelimitedTextSpans(text, isTextDLPEncodingDelimiter, emit) {
+		return
+	}
 	if strings.Contains(text, "/") {
 		for _, run := range extractEncodedRunSpans(text, minSegmentDecodeLen) {
-			// Whole-content decoding already inspects a run equal to text.
-			if run.text != text && strings.Contains(run.text, "/") {
-				segments = append(segments, run.text)
+			if run.text != text && strings.Contains(run.text, "/") && !emit(run.start, run.end) {
+				return
 			}
 		}
 	}
-	if !strings.Contains(text, "#") {
-		return segments
-	}
-	out := make([]string, 0, len(segments))
-	for _, segment := range segments {
-		out = append(out, segment)
-		if !strings.Contains(segment, "#") {
-			continue
-		}
-		seen := make(map[string]struct{})
-		for _, piece := range strings.FieldsFunc(segment, isURLFragmentDelimiter) {
-			if _, dup := seen[piece]; !dup {
-				seen[piece] = struct{}{}
-				out = append(out, piece)
+}
+
+// Match strings.FieldsFunc's rune boundaries, including invalid UTF-8, while
+// keeping byte coordinates into the caller's original string.
+func walkDelimitedTextSpans(text string, delimiter func(rune) bool, visit func(int, int) bool) bool {
+	start := -1
+	for at, r := range text {
+		if delimiter(r) {
+			if start >= 0 && !visit(start, at) {
+				return false
 			}
+			start = -1
+		} else if start < 0 {
+			start = at
 		}
 	}
-	return out
+	return start < 0 || visit(start, len(text))
 }
 
 // textDLPFlatSegments splits text once on the text_segment delimiters and

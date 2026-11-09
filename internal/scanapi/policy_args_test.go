@@ -65,6 +65,45 @@ func TestScanToolCallPolicyMatchesArgumentValues(t *testing.T) {
 	}
 }
 
+func TestScanToolCallPolicyWriteDestinations(t *testing.T) {
+	h := newTestHandler(t)
+	h.policyCfg = policy.New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: policy.DefaultToolPolicyRules()})
+	for _, tc := range []struct {
+		tool, args string
+		denied     bool
+	}{
+		{"bash", `{"command":"dd if=payload of=.bashrc"}`, true},
+		{"bash", `{"command":"dd of=/tmp/safe of=/etc/cron.d/job"}`, true},
+		{"bash", `{"command":"dd if=/dev/zero of=/var/log/auth.log"}`, true},
+		{"bash", `{"command":"dd of=/tmp/backup if=/etc/cron.d/job"}`, false},
+		{"bash", `{"command":"dd of=/tmp/disk.img # notes /etc/cron.d/job"}`, false},
+		{"bash", `{"command":"dd of=/tmp/disk.img # of=/etc/cron.d/job"}`, false},
+		{"write_file", `{"target":"/etc/shadow","content":"notes"}`, true},
+		{"write_file", `{"destination":".ssh/id_rsa","content":"notes"}`, true},
+		{"write_file", `{"dest":".ssh/id_rsa","content":"notes"}`, true},
+		{"write_file", `{"path":"/project/notes.md","content":"/etc/shadow"}`, false},
+	} {
+		t.Run(tc.tool+tc.args, func(t *testing.T) {
+			body := `{"kind":"tool_call","input":{"tool_name":"` + tc.tool + `","arguments":` + tc.args + `}}`
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+testToken)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			var resp Response
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatal(err)
+			}
+			if denied := resp.Decision == "deny"; denied != tc.denied {
+				t.Errorf("decision=%s, want denied=%v (findings %+v)", resp.Decision, tc.denied, resp.Findings)
+			}
+		})
+	}
+}
+
 func TestScanToolCallPolicyIncomplete(t *testing.T) {
 	for _, action := range []string{config.ActionBlock, config.ActionWarn} {
 		for _, tc := range []struct{ name, args, want string }{
