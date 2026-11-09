@@ -43,9 +43,9 @@ func TestTextDLPWarnContinuation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var matches []TextDLPMatch
 			if tc.segments {
-				matches = s.decodeTextSegmentsWithDecodes(tc.text, nil, textDLPAllPatterns)
+				matches = s.decodeTextSegmentsWithDecodes(tc.text, nil, textDLPAllPatterns, nil)
 			} else {
-				matches = s.decodeSplitHexRunsWithDecodes(tc.text, nil, textDLPAllPatterns)
+				matches = s.decodeSplitHexRunsWithDecodes(tc.text, nil, textDLPAllPatterns, nil)
 			}
 			if hasEnforcedMatch(matches) != tc.want {
 				t.Fatalf("decoded matches=%+v, want enforced=%v", matches, tc.want)

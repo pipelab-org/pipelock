@@ -382,7 +382,7 @@ func TestReassemblySegmentOffsetsFollowFragmentWalk(t *testing.T) {
 			memo.addReplayPayload(text, &assembledPayload{literal: text})
 			switch consumer {
 			case "configured":
-				sc.decodeTextSegmentsWithDecodes(text, memo, textDLPAllPatterns)
+				sc.decodeTextSegmentsWithDecodes(text, memo, textDLPAllPatterns, nil)
 			case "core":
 				sc.decodeCoreDLPTextSegmentsWithDecodes(text, memo)
 			case "budget":
@@ -418,7 +418,7 @@ func BenchmarkReassemblyFragmentSegmentOffsets(b *testing.B) {
 	for b.Loop() {
 		memo := &decodingMemo{reassemblyPlan: sc.reassemblyPlan, reassemblyDeferred: true, reassemblyKindInsensitive: true}
 		memo.addReplayPayload(text, &assembledPayload{literal: text})
-		sc.decodeTextSegmentsWithDecodes(text, memo, textDLPAllPatterns)
+		sc.decodeTextSegmentsWithDecodes(text, memo, textDLPAllPatterns, nil)
 		memo.releaseProjection()
 	}
 }
