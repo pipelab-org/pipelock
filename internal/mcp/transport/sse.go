@@ -33,6 +33,7 @@ type SSEReader struct {
 func NewSSEReader(r io.Reader) *SSEReader {
 	s := bufio.NewScanner(r)
 	s.Buffer(make([]byte, 0, 64*1024), MaxLineSize)
+	s.Split(newSSELineSplitter())
 	return &SSEReader{scanner: s, maxEventBytes: MaxLineSize}
 }
 
