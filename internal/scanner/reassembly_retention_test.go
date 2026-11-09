@@ -32,8 +32,8 @@ func TestReassemblyDecodedRetentionUsesReplay(t *testing.T) {
 		memo.decode(body, true)
 	}
 	decodedBytes := terminalRetainedBytes(memo, roots)
-	if decodedBytes > maxDecodeTotalBytes || memo.retainedBytes > maxDecodeTotalBytes || len(memo.reassemblyPendingReplay) == 0 {
-		t.Fatalf("payload ownership exceeded its cap: decoded=%d memo=%d replay=%d", decodedBytes, memo.retainedBytes, len(memo.reassemblyPendingReplay))
+	if decodedBytes > maxDecodeTotalBytes || memo.retainedBytes > maxDecodeTotalBytes || memo.reassemblyReplayPayloadCount == 0 {
+		t.Fatalf("payload ownership exceeded its cap: decoded=%d memo=%d replay=%d", decodedBytes, memo.retainedBytes, memo.reassemblyReplayPayloadCount)
 	}
 	for _, bucket := range memo.reassemblyReplayPayloads {
 		for _, payload := range bucket {
@@ -42,7 +42,7 @@ func TestReassemblyDecodedRetentionUsesReplay(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("input=%d memo=%d terminal_decoded=%d replay_views=%d cap=%d", inputBytes, memo.retainedBytes, decodedBytes, len(memo.reassemblyPendingReplay), maxDecodeTotalBytes)
+	t.Logf("input=%d memo=%d terminal_decoded=%d replay_views=%d cap=%d", inputBytes, memo.retainedBytes, decodedBytes, memo.reassemblyReplayPayloadCount, maxDecodeTotalBytes)
 	// Only the decoded outer-base64 view exposes the long separated run.
 	// Cache exhaustion must neither skip it nor introduce a new refusal.
 	inner := strings.Repeat("a!", 4200) + reassemblyBang(base64.RawStdEncoding.EncodeToString([]byte("MARK1234")))
@@ -330,8 +330,12 @@ func TestReassemblySegmentObserveForwardCursor(t *testing.T) {
 	text := "alpha/beta/alpha/gamma"
 	root := memo.addReplayPayload(text, &assembledPayload{literal: text})
 	source := assembledSegmentSource{memo: memo, text: text, replay: root, kind: assembledTextView}
-	for _, seg := range []string{"alpha", "beta", "gamma", "beta"} {
+	for i, seg := range []string{"alpha", "beta", "alpha", "gamma", "beta"} {
 		source.observe(seg)
+		want := []int{5, 10, 16, 22, 10}[i]
+		if source.cursor != want {
+			t.Fatalf("segment %d cursor=%d want=%d", i, source.cursor, want)
+		}
 	}
 	for _, seg := range []string{"alpha", "beta", "gamma"} {
 		payload := memo.replayPayload(seg)

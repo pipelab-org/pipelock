@@ -257,15 +257,16 @@ type assembledIdentity struct {
 
 type (
 	assembledBudget struct {
-		memo        *decodingMemo
-		patterns    textDLPPatternSet
-		decoderOnly bool
-		charged     map[string]*assembledCharges
-		registry    *assembledChargeRegistry
-		used        int
-		incomplete  bool
-		produced    map[assembledIdentity]struct{}
-		admitted    bool
+		memo          *decodingMemo
+		patterns      textDLPPatternSet
+		decoderOnly   bool
+		charged       map[string]*assembledCharges
+		registry      *assembledChargeRegistry
+		used          int
+		incomplete    bool
+		produced      map[assembledIdentity]struct{}
+		admitted      bool
+		admissionOnly bool
 	}
 	assembledScan struct {
 		p         *reassemblyPlan
@@ -336,6 +337,10 @@ type assembledLane struct {
 }
 
 func (s *assembledScan) searchLane(codec, phase, id int) {
+	if s.budget.admissionOnly {
+		s.budget.admitted = true
+		return
+	}
 	if s.budget.incomplete {
 		s.result.incomplete = true
 		return
@@ -437,6 +442,14 @@ func (s *assembledScan) produce(id int, view string, begin, finish int) bool {
 	return true
 }
 
+// admitsAssembledView runs the same context-independent admission grammar as
+// matching, without decoding lanes or spending their inspection allowance.
+func (p *reassemblyPlan) admitsAssembledView(text string) bool {
+	probe := assembledBudget{admissionOnly: true}
+	assembledLayer(p, text, &probe, 0)
+	return probe.admitted || p.assembled.nestedHex && assembledOuterAdmits(p, text, 0)
+}
+
 func assembledLayer(p *reassemblyPlan, text string, budget *assembledBudget, skip uint8) reassemblyResult {
 	patternSet := budget.patterns
 	if patternSet != textDLPAllPatterns && patternSet != textDLPCardPatterns {
@@ -509,6 +522,9 @@ func assembledLayer(p *reassemblyPlan, text string, budget *assembledBudget, ski
 						cue(phase, hit.pattern, &hit)
 					}
 				}
+			}
+			if budget.admissionOnly && budget.admitted {
+				return reassemblyResult{}
 			}
 		}
 	}

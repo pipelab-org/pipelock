@@ -20,7 +20,7 @@ const (
 func (k assembledViewKind) textual() bool { return k != assembledDecoderView }
 
 func (m *decodingMemo) reassemblySetKind(text string, kind assembledViewKind) bool {
-	if m == nil || !m.reassemblyDeferred && m.reassemblyPlan == nil {
+	if m == nil || m.reassemblyIncomplete || !m.reassemblyDeferred && m.reassemblyPlan == nil {
 		return false
 	}
 	// produce rejects binary ancestry only for decoder-disallowed patterns;
@@ -88,7 +88,9 @@ func (m *decodingMemo) reassemblyParent(source, text string) {
 func (m *decodingMemo) reassemblyParentFrom(source, text string, parent *assembledPayload) {
 	child := m.replayPayload(text)
 	if child != nil || parent != nil {
-		if _, exists := m.viewParent(text); exists {
+		// An existence check must not replay or hash the whole parent once
+		// per segment. Bytes are verified when the context is inspected.
+		if child != nil && child.contextParent != nil || m.reassemblyReplayParents[text] != nil {
 			return
 		}
 		if parent == nil {
@@ -174,35 +176,38 @@ func (s *assembledSegmentSource) release() {
 }
 
 func (s *assembledSegmentSource) observe(segment string) {
+	start := -1
+	if s.cursor <= len(s.text) {
+		if at := strings.Index(s.text[s.cursor:], segment); at >= 0 {
+			start = s.cursor + at
+		}
+	}
+	if start < 0 {
+		start = strings.Index(s.text, segment)
+	}
+	s.observeAt(segment, start)
+}
+
+func (s *assembledSegmentSource) observeAt(segment string, start int) {
 	m := s.memo
-	if m == nil {
+	if m == nil || m.reassemblyIncomplete {
 		return
 	}
 	if s.replay != nil && segment != s.text {
-		// Any occurrence replays the same bytes; the forward search only finds
-		// one sooner. A segment out of order falls back to the whole text.
-		start := -1
-		if s.cursor <= len(s.text) {
-			if at := strings.Index(s.text[s.cursor:], segment); at >= 0 {
-				start = s.cursor + at
-			}
-		}
-		if start < 0 {
-			start = strings.Index(s.text, segment)
-		}
-		if start >= 0 {
-			s.cursor = start + len(segment)
-		}
-		if start < 0 {
+		if start < 0 || start > len(s.text)-len(segment) || s.text[start:start+len(segment)] != segment {
 			m.markIncomplete()
 			m.reassemblyIncomplete = true
 			return
 		}
+		s.cursor = start + len(segment)
 		m.addReplayPayload(segment, &assembledPayload{parent: s.replay, operation: assembledPayloadSegment, start: start, end: start + len(segment)})
 	}
 	if m.reassemblyKindInsensitive {
 		return
 	}
+	// The final proximity check follows keywordSources, not the terminal's
+	// ancestry index. Preserve this exact substring edge in both systems.
+	m.registerKeywordTransform(s.text, segment, keywordSegment)
 	if m.reassemblySetKind(segment, s.kind) && s.known && s.text != segment && m.reassemblyPlan != nil && m.reassemblyPlan.keywords {
 		m.reassemblyParentFrom(s.text, m.canonicalPayload(segment), s.replay)
 	}

@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"crypto/sha256"
+	"reflect"
 
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
@@ -21,6 +22,8 @@ type assembledPayload struct {
 	start, end       int
 	kind             assembledViewKind
 	known, textRoot  bool
+	digestSet        bool
+	admitted         bool
 	contextParent    *assembledPayload
 	pending          int
 	cache            *assembledRecipeCache
@@ -36,12 +39,11 @@ type assembledDecodeRecipe struct {
 	cache      *assembledRecipeCache
 }
 
-// assembledRecipeCache holds the decoded views of at most one recipe and the
-// text of at most one replayed transform per scan. Replay lookups of sibling
-// views share that single walk or transform instead of recomputing the source
-// once per view; holding a new one releases the previous one, so retention
-// stays at one source's views and one transformed text however many are
-// replayed.
+// assembledRecipeCache holds the decoded views of at most one recipe and
+// at most four source-sized transformed strings per scan. These transient
+// transforms are not charged to retainedBytes and are released by
+// finishAssembled. Sibling views share a walk or transform; replacing a slot
+// releases its previous bytes, independently of the replay registry size.
 type assembledRecipeCache struct {
 	active *assembledDecodeRecipe
 	text   [assembledHeldTexts]*assembledPayload
@@ -125,6 +127,17 @@ func assembledPayloadFingerprint(text string) assembledPayloadKey {
 		hash = (hash ^ uint64(text[i])) * 1099511628211
 	}
 	return assembledPayloadKey{hash, len(text)}
+}
+
+// inspectionText verifies the bytes at an inspection boundary. Recursive
+// recipe inputs do not rehash a whole parent for each small segment; the
+// segment's own registered digest verifies the bytes passed to matching.
+func (p *assembledPayload) inspectionText() (string, bool) {
+	text, ok := p.materialize()
+	if !ok || p.digestSet && sha256.Sum256([]byte(text)) != p.digest {
+		return "", false
+	}
+	return text, true
 }
 
 func (p *assembledPayload) materialize() (string, bool) {
@@ -220,11 +233,28 @@ func (m *decodingMemo) payloadSource(text string) *assembledPayload {
 	return &assembledPayload{literal: text, pending: -1}
 }
 
+// Charge logical descriptor, index, recipe and source-wrapper sizes against
+// the existing decode byte bound. Go map/allocator overhead, borrowed source
+// strings and the transient transform cache remain separate from this charge;
+// the bounded entry count prevents them growing per distinct decoded view.
+var assembledReplayMetadataBytes = int(reflect.TypeFor[assembledPayload]().Size()*2 + reflect.TypeFor[assembledDecodeRecipe]().Size() + reflect.TypeFor[assembledPayloadKey]().Size() + reflect.TypeFor[[]*assembledPayload]().Size() + reflect.TypeFor[*assembledPayload]().Size())
+
 func (m *decodingMemo) addReplayPayload(text string, payload *assembledPayload) *assembledPayload {
 	if _, ok := m.reassemblySeen[text]; ok {
 		return nil
 	}
 	if existing := m.replayPayload(text); existing != nil {
+		return nil
+	}
+	// Replay descriptors are scan metadata, not another unbounded cache.
+	// The existing decode byte limit bounds descriptors and their recipes.
+	// Reaching it must retain the ordinary directional incomplete policy.
+	if !m.reassemblyIncomplete && m.reassemblyReplayPayloadCount >= maxDecodeTotalBytes/assembledReplayMetadataBytes {
+		m.trimReplayPayloads(payload)
+	}
+	if m.reassemblyIncomplete || m.reassemblyReplayPayloadCount >= maxDecodeTotalBytes/assembledReplayMetadataBytes {
+		m.markIncomplete()
+		m.reassemblyIncomplete = true
 		return nil
 	}
 	if payload.cache == nil {
@@ -235,10 +265,132 @@ func (m *decodingMemo) addReplayPayload(text string, payload *assembledPayload) 
 	}
 	payload.pending = -1
 	payload.digest = sha256.Sum256([]byte(text))
+	payload.digestSet = true
 	key := assembledPayloadFingerprint(text)
 	m.reassemblyReplayPayloads[key] = append(m.reassemblyReplayPayloads[key], payload)
 	m.reassemblyReplayPayloadCount++
 	return payload
+}
+
+// Descriptors with no pending consumer are a lookup optimization. Reclaim
+// them before refusing new work, while preserving the complete dependency
+// graph of every pending view and the decoder walk currently being observed.
+func (m *decodingMemo) trimReplayPayloads(incoming *assembledPayload) {
+	// Reuse the terminal's exact admission walk. A view with no lane or
+	// nested admission needs no future matching, regardless of keyword context
+	// or a later textual-kind upgrade. This proof does not spend decode work.
+	if m.reassemblyPlan != nil {
+		// Preserve recipe order, like reassemblyDrain: neighboring decoded
+		// views share one replay instead of evicting it in map iteration order.
+		for id := m.reassemblyInspected; id < len(m.reassemblyPending); id++ {
+			p := m.reassemblyPendingReplay[id]
+			if p == nil {
+				continue
+			}
+			text, ok := p.inspectionText()
+			if !ok {
+				m.markIncomplete()
+				m.reassemblyIncomplete = true
+				return
+			}
+			// Admission depends only on these digest-verified bytes and the
+			// immutable plan. Do not rescan a large live parent at every trim.
+			if p.admitted || m.reassemblyPlan.admitsAssembledView(text) {
+				p.admitted = true
+				continue
+			}
+			delete(m.reassemblyPendingReplay, id)
+			m.reassemblyPending[id] = ""
+			p.pending = -1
+		}
+	}
+	// Before the deferred drain, no projection or keyword replay has consumed
+	// an ID. Compact proven-empty slots so the pending index is bounded too.
+	if m.reassemblyInspected == 0 {
+		pending := m.reassemblyPending[:0]
+		replays := make(map[int]*assembledPayload, len(m.reassemblyPendingReplay))
+		for id, text := range m.reassemblyPending {
+			p := m.reassemblyPendingReplay[id]
+			if p == nil && text == "" {
+				continue
+			}
+			next := len(pending)
+			pending = append(pending, text)
+			if p != nil {
+				p.pending = next
+				replays[next] = p
+			} else {
+				m.reassemblySeen[text] = next
+			}
+		}
+		clear(m.reassemblyPending[len(pending):])
+		m.reassemblyPending = pending
+		m.reassemblyPendingReplay = replays
+	}
+	live := make(map[*assembledPayload]bool)
+	var visit func(*assembledPayload)
+	visit = func(p *assembledPayload) {
+		if p == nil || live[p] {
+			return
+		}
+		live[p] = true
+		visit(p.parent)
+		visit(p.contextParent)
+		if p.decode != nil {
+			visit(p.decode.source)
+		}
+	}
+	for _, p := range m.reassemblyPendingReplay {
+		visit(p)
+	}
+	for _, p := range m.reassemblyReplayParents {
+		visit(p)
+	}
+	if cache := m.reassemblyRecipeCache; cache != nil {
+		for _, p := range cache.text {
+			visit(p)
+		}
+		if cache.active != nil {
+			visit(cache.active.source)
+		}
+	}
+	if incoming != nil {
+		visit(incoming.parent)
+		visit(incoming.contextParent)
+		if incoming.decode != nil {
+			visit(incoming.decode.source)
+		}
+	}
+	for _, bucket := range m.reassemblyReplayPayloads {
+		for _, p := range bucket {
+			// A caller-owned borrow needs its descriptor until observation
+			// ends. Known origin state can also be needed by a later transform,
+			// even when these bytes have no terminal admission of their own.
+			if p.current != "" || p.known {
+				visit(p)
+			}
+		}
+	}
+	for key, bucket := range m.reassemblyReplayPayloads {
+		kept := bucket[:0]
+		for _, p := range bucket {
+			if live[p] {
+				kept = append(kept, p)
+			}
+		}
+		clear(bucket[len(kept):])
+		if len(kept) == 0 {
+			delete(m.reassemblyReplayPayloads, key)
+		} else {
+			m.reassemblyReplayPayloads[key] = kept
+		}
+	}
+	m.reassemblyReplayPayloadCount = 0
+	for p := range live {
+		if p.digestSet {
+			m.reassemblyReplayPayloadCount++
+		}
+	}
 }
 
 func (m *decodingMemo) recipeCache() *assembledRecipeCache {
@@ -249,6 +401,9 @@ func (m *decodingMemo) recipeCache() *assembledRecipeCache {
 }
 
 func (m *decodingMemo) observeDecodedRecipe(key decodingMemoKey, views []decodedResult, retained bool) {
+	if m.reassemblyIncomplete {
+		return
+	}
 	if retained || len(views) == 0 || !m.reassemblyDeferred && m.reassemblyPlan == nil {
 		m.reassemblyObserveDecoded(key.text, views)
 		return
@@ -280,7 +435,7 @@ func (m *decodingMemo) observeDecodedRecipe(key decodingMemoKey, views []decoded
 // normalized cache entries. A full cache switches ownership to a recipe,
 // without changing which bytes the scanner inspects.
 func (m *decodingMemo) rememberGraphTransform(source, text string, operation assembledPayloadOperation) string {
-	if m == nil || source == text || !m.reassemblyDeferred && m.reassemblyPlan == nil {
+	if m == nil || m.reassemblyIncomplete || source == text || !m.reassemblyDeferred && m.reassemblyPlan == nil {
 		return text
 	}
 	parent := m.replayPayload(source)
@@ -296,7 +451,7 @@ func (m *decodingMemo) rememberGraphTransform(source, text string, operation ass
 }
 
 func (m *decodingMemo) replayTransformUnretained(source, text string, operation assembledPayloadOperation) {
-	if m == nil || source == text || !m.reassemblyDeferred && m.reassemblyPlan == nil {
+	if m == nil || m.reassemblyIncomplete || source == text || !m.reassemblyDeferred && m.reassemblyPlan == nil {
 		return
 	}
 	m.addReplayPayload(text, &assembledPayload{parent: m.payloadSource(source), operation: operation})
@@ -345,7 +500,7 @@ func (m *decodingMemo) borrowPending(view int, text string) func() {
 
 func (m *decodingMemo) pendingText(view int) string {
 	if payload := m.reassemblyPendingReplay[view]; payload != nil {
-		text, ok := payload.materialize()
+		text, ok := payload.inspectionText()
 		if !ok {
 			m.markIncomplete()
 			m.reassemblyIncomplete = true
@@ -393,7 +548,7 @@ func (m *decodingMemo) viewParent(text string) (string, bool) {
 		parent = m.reassemblyReplayParents[text]
 	}
 	if parent != nil {
-		value, ok := parent.materialize()
+		value, ok := parent.inspectionText()
 		if !ok {
 			m.markIncomplete()
 			m.reassemblyIncomplete = true

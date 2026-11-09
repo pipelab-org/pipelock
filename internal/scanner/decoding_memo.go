@@ -25,7 +25,9 @@ type decodingMemoKey struct {
 // decodingMemo shares immutable decoded and normalized views within one scan.
 // Findings and scan policy remain request-scoped. The compiled terminal plan
 // separately retains bounded, context-independent proofs of no lane admission.
-// Retention limits stop caching, not decoding or detection.
+// Payload-cache limits stop caching, not decoding. If required replay
+// metadata cannot fit its separate bounded charge, inspection is marked
+// incomplete and the existing directional policy applies.
 //
 // incomplete records that some decode or HTML entity chain in this scan
 // stopped at a depth or work bound with decodable work left. It is a property of the

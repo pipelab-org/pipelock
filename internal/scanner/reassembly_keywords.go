@@ -83,6 +83,11 @@ func (s *assembledScan) keywordMatches(pattern *compiledPattern, lane *assembled
 			return false
 		}
 		lane.keyword.decoded = node
+		// Mapped roots own their coordinates, including a decoded parent's
+		// logical context that is not a substring of the original wire input.
+		if len(node.variants) > 0 {
+			lane.keyword.source = ""
+		}
 	}
 	matched := lane.keyword.matches(pattern.keywords, lane.view, start, end)
 	if !matched && (s.budget.memo.inspectionIncomplete() || lane.keyword.decoded != nil && (lane.keyword.decoded.owner.incomplete || lane.keyword.decoded.owner.budget.incomplete)) {
@@ -167,6 +172,31 @@ func (m *decodingMemo) registerReassemblyKeywordView(source, view string, codec,
 	}
 	if node.parent != nil && source != view {
 		node.reassembly = &assembledKeywordBits{codec, phase}
+	}
+	// Bit-decoded parents establish a new logical context. Keep that context
+	// as an alternate mapped root instead of walking only to its encoded wire
+	// ancestor, where the required keyword may not be visible.
+	seen := make(map[string]bool)
+	for _, parent := range m.keywordSources[source] {
+		for _, logical := range parent.logicalContexts() {
+			if seen[logical] {
+				continue
+			}
+			seen[logical] = true
+			context := newKeywordDecodeSources(logical)
+			context.budget = m.keywordBudgetForScan()
+			if logical != source && context.add(logical, source, "projection") == nil {
+				continue
+			}
+			alternate := context.add(source, view, "reassembly")
+			if alternate == nil {
+				continue
+			}
+			if alternate.parent != nil && source != view {
+				alternate.reassembly = &assembledKeywordBits{codec, phase}
+			}
+			node.variants = append(node.variants, alternate)
+		}
 	}
 	if m.keywordSources == nil {
 		m.keywordSources = make(map[string][]*keywordDecodeSource)

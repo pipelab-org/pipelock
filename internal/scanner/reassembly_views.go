@@ -169,6 +169,17 @@ func (m *decodingMemo) reassemblyObserveView(text string, kind assembledViewKind
 	if m.reassemblyPlan != nil && m.reassemblyPlan.emptyTerminal(assembledEmptyKey{m.reassemblyPlan, text, m.reassemblyPatternLimit, false}, false) {
 		return
 	}
+	// The decoder or transform still owns these bytes. Prove empty admission
+	// here so a later memory-pressure pass need not replay them just to prove
+	// the same absence. Kind and keyword ancestry remain independently live.
+	if m.reassemblyPlan != nil {
+		if payload := m.replayPayload(text); payload != nil && !payload.admitted {
+			if !m.reassemblyPlan.admitsAssembledView(text) {
+				return
+			}
+			payload.admitted = true
+		}
+	}
 	_, fresh := m.reassemblyRemember(text)
 	if !fresh || m.reassemblyDeferred {
 		return

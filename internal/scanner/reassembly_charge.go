@@ -66,9 +66,13 @@ func (b *assembledBudget) chargesFor(text string) *assembledCharges {
 			source := entry.source
 			if entry.replay != nil {
 				var ok bool
-				source, ok = entry.replay.materialize()
+				source, ok = entry.replay.inspectionText()
 				if !ok {
 					b.incomplete = true
+					if b.memo != nil {
+						b.memo.markIncomplete()
+						b.memo.reassemblyIncomplete = true
+					}
 					continue
 				}
 			}
