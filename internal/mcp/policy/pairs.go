@@ -364,6 +364,13 @@ type shellPathWord struct {
 // of the text. Expansions are not resolved: the value is the text as written,
 // which is the name when the word has none.
 func shellPathWords(s string) []shellPathWord {
+	words, _ := readShellPathWords(s)
+	return words
+}
+
+// readShellPathWords also reports whether every quote was closed. Path
+// matching retains words from malformed text; a command proof cannot.
+func readShellPathWords(s string) ([]shellPathWord, bool) {
 	var words []shellPathWord
 	var value strings.Builder
 	start, inWord := 0, false
@@ -418,7 +425,7 @@ func shellPathWords(s string) []shellPathWord {
 		}
 	}
 	closeWord(len(s))
-	return words
+	return words, quote == 0
 }
 
 // commandSegments splits a single shell command string into the parts that

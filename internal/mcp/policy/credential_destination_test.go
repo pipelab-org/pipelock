@@ -145,7 +145,7 @@ func TestCredentialDestinationPublicKeyIdentity(t *testing.T) {
 func TestCredentialDestinationCustomMatching(t *testing.T) {
 	var shipped config.ToolPolicyRule
 	for _, rule := range DefaultToolPolicyRules() {
-		if rule.Name == fileMutationRuleName && rule.ArgSource == "" && rule.ArgKey == fileTargetKeyPattern {
+		if rule.Name == fileMutationRuleName && rule.ArgSource == "" && rule.ArgKey == fileWriteDestinationKeyPattern {
 			shipped = rule
 			break
 		}
@@ -282,7 +282,7 @@ func TestCredentialDestinationSpellings(t *testing.T) {
 		"/home/user/.kube/./config", "/home/user/.kube/../.kube/config",
 		`C:\Users\user\.kube\config`, "/home/user/.ssh/authorized_keys",
 	} {
-		for _, key := range []string{"path", "file_path", "filePath", "file", "filename", "target_file"} {
+		for _, key := range []string{"path", "file_path", "filePath", "file", "filename", "target_file", "target", "target_path", "destination", "destination_path", "dest", "new_path", "location", "relative_path", "output"} {
 			for _, tool := range []string{"write_file", "mcp__filesystem__write_file", "filesystem.write_file", "filesystem:write_file"} {
 				v := toolCallVerdict(t, pc, tool, map[string]any{key: target, "content": "ordinary text"})
 				if !v.Matched || v.Action != config.ActionBlock {
