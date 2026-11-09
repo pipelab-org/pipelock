@@ -355,3 +355,30 @@ func TestSharedLoweredCopiesAndBounds(t *testing.T) {
 		t.Fatal("cache entry limit changed computation")
 	}
 }
+
+func TestReassemblyReplayRegistrationKeepsRecordedKind(t *testing.T) {
+	memo := &decodingMemo{reassemblyPlan: reassemblyMarkerPlan(t), reassemblyDeferred: true}
+	defer memo.releaseProjection()
+	source := "ordinary service status text with a parent"
+	view := "ordinary service status text"
+	memo.reassemblySetKind(view, assembledTextView)
+	memo.replayTransformUnretained(source, view, assembledPayloadImageText)
+	if memo.replayPayload(view) == nil {
+		t.Fatal("replay descriptor not registered")
+	}
+	memo.reassemblySetKind(view, assembledDecoderView)
+	if kind, known := memo.viewKind(view); !known || kind != assembledTextView {
+		t.Fatalf("recorded textual kind lost on registration: kind=%d known=%v", kind, known)
+	}
+}
+
+func TestReassemblyReplayRegistrationKeepsTextRoot(t *testing.T) {
+	memo := &decodingMemo{reassemblyPlan: reassemblyMarkerPlan(t), reassemblyDeferred: true}
+	defer memo.releaseProjection()
+	view := "ordinary service status text"
+	memo.reassemblyTextRoots = map[string]bool{view: true}
+	memo.replayTransformUnretained("ordinary service status text with a parent", view, assembledPayloadImageText)
+	if memo.replayPayload(view) == nil || !memo.isTextRoot(view) {
+		t.Fatal("text root lost on registration")
+	}
+}

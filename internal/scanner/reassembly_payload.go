@@ -263,6 +263,15 @@ func (m *decodingMemo) addReplayPayload(text string, payload *assembledPayload) 
 	if m.reassemblyReplayPayloads == nil {
 		m.reassemblyReplayPayloads = make(map[assembledPayloadKey][]*assembledPayload)
 	}
+	// Lookups switch to the descriptor once it exists. Carry over ancestry
+	// already recorded for these bytes so a later decoder label cannot
+	// replace an established textual kind or text root.
+	if kind, known := m.reassemblyViewKinds[text]; known && (!payload.known || kind < payload.kind) {
+		payload.kind, payload.known = kind, true
+	}
+	if m.reassemblyTextRoots[text] {
+		payload.textRoot = true
+	}
 	payload.pending = -1
 	payload.digest = sha256.Sum256([]byte(text))
 	payload.digestSet = true
