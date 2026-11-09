@@ -222,6 +222,8 @@ func (m *decodingMemo) reset() {
 	clear(m.decodedMatches)
 	m.retainedBytes = 0
 	m.decodedMatchesBytes = 0
+	m.reassemblyRecipeCache.release()
+	m.reassemblyRecipeCache = nil
 }
 
 func sharedDecodesFrom(ctx context.Context) *sharedDecodes {
