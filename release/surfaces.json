@@ -1153,10 +1153,10 @@
     {
       "id": "docs-guides-receipt-verification.md-3",
       "path": "docs/guides/receipt-verification.md",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?0\\.6\\.5)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "0.6.5",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?0\\.6\\.15)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "0.6.15",
       "count": 2,
-      "reason": "Published verifier compatibility baseline, retained while the next source version is pending publication; see sdk/verifiers/PUBLISHING.md and the historical bindings in scripts/release-verifier-install-gate.sh.",
+      "reason": "Published group-capable verifier release (verifier-v0.6.15), pinned in release/verifier-installers.json; see sdk/verifiers/PUBLISHING.md.",
       "format": "version"
     },
     {
