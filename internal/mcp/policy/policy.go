@@ -269,7 +269,7 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 // paths are the move/copy and multi-file reader carriers exercised by policy.
 // location, relative_path and output follow TestPolicy_FileArgumentPathScope's
 // alternate pathname contract, including filenames containing whitespace.
-var fileDestinationArgumentKey = regexp.MustCompile(fileTargetKeyPattern + "|" + fileDestinationKeyPattern + `|(?i)^(location|relative_path|output)$`)
+var fileDestinationArgumentKey = regexp.MustCompile(fileWriteDestinationKeyPattern)
 
 var filePathArgumentKey = regexp.MustCompile(fileDestinationArgumentKey.String() + `|(?i)^(source|source_?path|paths)$`)
 
@@ -495,6 +495,8 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 	redirectProfile := ""
 	var resolutionPolicy config.DeferResolutionPolicy
 	var destinationViews []argView
+	var ddCommentViews []argView
+	ddCommentChecked := false
 	destinationArgs, destinationShape, destinationProved := fileWriteDestinationArgs(toolName, proofArgs, proofShape)
 	if destinationProved && !checkInput && !slices.Equal(argStrings, extract.AllStringsFromJSON(proofShape)) {
 		// A key/value pass can narrow only the strings this JSON describes.
@@ -524,6 +526,17 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 				destinationViews = buildArgViews(expanded, false, nil, false)
 			}
 			ruleViews = destinationViews
+		}
+		if !pathValues && ddCommentRule(rule) {
+			if !ddCommentChecked {
+				ddCommentChecked = true
+				if checkInput || slices.Equal(argStrings, extract.AllStringsFromJSON(proofShape)) {
+					ddCommentViews = ddTrailingCommentViews(proofArgs, proofShape)
+				}
+			}
+			if ddCommentViews != nil {
+				ruleViews = ddCommentViews
+			}
 		}
 		patchInspection := patchTargetsOrdinary
 		patchFallbackArgs := argStrings
@@ -1865,9 +1878,16 @@ const (
 	sensitiveFilePathPattern = `\.ssh[\\/]?` + sshKeyNamePattern + `|\.aws[\\/]?credentials|\.env\b|\.netrc|/etc/shadow`
 	// Credential control files can affect later authentication or command
 	// execution. Dotenv files remain writable for ordinary application setup.
-	credentialWritePathPattern = `(?:^|[\\/])\.ssh[\\/]` + sshKeyNamePattern + `|(?:^|[\\/])(?:\.ssh[\\/](?:config|rc)|\.aws[\\/](?:credentials|config)|\.netrc|\.kube[\\/]config|\.docker[\\/]config\.json|etc[\\/]shadow)(?:$|[\\/:])`
-	fileTargetKeyPattern       = `(?i)^(path|file_?path|file|filename|target_?file)$`
-	fileDestinationKeyPattern  = `(?i)^(destination|destination_?path|dest|new_?path|target|target_?path)$`
+	credentialWritePathPattern     = `(?:^|[\\/])\.ssh[\\/]` + sshKeyNamePattern + `|(?:^|[\\/])(?:\.ssh[\\/](?:config|rc)|\.aws[\\/](?:credentials|config)|\.netrc|\.kube[\\/]config|\.docker[\\/]config\.json|etc[\\/]shadow)(?:$|[\\/:])`
+	fileTargetKeyPattern           = `(?i)^(path|file_?path|file|filename|target_?file)$`
+	fileDestinationKeyPattern      = `(?i)^(destination|destination_?path|dest|new_?path|target|target_?path)$`
+	fileWriteDestinationKeyPattern = fileTargetKeyPattern + "|" + fileDestinationKeyPattern + `|(?i)^(location|relative_path|output)$`
+	// GNU dd uses of=FILE as one operand. Require its word boundary and keep
+	// the pathname inside that operand, including quoted blanks.
+	// All output operands are checked conservatively, even if a later of=
+	// names a different file. See the coreutils manual cited by the rule.
+	ddOutputOperandPattern    = `\bdd(?:\s+[^\s;|&#]+)*\s+of=`
+	ddOutputPathPrefixPattern = `(?:[^\s;|&\x22\x27]*|\x27[^\x27]*|\x22[^\x22]*)`
 )
 
 func DefaultToolPolicyRules() []config.ToolPolicyRule {
@@ -1897,7 +1917,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			Name:        "Credential File Write",
 			ToolPattern: `(?i)^(` + fileWriteToolPattern + `)$`,
 			ArgPattern:  `(?i)(` + credentialWritePathPattern + `)`,
-			ArgKey:      fileTargetKeyPattern,
+			ArgKey:      fileWriteDestinationKeyPattern,
 			Action:      config.ActionBlock,
 		},
 		{
@@ -1911,7 +1931,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			Name:        "Credential File Write",
 			ToolPattern: `(?i)^(` + filePatchToolPattern + `)$`,
 			ArgPattern:  `(?i)(` + credentialWritePathPattern + `)`,
-			ArgKey:      fileTargetKeyPattern,
+			ArgKey:      fileWriteDestinationKeyPattern,
 			ArgSource:   config.ToolPolicyArgSourcePatchTargets,
 			Action:      config.ActionBlock,
 		},
@@ -2021,7 +2041,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			// https://www.gnu.org/software/coreutils/manual/html_node/dd-invocation.html
 			Name:        "Persistence Path Write via Command",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)(>{1,2}\s*[^;|&]*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\b(tee|sed\s+-i)\s+[^;|&]*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\b(cp|mv|install|ln)\b\s+(\S+\s+)+\S*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\bdd\b[^;|&]*\bof=\s*[^;|&]*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/))`,
+			ArgPattern:  `(?i)(>{1,2}\s*[^;|&]*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\b(tee|sed\s+-i)\s+[^;|&]*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\b(cp|mv|install|ln)\b\s+(\S+\s+)+\S*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|` + ddOutputOperandPattern + ddOutputPathPrefixPattern + `(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/))`,
 			Action:      config.ActionBlock,
 		},
 		{
@@ -2053,7 +2073,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			// profile named by another.
 			Name:        "Shell Profile Write via Command",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)(>{1,2}[^;|&]*(?:^|[/\s])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(tee|sed\s+-i)[^;|&]*(?:^|[/\s])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(cp|mv|install|ln)\b\s+(\S+\s+)+(?:\S*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\s*$|\balias\s+\w+=|>{1,2}[^;|&]*/etc/profile\b|\b(tee|sed\s+-i)[^;|&]*/etc/profile\b|\b(cp|mv|install|ln)\b\s+(\S+\s+)+\S*/etc/profile\s*$|\b(?:ln|link)\b(?:\s+[^\s;|&]+)+\s+(?:[^\s;|&]*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(?:ln|link)\b(?:\s+[^\s;|&]+)*\s+(?:[^\s;|&]*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b[^\s;|&]*(?:\s+[^\s;|&]+)+|\bcp(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b(?:\s+[^\s;|&]+)*\s+(?:[^\s;|&]*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\bcp(?:\s+[^\s;|&]+)+?\s+(?:[^\s;|&]*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b[^\s;|&]*(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b|\b(?:ln|link)\b(?:\s+[^\s;|&]+)+\s+[^\s;|&]*/etc/profile\b|\b(?:ln|link)\b(?:\s+[^\s;|&]+)*\s+[^\s;|&]*/etc/profile\b[^\s;|&]*(?:\s+[^\s;|&]+)+|\bcp(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b(?:\s+[^\s;|&]+)*\s+[^\s;|&]*/etc/profile\b|\bcp(?:\s+[^\s;|&]+)+?\s+[^\s;|&]*/etc/profile\b[^\s;|&]*(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b|\bdd\b[^;|&]*\bof=\s*[^;|&]*((?:^|[\\/])\.(?:bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b))`,
+			ArgPattern:  `(?i)(>{1,2}[^;|&]*(?:^|[/\s])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(tee|sed\s+-i)[^;|&]*(?:^|[/\s])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(cp|mv|install|ln)\b\s+(\S+\s+)+(?:\S*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\s*$|\balias\s+\w+=|>{1,2}[^;|&]*/etc/profile\b|\b(tee|sed\s+-i)[^;|&]*/etc/profile\b|\b(cp|mv|install|ln)\b\s+(\S+\s+)+\S*/etc/profile\s*$|\b(?:ln|link)\b(?:\s+[^\s;|&]+)+\s+(?:[^\s;|&]*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(?:ln|link)\b(?:\s+[^\s;|&]+)*\s+(?:[^\s;|&]*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b[^\s;|&]*(?:\s+[^\s;|&]+)+|\bcp(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b(?:\s+[^\s;|&]+)*\s+(?:[^\s;|&]*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\bcp(?:\s+[^\s;|&]+)+?\s+(?:[^\s;|&]*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b[^\s;|&]*(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b|\b(?:ln|link)\b(?:\s+[^\s;|&]+)+\s+[^\s;|&]*/etc/profile\b|\b(?:ln|link)\b(?:\s+[^\s;|&]+)*\s+[^\s;|&]*/etc/profile\b[^\s;|&]*(?:\s+[^\s;|&]+)+|\bcp(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b(?:\s+[^\s;|&]+)*\s+[^\s;|&]*/etc/profile\b|\bcp(?:\s+[^\s;|&]+)+?\s+[^\s;|&]*/etc/profile\b[^\s;|&]*(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b|` + ddOutputOperandPattern + `((?:` + ddOutputPathPrefixPattern + `/|[\x22\x27])?\.(?:bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|` + ddOutputPathPrefixPattern + `/etc/profile\b))`,
 			Action:      config.ActionBlock,
 		},
 		{
@@ -2110,7 +2130,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 		{
 			Name:        "Audit Log Tampering",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|` + fileWriteToolPattern + `)$`,
-			ArgPattern:  `(?i)(\b(rm|truncate|shred)\b[^;|&]*(` + auditLogShellPathPattern + `|\.(log|audit|jsonl)\b)|>{1,2}\s*[^;|&]*(` + auditLogShellPathPattern + `|\.(log|audit|jsonl)\b)|\b(?:ln|link)\b(?:\s+[^\s;|&]+)+\s+(?:[^\s;|&]*/)?(?:var/log|var/lib/pipelock)\b|\b(?:ln|link)\b(?:\s+[^\s;|&]+)*\s+(?:[^\s;|&]*/)?(?:var/log|var/lib/pipelock)\b[^\s;|&]*(?:\s+[^\s;|&]+)+|\bcp(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b(?:\s+[^\s;|&]+)*\s+(?:[^\s;|&]*/)?(?:var/log|var/lib/pipelock)\b|\bcp(?:\s+[^\s;|&]+)+?\s+(?:[^\s;|&]*/)?(?:var/log|var/lib/pipelock)\b[^\s;|&]*(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b|\bhistory\s+-c\b|\bunset\s+HISTFILE\b|\bexport\s+HISTFILE=/dev/null\b)`,
+			ArgPattern:  `(?i)(\b(rm|truncate|shred)\b[^;|&]*(` + auditLogShellPathPattern + `|\.(log|audit|jsonl)\b)|>{1,2}\s*[^;|&]*(` + auditLogShellPathPattern + `|\.(log|audit|jsonl)\b)|\b(?:ln|link)\b(?:\s+[^\s;|&]+)+\s+(?:[^\s;|&]*/)?(?:var/log|var/lib/pipelock)\b|\b(?:ln|link)\b(?:\s+[^\s;|&]+)*\s+(?:[^\s;|&]*/)?(?:var/log|var/lib/pipelock)\b[^\s;|&]*(?:\s+[^\s;|&]+)+|\bcp(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b(?:\s+[^\s;|&]+)*\s+(?:[^\s;|&]*/)?(?:var/log|var/lib/pipelock)\b|\bcp(?:\s+[^\s;|&]+)+?\s+(?:[^\s;|&]*/)?(?:var/log|var/lib/pipelock)\b[^\s;|&]*(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b|` + ddOutputOperandPattern + ddOutputPathPrefixPattern + `(` + auditLogShellPathPattern + `|\.(log|audit|jsonl)\b)|\bhistory\s+-c\b|\bunset\s+HISTFILE\b|\bexport\s+HISTFILE=/dev/null\b)`,
 		},
 	}
 	return withBuiltinToolNameAliases(rules)

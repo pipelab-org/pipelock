@@ -49,6 +49,45 @@ func TestDecide_GitQuotedParentheses(t *testing.T) {
 	}
 }
 
+func TestDecide_WriteDestinations(t *testing.T) {
+	cfg, sc, _ := testSetup(t)
+	pc := policy.New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: policy.DefaultToolPolicyRules()})
+	for _, tc := range []struct {
+		tool, input string
+		want        Outcome
+	}{
+		{"bash", `{"command":"dd if=payload of=.bashrc"}`, Deny},
+		{"bash", `{"command":"dd of=/tmp/safe of=/etc/cron.d/job"}`, Deny},
+		{"bash", `{"command":"dd if=/dev/zero of=/var/log/auth.log"}`, Deny},
+		{"bash", `{"command":"dd of=/tmp/backup if=/etc/cron.d/job"}`, Allow},
+		{"bash", `{"command":"dd of=/tmp/disk.img # notes /etc/cron.d/job"}`, Allow},
+		{"bash", `{"command":"dd of=/tmp/disk.img # of=/etc/cron.d/job"}`, Allow},
+		{"write_file", `{"target":"/etc/shadow","content":"notes"}`, Deny},
+		{"write_file", `{"destination":".ssh/id_rsa","content":"notes"}`, Deny},
+		{"write_file", `{"dest":".ssh/id_rsa","content":"notes"}`, Deny},
+		{"write_file", `{"path":"/project/notes.md","content":"/etc/shadow"}`, Allow},
+	} {
+		t.Run(tc.tool+tc.input, func(t *testing.T) {
+			decisions := map[string]Decision{
+				"mcp":      decideMCP(cfg, sc, pc, &MCPPayload{ToolName: tc.tool, ToolInput: tc.input}),
+				"tool use": decideToolUse(cfg, sc, pc, &ToolUsePayload{ToolName: tc.tool, ToolInput: tc.input}),
+			}
+			if tc.tool == "bash" {
+				var args struct{ Command string }
+				if err := json.Unmarshal([]byte(tc.input), &args); err != nil {
+					t.Fatal(err)
+				}
+				decisions["shell hook"] = decideShell(cfg, sc, pc, &ShellPayload{Command: args.Command})
+			}
+			for surface, got := range decisions {
+				if got.Outcome != tc.want {
+					t.Errorf("%s: outcome=%s, want %s (evidence %+v)", surface, got.Outcome, tc.want, got.Evidence)
+				}
+			}
+		})
+	}
+}
+
 // TestDecide_ToolPolicyMatchesArgumentValues checks that a command reaches the
 // tool policy as the same text whether it arrives as a shell command or as
 // the "command" value of MCP or tool-use input, so the object key does not
