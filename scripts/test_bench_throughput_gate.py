@@ -4,11 +4,15 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bench_throughput_gate as gate  # noqa: E402
@@ -133,6 +137,78 @@ class CompareTest(unittest.TestCase):
         count, sample = bench_run_single(command)
         self.assertEqual(count, 5)
         self.assertIn("-count=1", sample)
+
+
+class FailureReportingTest(unittest.TestCase):
+    def test_failing_invocation_leads_the_detail(self):
+        # Six rounds of successful candidate output sort after the failing
+        # baseline sample; the failure must survive the size cap.
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            records = []
+            for number in range(1, 7):
+                for side in ("baseline", "candidate"):
+                    (output / f"{side}-{number}.txt").write_text("PASS\n" + "x" * 2000)
+                    (output / f"{side}-{number}.stderr").write_text("")
+                    records.append({"round": number, "side": side, "stdout": f"{side}-{number}.txt",
+                                    "stderr": f"{side}-{number}.stderr"})
+            (output / "baseline-6.txt").write_text("--- FAIL: PROBE_SHAPE_FATAL\n")
+            records.append(records.pop(-2))  # baseline-6 ran last and failed
+            (output / "execution.jsonl").write_text("\n".join(json.dumps(r) for r in records) + "\n")
+            detail = gate.failure_detail(output)
+        self.assertTrue(detail.startswith("baseline-6.txt:"), detail[:80])
+        self.assertIn("PROBE_SHAPE_FATAL", detail)
+        self.assertLessEqual(len(detail), 4000)
+
+    def run_main(self, *argv):
+        # A capture that always measures a 100 percent slowdown: only the
+        # argument checks can keep it from deciding.
+        def doubled(baseline, candidate, output, command):
+            base = HEADER + "".join(rows(f"{gate.BENCH_NAME}/{s}", [1000.0] * 5) for s in gate.EXPECTED_SHAPES)
+            head = HEADER + "".join(rows(f"{gate.BENCH_NAME}/{s}", [2000.0] * 5) for s in gate.EXPECTED_SHAPES)
+            (output / "baseline.txt").write_text(base)
+            (output / "current.txt").write_text(head)
+        with mock.patch.object(sys, "argv", ["bench_throughput_gate.py", *argv]), \
+             mock.patch.object(gate, "prepare_baseline"), \
+             mock.patch.object(gate.bench_run, "capture_pair", side_effect=doubled) as capture, \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            try:
+                status = gate.main()
+            except SystemExit as exit_:
+                status = exit_.code
+        return status, capture
+
+    def test_doubled_capture_fails_with_default_thresholds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status, capture = self.run_main("--baseline", directory, "--candidate", directory,
+                                            "--output", str(Path(directory) / "out"))
+        self.assertEqual(status, 1)
+        capture.assert_called_once()
+
+    def test_invalid_thresholds_are_undecided(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for bad in (("--fail-pct", "nan"), ("--warn-pct", "nan"), ("--fail-pct", "inf"),
+                        ("--warn-pct", "30", "--fail-pct", "20"), ("--warn-pct", "-1")):
+                with self.subTest(bad=bad):
+                    status, capture = self.run_main("--baseline", directory, "--candidate", directory,
+                                                    "--output", str(Path(directory) / "out"), *bad)
+                    self.assertEqual(status, 2)
+                    capture.assert_not_called()
+
+    def test_unusable_output_is_undecided_not_slower(self):
+        with tempfile.TemporaryDirectory() as directory:
+            blocker = Path(directory) / "file"
+            blocker.write_text("not a directory")
+            status, capture = self.run_main("--baseline", directory, "--candidate", directory, "--output", str(blocker))
+        self.assertEqual(status, 2)
+        capture.assert_not_called()
+
+    def test_workflow_measures_unless_classifier_says_no(self):
+        import yaml
+        workflow = yaml.safe_load((Path(__file__).resolve().parent.parent / ".github/workflows/ci.yaml").read_text())
+        condition = workflow["jobs"]["benchmark-throughput"]["if"]
+        self.assertIn("needs.changed-files.outputs.benchmark_throughput != 'false'", condition)
+        self.assertNotIn("benchmark_throughput == 'true'", condition)
 
 
 class PrepareBaselineTest(unittest.TestCase):

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 import re
 import shutil
@@ -139,16 +140,27 @@ def compare(base_text: str, head_text: str, fail_pct: float, warn_pct: float, ro
 
 
 def failure_detail(output: Path, limit: int = 4000) -> str:
-    """The tail of every non-empty sample output.
+    """The tail of every non-empty sample output, the last invocation first.
 
     A compiler error goes to stderr; a benchmark's own b.Fatal goes to stdout.
+    bench_run stops at the failing invocation, which execution.jsonl records
+    last, so it leads and the size cap trims earlier, successful samples.
     """
+    files = sorted([*output.glob("*-[0-9]*.stderr"), *output.glob("*-[0-9]*.txt")])
+    last: list[Path] = []
+    try:
+        lines = (output / "execution.jsonl").read_text().splitlines()
+        if lines:
+            record = json.loads(lines[-1])
+            last = [output / record[key] for key in ("stderr", "stdout") if isinstance(record.get(key), str)]
+    except (OSError, ValueError):
+        pass
     parts = []
-    for path in sorted([*output.glob("*-[0-9]*.stderr"), *output.glob("*-[0-9]*.txt")]):
+    for path in [*[p for p in last if p in files], *[p for p in files if p not in last]]:
         text = path.read_text(errors="replace").strip()
         if text:
             parts.append(f"{path.name}:\n{text[-limit:]}")
-    return "\n\n".join(parts)[-limit:]
+    return "\n\n".join(parts)[:limit]
 
 
 def fenced(text: str) -> str:
@@ -183,20 +195,26 @@ def main() -> int:
     parser.add_argument("--fail-pct", type=float, default=DEFAULT_FAIL_PCT)
     parser.add_argument("--warn-pct", type=float, default=DEFAULT_WARN_PCT)
     args = parser.parse_args()
+    # argparse exits 2, the undecided status, on these errors.
     if args.rounds < 3:
-        parser.error("--rounds must be at least 3 so a median exists")
-    args.output.mkdir(mode=0o750, parents=True, exist_ok=True)
+        parser.error("--rounds must be at least 3 so one slow round cannot decide")
+    if not (math.isfinite(args.fail_pct) and math.isfinite(args.warn_pct) and 0 <= args.warn_pct <= args.fail_pct):
+        parser.error("--warn-pct and --fail-pct must be finite with 0 <= warn <= fail")
     status = 0
     try:
+        args.output.mkdir(mode=0o750, parents=True, exist_ok=True)
         prepare_baseline(args.baseline, args.candidate)
         bench_run.capture_pair(args.baseline, args.candidate, args.output, benchmark_command(args.rounds, args.benchtime))
         base_text = (args.output / "baseline.txt").read_text()
         head_text = (args.output / "current.txt").read_text()
         rows, failed = compare(base_text, head_text, args.fail_pct, args.warn_pct, args.rounds)
     except (bench_run.RunError, GateError, subprocess.CalledProcessError, OSError) as exc:
-        detail = failure_detail(args.output)
-        (args.output / "throughput-summary.md").write_text(
-            f"## Text DLP throughput gate\n\nNot decided: {exc}\n" + (f"\n{fenced(detail)}\n" if detail else ""))
+        detail = failure_detail(args.output) if args.output.is_dir() else ""
+        try:
+            (args.output / "throughput-summary.md").write_text(
+                f"## Text DLP throughput gate\n\nNot decided: {exc}\n" + (f"\n{fenced(detail)}\n" if detail else ""))
+        except OSError as write_error:
+            print(f"throughput-gate: could not write the summary: {write_error}", file=sys.stderr)
         print(f"throughput-gate: {exc}", file=sys.stderr)
         if detail:
             print(detail, file=sys.stderr)
