@@ -14,6 +14,41 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 )
 
+func TestDecide_GitQuotedParentheses(t *testing.T) {
+	cfg, sc, _ := testSetup(t)
+	pc := policy.New(config.MCPToolPolicy{Enabled: true, Action: config.ActionWarn, Rules: policy.DefaultToolPolicyRules()})
+	for _, tc := range []struct {
+		command string
+		want    Outcome
+	}{
+		{`git ls-files '--for=%(path)'`, Allow},
+		{`git log --oneline '--for=%(x)'`, Allow},
+		{`git -c alias.a=push ls-files '--for=%(path)'`, Allow},
+		{`git -c alias.a=rm ls-files '--for=%(path)'`, Allow},
+		{`git -c alias.a=push -c alias.b=rm ls-files '--for=%(path)'`, Allow},
+		{`sudo -u reset git -c alias.a=push ls-files '--for=%(path)'`, Allow},
+		{`sudo git -c alias.a=push ls-files '--for=%(path)'`, Allow},
+		{`git -c alias.a=push -c alias.l=ls-files l '--for=%(path)'`, Deny},
+		{`(git ls-files '--for=%(path)'; git push --force)`, Deny},
+		{`git ls-files '--for=%(path)' "$(git push --force)"`, Deny},
+		{`git ls-files '--for=x' ')' push --force`, Deny},
+		{`git ls-files '--for=%(path)`, Deny},
+	} {
+		t.Run(tc.command, func(t *testing.T) {
+			input := `{"command":` + strconv.Quote(tc.command) + `}`
+			for surface, got := range map[string]Decision{
+				"shell hook": decideShell(cfg, sc, pc, &ShellPayload{Command: tc.command}),
+				"mcp":        decideMCP(cfg, sc, pc, &MCPPayload{ToolName: "bash", ToolInput: input}),
+				"tool use":   decideToolUse(cfg, sc, pc, &ToolUsePayload{ToolName: "bash", ToolInput: input}),
+			} {
+				if got.Outcome != tc.want {
+					t.Errorf("%s: outcome=%s, want %s (evidence %+v)", surface, got.Outcome, tc.want, got.Evidence)
+				}
+			}
+		})
+	}
+}
+
 // TestDecide_ToolPolicyMatchesArgumentValues checks that a command reaches the
 // tool policy as the same text whether it arrives as a shell command or as
 // the "command" value of MCP or tool-use input, so the object key does not
