@@ -27,7 +27,7 @@ func (s *assembledScan) rememberKeyword(lane *assembledLane, codec, phase, id, b
 	if m == nil || m.reassemblyPlan == nil {
 		return
 	}
-	view, ok := m.reassemblySeen[s.text]
+	view, ok := m.findView(s.text)
 	if !ok {
 		return
 	} // Nested terminal layers have no projection reuse entry.
@@ -68,7 +68,7 @@ func (m *decodingMemo) replayKeywords(view, previous, codec int) {
 	if len(candidates) == 0 || m.assembledSameSource(view, previous) {
 		return
 	}
-	scan := assembledScan{p: m.reassemblyPlan, text: m.reassemblyPending[view], budget: &m.reassemblyBudget}
+	scan := assembledScan{p: m.reassemblyPlan, text: m.pendingText(view), budget: &m.reassemblyBudget}
 	// A source owns its mapping. Normalization maps of the immutable decoded
 	// lane can still be shared, as can exact source-normalization results.
 	lanes := make(map[*assembledLane]*assembledLane)
@@ -129,7 +129,7 @@ func (m *decodingMemo) replayKeywords(view, previous, codec int) {
 // A deletion-only projection derived from an already inspected source has
 // the same source context. It must not shorten that source's keyword window.
 func (m *decodingMemo) assembledSameSource(view, previous int) bool {
-	text, prior := m.reassemblyPending[view], m.reassemblyPending[previous]
+	text, prior := m.pendingText(view), m.pendingText(previous)
 	work := keywordDecodeSources{budget: m.keywordBudgetForScan()}
 	charge := func() bool {
 		if work.charge(keywordSpanBytes) {
@@ -139,11 +139,11 @@ func (m *decodingMemo) assembledSameSource(view, previous int) bool {
 		m.markIncomplete()
 		return false
 	}
-	for current, steps := text, 0; steps <= len(m.reassemblyParents); steps++ {
+	for current, steps := text, 0; steps <= m.parentLimit(); steps++ {
 		if !charge() {
 			return true
 		}
-		parent, ok := m.reassemblyParents[current]
+		parent, ok := m.viewParent(current)
 		if !ok {
 			break
 		}

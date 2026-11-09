@@ -43,3 +43,25 @@ func TestForDLPPrintableASCIIReferenceParity(t *testing.T) {
 		t.Fatalf("parity corpus lacks both paths: changed=%d unchanged=%d", changed, unchanged)
 	}
 }
+
+func TestForDLPASCIIControlsReferenceParity(t *testing.T) {
+	// Every ordered ASCII pair covers control deletion at either position,
+	// including adjacent controls and all printable neighbours.
+	for a := range 128 {
+		for b := range 128 {
+			input := "prefix" + string([]byte{byte(a), byte(b)}) + "suffix"
+			if got, want := ForDLP(input), forDLPFull(input); got != want {
+				t.Fatalf("ASCII pair %x: got %x, want %x", input, got, want)
+			}
+		}
+	}
+	for _, input := range []string{
+		"\x00\x1f\x7f", "a\n", "\tword\r\n",
+		"e\x00\u0301", "\x00\u1100\u1161", "\x7f\u0401",
+		"a\n\xffb", "\t\u00a0b", "a\u0301\x00b",
+	} {
+		if got, want := ForDLP(input), forDLPFull(input); got != want {
+			t.Fatalf("control fallback %x: got %x, want %x", input, got, want)
+		}
+	}
+}

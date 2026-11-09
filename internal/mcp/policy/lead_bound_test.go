@@ -157,7 +157,7 @@ func TestShippedPatterns_WithinLeadBound(t *testing.T) {
 		"Protected Path Metadata Change":  nil,
 		"Protected Path Link Creation":    nil,
 		"Protected Path Copy":             nil,
-		"Shell Profile Write via Command": {">", "alias", "cp", "install", "link", "ln", "mv", "sed", "tee"},
+		"Shell Profile Write via Command": {">", "alias", "cp", "dd", "install", "link", "ln", "mv", "sed", "tee"},
 	}
 	for _, r := range DefaultToolPolicyRules() {
 		w, ok := want[r.Name]

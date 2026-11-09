@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestDLPPreFilterCompiledPrefixParity(t *testing.T) {
@@ -55,6 +56,12 @@ func TestDLPPreFilterCompiledPrefixParity(t *testing.T) {
 					}
 				}
 				want = unique
+			}
+			// Text shorter than every pattern's shortest match cannot match any
+			// of them (see TestDecodedLengthAdmission), so length admission
+			// declines it before the prefix search.
+			if pf.minimumRunes > 0 && utf8.RuneCountInString(input) < pf.minimumRunes {
+				want = nil
 			}
 			if got := pf.patternsToCheck(input); !reflect.DeepEqual(got, want) {
 				t.Fatalf("candidate order differs for %q: got %v, want %v", input, got, want)

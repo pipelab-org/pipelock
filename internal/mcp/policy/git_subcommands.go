@@ -158,13 +158,17 @@ func (p gitProof) grants(judged []string) bool {
 type gitWord struct {
 	text               string
 	literal, ambiguous bool
+	// Quoted parentheses are operand text, but quoting still withholds
+	// proof of an executable or subcommand's original spelling.
+	quotedParens bool
 }
 
 // proveGitBuiltins reads args for gitProof. carriers is the shape of args
 // when the request recorded it (see jsonArgCarriers), else nil.
 //
-// Only a bounded literal prefix is read, never shell syntax. In a scalar,
-// words split on space and tab, and every word from the executable to the
+// Only a bounded literal prefix is proved; expansions are never evaluated.
+// In a scalar, raw words split on space and tab (gitScalarWords preserves
+// quoted parentheses), and every word from the executable to the
 // subcommand must be plain (see plainShellWord): quoting, escapes, expansion,
 // substitution, globbing, line continuation and non-ASCII text leave the
 // command unproved. Array elements are literal arguments; they are never
@@ -189,9 +193,12 @@ func proveGitBuiltins(args []string, carriers []argCarrier, gitTool bool) gitPro
 	if carriers == nil {
 		var words []gitWord
 		for _, arg := range args {
-			fields := splitPlainFields(arg)
+			fields, complete := gitScalarWords(arg, gitTool)
+			proof.unproved = proof.unproved || !complete
+			ambiguous := len(args) > 1 && len(splitPlainFields(arg)) > 1
 			for _, field := range fields {
-				words = append(words, gitWord{text: field, ambiguous: len(args) > 1 && len(fields) > 1})
+				field.ambiguous = ambiguous
+				words = append(words, field)
 			}
 		}
 		proof.read(words, gitTool, gitTool)
@@ -208,9 +215,9 @@ func proveGitBuiltins(args []string, carriers []argCarrier, gitTool bool) gitPro
 				words = append(words, gitWord{text: value, literal: true})
 				continue
 			}
-			for _, field := range splitPlainFields(value) {
-				words = append(words, gitWord{text: field})
-			}
+			fields, complete := gitScalarWords(value, gitTool)
+			proof.unproved = proof.unproved || !complete
+			words = append(words, fields...)
 		}
 		proof.read(words, gitTool, gitTool)
 	}
@@ -221,6 +228,35 @@ func proveGitBuiltins(args []string, carriers []argCarrier, gitTool bool) gitPro
 // space and tab.
 func splitPlainFields(s string) []string {
 	return strings.FieldsFunc(s, func(r rune) bool { return r == ' ' || r == '\t' })
+}
+
+// gitScalarWords keeps the original spelling for prefix proof. The shared
+// bash(1) reader identifies literal operands, whose parentheses cannot start
+// commands. Real parentheses, expansions and escapes retain the conservative
+// reading. Unclosed quotes cannot grant proof. Dedicated Git tool scalars
+// have no shell grammar in the first place.
+func gitScalarWords(source string, noShell bool) ([]gitWord, bool) {
+	var out []gitWord
+	if !noShell {
+		if words, ok := shellProofWords(source); ok && !slices.ContainsFunc(words, func(w shellProofWord) bool {
+			return !w.literal || w.operator && strings.ContainsAny(w.value, "()<>{}")
+		}) {
+			for _, w := range words {
+				for _, field := range splitPlainFields(source[w.start:w.end]) {
+					out = append(out, gitWord{text: field, quotedParens: w.literal && !w.operator})
+				}
+			}
+			return out, true
+		}
+	}
+	for _, field := range splitPlainFields(source) {
+		out = append(out, gitWord{text: field})
+	}
+	if noShell {
+		return out, true
+	}
+	_, complete := readShellPathWords(source)
+	return out, complete
 }
 
 // read adds the Git commands in one carrier's words. A command starts at the
@@ -324,6 +360,9 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 		start := 0
 		// The pass at i == len(w.text) flushes the last piece; the loop ends there.
 		for i := 0; ; i++ {
+			if i < len(w.text) && w.quotedParens && (w.text[i] == '(' || w.text[i] == ')') {
+				continue
+			}
 			if i < len(w.text) && !strings.ContainsRune(gitProofSeparators, rune(w.text[i])) {
 				continue
 			}

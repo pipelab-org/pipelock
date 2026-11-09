@@ -22,6 +22,8 @@ mcp_tool_policy:
 
 Built-in credential destination rules cover recognized file writes, edits, moves, copies and patches, including NTFS stream destinations. They inspect target fields and patch headers, preserving each preset's configured credential action. Ordinary `.env` writes and document content that mentions a credential path remain allowed by these rules. Custom tool names, custom credential locations and a remote server's filesystem aliases need operator-specific rules or filesystem containment.
 
+The shipped persistence-path and shell-profile file-write rules distinguish scalar document and replacement text from destinations in recognized file-write/edit calls. A flat argument object must name a nonempty pathname through a recognized target field such as `path`, `file_path`, `target` or `destination`. Scalar `content`, `document`, `body`, `text`, `old_text`, `new_text`, `old_string`, `new_string`, `oldText` and `newText` then count as data for these two rules. Unknown fields, nested objects, arrays and calls without a recognized target retain their existing checks. Custom rules and credential-read rules keep inspecting their configured argument set. Shell tools keep command scanning, including persistence writes through redirection, `tee`, `cp`, `mv`, `install`, `ln`, `sed -i` and `dd of=`.
+
 See the [MCP development listener guide](mcp-inspector-front.md) for a reverse proxy example and the [false-positive tuning guide](false-positive-tuning.md) for DLP warn-mode patterns.
 
 ## Shell command text

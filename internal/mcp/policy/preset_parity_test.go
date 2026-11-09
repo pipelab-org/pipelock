@@ -289,19 +289,18 @@ func assertPolicyCall(t *testing.T, pc *Config, toolName string, args map[string
 }
 
 // TestPresetShellLinkRulesMatchDefaults keeps the preset copies of the shell
-// rules that recognize link commands identical to the built-in defaults. The
-// patterns are long and hand-copied; a copy that drifts would silently drop a
-// link form in one preset.
+// rules that recognize link commands and dd output operands identical to the
+// built-in defaults. A copy that drifts could omit a command form in one preset.
 func TestPresetShellLinkRulesMatchDefaults(t *testing.T) {
 	want := map[string]string{}
 	for _, rule := range DefaultToolPolicyRules() {
 		switch rule.Name {
-		case "Shell Profile Write via Command", "Audit Log Tampering":
+		case "Persistence Path Write via Command", "Shell Profile Write via Command", "Audit Log Tampering":
 			want[rule.Name] = rule.ArgPattern
 		}
 	}
-	if len(want) != 2 {
-		t.Fatalf("expected both link-aware defaults, found %d", len(want))
+	if len(want) != 3 {
+		t.Fatalf("expected all operand-aware defaults, found %d", len(want))
 	}
 	presets, err := filepath.Glob(filepath.Join("..", "..", "..", "configs", "*.yaml"))
 	if err != nil || len(presets) == 0 {
@@ -324,7 +323,7 @@ func TestPresetShellLinkRulesMatchDefaults(t *testing.T) {
 			}
 		}
 		if seen != len(want) {
-			t.Errorf("%s: carries %d of %d link-aware shell rules", filepath.Base(preset), seen, len(want))
+			t.Errorf("%s: carries %d of %d operand-aware shell rules", filepath.Base(preset), seen, len(want))
 		}
 	}
 }

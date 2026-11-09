@@ -474,10 +474,10 @@ func TestPolicy_FileContentPathSpellings(t *testing.T) {
 	}{
 		{"/etc/cache space/../cron.d/job", false},
 		{"notes about /etc/cache/../cron.d/job", false},
-		// Bare path-shaped values retain the checks already applied before
-		// explicit pathname fields acquired whitespace-preserving readings.
-		{"/etc/cache/../cron.d/job", true},
-		{"file:etc/cron.d/job?notes=1", true},
+		// Scalar document text is not a write destination, even when it is
+		// itself a path or URI rather than prose mentioning one.
+		{"/etc/cache/../cron.d/job", false},
+		{"file:etc/cron.d/job?notes=1", false},
 	} {
 		raw, err := json.Marshal(map[string]string{"path": "/project/notes.txt", "content": tt.content})
 		if err != nil {
