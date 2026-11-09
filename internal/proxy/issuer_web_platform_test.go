@@ -511,14 +511,19 @@ func TestWebPlatformIssuerEvidenceIsInterceptOnly(t *testing.T) {
 		cfg.TLSInterception.Enabled = true
 	})
 	defer cleanup()
-	transport, ok := p.client.Transport.(*http.Transport)
+	egress, ok := p.client.Transport.(killSwitchEgressTransport)
 	if !ok {
 		t.Fatalf("fetch client transport is %T", p.client.Transport)
+	}
+	transport, ok := egress.next.(*http.Transport)
+	if !ok {
+		t.Fatalf("fetch client inner transport is %T", egress.next)
 	}
 	trusting := transport.Clone()
 	trusting.TLSClientConfig = &tls.Config{RootCAs: x509.NewCertPool(), MinVersion: tls.VersionTLS12}
 	trusting.TLSClientConfig.RootCAs.AddCert(tlsUpstream.Certificate())
-	p.client.Transport = trusting
+	egress.next = trusting
+	p.client.Transport = egress
 	type route struct {
 		send   func(*httptest.ResponseRecorder, string)
 		server *httptest.Server
