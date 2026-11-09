@@ -49,10 +49,12 @@ type credentialAudienceCandidate struct {
 	patternName       string
 	hosts             []string
 	authorizationOnly bool
-	carrierMask       uint16
+	carrierMask       uint32
 	gitHosts          []string
 	registryHosts     []string
 	headerValue       string
+	valueIdentity     [32]byte
+	hasValueIdentity  bool
 	// encoded is the decoding view the match came from; empty for the raw
 	// value. A carrier that reads claims from the header value can only bind
 	// them to a match found in that raw value.
@@ -123,7 +125,7 @@ func CredentialAudienceHeaderSurface(headerName, value string) string {
 	}
 }
 
-func audienceSurfacePermitted(surface string, authorizationOnly bool, mask uint16) bool {
+func audienceSurfacePermitted(surface string, authorizationOnly bool, mask uint32) bool {
 	if !authorizationOnly && mask == 0 {
 		return true
 	}
@@ -368,11 +370,20 @@ func registryBearerAllowed(candidate credentialAudienceCandidate, host, target, 
 	if err != nil || !strings.EqualFold(parsed.Scheme, "https") {
 		return false
 	}
+	token, ok := matchedBearerToken(candidate)
+	return ok && registryJWTAudienceMatches(token, host)
+}
+
+// matchedBearerToken binds claims to the bytes that produced the DLP finding.
+// Findings retain a SHA-256 value identity rather than credential text. Missing
+// identity, a substring, or a different token must never borrow this bearer.
+func matchedBearerToken(candidate credentialAudienceCandidate) (string, bool) {
 	fields := strings.Fields(candidate.headerValue)
-	if len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") {
-		return false
+	if len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") ||
+		!candidate.hasValueIdentity || sha256.Sum256([]byte(fields[1])) != candidate.valueIdentity {
+		return "", false
 	}
-	return registryJWTAudienceMatches(fields[1], host)
+	return fields[1], true
 }
 
 // registryJWTAudienceMatches reports whether token is a registry JWT whose
@@ -679,14 +690,14 @@ func (s *Scanner) credentialAudienceAllows(pattern *compiledPattern, target, sur
 }
 
 func (s *Scanner) credentialAudienceAllowsAt(pattern *compiledPattern, target, surface string, now time.Time) (CredentialAudienceAllow, bool) {
-	return s.credentialAudienceAllowsWithHeaderAt(pattern, target, surface, "", now)
+	return s.credentialAudienceAllowsWithHeaderAt(pattern, target, surface, "", "", now)
 }
 
-func (s *Scanner) credentialAudienceAllowsWithHeader(pattern *compiledPattern, target, surface, headerValue string) (CredentialAudienceAllow, bool) {
-	return s.credentialAudienceAllowsWithHeaderAt(pattern, target, surface, headerValue, s.currentTime())
+func (s *Scanner) credentialAudienceAllowsWithHeader(pattern *compiledPattern, target, surface, headerValue, matchedValue string) (CredentialAudienceAllow, bool) {
+	return s.credentialAudienceAllowsWithHeaderAt(pattern, target, surface, headerValue, matchedValue, s.currentTime())
 }
 
-func (s *Scanner) credentialAudienceAllowsWithHeaderAt(pattern *compiledPattern, target, surface, headerValue string, now time.Time) (CredentialAudienceAllow, bool) {
+func (s *Scanner) credentialAudienceAllowsWithHeaderAt(pattern *compiledPattern, target, surface, headerValue, matchedValue string, now time.Time) (CredentialAudienceAllow, bool) {
 	if pattern == nil {
 		return CredentialAudienceAllow{}, false
 	}
@@ -698,6 +709,8 @@ func (s *Scanner) credentialAudienceAllowsWithHeaderAt(pattern *compiledPattern,
 		gitHosts:          pattern.credentialAudienceGitHosts,
 		registryHosts:     pattern.credentialAudienceRegistryHosts,
 		headerValue:       headerValue,
+		valueIdentity:     sha256.Sum256([]byte(matchedValue)),
+		hasValueIdentity:  matchedValue != "",
 	}}, target, surface, now)
 	if len(keep) != 1 || keep[0] || len(allows) != 1 {
 		return CredentialAudienceAllow{}, false
@@ -811,6 +824,8 @@ func (s *Scanner) filterTextDLPMatchesForDestination(matches []TextDLPMatch, tar
 		candidates[i].gitHosts = match.credentialAudienceGitHosts
 		candidates[i].registryHosts = match.credentialAudienceRegistryHosts
 		candidates[i].headerValue = headerValue
+		candidates[i].valueIdentity = match.valueIdentity
+		candidates[i].hasValueIdentity = match.hasValueIdentity
 		candidates[i].encoded = match.Encoded
 	}
 	keep, allows := filterCredentialAudienceAt(candidates, target, surface, s.currentTime())
@@ -842,10 +857,13 @@ func (s *Scanner) ScrubAuthorizedCredentialFromJoinedHeaders(headerName, value, 
 		if !pattern.credentialAudienceCarrierRestricted() {
 			continue
 		}
-		if _, ok := s.credentialAudienceAllowsWithHeader(pattern, target, surface, value); !ok {
-			continue
-		}
-		value = pattern.re.ReplaceAllString(value, authorizedCredentialPlaceholder)
+		headerValue := value
+		value = pattern.re.ReplaceAllStringFunc(value, func(matchedValue string) string {
+			if _, ok := s.credentialAudienceAllowsWithHeader(pattern, target, surface, headerValue, matchedValue); ok {
+				return authorizedCredentialPlaceholder
+			}
+			return matchedValue
+		})
 	}
 	return s.scrubAuthorizedEncodedFields(value, target, surface)
 }

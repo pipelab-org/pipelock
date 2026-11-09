@@ -5,9 +5,12 @@ package scanner
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 func TestSignInBearerAudience(t *testing.T) {
@@ -86,16 +89,16 @@ func TestSignInBearerAudience(t *testing.T) {
 	}
 }
 
-// The route is earned only by the JWT pattern; another pattern's match in the
-// same Authorization value gets nothing from it.
+// The route requires the compiled sign-in carrier; a pattern name alone
+// cannot earn it.
 func TestSignInBearerAllowedOnlyForJWTPattern(t *testing.T) {
 	t.Parallel()
 	codex := registryJWT(t, map[string]any{"iss": "https://auth.openai.com", "client_id": "app_EMoamEEZ73f0CkXaXp7hrann"})
-	c := credentialAudienceCandidate{patternName: "OpenAI API Key", headerValue: "Bearer " + codex}
+	c := credentialAudienceCandidate{patternName: "JWT Token", headerValue: "Bearer " + codex, valueIdentity: sha256.Sum256([]byte(codex)), hasValueIdentity: true}
 	if signInBearerAllowed(c, "chatgpt.com", "https://chatgpt.com/backend-api/codex", CredentialAudienceAuthorizationHeaderSurface) {
-		t.Fatal("non-JWT pattern earned the sign-in route")
+		t.Fatal("pattern without the compiled carrier earned the sign-in route")
 	}
-	c.patternName = "JWT Token"
+	c.carrierMask = config.CredentialAudienceCarrierSignInBearer
 	if signInBearerAllowed(c, "chatgpt.com", "https://chatgpt.com/backend-api/codex", credentialAudienceURLQuerySurface) {
 		t.Fatal("URL query surface earned the sign-in route")
 	}
@@ -106,10 +109,12 @@ func TestSignInBearerAllowedOnlyForJWTPattern(t *testing.T) {
 		t.Fatal("unparseable target allowed")
 	}
 	c.headerValue = "Bearer not.a-jwt"
+	c.valueIdentity = sha256.Sum256([]byte("not.a-jwt"))
 	if signInBearerAllowed(c, "chatgpt.com", "https://chatgpt.com/backend-api/codex", CredentialAudienceAuthorizationHeaderSurface) {
 		t.Fatal("malformed token allowed")
 	}
 	c.headerValue = "Bearer a.%%%.b"
+	c.valueIdentity = sha256.Sum256([]byte("a.%%%.b"))
 	if signInBearerAllowed(c, "chatgpt.com", "https://chatgpt.com/backend-api/codex", CredentialAudienceAuthorizationHeaderSurface) {
 		t.Fatal("undecodable payload allowed")
 	}
@@ -134,9 +139,79 @@ func TestSignInBearerAllowedSchemeAndHeaderShape(t *testing.T) {
 		{"bare token", "https://chatgpt.com/backend-api/codex", codex, false},
 		{"empty value", "https://chatgpt.com/backend-api/codex", "", false},
 	} {
-		c := credentialAudienceCandidate{patternName: "JWT Token", headerValue: tc.value}
+		c := credentialAudienceCandidate{patternName: "JWT Token", carrierMask: config.CredentialAudienceCarrierSignInBearer, headerValue: tc.value, valueIdentity: sha256.Sum256([]byte(codex)), hasValueIdentity: true}
 		if got := signInBearerAllowed(c, "chatgpt.com", tc.target, surface); got != tc.allow {
 			t.Errorf("%s: allowed=%t want %t", tc.name, got, tc.allow)
 		}
+	}
+}
+
+func TestSignInBearerMatchedValue(t *testing.T) {
+	t.Parallel()
+	route := signInBearerRoutes[0]
+	token := registryJWT(t, map[string]any{"iss": route.issuer, "client_id": route.clientID})
+	other := registryJWT(t, map[string]any{"iss": "https://auth.vendor.example", "client_id": "app_other"})
+	target := "https://" + route.host + route.prefix + "/responses"
+	s := MustNew(credentialAudienceTestConfig())
+	t.Cleanup(s.Close)
+	for _, tc := range []struct {
+		name, matched, value string
+		allow                bool
+	}{
+		{"whole token", token, "Bearer " + token, true},
+		{"whitespace", token, "  bEaReR\t" + token + "  ", true},
+		{"different token", other, "Bearer " + token, false},
+		{"trailing garbage", token, "Bearer " + token + "!", false},
+		{"prefix garbage", token, "Bearer !" + token, false},
+		{"second token", other, "Bearer " + token + "!" + other, false},
+		{"token elsewhere", token, "Bearer placeholder " + token, false},
+		{"case differs", token[:len(token)-16] + strings.Repeat("A", 16), "Bearer " + token, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			matches := s.ScanTextForDLP(t.Context(), tc.matched).Matches
+			if !matchRetained(matches, "JWT Token") {
+				t.Fatal("fixture must match JWT pattern")
+			}
+			retained, allows := s.FilterHeaderDLPMatches(matches, target, "Authorization", tc.value)
+			if audienceAllowFor(allows, "JWT Token") != tc.allow || matchRetained(retained, "JWT Token") == tc.allow {
+				t.Fatalf("allow=%t retained=%v records=%v", tc.allow, retained, allows)
+			}
+			if tc.matched == token {
+				scrubbed := s.ScrubAuthorizedCredentialFromJoinedHeaders("Authorization", tc.value, target)
+				if (scrubbed != tc.value) != tc.allow {
+					t.Fatalf("scrubbed=%t want %t", scrubbed != tc.value, tc.allow)
+				}
+			}
+		})
+	}
+	candidate := credentialAudienceCandidate{carrierMask: config.CredentialAudienceCarrierSignInBearer, headerValue: "Bearer " + token}
+	if signInBearerAllowed(candidate, route.host, target, CredentialAudienceAuthorizationHeaderSurface) {
+		t.Fatal("missing match identity earned allowance")
+	}
+}
+
+func TestSignInBearerCustomPattern(t *testing.T) {
+	t.Parallel()
+	route := signInBearerRoutes[0]
+	token := registryJWT(t, map[string]any{"iss": route.issuer, "client_id": route.clientID})
+	cfg := credentialAudienceTestConfig()
+	for i := range cfg.DLP.Patterns {
+		if cfg.DLP.Patterns[i].Name == "JWT Token" {
+			cfg.DLP.Patterns[i].Regex += `|custom-[a-z]+`
+		}
+	}
+	cfg.ApplyDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	matches := s.ScanTextForDLP(t.Context(), token).Matches
+	if !matchRetained(matches, "JWT Token") {
+		t.Fatal("custom JWT pattern must still detect token")
+	}
+	retained, allows := s.FilterHeaderDLPMatches(matches, "https://"+route.host+route.prefix+"/responses", "Authorization", "Bearer "+token)
+	if !matchRetained(retained, "JWT Token") || audienceAllowFor(allows, "JWT Token") {
+		t.Fatalf("custom JWT pattern earned allowance: retained=%v records=%v", retained, allows)
 	}
 }

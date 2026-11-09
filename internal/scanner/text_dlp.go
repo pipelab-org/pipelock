@@ -340,7 +340,7 @@ type TextDLPMatch struct {
 	span                                MatchSpan
 	credentialAudienceHosts             []string
 	credentialAudienceAuthorizationOnly bool
-	credentialAudienceCarrierMask       uint16
+	credentialAudienceCarrierMask       uint32
 	credentialAudienceGitHosts          []string
 	credentialAudienceRegistryHosts     []string
 }

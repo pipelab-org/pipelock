@@ -483,7 +483,7 @@ type compiledPattern struct {
 	core                                bool     // name belongs to the immutable floor: exemptDomains is never honored
 	credentialAudienceHosts             []string // compiled built-ins only; empty means no audience exception
 	credentialAudienceAuthorizationOnly bool     // compiled built-ins only; limits the allow to Authorization headers
-	credentialAudienceCarrierMask       uint16   // compiled built-ins only; which headers may carry the credential
+	credentialAudienceCarrierMask       uint32   // compiled built-ins only; which headers may carry the credential
 	credentialAudienceGitHosts          []string // compiled built-ins only; hosts of the git-over-HTTPS Basic rule
 	credentialAudienceRegistryHosts     []string // compiled built-ins only; hosts of the package-registry rule
 	bundle                              string   // empty for built-in/config patterns

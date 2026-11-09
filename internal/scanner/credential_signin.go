@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"net/url"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 // signInBearerRoute is one provider API that accepts a sign-in access token,
@@ -50,7 +52,7 @@ func signInBearerAllowed(candidate credentialAudienceCandidate, host, target, su
 	// joins fields, and the single-token shape below leaves nothing to join. A
 	// token visible only after decoding (percent, base64, hex) could sit beside
 	// a genuine sign-in token and borrow its claims.
-	if candidate.patternName != "JWT Token" || surface != CredentialAudienceAuthorizationHeaderSurface ||
+	if candidate.carrierMask&config.CredentialAudienceCarrierSignInBearer == 0 || surface != CredentialAudienceAuthorizationHeaderSurface ||
 		(candidate.encoded != "" && candidate.encoded != "whitespace") {
 		return false
 	}
@@ -67,11 +69,11 @@ func signInBearerAllowed(candidate credentialAudienceCandidate, host, target, su
 			return false
 		}
 	}
-	fields := strings.Fields(candidate.headerValue)
-	if len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") {
+	token, ok := matchedBearerToken(candidate)
+	if !ok {
 		return false
 	}
-	parts := strings.Split(fields[1], ".")
+	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return false
 	}
