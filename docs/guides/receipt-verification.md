@@ -341,7 +341,7 @@ error, including a directory with several chains and no `--session`.
 
 ### Receipt groups with multiple chains
 
-Set `flight_recorder.receipt_chains` to 2–32 to enable signed receipt groups. The Go, TypeScript, Rust, and in-repository Python verifiers check the complete group with pinned signer keys. The published PyPI package `pipelock-verify` 0.4.1 verifies the ActionReceipt v1 chain in each shard file, but not the EvidenceReceipt v2 chain or the group; use `pipelock verify-receipt`, `pipelock-verifier`, `@pipelock/verifier-ts` 0.6.5 or `pipelock-verifier-rs` 0.6.5 for group evidence. The default of one chain keeps the existing single-chain format.
+Set `flight_recorder.receipt_chains` to 2–32 to enable signed receipt groups. The Go, TypeScript, Rust, and in-repository Python verifiers check the complete group with pinned signer keys. The published PyPI package `pipelock-verify` 0.4.1 verifies the ActionReceipt v1 chain in each shard file, but not the EvidenceReceipt v2 chain or the group; use `pipelock verify-receipt`, `pipelock-verifier`, `@pipelock/verifier-ts` 0.6.15 or `pipelock-verifier-rs` 0.6.15 for group evidence. The default of one chain keeps the existing single-chain format.
 
 With `flight_recorder.receipt_chains > 1`, one process writes several independent run sessions. A signed group opening lists their exact session IDs and signer. Each shard has its own signed `session_open`, action and evidence receipts, `session_close`, transcript root, and final checkpoint. The signed group close names every final shard head. A restarted process writes a new group and a signed transition to its predecessor.
 

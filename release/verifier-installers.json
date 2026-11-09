@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "release_blocked": true,
+  "release_blocked": false,
   "verifiers": [
     {
       "language": "Go",
@@ -21,13 +21,13 @@
       "package": "@pipelock/verifier-ts",
       "version": "0.6.15",
       "install_source": "npm",
-      "artifact_digest": "pending publication",
+      "artifact_digest": "sha512-+7OFpi131uXnu3SDL6ATTgoXzW5hZ5qe7PXdkwp6Z90ugEwTInFLP9ut2Svs1Scgponc5+07jdcRcDpHQSIsFA==",
       "publisher": {
         "repository": "pipelab-org/pipelock",
         "workflow": ".github/workflows/publish-verifiers.yaml",
         "environment": "verifier-release",
         "source_ref": "verifier-v0.6.15",
-        "source_commit": "pending publication"
+        "source_commit": "d4b84ae1618d2642c48e05988eed3147ab0a8a31"
       }
     },
     {
@@ -35,13 +35,13 @@
       "package": "pipelock-verifier-rs",
       "version": "0.6.15",
       "install_source": "crates.io",
-      "artifact_digest": "pending publication",
+      "artifact_digest": "2bc635953babd66b77f624e6d388ffce146a72455e412e123b03c1adf891f2df",
       "publisher": {
         "repository": "pipelab-org/pipelock",
         "workflow": ".github/workflows/publish-verifiers.yaml",
         "environment": "verifier-release",
         "source_ref": "verifier-v0.6.15",
-        "source_commit": "pending publication"
+        "source_commit": "d4b84ae1618d2642c48e05988eed3147ab0a8a31"
       }
     },
     {
