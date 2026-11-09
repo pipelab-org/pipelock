@@ -212,9 +212,12 @@ jobs:
           fi
 
           # Large-body text DLP throughput is a verdict-neutral property that
-          # a scanner or normalizer change can regress without failing a test.
+          # a change can regress without failing a test. The scanner imports
+          # config, extraction, JSON-number and other internal packages, so
+          # any internal change, a module change, or a change to this job or
+          # its scripts runs the comparison.
           throughput_changes="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" -- \
-            internal/scanner/ internal/normalize/ go.mod go.sum \
+            internal/ go.mod go.sum .github/workflows/ci.yaml \
             scripts/bench_throughput_gate.py scripts/bench_run.py)"
           if [ -n "$throughput_changes" ]; then
             echo "benchmark_throughput=true" >> "$GITHUB_OUTPUT"

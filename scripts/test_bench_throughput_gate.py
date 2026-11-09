@@ -24,74 +24,87 @@ def rows(name: str, values: list[float], size: int = 1 << 20) -> str:
 HEADER = "goos: linux\ngoarch: amd64\npkg: github.com/luckyPipewrench/pipelock/internal/scanner\n"
 
 
+def run(shape: str, base_values: list[float], head_values: list[float], omit: str = ""):
+    """Compare one shape's samples; the other expected shapes are unchanged."""
+    base, head = HEADER, HEADER
+    for name in gate.EXPECTED_SHAPES:
+        full = f"{gate.BENCH_NAME}/{name}"
+        b, h = (base_values, head_values) if name == shape else ([1000.0] * len(base_values),) * 2
+        base += rows(full, b)
+        if name != omit:
+            head += rows(full, h)
+    result, failed = gate.compare(base, head, 20.0, 10.0, len(base_values))
+    return {row["name"].split("/", 1)[1]: row for row in result}, failed
+
+
 class CompareTest(unittest.TestCase):
     def test_fastest_round_ignores_slow_outliers(self):
-        base = HEADER + rows("BenchmarkTextDLPThroughput/prose/1MiB", [1000, 1010, 990, 1005, 995])
-        head = HEADER + rows("BenchmarkTextDLPThroughput/prose/1MiB", [1000, 5000, 990, 1005, 995])
-        result, failed = gate.compare(base, head, 20.0, 10.0)
+        result, failed = run("prose/1MiB", [1000, 1010, 990, 1005, 995], [1000, 5000, 990, 1005, 995])
         self.assertFalse(failed)
-        self.assertEqual(result[0]["status"], "ok")
+        self.assertEqual(result["prose/1MiB"]["status"], "ok")
 
     def test_runner_load_on_later_rounds_does_not_fail(self):
         # Recorded on a loaded workstation: identical scanner code, the head's
         # second and third rounds slowed by other work. Its median is 25 percent
         # slower; its fastest round is not.
-        base = HEADER + rows("BenchmarkTextDLPThroughput/short/1MiB", [318e6, 309e6, 304e6])
-        head = HEADER + rows("BenchmarkTextDLPThroughput/short/1MiB", [313e6, 386e6, 446e6])
-        result, failed = gate.compare(base, head, 20.0, 10.0)
+        result, failed = run("short/1MiB", [318e6, 309e6, 304e6], [313e6, 386e6, 446e6])
         self.assertFalse(failed)
-        self.assertEqual(result[0]["status"], "ok")
+        self.assertEqual(result["short/1MiB"]["status"], "ok")
 
     def test_consistent_slowdown_fails(self):
-        base = HEADER + rows("BenchmarkTextDLPThroughput/b64json/1MiB", [1000, 1010, 990, 1005, 995])
-        head = HEADER + rows("BenchmarkTextDLPThroughput/b64json/1MiB", [1250, 1240, 1260, 1230, 1255])
-        result, failed = gate.compare(base, head, 20.0, 10.0)
+        result, failed = run("b64json/1MiB", [1000, 1010, 990, 1005, 995], [1250, 1240, 1260, 1230, 1255])
         self.assertTrue(failed)
-        self.assertEqual(result[0]["status"], "FAIL")
-        self.assertAlmostEqual(result[0]["delta_pct"], (1230 / 990 - 1) * 100, places=3)
-        self.assertAlmostEqual(result[0]["base_mbps"], (1 << 20) / 990, places=1)
+        row = result["b64json/1MiB"]
+        self.assertEqual(row["status"], "FAIL")
+        self.assertAlmostEqual(row["delta_pct"], (1230 / 990 - 1) * 100, places=3)
+        self.assertAlmostEqual(row["base_mbps"], (1 << 20) / 990, places=1)
 
     def test_warn_band(self):
-        base = HEADER + rows("BenchmarkTextDLPThroughput/short/1MiB", [1000, 1000, 1000])
-        head = HEADER + rows("BenchmarkTextDLPThroughput/short/1MiB", [1150, 1150, 1150])
-        result, failed = gate.compare(base, head, 20.0, 10.0)
+        result, failed = run("short/1MiB", [1000, 1000, 1000], [1150, 1150, 1150])
         self.assertFalse(failed)
-        self.assertEqual(result[0]["status"], "warn")
+        self.assertEqual(result["short/1MiB"]["status"], "warn")
 
     def test_speedup_passes(self):
-        base = HEADER + rows("BenchmarkTextDLPThroughput/prose/1MiB", [1000, 1000, 1000])
-        head = HEADER + rows("BenchmarkTextDLPThroughput/prose/1MiB", [500, 500, 500])
-        _, failed = gate.compare(base, head, 20.0, 10.0)
+        _, failed = run("prose/1MiB", [1000, 1000, 1000], [500, 500, 500])
         self.assertFalse(failed)
 
-    def test_new_and_removed_rows_are_reported_not_compared(self):
-        base = HEADER + rows("BenchmarkTextDLPThroughput/prose/1MiB", [1000, 1000, 1000]) + rows("BenchmarkTextDLPThroughput/old/1MiB", [1, 1, 1])
-        head = HEADER + rows("BenchmarkTextDLPThroughput/prose/1MiB", [1000, 1000, 1000]) + rows("BenchmarkTextDLPThroughput/new/1MiB", [1, 1, 1])
-        result, failed = gate.compare(base, head, 20.0, 10.0)
-        self.assertFalse(failed)
-        self.assertEqual({row["name"]: row["status"] for row in result},
-                         {"BenchmarkTextDLPThroughput/prose/1MiB": "ok",
-                          "BenchmarkTextDLPThroughput/new/1MiB": "new",
-                          "BenchmarkTextDLPThroughput/old/1MiB": "removed"})
+    def test_missing_or_extra_shapes_refuse(self):
+        # A skipped shape (b.Skip, a failed sub-benchmark) is not a pass.
+        with self.assertRaisesRegex(gate.GateError, "expected"):
+            run("prose/1MiB", [1000, 1000, 1000], [1000, 1000, 1000], omit="b64json/1MiB")
+        base = HEADER + "".join(rows(f"{gate.BENCH_NAME}/{n}", [1000] * 3) for n in gate.EXPECTED_SHAPES)
+        extra = base + rows(f"{gate.BENCH_NAME}/new/1MiB", [1000] * 3)
+        with self.assertRaisesRegex(gate.GateError, "expected"):
+            gate.compare(base, extra, 20.0, 10.0, 3)
 
-    def test_mismatched_rounds_refuse(self):
-        base = HEADER + rows("BenchmarkTextDLPThroughput/prose/1MiB", [1000, 1000, 1000])
-        head = HEADER + rows("BenchmarkTextDLPThroughput/prose/1MiB", [1000, 1000])
-        with self.assertRaises(gate.GateError):
-            gate.compare(base, head, 20.0, 10.0)
+    def test_round_count_must_match_the_request(self):
+        base = HEADER + "".join(rows(f"{gate.BENCH_NAME}/{n}", [1000] * 3) for n in gate.EXPECTED_SHAPES)
+        for rounds in (2, 5):
+            with self.subTest(rounds=rounds), self.assertRaisesRegex(gate.GateError, "rounds"):
+                gate.compare(base, base, 20.0, 10.0, rounds)
+        with self.assertRaisesRegex(gate.GateError, "rounds"):
+            run("prose/1MiB", [1000, 1000, 1000], [1000, 1000])
 
-    def test_no_shared_rows_refuse(self):
+    def test_no_rows_refuse(self):
         with self.assertRaises(gate.GateError):
-            gate.compare(HEADER, HEADER, 20.0, 10.0)
+            gate.compare(HEADER, HEADER, 20.0, 10.0, 3)
 
     def test_summary_lists_every_row(self):
-        base = HEADER + rows("BenchmarkTextDLPThroughput/prose/1MiB", [1000, 1000, 1000])
-        head = HEADER + rows("BenchmarkTextDLPThroughput/prose/1MiB", [1300, 1300, 1300])
-        result, _ = gate.compare(base, head, 20.0, 10.0)
-        text = gate.summary(result, 20.0, 10.0)
+        result, _ = run("prose/1MiB", [1000, 1000, 1000], [1300, 1300, 1300])
+        text = gate.summary(list(result.values()), 20.0, 10.0)
         self.assertIn("| BenchmarkTextDLPThroughput/prose/1MiB |", text)
         self.assertIn("+30.0%", text)
         self.assertIn("FAIL", text)
+
+    def test_failure_detail_reports_sample_stderr(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / "baseline-1.stderr").write_text("internal/scanner/x_test.go:9: undefined: scanner.NewAPI\n")
+            (output / "candidate-1.stderr").write_text("")
+            detail = gate.failure_detail(output)
+        self.assertIn("baseline-1.stderr", detail)
+        self.assertIn("undefined: scanner.NewAPI", detail)
+        self.assertNotIn("candidate-1.stderr", detail)
 
     def test_benchmark_command_pins_count_and_name(self):
         command = gate.benchmark_command(5, "1x")
@@ -129,6 +142,18 @@ class PrepareBaselineTest(unittest.TestCase):
                 self.assertEqual(self.git(base, "status", "--porcelain"), "")
                 moved = self.git(base, "rev-parse", "HEAD") != before
                 self.assertEqual(moved, base_bench != "new\n")
+
+    def test_dirty_baseline_is_refused_before_any_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = self.repo(Path(directory) / "base", "old\n")
+            head = self.repo(Path(directory) / "head", "new\n")
+            (base / "README").write_text("staged\n")
+            self.git(base, "add", "README")
+            before = self.git(base, "rev-parse", "HEAD")
+            with self.assertRaises(gate.bench_run.RunError):
+                gate.prepare_baseline(base, head)
+            self.assertEqual(self.git(base, "rev-parse", "HEAD"), before)
+            self.assertEqual((base / gate.BENCH_FILE).read_text(), "old\n")
 
     def test_candidate_without_benchmark_refuses(self):
         with tempfile.TemporaryDirectory() as directory:

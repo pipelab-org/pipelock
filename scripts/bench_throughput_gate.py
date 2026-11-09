@@ -18,9 +18,13 @@ both.
 
 Both sides run the candidate's benchmark file. The gate copies it into the
 baseline checkout and commits it there, so a base that predates the benchmark
-can still be measured and a pull request cannot make itself look faster by
-editing the benchmark. The file uses only the scanner's exported API for that
-reason.
+can still be measured and both sides always run the same workload code. A
+change that weakens the workload weakens both sides alike; review still owns
+the benchmark's content. The file uses only the scanner's exported API so it
+builds on older commits.
+
+The fastest round estimates best-case cost. A change that slows only some
+rounds, such as one that adds rare stalls, can pass.
 """
 
 from __future__ import annotations
@@ -39,6 +43,9 @@ import bench_run  # noqa: E402
 BENCH_NAME = "BenchmarkTextDLPThroughput"
 BENCH_PACKAGE = "./internal/scanner/"
 BENCH_FILE = Path("internal/scanner/text_dlp_throughput_bench_test.go")
+# Every shape must be measured on both sides; a skipped or failed shape is
+# not a pass.
+EXPECTED_SHAPES = ("prose/1MiB", "short/1MiB", "b64json/1MiB")
 DEFAULT_ROUNDS = 5
 DEFAULT_FAIL_PCT = 20.0
 DEFAULT_WARN_PCT = 10.0
@@ -54,6 +61,9 @@ def prepare_baseline(baseline: Path, candidate: Path) -> None:
     bench_run measures only clean checkouts at distinct commits, so the copy is
     committed with a throwaway identity. The baseline is a scratch worktree.
     """
+    # Refuse a dirty baseline before changing it, and commit only the
+    # benchmark path, so preparation cannot absorb unrelated changes.
+    bench_run.checkout_state(baseline.resolve(strict=True))
     source = candidate / BENCH_FILE
     if not source.is_file():
         raise GateError(f"candidate has no {BENCH_FILE}")
@@ -64,7 +74,7 @@ def prepare_baseline(baseline: Path, candidate: Path) -> None:
     shutil.copyfile(source, target)
     git = ["git", "-C", str(baseline), "-c", "user.name=throughput-gate", "-c", "user.email=gate@invalid.example"]
     for command in (git + ["add", "--", str(BENCH_FILE)],
-                    git + ["commit", "--quiet", "--no-gpg-sign", "-m", "measure with the candidate's benchmark"]):
+                    git + ["commit", "--quiet", "--no-gpg-sign", "-m", "measure with the candidate's benchmark", "--", str(BENCH_FILE)]):
         result = subprocess.run(command, capture_output=True, text=True, check=False)
         if result.returncode != 0:
             raise GateError(f"could not prepare the baseline benchmark: {result.stderr.strip()}")
@@ -99,17 +109,19 @@ def bytes_per_op(text: str) -> dict[str, float]:
     return out
 
 
-def compare(base_text: str, head_text: str, fail_pct: float, warn_pct: float) -> tuple[list[dict], bool]:
+def compare(base_text: str, head_text: str, fail_pct: float, warn_pct: float, rounds: int) -> tuple[list[dict], bool]:
     base, head = samples(base_text), samples(head_text)
-    shared = sorted(base.keys() & head.keys())
-    if not shared:
-        raise GateError("no shared throughput benchmark rows between base and head")
+    expected = {f"{BENCH_NAME}/{shape}" for shape in EXPECTED_SHAPES}
+    for side, rows_seen in (("base", base), ("head", head)):
+        if set(rows_seen) != expected:
+            raise GateError(f"{side} measured {sorted(rows_seen)}, expected {sorted(expected)}")
+    shared = sorted(expected)
     sizes = bytes_per_op(base_text)
     rows = []
     failed = False
     for name in shared:
-        if len(base[name]) != len(head[name]) or len(base[name]) < 3:
-            raise GateError(f"{name}: expected matching rounds of at least 3, got {len(base[name])} and {len(head[name])}")
+        if len(base[name]) != rounds or len(head[name]) != rounds:
+            raise GateError(f"{name}: expected {rounds} rounds per side, got {len(base[name])} and {len(head[name])}")
         base_ns, head_ns = min(base[name]), min(head[name])
         delta = (head_ns / base_ns - 1.0) * 100.0
         size = sizes.get(name)
@@ -123,9 +135,17 @@ def compare(base_text: str, head_text: str, fail_pct: float, warn_pct: float) ->
             "base_mbps": size / base_ns if size else None, "head_mbps": size / head_ns if size else None,
             "rounds": len(base[name]),
         })
-    for name in sorted(base.keys() ^ head.keys()):
-        rows.append({"name": name, "status": "new" if name in head else "removed"})
     return rows, failed
+
+
+def failure_detail(output: Path, limit: int = 4000) -> str:
+    """The tail of every non-empty sample stderr, such as a compiler error."""
+    parts = []
+    for path in sorted(output.glob("*-*.stderr")):
+        text = path.read_text(errors="replace").strip()
+        if text:
+            parts.append(f"{path.name}:\n{text[-limit:]}")
+    return "\n\n".join(parts)[-limit:]
 
 
 def summary(rows: list[dict], fail_pct: float, warn_pct: float) -> str:
@@ -162,10 +182,14 @@ def main() -> int:
         bench_run.capture_pair(args.baseline, args.candidate, args.output, benchmark_command(args.rounds, args.benchtime))
         base_text = (args.output / "baseline.txt").read_text()
         head_text = (args.output / "current.txt").read_text()
-        rows, failed = compare(base_text, head_text, args.fail_pct, args.warn_pct)
-    except (bench_run.RunError, GateError) as exc:
-        (args.output / "throughput-summary.md").write_text(f"## Text DLP throughput gate\n\nNot decided: {exc}\n")
+        rows, failed = compare(base_text, head_text, args.fail_pct, args.warn_pct, args.rounds)
+    except (bench_run.RunError, GateError, subprocess.CalledProcessError, OSError) as exc:
+        detail = failure_detail(args.output)
+        (args.output / "throughput-summary.md").write_text(
+            f"## Text DLP throughput gate\n\nNot decided: {exc}\n" + (f"\n```\n{detail}\n```\n" if detail else ""))
         print(f"throughput-gate: {exc}", file=sys.stderr)
+        if detail:
+            print(detail, file=sys.stderr)
         return 2
     text = summary(rows, args.fail_pct, args.warn_pct)
     (args.output / "throughput-summary.md").write_text(text)
