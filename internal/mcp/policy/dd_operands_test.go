@@ -5,6 +5,9 @@ package policy
 
 import (
 	"encoding/json"
+	"fmt"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -59,6 +62,38 @@ func TestDDCommentCustomRuleRetainsInput(t *testing.T) {
 			change(&rule)
 			pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: []config.ToolPolicyRule{rule}})
 			assertPolicyCall(t, pc, "bash", map[string]any{"command": "dd of=/tmp/safe # of=/etc/cron.d/job of=.bashrc of=/var/log/auth.log"}, rule.Name, config.ActionBlock)
+		}
+	}
+}
+
+// A '#' inside an earlier operand is a filename byte, not a comment. It must
+// not stop the operand walk short of a later protected output, however many
+// harmless outputs come between.
+func TestDDHashInOperandReachesLaterOutput(t *testing.T) {
+	checker := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionWarn, Rules: DefaultToolPolicyRules()})
+	var safe strings.Builder
+	for i := range 64 {
+		fmt.Fprintf(&safe, " of=/tmp/safe%d", i)
+	}
+	for _, command := range []string{
+		"dd if=/tmp/a#b" + safe.String() + " of=/var/log/auth.log",
+		"dd if=/tmp/a#b of=/var/log/auth.log",
+		"dd if=/tmp/a#b" + safe.String() + " of=/etc/cron.d/job",
+	} {
+		// An incomplete pair check only warns under the default policy, so a
+		// protected output must be matched by a real rule.
+		v := checker.CheckToolCall("bash", []string{command})
+		if !slices.ContainsFunc(v.Rules, func(rule string) bool { return rule != "incomplete_pair_check" }) {
+			t.Errorf("protected dd output not matched by a rule: %.80s...: %+v", command, v)
+		}
+	}
+	for _, command := range []string{
+		"dd of=/tmp/disk.img # of=/etc/cron.d/job",
+		"dd if=/etc/cron.d/job of=/tmp/backup",
+		"dd if=/tmp/a#b of=/tmp/out",
+	} {
+		if v := checker.CheckToolCall("bash", []string{command}); v.Matched {
+			t.Errorf("harmless dd blocked: %s: %+v", command, v)
 		}
 	}
 }

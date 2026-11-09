@@ -1886,7 +1886,11 @@ const (
 	// the pathname inside that operand, including quoted blanks.
 	// All output operands are checked conservatively, even if a later of=
 	// names a different file. See the coreutils manual cited by the rule.
-	ddOutputOperandPattern    = `\bdd(?:\s+[^\s;|&#]+)*\s+of=`
+	// A '#' inside an operand is a filename byte. Word-initial comments are
+	// removed by ddTrailingCommentViews before this pattern runs. Stopping
+	// the operand walk at '#' hides a later of= from the joined match and
+	// leaves only the bounded pair scan.
+	ddOutputOperandPattern    = `\bdd(?:\s+[^\s;|&]+)*\s+of=`
 	ddOutputPathPrefixPattern = `(?:[^\s;|&\x22\x27]|\x27[^\x27]*\x27|\x22[^\x22]*\x22)*(?:\x27[^\x27]*|\x22[^\x22]*)?`
 )
 
