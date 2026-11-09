@@ -1887,7 +1887,7 @@ const (
 	// All output operands are checked conservatively, even if a later of=
 	// names a different file. See the coreutils manual cited by the rule.
 	ddOutputOperandPattern    = `\bdd(?:\s+[^\s;|&#]+)*\s+of=`
-	ddOutputPathPrefixPattern = `(?:[^\s;|&\x22\x27]*|\x27[^\x27]*|\x22[^\x22]*)`
+	ddOutputPathPrefixPattern = `(?:[^\s;|&\x22\x27]|\x27[^\x27]*\x27|\x22[^\x22]*\x22)*(?:\x27[^\x27]*|\x22[^\x22]*)?`
 )
 
 func DefaultToolPolicyRules() []config.ToolPolicyRule {
