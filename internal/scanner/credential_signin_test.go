@@ -215,3 +215,39 @@ func TestSignInBearerCustomPattern(t *testing.T) {
 		t.Fatalf("custom JWT pattern earned allowance: retained=%v records=%v", retained, allows)
 	}
 }
+
+// Binding many JWT-shaped matches in one header must parse and hash the
+// bearer once, and a shared parse must decide exactly like an on-demand one.
+func TestMatchedBearerTokenSharedParse(t *testing.T) {
+	token := strings.Join([]string{"eyJh", "bGciOiJub25lIn0", ".eyJpc3MiOiJ4In0", ".sig"}, "")
+	header := "Bearer " + token
+	shared := parseBearer(header)
+	for _, tc := range []struct {
+		name    string
+		header  string
+		matched string
+		want    bool
+	}{
+		{"whole bearer", header, token, true},
+		{"substring", header, token[:10], false},
+		{"other token", header, token + "x", false},
+		{"two tokens", "Bearer " + token + " " + token, token, false},
+		{"basic scheme", "Basic " + token, token, false},
+		{"empty match", header, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := credentialAudienceCandidate{headerValue: tc.header, valueIdentity: sha256.Sum256([]byte(tc.matched)), hasValueIdentity: tc.matched != ""}
+			_, onDemand := matchedBearerToken(candidate)
+			if onDemand != tc.want {
+				t.Fatalf("on-demand parse = %v, want %v", onDemand, tc.want)
+			}
+			candidate.bearer = parseBearer(tc.header)
+			if _, got := matchedBearerToken(candidate); got != onDemand {
+				t.Fatalf("shared parse = %v, on-demand = %v", got, onDemand)
+			}
+		})
+	}
+	if !shared.ok || shared.token != token {
+		t.Fatal("shared parse lost the bearer token")
+	}
+}

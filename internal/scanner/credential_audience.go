@@ -59,6 +59,27 @@ type credentialAudienceCandidate struct {
 	// value. A carrier that reads claims from the header value can only bind
 	// them to a match found in that raw value.
 	encoded string
+	// bearer, when set, is headerValue already parsed once for every
+	// candidate that shares it; nil parses on demand.
+	bearer *parsedBearer
+}
+
+// parsedBearer is an Authorization value split into the Bearer scheme and its
+// single token, with the token's SHA-256 identity. Matches of one header share
+// it so binding a match costs one comparison instead of reparsing and
+// rehashing the whole value for every match.
+type parsedBearer struct {
+	token  string
+	digest [32]byte
+	ok     bool
+}
+
+func parseBearer(headerValue string) *parsedBearer {
+	fields := strings.Fields(headerValue)
+	if len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") {
+		return &parsedBearer{}
+	}
+	return &parsedBearer{token: fields[1], digest: sha256.Sum256([]byte(fields[1])), ok: true}
 }
 
 // CredentialAudienceAuthorizationHeaderSurface distinguishes Authorization from other
@@ -378,12 +399,17 @@ func registryBearerAllowed(candidate credentialAudienceCandidate, host, target, 
 // Findings retain a SHA-256 value identity rather than credential text. Missing
 // identity, a substring, or a different token must never borrow this bearer.
 func matchedBearerToken(candidate credentialAudienceCandidate) (string, bool) {
-	fields := strings.Fields(candidate.headerValue)
-	if len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") ||
-		!candidate.hasValueIdentity || sha256.Sum256([]byte(fields[1])) != candidate.valueIdentity {
+	if !candidate.hasValueIdentity {
 		return "", false
 	}
-	return fields[1], true
+	bearer := candidate.bearer
+	if bearer == nil {
+		bearer = parseBearer(candidate.headerValue)
+	}
+	if !bearer.ok || bearer.digest != candidate.valueIdentity {
+		return "", false
+	}
+	return bearer.token, true
 }
 
 // registryJWTAudienceMatches reports whether token is a registry JWT whose
@@ -693,11 +719,11 @@ func (s *Scanner) credentialAudienceAllowsAt(pattern *compiledPattern, target, s
 	return s.credentialAudienceAllowsWithHeaderAt(pattern, target, surface, "", "", now)
 }
 
-func (s *Scanner) credentialAudienceAllowsWithHeader(pattern *compiledPattern, target, surface, headerValue, matchedValue string) (CredentialAudienceAllow, bool) {
-	return s.credentialAudienceAllowsWithHeaderAt(pattern, target, surface, headerValue, matchedValue, s.currentTime())
+func (s *Scanner) credentialAudienceAllowsWithHeaderAt(pattern *compiledPattern, target, surface, headerValue, matchedValue string, now time.Time) (CredentialAudienceAllow, bool) {
+	return s.credentialAudienceAllowsWithBearerAt(pattern, target, surface, headerValue, nil, matchedValue, now)
 }
 
-func (s *Scanner) credentialAudienceAllowsWithHeaderAt(pattern *compiledPattern, target, surface, headerValue, matchedValue string, now time.Time) (CredentialAudienceAllow, bool) {
+func (s *Scanner) credentialAudienceAllowsWithBearerAt(pattern *compiledPattern, target, surface, headerValue string, bearer *parsedBearer, matchedValue string, now time.Time) (CredentialAudienceAllow, bool) {
 	if pattern == nil {
 		return CredentialAudienceAllow{}, false
 	}
@@ -711,6 +737,7 @@ func (s *Scanner) credentialAudienceAllowsWithHeaderAt(pattern *compiledPattern,
 		headerValue:       headerValue,
 		valueIdentity:     sha256.Sum256([]byte(matchedValue)),
 		hasValueIdentity:  matchedValue != "",
+		bearer:            bearer,
 	}}, target, surface, now)
 	if len(keep) != 1 || keep[0] || len(allows) != 1 {
 		return CredentialAudienceAllow{}, false
@@ -816,6 +843,7 @@ func (s *Scanner) filterTextDLPMatchesForDestination(matches []TextDLPMatch, tar
 		return matches, nil
 	}
 	candidates := make([]credentialAudienceCandidate, len(matches))
+	bearer := parseBearer(headerValue)
 	for i, match := range matches {
 		candidates[i].patternName = match.PatternName
 		candidates[i].hosts = match.credentialAudienceHosts
@@ -827,6 +855,7 @@ func (s *Scanner) filterTextDLPMatchesForDestination(matches []TextDLPMatch, tar
 		candidates[i].valueIdentity = match.valueIdentity
 		candidates[i].hasValueIdentity = match.hasValueIdentity
 		candidates[i].encoded = match.Encoded
+		candidates[i].bearer = bearer
 	}
 	keep, allows := filterCredentialAudienceAt(candidates, target, surface, s.currentTime())
 	filtered := make([]TextDLPMatch, 0, len(matches))
@@ -858,8 +887,10 @@ func (s *Scanner) ScrubAuthorizedCredentialFromJoinedHeaders(headerName, value, 
 			continue
 		}
 		headerValue := value
+		bearer := parseBearer(headerValue)
+		now := s.currentTime()
 		value = pattern.re.ReplaceAllStringFunc(value, func(matchedValue string) string {
-			if _, ok := s.credentialAudienceAllowsWithHeader(pattern, target, surface, headerValue, matchedValue); ok {
+			if _, ok := s.credentialAudienceAllowsWithBearerAt(pattern, target, surface, headerValue, bearer, matchedValue, now); ok {
 				return authorizedCredentialPlaceholder
 			}
 			return matchedValue
