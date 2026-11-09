@@ -298,3 +298,55 @@ func TestReassemblyRecipeReplayHoldsOneDecode(t *testing.T) {
 		t.Fatalf("out-of-range ordinal replayed %q", got)
 	}
 }
+
+// A fingerprint names a bucket, not a text. Two different texts forced into
+// one bucket must not resolve to each other's payload, and a registered text
+// must resolve to its own payload without rebuilding any bytes.
+func TestReassemblyReplayLookupComparesRegisteredDigest(t *testing.T) {
+	memo := &decodingMemo{reassemblyPlan: reassemblyMarkerPlan(t), reassemblyDeferred: true}
+	registered := strings.Repeat("a", 32)
+	other := strings.Repeat("b", 32)
+	payload := memo.addReplayPayload(registered, &assembledPayload{literal: registered})
+	if payload == nil {
+		t.Fatal("registration refused")
+	}
+	// Force a collision: file the payload under the other text's bucket too.
+	memo.reassemblyReplayPayloads[assembledPayloadFingerprint(other)] = []*assembledPayload{payload}
+	if got := memo.replayPayload(other); got != nil {
+		t.Fatal("fingerprint collision resolved to another text's payload")
+	}
+	// A payload whose bytes can no longer be rebuilt is still found by its
+	// registered digest; replay itself refuses it later.
+	payload.literal, payload.parent, payload.operation = "", &assembledPayload{}, assembledPayloadOperation(255)
+	if got := memo.replayPayload(registered); got != payload {
+		t.Fatal("registered text did not resolve to its payload")
+	}
+}
+
+// Segments are observed in split order; a later duplicate segment must still
+// replay its own bytes, and an out-of-order segment falls back to a full search.
+func TestReassemblySegmentObserveForwardCursor(t *testing.T) {
+	memo := &decodingMemo{reassemblyPlan: reassemblyMarkerPlan(t), reassemblyDeferred: true}
+	text := "alpha/beta/alpha/gamma"
+	root := memo.addReplayPayload(text, &assembledPayload{literal: text})
+	source := assembledSegmentSource{memo: memo, text: text, replay: root, kind: assembledTextView}
+	for _, seg := range []string{"alpha", "beta", "gamma", "beta"} {
+		source.observe(seg)
+	}
+	for _, seg := range []string{"alpha", "beta", "gamma"} {
+		payload := memo.replayPayload(seg)
+		if payload == nil {
+			t.Fatalf("segment %q not registered", seg)
+		}
+		if got, ok := payload.materialize(); !ok || got != seg {
+			t.Fatalf("segment %q replayed %q, %v", seg, got, ok)
+		}
+	}
+	if memo.reassemblyIncomplete {
+		t.Fatal("in-text segments marked the scan incomplete")
+	}
+	source.observe("missing")
+	if !memo.reassemblyIncomplete {
+		t.Fatal("a segment absent from its source did not fail closed")
+	}
+}

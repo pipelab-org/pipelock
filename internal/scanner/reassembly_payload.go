@@ -4,6 +4,8 @@
 package scanner
 
 import (
+	"crypto/sha256"
+
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
@@ -21,6 +23,8 @@ type assembledPayload struct {
 	known, textRoot  bool
 	contextParent    *assembledPayload
 	pending          int
+	cache            *assembledRecipeCache
+	digest           [sha256.Size]byte
 }
 
 type assembledDecodeRecipe struct {
@@ -32,13 +36,22 @@ type assembledDecodeRecipe struct {
 	cache      *assembledRecipeCache
 }
 
-// assembledRecipeCache holds the decoded views of at most one recipe per scan.
-// Replay lookups of sibling views share that single walk instead of decoding
-// the source once per view; holding a new recipe releases the previous one, so
-// retention stays at one source's views however many recipes are replayed.
+// assembledRecipeCache holds the decoded views of at most one recipe and the
+// text of at most one replayed transform per scan. Replay lookups of sibling
+// views share that single walk or transform instead of recomputing the source
+// once per view; holding a new one releases the previous one, so retention
+// stays at one source's views and one transformed text however many are
+// replayed.
 type assembledRecipeCache struct {
 	active *assembledDecodeRecipe
+	text   [assembledHeldTexts]*assembledPayload
+	next   int
 }
+
+// One scan replays segments of the raw, normalized and compacted texts
+// against each other, so a single held transform would be evicted on every
+// comparison. A few slots cover each distinct transform chain a scan builds.
+const assembledHeldTexts = 4
 
 func (r *assembledDecodeRecipe) hold(views []decodedResult) {
 	c := r.cache
@@ -52,11 +65,40 @@ func (r *assembledDecodeRecipe) hold(views []decodedResult) {
 	c.active = r
 }
 
+func (p *assembledPayload) holdText(text string) {
+	c := p.cache
+	if c == nil || text == "" {
+		return
+	}
+	for _, held := range c.text {
+		if held == p {
+			p.current = text
+			return
+		}
+	}
+	if old := c.text[c.next]; old != nil {
+		old.current = ""
+	}
+	p.current = text
+	c.text[c.next] = p
+	c.next = (c.next + 1) % assembledHeldTexts
+}
+
 func (c *assembledRecipeCache) release() {
-	if c != nil && c.active != nil {
+	if c == nil {
+		return
+	}
+	if c.active != nil {
 		c.active.current = nil
 		c.active = nil
 	}
+	for i, held := range c.text {
+		if held != nil {
+			held.current = ""
+			c.text[i] = nil
+		}
+	}
+	c.next = 0
 }
 
 type assembledPayloadOperation uint8
@@ -111,6 +153,22 @@ func (p *assembledPayload) materialize() (string, bool) {
 	if !ok {
 		return "", false
 	}
+	if p.operation == assembledPayloadSegment {
+		if p.start < 0 || p.end > len(source) || p.end < p.start {
+			return "", false
+		}
+		return source[p.start:p.end], true
+	}
+	// Segments of one transformed text replay in sequence, so the transform is
+	// held instead of being recomputed over the whole source for each segment.
+	text, ok := p.transform(source)
+	if ok {
+		p.holdText(text)
+	}
+	return text, ok
+}
+
+func (p *assembledPayload) transform(source string) (string, bool) {
 	switch p.operation {
 	case assembledPayloadNormalize:
 		return normalize.ForDLP(source), true
@@ -119,11 +177,6 @@ func (p *assembledPayload) materialize() (string, bool) {
 		return text, true
 	case assembledPayloadWhitespace:
 		return compactTextDLPWhitespace(source), true
-	case assembledPayloadSegment:
-		if p.start < 0 || p.end > len(source) || p.end < p.start {
-			return "", false
-		}
-		return source[p.start:p.end], true
 	case assembledPayloadRedactExamples:
 		return redactOfficialAWSExampleCredentialsForDocs(source), true
 	case assembledPayloadImageText:
@@ -135,20 +188,22 @@ func (p *assembledPayload) materialize() (string, bool) {
 	}
 }
 
-// The fingerprint is only an index. Every hit compares replayed bytes, so
-// neither a collision nor a different producing path can suppress inspection.
+// The fingerprint is only an index. Every hit compares the SHA-256 of the
+// bytes the payload was registered for, so neither a fingerprint collision nor
+// a different producing path can suppress inspection, and a lookup never
+// rebuilds a payload's bytes. Replay itself still fails closed when a payload
+// cannot reproduce its bytes (see pendingText).
 func (m *decodingMemo) replayPayload(text string) *assembledPayload {
 	if m == nil || len(m.reassemblyReplayPayloads) == 0 {
 		return nil
 	}
-	for _, payload := range m.reassemblyReplayPayloads[assembledPayloadFingerprint(text)] {
-		value, ok := payload.materialize()
-		if !ok {
-			m.reassemblyIncomplete = true
-			m.markIncomplete()
-			continue
-		}
-		if value == text {
+	candidates := m.reassemblyReplayPayloads[assembledPayloadFingerprint(text)]
+	if len(candidates) == 0 {
+		return nil
+	}
+	digest := sha256.Sum256([]byte(text))
+	for _, payload := range candidates {
+		if payload.digest == digest {
 			return payload
 		}
 	}
@@ -172,10 +227,14 @@ func (m *decodingMemo) addReplayPayload(text string, payload *assembledPayload) 
 	if existing := m.replayPayload(text); existing != nil {
 		return nil
 	}
+	if payload.cache == nil {
+		payload.cache = m.recipeCache()
+	}
 	if m.reassemblyReplayPayloads == nil {
 		m.reassemblyReplayPayloads = make(map[assembledPayloadKey][]*assembledPayload)
 	}
 	payload.pending = -1
+	payload.digest = sha256.Sum256([]byte(text))
 	key := assembledPayloadFingerprint(text)
 	m.reassemblyReplayPayloads[key] = append(m.reassemblyReplayPayloads[key], payload)
 	m.reassemblyReplayPayloadCount++

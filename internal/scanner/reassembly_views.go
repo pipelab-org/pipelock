@@ -300,6 +300,14 @@ func (s *reassemblyPlan) emptyTerminal(key assembledEmptyKey, remember bool) boo
 // counts. Exact value identities enter the terminal producer before scanning,
 // so one matched value cannot create the same finding twice.
 func finishAssembled(result TextDLPResult, memos ...*decodingMemo) TextDLPResult {
+	// Held replay bytes serve one inspection only; none outlive it.
+	defer func() {
+		for _, m := range memos {
+			if m != nil {
+				m.reassemblyRecipeCache.release()
+			}
+		}
+	}()
 	var fallback assembledAllowance
 	for _, m := range memos {
 		if m == nil || m.reassemblyPlan == nil {

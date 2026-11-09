@@ -139,6 +139,10 @@ type assembledSegmentSource struct {
 	replay          *assembledPayload
 	kind            assembledViewKind
 	known, borrowed bool
+	// cursor is where the previous segment ended. Callers observe segments in
+	// split order, so the next one is searched from there, keeping one source
+	// walk linear instead of rescanning the text from its start per segment.
+	cursor int
 }
 
 func (m *decodingMemo) reassemblySegmentSource(text string) assembledSegmentSource {
@@ -175,7 +179,20 @@ func (s *assembledSegmentSource) observe(segment string) {
 		return
 	}
 	if s.replay != nil && segment != s.text {
-		start := strings.Index(s.text, segment)
+		// Any occurrence replays the same bytes; the forward search only finds
+		// one sooner. A segment out of order falls back to the whole text.
+		start := -1
+		if s.cursor <= len(s.text) {
+			if at := strings.Index(s.text[s.cursor:], segment); at >= 0 {
+				start = s.cursor + at
+			}
+		}
+		if start < 0 {
+			start = strings.Index(s.text, segment)
+		}
+		if start >= 0 {
+			s.cursor = start + len(segment)
+		}
 		if start < 0 {
 			m.markIncomplete()
 			m.reassemblyIncomplete = true
