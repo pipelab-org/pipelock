@@ -34,9 +34,10 @@ type signInBearerRoute struct {
 //
 // The proxy cannot verify the token's signature. A token earns a route only
 // when its own iss and client_id claims name that provider and client, so a
-// JWT from any other issuer or client keeps the block, and a forged token can
-// reach only the issuer's own API host. The registry bearer rule makes the
-// same trade.
+// JWT whose claims name another issuer or client keeps the block. A token
+// from another issuer that copies these claims passes, but it can reach only
+// the route host and path those claims name. The registry bearer rule makes
+// the same trade.
 var signInBearerRoutes = []signInBearerRoute{
 	{host: "chatgpt.com", prefix: "/backend-api", issuer: "https://auth.openai.com", clientID: "app_EMoamEEZ73f0CkXaXp7hrann"},
 	{host: "api.x.ai", prefix: "/v1", issuer: "https://auth.x.ai", clientID: "b1a00492-073a-47ea-816f-4c329264a828"},
