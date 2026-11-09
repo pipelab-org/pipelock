@@ -133,14 +133,6 @@ func partialEncodedContentMatch() TextDLPMatch {
 	return TextDLPMatch{PatternName: PartialEncodedContentPattern, Severity: config.SeverityHigh, Warn: true, informational: true}
 }
 
-// Segments retain the source ancestry used by keyword-window decisions.
-func (m *decodingMemo) reassemblySegment(source, segment string, kind assembledViewKind) {
-	parent := m.reassemblySegmentSource(source)
-	defer parent.release()
-	parent.kind = kind
-	parent.observe(segment)
-}
-
 type assembledSegmentSource struct {
 	memo            *decodingMemo
 	text            string
