@@ -249,3 +249,52 @@ func TestReassemblySegmentReplayBorrowEndsWithWalk(t *testing.T) {
 		t.Fatal("released segment recipe lost detection", result)
 	}
 }
+
+// Replaying sibling views of one decoder must share a single walk of the
+// source, and holding a second decoder must release the first so retention
+// stays at one source's views.
+func TestReassemblyRecipeReplayHoldsOneDecode(t *testing.T) {
+	first := base64.StdEncoding.EncodeToString([]byte("MARK1234 first replayed source"))
+	second := base64.StdEncoding.EncodeToString([]byte("MARK5678 second replayed source"))
+	cache := new(assembledRecipeCache)
+	recipe := func(text string) (*assembledDecodeRecipe, []decodedResult) {
+		views, _ := decodeEncodingsBudgetMode(text, false, 0, false)
+		if len(views) == 0 {
+			t.Fatalf("fixture %q produced no decoded views", text)
+		}
+		return &assembledDecodeRecipe{source: &assembledPayload{literal: text}, cache: cache}, views
+	}
+	r1, v1 := recipe(first)
+	r2, v2 := recipe(second)
+
+	a := &assembledPayload{decode: r1, ordinal: 0}
+	if got, ok := a.materialize(); !ok || got != v1[0].text {
+		t.Fatalf("first replay = %q, %v; want %q", got, ok, v1[0].text)
+	}
+	if r1.current == nil || cache.active != r1 {
+		t.Fatal("replayed decode was not held for sibling lookups")
+	}
+	held := &r1.current[0]
+	if _, ok := a.materialize(); !ok || &r1.current[0] != held {
+		t.Fatal("sibling lookup walked the source again")
+	}
+
+	b := &assembledPayload{decode: r2, ordinal: 0}
+	if got, ok := b.materialize(); !ok || got != v2[0].text {
+		t.Fatalf("second replay = %q, %v; want %q", got, ok, v2[0].text)
+	}
+	if r1.current != nil || cache.active != r2 {
+		t.Fatal("holding a second decode did not release the first")
+	}
+	if got, ok := a.materialize(); !ok || got != v1[0].text {
+		t.Fatalf("replay after release = %q, %v; want %q", got, ok, v1[0].text)
+	}
+
+	cache.release()
+	if r1.current != nil || r2.current != nil || cache.active != nil {
+		t.Fatal("scan release left decoded views held")
+	}
+	if got, ok := (&assembledPayload{decode: r1, ordinal: len(v1)}).materialize(); ok {
+		t.Fatalf("out-of-range ordinal replayed %q", got)
+	}
+}

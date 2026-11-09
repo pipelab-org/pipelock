@@ -28,7 +28,35 @@ type assembledDecodeRecipe struct {
 	includeURL bool
 	minPrefix  int
 	inbound    bool
-	current    []decodedResult // borrowed only while draining this decoder's siblings
+	current    []decodedResult // borrowed while draining or held as the scan's one replayed decode
+	cache      *assembledRecipeCache
+}
+
+// assembledRecipeCache holds the decoded views of at most one recipe per scan.
+// Replay lookups of sibling views share that single walk instead of decoding
+// the source once per view; holding a new recipe releases the previous one, so
+// retention stays at one source's views however many recipes are replayed.
+type assembledRecipeCache struct {
+	active *assembledDecodeRecipe
+}
+
+func (r *assembledDecodeRecipe) hold(views []decodedResult) {
+	c := r.cache
+	if c == nil {
+		return
+	}
+	if c.active != nil && c.active != r {
+		c.active.current = nil
+	}
+	r.current = views
+	c.active = r
+}
+
+func (c *assembledRecipeCache) release() {
+	if c != nil && c.active != nil {
+		c.active.current = nil
+		c.active = nil
+	}
 }
 
 type assembledPayloadOperation uint8
@@ -62,17 +90,15 @@ func (p *assembledPayload) materialize() (string, bool) {
 		return p.current, true
 	}
 	if p.decode != nil {
-		if p.decode.current != nil {
-			if p.ordinal < 0 || p.ordinal >= len(p.decode.current) {
+		views := p.decode.current
+		if views == nil {
+			source, ok := p.decode.source.materialize()
+			if !ok {
 				return "", false
 			}
-			return p.decode.current[p.ordinal].text, true
+			views, _ = decodeEncodingsBudgetMode(source, p.decode.includeURL, p.decode.minPrefix, p.decode.inbound)
+			p.decode.hold(views)
 		}
-		source, ok := p.decode.source.materialize()
-		if !ok {
-			return "", false
-		}
-		views, _ := decodeEncodingsBudgetMode(source, p.decode.includeURL, p.decode.minPrefix, p.decode.inbound)
 		if p.ordinal < 0 || p.ordinal >= len(views) {
 			return "", false
 		}
@@ -156,12 +182,19 @@ func (m *decodingMemo) addReplayPayload(text string, payload *assembledPayload) 
 	return payload
 }
 
+func (m *decodingMemo) recipeCache() *assembledRecipeCache {
+	if m.reassemblyRecipeCache == nil {
+		m.reassemblyRecipeCache = new(assembledRecipeCache)
+	}
+	return m.reassemblyRecipeCache
+}
+
 func (m *decodingMemo) observeDecodedRecipe(key decodingMemoKey, views []decodedResult, retained bool) {
 	if retained || len(views) == 0 || !m.reassemblyDeferred && m.reassemblyPlan == nil {
 		m.reassemblyObserveDecoded(key.text, views)
 		return
 	}
-	recipe := &assembledDecodeRecipe{source: m.payloadSource(key.text), includeURL: key.includeURL, minPrefix: key.minPrefix, inbound: key.inbound}
+	recipe := &assembledDecodeRecipe{source: m.payloadSource(key.text), includeURL: key.includeURL, minPrefix: key.minPrefix, inbound: key.inbound, cache: m.recipeCache()}
 	var borrowed []*assembledPayload
 	for ordinal, view := range views {
 		if existing := m.replayPayload(view.text); existing != nil {

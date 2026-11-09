@@ -33,6 +33,7 @@ type decodingMemoKey struct {
 type decodingMemo struct {
 	reassemblyReplayPayloads     map[assembledPayloadKey][]*assembledPayload
 	reassemblyReplayPayloadCount int
+	reassemblyRecipeCache        *assembledRecipeCache
 	reassemblyPendingReplay      map[int]*assembledPayload
 	reassemblyReplayParents      map[string]*assembledPayload
 	reassemblyKindInsensitive    bool

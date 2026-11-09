@@ -88,6 +88,8 @@ type assembledProjectionStorage struct {
 var assembledProjectionPool = sync.Pool{New: func() any { return &assembledProjectionStorage{} }}
 
 func (m *decodingMemo) releaseProjection() {
+	m.reassemblyRecipeCache.release()
+	m.reassemblyRecipeCache = nil
 	clear(m.reassemblyReplayPayloads)
 	clear(m.reassemblyPendingReplay)
 	clear(m.reassemblyReplayParents)
