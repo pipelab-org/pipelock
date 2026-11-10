@@ -4,9 +4,10 @@
 package proxy
 
 import (
+	"crypto/rand"
 	"fmt"
 	"io"
-	"math/rand/v2"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -270,18 +271,24 @@ func TestIssuerIDEvictionMatchesLeastRecentScan(t *testing.T) {
 	live := map[string]model{}
 	clock := 0
 	frozen := map[int]bool{}
-	rng := rand.New(rand.NewPCG(7, 11)) //nolint:gosec // G404: deterministic operation sequence, not security-sensitive
+	randomIndex := func(n int) int {
+		draw, err := rand.Int(rand.Reader, big.NewInt(int64(n)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return int(draw.Int64())
+	}
 	nextID := 0
 	for step := range 4 * issuerCookieMaxEntries {
-		switch op := rng.IntN(10); {
+		switch op := randomIndex(10); {
 		case op == 0 && step > issuerCookieMaxEntries && len(frozen) < 2:
-			h := 1 + rng.IntN(len(hosts)-1)
+			h := 1 + randomIndex(len(hosts)-1)
 			s.recordSent("reader", hosts[h], nil, nil, false, now)
 			frozen[h] = true
 		case op < 4 && len(live) > 0:
 			for id, m := range live {
 				clock++
-				if rng.IntN(2) == 0 {
+				if randomIndex(2) == 0 {
 					s.mintServerID("reader", hosts[m.host], id, now)
 				} else if !s.serverIDIssued("reader", hosts[m.host], id) {
 					t.Fatalf("step %d: retained proof %s not allowed", step, id)
@@ -290,7 +297,7 @@ func TestIssuerIDEvictionMatchesLeastRecentScan(t *testing.T) {
 				break
 			}
 		default:
-			h := rng.IntN(len(hosts))
+			h := randomIndex(len(hosts))
 			for frozen[h] {
 				h = (h + 1) % len(hosts)
 			}
