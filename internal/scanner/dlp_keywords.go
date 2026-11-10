@@ -52,9 +52,30 @@ type keywordWorkBudget struct {
 	occurrences   map[keywordProjectionKey]*keywordSourceOccurrences
 	sourceVersion uint64
 	used          int
-	nodes         int
-	incomplete    bool
+	// searchBytes counts parent bytes read while locating a literal segment.
+	// The per-occurrence visit charge stays separate. The field fits the
+	// budget value's existing allocator class.
+	searchBytes int
+	nodes       int
+	incomplete  bool
 }
+
+// keywordSegmentSearch is one literal segment edge's repeat decision and
+// occurrence list. Keyword graphs live on the scan's decodingMemo, not in
+// the shared decode cache, and text matching walks that memo on the calling
+// goroutine. The mapped and logical fields on the same node are already
+// unsynchronized for that reason, so this cache is too.
+type keywordSegmentSearch struct {
+	repeat int8
+	at     []int
+	from   int
+	done   bool
+}
+
+const (
+	segmentRepeatUnique int8 = 1
+	segmentRepeatMany   int8 = 2
+)
 
 type keywordDecodeSource struct {
 	reassembly         *assembledKeywordBits
@@ -68,6 +89,7 @@ type keywordDecodeSource struct {
 	owner              *keywordDecodeSources
 	offsets            []keywordByteSpan
 	mapped             bool
+	segmentSearch      *keywordSegmentSearch
 }
 
 func newKeywordDecodeSources(root string) *keywordDecodeSources {
@@ -188,10 +210,12 @@ func (n *keywordDecodeSource) visitOneSource(start, end int, visit func(string, 
 		return visit(n.text, start, end)
 	}
 	// A repeated literal segment has no single offset map. Visit every
-	// occurrence so a later labeled copy can still qualify.
+	// occurrence so a later labeled copy can still qualify. The repeat
+	// decision and the positions are cached for this edge, including a
+	// negative decision, so later candidates do not rescan the parent.
 	if n.encoding == keywordSegment && n.text != "" {
-		if at := strings.Index(n.parent.text, n.text); at >= 0 && strings.Contains(n.parent.text[at+1:], n.text) {
-			return n.visitRepeatedSegment(start, end, visit)
+		if handled, matched := n.visitLiteralSegment(start, end, visit); handled {
+			return matched
 		}
 	}
 	if n.encoding == "identity" && n.parent.text == n.text {
@@ -225,36 +249,6 @@ func (n *keywordDecodeSource) visitOneSource(start, end int, visit func(string, 
 		return false
 	}
 	return n.parent.visitSources(n.offsets[start].start, n.offsets[end-1].end, visit)
-}
-
-// visitRepeatedSegment maps a literal segment that occurs more than once.
-// keywordSegmentOffsets keeps a single map only for a unique segment and
-// returns nil otherwise; each occurrence here keeps its own source position.
-func (n *keywordDecodeSource) visitRepeatedSegment(start, end int, visit func(string, int, int) bool) bool {
-	if n.parent == nil || start < 0 || end > len(n.text) || end <= start {
-		n.owner.incomplete = true
-		return false
-	}
-	parent := n.parent.text
-	segment := n.text
-	from := 0
-	for from <= len(parent)-len(segment) {
-		if !n.owner.charge(len(segment) + keywordSpanBytes) {
-			n.owner.incomplete = true
-			n.owner.budget.incomplete = true
-			return false
-		}
-		rel := strings.Index(parent[from:], segment)
-		if rel < 0 {
-			return false
-		}
-		at := from + rel
-		if n.parent.visitSources(at+start, at+end, visit) {
-			return true
-		}
-		from = at + 1
-	}
-	return false
 }
 
 // keywordCandidateContext distinguishes logical decoded text from projections
@@ -1088,4 +1082,102 @@ func keywordQueryValueOffsets(source, view string) []keywordByteSpan {
 		from += len(pair) + 1
 	}
 	return offsets
+}
+
+// visitLiteralSegment walks a segment edge. handled is false only when the
+// segment occurs once, so the caller keeps the single-copy offset map.
+// Occurrence positions are cached. A qualifying copy returns before later
+// copies are searched, and every visit pays the per-occurrence charge.
+func (n *keywordDecodeSource) visitLiteralSegment(start, end int, visit func(string, int, int) bool) (bool, bool) {
+	if n.parent == nil || start < 0 || end > len(n.text) || end <= start {
+		n.owner.incomplete = true
+		return true, false
+	}
+	if n.segmentSearch == nil {
+		cost := int(reflect.TypeFor[keywordSegmentSearch]().Size())
+		if !n.owner.charge(cost) {
+			return true, false
+		}
+		n.segmentSearch = &keywordSegmentSearch{}
+	}
+	st := n.segmentSearch
+	if st.repeat == segmentRepeatUnique {
+		return false, false
+	}
+	if st.repeat != segmentRepeatMany {
+		for len(st.at) < 2 {
+			rel, ok := n.indexSegment(st.from)
+			if !ok {
+				return true, false
+			}
+			if rel < 0 {
+				st.repeat = segmentRepeatUnique
+				st.done = true
+				st.at = nil
+				return false, false
+			}
+			st.at = append(st.at, st.from+rel)
+			st.from += rel + 1
+		}
+		st.repeat = segmentRepeatMany
+	}
+	for _, at := range st.at {
+		if !n.chargeSegmentVisit() {
+			return true, false
+		}
+		if n.parent.visitSources(at+start, at+end, visit) {
+			return true, true
+		}
+	}
+	for !st.done {
+		rel, ok := n.indexSegment(st.from)
+		if !ok {
+			return true, false
+		}
+		if rel < 0 {
+			st.done = true
+			break
+		}
+		at := st.from + rel
+		st.at = append(st.at, at)
+		st.from = at + 1
+		if !n.chargeSegmentVisit() {
+			return true, false
+		}
+		if n.parent.visitSources(at+start, at+end, visit) {
+			return true, true
+		}
+	}
+	return true, false
+}
+
+func (n *keywordDecodeSource) chargeSegmentVisit() bool {
+	return n.owner.charge(len(n.text) + keywordSpanBytes)
+}
+
+// indexSegment locates the next literal copy at or after from. ok is false
+// only when the keyword allowance cannot pay for the suffix. rel is negative
+// when no copy remains.
+func (n *keywordDecodeSource) indexSegment(from int) (int, bool) {
+	parent, segment := n.parent.text, n.text
+	if segment == "" || from > len(parent)-len(segment) {
+		return -1, true
+	}
+	suffixLen := len(parent) - from
+	room := maxDecodeTotalBytes - n.owner.budget.used
+	if keywordSpanBytes >= room || suffixLen > room-keywordSpanBytes {
+		n.owner.incomplete = true
+		n.owner.budget.incomplete = true
+		return -1, false
+	}
+	rel := strings.Index(parent[from:], segment)
+	examined := suffixLen
+	if rel >= 0 {
+		examined = rel + len(segment)
+	}
+	if !n.owner.charge(examined + keywordSpanBytes) {
+		return -1, false
+	}
+	n.owner.budget.searchBytes += examined
+	return rel, true
 }
