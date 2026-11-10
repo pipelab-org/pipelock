@@ -161,17 +161,25 @@ func singlePassInputs() []singlePassInput {
 		"percent":  percentEncodeN("A", maxDecodeRounds+20),
 		"work":     decodeBudgetNestedText(),
 	} {
+		// The refusal exists only outbound; inbound modes add only time.
 		text := "payment " + singlePassCard + " note: " + limit
-		add("limit/"+name, text, text)
+		for _, m := range modes {
+			if m.opts.scanSecretLeak {
+				inputs = append(inputs, singlePassInput{"limit/" + name + "/" + m.name, text, text, m.opts, m.inbound, m.shared})
+			}
+		}
 	}
-	size := 96 << 10
+	// One large clean body per shape reaches the replay descriptor cap; the
+	// secret positions need only enough surrounding text to be found mid-body.
+	large, small := 48<<10, 6<<10
 	if testing.Short() {
-		size = 16 << 10
+		large, small = 16<<10, 4<<10
 	}
 	for _, shape := range []string{"prose", "short", "b64json"} {
-		body := singlePassBody(shape, size)
+		clean := singlePassBody(shape, large)
+		add(shape+"/large/clean", clean, clean)
+		body := singlePassBody(shape, small)
 		mid := len(body) / 2
-		add(shape+"/clean", body, body)
 		for _, s := range []string{"anthropic", "card", "warn"} {
 			secret := secrets[s]
 			for pos, text := range map[string]string{
@@ -225,6 +233,11 @@ func TestTextDLPSinglePassMatchesTwoPasses(t *testing.T) {
 	var diffs, findings int
 	for sName, s := range scanners {
 		for _, in := range inputs {
+			// A keyword scanner keeps two passes either way; large bodies and
+			// limit inputs add only time there.
+			if s.hasDLPKeywords() && (strings.Contains(in.name, "/large/") || strings.HasPrefix(in.name, "limit/")) {
+				continue
+			}
 			textDLPSinglePass = false
 			before := runSinglePassInput(s, in)
 			textDLPSinglePass = true
