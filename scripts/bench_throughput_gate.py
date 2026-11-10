@@ -158,10 +158,15 @@ def failure_detail(output: Path, limit: int = 4000) -> str:
         pass
     parts: list[str] = []
     budget = limit
-    for path in [*[p for p in last if p in files], *[p for p in files if p not in last]]:
+    failing = [p for p in last if p in files]
+    for path in [*failing, *[p for p in files if p not in last]]:
         text = path.read_text(errors="replace").strip()
         header = f"{path.name}:\n"
         room = budget - len(header) - (2 if parts else 0)
+        if path in failing[:-1]:
+            # The failing invocation's stderr must not crowd out its stdout,
+            # where a benchmark's own b.Fatal lands.
+            room = min(room, limit // len(failing) - len(header) - 2)
         if not text or room <= 0:
             continue
         # Keep each file's end, where Go prints the error, and stop when the

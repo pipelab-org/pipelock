@@ -226,6 +226,18 @@ class FailureReportingTest(unittest.TestCase):
         self.assertTrue(detail.endswith("FINAL_COMPILER_ERROR") or "FINAL_COMPILER_ERROR" in detail)
         self.assertLessEqual(len(detail), 4000)
 
+    def test_failure_detail_keeps_both_streams_of_the_failing_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / "candidate-1.stderr").write_text("e" * 9000 + "\nSTDERR_END\n")
+            (output / "candidate-1.txt").write_text("--- FAIL: BenchmarkX\nSTDOUT_FATAL\n")
+            (output / "execution.jsonl").write_text(json.dumps(
+                {"round": 1, "side": "candidate", "stdout": "candidate-1.txt", "stderr": "candidate-1.stderr"}) + "\n")
+            detail = gate.failure_detail(output)
+        self.assertIn("STDERR_END", detail)
+        self.assertIn("STDOUT_FATAL", detail)
+        self.assertLessEqual(len(detail), 4000)
+
     def test_invalid_thresholds_are_undecided(self):
         with tempfile.TemporaryDirectory() as directory:
             for bad in (("--fail-pct", "nan"), ("--warn-pct", "nan"), ("--fail-pct", "inf"),
