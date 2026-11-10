@@ -278,7 +278,7 @@ func compareSinglePass(t *testing.T, sName string) {
 		}
 	}
 	// A comparison where little is found proves little.
-	if findings*2 < compared {
+	if compared == 0 || findings*2 < compared {
 		t.Fatalf("only %d of %d scans produced findings", findings, compared)
 	}
 	if diffs > 0 {
