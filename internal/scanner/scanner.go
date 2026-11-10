@@ -6523,6 +6523,12 @@ func (s *Scanner) checkSubdomainEntropy(hostname string) Result {
 	}
 
 	regDomain, err := publicsuffix.EffectiveTLDPlusOne(hostname)
+	if unexpectedPublicSuffixLookup(hostname, err) {
+		// Empty-label and invalid-suffix errors used to take the same allow
+		// as "host is itself a public suffix". Only that benign miss has no
+		// subdomain labels to score. Every other lookup error refuses.
+		return publicSuffixLookupBlock()
+	}
 	if err != nil || regDomain == hostname {
 		return Result{Allowed: true}
 	}
@@ -6635,6 +6641,41 @@ func (s *Scanner) isExcludedFromSubdomainEntropy(hostname string) bool {
 // be set or unset per host without affecting the other gate.
 func (s *Scanner) isExcludedFromQueryEntropy(hostname string) bool {
 	return matchesDomainList(hostname, s.queryExclusions)
+}
+
+// publicSuffixLookupFailedReason is the block text for an EffectiveTLDPlusOne
+// error that is not the benign "host is itself a public suffix" miss. The
+// hostname is not included: it is caller-controlled and this string is copied
+// into receipts and block responses.
+const publicSuffixLookupFailedReason = "public suffix lookup failed"
+
+// unexpectedPublicSuffixLookup reports whether err is an EffectiveTLDPlusOne
+// failure other than the documented benign case. That case is
+// "publicsuffix: cannot derive eTLD+1": the host is a public suffix (com,
+// co.uk, github.io) or an unmanaged single label (localhost, intranet), so
+// there is no registrable parent and no subdomain to score. The library
+// returns that when len(hostname) <= len(PublicSuffix(hostname)), after
+// rejecting empty labels. The invalid-suffix error is a separate return
+// and is not produced for any host the empty-label check accepts; it
+// still fail-closes.
+func unexpectedPublicSuffixLookup(hostname string, err error) bool {
+	if err == nil {
+		return false
+	}
+	if strings.HasPrefix(hostname, ".") || strings.HasSuffix(hostname, ".") || strings.Contains(hostname, "..") {
+		return true
+	}
+	suffix, _ := publicsuffix.PublicSuffix(hostname)
+	return len(hostname) > len(suffix)
+}
+
+func publicSuffixLookupBlock() Result {
+	return Result{
+		Allowed: false,
+		Reason:  publicSuffixLookupFailedReason,
+		Scanner: ScannerSubdomainEntropy,
+		Score:   1.0,
+	}
 }
 
 // baseDomain returns the registrable domain (eTLD+1) for budget tracking,
