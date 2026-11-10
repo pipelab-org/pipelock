@@ -64,6 +64,12 @@ func TestIssuerIDHistoryBlockReason(t *testing.T) {
 				s.history[fmt.Sprintf("session-%d", i)] = &issuerIDCaller{}
 			}
 		}, "destination_history_capacity"},
+		{"admitted caller at caller capacity", func(s *issuerQueryStore, key string) {
+			s.recordSent(key, mustIssuerQueryURL(t, "https://other.vendor.example/items"), nil, nil, true, time.Now())
+			for i := 1; i < issuerUnreadableMaxSessions; i++ {
+				s.history[fmt.Sprintf("session-%d", i)] = &issuerIDCaller{}
+			}
+		}, "destination_history_missing"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, cfg := newSentIssuerProxy(t)
@@ -80,6 +86,13 @@ func TestIssuerIDHistoryBlockReason(t *testing.T) {
 			}
 			if tc.want != "no_allowance" && s.serverIDIssued(key, origin, serverIDListed) {
 				t.Fatal("diagnosis granted ID authority")
+			}
+			if tc.want == "destination_history_missing" {
+				// "missing" must mean a later send can still admit history.
+				s.recordSent(key, origin, nil, nil, true, time.Now())
+				if s.idDestinationLocked(key, origin) == nil {
+					t.Fatal("missing history was actually refused at capacity")
+				}
 			}
 		})
 	}

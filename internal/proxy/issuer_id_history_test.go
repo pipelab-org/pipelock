@@ -161,6 +161,14 @@ func TestIssuerIDUnknownDestinationFreezesCaller(t *testing.T) {
 				if s.serverIDIssued(key, later, serverIDOther) || !s.serverIDIssued(key, origin, serverIDListed) {
 					t.Fatal("unknown destination reopened learning or revoked proof")
 				}
+				// A destination admitted before the fallback keeps a compacted
+				// bucket; only the caller freeze stops it learning again.
+				s.recordSent(key, origin, nil, []byte(agentBlob), true, now)
+				s.mintServerID(key, origin, serverIDCreated, now)
+				s.mintServerID(key, origin, agentBlob, now)
+				if s.serverIDIssued(key, origin, serverIDCreated) || s.serverIDIssued(key, origin, agentBlob) {
+					t.Fatal("caller freeze let an existing destination learn")
+				}
 			})
 		}
 	}
@@ -391,5 +399,21 @@ func TestIssuerIDOpaqueConnectFreezesBeforeDial(t *testing.T) {
 	}
 	if !store.serverIDIssued(key, origin, serverIDListed) {
 		t.Fatal("opaque CONNECT revoked exact proof")
+	}
+	// The tunnel may still be open after an enabled reload starts
+	// intercepting the host, so that reload must not reopen learning.
+	next := cfg.Clone()
+	next.TLSInterception.PassthroughDomains = nil
+	if !p.Reload(next, scanner.MustNew(next)) {
+		t.Fatal("enabled reload failed")
+	}
+	live := p.issuerStoreForUnmediatedSend()
+	if live != store {
+		t.Fatal("enabled reload replaced issuer history")
+	}
+	live.recordSent(key, origin, nil, nil, true, time.Now())
+	live.mintServerID(key, origin, serverIDOther, time.Now())
+	if live.serverIDIssued(key, origin, serverIDOther) || !live.serverIDIssued(key, origin, serverIDListed) {
+		t.Fatal("removing passthrough reopened learning or revoked proof")
 	}
 }

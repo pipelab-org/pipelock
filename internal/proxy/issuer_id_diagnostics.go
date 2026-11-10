@@ -74,7 +74,8 @@ func (ic *InterceptContext) issuerIDBlockReason(target *url.URL) string {
 	}
 	bucket := store.idDestinationLocked(session, target)
 	if bucket == nil {
-		if store.idAdmissionClosed || store.idDestinations >= issuerUnreadableMaxSessions || len(store.history) >= issuerUnreadableMaxSessions {
+		// The caller limit matters only to a caller that has not been admitted.
+		if store.idAdmissionClosed || store.idDestinations >= issuerUnreadableMaxSessions || (caller == nil && len(store.history) >= issuerUnreadableMaxSessions) {
 			return "destination_history_capacity"
 		}
 		return "destination_history_missing"
