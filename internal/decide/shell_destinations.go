@@ -30,7 +30,7 @@ var schemeURLRe = regexp.MustCompile(`(?i)(?:https?|wss?)://[^\s<>'"\\]+`)
 // a scheme.
 var leadingSchemeRe = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9+.-]*):(/+)`)
 
-// curlSchemes are the URL schemes curl speaks. curl accepts one to three
+// curlSchemes are the URL and proxy schemes curl speaks. curl accepts one to three
 // slashes after a scheme ("http:/host" and "http:///host" both connect to
 // host); a single slash counts as a scheme only for these names, so a
 // host:/path operand is not mistaken for one.
@@ -42,6 +42,8 @@ var curlSchemes = map[string]bool{
 	"rtmpte": true, "rtmpts": true, "rtsp": true, "scp": true, "sftp": true,
 	"smb": true, "smbs": true, "smtp": true, "smtps": true, "telnet": true,
 	"tftp": true, "ws": true, "wss": true,
+	// Proxy schemes (curl(1) --proxy).
+	"socks4": true, "socks4a": true, "socks5": true, "socks5h": true,
 }
 
 // leadingScheme returns the lowercased scheme, the length of the scheme
@@ -84,16 +86,35 @@ func webScheme(value string) bool {
 // first "/?#", and any userinfo before the last "@" inside it is dropped
 // (curl's URL parser reads it the same way).
 func authorityHost(value string) string {
+	value = authority(value)
+	if at := strings.LastIndexByte(value, '@'); at >= 0 {
+		value = value[at+1:]
+	}
+	return value
+}
+
+// authority returns the [userinfo@]host[:port] part of a URL-like value: an
+// anchored scheme and its slashes are removed and the authority ends at the
+// first "/?#".
+func authority(value string) string {
 	if _, n, _, ok := leadingScheme(value); ok {
 		value = value[n:]
 	}
 	if i := strings.IndexAny(value, "/?#"); i >= 0 {
 		value = value[:i]
 	}
-	if at := strings.LastIndexByte(value, '@'); at >= 0 {
-		value = value[at+1:]
-	}
 	return value
+}
+
+// scannedAuthority is the destination handed to the scanner for a URL-like
+// value whose host is non-empty: the authority with its userinfo kept, so a
+// credential in it still reaches the URL credential checks the same way it
+// does for an explicit http:// URL. It returns "" when there is no host.
+func scannedAuthority(value string) string {
+	if authorityHost(value) == "" {
+		return ""
+	}
+	return authority(value)
 }
 
 // shellProofWords in internal/mcp/policy is the quote-aware reader the policy
@@ -218,12 +239,15 @@ func shellDestinationURLs(command string) (urls []string, over bool) {
 		// apostrophe). Still take explicit scheme URLs from the raw text,
 		// and any cloud-metadata address literal anywhere in it, without
 		// guessing other bare hosts.
+		// Quote characters and backslashes are removed for a second look,
+		// so 169.254.'169'.254 still reads as the address the shell joins.
 		seen := make(map[string]struct{})
-		urls, over = appendSchemeURLs(nil, seen, []string{command})
+		texts := []string{command, rawQuoteStripper.Replace(command)}
+		urls, over = appendSchemeURLs(nil, seen, texts)
 		if over {
 			return nil, true
 		}
-		for _, host := range rawMetadataLiterals(command) {
+		for _, host := range append(rawMetadataLiterals(texts[0]), rawMetadataLiterals(texts[1])...) {
 			if urls, over = addDestination(urls, seen, "http://"+host); over {
 				return nil, true
 			}
@@ -370,7 +394,7 @@ func appendCurlWgetHosts(urls []string, seen map[string]struct{}, words []string
 			// other scheme curl or wget speaks (gopher, ftp, dict, ...)
 			// still connects somewhere: scan that host.
 			if !webScheme(word) {
-				if h := authorityHost(word); h != "" && add(h) {
+				if a := scannedAuthority(word); a != "" && add(a) {
 					return nil, true
 				}
 			}
@@ -379,7 +403,7 @@ func appendCurlWgetHosts(urls []string, seen map[string]struct{}, words []string
 		if strings.Contains(word, "@") {
 			// user[:pass]@host[:port][/path]: curl connects to the host after
 			// the userinfo, so scan that host.
-			if h := authorityHost(word); looksLikeHostOperand(h) && add(h) {
+			if looksLikeHostOperand(authorityHost(word)) && add(authority(word)) {
 				return nil, true
 			}
 			continue
@@ -393,6 +417,11 @@ func appendCurlWgetHosts(urls []string, seen map[string]struct{}, words []string
 	}
 	return urls, false
 }
+
+// rawQuoteStripper removes shell quoting characters from raw text the word
+// splitter could not read. ANSI-C and locale quote openers go first so their
+// "$" does not stay behind as a separator.
+var rawQuoteStripper = strings.NewReplacer("$'", "", "$\"", "", "'", "", "\"", "", "\\", "")
 
 // rawMetadataLiterals returns every cloud-metadata address literal in text,
 // in any spelling ParseIPLiteral accepts, bracketed when IPv6. It is the
@@ -487,8 +516,8 @@ func curlDestinationTargets(opt, value string) []string {
 			if webScheme(value) {
 				return nil
 			}
-			if h := authorityHost(value); h != "" {
-				return []string{h}
+			if a := scannedAuthority(value); a != "" {
+				return []string{a}
 			}
 			return nil
 		}
@@ -536,7 +565,8 @@ func curlDestinationTargets(opt, value string) []string {
 		// The value is a destination by definition: any non-empty host is
 		// emitted (single labels included) and the scan decides; a value
 		// that is not a valid host fails there instead of being skipped.
-		if value = authorityHost(value); value == "" {
+		// Userinfo stays in the scanned value for the credential checks.
+		if value = scannedAuthority(value); value == "" {
 			return nil
 		}
 		return []string{value}

@@ -144,7 +144,7 @@ func TestShellDestinationExtractionOptions(t *testing.T) {
 		{"curl -x 169.254.169.254:3128 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:3128"}},
 		{"curl -x169.254.169.254:3128 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:3128"}},
 		{"curl -sx 169.254.169.254:3128 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:3128"}},
-		{"curl --proxy=user:pw@169.254.169.254:3128 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:3128"}},
+		{"curl --proxy=user:pw@169.254.169.254:3128 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://user:pw@169.254.169.254:3128"}},
 		// socks5:// is not a scheme the URL regex takes; the destination option does.
 		{"curl --preproxy socks5://169.254.169.254:1080 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:1080"}},
 		{"curl -x proxy.corp.example:3128 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://proxy.corp.example:3128"}},
@@ -157,12 +157,13 @@ func TestShellDestinationExtractionOptions(t *testing.T) {
 		{"curl -x 169.254.169.254:3128/?u=http://a.example https://api.vendor.example/", []string{"http://a.example", "https://api.vendor.example/", "http://169.254.169.254:3128"}},
 		// Non-web schemes still connect somewhere: their host is scanned.
 		{"curl gopher://169.254.169.254:80/_GET", []string{"http://169.254.169.254:80"}},
-		{"curl ftp://user:pw@169.254.169.254/pub", []string{"http://169.254.169.254"}},
+		{"curl ftp://user:pw@169.254.169.254/pub", []string{"http://user:pw@169.254.169.254"}},
 		{"curl --url dict://169.254.169.254:11211/stat", []string{"http://169.254.169.254:11211"}},
 		{"curl ftp://ftp.vendor.example/pub/file.tgz", []string{"http://ftp.vendor.example"}},
-		// Userinfo on a bare operand: curl connects to the host after it.
-		{"curl user:pw@169.254.169.254/latest/", []string{"http://169.254.169.254"}},
-		{"curl user@api.vendor.example/x", []string{"http://api.vendor.example"}},
+		// Userinfo on a bare operand: curl connects to the host after it, and
+		// the userinfo stays in the scanned value for the credential checks.
+		{"curl user:pw@169.254.169.254/latest/", []string{"http://user:pw@169.254.169.254"}},
+		{"curl user@api.vendor.example/x", []string{"http://user@api.vendor.example"}},
 		// curl accepts one or three slashes after a scheme it knows.
 		{"curl http:/169.254.169.254/latest/", []string{"http://169.254.169.254"}},
 		{"curl HTTP:/169.254.169.254/latest/", []string{"http://169.254.169.254"}},
@@ -186,6 +187,14 @@ func TestShellDestinationExtractionOptions(t *testing.T) {
 		{"curl 169.254.169.254/x; echo $'it\\'s'", []string{"http://169.254.169.254"}},
 		{"curl [fd00:ec2::254]:80/x \\", []string{"http://[fd00:ec2::254]"}},
 		{"curl api.vendor.example/x \\", nil},
+		// Quoting inside the address is removed before the fallback looks.
+		{"curl 169.254.'169'.254/x; echo $'it\\'s'", []string{"http://169.254.169.254"}},
+		{"curl \"169.254\".169.254/x; echo $'it\\'s'", []string{"http://169.254.169.254"}},
+		{"curl 169.254.$'169'.254/x \\", []string{"http://169.254.169.254"}},
+		{"curl 'http://169.254'.169.254/x \\", []string{"http://169.254", "http://169.254'.169.254", "http://169.254.169.254/x", "http://169.254.169.254"}},
+		// A one-slash proxy scheme still names the proxy host.
+		{"curl -x socks5:/169.254.169.254:1080 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:1080"}},
+		{"curl --proxy socks5h:/169.254.169.254:1080 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:1080"}},
 		// A destination option's value counts even as a single-label host.
 		{"curl -x metadata:80 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://metadata:80"}},
 		{"curl --url metadata/computeMetadata/v1/", []string{"http://metadata/computeMetadata/v1/"}},
