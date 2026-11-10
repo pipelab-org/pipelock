@@ -411,6 +411,8 @@ func TestCommandSubstitutionBodies(t *testing.T) {
 		{"a\\ #$(b)", []string{"b"}},
 		{"$(a)#$(b)", []string{"a", "b"}},
 		{"a #$(b)\n$(c)", []string{"c"}},
+		{"# don't\n\"`b`\"", []string{"b"}},
+		{"curl http://a.example/#x\"$(b)\"", []string{"b"}},
 		{"$(x; esac) d", []string{"x; esac"}},
 		{`$(a "$(b)" c) d`, []string{`a "$(b)" c`}},
 		{`"$(a ")" b)" c`, []string{`a ")" b`}},

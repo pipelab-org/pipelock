@@ -177,6 +177,24 @@ func TestDecide_ShellDestinations(t *testing.T) {
 			wantScanner: scanner.ScannerSSRFMetadata,
 		},
 		{
+			name:        "substitution after a comment with an apostrophe",
+			command:     "# don't\necho \"$(curl 169.254.169.254/latest/meta-data/)\"",
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
+			name:        "backtick after a comment with an apostrophe",
+			command:     "# don't\necho \"`curl 169.254.169.254/latest/meta-data/`\"",
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
+			name:        "comment inside a substitution hides its paren",
+			command:     "echo \"$(echo hi # )\ncurl 169.254.169.254/latest/meta-data/)\"",
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
 			name:        "double-quoted substitution bare host",
 			command:     `echo "$(curl ` + blocked + `/x)"`,
 			blocklist:   []string{blocked},
