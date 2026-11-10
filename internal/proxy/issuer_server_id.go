@@ -435,10 +435,14 @@ func (s *issuerQueryStore) mintServerID(session string, target *url.URL, value s
 	if _, _, ok := issuerCookieOrigin(target); !ok {
 		return
 	}
-	sentDigest, ok := s.sentDigest(target, value)
-	if !ok {
+	// Canonicalize the host and derive every digest before taking the shared
+	// lock; IDNA lookup and HMAC work would otherwise serialize all callers.
+	host := issuerSentHost(target)
+	if host == "" {
 		return
 	}
+	sentDigest := s.digestFields("sent_host", host, value)
+	destinationKey := s.idDestinationKey(host)
 	idDigest, _ := s.originDigest("server_id", target, value)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -447,14 +451,14 @@ func (s *issuerQueryStore) mintServerID(session string, target *url.URL, value s
 		s.touchIDLocked(issued, idDigest)
 		return
 	}
-	if s.mintBlockedLocked(session, target) {
+	bucket := s.learningDestinationLocked(session, destinationKey)
+	if bucket == nil {
 		return
 	}
-	bucket := s.idDestinationLocked(session, target)
 	if provenance, sent := bucket.sent[sentDigest]; sent && provenance != issuerSentServerFirst {
 		return
 	}
-	if !s.idIntroducedLocked(session, target, value) {
+	if !s.idIntroducedLocked(bucket, host, value) {
 		return
 	}
 	if issued == nil {
@@ -519,11 +523,9 @@ func issuerServerIDIntroducible(value string) bool {
 // send used an already allowed ID. Agent-first words never become introduction
 // proof, including when used inside another issued ID. IDs consisting solely
 // of short fields keep ordinary entropy scoring.
-func (s *issuerQueryStore) idIntroducedLocked(session string, target *url.URL, value string) bool {
+func (s *issuerQueryStore) idIntroducedLocked(bucket *issuerIDDestination, host, value string) bool {
 	introduced := false
-	bucket := s.idDestinationLocked(session, target)
 	mac := hmac.New(sha256.New, s.key[:])
-	host := issuerSentHost(target)
 	_ = issuerSentTokens(value, func(token string) bool {
 		digest := issuerDigestFields(mac, "sent_host", host, token)
 		provenance, sent := bucket.sent[digest]

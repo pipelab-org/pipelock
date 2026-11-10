@@ -49,11 +49,23 @@ func (s *issuerQueryStore) admitIDCallerLocked(session string) *issuerIDCaller {
 
 func (s *issuerQueryStore) idDestinationLocked(session string, target *url.URL) *issuerIDDestination {
 	host := issuerSentHost(target)
-	caller := s.history[session]
-	if host == "" || caller == nil {
+	if host == "" {
 		return nil
 	}
-	return caller.destinations[s.digestFields("id_destination", host)]
+	return s.idDestinationByKeyLocked(session, s.idDestinationKey(host))
+}
+
+// idDestinationKey costs an HMAC; callers compute it before taking s.mu.
+func (s *issuerQueryStore) idDestinationKey(host string) [32]byte {
+	return s.digestFields("id_destination", host)
+}
+
+func (s *issuerQueryStore) idDestinationByKeyLocked(session string, key [32]byte) *issuerIDDestination {
+	caller := s.history[session]
+	if caller == nil {
+		return nil
+	}
+	return caller.destinations[key]
 }
 
 func (s *issuerQueryStore) admitIDDestinationLocked(session string, target *url.URL) *issuerIDDestination {
@@ -117,10 +129,20 @@ func (s *issuerQueryStore) observeIDFreezeLocked(scope string) {
 // Missing history never means empty history. Neither responses nor lookups
 // can create it, and a freeze or refused admission is never undone.
 func (s *issuerQueryStore) mintBlockedLocked(session string, target *url.URL) bool {
+	host := issuerSentHost(target)
+	return host == "" || s.learningDestinationLocked(session, s.idDestinationKey(host)) == nil
+}
+
+// learningDestinationLocked returns the destination only while both the
+// caller and the destination can still learn new IDs.
+func (s *issuerQueryStore) learningDestinationLocked(session string, key [32]byte) *issuerIDDestination {
 	caller := s.history[session]
 	if caller == nil || caller.block != issuerHistoryComplete {
-		return true
+		return nil
 	}
-	bucket := s.idDestinationLocked(session, target)
-	return bucket == nil || bucket.block != issuerHistoryComplete
+	bucket := caller.destinations[key]
+	if bucket == nil || bucket.block != issuerHistoryComplete {
+		return nil
+	}
+	return bucket
 }
