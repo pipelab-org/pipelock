@@ -101,9 +101,8 @@ type issuerQueryStore struct {
 	// ids retains exact origin-bound proofs independently of learning history.
 	// Each entry points to its permanent destination bucket so cache pressure
 	// cannot evict a frozen destination's irreplaceable proofs.
-	ids     map[string]map[[32]byte]issuerIDEntry
-	idClock uint64
-	used    map[string]time.Time
+	ids  map[string]*issuerIDCache
+	used map[string]time.Time
 }
 
 func newIssuerQueryStore() *issuerQueryStore {
@@ -129,7 +128,7 @@ func newIssuerQueryGeneration(ledger *issuerIDLedger) *issuerQueryStore {
 		paths:          make(map[string][][32]byte),
 		documents:      make(map[string][][32]byte),
 		locations:      make(map[string][]issuedLocationEntry),
-		ids:            make(map[string]map[[32]byte]issuerIDEntry),
+		ids:            make(map[string]*issuerIDCache),
 		used:           make(map[string]time.Time),
 	}
 }

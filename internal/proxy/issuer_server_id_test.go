@@ -610,9 +610,9 @@ func TestIssuerServerIDStore(t *testing.T) {
 		if !s.serverIDIssued("a", origin, serverIDListed) {
 			t.Fatal("positive control: HTTPS origin did not mint an ID")
 		}
-		issued := len(s.ids["a"])
+		issued := s.idCount("a")
 		s.mintServerID("a", plain, serverIDOther, now)
-		if len(s.ids["a"]) != issued {
+		if s.idCount("a") != issued {
 			t.Fatal("plain http changed issued ID evidence")
 		}
 		if s.serverIDIssued("a", plain, serverIDListed) {

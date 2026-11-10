@@ -200,7 +200,7 @@ func TestIssuerIDEvictionProtectsFrozen(t *testing.T) {
 			if got := s.serverIDIssued("reader", other, serverIDOther); got != (frozenCount < issuerCookieMaxEntries) {
 				t.Fatal("full pinned cache did not refuse only the new proof")
 			}
-			if len(s.ids["reader"]) != issuerCookieMaxEntries {
+			if s.idCount("reader") != issuerCookieMaxEntries {
 				t.Fatal("eviction changed cache capacity")
 			}
 		})
@@ -249,13 +249,12 @@ func TestIssuerIDFreezeCompactionAndRefresh(t *testing.T) {
 	if s.sentEntries != 0 || bucket.block != issuerHistoryUnreadBody {
 		t.Fatal("repeat freeze changed first cause or accounting")
 	}
-	clock := s.idClock
 	s.mintServerID("reader", origin, serverIDListed, now)
-	if s.idClock <= clock || len(s.ids["reader"]) != 1 {
+	if s.idCount("reader") != 1 || !s.serverIDIssued("reader", origin, serverIDListed) {
 		t.Fatal("frozen redelivery did not refresh existing proof only")
 	}
 	s.mintServerID("reader", origin, serverIDOther, now)
-	if len(s.ids["reader"]) != 1 {
+	if s.idCount("reader") != 1 {
 		t.Fatal("frozen redelivery created new proof")
 	}
 }

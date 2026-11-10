@@ -256,7 +256,15 @@ func TestIssuerIDLedgerKeepsFreezesAndLatches(t *testing.T) {
 func retiredIDCount(s *issuerQueryStore, session string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.ids[session])
+	return s.idCount(session)
+}
+
+// idCount reads the caller's retained proof count; callers serialize access.
+func (s *issuerQueryStore) idCount(session string) int {
+	if c := s.ids[session]; c != nil {
+		return len(c.entries)
+	}
+	return 0
 }
 
 type failingReader struct{}

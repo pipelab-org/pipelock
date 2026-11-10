@@ -298,7 +298,7 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 		pathIDs = nil
 	}
 	for _, pathID := range pathIDs {
-		if _, issued := s.serverIDMatchLocked(session, pathID.ids); !issued {
+		if s.serverIDMatchLocked(session, pathID.ids) == nil {
 			continue
 		}
 		for _, word := range pathID.words {
@@ -445,9 +445,11 @@ func (s *issuerQueryStore) mintServerID(session string, target *url.URL, value s
 		return
 	}
 	issued := s.ids[session]
-	if _, exists := issued[idDigest]; exists {
-		s.touchIDLocked(issued, idDigest)
-		return
+	if issued != nil {
+		if entry, exists := issued.entries[idDigest]; exists {
+			issued.touch(entry)
+			return
+		}
 	}
 	bucket := s.learningDestinationLocked(session, destinationKey)
 	if bucket == nil {
@@ -460,48 +462,22 @@ func (s *issuerQueryStore) mintServerID(session string, target *url.URL, value s
 		return
 	}
 	if issued == nil {
-		issued = make(map[[32]byte]issuerIDEntry)
+		issued = newIssuerIDCache()
 		s.ids[session] = issued
 	}
-	if len(issued) >= issuerCookieMaxEntries {
-		victim, ok := s.leastRecentIssuerIDLocked(session, issued)
-		if !ok {
+	if len(issued.entries) >= issuerCookieMaxEntries {
+		// Evict only a destination that can still learn. Frozen proofs cannot
+		// be replaced, so a full cache of pinned proofs refuses new IDs.
+		// learningDestinationLocked above already required a learning caller.
+		victim := issued.leastRecentReplaceable()
+		if victim == nil {
 			return
 		}
-		delete(issued, victim)
+		issued.remove(victim)
 	}
-	issued[idDigest] = issuerIDEntry{destination: bucket}
-	s.touchIDLocked(issued, idDigest)
-}
-
-// touchIDLocked marks an allowance as the most recently delivered or used.
-// It changes retention order only, never which IDs are allowed.
-func (s *issuerQueryStore) touchIDLocked(issued map[[32]byte]issuerIDEntry, digest [32]byte) {
-	s.idClock++
-	entry := issued[digest]
-	entry.lastUse = s.idClock
-	issued[digest] = entry
-}
-
-// leastRecentIssuerIDLocked evicts only a destination that can still learn.
-// Frozen proofs cannot be replaced, so full pinned caches refuse new IDs.
-func (s *issuerQueryStore) leastRecentIssuerIDLocked(session string, issued map[[32]byte]issuerIDEntry) ([32]byte, bool) {
-	caller := s.history[session]
-	if caller == nil || caller.block != issuerHistoryComplete {
-		return [32]byte{}, false
-	}
-	var oldest [32]byte
-	var oldestUse uint64
-	found := false
-	for digest, entry := range issued {
-		if entry.destination == nil || entry.destination.block != issuerHistoryComplete {
-			continue
-		}
-		if !found || entry.lastUse < oldestUse {
-			oldest, oldestUse, found = digest, entry.lastUse, true
-		}
-	}
-	return oldest, found
+	entry := &issuerIDEntry{digest: idDigest, destination: bucket}
+	issued.entries[idDigest] = entry
+	issued.touch(entry)
 }
 
 // issuerServerIDIntroducible reports whether value carries any word that
@@ -549,12 +525,12 @@ func (s *issuerQueryStore) serverIDIssued(session string, target *url.URL, segme
 	if s.retired {
 		return false
 	}
-	digest, issued := s.serverIDMatchLocked(session, candidates)
-	if !issued {
+	entry := s.serverIDMatchLocked(session, candidates)
+	if entry == nil {
 		return false
 	}
 	// Evict inactive IDs rather than a frequently used directory or item.
-	s.touchIDLocked(s.ids[session], digest)
+	s.ids[session].touch(entry)
 	return true
 }
 
@@ -596,14 +572,17 @@ func (s *issuerQueryStore) serverIDCandidates(mac hash.Hash, target *url.URL, se
 
 // serverIDMatchLocked reads existing authority only; the caller holds s.mu
 // and verifies runtime eligibility before granting anything.
-func (s *issuerQueryStore) serverIDMatchLocked(session string, c issuerIDCandidates) ([32]byte, bool) {
+func (s *issuerQueryStore) serverIDMatchLocked(session string, c issuerIDCandidates) *issuerIDEntry {
 	issued := s.ids[session]
+	if issued == nil {
+		return nil
+	}
 	for _, digest := range c.digests[:c.n] {
-		if _, ok := issued[digest]; ok {
-			return digest, true
+		if entry := issued.entries[digest]; entry != nil {
+			return entry
 		}
 	}
-	return [32]byte{}, false
+	return nil
 }
 
 // recordIssuerRequestSent records what an allowed request is about to send

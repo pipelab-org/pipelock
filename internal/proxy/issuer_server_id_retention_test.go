@@ -6,8 +6,10 @@ package proxy
 import (
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
 	"time"
@@ -43,7 +45,7 @@ func TestIssuerIDRetention(t *testing.T) {
 			if !s.serverIDIssued("reader", origin, serverIDListed) {
 				t.Fatal("active ID did not survive cache pressure")
 			}
-			if len(s.ids["reader"]) != issuerCookieMaxEntries {
+			if s.idCount("reader") != issuerCookieMaxEntries {
 				t.Fatal("retention changed the allowance capacity")
 			}
 			if s.serverIDIssued("reader", origin, "object-identifier-0000000000000000") {
@@ -241,11 +243,85 @@ func TestIssuerIDProvenanceConcurrent(t *testing.T) {
 	if got := s.idDestinationLocked("reader", origin).sent[other]; got != issuerSentAgentFirst {
 		t.Fatalf("agent-first word provenance = %d", got)
 	}
-	if len(s.ids["reader"]) > issuerCookieMaxEntries {
+	if s.idCount("reader") > issuerCookieMaxEntries {
 		t.Fatal("allowances exceeded capacity")
 	}
 	s.mintServerID("reader", origin, serverIDOther, now)
 	if s.serverIDIssued("reader", origin, serverIDOther) {
 		t.Fatal("agent-first word became an issued ID")
+	}
+}
+
+// The recency ring must pick the same victim as a full scan for the least
+// recently delivered or used proof of a destination that can still learn,
+// across interleaved touches, redeliveries and destination freezes.
+func TestIssuerIDEvictionMatchesLeastRecentScan(t *testing.T) {
+	s := newTestServerIDStore(t)
+	now := time.Now()
+	hosts := make([]*url.URL, 4)
+	for i := range hosts {
+		hosts[i] = mustIssuerQueryURL(t, fmt.Sprintf("https://h%d.vendor.example/items", i))
+		s.recordSent("reader", hosts[i], nil, nil, true, now)
+	}
+	type model struct {
+		host int
+		use  int
+	}
+	live := map[string]model{}
+	clock := 0
+	frozen := map[int]bool{}
+	rng := rand.New(rand.NewPCG(7, 11)) //nolint:gosec // G404: deterministic operation sequence, not security-sensitive
+	nextID := 0
+	for step := range 4 * issuerCookieMaxEntries {
+		switch op := rng.IntN(10); {
+		case op == 0 && step > issuerCookieMaxEntries && len(frozen) < 2:
+			h := 1 + rng.IntN(len(hosts)-1)
+			s.recordSent("reader", hosts[h], nil, nil, false, now)
+			frozen[h] = true
+		case op < 4 && len(live) > 0:
+			for id, m := range live {
+				clock++
+				if rng.IntN(2) == 0 {
+					s.mintServerID("reader", hosts[m.host], id, now)
+				} else if !s.serverIDIssued("reader", hosts[m.host], id) {
+					t.Fatalf("step %d: retained proof %s not allowed", step, id)
+				}
+				live[id] = model{m.host, clock}
+				break
+			}
+		default:
+			h := rng.IntN(len(hosts))
+			for frozen[h] {
+				h = (h + 1) % len(hosts)
+			}
+			id := fmt.Sprintf("object-identifier-%016d", nextID)
+			nextID++
+			want := ""
+			if len(live) >= issuerCookieMaxEntries {
+				oldest := -1
+				for vid, m := range live {
+					if !frozen[m.host] && (oldest < 0 || m.use < oldest) {
+						want, oldest = vid, m.use
+					}
+				}
+			}
+			s.mintServerID("reader", hosts[h], id, now)
+			clock++
+			if want != "" {
+				if s.serverIDIssued("reader", hosts[live[want].host], want) {
+					t.Fatalf("step %d: ring kept least recent learning proof", step)
+				}
+				delete(live, want)
+			}
+			live[id] = model{h, clock}
+			if s.idCount("reader") != len(live) {
+				t.Fatalf("step %d: cache %d, model %d", step, s.idCount("reader"), len(live))
+			}
+		}
+	}
+	for id, m := range live {
+		if !s.serverIDIssued("reader", hosts[m.host], id) {
+			t.Fatalf("model proof %s missing", id)
+		}
 	}
 }

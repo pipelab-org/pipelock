@@ -21,9 +21,70 @@ type issuerIDDestination struct {
 	sent  map[[32]byte]issuerSentProvenance
 }
 
+// issuerIDEntry is one retained proof. While its destination can still learn,
+// it is linked into its caller's recency ring. Once found frozen it is unlinked
+// (pinned) for good, because freezes are permanent and pinned proofs are never
+// victims.
 type issuerIDEntry struct {
-	lastUse     uint64
+	digest      [32]byte
 	destination *issuerIDDestination
+	prev, next  *issuerIDEntry
+}
+
+func (e *issuerIDEntry) replaceable() bool {
+	return e.destination != nil && e.destination.block == issuerHistoryComplete
+}
+
+// issuerIDCache holds one caller's proofs. order is the sentinel of a ring of
+// replaceable entries, most recent first, so touch and eviction cost amortized
+// O(1) under the shared ledger lock instead of a scan of every entry.
+type issuerIDCache struct {
+	entries map[[32]byte]*issuerIDEntry
+	order   issuerIDEntry
+}
+
+func newIssuerIDCache() *issuerIDCache {
+	c := &issuerIDCache{entries: make(map[[32]byte]*issuerIDEntry)}
+	c.order.prev, c.order.next = &c.order, &c.order
+	return c
+}
+
+func (c *issuerIDCache) unlink(e *issuerIDEntry) {
+	if e.next == nil {
+		return
+	}
+	e.prev.next, e.next.prev = e.next, e.prev
+	e.prev, e.next = nil, nil
+}
+
+// touch marks e as the most recently delivered or used. It changes retention
+// order only, never which IDs are allowed; pinned entries stay unlinked.
+func (c *issuerIDCache) touch(e *issuerIDEntry) {
+	c.unlink(e)
+	if !e.replaceable() {
+		return
+	}
+	e.prev, e.next = &c.order, c.order.next
+	c.order.next.prev = e
+	c.order.next = e
+}
+
+// leastRecentReplaceable returns the least recently delivered or used entry
+// whose destination can still learn. Entries at the old end whose destination
+// has since frozen are pinned on the way, each at most once.
+func (c *issuerIDCache) leastRecentReplaceable() *issuerIDEntry {
+	for e := c.order.prev; e != &c.order; e = c.order.prev {
+		if e.replaceable() {
+			return e
+		}
+		c.unlink(e)
+	}
+	return nil
+}
+
+func (c *issuerIDCache) remove(e *issuerIDEntry) {
+	c.unlink(e)
+	delete(c.entries, e.digest)
 }
 
 func (s *issuerQueryStore) closeIDAdmissionLocked() {
