@@ -80,7 +80,7 @@ func newMetadataSafeDialContext(
 
 func lookupMCPDialHost(ctx context.Context, sc *scanner.Scanner, host string) ([]string, error) {
 	if sc != nil {
-		return sc.HostResolver().LookupHost(ctx, host)
+		return sc.LookupDialHost(ctx, host)
 	}
 	return defaultMCPDialLookupHost(ctx, host)
 }

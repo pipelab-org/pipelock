@@ -1065,6 +1065,16 @@ func (s *Scanner) HostResolver() Resolver {
 	return s.resolver
 }
 
+// LookupDialHost resolves host through the scanner resolver. dns.host_overrides
+// win, then the configured upstream runs. The metadata-safe MCP dialer and
+// hook shell destinations both call this so a hostname has one lookup.
+func (s *Scanner) LookupDialHost(ctx context.Context, host string) ([]string, error) {
+	if s == nil || s.resolver == nil {
+		return nil, fmt.Errorf("scanner: no resolver")
+	}
+	return s.resolver.LookupHost(ctx, host)
+}
+
 // IsIPAllowlisted checks if an IP is in the SSRF IP allowlist (ssrf.ip_allowlist).
 // Used by checkSSRF and the dial-level SSRF check to exempt specific IP ranges.
 //
