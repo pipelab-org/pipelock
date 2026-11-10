@@ -451,9 +451,9 @@ var nestedShellNames = map[string]bool{
 }
 
 // shellShortFlags are bash(1)'s single-letter invocation and set options
-// (bash --help: -ilrsD, -c, -O, and -abefhkmnptuvxBCEHPT / -o). A cluster of
-// only these letters is flags; the command string is the next word. Any other
-// suffix is the command string attached to -c.
+// (bash --help: -ilrsD, -c, -O, and -abefhkmnptuvxBCEHPT / -o). A cluster
+// made of these letters that includes c starts the nested command string;
+// any other suffix on that cluster is treated as script text too.
 const shellShortFlags = "abcefhiklmnoprstuvxBCDEHOPT"
 
 // nestedShellScriptWords marks each shell word that is a nested shell's
@@ -462,43 +462,53 @@ const shellShortFlags = "abcefhiklmnoprstuvxBCDEHOPT"
 func nestedShellScriptWords(words []shellProofWord) []bool {
 	mark := make([]bool, len(words))
 	start := 0
-	for i := 0; i <= len(words); i++ {
-		if i < len(words) && !words[i].operator {
+	for i, w := range words {
+		if !w.operator {
 			continue
 		}
 		markNestedShellScripts(words[start:i], mark[start:i])
 		start = i + 1
 	}
+	markNestedShellScripts(words[start:], mark[start:])
 	return mark
 }
 
+// markNestedShellScripts marks the words of one command that may be a nested
+// shell's command string. Once -c appears among a shell's options, every
+// later word of the command is marked. Picking the single script word would
+// need each shell's exact option grammar (-o and -O take a value, clustered
+// or not, and long options differ by shell); a miscount would leave the real
+// script unmarked and its Git commands proved. Marking positional arguments
+// too only makes their Git reading stricter, so the error direction is safe.
 func markNestedShellScripts(words []shellProofWord, mark []bool) {
 	for i, w := range words {
 		if !nestedShellNames[commandName(w.value)] {
 			continue
 		}
+		sawCommand := false
 		for j := i + 1; j < len(words); j++ {
-			next, attached, ok := shellCommandString(words[j].value)
+			if sawCommand {
+				mark[j] = true
+				continue
+			}
+			attached, ok := shellCommandString(words[j].value)
 			if !ok {
 				continue
 			}
-			switch {
-			case attached:
+			sawCommand = true
+			if attached {
 				mark[j] = true
-			case next && j+1 < len(words):
-				mark[j+1] = true
 			}
-			break
 		}
 	}
 }
 
-// shellCommandString reports how word passes a command string to a shell.
-// next means the following word is the script (-c, -lc, -ce). attached means
-// the script is the suffix of word itself.
-func shellCommandString(word string) (next, attached, ok bool) {
+// shellCommandString reports whether word is a short-option cluster that
+// includes -c (-c, -lc, -ce, -oc). attached means the cluster also carries
+// text after its flags, which is marked as script text too.
+func shellCommandString(word string) (attached, ok bool) {
 	if len(word) < 2 || word[0] != '-' || word[1] == '-' {
-		return false, false, false
+		return false, false
 	}
 	body := word[1:]
 	i := 0
@@ -506,12 +516,9 @@ func shellCommandString(word string) (next, attached, ok bool) {
 		i++
 	}
 	if !strings.ContainsRune(body[:i], 'c') {
-		return false, false, false
+		return false, false
 	}
-	if i == len(body) {
-		return true, false, true
-	}
-	return false, true, true
+	return i < len(body), true
 }
 
 // plainShellWord reports whether a word in a scalar has the same text after
