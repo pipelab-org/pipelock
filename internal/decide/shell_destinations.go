@@ -154,6 +154,14 @@ func splitShellWords(source string) ([]string, bool) {
 			words = append(words, "\n")
 			i++
 			continue
+		case '$':
+			// $'...' (ANSI-C) and $"..." (locale) quoting decode escapes and
+			// drop the dollar sign; reading them as plain quotes would leave
+			// "$" glued to the word ($169.254.169.254). Report the structure
+			// unreliable so the raw-text fallback reads the command.
+			if i+1 < len(source) && (source[i+1] == '\'' || source[i+1] == '"') {
+				return nil, false
+			}
 		case '#':
 			if b.Len() == 0 {
 				for i < len(source) && source[i] != '\n' {
@@ -238,7 +246,26 @@ func splitShellWords(source string) ([]string, bool) {
 	return words, true
 }
 
+// maxNestedShellDepth bounds how many script layers (bash -c "sh -c '...'")
+// are reparsed. Each layer is a quoted word inside the one above, so real
+// commands rarely pass two.
+const maxNestedShellDepth = 4
+
+// scriptRunners are programs whose -c option (alone or in a short-option
+// cluster such as -lc or -xc) takes a whole shell script as its value.
+// commandBase strips any directory, so /bin/sh and /usr/bin/env bash work.
+var scriptRunners = map[string]bool{
+	"ash": true, "bash": true, "busybox": true, "csh": true, "dash": true,
+	"fish": true, "ksh": true, "mksh": true, "rbash": true, "runuser": true,
+	"sh": true, "su": true, "tcsh": true, "yash": true, "zsh": true,
+}
+
 func shellDestinationURLs(command string) (urls []string, over bool) {
+	return shellDestinationURLsAt(command, nil, make(map[string]struct{}), 0)
+}
+
+func shellDestinationURLsAt(command string, urls []string, seen map[string]struct{}, depth int) ([]string, bool) {
+	var over bool
 	words, ok := splitShellWords(command)
 	if !ok {
 		// The structure is not reliable (ANSI-C quoting, a heredoc with an
@@ -247,9 +274,8 @@ func shellDestinationURLs(command string) (urls []string, over bool) {
 		// guessing other bare hosts.
 		// Quote characters and backslashes are removed for a second look,
 		// so 169.254.'169'.254 still reads as the address the shell joins.
-		seen := make(map[string]struct{})
 		texts := []string{command, rawQuoteStripper.Replace(command)}
-		urls, over = appendSchemeURLs(nil, seen, texts)
+		urls, over = appendSchemeURLs(urls, seen, texts)
 		if over {
 			return nil, true
 		}
@@ -260,12 +286,70 @@ func shellDestinationURLs(command string) (urls []string, over bool) {
 		}
 		return urls, false
 	}
-	seen := make(map[string]struct{})
-	urls, over = appendSchemeURLs(nil, seen, words)
+	urls, over = appendSchemeURLs(urls, seen, words)
 	if over {
 		return nil, true
 	}
-	return appendCurlWgetHosts(urls, seen, words)
+	if urls, over = appendCurlWgetHosts(urls, seen, words); over {
+		return nil, true
+	}
+	// A script passed to a shell's -c or to eval is one quoted word here,
+	// so a bare host inside it never reached the curl/wget scan above.
+	// Reparse those scripts. Only recognised script-execution forms are
+	// reparsed; an ordinary quoted argument (a commit message, an echo) is
+	// left alone. Past the depth limit, deny rather than stop looking.
+	for _, script := range nestedScripts(words) {
+		if depth+1 >= maxNestedShellDepth {
+			return nil, true
+		}
+		if urls, over = shellDestinationURLsAt(script, urls, seen, depth+1); over {
+			return nil, true
+		}
+	}
+	return urls, false
+}
+
+// nestedScripts returns the script text each recognised script-execution
+// form in words runs: the value of a -c option cluster after a shell or su,
+// and the arguments of eval joined the way eval joins them.
+func nestedScripts(words []string) []string {
+	var scripts []string
+	for i := 0; i < len(words); i++ {
+		base := commandBase(words[i])
+		switch {
+		case base == "eval":
+			j := i + 1
+			for j < len(words) && !isShellOperator(words[j]) {
+				j++
+			}
+			if j > i+1 {
+				scripts = append(scripts, strings.Join(words[i+1:j], " "))
+			}
+			i = j - 1
+		case scriptRunners[base]:
+			// Look past other options and operands (su USER -c, bash -o
+			// pipefail -c) for the first short-option cluster holding c.
+			for j := i + 1; j < len(words) && !isShellOperator(words[j]); j++ {
+				if shortClusterHasC(words[j]) {
+					if j+1 < len(words) && !isShellOperator(words[j+1]) {
+						scripts = append(scripts, words[j+1])
+					}
+					break
+				}
+			}
+		}
+	}
+	return scripts
+}
+
+// shortClusterHasC reports whether word is a single-dash (or plus) short
+// option cluster containing c. Reading any such cluster as -c over-marks
+// at worst, which only scans more text.
+func shortClusterHasC(word string) bool {
+	if len(word) < 2 || strings.HasPrefix(word, "--") || (word[0] != '-' && word[0] != '+') {
+		return false
+	}
+	return strings.ContainsRune(word[1:], 'c')
 }
 
 func appendSchemeURLs(urls []string, seen map[string]struct{}, words []string) ([]string, bool) {
@@ -365,13 +449,17 @@ func appendCurlWgetHosts(urls []string, seen map[string]struct{}, words []string
 			// be the value or the URL. A literal IP is scanned either way (a
 			// file named like an address is not worth the miss); a hostname is
 			// left alone to avoid treating values as hosts.
-			if !wasAmbiguous || !isOptionWord(word) {
+			// A word with a scheme or userinfo is a destination whichever
+			// way the unknown option reads it: the scheme and userinfo
+			// branches below add only hosts curl would connect to.
+			urlLike := wasAmbiguous && !isOptionWord(word) && (hasLeadingScheme(word) || strings.Contains(word, "@"))
+			if !urlLike && (!wasAmbiguous || !isOptionWord(word)) {
 				if wasAmbiguous && looksLikeHostOperand(word) && scanner.ParseIPLiteral(operandHost(word)) != nil && add(word) {
 					return nil, true
 				}
 				continue
 			}
-			carry = true
+			carry = !urlLike
 		}
 		if !optionsDone && isOptionWord(word) {
 			if tool == "curl" {
@@ -857,7 +945,7 @@ var (
 func shellURLCapEvidence() Evidence {
 	return Evidence{
 		Scanner:              scanner.DecideStructuralLabel,
-		Pattern:              fmt.Sprintf("shell command names more than %d URLs", maxShellDestinationURLs),
+		Pattern:              fmt.Sprintf("shell command names more than %d URLs or nests scripts %d deep", maxShellDestinationURLs, maxNestedShellDepth),
 		Severity:             config.SeverityHigh,
 		Detail:               "refusing to scan a subset of shell destinations",
 		Action:               config.ActionBlock,

@@ -103,6 +103,42 @@ func TestDecide_ShellDestinations(t *testing.T) {
 			wantScanner: scanner.ScannerBlocklist,
 		},
 		{
+			name:        "bash -c bare metadata",
+			command:     `bash -c "curl 169.254.169.254/latest/meta-data/"`,
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
+			name:        "sh -c bare metadata",
+			command:     `sh -c 'curl 169.254.169.254/latest/meta-data/'`,
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
+			name:        "eval bare metadata",
+			command:     `eval "curl 169.254.169.254/latest/meta-data/"`,
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
+			name:        "ansi-c quoted metadata",
+			command:     `curl $'169.254.169.254'/latest/meta-data/`,
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
+			name:        "unknown option then one-slash url",
+			command:     "curl --not-a-real-option http:/169.254.169.254/latest/meta-data/",
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
+			name:        "unknown option then gopher url",
+			command:     "curl --not-a-real-option gopher://169.254.169.254:70/_x",
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
 			name:        "bash -c nested scheme url",
 			command:     `bash -c "curl https://` + blocked + `/x"`,
 			blocklist:   []string{blocked},

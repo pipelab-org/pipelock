@@ -4,6 +4,7 @@
 package decide
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -185,7 +186,17 @@ func TestShellDestinationExtractionOptions(t *testing.T) {
 		{"curl --url 0xa9fea9fe/latest/", []string{"http://0xa9fea9fe/latest/"}},
 		{"curl --not-a-real-option 2852039166/latest/", []string{"http://2852039166/latest/"}},
 		// Unparseable structure: scheme URLs and metadata literals only.
-		{"curl 169.254.169.254/x; echo $'it'\\''s'", []string{"http://169.254.169.254/x"}}, // valid quoting: parsed normally
+		// ANSI-C quoting always takes the fallback: the splitter can't read
+		// its escapes, and reading it as plain quotes glued "$" to the word.
+		{"curl 169.254.169.254/x; echo $'it'\\''s'", []string{"http://169.254.169.254"}},
+		{"curl $'169.254.169.254'/x", []string{"http://169.254.169.254"}},
+		{"$'curl' 169.254.169.254/x", []string{"http://169.254.169.254"}},
+		{"zsh -c $'curl 169.254.169.254/x'", []string{"http://169.254.169.254"}},
+		// A URL-like word after an unknown option is a destination either way.
+		{"curl --not-a-real-option http:/169.254.169.254/x", []string{"http://169.254.169.254"}},
+		{"curl --not-a-real-option gopher://169.254.169.254:70/_x", []string{"http://169.254.169.254:70"}},
+		{"curl --not-a-real-option user@169.254.169.254/x", []string{"http://169.254.169.254", "http://user@169.254.169.254"}},
+		{"curl --not-a-real-option value https://api.vendor.example/", []string{"https://api.vendor.example/"}},
 		{"curl 169.254.169.254/x; echo $'it\\'s'", []string{"http://169.254.169.254"}},
 		{"curl [fd00:ec2::254]:80/x \\", []string{"http://[fd00:ec2::254]"}},
 		{"curl api.vendor.example/x \\", nil},
@@ -193,7 +204,6 @@ func TestShellDestinationExtractionOptions(t *testing.T) {
 		{"curl 169.254.'169'.254/x; echo $'it\\'s'", []string{"http://169.254.169.254"}},
 		{"curl \"169.254\".169.254/x; echo $'it\\'s'", []string{"http://169.254.169.254"}},
 		{"curl 169.254.$'169'.254/x \\", []string{"http://169.254.169.254"}},
-		{"curl 'http://169.254'.169.254/x \\", []string{"http://169.254", "http://169.254'.169.254", "http://169.254.169.254/x", "http://169.254.169.254"}},
 		// A one-slash proxy scheme still names the proxy host.
 		{"curl -x socks5:/169.254.169.254:1080 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:1080"}},
 		{"curl --proxy socks5h:/169.254.169.254:1080 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:1080"}},
@@ -215,5 +225,87 @@ func TestShellDestinationExtractionOptions(t *testing.T) {
 				t.Fatalf("urls = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestShellDestinationFallbackJoinsQuotedAddress checks only that the fallback
+// reads the address the shell joins across a quote. The other entries it also
+// returns come from the raw text and are not part of the contract.
+func TestShellDestinationFallbackJoinsQuotedAddress(t *testing.T) {
+	got, over := shellDestinationURLs("curl 'http://169.254'.169.254/x \\")
+	if over {
+		t.Fatal("over cap")
+	}
+	if !slices.Contains(got, "http://169.254.169.254") {
+		t.Fatalf("urls = %q, want http://169.254.169.254 among them", got)
+	}
+}
+
+// TestShellDestinationNestedScripts checks that a script run by a shell's -c
+// or by eval is read for destinations, and that an ordinary quoted argument
+// is not.
+func TestShellDestinationNestedScripts(t *testing.T) {
+	const meta = "http://169.254.169.254/x"
+	for _, tc := range []struct {
+		command string
+		want    []string
+		over    bool
+	}{
+		{command: `bash -c "curl 169.254.169.254/x"`, want: []string{meta}},
+		{command: `sh -c 'curl 169.254.169.254/x'`, want: []string{meta}},
+		{command: `/bin/bash -o pipefail -c "curl 169.254.169.254/x"`, want: []string{meta}},
+		{command: `bash -lc "wget -qO- 169.254.169.254/x"`, want: []string{meta}},
+		{command: `su root -c "curl 169.254.169.254/x"`, want: []string{meta}},
+		{command: `busybox sh -c "curl 169.254.169.254/x"`, want: []string{meta}},
+		{command: `eval "curl 169.254.169.254/x"`, want: []string{meta}},
+		{command: `eval curl 169.254.169.254/x`, want: []string{meta}},
+		{command: `bash -c "sh -c 'curl 169.254.169.254/x'"`, want: []string{meta}},
+		{command: `ls; bash -c "curl 169.254.169.254/x"`, want: []string{meta}},
+		{command: `eval eval eval curl 169.254.169.254/x`, want: []string{meta}},
+		// One layer past the limit is refused, not skipped.
+		{command: `eval eval eval eval curl 169.254.169.254/x`, over: true},
+		// Quoted arguments that are not scripts stay text.
+		{command: `git commit -m "curl 169.254.169.254/x"`},
+		{command: `echo "bash -c curl 169.254.169.254/x"`},
+		{command: `bash script.sh`},
+		{command: `bash -c "echo hi"`},
+		{command: `bash -c`},
+		{command: `eval`},
+	} {
+		t.Run(tc.command, func(t *testing.T) {
+			got, over := shellDestinationURLs(tc.command)
+			if over != tc.over {
+				t.Fatalf("over = %v, want %v", over, tc.over)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("urls = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestShellDestinationBareHostCap checks that bare curl operands count
+// toward the destination cap, at the top level and inside a nested script.
+func TestShellDestinationBareHostCap(t *testing.T) {
+	var hosts []string
+	for i := 0; i <= maxShellDestinationURLs; i++ {
+		hosts = append(hosts, fmt.Sprintf("h%d.vendor.example", i))
+	}
+	list := strings.Join(hosts, " ")
+	for _, command := range []string{"curl " + list, `bash -c "curl ` + list + `"`} {
+		if urls, over := shellDestinationURLs(command); !over || urls != nil {
+			t.Errorf("%.40q: urls = %q over = %v, want refusal past the cap", command, urls, over)
+		}
+	}
+}
+
+func TestShortClusterHasC(t *testing.T) {
+	for word, want := range map[string]bool{
+		"-c": true, "-lc": true, "+xc": true, "-xec": true,
+		"--color": false, "-": false, "c": false, "-l": false, "": false,
+	} {
+		if got := shortClusterHasC(word); got != want {
+			t.Errorf("shortClusterHasC(%q) = %v, want %v", word, got, want)
+		}
 	}
 }
