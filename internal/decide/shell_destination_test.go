@@ -195,6 +195,12 @@ func TestDecide_ShellDestinations(t *testing.T) {
 			wantScanner: scanner.ScannerSSRFMetadata,
 		},
 		{
+			name:        "case subject named esac",
+			command:     `echo "$(case esac in *) curl 169.254.169.254/latest/meta-data/;; esac)"`,
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
 			name:        "double-quoted substitution bare host",
 			command:     `echo "$(curl ` + blocked + `/x)"`,
 			blocklist:   []string{blocked},

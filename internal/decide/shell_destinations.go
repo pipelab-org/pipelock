@@ -626,6 +626,10 @@ type parenFrame struct {
 	outerDouble bool
 	cases       int
 	pattern     bool
+	// head is true between case and its in. The first word there is the
+	// subject, which may itself be esac or in; headWords counts them.
+	head      bool
+	headWords int
 }
 
 // scan walks s.src from i. With untilParen it returns the index of the )
@@ -678,6 +682,15 @@ func (s *substitutionScanner) scanBody(i int, untilParen, hereText, anyCase bool
 			cmdPos = strings.IndexByte(";&|\n(", c) >= 0
 		}
 		top := &frames[len(frames)-1]
+		if wordStart && top.head && strings.IndexByte(" \t\n", c) < 0 {
+			// Counted before the switch so a subject starting with $(, a
+			// quote or a backslash counts too. The first in after the
+			// subject ends the head.
+			if top.headWords > 0 && shellKeywordAt(src, i, "in") {
+				top.head, top.pattern = false, true
+			}
+			top.headWords++
+		}
 		switch {
 		case c == '\\':
 			i++
@@ -757,11 +770,11 @@ func (s *substitutionScanner) scanBody(i int, untilParen, hereText, anyCase bool
 		case wordStart && shellKeywordAt(src, i, "case"):
 			if atCmd || anyCase {
 				top.cases++
-				top.pattern = true
+				top.head, top.headWords, top.pattern = true, 0, false
 			} else {
 				rejectedCase = true
 			}
-		case wordStart && top.cases > 0 && (top.pattern || atCmd) && shellKeywordAt(src, i, "esac"):
+		case wordStart && top.cases > 0 && !top.head && (top.pattern || atCmd) && shellKeywordAt(src, i, "esac"):
 			top.cases--
 			top.pattern = false
 		}

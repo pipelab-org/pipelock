@@ -414,6 +414,12 @@ func TestCommandSubstitutionBodies(t *testing.T) {
 		{"$(f() case y in a) b;; esac; f) c", []string{"f() case y in a) b;; esac; f"}},
 		{"$(function f case y in a) b;; esac; f) c", []string{"function f case y in a) b;; esac; f"}},
 		{"$(coproc case y in a) b;; esac) c", []string{"coproc case y in a) b;; esac"}},
+		// The subject after case may be the word esac or in.
+		{"$(case esac in *) b;; esac) c", []string{"case esac in *) b;; esac"}},
+		{"$(case in in *) b;; esac) c", []string{"case in in *) b;; esac"}},
+		{"$(case $(x) in *) b;; esac) c", []string{"case $(x) in *) b;; esac"}},
+		{`$(case "esac" in *) b;; esac) c`, []string{`case "esac" in *) b;; esac`}},
+		{`$(case \esac in *) b;; esac) c`, []string{`case \esac in *) b;; esac`}},
 		{"$(if x; then case y in a) b;; esac; fi) c", []string{"if x; then case y in a) b;; esac; fi"}},
 		{"$(while x; do case y in a) b;; esac; done) c", []string{"while x; do case y in a) b;; esac; done"}},
 		{"$({ case y in a) b;; esac; }) c", []string{"{ case y in a) b;; esac; }"}},
