@@ -126,8 +126,9 @@ func scannedAuthorities(value string) []string {
 // shellProofWords in internal/mcp/policy is the quote-aware reader the policy
 // package already uses, and it is not exported. This splitter is the
 // best-effort reader for destination extraction only: it removes quotes and
-// simple escapes and keeps operators as their own words. It does not expand
-// variables or re-parse a quoted script.
+// simple escapes, decodes $'...' and $"..." the way bash does, and keeps
+// operators as their own words. It does not expand variables, here-strings or
+// backtick substitutions; nestedScripts reparses only -c and eval scripts.
 
 func splitShellWords(source string) ([]string, bool) {
 	if !utf8.ValidString(source) {
