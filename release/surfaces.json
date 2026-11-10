@@ -1276,6 +1276,14 @@
       "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
     },
     {
+      "id": "docs-guides-upgrading-to-3.8.md-1",
+      "path": "docs/guides/upgrading-to-3.8.md",
+      "pattern": "off in defaults and all (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?) presets",
+      "expected": "stats:Preset files",
+      "count": 1,
+      "reason": "Public default count; derived by the existing TestCanonicalStats contract."
+    },
+    {
       "id": "docs-guides-upgrading-to-3.7.md-1",
       "path": "docs/guides/upgrading-to-3.7.md",
       "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.7\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
