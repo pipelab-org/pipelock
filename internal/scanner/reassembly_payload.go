@@ -24,10 +24,14 @@ type assembledPayload struct {
 	known, textRoot  bool
 	digestSet        bool
 	admitted         bool
-	contextParent    *assembledPayload
-	pending          int
-	cache            *assembledRecipeCache
-	digest           [sha256.Size]byte
+	// trimVerified records that a trim materialized this admitted descriptor
+	// and its digest matched. Later trims skip the re-decode; the drain still
+	// verifies the bytes it inspects.
+	trimVerified  bool
+	contextParent *assembledPayload
+	pending       int
+	cache         *assembledRecipeCache
+	digest        [sha256.Size]byte
 }
 
 type assembledDecodeRecipe struct {
@@ -296,6 +300,13 @@ func (m *decodingMemo) trimReplayPayloads(incoming *assembledPayload) {
 			if p == nil {
 				continue
 			}
+			// An admitted descriptor stays pending for the drain, which
+			// verifies its digest again before matching. Verify it here
+			// once: materializing every pending view on every trim made one
+			// scan at the descriptor cap do quadratic decode work.
+			if p.admitted && p.trimVerified {
+				continue
+			}
 			text, ok := p.inspectionText()
 			if !ok {
 				m.markIncomplete()
@@ -306,6 +317,7 @@ func (m *decodingMemo) trimReplayPayloads(incoming *assembledPayload) {
 			// immutable plan. Do not rescan a large live parent at every trim.
 			if p.admitted || m.reassemblyPlan.admitsAssembledView(text) {
 				p.admitted = true
+				p.trimVerified = true
 				continue
 			}
 			delete(m.reassemblyPendingReplay, id)
