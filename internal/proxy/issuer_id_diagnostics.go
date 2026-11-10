@@ -3,6 +3,8 @@
 
 package proxy
 
+import "net/url"
+
 // issuerIDHistoryBlock records the first reason complete send history was
 // lost. The existing bounded tombstone map holds it; it grants no allowance.
 type issuerIDHistoryBlock uint8
@@ -12,32 +14,33 @@ const (
 	issuerHistoryUnknown
 	issuerHistoryUnreadBody
 	issuerHistoryRequestLimit
-	issuerHistorySessionLimit
+	issuerHistoryDestinationLimit
 	issuerHistoryTotalLimit
 	issuerHistoryStream
+	issuerHistoryUnknownDestination
 )
 
 func (reason issuerIDHistoryBlock) String() string {
 	switch reason {
 	case issuerHistoryUnreadBody:
-		return "history_unread_body"
+		return "destination_learning_frozen_unread_body"
 	case issuerHistoryRequestLimit:
-		return "history_request_limit"
-	case issuerHistorySessionLimit:
-		return "history_session_limit"
+		return "destination_learning_frozen_request_limit"
+	case issuerHistoryDestinationLimit:
+		return "destination_learning_frozen_destination_limit"
 	case issuerHistoryTotalLimit:
-		return "history_total_limit"
+		return "destination_learning_frozen_total_limit"
 	case issuerHistoryStream:
-		return "history_stream"
+		return "destination_learning_frozen_stream"
 	default:
-		return "history_incomplete"
+		return "destination_learning_frozen_incomplete"
 	}
 }
 
 // issuerIDBlockReason explains the request's actual evidence prerequisites and
 // history state to the operator audit log. It must never create history, mint
 // an allowance, inspect matched bytes or disclose state to the client.
-func (ic *InterceptContext) issuerIDBlockReason() string {
+func (ic *InterceptContext) issuerIDBlockReason(target *url.URL) string {
 	if ic == nil || ic.Proxy == nil {
 		return "store_unavailable"
 	}
@@ -62,14 +65,22 @@ func (ic *InterceptContext) issuerIDBlockReason() string {
 	if store.disabled {
 		return "store_unavailable"
 	}
-	if reason := store.sentUnreadable[session]; reason != issuerHistoryComplete {
-		return reason.String()
+	if issuerSentHost(target) == "" {
+		return "destination_unknown"
 	}
-	if store.sent[session] == nil {
-		if len(store.sent) >= issuerUnreadableMaxSessions {
-			return "history_capacity"
+	caller := store.history[session]
+	if caller != nil && caller.block != issuerHistoryComplete {
+		return "caller_learning_frozen"
+	}
+	bucket := store.idDestinationLocked(session, target)
+	if bucket == nil {
+		if store.idAdmissionClosed || store.idDestinations >= issuerUnreadableMaxSessions || len(store.history) >= issuerUnreadableMaxSessions {
+			return "destination_history_capacity"
 		}
-		return "history_missing"
+		return "destination_history_missing"
+	}
+	if bucket.block != issuerHistoryComplete {
+		return bucket.block.String()
 	}
 	// History alone cannot tell an ID that was never delivered from one refused
 	// as a caller-first reflection, an evicted one, or a segment that is not an

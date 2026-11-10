@@ -17,7 +17,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
-	"github.com/luckyPipewrench/pipelock/internal/metrics"
 )
 
 // A server-issued ID is an opaque object identifier an origin returned in a
@@ -30,8 +29,9 @@ import (
 // an issue, so it stays scored.
 //
 // Evidence is in-memory and session-bound like the rest of the issuer store.
-// A session whose sent traffic cannot be fully read stops minting IDs, so a
-// value can never be admitted because Pipelock failed to see it go out.
+// Incomplete outgoing history freezes learning for that caller/destination,
+// while established exact proofs remain usable. Unknown destinations freeze
+// caller-wide learning. Neither case admits new values from missing history.
 
 const (
 	issuerQueryServerID issuerQueryKind = "server_issued_id"
@@ -42,19 +42,20 @@ const (
 	issuerServerIDMaxLen = 512
 	// issuerServerIDMaxPerResponse bounds the IDs one response can mint.
 	issuerServerIDMaxPerResponse = 512
-	// issuerSentMaxEntries bounds the sent-token digests kept per session.
+	// issuerSentMaxEntries bounds the sent-token digests kept per destination.
 	// Evicting one would let that token be minted later, so a full set stops
-	// minting for the session instead.
+	// learning for that destination instead.
 	issuerSentMaxEntries = 8192
 	// issuerSentMaxTokensPerRequest bounds the input tokens one request
 	// records. Repeated tokens still count toward this workload limit even
 	// when their digest needs only one retained history entry.
 	issuerSentMaxTokensPerRequest = 4096
 	// issuerUnreadableMaxSessions bounds retained ID-history buckets, including
-	// incomplete-history tombstones. New buckets are refused at capacity.
+	// incomplete-history tombstones. It bounds callers and destination buckets
+	// separately. Admission permanently closes on the first capacity refusal.
 	issuerUnreadableMaxSessions = 4096
 	// issuerSentAllMaxEntries bounds the total sent digests across buckets.
-	// An addition past it taints only the bucket making that addition.
+	// An addition past it freezes only the destination making that addition.
 	issuerSentAllMaxEntries = 1 << 17
 )
 
@@ -159,7 +160,10 @@ func (s *issuerQueryStore) sentDigest(target *url.URL, value string) ([32]byte, 
 }
 
 func issuerSentHost(target *url.URL) string {
-	return strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
+	if target == nil {
+		return ""
+	}
+	return canonicalRedirectHost(target.Hostname())
 }
 
 func (s *issuerQueryStore) originDigest(tag string, target *url.URL, value string) ([32]byte, bool) {
@@ -167,46 +171,7 @@ func (s *issuerQueryStore) originDigest(tag string, target *url.URL, value strin
 	if !ok {
 		return [32]byte{}, false
 	}
-	return s.digestFields(tag, strings.ToLower(target.Scheme), host, port, value), true
-}
-
-// admitIDSessionLocked retains history without eviction. An unremembered
-// caller cannot mint: refusing new buckets at capacity preserves both the
-// negative evidence and the allowances of existing callers.
-func (s *issuerQueryStore) admitIDSessionLocked(session string) bool {
-	if _, exists := s.sent[session]; exists {
-		return true
-	}
-	if len(s.sent) >= issuerUnreadableMaxSessions {
-		if !s.idCapacityReported && s.observeIDBlock != nil {
-			s.observeIDBlock(metrics.IssuerIDBlockCapacity, true)
-		}
-		s.idCapacityReported = true
-		return false
-	}
-	s.sent[session] = make(map[[32]byte]issuerSentProvenance)
-	return true
-}
-
-// taintSentLocked revokes only this caller's IDs when its outgoing history
-// is incomplete. Neither hosts nor other callers acquire this taint.
-func (s *issuerQueryStore) taintSentLocked(session string) {
-	s.taintSentForReasonLocked(session, issuerHistoryUnknown)
-}
-
-func (s *issuerQueryStore) taintSentForReasonLocked(session string, reason issuerIDHistoryBlock) {
-	if !s.admitIDSessionLocked(session) || s.sentUnreadable[session] != issuerHistoryComplete {
-		return
-	}
-	if reason == issuerHistoryComplete {
-		reason = issuerHistoryUnknown
-	}
-	delete(s.ids, session)
-	s.sentUnreadable[session] = reason
-	if s.observeIDBlock != nil {
-		s.observeIDBlock(metrics.IssuerIDBlockSession, !s.idBlockReported)
-	}
-	s.idBlockReported = true
+	return s.digestFields(tag, strings.ToLower(target.Scheme), canonicalRedirectHost(host), port, value), true
 }
 
 // newObservedIssuerQueryStore joins issuer-history transitions to the proxy's
@@ -217,25 +182,24 @@ func (p *Proxy) newObservedIssuerQueryStore() *issuerQueryStore {
 		p.metrics.RecordIssuerIDBlock(scope)
 		if log && p.logger != nil {
 			p.logger.LogAnomaly(audit.NewMethodLogContext("ISSUER_ID"), "",
-				"server-issued ID evidence blocked ("+scope+"); affected caller buckets retain path entropy enforcement; restart or disable and re-enable issuer evidence to clear IDs and history; additional caller transitions are counted in pipelock_issuer_id_blocks_total", 0)
+				"server-issued ID evidence blocked ("+scope+"); new learning is frozen for the affected destination (or caller when unknown); known exact IDs remain usable; restart or disable and re-enable issuer evidence resets history AND discards every known ID; additional transitions are counted in pipelock_issuer_id_blocks_total", 0)
 		}
 	}
 	return s
 }
 
-// mintBlockedLocked only inspects history established by send recording.
-// Neither a response nor a lookup can turn missing history into authority.
-func (s *issuerQueryStore) mintBlockedLocked(session string, target *url.URL) bool {
-	_, ok := s.sentDigest(target, "")
-	return !ok || s.sent[session] == nil || s.sentUnreadable[session] != issuerHistoryComplete
-}
-
 // recordSent records every token a request carries to its origin: path
 // segments, query keys and values, and the body, both raw and decoded. A
 // body that was sent but not buffered, or a request over the bound, marks the
-// session unreadable.
+// destination unreadable.
 func (s *issuerQueryStore) recordSent(session string, target *url.URL, header http.Header, body []byte, bodyKnown bool, _ time.Time) {
-	if s == nil || s.disabled || session == "" || target == nil {
+	if s == nil || s.disabled || session == "" {
+		return
+	}
+	if target == nil || issuerSentHost(target) == "" {
+		s.mu.Lock()
+		s.freezeIDCallerLocked(session)
+		s.mu.Unlock()
 		return
 	}
 	// issuerCookieOrigin rejects userinfo so a user:pass@host URL cannot
@@ -321,15 +285,16 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.admitIDSessionLocked(session) || s.sentUnreadable[session] != issuerHistoryComplete {
+	bucket := s.admitIDDestinationLocked(session, originTarget)
+	if bucket == nil || bucket.block != issuerHistoryComplete {
 		return
 	}
 	if !bodyKnown {
-		s.taintSentForReasonLocked(session, issuerHistoryUnreadBody)
+		s.freezeIDDestinationLocked(bucket, issuerHistoryUnreadBody)
 		return
 	}
 	if overflow {
-		s.taintSentForReasonLocked(session, issuerHistoryRequestLimit)
+		s.freezeIDDestinationLocked(bucket, issuerHistoryRequestLimit)
 		return
 	}
 	// Determine provenance while holding the same lock as history insertion.
@@ -345,17 +310,17 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 			serverFirst[word] = struct{}{}
 		}
 	}
-	sent := s.sent[session]
+	sent := bucket.sent
 	for _, digest := range digests {
 		if _, exists := sent[digest]; exists {
 			continue
 		}
 		if len(sent) >= issuerSentMaxEntries {
-			s.taintSentForReasonLocked(session, issuerHistorySessionLimit)
+			s.freezeIDDestinationLocked(bucket, issuerHistoryDestinationLimit)
 			return
 		}
 		if s.sentEntries >= issuerSentAllMaxEntries {
-			s.taintSentForReasonLocked(session, issuerHistoryTotalLimit)
+			s.freezeIDDestinationLocked(bucket, issuerHistoryTotalLimit)
 			return
 		}
 		provenance := issuerSentAgentFirst
@@ -477,51 +442,64 @@ func (s *issuerQueryStore) mintServerID(session string, target *url.URL, value s
 	idDigest, _ := s.originDigest("server_id", target, value)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.mintBlockedLocked(session, target) {
-		return
-	}
 	issued := s.ids[session]
 	if _, exists := issued[idDigest]; exists {
-		// A freshly delivered listing refreshes the same allowance; it
-		// does not introduce another value or consume another slot.
 		s.touchIDLocked(issued, idDigest)
 		return
 	}
-	if provenance, sent := s.sent[session][sentDigest]; sent && provenance != issuerSentServerFirst {
+	if s.mintBlockedLocked(session, target) {
+		return
+	}
+	bucket := s.idDestinationLocked(session, target)
+	if provenance, sent := bucket.sent[sentDigest]; sent && provenance != issuerSentServerFirst {
 		return
 	}
 	if !s.idIntroducedLocked(session, target, value) {
 		return
 	}
 	if issued == nil {
-		issued = make(map[[32]byte]uint64)
+		issued = make(map[[32]byte]issuerIDEntry)
 		s.ids[session] = issued
 	}
 	if len(issued) >= issuerCookieMaxEntries {
-		delete(issued, leastRecentIssuerID(issued))
+		victim, ok := s.leastRecentIssuerIDLocked(session, issued)
+		if !ok {
+			return
+		}
+		delete(issued, victim)
 	}
+	issued[idDigest] = issuerIDEntry{destination: bucket}
 	s.touchIDLocked(issued, idDigest)
 }
 
 // touchIDLocked marks an allowance as the most recently delivered or used.
 // It changes retention order only, never which IDs are allowed.
-func (s *issuerQueryStore) touchIDLocked(issued map[[32]byte]uint64, digest [32]byte) {
+func (s *issuerQueryStore) touchIDLocked(issued map[[32]byte]issuerIDEntry, digest [32]byte) {
 	s.idClock++
-	issued[digest] = s.idClock
+	entry := issued[digest]
+	entry.lastUse = s.idClock
+	issued[digest] = entry
 }
 
-// leastRecentIssuerID names the allowance to evict when a new ID needs a
-// slot. Every touch takes a distinct clock value, so the choice is unique.
-func leastRecentIssuerID(issued map[[32]byte]uint64) [32]byte {
+// leastRecentIssuerIDLocked evicts only a destination that can still learn.
+// Frozen proofs cannot be replaced, so full pinned caches refuse new IDs.
+func (s *issuerQueryStore) leastRecentIssuerIDLocked(session string, issued map[[32]byte]issuerIDEntry) ([32]byte, bool) {
+	caller := s.history[session]
+	if caller == nil || caller.block != issuerHistoryComplete {
+		return [32]byte{}, false
+	}
 	var oldest [32]byte
-	first := true
 	var oldestUse uint64
-	for digest, lastUse := range issued {
-		if first || lastUse < oldestUse {
-			oldest, oldestUse, first = digest, lastUse, false
+	found := false
+	for digest, entry := range issued {
+		if entry.destination == nil || entry.destination.block != issuerHistoryComplete {
+			continue
+		}
+		if !found || entry.lastUse < oldestUse {
+			oldest, oldestUse, found = digest, entry.lastUse, true
 		}
 	}
-	return oldest
+	return oldest, found
 }
 
 // issuerServerIDIntroducible reports whether value carries any word that
@@ -543,11 +521,12 @@ func issuerServerIDIntroducible(value string) bool {
 // of short fields keep ordinary entropy scoring.
 func (s *issuerQueryStore) idIntroducedLocked(session string, target *url.URL, value string) bool {
 	introduced := false
+	bucket := s.idDestinationLocked(session, target)
 	mac := hmac.New(sha256.New, s.key[:])
 	host := issuerSentHost(target)
 	_ = issuerSentTokens(value, func(token string) bool {
 		digest := issuerDigestFields(mac, "sent_host", host, token)
-		provenance, sent := s.sent[session][digest]
+		provenance, sent := bucket.sent[digest]
 		introduced = !sent || provenance == issuerSentServerFirst
 		return !introduced
 	})
@@ -568,7 +547,7 @@ func (s *issuerQueryStore) serverIDIssued(session string, target *url.URL, segme
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	digest, issued := s.serverIDMatchLocked(session, candidates)
-	if !issued || s.mintBlockedLocked(session, target) {
+	if !issued {
 		return false
 	}
 	// Evict inactive IDs rather than a frequently used directory or item.
@@ -599,6 +578,7 @@ func (s *issuerQueryStore) serverIDCandidates(mac hash.Hash, target *url.URL, se
 	if !ok {
 		return c
 	}
+	host = canonicalRedirectHost(host)
 	scheme := strings.ToLower(target.Scheme)
 	if issuerServerIDShaped(segment) {
 		c.digests[c.n] = issuerDigestFields(mac, "server_id", scheme, host, port, segment)
@@ -612,7 +592,7 @@ func (s *issuerQueryStore) serverIDCandidates(mac hash.Hash, target *url.URL, se
 }
 
 // serverIDMatchLocked reads existing authority only; the caller holds s.mu
-// and checks history before granting anything.
+// and verifies runtime eligibility before granting anything.
 func (s *issuerQueryStore) serverIDMatchLocked(session string, c issuerIDCandidates) ([32]byte, bool) {
 	issued := s.ids[session]
 	for _, digest := range c.digests[:c.n] {
@@ -684,7 +664,7 @@ func (p *Proxy) recordIssuerFetchSent(cfg *config.Config, agent, clientIP string
 
 // taintIssuerSessionForStream marks a session whose traffic now includes a
 // stream Pipelock does not record token by token, such as WebSocket frames.
-func (p *Proxy) taintIssuerSessionForStream(cfg *config.Config, agent, clientIP string, actorAuth envelope.ActorAuth, _ *url.URL) {
+func (p *Proxy) taintIssuerSessionForStream(cfg *config.Config, agent, clientIP string, actorAuth envelope.ActorAuth, target *url.URL) {
 	if !actorAuth.TrustedForIdentity() {
 		return
 	}
@@ -698,5 +678,11 @@ func (p *Proxy) taintIssuerSessionForStream(cfg *config.Config, agent, clientIP 
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	store.taintSentForReasonLocked(session, issuerHistoryStream)
+	if issuerSentHost(target) == "" {
+		store.freezeIDCallerLocked(session)
+		return
+	}
+	if bucket := store.admitIDDestinationLocked(session, target); bucket != nil {
+		store.freezeIDDestinationLocked(bucket, issuerHistoryStream)
+	}
 }

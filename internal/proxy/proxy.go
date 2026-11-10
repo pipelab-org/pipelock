@@ -1307,6 +1307,9 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			if err := p.refreshEnvelopeForRedirect(req, via, currentCfg); err != nil {
 				return err
 			}
+			// Fetch follows this hop internally. Record its actual destination
+			// and outgoing headers before dispatch, just like the initial send.
+			p.recordIssuerForwardSent(currentCfg, agentName, clientIP, envelope.ActorAuth(agentAuthFromContext(req.Context())), req, nil)
 			return nil
 		},
 	}

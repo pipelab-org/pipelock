@@ -193,7 +193,7 @@ func TestIssuerIDProvenanceIsOriginBound(t *testing.T) {
 			}
 			s.recordSent("reader", mustIssuerQueryURL(t, elsewhere+serverIDListed), nil, nil, true, now)
 			digest, _ := s.sentDigest(origin, serverIDListed)
-			if got := s.sent["reader"][digest]; got != issuerSentAgentFirst {
+			if got := s.idDestinationLocked("reader", origin).sent[digest]; got != issuerSentAgentFirst {
 				t.Fatalf("send to another origin recorded provenance %d", got)
 			}
 			for i := range issuerCookieMaxEntries {
@@ -238,7 +238,7 @@ func TestIssuerIDProvenanceConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 	other, _ := s.sentDigest(origin, serverIDOther)
-	if got := s.sent["reader"][other]; got != issuerSentAgentFirst {
+	if got := s.idDestinationLocked("reader", origin).sent[other]; got != issuerSentAgentFirst {
 		t.Fatalf("agent-first word provenance = %d", got)
 	}
 	if len(s.ids["reader"]) > issuerCookieMaxEntries {

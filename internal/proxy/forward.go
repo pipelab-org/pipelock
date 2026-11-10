@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -742,6 +743,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		blockreason.SetRecordedReceipt(w.Header(), allowReceipt.ActionID)
+	}
+	if !shouldIntercept {
+		// This tunnel can send bytes we cannot record, even when a later
+		// enabled reload starts intercepting the same host again.
+		p.taintIssuerSessionForStream(cfg, agent, clientIP, id.Auth, &url.URL{Scheme: schemeHTTPS, Host: target})
 	}
 	outcomeStatus := "unknown"
 	outcomeBytes := int64(-1)

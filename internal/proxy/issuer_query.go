@@ -71,19 +71,16 @@ type issuerQueryStore struct {
 	// deliveries coordinates only matching follow-ups while headers are being
 	// flushed. It never grants authority and does not evict delivered evidence.
 	deliveries map[string]*issuedRedirectDeliverySet
-	// ids maps keyed digests of object IDs an origin introduced in a JSON
-	// response to idClock at their last delivery or use, so the least recently
-	// used is evicted and every lookup is constant time under s.mu. sent holds
-	// digests of every token the session sent to an origin, retaining whether
-	// an allowed ID introduced it first; sentUnreadable marks a session whose
-	// outgoing traffic could not be fully recorded.
-	ids            map[string]map[[32]byte]uint64
-	idClock        uint64
-	sent           map[string]map[[32]byte]issuerSentProvenance
-	sentUnreadable map[string]issuerIDHistoryBlock
-	// ID history is retained independently of query-evidence LRU eviction.
-	// Capacity denies new buckets or taints only the caller adding history;
-	// it never revokes an existing peer's IDs.
+	// ids retains exact origin-bound proofs independently of learning history.
+	// Each entry points to its permanent destination bucket so cache pressure
+	// cannot evict a frozen destination's irreplaceable proofs.
+	ids     map[string]map[[32]byte]issuerIDEntry
+	idClock uint64
+	history map[string]*issuerIDCaller
+	// Callers and destination tombstones are never evicted. Once admission
+	// refuses a bucket, the latch prevents missing sends from looking fresh.
+	idDestinations     int
+	idAdmissionClosed  bool
 	sentEntries        int
 	observeIDBlock     func(scope string, log bool)
 	idBlockReported    bool
@@ -103,11 +100,9 @@ func newIssuerQueryStoreWithReader(reader io.Reader) *issuerQueryStore {
 		paths:     make(map[string][][32]byte),
 		documents: make(map[string][][32]byte),
 		locations: make(map[string][]issuedLocationEntry),
-		ids:       make(map[string]map[[32]byte]uint64),
-		sent:      make(map[string]map[[32]byte]issuerSentProvenance),
+		ids:       make(map[string]map[[32]byte]issuerIDEntry),
+		history:   make(map[string]*issuerIDCaller),
 		used:      make(map[string]time.Time),
-
-		sentUnreadable: make(map[string]issuerIDHistoryBlock),
 	}
 	if _, err := io.ReadFull(reader, s.key[:]); err != nil {
 		s.disabled = true

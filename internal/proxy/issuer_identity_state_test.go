@@ -49,7 +49,7 @@ func TestIssuerIDIdentityReload(t *testing.T) {
 	original.recordSent(peer, origin, nil, nil, true, time.Now())
 	original.mintServerID(key, origin, serverIDListed, time.Now())
 	original.mintServerID(peer, origin, serverIDListed, time.Now())
-	original.taintSentLocked(key)
+	original.freezeIDCallerLocked(key)
 	for _, state := range []struct {
 		name string
 		bind bool
@@ -69,9 +69,12 @@ func TestIssuerIDIdentityReload(t *testing.T) {
 		if live != original {
 			t.Fatal("enabled identity reload erased history")
 		}
-		live.mintServerID(key, origin, serverIDListed, time.Now())
-		if live.serverIDIssued(key, origin, serverIDListed+":") {
-			t.Fatal("identity reload revived own tainted IDs")
+		live.mintServerID(key, origin, serverIDOther, time.Now())
+		if live.serverIDIssued(key, origin, serverIDOther) {
+			t.Fatal("enabled reload reopened frozen learning")
+		}
+		if !live.serverIDIssued(key, origin, serverIDListed+":") {
+			t.Fatal("enabled reload revoked frozen caller proof")
 		}
 		if !live.serverIDIssued(peer, origin, serverIDListed+":") {
 			t.Fatal("identity reload revoked bound peer")

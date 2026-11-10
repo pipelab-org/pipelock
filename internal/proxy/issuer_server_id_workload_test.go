@@ -50,8 +50,8 @@ func TestCompositeIDOrdinaryListWorkloads(t *testing.T) {
 				}
 				s := newTestServerIDStore(t)
 				s.recordSent("reader", origin, nil, []byte("ids="+strings.Join(fields, ",")), true, time.Now())
-				t.Logf("body_bytes=%d history_entries=%d history_unreadable=%v", count*(size+1)+3, s.sentEntries, s.sentUnreadable["reader"])
-				if s.sentUnreadable["reader"] != issuerHistoryComplete {
+				t.Logf("body_bytes=%d history_entries=%d history_unreadable=%v", count*(size+1)+3, s.sentEntries, s.idDestinationLocked("reader", origin).block)
+				if s.idDestinationLocked("reader", origin).block != issuerHistoryComplete {
 					t.Fatal("ordinary list exhausted per-request history budget")
 				}
 			})
@@ -67,7 +67,7 @@ func TestShortFieldsDoNotExpandIDHistory(t *testing.T) {
 	}
 	s := newTestServerIDStore(t)
 	s.recordSent("reader", origin, nil, []byte(strings.Join(fields, ",")), true, time.Now())
-	if s.sentUnreadable["reader"] != issuerHistoryComplete || s.sentEntries != 0 {
+	if s.idDestinationLocked("reader", origin).block != issuerHistoryComplete || s.sentEntries != 0 {
 		t.Fatal("short fields added history or consumed the input-token budget")
 	}
 	s.mintServerID("reader", origin, compositeSiteID, time.Now())

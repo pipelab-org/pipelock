@@ -15,11 +15,13 @@ func TestRecordIssuerIDBlock(t *testing.T) {
 	m.RecordIssuerIDBlock(IssuerIDBlockSession)
 	m.RecordIssuerIDBlock(IssuerIDBlockSession)
 	m.RecordIssuerIDBlock(IssuerIDBlockCapacity)
+	m.RecordIssuerIDBlock(IssuerIDBlockDestination)
 	m.RecordIssuerIDBlock("api.vendor.example")
 	body := scrapeMetrics(t, m)
 	for _, want := range []string{
 		`pipelock_issuer_id_blocks_total{scope="session"} 2`,
 		`pipelock_issuer_id_blocks_total{scope="capacity"} 1`,
+		`pipelock_issuer_id_blocks_total{scope="destination"} 1`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing metric %q", want)

@@ -82,8 +82,8 @@ func TestIssuerSentIdentityIsolation(t *testing.T) {
 					case "websocket":
 						p.taintIssuerSessionForStream(cfg, agent, client, auth, origin)
 					}
-					if transport != "fetch" && s.serverIDIssued(trusted, origin, serverIDListed) == auth.TrustedForIdentity() {
-						t.Fatal("own taint or untrusted DoS isolation failed")
+					if !s.serverIDIssued(trusted, origin, serverIDListed) {
+						t.Fatal("known proof revoked by send or untrusted traffic")
 					}
 					s.mintServerID(trusted, origin, agentBlob, time.Now())
 					if s.serverIDIssued(trusted, origin, agentBlob) == auth.TrustedForIdentity() {
@@ -124,7 +124,8 @@ func TestIssuerSentIncompleteCallerLocal(t *testing.T) {
 				for i := 0; i < issuerSentMaxEntries; i++ {
 					var digest [32]byte
 					digest[0], digest[1] = byte(i), byte(i>>8)
-					s.sent[sender][digest] = issuerSentAgentFirst
+					s.idDestinationLocked(sender, origin).sent[digest] = issuerSentAgentFirst
+					s.sentEntries++
 				}
 				body = []byte(agentBlob)
 			}
@@ -133,8 +134,8 @@ func TestIssuerSentIncompleteCallerLocal(t *testing.T) {
 			} else {
 				s.recordSent(sender, origin, nil, body, known, time.Now())
 			}
-			if s.serverIDIssued(sender, origin, serverIDListed) {
-				t.Fatal("own ID survived incomplete history")
+			if !s.serverIDIssued(sender, origin, serverIDListed) {
+				t.Fatal("known ID lost after history freeze")
 			}
 			s.mintServerID(sender, origin, serverIDOther, time.Now())
 			if s.serverIDIssued(sender, origin, serverIDOther) {

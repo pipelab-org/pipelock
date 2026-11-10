@@ -25,44 +25,45 @@ func TestIssuerIDHistoryBlockReason(t *testing.T) {
 		prepare func(*issuerQueryStore, string)
 		want    string
 	}{
-		{"missing", func(*issuerQueryStore, string) {}, "history_missing"},
+		{"missing", func(*issuerQueryStore, string) {}, "destination_history_missing"},
 		{"complete", func(s *issuerQueryStore, key string) {
 			s.recordSent(key, origin, nil, nil, true, time.Now())
 		}, "no_allowance"},
 		{"unread body", func(s *issuerQueryStore, key string) {
 			s.recordSent(key, origin, nil, nil, false, time.Now())
-		}, "history_unread_body"},
+		}, "destination_learning_frozen_unread_body"},
 		{"request limit", func(s *issuerQueryStore, key string) {
 			s.recordSent(key, origin, nil, []byte(strings.Repeat(serverIDOther+" ", issuerSentMaxTokensPerRequest+1)), true, time.Now())
-		}, "history_request_limit"},
+		}, "destination_learning_frozen_request_limit"},
 		{"total limit", func(s *issuerQueryStore, key string) {
 			s.sentEntries = issuerSentAllMaxEntries
 			s.recordSent(key, origin, nil, []byte(serverIDOther), true, time.Now())
-		}, "history_total_limit"},
+		}, "destination_learning_frozen_total_limit"},
 		{"session limit", func(s *issuerQueryStore, key string) {
 			s.recordSent(key, origin, nil, nil, true, time.Now())
 			for i := range issuerSentMaxEntries {
 				var digest [32]byte
 				digest[0], digest[1] = byte(i), byte(i>>8)
-				s.sent[key][digest] = issuerSentAgentFirst
+				s.idDestinationLocked(key, origin).sent[digest] = issuerSentAgentFirst
+				s.sentEntries++
 			}
 			s.recordSent(key, origin, nil, []byte(serverIDOther), true, time.Now())
-		}, "history_session_limit"},
+		}, "destination_learning_frozen_destination_limit"},
 		{"stream", func(s *issuerQueryStore, key string) {
-			s.taintSentForReasonLocked(key, issuerHistoryStream)
-		}, "history_stream"},
+			s.freezeIDDestinationLocked(s.admitIDDestinationLocked(key, origin), issuerHistoryStream)
+		}, "destination_learning_frozen_stream"},
 		{"unspecified", func(s *issuerQueryStore, key string) {
-			s.taintSentForReasonLocked(key, issuerHistoryComplete)
-		}, "history_incomplete"},
+			s.freezeIDDestinationLocked(s.admitIDDestinationLocked(key, origin), issuerHistoryComplete)
+		}, "destination_learning_frozen_incomplete"},
 		{"first cause retained", func(s *issuerQueryStore, key string) {
 			s.recordSent(key, origin, nil, nil, false, time.Now())
-			s.taintSentForReasonLocked(key, issuerHistoryStream)
-		}, "history_unread_body"},
+			s.freezeIDDestinationLocked(s.admitIDDestinationLocked(key, origin), issuerHistoryStream)
+		}, "destination_learning_frozen_unread_body"},
 		{"bucket capacity", func(s *issuerQueryStore, _ string) {
 			for i := range issuerUnreadableMaxSessions {
-				s.sent[fmt.Sprintf("session-%d", i)] = nil
+				s.history[fmt.Sprintf("session-%d", i)] = &issuerIDCaller{}
 			}
-		}, "history_capacity"},
+		}, "destination_history_capacity"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, cfg := newSentIssuerProxy(t)
@@ -70,11 +71,11 @@ func TestIssuerIDHistoryBlockReason(t *testing.T) {
 			s := p.issuerCookieRuntime.Load().query
 			key := sessionKeyFor(cfg, ic.Agent, ic.ClientIP, ic.ActorAuth)
 			tc.prepare(s, key)
-			before := len(s.sent)
-			if got := ic.issuerIDBlockReason(); got != tc.want {
+			before := len(s.history)
+			if got := ic.issuerIDBlockReason(origin); got != tc.want {
 				t.Fatalf("reason = %q, want %q", got, tc.want)
 			}
-			if len(s.sent) != before {
+			if len(s.history) != before {
 				t.Fatal("diagnosis created send history")
 			}
 			if tc.want != "no_allowance" && s.serverIDIssued(key, origin, serverIDListed) {
@@ -111,7 +112,7 @@ func TestInterceptIssuerIDAuditReason(t *testing.T) {
 	key := sessionKeyFor(h.cfg, agent, "10.0.0.1", envelope.ActorAuthBound)
 	origin := mustIssuerQueryURL(t, upstream.URL)
 	store.recordSent(key, origin, nil, nil, false, time.Now())
-	if got := h.send(upstream, http.MethodGet, "/items/"+serverIDListed, agent, "", ""); got != http.StatusForbidden {
+	if got := h.send(upstream, http.MethodGet, "/items/"+serverIDOther, agent, "", ""); got != http.StatusForbidden {
 		t.Fatalf("incomplete history = %d, want 403", got)
 	}
 	var block map[string]any
@@ -121,7 +122,7 @@ func TestInterceptIssuerIDAuditReason(t *testing.T) {
 			block = event
 		}
 	}
-	if block["issuer_id_evidence"] != "history_unread_body" {
+	if block["issuer_id_evidence"] != "destination_learning_frozen_unread_body" {
 		t.Fatalf("operator diagnostic = %v", block["issuer_id_evidence"])
 	}
 	blockedJSON, err := json.Marshal(block)
@@ -134,33 +135,34 @@ func TestInterceptIssuerIDAuditReason(t *testing.T) {
 }
 
 func TestIssuerIDBlockPrerequisites(t *testing.T) {
+	origin := mustIssuerQueryURL(t, "https://api.vendor.example/items")
 	var absent *InterceptContext
-	if got := absent.issuerIDBlockReason(); got != "store_unavailable" {
+	if got := absent.issuerIDBlockReason(nil); got != "store_unavailable" {
 		t.Fatal(got)
 	}
 	p, cfg := newSentIssuerProxy(t)
 	ic := &InterceptContext{Proxy: p, Config: cfg, Agent: "reader", ClientIP: "192.0.2.1", ActorAuth: envelope.ActorAuthSelfDeclared}
-	if got := ic.issuerIDBlockReason(); got != "untrusted_actor" {
+	if got := ic.issuerIDBlockReason(origin); got != "untrusted_actor" {
 		t.Fatal(got)
 	}
 	ic.ActorAuth = envelope.ActorAuthBound
 	off := cfg.Clone()
 	off.RequestBodyScanning.ScanHeaders = false
 	ic.Config = off
-	if got := ic.issuerIDBlockReason(); got != "disabled" {
+	if got := ic.issuerIDBlockReason(origin); got != "disabled" {
 		t.Fatal(got)
 	}
 	ic.Config = cfg.Clone()
-	if got := ic.issuerIDBlockReason(); got != "stale_runtime" {
+	if got := ic.issuerIDBlockReason(origin); got != "stale_runtime" {
 		t.Fatal(got)
 	}
 	ic.Config = cfg
 	p.issuerCookieRuntime.Load().query.disabled = true
-	if got := ic.issuerIDBlockReason(); got != "store_unavailable" {
+	if got := ic.issuerIDBlockReason(origin); got != "store_unavailable" {
 		t.Fatal(got)
 	}
 	p.issuerCookieRuntime.Store(nil)
-	if got := ic.issuerIDBlockReason(); got != "store_unavailable" {
+	if got := ic.issuerIDBlockReason(origin); got != "store_unavailable" {
 		t.Fatal(got)
 	}
 }

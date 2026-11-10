@@ -1092,7 +1092,7 @@ func newInterceptHandler(
 				}
 				detail := auditDetailFromResult(urlResult)
 				if urlResult.Scanner == scanner.ScannerEntropy && strings.HasPrefix(urlResult.Reason, "high entropy path segment ") {
-					detail.IssuerIDEvidence = ic.issuerIDBlockReason()
+					detail.IssuerIDEvidence = ic.issuerIDBlockReason(r.URL)
 				}
 				ic.Logger.LogBlockedDetail(actx, urlResult.Scanner, urlResult.Reason, detail)
 				ic.Metrics.RecordTLSRequestBlocked("url_scan")
