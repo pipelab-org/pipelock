@@ -187,6 +187,13 @@ func (n *keywordDecodeSource) visitOneSource(start, end int, visit func(string, 
 	if n.parent == nil {
 		return visit(n.text, start, end)
 	}
+	// A repeated literal segment has no single offset map. Visit every
+	// occurrence so a later labeled copy can still qualify.
+	if n.encoding == keywordSegment && n.text != "" {
+		if at := strings.Index(n.parent.text, n.text); at >= 0 && strings.Contains(n.parent.text[at+1:], n.text) {
+			return n.visitRepeatedSegment(start, end, visit)
+		}
+	}
 	if n.encoding == "identity" && n.parent.text == n.text {
 		// Identity edges keep every byte position. Building and charging a
 		// per-byte map for each graph that binds the same parent spends the
@@ -218,6 +225,36 @@ func (n *keywordDecodeSource) visitOneSource(start, end int, visit func(string, 
 		return false
 	}
 	return n.parent.visitSources(n.offsets[start].start, n.offsets[end-1].end, visit)
+}
+
+// visitRepeatedSegment maps a literal segment that occurs more than once.
+// keywordSegmentOffsets keeps a single map only for a unique segment and
+// returns nil otherwise; each occurrence here keeps its own source position.
+func (n *keywordDecodeSource) visitRepeatedSegment(start, end int, visit func(string, int, int) bool) bool {
+	if n.parent == nil || start < 0 || end > len(n.text) || end <= start {
+		n.owner.incomplete = true
+		return false
+	}
+	parent := n.parent.text
+	segment := n.text
+	from := 0
+	for from <= len(parent)-len(segment) {
+		if !n.owner.charge(len(segment) + keywordSpanBytes) {
+			n.owner.incomplete = true
+			n.owner.budget.incomplete = true
+			return false
+		}
+		rel := strings.Index(parent[from:], segment)
+		if rel < 0 {
+			return false
+		}
+		at := from + rel
+		if n.parent.visitSources(at+start, at+end, visit) {
+			return true
+		}
+		from = at + 1
+	}
+	return false
 }
 
 // keywordCandidateContext distinguishes logical decoded text from projections
