@@ -9,7 +9,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 )
 
-// All history and allowance state is protected by issuerQueryStore.mu.
+// All history and allowance state is protected by the shared issuerIDLedger.mu.
 // Destination keys are keyed digests; no hostname or sent value is retained.
 type issuerIDCaller struct {
 	block        issuerIDHistoryBlock

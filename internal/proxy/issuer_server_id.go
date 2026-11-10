@@ -17,6 +17,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"golang.org/x/net/http/httpguts"
 )
 
 // A server-issued ID is an opaque object identifier an origin returned in a
@@ -182,7 +183,7 @@ func (p *Proxy) newObservedIssuerQueryStore() *issuerQueryStore {
 		p.metrics.RecordIssuerIDBlock(scope)
 		if log && p.logger != nil {
 			p.logger.LogAnomaly(audit.NewMethodLogContext("ISSUER_ID"), "",
-				"server-issued ID evidence blocked ("+scope+"); new learning is frozen for the affected destination (or caller when unknown); known exact IDs remain usable; restart or disable and re-enable issuer evidence resets history AND discards every known ID; additional transitions are counted in pipelock_issuer_id_blocks_total", 0)
+				"server-issued ID evidence blocked ("+scope+"); new learning is frozen for the affected destination (or caller when unknown); known exact IDs remain usable; only a restart resets history, and it also discards every known ID (disabling issuer evidence discards known IDs but keeps history); additional transitions are counted in pipelock_issuer_id_blocks_total", 0)
 		}
 	}
 	return s
@@ -301,7 +302,12 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 	// Only an exact, currently allowed path ID (or its addressing delimiter)
 	// can preserve server-first words. This adds flags to tokens already being
 	// recorded, never entries at mint time or authority from arbitrary bodies.
+	// A retired generation's allowances were revoked, so its sends are all
+	// agent-first in the shared ledger.
 	serverFirst := make(map[[32]byte]struct{})
+	if s.retired {
+		pathIDs = nil
+	}
 	for _, pathID := range pathIDs {
 		if _, issued := s.serverIDMatchLocked(session, pathID.ids); !issued {
 			continue
@@ -446,6 +452,9 @@ func (s *issuerQueryStore) mintServerID(session string, target *url.URL, value s
 	idDigest, _ := s.originDigest("server_id", target, value)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.retired {
+		return
+	}
 	issued := s.ids[session]
 	if _, exists := issued[idDigest]; exists {
 		s.touchIDLocked(issued, idDigest)
@@ -548,6 +557,9 @@ func (s *issuerQueryStore) serverIDIssued(session string, target *url.URL, segme
 	candidates := s.serverIDCandidates(hmac.New(sha256.New, s.key[:]), target, segment)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.retired {
+		return false
+	}
 	digest, issued := s.serverIDMatchLocked(session, candidates)
 	if !issued {
 		return false
@@ -649,6 +661,36 @@ func (p *Proxy) recordIssuerForwardSent(cfg *config.Config, agent, clientIP stri
 	}
 	bodyKnown := body != nil || r.Body == nil || r.Body == http.NoBody
 	store.recordSent(sessionKeyFor(cfg, agent, clientIP, actorAuth), r.URL, r.Header, body, bodyKnown, time.Now())
+}
+
+// reverseIssuerSend is the reverse proxy's admitted caller and the exact body
+// it buffered, carried to the transport that sends the rewritten request.
+type reverseIssuerSend struct {
+	cfg       *config.Config
+	agent     string
+	clientIP  string
+	actorAuth envelope.ActorAuth
+	body      []byte
+}
+
+// recordIssuerReverseSent records an outgoing reverse-proxy request after
+// Director rewrote its URL and any envelope headers were added, so history
+// holds what the upstream actually receives. A request asking to upgrade can
+// hand the connection to a byte stream Pipelock does not record, so it
+// freezes the destination before anything is sent.
+func (p *Proxy) recordIssuerReverseSent(req *http.Request) {
+	if p == nil || req == nil {
+		return
+	}
+	send, ok := req.Context().Value(ctxKeyReverseIssuerSend).(reverseIssuerSend)
+	if !ok {
+		return
+	}
+	if httpguts.HeaderValuesContainsToken(req.Header["Connection"], "Upgrade") {
+		p.taintIssuerSessionForStream(send.cfg, send.agent, send.clientIP, send.actorAuth, req.URL)
+		return
+	}
+	p.recordIssuerForwardSent(send.cfg, send.agent, send.clientIP, send.actorAuth, req, send.body)
 }
 
 // recordIssuerFetchSent records a /fetch request's URL as sent. It carries no

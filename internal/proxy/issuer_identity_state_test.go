@@ -103,10 +103,23 @@ func TestIssuerIDIdentityReload(t *testing.T) {
 	if fresh == original || fresh.serverIDIssued(peer, origin, serverIDListed+":") {
 		t.Fatal("disabled evidence revived")
 	}
+	// Toggling a prerequisite revokes IDs but keeps history: the frozen
+	// caller stays frozen, while the unfrozen peer relearns. Only a restart,
+	// which starts a new ledger, clears the freeze.
 	fresh.recordSent(key, origin, nil, nil, true, time.Now())
 	fresh.mintServerID(key, origin, serverIDListed, time.Now())
-	if !fresh.serverIDIssued(key, origin, serverIDListed+":") {
-		t.Fatal("explicit reset retained taint")
+	if fresh.serverIDIssued(key, origin, serverIDListed+":") {
+		t.Fatal("prerequisite toggle cleared a caller freeze")
+	}
+	fresh.mintServerID(peer, origin, serverIDListed, time.Now())
+	if !fresh.serverIDIssued(peer, origin, serverIDListed+":") {
+		t.Fatal("unfrozen peer could not relearn after re-enable")
+	}
+	restarted := p.newObservedIssuerQueryStore()
+	restarted.recordSent(key, origin, nil, nil, true, time.Now())
+	restarted.mintServerID(key, origin, serverIDListed, time.Now())
+	if !restarted.serverIDIssued(key, origin, serverIDListed+":") {
+		t.Fatal("a new process ledger retained taint")
 	}
 }
 

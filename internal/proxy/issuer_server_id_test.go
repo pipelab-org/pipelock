@@ -54,7 +54,7 @@ func TestIssuerIDBlockObservation(t *testing.T) {
 	if strings.Count(logs.String(), "anomaly detected") != 1 || strings.Contains(logs.String(), origin.Host) || strings.Contains(logs.String(), "first") {
 		t.Fatalf("expected one coalesced warning without identities or hosts, got %s", logs.String())
 	}
-	if !strings.Contains(logs.String(), "restart or disable and re-enable") {
+	if !strings.Contains(logs.String(), "only a restart resets history") {
 		t.Fatal("warning omitted recovery guidance")
 	}
 	fresh := p.newObservedIssuerQueryStore()
