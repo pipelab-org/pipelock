@@ -195,7 +195,7 @@ func (m *decodingMemo) registerReassemblyKeywordView(source, view string, codec,
 			if alternate.parent != nil && source != view {
 				alternate.reassembly = &assembledKeywordBits{codec, phase}
 			}
-			node.variants = append(node.variants, alternate)
+			node.owner.addVariant(node, alternate)
 		}
 	}
 	if m.keywordSources == nil {
