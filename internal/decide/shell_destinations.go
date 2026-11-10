@@ -395,8 +395,14 @@ func looksLikeHostOperand(word string) bool {
 	return true
 }
 
+// validPort accepts the port of a bare host operand. An empty port is valid:
+// curl reads "host:/path" as the scheme's default port, so it is a real
+// destination. Out-of-range digits are accepted too; the scan then decides.
 func validPort(port string) bool {
-	if port == "" || len(port) > 5 {
+	if port == "" {
+		return true
+	}
+	if len(port) > 5 {
 		return false
 	}
 	for _, c := range port {

@@ -1,0 +1,138 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package decide
+
+import (
+	"slices"
+	"strings"
+	"testing"
+)
+
+// TestLooksLikeHostOperand pins which bare curl/wget operands count as a host.
+// A rejected shape is never scanned, so each rejection here must be a word
+// curl would not treat as a destination either.
+func TestLooksLikeHostOperand(t *testing.T) {
+	for _, tc := range []struct {
+		word string
+		want bool
+	}{
+		{"api.vendor.example", true},
+		{"api.vendor.example/path", true},
+		{"api.vendor.example.", true},
+		{"169.254.169.254", true},
+		{"169.254.169.254:80/latest", true},
+		{"169.254.169.254:/latest", true}, // empty port: curl uses the default
+		{"169.254.169.254:99999", true},   // out of range, still scanned
+		{"[fd00:ec2::254]", true},
+		{"[fd00:ec2::254]/latest", true},
+		{"[fd00:ec2::254]:80/latest", true},
+		{"[fd00:ec2::254]:/latest", true},
+		{"a-b.vendor.example", true},
+
+		{"", false},
+		{"-o", false},
+		{"https://api.vendor.example/", false}, // scheme URLs take the regex path
+		{"user@api.vendor.example", false},
+		{"api.vendor example", false},
+		{"/etc/passwd", false},
+		{"localhost", false}, // no dot: ambiguous with a file name
+		{"file.txt..bak", false},
+		{"[]", false},
+		{"[fd00::1", false},
+		{"[fd00::1]x", false},
+		{"[fd00::1]:8o", false},
+		{"api.vendor.example:8o80", false},
+		{"api.vendor.example:123456", false},
+		{"-bad.vendor.example", false},
+		{"bad-.vendor.example", false},
+		{"bad_label.vendor.example", false},
+		{strings.Repeat("a", 64) + ".vendor.example", false},
+	} {
+		if got := looksLikeHostOperand(tc.word); got != tc.want {
+			t.Errorf("looksLikeHostOperand(%q) = %v, want %v", tc.word, got, tc.want)
+		}
+	}
+}
+
+// TestOperandHost pins the host part used for the literal-IP check after an
+// unknown option.
+func TestOperandHost(t *testing.T) {
+	for _, tc := range []struct{ word, want string }{
+		{"169.254.169.254", "169.254.169.254"},
+		{"169.254.169.254:80/latest", "169.254.169.254"},
+		{"[fd00:ec2::254]:80/latest", "fd00:ec2::254"},
+		{"[fd00:ec2::254]/latest", "fd00:ec2::254"},
+		{"[fd00::1", "[fd00::1"},
+		{"api.vendor.example/x", "api.vendor.example"},
+	} {
+		if got := operandHost(tc.word); got != tc.want {
+			t.Errorf("operandHost(%q) = %q, want %q", tc.word, got, tc.want)
+		}
+	}
+}
+
+// TestSplitShellWordsShapes covers quoting, escapes, comments and operators.
+// An unterminated quote or a trailing backslash is unreliable structure, so the
+// reader reports it and the caller falls back to explicit scheme URLs only.
+func TestSplitShellWordsShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		in    string
+		want  []string
+		valid bool
+	}{
+		{"single quotes", `curl 'a b'`, []string{"curl", "a b"}, true},
+		{"double quote escapes", `echo "a\"b\$c"`, []string{"echo", `a"b$c`}, true},
+		{"plain escape", `curl a\ b`, []string{"curl", "a b"}, true},
+		{"comment to end of line", "curl x # 169.254.169.254\nls", []string{"curl", "x", "\n", "ls"}, true},
+		{"hash inside a word is literal", "curl a#b", []string{"curl", "a#b"}, true},
+		{"doubled operators", "a && b || c >> d", []string{"a", "&&", "b", "||", "c", ">>", "d"}, true},
+		{"single operators", "a;b|c&d(e)f<g>h", []string{"a", ";", "b", "|", "c", "&", "d", "(", "e", ")", "f", "<", "g", ">", "h"}, true},
+		{"unterminated single quote", `curl 'oops`, nil, false},
+		{"unterminated double quote", `curl "oops`, nil, false},
+		{"trailing backslash", `curl x\`, nil, false},
+		{"invalid utf8", "curl \xff", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := splitShellWords(tc.in)
+			if ok != tc.valid {
+				t.Fatalf("ok = %v, want %v (words %q)", ok, tc.valid, got)
+			}
+			if tc.valid && !slices.Equal(got, tc.want) {
+				t.Fatalf("words = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestShellDestinationExtractionOptions covers option handling the decide
+// table does not reach: `--`, wget's two-letter flags, short clusters that end
+// in a value option, duplicates, and the unreliable-structure fallback.
+func TestShellDestinationExtractionOptions(t *testing.T) {
+	for _, tc := range []struct {
+		command string
+		want    []string
+	}{
+		{"curl -- 169.254.169.254/x", []string{"http://169.254.169.254/x"}},
+		{"wget -nv 169.254.169.254/x", []string{"http://169.254.169.254/x"}},
+		{"wget -nc api.vendor.example/f", []string{"http://api.vendor.example/f"}},
+		{"curl -so out.txt api.vendor.example/f", []string{"http://api.vendor.example/f"}},
+		{"curl -so 169.254.169.254 api.vendor.example/f", []string{"http://api.vendor.example/f"}},
+		{"curl 169.254.169.254:/x", []string{"http://169.254.169.254:/x"}},
+		{"curl https://api.vendor.example/a https://api.vendor.example/a", []string{"https://api.vendor.example/a"}},
+		{"curl 'https://api.vendor.example/q", []string{"https://api.vendor.example/q"}},
+		{"curl 'unterminated 169.254.169.254", nil},
+		{"ls 169.254.169.254", nil},
+	} {
+		t.Run(tc.command, func(t *testing.T) {
+			got, over := shellDestinationURLs(tc.command)
+			if over {
+				t.Fatalf("over cap for %q", tc.command)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("urls = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
