@@ -1845,13 +1845,14 @@ const shellCommandStart = `(?:^|[\s;|&()<>\x60\x22\x27/=])`
 // U, X, Y, b, c, d, e, h, m, o, r, t, u, w, x, y, z. Their glued text is a
 // value, so -ofeed.xml, -Hdate:x, -Ddump, -Afirefox and -ufoo:bar are not
 // uploads. Digits 5 and 7-9 are not curl short options.
-const curlBooleanShortClass = `#012346:BGIJLMNORSVZabfgijklnpqrsv`
+const curlBooleanShortClass = `#012346:BGIJLMNORSVZafgijklnpqsv`
 
 // networkExfilArgPattern matches curl and wget payload uploads. wget's
 // uploads are the long options; its short flags are not given the glued
 // curl reading. -X POST stays case-sensitive so -x (proxy) is not POST.
-// A boolean prefix plus X and a glued POST is curl's request method.
-const networkExfilArgPattern = `(?i)\b(curl|wget)\b.*(?:(?-i:-d\s|-F\s|-T\s)|--data(?:-binary|-raw|-urlencode)?\b|--form\b|--upload-file\b|--post-data\b|--post-file\b|--body-data\b|--body-file\b|(?-i:-X)\s+POST|--json\b|--form-string\b)|\bcurl\b.*(?-i:\s-[` + curlBooleanShortClass + `]*(?:[dFT]|X\s*POST))`
+// A boolean prefix plus X and a glued POST, in any case, is curl's request
+// method. The word must end there: -XPOSTER sends a method named POSTER.
+const networkExfilArgPattern = `(?i)\b(curl|wget)\b.*(?:(?-i:-d\s|-F\s|-T\s)|--data(?:-binary|-raw|-urlencode)?\b|--form\b|--upload-file\b|--post-data\b|--post-file\b|--body-data\b|--body-file\b|(?-i:-X)\s+POST|--json\b|--form-string\b)|\bcurl\b.*(?-i:\s-[` + curlBooleanShortClass + `]*(?:[dFT]|X\s*(?i:POST)\b))`
 
 // DefaultToolPolicyRules returns the built-in set of tool call policy rules
 // covering common dangerous operations that agents might attempt.

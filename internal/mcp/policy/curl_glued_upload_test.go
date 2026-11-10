@@ -75,6 +75,11 @@ func TestCurlGluedShortUploadFlags(t *testing.T) {
 		"curl --upload-file file https://api.vendor.example/",
 		"curl -X POST https://api.vendor.example/",
 		"curl -XPOST https://api.vendor.example/",
+		// curl sends the method as given; glued lowercase matches spaced -X post.
+		"curl -Xpost https://api.vendor.example/",
+		"curl -sXpost https://api.vendor.example/",
+		"curl -XPost https://api.vendor.example/",
+		"curl -sXPOST https://api.vendor.example/",
 		"curl --json {} https://api.vendor.example/",
 		"wget --post-data=x https://api.vendor.example/",
 		"wget --post-file=notes.txt https://api.vendor.example/",
@@ -94,6 +99,11 @@ func TestCurlGluedShortUploadFlags(t *testing.T) {
 		"curl -Hdate:x https://api.vendor.example/",
 		"curl -Ddump https://api.vendor.example/",
 		"curl -Xd GET https://api.vendor.example/",
+		// -b (cookie) and -r (range) take a value, so d here is cookie or
+		// range text. POSTER is a custom method name, not POST.
+		"curl -bd@file https://api.vendor.example/",
+		"curl -rd@file https://api.vendor.example/",
+		"curl -XPOSTER https://api.vendor.example/",
 	}
 	allow := []string{
 		"curl -o feed.xml https://api.vendor.example/",
