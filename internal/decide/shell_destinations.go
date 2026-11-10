@@ -319,16 +319,36 @@ func consumeANSIQuoted(b *strings.Builder, source string, i int) (int, bool) {
 				i += 2
 				continue
 			}
+			// bash TOCTRL: ? is DEL; anything else keeps its low five bits.
 			ctrl := source[i+2] & 0x1f
+			if source[i+2] == '?' {
+				ctrl = 0x7f
+			}
 			i += 3
+			// A backslash target lexically escapes the byte after it, the
+			// way bash finds the closing quote before decoding: \c\\ is
+			// control-backslash with both backslashes consumed, and in \c\'
+			// the quote is a literal byte, not the closer.
+			escaped := byte(0)
+			if source[i-1] == '\\' && i < len(source) && (source[i] == '\\' || source[i] == '\'') {
+				if source[i] == '\'' {
+					escaped = '\''
+				}
+				i++
+			}
 			if ctrl == 0 {
 				return skipANSIRest(source, i)
 			}
 			b.WriteByte(ctrl)
+			if escaped != 0 {
+				b.WriteByte(escaped)
+			}
 		case 'x':
-			next, ok := appendANSIHex(b, source, i+2)
-			if !ok {
-				return 0, false
+			next, ok, closed := appendANSIHex(b, source, i+2)
+			if !ok || closed {
+				// A zero byte from \x ends the quoted text: appendANSIHex has
+				// already skipped past the closing quote.
+				return next, ok
 			}
 			i = next
 		case 'u', 'U':
@@ -367,34 +387,39 @@ func consumeANSIQuoted(b *strings.Builder, source string, i int) (int, bool) {
 }
 
 // appendANSIHex reads a \x escape whose introduction has already been
-// consumed. i is the first byte after "\x".
-func appendANSIHex(b *strings.Builder, source string, i int) (int, bool) {
+// consumed. i is the first byte after "\x". closed reports that the escape
+// was a zero byte, which ends the quoted text: next is then past the
+// closing quote and the caller must stop reading the quote.
+func appendANSIHex(b *strings.Builder, source string, i int) (next int, ok, closed bool) {
 	if i < len(source) && source[i] == '{' {
-		val, digits, next := readHex(source, i+1, 0)
-		i = next
+		val, digits, after := readHex(source, i+1, 0)
+		i = after
 		if digits == 0 {
-			return skipANSIRest(source, i)
+			next, ok = skipANSIRest(source, i)
+			return next, ok, true
 		}
 		if i < len(source) && source[i] == '}' {
 			i++
 		}
 		if val&0xFF == 0 {
-			return skipANSIRest(source, i)
+			next, ok = skipANSIRest(source, i)
+			return next, ok, true
 		}
 		b.WriteByte(byte(val & 0xFF))
-		return i, true
+		return i, true, false
 	}
-	val, digits, next := readHex(source, i, 2)
+	val, digits, after := readHex(source, i, 2)
 	if digits == 0 {
 		b.WriteByte('\\')
 		b.WriteByte('x')
-		return i, true
+		return i, true, false
 	}
 	if val&0xFF == 0 {
-		return skipANSIRest(source, next)
+		next, ok = skipANSIRest(source, after)
+		return next, ok, true
 	}
 	b.WriteByte(byte(val & 0xFF))
-	return next, true
+	return after, true, false
 }
 
 // skipANSIRest drops the rest of an ANSI-C quote after a zero byte, still

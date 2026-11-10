@@ -158,6 +158,13 @@ func TestDecide_ShellDestinations(t *testing.T) {
 			wantScanner: scanner.ScannerSSRFMetadata,
 		},
 		{
+			name:        "nul ansi-c quote keeps the next host",
+			command:     "curl $'\\x00' " + blocked + "/x",
+			blocklist:   []string{blocked},
+			want:        Deny,
+			wantScanner: scanner.ScannerBlocklist,
+		},
+		{
 			name:        "bash -c nested scheme url",
 			command:     `bash -c "curl https://` + blocked + `/x"`,
 			blocklist:   []string{blocked},

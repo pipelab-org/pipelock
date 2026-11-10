@@ -203,6 +203,10 @@ func TestShellDestinationExtractionOptions(t *testing.T) {
 		{"curl api.vendor.example/x --data $'{}'", []string{"http://api.vendor.example/x"}},
 		{`bash -c $'curl \x31\x36\x39.\x32\x35\x34.\x31\x36\x39.\x32\x35\x34/x'`, []string{"http://169.254.169.254/x"}},
 		{"echo $'169.254.169.254'", nil},
+		// A zero byte from \x ends the quote; the words after it stay words.
+		{"curl $'\\x00' api.vendor.example/x", []string{"http://api.vendor.example/x"}},
+		{"curl $'\\x{}rest' api.vendor.example/x", []string{"http://api.vendor.example/x"}},
+		{"curl $'\\x{0}' api.vendor.example/x", []string{"http://api.vendor.example/x"}},
 		// A URL-like word after an unknown option is a destination either way.
 		{"curl --not-a-real-option http:/169.254.169.254/x", []string{"http://169.254.169.254"}},
 		{"curl --not-a-real-option gopher://169.254.169.254:70/_x", []string{"http://169.254.169.254:70"}},
@@ -317,6 +321,89 @@ func TestShortClusterHasC(t *testing.T) {
 	} {
 		if got := shortClusterHasC(word); got != want {
 			t.Errorf("shortClusterHasC(%q) = %v, want %v", word, got, want)
+		}
+	}
+}
+
+// TestANSIQuotedControlBackslash pins bash 5.3's reading of \c followed by
+// a backslash: \c\\ is control-backslash and consumes both backslashes, so
+// decoding stays in step with the shell after it.
+func TestANSIQuotedControlBackslash(t *testing.T) {
+	for command, want := range map[string]string{
+		`$'\c\\.'`:          "\x1c.",
+		`$'\c\.'`:           "\x1c.",
+		`$'\c\\\\.'`:        "\x1c\\.",
+		`$'\c\\\x41'`:       "\x1cA",
+		`$'\c\''`:           "\x1c'",
+		`$'\c?'`:            "\x7f",
+		`$'\c\x41'`:         "\x1cx41",
+		`$'\c\\\U00000041'`: "\x1cA",
+	} {
+		words, ok := splitShellWords(command)
+		if !ok || len(words) != 1 || words[0] != want {
+			t.Errorf("splitShellWords(%s) = %q, %v; want [%q]", command, words, ok, want)
+		}
+	}
+}
+
+// TestANSIQuotedDecode pins $'...' decoding to bash 5.3.20 output: each want
+// value was produced by running printf %s on the same input in that bash.
+func TestANSIQuotedDecode(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{`$'\a\b\e\E\f\n\r\t\v'`, "\x07\x08\x1b\x1b\x0c\x0a\x0d\x09\x0b"},
+		{`$'\\\'\"\?'`, "\x5c\x27\x22\x3f"},
+		{`$'\z\8\9'`, "\x5c\x7a\x5c\x38\x5c\x39"},
+		{`$'\x41\x4a\x4A'`, "\x41\x4a\x4a"},
+		{`$'\x4g'`, "\x04\x67"},
+		{`$'\xg'`, "\x5c\x78\x67"},
+		{`$'\x'`, "\x5c\x78"},
+		{`$'\x{41}'`, "\x41"},
+		{`$'\x{1ff}'`, "\xff"},
+		{`$'\x{41'`, "\x41"},
+		{`$'\x{}rest'`, ""},
+		{`$'\x{0}rest'`, ""},
+		{`$'\x00rest'`, ""},
+		{`$'\x{}a\'b'`, ""},
+		{`$'\101\7\77'`, "\x41\x07\x3f"},
+		{`$'\777'`, "\xff"},
+		{`$'\0rest'`, ""},
+		{`$'\000\'x'`, ""},
+		{`$'\08'`, ""},
+		{`$'\u0041'`, "\x41"},
+		{`$'\u00e9'`, "\xc3\xa9"},
+		{`$'\u20ac'`, "\xe2\x82\xac"},
+		{`$'\U0001F600'`, "\xf0\x9f\x98\x80"},
+		{`$'\U00000041'`, "\x41"},
+		{`$'\u'`, "\x5c\x75"},
+		{`$'\U'`, "\x5c\x55"},
+		{`$'\uZZ'`, "\x5c\x75\x5a\x5a"},
+		{`$'\u0000rest'`, ""},
+		{`$'\ud800'`, "\xed\xa0\x80"},
+		{`$'\ca\cA\c@x'`, "\x01\x01"},
+		{`$'\c'`, "\x5c\x63"},
+		{`$'\c?'`, "\x7f"},
+		{`$'\c@rest\'q'`, ""},
+		{`$'169.254.169.254'`, "\x31\x36\x39\x2e\x32\x35\x34\x2e\x31\x36\x39\x2e\x32\x35\x34"},
+		{`$'\x31\x36\x39.\x32\x35\x34.\x31\x36\x39.\x32\x35\x34'`, "\x31\x36\x39\x2e\x32\x35\x34\x2e\x31\x36\x39\x2e\x32\x35\x34"},
+		{`$'\061\066\071.254.169.254'`, "\x31\x36\x39\x2e\x32\x35\x34\x2e\x31\x36\x39\x2e\x32\x35\x34"},
+	} {
+		words, ok := splitShellWords(tc.in)
+		var got string
+		if len(words) == 1 {
+			got = words[0]
+		}
+		if !ok || len(words) > 1 || got != tc.want {
+			t.Errorf("splitShellWords(%s) = %q, %v; want %q", tc.in, words, ok, tc.want)
+		}
+	}
+}
+
+// TestANSIQuotedUnterminated checks that a $'...' quote that never closes,
+// including after a zero byte, leaves the command to the raw-text fallback.
+func TestANSIQuotedUnterminated(t *testing.T) {
+	for _, command := range []string{`$'abc`, `$'\x00abc`, `$'\x00\`, `$'\x{}x\`, `$'\`, `$'\x`, `$"abc`} {
+		if words, ok := splitShellWords(command); ok {
+			t.Errorf("splitShellWords(%s) = %q, true; want unreadable", command, words)
 		}
 	}
 }
