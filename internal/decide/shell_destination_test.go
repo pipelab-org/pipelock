@@ -127,6 +127,25 @@ func TestDecide_ShellDestinations(t *testing.T) {
 			wantScanner: scanner.ScannerSSRFMetadata,
 		},
 		{
+			name:        "ansi-c hex escape is the metadata address",
+			command:     `curl $'\x31\x36\x39.\x32\x35\x34.\x31\x36\x39.\x32\x35\x34'/latest/meta-data/`,
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
+			name:        "nested script in an ansi-c hex escape",
+			command:     `bash -c $'curl \x31\x36\x39.\x32\x35\x34.\x31\x36\x39.\x32\x35\x34/latest/meta-data/'`,
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
+			name:        "bare host beside an ansi-c argument",
+			command:     "curl " + blocked + "/x --data $'{}'",
+			blocklist:   []string{blocked},
+			want:        Deny,
+			wantScanner: scanner.ScannerBlocklist,
+		},
+		{
 			name:        "unknown option then one-slash url",
 			command:     "curl --not-a-real-option http:/169.254.169.254/latest/meta-data/",
 			want:        Deny,

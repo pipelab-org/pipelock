@@ -94,6 +94,12 @@ func TestSplitShellWordsShapes(t *testing.T) {
 		{"unterminated double quote", `curl "oops`, nil, false},
 		{"trailing backslash", `curl x\`, nil, false},
 		{"invalid utf8", "curl \xff", nil, false},
+		// bash(1) ANSI-C quoting. The escapes are the bytes the shell runs.
+		{"ansi-c hex address", `curl $'\x31\x36\x39.\x32\x35\x34.\x31\x36\x39.\x32\x35\x34'`, []string{"curl", "169.254.169.254"}, true},
+		{"ansi-c brace hex address", `curl $'\x{31}\x{36}\x{39}.\x{32}\x{35}\x{34}.\x{31}\x{36}\x{39}.\x{32}\x{35}\x{34}'`, []string{"curl", "169.254.169.254"}, true},
+		{"locale quote drops the dollar", `curl $"api.vendor.example"`, []string{"curl", "api.vendor.example"}, true},
+		{"dollar quote inside double quotes stays text", `echo "cost $'100'"`, []string{"echo", "cost $'100'"}, true},
+		{"unterminated ansi-c quote", `curl $'oops`, nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, ok := splitShellWords(tc.in)
@@ -186,23 +192,28 @@ func TestShellDestinationExtractionOptions(t *testing.T) {
 		{"curl --url 0xa9fea9fe/latest/", []string{"http://0xa9fea9fe/latest/"}},
 		{"curl --not-a-real-option 2852039166/latest/", []string{"http://2852039166/latest/"}},
 		// Unparseable structure: scheme URLs and metadata literals only.
-		// ANSI-C quoting always takes the fallback: the splitter can't read
-		// its escapes, and reading it as plain quotes glued "$" to the word.
-		{"curl 169.254.169.254/x; echo $'it'\\''s'", []string{"http://169.254.169.254"}},
-		{"curl $'169.254.169.254'/x", []string{"http://169.254.169.254"}},
-		{"$'curl' 169.254.169.254/x", []string{"http://169.254.169.254"}},
-		{"zsh -c $'curl 169.254.169.254/x'", []string{"http://169.254.169.254"}},
+		// ANSI-C and locale quotes are decoded, so a quote elsewhere does not
+		// drop a bare host, and an escape becomes the host the shell runs.
+		{"curl 169.254.169.254/x; echo $'it'\\''s'", []string{"http://169.254.169.254/x"}},
+		{"curl $'169.254.169.254'/x", []string{"http://169.254.169.254/x"}},
+		{"$'curl' 169.254.169.254/x", []string{"http://169.254.169.254/x"}},
+		{"zsh -c $'curl 169.254.169.254/x'", []string{"http://169.254.169.254/x"}},
+		{`curl $'\x31\x36\x39.\x32\x35\x34.\x31\x36\x39.\x32\x35\x34/x'`, []string{"http://169.254.169.254/x"}},
+		{`curl $'\x{31}\x{36}\x{39}.\x{32}\x{35}\x{34}.\x{31}\x{36}\x{39}.\x{32}\x{35}\x{34}/x'`, []string{"http://169.254.169.254/x"}},
+		{"curl api.vendor.example/x --data $'{}'", []string{"http://api.vendor.example/x"}},
+		{`bash -c $'curl \x31\x36\x39.\x32\x35\x34.\x31\x36\x39.\x32\x35\x34/x'`, []string{"http://169.254.169.254/x"}},
+		{"echo $'169.254.169.254'", nil},
 		// A URL-like word after an unknown option is a destination either way.
 		{"curl --not-a-real-option http:/169.254.169.254/x", []string{"http://169.254.169.254"}},
 		{"curl --not-a-real-option gopher://169.254.169.254:70/_x", []string{"http://169.254.169.254:70"}},
 		{"curl --not-a-real-option user@169.254.169.254/x", []string{"http://169.254.169.254", "http://user@169.254.169.254"}},
 		{"curl --not-a-real-option value https://api.vendor.example/", []string{"https://api.vendor.example/"}},
-		{"curl 169.254.169.254/x; echo $'it\\'s'", []string{"http://169.254.169.254"}},
+		{"curl 169.254.169.254/x; echo $'it\\'s'", []string{"http://169.254.169.254/x"}},
 		{"curl [fd00:ec2::254]:80/x \\", []string{"http://[fd00:ec2::254]"}},
 		{"curl api.vendor.example/x \\", nil},
 		// Quoting inside the address is removed before the fallback looks.
-		{"curl 169.254.'169'.254/x; echo $'it\\'s'", []string{"http://169.254.169.254"}},
-		{"curl \"169.254\".169.254/x; echo $'it\\'s'", []string{"http://169.254.169.254"}},
+		{"curl 169.254.'169'.254/x; echo $'it\\'s'", []string{"http://169.254.169.254/x"}},
+		{"curl \"169.254\".169.254/x; echo $'it\\'s'", []string{"http://169.254.169.254/x"}},
 		{"curl 169.254.$'169'.254/x \\", []string{"http://169.254.169.254"}},
 		// A one-slash proxy scheme still names the proxy host.
 		{"curl -x socks5:/169.254.169.254:1080 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:1080"}},

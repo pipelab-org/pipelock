@@ -155,12 +155,23 @@ func splitShellWords(source string) ([]string, bool) {
 			i++
 			continue
 		case '$':
-			// $'...' (ANSI-C) and $"..." (locale) quoting decode escapes and
-			// drop the dollar sign; reading them as plain quotes would leave
-			// "$" glued to the word ($169.254.169.254). Report the structure
-			// unreliable so the raw-text fallback reads the command.
+			// $'...' (ANSI-C) and $"..." (locale) quoting. Reading them as
+			// plain quotes leaves "$" on the word. Decode them so the bytes
+			// the shell runs are the bytes the destination scan sees, and so
+			// one such quote does not abandon the rest of the command.
 			if i+1 < len(source) && (source[i+1] == '\'' || source[i+1] == '"') {
-				return nil, false
+				var next int
+				var quoted bool
+				if source[i+1] == '\'' {
+					next, quoted = consumeANSIQuoted(&b, source, i+2)
+				} else {
+					next, quoted = consumeDoubleQuoted(&b, source, i+2)
+				}
+				if !quoted {
+					return nil, false
+				}
+				i = next
+				continue
 			}
 		case '#':
 			if b.Len() == 0 {
@@ -186,33 +197,11 @@ func splitShellWords(source string) ([]string, bool) {
 			}
 			continue
 		case '"':
-			i++
-			closed := false
-			for i < len(source) {
-				if source[i] == '\\' && i+1 < len(source) {
-					n := source[i+1]
-					if n == '\n' {
-						// Backslash-newline is a line continuation: both bytes go.
-						i += 2
-						continue
-					}
-					if n == '$' || n == '`' || n == '"' || n == '\\' {
-						b.WriteByte(n)
-						i += 2
-						continue
-					}
-				}
-				if source[i] == '"' {
-					closed = true
-					i++
-					break
-				}
-				b.WriteByte(source[i])
-				i++
-			}
-			if !closed {
+			next, quoted := consumeDoubleQuoted(&b, source, i+1)
+			if !quoted {
 				return nil, false
 			}
+			i = next
 			continue
 		case '\\':
 			if i+1 >= len(source) {
@@ -246,6 +235,256 @@ func splitShellWords(source string) ([]string, bool) {
 	return words, true
 }
 
+// consumeDoubleQuoted reads a double-quoted word starting at the first byte
+// inside the quotes. Bash $"..." locale quotes use these same rules when the
+// string is not translated (bash(1) "Translating Strings").
+func consumeDoubleQuoted(b *strings.Builder, source string, i int) (int, bool) {
+	for i < len(source) {
+		if source[i] == '\\' && i+1 < len(source) {
+			n := source[i+1]
+			if n == '\n' {
+				// Backslash-newline is a line continuation: both bytes go.
+				i += 2
+				continue
+			}
+			if n == '$' || n == '`' || n == '"' || n == '\\' {
+				b.WriteByte(n)
+				i += 2
+				continue
+			}
+		}
+		if source[i] == '"' {
+			return i + 1, true
+		}
+		b.WriteByte(source[i])
+		i++
+	}
+	return 0, false
+}
+
+// consumeANSIQuoted reads a bash $'...' word starting at the first byte
+// inside the quotes. The escapes are the bash(1) "ANSI-C Quoting" list.
+// Bash 5.3 also accepts \x{hex} with any number of digits and an optional
+// closing brace, and keeps the low eight bits (verified on bash 5.3.20).
+// A decoded zero byte ends the quoted text: the shell stores no NUL, and
+// bytes after it inside the quotes are dropped. \x{ with no hex digits
+// drops the rest of the quoted text the same way.
+func consumeANSIQuoted(b *strings.Builder, source string, i int) (int, bool) {
+	for i < len(source) {
+		c := source[i]
+		if c == '\'' {
+			return i + 1, true
+		}
+		if c != '\\' {
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		if i+1 >= len(source) {
+			return 0, false
+		}
+		n := source[i+1]
+		switch n {
+		case 'a':
+			b.WriteByte(0x07)
+			i += 2
+		case 'b':
+			b.WriteByte(0x08)
+			i += 2
+		case 'e', 'E':
+			b.WriteByte(0x1b)
+			i += 2
+		case 'f':
+			b.WriteByte(0x0c)
+			i += 2
+		case 'n':
+			b.WriteByte('\n')
+			i += 2
+		case 'r':
+			b.WriteByte('\r')
+			i += 2
+		case 't':
+			b.WriteByte('\t')
+			i += 2
+		case 'v':
+			b.WriteByte(0x0b)
+			i += 2
+		case '\\', '\'', '"', '?':
+			b.WriteByte(n)
+			i += 2
+		case 'c':
+			if i+2 >= len(source) || source[i+2] == '\'' {
+				b.WriteByte('\\')
+				b.WriteByte('c')
+				i += 2
+				continue
+			}
+			ctrl := source[i+2] & 0x1f
+			i += 3
+			if ctrl == 0 {
+				return skipANSIRest(source, i)
+			}
+			b.WriteByte(ctrl)
+		case 'x':
+			next, ok := appendANSIHex(b, source, i+2)
+			if !ok {
+				return 0, false
+			}
+			i = next
+		case 'u', 'U':
+			maxDigits := 4
+			if n == 'U' {
+				maxDigits = 8
+			}
+			val, digits, next := readHex(source, i+2, maxDigits)
+			if digits == 0 {
+				b.WriteByte('\\')
+				b.WriteByte(n)
+				i += 2
+				continue
+			}
+			i = next
+			if val == 0 {
+				return skipANSIRest(source, i)
+			}
+			appendCodepoint(b, val)
+		default:
+			if n < '0' || n > '7' {
+				b.WriteByte('\\')
+				b.WriteByte(n)
+				i += 2
+				continue
+			}
+			val, next := readOctal(source, i+1)
+			i = next
+			if val&0xFF == 0 {
+				return skipANSIRest(source, i)
+			}
+			b.WriteByte(byte(val & 0xFF))
+		}
+	}
+	return 0, false
+}
+
+// appendANSIHex reads a \x escape whose introduction has already been
+// consumed. i is the first byte after "\x".
+func appendANSIHex(b *strings.Builder, source string, i int) (int, bool) {
+	if i < len(source) && source[i] == '{' {
+		val, digits, next := readHex(source, i+1, 0)
+		i = next
+		if digits == 0 {
+			return skipANSIRest(source, i)
+		}
+		if i < len(source) && source[i] == '}' {
+			i++
+		}
+		if val&0xFF == 0 {
+			return skipANSIRest(source, i)
+		}
+		b.WriteByte(byte(val & 0xFF))
+		return i, true
+	}
+	val, digits, next := readHex(source, i, 2)
+	if digits == 0 {
+		b.WriteByte('\\')
+		b.WriteByte('x')
+		return i, true
+	}
+	if val&0xFF == 0 {
+		return skipANSIRest(source, next)
+	}
+	b.WriteByte(byte(val & 0xFF))
+	return next, true
+}
+
+// skipANSIRest drops the rest of an ANSI-C quote after a zero byte, still
+// honoring backslash escapes so \' is not the closer.
+func skipANSIRest(source string, i int) (int, bool) {
+	for i < len(source) {
+		if source[i] == '\\' {
+			if i+1 >= len(source) {
+				return 0, false
+			}
+			i += 2
+			continue
+		}
+		if source[i] == '\'' {
+			return i + 1, true
+		}
+		i++
+	}
+	return 0, false
+}
+
+// readHex reads up to limit hex digits, or any number when limit is 0. The
+// value keeps only the low eight bits when limit is 0, which is what \x{...}
+// stores.
+func readHex(source string, i, limit int) (val uint32, digits, next int) {
+	for limit <= 0 || digits < limit {
+		if i >= len(source) {
+			break
+		}
+		d, ok := hexDigit(source[i])
+		if !ok {
+			break
+		}
+		if limit <= 0 {
+			val = ((val << 4) | d) & 0xFF
+		} else {
+			val = (val << 4) | d
+		}
+		i++
+		digits++
+	}
+	return val, digits, i
+}
+
+func readOctal(source string, i int) (val uint32, next int) {
+	for n := 0; n < 3 && i < len(source); n++ {
+		c := source[i]
+		if c < '0' || c > '7' {
+			break
+		}
+		val = (val << 3) | uint32(c-'0')
+		i++
+	}
+	return val, i
+}
+
+func hexDigit(c byte) (uint32, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return uint32(c - '0'), true
+	case c >= 'a' && c <= 'f':
+		return uint32(c-'a') + 10, true
+	case c >= 'A' && c <= 'F':
+		return uint32(c-'A') + 10, true
+	default:
+		return 0, false
+	}
+}
+
+// appendCodepoint writes cp the way bash writes a \u or \U escape, including
+// a surrogate as its UTF-8 bytes rather than a replacement character.
+func appendCodepoint(b *strings.Builder, cp uint32) {
+	switch {
+	case cp <= 0x7F:
+		b.WriteByte(byte(cp))
+	case cp <= 0x7FF:
+		b.WriteByte(0xC0 | byte(cp>>6))
+		b.WriteByte(0x80 | byte(cp&0x3F))
+	case cp <= 0xFFFF:
+		b.WriteByte(0xE0 | byte(cp>>12))
+		b.WriteByte(0x80 | byte((cp>>6)&0x3F))
+		b.WriteByte(0x80 | byte(cp&0x3F))
+	default:
+		b.WriteByte(0xF0 | byte((cp>>18)&0x07))
+		b.WriteByte(0x80 | byte((cp>>12)&0x3F))
+		b.WriteByte(0x80 | byte((cp>>6)&0x3F))
+		b.WriteByte(0x80 | byte(cp&0x3F))
+	}
+}
+
 // maxNestedShellDepth bounds how many script layers (bash -c "sh -c '...'")
 // are reparsed. Each layer is a quoted word inside the one above, so real
 // commands rarely pass two.
@@ -268,8 +507,8 @@ func shellDestinationURLsAt(command string, urls []string, seen map[string]struc
 	var over bool
 	words, ok := splitShellWords(command)
 	if !ok {
-		// The structure is not reliable (ANSI-C quoting, a heredoc with an
-		// apostrophe). Still take explicit scheme URLs from the raw text,
+		// The structure is not reliable (an unclosed quote, a trailing
+		// backslash). Still take explicit scheme URLs from the raw text,
 		// and any cloud-metadata address literal anywhere in it, without
 		// guessing other bare hosts.
 		// Quote characters and backslashes are removed for a second look,
