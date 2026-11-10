@@ -125,7 +125,7 @@ type Decision struct {
 func Decide(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config, action Action) Decision {
 	switch action.Kind {
 	case EventShellExecution:
-		return decideShell(cfg, sc, policyCfg, action.Shell)
+		return decideShell(ctx, cfg, sc, policyCfg, action.Shell)
 	case EventMCPExecution:
 		return decideMCP(cfg, sc, policyCfg, action.MCP)
 	case EventReadFile:
@@ -145,7 +145,7 @@ func Decide(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, policy
 	}
 }
 
-func decideShell(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config, p *ShellPayload) Decision {
+func decideShell(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config, p *ShellPayload) Decision {
 	if p == nil {
 		return deny("pipelock: missing shell payload")
 	}
@@ -171,6 +171,25 @@ func decideShell(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Conf
 		rawArgs := json.RawMessage(`{"command":` + strconv.Quote(p.Command) + `}`)
 		policyVerdict := policyCfg.CheckShellCommand(p.Command, rawArgs)
 		evidence = append(evidence, evidenceFromPolicy(policyVerdict)...)
+	}
+
+	// Destinations named in the command take the same URL pipeline as WebFetch.
+	// A command with none keeps the decision the checks above already made.
+	urls, over := shellDestinationURLs(p.Command)
+	if over {
+		evidence = append(evidence, shellURLCapEvidence())
+		return buildDecision(cfg, evidence)
+	}
+	for _, rawURL := range urls {
+		found := urlDestinationEvidence(ctx, sc, rawURL)
+		for i := range found {
+			// A cancelled context or a deadline is a refusal, including when
+			// enforce is off. Skipping it would allow the command.
+			if found[i].Scanner == scanner.ScannerContext {
+				found[i].inspectionIncomplete = true
+			}
+		}
+		evidence = append(evidence, found...)
 	}
 
 	return buildDecision(cfg, evidence)
@@ -251,10 +270,16 @@ func decideWebFetch(ctx context.Context, cfg *config.Config, sc *scanner.Scanner
 		return deny("pipelock: missing WebFetch URL")
 	}
 
-	// Run the full URL scanner pipeline (scheme, blocklist, DLP, SSRF, etc.).
-	result := sc.Scan(ctx, p.URL)
+	return buildDecision(cfg, urlDestinationEvidence(ctx, sc, p.URL))
+}
+
+// urlDestinationEvidence runs the WebFetch URL pipeline. An allowed URL
+// produces no evidence. When an earlier stage stops the scan, the core
+// credential floor still runs, matching decideWebFetch.
+func urlDestinationEvidence(ctx context.Context, sc *scanner.Scanner, rawURL string) []Evidence {
+	result := sc.Scan(ctx, rawURL)
 	if result.Allowed {
-		return Decision{Outcome: Allow}
+		return nil
 	}
 
 	core := scanner.IsCoreCriticalResult(result)
@@ -270,7 +295,7 @@ func decideWebFetch(ctx context.Context, cfg *config.Config, sc *scanner.Scanner
 	// names the credential, which is why the request stays denied in audit
 	// mode even though the earlier stage alone would only warn.
 	if !core {
-		if floor := sc.ScanURLCoreFloor(p.URL); !floor.Allowed {
+		if floor := sc.ScanURLCoreFloor(rawURL); !floor.Allowed {
 			evidence = append(evidence, Evidence{
 				Scanner:  floor.Scanner,
 				Pattern:  floor.Reason,
@@ -280,8 +305,7 @@ func decideWebFetch(ctx context.Context, cfg *config.Config, sc *scanner.Scanner
 			})
 		}
 	}
-
-	return buildDecision(cfg, evidence)
+	return evidence
 }
 
 func decideWrite(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config, p *WritePayload) Decision {

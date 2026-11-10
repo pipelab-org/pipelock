@@ -4,6 +4,7 @@
 package decide
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -37,7 +38,7 @@ func TestDecide_GitQuotedParentheses(t *testing.T) {
 		t.Run(tc.command, func(t *testing.T) {
 			input := `{"command":` + strconv.Quote(tc.command) + `}`
 			for surface, got := range map[string]Decision{
-				"shell hook": decideShell(cfg, sc, pc, &ShellPayload{Command: tc.command}),
+				"shell hook": decideShell(context.Background(), cfg, sc, pc, &ShellPayload{Command: tc.command}),
 				"mcp":        decideMCP(cfg, sc, pc, &MCPPayload{ToolName: "bash", ToolInput: input}),
 				"tool use":   decideToolUse(cfg, sc, pc, &ToolUsePayload{ToolName: "bash", ToolInput: input}),
 			} {
@@ -77,7 +78,7 @@ func TestDecide_WriteDestinations(t *testing.T) {
 				if err := json.Unmarshal([]byte(tc.input), &args); err != nil {
 					t.Fatal(err)
 				}
-				decisions["shell hook"] = decideShell(cfg, sc, pc, &ShellPayload{Command: args.Command})
+				decisions["shell hook"] = decideShell(context.Background(), cfg, sc, pc, &ShellPayload{Command: args.Command})
 			}
 			for surface, got := range decisions {
 				if got.Outcome != tc.want {
@@ -134,7 +135,7 @@ func TestDecide_ToolPolicyMatchesArgumentValues(t *testing.T) {
 	for _, tt := range tests {
 		input := `{"command":` + strconv.Quote(tt.command) + `}`
 		paths := map[string]Decision{
-			"shell":    decideShell(cfg, sc, pc, &ShellPayload{Command: tt.command}),
+			"shell":    decideShell(context.Background(), cfg, sc, pc, &ShellPayload{Command: tt.command}),
 			"mcp":      decideMCP(cfg, sc, pc, &MCPPayload{ToolName: "bash", ToolInput: input}),
 			"tool use": decideToolUse(cfg, sc, pc, &ToolUsePayload{ToolName: "bash", ToolInput: input}),
 		}
