@@ -159,6 +159,13 @@ type decodedMatchKey struct {
 }
 
 func (k decodedMatchKey) match(normalized string, lowered *dlpLoweredBytes) []TextDLPMatch {
+	return k.matchWithDecodes(normalized, lowered, nil)
+}
+
+// matchWithDecodes is match with a decoding memo for configured patterns, so a
+// caller's cancellation reaches the pattern walk. Core patterns ignore the
+// memo, as match always has. Every decoded-match path selects patterns here.
+func (k decodedMatchKey) matchWithDecodes(normalized string, lowered *dlpLoweredBytes, decodes *decodingMemo) []TextDLPMatch {
 	if k.core {
 		return k.scanner.matchCoreDLPPatternsLowered(normalized, k.encoding, lowered)
 	}
@@ -166,7 +173,7 @@ func (k decodedMatchKey) match(normalized string, lowered *dlpLoweredBytes) []Te
 	if k.cardOnly {
 		patterns = textDLPCardPatterns
 	}
-	return k.scanner.matchDLPPatternsLowered(normalized, k.encoding, k.text, lowered, patterns)
+	return k.scanner.matchDLPPatternsLoweredWithDecodes(normalized, k.encoding, k.text, lowered, patterns, decodes)
 }
 
 // sharedDecodes lets the scans of one message's views reuse each other's
@@ -299,16 +306,11 @@ func (s *sharedDecodes) matchDecodedContext(key decodedMatchKey, ctx context.Con
 	if !key.cardOnly {
 		lowered = s.loweredFor(normalized)
 	}
-	var matches []TextDLPMatch
-	if ctx == nil || key.core {
-		matches = key.match(normalized, &lowered)
-	} else {
-		patterns := textDLPAllPatterns
-		if key.cardOnly {
-			patterns = textDLPCardPatterns
-		}
-		matches = key.scanner.matchDLPPatternsLoweredWithDecodes(normalized, key.encoding, key.text, &lowered, patterns, &decodingMemo{scanCtx: ctx})
+	var decodes *decodingMemo
+	if ctx != nil {
+		decodes = &decodingMemo{scanCtx: ctx}
 	}
+	matches := key.matchWithDecodes(normalized, &lowered, decodes)
 	if ctx != nil && ctx.Err() != nil {
 		return slices.Clone(matches)
 	}
@@ -671,16 +673,7 @@ func (m *decodingMemo) matchDecodedKey(key decodedMatchKey) []TextDLPMatch {
 	normalized := m.normalize(key.text)
 	var lowered dlpLoweredBytes
 	lowered.add(normalized)
-	var matches []TextDLPMatch
-	if key.core {
-		matches = key.match(normalized, &lowered)
-	} else {
-		patterns := textDLPAllPatterns
-		if key.cardOnly {
-			patterns = textDLPCardPatterns
-		}
-		matches = key.scanner.matchDLPPatternsLoweredWithDecodes(normalized, key.encoding, key.text, &lowered, patterns, m)
-	}
+	matches := key.matchWithDecodes(normalized, &lowered, m)
 	if m.scanCtx != nil && m.scanCtx.Err() != nil {
 		// A walk that stopped on cancellation is partial. Caching it would
 		// make a later lookup look like a verified negative.
