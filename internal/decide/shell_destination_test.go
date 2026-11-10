@@ -82,7 +82,7 @@ func TestDecide_ShellDestinations(t *testing.T) {
 			name:        "metadata literal",
 			command:     "curl http://169.254.169.254/latest/meta-data/",
 			want:        Deny,
-			wantScanner: scanner.ScannerCoreSSRF,
+			wantScanner: scanner.ScannerSSRFMetadata,
 		},
 		{
 			name:        "credential hostname without dns",
@@ -143,7 +143,7 @@ func TestDecide_ShellDestinations(t *testing.T) {
 			name:        "echoed metadata url is scanned and denied",
 			command:     `echo "see http://169.254.169.254/latest/meta-data/"`,
 			want:        Deny,
-			wantScanner: scanner.ScannerCoreSSRF,
+			wantScanner: scanner.ScannerSSRFMetadata,
 		},
 		{
 			name:    "ls unchanged",
@@ -175,13 +175,13 @@ func TestDecide_ShellDestinations(t *testing.T) {
 			name:        "bare metadata operand",
 			command:     "curl 169.254.169.254/latest/meta-data/",
 			want:        Deny,
-			wantScanner: scanner.ScannerCoreSSRF,
+			wantScanner: scanner.ScannerSSRFMetadata,
 		},
 		{
 			name:        "scheme url passed to --url",
 			command:     "curl --url http://169.254.169.254/latest/meta-data/",
 			want:        Deny,
-			wantScanner: scanner.ScannerCoreSSRF,
+			wantScanner: scanner.ScannerSSRFMetadata,
 		},
 		{
 			name:    "unknown option value is not a destination",
@@ -202,7 +202,7 @@ func TestDecide_ShellDestinations(t *testing.T) {
 			name:        "websocket destination to metadata is denied",
 			command:     "wscat -c ws://169.254.169.254/latest/meta-data/",
 			want:        Deny,
-			wantScanner: scanner.ScannerCoreSSRF,
+			wantScanner: scanner.ScannerSSRFMetadata,
 		},
 		{
 			name:        "uppercase websocket scheme with credential hostname",

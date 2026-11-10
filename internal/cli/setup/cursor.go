@@ -235,8 +235,15 @@ func runCursorHook(cmd *cobra.Command, configFile string) error {
 	action := payloadToAction(payload)
 
 	// Build scanner and policy. A shell command is code about to run, so its
-	// scanner treats an environment lookup assignment as code, not a credential.
-	sc, err := scanner.NewWithOptions(cfg, scanner.Options{ToolCommandEnvLookups: action.Kind == decide.EventShellExecution})
+	// scanner treats an environment lookup assignment as code, not a credential,
+	// and lets literal private destinations through the core SSRF floor.
+	// The allowlist is on this scanner only. The loaded config is not copied
+	// or mutated, so other event kinds built from the same file keep the floor.
+	shellEvent := action.Kind == decide.EventShellExecution
+	sc, err := scanner.NewWithOptions(cfg, scanner.Options{
+		ToolCommandEnvLookups: shellEvent,
+		ShellPrivateLiterals:  shellEvent,
+	})
 	if err != nil {
 		return fmt.Errorf("create scanner: %w", err)
 	}

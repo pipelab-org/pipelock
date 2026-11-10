@@ -330,13 +330,18 @@ type Scanner struct {
 	maxURLLength              int
 	internalCIDRs             []*net.IPNet
 	ipAllowlistCIDRs          []*net.IPNet // SSRF-exempt IP ranges (ssrf.ip_allowlist)
-	trustedDomains            []string     // SSRF-exempt domains (wildcard via MatchDomain)
-	destinationGrants         destination.GrantSet
-	rawAPIAllowlist           []string // full api_allowlist for SSRF hint generation (all modes)
-	rateLimiter               *RateLimiter
-	dataBudget                *DataBudget
-	envSecrets                []string // filtered high-entropy env var values
-	fileSecrets               []string // loaded from secrets_file config
+	// shellPrivateCIDRs is the shell-execution literal exemption. It is empty
+	// unless Options.ShellPrivateLiterals is set. IsIPAllowlisted consults it
+	// before the non-overridable refusal so the core floor can let those
+	// literals through. See shellPrivateLiteralNets.
+	shellPrivateCIDRs []*net.IPNet
+	trustedDomains    []string // SSRF-exempt domains (wildcard via MatchDomain)
+	destinationGrants destination.GrantSet
+	rawAPIAllowlist   []string // full api_allowlist for SSRF hint generation (all modes)
+	rateLimiter       *RateLimiter
+	dataBudget        *DataBudget
+	envSecrets        []string // filtered high-entropy env var values
+	fileSecrets       []string // loaded from secrets_file config
 	// knownSecretWindows holds the partial-match windows for every configured
 	// env and file secret, keyed by the secret. It is built once here because
 	// the lists are fixed for a scanner's lifetime (a reload builds a new
@@ -563,6 +568,17 @@ type Options struct {
 	// UpstreamResolver answers lookups not covered by dns.host_overrides.
 	// Nil uses net.DefaultResolver.
 	UpstreamResolver Resolver
+	// ShellPrivateLiterals adds shellPrivateLiteralNets to this scanner's
+	// SSRF allowlist. Set it only on the scanner that evaluates a shell
+	// command. WebFetch, MCP, and file scanners leave it unset, so their
+	// core floor is unchanged. The ranges include the unspecified address
+	// and prefixes that contain a cloud-metadata address. Operator
+	// ssrf.ip_allowlist entries cannot name those, and IsIPAllowlisted
+	// refuses them. This scanner honors the ranges anyway so a literal
+	// private destination is scanned for credentials instead of stopped
+	// at the core SSRF floor. The shell decision refuses a metadata or
+	// link-local literal before that scan.
+	ShellPrivateLiterals bool
 }
 
 func New(cfg *config.Config) (*Scanner, error) {
@@ -634,6 +650,9 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		nestedURLResolveBudget:      defaultNestedURLResolveBudget,
 		pathEntropyExempt:           buildPathEntropyExempt(cfg),
 		destinationGrants:           grants,
+	}
+	if opts.ShellPrivateLiterals {
+		s.shellPrivateCIDRs = shellPrivateLiteralNets
 	}
 
 	// Initialize rate limiter if enabled
@@ -1065,16 +1084,6 @@ func (s *Scanner) HostResolver() Resolver {
 	return s.resolver
 }
 
-// LookupDialHost resolves host through the scanner resolver. dns.host_overrides
-// win, then the configured upstream runs. The metadata-safe MCP dialer and
-// hook shell destinations both call this so a hostname has one lookup.
-func (s *Scanner) LookupDialHost(ctx context.Context, host string) ([]string, error) {
-	if s == nil || s.resolver == nil {
-		return nil, fmt.Errorf("scanner: no resolver")
-	}
-	return s.resolver.LookupHost(ctx, host)
-}
-
 // IsIPAllowlisted checks if an IP is in the SSRF IP allowlist (ssrf.ip_allowlist).
 // Used by checkSSRF and the dial-level SSRF check to exempt specific IP ranges.
 //
@@ -1086,8 +1095,18 @@ func (s *Scanner) LookupDialHost(ctx context.Context, host string) ([]string, er
 // is the single chokepoint consulted by every allowlist site (core literal
 // floor, resolved SSRF, and the proxy dial guard), so hardening it here covers
 // all of them at once.
+//
+// A shell-execution scanner is the exception to that refusal, and only for
+// shellPrivateLiteralNets. Those ranges are not operator configuration.
+// Link-local addresses and metadata addresses outside the ranges stay refused.
 func (s *Scanner) IsIPAllowlisted(ip net.IP) bool {
-	if ip == nil || IsNonOverridableSSRFTarget(ip) {
+	if ip == nil {
+		return false
+	}
+	if s.shellPrivateExempt(ip) {
+		return true
+	}
+	if IsNonOverridableSSRFTarget(ip) {
 		return false
 	}
 	// When an IPv4 address is embedded in ip, every internal form must be
@@ -1112,6 +1131,67 @@ func (s *Scanner) IsIPAllowlisted(ip net.IP) bool {
 
 func (s *Scanner) rawIPAllowlisted(ip net.IP) bool {
 	for _, cidr := range s.ipAllowlistCIDRs {
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// shellPrivateLiteralNets are the literal ranges a shell command may name.
+// Loopback, RFC 1918, carrier-grade NAT, unique-local, and the unspecified
+// address are local services. 100.64.0.0/10 contains the Alibaba metadata
+// address and fc00::/7 contains the AWS IPv6 metadata address; the shell
+// decision refuses those literals before the scan. Link-local and multicast
+// are absent, so the core floor still blocks them.
+var shellPrivateLiteralNets = mustParseCIDRs([]string{
+	"127.0.0.0/8",
+	"::1/128",
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"100.64.0.0/10",
+	"fc00::/7",
+	"0.0.0.0/32",
+	"::/128",
+})
+
+func mustParseCIDRs(cidrs []string) []*net.IPNet {
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			panic("BUG: shell private CIDR " + cidr + ": " + err.Error())
+		}
+		nets = append(nets, network)
+	}
+	return nets
+}
+
+// shellPrivateExempt reports whether every core-blocked form of ip sits in
+// the shell literal ranges. One form outside those ranges keeps the refusal.
+func (s *Scanner) shellPrivateExempt(ip net.IP) bool {
+	if len(s.shellPrivateCIDRs) == 0 || ip == nil {
+		return false
+	}
+	blocked := 0
+	for _, form := range destination.SSRFForms(ip) {
+		if form == nil || !s.isRawCoreCIDRBlocked(form) {
+			continue
+		}
+		blocked++
+		if !rawInCIDRs(s.shellPrivateCIDRs, form) {
+			return false
+		}
+	}
+	return blocked > 0
+}
+
+func rawInCIDRs(cidrs []*net.IPNet, ip net.IP) bool {
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+	for _, cidr := range cidrs {
 		if cidr.Contains(ip) {
 			return true
 		}

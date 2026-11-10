@@ -175,6 +175,9 @@ func decideShell(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, p
 
 	// Destinations named in the command take the same URL pipeline as WebFetch.
 	// A command with none keeps the decision the checks above already made.
+	// A hostname is not resolved. A name that points at a private or metadata
+	// address is not detected by the hook; the proxy enforces DNS-based SSRF
+	// when traffic is routed through it.
 	urls, over := shellDestinationURLs(p.Command)
 	if over {
 		evidence = append(evidence, shellURLCapEvidence())
@@ -274,13 +277,24 @@ func decideWebFetch(ctx context.Context, cfg *config.Config, sc *scanner.Scanner
 }
 
 // shellDestinationEvidence scans one destination named in a shell command.
+// A hostname is not resolved here. A name that points at a private or
+// metadata address is not detected by the hook; the proxy enforces DNS-based
+// SSRF when traffic is routed through it.
+//
+// A literal metadata or link-local address is refused before the scan. The
+// shell scanner's private-literal allowlist lets every other literal private
+// address through the core SSRF floor, so credential and entropy checks still
+// run. Dropping the core SSRF result instead would skip those stages.
 // A ws or wss destination is a WebSocket handshake over HTTP or HTTPS
 // (RFC 6455 section 3), so it takes the scanner's WebSocket entry point, which
 // maps the scheme the way the WebSocket proxy does, and the core floor reads
 // the mapped HTTP form. Every other destination takes the same URL pipeline
-// as WebFetch. A configured private-address refusal is not kept: the hook
-// replaces it with the metadata and link-local floor.
+// as WebFetch.
 func shellDestinationEvidence(ctx context.Context, sc *scanner.Scanner, rawURL string) []Evidence {
+	host := shellDestinationHost(rawURL)
+	if ip := scanner.ParseIPLiteral(host); ip != nil && shellHookMetadataOrLinkLocal(ip) {
+		return shellHookFloorEvidence(host, ip)
+	}
 	floorURL := rawURL
 	var result scanner.Result
 	if mapped, ok := webSocketHTTPForm(rawURL); ok {
@@ -289,14 +303,7 @@ func shellDestinationEvidence(ctx context.Context, sc *scanner.Scanner, rawURL s
 	} else {
 		result = sc.Scan(ctx, rawURL)
 	}
-	// A configured private-address refusal is not evidence for a hook command.
-	// The stages before that refusal already ran. A metadata classification
-	// from a hostname is replaced by the same lookup so audit mode still
-	// refuses it. A literal metadata address keeps the scan result.
-	if !result.Allowed && shellReplacesConfiguredSSRF(floorURL, result) {
-		return shellConfiguredSSRFEvidence(ctx, sc, floorURL, result)
-	}
-	return markShellMetadataFloor(scanDestinationEvidence(result, sc, floorURL))
+	return scanDestinationEvidence(result, sc, floorURL)
 }
 
 // webSocketHTTPForm reports whether rawURL has a ws or wss scheme and, if so,
