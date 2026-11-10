@@ -3381,11 +3381,14 @@ func (c *Config) validateForwardProxy() error {
 		"forward_proxy.redirect_websocket_hosts", c.ForwardProxy.RedirectWebSocketHosts, false); err != nil {
 		return err
 	}
-	if !c.ForwardProxy.Enabled {
-		return nil
-	}
+	// Checked before the enabled gate: sandbox, guard and other launchers turn
+	// the forward proxy on after validation, and require-TLS only runs when
+	// SNI verification does.
 	if c.ForwardProxy.SNIRequireTLSEnabled() && !c.ForwardProxy.SNIVerificationEnabled() {
 		return fmt.Errorf("forward_proxy.sni_require_tls requires forward_proxy.sni_verification")
+	}
+	if !c.ForwardProxy.Enabled {
+		return nil
 	}
 	if c.ForwardProxy.MaxTunnelSeconds <= 0 {
 		return fmt.Errorf("forward_proxy.max_tunnel_seconds must be positive")
