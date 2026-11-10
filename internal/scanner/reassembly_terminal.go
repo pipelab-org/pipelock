@@ -346,14 +346,18 @@ type assembledLane struct {
 // strideCanceled reports caller cancellation at a fixed byte stride.
 // A nil context, or a context that is still live, keeps the walk going.
 // The flag is not an inspection limit and must not be cached as one.
+// It reads Done rather than Err, like terminalCanceled: a repeated scan
+// skips walks an earlier scan proved empty, so Err calls here would make
+// the number of context checks differ from scan to scan. A context closes
+// Done whenever Err reports an error, so cancellation is still observed.
 func (b *assembledBudget) strideCanceled() bool {
-	if b == nil || b.memo == nil || b.memo.scanCtx == nil {
+	if b == nil || b.memo == nil {
 		return false
 	}
 	if b.stopped {
 		return true
 	}
-	if b.memo.scanCtx.Err() != nil {
+	if b.memo.terminalCanceled() {
 		b.stopped = true
 		return true
 	}
