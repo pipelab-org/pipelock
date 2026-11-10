@@ -42,26 +42,30 @@ def run(shape: str, base_values: list[float], head_values: list[float], omit: st
 
 
 class CompareTest(unittest.TestCase):
-    def test_fastest_round_ignores_slow_outliers(self):
-        result, failed = run("prose/1MiB", [1000, 1010, 990, 1005, 995], [1000, 5000, 990, 1005, 995])
+    def test_one_noisy_pair_does_not_decide(self):
+        result, failed = run("prose/1MiB", [1000, 1010, 990, 1005, 995, 1000], [1000, 5000, 990, 1005, 995, 1000])
         self.assertFalse(failed)
         self.assertEqual(result["prose/1MiB"]["status"], "ok")
 
-    def test_runner_load_on_later_rounds_does_not_fail(self):
-        # Recorded on a loaded workstation: identical scanner code, the head's
-        # second and third rounds slowed by other work. Its median is 25 percent
-        # slower; its fastest round is not.
-        result, failed = run("short/1MiB", [318e6, 309e6, 304e6], [313e6, 386e6, 446e6])
+    def test_load_drift_hitting_both_sides_does_not_fail(self):
+        # Identical code while the runner slows across the job: each pair runs
+        # back to back, so the ratio stays near 1 even as both sides drift.
+        base = [300e6, 390e6, 450e6, 320e6, 410e6, 300e6]
+        head = [310e6, 380e6, 460e6, 315e6, 420e6, 305e6]
+        result, failed = run("short/1MiB", base, head)
         self.assertFalse(failed)
         self.assertEqual(result["short/1MiB"]["status"], "ok")
 
     def test_consistent_slowdown_fails(self):
-        result, failed = run("b64json/1MiB", [1000, 1010, 990, 1005, 995], [1250, 1240, 1260, 1230, 1255])
+        base = [1000, 1010, 990, 1005, 995, 1000]
+        head = [1250, 1240, 1260, 1230, 1255, 1250]
+        result, failed = run("b64json/1MiB", base, head)
         self.assertTrue(failed)
         row = result["b64json/1MiB"]
         self.assertEqual(row["status"], "FAIL")
-        self.assertAlmostEqual(row["delta_pct"], (1230 / 990 - 1) * 100, places=3)
-        self.assertAlmostEqual(row["base_mbps"], (1 << 20) / 990, places=1)
+        ratios = sorted(h / b for b, h in zip(base, head))
+        self.assertAlmostEqual(row["delta_pct"], ((ratios[2] + ratios[3]) / 2 - 1) * 100, places=3)
+        self.assertAlmostEqual(row["base_mbps"], (1 << 20) / 1000, places=1)
 
     def test_warn_band(self):
         result, failed = run("short/1MiB", [1000, 1000, 1000], [1150, 1150, 1150])
@@ -164,8 +168,8 @@ class FailureReportingTest(unittest.TestCase):
         # A capture that always measures a 100 percent slowdown: only the
         # argument checks can keep it from deciding.
         def doubled(baseline, candidate, output, command):
-            base = HEADER + "".join(rows(f"{gate.BENCH_NAME}/{s}", [1000.0] * 5) for s in gate.EXPECTED_SHAPES)
-            head = HEADER + "".join(rows(f"{gate.BENCH_NAME}/{s}", [2000.0] * 5) for s in gate.EXPECTED_SHAPES)
+            base = HEADER + "".join(rows(f"{gate.BENCH_NAME}/{s}", [1000.0] * 6) for s in gate.EXPECTED_SHAPES)
+            head = HEADER + "".join(rows(f"{gate.BENCH_NAME}/{s}", [2000.0] * 6) for s in gate.EXPECTED_SHAPES)
             (output / "baseline.txt").write_text(base)
             (output / "current.txt").write_text(head)
         with mock.patch.object(sys, "argv", ["bench_throughput_gate.py", *argv]), \
@@ -184,6 +188,34 @@ class FailureReportingTest(unittest.TestCase):
                                             "--output", str(Path(directory) / "out"))
         self.assertEqual(status, 1)
         capture.assert_called_once()
+
+    def test_odd_or_short_round_counts_are_undecided(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for rounds in ("2", "3", "5"):
+                with self.subTest(rounds=rounds):
+                    status, capture = self.run_main("--baseline", directory, "--candidate", directory,
+                                                    "--output", str(Path(directory) / "out"), "--rounds", rounds)
+                    self.assertEqual(status, 2)
+                    capture.assert_not_called()
+
+    def test_unwritable_results_are_undecided(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(Path, "write_text", side_effect=OSError("disk full")):
+            status, _ = self.run_main("--baseline", directory, "--candidate", directory,
+                                      "--output", str(Path(directory) / "out"))
+        self.assertEqual(status, 2)
+
+    def test_failure_detail_keeps_the_end_of_a_long_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / "candidate-1.stderr").write_text("x" * 9000 + "\nFINAL_COMPILER_ERROR\n")
+            (output / "baseline-1.stderr").write_text("y" * 9000 + "\n")
+            (output / "execution.jsonl").write_text(json.dumps(
+                {"round": 1, "side": "candidate", "stdout": "candidate-1.txt", "stderr": "candidate-1.stderr"}) + "\n")
+            detail = gate.failure_detail(output)
+        self.assertTrue(detail.startswith("candidate-1.stderr:"), detail[:40])
+        self.assertTrue(detail.endswith("FINAL_COMPILER_ERROR") or "FINAL_COMPILER_ERROR" in detail)
+        self.assertLessEqual(len(detail), 4000)
 
     def test_invalid_thresholds_are_undecided(self):
         with tempfile.TemporaryDirectory() as directory:

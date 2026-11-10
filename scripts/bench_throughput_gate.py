@@ -35,6 +35,7 @@ import math
 from pathlib import Path
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 
@@ -47,7 +48,8 @@ BENCH_FILE = Path("internal/scanner/text_dlp_throughput_bench_test.go")
 # Every shape must be measured on both sides; a skipped or failed shape is
 # not a pass.
 EXPECTED_SHAPES = ("prose/1MiB", "short/1MiB", "b64json/1MiB")
-DEFAULT_ROUNDS = 5
+DEFAULT_ROUNDS = 6
+DEFAULT_BENCHTIME = "2s"
 DEFAULT_FAIL_PCT = 20.0
 DEFAULT_WARN_PCT = 10.0
 
@@ -123,8 +125,11 @@ def compare(base_text: str, head_text: str, fail_pct: float, warn_pct: float, ro
     for name in shared:
         if len(base[name]) != rounds or len(head[name]) != rounds:
             raise GateError(f"{name}: expected {rounds} rounds per side, got {len(base[name])} and {len(head[name])}")
-        base_ns, head_ns = min(base[name]), min(head[name])
-        delta = (head_ns / base_ns - 1.0) * 100.0
+        # Round i of each side ran back to back, so their ratio cancels load
+        # that drifts across the job; the median ratio ignores one noisy pair.
+        ratios = [h / b for b, h in zip(base[name], head[name])]
+        delta = (statistics.median(ratios) - 1.0) * 100.0
+        base_ns, head_ns = statistics.median(base[name]), statistics.median(head[name])
         size = sizes.get(name)
         status = "ok"
         if delta > fail_pct:
@@ -155,12 +160,19 @@ def failure_detail(output: Path, limit: int = 4000) -> str:
             last = [output / record[key] for key in ("stderr", "stdout") if isinstance(record.get(key), str)]
     except (OSError, ValueError):
         pass
-    parts = []
+    parts: list[str] = []
+    budget = limit
     for path in [*[p for p in last if p in files], *[p for p in files if p not in last]]:
         text = path.read_text(errors="replace").strip()
-        if text:
-            parts.append(f"{path.name}:\n{text[-limit:]}")
-    return "\n\n".join(parts)[:limit]
+        header = f"{path.name}:\n"
+        room = budget - len(header) - (2 if parts else 0)
+        if not text or room <= 0:
+            continue
+        # Keep each file's end, where Go prints the error, and stop when the
+        # budget is spent rather than cutting the joined text mid-file.
+        parts.append(header + text[-room:])
+        budget -= len(parts[-1]) + (2 if len(parts) > 1 else 0)
+    return "\n\n".join(parts)
 
 
 def fenced(text: str) -> str:
@@ -172,7 +184,7 @@ def fenced(text: str) -> str:
 
 def summary(rows: list[dict], fail_pct: float, warn_pct: float) -> str:
     lines = ["## Text DLP throughput gate", "",
-             f"Fastest of paired rounds on one runner. Fail above +{fail_pct:g}%, warn above +{warn_pct:g}%.", "",
+             f"Median of paired head/base ratios over interleaved rounds on one runner. Fail above +{fail_pct:g}%, warn above +{warn_pct:g}%.", "",
              "| Benchmark | Base MB/s | Head MB/s | Base ns/op | Head ns/op | Delta | Status |",
              "| --- | ---: | ---: | ---: | ---: | ---: | --- |"]
     for row in rows:
@@ -191,13 +203,13 @@ def main() -> int:
     parser.add_argument("--candidate", required=True, type=Path, help="clean checkout of the head commit")
     parser.add_argument("--output", required=True, type=Path, help="empty directory for raw samples and the summary")
     parser.add_argument("--rounds", type=int, default=DEFAULT_ROUNDS)
-    parser.add_argument("--benchtime", default="1x")
+    parser.add_argument("--benchtime", default=DEFAULT_BENCHTIME)
     parser.add_argument("--fail-pct", type=float, default=DEFAULT_FAIL_PCT)
     parser.add_argument("--warn-pct", type=float, default=DEFAULT_WARN_PCT)
     args = parser.parse_args()
     # argparse exits 2, the undecided status, on these errors.
-    if args.rounds < 3:
-        parser.error("--rounds must be at least 3 so one slow round cannot decide")
+    if args.rounds < 4 or args.rounds % 2:
+        parser.error("--rounds must be even and at least 4, so each side runs first equally often")
     if not (math.isfinite(args.fail_pct) and math.isfinite(args.warn_pct) and 0 <= args.warn_pct <= args.fail_pct):
         parser.error("--warn-pct and --fail-pct must be finite with 0 <= warn <= fail")
     status = 0
@@ -220,8 +232,12 @@ def main() -> int:
             print(detail, file=sys.stderr)
         return 2
     text = summary(rows, args.fail_pct, args.warn_pct)
-    (args.output / "throughput-summary.md").write_text(text)
-    (args.output / "throughput-rows.json").write_text(json.dumps(rows, indent=2) + "\n")
+    try:
+        (args.output / "throughput-summary.md").write_text(text)
+        (args.output / "throughput-rows.json").write_text(json.dumps(rows, indent=2) + "\n")
+    except OSError as exc:
+        print(f"throughput-gate: could not write the results: {exc}", file=sys.stderr)
+        return 2
     print(text)
     if failed:
         print("throughput-gate: head is slower than base beyond the threshold", file=sys.stderr)
