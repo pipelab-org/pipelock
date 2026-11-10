@@ -125,7 +125,7 @@ type Decision struct {
 func Decide(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config, action Action) Decision {
 	switch action.Kind {
 	case EventShellExecution:
-		return decideShell(cfg, sc, policyCfg, action.Shell)
+		return decideShell(ctx, cfg, sc, policyCfg, action.Shell)
 	case EventMCPExecution:
 		return decideMCP(cfg, sc, policyCfg, action.MCP)
 	case EventReadFile:
@@ -145,7 +145,7 @@ func Decide(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, policy
 	}
 }
 
-func decideShell(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config, p *ShellPayload) Decision {
+func decideShell(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config, p *ShellPayload) Decision {
 	if p == nil {
 		return deny("pipelock: missing shell payload")
 	}
@@ -171,6 +171,28 @@ func decideShell(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Conf
 		rawArgs := json.RawMessage(`{"command":` + strconv.Quote(p.Command) + `}`)
 		policyVerdict := policyCfg.CheckShellCommand(p.Command, rawArgs)
 		evidence = append(evidence, evidenceFromPolicy(policyVerdict)...)
+	}
+
+	// Destinations named in the command take the same URL pipeline as WebFetch.
+	// A command with none keeps the decision the checks above already made.
+	// A hostname is not resolved. A name that points at a private or metadata
+	// address is not detected by the hook; the proxy enforces DNS-based SSRF
+	// when traffic is routed through it.
+	urls, over := shellDestinationURLs(p.Command)
+	if over {
+		evidence = append(evidence, shellURLCapEvidence())
+		return buildDecision(cfg, evidence)
+	}
+	for _, rawURL := range urls {
+		found := shellDestinationEvidence(ctx, sc, rawURL)
+		for i := range found {
+			// A cancelled context or a deadline is a refusal, including when
+			// enforce is off. Skipping it would allow the command.
+			if found[i].Scanner == scanner.ScannerContext {
+				found[i].inspectionIncomplete = true
+			}
+		}
+		evidence = append(evidence, found...)
 	}
 
 	return buildDecision(cfg, evidence)
@@ -251,10 +273,67 @@ func decideWebFetch(ctx context.Context, cfg *config.Config, sc *scanner.Scanner
 		return deny("pipelock: missing WebFetch URL")
 	}
 
-	// Run the full URL scanner pipeline (scheme, blocklist, DLP, SSRF, etc.).
-	result := sc.Scan(ctx, p.URL)
+	return buildDecision(cfg, urlDestinationEvidence(ctx, sc, p.URL))
+}
+
+// shellDestinationEvidence scans one destination named in a shell command.
+// A hostname is not resolved here. A name that points at a private or
+// metadata address is not detected by the hook; the proxy enforces DNS-based
+// SSRF when traffic is routed through it.
+//
+// A literal metadata or link-local address is refused before the scan. The
+// shell scanner's private-literal allowlist lets every other literal private
+// address through the core SSRF floor, so credential and entropy checks still
+// run. Dropping the core SSRF result instead would skip those stages.
+// A ws or wss destination is a WebSocket handshake over HTTP or HTTPS
+// (RFC 6455 section 3), so it takes the scanner's WebSocket entry point, which
+// maps the scheme the way the WebSocket proxy does, and the core floor reads
+// the mapped HTTP form. Every other destination takes the same URL pipeline
+// as WebFetch.
+func shellDestinationEvidence(ctx context.Context, sc *scanner.Scanner, rawURL string) []Evidence {
+	host := shellDestinationHost(rawURL)
+	if ip := scanner.ParseIPLiteral(host); ip != nil && shellHookMetadataOrLinkLocal(ip) {
+		return shellHookFloorEvidence(host, ip)
+	}
+	floorURL := rawURL
+	var result scanner.Result
+	if mapped, ok := webSocketHTTPForm(rawURL); ok {
+		floorURL = mapped
+		result = sc.ScanWebSocket(ctx, rawURL)
+	} else {
+		result = sc.Scan(ctx, rawURL)
+	}
+	return scanDestinationEvidence(result, sc, floorURL)
+}
+
+// webSocketHTTPForm reports whether rawURL has a ws or wss scheme and, if so,
+// returns it with the scheme mapped to http or https.
+func webSocketHTTPForm(rawURL string) (string, bool) {
+	scheme, rest, ok := strings.Cut(rawURL, "://")
+	if !ok {
+		return "", false
+	}
+	switch strings.ToLower(scheme) {
+	case "ws":
+		return "http://" + rest, true
+	case "wss":
+		return "https://" + rest, true
+	}
+	return "", false
+}
+
+// urlDestinationEvidence runs the WebFetch URL pipeline. An allowed URL
+// produces no evidence. When an earlier stage stops the scan, the core
+// credential floor still runs, matching decideWebFetch.
+func urlDestinationEvidence(ctx context.Context, sc *scanner.Scanner, rawURL string) []Evidence {
+	return scanDestinationEvidence(sc.Scan(ctx, rawURL), sc, rawURL)
+}
+
+// scanDestinationEvidence turns one URL scan result into evidence, adding the
+// core floor's finding for floorURL when an earlier stage stopped the scan.
+func scanDestinationEvidence(result scanner.Result, sc *scanner.Scanner, floorURL string) []Evidence {
 	if result.Allowed {
-		return Decision{Outcome: Allow}
+		return nil
 	}
 
 	core := scanner.IsCoreCriticalResult(result)
@@ -270,7 +349,7 @@ func decideWebFetch(ctx context.Context, cfg *config.Config, sc *scanner.Scanner
 	// names the credential, which is why the request stays denied in audit
 	// mode even though the earlier stage alone would only warn.
 	if !core {
-		if floor := sc.ScanURLCoreFloor(p.URL); !floor.Allowed {
+		if floor := sc.ScanURLCoreFloor(floorURL); !floor.Allowed {
 			evidence = append(evidence, Evidence{
 				Scanner:  floor.Scanner,
 				Pattern:  floor.Reason,
@@ -280,8 +359,7 @@ func decideWebFetch(ctx context.Context, cfg *config.Config, sc *scanner.Scanner
 			})
 		}
 	}
-
-	return buildDecision(cfg, evidence)
+	return evidence
 }
 
 func decideWrite(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config, p *WritePayload) Decision {
