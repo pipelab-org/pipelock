@@ -223,44 +223,63 @@ func runSinglePassInput(s *Scanner, in singlePassInput) string {
 	return canonicalSinglePassResult(s.scanTextDLPViews(ctx, in.text, in.cardView, in.opts))
 }
 
-// TestTextDLPSinglePassMatchesTwoPasses fails on any observable difference
-// between scanning both pattern classes in one pass and in two passes.
-func TestTextDLPSinglePassMatchesTwoPasses(t *testing.T) {
+// The comparison is split into one top-level test per scanner fixture: the CI
+// shard planner places whole top-level tests, and the four together run past
+// the per-test ceiling under the race detector.
+
+func TestTextDLPSinglePassMatchesTwoPassesDefaults(t *testing.T) {
+	compareSinglePass(t, "defaults")
+}
+
+func TestTextDLPSinglePassMatchesTwoPassesCustom(t *testing.T) {
+	compareSinglePass(t, "custom")
+}
+
+func TestTextDLPSinglePassMatchesTwoPassesKeywords(t *testing.T) {
+	compareSinglePass(t, "custom-keywords")
+}
+
+func TestTextDLPSinglePassMatchesTwoPassesReservedName(t *testing.T) {
+	compareSinglePass(t, "reserved-name")
+}
+
+// compareSinglePass fails on any observable difference between scanning both
+// pattern classes in one pass and in two passes for one scanner fixture.
+func compareSinglePass(t *testing.T, sName string) {
+	t.Helper()
 	saved := textDLPSinglePass
 	t.Cleanup(func() { textDLPSinglePass = saved })
-	scanners := singlePassScanners(t)
-	inputs := singlePassInputs()
-	var diffs, findings int
-	for sName, s := range scanners {
-		for _, in := range inputs {
-			// A keyword scanner keeps two passes either way; large bodies and
-			// limit inputs add only time there.
-			if s.hasDLPKeywords() && (strings.Contains(in.name, "/large/") || strings.HasPrefix(in.name, "limit/")) {
-				continue
+	s := singlePassScanners(t)[sName]
+	var compared, diffs, findings int
+	for _, in := range singlePassInputs() {
+		// A keyword scanner keeps two passes either way; large bodies and
+		// limit inputs add only time there.
+		if s.hasDLPKeywords() && (strings.Contains(in.name, "/large/") || strings.HasPrefix(in.name, "limit/")) {
+			continue
+		}
+		compared++
+		textDLPSinglePass = false
+		before := runSinglePassInput(s, in)
+		textDLPSinglePass = true
+		after := runSinglePassInput(s, in)
+		if strings.Contains(before, "\nM ") || strings.Contains(before, "\nI ") {
+			findings++
+		}
+		if before == after {
+			continue
+		}
+		diffs++
+		if diffs <= 10 {
+			preview := in.text
+			if len(preview) > 160 {
+				preview = preview[:160] + "..."
 			}
-			textDLPSinglePass = false
-			before := runSinglePassInput(s, in)
-			textDLPSinglePass = true
-			after := runSinglePassInput(s, in)
-			if strings.Contains(before, "\nM ") || strings.Contains(before, "\nI ") {
-				findings++
-			}
-			if before == after {
-				continue
-			}
-			diffs++
-			if diffs <= 10 {
-				preview := in.text
-				if len(preview) > 160 {
-					preview = preview[:160] + "..."
-				}
-				t.Errorf("scanner=%s input=%s text=%q\n--- two passes\n%s--- one pass\n%s", sName, in.name, preview, before, after)
-			}
+			t.Errorf("scanner=%s input=%s text=%q\n--- two passes\n%s--- one pass\n%s", sName, in.name, preview, before, after)
 		}
 	}
-	// A comparison where nothing is found proves little.
-	if findings < len(inputs) {
-		t.Fatalf("only %d of %d scans produced findings", findings, len(inputs)*len(scanners))
+	// A comparison where little is found proves little.
+	if findings*2 < compared {
+		t.Fatalf("only %d of %d scans produced findings", findings, compared)
 	}
 	if diffs > 0 {
 		t.Fatalf("%d single-pass differences", diffs)
