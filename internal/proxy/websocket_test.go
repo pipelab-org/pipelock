@@ -617,8 +617,12 @@ func TestWSProxyIssuerHistoryUncertainty(t *testing.T) {
 	if _, _, err := wsutil.ReadServerData(conn); err != nil {
 		t.Fatal(err)
 	}
-	if store.serverIDIssued(sender, origin, serverIDListed) {
-		t.Fatal("sender kept an ID after its WebSocket traffic reached the host")
+	if !store.serverIDIssued(sender, origin, serverIDListed) {
+		t.Fatal("WebSocket traffic revoked the sender's known ID")
+	}
+	store.mintServerID(sender, origin, serverIDOther, time.Now())
+	if store.serverIDIssued(sender, origin, serverIDOther) {
+		t.Fatal("WebSocket traffic allowed new ID learning")
 	}
 	if !store.serverIDIssued(peer, origin, serverIDListed) {
 		t.Fatal("sender's WebSocket tainted another trusted caller")
@@ -671,8 +675,8 @@ func TestWSProxyIssuerHistoryTaintedBeforeHandshake(t *testing.T) {
 	defer handshakeTimeout.Stop()
 	select {
 	case got := <-observed:
-		if got.retained || got.minted || !got.peerRetained {
-			t.Fatalf("upstream handshake saw usable issuer evidence: %+v", got)
+		if !got.retained || got.minted || !got.peerRetained {
+			t.Fatalf("upstream handshake changed known IDs or allowed new learning: %+v", got)
 		}
 	case <-handshakeTimeout.C:
 		t.Fatal("upstream handshake was not observed")
@@ -687,8 +691,8 @@ func TestWSProxyIssuerHistoryTaintedBeforeHandshake(t *testing.T) {
 	if !errors.Is(err, io.EOF) && (!errors.As(err, &closed) || closed.Code != ws.StatusInternalServerError) {
 		t.Fatalf("failed upstream handshake = %v, want closed stream", err)
 	}
-	if store.serverIDIssued(sender, origin, serverIDListed) {
-		t.Fatal("failed upstream dial restored previously learned evidence")
+	if !store.serverIDIssued(sender, origin, serverIDListed) {
+		t.Fatal("failed upstream dial revoked previously learned evidence")
 	}
 	store.mintServerID(sender, origin, serverIDOther, time.Now())
 	if store.serverIDIssued(sender, origin, serverIDOther) {
