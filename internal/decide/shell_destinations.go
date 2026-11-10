@@ -5,6 +5,7 @@ package decide
 
 import (
 	"fmt"
+	"net"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -84,7 +85,12 @@ func splitShellWords(source string) ([]string, bool) {
 			for i < len(source) {
 				if source[i] == '\\' && i+1 < len(source) {
 					n := source[i+1]
-					if n == '$' || n == '`' || n == '"' || n == '\\' || n == '\n' {
+					if n == '\n' {
+						// Backslash-newline is a line continuation: both bytes go.
+						i += 2
+						continue
+					}
+					if n == '$' || n == '`' || n == '"' || n == '\\' {
 						b.WriteByte(n)
 						i += 2
 						continue
@@ -105,6 +111,12 @@ func splitShellWords(source string) ([]string, bool) {
 		case '\\':
 			if i+1 >= len(source) {
 				return nil, false
+			}
+			if source[i+1] == '\n' {
+				// Line continuation (POSIX 2.2.1): the pair is removed and the
+				// word continues on the next line.
+				i += 2
+				continue
 			}
 			b.WriteByte(source[i+1])
 			i += 2
@@ -179,39 +191,91 @@ func appendCurlWgetHosts(urls []string, seen map[string]struct{}, words []string
 	tool := ""
 	optionsDone := false
 	skipBare := false
+	ambiguous := false
+	urlNext := false
+	add := func(word string) bool {
+		var over bool
+		urls, over = addDestination(urls, seen, "http://"+word)
+		return over
+	}
 	for _, word := range words {
 		if isShellOperator(word) {
 			tool = ""
 			optionsDone = false
-			skipBare = false
+			skipBare, ambiguous, urlNext = false, false, false
 			continue
 		}
 		if tool == "" {
 			if base := commandBase(word); base == "curl" || base == "wget" {
 				tool = base
 				optionsDone = false
-				skipBare = false
+				skipBare, ambiguous, urlNext = false, false, false
+			}
+			continue
+		}
+		if urlNext {
+			// curl's --url value is the destination itself.
+			urlNext = false
+			if looksLikeHostOperand(word) && add(word) {
+				return nil, true
 			}
 			continue
 		}
 		if skipBare {
 			skipBare = false
+			// After an option this table does not know, the word may be that
+			// option's value or the URL. A literal IP is scanned either way
+			// (a file named like an address is not worth the miss); a
+			// hostname is left alone to avoid treating values as hosts.
+			if ambiguous && looksLikeHostOperand(word) && scanner.ParseIPLiteral(operandHost(word)) != nil && add(word) {
+				return nil, true
+			}
+			ambiguous = false
 			continue
 		}
 		if !optionsDone && isOptionWord(word) {
-			skipBare, optionsDone = consumeFetchOption(tool, word)
+			if tool == "curl" {
+				if word == "--url" {
+					urlNext = true
+					continue
+				}
+				if value, ok := strings.CutPrefix(word, "--url="); ok {
+					if looksLikeHostOperand(value) && add(value) {
+						return nil, true
+					}
+					continue
+				}
+			}
+			skipBare, ambiguous, optionsDone = consumeFetchOption(tool, word)
 			continue
 		}
 		if !looksLikeHostOperand(word) {
 			continue
 		}
-		var over bool
-		urls, over = addDestination(urls, seen, "http://"+word)
-		if over {
+		if add(word) {
 			return nil, true
 		}
 	}
 	return urls, false
+}
+
+// operandHost returns the host part of a bare host[:port][/path] operand,
+// without brackets or port, for the literal-IP check.
+func operandHost(word string) string {
+	host := word
+	if i := strings.IndexByte(host, '/'); i >= 0 {
+		host = host[:i]
+	}
+	if strings.HasPrefix(host, "[") {
+		if end := strings.IndexByte(host, ']'); end > 0 {
+			return host[1:end]
+		}
+		return host
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return h
+	}
+	return host
 }
 
 func isShellOperator(word string) bool {
@@ -235,34 +299,36 @@ func isOptionWord(word string) bool {
 	return word == "--" || (strings.HasPrefix(word, "-") && len(word) > 1)
 }
 
-// consumeFetchOption reports whether the next word is that option's value
-// (and therefore not a URL operand) and whether options have ended (`--`).
-func consumeFetchOption(tool, word string) (skipNextBare, optionsDone bool) {
+// consumeFetchOption reports whether the next word may be that option's value
+// (and therefore not a plain URL operand), whether that is only a guess because
+// the option is not in the table (ambiguous), and whether options have ended
+// (`--`).
+func consumeFetchOption(tool, word string) (skipNextBare, ambiguous, optionsDone bool) {
 	if word == "--" {
-		return false, true
+		return false, false, true
 	}
 	if strings.HasPrefix(word, "--") {
 		name, _, attached := strings.Cut(word[2:], "=")
 		takes, known := fetchOption(tool, name)
 		if !known {
-			return !attached, false
+			return !attached, !attached, false
 		}
-		return takes && !attached, false
+		return takes && !attached, false, false
 	}
 	if tool == "wget" && (word == "-nv" || word == "-nc") {
-		return false, false
+		return false, false, false
 	}
 	cluster := word[1:]
 	for i := 0; i < len(cluster); i++ {
 		takes, known := fetchOption(tool, cluster[i:i+1])
 		if !known {
-			return true, false
+			return true, true, false
 		}
 		if takes {
-			return i+1 == len(cluster), false
+			return i+1 == len(cluster), false, false
 		}
 	}
-	return false, false
+	return false, false, false
 }
 
 func fetchOption(tool, name string) (takesValue, known bool) {

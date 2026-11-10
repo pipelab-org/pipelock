@@ -184,13 +184,53 @@ func TestDecide_ShellDestinations(t *testing.T) {
 			wantScanner: scanner.ScannerSSRFMetadata,
 		},
 		{
-			name:    "unknown option value is not a destination",
+			name:    "literal ip after an unknown option is scanned",
 			command: "curl --not-a-real-option 169.254.169.254",
+			want:    Deny,
+		},
+		{
+			name:    "literal ip after a real but unlisted curl flag is scanned",
+			command: "curl --retry-connrefused 169.254.169.254/latest/meta-data/",
+			want:    Deny,
+		},
+		{
+			name:    "hostname after an unknown option is not guessed",
+			command: "curl --not-a-real-option api.vendor.example",
 			want:    Allow,
 		},
 		{
-			name:    "url option value without a scheme is not a destination",
+			name:    "url option value without a scheme is the destination",
 			command: "curl --url 169.254.169.254",
+			want:    Deny,
+		},
+		{
+			name:    "url option attached value is the destination",
+			command: "curl --url=169.254.169.254/latest/meta-data/",
+			want:    Deny,
+		},
+		{
+			name:    "benign url option value stays allowed",
+			command: "curl --url api.vendor.example/health",
+			want:    Allow,
+		},
+		{
+			name:    "line continuation before a bare metadata host",
+			command: "curl -s \\\n  169.254.169.254/latest/meta-data/",
+			want:    Deny,
+		},
+		{
+			name:    "line continuation glued to a bare metadata host",
+			command: "curl \\\n169.254.169.254/latest/meta-data/",
+			want:    Deny,
+		},
+		{
+			name:    "line continuation inside a double-quoted operand",
+			command: "curl -s \"169.254.169.254\\\n/latest/meta-data/\"",
+			want:    Deny,
+		},
+		{
+			name:    "multi-line benign curl stays allowed",
+			command: "curl -fsSL \\\n  https://api.vendor.example/install.sh",
 			want:    Allow,
 		},
 		{
@@ -295,9 +335,13 @@ func TestShellDestinationExtraction(t *testing.T) {
 		{command: "wget -qO- blocked.example/secret", want: []string{"http://blocked.example/secret"}},
 		{command: `bash -c "curl https://blocked.example/x"`, want: []string{"https://blocked.example/x"}},
 		{command: `echo "see https://api.vendor.example/docs"`, want: []string{"https://api.vendor.example/docs"}},
-		{command: "curl --url 169.254.169.254"},
+		{command: "curl --url 169.254.169.254", want: []string{"http://169.254.169.254"}},
+		{command: "curl --url=api.vendor.example/x", want: []string{"http://api.vendor.example/x"}},
 		{command: "curl --url http://169.254.169.254/latest/meta-data/", want: []string{"http://169.254.169.254/latest/meta-data/"}},
-		{command: "curl --not-a-real-option 169.254.169.254"},
+		{command: "curl --not-a-real-option 169.254.169.254", want: []string{"http://169.254.169.254"}},
+		{command: "curl --not-a-real-option api.vendor.example"},
+		{command: "curl -o 169.254.169.254 https://api.vendor.example/x", want: []string{"https://api.vendor.example/x"}},
+		{command: "curl -s \\\n  169.254.169.254/x", want: []string{"http://169.254.169.254/x"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.command, func(t *testing.T) {
