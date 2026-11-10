@@ -161,6 +161,9 @@ type gitWord struct {
 	// Quoted parentheses are operand text, but quoting still withholds
 	// proof of an executable or subcommand's original spelling.
 	quotedParens bool
+	// nestedScript marks a word of a shell -c/-lc command string. Separators
+	// there belong to the nested shell, not to the outer command.
+	nestedScript bool
 }
 
 // proveGitBuiltins reads args for gitProof. carriers is the shape of args
@@ -241,9 +244,14 @@ func gitScalarWords(source string, noShell bool) ([]gitWord, bool) {
 		if words, ok := shellProofWords(source); ok && !slices.ContainsFunc(words, func(w shellProofWord) bool {
 			return !w.literal || w.operator && strings.ContainsAny(w.value, "()<>{}")
 		}) {
-			for _, w := range words {
+			scripts := nestedShellScriptWords(words)
+			for i, w := range words {
 				for _, field := range splitPlainFields(source[w.start:w.end]) {
-					out = append(out, gitWord{text: field, quotedParens: w.literal && !w.operator})
+					out = append(out, gitWord{
+						text:         field,
+						quotedParens: w.literal && !w.operator,
+						nestedScript: scripts[i],
+					})
 				}
 			}
 			return out, true
@@ -272,7 +280,9 @@ func gitScalarWords(source string, noShell bool) ([]gitWord, bool) {
 // read git as an alias and fetch as its argument. Git met after such a word in
 // the same command is unproved. A shell's command string in an argument list,
 // such as bash -c's, is not read: the shell's environment, startup files and
-// aliases can redefine git there, so its Git commands stay unproved.
+// aliases can redefine git there, so its Git commands stay unproved. A
+// separator inside that string is the nested shell's own syntax, and a Git
+// builtin after one does not join the proof.
 func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 	const (
 		seeking = iota
@@ -287,6 +297,8 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 	// expanded marks a scalar word in the current command, before its
 	// executable, that is not plain.
 	expanded := false
+	// nestedSep marks a separator already seen in the current nested script.
+	nestedSep := false
 	// executable marks that the current command's executable word is next:
 	// POSIX simple commands (Shell Command Language 2.9.1) begin with
 	// optional NAME=value assignments, then the command name. A command name
@@ -345,6 +357,13 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 					p.unproved, state = true, done
 				}
 			case gitBuiltins[w.text]:
+				// A builtin after a separator inside bash -c's script is the
+				// nested shell's command. Granting it would let an option
+				// abbreviation such as --har keep the builtin reading.
+				if w.nestedScript && nestedSep {
+					p.unproved, state = true, done
+					break
+				}
 				p.proved = append(p.proved, w.text)
 				state = done
 			default:
@@ -353,6 +372,9 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 		}
 	}
 	for _, w := range words {
+		if !w.nestedScript {
+			nestedSep = false
+		}
 		if w.literal || noShell {
 			word(w)
 			continue
@@ -367,10 +389,13 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 				continue
 			}
 			if piece := w.text[start:i]; piece != "" {
-				word(gitWord{text: piece, ambiguous: w.ambiguous})
+				word(gitWord{text: piece, ambiguous: w.ambiguous, nestedScript: w.nestedScript})
 			}
 			if i == len(w.text) {
 				break
+			}
+			if w.nestedScript {
+				nestedSep = true
 			}
 			if state == seeking && w.text[i] == '`' {
 				// A backquote is the older spelling of $(, whose $ marks the
@@ -416,6 +441,85 @@ var shellAssignment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 // the normalized views split on, and backquote, which starts a command
 // substitution.
 const gitProofSeparators = ";|&()\n`"
+
+// nestedShellNames are shells whose -c argument is a command string. The
+// names match the shells Encoded Command Execution already names, plus the
+// restricted and Almquist spellings of the same programs.
+var nestedShellNames = map[string]bool{
+	"ash": true, "bash": true, "dash": true, "ksh": true,
+	"mksh": true, "rbash": true, "sh": true, "zsh": true,
+}
+
+// shellShortFlags are bash(1)'s single-letter invocation and set options
+// (bash --help: -ilrsD, -c, -O, and -abefhkmnptuvxBCEHPT / -o). A cluster
+// made of these letters that includes c starts the nested command string;
+// any other suffix on that cluster is treated as script text too.
+const shellShortFlags = "abcefhiklmnoprstuvxBCDEHOPT"
+
+// nestedShellScriptWords marks each shell word that is a nested shell's
+// command string. Operators split commands. A -c inside one command marks
+// that command's script only.
+func nestedShellScriptWords(words []shellProofWord) []bool {
+	mark := make([]bool, len(words))
+	start := 0
+	for i, w := range words {
+		if !w.operator {
+			continue
+		}
+		markNestedShellScripts(words[start:i], mark[start:i])
+		start = i + 1
+	}
+	markNestedShellScripts(words[start:], mark[start:])
+	return mark
+}
+
+// markNestedShellScripts marks the words of one command that may be a nested
+// shell's command string. Once -c appears among a shell's options, every
+// later word of the command is marked. Picking the single script word would
+// need each shell's exact option grammar (-o and -O take a value, clustered
+// or not, and long options differ by shell); a miscount would leave the real
+// script unmarked and its Git commands proved. Marking positional arguments
+// too only makes their Git reading stricter, so the error direction is safe.
+func markNestedShellScripts(words []shellProofWord, mark []bool) {
+	for i, w := range words {
+		if !nestedShellNames[commandName(w.value)] {
+			continue
+		}
+		sawCommand := false
+		for j := i + 1; j < len(words); j++ {
+			if sawCommand {
+				mark[j] = true
+				continue
+			}
+			attached, ok := shellCommandString(words[j].value)
+			if !ok {
+				continue
+			}
+			sawCommand = true
+			if attached {
+				mark[j] = true
+			}
+		}
+	}
+}
+
+// shellCommandString reports whether word is a short-option cluster that
+// includes -c (-c, -lc, -ce, -oc). attached means the cluster also carries
+// text after its flags, which is marked as script text too.
+func shellCommandString(word string) (attached, ok bool) {
+	if len(word) < 2 || word[0] != '-' || word[1] == '-' {
+		return false, false
+	}
+	body := word[1:]
+	i := 0
+	for i < len(body) && strings.ContainsRune(shellShortFlags, rune(body[i])) {
+		i++
+	}
+	if !strings.ContainsRune(body[:i], 'c') {
+		return false, false
+	}
+	return i < len(body), true
+}
 
 // plainShellWord reports whether a word in a scalar has the same text after
 // shell parsing as before it, so its boundaries do not depend on how the tool
