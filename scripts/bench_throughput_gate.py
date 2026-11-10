@@ -4,17 +4,13 @@
 
 Runs BenchmarkTextDLPThroughput on the base and head checkouts of one runner,
 interleaving the two sides round by round through bench_run.capture_pair, and
-compares the per-shape fastest round. A head that is slower than base by more
-than the threshold on any shape fails. The scanner cost this guards is per
-byte of scanned text, so the summary also reports MB/s.
+compares the median of paired per-round head/base ratios. A head that is
+slower than base by more than the threshold on any shape fails. The scanner
+cost this guards is per byte of scanned text, so the summary also reports MB/s.
 
-Noise control: paired rounds on one runner, the fastest round per side, and a
-separate warn band below the failure threshold. The scan is deterministic, so
-load on the runner can only make a round slower; the fastest round is the best
-estimate of its cost. On a loaded workstation, identical code compared by
-median differed by up to 25 percent across three rounds and by at most 10
-percent compared by fastest round, while a real 40 percent slowdown showed in
-both.
+Paired rounds alternate execution order to reduce drift and ordering effects;
+the median limits the influence of isolated noisy pairs. Sustained asymmetric
+load or slowdowns affecting only a minority of rounds can still mislead it.
 
 Both sides run the candidate's benchmark file. The gate copies it into the
 baseline checkout and commits it there, so a base that predates the benchmark
@@ -23,8 +19,6 @@ change that weakens the workload weakens both sides alike; review still owns
 the benchmark's content. The file uses only the scanner's exported API so it
 builds on older commits.
 
-The fastest round estimates best-case cost. A change that slows only some
-rounds, such as one that adds rare stalls, can pass.
 """
 
 from __future__ import annotations
@@ -125,6 +119,8 @@ def compare(base_text: str, head_text: str, fail_pct: float, warn_pct: float, ro
     for name in shared:
         if len(base[name]) != rounds or len(head[name]) != rounds:
             raise GateError(f"{name}: expected {rounds} rounds per side, got {len(base[name])} and {len(head[name])}")
+        if any(not math.isfinite(value) or value <= 0 for value in base[name] + head[name]):
+            raise GateError(f"{name}: ns/op samples must be finite and positive")
         # Round i of each side ran back to back, so their ratio cancels load
         # that drifts across the job; the median ratio ignores one noisy pair.
         ratios = [h / b for b, h in zip(base[name], head[name])]
@@ -221,7 +217,10 @@ def main() -> int:
         head_text = (args.output / "current.txt").read_text()
         rows, failed = compare(base_text, head_text, args.fail_pct, args.warn_pct, args.rounds)
     except (bench_run.RunError, GateError, subprocess.CalledProcessError, OSError) as exc:
-        detail = failure_detail(args.output) if args.output.is_dir() else ""
+        try:
+            detail = failure_detail(args.output) if args.output.is_dir() else ""
+        except OSError as detail_error:
+            detail = f"Could not read benchmark diagnostics: {detail_error}"
         try:
             (args.output / "throughput-summary.md").write_text(
                 f"## Text DLP throughput gate\n\nNot decided: {exc}\n" + (f"\n{fenced(detail)}\n" if detail else ""))

@@ -93,6 +93,15 @@ class CompareTest(unittest.TestCase):
         with self.assertRaisesRegex(gate.GateError, "rounds"):
             run("prose/1MiB", [1000, 1000, 1000], [1000, 1000])
 
+    def test_nonpositive_or_nonfinite_samples_refuse(self):
+        for bad in (0, float("inf")):
+            with self.subTest(bad=bad), self.assertRaises(gate.GateError):
+                with mock.patch.object(gate, "samples", side_effect=[
+                    {f"{gate.BENCH_NAME}/{s}": [bad] * 6 for s in gate.EXPECTED_SHAPES},
+                    {f"{gate.BENCH_NAME}/{s}": [1000] * 6 for s in gate.EXPECTED_SHAPES},
+                ]):
+                    gate.compare("", "", 20, 10, 6)
+
     def test_no_rows_refuse(self):
         with self.assertRaises(gate.GateError):
             gate.compare(HEADER, HEADER, 20.0, 10.0, 3)
@@ -226,6 +235,15 @@ class FailureReportingTest(unittest.TestCase):
                                                     "--output", str(Path(directory) / "out"), *bad)
                     self.assertEqual(status, 2)
                     capture.assert_not_called()
+
+    def test_unreadable_diagnostics_remain_undecided(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(gate, "prepare_baseline", side_effect=gate.GateError("capture failed")), \
+             mock.patch.object(gate, "failure_detail", side_effect=OSError("unreadable")), \
+             mock.patch.object(sys, "argv", ["gate", "--baseline", directory, "--candidate", directory,
+                                            "--output", str(Path(directory) / "out")]), \
+             contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(gate.main(), 2)
 
     def test_unusable_output_is_undecided_not_slower(self):
         with tempfile.TemporaryDirectory() as directory:
