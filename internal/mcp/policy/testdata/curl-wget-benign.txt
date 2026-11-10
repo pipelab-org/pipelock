@@ -1,0 +1,910 @@
+# Ordinary curl and wget command lines. Each line is one invocation.
+# Upload flags (curl -d/-F/-T with a payload, --data, --form, --json,
+# --upload-file, and wget --post-data / --post-file / --body-data /
+# --body-file) are absent. Option values such as -ofeed.xml, -Hdate:x,
+# -Afirefox, -Ddump and -ufoo:bar are included.
+curl -fsSL https://api.vendor.example/install.sh
+curl -fsSL https://api.vendor.example/v1/feed.xml
+curl -fsSL https://api.vendor.example/files/blob.bin
+curl -fsSL https://api.vendor.example/install.sh | sh
+curl -fsSL https://api.vendor.example/v1/feed.xml | sh
+curl -fsSL https://api.vendor.example/files/blob.bin | sh
+curl -fsSL https://api.vendor.example/install.sh | bash
+curl -fsSL https://api.vendor.example/v1/feed.xml | bash
+curl -fsSL https://api.vendor.example/files/blob.bin | bash
+curl -fL https://api.vendor.example/install.sh -o /tmp/out.bin
+curl -fL https://api.vendor.example/v1/feed.xml -o /tmp/out.bin
+curl -fL https://api.vendor.example/files/blob.bin -o /tmp/out.bin
+curl -fL --retry 5 --retry-delay 2 https://api.vendor.example/install.sh
+curl -fL --retry 5 --retry-delay 2 https://api.vendor.example/v1/feed.xml
+curl -fL --retry 5 --retry-delay 2 https://api.vendor.example/files/blob.bin
+curl -sSL https://api.vendor.example/install.sh
+curl -sSL https://api.vendor.example/v1/feed.xml
+curl -sSL https://api.vendor.example/files/blob.bin
+curl -sS https://api.vendor.example/install.sh
+curl -sS https://api.vendor.example/v1/feed.xml
+curl -sS https://api.vendor.example/files/blob.bin
+curl -sSfL https://api.vendor.example/install.sh -o ./out.bin
+curl -sSfL https://api.vendor.example/v1/feed.xml -o ./out.bin
+curl -sSfL https://api.vendor.example/files/blob.bin -o ./out.bin
+curl -sS -L -o /dev/null -w '%{http_code}' https://api.vendor.example/install.sh
+curl -sS -L -o /dev/null -w '%{http_code}' https://api.vendor.example/v1/feed.xml
+curl -sS -L -o /dev/null -w '%{http_code}' https://api.vendor.example/files/blob.bin
+curl -s -o /dev/null -w '%{http_code}' https://api.vendor.example/install.sh
+curl -s -o /dev/null -w '%{http_code}' https://api.vendor.example/v1/feed.xml
+curl -s -o /dev/null -w '%{http_code}' https://api.vendor.example/files/blob.bin
+curl -s -o /dev/null -w '%{url_effective}' https://api.vendor.example/install.sh
+curl -s -o /dev/null -w '%{url_effective}' https://api.vendor.example/v1/feed.xml
+curl -s -o /dev/null -w '%{url_effective}' https://api.vendor.example/files/blob.bin
+curl -s -D headers.txt -o /dev/null https://api.vendor.example/install.sh
+curl -s -D headers.txt -o /dev/null https://api.vendor.example/v1/feed.xml
+curl -s -D headers.txt -o /dev/null https://api.vendor.example/files/blob.bin
+curl -sI https://api.vendor.example/install.sh
+curl -sI https://api.vendor.example/v1/feed.xml
+curl -sI https://api.vendor.example/files/blob.bin
+curl -I https://api.vendor.example/install.sh
+curl -I https://api.vendor.example/v1/feed.xml
+curl -I https://api.vendor.example/files/blob.bin
+curl -I -H 'Accept: application/json' https://api.vendor.example/install.sh
+curl -I -H 'Accept: application/json' https://api.vendor.example/v1/feed.xml
+curl -I -H 'Accept: application/json' https://api.vendor.example/files/blob.bin
+curl -sS -H 'Accept: application/json' https://api.vendor.example/install.sh
+curl -sS -H 'Accept: application/json' https://api.vendor.example/v1/feed.xml
+curl -sS -H 'Accept: application/json' https://api.vendor.example/files/blob.bin
+curl -sS -H 'Accept: text/plain' -H 'Accept-Language: en' https://api.vendor.example/install.sh
+curl -sS -H 'Accept: text/plain' -H 'Accept-Language: en' https://api.vendor.example/v1/feed.xml
+curl -sS -H 'Accept: text/plain' -H 'Accept-Language: en' https://api.vendor.example/files/blob.bin
+curl -A 'vendor-client/1.0' https://api.vendor.example/install.sh
+curl -A 'vendor-client/1.0' https://api.vendor.example/v1/feed.xml
+curl -A 'vendor-client/1.0' https://api.vendor.example/files/blob.bin
+curl -Afirefox https://api.vendor.example/install.sh
+curl -Afirefox https://api.vendor.example/v1/feed.xml
+curl -Afirefox https://api.vendor.example/files/blob.bin
+curl --user-agent 'vendor-client/1.0' https://api.vendor.example/install.sh
+curl --user-agent 'vendor-client/1.0' https://api.vendor.example/v1/feed.xml
+curl --user-agent 'vendor-client/1.0' https://api.vendor.example/files/blob.bin
+curl -u 'name:placeholder' https://api.vendor.example/install.sh
+curl -u 'name:placeholder' https://api.vendor.example/v1/feed.xml
+curl -u 'name:placeholder' https://api.vendor.example/files/blob.bin
+curl -ufoo:bar https://api.vendor.example/install.sh
+curl -ufoo:bar https://api.vendor.example/v1/feed.xml
+curl -ufoo:bar https://api.vendor.example/files/blob.bin
+curl -n https://api.vendor.example/install.sh
+curl -n https://api.vendor.example/v1/feed.xml
+curl -n https://api.vendor.example/files/blob.bin
+curl --netrc https://api.vendor.example/install.sh
+curl --netrc https://api.vendor.example/v1/feed.xml
+curl --netrc https://api.vendor.example/files/blob.bin
+curl -x http://proxy.vendor.example:8080 https://api.vendor.example/install.sh
+curl -x http://proxy.vendor.example:8080 https://api.vendor.example/v1/feed.xml
+curl -x http://proxy.vendor.example:8080 https://api.vendor.example/files/blob.bin
+curl -x http://proxy.vendor.example:8080 --proxytunnel https://api.vendor.example/install.sh
+curl -x http://proxy.vendor.example:8080 --proxytunnel https://api.vendor.example/v1/feed.xml
+curl -x http://proxy.vendor.example:8080 --proxytunnel https://api.vendor.example/files/blob.bin
+curl -p -x http://proxy.vendor.example:8080 https://api.vendor.example/install.sh
+curl -p -x http://proxy.vendor.example:8080 https://api.vendor.example/v1/feed.xml
+curl -p -x http://proxy.vendor.example:8080 https://api.vendor.example/files/blob.bin
+curl --compressed https://api.vendor.example/install.sh
+curl --compressed https://api.vendor.example/v1/feed.xml
+curl --compressed https://api.vendor.example/files/blob.bin
+curl -sS --compressed -L https://api.vendor.example/install.sh
+curl -sS --compressed -L https://api.vendor.example/v1/feed.xml
+curl -sS --compressed -L https://api.vendor.example/files/blob.bin
+curl -L --compressed -H 'Accept-Encoding: gzip' https://api.vendor.example/install.sh
+curl -L --compressed -H 'Accept-Encoding: gzip' https://api.vendor.example/v1/feed.xml
+curl -L --compressed -H 'Accept-Encoding: gzip' https://api.vendor.example/files/blob.bin
+curl -k https://api.vendor.example/install.sh
+curl -k https://api.vendor.example/v1/feed.xml
+curl -k https://api.vendor.example/files/blob.bin
+curl --insecure -L https://api.vendor.example/install.sh
+curl --insecure -L https://api.vendor.example/v1/feed.xml
+curl --insecure -L https://api.vendor.example/files/blob.bin
+curl -r 0-1023 -o /tmp/part.bin https://api.vendor.example/install.sh
+curl -r 0-1023 -o /tmp/part.bin https://api.vendor.example/v1/feed.xml
+curl -r 0-1023 -o /tmp/part.bin https://api.vendor.example/files/blob.bin
+curl --range 0-99 -o /tmp/part.bin https://api.vendor.example/install.sh
+curl --range 0-99 -o /tmp/part.bin https://api.vendor.example/v1/feed.xml
+curl --range 0-99 -o /tmp/part.bin https://api.vendor.example/files/blob.bin
+curl -C - -o /tmp/out.bin https://api.vendor.example/install.sh
+curl -C - -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl -C - -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl --continue-at - -o /tmp/out.bin https://api.vendor.example/install.sh
+curl --continue-at - -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl --continue-at - -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl -C 1000 -o /tmp/out.bin https://api.vendor.example/install.sh
+curl -C 1000 -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl -C 1000 -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl -O https://api.vendor.example/install.sh
+curl -O https://api.vendor.example/v1/feed.xml
+curl -O https://api.vendor.example/files/blob.bin
+curl -OJ https://api.vendor.example/install.sh
+curl -OJ https://api.vendor.example/v1/feed.xml
+curl -OJ https://api.vendor.example/files/blob.bin
+curl -L -O https://api.vendor.example/install.sh
+curl -L -O https://api.vendor.example/v1/feed.xml
+curl -L -O https://api.vendor.example/files/blob.bin
+curl -o feed.xml https://api.vendor.example/install.sh
+curl -o feed.xml https://api.vendor.example/v1/feed.xml
+curl -o feed.xml https://api.vendor.example/files/blob.bin
+curl -ofeed.xml https://api.vendor.example/install.sh
+curl -ofeed.xml https://api.vendor.example/v1/feed.xml
+curl -ofeed.xml https://api.vendor.example/files/blob.bin
+curl -o ./feed.xml https://api.vendor.example/install.sh
+curl -o ./feed.xml https://api.vendor.example/v1/feed.xml
+curl -o ./feed.xml https://api.vendor.example/files/blob.bin
+curl --output feed.xml https://api.vendor.example/install.sh
+curl --output feed.xml https://api.vendor.example/v1/feed.xml
+curl --output feed.xml https://api.vendor.example/files/blob.bin
+curl --output-dir /tmp -O https://api.vendor.example/install.sh
+curl --output-dir /tmp -O https://api.vendor.example/v1/feed.xml
+curl --output-dir /tmp -O https://api.vendor.example/files/blob.bin
+curl --create-dirs -o /tmp/vendor/feed.xml https://api.vendor.example/install.sh
+curl --create-dirs -o /tmp/vendor/feed.xml https://api.vendor.example/v1/feed.xml
+curl --create-dirs -o /tmp/vendor/feed.xml https://api.vendor.example/files/blob.bin
+curl --remote-name-all https://api.vendor.example/install.sh
+curl --remote-name-all https://api.vendor.example/v1/feed.xml
+curl --remote-name-all https://api.vendor.example/files/blob.bin
+curl -R -O https://api.vendor.example/install.sh
+curl -R -O https://api.vendor.example/v1/feed.xml
+curl -R -O https://api.vendor.example/files/blob.bin
+curl -z 'Mon, 01 Jan 2024 00:00:00 GMT' -O https://api.vendor.example/install.sh
+curl -z 'Mon, 01 Jan 2024 00:00:00 GMT' -O https://api.vendor.example/v1/feed.xml
+curl -z 'Mon, 01 Jan 2024 00:00:00 GMT' -O https://api.vendor.example/files/blob.bin
+curl --time-cond feed.xml -o feed.xml https://api.vendor.example/install.sh
+curl --time-cond feed.xml -o feed.xml https://api.vendor.example/v1/feed.xml
+curl --time-cond feed.xml -o feed.xml https://api.vendor.example/files/blob.bin
+curl -m 30 https://api.vendor.example/install.sh
+curl -m 30 https://api.vendor.example/v1/feed.xml
+curl -m 30 https://api.vendor.example/files/blob.bin
+curl --max-time 15 --connect-timeout 5 https://api.vendor.example/install.sh
+curl --max-time 15 --connect-timeout 5 https://api.vendor.example/v1/feed.xml
+curl --max-time 15 --connect-timeout 5 https://api.vendor.example/files/blob.bin
+curl --retry 5 --retry-delay 1 --retry-max-time 60 https://api.vendor.example/install.sh
+curl --retry 5 --retry-delay 1 --retry-max-time 60 https://api.vendor.example/v1/feed.xml
+curl --retry 5 --retry-delay 1 --retry-max-time 60 https://api.vendor.example/files/blob.bin
+curl --retry 3 --retry-all-errors https://api.vendor.example/install.sh
+curl --retry 3 --retry-all-errors https://api.vendor.example/v1/feed.xml
+curl --retry 3 --retry-all-errors https://api.vendor.example/files/blob.bin
+curl --retry 3 --retry-connrefused https://api.vendor.example/install.sh
+curl --retry 3 --retry-connrefused https://api.vendor.example/v1/feed.xml
+curl --retry 3 --retry-connrefused https://api.vendor.example/files/blob.bin
+curl -w '%{http_code}' -o /dev/null -s https://api.vendor.example/install.sh
+curl -w '%{http_code}' -o /dev/null -s https://api.vendor.example/v1/feed.xml
+curl -w '%{http_code}' -o /dev/null -s https://api.vendor.example/files/blob.bin
+curl -sS -w '%{time_total}' -o /dev/null https://api.vendor.example/install.sh
+curl -sS -w '%{time_total}' -o /dev/null https://api.vendor.example/v1/feed.xml
+curl -sS -w '%{time_total}' -o /dev/null https://api.vendor.example/files/blob.bin
+curl --write-out '%{http_code}' -s -o /dev/null https://api.vendor.example/install.sh
+curl --write-out '%{http_code}' -s -o /dev/null https://api.vendor.example/v1/feed.xml
+curl --write-out '%{http_code}' -s -o /dev/null https://api.vendor.example/files/blob.bin
+curl -H 'Accept: application/json' https://api.vendor.example/install.sh
+curl -H 'Accept: application/json' https://api.vendor.example/v1/feed.xml
+curl -H 'Accept: application/json' https://api.vendor.example/files/blob.bin
+curl -H 'Accept: text/html' -H 'Cache-Control: no-cache' https://api.vendor.example/install.sh
+curl -H 'Accept: text/html' -H 'Cache-Control: no-cache' https://api.vendor.example/v1/feed.xml
+curl -H 'Accept: text/html' -H 'Cache-Control: no-cache' https://api.vendor.example/files/blob.bin
+curl -Hdate:x https://api.vendor.example/install.sh
+curl -Hdate:x https://api.vendor.example/v1/feed.xml
+curl -Hdate:x https://api.vendor.example/files/blob.bin
+curl --header 'Accept: application/xml' https://api.vendor.example/install.sh
+curl --header 'Accept: application/xml' https://api.vendor.example/v1/feed.xml
+curl --header 'Accept: application/xml' https://api.vendor.example/files/blob.bin
+curl -e https://api.vendor.example/ -o /dev/null https://api.vendor.example/install.sh
+curl -e https://api.vendor.example/ -o /dev/null https://api.vendor.example/v1/feed.xml
+curl -e https://api.vendor.example/ -o /dev/null https://api.vendor.example/files/blob.bin
+curl --referer https://api.vendor.example/ https://api.vendor.example/install.sh
+curl --referer https://api.vendor.example/ https://api.vendor.example/v1/feed.xml
+curl --referer https://api.vendor.example/ https://api.vendor.example/files/blob.bin
+curl -4 https://api.vendor.example/install.sh
+curl -4 https://api.vendor.example/v1/feed.xml
+curl -4 https://api.vendor.example/files/blob.bin
+curl -6 https://api.vendor.example/install.sh
+curl -6 https://api.vendor.example/v1/feed.xml
+curl -6 https://api.vendor.example/files/blob.bin
+curl -4 -fsSL https://api.vendor.example/install.sh
+curl -4 -fsSL https://api.vendor.example/v1/feed.xml
+curl -4 -fsSL https://api.vendor.example/files/blob.bin
+curl --http1.1 https://api.vendor.example/install.sh
+curl --http1.1 https://api.vendor.example/v1/feed.xml
+curl --http1.1 https://api.vendor.example/files/blob.bin
+curl -0 https://api.vendor.example/install.sh
+curl -0 https://api.vendor.example/v1/feed.xml
+curl -0 https://api.vendor.example/files/blob.bin
+curl --http2 https://api.vendor.example/install.sh
+curl --http2 https://api.vendor.example/v1/feed.xml
+curl --http2 https://api.vendor.example/files/blob.bin
+curl -v https://api.vendor.example/install.sh
+curl -v https://api.vendor.example/v1/feed.xml
+curl -v https://api.vendor.example/files/blob.bin
+curl -sv https://api.vendor.example/install.sh
+curl -sv https://api.vendor.example/v1/feed.xml
+curl -sv https://api.vendor.example/files/blob.bin
+curl --silent --show-error https://api.vendor.example/install.sh
+curl --silent --show-error https://api.vendor.example/v1/feed.xml
+curl --silent --show-error https://api.vendor.example/files/blob.bin
+curl --no-progress-meter -o /tmp/out.bin https://api.vendor.example/install.sh
+curl --no-progress-meter -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl --no-progress-meter -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl -# -o /tmp/out.bin https://api.vendor.example/install.sh
+curl -# -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl -# -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl -L --max-redirs 5 https://api.vendor.example/install.sh
+curl -L --max-redirs 5 https://api.vendor.example/v1/feed.xml
+curl -L --max-redirs 5 https://api.vendor.example/files/blob.bin
+curl --path-as-is https://api.vendor.example/install.sh
+curl --path-as-is https://api.vendor.example/v1/feed.xml
+curl --path-as-is https://api.vendor.example/files/blob.bin
+curl --globoff https://api.vendor.example/install.sh
+curl --globoff https://api.vendor.example/v1/feed.xml
+curl --globoff https://api.vendor.example/files/blob.bin
+curl -g https://api.vendor.example/install.sh
+curl -g https://api.vendor.example/v1/feed.xml
+curl -g https://api.vendor.example/files/blob.bin
+curl --resolve api.vendor.example:443:203.0.113.10 https://api.vendor.example/install.sh
+curl --resolve api.vendor.example:443:203.0.113.10 https://api.vendor.example/v1/feed.xml
+curl --resolve api.vendor.example:443:203.0.113.10 https://api.vendor.example/files/blob.bin
+curl -Ddump -o /dev/null https://api.vendor.example/install.sh
+curl -Ddump -o /dev/null https://api.vendor.example/v1/feed.xml
+curl -Ddump -o /dev/null https://api.vendor.example/files/blob.bin
+curl -D headers.txt https://api.vendor.example/install.sh
+curl -D headers.txt https://api.vendor.example/v1/feed.xml
+curl -D headers.txt https://api.vendor.example/files/blob.bin
+curl --dump-header headers.txt -o /dev/null https://api.vendor.example/install.sh
+curl --dump-header headers.txt -o /dev/null https://api.vendor.example/v1/feed.xml
+curl --dump-header headers.txt -o /dev/null https://api.vendor.example/files/blob.bin
+curl --fail --silent --show-error https://api.vendor.example/install.sh
+curl --fail --silent --show-error https://api.vendor.example/v1/feed.xml
+curl --fail --silent --show-error https://api.vendor.example/files/blob.bin
+curl -f --retry 5 https://api.vendor.example/install.sh
+curl -f --retry 5 https://api.vendor.example/v1/feed.xml
+curl -f --retry 5 https://api.vendor.example/files/blob.bin
+curl -G -s https://api.vendor.example/install.sh
+curl -G -s https://api.vendor.example/v1/feed.xml
+curl -G -s https://api.vendor.example/files/blob.bin
+curl -X GET https://api.vendor.example/install.sh
+curl -X GET https://api.vendor.example/v1/feed.xml
+curl -X GET https://api.vendor.example/files/blob.bin
+curl -X HEAD -s -o /dev/null https://api.vendor.example/install.sh
+curl -X HEAD -s -o /dev/null https://api.vendor.example/v1/feed.xml
+curl -X HEAD -s -o /dev/null https://api.vendor.example/files/blob.bin
+curl --request GET https://api.vendor.example/install.sh
+curl --request GET https://api.vendor.example/v1/feed.xml
+curl --request GET https://api.vendor.example/files/blob.bin
+curl -X get https://api.vendor.example/install.sh
+curl -X get https://api.vendor.example/v1/feed.xml
+curl -X get https://api.vendor.example/files/blob.bin
+curl --proto '=https' https://api.vendor.example/install.sh
+curl --proto '=https' https://api.vendor.example/v1/feed.xml
+curl --proto '=https' https://api.vendor.example/files/blob.bin
+curl -k --tlsv1.2 https://api.vendor.example/install.sh
+curl -k --tlsv1.2 https://api.vendor.example/v1/feed.xml
+curl -k --tlsv1.2 https://api.vendor.example/files/blob.bin
+curl --tls-max 1.3 https://api.vendor.example/install.sh
+curl --tls-max 1.3 https://api.vendor.example/v1/feed.xml
+curl --tls-max 1.3 https://api.vendor.example/files/blob.bin
+curl -b 'session=opaque' https://api.vendor.example/install.sh
+curl -b 'session=opaque' https://api.vendor.example/v1/feed.xml
+curl -b 'session=opaque' https://api.vendor.example/files/blob.bin
+curl -c /tmp/cookies.txt https://api.vendor.example/install.sh
+curl -c /tmp/cookies.txt https://api.vendor.example/v1/feed.xml
+curl -c /tmp/cookies.txt https://api.vendor.example/files/blob.bin
+curl -b /tmp/cookies.txt -c /tmp/cookies.txt https://api.vendor.example/install.sh
+curl -b /tmp/cookies.txt -c /tmp/cookies.txt https://api.vendor.example/v1/feed.xml
+curl -b /tmp/cookies.txt -c /tmp/cookies.txt https://api.vendor.example/files/blob.bin
+curl --cookie 'session=opaque' https://api.vendor.example/install.sh
+curl --cookie 'session=opaque' https://api.vendor.example/v1/feed.xml
+curl --cookie 'session=opaque' https://api.vendor.example/files/blob.bin
+curl -n --netrc-file /tmp/netrc https://api.vendor.example/install.sh
+curl -n --netrc-file /tmp/netrc https://api.vendor.example/v1/feed.xml
+curl -n --netrc-file /tmp/netrc https://api.vendor.example/files/blob.bin
+curl -E /tmp/client.pem https://api.vendor.example/install.sh
+curl -E /tmp/client.pem https://api.vendor.example/v1/feed.xml
+curl -E /tmp/client.pem https://api.vendor.example/files/blob.bin
+curl --cacert /tmp/ca.pem https://api.vendor.example/install.sh
+curl --cacert /tmp/ca.pem https://api.vendor.example/v1/feed.xml
+curl --cacert /tmp/ca.pem https://api.vendor.example/files/blob.bin
+curl --capath /tmp/certs https://api.vendor.example/install.sh
+curl --capath /tmp/certs https://api.vendor.example/v1/feed.xml
+curl --capath /tmp/certs https://api.vendor.example/files/blob.bin
+curl -K /tmp/curl.cfg https://api.vendor.example/install.sh
+curl -K /tmp/curl.cfg https://api.vendor.example/v1/feed.xml
+curl -K /tmp/curl.cfg https://api.vendor.example/files/blob.bin
+curl --config /tmp/curl.cfg https://api.vendor.example/install.sh
+curl --config /tmp/curl.cfg https://api.vendor.example/v1/feed.xml
+curl --config /tmp/curl.cfg https://api.vendor.example/files/blob.bin
+curl -q -fsSL https://api.vendor.example/install.sh
+curl -q -fsSL https://api.vendor.example/v1/feed.xml
+curl -q -fsSL https://api.vendor.example/files/blob.bin
+curl --disable -fsSL https://api.vendor.example/install.sh
+curl --disable -fsSL https://api.vendor.example/v1/feed.xml
+curl --disable -fsSL https://api.vendor.example/files/blob.bin
+curl -y 5 -Y 1000 -o /tmp/out.bin https://api.vendor.example/install.sh
+curl -y 5 -Y 1000 -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl -y 5 -Y 1000 -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl --speed-time 5 --speed-limit 1000 https://api.vendor.example/install.sh
+curl --speed-time 5 --speed-limit 1000 https://api.vendor.example/v1/feed.xml
+curl --speed-time 5 --speed-limit 1000 https://api.vendor.example/files/blob.bin
+curl --limit-rate 200k -o /tmp/out.bin https://api.vendor.example/install.sh
+curl --limit-rate 200k -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl --limit-rate 200k -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl --max-filesize 1000000 -O https://api.vendor.example/install.sh
+curl --max-filesize 1000000 -O https://api.vendor.example/v1/feed.xml
+curl --max-filesize 1000000 -O https://api.vendor.example/files/blob.bin
+curl --etag-compare /tmp/etag -o /tmp/out.bin https://api.vendor.example/install.sh
+curl --etag-compare /tmp/etag -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl --etag-compare /tmp/etag -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl --etag-save /tmp/etag -o /tmp/out.bin https://api.vendor.example/install.sh
+curl --etag-save /tmp/etag -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl --etag-save /tmp/etag -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl --compressed --retry 5 -fsSL https://api.vendor.example/install.sh -o /tmp/install.sh
+curl --compressed --retry 5 -fsSL https://api.vendor.example/v1/feed.xml -o /tmp/install.sh
+curl --compressed --retry 5 -fsSL https://api.vendor.example/files/blob.bin -o /tmp/install.sh
+curl -fsSL --proto '=https' --tlsv1.2 https://api.vendor.example/install.sh
+curl -fsSL --proto '=https' --tlsv1.2 https://api.vendor.example/v1/feed.xml
+curl -fsSL --proto '=https' --tlsv1.2 https://api.vendor.example/files/blob.bin
+curl -sS -L -H 'Accept: application/octet-stream' -o /tmp/blob.bin https://api.vendor.example/install.sh
+curl -sS -L -H 'Accept: application/octet-stream' -o /tmp/blob.bin https://api.vendor.example/v1/feed.xml
+curl -sS -L -H 'Accept: application/octet-stream' -o /tmp/blob.bin https://api.vendor.example/files/blob.bin
+curl -sS --fail-with-body -o /tmp/err.txt https://api.vendor.example/install.sh
+curl -sS --fail-with-body -o /tmp/err.txt https://api.vendor.example/v1/feed.xml
+curl -sS --fail-with-body -o /tmp/err.txt https://api.vendor.example/files/blob.bin
+curl --fail-early https://api.vendor.example/install.sh https://api.vendor.example/install.sh
+curl --fail-early https://api.vendor.example/v1/feed.xml https://api.vendor.example/v1/feed.xml
+curl --fail-early https://api.vendor.example/files/blob.bin https://api.vendor.example/files/blob.bin
+curl -sS -o /dev/null -D - https://api.vendor.example/install.sh
+curl -sS -o /dev/null -D - https://api.vendor.example/v1/feed.xml
+curl -sS -o /dev/null -D - https://api.vendor.example/files/blob.bin
+curl -i https://api.vendor.example/install.sh
+curl -i https://api.vendor.example/v1/feed.xml
+curl -i https://api.vendor.example/files/blob.bin
+curl -si https://api.vendor.example/install.sh
+curl -si https://api.vendor.example/v1/feed.xml
+curl -si https://api.vendor.example/files/blob.bin
+curl --head https://api.vendor.example/install.sh
+curl --head https://api.vendor.example/v1/feed.xml
+curl --head https://api.vendor.example/files/blob.bin
+curl -I --compressed https://api.vendor.example/install.sh
+curl -I --compressed https://api.vendor.example/v1/feed.xml
+curl -I --compressed https://api.vendor.example/files/blob.bin
+curl -L -k -sS -o /tmp/out.bin https://api.vendor.example/install.sh
+curl -L -k -sS -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl -L -k -sS -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl --output /tmp/out.bin --create-dirs --silent https://api.vendor.example/install.sh
+curl --output /tmp/out.bin --create-dirs --silent https://api.vendor.example/v1/feed.xml
+curl --output /tmp/out.bin --create-dirs --silent https://api.vendor.example/files/blob.bin
+curl -sS -L --retry 5 --retry-connrefused -o /tmp/out.bin https://api.vendor.example/install.sh
+curl -sS -L --retry 5 --retry-connrefused -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl -sS -L --retry 5 --retry-connrefused -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl -H 'Accept: application/json' -H 'X-Request-Id: 123' -sS https://api.vendor.example/install.sh
+curl -H 'Accept: application/json' -H 'X-Request-Id: 123' -sS https://api.vendor.example/v1/feed.xml
+curl -H 'Accept: application/json' -H 'X-Request-Id: 123' -sS https://api.vendor.example/files/blob.bin
+curl --ipv4 -fsSL https://api.vendor.example/install.sh
+curl --ipv4 -fsSL https://api.vendor.example/v1/feed.xml
+curl --ipv4 -fsSL https://api.vendor.example/files/blob.bin
+curl --ipv6 -fsSL https://api.vendor.example/install.sh
+curl --ipv6 -fsSL https://api.vendor.example/v1/feed.xml
+curl --ipv6 -fsSL https://api.vendor.example/files/blob.bin
+curl -4 --compressed -L https://api.vendor.example/install.sh
+curl -4 --compressed -L https://api.vendor.example/v1/feed.xml
+curl -4 --compressed -L https://api.vendor.example/files/blob.bin
+curl --location-trusted -n -L https://api.vendor.example/install.sh
+curl --location-trusted -n -L https://api.vendor.example/v1/feed.xml
+curl --location-trusted -n -L https://api.vendor.example/files/blob.bin
+curl --no-keepalive https://api.vendor.example/install.sh
+curl --no-keepalive https://api.vendor.example/v1/feed.xml
+curl --no-keepalive https://api.vendor.example/files/blob.bin
+curl --tcp-nodelay -s https://api.vendor.example/install.sh
+curl --tcp-nodelay -s https://api.vendor.example/v1/feed.xml
+curl --tcp-nodelay -s https://api.vendor.example/files/blob.bin
+curl --path-as-is -g https://api.vendor.example/install.sh
+curl --path-as-is -g https://api.vendor.example/v1/feed.xml
+curl --path-as-is -g https://api.vendor.example/files/blob.bin
+curl --parallel --parallel-max 4 https://api.vendor.example/install.sh https://api.vendor.example/install.sh
+curl --parallel --parallel-max 4 https://api.vendor.example/v1/feed.xml https://api.vendor.example/v1/feed.xml
+curl --parallel --parallel-max 4 https://api.vendor.example/files/blob.bin https://api.vendor.example/files/blob.bin
+curl -Z --parallel-max 4 https://api.vendor.example/install.sh https://api.vendor.example/install.sh
+curl -Z --parallel-max 4 https://api.vendor.example/v1/feed.xml https://api.vendor.example/v1/feed.xml
+curl -Z --parallel-max 4 https://api.vendor.example/files/blob.bin https://api.vendor.example/files/blob.bin
+curl -s https://api.vendor.example/install.sh -: -s https://api.vendor.example/install.sh
+curl -s https://api.vendor.example/v1/feed.xml -: -s https://api.vendor.example/v1/feed.xml
+curl -s https://api.vendor.example/files/blob.bin -: -s https://api.vendor.example/files/blob.bin
+curl --interface eth0 https://api.vendor.example/install.sh
+curl --interface eth0 https://api.vendor.example/v1/feed.xml
+curl --interface eth0 https://api.vendor.example/files/blob.bin
+curl -m 10 -o /dev/null -s -w '%{http_code}' https://api.vendor.example/install.sh
+curl -m 10 -o /dev/null -s -w '%{http_code}' https://api.vendor.example/v1/feed.xml
+curl -m 10 -o /dev/null -s -w '%{http_code}' https://api.vendor.example/files/blob.bin
+curl -fSs https://api.vendor.example/install.sh
+curl -fSs https://api.vendor.example/v1/feed.xml
+curl -fSs https://api.vendor.example/files/blob.bin
+curl --silent --location --fail https://api.vendor.example/install.sh
+curl --silent --location --fail https://api.vendor.example/v1/feed.xml
+curl --silent --location --fail https://api.vendor.example/files/blob.bin
+curl -o /tmp/out.bin -L -f https://api.vendor.example/install.sh
+curl -o /tmp/out.bin -L -f https://api.vendor.example/v1/feed.xml
+curl -o /tmp/out.bin -L -f https://api.vendor.example/files/blob.bin
+curl https://api.vendor.example/install.sh -o /tmp/out.bin
+curl https://api.vendor.example/v1/feed.xml -o /tmp/out.bin
+curl https://api.vendor.example/files/blob.bin -o /tmp/out.bin
+curl https://api.vendor.example/install.sh -fsSL
+curl https://api.vendor.example/v1/feed.xml -fsSL
+curl https://api.vendor.example/files/blob.bin -fsSL
+curl --output - https://api.vendor.example/install.sh
+curl --output - https://api.vendor.example/v1/feed.xml
+curl --output - https://api.vendor.example/files/blob.bin
+curl -o - https://api.vendor.example/install.sh
+curl -o - https://api.vendor.example/v1/feed.xml
+curl -o - https://api.vendor.example/files/blob.bin
+curl -sS -H 'Accept: */*' https://api.vendor.example/install.sh
+curl -sS -H 'Accept: */*' https://api.vendor.example/v1/feed.xml
+curl -sS -H 'Accept: */*' https://api.vendor.example/files/blob.bin
+curl --compressed -H 'Accept: application/json' -H 'User-Agent: vendor-client' https://api.vendor.example/install.sh
+curl --compressed -H 'Accept: application/json' -H 'User-Agent: vendor-client' https://api.vendor.example/v1/feed.xml
+curl --compressed -H 'Accept: application/json' -H 'User-Agent: vendor-client' https://api.vendor.example/files/blob.bin
+curl -A 'Mozilla/5.0' -L https://api.vendor.example/install.sh
+curl -A 'Mozilla/5.0' -L https://api.vendor.example/v1/feed.xml
+curl -A 'Mozilla/5.0' -L https://api.vendor.example/files/blob.bin
+curl --user 'name:placeholder' https://api.vendor.example/install.sh
+curl --user 'name:placeholder' https://api.vendor.example/v1/feed.xml
+curl --user 'name:placeholder' https://api.vendor.example/files/blob.bin
+curl -u name:placeholder https://api.vendor.example/install.sh
+curl -u name:placeholder https://api.vendor.example/v1/feed.xml
+curl -u name:placeholder https://api.vendor.example/files/blob.bin
+curl --proxy http://proxy.vendor.example:8080 --proxy-user 'name:placeholder' https://api.vendor.example/install.sh
+curl --proxy http://proxy.vendor.example:8080 --proxy-user 'name:placeholder' https://api.vendor.example/v1/feed.xml
+curl --proxy http://proxy.vendor.example:8080 --proxy-user 'name:placeholder' https://api.vendor.example/files/blob.bin
+curl -U 'name:placeholder' -x http://proxy.vendor.example:8080 https://api.vendor.example/install.sh
+curl -U 'name:placeholder' -x http://proxy.vendor.example:8080 https://api.vendor.example/v1/feed.xml
+curl -U 'name:placeholder' -x http://proxy.vendor.example:8080 https://api.vendor.example/files/blob.bin
+curl --cert-status https://api.vendor.example/install.sh
+curl --cert-status https://api.vendor.example/v1/feed.xml
+curl --cert-status https://api.vendor.example/files/blob.bin
+curl --ssl-reqd https://api.vendor.example/install.sh
+curl --ssl-reqd https://api.vendor.example/v1/feed.xml
+curl --ssl-reqd https://api.vendor.example/files/blob.bin
+curl --tlsv1.2 --tls-max 1.2 https://api.vendor.example/install.sh
+curl --tlsv1.2 --tls-max 1.2 https://api.vendor.example/v1/feed.xml
+curl --tlsv1.2 --tls-max 1.2 https://api.vendor.example/files/blob.bin
+curl -1 https://api.vendor.example/install.sh
+curl -1 https://api.vendor.example/v1/feed.xml
+curl -1 https://api.vendor.example/files/blob.bin
+curl --http1.0 https://api.vendor.example/install.sh
+curl --http1.0 https://api.vendor.example/v1/feed.xml
+curl --http1.0 https://api.vendor.example/files/blob.bin
+curl --alt-svc /tmp/altsvc https://api.vendor.example/install.sh
+curl --alt-svc /tmp/altsvc https://api.vendor.example/v1/feed.xml
+curl --alt-svc /tmp/altsvc https://api.vendor.example/files/blob.bin
+curl --hsts /tmp/hsts https://api.vendor.example/install.sh
+curl --hsts /tmp/hsts https://api.vendor.example/v1/feed.xml
+curl --hsts /tmp/hsts https://api.vendor.example/files/blob.bin
+curl --keepalive-time 60 https://api.vendor.example/install.sh
+curl --keepalive-time 60 https://api.vendor.example/v1/feed.xml
+curl --keepalive-time 60 https://api.vendor.example/files/blob.bin
+curl -N https://api.vendor.example/install.sh
+curl -N https://api.vendor.example/v1/feed.xml
+curl -N https://api.vendor.example/files/blob.bin
+curl --no-buffer https://api.vendor.example/install.sh
+curl --no-buffer https://api.vendor.example/v1/feed.xml
+curl --no-buffer https://api.vendor.example/files/blob.bin
+curl --crlf -o /tmp/out.bin https://api.vendor.example/install.sh
+curl --crlf -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl --crlf -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl -sS --stderr /tmp/curl.err https://api.vendor.example/install.sh
+curl -sS --stderr /tmp/curl.err https://api.vendor.example/v1/feed.xml
+curl -sS --stderr /tmp/curl.err https://api.vendor.example/files/blob.bin
+curl --retry 5 --retry-delay 2 --retry-max-time 30 -fsSL -o /tmp/out.bin https://api.vendor.example/install.sh
+curl --retry 5 --retry-delay 2 --retry-max-time 30 -fsSL -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl --retry 5 --retry-delay 2 --retry-max-time 30 -fsSL -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl -sS -L --compressed -H 'Accept: application/json' -o /tmp/out.json https://api.vendor.example/install.sh
+curl -sS -L --compressed -H 'Accept: application/json' -o /tmp/out.json https://api.vendor.example/v1/feed.xml
+curl -sS -L --compressed -H 'Accept: application/json' -o /tmp/out.json https://api.vendor.example/files/blob.bin
+curl -# -L -o /tmp/out.bin https://api.vendor.example/install.sh
+curl -# -L -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl -# -L -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl -sS --connect-timeout 5 --max-time 20 -o /dev/null https://api.vendor.example/install.sh
+curl -sS --connect-timeout 5 --max-time 20 -o /dev/null https://api.vendor.example/v1/feed.xml
+curl -sS --connect-timeout 5 --max-time 20 -o /dev/null https://api.vendor.example/files/blob.bin
+curl --remote-time -O https://api.vendor.example/install.sh
+curl --remote-time -O https://api.vendor.example/v1/feed.xml
+curl --remote-time -O https://api.vendor.example/files/blob.bin
+curl -R --remote-time -O https://api.vendor.example/install.sh
+curl -R --remote-time -O https://api.vendor.example/v1/feed.xml
+curl -R --remote-time -O https://api.vendor.example/files/blob.bin
+curl --output-dir /tmp --remote-name https://api.vendor.example/install.sh
+curl --output-dir /tmp --remote-name https://api.vendor.example/v1/feed.xml
+curl --output-dir /tmp --remote-name https://api.vendor.example/files/blob.bin
+curl -fsS https://api.vendor.example/install.sh
+curl -fsS https://api.vendor.example/v1/feed.xml
+curl -fsS https://api.vendor.example/files/blob.bin
+curl -sSf https://api.vendor.example/install.sh
+curl -sSf https://api.vendor.example/v1/feed.xml
+curl -sSf https://api.vendor.example/files/blob.bin
+curl --fail-early --parallel https://api.vendor.example/install.sh https://api.vendor.example/install.sh
+curl --fail-early --parallel https://api.vendor.example/v1/feed.xml https://api.vendor.example/v1/feed.xml
+curl --fail-early --parallel https://api.vendor.example/files/blob.bin https://api.vendor.example/files/blob.bin
+curl -g --path-as-is https://api.vendor.example/install.sh
+curl -g --path-as-is https://api.vendor.example/v1/feed.xml
+curl -g --path-as-is https://api.vendor.example/files/blob.bin
+curl --http2 --compressed -fsSL https://api.vendor.example/install.sh
+curl --http2 --compressed -fsSL https://api.vendor.example/v1/feed.xml
+curl --http2 --compressed -fsSL https://api.vendor.example/files/blob.bin
+curl -4 -k -L -o /tmp/out.bin https://api.vendor.example/install.sh
+curl -4 -k -L -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl -4 -k -L -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl -6 --compressed -o /tmp/out.bin https://api.vendor.example/install.sh
+curl -6 --compressed -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl -6 --compressed -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl --cacert /tmp/ca.pem --capath /tmp/certs https://api.vendor.example/install.sh
+curl --cacert /tmp/ca.pem --capath /tmp/certs https://api.vendor.example/v1/feed.xml
+curl --cacert /tmp/ca.pem --capath /tmp/certs https://api.vendor.example/files/blob.bin
+curl -E /tmp/client.pem --cert-type PEM https://api.vendor.example/install.sh
+curl -E /tmp/client.pem --cert-type PEM https://api.vendor.example/v1/feed.xml
+curl -E /tmp/client.pem --cert-type PEM https://api.vendor.example/files/blob.bin
+curl --proxy-cacert /tmp/ca.pem -x http://proxy.vendor.example:8080 https://api.vendor.example/install.sh
+curl --proxy-cacert /tmp/ca.pem -x http://proxy.vendor.example:8080 https://api.vendor.example/v1/feed.xml
+curl --proxy-cacert /tmp/ca.pem -x http://proxy.vendor.example:8080 https://api.vendor.example/files/blob.bin
+curl --noproxy api.vendor.example https://api.vendor.example/install.sh
+curl --noproxy api.vendor.example https://api.vendor.example/v1/feed.xml
+curl --noproxy api.vendor.example https://api.vendor.example/files/blob.bin
+curl -sS -D - -o /dev/null -w '%{http_code}' https://api.vendor.example/install.sh
+curl -sS -D - -o /dev/null -w '%{http_code}' https://api.vendor.example/v1/feed.xml
+curl -sS -D - -o /dev/null -w '%{http_code}' https://api.vendor.example/files/blob.bin
+curl --no-progress-meter --fail -L https://api.vendor.example/install.sh -o /tmp/out.bin
+curl --no-progress-meter --fail -L https://api.vendor.example/v1/feed.xml -o /tmp/out.bin
+curl --no-progress-meter --fail -L https://api.vendor.example/files/blob.bin -o /tmp/out.bin
+curl -H 'If-None-Match: opaque' -o /tmp/out.bin https://api.vendor.example/install.sh
+curl -H 'If-None-Match: opaque' -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl -H 'If-None-Match: opaque' -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl --etag-compare /tmp/etag --etag-save /tmp/etag -O https://api.vendor.example/install.sh
+curl --etag-compare /tmp/etag --etag-save /tmp/etag -O https://api.vendor.example/v1/feed.xml
+curl --etag-compare /tmp/etag --etag-save /tmp/etag -O https://api.vendor.example/files/blob.bin
+curl -z feed.xml -R -O https://api.vendor.example/install.sh
+curl -z feed.xml -R -O https://api.vendor.example/v1/feed.xml
+curl -z feed.xml -R -O https://api.vendor.example/files/blob.bin
+curl --continue-at 2048 -o /tmp/out.bin https://api.vendor.example/install.sh
+curl --continue-at 2048 -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl --continue-at 2048 -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl -r 100-200 -o /tmp/part.bin https://api.vendor.example/install.sh
+curl -r 100-200 -o /tmp/part.bin https://api.vendor.example/v1/feed.xml
+curl -r 100-200 -o /tmp/part.bin https://api.vendor.example/files/blob.bin
+curl --head --http1.1 https://api.vendor.example/install.sh
+curl --head --http1.1 https://api.vendor.example/v1/feed.xml
+curl --head --http1.1 https://api.vendor.example/files/blob.bin
+curl -I -H 'Accept: */*' --compressed https://api.vendor.example/install.sh
+curl -I -H 'Accept: */*' --compressed https://api.vendor.example/v1/feed.xml
+curl -I -H 'Accept: */*' --compressed https://api.vendor.example/files/blob.bin
+curl --user-agent vendor-client/1.0 --compressed https://api.vendor.example/install.sh
+curl --user-agent vendor-client/1.0 --compressed https://api.vendor.example/v1/feed.xml
+curl --user-agent vendor-client/1.0 --compressed https://api.vendor.example/files/blob.bin
+curl -A 'vendor-fetch/2' -fsSL -o /tmp/out.bin https://api.vendor.example/install.sh
+curl -A 'vendor-fetch/2' -fsSL -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl -A 'vendor-fetch/2' -fsSL -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl --netrc-optional -n https://api.vendor.example/install.sh
+curl --netrc-optional -n https://api.vendor.example/v1/feed.xml
+curl --netrc-optional -n https://api.vendor.example/files/blob.bin
+curl --basic -u name:placeholder https://api.vendor.example/install.sh
+curl --basic -u name:placeholder https://api.vendor.example/v1/feed.xml
+curl --basic -u name:placeholder https://api.vendor.example/files/blob.bin
+curl --digest -u name:placeholder https://api.vendor.example/install.sh
+curl --digest -u name:placeholder https://api.vendor.example/v1/feed.xml
+curl --digest -u name:placeholder https://api.vendor.example/files/blob.bin
+curl --anyauth -u name:placeholder https://api.vendor.example/install.sh
+curl --anyauth -u name:placeholder https://api.vendor.example/v1/feed.xml
+curl --anyauth -u name:placeholder https://api.vendor.example/files/blob.bin
+curl --tls-max 1.3 --http2 -fsSL https://api.vendor.example/install.sh
+curl --tls-max 1.3 --http2 -fsSL https://api.vendor.example/v1/feed.xml
+curl --tls-max 1.3 --http2 -fsSL https://api.vendor.example/files/blob.bin
+curl --proto '=https' --tlsv1.2 -fsSL https://api.vendor.example/install.sh
+curl --proto '=https' --tlsv1.2 -fsSL https://api.vendor.example/v1/feed.xml
+curl --proto '=https' --tlsv1.2 -fsSL https://api.vendor.example/files/blob.bin
+curl -sS --retry 8 --retry-all-errors --retry-delay 1 https://api.vendor.example/install.sh
+curl -sS --retry 8 --retry-all-errors --retry-delay 1 https://api.vendor.example/v1/feed.xml
+curl -sS --retry 8 --retry-all-errors --retry-delay 1 https://api.vendor.example/files/blob.bin
+curl -o /tmp/out.bin --create-dirs --fail --location https://api.vendor.example/install.sh
+curl -o /tmp/out.bin --create-dirs --fail --location https://api.vendor.example/v1/feed.xml
+curl -o /tmp/out.bin --create-dirs --fail --location https://api.vendor.example/files/blob.bin
+curl --parallel-immediate --parallel-max 2 https://api.vendor.example/install.sh https://api.vendor.example/install.sh
+curl --parallel-immediate --parallel-max 2 https://api.vendor.example/v1/feed.xml https://api.vendor.example/v1/feed.xml
+curl --parallel-immediate --parallel-max 2 https://api.vendor.example/files/blob.bin https://api.vendor.example/files/blob.bin
+curl -Z -s https://api.vendor.example/install.sh https://api.vendor.example/install.sh
+curl -Z -s https://api.vendor.example/v1/feed.xml https://api.vendor.example/v1/feed.xml
+curl -Z -s https://api.vendor.example/files/blob.bin https://api.vendor.example/files/blob.bin
+curl --next -O https://api.vendor.example/install.sh -O https://api.vendor.example/install.sh
+curl --next -O https://api.vendor.example/v1/feed.xml -O https://api.vendor.example/v1/feed.xml
+curl --next -O https://api.vendor.example/files/blob.bin -O https://api.vendor.example/files/blob.bin
+curl -s --next -s https://api.vendor.example/install.sh https://api.vendor.example/install.sh
+curl -s --next -s https://api.vendor.example/v1/feed.xml https://api.vendor.example/v1/feed.xml
+curl -s --next -s https://api.vendor.example/files/blob.bin https://api.vendor.example/files/blob.bin
+curl --path-as-is --globoff --fail https://api.vendor.example/install.sh
+curl --path-as-is --globoff --fail https://api.vendor.example/v1/feed.xml
+curl --path-as-is --globoff --fail https://api.vendor.example/files/blob.bin
+curl -g -f -L https://api.vendor.example/install.sh
+curl -g -f -L https://api.vendor.example/v1/feed.xml
+curl -g -f -L https://api.vendor.example/files/blob.bin
+curl --max-redirs 3 -L -o /tmp/out.bin https://api.vendor.example/install.sh
+curl --max-redirs 3 -L -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl --max-redirs 3 -L -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl --connect-timeout 2 -m 5 -o /dev/null -sS https://api.vendor.example/install.sh
+curl --connect-timeout 2 -m 5 -o /dev/null -sS https://api.vendor.example/v1/feed.xml
+curl --connect-timeout 2 -m 5 -o /dev/null -sS https://api.vendor.example/files/blob.bin
+curl -w '%{http_code} %{size_download}' -s -o /dev/null https://api.vendor.example/install.sh
+curl -w '%{http_code} %{size_download}' -s -o /dev/null https://api.vendor.example/v1/feed.xml
+curl -w '%{http_code} %{size_download}' -s -o /dev/null https://api.vendor.example/files/blob.bin
+curl --write-out '%{content_type}' -sI https://api.vendor.example/install.sh
+curl --write-out '%{content_type}' -sI https://api.vendor.example/v1/feed.xml
+curl --write-out '%{content_type}' -sI https://api.vendor.example/files/blob.bin
+curl -H 'Accept: text/csv' -o /tmp/rows.csv https://api.vendor.example/install.sh
+curl -H 'Accept: text/csv' -o /tmp/rows.csv https://api.vendor.example/v1/feed.xml
+curl -H 'Accept: text/csv' -o /tmp/rows.csv https://api.vendor.example/files/blob.bin
+curl --header 'Accept-Language: en' -sS https://api.vendor.example/install.sh
+curl --header 'Accept-Language: en' -sS https://api.vendor.example/v1/feed.xml
+curl --header 'Accept-Language: en' -sS https://api.vendor.example/files/blob.bin
+curl -H 'Cache-Control: no-cache' -I https://api.vendor.example/install.sh
+curl -H 'Cache-Control: no-cache' -I https://api.vendor.example/v1/feed.xml
+curl -H 'Cache-Control: no-cache' -I https://api.vendor.example/files/blob.bin
+curl --compressed -H 'Accept-Encoding: gzip' -o /tmp/out.bin https://api.vendor.example/install.sh
+curl --compressed -H 'Accept-Encoding: gzip' -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl --compressed -H 'Accept-Encoding: gzip' -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl -k -L --retry 3 -o /tmp/out.bin https://api.vendor.example/install.sh
+curl -k -L --retry 3 -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl -k -L --retry 3 -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl --insecure --location --fail --silent --show-error https://api.vendor.example/install.sh
+curl --insecure --location --fail --silent --show-error https://api.vendor.example/v1/feed.xml
+curl --insecure --location --fail --silent --show-error https://api.vendor.example/files/blob.bin
+curl -fsSL -A 'vendor-install/1' https://api.vendor.example/install.sh | sh
+curl -fsSL -A 'vendor-install/1' https://api.vendor.example/v1/feed.xml | sh
+curl -fsSL -A 'vendor-install/1' https://api.vendor.example/files/blob.bin | sh
+curl -fsSL --proto '=https' --tlsv1.2 https://api.vendor.example/install.sh | bash
+curl -fsSL --proto '=https' --tlsv1.2 https://api.vendor.example/v1/feed.xml | bash
+curl -fsSL --proto '=https' --tlsv1.2 https://api.vendor.example/files/blob.bin | bash
+curl -sS -L -o /dev/null -w '%{http_code}' --retry 5 https://api.vendor.example/install.sh
+curl -sS -L -o /dev/null -w '%{http_code}' --retry 5 https://api.vendor.example/v1/feed.xml
+curl -sS -L -o /dev/null -w '%{http_code}' --retry 5 https://api.vendor.example/files/blob.bin
+curl --ipv4 --http1.1 -I https://api.vendor.example/install.sh
+curl --ipv4 --http1.1 -I https://api.vendor.example/v1/feed.xml
+curl --ipv4 --http1.1 -I https://api.vendor.example/files/blob.bin
+curl --ipv6 --http2 -I https://api.vendor.example/install.sh
+curl --ipv6 --http2 -I https://api.vendor.example/v1/feed.xml
+curl --ipv6 --http2 -I https://api.vendor.example/files/blob.bin
+curl --styled-output -I https://api.vendor.example/install.sh
+curl --styled-output -I https://api.vendor.example/v1/feed.xml
+curl --styled-output -I https://api.vendor.example/files/blob.bin
+curl --no-keepalive --tcp-nodelay -o /tmp/out.bin https://api.vendor.example/install.sh
+curl --no-keepalive --tcp-nodelay -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl --no-keepalive --tcp-nodelay -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl --limit-rate 50k --max-time 30 -O https://api.vendor.example/install.sh
+curl --limit-rate 50k --max-time 30 -O https://api.vendor.example/v1/feed.xml
+curl --limit-rate 50k --max-time 30 -O https://api.vendor.example/files/blob.bin
+curl --speed-limit 1000 --speed-time 10 -o /tmp/out.bin https://api.vendor.example/install.sh
+curl --speed-limit 1000 --speed-time 10 -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl --speed-limit 1000 --speed-time 10 -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl -Y 1000 -y 10 -o /tmp/out.bin https://api.vendor.example/install.sh
+curl -Y 1000 -y 10 -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl -Y 1000 -y 10 -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl --max-filesize 1048576 -fsSL -o /tmp/out.bin https://api.vendor.example/install.sh
+curl --max-filesize 1048576 -fsSL -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl --max-filesize 1048576 -fsSL -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl --remove-on-error -o /tmp/out.bin https://api.vendor.example/install.sh
+curl --remove-on-error -o /tmp/out.bin https://api.vendor.example/v1/feed.xml
+curl --remove-on-error -o /tmp/out.bin https://api.vendor.example/files/blob.bin
+curl --skip-existing -O https://api.vendor.example/install.sh
+curl --skip-existing -O https://api.vendor.example/v1/feed.xml
+curl --skip-existing -O https://api.vendor.example/files/blob.bin
+curl --no-clobber -O https://api.vendor.example/install.sh
+curl --no-clobber -O https://api.vendor.example/v1/feed.xml
+curl --no-clobber -O https://api.vendor.example/files/blob.bin
+curl --remote-name-all --remote-time https://api.vendor.example/install.sh
+curl --remote-name-all --remote-time https://api.vendor.example/v1/feed.xml
+curl --remote-name-all --remote-time https://api.vendor.example/files/blob.bin
+curl -OJ -L https://api.vendor.example/install.sh
+curl -OJ -L https://api.vendor.example/v1/feed.xml
+curl -OJ -L https://api.vendor.example/files/blob.bin
+curl -odump.xml https://api.vendor.example/install.sh
+curl -odump.xml https://api.vendor.example/v1/feed.xml
+curl -odump.xml https://api.vendor.example/files/blob.bin
+curl -sDheaders.txt -o /dev/null https://api.vendor.example/install.sh
+curl -sDheaders.txt -o /dev/null https://api.vendor.example/v1/feed.xml
+curl -sDheaders.txt -o /dev/null https://api.vendor.example/files/blob.bin
+curl -w%{http_code} -s -o /dev/null https://api.vendor.example/install.sh
+curl -w%{http_code} -s -o /dev/null https://api.vendor.example/v1/feed.xml
+curl -w%{http_code} -s -o /dev/null https://api.vendor.example/files/blob.bin
+curl --unix-socket /tmp/vendor.sock http://localhost/health
+curl -t opt=val telnet://api.vendor.example
+curl --proto-default https api.vendor.example/v1
+curl -g -s 'https://api.vendor.example/file[1-3].txt'
+curl --abstract-unix-socket vendor-sock https://api.vendor.example/v1/status
+curl -l ftp://api.vendor.example/pub/
+curl --list-only ftp://api.vendor.example/pub/
+curl -B ftp://api.vendor.example/file
+curl --ftp-pasv ftp://api.vendor.example/file
+curl -P - ftp://api.vendor.example/file
+curl --quote HELP ftp://api.vendor.example/
+curl -Q HELP ftp://api.vendor.example/
+curl -q --disable-epsv ftp://api.vendor.example/file
+curl --ftp-method multicwd ftp://api.vendor.example/file
+sudo curl -fsSL https://api.vendor.example/install.sh
+command curl -fsSL https://api.vendor.example/install.sh
+/usr/bin/curl -fsSL https://api.vendor.example/install.sh
+wget -q -O- https://api.vendor.example/install.sh
+wget -q -O- https://api.vendor.example/v1/feed.xml
+wget -q -O- https://api.vendor.example/files/blob.bin
+wget -q -O - https://api.vendor.example/install.sh
+wget -q -O - https://api.vendor.example/v1/feed.xml
+wget -q -O - https://api.vendor.example/files/blob.bin
+wget -q -O /tmp/out.bin https://api.vendor.example/install.sh
+wget -q -O /tmp/out.bin https://api.vendor.example/v1/feed.xml
+wget -q -O /tmp/out.bin https://api.vendor.example/files/blob.bin
+wget -O /tmp/out.bin https://api.vendor.example/install.sh
+wget -O /tmp/out.bin https://api.vendor.example/v1/feed.xml
+wget -O /tmp/out.bin https://api.vendor.example/files/blob.bin
+wget -c -O /tmp/out.bin https://api.vendor.example/install.sh
+wget -c -O /tmp/out.bin https://api.vendor.example/v1/feed.xml
+wget -c -O /tmp/out.bin https://api.vendor.example/files/blob.bin
+wget -N -O /tmp/out.bin https://api.vendor.example/install.sh
+wget -N -O /tmp/out.bin https://api.vendor.example/v1/feed.xml
+wget -N -O /tmp/out.bin https://api.vendor.example/files/blob.bin
+wget -q -c https://api.vendor.example/install.sh
+wget -q -c https://api.vendor.example/v1/feed.xml
+wget -q -c https://api.vendor.example/files/blob.bin
+wget -r -np -nH https://api.vendor.example/install.sh
+wget -r -np -nH https://api.vendor.example/v1/feed.xml
+wget -r -np -nH https://api.vendor.example/files/blob.bin
+wget -r -np -nd https://api.vendor.example/install.sh
+wget -r -np -nd https://api.vendor.example/v1/feed.xml
+wget -r -np -nd https://api.vendor.example/files/blob.bin
+wget -r -l 1 -np https://api.vendor.example/install.sh
+wget -r -l 1 -np https://api.vendor.example/v1/feed.xml
+wget -r -l 1 -np https://api.vendor.example/files/blob.bin
+wget -q --show-progress -O /tmp/out.bin https://api.vendor.example/install.sh
+wget -q --show-progress -O /tmp/out.bin https://api.vendor.example/v1/feed.xml
+wget -q --show-progress -O /tmp/out.bin https://api.vendor.example/files/blob.bin
+wget -q --timeout=20 --tries=3 https://api.vendor.example/install.sh
+wget -q --timeout=20 --tries=3 https://api.vendor.example/v1/feed.xml
+wget -q --timeout=20 --tries=3 https://api.vendor.example/files/blob.bin
+wget --no-verbose -O /tmp/out.bin https://api.vendor.example/install.sh
+wget --no-verbose -O /tmp/out.bin https://api.vendor.example/v1/feed.xml
+wget --no-verbose -O /tmp/out.bin https://api.vendor.example/files/blob.bin
+wget -nv -O /tmp/out.bin https://api.vendor.example/install.sh
+wget -nv -O /tmp/out.bin https://api.vendor.example/v1/feed.xml
+wget -nv -O /tmp/out.bin https://api.vendor.example/files/blob.bin
+wget --https-only https://api.vendor.example/install.sh
+wget --https-only https://api.vendor.example/v1/feed.xml
+wget --https-only https://api.vendor.example/files/blob.bin
+wget --content-disposition -P /tmp https://api.vendor.example/install.sh
+wget --content-disposition -P /tmp https://api.vendor.example/v1/feed.xml
+wget --content-disposition -P /tmp https://api.vendor.example/files/blob.bin
+wget -P /tmp https://api.vendor.example/install.sh
+wget -P /tmp https://api.vendor.example/v1/feed.xml
+wget -P /tmp https://api.vendor.example/files/blob.bin
+wget -nc https://api.vendor.example/install.sh
+wget -nc https://api.vendor.example/v1/feed.xml
+wget -nc https://api.vendor.example/files/blob.bin
+wget --no-clobber https://api.vendor.example/install.sh
+wget --no-clobber https://api.vendor.example/v1/feed.xml
+wget --no-clobber https://api.vendor.example/files/blob.bin
+wget -x -nH https://api.vendor.example/install.sh
+wget -x -nH https://api.vendor.example/v1/feed.xml
+wget -x -nH https://api.vendor.example/files/blob.bin
+wget --cut-dirs=2 -r -np https://api.vendor.example/install.sh
+wget --cut-dirs=2 -r -np https://api.vendor.example/v1/feed.xml
+wget --cut-dirs=2 -r -np https://api.vendor.example/files/blob.bin
+wget --reject=index.html -r -np https://api.vendor.example/install.sh
+wget --reject=index.html -r -np https://api.vendor.example/v1/feed.xml
+wget --reject=index.html -r -np https://api.vendor.example/files/blob.bin
+wget --accept=.xml -r -np https://api.vendor.example/install.sh
+wget --accept=.xml -r -np https://api.vendor.example/v1/feed.xml
+wget --accept=.xml -r -np https://api.vendor.example/files/blob.bin
+wget -m -np https://api.vendor.example/install.sh
+wget -m -np https://api.vendor.example/v1/feed.xml
+wget -m -np https://api.vendor.example/files/blob.bin
+wget --mirror -np -nH https://api.vendor.example/install.sh
+wget --mirror -np -nH https://api.vendor.example/v1/feed.xml
+wget --mirror -np -nH https://api.vendor.example/files/blob.bin
+wget --limit-rate=200k -O /tmp/out.bin https://api.vendor.example/install.sh
+wget --limit-rate=200k -O /tmp/out.bin https://api.vendor.example/v1/feed.xml
+wget --limit-rate=200k -O /tmp/out.bin https://api.vendor.example/files/blob.bin
+wget --wait=1 --random-wait -r -np https://api.vendor.example/install.sh
+wget --wait=1 --random-wait -r -np https://api.vendor.example/v1/feed.xml
+wget --wait=1 --random-wait -r -np https://api.vendor.example/files/blob.bin
+wget --no-check-certificate https://api.vendor.example/install.sh
+wget --no-check-certificate https://api.vendor.example/v1/feed.xml
+wget --no-check-certificate https://api.vendor.example/files/blob.bin
+wget --ca-certificate=/tmp/ca.pem https://api.vendor.example/install.sh
+wget --ca-certificate=/tmp/ca.pem https://api.vendor.example/v1/feed.xml
+wget --ca-certificate=/tmp/ca.pem https://api.vendor.example/files/blob.bin
+wget -4 -q -O /tmp/out.bin https://api.vendor.example/install.sh
+wget -4 -q -O /tmp/out.bin https://api.vendor.example/v1/feed.xml
+wget -4 -q -O /tmp/out.bin https://api.vendor.example/files/blob.bin
+wget -6 -q -O /tmp/out.bin https://api.vendor.example/install.sh
+wget -6 -q -O /tmp/out.bin https://api.vendor.example/v1/feed.xml
+wget -6 -q -O /tmp/out.bin https://api.vendor.example/files/blob.bin
+wget --restrict-file-names=windows -O /tmp/out.bin https://api.vendor.example/install.sh
+wget --restrict-file-names=windows -O /tmp/out.bin https://api.vendor.example/v1/feed.xml
+wget --restrict-file-names=windows -O /tmp/out.bin https://api.vendor.example/files/blob.bin
+wget -e robots=off -r -np https://api.vendor.example/install.sh
+wget -e robots=off -r -np https://api.vendor.example/v1/feed.xml
+wget -e robots=off -r -np https://api.vendor.example/files/blob.bin
+wget -q -O- https://api.vendor.example/install.sh | sh
+wget -q -O- https://api.vendor.example/v1/feed.xml | sh
+wget -q -O- https://api.vendor.example/files/blob.bin | sh
+wget --progress=dot:giga -O /tmp/out.bin https://api.vendor.example/install.sh
+wget --progress=dot:giga -O /tmp/out.bin https://api.vendor.example/v1/feed.xml
+wget --progress=dot:giga -O /tmp/out.bin https://api.vendor.example/files/blob.bin
+wget --user-agent='vendor-client/1.0' https://api.vendor.example/install.sh
+wget --user-agent='vendor-client/1.0' https://api.vendor.example/v1/feed.xml
+wget --user-agent='vendor-client/1.0' https://api.vendor.example/files/blob.bin
+wget -U 'vendor-client/1.0' https://api.vendor.example/install.sh
+wget -U 'vendor-client/1.0' https://api.vendor.example/v1/feed.xml
+wget -U 'vendor-client/1.0' https://api.vendor.example/files/blob.bin
+wget --timeout=10 --read-timeout=10 -q https://api.vendor.example/install.sh
+wget --timeout=10 --read-timeout=10 -q https://api.vendor.example/v1/feed.xml
+wget --timeout=10 --read-timeout=10 -q https://api.vendor.example/files/blob.bin
+wget -q --retry-connrefused --waitretry=1 --tries=5 https://api.vendor.example/install.sh
+wget -q --retry-connrefused --waitretry=1 --tries=5 https://api.vendor.example/v1/feed.xml
+wget -q --retry-connrefused --waitretry=1 --tries=5 https://api.vendor.example/files/blob.bin
+wget --no-http-keep-alive -O /tmp/out.bin https://api.vendor.example/install.sh
+wget --no-http-keep-alive -O /tmp/out.bin https://api.vendor.example/v1/feed.xml
+wget --no-http-keep-alive -O /tmp/out.bin https://api.vendor.example/files/blob.bin
+wget -q --header='Accept: application/json' -O /tmp/out.bin https://api.vendor.example/install.sh
+wget -q --header='Accept: application/json' -O /tmp/out.bin https://api.vendor.example/v1/feed.xml
+wget -q --header='Accept: application/json' -O /tmp/out.bin https://api.vendor.example/files/blob.bin
+wget --compression=auto -O /tmp/out.bin https://api.vendor.example/install.sh
+wget --compression=auto -O /tmp/out.bin https://api.vendor.example/v1/feed.xml
+wget --compression=auto -O /tmp/out.bin https://api.vendor.example/files/blob.bin
+wget -q --show-progress --progress=bar:force -O /tmp/out.bin https://api.vendor.example/install.sh
+wget -q --show-progress --progress=bar:force -O /tmp/out.bin https://api.vendor.example/v1/feed.xml
+wget -q --show-progress --progress=bar:force -O /tmp/out.bin https://api.vendor.example/files/blob.bin
+wget --trust-server-names -P /tmp https://api.vendor.example/install.sh
+wget --trust-server-names -P /tmp https://api.vendor.example/v1/feed.xml
+wget --trust-server-names -P /tmp https://api.vendor.example/files/blob.bin
+wget -nd -r -l 2 -np https://api.vendor.example/install.sh
+wget -nd -r -l 2 -np https://api.vendor.example/v1/feed.xml
+wget -nd -r -l 2 -np https://api.vendor.example/files/blob.bin
+wget -erobots=off -q https://api.vendor.example/install.sh
+wget -erobots=off -q https://api.vendor.example/v1/feed.xml
+wget -erobots=off -q https://api.vendor.example/files/blob.bin
+wget --domains=api.vendor.example -r -np https://api.vendor.example/install.sh
+wget --domains=api.vendor.example -r -np https://api.vendor.example/v1/feed.xml
+wget --domains=api.vendor.example -r -np https://api.vendor.example/files/blob.bin
+wget -X /private -r -np https://api.vendor.example/install.sh
+wget -X /private -r -np https://api.vendor.example/v1/feed.xml
+wget -X /private -r -np https://api.vendor.example/files/blob.bin
+wget -np -nH --cut-dirs=1 -r https://api.vendor.example/install.sh
+wget -np -nH --cut-dirs=1 -r https://api.vendor.example/v1/feed.xml
+wget -np -nH --cut-dirs=1 -r https://api.vendor.example/files/blob.bin
+wget -q -c -N -O /tmp/out.bin https://api.vendor.example/install.sh
+wget -q -c -N -O /tmp/out.bin https://api.vendor.example/v1/feed.xml
+wget -q -c -N -O /tmp/out.bin https://api.vendor.example/files/blob.bin
+wget --https-only --no-verbose -O /tmp/out.bin https://api.vendor.example/install.sh
+wget --https-only --no-verbose -O /tmp/out.bin https://api.vendor.example/v1/feed.xml
+wget --https-only --no-verbose -O /tmp/out.bin https://api.vendor.example/files/blob.bin
+wget --mirror --no-parent --convert-links https://api.vendor.example/install.sh
+wget --mirror --no-parent --convert-links https://api.vendor.example/v1/feed.xml
+wget --mirror --no-parent --convert-links https://api.vendor.example/files/blob.bin
+wget -q -O /dev/null https://api.vendor.example/install.sh
+wget -q -O /dev/null https://api.vendor.example/v1/feed.xml
+wget -q -O /dev/null https://api.vendor.example/files/blob.bin
+wget --user=name --password=placeholder https://api.vendor.example/install.sh
+wget --user=name --password=placeholder https://api.vendor.example/v1/feed.xml
+wget --user=name --password=placeholder https://api.vendor.example/files/blob.bin
+wget --spider -q https://api.vendor.example/install.sh
+wget --spider -q https://api.vendor.example/v1/feed.xml
+wget --spider -q https://api.vendor.example/files/blob.bin
+wget --server-response -q -O /dev/null https://api.vendor.example/install.sh
+wget --server-response -q -O /dev/null https://api.vendor.example/v1/feed.xml
+wget --server-response -q -O /dev/null https://api.vendor.example/files/blob.bin
+wget -nH -nd -np -r -l 1 https://api.vendor.example/install.sh
+wget -nH -nd -np -r -l 1 https://api.vendor.example/v1/feed.xml
+wget -nH -nd -np -r -l 1 https://api.vendor.example/files/blob.bin
+wget --no-host-directories --no-directories -O /tmp/out.bin https://api.vendor.example/install.sh
+wget --no-host-directories --no-directories -O /tmp/out.bin https://api.vendor.example/v1/feed.xml
+wget --no-host-directories --no-directories -O /tmp/out.bin https://api.vendor.example/files/blob.bin
+wget -4 --timeout=10 -q -O- https://api.vendor.example/install.sh
+wget -4 --timeout=10 -q -O- https://api.vendor.example/v1/feed.xml
+wget -4 --timeout=10 -q -O- https://api.vendor.example/files/blob.bin
+wget --execute robots=off -q https://api.vendor.example/install.sh
+wget --execute robots=off -q https://api.vendor.example/v1/feed.xml
+wget --execute robots=off -q https://api.vendor.example/files/blob.bin
+wget -P /tmp/vendor --no-verbose https://api.vendor.example/install.sh
+wget -P /tmp/vendor --no-verbose https://api.vendor.example/v1/feed.xml
+wget -P /tmp/vendor --no-verbose https://api.vendor.example/files/blob.bin

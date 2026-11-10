@@ -34,8 +34,12 @@ var priorArgPatterns = map[string][]string{
 	`(?i)(\beval\b.*\bbase64\b|\bbase64(?:\s+[^\s;|&]+)*?\s+(-[a-z]*d[a-z]*|--decode)\b.*\|\s*(?:(?:sudo|env|exec|command)(?:\s+[^\s;|&]+)*?\s+)?(?:[^\s;|&]*/)?((ba)?sh|zsh|dash|ksh|mksh)\b)`: {
 		`(?i)(\beval\b.*\bbase64\b|\bbase64\s+(-d|--decode)\b.*\|\s*(ba)?sh\b)`,
 	},
-	// Network Exfiltration
-	`(?i)\b(curl|wget)\b.*(?:(?-i:-d\s|-F\s|-T\s)|--data(?:-binary|-raw|-urlencode)?\b|--form\b|--upload-file\b|--post-data\b|--post-file\b|--body-data\b|--body-file\b|(?-i:-X)\s+POST|--json\b|--form-string\b)|\bcurl\b.*\s(?-i:-[a-zA-Z0-9]+[dFT])`: {
+	// Network Exfiltration. The first prior is the pattern this one replaced.
+	// It also matched an upload letter inside an option value (-ofeed.xml,
+	// -Hdate:x, -Ddump). Those calls stay matched; the new pattern does not
+	// match them on its own.
+	networkExfilArgPattern: {
+		`(?i)\b(curl|wget)\b.*(?:(?-i:-d\s|-F\s|-T\s)|--data(?:-binary|-raw|-urlencode)?\b|--form\b|--upload-file\b|--post-data\b|--post-file\b|--body-data\b|--body-file\b|(?-i:-X)\s+POST|--json\b|--form-string\b)|\bcurl\b.*\s(?-i:-[a-zA-Z0-9]+[dFT])`,
 		`(?i)\b(curl|wget)\b.*(?:(?-i:-d\s|-T\s)|--data|--upload-file|(?-i:-X)\s+POST|--post-data)`,
 	},
 	// Package Install

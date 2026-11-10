@@ -1826,6 +1826,34 @@ func expandBraces(s string) string {
 // shellProofWords refuses unsupported controls before granting any exception.
 const shellCommandStart = `(?:^|[\s;|&()<>\x60\x22\x27/=])`
 
+// curlBooleanShortClass is the set of curl short options that take no
+// argument, from curl 8.23.0 `curl --help all` (release 2026-10-14). In a
+// short-option cluster, curl reads these until it meets an option that takes
+// an argument; the rest of that word is the argument. An upload letter
+// (d, F, T) therefore counts only after a run of these options.
+//
+//	# progress-bar    0 http1.0    1 tlsv1      2 sslv2     3 sslv3
+//	4 ipv4            6 ipv6       : next       B ascii     G get
+//	I head            J remote-header-name      L location  M manual
+//	N no-buffer       O remote-name             R remote-time
+//	S show-error      V version    Z parallel   a append    f fail
+//	g globoff         i headers    j junk-session-cookies   k insecure
+//	l list-only       n netrc      p proxytunnel            q disable
+//	s silent          v verbose
+//
+// Short options that take an argument are absent: A, C, D, E, H, K, P, Q, T,
+// U, X, Y, b, c, d, e, h, m, o, r, t, u, w, x, y, z. Their glued text is a
+// value, so -ofeed.xml, -Hdate:x, -Ddump, -Afirefox and -ufoo:bar are not
+// uploads. Digits 5 and 7-9 are not curl short options.
+const curlBooleanShortClass = `#012346:BGIJLMNORSVZafgijklnpqsv`
+
+// networkExfilArgPattern matches curl and wget payload uploads. wget's
+// uploads are the long options; its short flags are not given the glued
+// curl reading. -X POST stays case-sensitive so -x (proxy) is not POST.
+// A boolean prefix plus X and a glued POST, in any case, is curl's request
+// method. The word must end there: -XPOSTER sends a method named POSTER.
+const networkExfilArgPattern = `(?i)\b(curl|wget)\b.*(?:(?-i:-d\s|-F\s|-T\s)|--data(?:-binary|-raw|-urlencode)?\b|--form\b|--upload-file\b|--post-data\b|--post-file\b|--body-data\b|--body-file\b|(?-i:-X)\s+POST|--json\b|--form-string\b)|\bcurl\b.*(?-i:\s-[` + curlBooleanShortClass + `]*(?:[dFT]|X\s*(?i:POST)\b))`
+
 // DefaultToolPolicyRules returns the built-in set of tool call policy rules
 // covering common dangerous operations that agents might attempt.
 const (
@@ -1949,8 +1977,10 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			// round-4 of the pre-tag gate found `curl --form` bypassed the earlier pattern.
 			// Short flags are case-sensitive: -f fails, -D dumps headers and
 			// -t is the telnet option. Long options and the tool name stay
-			// case-insensitive. -X is case-sensitive so -x (proxy) is not POST.
-			ArgPattern: `(?i)\b(curl|wget)\b.*(?:(?-i:-d\s|-F\s|-T\s)|--data(?:-binary|-raw|-urlencode)?\b|--form\b|--upload-file\b|--post-data\b|--post-file\b|--body-data\b|--body-file\b|(?-i:-X)\s+POST|--json\b|--form-string\b)|\bcurl\b.*\s(?-i:-[a-zA-Z0-9]+[dFT])`,
+			// case-insensitive. A glued upload value (-d@file, -Fa=@f, -Tfile)
+			// counts when every short option before d, F or T takes no argument
+			// (curlBooleanShortClass).
+			ArgPattern: networkExfilArgPattern,
 		},
 		{
 			Name:        "Reverse Shell",
