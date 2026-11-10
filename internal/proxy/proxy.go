@@ -122,6 +122,10 @@ const (
 	// httputil.ReverseProxy's ModifyResponse boundary. Buffered response blocks
 	// replace the upstream response after an admission receipt was exposed.
 	ctxKeyReverseResponseReceipt
+	// ctxKeyReverseIssuerSend carries the admitted caller identity and the
+	// exact buffered body so the reverse transport records the actual
+	// upstream request into issuer ID history after Director and signing.
+	ctxKeyReverseIssuerSend
 
 	// ctxKeyEnvelopeEmitter snapshots the fetch/forward envelope emitter
 	// decision, including an explicit nil when signing was off at
@@ -1307,6 +1311,9 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			if err := p.refreshEnvelopeForRedirect(req, via, currentCfg); err != nil {
 				return err
 			}
+			// Fetch follows this hop internally. Record its actual destination
+			// and outgoing headers before dispatch, just like the initial send.
+			p.recordIssuerForwardSent(currentCfg, agentName, clientIP, envelope.ActorAuth(agentAuthFromContext(req.Context())), req, nil)
 			return nil
 		},
 	}
@@ -2812,9 +2819,18 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 			issuerStore.flush(time.Now(), true)
 		}
 	}
-	queryStore := p.newObservedIssuerQueryStore()
-	if issuerCookieEnabled(cfg) && oldIssuer != nil && issuerCookieEnabled(oldIssuer.cfg) {
+	// Positive issuer evidence follows the same window as the cookie store.
+	// The negative ID ledger it embeds outlives every reload, including
+	// enabled-to-disabled-to-enabled, so toggling cannot forget what a caller
+	// sent or which destinations froze. Only a restart starts a new ledger.
+	var queryStore *issuerQueryStore
+	switch {
+	case oldIssuer == nil || oldIssuer.query == nil:
+		queryStore = p.newObservedIssuerQueryStore()
+	case issuerCookieEnabled(cfg) && issuerCookieEnabled(oldIssuer.cfg):
 		queryStore = oldIssuer.query
+	default:
+		queryStore = oldIssuer.query.nextGeneration()
 	}
 	p.issuerCookieRuntime.Store(&issuerCookieRuntime{cfg: cfg, store: issuerStore, query: queryStore})
 	p.refreshMetricsDialTarget(cfg.MetricsListen)

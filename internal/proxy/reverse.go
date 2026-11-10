@@ -1794,6 +1794,15 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		r = r.WithContext(ctx)
 	}
 
+	// The transport records the rewritten request into issuer ID history
+	// under the same resolved identity every other session control used.
+	// reverseBodyBytes is nil exactly when the body was not buffered.
+	if rp.owner != nil {
+		r = r.WithContext(context.WithValue(r.Context(), ctxKeyReverseIssuerSend, reverseIssuerSend{
+			cfg: cfg, agent: agent, clientIP: clientIP, actorAuth: resolvedIdentity.Auth, body: reverseBodyBytes,
+		}))
+	}
+
 	// Forward to upstream. Response scanning happens in modifyResponse.
 	// Envelope signing happens in the signing RoundTripper wrapping
 	// rp.proxy.Transport so @target-uri reflects the post-Director URL.
@@ -2005,6 +2014,14 @@ func (t *reverseOutcomeTracker) EmitOnce(rp *ReverseProxyHandler) {
 	rp.emitOutcomeReceipt(cfg, opts, status, bytesTransferred, reason)
 }
 
+// recordIssuerSend joins the outgoing request to the owner's issuer ID
+// history. A transport without an owner proxy has no history to record.
+func (t *reverseSigningRoundTripper) recordIssuerSend(req *http.Request) {
+	if t.rp != nil {
+		t.rp.owner.recordIssuerReverseSent(req)
+	}
+}
+
 // RoundTrip implements http.RoundTripper. It runs envelope injection
 // and signing before handing the request off to the base transport.
 // Errors from InjectAndSign fail closed and block the outbound request.
@@ -2017,6 +2034,7 @@ func (t *reverseSigningRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 	if em == nil {
 		// No emitter was live at admission time - signing was off
 		// for this request. Forward unsigned.
+		t.recordIssuerSend(req)
 		return t.base.RoundTrip(req)
 	}
 	opts, ok := req.Context().Value(ctxKeyReverseEnvelopeOpts).(envelope.BuildOpts)
@@ -2030,6 +2048,7 @@ func (t *reverseSigningRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 	if err := em.InjectAndSign(req, body, opts); err != nil {
 		return nil, newEnvelopeBlockedRequest(err)
 	}
+	t.recordIssuerSend(req)
 	return t.base.RoundTrip(req)
 }
 

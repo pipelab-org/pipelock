@@ -556,7 +556,7 @@ func TestIssuerQueryJSONPositions(t *testing.T) {
 // its input: two values differing only in invalid UTF-8 bytes must not share
 // an allowance, and moving bytes across a field boundary must change it.
 func TestIssuerQueryDigestIsByteExact(t *testing.T) {
-	s := &issuerQueryStore{}
+	s := &issuerQueryStore{issuerIDLedger: &issuerIDLedger{}}
 	a := s.digest("https", "api.vendor.example", "443", "/page", "cursor", "tok\xff")
 	b := s.digest("https", "api.vendor.example", "443", "/page", "cursor", "tok\xfe")
 	if a == b {

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Document how SSH and other non-HTTP egress can be declined: the forward proxy refuses SSH sent directly only when the optional `forward_proxy.sni_require_tls` check is on, and `pipelock sandbox` leaves no direct route out. Includes the sandbox caveats and an opt-in tool-policy warning rule. See [current unsupported paths](docs/security/current-unsupported-paths.md#ssh-and-other-non-http-egress).
+- Verify each admitted replay descriptor once per text DLP scan so later trims skip already-checked views. Large encoded bodies finish sooner; drain still checks the digest of every matched view. ([#2173](https://github.com/pipelab-org/pipelock/pull/2173))
+- Pin the Compose and Kubernetes recipe images to the published v3.8.0 `ghcr.io/pipelab-org` digests, and note in the 3.8 upgrade guide that tool-policy rules also match a bounded reading of shell expansions, and that request scanning reads ZIP and ZIP-based Office text within limits, with TLS interception off in defaults and all 7 presets and PDF text still only raw-byte scanned.
+- Scan card and non-card text DLP patterns in one pass when the text and its card view are the same. Findings, their order and their spans don't change; scanners with keyword-gated patterns keep two passes. Large inbound bodies scan faster. ([#2175](https://github.com/pipelab-org/pipelock/pull/2175))
+
+### Fixed
+
+- Git commands that follow a separator inside a nested shell's command string, such as `bash -c` or `sh -c`, now get the destructive-git rule's strict reading instead of passing as builtin-safe. The default Network Exfiltration rule matches curl and wget short upload flags case-sensitively, so `curl -f`, `-fsSL`, `-D` and `-t` no longer count as uploads; the presets and quickstart example carry the same pattern. ([#2176](https://github.com/pipelab-org/pipelock/pull/2176))
+- The subdomain entropy check refuses a host when the public-suffix lookup fails for an unexpected reason, instead of allowing it. Block reasons no longer repeat request-derived text: query keys and nested-URL findings are named by parameter position, and unsupported schemes get a fixed message. The reason, v1 pattern and v2 rule id change on these blocks; verdicts and `X-Pipelock-Block-Reason` labels don't. ([#2177](https://github.com/pipelab-org/pipelock/pull/2177))
+- Text DLP stops encoded-content reassembly when the caller's context ends, and a stopped walk is never cached as a verified miss. A keyword-gated rule now finds a qualified encoded carrier even when an identical unqualified copy appears earlier in the text, and the extra search is charged to the keyword work budget. ([#2178](https://github.com/pipelab-org/pipelock/pull/2178))
+
 ## [3.8.0] - 2026-11-09
 
 ### Breaking Changes / Upgrade Notes

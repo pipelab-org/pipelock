@@ -323,6 +323,9 @@ type BlockDetail struct {
 	// Cookies names the Cookie pairs that carried a header DLP match. Names
 	// only; a cookie value is never logged.
 	Cookies []string
+	// IssuerIDEvidence is fixed proxy-owned diagnostic metadata for a denied
+	// intercepted URL. It contains no ID, matched value or client-supplied text.
+	IssuerIDEvidence string
 }
 
 // Class string constants kept in lockstep with internal/scanner ResultClass.
@@ -386,6 +389,7 @@ func (l *Logger) LogBlockedDetail(ctx LogContext, scanner, reason string, detail
 		str("scanner", scanner).
 		str("reason", reason).
 		optStr("header", detail.Header).
+		optStr("issuer_id_evidence", detail.IssuerIDEvidence).
 		agentField(ctx.agent, ctx.agentAuth).
 		optStr("subject_discriminator", l.subjectDiscriminator(ctx.dowSubjectKey)).
 		optStr("subject_trust", ctx.dowSubjectTrust).
