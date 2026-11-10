@@ -49,6 +49,12 @@ The `claude-code`, `cursor`, `generic-agent`, and `hostile-model` presets and th
 
 Tool policy rules also match a bounded reading of shell expansions the command text decides, such as unset parameters, brace items and literal brackets. A word past the expansion bound reports an incomplete check, which `on_incomplete_check` turns into a warning or a block. Review rules for commands that legitimately use these forms. See [MCP tool policy](../configuration.md#mcp-tool-policy).
 
+## Check what upload inspection covers
+
+Request scanning reads the text inside Office and ZIP uploads, within extraction limits. Files it can't open, or that go over the limits, keep their stated refusal or limits. With the built-in `warn` action an unreadable archive is still delivered; with `action: block` and `enforce: true` it's withheld.
+
+HTTPS through the forward proxy (CONNECT) needs TLS interception, which is off in defaults and all 7 presets. Plain-HTTP forward proxy, reverse proxy and WebSocket client text are scanned without it. PDF text isn't extracted yet; PDF uploads only get the existing raw-byte scan. See [request body scanning](../configuration.md#request-body-scanning).
+
 ## Review repository-scan suppressions
 
 `pipelock git scan-diff`, `pipelock audit`, and the GitHub Action apply the core DLP floor even when configured defaults are disabled or a custom pattern reuses a built-in name. Inline `pipelock:ignore` markers and rule suppressions can't silence core findings. Synthetic fixtures can therefore produce findings after upgrading. Construct synthetic values from fragments where possible; path exclusions remove every finding for that path, including core findings, so review them narrowly. Generated pre-push hooks don't expose an exclusion option. See the [suppression guide](suppression.md).
