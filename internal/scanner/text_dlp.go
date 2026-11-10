@@ -497,7 +497,15 @@ type textDLPOptions struct {
 	emitWarns       bool
 	scanSecretLeak  bool
 	patterns        textDLPPatternSet
+	// mergedClasses scans the card and non-card pattern classes in one pass
+	// over one text. Each class keeps its own decode early stop and its own
+	// result tail, so the findings equal two separate passes' findings.
+	mergedClasses bool
 }
+
+// textDLPSinglePass lets the parity test run the two-pass scan on the same
+// input. Production never changes it.
+var textDLPSinglePass = true
 
 type textDLPPatternSet uint8
 
@@ -768,27 +776,42 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 	// after destination-specific card suppression.
 	emit := opts.emitWarns
 	opts.emitWarns = false
-	opts.patterns = textDLPNonCardPatterns
-	// Separate text/card memos never widen their pattern sets. A shared memo
-	// retains the all-pattern upper bound until both passes have finished.
-	if text != cardView {
-		originalDecodes.reassemblyPatternLimit = textDLPNonCardPatterns
-	}
-	original := s.scanTextForDLPWithDecodes(ctx, text, opts, originalDecodes)
+	var original TextDLPResult
 	terminalMemos := []*decodingMemo{originalDecodes}
-	cardDecodes := originalDecodes
-	if text != cardView {
-		typedDecodes := textDecodingMemo(shared, terminalInbound, allowance, kindInsensitive)
-		defer typedDecodes.releaseTextDecodingMemo()
-		typedDecodes.reassemblyPatternLimit = textDLPCardPatterns
-		cardDecodes = typedDecodes
-		terminalMemos = append(terminalMemos, typedDecodes)
+	// One text needs one walk: a merged pass applies each class's early stop
+	// and result tail on its own, so it returns the two passes' findings in
+	// the same order. Keyword-gated patterns judge a candidate's context from
+	// transforms the memo has registered so far, and the second pass used to
+	// see the first pass's transforms; keep two passes for them.
+	if textDLPSinglePass && text == cardView && !s.hasDLPKeywords() {
+		opts.patterns = textDLPAllPatterns
+		opts.mergedClasses = true
+		original = s.scanTextForDLPWithDecodes(ctx, text, opts, originalDecodes)
+		opts.mergedClasses = false
+		opts.patterns = textDLPCardPatterns
+		opts.scanSecretLeak = false
+	} else {
+		opts.patterns = textDLPNonCardPatterns
+		// Separate text/card memos never widen their pattern sets. A shared memo
+		// retains the all-pattern upper bound until both passes have finished.
+		if text != cardView {
+			originalDecodes.reassemblyPatternLimit = textDLPNonCardPatterns
+		}
+		original = s.scanTextForDLPWithDecodes(ctx, text, opts, originalDecodes)
+		cardDecodes := originalDecodes
+		if text != cardView {
+			typedDecodes := textDecodingMemo(shared, terminalInbound, allowance, kindInsensitive)
+			defer typedDecodes.releaseTextDecodingMemo()
+			typedDecodes.reassemblyPatternLimit = textDLPCardPatterns
+			cardDecodes = typedDecodes
+			terminalMemos = append(terminalMemos, typedDecodes)
+		}
+		opts.patterns = textDLPCardPatterns
+		opts.scanSecretLeak = false
+		cards := s.scanTextForDLPWithDecodes(ctx, cardView, opts, cardDecodes)
+		original.Matches = append(original.Matches, cards.Matches...)
+		original.InformationalMatches = append(original.InformationalMatches, cards.InformationalMatches...)
 	}
-	opts.patterns = textDLPCardPatterns
-	opts.scanSecretLeak = false
-	cards := s.scanTextForDLPWithDecodes(ctx, cardView, opts, cardDecodes)
-	original.Matches = append(original.Matches, cards.Matches...)
-	original.InformationalMatches = append(original.InformationalMatches, cards.InformationalMatches...)
 	for i := range original.Matches {
 		if text != cardView && original.Matches[i].genericCard {
 			original.Matches[i].span.ViewLabel = spanViewLabel("json_integer", original.Matches[i].span.ViewLabel)
@@ -903,8 +926,19 @@ func (s *Scanner) scanTextForDLPDetectors(ctx context.Context, text string, opts
 		}
 	}
 	result := s.scanTextForDLPDetectorsInner(ctx, text, opts, decodes)
-	if opts.scanSecretLeak && !inboundDirection(ctx) && decodes.inspectionIncomplete() && !HasInspectionLimit(result.Matches) {
-		result.Matches = append(result.Matches, uninspectableEncodedContentMatch())
+	// Two passes added the refusal at the end of the non-card pass, ahead of
+	// every card finding, and looked for an existing limit among non-card
+	// findings only; a custom card pattern may reuse a limit's name. Receipt
+	// content reports the first match as its reason, so the merged pass keeps
+	// both the position and the scope.
+	at := len(result.Matches)
+	if opts.mergedClasses {
+		if card := slices.IndexFunc(result.Matches, func(m TextDLPMatch) bool { return m.genericCard }); card >= 0 {
+			at = card
+		}
+	}
+	if opts.scanSecretLeak && !inboundDirection(ctx) && decodes.inspectionIncomplete() && !HasInspectionLimit(result.Matches[:at]) {
+		result.Matches = slices.Insert(result.Matches, at, uninspectableEncodedContentMatch())
 		result.Clean = false
 	}
 	return result
@@ -1294,16 +1328,15 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// must not do that: another enforced match can still sit in a later
 	// segment. noteTextSegmentDecodeBudget still decodes every segment, so
 	// this stop cannot hide a walk that reached its bound.
-	if !hasEnforcedMatch(matches) {
-		for _, view := range segmentDecodeViews {
-			matches = append(matches, s.decodeTextSegmentsWithDecodes(view.text, decodes, opts.patterns)...)
-			if hasEnforcedMatch(matches) {
-				break
-			}
+	gate := newTextDLPDecodeGate(opts, matches)
+	for _, view := range segmentDecodeViews {
+		if gate.done() {
+			break
 		}
+		matches = append(matches, s.decodeTextSegmentsWithDecodes(view.text, decodes, opts.patterns, gate)...)
 	}
-	if !hasEnforcedMatch(matches) {
-		matches = append(matches, s.decodeSplitHexRunsWithDecodes(text, decodes, opts.patterns)...)
+	if !gate.done() {
+		matches = append(matches, s.decodeSplitHexRunsWithDecodes(text, decodes, opts.patterns, gate)...)
 	}
 
 	// Check for env + file secret leaks (raw + encoded forms). These detect a
@@ -1322,34 +1355,22 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 		}
 	}
 
-	// Deduplicate matches by pattern name + encoding.
-	matches = deduplicateMatches(matches)
-
-	// Retain every core finding, with configured canary attribution first.
-	// A canary can also have a credential's shape; its encoding provenance
-	// must not be hidden behind the pattern finding for the same value.
-	if len(coreMatches) > 0 {
-		if len(canaryMatches) > 0 {
-			coreMatches = append(canaryMatches[:len(canaryMatches):len(canaryMatches)], coreMatches...)
-		}
-		matches = append(coreMatches, matches...)
-		matches = deduplicateMatches(matches)
-	}
-
-	if len(matches) == 0 {
-		return TextDLPResult{Clean: true}
-	}
-
-	// Partition matches: warn-mode patterns go to InformationalMatches,
-	// enforced patterns go to Matches. Warn-only results are Clean=true
-	// so transports take no enforcement action.
 	var enforced, informational []TextDLPMatch
-	for _, m := range matches {
-		if m.Warn {
-			informational = append(informational, m)
-		} else {
-			enforced = append(enforced, m)
-		}
+	if opts.mergedClasses {
+		// Finish each class as its own pass would have, non-card first. Core
+		// and canary findings belong to the non-card class; a card pass never
+		// produced them.
+		nonCard := slices.DeleteFunc(slices.Clone(matches), func(m TextDLPMatch) bool { return m.genericCard })
+		card := slices.DeleteFunc(matches, func(m TextDLPMatch) bool { return !m.genericCard })
+		enforced, informational = finishTextDLPMatches(nonCard, coreMatches, canaryMatches)
+		cardEnforced, cardInformational := finishTextDLPMatches(card, nil, nil)
+		enforced = append(enforced, cardEnforced...)
+		informational = append(informational, cardInformational...)
+	} else {
+		enforced, informational = finishTextDLPMatches(matches, coreMatches, canaryMatches)
+	}
+	if len(enforced) == 0 && len(informational) == 0 {
+		return TextDLPResult{Clean: true}
 	}
 
 	// Emit warn events through the shared helper so warn-hook behavior stays centralized.
@@ -1786,6 +1807,81 @@ func hasEnforcedMatch(matches []TextDLPMatch) bool {
 	return false
 }
 
+// finishTextDLPMatches is one pass's result tail. It deduplicates matches by
+// pattern name and encoding, retains every core finding with configured
+// canary attribution first, and splits warn-mode findings from enforced ones.
+// A canary can also have a credential's shape; its encoding provenance must
+// not be hidden behind the pattern finding for the same value.
+func finishTextDLPMatches(matches, coreMatches, canaryMatches []TextDLPMatch) (enforced, informational []TextDLPMatch) {
+	matches = deduplicateMatches(matches)
+	if len(coreMatches) > 0 {
+		if len(canaryMatches) > 0 {
+			coreMatches = append(canaryMatches[:len(canaryMatches):len(canaryMatches)], coreMatches...)
+		}
+		matches = append(coreMatches, matches...)
+		matches = deduplicateMatches(matches)
+	}
+	// Warn-only results are Clean=true so transports take no enforcement action.
+	for _, m := range matches {
+		if m.Warn {
+			informational = append(informational, m)
+		} else {
+			enforced = append(enforced, m)
+		}
+	}
+	return enforced, informational
+}
+
+// textDLPDecodeGate decides which decoded findings the segment and split-hex
+// stages keep and when they stop. A pass over one pattern class stops at its
+// first enforced finding; warn-mode findings never stop it, because another
+// enforced match can still sit in a later segment. A merged pass keeps each
+// class open until that class has an enforced finding, which is where two
+// separate passes would each have stopped. The walk continues while either
+// class is open.
+type textDLPDecodeGate struct {
+	perClass bool
+	open     [2]bool // indexed by textDLPClass
+}
+
+func textDLPClass(genericCard bool) int {
+	if genericCard {
+		return 1
+	}
+	return 0
+}
+
+func newTextDLPDecodeGate(opts textDLPOptions, prior []TextDLPMatch) *textDLPDecodeGate {
+	g := &textDLPDecodeGate{perClass: opts.mergedClasses}
+	g.open[textDLPClass(false)] = opts.patterns.includes(false)
+	g.open[textDLPClass(true)] = opts.patterns.includes(true)
+	g.close(prior)
+	return g
+}
+
+func (g *textDLPDecodeGate) done() bool { return !g.open[0] && !g.open[1] }
+
+// keep returns the findings whose class is still open, then closes each class
+// that found an enforced match.
+func (g *textDLPDecodeGate) keep(found []TextDLPMatch) []TextDLPMatch {
+	kept := slices.DeleteFunc(slices.Clone(found), func(m TextDLPMatch) bool { return !g.open[textDLPClass(m.genericCard)] })
+	g.close(found)
+	return kept
+}
+
+func (g *textDLPDecodeGate) close(found []TextDLPMatch) {
+	for _, m := range found {
+		if m.Warn {
+			continue
+		}
+		if !g.perClass {
+			g.open = [2]bool{}
+			return
+		}
+		g.open[textDLPClass(m.genericCard)] = false
+	}
+}
+
 // noteTextSegmentDecodeBudget decodes every segment of every view the
 // pattern walk might have skipped. It adds no findings. A bound reached here
 // sticks on the memo and the caller refuses outbound text. Inbound scans keep
@@ -1817,7 +1913,10 @@ func noteTextSegmentDecodeBudget(views []string, decodes *decodingMemo) {
 // hex/base64/base32 decoding on each segment. Catches encoded secrets
 // embedded in URLs (e.g., "https://evil.com/<hex-encoded-key>/data") where
 // whole-string decode fails because the surrounding text isn't valid encoding.
-func (s *Scanner) decodeTextSegmentsWithDecodes(text string, decodes *decodingMemo, patterns textDLPPatternSet) []TextDLPMatch {
+func (s *Scanner) decodeTextSegmentsWithDecodes(text string, decodes *decodingMemo, patterns textDLPPatternSet, gate *textDLPDecodeGate) []TextDLPMatch {
+	if gate == nil {
+		gate = newTextDLPDecodeGate(textDLPOptions{patterns: patterns}, nil)
+	}
 	// Split on URL-like and structured-data delimiters. Request bodies often
 	// wrap encoded secrets in JSON, YAML, CSV, or multipart text, so quotes,
 	// braces, colons, and commas must not stay attached to the encoded token.
@@ -1831,8 +1930,8 @@ func (s *Scanner) decodeTextSegmentsWithDecodes(text string, decodes *decodingMe
 		}
 		for _, d := range decodes.decode(seg, true) {
 			if m := decodes.matchDecodedFor(s, d.text, d.encoding, patterns); len(m) > 0 {
-				matches = append(matches, m...)
-				if hasEnforcedMatch(m) {
+				matches = append(matches, gate.keep(m)...)
+				if gate.done() {
 					return false
 				}
 			}
@@ -1852,7 +1951,10 @@ func (s *Scanner) decodeTextSegmentsWithDecodes(text string, decodes *decodingMe
 // contiguous in one of the decoded views; neighbouring hex values only add
 // bytes around it. The work is linear in the input, with no window search,
 // piece-length floor or budget.
-func (s *Scanner) decodeSplitHexRunsWithDecodes(text string, decodes *decodingMemo, patterns textDLPPatternSet) []TextDLPMatch {
+func (s *Scanner) decodeSplitHexRunsWithDecodes(text string, decodes *decodingMemo, patterns textDLPPatternSet, gate *textDLPDecodeGate) []TextDLPMatch {
+	if gate == nil {
+		gate = newTextDLPDecodeGate(textDLPOptions{patterns: patterns}, nil)
+	}
 	var matches []TextDLPMatch
 	for _, run := range adjacentHexRuns(textDLPFlatSegments(text)) {
 		for offset := 0; offset < 2; offset++ {
@@ -1867,8 +1969,8 @@ func (s *Scanner) decodeSplitHexRunsWithDecodes(text string, decodes *decodingMe
 			}
 			d := string(decoded)
 			if m := decodes.matchDecodedFor(s, d, encodingHex, patterns); len(m) > 0 {
-				matches = append(matches, m...)
-				if hasEnforcedMatch(m) {
+				matches = append(matches, gate.keep(m)...)
+				if gate.done() {
 					return matches
 				}
 			}
