@@ -494,21 +494,8 @@ func (s *keywordDecodeSources) visitOccurrences(source, root string, visit func(
 		}
 	}
 	for !entry.done && entry.from <= len(source)-len(root) {
-		suffixLen := len(source) - entry.from
-		room := maxDecodeTotalBytes - s.budget.used
-		// Refuse before reading a suffix the remaining allowance cannot pay for,
-		// recording the refusal the way a failed charge does.
-		if keywordSpanBytes >= room || suffixLen > room-keywordSpanBytes {
-			s.incomplete = true
-			s.budget.incomplete = true
-			return false
-		}
-		at := strings.Index(source[entry.from:], root)
-		examined := suffixLen
-		if at >= 0 {
-			examined = at + len(root)
-		}
-		if !s.charge(examined + keywordSpanBytes) {
+		at, _, ok := s.chargedIndex(source, entry.from, root)
+		if !ok {
 			return false
 		}
 		if at < 0 {
@@ -1256,21 +1243,34 @@ func (n *keywordDecodeSource) indexSegment(from int) (int, bool) {
 	if segment == "" || from > len(parent)-len(segment) {
 		return -1, true
 	}
-	suffixLen := len(parent) - from
-	room := maxDecodeTotalBytes - n.owner.budget.used
-	if keywordSpanBytes >= room || suffixLen > room-keywordSpanBytes {
-		n.owner.incomplete = true
-		n.owner.budget.incomplete = true
-		return -1, false
-	}
-	rel := strings.Index(parent[from:], segment)
-	examined := suffixLen
-	if rel >= 0 {
-		examined = rel + len(segment)
-	}
-	if !n.owner.charge(examined + keywordSpanBytes) {
+	rel, examined, ok := n.owner.chargedIndex(parent, from, segment)
+	if !ok {
 		return -1, false
 	}
 	n.owner.budget.searchBytes += examined
 	return rel, true
+}
+
+// chargedIndex runs strings.Index over haystack[from:] against the keyword
+// allowance. It refuses before reading a suffix the remaining allowance
+// cannot pay for, recording the refusal the way a failed charge does, and
+// otherwise charges the bytes the search examined plus one span. rel is
+// relative to from and negative when needle does not occur.
+func (s *keywordDecodeSources) chargedIndex(haystack string, from int, needle string) (rel, examined int, ok bool) {
+	suffixLen := len(haystack) - from
+	room := maxDecodeTotalBytes - s.budget.used
+	if keywordSpanBytes >= room || suffixLen > room-keywordSpanBytes {
+		s.incomplete = true
+		s.budget.incomplete = true
+		return -1, 0, false
+	}
+	rel = strings.Index(haystack[from:], needle)
+	examined = suffixLen
+	if rel >= 0 {
+		examined = rel + len(needle)
+	}
+	if !s.charge(examined + keywordSpanBytes) {
+		return -1, 0, false
+	}
+	return rel, examined, true
 }
