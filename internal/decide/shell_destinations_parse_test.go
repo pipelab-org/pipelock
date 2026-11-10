@@ -406,6 +406,14 @@ func TestCommandSubstitutionBodies(t *testing.T) {
 		{"$(case x in (a) b;; esac) d", []string{"case x in (a) b;; esac"}},
 		{"$(case x in a) $(case y in b) c;; esac);; esac) d", []string{"case x in a) $(case y in b) c;; esac);; esac"}},
 		{"$(echo case) d", []string{"echo case"}},
+		// case counts only where a command starts, including after
+		// reserved words; as an argument it opens nothing.
+		{"$(echo case x in a) b) c", []string{"echo case x in a"}},
+		{"$(if x; then case y in a) b;; esac; fi) c", []string{"if x; then case y in a) b;; esac; fi"}},
+		{"$(while x; do case y in a) b;; esac; done) c", []string{"while x; do case y in a) b;; esac; done"}},
+		{"$({ case y in a) b;; esac; }) c", []string{"{ case y in a) b;; esac; }"}},
+		{"$(! case y in a) b;; esac) c", []string{"! case y in a) b;; esac"}},
+		{"$(x && case y in a) b;; esac) c", []string{"x && case y in a) b;; esac"}},
 		// Unclosed: bash refuses it; the outer scan reads on after the ).
 		{"$(case x in a) $(b)", []string{"case x in a", "b"}},
 		{"a\\ #$(b)", []string{"b"}},

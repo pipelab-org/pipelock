@@ -724,7 +724,12 @@ func (s *substitutionScanner) scan(i int, untilParen, hereText bool) int {
 			if top.cases > 0 {
 				top.pattern = true
 			}
-		case wordStart && shellKeywordAt(src, i, "case"):
+		case wordStart && atCmd && reservedPrefixAt(src, i) > 0:
+			// then, do, else and the like keep the next word in command
+			// position, so a case after them is still the keyword.
+			i += reservedPrefixAt(src, i) - 1
+			cmdPos = true
+		case wordStart && atCmd && shellKeywordAt(src, i, "case"):
 			top.cases++
 			top.pattern = true
 		case wordStart && top.cases > 0 && (top.pattern || atCmd) && shellKeywordAt(src, i, "esac"):
@@ -830,6 +835,21 @@ func ansiQuoteEnd(src string, i int) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// commandPrefixWords are the reserved words after which a command, and so
+// a case keyword, may follow (bash(1) "Reserved Words").
+var commandPrefixWords = []string{"then", "do", "else", "elif", "if", "while", "until", "!", "{", "time"}
+
+// reservedPrefixAt returns the length of the commandPrefixWords entry that
+// starts at i as a whole word, or 0.
+func reservedPrefixAt(src string, i int) int {
+	for _, w := range commandPrefixWords {
+		if shellKeywordAt(src, i, w) {
+			return len(w)
+		}
+	}
+	return 0
 }
 
 func shellKeywordAt(src string, i int, keyword string) bool {
