@@ -408,7 +408,12 @@ func TestCommandSubstitutionBodies(t *testing.T) {
 		{"$(echo case) d", []string{"echo case"}},
 		// case counts only where a command starts, including after
 		// reserved words; as an argument it opens nothing.
-		{"$(echo case x in a) b) c", []string{"echo case x in a"}},
+		// A case passed over for its position still extends the body to
+		// where the permissive reading would end it.
+		{"$(echo case x in a) b) c", []string{"echo case x in a) b"}},
+		{"$(f() case y in a) b;; esac; f) c", []string{"f() case y in a) b;; esac; f"}},
+		{"$(function f case y in a) b;; esac; f) c", []string{"function f case y in a) b;; esac; f"}},
+		{"$(coproc case y in a) b;; esac) c", []string{"coproc case y in a) b;; esac"}},
 		{"$(if x; then case y in a) b;; esac; fi) c", []string{"if x; then case y in a) b;; esac; fi"}},
 		{"$(while x; do case y in a) b;; esac; done) c", []string{"while x; do case y in a) b;; esac; done"}},
 		{"$({ case y in a) b;; esac; }) c", []string{"{ case y in a) b;; esac; }"}},

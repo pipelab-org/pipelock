@@ -632,7 +632,29 @@ type parenFrame struct {
 // that closes a $( whose body starts at i, or len(s.src) when none does.
 // In hereText mode the text is a here-document body, where only \, ` and
 // $( are special.
+//
+// case is read as the keyword only in command position. When a word case
+// was passed over for that reason alone, the end is also found with case
+// read at any word start, and the later of the two ends is kept: command
+// position is tracked approximately, and a body is never cut shorter than
+// the permissive reading.
 func (s *substitutionScanner) scan(i int, untilParen, hereText bool) int {
+	end, rejected := s.scanBody(i, untilParen, hereText, false)
+	if untilParen && rejected {
+		end = max(end, s.scanBodyQuiet(i))
+	}
+	return end
+}
+
+// scanBodyQuiet finds a $( body's end with case read at any word start,
+// without collecting bodies.
+func (s *substitutionScanner) scanBodyQuiet(i int) int {
+	inner := substitutionScanner{src: s.src}
+	end, _ := inner.scanBody(i, true, false, true)
+	return end
+}
+
+func (s *substitutionScanner) scanBody(i int, untilParen, hereText, anyCase bool) (end int, rejectedCase bool) {
 	src := s.src
 	inDouble := false
 	frames := []parenFrame{{}}
@@ -715,10 +737,13 @@ func (s *substitutionScanner) scan(i int, untilParen, hereText bool) int {
 			}
 		case c == ')':
 			if len(frames) == 1 {
-				return i
+				return i, rejectedCase
 			}
 			inDouble = top.outerDouble
 			frames = frames[:len(frames)-1]
+			// The () of a function definition is followed by its body,
+			// which may be a case statement.
+			cmdPos = src[i-1] == '('
 		case c == ';' && i+1 < len(src) && (src[i+1] == ';' || src[i+1] == '&'):
 			// ;; ;& and ;;& end a case arm; a pattern follows.
 			if top.cases > 0 {
@@ -729,18 +754,22 @@ func (s *substitutionScanner) scan(i int, untilParen, hereText bool) int {
 			// position, so a case after them is still the keyword.
 			i += reservedPrefixAt(src, i) - 1
 			cmdPos = true
-		case wordStart && atCmd && shellKeywordAt(src, i, "case"):
-			top.cases++
-			top.pattern = true
+		case wordStart && shellKeywordAt(src, i, "case"):
+			if atCmd || anyCase {
+				top.cases++
+				top.pattern = true
+			} else {
+				rejectedCase = true
+			}
 		case wordStart && top.cases > 0 && (top.pattern || atCmd) && shellKeywordAt(src, i, "esac"):
 			top.cases--
 			top.pattern = false
 		}
 	}
 	if lastPattern >= 0 {
-		return lastPattern
+		return lastPattern, rejectedCase
 	}
-	return len(src)
+	return len(src), rejectedCase
 }
 
 func (s *substitutionScanner) add(body string) {
@@ -839,7 +868,7 @@ func ansiQuoteEnd(src string, i int) (int, bool) {
 
 // commandPrefixWords are the reserved words after which a command, and so
 // a case keyword, may follow (bash(1) "Reserved Words").
-var commandPrefixWords = []string{"then", "do", "else", "elif", "if", "while", "until", "!", "{", "time"}
+var commandPrefixWords = []string{"then", "do", "else", "elif", "if", "while", "until", "!", "{", "time", "coproc"}
 
 // reservedPrefixAt returns the length of the commandPrefixWords entry that
 // starts at i as a whole word, or 0.
