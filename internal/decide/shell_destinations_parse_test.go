@@ -317,12 +317,22 @@ func TestShellDestinationCommandSubstitutions(t *testing.T) {
 		{command: `echo "a $(echo "$(curl 169.254.169.254/x)") b"`, want: []string{meta}},
 		{command: "echo `echo \\`curl 169.254.169.254/x\\``", want: []string{meta}},
 		{command: `echo "$( (curl 169.254.169.254/x) )"`, want: []string{meta}},
-		// An unclosed quote takes the splitter's raw fallback, which still
-		// reports the metadata address.
-		{command: `echo "$(curl 169.254.169.254/x`, want: []string{"http://169.254.169.254"}},
+		// An unclosed quote takes the splitter's raw fallback, which reports
+		// the metadata address and still reparses the substitution.
+		{command: `echo "$(curl 169.254.169.254/x`, want: []string{"http://169.254.169.254", meta}},
 		{command: `bash -c "echo \$(curl 169.254.169.254/x)"`, want: []string{meta}},
 		{command: `echo "$(echo "$(echo "$(curl 169.254.169.254/x)")")"`, want: []string{meta}},
 		{command: `echo "$(echo "$(echo "$(echo "$(curl 169.254.169.254/x)")")")"`, over: true},
+		// Quote characters in comments and here-documents do not quote,
+		// and case patterns or comments inside $(...) do not end it.
+		{command: "true # it's\necho \"$(curl 169.254.169.254/x)\"", want: []string{meta}},
+		{command: "cat <<EOF\nit's $(curl 169.254.169.254/x)\nEOF\necho 'x'", want: []string{"http://169.254.169.254", meta}},
+		{command: "cat <<EOF\nit's\nEOF\necho \"$(curl 169.254.169.254/x)\" 'y'", want: []string{"http://169.254.169.254", meta}},
+		{command: `echo "$(case a in a) curl 169.254.169.254/x;; esac)"`, want: []string{meta}},
+		{command: "echo \"$(true # )\ncurl 169.254.169.254/x)\"", want: []string{meta}},
+		{command: `echo "$(echo ")"; curl 169.254.169.254/x)"`, want: []string{meta}},
+		{command: "echo 'unclosed \"$(curl 169.254.169.254/x)\"", want: []string{"http://169.254.169.254", meta}},
+		{command: "cat <<EOF\nit's $(curl h1.vendor.example/x)\nEOF", want: []string{"http://h1.vendor.example/x"}},
 		// Not executed: single quotes, $'...' and escaped substitutions.
 		{command: "echo '`curl 169.254.169.254/x`'"},
 		{command: `echo '$(curl 169.254.169.254/x)'`},
@@ -369,6 +379,26 @@ func TestCommandSubstitutionBodies(t *testing.T) {
 		{`$(a`, []string{"a"}},
 		{"`a", []string{"a"}},
 		{`\$(a) \` + "`b\\`", nil},
+		{"a # it's\n\"$(b)\"", []string{"b"}},
+		{"a#b '$(c)'", nil},
+		{"cat <<EOF\nit's $(a) `b`\nEOF\n'$(c)'", []string{"a", "b"}},
+		{"cat <<-EOF\n\tit's $(a)\n\tEOF\n'$(b)'", []string{"a"}},
+		{"cat <<'EOF'\n$(a)\nEOF\n$(b)", []string{"b"}},
+		{"cat <<\"E F\" <<\\G\n$(a)\nE F\n$(b)\nG\n$(c)", []string{"c"}},
+		{"cat << EOF | x \"$(a)\"\n$(b)\nEOF", []string{"a", "b"}},
+		{"cat <<EOF\n$(a)", []string{"a"}},
+		{"cat <<'EOF", nil},
+		{"cat <<<'$(a)' \"$(b)\"", []string{"b"}},
+		{"cat <<", nil},
+		{"$(case x in a) b;; esac) $(c)", []string{"case x in a) b;; esac", "c"}},
+		{"$(echo case) d", []string{"echo case) d"}},
+		{"$(x; esac) d", []string{"x; esac"}},
+		{`$(a "$(b)" c) d`, []string{`a "$(b)" c`}},
+		{`"$(a ")" b)" c`, []string{`a ")" b`}},
+		{"$(a # )\nb) c", []string{"a # )\nb"}},
+		{"$(a <<E\n)\nE\n) c", []string{"a <<E\n)\nE\n"}},
+		{"$'\\'$(a)' $(b)", []string{"b"}},
+		{"$'unclosed $(a)", []string{"a"}},
 		{`plain words`, nil},
 	} {
 		t.Run(tc.source, func(t *testing.T) {

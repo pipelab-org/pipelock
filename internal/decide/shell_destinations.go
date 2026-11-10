@@ -550,7 +550,9 @@ func shellDestinationURLsAt(command string, urls []string, seen map[string]struc
 				return nil, true
 			}
 		}
-		return urls, false
+		// The substitution reader follows here-documents and comments the
+		// word splitter does not, so a quote inside one does not hide them.
+		return reparseScripts(commandSubstitutions(command), urls, seen, depth)
 	}
 	urls, over = appendSchemeURLs(urls, seen, words)
 	if over {
@@ -567,7 +569,13 @@ func shellDestinationURLsAt(command string, urls []string, seen map[string]struc
 	// Command substitutions run their body even inside double quotes
 	// ("$(curl ...)") or as an assignment value, where the body is part of
 	// one word. Backticks are never split from their first word at all.
-	scripts := append(nestedScripts(words), commandSubstitutions(command)...)
+	return reparseScripts(append(nestedScripts(words), commandSubstitutions(command)...), urls, seen, depth)
+}
+
+// reparseScripts scans each nested script one level down. Past the depth
+// limit it denies rather than stops looking.
+func reparseScripts(scripts, urls []string, seen map[string]struct{}, depth int) ([]string, bool) {
+	var over bool
 	for _, script := range scripts {
 		if depth+1 >= maxNestedShellDepth {
 			return nil, true
@@ -580,41 +588,219 @@ func shellDestinationURLsAt(command string, urls []string, seen map[string]struc
 }
 
 // commandSubstitutions returns the body of each $(...) and backtick
-// substitution bash would execute in source: those outside quotes and those
-// inside double quotes, but not text inside single quotes or $'...'. A
-// nested substitution stays in its parent's body for the next reparse. A
-// body left open at the end of the text runs to the end; scanning more is
-// the safe reading. A ) that closes a case pattern inside $(...) ends the
-// body early, and the rest is then read as outer text.
+// substitution bash would execute in source: those outside quotes, inside
+// double quotes and inside unquoted here-documents, but not text inside
+// single quotes, $'...', comments or quoted here-documents. A nested
+// substitution stays in its parent's body for the next reparse.
+//
+// Where the reading is uncertain it scans more text, never less: a quote
+// that never closes is read as unquoted, a body left open runs to the end,
+// and a ) inside an unfinished case statement does not end a body.
 func commandSubstitutions(source string) []string {
-	var bodies []string
+	s := substitutionScanner{src: source, collect: true}
+	s.scan(0, false, false)
+	return s.bodies
+}
+
+type substitutionScanner struct {
+	src     string
+	bodies  []string
+	collect bool
+}
+
+type pendingHereDoc struct {
+	delim          string
+	strip, expands bool
+}
+
+// shellWordBreaks are the bytes after which a new shell word starts.
+const shellWordBreaks = " \t\n;|&()<>"
+
+// scan walks s.src from i. With untilParen it returns the index of the )
+// that closes a $( whose body starts at i, or len(s.src) when none does.
+// In hereText mode the text is a here-document body, where only \, ` and
+// $( are special.
+func (s *substitutionScanner) scan(i int, untilParen, hereText bool) int {
+	src := s.src
 	inDouble := false
-	for i := 0; i < len(source); i++ {
-		switch c := source[i]; {
+	// outer holds the double-quote state outside each open parenthesis
+	// inside the body, so the ) of a nested "$(...)" restores it.
+	var outer []bool
+	caseDepth := 0
+	var pending []pendingHereDoc
+	for ; i < len(src); i++ {
+		c := src[i]
+		switch {
 		case c == '\\':
 			i++
-		case c == '\'' && !inDouble:
-			for i++; i < len(source) && source[i] != '\''; i++ {
+		case c == '`':
+			body, next := backtickBody(src, i+1, inDouble)
+			s.add(body)
+			i = next - 1
+		case c == '$' && i+1 < len(src) && src[i+1] == '(':
+			if untilParen {
+				// Track it as a parenthesis; the body is read on its own
+				// when the enclosing body is reparsed.
+				outer = append(outer, inDouble)
+				inDouble = false
+				i++
+				continue
 			}
-		case c == '$' && !inDouble && i+1 < len(source) && source[i+1] == '\'':
-			for i += 2; i < len(source) && source[i] != '\''; i++ {
-				if source[i] == '\\' {
-					i++
-				}
-			}
+			inner := substitutionScanner{src: src}
+			end := inner.scan(i+2, true, false)
+			s.add(src[i+2 : end])
+			i = end
+		case hereText:
 		case c == '"':
 			inDouble = !inDouble
-		case c == '`':
-			body, next := backtickBody(source, i+1, inDouble)
-			bodies = append(bodies, body)
+		case inDouble:
+		case c == '\'':
+			// A quote that never closes is read as unquoted.
+			if end := strings.IndexByte(src[i+1:], '\''); end >= 0 {
+				i += end + 1
+			}
+		case c == '$' && i+1 < len(src) && src[i+1] == '\'':
+			if end, ok := ansiQuoteEnd(src, i+2); ok {
+				i = end
+			}
+		case c == '#' && wordStartAt(src, i):
+			for i+1 < len(src) && src[i+1] != '\n' {
+				i++
+			}
+		case c == '<' && strings.HasPrefix(src[i:], "<<") && !strings.HasPrefix(src[i:], "<<<"):
+			doc, next := readHereDocWord(src, i+2)
+			if doc.delim != "" {
+				pending = append(pending, doc)
+			}
 			i = next - 1
-		case c == '$' && i+1 < len(source) && source[i+1] == '(':
-			end := closingParen(source, i+2)
-			bodies = append(bodies, source[i+2:end])
-			i = end
+		case c == '\n' && len(pending) > 0:
+			i = s.hereDocBodies(i+1, pending) - 1
+			pending = nil
+		case !untilParen:
+		case c == '(':
+			outer = append(outer, false)
+		case c == ')':
+			switch {
+			case len(outer) > 0:
+				inDouble = outer[len(outer)-1]
+				outer = outer[:len(outer)-1]
+			case caseDepth == 0:
+				return i
+			}
+		case wordStartAt(src, i) && shellKeywordAt(src, i, "case"):
+			caseDepth++
+		case wordStartAt(src, i) && shellKeywordAt(src, i, "esac") && caseDepth > 0:
+			caseDepth--
 		}
 	}
-	return bodies
+	return len(src)
+}
+
+func (s *substitutionScanner) add(body string) {
+	if s.collect {
+		s.bodies = append(s.bodies, body)
+	}
+}
+
+// hereDocBodies reads the bodies of the pending here-documents, one after
+// another, starting at i, the byte after the newline that ends the command
+// line. It returns the index after the last delimiter line. A body with no
+// closing delimiter runs to the end of the text.
+func (s *substitutionScanner) hereDocBodies(i int, pending []pendingHereDoc) int {
+	src := s.src
+	for _, doc := range pending {
+		start := i
+		end := len(src)
+		for i < len(src) {
+			lineEnd := strings.IndexByte(src[i:], '\n')
+			next := len(src)
+			if lineEnd >= 0 {
+				lineEnd += i
+				next = lineEnd + 1
+			} else {
+				lineEnd = len(src)
+			}
+			line := src[i:lineEnd]
+			if doc.strip {
+				line = strings.TrimLeft(line, "\t")
+			}
+			if line == doc.delim {
+				end = i
+				i = next
+				break
+			}
+			i = next
+		}
+		if doc.expands && s.collect {
+			inner := substitutionScanner{src: src[start:end], collect: true}
+			inner.scan(0, false, true)
+			s.bodies = append(s.bodies, inner.bodies...)
+		}
+	}
+	return i
+}
+
+// readHereDocWord reads the delimiter after << (and an optional -). Any
+// quoting in the word makes the body literal text (bash(1) "Here
+// Documents"); the delimiter is the word with its quotes removed.
+func readHereDocWord(src string, i int) (doc pendingHereDoc, next int) {
+	if i < len(src) && src[i] == '-' {
+		doc.strip = true
+		i++
+	}
+	for i < len(src) && (src[i] == ' ' || src[i] == '\t') {
+		i++
+	}
+	var b strings.Builder
+	quoted := false
+	for i < len(src) && strings.IndexByte(shellWordBreaks, src[i]) < 0 {
+		switch c := src[i]; c {
+		case '\'', '"':
+			quoted = true
+			end := strings.IndexByte(src[i+1:], c)
+			if end < 0 {
+				return pendingHereDoc{}, len(src)
+			}
+			b.WriteString(src[i+1 : i+1+end])
+			i += end + 2
+		case '\\':
+			quoted = true
+			if i+1 < len(src) {
+				b.WriteByte(src[i+1])
+			}
+			i += 2
+		default:
+			b.WriteByte(c)
+			i++
+		}
+	}
+	doc.delim = b.String()
+	doc.expands = !quoted
+	return doc, min(i, len(src))
+}
+
+// ansiQuoteEnd returns the index of the quote closing a $'...' body that
+// starts at i.
+func ansiQuoteEnd(src string, i int) (int, bool) {
+	for ; i < len(src); i++ {
+		switch src[i] {
+		case '\\':
+			i++
+		case '\'':
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+func wordStartAt(src string, i int) bool {
+	return i == 0 || strings.IndexByte(shellWordBreaks, src[i-1]) >= 0
+}
+
+func shellKeywordAt(src string, i int, keyword string) bool {
+	end := i + len(keyword)
+	return strings.HasPrefix(src[i:], keyword) &&
+		(end == len(src) || strings.IndexByte(shellWordBreaks, src[end]) >= 0)
 }
 
 // backtickBody reads a backtick substitution from the first byte after the
@@ -640,39 +826,6 @@ func backtickBody(source string, i int, inDouble bool) (body string, next int) {
 		b.WriteByte(c)
 	}
 	return b.String(), i
-}
-
-// closingParen returns the index of the ) that closes a $( whose body starts
-// at i, or len(source) when none does. Quotes, escapes and nested parentheses
-// inside the body are skipped.
-func closingParen(source string, i int) int {
-	depth := 0
-	for ; i < len(source); i++ {
-		switch source[i] {
-		case '\\':
-			i++
-		case '\'':
-			for i++; i < len(source) && source[i] != '\''; i++ {
-			}
-		case '"':
-			for i++; i < len(source) && source[i] != '"'; i++ {
-				if source[i] == '\\' {
-					i++
-				}
-			}
-		case '`':
-			_, next := backtickBody(source, i+1, false)
-			i = next - 1
-		case '(':
-			depth++
-		case ')':
-			if depth == 0 {
-				return i
-			}
-			depth--
-		}
-	}
-	return len(source)
 }
 
 // nestedScripts returns the script text each recognised script-execution
