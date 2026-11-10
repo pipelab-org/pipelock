@@ -189,7 +189,7 @@ func TestNestedEntropyReasonIsQueryEntropy(t *testing.T) {
 	if r.Allowed {
 		t.Fatal("nested secret was allowed")
 	}
-	if !strings.HasPrefix(r.Reason, queryEntropyParamReasonPrefix+`"next" nested URL path segment (`) {
+	if !strings.HasPrefix(r.Reason, queryEntropyParamReasonPrefix+"at position 1 nested URL path segment (") {
 		t.Fatalf("reason = %q", r.Reason)
 	}
 	if !IsQueryEntropyResult(r) {

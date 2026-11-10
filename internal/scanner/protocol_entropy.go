@@ -4,7 +4,6 @@
 package scanner
 
 import (
-	"fmt"
 	"math"
 	"net/url"
 	"regexp"
@@ -457,16 +456,13 @@ func queryEntropyPairValues(pairs []queryEntropyPair, key string) []string {
 }
 
 // queryEntropyParamResult builds the block for a query value finding. The
-// reason keeps the queryEntropyParamReasonPrefix + quoted key shape that
-// remediation and explain consumers match on; a nested part is named after it.
-func (s *Scanner) queryEntropyParamResult(key string, f entropyFinding) Result {
-	reason := fmt.Sprintf(queryEntropyParamReasonPrefix+"%q (%.2f > %.2f threshold)", key, f.entropy, s.entropyThreshold)
-	if f.part != "" {
-		reason = fmt.Sprintf(queryEntropyParamReasonPrefix+"%q %s (%.2f > %.2f threshold)", key, f.part, f.entropy, s.entropyThreshold)
-	}
+// reason keeps queryEntropyParamReasonPrefix so remediation and explain still
+// match it, and names the parameter by position. A nested part is a
+// scanner-generated view name and is included after the position.
+func (s *Scanner) queryEntropyParamResult(position int, f entropyFinding) Result {
 	return Result{
 		Allowed: false,
-		Reason:  reason,
+		Reason:  queryEntropyPositionReason(queryEntropyParamReasonPrefix, position, f.part, f.entropy, s.entropyThreshold),
 		Scanner: ScannerEntropy,
 		Class:   ClassHeuristicEntropy,
 		Score:   math.Min(f.entropy/8.0, 1.0),

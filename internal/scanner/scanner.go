@@ -1388,7 +1388,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket
 		decisions.checks[urlScheme] = DecisionFired | DecisionBlocked
 		return Result{
 			Allowed: false,
-			Reason:  fmt.Sprintf("scheme %q not allowed: only http and https", parsed.Scheme),
+			Reason:  schemeNotAllowedReason,
 			Scanner: ScannerScheme,
 			Score:   1.0,
 		}
@@ -1861,11 +1861,17 @@ const defaultNestedURLResolveBudget = ssrfLookupCeiling
 
 const nestedURLReasonPrefix = "nested URL in query parameter"
 
-// nestedURLCandidate is one query component text that may be a nested URL, with
-// the parameter key it came from for the block reason.
+// schemeNotAllowedReason is the block text for a URL whose scheme is neither
+// http nor https. The scheme is not included: it is caller-controlled and this
+// string is copied into receipts and block responses.
+const schemeNotAllowedReason = "scheme not allowed: only http and https"
+
+// nestedURLCandidate is one query component text that may be a nested URL.
+// position is the 1-based index of its raw query pair. The parameter name is
+// not kept: block reasons are copied into receipts and responses.
 type nestedURLCandidate struct {
-	key  string
-	text string
+	position int
+	text     string
 }
 
 // nestedURLCandidates enumerates every query component that could hide a nested
@@ -1884,7 +1890,7 @@ func nestedURLCandidates(rawQuery string, maxLen int) (out []nestedURLCandidate,
 
 func nestedURLCandidatesWithDecodes(rawQuery string, maxLen int, decodes *decodingMemo) []nestedURLCandidate {
 	var out []nestedURLCandidate
-	add := func(key, text string) {
+	add := func(position int, text string) {
 		text = strings.TrimSpace(text)
 		if text == "" || (maxLen > 0 && len(text) > maxLen) {
 			return
@@ -1900,20 +1906,20 @@ func nestedURLCandidatesWithDecodes(rawQuery string, maxLen int, decodes *decodi
 			// allow gate, and an invented shape rule for one is a bypass.
 			text = "https:" + text
 		}
-		out = append(out, nestedURLCandidate{key: key, text: text})
+		out = append(out, nestedURLCandidate{position: position, text: text})
 	}
-	for _, pair := range rawQuerySecurityPairs(rawQuery) {
+	for i, pair := range rawQuerySecurityPairs(rawQuery) {
 		key, value := pair.key, pair.value
-		decodedKey := IterativeDecode(key)
+		position := i + 1
 		for _, component := range []string{key, value} {
 			if component == "" {
 				continue
 			}
-			add(decodedKey, component)
+			add(position, component)
 			// RFC 3986 section 2.1 escapes can appear after another encoding
 			// is recovered. Keep them in the same bounded decoding walk.
 			for _, d := range decodes.decode(component, true) {
-				add(decodedKey, d.text)
+				add(position, d.text)
 			}
 		}
 	}
@@ -1945,7 +1951,7 @@ func (s *Scanner) checkNestedURLs(ctx context.Context, parsed *url.URL) Result {
 	// destination and must cost one resolution, not one per occurrence.
 	seen := make(map[string]struct{}, len(candidates))
 	for _, c := range candidates {
-		result := s.checkNestedURLValue(nestedCtx, c.key, c.text, runDNSSSRF, seen)
+		result := s.checkNestedURLValue(nestedCtx, c.position, c.text, runDNSSSRF, seen)
 		if result.Allowed {
 			continue
 		}
@@ -1970,7 +1976,7 @@ func (s *Scanner) checkNestedURLs(ctx context.Context, parsed *url.URL) Result {
 	return Result{Allowed: true}
 }
 
-func (s *Scanner) checkNestedURLValue(ctx context.Context, key, text string, runDNSSSRF bool, seen map[string]struct{}) Result {
+func (s *Scanner) checkNestedURLValue(ctx context.Context, position int, text string, runDNSSSRF bool, seen map[string]struct{}) Result {
 	nestedParsed, err := url.Parse(text)
 	if err != nil {
 		return Result{Allowed: true}
@@ -2008,24 +2014,24 @@ func (s *Scanner) checkNestedURLValue(ctx context.Context, key, text string, run
 		seen[dedupKey] = struct{}{}
 	}
 	if result := s.checkAllowlist(nestedDest); !result.Allowed {
-		return prefixNestedURLResult(key, result)
+		return prefixNestedURLResult(position, result)
 	}
 	if result := s.checkBlocklist(nestedHost); !result.Allowed {
-		return prefixNestedURLResult(key, result)
+		return prefixNestedURLResult(position, result)
 	}
 	if result := s.checkCoreSSRFLiteral(nestedDest); !result.Allowed {
-		return prefixNestedURLResult(key, result)
+		return prefixNestedURLResult(position, result)
 	}
 	if runDNSSSRF {
 		if result := s.checkSSRF(ctx, nestedDest); !result.Allowed {
-			return prefixNestedURLResult(key, result)
+			return prefixNestedURLResult(position, result)
 		}
 	}
 	return Result{Allowed: true}
 }
 
-func prefixNestedURLResult(key string, result Result) Result {
-	result.Reason = fmt.Sprintf(nestedURLReasonPrefix+" %q: %s", key, result.Reason)
+func prefixNestedURLResult(position int, result Result) Result {
+	result.Reason = fmt.Sprintf("%s at position %d: %s", nestedURLReasonPrefix, position, result.Reason)
 	return result
 }
 
@@ -5580,6 +5586,37 @@ const (
 	queryEntropyParamReasonPrefix = "high entropy query param "
 )
 
+// queryParamPosition is the 1-based index of the first non-empty raw pair whose
+// decoded key equals key. Zero means the key was not found. The key stays out
+// of the reason: that string is copied into receipts and block responses.
+func queryParamPosition(rawQuery, key string) int {
+	for i, pair := range splitQueryEntropyPairs(rawQuery) {
+		if pair.key == key {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+// queryEntropyPositionReason names a query entropy block by parameter position.
+// part is a scanner-generated view name, such as "DNS message", never request text.
+func queryEntropyPositionReason(prefix string, position int, part string, entropy, threshold float64) string {
+	if part == "" {
+		return fmt.Sprintf("%sat position %d (%.2f > %.2f threshold)", prefix, position, entropy, threshold)
+	}
+	return fmt.Sprintf("%sat position %d %s (%.2f > %.2f threshold)", prefix, position, part, entropy, threshold)
+}
+
+func queryEntropyKeyBlock(position int, entropy, threshold float64) Result {
+	return Result{
+		Allowed: false,
+		Reason:  queryEntropyPositionReason(queryEntropyKeyReasonPrefix, position, "", entropy, threshold),
+		Scanner: ScannerEntropy,
+		Class:   ClassHeuristicEntropy,
+		Score:   math.Min(entropy/8.0, 1.0),
+	}
+}
+
 // checkEntropy calculates Shannon entropy on URL path segments and query values.
 // Domains listed in subdomain_entropy_exclusions skip path entropy checks only
 // (APIs that use high-entropy subdomains often embed tokens in URL paths too).
@@ -5771,13 +5808,7 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 		if !excludedQuery && len(key) >= s.entropyMinLen {
 			entropy := ShannonEntropy(key)
 			if entropy > s.entropyThreshold {
-				return Result{
-					Allowed: false,
-					Reason:  fmt.Sprintf(queryEntropyKeyReasonPrefix+"%q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
-					Scanner: ScannerEntropy,
-					Class:   ClassHeuristicEntropy,
-					Score:   math.Min(entropy/8.0, 1.0),
-				}
+				return queryEntropyKeyBlock(queryParamPosition(parsed.RawQuery, key), entropy, s.entropyThreshold)
 			}
 		}
 		for _, v := range values {
@@ -5793,7 +5824,7 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 						relieved = true
 						continue
 					}
-					return s.queryEntropyParamResult(key, finding)
+					return s.queryEntropyParamResult(queryParamPosition(parsed.RawQuery, key), finding)
 				}
 				continue
 			}
@@ -5803,7 +5834,7 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 					relieved = true
 					continue
 				}
-				return s.queryEntropyParamResult(key, finding)
+				return s.queryEntropyParamResult(queryParamPosition(parsed.RawQuery, key), finding)
 			}
 		}
 	}
@@ -5816,18 +5847,12 @@ func (s *Scanner) scanAmbiguousRawQueryWithContext(ctx context.Context, rawQuery
 	defer func() { result.relief = relieved }()
 	pairs := splitQueryEntropyPairs(rawQuery)
 	s256 := pkceExemptionApplies(queryEntropyPairValues(pairs, pkceMethodParam), queryEntropyPairValues(pairs, pkceChallengeParam))
-	for _, p := range pairs {
+	for i, p := range pairs {
 		key, value := p.key, p.value
 		if scanEntropy && len(key) >= s.entropyMinLen {
 			entropy := ShannonEntropy(key)
 			if entropy > s.entropyThreshold {
-				return Result{
-					Allowed: false,
-					Reason:  fmt.Sprintf(queryEntropyKeyReasonPrefix+"%q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
-					Scanner: ScannerEntropy,
-					Class:   ClassHeuristicEntropy,
-					Score:   math.Min(entropy/8.0, 1.0),
-				}, true
+				return queryEntropyKeyBlock(i+1, entropy, s.entropyThreshold), true
 			}
 		}
 		if result, blocked := unsafeDatabaseURIQueryValueResult(value); blocked {
@@ -5841,7 +5866,7 @@ func (s *Scanner) scanAmbiguousRawQueryWithContext(ctx context.Context, rawQuery
 				relieved = true
 				continue
 			}
-			return s.queryEntropyParamResult(key, finding), true
+			return s.queryEntropyParamResult(i+1, finding), true
 		}
 	}
 	return Result{}, false
@@ -6523,6 +6548,12 @@ func (s *Scanner) checkSubdomainEntropy(hostname string) Result {
 	}
 
 	regDomain, err := publicsuffix.EffectiveTLDPlusOne(hostname)
+	if unexpectedPublicSuffixLookup(hostname, err) {
+		// Empty-label and invalid-suffix errors used to take the same allow
+		// as "host is itself a public suffix". Only that benign miss has no
+		// subdomain labels to score. Every other lookup error refuses.
+		return publicSuffixLookupBlock()
+	}
 	if err != nil || regDomain == hostname {
 		return Result{Allowed: true}
 	}
@@ -6635,6 +6666,41 @@ func (s *Scanner) isExcludedFromSubdomainEntropy(hostname string) bool {
 // be set or unset per host without affecting the other gate.
 func (s *Scanner) isExcludedFromQueryEntropy(hostname string) bool {
 	return matchesDomainList(hostname, s.queryExclusions)
+}
+
+// publicSuffixLookupFailedReason is the block text for an EffectiveTLDPlusOne
+// error that is not the benign "host is itself a public suffix" miss. The
+// hostname is not included: it is caller-controlled and this string is copied
+// into receipts and block responses.
+const publicSuffixLookupFailedReason = "public suffix lookup failed"
+
+// unexpectedPublicSuffixLookup reports whether err is an EffectiveTLDPlusOne
+// failure other than the documented benign case. That case is
+// "publicsuffix: cannot derive eTLD+1": the host is a public suffix (com,
+// co.uk, github.io) or an unmanaged single label (localhost, intranet), so
+// there is no registrable parent and no subdomain to score. The library
+// returns that when len(hostname) <= len(PublicSuffix(hostname)), after
+// rejecting empty labels. The invalid-suffix error is a separate return
+// and is not produced for any host the empty-label check accepts; it
+// still fail-closes.
+func unexpectedPublicSuffixLookup(hostname string, err error) bool {
+	if err == nil {
+		return false
+	}
+	if strings.HasPrefix(hostname, ".") || strings.HasSuffix(hostname, ".") || strings.Contains(hostname, "..") {
+		return true
+	}
+	suffix, _ := publicsuffix.PublicSuffix(hostname)
+	return len(hostname) > len(suffix)
+}
+
+func publicSuffixLookupBlock() Result {
+	return Result{
+		Allowed: false,
+		Reason:  publicSuffixLookupFailedReason,
+		Scanner: ScannerSubdomainEntropy,
+		Score:   1.0,
+	}
 }
 
 // baseDomain returns the registrable domain (eTLD+1) for budget tracking,

@@ -609,15 +609,23 @@ func TestGuidanceForNestedResultRoutesOnInnerReason(t *testing.T) {
 		Reason:  "SSRF blocked: 10.0.0.12 is an internal IP",
 		Scanner: ScannerSSRF,
 	}
-	hostile := prefixNestedURLResult("metadata", private)
+	hostile := prefixNestedURLResult(1, private)
+	if strings.Contains(hostile.Reason, "metadata") {
+		t.Fatalf("reason echoes a parameter name: %q", hostile.Reason)
+	}
 	g, ok := GuidanceForResult(hostile.Scanner, hostile.Reason)
 	if !ok {
 		t.Fatal("no guidance for a nested SSRF block")
 	}
 	if g.Immutable {
-		t.Fatalf("a parameter named %q routed a private-IP block to immutable metadata guidance: %q", "metadata", g.OperatorKnob)
+		t.Fatalf("nested private-IP block routed to immutable metadata guidance: %q", g.OperatorKnob)
 	}
-	genuine := prefixNestedURLResult("target", Result{
+	historical := nestedURLReasonPrefix + ` "metadata": ` + private.Reason
+	gh, ok := GuidanceForResult(private.Scanner, historical)
+	if !ok || gh.Immutable {
+		t.Fatalf("stored reason with parameter %q routed to immutable guidance: ok=%v knob=%q", "metadata", ok, gh.OperatorKnob)
+	}
+	genuine := prefixNestedURLResult(1, Result{
 		Allowed: false,
 		Reason:  "SSRF blocked: 169.254.169.254 is a cloud metadata endpoint",
 		Scanner: ScannerSSRF,
@@ -756,7 +764,7 @@ func TestGuidanceForNestedResultKeyCannotSuppressAnnotation(t *testing.T) {
 	for _, key := range []string{"target", "shared resolution budget", "SHARED RESOLUTION BUDGET"} {
 		t.Run(key, func(t *testing.T) {
 			t.Parallel()
-			blocked := prefixNestedURLResult(key, private)
+			blocked := Result{Scanner: private.Scanner, Reason: fmt.Sprintf("%s %q: %s", nestedURLReasonPrefix, key, private.Reason)}
 			g, ok := GuidanceForResult(blocked.Scanner, blocked.Reason)
 			if !ok {
 				t.Fatal("no guidance for a nested SSRF block")
@@ -818,7 +826,7 @@ func TestRemediationNestedJSONInspectionKey(t *testing.T) {
 				t.Fatalf("invalid positive control: %+v, %v", baseline, ok)
 			}
 			for _, key := range []string{UninspectableJSONNumberPattern, `quoted " ` + UninspectableJSONNumberPattern, "request body contains secret: " + UninspectableJSONNumberPattern, "; GitHub grant outside its validity window"} {
-				result := prefixNestedURLResult(key, Result{Scanner: label, Reason: reason})
+				result := Result{Scanner: label, Reason: fmt.Sprintf("%s %q: %s", nestedURLReasonPrefix, key, reason)}
 				got, mapped := GuidanceForResult(result.Scanner, result.Reason)
 				if !mapped || got.Immutable || !strings.HasPrefix(got.OperatorKnob, baseline.OperatorKnob) || got.AgentReason != baseline.AgentReason {
 					t.Fatalf("key %q changed guidance: %+v; baseline %+v", key, got, baseline)
