@@ -450,6 +450,7 @@ func TestIssuerIDLedgerConcurrentReloadRecording(t *testing.T) {
 	<-done
 	reloadIssuerFlag(t, p, current, true)
 	live := p.issuerStoreForUnmediatedSend()
+	live.recordSent(key, origin, nil, nil, true, time.Now())
 	live.mintServerID(key, origin, agentBlob, time.Now())
 	if live.serverIDIssued(key, origin, agentBlob) {
 		t.Fatal("a send racing reloads was lost from the ledger")
