@@ -897,6 +897,9 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 }
 
 func (s *Scanner) scanTextForDLPWithDecodes(ctx context.Context, text string, opts textDLPOptions, decodes *decodingMemo) TextDLPResult {
+	if decodes != nil {
+		decodes.scanCtx = ctx
+	}
 	result := s.scanTextForDLPDetectors(ctx, text, opts, decodes)
 	if ctx.Err() != nil {
 		result.Incomplete = true

@@ -13,6 +13,8 @@ import (
 type reassemblyResult struct {
 	findings   []TextDLPMatch
 	incomplete bool
+	// stopped means the caller context ended. It is not an inspection limit.
+	stopped bool
 }
 
 // reassemblyRemember joins the existing per-scan view graph. The projection index
@@ -205,6 +207,23 @@ func assembledEnoughSymbols(text string, minimum int) bool {
 	return false
 }
 
+// terminalCanceled reports a caller context that has already ended.
+// Callers check it once per pending view, not per candidate. Done, rather
+// than Err, keeps the check off the scan checkpoint count: a repeated scan
+// can skip a view the first scan proved empty, so an Err call here would
+// not be stable. The stop is not recorded as an inspection limit.
+func (m *decodingMemo) terminalCanceled() bool {
+	if m == nil || m.scanCtx == nil {
+		return false
+	}
+	select {
+	case <-m.scanCtx.Done():
+		return true
+	default:
+		return false
+	}
+}
+
 func (m *decodingMemo) reassemblyDrain() {
 	var borrowed *assembledDecodeRecipe
 	defer func() {
@@ -213,6 +232,10 @@ func (m *decodingMemo) reassemblyDrain() {
 		}
 	}()
 	for m.reassemblyInspected < len(m.reassemblyPending) {
+		// One check per pending view, before that view is screened.
+		if m.terminalCanceled() {
+			return
+		}
 		id := m.reassemblyInspected
 		m.reassemblyInspected++
 		var recipe *assembledDecodeRecipe
@@ -230,47 +253,54 @@ func (m *decodingMemo) reassemblyDrain() {
 				}
 			}
 		}
-		m.reassemblyInspect(id)
+		if m.reassemblyInspect(id) {
+			return
+		}
 	}
 }
 
-func (m *decodingMemo) reassemblyInspect(view int) {
+func (m *decodingMemo) reassemblyInspect(view int) bool {
 	if m.reassemblyPlan == nil || m.reassemblyIncomplete || m.incomplete && !m.inbound {
-		return
+		return false
 	}
 	text := m.pendingText(view)
 	release := m.borrowPending(view, text)
 	defer release()
 	key := assembledEmptyKey{m.reassemblyPlan, text, m.reassemblyPatterns, !m.textualView(text)}
 	if m.reassemblyPlan.emptyTerminal(key, false) {
-		return
+		return false
 	}
 	budget := &m.reassemblyBudget
 	*budget = assembledBudget{memo: m, used: m.assembledBytes, produced: m.reassemblyProduced, patterns: m.reassemblyPatterns, decoderOnly: !m.textualView(text), charged: m.assembledCharged, registry: m.assembledChargeRegistry}
 	skip := m.assembledSkip(view)
 	r := assembledLayer(m.reassemblyPlan, text, budget, skip)
-	nested := m.reassemblyPlan.assembled.nestedHex && skip&1 == 0 && !budget.incomplete && assembledOuterAdmits(m.reassemblyPlan, text, 0)
+	// A walk stopped by cancellation has not proved this view empty, and it
+	// must not become an inspection-limit finding.
+	stopped := r.stopped || budget.stopped
+	nested := !stopped && m.reassemblyPlan.assembled.nestedHex && skip&1 == 0 && !budget.incomplete && assembledOuterAdmits(m.reassemblyPlan, text, 0)
 	if nested {
 		if m.reassemblyNestedDeferred {
 			m.reassemblyNestedPending = append(m.reassemblyNestedPending, view)
 		} else {
 			more := assembledNestedHexAdmitted(m.reassemblyPlan, text, budget)
 			assembledMerge(&r, more)
+			stopped = stopped || r.stopped || budget.stopped
 		}
 	}
-	if skip == 0 && !nested && !budget.admitted && !budget.incomplete && m.reassemblyPendingReplay[view] == nil {
+	if !stopped && skip == 0 && !nested && !budget.admitted && !budget.incomplete && m.reassemblyPendingReplay[view] == nil {
 		m.reassemblyPlan.emptyTerminal(key, true)
 	}
 	m.assembledBytes = budget.used
 	m.assembledCharged = budget.charged
 	m.assembledChargeRegistry = budget.registry
-	if r.incomplete {
+	if !stopped && r.incomplete {
 		m.reassemblyIncomplete = true
 		if !m.inbound {
 			m.markIncomplete()
 		}
 	}
 	m.reassemblyFindings = append(m.reassemblyFindings, r.findings...)
+	return stopped
 }
 
 type assembledEmptyKey struct {
@@ -350,6 +380,10 @@ func finishAssembled(result TextDLPResult, memos ...*decodingMemo) TextDLPResult
 		m.reassemblyDrain()
 		m.reassemblyNestedDeferred = false
 		for _, view := range m.reassemblyNestedPending {
+			// One check per nested view, before that view is screened.
+			if m.terminalCanceled() {
+				break
+			}
 			text := m.pendingText(view)
 			if m.incomplete && !m.inbound {
 				break
@@ -363,6 +397,9 @@ func finishAssembled(result TextDLPResult, memos ...*decodingMemo) TextDLPResult
 			m.assembledCharged = budget.charged
 			m.assembledChargeRegistry = budget.registry
 			m.reassemblyFindings = append(m.reassemblyFindings, more.findings...)
+			if more.stopped {
+				break
+			}
 			if more.incomplete {
 				m.reassemblyIncomplete = true
 				if !m.inbound {

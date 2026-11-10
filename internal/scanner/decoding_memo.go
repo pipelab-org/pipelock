@@ -61,13 +61,17 @@ type decodingMemo struct {
 	reassemblyDecodedBytes       int
 	reassemblyParents            map[string]string
 	reassemblyIncomplete         bool
-	assembledCharged             map[string]*assembledCharges
-	assembledChargeRegistry      *assembledChargeRegistry
-	reassemblyInspected          int
-	reassemblyProduced           map[assembledIdentity]struct{}
-	reassemblyPlan               *reassemblyPlan
-	reassemblySeen               map[string]int
-	reassemblyFindings           []TextDLPMatch
+	// scanCtx bounds terminal finalization. A canceled caller stops later
+	// views and long walks. That stop stays off the inspection-limit flags:
+	// the caller reports cancellation from its own context check.
+	scanCtx                 context.Context
+	assembledCharged        map[string]*assembledCharges
+	assembledChargeRegistry *assembledChargeRegistry
+	reassemblyInspected     int
+	reassemblyProduced      map[assembledIdentity]struct{}
+	reassemblyPlan          *reassemblyPlan
+	reassemblySeen          map[string]int
+	reassemblyFindings      []TextDLPMatch
 
 	keywordPresence map[keywordPresenceKey]bool
 	keywordMode     bool

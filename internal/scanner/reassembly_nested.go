@@ -13,6 +13,7 @@ import (
 func assembledMerge(result *reassemblyResult, more reassemblyResult) {
 	result.findings = append(result.findings, more.findings...)
 	result.incomplete = result.incomplete || more.incomplete
+	result.stopped = result.stopped || more.stopped
 }
 
 // RFC 4648 hex has two nibble alignments. Adjacent raw alphabet symbols
@@ -27,7 +28,14 @@ func assembledHexViews(text string, budget *assembledBudget) (views [2]string) {
 	}
 	previous := byte(0)
 	symbols := 0
+	nextCancel := responseBodyContextCheckBytes
 	for i := range len(text) {
+		if i >= nextCancel {
+			nextCancel = i + responseBodyContextCheckBytes
+			if budget.strideCanceled() {
+				return views
+			}
+		}
 		v := reassemblyCodecs[0].values[text[i]]
 		if v < 0 {
 			continue
@@ -62,7 +70,15 @@ func assembledNestedHexAdmitted(p *reassemblyPlan, text string, budget *assemble
 		result.incomplete = true
 		return result
 	}
+	if budget.stopped {
+		result.stopped = true
+		return result
+	}
 	for phase, view := range views {
+		if budget.stopped {
+			result.stopped = true
+			break
+		}
 		if view == "" {
 			continue
 		}
@@ -71,6 +87,9 @@ func assembledNestedHexAdmitted(p *reassemblyPlan, text string, budget *assemble
 		}
 		more := assembledLayer(p, view, budget, 0)
 		assembledMerge(&result, more)
+		if budget.stopped || result.stopped {
+			break
+		}
 		if budget.incomplete {
 			break
 		}
@@ -130,13 +149,17 @@ func assembledNestedHexAdmitted(p *reassemblyPlan, text string, budget *assemble
 			assembledMerge(&result, plain.result)
 			more = assembledLayer(p, decoded, budget, 0)
 			assembledMerge(&result, more)
-			if budget.incomplete {
+			if budget.stopped || result.stopped || budget.incomplete {
 				break
 			}
 		}
-		if budget.incomplete {
+		if budget.stopped || result.stopped || budget.incomplete {
 			break
 		}
+	}
+	if budget.stopped {
+		result.stopped = true
+		return result
 	}
 	result.incomplete = budget.incomplete
 	return result
