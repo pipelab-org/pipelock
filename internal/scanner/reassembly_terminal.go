@@ -351,11 +351,15 @@ type assembledLane struct {
 // the number of context checks differ from scan to scan. A context closes
 // Done whenever Err reports an error, so cancellation is still observed.
 func (b *assembledBudget) strideCanceled() bool {
-	if b == nil || b.memo == nil {
+	if b == nil {
 		return false
 	}
+	// A stop already recorded holds even without a memo to re-check.
 	if b.stopped {
 		return true
+	}
+	if b.memo == nil {
+		return false
 	}
 	if b.memo.terminalCanceled() {
 		b.stopped = true

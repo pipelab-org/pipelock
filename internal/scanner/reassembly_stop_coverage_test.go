@@ -70,10 +70,16 @@ func TestReassemblyStrideCanceled(t *testing.T) {
 			t.Fatal("nil budget stopped the walk")
 		}
 	})
-	t.Run("nil memo", func(t *testing.T) {
+	t.Run("nil memo keeps a recorded stop", func(t *testing.T) {
 		budget := &assembledBudget{stopped: true}
-		if budget.strideCanceled() || !budget.stopped {
-			t.Fatal("missing memo reported or cleared a stop")
+		if !budget.strideCanceled() || !budget.stopped {
+			t.Fatal("stopped budget without a memo resumed the walk")
+		}
+	})
+	t.Run("nil memo without a stop", func(t *testing.T) {
+		budget := &assembledBudget{}
+		if budget.strideCanceled() || budget.stopped {
+			t.Fatal("missing memo invented a stop")
 		}
 	})
 	t.Run("already stopped", func(t *testing.T) {

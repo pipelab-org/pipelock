@@ -75,10 +75,6 @@ func assembledNestedHexAdmitted(p *reassemblyPlan, text string, budget *assemble
 		return result
 	}
 	for phase, view := range views {
-		if budget.stopped {
-			result.stopped = true
-			break
-		}
 		if view == "" {
 			continue
 		}
