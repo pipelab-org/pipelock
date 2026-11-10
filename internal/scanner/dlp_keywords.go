@@ -496,13 +496,11 @@ func (s *keywordDecodeSources) visitOccurrences(source, root string, visit func(
 	for !entry.done && entry.from <= len(source)-len(root) {
 		suffixLen := len(source) - entry.from
 		room := maxDecodeTotalBytes - s.budget.used
-		// Refuse before reading a suffix the remaining allowance cannot pay for.
-		// room+1 cannot fit, so charge records the refusal and does not add.
+		// Refuse before reading a suffix the remaining allowance cannot pay for,
+		// recording the refusal the way a failed charge does.
 		if keywordSpanBytes >= room || suffixLen > room-keywordSpanBytes {
-			if s.charge(room + 1) {
-				s.incomplete = true
-				s.budget.incomplete = true
-			}
+			s.incomplete = true
+			s.budget.incomplete = true
 			return false
 		}
 		at := strings.Index(source[entry.from:], root)

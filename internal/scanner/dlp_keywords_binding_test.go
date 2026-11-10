@@ -286,3 +286,35 @@ func TestKeywordBindingMatchesReference(t *testing.T) {
 		})
 	}
 }
+
+// TestKeywordVariantIndexNilNode keeps a nil node from creating an index.
+func TestKeywordVariantIndexNilNode(t *testing.T) {
+	s := newKeywordDecodeSources("root")
+	s.ensureVariantIndex(nil)
+	if s.bound != nil || s.boundReady != nil {
+		t.Fatalf("nil node built an index: bound=%v ready=%v", s.bound, s.boundReady)
+	}
+}
+
+// TestKeywordAncestorStampWraps checks the generation counter at its maximum:
+// the seen set is cleared, so a stamp left from before the wrap cannot hide a
+// node from the walk.
+func TestKeywordAncestorStampWraps(t *testing.T) {
+	s := newKeywordDecodeSources("root")
+	mid := s.add("root", "mid", "base64")
+	leaf := s.add("mid", "leaf", "base64")
+	root := s.nodes["root"]
+	if mid == nil || leaf == nil || leaf.parent != mid || mid.parent != root {
+		t.Fatalf("graph not built: mid=%v leaf=%v", mid, leaf)
+	}
+	s.budget.ancestorGen = ^uint64(0)
+	// Without the reset this stale stamp equals the first generation after the
+	// wrap and the walk would skip mid before reaching root.
+	s.budget.ancestorSeen = map[*keywordDecodeSource]uint64{mid: 1}
+	if !leaf.hasSourceAncestor(root) {
+		t.Fatal("ancestor hidden by a stamp from before the wrap")
+	}
+	if s.budget.ancestorGen != 1 {
+		t.Fatalf("ancestorGen = %d, want 1 after the wrap", s.budget.ancestorGen)
+	}
+}

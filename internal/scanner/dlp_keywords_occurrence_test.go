@@ -90,3 +90,36 @@ func TestKeywordOccurrenceUnaffordableSuffixRefuses(t *testing.T) {
 		t.Fatalf("ok incomplete=%v budgetIncomplete=%v used=%d", sources.incomplete, sources.budget.incomplete, sources.budget.used)
 	}
 }
+
+// TestKeywordOccurrenceSuffixBoundary pins the affordability check at its
+// exact limit: a suffix that exactly fits the remaining allowance is searched
+// and stays complete, and one byte less refuses with both incomplete flags.
+func TestKeywordOccurrenceSuffixBoundary(t *testing.T) {
+	root := "kw"
+	source := strings.Repeat("x", 100) + root
+	entryCost := int(reflect.TypeFor[keywordProjectionKey]().Size() + reflect.TypeFor[keywordSourceOccurrences]().Size())
+	for _, tc := range []struct {
+		name  string
+		slack int
+		ok    bool
+	}{
+		{name: "exact fit", slack: 0, ok: true},
+		{name: "one byte short", slack: -1, ok: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sources := newKeywordDecodeSources(source)
+			// After the cache entry charge, room is len(source)+keywordSpanBytes+slack.
+			sources.budget.used = maxDecodeTotalBytes - entryCost - len(source) - keywordSpanBytes - tc.slack
+			got := sources.visitOccurrences(source, root, func(int) bool { return true })
+			if got != tc.ok {
+				t.Fatalf("visitOccurrences = %v, want %v", got, tc.ok)
+			}
+			if tc.ok && (sources.incomplete || sources.budget.incomplete) {
+				t.Fatalf("exact fit marked incomplete: %v %v", sources.incomplete, sources.budget.incomplete)
+			}
+			if !tc.ok && (!sources.incomplete || !sources.budget.incomplete) {
+				t.Fatalf("refusal left a flag unset: %v %v", sources.incomplete, sources.budget.incomplete)
+			}
+		})
+	}
+}
