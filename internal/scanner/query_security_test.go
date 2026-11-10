@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -35,7 +36,7 @@ func TestNestedURLRawQueryPairs(t *testing.T) {
 		t.Fatal("ordinary nested query decoding was incomplete")
 	}
 	for _, candidate := range candidates {
-		if candidate.key == "next" && candidate.text == "https://api.vendor.example/%ZZ" {
+		if candidate.position == 2 && candidate.text == "https://api.vendor.example/%ZZ" {
 			return
 		}
 	}
@@ -76,7 +77,7 @@ func TestScan_NestedURLRawQueryPairs(t *testing.T) {
 	t.Cleanup(sc.Close)
 	sc.resolver = failOnLookupResolver{t: t}
 	target := nestedURLOuterHost + "?x=1;next=" + url.QueryEscape(nestedURLMetadataPath)
-	if result := sc.Scan(t.Context(), target); result.Allowed {
-		t.Fatal("semicolon nested metadata destination was allowed")
+	if result := sc.Scan(t.Context(), target); result.Allowed || strings.Contains(result.Reason, "next") || !strings.HasPrefix(result.Reason, nestedURLReasonPrefix+" at position 2: ") {
+		t.Fatalf("semicolon nested metadata destination: allowed=%v reason=%q", result.Allowed, result.Reason)
 	}
 }

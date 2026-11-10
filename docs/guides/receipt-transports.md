@@ -123,7 +123,7 @@ Taint-aware fields (when session profiling is active):
 
 When request-side redaction succeeds, the receipt keeps the underlying transport verdict and adds the `redaction` summary block. When no values were rewritten, the field is omitted so legacy receipts remain byte-identical.
 
-URL targets and `recent_taint_sources[].url` drop userinfo, path, query and fragment before signing, even when DLP finds no match or `flight_recorder.redact` is false. The destination, method, request ID, verdict and layer remain available for correlation. DLP redaction still applies to retained content when enabled. Existing signed receipts retain their original values and remain verifiable. A blocked request's reason text can still name the query parameter that triggered the block.
+URL targets and `recent_taint_sources[].url` drop userinfo, path, query and fragment before signing, even when DLP finds no match or `flight_recorder.redact` is false. The destination, method, request ID, verdict and layer remain available for correlation. DLP redaction still applies to retained content when enabled. Existing signed receipts retain their original values and remain verifiable. A blocked request's reason text names the triggering query parameter by its position in the query string. It does not repeat the parameter name.
 
 ## Chain Integrity
 
