@@ -51,9 +51,9 @@ Tool policy rules also match a bounded reading of shell expansions the command t
 
 ## Check what upload inspection covers
 
-Request scanning reads the text inside Office and ZIP uploads, within extraction limits. Files it can't open, or that go over the limits, keep their stated refusal or limits. With the built-in `warn` action an unreadable archive is still delivered; with `action: block` and `enforce: true` it's withheld.
+Request scanning reads the text inside ZIP uploads and ZIP-based Office files such as `.docx`, `.xlsx` and `.pptx`, within extraction limits. Legacy `.doc` and `.xls` files sent on their own aren't opened for text extraction; other checks still apply to them. Files it can't open, or that go over the limits, keep their stated refusal or limits. With the built-in `warn` action an unreadable archive is still delivered; with `action: block` and `enforce: true` it's withheld.
 
-HTTPS through the forward proxy (CONNECT) needs TLS interception, which is off in defaults and all 7 presets. Plain-HTTP forward proxy, reverse proxy and WebSocket client text are scanned without it. PDF text isn't extracted yet; PDF uploads only get the existing raw-byte scan. See [request body scanning](../configuration.md#request-body-scanning).
+HTTPS through the forward proxy (CONNECT) needs TLS interception, which is off in defaults and all 7 presets. Plain-HTTP forward proxy and reverse proxy bodies are scanned without it. WebSocket client text is scanned when traffic goes through the WebSocket proxy (`websocket_proxy`, off by default); WSS carried in an ordinary CONNECT tunnel stays opaque without interception. PDF text isn't extracted yet; PDF uploads only get the existing raw-byte scan. See [request body scanning](../configuration.md#request-body-scanning).
 
 ## Review repository-scan suppressions
 

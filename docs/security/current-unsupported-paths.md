@@ -30,9 +30,9 @@ An SSH client can be told to reach its server through an HTTP proxy, which it do
 2. Before relaying any bytes, it reads the first bytes the client sends into the tunnel, waiting up to five seconds.
 3. It splices the tunnel only if those bytes are a TLS ClientHello carrying an SNI name that matches the CONNECT host.
 
-An SSH client opens with a plain-text version line (`SSH-2.0-...`), not a TLS record. Pipelock classifies the tunnel as `not_tls` and closes both connections. A client that waits for the server to speak first sends nothing, so it hits the five-second limit and is closed as well. That limit is part of `sni_verification`, which is on by default. In both cases the SSH server's own banner is never relayed. The client sees `200 Connection Established` followed by the connection closing, and the SSH client reports that the connection closed before the server's banner arrived. Pipelock logs an `sni_mismatch` event with `"category":"not_tls"` or `"category":"timeout"`.
+An SSH client opens with a plain-text version line (`SSH-2.0-...`), not a TLS record. Pipelock classifies the tunnel as `not_tls` and closes both connections. A client that waits for the server to speak first sends nothing, so it hits the five-second limit and is closed as well. That limit is part of `sni_verification`, which is on by default. In both cases the SSH server's own banner is never relayed. The client sees `200 Connection Established` followed by the connection closing, and the SSH client reports that the connection closed before the server's banner arrived. `pipelock run` logs an `sni_mismatch` event with `"category":"not_tls"` or `"category":"timeout"`. The proxy that `pipelock sandbox` starts for its bridge refuses the same tunnels but doesn't write structured audit events, so there is no `sni_mismatch` entry for a sandbox launch.
 
-The same check refuses any other protocol that does not begin with TLS, as well as TLS ClientHellos with no SNI extension (`no_extension`). It looks at how a tunnel begins. It does not decrypt the tunnel or identify the protocol inside it.
+The same check refuses any other protocol that does not begin with TLS, as well as TLS ClientHellos with no SNI extension (`no_extension`). It looks at how a tunnel begins. It does not decrypt the tunnel or identify the protocol inside it, so SSH carried inside a TLS session to an allowed host with a matching SNI name passes this check. It stops SSH sent directly, not SSH wrapped in TLS.
 
 ```yaml
 forward_proxy:
@@ -44,8 +44,8 @@ forward_proxy:
 This protection depends on that setting:
 
 - `sni_require_tls` defaults to `false`. Whenever `forward_proxy.enabled` is `true` in your config, check that `sni_require_tls: true` is present, and add it if it is not.
-- `sni_require_tls: true` together with `sni_verification: false` is rejected when the config loads.
-- Turning `sni_require_tls` on takes effect on hot reload. Turning it off with a reload is rejected as a security downgrade, and the running configuration stays active until you restart.
+- `sni_require_tls: true` together with `sni_verification: false` is rejected when the config loads, but only while `forward_proxy.enabled` is `true` in the file. `pipelock sandbox` turns the forward proxy on after loading, so a sandbox config that leaves `enabled` unset or `false` skips that check, and with `sni_verification: false` the require-TLS check never runs. For sandbox configs, set `forward_proxy.enabled: true` and keep `sni_verification` on.
+- With `pipelock run`, turning `sni_require_tls` on takes effect on hot reload. Turning it off with a reload is rejected as a security downgrade, and the running configuration stays active until you restart. `pipelock sandbox` reads its config once at launch and doesn't reload it, so restart a running sandbox after changing this setting.
 
 ### Inside `pipelock sandbox`: no direct route out
 
@@ -65,12 +65,13 @@ No built-in tool-policy rule matches `ssh`, `scp`, `sftp`, or SSH Git remotes. I
 
 ```yaml
 mcp_tool_policy:
-  # Keep enabled, action, and every other existing setting and rule as they are.
+  enabled: true   # required for any rule here to be checked
+  # Keep action and every other existing setting and rule as they are.
   rules:
     # ...existing rules...
     - name: "SSH-family command"
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
-      arg_pattern: '(?i)(?:^|[\s;&|(`/])(?:ssh|scp|sftp)\s|git@[a-z0-9.-]+:|ssh://'
+      arg_pattern: '(?i)(?:^|[\s;&|(`/])(?:ssh|scp|sftp)\s|[a-z0-9._-]+@[a-z0-9.-]+:|ssh://'
       action: warn
 ```
 
@@ -79,7 +80,9 @@ With `action: warn` on the rule, `pipelock mcp proxy` forwards the call and logs
 Keep these points in mind:
 
 - If your config has no `mcp_tool_policy.rules` list, Pipelock loads its built-in rules at runtime. A `rules` list you write replaces them. It does not add to them. Do not add a list that holds only this entry, because that turns the built-in rules off. Add the entry only to a config that already lists its rules.
+- The section must have `enabled: true`. With `enabled: false`, no rule in the list is checked, so this entry neither warns nor blocks.
 - Leave the section's `action` as it is. Rules without their own `action` use the section's, so changing it changes them too.
+- The `user@host:` form matches SCP-style Git remotes for any user, such as `git@` or `deploy@`. It can also match other text with that shape. It doesn't catch a remote hidden behind an SSH config alias or a Git `insteadOf` rewrite.
 - The rule only sees tool calls that pass through Pipelock. It matches argument text, so it can fire on a string that only mentions one of these commands. It does not see SSH connections that a program opens on its own, such as a script that runs `ssh` internally.
 - `pipelock explain --tool` reports a rule match only when the rule blocks. To check the pattern with `explain`, try it with a temporary copy that uses `action: block`.
 
@@ -88,7 +91,7 @@ Keep these points in mind:
 - Pipelock cannot inspect data sent over SSH, in any mode.
 - Outside the sandbox, or when `--best-effort` falls back to running without a network namespace, a process that opens its own TCP connection without going through the proxy is not seen by Pipelock. See [Raw socket egress](#raw-socket-egress).
 
-**Integrator action.** If agents should not use SSH, set `forward_proxy.sni_require_tls: true`. Run agents under `pipelock sandbox` without `--best-effort`, or block outbound TCP to port 22 and other non-HTTP destinations at the host, container, or network-policy layer. If an agent needs Git, prefer HTTPS remotes routed through Pipelock (see [Processes that ignore `HTTPS_PROXY` and `NO_PROXY`](#processes-that-ignore-https_proxy-and-no_proxy)). If you allow SSH at the network layer, treat it as an unscanned channel.
+**Integrator action.** If agents should not use SSH, set `forward_proxy.sni_require_tls: true` to refuse SSH sent directly through the forward proxy; SSH wrapped in TLS to an allowed host still passes. Run agents under `pipelock sandbox` without `--best-effort`, or block outbound TCP to port 22 and other non-HTTP destinations at the host, container, or network-policy layer. If an agent needs Git, prefer HTTPS remotes routed through Pipelock (see [Processes that ignore `HTTPS_PROXY` and `NO_PROXY`](#processes-that-ignore-https_proxy-and-no_proxy)). If you allow SSH at the network layer, treat it as an unscanned channel.
 
 ## Browsers without explicit proxy configuration
 
