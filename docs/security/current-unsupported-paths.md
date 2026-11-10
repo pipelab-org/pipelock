@@ -45,7 +45,7 @@ This protection depends on that setting:
 
 - `sni_require_tls` defaults to `false`. Whenever `forward_proxy.enabled` is `true` in your config, check that `sni_require_tls: true` is present, and add it if it is not.
 - `sni_require_tls: true` together with `sni_verification: false` is rejected when the config loads, but only while `forward_proxy.enabled` is `true` in the file. `pipelock sandbox` turns the forward proxy on after loading, so a sandbox config that leaves `enabled` unset or `false` skips that check, and with `sni_verification: false` the require-TLS check never runs. For sandbox configs, set `forward_proxy.enabled: true` and keep `sni_verification` on.
-- With `pipelock run`, turning `sni_require_tls` on takes effect on hot reload. Turning it off with a reload is rejected as a security downgrade, and the running configuration stays active until you restart. `pipelock sandbox` reads its config once at launch and doesn't reload it, so restart a running sandbox after changing this setting.
+- With `pipelock run`, turning `sni_require_tls` on takes effect on hot reload for new CONNECT requests. A tunnel opened before the reload keeps the configuration it started with and keeps relaying, so close existing tunnels (or restart) after enabling it. Turning it off with a reload is rejected as a security downgrade, and the running configuration stays active until you restart. `pipelock sandbox` reads its config once at launch and doesn't reload it, so restart a running sandbox after changing this setting.
 
 ### Inside `pipelock sandbox`: no direct route out
 
@@ -57,7 +57,7 @@ A process in the sandbox that tries to open its own TCP connection, such as an S
 pipelock sandbox --config pipelock.yaml -- COMMAND [ARGS...]
 ```
 
-Check the launch status line. `network: ACTIVE (isolated namespace)` means the namespace is in place. An authorized `--best-effort` launch can fall back to running without a network namespace when namespaces are unavailable. That fallback is reported as `advisory-override`; direct egress, SSH included, can then bypass Pipelock (see [Advisory network override](../guides/sandbox.md#advisory-network-override)).
+Check the launch status line. `network: ACTIVE (isolated namespace)` means the namespace is in place. An authorized best-effort launch (the `--best-effort` flag or `sandbox.best_effort: true` in the config) can fall back to running without a network namespace when namespaces are unavailable. That fallback is reported as `advisory-override`; direct egress, SSH included, can then bypass Pipelock (see [Advisory network override](../guides/sandbox.md#advisory-network-override)).
 
 ### Optional: flag SSH commands in tool calls
 
@@ -89,9 +89,9 @@ Keep these points in mind:
 ### What this does not cover
 
 - Pipelock cannot inspect data sent over SSH, in any mode.
-- Outside the sandbox, or when `--best-effort` falls back to running without a network namespace, a process that opens its own TCP connection without going through the proxy is not seen by Pipelock. See [Raw socket egress](#raw-socket-egress).
+- Outside the sandbox, or when a best-effort launch falls back to running without a network namespace, a process that opens its own TCP connection without going through the proxy is not seen by Pipelock. See [Raw socket egress](#raw-socket-egress).
 
-**Integrator action.** If agents should not use SSH, set `forward_proxy.sni_require_tls: true` to refuse SSH sent directly through the forward proxy; SSH wrapped in TLS to an allowed host still passes. Run agents under `pipelock sandbox` without `--best-effort`, or block outbound TCP to port 22 and other non-HTTP destinations at the host, container, or network-policy layer. If an agent needs Git, prefer HTTPS remotes routed through Pipelock (see [Processes that ignore `HTTPS_PROXY` and `NO_PROXY`](#processes-that-ignore-https_proxy-and-no_proxy)). If you allow SSH at the network layer, treat it as an unscanned channel.
+**Integrator action.** If agents should not use SSH, set `forward_proxy.sni_require_tls: true` to refuse SSH sent directly through the forward proxy; SSH wrapped in TLS to an allowed host still passes. Run agents under `pipelock sandbox` with best-effort off in both places, no `--best-effort` flag and no `sandbox.best_effort: true` in the config, and confirm the launch reports `network: ACTIVE (isolated namespace)`. Or block outbound TCP to port 22 and other non-HTTP destinations at the host, container, or network-policy layer. If an agent needs Git, prefer HTTPS remotes routed through Pipelock (see [Processes that ignore `HTTPS_PROXY` and `NO_PROXY`](#processes-that-ignore-https_proxy-and-no_proxy)). If you allow SSH at the network layer, treat it as an unscanned channel.
 
 ## Browsers without explicit proxy configuration
 
