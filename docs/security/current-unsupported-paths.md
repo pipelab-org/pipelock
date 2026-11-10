@@ -44,7 +44,7 @@ forward_proxy:
 This protection depends on that setting:
 
 - `sni_require_tls` defaults to `false`. Whenever `forward_proxy.enabled` is `true` in your config, check that `sni_require_tls: true` is present, and add it if it is not.
-- `sni_require_tls: true` together with `sni_verification: false` is rejected when the config loads, but only while `forward_proxy.enabled` is `true` in the file. `pipelock sandbox` turns the forward proxy on after loading, so a sandbox config that leaves `enabled` unset or `false` skips that check, and with `sni_verification: false` the require-TLS check never runs. For sandbox configs, set `forward_proxy.enabled: true` and keep `sni_verification` on.
+- `sni_require_tls: true` together with `sni_verification: false` is rejected when the config loads, whether or not `forward_proxy.enabled` is set. `pipelock sandbox` and other launchers turn the forward proxy on after loading, so the check doesn't depend on that setting.
 - With `pipelock run`, turning `sni_require_tls` on takes effect on hot reload for new CONNECT requests. A tunnel opened before the reload keeps the configuration it started with and keeps relaying, so close existing tunnels (or restart) after enabling it. Turning it off with a reload is rejected as a security downgrade, and the running configuration stays active until you restart. `pipelock sandbox` reads its config once at launch and doesn't reload it, so restart a running sandbox after changing this setting.
 
 ### Inside `pipelock sandbox`: no direct route out
