@@ -144,6 +144,7 @@ type issuerBoundCookieStore struct {
 
 // A single atomic pointer ties requests to the current policy snapshot.
 // An enabled reload retains the store; disabling a prerequisite resets it.
+// The query store's negative ID ledger is kept across every reload.
 type issuerCookieRuntime struct {
 	cfg   *config.Config
 	store *issuerBoundCookieStore

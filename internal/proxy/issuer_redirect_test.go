@@ -1058,7 +1058,7 @@ func TestIssuedRedirectPendingFailuresAndGuards(t *testing.T) {
 		t.Fatal("nil configuration admitted")
 	}
 	ic.Config = e.cfg
-	disabled := &issuerQueryStore{disabled: true}
+	disabled := &issuerQueryStore{issuerIDLedger: &issuerIDLedger{disabled: true}}
 	if ic.issuedLocationAllowedContext(t.Context(), disabled, session, target) {
 		t.Fatal("disabled store admitted")
 	}

@@ -50,9 +50,36 @@ type issuerQueryEntry struct {
 	kind   issuerQueryKind
 }
 
-type issuerQueryStore struct {
+// issuerIDLedger is the process-lifetime negative ID history: what each
+// caller sent to each destination, every freeze, and the capacity latches.
+// One ledger, its key and its lock are shared by every positive evidence
+// generation in the process, so a reload that discards positive evidence
+// cannot forget what callers sent, and a sender holding a replaced store
+// still writes here. Only a restart starts a new ledger.
+type issuerIDLedger struct {
 	mu       sync.Mutex
 	key      [32]byte
+	disabled bool
+	history  map[string]*issuerIDCaller
+	// Callers and destination tombstones are never evicted. Once admission
+	// refuses a bucket, the latch prevents missing sends from looking fresh.
+	idDestinations     int
+	idAdmissionClosed  bool
+	sentEntries        int
+	observeIDBlock     func(scope string, log bool)
+	idBlockReported    bool
+	idCapacityReported bool
+}
+
+// issuerQueryStore is one generation of positive issuer evidence. Its maps
+// are replaced when a prerequisite is disabled; the embedded ledger is not.
+// All fields are protected by the ledger's shared mu.
+type issuerQueryStore struct {
+	*issuerIDLedger
+	// retired marks a generation replaced by a disabling reload. A retired
+	// store grants nothing and contributes no server-first provenance; a
+	// sender that still holds it records only negative history.
+	retired  bool
 	sessions map[string][]issuerQueryEntry
 	// redirects holds keyed digests of (authorization server origin,
 	// redirect_uri origin and path) pairs declared by the session.
@@ -71,45 +98,50 @@ type issuerQueryStore struct {
 	// deliveries coordinates only matching follow-ups while headers are being
 	// flushed. It never grants authority and does not evict delivered evidence.
 	deliveries map[string]*issuedRedirectDeliverySet
-	// ids holds keyed digests of object IDs an origin introduced in a JSON
-	// response; sent holds digests of every token the session sent to an
-	// origin, so a reflected value is never minted as an ID; sentUnreadable
-	// marks a session whose outgoing traffic could not be fully recorded.
-	ids            map[string][][32]byte
-	sent           map[string]map[[32]byte]struct{}
-	sentUnreadable map[string]bool
-	// ID history is retained independently of query-evidence LRU eviction.
-	// Capacity denies new buckets or taints only the caller adding history;
-	// it never revokes an existing peer's IDs.
-	sentEntries        int
-	observeIDBlock     func(scope string, log bool)
-	idBlockReported    bool
-	idCapacityReported bool
-	used               map[string]time.Time
-	disabled           bool
+	// ids retains exact origin-bound proofs independently of learning history.
+	// Each entry points to its permanent destination bucket so cache pressure
+	// cannot evict a frozen destination's irreplaceable proofs.
+	ids  map[string]*issuerIDCache
+	used map[string]time.Time
 }
 
 func newIssuerQueryStore() *issuerQueryStore {
 	return newIssuerQueryStoreWithReader(rand.Reader)
 }
 
+// newIssuerQueryStoreWithReader starts a new ledger with its first positive
+// generation. A key read failure disables the ledger and every generation of
+// it, so no allowance can exist until restart.
 func newIssuerQueryStoreWithReader(reader io.Reader) *issuerQueryStore {
-	s := &issuerQueryStore{
-		sessions:  make(map[string][]issuerQueryEntry),
-		redirects: make(map[string][][32]byte),
-		paths:     make(map[string][][32]byte),
-		documents: make(map[string][][32]byte),
-		locations: make(map[string][]issuedLocationEntry),
-		ids:       make(map[string][][32]byte),
-		sent:      make(map[string]map[[32]byte]struct{}),
-		used:      make(map[string]time.Time),
+	ledger := &issuerIDLedger{history: make(map[string]*issuerIDCaller)}
+	if _, err := io.ReadFull(reader, ledger.key[:]); err != nil {
+		ledger.disabled = true
+	}
+	return newIssuerQueryGeneration(ledger)
+}
 
-		sentUnreadable: make(map[string]bool),
+func newIssuerQueryGeneration(ledger *issuerIDLedger) *issuerQueryStore {
+	return &issuerQueryStore{
+		issuerIDLedger: ledger,
+		sessions:       make(map[string][]issuerQueryEntry),
+		redirects:      make(map[string][][32]byte),
+		paths:          make(map[string][][32]byte),
+		documents:      make(map[string][][32]byte),
+		locations:      make(map[string][]issuedLocationEntry),
+		ids:            make(map[string]*issuerIDCache),
+		used:           make(map[string]time.Time),
 	}
-	if _, err := io.ReadFull(reader, s.key[:]); err != nil {
-		s.disabled = true
-	}
-	return s
+}
+
+// nextGeneration retires s and returns an empty positive generation over the
+// same ledger. Retiring under the shared lock orders it against every record
+// and mint already in progress on s.
+func (s *issuerQueryStore) nextGeneration() *issuerQueryStore {
+	next := newIssuerQueryGeneration(s.issuerIDLedger)
+	s.mu.Lock()
+	s.retired = true
+	s.mu.Unlock()
+	return next
 }
 
 func (ic *InterceptContext) issuerQueryStore() *issuerQueryStore {
