@@ -47,6 +47,8 @@ Generated configurations now preserve bundled policy. The audit preset keeps exp
 
 The `claude-code`, `cursor`, `generic-agent`, and `hostile-model` presets and the quickstart example also retain built-in response patterns alongside their supplemental expressions. Regenerated YAML uses `Preset` names for the supplemental expressions. Review name-based alerts and suppressions before replacing an older configuration: an old rule name doesn't cover its supplemental `Preset` counterpart. Existing saved configurations keep their names until edited or replaced. See [preset migration](../configuration.md#presets).
 
+Tool policy rules also match a bounded reading of shell expansions the command text decides, such as unset parameters, brace items and literal brackets. A word past the expansion bound reports an incomplete check, which `on_incomplete_check` turns into a warning or a block. Review rules for commands that legitimately use these forms. See [MCP tool policy](../configuration.md#mcp-tool-policy).
+
 ## Review repository-scan suppressions
 
 `pipelock git scan-diff`, `pipelock audit`, and the GitHub Action apply the core DLP floor even when configured defaults are disabled or a custom pattern reuses a built-in name. Inline `pipelock:ignore` markers and rule suppressions can't silence core findings. Synthetic fixtures can therefore produce findings after upgrading. Construct synthetic values from fragments where possible; path exclusions remove every finding for that path, including core findings, so review them narrowly. Generated pre-push hooks don't expose an exclusion option. See the [suppression guide](suppression.md).
