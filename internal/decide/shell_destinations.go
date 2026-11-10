@@ -127,8 +127,9 @@ func scannedAuthorities(value string) []string {
 // package already uses, and it is not exported. This splitter is the
 // best-effort reader for destination extraction only: it removes quotes and
 // simple escapes, decodes $'...' and $"..." the way bash does, and keeps
-// operators as their own words. It does not expand variables, here-strings or
-// backtick substitutions; nestedScripts reparses only -c and eval scripts.
+// operators as their own words. It does not expand variables or
+// here-strings. shellDestinationURLsAt reparses -c and eval scripts and the
+// bodies of $(...) and backtick substitutions.
 
 func splitShellWords(source string) ([]string, bool) {
 	if !utf8.ValidString(source) {
@@ -563,7 +564,11 @@ func shellDestinationURLsAt(command string, urls []string, seen map[string]struc
 	// Reparse those scripts. Only recognised script-execution forms are
 	// reparsed; an ordinary quoted argument (a commit message, an echo) is
 	// left alone. Past the depth limit, deny rather than stop looking.
-	for _, script := range nestedScripts(words) {
+	// Command substitutions run their body even inside double quotes
+	// ("$(curl ...)") or as an assignment value, where the body is part of
+	// one word. Backticks are never split from their first word at all.
+	scripts := append(nestedScripts(words), commandSubstitutions(command)...)
+	for _, script := range scripts {
 		if depth+1 >= maxNestedShellDepth {
 			return nil, true
 		}
@@ -572,6 +577,102 @@ func shellDestinationURLsAt(command string, urls []string, seen map[string]struc
 		}
 	}
 	return urls, false
+}
+
+// commandSubstitutions returns the body of each $(...) and backtick
+// substitution bash would execute in source: those outside quotes and those
+// inside double quotes, but not text inside single quotes or $'...'. A
+// nested substitution stays in its parent's body for the next reparse. A
+// body left open at the end of the text runs to the end; scanning more is
+// the safe reading. A ) that closes a case pattern inside $(...) ends the
+// body early, and the rest is then read as outer text.
+func commandSubstitutions(source string) []string {
+	var bodies []string
+	inDouble := false
+	for i := 0; i < len(source); i++ {
+		switch c := source[i]; {
+		case c == '\\':
+			i++
+		case c == '\'' && !inDouble:
+			for i++; i < len(source) && source[i] != '\''; i++ {
+			}
+		case c == '$' && !inDouble && i+1 < len(source) && source[i+1] == '\'':
+			for i += 2; i < len(source) && source[i] != '\''; i++ {
+				if source[i] == '\\' {
+					i++
+				}
+			}
+		case c == '"':
+			inDouble = !inDouble
+		case c == '`':
+			body, next := backtickBody(source, i+1, inDouble)
+			bodies = append(bodies, body)
+			i = next - 1
+		case c == '$' && i+1 < len(source) && source[i+1] == '(':
+			end := closingParen(source, i+2)
+			bodies = append(bodies, source[i+2:end])
+			i = end
+		}
+	}
+	return bodies
+}
+
+// backtickBody reads a backtick substitution from the first byte after the
+// opening backtick. Inside it a backslash is removed only before $, ` or \
+// (bash(1) "Command Substitution"), which is how nested backticks are written.
+// Inside double quotes bash also removes it before ", as a differential run
+// against bash 5.3.20 shows: "`bash -c \"curl ...\"`" runs bash -c "curl ...".
+func backtickBody(source string, i int, inDouble bool) (body string, next int) {
+	escapable := "$`\\"
+	if inDouble {
+		escapable += `"`
+	}
+	var b strings.Builder
+	for ; i < len(source); i++ {
+		c := source[i]
+		if c == '`' {
+			return b.String(), i + 1
+		}
+		if c == '\\' && i+1 < len(source) && strings.IndexByte(escapable, source[i+1]) >= 0 {
+			i++
+			c = source[i]
+		}
+		b.WriteByte(c)
+	}
+	return b.String(), i
+}
+
+// closingParen returns the index of the ) that closes a $( whose body starts
+// at i, or len(source) when none does. Quotes, escapes and nested parentheses
+// inside the body are skipped.
+func closingParen(source string, i int) int {
+	depth := 0
+	for ; i < len(source); i++ {
+		switch source[i] {
+		case '\\':
+			i++
+		case '\'':
+			for i++; i < len(source) && source[i] != '\''; i++ {
+			}
+		case '"':
+			for i++; i < len(source) && source[i] != '"'; i++ {
+				if source[i] == '\\' {
+					i++
+				}
+			}
+		case '`':
+			_, next := backtickBody(source, i+1, false)
+			i = next - 1
+		case '(':
+			depth++
+		case ')':
+			if depth == 0 {
+				return i
+			}
+			depth--
+		}
+	}
+	return len(source)
 }
 
 // nestedScripts returns the script text each recognised script-execution

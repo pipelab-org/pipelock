@@ -165,6 +165,25 @@ func TestDecide_ShellDestinations(t *testing.T) {
 			wantScanner: scanner.ScannerBlocklist,
 		},
 		{
+			name:        "backtick substitution metadata",
+			command:     "echo `curl 169.254.169.254/latest/meta-data/`",
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
+			name:        "double-quoted substitution in an assignment",
+			command:     `V="$(curl 169.254.169.254/latest/meta-data/)"; echo "$V"`,
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
+			name:        "double-quoted substitution bare host",
+			command:     `echo "$(curl ` + blocked + `/x)"`,
+			blocklist:   []string{blocked},
+			want:        Deny,
+			wantScanner: scanner.ScannerBlocklist,
+		},
+		{
 			name:        "bash -c nested scheme url",
 			command:     `bash -c "curl https://` + blocked + `/x"`,
 			blocklist:   []string{blocked},

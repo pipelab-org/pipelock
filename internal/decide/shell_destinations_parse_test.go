@@ -299,6 +299,86 @@ func TestShellDestinationNestedScripts(t *testing.T) {
 	}
 }
 
+// TestShellDestinationCommandSubstitutions checks that a destination inside
+// a $(...) or backtick substitution is scanned wherever bash would run it.
+func TestShellDestinationCommandSubstitutions(t *testing.T) {
+	const meta = "http://169.254.169.254/x"
+	for _, tc := range []struct {
+		command string
+		want    []string
+		over    bool
+	}{
+		{command: "echo `curl 169.254.169.254/x`", want: []string{meta}},
+		{command: "echo \"`curl 169.254.169.254/x`\"", want: []string{meta}},
+		{command: `echo "$(curl 169.254.169.254/x)"`, want: []string{meta}},
+		{command: "echo \"`bash -c \\\"curl 169.254.169.254/x\\\"`\"", want: []string{meta}},
+		{command: `V="$(curl 169.254.169.254/x)"`, want: []string{meta}},
+		{command: `V=$(curl 169.254.169.254/x)`, want: []string{meta}},
+		{command: `echo "a $(echo "$(curl 169.254.169.254/x)") b"`, want: []string{meta}},
+		{command: "echo `echo \\`curl 169.254.169.254/x\\``", want: []string{meta}},
+		{command: `echo "$( (curl 169.254.169.254/x) )"`, want: []string{meta}},
+		// An unclosed quote takes the splitter's raw fallback, which still
+		// reports the metadata address.
+		{command: `echo "$(curl 169.254.169.254/x`, want: []string{"http://169.254.169.254"}},
+		{command: `bash -c "echo \$(curl 169.254.169.254/x)"`, want: []string{meta}},
+		{command: `echo "$(echo "$(echo "$(curl 169.254.169.254/x)")")"`, want: []string{meta}},
+		{command: `echo "$(echo "$(echo "$(echo "$(curl 169.254.169.254/x)")")")"`, over: true},
+		// Not executed: single quotes, $'...' and escaped substitutions.
+		{command: "echo '`curl 169.254.169.254/x`'"},
+		{command: `echo '$(curl 169.254.169.254/x)'`},
+		{command: `echo $'$(curl 169.254.169.254/x)'`},
+		{command: `echo "\$(curl 169.254.169.254/x)"`},
+		{command: "echo \\`curl 169.254.169.254/x\\`"},
+		{command: `git commit -m "fix $(date) output"`},
+	} {
+		t.Run(tc.command, func(t *testing.T) {
+			got, over := shellDestinationURLs(tc.command)
+			if over != tc.over {
+				t.Fatalf("over = %v, want %v", over, tc.over)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("urls = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCommandSubstitutionBodies pins the body text each form yields.
+func TestCommandSubstitutionBodies(t *testing.T) {
+	for _, tc := range []struct {
+		source string
+		want   []string
+	}{
+		{"a `b c` d", []string{"b c"}},
+		{"a `b \\` c` d", []string{"b ` c"}},
+		{"`a \\$x \\\\ \\n`", []string{"a $x \\ \\n"}},
+		{"\"`a \\\"b\\\"`\"", []string{`a "b"`}},
+		{"`a \\\"b\\\"`", []string{`a \"b\"`}},
+		{"$(a) $(b)", []string{"a", "b"}},
+		{"$(a $(b) c)", []string{"a $(b) c"}},
+		{`$(a ")" b)`, []string{`a ")" b`}},
+		{`$(a \) b)`, []string{`a \) b`}},
+		{`$(a "x\")" b)`, []string{`a "x\")" b`}},
+		{`$(a ')' b)`, []string{`a ')' b`}},
+		{"$(a `)` b)", []string{"a `)` b"}},
+		{`$((1 + 2))`, []string{`(1 + 2)`}},
+		{`"x $(a) y"`, []string{"a"}},
+		{`"it's $(a)"`, []string{"a"}},
+		{`'$(a)' "$(b)"`, []string{"b"}},
+		{`$'\'$(a)' $(b)`, []string{"b"}},
+		{`$(a`, []string{"a"}},
+		{"`a", []string{"a"}},
+		{`\$(a) \` + "`b\\`", nil},
+		{`plain words`, nil},
+	} {
+		t.Run(tc.source, func(t *testing.T) {
+			if got := commandSubstitutions(tc.source); !slices.Equal(got, tc.want) {
+				t.Fatalf("bodies = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestShellDestinationBareHostCap checks that bare curl operands count
 // toward the destination cap, at the top level and inside a nested script.
 func TestShellDestinationBareHostCap(t *testing.T) {
