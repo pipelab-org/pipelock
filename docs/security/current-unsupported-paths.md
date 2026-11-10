@@ -57,7 +57,7 @@ A process in the sandbox that tries to open its own TCP connection, such as an S
 pipelock sandbox --config pipelock.yaml -- COMMAND [ARGS...]
 ```
 
-Check the launch status line. `network: ACTIVE (isolated namespace)` means the namespace is in place. An authorized `--best-effort` launch runs without a network namespace (`advisory-override`). In that case direct egress, SSH included, can bypass Pipelock (see [Advisory network override](../guides/sandbox.md#advisory-network-override)).
+Check the launch status line. `network: ACTIVE (isolated namespace)` means the namespace is in place. An authorized `--best-effort` launch can fall back to running without a network namespace when namespaces are unavailable. That fallback is reported as `advisory-override`; direct egress, SSH included, can then bypass Pipelock (see [Advisory network override](../guides/sandbox.md#advisory-network-override)).
 
 ### Optional: flag SSH commands in tool calls
 
@@ -86,7 +86,7 @@ Keep these points in mind:
 ### What this does not cover
 
 - Pipelock cannot inspect data sent over SSH, in any mode.
-- Outside the sandbox, or under `--best-effort`, a process that opens its own TCP connection without going through the proxy is not seen by Pipelock. See [Raw socket egress](#raw-socket-egress).
+- Outside the sandbox, or when `--best-effort` falls back to running without a network namespace, a process that opens its own TCP connection without going through the proxy is not seen by Pipelock. See [Raw socket egress](#raw-socket-egress).
 
 **Integrator action.** If agents should not use SSH, set `forward_proxy.sni_require_tls: true`. Run agents under `pipelock sandbox` without `--best-effort`, or block outbound TCP to port 22 and other non-HTTP destinations at the host, container, or network-policy layer. If an agent needs Git, prefer HTTPS remotes routed through Pipelock (see [Processes that ignore `HTTPS_PROXY` and `NO_PROXY`](#processes-that-ignore-https_proxy-and-no_proxy)). If you allow SSH at the network layer, treat it as an unscanned channel.
 
