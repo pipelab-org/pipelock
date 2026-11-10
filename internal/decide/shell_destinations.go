@@ -589,13 +589,15 @@ func reparseScripts(scripts, urls []string, seen map[string]struct{}, depth int)
 
 // commandSubstitutions returns the body of each $(...) and backtick
 // substitution bash would execute in source: those outside quotes, inside
-// double quotes and inside unquoted here-documents, but not text inside
-// single quotes, $'...', comments or quoted here-documents. A nested
-// substitution stays in its parent's body for the next reparse.
+// double quotes and inside here-documents, but not text inside single
+// quotes, $'...' or comments. A nested substitution stays in its parent's
+// body for the next reparse.
 //
 // Where the reading is uncertain it scans more text, never less: a quote
 // that never closes is read as unquoted, a body left open runs to the end,
-// and a ) inside an unfinished case statement does not end a body.
+// and a case pattern's ) inside a $(...) body does not end it. Quoted
+// here-document bodies are scanned too: << inside ${...} or arithmetic
+// can look like a quoted here-document that would hide the lines after it.
 func commandSubstitutions(source string) []string {
 	s := substitutionScanner{src: source, collect: true}
 	s.scan(0, false, false)
@@ -609,12 +611,22 @@ type substitutionScanner struct {
 }
 
 type pendingHereDoc struct {
-	delim          string
-	strip, expands bool
+	delim string
+	strip bool
 }
 
 // shellWordBreaks are the bytes after which a new shell word starts.
 const shellWordBreaks = " \t\n;|&()<>"
+
+// parenFrame is one open parenthesis inside a $(...) body: the
+// double-quote state outside it, and the case statements open inside it.
+// pattern is true where a case pattern is being read, so its ) closes the
+// pattern rather than the parenthesis.
+type parenFrame struct {
+	outerDouble bool
+	cases       int
+	pattern     bool
+}
 
 // scan walks s.src from i. With untilParen it returns the index of the )
 // that closes a $( whose body starts at i, or len(s.src) when none does.
@@ -623,13 +635,27 @@ const shellWordBreaks = " \t\n;|&()<>"
 func (s *substitutionScanner) scan(i int, untilParen, hereText bool) int {
 	src := s.src
 	inDouble := false
-	// outer holds the double-quote state outside each open parenthesis
-	// inside the body, so the ) of a nested "$(...)" restores it.
-	var outer []bool
-	caseDepth := 0
+	frames := []parenFrame{{}}
+	// lastPattern is the last ) read as a case pattern's close at the top
+	// level. When no ) closes the body, the body ends there instead: case
+	// is matched at any word start, so a word "case" that is only an
+	// argument would otherwise run the body to the end of the text.
+	lastPattern := -1
 	var pending []pendingHereDoc
+	// atWordStart is true when no byte of a new shell word has been read:
+	// at the start and after an unescaped, unquoted blank or operator. An
+	// escaped blank, a quote or a substitution's closing ) does not start
+	// a word, so a # after them is not a comment. cmdPos is true where a
+	// command may start, which is where esac can close a case arm.
+	atWordStart, cmdPos := true, true
 	for ; i < len(src); i++ {
 		c := src[i]
+		wordStart, atCmd := atWordStart, cmdPos
+		atWordStart = !inDouble && !hereText && strings.IndexByte(shellWordBreaks, c) >= 0
+		if !inDouble && !hereText && c != ' ' && c != '\t' {
+			cmdPos = strings.IndexByte(";&|\n(", c) >= 0
+		}
+		top := &frames[len(frames)-1]
 		switch {
 		case c == '\\':
 			i++
@@ -641,8 +667,9 @@ func (s *substitutionScanner) scan(i int, untilParen, hereText bool) int {
 			if untilParen {
 				// Track it as a parenthesis; the body is read on its own
 				// when the enclosing body is reparsed.
-				outer = append(outer, inDouble)
+				frames = append(frames, parenFrame{outerDouble: inDouble})
 				inDouble = false
+				atWordStart, cmdPos = true, true
 				i++
 				continue
 			}
@@ -663,13 +690,14 @@ func (s *substitutionScanner) scan(i int, untilParen, hereText bool) int {
 			if end, ok := ansiQuoteEnd(src, i+2); ok {
 				i = end
 			}
-		case c == '#' && wordStartAt(src, i):
+		case c == '#' && wordStart:
 			for i+1 < len(src) && src[i+1] != '\n' {
 				i++
 			}
 		case c == '<' && strings.HasPrefix(src[i:], "<<") && !strings.HasPrefix(src[i:], "<<<"):
 			doc, next := readHereDocWord(src, i+2)
 			if doc.delim != "" {
+				// Read by hereDocBodies at the next unquoted newline.
 				pending = append(pending, doc)
 			}
 			i = next - 1
@@ -678,20 +706,34 @@ func (s *substitutionScanner) scan(i int, untilParen, hereText bool) int {
 			pending = nil
 		case !untilParen:
 		case c == '(':
-			outer = append(outer, false)
+			frames = append(frames, parenFrame{})
+		case c == ')' && top.cases > 0 && top.pattern:
+			top.pattern = false
+			cmdPos = true
+			if len(frames) == 1 {
+				lastPattern = i
+			}
 		case c == ')':
-			switch {
-			case len(outer) > 0:
-				inDouble = outer[len(outer)-1]
-				outer = outer[:len(outer)-1]
-			case caseDepth == 0:
+			if len(frames) == 1 {
 				return i
 			}
-		case wordStartAt(src, i) && shellKeywordAt(src, i, "case"):
-			caseDepth++
-		case wordStartAt(src, i) && shellKeywordAt(src, i, "esac") && caseDepth > 0:
-			caseDepth--
+			inDouble = top.outerDouble
+			frames = frames[:len(frames)-1]
+		case c == ';' && i+1 < len(src) && (src[i+1] == ';' || src[i+1] == '&'):
+			// ;; ;& and ;;& end a case arm; a pattern follows.
+			if top.cases > 0 {
+				top.pattern = true
+			}
+		case wordStart && shellKeywordAt(src, i, "case"):
+			top.cases++
+			top.pattern = true
+		case wordStart && top.cases > 0 && (top.pattern || atCmd) && shellKeywordAt(src, i, "esac"):
+			top.cases--
+			top.pattern = false
 		}
+	}
+	if lastPattern >= 0 {
+		return lastPattern
 	}
 	return len(src)
 }
@@ -731,7 +773,7 @@ func (s *substitutionScanner) hereDocBodies(i int, pending []pendingHereDoc) int
 			}
 			i = next
 		}
-		if doc.expands && s.collect {
+		if s.collect {
 			inner := substitutionScanner{src: src[start:end], collect: true}
 			inner.scan(0, false, true)
 			s.bodies = append(s.bodies, inner.bodies...)
@@ -740,9 +782,10 @@ func (s *substitutionScanner) hereDocBodies(i int, pending []pendingHereDoc) int
 	return i
 }
 
-// readHereDocWord reads the delimiter after << (and an optional -). Any
-// quoting in the word makes the body literal text (bash(1) "Here
-// Documents"); the delimiter is the word with its quotes removed.
+// readHereDocWord reads the delimiter after << (and an optional -). The
+// delimiter is the word with its quotes removed (bash(1) "Here Documents").
+// Quoting would make the body literal, but it is scanned anyway; see
+// commandSubstitutions.
 func readHereDocWord(src string, i int) (doc pendingHereDoc, next int) {
 	if i < len(src) && src[i] == '-' {
 		doc.strip = true
@@ -752,11 +795,9 @@ func readHereDocWord(src string, i int) (doc pendingHereDoc, next int) {
 		i++
 	}
 	var b strings.Builder
-	quoted := false
 	for i < len(src) && strings.IndexByte(shellWordBreaks, src[i]) < 0 {
 		switch c := src[i]; c {
 		case '\'', '"':
-			quoted = true
 			end := strings.IndexByte(src[i+1:], c)
 			if end < 0 {
 				return pendingHereDoc{}, len(src)
@@ -764,7 +805,6 @@ func readHereDocWord(src string, i int) (doc pendingHereDoc, next int) {
 			b.WriteString(src[i+1 : i+1+end])
 			i += end + 2
 		case '\\':
-			quoted = true
 			if i+1 < len(src) {
 				b.WriteByte(src[i+1])
 			}
@@ -775,7 +815,6 @@ func readHereDocWord(src string, i int) (doc pendingHereDoc, next int) {
 		}
 	}
 	doc.delim = b.String()
-	doc.expands = !quoted
 	return doc, min(i, len(src))
 }
 
@@ -791,10 +830,6 @@ func ansiQuoteEnd(src string, i int) (int, bool) {
 		}
 	}
 	return 0, false
-}
-
-func wordStartAt(src string, i int) bool {
-	return i == 0 || strings.IndexByte(shellWordBreaks, src[i-1]) >= 0
 }
 
 func shellKeywordAt(src string, i int, keyword string) bool {
