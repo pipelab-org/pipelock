@@ -27,7 +27,14 @@ func assembledHexViews(text string, budget *assembledBudget) (views [2]string) {
 	}
 	previous := byte(0)
 	symbols := 0
+	nextCancel := responseBodyContextCheckBytes
 	for i := range len(text) {
+		if i >= nextCancel {
+			nextCancel = i + responseBodyContextCheckBytes
+			if budget.canceled() {
+				return views
+			}
+		}
 		v := reassemblyCodecs[0].values[text[i]]
 		if v < 0 {
 			continue

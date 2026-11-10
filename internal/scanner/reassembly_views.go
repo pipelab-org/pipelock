@@ -213,6 +213,10 @@ func (m *decodingMemo) reassemblyDrain() {
 		}
 	}()
 	for m.reassemblyInspected < len(m.reassemblyPending) {
+		if m.scanCtx != nil && m.scanCtx.Err() != nil {
+			m.reassemblyIncomplete = true
+			return
+		}
 		id := m.reassemblyInspected
 		m.reassemblyInspected++
 		var recipe *assembledDecodeRecipe
@@ -350,6 +354,10 @@ func finishAssembled(result TextDLPResult, memos ...*decodingMemo) TextDLPResult
 		m.reassemblyDrain()
 		m.reassemblyNestedDeferred = false
 		for _, view := range m.reassemblyNestedPending {
+			if m.scanCtx != nil && m.scanCtx.Err() != nil {
+				m.reassemblyIncomplete = true
+				break
+			}
 			text := m.pendingText(view)
 			if m.incomplete && !m.inbound {
 				break

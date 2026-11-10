@@ -262,6 +262,9 @@ func (p *compiledPattern) candidateHasLeftBoundary(source string, candidateLoc [
 func (p *compiledPattern) firstAcceptedSpan(text string, joined func(int, int) bool) (int, int, bool) {
 	if !p.wifOverlapRetry {
 		for _, loc := range p.re.FindAllStringIndex(text, -1) {
+			if p.stopMatch != nil && p.stopMatch() {
+				return 0, 0, false
+			}
 			start, end, ok := p.acceptedSpan(text, loc[0], loc[1])
 			if ok && (joined == nil || joined(start, end)) {
 				return start, end, true
@@ -269,7 +272,7 @@ func (p *compiledPattern) firstAcceptedSpan(text string, joined func(int, int) b
 		}
 		return 0, 0, false
 	}
-	return firstWIFCandidate(text, func(start, end int) bool {
+	return firstWIFCandidate(text, p.stopMatch, func(start, end int) bool {
 		return p.accepts(text, start, end) && (joined == nil || joined(start, end))
 	})
 }
@@ -280,10 +283,15 @@ func (p *compiledPattern) firstAcceptedSpan(text string, joined func(int, int) b
 // then 51), and validateWIF accepts only all-base58 input, so this yields every
 // candidate the case-insensitive regex could have had accepted. Re-running the
 // regex from each rejected start instead costs up to 52 regex steps per byte.
-func firstWIFCandidate(text string, accept func(start, end int) bool) (int, int, bool) {
+func firstWIFCandidate(text string, stop func() bool, accept func(start, end int) bool) (int, int, bool) {
 	// run checks every start in the base58 run text[runStart:runEnd].
+	halted := false
 	run := func(runStart, runEnd int) (int, int, bool) {
 		for start := runStart; runEnd-start >= wifUncompressedLen; start++ {
+			if stop != nil && stop() {
+				halted = true
+				return 0, 0, false
+			}
 			width := 0
 			switch text[start] {
 			case '5':
@@ -302,10 +310,19 @@ func firstWIFCandidate(text string, accept func(start, end int) bool) (int, int,
 		if isBase58Byte(text[i]) {
 			continue
 		}
+		if halted {
+			return 0, 0, false
+		}
 		if start, end, ok := run(runStart, i); ok {
 			return start, end, true
 		}
+		if halted {
+			return 0, 0, false
+		}
 		runStart = i + 1
+	}
+	if halted {
+		return 0, 0, false
 	}
 	return run(runStart, len(text))
 }

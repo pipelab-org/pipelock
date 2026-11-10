@@ -945,10 +945,20 @@ func (m *decodingMemo) registerKeywordTransform(source, view, encoding string) {
 }
 
 func (p *compiledPattern) matchSpanWithDecodes(view, source string, memo *decodingMemo) (start, end int, matched bool) {
-	if p.keywords == nil {
+	// A copied pattern carries this scan's cancellation check. The shared
+	// pattern stays untouched so concurrent scans cannot observe it.
+	bound := memo != nil && memo.scanCtx != nil
+	if p.keywords == nil && !bound {
 		return p.matchSpanInView(view, source)
 	}
 	pattern := *p
+	if bound {
+		ctx := memo.scanCtx
+		pattern.stopMatch = func() bool { return ctx.Err() != nil }
+	}
+	if p.keywords == nil {
+		return pattern.matchSpanInView(view, source)
+	}
 	logical := config.DLPKeywordContext(source)
 	context := keywordCandidateContext{logical: logical, memo: memo}
 	if memo != nil {

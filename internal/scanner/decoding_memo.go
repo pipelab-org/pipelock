@@ -69,6 +69,9 @@ type decodingMemo struct {
 	reassemblySeen               map[string]int
 	reassemblyFindings           []TextDLPMatch
 
+	// scanCtx lets terminal finalization stop when the caller cancels.
+	// A nil context means the caller did not bound the scan.
+	scanCtx         context.Context
 	keywordPresence map[keywordPresenceKey]bool
 	keywordMode     bool
 	keywordBudget   *keywordWorkBudget
@@ -255,6 +258,13 @@ func (s *sharedDecodes) decode(key decodingMemoKey) ([]decodedResult, bool, bool
 }
 
 func (s *sharedDecodes) matchDecoded(key decodedMatchKey) []TextDLPMatch {
+	return s.matchDecodedContext(key, nil)
+}
+
+// matchDecodedContext is matchDecoded with the caller's cancellation. A nil
+// context keeps the cached result. A context that has already ended is not
+// stored: the walk may have stopped before every candidate was judged.
+func (s *sharedDecodes) matchDecodedContext(key decodedMatchKey, ctx context.Context) []TextDLPMatch {
 	filter := key.scanner.dlpPreFilter
 	if key.core {
 		filter = key.scanner.core.dlpPreFilter
@@ -289,7 +299,19 @@ func (s *sharedDecodes) matchDecoded(key decodedMatchKey) []TextDLPMatch {
 	if !key.cardOnly {
 		lowered = s.loweredFor(normalized)
 	}
-	matches := key.match(normalized, &lowered)
+	var matches []TextDLPMatch
+	if ctx == nil || key.core {
+		matches = key.match(normalized, &lowered)
+	} else {
+		patterns := textDLPAllPatterns
+		if key.cardOnly {
+			patterns = textDLPCardPatterns
+		}
+		matches = key.scanner.matchDLPPatternsLoweredWithDecodes(normalized, key.encoding, key.text, &lowered, patterns, &decodingMemo{scanCtx: ctx})
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return slices.Clone(matches)
+	}
 	s.mu.Lock()
 	s.store.retainDecodedMatches(key, matches)
 	s.mu.Unlock()
@@ -617,6 +639,10 @@ func (m *decodingMemo) matchDecodedCore(sc *Scanner, text, encoding string) []Te
 
 func (m *decodingMemo) matchDecodedKey(key decodedMatchKey) []TextDLPMatch {
 	if m != nil && m.keywordMode && !key.core {
+		if m.scanCtx != nil && m.scanCtx.Err() != nil {
+			m.reassemblyIncomplete = true
+			return nil
+		}
 		normalized := m.normalize(key.text)
 		var lowered dlpLoweredBytes
 		lowered.add(normalized)
@@ -633,15 +659,34 @@ func (m *decodingMemo) matchDecodedKey(key decodedMatchKey) []TextDLPMatch {
 		return key.match(normalized, &lowered)
 	}
 	if m.shared != nil {
-		return m.shared.matchDecoded(key)
+		return m.shared.matchDecodedContext(key, m.scanCtx)
 	}
 	if cached, ok := m.decodedMatches[key]; ok {
 		return slices.Clone(cached)
 	}
+	if m.scanCtx != nil && m.scanCtx.Err() != nil {
+		m.reassemblyIncomplete = true
+		return nil
+	}
 	normalized := m.normalize(key.text)
 	var lowered dlpLoweredBytes
 	lowered.add(normalized)
-	matches := key.match(normalized, &lowered)
+	var matches []TextDLPMatch
+	if key.core {
+		matches = key.match(normalized, &lowered)
+	} else {
+		patterns := textDLPAllPatterns
+		if key.cardOnly {
+			patterns = textDLPCardPatterns
+		}
+		matches = key.scanner.matchDLPPatternsLoweredWithDecodes(normalized, key.encoding, key.text, &lowered, patterns, m)
+	}
+	if m.scanCtx != nil && m.scanCtx.Err() != nil {
+		// A walk that stopped on cancellation is partial. Caching it would
+		// make a later lookup look like a verified negative.
+		m.reassemblyIncomplete = true
+		return slices.Clone(matches)
+	}
 	m.retainDecodedMatches(key, matches)
 	return slices.Clone(matches)
 }

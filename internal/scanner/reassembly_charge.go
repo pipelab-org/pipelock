@@ -101,6 +101,17 @@ func (b *assembledBudget) chargesFor(text string) *assembledCharges {
 	return c
 }
 
+// canceled reports a caller context that has already ended. The terminal
+// stops scheduling more replay; the scan result stays incomplete.
+func (b *assembledBudget) canceled() bool {
+	if b == nil || b.memo == nil || b.memo.scanCtx == nil || b.memo.scanCtx.Err() == nil {
+		return false
+	}
+	b.incomplete = true
+	b.memo.reassemblyIncomplete = true
+	return true
+}
+
 func (b *assembledBudget) charge(c *assembledCharges, codec, phase, offset int) bool {
 	if c == nil {
 		// A caller without a source registry still pays for each decoded byte.

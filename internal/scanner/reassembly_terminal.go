@@ -377,20 +377,26 @@ func (s *assembledScan) searchLane(codec, phase, id int) {
 		s.lanes[codec][phase] = lane
 	}
 	pattern := s.p.assembled.terminalPattern(id, s.p.patterns[id])
-	if !pattern.admitsView(lane.view) {
+	if pattern == nil || !pattern.admitsView(lane.view) {
 		return
 	}
 	// firstAcceptedSpan preserves validator and canonical WIF overlap handling.
 	// Unlike a sliced confirmation, this complete lane has no artificial UTF-8
 	// edges: regexp sees the true phase origin, neighboring runes and EOF.
-	matchPattern := pattern
+	// The copy carries this scan's cancellation check and never mutates the
+	// shared compiled pattern.
+	copyPattern := *pattern
+	copyPattern.stopMatch = func() bool { return s.budget.canceled() }
 	if pattern.keywords != nil {
-		copyPattern := *pattern
 		copyPattern.keywords = nil // Context is checked per candidate below.
-		matchPattern = &copyPattern
 	}
+	matchPattern := &copyPattern
 	accepted := false
 	matchPattern.firstAcceptedSpan(lane.view, func(begin, finish int) bool {
+		if s.budget.canceled() {
+			s.result.incomplete = true
+			return true
+		}
 		if pattern.withoutLeftBoundary != nil {
 			loc := pattern.withoutLeftBoundary.FindStringIndex(lane.view[begin:finish])
 			if loc == nil {
@@ -457,6 +463,10 @@ func assembledLayer(p *reassemblyPlan, text string, budget *assembledBudget, ski
 	}
 	scan := assembledScan{p: p, text: text, budget: budget}
 	for codec := range reassemblyCodecs {
+		if budget.canceled() {
+			scan.result.incomplete = true
+			return scan.result
+		}
 		if skip&(1<<uint(codec)) != 0 {
 			continue
 		}
@@ -490,7 +500,15 @@ func assembledLayer(p *reassemblyPlan, text string, budget *assembledBudget, ski
 				scan.searchLane(codec, phase, id)
 			}
 		}
+		nextCancel := responseBodyContextCheckBytes
 		for i := range len(text) {
+			if i >= nextCancel {
+				nextCancel = i + responseBodyContextCheckBytes
+				if budget.canceled() {
+					scan.result.incomplete = true
+					return scan.result
+				}
+			}
 			v := c.values[text[i]]
 			if v < 0 {
 				continue
