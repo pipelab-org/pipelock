@@ -151,6 +151,18 @@ func TestShellDestinationExtractionOptions(t *testing.T) {
 		// Userinfo is read only inside the authority: the path's "@" is not it.
 		{"curl -x 169.254.169.254:3128/@proxy.corp.example https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:3128"}},
 		{"curl -x http://169.254.169.254:3128?x=@proxy.corp.example https://api.vendor.example/", []string{"http://169.254.169.254:3128?x=@proxy.corp.example", "https://api.vendor.example/", "http://169.254.169.254:3128"}},
+		// Only a scheme at the start is a scheme: "://" in a path or query is not.
+		{"curl --url 169.254.169.254/x?r=http://a.example", []string{"http://a.example", "http://169.254.169.254/x?r=http://a.example"}},
+		{"curl 169.254.169.254/x?u=http://a.example", []string{"http://a.example", "http://169.254.169.254/x?u=http://a.example"}},
+		{"curl -x 169.254.169.254:3128/?u=http://a.example https://api.vendor.example/", []string{"http://a.example", "https://api.vendor.example/", "http://169.254.169.254:3128"}},
+		// Non-web schemes still connect somewhere: their host is scanned.
+		{"curl gopher://169.254.169.254:80/_GET", []string{"http://169.254.169.254:80"}},
+		{"curl ftp://user:pw@169.254.169.254/pub", []string{"http://169.254.169.254"}},
+		{"curl --url dict://169.254.169.254:11211/stat", []string{"http://169.254.169.254:11211"}},
+		{"curl ftp://ftp.vendor.example/pub/file.tgz", []string{"http://ftp.vendor.example"}},
+		// Userinfo on a bare operand: curl connects to the host after it.
+		{"curl user:pw@169.254.169.254/latest/", []string{"http://169.254.169.254"}},
+		{"curl user@api.vendor.example/x", []string{"http://api.vendor.example"}},
 		// A destination option's value counts even as a single-label host.
 		{"curl -x metadata:80 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://metadata:80"}},
 		{"curl --url metadata/computeMetadata/v1/", []string{"http://metadata/computeMetadata/v1/"}},

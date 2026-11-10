@@ -25,6 +25,36 @@ const maxShellDestinationURLs = 16
 // already-split shell word. The scheme match is case-insensitive.
 var schemeURLRe = regexp.MustCompile(`(?i)(?:https?|wss?)://[^\s<>'"\\]+`)
 
+// leadingSchemeRe is an RFC 3986 scheme anchored at the start of a value. A
+// "://" later in the value (in a path or query) is not a scheme.
+var leadingSchemeRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*://`)
+
+// webScheme reports whether value starts with a scheme schemeURLRe already
+// takes as a whole URL (http, https, ws, wss).
+func webScheme(value string) bool {
+	m := leadingSchemeRe.FindString(value)
+	switch strings.ToLower(strings.TrimSuffix(m, "://")) {
+	case "http", "https", "ws", "wss":
+		return true
+	}
+	return false
+}
+
+// authorityHost returns the host[:port] a URL-like value connects to: an
+// anchored scheme is removed, the authority ends at the first "/?#", and any
+// userinfo before the last "@" inside it is dropped (curl's URL parser reads
+// it the same way).
+func authorityHost(value string) string {
+	value = strings.TrimPrefix(value, leadingSchemeRe.FindString(value))
+	if i := strings.IndexAny(value, "/?#"); i >= 0 {
+		value = value[:i]
+	}
+	if at := strings.LastIndexByte(value, '@'); at >= 0 {
+		value = value[at+1:]
+	}
+	return value
+}
+
 // shellProofWords in internal/mcp/policy is the quote-aware reader the policy
 // package already uses, and it is not exported. This splitter is the
 // best-effort reader for destination extraction only: it removes quotes and
@@ -269,6 +299,25 @@ func appendCurlWgetHosts(urls []string, seen map[string]struct{}, words []string
 			}
 			continue
 		}
+		if leadingSchemeRe.MatchString(word) {
+			// http(s) and ws(s) URLs are taken whole by the URL regex. Any
+			// other scheme curl or wget speaks (gopher, ftp, dict, ...)
+			// still connects somewhere: scan that host.
+			if !webScheme(word) {
+				if h := authorityHost(word); h != "" && add(h) {
+					return nil, true
+				}
+			}
+			continue
+		}
+		if strings.Contains(word, "@") {
+			// user[:pass]@host[:port][/path]: curl connects to the host after
+			// the userinfo, so scan that host.
+			if h := authorityHost(word); looksLikeHostOperand(h) && add(h) {
+				return nil, true
+			}
+			continue
+		}
 		if !looksLikeHostOperand(word) {
 			continue
 		}
@@ -323,8 +372,19 @@ func curlDestinationTargets(opt, value string) []string {
 	switch opt {
 	case "url":
 		// The value is the URL by definition, so a single-label host counts
-		// too. A scheme-bearing value is already taken by the URL regex.
-		if value == "" || strings.Contains(value, "://") {
+		// too. Only a scheme at the start makes it a scheme URL: http(s) and
+		// ws(s) URLs are taken whole by the URL regex, and any other scheme
+		// still names a host to scan.
+		if value == "" {
+			return nil
+		}
+		if leadingSchemeRe.MatchString(value) {
+			if webScheme(value) {
+				return nil
+			}
+			if h := authorityHost(value); h != "" {
+				return []string{h}
+			}
 			return nil
 		}
 		return []string{value}
@@ -371,16 +431,7 @@ func curlDestinationTargets(opt, value string) []string {
 		// The value is a destination by definition: any non-empty host is
 		// emitted (single labels included) and the scan decides; a value
 		// that is not a valid host fails there instead of being skipped.
-		if _, after, found := strings.Cut(value, "://"); found {
-			value = after
-		}
-		if i := strings.IndexAny(value, "/?#"); i >= 0 {
-			value = value[:i]
-		}
-		if at := strings.LastIndexByte(value, '@'); at >= 0 {
-			value = value[at+1:]
-		}
-		if value == "" {
+		if value = authorityHost(value); value == "" {
 			return nil
 		}
 		return []string{value}
@@ -520,7 +571,7 @@ func fetchOption(tool, name string) (takesValue, known bool) {
 }
 
 func looksLikeHostOperand(word string) bool {
-	if word == "" || strings.HasPrefix(word, "-") || strings.Contains(word, "://") || strings.Contains(word, "@") || strings.ContainsAny(word, " \t") {
+	if word == "" || strings.HasPrefix(word, "-") || leadingSchemeRe.MatchString(word) || strings.Contains(word, "@") || strings.ContainsAny(word, " \t") {
 		return false
 	}
 	host := word
