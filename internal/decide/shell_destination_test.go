@@ -193,6 +193,24 @@ func TestDecide_ShellDestinations(t *testing.T) {
 			command: "curl --url 169.254.169.254",
 			want:    Allow,
 		},
+		{
+			name:    "benign websocket destination is scanned and allowed",
+			command: "wscat -c wss://api.vendor.example/socket",
+			want:    Allow,
+		},
+		{
+			name:        "websocket destination to metadata is denied",
+			command:     "wscat -c ws://169.254.169.254/latest/meta-data/",
+			want:        Deny,
+			wantScanner: scanner.ScannerCoreSSRF,
+		},
+		{
+			name:        "uppercase websocket scheme with credential hostname",
+			command:     "wscat -c WSS://" + host + "/socket",
+			want:        Deny,
+			wantScanner: scanner.ScannerCoreDLP,
+			secret:      key,
+		},
 	}
 
 	for _, source := range []string{"claude-code", "cursor"} {

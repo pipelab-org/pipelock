@@ -181,7 +181,7 @@ func decideShell(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, p
 		return buildDecision(cfg, evidence)
 	}
 	for _, rawURL := range urls {
-		found := urlDestinationEvidence(ctx, sc, rawURL)
+		found := shellDestinationEvidence(ctx, sc, rawURL)
 		for i := range found {
 			// A cancelled context or a deadline is a refusal, including when
 			// enforce is off. Skipping it would allow the command.
@@ -273,11 +273,44 @@ func decideWebFetch(ctx context.Context, cfg *config.Config, sc *scanner.Scanner
 	return buildDecision(cfg, urlDestinationEvidence(ctx, sc, p.URL))
 }
 
+// shellDestinationEvidence scans one destination named in a shell command.
+// A ws or wss destination is a WebSocket handshake over HTTP or HTTPS
+// (RFC 6455 section 3), so it takes the scanner's WebSocket entry point, which
+// maps the scheme the way the WebSocket proxy does, and the core floor reads
+// the mapped HTTP form. Every other destination takes the WebFetch pipeline.
+func shellDestinationEvidence(ctx context.Context, sc *scanner.Scanner, rawURL string) []Evidence {
+	if floorURL, ok := webSocketHTTPForm(rawURL); ok {
+		return scanDestinationEvidence(sc.ScanWebSocket(ctx, rawURL), sc, floorURL)
+	}
+	return urlDestinationEvidence(ctx, sc, rawURL)
+}
+
+// webSocketHTTPForm reports whether rawURL has a ws or wss scheme and, if so,
+// returns it with the scheme mapped to http or https.
+func webSocketHTTPForm(rawURL string) (string, bool) {
+	scheme, rest, ok := strings.Cut(rawURL, "://")
+	if !ok {
+		return "", false
+	}
+	switch strings.ToLower(scheme) {
+	case "ws":
+		return "http://" + rest, true
+	case "wss":
+		return "https://" + rest, true
+	}
+	return "", false
+}
+
 // urlDestinationEvidence runs the WebFetch URL pipeline. An allowed URL
 // produces no evidence. When an earlier stage stops the scan, the core
 // credential floor still runs, matching decideWebFetch.
 func urlDestinationEvidence(ctx context.Context, sc *scanner.Scanner, rawURL string) []Evidence {
-	result := sc.Scan(ctx, rawURL)
+	return scanDestinationEvidence(sc.Scan(ctx, rawURL), sc, rawURL)
+}
+
+// scanDestinationEvidence turns one URL scan result into evidence, adding the
+// core floor's finding for floorURL when an earlier stage stopped the scan.
+func scanDestinationEvidence(result scanner.Result, sc *scanner.Scanner, floorURL string) []Evidence {
 	if result.Allowed {
 		return nil
 	}
@@ -295,7 +328,7 @@ func urlDestinationEvidence(ctx context.Context, sc *scanner.Scanner, rawURL str
 	// names the credential, which is why the request stays denied in audit
 	// mode even though the earlier stage alone would only warn.
 	if !core {
-		if floor := sc.ScanURLCoreFloor(rawURL); !floor.Allowed {
+		if floor := sc.ScanURLCoreFloor(floorURL); !floor.Allowed {
 			evidence = append(evidence, Evidence{
 				Scanner:  floor.Scanner,
 				Pattern:  floor.Reason,
