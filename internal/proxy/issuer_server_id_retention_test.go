@@ -192,7 +192,7 @@ func TestIssuerIDProvenanceIsOriginBound(t *testing.T) {
 				t.Fatal("positive control: listing did not issue ID")
 			}
 			s.recordSent("reader", mustIssuerQueryURL(t, elsewhere+serverIDListed), nil, nil, true, now)
-			digest, _ := s.sentDigest(origin, serverIDListed)
+			digest := s.digestFields("sent_host", issuerSentHost(origin), serverIDListed)
 			if got := s.idDestinationLocked("reader", origin).sent[digest]; got != issuerSentAgentFirst {
 				t.Fatalf("send to another origin recorded provenance %d", got)
 			}
@@ -237,7 +237,7 @@ func TestIssuerIDProvenanceConcurrent(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	other, _ := s.sentDigest(origin, serverIDOther)
+	other := s.digestFields("sent_host", issuerSentHost(origin), serverIDOther)
 	if got := s.idDestinationLocked("reader", origin).sent[other]; got != issuerSentAgentFirst {
 		t.Fatalf("agent-first word provenance = %d", got)
 	}

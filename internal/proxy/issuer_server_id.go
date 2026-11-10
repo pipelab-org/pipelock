@@ -149,17 +149,6 @@ func emitSentFormRun(run string, emit func(string) bool) bool {
 	return true
 }
 
-// sentDigest binds a sent token to the host alone. A value sent to a host over
-// any scheme or port has reached that host. Unless an allowed ID introduced
-// it first, it cannot establish introduction on another port either.
-func (s *issuerQueryStore) sentDigest(target *url.URL, value string) ([32]byte, bool) {
-	host := issuerSentHost(target)
-	if host == "" {
-		return [32]byte{}, false
-	}
-	return s.digestFields("sent_host", host, value), true
-}
-
 func issuerSentHost(target *url.URL) string {
 	if target == nil {
 		return ""
