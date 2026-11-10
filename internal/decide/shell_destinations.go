@@ -322,10 +322,12 @@ func curlDestinationOption(word string) (opt, value string, attached, ok bool) {
 func curlDestinationTargets(opt, value string) []string {
 	switch opt {
 	case "url":
-		if looksLikeHostOperand(value) {
-			return []string{value}
+		// The value is the URL by definition, so a single-label host counts
+		// too. A scheme-bearing value is already taken by the URL regex.
+		if value == "" || strings.Contains(value, "://") {
+			return nil
 		}
-		return nil
+		return []string{value}
 	case "resolve":
 		// [+]HOST:PORT:ADDRESS[,ADDRESS]...
 		value = strings.TrimPrefix(value, "+")
@@ -363,23 +365,25 @@ func curlDestinationTargets(opt, value string) []string {
 		}
 		return []string{t}
 	default:
-		// Proxy forms: [scheme://][user:pass@]host[:port][/...]
+		// Proxy forms: [scheme://][user:pass@]host[:port][/...]. Cut the
+		// authority at the first "/?#" before looking for userinfo, the way
+		// curl's URL parser does, so "host/@other" names host, not other.
+		// The value is a destination by definition: any non-empty host is
+		// emitted (single labels included) and the scan decides; a value
+		// that is not a valid host fails there instead of being skipped.
 		if _, after, found := strings.Cut(value, "://"); found {
 			value = after
+		}
+		if i := strings.IndexAny(value, "/?#"); i >= 0 {
+			value = value[:i]
 		}
 		if at := strings.LastIndexByte(value, '@'); at >= 0 {
 			value = value[at+1:]
 		}
-		if i := strings.IndexByte(value, '/'); i >= 0 {
-			value = value[:i]
-		}
 		if value == "" {
 			return nil
 		}
-		if looksLikeHostOperand(value) || scanner.ParseIPLiteral(operandHost(value)) != nil {
-			return []string{value}
-		}
-		return nil
+		return []string{value}
 	}
 }
 

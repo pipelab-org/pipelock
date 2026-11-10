@@ -148,6 +148,12 @@ func TestShellDestinationExtractionOptions(t *testing.T) {
 		// socks5:// is not a scheme the URL regex takes; the destination option does.
 		{"curl --preproxy socks5://169.254.169.254:1080 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:1080"}},
 		{"curl -x proxy.corp.example:3128 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://proxy.corp.example:3128"}},
+		// Userinfo is read only inside the authority: the path's "@" is not it.
+		{"curl -x 169.254.169.254:3128/@proxy.corp.example https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:3128"}},
+		{"curl -x http://169.254.169.254:3128?x=@proxy.corp.example https://api.vendor.example/", []string{"http://169.254.169.254:3128?x=@proxy.corp.example", "https://api.vendor.example/", "http://169.254.169.254:3128"}},
+		// A destination option's value counts even as a single-label host.
+		{"curl -x metadata:80 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://metadata:80"}},
+		{"curl --url metadata/computeMetadata/v1/", []string{"http://metadata/computeMetadata/v1/"}},
 		{"curl --resolve badvalue https://api.vendor.example/", []string{"https://api.vendor.example/"}},
 		// A known value option still owns its next word, even an option-looking one.
 		{"curl -o --url=169.254.169.254 api.vendor.example/f", []string{"http://api.vendor.example/f"}},
