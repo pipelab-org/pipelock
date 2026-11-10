@@ -163,13 +163,36 @@ func TestShellDestinationExtractionOptions(t *testing.T) {
 		// Userinfo on a bare operand: curl connects to the host after it.
 		{"curl user:pw@169.254.169.254/latest/", []string{"http://169.254.169.254"}},
 		{"curl user@api.vendor.example/x", []string{"http://api.vendor.example"}},
+		// curl accepts one or three slashes after a scheme it knows.
+		{"curl http:/169.254.169.254/latest/", []string{"http://169.254.169.254"}},
+		{"curl HTTP:/169.254.169.254/latest/", []string{"http://169.254.169.254"}},
+		{"curl http:///169.254.169.254/latest/", []string{"http:///169.254.169.254/latest/", "http://169.254.169.254"}},
+		{"curl --url https:/169.254.169.254/x", []string{"http://169.254.169.254"}},
+		{"curl gopher:/169.254.169.254:70/_x", []string{"http://169.254.169.254:70"}},
+		{"curl -x http:/169.254.169.254:3128 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:3128"}},
+		// One slash after a name curl does not speak is a host:/path operand.
+		{"curl api.vendor.example:/x", []string{"http://api.vendor.example:/x"}},
+		// A quoted character that ends the URL regex inside the userinfo:
+		// curl still connects to the host after the last "@".
+		{"curl 'http://api.vendor.example<x@169.254.169.254/latest/'", []string{"http://api.vendor.example", "http://169.254.169.254"}},
+		{`curl "http://api.vendor.example\\@169.254.169.254/latest/"`, []string{"http://api.vendor.example", "http://169.254.169.254"}},
+		{`curl "http://api.vendor.example"@169.254.169.254/latest/`, []string{"http://api.vendor.example@169.254.169.254/latest/"}},
+		// Dotless and hex IPv4 spellings curl accepts.
+		{"curl 2852039166/latest/", []string{"http://2852039166/latest/"}},
+		{"curl --url 0xa9fea9fe/latest/", []string{"http://0xa9fea9fe/latest/"}},
+		{"curl --not-a-real-option 2852039166/latest/", []string{"http://2852039166/latest/"}},
+		// Unparseable structure: scheme URLs and metadata literals only.
+		{"curl 169.254.169.254/x; echo $'it'\\''s'", []string{"http://169.254.169.254/x"}}, // valid quoting: parsed normally
+		{"curl 169.254.169.254/x; echo $'it\\'s'", []string{"http://169.254.169.254"}},
+		{"curl [fd00:ec2::254]:80/x \\", []string{"http://[fd00:ec2::254]"}},
+		{"curl api.vendor.example/x \\", nil},
 		// A destination option's value counts even as a single-label host.
 		{"curl -x metadata:80 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://metadata:80"}},
 		{"curl --url metadata/computeMetadata/v1/", []string{"http://metadata/computeMetadata/v1/"}},
 		{"curl --resolve badvalue https://api.vendor.example/", []string{"https://api.vendor.example/"}},
 		// A known value option still owns its next word, even an option-looking one.
 		{"curl -o --url=169.254.169.254 api.vendor.example/f", []string{"http://api.vendor.example/f"}},
-		{"curl 'unterminated 169.254.169.254", nil},
+		{"curl 'unterminated 169.254.169.254", []string{"http://169.254.169.254"}},
 		{"ls 169.254.169.254", nil},
 	} {
 		t.Run(tc.command, func(t *testing.T) {

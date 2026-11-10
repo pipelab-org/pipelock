@@ -25,15 +25,54 @@ const maxShellDestinationURLs = 16
 // already-split shell word. The scheme match is case-insensitive.
 var schemeURLRe = regexp.MustCompile(`(?i)(?:https?|wss?)://[^\s<>'"\\]+`)
 
-// leadingSchemeRe is an RFC 3986 scheme anchored at the start of a value. A
-// "://" later in the value (in a path or query) is not a scheme.
-var leadingSchemeRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*://`)
+// leadingSchemeRe is an RFC 3986 scheme and the slashes after it, anchored at
+// the start of a value. A "://" later in the value (in a path or query) is not
+// a scheme.
+var leadingSchemeRe = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9+.-]*):(/+)`)
+
+// curlSchemes are the URL schemes curl speaks. curl accepts one to three
+// slashes after a scheme ("http:/host" and "http:///host" both connect to
+// host); a single slash counts as a scheme only for these names, so a
+// host:/path operand is not mistaken for one.
+var curlSchemes = map[string]bool{
+	"dict": true, "file": true, "ftp": true, "ftps": true, "gopher": true,
+	"gophers": true, "http": true, "https": true, "imap": true, "imaps": true,
+	"ldap": true, "ldaps": true, "mqtt": true, "mqtts": true, "pop3": true,
+	"pop3s": true, "rtmp": true, "rtmpe": true, "rtmps": true, "rtmpt": true,
+	"rtmpte": true, "rtmpts": true, "rtsp": true, "scp": true, "sftp": true,
+	"smb": true, "smbs": true, "smtp": true, "smtps": true, "telnet": true,
+	"tftp": true, "ws": true, "wss": true,
+}
+
+// leadingScheme returns the lowercased scheme, the length of the scheme
+// prefix including its slashes, and how many slashes follow the colon.
+func leadingScheme(value string) (scheme string, prefixLen, slashes int, ok bool) {
+	m := leadingSchemeRe.FindStringSubmatch(value)
+	if m == nil {
+		return "", 0, 0, false
+	}
+	scheme, slashes = strings.ToLower(m[1]), len(m[2])
+	if slashes == 1 && !curlSchemes[scheme] {
+		return "", 0, 0, false
+	}
+	return scheme, len(m[0]), slashes, true
+}
+
+// hasLeadingScheme reports whether value starts with a URL scheme.
+func hasLeadingScheme(value string) bool {
+	_, _, _, ok := leadingScheme(value)
+	return ok
+}
 
 // webScheme reports whether value starts with a scheme schemeURLRe already
-// takes as a whole URL (http, https, ws, wss).
+// takes as a whole URL: http, https, ws or wss followed by exactly "//".
+// Other slash counts are scanned through authorityHost instead.
 func webScheme(value string) bool {
-	m := leadingSchemeRe.FindString(value)
-	switch strings.ToLower(strings.TrimSuffix(m, "://")) {
+	scheme, _, slashes, ok := leadingScheme(value)
+	if !ok || slashes != 2 {
+		return false
+	}
+	switch scheme {
 	case "http", "https", "ws", "wss":
 		return true
 	}
@@ -41,11 +80,13 @@ func webScheme(value string) bool {
 }
 
 // authorityHost returns the host[:port] a URL-like value connects to: an
-// anchored scheme is removed, the authority ends at the first "/?#", and any
-// userinfo before the last "@" inside it is dropped (curl's URL parser reads
-// it the same way).
+// anchored scheme and its slashes are removed, the authority ends at the
+// first "/?#", and any userinfo before the last "@" inside it is dropped
+// (curl's URL parser reads it the same way).
 func authorityHost(value string) string {
-	value = strings.TrimPrefix(value, leadingSchemeRe.FindString(value))
+	if _, n, _, ok := leadingScheme(value); ok {
+		value = value[n:]
+	}
 	if i := strings.IndexAny(value, "/?#"); i >= 0 {
 		value = value[:i]
 	}
@@ -173,10 +214,21 @@ func splitShellWords(source string) ([]string, bool) {
 func shellDestinationURLs(command string) (urls []string, over bool) {
 	words, ok := splitShellWords(command)
 	if !ok {
-		// The structure is not reliable. Still take explicit scheme URLs
-		// from the raw text, and do not guess a bare host.
-		words = []string{command}
-		return appendSchemeURLs(nil, map[string]struct{}{}, words)
+		// The structure is not reliable (ANSI-C quoting, a heredoc with an
+		// apostrophe). Still take explicit scheme URLs from the raw text,
+		// and any cloud-metadata address literal anywhere in it, without
+		// guessing other bare hosts.
+		seen := make(map[string]struct{})
+		urls, over = appendSchemeURLs(nil, seen, []string{command})
+		if over {
+			return nil, true
+		}
+		for _, host := range rawMetadataLiterals(command) {
+			if urls, over = addDestination(urls, seen, "http://"+host); over {
+				return nil, true
+			}
+		}
+		return urls, false
 	}
 	seen := make(map[string]struct{})
 	urls, over = appendSchemeURLs(nil, seen, words)
@@ -188,11 +240,25 @@ func shellDestinationURLs(command string) (urls []string, over bool) {
 
 func appendSchemeURLs(urls []string, seen map[string]struct{}, words []string) ([]string, bool) {
 	for _, word := range words {
-		for _, match := range schemeURLRe.FindAllString(word, -1) {
+		for _, loc := range schemeURLRe.FindAllStringIndex(word, -1) {
+			match := word[loc[0]:loc[1]]
 			var over bool
 			urls, over = addDestination(urls, seen, strings.TrimRight(match, ".,);"))
 			if over {
 				return nil, true
+			}
+			// The regex stops at a quote, backslash or angle bracket that
+			// quoting kept inside the word, which can end the match inside
+			// the userinfo: 'http://a.example<x@169.254.169.254/' connects
+			// to 169.254.169.254. Scan the authority curl would read too.
+			full := word[loc[0]:]
+			if i := strings.IndexAny(full, " \t\n"); i >= 0 {
+				full = full[:i]
+			}
+			if h := authorityHost(full); h != "" && h != authorityHost(match) {
+				if urls, over = addDestination(urls, seen, "http://"+h); over {
+					return nil, true
+				}
 			}
 		}
 	}
@@ -299,7 +365,7 @@ func appendCurlWgetHosts(urls []string, seen map[string]struct{}, words []string
 			}
 			continue
 		}
-		if leadingSchemeRe.MatchString(word) {
+		if hasLeadingScheme(word) {
 			// http(s) and ws(s) URLs are taken whole by the URL regex. Any
 			// other scheme curl or wget speaks (gopher, ftp, dict, ...)
 			// still connects somewhere: scan that host.
@@ -326,6 +392,45 @@ func appendCurlWgetHosts(urls []string, seen map[string]struct{}, words []string
 		}
 	}
 	return urls, false
+}
+
+// rawMetadataLiterals returns every cloud-metadata address literal in text,
+// in any spelling ParseIPLiteral accepts, bracketed when IPv6. It is the
+// fallback when the command cannot be split into words.
+func rawMetadataLiterals(text string) []string {
+	var out []string
+	seen := make(map[string]struct{})
+	fields := strings.FieldsFunc(text, func(r rune) bool { return !ipLiteralRune(r) })
+	for _, field := range fields {
+		candidates := []string{field, strings.Trim(field, "[]")}
+		if h, _, err := net.SplitHostPort(field); err == nil {
+			candidates = append(candidates, h)
+		}
+		for _, c := range candidates {
+			ip := scanner.ParseIPLiteral(c)
+			if ip == nil || !scanner.IsCloudMetadataIP(ip) {
+				continue
+			}
+			host := bracketHost(ip.String())
+			if _, dup := seen[host]; !dup {
+				seen[host] = struct{}{}
+				out = append(out, host)
+			}
+			break
+		}
+	}
+	return out
+}
+
+// ipLiteralRune reports whether r can appear in an IP literal in any spelling
+// ParseIPLiteral accepts: decimal, octal or hex IPv4 parts, IPv6 with
+// brackets, a port separator or a zone.
+func ipLiteralRune(r rune) bool {
+	switch {
+	case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F':
+		return true
+	}
+	return strings.ContainsRune("xX.:[]%", r)
 }
 
 // curlDestinationLongOpts are curl options whose value names a network
@@ -378,7 +483,7 @@ func curlDestinationTargets(opt, value string) []string {
 		if value == "" {
 			return nil
 		}
-		if leadingSchemeRe.MatchString(value) {
+		if hasLeadingScheme(value) {
 			if webScheme(value) {
 				return nil
 			}
@@ -571,7 +676,7 @@ func fetchOption(tool, name string) (takesValue, known bool) {
 }
 
 func looksLikeHostOperand(word string) bool {
-	if word == "" || strings.HasPrefix(word, "-") || leadingSchemeRe.MatchString(word) || strings.Contains(word, "@") || strings.ContainsAny(word, " \t") {
+	if word == "" || strings.HasPrefix(word, "-") || hasLeadingScheme(word) || strings.Contains(word, "@") || strings.ContainsAny(word, " \t") {
 		return false
 	}
 	host := word
@@ -598,6 +703,11 @@ func looksLikeHostOperand(word string) bool {
 		host = host[:i]
 	}
 	host = strings.TrimSuffix(host, ".")
+	// curl accepts every IPv4 spelling the URL standard does, including one
+	// dotless number (2852039166) and hex or octal parts.
+	if scanner.ParseIPLiteral(host) != nil {
+		return true
+	}
 	if !strings.Contains(host, ".") || strings.Contains(host, "..") {
 		return false
 	}

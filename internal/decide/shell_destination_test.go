@@ -225,6 +225,58 @@ func TestDecide_ShellDestinations(t *testing.T) {
 			wantScanner: scanner.ScannerSSRFMetadata,
 		},
 		{
+			name:        "unparseable ansi-c quoting still finds a metadata host",
+			command:     "curl 169.254.169.254/latest/meta-data/; echo $'it\\'s'",
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
+			name:        "unparseable heredoc apostrophe still finds a metadata host",
+			command:     "cat <<EOF\ndon't\nEOF\ncurl 169.254.169.254/latest/meta-data/",
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
+			name:        "unparseable trailing backslash still finds a metadata host",
+			command:     "curl 169.254.169.254/latest/meta-data/ \\",
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
+			name:    "unparseable heredoc without a destination stays allowed",
+			command: "cat <<EOF > notes.txt\ndon't forget\nEOF",
+			want:    Allow,
+		},
+		{
+			name:    "unparseable text with only a link-local mention stays allowed",
+			command: "cat <<EOF\nit's 169.254.10.10\nEOF",
+			want:    Allow,
+		},
+		{
+			name:        "single-slash scheme metadata url",
+			command:     "curl http:/169.254.169.254/latest/meta-data/",
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
+			name:        "triple-slash scheme metadata url",
+			command:     "curl http:///169.254.169.254/latest/meta-data/",
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
+			name:        "quoted angle bracket in userinfo hides metadata host",
+			command:     "curl 'http://api.vendor.example<x@169.254.169.254/latest/meta-data/'",
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
+			name:        "dotless ipv4 metadata operand",
+			command:     "curl 2852039166/latest/meta-data/",
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
 			name:    "benign url option value stays allowed",
 			command: "curl --url api.vendor.example/health",
 			want:    Allow,
