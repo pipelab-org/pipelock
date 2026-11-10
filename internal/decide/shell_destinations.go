@@ -192,35 +192,44 @@ func appendCurlWgetHosts(urls []string, seen map[string]struct{}, words []string
 	optionsDone := false
 	skipBare := false
 	ambiguous := false
-	urlNext := false
+	destNext := "" // curl destination option whose value is the next word
 	add := func(word string) bool {
 		var over bool
 		urls, over = addDestination(urls, seen, "http://"+word)
 		return over
 	}
+	addValue := func(opt, value string) bool {
+		for _, dest := range curlDestinationTargets(opt, value) {
+			if add(dest) {
+				return true
+			}
+		}
+		return false
+	}
 	for _, word := range words {
 		if isShellOperator(word) {
 			tool = ""
 			optionsDone = false
-			skipBare, ambiguous, urlNext = false, false, false
+			skipBare, ambiguous, destNext = false, false, ""
 			continue
 		}
 		if tool == "" {
 			if base := commandBase(word); base == "curl" || base == "wget" {
 				tool = base
 				optionsDone = false
-				skipBare, ambiguous, urlNext = false, false, false
+				skipBare, ambiguous, destNext = false, false, ""
 			}
 			continue
 		}
-		if urlNext {
-			// curl's --url value is the destination itself.
-			urlNext = false
-			if looksLikeHostOperand(word) && add(word) {
+		if destNext != "" {
+			opt := destNext
+			destNext = ""
+			if addValue(opt, word) {
 				return nil, true
 			}
 			continue
 		}
+		carry := false
 		if skipBare {
 			wasAmbiguous := ambiguous
 			skipBare, ambiguous = false, false
@@ -236,21 +245,28 @@ func appendCurlWgetHosts(urls []string, seen map[string]struct{}, words []string
 				}
 				continue
 			}
+			carry = true
 		}
 		if !optionsDone && isOptionWord(word) {
 			if tool == "curl" {
-				if word == "--url" {
-					urlNext = true
-					continue
-				}
-				if value, ok := strings.CutPrefix(word, "--url="); ok {
-					if looksLikeHostOperand(value) && add(value) {
+				if opt, value, attached, ok := curlDestinationOption(word); ok {
+					if !attached {
+						destNext = opt
+						continue
+					}
+					if addValue(opt, value) {
 						return nil, true
 					}
 					continue
 				}
 			}
 			skipBare, ambiguous, optionsDone = consumeFetchOption(tool, word)
+			// The unknown option before this one might take this word as
+			// its value, which makes the next word the URL: keep the
+			// literal-IP check alive for it.
+			if carry && skipBare {
+				ambiguous = true
+			}
 			continue
 		}
 		if !looksLikeHostOperand(word) {
@@ -261,6 +277,150 @@ func appendCurlWgetHosts(urls []string, seen map[string]struct{}, words []string
 		}
 	}
 	return urls, false
+}
+
+// curlDestinationLongOpts are curl options whose value names a network
+// destination the request will reach: the URL itself, a proxy, or an address
+// that overrides where a host connects (curl(1): --url, --proxy, --preproxy,
+// --proxy1.0, --socks4, --socks4a, --socks5, --socks5-hostname, --resolve,
+// --connect-to). Their values are scanned instead of skipped.
+var curlDestinationLongOpts = optSet(
+	"url", "proxy", "preproxy", "proxy1.0", "socks4", "socks4a", "socks5", "socks5-hostname", "resolve", "connect-to",
+)
+
+// curlDestinationOption reports whether word is a curl destination option.
+// It returns the canonical option name and, when the value is attached to the
+// word (--opt=value, -xvalue), that value.
+func curlDestinationOption(word string) (opt, value string, attached, ok bool) {
+	if rest, isLong := strings.CutPrefix(word, "--"); isLong {
+		name, v, hasValue := strings.Cut(rest, "=")
+		if _, known := curlDestinationLongOpts[name]; !known {
+			return "", "", false, false
+		}
+		return name, v, hasValue, true
+	}
+	// Short form: -x is --proxy. It may end a cluster of booleans (-sSx, value
+	// next) or carry its value glued (-xhost:3128, -sxhost:3128).
+	cluster := word[1:]
+	for i := 0; i < len(cluster); i++ {
+		letter := cluster[i : i+1]
+		if letter == "x" {
+			if i+1 == len(cluster) {
+				return "proxy", "", false, true
+			}
+			return "proxy", cluster[i+1:], true, true
+		}
+		if takes, known := fetchOption("curl", letter); !known || takes {
+			return "", "", false, false
+		}
+	}
+	return "", "", false, false
+}
+
+// curlDestinationTargets returns the host[:port] targets named by a curl
+// destination option value, bracketing IPv6 literals.
+func curlDestinationTargets(opt, value string) []string {
+	switch opt {
+	case "url":
+		if looksLikeHostOperand(value) {
+			return []string{value}
+		}
+		return nil
+	case "resolve":
+		// [+]HOST:PORT:ADDRESS[,ADDRESS]...
+		value = strings.TrimPrefix(value, "+")
+		rest, ok := cutHostPortPrefix(value)
+		if !ok {
+			return nil
+		}
+		var out []string
+		for _, addr := range strings.Split(rest, ",") {
+			if t := bracketHost(addr); t != "" {
+				out = append(out, t)
+			}
+		}
+		return out
+	case "connect-to":
+		// HOST1:PORT1:HOST2:PORT2; an empty HOST2 keeps the original host.
+		rest, ok := cutHostPortPrefix(value)
+		if !ok {
+			return nil
+		}
+		host2, port2 := rest, ""
+		if strings.HasPrefix(rest, "[") {
+			if end := strings.IndexByte(rest, ']'); end > 0 {
+				host2, port2 = rest[:end+1], strings.TrimPrefix(rest[end+1:], ":")
+			}
+		} else if i := strings.LastIndexByte(rest, ':'); i >= 0 {
+			host2, port2 = rest[:i], rest[i+1:]
+		}
+		t := bracketHost(host2)
+		if t == "" {
+			return nil
+		}
+		if port2 != "" {
+			t += ":" + port2
+		}
+		return []string{t}
+	default:
+		// Proxy forms: [scheme://][user:pass@]host[:port][/...]
+		if _, after, found := strings.Cut(value, "://"); found {
+			value = after
+		}
+		if at := strings.LastIndexByte(value, '@'); at >= 0 {
+			value = value[at+1:]
+		}
+		if i := strings.IndexByte(value, '/'); i >= 0 {
+			value = value[:i]
+		}
+		if value == "" {
+			return nil
+		}
+		if looksLikeHostOperand(value) || scanner.ParseIPLiteral(operandHost(value)) != nil {
+			return []string{value}
+		}
+		return nil
+	}
+}
+
+// cutHostPortPrefix splits "HOST:PORT:rest" (HOST may be a bracketed IPv6
+// literal or *) and returns the remainder after the second colon.
+func cutHostPortPrefix(value string) (rest string, ok bool) {
+	start := 0
+	if strings.HasPrefix(value, "[") {
+		end := strings.IndexByte(value, ']')
+		if end < 0 {
+			return "", false
+		}
+		start = end + 1
+	}
+	first := strings.IndexByte(value[start:], ':')
+	if first < 0 {
+		return "", false
+	}
+	first += start
+	second := strings.IndexByte(value[first+1:], ':')
+	if second < 0 {
+		return "", false
+	}
+	second += first + 1
+	return value[second+1:], true
+}
+
+// bracketHost returns host ready for a host[:port] operand: IPv6 literals in
+// brackets, other non-empty hosts unchanged.
+func bracketHost(host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return ""
+	}
+	if strings.HasPrefix(host, "[") {
+		return host
+	}
+	if strings.Contains(host, ":") {
+		return "[" + host + "]"
+	}
+	return host
 }
 
 // operandHost returns the host part of a bare host[:port][/path] operand,

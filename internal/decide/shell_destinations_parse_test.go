@@ -130,6 +130,25 @@ func TestShellDestinationExtractionOptions(t *testing.T) {
 		// Real curl booleans are in the table, so a following hostname is an operand.
 		{"curl --retry-connrefused --fail-early api.vendor.example/x", []string{"http://api.vendor.example/x"}},
 		{"curl --no-progress-meter 169.254.169.254/x", []string{"http://169.254.169.254/x"}},
+		// An unknown option might take the value option after it as its own
+		// value, which makes the next word the URL: a literal IP stays scanned.
+		{"curl --not-a-real-option -o 169.254.169.254", []string{"http://169.254.169.254"}},
+		{"curl --not-a-real-option -o out.txt api.vendor.example/f", []string{"http://api.vendor.example/f"}},
+		// Destination options: their values name where the request goes.
+		{"curl --resolve api.vendor.example:80:169.254.169.254 http://api.vendor.example/latest/", []string{"http://api.vendor.example/latest/", "http://169.254.169.254"}},
+		{"curl --resolve=+api.vendor.example:443:10.0.0.5,[fd00:ec2::254] https://api.vendor.example/", []string{"https://api.vendor.example/", "http://10.0.0.5", "http://[fd00:ec2::254]"}},
+		{"curl --connect-to api.vendor.example:80:169.254.169.254:80 http://api.vendor.example/", []string{"http://api.vendor.example/", "http://169.254.169.254:80"}},
+		{"curl --connect-to api.vendor.example:443::8443 https://api.vendor.example/", []string{"https://api.vendor.example/"}},
+		{"curl --connect-to ::[fd00:ec2::254]:80 http://api.vendor.example/", []string{"http://api.vendor.example/", "http://[fd00:ec2::254]:80"}},
+		{"curl --socks5 169.254.169.254:1080 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:1080"}},
+		{"curl -x 169.254.169.254:3128 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:3128"}},
+		{"curl -x169.254.169.254:3128 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:3128"}},
+		{"curl -sx 169.254.169.254:3128 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:3128"}},
+		{"curl --proxy=user:pw@169.254.169.254:3128 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:3128"}},
+		// socks5:// is not a scheme the URL regex takes; the destination option does.
+		{"curl --preproxy socks5://169.254.169.254:1080 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:1080"}},
+		{"curl -x proxy.corp.example:3128 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://proxy.corp.example:3128"}},
+		{"curl --resolve badvalue https://api.vendor.example/", []string{"https://api.vendor.example/"}},
 		// A known value option still owns its next word, even an option-looking one.
 		{"curl -o --url=169.254.169.254 api.vendor.example/f", []string{"http://api.vendor.example/f"}},
 		{"curl 'unterminated 169.254.169.254", nil},
