@@ -448,3 +448,34 @@ func BenchmarkTextDLPFragmentReplayComplete(b *testing.B) {
 		}
 	}
 }
+
+// A trim verifies each admitted replay descriptor once. Re-verifying every
+// pending descriptor on every trim made one scan at the descriptor cap do
+// quadratic decode work; the drain still checks the bytes it matches.
+func TestReassemblyTrimVerifiesAdmittedDescriptorOnce(t *testing.T) {
+	memo := &decodingMemo{reassemblyPlan: reassemblyMarkerPlan(t), reassemblyDeferred: true}
+	defer memo.releaseProjection()
+	text := "00000000/" + reassemblyBang(base64.RawStdEncoding.EncodeToString([]byte("MARK1234")))
+	p := memo.addReplayPayload(text, &assembledPayload{literal: text, digest: sha256.Sum256([]byte(text)), digestSet: true})
+	if p == nil {
+		t.Fatal("descriptor was not registered")
+	}
+	if id, fresh := memo.reassemblyRemember(text); !fresh || memo.reassemblyPendingReplay[id] != p {
+		t.Fatal("pending identity was not registered")
+	}
+	memo.trimReplayPayloads(nil)
+	if !p.admitted || !p.trimVerified || memo.inspectionIncomplete() {
+		t.Fatalf("first trim did not verify the admitted descriptor: admitted=%v verified=%v", p.admitted, p.trimVerified)
+	}
+	// Tamper after the first verification. A later trim does not decode it
+	// again, so it cannot notice; the drain must.
+	p.literal = text + "!"
+	memo.trimReplayPayloads(nil)
+	if memo.inspectionIncomplete() {
+		t.Fatal("a later trim re-decoded a verified admitted descriptor")
+	}
+	result := finishAssembled(TextDLPResult{Clean: true}, memo)
+	if result.Clean || !HasInspectionLimit(result.Matches) {
+		t.Fatalf("drain matched a descriptor whose digest no longer verifies: %+v", result)
+	}
+}
