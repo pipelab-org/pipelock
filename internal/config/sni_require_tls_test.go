@@ -4,6 +4,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -28,6 +29,57 @@ func TestForwardProxySNIRequireTLSValidation(t *testing.T) {
 	cfg.ForwardProxy.SNIRequireTLS = &requireTLS
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("explicit legacy opt-out with SNI verification disabled: %v", err)
+	}
+}
+
+// Several launchers (sandbox, MCP sandbox bridge, guard, diagnostics) turn the
+// forward proxy on after the config has been validated. The dependency check
+// must therefore hold whether or not forward_proxy.enabled is set in the file,
+// or require-TLS silently never runs once the launcher enables the proxy.
+func TestForwardProxySNIRequireTLSValidationWhenForwardProxyDisabled(t *testing.T) {
+	boolPtr := func(v bool) *bool { return &v }
+	tests := []struct {
+		name         string
+		verification *bool
+		requireTLS   *bool
+		wantErr      bool
+	}{
+		{name: "contradiction refused", verification: boolPtr(false), requireTLS: boolPtr(true), wantErr: true},
+		{name: "require with default verification", verification: nil, requireTLS: boolPtr(true), wantErr: false},
+		{name: "require with verification", verification: boolPtr(true), requireTLS: boolPtr(true), wantErr: false},
+		{name: "verification off without require", verification: boolPtr(false), requireTLS: boolPtr(false), wantErr: false},
+		{name: "verification off with require omitted", verification: boolPtr(false), requireTLS: nil, wantErr: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.ForwardProxy.Enabled = false
+			cfg.ForwardProxy.SNIVerification = tc.verification
+			cfg.ForwardProxy.SNIRequireTLS = tc.requireTLS
+			err := cfg.Validate()
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "sni_require_tls requires") {
+					t.Fatalf("Validate() error = %v, want require-TLS dependency refusal", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate() error = %v, want nil", err)
+			}
+		})
+	}
+}
+
+// Load is the path both startup and hot reload take, so a file that leaves the
+// forward proxy disabled must still be refused with the contradictory pair.
+func TestLoadRefusesSNIRequireTLSWithoutVerificationWhenForwardProxyDisabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	body := "forward_proxy:\n  enabled: false\n  sni_verification: false\n  sni_require_tls: true\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "sni_require_tls requires") {
+		t.Fatalf("Load() error = %v, want require-TLS dependency refusal", err)
 	}
 }
 
