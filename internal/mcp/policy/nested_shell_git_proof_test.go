@@ -34,6 +34,9 @@ func TestNestedShellGitProofSeparator(t *testing.T) {
 		{`bash -O extglob -c "echo hi; git fetch --har"`, true},
 		{`bash -co errexit "echo hi; git fetch --har"`, true},
 		{`bash -oc errexit "echo hi; git status"`, false},
+		// A script glued to the -c cluster is script text too.
+		{`bash -c"echo hi; git fetch --har"`, true},
+		{`bash -c"echo hi; git status"`, false},
 		{`bash -Oc extglob "git log --oneline; echo done"`, false},
 		{`sudo bash -c "echo hi; git fetch --har"`, true},
 		{`bash -c "echo hi && git fetch --har"`, true},
