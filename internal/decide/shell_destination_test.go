@@ -281,6 +281,18 @@ func TestDecide_ShellDestinations(t *testing.T) {
 			wantScanner: scanner.ScannerEntropy,
 		},
 		{
+			name:        "unparseable proxy userinfo still hits the metadata floor",
+			command:     "curl -x a%zz@169.254.169.254:3128 https://api.vendor.example/",
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
+			name:        "unparseable operand userinfo still hits the metadata floor",
+			command:     "curl a%zz@169.254.169.254/latest/meta-data/",
+			want:        Deny,
+			wantScanner: scanner.ScannerSSRFMetadata,
+		},
+		{
 			name:    "low-entropy proxy userinfo stays allowed",
 			command: "curl -x svc:secret@proxy.corp.example:3128 https://api.vendor.example/",
 			want:    Allow,

@@ -106,15 +106,21 @@ func authority(value string) string {
 	return value
 }
 
-// scannedAuthority is the destination handed to the scanner for a URL-like
-// value whose host is non-empty: the authority with its userinfo kept, so a
-// credential in it still reaches the URL credential checks the same way it
-// does for an explicit http:// URL. It returns "" when there is no host.
-func scannedAuthority(value string) string {
-	if authorityHost(value) == "" {
-		return ""
+// scannedAuthorities are the destinations handed to the scanner for a
+// URL-like value: the host alone, so the hook's metadata floor reads it even
+// when the userinfo would make the URL unparseable, and then the authority
+// with its userinfo kept, so a credential in it still reaches the URL
+// credential checks the way it does for an explicit http:// URL. It returns
+// nil when there is no host.
+func scannedAuthorities(value string) []string {
+	host := authorityHost(value)
+	if host == "" {
+		return nil
 	}
-	return authority(value)
+	if full := authority(value); full != host {
+		return []string{host, full}
+	}
+	return []string{host}
 }
 
 // shellProofWords in internal/mcp/policy is the quote-aware reader the policy
@@ -394,8 +400,10 @@ func appendCurlWgetHosts(urls []string, seen map[string]struct{}, words []string
 			// other scheme curl or wget speaks (gopher, ftp, dict, ...)
 			// still connects somewhere: scan that host.
 			if !webScheme(word) {
-				if a := scannedAuthority(word); a != "" && add(a) {
-					return nil, true
+				for _, a := range scannedAuthorities(word) {
+					if add(a) {
+						return nil, true
+					}
 				}
 			}
 			continue
@@ -403,8 +411,12 @@ func appendCurlWgetHosts(urls []string, seen map[string]struct{}, words []string
 		if strings.Contains(word, "@") {
 			// user[:pass]@host[:port][/path]: curl connects to the host after
 			// the userinfo, so scan that host.
-			if looksLikeHostOperand(authorityHost(word)) && add(authority(word)) {
-				return nil, true
+			if looksLikeHostOperand(authorityHost(word)) {
+				for _, a := range scannedAuthorities(word) {
+					if add(a) {
+						return nil, true
+					}
+				}
 			}
 			continue
 		}
@@ -516,10 +528,7 @@ func curlDestinationTargets(opt, value string) []string {
 			if webScheme(value) {
 				return nil
 			}
-			if a := scannedAuthority(value); a != "" {
-				return []string{a}
-			}
-			return nil
+			return scannedAuthorities(value)
 		}
 		return []string{value}
 	case "resolve":
@@ -566,10 +575,7 @@ func curlDestinationTargets(opt, value string) []string {
 		// emitted (single labels included) and the scan decides; a value
 		// that is not a valid host fails there instead of being skipped.
 		// Userinfo stays in the scanned value for the credential checks.
-		if value = scannedAuthority(value); value == "" {
-			return nil
-		}
-		return []string{value}
+		return scannedAuthorities(value)
 	}
 }
 

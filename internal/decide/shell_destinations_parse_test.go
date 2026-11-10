@@ -144,7 +144,7 @@ func TestShellDestinationExtractionOptions(t *testing.T) {
 		{"curl -x 169.254.169.254:3128 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:3128"}},
 		{"curl -x169.254.169.254:3128 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:3128"}},
 		{"curl -sx 169.254.169.254:3128 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:3128"}},
-		{"curl --proxy=user:pw@169.254.169.254:3128 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://user:pw@169.254.169.254:3128"}},
+		{"curl --proxy=user:pw@169.254.169.254:3128 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:3128", "http://user:pw@169.254.169.254:3128"}},
 		// socks5:// is not a scheme the URL regex takes; the destination option does.
 		{"curl --preproxy socks5://169.254.169.254:1080 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://169.254.169.254:1080"}},
 		{"curl -x proxy.corp.example:3128 https://api.vendor.example/", []string{"https://api.vendor.example/", "http://proxy.corp.example:3128"}},
@@ -157,13 +157,15 @@ func TestShellDestinationExtractionOptions(t *testing.T) {
 		{"curl -x 169.254.169.254:3128/?u=http://a.example https://api.vendor.example/", []string{"http://a.example", "https://api.vendor.example/", "http://169.254.169.254:3128"}},
 		// Non-web schemes still connect somewhere: their host is scanned.
 		{"curl gopher://169.254.169.254:80/_GET", []string{"http://169.254.169.254:80"}},
-		{"curl ftp://user:pw@169.254.169.254/pub", []string{"http://user:pw@169.254.169.254"}},
+		{"curl ftp://user:pw@169.254.169.254/pub", []string{"http://169.254.169.254", "http://user:pw@169.254.169.254"}},
 		{"curl --url dict://169.254.169.254:11211/stat", []string{"http://169.254.169.254:11211"}},
 		{"curl ftp://ftp.vendor.example/pub/file.tgz", []string{"http://ftp.vendor.example"}},
 		// Userinfo on a bare operand: curl connects to the host after it, and
-		// the userinfo stays in the scanned value for the credential checks.
-		{"curl user:pw@169.254.169.254/latest/", []string{"http://user:pw@169.254.169.254"}},
-		{"curl user@api.vendor.example/x", []string{"http://user@api.vendor.example"}},
+		// the userinfo stays in a second scanned value for the credential
+		// checks; the host alone is scanned first so the metadata floor reads
+		// it even when the userinfo makes the URL unparseable.
+		{"curl user:pw@169.254.169.254/latest/", []string{"http://169.254.169.254", "http://user:pw@169.254.169.254"}},
+		{"curl user@api.vendor.example/x", []string{"http://api.vendor.example", "http://user@api.vendor.example"}},
 		// curl accepts one or three slashes after a scheme it knows.
 		{"curl http:/169.254.169.254/latest/", []string{"http://169.254.169.254"}},
 		{"curl HTTP:/169.254.169.254/latest/", []string{"http://169.254.169.254"}},
