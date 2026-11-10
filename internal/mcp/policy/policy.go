@@ -1947,7 +1947,10 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			// --form (-F, multipart), --upload-file (-T), explicit POST,
 			// wget's --post-data / --post-file / --body-data / --body-file.
 			// round-4 of the pre-tag gate found `curl --form` bypassed the earlier pattern.
-			ArgPattern: `(?i)\b(curl|wget)\b.*(-d\s|-F\s|-T\s|--data(?:-binary|-raw|-urlencode)?\b|--form\b|--upload-file\b|--post-data\b|--post-file\b|--body-data\b|--body-file\b|-X\s+POST|--json\b|--form-string\b)|\bcurl\b.*\s(?-i:-[a-zA-Z0-9]+[dFT])`,
+			// Short flags are case-sensitive: -f fails, -D dumps headers and
+			// -t is the telnet option. Long options and the tool name stay
+			// case-insensitive. -X is case-sensitive so -x (proxy) is not POST.
+			ArgPattern: `(?i)\b(curl|wget)\b.*(?:(?-i:-d\s|-F\s|-T\s)|--data(?:-binary|-raw|-urlencode)?\b|--form\b|--upload-file\b|--post-data\b|--post-file\b|--body-data\b|--body-file\b|(?-i:-X)\s+POST|--json\b|--form-string\b)|\bcurl\b.*\s(?-i:-[a-zA-Z0-9]+[dFT])`,
 		},
 		{
 			Name:        "Reverse Shell",

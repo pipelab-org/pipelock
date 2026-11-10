@@ -526,13 +526,17 @@ func OperatorHintFor(label string) string {
 // entropy, while ScannerDenialOfWallet distinguishes budget-limit reasons.
 // Every other label falls through to the label-keyed table. This is the single
 // place that disambiguation lives, so explain, audit, and future consumers agree.
-// stripNestedURLReasonPrefix removes the "nested URL in query parameter %q: "
-// prefix so guidance routes on the INNER scanner reason. The parameter key is
+// stripNestedURLReasonPrefix removes the nested-URL parameter prefix so
+// guidance routes on the INNER scanner reason. Current reasons name the
+// parameter by position. Older reasons quoted the parameter key. That key is
 // attacker-chosen, and the SSRF routing below matches substrings such as
-// "metadata"; without this, a request naming its parameter "metadata" would be
-// explained with the immutable cloud-metadata guidance no matter what the
-// nested destination actually was.
+// "metadata"; without the strip, a stored reason whose parameter was named
+// "metadata" would be explained with the immutable cloud-metadata guidance
+// no matter what the nested destination actually was.
 func stripNestedURLReasonPrefix(reason string) string {
+	if inner, ok := stripNestedURLPositionPrefix(reason); ok {
+		return inner
+	}
 	open := nestedURLReasonPrefix + " \""
 	if !strings.HasPrefix(reason, open) {
 		return reason
@@ -557,6 +561,25 @@ func stripNestedURLReasonPrefix(reason string) string {
 		return reason
 	}
 	return reason
+}
+
+func stripNestedURLPositionPrefix(reason string) (string, bool) {
+	open := nestedURLReasonPrefix + " at position "
+	if !strings.HasPrefix(reason, open) {
+		return "", false
+	}
+	rest := reason[len(open):]
+	if rest == "" || rest[0] < '0' || rest[0] > '9' {
+		return "", false
+	}
+	i := 0
+	for i < len(rest) && rest[i] >= '0' && rest[i] <= '9' {
+		i++
+	}
+	if !strings.HasPrefix(rest[i:], ": ") {
+		return "", false
+	}
+	return rest[i+2:], true
 }
 
 // IsQueryEntropyResult reports whether an entropy finding came from a query
@@ -1167,9 +1190,10 @@ const nestedURLBudgetAgentReason = "a destination named inside this request coul
 func annotateNestedURLGuidance(g RemediationGuidance, label, reason, stripped string) RemediationGuidance {
 	// A resolution timeout already carries its own guidance and must not be
 	// annotated with the destination-knob sentence: no allowlist lifts a timeout.
-	// Test the STRIPPED reason, never the raw one. The raw reason still carries
-	// the query key, which the client chooses, so matching on it let a parameter
-	// named after the budget suppress the sentence on a genuine destination block.
+	// Test the STRIPPED reason, never the raw one. Historical reasons quoted the
+	// query key, which the client chooses, so matching on the raw text let a
+	// parameter named after the budget suppress the sentence on a genuine
+	// destination block.
 	if !containsLowerASCII(reason, "nested url in query parameter") {
 		return g
 	}

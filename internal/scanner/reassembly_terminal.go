@@ -267,6 +267,9 @@ type (
 		produced      map[assembledIdentity]struct{}
 		admitted      bool
 		admissionOnly bool
+		// stopped ends later terminal work because the caller context ended.
+		// It does not mean the decoded-byte allowance was exhausted.
+		stopped bool
 	}
 	assembledScan struct {
 		p         *reassemblyPlan
@@ -304,6 +307,10 @@ func assembledOrigin(text string, position assembledPosition, n int) reassemblyR
 }
 
 func (s *assembledScan) literal(codec, phase, symbols, end int, hit reassemblyNeedle) {
+	if s.budget != nil && s.budget.stopped {
+		s.result.stopped = true
+		return
+	}
 	id := hit.pattern
 	a := s.p.assembled
 	c := reassemblyCodecs[codec]
@@ -336,9 +343,38 @@ type assembledLane struct {
 	retained      bool
 }
 
+// strideCanceled reports caller cancellation at a fixed byte stride.
+// A nil context, or a context that is still live, keeps the walk going.
+// The flag is not an inspection limit and must not be cached as one.
+// It reads Done rather than Err, like terminalCanceled: a repeated scan
+// skips walks an earlier scan proved empty, so Err calls here would make
+// the number of context checks differ from scan to scan. A context closes
+// Done whenever Err reports an error, so cancellation is still observed.
+func (b *assembledBudget) strideCanceled() bool {
+	if b == nil {
+		return false
+	}
+	// A stop already recorded holds even without a memo to re-check.
+	if b.stopped {
+		return true
+	}
+	if b.memo == nil {
+		return false
+	}
+	if b.memo.terminalCanceled() {
+		b.stopped = true
+		return true
+	}
+	return false
+}
+
 func (s *assembledScan) searchLane(codec, phase, id int) {
 	if s.budget.admissionOnly {
 		s.budget.admitted = true
+		return
+	}
+	if s.budget.stopped {
+		s.result.stopped = true
 		return
 	}
 	if s.budget.incomplete {
@@ -361,7 +397,16 @@ func (s *assembledScan) searchLane(codec, phase, id int) {
 		}
 		data := make([]byte, 0)
 		decodedByte := 0
-		assembledReplay(s.text, codec, 0, len(s.text), uint8(phase*reassemblyCodecs[codec].width&0xff), func(b byte, _ int) bool {
+		nextCancel := responseBodyContextCheckBytes
+		replayStopped := false
+		assembledReplay(s.text, codec, 0, len(s.text), uint8(phase*reassemblyCodecs[codec].width&0xff), func(b byte, rawEnd int) bool {
+			if rawEnd >= nextCancel {
+				nextCancel = rawEnd + responseBodyContextCheckBytes
+				if s.budget.strideCanceled() {
+					replayStopped = true
+					return false
+				}
+			}
 			if !s.budget.charge(s.charges, codec, phase, decodedByte) {
 				return false
 			}
@@ -371,6 +416,11 @@ func (s *assembledScan) searchLane(codec, phase, id int) {
 		})
 		if s.budget.incomplete {
 			s.result.incomplete = true
+			return
+		}
+		// A partial replay is not a screened lane and is not a verified miss.
+		if replayStopped || s.budget.stopped {
+			s.result.stopped = true
 			return
 		}
 		lane = &assembledLane{view: string(data)}
@@ -457,6 +507,10 @@ func assembledLayer(p *reassemblyPlan, text string, budget *assembledBudget, ski
 	}
 	scan := assembledScan{p: p, text: text, budget: budget}
 	for codec := range reassemblyCodecs {
+		if budget.stopped {
+			scan.result.stopped = true
+			return scan.result
+		}
 		if skip&(1<<uint(codec)) != 0 {
 			continue
 		}
@@ -490,7 +544,15 @@ func assembledLayer(p *reassemblyPlan, text string, budget *assembledBudget, ski
 				scan.searchLane(codec, phase, id)
 			}
 		}
+		nextCancel := responseBodyContextCheckBytes
 		for i := range len(text) {
+			if i >= nextCancel {
+				nextCancel = i + responseBodyContextCheckBytes
+				if budget.strideCanceled() {
+					scan.result.stopped = true
+					return scan.result
+				}
+			}
 			v := c.values[text[i]]
 			if v < 0 {
 				continue
@@ -529,6 +591,7 @@ func assembledLayer(p *reassemblyPlan, text string, budget *assembledBudget, ski
 		}
 	}
 	scan.result.incomplete = budget.incomplete
+	scan.result.stopped = budget.stopped
 	return scan.result
 }
 
