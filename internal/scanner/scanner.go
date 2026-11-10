@@ -1174,6 +1174,13 @@ func (s *Scanner) shellPrivateExempt(ip net.IP) bool {
 	if len(s.shellPrivateCIDRs) == 0 || ip == nil {
 		return false
 	}
+	// The ranges contain cloud-metadata addresses (100.100.100.200 in
+	// 100.64.0.0/10, fd00:ec2::254 in fc00::/7). Never exempt one, in any
+	// embedded form, so this option cannot admit metadata even for a caller
+	// that skips the shell decision's own metadata refusal.
+	if IsCloudMetadataIP(ip) {
+		return false
+	}
 	blocked := 0
 	for _, form := range destination.SSRFForms(ip) {
 		if form == nil || !s.isRawCoreCIDRBlocked(form) {

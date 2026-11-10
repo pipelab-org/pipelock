@@ -11,9 +11,8 @@ import (
 )
 
 // TestShellPrivateLiterals_CoreFloor pins the shell scanner's allowlist.
-// Metadata addresses that sit inside those prefixes pass this floor. The
-// shell decision refuses them before the scan; without that refusal the
-// allowlisted scan would admit them.
+// Metadata addresses that sit inside those prefixes stay refused by the
+// scanner itself, independently of the shell decision's own refusal.
 func TestShellPrivateLiterals_CoreFloor(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.ApplyDefaults()
@@ -43,7 +42,9 @@ func TestShellPrivateLiterals_CoreFloor(t *testing.T) {
 		{name: "unspecified", url: "http://0.0.0.0:5173", allowed: true},
 		{name: "cgnat", url: "http://100.64.0.10/", allowed: true},
 		{name: "ula", url: "http://[fd00::1]/", allowed: true},
-		{name: "alibaba inside cgnat", url: "http://100.100.100.200/latest/meta-data/", allowed: true},
+		{name: "alibaba inside cgnat", url: "http://100.100.100.200/latest/meta-data/", allowed: false},
+		{name: "aws ipv6 metadata inside ula", url: "http://[fd00:ec2::254]/latest/meta-data/", allowed: false},
+		{name: "mapped alibaba inside cgnat", url: "http://[::ffff:100.100.100.200]/latest/", allowed: false},
 		{name: "link local", url: "http://169.254.10.10/", allowed: false, scanner: ScannerCoreSSRF},
 		{name: "metadata", url: "http://169.254.169.254/latest/meta-data/", allowed: false, scanner: ScannerCoreSSRF},
 		{
