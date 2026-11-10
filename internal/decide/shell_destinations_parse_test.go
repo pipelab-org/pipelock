@@ -122,6 +122,16 @@ func TestShellDestinationExtractionOptions(t *testing.T) {
 		{"curl 169.254.169.254:/x", []string{"http://169.254.169.254:/x"}},
 		{"curl https://api.vendor.example/a https://api.vendor.example/a", []string{"https://api.vendor.example/a"}},
 		{"curl 'https://api.vendor.example/q", []string{"https://api.vendor.example/q"}},
+		// An option word after an unknown option is processed as an option.
+		{"curl --not-a-real-option --url=169.254.169.254/latest/meta-data/", []string{"http://169.254.169.254/latest/meta-data/"}},
+		{"curl --not-a-real-option --url 169.254.169.254/latest/", []string{"http://169.254.169.254/latest/"}},
+		{"curl --not-a-real-option -- 169.254.169.254/x", []string{"http://169.254.169.254/x"}},
+		{"curl --not-a-real-option --also-not-real api.vendor.example/x", nil},
+		// Real curl booleans are in the table, so a following hostname is an operand.
+		{"curl --retry-connrefused --fail-early api.vendor.example/x", []string{"http://api.vendor.example/x"}},
+		{"curl --no-progress-meter 169.254.169.254/x", []string{"http://169.254.169.254/x"}},
+		// A known value option still owns its next word, even an option-looking one.
+		{"curl -o --url=169.254.169.254 api.vendor.example/f", []string{"http://api.vendor.example/f"}},
 		{"curl 'unterminated 169.254.169.254", nil},
 		{"ls 169.254.169.254", nil},
 	} {

@@ -189,7 +189,7 @@ func TestDecide_ShellDestinations(t *testing.T) {
 			want:    Deny,
 		},
 		{
-			name:    "literal ip after a real but unlisted curl flag is scanned",
+			name:    "literal ip after a boolean curl flag is scanned",
 			command: "curl --retry-connrefused 169.254.169.254/latest/meta-data/",
 			want:    Deny,
 		},
