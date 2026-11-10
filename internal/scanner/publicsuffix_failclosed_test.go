@@ -103,8 +103,10 @@ func TestPublicSuffixLookupErrorClasses(t *testing.T) {
 }
 
 // The invalid-suffix error is a real EffectiveTLDPlusOne return. x/net v0.62.0
-// does not produce it for a host the empty-label check accepts, so the class
-// is applied to a normal host with that error. A cannot-derive host stays benign.
+// does not produce it for any host the empty-label check accepts, so no host
+// can drive it through checkSubdomainEntropy; the decision it reaches is the
+// unexpectedPublicSuffixLookup predicate, asserted here. A cannot-derive host
+// stays benign. The empty-label class is covered end to end above.
 func TestPublicSuffixInvalidSuffixClassFailsClosed(t *testing.T) {
 	t.Parallel()
 	const host = "api.vendor.example"
@@ -122,27 +124,6 @@ func TestPublicSuffixInvalidSuffixClassFailsClosed(t *testing.T) {
 	empty := errors.New(`publicsuffix: empty label in domain "foo..example"`)
 	if !unexpectedPublicSuffixLookup("foo..example", empty) {
 		t.Fatal("empty-label error was treated as benign")
-	}
-
-	// No host in this set produces the invalid-suffix class. If one ever does,
-	// the lookup must block it.
-	for _, candidate := range []string{
-		"www.ck", "foo.www.ck", "www.www.ck", "test.ck", "b.test.ck",
-		"c.mm", "b.c.mm", "com", "github.io", "api.vendor.example",
-		".com", "com.", "com..au", "foo..bar",
-	} {
-		class := publicSuffixErrorClass(candidate)
-		if class != publicSuffixClassInvalid {
-			continue
-		}
-		cfg := testConfig()
-		cfg.DLP.Patterns = nil
-		s := MustNew(cfg)
-		t.Cleanup(s.Close)
-		got := s.checkSubdomainEntropy(candidate)
-		if got.Allowed || got.Reason != publicSuffixLookupFailedReason {
-			t.Fatalf("%s invalid-suffix lookup allowed: %+v", candidate, got)
-		}
 	}
 }
 

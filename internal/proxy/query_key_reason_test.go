@@ -5,7 +5,6 @@ package proxy
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -69,29 +68,10 @@ func TestQueryKeyBlockOmitsCanaryFromReasonReceiptAndBody(t *testing.T) {
 	assertCanaryAbsent(t, "fetch body", fetchRec.Body.String(), canary)
 	assertCanaryAbsent(t, "fetch headers", headerText(fetchRec.Header()), canary)
 
-	lc := net.ListenConfig{}
-	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	srv := &http.Server{
-		Handler:           p.buildHandler(p.buildMux()),
-		ReadHeaderTimeout: 5 * time.Second,
-		BaseContext: func(_ net.Listener) context.Context {
-			return ctx
-		},
-	}
-	go func() { _ = srv.Serve(ln) }()
-	t.Cleanup(func() {
-		cancel()
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer shutdownCancel()
-		_ = srv.Shutdown(shutdownCtx)
-		_ = ln.Close()
-	})
+	srv := httptest.NewServer(p.buildHandler(p.buildMux()))
+	t.Cleanup(srv.Close)
 
-	conn, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(t.Context(), "tcp", ln.Addr().String())
+	conn, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(t.Context(), "tcp", srv.Listener.Addr().String())
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
