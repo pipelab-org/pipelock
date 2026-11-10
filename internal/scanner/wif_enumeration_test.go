@@ -117,7 +117,7 @@ func TestFirstWIFCandidateMatchesRegexRestart(t *testing.T) {
 	}
 	for _, text := range texts {
 		wantStart, wantEnd, wantOK := regexWIFSpan(text, validateWIF)
-		gotStart, gotEnd, gotOK := firstWIFCandidate(text, nil, func(start, end int) bool { return validateWIF(text[start:end]) })
+		gotStart, gotEnd, gotOK := firstWIFCandidate(text, func(start, end int) bool { return validateWIF(text[start:end]) })
 		if gotOK != wantOK || gotStart != wantStart || gotEnd != wantEnd {
 			t.Fatalf("enumerator %d:%d %v, regex restart %d:%d %v for %q", gotStart, gotEnd, gotOK, wantStart, wantEnd, wantOK, text)
 		}
@@ -129,7 +129,7 @@ func TestFirstWIFCandidateMatchesRegexRestart(t *testing.T) {
 func TestFirstWIFCandidateVisitsEachStartOnce(t *testing.T) {
 	text := strings.Repeat("K", 4096) + " " + strings.Repeat("5", 100) + "-" + strings.Repeat("L", 51)
 	calls := 0
-	if _, _, ok := firstWIFCandidate(text, nil, func(int, int) bool { calls++; return false }); ok {
+	if _, _, ok := firstWIFCandidate(text, func(int, int) bool { calls++; return false }); ok {
 		t.Fatal("rejecting acceptor produced a span")
 	}
 	if want := (4096 - wifCompressedLen + 1) + (100 - wifUncompressedLen + 1); calls != want {

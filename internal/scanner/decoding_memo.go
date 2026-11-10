@@ -69,9 +69,6 @@ type decodingMemo struct {
 	reassemblySeen               map[string]int
 	reassemblyFindings           []TextDLPMatch
 
-	// scanCtx lets terminal finalization stop when the caller cancels.
-	// A nil context means the caller did not bound the scan.
-	scanCtx         context.Context
 	keywordPresence map[keywordPresenceKey]bool
 	keywordMode     bool
 	keywordBudget   *keywordWorkBudget
@@ -159,13 +156,6 @@ type decodedMatchKey struct {
 }
 
 func (k decodedMatchKey) match(normalized string, lowered *dlpLoweredBytes) []TextDLPMatch {
-	return k.matchWithDecodes(normalized, lowered, nil)
-}
-
-// matchWithDecodes is match with a decoding memo for configured patterns, so a
-// caller's cancellation reaches the pattern walk. Core patterns ignore the
-// memo, as match always has. Every decoded-match path selects patterns here.
-func (k decodedMatchKey) matchWithDecodes(normalized string, lowered *dlpLoweredBytes, decodes *decodingMemo) []TextDLPMatch {
 	if k.core {
 		return k.scanner.matchCoreDLPPatternsLowered(normalized, k.encoding, lowered)
 	}
@@ -173,7 +163,7 @@ func (k decodedMatchKey) matchWithDecodes(normalized string, lowered *dlpLowered
 	if k.cardOnly {
 		patterns = textDLPCardPatterns
 	}
-	return k.scanner.matchDLPPatternsLoweredWithDecodes(normalized, k.encoding, k.text, lowered, patterns, decodes)
+	return k.scanner.matchDLPPatternsLowered(normalized, k.encoding, k.text, lowered, patterns)
 }
 
 // sharedDecodes lets the scans of one message's views reuse each other's
@@ -265,13 +255,6 @@ func (s *sharedDecodes) decode(key decodingMemoKey) ([]decodedResult, bool, bool
 }
 
 func (s *sharedDecodes) matchDecoded(key decodedMatchKey) []TextDLPMatch {
-	return s.matchDecodedContext(key, nil)
-}
-
-// matchDecodedContext is matchDecoded with the caller's cancellation. A nil
-// context keeps the cached result. A context that has already ended is not
-// stored: the walk may have stopped before every candidate was judged.
-func (s *sharedDecodes) matchDecodedContext(key decodedMatchKey, ctx context.Context) []TextDLPMatch {
 	filter := key.scanner.dlpPreFilter
 	if key.core {
 		filter = key.scanner.core.dlpPreFilter
@@ -306,14 +289,7 @@ func (s *sharedDecodes) matchDecodedContext(key decodedMatchKey, ctx context.Con
 	if !key.cardOnly {
 		lowered = s.loweredFor(normalized)
 	}
-	var decodes *decodingMemo
-	if ctx != nil {
-		decodes = &decodingMemo{scanCtx: ctx}
-	}
-	matches := key.matchWithDecodes(normalized, &lowered, decodes)
-	if ctx != nil && ctx.Err() != nil {
-		return slices.Clone(matches)
-	}
+	matches := key.match(normalized, &lowered)
 	s.mu.Lock()
 	s.store.retainDecodedMatches(key, matches)
 	s.mu.Unlock()
@@ -641,10 +617,6 @@ func (m *decodingMemo) matchDecodedCore(sc *Scanner, text, encoding string) []Te
 
 func (m *decodingMemo) matchDecodedKey(key decodedMatchKey) []TextDLPMatch {
 	if m != nil && m.keywordMode && !key.core {
-		if m.scanCtx != nil && m.scanCtx.Err() != nil {
-			m.reassemblyIncomplete = true
-			return nil
-		}
 		normalized := m.normalize(key.text)
 		var lowered dlpLoweredBytes
 		lowered.add(normalized)
@@ -661,25 +633,15 @@ func (m *decodingMemo) matchDecodedKey(key decodedMatchKey) []TextDLPMatch {
 		return key.match(normalized, &lowered)
 	}
 	if m.shared != nil {
-		return m.shared.matchDecodedContext(key, m.scanCtx)
+		return m.shared.matchDecoded(key)
 	}
 	if cached, ok := m.decodedMatches[key]; ok {
 		return slices.Clone(cached)
 	}
-	if m.scanCtx != nil && m.scanCtx.Err() != nil {
-		m.reassemblyIncomplete = true
-		return nil
-	}
 	normalized := m.normalize(key.text)
 	var lowered dlpLoweredBytes
 	lowered.add(normalized)
-	matches := key.matchWithDecodes(normalized, &lowered, m)
-	if m.scanCtx != nil && m.scanCtx.Err() != nil {
-		// A walk that stopped on cancellation is partial. Caching it would
-		// make a later lookup look like a verified negative.
-		m.reassemblyIncomplete = true
-		return slices.Clone(matches)
-	}
+	matches := key.match(normalized, &lowered)
 	m.retainDecodedMatches(key, matches)
 	return slices.Clone(matches)
 }

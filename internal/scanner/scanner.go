@@ -467,10 +467,7 @@ type compiledPattern struct {
 	providerPrefixRE    *regexp.Regexp
 	severity            string
 	validate            func(string) bool // post-match checksum (nil = regex-only)
-	// stopMatch ends a multi-match walk. It is set on a per-scan copy, never
-	// on a pattern shared by concurrent scans.
-	stopMatch   func() bool
-	genericCard bool // validator provenance, never a display-name exemption
+	genericCard         bool              // validator provenance, never a display-name exemption
 	// cardPrefixRetry marks the canonical card rule with its luhn validator.
 	// Its failed greedy hits retry shorter candidates (jsonnumber.AcceptedCardEnd).
 	cardPrefixRetry bool
