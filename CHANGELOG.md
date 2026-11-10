@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Document how SSH and other non-HTTP egress is declined through the forward proxy and `pipelock sandbox`, including the optional `forward_proxy.sni_require_tls` check and a tool-policy warning rule that must be appended to an existing rules list.
+- Verify each admitted replay descriptor once per text DLP scan so later trims skip already-checked views. Large encoded bodies finish sooner; drain still checks the digest of every matched view. ([#2173](https://github.com/pipelab-org/pipelock/pull/2173))
+
 ## [3.8.0] - 2026-11-09
 
 ### Breaking Changes / Upgrade Notes
