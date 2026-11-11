@@ -5,9 +5,11 @@ package scanner_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
-	"math/rand/v2"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -47,7 +49,6 @@ func BenchmarkTextDLPThroughput(b *testing.B) {
 // throughputBody returns deterministic, credential-free text of about n bytes.
 func throughputBody(shape string, n int) string {
 	words := []string{"the", "agent", "reads", "a", "document", "about", "river", "pipes", "valve", "pressure", "and", "flow"}
-	r := rand.New(rand.NewPCG(3, 4))
 	var b strings.Builder
 	for i := 0; b.Len() < n; i++ {
 		switch shape {
@@ -61,15 +62,25 @@ func throughputBody(shape string, n int) string {
 		case "short":
 			fmt.Fprintf(&b, "%s %s %d\n", words[i%len(words)], words[(i*7)%len(words)], i%1000)
 		default:
-			// Distinct binary blobs from a fixed seed. Each decodes to its own
+			// Distinct binary blobs derived from the record index. Each decodes to its own
 			// view, which is what fills the scan's replay descriptor table on
 			// large base64 bodies.
-			raw := make([]byte, 60+r.IntN(340))
-			for j := range raw {
-				raw[j] = byte(r.IntN(256))
-			}
+			raw := throughputBlob(i)
 			fmt.Fprintf(&b, `{"id":%d,"blob":"%s","note":"%s"},`, i, base64.StdEncoding.EncodeToString(raw), words[i%len(words)])
 		}
 	}
 	return b.String()
+}
+
+// throughputBlob returns 64 to 400 bytes of fixed, record-specific binary data
+// from a SHA-256 chain, so every run scans the same bytes.
+func throughputBlob(i int) []byte {
+	sum := sha256.Sum256([]byte(strconv.Itoa(i)))
+	n := 64 + int(binary.BigEndian.Uint16(sum[:2])%337)
+	raw := make([]byte, 0, n+sha256.Size)
+	for len(raw) < n {
+		sum = sha256.Sum256(sum[:])
+		raw = append(raw, sum[:]...)
+	}
+	return raw[:n]
 }
