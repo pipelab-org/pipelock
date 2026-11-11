@@ -47,7 +47,7 @@ jobs:
     strategy:
       matrix:
         go:
-          - version: '1.26.10'
+          - version: '1.26.11'
           - version: '1.27.3'
     steps:
       - uses: actions/setup-go@1111111111111111111111111111111111111111
