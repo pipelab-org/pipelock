@@ -159,6 +159,7 @@ jobs:
       tested_tree: ${{ steps.tree.outputs.tested_tree }}
       benchmark_smoke: ${{ steps.check.outputs.benchmark_smoke }}
       benchmark_alloc: ${{ steps.check.outputs.benchmark_alloc }}
+      benchmark_throughput: ${{ steps.check.outputs.benchmark_throughput }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -208,6 +209,20 @@ jobs:
             echo "benchmark_alloc=true" >> "$GITHUB_OUTPUT"
           else
             echo "benchmark_alloc=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Large-body text DLP throughput is a verdict-neutral property that
+          # a change can regress without failing a test. The scanner imports
+          # config, extraction, JSON-number and other internal packages, so
+          # any internal change, a module change, or a change to this job or
+          # its scripts runs the comparison.
+          throughput_changes="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" -- \
+            internal/ go.mod go.sum .github/workflows/ci.yaml \
+            scripts/bench_throughput_gate.py scripts/bench_run.py)"
+          if [ -n "$throughput_changes" ]; then
+            echo "benchmark_throughput=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "benchmark_throughput=false" >> "$GITHUB_OUTPUT"
           fi
 
       # A pull request that changes only prose skips the Go build, test, lint
@@ -1925,6 +1940,45 @@ jobs:
             --baseline "$baseline" --candidate "$PWD" --output "$output" || status=$?
           if [[ -f "$output/allocation-summary.md" ]]; then
             cat "$output/allocation-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
+
+  benchmark-throughput:
+    needs: [security-scan, changed-files]
+    # Runs unless the classifier positively said no change applies: a failed
+    # or missing classification measures rather than reporting a skip.
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.security-scan.result == 'success' && needs.changed-files.outputs.benchmark_throughput != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      # Base and head run interleaved on this one runner, so the comparison
+      # is a paired measurement rather than two runners' absolute numbers.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26'
+
+      - name: Compare base and merged text DLP throughput
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          baseline="$RUNNER_TEMP/throughput-base"
+          output="$RUNNER_TEMP/throughput-gate"
+          git worktree add --detach "$baseline" "$BASE_SHA"
+          mkdir -m 750 "$output"
+          status=0
+          python3 scripts/bench_throughput_gate.py \
+            --baseline "$baseline" --candidate "$PWD" --output "$output" || status=$?
+          if [[ -f "$output/throughput-summary.md" ]]; then
+            cat "$output/throughput-summary.md" >> "$GITHUB_STEP_SUMMARY"
           fi
           exit "$status"
 

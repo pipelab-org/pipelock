@@ -305,6 +305,9 @@ ALLOCATION_EXCLUSIONS: dict[tuple[str, str], str] = {
         "allocs/op varies after warm-up: 49, 45, 45 (20 iterations)",
     ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkScan_ManyQueryParamsAllowed"):
         "allocs/op varies after warm-up: 974487, 974486, 974488 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkTextDLPThroughput"):
+        "measured by the benchmark-throughput job; 1 MiB scans at 20 iterations, 4 rounds and two sides "
+        "added about 11 minutes to this job",
     ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkWIFOverlapScan"):
         "allocs/op varies after warm-up: 115011, 115014, 115014 (20 iterations)",
 }

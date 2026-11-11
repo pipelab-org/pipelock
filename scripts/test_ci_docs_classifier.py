@@ -170,7 +170,28 @@ class DocsClassifierTest(unittest.TestCase):
                 capture_output=True, text=True, check=False,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(Path(output.name).read_text().strip(), "go_toolchain=true\nbenchmark_smoke=true\nbenchmark_alloc=true")
+            self.assertEqual(Path(output.name).read_text().strip(), "go_toolchain=true\nbenchmark_smoke=true\nbenchmark_alloc=true\nbenchmark_throughput=true")
+
+    def test_throughput_runs_for_every_internal_package_the_scanner_imports(self) -> None:
+        steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["changed-files"]["steps"]
+        policy = next(step["run"] for step in steps if step.get("id") == "check")
+        cases = (("internal/config/defaults.go", True), ("internal/extract/extract.go", True),
+                 ("internal/jsonnumber/card.go", True), ("internal/scanner/check.go", True),
+                 ("scripts/bench_throughput_gate.py", True), ("docs/guide.md", False))
+        for path, expected in cases:
+            with self.subTest(path=path):
+                base = self.rev()
+                self.write(path, f"change {path}\n")
+                self.commit(path)
+                with tempfile.NamedTemporaryFile("r", encoding="utf-8") as output:
+                    result = subprocess.run(
+                        ["bash", "-euo", "pipefail", "-c", policy], cwd=self.repo,
+                        env=os.environ | {"BASE_SHA": base, "HEAD_SHA": self.rev(), "GITHUB_OUTPUT": output.name,
+                                          "GITHUB_WORKSPACE": str(ROOT)},
+                        capture_output=True, text=True, check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn(f"benchmark_throughput={str(expected).lower()}", Path(output.name).read_text())
 
     def test_empty_diff_runs_everything(self) -> None:
         self.commit("empty")
