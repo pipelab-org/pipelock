@@ -61,11 +61,11 @@ jobs:
       # runner image ships. Without it a tag fails here, after it is cut.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
           check-latest: true
           cache: false
       - name: Verify Go version
-        run: test "$(go env GOVERSION)" = "go1.26.10"
+        run: test "$(go env GOVERSION)" = "go1.26.11"
       - name: Release-readiness gate
         # The gate asserts the release keyring secret is present BEFORE any build runs, so
         # it has to receive that secret. Without this mapping the check reads an empty value
@@ -94,13 +94,13 @@ jobs:
           - name: enterprise
             tags: enterprise
         shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'proxy-5', 'proxy-6', 'proxy-7', 'proxy-8', 'scanner-0', 'scanner-1', 'scanner-2', 'scanner-3', 'scanner-4', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'mcp-6', 'mcp-7', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3', 'rest-4', 'rest-5', 'rest-6', 'rest-7']
-        # 1.26.10 is the floor and mirrors the pin already verified in ci.yaml's
-        # govulncheck job. It includes the crypto/x509 fix for GO-2026-6809.
+        # 1.26.11 is the floor and mirrors the pin already verified in ci.yaml's
+        # govulncheck job. It includes the net/http fix for GO-2026-6859.
         # Keep this pin in lockstep with that job. The matrix guard checks only
         # supported Go minors, not these exact patch versions.
         go:
-          - version: '1.26.10'
-            expected: go1.26.10
+          - version: '1.26.11'
+            expected: go1.26.11
           - version: '1.27.2'
             expected: go1.27.2
     steps:
@@ -197,7 +197,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
           check-latest: true
           cache: false
 
@@ -208,7 +208,7 @@ jobs:
         run: |
           got="$(go env GOVERSION)"
           echo "GOVERSION=$got"
-          test "$got" = "go1.26.10"
+          test "$got" = "go1.26.11"
 
       # zizmor 1.29.0 treats the empty cache value as enabled; setup-node treats it as disabled.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0; zizmor: ignore[cache-poisoning]
@@ -257,7 +257,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
           check-latest: true
           cache: false
 
@@ -265,7 +265,7 @@ jobs:
         run: |
           got="$(go env GOVERSION)"
           echo "GOVERSION=$got"
-          test "$got" = "go1.26.10"
+          test "$got" = "go1.26.11"
 
       - name: Verify dependencies
         run: bash scripts/ci-retry.sh go mod verify
@@ -980,12 +980,12 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
           check-latest: true
           cache: false
 
       - name: Verify Go version
-        run: test "$(go env GOVERSION)" = "go1.26.10"
+        run: test "$(go env GOVERSION)" = "go1.26.11"
 
       - name: Download promotion inputs
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -1441,12 +1441,12 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
           check-latest: true
           cache: false
 
       - name: Verify Go version
-        run: test "$(go env GOVERSION)" = "go1.26.10"
+        run: test "$(go env GOVERSION)" = "go1.26.11"
 
       - name: Download promotion inputs
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

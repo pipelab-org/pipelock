@@ -436,8 +436,8 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertEqual(len(gate), 1)
         self.assertEqual(len(setup), 1)
         self.assertLess(setup[0], gate[0])
-        self.assertEqual(steps[setup[0]]["with"]["go-version"], "1.26.10")
-        self.assertIn('"go1.26.10"', steps[setup[0] + 1]["run"])
+        self.assertEqual(steps[setup[0]]["with"]["go-version"], "1.26.11")
+        self.assertIn('"go1.26.11"', steps[setup[0] + 1]["run"])
 
     def test_image_namespace_follows_the_releasing_repository(self) -> None:
         parsed = yaml.load(self.workflow, Loader=WorkflowLoader)
