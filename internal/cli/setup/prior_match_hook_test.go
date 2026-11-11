@@ -40,8 +40,11 @@ func TestHooks_DenyWhatThePairCheckMatched(t *testing.T) {
 		{"./a then a", "echo -rf /srv/data > ./a; xargs rm < a", true, true},
 		{"double slash", "echo -rf /srv/data > /tmp/a; xargs rm < /tmp//a", true, true},
 		{"dot dot", "echo -rf /srv/data > /tmp/a; xargs rm < /tmp/../tmp/a", true, true},
-		{"push flag through a copy", "echo --force > /tmp/f; cp /tmp/f /tmp/g; xargs git push origin main < /tmp/g", true, false},
-		{"reset flag through a copy", "echo --hard > /tmp/a; cp /tmp/a /tmp/b; xargs git reset < /tmp/b", true, false},
+		// The destructive rule denies these outright. The hook-skip and
+		// branch-delete warn rules cannot be decided for arguments read from
+		// a file, so the incomplete note also appears.
+		{"push flag through a copy", "echo --force > /tmp/f; cp /tmp/f /tmp/g; xargs git push origin main < /tmp/g", true, true},
+		{"reset flag through a copy", "echo --hard > /tmp/a; cp /tmp/a /tmp/b; xargs git reset < /tmp/b", true, true},
 		{"zero-width, copied file to xargs <", zeroWidth("echo -rf /srv/data > /tmp/a; cp /tmp/a /tmp/b; xargs rm < /tmp/b"), true, true},
 		{"zero-width, decode written then piped to sh", zeroWidth("echo base64 -d x.b64 > /tmp/a; cat /tmp/a | sh"), true, false},
 		// Controls.

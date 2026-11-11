@@ -19,6 +19,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// modePresetStricterActions lists built-in tool rules a mode preset sets to a
+// stricter action on purpose. strict blocks a git hook skip, which the
+// built-in rule only warns on.
+var modePresetStricterActions = map[string]map[string]string{
+	config.ModeStrict: {"Git Hook Bypass": config.ActionBlock},
+}
+
 func TestModePresetsKeepRuntimeToolRules(t *testing.T) {
 	for _, name := range []string{config.ModeStrict, config.ModeBalanced, config.ModeAudit} {
 		t.Run(name, func(t *testing.T) {
@@ -45,6 +52,9 @@ func TestModePresetsKeepRuntimeToolRules(t *testing.T) {
 					wantAction := original.Action
 					if wantAction == "" {
 						wantAction = cfg.MCPToolPolicy.Action
+					}
+					if stricter, ok := modePresetStricterActions[name][original.Name]; ok {
+						wantAction = stricter
 					}
 					if action != wantAction {
 						t.Errorf("rule[%d] %q action = %q, want %q", i, original.Name, action, wantAction)

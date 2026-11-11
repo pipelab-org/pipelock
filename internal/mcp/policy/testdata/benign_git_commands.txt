@@ -1,0 +1,288 @@
+git status
+git status -sb
+git status --porcelain
+git status --porcelain=v1
+git status -uall
+git status .
+git status -- file.go
+git status --branch --short
+git log
+git log --oneline
+git log -n 20
+git log -n 5 --oneline
+git log -p -n 3
+git log --stat
+git log --graph --oneline --all
+git log --decorate
+git log --abbrev-commit -n 10
+git log -1
+git log -- file.go
+git log -n 20 -- src
+git log --follow -n 10 -- README.md
+git diff
+git diff --stat
+git diff --cached
+git diff --name-only
+git diff HEAD
+git diff HEAD --stat
+git diff .
+git diff -- file.go
+git diff main...feature
+git diff --ignore-space-change
+git diff --color
+git diff origin/main -- src
+git add .
+git add -A
+git add -u
+git add -p
+git add file.go
+git add -- file.go
+git add src
+git add -f notes
+git add --force notes.txt
+git add -n .
+git commit -m msg
+git commit -m "update status"
+git commit -am "refresh docs"
+git commit --amend --no-edit
+git commit --amend --no-edit -m msg
+git commit --no-verbose -m msg
+git commit -S -m msg
+git commit --signoff -m msg
+git commit --allow-empty -m msg
+git commit --dry-run
+git commit -m "explain the change"
+git checkout -b feature
+git checkout -b feature origin/main
+git checkout main
+git checkout --detach
+git checkout --detach HEAD
+git checkout --track origin/feature
+git checkout -b fix-docs origin/main
+git checkout --guess main
+git switch -c feature
+git switch -c feature origin/main
+git switch main
+git switch --detach HEAD
+git switch -
+git switch --guess feature
+git branch
+git branch -d merged
+git branch --delete merged
+git branch -m old new
+git branch -c old new
+git branch --show-current
+git branch --list
+git branch -vv
+git branch -a
+git branch -r
+git branch --merged
+git branch --no-merged
+git branch --sort=-committerdate
+git fetch
+git fetch origin
+git fetch --all
+git fetch --prune
+git fetch --force
+git fetch origin main
+git fetch --tags
+git pull
+git pull --rebase
+git pull --rebase origin main
+git pull --ff-only
+git pull --ff-only origin main
+git pull origin main
+git pull --no-rebase
+git rebase origin/main
+git rebase -n origin/main
+git rebase --continue
+git rebase --abort
+git rebase --skip
+git rebase -i HEAD~3
+git rebase --force-rebase
+git rebase --quit
+git rebase --onto main feature
+git stash
+git stash push -m wip
+git stash pop
+git stash list
+git stash show
+git stash apply
+git stash drop
+git stash push --include-untracked -m wip
+git restore --staged file.go
+git restore -S file.go
+git restore --staged .
+git restore --staged src/main.go
+git restore -S -- README.md
+git worktree list
+git worktree add ../wt feature
+git worktree list --porcelain
+git tag
+git tag -l
+git tag -a v1 -m msg
+git tag --list "v*"
+git show-ref --tags
+git show HEAD
+git show --stat HEAD
+git show HEAD:file.go
+git blame file.go
+git blame -L 1,20 file.go
+git cherry-pick abcdef
+git cherry-pick --continue
+git cherry-pick --abort
+git cherry-pick --skip
+git merge --ff-only
+git merge --ff-only origin/main
+git merge -n topic
+git merge --no-ff topic
+git merge --no-stat topic
+git merge --abort
+git merge --continue
+git remote -v
+git remote show origin
+git remote add origin https://example.com/repo.git
+git remote get-url origin
+git remote prune origin
+git config --get core.hooksPath
+git config core.hooksPath
+git config --unset core.hooksPath
+git config --list
+git config --get user.name
+git config --get-regexp core.hooksPath
+git -c core.pager=less status
+git -c core.editor=true status
+git --no-pager status
+git --no-pager log -n 5
+git clean -n
+git clean -nd
+git reset --soft HEAD
+git reset --soft HEAD~1
+git reset HEAD
+git reset --mixed
+git reset --mixed HEAD
+git am -3 mailbox
+git am --continue
+git am --abort
+git rev-parse HEAD
+git rev-parse --abbrev-ref HEAD
+git symbolic-ref --short HEAD
+git describe --tags
+git shortlog -sn
+git reflog -n 10
+git grep -n TODO
+git ls-files
+git ls-files --stage
+git diff-index HEAD
+git whatchanged -n 5
+git archive --format=tar HEAD
+git bundle list-heads repo.bundle
+git checkout -b feature && git status
+git checkout -b feature && git status .
+git switch -c feature && git status
+git branch -d merged && git status
+git fetch origin && git status
+git pull --rebase && git log -n 5
+git add . && git status
+git commit -m msg && git status
+git restore --staged file.go && git status
+git merge --ff-only && git log -n 5
+bash -c "cd repo && git status"
+bash -c "cd repo && git log -n 10"
+bash -c "cd repo && git diff"
+bash -c "cd repo && git add ."
+bash -c "cd repo && git commit -m msg"
+bash -c "cd repo && git checkout -b feature"
+bash -c "cd repo && git switch -c feature"
+bash -c "cd repo && git branch"
+bash -c "cd repo && git branch -d merged"
+bash -c "cd repo && git fetch origin"
+bash -c "cd repo && git pull --rebase"
+bash -c "cd repo && git rebase origin/main"
+bash -c "cd repo && git stash"
+bash -c "cd repo && git restore --staged file.go"
+bash -c "cd repo && git worktree list"
+bash -c "cd repo && git tag -l"
+bash -c "cd repo && git show HEAD"
+bash -c "cd repo && git blame file.go"
+bash -c "cd repo && git cherry-pick --continue"
+bash -c "cd repo && git merge --ff-only"
+bash -c "cd repo && git remote -v"
+bash -c "cd repo && git status ."
+bash -c "cd repo && git diff ."
+bash -c "cd repo && git log --oneline -n 20"
+bash -c "cd repo && git push origin main"
+bash -c "cd repo && git push --dry-run origin main"
+bash -c "cd repo && git push --force-with-lease origin main"
+bash -c "cd repo && git push -n origin main"
+bash -c "cd repo && git reset --soft HEAD"
+bash -c "cd repo && git clean -n"
+bash -c "cd repo && git am -3 mailbox"
+bash -c "cd repo && git config --get user.name"
+bash -c "cd repo && git rev-parse HEAD"
+bash -c "cd repo && git ls-files"
+bash -c "cd repo && git stash pop"
+bash -c "cd repo && git checkout -b feature && git status"
+bash -c "cd repo && git fetch origin && git log -n 5"
+bash -c "cd repo && git add . && git diff --cached"
+bash -c "cd repo && git restore --staged file.go && git diff --cached"
+bash -c "cd repo && git branch -d merged && git branch --list"
+git checkout -- file.go
+git checkout -- src/file.go
+git checkout file.go
+git checkout src/a.go
+git checkout HEAD -- file.go
+git checkout main -- src/main.go
+git checkout -- src
+git restore file.go
+git restore src/file.go
+git restore src
+git restore src/
+git restore --worktree file.go
+git restore --source HEAD -- file.go
+git restore --source=HEAD file.go
+git restore --staged -- file.go
+git push --force-with-lease=refs/heads/main origin main
+git push --force-if-includes --force-with-lease origin main
+git checkout "."
+git checkout -- "."
+bash -c "git checkout -- file.go"
+bash -c "git restore src/file.go"
+git checkout .
+git checkout -- .
+git checkout HEAD -- .
+git restore .
+git restore -- .
+git restore --worktree .
+git restore --source HEAD .
+git checkout feature && tail -f app.log
+git switch main && make -f Makefile.ci
+git branch -a && ls -f
+git branch && grep -C 2 TODO main.go
+git checkout main && rm -f build/out.o
+git checkout feature; tail -f app.log
+git switch main; make -f Makefile.ci
+git branch -a; ls -f
+(git checkout feature) && tail -f app.log
+git checkout feature && git status && tail -f app.log
+git switch main | cat
+git branch -a | head
+git checkout main && git diff | grep -C 2 TODO
+echo ready && git checkout feature && tail -f app.log
+git checkout -b feature && go test ./internal/mcp/policy/
+git switch -c topic && make -f Makefile.ci
+git branch --list && ls -f
+xargs -a files git checkout
+echo feature | xargs git checkout
+echo -f | xargs git checkout main
+git checkout feature && git branch -vv && grep -n TODO main.go
+( cd repo && git checkout feature && tail -f app.log )
+git stash; git checkout feature; tail -f app.log
+git log -n 5; git switch main; make -f Makefile
+git checkout -- file.go && tail -f app.log
+git restore file.go && make -f Makefile
+git commit -m msg && make -n
+git commit -m msg; make -n
+git branch -d merged && ls -f
+git checkout main && git pull --ff-only && git status
+printf '%s\n' feature | xargs git checkout

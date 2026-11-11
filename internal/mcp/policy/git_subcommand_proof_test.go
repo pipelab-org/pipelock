@@ -86,10 +86,11 @@ func TestGitSubcommandProof(t *testing.T) {
 		words []string
 		allow []gitCarrier
 	}{
-		// Builtins with a destructive-looking option stay allowed.
+		// Builtins with a destructive-looking option stay allowed, except
+		// checkout --force, which discards local changes.
 		{"plain fetch", []string{"fetch", "--force"}, all},
 		{"plain add", []string{"add", "--force", "notes"}, all},
-		{"plain checkout", []string{"checkout", "--force", "main"}, all},
+		{"plain checkout", []string{"checkout", "--force", "main"}, nil},
 		{"plain global flag", []string{"--no-pager", "fetch", "--force"}, all},
 		{"plain -C", []string{"-C", "/srv/repo", "fetch", "--force"}, all},
 		{"plain -c", []string{"-c", "core.pager=cat", "fetch", "--force"}, all},

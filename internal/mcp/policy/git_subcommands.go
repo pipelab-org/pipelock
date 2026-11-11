@@ -560,14 +560,20 @@ func gitGlobalOption(word string) bool {
 
 // gitDestructiveOptions are the long options in the covered Git subcommands'
 // option tables (commandLongOptions) that a built-in rule blocks on their own:
-// reset --hard and push --force under Destructive Git Operation, and git rm
-// --force under Destructive File Delete. Clean's force option is blocked only
-// together with -d, which has no long form. TestGitDestructiveOptionsFromRules
-// derives this list from DefaultToolPolicyRules.
+// reset --hard and push --force under Destructive Git Operation, git rm
+// --force under Destructive File Delete, and the checkout, switch, and branch
+// forms that discard a work tree or reset a ref. Clean's force option is
+// blocked only together with -d, which has no long form.
+// TestGitDestructiveOptionsFromRules derives this list from DefaultToolPolicyRules.
 var gitDestructiveOptions = []struct{ command, option string }{
 	{"reset", "hard"},
 	{"push", "force"},
 	{"rm", "force"},
+	{"checkout", "force"},
+	{"switch", "force-create"},
+	{"switch", "discard-changes"},
+	{"switch", "force"},
+	{"branch", "force"},
 }
 
 // gitDestructiveReadings returns "<subcommand> --<option>" for each destructive

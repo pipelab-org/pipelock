@@ -65,6 +65,99 @@ type argView struct {
 	xargsFree bool
 }
 
+// dropCrossLineShortReadings removes a short-option reading that appears only
+// because strings.Fields joined lines. The reading stays when a single line
+// produces it. Strict readings of long options are not short readings, so
+// they stay even when the line split does not repeat them.
+func dropCrossLineShortReadings(args []string, n argViewNorm, expanded []string, gitTool bool) []string {
+	if !slices.ContainsFunc(args, func(arg string) bool { return strings.Contains(arg, "\n") }) {
+		return expanded
+	}
+	allowed := map[string]struct{}{}
+	sawSplit := false
+	keep := func(arg string) {
+		lt, _ := n.tokens([]string{arg})
+		norm, _ := normalizeLineOptions(lt, gitTool, nil)
+		for _, token := range norm {
+			allowed[token] = struct{}{}
+		}
+	}
+	for _, arg := range args {
+		lines, ok := unquotedLines(arg)
+		if !ok || len(lines) < 2 {
+			keep(arg)
+			continue
+		}
+		sawSplit = true
+		for _, line := range lines {
+			keep(line)
+		}
+	}
+	if !sawSplit {
+		return expanded
+	}
+	out := make([]string, 0, len(expanded))
+	removed := false
+	for _, token := range expanded {
+		if _, short := crossLineShortReadings[token]; short {
+			if _, ok := allowed[token]; !ok {
+				removed = true
+				continue
+			}
+		}
+		out = append(out, token)
+	}
+	if !removed {
+		return expanded
+	}
+	return out
+}
+
+// unquotedLines splits s on newlines that are not inside single or double
+// quotes. A backslash-newline outside single quotes is a line continuation
+// (POSIX 2.2.1): the shell removes the pair and the command goes on, so it
+// is not a split. ok is false when a quote is left open.
+func unquotedLines(s string) ([]string, bool) {
+	var lines []string
+	var b strings.Builder
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\\' && quote != '\'' && i+1 < len(s) {
+			if s[i+1] == '\n' {
+				i++
+				continue
+			}
+			b.WriteByte(c)
+			b.WriteByte(s[i+1])
+			i++
+			continue
+		}
+		if quote != 0 {
+			b.WriteByte(c)
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"':
+			quote = c
+			b.WriteByte(c)
+		case '\n':
+			lines = append(lines, b.String())
+			b.Reset()
+		default:
+			b.WriteByte(c)
+		}
+	}
+	if quote != 0 {
+		return nil, false
+	}
+	lines = append(lines, b.String())
+	return lines, true
+}
+
 // literalArgTokens returns the submitted strings unmodified, each as one
 // token, and their space-joined form.
 func literalArgTokens(args []string) ([]string, string) {
@@ -189,9 +282,9 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof, pathReadings bo
 			// Strict readings add tokens. Keep the ordinary interpretation too,
 			// so an anchored configured deny cannot lose its earlier match.
 			ordinary, _, _ := normalizeOptions(v.tokens, false, gitTool)
-			addInterpretation(ordinary, false, true)
+			addInterpretation(dropCrossLineShortReadings(args, n, ordinary, gitTool), false, true)
 		}
-		addInterpretation(tokens, unknownGit, false)
+		addInterpretation(dropCrossLineShortReadings(args, n, tokens, gitTool), unknownGit, false)
 	}
 	tokens, joined := literalArgTokens(args)
 	add(argView{tokens: tokens, joined: joined, inputKnown: inputKnown, checkXargs: true})
