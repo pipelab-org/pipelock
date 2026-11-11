@@ -160,7 +160,7 @@ func TestCommandLongOptionsNormalization(t *testing.T) {
 		{"sudo -u push -- git reset --ha", "sudo -u push -- git reset --ha --hard"},
 		{"cat >rm --rec file", "cat >rm --recursive file"},
 		{"git r --ha", "git r --ha reset --hard"},
-		{"git r --f origin --f", "git r --f push --force rm --force origin --f"},
+		{"git r --f origin --f", "git r --f push --force rm --force checkout --force switch --force-create switch --force branch --force origin --f"},
 		{"git -c alias.a=reset --ha a", "git -c alias.a=reset --ha reset --hard a"},
 		{"V=--ha git x", "V=--ha reset --hard git x"},
 		{"echo --ha; git x", "echo --ha reset --hard ; git x"},

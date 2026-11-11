@@ -177,7 +177,7 @@ func TestGitDestructiveOptionsFromRules(t *testing.T) {
 		}
 	}
 	var derived []string
-	for _, command := range []string{"reset", "clean", "push", "rm"} {
+	for _, command := range []string{"reset", "clean", "push", "rm", "checkout", "switch", "branch", "restore", "commit", "merge", "rebase", "am"} {
 		key, ok := gitCommandKey(command)
 		if !ok {
 			t.Fatalf("%s is not a covered Git subcommand", command)
@@ -205,9 +205,9 @@ func TestGitDestructiveReadings(t *testing.T) {
 	}{
 		{"--h", []string{"reset --hard"}},
 		{"--hard", []string{"reset --hard"}},
-		{"--f", []string{"push --force", "rm --force"}},
-		{"--for=%(path)", []string{"push --force", "rm --force"}},
-		{"--force", []string{"push --force", "rm --force"}},
+		{"--f", []string{"push --force", "rm --force", "checkout --force", "switch --force-create", "switch --force", "branch --force"}},
+		{"--for=%(path)", []string{"push --force", "rm --force", "checkout --force", "switch --force-create", "switch --force", "branch --force"}},
+		{"--force", []string{"push --force", "rm --force", "checkout --force", "switch --force-create", "switch --force", "branch --force"}},
 		{"--format", nil},
 		{"--forced", nil},
 		{"--force-with-lease", nil},

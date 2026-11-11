@@ -46,12 +46,15 @@ func optionSpec(names, values, shortValues string, forceShort bool) longOptionSp
 }
 
 // The option sets are from GNU coreutils 9.12 rm/chmod/chown/cp/base64 --help,
-// Git 2.56.0 reset/clean/push/rm -h (including the documented negated forms),
-// util-linux 2.42.4 wipefs --help, Ncat 7.992 --help and GNU Wget 1.25.0 --help.
+// Git 2.56.0 reset/clean/push/rm/checkout/switch/branch/restore/commit/merge/
+// rebase/am -h (including the documented negated forms), util-linux 2.42.4
+// wipefs --help, Ncat 7.992 --help and GNU Wget 1.25.0 --help.
 // Sources: https://www.gnu.org/software/coreutils/manual/coreutils.html
 // (rm, chmod, chown, cp, base64 invocation), https://git-scm.com/docs/gitcli#_abbreviated_options
-// and the git-reset, git-clean, git-push, git-rm manuals at git-scm.com/docs,
-// the wipefs(8) manual, https://nmap.org/book/ncat-man.html and the Wget manual.
+// and the git-reset, git-clean, git-push, git-rm, git-checkout, git-switch,
+// git-branch, git-restore, git-commit, git-merge, git-rebase, and git-am
+// manuals at git-scm.com/docs, the wipefs(8) manual,
+// https://nmap.org/book/ncat-man.html and the Wget manual.
 // Keep the complete sets for these commands: benign options participate in
 // ambiguity too. Git reads --help only as an exact word before parsing (Git
 // 2.56.0 runs git reset --h as --hard), so the Git sets omit it. Wget's set is only its upload options because no other Wget
@@ -74,6 +77,20 @@ var commandLongOptions = map[string]longOptionSpec{
 	"clean":  optionSpec("quiet! dry-run! force! interactive! exclude", "exclude", "e", true),
 	"push":   optionSpec("verbose! quiet! repo! all! branches! mirror! delete! tags! dry-run! porcelain! force! force-with-lease! force-if-includes! recurse-submodules! thin! receive-pack! exec! set-upstream! progress! prune! no-verify verify follow-tags! signed! atomic! push-option! ipv4 ipv6", "repo recurse-submodules receive-pack exec push-option", "o", true),
 	"git-rm": optionSpec("dry-run! quiet! cached! force! ignore-unmatch! sparse! pathspec-from-file! pathspec-file-nul!", "pathspec-from-file", "", false),
+	// checkout, switch, branch, restore, commit, merge, rebase, and am are the
+	// Git 2.56.0 -h sets. Names that the manual spells as a pair of opposites
+	// (--no-verify / --verify, --no-stat / --stat, --no-ff / --ff,
+	// --contains / --no-contains, --merged / --no-merged) stay separate so a
+	// trailing ! does not invent a second copy. -f is checkout, switch, and
+	// branch's short force; rebase's -f is force-rebase and is not that synonym.
+	"checkout": optionSpec("guess! overlay! auto-advance! quiet! recurse-submodules! progress! merge! conflict! detach! track! force! orphan! overwrite-ignore! ignore-other-worktrees! ours theirs patch! unified inter-hunk-context ignore-skip-worktree-bits! pathspec-from-file! pathspec-file-nul!", "recurse-submodules conflict track orphan unified inter-hunk-context pathspec-from-file", "bBU", true),
+	"switch":   optionSpec("create! force-create! guess! discard-changes! quiet! recurse-submodules! progress! merge! conflict! detach! track! force! orphan! overwrite-ignore! ignore-other-worktrees!", "create force-create recurse-submodules conflict track orphan", "cC", true),
+	"branch":   optionSpec("verbose! quiet! track! set-upstream-to! unset-upstream! color! remotes all contains no-contains abbrev! delete! move! omit-empty! copy! list! show-current! create-reflog! edit-description! delete-merged dry-run! force! merged no-merged forked column! sort! points-at! ignore-case! recurse-submodules! format!", "track set-upstream-to color contains no-contains abbrev delete-merged merged no-merged forked column sort points-at format", "u", true),
+	"restore":  optionSpec("source! staged! worktree! ignore-unmerged! overlay! quiet! recurse-submodules! progress! merge! conflict! ours theirs patch! unified inter-hunk-context ignore-skip-worktree-bits! pathspec-from-file! pathspec-file-nul!", "source recurse-submodules conflict unified inter-hunk-context pathspec-from-file", "sU", false),
+	"commit":   optionSpec("quiet! verbose! file! author! date! message! reedit-message! reuse-message! fixup! squash! reset-author! trailer! signoff! template! edit! cleanup! status! gpg-sign! all! include! interactive! patch! unified inter-hunk-context only! no-verify verify dry-run! short! branch! ahead-behind! porcelain! long! null! amend! no-post-rewrite post-rewrite untracked-files! pathspec-from-file! pathspec-file-nul!", "file author date message reedit-message reuse-message fixup squash trailer template cleanup gpg-sign unified inter-hunk-context untracked-files pathspec-from-file", "FmcCtSuU", false),
+	"merge":    optionSpec("stat! summary! compact-summary! log! squash! commit! edit! cleanup! ff! ff-only rerere-autoupdate! verify-signatures! strategy! strategy-option! message! file! into-name! verbose! quiet! abort! quit! continue! allow-unrelated-histories! progress! gpg-sign! autostash! overwrite-ignore! signoff! no-verify verify", "log cleanup strategy strategy-option message file into-name gpg-sign", "sXmF", false),
+	"rebase":   optionSpec("onto! keep-base! no-verify verify quiet! verbose! no-stat stat trailer! signoff! committer-date-is-author-date! reset-author-date! ignore-whitespace! whitespace! force-rebase! no-ff ff continue skip abort quit edit-todo show-current-patch apply merge interactive rerere-autoupdate! empty autosquash! update-refs! gpg-sign! autostash! exec! rebase-merges! fork-point! strategy! strategy-option! root! reschedule-failed-exec! reapply-cherry-picks!", "onto trailer whitespace empty exec rebase-merges strategy strategy-option", "CxsX", false),
+	"am":       optionSpec("interactive! no-verify verify 3way! quiet! signoff! utf8! keep! keep-non-patch! message-id! keep-cr! scissors! quoted-cr whitespace! ignore-space-change! ignore-whitespace! directory! exclude! include! patch-format! reject! resolvemsg! continue resolved skip abort quit show-current-patch retry allow-empty committer-date-is-author-date! ignore-date! rerere-autoupdate! gpg-sign! empty", "quoted-cr whitespace directory exclude include patch-format empty", "C", false),
 }
 
 var ncatOptions = optionSpec("allow allowfile append-output broker chat crlf delay deny denyfile exec help hex-dump idle-timeout keep-open listen lua-exec max-conns nodns no-shutdown output proxy proxy-auth proxy-dns proxy-type recv-only sctp send-only sh-exec source source-port ssl ssl-alpn ssl-cert ssl-ciphers ssl-servername ssl-trustfile ssl-verify telnet udp unixsock verbose version vsock wait",
@@ -86,7 +103,7 @@ var gitValueOptions = []string{"-C", "-c", "--git-dir", "--work-tree", "--namesp
 // gitCommandKey maps a covered Git subcommand to its option set.
 func gitCommandKey(name string) (string, bool) {
 	switch name {
-	case "reset", "clean", "push":
+	case "reset", "clean", "push", "checkout", "switch", "branch", "restore", "commit", "merge", "rebase", "am":
 		return name, true
 	case "rm":
 		return "git-rm", true
