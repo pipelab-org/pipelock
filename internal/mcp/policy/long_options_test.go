@@ -168,6 +168,15 @@ func TestCommandLongOptionsNormalization(t *testing.T) {
 		{"git RESET --ha", "git RESET --ha reset --hard"},
 		{"git status --ha", "git status --ha"},
 		{"git st --oneline", "git st --oneline"},
+		{"git checkout -f main", "git checkout -f --force main"},
+		{"git checkout -B feature", "git checkout -B --reset-branch feature"},
+		{"git switch -C main origin/main", "git switch -C --force-create main origin/main"},
+		{"git switch -f other", "git switch -f --force --discard-changes other"},
+		{"git branch -D feature", "git branch -D --unmerged-delete feature"},
+		{"git branch -fd feature", "git branch -fd --force --delete feature"},
+		{"git branch -M old new", "git branch -M --move --force old new"},
+		{"git commit -n -m msg", "git commit -n --no-verify -m msg"},
+		{"git checkout feature && tail -f app.log", "git checkout feature && tail -f app.log"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {

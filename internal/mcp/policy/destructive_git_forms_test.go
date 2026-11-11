@@ -336,6 +336,144 @@ func TestGitFormPresetActions(t *testing.T) {
 	}
 }
 
+// TestDestructiveGitShortOptionCompounds checks short clusters that belong to
+// a later command. The pair matcher tries every ordered pair, so checkout
+// together with a later -f used to match. A short cluster counts only inside
+// the git invocation that owns it. Push still pairs with a later -f.
+func TestDestructiveGitShortOptionCompounds(t *testing.T) {
+	pc := defaultConfig(t)
+	compounds := []string{
+		"git checkout feature && tail -f app.log",
+		"git switch main && make -f Makefile.ci",
+		"git branch -a && ls -f",
+		"git branch && grep -C 2 TODO main.go",
+		"git checkout main && rm -f build/out.o",
+		"git checkout feature; tail -f app.log",
+		"git switch main; make -f Makefile.ci",
+		"git branch -a; ls -f",
+		"(git checkout feature) && tail -f app.log",
+		"git checkout feature && git status && tail -f app.log",
+		"git switch main | cat",
+		"git branch -a | head",
+		"git checkout main && git diff | grep -C 2 TODO",
+		"echo ready && git checkout feature && tail -f app.log",
+		"git checkout -b feature && go test ./internal/mcp/policy/",
+		"git switch -c topic && make -f Makefile.ci",
+		"git branch --list && ls -f",
+		"xargs -a files git checkout",
+		"echo feature | xargs git checkout",
+		"echo -f | xargs git checkout main",
+		"git checkout feature && git branch -vv && grep -n TODO main.go",
+		"( cd repo && git checkout feature && tail -f app.log )",
+		"git stash; git checkout feature; tail -f app.log",
+		"git log -n 5; git switch main; make -f Makefile",
+		"git checkout -- file.go && tail -f app.log",
+		"git restore file.go && make -f Makefile",
+		"git commit -m msg && make -n",
+		"git commit -m msg; make -n",
+		"git branch -d merged && ls -f",
+		"git checkout main && git pull --ff-only && git status",
+		"printf '%s\n' feature | xargs git checkout",
+		"git checkout feature\ntail -f app.log",
+		"git branch -a\nls -f",
+		"(git switch main)\nmake -f Makefile.ci",
+		"git checkout feature &&\ntail -f app.log",
+		"( git checkout feature && tail -f app.log )",
+		"git switch main; make -f Makefile.ci; git status",
+		"git branch | grep -C 2 feature",
+	}
+	if len(compounds) < 25 {
+		t.Fatalf("%d compounds, want at least 25", len(compounds))
+	}
+	for _, command := range compounds {
+		t.Run(command, func(t *testing.T) {
+			for surface, v := range destructiveGitSurfaces(t, pc, command) {
+				if slices.Contains(v.Rules, ruleGit) {
+					t.Errorf("%s %q: destructive git matched %v", surface, command, v.Rules)
+				}
+			}
+		})
+	}
+	for _, command := range []string{
+		"git commit -m msg && make -n",
+		"git commit -m msg; make -n",
+		"git branch -d merged && ls -f",
+	} {
+		for surface, v := range destructiveGitSurfaces(t, pc, command) {
+			if slices.Contains(v.Rules, ruleGitHook) || slices.Contains(v.Rules, ruleGitBranch) {
+				t.Errorf("%s %q: got %v", surface, command, v.Rules)
+			}
+		}
+	}
+	deleted := pc.CheckToolCall("bash", []string{"git checkout main && rm -f build/out.o"})
+	if !slices.Contains(deleted.Rules, ruleFileDelete) {
+		t.Errorf("file delete missing: %v", deleted.Rules)
+	}
+	blocks := []string{
+		"git checkout -f main",
+		"git checkout -qf main",
+		"git switch -C main origin/main",
+		"git switch -f other",
+		"bash -c \"echo ready; git checkout -f main\"",
+		"git checkout '-f' main",
+		"git checkout \"-f\" main",
+		"GIT CHECKOUT -f main",
+		"Git Checkout -B feature",
+		"git checkout -B feature",
+		"git checkout -Bfeature origin/main",
+		"git branch -M old new",
+		"git branch -C old new",
+		"git branch -f feature HEAD",
+		"git checkout -f | cat",
+		"git checkout -f|cat",
+		"echo --force | xargs git checkout main",
+		"git push -f",
+		"git push origin +main",
+		"git push origin main && tail -f build.log",
+		"git reset --hard HEAD",
+		"git clean -fd",
+	}
+	for _, command := range blocks {
+		t.Run(command, func(t *testing.T) {
+			for surface, v := range destructiveGitSurfaces(t, pc, command) {
+				wantGitRule(t, v, command, surface, ruleGit, config.ActionBlock)
+			}
+		})
+	}
+	v := pc.CheckToolCall("git", []string{"checkout", "-f", "main"})
+	wantGitRule(t, v, "checkout -f main", "git tool", ruleGit, config.ActionBlock)
+	v = pc.CheckToolCall("git", []string{"CHECKOUT", "-f", "main"})
+	wantGitRule(t, v, "CHECKOUT -f main", "git tool", ruleGit, config.ActionBlock)
+	v = pc.CheckToolCall("git", []string{"switch", "-C", "main", "origin/main"})
+	wantGitRule(t, v, "switch -C main", "git tool", ruleGit, config.ActionBlock)
+	v = pc.CheckToolCall("git", []string{"checkout", "feature"})
+	if slices.Contains(v.Rules, ruleGit) {
+		t.Errorf("git tool checkout feature: %v", v.Rules)
+	}
+	for surface, verdict := range destructiveGitSurfaces(t, pc, "git branch -D feature") {
+		wantGitRule(t, verdict, "git branch -D feature", surface, ruleGitBranch, config.ActionWarn, ruleGit)
+	}
+	for surface, verdict := range destructiveGitSurfaces(t, pc, "git commit --no-verify -m wip") {
+		wantGitRule(t, verdict, "git commit --no-verify -m wip", surface, ruleGitHook, config.ActionWarn, ruleGit)
+	}
+	for surface, verdict := range destructiveGitSurfaces(t, pc, "git commit -n") {
+		wantGitRule(t, verdict, "git commit -n", surface, ruleGitHook, config.ActionWarn, ruleGit)
+	}
+	for _, command := range []string{
+		"git checkout -- internal/foo.go",
+		"git restore internal/foo.go",
+		"git checkout .",
+		"git push --force-with-lease",
+		"git commit -m 'docs: explain the no-verify flag'",
+	} {
+		for surface, verdict := range destructiveGitSurfaces(t, pc, command) {
+			if verdict.Matched && (slices.Contains(verdict.Rules, ruleGit) || slices.Contains(verdict.Rules, ruleGitHook) || slices.Contains(verdict.Rules, ruleGitBranch)) {
+				t.Errorf("%s %q: got %q %v", surface, command, verdict.Action, verdict.Rules)
+			}
+		}
+	}
+}
+
 func TestPresetGitFormPatternsMatchDefaults(t *testing.T) {
 	want := map[string]string{
 		ruleGit:       destructiveGitArgPattern,

@@ -255,3 +255,34 @@ git restore .
 git restore -- .
 git restore --worktree .
 git restore --source HEAD .
+git checkout feature && tail -f app.log
+git switch main && make -f Makefile.ci
+git branch -a && ls -f
+git branch && grep -C 2 TODO main.go
+git checkout main && rm -f build/out.o
+git checkout feature; tail -f app.log
+git switch main; make -f Makefile.ci
+git branch -a; ls -f
+(git checkout feature) && tail -f app.log
+git checkout feature && git status && tail -f app.log
+git switch main | cat
+git branch -a | head
+git checkout main && git diff | grep -C 2 TODO
+echo ready && git checkout feature && tail -f app.log
+git checkout -b feature && go test ./internal/mcp/policy/
+git switch -c topic && make -f Makefile.ci
+git branch --list && ls -f
+xargs -a files git checkout
+echo feature | xargs git checkout
+echo -f | xargs git checkout main
+git checkout feature && git branch -vv && grep -n TODO main.go
+( cd repo && git checkout feature && tail -f app.log )
+git stash; git checkout feature; tail -f app.log
+git log -n 5; git switch main; make -f Makefile
+git checkout -- file.go && tail -f app.log
+git restore file.go && make -f Makefile
+git commit -m msg && make -n
+git commit -m msg; make -n
+git branch -d merged && ls -f
+git checkout main && git pull --ff-only && git status
+printf '%s\n' feature | xargs git checkout

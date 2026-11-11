@@ -15,6 +15,11 @@ type longOptionSpec struct {
 	values      []string
 	shortValues string
 	forceShort  bool
+	// shortNames maps a case-sensitive short letter to the long option names
+	// it spells, without dashes. Git 2.56.0 is case-sensitive for short
+	// options. A letter with no long spelling uses a reading name the git
+	// form patterns match and that no other command emits.
+	shortNames map[byte][]string
 	// prefixes maps every non-empty prefix of a name to the names it may
 	// abbreviate, in names order, and an exact name to itself alone. It is
 	// derived from names, so its size is fixed by the tables below.
@@ -42,6 +47,36 @@ func optionSpec(names, values, shortValues string, forceShort bool) longOptionSp
 			}
 		}
 	}
+	return spec
+}
+
+// crossLineShortReadings are the long tokens shortOptionNames can add. A
+// reading that shows up only after newlines were flattened is dropped; one
+// that a single line produces is kept.
+var crossLineShortReadings = func() map[string]struct{} {
+	set := make(map[string]struct{})
+	for _, spec := range commandLongOptions {
+		for _, names := range spec.shortNames {
+			for _, name := range names {
+				set["--"+name] = struct{}{}
+			}
+		}
+	}
+	return set
+}()
+
+// withShortNames records the short letters normalizeOptions presents as long
+// options when this command is the active git invocation. Sources are the
+// Git 2.56.0 -h text and the manuals: checkout -f/--force, and -B with no
+// long spelling (git-checkout(1): the same as -b, except an existing branch
+// is reset); switch -f/--force, which the manual also calls an alias of
+// --discard-changes, and -C/--force-create; branch -f/--force, -M as --move
+// --force, -C as --copy --force, -d/--delete, and -D (no long spelling; the
+// manual calls it a shortcut for --delete --force, and the warn rule reads
+// it as unmerged-delete so -D alone stays a warn); commit and am -n as
+// --no-verify.
+func withShortNames(spec longOptionSpec, shorts map[byte][]string) longOptionSpec {
+	spec.shortNames = shorts
 	return spec
 }
 
@@ -83,14 +118,30 @@ var commandLongOptions = map[string]longOptionSpec{
 	// --contains / --no-contains, --merged / --no-merged) stay separate so a
 	// trailing ! does not invent a second copy. -f is checkout, switch, and
 	// branch's short force; rebase's -f is force-rebase and is not that synonym.
-	"checkout": optionSpec("guess! overlay! auto-advance! quiet! recurse-submodules! progress! merge! conflict! detach! track! force! orphan! overwrite-ignore! ignore-other-worktrees! ours theirs patch! unified inter-hunk-context ignore-skip-worktree-bits! pathspec-from-file! pathspec-file-nul!", "recurse-submodules conflict track orphan unified inter-hunk-context pathspec-from-file", "bBU", true),
-	"switch":   optionSpec("create! force-create! guess! discard-changes! quiet! recurse-submodules! progress! merge! conflict! detach! track! force! orphan! overwrite-ignore! ignore-other-worktrees!", "create force-create recurse-submodules conflict track orphan", "cC", true),
-	"branch":   optionSpec("verbose! quiet! track! set-upstream-to! unset-upstream! color! remotes all contains no-contains abbrev! delete! move! omit-empty! copy! list! show-current! create-reflog! edit-description! delete-merged dry-run! force! merged no-merged forked column! sort! points-at! ignore-case! recurse-submodules! format!", "track set-upstream-to color contains no-contains abbrev delete-merged merged no-merged forked column sort points-at format", "u", true),
-	"restore":  optionSpec("source! staged! worktree! ignore-unmerged! overlay! quiet! recurse-submodules! progress! merge! conflict! ours theirs patch! unified inter-hunk-context ignore-skip-worktree-bits! pathspec-from-file! pathspec-file-nul!", "source recurse-submodules conflict unified inter-hunk-context pathspec-from-file", "sU", false),
-	"commit":   optionSpec("quiet! verbose! file! author! date! message! reedit-message! reuse-message! fixup! squash! reset-author! trailer! signoff! template! edit! cleanup! status! gpg-sign! all! include! interactive! patch! unified inter-hunk-context only! no-verify verify dry-run! short! branch! ahead-behind! porcelain! long! null! amend! no-post-rewrite post-rewrite untracked-files! pathspec-from-file! pathspec-file-nul!", "file author date message reedit-message reuse-message fixup squash trailer template cleanup gpg-sign unified inter-hunk-context untracked-files pathspec-from-file", "FmcCtSuU", false),
-	"merge":    optionSpec("stat! summary! compact-summary! log! squash! commit! edit! cleanup! ff! ff-only rerere-autoupdate! verify-signatures! strategy! strategy-option! message! file! into-name! verbose! quiet! abort! quit! continue! allow-unrelated-histories! progress! gpg-sign! autostash! overwrite-ignore! signoff! no-verify verify", "log cleanup strategy strategy-option message file into-name gpg-sign", "sXmF", false),
-	"rebase":   optionSpec("onto! keep-base! no-verify verify quiet! verbose! no-stat stat trailer! signoff! committer-date-is-author-date! reset-author-date! ignore-whitespace! whitespace! force-rebase! no-ff ff continue skip abort quit edit-todo show-current-patch apply merge interactive rerere-autoupdate! empty autosquash! update-refs! gpg-sign! autostash! exec! rebase-merges! fork-point! strategy! strategy-option! root! reschedule-failed-exec! reapply-cherry-picks!", "onto trailer whitespace empty exec rebase-merges strategy strategy-option", "CxsX", false),
-	"am":       optionSpec("interactive! no-verify verify 3way! quiet! signoff! utf8! keep! keep-non-patch! message-id! keep-cr! scissors! quoted-cr whitespace! ignore-space-change! ignore-whitespace! directory! exclude! include! patch-format! reject! resolvemsg! continue resolved skip abort quit show-current-patch retry allow-empty committer-date-is-author-date! ignore-date! rerere-autoupdate! gpg-sign! empty", "quoted-cr whitespace directory exclude include patch-format empty", "C", false),
+	"checkout": withShortNames(optionSpec("guess! overlay! auto-advance! quiet! recurse-submodules! progress! merge! conflict! detach! track! force! orphan! overwrite-ignore! ignore-other-worktrees! ours theirs patch! unified inter-hunk-context ignore-skip-worktree-bits! pathspec-from-file! pathspec-file-nul!", "recurse-submodules conflict track orphan unified inter-hunk-context pathspec-from-file", "bBU", true), map[byte][]string{
+		'f': {"force"},
+		'B': {"reset-branch"},
+	}),
+	"switch": withShortNames(optionSpec("create! force-create! guess! discard-changes! quiet! recurse-submodules! progress! merge! conflict! detach! track! force! orphan! overwrite-ignore! ignore-other-worktrees!", "create force-create recurse-submodules conflict track orphan", "cC", true), map[byte][]string{
+		'f': {"force", "discard-changes"},
+		'C': {"force-create"},
+	}),
+	"branch": withShortNames(optionSpec("verbose! quiet! track! set-upstream-to! unset-upstream! color! remotes all contains no-contains abbrev! delete! move! omit-empty! copy! list! show-current! create-reflog! edit-description! delete-merged dry-run! force! merged no-merged forked column! sort! points-at! ignore-case! recurse-submodules! format!", "track set-upstream-to color contains no-contains abbrev delete-merged merged no-merged forked column sort points-at format", "u", true), map[byte][]string{
+		'f': {"force"},
+		'M': {"move", "force"},
+		'C': {"copy", "force"},
+		'd': {"delete"},
+		'D': {"unmerged-delete"},
+	}),
+	"restore": optionSpec("source! staged! worktree! ignore-unmerged! overlay! quiet! recurse-submodules! progress! merge! conflict! ours theirs patch! unified inter-hunk-context ignore-skip-worktree-bits! pathspec-from-file! pathspec-file-nul!", "source recurse-submodules conflict unified inter-hunk-context pathspec-from-file", "sU", false),
+	"commit": withShortNames(optionSpec("quiet! verbose! file! author! date! message! reedit-message! reuse-message! fixup! squash! reset-author! trailer! signoff! template! edit! cleanup! status! gpg-sign! all! include! interactive! patch! unified inter-hunk-context only! no-verify verify dry-run! short! branch! ahead-behind! porcelain! long! null! amend! no-post-rewrite post-rewrite untracked-files! pathspec-from-file! pathspec-file-nul!", "file author date message reedit-message reuse-message fixup squash trailer template cleanup gpg-sign unified inter-hunk-context untracked-files pathspec-from-file", "FmcCtSuU", false), map[byte][]string{
+		'n': {"no-verify"},
+	}),
+	"merge":  optionSpec("stat! summary! compact-summary! log! squash! commit! edit! cleanup! ff! ff-only rerere-autoupdate! verify-signatures! strategy! strategy-option! message! file! into-name! verbose! quiet! abort! quit! continue! allow-unrelated-histories! progress! gpg-sign! autostash! overwrite-ignore! signoff! no-verify verify", "log cleanup strategy strategy-option message file into-name gpg-sign", "sXmF", false),
+	"rebase": optionSpec("onto! keep-base! no-verify verify quiet! verbose! no-stat stat trailer! signoff! committer-date-is-author-date! reset-author-date! ignore-whitespace! whitespace! force-rebase! no-ff ff continue skip abort quit edit-todo show-current-patch apply merge interactive rerere-autoupdate! empty autosquash! update-refs! gpg-sign! autostash! exec! rebase-merges! fork-point! strategy! strategy-option! root! reschedule-failed-exec! reapply-cherry-picks!", "onto trailer whitespace empty exec rebase-merges strategy strategy-option", "CxsX", false),
+	"am": withShortNames(optionSpec("interactive! no-verify verify 3way! quiet! signoff! utf8! keep! keep-non-patch! message-id! keep-cr! scissors! quoted-cr whitespace! ignore-space-change! ignore-whitespace! directory! exclude! include! patch-format! reject! resolvemsg! continue resolved skip abort quit show-current-patch retry allow-empty committer-date-is-author-date! ignore-date! rerere-autoupdate! gpg-sign! empty", "quoted-cr whitespace directory exclude include patch-format empty", "C", false), map[byte][]string{
+		'n': {"no-verify"},
+	}),
 }
 
 var ncatOptions = optionSpec("allow allowfile append-output broker chat crlf delay deny denyfile exec help hex-dump idle-timeout keep-open listen lua-exec max-conns nodns no-shutdown output proxy proxy-auth proxy-dns proxy-type recv-only sctp send-only sh-exec source source-port ssl ssl-alpn ssl-cert ssl-ciphers ssl-servername ssl-trustfile ssl-verify telnet udp unixsock verbose version vsock wait",
@@ -175,7 +226,7 @@ func normalizeLineOptions(tokens []string, gitTool bool, proof *gitProof) ([]str
 func normalizeOptions(tokens []string, strict, gitTool bool) (out []string, unknownGit bool, judged []string) {
 	tokens = gitDashedReadings(tokens)
 	hasLongOption := slices.ContainsFunc(tokens, func(token string) bool { return strings.Contains(token, "--") })
-	if !hasLongOption {
+	if !hasLongOption && !hasBareShortOption(tokens) {
 		return tokens, false, nil
 	}
 	var activeKey string
@@ -281,6 +332,17 @@ func normalizeOptions(tokens []string, strict, gitTool bool) (out []string, unkn
 						// so earlier utilities' interpretations still apply.
 						expand = true
 					case git:
+						// The git tool has no shell and no word "git". A subcommand
+						// whose letters match a covered builtin, but not its exact
+						// spelling, is still that command's option grammar: the
+						// form patterns match the subcommand in any case.
+						if gitTool && !gitBuiltins[word] {
+							if key, ok := gitCommandKey(name); ok {
+								active, git, stopped = activate(key), false, false
+								unknown, unknownGit = true, true
+								break
+							}
+						}
 						// An unrelated Git subcommand must not adopt a later operand as
 						// its command.
 						stopped = true
@@ -464,6 +526,9 @@ func (e optionExpander) expand(word, activeKey string, candidateKeys []string) [
 	}
 	if activeKey != "" {
 		interpret(activeKey, true)
+		for _, name := range shortOptionNames(word, commandLongOptions[activeKey]) {
+			present(e.extra, "--"+name)
+		}
 	}
 	for _, key := range candidateKeys {
 		if key != activeKey {
@@ -510,6 +575,44 @@ func scanLongOption(name string, names []string) []string {
 func optionTakesValue(word string, spec longOptionSpec) bool {
 	names, _, hasValue := matchLongOption(word, spec)
 	return !hasValue && slices.ContainsFunc(names, func(name string) bool { return slices.Contains(spec.values, name) })
+}
+
+// hasBareShortOption reports whether tokens contain a short-option word, so
+// normalizeOptions still reads git checkout -f when the line has no long option.
+func hasBareShortOption(tokens []string) bool {
+	for _, token := range tokens {
+		for i := 0; i < len(token); i++ {
+			if token[i] != '-' {
+				continue
+			}
+			if i > 0 && !strings.ContainsRune(" \t;|&()\n", rune(token[i-1])) {
+				continue
+			}
+			if i+1 < len(token) && token[i+1] != '-' && !strings.ContainsRune(" \t;|&()\n", rune(token[i+1])) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// shortOptionNames returns the long names spelled by a short cluster of spec.
+// A value-taking letter consumes the rest of the cluster (Git's parse-options
+// short-option contract), so checkout -bforce is a branch name, not -f.
+func shortOptionNames(word string, spec longOptionSpec) []string {
+	if len(spec.shortNames) == 0 || len(word) < 2 || word[0] != '-' || word[1] == '-' {
+		return nil
+	}
+	var names []string
+	for i := 1; i < len(word); i++ {
+		if listed := spec.shortNames[word[i]]; len(listed) > 0 {
+			names = append(names, listed...)
+		}
+		if strings.ContainsRune(spec.shortValues, rune(word[i])) {
+			break
+		}
+	}
+	return names
 }
 
 // A value-taking short option consumes the rest of its cluster, or the next
