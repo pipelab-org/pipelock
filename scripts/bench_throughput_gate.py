@@ -249,5 +249,14 @@ def main() -> int:
     return status
 
 
+def run() -> int:
+    """main, with any unexpected error reported as undecided rather than slower."""
+    try:
+        return main()
+    except Exception as exc:  # noqa: BLE001 - exit 1 must mean only "slower"
+        print(f"throughput-gate: undecided after an unexpected error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())

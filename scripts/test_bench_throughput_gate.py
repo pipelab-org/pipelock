@@ -208,11 +208,26 @@ class FailureReportingTest(unittest.TestCase):
                     capture.assert_not_called()
 
     def test_unwritable_results_are_undecided(self):
+        real = Path.write_text
+
+        def fail_summary(path, *args, **kwargs):
+            if path.name == "throughput-summary.md":
+                raise OSError("disk full")
+            return real(path, *args, **kwargs)
+
         with tempfile.TemporaryDirectory() as directory, \
-             mock.patch.object(Path, "write_text", side_effect=OSError("disk full")):
-            status, _ = self.run_main("--baseline", directory, "--candidate", directory,
-                                      "--output", str(Path(directory) / "out"))
+             mock.patch.object(Path, "write_text", autospec=True, side_effect=fail_summary):
+            status, capture = self.run_main("--baseline", directory, "--candidate", directory,
+                                            "--output", str(Path(directory) / "out"))
         self.assertEqual(status, 2)
+        capture.assert_called_once()
+
+    def test_unexpected_errors_are_undecided(self):
+        with mock.patch.object(gate, "main", side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")), \
+             contextlib.redirect_stderr(io.StringIO()) as err:
+            status = gate.run()
+        self.assertEqual(status, 2)
+        self.assertIn("UnicodeDecodeError", err.getvalue())
 
     def test_failure_detail_keeps_the_end_of_a_long_error(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -223,7 +238,7 @@ class FailureReportingTest(unittest.TestCase):
                 {"round": 1, "side": "candidate", "stdout": "candidate-1.txt", "stderr": "candidate-1.stderr"}) + "\n")
             detail = gate.failure_detail(output)
         self.assertTrue(detail.startswith("candidate-1.stderr:"), detail[:40])
-        self.assertTrue(detail.endswith("FINAL_COMPILER_ERROR") or "FINAL_COMPILER_ERROR" in detail)
+        self.assertTrue(detail.endswith("FINAL_COMPILER_ERROR"), detail[-40:])
         self.assertLessEqual(len(detail), 4000)
 
     def test_failure_detail_keeps_both_streams_of_the_failing_run(self):
