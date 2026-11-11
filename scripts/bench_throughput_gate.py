@@ -221,7 +221,7 @@ def main() -> int:
         base_text = (args.output / "baseline.txt").read_text()
         head_text = (args.output / "current.txt").read_text()
         rows, failed = compare(base_text, head_text, args.fail_pct, args.warn_pct, args.rounds)
-    except (bench_run.RunError, GateError, subprocess.CalledProcessError, OSError) as exc:
+    except Exception as exc:  # noqa: BLE001 - every failure to measure is undecided, with its cause in the summary
         try:
             detail = failure_detail(args.output) if args.output.is_dir() else ""
         except OSError as detail_error:

@@ -222,6 +222,20 @@ class FailureReportingTest(unittest.TestCase):
         self.assertEqual(status, 2)
         capture.assert_called_once()
 
+    def test_unexpected_capture_errors_reach_the_summary(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(sys, "argv", ["bench_throughput_gate.py", "--baseline", directory,
+                                             "--candidate", directory, "--output", str(Path(directory) / "out")]), \
+             mock.patch.object(gate, "prepare_baseline"), \
+             mock.patch.object(gate.bench_run, "capture_pair",
+                               side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad byte")), \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            status = gate.run()
+            summary = (Path(directory) / "out" / "throughput-summary.md").read_text()
+        self.assertEqual(status, 2)
+        self.assertIn("Not decided", summary)
+        self.assertIn("bad byte", summary)
+
     def test_unexpected_errors_are_undecided(self):
         with mock.patch.object(gate, "main", side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")), \
              contextlib.redirect_stderr(io.StringIO()) as err:
