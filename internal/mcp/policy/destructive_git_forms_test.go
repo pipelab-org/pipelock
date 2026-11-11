@@ -506,3 +506,59 @@ func TestPresetGitFormPatternsMatchDefaults(t *testing.T) {
 		}
 	}
 }
+
+// TestGitShortClusterValuesAndContinuations checks two shell facts the git
+// forms depend on. A value-taking short letter consumes the rest of its
+// cluster (git checkout -bfix names a branch), so the text after it is not
+// an option. A backslash-newline continues one command, so a flag on the next
+// line still belongs to the git command before it.
+func TestGitShortClusterValuesAndContinuations(t *testing.T) {
+	pc := defaultConfig(t)
+	bs := string(rune(92))
+	for _, command := range []string{
+		"git checkout -bfeature",
+		"git checkout -bfix",
+		"git checkout -Ufoo main",
+		"git switch -cfeature",
+		"git branch -ufoo",
+		"git branch -uorigin/main",
+		`git commit -m"new feature"`,
+		"git commit -mnew",
+		"git commit -Snext -m x",
+		"git am -Cnum patch.mbox",
+	} {
+		t.Run("allow/"+command, func(t *testing.T) {
+			for surface, v := range destructiveGitSurfaces(t, pc, command) {
+				if slices.Contains(v.Rules, ruleGit) || slices.Contains(v.Rules, ruleGitHook) {
+					t.Errorf("%s %q: got %v", surface, command, v.Rules)
+				}
+			}
+		})
+	}
+	for _, command := range []string{
+		"git checkout -fb x",
+		"git switch -fc x",
+		"git branch -fu x",
+		"git checkout " + bs + "\n-f main",
+		"git -C repo checkout " + bs + "\n-f main",
+		"git switch " + bs + "\n-C main",
+		"git branch " + bs + "\n-f main HEAD",
+		"git -C repo checkout " + bs + "\n--force main",
+	} {
+		t.Run("block/"+command, func(t *testing.T) {
+			for surface, v := range destructiveGitSurfaces(t, pc, command) {
+				wantGitRule(t, v, command, surface, ruleGit, config.ActionBlock)
+			}
+		})
+	}
+	for _, command := range []string{
+		"git commit -an -m wip",
+		"git commit " + bs + "\n--no-verify -m wip",
+	} {
+		t.Run("warn/"+command, func(t *testing.T) {
+			for surface, v := range destructiveGitSurfaces(t, pc, command) {
+				wantGitRule(t, v, command, surface, ruleGitHook, config.ActionWarn, ruleGit)
+			}
+		})
+	}
+}

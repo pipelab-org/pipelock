@@ -64,9 +64,9 @@ const destructiveGitArgPattern = `(?i)` + shellCommandStart + `(?:` +
 	`|restore(?:\s+` + gitRestoreSafeToken + `)*\s+(?:--\s+)?` + gitWholeTreePath + `(?:[\s;&|()<>]|$)` +
 	`|restore(?:\s+[^\s;|&]+)*?\s+(?:--worktree\b|(?-i:-[A-Za-z]*W[A-Za-z]*\b))(?:\s+[^\s;|&]+)*\s+(?:--\s+)?` + gitWholeTreePath + `(?:[\s;&|()<>]|$)` +
 	`)` +
-	`|git[ \t]+checkout(?:[ \t]+-[^\s;|&]+)*?[ \t]+(?-i:-[A-Za-z]*[Bf][A-Za-z]*)(?:[\s;&|()<>]|$)` +
-	`|git[ \t]+switch(?:[ \t]+-[^\s;|&]+)*?[ \t]+(?-i:-[A-Za-z]*[Cf][A-Za-z]*)(?:[\s;&|()<>]|$)` +
-	`|git[ \t]+branch(?:[ \t]+-[^\s;|&]+)*?[ \t]+(?-i:-[A-Za-z]*[CMf][A-Za-z]*)(?:[\s;&|()<>]|$)` +
+	`|git[ \t]+checkout(?:[ \t]+-[^\s;|&]+)*?[ \t]+(?-i:-[ac-zA-TV-Z]*[Bf][A-Za-z]*)(?:[\s;&|()<>]|$)` +
+	`|git[ \t]+switch(?:[ \t]+-[^\s;|&]+)*?[ \t]+(?-i:-[abd-zA-Z]*[Cf][A-Za-z]*)(?:[\s;&|()<>]|$)` +
+	`|git[ \t]+branch(?:[ \t]+-[^\s;|&]+)*?[ \t]+(?-i:-[a-tv-zA-Z]*[CMf][A-Za-z]*)(?:[\s;&|()<>]|$)` +
 	`)`
 
 // gitHookBypassArgPattern matches a hook skip. git-commit(1) and git-am(1)
@@ -91,7 +91,7 @@ const gitHookBypassArgPattern = `(?i)` + shellCommandStart + `(?:` +
 	`|config(?:\s+[^\s;|&]+)*?\s+core\.hooksPath` + gitHookValue +
 	`|-c(?:=|\s+)core\.hooksPath` + gitHookValue +
 	`)` +
-	`|git[ \t]+(?:commit|am)(?:[ \t]+-[^\s;|&]+)*?[ \t]+(?-i:-[A-Za-z]*n[A-Za-z]*)(?:[\s;&|()<>]|$)` +
+	`|git[ \t]+(?:commit|am)(?:[ \t]+-[^\s;|&]+)*?[ \t]+(?-i:-[abd-ln-sv-zABDEG-RTV-Z]*n[A-Za-z]*)(?:[\s;&|()<>]|$)` +
 	`)`
 
 // gitUnmergedBranchDeleteArgPattern matches git-branch(1) -D, the short

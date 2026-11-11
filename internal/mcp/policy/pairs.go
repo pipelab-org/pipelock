@@ -114,13 +114,25 @@ func dropCrossLineShortReadings(args []string, n argViewNorm, expanded []string,
 }
 
 // unquotedLines splits s on newlines that are not inside single or double
-// quotes. ok is false when a quote is left open.
+// quotes. A backslash-newline outside single quotes is a line continuation
+// (POSIX 2.2.1): the shell removes the pair and the command goes on, so it
+// is not a split. ok is false when a quote is left open.
 func unquotedLines(s string) ([]string, bool) {
 	var lines []string
 	var b strings.Builder
 	var quote byte
 	for i := 0; i < len(s); i++ {
 		c := s[i]
+		if c == '\\' && quote != '\'' && i+1 < len(s) {
+			if s[i+1] == '\n' {
+				i++
+				continue
+			}
+			b.WriteByte(c)
+			b.WriteByte(s[i+1])
+			i++
+			continue
+		}
 		if quote != 0 {
 			b.WriteByte(c)
 			if c == quote {
