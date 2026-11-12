@@ -213,12 +213,15 @@ func actionRemoveNetworkNamespace() step {
 				errs = append(errs, err)
 			} else {
 				unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+				var units []string
 				for _, record := range inv.Services {
-					socket := record.Unit + ".socket"
-					if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", socket); err != nil {
-						errs = append(errs, err)
-					}
-					for _, suffix := range []string{".socket", ".service"} {
+					units = append(units, record.Unit)
+				}
+				if err := closeLoopbackDoorways(ctx, env, units); err != nil {
+					errs = append(errs, err)
+				}
+				for _, record := range inv.Services {
+					for _, suffix := range []string{"-netns.service", ".socket", ".service"} {
 						path := filepath.Join(unitDir, record.Unit+suffix)
 						if err := restoreBackup(env, path); err != nil {
 							errs = append(errs, fmt.Errorf("restore %s: %w", path, err))
@@ -231,7 +234,7 @@ func actionRemoveNetworkNamespace() step {
 					continue
 				}
 				unit := filepath.Base(path)
-				if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
+				if err := runRevocationSystemctl(ctx, env, "disable", "--now", unit); err != nil {
 					errs = append(errs, fmt.Errorf("disable %s: %w", unit, err))
 				}
 				if err := restoreBackup(env, path); err != nil {

@@ -592,16 +592,14 @@ func removePublishedServices(ctx context.Context, env *installEnv) error {
 	}
 	var errs []error
 	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	var units []string
 	for _, record := range set.Services {
-		for _, unit := range publishedRecordUnitNames(record) {
-			args := []string{"stop", unit}
-			if strings.HasSuffix(unit, ".socket") {
-				args = []string{"disable", "--now", unit}
-			}
-			if err := runSystemctlCleanupUnit(ctx, env, args...); err != nil {
-				errs = append(errs, err)
-			}
-		}
+		units = append(units, publishedRecordUnitNames(record)...)
+	}
+	if err := closePublishedDoorways(ctx, env, units); err != nil {
+		errs = append(errs, err)
+	}
+	for _, record := range set.Services {
 		for _, unit := range publishedRecordUnitNames(record) {
 			path := filepath.Join(unitDir, unit)
 			if err := restoreBackup(env, path); err != nil {
