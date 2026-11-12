@@ -101,7 +101,7 @@ func TestUniformByteGlueControlRunSkipsDecodePass(t *testing.T) {
 	}
 }
 
-func TestDecimalByteListNonUniformGlueStaysClean(t *testing.T) {
+func TestDecimalByteListNonUniformGlueKnownMiss(t *testing.T) {
 	s := gluedBoundaryScanner(t)
 	secret := "AKIA" + "0123456789ABCDEF"
 	var b strings.Builder
@@ -116,9 +116,9 @@ func TestDecimalByteListNonUniformGlueStaysClean(t *testing.T) {
 		b.WriteString(strconv.Itoa(int(secret[i])))
 	}
 	got := s.ScanTextForDLP(context.Background(), "values "+b.String()+" end")
-	if !got.Clean || len(got.InformationalMatches) != 0 {
-		t.Fatalf("mixed glue produced a finding: %+v", gluedMatchNames(got.Matches))
-	}
+	// Mixed separators are outside this slice. Log the miss. Do not assert
+	// that an encoded access key stays clean.
+	t.Logf("non-uniform glue detected=%v", gluedBoundaryFound(got.Matches, got.InformationalMatches, "AWS Access ID"))
 }
 
 func decimalByteList(secret, glue string) string {
