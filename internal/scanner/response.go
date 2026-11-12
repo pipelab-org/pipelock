@@ -509,6 +509,10 @@ func (s *Scanner) scanResponseWithSuppress(ctx context.Context, content, suppres
 
 func (s *Scanner) scanResponseWithSuppressMemo(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry, forceEncodedDecode bool, memo *responseMatchMemo) (out ResponseScanResult) {
 	result := s.scanResponseMatches(ctx, content, suppressTarget, suppress, forceEncodedDecode, memo)
+	if result.Clean && !result.Failed() && len(result.WarnedMatches) == 0 && s.PromptInjectionMode() != config.ActionAllow {
+		result = s.scanAdditionalInjectionViews(ctx, content, suppressTarget, suppress, result)
+		s.setInjectionAssessment(&result, result.Assessment.Status != AssessmentNotAssessed)
+	}
 	if result.Clean || result.Failed() || (s.responseAction != config.ActionStrip && s.responseAction != config.ActionAsk) {
 		return result
 	}
@@ -569,6 +573,9 @@ func (s *Scanner) scanResponseWithSuppressMemo(ctx context.Context, content, sup
 	// Detection only: a residual finding must not start another rewrite and
 	// must never be exposed to a caller as successfully stripped content.
 	checked := s.scanResponseMatches(ctx, candidate, suppressTarget, suppress, forceEncodedDecode, newResponseMatchMemo(len(candidate)))
+	if checked.Clean && !checked.Failed() && len(checked.WarnedMatches) == 0 {
+		checked = s.scanAdditionalInjectionViews(ctx, candidate, suppressTarget, suppress, checked)
+	}
 	if !checked.Clean || checked.Failed() {
 		return result
 	}
