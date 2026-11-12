@@ -159,6 +159,9 @@ func (f *fakeRunner) run(_ context.Context, name string, args ...string) (string
 	if name == "getfacl" {
 		return "user::rwx\ngroup::r-x\nother::---\n", 0, nil
 	}
+	if filepath.Base(name) == testNFT && strings.HasPrefix(strings.Join(args, " "), "-n -a list chain ") {
+		return "No such file or directory", 1, nil
+	}
 	return "", 0, nil
 }
 
@@ -530,8 +533,8 @@ func TestRunInstall_DryRunSucceedsWithoutMutation(t *testing.T) {
 	// Dry-run may validate the config, but it must not shell out for
 	// service or nft mutation.
 	assertNoServiceOrNFTMutationAfterPreflightFailure(t, runner)
-	if len(runner.calls) != 1 {
-		t.Errorf("dry-run calls: got %v, want only config preflight", runner.calls)
+	if len(runner.calls) != 2 {
+		t.Errorf("dry-run calls: got %v, want nft observation and config preflight", runner.calls)
 	}
 	if !strings.Contains(buf.String(), "planned steps") {
 		t.Errorf("missing 'planned steps' header: %q", buf.String())

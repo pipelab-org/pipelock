@@ -455,6 +455,9 @@ func TestReconcileConflictIsUntouchedAndVerifyFails(t *testing.T) {
 	if status, detail := probeNFTContainment(context.Background(), probe); status != statusFail || !strings.Contains(detail, "handle 10") {
 		t.Fatalf("verify=%s %s", status, detail)
 	}
+	if result := doctorChainStructureReader(probe, &doctorEnv{port: defaultProxyPort, agentUserName: defaultAgentUser})(t.Context()); result.status != statusFail || result.class != classInfra || !strings.Contains(result.detail, "nft reconciliation conflict:") || !strings.Contains(result.remediation, "handle 10") {
+		t.Fatalf("doctor did not preserve the planner's conflict: %+v", result)
+	}
 }
 
 func TestReconcileLegacyIdentityAndPositionBoundaries(t *testing.T) {

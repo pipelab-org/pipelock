@@ -112,7 +112,7 @@ func defaultDoctorEnv() *doctorEnv {
 		undiciShimPath:   defaultUndiciShimPath,
 		canaryURL:        canaryURL,
 		curlPath:         platform.curlPath,
-		runCmd:           realRunCommand,
+		runCmd:           runDoctorCommand,
 		dialCtx:          realDial,
 		readFile:         os.ReadFile,
 		stat:             os.Stat,
@@ -130,6 +130,14 @@ func defaultDoctorEnv() *doctorEnv {
 	env.chainStructure = doctorChainStructureReader(counterEnv, env)
 	env.doorwaySockets = doctorDoorwaySocketReader(counterEnv, env)
 	return env
+}
+
+// Diagnostic subprocesses do not consume the operator's project. In particular,
+// Node's --require preload resolves package context from cwd before the probe
+// runs, and sudo's target user may not be able to read that context. os/exec's
+// Cmd.Dir changes only the child, without changing this process's directory.
+func runDoctorCommand(ctx context.Context, name string, args ...string) (string, int, error) {
+	return runCommandInDir(ctx, "/", name, args...)
 }
 
 // doctorDropCounterReader binds the verify counter reader to live doctor flag

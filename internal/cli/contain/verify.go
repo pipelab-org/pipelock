@@ -304,7 +304,14 @@ func realGroupIDs(u *user.User) ([]string, error) {
 // exit code - only failure to start the binary returns a non-nil
 // error.
 func realRunCommand(ctx context.Context, name string, args ...string) (string, int, error) {
+	return runCommandInDir(ctx, "", name, args...)
+}
+
+// runCommandInDir retains the runner's bounded output and launch/exit error
+// contract. An empty directory preserves os/exec's inherited working directory.
+func runCommandInDir(ctx context.Context, dir, name string, args ...string) (string, int, error) {
 	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // G204: name comes from probe definitions (compile-time string literals or package consts), never user input.
+	cmd.Dir = dir
 	buf := newCappedBuffer(maxCmdOutputBytes)
 	cmd.Stdout = buf
 	cmd.Stderr = buf

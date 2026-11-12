@@ -204,6 +204,9 @@ func runInstall(ctx context.Context, env *installEnv, opts installOpts) error {
 	if err := requireContainForwardProxy(env, target.checkPath, target.checkPath, opts); err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 	}
+	if err := preflightInstallNFTRules(ctx, env, target.checkPath); err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+	}
 
 	if opts.dryRun {
 		if err := preflightPipelockConfig(ctx, env, opts, true); err != nil {
@@ -2618,35 +2621,53 @@ func ensureNFTRulesDirSafe(env *installEnv) error {
 	return nil
 }
 
-func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error) {
-	// Check nft version before generating rules. The containment
-	// ruleset requires "meta skuid" (available since nftables 0.4),
-	// "counter log prefix ... drop" inline syntax (0.6+), and nft
-	// check mode (-c/--check, 0.8+). Hosts below that fail at load
-	// time with a cryptic parse error. Detect early and fail with a
-	// clear minimum-version message.
-	if err := checkNFTVersion(ctx, env); err != nil {
-		return false, err
+// preflightInstallNFTRules observes only: it must run before even creating the
+// reconcile lock's parent directory. Apply observes again under that lock, so
+// this early refusal cannot authorize a later write against stale state.
+func preflightInstallNFTRules(ctx context.Context, env *installEnv, configPath string) error {
+	snapshot := *env
+	snapshot.readFile, _ = snapshotReconcileReads(env.readFile)
+	env = &snapshot
+	observation, err := observeInstallNFTRules(ctx, env)
+	if err != nil {
+		return err
 	}
+	data, err := env.readFile(configPath)
+	if err != nil {
+		return fmt.Errorf("read prospective managed config: %w", err)
+	}
+	policy, err := installNFTRulesPolicy(env, observation, data, time.Now())
+	if err != nil {
+		var missing user.UnknownUserError
+		if observation.live == "" && errors.As(err, &missing) &&
+			(string(missing) == env.agentUserName || string(missing) == env.proxyUserName) {
+			// useradd chooses new UIDs. No invented identity can classify an
+			// existing chain; only confirmed absence permits this clean-install
+			// deferral. The apply step checks the real identities before writing.
+			_, _ = fmt.Fprintf(env.out, "[DEFERRED] nft reconciliation: %v; managed chain is absent; recheck after creating managed users\n", err)
+			return nil
+		}
+		return err
+	}
+	return planNFTReconciliation(policy, observation).err()
+}
+
+func installNFTRulesPolicy(env *installEnv, observation nftReconcileObservation, listenerData []byte, policyTime time.Time) (nftReconcilePolicy, error) {
 	operatorUID, err := operatorUIDFromEnv(env)
 	if err != nil {
-		return false, err
+		return nftReconcilePolicy{}, err
 	}
 	proxyUID, agentUID, err := resolveUIDs(env)
 	if err != nil {
-		return false, err
-	}
-	listenerData, policyTime, err := observeInstallPolicy(env)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Errorf("read managed listener config: %w", err)
+		return nftReconcilePolicy{}, err
 	}
 	agentListener, err := agentListenerFromConfigBytes(listenerData)
 	if err != nil {
-		return false, fmt.Errorf("managed listener config: %w", err)
+		return nftReconcilePolicy{}, fmt.Errorf("managed listener config: %w", err)
 	}
 	loopbackServices, err := parseContainmentLoopbackServicesFromConfigBytes(listenerData, env.proxyPort, policyTime)
 	if err != nil {
-		return false, fmt.Errorf("managed config %s: %w", managedPipelockConfigPath(env), err)
+		return nftReconcilePolicy{}, fmt.Errorf("managed config %s: %w", managedPipelockConfigPath(env), err)
 	}
 	body := renderNFTRulesWithServices(nftRuleOptions{
 		OperatorUID:      operatorUID,
@@ -2659,30 +2680,55 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 		AgentListener:    agentListener,
 	})
 
-	persisted, readErr := env.readFile(env.nftRulesPath)
-	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-		return false, fmt.Errorf("read %s: %w", env.nftRulesPath, readErr)
-	}
-	policy := nftReconcilePolicy{
+	return nftReconcilePolicy{
 		rules: body, table: env.nftTableOrDefault(), chain: env.nftChainOrDefault(),
 		uids:  nftRulesHeaderUIDs{operatorUID: operatorUID, proxyUID: proxyUID, agentUID: agentUID, proxyPort: env.proxyPort},
-		prior: priorNFTRulesHeaders(env.readFile, env.nftRulesPath, persisted),
+		prior: priorNFTRulesHeaders(env.readFile, env.nftRulesPath, []byte(observation.persisted)),
+	}, nil
+}
+
+func observeInstallNFTRules(ctx context.Context, env *installEnv) (nftReconcileObservation, error) {
+	persisted, err := env.readFile(env.nftRulesPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nftReconcileObservation{}, fmt.Errorf("read %s: %w", env.nftRulesPath, err)
 	}
-	live, code, listErr := env.runCmd(ctx, nftExecutable(env), "-n", "-a", "list", "chain", "inet", policy.table, policy.chain)
+	live, code, listErr := env.runCmd(ctx, nftExecutable(env), "-n", "-a", "list", "chain", "inet", env.nftTableOrDefault(), env.nftChainOrDefault())
 	if listErr != nil {
-		return false, fmt.Errorf("list nft managed chain: %w", listErr)
+		return nftReconcileObservation{}, fmt.Errorf("list nft managed chain: %w", listErr)
 	}
-	tableLoaded := code == 0
 	if code != 0 {
 		if !nftOutputConfirmsAbsent(live) {
-			return false, fmt.Errorf("list nft managed chain exit=%d: %s", code, oneLine(live))
+			return nftReconcileObservation{}, fmt.Errorf("list nft managed chain exit=%d: %s", code, oneLine(live))
 		}
 		live = ""
+	} else if strings.TrimSpace(live) == "" {
+		return nftReconcileObservation{}, errors.New("list nft managed chain returned an empty observation")
 	}
-	plan := planNFTReconciliation(policy, nftReconcileObservation{persisted: string(persisted), live: live})
+	return nftReconcileObservation{persisted: string(persisted), live: live}, nil
+}
+
+func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error) {
+	// The renderer requires nft check mode (0.8+) as well as skuid and counters.
+	if err := checkNFTVersion(ctx, env); err != nil {
+		return false, err
+	}
+	listenerData, policyTime, err := observeInstallPolicy(env)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("read managed listener config: %w", err)
+	}
+	observation, err := observeInstallNFTRules(ctx, env)
+	if err != nil {
+		return false, err
+	}
+	policy, err := installNFTRulesPolicy(env, observation, listenerData, policyTime)
+	if err != nil {
+		return false, err
+	}
+	plan := planNFTReconciliation(policy, observation)
 	if err := plan.err(); err != nil {
 		return false, err
 	}
+	body, tableLoaded := policy.rules, plan.hadChain
 	rulesMatch := !plan.fileChanged
 	liveRulesDrifted := plan.kernelChanged
 	// Capture every state rollback must restore before changing any rules or
