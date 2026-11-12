@@ -52,10 +52,19 @@ func TestDoctorCommandStableContext(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "unreadable cwd":
+				directory, err := os.Open(filepath.Clean(cwd))
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = directory.Close() })
+				t.Cleanup(func() {
+					if err := directory.Chmod(0o700); err != nil {
+						t.Errorf("restore directory traversal: %v", err)
+					}
+				})
 				if err := os.Chmod(cwd, 0); err != nil {
 					t.Fatal(err)
 				}
-				t.Cleanup(func() { _ = os.Chmod(cwd, 0o750) }) //nolint:gosec // G302: restore directory traversal for TempDir cleanup.
 			case "removed cwd":
 				if err := os.Remove(pkg); err != nil {
 					t.Fatal(err)
@@ -463,7 +472,7 @@ func TestDoctorNodeProxyProcess(t *testing.T) {
 			wrapper := filepath.Join(dir, "pipelock-node")
 			// Isolate the child environment and use only the local test proxy.
 			body := "#!/bin/sh\nexec env -i NODE_USE_ENV_PROXY=1 HTTP_PROXY=" + shellQuote(proxy.URL) + " HTTPS_PROXY=" + shellQuote(proxy.URL) + " " + shellQuote(node) + " --require " + shellQuote(shim) + " \"$@\"\n"
-			if err := os.WriteFile(wrapper, []byte(body), 0o700); err != nil { //nolint:gosec // G306: executable wrapper fixture in a temporary directory.
+			if err := os.WriteFile(wrapper, []byte(body), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			operatorDir := t.TempDir()
@@ -474,9 +483,10 @@ func TestDoctorNodeProxyProcess(t *testing.T) {
 			env := defaultDoctorEnv()
 			env.wrapperDir, env.undiciShimPath, env.canaryURL = dir, shim, "http://api.vendor.example/"
 			// Replace sudo so the test needs no privileged identity switch;
-			// retain the real wrapper, Node process, and command runner.
+			// retain the real wrapper script, Node process, and command runner.
+			// Interpret the private fixture without adding executable file permissions.
 			env.runCmd = func(ctx context.Context, _ string, args ...string) (string, int, error) {
-				return run(ctx, args[4], args[5:]...)
+				return run(ctx, "/bin/sh", args[4:]...)
 			}
 			result := checkNodeThroughProxy(ctx, env)
 			if result.status != tc.status || result.class != tc.class {
