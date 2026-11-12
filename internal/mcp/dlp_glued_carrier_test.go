@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -29,6 +30,9 @@ func TestScanRequestGluedBoundaryAndByteList(t *testing.T) {
 		{name: "digit glued card", arg: "94111" + strings.Repeat("1", 12), pattern: "Credit Card Number", want: false},
 		{name: "glued ssn", arg: "x123-45-6789", pattern: "Social Security Number", want: true},
 		{name: "prose provider key", arg: "the desk-ant-hill-clearance-report-final", pattern: "Anthropic API Key", want: false},
+		{name: "letter byte list", arg: mcpByteList("AKIA"+"0123456789ABCDEF", "x"), pattern: "AWS Access ID", want: true},
+		{name: "hyphen byte list", arg: mcpByteList("AKIA"+"0123456789ABCDEF", "-"), pattern: "AWS Access ID", want: true},
+		{name: "date and version", arg: "shipped 2026-11-11 version 1.2.3 from 203.0.113.10", pattern: "AWS Access ID", want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -45,4 +49,12 @@ func TestScanRequestGluedBoundaryAndByteList(t *testing.T) {
 			}
 		})
 	}
+}
+
+func mcpByteList(secret, glue string) string {
+	parts := make([]string, len(secret))
+	for i := 0; i < len(secret); i++ {
+		parts[i] = strconv.Itoa(int(secret[i]))
+	}
+	return strings.Join(parts, glue)
 }

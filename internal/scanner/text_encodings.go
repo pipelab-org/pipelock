@@ -39,6 +39,11 @@ func hasCharacterCodeRun(s string) bool {
 	if !hasMinimumASCIIDigits(s, minDecimalCodeRun) {
 		return false
 	}
+	// A uniform letter, "_", ".", or "-" glue is a byte list even though those
+	// runes stay attached for the ordinary numeric-code parser.
+	if hasUniformByteGlueRun(s) {
+		return true
+	}
 	// A run needs at least this many fields, regardless of their values.
 	// Count before parsing: one large hex/base64 field cannot be a code list,
 	// and strconv error reporting would otherwise copy that entire field.
@@ -128,6 +133,15 @@ func textEncodingViews(s string) []textEncodingView { return textEncodingViewsMo
 func textEncodingViewsMode(s string, recoverQP bool) []textEncodingView {
 	var out []textEncodingView
 
+	// One view per run. Joining runs with a newline would make keyword offsets
+	// fail closed for every run in the carrier, including a run that decoded
+	// on its own.
+	for _, run := range uniformByteGlueRuns(s) {
+		out = append(out, textEncodingView{
+			decodedResult: decodedResult{text: run.text, encoding: encodingDecimal},
+			sourceRange:   encodingSourceRange{start: run.start, end: run.end},
+		})
+	}
 	if hasCharacterCodeRun(s) {
 		if decoded, _ := decodeCharacterCodes(s, characterCodeSeparatorFast, parseDecimalCharacterCode, false); decoded != "" && decoded != s {
 			out = append(out, textEncodingView{decodedResult{text: decoded, encoding: encodingDecimal}, encodingSourceRange{0, len(s)}})
@@ -302,6 +316,135 @@ func characterCodeSeparatorFast(r rune) bool {
 	return characterCodeSeparator(r)
 }
 
+// uniformByteGlueRun is one decimal byte list whose gaps are the same single
+// rune. The rune is a letter, "_", ".", or "-". Mixed gaps and values above
+// 255 do not decode. Versions, dates, addresses, and phone numbers fail that
+// bar. The ordinary characterCodeSeparator set is unchanged, so comma and
+// space lists, JSON exponents, and "\u" escapes keep their existing meaning.
+type uniformByteGlueRun struct {
+	text       string
+	start, end int
+}
+
+func isUniformByteGlueRune(r rune) bool {
+	return r == '_' || r == '.' || r == '-' || unicode.IsLetter(r)
+}
+
+func hasUniformByteGlueRun(s string) bool {
+	return len(uniformByteGlueRuns(s)) > 0
+}
+
+func uniformByteGlueRuns(s string) []uniformByteGlueRun {
+	if !hasMinimumASCIIDigits(s, minDecimalCodeRun) {
+		return nil
+	}
+	var runs []uniformByteGlueRun
+	for i := 0; i < len(s); {
+		if s[i] < '0' || s[i] > '9' || (i > 0 && s[i-1] >= '0' && s[i-1] <= '9') {
+			i++
+			continue
+		}
+		text, _, next, ok := parseUniformByteGlueRun(s, i, false)
+		if next <= i {
+			i++
+			continue
+		}
+		if ok {
+			runs = append(runs, uniformByteGlueRun{text: text, start: i, end: next})
+		}
+		i = next
+	}
+	return runs
+}
+
+func decodeUniformByteGlue(s string, withRanges bool) (string, []encodingSourceRange) {
+	if !hasMinimumASCIIDigits(s, minDecimalCodeRun) {
+		return "", nil
+	}
+	var out strings.Builder
+	var ranges []encodingSourceRange
+	for i := 0; i < len(s); {
+		if s[i] < '0' || s[i] > '9' || (i > 0 && s[i-1] >= '0' && s[i-1] <= '9') {
+			i++
+			continue
+		}
+		text, runRanges, next, ok := parseUniformByteGlueRun(s, i, withRanges)
+		if next <= i {
+			i++
+			continue
+		}
+		if ok {
+			if out.Len() > 0 {
+				out.WriteByte('\n')
+				if withRanges {
+					ranges = append(ranges, encodingSourceRange{})
+				}
+			}
+			out.WriteString(text)
+			ranges = append(ranges, runRanges...)
+		}
+		i = next
+	}
+	return out.String(), ranges
+}
+
+func parseUniformByteGlueRun(s string, start int, withRanges bool) (text string, ranges []encodingSourceRange, next int, ok bool) {
+	i := start
+	var glue rune
+	var buf strings.Builder
+	count := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		j := i
+		for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+			j++
+		}
+		code, good := integerByteCode(s[i:j])
+		if !good {
+			if count >= minDecimalCodeRun && glue != 0 {
+				return buf.String(), ranges, i, true
+			}
+			return "", nil, j, false
+		}
+		buf.WriteByte(code)
+		if withRanges {
+			ranges = append(ranges, encodingSourceRange{start: i, end: j})
+		}
+		count++
+		i = j
+		if i >= len(s) {
+			break
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if (r == utf8.RuneError && size == 1) || !isUniformByteGlueRune(r) {
+			break
+		}
+		if i+size >= len(s) || s[i+size] < '0' || s[i+size] > '9' {
+			break
+		}
+		if glue == 0 {
+			glue = r
+		} else if r != glue {
+			return "", nil, i + size, false
+		}
+		i += size
+	}
+	if count >= minDecimalCodeRun && glue != 0 {
+		return buf.String(), ranges, i, true
+	}
+	if i <= start {
+		return "", nil, start + 1, false
+	}
+	return "", nil, i, false
+}
+
+func integerByteCode(field string) (byte, bool) {
+	n, err := strconv.ParseUint(field, 10, 8)
+	if err != nil {
+		return 0, false
+	}
+	return byte(n), true // #nosec G115 -- ParseUint bitSize 8 rejects values above 255.
+}
+
 // A number literal cannot contain arbitrary letters. Keeping them attached
 // prevents digits inside another carrier (such as JSON \u0041 escapes) from
 // manufacturing numeric-code views. The numeric parser still owns exponent
@@ -468,9 +611,16 @@ func mapTextEncodingViewSources(set responseMatchSet, source string, view textEn
 func mapTextEncodingSources(set responseMatchSet, source string, view decodedResult) responseMatchSet {
 	mappers := responseSourceMappers{source: view.text}
 	var ranges []encodingSourceRange
+	var decoded string
 	switch view.encoding {
 	case encodingDecimal:
-		_, ranges = decodeCharacterCodes(source, characterCodeSeparator, parseDecimalCharacterCode, true)
+		decoded, ranges = decodeCharacterCodes(source, characterCodeSeparator, parseDecimalCharacterCode, true)
+		if decoded != view.text {
+			decoded, ranges = decodeUniformByteGlue(source, true)
+			if decoded != view.text {
+				ranges = nil
+			}
+		}
 	case encodingOctal, encodingBinary:
 		_, ranges = decodePrefixedCharacterCodes(source, view.encoding, true)
 	case encodingQuotedPrintable:

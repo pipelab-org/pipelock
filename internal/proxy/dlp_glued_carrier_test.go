@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -28,6 +29,9 @@ func TestScanRequestBodyGluedBoundaryAndByteList(t *testing.T) {
 		{name: "digit glued card", body: `{"text":"94111` + strings.Repeat("1", 12) + `"}`, pattern: "Credit Card Number", want: false},
 		{name: "glued ssn", body: `{"text":"x123-45-6789"}`, pattern: "Social Security Number", want: true},
 		{name: "prose provider key", body: `{"text":"the desk-ant-hill-clearance-report-final"}`, pattern: "Anthropic API Key", want: false},
+		{name: "letter byte list", body: `{"text":"` + proxyByteList("AKIA"+"0123456789ABCDEF", "x") + `"}`, pattern: "AWS Access ID", want: true},
+		{name: "dot byte list", body: `{"text":"` + proxyByteList("AKIA"+"0123456789ABCDEF", ".") + `"}`, pattern: "AWS Access ID", want: true},
+		{name: "version string", body: `{"text":"version 1.2.3 shipped 2026-11-11 at 203.0.113.10 id_123_456"}`, pattern: "AWS Access ID", want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -44,4 +48,12 @@ func TestScanRequestBodyGluedBoundaryAndByteList(t *testing.T) {
 			}
 		})
 	}
+}
+
+func proxyByteList(secret, glue string) string {
+	parts := make([]string, len(secret))
+	for i := 0; i < len(secret); i++ {
+		parts[i] = strconv.Itoa(int(secret[i]))
+	}
+	return strings.Join(parts, glue)
 }
