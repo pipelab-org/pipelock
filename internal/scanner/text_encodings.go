@@ -39,6 +39,14 @@ func hasCharacterCodeRun(s string) bool {
 	if !hasMinimumASCIIDigits(s, minDecimalCodeRun) {
 		return false
 	}
+	// A uniform letter, "_", ".", or "-" glue is a byte list even though those
+	// runes stay attached for the ordinary numeric-code parser. Only a run
+	// whose decoded bytes are printable text opens this pass. A dotted list
+	// of small integers decodes to control bytes; isPrintableText already
+	// refuses that, and scanning it would decode the whole carrier.
+	if hasUniformByteGlueRun(s) {
+		return true
+	}
 	// A run needs at least this many fields, regardless of their values.
 	// Count before parsing: one large hex/base64 field cannot be a code list,
 	// and strconv error reporting would otherwise copy that entire field.
@@ -128,6 +136,15 @@ func textEncodingViews(s string) []textEncodingView { return textEncodingViewsMo
 func textEncodingViewsMode(s string, recoverQP bool) []textEncodingView {
 	var out []textEncodingView
 
+	// One view per run. Joining runs with a newline would make keyword offsets
+	// fail closed for every run in the carrier, including a run that decoded
+	// on its own.
+	for _, run := range uniformByteGlueRuns(s) {
+		out = append(out, textEncodingView{
+			decodedResult: decodedResult{text: run.text, encoding: encodingDecimal},
+			sourceRange:   encodingSourceRange{start: run.start, end: run.end},
+		})
+	}
 	if hasCharacterCodeRun(s) {
 		if decoded, _ := decodeCharacterCodes(s, characterCodeSeparatorFast, parseDecimalCharacterCode, false); decoded != "" && decoded != s {
 			out = append(out, textEncodingView{decodedResult{text: decoded, encoding: encodingDecimal}, encodingSourceRange{0, len(s)}})
@@ -302,6 +319,176 @@ func characterCodeSeparatorFast(r rune) bool {
 	return characterCodeSeparator(r)
 }
 
+// uniformByteGlueRun is one decimal byte list whose gaps are the same single
+// rune. The rune is a letter, "_", ".", or "-". Mixed gaps and values above
+// 255 do not decode. Versions, dates, addresses, and phone numbers fail that
+// bar. The ordinary characterCodeSeparator set is unchanged, so comma and
+// space lists, JSON exponents, and "\u" escapes keep their existing meaning.
+type uniformByteGlueRun struct {
+	text       string
+	start, end int
+}
+
+func isUniformByteGlueRune(r rune) bool {
+	return r == '_' || r == '.' || r == '-' || unicode.IsLetter(r)
+}
+
+func hasUniformByteGlueRun(s string) bool {
+	return len(uniformByteGlueRuns(s)) > 0
+}
+
+// uniformGlueTextAdmitted reports whether a decoded glue run is text worth
+// scanning. isPrintableText is the existing 80% rule. Bytes that rule does
+// not count, when they sit only at the ends, are framing: a credential
+// followed by zero bytes is still the credential. The trimmed core has to
+// pass the same rule, and it has to be at least as long as the framing.
+// Otherwise one printable byte at the edge of a control run would open the
+// decode pass for the whole carrier.
+func uniformGlueTextAdmitted(text string) bool {
+	if text == "" {
+		return false
+	}
+	if isPrintableText([]byte(text)) {
+		return true
+	}
+	core := strings.TrimFunc(text, isGlueControlPad)
+	if core == "" || !isPrintableText([]byte(core)) {
+		return false
+	}
+	pad := len(text) - len(core)
+	return len(core) >= pad
+}
+
+// isGlueControlPad is a byte isPrintableText does not count. Tab and the
+// line breaks stay, because that rule already accepts them as text.
+// A lone non-UTF-8 byte is reported as RuneError; that byte is padding too.
+// A real U+FFFD at the end is the same rune and is not part of a credential.
+func isGlueControlPad(r rune) bool {
+	if r == utf8.RuneError {
+		return true
+	}
+	size := utf8.RuneLen(r)
+	if size < 1 {
+		return true
+	}
+	return !isPrintableResponseRune(r, size)
+}
+
+func uniformByteGlueRuns(s string) []uniformByteGlueRun {
+	if !hasMinimumASCIIDigits(s, minDecimalCodeRun) {
+		return nil
+	}
+	var runs []uniformByteGlueRun
+	for i := 0; i < len(s); {
+		if s[i] < '0' || s[i] > '9' || (i > 0 && s[i-1] >= '0' && s[i-1] <= '9') {
+			i++
+			continue
+		}
+		text, _, next, ok := parseUniformByteGlueRun(s, i, false)
+		if next <= i {
+			i++
+			continue
+		}
+		// Same printable-text rule as other decoded views. A dotted list of
+		// small integers is all control bytes and must not open the decode
+		// pass. Control bytes wrapped around a printable core still count:
+		// trimming them is the pad, and the core is the carrier.
+		if ok && uniformGlueTextAdmitted(text) {
+			runs = append(runs, uniformByteGlueRun{text: text, start: i, end: next})
+		}
+		i = next
+	}
+	return runs
+}
+
+func decodeUniformByteGlue(s string, withRanges bool) (string, []encodingSourceRange) {
+	if !hasMinimumASCIIDigits(s, minDecimalCodeRun) {
+		return "", nil
+	}
+	var out strings.Builder
+	var ranges []encodingSourceRange
+	for i := 0; i < len(s); {
+		if s[i] < '0' || s[i] > '9' || (i > 0 && s[i-1] >= '0' && s[i-1] <= '9') {
+			i++
+			continue
+		}
+		text, runRanges, next, ok := parseUniformByteGlueRun(s, i, withRanges)
+		if next <= i {
+			i++
+			continue
+		}
+		if ok {
+			if out.Len() > 0 {
+				out.WriteByte('\n')
+				if withRanges {
+					ranges = append(ranges, encodingSourceRange{})
+				}
+			}
+			out.WriteString(text)
+			ranges = append(ranges, runRanges...)
+		}
+		i = next
+	}
+	return out.String(), ranges
+}
+
+func parseUniformByteGlueRun(s string, start int, withRanges bool) (text string, ranges []encodingSourceRange, next int, ok bool) {
+	i := start
+	var glue rune
+	var buf strings.Builder
+	count := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		j := i
+		for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+			j++
+		}
+		code, good := integerByteCode(s[i:j])
+		if !good {
+			if count >= minDecimalCodeRun && glue != 0 {
+				return buf.String(), ranges, i, true
+			}
+			return "", nil, j, false
+		}
+		buf.WriteByte(code)
+		if withRanges {
+			ranges = append(ranges, encodingSourceRange{start: i, end: j})
+		}
+		count++
+		i = j
+		if i >= len(s) {
+			break
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if (r == utf8.RuneError && size == 1) || !isUniformByteGlueRune(r) {
+			break
+		}
+		if i+size >= len(s) || s[i+size] < '0' || s[i+size] > '9' {
+			break
+		}
+		if glue == 0 {
+			glue = r
+		} else if r != glue {
+			return "", nil, i + size, false
+		}
+		i += size
+	}
+	if count >= minDecimalCodeRun && glue != 0 {
+		return buf.String(), ranges, i, true
+	}
+	if i <= start {
+		return "", nil, start + 1, false
+	}
+	return "", nil, i, false
+}
+
+func integerByteCode(field string) (byte, bool) {
+	n, err := strconv.ParseUint(field, 10, 8)
+	if err != nil {
+		return 0, false
+	}
+	return byte(n), true // #nosec G115 -- ParseUint bitSize 8 rejects values above 255.
+}
+
 // A number literal cannot contain arbitrary letters. Keeping them attached
 // prevents digits inside another carrier (such as JSON \u0041 escapes) from
 // manufacturing numeric-code views. The numeric parser still owns exponent
@@ -468,9 +655,16 @@ func mapTextEncodingViewSources(set responseMatchSet, source string, view textEn
 func mapTextEncodingSources(set responseMatchSet, source string, view decodedResult) responseMatchSet {
 	mappers := responseSourceMappers{source: view.text}
 	var ranges []encodingSourceRange
+	var decoded string
 	switch view.encoding {
 	case encodingDecimal:
-		_, ranges = decodeCharacterCodes(source, characterCodeSeparator, parseDecimalCharacterCode, true)
+		decoded, ranges = decodeCharacterCodes(source, characterCodeSeparator, parseDecimalCharacterCode, true)
+		if decoded != view.text {
+			decoded, ranges = decodeUniformByteGlue(source, true)
+			if decoded != view.text {
+				ranges = nil
+			}
+		}
 	case encodingOctal, encodingBinary:
 		_, ranges = decodePrefixedCharacterCodes(source, view.encoding, true)
 	case encodingQuotedPrintable:

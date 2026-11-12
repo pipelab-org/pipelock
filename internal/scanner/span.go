@@ -129,18 +129,15 @@ func (p *compiledPattern) matchSpanInView(text, source string) (start, end int, 
 		return p.firstAcceptedSpan(text, nil)
 	}
 	if source == text {
-		for _, loc := range p.re.FindAllStringIndex(text, -1) {
-			bodyLoc := p.withoutLeftBoundary.FindStringIndex(text[loc[0]:loc[1]])
-			if bodyLoc == nil {
-				continue
-			}
-			start = loc[0] + bodyLoc[0]
-			end = loc[0] + bodyLoc[1]
-			if p.accepts(text, start, end) {
-				return start, end, true
-			}
-		}
-		return 0, 0, false
+		return p.firstBoundaryOrGluedSpan(text)
+	}
+	// Word-boundary families stay on the bounded grammar in a transformed
+	// view. A one-character exception applies only when that same candidate
+	// is already a one-character disguise in the source. Whitespace removal
+	// can glue a date to a clock (2026-12-30 23:59:59) and manufacture an
+	// SSN-shaped run; the source still has the space, so it is not confirmed.
+	if p.providerPrefixRE == nil {
+		return p.firstJoinedGluedSpan(text, source)
 	}
 
 	invalidSourceCandidates := p.invalidLeadingCandidates(source)
@@ -152,11 +149,194 @@ func (p *compiledPattern) matchSpanInView(text, source string) (start, end int, 
 			invalidIndex++
 			continue
 		}
-		if p.accepts(text, start, end) {
+		start, end, ok = p.acceptedSpan(text, start, end)
+		if ok {
 			return start, end, true
 		}
 	}
 	return 0, 0, false
+}
+
+// firstBoundaryOrGluedSpan returns the earliest bounded hit. A candidate the
+// left boundary rejects is also returned when it starts strictly earlier,
+// exactly one preceding rune is what failed the boundary, and the family
+// strength check accepts it. A receiver that drops that rune sees the
+// credential. PR #1391 prose such as "desk-ant-" still fails, because
+// removing one rune leaves another boundary failure.
+func (p *compiledPattern) firstBoundaryOrGluedSpan(text string) (int, int, bool) {
+	start, end, ok := p.firstBoundedBodySpan(text)
+	if !p.relaxSingleGluedBoundary || (ok && start == 0) {
+		return start, end, ok
+	}
+	// A card or SSN accepts only a glued ASCII letter or underscore: a digit
+	// lengthens the number, and RE2's \b treats every other rune as a
+	// boundary already. Text without one cannot hold a glued candidate, so
+	// the second body search over it is skipped. Long digit runs made that
+	// search the most expensive part of the scan.
+	if p.gluedDigitExtendsNumber && !hasASCIIGlueLetter(text) {
+		return start, end, ok
+	}
+	limit := len(text) + 1
+	if ok {
+		limit = start
+	}
+	if gStart, gEnd, gOK := p.earliestGluedSpan(text, limit); gOK {
+		return gStart, gEnd, true
+	}
+	return start, end, ok
+}
+
+func (p *compiledPattern) firstBoundedBodySpan(text string) (int, int, bool) {
+	for _, loc := range p.re.FindAllStringIndex(text, -1) {
+		bodyLoc := p.withoutLeftBoundary.FindStringIndex(text[loc[0]:loc[1]])
+		if bodyLoc == nil {
+			continue
+		}
+		start, end, ok := p.acceptedSpan(text, loc[0]+bodyLoc[0], loc[0]+bodyLoc[1])
+		if ok {
+			return start, end, true
+		}
+	}
+	return 0, 0, false
+}
+
+func (p *compiledPattern) firstJoinedGluedSpan(text, source string) (int, int, bool) {
+	start, end, ok := p.firstBoundedBodySpan(text)
+	if !p.relaxSingleGluedBoundary || (ok && start == 0) {
+		return start, end, ok
+	}
+	// A digit glued to a card or SSN is rejected: it lengthens the number.
+	// A digit-only view therefore has no glue rune this family can accept,
+	// and a second body scan only repeats the bounded one. Dot-stripping a
+	// long dotted integer list produces that view.
+	if p.gluedDigitExtendsNumber && !textHasNonDigit(text) {
+		return start, end, ok
+	}
+	limit := len(text) + 1
+	if ok {
+		limit = start
+	}
+	bestStart, bestEnd := limit, 0
+	found := false
+	for _, loc := range p.providerCandidateSpans(text) {
+		if loc[0] >= bestStart {
+			continue
+		}
+		gStart, gEnd, gOK := p.gluedCandidateSpan(text, loc)
+		if !gOK || gStart >= bestStart || !p.gluedCandidateConfirmedInSource(source, text[gStart:gEnd]) {
+			continue
+		}
+		bestStart, bestEnd, found = gStart, gEnd, true
+	}
+	if found {
+		return bestStart, bestEnd, true
+	}
+	return start, end, ok
+}
+
+func hasASCIIGlueLetter(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i] | 0x20
+		if (c >= 'a' && c <= 'z') || s[i] == '_' {
+			return true
+		}
+	}
+	return false
+}
+
+func textHasNonDigit(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *compiledPattern) gluedCandidateConfirmedInSource(source, candidate string) bool {
+	if candidate == "" || len(candidate) > len(source) {
+		return false
+	}
+	from := 0
+	for from <= len(source)-len(candidate) {
+		i := strings.Index(source[from:], candidate)
+		if i < 0 {
+			return false
+		}
+		at := from + i
+		loc := [2]int{at, at + len(candidate)}
+		if p.candidateHasLeftBoundary(source, loc) {
+			return true
+		}
+		glued, ok := p.exactlyOneGluedRune(source, loc)
+		if ok && (!p.gluedDigitExtendsNumber || glued < '0' || glued > '9') {
+			return true
+		}
+		from = at + 1
+	}
+	return false
+}
+
+func (p *compiledPattern) earliestGluedSpan(text string, limit int) (int, int, bool) {
+	bestStart, bestEnd := limit, 0
+	found := false
+	for _, loc := range p.providerCandidateSpans(text) {
+		if loc[0] >= bestStart {
+			continue
+		}
+		start, end, ok := p.gluedCandidateSpan(text, loc)
+		if !ok || start >= bestStart {
+			continue
+		}
+		bestStart, bestEnd, found = start, end, true
+	}
+	return bestStart, bestEnd, found
+}
+
+func (p *compiledPattern) gluedCandidateSpan(text string, loc [2]int) (int, int, bool) {
+	glued, ok := p.exactlyOneGluedRune(text, loc)
+	if !ok {
+		return 0, 0, false
+	}
+	if p.gluedDigitExtendsNumber && glued >= '0' && glued <= '9' {
+		return 0, 0, false
+	}
+	start, end, ok := p.acceptedSpan(text, loc[0], loc[1])
+	if !ok || start != loc[0] {
+		return 0, 0, false
+	}
+	if p.providerKeyPrefix != "" && !providerSuffixHasKeyStrength(p.providerKeyPrefix, text[start:end]) {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+// exactlyOneGluedRune reports the single preceding rune whose removal makes
+// candidateHasLeftBoundary true. Zero runes means the boundary already held.
+// Two or more means the candidate is still inside a word after one deletion,
+// which is the prose shape PR #1391 kept out of redaction and DLP.
+func (p *compiledPattern) exactlyOneGluedRune(source string, loc [2]int) (rune, bool) {
+	if loc[0] <= 0 || loc[1] > len(source) || loc[0] >= loc[1] || p.candidateHasLeftBoundary(source, loc) {
+		return 0, false
+	}
+	r, size := utf8.DecodeLastRuneInString(source[:loc[0]])
+	if r == utf8.RuneError && size == 1 {
+		return 0, false
+	}
+	before := loc[0] - size
+	var window string
+	candidateStart := 0
+	if before > 0 {
+		_, prevSize := utf8.DecodeLastRuneInString(source[:before])
+		window = source[before-prevSize:before] + source[loc[0]:p.leftBoundaryWindowEnd(source, loc)]
+		candidateStart = prevSize
+	} else {
+		window = source[loc[0]:p.leftBoundaryWindowEnd(source, loc)]
+	}
+	if !p.candidateHasLeftBoundary(window, [2]int{candidateStart, len(window)}) {
+		return 0, false
+	}
+	return r, true
 }
 
 // matchSpanInJoinedView is matchSpanInView for the whitespace-joined view,
@@ -199,6 +379,14 @@ func (p *compiledPattern) invalidLeadingCandidates(source string) []string {
 		if p.candidateHasLeftBoundary(source, loc) {
 			continue
 		}
+		// A one-character disguise that passes the strength check is a real
+		// candidate. Leaving it in this list would suppress it again once a
+		// normalized view no longer matches the source byte for byte.
+		if p.relaxSingleGluedBoundary {
+			if _, _, ok := p.gluedCandidateSpan(source, loc); ok {
+				continue
+			}
+		}
 		candidates = append(candidates, strings.ToLower(source[loc[0]:loc[1]]))
 	}
 	return candidates
@@ -208,6 +396,14 @@ func (p *compiledPattern) invalidLeadingCandidates(source string) []string {
 // greedy, so FindAllStringIndex would let a suppressed prose candidate consume
 // a later reconstructed key and mask it from enforcement.
 func (p *compiledPattern) providerCandidateSpans(text string) [][2]int {
+	if p.providerPrefixRE == nil {
+		locs := p.withoutLeftBoundary.FindAllStringIndex(text, -1)
+		spans := make([][2]int, len(locs))
+		for i, loc := range locs {
+			spans[i] = [2]int{loc[0], loc[1]}
+		}
+		return spans
+	}
 	return p.canonicalProviderCandidateSpans(text)
 }
 
@@ -231,12 +427,35 @@ func (p *compiledPattern) canonicalProviderCandidateSpans(text string) [][2]int 
 				continue
 			}
 			// The canonical provider bodies require at least 20 suffix characters.
-			if remaining >= 20 {
+			if remaining >= providerKeyMinSuffixRunes {
 				spans = append(spans, [2]int{loc[0] + prefix[0], loc[1]})
 			}
 		}
 	}
 	return spans
+}
+
+// providerKeyMinSuffixRunes is the {20,} suffix minimum shared by the three
+// canonical provider bodies (config.AnthropicKeyBodyRegex and its siblings).
+const providerKeyMinSuffixRunes = 20
+
+// leftBoundaryWindowEnd is where a candidate's left-boundary check may stop.
+// A provider body is its prefix followed by twenty or more runes of one class,
+// with no right boundary, and every provider candidate span is a body match.
+// So whether a bounded hit starts at the candidate is settled by the prefix
+// and its first twenty suffix runes. Reading the whole suffix again for every
+// nested prefix of one long run made the scan quadratic in the run's length.
+// Other patterns keep the full span: their candidates do not overlap.
+func (p *compiledPattern) leftBoundaryWindowEnd(source string, loc [2]int) int {
+	if p.providerPrefixRE == nil {
+		return loc[1]
+	}
+	end := loc[0]
+	for n := len(p.providerKeyPrefix) + providerKeyMinSuffixRunes; n > 0 && end < loc[1]; n-- {
+		_, size := utf8.DecodeRuneInString(source[end:loc[1]])
+		end += size
+	}
+	return end
 }
 
 func (p *compiledPattern) candidateHasLeftBoundary(source string, candidateLoc [2]int) bool {
@@ -245,7 +464,7 @@ func (p *compiledPattern) candidateHasLeftBoundary(source string, candidateLoc [
 		_, size := utf8.DecodeLastRuneInString(source[:windowStart])
 		windowStart -= size
 	}
-	window := source[windowStart:candidateLoc[1]]
+	window := source[windowStart:p.leftBoundaryWindowEnd(source, candidateLoc)]
 	for _, loc := range p.re.FindAllStringIndex(window, -1) {
 		bodyLoc := p.withoutLeftBoundary.FindStringIndex(window[loc[0]:loc[1]])
 		if bodyLoc != nil && windowStart+loc[0]+bodyLoc[0] == candidateLoc[0] {

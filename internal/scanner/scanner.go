@@ -470,9 +470,16 @@ type compiledPattern struct {
 	withoutLeftBoundary *regexp.Regexp
 	providerKeyPrefix   string
 	providerPrefixRE    *regexp.Regexp
-	severity            string
-	validate            func(string) bool // post-match checksum (nil = regex-only)
-	genericCard         bool              // validator provenance, never a display-name exemption
+	// relaxSingleGluedBoundary joins candidateHasLeftBoundary. A miss is still
+	// a finding when exactly one preceding rune caused it and the family
+	// strength check passes. Longer prose prefixes keep failing that check.
+	relaxSingleGluedBoundary bool
+	// gluedDigitExtendsNumber refuses a glued ASCII digit. In front of a card
+	// or an SSN that digit lengthens the number instead of disguising it.
+	gluedDigitExtendsNumber bool
+	severity                string
+	validate                func(string) bool // post-match checksum (nil = regex-only)
+	genericCard             bool              // validator provenance, never a display-name exemption
 	// cardPrefixRetry marks the canonical card rule with its luhn validator.
 	// Its failed greedy hits retry shorter candidates (jsonnumber.AcceptedCardEnd).
 	cardPrefixRetry bool
@@ -723,8 +730,27 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 			if err != nil {
 				return nil, fmt.Errorf("compile DLP pattern %q without left boundary: %w", p.Name, err)
 			}
+			cp.relaxSingleGluedBoundary = true
+		} else if body, rejectDigit, ok := gluedWordBoundaryBody(p.Regex); ok {
+			if !strings.HasPrefix(body, "(?i)") {
+				body = "(?i)" + body
+			}
+			cp.withoutLeftBoundary, err = regexp.Compile(body)
+			if err != nil {
+				return nil, fmt.Errorf("compile DLP pattern %q without left boundary: %w", p.Name, err)
+			}
+			cp.relaxSingleGluedBoundary = true
+			cp.gluedDigitExtendsNumber = rejectDigit
 		}
 		requirements := analyzePatternMatchRequirements(cp.re, cp.withoutLeftBoundary)
+		if cp.withoutLeftBoundary != nil && cp.providerKeyPrefix == "" {
+			// The removed \b is zero width, so every bounded hit is also a
+			// body hit at the same offset, and every glued candidate is a
+			// body hit. The body's shape is a necessary condition for both.
+			// The bounded grammar's gate is not: its whole-word length check
+			// rejects the glued rune.
+			requirements.shape = analyzeRegexpMatchRequirements(cp.withoutLeftBoundary.String()).shape
+		}
 		cp.requiresEquals = requirements.requiresEquals
 		cp.minASCIIDigits = requirements.minASCIIDigits
 		cp.shapeGate = requirements.shape
@@ -6470,6 +6496,61 @@ func isReadableLowerWord(part string) bool {
 		}
 	}
 	return hasVowel
+}
+
+// gluedWordBoundaryBody is the shipped word-boundary grammar with its leading
+// \b removed. The match still uses candidateHasLeftBoundary. Card numbers and
+// SSNs reject a glued digit because that digit lengthens the number. Twilio
+// and Mailgun keep a glued digit: the body is a fixed prefix plus an exact
+// length, and the trailing \b still rejects a longer blob.
+func gluedWordBoundaryBody(regex string) (body string, rejectDigit bool, ok bool) {
+	switch regex {
+	case `\bSK[a-f0-9]{32}\b`, `\bkey-[a-zA-Z0-9]{32}\b`:
+		return strings.TrimPrefix(regex, `\b`), false, true
+	case `\b\d{3}-\d{2}-\d{4}\b`, jsonnumber.ShippedCardPattern:
+		return strings.TrimPrefix(regex, `\b`), true, true
+	default:
+		return "", false, false
+	}
+}
+
+// providerSuffixHasKeyStrength is the boundary-failure check for the three
+// shipped provider prefixes. The suffix must contain a digit and must not be
+// hyphenated readable words (the PR #1391 prose shape). Entropy uses
+// envLeakMinEntropy with >= because eight repeating symbols land on that
+// floor: log2(8) == 3. looksLikeOpaqueToken uses a strict > for a different
+// decision and is not this gate.
+func providerSuffixHasKeyStrength(prefix, candidate string) bool {
+	if len(candidate) < len(prefix) || !strings.EqualFold(candidate[:len(prefix)], prefix) {
+		return false
+	}
+	suffix := candidate[len(prefix):]
+	if !containsASCIIDigit(suffix) || providerSuffixIsHyphenatedProse(suffix) {
+		return false
+	}
+	return ShannonEntropy(suffix) >= envLeakMinEntropy
+}
+
+func containsASCIIDigit(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= '0' && s[i] <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
+func providerSuffixIsHyphenatedProse(suffix string) bool {
+	parts := strings.Split(strings.ToLower(suffix), "-")
+	if len(parts) < 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || (!isYearLike(part) && !isReadableLowerWord(part)) {
+			return false
+		}
+	}
+	return true
 }
 
 // ShannonEntropy calculates the Shannon entropy of a string in bits per character.

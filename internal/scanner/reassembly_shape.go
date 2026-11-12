@@ -22,10 +22,14 @@ type assembledShape struct {
 	local        *regexp.Regexp
 	validate     *compiledPattern
 	validateRule bool
-	segments     [8][9][4]uint64
-	members      [256]bool
-	masks        [5][8][64]uint64
-	bias         [5]uint64
+	// glued admits a window whose only candidate has one glued rune before
+	// it. The bounded local grammar rejects that candidate; searchLane
+	// accepts it, so the screen must not refuse its lane.
+	glued    *compiledPattern
+	segments [8][9][4]uint64
+	members  [256]bool
+	masks    [5][8][64]uint64
+	bias     [5]uint64
 }
 
 const (
@@ -158,11 +162,25 @@ func (s *assembledShape) grammarNear(text string, position assembledPosition) bo
 		data = append(data, b)
 		return len(data) < cap(data)
 	})
+	var ok bool
 	if s.validate != nil {
-		_, _, ok := s.validate.firstAcceptedSpan(string(data), nil)
-		return ok
+		_, _, ok = s.validate.firstAcceptedSpan(string(data), nil)
+	} else {
+		ok = s.local.Match(data)
 	}
-	return s.local.Match(data)
+	return ok || s.gluedNear(string(data))
+}
+
+func (s *assembledShape) gluedNear(view string) bool {
+	if s.glued == nil {
+		return false
+	}
+	for _, loc := range s.glued.providerCandidateSpans(view) {
+		if _, _, ok := s.glued.gluedCandidateSpan(view, loc); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *assembledShape) classRun(text string, position assembledPosition) bool {
