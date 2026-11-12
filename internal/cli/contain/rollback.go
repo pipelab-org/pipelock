@@ -263,11 +263,12 @@ func actionRemoveNetworkNamespace() step {
 			if retainLoopbackInventory {
 				env.preserveContainmentRecords = true
 			} else if env.loopbackForwarderInvPath != "" {
-				if err := removeDoorwayRestoreJournal(env, env.loopbackForwarderInvPath); err != nil {
+				if err := restoreJournaledBackup(env, env.loopbackForwarderInvPath, env.loopbackForwarderInvPath); err != nil {
+					errs = append(errs, fmt.Errorf("restore %s: %w", env.loopbackForwarderInvPath, err))
+					env.preserveContainmentRecords = true
+				} else if err := removeDoorwayRestoreJournal(env, env.loopbackForwarderInvPath); err != nil {
 					errs = append(errs, err)
 					env.preserveContainmentRecords = true
-				} else if err := restoreBackup(env, env.loopbackForwarderInvPath); err != nil {
-					errs = append(errs, fmt.Errorf("restore %s: %w", env.loopbackForwarderInvPath, err))
 				}
 			}
 			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {

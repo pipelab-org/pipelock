@@ -847,14 +847,58 @@ func restoreJournaledBackup(env *installEnv, inventoryPath, path string) error {
 	if err := restoreBackup(env, clean); err != nil {
 		return err
 	}
-	paths := make([]string, 0, len(done)+1)
+	done[clean] = true
+	if err := writeDoorwayRestoreJournal(env, inventoryPath, done); err != nil {
+		journalErr := fmt.Errorf("record restored doorway file %s: %w", clean, err)
+		// The backup was consumed. Put the restored bytes back beside the
+		// file so a later attempt restores them instead of deleting the file.
+		bak := clean + ".bak"
+		if _, statErr := env.lstat(bak); errors.Is(statErr, os.ErrNotExist) {
+			body, readErr := env.readFile(clean)
+			if readErr != nil {
+				return errors.Join(journalErr, fmt.Errorf("read restored %s: %w", clean, readErr))
+			}
+			mode := os.FileMode(0o600)
+			if info, infoErr := env.lstat(clean); infoErr == nil {
+				mode = info.Mode().Perm()
+			}
+			if writeErr := env.writeFile(bak, body, mode); writeErr != nil {
+				return errors.Join(journalErr, fmt.Errorf("keep backup %s: %w", bak, writeErr))
+			}
+		}
+		return journalErr
+	}
+	return nil
+}
+
+// forgetDoorwayRestore drops one path from the journal after a new backup
+// of that path exists. The old completion entry would make the next removal
+// skip the new backup.
+func forgetDoorwayRestore(env *installEnv, inventoryPath, path string) error {
+	done, err := readDoorwayRestoreJournal(env, doorwayRestoreJournalPath(inventoryPath))
+	if err != nil {
+		return err
+	}
+	clean := filepath.Clean(path)
+	if !done[clean] {
+		return nil
+	}
+	delete(done, clean)
+	return writeDoorwayRestoreJournal(env, inventoryPath, done)
+}
+
+func writeDoorwayRestoreJournal(env *installEnv, inventoryPath string, done map[string]bool) error {
+	if len(done) == 0 {
+		return removeDoorwayRestoreJournal(env, inventoryPath)
+	}
+	paths := make([]string, 0, len(done))
 	for restored := range done {
 		paths = append(paths, restored)
 	}
-	paths = append(paths, clean)
 	sort.Strings(paths)
+	journal := doorwayRestoreJournalPath(inventoryPath)
 	if err := env.writeFile(journal, []byte(strings.Join(paths, "\n")+"\n"), 0o600); err != nil {
-		return fmt.Errorf("record restored doorway file %s: %w", clean, err)
+		return fmt.Errorf("write doorway restore journal: %w", err)
 	}
 	return nil
 }

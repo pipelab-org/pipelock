@@ -459,6 +459,9 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 				if err := backupAndWrite(env, item.path, []byte(item.body), mode); err != nil {
 					return len(touched) > 0, fmt.Errorf("write %s: %w", item.path, err)
 				}
+				if err := forgetDoorwayRestore(env, recordPath, item.path); err != nil {
+					return true, err
+				}
 				touched = append(touched, item.path)
 				changedUnit[filepath.Base(item.path)] = true
 			}
@@ -489,6 +492,9 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 			} else {
 				if err := backupAndWrite(env, recordPath, recordBytes, modeConfigSecret); err != nil {
 					return true, fmt.Errorf("write published service records: %w", err)
+				}
+				if err := forgetDoorwayRestore(env, recordPath, recordPath); err != nil {
+					return true, err
 				}
 				touched = append(touched, recordPath)
 			}
@@ -620,14 +626,15 @@ func removePublishedServices(ctx context.Context, env *installEnv) error {
 		env.preserveContainmentRecords = true
 		return errors.Join(errs...)
 	}
+	if err := restoreJournaledBackup(env, recordPath, recordPath); err != nil {
+		env.preserveContainmentRecords = true
+		return fmt.Errorf("restore %s: %w", recordPath, err)
+	}
 	if err := removeDoorwayRestoreJournal(env, recordPath); err != nil {
 		env.preserveContainmentRecords = true
 		return err
 	}
-	if err := restoreBackup(env, recordPath); err != nil {
-		errs = append(errs, fmt.Errorf("restore %s: %w", recordPath, err))
-	}
-	return errors.Join(errs...)
+	return nil
 }
 
 // reconcileDeclaredContainmentPublishedServicesForReload fails closed: any
