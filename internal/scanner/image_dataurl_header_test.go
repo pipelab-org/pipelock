@@ -16,6 +16,15 @@ func imageHeaderAccessKeyID() string {
 	return "AKIA" + "0123456789ABCDEF"
 }
 
+func hasImageHeaderAWSAccessID(matches []TextDLPMatch) bool {
+	for _, match := range matches {
+		if match.PatternName == "AWS Access ID" {
+			return true
+		}
+	}
+	return false
+}
+
 // TestScanTextForDLP_ImageDataURLHeaderParameterBlocks covers a credential
 // placed in a media-type parameter of a verified image data URL. The
 // parameter is plaintext a receiver reads; it is not a byte of the image, so
@@ -38,11 +47,11 @@ func TestScanTextForDLP_ImageDataURLHeaderParameterBlocks(t *testing.T) {
 			t.Fatalf("DLP view dropped the header parameter for %.60q", text)
 		}
 		result := s.ScanTextForDLP(context.Background(), text)
-		if result.Clean || !hasTextDLPPattern(result.Matches, "AWS Access ID") {
+		if result.Clean || !hasImageHeaderAWSAccessID(result.Matches) {
 			t.Fatalf("header credential passed outbound for %.60q: %+v", text, result)
 		}
 		inbound := s.ScanTextForDLPInbound(context.Background(), text)
-		if !hasTextDLPPattern(inbound.Matches, "AWS Access ID") {
+		if !hasImageHeaderAWSAccessID(inbound.Matches) {
 			t.Fatalf("header credential passed inbound for %.60q: %+v", text, inbound)
 		}
 	}
