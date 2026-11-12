@@ -154,12 +154,11 @@ func tokenClasses() []classPattern {
 		{class: ClassOpenAIAPIKey, pattern: regexp.MustCompile(`sk-(?:proj|svcacct)-[A-Za-z0-9_-]{20,}`), priority: 100, skipTrailing: providerKeySkipTrailing, skipLeading: providerKeyInvalidLeading},
 		{class: ClassAnthropicKey, pattern: regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{20,}`), priority: 100, skipTrailing: providerKeySkipTrailing, skipLeading: providerKeyInvalidLeading},
 		{class: ClassNPMToken, pattern: regexp.MustCompile(`(?i)npm_[A-Za-z0-9]{36,}\b`), priority: 100},
-		// PyPI API tokens use the stable "pypi-AgE" prefix for v2 macaroons
-		// with empty location. Update this if PyPI rotates token format.
-		{class: ClassPyPIToken, pattern: regexp.MustCompile(`(?i)pypi-AgE[A-Za-z0-9_-]{90,}`), priority: 100},
+		// Mirror PyPI's documented minimum base64url macaroon length.
+		{class: ClassPyPIToken, pattern: regexp.MustCompile(`(?i)pypi-[A-Za-z0-9_-]{85,}`), priority: 100},
 		{class: ClassLinearAPIKey, pattern: regexp.MustCompile(`(?i)lin_api_[A-Za-z0-9]{40,}\b`), priority: 100},
 		{class: ClassNotionAPIKey, pattern: regexp.MustCompile(`(?i)ntn_[A-Za-z0-9]{40,}\b`), priority: 100},
-		{class: ClassSentryAuthToken, pattern: regexp.MustCompile(`(?i)sntrys_[A-Za-z0-9]{40,}\b`), priority: 100},
+		{class: ClassSentryAuthToken, pattern: regexp.MustCompile(`(?i)sntrys_(?:[A-Za-z0-9+/=]+_[A-Za-z0-9+/]{43}|[A-Za-z0-9]{40,}\b)`), priority: 100},
 		{class: ClassTelegramToken, pattern: regexp.MustCompile(`\b[0-9]{8,10}:[A-Za-z0-9_-]{35}\b`), priority: 100},
 		{class: ClassDiscordToken, pattern: regexp.MustCompile(`(?:\b[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}|\bmfa\.[A-Za-z0-9_-]{84,})`), priority: 100},
 		// Twilio API Key SID: SK + 32 hex (34 total). Boundaries match the

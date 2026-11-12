@@ -370,6 +370,16 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Infrastructure and platform tokens
 	// DigitalOcean personal access tokens: 64 hex chars after prefix.
 	{Name: "DigitalOcean Token", Regex: `dop_v1_[a-f0-9]{64}`, Severity: SeverityCritical},
+	// Doppler publishes each token kind and a 40-44 character alphanumeric
+	// payload. Service tokens may also carry a 2-35 character config name.
+	// Source: https://docs.doppler.com/reference/auth-token-formats
+	{Name: "Doppler Token", Regex: `\bdp\.(?:(?:ct|pt|sa|said|scim|audit)\.|st\.(?:[a-z0-9_-]{2,35}\.)?)[A-Za-z0-9]{40,44}\b`, Severity: SeverityCritical},
+	// 1Password's displayed Secret Key has 34 letters and numbers: A3,
+	// a six-character identifier, and 26 secret characters. Match the
+	// grouping shown in section 3.2 of its security design white paper.
+	// Sources: https://support.1password.com/secret-key-security/
+	// https://1passwordstatic.com/files/security/1password-white-paper.pdf
+	{Name: "1Password Secret Key", Regex: `\bA3-[A-Z0-9]{6}-[A-Z0-9]{11}(?:-[A-Z0-9]{5}){3}\b`, Severity: SeverityCritical},
 	// Vault 1.10+ service tokens use hvs. plus 24+ random chars.
 	// Source: https://developer.hashicorp.com/vault/docs/concepts/tokens#token-prefixes
 	{Name: "HashiCorp Vault Token", Regex: `hvs\.[A-Za-z0-9]{24,}\b`, Severity: SeverityCritical},
@@ -382,12 +392,10 @@ var defaultDLPPatternSet = []DLPPattern{
 
 	// Package registry tokens
 	{Name: "npm Token", Regex: `npm_[A-Za-z0-9]{36,}\b`, Severity: SeverityCritical},
-	// PyPI API tokens are long base64url payloads with a stable
-	// "pypi-AgE" prefix (v2 macaroon, empty location). If PyPI
-	// rotates macaroon format or version, this regex MUST be updated:
-	// current shape is intentionally precise over future-proof.
-	// Source: https://pypi.org/help/#apitoken
-	{Name: "PyPI Token", Regex: `pypi-AgE[A-Za-z0-9_-]{90,}`, Severity: SeverityCritical},
+	// PyPI documents a base64url macaroon of at least 85 characters after
+	// pypi-. Its serialized version/location bytes need not start with AgE.
+	// Source: https://docs.pypi.org/api/secrets/#detecting-the-pypi-secret-format
+	{Name: "PyPI Token", Regex: `pypi-[A-Za-z0-9_-]{85,}`, Severity: SeverityCritical},
 
 	// Developer platform tokens
 	// Linear documents lin_api_ as the personal API key prefix; keep the
@@ -395,12 +403,18 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Source: https://linear.app/changelog/2021-08-19-github-secret-scanning
 	{Name: "Linear API Key", Regex: `lin_api_[A-Za-z0-9]{40,}\b`, Severity: SeverityHigh},
 	{Name: "Notion API Key", Regex: `ntn_[a-zA-Z0-9]{40,}\b`, Severity: SeverityHigh},
-	// Sentry CLI documents sntrys_ auth tokens; keep the existing
-	// length floor but require a token boundary.
-	// Source: https://docs.sentry.dev/cli/configuration/
-	{Name: "Sentry Auth Token", Regex: `sntrys_[A-Za-z0-9]{40,}\b`, Severity: SeverityHigh},
+	// Organization tokens contain a base64 payload, underscore separator,
+	// and a 43-character unpadded base64 secret. Preserve the previous
+	// alphanumeric form as an alternative for compatibility.
+	// Source: https://docs.sentry.io/security-legal-pii/security/token-formats/
+	{Name: "Sentry Auth Token", Regex: `sntrys_(?:[A-Za-z0-9+/=]+_[A-Za-z0-9+/]{43}|[A-Za-z0-9]{40,}\b)`, Severity: SeverityHigh},
 
 	// Cryptographic material
+	// age X25519 identities encode 32 bytes in Bech32: 52 data characters
+	// plus six checksum characters, after the HRP and separator. Detect the
+	// shape without rejecting a damaged checksum in a leaked identity.
+	// Source: https://c2sp.org/age#the-x25519-recipient-type
+	{Name: "age Secret Key", Regex: `\bAGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}\b`, Severity: SeverityCritical},
 	// PGP + optional trailing BLOCK keep DLP detection aligned with
 	// the ssh-private-key redaction class (which covers PGP/BLOCK).
 	{Name: "Private Key Header", Regex: `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+|PGP\s+)?PRIVATE\s+KEY(\s+BLOCK)?-----`, Severity: SeverityCritical},

@@ -50,6 +50,28 @@ const testSeedPhrase12 = "abandon abandon abandon abandon abandon abandon abando
 
 func ptrBool(v bool) *bool { return &v }
 
+func TestScan_DocumentedProviderCredentials(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.MaxURLLength = 8192
+	cfg.DLP.ScanEnv = false
+	s := MustNew(cfg)
+	defer s.Close()
+	for _, fixture := range documentedProviderCredentials() {
+		t.Run(fixture.name, func(t *testing.T) {
+			for _, target := range []string{
+				"https://api.vendor.example/collect?data=" + url.QueryEscape(fixture.value),
+				"https://api.vendor.example/collect/" + url.PathEscape(fixture.value),
+			} {
+				result := s.Scan(context.Background(), target)
+				if result.Allowed || result.Scanner != ScannerDLP || !strings.Contains(result.Reason, fixture.pattern) {
+					t.Fatalf("expected %s DLP refusal, got %+v", fixture.pattern, result)
+				}
+			}
+		})
+	}
+}
+
 func testConfig() *config.Config {
 	cfg := config.Defaults()
 	// Use a higher entropy threshold for test predictability

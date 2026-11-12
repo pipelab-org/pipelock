@@ -255,6 +255,12 @@ dlp:
     - name: "DigitalOcean Token"
       regex: 'dop_v1_[a-f0-9]{64}'
       severity: critical
+    - name: "Doppler Token"
+      regex: '\bdp\.(?:(?:ct|pt|sa|said|scim|audit)\.|st\.(?:[a-z0-9_-]{2,35}\.)?)[A-Za-z0-9]{40,44}\b'
+      severity: critical
+    - name: "1Password Secret Key"
+      regex: '\bA3-[A-Z0-9]{6}-[A-Z0-9]{11}(?:-[A-Z0-9]{5}){3}\b'
+      severity: critical
     - name: "HashiCorp Vault Token"
       regex: 'hvs\.[A-Za-z0-9]{24,}\b'
       severity: critical
@@ -268,7 +274,7 @@ dlp:
       regex: 'npm_[A-Za-z0-9]{36,}\b'
       severity: critical
     - name: "PyPI Token"
-      regex: 'pypi-AgE[A-Za-z0-9_-]{90,}'
+      regex: 'pypi-[A-Za-z0-9_-]{85,}'
       severity: critical
     - name: "Linear API Key"
       regex: 'lin_api_[A-Za-z0-9]{40,}\b'
@@ -277,8 +283,11 @@ dlp:
       regex: 'ntn_[a-zA-Z0-9]{40,}\b'
       severity: high
     - name: "Sentry Auth Token"
-      regex: 'sntrys_[A-Za-z0-9]{40,}\b'
+      regex: 'sntrys_(?:[A-Za-z0-9+/=]+_[A-Za-z0-9+/]{43}|[A-Za-z0-9]{40,}\b)'
       severity: high
+    - name: "age Secret Key"
+      regex: '\bAGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}\b'
+      severity: critical
     - name: "Private Key Header"
       regex: '-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+|PGP\s+)?PRIVATE\s+KEY(\s+BLOCK)?-----'
       severity: critical

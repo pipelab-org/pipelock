@@ -29,6 +29,71 @@ const (
 	testABARoutingName  = "ABA Routing Number"
 )
 
+func TestScanTextForDLP_DocumentedProviderCredentials(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = false
+	s := MustNew(cfg)
+	defer s.Close()
+	for _, fixture := range documentedProviderCredentials() {
+		t.Run(fixture.name, func(t *testing.T) {
+			for carrier, text := range map[string]string{
+				"plain":   fixture.value,
+				"json":    `{"credential":"` + fixture.value + `"}`,
+				"base64":  base64.StdEncoding.EncodeToString([]byte(fixture.value)),
+				"percent": url.QueryEscape(fixture.value),
+				"split":   fixture.value[:len(fixture.value)/2] + " " + fixture.value[len(fixture.value)/2:],
+			} {
+				t.Run(carrier, func(t *testing.T) {
+					result := s.ScanTextForDLP(context.Background(), text)
+					found := false
+					for _, match := range result.Matches {
+						found = found || match.PatternName == fixture.pattern
+					}
+					if result.Clean || !found {
+						t.Fatalf("expected %s, got %+v", fixture.pattern, result)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestScanTextForDLP_ProviderCredentialNearMisses(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = false
+	s := MustNew(cfg)
+	defer s.Close()
+	tests := map[string]string{
+		"1Password short identifier":  "A3-" + strings.Repeat("B", 5) + "-" + strings.Repeat("C", 11) + strings.Repeat("-D7EF8", 3),
+		"1Password short secret":      "A3-" + strings.Repeat("B", 6) + "-" + strings.Repeat("C", 10) + strings.Repeat("-D7EF8", 3),
+		"1Password public identifier": "A3-" + strings.Repeat("B", 6),
+		"Doppler too short":           "dp.pt." + strings.Repeat("aB3x", 9) + "abc",
+		"Doppler too long":            "dp.pt." + strings.Repeat("aB3x", 11) + "a",
+		"Doppler wrong kind":          "dp.unknown." + strings.Repeat("aB3x", 10),
+		"Doppler invalid alphabet":    "dp.pt." + strings.Repeat("_", 40),
+		"Doppler short environment":   "dp.st.a." + strings.Repeat("aB3x", 10),
+		"Doppler long environment":    "dp.st." + strings.Repeat("a", 36) + "." + strings.Repeat("aB3x", 10),
+		"age too short":               "AGE-SECRET-KEY-1" + strings.Repeat("Q", 57),
+		"age invalid alphabet":        "AGE-SECRET-KEY-1" + strings.Repeat("I", 58),
+		"age public recipient":        "age1" + strings.Repeat("Q", 58),
+		"PyPI too short":              "pypi-" + strings.Repeat("B", 84),
+		"PyPI project names":          "Install the pypi-client and read the pypi-package release notes for the next deployment.",
+		"Sentry too short":            "sntrys_" + strings.Repeat("Q", 20) + "_" + strings.Repeat("R", 42),
+		"Sentry prose":                "The sntrys_ prefix identifies organization tokens. Store them securely and rotate them regularly.",
+		"Doppler prose":               "The dp.pt. prefix identifies personal tokens. The dp.st. prefix identifies service tokens.",
+		"age prose":                   "Keep your AGE-SECRET-KEY-1 identity offline. Share only the public recipient with collaborators.",
+	}
+	for name, text := range tests {
+		t.Run(name, func(t *testing.T) {
+			if result := s.ScanTextForDLP(context.Background(), text); !result.Clean {
+				t.Fatalf("non-credential was flagged: %+v", result.Matches)
+			}
+		})
+	}
+}
+
 func TestScanTextForDLP_ProviderKeyOutboundCarriers(t *testing.T) {
 	t.Parallel()
 	s := MustNew(testConfig())
