@@ -6,6 +6,7 @@ package scanner
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -13,6 +14,9 @@ import (
 )
 
 func BenchmarkUniformProfile(b *testing.B) {
+	if os.Getenv("PIPELOCK_BENCH_UNIFORM_RUN") == "" {
+		b.Skip("set PIPELOCK_BENCH_UNIFORM_RUN=1; multi-MiB scans are too slow for the CI allocation run")
+	}
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	s := MustNew(cfg)
@@ -29,6 +33,9 @@ func BenchmarkUniformProfile(b *testing.B) {
 }
 
 func BenchmarkUniformSibling(b *testing.B) {
+	if os.Getenv("PIPELOCK_BENCH_UNIFORM_RUN") == "" {
+		b.Skip("set PIPELOCK_BENCH_UNIFORM_RUN=1; multi-MiB scans are too slow for the CI allocation run")
+	}
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	s := MustNew(cfg)
