@@ -351,6 +351,7 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 	var previous map[string]unitRuntimeState
 	var desired map[string]bool
 	var touched []string
+	var forgotten []string
 	var retired map[string][]byte
 	return step{
 		name: "install-published-services",
@@ -444,6 +445,7 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 				}
 			}
 			touched = nil
+			forgotten = nil
 			retired = make(map[string][]byte)
 			for _, item := range files {
 				mode := modeUnitFile
@@ -459,11 +461,11 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 				if err := backupAndWrite(env, item.path, []byte(item.body), mode); err != nil {
 					return len(touched) > 0, fmt.Errorf("write %s: %w", item.path, err)
 				}
-				if err := forgetDoorwayRestore(env, recordPath, item.path); err != nil {
-					return true, err
-				}
 				touched = append(touched, item.path)
 				changedUnit[filepath.Base(item.path)] = true
+				if err := noteForgottenDoorway(env, recordPath, item.path, &forgotten); err != nil {
+					return true, err
+				}
 			}
 			// Revoke before starting anything new: a removed or expired
 			// publication must be closed even if a later start fails.
@@ -493,10 +495,10 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 				if err := backupAndWrite(env, recordPath, recordBytes, modeConfigSecret); err != nil {
 					return true, fmt.Errorf("write published service records: %w", err)
 				}
-				if err := forgetDoorwayRestore(env, recordPath, recordPath); err != nil {
+				touched = append(touched, recordPath)
+				if err := noteForgottenDoorway(env, recordPath, recordPath, &forgotten); err != nil {
 					return true, err
 				}
-				touched = append(touched, recordPath)
 			}
 			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
 				return true, fmt.Errorf("reload systemd after publishing services: %w", err)
@@ -554,6 +556,10 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 			}
 			for i := len(touched) - 1; i >= 0; i-- {
 				if err := restoreBackup(env, touched[i]); err != nil {
+					errs = append(errs, err)
+					continue
+				}
+				if err := restoreForgottenDoorway(env, publishedServiceRecordPath(env.loopbackForwarderInvPath), touched[i], forgotten); err != nil {
 					errs = append(errs, err)
 				}
 			}

@@ -957,6 +957,7 @@ func stepInstallNetworkNamespacePolicy(serviceOverride *[]config.ContainmentLoop
 	var writtenRelays map[string]bool
 	var ownedRelays map[string]bool
 	var touched []string
+	var forgotten []string
 	var retired map[string][]byte
 	return step{
 		name: "install-agent-network-namespace",
@@ -1114,6 +1115,7 @@ func stepInstallNetworkNamespacePolicy(serviceOverride *[]config.ContainmentLoop
 				previousLegacyAnchor = systemdUnitRuntimeState(ctx, env, filepath.Base(env.ownedLoopbackAnchorUnitPath))
 			}
 			touched = nil
+			forgotten = nil
 			for _, item := range paths {
 				if !filePlan.writePaths[item.path] {
 					if err := env.chmod(item.path, item.mode); err != nil {
@@ -1125,9 +1127,10 @@ func stepInstallNetworkNamespacePolicy(serviceOverride *[]config.ContainmentLoop
 				if err := backupAndWrite(env, item.path, []byte(item.body), item.mode); err != nil {
 					return len(touched) > 0, fmt.Errorf("write %s: %w", item.path, err)
 				}
+				touched = append(touched, item.path)
 				// A failed rollback may already list this path as restored.
 				// The backup just taken is the one a later rollback must use.
-				if err := forgetDoorwayRestore(env, env.loopbackForwarderInvPath, item.path); err != nil {
+				if err := noteForgottenDoorway(env, env.loopbackForwarderInvPath, item.path, &forgotten); err != nil {
 					return true, err
 				}
 				// The pre-write ownership check misses a file that did not
@@ -1154,7 +1157,6 @@ func stepInstallNetworkNamespacePolicy(serviceOverride *[]config.ContainmentLoop
 				} else if strings.HasSuffix(item.path, "-netns.service") {
 					changedNamespaceForwarders[filepath.Base(item.path)] = true
 				}
-				touched = append(touched, item.path)
 			}
 			staleRetired := false
 			for _, unit := range filePlan.closeDoorways {
@@ -1396,6 +1398,10 @@ func stepInstallNetworkNamespacePolicy(serviceOverride *[]config.ContainmentLoop
 			}
 			for i := len(touched) - 1; i >= 0; i-- {
 				if err := restoreBackup(env, touched[i]); err != nil {
+					errs = append(errs, err)
+					continue
+				}
+				if err := restoreForgottenDoorway(env, env.loopbackForwarderInvPath, touched[i], forgotten); err != nil {
 					errs = append(errs, err)
 				}
 			}

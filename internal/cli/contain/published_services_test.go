@@ -271,6 +271,212 @@ func TestRestoreJournalWriteFailureKeepsBackup(t *testing.T) {
 	}
 }
 
+func TestRestoreJournalWriteFailureKeepsArchivedBackup(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	dir := t.TempDir()
+	inventory := filepath.Join(dir, "published-services.json")
+	socket := filepath.Join(dir, "unit.socket")
+	if err := os.WriteFile(socket, []byte("managed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(socket+".bak", []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(dir, "unit.socket.bak.archived-older")
+	if err := os.WriteFile(archive, []byte("older\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rememberArchivedBackup(env, filepath.Clean(socket)+".bak", archive)
+	journal := doorwayRestoreJournalPath(inventory)
+	originalWrite := env.writeFile
+	env.writeFile = func(path string, contents []byte, mode os.FileMode) error {
+		if path == journal {
+			return errors.New("journal write failed")
+		}
+		return originalWrite(path, contents, mode)
+	}
+
+	if err := restoreJournaledBackup(env, inventory, socket); err == nil || !strings.Contains(err.Error(), "journal write failed") {
+		t.Fatalf("restore = %v, want the journal write failure", err)
+	}
+	kept := env.archivedBackups[filepath.Clean(socket)+".bak"]
+	if len(kept) != 1 {
+		t.Fatalf("archived backups = %v", env.archivedBackups)
+	}
+	older, err := os.ReadFile(filepath.Clean(kept[0]))
+	if err != nil || string(older) != "older\n" {
+		t.Fatalf("archived backup = %q, %v", older, err)
+	}
+	env.restoredBackups = nil
+	env.writeFile = originalWrite
+	if err := restoreJournaledBackup(env, inventory, socket); err != nil {
+		t.Fatalf("retry = %v", err)
+	}
+	got, err := os.ReadFile(filepath.Clean(socket))
+	if err != nil || string(got) != "operator\n" {
+		t.Fatalf("restored socket = %q, %v", got, err)
+	}
+	bak, err := os.ReadFile(filepath.Clean(socket) + ".bak")
+	if err != nil || string(bak) != "older\n" {
+		t.Fatalf("older backup after retry = %q, %v", bak, err)
+	}
+}
+
+func TestInstallPublishedServiceJournalErrorRestoresUnit(t *testing.T) {
+	env, _ := publishedInstallEnv(t, publishedTestConfig)
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	socket := filepath.Join(unitDir, "pipelock-published-viewer.socket")
+	if err := os.WriteFile(socket, []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
+	journal := doorwayRestoreJournalPath(recordPath)
+	if err := os.MkdirAll(filepath.Dir(journal), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(unitDir, "other-kept.socket")
+	if err := os.WriteFile(journal, []byte(filepath.Clean(socket)+"\n"+other+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalWrite := env.writeFile
+	env.writeFile = func(path string, contents []byte, mode os.FileMode) error {
+		if path == journal {
+			return errors.New("journal write failed")
+		}
+		return originalWrite(path, contents, mode)
+	}
+
+	install := stepInstallPublishedServices(nil)
+	applied, err := install.apply(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "journal write failed") {
+		t.Fatalf("install = %v, want the journal write failure", err)
+	}
+	if !applied {
+		t.Fatal("written unit was left outside the undo set")
+	}
+	if undoErr := install.undo(context.Background(), env); undoErr != nil {
+		t.Fatalf("undo = %v", undoErr)
+	}
+	got, err := os.ReadFile(filepath.Clean(socket))
+	if err != nil || string(got) != "operator\n" {
+		t.Fatalf("socket after undo = %q, %v", got, err)
+	}
+	data, err := os.ReadFile(filepath.Clean(journal))
+	if err != nil || !strings.Contains(string(data), filepath.Clean(socket)) {
+		t.Fatalf("journal = %q, %v", data, err)
+	}
+}
+
+func TestInstallPublishedRecordJournalErrorRestoresRecord(t *testing.T) {
+	env, _ := publishedInstallEnv(t, publishedTestConfig)
+	recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
+	previous := "{\"services\":[]}\n"
+	if err := os.MkdirAll(filepath.Dir(recordPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(recordPath, []byte(previous), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	journal := doorwayRestoreJournalPath(recordPath)
+	other := recordPath + ".other"
+	if err := os.WriteFile(journal, []byte(filepath.Clean(recordPath)+"\n"+other+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalWrite := env.writeFile
+	env.writeFile = func(path string, contents []byte, mode os.FileMode) error {
+		if path == journal {
+			return errors.New("journal write failed")
+		}
+		return originalWrite(path, contents, mode)
+	}
+
+	install := stepInstallPublishedServices(nil)
+	applied, err := install.apply(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "journal write failed") {
+		t.Fatalf("install = %v, want the journal write failure", err)
+	}
+	if !applied {
+		t.Fatal("written record was left outside the undo set")
+	}
+	if undoErr := install.undo(context.Background(), env); undoErr != nil {
+		t.Fatalf("undo = %v", undoErr)
+	}
+	got, err := os.ReadFile(filepath.Clean(recordPath))
+	if err != nil || string(got) != previous {
+		t.Fatalf("record after undo = %q, %v", got, err)
+	}
+}
+
+func TestInstallPublishedServiceUndoRestoresJournalEntry(t *testing.T) {
+	env, _ := publishedInstallEnv(t, publishedTestConfig)
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	socket := filepath.Join(unitDir, "pipelock-published-viewer.socket")
+	if err := os.WriteFile(socket, []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
+	journal := doorwayRestoreJournalPath(recordPath)
+	if err := os.MkdirAll(filepath.Dir(journal), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(journal, []byte(filepath.Clean(socket)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	later := step{
+		name:  "later-failure",
+		apply: func(context.Context, *installEnv) (bool, error) { return false, errors.New("later failed") },
+	}
+	_, err := runSteps(context.Background(), env, env.out, []step{stepInstallPublishedServices(nil), later})
+	if err == nil || !strings.Contains(err.Error(), "later failed") {
+		t.Fatalf("install = %v", err)
+	}
+	got, err := os.ReadFile(filepath.Clean(socket))
+	if err != nil || string(got) != "operator\n" {
+		t.Fatalf("socket after undo = %q, %v", got, err)
+	}
+	data, err := os.ReadFile(filepath.Clean(journal))
+	if err != nil || !strings.Contains(string(data), filepath.Clean(socket)) {
+		t.Fatalf("journal after undo = %q, %v", data, err)
+	}
+}
+
+func TestInstallPublishedServiceUndoLeavesUnjournaledPath(t *testing.T) {
+	env, _ := publishedInstallEnv(t, publishedTestConfig)
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	socket := filepath.Join(unitDir, "pipelock-published-viewer.socket")
+	if err := os.WriteFile(socket, []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
+	journal := doorwayRestoreJournalPath(recordPath)
+	if err := os.MkdirAll(filepath.Dir(journal), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(unitDir, "other-kept.socket")
+	if err := os.WriteFile(journal, []byte(other+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	later := step{
+		name:  "later-failure",
+		apply: func(context.Context, *installEnv) (bool, error) { return false, errors.New("later failed") },
+	}
+	_, err := runSteps(context.Background(), env, env.out, []step{stepInstallPublishedServices(nil), later})
+	if err == nil || !strings.Contains(err.Error(), "later failed") {
+		t.Fatalf("install = %v", err)
+	}
+	got, err := os.ReadFile(filepath.Clean(socket))
+	if err != nil || string(got) != "operator\n" {
+		t.Fatalf("socket after undo = %q, %v", got, err)
+	}
+	data, err := os.ReadFile(filepath.Clean(journal))
+	if err != nil {
+		t.Fatalf("journal = %v", err)
+	}
+	if strings.Contains(string(data), filepath.Clean(socket)) || !strings.Contains(string(data), other) {
+		t.Fatalf("journal = %s", data)
+	}
+}
+
 func TestInstallPublishedServiceDropsStaleRestoreJournal(t *testing.T) {
 	env, _ := publishedInstallEnv(t, publishedTestConfig)
 	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
