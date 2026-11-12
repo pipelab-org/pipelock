@@ -142,13 +142,22 @@ func TestEncodedCredentialInUniformRun(t *testing.T) {
 							continue
 						}
 						phases := enc.quantum
-						if reduced || (size != 1<<20 && (!full || secret.name != "AWS Access ID")) {
+						if reduced || (size != 1<<20 && !full) {
 							phases = 1
 						}
 						for phase := range phases {
 							body := uniformAlphabetCarrier(alphabet, enc.text, size, phase, enc.quantum)
 							result := sc.ScanTextForDLP(context.Background(), body)
-							if !slices.Contains(matchNames(result.Matches), secret.name) || uniformScanStopped(result) {
+							found := slices.Contains(matchNames(result.Matches), secret.name)
+							// Above 1 MiB some phases exhaust the existing reassembly
+							// allowance, as on main, and the outbound scan refuses
+							// with an inspection limit. That fails closed and is
+							// accepted; a clean or merely incomplete result is not.
+							if !found && size > 1<<20 && !result.Clean && HasInspectionLimit(result.Matches) {
+								t.Logf("size=%d phase=%d refused at the inspection limit", size, phase)
+								continue
+							}
+							if !found || uniformScanStopped(result) {
 								t.Fatalf("size=%d phase=%d matches=%v incomplete=%v", size, phase, matchNames(result.Matches), uniformScanStopped(result))
 							}
 						}
