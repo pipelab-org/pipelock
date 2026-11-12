@@ -11,11 +11,16 @@ import (
 	"unicode/utf8"
 )
 
-// decodeLikelyWideResponseBody recognizes UTF-32BE BOMs and BOM-less ASCII
-// UTF-32 code units (Unicode Standard section 3.9). The prefix ff fe 00 00
+// decodeLikelyWideResponseBody recognizes UTF-32 BE and LE. Unicode Standard
+// section 3.9 defines a scalar as U+0000..U+D7FF or U+E000..U+10FFFF, so a
+// surrogate or a unit above U+10FFFF is not UTF-32. The prefix ff fe 00 00
 // also starts valid UTF-16LE with a leading NUL, so retain its legacy UTF-16
 // interpretation. Existing NUL normalization also covers ASCII UTF-32LE there.
-// BOM-less UTF-32 recognition requires ASCII scalars with three zero bytes.
+// A BOM-less sample must be scalars and contain one ASCII unit (U+0001..U+007F).
+// That ASCII unit is what separates this from an all-NUL sample and from the
+// U+00FF pattern the boundary tests keep on the opaque path. The opposite
+// endian of a non-zero BMP unit is above U+10FFFF, so the two orders do not
+// both succeed.
 func decodeLikelyWideResponseBody(ctx context.Context, data []byte) (string, bool, error) {
 	var order binary.ByteOrder
 	offset := 0
@@ -29,15 +34,7 @@ func decodeLikelyWideResponseBody(ctx context.Context, data []byte) (string, boo
 		default:
 			if len(data) >= 8 && len(data)%4 == 0 {
 				for _, candidate := range []binary.ByteOrder{binary.LittleEndian, binary.BigEndian} {
-					ascii := true
-					for i := 0; i < min(len(data), 4096); i += 4 {
-						v := candidate.Uint32(data[i : i+4])
-						if v == 0 || v > 0x7f {
-							ascii = false
-							break
-						}
-					}
-					if ascii {
+					if utf32Sample(data, candidate) {
 						order = candidate
 						break
 					}
@@ -75,4 +72,22 @@ func decodeLikelyWideResponseBody(ctx context.Context, data []byte) (string, boo
 		}
 	}
 	return decoded.String(), true, nil
+}
+
+// utf32Sample reports whether the leading units are Unicode scalars and one
+// of them is ASCII. U+0000 is a scalar, so an all-NUL sample fails the ASCII
+// requirement and stays off this path.
+func utf32Sample(data []byte, order binary.ByteOrder) bool {
+	ascii := false
+	limit := min(len(data), 4096)
+	for i := 0; i < limit; i += 4 {
+		value := order.Uint32(data[i : i+4])
+		if value > utf8.MaxRune || !utf8.ValidRune(rune(value)) {
+			return false
+		}
+		if value >= 1 && value <= 0x7f {
+			ascii = true
+		}
+	}
+	return ascii
 }
