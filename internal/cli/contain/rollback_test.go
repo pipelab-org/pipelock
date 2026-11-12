@@ -203,7 +203,7 @@ func TestActionRemoveNetworkNamespaceAggregatesCleanupFailures(t *testing.T) {
 	runner.on(argvFor("systemctl", "daemon-reload"), "", 1, errors.New("reload failed"))
 	originalRemove := env.removeFile
 	env.removeFile = func(path string) error {
-		if path == dynamicService || path == env.proxyForwarderSocketPath || path == env.ownedLoopbackAnchorUnitPath || path == env.loopbackForwarderInvPath {
+		if path == dynamicService || path == env.proxyForwarderSocketPath || path == env.ownedLoopbackAnchorUnitPath {
 			return errors.New("remove failed")
 		}
 		return originalRemove(path)
@@ -222,6 +222,70 @@ func TestActionRemoveNetworkNamespaceAggregatesCleanupFailures(t *testing.T) {
 		if _, statErr := os.Stat(path); statErr != nil {
 			t.Fatalf("loopback record %s removed after failed close: %v", path, statErr)
 		}
+	}
+}
+
+func TestRollbackKeepsConfigDirWhenDoorwayCloseFails(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	record := loopbackForwarderRecord{Unit: loopbackForwarderUnitBase("127.0.0.1", 9200), Host: "127.0.0.1", Port: 9200}
+	data, err := json.Marshal(loopbackForwarderInventory{Services: []loopbackForwarderRecord{record}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(env.loopbackForwarderInvPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.loopbackForwarderInvPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner.on(argvFor("systemctl", "disable", "--now", record.Unit+".socket"), "", 1, errors.New("dynamic disable failed"))
+
+	if err := actionRemoveNetworkNamespace().undo(context.Background(), env); err == nil || !strings.Contains(err.Error(), "dynamic disable failed") {
+		t.Fatalf("namespace removal = %v, want the close failure", err)
+	}
+	err = actionMaybeRemoveDir(rollbackOpts{}, "config", func(e *installEnv) string { return e.configDir }).undo(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "left "+env.configDir+" in place") {
+		t.Fatalf("config removal = %v, want the directory retained", err)
+	}
+	if _, statErr := os.Stat(env.loopbackForwarderInvPath); statErr != nil {
+		t.Fatalf("loopback inventory removed with the config directory: %v", statErr)
+	}
+}
+
+func TestActionRemoveNetworkNamespaceKeepsInventoryWhenUnitRestoreFails(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	record := loopbackForwarderRecord{Unit: loopbackForwarderUnitBase("127.0.0.1", 9200), Host: "127.0.0.1", Port: 9200}
+	data, err := json.Marshal(loopbackForwarderInventory{Services: []loopbackForwarderRecord{record}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(env.loopbackForwarderInvPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.loopbackForwarderInvPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	netns := filepath.Join(filepath.Dir(env.proxyForwarderSocketPath), record.Unit+"-netns.service")
+	if err := os.WriteFile(netns, []byte("managed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalRemove := env.removeFile
+	env.removeFile = func(path string) error {
+		if path == netns {
+			return errors.New("netns restore failed")
+		}
+		return originalRemove(path)
+	}
+
+	err = actionRemoveNetworkNamespace().undo(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "netns restore failed") {
+		t.Fatalf("err = %v, want the unit restore failure", err)
+	}
+	if _, statErr := os.Stat(env.loopbackForwarderInvPath); statErr != nil {
+		t.Fatalf("loopback inventory removed after failed unit restore: %v", statErr)
+	}
+	if _, statErr := os.Stat(netns); statErr != nil {
+		t.Fatalf("netns unit removed after failed restore: %v", statErr)
 	}
 }
 

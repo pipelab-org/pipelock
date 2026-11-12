@@ -472,6 +472,29 @@ func TestCovPubRemovePublishedServicesPaths(t *testing.T) {
 			t.Fatalf("publication record removed after failed close: %v", statErr)
 		}
 	})
+
+	t.Run("failed unit restore leaves the publication record", func(t *testing.T) {
+		env, _ := publishedInstallEnv(t, publishedTestConfig)
+		if _, err := stepInstallPublishedServices(nil).apply(context.Background(), env); err != nil {
+			t.Fatalf("install: %v", err)
+		}
+		unit := filepath.Join(filepath.Dir(env.proxyForwarderSocketPath), "pipelock-published-viewer.socket")
+		original := env.removeFile
+		env.removeFile = func(path string) error {
+			if path == unit {
+				return errors.New("socket restore failed")
+			}
+			return original(path)
+		}
+		recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
+		err := removePublishedServices(context.Background(), env)
+		if err == nil || !strings.Contains(err.Error(), "socket restore failed") {
+			t.Fatalf("err = %v, want the unit restore failure", err)
+		}
+		if _, statErr := os.Stat(recordPath); statErr != nil {
+			t.Fatalf("publication record removed after failed unit restore: %v", statErr)
+		}
+	})
 }
 
 // TestCovPubDeclaredContainmentPublishedServicesForVerifyReadError covers the

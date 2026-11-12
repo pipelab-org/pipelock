@@ -209,7 +209,7 @@ func actionRemoveNetworkNamespace() step {
 			if err := removePublishedServices(ctx, env); err != nil {
 				errs = append(errs, err)
 			}
-			loopbackCloseFailed := false
+			retainLoopbackInventory := false
 			if inv, err := readLoopbackForwarderInventory(env); err != nil {
 				errs = append(errs, err)
 			} else {
@@ -220,13 +220,17 @@ func actionRemoveNetworkNamespace() step {
 				}
 				if err := closeLoopbackDoorways(ctx, env, units); err != nil {
 					errs = append(errs, err)
-					loopbackCloseFailed = true
+					retainLoopbackInventory = true
 				} else {
 					for _, record := range inv.Services {
 						for _, suffix := range []string{"-netns.service", ".socket", ".service"} {
 							path := filepath.Join(unitDir, record.Unit+suffix)
 							if err := restoreBackup(env, path); err != nil {
 								errs = append(errs, fmt.Errorf("restore %s: %w", path, err))
+								// A failed restore leaves that unit file behind.
+								// Deleting the inventory would give the next
+								// attempt no record of it.
+								retainLoopbackInventory = true
 							}
 						}
 					}
@@ -256,7 +260,9 @@ func actionRemoveNetworkNamespace() step {
 					errs = append(errs, fmt.Errorf("restore legacy %s: %w", path, err))
 				}
 			}
-			if env.loopbackForwarderInvPath != "" && !loopbackCloseFailed {
+			if retainLoopbackInventory {
+				env.preserveContainmentRecords = true
+			} else if env.loopbackForwarderInvPath != "" {
 				if err := restoreBackup(env, env.loopbackForwarderInvPath); err != nil {
 					errs = append(errs, fmt.Errorf("restore %s: %w", env.loopbackForwarderInvPath, err))
 				}
@@ -407,6 +413,9 @@ func actionMaybeRemoveDir(opts rollbackOpts, label string, pathFn func(*installE
 				return nil
 			}
 			path := pathFn(env)
+			if label == "config" && env.preserveContainmentRecords {
+				return fmt.Errorf("left %s in place so a later attempt can find doorway records", path)
+			}
 			if err := os.RemoveAll(filepath.Clean(path)); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("rm -rf %s: %w", path, err)
 			}

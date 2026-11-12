@@ -159,8 +159,12 @@ type installEnv struct {
 	toolsListPath            string // plk-launch's runtime allow-list (tab-separated NAME\tTARGET)
 	workspaceInvPath         string
 	loopbackForwarderInvPath string
-	evidenceACLInvPath       string // operator evidence-read ACL inventory
-	viewerAccountMarkerPath  string // records whether install created pipelock-viewer
+	// preserveContainmentRecords is set when a doorway close or unit restore
+	// failed. Rollback must not delete the config directory that holds the
+	// inventory a later attempt needs.
+	preserveContainmentRecords bool
+	evidenceACLInvPath         string // operator evidence-read ACL inventory
+	viewerAccountMarkerPath    string // records whether install created pipelock-viewer
 	// evidenceACLPreexisting records that the operator evidence ACL recorded
 	// in the inventory already covered this install's operator and dirs before
 	// the grant step ran, so rolling that step back must leave it in place.

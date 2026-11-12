@@ -119,10 +119,10 @@ func installRefusalDesiredDoorways(env *installEnv, path string, policyTime time
 		loopbackUnits = append(loopbackUnits, loopbackForwarderUnitBase(service.Host, service.Port))
 	}
 	for _, service := range publication {
-		// The unit name comes from the service name. An operator change
-		// leaves that name in place while the previous operator still owns
-		// the socket, so the name alone is not authorization to keep it.
-		if recordedPublishedOperatorDiffers(observed, service) {
+		// The unit name comes from the service name. The operator, relay
+		// target, and listen addresses live in the unit contents, so a
+		// change to any of them leaves the previous doorway in place.
+		if recordedPublishedDoorwayDiffers(observed, service) {
 			continue
 		}
 		for _, file := range publishedServiceFiles(filepath.Dir(env.proxyForwarderSocketPath), env.pipelockTarget, env.proxyUserName, service) {
@@ -132,11 +132,19 @@ func installRefusalDesiredDoorways(env *installEnv, path string, policyTime time
 	return loopbackUnits, publishedUnits, errors.Join(loopbackErr, publishedErr)
 }
 
-func recordedPublishedOperatorDiffers(observed publishedServiceRecordSet, service config.ContainmentPublishedService) bool {
+func recordedPublishedDoorwayDiffers(observed publishedServiceRecordSet, service config.ContainmentPublishedService) bool {
 	for _, record := range observed.Services {
-		if record.Name == service.Name {
-			return record.OperatorUser != service.OperatorUser
+		if record.Name != service.Name {
+			continue
 		}
+		recordedSocket := record.HostSocket
+		if recordedSocket == "" {
+			recordedSocket = config.ContainmentPublishedSocketDir + "/" + record.Name + ".sock"
+		}
+		return record.OperatorUser != service.OperatorUser ||
+			systemdListenAddress(record.AgentHost, record.AgentPort) != publishedAgentTarget(service) ||
+			recordedSocket != service.EffectiveHostSocket() ||
+			record.HostListen != service.HostListen
 	}
 	return false
 }

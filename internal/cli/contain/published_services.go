@@ -600,15 +600,24 @@ func removePublishedServices(ctx context.Context, env *installEnv) error {
 		// restoreBackup removes a file that has no backup. Deleting the
 		// record after a failed close leaves the doorway enabled and gives
 		// the next attempt nothing to retry.
+		env.preserveContainmentRecords = true
 		return err
 	}
+	unitRestoreFailed := false
 	for _, record := range set.Services {
 		for _, unit := range publishedRecordUnitNames(record) {
 			path := filepath.Join(unitDir, unit)
 			if err := restoreBackup(env, path); err != nil {
 				errs = append(errs, fmt.Errorf("restore %s: %w", path, err))
+				unitRestoreFailed = true
 			}
 		}
+	}
+	if unitRestoreFailed {
+		// The record is the list the next attempt uses to find a unit
+		// whose restore did not finish.
+		env.preserveContainmentRecords = true
+		return errors.Join(errs...)
 	}
 	path := publishedServiceRecordPath(env.loopbackForwarderInvPath)
 	if err := restoreBackup(env, path); err != nil {

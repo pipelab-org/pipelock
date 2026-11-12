@@ -194,6 +194,8 @@ func TestInstallRefusalDoorwayPolicyIntersection(t *testing.T) {
 		{"broken installed config", "broken", "active", true, true},
 		{"unreadable candidate", "active", "unreadable", true, true},
 		{"candidate replaces operator", "active", "operator", false, true},
+		{"candidate replaces relay target", "active", "target", false, true},
+		{"candidate replaces listen address", "active", "listen", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env, _, _ := newFakeEnv(t)
@@ -216,6 +218,10 @@ func TestInstallRefusalDoorwayPolicyIntersection(t *testing.T) {
 					body = "containment: ["
 				case "operator":
 					body = strings.Replace(active, "operator_user: operator\n", "operator_user: other\n", 1)
+				case "target":
+					body = strings.Replace(active, "agent_port: 5900\n", "agent_port: 5901\n", 1)
+				case "listen":
+					body = strings.Replace(active, "operator_user: operator\n", "operator_user: operator\n      host_listen: 127.0.0.1:15900\n", 1)
 				case "unreadable":
 					path := item.path
 					env.readFile = func(p string) ([]byte, error) {
