@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"context"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -232,7 +233,7 @@ func TestInboundDecodeWalkBudgetStops(t *testing.T) {
 		{"prefix recovery byte root", []decodedResult{{text: strings.Repeat("!", maxDecodeTotalBytes+1)}}, 1, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			views, complete := decodeEncodingsInboundWalkTracked(nil, nil, tc.roots, newDecodeSeen(), true, tc.minPrefix, true, nil)
+			views, complete := decodeEncodingsInboundWalkTracked(nil, nil, tc.roots, newDecodeSeen(), inboundDecodeWalkOptions{includeURL: true, minPrefix: tc.minPrefix, withHTML: true, reportWorkLimits: true})
 			if complete || len(views) != tc.wantViews {
 				t.Fatalf("budget stop: views=%d complete=%v", len(views), complete)
 			}
@@ -293,5 +294,103 @@ func TestInboundDecodeLimitSameNamedFinding(t *testing.T) {
 	}
 	if r.Clean || r.Incomplete || !finding || partial != 1 || warnings != 1 {
 		t.Fatalf("same-named finding hid partial evidence: clean=%v finding=%v partial=%d warnings=%d matches=%v", r.Clean, finding, partial, warnings, matchNamesOf(r.Matches))
+	}
+}
+
+func TestInboundDecodeTaggedCandidateLimitWarns(t *testing.T) {
+	// This fixed prefix fills the tag walk at a segment root after duplicate
+	// views are removed. Later segments would independently report exhaustion
+	// and hide a queue skipped at entry.
+	var body strings.Builder
+	body.WriteString(strings.Repeat("z", 16))
+	for i := range 3615 {
+		body.WriteByte(';')
+		body.WriteString("z0z0z0")
+		body.WriteString(strconv.Itoa(1000 + i))
+	}
+	text := unicodeTags(body.String())
+	for _, inbound := range []bool{false, true} {
+		views, complete := decodeEncodingsBudgetMode(text, true, 0, inbound)
+		t.Logf("inbound=%v views=%d complete=%v", inbound, len(views), complete)
+		if len(views) != maxDecodeCandidates+1 {
+			t.Fatalf("fixture did not reach the tag budget: views=%d", len(views))
+		}
+		// Outbound checks the last root and finds only an already-seen child;
+		// inbound stops before that check and must disclose the skipped work.
+		if complete == inbound {
+			t.Errorf("tag segment completeness changed: inbound=%v complete=%v", inbound, complete)
+		}
+	}
+	sc := decodeLimitScanner(t)
+	r := sc.ScanTextForDLPInbound(t.Context(), text)
+	if !r.Clean || !hasPartial(r) || !OnlyInformational(r.Matches) {
+		t.Fatalf("tag candidate cap lost warning: clean=%v matches=%v", r.Clean, matchNamesOf(r.Matches))
+	}
+	if r := sc.ScanTextForDLP(t.Context(), text); !r.Clean || HasInspectionLimit(r.Matches) || hasPartial(r) {
+		t.Fatal("tag candidate cap changed the complete outbound scan", matchNamesOf(r.Matches))
+	}
+}
+
+// Keyword-gated scans and separate card views can use inbound accounting
+// inside an outbound scan. Work warnings must follow the enclosing direction
+// on repeated scans.
+func TestOutboundCardDecodeWorkPolicy(t *testing.T) {
+	for _, keywords := range []bool{false, true} {
+		t.Run(strconv.FormatBool(keywords), func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.DLP.ScanEnv = false
+			if keywords {
+				cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{Name: "Context record", Regex: `RECORD_[A-Z]{8}`, Severity: config.SeverityHigh, Keywords: []string{"lookup"}})
+			}
+			sc := MustNew(cfg)
+			defer sc.Close()
+			text := strings.Repeat("!", maxDecodeTotalBytes+1)
+			ctx, release := WithSharedDecodes(t.Context())
+			defer release()
+			for _, inbound := range []bool{true, false, true, false} {
+				var r TextDLPResult
+				if keywords {
+					if inbound {
+						r = sc.ScanTextForDLPInbound(ctx, text)
+					} else {
+						r = sc.ScanTextForDLP(ctx, text)
+					}
+				} else if inbound {
+					r = sc.ScanTextForDLPInboundWithCardView(ctx, "ordinary", text)
+				} else {
+					r = sc.ScanTextForDLPWithCardView(ctx, "ordinary", text)
+				}
+				if !r.Clean || r.Incomplete || HasInspectionLimit(r.Matches) || hasPartial(r) != inbound {
+					t.Fatalf("card work accounting changed: inbound=%v clean=%v matches=%v", inbound, r.Clean, matchNamesOf(r.Matches))
+				}
+			}
+			// Existing depth refusals remain enforced in the outbound card pass.
+			r := sc.ScanTextForDLPWithCardView(ctx, "ordinary", entityChain(maxHTMLEntityDecodePasses+1, false))
+			if !HasInspectionLimit(r.Matches) {
+				t.Fatal("outbound card pass lost its depth refusal", matchNamesOf(r.Matches))
+			}
+		})
+	}
+}
+
+func TestSharedDecodeWorkReportingModes(t *testing.T) {
+	ctx, release := WithSharedDecodes(t.Context())
+	defer release()
+	shared := sharedDecodesFrom(ctx)
+	text := decodeCandidateLimitText()
+	want := referenceDecodeEncodingsFixpoint(text, true)
+	for _, report := range []bool{true, false, true, false} {
+		key := decodingMemoKey{text: text, includeURL: true, inbound: true, reportWorkLimits: report}
+		views, complete, retained := shared.decode(key)
+		if !retained || complete == report || !reflect.DeepEqual(views, want) {
+			t.Fatalf("cached work mode changed: report=%v complete=%v retained=%v views=%d", report, complete, retained, len(views))
+		}
+	}
+	shared.mu.Lock()
+	entries := len(shared.store.views)
+	shared.mu.Unlock()
+	if entries != 2 {
+		t.Fatalf("reporting modes shared a cache entry: entries=%d", entries)
 	}
 }

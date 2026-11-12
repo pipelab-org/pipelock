@@ -3333,23 +3333,30 @@ func decodeEncodingsFixpointMode(s string, includeURL bool, minPrefix int) (out 
 
 // Inbound scans retain their existing work accounting and partial-view policy.
 func decodeEncodingsBudgetMode(s string, includeURL bool, minPrefix int, inbound bool) ([]decodedResult, bool) {
-	return decodeEncodingsBudgetModeTracked(s, includeURL, minPrefix, inbound, nil)
+	return decodeEncodingsForScan(s, includeURL, minPrefix, decodeBudgetMode{inbound: inbound, reportWorkLimits: inbound}, nil)
 }
 
-func decodeEncodingsBudgetModeTracked(s string, includeURL bool, minPrefix int, inbound bool, sources *keywordDecodeSources) ([]decodedResult, bool) {
+// decodeBudgetMode keeps view accounting separate from warning policy. An
+// outbound card-only pass uses inbound accounting without gaining new refusals.
+type decodeBudgetMode struct {
+	inbound          bool
+	reportWorkLimits bool
+}
+
+func decodeEncodingsForScan(s string, includeURL bool, minPrefix int, mode decodeBudgetMode, sources *keywordDecodeSources) ([]decodedResult, bool) {
 	if s == "" {
 		return nil, true
 	}
-	if inbound && len(s) > maxDecodeTotalBytes {
-		// Keep the inbound size shortcut, but disclose the uninspected graph.
-		return nil, false
+	if mode.inbound && len(s) > maxDecodeTotalBytes {
+		// Keep the size shortcut and the outbound card-only pass policy.
+		return nil, !mode.reportWorkLimits
 	}
 	var seen decodeSeen
 	seen.add(s)
 	var queue [8]string
 	// Views collect on the stack and are copied once at their final size.
 	var views [32]decodedResult
-	collected, complete := runDecodeWalk(inbound, append(queue[:0], s), nil, &seen, includeURL, minPrefix, false, views[:0], sources)
+	collected, complete := runDecodeWalk(mode, append(queue[:0], s), nil, &seen, includeURL, minPrefix, false, views[:0], sources)
 
 	// Entity roots: the input and every first-part view whose entity decoding
 	// differs. The first part already expanded those texts' other layers.
@@ -3373,14 +3380,14 @@ func decodeEncodingsBudgetModeTracked(s string, includeURL bool, minPrefix int, 
 		}
 	}
 	if len(roots) > 0 {
-		htmlViews, htmlComplete := runDecodeWalk(inbound, nil, roots, &seen, includeURL, minPrefix, true, nil, sources)
+		htmlViews, htmlComplete := runDecodeWalk(mode, nil, roots, &seen, includeURL, minPrefix, true, nil, sources)
 		collected = append(collected, htmlViews...)
 		complete = complete && htmlComplete
 	}
 	// Existing decode results retain their admission order and budget. Tag
 	// segments expand afterward under the same ceilings, so extra views cannot
 	// displace a finding from the original graph.
-	tagViews, tagComplete := decodeTagSegmentViews(collected, &seen, includeURL, minPrefix, inbound, sources)
+	tagViews, tagComplete := decodeTagSegmentViews(collected, &seen, includeURL, minPrefix, mode, sources)
 	collected = append(collected, tagViews...)
 	complete = complete && tagComplete
 	if len(collected) == 0 {
@@ -3394,7 +3401,7 @@ func decodeEncodingsBudgetModeTracked(s string, includeURL bool, minPrefix int, 
 // Its queue is iterative; each distinct root and decoded result spends the
 // existing candidate and byte budgets before it contributes another expansion.
 // With keyword sources, each segment keeps its edge back to the tag view.
-func decodeTagSegmentViews(prior []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, inbound bool, sources *keywordDecodeSources) ([]decodedResult, bool) {
+func decodeTagSegmentViews(prior []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, mode decodeBudgetMode, sources *keywordDecodeSources) ([]decodedResult, bool) {
 	var queue []string
 	for _, d := range prior {
 		if d.encoding == encodingUnicodeTags {
@@ -3422,7 +3429,7 @@ func decodeTagSegmentViews(prior []decodedResult, seen *decodeSeen, includeURL b
 				}
 				out = append(out, root)
 				var walked bool
-				out, walked = runDecodeWalk(inbound, []string{segment}, nil, seen, includeURL, minPrefix, true, out, sources)
+				out, walked = runDecodeWalk(mode, []string{segment}, nil, seen, includeURL, minPrefix, true, out, sources)
 				complete = complete && walked
 				for i := before; i < len(out); i++ {
 					if len(out[i].text) > maxDecodeTotalBytes-consumed {
@@ -3444,9 +3451,9 @@ func decodeTagSegmentViews(prior []decodedResult, seen *decodeSeen, includeURL b
 
 // runDecodeWalk calls the walk for the scan direction directly, so a caller's
 // stack-held set and queue need not move to the heap.
-func runDecodeWalk(inbound bool, queue []string, start []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, withHTML bool, out []decodedResult, sources *keywordDecodeSources) ([]decodedResult, bool) {
-	if inbound {
-		return decodeEncodingsInboundWalkTracked(out, queue, start, seen, includeURL, minPrefix, withHTML, sources)
+func runDecodeWalk(mode decodeBudgetMode, queue []string, start []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, withHTML bool, out []decodedResult, sources *keywordDecodeSources) ([]decodedResult, bool) {
+	if mode.inbound {
+		return decodeEncodingsInboundWalkTracked(out, queue, start, seen, inboundDecodeWalkOptions{includeURL: includeURL, minPrefix: minPrefix, withHTML: withHTML, sources: sources, reportWorkLimits: mode.reportWorkLimits})
 	}
 	return decodeEncodingsWalkTracked(out, queue, start, seen, includeURL, minPrefix, withHTML, sources)
 }
@@ -6894,8 +6901,17 @@ func queryValueDecodedTargetsWithDecodes(decoded string, decodes *decodingMemo) 
 }
 
 // decodeEncodingsInboundWalkTracked preserves response inspection accounting.
-// Admitted views are appended to out, which must be empty.
-func decodeEncodingsInboundWalkTracked(out []decodedResult, queue []string, start []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, withHTML bool, sources *keywordDecodeSources) ([]decodedResult, bool) {
+// Admitted views are appended to out; tag-segment walks retain prior admissions.
+type inboundDecodeWalkOptions struct {
+	includeURL       bool
+	minPrefix        int
+	withHTML         bool
+	sources          *keywordDecodeSources
+	reportWorkLimits bool
+}
+
+func decodeEncodingsInboundWalkTracked(out []decodedResult, queue []string, start []decodedResult, seen *decodeSeen, opts inboundDecodeWalkOptions) ([]decodedResult, bool) {
+	includeURL, minPrefix, withHTML, sources := opts.includeURL, opts.minPrefix, opts.withHTML, opts.sources
 	consumed := 0
 	complete := true
 	// admit records one view and reports whether the walk may continue.
@@ -6920,12 +6936,13 @@ func decodeEncodingsInboundWalkTracked(out []decodedResult, queue []string, star
 			queue = append(queue, d.text)
 		}
 		if !more {
-			return out, false
+			return out, complete && !opts.reportWorkLimits
 		}
 	}
 	var scratch [16]decodedResult
 	views := scratch[:0]
-	for head := 0; head < len(queue) && len(out) < maxDecodeCandidates && consumed < maxDecodeTotalBytes; head++ {
+	head := 0
+	for ; head < len(queue) && len(out) < maxDecodeCandidates && consumed < maxDecodeTotalBytes; head++ {
 		var stepComplete bool
 		views, stepComplete = decodeEncodingsOnceInto(views[:0], queue[head], includeURL, minPrefix, withHTML)
 		complete = complete && stepComplete
@@ -6935,14 +6952,14 @@ func decodeEncodingsInboundWalkTracked(out []decodedResult, queue []string, star
 			}
 			added, more := admit(d)
 			if !more {
-				return out, false
+				return out, complete && !opts.reportWorkLimits
 			}
 			if added {
 				queue = append(queue, d.text)
 			}
 		}
 	}
-	return out, complete
+	return out, complete && (!opts.reportWorkLimits || head == len(queue))
 }
 
 // hexDecodes reports whether hex.DecodeString(s) would succeed: an even
