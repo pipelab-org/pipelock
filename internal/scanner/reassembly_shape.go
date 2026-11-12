@@ -3,6 +3,7 @@
 package scanner
 
 import (
+	"bytes"
 	"fmt"
 	"math/bits"
 	"regexp"
@@ -139,16 +140,38 @@ func (s *assembledShape) compatible(offset, width, value int) bool {
 // paired cue. Both sides of that byte matter when a compatible prefix has
 // already advanced the raw counter. The existing normalizer unit bounds local
 // work; longer grammars retain a weaker necessary condition, never a refusal.
-func (s *assembledShape) run(text string, codec, phase, symbols, end int) bool {
+func (s *assembledShape) run(text string, codec, phase, symbols, end int, cache *assembledGrammarCache) bool {
 	position := assembledPosition{codec, phase, symbols, end}
-	return s.classRun(text, position) && s.grammarNear(text, position)
+	return s.classRun(text, position, cache) && s.grammarNear(text, position, cache)
+}
+
+type assembledGrammarEntry struct {
+	previous []byte
+	scratch  []byte
+	valid    bool
+	result   bool
+	raw      string
+	rawSkip  uint8
+	rawFull  bool
+}
+
+type assembledGrammarKey struct {
+	shape    *assembledShape
+	codec    int
+	phase    int
+	position int
+}
+
+type assembledGrammarCache struct {
+	entries map[assembledGrammarKey]*assembledGrammarEntry
+	origins map[assembledOriginKey]assembledOriginEntry
 }
 
 // A cue that confirms a genuine match lies inside it, so its last complete
 // byte belongs to the match and every match byte lies within window bytes of
 // it. Complete neighboring runes preserve the assertion context of every
 // genuine match around that cue. Existence decides admission.
-func (s *assembledShape) grammarNear(text string, position assembledPosition) bool {
+func (s *assembledShape) grammarNear(text string, position assembledPosition, cache *assembledGrammarCache) bool {
 	if s.local == nil {
 		return true
 	}
@@ -156,19 +179,54 @@ func (s *assembledShape) grammarNear(text string, position assembledPosition) bo
 	// assertions. Every match byte lies within window of the interior cue;
 	// anchored genuine matches also include their actual lane edge.
 	window := s.window + utf8.UTFMax
-	ref := assembledOrigin(text, position, window)
-	data := make([]byte, 0, 2*window)
-	assembledReplay(text, position.codec, ref.raw, len(text), ref.skip, func(b byte, _ int) bool {
-		data = append(data, b)
-		return len(data) < cap(data)
-	})
-	var ok bool
-	if s.validate != nil {
-		_, _, ok = s.validate.firstAcceptedSpan(string(data), nil)
-	} else {
-		ok = s.local.Match(data)
+	ref := cachedAssembledOrigin(text, position, window, cache)
+	if cache.entries == nil {
+		cache.entries = make(map[assembledGrammarKey]*assembledGrammarEntry)
 	}
-	return ok || s.gluedNear(string(data))
+	key := assembledGrammarKey{s, position.codec, position.phase, position.symbols % reassemblyCodecs[position.codec].quantum}
+	entry := cache.entries[key]
+	if entry == nil {
+		entry = &assembledGrammarEntry{}
+		cache.entries[key] = entry
+	}
+	// Identical raw input and bit alignment reproduce the same decoded window.
+	// A short window is reusable only at EOF; otherwise later bytes could extend it.
+	rawEnd := ref.raw + len(entry.raw)
+	if entry.valid && ref.skip == entry.rawSkip && rawEnd <= len(text) &&
+		(entry.rawFull || rawEnd == len(text)) && text[ref.raw:rawEnd] == entry.raw {
+		return entry.result
+	}
+	data := entry.scratch[:0]
+	if cap(data) < 2*window {
+		data = make([]byte, 0, 2*window)
+	}
+	end := ref.raw
+	assembledReplay(text, position.codec, ref.raw, len(text), ref.skip, func(b byte, rawEnd int) bool {
+		data = append(data, b)
+		end = rawEnd
+		return len(data) < 2*window
+	})
+	full := len(data) == 2*window
+	if !full {
+		end = len(text)
+	}
+	entry.raw, entry.rawSkip, entry.rawFull = text[ref.raw:end], ref.skip, full
+	if entry.valid && bytes.Equal(entry.previous, data) {
+		entry.scratch = data
+		return entry.result
+	}
+	var result bool
+	if s.validate != nil {
+		_, _, result = s.validate.firstAcceptedSpan(string(data), nil)
+	} else {
+		result = s.local.Match(data)
+	}
+	// The glued-candidate screen reads only the decoded window, so it is part
+	// of the cached admission result.
+	result = result || s.gluedNear(string(data))
+	entry.previous, entry.scratch = data, entry.previous[:0]
+	entry.valid, entry.result = true, result
+	return result
 }
 
 func (s *assembledShape) gluedNear(view string) bool {
@@ -183,10 +241,10 @@ func (s *assembledShape) gluedNear(view string) bool {
 	return false
 }
 
-func (s *assembledShape) classRun(text string, position assembledPosition) bool {
+func (s *assembledShape) classRun(text string, position assembledPosition, cache *assembledGrammarCache) bool {
 	codec := position.codec
 	required := min(s.minimum, maxReassembledTokenLen)
-	ref := assembledOrigin(text, position, required)
+	ref := cachedAssembledOrigin(text, position, required, cache)
 	consecutive := 0
 	assembledReplay(text, codec, ref.raw, position.end, ref.skip, func(b byte, _ int) bool {
 		if s.members[b] {
@@ -203,7 +261,7 @@ func (s *assembledShape) classRun(text string, position assembledPosition) bool 
 		return true
 	}
 	// Start at the next complete phase byte, preserving pending symbol bits.
-	ref = assembledOrigin(text, position, 0)
+	ref = cachedAssembledOrigin(text, position, 0, cache)
 	cursor := assembledForwardCursor{text: text, codec: codec, raw: ref.raw, skip: int(ref.skip)}
 	for consecutive < required {
 		b, ok := cursor.nextByte()

@@ -288,6 +288,55 @@ type (
 // Coordinates use the true phase origin, so an under-cap prefix cannot shift it.
 type assembledPosition struct{ codec, phase, symbols, end int }
 
+type assembledOriginKey struct{ codec, phase, n int }
+
+type assembledOriginEntry struct {
+	text   string
+	symbol int
+	raw    int
+}
+
+// Reuse the prior symbol position only within this scan and for the same
+// input. Advancing visits each intervening raw byte; a backward request uses
+// the original walk and resets the cursor.
+func cachedAssembledOrigin(text string, position assembledPosition, n int, cache *assembledGrammarCache) reassemblyRef {
+	c := reassemblyCodecs[position.codec]
+	count := max(0, (position.symbols-position.phase)*c.width/8)
+	bit := position.phase*c.width + max(0, count-n)*8
+	target := bit / c.width
+	key := assembledOriginKey{position.codec, position.phase, n}
+	if cache.origins == nil {
+		cache.origins = make(map[assembledOriginKey]assembledOriginEntry)
+	}
+	prev, ok := cache.origins[key]
+	if ok && prev.text == text && target >= prev.symbol && target <= position.symbols && prev.raw <= position.end {
+		raw := prev.raw
+		remaining := target - prev.symbol
+		for remaining > 0 && raw < position.end {
+			if c.values[text[raw]] >= 0 {
+				remaining--
+			}
+			raw++
+		}
+		if remaining == 0 {
+			if target == position.symbols {
+				raw = position.end
+			} else {
+				for raw < position.end && c.values[text[raw]] < 0 {
+					raw++
+				}
+			}
+			cache.origins[key] = assembledOriginEntry{text, target, raw}
+			return reassemblyRef{raw: raw, skip: uint8(bit % c.width & 7)}
+		}
+	}
+	ref := assembledOrigin(text, position, n)
+	if target <= position.symbols {
+		cache.origins[key] = assembledOriginEntry{text, target, ref.raw}
+	}
+	return ref
+}
+
 func assembledOrigin(text string, position assembledPosition, n int) reassemblyRef {
 	codec, phase, symbols, end := position.codec, position.phase, position.symbols, position.end
 	c := reassemblyCodecs[codec]
@@ -296,6 +345,10 @@ func assembledOrigin(text string, position assembledPosition, n int) reassemblyR
 	bit := phase*c.width + startByte*8
 	startSymbol := bit / c.width
 	need := symbols - startSymbol
+	// Equal counts prove that every byte before end is a codec symbol.
+	if symbols == end {
+		return reassemblyRef{raw: end - max(need, 0), skip: uint8(bit % c.width & 7)}
+	}
 	raw := end
 	for need > 0 && raw > 0 {
 		raw--
@@ -518,6 +571,7 @@ func assembledLayer(p *reassemblyPlan, text string, budget *assembledBudget, ski
 		patternSet = textDLPNonCardPatterns
 	}
 	scan := assembledScan{p: p, text: text, budget: budget}
+	var grammarCache assembledGrammarCache
 	for codec := range reassemblyCodecs {
 		if budget.stopped {
 			scan.result.stopped = true
@@ -583,7 +637,7 @@ func assembledLayer(p *reassemblyPlan, text string, budget *assembledBudget, ski
 					if budget.decoderOnly && !p.assembled.decoderAllowed[shape.id] || scan.checked[codec] != nil && scan.checked[codec][shape.id]&(uint8(1)<<uint(phase)) != 0 {
 						continue
 					}
-					if (symbols-phase)*c.width >= 8 && shape.pair(codec, phase, symbols, previous, v) && shape.run(text, codec, phase, symbols, rawEnd) {
+					if (symbols-phase)*c.width >= 8 && shape.pair(codec, phase, symbols, previous, v) && shape.run(text, codec, phase, symbols, rawEnd, &grammarCache) {
 						cue(phase, shape.id, nil)
 					}
 				}
