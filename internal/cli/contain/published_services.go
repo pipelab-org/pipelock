@@ -597,7 +597,10 @@ func removePublishedServices(ctx context.Context, env *installEnv) error {
 		units = append(units, publishedRecordUnitNames(record)...)
 	}
 	if err := closePublishedDoorways(ctx, env, units); err != nil {
-		errs = append(errs, err)
+		// restoreBackup removes a file that has no backup. Deleting the
+		// record after a failed close leaves the doorway enabled and gives
+		// the next attempt nothing to retry.
+		return err
 	}
 	for _, record := range set.Services {
 		for _, unit := range publishedRecordUnitNames(record) {

@@ -218,6 +218,11 @@ func TestActionRemoveNetworkNamespaceAggregatesCleanupFailures(t *testing.T) {
 			t.Errorf("cleanup error %q does not contain %q", err, want)
 		}
 	}
+	for _, path := range []string{filepath.Join(unitDir, record.Unit+".socket"), env.loopbackForwarderInvPath} {
+		if _, statErr := os.Stat(path); statErr != nil {
+			t.Fatalf("loopback record %s removed after failed close: %v", path, statErr)
+		}
+	}
 }
 
 func assertRestorePathPositiveControl(t *testing.T) {

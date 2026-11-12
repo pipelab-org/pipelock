@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"slices"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 // A refused install cannot grant access, but it must still close access that
@@ -77,7 +79,7 @@ func installRefusalDoorwayPlan(env *installEnv, configPath string) ([]string, []
 	}
 	policyTime := time.Now()
 	for i, path := range paths {
-		loopback, publication, err := installRefusalDesiredDoorways(&observed, path, policyTime)
+		loopback, publication, err := installRefusalDesiredDoorways(&observed, path, policyTime, publishedInv)
 		errs = append(errs, err)
 		if i == 0 {
 			desiredLoopback, desiredPublished = loopback, publication
@@ -102,7 +104,7 @@ func installRefusalDoorwayPlan(env *installEnv, configPath string) ([]string, []
 	return loopback, plan.closeDoorways, errors.Join(errs...)
 }
 
-func installRefusalDesiredDoorways(env *installEnv, path string, policyTime time.Time) ([]string, []string, error) {
+func installRefusalDesiredDoorways(env *installEnv, path string, policyTime time.Time, observed publishedServiceRecordSet) ([]string, []string, error) {
 	data, err := env.readFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -117,9 +119,24 @@ func installRefusalDesiredDoorways(env *installEnv, path string, policyTime time
 		loopbackUnits = append(loopbackUnits, loopbackForwarderUnitBase(service.Host, service.Port))
 	}
 	for _, service := range publication {
+		// The unit name comes from the service name. An operator change
+		// leaves that name in place while the previous operator still owns
+		// the socket, so the name alone is not authorization to keep it.
+		if recordedPublishedOperatorDiffers(observed, service) {
+			continue
+		}
 		for _, file := range publishedServiceFiles(filepath.Dir(env.proxyForwarderSocketPath), env.pipelockTarget, env.proxyUserName, service) {
 			publishedUnits = append(publishedUnits, filepath.Base(file.path))
 		}
 	}
 	return loopbackUnits, publishedUnits, errors.Join(loopbackErr, publishedErr)
+}
+
+func recordedPublishedOperatorDiffers(observed publishedServiceRecordSet, service config.ContainmentPublishedService) bool {
+	for _, record := range observed.Services {
+		if record.Name == service.Name {
+			return record.OperatorUser != service.OperatorUser
+		}
+	}
+	return false
 }

@@ -520,7 +520,7 @@ func assertNoServiceOrNFTMutationAfterPreflightFailure(t *testing.T, runner *fak
 		if call.name == testSystemctl && containsArg(call.args, "enable") && containsArg(call.args, "--now") {
 			t.Fatalf("systemctl enable --now reached after config preflight failure: %+v", runner.calls)
 		}
-		if call.name == testNFT && containsArg(call.args, "-f") {
+		if filepath.Base(call.name) == testNFT && containsArg(call.args, "-f") {
 			t.Fatalf("nft load/validate reached after config preflight failure: %+v", runner.calls)
 		}
 	}

@@ -193,6 +193,7 @@ func TestInstallRefusalDoorwayPolicyIntersection(t *testing.T) {
 		{"missing installed config", "missing", "active", true, true},
 		{"broken installed config", "broken", "active", true, true},
 		{"unreadable candidate", "active", "unreadable", true, true},
+		{"candidate replaces operator", "active", "operator", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env, _, _ := newFakeEnv(t)
@@ -213,6 +214,8 @@ func TestInstallRefusalDoorwayPolicyIntersection(t *testing.T) {
 					body = expired
 				case "broken":
 					body = "containment: ["
+				case "operator":
+					body = strings.Replace(active, "operator_user: operator\n", "operator_user: other\n", 1)
 				case "unreadable":
 					path := item.path
 					env.readFile = func(p string) ([]byte, error) {

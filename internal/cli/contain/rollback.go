@@ -209,6 +209,7 @@ func actionRemoveNetworkNamespace() step {
 			if err := removePublishedServices(ctx, env); err != nil {
 				errs = append(errs, err)
 			}
+			loopbackCloseFailed := false
 			if inv, err := readLoopbackForwarderInventory(env); err != nil {
 				errs = append(errs, err)
 			} else {
@@ -219,12 +220,14 @@ func actionRemoveNetworkNamespace() step {
 				}
 				if err := closeLoopbackDoorways(ctx, env, units); err != nil {
 					errs = append(errs, err)
-				}
-				for _, record := range inv.Services {
-					for _, suffix := range []string{"-netns.service", ".socket", ".service"} {
-						path := filepath.Join(unitDir, record.Unit+suffix)
-						if err := restoreBackup(env, path); err != nil {
-							errs = append(errs, fmt.Errorf("restore %s: %w", path, err))
+					loopbackCloseFailed = true
+				} else {
+					for _, record := range inv.Services {
+						for _, suffix := range []string{"-netns.service", ".socket", ".service"} {
+							path := filepath.Join(unitDir, record.Unit+suffix)
+							if err := restoreBackup(env, path); err != nil {
+								errs = append(errs, fmt.Errorf("restore %s: %w", path, err))
+							}
 						}
 					}
 				}
@@ -253,7 +256,7 @@ func actionRemoveNetworkNamespace() step {
 					errs = append(errs, fmt.Errorf("restore legacy %s: %w", path, err))
 				}
 			}
-			if env.loopbackForwarderInvPath != "" {
+			if env.loopbackForwarderInvPath != "" && !loopbackCloseFailed {
 				if err := restoreBackup(env, env.loopbackForwarderInvPath); err != nil {
 					errs = append(errs, fmt.Errorf("restore %s: %w", env.loopbackForwarderInvPath, err))
 				}
