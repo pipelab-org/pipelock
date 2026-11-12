@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"context"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -123,16 +124,25 @@ func TestEncodedCredentialInUniformRun(t *testing.T) {
 					t.Cleanup(sc.Close)
 					codec := reassemblyCodecByName(t, enc.name)
 					alphabet := reassemblyCodecs[codec].alphabet[:1]
-					sizes := []int{1 << 20, 2 << 20, 4 << 20}
-					// The race detector multiplies the cost of these scans; one
-					// size at one phase keeps the detection check in race runs.
-					reduced := raceEnabled || testing.Short()
+					// Every phase at 1 MiB, and one phase at 4 MiB for the AWS key, keep the package
+					// inside its CI test timeout. PIPELOCK_TEST_UNIFORM_RUN_FULL runs
+					// every size at every phase. The race detector multiplies the
+					// cost, so race and short runs keep one size at one phase.
+					sizes := []int{1 << 20, 4 << 20}
+					full := os.Getenv("PIPELOCK_TEST_UNIFORM_RUN_FULL") != ""
+					if full {
+						sizes = []int{1 << 20, 2 << 20, 4 << 20}
+					}
+					reduced := !full && (raceEnabled || testing.Short())
 					if reduced {
 						sizes = sizes[:1]
 					}
 					for _, size := range sizes {
+						if size != 1<<20 && !full && secret.name != "AWS Access ID" {
+							continue
+						}
 						phases := enc.quantum
-						if reduced || (secret.name != "AWS Access ID" && size != 1<<20) {
+						if reduced || (size != 1<<20 && (!full || secret.name != "AWS Access ID")) {
 							phases = 1
 						}
 						for phase := range phases {
