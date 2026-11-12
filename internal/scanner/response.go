@@ -200,7 +200,7 @@ func (s *Scanner) scanResponseBodyUncached(ctx context.Context, body []byte, sup
 			return ResponseScanResult{Clean: false, ScanError: classifyErr.Error()}
 		}
 		if !textual {
-			decoded, decodedOK, decodeErr := decodeLikelyUTF16ResponseBody(ctx, body)
+			decoded, decodedOK, decodeErr := decodeLikelyWideResponseBody(ctx, body)
 			if decodeErr != nil {
 				return ResponseScanResult{Clean: false, ScanError: decodeErr.Error()}
 			}
