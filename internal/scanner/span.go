@@ -310,10 +310,10 @@ func (p *compiledPattern) exactlyOneGluedRune(source string, loc [2]int) (rune, 
 	candidateStart := 0
 	if before > 0 {
 		_, prevSize := utf8.DecodeLastRuneInString(source[:before])
-		window = source[before-prevSize:before] + source[loc[0]:loc[1]]
+		window = source[before-prevSize:before] + source[loc[0]:p.leftBoundaryWindowEnd(source, loc)]
 		candidateStart = prevSize
 	} else {
-		window = source[loc[0]:loc[1]]
+		window = source[loc[0]:p.leftBoundaryWindowEnd(source, loc)]
 	}
 	if !p.candidateHasLeftBoundary(window, [2]int{candidateStart, len(window)}) {
 		return 0, false
@@ -409,12 +409,35 @@ func (p *compiledPattern) canonicalProviderCandidateSpans(text string) [][2]int 
 				continue
 			}
 			// The canonical provider bodies require at least 20 suffix characters.
-			if remaining >= 20 {
+			if remaining >= providerKeyMinSuffixRunes {
 				spans = append(spans, [2]int{loc[0] + prefix[0], loc[1]})
 			}
 		}
 	}
 	return spans
+}
+
+// providerKeyMinSuffixRunes is the {20,} suffix minimum shared by the three
+// canonical provider bodies (config.AnthropicKeyBodyRegex and its siblings).
+const providerKeyMinSuffixRunes = 20
+
+// leftBoundaryWindowEnd is where a candidate's left-boundary check may stop.
+// A provider body is its prefix followed by twenty or more runes of one class,
+// with no right boundary, and every provider candidate span is a body match.
+// So whether a bounded hit starts at the candidate is settled by the prefix
+// and its first twenty suffix runes. Reading the whole suffix again for every
+// nested prefix of one long run made the scan quadratic in the run's length.
+// Other patterns keep the full span: their candidates do not overlap.
+func (p *compiledPattern) leftBoundaryWindowEnd(source string, loc [2]int) int {
+	if p.providerPrefixRE == nil {
+		return loc[1]
+	}
+	end := loc[0]
+	for n := len(p.providerKeyPrefix) + providerKeyMinSuffixRunes; n > 0 && end < loc[1]; n-- {
+		_, size := utf8.DecodeRuneInString(source[end:loc[1]])
+		end += size
+	}
+	return end
 }
 
 func (p *compiledPattern) candidateHasLeftBoundary(source string, candidateLoc [2]int) bool {
@@ -423,7 +446,7 @@ func (p *compiledPattern) candidateHasLeftBoundary(source string, candidateLoc [
 		_, size := utf8.DecodeLastRuneInString(source[:windowStart])
 		windowStart -= size
 	}
-	window := source[windowStart:candidateLoc[1]]
+	window := source[windowStart:p.leftBoundaryWindowEnd(source, candidateLoc)]
 	for _, loc := range p.re.FindAllStringIndex(window, -1) {
 		bodyLoc := p.withoutLeftBoundary.FindStringIndex(window[loc[0]:loc[1]])
 		if bodyLoc != nil && windowStart+loc[0]+bodyLoc[0] == candidateLoc[0] {
