@@ -103,7 +103,7 @@ func (r ResponseScanResult) RecoveryAssessment() InjectionAssessment {
 func (s *Scanner) setInjectionAssessment(result *ResponseScanResult, assessed bool) {
 	status := AssessmentNotAssessed
 	switch {
-	case result.Failed():
+	case result.Failed() || result.InspectionIncomplete:
 		status = AssessmentIncomplete
 	case s.PromptInjectionMode() == config.ActionAllow:
 		status = AssessmentOff

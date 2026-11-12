@@ -1147,7 +1147,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		action = config.StrongestAction(action, result.EntropyAction)
 	}
 	for _, text := range texts {
-		injectionResult := req.Scanner.ScanResponse(ctx, text)
+		injectionResult := req.Scanner.ScanResponseOutbound(ctx, text)
 		if injectionResult.Failed() {
 			return nil, BodyScanResult{Action: config.ActionBlock, ScanError: injectionResult.ScanError, Reason: "request body scan failed: " + injectionResult.ScanError}
 		}
@@ -1162,7 +1162,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	// for deterministic split-secret detection.
 	joinedInOrder := strings.Join(texts, "\n")
 	var inOrderInjection, sortedInjection []scanner.ResponseMatch
-	injectionResult := req.Scanner.ScanResponse(ctx, joinedInOrder)
+	injectionResult := req.Scanner.ScanResponseOutbound(ctx, joinedInOrder)
 	if injectionResult.Failed() {
 		return nil, BodyScanResult{Action: config.ActionBlock, ScanError: injectionResult.ScanError, Reason: "request body scan failed: " + injectionResult.ScanError}
 	}
@@ -1174,7 +1174,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	// non-JSON body parsers and query maps can otherwise vary).
 	sorted := sortedBodyTexts(texts)
 	joined := strings.Join(sorted, "\n")
-	injectionResult = req.Scanner.ScanResponse(ctx, joined)
+	injectionResult = req.Scanner.ScanResponseOutbound(ctx, joined)
 	if injectionResult.Failed() {
 		return nil, BodyScanResult{Action: config.ActionBlock, ScanError: injectionResult.ScanError, Reason: "request body scan failed: " + injectionResult.ScanError}
 	}
@@ -1192,7 +1192,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 			joinedFields = append(joinedFields, strings.Join(partTexts, "\n"), strings.Join(sortedBodyTexts(partTexts), "\n"))
 		}
 		for _, joinedFields := range joinedFields {
-			fieldResult := req.Scanner.ScanResponse(ctx, joinedFields)
+			fieldResult := req.Scanner.ScanResponseOutbound(ctx, joinedFields)
 			if fieldResult.Failed() {
 				return nil, BodyScanResult{Action: config.ActionBlock, ScanError: fieldResult.ScanError, Reason: "request body scan failed: " + fieldResult.ScanError}
 			}
