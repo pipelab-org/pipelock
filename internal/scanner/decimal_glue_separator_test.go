@@ -101,6 +101,39 @@ func TestUniformByteGlueControlRunSkipsDecodePass(t *testing.T) {
 	}
 }
 
+// End padding can push a decoded credential under the 80% printable rule.
+// The core is still the credential. A control run with one printable byte
+// at the edge is not.
+func TestUniformByteGlueControlPaddingKeepsPrintableCore(t *testing.T) {
+	s := gluedBoundaryScanner(t)
+	secret := "AKIA" + "0123456789ABCDEF"
+	padded := strings.Repeat("\x00", 3) + secret + strings.Repeat("\x00", 3)
+	encoded := decimalByteList(padded, ".")
+	if !hasTextEncoding(encoded) {
+		t.Fatal("NUL-padded credential did not open the decode pass")
+	}
+	got := s.ScanTextForDLP(context.Background(), "values "+encoded+" end")
+	if !gluedBoundaryFound(got.Matches, got.InformationalMatches, "AWS Access ID") {
+		t.Fatalf("NUL-padded credential missed: clean=%v matches=%v", got.Clean, gluedMatchNames(got.Matches))
+	}
+	delPadded := strings.Repeat("\x7f", 3) + secret + strings.Repeat("\x7f", 3)
+	delEncoded := decimalByteList(delPadded, ".")
+	delGot := s.ScanTextForDLP(context.Background(), "values "+delEncoded+" end")
+	if !gluedBoundaryFound(delGot.Matches, delGot.InformationalMatches, "AWS Access ID") {
+		t.Fatalf("DEL-padded credential missed: clean=%v matches=%v", delGot.Clean, gluedMatchNames(delGot.Matches))
+	}
+	c1Padded := strings.Repeat("\x80", 3) + secret + strings.Repeat("\x80", 3)
+	c1Got := s.ScanTextForDLP(context.Background(), "values "+decimalByteList(c1Padded, ".")+" end")
+	if !gluedBoundaryFound(c1Got.Matches, c1Got.InformationalMatches, "AWS Access ID") {
+		t.Fatalf("C1-padded credential missed: clean=%v matches=%v", c1Got.Clean, gluedMatchNames(c1Got.Matches))
+	}
+
+	edge := strings.Repeat("\x00", 64) + "A"
+	if hasTextEncoding(decimalByteList(edge, ".")) {
+		t.Fatal("one printable byte at the edge of a control run opened the decode pass")
+	}
+}
+
 func TestDecimalByteListNonUniformGlueKnownMiss(t *testing.T) {
 	s := gluedBoundaryScanner(t)
 	secret := "AKIA" + "0123456789ABCDEF"

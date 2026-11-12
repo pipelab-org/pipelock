@@ -337,6 +337,43 @@ func hasUniformByteGlueRun(s string) bool {
 	return len(uniformByteGlueRuns(s)) > 0
 }
 
+// uniformGlueTextAdmitted reports whether a decoded glue run is text worth
+// scanning. isPrintableText is the existing 80% rule. Bytes that rule does
+// not count, when they sit only at the ends, are framing: a credential
+// followed by zero bytes is still the credential. The trimmed core has to
+// pass the same rule, and it has to be at least as long as the framing.
+// Otherwise one printable byte at the edge of a control run would open the
+// decode pass for the whole carrier.
+func uniformGlueTextAdmitted(text string) bool {
+	if text == "" {
+		return false
+	}
+	if isPrintableText([]byte(text)) {
+		return true
+	}
+	core := strings.TrimFunc(text, isGlueControlPad)
+	if core == "" || !isPrintableText([]byte(core)) {
+		return false
+	}
+	pad := len(text) - len(core)
+	return len(core) >= pad
+}
+
+// isGlueControlPad is a byte isPrintableText does not count. Tab and the
+// line breaks stay, because that rule already accepts them as text.
+// A lone non-UTF-8 byte is reported as RuneError; that byte is padding too.
+// A real U+FFFD at the end is the same rune and is not part of a credential.
+func isGlueControlPad(r rune) bool {
+	if r == utf8.RuneError {
+		return true
+	}
+	size := utf8.RuneLen(r)
+	if size < 1 {
+		return true
+	}
+	return !isPrintableResponseRune(r, size)
+}
+
 func uniformByteGlueRuns(s string) []uniformByteGlueRun {
 	if !hasMinimumASCIIDigits(s, minDecimalCodeRun) {
 		return nil
@@ -352,10 +389,11 @@ func uniformByteGlueRuns(s string) []uniformByteGlueRun {
 			i++
 			continue
 		}
-		// Same printable-text rule as other decoded views. Control bytes from a
-		// dotted integer list are not a carrier, so they neither open the
-		// response decode pass nor become a DLP view.
-		if ok && isPrintableText([]byte(text)) {
+		// Same printable-text rule as other decoded views. A dotted list of
+		// small integers is all control bytes and must not open the decode
+		// pass. Control bytes wrapped around a printable core still count:
+		// trimming them is the pad, and the core is the carrier.
+		if ok && uniformGlueTextAdmitted(text) {
 			runs = append(runs, uniformByteGlueRun{text: text, start: i, end: next})
 		}
 		i = next
