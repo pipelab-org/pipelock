@@ -151,6 +151,7 @@ func TestRunInstall_ConfigPreflightDryRunReportsMissingManagedConfig(t *testing.
 
 func TestRunInstall_ConfigPreflightDryRunReportsWithoutMutation(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
+	trustInstallNFTForTest(env)
 	src := writePreflightConfig(t, "dry-source.yaml", "forward_proxy:\n  enabled: true\nagents:\n  _default:\n    budget:\n      max_retries_per_endpoint: 2\n")
 	target := managedPipelockConfigPath(env)
 	runner.on(argvFor(env.pipelockBinary, "check", "--config", src, "--require-build-compatibility"),

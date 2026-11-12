@@ -205,6 +205,9 @@ func runInstall(ctx context.Context, env *installEnv, opts installOpts) error {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 	}
 	if err := preflightInstallNFTRules(ctx, env, target.checkPath); err != nil {
+		if !opts.dryRun {
+			err = errors.Join(err, revokeInstallRefusalDoorways(ctx, env, target.checkPath))
+		}
 		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 	}
 
@@ -2625,6 +2628,9 @@ func ensureNFTRulesDirSafe(env *installEnv) error {
 // reconcile lock's parent directory. Apply observes again under that lock, so
 // this early refusal cannot authorize a later write against stale state.
 func preflightInstallNFTRules(ctx context.Context, env *installEnv, configPath string) error {
+	if err := expectPrivilegedExecutablePath(env.stat, "nft", nftExecutable(env)); err != nil {
+		return err
+	}
 	snapshot := *env
 	snapshot.readFile, _ = snapshotReconcileReads(env.readFile)
 	env = &snapshot
@@ -2665,14 +2671,6 @@ func installNFTIdentityError(env *installEnv, observation nftReconcileObservatio
 }
 
 func installNFTRulesPolicy(env *installEnv, observation nftReconcileObservation, configPath string, listenerData []byte, policyTime time.Time) (nftReconcilePolicy, error) {
-	operatorUID, err := operatorUIDFromEnv(env)
-	if err != nil {
-		return nftReconcilePolicy{}, err
-	}
-	proxyUID, agentUID, err := resolveUIDs(env)
-	if err != nil {
-		return nftReconcilePolicy{}, err
-	}
 	agentListener, err := agentListenerFromConfigBytes(listenerData)
 	if err != nil {
 		return nftReconcilePolicy{}, fmt.Errorf("managed listener config %s: %w", configPath, err)
@@ -2680,6 +2678,14 @@ func installNFTRulesPolicy(env *installEnv, observation nftReconcileObservation,
 	loopbackServices, err := parseContainmentLoopbackServicesFromConfigBytes(listenerData, env.proxyPort, policyTime)
 	if err != nil {
 		return nftReconcilePolicy{}, fmt.Errorf("managed config %s: %w", configPath, err)
+	}
+	operatorUID, err := operatorUIDFromEnv(env)
+	if err != nil {
+		return nftReconcilePolicy{}, err
+	}
+	proxyUID, agentUID, err := resolveUIDs(env)
+	if err != nil {
+		return nftReconcilePolicy{}, err
 	}
 	body := renderNFTRulesWithServices(nftRuleOptions{
 		OperatorUID:      operatorUID,
@@ -2704,17 +2710,9 @@ func observeInstallNFTRules(ctx context.Context, env *installEnv) (nftReconcileO
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nftReconcileObservation{}, fmt.Errorf("read %s: %w", env.nftRulesPath, err)
 	}
-	live, code, listErr := env.runCmd(ctx, nftExecutable(env), "-n", "-a", "list", "chain", "inet", env.nftTableOrDefault(), env.nftChainOrDefault())
-	if listErr != nil {
-		return nftReconcileObservation{}, fmt.Errorf("list nft managed chain: %w", listErr)
-	}
-	if code != 0 {
-		if !nftOutputConfirmsAbsent(live) {
-			return nftReconcileObservation{}, fmt.Errorf("list nft managed chain exit=%d: %s", code, oneLine(live))
-		}
-		live = ""
-	} else if strings.TrimSpace(live) == "" {
-		return nftReconcileObservation{}, errors.New("list nft managed chain returned an empty observation")
+	live, err := observeNFTManagedChain(ctx, env.runCmd, nftExecutable(env), env.nftTableOrDefault(), env.nftChainOrDefault())
+	if err != nil {
+		return nftReconcileObservation{}, err
 	}
 	return nftReconcileObservation{persisted: string(persisted), live: live}, nil
 }

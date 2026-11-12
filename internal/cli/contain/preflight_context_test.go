@@ -207,6 +207,7 @@ func TestInstallNFTPreflightSupportedStates(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env, runner, out := newFakeEnv(t)
+			trustInstallNFTForTest(env)
 			src := filepath.Join(t.TempDir(), "pipelock.yaml")
 			if err := os.WriteFile(src, []byte("mode: balanced\nforward_proxy:\n  enabled: true\n"), 0o600); err != nil {
 				t.Fatal(err)
@@ -238,6 +239,7 @@ func TestInstallNFTPreflightReadFailures(t *testing.T) {
 	for _, name := range []string{"rules unreadable", "config unreadable", "nft unavailable", "identity unavailable", "invalid UID"} {
 		t.Run(name, func(t *testing.T) {
 			env, runner, _ := newFakeEnv(t)
+			trustInstallNFTForTest(env)
 			src := filepath.Join(t.TempDir(), "pipelock.yaml")
 			if err := os.WriteFile(src, []byte("mode: balanced\nforward_proxy:\n  enabled: true\n"), 0o600); err != nil {
 				t.Fatal(err)
@@ -289,6 +291,7 @@ func TestInstallNFTPreflightReadFailures(t *testing.T) {
 
 func TestInstallNFTPreflightUsesProspectiveConfig(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
+	trustInstallNFTForTest(env)
 	policy := reconcileTestPolicy()
 	live := wrapNFTListingForTest("ip daddr 127.0.0.1 tcp dport 9000 accept # handle 10\n" + nftListingFromRulesBodyForTest(policy.rules, 20))
 	runner.on(argvFor(env.nftPath, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), live, 0, nil)
@@ -304,6 +307,7 @@ func TestInstallNFTPreflightUsesProspectiveConfig(t *testing.T) {
 
 func TestInstallNFTPreflightNamesTheConfigItRead(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
+	trustInstallNFTForTest(env)
 	src := filepath.Join(t.TempDir(), "candidate.yaml")
 	// config.Load accepts an agent listener string. The nft policy parser is
 	// the check that rejects a non-loopback address, so this must name the
@@ -351,6 +355,7 @@ func TestInstallNFTRulesPolicyValidationErrors(t *testing.T) {
 
 func TestInstallNFTPreflightReobservesAfterUserCreation(t *testing.T) {
 	env, runner, out := newFakeEnv(t)
+	trustInstallNFTForTest(env)
 	src := filepath.Join(t.TempDir(), "pipelock.yaml")
 	if err := os.WriteFile(src, []byte("mode: balanced\nforward_proxy:\n  enabled: true\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -382,6 +387,7 @@ func TestInstallNFTPreflightReobservesAfterUserCreation(t *testing.T) {
 
 func TestInstallNFTApplyNamesPresentChainWhenUserMissing(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
+	trustInstallNFTForTest(env)
 	policy := reconcileTestPolicy()
 	live := wrapNFTListingForTest(nftListingFromRulesBodyForTest(policy.rules, 20))
 	runner.on(argvFor(env.nftPath, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), live, 0, nil)

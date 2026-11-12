@@ -113,7 +113,7 @@ func TestReloadDoorwaysPrecedeNFTFailures(t *testing.T) {
 					if stage == "list" {
 						return "", 1, failure
 					}
-					return "", 0, nil
+					return "No such file or directory", 1, nil
 				}
 				if (stage == "validate" && strings.HasPrefix(command, "-c")) || (stage == "apply" && args[0] == "-f") {
 					return "", 1, failure

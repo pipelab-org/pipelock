@@ -522,6 +522,7 @@ func TestRunInstall_SelfPathFallback(t *testing.T) {
 
 func TestRunInstall_DryRunSucceedsWithoutMutation(t *testing.T) {
 	env, runner, buf := newFakeEnv(t)
+	trustInstallNFTForTest(env)
 	src := filepath.Join(t.TempDir(), "pipelock.yaml")
 	if err := os.WriteFile(src, []byte("mode: balanced\nforward_proxy:\n  enabled: true\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -2793,6 +2794,7 @@ func TestInstallCmdDryRunSkipsHostPreflightAndPrintsPlan(t *testing.T) {
 		return nil
 	}
 	env, _, out := newFakeEnv(t)
+	trustInstallNFTForTest(env)
 	newContainInstallEnv = func(io.Writer) *installEnv { return env }
 	src := filepath.Join(t.TempDir(), "pipelock.yaml")
 	if err := os.WriteFile(src, []byte("mode: balanced\nforward_proxy:\n  enabled: true\n"), 0o600); err != nil {

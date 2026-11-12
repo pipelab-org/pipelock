@@ -93,6 +93,7 @@ func TestInstallWritePathsAccept(t *testing.T) {
 	} {
 		t.Run(fmt.Sprintf("layout_%d", i), func(t *testing.T) {
 			env, runner, _ := newFakeEnv(t)
+			trustInstallNFTForTest(env)
 			src := filepath.Join(t.TempDir(), "pipelock.yaml")
 			mustWriteFile(t, src, "forward_proxy: {enabled: true}\n"+strings.ReplaceAll(body, "DATA", env.dataDir)+"\n")
 			if err := runInstall(context.Background(), env, installOpts{dryRun: true, configSource: src}); err != nil {
@@ -180,6 +181,7 @@ func TestInstallWritePathsPermissionDeferred(t *testing.T) {
 	for _, dryRun := range []bool{true, false} {
 		t.Run(fmt.Sprintf("dry_run_%v", dryRun), func(t *testing.T) {
 			env, runner, out := newFakeEnv(t)
+			trustInstallNFTForTest(env)
 			if err := os.MkdirAll(env.dataDir, 0o700); err != nil {
 				t.Fatal(err)
 			}

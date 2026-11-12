@@ -1533,6 +1533,9 @@ func TestInstallReloadInterleavingConvergesOnLatestConfig(t *testing.T) {
 			case strings.HasPrefix(joined, "-n -a list chain"):
 				kernelMu.Lock()
 				defer kernelMu.Unlock()
+				if kernelBody == "" {
+					return "No such file or directory", 1, nil
+				}
 				return nftListingForTest(kernelBody), 0, nil
 			case strings.HasPrefix(joined, "-c -f "):
 				return "", 0, nil
