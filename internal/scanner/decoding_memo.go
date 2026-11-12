@@ -15,11 +15,12 @@ import (
 )
 
 type decodingMemoKey struct {
-	text       string
-	includeURL bool
-	minPrefix  int
-	inbound    bool
-	keyword    bool
+	text             string
+	includeURL       bool
+	minPrefix        int
+	inbound          bool
+	keyword          bool
+	reportWorkLimits bool
 }
 
 // decodingMemo shares immutable decoded and normalized views within one scan.
@@ -33,6 +34,11 @@ type decodingMemoKey struct {
 // stopped at a depth or work bound with decodable work left. It is a property of the
 // scan, not of one view, so it survives cache hits and unretained decodes.
 type decodingMemo struct {
+	// urlAccounting marks a URL scan's memo. URL checks keep the inbound
+	// decode accounting for their direction, but their verdicts depend on
+	// whether a rescan finished cleanly, so a work-budget stop there is not
+	// reported as a partial-inspection warning. Text scans report it.
+	urlAccounting                bool
 	reassemblyReplayPayloads     map[assembledPayloadKey][]*assembledPayload
 	reassemblyReplayPayloadCount int
 	reassemblyRecipeCache        *assembledRecipeCache
@@ -247,7 +253,7 @@ func (s *sharedDecodes) decode(key decodingMemoKey) ([]decodedResult, bool, bool
 	if ok {
 		return cached.views, cached.complete, true
 	}
-	decoded, complete := decodeEncodingsBudgetMode(key.text, key.includeURL, key.minPrefix, key.inbound)
+	decoded, complete := decodeEncodingsForScan(key.text, key.includeURL, key.minPrefix, decodeBudgetMode{inbound: key.inbound, reportWorkLimits: key.reportWorkLimits}, nil)
 	s.mu.Lock()
 	s.store.retainDecode(key, decoded, complete)
 	cached, retained := s.store.views[key]
@@ -403,8 +409,15 @@ func (m *decodingMemo) decodeKnownSecret(text string, minimum int) []decodedResu
 }
 
 func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) []decodedResult {
+	var mode decodeBudgetMode
+	if m != nil {
+		// Card-only outbound passes retain inbound accounting, but their work
+		// stops must not create a new outbound refusal. The enclosing text scan
+		// owns direction; standalone decode memos use their explicit inbound bit.
+		mode = decodeBudgetMode{inbound: m.inbound, reportWorkLimits: m.inbound && !m.urlAccounting && (m.reassemblyPlan == nil || m.reassemblyInbound)}
+	}
 	if m != nil && m.keywordMode && minPrefix == 0 {
-		key := decodingMemoKey{text: text, includeURL: includeURL, minPrefix: minPrefix, inbound: m.inbound, keyword: true}
+		key := decodingMemoKey{text: text, includeURL: includeURL, minPrefix: minPrefix, inbound: m.inbound, keyword: true, reportWorkLimits: mode.reportWorkLimits}
 		if cached, ok := m.views[key]; ok {
 			if cached.sources != nil {
 				cached.sources.bindParents(text, m.keywordSources[text])
@@ -422,7 +435,7 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 		if parents := m.keywordSources[text]; len(parents) > 0 {
 			sources.bindParents(text, parents)
 		}
-		views, complete := decodeEncodingsBudgetModeTracked(text, includeURL, minPrefix, m.inbound, sources)
+		views, complete := decodeEncodingsForScan(text, includeURL, minPrefix, mode, sources)
 		m.retainDecode(key, views, complete)
 		if cached, ok := m.views[key]; ok {
 			cached.sources = sources
@@ -450,7 +463,7 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 		decoded, _ := decodeEncodingsFixpointMode(text, includeURL, minPrefix)
 		return decoded
 	}
-	key := decodingMemoKey{text: text, includeURL: includeURL, minPrefix: minPrefix, inbound: m.inbound}
+	key := decodingMemoKey{text: text, includeURL: includeURL, minPrefix: minPrefix, inbound: m.inbound, reportWorkLimits: mode.reportWorkLimits}
 	if m.shared != nil {
 		decoded, complete, retained := m.shared.decode(key)
 		if !complete {
@@ -483,7 +496,7 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 		}
 		return cached.views
 	}
-	decoded, complete := decodeEncodingsBudgetMode(text, includeURL, minPrefix, m.inbound)
+	decoded, complete := decodeEncodingsForScan(text, includeURL, minPrefix, mode, nil)
 	if !complete {
 		m.incomplete = true
 	}
