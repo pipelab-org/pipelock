@@ -167,3 +167,51 @@ func TestGluedCandidateConfirmedInSourceEdges(t *testing.T) {
 		t.Fatal("digit-glued or two-letter candidate confirmed")
 	}
 }
+
+// The card and SSN glued search is skipped on text with no ASCII letter or
+// underscore. That skip is exact: on such text the glued search itself never
+// finds a candidate, whatever sits before the number.
+func TestGluedNumberSearchNeedsASCIIGlueLetter(t *testing.T) {
+	s := gluedBoundaryScanner(t)
+	card := strings.Join([]string{"4111", "1111", "1111", "1111"}, " ")
+	ssn := "123" + "-45-" + "6789"
+	leads := []string{"", "9", "0", "-", ".", " ", "é", "ß", "K", "а", " ", "#", "+", "/", "\t", "21"}
+	for _, name := range []string{"Credit Card Number", "Social Security Number"} {
+		p := gluedTestPattern(t, s, name)
+		if !p.gluedDigitExtendsNumber {
+			t.Fatalf("%s does not reject a glued digit", name)
+		}
+		for _, number := range []string{card, ssn, strings.ReplaceAll(card, " ", ""), strings.ReplaceAll(ssn, "-", "")} {
+			for _, lead := range leads {
+				text := strings.Repeat("21", 40) + " " + lead + number + " " + lead + number
+				if hasASCIIGlueLetter(text) {
+					t.Fatalf("fixture has a glue letter: %q", text)
+				}
+				if start, _, ok := p.earliestGluedSpan(text, len(text)+1); ok {
+					t.Fatalf("%s: glued search found %q in letterless text", name, text[start:])
+				}
+			}
+		}
+		// With a glue letter the search runs and finds the candidate.
+		glued := "id x" + ssn
+		if name == "Credit Card Number" {
+			glued = "id x" + card
+		}
+		if !hasASCIIGlueLetter(glued) {
+			t.Fatal("glue letter not detected")
+		}
+		if _, _, ok := p.firstBoundaryOrGluedSpan(glued); !ok {
+			t.Fatalf("%s: letter-glued candidate missed in %q", name, glued)
+		}
+	}
+	for _, c := range []string{"A", "z", "_", "Q"} {
+		if !hasASCIIGlueLetter("12" + c) {
+			t.Fatalf("%q is a glue letter", c)
+		}
+	}
+	for _, c := range []string{"@", "[", "`", "{", "é", "\x80", "\xff"} {
+		if hasASCIIGlueLetter("12" + c) {
+			t.Fatalf("%q is not a glue letter", c)
+		}
+	}
+}

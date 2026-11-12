@@ -168,6 +168,14 @@ func (p *compiledPattern) firstBoundaryOrGluedSpan(text string) (int, int, bool)
 	if !p.relaxSingleGluedBoundary || (ok && start == 0) {
 		return start, end, ok
 	}
+	// A card or SSN accepts only a glued ASCII letter or underscore: a digit
+	// lengthens the number, and RE2's \b treats every other rune as a
+	// boundary already. Text without one cannot hold a glued candidate, so
+	// the second body search over it is skipped. Long digit runs made that
+	// search the most expensive part of the scan.
+	if p.gluedDigitExtendsNumber && !hasASCIIGlueLetter(text) {
+		return start, end, ok
+	}
 	limit := len(text) + 1
 	if ok {
 		limit = start
@@ -224,6 +232,16 @@ func (p *compiledPattern) firstJoinedGluedSpan(text, source string) (int, int, b
 		return bestStart, bestEnd, true
 	}
 	return start, end, ok
+}
+
+func hasASCIIGlueLetter(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i] | 0x20
+		if (c >= 'a' && c <= 'z') || s[i] == '_' {
+			return true
+		}
+	}
+	return false
 }
 
 func textHasNonDigit(s string) bool {
