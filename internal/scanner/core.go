@@ -371,6 +371,10 @@ func (s *Scanner) scanCoreResponse(content string, suppress coreResponseSuppress
 }
 
 func (s *Scanner) scanCoreResponseWithMemo(content string, suppress coreResponseSuppressor, forceEncodedDecode bool, memo *responseMatchMemo) responseMatchSet {
+	return s.scanCoreResponseWithOptions(content, suppress, forceEncodedDecode, memo, false)
+}
+
+func (s *Scanner) scanCoreResponseWithOptions(content string, suppress coreResponseSuppressor, forceEncodedDecode bool, memo *responseMatchMemo, skipEncodedDecode bool) responseMatchSet {
 	if s.core == nil {
 		return responseMatchSet{}
 	}
@@ -428,7 +432,7 @@ func (s *Scanner) scanCoreResponseWithMemo(content string, suppress coreResponse
 	if normalize.ContainsTags(original) {
 		decodeContent = original
 	}
-	if forceEncodedDecode || hasEncodedRun(content) || hasTextEncoding(content) || hasQuotedPrintable(original) || normalize.ContainsTags(original) {
+	if !skipEncodedDecode && (forceEncodedDecode || hasEncodedRun(content) || hasTextEncoding(content) || hasQuotedPrintable(original) || normalize.ContainsTags(original)) {
 		if decodedSet := s.matchDecodedCoreResponseMode(decodeContent, suppress, !forceEncodedDecode); len(decodedSet.matches) > 0 {
 			return decodedSet
 		}

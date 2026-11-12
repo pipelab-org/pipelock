@@ -37,6 +37,9 @@ type ResponseScanResult struct {
 	// global operator policy. Like ObservedCoreMatches, these are evidence,
 	// not enforcing matches and never injection-driven taint.
 	WarnedMatches []ResponseMatch `json:"warned_matches,omitempty"`
+	// InspectionIncomplete records a decoding bound reached without a content
+	// finding. Inbound delivery warns; outbound delivery refuses.
+	InspectionIncomplete bool
 	// ScanError records why scanning could not complete. It is deliberately
 	// separate from Matches: an incomplete scan must fail closed, but it is not
 	// evidence that response content matched a prompt-injection pattern.
@@ -212,6 +215,7 @@ func (s *Scanner) scanResponseBodyUncached(ctx context.Context, body []byte, sup
 					return decodedResult
 				}
 				rawResult := s.scanOpaqueResponseText(ctx, body, suppressTarget, suppress)
+				rawResult.InspectionIncomplete = rawResult.InspectionIncomplete || decodedResult.InspectionIncomplete
 				rawResult.WarnedMatches = append(decodedResult.WarnedMatches, rawResult.WarnedMatches...)
 				rawResult.SuppressedMatches = append(decodedResult.SuppressedMatches, rawResult.SuppressedMatches...)
 				rawResult.ObservedCoreMatches = append(decodedResult.ObservedCoreMatches, rawResult.ObservedCoreMatches...)
@@ -320,6 +324,7 @@ func (s *Scanner) scanOpaqueResponseText(ctx context.Context, body []byte, suppr
 			reconstructedResult = s.scanResponseWithSuppress(ctx, reconstructed, suppressTarget, suppress, true)
 		}
 		reconstructedResult = requireFragmentBoundaryMatch(reconstructed, reconstructedResult)
+		reconstructedResult.InspectionIncomplete = result.InspectionIncomplete || reconstructedResult.InspectionIncomplete
 		reconstructedResult.WarnedMatches = append(result.WarnedMatches, reconstructedResult.WarnedMatches...)
 		reconstructedResult.SuppressedMatches = append(result.SuppressedMatches, reconstructedResult.SuppressedMatches...)
 		reconstructedResult.ObservedCoreMatches = append(result.ObservedCoreMatches, reconstructedResult.ObservedCoreMatches...)
@@ -576,6 +581,8 @@ func (s *Scanner) scanResponseWithSuppressMemo(ctx context.Context, content, sup
 	if checked.Clean && !checked.Failed() && len(checked.WarnedMatches) == 0 {
 		checked = s.scanAdditionalInjectionViews(ctx, candidate, suppressTarget, suppress, checked)
 	}
+	result.InspectionIncomplete = result.InspectionIncomplete || checked.InspectionIncomplete
+	s.setInjectionAssessment(&result, true)
 	if !checked.Clean || checked.Failed() {
 		return result
 	}
@@ -586,6 +593,7 @@ func (s *Scanner) scanResponseWithSuppressMemo(ctx context.Context, content, sup
 type responseScanOptions struct {
 	forceEncodedDecode bool
 	decodeOnly         bool
+	skipEncodedDecode  bool
 }
 
 func (s *Scanner) scanResponseMatches(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry, forceEncodedDecode bool, memo *responseMatchMemo) (out ResponseScanResult) {
@@ -702,12 +710,16 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 		if ctx != nil && ctx.Err() != nil {
 			return ResponseScanResult{Clean: false, ScanError: ctx.Err().Error()}
 		}
-		return ResponseScanResult{Clean: len(matches) == 0, Matches: matches}
+		result := ResponseScanResult{Clean: len(matches) == 0, Matches: matches}
+		if result.Clean {
+			result = s.scanAdditionalInjectionViews(ctx, content, suppressTarget, suppress, result)
+		}
+		return result
 	}
 
 	// Core response patterns run first whenever the global wording policy
 	// enables detection, regardless of response_scanning.enabled.
-	if coreSet := s.scanCoreResponseWithMemo(content, filterSuppressed, options.forceEncodedDecode, memo); len(coreSet.matches) > 0 {
+	if coreSet := s.scanCoreResponseWithOptions(content, filterSuppressed, options.forceEncodedDecode, memo, options.skipEncodedDecode); len(coreSet.matches) > 0 {
 		result := ResponseScanResult{
 			Clean:   false,
 			Matches: coreSet.matches,
@@ -793,7 +805,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	if normalize.ContainsTags(preStripContent) {
 		decodeContent = preStripContent
 	}
-	if len(matches) == 0 && (options.forceEncodedDecode || hasEncodedRun(content) || hasTextEncoding(content) || hasQuotedPrintable(preStripContent) || normalize.ContainsTags(preStripContent)) {
+	if len(matches) == 0 && !options.skipEncodedDecode && (options.forceEncodedDecode || hasEncodedRun(content) || hasTextEncoding(content) || hasQuotedPrintable(preStripContent) || normalize.ContainsTags(preStripContent)) {
 		decodedSet := s.matchDecodedResponseWithSuppressMode(decodeContent, filterSuppressed, !options.forceEncodedDecode)
 		matches = filterSuppressed(decodedSet.matches)
 		if len(matches) == 0 && preStripContent != content && hasQuotedPrintable(preStripContent) {
@@ -1690,6 +1702,11 @@ type encodedRunSpan struct {
 //pipelock:provenance-transform encoded_run
 func extractEncodedRunSpans(content string, minLen int) []encodedRunSpan {
 	var runs []encodedRunSpan
+	visitEncodedRunSpans(content, minLen, func(run encodedRunSpan) bool { runs = append(runs, run); return true })
+	return runs
+}
+
+func visitEncodedRunSpans(content string, minLen int, yield func(encodedRunSpan) bool) {
 	start := -1
 	for i := 0; i < len(content); i++ {
 		c := content[i]
@@ -1706,7 +1723,9 @@ func extractEncodedRunSpans(content string, minLen int) []encodedRunSpan {
 				// Re-attach up to 2 trailing '=' for base64 padding.
 				end = attachBase64Padding(content, end)
 				if end-start >= minLen {
-					runs = append(runs, encodedRunSpan{text: content[start:end], start: start, end: end})
+					if !yield(encodedRunSpan{text: content[start:end], start: start, end: end}) {
+						return
+					}
 				}
 			}
 			start = -1
@@ -1716,10 +1735,11 @@ func extractEncodedRunSpans(content string, minLen int) []encodedRunSpan {
 	if start >= 0 {
 		end := len(content)
 		if end-start >= minLen {
-			runs = append(runs, encodedRunSpan{text: content[start:end], start: start, end: end})
+			if !yield(encodedRunSpan{text: content[start:end], start: start, end: end}) {
+				return
+			}
 		}
 	}
-	return runs
 }
 
 func extractEncodedRuns(content string, minLen int) []string {

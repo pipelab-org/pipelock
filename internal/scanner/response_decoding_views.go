@@ -5,6 +5,8 @@ package scanner
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"io"
 	"strings"
@@ -14,6 +16,17 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
+
+type outboundInjectionContextKey struct{}
+
+// ScanResponseOutbound scans text the agent sends. Unlike inbound responses,
+// an outbound decoding limit refuses delivery even under warn-only policy.
+func (s *Scanner) ScanResponseOutbound(ctx context.Context, content string) ResponseScanResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return s.ScanResponse(context.WithValue(ctx, outboundInjectionContextKey{}, true), content)
+}
 
 const injectionDecodeLimitReason = "injection inspection incomplete: decoding limit reached"
 
@@ -36,23 +49,31 @@ func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, tar
 	incomplete := false
 	defer func() {
 		if incomplete {
-			out.Clean = false
-			out.ScanError = injectionDecodeLimitReason
+			out.InspectionIncomplete = true
+			outbound, _ := ctx.Value(outboundInjectionContextKey{}).(bool)
+			if outbound {
+				out.Clean = false
+				out.ScanError = injectionDecodeLimitReason
+			} else {
+				s.EmitTextDLPWarnMatches(ctx, []TextDLPMatch{partialEncodedContentMatch()})
+			}
 		}
 	}()
 	for head := 0; head < len(queue); head++ {
-		if ctx != nil && ctx.Err() != nil {
-			return ResponseScanResult{Clean: false, ScanError: ctx.Err().Error()}
+		if err := ctx.Err(); err != nil {
+			result.Clean = false
+			result.ScanError = err.Error()
+			return result
 		}
 		parent := queue[head]
-		if !hasAdditionalInjectionEncoding(parent.text) {
-			continue
-		}
 		if len(parent.text) > maxDecodeTotalBytes {
 			incomplete = true
 			continue
 		}
 		views, complete := additionalInjectionViews(parent.text)
+		legacy, legacyComplete := injectionLegacyDecodeViews(parent.text)
+		views = append(views, legacy...)
+		complete = complete && legacyComplete
 		incomplete = incomplete || !complete
 		for _, view := range views {
 			if view.text == "" || seen[view.text] {
@@ -74,7 +95,7 @@ func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, tar
 			if view.label == "" {
 				continue
 			}
-			checked := s.scanResponseMatches(ctx, view.text, target, suppress, false, newResponseMatchMemo(len(view.text)))
+			checked := s.scanResponseMatchesWithOptions(ctx, view.text, target, suppress, responseScanOptions{skipEncodedDecode: true}, newResponseMatchMemo(len(view.text)))
 			if BlankViewAddsNoCoverage(view.text, checked) {
 				continue
 			}
@@ -93,6 +114,10 @@ func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, tar
 				return result
 			}
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		result.Clean = false
+		result.ScanError = err.Error()
 	}
 	return result
 }
@@ -151,4 +176,47 @@ func injectionHTMLText(text string) string {
 			return out.String()
 		}
 	}
+}
+
+func injectionLegacyDecodeViews(text string) ([]injectionDecodeView, bool) {
+	complete := true
+	used := 0
+	seen := map[string]bool{text: true}
+	var views []injectionDecodeView
+	add := func(text string) {
+		if text == "" || seen[text] {
+			return
+		}
+		if len(views) >= maxDecodeCandidates || len(text) > maxDecodeTotalBytes-used {
+			complete = false
+			return
+		}
+		seen[text] = true
+		used += len(text)
+		views = append(views, injectionDecodeView{text: text})
+	}
+	decode := func(source string, printableOnly bool) {
+		stripped, _ := stripDecodeWhitespace(source, 0)
+		stripped = canonicalMixedBase64(stripped)
+		for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.URLEncoding, base64.RawStdEncoding, base64.RawURLEncoding} {
+			if decoded, err := enc.DecodeString(stripped); err == nil && len(decoded) > 0 && (!printableOnly || isPrintableText(decoded)) {
+				add(string(decoded))
+			}
+		}
+		if decoded, err := hex.DecodeString(stripped); err == nil && len(decoded) > 0 && (!printableOnly || isPrintableText(decoded)) {
+			add(string(decoded))
+		}
+	}
+	decode(text, false)
+	visitEncodedRunSpans(text, minSegmentDecodeLen, func(segment encodedRunSpan) bool {
+		decode(segment.text, true)
+		return complete
+	})
+	for _, view := range textEncodingViewsMode(text, true) {
+		add(view.text)
+	}
+	if decoded := normalize.DecodeTags(text); decoded != text {
+		add(decoded)
+	}
+	return views, complete
 }
