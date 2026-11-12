@@ -248,6 +248,88 @@ func TestInstallRefusalDoorwayPolicyIntersection(t *testing.T) {
 	}
 }
 
+func TestInstallRefusalClosesMismatchedUnitWithoutRecord(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	service := loopbackTestService(9200)
+	data, err := json.Marshal(desiredLoopbackForwarders([]config.ContainmentLoopbackService{service}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(env.loopbackForwarderInvPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.loopbackForwarderInvPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	active := loopbackConfigYAML(loopbackEntryYAML(service.Host, service.Port, service.ExpiresAt)) + strings.TrimPrefix(publishedTestConfig, "containment:\n")
+	if err := os.WriteFile(managedPipelockConfigPath(env), []byte(active), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	candidatePath := filepath.Join(t.TempDir(), "candidate.yaml")
+	if err := os.WriteFile(candidatePath, []byte(active), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stale := publishedTestService()
+	stale.OperatorUser = "other"
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	if err := os.MkdirAll(unitDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range publishedServiceFiles(unitDir, env.pipelockTarget, env.proxyUserName, stale) {
+		if err := os.WriteFile(file.path, []byte(file.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(publishedServiceRecordPath(env.loopbackForwarderInvPath), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, publication, err := installRefusalDoorwayPlan(env, candidatePath)
+	if err == nil || len(publication) == 0 {
+		t.Fatalf("publication=%v error=%v, want the mismatched unit closed and the record error", publication, err)
+	}
+}
+
+func TestInstallRefusalKeepsMatchingUnitWithoutRecord(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	service := loopbackTestService(9200)
+	data, err := json.Marshal(desiredLoopbackForwarders([]config.ContainmentLoopbackService{service}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(env.loopbackForwarderInvPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.loopbackForwarderInvPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	active := loopbackConfigYAML(loopbackEntryYAML(service.Host, service.Port, service.ExpiresAt)) + strings.TrimPrefix(publishedTestConfig, "containment:\n")
+	if err := os.WriteFile(managedPipelockConfigPath(env), []byte(active), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	candidatePath := filepath.Join(t.TempDir(), "candidate.yaml")
+	if err := os.WriteFile(candidatePath, []byte(active), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	if err := os.MkdirAll(unitDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range publishedServiceFiles(unitDir, env.pipelockTarget, env.proxyUserName, publishedTestService()) {
+		if err := os.WriteFile(file.path, []byte(file.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(publishedServiceRecordPath(env.loopbackForwarderInvPath), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, publication, err := installRefusalDoorwayPlan(env, candidatePath)
+	if err == nil || len(publication) != 0 {
+		t.Fatalf("publication=%v error=%v, want the matching unit kept and the record error", publication, err)
+	}
+}
+
 func putInstallRefusalInventories(t *testing.T, env *installEnv, services []config.ContainmentLoopbackService) {
 	t.Helper()
 	data, err := json.Marshal(desiredLoopbackForwarders(services))

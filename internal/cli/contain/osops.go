@@ -826,6 +826,64 @@ func restoreTouchedInline(env *installEnv, touched []string, cause error) (bool,
 	return len(errs) > 1, errors.Join(errs...)
 }
 
+func doorwayRestoreJournalPath(inventoryPath string) string {
+	return filepath.Clean(inventoryPath) + ".restore-journal"
+}
+
+// restoreJournaledBackup restores one file and records that completion beside
+// the inventory. A later process has an empty restoredBackups map, so without
+// the journal it would treat the restored file as an install-created file and
+// delete it.
+func restoreJournaledBackup(env *installEnv, inventoryPath, path string) error {
+	journal := doorwayRestoreJournalPath(inventoryPath)
+	done, err := readDoorwayRestoreJournal(env, journal)
+	if err != nil {
+		return err
+	}
+	clean := filepath.Clean(path)
+	if done[clean] {
+		return nil
+	}
+	if err := restoreBackup(env, clean); err != nil {
+		return err
+	}
+	paths := make([]string, 0, len(done)+1)
+	for restored := range done {
+		paths = append(paths, restored)
+	}
+	paths = append(paths, clean)
+	sort.Strings(paths)
+	if err := env.writeFile(journal, []byte(strings.Join(paths, "\n")+"\n"), 0o600); err != nil {
+		return fmt.Errorf("record restored doorway file %s: %w", clean, err)
+	}
+	return nil
+}
+
+func readDoorwayRestoreJournal(env *installEnv, journal string) (map[string]bool, error) {
+	data, err := env.readFile(journal)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return map[string]bool{}, nil
+		}
+		return nil, fmt.Errorf("read doorway restore journal %s: %w", journal, err)
+	}
+	done := make(map[string]bool)
+	for _, line := range strings.Split(string(data), "\n") {
+		if line != "" {
+			done[line] = true
+		}
+	}
+	return done, nil
+}
+
+func removeDoorwayRestoreJournal(env *installEnv, inventoryPath string) error {
+	err := env.removeFile(doorwayRestoreJournalPath(inventoryPath))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove doorway restore journal: %w", err)
+	}
+	return nil
+}
+
 func markBackupRestored(env *installEnv, clean string) {
 	if env.restoredBackups == nil {
 		env.restoredBackups = make(map[string]bool)

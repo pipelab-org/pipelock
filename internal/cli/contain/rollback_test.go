@@ -252,6 +252,53 @@ func TestRollbackKeepsConfigDirWhenDoorwayCloseFails(t *testing.T) {
 	}
 }
 
+func TestActionRemoveNetworkNamespaceRetryKeepsRestoredUnit(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	record := loopbackForwarderRecord{Unit: loopbackForwarderUnitBase("127.0.0.1", 9200), Host: "127.0.0.1", Port: 9200}
+	data, err := json.Marshal(loopbackForwarderInventory{Services: []loopbackForwarderRecord{record}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(env.loopbackForwarderInvPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.loopbackForwarderInvPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	socket := filepath.Join(unitDir, record.Unit+".socket")
+	if err := os.WriteFile(socket, []byte("managed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(socket+".bak", []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	netns := filepath.Join(unitDir, record.Unit+"-netns.service")
+	if err := os.WriteFile(netns, []byte("managed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalRemove := env.removeFile
+	env.removeFile = func(path string) error {
+		if path == netns {
+			return errors.New("netns restore failed")
+		}
+		return originalRemove(path)
+	}
+
+	if err := actionRemoveNetworkNamespace().undo(context.Background(), env); err == nil || !strings.Contains(err.Error(), "netns restore failed") {
+		t.Fatalf("first removal = %v, want the unit restore failure", err)
+	}
+	env.restoredBackups = nil
+	env.archivedBackups = nil
+	if err := actionRemoveNetworkNamespace().undo(context.Background(), env); err == nil || !strings.Contains(err.Error(), "netns restore failed") {
+		t.Fatalf("retry = %v, want the same unfinished restore", err)
+	}
+	body, err := os.ReadFile(socket)
+	if err != nil || string(body) != "operator\n" {
+		t.Fatalf("restored socket after retry = %q, %v", body, err)
+	}
+}
+
 func TestActionRemoveNetworkNamespaceKeepsInventoryWhenUnitRestoreFails(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	record := loopbackForwarderRecord{Unit: loopbackForwarderUnitBase("127.0.0.1", 9200), Host: "127.0.0.1", Port: 9200}

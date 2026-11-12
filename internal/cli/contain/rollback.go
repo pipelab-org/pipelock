@@ -225,7 +225,7 @@ func actionRemoveNetworkNamespace() step {
 					for _, record := range inv.Services {
 						for _, suffix := range []string{"-netns.service", ".socket", ".service"} {
 							path := filepath.Join(unitDir, record.Unit+suffix)
-							if err := restoreBackup(env, path); err != nil {
+							if err := restoreJournaledBackup(env, env.loopbackForwarderInvPath, path); err != nil {
 								errs = append(errs, fmt.Errorf("restore %s: %w", path, err))
 								// A failed restore leaves that unit file behind.
 								// Deleting the inventory would give the next
@@ -263,7 +263,10 @@ func actionRemoveNetworkNamespace() step {
 			if retainLoopbackInventory {
 				env.preserveContainmentRecords = true
 			} else if env.loopbackForwarderInvPath != "" {
-				if err := restoreBackup(env, env.loopbackForwarderInvPath); err != nil {
+				if err := removeDoorwayRestoreJournal(env, env.loopbackForwarderInvPath); err != nil {
+					errs = append(errs, err)
+					env.preserveContainmentRecords = true
+				} else if err := restoreBackup(env, env.loopbackForwarderInvPath); err != nil {
 					errs = append(errs, fmt.Errorf("restore %s: %w", env.loopbackForwarderInvPath, err))
 				}
 			}

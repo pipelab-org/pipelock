@@ -122,7 +122,7 @@ func installRefusalDesiredDoorways(env *installEnv, path string, policyTime time
 		// The unit name comes from the service name. The operator, relay
 		// target, and listen addresses live in the unit contents, so a
 		// change to any of them leaves the previous doorway in place.
-		if recordedPublishedDoorwayDiffers(observed, service) {
+		if recordedPublishedDoorwayDiffers(env, observed, service) {
 			continue
 		}
 		for _, file := range publishedServiceFiles(filepath.Dir(env.proxyForwarderSocketPath), env.pipelockTarget, env.proxyUserName, service) {
@@ -132,7 +132,7 @@ func installRefusalDesiredDoorways(env *installEnv, path string, policyTime time
 	return loopbackUnits, publishedUnits, errors.Join(loopbackErr, publishedErr)
 }
 
-func recordedPublishedDoorwayDiffers(observed publishedServiceRecordSet, service config.ContainmentPublishedService) bool {
+func recordedPublishedDoorwayDiffers(env *installEnv, observed publishedServiceRecordSet, service config.ContainmentPublishedService) bool {
 	for _, record := range observed.Services {
 		if record.Name != service.Name {
 			continue
@@ -145,6 +145,14 @@ func recordedPublishedDoorwayDiffers(observed publishedServiceRecordSet, service
 			systemdListenAddress(record.AgentHost, record.AgentPort) != publishedAgentTarget(service) ||
 			recordedSocket != service.EffectiveHostSocket() ||
 			record.HostListen != service.HostListen
+	}
+	// A missing record is not evidence that the unit still matches. Keep the
+	// name only when every rendered unit file matches the candidate.
+	for _, file := range publishedServiceFiles(filepath.Dir(env.proxyForwarderSocketPath), env.pipelockTarget, env.proxyUserName, service) {
+		body, err := env.readFile(file.path)
+		if err != nil || string(body) != file.body {
+			return true
+		}
 	}
 	return false
 }

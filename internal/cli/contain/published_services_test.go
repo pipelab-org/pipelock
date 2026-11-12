@@ -189,6 +189,53 @@ func TestPublishedReconcileKeepsRevokedUnitRecordedUntilDisabled(t *testing.T) {
 	}
 }
 
+func TestRemovePublishedServicesRetryKeepsRestoredUnit(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	if err := os.MkdirAll(filepath.Dir(env.loopbackForwarderInvPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
+	body := "{\"services\":[{\"unit\":\"pipelock-published-viewer\",\"name\":\"viewer\",\"agent_port\":5900,\"operator_user\":\"operator\",\"owner\":\"ops\",\"reason\":\"watch the agent display\",\"expires_at\":\"2099-01-01T00:00:00Z\"}]}\n"
+	if err := os.WriteFile(recordPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	socket := filepath.Join(unitDir, "pipelock-published-viewer.socket")
+	service := filepath.Join(unitDir, "pipelock-published-viewer.service")
+	if err := os.MkdirAll(unitDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(socket, []byte("managed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(socket+".bak", []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(service, []byte("managed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalRemove := env.removeFile
+	env.removeFile = func(path string) error {
+		if path == service {
+			return errors.New("service restore failed")
+		}
+		return originalRemove(path)
+	}
+
+	if err := removePublishedServices(context.Background(), env); err == nil || !strings.Contains(err.Error(), "service restore failed") {
+		t.Fatalf("first removal = %v, want the unit restore failure", err)
+	}
+	env.restoredBackups = nil
+	env.archivedBackups = nil
+	if err := removePublishedServices(context.Background(), env); err == nil || !strings.Contains(err.Error(), "service restore failed") {
+		t.Fatalf("retry = %v, want the same unfinished restore", err)
+	}
+	got, err := os.ReadFile(socket)
+	if err != nil || string(got) != "operator\n" {
+		t.Fatalf("restored socket after retry = %q, %v", got, err)
+	}
+}
+
 func TestInstallPublishedServicesRollbackOnLaterFailure(t *testing.T) {
 	env, runner := publishedInstallEnv(t, publishedTestConfig)
 	unitDir := filepath.Dir(env.proxyForwarderSocketPath)

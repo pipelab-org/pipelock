@@ -603,11 +603,12 @@ func removePublishedServices(ctx context.Context, env *installEnv) error {
 		env.preserveContainmentRecords = true
 		return err
 	}
+	recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
 	unitRestoreFailed := false
 	for _, record := range set.Services {
 		for _, unit := range publishedRecordUnitNames(record) {
 			path := filepath.Join(unitDir, unit)
-			if err := restoreBackup(env, path); err != nil {
+			if err := restoreJournaledBackup(env, recordPath, path); err != nil {
 				errs = append(errs, fmt.Errorf("restore %s: %w", path, err))
 				unitRestoreFailed = true
 			}
@@ -619,9 +620,12 @@ func removePublishedServices(ctx context.Context, env *installEnv) error {
 		env.preserveContainmentRecords = true
 		return errors.Join(errs...)
 	}
-	path := publishedServiceRecordPath(env.loopbackForwarderInvPath)
-	if err := restoreBackup(env, path); err != nil {
-		errs = append(errs, fmt.Errorf("restore %s: %w", path, err))
+	if err := removeDoorwayRestoreJournal(env, recordPath); err != nil {
+		env.preserveContainmentRecords = true
+		return err
+	}
+	if err := restoreBackup(env, recordPath); err != nil {
+		errs = append(errs, fmt.Errorf("restore %s: %w", recordPath, err))
 	}
 	return errors.Join(errs...)
 }
