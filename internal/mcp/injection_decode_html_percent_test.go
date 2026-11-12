@@ -43,7 +43,7 @@ func TestInjectionDecodeHTMLPercentMCP(t *testing.T) {
 			}
 			request := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send","arguments":{"text":` + string(encoded) + `}}}`)
 			input := ScanRequest(t.Context(), request, sc, config.ActionBlock, config.ActionBlock)
-			if input.Clean || len(input.Inject) == 0 {
+			if input.Clean || len(input.Inject) == 0 || input.Action != config.ActionBlock {
 				t.Errorf("input: %+v", input)
 			}
 			response := []byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":` + string(encoded) + `}]}}`)
