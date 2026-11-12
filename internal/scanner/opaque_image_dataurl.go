@@ -22,9 +22,15 @@ const dataImagePrefix = "data:image/"
 // (e.g. vowel-folded "DAN") that scanning random binary produces. Surrounding
 // text remains joined so a secret split around an image does not gain a
 // delimiter-based bypass.
+//
+// A header that carries parameters (data:image/png;name=...;base64,) is text
+// the receiver reads, so it follows the excised text on its own line.
 func exciseVerifiedImageDataURLs(text string) string {
-	excised, _ := stripVerifiedImageDataURLs(text, false)
-	return excised
+	excised, headers := stripVerifiedImageDataURLs(text, false)
+	if headers == "" {
+		return excised
+	}
+	return excised + "\n" + headers
 }
 
 // exciseImagesRetainingDecodedForDLP removes the base64 *text* of verified image
@@ -56,7 +62,9 @@ func exciseImagesRetainingDecodedForDLP(text string) string {
 // from text and returns the excised text. When retainDecoded is set it also
 // returns the concatenated decoded image bytes (newline-separated, one trailing
 // newline per image); callers that only need the base64 text removed pass false
-// to skip that allocation.
+// to skip that allocation. Either way the second result ends with each removed
+// header that carries parameters, one per line, after any decoded bytes; a
+// bare data:image/png;base64, header adds nothing.
 func stripVerifiedImageDataURLs(text string, retainDecoded bool) (excised, decodedConcat string) {
 	excised, decodedConcat, _ = stripVerifiedImageDataURLSpans(text, retainDecoded)
 	return excised, decodedConcat
@@ -70,6 +78,9 @@ func stripVerifiedImageDataURLSpans(text string, retainDecoded bool) (excised, d
 	copyFrom := 0
 	var out strings.Builder
 	var decoded strings.Builder
+	// Parameter values in a removed header are plaintext the receiver reads.
+	// They go after every decoded image so decoded-byte offsets stay put.
+	var headers strings.Builder
 
 	for searchFrom < len(text) {
 		rel := indexDataImagePrefix(text[searchFrom:])
@@ -110,13 +121,30 @@ func stripVerifiedImageDataURLSpans(text string, retainDecoded bool) (excised, d
 			decoded.Write(decodedImage)
 			decoded.WriteByte('\n')
 		}
+		if header := text[start:payloadStart]; imageDataURLHeaderHasParameters(header) {
+			headers.WriteString(header)
+			headers.WriteByte('\n')
+		}
 	}
 
 	if out.Cap() == 0 {
 		return text, "", nil
 	}
 	out.WriteString(text[copyFrom:])
+	decoded.WriteString(headers.String())
 	return out.String(), decoded.String(), removed
+}
+
+// imageDataURLHeaderHasParameters reports whether a verified header, through
+// its comma, holds anything besides the media type and the base64 flag.
+func imageDataURLHeaderHasParameters(header string) bool {
+	parts := strings.Split(strings.TrimSuffix(header, ","), ";")
+	for _, part := range parts[1:] {
+		if !strings.EqualFold(strings.TrimSpace(part), "base64") {
+			return true
+		}
+	}
+	return false
 }
 
 func indexDataImagePrefix(text string) int {

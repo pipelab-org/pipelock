@@ -1302,7 +1302,38 @@ type bodyDLPTextExtraction struct {
 	HeaderTokens        []string
 	Texts               []string
 	ProviderOpaqueTexts []string
-	Err                 string
+	// RawDocument preserves JSON source order, with string escapes canonicalized
+	// and trusted provider ciphertext values emptied. A receiver reads strings
+	// in source order; a credential split across strings needs that order.
+	// The field views and the sorted join do not keep it.
+	RawDocument string
+	Err         string
+}
+
+// jsonBodyDLPStringRewrite replaces a complete quoted JSON token. Rewrites are
+// in source order and never overlap.
+type jsonBodyDLPStringRewrite struct {
+	start, end int64
+	quoted     []byte
+}
+
+// jsonBodyRawDocument preserves source order and JSON syntax while applying
+// string rewrites. Canonical strings let the scanner verify image data URLs
+// even when a producer escaped their slashes, scheme, or base64 payload.
+func jsonBodyRawDocument(body []byte, rewrites []jsonBodyDLPStringRewrite) string {
+	if len(rewrites) == 0 {
+		return string(body)
+	}
+	var b strings.Builder
+	b.Grow(len(body))
+	var at int64
+	for _, rewrite := range rewrites {
+		b.Write(body[at:rewrite.start])
+		b.Write(rewrite.quoted)
+		at = rewrite.end
+	}
+	b.Write(body[at:])
+	return b.String()
 }
 
 func extractBodyTextForDLP(body []byte, req BodyScanRequest) bodyDLPTextExtraction {
@@ -1356,17 +1387,17 @@ func extractBodyTextForDLP(body []byte, req BodyScanRequest) bodyDLPTextExtracti
 		texts, errText := extractBodyText(body, req)
 		return bodyDLPTextExtraction{GenericTexts: texts, Texts: texts, Err: errText}
 	}
-	textStrings, cardStrings, atoms, providerOpaqueTexts, genericTexts, truncated, err := extractJSONBodyDLPStrings(body, req)
+	textStrings, cardStrings, atoms, providerOpaqueTexts, genericTexts, stringRewrites, truncated, err := extractJSONBodyDLPStrings(body, req)
 	if err != nil {
 		return bodyDLPTextExtraction{Err: err.Error()}
 	}
 	if truncated {
 		return bodyDLPTextExtraction{Err: "JSON body exceeds maximum inspectable nesting depth"}
 	}
-	return bodyDLPTextExtraction{GenericTexts: genericTexts, Texts: textStrings, CardTexts: cardStrings, Atoms: atoms, ProviderOpaqueTexts: providerOpaqueTexts}
+	return bodyDLPTextExtraction{GenericTexts: genericTexts, Texts: textStrings, CardTexts: cardStrings, Atoms: atoms, ProviderOpaqueTexts: providerOpaqueTexts, RawDocument: jsonBodyRawDocument(body, stringRewrites)}
 }
 
-func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []string, []extract.DLPAtom, []string, []string, bool, error) {
+func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []string, []extract.DLPAtom, []string, []string, []jsonBodyDLPStringRewrite, bool, error) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 
@@ -1378,6 +1409,7 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 		atoms = append(atoms, extract.DLPAtom{Text: text, Card: card, Number: number})
 	}
 	var providerOpaque []string
+	var stringRewrites []jsonBodyDLPStringRewrite
 	var generic []string
 	var stack []jsonBodyDLPFrame
 	depth := 0
@@ -1386,21 +1418,22 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 	rootComplete := false
 
 	for {
+		before := dec.InputOffset()
 		tok, err := dec.Token()
 		if err == io.EOF {
 			if !rootStarted {
-				return nil, nil, nil, nil, nil, false, fmt.Errorf("decoding JSON body for DLP: empty JSON body")
+				return nil, nil, nil, nil, nil, nil, false, fmt.Errorf("decoding JSON body for DLP: empty JSON body")
 			}
 			if depth > 0 || len(stack) > 0 || !rootComplete {
-				return nil, nil, nil, nil, nil, false, fmt.Errorf("decoding JSON body for DLP: %w", io.ErrUnexpectedEOF)
+				return nil, nil, nil, nil, nil, nil, false, fmt.Errorf("decoding JSON body for DLP: %w", io.ErrUnexpectedEOF)
 			}
 			break
 		}
 		if err != nil {
-			return nil, nil, nil, nil, nil, false, fmt.Errorf("decoding JSON body for DLP: %w", err)
+			return nil, nil, nil, nil, nil, nil, false, fmt.Errorf("decoding JSON body for DLP: %w", err)
 		}
 		if rootComplete {
-			return nil, nil, nil, nil, nil, false, fmt.Errorf("decoding JSON body for DLP: multiple JSON values")
+			return nil, nil, nil, nil, nil, nil, false, fmt.Errorf("decoding JSON body for DLP: multiple JSON values")
 		}
 		rootStarted = true
 
@@ -1427,7 +1460,26 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 				markJSONBodyDLPValueConsumed(stack)
 			}
 		case string:
-			if len(stack) > 0 && stack[len(stack)-1].kind == '{' && stack[len(stack)-1].expectKey {
+			isKey := len(stack) > 0 && stack[len(stack)-1].kind == '{' && stack[len(stack)-1].expectKey
+			opaque := !isKey && depth <= extractJSONMaxDepth && isTrustedProviderOpaqueDLPField(req, currentJSONBodyDLPPath(stack), v)
+			// Only separators and whitespace precede this quoted token. Keep its
+			// original position, but normalize escapes before image verification.
+			end := dec.InputOffset()
+			open := before + int64(bytes.IndexByte(body[before:end], '"'))
+			if opaque || bytes.IndexByte(body[open:end], '\\') >= 0 {
+				value := v
+				if opaque {
+					value = ""
+				}
+				var quoted bytes.Buffer
+				enc := json.NewEncoder(&quoted)
+				// HTML escapes would hide URL query separators from the existing
+				// structural SigV4 credential carve-out in this scan-only view.
+				enc.SetEscapeHTML(false)
+				_ = enc.Encode(value) // Encoding a string into bytes.Buffer cannot fail.
+				stringRewrites = append(stringRewrites, jsonBodyDLPStringRewrite{start: open, end: end, quoted: quoted.Bytes()[:quoted.Len()-1]})
+			}
+			if isKey {
 				if depth <= extractJSONMaxDepth {
 					appendAtom(v, v, false)
 					atoms[len(atoms)-1].Key = true
@@ -1439,7 +1491,7 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 			}
 			if depth <= extractJSONMaxDepth {
 				generic = append(generic, v)
-				if isTrustedProviderOpaqueDLPField(req, currentJSONBodyDLPPath(stack), v) {
+				if opaque {
 					providerOpaque = append(providerOpaque, v)
 				} else {
 					appendAtom(v, v, false)
@@ -1470,7 +1522,7 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 			rootComplete = true
 		}
 	}
-	return result, cards, atoms, providerOpaque, generic, truncated, nil
+	return result, cards, atoms, providerOpaque, generic, stringRewrites, truncated, nil
 }
 
 const extractJSONMaxDepth = extract.MaxExtractDepth
@@ -1722,10 +1774,13 @@ type bodyDLPViews struct {
 	texts, cards []string
 	atoms        []extract.DLPAtom
 	rawJSON      string
+	// rawDocument is scanned after the field views without a card view;
+	// card runs in raw JSON stay with ScanJSONCardRuns over rawJSON.
+	rawDocument string
 }
 
 func bodyDLPExtractionViews(body []byte, extracted bodyDLPTextExtraction, fileTexts []string) []bodyDLPViews {
-	views := []bodyDLPViews{{texts: extracted.Texts, cards: extracted.CardTexts, atoms: extracted.Atoms, rawJSON: bodyJSONCardView(body, extracted.Atoms)}}
+	views := []bodyDLPViews{{texts: extracted.Texts, cards: extracted.CardTexts, atoms: extracted.Atoms, rawJSON: bodyJSONCardView(body, extracted.Atoms), rawDocument: extracted.RawDocument}}
 	for _, fields := range extracted.DLPFieldGroups {
 		views = append(views, bodyDLPViews{texts: fields})
 	}
@@ -1827,6 +1882,17 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 	if len(result.Matches) > 0 {
 		if matches := filterMatches(result.Matches); len(matches) > 0 {
 			allMatches = append(allMatches, matches...)
+		}
+	}
+	if views.rawDocument != "" {
+		var raw scanner.TextDLPResult
+		if allowEmbeddedSigV4 {
+			raw = sc.ScanRequestBodyTextPartsWithCardViews(ctx, []string{views.rawDocument}, []string{""}, "")
+		} else {
+			raw = sc.ScanTextForDLPWithCardView(ctx, views.rawDocument, "")
+		}
+		if len(raw.Matches) > 0 {
+			allMatches = appendNewBodyDLPValues(allMatches, filterMatches(raw.Matches))
 		}
 	}
 	recordUniqueBodyDLPDrops(dropped, onDropped)
@@ -2050,6 +2116,29 @@ func mergeJoinedInjectionMatches(perField []scanner.ResponseMatch, joinedViews .
 
 func bodyInjectionMatchKey(match scanner.ResponseMatch) string {
 	return match.PatternName + "\x00" + match.MatchText
+}
+
+// appendNewBodyDLPValues adds the raw-document matches that report a value
+// no earlier view reported. The raw document repeats every field, so most of
+// its matches restate a field finding under another encoding label; keeping
+// those would change the finding list of every body that already matched.
+func appendNewBodyDLPValues(matches, raw []scanner.TextDLPMatch) []scanner.TextDLPMatch {
+	if len(raw) == 0 {
+		return matches
+	}
+	seen := make(map[string]struct{}, len(matches))
+	for _, match := range matches {
+		seen[bodyDLPDropKey(match)] = struct{}{}
+	}
+	for _, match := range raw {
+		key := bodyDLPDropKey(match)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		matches = append(matches, match)
+	}
+	return matches
 }
 
 func bodyDLPMatchKey(match scanner.TextDLPMatch) string {
