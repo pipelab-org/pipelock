@@ -57,7 +57,9 @@ func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, tar
 	used := 0
 	incomplete := false
 	defer func() {
-		if !incomplete {
+		// A cancellation or other scan error already decides the result; a
+		// decode limit reached before it must not replace that reason.
+		if !incomplete || out.ScanError != "" {
 			return
 		}
 		// A content finding already decides the verdict. The limit is partial
