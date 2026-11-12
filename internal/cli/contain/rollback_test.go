@@ -293,7 +293,7 @@ func TestActionRemoveNetworkNamespaceRetryKeepsRestoredUnit(t *testing.T) {
 	if err := actionRemoveNetworkNamespace().undo(context.Background(), env); err == nil || !strings.Contains(err.Error(), "netns restore failed") {
 		t.Fatalf("retry = %v, want the same unfinished restore", err)
 	}
-	body, err := os.ReadFile(socket)
+	body, err := os.ReadFile(filepath.Clean(socket))
 	if err != nil || string(body) != "operator\n" {
 		t.Fatalf("restored socket after retry = %q, %v", body, err)
 	}

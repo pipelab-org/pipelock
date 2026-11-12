@@ -230,7 +230,7 @@ func TestRemovePublishedServicesRetryKeepsRestoredUnit(t *testing.T) {
 	if err := removePublishedServices(context.Background(), env); err == nil || !strings.Contains(err.Error(), "service restore failed") {
 		t.Fatalf("retry = %v, want the same unfinished restore", err)
 	}
-	got, err := os.ReadFile(socket)
+	got, err := os.ReadFile(filepath.Clean(socket))
 	if err != nil || string(got) != "operator\n" {
 		t.Fatalf("restored socket after retry = %q, %v", got, err)
 	}
