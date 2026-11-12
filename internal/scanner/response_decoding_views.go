@@ -123,7 +123,7 @@ func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, tar
 }
 
 func hasAdditionalInjectionEncoding(text string) bool {
-	return strings.ContainsAny(text, "&%<")
+	return strings.ContainsAny(text, "&%<+") || strings.Contains(text, `\u`)
 }
 
 func additionalInjectionViews(text string) ([]injectionDecodeView, bool) {
@@ -131,6 +131,12 @@ func additionalInjectionViews(text string) ([]injectionDecodeView, bool) {
 	complete := true
 	if !hasAdditionalInjectionEncoding(text) {
 		return nil, true
+	}
+	if decoded := normalize.DecodeJSONUnicodeEscapes(text); decoded != text {
+		views = append(views, injectionDecodeView{text: decoded, label: "json_unicode_decoded"})
+	}
+	if decoded := injectionUTF7View(text); decoded != text {
+		views = append(views, injectionDecodeView{text: decoded, label: "utf7_shifted_decoded"})
 	}
 	if strings.Contains(text, "&") {
 		decoded, converged := decodeHTMLEntitiesChecked(text)
@@ -219,4 +225,66 @@ func injectionLegacyDecodeViews(text string) ([]injectionDecodeView, bool) {
 		add(decoded)
 	}
 	return views, complete
+}
+
+// injectionUTF7View reuses DLP's RFC 4648 decoder for the RFC 2152 shifted
+// sequence. The existing UTF-16 body decoder receives an explicit big-endian BOM so it
+// cannot infer little-endian ASCII from non-ASCII UTF-7 code units.
+func injectionUTF7View(text string) string {
+	if !strings.Contains(text, "+") {
+		return text
+	}
+	var out strings.Builder
+	changed := false
+	for rest := text; ; {
+		start := strings.IndexByte(rest, '+')
+		if start < 0 {
+			out.WriteString(rest)
+			break
+		}
+		out.WriteString(rest[:start])
+		rest = rest[start:]
+		// RFC 2152 ends a shifted sequence at a non-base64 byte or EOF.
+		// Only an explicit '-' terminator is consumed; other bytes stay literal.
+		end := 1
+		for end < len(rest) {
+			c := rest[end]
+			base64Byte := (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' || c == '/'
+			if !base64Byte {
+				break
+			}
+			end++
+		}
+		consumed := end
+		if end < len(rest) && rest[end] == '-' {
+			consumed++
+		}
+		encoded := rest[1:end]
+		if encoded == "" {
+			out.WriteString(rest[:consumed])
+		} else {
+			buffer := make([]byte, base64.RawStdEncoding.DecodedLen(len(encoded)))
+			decoded := decodeBase64PaddingVariants(encoded, base64.StdEncoding, base64.RawStdEncoding, buffer, 0)
+			value := decoded[0]
+			if value == "" {
+				value = decoded[1]
+			}
+			if value == "" || len(value)%2 != 0 {
+				out.WriteString(rest[:consumed])
+			} else {
+				decoded, ok, _ := decodeLikelyUTF16ResponseBody(context.Background(), append([]byte{0xfe, 0xff}, []byte(value)...))
+				if ok {
+					out.WriteString(decoded)
+					changed = true
+				} else {
+					out.WriteString(rest[:consumed])
+				}
+			}
+		}
+		rest = rest[consumed:]
+	}
+	if !changed {
+		return text
+	}
+	return out.String()
 }
