@@ -57,15 +57,25 @@ func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, tar
 	used := 0
 	incomplete := false
 	defer func() {
-		if incomplete {
-			out.InspectionIncomplete = true
-			outbound, _ := ctx.Value(outboundInjectionContextKey{}).(bool)
-			if outbound {
-				out.Clean = false
-				out.ScanError = injectionDecodeLimitReason
-			} else {
+		if !incomplete {
+			return
+		}
+		// A content finding already decides the verdict. The limit is partial
+		// evidence beside it, matching text DLP and reassembly: inbound warns,
+		// and outbound keeps the block instead of replacing it with a scan error.
+		outbound, _ := ctx.Value(outboundInjectionContextKey{}).(bool)
+		if len(out.Matches)+len(out.WarnedMatches) > 0 {
+			if !outbound {
 				s.EmitTextDLPWarnMatches(ctx, []TextDLPMatch{partialEncodedContentMatch()})
 			}
+			return
+		}
+		out.InspectionIncomplete = true
+		if outbound {
+			out.Clean = false
+			out.ScanError = injectionDecodeLimitReason
+		} else {
+			s.EmitTextDLPWarnMatches(ctx, []TextDLPMatch{partialEncodedContentMatch()})
 		}
 	}()
 	for head := 0; head < len(queue); head++ {
