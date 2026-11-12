@@ -263,3 +263,35 @@ func TestInboundDecodeLimitKeepsCardClassification(t *testing.T) {
 		t.Fatalf("card or warning classification changed: clean=%v matches=%v", r.Clean, matchNamesOf(r.Matches))
 	}
 }
+
+func TestInboundDecodeLimitSameNamedFinding(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name: PartialEncodedContentPattern, Regex: `REVIEW_SENTINEL`, Severity: config.SeverityHigh,
+	})
+	sc := MustNew(cfg)
+	defer sc.Close()
+	warnings := 0
+	sc.SetDLPWarnHook(func(_ context.Context, name, _ string) {
+		if name == PartialEncodedContentPattern {
+			warnings++
+		}
+	})
+	r := sc.ScanTextForDLPInbound(t.Context(), "REVIEW_SENTINEL "+entityChain(maxHTMLEntityDecodePasses+1, false))
+	finding, partial := false, 0
+	for _, match := range r.Matches {
+		if match.PatternName != PartialEncodedContentPattern {
+			continue
+		}
+		if match.IsInformational() && match.Warn {
+			partial++
+		} else {
+			finding = true
+		}
+	}
+	if r.Clean || r.Incomplete || !finding || partial != 1 || warnings != 1 {
+		t.Fatalf("same-named finding hid partial evidence: clean=%v finding=%v partial=%d warnings=%d matches=%v", r.Clean, finding, partial, warnings, matchNamesOf(r.Matches))
+	}
+}
