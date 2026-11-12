@@ -40,7 +40,10 @@ func hasCharacterCodeRun(s string) bool {
 		return false
 	}
 	// A uniform letter, "_", ".", or "-" glue is a byte list even though those
-	// runes stay attached for the ordinary numeric-code parser.
+	// runes stay attached for the ordinary numeric-code parser. Only a run
+	// whose decoded bytes are printable text opens this pass. A dotted list
+	// of small integers decodes to control bytes; isPrintableText already
+	// refuses that, and scanning it would decode the whole carrier.
 	if hasUniformByteGlueRun(s) {
 		return true
 	}
@@ -349,7 +352,10 @@ func uniformByteGlueRuns(s string) []uniformByteGlueRun {
 			i++
 			continue
 		}
-		if ok {
+		// Same printable-text rule as other decoded views. Control bytes from a
+		// dotted integer list are not a carrier, so they neither open the
+		// response decode pass nor become a DLP view.
+		if ok && isPrintableText([]byte(text)) {
 			runs = append(runs, uniformByteGlueRun{text: text, start: i, end: next})
 		}
 		i = next

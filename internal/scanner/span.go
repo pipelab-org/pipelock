@@ -197,6 +197,13 @@ func (p *compiledPattern) firstJoinedGluedSpan(text, source string) (int, int, b
 	if !p.relaxSingleGluedBoundary || (ok && start == 0) {
 		return start, end, ok
 	}
+	// A digit glued to a card or SSN is rejected: it lengthens the number.
+	// A digit-only view therefore has no glue rune this family can accept,
+	// and a second body scan only repeats the bounded one. Dot-stripping a
+	// long dotted integer list produces that view.
+	if p.gluedDigitExtendsNumber && !textHasNonDigit(text) {
+		return start, end, ok
+	}
 	limit := len(text) + 1
 	if ok {
 		limit = start
@@ -217,6 +224,15 @@ func (p *compiledPattern) firstJoinedGluedSpan(text, source string) (int, int, b
 		return bestStart, bestEnd, true
 	}
 	return start, end, ok
+}
+
+func textHasNonDigit(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *compiledPattern) gluedCandidateConfirmedInSource(source, candidate string) bool {
