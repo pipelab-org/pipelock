@@ -96,7 +96,6 @@ func TestSelectiveBoundaries(t *testing.T) {
 		"M" + strings.Repeat("a", 23) + "." + strings.Repeat("b", 6) + "." + strings.Repeat("c", 26),
 		" SK" + strings.Repeat("a", 31) + " ",
 		" SK" + strings.Repeat("a", 33) + " ",
-		"xSK" + strings.Repeat("a", 32) + " ",
 		" SK" + strings.Repeat("a", 31) + "g ",
 	} {
 		for _, enc := range reassemblyEncodings(plain) {
@@ -104,6 +103,15 @@ func TestSelectiveBoundaries(t *testing.T) {
 			if len(r.findings) > 0 || r.incomplete {
 				t.Errorf("malformed %q %s: %s", plain, enc.name, reassemblyDecision(r))
 			}
+		}
+	}
+	// One glued rune before the key is a key: a receiver that drops it
+	// recovers the credential, and the plain-text scan already reports it.
+	glued := "xSK" + strings.Repeat("a", 32) + " "
+	for _, enc := range reassemblyEncodings(glued) {
+		r := reassemblyTerminal(p, reassemblyBang(enc.text), &assembledBudget{})
+		if len(r.findings) == 0 || r.incomplete {
+			t.Errorf("glued %q %s: %s", glued, enc.name, reassemblyDecision(r))
 		}
 	}
 }
