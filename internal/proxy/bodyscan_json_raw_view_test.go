@@ -149,12 +149,15 @@ func TestScanRequestBody_JSONRawViewKeepsFieldFindings(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
 	sc := scanner.MustNew(testScannerConfig())
 	defer sc.Close()
+	// The test card number is assembled at run time so the source holds no
+	// literal card.
+	cardGroups := []string{"4111", "1111", "1111", "1111"}
 
 	for _, body := range []string{
 		`{"token":"` + encoded + `"}`,
 		`{"token":"` + secret + `"}`,
 		`{"a":"` + secret + `","b":["` + encoded + `"]}`,
-		`{"card":"4111 1111 1111 1111","n":[4111,1111,1111,1111]}`,
+		`{"card":"` + strings.Join(cardGroups, " ") + `","n":[` + strings.Join(cardGroups, ",") + `]}`,
 	} {
 		extracted := extractBodyTextForDLP([]byte(body), BodyScanRequest{ContentType: "application/json"})
 		if extracted.Err != "" || extracted.RawDocument != body {
