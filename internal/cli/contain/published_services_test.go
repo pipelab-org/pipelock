@@ -734,6 +734,46 @@ func TestRemovePublishedServicesKeepsJournalWhenRecordRestoreFails(t *testing.T)
 	}
 }
 
+func TestFinishDoorwayInventoryRestoreStatErrorKeepsFile(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	inventory := filepath.Join(t.TempDir(), "published-services.json")
+	if err := os.WriteFile(inventory+".bak", []byte("operator-record\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	statErr := errors.New("stat failed")
+	failed := false
+	realLstat := env.lstat
+	env.lstat = func(path string) (os.FileInfo, error) {
+		if !failed && filepath.Clean(path) == filepath.Clean(inventory) {
+			if _, err := os.Lstat(path); err == nil {
+				failed = true
+				return nil, statErr
+			}
+		}
+		return realLstat(path)
+	}
+
+	if err := finishDoorwayInventoryRestore(env, inventory); err == nil || !errors.Is(err, statErr) {
+		t.Fatalf("finish = %v, want the stat error", err)
+	}
+	got, err := os.ReadFile(filepath.Clean(inventory))
+	if err != nil || string(got) != "operator-record\n" {
+		t.Fatalf("inventory after stat error = %q, %v", got, err)
+	}
+
+	retry := *env
+	retry.restoredBackups = nil
+	retry.archivedBackups = nil
+	retry.lstat = os.Lstat
+	if err := finishDoorwayInventoryRestore(&retry, inventory); err != nil {
+		t.Fatalf("retry = %v", err)
+	}
+	got, err = os.ReadFile(filepath.Clean(inventory))
+	if err != nil || string(got) != "operator-record\n" {
+		t.Fatalf("inventory after retry = %q, %v", got, err)
+	}
+}
+
 func TestInstallPublishedServicesRollbackOnLaterFailure(t *testing.T) {
 	env, runner := publishedInstallEnv(t, publishedTestConfig)
 	unitDir := filepath.Dir(env.proxyForwarderSocketPath)

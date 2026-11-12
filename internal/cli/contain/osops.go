@@ -1030,7 +1030,14 @@ func finishDoorwayInventoryRestore(env *installEnv, inventoryPath string) error 
 				return err
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
+			// The backup is already consumed. Record the completion before
+			// returning so a later finish does not delete the restored file.
+			// A failed journal write parks those bytes as the next backup.
+			statErr := err
+			if recordErr := restoreJournaledBackup(env, inventoryPath, inventoryPath); recordErr != nil {
+				return errors.Join(statErr, recordErr)
+			}
+			return statErr
 		}
 	}
 	return removeDoorwayRestoreJournal(env, inventoryPath)
