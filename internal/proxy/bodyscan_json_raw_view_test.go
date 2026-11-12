@@ -66,9 +66,9 @@ func rawViewScanJSONBody(t *testing.T, sc *scanner.Scanner, body string) BodySca
 	return result
 }
 
-func rawViewHasPattern(matches []scanner.TextDLPMatch, name string) bool {
+func rawViewHasAWSAccessID(matches []scanner.TextDLPMatch) bool {
 	for _, match := range matches {
-		if match.PatternName == name {
+		if match.PatternName == "AWS Access ID" {
 			return true
 		}
 	}
@@ -130,7 +130,7 @@ func TestScanRequestBody_JSONStringSplitCredentialBlocks(t *testing.T) {
 				t.Fatalf("receiver recovery failed: %q %v", got, err)
 			}
 			result := rawViewScanJSONBody(t, sc, tt.body)
-			if result.Clean || !rawViewHasPattern(result.DLPMatches, "AWS Access ID") {
+			if result.Clean || !rawViewHasAWSAccessID(result.DLPMatches) {
 				t.Fatalf("split credential passed the body scan: clean=%v reason=%q dlp=%+v", result.Clean, result.Reason, result.DLPMatches)
 			}
 			if result.Action != config.ActionBlock {
@@ -243,5 +243,14 @@ func BenchmarkScanRequestBody_JSONChat(b *testing.B) {
 		if !result.Clean {
 			b.Fatalf("benchmark body was not clean: %+v", result)
 		}
+	}
+}
+
+func TestExtractBodyTextForDLP_RawDocumentKeepsJSONOrder(t *testing.T) {
+	body := []byte(`{ "b":"\u0062", "a":"a", "b":"\u0063", "n":1e3, "v":null }`)
+	extracted := extractBodyTextForDLP(body, BodyScanRequest{ContentType: "application/json"})
+	want := `{ "b":"b", "a":"a", "b":"c", "n":1e3, "v":null }`
+	if extracted.Err != "" || extracted.RawDocument != want {
+		t.Fatalf("raw document: error=%q view=%q, want %q", extracted.Err, extracted.RawDocument, want)
 	}
 }

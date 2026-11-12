@@ -1390,7 +1390,19 @@ func TestScanRequestBody_EmbeddedSigV4URLNeedsNoCoreSuppression(t *testing.T) {
 			scheme: "https", method: http.MethodPost, contentType: contentTypeJSON, host: route.Host, path: route.Path, expires: route.Expires, wantClean: true,
 		},
 		{
+			name: "authorized URL with escaped slashes", body: `{"url":"` + strings.ReplaceAll(presignedURL, "/", `\/`) + `"}`,
+			scheme: "https", method: http.MethodPost, contentType: contentTypeJSON, host: route.Host, path: route.Path, expires: route.Expires, wantClean: true,
+		},
+		{
+			name: "authorized URL with JSON-escaped ampersands", body: `{"url":"` + strings.ReplaceAll(presignedURL, "&", `\u0026`) + `"}`,
+			scheme: "https", method: http.MethodPost, contentType: contentTypeJSON, host: route.Host, path: route.Path, expires: route.Expires, wantClean: true,
+		},
+		{
 			name: "separate key beside attachment URL", body: `{"variables":{"url":"` + presignedURL + `","other":"` + key + `"}}`,
+			scheme: "https", method: http.MethodPost, contentType: contentTypeJSON, host: route.Host, path: route.Path, expires: route.Expires, wantClean: false,
+		},
+		{
+			name: "separate key beside JSON-escaped attachment URL", body: `{"url":"` + strings.ReplaceAll(presignedURL, "&", `\u0026`) + `","other":"` + key + `"}`,
 			scheme: "https", method: http.MethodPost, contentType: contentTypeJSON, host: route.Host, path: route.Path, expires: route.Expires, wantClean: false,
 		},
 		{

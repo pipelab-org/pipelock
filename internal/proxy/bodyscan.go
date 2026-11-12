@@ -1302,26 +1302,35 @@ type bodyDLPTextExtraction struct {
 	HeaderTokens        []string
 	Texts               []string
 	ProviderOpaqueTexts []string
-	// RawDocument is a JSON body as sent, with trusted provider ciphertext
-	// values emptied. A receiver reads strings in source order, and a
-	// credential split across several strings is whole only in that order.
+	// RawDocument preserves JSON source order, with string escapes canonicalized
+	// and trusted provider ciphertext values emptied. A receiver reads strings
+	// in source order; a credential split across strings needs that order.
 	// The field views and the sorted join do not keep it.
 	RawDocument string
 	Err         string
 }
 
-// jsonBodyRawDocument returns body with each span emptied. Spans are in
-// source order and do not overlap.
-func jsonBodyRawDocument(body []byte, spans [][2]int64) string {
-	if len(spans) == 0 {
+// jsonBodyDLPStringRewrite replaces a complete quoted JSON token. Rewrites are
+// in source order and never overlap.
+type jsonBodyDLPStringRewrite struct {
+	start, end int64
+	quoted     []byte
+}
+
+// jsonBodyRawDocument preserves source order and JSON syntax while applying
+// string rewrites. Canonical strings let the scanner verify image data URLs
+// even when a producer escaped their slashes, scheme, or base64 payload.
+func jsonBodyRawDocument(body []byte, rewrites []jsonBodyDLPStringRewrite) string {
+	if len(rewrites) == 0 {
 		return string(body)
 	}
 	var b strings.Builder
 	b.Grow(len(body))
 	var at int64
-	for _, span := range spans {
-		b.Write(body[at:span[0]])
-		at = span[1]
+	for _, rewrite := range rewrites {
+		b.Write(body[at:rewrite.start])
+		b.Write(rewrite.quoted)
+		at = rewrite.end
 	}
 	b.Write(body[at:])
 	return b.String()
@@ -1378,17 +1387,17 @@ func extractBodyTextForDLP(body []byte, req BodyScanRequest) bodyDLPTextExtracti
 		texts, errText := extractBodyText(body, req)
 		return bodyDLPTextExtraction{GenericTexts: texts, Texts: texts, Err: errText}
 	}
-	textStrings, cardStrings, atoms, providerOpaqueTexts, genericTexts, opaqueSpans, truncated, err := extractJSONBodyDLPStrings(body, req)
+	textStrings, cardStrings, atoms, providerOpaqueTexts, genericTexts, stringRewrites, truncated, err := extractJSONBodyDLPStrings(body, req)
 	if err != nil {
 		return bodyDLPTextExtraction{Err: err.Error()}
 	}
 	if truncated {
 		return bodyDLPTextExtraction{Err: "JSON body exceeds maximum inspectable nesting depth"}
 	}
-	return bodyDLPTextExtraction{GenericTexts: genericTexts, Texts: textStrings, CardTexts: cardStrings, Atoms: atoms, ProviderOpaqueTexts: providerOpaqueTexts, RawDocument: jsonBodyRawDocument(body, opaqueSpans)}
+	return bodyDLPTextExtraction{GenericTexts: genericTexts, Texts: textStrings, CardTexts: cardStrings, Atoms: atoms, ProviderOpaqueTexts: providerOpaqueTexts, RawDocument: jsonBodyRawDocument(body, stringRewrites)}
 }
 
-func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []string, []extract.DLPAtom, []string, []string, [][2]int64, bool, error) {
+func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []string, []extract.DLPAtom, []string, []string, []jsonBodyDLPStringRewrite, bool, error) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 
@@ -1400,10 +1409,7 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 		atoms = append(atoms, extract.DLPAtom{Text: text, Card: card, Number: number})
 	}
 	var providerOpaque []string
-	// opaqueSpans holds the byte range of each trusted provider ciphertext
-	// value inside body, quotes excluded, so the raw-document view can leave
-	// that ciphertext out the same way the field views do.
-	var opaqueSpans [][2]int64
+	var stringRewrites []jsonBodyDLPStringRewrite
 	var generic []string
 	var stack []jsonBodyDLPFrame
 	depth := 0
@@ -1454,7 +1460,26 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 				markJSONBodyDLPValueConsumed(stack)
 			}
 		case string:
-			if len(stack) > 0 && stack[len(stack)-1].kind == '{' && stack[len(stack)-1].expectKey {
+			isKey := len(stack) > 0 && stack[len(stack)-1].kind == '{' && stack[len(stack)-1].expectKey
+			opaque := !isKey && depth <= extractJSONMaxDepth && isTrustedProviderOpaqueDLPField(req, currentJSONBodyDLPPath(stack), v)
+			// Only separators and whitespace precede this quoted token. Keep its
+			// original position, but normalize escapes before image verification.
+			end := dec.InputOffset()
+			open := before + int64(bytes.IndexByte(body[before:end], '"'))
+			if opaque || bytes.IndexByte(body[open:end], '\\') >= 0 {
+				value := v
+				if opaque {
+					value = ""
+				}
+				var quoted bytes.Buffer
+				enc := json.NewEncoder(&quoted)
+				// HTML escapes would hide URL query separators from the existing
+				// structural SigV4 credential carve-out in this scan-only view.
+				enc.SetEscapeHTML(false)
+				_ = enc.Encode(value) // Encoding a string into bytes.Buffer cannot fail.
+				stringRewrites = append(stringRewrites, jsonBodyDLPStringRewrite{start: open, end: end, quoted: quoted.Bytes()[:quoted.Len()-1]})
+			}
+			if isKey {
 				if depth <= extractJSONMaxDepth {
 					appendAtom(v, v, false)
 					atoms[len(atoms)-1].Key = true
@@ -1466,14 +1491,8 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 			}
 			if depth <= extractJSONMaxDepth {
 				generic = append(generic, v)
-				if isTrustedProviderOpaqueDLPField(req, currentJSONBodyDLPPath(stack), v) {
+				if opaque {
 					providerOpaque = append(providerOpaque, v)
-					// Only whitespace, ':' and ',' separate the previous token
-					// from this string, so its first quote opens the value.
-					end := dec.InputOffset()
-					if open := bytes.IndexByte(body[before:end], '"'); open >= 0 && before+int64(open)+1 <= end-1 {
-						opaqueSpans = append(opaqueSpans, [2]int64{before + int64(open) + 1, end - 1})
-					}
 				} else {
 					appendAtom(v, v, false)
 				}
@@ -1503,7 +1522,7 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 			rootComplete = true
 		}
 	}
-	return result, cards, atoms, providerOpaque, generic, opaqueSpans, truncated, nil
+	return result, cards, atoms, providerOpaque, generic, stringRewrites, truncated, nil
 }
 
 const extractJSONMaxDepth = extract.MaxExtractDepth
