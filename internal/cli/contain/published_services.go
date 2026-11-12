@@ -555,8 +555,13 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 				}
 			}
 			for i := len(touched) - 1; i >= 0; i-- {
-				if err := restoreBackup(env, touched[i]); err != nil {
-					errs = append(errs, err)
+				restoreErr := restoreBackup(env, touched[i])
+				if restoreErr != nil {
+					errs = append(errs, restoreErr)
+				}
+				// Restoring an older archive can fail after the file itself
+				// is already back. The journal entry still has to be recorded.
+				if restoreErr != nil && !env.restoredBackups[filepath.Clean(touched[i])] {
 					continue
 				}
 				if err := restoreForgottenDoorway(env, publishedServiceRecordPath(env.loopbackForwarderInvPath), touched[i], forgotten); err != nil {

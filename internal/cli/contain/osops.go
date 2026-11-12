@@ -850,26 +850,53 @@ func restoreJournaledBackup(env *installEnv, inventoryPath, path string) error {
 	done[clean] = true
 	if err := writeDoorwayRestoreJournal(env, inventoryPath, done); err != nil {
 		journalErr := fmt.Errorf("record restored doorway file %s: %w", clean, err)
+		// A directory sync can fail after the new journal is already in place.
+		recorded, readErr := readDoorwayRestoreJournal(env, journal)
+		if readErr == nil && recorded[clean] {
+			return nil
+		}
 		// restoreBackup may already have moved an older archive into .bak.
 		// Keep that archive, and put the restored bytes in .bak so the next
-		// attempt restores them instead of promoting the older archive or
-		// deleting the file.
-		bak := clean + ".bak"
-		body, readErr := env.readFile(clean)
-		if readErr != nil {
-			return errors.Join(journalErr, fmt.Errorf("read restored %s: %w", clean, readErr))
-		}
-		if _, rotateErr := rotateBackupIfNeeded(env, bak, body); rotateErr != nil {
-			return errors.Join(journalErr, rotateErr)
-		}
-		mode := os.FileMode(0o600)
-		if info, infoErr := env.lstat(clean); infoErr == nil {
-			mode = info.Mode().Perm()
-		}
-		if writeErr := env.writeFile(bak, body, mode); writeErr != nil {
-			return errors.Join(journalErr, fmt.Errorf("keep backup %s: %w", bak, writeErr))
+		// attempt restores them instead of deleting the file. A failed copy
+		// parks the restored file itself as that backup.
+		if keepErr := preserveConsumedDoorwayBackup(env, clean); keepErr != nil {
+			return errors.Join(journalErr, keepErr)
 		}
 		return journalErr
+	}
+	return nil
+}
+
+// preserveConsumedDoorwayBackup keeps the restored bytes beside the file
+// after the backup was consumed. The next removal restores that backup
+// instead of treating the file as one this install created and deleting it.
+func preserveConsumedDoorwayBackup(env *installEnv, clean string) error {
+	bak := clean + ".bak"
+	body, err := env.readFile(clean)
+	if err != nil {
+		return fmt.Errorf("read restored %s: %w", clean, err)
+	}
+	if _, rotateErr := rotateBackupIfNeeded(env, bak, body); rotateErr != nil {
+		return rotateErr
+	}
+	mode := os.FileMode(0o600)
+	if info, infoErr := env.lstat(clean); infoErr == nil {
+		mode = info.Mode().Perm()
+	}
+	writeErr := env.writeFile(bak, body, mode)
+	if writeErr == nil {
+		return nil
+	}
+	if _, statErr := env.lstat(bak); statErr == nil {
+		return nil
+	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return errors.Join(fmt.Errorf("keep backup %s: %w", bak, writeErr), fmt.Errorf("stat %s: %w", bak, statErr))
+	}
+	if renameErr := env.rename(clean, bak); renameErr != nil {
+		return errors.Join(
+			fmt.Errorf("keep backup %s: %w", bak, writeErr),
+			fmt.Errorf("park restored %s: copy it aside before retrying removal: %w", clean, renameErr),
+		)
 	}
 	return nil
 }
@@ -897,12 +924,19 @@ func forgetDoorwayRestore(env *installEnv, inventoryPath, path string) (bool, er
 // noteForgottenDoorway records a completion entry this install removed, so
 // undo can put that entry back when it restores the file.
 func noteForgottenDoorway(env *installEnv, inventoryPath, path string, forgotten *[]string) error {
-	removed, err := forgetDoorwayRestore(env, inventoryPath, path)
-	if err != nil || !removed {
+	done, err := readDoorwayRestoreJournal(env, doorwayRestoreJournalPath(inventoryPath))
+	if err != nil {
 		return err
 	}
-	*forgotten = append(*forgotten, filepath.Clean(path))
-	return nil
+	clean := filepath.Clean(path)
+	// Record the entry before the journal write. That write can rename the
+	// updated journal into place and then fail, and undo still has to put
+	// the entry back.
+	if done[clean] {
+		*forgotten = append(*forgotten, clean)
+	}
+	_, err = forgetDoorwayRestore(env, inventoryPath, path)
+	return err
 }
 
 // restoreForgottenDoorway puts back a completion entry that undo's file
