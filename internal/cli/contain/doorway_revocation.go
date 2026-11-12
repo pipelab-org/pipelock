@@ -51,9 +51,20 @@ func revocationCommandContext(ctx context.Context) (context.Context, context.Can
 }
 
 func runRevocationSystemctl(ctx context.Context, env *installEnv, args ...string) error {
-	cmdCtx, cancel := revocationCommandContext(ctx)
-	defer cancel()
-	return runSystemctlCleanupUnit(cmdCtx, env, args...)
+	run := func(args ...string) error {
+		cmdCtx, cancel := revocationCommandContext(ctx)
+		defer cancel()
+		return runSystemctlCleanupUnit(cmdCtx, env, args...)
+	}
+	err := run(args...)
+	if len(args) > 0 && args[0] == "disable" {
+		// systemctl(1) --runtime selects /run instead of /etc. A normal
+		// disable can stop a unit while leaving its runtime enablement intact.
+		// Attempt both stores even when one fails, with separate deadlines.
+		runtimeArgs := append([]string{"disable", "--runtime"}, args[1:]...)
+		err = errors.Join(err, run(runtimeArgs...))
+	}
+	return err
 }
 
 func closeLoopbackDoorways(ctx context.Context, env *installEnv, units []string) error {

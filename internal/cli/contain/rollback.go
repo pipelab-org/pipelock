@@ -209,19 +209,29 @@ func actionRemoveNetworkNamespace() step {
 			if err := removePublishedServices(ctx, env); err != nil {
 				errs = append(errs, err)
 			}
+			retainLoopbackInventory := false
 			if inv, err := readLoopbackForwarderInventory(env); err != nil {
 				errs = append(errs, err)
 			} else {
 				unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+				var units []string
 				for _, record := range inv.Services {
-					socket := record.Unit + ".socket"
-					if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", socket); err != nil {
-						errs = append(errs, err)
-					}
-					for _, suffix := range []string{".socket", ".service"} {
-						path := filepath.Join(unitDir, record.Unit+suffix)
-						if err := restoreBackup(env, path); err != nil {
-							errs = append(errs, fmt.Errorf("restore %s: %w", path, err))
+					units = append(units, record.Unit)
+				}
+				if err := closeLoopbackDoorways(ctx, env, units); err != nil {
+					errs = append(errs, err)
+					retainLoopbackInventory = true
+				} else {
+					for _, record := range inv.Services {
+						for _, suffix := range []string{"-netns.service", ".socket", ".service"} {
+							path := filepath.Join(unitDir, record.Unit+suffix)
+							if err := restoreJournaledBackup(env, env.loopbackForwarderInvPath, path); err != nil {
+								errs = append(errs, fmt.Errorf("restore %s: %w", path, err))
+								// A failed restore leaves that unit file behind.
+								// Deleting the inventory would give the next
+								// attempt no record of it.
+								retainLoopbackInventory = true
+							}
 						}
 					}
 				}
@@ -231,7 +241,7 @@ func actionRemoveNetworkNamespace() step {
 					continue
 				}
 				unit := filepath.Base(path)
-				if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
+				if err := runRevocationSystemctl(ctx, env, "disable", "--now", unit); err != nil {
 					errs = append(errs, fmt.Errorf("disable %s: %w", unit, err))
 				}
 				if err := restoreBackup(env, path); err != nil {
@@ -250,9 +260,12 @@ func actionRemoveNetworkNamespace() step {
 					errs = append(errs, fmt.Errorf("restore legacy %s: %w", path, err))
 				}
 			}
-			if env.loopbackForwarderInvPath != "" {
-				if err := restoreBackup(env, env.loopbackForwarderInvPath); err != nil {
+			if retainLoopbackInventory {
+				env.preserveContainmentRecords = true
+			} else if env.loopbackForwarderInvPath != "" {
+				if err := finishDoorwayInventoryRestore(env, env.loopbackForwarderInvPath); err != nil {
 					errs = append(errs, fmt.Errorf("restore %s: %w", env.loopbackForwarderInvPath, err))
+					env.preserveContainmentRecords = true
 				}
 			}
 			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
@@ -401,6 +414,9 @@ func actionMaybeRemoveDir(opts rollbackOpts, label string, pathFn func(*installE
 				return nil
 			}
 			path := pathFn(env)
+			if label == "config" && env.preserveContainmentRecords {
+				return fmt.Errorf("left %s in place so a later attempt can find doorway records", path)
+			}
 			if err := os.RemoveAll(filepath.Clean(path)); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("rm -rf %s: %w", path, err)
 			}

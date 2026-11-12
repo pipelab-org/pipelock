@@ -957,6 +957,7 @@ func stepInstallNetworkNamespacePolicy(serviceOverride *[]config.ContainmentLoop
 	var writtenRelays map[string]bool
 	var ownedRelays map[string]bool
 	var touched []string
+	var forgotten []string
 	var retired map[string][]byte
 	return step{
 		name: "install-agent-network-namespace",
@@ -1114,6 +1115,7 @@ func stepInstallNetworkNamespacePolicy(serviceOverride *[]config.ContainmentLoop
 				previousLegacyAnchor = systemdUnitRuntimeState(ctx, env, filepath.Base(env.ownedLoopbackAnchorUnitPath))
 			}
 			touched = nil
+			forgotten = nil
 			for _, item := range paths {
 				if !filePlan.writePaths[item.path] {
 					if err := env.chmod(item.path, item.mode); err != nil {
@@ -1124,6 +1126,12 @@ func stepInstallNetworkNamespacePolicy(serviceOverride *[]config.ContainmentLoop
 				}
 				if err := backupAndWrite(env, item.path, []byte(item.body), item.mode); err != nil {
 					return len(touched) > 0, fmt.Errorf("write %s: %w", item.path, err)
+				}
+				touched = append(touched, item.path)
+				// A failed rollback may already list this path as restored.
+				// The backup just taken is the one a later rollback must use.
+				if err := noteForgottenDoorway(env, env.loopbackForwarderInvPath, item.path, &forgotten); err != nil {
+					return true, err
 				}
 				// The pre-write ownership check misses a file that did not
 				// match, including a foreign unit this attempt replaces and
@@ -1149,7 +1157,6 @@ func stepInstallNetworkNamespacePolicy(serviceOverride *[]config.ContainmentLoop
 				} else if strings.HasSuffix(item.path, "-netns.service") {
 					changedNamespaceForwarders[filepath.Base(item.path)] = true
 				}
-				touched = append(touched, item.path)
 			}
 			staleRetired := false
 			for _, unit := range filePlan.closeDoorways {
@@ -1158,7 +1165,7 @@ func stepInstallNetworkNamespacePolicy(serviceOverride *[]config.ContainmentLoop
 				// Requires= the socket, so leaving it enabled after the socket is
 				// gone makes a unit that fails on every start.
 				for _, running := range []string{unit + "-netns.service", unit + ".socket"} {
-					if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", running); err != nil {
+					if err := runRevocationSystemctl(ctx, env, "disable", "--now", running); err != nil {
 						return true, fmt.Errorf("disable stale loopback forwarder %s: %w", running, err)
 					}
 				}
@@ -1183,6 +1190,16 @@ func stepInstallNetworkNamespacePolicy(serviceOverride *[]config.ContainmentLoop
 					body, readErr := env.readFile(path)
 					if readErr != nil {
 						return true, fmt.Errorf("read stale loopback forwarder %s: %w", path, readErr)
+					}
+					// A failed removal may already have restored this file and
+					// recorded that in the journal. The backup is gone, so
+					// restoreBackup would delete the operator file.
+					finished, err := doorwayRestoreFinished(env, env.loopbackForwarderInvPath, path)
+					if err != nil {
+						return true, err
+					}
+					if finished {
+						continue
 					}
 					// The current file is Pipelock's managed unit. Restore its
 					// pre-install backup now instead of backing up the managed
@@ -1390,7 +1407,16 @@ func stepInstallNetworkNamespacePolicy(serviceOverride *[]config.ContainmentLoop
 				}
 			}
 			for i := len(touched) - 1; i >= 0; i-- {
-				if err := restoreBackup(env, touched[i]); err != nil {
+				restoreErr := restoreBackup(env, touched[i])
+				if restoreErr != nil {
+					errs = append(errs, restoreErr)
+				}
+				// Restoring an older archive can fail after the file itself
+				// is already back. The journal entry still has to be recorded.
+				if restoreErr != nil && !env.restoredBackups[filepath.Clean(touched[i])] {
+					continue
+				}
+				if err := restoreForgottenDoorway(env, env.loopbackForwarderInvPath, touched[i], forgotten); err != nil {
 					errs = append(errs, err)
 				}
 			}

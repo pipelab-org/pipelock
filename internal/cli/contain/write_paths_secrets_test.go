@@ -115,6 +115,7 @@ func TestInstallWritePathsPrivateMaterialPermissionDeferred(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env, runner, out := newFakeEnv(t)
+			trustInstallNFTForTest(env)
 			if err := os.MkdirAll(env.dataDir, 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -208,6 +209,7 @@ func TestInstallWritePathsPrivateMaterialUnreadableAlias(t *testing.T) {
 	for _, dryRun := range []bool{true, false} {
 		t.Run(fmt.Sprintf("dry_run_%v", dryRun), func(t *testing.T) {
 			env, runner, out := newFakeEnv(t)
+			trustInstallNFTForTest(env)
 			key := filepath.Join(env.recorderDir(), "signing.key")
 			mustWriteFile(t, key, "private key fixture")
 			privateDir := filepath.Join(t.TempDir(), "unreadable")

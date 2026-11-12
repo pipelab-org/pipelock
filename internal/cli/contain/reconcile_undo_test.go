@@ -118,6 +118,7 @@ func TestPublishedReconcileUndoHonorsDeclarations(t *testing.T) {
 					t.Fatalf("reconcile error = %v, want injected enable failure", err)
 				}
 				assertReconcileUnitState(t, states, oldUnits, unitRuntimeState{})
+				assertRuntimeDoorwaysDisabled(t, runner, oldUnits)
 				assertReconcileUnitState(t, states, []string{freshSocket}, unitRuntimeState{})
 				assertReconcileUnitState(t, states, []string{keepSocket}, unitRuntimeState{enabled: true, active: true})
 				if !runnerSaw(runner, "systemctl start "+keepSocket) {
@@ -164,6 +165,7 @@ func TestLoopbackReconcileUndoHonorsDeclarations(t *testing.T) {
 					t.Fatalf("reconcile error = %v, want injected enable failure", err)
 				}
 				assertReconcileUnitState(t, states, oldUnits, unitRuntimeState{})
+				assertRuntimeDoorwaysDisabled(t, runner, oldUnits)
 				assertReconcileUnitState(t, states, []string{freshBase + ".socket", freshBase + "-netns.service"}, unitRuntimeState{})
 				assertReconcileUnitState(t, states, keptUnits, unitRuntimeState{enabled: true, active: true})
 				for _, unit := range keptUnits {

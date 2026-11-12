@@ -351,6 +351,7 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 	var previous map[string]unitRuntimeState
 	var desired map[string]bool
 	var touched []string
+	var forgotten []string
 	var retired map[string][]byte
 	return step{
 		name: "install-published-services",
@@ -444,6 +445,7 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 				}
 			}
 			touched = nil
+			forgotten = nil
 			retired = make(map[string][]byte)
 			for _, item := range files {
 				mode := modeUnitFile
@@ -461,6 +463,9 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 				}
 				touched = append(touched, item.path)
 				changedUnit[filepath.Base(item.path)] = true
+				if err := noteForgottenDoorway(env, recordPath, item.path, &forgotten); err != nil {
+					return true, err
+				}
 			}
 			// Revoke before starting anything new: a removed or expired
 			// publication must be closed even if a later start fails.
@@ -469,6 +474,13 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 			}
 			for _, unit := range filePlan.closeDoorways {
 				path := filepath.Join(unitDir, unit)
+				finished, err := doorwayRestoreFinished(env, recordPath, path)
+				if err != nil {
+					return true, err
+				}
+				if finished {
+					continue
+				}
 				body, readErr := env.readFile(path)
 				if errors.Is(readErr, os.ErrNotExist) {
 					continue
@@ -491,6 +503,9 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 					return true, fmt.Errorf("write published service records: %w", err)
 				}
 				touched = append(touched, recordPath)
+				if err := noteForgottenDoorway(env, recordPath, recordPath, &forgotten); err != nil {
+					return true, err
+				}
 			}
 			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
 				return true, fmt.Errorf("reload systemd after publishing services: %w", err)
@@ -547,7 +562,16 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 				}
 			}
 			for i := len(touched) - 1; i >= 0; i-- {
-				if err := restoreBackup(env, touched[i]); err != nil {
+				restoreErr := restoreBackup(env, touched[i])
+				if restoreErr != nil {
+					errs = append(errs, restoreErr)
+				}
+				// Restoring an older archive can fail after the file itself
+				// is already back. The journal entry still has to be recorded.
+				if restoreErr != nil && !env.restoredBackups[filepath.Clean(touched[i])] {
+					continue
+				}
+				if err := restoreForgottenDoorway(env, publishedServiceRecordPath(env.loopbackForwarderInvPath), touched[i], forgotten); err != nil {
 					errs = append(errs, err)
 				}
 			}
@@ -592,28 +616,39 @@ func removePublishedServices(ctx context.Context, env *installEnv) error {
 	}
 	var errs []error
 	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	var units []string
+	for _, record := range set.Services {
+		units = append(units, publishedRecordUnitNames(record)...)
+	}
+	if err := closePublishedDoorways(ctx, env, units); err != nil {
+		// restoreBackup removes a file that has no backup. Deleting the
+		// record after a failed close leaves the doorway enabled and gives
+		// the next attempt nothing to retry.
+		env.preserveContainmentRecords = true
+		return err
+	}
+	recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
+	unitRestoreFailed := false
 	for _, record := range set.Services {
 		for _, unit := range publishedRecordUnitNames(record) {
-			args := []string{"stop", unit}
-			if strings.HasSuffix(unit, ".socket") {
-				args = []string{"disable", "--now", unit}
-			}
-			if err := runSystemctlCleanupUnit(ctx, env, args...); err != nil {
-				errs = append(errs, err)
-			}
-		}
-		for _, unit := range publishedRecordUnitNames(record) {
 			path := filepath.Join(unitDir, unit)
-			if err := restoreBackup(env, path); err != nil {
+			if err := restoreJournaledBackup(env, recordPath, path); err != nil {
 				errs = append(errs, fmt.Errorf("restore %s: %w", path, err))
+				unitRestoreFailed = true
 			}
 		}
 	}
-	path := publishedServiceRecordPath(env.loopbackForwarderInvPath)
-	if err := restoreBackup(env, path); err != nil {
-		errs = append(errs, fmt.Errorf("restore %s: %w", path, err))
+	if unitRestoreFailed {
+		// The record is the list the next attempt uses to find a unit
+		// whose restore did not finish.
+		env.preserveContainmentRecords = true
+		return errors.Join(errs...)
 	}
-	return errors.Join(errs...)
+	if err := finishDoorwayInventoryRestore(env, recordPath); err != nil {
+		env.preserveContainmentRecords = true
+		return fmt.Errorf("restore %s: %w", recordPath, err)
+	}
+	return nil
 }
 
 // reconcileDeclaredContainmentPublishedServicesForReload fails closed: any

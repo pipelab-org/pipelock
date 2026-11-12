@@ -435,8 +435,8 @@ func TestCovPubInstallPublishedServicesUndoAllBranches(t *testing.T) {
 }
 
 // TestCovPubRemovePublishedServicesPaths covers removePublishedServices: the
-// unconfigured-host no-op, the record-read failure, and the combined
-// systemctl-cleanup and restoreBackup failures collected across both loops.
+// unconfigured-host no-op, the record-read failure, and a failed close that
+// leaves the publication record in place.
 func TestCovPubRemovePublishedServicesPaths(t *testing.T) {
 	t.Run("empty loopback path is a no-op", func(t *testing.T) {
 		env := &installEnv{}
@@ -455,7 +455,7 @@ func TestCovPubRemovePublishedServicesPaths(t *testing.T) {
 		}
 	})
 
-	t.Run("cleanup and restore errors are collected", func(t *testing.T) {
+	t.Run("failed close leaves the publication record", func(t *testing.T) {
 		env, _ := publishedInstallEnv(t, publishedTestConfig)
 		if _, err := stepInstallPublishedServices(nil).apply(context.Background(), env); err != nil {
 			t.Fatalf("install: %v", err)
@@ -463,23 +463,36 @@ func TestCovPubRemovePublishedServicesPaths(t *testing.T) {
 		env.runCmd = func(context.Context, string, ...string) (string, int, error) {
 			return "", 1, errors.New("systemctl denied")
 		}
-		unitDir := filepath.Dir(env.proxyForwarderSocketPath)
 		recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
-		baseLstat := env.lstat
-		env.lstat = func(p string) (os.FileInfo, error) {
-			if p == filepath.Join(unitDir, "pipelock-published-viewer.socket")+".bak" || p == recordPath+".bak" {
-				return nil, errors.New("lstat denied")
-			}
-			return baseLstat(p)
-		}
 		err := removePublishedServices(context.Background(), env)
-		if err == nil {
-			t.Fatal("expected combined cleanup/restore errors")
+		if err == nil || !strings.Contains(err.Error(), "systemctl denied") {
+			t.Fatalf("err = %v, want the close failure", err)
 		}
-		for _, want := range []string{"systemctl denied", "restore", "lstat denied"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Fatalf("err = %v, missing %q", err, want)
+		if _, statErr := os.Stat(recordPath); statErr != nil {
+			t.Fatalf("publication record removed after failed close: %v", statErr)
+		}
+	})
+
+	t.Run("failed unit restore leaves the publication record", func(t *testing.T) {
+		env, _ := publishedInstallEnv(t, publishedTestConfig)
+		if _, err := stepInstallPublishedServices(nil).apply(context.Background(), env); err != nil {
+			t.Fatalf("install: %v", err)
+		}
+		unit := filepath.Join(filepath.Dir(env.proxyForwarderSocketPath), "pipelock-published-viewer.socket")
+		original := env.removeFile
+		env.removeFile = func(path string) error {
+			if path == unit {
+				return errors.New("socket restore failed")
 			}
+			return original(path)
+		}
+		recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
+		err := removePublishedServices(context.Background(), env)
+		if err == nil || !strings.Contains(err.Error(), "socket restore failed") {
+			t.Fatalf("err = %v, want the unit restore failure", err)
+		}
+		if _, statErr := os.Stat(recordPath); statErr != nil {
+			t.Fatalf("publication record removed after failed unit restore: %v", statErr)
 		}
 	})
 }

@@ -455,6 +455,9 @@ func TestReconcileConflictIsUntouchedAndVerifyFails(t *testing.T) {
 	if status, detail := probeNFTContainment(context.Background(), probe); status != statusFail || !strings.Contains(detail, "handle 10") {
 		t.Fatalf("verify=%s %s", status, detail)
 	}
+	if result := doctorChainStructureReader(probe, &doctorEnv{port: defaultProxyPort, agentUserName: defaultAgentUser})(t.Context()); result.status != statusFail || result.class != classInfra || !strings.Contains(result.detail, "nft reconciliation conflict:") || !strings.Contains(result.remediation, "handle 10") {
+		t.Fatalf("doctor did not preserve the planner's conflict: %+v", result)
+	}
 }
 
 func TestReconcileLegacyIdentityAndPositionBoundaries(t *testing.T) {
@@ -822,11 +825,11 @@ func TestReconcileRecoveryAttemptsEveryKnownDoorway(t *testing.T) {
 			env, _, _ := newFakeEnv(t)
 			recordPath := env.loopbackForwarderInvPath
 			data := []byte(`{"services":[{"unit":"pipelock-agent-loopback-v4-9200","host":"127.0.0.1","port":9200}],"proxy_relay":true}`)
-			wantAttempts := 3
+			wantAttempts, wantObservations := 5, 3
 			if published {
 				recordPath = publishedServiceRecordPath(recordPath)
 				data = []byte(`{"services":[{"unit":"pipelock-published-viewer","name":"viewer"}]}`)
-				wantAttempts = 2
+				wantAttempts, wantObservations = 3, 2
 			}
 			read := env.readFile
 			env.readFile = func(path string) ([]byte, error) {
@@ -852,7 +855,7 @@ func TestReconcileRecoveryAttemptsEveryKnownDoorway(t *testing.T) {
 			} else {
 				err = revokeKnownLoopbackDoorways(context.Background(), env)
 			}
-			if !errors.Is(err, failure) || !errors.Is(err, os.ErrPermission) || attempts != wantAttempts || observations != wantAttempts {
+			if !errors.Is(err, failure) || !errors.Is(err, os.ErrPermission) || attempts != wantAttempts || observations != wantObservations {
 				t.Fatalf("recovery attempts=%d observations=%d error=%v", attempts, observations, err)
 			}
 		})

@@ -4,9 +4,11 @@
 package contain
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -90,4 +92,24 @@ func observeInstallPolicy(env *installEnv) ([]byte, time.Time, error) {
 		snapshot.now, snapshot.read = time.Now(), true
 	}
 	return snapshot.data, snapshot.now, snapshot.err
+}
+
+// observeNFTManagedChain shares the live observation contract for mutating
+// reconciliation paths. nft(8) list chain prints the requested chain; a
+// successful command with no content is unknown, not confirmed absence.
+func observeNFTManagedChain(ctx context.Context, run runCommand, nftPath, table, chain string) (string, error) {
+	live, code, err := run(ctx, nftPath, "-n", "-a", "list", "chain", "inet", table, chain)
+	if err != nil {
+		return "", fmt.Errorf("list nft managed chain: %w", err)
+	}
+	if code != 0 {
+		if !nftOutputConfirmsAbsent(live) {
+			return "", fmt.Errorf("list nft managed chain exit=%d: %s", code, oneLine(live))
+		}
+		return "", nil
+	}
+	if strings.TrimSpace(live) == "" {
+		return "", errors.New("list nft managed chain returned an empty observation")
+	}
+	return live, nil
 }

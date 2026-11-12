@@ -226,17 +226,9 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) (result error)
 		rules: string(rules), uids: header, table: env.table, chain: env.chain,
 		prior: priorNFTRulesHeaders(env.readFile, env.rulesPath, persisted),
 	}
-	out, code, err := env.runCmd(ctx, env.nftPath, "-n", "-a", "list", "chain", "inet", env.table, env.chain)
+	out, err := observeNFTManagedChain(ctx, env.runCmd, env.nftPath, env.table, env.chain)
 	if err != nil {
-		return fmt.Errorf("list nft managed chain: %w", err)
-	}
-	if code != 0 && strings.Contains(out, "No such file or directory") {
-		// A missing chain is the normal first-boot state. Loading the canonical
-		// file is sufficient and preserves nft's own error handling for any
-		// other missing-table situation.
-		out = ""
-	} else if code != 0 {
-		return fmt.Errorf("list nft managed chain exit=%d: %s", code, oneLine(out))
+		return err
 	}
 	plan := planNFTReconciliation(policy, nftReconcileObservation{persisted: string(persisted), live: out})
 	if err := plan.err(); err != nil {

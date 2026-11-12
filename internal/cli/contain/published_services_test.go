@@ -189,6 +189,591 @@ func TestPublishedReconcileKeepsRevokedUnitRecordedUntilDisabled(t *testing.T) {
 	}
 }
 
+func TestRemovePublishedServicesRetryKeepsRestoredUnit(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	if err := os.MkdirAll(filepath.Dir(env.loopbackForwarderInvPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
+	body := "{\"services\":[{\"unit\":\"pipelock-published-viewer\",\"name\":\"viewer\",\"agent_port\":5900,\"operator_user\":\"operator\",\"owner\":\"ops\",\"reason\":\"watch the agent display\",\"expires_at\":\"2099-01-01T00:00:00Z\"}]}\n"
+	if err := os.WriteFile(recordPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	socket := filepath.Join(unitDir, "pipelock-published-viewer.socket")
+	service := filepath.Join(unitDir, "pipelock-published-viewer.service")
+	if err := os.MkdirAll(unitDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(socket, []byte("managed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(socket+".bak", []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(service, []byte("managed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalRemove := env.removeFile
+	env.removeFile = func(path string) error {
+		if path == service {
+			return errors.New("service restore failed")
+		}
+		return originalRemove(path)
+	}
+
+	if err := removePublishedServices(context.Background(), env); err == nil || !strings.Contains(err.Error(), "service restore failed") {
+		t.Fatalf("first removal = %v, want the unit restore failure", err)
+	}
+	env.restoredBackups = nil
+	env.archivedBackups = nil
+	if err := removePublishedServices(context.Background(), env); err == nil || !strings.Contains(err.Error(), "service restore failed") {
+		t.Fatalf("retry = %v, want the same unfinished restore", err)
+	}
+	got, err := os.ReadFile(filepath.Clean(socket))
+	if err != nil || string(got) != "operator\n" {
+		t.Fatalf("restored socket after retry = %q, %v", got, err)
+	}
+}
+
+func TestRestoreJournalWriteFailureKeepsBackup(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	dir := t.TempDir()
+	inventory := filepath.Join(dir, "published-services.json")
+	socket := filepath.Join(dir, "unit.socket")
+	if err := os.WriteFile(socket, []byte("managed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(socket+".bak", []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	journal := doorwayRestoreJournalPath(inventory)
+	originalWrite := env.writeFile
+	env.writeFile = func(path string, contents []byte, mode os.FileMode) error {
+		if path == journal {
+			return errors.New("journal write failed")
+		}
+		return originalWrite(path, contents, mode)
+	}
+
+	if err := restoreJournaledBackup(env, inventory, socket); err == nil || !strings.Contains(err.Error(), "journal write failed") {
+		t.Fatalf("restore = %v, want the journal write failure", err)
+	}
+	env.restoredBackups = nil
+	env.archivedBackups = nil
+	env.writeFile = originalWrite
+	if err := restoreJournaledBackup(env, inventory, socket); err != nil {
+		t.Fatalf("retry = %v", err)
+	}
+	got, err := os.ReadFile(filepath.Clean(socket))
+	if err != nil || string(got) != "operator\n" {
+		t.Fatalf("restored socket = %q, %v", got, err)
+	}
+}
+
+func TestRestoreJournalWriteFailureKeepsArchivedBackup(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	dir := t.TempDir()
+	inventory := filepath.Join(dir, "published-services.json")
+	socket := filepath.Join(dir, "unit.socket")
+	if err := os.WriteFile(socket, []byte("managed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(socket+".bak", []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(dir, "unit.socket.bak.archived-older")
+	if err := os.WriteFile(archive, []byte("older\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rememberArchivedBackup(env, filepath.Clean(socket)+".bak", archive)
+	journal := doorwayRestoreJournalPath(inventory)
+	originalWrite := env.writeFile
+	env.writeFile = func(path string, contents []byte, mode os.FileMode) error {
+		if path == journal {
+			return errors.New("journal write failed")
+		}
+		return originalWrite(path, contents, mode)
+	}
+
+	if err := restoreJournaledBackup(env, inventory, socket); err == nil || !strings.Contains(err.Error(), "journal write failed") {
+		t.Fatalf("restore = %v, want the journal write failure", err)
+	}
+	kept := env.archivedBackups[filepath.Clean(socket)+".bak"]
+	if len(kept) != 1 {
+		t.Fatalf("archived backups = %v", env.archivedBackups)
+	}
+	older, err := os.ReadFile(filepath.Clean(kept[0]))
+	if err != nil || string(older) != "older\n" {
+		t.Fatalf("archived backup = %q, %v", older, err)
+	}
+	env.restoredBackups = nil
+	env.writeFile = originalWrite
+	if err := restoreJournaledBackup(env, inventory, socket); err != nil {
+		t.Fatalf("retry = %v", err)
+	}
+	got, err := os.ReadFile(filepath.Clean(socket))
+	if err != nil || string(got) != "operator\n" {
+		t.Fatalf("restored socket = %q, %v", got, err)
+	}
+	bak, err := os.ReadFile(filepath.Clean(socket) + ".bak")
+	if err != nil || string(bak) != "older\n" {
+		t.Fatalf("older backup after retry = %q, %v", bak, err)
+	}
+}
+
+func TestRestoreJournalWriteAndBackupFailureKeepsOperatorBytes(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	dir := t.TempDir()
+	inventory := filepath.Join(dir, "published-services.json")
+	socket := filepath.Join(dir, "unit.socket")
+	if err := os.WriteFile(socket, []byte("managed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(socket+".bak", []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env.writeFile = func(string, []byte, os.FileMode) error {
+		return errors.New("write failed")
+	}
+
+	if err := restoreJournaledBackup(env, inventory, socket); err == nil || !strings.Contains(err.Error(), "record restored doorway file") {
+		t.Fatalf("restore = %v, want the journal write failure", err)
+	}
+	parked, err := os.ReadFile(filepath.Clean(socket) + ".bak")
+	if err != nil || string(parked) != "operator\n" {
+		t.Fatalf("parked backup = %q, %v", parked, err)
+	}
+	env.restoredBackups = nil
+	env.archivedBackups = nil
+	if err := restoreJournaledBackup(env, inventory, socket); err == nil {
+		t.Fatal("retry with writes still failing returned success")
+	}
+	parked, err = os.ReadFile(filepath.Clean(socket) + ".bak")
+	if err != nil || string(parked) != "operator\n" {
+		t.Fatalf("backup after failed retry = %q, %v", parked, err)
+	}
+	if _, statErr := os.Stat(socket); !errors.Is(statErr, os.ErrNotExist) {
+		body, _ := os.ReadFile(filepath.Clean(socket))
+		if string(body) != "operator\n" {
+			t.Fatalf("retry deleted the restored bytes: %q, %v", body, statErr)
+		}
+	}
+}
+
+func TestNoteForgottenDoorwayKeepsCommittedJournalRemoval(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	dir := t.TempDir()
+	inventory := filepath.Join(dir, "published-services.json")
+	socket := filepath.Join(dir, "unit.socket")
+	other := filepath.Join(dir, "other.socket")
+	journal := doorwayRestoreJournalPath(inventory)
+	if err := os.WriteFile(journal, []byte(filepath.Clean(socket)+"\n"+other+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalWrite := env.writeFile
+	env.writeFile = func(path string, contents []byte, mode os.FileMode) error {
+		if path != journal {
+			return originalWrite(path, contents, mode)
+		}
+		if err := originalWrite(path, contents, mode); err != nil {
+			return err
+		}
+		return errors.New("journal sync failed")
+	}
+
+	var forgotten []string
+	if err := noteForgottenDoorway(env, inventory, socket, &forgotten); err == nil || !strings.Contains(err.Error(), "journal sync failed") {
+		t.Fatalf("forget = %v", err)
+	}
+	if len(forgotten) != 1 || forgotten[0] != filepath.Clean(socket) {
+		t.Fatalf("forgotten = %v", forgotten)
+	}
+	data, err := os.ReadFile(filepath.Clean(journal))
+	if err != nil || strings.Contains(string(data), filepath.Clean(socket)) {
+		t.Fatalf("committed journal still lists the removed path: %q, %v", data, err)
+	}
+	if err := restoreForgottenDoorway(env, inventory, socket, forgotten); err != nil && !strings.Contains(err.Error(), "journal sync failed") {
+		t.Fatalf("restore entry = %v", err)
+	}
+	data, err = os.ReadFile(filepath.Clean(journal))
+	if err != nil || !strings.Contains(string(data), filepath.Clean(socket)) {
+		t.Fatalf("journal after undo = %q, %v", data, err)
+	}
+}
+
+func TestInstallPublishedServiceJournalErrorRestoresUnit(t *testing.T) {
+	env, _ := publishedInstallEnv(t, publishedTestConfig)
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	socket := filepath.Join(unitDir, "pipelock-published-viewer.socket")
+	if err := os.WriteFile(socket, []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
+	journal := doorwayRestoreJournalPath(recordPath)
+	if err := os.MkdirAll(filepath.Dir(journal), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(unitDir, "other-kept.socket")
+	if err := os.WriteFile(journal, []byte(filepath.Clean(socket)+"\n"+other+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalWrite := env.writeFile
+	env.writeFile = func(path string, contents []byte, mode os.FileMode) error {
+		if path == journal {
+			return errors.New("journal write failed")
+		}
+		return originalWrite(path, contents, mode)
+	}
+
+	install := stepInstallPublishedServices(nil)
+	applied, err := install.apply(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "journal write failed") {
+		t.Fatalf("install = %v, want the journal write failure", err)
+	}
+	if !applied {
+		t.Fatal("written unit was left outside the undo set")
+	}
+	if undoErr := install.undo(context.Background(), env); undoErr != nil {
+		t.Fatalf("undo = %v", undoErr)
+	}
+	got, err := os.ReadFile(filepath.Clean(socket))
+	if err != nil || string(got) != "operator\n" {
+		t.Fatalf("socket after undo = %q, %v", got, err)
+	}
+	data, err := os.ReadFile(filepath.Clean(journal))
+	if err != nil || !strings.Contains(string(data), filepath.Clean(socket)) {
+		t.Fatalf("journal = %q, %v", data, err)
+	}
+}
+
+func TestInstallPublishedRecordJournalErrorRestoresRecord(t *testing.T) {
+	env, _ := publishedInstallEnv(t, publishedTestConfig)
+	recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
+	previous := "{\"services\":[]}\n"
+	if err := os.MkdirAll(filepath.Dir(recordPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(recordPath, []byte(previous), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	journal := doorwayRestoreJournalPath(recordPath)
+	other := recordPath + ".other"
+	if err := os.WriteFile(journal, []byte(filepath.Clean(recordPath)+"\n"+other+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalWrite := env.writeFile
+	env.writeFile = func(path string, contents []byte, mode os.FileMode) error {
+		if path == journal {
+			return errors.New("journal write failed")
+		}
+		return originalWrite(path, contents, mode)
+	}
+
+	install := stepInstallPublishedServices(nil)
+	applied, err := install.apply(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "journal write failed") {
+		t.Fatalf("install = %v, want the journal write failure", err)
+	}
+	if !applied {
+		t.Fatal("written record was left outside the undo set")
+	}
+	if undoErr := install.undo(context.Background(), env); undoErr != nil {
+		t.Fatalf("undo = %v", undoErr)
+	}
+	got, err := os.ReadFile(filepath.Clean(recordPath))
+	if err != nil || string(got) != previous {
+		t.Fatalf("record after undo = %q, %v", got, err)
+	}
+}
+
+func TestInstallPublishedServiceUndoRestoresJournalEntry(t *testing.T) {
+	env, _ := publishedInstallEnv(t, publishedTestConfig)
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	socket := filepath.Join(unitDir, "pipelock-published-viewer.socket")
+	if err := os.WriteFile(socket, []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
+	journal := doorwayRestoreJournalPath(recordPath)
+	if err := os.MkdirAll(filepath.Dir(journal), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(journal, []byte(filepath.Clean(socket)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	later := step{
+		name:  "later-failure",
+		apply: func(context.Context, *installEnv) (bool, error) { return false, errors.New("later failed") },
+	}
+	_, err := runSteps(context.Background(), env, env.out, []step{stepInstallPublishedServices(nil), later})
+	if err == nil || !strings.Contains(err.Error(), "later failed") {
+		t.Fatalf("install = %v", err)
+	}
+	got, err := os.ReadFile(filepath.Clean(socket))
+	if err != nil || string(got) != "operator\n" {
+		t.Fatalf("socket after undo = %q, %v", got, err)
+	}
+	data, err := os.ReadFile(filepath.Clean(journal))
+	if err != nil || !strings.Contains(string(data), filepath.Clean(socket)) {
+		t.Fatalf("journal after undo = %q, %v", data, err)
+	}
+}
+
+func TestInstallPublishedServiceUndoLeavesUnjournaledPath(t *testing.T) {
+	env, _ := publishedInstallEnv(t, publishedTestConfig)
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	socket := filepath.Join(unitDir, "pipelock-published-viewer.socket")
+	if err := os.WriteFile(socket, []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
+	journal := doorwayRestoreJournalPath(recordPath)
+	if err := os.MkdirAll(filepath.Dir(journal), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(unitDir, "other-kept.socket")
+	if err := os.WriteFile(journal, []byte(other+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	later := step{
+		name:  "later-failure",
+		apply: func(context.Context, *installEnv) (bool, error) { return false, errors.New("later failed") },
+	}
+	_, err := runSteps(context.Background(), env, env.out, []step{stepInstallPublishedServices(nil), later})
+	if err == nil || !strings.Contains(err.Error(), "later failed") {
+		t.Fatalf("install = %v", err)
+	}
+	got, err := os.ReadFile(filepath.Clean(socket))
+	if err != nil || string(got) != "operator\n" {
+		t.Fatalf("socket after undo = %q, %v", got, err)
+	}
+	data, err := os.ReadFile(filepath.Clean(journal))
+	if err != nil {
+		t.Fatalf("journal = %v", err)
+	}
+	if strings.Contains(string(data), filepath.Clean(socket)) || !strings.Contains(string(data), other) {
+		t.Fatalf("journal = %s", data)
+	}
+}
+
+func TestInstallPublishedUndoRecordsJournalWhenArchiveRestoreFails(t *testing.T) {
+	env, _ := publishedInstallEnv(t, publishedTestConfig)
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	socket := filepath.Join(unitDir, "pipelock-published-viewer.socket")
+	if err := os.WriteFile(socket, []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(socket+".bak", []byte("older\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
+	journal := doorwayRestoreJournalPath(recordPath)
+	if err := os.MkdirAll(filepath.Dir(journal), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(journal, []byte(filepath.Clean(socket)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	install := stepInstallPublishedServices(nil)
+	if _, err := install.apply(context.Background(), env); err != nil {
+		t.Fatalf("install = %v", err)
+	}
+	originalRename := env.rename
+	env.rename = func(oldPath, newPath string) error {
+		if strings.Contains(oldPath, ".archived") && strings.HasSuffix(newPath, ".bak") {
+			return errors.New("archive restore failed")
+		}
+		return originalRename(oldPath, newPath)
+	}
+	if err := install.undo(context.Background(), env); err == nil || !strings.Contains(err.Error(), "archive restore failed") {
+		t.Fatalf("undo = %v", err)
+	}
+	got, err := os.ReadFile(filepath.Clean(socket))
+	if err != nil || string(got) != "operator\n" {
+		t.Fatalf("socket after undo = %q, %v", got, err)
+	}
+	data, err := os.ReadFile(filepath.Clean(journal))
+	if err != nil || !strings.Contains(string(data), filepath.Clean(socket)) {
+		t.Fatalf("journal after undo = %q, %v", data, err)
+	}
+	env.restoredBackups = nil
+	env.archivedBackups = nil
+	env.rename = originalRename
+	if err := restoreJournaledBackup(env, recordPath, socket); err != nil {
+		t.Fatalf("later removal = %v", err)
+	}
+	got, err = os.ReadFile(filepath.Clean(socket))
+	if err != nil || string(got) != "operator\n" {
+		t.Fatalf("socket after later removal = %q, %v", got, err)
+	}
+}
+
+func TestRevokeSkipsJournaledPublishedRestore(t *testing.T) {
+	env, _ := publishedInstallEnv(t, "containment:\n  published_services: []\n")
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	socket := filepath.Join(unitDir, "pipelock-published-viewer.socket")
+	service := filepath.Join(unitDir, "pipelock-published-viewer.service")
+	if err := os.WriteFile(socket, []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(service, []byte("managed-service\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
+	records, err := encodePublishedServiceRecords(desiredPublishedServices([]config.ContainmentPublishedService{publishedTestService()}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(recordPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(recordPath, records, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	journal := doorwayRestoreJournalPath(recordPath)
+	if err := os.WriteFile(journal, []byte(filepath.Clean(socket)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := stepInstallPublishedServices(nil).apply(context.Background(), env); err != nil {
+		t.Fatalf("install = %v", err)
+	}
+	got, err := os.ReadFile(filepath.Clean(socket))
+	if err != nil || string(got) != "operator\n" {
+		t.Fatalf("journaled socket = %q, %v", got, err)
+	}
+	if _, statErr := os.Stat(service); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("unjournaled service = %v", statErr)
+	}
+}
+
+func TestInstallPublishedServiceDropsStaleRestoreJournal(t *testing.T) {
+	env, _ := publishedInstallEnv(t, publishedTestConfig)
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	socket := filepath.Join(unitDir, "pipelock-published-viewer.socket")
+	if err := os.WriteFile(socket, []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
+	journal := doorwayRestoreJournalPath(recordPath)
+	if err := os.MkdirAll(filepath.Dir(journal), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(journal, []byte(filepath.Clean(socket)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := stepInstallPublishedServices(nil).apply(context.Background(), env); err != nil {
+		t.Fatalf("install = %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Clean(journal)); err == nil && strings.Contains(string(data), filepath.Clean(socket)) {
+		t.Fatalf("journal still lists the rewritten unit: %s", data)
+	}
+	env.restoredBackups = nil
+	env.archivedBackups = nil
+	if err := restoreJournaledBackup(env, recordPath, socket); err != nil {
+		t.Fatalf("restore after reinstall = %v", err)
+	}
+	got, err := os.ReadFile(filepath.Clean(socket))
+	if err != nil || string(got) != "operator\n" {
+		t.Fatalf("restored socket = %q, %v", got, err)
+	}
+}
+
+func TestRemovePublishedServicesKeepsJournalWhenRecordRestoreFails(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	if err := os.MkdirAll(filepath.Dir(env.loopbackForwarderInvPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
+	body := "{\"services\":[{\"unit\":\"pipelock-published-viewer\",\"name\":\"viewer\",\"agent_port\":5900,\"operator_user\":\"operator\",\"owner\":\"ops\",\"reason\":\"watch the agent display\",\"expires_at\":\"2099-01-01T00:00:00Z\"}]}\n"
+	if err := os.WriteFile(recordPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	socket := filepath.Join(unitDir, "pipelock-published-viewer.socket")
+	service := filepath.Join(unitDir, "pipelock-published-viewer.service")
+	if err := os.MkdirAll(unitDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(socket, []byte("managed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(socket+".bak", []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(service, []byte("managed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(service+".bak", []byte("operator-service\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalRemove := env.removeFile
+	env.removeFile = func(path string) error {
+		if path == recordPath {
+			return errors.New("record restore failed")
+		}
+		return originalRemove(path)
+	}
+
+	if err := removePublishedServices(context.Background(), env); err == nil || !strings.Contains(err.Error(), "record restore failed") {
+		t.Fatalf("first removal = %v, want the record restore failure", err)
+	}
+	if _, err := os.Stat(doorwayRestoreJournalPath(recordPath)); err != nil {
+		t.Fatalf("restore journal = %v", err)
+	}
+	env.restoredBackups = nil
+	env.archivedBackups = nil
+	if err := removePublishedServices(context.Background(), env); err == nil || !strings.Contains(err.Error(), "record restore failed") {
+		t.Fatalf("retry = %v, want the same record restore failure", err)
+	}
+	got, err := os.ReadFile(filepath.Clean(socket))
+	if err != nil || string(got) != "operator\n" {
+		t.Fatalf("restored socket after retry = %q, %v", got, err)
+	}
+}
+
+func TestFinishDoorwayInventoryRestoreStatErrorKeepsFile(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	inventory := filepath.Join(t.TempDir(), "published-services.json")
+	if err := os.WriteFile(inventory+".bak", []byte("operator-record\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	statErr := errors.New("stat failed")
+	failed := false
+	realLstat := env.lstat
+	env.lstat = func(path string) (os.FileInfo, error) {
+		if !failed && filepath.Clean(path) == filepath.Clean(inventory) {
+			if _, err := os.Lstat(path); err == nil {
+				failed = true
+				return nil, statErr
+			}
+		}
+		return realLstat(path)
+	}
+
+	if err := finishDoorwayInventoryRestore(env, inventory); err == nil || !errors.Is(err, statErr) {
+		t.Fatalf("finish = %v, want the stat error", err)
+	}
+	got, err := os.ReadFile(filepath.Clean(inventory))
+	if err != nil || string(got) != "operator-record\n" {
+		t.Fatalf("inventory after stat error = %q, %v", got, err)
+	}
+
+	retry := *env
+	retry.restoredBackups = nil
+	retry.archivedBackups = nil
+	retry.lstat = os.Lstat
+	if err := finishDoorwayInventoryRestore(&retry, inventory); err != nil {
+		t.Fatalf("retry = %v", err)
+	}
+	got, err = os.ReadFile(filepath.Clean(inventory))
+	if err != nil || string(got) != "operator-record\n" {
+		t.Fatalf("inventory after retry = %q, %v", got, err)
+	}
+}
+
 func TestInstallPublishedServicesRollbackOnLaterFailure(t *testing.T) {
 	env, runner := publishedInstallEnv(t, publishedTestConfig)
 	unitDir := filepath.Dir(env.proxyForwarderSocketPath)

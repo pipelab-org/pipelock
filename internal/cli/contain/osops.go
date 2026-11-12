@@ -159,8 +159,12 @@ type installEnv struct {
 	toolsListPath            string // plk-launch's runtime allow-list (tab-separated NAME\tTARGET)
 	workspaceInvPath         string
 	loopbackForwarderInvPath string
-	evidenceACLInvPath       string // operator evidence-read ACL inventory
-	viewerAccountMarkerPath  string // records whether install created pipelock-viewer
+	// preserveContainmentRecords is set when a doorway close or unit restore
+	// failed. Rollback must not delete the config directory that holds the
+	// inventory a later attempt needs.
+	preserveContainmentRecords bool
+	evidenceACLInvPath         string // operator evidence-read ACL inventory
+	viewerAccountMarkerPath    string // records whether install created pipelock-viewer
 	// evidenceACLPreexisting records that the operator evidence ACL recorded
 	// in the inventory already covered this install's operator and dirs before
 	// the grant step ran, so rolling that step back must leave it in place.
@@ -820,6 +824,231 @@ func restoreTouchedInline(env *installEnv, touched []string, cause error) (bool,
 		}
 	}
 	return len(errs) > 1, errors.Join(errs...)
+}
+
+// doorwayRestoreFinished reports whether removal already restored path.
+// A later revoke must not call restoreBackup for that path: the backup was
+// consumed, and a missing backup deletes the restored file.
+func doorwayRestoreFinished(env *installEnv, inventoryPath, path string) (bool, error) {
+	done, err := readDoorwayRestoreJournal(env, doorwayRestoreJournalPath(inventoryPath))
+	if err != nil {
+		return false, err
+	}
+	return done[filepath.Clean(path)], nil
+}
+
+func doorwayRestoreJournalPath(inventoryPath string) string {
+	return filepath.Clean(inventoryPath) + ".restore-journal"
+}
+
+// restoreJournaledBackup restores one file and records that completion beside
+// the inventory. A later process has an empty restoredBackups map, so without
+// the journal it would treat the restored file as an install-created file and
+// delete it.
+func restoreJournaledBackup(env *installEnv, inventoryPath, path string) error {
+	journal := doorwayRestoreJournalPath(inventoryPath)
+	done, err := readDoorwayRestoreJournal(env, journal)
+	if err != nil {
+		return err
+	}
+	clean := filepath.Clean(path)
+	if done[clean] {
+		return nil
+	}
+	if err := restoreBackup(env, clean); err != nil {
+		return err
+	}
+	done[clean] = true
+	if err := writeDoorwayRestoreJournal(env, inventoryPath, done); err != nil {
+		journalErr := fmt.Errorf("record restored doorway file %s: %w", clean, err)
+		// A directory sync can fail after the new journal is already in place.
+		recorded, readErr := readDoorwayRestoreJournal(env, journal)
+		if readErr == nil && recorded[clean] {
+			return nil
+		}
+		// restoreBackup may already have moved an older archive into .bak.
+		// Keep that archive, and put the restored bytes in .bak so the next
+		// attempt restores them instead of deleting the file. A failed copy
+		// parks the restored file itself as that backup.
+		if keepErr := preserveConsumedDoorwayBackup(env, clean); keepErr != nil {
+			return errors.Join(journalErr, keepErr)
+		}
+		return journalErr
+	}
+	return nil
+}
+
+// preserveConsumedDoorwayBackup keeps the restored bytes beside the file
+// after the backup was consumed. The next removal restores that backup
+// instead of treating the file as one this install created and deleting it.
+func preserveConsumedDoorwayBackup(env *installEnv, clean string) error {
+	bak := clean + ".bak"
+	body, err := env.readFile(clean)
+	if err != nil {
+		return fmt.Errorf("read restored %s: %w", clean, err)
+	}
+	if _, rotateErr := rotateBackupIfNeeded(env, bak, body); rotateErr != nil {
+		return rotateErr
+	}
+	mode := os.FileMode(0o600)
+	if info, infoErr := env.lstat(clean); infoErr == nil {
+		mode = info.Mode().Perm()
+	}
+	writeErr := env.writeFile(bak, body, mode)
+	if writeErr == nil {
+		return nil
+	}
+	if _, statErr := env.lstat(bak); statErr == nil {
+		return nil
+	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return errors.Join(fmt.Errorf("keep backup %s: %w", bak, writeErr), fmt.Errorf("stat %s: %w", bak, statErr))
+	}
+	if renameErr := env.rename(clean, bak); renameErr != nil {
+		return errors.Join(
+			fmt.Errorf("keep backup %s: %w", bak, writeErr),
+			fmt.Errorf("park restored %s: copy it aside before retrying removal: %w", clean, renameErr),
+		)
+	}
+	return nil
+}
+
+// forgetDoorwayRestore drops one path from the journal after a new backup
+// of that path exists. The old completion entry would make the next removal
+// skip the new backup. removed is false when the path was not listed or the
+// updated journal could not be written.
+func forgetDoorwayRestore(env *installEnv, inventoryPath, path string) (bool, error) {
+	done, err := readDoorwayRestoreJournal(env, doorwayRestoreJournalPath(inventoryPath))
+	if err != nil {
+		return false, err
+	}
+	clean := filepath.Clean(path)
+	if !done[clean] {
+		return false, nil
+	}
+	delete(done, clean)
+	if err := writeDoorwayRestoreJournal(env, inventoryPath, done); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// noteForgottenDoorway records a completion entry this install removed, so
+// undo can put that entry back when it restores the file.
+func noteForgottenDoorway(env *installEnv, inventoryPath, path string, forgotten *[]string) error {
+	done, err := readDoorwayRestoreJournal(env, doorwayRestoreJournalPath(inventoryPath))
+	if err != nil {
+		return err
+	}
+	clean := filepath.Clean(path)
+	// Record the entry before the journal write. That write can rename the
+	// updated journal into place and then fail, and undo still has to put
+	// the entry back.
+	if done[clean] {
+		*forgotten = append(*forgotten, clean)
+	}
+	_, err = forgetDoorwayRestore(env, inventoryPath, path)
+	return err
+}
+
+// restoreForgottenDoorway puts back a completion entry that undo's file
+// restore would otherwise leave unprotected. A path this install did not
+// remove stays out of the journal.
+func restoreForgottenDoorway(env *installEnv, inventoryPath, path string, forgotten []string) error {
+	clean := filepath.Clean(path)
+	for _, item := range forgotten {
+		if item != clean {
+			continue
+		}
+		return rememberDoorwayRestore(env, inventoryPath, clean)
+	}
+	return nil
+}
+
+func rememberDoorwayRestore(env *installEnv, inventoryPath, path string) error {
+	done, err := readDoorwayRestoreJournal(env, doorwayRestoreJournalPath(inventoryPath))
+	if err != nil {
+		return err
+	}
+	clean := filepath.Clean(path)
+	if done[clean] {
+		return nil
+	}
+	done[clean] = true
+	return writeDoorwayRestoreJournal(env, inventoryPath, done)
+}
+
+func writeDoorwayRestoreJournal(env *installEnv, inventoryPath string, done map[string]bool) error {
+	if len(done) == 0 {
+		return removeDoorwayRestoreJournal(env, inventoryPath)
+	}
+	paths := make([]string, 0, len(done))
+	for restored := range done {
+		paths = append(paths, restored)
+	}
+	sort.Strings(paths)
+	journal := doorwayRestoreJournalPath(inventoryPath)
+	if err := env.writeFile(journal, []byte(strings.Join(paths, "\n")+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write doorway restore journal: %w", err)
+	}
+	return nil
+}
+
+func readDoorwayRestoreJournal(env *installEnv, journal string) (map[string]bool, error) {
+	data, err := env.readFile(journal)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return map[string]bool{}, nil
+		}
+		return nil, fmt.Errorf("read doorway restore journal %s: %w", journal, err)
+	}
+	done := make(map[string]bool)
+	for _, line := range strings.Split(string(data), "\n") {
+		if line != "" {
+			done[line] = true
+		}
+	}
+	return done, nil
+}
+
+// finishDoorwayInventoryRestore restores the inventory after every unit
+// restore has been journaled. A file that install created has nothing left
+// to protect, so it is not journaled and a missing directory is not an error.
+func finishDoorwayInventoryRestore(env *installEnv, inventoryPath string) error {
+	done, err := readDoorwayRestoreJournal(env, doorwayRestoreJournalPath(inventoryPath))
+	if err != nil {
+		return err
+	}
+	clean := filepath.Clean(inventoryPath)
+	if !done[clean] {
+		if err := restoreBackup(env, inventoryPath); err != nil {
+			return err
+		}
+		// An install-created inventory is gone. There is no restored file to
+		// protect, and its directory may not exist.
+		if _, err := env.lstat(inventoryPath); err == nil {
+			if err := restoreJournaledBackup(env, inventoryPath, inventoryPath); err != nil {
+				return err
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			// The backup is already consumed. Record the completion before
+			// returning so a later finish does not delete the restored file.
+			// A failed journal write parks those bytes as the next backup.
+			statErr := err
+			if recordErr := restoreJournaledBackup(env, inventoryPath, inventoryPath); recordErr != nil {
+				return errors.Join(statErr, recordErr)
+			}
+			return statErr
+		}
+	}
+	return removeDoorwayRestoreJournal(env, inventoryPath)
+}
+
+func removeDoorwayRestoreJournal(env *installEnv, inventoryPath string) error {
+	err := env.removeFile(doorwayRestoreJournalPath(inventoryPath))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove doorway restore journal: %w", err)
+	}
+	return nil
 }
 
 func markBackupRestored(env *installEnv, clean string) {
