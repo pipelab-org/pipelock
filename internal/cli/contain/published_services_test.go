@@ -609,6 +609,45 @@ func TestInstallPublishedUndoRecordsJournalWhenArchiveRestoreFails(t *testing.T)
 	}
 }
 
+func TestRevokeSkipsJournaledPublishedRestore(t *testing.T) {
+	env, _ := publishedInstallEnv(t, "containment:\n  published_services: []\n")
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	socket := filepath.Join(unitDir, "pipelock-published-viewer.socket")
+	service := filepath.Join(unitDir, "pipelock-published-viewer.service")
+	if err := os.WriteFile(socket, []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(service, []byte("managed-service\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
+	records, err := encodePublishedServiceRecords(desiredPublishedServices([]config.ContainmentPublishedService{publishedTestService()}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(recordPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(recordPath, records, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	journal := doorwayRestoreJournalPath(recordPath)
+	if err := os.WriteFile(journal, []byte(filepath.Clean(socket)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := stepInstallPublishedServices(nil).apply(context.Background(), env); err != nil {
+		t.Fatalf("install = %v", err)
+	}
+	got, err := os.ReadFile(filepath.Clean(socket))
+	if err != nil || string(got) != "operator\n" {
+		t.Fatalf("journaled socket = %q, %v", got, err)
+	}
+	if _, statErr := os.Stat(service); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("unjournaled service = %v", statErr)
+	}
+}
+
 func TestInstallPublishedServiceDropsStaleRestoreJournal(t *testing.T) {
 	env, _ := publishedInstallEnv(t, publishedTestConfig)
 	unitDir := filepath.Dir(env.proxyForwarderSocketPath)

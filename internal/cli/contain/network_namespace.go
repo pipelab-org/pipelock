@@ -1191,6 +1191,16 @@ func stepInstallNetworkNamespacePolicy(serviceOverride *[]config.ContainmentLoop
 					if readErr != nil {
 						return true, fmt.Errorf("read stale loopback forwarder %s: %w", path, readErr)
 					}
+					// A failed removal may already have restored this file and
+					// recorded that in the journal. The backup is gone, so
+					// restoreBackup would delete the operator file.
+					finished, err := doorwayRestoreFinished(env, env.loopbackForwarderInvPath, path)
+					if err != nil {
+						return true, err
+					}
+					if finished {
+						continue
+					}
 					// The current file is Pipelock's managed unit. Restore its
 					// pre-install backup now instead of backing up the managed
 					// file again; otherwise a successful revoke strands operator

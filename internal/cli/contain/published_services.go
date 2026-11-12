@@ -474,6 +474,13 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 			}
 			for _, unit := range filePlan.closeDoorways {
 				path := filepath.Join(unitDir, unit)
+				finished, err := doorwayRestoreFinished(env, recordPath, path)
+				if err != nil {
+					return true, err
+				}
+				if finished {
+					continue
+				}
 				body, readErr := env.readFile(path)
 				if errors.Is(readErr, os.ErrNotExist) {
 					continue

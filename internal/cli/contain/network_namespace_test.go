@@ -1816,6 +1816,51 @@ func TestContainedNetworkNamespaceUnitSharesPrivateTmp(t *testing.T) {
 // an earlier retirement that removed only the socket and service left the
 // in-namespace listener enabled with Requires= on a socket that no longer
 // exists, so it failed on every start.
+func TestRevokeSkipsJournaledLoopbackRestore(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	configPath := filepath.Join(env.configDir, "pipelock.yaml")
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	base := loopbackForwarderUnitBase("127.0.0.1", 9200)
+	socket := filepath.Join(unitDir, base+".socket")
+	service := filepath.Join(unitDir, base+".service")
+	if err := os.WriteFile(socket, []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(service, []byte("managed-service\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := json.Marshal(loopbackForwarderInventory{Services: []loopbackForwarderRecord{{
+		Unit: base, Host: "127.0.0.1", Port: 9200, Owner: "search-team", Reason: "local retrieval", ExpiresAt: futureExpiryForTest,
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(env.loopbackForwarderInvPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.loopbackForwarderInvPath, inventory, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	journal := doorwayRestoreJournalPath(env.loopbackForwarderInvPath)
+	if err := os.WriteFile(journal, []byte(filepath.Clean(socket)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("containment:\n  loopback_services: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := stepInstallNetworkNamespace().apply(context.Background(), env); err != nil {
+		t.Fatalf("install = %v", err)
+	}
+	got, err := os.ReadFile(filepath.Clean(socket))
+	if err != nil || string(got) != "operator\n" {
+		t.Fatalf("journaled socket = %q, %v", got, err)
+	}
+	if _, statErr := os.Stat(service); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("unjournaled service = %v", statErr)
+	}
+}
+
 func TestDeclaredLoopbackOrphanListenerIsRetired(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	configPath := filepath.Join(env.configDir, "pipelock.yaml")

@@ -826,6 +826,17 @@ func restoreTouchedInline(env *installEnv, touched []string, cause error) (bool,
 	return len(errs) > 1, errors.Join(errs...)
 }
 
+// doorwayRestoreFinished reports whether removal already restored path.
+// A later revoke must not call restoreBackup for that path: the backup was
+// consumed, and a missing backup deletes the restored file.
+func doorwayRestoreFinished(env *installEnv, inventoryPath, path string) (bool, error) {
+	done, err := readDoorwayRestoreJournal(env, doorwayRestoreJournalPath(inventoryPath))
+	if err != nil {
+		return false, err
+	}
+	return done[filepath.Clean(path)], nil
+}
+
 func doorwayRestoreJournalPath(inventoryPath string) string {
 	return filepath.Clean(inventoryPath) + ".restore-journal"
 }
