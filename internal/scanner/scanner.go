@@ -743,6 +743,14 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 			cp.gluedDigitExtendsNumber = rejectDigit
 		}
 		requirements := analyzePatternMatchRequirements(cp.re, cp.withoutLeftBoundary)
+		if cp.withoutLeftBoundary != nil && cp.providerKeyPrefix == "" {
+			// The removed \b is zero width, so every bounded hit is also a
+			// body hit at the same offset, and every glued candidate is a
+			// body hit. The body's shape is a necessary condition for both.
+			// The bounded grammar's gate is not: its whole-word length check
+			// rejects the glued rune.
+			requirements.shape = analyzeRegexpMatchRequirements(cp.withoutLeftBoundary.String()).shape
+		}
 		cp.requiresEquals = requirements.requiresEquals
 		cp.minASCIIDigits = requirements.minASCIIDigits
 		cp.shapeGate = requirements.shape

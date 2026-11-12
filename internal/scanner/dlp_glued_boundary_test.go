@@ -190,3 +190,33 @@ func gluedMatchNames(matches []TextDLPMatch) []string {
 	}
 	return names
 }
+
+// The zero-width-boundary families keep a shape gate after gaining a
+// boundary-free body, and that gate admits each glued credential. A gate taken
+// from the bounded grammar would refuse the glued Twilio key on word length.
+func TestGluedBoundaryShapeGateAdmitsGluedCandidate(t *testing.T) {
+	s := gluedBoundaryScanner(t)
+	gated := map[string]bool{"Twilio API Key": true, "Social Security Number": true, "Credit Card Number": true}
+	for _, p := range s.dlpPatterns {
+		if !gated[p.name] {
+			continue
+		}
+		delete(gated, p.name)
+		if p.shapeGate == nil {
+			t.Errorf("%s: shape gate dropped", p.name)
+		}
+	}
+	for name := range gated {
+		t.Errorf("%s: pattern not compiled", name)
+	}
+	for _, tc := range gluedBoundaryCases() {
+		if !tc.want {
+			continue
+		}
+		for _, p := range s.dlpPatterns {
+			if p.name == tc.pattern && !p.admitsView("note: "+tc.prefix+tc.secret+" end") {
+				t.Errorf("%s: shape gate refuses glued candidate %q", tc.pattern, tc.prefix)
+			}
+		}
+	}
+}
