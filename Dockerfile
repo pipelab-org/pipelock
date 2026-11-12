@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Multi-stage build for minimal image size
-FROM golang:1.27.2-alpine@sha256:85dc1069ac644ea3c527b177303a406eb3358192816cd7f9e5848eb658851673 AS builder
+FROM golang:1.27.4-alpine@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf AS builder
 
 # The image builds the binary that ships in the container, so its toolchain is
 # a security input rather than a build detail: govulncheck analyses the active
@@ -16,8 +16,8 @@ FROM golang:1.27.2-alpine@sha256:85dc1069ac644ea3c527b177303a406eb3358192816cd7f
 # which is the opposite of what this check is for. Change the tag, the digest
 # and this literal together.
 RUN got="$(go env GOVERSION)"; \
-    if [ "$got" != "go1.27.2" ]; then \
-      echo "toolchain mismatch: base image reports $got, expected go1.27.2" >&2; \
+    if [ "$got" != "go1.27.4" ]; then \
+      echo "toolchain mismatch: base image reports $got, expected go1.27.4" >&2; \
       echo "update the golang base image tag and digest together with this expectation" >&2; \
       exit 1; \
     fi; \

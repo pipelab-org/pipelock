@@ -2023,8 +2023,26 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 		{
 			Name:        "Destructive Git Operation",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|git)$`,
-			ArgPattern:  `(?i)(?:^|[\s;|&()<>\x60\x22\x27/=])(git\s+)?(push(?:\s+[^\s;|&]+)*?\s+(--force(?:[\s;&|()<>]|$)|-[a-z]*f[a-z]*\b|\+[^\s;|&]+)|reset(?:\s+[^\s;|&]+)*?\s+--hard\b|clean(?:\s+[^\s;|&]+)*?\s+(-[a-z]*(f[a-z]*d|d[a-z]*f)[a-z]*\b|-[a-z]*f[a-z]*(?:\s+[^\s;|&]+)*?\s+-[a-z]*d[a-z]*\b|-[a-z]*d[a-z]*(?:\s+[^\s;|&]+)*?\s+-[a-z]*f[a-z]*\b))`,
+			ArgPattern:  destructiveGitArgPattern,
 			Action:      config.ActionBlock,
+		},
+		{
+			// A hook skip is a safety-check bypass. It does not discard commits
+			// or a work tree, so the default action is warn. strict and
+			// hostile-model presets set block.
+			Name:        "Git Hook Bypass",
+			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|git)$`,
+			ArgPattern:  gitHookBypassArgPattern,
+			Action:      config.ActionWarn,
+		},
+		{
+			// git branch -D deletes an unmerged branch. The commits usually
+			// remain in the reflog until it expires. The default action is warn
+			// in every preset, including strict and hostile-model.
+			Name:        "Unmerged Git Branch Delete",
+			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|git)$`,
+			ArgPattern:  gitUnmergedBranchDeleteArgPattern,
+			Action:      config.ActionWarn,
 		},
 		{
 			Name:        "Encoded Command Execution",

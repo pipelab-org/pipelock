@@ -87,7 +87,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: "1.26.10"
+          go-version: "1.26.11"
 
       - name: Verify Go version
         # This job builds the candidate binary the published score is measured
@@ -98,7 +98,7 @@ jobs:
         run: |
           got="$(go env GOVERSION)"
           echo "GOVERSION=$got"
-          test "$got" = "go1.26.10"
+          test "$got" = "go1.26.11"
 
       - name: Verify immutable inputs
         shell: bash

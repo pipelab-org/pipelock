@@ -18,8 +18,11 @@ var priorArgPatterns = map[string][]string{
 	`(?i)\brm(?:\s+[^\s;|&]+)*?\s+(-[a-z]*[rf][a-z]*\b|--(?:recursive|force)\b)`: {
 		`(?i)\brm\s+(--\s+)?(-[a-z]*[rf]\b|--(?:recursive|force)\b)`,
 	},
-	// Destructive Git Operation
-	`(?i)(?:^|[\s;|&()<>\x60\x22\x27/=])(git\s+)?(push(?:\s+[^\s;|&]+)*?\s+(--force(?:[\s;&|()<>]|$)|-[a-z]*f[a-z]*\b|\+[^\s;|&]+)|reset(?:\s+[^\s;|&]+)*?\s+--hard\b|clean(?:\s+[^\s;|&]+)*?\s+(-[a-z]*(f[a-z]*d|d[a-z]*f)[a-z]*\b|-[a-z]*f[a-z]*(?:\s+[^\s;|&]+)*?\s+-[a-z]*d[a-z]*\b|-[a-z]*d[a-z]*(?:\s+[^\s;|&]+)*?\s+-[a-z]*f[a-z]*\b))`: {
+	// Destructive Git Operation. The first prior is the pattern this one
+	// replaced. The second is the pattern that one replaced. Neither matches
+	// a path-scoped checkout or restore, so those forms are not kept.
+	destructiveGitArgPattern: {
+		`(?i)(?:^|[\s;|&()<>\x60\x22\x27/=])(git\s+)?(push(?:\s+[^\s;|&]+)*?\s+(--force(?:[\s;&|()<>]|$)|-[a-z]*f[a-z]*\b|\+[^\s;|&]+)|reset(?:\s+[^\s;|&]+)*?\s+--hard\b|clean(?:\s+[^\s;|&]+)*?\s+(-[a-z]*(f[a-z]*d|d[a-z]*f)[a-z]*\b|-[a-z]*f[a-z]*(?:\s+[^\s;|&]+)*?\s+-[a-z]*d[a-z]*\b|-[a-z]*d[a-z]*(?:\s+[^\s;|&]+)*?\s+-[a-z]*f[a-z]*\b))`,
 		`(?i)(?:^|[\s;|&()<>\x60\x22\x27/=])(git\s+)?(push\s+(--force(\s|$)|-f\b)|reset\s+--hard\b|clean\s+-fd\b)`,
 	},
 	// Detached Process Spawning
