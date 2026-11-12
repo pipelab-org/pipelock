@@ -332,20 +332,52 @@ func additionalInjectionViews(text, applied string) ([]injectionDecodeView, bool
 
 // injectionHTMLText uses the same HTML parser's text-node semantics as fetch
 // extraction: tags and comments disappear, adjacent text nodes concatenate,
-// and character references decode. The raw view is always scanned first.
+// and character references decode. script, style and noscript text is omitted,
+// matching the element names fetch conceals. template and textarea stay.
+// The raw view is always scanned first.
 func injectionHTMLText(text string) string {
 	z := html.NewTokenizer(strings.NewReader(text))
 	var out strings.Builder
+	raw := ""
 	for {
 		switch z.Next() {
 		case html.TextToken:
-			out.Write(z.Text())
+			if raw == "" {
+				out.Write(z.Text())
+			}
+		case html.StartTagToken, html.SelfClosingTagToken:
+			if raw != "" {
+				continue
+			}
+			name, _ := z.TagName()
+			if injectionHTMLConcealedElement(name) {
+				// The tokenizer keeps a raw element open until its end tag,
+				// including when the start tag was marked self-closing.
+				raw = string(name)
+			}
+		case html.EndTagToken:
+			if raw == "" {
+				continue
+			}
+			name, _ := z.TagName()
+			if string(name) == raw {
+				raw = ""
+			}
 		case html.ErrorToken:
 			if !errors.Is(z.Err(), io.EOF) {
 				return text
 			}
 			return out.String()
 		}
+	}
+}
+
+func injectionHTMLConcealedElement(name []byte) bool {
+	switch string(name) {
+	case "script", "style", "noscript":
+		return true
+	default:
+		return false
 	}
 }
 
