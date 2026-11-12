@@ -440,7 +440,7 @@ func (s *assembledScan) searchLane(codec, phase, id int) {
 		matchPattern = &copyPattern
 	}
 	accepted := false
-	matchPattern.firstAcceptedSpan(lane.view, func(begin, finish int) bool {
+	visit := func(begin, finish int) bool {
 		if pattern.withoutLeftBoundary != nil {
 			loc := pattern.withoutLeftBoundary.FindStringIndex(lane.view[begin:finish])
 			if loc == nil {
@@ -472,7 +472,19 @@ func (s *assembledScan) searchLane(codec, phase, id int) {
 		s.viewLabel = fmt.Sprintf("reassembly:%s:phase_%d", s.encoding, phase)
 		accepted = s.produce(id, lane.view, begin, finish)
 		return accepted && pattern.keywords == nil
-	})
+	}
+	if _, _, stopped := matchPattern.firstAcceptedSpan(lane.view, visit); stopped || !pattern.relaxSingleGluedBoundary {
+		return
+	}
+	// The lane is a complete decoded view, so it takes the same one-glued-rune
+	// candidates matchSpanInView takes from plain text. The bounded regex
+	// above never yields them.
+	for _, loc := range matchPattern.providerCandidateSpans(lane.view) {
+		begin, finish, ok := matchPattern.gluedCandidateSpan(lane.view, loc)
+		if ok && visit(begin, finish) {
+			return
+		}
+	}
 }
 
 func (s *assembledScan) produce(id int, view string, begin, finish int) bool {

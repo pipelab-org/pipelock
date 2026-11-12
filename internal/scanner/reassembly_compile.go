@@ -47,6 +47,12 @@ func newAssembledPlan(p *reassemblyPlan) (*assembledPlan, error) {
 			validation.keywordContext = nil
 			shape.validate = &validation
 		}
+		if pattern.relaxSingleGluedBoundary {
+			glued := *pattern
+			glued.keywords = nil
+			glued.keywordContext = nil
+			shape.glued = &glued
+		}
 		a.shapes = append(a.shapes, &shape)
 	}
 	a.buildShapeGroups(p)
