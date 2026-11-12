@@ -99,7 +99,7 @@ func TestInjectionDecodeStripResidual(t *testing.T) {
 }
 
 func TestInjectionDecodePercentPlusViews(t *testing.T) {
-	views, complete := additionalInjectionViews("ordinary+documentation%20example")
+	views, complete := additionalInjectionViews("ordinary+documentation%20example", "")
 	var texts []string
 	for _, v := range views {
 		texts = append(texts, v.text)

@@ -30,15 +30,24 @@ func (s *Scanner) ScanResponseOutbound(ctx context.Context, content string) Resp
 
 const injectionDecodeLimitReason = "injection inspection incomplete: decoding limit reached"
 
+// injectionHTMLTextLabel marks the one HTML extraction on a decode lineage.
+const injectionHTMLTextLabel = "html_text"
+
 type injectionDecodeView struct {
 	text, label string
-	depth       int
+	// applied lists transforms already run on this lineage. HTML extraction
+	// is one tokenizer pass over a payload: running it again treats the
+	// extracted text as markup and never reaches a fixed point.
+	applied string
+	depth   int
 }
 
 // scanAdditionalInjectionViews runs after the historical passes so their
 // findings, order and coordinates remain unchanged. Only new decoded views
-// are matched. Every retained view is charged against the DLP byte/candidate
-// budgets, including first-layer copies; nesting uses the injection depth cap.
+// are matched. A single transform of the scanned input, and one HTML
+// extraction of that transform, is admitted when the view itself fits.
+// Deeper copies share the retained-byte budget. Nesting uses the injection
+// depth cap.
 func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, target string, suppress []config.SuppressEntry, result ResponseScanResult) (out ResponseScanResult) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -67,10 +76,14 @@ func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, tar
 		}
 		parent := queue[head]
 		if len(parent.text) > maxDecodeTotalBytes {
-			incomplete = true
+			// The caller already scanned this text. A larger plain payload is
+			// not a decoding limit; only an encoding we will not open is.
+			if hasAdditionalInjectionEncoding(parent.text) || normalize.ContainsTags(parent.text) || hasTextEncoding(parent.text) {
+				incomplete = true
+			}
 			continue
 		}
-		views, complete := additionalInjectionViews(parent.text)
+		views, complete := additionalInjectionViews(parent.text, parent.applied)
 		legacy, legacyComplete := injectionLegacyDecodeViews(parent.text)
 		views = append(views, legacy...)
 		complete = complete && legacyComplete
@@ -79,16 +92,34 @@ func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, tar
 			if view.text == "" || seen[view.text] {
 				continue
 			}
-			if parent.depth >= responseDecodeMaxDepth || len(queue) >= maxDecodeCandidates || len(view.text) > maxDecodeTotalBytes-used {
+			// One transform of the scanned input, and HTML extraction of that
+			// transform, must not push each other out of the retained-byte
+			// budget. Charging them did: tag stripping was dropped on a page
+			// still inside the response cap, including after entity decoding.
+			htmlOfDecoded := view.label == injectionHTMLTextLabel && parent.depth == 1 && !strings.Contains(parent.applied, injectionHTMLTextLabel)
+			charge := parent.depth > 0 && !htmlOfDecoded
+			overBudget := len(view.text) > maxDecodeTotalBytes || (charge && len(view.text) > maxDecodeTotalBytes-used)
+			if parent.depth >= responseDecodeMaxDepth || len(queue) >= maxDecodeCandidates || overBudget {
+				// A leftover shorter than an encoded segment cannot hold a phrase.
+				// The same floor is minSegmentDecodeLen.
+				if view.label == "" && len(view.text) < minSegmentDecodeLen {
+					continue
+				}
 				incomplete = true
 				continue
 			}
 			seen[view.text] = true
-			used += len(view.text)
+			if charge {
+				used += len(view.text)
+			}
 			view.depth = parent.depth + 1
 			if view.label == "" {
+				// A legacy payload is new text. Transforms run again; the
+				// inherited label is provenance for the coordinates only.
+				view.applied = ""
 				view.label = parent.label
 			} else {
+				view.applied = spanViewLabel(view.label, parent.applied)
 				view.label = spanViewLabel(view.label, parent.label)
 			}
 			queue = append(queue, view)
@@ -126,10 +157,10 @@ func hasAdditionalInjectionEncoding(text string) bool {
 	return strings.ContainsAny(text, "&%<+") || strings.Contains(text, `\u`)
 }
 
-func additionalInjectionViews(text string) ([]injectionDecodeView, bool) {
+func additionalInjectionViews(text, applied string) ([]injectionDecodeView, bool) {
 	var views []injectionDecodeView
 	complete := true
-	if !hasAdditionalInjectionEncoding(text) {
+	if !hasAdditionalInjectionEncoding(text) && !strings.Contains(text, "<") {
 		return nil, true
 	}
 	if decoded := normalize.DecodeJSONUnicodeEscapes(text); decoded != text {
@@ -156,10 +187,12 @@ func additionalInjectionViews(text string) ([]injectionDecodeView, bool) {
 			complete = complete && normalize.PercentUnescapePartial(percent) == percent
 		}
 	}
-	if strings.Contains(text, "<") {
+	// One extraction per lineage. A second pass parses the extracted text as
+	// markup, so ordinary "<" and "+" keep producing new views until the depth cap.
+	if strings.Contains(text, "<") && !strings.Contains(applied, injectionHTMLTextLabel) {
 		decoded := injectionHTMLText(text)
 		if decoded != text {
-			views = append(views, injectionDecodeView{text: decoded, label: "html_text"})
+			views = append(views, injectionDecodeView{text: decoded, label: injectionHTMLTextLabel})
 		}
 	}
 	return views, complete
