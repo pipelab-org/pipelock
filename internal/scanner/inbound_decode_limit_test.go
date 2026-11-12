@@ -6,6 +6,7 @@ package scanner
 import (
 	"context"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -52,8 +53,8 @@ func hasPartial(r TextDLPResult) bool {
 		slices.Contains(matchNamesOf(r.InformationalMatches), PartialEncodedContentPattern)
 }
 
-// Josh's decision (2026-11-11): inbound content at a decode limit always
-// carries the partial-inspection warning and is never refused.
+// Inbound content at a decode limit carries the partial-inspection warning
+// without an inspection refusal.
 func TestInboundDecodeLimitWarns(t *testing.T) {
 	t.Parallel()
 	sc := decodeLimitScanner(t)
@@ -159,5 +160,106 @@ func TestInboundWithinDecodeLimitsNoWarning(t *testing.T) {
 		if hasPartial(r) || !slices.Contains(matchNamesOf(r.Matches), "AWS Access ID") {
 			t.Fatalf("percent chain n=%d: want the credential and no warning, got %v", n, matchNamesOf(r.Matches))
 		}
+	}
+}
+
+// Independent JSON and quoted-printable chains form a decode graph that
+// reaches the candidate cap before the byte cap (under 1 MiB of views).
+func decodeCandidateLimitText() string {
+	return `\` + strings.Repeat("u005c", 60) + "u0021!=" + strings.Repeat("3D", 60) + "21!"
+}
+
+func TestInboundDecodeWorkLimitsWarn(t *testing.T) {
+	sc := decodeLimitScanner(t)
+	for _, tc := range []struct {
+		name            string
+		text            string
+		outboundRefuses bool
+	}{
+		{"candidate cap", decodeCandidateLimitText(), true},
+		{"decoded byte cap", decodeBudgetNestedText(), true},
+		// Outbound inspects a large terminal input; inbound retains its
+		// existing whole-input decode shortcut, but must disclose the skip.
+		{"oversized input", strings.Repeat("!", maxDecodeTotalBytes+1), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			views, complete := decodeEncodingsBudgetMode(tc.text, true, 0, true)
+			if tc.name == "candidate cap" {
+				bytes := 0
+				for _, view := range views {
+					bytes += len(view.text)
+				}
+				if len(views) != maxDecodeCandidates || bytes >= maxDecodeTotalBytes {
+					t.Fatalf("candidate fixture did not isolate the cap: views=%d bytes=%d", len(views), bytes)
+				}
+			}
+			if complete {
+				t.Error("inbound decoder reported a budget stop as complete")
+			}
+			ctx, release := WithSharedDecodes(t.Context())
+			defer release()
+			for _, shared := range []bool{false, true, true} {
+				scanCtx := t.Context()
+				if shared {
+					scanCtx = ctx
+				}
+				r := sc.ScanTextForDLPInbound(scanCtx, tc.text)
+				if !hasPartial(r) || !r.Clean || r.Incomplete || !OnlyInformational(r.Matches) {
+					t.Errorf("inbound budget stop: shared=%v clean=%v incomplete=%v matches=%v", shared, r.Clean, r.Incomplete, matchNamesOf(r.Matches))
+				}
+			}
+			r := sc.ScanTextForDLP(t.Context(), tc.text)
+			if HasInspectionLimit(r.Matches) != tc.outboundRefuses || r.Clean == tc.outboundRefuses || hasPartial(r) {
+				t.Errorf("outbound accounting changed: clean=%v matches=%v", r.Clean, matchNamesOf(r.Matches))
+			}
+		})
+	}
+}
+
+func TestInboundDecodeWalkBudgetStops(t *testing.T) {
+	roots := make([]decodedResult, maxDecodeCandidates)
+	for i := range roots {
+		roots[i] = decodedResult{text: "!" + strconv.Itoa(i), encoding: encodingHTML}
+	}
+	for _, tc := range []struct {
+		name      string
+		roots     []decodedResult
+		minPrefix int
+		wantViews int
+	}{
+		{"candidate roots", roots, 0, maxDecodeCandidates},
+		{"byte root", []decodedResult{{text: strings.Repeat("!", maxDecodeTotalBytes)}}, 0, 1},
+		{"prefix recovery byte root", []decodedResult{{text: strings.Repeat("!", maxDecodeTotalBytes+1)}}, 1, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			views, complete := decodeEncodingsInboundWalkTracked(nil, nil, tc.roots, newDecodeSeen(), true, tc.minPrefix, true, nil)
+			if complete || len(views) != tc.wantViews {
+				t.Fatalf("budget stop: views=%d complete=%v", len(views), complete)
+			}
+		})
+	}
+}
+
+func TestInboundDecodeLimitKeepsCardClassification(t *testing.T) {
+	sc := decodeLimitScanner(t)
+	// The strings reconstruct an enforcing card run; the independent deep
+	// escape chain must keep its own warning outside that classification.
+	text := `["4111","111111111111","` + percentChain(maxDecodeRounds+1) + `"]`
+	r := sc.ScanTextForDLPInbound(t.Context(), text)
+	card := false
+	partial := 0
+	for _, match := range r.Matches {
+		if match.genericCard && !match.IsInformational() {
+			card = true
+		}
+		if match.PatternName == PartialEncodedContentPattern {
+			partial++
+			if !match.IsInformational() || !match.Warn {
+				t.Fatal("partial evidence reclassified as enforcing", match)
+			}
+		}
+	}
+	if !card || partial != 1 || r.Clean || HasInspectionLimit(r.Matches) {
+		t.Fatalf("card or warning classification changed: clean=%v matches=%v", r.Clean, matchNamesOf(r.Matches))
 	}
 }

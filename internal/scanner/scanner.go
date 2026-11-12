@@ -3337,8 +3337,12 @@ func decodeEncodingsBudgetMode(s string, includeURL bool, minPrefix int, inbound
 }
 
 func decodeEncodingsBudgetModeTracked(s string, includeURL bool, minPrefix int, inbound bool, sources *keywordDecodeSources) ([]decodedResult, bool) {
-	if s == "" || inbound && len(s) > maxDecodeTotalBytes {
+	if s == "" {
 		return nil, true
+	}
+	if inbound && len(s) > maxDecodeTotalBytes {
+		// Keep the inbound size shortcut, but disclose the uninspected graph.
+		return nil, false
 	}
 	var seen decodeSeen
 	seen.add(s)
@@ -6916,7 +6920,7 @@ func decodeEncodingsInboundWalkTracked(out []decodedResult, queue []string, star
 			queue = append(queue, d.text)
 		}
 		if !more {
-			return out, complete
+			return out, false
 		}
 	}
 	var scratch [16]decodedResult
@@ -6931,7 +6935,7 @@ func decodeEncodingsInboundWalkTracked(out []decodedResult, queue []string, star
 			}
 			added, more := admit(d)
 			if !more {
-				return out, complete
+				return out, false
 			}
 			if added {
 				queue = append(queue, d.text)
