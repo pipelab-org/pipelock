@@ -920,6 +920,32 @@ func readDoorwayRestoreJournal(env *installEnv, journal string) (map[string]bool
 	return done, nil
 }
 
+// finishDoorwayInventoryRestore restores the inventory after every unit
+// restore has been journaled. A file that install created has nothing left
+// to protect, so it is not journaled and a missing directory is not an error.
+func finishDoorwayInventoryRestore(env *installEnv, inventoryPath string) error {
+	done, err := readDoorwayRestoreJournal(env, doorwayRestoreJournalPath(inventoryPath))
+	if err != nil {
+		return err
+	}
+	clean := filepath.Clean(inventoryPath)
+	if !done[clean] {
+		if err := restoreBackup(env, inventoryPath); err != nil {
+			return err
+		}
+		// An install-created inventory is gone. There is no restored file to
+		// protect, and its directory may not exist.
+		if _, err := env.lstat(inventoryPath); err == nil {
+			if err := restoreJournaledBackup(env, inventoryPath, inventoryPath); err != nil {
+				return err
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return removeDoorwayRestoreJournal(env, inventoryPath)
+}
+
 func removeDoorwayRestoreJournal(env *installEnv, inventoryPath string) error {
 	err := env.removeFile(doorwayRestoreJournalPath(inventoryPath))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {

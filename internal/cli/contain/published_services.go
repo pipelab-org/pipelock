@@ -626,13 +626,9 @@ func removePublishedServices(ctx context.Context, env *installEnv) error {
 		env.preserveContainmentRecords = true
 		return errors.Join(errs...)
 	}
-	if err := restoreJournaledBackup(env, recordPath, recordPath); err != nil {
+	if err := finishDoorwayInventoryRestore(env, recordPath); err != nil {
 		env.preserveContainmentRecords = true
 		return fmt.Errorf("restore %s: %w", recordPath, err)
-	}
-	if err := removeDoorwayRestoreJournal(env, recordPath); err != nil {
-		env.preserveContainmentRecords = true
-		return err
 	}
 	return nil
 }
