@@ -22,7 +22,7 @@ func TestStructuredJSONGrammarMatchesDLPExtractor(t *testing.T) {
 		`{"k":"v","k":"w"}`, deep(extractJSONMaxDepth), deep(extractJSONMaxDepth + 1),
 		`{"a":` + deep(extractJSONMaxDepth) + `}`,
 	} {
-		_, _, _, _, _, truncated, dlpErr := extractJSONBodyDLPStrings([]byte(body), BodyScanRequest{})
+		_, _, _, _, _, _, truncated, dlpErr := extractJSONBodyDLPStrings([]byte(body), BodyScanRequest{})
 		_, err := structuredJSONStrings([]byte(body), nil)
 		if dlpAccepts, accepts := dlpErr == nil && !truncated, err == nil; dlpAccepts != accepts {
 			t.Errorf("%q: DLP extractor accepts=%v (err=%v truncated=%v), structured accepts=%v (err=%v)", body, dlpAccepts, dlpErr, truncated, accepts, err)
