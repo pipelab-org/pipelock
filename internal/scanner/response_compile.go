@@ -8,15 +8,18 @@ import (
 	"sync"
 )
 
-// The scanner already compiles these three response pattern groups. Keep one
-// current syntax per group, replacing it when configuration changes, rather
-// than accumulating a history of configuration or request content.
+// Keep one current syntax per configured or core response pattern group,
+// replacing it when configuration changes, rather than accumulating a history
+// of configuration or request content.
 type responseSyntaxGroup uint8
 
 const (
 	responseSyntaxPrimary responseSyntaxGroup = iota
 	responseSyntaxOptionalSpace
 	responseSyntaxVowelFold
+	responseSyntaxCorePrimary
+	responseSyntaxCoreOptionalSpace
+	responseSyntaxCoreVowelFold
 	responseSyntaxGroups
 )
 

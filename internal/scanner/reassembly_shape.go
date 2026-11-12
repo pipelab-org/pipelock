@@ -47,7 +47,7 @@ func newAssembledShape(id int, expr string) (*assembledShape, error) {
 	// A finite grammar bounds the bytes of any match, including folded runes.
 	if n := reassemblyMaxBytes(tree); n > 0 && n <= maxReassembledTokenLen {
 		s.window = n
-		s.local = regexp.MustCompile(tree.String())
+		s.local = mustCompileScannerRegexp(tree.String())
 	}
 	// Join the existing regex-derived shape analysis. A rune-length lower
 	// bound is also a byte-length lower bound, including folded UTF-8 runes.

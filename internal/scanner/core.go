@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"regexp"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -205,7 +204,7 @@ func initCoreScanner(cfg *config.Config) *compiledCoreScanner {
 		if !strings.HasPrefix(pattern, "(?i)") {
 			pattern = "(?i)" + pattern
 		}
-		re, err := regexp.Compile(pattern)
+		re, err := compileScannerRegexp(pattern)
 		if err != nil {
 			panic(fmt.Sprintf("BUG: core DLP pattern %q failed to compile: %v", p.name, err))
 		}
@@ -236,7 +235,7 @@ func initCoreScanner(cfg *config.Config) *compiledCoreScanner {
 
 	// Compile core response patterns with all variant passes.
 	for _, p := range coreResponsePatternDefs() {
-		re, err := regexp.Compile(p.regex)
+		re, err := compileScannerRegexp(p.regex)
 		if err != nil {
 			panic(fmt.Sprintf("BUG: core response pattern %q failed to compile: %v", p.name, err))
 		}
@@ -252,7 +251,7 @@ func initCoreScanner(cfg *config.Config) *compiledCoreScanner {
 		optRegex := strings.ReplaceAll(p.regex, `\s+`, `\s*`)
 		optRegex = strings.ReplaceAll(optRegex, `[-,;:.\s]+`, `[-,;:.\s]*`)
 		if optRegex != p.regex {
-			if optRe, optErr := regexp.Compile(optRegex); optErr == nil {
+			if optRe, optErr := compileScannerRegexp(optRegex); optErr == nil {
 				cs.responseOptSpacePatterns = append(cs.responseOptSpacePatterns, &compiledPattern{
 					name:                p.name,
 					re:                  optRe,
@@ -283,7 +282,7 @@ func initCoreScanner(cfg *config.Config) *compiledCoreScanner {
 		}
 		vfRegex = vfPrefix + normalize.FoldVowels(vfRegex)
 		if vfRegex != p.regex {
-			if vfRe, vfErr := regexp.Compile(vfRegex); vfErr == nil {
+			if vfRe, vfErr := compileScannerRegexp(vfRegex); vfErr == nil {
 				cs.responseVowelFoldPatterns = append(cs.responseVowelFoldPatterns, &compiledPattern{
 					name:                p.name,
 					re:                  vfRe,
@@ -296,13 +295,13 @@ func initCoreScanner(cfg *config.Config) *compiledCoreScanner {
 
 	// Build response pre-filters.
 	if len(cs.responsePatterns) > 0 {
-		cs.responsePreFilter = newResponsePreFilter(cs.responsePatterns)
+		cs.responsePreFilter = reusableResponsePreFilter(cs.responsePatterns, responseSyntaxCorePrimary)
 	}
 	if len(cs.responseOptSpacePatterns) > 0 {
-		cs.responseOptSpacePreFilter = newResponsePreFilter(cs.responseOptSpacePatterns)
+		cs.responseOptSpacePreFilter = reusableResponsePreFilter(cs.responseOptSpacePatterns, responseSyntaxCoreOptionalSpace)
 	}
 	if len(cs.responseVowelFoldPatterns) > 0 {
-		cs.responseVowelFoldPreFilter = newResponsePreFilter(cs.responseVowelFoldPatterns)
+		cs.responseVowelFoldPreFilter = reusableResponsePreFilter(cs.responseVowelFoldPatterns, responseSyntaxCoreVowelFold)
 	}
 
 	// Parse core internal CIDRs.

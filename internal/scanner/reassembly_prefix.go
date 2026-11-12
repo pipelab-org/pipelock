@@ -117,7 +117,7 @@ func assembledContinuationVerifier(tree *syntax.Regexp) (*regexp.Regexp, int) {
 	if size <= 0 || size > maxReassembledTokenLen || assembledJunkExposure*assembledJunkWeight(prefix) > 1 {
 		return nil, 0
 	}
-	return regexp.MustCompile("^(?:" + prefix.String() + ")"), size
+	return mustCompileScannerRegexp("^(?:" + prefix.String() + ")"), size
 }
 
 // The returned language contains a prefix of every match. complete means the
