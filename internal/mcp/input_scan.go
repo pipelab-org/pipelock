@@ -485,13 +485,13 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 
 		// Run injection patterns on the full raw text (injection patterns
 		// match phrases, not encoded blobs -- full text is appropriate).
-		injResult := sc.ScanResponse(ctx, raw)
+		injResult := sc.ScanResponseOutbound(ctx, raw)
 
 		// Also scan each extracted string individually for encoded injection
 		// (e.g. base64-encoded phrases) that don't decode in the full blob.
 		if injResult.Clean {
 			for _, s := range strs {
-				r := sc.ScanResponse(ctx, s)
+				r := sc.ScanResponseOutbound(ctx, s)
 				assessment := mergeInputViewAssessment(injResult, s, r)
 				injResult.Assessment = assessment
 				if !r.Clean {
@@ -607,14 +607,14 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 
 	// Run injection patterns (reuses response scanning patterns).
 	// First scan joined text for injection phrases that span fields.
-	injResult := sc.ScanResponse(ctx, joined)
+	injResult := sc.ScanResponseOutbound(ctx, joined)
 
 	// Also scan each extracted string individually for injection. Catches
 	// encoded injection (e.g. base64) in a single field that doesn't decode
 	// cleanly when concatenated with other fields.
 	if injResult.Clean {
 		for _, s := range strs {
-			r := sc.ScanResponse(ctx, s)
+			r := sc.ScanResponseOutbound(ctx, s)
 			assessment := mergeInputViewAssessment(injResult, s, r)
 			injResult.Assessment = assessment
 			if !r.Clean {
@@ -715,13 +715,13 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 		}
 	}
 
-	injResult := sc.ScanResponse(ctx, text)
+	injResult := sc.ScanResponseOutbound(ctx, text)
 
 	// JSON unicode unescape for injection scanning: same parser differential
 	// fix as DLP above. \u0069gnore → "ignore" must be caught.
 	if injResult.Clean {
 		if unescaped := unescapeJSONUnicode(text); unescaped != text {
-			r := sc.ScanResponse(ctx, unescaped)
+			r := sc.ScanResponseOutbound(ctx, unescaped)
 			assessment := injResult.RecoveryAssessment().Merge(r.RecoveryAssessment())
 			injResult = r
 			injResult.Assessment = assessment
@@ -732,7 +732,7 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 	// (e.g. base64-encoded phrases) that don't decode in the full blob.
 	if injResult.Clean {
 		for _, s := range strs {
-			r := sc.ScanResponse(ctx, s)
+			r := sc.ScanResponseOutbound(ctx, s)
 			assessment := mergeInputViewAssessment(injResult, s, r)
 			injResult.Assessment = assessment
 			if !r.Clean {

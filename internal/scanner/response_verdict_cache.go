@@ -78,7 +78,7 @@ func (c *responseVerdictCache) get(key responseVerdictKey) (ResponseScanResult, 
 func (c *responseVerdictCache) put(key responseVerdictKey, size int, result ResponseScanResult) {
 	// A suppressed or observed finding is evidence, even when the verdict is clean.
 	// It must be produced again for every request and can depend on time.
-	if size < 0 || size > responseVerdictMaxBody || !result.Clean || result.Failed() || len(result.Matches) != 0 ||
+	if size < 0 || size > responseVerdictMaxBody || !result.Clean || result.Failed() || result.InspectionIncomplete || len(result.Matches) != 0 ||
 		len(result.WarnedMatches) != 0 || len(result.SuppressedMatches) != 0 || len(result.ObservedCoreMatches) != 0 || result.TransformedContent != "" {
 		return
 	}

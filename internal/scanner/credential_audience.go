@@ -1170,7 +1170,7 @@ func (s *Scanner) queryLessURLScansClean(parsed *url.URL, memo *queryLessDLPMemo
 	withoutQuery := *parsed
 	withoutQuery.RawQuery = ""
 	withoutQuery.ForceQuery = false
-	decodes := decodingMemo{inbound: memo != nil && memo.inbound}
+	decodes := decodingMemo{urlAccounting: true, inbound: memo != nil && memo.inbound}
 	result, _ := s.checkDLPWithDecodesAt(&withoutQuery, &decodes, s.queryScanTime(memo))
 	if memo != nil {
 		memo.done, memo.clean = true, result.Allowed
@@ -1230,7 +1230,7 @@ func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, mem
 			query := parsed.Query()
 			query.Del("key")
 			remaining.RawQuery = query.Encode()
-			decodes := decodingMemo{inbound: memo != nil && memo.inbound}
+			decodes := decodingMemo{urlAccounting: true, inbound: memo != nil && memo.inbound}
 			if result, _ := s.checkDLPWithDecodesAt(&remaining, &decodes, now); !result.Allowed {
 				return bareURLSurface
 			}
@@ -1692,7 +1692,7 @@ func (s *Scanner) queryGrantValidityNoteWithMode(parsed *url.URL, now time.Time,
 	if !ok {
 		return ""
 	}
-	decodes := decodingMemo{inbound: inbound}
+	decodes := decodingMemo{urlAccounting: true, inbound: inbound}
 	if result, _ := s.checkDLPWithDecodesAt(parsed, &decodes, at); !result.Allowed {
 		return ""
 	}

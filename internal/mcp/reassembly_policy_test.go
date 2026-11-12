@@ -46,6 +46,15 @@ func runReassemblyPolicyInbound(t *testing.T, surface string) {
 	if testing.Short() {
 		t.Skip("encoded allowance witness")
 	}
+	runInboundPartialSurface(t, surface, policyPartialBody())
+}
+
+// runInboundPartialSurface delivers body through one inbound surface under a
+// block-action response policy and asserts the partial-inspection evidence
+// arrives as a warning: delivered unchanged, signed receipt, operator log and
+// warn hook, never a refusal.
+func runInboundPartialSurface(t *testing.T, surface, body string) {
+	t.Helper()
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.DLP.ScanEnv = false
@@ -62,7 +71,6 @@ func runReassemblyPolicyInbound(t *testing.T, surface string) {
 	cfg.ResponseScanning.Action = config.ActionBlock
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()
-	body := policyPartialBody()
 	t.Run(surface, func(t *testing.T) {
 		warnings := 0
 		sc.SetDLPWarnHook(func(_ context.Context, name, _ string) {
