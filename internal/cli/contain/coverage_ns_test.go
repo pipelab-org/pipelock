@@ -1174,6 +1174,16 @@ func TestCovNSInstallNetworkNamespaceApplySkipsRestartForRevokedForwarder(t *tes
 	if !fakeRunnerCalled(runner, "systemctl restart "+nsUnit) {
 		t.Fatalf("apply() did not restart the changed namespace holder: %v", runner.calls)
 	}
+	for _, name := range []string{revokedNS, unit + ".socket"} {
+		if !fakeRunnerCalled(runner, "systemctl disable --now "+name) || !fakeRunnerCalled(runner, "systemctl disable --runtime --now "+name) {
+			t.Fatalf("revoked doorway %s was not disabled in both enablement stores: %v", name, runner.calls)
+		}
+	}
+	for _, name := range []string{nsUnit, containedNamespaceForwarderUnit, filepath.Base(env.proxyForwarderSocketPath)} {
+		if fakeRunnerCalled(runner, "systemctl disable --runtime --now "+name) {
+			t.Fatalf("runtime disable touched kept unit %s: %v", name, runner.calls)
+		}
+	}
 }
 
 // TestCovNSInstallNetworkNamespaceUndoInactiveStateCleanupFailures forces

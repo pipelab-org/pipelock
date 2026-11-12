@@ -1158,7 +1158,7 @@ func stepInstallNetworkNamespacePolicy(serviceOverride *[]config.ContainmentLoop
 				// Requires= the socket, so leaving it enabled after the socket is
 				// gone makes a unit that fails on every start.
 				for _, running := range []string{unit + "-netns.service", unit + ".socket"} {
-					if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", running); err != nil {
+					if err := runRevocationSystemctl(ctx, env, "disable", "--now", running); err != nil {
 						return true, fmt.Errorf("disable stale loopback forwarder %s: %w", running, err)
 					}
 				}
