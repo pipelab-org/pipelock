@@ -123,9 +123,16 @@ func TestEncodedCredentialInUniformRun(t *testing.T) {
 					t.Cleanup(sc.Close)
 					codec := reassemblyCodecByName(t, enc.name)
 					alphabet := reassemblyCodecs[codec].alphabet[:1]
-					for _, size := range []int{1 << 20, 2 << 20, 4 << 20} {
+					sizes := []int{1 << 20, 2 << 20, 4 << 20}
+					// The race detector multiplies the cost of these scans; one
+					// size at one phase keeps the detection check in race runs.
+					reduced := raceEnabled || testing.Short()
+					if reduced {
+						sizes = sizes[:1]
+					}
+					for _, size := range sizes {
 						phases := enc.quantum
-						if secret.name != "AWS Access ID" && size != 1<<20 {
+						if reduced || (secret.name != "AWS Access ID" && size != 1<<20) {
 							phases = 1
 						}
 						for phase := range phases {
