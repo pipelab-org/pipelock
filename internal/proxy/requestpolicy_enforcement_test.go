@@ -392,7 +392,7 @@ func TestRequestPolicyBodyLimit_DefaultFallback(t *testing.T) {
 	t.Parallel()
 	p := newTestProxyWithConfig(t, reqPolicyConfig(graphqlBlockRule()))
 	p.cfgPtr.Store(&config.Config{})
-	if got := p.requestPolicyBodyLimit(); got != defaultRequestPolicyMaxBodyBytes {
+	if got := p.requestPolicyBodyLimit(nil); got != defaultRequestPolicyMaxBodyBytes {
 		t.Fatalf("default limit = %d, want %d", got, defaultRequestPolicyMaxBodyBytes)
 	}
 }
@@ -1149,5 +1149,51 @@ func TestRequestPolicy_HotReloadAppliesRuleChange(t *testing.T) {
 	}
 	if got := p.evaluateRequestPolicy(rpTestHost, http.MethodDelete, http.Header{}, "/v1/jobs/1", "", requestPolicyBody{}); got.Matched() {
 		t.Fatal("after rule removal, DELETE should not match")
+	}
+}
+
+// A reload between admission and the body read must not change the limit a
+// request is held to: the admitted configuration decides, in both directions.
+func TestPrepareRequestPolicyBodyUsesAdmittedLimit(t *testing.T) {
+	tests := []struct {
+		name          string
+		admittedLimit int
+		liveLimit     int
+		wantBlock     bool
+	}{
+		{name: "reload raised the limit", admittedLimit: 8, liveLimit: 1 << 20, wantBlock: true},
+		{name: "reload lowered the limit", admittedLimit: 1 << 20, liveLimit: 8, wantBlock: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			admitted := reqPolicyConfig(graphqlBlockRule())
+			admitted.RequestBodyScanning.MaxBodyBytes = tt.admittedLimit
+			p := newTestProxyWithConfig(t, admitted)
+
+			live := reqPolicyConfig(graphqlBlockRule())
+			live.RequestBodyScanning.MaxBodyBytes = tt.liveLimit
+			p.cfgPtr.Store(live)
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+rpTestHost+"/graphql",
+				strings.NewReader(deleteRecordGraphQLBody()))
+			req.Header.Set("Content-Type", "application/json")
+			in := requestPolicyInput{
+				Host:        rpTestHost,
+				Method:      http.MethodPost,
+				Path:        "/graphql",
+				ContentType: "application/json",
+				Headers:     req.Header,
+				Config:      admitted,
+				Transport:   TransportForward,
+				AuditCtx:    audit.LogContext{},
+			}
+			res := p.prepareRequestPolicyBody(req, &in)
+			if res.Block != tt.wantBlock {
+				t.Fatalf("Block = %v, want %v", res.Block, tt.wantBlock)
+			}
+			if !tt.wantBlock && !in.BodyRead {
+				t.Fatal("body within the admitted limit was not read")
+			}
+		})
 	}
 }

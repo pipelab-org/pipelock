@@ -35,20 +35,20 @@ func TestRequestPolicyBodyLimitDefaultAndConfigured(t *testing.T) {
 	t.Parallel()
 
 	p := &Proxy{}
-	if got := p.requestPolicyBodyLimit(); got != defaultRequestPolicyMaxBodyBytes {
+	if got := p.requestPolicyBodyLimit(nil); got != defaultRequestPolicyMaxBodyBytes {
 		t.Fatalf("unset config limit = %d, want default %d", got, defaultRequestPolicyMaxBodyBytes)
 	}
 
 	cfg := config.Defaults()
 	cfg.RequestBodyScanning.MaxBodyBytes = 4096
 	p.cfgPtr.Store(cfg)
-	if got := p.requestPolicyBodyLimit(); got != 4096 {
+	if got := p.requestPolicyBodyLimit(nil); got != 4096 {
 		t.Fatalf("configured limit = %d, want 4096", got)
 	}
 
 	cfg.RequestBodyScanning.MaxBodyBytes = 0
 	p.cfgPtr.Store(cfg)
-	if got := p.requestPolicyBodyLimit(); got != defaultRequestPolicyMaxBodyBytes {
+	if got := p.requestPolicyBodyLimit(nil); got != defaultRequestPolicyMaxBodyBytes {
 		t.Fatalf("non-positive limit = %d, want default %d", got, defaultRequestPolicyMaxBodyBytes)
 	}
 }

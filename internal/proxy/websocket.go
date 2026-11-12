@@ -921,14 +921,28 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var clientConn net.Conn
+	// A client that offers subprotocols must be told which one the upstream
+	// selected, so its upgrade waits for the upstream handshake. Validate the
+	// client handshake first so a malformed request never reaches the upstream.
+	negotiateProtocol := len(r.Header.Values(headerNameWSProtocol)) > 0
+	selectedProtocol := ""
+	if negotiateProtocol {
+		if err := validateWSClientHandshake(r); err != nil {
+			log.LogError(actx, fmt.Errorf("client upgrade: %w", err))
+			writeBlockedError(w, blockInfoFor(blockreason.BadRequest, "websocket").WithRequestID(requestID),
+				"invalid WebSocket handshake", http.StatusBadRequest)
+			return
+		}
+	}
 	upgradeClient := func() bool {
 		// Upgrade writes directly to the hijacked connection, so its explicit
 		// reply headers must carry the confirmed receipt ID. Copy no other fields.
 		replyHeaders := make(http.Header)
 		blockreason.SetRecordedReceipt(replyHeaders, w.Header().Get(blockreason.HeaderRecordedReceipt))
 		upgrader := ws.HTTPUpgrader{
-			Timeout: 10 * time.Second,
-			Header:  replyHeaders,
+			Timeout:  10 * time.Second,
+			Header:   replyHeaders,
+			Protocol: func(offer string) bool { return selectedProtocol != "" && offer == selectedProtocol },
 		}
 		var upgradeErr error
 		clientConn, _, _, upgradeErr = upgrader.Upgrade(r, w)
@@ -940,7 +954,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		clientConn = p.withAdaptiveClose(clientConn, refusalOpts)
 		return true
 	}
-	if !cfg.FlightRecorder.RequireReceipts {
+	if !cfg.FlightRecorder.RequireReceipts && !negotiateProtocol {
 		if !upgradeClient() {
 			return
 		}
@@ -1170,13 +1184,16 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if cfg.FlightRecorder.RequireReceipts {
 		// Upgrade the client connection only after the required intent receipt is
 		// durable. A 101 response is client egress; under require_receipts it must
-		// not be written before fsync succeeds.
-		if !upgradeClient() {
-			return
+		// not be written before fsync succeeds. With a subprotocol offer the
+		// upgrade waits further, until the upstream has made its selection.
+		if !negotiateProtocol {
+			if !upgradeClient() {
+				return
+			}
+			defer safeClose(clientConn, "ws.clientConn", log)
 		}
-		defer safeClose(clientConn, "ws.clientConn", log)
 	}
-	if clientConn == nil {
+	if clientConn == nil && !negotiateProtocol {
 		log.LogError(actx, fmt.Errorf("websocket client connection unavailable after admission"))
 		return
 	}
@@ -1186,7 +1203,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// trusted caller before sending the handshake. Requests refused by the
 	// admission checks above cannot taint even that caller's evidence.
 	p.taintIssuerSessionForStream(cfg, agent, clientIP, id.Auth, parsed)
-	upstreamConn, dialErr := p.wsDialUpstream(r.Context(), targetURL, fwdHeaders, cfg)
+	upstreamConn, upstreamProtocol, dialErr := p.wsDialUpstream(r.Context(), targetURL, fwdHeaders, cfg)
 	if dialErr != nil {
 		var ssrfErr *ssrfDialBlockError
 		if errors.As(dialErr, &ssrfErr) {
@@ -1203,20 +1220,38 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				RequestID: requestID,
 				Agent:     agent,
 			})
-			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation, ssrfErr.blockInfo().WithRequestID(requestID).CloseFramePayload())
-			outcomeStatus = strconv.Itoa(int(ws.StatusPolicyViolation))
+			if clientConn == nil {
+				// The client is not upgraded yet, so the refusal is an HTTP response.
+				writeBlockedError(w, ssrfErr.blockInfo().WithRequestID(requestID), "WebSocket upstream destination refused", http.StatusForbidden)
+				outcomeStatus = strconv.Itoa(http.StatusForbidden)
+			} else {
+				plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation, ssrfErr.blockInfo().WithRequestID(requestID).CloseFramePayload())
+				outcomeStatus = strconv.Itoa(int(ws.StatusPolicyViolation))
+			}
 			outcomeBytes = 0
 			outcomeReason = string(ssrfErr.reason)
 			return
 		}
 		log.LogError(actx, fmt.Errorf("upstream dial: %w", dialErr))
-		plwsutil.WriteCloseFrame(clientConn, ws.StatusInternalServerError, "upstream dial failed")
-		outcomeStatus = strconv.Itoa(int(ws.StatusInternalServerError))
+		if clientConn == nil {
+			writeHTTPError(w, "WebSocket upstream handshake failed", http.StatusBadGateway)
+			outcomeStatus = strconv.Itoa(http.StatusBadGateway)
+		} else {
+			plwsutil.WriteCloseFrame(clientConn, ws.StatusInternalServerError, "upstream dial failed")
+			outcomeStatus = strconv.Itoa(int(ws.StatusInternalServerError))
+		}
 		outcomeBytes = 0
 		outcomeReason = "upstream_dial_failed"
 		return
 	}
 	defer safeClose(upstreamConn, "ws.upstreamConn", log)
+	if negotiateProtocol {
+		selectedProtocol = upstreamProtocol
+		if !upgradeClient() {
+			return
+		}
+		defer safeClose(clientConn, "ws.clientConn", log)
+	}
 	upstreamConn = p.withAdaptiveClose(upstreamConn, refusalOpts)
 	wsAirlockSessions = retainAirlockSessions(wsAirlockSessions, p.airlockSessionForIdentity(cfg, agent, clientIP, id.Auth))
 	for _, wsSess := range wsAirlockSessions {
@@ -1357,9 +1392,11 @@ func (p *Proxy) buildWSForwardHeaders(r *http.Request, parsed *url.URL, cfg *con
 		}
 	}
 
-	// Subprotocol negotiation.
-	if v := r.Header.Get("Sec-WebSocket-Protocol"); v != "" {
-		fwd.Set("Sec-WebSocket-Protocol", v)
+	// Subprotocol negotiation. A client may spread its offers over several
+	// header lines; forward every offer as one normalized list so the header
+	// DLP scan and the upstream handshake both see all of them.
+	if offers := wsProtocolOffers(r.Header); len(offers) > 0 {
+		fwd.Set(headerNameWSProtocol, strings.Join(offers, ", "))
 	}
 
 	// Origin policy.
@@ -1419,7 +1456,7 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 	}()
 	for _, key := range []string{
 		headerNameAuthorization, "X-Api-Key", "X-Goog-Api-Key", "Cookie",
-		"Origin", "Sec-WebSocket-Protocol", "User-Agent",
+		"Origin", headerNameWSProtocol, "User-Agent",
 	} {
 		val := headers.Get(key)
 		if val == "" {
@@ -1497,22 +1534,73 @@ func isHostAllowlisted(hostname string, allowlist []string) bool {
 	return false
 }
 
-// wsDialUpstream dials the upstream WebSocket server using the SSRF-safe dialer.
-func (p *Proxy) wsDialUpstream(ctx context.Context, targetURL string, fwdHeaders http.Header, cfg *config.Config) (net.Conn, error) {
+const headerNameWSProtocol = "Sec-WebSocket-Protocol"
+
+// wsProtocolOffers returns the subprotocols offered in h, in order, across
+// every Sec-WebSocket-Protocol header line.
+func wsProtocolOffers(h http.Header) []string {
+	var offers []string
+	for _, line := range h.Values(headerNameWSProtocol) {
+		for _, offer := range strings.Split(line, ",") {
+			if offer = strings.TrimSpace(offer); offer != "" {
+				offers = append(offers, offer)
+			}
+		}
+	}
+	return offers
+}
+
+var errWSHandshakeValidated = errors.New("WebSocket handshake validated")
+
+// validateWSClientHandshake runs the RFC 6455 request checks on r without
+// upgrading it. OnBeforeUpgrade stops the parser once the request has passed,
+// so nothing is written to the client.
+func validateWSClientHandshake(r *http.Request) error {
+	candidate := r.Clone(r.Context())
+	candidate.Body, candidate.GetBody = nil, nil
+	candidate.ContentLength = 0
+	candidate.TransferEncoding, candidate.Trailer = nil, nil
+	var wire bytes.Buffer
+	if err := candidate.Write(&wire); err != nil {
+		return err
+	}
+	upgrader := ws.Upgrader{
+		Protocol:        func([]byte) bool { return false },
+		OnBeforeUpgrade: func() (ws.HandshakeHeader, error) { return nil, errWSHandshakeValidated },
+	}
+	_, err := upgrader.Upgrade(struct {
+		io.Reader
+		io.Writer
+	}{bytes.NewReader(wire.Bytes()), io.Discard})
+	if errors.Is(err, errWSHandshakeValidated) {
+		return nil
+	}
+	return err
+}
+
+// wsDialUpstream dials the upstream WebSocket server using the SSRF-safe
+// dialer and returns the subprotocol the upstream selected, if any. The
+// offers in fwdHeaders go through the dialer's own protocol list so it
+// accepts a selection only when that protocol was offered.
+func (p *Proxy) wsDialUpstream(ctx context.Context, targetURL string, fwdHeaders http.Header, cfg *config.Config) (net.Conn, string, error) {
 	timeout := time.Duration(cfg.WebSocketProxy.MaxConnectionSeconds) * time.Second
 	dialCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	headers := fwdHeaders.Clone()
+	protocols := wsProtocolOffers(headers)
+	headers.Del(headerNameWSProtocol)
 	dialer := ws.Dialer{
 		NetDial:    p.ssrfSafeDialContext,
-		Header:     ws.HandshakeHeaderHTTP(fwdHeaders),
+		Header:     ws.HandshakeHeaderHTTP(headers),
+		Protocols:  protocols,
 		Timeout:    30 * time.Second,
 		Extensions: nil, // disable permessage-deflate; relay does not handle compressed frames
 	}
 
-	conn, reader, _, err := dialer.Dial(dialCtx, targetURL)
+	conn, reader, handshake, err := dialer.Dial(dialCtx, targetURL)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if reader != nil {
 		buffered := reader.Buffered()
@@ -1521,15 +1609,15 @@ func (p *Proxy) wsDialUpstream(ctx context.Context, targetURL string, fwdHeaders
 			if peekErr != nil {
 				ws.PutReader(reader)
 				_ = conn.Close()
-				return nil, fmt.Errorf("preserve post-handshake WebSocket bytes: %w", peekErr)
+				return nil, "", fmt.Errorf("preserve post-handshake WebSocket bytes: %w", peekErr)
 			}
 			preserved := bytes.Clone(prefix)
 			ws.PutReader(reader)
-			return &wsDialPrefixedConn{Conn: conn, prefix: bytes.NewReader(preserved)}, nil
+			return &wsDialPrefixedConn{Conn: conn, prefix: bytes.NewReader(preserved)}, handshake.Protocol, nil
 		}
 		ws.PutReader(reader)
 	}
-	return conn, nil
+	return conn, handshake.Protocol, nil
 }
 
 // wsDialPrefixedConn drains bytes received alongside the upstream HTTP upgrade
