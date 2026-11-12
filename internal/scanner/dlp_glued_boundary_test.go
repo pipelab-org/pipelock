@@ -191,6 +191,28 @@ func gluedMatchNames(matches []TextDLPMatch) []string {
 	return names
 }
 
+// A spaced letter-prefixed card is one finding. The source-confirmation guard
+// drops the whitespace-joined copy, whose body is not contiguous in the source.
+// Forcing gluedCandidateConfirmedInSource true reports that card twice.
+func TestGluedCandidateConfirmedInSourceChangesCardCount(t *testing.T) {
+	s := gluedBoundaryScanner(t)
+	got := s.ScanTextForDLP(context.Background(), "a4111 1111 1111 1111")
+	n := 0
+	for _, match := range got.Matches {
+		if match.PatternName == "Credit Card Number" {
+			n++
+		}
+	}
+	for _, match := range got.InformationalMatches {
+		if match.PatternName == "Credit Card Number" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("spaced glued card findings = %d, want 1", n)
+	}
+}
+
 // The zero-width-boundary families keep a shape gate after gaining a
 // boundary-free body, and that gate admits each glued credential. A gate taken
 // from the bounded grammar would refuse the glued Twilio key on word length.
