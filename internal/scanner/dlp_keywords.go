@@ -843,6 +843,9 @@ func keywordTextEncodingOffsets(source, decoded, encoding string) []keywordByteS
 	switch encoding {
 	case encodingDecimal:
 		text, ranges = decodeCharacterCodes(source, characterCodeSeparator, parseDecimalCharacterCode, true)
+		if text != decoded {
+			text, ranges = decodeUniformByteGlue(source, true)
+		}
 	case encodingOctal, encodingBinary:
 		text, ranges = decodePrefixedCharacterCodes(source, encoding, true)
 	case encodingQuotedPrintable:
