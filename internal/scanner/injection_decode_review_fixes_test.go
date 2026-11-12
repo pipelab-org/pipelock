@@ -59,3 +59,28 @@ func TestInjectionDecodeFindingPrecedesLimit(t *testing.T) {
 		})
 	}
 }
+
+func TestInjectionDecodeOversizePlainTextStaysComplete(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := MustNew(cfg)
+	pad := strings.Repeat("a", maxDecodeTotalBytes)
+	for _, suffix := range []string{"C++", "a < b", "R&D", "100%"} {
+		t.Run(suffix, func(t *testing.T) {
+			out := sc.ScanResponseOutbound(t.Context(), pad+suffix)
+			if out.InspectionIncomplete || out.Failed() || !out.Clean || !out.Assessment.IsBenign() {
+				t.Errorf("plain oversize refused: incomplete=%v failed=%v clean=%v status=%s err=%q",
+					out.InspectionIncomplete, out.Failed(), out.Clean, out.Assessment.Status, out.ScanError)
+			}
+		})
+	}
+	for _, suffix := range []string{"&amp;", "%41", `\u0061`, injectionUnicodeCodecCases()["utf7"], "<p>note</p>", "=41"} {
+		t.Run(suffix, func(t *testing.T) {
+			out := sc.ScanResponseOutbound(t.Context(), pad+suffix)
+			if !out.InspectionIncomplete || !out.Failed() || out.Clean || out.ScanError != injectionDecodeLimitReason {
+				t.Errorf("encoded oversize was treated as inspected: incomplete=%v failed=%v clean=%v err=%q",
+					out.InspectionIncomplete, out.Failed(), out.Clean, out.ScanError)
+			}
+		})
+	}
+}

@@ -87,8 +87,8 @@ func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, tar
 		parent := queue[head]
 		if len(parent.text) > maxDecodeTotalBytes {
 			// The caller already scanned this text. A larger plain payload is
-			// not a decoding limit; only an encoding we will not open is.
-			if hasAdditionalInjectionEncoding(parent.text) || normalize.ContainsTags(parent.text) || hasTextEncoding(parent.text) {
+			// not a decoding limit; only a transform we will not open is.
+			if additionalInjectionTransformApplies(parent.text) || normalize.ContainsTags(parent.text) || hasTextEncoding(parent.text) {
 				incomplete = true
 			}
 			continue
@@ -165,6 +165,128 @@ func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, tar
 
 func hasAdditionalInjectionEncoding(text string) bool {
 	return strings.ContainsAny(text, "&%<+") || strings.Contains(text, `\u`)
+}
+
+// additionalInjectionTransformApplies reports whether one of the existing
+// injection decoders would change text. Punctuation alone does not: "C++",
+// "a < b", "R&D" and "100%" contain the admission characters and decode to
+// themselves. The checks stay on the original bytes so an oversize payload
+// is not copied just to learn that.
+func additionalInjectionTransformApplies(text string) bool {
+	return jsonUnicodeEscapeApplies(text) || utf7ShiftApplies(text) || htmlEntityApplies(text) || percentEncodingApplies(text) || htmlMarkupApplies(text)
+}
+
+func jsonUnicodeEscapeApplies(text string) bool {
+	for i := 0; i+6 <= len(text); i++ {
+		if text[i] != '\\' || text[i+1] != 'u' {
+			continue
+		}
+		if hexDigits(text[i+2:i+6]) == 4 {
+			return true
+		}
+	}
+	return false
+}
+
+func hexDigits(text string) int {
+	for i := range len(text) {
+		c := text[i]
+		digit := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		if !digit {
+			return i
+		}
+	}
+	return len(text)
+}
+
+func utf7ShiftApplies(text string) bool {
+	if !strings.Contains(text, "+") {
+		return false
+	}
+	for i := 0; i < len(text); {
+		if text[i] != '+' {
+			next := strings.IndexByte(text[i:], '+')
+			if next < 0 {
+				return false
+			}
+			i += next
+		}
+		_, consumed, ok := utf7ShiftAt(text[i:])
+		if ok {
+			return true
+		}
+		if consumed < 1 {
+			return false
+		}
+		i += consumed
+	}
+	return false
+}
+
+func htmlEntityApplies(text string) bool {
+	start := 0
+	for {
+		rel := strings.IndexByte(text[start:], '&')
+		if rel < 0 {
+			return false
+		}
+		i := start + rel
+		end := i + 1
+		limit := min(len(text), i+64)
+		for end < limit && text[end] != '&' {
+			end++
+			if text[end-1] == ';' {
+				break
+			}
+		}
+		decoded, _ := decodeHTMLEntitiesChecked(text[i:end])
+		if decoded != text[i:end] {
+			return true
+		}
+		start = i + 1
+	}
+}
+
+func percentEncodingApplies(text string) bool {
+	if !strings.Contains(text, "%") {
+		return false
+	}
+	plus := false
+	for i := 0; i < len(text); i++ {
+		if text[i] == '+' {
+			plus = true
+		}
+		if text[i] == '%' && i+2 < len(text) && hexDigits(text[i+1:i+3]) == 2 {
+			return true
+		}
+	}
+	// Form decoding maps '+' to a space only on a value that also contains '%'.
+	return plus
+}
+
+func htmlMarkupApplies(text string) bool {
+	for i := 0; i < len(text); i++ {
+		if text[i] != '<' || i+1 >= len(text) {
+			continue
+		}
+		switch text[i+1] {
+		case '/':
+			if i+2 < len(text) && asciiLetter(text[i+2]) {
+				return true
+			}
+		case '!', '?':
+			return true
+		default:
+			if asciiLetter(text[i+1]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func asciiLetter(c byte) bool {
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 }
 
 func additionalInjectionViews(text, applied string) ([]injectionDecodeView, bool) {
@@ -279,55 +401,68 @@ func injectionUTF7View(text string) string {
 	}
 	var out strings.Builder
 	changed := false
-	for rest := text; ; {
-		start := strings.IndexByte(rest, '+')
-		if start < 0 {
-			out.WriteString(rest)
-			break
-		}
-		out.WriteString(rest[:start])
-		rest = rest[start:]
-		// RFC 2152 ends a shifted sequence at a non-base64 byte or EOF.
-		// Only an explicit '-' terminator is consumed; other bytes stay literal.
-		end := 1
-		for end < len(rest) {
-			c := rest[end]
-			base64Byte := (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' || c == '/'
-			if !base64Byte {
+	for i := 0; i < len(text); {
+		if text[i] != '+' {
+			next := strings.IndexByte(text[i:], '+')
+			if next < 0 {
+				out.WriteString(text[i:])
 				break
 			}
-			end++
+			out.WriteString(text[i : i+next])
+			i += next
 		}
-		consumed := end
-		if end < len(rest) && rest[end] == '-' {
-			consumed++
-		}
-		encoded := rest[1:end]
-		if encoded == "" {
-			out.WriteString(rest[:consumed])
+		decoded, consumed, ok := utf7ShiftAt(text[i:])
+		if ok {
+			out.WriteString(decoded)
+			changed = true
 		} else {
-			buffer := make([]byte, base64.RawStdEncoding.DecodedLen(len(encoded)))
-			decoded := decodeBase64PaddingVariants(encoded, base64.StdEncoding, base64.RawStdEncoding, buffer, 0)
-			value := decoded[0]
-			if value == "" {
-				value = decoded[1]
-			}
-			if value == "" || len(value)%2 != 0 {
-				out.WriteString(rest[:consumed])
-			} else {
-				decoded, ok, _ := decodeLikelyUTF16ResponseBody(context.Background(), append([]byte{0xfe, 0xff}, []byte(value)...))
-				if ok {
-					out.WriteString(decoded)
-					changed = true
-				} else {
-					out.WriteString(rest[:consumed])
-				}
-			}
+			out.WriteString(text[i : i+consumed])
 		}
-		rest = rest[consumed:]
+		i += consumed
 	}
 	if !changed {
 		return text
 	}
 	return out.String()
+}
+
+// utf7ShiftAt parses one RFC 2152 shifted sequence at the start of rest.
+// rest must begin with '+'. A shift that does not decode to UTF-16 reports
+// the bytes consumed and ok false, so the caller keeps them literal.
+func utf7ShiftAt(rest string) (decoded string, consumed int, ok bool) {
+	// RFC 2152 ends a shifted sequence at a non-base64 byte or EOF.
+	// Only an explicit '-' terminator is consumed; other bytes stay literal.
+	end := 1
+	for end < len(rest) {
+		c := rest[end]
+		base64Byte := (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' || c == '/'
+		if !base64Byte {
+			break
+		}
+		end++
+	}
+	consumed = end
+	if end < len(rest) && rest[end] == '-' {
+		consumed++
+	}
+	encoded := rest[1:end]
+	if encoded == "" {
+		return "", consumed, false
+	}
+	buffer := make([]byte, base64.RawStdEncoding.DecodedLen(len(encoded)))
+	parts := decodeBase64PaddingVariants(encoded, base64.StdEncoding, base64.RawStdEncoding, buffer, 0)
+	value := parts[0]
+	if value == "" {
+		value = parts[1]
+	}
+	if value == "" || len(value)%2 != 0 {
+		return "", consumed, false
+	}
+	// The existing UTF-16 body decoder receives an explicit big-endian BOM so it
+	// cannot infer little-endian ASCII from non-ASCII UTF-7 code units.
+	utf16, decodedOK, _ := decodeLikelyUTF16ResponseBody(context.Background(), append([]byte{0xfe, 0xff}, []byte(value)...))
+	if !decodedOK {
+		return "", consumed, false
+	}
+	return utf16, consumed, true
 }
