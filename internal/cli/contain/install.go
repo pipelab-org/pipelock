@@ -2634,25 +2634,37 @@ func preflightInstallNFTRules(ctx context.Context, env *installEnv, configPath s
 	}
 	data, err := env.readFile(configPath)
 	if err != nil {
-		return fmt.Errorf("read prospective managed config: %w", err)
+		return fmt.Errorf("read prospective managed config %s: %w", configPath, err)
 	}
-	policy, err := installNFTRulesPolicy(env, observation, data, time.Now())
+	policy, err := installNFTRulesPolicy(env, observation, configPath, data, time.Now())
 	if err != nil {
 		var missing user.UnknownUserError
-		if observation.live == "" && errors.As(err, &missing) &&
-			(string(missing) == env.agentUserName || string(missing) == env.proxyUserName) {
+		if errors.As(err, &missing) &&
+			(string(missing) == env.agentUserName || string(missing) == env.proxyUserName) &&
+			observation.live == "" {
 			// useradd chooses new UIDs. No invented identity can classify an
 			// existing chain; only confirmed absence permits this clean-install
 			// deferral. The apply step checks the real identities before writing.
 			_, _ = fmt.Fprintf(env.out, "[DEFERRED] nft reconciliation: %v; managed chain is absent; recheck after creating managed users\n", err)
 			return nil
 		}
-		return err
+		return installNFTIdentityError(env, observation, err)
 	}
 	return planNFTReconciliation(policy, observation).err()
 }
 
-func installNFTRulesPolicy(env *installEnv, observation nftReconcileObservation, listenerData []byte, policyTime time.Time) (nftReconcilePolicy, error) {
+// installNFTIdentityError keeps a present chain from being reported as a bare
+// missing-user lookup. Apply uses the same wording as the early refusal.
+func installNFTIdentityError(env *installEnv, observation nftReconcileObservation, err error) error {
+	var missing user.UnknownUserError
+	if observation.live != "" && errors.As(err, &missing) &&
+		(string(missing) == env.agentUserName || string(missing) == env.proxyUserName) {
+		return fmt.Errorf("nft chain inet %s %s is present and %w; install did not create managed users or change rules", env.nftTableOrDefault(), env.nftChainOrDefault(), err)
+	}
+	return err
+}
+
+func installNFTRulesPolicy(env *installEnv, observation nftReconcileObservation, configPath string, listenerData []byte, policyTime time.Time) (nftReconcilePolicy, error) {
 	operatorUID, err := operatorUIDFromEnv(env)
 	if err != nil {
 		return nftReconcilePolicy{}, err
@@ -2663,11 +2675,11 @@ func installNFTRulesPolicy(env *installEnv, observation nftReconcileObservation,
 	}
 	agentListener, err := agentListenerFromConfigBytes(listenerData)
 	if err != nil {
-		return nftReconcilePolicy{}, fmt.Errorf("managed listener config: %w", err)
+		return nftReconcilePolicy{}, fmt.Errorf("managed listener config %s: %w", configPath, err)
 	}
 	loopbackServices, err := parseContainmentLoopbackServicesFromConfigBytes(listenerData, env.proxyPort, policyTime)
 	if err != nil {
-		return nftReconcilePolicy{}, fmt.Errorf("managed config %s: %w", managedPipelockConfigPath(env), err)
+		return nftReconcilePolicy{}, fmt.Errorf("managed config %s: %w", configPath, err)
 	}
 	body := renderNFTRulesWithServices(nftRuleOptions{
 		OperatorUID:      operatorUID,
@@ -2720,9 +2732,9 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 	if err != nil {
 		return false, err
 	}
-	policy, err := installNFTRulesPolicy(env, observation, listenerData, policyTime)
+	policy, err := installNFTRulesPolicy(env, observation, managedPipelockConfigPath(env), listenerData, policyTime)
 	if err != nil {
-		return false, err
+		return false, installNFTIdentityError(env, observation, err)
 	}
 	plan := planNFTReconciliation(policy, observation)
 	if err := plan.err(); err != nil {

@@ -127,6 +127,9 @@ func TestInstallNFTPreflightBeforeMutation(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), tc.want) || cliutil.ExitCodeOf(err) != cliutil.ExitConfig {
 					t.Fatalf("install error=%v, want preflight refusal containing %q", err, tc.want)
 				}
+				if tc.missingUser && (!strings.Contains(err.Error(), "did not create managed users") || !strings.Contains(err.Error(), defaultNFTChain)) {
+					t.Fatalf("missing identity on a present chain did not name the refusal: %v", err)
+				}
 				if mutations != 0 {
 					t.Fatalf("failed preflight mutated %d times", mutations)
 				}
@@ -237,7 +240,7 @@ func TestInstallNFTPreflightReadFailures(t *testing.T) {
 				path := env.nftRulesPath
 				want = "read " + path
 				if name == "config unreadable" {
-					path, want = src, "read prospective managed config"
+					path, want = src, "read prospective managed config "+src
 				}
 				reads := 0
 				env.readFile = func(p string) ([]byte, error) {
@@ -290,13 +293,33 @@ func TestInstallNFTPreflightUsesProspectiveConfig(t *testing.T) {
 	assertNoServiceOrNFTMutationAfterPreflightFailure(t, runner)
 }
 
+func TestInstallNFTPreflightNamesTheConfigItRead(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	src := filepath.Join(t.TempDir(), "candidate.yaml")
+	// config.Load accepts an agent listener string. The nft policy parser is
+	// the check that rejects a non-loopback address, so this must name the
+	// candidate file rather than the installed managed path.
+	body := "mode: balanced\nforward_proxy:\n  enabled: true\ncontainment:\n  agent_listener: 10.1.2.3:9000\n"
+	if err := os.WriteFile(src, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner.on(argvFor(env.nftPath, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "No such file or directory", 1, nil)
+	err := runInstall(t.Context(), env, installOpts{dryRun: true, configSource: src})
+	managed := managedPipelockConfigPath(env)
+	if err == nil || !strings.Contains(err.Error(), src) || strings.Contains(err.Error(), managed) {
+		t.Fatalf("parsed config error=%v, want %s and not %s", err, src, managed)
+	}
+	assertNoServiceOrNFTMutationAfterPreflightFailure(t, runner)
+}
+
 func TestInstallNFTRulesPolicyValidationErrors(t *testing.T) {
+	const parsedConfigPath = "/tmp/contain-policy-candidate.yaml"
 	for _, tc := range []struct {
 		name, data, want string
 	}{
 		{"operator unavailable", "", "lookup operator user"},
-		{"invalid listener", "containment:\n  agent_listener: invalid\n", "managed listener config"},
-		{"invalid loopback services", "containment:\n  loopback_services: false\n", "managed config"},
+		{"invalid listener", "containment:\n  agent_listener: invalid\n", "managed listener config " + parsedConfigPath},
+		{"invalid loopback services", "containment:\n  loopback_services: false\n", "managed config " + parsedConfigPath},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env, _, _ := newFakeEnv(t)
@@ -309,7 +332,7 @@ func TestInstallNFTRulesPolicyValidationErrors(t *testing.T) {
 					return lookup(name)
 				}
 			}
-			_, err := installNFTRulesPolicy(env, nftReconcileObservation{}, []byte(tc.data), time.Now())
+			_, err := installNFTRulesPolicy(env, nftReconcileObservation{}, parsedConfigPath, []byte(tc.data), time.Now())
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("invalid policy error=%v, want %q", err, tc.want)
 			}
@@ -346,6 +369,27 @@ func TestInstallNFTPreflightReobservesAfterUserCreation(t *testing.T) {
 		t.Fatalf("refused apply wrote managed rules: %v", err)
 	}
 	assertNoServiceOrNFTMutationAfterPreflightFailure(t, runner)
+}
+
+func TestInstallNFTApplyNamesPresentChainWhenUserMissing(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	policy := reconcileTestPolicy()
+	live := wrapNFTListingForTest(nftListingFromRulesBodyForTest(policy.rules, 20))
+	runner.on(argvFor(env.nftPath, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), live, 0, nil)
+	lookup := env.lookupUser
+	env.lookupUser = func(name string) (*user.User, error) {
+		if name == env.agentUserName {
+			return nil, user.UnknownUserError(name)
+		}
+		return lookup(name)
+	}
+	changed, err := stepInstallNFTRulesApply(t.Context(), env)
+	if changed || err == nil || !strings.Contains(err.Error(), "did not create managed users") || !strings.Contains(err.Error(), "lookup "+env.agentUserName) {
+		t.Fatalf("apply changed=%v error=%v", changed, err)
+	}
+	if _, statErr := os.Stat(env.nftRulesPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("refused apply wrote managed rules: %v", statErr)
+	}
 }
 
 func TestDoctorNodeProxyProcess(t *testing.T) {
