@@ -825,11 +825,11 @@ func TestReconcileRecoveryAttemptsEveryKnownDoorway(t *testing.T) {
 			env, _, _ := newFakeEnv(t)
 			recordPath := env.loopbackForwarderInvPath
 			data := []byte(`{"services":[{"unit":"pipelock-agent-loopback-v4-9200","host":"127.0.0.1","port":9200}],"proxy_relay":true}`)
-			wantAttempts := 3
+			wantAttempts, wantObservations := 5, 3
 			if published {
 				recordPath = publishedServiceRecordPath(recordPath)
 				data = []byte(`{"services":[{"unit":"pipelock-published-viewer","name":"viewer"}]}`)
-				wantAttempts = 2
+				wantAttempts, wantObservations = 3, 2
 			}
 			read := env.readFile
 			env.readFile = func(path string) ([]byte, error) {
@@ -855,7 +855,7 @@ func TestReconcileRecoveryAttemptsEveryKnownDoorway(t *testing.T) {
 			} else {
 				err = revokeKnownLoopbackDoorways(context.Background(), env)
 			}
-			if !errors.Is(err, failure) || !errors.Is(err, os.ErrPermission) || attempts != wantAttempts || observations != wantAttempts {
+			if !errors.Is(err, failure) || !errors.Is(err, os.ErrPermission) || attempts != wantAttempts || observations != wantObservations {
 				t.Fatalf("recovery attempts=%d observations=%d error=%v", attempts, observations, err)
 			}
 		})
