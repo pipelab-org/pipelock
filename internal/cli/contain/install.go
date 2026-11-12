@@ -2659,7 +2659,7 @@ func installNFTIdentityError(env *installEnv, observation nftReconcileObservatio
 	var missing user.UnknownUserError
 	if observation.live != "" && errors.As(err, &missing) &&
 		(string(missing) == env.agentUserName || string(missing) == env.proxyUserName) {
-		return fmt.Errorf("nft chain inet %s %s is present and %w; install did not create managed users or change rules", env.nftTableOrDefault(), env.nftChainOrDefault(), err)
+		return fmt.Errorf("nft chain inet %s %s is present and %w; restore the missing managed user before retrying nft reconciliation", env.nftTableOrDefault(), env.nftChainOrDefault(), err)
 	}
 	return err
 }

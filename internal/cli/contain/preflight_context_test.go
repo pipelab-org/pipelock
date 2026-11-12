@@ -127,7 +127,7 @@ func TestInstallNFTPreflightBeforeMutation(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), tc.want) || cliutil.ExitCodeOf(err) != cliutil.ExitConfig {
 					t.Fatalf("install error=%v, want preflight refusal containing %q", err, tc.want)
 				}
-				if tc.missingUser && (!strings.Contains(err.Error(), "did not create managed users") || !strings.Contains(err.Error(), defaultNFTChain)) {
+				if tc.missingUser && (!strings.Contains(err.Error(), "restore the missing managed user") || !strings.Contains(err.Error(), defaultNFTChain)) {
 					t.Fatalf("missing identity on a present chain did not name the refusal: %v", err)
 				}
 				if mutations != 0 {
@@ -384,7 +384,7 @@ func TestInstallNFTApplyNamesPresentChainWhenUserMissing(t *testing.T) {
 		return lookup(name)
 	}
 	changed, err := stepInstallNFTRulesApply(t.Context(), env)
-	if changed || err == nil || !strings.Contains(err.Error(), "did not create managed users") || !strings.Contains(err.Error(), "lookup "+env.agentUserName) {
+	if changed || err == nil || !strings.Contains(err.Error(), "restore the missing managed user") || !strings.Contains(err.Error(), "lookup "+env.agentUserName) {
 		t.Fatalf("apply changed=%v error=%v", changed, err)
 	}
 	if _, statErr := os.Stat(env.nftRulesPath); !errors.Is(statErr, os.ErrNotExist) {
