@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -23,6 +24,26 @@ func TestReassemblyPolicyPartialAuditReceipt(t *testing.T) {
 	if testing.Short() {
 		t.Skip("large allowance witness")
 	}
+	assertInboundPartialAuditReceipt(t, strings.Repeat("30", 1<<22)+strings.Repeat("!0", 80))
+}
+
+// A key under 501 percent-encoding rounds is past the decoder's round limit.
+// Inbound delivery stays clean and the stop reaches the audit log and a signed
+// receipt as a warning.
+func TestInboundDecodeLimitAuditReceipt(t *testing.T) {
+	key := "AK" + "IA" + strings.Repeat("V", 16)
+	encoded := fmt.Sprintf("%%%02X", key[0])
+	for range 500 {
+		encoded = strings.ReplaceAll(encoded, "%", "%25")
+	}
+	assertInboundPartialAuditReceipt(t, "token "+encoded+key[1:]+" end")
+}
+
+// assertInboundPartialAuditReceipt scans body as inbound content and requires
+// a clean, informational-only result whose partial-inspection evidence reached
+// the audit log and a verifiable warn receipt.
+func assertInboundPartialAuditReceipt(t *testing.T, body string) {
+	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +81,6 @@ func TestReassemblyPolicyPartialAuditReceipt(t *testing.T) {
 	sc.SetDLPWarnHook(func(ctx context.Context, name, severity string) {
 		emitDLPWarn(logger, nil, emitter, ctx, name, severity)
 	})
-	body := strings.Repeat("30", 1<<22) + strings.Repeat("!0", 80)
 	ctx := scanner.WithDLPWarnContext(t.Context(), scanner.DLPWarnContext{Transport: "mcp_http", Resource: "tools/call", RequestID: "partial-scan", Agent: "test-agent", PolicyHash: runtimeTestPolicyHash})
 	r := sc.ScanTextForDLPInbound(ctx, body)
 	if !r.Clean || r.Incomplete || !scanner.OnlyInformational(r.Matches) || scanner.HasInspectionLimit(r.Matches) {

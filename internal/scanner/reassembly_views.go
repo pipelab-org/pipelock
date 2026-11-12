@@ -419,7 +419,11 @@ func finishAssembled(result TextDLPResult, memos ...*decodingMemo) TextDLPResult
 		allowance.used = m.assembledBytes
 		allowance.charged = m.assembledCharged
 		allowance.registry = m.assembledChargeRegistry
-		if m.inbound && m.reassemblyIncomplete && !slices.ContainsFunc(result.Matches, func(match TextDLPMatch) bool { return match.PatternName == PartialEncodedContentPattern }) {
+		// An inbound scan that stopped at any decoder bound (percent round,
+		// entity pass, work or candidate limit) reports the same non-enforcing
+		// partial-inspection evidence as the reassembly allowance. Outbound
+		// refuses the same condition below; inbound delivery is unchanged.
+		if m.inbound && (m.reassemblyIncomplete || m.inspectionIncomplete()) && !slices.ContainsFunc(result.Matches, func(match TextDLPMatch) bool { return match.PatternName == PartialEncodedContentPattern }) {
 			result.Matches = append(result.Matches, partialEncodedContentMatch())
 		}
 		if !m.inbound && m.inspectionIncomplete() && !HasInspectionLimit(result.Matches) {
