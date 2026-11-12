@@ -244,7 +244,7 @@ func (s *Scanner) ScanURLCoreFloor(rawURL string) Result {
 // marked by WithInboundDirection. URL depth limits and credential findings
 // still hold on both directions.
 func (s *Scanner) ScanURLCoreFloorWithContext(ctx context.Context, rawURL string) Result {
-	decodes := decodingMemo{inbound: inboundDirection(ctx)}
+	decodes := decodingMemo{urlAccounting: true, inbound: inboundDirection(ctx)}
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		if matches := s.scanCoreDLPWithDecodes(rawURL, &decodes); len(matches) > 0 {
@@ -1554,7 +1554,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket
 
 	// Core DLP - immutable safety floor. Runs BEFORE main DLP, BEFORE DNS.
 	// Core findings are FINAL; the main scanner cannot override a core block.
-	decodes := decodingMemo{inbound: inboundDirection(ctx)}
+	decodes := decodingMemo{urlAccounting: true, inbound: inboundDirection(ctx)}
 	result = s.checkCoreDLPWithDecodes(scanURL, &decodes)
 	decisions.record(urlCoreDLP, result)
 	if !result.Allowed {
@@ -2032,7 +2032,7 @@ func (s *Scanner) checkNestedURLs(ctx context.Context, parsed *url.URL) Result {
 	if !s.scanNestedURLs || parsed == nil || parsed.RawQuery == "" {
 		return Result{Allowed: true}
 	}
-	decodes := decodingMemo{inbound: inboundDirection(ctx)}
+	decodes := decodingMemo{urlAccounting: true, inbound: inboundDirection(ctx)}
 	candidates := nestedURLCandidatesWithDecodes(nativeOAuthNestedTarget(ctx, parsed).RawQuery, s.maxURLLength, &decodes)
 	if !decodes.inbound && decodes.inspectionIncomplete() {
 		return urlInspectionLimitResult()
@@ -3940,7 +3940,7 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 	// checks historically had independent memos and unreported partial views.
 	secretDecodes := decodes
 	if decodes != nil && decodes.inbound {
-		secretDecodes = &decodingMemo{inbound: true}
+		secretDecodes = &decodingMemo{urlAccounting: true, inbound: true}
 	}
 	// Check for environment variable leaks
 	if result := s.checkSecretsInURLWithDecodes(s.envSecrets, parsed, "environment variable leak detected", secretDecodes); !result.Allowed {

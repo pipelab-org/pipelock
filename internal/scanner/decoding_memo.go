@@ -34,6 +34,11 @@ type decodingMemoKey struct {
 // stopped at a depth or work bound with decodable work left. It is a property of the
 // scan, not of one view, so it survives cache hits and unretained decodes.
 type decodingMemo struct {
+	// urlAccounting marks a URL scan's memo. URL checks keep the inbound
+	// decode accounting for their direction, but their verdicts depend on
+	// whether a rescan finished cleanly, so a work-budget stop there is not
+	// reported as a partial-inspection warning. Text scans report it.
+	urlAccounting                bool
 	reassemblyReplayPayloads     map[assembledPayloadKey][]*assembledPayload
 	reassemblyReplayPayloadCount int
 	reassemblyRecipeCache        *assembledRecipeCache
@@ -409,7 +414,7 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 		// Card-only outbound passes retain inbound accounting, but their work
 		// stops must not create a new outbound refusal. The enclosing text scan
 		// owns direction; standalone decode memos use their explicit inbound bit.
-		mode = decodeBudgetMode{inbound: m.inbound, reportWorkLimits: m.inbound && (m.reassemblyPlan == nil || m.reassemblyInbound)}
+		mode = decodeBudgetMode{inbound: m.inbound, reportWorkLimits: m.inbound && !m.urlAccounting && (m.reassemblyPlan == nil || m.reassemblyInbound)}
 	}
 	if m != nil && m.keywordMode && minPrefix == 0 {
 		key := decodingMemoKey{text: text, includeURL: includeURL, minPrefix: minPrefix, inbound: m.inbound, keyword: true, reportWorkLimits: mode.reportWorkLimits}
