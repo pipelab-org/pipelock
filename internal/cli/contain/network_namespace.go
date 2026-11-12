@@ -1125,6 +1125,11 @@ func stepInstallNetworkNamespacePolicy(serviceOverride *[]config.ContainmentLoop
 				if err := backupAndWrite(env, item.path, []byte(item.body), item.mode); err != nil {
 					return len(touched) > 0, fmt.Errorf("write %s: %w", item.path, err)
 				}
+				// A failed rollback may already list this path as restored.
+				// The backup just taken is the one a later rollback must use.
+				if err := forgetDoorwayRestore(env, env.loopbackForwarderInvPath, item.path); err != nil {
+					return true, err
+				}
 				// The pre-write ownership check misses a file that did not
 				// match, including a foreign unit this attempt replaces and
 				// a unit that did not exist. The body just written is ours.

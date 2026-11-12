@@ -1467,6 +1467,50 @@ func TestDeclaredLoopbackForwardersInstallAndRevoke(t *testing.T) {
 	}
 }
 
+func TestLoopbackInstallDropsStaleRestoreJournal(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	configPath := filepath.Join(env.configDir, "pipelock.yaml")
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	socket := filepath.Join(unitDir, loopbackForwarderUnitBase("127.0.0.1", 9200)+".socket")
+	if err := os.WriteFile(socket, []byte("operator\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	journal := doorwayRestoreJournalPath(env.loopbackForwarderInvPath)
+	if err := os.MkdirAll(filepath.Dir(journal), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(journal, []byte(filepath.Clean(socket)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configured := `containment:
+  loopback_services:
+    - host: 127.0.0.1
+      port: 9200
+      owner: search-team
+      reason: local retrieval
+      expires_at: ` + futureExpiryForTest + `
+`
+	if err := os.WriteFile(configPath, []byte(configured), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := stepInstallNetworkNamespace().apply(context.Background(), env); err != nil {
+		t.Fatalf("install = %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Clean(journal)); err == nil && strings.Contains(string(data), filepath.Clean(socket)) {
+		t.Fatalf("journal still lists the rewritten unit: %s", data)
+	}
+	env.restoredBackups = nil
+	env.archivedBackups = nil
+	if err := restoreJournaledBackup(env, env.loopbackForwarderInvPath, socket); err != nil {
+		t.Fatalf("restore after reinstall = %v", err)
+	}
+	got, err := os.ReadFile(filepath.Clean(socket))
+	if err != nil || string(got) != "operator\n" {
+		t.Fatalf("restored socket = %q, %v", got, err)
+	}
+}
+
 func TestDeclaredLoopbackForwarderRevokeRollsBack(t *testing.T) {
 	env, _, out := newFakeEnv(t)
 	configPath := filepath.Join(env.configDir, "pipelock.yaml")
