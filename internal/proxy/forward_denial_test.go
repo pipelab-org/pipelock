@@ -77,6 +77,29 @@ func TestForwardCapacityCatalogMatchesSessionResult(t *testing.T) {
 	if spec.reason != session.ErrCapacity.Error() {
 		t.Fatalf("catalog reason = %q", spec.reason)
 	}
+	// blockResponse ignores Detail. The forward profile site used to write
+	// that text, and fetch, WebSocket, and reverse still do. A producer that
+	// stops using the capacity error would leave this comparison green.
+	cfg := config.Defaults()
+	cfg.ApplyDefaults()
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.MaxSessions = 1
+	sm := NewSessionManager(&cfg.SessionProfiling, &cfg.AdaptiveEnforcement, nil)
+	t.Cleanup(sm.Close)
+	pinCapacitySession(t, sm)
+	proxy := &Proxy{}
+	proxy.sessionMgrPtr.Store(sm)
+	sr := proxy.recordSessionActivityWithUserAgent(sessionActivityOptions{
+		ClientIP:  "192.0.2.88",
+		Agent:     agentAnonymous,
+		Hostname:  "api.vendor.example",
+		RequestID: "capacity-profile",
+		Config:    cfg,
+		Result:    scanner.Result{Allowed: true},
+	})
+	if !sr.capacityDenied || !sr.Blocked || sr.Detail != spec.reason {
+		t.Fatalf("profiling capacity result denied=%v blocked=%v detail=%q", sr.capacityDenied, sr.Blocked, sr.Detail)
+	}
 }
 
 func TestForwardDenialEmitterEvidence(t *testing.T) {
