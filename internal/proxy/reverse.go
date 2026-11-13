@@ -1275,9 +1275,10 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}
 
 		inflightLimit := reverseRequestScanInflightLimit(cfg)
-		releaseRequestScan, reserved := rp.requestScanBudget.reserve(int64(maxBytes), int64(inflightLimit))
+		scanReserve := reverseRequestScanReserve(r.Header, maxBytes)
+		releaseRequestScan, reserved := rp.requestScanBudget.reserve(scanReserve, int64(inflightLimit))
 		if !reserved {
-			reason := fmt.Sprintf("request body scan would reserve %d bytes and exceed this reverse proxy instance's max_inflight_scan_bytes %d bytes", maxBytes, inflightLimit)
+			reason := fmt.Sprintf("request body scan would reserve %d bytes and exceed this reverse proxy instance's max_inflight_scan_bytes %d bytes", scanReserve, inflightLimit)
 			rp.metrics.RecordReverseProxyRequest(r.Method, strconv.Itoa(http.StatusServiceUnavailable))
 			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, reverseRequestScanInflightBudgetLabel)
 			emitReverseReceipt(receipt.EmitOpts{
@@ -4043,6 +4044,22 @@ func reverseObservedBodyBytes(contentLength int64, observed int, complete bool) 
 		return int(contentLength), true
 	}
 	return observed, false
+}
+
+// reverseCodedScanBuffers is how many body-sized buffers a scan of a
+// compressed request holds at once: the bytes as sent, the decoded body that
+// is scanned, and the decoded copy kept to detect a rewrite.
+const reverseCodedScanBuffers = 3
+
+// reverseRequestScanReserve is the in-flight budget one request scan
+// reserves. An identity body is buffered once. A body with a content coding
+// this proxy decodes can expand to maxBytes again for each decoded buffer, so
+// it reserves for all of them.
+func reverseRequestScanReserve(header http.Header, maxBytes int) int64 {
+	if coding, err := responseencoding.ParseRequestCoding(header.Values("Content-Encoding")); err == nil && coding != "" {
+		return int64(maxBytes) * reverseCodedScanBuffers
+	}
+	return int64(maxBytes)
 }
 
 func reverseRequestScanInflightLimit(cfg *config.Config) int {

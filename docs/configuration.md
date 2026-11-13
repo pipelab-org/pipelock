@@ -4707,7 +4707,7 @@ reverse_proxy:
 | `enabled` | `false` | Enable reverse proxy mode |
 | `listen` | (required) | Listen address for the reverse proxy |
 | `upstream` | (required) | Upstream service URL to forward to |
-| `max_inflight_scan_bytes` | `67108864` | Per-instance byte budget for buffered request-body scans. A request that cannot reserve capacity is denied before its body is read. Must be at least `request_body_scanning.max_body_bytes` when request-body scanning is enabled. |
+| `max_inflight_scan_bytes` | `67108864` | Per-instance byte budget for buffered request-body scans. A request that cannot reserve capacity is denied before its body is read. Must be at least `request_body_scanning.max_body_bytes` when request-body scanning is enabled. A gzip or deflate request body reserves three times `max_body_bytes`, for the bytes as sent and the decoded copies; with a smaller budget those requests are refused with 503. |
 
 ### Submit Profile
 

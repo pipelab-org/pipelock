@@ -153,8 +153,8 @@ func emitSentFormRun(run string, emit func(string) bool) bool {
 // issuerDecodedBody returns the plaintext of one supported request content
 // coding. A nil plaintext with known true means the body is identity and the
 // caller records body itself. known is false when the coding is not decoded
-// completely, including a decoded body above the default request-body cap.
-func issuerDecodedBody(header http.Header, body []byte) (plain []byte, known bool) {
+// completely, including a decoded body above limit.
+func issuerDecodedBody(header http.Header, body []byte, limit int) (plain []byte, known bool) {
 	var values []string
 	if header != nil {
 		values = header.Values("Content-Encoding")
@@ -166,8 +166,8 @@ func issuerDecodedBody(header http.Header, body []byte) (plain []byte, known boo
 	if coding == "" {
 		return nil, true
 	}
-	decoded, decErr := responseencoding.ReadDecoded(coding, body, defaultRequestPolicyMaxBodyBytes)
-	if decErr != nil || len(decoded) > defaultRequestPolicyMaxBodyBytes {
+	decoded, decErr := responseencoding.ReadDecoded(coding, body, limit)
+	if decErr != nil || len(decoded) > limit {
 		return nil, false
 	}
 	return decoded, true
@@ -192,6 +192,7 @@ func (s *issuerQueryStore) originDigest(tag string, target *url.URL, value strin
 // existing operational audit and metrics. Neither sink receives hosts or IDs.
 func (p *Proxy) newObservedIssuerQueryStore() *issuerQueryStore {
 	s := newIssuerQueryStore()
+	s.bodyDecodeLimit = func() int { return p.requestPolicyBodyLimit(nil) }
 	s.observeIDBlock = func(scope string, log bool) {
 		p.metrics.RecordIssuerIDBlock(scope)
 		if log && p.logger != nil {
@@ -251,7 +252,13 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 		// usually do not contain the identifier as a contiguous token, and a
 		// later reflection would otherwise mint as server-issued. A coding
 		// that does not decode completely is unread history.
-		plain, plainKnown := issuerDecodedBody(header, body)
+		// The limit is the one a body is admitted under, so a body the scan
+		// accepted is never unreadable here for its size alone.
+		limit := defaultRequestPolicyMaxBodyBytes
+		if s.bodyDecodeLimit != nil {
+			limit = s.bodyDecodeLimit()
+		}
+		plain, plainKnown := issuerDecodedBody(header, body, limit)
 		if !plainKnown {
 			bodyKnown = false
 		} else if plain != nil {

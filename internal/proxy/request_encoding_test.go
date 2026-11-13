@@ -2059,3 +2059,102 @@ func TestCeeAdmitChargesCodingExtras(t *testing.T) {
 		})
 	}
 }
+
+// Issuer history decodes a compressed body under the configured body limit,
+// so a body the scan admitted is not unreadable here for its size alone.
+func TestIssuerDecodedBodyUsesConfiguredLimit(t *testing.T) {
+	plain := bytes.Repeat([]byte("a"), 400)
+	wire := gzipRequestBody(t, plain)
+	header := http.Header{"Content-Encoding": []string{"gzip"}}
+	if got, known := issuerDecodedBody(header, wire, 64); known || got != nil {
+		t.Fatalf("a body over the limit was read: known=%v len=%d", known, len(got))
+	}
+	if got, known := issuerDecodedBody(header, wire, 4096); !known || !bytes.Equal(got, plain) {
+		t.Fatalf("a body under the limit was not read: known=%v len=%d", known, len(got))
+	}
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.RequestBodyScanning.MaxBodyBytes = 12345
+	p := newTestProxyWithConfig(t, cfg)
+	if got := p.newObservedIssuerQueryStore().bodyDecodeLimit(); got != 12345 {
+		t.Fatalf("store decode limit = %d, want the configured max_body_bytes", got)
+	}
+}
+
+// A compressed request holds the bytes as sent and two decoded buffers, so
+// the reverse proxy reserves in-flight budget for all three. An identity body
+// and a coding this proxy does not decode reserve one.
+func TestReverseRequestScanReserve(t *testing.T) {
+	const maxBytes = 1000
+	for _, tc := range []struct {
+		name     string
+		encoding []string
+		want     int64
+	}{
+		{name: "identity", want: maxBytes},
+		{name: "explicit identity", encoding: []string{"identity"}, want: maxBytes},
+		{name: "gzip", encoding: []string{"gzip"}, want: 3 * maxBytes},
+		{name: "deflate", encoding: []string{"deflate"}, want: 3 * maxBytes},
+		{name: "unsupported", encoding: []string{"br"}, want: maxBytes},
+		{name: "stacked", encoding: []string{"gzip", "gzip"}, want: maxBytes},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			header := http.Header{}
+			for _, v := range tc.encoding {
+				header.Add("Content-Encoding", v)
+			}
+			if got := reverseRequestScanReserve(header, maxBytes); got != tc.want {
+				t.Fatalf("reserve = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// A compressed body is refused when the in-flight budget cannot hold its
+// decoded buffers, and admitted when it can.
+func TestReverseCompressedBodyReservesDecodedBuffers(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		inflight int
+		want     int
+	}{
+		{name: "budget holds one buffer only", inflight: 1024, want: http.StatusServiceUnavailable},
+		{name: "budget holds all three", inflight: 3 * 1024, want: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := reverseParityBaseConfig(t)
+			cfg.RequestBodyScanning.Enabled = true
+			cfg.RequestBodyScanning.Action = config.ActionBlock
+			cfg.RequestBodyScanning.MaxBodyBytes = 1024
+			cfg.ReverseProxy.MaxInflightScanBytes = tc.inflight
+			cfg.Taint.Enabled = false
+			var hits atomic.Int32
+			rp, _, _ := newReverseParityHarness(t, cfg, func(w http.ResponseWriter, r *http.Request) {
+				hits.Add(1)
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.WriteHeader(http.StatusOK)
+			})
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://reverse.example/upload", bytes.NewReader(gzipRequestBody(t, []byte("hello"))))
+			req.RemoteAddr = "10.0.0.9:5555"
+			req.Header.Set("Content-Type", "text/plain")
+			req.Header.Set("Content-Encoding", "gzip")
+			rec := httptest.NewRecorder()
+			rp.ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Fatalf("status=%d, want %d; body=%s", rec.Code, tc.want, rec.Body.String())
+			}
+			if wantHits := int32(0); tc.want == http.StatusOK {
+				wantHits = 1
+				if hits.Load() != wantHits {
+					t.Fatalf("upstream hits=%d", hits.Load())
+				}
+			} else if hits.Load() != wantHits {
+				t.Fatalf("upstream hits=%d", hits.Load())
+			}
+			if got := rp.requestScanBudget.inflightBytes.Load(); got != 0 {
+				t.Fatalf("in-flight budget not released: %d", got)
+			}
+		})
+	}
+}
