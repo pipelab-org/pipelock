@@ -1908,7 +1908,7 @@ jobs:
     needs: [security-scan, changed-files]
     if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.security-scan.result == 'success' && needs.changed-files.outputs.benchmark_alloc == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
