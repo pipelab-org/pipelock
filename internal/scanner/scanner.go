@@ -679,7 +679,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		if !strings.HasPrefix(pattern, "(?i)") {
 			pattern = "(?i)" + pattern
 		}
-		re, err := regexp.Compile(pattern)
+		re, err := compileScannerRegexp(pattern)
 		if err != nil {
 			return nil, fmt.Errorf("compile DLP pattern %q: %w", p.Name, err)
 		}
@@ -722,11 +722,11 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 			}
 		}
 		if cp.providerKeyPrefix != "" {
-			cp.providerPrefixRE = regexp.MustCompile("(?i)" + regexp.QuoteMeta(cp.providerKeyPrefix))
+			cp.providerPrefixRE = mustCompileScannerRegexp("(?i)" + regexp.QuoteMeta(cp.providerKeyPrefix))
 			if !strings.HasPrefix(body, "(?i)") {
 				body = "(?i)" + body
 			}
-			cp.withoutLeftBoundary, err = regexp.Compile(body)
+			cp.withoutLeftBoundary, err = compileScannerRegexp(body)
 			if err != nil {
 				return nil, fmt.Errorf("compile DLP pattern %q without left boundary: %w", p.Name, err)
 			}
@@ -735,7 +735,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 			if !strings.HasPrefix(body, "(?i)") {
 				body = "(?i)" + body
 			}
-			cp.withoutLeftBoundary, err = regexp.Compile(body)
+			cp.withoutLeftBoundary, err = compileScannerRegexp(body)
 			if err != nil {
 				return nil, fmt.Errorf("compile DLP pattern %q without left boundary: %w", p.Name, err)
 			}
@@ -897,7 +897,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		s.responseEnabled = true
 		s.responseAction = cfg.ResponseScanning.Action
 		for _, p := range cfg.ResponseScanning.Patterns {
-			re, err := regexp.Compile(p.Regex)
+			re, err := compileScannerRegexp(p.Regex)
 			if err != nil {
 				return nil, fmt.Errorf("compile response pattern %q: %w", p.Name, err)
 			}
@@ -918,7 +918,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 			optRegex := strings.ReplaceAll(p.Regex, `\s+`, `\s*`)
 			optRegex = strings.ReplaceAll(optRegex, `[-,;:.\s]+`, `[-,;:.\s]*`)
 			if optRegex != p.Regex {
-				optRe, optErr := regexp.Compile(optRegex)
+				optRe, optErr := compileScannerRegexp(optRegex)
 				if optErr == nil {
 					s.responseOptSpacePatterns = append(s.responseOptSpacePatterns, &compiledPattern{
 						name:                p.Name,
@@ -958,7 +958,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 			}
 			vfRegex = vfPrefix + normalize.FoldVowels(vfRegex)
 			if vfRegex != p.Regex {
-				vfRe, vfErr := regexp.Compile(vfRegex)
+				vfRe, vfErr := compileScannerRegexp(vfRegex)
 				if vfErr == nil {
 					s.responseVowelFoldPatterns = append(s.responseVowelFoldPatterns, &compiledPattern{
 						name:                p.Name,
@@ -1001,6 +1001,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 	}
 
 	s.responseVerdicts.revision = s.responsePatternRevision()
+	scannerRegexpCache.finishBuild(scannerRegexpIdleBuilds)
 	return s, nil
 }
 

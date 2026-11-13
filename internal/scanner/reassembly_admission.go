@@ -179,5 +179,5 @@ func assembledAdmissionLiterals(tree *syntax.Regexp) []string {
 }
 
 func assembledAdmissionRegexp(tree *syntax.Regexp) *regexp.Regexp {
-	return regexp.MustCompile(tree.String())
+	return mustCompileScannerRegexp(tree.String())
 }

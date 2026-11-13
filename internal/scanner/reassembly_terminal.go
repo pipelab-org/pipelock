@@ -171,7 +171,7 @@ func compileAssembledPlan(p *reassemblyPlan) (*assembledPlan, error) {
 			}
 		}
 		if len(quoted) > 0 {
-			a.verify[id] = regexp.MustCompile("^(?:" + strings.Join(quoted, "|") + ")")
+			a.verify[id] = mustCompileScannerRegexp("^(?:" + strings.Join(quoted, "|") + ")")
 			if prefix, size := assembledCueVerifier(tree, anchors, literals); prefix != nil {
 				a.verify[id] = prefix
 				a.literalBytes[id] = max(a.literalBytes[id], size)
