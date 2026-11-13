@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseRequestCoding(t *testing.T) {
@@ -153,6 +154,49 @@ func deflateTestBody(t *testing.T, plain []byte) []byte {
 		t.Fatalf("deflate close: %v", err)
 	}
 	return buf.Bytes()
+}
+
+// A gzip header can carry a file name, a comment, and an extra field. Those
+// bytes reach the receiver outside the decoded body, so a body with any of
+// them is refused. A header with a modification time alone still decodes.
+func TestReadDecodedRefusesGzipHeaderContent(t *testing.T) {
+	t.Parallel()
+	plain := []byte("scan this body")
+	cases := []struct {
+		name    string
+		header  gzip.Header
+		wantErr bool
+	}{
+		{name: "plain header"},
+		{name: "modification time only", header: gzip.Header{ModTime: time.Unix(1700000000, 0)}},
+		{name: "file name", header: gzip.Header{Name: "note.txt"}, wantErr: true},
+		{name: "comment", header: gzip.Header{Comment: "carried outside the body"}, wantErr: true},
+		{name: "extra field", header: gzip.Header{Extra: []byte{'A', 'B', 2, 0, 'x', 'y'}}, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var buf bytes.Buffer
+			zw := gzip.NewWriter(&buf)
+			zw.Header = tc.header
+			if _, err := zw.Write(plain); err != nil {
+				t.Fatal(err)
+			}
+			if err := zw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			got, err := ReadDecoded("gzip", buf.Bytes(), len(plain))
+			if tc.wantErr {
+				if !errors.Is(err, errGzipHeaderContent) || got != nil {
+					t.Fatalf("decoded %q, err=%v; want the header refusal", got, err)
+				}
+				return
+			}
+			if err != nil || !bytes.Equal(got, plain) {
+				t.Fatalf("decoded %q, err=%v", got, err)
+			}
+		})
+	}
 }
 
 func TestRequestIdentity(t *testing.T) {

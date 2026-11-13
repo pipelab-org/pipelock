@@ -24,6 +24,7 @@ var (
 	// a supported coding combined with identity.
 	ErrStackedContentCoding = errors.New("stacked content coding")
 	errTrailingContent      = errors.New("content remains after the compressed stream")
+	errGzipHeaderContent    = errors.New("gzip header carries a file name, comment, or extra field")
 )
 
 // RequestIdentity asks an upstream for uncompressed response bytes. Setting an
@@ -147,6 +148,8 @@ func NewDecoder(coding string, r io.Reader) (io.ReadCloser, error) {
 // returned with a nil error. A decode error, a truncated stream, a checksum
 // failure, or any byte after the compressed stream returns an error and no
 // body. A gzip body is one member; a second member counts as trailing bytes.
+// A gzip header with a file name, comment, or extra field is an error, because
+// those bytes reach the receiver without being part of the decoded body.
 // deflate is zlib-wrapped, and bytes after that stream are an error because
 // the zlib reader leaves them unread.
 func ReadDecoded(coding string, original []byte, maxDecoded int) ([]byte, error) {
@@ -163,6 +166,13 @@ func ReadDecoded(coding string, original []byte, maxDecoded int) ([]byte, error)
 		// part of the body, so a second member is refused below as trailing
 		// content instead of being scanned as a body the upstream may not see.
 		gz.Multistream(false)
+		// The file name, comment and extra field are free-form bytes that
+		// travel to the receiver outside the decoded body, so nothing would
+		// scan them. A body that carries any of them is refused.
+		if gz.Name != "" || gz.Comment != "" || len(gz.Extra) != 0 {
+			_ = dec.Close()
+			return nil, errGzipHeaderContent
+		}
 	}
 	decoded, err := io.ReadAll(io.LimitReader(dec, int64(maxDecoded)+1))
 	if err != nil {

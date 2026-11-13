@@ -264,6 +264,19 @@ func TestCompressedRequestBodiesFailClosed(t *testing.T) {
 	zlibTrail := append(append([]byte{}, deflateRequestBody(t, clean)...), []byte(" "+secret)...)
 	bomb := gzipRequestBody(t, bytes.Repeat([]byte("A"), 256))
 	oversized := bytes.Repeat([]byte("Z"), 128)
+	// The credential sits in the gzip header, outside the decoded body.
+	headerField := func(h gzip.Header, payload []byte) []byte {
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		zw.Header = h
+		if _, err := zw.Write(payload); err != nil {
+			t.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
 
 	cases := []struct {
 		name        string
@@ -284,6 +297,12 @@ func TestCompressedRequestBodiesFailClosed(t *testing.T) {
 		{name: "gzip then plaintext credential", body: plainAfter, encodings: []string{"gzip"}, wantStatus: http.StatusForbidden, wantReason: string(blockreason.ParseError), wantSub: scanner.UnscannedEncodingSuffix},
 		{name: "second gzip member credential", body: second, encodings: []string{"gzip"}, wantStatus: http.StatusForbidden, wantReason: string(blockreason.ParseError), wantSub: scanner.UnscannedEncodingSuffix},
 		{name: "zlib then trailing bytes", body: zlibTrail, encodings: []string{"deflate"}, wantStatus: http.StatusForbidden, wantReason: string(blockreason.ParseError), wantSub: scanner.UnscannedEncodingSuffix},
+		{name: "credential in gzip comment", body: headerField(gzip.Header{Comment: secret}, clean), encodings: []string{"gzip"}, wantStatus: http.StatusForbidden, wantReason: string(blockreason.ParseError), wantSub: scanner.UnscannedEncodingSuffix},
+		{name: "credential in gzip file name", body: headerField(gzip.Header{Name: secret}, clean), encodings: []string{"gzip"}, wantStatus: http.StatusForbidden, wantReason: string(blockreason.ParseError), wantSub: scanner.UnscannedEncodingSuffix},
+		{name: "credential in gzip extra field", body: headerField(gzip.Header{Extra: []byte(secret)}, clean), encodings: []string{"gzip"}, wantStatus: http.StatusForbidden, wantReason: string(blockreason.ParseError), wantSub: scanner.UnscannedEncodingSuffix},
+		{name: "credential in gzip comment with empty body", body: headerField(gzip.Header{Comment: secret}, nil), encodings: []string{"gzip"}, wantStatus: http.StatusForbidden, wantReason: string(blockreason.ParseError), wantSub: scanner.UnscannedEncodingSuffix},
+		{name: "credential in gzip file name with empty body", body: headerField(gzip.Header{Name: secret}, nil), encodings: []string{"gzip"}, wantStatus: http.StatusForbidden, wantReason: string(blockreason.ParseError), wantSub: scanner.UnscannedEncodingSuffix},
+		{name: "credential in gzip extra field with empty body", body: headerField(gzip.Header{Extra: []byte(secret)}, nil), encodings: []string{"gzip"}, wantStatus: http.StatusForbidden, wantReason: string(blockreason.ParseError), wantSub: scanner.UnscannedEncodingSuffix},
 		{name: "stacked gzip", body: gzipped, encodings: []string{"gzip, gzip"}, wantStatus: http.StatusForbidden, wantReason: string(blockreason.ParseError), wantSub: scanner.UnscannedEncodingSuffix},
 		{name: "two header lines", body: gzipped, encodings: []string{"gzip", "gzip"}, wantStatus: http.StatusForbidden, wantReason: string(blockreason.ParseError), wantSub: scanner.UnscannedEncodingSuffix},
 		{name: "gzip plus identity", body: gzipped, encodings: []string{"gzip, identity"}, wantStatus: http.StatusForbidden, wantReason: string(blockreason.ParseError), wantSub: scanner.UnscannedEncodingSuffix},
