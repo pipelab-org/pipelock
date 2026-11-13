@@ -61,7 +61,6 @@ func TestGluedBoundaryProseStaysClean(t *testing.T) {
 		"the desk-ant-hill-clearance-report-final",
 		"desk-ant-" + strings.Repeat("a", 20),
 		"kiosk-proj-" + strings.Repeat("a", 20),
-		"kiosk-admin-" + strings.Repeat("a", 20),
 		"risk-svcacct-" + strings.Repeat("a", 20),
 		"task-ant-hill-clearance-report-final",
 		"x" + "sk-ant-" + strings.Repeat("a", 20),
@@ -92,7 +91,6 @@ type gluedBoundaryCase struct {
 func gluedBoundaryCases() []gluedBoundaryCase {
 	anthropic := gluedAnthropicKey()
 	openai := "sk-" + "proj-" + strings.Repeat("Qw7eR9tY", 6)
-	admin := "sk-" + "admin-" + strings.Repeat("Qw7eR9tY", 6)
 	service := "sk-" + "svcacct-" + strings.Repeat("Qw7eR9tY", 6)
 	mailgun := "key-" + strings.Repeat("a1b2c3d4", 4)
 	twilio := "SK" + strings.Repeat("a1b2c3d4", 4)
@@ -110,7 +108,6 @@ func gluedBoundaryCases() []gluedBoundaryCase {
 	for _, secret := range []struct{ pattern, value string }{
 		{"Anthropic API Key", anthropic},
 		{"OpenAI API Key", openai},
-		{"OpenAI API Key", admin},
 		{"OpenAI Service Key", service},
 	} {
 		add(secret.pattern, secret.value, []string{"x", "9", "_", "-"}, true)
@@ -164,50 +161,6 @@ func gluedBoundaryScanner(t *testing.T) *Scanner {
 	s := MustNew(cfg)
 	t.Cleanup(s.Close)
 	return s
-}
-
-// TestSavedOpenAIProjectBodyKeepsSingleCharacterGlue locks the previous
-// project-only body. A preset saved before admin keys shared the rule still
-// has to catch a project key glued to one character, and still has to ignore
-// an admin-shaped value.
-func TestSavedOpenAIProjectBodyKeepsSingleCharacterGlue(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Internal = nil
-	cfg.APIAllowlist = nil
-	cfg.FetchProxy.Monitoring.EntropyThreshold = 0
-	cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold = 0
-	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 0
-	cfg.FetchProxy.Monitoring.MaxURLLength = 8192
-	legacy := config.ProviderKeyLeftBoundaryRegex + legacyOpenAIProjectKeyBody
-	replaced := false
-	for i, pattern := range cfg.DLP.Patterns {
-		if pattern.Name != "OpenAI API Key" {
-			continue
-		}
-		cfg.DLP.Patterns[i].Regex = legacy
-		replaced = true
-	}
-	if !replaced {
-		t.Fatal("OpenAI API Key pattern missing from defaults")
-	}
-	s := MustNew(cfg)
-	t.Cleanup(s.Close)
-	secret := "sk-" + "proj-" + strings.Repeat("Qw7eR9tY", 6)
-	for _, prefix := range []string{"x", "9", "_", "-"} {
-		text := "note: " + prefix + secret + " end"
-		got := s.ScanTextForDLP(context.Background(), text)
-		if !gluedBoundaryFound(got.Matches, got.InformationalMatches, "OpenAI API Key") {
-			t.Fatalf("prefix %q: clean=%v matches=%v", prefix, got.Clean, gluedMatchNames(got.Matches))
-		}
-	}
-	target := "https://api.vendor.example/v1/items?ref=" + url.QueryEscape("x"+secret)
-	if result := s.Scan(context.Background(), target); !gluedBoundaryURLBlock(result, "OpenAI API Key") {
-		t.Fatalf("URL allowed=%v scanner=%q", result.Allowed, result.Scanner)
-	}
-	admin := "note: " + "sk-" + "admin-" + strings.Repeat("Qw7eR9tY", 6) + " end"
-	if got := s.ScanTextForDLP(context.Background(), admin); gluedBoundaryFound(got.Matches, got.InformationalMatches, "OpenAI API Key") {
-		t.Fatal("legacy project body matched an admin-shaped value")
-	}
 }
 
 func gluedBoundaryURLBlock(result Result, pattern string) bool {

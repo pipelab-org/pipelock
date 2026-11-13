@@ -1097,7 +1097,7 @@ Core safety-floor patterns (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `
 | Pattern | Regex Prefix | Severity |
 |---------|-------------|----------|
 | Anthropic API Key | `sk-ant-` + 20+ token chars | critical |
-| OpenAI API Key | `sk-proj-` or `sk-admin-` + 20+ token chars | critical |
+| OpenAI API Key | `sk-proj-` + 20+ token chars | critical |
 | OpenAI Service Key | `sk-svcacct-` + 20+ token chars | critical |
 | Fireworks API Key | `fw_` | critical |
 | LLM Router API Key | `sk-or-v1-` + 20+ hex chars | critical |

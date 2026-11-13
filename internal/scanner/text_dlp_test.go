@@ -88,8 +88,6 @@ func TestScanTextForDLP_ProviderCredentialNearMisses(t *testing.T) {
 		"Sentry personal prose":         "The sntryu_ prefix identifies personal tokens. Store them securely and rotate them regularly.",
 		"Doppler prose":                 "The dp.pt. prefix identifies personal tokens. The dp.st. prefix identifies service tokens.",
 		"age prose":                     "Keep your AGE-SECRET-KEY-1 identity offline. Share only the public recipient with collaborators.",
-		"OpenAI administrator word":     "sk-" + "administrator",
-		"OpenAI admin key too short":    "sk-" + "admin-" + strings.Repeat("A", 19),
 		"Vault batch token too short":   "hvb." + strings.Repeat("A", 23),
 		"Vault batch wrong case":        "HVB." + strings.Repeat("A", 24),
 		"Vault batch label":             "hvb.string",

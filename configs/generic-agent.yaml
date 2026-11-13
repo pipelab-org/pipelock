@@ -119,7 +119,7 @@ dlp:
       regex: '(?:^|[^A-Za-z0-9_-])sk-ant-[a-zA-Z0-9\-_]{20,}'
       severity: critical
     - name: "OpenAI API Key"
-      regex: '(?:^|[^A-Za-z0-9_-])sk-(?:proj|admin)-[a-zA-Z0-9\-_]{20,}'
+      regex: '(?:^|[^A-Za-z0-9_-])sk-proj-[a-zA-Z0-9\-_]{20,}'
       severity: critical
     - name: "OpenAI Service Key"
       regex: '(?:^|[^A-Za-z0-9_-])sk-svcacct-[a-zA-Z0-9\-_]{20,}'

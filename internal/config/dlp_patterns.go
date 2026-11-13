@@ -19,10 +19,8 @@ import (
 const (
 	ProviderKeyLeftBoundaryRegex = `(?:^|[^A-Za-z0-9_-])`
 	AnthropicKeyBodyRegex        = `sk-ant-[a-zA-Z0-9\-_]{20,}`
-	// Project and admin keys share one body rule. Admin keys are documented
-	// as sk-admin- at https://platform.openai.com/docs/api-reference/admin-api-keys.
-	OpenAIKeyBodyRegex        = `sk-(?:proj|admin)-[a-zA-Z0-9\-_]{20,}`
-	OpenAIServiceKeyBodyRegex = `sk-svcacct-[a-zA-Z0-9\-_]{20,}`
+	OpenAIKeyBodyRegex           = `sk-proj-[a-zA-Z0-9\-_]{20,}`
+	OpenAIServiceKeyBodyRegex    = `sk-svcacct-[a-zA-Z0-9\-_]{20,}`
 	// BitcoinWIFRegex follows the mainnet Base58Check lengths documented at
 	// https://en.bitcoin.it/wiki/Wallet_import_format (51 or 52 characters).
 	BitcoinWIFRegex = `(?:5[1-9A-HJ-NP-Za-km-z]{50}|[KL][1-9A-HJ-NP-Za-km-z]{51})`

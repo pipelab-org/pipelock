@@ -271,7 +271,6 @@ func TestDefaultDLPPatternsRedactionMirrorCoverage(t *testing.T) {
 	}{
 		{name: "Anthropic API Key", value: "sk-" + "ant-" + strings.Repeat("A", 20), class: redact.ClassAnthropicKey},
 		{name: "OpenAI API Key", value: "sk-" + "proj-" + strings.Repeat("A", 20), class: redact.ClassOpenAIAPIKey},
-		{name: "OpenAI API Key", variant: " admin", value: "sk-" + "admin-" + strings.Repeat("A", 20), class: redact.ClassOpenAIAPIKey},
 		{name: "OpenAI Service Key", value: "sk-" + "svcacct-" + strings.Repeat("A", 20), class: redact.ClassOpenAIAPIKey},
 		// Underscore suffixes: the scanner and redactor alphabets must agree.
 		// A scanner class narrower than the redactor is a fail-open, because the

@@ -151,7 +151,7 @@ func tokenClasses() []classPattern {
 		// Keep the pattern span to the credential so redaction preserves the
 		// surrounding JSON/text delimiter. The skip guards above express the
 		// RE2-unavailable left lookbehind without consuming that delimiter.
-		{class: ClassOpenAIAPIKey, pattern: regexp.MustCompile(`sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}`), priority: 100, skipTrailing: providerKeySkipTrailing, skipLeading: providerKeyInvalidLeading},
+		{class: ClassOpenAIAPIKey, pattern: regexp.MustCompile(`sk-(?:proj|svcacct)-[A-Za-z0-9_-]{20,}`), priority: 100, skipTrailing: providerKeySkipTrailing, skipLeading: providerKeyInvalidLeading},
 		{class: ClassAnthropicKey, pattern: regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{20,}`), priority: 100, skipTrailing: providerKeySkipTrailing, skipLeading: providerKeyInvalidLeading},
 		{class: ClassNPMToken, pattern: regexp.MustCompile(`(?i)npm_[A-Za-z0-9]{36,}\b`), priority: 100},
 		// Mirror PyPI's documented minimum base64url macaroon length.

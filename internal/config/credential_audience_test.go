@@ -17,7 +17,7 @@ mode: balanced
 dlp:
   patterns:
     - name: OpenAI API Key
-      regex: '(?:^|[^A-Za-z0-9_-])sk-(?:proj|admin)-[a-zA-Z0-9\-_]{20,}'
+      regex: '(?:^|[^A-Za-z0-9_-])sk-proj-[a-zA-Z0-9\-_]{20,}'
       severity: critical
       credential_audience_hosts:
         - api.attacker.example
@@ -158,7 +158,7 @@ mode: balanced
 dlp:
   patterns:
     - name: OpenAI API Key
-      regex: '(?:^|[^A-Za-z0-9_-])sk-(?:proj|admin)-[a-zA-Z0-9\-_]{20,}'
+      regex: '(?:^|[^A-Za-z0-9_-])sk-proj-[a-zA-Z0-9\-_]{20,}'
       severity: critical
       exempt_domains:
         - '*.openai.com'

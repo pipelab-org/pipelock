@@ -25,7 +25,6 @@ func documentedProviderCredentials() []providerCredentialFixture {
 		{name: "Sentry organization payload", pattern: "Sentry Auth Token", value: "sntrys_" + strings.Repeat("QUJD", 12) + "+/==_" + strings.Repeat("A", 42) + "/"},
 		{name: "Sentry previous payload", pattern: "Sentry Auth Token", value: "sntrys_" + strings.Repeat("E", 40)},
 		{name: "Sentry personal token", pattern: "Sentry Auth Token", value: "sntryu_" + strings.Repeat("ab", 32)},
-		{name: "OpenAI admin key", pattern: "OpenAI API Key", value: "sk-" + "admin-" + strings.Repeat("Ab9_", 5)},
 		{name: "Vault batch token", pattern: "HashiCorp Vault Token", value: "hvb." + strings.Repeat("Ab", 12)},
 		{name: "Heroku OAuth token", pattern: "Heroku OAuth Token", value: "HRKU-" + strings.Repeat("Ab3_", 15)},
 		{name: "Bedrock long-term key", pattern: "Amazon Bedrock Long-Term API Key", value: "ABSK" + "QmVkcm9j" + "a0FQSU" + "tleS" + strings.Repeat("Ab", 4) + "+/="},

@@ -468,7 +468,7 @@ type compiledPattern struct {
 	name                string
 	re                  *regexp.Regexp
 	withoutLeftBoundary *regexp.Regexp
-	providerKeyPrefixes []string
+	providerKeyPrefix   string
 	providerPrefixRE    *regexp.Regexp
 	// relaxSingleGluedBoundary joins candidateHasLeftBoundary. A miss is still
 	// a finding when exactly one preceding rune caused it and the family
@@ -714,23 +714,15 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		if hasProviderBoundary {
 			switch body {
 			case config.AnthropicKeyBodyRegex:
-				cp.providerKeyPrefixes = []string{"sk-ant-"}
+				cp.providerKeyPrefix = "sk-ant-"
 			case config.OpenAIKeyBodyRegex:
-				cp.providerKeyPrefixes = []string{"sk-proj-", "sk-admin-"}
-			case legacyOpenAIProjectKeyBody:
-				// A saved preset can still spell the project-only body. That
-				// body used to receive one-character glue; keep it.
-				cp.providerKeyPrefixes = []string{"sk-proj-"}
+				cp.providerKeyPrefix = "sk-proj-"
 			case config.OpenAIServiceKeyBodyRegex:
-				cp.providerKeyPrefixes = []string{"sk-svcacct-"}
+				cp.providerKeyPrefix = "sk-svcacct-"
 			}
 		}
-		if len(cp.providerKeyPrefixes) > 0 {
-			quoted := make([]string, len(cp.providerKeyPrefixes))
-			for i, prefix := range cp.providerKeyPrefixes {
-				quoted[i] = regexp.QuoteMeta(prefix)
-			}
-			cp.providerPrefixRE = mustCompileScannerRegexp("(?i)(?:" + strings.Join(quoted, "|") + ")")
+		if cp.providerKeyPrefix != "" {
+			cp.providerPrefixRE = mustCompileScannerRegexp("(?i)" + regexp.QuoteMeta(cp.providerKeyPrefix))
 			if !strings.HasPrefix(body, "(?i)") {
 				body = "(?i)" + body
 			}
@@ -751,7 +743,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 			cp.gluedDigitExtendsNumber = rejectDigit
 		}
 		requirements := analyzePatternMatchRequirements(cp.re, cp.withoutLeftBoundary)
-		if cp.withoutLeftBoundary != nil && len(cp.providerKeyPrefixes) == 0 {
+		if cp.withoutLeftBoundary != nil && cp.providerKeyPrefix == "" {
 			// The removed \b is zero width, so every bounded hit is also a
 			// body hit at the same offset, and every glued candidate is a
 			// body hit. The body's shape is a necessary condition for both.
@@ -6534,26 +6526,14 @@ func gluedWordBoundaryBody(regex string) (body string, rejectDigit bool, ok bool
 	}
 }
 
-// legacyOpenAIProjectKeyBody is the project-only OpenAI body from before
-// admin keys shared OpenAIKeyBodyRegex. The hyphen is escaped the same way
-// the shipped preset spells it.
-const legacyOpenAIProjectKeyBody = `sk-proj-[a-zA-Z0-9\-_]{20,}`
-
 // providerSuffixHasKeyStrength is the boundary-failure check for the three
 // shipped provider prefixes. The suffix must contain a digit and must not be
 // hyphenated readable words (the PR #1391 prose shape). Entropy uses
 // envLeakMinEntropy with >= because eight repeating symbols land on that
 // floor: log2(8) == 3. looksLikeOpaqueToken uses a strict > for a different
 // decision and is not this gate.
-func providerSuffixHasKeyStrength(prefixes []string, candidate string) bool {
-	prefix := ""
-	for _, p := range prefixes {
-		if len(candidate) >= len(p) && strings.EqualFold(candidate[:len(p)], p) {
-			prefix = p
-			break
-		}
-	}
-	if prefix == "" {
+func providerSuffixHasKeyStrength(prefix, candidate string) bool {
+	if len(candidate) < len(prefix) || !strings.EqualFold(candidate[:len(prefix)], prefix) {
 		return false
 	}
 	suffix := candidate[len(prefix):]
