@@ -1390,13 +1390,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if sr.Blocked {
 		// A capacity miss here is the same refusal as the one above: its
 		// detail is the capacity text and its response is the catalog's.
+		// The two cases share one exit so neither can fall into the other's
+		// response write.
 		if sr.capacityDenied {
 			denyForwardCapacity()
-			return
+		} else {
+			info, status := sr.blockResponse()
+			writeBlockedError(w,
+				info.WithRequestID(requestID), sr.Detail, status)
 		}
-		info, status := sr.blockResponse()
-		writeBlockedError(w,
-			info.WithRequestID(requestID), sr.Detail, status)
 		return
 	}
 
