@@ -344,7 +344,8 @@ func TestRequestClientCanceledCause(t *testing.T) {
 			}
 		})
 	}
-	if requestClientCanceled(nil) { //nolint:staticcheck // nil context is the case under test
+	var missing context.Context
+	if requestClientCanceled(missing) {
 		t.Fatal("nil context reported as a client cancellation")
 	}
 }
