@@ -5640,6 +5640,14 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			})
 		return
 	}
+	// Return before replay capture and session scoring. A canceled URL
+	// admission is not a block, and scoring it would raise the threat
+	// score for a request that is never forwarded.
+	if clientCanceledContextRefusal(r.Context(), result) {
+		logRequestCanceled(log, actx, result.Reason)
+		writeClientCanceledFetch(w, displayURL, agent)
+		return
+	}
 
 	// Capture observer: record URL verdict for policy replay.
 	urlFindings := urlResultToFindings(result)
@@ -5943,6 +5951,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		hostname: parsed.Hostname(), target: displayURL, metricAgent: agentLabel, start: start,
 	})
 	if errors.Is(headerReceiptErr, scanner.ErrTextDLPIncomplete) {
+		if requestClientCanceled(r.Context()) {
+			logRequestCanceled(log, actx, headerReceiptErr.Error())
+			writeClientCanceledFetch(w, displayURL, agent)
+			return
+		}
 		reason := "request scan failed: " + headerReceiptErr.Error()
 		log.LogBlocked(actx, scanner.ScannerContext, headerReceiptErr.Error())
 		p.metrics.RecordBlocked(parsed.Hostname(), scanner.ScannerContext, time.Since(start), agentLabel)

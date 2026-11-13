@@ -41,6 +41,7 @@ const (
 	EventMCPUnknownTool              = "mcp_unknown_tool"
 	EventMediaExposure               = "media_exposure"
 	EventRedirect                    = "redirect"
+	EventRequestCanceled             = "request_canceled"
 	EventResponseScan                = "response_scan"
 	EventResponseScanExempt          = "response_scan_exempt"
 	EventResponseScanSuppressed      = "response_scan_suppressed"
@@ -110,6 +111,7 @@ func Builtins() []Descriptor {
 		{EventMCPUnknownTool, "warn", "warn"},
 		{EventMediaExposure, "warn", "allow"},
 		{EventRedirect, "info", "redirect"},
+		{EventRequestCanceled, "info", ""},
 		{EventResponseScan, "warn", "warn"},
 		{EventResponseScanExempt, "warn", "warn"},
 		{EventResponseScanSuppressed, "warn", "warn"},

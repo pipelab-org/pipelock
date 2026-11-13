@@ -818,13 +818,21 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
 		}
 	}
-	refuseRequestScanError := func(err error) bool {
+	// hadFinding keeps an unfinished scan that already matched a secret a
+	// block, whatever ended the request context.
+	refuseRequestScanError := func(err error, hadFinding bool) bool {
 		if !errors.Is(err, scanner.ErrTextDLPIncomplete) {
 			return false
 		}
 		targetURL := reverseTargetURL(rp.upstream, r)
+		actx := newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
+		if !hadFinding && requestClientCanceled(r.Context()) {
+			logRequestCanceled(rp.logger, actx, err.Error())
+			writeClientCanceled(w)
+			return true
+		}
 		reason := "request scan failed: " + err.Error()
-		rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), scanner.ScannerContext, err.Error())
+		rp.logger.LogBlocked(actx, scanner.ScannerContext, err.Error())
 		rp.metrics.RecordReverseProxyRequest(r.Method, "503")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "scan_error")
 		emitReverseReceipt(receipt.EmitOpts{
@@ -1036,6 +1044,11 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		if !urlResult.Allowed {
+			if clientCanceledContextRefusal(r.Context(), urlResult) {
+				logRequestCanceled(rp.logger, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), urlResult.Reason)
+				writeClientCanceled(w)
+				return
+			}
 			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, scannerLabelSubmitProfile)
 			reason := urlResult.Reason
@@ -1062,7 +1075,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	requestScannerVerdict := config.ActionAllow
 	if pathQuery := r.URL.RequestURI(); pathQuery != "" {
 		pathDLP := sc.ScanTextForDLP(r.Context(), pathQuery)
-		if refuseRequestScanError(pathDLP.Err()) {
+		if refuseRequestScanError(pathDLP.Err(), len(pathDLP.Matches) > 0) {
 			return
 		}
 		filteredMatches, audienceAllows := sc.FilterTextDLPMatchesForDestination(pathDLP.Matches, targetURL, "url")
@@ -1180,7 +1193,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}, func(allow scanner.CredentialAudienceAllow) error {
 			return rp.recordCredentialAudienceAllow(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}), allow, r.Method, targetURL, requestID, agent, receiptShardFromContext(r.Context()))
 		})
-		if headerResult != nil && headerResult.ScanError != "" && refuseRequestScanError(scanner.ErrTextDLPIncomplete) {
+		if headerResult != nil && headerResult.ScanError != "" && !bodyResultHasFinding(*headerResult) && refuseRequestScanError(scanner.ErrTextDLPIncomplete, false) {
 			return
 		}
 		if headerResult != nil && headerResult.CredentialAudienceReceiptErr != nil {
@@ -1204,7 +1217,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			rp.logger.LogHeaderDLP(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""}), headerResult.HeaderName,
 				action, patternNames, nil, headerResult.CredentialAudienceMismatches...)
 
-			if headerHardBlock || (action == config.ActionBlock && cfg.EnforceEnabled()) {
+			if headerResult.ScanError != "" || headerHardBlock || (action == config.ActionBlock && cfg.EnforceEnabled()) {
 				receiptPattern := fmt.Sprintf("header DLP: %s", strings.Join(patternNames, ", "))
 				reason := headerResult.withAudienceExplanation(receiptPattern)
 				rp.recordRequestBlockSignal(r, agent, clientIP, requestID, resolvedIdentity.Auth, cfg, scanner.ScannerDLP, receiptPattern)
@@ -2113,6 +2126,11 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	applySigV4CredentialRouteConfig(&bodyReq, cfg)
 	applyBodyScanRedaction(&bodyReq, redaction)
 	bodyBytes, result := scanRequestBody(r.Context(), bodyReq)
+	if clientCanceledIncompleteBody(r.Context(), result) {
+		logRequestCanceled(rp.logger, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: receiptInput.Target, ClientIP: reverseClientIP(r), RequestID: receiptInput.RequestID, Agent: receiptInput.Agent}), result.Reason)
+		writeClientCanceled(w)
+		return true, "", nil, false
+	}
 	if result.CredentialAudienceReceiptErr != nil {
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(result.CredentialAudienceReceiptErr)
 		rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: receiptInput.Target, ClientIP: reverseClientIP(r), RequestID: receiptInput.RequestID, Agent: receiptInput.Agent}), blockedErr.layer, blockedErr.detail)

@@ -4,7 +4,6 @@
 package proxy
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -96,7 +95,7 @@ func TestA2ARequestBodyVerdictPrecedesUpstream(t *testing.T) {
 							target = "https://peer.vendor.example/message:send"
 						}
 						req := newA2AForwardBodyRequest(t, target, body)
-						ctx, cancel := context.WithCancel(req.Context())
+						ctx, cancel := proxyStoppedContext(req.Context())
 						defer cancel()
 						req = req.WithContext(ctx)
 						req.Body = gate

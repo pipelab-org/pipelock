@@ -53,6 +53,7 @@ func TestBuiltinEventCompatibility(t *testing.T) {
 		{"mcp_unknown_tool", SeverityWarn, true, "warn"},
 		{"media_exposure", SeverityWarn, true, "allow"},
 		{"redirect", SeverityInfo, true, "redirect"},
+		{"request_canceled", SeverityInfo, true, ""},
 		{"response_scan", SeverityWarn, true, "warn"},
 		{"response_scan_exempt", SeverityWarn, true, "warn"},
 		{"response_scan_suppressed", SeverityWarn, true, "warn"},
