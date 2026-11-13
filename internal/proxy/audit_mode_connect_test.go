@@ -7,9 +7,11 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"net"
 	"net/http"
-	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -19,15 +21,30 @@ import (
 // TestAuditModeConnectRefusals records CONNECT with enforce false.
 // A core credential in the request header stays refused. The audit event is
 // header_dlp, the request counter and the tunnel counter both increment, and
-// no block receipt is written. A blocklisted host opens a tunnel and the
-// audit event is anomaly. The kill switch answers 503 with kill_switch_deny
-// and does not write a block receipt.
+// no block receipt is written. The header block path records the request
+// counter and the tunnel counter, then returns without a receipt. A
+// blocklisted host is dialed, and the proxy writes 200 only after that dial
+// returns. Delivery is the upstream accept, not the status alone. The audit
+// event is anomaly. The kill switch answers 503 with kill_switch_deny and
+// does not write a block receipt.
 func TestAuditModeConnectRefusals(t *testing.T) {
-	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	t.Cleanup(upstream.Close)
-	host := strings.TrimPrefix(upstream.URL, "http://")
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	var accepts atomic.Int32
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepts.Add(1)
+			_ = conn.Close()
+		}
+	}()
+	host := ln.Addr().String()
 	core := auditFloorValue("core")
 
 	cases := []struct {
@@ -79,12 +96,35 @@ func TestAuditModeConnectRefusals(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = resp.Body.Close()
+			if tc.want.delivered {
+				waitTCPAccepts(t, &accepts, 1)
+			} else if accepts.Load() != 0 {
+				t.Fatalf("refused CONNECT reached upstream %d times", accepts.Load())
+			}
 			got := auditModeObservation{
-				status: resp.StatusCode, delivered: resp.StatusCode == http.StatusOK,
+				status: resp.StatusCode, delivered: resp.StatusCode == http.StatusOK && accepts.Load() == 1,
 				events: auditEventTypes(logs.String()), blockMetrics: auditBlockMetrics(t, proxy.metrics),
 				blockReceipt: auditBlockReceipt(t, receipts),
 			}
 			assertAuditMode(t, got, tc.want)
+			accepts.Store(0)
 		})
+	}
+}
+
+func waitTCPAccepts(t *testing.T, accepts *atomic.Int32, want int32) {
+	t.Helper()
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	for accepts.Load() != want {
+		select {
+		case <-deadline.C:
+			t.Fatalf("upstream accepts=%d want %d", accepts.Load(), want)
+		case <-t.Context().Done():
+			t.Fatal(t.Context().Err())
+		case <-tick.C:
+		}
 	}
 }

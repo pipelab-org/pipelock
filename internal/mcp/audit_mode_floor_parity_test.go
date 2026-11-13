@@ -18,8 +18,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
-// TestAuditModeMCPInputFloors records input floors that stay refused when
-// enforce is false. The MCP proxy does not read enforce.
+// TestAuditModeMCPInputFloors records input floors that stay refused for
+// both enforce values. EvaluateMCPInputGates keeps the core credential
+// floor, the hostname-exfiltration floor, and an unfinished inspection
+// when input scanning is off. The MCP proxy does not read enforce, and
+// the scanner does not store it, so the two settings match.
 func TestAuditModeMCPInputFloors(t *testing.T) {
 	host := "https://706f7374677265733a2f2f757365723a70617373406462.exfil.vendor.example/leak"
 	nested := "%68"
@@ -45,54 +48,88 @@ func TestAuditModeMCPInputFloors(t *testing.T) {
 				msg = []byte(makeRequest(1, "resources/read", map[string]string{"uri": uri}))
 			}
 			for _, enabled := range []bool{true, false} {
-				cfg := config.Defaults()
-				cfg.Internal = nil
-				cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-				cfg.ResponseScanning.Action = config.ActionWarn
-				off := false
-				cfg.Enforce = &off
-				sc := scanner.MustNew(cfg)
-				t.Cleanup(sc.Close)
-				opts := testOpts(sc)
-				opts.InputCfg = &InputScanConfig{Enabled: enabled, Action: config.ActionWarn, OnParseError: config.ActionBlock}
-				if got := scanHTTPInputDecision(msg, io.Discard, "session", "session", opts); got.Blocked == nil {
-					t.Errorf("HTTP enabled=%v released the floor", enabled)
-				}
-				var out bytes.Buffer
-				blocked := make(chan BlockedRequest, 2)
-				ForwardScannedInput(transport.NewStdioReader(bytes.NewReader(append(append([]byte(nil), msg...), '\n'))), transport.NewStdioWriter(&out), io.Discard, config.ActionWarn, config.ActionBlock, blocked, nil, nil, opts)
-				if out.Len() != 0 || len(blocked) == 0 {
-					t.Errorf("stdio enabled=%v forwarded=%d blocked=%d", enabled, out.Len(), len(blocked))
+				for _, enforce := range []bool{false, true} {
+					cfg := config.Defaults()
+					cfg.Internal = nil
+					cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+					cfg.ResponseScanning.Action = config.ActionWarn
+					cfg.Enforce = &enforce
+					sc := scanner.MustNew(cfg)
+					t.Cleanup(sc.Close)
+					opts := testOpts(sc)
+					opts.InputCfg = &InputScanConfig{Enabled: enabled, Action: config.ActionWarn, OnParseError: config.ActionBlock}
+					if got := scanHTTPInputDecision(msg, io.Discard, "session", "session", opts); got.Blocked == nil {
+						t.Errorf("HTTP enabled=%v enforce=%v released the floor", enabled, enforce)
+					}
+					var out bytes.Buffer
+					blocked := make(chan BlockedRequest, 2)
+					ForwardScannedInput(transport.NewStdioReader(bytes.NewReader(append(append([]byte(nil), msg...), '\n'))), transport.NewStdioWriter(&out), io.Discard, config.ActionWarn, config.ActionBlock, blocked, nil, nil, opts)
+					if out.Len() != 0 || len(blocked) == 0 {
+						t.Errorf("stdio enabled=%v enforce=%v forwarded=%d blocked=%d", enabled, enforce, out.Len(), len(blocked))
+					}
 				}
 			}
 		})
 	}
 }
 
+// TestAuditModeMCPRequiredReceipt records the receipt gate. RequireReceipts
+// lives on MCPProxyOpts. A missing emitter refuses an ordinary tool call and
+// a healthy emitter allows it. Config.Enforce is not read, so both settings
+// produce that pair.
 func TestAuditModeMCPRequiredReceipt(t *testing.T) {
-	opts := testOpts(testInputScanner(t))
-	opts.RequireReceipts = true
-	opts.Transport = transportMCPStdio
-	opts.PolicyHash = mcpTestPolicyHash
 	msg := []byte(makeRequest(1, "tools/call", map[string]any{"name": "send", "arguments": map[string]string{"text": "ordinary"}}))
-	if got := scanHTTPInputDecision(msg, io.Discard, "session", "session", opts); got.Blocked == nil {
-		t.Fatal("released without required receipt")
-	}
-	emitter, _, _, _ := newReceiptTestHarness(t)
-	opts.ReceiptEmitter = emitter
-	if got := scanHTTPInputDecision(msg, io.Discard, "session", "session", opts); got.Blocked != nil {
-		t.Fatalf("refused healthy receipt: %+v", got.Blocked)
+	for _, enforce := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enforce=%t", enforce), func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+			cfg.Enforce = &enforce
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			opts := testOpts(sc)
+			opts.RequireReceipts = true
+			opts.Transport = transportMCPStdio
+			opts.PolicyHash = mcpTestPolicyHash
+			if got := scanHTTPInputDecision(msg, io.Discard, "session", "session", opts); got.Blocked == nil {
+				t.Fatal("released without required receipt")
+			}
+			emitter, _, _, _ := newReceiptTestHarness(t)
+			opts.ReceiptEmitter = emitter
+			if got := scanHTTPInputDecision(msg, io.Discard, "session", "session", opts); got.Blocked != nil {
+				t.Fatalf("refused healthy receipt: %+v", got.Blocked)
+			}
+		})
 	}
 }
 
+// TestAuditModeMCPListenerProtocolAdmission records listener admission.
+// An unsupported method, a malformed session id, and a malformed listener
+// token are refused in the listener before a scan. Those checks do not read
+// enforce, so both settings return the same status and do not reach the
+// upstream.
 func TestAuditModeMCPListenerProtocolAdmission(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("invalid listener request reached upstream")
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(upstream.Close)
-	opts := testOpts(testScannerForHTTP(t))
-	base, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+	for _, enforce := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enforce=%t", enforce), func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+			cfg.Enforce = &enforce
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			opts := testOpts(sc)
+			base, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+			runAuditModeMCPListenerAdmission(t, base)
+		})
+	}
+}
+
+func runAuditModeMCPListenerAdmission(t *testing.T, base string) {
 	for _, tc := range []struct {
 		name, method, header, value string
 		status                      int
@@ -121,22 +158,30 @@ func TestAuditModeMCPListenerProtocolAdmission(t *testing.T) {
 	}
 }
 
+// TestAuditModeMCPFragmentInspection records a reassembled number past the
+// fixed JSON exponent bound. The fragment scanner blocks that inspection
+// limit even when the cross-request action is warn. Config.Enforce is not
+// read on this path, and the scanner does not store it, so both settings
+// refuse the second message and release the first.
 func TestAuditModeMCPFragmentInspection(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	off := false
-	cfg.Enforce = &off
-	sc := scanner.MustNew(cfg)
-	t.Cleanup(sc.Close)
-	opts := MCPProxyOpts{Scanner: sc, CEE: newCEERuntimeMatrixDeps(t)}
-	opts.CEE.Reconfigure(config.CrossRequestDetection{Enabled: true, Action: config.ActionWarn, FragmentReassembly: config.CrossRequestFragments{Enabled: true, MaxBufferBytes: 4096, WindowMinutes: 5}}, nil)
 	first := makeRequest(86, methodToolsCall, map[string]any{"name": "echo", "arguments": map[string]string{"payload": `{"n":1e`}})
 	second := makeRequest(87, methodToolsCall, map[string]any{"name": "echo", "arguments": map[string]string{"payload": `10001}`}})
-	if result := scanHTTPInputDecision([]byte(first), io.Discard, "limit-session", "audit", opts); result.Blocked != nil {
-		t.Fatalf("seed refused: %+v", result.Blocked)
-	}
-	if result := scanHTTPInputDecision([]byte(second), io.Discard, "limit-session", "audit", opts); result.Blocked == nil {
-		t.Fatal("fragment inspection limit released")
+	for _, enforce := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enforce=%t", enforce), func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+			cfg.Enforce = &enforce
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			opts := MCPProxyOpts{Scanner: sc, CEE: newCEERuntimeMatrixDeps(t)}
+			opts.CEE.Reconfigure(config.CrossRequestDetection{Enabled: true, Action: config.ActionWarn, FragmentReassembly: config.CrossRequestFragments{Enabled: true, MaxBufferBytes: 4096, WindowMinutes: 5}}, nil)
+			if result := scanHTTPInputDecision([]byte(first), io.Discard, "limit-session", "audit", opts); result.Blocked != nil {
+				t.Fatalf("seed refused: %+v", result.Blocked)
+			}
+			if result := scanHTTPInputDecision([]byte(second), io.Discard, "limit-session", "audit", opts); result.Blocked == nil {
+				t.Fatal("fragment inspection limit released")
+			}
+		})
 	}
 }
