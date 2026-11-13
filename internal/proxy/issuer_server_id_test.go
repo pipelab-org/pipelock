@@ -719,7 +719,11 @@ func TestIssuerHistorySeesPlaintextInsideCompressedRequest(t *testing.T) {
 		// otherIDMinted is false when the coding cannot be decoded: learning
 		// stops, so an identifier that was not in the body cannot mint either.
 		otherIDMinted bool
+		// decodeLimit overrides the store's decoded-size limit when set.
+		decodeLimit int
 	}
+	corrupt := append([]byte(nil), gzipBody...)
+	corrupt[len(corrupt)-1] ^= 0xff
 	cases := []call{
 		{name: "identity", body: []byte(agentBlob), otherIDMinted: true},
 		{name: "gzip forward", encoding: "gzip", body: gzipBody, otherIDMinted: true},
@@ -727,6 +731,12 @@ func TestIssuerHistorySeesPlaintextInsideCompressedRequest(t *testing.T) {
 		{name: "deflate forward", encoding: "deflate", body: deflateBody, otherIDMinted: true},
 		{name: "gzip intercept", encoding: "gzip", body: gzipBody, intercept: true, otherIDMinted: true},
 		{name: "unsupported coding", encoding: "br", body: []byte("notes"), otherIDMinted: false},
+		{name: "truncated gzip", encoding: "gzip", body: gzipBody[:len(gzipBody)-6], otherIDMinted: false},
+		{name: "corrupt gzip checksum", encoding: "gzip", body: corrupt, otherIDMinted: false},
+		{name: "bytes after gzip", encoding: "gzip", body: append(append([]byte(nil), gzipBody...), "tail"...), otherIDMinted: false},
+		{name: "second gzip member", encoding: "gzip", body: append(append([]byte(nil), gzipBody...), gzipIssuerBody(t, []byte("more"))...), otherIDMinted: false},
+		{name: "bytes after deflate", encoding: "deflate", body: append(append([]byte(nil), deflateBody...), "tail"...), otherIDMinted: false},
+		{name: "decoded size over the limit", encoding: "gzip", body: gzipBody, decodeLimit: 16, otherIDMinted: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -734,6 +744,9 @@ func TestIssuerHistorySeesPlaintextInsideCompressedRequest(t *testing.T) {
 			store := h.p.issuerStoreForUnmediatedSend()
 			if store == nil {
 				t.Fatal("issuer store not running")
+			}
+			if tc.decodeLimit > 0 {
+				store.bodyDecodeLimit = func() int { return tc.decodeLimit }
 			}
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://api.vendor.example/notes", bytes.NewReader(tc.body))
 			if tc.encoding != "" {
