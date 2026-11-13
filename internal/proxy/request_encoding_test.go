@@ -1682,3 +1682,99 @@ func TestExtractOutboundPayloadsDecodesAndForwardsWire(t *testing.T) {
 		t.Fatalf("forwarded body changed: err=%v match=%v", err, bytes.Equal(forwarded, wire))
 	}
 }
+
+// A credential split across the same JSON field of two gzip requests, with
+// unrelated padding in a sibling field, is joined by the JSON partition. Body
+// scanning is off and request policy is the only other reader of the body, so
+// the partition has to work from the decoded document.
+func TestGzipJSONFieldSplitWithPolicyOnlyBodyRead(t *testing.T) {
+	secret := testCEEAWSKeyPrefix + testCEEAWSKeySuffix
+	half := len(secret) / 2
+	padding := strings.Repeat("ordinary prose ", ceeForwardConversationPaddingBytes/len("ordinary prose "))
+	configure := func(cfg *config.Config, host string) {
+		rule := graphqlBlockRule()
+		rule.Route.Hosts = []string{host}
+		cfg.RequestPolicy.Enabled = true
+		cfg.RequestPolicy.Rules = []config.RequestPolicyRule{rule}
+		cfg.RequestBodyScanning.Enabled = false
+		cfg.CrossRequestDetection = ceeFragmentBlockCfg()
+		cfg.CrossRequestDetection.EntropyBudget.Enabled = false
+		cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 2 * ceeForwardConversationPaddingBytes
+		cfg.Taint.Enabled = false
+	}
+	// A benign GraphQL query keeps the policy rule from matching, so the
+	// request is admitted and the policy still reads the body.
+	document := func(content string) string {
+		return `{"query":"query { id }","messages":[{"role":"user","content":"` + content + `"}],"history":"` + padding + `"}`
+	}
+	check := func(t *testing.T, send func(content string) *http.Response) {
+		t.Helper()
+		first := send(secret[:half])
+		defer func() { _ = first.Body.Close() }()
+		if first.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(first.Body)
+			t.Fatalf("first status=%d body=%s", first.StatusCode, body)
+		}
+		second := send(secret[half:])
+		defer func() { _ = second.Body.Close() }()
+		if second.StatusCode != http.StatusForbidden || second.Header.Get(blockreason.HeaderLayer) != "cross_request" {
+			body, _ := io.ReadAll(second.Body)
+			t.Fatalf("second status=%d layer=%q body=%s", second.StatusCode, second.Header.Get(blockreason.HeaderLayer), body)
+		}
+	}
+
+	t.Run("forward", func(t *testing.T) {
+		backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(backend.Close)
+		proxyAddr, proxy, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+			configure(cfg, "api.example.com")
+		})
+		t.Cleanup(cleanup)
+		installForwardTestDialer(proxy, backend.Listener.Addr().String())
+		client := forwardHTTPClient(t, proxyAddr)
+		check(t, func(content string) *http.Response {
+			wire := gzipRequestBody(t, []byte(document(content)))
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://api.example.com/v1/messages", bytes.NewReader(wire))
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Content-Encoding", "gzip")
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("do: %v", err)
+			}
+			return resp
+		})
+	})
+
+	t.Run("intercept", func(t *testing.T) {
+		upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(upstream.Close)
+		cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+		configure(cfg, upstream.Listener.Addr().(*net.TCPAddr).IP.String())
+		sc := scanner.MustNew(cfg)
+		t.Cleanup(sc.Close)
+		proxy, err := New(cfg, logger, sc, m)
+		if err != nil {
+			t.Fatalf("proxy: %v", err)
+		}
+		t.Cleanup(proxy.Close)
+		check(t, func(content string) *http.Response {
+			wire := gzipRequestBody(t, []byte(document(content)))
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://"+upstream.Listener.Addr().String()+"/v1/messages", bytes.NewReader(wire))
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Content-Encoding", "gzip")
+			return interceptAndRequestWithProxy(t, upstream, cache, pool, cfg, sc, logger, m, req, proxy)
+		})
+	})
+}
