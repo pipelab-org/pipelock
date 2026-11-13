@@ -63,6 +63,10 @@ type requestPolicyInput struct {
 	Headers     http.Header // resolved for method-override detection
 	Body        []byte
 	BodyRead    bool
+	// Config is the configuration the request was admitted under. When set,
+	// the body limit comes from it, so a reload between admission and the body
+	// read cannot change the limit this request is held to.
+	Config *config.Config
 
 	Transport string
 	Target    string // full URL or host:port, for receipt/audit correlation
@@ -225,8 +229,11 @@ func (p *Proxy) evaluateRequestPolicyUninspectableBatch(in requestPolicyInput, a
 	return d
 }
 
-func (p *Proxy) requestPolicyBodyLimit() int {
-	cfg := p.cfgPtr.Load()
+func (p *Proxy) requestPolicyBodyLimit(admitted *config.Config) int {
+	cfg := admitted
+	if cfg == nil {
+		cfg = p.cfgPtr.Load()
+	}
 	if cfg != nil && cfg.RequestBodyScanning.MaxBodyBytes > 0 {
 		return cfg.RequestBodyScanning.MaxBodyBytes
 	}
@@ -245,7 +252,7 @@ func (p *Proxy) prepareRequestPolicyBody(r *http.Request, in *requestPolicyInput
 		in.BodyRead = true
 		return requestPolicyResult{}
 	}
-	limit := p.requestPolicyBodyLimit()
+	limit := p.requestPolicyBodyLimit(in.Config)
 	buf, err := io.ReadAll(io.LimitReader(r.Body, int64(limit)+1))
 	if err != nil {
 		return p.requestPolicyReadBlocked(*in, fmt.Sprintf("request body could not be inspected: %v", err))
@@ -273,13 +280,14 @@ func (p *Proxy) prepareRequestPolicyBody(r *http.Request, in *requestPolicyInput
 // shared finalizer so it is metered, audited, and receipted like any other
 // match. reason is logged as bounded audit context for the failure cause.
 func (p *Proxy) requestPolicyReadBlocked(in requestPolicyInput, reason string) requestPolicyResult {
-	m := p.requestPolicyMatcher()
-	if m == nil {
-		return requestPolicyResult{}
-	}
 	p.logger.LogAnomaly(in.AuditCtx, blockLayerRequestPolicy, reason, 0)
 	d := p.evaluateRequestPolicyUninspectable(in, config.ActionBlock, reqpolicy.PredAnyBody)
 	d = reqpolicy.Stricter(d, p.evaluateRequestPolicyUninspectableBatch(in, config.ActionBlock))
+	// A reload can remove the matching rule during the read. A shadow rule
+	// also cannot make a partially consumed stream safe to forward.
+	if !d.Enforced() || d.Action != config.ActionBlock {
+		d = reqpolicy.Decision{Action: config.ActionBlock, RuleName: "body_uninspectable", Reason: "request body could not be inspected"}
+	}
 	return p.finalizeRequestPolicyDecision(in, d)
 }
 

@@ -2137,6 +2137,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	rpInput := requestPolicyInput{
 		Host:        r.URL.Hostname(),
 		Method:      r.Method,
+		Config:      cfg,
 		Path:        r.URL.EscapedPath(),
 		Query:       r.URL.RawQuery,
 		ContentType: r.Header.Get(headerContentType),
