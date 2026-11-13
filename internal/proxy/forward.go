@@ -247,16 +247,26 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	targetCtx := newConnectAuditContext(r.Context(), p.logger, target, clientIP, requestID, agent)
 	headerCtx := targetCtx
-	denyConnectCapacity := func() {
-		p.logger.LogBlocked(targetCtx, sessionCapacityLayer, session.ErrCapacity.Error())
-		p.metrics.RecordTunnelBlocked(agentLabel)
-		emitConnectReceipt(receipt.EmitOpts{
-			ActionID: actionID, Verdict: config.ActionBlock, Layer: sessionCapacityLayer,
-			Pattern: session.ErrCapacity.Error(), Transport: TransportConnect,
-			Method: http.MethodConnect, Target: connectReceiptTarget, RequestID: requestID, Agent: agent,
+	denyConnectAs := func(kind forwardDenialKind) {
+		p.emitForwardDenial(forwardDenial{
+			Kind:        kind,
+			Context:     targetCtx,
+			Writer:      w,
+			RequestID:   requestID,
+			Agent:       agent,
+			MetricAgent: agentLabel,
+			Started:     start,
+			ActionID:    actionID,
+			Emit:        emitConnectReceipt,
+			Method:      http.MethodConnect,
+			Target:      connectReceiptTarget,
+			Transport:   TransportConnect,
 		})
-		writeBlockedError(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer).WithRequestID(requestID), session.ErrCapacity.Error(), http.StatusServiceUnavailable)
 	}
+	denyConnectCapacity := func() { denyConnectAs(forwardDenialConnectSessionCapacity) }
+	// After the hijack the client already has its 200, so this refusal writes
+	// no HTTP response and its receipt is a child of the request action.
+	denyInterceptCapacity := func() { denyConnectAs(forwardDenialConnectInterceptSessionCapacity) }
 
 	// Scan through all layers (URL pipeline).
 	connectScanCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
@@ -937,14 +947,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if sm := p.sessionMgrPtr.Load(); sm != nil {
 			sess := sm.GetOrCreate(responseTaintSessionKey(cfg, agent, clientIP, id.Auth))
 			if sess == nil {
-				p.logger.LogBlocked(targetCtx, sessionCapacityLayer, session.ErrCapacity.Error())
-				p.metrics.RecordTunnelBlocked(agentLabel)
-				emitConnectReceipt(receipt.EmitOpts{
-					ActionID: receipt.NewActionID(), ParentActionID: actionID,
-					Verdict: config.ActionBlock, Layer: sessionCapacityLayer,
-					Pattern: session.ErrCapacity.Error(), Transport: TransportConnect,
-					Method: http.MethodConnect, Target: connectReceiptTarget, RequestID: requestID, Agent: agent,
-				})
+				denyInterceptCapacity()
 				outcomeStatus = strconv.Itoa(http.StatusOK)
 				outcomeBytes = 0
 				outcomeReason = sessionCapacityLayer
@@ -1167,6 +1170,23 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}))
 	}
 	actx := newHTTPAuditContext(r.Context(), p.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
+	denyForwardCapacity := func() {
+		p.emitForwardDenial(forwardDenial{
+			Kind:        forwardDenialForwardSessionCapacity,
+			Context:     actx,
+			Writer:      w,
+			RequestID:   requestID,
+			Agent:       agent,
+			MetricAgent: agentLabel,
+			Hostname:    r.URL.Hostname(),
+			Started:     start,
+			ActionID:    actionID,
+			Emit:        emitForwardReceipt,
+			Method:      r.Method,
+			Target:      targetURL,
+			Transport:   TransportForward,
+		})
+	}
 
 	// Scan through all layers (URL pipeline)
 	fwdScanCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
@@ -1282,14 +1302,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		sess := sm.GetOrCreate(forwardSessionKey)
 		if sess == nil {
-			p.logger.LogBlocked(actx, sessionCapacityLayer, session.ErrCapacity.Error())
-			p.metrics.RecordBlocked(r.URL.Hostname(), sessionCapacityLayer, time.Since(start), agentLabel)
-			emitForwardReceipt(receipt.EmitOpts{
-				ActionID: actionID, Verdict: config.ActionBlock, Layer: sessionCapacityLayer,
-				Pattern: session.ErrCapacity.Error(), Transport: TransportForward,
-				Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent,
-			})
-			writeBlockedError(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer).WithRequestID(requestID), session.ErrCapacity.Error(), http.StatusServiceUnavailable)
+			denyForwardCapacity()
 			return
 		}
 		forwardRec = sess
@@ -1375,18 +1388,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if sr.Blocked {
-		info, status := sr.blockResponse()
+		// A capacity miss here is the same refusal as the one above: its
+		// detail is the capacity text and its response is the catalog's.
+		// The two cases share one exit so neither can fall into the other's
+		// response write.
 		if sr.capacityDenied {
-			p.logger.LogBlocked(actx, sessionCapacityLayer, sr.Detail)
-			p.metrics.RecordBlocked(r.URL.Hostname(), sessionCapacityLayer, time.Since(start), agentLabel)
-			emitForwardReceipt(receipt.EmitOpts{
-				ActionID: actionID, Verdict: config.ActionBlock, Layer: sessionCapacityLayer,
-				Pattern: sr.Detail, Transport: TransportForward,
-				Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent,
-			})
+			denyForwardCapacity()
+		} else {
+			info, status := sr.blockResponse()
+			writeBlockedError(w,
+				info.WithRequestID(requestID), sr.Detail, status)
 		}
-		writeBlockedError(w,
-			info.WithRequestID(requestID), sr.Detail, status)
 		return
 	}
 
@@ -2126,14 +2138,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if ceeBlockAll {
 			if ceeRec == nil {
-				p.logger.LogBlocked(actx, sessionCapacityLayer, session.ErrCapacity.Error())
-				p.metrics.RecordBlocked(r.URL.Hostname(), sessionCapacityLayer, time.Since(start), agentLabel)
-				emitForwardReceipt(receipt.EmitOpts{
-					ActionID: actionID, Verdict: config.ActionBlock, Layer: sessionCapacityLayer,
-					Pattern: session.ErrCapacity.Error(), Transport: TransportForward,
-					Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent,
-				})
-				writeBlockedError(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer).WithRequestID(requestID), session.ErrCapacity.Error(), http.StatusServiceUnavailable)
+				denyForwardCapacity()
 				return
 			}
 			level := recEscalationLevel(ceeRec)
