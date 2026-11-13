@@ -564,7 +564,7 @@ func interceptTunnel(
 		// inner requests start from a bare context, so the envelope-failure,
 		// authority-mismatch, and primary audit events below all reported
 		// unknown provenance even though the tunnel knew the real grade.
-		BaseContext: ic.baseContext(),
+		BaseContext: ic.tunnelBaseContext(ctx),
 		ConnState: func(_ net.Conn, state http.ConnState) {
 			// Close the listener when the connection finishes so Serve()
 			// exits promptly instead of blocking on Accept() forever.
@@ -3337,6 +3337,15 @@ func (ic *InterceptContext) actorAuthContext() context.Context {
 func (ic *InterceptContext) baseContext() func(net.Listener) context.Context {
 	return func(net.Listener) context.Context {
 		return ic.actorAuthContext()
+	}
+}
+
+// tunnelBaseContext is baseContext with the tunnel's own context attached, so
+// a request served inside the tunnel can tell why the tunnel ended.
+func (ic *InterceptContext) tunnelBaseContext(tunnel context.Context) func(net.Listener) context.Context {
+	base := ic.baseContext()
+	return func(ln net.Listener) context.Context {
+		return context.WithValue(base(ln), ctxKeyInterceptTunnel, tunnel)
 	}
 }
 

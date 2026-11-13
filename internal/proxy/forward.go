@@ -917,8 +917,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// Wrap clientConn with buffered reader so any bytes peeked during
 		// SNI verification (ClientHello) are available to the TLS server.
 		interceptConn := wrapBuffered(clientConn, clientReader)
-		interceptCtx, interceptCancel := context.WithCancel(r.Context())
-		defer interceptCancel()
+		interceptCtx, interceptCancelCause := context.WithCancelCause(r.Context())
+		defer interceptCancelCause(nil)
+		// An airlock cancellation carries its own cause so a request it
+		// interrupts is not recorded as a client disconnect.
+		interceptCancel := func() { interceptCancelCause(errAirlockTerminated) }
 		// Register airlock cancel for intercepted tunnels so escalation to
 		// hard/drain terminates the inner-request http.Server via context.
 		for _, connectAirlockSess := range connectAirlockSessions {

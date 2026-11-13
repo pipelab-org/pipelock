@@ -303,3 +303,48 @@ func TestFindingBeforeCancelStillRecorded(t *testing.T) {
 		t.Fatalf("finding was rewritten as a cancellation: %s", raw)
 	}
 }
+
+func TestRequestClientCanceledCause(t *testing.T) {
+	plain := func(parent context.Context) context.Context {
+		ctx, cancel := context.WithCancel(parent)
+		cancel()
+		return ctx
+	}
+	withCause := func(parent context.Context, cause error) context.Context {
+		ctx, cancel := context.WithCancelCause(parent)
+		cancel(cause)
+		return ctx
+	}
+	inTunnel := func(tunnel context.Context) context.Context {
+		ic := &InterceptContext{}
+		return plain(ic.tunnelBaseContext(tunnel)(nil))
+	}
+	expired, cancelExpired := context.WithDeadline(context.Background(), time.Unix(1, 0))
+	defer cancelExpired()
+
+	tests := []struct {
+		name string
+		ctx  context.Context
+		want bool
+	}{
+		{"live", context.Background(), false},
+		{"deadline", expired, false},
+		{"client went away", plain(context.Background()), true},
+		{"license revoked", withCause(context.Background(), errAgentLicenseRevoked), false},
+		{"request under a revoked license", plain(withCause(context.Background(), errAgentLicenseRevoked)), false},
+		{"tunnel still open", inTunnel(context.Background()), true},
+		{"tunnel closed normally", inTunnel(plain(context.Background())), true},
+		{"tunnel ended by the airlock", inTunnel(withCause(context.Background(), errAirlockTerminated)), false},
+		{"tunnel deadline", inTunnel(expired), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := requestClientCanceled(tt.ctx); got != tt.want {
+				t.Fatalf("requestClientCanceled = %v, want %v", got, tt.want)
+			}
+		})
+	}
+	if requestClientCanceled(nil) { //nolint:staticcheck // nil context is the case under test
+		t.Fatal("nil context reported as a client cancellation")
+	}
+}

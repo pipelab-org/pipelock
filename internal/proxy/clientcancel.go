@@ -17,11 +17,35 @@ import (
 // context ended before scanning finished. It is not a block.
 const clientCanceledStatusText = "request canceled"
 
-// requestClientCanceled reports that the inbound request context ended
-// because the caller went away. A deadline, a nil context, and a context
-// that is still live are not this case.
+// errAirlockTerminated is the cancellation cause of an intercepted tunnel that
+// the airlock ended.
+var errAirlockTerminated = errors.New("airlock terminated connection")
+
+type ctxKeyInterceptTunnelType struct{}
+
+// ctxKeyInterceptTunnel carries an intercepted tunnel's context into the
+// requests served inside it. Those requests start from a fresh base context,
+// so the tunnel's own cancellation cause is not otherwise visible to them.
+var ctxKeyInterceptTunnel = ctxKeyInterceptTunnelType{}
+
+// requestClientCanceled reports that the inbound request context ended with a
+// plain cancellation: the caller went away, or the proxy is shutting down. A
+// deadline, a nil context, and a context that is still live are not this
+// case. Neither is a cancellation the proxy made to enforce something, such
+// as a revoked license or an airlock ending the tunnel the request rides in.
+// Those carry their own cause and stay blocks.
 func requestClientCanceled(ctx context.Context) bool {
-	return ctx != nil && errors.Is(ctx.Err(), context.Canceled)
+	if ctx == nil || !errors.Is(ctx.Err(), context.Canceled) {
+		return false
+	}
+	if !errors.Is(context.Cause(ctx), context.Canceled) {
+		return false
+	}
+	tunnel, ok := ctx.Value(ctxKeyInterceptTunnel).(context.Context)
+	if ok && tunnel.Err() != nil && !errors.Is(context.Cause(tunnel), context.Canceled) {
+		return false
+	}
+	return true
 }
 
 // bodyResultHasFinding reports a credential, injection, address, entropy,
