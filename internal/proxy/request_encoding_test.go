@@ -1176,9 +1176,10 @@ func TestForwardA2AGzipRedirectReplaysOriginalBody(t *testing.T) {
 	}
 }
 
-func TestReverseGzipBodyUsesDecodedViewForCrossRequestDetection(t *testing.T) {
+func reverseGzipCrossRequest(t *testing.T, bodyScanning bool) {
+	t.Helper()
 	cfg := reverseParityBaseConfig(t)
-	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Enabled = bodyScanning
 	cfg.RequestBodyScanning.Action = config.ActionBlock
 	cfg.CrossRequestDetection = ceeFragmentBlockCfg()
 	cfg.Taint.Enabled = false
@@ -1212,7 +1213,8 @@ func TestReverseGzipBodyUsesDecodedViewForCrossRequestDetection(t *testing.T) {
 	}
 }
 
-func TestForwardGzipBodyUsesDecodedViewForCrossRequestDetection(t *testing.T) {
+func forwardGzipCrossRequest(t *testing.T, bodyScanning bool) {
+	t.Helper()
 	var got []byte
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -1228,7 +1230,7 @@ func TestForwardGzipBodyUsesDecodedViewForCrossRequestDetection(t *testing.T) {
 	t.Cleanup(backend.Close)
 
 	proxyAddr, proxy, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
-		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.Enabled = bodyScanning
 		cfg.RequestBodyScanning.Action = config.ActionBlock
 		cfg.CrossRequestDetection = ceeFragmentBlockCfg()
 		cfg.Taint.Enabled = false
@@ -1267,7 +1269,8 @@ func TestForwardGzipBodyUsesDecodedViewForCrossRequestDetection(t *testing.T) {
 	}
 }
 
-func TestInterceptGzipBodyUsesDecodedViewForCrossRequestDetection(t *testing.T) {
+func interceptGzipCrossRequest(t *testing.T, bodyScanning bool) {
+	t.Helper()
 	var got []byte
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -1283,7 +1286,7 @@ func TestInterceptGzipBodyUsesDecodedViewForCrossRequestDetection(t *testing.T) 
 	t.Cleanup(upstream.Close)
 
 	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
-	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Enabled = bodyScanning
 	cfg.RequestBodyScanning.Action = config.ActionBlock
 	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
 	cfg.CrossRequestDetection = ceeFragmentBlockCfg()
@@ -1319,6 +1322,19 @@ func TestInterceptGzipBodyUsesDecodedViewForCrossRequestDetection(t *testing.T) 
 	if second.StatusCode != http.StatusForbidden || second.Header.Get(blockreason.HeaderLayer) != "cross_request" {
 		body, _ := io.ReadAll(second.Body)
 		t.Fatalf("second status=%d layer=%q body=%s", second.StatusCode, second.Header.Get(blockreason.HeaderLayer), body)
+	}
+}
+
+// Cross-request detection reads the decoded text of a gzip body whether or
+// not request body scanning buffered it. A credential split across two
+// compressed requests is refused on the second, and the first is forwarded
+// byte for byte.
+func TestGzipBodyUsesDecodedViewForCrossRequestDetection(t *testing.T) {
+	for _, bodyScanning := range []bool{true, false} {
+		name := fmt.Sprintf("body_scanning=%t", bodyScanning)
+		t.Run("reverse/"+name, func(t *testing.T) { reverseGzipCrossRequest(t, bodyScanning) })
+		t.Run("forward/"+name, func(t *testing.T) { forwardGzipCrossRequest(t, bodyScanning) })
+		t.Run("intercept/"+name, func(t *testing.T) { interceptGzipCrossRequest(t, bodyScanning) })
 	}
 }
 
@@ -1551,4 +1567,45 @@ func reverseAdmittedGzipPolicy(t *testing.T, admittedLimit, liveLimit int, wire 
 		t.Fatalf("forwarded enc=%q match=%v", enc, bytes.Equal(got, wire))
 	}
 	return w.Code, hits.Load()
+}
+
+// ceeDecodedPrefix decodes a supported coding for inspection and otherwise
+// returns the bytes as read. It never reports an error.
+func TestCEEDecodedPrefix(t *testing.T) {
+	plain := []byte(strings.Repeat("inspect this text ", 40))
+	gzipped := gzipRequestBody(t, plain)
+	cases := []struct {
+		name     string
+		encoding []string
+		wire     []byte
+		want     []byte
+		prefix   bool
+	}{
+		{name: "identity", wire: plain, want: plain},
+		{name: "gzip", encoding: []string{"gzip"}, wire: gzipped, want: plain},
+		{name: "deflate", encoding: []string{"deflate"}, wire: deflateRequestBody(t, plain), want: plain},
+		{name: "read stopped inside the stream", encoding: []string{"gzip"}, wire: gzipped[:len(gzipped)-12], prefix: true},
+		{name: "unsupported coding", encoding: []string{"br"}, wire: gzipped, want: gzipped},
+		{name: "stacked coding", encoding: []string{"gzip", "gzip"}, wire: gzipped, want: gzipped},
+		{name: "declared gzip is not gzip", encoding: []string{"gzip"}, wire: plain, want: plain},
+		{name: "gzip header only", encoding: []string{"gzip"}, wire: gzipped[:10], want: gzipped[:10]},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			header := http.Header{}
+			for _, v := range tc.encoding {
+				header.Add("Content-Encoding", v)
+			}
+			got := ceeDecodedPrefix(header, tc.wire)
+			if tc.prefix {
+				if len(got) == 0 || !bytes.HasPrefix(plain, got) {
+					t.Fatalf("got %d bytes that are not a prefix of the plaintext", len(got))
+				}
+				return
+			}
+			if !bytes.Equal(got, tc.want) {
+				t.Fatalf("got %d bytes, want %d", len(got), len(tc.want))
+			}
+		})
+	}
 }

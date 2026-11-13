@@ -28,6 +28,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -439,10 +440,17 @@ func callWithInspectedBody(r *http.Request, inspected []byte, fn func()) {
 	r.GetBody = func() (io.ReadCloser, error) {
 		return io.NopCloser(bytes.NewReader(held)), nil
 	}
+	// The inspected view is already decoded, so it is presented without the
+	// content coding. The header is restored with the forwarded body.
+	prevCoding, hadCoding := r.Header["Content-Encoding"]
+	delete(r.Header, "Content-Encoding")
 	defer func() {
 		r.Body = prevBody
 		r.ContentLength = prevLen
 		r.GetBody = prevGet
+		if hadCoding {
+			r.Header["Content-Encoding"] = prevCoding
+		}
 	}()
 	fn()
 }
@@ -465,9 +473,12 @@ func extractOutboundPayloads(r *http.Request, partitionJSON bool, sessionKey str
 		limited := io.LimitReader(origBody, maxCEEBodyRead)
 		bodyBytes, err := io.ReadAll(limited)
 		if err == nil && len(bodyBytes) > 0 {
-			parts = append(parts, string(bodyBytes))
+			// The forwarded bytes stay as read. What is inspected is the
+			// decoded text when the body carries a supported content coding.
+			inspected := ceeDecodedPrefix(r.Header, bodyBytes)
+			parts = append(parts, string(inspected))
 			if partitionJSON {
-				result.bodyFragmentLeaves, result.partitionReason = jsonBodyFragmentLeaves(r.Header.Get("Content-Type"), bodyBytes, sessionKey, partitionKey)
+				result.bodyFragmentLeaves, result.partitionReason = jsonBodyFragmentLeaves(r.Header.Get("Content-Type"), inspected, sessionKey, partitionKey)
 				result.bodyFragmentPayloads = concatCEEJSONLeaves(result.bodyFragmentLeaves)
 			}
 		}
@@ -483,6 +494,30 @@ func extractOutboundPayloads(r *http.Request, partitionJSON bool, sessionKey str
 
 	result.outbound = []byte(strings.Join(parts, ""))
 	return result
+}
+
+// ceeDecodedPrefix returns the text cross-request detection inspects for a
+// request body read up to maxCEEBodyRead. A single gzip, x-gzip, or deflate
+// coding is decoded, bounded by the same limit, so a body nothing else
+// buffered is still inspected as the receiver will read it. The read may have
+// stopped inside the stream, so a decode error keeps what was decoded before
+// it. Identity, any other coding, and a body that yields no decoded bytes
+// return the bytes as read. Detection only: this never refuses a request.
+func ceeDecodedPrefix(header http.Header, wire []byte) []byte {
+	coding, err := responseencoding.ParseRequestCoding(header.Values("Content-Encoding"))
+	if err != nil || coding == "" {
+		return wire
+	}
+	dec, err := responseencoding.NewDecoder(coding, bytes.NewReader(wire))
+	if err != nil {
+		return wire
+	}
+	defer func() { _ = dec.Close() }()
+	decoded, _ := io.ReadAll(io.LimitReader(dec, maxCEEBodyRead))
+	if len(decoded) == 0 {
+		return wire
+	}
+	return decoded
 }
 
 // jsonBodyFragmentPayloads partitions a JSON request body into keyed, fixed-
