@@ -1462,8 +1462,11 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 	} {
 		values := headers.Values(key)
 		if key == headerNameWSProtocol {
-			normalized := strings.Join(wsProtocolOffers(headers), ", ")
-			values = append(append([]string(nil), values...), normalized)
+			// Scan each original line, each offer on its own, and the
+			// normalized list that goes on the wire.
+			offers := wsProtocolOffers(headers)
+			values = append(append([]string(nil), values...), offers...)
+			values = append(values, strings.Join(offers, ", "))
 		}
 		for _, val := range values {
 			if val == "" {
@@ -1588,6 +1591,13 @@ func validateWSClientHandshake(r *http.Request) error {
 	candidate.Body, candidate.GetBody = nil, nil
 	candidate.ContentLength = 0
 	candidate.TransferEncoding, candidate.Trailer = nil, nil
+	// The client upgrade reads only the first Connection and Upgrade line.
+	// Keep only that line so the re-parse checks what the upgrade will.
+	for _, name := range []string{"Connection", "Upgrade"} {
+		if lines := candidate.Header.Values(name); len(lines) > 1 {
+			candidate.Header[name] = lines[:1]
+		}
+	}
 	var wire bytes.Buffer
 	if err := candidate.Write(&wire); err != nil {
 		return err

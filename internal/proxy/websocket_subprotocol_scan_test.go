@@ -51,9 +51,16 @@ func TestWSSubprotocolAnchoredPatternPerLine(t *testing.T) {
 		}
 	})
 	defer cleanup()
-	resp, conn := rawWSHandshake(t, ws.HandshakeHeaderHTTP(http.Header{headerNameWSProtocol: []string{"private-token-123456", "other"}}), wsProxyURL(proxyAddr, target), true)
-	defer func() { _ = conn.Close() }()
-	if resp.StatusCode != http.StatusForbidden || hits.Load() != 0 {
-		t.Fatalf("status %d, upstream hits %d; want 403 and zero", resp.StatusCode, hits.Load())
+	for name, offers := range map[string][]string{
+		"own line":           {"private-token-123456", "other"},
+		"second in one line": {"other, private-token-123456"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, conn := rawWSHandshake(t, ws.HandshakeHeaderHTTP(http.Header{headerNameWSProtocol: offers}), wsProxyURL(proxyAddr, target), true)
+			defer func() { _ = conn.Close() }()
+			if resp.StatusCode != http.StatusForbidden || hits.Load() != 0 {
+				t.Fatalf("status %d, upstream hits %d; want 403 and zero", resp.StatusCode, hits.Load())
+			}
+		})
 	}
 }

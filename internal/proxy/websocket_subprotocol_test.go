@@ -284,6 +284,13 @@ func TestValidateWSClientHandshake(t *testing.T) {
 	if err := validateWSClientHandshake(valid()); err != nil {
 		t.Fatalf("valid handshake rejected: %v", err)
 	}
+	// The upgrade reads the first Connection line only, so a later line that
+	// does not name Upgrade must not fail the pre-check.
+	split := valid()
+	split.Header.Add("Connection", "keep-alive")
+	if err := validateWSClientHandshake(split); err != nil {
+		t.Fatalf("handshake with a second Connection line rejected: %v", err)
+	}
 	tests := []struct {
 		name   string
 		mutate func(*http.Request)
@@ -296,6 +303,9 @@ func TestValidateWSClientHandshake(t *testing.T) {
 			r.Proto, r.ProtoMajor, r.ProtoMinor = "HTTP/1.0", 1, 0
 		}},
 		{"missing host", func(r *http.Request) { r.Host = "" }},
+		{"upgrade only on a later connection line", func(r *http.Request) {
+			r.Header["Connection"] = []string{"keep-alive", "Upgrade"}
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
