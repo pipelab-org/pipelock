@@ -210,7 +210,7 @@ class PairTest(unittest.TestCase):
         self.assertEqual(len(self.calls), 2)
         for _, command in self.calls:
             self.assertIn(f"-count={RUN.ALLOCATION_REPETITIONS}", command)
-            self.assertIn("-benchtime=20x", command)
+            self.assertIn("-benchtime=1x", command)
         self.assertIn("Unchanged benchmarks: 1", (self.out / "allocation-summary.md").read_text())
 
     def test_allocation_capture_reports_deltas_without_failure(self):

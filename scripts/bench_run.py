@@ -229,6 +229,8 @@ def smoke_benchmarks() -> int:
 # Fixed iterations and in-process repetitions follow Go's -benchtime=Nx and
 # -count contracts. Repetition one is initialization; the remaining three must
 # agree, so a benchmark that varies is excluded at run time, not reported.
+# Only allocations are compared, so one iteration is enough, and the agreement
+# check carries the stability burden.
 ALLOCATION_REPETITIONS = 4
 # Reproduced on linux/amd64 with -count=4 at the stated fixed iteration counts.
 # These are observed post-warm-up allocs/op values, never a numerical tolerance.
@@ -310,6 +312,10 @@ ALLOCATION_EXCLUSIONS: dict[tuple[str, str], str] = {
         "added about 11 minutes to this job",
     ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkWIFOverlapScan"):
         "allocs/op varies after warm-up: 115011, 115014, 115014 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/mcp/tools", "BenchmarkExtractSchemaDescriptions_Simple"):
+        "allocs/op differs across identical runs at 1 iteration: 38 and 34",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkTextDLPFragmentReplayComplete"):
+        "allocs/op differs across identical runs at 1 iteration: 130057 and 130058",
 }
 # Go splits -skip at top-level alternations and slashes. Anchor each path
 # component so excluding one sub-case keeps its siblings running.
@@ -324,7 +330,7 @@ def allocation_skip_pattern(names: tuple[str, ...]) -> str:
 # top-level name defined in one package only.
 ALLOCATION_COMMAND = ["go", "test", "./internal/scanner/...", "./internal/proxy/...", "./internal/mcp/...",
                       "-run=^$", "-bench=.", f"-skip={allocation_skip_pattern(ALLOCATION_SKIPPED)}",
-                      "-benchtime=20x", f"-count={ALLOCATION_REPETITIONS}", "-benchmem"]
+                      "-benchtime=1x", f"-count={ALLOCATION_REPETITIONS}", "-benchmem"]
 
 
 def allocation_samples(text: str, repetitions: int = ALLOCATION_REPETITIONS) -> tuple[dict, dict]:
@@ -383,7 +389,7 @@ def allocation_report(baseline: str, current: str) -> str:
     shared = (base.keys() & head.keys()) - excluded
     changed = sorted(key for key in shared if base[key][0] != head[key][0])
     lines = ["## Benchmark allocation report", "",
-             f"Report only; first repetition discarded. Fixed 20 iterations, {ALLOCATION_REPETITIONS} repetitions per process.",
+             f"Report only; first repetition discarded. Fixed 1 iteration, {ALLOCATION_REPETITIONS} repetitions per process.",
              "Only allocs/op is compared. B/op and timing are not compared.",
              "A benchmark whose remaining repetitions disagree is excluded below, as are known varying cases.",
              "Known varying benchmark cases are skipped rather than run; their other cases remain compared.",
