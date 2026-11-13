@@ -69,9 +69,16 @@ func TestHeaderScanErrorRefusedAcrossHTTPConsumers(t *testing.T) {
 				}
 				cancelledDuringRequest := base.Err() != nil
 				cancel()
-				if w.Code == http.StatusServiceUnavailable && w.Header().Get("X-Pipelock-Block-Reason") == "parse_error" {
+				if kind == "websocket" && w.Code == http.StatusServiceUnavailable && w.Header().Get("X-Pipelock-Block-Reason") == "parse_error" {
 					if !cancelledDuringRequest || calls.Load() != 0 || !strings.Contains(w.Body.String(), scanner.ErrTextDLPIncomplete.Error()) {
 						t.Fatalf("unverified header refusal: canceled=%v upstream=%d body=%s", cancelledDuringRequest, calls.Load(), w.Body.String())
+					}
+					refused = true
+					break
+				}
+				if kind != "websocket" && w.Code == http.StatusServiceUnavailable && strings.Contains(w.Body.String(), clientCanceledStatusText) {
+					if !cancelledDuringRequest || calls.Load() != 0 || w.Header().Get("X-Pipelock-Block-Reason") != "" {
+						t.Fatalf("client cancel was treated as a block: canceled=%v upstream=%d headers=%v body=%s", cancelledDuringRequest, calls.Load(), w.Header(), w.Body.String())
 					}
 					refused = true
 					break
@@ -122,14 +129,15 @@ func TestReverseRequestScanErrorPreservesRefusalEvidence(t *testing.T) {
 			if ctx.Err() == nil || w.Code != http.StatusServiceUnavailable || calls.Load() != 0 {
 				t.Fatalf("scan failure: canceled=%v status=%d upstream=%d body=%s", ctx.Err(), w.Code, calls.Load(), w.Body.String())
 			}
-			var result ReverseProxyBlockResponse
-			if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || !result.Blocked || result.Error == "" || result.Direction != scanDirectionRequest || !strings.Contains(result.BlockReason, scanner.ErrTextDLPIncomplete.Error()) {
-				t.Errorf("reverse refusal lost its JSON contract: result=%+v err=%v body=%s", result, err, w.Body.String())
+			if !strings.Contains(w.Body.String(), clientCanceledStatusText) || w.Header().Get("X-Pipelock-Block-Reason") != "" {
+				t.Fatalf("client cancel was treated as a block: headers=%v body=%s", w.Header(), w.Body.String())
 			}
-			assertRequestScanErrorHeaders(t, w)
-			assertMetricsContain(t, p.metrics, `pipelock_reverse_proxy_requests_total{method="GET",status="503"} 1`)
-			assertMetricsContain(t, p.metrics, `pipelock_reverse_proxy_scan_blocked_total{direction="request",reason="scan_error"} 1`)
-			assertRequestScanErrorReceipt(t, rph, TransportReverse)
+			assertMetricsNotContain(t, p.metrics, `pipelock_reverse_proxy_scan_blocked_total{direction="request",reason="scan_error"} 1`)
+			for _, got := range rph.findReceipts(t) {
+				if got.ActionRecord.Verdict == config.ActionBlock {
+					t.Fatalf("client cancel emitted a block receipt: %+v", got.ActionRecord)
+				}
+			}
 		})
 	}
 }
@@ -165,12 +173,18 @@ func TestFetchHeaderScanErrorPreservesRefusalEvidence(t *testing.T) {
 		}
 		found = true
 		var result FetchResponse
-		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || !result.Blocked || result.URL != "http://api.vendor.example/ordinary" || !strings.Contains(result.BlockReason, scanner.ErrTextDLPIncomplete.Error()) {
-			t.Errorf("fetch refusal lost its JSON contract: result=%+v err=%v body=%s", result, err, w.Body.String())
+		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || result.Blocked || result.Error != clientCanceledStatusText || result.URL != "http://api.vendor.example/ordinary" {
+			t.Errorf("fetch cancel lost its response: result=%+v err=%v body=%s", result, err, w.Body.String())
 		}
-		assertRequestScanErrorHeaders(t, w)
-		assertMetricsContain(t, p.metrics, `pipelock_scanner_hits_total{agent="_default",scanner="context"} 1`)
-		assertRequestScanErrorReceipt(t, rph, TransportFetch)
+		if w.Header().Get("X-Pipelock-Block-Reason") != "" {
+			t.Errorf("client cancel set a block header: %v", w.Header())
+		}
+		assertMetricsNotContain(t, p.metrics, `pipelock_scanner_hits_total{agent="_default",scanner="context"} 1`)
+		for _, got := range rph.findReceipts(t) {
+			if got.ActionRecord.Verdict == config.ActionBlock {
+				t.Fatalf("client cancel emitted a block receipt: %+v", got.ActionRecord)
+			}
+		}
 		break
 	}
 	if !found || calls.Load() != 0 {

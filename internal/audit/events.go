@@ -21,6 +21,7 @@ const (
 	EventResponseScan           EventType = eventcatalog.EventResponseScan
 	EventResponseScanSuppressed EventType = eventcatalog.EventResponseScanSuppressed
 	EventRedirect               EventType = eventcatalog.EventRedirect
+	EventRequestCanceled        EventType = eventcatalog.EventRequestCanceled
 	EventTunnelOpen             EventType = eventcatalog.EventTunnelOpen
 	EventTunnelClose            EventType = eventcatalog.EventTunnelClose
 	EventForwardHTTP            EventType = eventcatalog.EventForwardHTTP

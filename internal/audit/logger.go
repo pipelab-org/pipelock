@@ -416,6 +416,28 @@ func (l *Logger) LogBlockedDetail(ctx LogContext, scanner, reason string, detail
 	}
 }
 
+// LogRequestCanceled records that the inbound request context was canceled
+// before scanning finished. The request is not forwarded. This is not a block.
+func (l *Logger) LogRequestCanceled(ctx LogContext, reason string) {
+	if l == nil {
+		return
+	}
+	e := newLogEntry(l.zl.Info(), EventRequestCanceled).
+		optStr("method", ctx.method).
+		optStr("url", dropURLContentSegments(ctx.url, false)).
+		optStr("target", dropURLContentSegments(ctx.target, false)).
+		optStr("resource", ctx.resource).
+		optStr("client_ip", ctx.clientIP).
+		optStr("request_id", ctx.requestID).
+		correlationField(ctx.correlation).
+		agentField(ctx.agent, ctx.agentAuth).
+		str("reason", reason)
+	e.msg("request canceled")
+	if l.emitter != nil {
+		l.emitEvent(string(EventRequestCanceled), e.fields)
+	}
+}
+
 // LogError logs a fetch error.
 func (l *Logger) LogError(ctx LogContext, err error) {
 	e := newLogEntry(l.zl.Error(), EventError).

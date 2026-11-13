@@ -886,11 +886,18 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	// Read body with +1 byte to detect overflow.
 	buf, err := io.ReadAll(io.LimitReader(req.Body, int64(req.MaxBytes)+1))
 	if err != nil {
-		return nil, BodyScanResult{
+		result := BodyScanResult{
 			Clean:  false,
 			Action: config.ActionBlock,
 			Reason: fmt.Sprintf("error reading request body: %v", err),
 		}
+		// A read that fails because the caller already went away is an
+		// unfinished scan, not a separate finding. Other read errors stay
+		// ordinary fail-closed blocks.
+		if requestClientCanceled(ctx) {
+			result.ScanError = context.Canceled.Error()
+		}
+		return nil, result
 	}
 	if len(req.Trailer) != 0 {
 		// A Trailer header is hop-by-hop, but removing that header does not clear
@@ -1149,7 +1156,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	for _, text := range texts {
 		injectionResult := req.Scanner.ScanResponseOutbound(ctx, text)
 		if injectionResult.Failed() {
-			return nil, BodyScanResult{Action: config.ActionBlock, ScanError: injectionResult.ScanError, Reason: "request body scan failed: " + injectionResult.ScanError}
+			return stopIncompleteBodyScan(result, injectionResult.ScanError)
 		}
 		if !injectionResult.Clean {
 			result.InjectionMatches = append(result.InjectionMatches, injectionResult.Matches...)
@@ -1164,7 +1171,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	var inOrderInjection, sortedInjection []scanner.ResponseMatch
 	injectionResult := req.Scanner.ScanResponseOutbound(ctx, joinedInOrder)
 	if injectionResult.Failed() {
-		return nil, BodyScanResult{Action: config.ActionBlock, ScanError: injectionResult.ScanError, Reason: "request body scan failed: " + injectionResult.ScanError}
+		return stopIncompleteBodyScan(result, injectionResult.ScanError)
 	}
 	if !injectionResult.Clean {
 		inOrderInjection = injectionResult.Matches
@@ -1176,7 +1183,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	joined := strings.Join(sorted, "\n")
 	injectionResult = req.Scanner.ScanResponseOutbound(ctx, joined)
 	if injectionResult.Failed() {
-		return nil, BodyScanResult{Action: config.ActionBlock, ScanError: injectionResult.ScanError, Reason: "request body scan failed: " + injectionResult.ScanError}
+		return stopIncompleteBodyScan(result, injectionResult.ScanError)
 	}
 	if !injectionResult.Clean {
 		sortedInjection = injectionResult.Matches
@@ -1194,7 +1201,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		for _, joinedFields := range joinedFields {
 			fieldResult := req.Scanner.ScanResponseOutbound(ctx, joinedFields)
 			if fieldResult.Failed() {
-				return nil, BodyScanResult{Action: config.ActionBlock, ScanError: fieldResult.ScanError, Reason: "request body scan failed: " + fieldResult.ScanError}
+				return stopIncompleteBodyScan(result, fieldResult.ScanError)
 			}
 			fieldInjection = mergeJoinedInjectionMatches(fieldInjection, fieldResult.Matches)
 		}
@@ -2809,9 +2816,20 @@ func scanRequestHeadersWithSuppress(ctx context.Context, headers http.Header, cf
 // the match, preserving the original fail-closed header behavior.
 func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner, target string, suppress []config.SuppressEntry, onDropped func(scanner.TextDLPMatch, string), onAudienceAllow func(scanner.CredentialAudienceAllow) error) (result *BodyScanResult) {
 	defer func() {
-		if ctx.Err() != nil {
-			result = &BodyScanResult{Action: config.ActionBlock, ScanError: scanner.ErrTextDLPIncomplete.Error()}
+		if ctx.Err() == nil {
+			return
 		}
+		// A finding collected before the context ended stays on the result.
+		// Replacing the result would let cancellation hide it.
+		if result != nil && bodyResultHasFinding(*result) {
+			result.Clean = false
+			result.Action = config.ActionBlock
+			if result.ScanError == "" {
+				result.ScanError = scanner.ErrTextDLPIncomplete.Error()
+			}
+			return
+		}
+		result = &BodyScanResult{Action: config.ActionBlock, ScanError: scanner.ErrTextDLPIncomplete.Error()}
 	}()
 	bodyCfg := cfg.RequestBodyScanning
 	disabled := bodyDLPDisabledSet(bodyCfg.DisablePatterns)
@@ -3024,7 +3042,7 @@ func (p *Proxy) evalHeaderDLP(ctx context.Context, e headerDLPParams) (blocked b
 	if headerResult == nil {
 		return false, false, "", nil
 	}
-	if headerResult.ScanError != "" {
+	if headerResult.ScanError != "" && !bodyResultHasFinding(*headerResult) {
 		return false, false, "", scanner.ErrTextDLPIncomplete
 	}
 	if headerResult.CredentialAudienceReceiptErr != nil {
@@ -3045,7 +3063,9 @@ func (p *Proxy) evalHeaderDLP(ctx context.Context, e headerDLPParams) (blocked b
 		reason = "request header contains secret"
 	}
 	reason = headerResult.withAudienceExplanation(reason)
-	if headerHardBlock || (action == config.ActionBlock && e.cfg.EnforceEnabled()) {
+	// An unfinished header scan is not forwarded, including when a finding
+	// was already recorded above and the configured action would only warn.
+	if headerResult.ScanError != "" || headerHardBlock || (action == config.ActionBlock && e.cfg.EnforceEnabled()) {
 		p.metrics.RecordBlocked(e.hostname, "header_dlp", time.Since(e.start), metricAgent)
 		return true, true, reason, nil
 	}
@@ -3063,4 +3083,33 @@ func refuseTextDLPScanError(w http.ResponseWriter, log *audit.Logger, actx audit
 	}
 	writeBlockedError(w, blockInfoFor(blockreason.ParseError, scanner.ScannerContext).WithRequestID(requestID), "request scan failed: "+err.Error(), http.StatusServiceUnavailable)
 	return true
+}
+
+// refuseTextDLPScanErrorForContext is refuseTextDLPScanError except when the
+// inbound request context itself was canceled. That case is a cancellation,
+// not a block, and still does not forward the request.
+func refuseTextDLPScanErrorForContext(ctx context.Context, w http.ResponseWriter, log *audit.Logger, actx audit.LogContext, requestID string, err error) bool {
+	if !errors.Is(err, scanner.ErrTextDLPIncomplete) {
+		return false
+	}
+	if requestClientCanceled(ctx) {
+		logRequestCanceled(log, actx, err.Error())
+		writeClientCanceled(w)
+		return true
+	}
+	return refuseTextDLPScanError(w, log, actx, requestID, err)
+}
+
+// stopIncompleteBodyScan keeps findings already collected and fails closed.
+// Returning no body means every caller refuses to forward the request.
+// A result that already has a finding keeps its own reason so the finding
+// stays visible; a result with no finding records the unfinished scan.
+func stopIncompleteBodyScan(result BodyScanResult, scanErr string) ([]byte, BodyScanResult) {
+	result.Clean = false
+	result.Action = config.ActionBlock
+	result.ScanError = scanErr
+	if !bodyResultHasFinding(result) {
+		result.Reason = "request body scan failed: " + scanErr
+	}
+	return nil, result
 }

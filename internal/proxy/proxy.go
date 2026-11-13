@@ -5752,6 +5752,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	var fetchGate ContractGateOutput
 
 	if !result.Allowed {
+		if clientCanceledContextRefusal(r.Context(), result) {
+			logRequestCanceled(log, actx, result.Reason)
+			writeClientCanceledFetch(w, displayURL, agent)
+			return
+		}
 		if urlBlocked {
 			log.LogBlockedDetail(actx, result.Scanner, result.Reason, auditDetailFromResult(result))
 			p.recordDecision(config.ActionBlock, result.Scanner, result.Reason, "fetch", requestID)
@@ -5943,6 +5948,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		hostname: parsed.Hostname(), target: displayURL, metricAgent: agentLabel, start: start,
 	})
 	if errors.Is(headerReceiptErr, scanner.ErrTextDLPIncomplete) {
+		if requestClientCanceled(r.Context()) {
+			logRequestCanceled(log, actx, headerReceiptErr.Error())
+			writeClientCanceledFetch(w, displayURL, agent)
+			return
+		}
 		reason := "request scan failed: " + headerReceiptErr.Error()
 		log.LogBlocked(actx, scanner.ScannerContext, headerReceiptErr.Error())
 		p.metrics.RecordBlocked(parsed.Hostname(), scanner.ScannerContext, time.Since(start), agentLabel)

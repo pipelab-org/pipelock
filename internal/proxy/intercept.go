@@ -485,7 +485,11 @@ func interceptTunnel(
 	handshakeStart := time.Now()
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		ic.Metrics.RecordTLSIntercept("handshake_error")
-		ic.Logger.LogBlocked(ictx, "tls_handshake_error", err.Error())
+		if requestClientCanceled(ctx) {
+			logRequestCanceled(ic.Logger, ictx, err.Error())
+		} else {
+			ic.Logger.LogBlocked(ictx, "tls_handshake_error", err.Error())
+		}
 		return fmt.Errorf("client TLS handshake: %w", err)
 	}
 	ic.Metrics.RecordTLSHandshake("client", time.Since(handshakeStart))
@@ -1062,6 +1066,9 @@ func newInterceptHandler(
 		// (fail-closed). The neutral-handling is done inline below - hasFinding
 		// stays false and the signal switch skips SignalBlock.
 		if !urlResult.Allowed && !urlResult.IsProtective() {
+			if refuseClientCanceledScan(r.Context(), w, ic.Logger, actx, urlResult) {
+				return
+			}
 			// Infrastructure errors (e.g. DNS resolver timeout) must not
 			// taint the finding flag - they are score-neutral and are not
 			// evidence of agent misbehavior. Fail-closed block still fires
@@ -1372,6 +1379,15 @@ func newInterceptHandler(
 			}
 			applyBodyScanRedaction(&bodyReq, redaction)
 			bodyBytes, result := scanRequestBody(r.Context(), bodyReq)
+			if clientCanceledIncompleteBody(r.Context(), result) {
+				reason := result.Reason
+				if reason == "" {
+					reason = result.ScanError
+				}
+				logRequestCanceled(ic.Logger, actx, reason)
+				writeClientCanceled(w)
+				return
+			}
 			if result.CredentialAudienceReceiptErr != nil {
 				blockedErr := newCredentialAudienceReceiptBlockedRequest(result.CredentialAudienceReceiptErr)
 				ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
@@ -1701,7 +1717,7 @@ func newInterceptHandler(
 				}
 				return nil
 			})
-			if headerResult != nil && headerResult.ScanError != "" && refuseTextDLPScanError(w, ic.Logger, actx, ic.RequestID, scanner.ErrTextDLPIncomplete) {
+			if headerResult != nil && headerResult.ScanError != "" && !bodyResultHasFinding(*headerResult) && refuseTextDLPScanErrorForContext(r.Context(), w, ic.Logger, actx, ic.RequestID, scanner.ErrTextDLPIncomplete) {
 				return
 			}
 			if headerResult != nil && headerResult.CredentialAudienceReceiptErr != nil {
@@ -1769,7 +1785,7 @@ func newInterceptHandler(
 				}
 				reason := headerResult.withAudienceExplanation(receiptPattern)
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
-				if headerHardBlock || action == config.ActionAsk || (action == config.ActionBlock && (ic.Config.EnforceEnabled() || escalatedBlock)) {
+				if headerResult.ScanError != "" || headerHardBlock || action == config.ActionAsk || (action == config.ActionBlock && (ic.Config.EnforceEnabled() || escalatedBlock)) {
 					interceptRecordFinding(ic, decide.UpgradedWarningSignal(originalAction, session.SignalBlock), scanner.ScannerDLP, receiptPattern)
 					ic.Logger.LogBlockedDetail(actx, "header_dlp", reason, audit.BlockDetail{
 						Header: headerResult.HeaderName, Patterns: dlpMatchNames(headerResult.DLPMatches),

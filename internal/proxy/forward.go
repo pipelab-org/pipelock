@@ -346,7 +346,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		hostname: host, target: syntheticURL, metricAgent: agentLabel, start: start,
 		reasonPrefix: "CONNECT blocked: header DLP match",
 	})
-	if refuseTextDLPScanError(w, p.logger, headerCtx, requestID, connectHeaderReceiptErr) {
+	if refuseTextDLPScanErrorForContext(r.Context(), w, p.logger, headerCtx, requestID, connectHeaderReceiptErr) {
 		return
 	}
 	if connectHeaderReceiptErr != nil {
@@ -441,6 +441,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	var connectGate ContractGateOutput
 
 	if !result.Allowed {
+		if refuseClientCanceledScan(r.Context(), w, p.logger, targetCtx, result) {
+			return
+		}
 		status := http.StatusForbidden
 		if result.Scanner == scanner.ScannerRateLimit {
 			status = http.StatusTooManyRequests
@@ -1310,6 +1313,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	hasFinding := !result.Allowed && (!result.IsAdaptiveNeutral() || result.IsEntropyOnly())
 
 	if !result.Allowed {
+		if refuseClientCanceledScan(r.Context(), w, p.logger, actx, result) {
+			return
+		}
 		status := http.StatusForbidden
 		if result.Scanner == scanner.ScannerRateLimit {
 			status = http.StatusTooManyRequests
@@ -1628,6 +1634,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		applyBodyScanRedaction(&bodyReq, p.currentRedactionRuntimeFor(cfg))
 		buf, bodyResult := scanRequestBody(r.Context(), bodyReq)
+		if clientCanceledIncompleteBody(r.Context(), bodyResult) {
+			reason := bodyResult.Reason
+			if reason == "" {
+				reason = bodyResult.ScanError
+			}
+			logRequestCanceled(p.logger, actx, reason)
+			writeClientCanceled(w)
+			return
+		}
 		if bodyResult.CredentialAudienceReceiptErr != nil {
 			blockedErr := newCredentialAudienceReceiptBlockedRequest(bodyResult.CredentialAudienceReceiptErr)
 			p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
@@ -1899,7 +1914,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		headers: r.Header, cfg: cfg, sc: sc, logger: p.logger, actx: actx,
 		hostname: r.URL.Hostname(), target: targetURL, metricAgent: agentLabel, start: start,
 	})
-	if refuseTextDLPScanError(w, p.logger, actx, requestID, forwardHeaderReceiptErr) {
+	if refuseTextDLPScanErrorForContext(r.Context(), w, p.logger, actx, requestID, forwardHeaderReceiptErr) {
 		return
 	}
 	if forwardHeaderReceiptErr != nil {
