@@ -948,7 +948,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		clientConn, _, _, upgradeErr = upgrader.Upgrade(r, w)
 		if upgradeErr != nil {
 			log.LogError(actx, fmt.Errorf("client upgrade: %w", upgradeErr))
-			// If Upgrade fails, it already wrote the HTTP error response.
+			// If Upgrade fails, it already wrote the HTTP error response. The
+			// connection is hijacked by then, so nothing else closes it.
+			safeClose(clientConn, "ws.clientConn", log)
+			clientConn = nil
 			return false
 		}
 		clientConn = p.withAdaptiveClose(clientConn, refusalOpts)

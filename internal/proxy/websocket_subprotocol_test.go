@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -174,41 +175,7 @@ type wsHandshakeReply struct {
 // Sec-WebSocket-Key header to produce an invalid handshake.
 func rawWSHandshake(t *testing.T, extra ws.HandshakeHeaderHTTP, target string, withKey bool) (wsHandshakeReply, net.Conn) {
 	t.Helper()
-	u, err := url.Parse(target)
-	if err != nil {
-		t.Fatalf("parse target: %v", err)
-	}
-	var d net.Dialer
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	conn, err := d.DialContext(ctx, "tcp4", u.Host)
-	if err != nil {
-		t.Fatalf("dial proxy: %v", err)
-	}
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-	var b strings.Builder
-	fmt.Fprintf(&b, "GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n", u.RequestURI(), u.Host)
-	if withKey {
-		b.WriteString("Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n")
-	}
-	for name, values := range http.Header(extra) {
-		for _, v := range values {
-			fmt.Fprintf(&b, "%s: %s\r\n", name, v)
-		}
-	}
-	b.WriteString("\r\n")
-	if _, err := conn.Write([]byte(b.String())); err != nil {
-		_ = conn.Close()
-		t.Fatalf("write handshake: %v", err)
-	}
-	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
-	if err != nil {
-		_ = conn.Close()
-		t.Fatalf("read handshake response: %v", err)
-	}
-	// A handshake reply carries no body the tests read.
-	_ = resp.Body.Close()
-	return wsHandshakeReply{StatusCode: resp.StatusCode, Header: resp.Header}, conn
+	return rawWSHandshakeVersion(t, extra, target, "HTTP/1.1", withKey)
 }
 
 // An upstream that selects a subprotocol the client never offered breaks the
@@ -421,6 +388,26 @@ func rawWSHandshakeVersion(t *testing.T, extra ws.HandshakeHeaderHTTP, target, p
 		_ = conn.Close()
 		t.Fatalf("read handshake response: %v", err)
 	}
+	// A handshake reply carries no body the tests read.
 	_ = resp.Body.Close()
 	return wsHandshakeReply{StatusCode: resp.StatusCode, Header: resp.Header}, conn
+}
+
+// A client whose upgrade is refused has already been hijacked from the HTTP
+// server, so the handler must close the connection itself.
+func TestWSFailedClientUpgradeClosesConnection(t *testing.T) {
+	target, _, hits := wsSelectingBackend(t, func(string) bool { return true })
+	proxyAddr, cleanup := setupWSProxy(t, nil)
+	defer cleanup()
+
+	resp, conn := rawWSHandshake(t, nil, wsProxyURL(proxyAddr, target), false)
+	defer func() { _ = conn.Close() }()
+	if resp.StatusCode != http.StatusBadRequest || hits.Load() != 0 {
+		t.Fatalf("status = %d, want %d; upstream handshakes = %d, want 0",
+			resp.StatusCode, http.StatusBadRequest, hits.Load())
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := conn.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("read after refused upgrade = %v, want EOF", err)
+	}
 }
