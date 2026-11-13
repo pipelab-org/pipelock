@@ -872,11 +872,14 @@ const maxPairwiseSplitFields = 64
 // payload costs more the more fields it is spread across.
 const maxPairwiseSplitWorkBytes = 8 * 1024 * 1024
 
-// pairwiseSplitSingleArgumentValues is the most strings a call with one
-// argument extracts: the protocol version, a string id, the method, the tool
-// name and the argument. Its pairwise cost grows only with its size, so it is
-// never refused for that cost.
-const pairwiseSplitSingleArgumentValues = 5
+// pairwiseSplitUnboundedValues is the number of extracted strings up to which
+// the work bound does not apply. A tools/call with one or two string arguments
+// extracts at most five: the protocol version, the method, the tool name and
+// either a string id with one argument or two arguments. At that count the
+// pairwise scan costs at most eight times the message, which the transport
+// size limit already bounds, and refusing it would refuse an ordinary call
+// that carries one large value.
+const pairwiseSplitUnboundedValues = 5
 
 // pairwiseSplitWorkExceeded reports whether the pairwise scan of vals would
 // pass maxPairwiseSplitWorkBytes.
@@ -888,7 +891,7 @@ func pairwiseSplitWorkExceeded(vals []string) bool {
 			total += len(v)
 		}
 	}
-	return n > pairwiseSplitSingleArgumentValues && 2*(n-1)*total > maxPairwiseSplitWorkBytes
+	return n > pairwiseSplitUnboundedValues && 2*(n-1)*total > maxPairwiseSplitWorkBytes
 }
 
 // scanSplitSecret checks for secrets split across multiple JSON fields.

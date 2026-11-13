@@ -44,7 +44,7 @@ func TestPairwiseSplitWorkExceeded(t *testing.T) {
 		vals []string
 		want bool
 	}{
-		{"one large argument", values(pairwiseSplitSingleArgumentValues, 4*1024*1024), false},
+		{"five values, one large", values(pairwiseSplitUnboundedValues, 4*1024*1024), false},
 		{"six values at the bound", values(6, atLimit), false},
 		{"six values past the bound", values(6, atLimit+1), true},
 		{"sixteen 4 KiB fields", values(19, 4*1024), false},
