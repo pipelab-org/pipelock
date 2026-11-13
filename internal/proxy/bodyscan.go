@@ -973,13 +973,14 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 				RedactionBlockReason: redact.ReasonInternalError,
 			}
 		}
-		inspected := scanned
-		if inspected == nil {
-			inspected = []byte{}
-		}
+		// scanned equals decodedView here, and nothing else holds either
+		// buffer, so both are handed over without another copy.
 		result.ContentCoding = coding
-		result.InspectedBody = append([]byte(nil), inspected...)
-		return append([]byte(nil), wire...), result
+		result.InspectedBody = decodedView
+		if result.InspectedBody == nil {
+			result.InspectedBody = []byte{}
+		}
+		return wire, result
 	}
 
 	// Empty body: clean. A supported coding still forwards the original
@@ -1087,8 +1088,16 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 			})
 		}
 		if report != nil {
-			buf = rewritten
 			redactReport = report
+			// A JSON rewrite re-encodes the document even when it redacts
+			// nothing. For a compressed body the original bytes are what
+			// is forwarded, so with no redaction the decoded body stays
+			// the scanned view and the scan covers what the upstream
+			// receives. A real redaction still replaces it and is refused
+			// in finish.
+			if coding == "" || report.TotalRedactions > 0 {
+				buf = rewritten
+			}
 		}
 	}
 

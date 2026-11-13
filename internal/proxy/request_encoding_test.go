@@ -965,16 +965,46 @@ func TestForwardA2ACodedBodiesMatchIdentity(t *testing.T) {
 	}
 }
 
+// With redaction on and nothing to redact, a compressed JSON body is forwarded
+// as sent. The redaction rewrite re-encodes a document even when it changes
+// no value, so ordinary client JSON (unsorted keys, spacing) must not be
+// taken for a rewrite.
 func TestCleanGzipJSONWithRedactionForwardsWhenUnchanged(t *testing.T) {
-	plain := []byte(`{"ok":true}`)
-	wire := gzipRequestBody(t, plain)
-	status, respBody, _, up := forwardCodedRequest(t, func(cfg *config.Config) {
+	for name, document := range map[string]string{
+		"compact sorted":  `{"ok":true}`,
+		"unsorted keys":   `{"model":"x","messages":[],"b":1,"a":2}`,
+		"spaced":          `{ "a" : 1, "list" : [ 1, 2 ] }`,
+		"pretty printed":  "{\n  \"model\": \"x\",\n  \"messages\": []\n}\n",
+		"escaped unicode": `{"note":"caf\u00e9"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			wire := gzipRequestBody(t, []byte(document))
+			status, respBody, _, up := forwardCodedRequest(t, func(cfg *config.Config) {
+				cfg.RequestBodyScanning.Enabled = true
+				cfg.RequestBodyScanning.Action = config.ActionBlock
+				enableRequestRedaction(cfg)
+			}, wire, []string{"gzip"}, "application/json")
+			if status != http.StatusNoContent || up.hits.Load() != 1 || !bytes.Equal(up.body, wire) {
+				t.Fatalf("status=%d hits=%d match=%v body=%s", status, up.hits.Load(), bytes.Equal(up.body, wire), respBody)
+			}
+		})
+	}
+}
+
+// With redaction on, a credential in a compressed JSON body that redaction
+// would not rewrite is still found by the scan of the decoded body. A
+// duplicate key keeps both values in view, since the original bytes are what
+// the upstream receives.
+func TestGzipJSONWithRedactionStillScansDecodedBody(t *testing.T) {
+	secret := fakeAPIKey()
+	wire := gzipRequestBody(t, []byte(`{"note":"`+secret+`","note":"harmless"}`))
+	status, respBody, hdr, up := forwardCodedRequest(t, func(cfg *config.Config) {
 		cfg.RequestBodyScanning.Enabled = true
 		cfg.RequestBodyScanning.Action = config.ActionBlock
 		enableRequestRedaction(cfg)
 	}, wire, []string{"gzip"}, "application/json")
-	if status != http.StatusNoContent || up.hits.Load() != 1 || !bytes.Equal(up.body, wire) {
-		t.Fatalf("status=%d hits=%d match=%v body=%s", status, up.hits.Load(), bytes.Equal(up.body, wire), respBody)
+	if status != http.StatusForbidden || up.hits.Load() != 0 {
+		t.Fatalf("status=%d hits=%d reason=%q body=%s", status, up.hits.Load(), hdr.Get(blockreason.HeaderReason), respBody)
 	}
 }
 
