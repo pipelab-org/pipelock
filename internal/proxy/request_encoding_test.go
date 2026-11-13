@@ -2162,9 +2162,10 @@ func TestReverseCompressedBodyReservesDecodedBuffers(t *testing.T) {
 }
 
 // A gzip modification time is four bytes a sender chooses. It is charged to
-// the entropy budget whichever reader decoded the body: with body scanning on
-// the scan hands cross-request detection only the decoded text, and with it
-// off cross-request detection decodes the body itself.
+// the entropy budget on every transport, whichever reader decoded the body:
+// with body scanning on the scan hands cross-request detection only the
+// decoded text, and with it off cross-request detection decodes the body
+// itself.
 func TestGzipTimestampChargedToEntropyBudget(t *testing.T) {
 	stamped := func(stamp int64) []byte {
 		var buf bytes.Buffer
@@ -2175,48 +2176,92 @@ func TestGzipTimestampChargedToEntropyBudget(t *testing.T) {
 		}
 		return buf.Bytes()
 	}
-	for _, bodyScanning := range []bool{true, false} {
-		for _, stamp := range []int64{0, 0x7a6b3c1d} {
-			t.Run(fmt.Sprintf("body_scanning=%t/stamp=%t", bodyScanning, stamp != 0), func(t *testing.T) {
-				backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					_, _ = io.Copy(io.Discard, r.Body)
-					w.WriteHeader(http.StatusOK)
-				}))
-				t.Cleanup(backend.Close)
-				proxyAddr, proxy, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
-					cfg.RequestBodyScanning.Enabled = bodyScanning
-					cfg.RequestBodyScanning.Action = config.ActionBlock
-					cfg.CrossRequestDetection.Enabled = true
-					cfg.CrossRequestDetection.Action = config.ActionBlock
-					cfg.CrossRequestDetection.FragmentReassembly.Enabled = false
-					cfg.CrossRequestDetection.EntropyBudget = config.CrossRequestEntropyBudget{
-						Enabled: true, BitsPerWindow: 1, WindowMinutes: 5, Action: config.ActionBlock,
+	configure := func(cfg *config.Config, bodyScanning bool) {
+		cfg.RequestBodyScanning.Enabled = bodyScanning
+		cfg.RequestBodyScanning.Action = config.ActionBlock
+		cfg.CrossRequestDetection.Enabled = true
+		cfg.CrossRequestDetection.Action = config.ActionBlock
+		cfg.CrossRequestDetection.FragmentReassembly.Enabled = false
+		cfg.CrossRequestDetection.EntropyBudget = config.CrossRequestEntropyBudget{
+			Enabled: true, BitsPerWindow: 1, WindowMinutes: 5, Action: config.ActionBlock,
+		}
+		cfg.Taint.Enabled = false
+	}
+	discard := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	})
+	transports := map[string]func(t *testing.T, bodyScanning bool, wire []byte) int{
+		"forward": func(t *testing.T, bodyScanning bool, wire []byte) int {
+			t.Helper()
+			backend := httptest.NewServer(discard)
+			t.Cleanup(backend.Close)
+			proxyAddr, proxy, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) { configure(cfg, bodyScanning) })
+			t.Cleanup(cleanup)
+			installForwardTestDialer(proxy, backend.Listener.Addr().String())
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://api.example.com/", bytes.NewReader(wire))
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			req.Header.Set("Content-Type", "text/plain")
+			req.Header.Set("Content-Encoding", "gzip")
+			resp, err := forwardHTTPClient(t, proxyAddr).Do(req)
+			if err != nil {
+				t.Fatalf("do: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			return resp.StatusCode
+		},
+		"intercept": func(t *testing.T, bodyScanning bool, wire []byte) int {
+			t.Helper()
+			upstream := httptest.NewTLSServer(discard)
+			t.Cleanup(upstream.Close)
+			cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+			configure(cfg, bodyScanning)
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			proxy, err := New(cfg, logger, sc, m)
+			if err != nil {
+				t.Fatalf("proxy: %v", err)
+			}
+			t.Cleanup(proxy.Close)
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://"+upstream.Listener.Addr().String()+"/", bytes.NewReader(wire))
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			req.Header.Set("Content-Type", "text/plain")
+			req.Header.Set("Content-Encoding", "gzip")
+			resp := interceptAndRequestWithProxy(t, upstream, cache, pool, cfg, sc, logger, m, req, proxy)
+			defer func() { _ = resp.Body.Close() }()
+			return resp.StatusCode
+		},
+		"reverse": func(t *testing.T, bodyScanning bool, wire []byte) int {
+			t.Helper()
+			cfg := reverseParityBaseConfig(t)
+			configure(cfg, bodyScanning)
+			rp, _, _ := newReverseParityHarness(t, cfg, discard)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://reverse.example/", bytes.NewReader(wire))
+			req.RemoteAddr = "10.0.0.9:5555"
+			req.Header.Set("Content-Type", "text/plain")
+			req.Header.Set("Content-Encoding", "gzip")
+			rec := httptest.NewRecorder()
+			rp.ServeHTTP(rec, req)
+			return rec.Code
+		},
+	}
+	for name, send := range transports {
+		for _, bodyScanning := range []bool{true, false} {
+			for _, stamp := range []int64{0, 0x7a6b3c1d} {
+				t.Run(fmt.Sprintf("%s/body_scanning=%t/stamp=%t", name, bodyScanning, stamp != 0), func(t *testing.T) {
+					want := http.StatusOK
+					if stamp != 0 {
+						want = http.StatusForbidden
 					}
-					cfg.Taint.Enabled = false
+					if got := send(t, bodyScanning, stamped(stamp)); got != want {
+						t.Fatalf("status=%d, want %d", got, want)
+					}
 				})
-				t.Cleanup(cleanup)
-				installForwardTestDialer(proxy, backend.Listener.Addr().String())
-				client := forwardHTTPClient(t, proxyAddr)
-				req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://api.example.com/", bytes.NewReader(stamped(stamp)))
-				if err != nil {
-					t.Fatalf("request: %v", err)
-				}
-				req.Header.Set("Content-Type", "text/plain")
-				req.Header.Set("Content-Encoding", "gzip")
-				resp, err := client.Do(req)
-				if err != nil {
-					t.Fatalf("do: %v", err)
-				}
-				defer func() { _ = resp.Body.Close() }()
-				want := http.StatusOK
-				if stamp != 0 {
-					want = http.StatusForbidden
-				}
-				if resp.StatusCode != want {
-					body, _ := io.ReadAll(resp.Body)
-					t.Fatalf("status=%d, want %d; body=%s", resp.StatusCode, want, body)
-				}
-			})
+			}
 		}
 	}
 }
