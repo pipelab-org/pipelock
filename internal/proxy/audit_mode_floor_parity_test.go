@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -33,8 +34,7 @@ func TestAuditModeConnectSNIRequireTLS(t *testing.T) {
 	for _, enforce := range []bool{false, true} {
 		t.Run(fmt.Sprintf("enforce=%t", enforce), func(t *testing.T) {
 			for _, payload := range [][]byte{buildClientHello("other.vendor.example"), []byte("not TLS")} {
-				upstream := listenEcho(t)
-				t.Cleanup(func() { _ = upstream.Close() })
+				upstream, upstreamRead := listenRecording(t)
 				proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
 					cfg.Enforce = &enforce
 					cfg.ForwardProxy.SNIRequireTLS = ptrBool(true)
@@ -63,6 +63,17 @@ func TestAuditModeConnectSNIRequireTLS(t *testing.T) {
 				closed := errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET)
 				if n != 0 || !closed {
 					t.Fatalf("authority failure relayed %d bytes, read err=%v", n, err)
+				}
+				// The client seeing a closed tunnel does not show what the
+				// upstream received. Its connection has ended by now, and it
+				// must have read nothing.
+				select {
+				case got := <-upstreamRead:
+					if got != 0 {
+						t.Fatalf("upstream received %d refused bytes", got)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("upstream connection did not end")
 				}
 			}
 		})
@@ -157,8 +168,7 @@ func TestAuditModeWebSocketNegotiationFloor(t *testing.T) {
 	for _, header := range []string{"Sec-WebSocket-Protocol", "Sec-WebSocket-Extensions"} {
 		for _, enforce := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/enforce=%t", header, enforce), func(t *testing.T) {
-				backend, closeBackend := wsEchoServer(t)
-				t.Cleanup(closeBackend)
+				backend, frames, backendDone := wsRecordingServer(t)
 				addr, cleanup := setupWSProxy(t, func(cfg *config.Config) {
 					cfg.Enforce = &enforce
 				})
@@ -186,6 +196,16 @@ func TestAuditModeWebSocketNegotiationFloor(t *testing.T) {
 				if got, _, err := wsutil.ReadServerData(conn); err == nil {
 					t.Fatalf("negotiation bypass forwarded credential: %q", got)
 				}
+				// The missing echo does not show what the backend received.
+				// Its connection has ended, and only the benign frame arrived.
+				select {
+				case <-backendDone:
+				case <-time.After(5 * time.Second):
+					t.Fatal("backend connection did not end")
+				}
+				if got := frames(); got != 1 {
+					t.Fatalf("backend received %d frames, want only the benign one", got)
+				}
 			})
 		}
 	}
@@ -199,8 +219,7 @@ func TestAuditModeWebSocketAccessFloor(t *testing.T) {
 	for _, reason := range []string{"disabled", "capacity", "receipts"} {
 		for _, enforce := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/enforce=%t", reason, enforce), func(t *testing.T) {
-				backend, closeBackend := wsEchoServer(t)
-				t.Cleanup(closeBackend)
+				backend, handshakes, _, _ := websocketBoundaryBackend(t)
 				addr, cleanup := setupWSProxy(t, func(cfg *config.Config) {
 					cfg.Enforce = &enforce
 					cfg.WebSocketProxy.Enabled = reason != "disabled"
@@ -225,6 +244,9 @@ func TestAuditModeWebSocketAccessFloor(t *testing.T) {
 				}
 				if err == nil {
 					t.Fatalf("%s guard allowed the handshake", reason)
+				}
+				if got := handshakes.Load(); got != 0 {
+					t.Fatalf("%s guard reached the upstream %d time(s)", reason, got)
 				}
 			})
 		}
@@ -306,8 +328,7 @@ func TestAuditModeWebSocketOutboundInspectionFloor(t *testing.T) {
 func TestAuditModeWebSocketUnavailableScanner(t *testing.T) {
 	for _, enforce := range []bool{false, true} {
 		t.Run(fmt.Sprintf("enforce=%t", enforce), func(t *testing.T) {
-			backend, closeBackend := wsEchoServer(t)
-			t.Cleanup(closeBackend)
+			backend, handshakes, _, _ := websocketBoundaryBackend(t)
 			addr, p, cleanup := setupWSProxyDefaultWithProxy(t, func(cfg *config.Config) {
 				cfg.Enforce = &enforce
 			})
@@ -319,6 +340,9 @@ func TestAuditModeWebSocketUnavailableScanner(t *testing.T) {
 			}
 			if err == nil {
 				t.Fatal("unavailable scanner allowed the connection")
+			}
+			if got := handshakes.Load(); got != 0 {
+				t.Fatalf("unavailable scanner reached the upstream %d time(s)", got)
 			}
 		})
 	}
@@ -352,4 +376,30 @@ func TestAuditModeWebSocketMalformedNegotiation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// listenRecording is a TCP upstream that reads each connection to its end and
+// reports how many bytes it received.
+func listenRecording(t *testing.T) (net.Listener, <-chan int) {
+	t.Helper()
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	read := make(chan int, 4)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				n, _ := io.Copy(io.Discard, conn)
+				read <- int(n)
+			}()
+		}
+	}()
+	return ln, read
 }
