@@ -1589,39 +1589,48 @@ func reverseAdmittedGzipPolicy(t *testing.T, admittedLimit, liveLimit int, wire 
 }
 
 // ceeInspectedBody returns the decoded text for a clean supported stream and
-// keeps everything else a receiver could recover.
+// keeps everything else a receiver could recover in the scanned stream only.
 func TestCEEInspectedBody(t *testing.T) {
 	plain := []byte(strings.Repeat("inspect this text ", 40))
+	second := []byte("second member text")
 	gzipped := gzipRequestBody(t, plain)
 	deflated := deflateRequestBody(t, plain)
-	var fields bytes.Buffer
-	zw := gzip.NewWriter(&fields)
-	zw.Header = gzip.Header{Name: "name-field", Comment: "comment-field", Extra: []byte("extra-field")}
-	if _, err := zw.Write(plain); err != nil {
-		t.Fatal(err)
+	withFields := func(h gzip.Header, payload []byte) []byte {
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		zw.Header = h
+		if _, err := zw.Write(payload); err != nil {
+			t.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
 	}
-	if err := zw.Close(); err != nil {
-		t.Fatal(err)
-	}
+	fields := withFields(gzip.Header{Name: "name-field", Comment: "comment-field", Extra: []byte("extra-field")}, plain)
+	laterFields := withFields(gzip.Header{Comment: "later-comment"}, second)
 	join := func(parts ...[]byte) []byte { return bytes.Join(parts, nil) }
+	cut := gzipped[:len(gzipped)-12]
 	cases := []struct {
-		name     string
-		encoding []string
-		wire     []byte
-		want     []byte
-		contains [][]byte
+		name         string
+		encoding     []string
+		wire         []byte
+		wantStream   []byte
+		wantDocument []byte
+		streamHas    [][]byte
 	}{
-		{name: "identity", wire: plain, want: plain},
-		{name: "gzip", encoding: []string{"gzip"}, wire: gzipped, want: plain},
-		{name: "deflate", encoding: []string{"deflate"}, wire: deflated, want: plain},
-		{name: "unsupported coding", encoding: []string{"br"}, wire: gzipped, want: gzipped},
-		{name: "stacked coding", encoding: []string{"gzip", "gzip"}, wire: gzipped, want: gzipped},
-		{name: "declared gzip is not gzip", encoding: []string{"gzip"}, wire: plain, want: plain},
-		{name: "bytes after gzip", encoding: []string{"gzip"}, wire: join(gzipped, []byte("tail")), want: join(plain, []byte("tail"))},
-		{name: "bytes after deflate", encoding: []string{"deflate"}, wire: join(deflated, []byte("tail")), want: join(plain, []byte("tail"))},
-		{name: "second gzip member", encoding: []string{"gzip"}, wire: join(gzipped, gzipped), want: join(plain, gzipped)},
-		{name: "gzip header fields", encoding: []string{"gzip"}, wire: fields.Bytes(), want: join([]byte("name-fieldcomment-fieldextra-field"), plain)},
-		{name: "stream fails part way", encoding: []string{"gzip"}, wire: gzipped[:len(gzipped)-12], contains: [][]byte{plain[:18], gzipped[:len(gzipped)-12]}},
+		{name: "identity", wire: plain, wantStream: plain, wantDocument: plain},
+		{name: "gzip", encoding: []string{"gzip"}, wire: gzipped, wantStream: plain, wantDocument: plain},
+		{name: "deflate", encoding: []string{"deflate"}, wire: deflated, wantStream: plain, wantDocument: plain},
+		{name: "unsupported coding", encoding: []string{"br"}, wire: gzipped, wantStream: gzipped, wantDocument: gzipped},
+		{name: "stacked coding", encoding: []string{"gzip", "gzip"}, wire: gzipped, wantStream: gzipped, wantDocument: gzipped},
+		{name: "declared gzip is not gzip", encoding: []string{"gzip"}, wire: plain, wantStream: plain, wantDocument: plain},
+		{name: "bytes after gzip", encoding: []string{"gzip"}, wire: join(gzipped, []byte("tail")), wantStream: join(plain, []byte("tail")), wantDocument: plain},
+		{name: "bytes after deflate", encoding: []string{"deflate"}, wire: join(deflated, []byte("tail")), wantStream: join(plain, []byte("tail")), wantDocument: plain},
+		{name: "second gzip member is decoded", encoding: []string{"gzip"}, wire: join(gzipped, gzipRequestBody(t, second)), wantStream: join(plain, second), wantDocument: join(plain, second)},
+		{name: "gzip header fields stay out of the document", encoding: []string{"gzip"}, wire: fields, wantStream: join([]byte("name-fieldcomment-fieldextra-field"), plain), wantDocument: plain},
+		{name: "later member header field", encoding: []string{"gzip"}, wire: join(gzipped, laterFields), wantStream: join(plain, []byte("later-comment"), second), wantDocument: join(plain, second)},
+		{name: "stream fails part way", encoding: []string{"gzip"}, wire: cut, streamHas: [][]byte{plain[:18]}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1629,16 +1638,32 @@ func TestCEEInspectedBody(t *testing.T) {
 			for _, v := range tc.encoding {
 				header.Add("Content-Encoding", v)
 			}
-			got := ceeInspectedBody(header, tc.wire)
-			for _, part := range tc.contains {
-				if !bytes.Contains(got, part) {
-					t.Fatalf("inspected %d bytes without an expected part of %d bytes", len(got), len(part))
+			stream, document := ceeInspectedBody(header, tc.wire)
+			for _, part := range tc.streamHas {
+				if !bytes.Contains(stream, part) {
+					t.Fatalf("stream of %d bytes is missing an expected part of %d bytes", len(stream), len(part))
 				}
 			}
-			if tc.want != nil && !bytes.Equal(got, tc.want) {
-				t.Fatalf("got %d bytes, want %d", len(got), len(tc.want))
+			if tc.wantStream != nil && !bytes.Equal(stream, tc.wantStream) {
+				t.Fatalf("stream = %d bytes, want %d", len(stream), len(tc.wantStream))
+			}
+			if tc.wantDocument != nil && !bytes.Equal(document, tc.wantDocument) {
+				t.Fatalf("document = %d bytes, want %d", len(document), len(tc.wantDocument))
+			}
+			if len(document) > maxCEEBodyRead {
+				t.Fatalf("document = %d bytes, over the read limit", len(document))
 			}
 		})
+	}
+}
+
+// A body that decodes to more than the read limit stops at the limit.
+func TestCEEInspectedBodyBoundsDecodedText(t *testing.T) {
+	wire := gzipRequestBody(t, bytes.Repeat([]byte("A"), maxCEEBodyRead*3))
+	header := http.Header{"Content-Encoding": []string{"gzip"}}
+	_, document := ceeInspectedBody(header, wire)
+	if len(document) != maxCEEBodyRead {
+		t.Fatalf("document = %d bytes, want %d", len(document), maxCEEBodyRead)
 	}
 }
 

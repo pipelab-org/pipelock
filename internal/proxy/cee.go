@@ -477,10 +477,10 @@ func extractOutboundPayloads(r *http.Request, partitionJSON bool, sessionKey str
 			// The forwarded bytes stay as read. What is inspected is the
 			// text a receiver can recover when the body carries a supported
 			// content coding.
-			inspected := ceeInspectedBody(r.Header, bodyBytes)
+			inspected, document := ceeInspectedBody(r.Header, bodyBytes)
 			parts = append(parts, string(inspected))
 			if partitionJSON {
-				result.bodyFragmentLeaves, result.partitionReason = jsonBodyFragmentLeaves(r.Header.Get("Content-Type"), inspected, sessionKey, partitionKey)
+				result.bodyFragmentLeaves, result.partitionReason = jsonBodyFragmentLeaves(r.Header.Get("Content-Type"), document, sessionKey, partitionKey)
 				result.bodyFragmentPayloads = concatCEEJSONLeaves(result.bodyFragmentLeaves)
 			}
 		}
@@ -499,50 +499,59 @@ func extractOutboundPayloads(r *http.Request, partitionJSON bool, sessionKey str
 }
 
 // ceeInspectedBody returns what cross-request detection inspects for a
-// request body read up to maxCEEBodyRead. Identity, an unsupported or stacked
-// coding, and a body that does not start a supported stream return the bytes
-// as read.
+// request body read up to maxCEEBodyRead. stream is the text scanned as one
+// run. document is the body a receiver parses, which is what the JSON
+// partition reads. Identity, an unsupported or stacked coding, and a body that
+// does not start a supported stream return the bytes as read for both.
 //
 // A single gzip, x-gzip, or deflate coding returns the decoded text, bounded
 // by the same limit, so a split value in two compressed requests still lines
-// up. Nothing on this path validated the stream, so everything else a
-// receiver could recover is kept as well: a gzip file name, comment and extra
-// field go before the decoded text, bytes after the stream go after it, and a
-// stream that fails part way is followed by the bytes as read. A clean stream
-// with none of those adds nothing to the decoded text.
+// up. Every gzip member is decoded, since a receiver may read them all.
+// Nothing on this path validated the body, so stream also keeps everything
+// else a receiver could recover: each member's file name, comment and extra
+// field before that member's text, and whatever is left when decoding stops,
+// whether that is bytes after the stream or a stream that fails part way.
+// Those extras stay out of document. A clean stream with none of them yields
+// the decoded text for both.
 //
 // Detection only: this never refuses a request.
-func ceeInspectedBody(header http.Header, wire []byte) []byte {
+func ceeInspectedBody(header http.Header, wire []byte) (stream, document []byte) {
 	coding, err := responseencoding.ParseRequestCoding(header.Values("Content-Encoding"))
 	if err != nil || coding == "" {
-		return wire
+		return wire, wire
 	}
 	src := bytes.NewReader(wire)
 	dec, err := responseencoding.NewDecoder(coding, src)
 	if err != nil {
-		return wire
+		return wire, wire
 	}
 	defer func() { _ = dec.Close() }()
-	var out []byte
-	if gz, ok := dec.(*gzip.Reader); ok {
-		// One member, as the body scan reads it. A later member is then part
-		// of the bytes after the stream.
-		gz.Multistream(false)
-		out = append(out, gz.Name...)
-		out = append(out, gz.Comment...)
-		out = append(out, gz.Extra...)
+	gz, isGzip := dec.(*gzip.Reader)
+	for {
+		if isGzip {
+			// One member at a time, so each member's header is seen.
+			gz.Multistream(false)
+			stream = append(stream, gz.Name...)
+			stream = append(stream, gz.Comment...)
+			stream = append(stream, gz.Extra...)
+		}
+		room := maxCEEBodyRead - len(document)
+		text, readErr := io.ReadAll(io.LimitReader(dec, int64(room)))
+		stream = append(stream, text...)
+		document = append(document, text...)
+		// bytes.Reader is read byte by byte by the decoder, so what is left
+		// is exactly what follows the member just read. Anything not decoded
+		// is kept as read: bytes after the stream, the rest of a stream that
+		// failed, or the rest of a body over the limit.
+		rest := wire[len(wire)-src.Len():]
+		if readErr != nil || len(text) == room || len(rest) == 0 {
+			return append(stream, rest...), document
+		}
+		// Reading the next header consumes input, so rest is taken first.
+		if !isGzip || gz.Reset(src) != nil {
+			return append(stream, rest...), document
+		}
 	}
-	decoded, readErr := io.ReadAll(io.LimitReader(dec, maxCEEBodyRead))
-	out = append(out, decoded...)
-	switch {
-	case readErr != nil:
-		out = append(out, wire...)
-	case len(decoded) < maxCEEBodyRead:
-		// The stream ended. bytes.Reader is read byte by byte by the
-		// decoder, so what is left is exactly what follows the stream.
-		out = append(out, wire[len(wire)-src.Len():]...)
-	}
-	return out
 }
 
 // jsonBodyFragmentPayloads partitions a JSON request body into keyed, fixed-
