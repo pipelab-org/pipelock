@@ -429,9 +429,10 @@ var defaultDLPPatternSet = []DLPPattern{
 	// https://agilebits.github.io/security-design/1Password_Security_Design.pdf
 	{Name: "1Password Secret Key", Regex: `A3-[A-Z0-9]{6}-(?:[A-Z0-9]{11}(?:-[A-Z0-9]{5}){3}|[A-Z0-9]{6}(?:-[A-Z0-9]{5}){4})`, Severity: SeverityCritical},
 	// Vault 1.10+ service tokens use hvs. plus 24 or more random characters.
-	// The published service-token example contains underscores, so the body is
-	// the base64url set and has no trailing word boundary: a boundary would
-	// keep only the alphanumeric prefix when a hyphen follows. The service
+	// Vault publishes the prefixes and a 24-character minimum, and no
+	// alphabet. The body takes the base64url set with no trailing word
+	// boundary: a boundary would keep only the alphanumeric prefix when a
+	// hyphen follows, and miss the token when an underscore does. The service
 	// prefix stays case-insensitive. Batch (hvb.) and recovery (hvr.) prefixes
 	// stay case-sensitive. Vault is self-hosted, so there is no compiled audience.
 	// Source: https://developer.hashicorp.com/vault/docs/concepts/tokens#token-prefixes
