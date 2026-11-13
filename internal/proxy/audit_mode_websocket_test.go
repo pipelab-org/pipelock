@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,24 +29,23 @@ import (
 // credential in a text frame is not echoed, and a binary frame is not echoed.
 // Both leave the handshake status at 101, log ws_open, ws_blocked, and
 // ws_close, increment pipelock_ws_connections_total when the relay finishes,
-// and write a block receipt. The kill switch refuses the handshake and does
-// not write a block receipt.
+// and write a block receipt. The backend records every frame it receives, and
+// it receives neither refused frame. The kill switch refuses the handshake and
+// does not write a block receipt.
 func TestAuditModeWebSocketRefusals(t *testing.T) {
-	backend, closeBackend := wsEchoServer(t)
-	t.Cleanup(closeBackend)
 	core := auditFloorValue("core")
 
 	type wsCase struct {
 		name      string
 		blocklist bool
 		kill      bool
-		run       func(t *testing.T, addr string) (status int, delivered bool)
+		run       func(t *testing.T, addr, backend string) (status int, delivered bool)
 		want      auditModeObservation
 	}
 	cases := []wsCase{
 		{
 			name: "core credential url",
-			run: func(t *testing.T, addr string) (int, bool) {
+			run: func(t *testing.T, addr, backend string) (int, bool) {
 				t.Helper()
 				resp := websocketHandshake(t, addr, "ws://"+backend+"/?token="+core)
 				defer func() { _ = resp.Body.Close() }()
@@ -55,7 +55,7 @@ func TestAuditModeWebSocketRefusals(t *testing.T) {
 		},
 		{
 			name: "blocklisted host", blocklist: true,
-			run: func(t *testing.T, addr string) (int, bool) {
+			run: func(t *testing.T, addr, backend string) (int, bool) {
 				t.Helper()
 				resp := requestWSHandshake(t, addr, backend, nil)
 				defer func() { _ = resp.Body.Close() }()
@@ -65,7 +65,7 @@ func TestAuditModeWebSocketRefusals(t *testing.T) {
 		},
 		{
 			name: "core credential frame",
-			run: func(t *testing.T, addr string) (int, bool) {
+			run: func(t *testing.T, addr, backend string) (int, bool) {
 				t.Helper()
 				return websocketFrame(t, addr, backend, ws.OpText, []byte("token="+core))
 			},
@@ -73,7 +73,7 @@ func TestAuditModeWebSocketRefusals(t *testing.T) {
 		},
 		{
 			name: "binary frame",
-			run: func(t *testing.T, addr string) (int, bool) {
+			run: func(t *testing.T, addr, backend string) (int, bool) {
 				t.Helper()
 				return websocketFrame(t, addr, backend, ws.OpBinary, []byte("opaque"))
 			},
@@ -81,7 +81,7 @@ func TestAuditModeWebSocketRefusals(t *testing.T) {
 		},
 		{
 			name: "kill switch", kill: true,
-			run: func(t *testing.T, addr string) (int, bool) {
+			run: func(t *testing.T, addr, backend string) (int, bool) {
 				t.Helper()
 				resp := requestWSHandshake(t, addr, backend, nil)
 				defer func() { _ = resp.Body.Close() }()
@@ -110,7 +110,10 @@ func TestAuditModeWebSocketRefusals(t *testing.T) {
 			proxy.ks = killswitch.New(proxy.cfgPtr.Load())
 			receipts := newReceiptProxyHelperWithMetrics(t, proxy.metrics)
 			proxy.receiptEmitterPtr.Store(receipts.emitter)
-			status, delivered := tc.run(t, addr)
+			// Each case has its own backend, so an earlier case's connection
+			// cannot signal or count here.
+			backend, frames, backendDone := wsRecordingServer(t)
+			status, delivered := tc.run(t, addr, backend)
 			events := auditEventTypes(logs.String())
 			blockMetrics := auditBlockMetrics(t, proxy.metrics)
 			switch tc.name {
@@ -119,6 +122,16 @@ func TestAuditModeWebSocketRefusals(t *testing.T) {
 			case "core credential frame", "binary frame":
 				events = waitAuditEvents(t, &logs, "ws_close")
 				blockMetrics = waitAuditBlockMetric(t, proxy.metrics, "pipelock_ws_connections_total")
+				// The backend connection has ended, so every frame the proxy
+				// forwarded on it has been counted.
+				select {
+				case <-backendDone:
+				case <-time.After(5 * time.Second):
+					t.Fatal("backend connection did not end")
+				}
+				if got := frames(); got != 0 {
+					t.Fatalf("backend received %d refused frame(s)", got)
+				}
 			}
 			got := auditModeObservation{
 				status: status, delivered: delivered, events: events,
@@ -160,4 +173,42 @@ func websocketFrame(t *testing.T, proxyAddr, backend string, opcode ws.OpCode, p
 	}
 	reply, _, err := wsutil.ReadServerData(conn)
 	return http.StatusSwitchingProtocols, err == nil && bytes.Equal(reply, payload)
+}
+
+// wsRecordingServer is a WebSocket echo backend that counts the data frames it
+// receives and signals on done when a connection ends.
+func wsRecordingServer(t *testing.T) (addr string, frames func() int, done <-chan struct{}) {
+	t.Helper()
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var received atomic.Int32
+	ended := make(chan struct{}, 16)
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, _, _, upgradeErr := ws.UpgradeHTTP(r, w)
+			if upgradeErr != nil {
+				return
+			}
+			defer func() {
+				_ = conn.Close()
+				ended <- struct{}{}
+			}()
+			for {
+				msg, op, readErr := wsutil.ReadClientData(conn)
+				if readErr != nil {
+					return
+				}
+				received.Add(1)
+				if writeErr := wsutil.WriteServerMessage(conn, op, msg); writeErr != nil {
+					return
+				}
+			}
+		}),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	return ln.Addr().String(), func() int { return int(received.Load()) }, ended
 }
