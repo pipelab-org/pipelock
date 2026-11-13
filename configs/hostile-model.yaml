@@ -259,7 +259,7 @@ dlp:
       regex: 'A3-[A-Z0-9]{6}-(?:[A-Z0-9]{11}(?:-[A-Z0-9]{5}){3}|[A-Z0-9]{6}(?:-[A-Z0-9]{5}){4})'
       severity: critical
     - name: "HashiCorp Vault Token"
-      regex: '(?:hvs\.[A-Za-z0-9]{24,}\b|(?-i:hv[sbr]\.)[A-Za-z0-9_-]{24,})'
+      regex: '(?:(?-i:hv[br]\.)[A-Za-z0-9_-]{24,}|hvs\.[A-Za-z0-9_-]{24,})'
       severity: critical
     - name: "Vercel Token"
       regex: '(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}\b'

@@ -429,14 +429,13 @@ var defaultDLPPatternSet = []DLPPattern{
 	// https://agilebits.github.io/security-design/1Password_Security_Design.pdf
 	{Name: "1Password Secret Key", Regex: `A3-[A-Z0-9]{6}-(?:[A-Z0-9]{11}(?:-[A-Z0-9]{5}){3}|[A-Z0-9]{6}(?:-[A-Z0-9]{5}){4})`, Severity: SeverityCritical},
 	// Vault 1.10+ service tokens use hvs. plus 24 or more random characters.
-	// Batch tokens use the case-sensitive prefix hvb. and an unpadded
-	// base64url body, which may contain or end in - or _, so that branch has
-	// no trailing word boundary. The service prefix stays case-insensitive so
-	// an uppercased hvs. leak still matches. Vault is self-hosted, so there
-	// is no compiled audience.
-	// Sources: https://developer.hashicorp.com/vault/docs/concepts/tokens#token-prefixes
-	// https://github.com/hashicorp/vault/blob/v1.20.0/vault/token_store.go
-	{Name: "HashiCorp Vault Token", Regex: `(?:hvs\.[A-Za-z0-9]{24,}\b|(?-i:hv[sbr]\.)[A-Za-z0-9_-]{24,})`, Severity: SeverityCritical},
+	// The published service-token example contains underscores, so the body is
+	// the base64url set and has no trailing word boundary: a boundary would
+	// keep only the alphanumeric prefix when a hyphen follows. The service
+	// prefix stays case-insensitive. Batch (hvb.) and recovery (hvr.) prefixes
+	// stay case-sensitive. Vault is self-hosted, so there is no compiled audience.
+	// Source: https://developer.hashicorp.com/vault/docs/concepts/tokens#token-prefixes
+	{Name: "HashiCorp Vault Token", Regex: `(?:(?-i:hv[br]\.)[A-Za-z0-9_-]{24,}|hvs\.[A-Za-z0-9_-]{24,})`, Severity: SeverityCritical},
 	{Name: "Vercel Token", Regex: `(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}\b`, Severity: SeverityCritical},
 	// Supabase secret keys use sb_secret_<22-char-random>_<8-char-checksum>.
 	// Both suffix parts are base64url; the final checksum char may be '-',

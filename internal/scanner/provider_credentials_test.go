@@ -29,6 +29,7 @@ func documentedProviderCredentials() []providerCredentialFixture {
 		{name: "Vault batch base64url token", pattern: "HashiCorp Vault Token", value: "hvb." + "A-b_" + strings.Repeat("Cd", 10) + "-"},
 		{name: "Vault service base64url token", pattern: "HashiCorp Vault Token", value: "hvs." + "A-b_" + strings.Repeat("Cd", 10) + "-"},
 		{name: "Vault service token before underscore", pattern: "HashiCorp Vault Token", value: "hvs." + strings.Repeat("Ab", 12) + "_x"},
+		{name: "Vault service upper base64url token", pattern: "HashiCorp Vault Token", value: "HVS." + strings.Repeat("A", 13) + "_" + strings.Repeat("B", 12)},
 		{name: "Vault recovery token", pattern: "HashiCorp Vault Token", value: "hvr." + strings.Repeat("Ab", 12)},
 		{name: "OpenAI admin key", pattern: "OpenAI Admin Key", value: "sk-" + "admin-" + strings.Repeat("Ab", 10)},
 		{name: "OpenAI admin key URL alphabet", pattern: "OpenAI Admin Key", value: "sk-" + "admin-" + strings.Repeat("A-b_", 5)},

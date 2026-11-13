@@ -94,6 +94,7 @@ func TestScanTextForDLP_ProviderCredentialNearMisses(t *testing.T) {
 		"Vault recovery too short":      "hvr." + strings.Repeat("A", 23),
 		"Vault recovery wrong case":     "HVR." + strings.Repeat("A", 20) + "-b_c",
 		"Vault recovery label":          "hvr.string",
+		"Vault service token too short": "hvs." + strings.Repeat("A", 13) + "_" + strings.Repeat("B", 9),
 		"OpenAI admin key too short":    "sk-" + "admin-" + strings.Repeat("A", 19),
 		"Slack refresh too short":       "xoxe-" + strings.Repeat("A", 14),
 		"Slack workflow too short":      "xwfp-" + strings.Repeat("A", 14),

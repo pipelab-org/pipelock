@@ -229,12 +229,13 @@ func TestDLPKeywordsLegacyPolicyHashGolden(t *testing.T) {
 	// the JWT sign-in bearer carrier, then for the Doppler, 1Password and age
 	// patterns and the widened PyPI and Sentry patterns, then for the
 	// Bedrock, Heroku, and Vault corpus change, and for the OpenAI admin,
-	// Slack refresh and workflow, and Vault recovery patterns.
+	// Slack refresh and workflow, and Vault recovery patterns, then when
+	// the Vault service body became base64url.
 	// Balanced mode without default patterns retains its pre-keyword hash
 	// independently of changes to the built-in corpus.
 	for _, tc := range []struct{ body, want string }{
 		{keywordConfigYAML(""), "85c76016e5a0725a682561e23f18dd8ebade2ada53e72c7324cbb511f7749ed6"},
-		{"mode: balanced\n", "9e8cef3f32a1e390bcbc7698e0cdf3f0c84cb3da87e9fc39aa83965f8342f719"},
+		{"mode: balanced\n", "d43548b20dca4da9c578eb634d4586d02dd253f3821ba5c11143d0a496eafa4d"},
 		{"mode: balanced\ndlp:\n  include_defaults: false\n", "66df31a95a2ce552d4d50fc55356f0dd204d8bf3999a3bfa90bf9c3332710d86"},
 	} {
 		cfg, err := LoadBytes([]byte(tc.body))

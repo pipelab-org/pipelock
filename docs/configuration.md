@@ -1151,7 +1151,7 @@ Core safety-floor patterns (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `
 | Heroku OAuth Token | case-sensitive `HRKU-` + exactly 60 base64url characters, or a UUID | critical |
 | Doppler Token | `dp.` + documented token kind + optional service config name + 40–44 alphanumeric chars | critical |
 | 1Password Secret Key | `A3-` + six-character identifier + 26 secret characters, grouped 6-5-5-5-5 or 11-5-5-5 | critical |
-| HashiCorp Vault Token | `hvs.` + 24+ alphanumeric chars, or case-sensitive `hvs.`, `hvb.` or `hvr.` + 24+ base64url chars | critical |
+| HashiCorp Vault Token | case-insensitive `hvs.`, or case-sensitive `hvb.` or `hvr.`, + 24+ base64url chars | critical |
 | Vercel Token | `vercel_\|vc[piark]_` | critical |
 | Supabase Service Key | `sb_secret_<22-char-random>_<8-char-checksum>` | critical |
 | npm Token | `npm_` | critical |

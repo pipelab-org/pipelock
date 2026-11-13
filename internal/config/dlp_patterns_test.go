@@ -306,6 +306,8 @@ func TestDefaultDLPPatternsRedactionMirrorCoverage(t *testing.T) {
 		{name: "HashiCorp Vault Token", variant: " batch", value: "hvb." + strings.Repeat("A", 24), class: redact.ClassVaultToken},
 		{name: "HashiCorp Vault Token", variant: " batch base64url", value: "hvb." + "A-b_" + strings.Repeat("Cd", 10) + "-", class: redact.ClassVaultToken},
 		{name: "HashiCorp Vault Token", variant: " recovery", value: "hvr." + strings.Repeat("A", 24), class: redact.ClassVaultToken},
+		{name: "HashiCorp Vault Token", variant: " service base64url", value: "hvs." + strings.Repeat("A", 13) + "_" + strings.Repeat("B", 20), class: redact.ClassVaultToken},
+		{name: "HashiCorp Vault Token", variant: " service hyphen tail", value: "hvs." + strings.Repeat("A", 24) + "-" + strings.Repeat("B", 8), class: redact.ClassVaultToken, exact: true},
 		{name: "Vercel Token", value: "vercel_" + strings.Repeat("A", 24), class: redact.ClassVercelToken},
 		{name: "Supabase Service Key", value: "sb_secret_" + strings.Repeat("A", 22) + "_" + strings.Repeat("B", 8), class: redact.ClassSupabaseKey},
 		{name: "npm Token", value: "npm_" + strings.Repeat("A", 36), class: redact.ClassNPMToken},
