@@ -1176,44 +1176,38 @@ func TestForwardA2AGzipRedirectReplaysOriginalBody(t *testing.T) {
 	}
 }
 
-func TestReverseGzipBodyUsesDecodedViewForCrossRequestEntropy(t *testing.T) {
-	plain := []byte("cross request body text")
-	wire := gzipRequestBody(t, plain)
-	var got []byte
-	var enc string
+func TestReverseGzipBodyUsesDecodedViewForCrossRequestDetection(t *testing.T) {
 	cfg := reverseParityBaseConfig(t)
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.Action = config.ActionBlock
+	cfg.CrossRequestDetection = ceeFragmentBlockCfg()
 	cfg.Taint.Enabled = false
+	var got []byte
 	rp, _, _ := newReverseParityHarness(t, cfg, func(w http.ResponseWriter, r *http.Request) {
-		buf, err := io.ReadAll(r.Body)
+		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Errorf("read upstream body: %v", err)
 		}
-		got = append([]byte(nil), buf...)
-		enc = r.Header.Get("Content-Encoding")
+		got = append([]byte(nil), body...)
 		w.WriteHeader(http.StatusOK)
 	})
-
-	send := func(body []byte, coding string) *httptest.ResponseRecorder {
+	send := func(plain string) (*httptest.ResponseRecorder, []byte) {
 		t.Helper()
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://reverse.example/upload", bytes.NewReader(body))
+		wire := gzipRequestBody(t, []byte(plain))
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://reverse.example/upload", bytes.NewReader(wire))
 		req.RemoteAddr = "10.0.0.9:5555"
 		req.Header.Set("Content-Type", "text/plain")
-		if coding != "" {
-			req.Header.Set("Content-Encoding", coding)
-		}
+		req.Header.Set("Content-Encoding", "gzip")
 		rec := httptest.NewRecorder()
 		rp.ServeHTTP(rec, req)
-		return rec
+		return rec, wire
 	}
-
-	identity := send([]byte("plain body"), "")
-	if identity.Code != http.StatusOK {
-		t.Fatalf("identity status=%d body=%s", identity.Code, identity.Body.String())
+	first, wire := send(testCEEAWSKeyPrefix)
+	if first.Code != http.StatusOK || !bytes.Equal(got, wire) {
+		t.Fatalf("first status=%d wire match=%v body=%s", first.Code, bytes.Equal(got, wire), first.Body.String())
 	}
-	coded := send(wire, "gzip")
-	if coded.Code != http.StatusOK || enc != "gzip" || !bytes.Equal(got, wire) {
-		t.Fatalf("status=%d enc=%q match=%v body=%s", coded.Code, enc, bytes.Equal(got, wire), coded.Body.String())
+	second, _ := send(testCEEAWSKeySuffix)
+	if second.Code != http.StatusForbidden || second.Header().Get(blockreason.HeaderLayer) != "cross_request" {
+		t.Fatalf("second status=%d layer=%q body=%s", second.Code, second.Header().Get(blockreason.HeaderLayer), second.Body.String())
 	}
 }
