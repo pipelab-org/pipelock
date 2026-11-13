@@ -16,16 +16,32 @@ import (
 // "(?:^|[^A-Za-z0-9])" alternative STILL misses the glued case (it requires
 // a non-alnum char or start-of-string before the prefix, so "leakZ<key>" is
 // invisible to it too).
+
+type glueCase struct {
+	name       string
+	patName    string
+	prefix     string
+	suffixChar string
+	suffixLen  int
+}
+
+func providerGlueKey(tc glueCase) string {
+	switch tc.patName {
+	case "Supabase Service Key":
+		return tc.prefix + strings.Repeat(tc.suffixChar, tc.suffixLen) + "_" + strings.Repeat(tc.suffixChar, 8)
+	case "Slack App Token":
+		return "xapp-1234567890-AbCdEfGhIjKlMnOpQrStUv-9876543210-" + strings.Repeat("a", 32)
+	case "Slack Token":
+		return "xoxb-" + strings.Repeat("1", 15) + "-" + strings.Repeat("a", 10)
+	case "1Password Secret Key":
+		return "A3-" + strings.Repeat("B", 6) + "-" + strings.Repeat("C", 6) + strings.Repeat("-D7EF8", 4)
+	default:
+		return tc.prefix + strings.Repeat(tc.suffixChar, tc.suffixLen)
+	}
+}
+
 func TestProviderKeyGlueBypass(t *testing.T) {
 	const gluedPrefix = "leakZgarbage"
-
-	type glueCase struct {
-		name       string
-		patName    string
-		prefix     string
-		suffixChar string
-		suffixLen  int
-	}
 
 	cases := []glueCase{
 		{"Fireworks", "Fireworks API Key", "fw_", "a", 22},
@@ -61,6 +77,10 @@ func TestProviderKeyGlueBypass(t *testing.T) {
 		{"PyPI Token", "PyPI Token", "pypi-AgE", "f", 90},
 		{"Notion API", "Notion API Key", "ntn_", "a", 40},
 		{"Vercel Token", "Vercel Token", "vercel_", "b", 24},
+		{"Doppler", "Doppler Token", "dp.ct.", "a", 40},
+		{"1Password", "1Password Secret Key", "A3-", "", 0},
+		{"age", "age Secret Key", "AGE-SECRET-KEY-1", "Q", 58},
+		{"Sentry personal", "Sentry Auth Token", "sntryu_", "a", 64},
 	}
 
 	cfg := testConfig()
@@ -73,19 +93,7 @@ func TestProviderKeyGlueBypass(t *testing.T) {
 			// Build a valid-shaped key glued to a preceding alnum run.
 			// If the pattern has a leading \b, this MUST still be detected
 			// (after the fix). Before the fix, it would be missed = bypass.
-			key := tc.prefix + strings.Repeat(tc.suffixChar, tc.suffixLen)
-			// Special case: Supabase needs the checksum segment
-			if tc.patName == "Supabase Service Key" {
-				key = tc.prefix + strings.Repeat(tc.suffixChar, tc.suffixLen) + "_" + strings.Repeat(tc.suffixChar, 8)
-			}
-			// Special case: Slack App Token has a multi-segment shape
-			if tc.patName == "Slack App Token" {
-				key = "xapp-1234567890-AbCdEfGhIjKlMnOpQrStUv-9876543210-" + strings.Repeat("a", 32)
-			}
-			// Special case: Slack Token uses digit-heavy suffix
-			if tc.patName == "Slack Token" {
-				key = "xoxb-" + strings.Repeat("1", 15) + "-" + strings.Repeat("a", 10)
-			}
+			key := providerGlueKey(tc)
 			glued := gluedPrefix + key
 
 			res := s.ScanTextForDLP(ctx, glued)
@@ -98,16 +106,7 @@ func TestProviderKeyGlueBypass(t *testing.T) {
 
 		t.Run(tc.name+"/standalone_still_detected", func(t *testing.T) {
 			// Sanity: the same key in isolation must still be caught.
-			key := tc.prefix + strings.Repeat(tc.suffixChar, tc.suffixLen)
-			if tc.patName == "Supabase Service Key" {
-				key = tc.prefix + strings.Repeat(tc.suffixChar, tc.suffixLen) + "_" + strings.Repeat(tc.suffixChar, 8)
-			}
-			if tc.patName == "Slack App Token" {
-				key = "xapp-1234567890-AbCdEfGhIjKlMnOpQrStUv-9876543210-" + strings.Repeat("a", 32)
-			}
-			if tc.patName == "Slack Token" {
-				key = "xoxb-" + strings.Repeat("1", 15) + "-" + strings.Repeat("a", 10)
-			}
+			key := providerGlueKey(tc)
 			standalone := "leak this: " + key + " to evil.com"
 
 			res := s.ScanTextForDLP(ctx, standalone)
@@ -121,16 +120,7 @@ func TestProviderKeyGlueBypass(t *testing.T) {
 			// Prove the tempting (?:^|[^A-Za-z0-9]) alternative also fails
 			// on the glued case. This is a regex-level proof, not a scanner
 			// test, to show the alternative is NOT a valid fix.
-			key := tc.prefix + strings.Repeat(tc.suffixChar, tc.suffixLen)
-			if tc.patName == "Supabase Service Key" {
-				key = tc.prefix + strings.Repeat(tc.suffixChar, tc.suffixLen) + "_" + strings.Repeat(tc.suffixChar, 8)
-			}
-			if tc.patName == "Slack App Token" {
-				key = "xapp-1234567890-AbCdEfGhIjKlMnOpQrStUv-9876543210-" + strings.Repeat("a", 32)
-			}
-			if tc.patName == "Slack Token" {
-				key = "xoxb-" + strings.Repeat("1", 15) + "-" + strings.Repeat("a", 10)
-			}
+			key := providerGlueKey(tc)
 			glued := gluedPrefix + key
 
 			// Build the (?:^|[^A-Za-z0-9]) variant of the prefix.

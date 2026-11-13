@@ -557,7 +557,7 @@
     {
       "id": "docs-comparison.md-2",
       "path": "docs/comparison.md",
-      "pattern": "^Docker\\ MCP\\ Gateway\\ aggregates\\ MCP\\ servers\\ and\\ provides\\ Docker\\-native\\ MCP\\ lifecycle\\ and\\ gatewaying\\.\\ Pipelock\\ provides\\ deep\\ content\\ inspection\\ \\(65\\ DLP\\ patterns,\\ BIP\\-39\\ seed\\ phrase\\ detection,\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ prompt\\-injection\\ and\\ state/control\\-poisoning\\ patterns",
+      "pattern": "^Docker\\ MCP\\ Gateway\\ aggregates\\ MCP\\ servers\\ and\\ provides\\ Docker\\-native\\ MCP\\ lifecycle\\ and\\ gatewaying\\.\\ Pipelock\\ provides\\ deep\\ content\\ inspection\\ \\([0-9]+\\ DLP\\ patterns,\\ BIP\\-39\\ seed\\ phrase\\ detection,\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ prompt\\-injection\\ and\\ state/control\\-poisoning\\ patterns",
       "expected": "stats:Response patterns",
       "count": 1,
       "reason": "Public default count; derived by the existing TestCanonicalStats contract."

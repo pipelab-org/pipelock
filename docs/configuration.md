@@ -975,8 +975,8 @@ dlp:
 | `scan_env` | `true` | Scan environment variables for leaked values |
 | `secrets_file` | `""` | Path to file with known secrets (one per line) |
 | `min_env_secret_length` | `16` | Min env var value length to consider |
-| `include_defaults` | `true` | Merge your patterns with the 65 built-in patterns |
-| `patterns` | 65 built-in | DLP credential detection patterns |
+| `include_defaults` | `true` | Merge your patterns with the 68 built-in patterns |
+| `patterns` | 68 built-in | DLP credential detection patterns |
 | `patterns[].validator` | `""` | Post-match checksum validator: `luhn`, `mod97`, `aba`, `wif`, `dea`, or `npi` |
 | `patterns[].keywords` | `[]` | Optional literal, case-insensitive nearby labels for custom patterns; 1 to 50 terms, each 3 to 90 Unicode scalar values before and after DLP normalization |
 | `patterns[].keyword_window` | `50` with keywords | Characters on each side of the candidate, from 1 to 300; every keyword must fit wholly within one side; requires nonempty keywords |
@@ -1090,7 +1090,7 @@ Top-level `suppress`, `request_body_scanning.disable_patterns`, and a `warn` ent
 
 Core safety-floor patterns (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `GitHub Fine-Grained PAT`, `GitLab PAT`, `Slack Token`, `Private Key Header`, `GCP Service Account Key`) cannot be exempted, suppressed, or downgraded by operator configuration. A pattern that reuses one of those names with `exempt_domains` is rejected at startup and on reload, and the configured scanner ignores the field for those names even if one slipped through. A core pattern may still carry a compiled audience. `Slack Token` is allowed in `Authorization: Bearer` at `slack.com/api/...` or exactly `mcp.slack.com/mcp`. `GitHub Token` and `GitHub Fine-Grained PAT` are allowed on an encrypted `Authorization` header at `api.github.com` and `uploads.github.com`. `GitLab PAT` is allowed on an encrypted `PRIVATE-TOKEN` or `Authorization` header at `gitlab.com`. `dlp.github_enterprise_hosts` and `dlp.gitlab_hosts` add exact enterprise hosts for those classes and do not replace the compiled public hosts. The credential stays blocked on every other destination. A declared host the operator does not control receives the credential by design. AWS secret keys and private keys never gain a destination allowance. The compiled hosts cannot be cleared from YAML.
 
-### Built-in DLP Patterns (65)
+### Built-in DLP Patterns (68)
 
 | Pattern | Regex Prefix | Severity |
 |---------|-------------|----------|
@@ -1122,7 +1122,7 @@ Core safety-floor patterns (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `
 | MySQL Connection String | `mysql://user:pass@` | critical |
 | MongoDB Connection String | `mongodb(+srv)://user:pass@` | critical |
 | Redis Connection String | `redis(s)://user:pass@` | critical |
-| GCP Service Account Key (always-on core pattern, not part of the 65 default count) | `"type":"service_account"` | critical |
+| GCP Service Account Key (always-on core pattern, not part of the 68 default count) | `"type":"service_account"` | critical |
 | GCP Service Account Private Key ID | `"private_key_id":"<40 hex>"` | high |
 | Azure Storage Account Key | `AccountKey=<88-char base64>` | critical |
 | Azure SAS Token | `sig=<base64>%3D` / decoded `sig=<base64>=` | high |
@@ -1141,14 +1141,17 @@ Core safety-floor patterns (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `
 | Groq API Key | `gsk_` | critical |
 | xAI API Key | `xai-` | critical |
 | DigitalOcean Token | `dop_v1_` | critical |
+| Doppler Token | `dp.` + documented token kind + optional service config name + 40–44 alphanumeric chars | critical |
+| 1Password Secret Key | `A3-` + six-character identifier + 26 secret characters, grouped 6-5-5-5-5 or 11-5-5-5 | critical |
 | HashiCorp Vault Token | `hvs.` + 24+ alphanumeric chars | critical |
 | Vercel Token | `vercel_\|vc[piark]_` | critical |
 | Supabase Service Key | `sb_secret_<22-char-random>_<8-char-checksum>` | critical |
 | npm Token | `npm_` | critical |
-| PyPI Token | `pypi-AgE` | critical |
+| PyPI Token | `pypi-` + 85+ base64url chars | critical |
 | Linear API Key | `lin_api_` + 40+ alphanumeric chars | high |
 | Notion API Key | `ntn_` | high |
-| Sentry Auth Token | `sntrys_` + 40+ alphanumeric chars | high |
+| Sentry Auth Token | `sntryu_` + 64 hex chars; `sntrys_` + base64 payload + `_` + 43 unpadded base64 chars; previous 40+ alphanumeric form also detected | high |
+| age Secret Key | `AGE-SECRET-KEY-1` + 58 Bech32 chars (X25519 identity; checksum validity is not required for detection) | critical |
 | JWT Token | JSON-object base64url header and payload, three segments | high |
 | Private Key Header | `-----BEGIN.*PRIVATE KEY-----` | critical |
 | Bitcoin WIF Private Key | `[5KL]` + base58 | critical |

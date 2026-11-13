@@ -19,6 +19,7 @@ func TestCredentialAudienceEndpointAndCarrier(t *testing.T) {
 	google := "AI" + "za" + strings.Repeat("a", 35)
 	groq := "gsk_" + strings.Repeat("a", 48)
 	anthropic := "sk-" + "ant-" + strings.Repeat("a", 24)
+	doppler := "dp." + "st." + strings.Repeat("a", 40)
 	for _, tc := range []struct {
 		name, target, value, header string
 		allow                       bool
@@ -36,6 +37,13 @@ func TestCredentialAudienceEndpointAndCarrier(t *testing.T) {
 		{"groq subdomain", "https://other.groq.com/openai/v1/chat/completions", groq, "Bearer", false},
 		{"groq header", "https://api.groq.com/openai/v1/chat/completions", groq, "Bearer", true},
 		{"groq wrong route", "https://api.groq.com/unrelated", groq, "Bearer", false},
+		{"doppler header", "https://api.doppler.com/v3/configs/config/secrets", doppler, "Bearer", true},
+		{"doppler subdomain", "https://other.doppler.com/v3/projects", doppler, "Bearer", false},
+		{"doppler wrong route", "https://api.doppler.com/unrelated", doppler, "Bearer", false},
+		{"doppler route delimiter", "https://api.doppler.com/v3x/projects", doppler, "Bearer", false},
+		{"doppler wrong scheme", "https://api.doppler.com/v3/projects", doppler, "Basic", false},
+		{"doppler body", "https://api.doppler.com/v3/projects", doppler, "", false},
+		{"doppler cleartext", "http://api.doppler.com/v3/projects", doppler, "Bearer", false},
 		{"anthropic body", "https://api.anthropic.com/v1/messages", anthropic, "", false},
 		{"anthropic header", "https://api.anthropic.com/v1/messages", anthropic, "X-Api-Key", true},
 		{"anthropic openai sdk bearer", "https://api.anthropic.com/v1/chat/completions", anthropic, "Bearer", true},

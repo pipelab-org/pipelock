@@ -464,7 +464,7 @@ const (
 	// (Claude Code first-party credential endpoints). The default
 	// pattern corpus is part of the canonical policy view.
 	// Re-bumped for the compiled sign-in bearer carrier on the JWT pattern.
-	goldenHashDefaults = "aaa69c20b466da8e99b1af8c1ee67aa10167abe9248941de90df64e23ebc42b4"
+	goldenHashDefaults = "a05d0ee988d0ac8e431da703d229729c7113475504d35cfa47c4bc59eb97be93"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -711,7 +711,7 @@ const (
 	// (Claude Code first-party credential endpoints). The default
 	// pattern corpus is part of the canonical policy view.
 	// Re-bumped with goldenHashDefaults for the sign-in bearer carrier.
-	goldenHashRichConfig = "941a0679fef814e2030e8736d32983fbd6ec5674d3ebd6021cf1bfa17de6a595"
+	goldenHashRichConfig = "09969d7f602c8a4d80629eeee2295c2e024cf55a63e1a41b7d023b7bdad7cc3c"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1285,8 +1285,8 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 		// Gateway carrier, the publisher SDK Together host and the JWT sign-in
 		// bearer carrier, matching the default and rich-config goldens above.
 		// They inherit the RFC 9110 default URI limit of 8000 octets.
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "ba2cd65c3708db0faa29ce29a9c82015e0b6a7cb499849d26b6f2b24f1394f67"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "4679f249c6c0852349f58617b5773094ca364da0a67a3637499f0c4f17d94f0d"},
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "27ed7d18b39fb2180c59cbb25d649e22b2b1996d7b6255c347f76fecfefaf6aa"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "7f952b3f7283d75c893cb0940ab9f721e83f6d0034945b143e503eda13084ba1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
