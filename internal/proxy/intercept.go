@@ -1253,9 +1253,11 @@ func newInterceptHandler(
 		// hand the already-buffered bytes to InjectAndSign for
 		// content-digest computation without a second drain pass.
 		var interceptBodyBytes []byte
+		var interceptInspected []byte
+		interceptDecoded := false
 		var interceptEntropyWarningPattern string
 		if !ic.Config.RequestBodyScanning.Enabled && isA2A && ic.Config.A2AScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
-			bodyBytes, err := readForwardBodyForProtocolScan(r.Body, strings.Join(r.Header.Values("Content-Encoding"), ","), ic.Config.RequestBodyScanning.MaxBodyBytes, r.Trailer)
+			wire, inspected, decoded, err := readForwardBodyForProtocolScan(r.Body, strings.Join(r.Header.Values("Content-Encoding"), ","), ic.Config.RequestBodyScanning.MaxBodyBytes, r.Trailer)
 			if err != nil {
 				reason := "a2a: " + err.Error()
 				ic.Logger.LogBlocked(actx, scannerLabelA2A, reason)
@@ -1279,7 +1281,7 @@ func newInterceptHandler(
 			if observation := decide.ObserveCrossAgentContamination(ic.Recorder, &ic.Config.Taint, session.CrossAgentBoundaryA2ARequest); observation.ShouldEscalate {
 				interceptRecordSignal(ic, observation.AdaptiveSignal(false))
 			}
-			a2aBodyResult := mcp.ScanA2ARequestBody(r.Context(), bodyBytes, ic.Scanner, &ic.Config.A2AScanning, a2aContentEntropyOptions(r.URL.Hostname(), ic.Config))
+			a2aBodyResult := mcp.ScanA2ARequestBody(r.Context(), inspected, ic.Scanner, &ic.Config.A2AScanning, a2aContentEntropyOptions(r.URL.Hostname(), ic.Config))
 			if !a2aBodyResult.Clean {
 				if !a2aBodyResult.IsInfrastructureError() {
 					hasFinding = true
@@ -1321,13 +1323,15 @@ func newInterceptHandler(
 				}
 				ic.Logger.LogAnomaly(actx, scannerLabelA2A, reason, 0.8)
 			}
-			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-			r.ContentLength = int64(len(bodyBytes))
-			bodyBytesCopy := bodyBytes
+			r.Body = io.NopCloser(bytes.NewReader(wire))
+			r.ContentLength = int64(len(wire))
+			wireCopy := wire
 			r.GetBody = func() (io.ReadCloser, error) {
-				return io.NopCloser(bytes.NewReader(bodyBytesCopy)), nil
+				return io.NopCloser(bytes.NewReader(wireCopy)), nil
 			}
-			interceptBodyBytes = bodyBytes
+			interceptBodyBytes = wire
+			interceptInspected = inspected
+			interceptDecoded = decoded
 		}
 		if ic.Config.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
 			redaction := ic.Redaction
@@ -1387,6 +1391,7 @@ func newInterceptHandler(
 				writeClientCanceled(w)
 				return
 			}
+			inspected := inspectedBodyBytes(bodyBytes, result)
 			if result.CredentialAudienceReceiptErr != nil {
 				blockedErr := newCredentialAudienceReceiptBlockedRequest(result.CredentialAudienceReceiptErr)
 				ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
@@ -1608,7 +1613,7 @@ func newInterceptHandler(
 			// (Cross-agent contamination for this emit was already observed
 			// right after the body was buffered, before the generic DLP block.)
 			if isA2A && bodyBytes != nil {
-				a2aBodyResult := mcp.ScanA2ARequestBody(r.Context(), bodyBytes, ic.Scanner, &ic.Config.A2AScanning, a2aContentEntropyOptions(r.URL.Hostname(), ic.Config))
+				a2aBodyResult := mcp.ScanA2ARequestBody(r.Context(), inspected, ic.Scanner, &ic.Config.A2AScanning, a2aContentEntropyOptions(r.URL.Hostname(), ic.Config))
 				if !a2aBodyResult.Clean {
 					// Consistency with URL-scan path: infrastructure errors are
 					// score-neutral and must not set the finding flag.
@@ -1673,6 +1678,8 @@ func newInterceptHandler(
 				}
 			}
 			interceptBodyBytes = bodyBytes
+			interceptInspected = inspected
+			interceptDecoded = result.ContentCoding != ""
 		}
 
 		// Request header DLP scanning.
@@ -1826,7 +1833,15 @@ func newInterceptHandler(
 				partitionKey = fb.PartitionKey()
 			}
 		}
-		outboundPayloads := extractOutboundPayloads(r, partitionJSON, sessionKey, partitionKey)
+		var outboundPayloads ceeOutboundPayloads
+		if interceptDecoded {
+			callWithInspectedBody(r, interceptInspected, func() {
+				outboundPayloads = extractOutboundPayloads(r, partitionJSON, sessionKey, partitionKey)
+			})
+			outboundPayloads.addValidatedCodingStamp(r.Header, interceptBodyBytes)
+		} else {
+			outboundPayloads = extractOutboundPayloads(r, partitionJSON, sessionKey, partitionKey)
+		}
 		outbound := outboundPayloads.outbound
 		keys := queryParamKeys(r.URL)
 		paths := pathSegments(r.URL)
@@ -2024,7 +2039,7 @@ func newInterceptHandler(
 				Query:       r.URL.RawQuery,
 				ContentType: r.Header.Get(headerContentType),
 				Headers:     r.Header,
-				Body:        interceptBodyBytes,
+				Body:        requestPolicyBodyView(interceptBodyBytes, interceptInspected, interceptDecoded),
 				BodyRead:    interceptBodyBytes != nil || r.Body == nil || r.Body == http.NoBody,
 				Transport:   "intercept",
 				Target:      targetURL,

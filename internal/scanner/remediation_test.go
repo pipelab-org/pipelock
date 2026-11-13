@@ -1144,6 +1144,11 @@ func TestUnscannedEncodingGuidance(t *testing.T) {
 		if strings.Contains(got.OperatorKnob, "suppress") || !strings.Contains(got.OperatorKnob, "Content-Encoding") {
 			t.Fatalf("%s: operator knob = %q", label, got.OperatorKnob)
 		}
+		// The same reason is returned for a gzip or deflate body that was
+		// refused because it did not decode in full.
+		if !strings.Contains(got.OperatorKnob, "did not decode completely") {
+			t.Fatalf("%s: operator knob omits the incomplete decode case: %q", label, got.OperatorKnob)
+		}
 		if hint := OperatorHintForResult(label, reason); hint != got.OperatorKnob {
 			t.Fatalf("%s: audit remediation hint = %q", label, hint)
 		}

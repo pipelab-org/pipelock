@@ -7,11 +7,197 @@ import (
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestParseRequestCoding(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		values  []string
+		want    string
+		wantErr error
+	}{
+		{name: "absent"},
+		{name: "empty token", values: []string{"  "}},
+		{name: "identity", values: []string{"identity"}},
+		{name: "repeated identity", values: []string{"identity", " Identity "}},
+		{name: "gzip", values: []string{"gzip"}, want: "gzip"},
+		{name: "padded gzip", values: []string{" gzip "}, want: "gzip"},
+		{name: "mixed case", values: []string{"GZip"}, want: "gzip"},
+		{name: "x-gzip", values: []string{"x-gzip"}, want: "x-gzip"},
+		{name: "deflate", values: []string{"deflate"}, want: "deflate"},
+		{name: "gzip and identity", values: []string{"gzip, identity"}, wantErr: ErrStackedContentCoding},
+		{name: "identity and gzip", values: []string{"identity", "gzip"}, wantErr: ErrStackedContentCoding},
+		{name: "two header lines", values: []string{"gzip", "gzip"}, wantErr: ErrStackedContentCoding},
+		{name: "stacked value", values: []string{"gzip, gzip"}, wantErr: ErrStackedContentCoding},
+		{name: "brotli", values: []string{"br"}, wantErr: ErrUnsupportedContentCoding},
+		{name: "zstd", values: []string{"zstd"}, wantErr: ErrUnsupportedContentCoding},
+		{name: "compress", values: []string{"compress"}, wantErr: ErrUnsupportedContentCoding},
+		{name: "unknown", values: []string{"mystery"}, wantErr: ErrUnsupportedContentCoding},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := ParseRequestCoding(tt.values)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("ParseRequestCoding(%q) error = %v, want %v", tt.values, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseRequestCoding(%q) error = %v", tt.values, err)
+			}
+			if got != tt.want {
+				t.Fatalf("ParseRequestCoding(%q) = %q, want %q", tt.values, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReadDecodedGzipDeflateAndRefusals(t *testing.T) {
+	t.Parallel()
+	plain := []byte("scan this body")
+	gzipped := gzipTestBody(t, plain)
+	decoded, err := ReadDecoded("gzip", gzipped, len(plain))
+	if err != nil {
+		t.Fatalf("gzip: %v", err)
+	}
+	if !bytes.Equal(decoded, plain) {
+		t.Fatalf("gzip decoded = %q, want %q", decoded, plain)
+	}
+	xGzip, err := ReadDecoded("x-gzip", gzipped, len(plain))
+	if err != nil || !bytes.Equal(xGzip, plain) {
+		t.Fatalf("x-gzip = %q, %v", xGzip, err)
+	}
+	deflated := deflateTestBody(t, plain)
+	gotDeflate, err := ReadDecoded("deflate", deflated, len(plain))
+	if err != nil || !bytes.Equal(gotDeflate, plain) {
+		t.Fatalf("deflate = %q, %v", gotDeflate, err)
+	}
+
+	// A second gzip member is refused, not decoded: receivers disagree on
+	// whether it is part of the body.
+	second := gzipTestBody(t, []byte(" plus more"))
+	joined := append(append([]byte{}, gzipped...), second...)
+	if both, err := ReadDecoded("gzip", joined, 64); err == nil {
+		t.Fatalf("concatenated gzip decoded as %q", both)
+	}
+
+	bomb := gzipTestBody(t, bytes.Repeat([]byte("A"), 64))
+	over, err := ReadDecoded("gzip", bomb, 8)
+	if err != nil {
+		t.Fatalf("over-limit decode error = %v", err)
+	}
+	if len(over) != 9 {
+		t.Fatalf("over-limit decoded length = %d, want 9", len(over))
+	}
+
+	if _, err := ReadDecoded("gzip", gzipped[:8], 64); err == nil {
+		t.Fatal("truncated gzip decoded")
+	}
+	corrupt := append([]byte{}, gzipped...)
+	corrupt[len(corrupt)-1] ^= 0xff
+	if _, err := ReadDecoded("gzip", corrupt, 64); err == nil {
+		t.Fatal("corrupt gzip checksum decoded")
+	}
+	trailingGzip := append(append([]byte{}, gzipped...), []byte("trailing")...)
+	if _, err := ReadDecoded("gzip", trailingGzip, 64); err == nil {
+		t.Fatal("gzip with trailing plaintext decoded")
+	}
+	trailingDeflate := append(append([]byte{}, deflated...), []byte("trailing")...)
+	if _, err := ReadDecoded("deflate", trailingDeflate, 64); err == nil {
+		t.Fatal("zlib stream with trailing bytes decoded")
+	}
+	if _, err := ReadDecoded("gzip", nil, 8); err == nil {
+		t.Fatal("empty gzip input decoded")
+	}
+	if _, err := ReadDecoded("br", gzipped, 8); err == nil {
+		t.Fatal("unsupported coding decoded")
+	}
+	if _, err := NewDecoder("compress", bytes.NewReader(gzipped)); err == nil {
+		t.Fatal("NewDecoder accepted compress")
+	}
+	negative, err := ReadDecoded("gzip", gzipTestBody(t, nil), -1)
+	if err != nil || len(negative) != 0 {
+		t.Fatalf("negative limit = %q, %v", negative, err)
+	}
+}
+
+func gzipTestBody(t *testing.T, plain []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w := gzip.NewWriter(&buf)
+	if _, err := w.Write(plain); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func deflateTestBody(t *testing.T, plain []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w := zlib.NewWriter(&buf)
+	if _, err := w.Write(plain); err != nil {
+		t.Fatalf("deflate write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("deflate close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// A gzip header can carry a file name, a comment, and an extra field. Those
+// bytes reach the receiver outside the decoded body, so a body with any of
+// them is refused. A header with a modification time alone still decodes.
+func TestReadDecodedRefusesGzipHeaderContent(t *testing.T) {
+	t.Parallel()
+	plain := []byte("scan this body")
+	cases := []struct {
+		name    string
+		header  gzip.Header
+		wantErr bool
+	}{
+		{name: "plain header"},
+		{name: "modification time only", header: gzip.Header{ModTime: time.Unix(1700000000, 0)}},
+		{name: "file name", header: gzip.Header{Name: "note.txt"}, wantErr: true},
+		{name: "comment", header: gzip.Header{Comment: "carried outside the body"}, wantErr: true},
+		{name: "extra field", header: gzip.Header{Extra: []byte{'A', 'B', 2, 0, 'x', 'y'}}, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var buf bytes.Buffer
+			zw := gzip.NewWriter(&buf)
+			zw.Header = tc.header
+			if _, err := zw.Write(plain); err != nil {
+				t.Fatal(err)
+			}
+			if err := zw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			got, err := ReadDecoded("gzip", buf.Bytes(), len(plain))
+			if tc.wantErr {
+				if !errors.Is(err, errGzipHeaderContent) || got != nil {
+					t.Fatalf("decoded %q, err=%v; want the header refusal", got, err)
+				}
+				return
+			}
+			if err != nil || !bytes.Equal(got, plain) {
+				t.Fatalf("decoded %q, err=%v", got, err)
+			}
+		})
+	}
+}
 
 func TestRequestIdentity(t *testing.T) {
 	header := http.Header{"Accept-Encoding": {"gzip", "deflate, br, zstd"}}

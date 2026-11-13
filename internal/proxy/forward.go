@@ -1516,6 +1516,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// the signer would have to re-drain req.Body itself and the caller
 	// would lose deterministic bookkeeping about byte counts.
 	var forwardBodyBytes []byte
+	var forwardInspected []byte
+	forwardDecoded := false
 	var forwardEntropyWarnRoute *BodyEntropyWarnRouteMatch
 	scanA2AForwardBody := func(buf []byte) bool {
 		a2aBodyResult := mcp.ScanA2ARequestBody(r.Context(), buf, sc, &cfg.A2AScanning, a2aContentEntropyOptions(r.URL.Hostname(), cfg))
@@ -1567,7 +1569,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return false
 	}
 	if !cfg.RequestBodyScanning.Enabled && isA2A && cfg.A2AScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
-		buf, err := readForwardBodyForProtocolScan(r.Body, strings.Join(r.Header.Values("Content-Encoding"), ","), cfg.RequestBodyScanning.MaxBodyBytes, r.Trailer)
+		wire, inspected, decoded, err := readForwardBodyForProtocolScan(r.Body, strings.Join(r.Header.Values("Content-Encoding"), ","), cfg.RequestBodyScanning.MaxBodyBytes, r.Trailer)
 		if err != nil {
 			reason := "a2a: " + err.Error()
 			p.logger.LogBlocked(actx, scannerLabelA2A, reason)
@@ -1597,16 +1599,18 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				"blocked: "+reason, http.StatusForbidden)
 			return
 		}
-		if scanA2AForwardBody(buf) {
+		if scanA2AForwardBody(inspected) {
 			return
 		}
-		r.Body = io.NopCloser(bytes.NewReader(buf))
-		r.ContentLength = int64(len(buf))
-		bufCopy := buf
+		r.Body = io.NopCloser(bytes.NewReader(wire))
+		r.ContentLength = int64(len(wire))
+		wireCopy := wire
 		r.GetBody = func() (io.ReadCloser, error) {
-			return io.NopCloser(bytes.NewReader(bufCopy)), nil
+			return io.NopCloser(bytes.NewReader(wireCopy)), nil
 		}
-		forwardBodyBytes = buf
+		forwardBodyBytes = wire
+		forwardInspected = inspected
+		forwardDecoded = decoded
 	}
 	if cfg.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
 		bodyReq := BodyScanRequest{
@@ -1651,6 +1655,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			writeClientCanceled(w)
 			return
 		}
+		inspected := inspectedBodyBytes(buf, bodyResult)
 		if bodyResult.CredentialAudienceReceiptErr != nil {
 			blockedErr := newCredentialAudienceReceiptBlockedRequest(bodyResult.CredentialAudienceReceiptErr)
 			p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
@@ -1900,7 +1905,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// Generic body DLP sees opaque text, but A2A file/url fields need the
 		// protocol-aware URL scanner so non-text FilePart URIs cannot bypass
 		// SSRF protections on the plain forward-proxy path.
-		if isA2A && cfg.A2AScanning.Enabled && buf != nil && scanA2AForwardBody(buf) {
+		if isA2A && cfg.A2AScanning.Enabled && buf != nil && scanA2AForwardBody(inspected) {
 			return
 		}
 
@@ -1914,6 +1919,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			return io.NopCloser(bytes.NewReader(bufCopy)), nil
 		}
 		forwardBodyBytes = buf
+		forwardInspected = inspected
+		forwardDecoded = bodyResult.ContentCoding != ""
 	}
 
 	// Request header DLP scanning.
@@ -2036,7 +2043,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if fb := p.fragmentBufferPtr.Load(); fb != nil {
 		ceePartitionKey = fb.PartitionKey()
 	}
-	ceePayloads := extractOutboundPayloads(r, ceeJSONBodyPartitioningEnabled(p.cfgPtr.Load()), ceeSession, ceePartitionKey)
+	var ceePayloads ceeOutboundPayloads
+	if forwardDecoded {
+		callWithInspectedBody(r, forwardInspected, func() {
+			ceePayloads = extractOutboundPayloads(r, ceeJSONBodyPartitioningEnabled(p.cfgPtr.Load()), ceeSession, ceePartitionKey)
+		})
+		ceePayloads.addValidatedCodingStamp(r.Header, forwardBodyBytes)
+	} else {
+		ceePayloads = extractOutboundPayloads(r, ceeJSONBodyPartitioningEnabled(p.cfgPtr.Load()), ceeSession, ceePartitionKey)
+	}
 	ceeAdmission := p.admitCurrentCEE(r.Context(), ceeAdmitRequest{
 		ActorAuth: id.Auth, Outbound: ceePayloads.outbound, BodyFragmentPayloads: ceePayloads.bodyFragmentPayloads, BodyFragmentLeaves: ceePayloads.bodyFragmentLeaves,
 		PartitionReason: ceePayloads.partitionReason,
@@ -2142,7 +2157,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		Query:       r.URL.RawQuery,
 		ContentType: r.Header.Get(headerContentType),
 		Headers:     r.Header,
-		Body:        forwardBodyBytes,
+		Body:        requestPolicyBodyView(forwardBodyBytes, forwardInspected, forwardDecoded),
 		BodyRead:    forwardBodyBytes != nil || r.Body == nil || r.Body == http.NoBody,
 		Transport:   TransportForward,
 		Target:      targetURL,
@@ -3629,22 +3644,45 @@ func recordA2AContentEntropyTelemetry(logger *audit.Logger, m *metrics.Metrics, 
 	logger.LogBodyScan(actx, scanner.AuditBodyEntropy, action, 1, []string{contentEntropyReason(result.EntropyFinding)})
 }
 
-func readForwardBodyForProtocolScan(body io.Reader, contentEncoding string, maxBytes int, trailer http.Header) ([]byte, error) {
-	if hasNonIdentityEncoding(contentEncoding) {
-		return nil, fmt.Errorf("request body uses Content-Encoding %q; compressed bodies cannot be scanned", contentEncoding)
+func readForwardBodyForProtocolScan(body io.Reader, contentEncoding string, maxBytes int, trailer http.Header) (wire, inspected []byte, decoded bool, err error) {
+	coding, codingErr := responseencoding.ParseRequestCoding([]string{contentEncoding})
+	if codingErr != nil {
+		return nil, nil, false, fmt.Errorf("request body uses Content-Encoding %q; compressed bodies cannot be scanned", contentEncoding)
 	}
 
-	buf, err := io.ReadAll(io.LimitReader(body, int64(maxBytes)+1))
+	raw, err := io.ReadAll(io.LimitReader(body, int64(maxBytes)+1))
 	if err != nil {
-		return nil, fmt.Errorf("error reading request body: %w", err)
+		return nil, nil, false, fmt.Errorf("error reading request body: %w", err)
 	}
-	if len(buf) > maxBytes {
-		return nil, fmt.Errorf("request body exceeds max_body_bytes (%d)", maxBytes)
+	if len(raw) > maxBytes {
+		return nil, nil, false, fmt.Errorf("request body exceeds max_body_bytes (%d)", maxBytes)
 	}
 	if len(trailer) != 0 {
-		return nil, fmt.Errorf("request trailers cannot be scanned for secrets")
+		return nil, nil, false, fmt.Errorf("request trailers cannot be scanned for secrets")
 	}
-	return buf, nil
+	if coding == "" {
+		return raw, raw, false, nil
+	}
+	decodedBody, decErr := responseencoding.ReadDecoded(coding, raw, maxBytes)
+	if decErr != nil {
+		return nil, nil, false, fmt.Errorf("request body uses Content-Encoding %q; compressed bodies cannot be scanned", contentEncoding)
+	}
+	if len(decodedBody) > maxBytes {
+		return nil, nil, false, fmt.Errorf("request body exceeds max_body_bytes (%d)", maxBytes)
+	}
+	return raw, decodedBody, true, nil
+}
+
+// requestPolicyBodyView is the body request policy inspects. A decoded
+// content coding supplies the decoded bytes. The forwarded body stays separate.
+func requestPolicyBodyView(wire, inspected []byte, decoded bool) []byte {
+	if decoded {
+		if inspected == nil {
+			return []byte{}
+		}
+		return inspected
+	}
+	return wire
 }
 
 // copyResponseHeaders copies upstream response headers to the client response,
