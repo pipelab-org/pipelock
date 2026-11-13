@@ -717,6 +717,10 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 				cp.providerKeyPrefixes = []string{"sk-ant-"}
 			case config.OpenAIKeyBodyRegex:
 				cp.providerKeyPrefixes = []string{"sk-proj-", "sk-admin-"}
+			case legacyOpenAIProjectKeyBody:
+				// A saved preset can still spell the project-only body. That
+				// body used to receive one-character glue; keep it.
+				cp.providerKeyPrefixes = []string{"sk-proj-"}
 			case config.OpenAIServiceKeyBodyRegex:
 				cp.providerKeyPrefixes = []string{"sk-svcacct-"}
 			}
@@ -6529,6 +6533,11 @@ func gluedWordBoundaryBody(regex string) (body string, rejectDigit bool, ok bool
 		return "", false, false
 	}
 }
+
+// legacyOpenAIProjectKeyBody is the project-only OpenAI body from before
+// admin keys shared OpenAIKeyBodyRegex. The hyphen is escaped the same way
+// the shipped preset spells it.
+const legacyOpenAIProjectKeyBody = `sk-proj-[a-zA-Z0-9\-_]{20,}`
 
 // providerSuffixHasKeyStrength is the boundary-failure check for the three
 // shipped provider prefixes. The suffix must contain a digit and must not be
