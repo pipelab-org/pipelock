@@ -866,6 +866,34 @@ func scanRequestBatch(ctx context.Context, line []byte, sc *scanner.Scanner, act
 // without a first-class denial. Sampling a subset would create an evasion gap.
 const maxPairwiseSplitFields = 64
 
+// maxPairwiseSplitWorkBytes bounds the bytes the pairwise scan hands to text
+// DLP, the same 8 MiB the scanner allows one scan to expand to while decoding.
+// Every value is joined with every other one in both orders, so the same
+// payload costs more the more fields it is spread across.
+const maxPairwiseSplitWorkBytes = 8 * 1024 * 1024
+
+// pairwiseSplitUnboundedValues is the number of extracted strings up to which
+// the work bound does not apply. A tools/call with one or two string arguments
+// extracts at most five: the protocol version, the method, the tool name and
+// either a string id with one argument or two arguments. At that count the
+// pairwise scan costs at most eight times the message, which the transport
+// size limit already bounds, and refusing it would refuse an ordinary call
+// that carries one large value.
+const pairwiseSplitUnboundedValues = 5
+
+// pairwiseSplitWorkExceeded reports whether the pairwise scan of vals would
+// pass maxPairwiseSplitWorkBytes.
+func pairwiseSplitWorkExceeded(vals []string) bool {
+	var n, total int
+	for _, v := range vals {
+		if v != "" {
+			n++
+			total += len(v)
+		}
+	}
+	return n > pairwiseSplitUnboundedValues && 2*(n-1)*total > maxPairwiseSplitWorkBytes
+}
+
 // scanSplitSecret checks for secrets split across multiple JSON fields.
 // Two strategies:
 //  1. Sorted-key concatenation (original): joins all values without separators.
@@ -903,7 +931,7 @@ func scanSplitSecret(ctx context.Context, raw json.RawMessage, joined string, sc
 			}
 		}
 	}
-	if len(vals) > maxPairwiseSplitFields {
+	if len(vals) > maxPairwiseSplitFields || pairwiseSplitWorkExceeded(vals) {
 		return scanner.TextDLPResult{
 			Clean: false,
 			Matches: []scanner.TextDLPMatch{{
