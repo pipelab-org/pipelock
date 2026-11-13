@@ -63,10 +63,13 @@ type issuerIDLedger struct {
 	history  map[string]*issuerIDCaller
 	// Callers and destination tombstones are never evicted. Once admission
 	// refuses a bucket, the latch prevents missing sends from looking fresh.
-	idDestinations     int
-	idAdmissionClosed  bool
-	sentEntries        int
-	observeIDBlock     func(scope string, log bool)
+	idDestinations    int
+	idAdmissionClosed bool
+	sentEntries       int
+	observeIDBlock    func(scope string, log bool)
+	// bodyDecodeLimit bounds the decoded size of a compressed request body
+	// recorded as sent. Nil uses the default request-body limit.
+	bodyDecodeLimit    func() int
 	idBlockReported    bool
 	idCapacityReported bool
 }

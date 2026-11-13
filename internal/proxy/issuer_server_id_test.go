@@ -5,6 +5,8 @@ package proxy
 
 import (
 	"bytes"
+	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -685,4 +687,113 @@ func TestIssuerServerIDUnmediatedSends(t *testing.T) {
 			t.Fatal("known id lost after websocket handshake")
 		}
 	})
+}
+
+// A gzip or deflate body is what the origin application reads. History has to
+// record that plaintext. Recording only the compressed bytes lets the origin
+// echo an identifier the session already sent, and path entropy then treats
+// the echo as server-issued.
+func TestIssuerHistorySeesPlaintextInsideCompressedRequest(t *testing.T) {
+	origin, err := url.Parse("https://api.vendor.example/v1/filters")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const agent = "mail-agent"
+	now := time.Now()
+	// Default compression of a short literal stores it unchanged. A repeated
+	// prefix is long enough that the default compressor stops storing the
+	// identifier as a contiguous byte string, which is what ordinary clients
+	// send.
+	plain := append(bytes.Repeat([]byte("note "), 40), []byte(agentBlob)...)
+	gzipBody := gzipIssuerBody(t, plain)
+	deflateBody := zlibIssuerBody(t, plain)
+	if bytes.Contains(gzipBody, []byte(agentBlob)) || bytes.Contains(deflateBody, []byte(agentBlob)) {
+		t.Fatal("fixture left the identifier visible in the compressed bytes")
+	}
+
+	type call struct {
+		name      string
+		encoding  string
+		body      []byte
+		intercept bool
+		// otherIDMinted is false when the coding cannot be decoded: learning
+		// stops, so an identifier that was not in the body cannot mint either.
+		otherIDMinted bool
+		// decodeLimit overrides the store's decoded-size limit when set.
+		decodeLimit int
+	}
+	corrupt := append([]byte(nil), gzipBody...)
+	corrupt[len(corrupt)-1] ^= 0xff
+	cases := []call{
+		{name: "identity", body: []byte(agentBlob), otherIDMinted: true},
+		{name: "gzip forward", encoding: "gzip", body: gzipBody, otherIDMinted: true},
+		{name: "x-gzip forward", encoding: "x-gzip", body: gzipBody, otherIDMinted: true},
+		{name: "deflate forward", encoding: "deflate", body: deflateBody, otherIDMinted: true},
+		{name: "gzip intercept", encoding: "gzip", body: gzipBody, intercept: true, otherIDMinted: true},
+		{name: "unsupported coding", encoding: "br", body: []byte("notes"), otherIDMinted: false},
+		{name: "truncated gzip", encoding: "gzip", body: gzipBody[:len(gzipBody)-6], otherIDMinted: false},
+		{name: "corrupt gzip checksum", encoding: "gzip", body: corrupt, otherIDMinted: false},
+		{name: "bytes after gzip", encoding: "gzip", body: append(append([]byte(nil), gzipBody...), "tail"...), otherIDMinted: false},
+		{name: "second gzip member", encoding: "gzip", body: append(append([]byte(nil), gzipBody...), gzipIssuerBody(t, []byte("more"))...), otherIDMinted: false},
+		{name: "bytes after deflate", encoding: "deflate", body: append(append([]byte(nil), deflateBody...), "tail"...), otherIDMinted: false},
+		{name: "decoded size over the limit", encoding: "gzip", body: gzipBody, decodeLimit: 16, otherIDMinted: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newWebPlatformHarness(t)
+			store := h.p.issuerStoreForUnmediatedSend()
+			if store == nil {
+				t.Fatal("issuer store not running")
+			}
+			if tc.decodeLimit > 0 {
+				store.bodyDecodeLimit = func() int { return tc.decodeLimit }
+			}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://api.vendor.example/notes", bytes.NewReader(tc.body))
+			if tc.encoding != "" {
+				req.Header.Set("Content-Encoding", tc.encoding)
+			}
+			if tc.intercept {
+				recordIssuerRequestSent(&InterceptContext{
+					Proxy: h.p, Config: h.cfg, Agent: agent, ClientIP: "127.0.0.1", ActorAuth: envelope.ActorAuthBound,
+				}, req, tc.body)
+			} else {
+				h.p.recordIssuerForwardSent(h.cfg, agent, "127.0.0.1", envelope.ActorAuthBound, req, append([]byte(nil), tc.body...))
+			}
+			session := sessionKeyFor(h.cfg, agent, "127.0.0.1", envelope.ActorAuthBound)
+			store.mintServerID(session, origin, agentBlob, now)
+			if store.serverIDIssued(session, origin, agentBlob) {
+				t.Fatal("identifier carried to the origin was minted")
+			}
+			store.mintServerID(session, origin, serverIDListed, now)
+			if got := store.serverIDIssued(session, origin, serverIDListed); got != tc.otherIDMinted {
+				t.Fatalf("unrelated id minted=%v, want %v", got, tc.otherIDMinted)
+			}
+		})
+	}
+}
+
+func gzipIssuerBody(t *testing.T, plain []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w := gzip.NewWriter(&buf)
+	if _, err := w.Write(plain); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func zlibIssuerBody(t *testing.T, plain []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w := zlib.NewWriter(&buf)
+	if _, err := w.Write(plain); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }

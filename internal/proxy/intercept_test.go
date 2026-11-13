@@ -2236,16 +2236,61 @@ func TestInterceptTunnel_HostPortMismatch(t *testing.T) {
 }
 
 func TestInterceptTunnel_CompressedBodyBlocked(t *testing.T) {
-	// When the request body is compressed, scanRequestBody returns nil bytes
-	// (fail-closed). This should block regardless of action/enforce mode.
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	// A single gzip body is decoded and scanned. The original compressed
+	// bytes are what the upstream receives.
+	plain := []byte(`{"ok":true}`)
+	wire := gzipRequestBody(t, plain)
+	var got []byte
+	var hits atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+		}
+		got = body
+		if r.Header.Get("Content-Encoding") != "gzip" {
+			t.Errorf("Content-Encoding = %q, want gzip", r.Header.Get("Content-Encoding"))
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()
 
 	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 	cfg.RequestBodyScanning.Enabled = true
-	cfg.RequestBodyScanning.Action = config.ActionWarn // even warn blocks when body is nil
+	cfg.RequestBodyScanning.Action = config.ActionWarn
+	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://"+addr+"/api", bytes.NewReader(wire))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for a clean gzip body", resp.StatusCode)
+	}
+	if hits.Load() != 1 || !bytes.Equal(got, wire) {
+		t.Fatalf("hits=%d forwarded match=%v", hits.Load(), bytes.Equal(got, wire))
+	}
+}
+
+func TestInterceptTunnel_UnsupportedContentEncodingBlocked(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Action = config.ActionWarn
 	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
@@ -2254,13 +2299,16 @@ func TestInterceptTunnel_CompressedBodyBlocked(t *testing.T) {
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
 		"https://"+addr+"/api", strings.NewReader("compressed payload"))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("Content-Encoding", "br")
 
 	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("status = %d, want 403 (compressed body should be blocked fail-closed)", resp.StatusCode)
+		t.Fatalf("status = %d, want 403 for an unsupported content coding", resp.StatusCode)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
 	}
 }
 

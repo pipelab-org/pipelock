@@ -38,6 +38,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/media"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
+	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -691,16 +692,26 @@ type BodyScanResult struct {
 	// FileInspectionBlock is set only for enforced request-body block policy.
 	FileInspectionBlock bool
 	// UnscannedEncoding marks a body withheld because its Content-Encoding is
-	// not decoded. It is withheld under every action and enforce setting.
+	// not a single decoded gzip, x-gzip, or deflate coding, or because that
+	// coding did not consume the whole body. It is withheld under every
+	// action and enforce setting.
 	UnscannedEncoding bool
-	Clean             bool
-	Action            string
-	DLPMatches        []scanner.TextDLPMatch
-	InjectionMatches  []scanner.ResponseMatch
-	AddressFindings   []addressprotect.Finding // crypto address poisoning findings
-	EntropyFinding    *ContentEntropyFinding
-	EntropyAction     string
-	EntropyWarnRoute  *BodyEntropyWarnRouteMatch
+	// ContentCoding is set when the returned buffer is the original compressed
+	// body and InspectedBody is the decoded view that was scanned. Empty means
+	// the returned buffer is the identity body.
+	ContentCoding string
+	// InspectedBody is the decoded body when ContentCoding is set. A decoded
+	// empty body is a non-nil empty slice. Forwarding must use the returned
+	// buffer, which keeps the original compressed bytes.
+	InspectedBody    []byte
+	Clean            bool
+	Action           string
+	DLPMatches       []scanner.TextDLPMatch
+	InjectionMatches []scanner.ResponseMatch
+	AddressFindings  []addressprotect.Finding // crypto address poisoning findings
+	EntropyFinding   *ContentEntropyFinding
+	EntropyAction    string
+	EntropyWarnRoute *BodyEntropyWarnRouteMatch
 	// RedactedDLPOnly is true when DLP matched the original body but the
 	// post-redaction body scanned clean. Callers can use this to distinguish
 	// "raw residual secret remains" from "secret was removed before forward".
@@ -844,10 +855,18 @@ type BodyScanRequest struct {
 	SigV4CredentialRoutes    []config.RequestBodySigV4CredentialRoute
 }
 
+// compressedRequestRewriteReason refuses a compressed request whose scanned
+// bytes differ from the decoded body. The original compressed bytes cannot
+// be updated in place, and this path does not re-encode.
+const compressedRequestRewriteReason = "compressed request body would be rewritten and cannot be forwarded unchanged"
+
 // scanRequestBody reads, buffers, and scans an HTTP request body for
 // credential exfiltration and prompt injection.
-// Returns the buffered body bytes (for re-wrapping) and the scan result.
-// Fail-closed: oversized bodies and compressed bodies are always blocked.
+// The returned buffer is what a caller re-wraps for forwarding. For a single
+// gzip, x-gzip, or deflate coding that is the original compressed body, and
+// BodyScanResult.InspectedBody is the decoded view that was scanned.
+// Fail-closed: oversized bodies, unsupported codings, and bodies that cannot
+// be decoded completely are always blocked.
 func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final BodyScanResult) {
 	var audienceAllows []scanner.CredentialAudienceAllow
 	defer func() {
@@ -872,19 +891,16 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	collectAudienceAllow := func(allow scanner.CredentialAudienceAllow) {
 		audienceAllows = append(audienceAllows, allow)
 	}
-	// Content-Encoding check: compressed bodies evade DLP regex matching.
-	// Parse as comma-separated tokens (RFC 7231 section 3.1.2.2).
-	if hasNonIdentityEncoding(req.ContentEncoding) {
-		return nil, BodyScanResult{
-			Clean:             false,
-			Action:            config.ActionBlock,
-			Reason:            fmt.Sprintf("request body uses Content-Encoding %q; %s", req.ContentEncoding, scanner.UnscannedEncodingSuffix),
-			UnscannedEncoding: true,
-		}
+	// A single gzip, x-gzip, or deflate coding is decoded and scanned.
+	// Every other coding keeps the unread-body refusal.
+	coding, codingErr := responseencoding.ParseRequestCoding([]string{req.ContentEncoding})
+	if codingErr != nil {
+		return unscannedRequestBodyResult(req.ContentEncoding)
 	}
 
-	// Read body with +1 byte to detect overflow.
-	buf, err := io.ReadAll(io.LimitReader(req.Body, int64(req.MaxBytes)+1))
+	// Read body with +1 byte to detect overflow. The same limit bounds the
+	// compressed input and, after a supported coding, the decoded bytes.
+	raw, err := io.ReadAll(io.LimitReader(req.Body, int64(req.MaxBytes)+1))
 	if err != nil {
 		result := BodyScanResult{
 			Clean:  false,
@@ -913,7 +929,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	}
 
 	// Overflow: fail-closed block regardless of configured action.
-	if len(buf) > req.MaxBytes {
+	if len(raw) > req.MaxBytes {
 		return nil, BodyScanResult{
 			Clean:  false,
 			Action: config.ActionBlock,
@@ -921,9 +937,61 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		}
 	}
 
-	// Empty body: clean.
+	buf := raw
+	var wire []byte
+	if coding != "" {
+		decoded, decErr := responseencoding.ReadDecoded(coding, raw, req.MaxBytes)
+		if decErr != nil {
+			return unscannedRequestBodyResult(req.ContentEncoding)
+		}
+		if len(decoded) > req.MaxBytes {
+			return nil, BodyScanResult{
+				Clean:  false,
+				Action: config.ActionBlock,
+				Reason: fmt.Sprintf("request body exceeds max_body_bytes (%d)", req.MaxBytes),
+			}
+		}
+		wire = raw
+		buf = decoded
+	}
+	// Copied only for a decoded coding so an identity body is not duplicated
+	// before redaction replaces buf.
+	var decodedView []byte
+	if coding != "" {
+		decodedView = append([]byte(nil), buf...)
+	}
+	var redactReport *redact.Report
+	finish := func(scanned []byte, result BodyScanResult) ([]byte, BodyScanResult) {
+		if coding == "" {
+			return scanned, result
+		}
+		if !bytes.Equal(scanned, decodedView) {
+			return nil, BodyScanResult{
+				Clean:                false,
+				Action:               config.ActionBlock,
+				Reason:               compressedRequestRewriteReason,
+				RedactionBlockReason: redact.ReasonInternalError,
+			}
+		}
+		// scanned equals decodedView here, and nothing else holds either
+		// buffer, so both are handed over without another copy.
+		result.ContentCoding = coding
+		result.InspectedBody = decodedView
+		if result.InspectedBody == nil {
+			result.InspectedBody = []byte{}
+		}
+		return wire, result
+	}
+
+	// Empty body: clean. A supported coding still forwards the original
+	// compressed bytes and reports the decoded view separately. finish treats
+	// a nil scanned buffer as an empty inspected view.
 	if len(buf) == 0 {
-		return buf, BodyScanResult{Clean: true}
+		scanned := buf
+		if coding != "" {
+			scanned = nil
+		}
+		return finish(scanned, BodyScanResult{Clean: true})
 	}
 
 	if audienceSurface == "websocket_frame" {
@@ -987,42 +1055,49 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	// request forwards the ORIGINAL unredacted body - the bypass
 	// reported in v1b round 1 review (2026-04-19). DLP then scans the
 	// redacted buf and catches anything redaction did not cover.
-	var redactReport *redact.Report
 	if req.RedactionRequired && req.RedactMatcher == nil {
-		return buf, BodyScanResult{
+		return finish(buf, BodyScanResult{
 			Clean:                false,
 			Action:               config.ActionBlock,
 			Reason:               "redaction runtime unavailable during reload",
 			RedactionBlockReason: redact.ReasonInternalError,
-		}
+		})
 	}
 	if req.RedactMatcher != nil {
 		rewritten, report, err := applyRedaction(buf, req)
 		if err != nil {
 			var be *redact.BlockError
 			if errors.As(err, &be) {
-				return buf, BodyScanResult{
+				return finish(buf, BodyScanResult{
 					Clean:                false,
 					Action:               config.ActionBlock,
 					Reason:               fmt.Sprintf("redaction blocked request: %s", be.Reason),
 					RedactionBlockReason: be.Reason,
-				}
+				})
 			}
 			// Non-BlockError from redact is currently unreachable because
 			// RewriteJSON always wraps failures in *BlockError. Setting
 			// the sentinel reason keeps isFailClosedBodyResult's check
 			// (RedactionBlockReason != "") reachable if that contract
 			// ever loosens, so audit-mode callers still block.
-			return buf, BodyScanResult{
+			return finish(buf, BodyScanResult{
 				Clean:                false,
 				Action:               config.ActionBlock,
 				Reason:               fmt.Sprintf("redaction error: %v", err),
 				RedactionBlockReason: redact.ReasonInternalError,
-			}
+			})
 		}
 		if report != nil {
-			buf = rewritten
 			redactReport = report
+			// A JSON rewrite re-encodes the document even when it redacts
+			// nothing. For a compressed body the original bytes are what
+			// is forwarded, so with no redaction the decoded body stays
+			// the scanned view and the scan covers what the upstream
+			// receives. A real redaction still replaces it and is refused
+			// in finish.
+			if coding == "" || report.TotalRedactions > 0 {
+				buf = rewritten
+			}
 		}
 	}
 
@@ -1086,15 +1161,15 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	// preamble or epilogue. These decide the result like any field.
 	if len(texts) == 0 && len(dlpExtracted.Texts) == 0 && len(fileTexts) == 0 && fileIncomplete == "" {
 		if len(preRedactionDLP) > 0 {
-			return buf, BodyScanResult{
+			return finish(buf, BodyScanResult{
 				Clean:           false,
 				Action:          requestBodyDLPAction(preRedactionDLP, req.Action, req.PatternActions),
 				DLPMatches:      preRedactionDLP,
 				RedactedDLPOnly: redactReport != nil && redactReport.Applied,
 				RedactionReport: redactReport,
-			}
+			})
 		}
-		return buf, BodyScanResult{Clean: true, RedactionReport: redactReport}
+		return finish(buf, BodyScanResult{Clean: true, RedactionReport: redactReport})
 	}
 
 	var result BodyScanResult
@@ -1253,10 +1328,40 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		if result.EntropyFinding != nil && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 && len(result.AddressFindings) == 0 {
 			result.Reason = appendUnreadUpload(bodyEntropyReason(result), result.FileInspectionIncomplete)
 		}
-		return buf, result
+		return finish(buf, result)
 	}
 
-	return buf, BodyScanResult{Clean: true, RedactionReport: redactReport}
+	return finish(buf, BodyScanResult{Clean: true, RedactionReport: redactReport})
+}
+
+func unscannedRequestBodyResult(contentEncoding string) ([]byte, BodyScanResult) {
+	return nil, BodyScanResult{
+		Clean:             false,
+		Action:            config.ActionBlock,
+		Reason:            fmt.Sprintf("request body uses Content-Encoding %q; %s", contentEncoding, scanner.UnscannedEncodingSuffix),
+		UnscannedEncoding: true,
+	}
+}
+
+// inspectedBodyBytes returns the decoded view when the scan decoded a
+// supported content coding, and the forwarded buffer otherwise.
+// inspectedBodyForCaller returns the decoded view only when a content coding
+// was decoded. A nil result tells the caller to inspect the forwarded buffer.
+func inspectedBodyForCaller(forward []byte, result BodyScanResult) []byte {
+	if result.ContentCoding == "" {
+		return nil
+	}
+	return inspectedBodyBytes(forward, result)
+}
+
+func inspectedBodyBytes(forward []byte, result BodyScanResult) []byte {
+	if result.ContentCoding == "" {
+		return forward
+	}
+	if result.InspectedBody == nil {
+		return []byte{}
+	}
+	return result.InspectedBody
 }
 
 func scanBodyTextsForContentEntropy(texts []string, req BodyScanRequest) *ContentEntropyFinding {
