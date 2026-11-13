@@ -361,6 +361,10 @@ func TestClientCancelDoesNotRaiseSessionScore(t *testing.T) {
 	cfg.AdaptiveEnforcement.EscalationThreshold = adaptiveTestThreshold
 	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0
 	cfg.WebSocketProxy.Enabled = true
+	// Header scanning is on by default. On CONNECT it runs before the URL
+	// cancellation return and would itself refuse a context that is already
+	// canceled, so the score check would never reach that return.
+	cfg.RequestBodyScanning.ScanHeaders = false
 	logger, logs := newCancelAuditLogger(t)
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
@@ -427,6 +431,24 @@ func TestClientCancelDoesNotRaiseSessionScore(t *testing.T) {
 		}
 		if score := scoreOf(req); score != before {
 			t.Fatalf("connect cancel threat score = %v, want %v", score, before)
+		}
+	})
+	t.Run("intercept", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "https://api.vendor.example/ordinary", nil)
+		before := scoreOf(req)
+		clientIP, _ := requestMeta(req)
+		w := httptest.NewRecorder()
+		newInterceptHandler(&InterceptContext{
+			TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg, Scanner: sc,
+			Logger: logger, Metrics: m, ClientIP: clientIP, RequestID: "cancel-score", Proxy: p,
+		}, p.client.Transport).ServeHTTP(w, req)
+		if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), clientCanceledStatusText) {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		if score := scoreOf(req); score != before {
+			t.Fatalf("intercept cancel threat score = %v, want %v", score, before)
 		}
 	})
 	if countAuditEvent(logs.String(), "blocked") != 0 {
