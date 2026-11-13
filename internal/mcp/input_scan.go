@@ -866,14 +866,30 @@ func scanRequestBatch(ctx context.Context, line []byte, sc *scanner.Scanner, act
 // without a first-class denial. Sampling a subset would create an evasion gap.
 const maxPairwiseSplitFields = 64
 
-// maxPairwiseSplitWorkBytes bounds the bytes the pairwise scan may hand to
-// text DLP. Each ordered concatenation charges its own length. The figure is
-// one quarter of the scanner decode-expansion bound (maxDecodeTotalBytes,
-// 8 MiB). The full bound still leaves a 256 KiB payload spread across this
-// field cap running for several seconds. A quarter of it covers that payload
-// held in one field, about 1.5 MiB once the three envelope strings are
-// paired with it, and a few dozen short or 1 KiB fields.
-const maxPairwiseSplitWorkBytes int64 = (8 * 1024 * 1024) / 4
+// maxPairwiseSplitWorkBytes bounds the bytes the pairwise scan hands to text
+// DLP, the same 8 MiB the scanner allows one scan to expand to while decoding.
+// Every value is joined with every other one in both orders, so the same
+// payload costs more the more fields it is spread across.
+const maxPairwiseSplitWorkBytes = 8 * 1024 * 1024
+
+// pairwiseSplitSingleArgumentValues is the most strings a call with one
+// argument extracts: the protocol version, a string id, the method, the tool
+// name and the argument. Its pairwise cost grows only with its size, so it is
+// never refused for that cost.
+const pairwiseSplitSingleArgumentValues = 5
+
+// pairwiseSplitWorkExceeded reports whether the pairwise scan of vals would
+// pass maxPairwiseSplitWorkBytes.
+func pairwiseSplitWorkExceeded(vals []string) bool {
+	var n, total int
+	for _, v := range vals {
+		if v != "" {
+			n++
+			total += len(v)
+		}
+	}
+	return n > pairwiseSplitSingleArgumentValues && 2*(n-1)*total > maxPairwiseSplitWorkBytes
+}
 
 // scanSplitSecret checks for secrets split across multiple JSON fields.
 // Two strategies:
@@ -912,7 +928,7 @@ func scanSplitSecret(ctx context.Context, raw json.RawMessage, joined string, sc
 			}
 		}
 	}
-	if len(vals) > maxPairwiseSplitFields {
+	if len(vals) > maxPairwiseSplitFields || pairwiseSplitWorkExceeded(vals) {
 		return scanner.TextDLPResult{
 			Clean: false,
 			Matches: []scanner.TextDLPMatch{{
@@ -923,7 +939,6 @@ func scanSplitSecret(ctx context.Context, raw json.RawMessage, joined string, sc
 	}
 
 	// Strategy 2: pairwise concatenation (catches 2-field splits regardless of key order).
-	var used int64
 	for i := 0; i < len(vals); i++ {
 		if len(vals[i]) == 0 {
 			continue
@@ -932,18 +947,6 @@ func scanSplitSecret(ctx context.Context, raw json.RawMessage, joined string, sc
 			if len(vals[j]) == 0 {
 				continue
 			}
-			// Charge both orders up front. Stopping after only one order would
-			// change which split a finished scan reports.
-			charge := int64(len(vals[i]) + len(vals[j]))
-			if charge > maxPairwiseSplitWorkBytes/2 || used > maxPairwiseSplitWorkBytes-2*charge {
-				result.Matches = append([]scanner.TextDLPMatch{{
-					PatternName: uninspectableSplitSecretFieldsReason,
-					Severity:    config.SeverityCritical,
-				}}, result.Matches...)
-				result.Clean = false
-				return result
-			}
-			used += 2 * charge
 			// Generic cards use the source-ordered typed sequence above. Pairwise
 			// reconstruction belongs only to other credential detectors; it must
 			// not erase keys or scalar interruptions or reverse card pieces.
