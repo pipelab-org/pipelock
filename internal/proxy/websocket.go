@@ -1569,7 +1569,18 @@ var errWSHandshakeValidated = errors.New("WebSocket handshake validated")
 // validateWSClientHandshake runs the RFC 6455 request checks on r without
 // upgrading it. OnBeforeUpgrade stops the parser once the request has passed,
 // so nothing is written to the client.
+//
+// The later client upgrade is ws.HTTPUpgrader, which reads the original
+// request. Two fields must be checked here, on that request, because
+// Request.Write cannot represent them: it always emits HTTP/1.1, and it
+// fills an empty Host from the URL.
 func validateWSClientHandshake(r *http.Request) error {
+	if r.ProtoMajor < 1 || (r.ProtoMajor == 1 && r.ProtoMinor < 1) {
+		return ws.ErrHandshakeBadProtocol
+	}
+	if r.Host == "" {
+		return ws.ErrHandshakeBadHost
+	}
 	candidate := r.Clone(r.Context())
 	candidate.Body, candidate.GetBody = nil, nil
 	candidate.ContentLength = 0

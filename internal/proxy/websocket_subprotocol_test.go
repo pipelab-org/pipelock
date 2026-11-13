@@ -325,6 +325,10 @@ func TestValidateWSClientHandshake(t *testing.T) {
 		{"wrong version", func(r *http.Request) { r.Header.Set("Sec-WebSocket-Version", "8") }},
 		{"missing upgrade", func(r *http.Request) { r.Header.Del("Upgrade") }},
 		{"wrong method", func(r *http.Request) { r.Method = http.MethodPost }},
+		{"http/1.0", func(r *http.Request) {
+			r.Proto, r.ProtoMajor, r.ProtoMinor = "HTTP/1.0", 1, 0
+		}},
+		{"missing host", func(r *http.Request) { r.Host = "" }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -336,4 +340,87 @@ func TestValidateWSClientHandshake(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A long offer list and a Connection header that also carries keep-alive
+// are legal handshakes. The pre-upgrade check must accept both.
+func TestValidateWSClientHandshakeAcceptsLongOfferList(t *testing.T) {
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://proxy.example/ws", nil)
+	r.Header.Set("Upgrade", "websocket")
+	r.Header.Set("Connection", "keep-alive, Upgrade")
+	r.Header.Set("Sec-WebSocket-Version", "13")
+	r.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	offers := make([]string, 0, 800)
+	for i := range 800 {
+		offers = append(offers, fmt.Sprintf("agent-stream.v%d", i))
+	}
+	r.Header.Set(headerNameWSProtocol, strings.Join(offers, ", "))
+	if err := validateWSClientHandshake(r); err != nil {
+		t.Fatalf("long offer list rejected: %v", err)
+	}
+}
+
+// HTTP/1.0 can reach the handler. The pre-upgrade check must refuse it
+// before any upstream dial: the client upgrade rejects that version.
+func TestWSSubprotocolHTTP10DoesNotDial(t *testing.T) {
+	target, _, hits := wsSelectingBackend(t, func(string) bool { return true })
+	proxyAddr, cleanup := setupWSProxy(t, nil)
+	defer cleanup()
+
+	// keep-alive stops net/http from rewriting Connection to "close", which would
+	// fail the re-parse for a different reason. This is the handshake whose
+	// version Request.Write turns into HTTP/1.1.
+	extra := ws.HandshakeHeaderHTTP(http.Header{
+		headerNameWSProtocol: []string{testWSProtoPreferred},
+		"Connection":         []string{"keep-alive, Upgrade"},
+	})
+	resp, conn := rawWSHandshakeVersion(t, extra, wsProxyURL(proxyAddr, target), "HTTP/1.0", true)
+	defer func() { _ = conn.Close() }()
+	if resp.StatusCode != http.StatusBadRequest || hits.Load() != 0 {
+		t.Fatalf("status = %d, want %d; upstream handshakes = %d, want 0",
+			resp.StatusCode, http.StatusBadRequest, hits.Load())
+	}
+}
+
+// rawWSHandshakeVersion is rawWSHandshake with the request version chosen by
+// the caller. HTTP/1.0 is a version the net/http server delivers to the handler.
+func rawWSHandshakeVersion(t *testing.T, extra ws.HandshakeHeaderHTTP, target, proto string, withKey bool) (wsHandshakeReply, net.Conn) {
+	t.Helper()
+	u, err := url.Parse(target)
+	if err != nil {
+		t.Fatalf("parse target: %v", err)
+	}
+	var d net.Dialer
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, err := d.DialContext(ctx, "tcp4", u.Host)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	var b strings.Builder
+	fmt.Fprintf(&b, "GET %s %s\r\nHost: %s\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n", u.RequestURI(), proto, u.Host)
+	if http.Header(extra).Get("Connection") == "" {
+		b.WriteString("Connection: Upgrade\r\n")
+	}
+	if withKey {
+		b.WriteString("Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n")
+	}
+	for name, values := range http.Header(extra) {
+		for _, v := range values {
+			fmt.Fprintf(&b, "%s: %s\r\n", name, v)
+		}
+	}
+	b.WriteString("\r\n")
+	if _, err := conn.Write([]byte(b.String())); err != nil {
+		_ = conn.Close()
+		t.Fatalf("write handshake: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		_ = conn.Close()
+		t.Fatalf("read handshake response: %v", err)
+	}
+	_ = resp.Body.Close()
+	return wsHandshakeReply{StatusCode: resp.StatusCode, Header: resp.Header}, conn
 }
