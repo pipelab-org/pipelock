@@ -67,33 +67,80 @@ func TestScanTextForDLP_ProviderCredentialNearMisses(t *testing.T) {
 	s := MustNew(cfg)
 	defer s.Close()
 	tests := map[string]string{
-		"1Password short identifier":  "A3-" + strings.Repeat("B", 5) + "-" + strings.Repeat("C", 11) + strings.Repeat("-D7EF8", 3),
-		"1Password short secret":      "A3-" + strings.Repeat("B", 6) + "-" + strings.Repeat("C", 10) + strings.Repeat("-D7EF8", 3),
-		"1Password public identifier": "A3-" + strings.Repeat("B", 6),
-		"diagram paper size":          "Print this diagram on A3 paper and compare it with A4.",
-		"1Password short kit group":   "A3-" + strings.Repeat("B", 6) + "-" + strings.Repeat("C", 5) + strings.Repeat("-D7EF8", 4),
-		"Doppler too short":           "dp.pt." + strings.Repeat("aB3x", 9) + "abc",
-		"Doppler wrong kind":          "dp.unknown." + strings.Repeat("aB3x", 10),
-		"Doppler invalid alphabet":    "dp.pt." + strings.Repeat("_", 40),
-		"Doppler short environment":   "dp.st.a." + strings.Repeat("aB3x", 10),
-		"Doppler long environment":    "dp.st." + strings.Repeat("a", 36) + "." + strings.Repeat("aB3x", 10),
-		"age too short":               "AGE-SECRET-KEY-1" + strings.Repeat("Q", 57),
-		"age invalid alphabet":        "AGE-SECRET-KEY-1" + strings.Repeat("I", 58),
-		"age public recipient":        "age1" + strings.Repeat("Q", 58),
-		"PyPI too short":              "pypi-" + strings.Repeat("B", 84),
-		"PyPI project names":          "Install the pypi-client and read the pypi-package release notes for the next deployment.",
-		"Sentry too short":            "sntrys_" + strings.Repeat("Q", 20) + "_" + strings.Repeat("R", 42),
-		"Sentry personal too short":   "sntryu_" + strings.Repeat("ab", 31),
-		"Sentry prose":                "The sntrys_ prefix identifies organization tokens. Store them securely and rotate them regularly.",
-		"Sentry personal prose":       "The sntryu_ prefix identifies personal tokens. Store them securely and rotate them regularly.",
-		"Doppler prose":               "The dp.pt. prefix identifies personal tokens. The dp.st. prefix identifies service tokens.",
-		"age prose":                   "Keep your AGE-SECRET-KEY-1 identity offline. Share only the public recipient with collaborators.",
+		"1Password short identifier":    "A3-" + strings.Repeat("B", 5) + "-" + strings.Repeat("C", 11) + strings.Repeat("-D7EF8", 3),
+		"1Password short secret":        "A3-" + strings.Repeat("B", 6) + "-" + strings.Repeat("C", 10) + strings.Repeat("-D7EF8", 3),
+		"1Password public identifier":   "A3-" + strings.Repeat("B", 6),
+		"diagram paper size":            "Print this diagram on A3 paper and compare it with A4.",
+		"1Password short kit group":     "A3-" + strings.Repeat("B", 6) + "-" + strings.Repeat("C", 5) + strings.Repeat("-D7EF8", 4),
+		"Doppler too short":             "dp.pt." + strings.Repeat("aB3x", 9) + "abc",
+		"Doppler wrong kind":            "dp.unknown." + strings.Repeat("aB3x", 10),
+		"Doppler invalid alphabet":      "dp.pt." + strings.Repeat("_", 40),
+		"Doppler short environment":     "dp.st.a." + strings.Repeat("aB3x", 10),
+		"Doppler long environment":      "dp.st." + strings.Repeat("a", 36) + "." + strings.Repeat("aB3x", 10),
+		"age too short":                 "AGE-SECRET-KEY-1" + strings.Repeat("Q", 57),
+		"age invalid alphabet":          "AGE-SECRET-KEY-1" + strings.Repeat("I", 58),
+		"age public recipient":          "age1" + strings.Repeat("Q", 58),
+		"PyPI too short":                "pypi-" + strings.Repeat("B", 84),
+		"PyPI project names":            "Install the pypi-client and read the pypi-package release notes for the next deployment.",
+		"Sentry too short":              "sntrys_" + strings.Repeat("Q", 20) + "_" + strings.Repeat("R", 42),
+		"Sentry personal too short":     "sntryu_" + strings.Repeat("ab", 31),
+		"Sentry prose":                  "The sntrys_ prefix identifies organization tokens. Store them securely and rotate them regularly.",
+		"Sentry personal prose":         "The sntryu_ prefix identifies personal tokens. Store them securely and rotate them regularly.",
+		"Doppler prose":                 "The dp.pt. prefix identifies personal tokens. The dp.st. prefix identifies service tokens.",
+		"age prose":                     "Keep your AGE-SECRET-KEY-1 identity offline. Share only the public recipient with collaborators.",
+		"OpenAI administrator word":     "sk-" + "administrator",
+		"OpenAI admin key too short":    "sk-" + "admin-" + strings.Repeat("A", 19),
+		"Vault batch token too short":   "hvb." + strings.Repeat("A", 23),
+		"Vault batch wrong case":        "HVB." + strings.Repeat("A", 24),
+		"Vault batch label":             "hvb.string",
+		"Heroku token wrong case":       "hrku-" + strings.Repeat("Ab3_", 15),
+		"Heroku token too short":        "HRKU-" + strings.Repeat("Ab3_", 14) + "Ab3",
+		"Heroku legacy uuid token":      "HRKU-" + "01234567-89ab-cdef-0123-456789abcdef",
+		"Heroku version label":          "HRKU-1.2.3",
+		"Bedrock long-term too short":   "ABSK" + "QmVkcm9j" + "a0FQSU" + "tleS",
+		"Bedrock long-term wrong case":  "absk" + "QmVkcm9j" + "a0FQSU" + "tleS" + strings.Repeat("Ab", 4),
+		"Bedrock long-term lookalike":   "ABSK" + strings.Repeat("A", 24),
+		"Bedrock short-term wrong case": "BEDROCK-" + "API-KEY-" + bedrockShortPreamble() + "Ab9",
+		"Bedrock short-term lookalike":  "bedrock-" + "api-key-" + strings.Repeat("A", 24),
+		"Slack refresh too short":       "xoxe-" + strings.Repeat("3c-", 4) + "3c",
+		"Slack workflow too short":      "xwfp-" + strings.Repeat("4d-", 4) + "4",
+		"Slack rotating app lookalike":  "xoxe." + "xapp-not-a-token",
+		"Slack version label":           "xoxe-1.2.3",
 	}
 	for name, text := range tests {
 		t.Run(name, func(t *testing.T) {
 			if result := s.ScanTextForDLP(context.Background(), text); !result.Clean {
 				t.Fatalf("non-credential was flagged: %+v", result.Matches)
 			}
+		})
+	}
+}
+
+func TestScanTextForDLP_SlackRotatingPrefixCovered(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = false
+	s := MustNew(cfg)
+	defer s.Close()
+	for _, fixture := range documentedProviderCredentials() {
+		if !strings.HasPrefix(fixture.value, "xoxe.") {
+			continue
+		}
+		t.Run(fixture.name, func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), fixture.value)
+			for _, match := range result.Matches {
+				if match.PatternName != fixture.pattern || match.Encoded != "" {
+					continue
+				}
+				span := match.Span()
+				if !span.Valid() || span.ByteStart < 0 || span.ByteEnd > len(fixture.value) {
+					continue
+				}
+				if strings.HasPrefix(fixture.value[span.ByteStart:span.ByteEnd], "xoxe.") {
+					return
+				}
+			}
+			t.Fatalf("match did not cover the rotating prefix: %+v", result.Matches)
 		})
 	}
 }

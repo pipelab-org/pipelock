@@ -464,7 +464,9 @@ const (
 	// (Claude Code first-party credential endpoints). The default
 	// pattern corpus is part of the canonical policy view.
 	// Re-bumped for the compiled sign-in bearer carrier on the JWT pattern.
-	goldenHashDefaults = "a05d0ee988d0ac8e431da703d229729c7113475504d35cfa47c4bc59eb97be93"
+	// Re-bumped when the default corpus added Bedrock and Heroku patterns and
+	// widened the OpenAI, Slack, and Vault patterns.
+	goldenHashDefaults = "c0719538b87900b2bb297324ff4e0b4cfe0d8beaccabc8e602952ab29dd54eec"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -711,7 +713,8 @@ const (
 	// (Claude Code first-party credential endpoints). The default
 	// pattern corpus is part of the canonical policy view.
 	// Re-bumped with goldenHashDefaults for the sign-in bearer carrier.
-	goldenHashRichConfig = "09969d7f602c8a4d80629eeee2295c2e024cf55a63e1a41b7d023b7bdad7cc3c"
+	// Re-bumped with goldenHashDefaults for the Bedrock, Heroku, OpenAI, Slack, and Vault corpus change.
+	goldenHashRichConfig = "53fbd01df4ec22888abcf66caa705a9aa44db9bf80ce79e50c329c94ffdf082d"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1285,8 +1288,8 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 		// Gateway carrier, the publisher SDK Together host and the JWT sign-in
 		// bearer carrier, matching the default and rich-config goldens above.
 		// They inherit the RFC 9110 default URI limit of 8000 octets.
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "27ed7d18b39fb2180c59cbb25d649e22b2b1996d7b6255c347f76fecfefaf6aa"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "7f952b3f7283d75c893cb0940ab9f721e83f6d0034945b143e503eda13084ba1"},
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "ee21cf6edc6a67824a2e8ca8a1a6d080d97e547db53a10db0139a5caca66237b"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "dc556fd9e167aad59ef24f5a2b8c2ac7c4cfab6a94e495a5278e83a58f652f61"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

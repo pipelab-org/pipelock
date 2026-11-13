@@ -19,8 +19,10 @@ import (
 const (
 	ProviderKeyLeftBoundaryRegex = `(?:^|[^A-Za-z0-9_-])`
 	AnthropicKeyBodyRegex        = `sk-ant-[a-zA-Z0-9\-_]{20,}`
-	OpenAIKeyBodyRegex           = `sk-proj-[a-zA-Z0-9\-_]{20,}`
-	OpenAIServiceKeyBodyRegex    = `sk-svcacct-[a-zA-Z0-9\-_]{20,}`
+	// Project and admin keys share one body rule. Admin keys are documented
+	// as sk-admin- at https://platform.openai.com/docs/api-reference/admin-api-keys.
+	OpenAIKeyBodyRegex        = `sk-(?:proj|admin)-[a-zA-Z0-9\-_]{20,}`
+	OpenAIServiceKeyBodyRegex = `sk-svcacct-[a-zA-Z0-9\-_]{20,}`
 	// BitcoinWIFRegex follows the mainnet Base58Check lengths documented at
 	// https://en.bitcoin.it/wiki/Wallet_import_format (51 or 52 characters).
 	BitcoinWIFRegex = `(?:5[1-9A-HJ-NP-Za-km-z]{50}|[KL][1-9A-HJ-NP-Za-km-z]{51})`
@@ -136,6 +138,17 @@ const GitHubDownloadGrantIssuer = "github.com"
 // to git transport paths on the same host. Job tokens use JOB-TOKEN only.
 const gitlabTokenAudienceMask = CredentialAudienceCarrierPrivateToken | CredentialAudienceCarrierAuthorizationBearer | CredentialAudienceCarrierGitBasic
 
+// bedrockShortTermKeyRegex is the short-term Bedrock key shape AWS publishes.
+// The fixed preamble is split so the registry does not hold one long
+// credential-shaped literal. The variable class includes a literal backslash,
+// matching the published pattern.
+const bedrockShortTermKeyRegex = `(?-i:bedrock-api-key-` +
+	`YmVkcm9j` + `ay5hbWF6` + `b25hd3Mu` + `Y29tLz9B` +
+	`Y3Rpb249` + `Q2FsbFdp` + `dGhCZWFy` + `ZXJUb2tl` +
+	`biZYLUFt` + `ei1BbGdv` + `cml0aG09` + `QVdTNC1I` +
+	`TUFDLVNI` + `QTI1NiZY` + `LUFtei1D` + `cmVkZW50` +
+	`aWFsP` + `)[A-Za-z0-9\\]+={0,2}`
+
 // defaultDLPPatternSet is the canonical shipped DLP pattern registry.
 // Defaults, generated presets, and drift tests read from this list instead of
 // carrying separate name/regex/severity copies.
@@ -246,6 +259,13 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Anchored to common config key names to reduce FPs on arbitrary base64.
 	// Separator class handles YAML (: ), env (=), JSON (":"), and quoted formats.
 	{Name: "AWS Secret Key", Regex: `(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY|secret.?access.?key|SecretAccessKey)\s*["'=:\s]{1,5}\s*[A-Za-z0-9/+=]{40}`, Severity: SeverityCritical},
+	// Amazon Bedrock long-term keys start with ABSK plus the base64 of
+	// BedrockAPIKey-. Short-term keys start with bedrock-api-key- plus a
+	// fixed base64 preamble. Both prefixes are case-sensitive. Endpoints
+	// are regional, so neither pattern has a compiled audience.
+	// Source: https://aws.amazon.com/blogs/security/securing-amazon-bedrock-api-keys-best-practices-for-implementation-and-management/
+	{Name: "Amazon Bedrock Long-Term API Key", Regex: `(?-i:ABSKQmVkcm9ja0FQSUtleS)[A-Za-z0-9+/]+={0,2}`, Severity: SeverityCritical},
+	{Name: "Amazon Bedrock Short-Term API Key", Regex: bedrockShortTermKeyRegex, Severity: SeverityCritical},
 	{Name: "Google OAuth Token", Regex: `ya29\.[a-zA-Z0-9_-]{20,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"gmail.googleapis.com", "www.googleapis.com", "storage.googleapis.com"}, CredentialAudienceAuthorizationOnly: true},
 	// GCP service-account JSON private_key_id. The "service_account"
 	// type marker is already an always-on CORE pattern (see
@@ -283,18 +303,26 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Slack's hosted MCP server accepts user tokens at https://mcp.slack.com/mcp.
 	// Those user tokens share the Slack Token pattern with bot and legacy token
 	// forms, so the compiled audience remains pattern-scoped: every xox* token is
-	// allowed only to these two exact Slack-owned authorities. A Socket Mode
+	// allowed only to these two exact Slack-owned authorities. Rotating bot
+	// and user tokens add an xoxe. prefix (xoxe.xoxb-, xoxe.xoxp-); refresh
+	// tokens use xoxe- and workflow tokens use xwfp-. The same body rule
+	// covers them. A Socket Mode
 	// client opens its gateway on
 	// the pre-authenticated wss:// URL returned by apps.connections.open, which
 	// carries its own ticket, so no token is re-presented to that subdomain and
 	// it is deliberately not an audience host.
 	// Sources: https://docs.slack.dev/apis/web-api/
 	// https://docs.slack.dev/ai/slack-mcp-server/
-	{Name: "Slack Token", Regex: `xox[bpras]-[0-9a-zA-Z-]{15,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"slack.com", "mcp.slack.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
+	// Sources for the rotating and workflow prefixes:
+	// https://docs.slack.dev/authentication/tokens/
+	// https://docs.slack.dev/authentication/using-token-rotation/
+	{Name: "Slack Token", Regex: `(?:xoxe\.xox[bp]|xox[bpras]|xoxe|xwfp)-[0-9a-zA-Z-]{15,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"slack.com", "mcp.slack.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// The app-level token authenticates apps.connections.open, also on
 	// https://slack.com/api/..., so it shares the exact-host audience.
+	// Rotating app-level tokens use the same shape with an xoxe. prefix.
 	// Source: https://docs.slack.dev/reference/methods/apps.connections.open/
-	{Name: "Slack App Token", Regex: `xapp-[0-9]+-[A-Za-z0-9_]+-[0-9]+-[a-f0-9]+`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"slack.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
+	// https://docs.slack.dev/authentication/tokens/
+	{Name: "Slack App Token", Regex: `(?:xoxe\.)?xapp-[0-9]+-[A-Za-z0-9_]+-[0-9]+-[a-f0-9]+`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"slack.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// The first segment is base64 of a snowflake user ID, which is
 	// structurally an UPPERCASE M or N; the bot-token form is three
 	// dot-separated base64url parts, the mfa form is "mfa." + 84 chars.
@@ -370,6 +398,15 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Infrastructure and platform tokens
 	// DigitalOcean personal access tokens: 64 hex chars after prefix.
 	{Name: "DigitalOcean Token", Regex: `dop_v1_[a-f0-9]{64}`, Severity: SeverityCritical},
+	// Heroku OAuth access tokens are 65 characters and prefixed with HRKU-.
+	// The prefix is case-sensitive. Heroku publishes no alphabet; the body
+	// is the letters, digits, and underscore in the published 65-character
+	// example, exactly 60 characters after the prefix. The older
+	// 41-character UUID-shaped token is a different length. api.heroku.com
+	// and id.heroku.com are both documented hosts, so there is no compiled
+	// audience.
+	// Source: https://devcenter.heroku.com/articles/oauth
+	{Name: "Heroku OAuth Token", Regex: `(?-i:HRKU-)[A-Za-z0-9_]{60}`, Severity: SeverityCritical},
 	// Doppler publishes each token kind and a 40-44 character alphanumeric
 	// payload. Service tokens may also carry a 2-35 character config name.
 	// No word boundary on either side: a letter or digit glued before or
@@ -384,9 +421,12 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Sources: https://support.1password.com/secret-key-security/
 	// https://agilebits.github.io/security-design/1Password_Security_Design.pdf
 	{Name: "1Password Secret Key", Regex: `A3-[A-Z0-9]{6}-(?:[A-Z0-9]{11}(?:-[A-Z0-9]{5}){3}|[A-Z0-9]{6}(?:-[A-Z0-9]{5}){4})`, Severity: SeverityCritical},
-	// Vault 1.10+ service tokens use hvs. plus 24+ random chars.
+	// Vault 1.10+ service tokens use hvs. plus 24 or more random characters.
+	// Batch tokens use the case-sensitive prefix hvb. with the same body.
+	// The service prefix stays case-insensitive so an uppercased hvs. leak
+	// still matches. Vault is self-hosted, so there is no compiled audience.
 	// Source: https://developer.hashicorp.com/vault/docs/concepts/tokens#token-prefixes
-	{Name: "HashiCorp Vault Token", Regex: `hvs\.[A-Za-z0-9]{24,}\b`, Severity: SeverityCritical},
+	{Name: "HashiCorp Vault Token", Regex: `(?:hvs\.|(?-i:hvb\.))[A-Za-z0-9]{24,}\b`, Severity: SeverityCritical},
 	{Name: "Vercel Token", Regex: `(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}\b`, Severity: SeverityCritical},
 	// Supabase secret keys use sb_secret_<22-char-random>_<8-char-checksum>.
 	// Both suffix parts are base64url; the final checksum char may be '-',

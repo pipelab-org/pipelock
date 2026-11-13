@@ -138,20 +138,20 @@ func tokenClasses() []classPattern {
 		// (32 bytes -> 44 base64 chars). Match encoded or decoded padding;
 		// the padding itself terminates the value without consuming a query delimiter.
 		{class: ClassAzureSAS, pattern: regexp.MustCompile(`(?i)\bsig=(?:[A-Za-z0-9%]{43,}%3d\b|[A-Za-z0-9+/]{43}=)`), priority: 100},
-		{class: ClassSlackToken, pattern: regexp.MustCompile(`xox[baprs]-[A-Za-z0-9-]{10,}\b`), priority: 100},
+		{class: ClassSlackToken, pattern: regexp.MustCompile(`(?:xoxe\.xox[bp]|xox[baprs]|xoxe|xwfp)-[A-Za-z0-9-]{10,}\b`), priority: 100},
 		{class: ClassFireworksAPIKey, pattern: regexp.MustCompile(`(?i)fw_[A-Za-z0-9]{22}\b`), priority: 100},
 		{class: ClassAIProviderKey, pattern: regexp.MustCompile(`(?i)(?:sk-or-v1-[A-Fa-f0-9]{20,}|pplx-[A-Za-z0-9]{20,}|tvly-[A-Za-z0-9]{20,}|pcsk_[A-Za-z0-9]{36,}|gsk_[A-Za-z0-9]{48,}|xai-[A-Za-z0-9_-]{80,})\b`), priority: 100},
 		{class: ClassHuggingFaceToken, pattern: regexp.MustCompile(`(?i)hf_[A-Za-z0-9]{34,37}\b`), priority: 100},
 		{class: ClassReplicateAPIToken, pattern: regexp.MustCompile(`(?i)r8_[a-f0-9]{40}\b`), priority: 100},
 		{class: ClassTogetherAIKey, pattern: regexp.MustCompile(`(?i)tok_[a-z0-9]{40,}\b`), priority: 100},
-		{class: ClassVaultToken, pattern: regexp.MustCompile(`(?i)hvs\.[A-Za-z0-9]{24,}\b`), priority: 100},
+		{class: ClassVaultToken, pattern: regexp.MustCompile(`(?i)(?:hvs\.|(?-i:hvb\.))[A-Za-z0-9]{24,}\b`), priority: 100},
 		{class: ClassVercelToken, pattern: regexp.MustCompile(`(?i)(?:vercel|vc[piark])_[A-Za-z0-9]{24,}\b`), priority: 100},
 		{class: ClassSupabaseKey, pattern: regexp.MustCompile(`(?i)sb_secret_[A-Za-z0-9_-]{22}_(?:[A-Za-z0-9_-]{7}[A-Za-z0-9_]\b|[A-Za-z0-9_-]{7}-\B)`), priority: 100},
 		{class: ClassDatabricksPAT, pattern: regexp.MustCompile(`(?i)dapi[0-9a-f]{32,}\b`), priority: 100},
 		// Keep the pattern span to the credential so redaction preserves the
 		// surrounding JSON/text delimiter. The skip guards above express the
 		// RE2-unavailable left lookbehind without consuming that delimiter.
-		{class: ClassOpenAIAPIKey, pattern: regexp.MustCompile(`sk-(?:proj|svcacct)-[A-Za-z0-9_-]{20,}`), priority: 100, skipTrailing: providerKeySkipTrailing, skipLeading: providerKeyInvalidLeading},
+		{class: ClassOpenAIAPIKey, pattern: regexp.MustCompile(`sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}`), priority: 100, skipTrailing: providerKeySkipTrailing, skipLeading: providerKeyInvalidLeading},
 		{class: ClassAnthropicKey, pattern: regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{20,}`), priority: 100, skipTrailing: providerKeySkipTrailing, skipLeading: providerKeyInvalidLeading},
 		{class: ClassNPMToken, pattern: regexp.MustCompile(`(?i)npm_[A-Za-z0-9]{36,}\b`), priority: 100},
 		// Mirror PyPI's documented minimum base64url macaroon length.

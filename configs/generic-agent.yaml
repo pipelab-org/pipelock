@@ -119,7 +119,7 @@ dlp:
       regex: '(?:^|[^A-Za-z0-9_-])sk-ant-[a-zA-Z0-9\-_]{20,}'
       severity: critical
     - name: "OpenAI API Key"
-      regex: '(?:^|[^A-Za-z0-9_-])sk-proj-[a-zA-Z0-9\-_]{20,}'
+      regex: '(?:^|[^A-Za-z0-9_-])sk-(?:proj|admin)-[a-zA-Z0-9\-_]{20,}'
       severity: critical
     - name: "OpenAI Service Key"
       regex: '(?:^|[^A-Za-z0-9_-])sk-svcacct-[a-zA-Z0-9\-_]{20,}'
@@ -196,6 +196,12 @@ dlp:
     - name: "AWS Secret Key"
       regex: '(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY|secret.?access.?key|SecretAccessKey)\s*["''=:\s]{1,5}\s*[A-Za-z0-9/+=]{40}'
       severity: critical
+    - name: "Amazon Bedrock Long-Term API Key"
+      regex: '(?-i:ABSKQmVkcm9ja0FQSUtleS)[A-Za-z0-9+/]+={0,2}'
+      severity: critical
+    - name: "Amazon Bedrock Short-Term API Key"
+      regex: '(?-i:bedrock-api-key-YmVkcm9jay5hbWF6b25hd3MuY29tLz9BY3Rpb249Q2FsbFdpdGhCZWFyZXJUb2tlbiZYLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsP)[A-Za-z0-9\\]+={0,2}'
+      severity: critical
     - name: "Google OAuth Token"
       regex: 'ya29\.[a-zA-Z0-9_-]{20,}'
       severity: critical
@@ -209,10 +215,10 @@ dlp:
       regex: '\bsig=(?:[A-Za-z0-9%]{43,}%3d\b|[A-Za-z0-9+/]{43}=)'
       severity: high
     - name: "Slack Token"
-      regex: 'xox[bpras]-[0-9a-zA-Z-]{15,}'
+      regex: '(?:xoxe\.xox[bp]|xox[bpras]|xoxe|xwfp)-[0-9a-zA-Z-]{15,}'
       severity: critical
     - name: "Slack App Token"
-      regex: 'xapp-[0-9]+-[A-Za-z0-9_]+-[0-9]+-[a-f0-9]+'
+      regex: '(?:xoxe\.)?xapp-[0-9]+-[A-Za-z0-9_]+-[0-9]+-[a-f0-9]+'
       severity: critical
     - name: "Discord Bot Token"
       regex: '(?:(?-i:[MN])[A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}|(?-i:mfa\.)[A-Za-z0-9\-_]{84,})'
@@ -253,6 +259,9 @@ dlp:
     - name: "DigitalOcean Token"
       regex: 'dop_v1_[a-f0-9]{64}'
       severity: critical
+    - name: "Heroku OAuth Token"
+      regex: '(?-i:HRKU-)[A-Za-z0-9_]{60}'
+      severity: critical
     - name: "Doppler Token"
       regex: 'dp\.(?:(?:ct|pt|sa|said|scim|audit)\.|st\.(?:[a-z0-9_-]{2,35}\.)?)[A-Za-z0-9]{40,44}'
       severity: critical
@@ -260,7 +269,7 @@ dlp:
       regex: 'A3-[A-Z0-9]{6}-(?:[A-Z0-9]{11}(?:-[A-Z0-9]{5}){3}|[A-Z0-9]{6}(?:-[A-Z0-9]{5}){4})'
       severity: critical
     - name: "HashiCorp Vault Token"
-      regex: 'hvs\.[A-Za-z0-9]{24,}\b'
+      regex: '(?:hvs\.|(?-i:hvb\.))[A-Za-z0-9]{24,}\b'
       severity: critical
     - name: "Vercel Token"
       regex: '(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}\b'

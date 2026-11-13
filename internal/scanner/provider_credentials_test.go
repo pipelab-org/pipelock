@@ -25,6 +25,16 @@ func documentedProviderCredentials() []providerCredentialFixture {
 		{name: "Sentry organization payload", pattern: "Sentry Auth Token", value: "sntrys_" + strings.Repeat("QUJD", 12) + "+/==_" + strings.Repeat("A", 42) + "/"},
 		{name: "Sentry previous payload", pattern: "Sentry Auth Token", value: "sntrys_" + strings.Repeat("E", 40)},
 		{name: "Sentry personal token", pattern: "Sentry Auth Token", value: "sntryu_" + strings.Repeat("ab", 32)},
+		{name: "OpenAI admin key", pattern: "OpenAI API Key", value: "sk-" + "admin-" + strings.Repeat("Ab9_", 5)},
+		{name: "Vault batch token", pattern: "HashiCorp Vault Token", value: "hvb." + strings.Repeat("Ab", 12)},
+		{name: "Heroku OAuth token", pattern: "Heroku OAuth Token", value: "HRKU-" + strings.Repeat("Ab3_", 15)},
+		{name: "Bedrock long-term key", pattern: "Amazon Bedrock Long-Term API Key", value: "ABSK" + "QmVkcm9j" + "a0FQSU" + "tleS" + strings.Repeat("Ab", 4) + "+/="},
+		{name: "Bedrock short-term key", pattern: "Amazon Bedrock Short-Term API Key", value: "bedrock-" + "api-key-" + bedrockShortPreamble() + "Ab9"},
+		{name: "Slack rotating bot token", pattern: "Slack Token", value: "xoxe." + "xoxb-" + strings.Repeat("1a-", 5)},
+		{name: "Slack rotating user token", pattern: "Slack Token", value: "xoxe." + "xoxp-" + strings.Repeat("2b-", 5)},
+		{name: "Slack refresh token", pattern: "Slack Token", value: "xoxe-" + strings.Repeat("3c-", 5)},
+		{name: "Slack workflow token", pattern: "Slack Token", value: "xwfp-" + strings.Repeat("4d-", 5)},
+		{name: "Slack rotating app token", pattern: "Slack App Token", value: "xoxe." + "xapp-1-" + strings.Repeat("A", 12) + "-2-" + strings.Repeat("b", 16)},
 	}
 	for _, kind := range []string{"ct", "pt", "st", "sa", "said", "scim", "audit"} {
 		for _, length := range []int{40, 44} {
@@ -41,4 +51,28 @@ func documentedProviderCredentials() []providerCredentialFixture {
 		})
 	}
 	return fixtures
+}
+
+// bedrockShortPreamble is the fixed base64 prefix AWS publishes after
+// bedrock-api-key-. It is split so the fixture is not one credential-shaped literal.
+func bedrockShortPreamble() string {
+	return strings.Join([]string{
+		"YmVkcm9j",
+		"ay5hbWF6",
+		"b25hd3Mu",
+		"Y29tLz9B",
+		"Y3Rpb249",
+		"Q2FsbFdp",
+		"dGhCZWFy",
+		"ZXJUb2tl",
+		"biZYLUFt",
+		"ei1BbGdv",
+		"cml0aG09",
+		"QVdTNC1I",
+		"TUFDLVNI",
+		"QTI1NiZY",
+		"LUFtei1D",
+		"cmVkZW50",
+		"aWFsP",
+	}, "")
 }

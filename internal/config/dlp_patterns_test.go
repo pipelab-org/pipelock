@@ -165,14 +165,14 @@ func TestPresetDLPPatternsProfiles(t *testing.T) {
 		{
 			name:            "full",
 			profile:         DLPPresetProfileFull,
-			wantLen:         69,
+			wantLen:         72,
 			wantSeverity:    SeverityHigh,
 			wantPatternName: "Google API Key",
 		},
 		{
 			name:            "hostile",
 			profile:         DLPPresetProfileHostile,
-			wantLen:         69,
+			wantLen:         72,
 			wantSeverity:    SeverityCritical,
 			wantPatternName: "Google API Key",
 		},
@@ -271,6 +271,7 @@ func TestDefaultDLPPatternsRedactionMirrorCoverage(t *testing.T) {
 	}{
 		{name: "Anthropic API Key", value: "sk-" + "ant-" + strings.Repeat("A", 20), class: redact.ClassAnthropicKey},
 		{name: "OpenAI API Key", value: "sk-" + "proj-" + strings.Repeat("A", 20), class: redact.ClassOpenAIAPIKey},
+		{name: "OpenAI API Key", variant: " admin", value: "sk-" + "admin-" + strings.Repeat("A", 20), class: redact.ClassOpenAIAPIKey},
 		{name: "OpenAI Service Key", value: "sk-" + "svcacct-" + strings.Repeat("A", 20), class: redact.ClassOpenAIAPIKey},
 		// Underscore suffixes: the scanner and redactor alphabets must agree.
 		// A scanner class narrower than the redactor is a fail-open, because the
@@ -294,11 +295,14 @@ func TestDefaultDLPPatternsRedactionMirrorCoverage(t *testing.T) {
 		{name: "Azure SAS Token", value: "sig=" + strings.Repeat("A", 43) + "%3d", class: redact.ClassAzureSAS, exact: true},
 		{name: "Azure SAS Token", variant: " decoded", value: "sig=" + strings.Repeat("A", 43) + "=", class: redact.ClassAzureSAS, exact: true},
 		{name: "Slack Token", value: "xoxb-" + strings.Repeat("A", 15), class: redact.ClassSlackToken},
+		{name: "Slack Token", variant: " rotating", value: "xoxe." + "xoxb-" + strings.Repeat("A", 15), class: redact.ClassSlackToken},
+		{name: "Slack Token", variant: " workflow", value: "xwfp-" + strings.Repeat("A", 15), class: redact.ClassSlackToken},
 		{name: "Hugging Face Token", value: "hf_" + strings.Repeat("A", 34), class: redact.ClassHuggingFaceToken},
 		{name: "Databricks Token", value: "dapi" + strings.Repeat("a", 32), class: redact.ClassDatabricksPAT},
 		{name: "Replicate API Token", value: "r8_" + strings.Repeat("a", 40), class: redact.ClassReplicateAPIToken},
 		{name: "Together AI Key", value: "tok_" + strings.Repeat("a", 40), class: redact.ClassTogetherAIKey},
 		{name: "HashiCorp Vault Token", value: "hvs." + strings.Repeat("A", 24), class: redact.ClassVaultToken},
+		{name: "HashiCorp Vault Token", variant: " batch", value: "hvb." + strings.Repeat("A", 24), class: redact.ClassVaultToken},
 		{name: "Vercel Token", value: "vercel_" + strings.Repeat("A", 24), class: redact.ClassVercelToken},
 		{name: "Supabase Service Key", value: "sb_secret_" + strings.Repeat("A", 22) + "_" + strings.Repeat("B", 8), class: redact.ClassSupabaseKey},
 		{name: "npm Token", value: "npm_" + strings.Repeat("A", 36), class: redact.ClassNPMToken},
