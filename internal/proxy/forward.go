@@ -247,7 +247,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	targetCtx := newConnectAuditContext(r.Context(), p.logger, target, clientIP, requestID, agent)
 	headerCtx := targetCtx
-	denyConnect := func(kind forwardDenialKind) {
+	denyConnectAs := func(kind forwardDenialKind) {
 		p.emitForwardDenial(forwardDenial{
 			Kind:        kind,
 			Context:     targetCtx,
@@ -263,6 +263,10 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			Transport:   TransportConnect,
 		})
 	}
+	denyConnectCapacity := func() { denyConnectAs(forwardDenialConnectSessionCapacity) }
+	// After the hijack the client already has its 200, so this refusal writes
+	// no HTTP response and its receipt is a child of the request action.
+	denyInterceptCapacity := func() { denyConnectAs(forwardDenialConnectInterceptSessionCapacity) }
 
 	// Scan through all layers (URL pipeline).
 	connectScanCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
@@ -341,7 +345,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		sess := sm.GetOrCreate(connectSessionKey)
 		if sess == nil {
-			denyConnect(forwardDenialConnectSessionCapacity)
+			denyConnectCapacity()
 			return
 		}
 		connectRec = sess
@@ -501,7 +505,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	if sr.Blocked {
 		if sr.capacityDenied {
-			denyConnect(forwardDenialConnectSessionCapacity)
+			denyConnectCapacity()
 			return
 		}
 		info, status := sr.blockResponse()
@@ -547,7 +551,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		p.connectCEEReady()
 	}
 	if ceeEntropy.Active && ceeEntropy.Sessions != nil && ceeEntropy.Recorder == nil {
-		denyConnect(forwardDenialConnectSessionCapacity)
+		denyConnectCapacity()
 		return
 	}
 	postCEERec, postCEEAdaptive := connectPostCEEAdaptiveState(ceeEntropy, connectRec, cfg.AdaptiveEnforcement)
@@ -563,7 +567,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 				recorded := ceeRecordSignals(ceeResult{EntropyHit: true}, sm, sessionKey,
 					ceeEntropy.AdaptiveConfig.EscalationThreshold, p.logger, p.metrics, clientIP, requestID)
 				if recorded == nil {
-					denyConnect(forwardDenialConnectSessionCapacity)
+					denyConnectCapacity()
 					return
 				}
 				postCEERec = recorded
@@ -943,7 +947,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if sm := p.sessionMgrPtr.Load(); sm != nil {
 			sess := sm.GetOrCreate(responseTaintSessionKey(cfg, agent, clientIP, id.Auth))
 			if sess == nil {
-				denyConnect(forwardDenialConnectInterceptSessionCapacity)
+				denyInterceptCapacity()
 				outcomeStatus = strconv.Itoa(http.StatusOK)
 				outcomeBytes = 0
 				outcomeReason = sessionCapacityLayer
@@ -1166,10 +1170,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}))
 	}
 	actx := newHTTPAuditContext(r.Context(), p.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
-	denyForward := func(kind forwardDenialKind, pattern string) {
+	denyForwardCapacity := func() {
 		p.emitForwardDenial(forwardDenial{
-			Kind:        kind,
-			Pattern:     pattern,
+			Kind:        forwardDenialForwardSessionCapacity,
 			Context:     actx,
 			Writer:      w,
 			RequestID:   requestID,
@@ -1299,7 +1302,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		sess := sm.GetOrCreate(forwardSessionKey)
 		if sess == nil {
-			denyForward(forwardDenialForwardSessionCapacity, "")
+			denyForwardCapacity()
 			return
 		}
 		forwardRec = sess
@@ -1385,10 +1388,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if sr.Blocked {
-		info, status := sr.blockResponse()
+		// A capacity miss here is the same refusal as the one above: its
+		// detail is the capacity text and its response is the catalog's.
 		if sr.capacityDenied {
-			denyForward(forwardDenialForwardProfileSessionCapacity, sr.Detail)
+			denyForwardCapacity()
+			return
 		}
+		info, status := sr.blockResponse()
 		writeBlockedError(w,
 			info.WithRequestID(requestID), sr.Detail, status)
 		return
@@ -2130,7 +2136,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if ceeBlockAll {
 			if ceeRec == nil {
-				denyForward(forwardDenialForwardSessionCapacity, "")
+				denyForwardCapacity()
 				return
 			}
 			level := recEscalationLevel(ceeRec)

@@ -6,7 +6,6 @@ package proxy
 import (
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -55,7 +54,6 @@ func TestForwardDenialCatalog(t *testing.T) {
 		forwardDenialConnectSessionCapacity,
 		forwardDenialConnectInterceptSessionCapacity,
 		forwardDenialForwardSessionCapacity,
-		forwardDenialForwardProfileSessionCapacity,
 	} {
 		got, ok := forwardDenialSpecFor(kind)
 		if !ok || got.kind != kind || got.label != sessionCapacityLayer {
@@ -64,13 +62,28 @@ func TestForwardDenialCatalog(t *testing.T) {
 	}
 }
 
+// The forward handler sends a capacity miss from session profiling through
+// the same catalog entry as its own capacity miss. That holds only while the
+// profiling result describes the refusal the way the catalog does.
+func TestForwardCapacityCatalogMatchesSessionResult(t *testing.T) {
+	spec, ok := forwardDenialSpecFor(forwardDenialForwardSessionCapacity)
+	if !ok {
+		t.Fatal("forward capacity kind is not in the catalog")
+	}
+	info, status := SessionResult{capacityDenied: true}.blockResponse()
+	if info != blockInfoFor(spec.block, spec.label) || status != spec.status {
+		t.Fatalf("session result responds %+v %d, catalog says %+v %d", info, status, blockInfoFor(spec.block, spec.label), spec.status)
+	}
+	if spec.reason != session.ErrCapacity.Error() {
+		t.Fatalf("catalog reason = %q", spec.reason)
+	}
+}
+
 func TestForwardDenialEmitterEvidence(t *testing.T) {
 	reason := session.ErrCapacity.Error()
-	profile := "profile-capacity-detail"
 	cases := []struct {
 		name          string
 		kind          forwardDenialKind
-		pattern       string
 		transport     string
 		method        string
 		status        int
@@ -88,7 +101,6 @@ func TestForwardDenialEmitterEvidence(t *testing.T) {
 		{
 			name:         "connect_session_capacity",
 			kind:         forwardDenialConnectSessionCapacity,
-			pattern:      "should-not-appear",
 			transport:    TransportConnect,
 			method:       http.MethodConnect,
 			status:       http.StatusServiceUnavailable,
@@ -102,7 +114,6 @@ func TestForwardDenialEmitterEvidence(t *testing.T) {
 		{
 			name:          "connect_intercept_session_capacity",
 			kind:          forwardDenialConnectInterceptSessionCapacity,
-			pattern:       "should-not-appear",
 			transport:     TransportConnect,
 			method:        http.MethodConnect,
 			status:        http.StatusOK,
@@ -114,7 +125,6 @@ func TestForwardDenialEmitterEvidence(t *testing.T) {
 		{
 			name:         "forward_session_capacity",
 			kind:         forwardDenialForwardSessionCapacity,
-			pattern:      "should-not-appear",
 			transport:    TransportForward,
 			method:       http.MethodGet,
 			status:       http.StatusServiceUnavailable,
@@ -127,23 +137,10 @@ func TestForwardDenialEmitterEvidence(t *testing.T) {
 			scannerLabel: sessionCapacityLayer,
 			metrics:      "pipelock_requests_total",
 		},
-		{
-			name:         "forward_profile_session_capacity",
-			kind:         forwardDenialForwardProfileSessionCapacity,
-			pattern:      profile,
-			transport:    TransportForward,
-			method:       http.MethodGet,
-			status:       http.StatusOK,
-			wantReason:   profile,
-			requests:     1,
-			scannerHits:  1,
-			scannerLabel: sessionCapacityLayer,
-			metrics:      "pipelock_requests_total",
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, actionID, measured := driveForwardDenial(t, tc.kind, tc.pattern)
+			got, actionID, measured := driveForwardDenial(t, tc.kind)
 			if got.status != tc.status || got.body != tc.body {
 				t.Fatalf("status=%d body=%q", got.status, got.body)
 			}
@@ -163,9 +160,6 @@ func TestForwardDenialEmitterEvidence(t *testing.T) {
 			}
 			if _, ok := blocked["block_class"]; ok {
 				t.Fatalf("blocked event carries block_class: %v", blocked)
-			}
-			if strings.Contains(got.body, "should-not-appear") || blocked["reason"] == "should-not-appear" {
-				t.Fatalf("caller pattern leaked into %s", tc.name)
 			}
 			if got.counters["pipelock_tunnels_total{result=blocked,agent=_default}"] != tc.tunnels ||
 				got.counters["pipelock_requests_total{result=blocked,agent=_default}"] != tc.requests ||
@@ -198,8 +192,7 @@ func TestForwardDenialEmitterEvidence(t *testing.T) {
 }
 
 func TestForwardDenialUnknownKindRefuses(t *testing.T) {
-	const caller = "caller-pattern-must-not-leak"
-	got, actionID, measured := driveForwardDenial(t, "missing", caller)
+	got, actionID, measured := driveForwardDenial(t, "missing")
 	fallback, known := forwardDenialSpecFor("missing")
 	if known {
 		t.Fatal("unknown kind accepted")
@@ -235,9 +228,6 @@ func TestForwardDenialUnknownKindRefuses(t *testing.T) {
 	if _, ok := blocked["block_class"]; ok {
 		t.Fatalf("blocked event carries block_class: %v", blocked)
 	}
-	if strings.Contains(got.body, caller) || strings.Contains(blocked["reason"].(string), caller) {
-		t.Fatal("caller pattern leaked")
-	}
 	if got.counters["pipelock_requests_total{result=blocked,agent=_default}"] != 1 ||
 		got.counters["pipelock_tunnels_total{result=blocked,agent=_default}"] != 0 ||
 		scannerHits(t, measured, scanner.AuditScannerUnavailable) != 1 ||
@@ -251,7 +241,7 @@ func TestForwardDenialUnknownKindRefuses(t *testing.T) {
 	rec := blocks[0].ActionRecord
 	if rec.Layer != scanner.AuditScannerUnavailable || rec.Pattern != reason || rec.Verdict != config.ActionBlock ||
 		rec.ParentActionID != "" || rec.ActionID != actionID || rec.Actor != agentAnonymous ||
-		rec.ActionType != receipt.ActionRead || strings.Contains(rec.Pattern, caller) {
+		rec.ActionType != receipt.ActionRead {
 		t.Fatalf("receipt=%+v", rec)
 	}
 	if got.headers.Get(blockreason.HeaderRecordedReceipt) != rec.ActionID || got.headers.Get(blockreason.HeaderRequestID) != rec.RequestID {
@@ -259,7 +249,7 @@ func TestForwardDenialUnknownKindRefuses(t *testing.T) {
 	}
 }
 
-func driveForwardDenial(t *testing.T, kind forwardDenialKind, pattern string) (capacityEvidence, string, *metrics.Metrics) {
+func driveForwardDenial(t *testing.T, kind forwardDenialKind) (capacityEvidence, string, *metrics.Metrics) {
 	t.Helper()
 	cfg := config.Defaults()
 	proxy := &Proxy{metrics: metrics.New()}
@@ -277,7 +267,6 @@ func driveForwardDenial(t *testing.T, kind forwardDenialKind, pattern string) (c
 	selected := proxy.admitReceiptShard()
 	proxy.emitForwardDenial(forwardDenial{
 		Kind:        kind,
-		Pattern:     pattern,
 		Context:     ctx,
 		Writer:      recorder,
 		RequestID:   requestID,

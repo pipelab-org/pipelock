@@ -22,7 +22,6 @@ const (
 	forwardDenialConnectSessionCapacity          forwardDenialKind = "connect_session_capacity"
 	forwardDenialConnectInterceptSessionCapacity forwardDenialKind = "connect_intercept_session_capacity"
 	forwardDenialForwardSessionCapacity          forwardDenialKind = "forward_session_capacity"
-	forwardDenialForwardProfileSessionCapacity   forwardDenialKind = "forward_profile_session_capacity"
 )
 
 type forwardDenialMetric int
@@ -41,8 +40,8 @@ const (
 
 // forwardDenialSpec is the forward-handler refusal catalog. It follows the
 // MCP denial catalog in shape: a kind, the audit label the call site already
-// emits, and a fixed reason. An empty reason keeps the caller pattern. The
-// first entry is the fail-closed fallback for a kind that is not listed.
+// emits, and a fixed reason. The first entry is the fail-closed fallback for a
+// kind that is not listed.
 type forwardDenialSpec struct {
 	kind          forwardDenialKind
 	label         string
@@ -89,11 +88,6 @@ var forwardDenialCatalog = [...]forwardDenialSpec{
 		status: http.StatusServiceUnavailable,
 		block:  blockreason.DataBudget,
 	},
-	{
-		kind:   forwardDenialForwardProfileSessionCapacity,
-		label:  sessionCapacityLayer,
-		metric: forwardDenialMetricRequest,
-	},
 }
 
 func forwardDenialSpecFor(kind forwardDenialKind) (forwardDenialSpec, bool) {
@@ -110,7 +104,6 @@ func forwardDenialSpecFor(kind forwardDenialKind) (forwardDenialSpec, bool) {
 // policy hash, and the recorded-receipt header.
 type forwardDenial struct {
 	Kind        forwardDenialKind
-	Pattern     string
 	Context     audit.LogContext
 	Writer      http.ResponseWriter
 	RequestID   string
@@ -127,13 +120,10 @@ type forwardDenial struct {
 
 // emitForwardDenial records one catalogued forward or CONNECT refusal.
 // An unknown kind still refuses and still records a refusal, using the
-// unclassified entry and ignoring the caller pattern.
+// unclassified entry.
 func (p *Proxy) emitForwardDenial(d forwardDenial) {
-	spec, known := forwardDenialSpecFor(d.Kind)
+	spec, _ := forwardDenialSpecFor(d.Kind)
 	reason := spec.reason
-	if known && reason == "" {
-		reason = d.Pattern
-	}
 	p.logger.LogBlocked(d.Context, spec.label, reason)
 	if spec.metric == forwardDenialMetricTunnel {
 		p.metrics.RecordTunnelBlocked(d.MetricAgent)
