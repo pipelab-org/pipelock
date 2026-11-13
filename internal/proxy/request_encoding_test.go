@@ -282,7 +282,7 @@ func TestCompressedRequestBodiesFailClosed(t *testing.T) {
 		{name: "truncated gzip", body: truncated, encodings: []string{"gzip"}, wantStatus: http.StatusForbidden, wantReason: string(blockreason.ParseError), wantSub: scanner.UnscannedEncodingSuffix},
 		{name: "corrupt crc", body: corrupt, encodings: []string{"gzip"}, wantStatus: http.StatusForbidden, wantReason: string(blockreason.ParseError), wantSub: scanner.UnscannedEncodingSuffix},
 		{name: "gzip then plaintext credential", body: plainAfter, encodings: []string{"gzip"}, wantStatus: http.StatusForbidden, wantReason: string(blockreason.ParseError), wantSub: scanner.UnscannedEncodingSuffix},
-		{name: "second gzip member credential", body: second, encodings: []string{"gzip"}, wantStatus: http.StatusForbidden, wantReason: string(blockreason.DLPMatch)},
+		{name: "second gzip member credential", body: second, encodings: []string{"gzip"}, wantStatus: http.StatusForbidden, wantReason: string(blockreason.ParseError), wantSub: scanner.UnscannedEncodingSuffix},
 		{name: "zlib then trailing bytes", body: zlibTrail, encodings: []string{"deflate"}, wantStatus: http.StatusForbidden, wantReason: string(blockreason.ParseError), wantSub: scanner.UnscannedEncodingSuffix},
 		{name: "stacked gzip", body: gzipped, encodings: []string{"gzip, gzip"}, wantStatus: http.StatusForbidden, wantReason: string(blockreason.ParseError), wantSub: scanner.UnscannedEncodingSuffix},
 		{name: "two header lines", body: gzipped, encodings: []string{"gzip", "gzip"}, wantStatus: http.StatusForbidden, wantReason: string(blockreason.ParseError), wantSub: scanner.UnscannedEncodingSuffix},

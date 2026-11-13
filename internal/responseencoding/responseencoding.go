@@ -146,8 +146,9 @@ func NewDecoder(coding string, r io.Reader) (io.ReadCloser, error) {
 // treating the limit as a decode error. A decoded length above maxDecoded is
 // returned with a nil error. A decode error, a truncated stream, a checksum
 // failure, or any byte after the compressed stream returns an error and no
-// body. gzip members are concatenated. deflate is zlib-wrapped, and bytes
-// after that stream are an error because the zlib reader leaves them unread.
+// body. A gzip body is one member; a second member counts as trailing bytes.
+// deflate is zlib-wrapped, and bytes after that stream are an error because
+// the zlib reader leaves them unread.
 func ReadDecoded(coding string, original []byte, maxDecoded int) ([]byte, error) {
 	if maxDecoded < 0 {
 		maxDecoded = 0
@@ -156,6 +157,12 @@ func ReadDecoded(coding string, original []byte, maxDecoded int) ([]byte, error)
 	dec, err := NewDecoder(coding, src)
 	if err != nil {
 		return nil, err
+	}
+	if gz, ok := dec.(*gzip.Reader); ok {
+		// One member only. Receivers disagree on whether later members are
+		// part of the body, so a second member is refused below as trailing
+		// content instead of being scanned as a body the upstream may not see.
+		gz.Multistream(false)
 	}
 	decoded, err := io.ReadAll(io.LimitReader(dec, int64(maxDecoded)+1))
 	if err != nil {

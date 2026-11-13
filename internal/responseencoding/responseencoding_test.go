@@ -81,15 +81,12 @@ func TestReadDecodedGzipDeflateAndRefusals(t *testing.T) {
 		t.Fatalf("deflate = %q, %v", gotDeflate, err)
 	}
 
-	// A second gzip member is part of the decoded view.
+	// A second gzip member is refused, not decoded: receivers disagree on
+	// whether it is part of the body.
 	second := gzipTestBody(t, []byte(" plus more"))
 	joined := append(append([]byte{}, gzipped...), second...)
-	both, err := ReadDecoded("gzip", joined, 64)
-	if err != nil {
-		t.Fatalf("concatenated gzip: %v", err)
-	}
-	if !bytes.Equal(both, []byte("scan this body plus more")) {
-		t.Fatalf("concatenated decoded = %q", both)
+	if both, err := ReadDecoded("gzip", joined, 64); err == nil {
+		t.Fatalf("concatenated gzip decoded as %q", both)
 	}
 
 	bomb := gzipTestBody(t, bytes.Repeat([]byte("A"), 64))

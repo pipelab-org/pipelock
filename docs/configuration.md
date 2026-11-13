@@ -633,7 +633,7 @@ A scanner failure also blocks with `parse_error`, but uses the `context` layer i
 
 **Fail-closed behaviors** (always blocked regardless of `action` setting):
 - Bodies exceeding `max_body_bytes`
-- Content codings other than a single gzip, x-gzip, or deflate, and gzip or deflate bodies that cannot be fully decoded: a single gzip, x-gzip, or deflate request body is decoded and scanned within `max_body_bytes`. Stacked codings, `br`, `zstd`, and any other coding stay blocked. The block uses `X-Pipelock-Block-Reason: parse_error`; it is not a secret match, so `suppress` does not apply.
+- Content codings other than a single gzip, x-gzip, or deflate, and gzip or deflate bodies that cannot be fully decoded: a single gzip, x-gzip, or deflate request body is decoded and scanned within `max_body_bytes`. Stacked codings, `br`, `zstd`, and any other coding stay blocked, and so does a gzip body with more than one member or with bytes after the compressed stream. The block uses `X-Pipelock-Block-Reason: parse_error`; it is not a secret match, so `suppress` does not apply.
 - Body read errors: prevents forwarding empty/corrupt bodies
 - Invalid JSON bodies
 - Invalid form-urlencoded bodies: prevents parser differential attacks
