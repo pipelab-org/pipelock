@@ -1392,11 +1392,10 @@ func (p *Proxy) buildWSForwardHeaders(r *http.Request, parsed *url.URL, cfg *con
 		}
 	}
 
-	// Subprotocol negotiation. A client may spread its offers over several
-	// header lines; forward every offer as one normalized list so the header
-	// DLP scan and the upstream handshake both see all of them.
-	if offers := wsProtocolOffers(r.Header); len(offers) > 0 {
-		fwd.Set(headerNameWSProtocol, strings.Join(offers, ", "))
+	// Preserve each original offer line for DLP; the dialer normalizes the
+	// offers into one header after scanning.
+	for _, line := range r.Header.Values(headerNameWSProtocol) {
+		fwd.Add(headerNameWSProtocol, line)
 	}
 
 	// Origin policy.
@@ -1458,32 +1457,38 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 		headerNameAuthorization, "X-Api-Key", "X-Goog-Api-Key", "Cookie",
 		"Origin", headerNameWSProtocol, "User-Agent",
 	} {
-		val := headers.Get(key)
-		if val == "" {
-			continue
+		values := headers.Values(key)
+		if key == headerNameWSProtocol {
+			normalized := strings.Join(wsProtocolOffers(headers), ", ")
+			values = append(append([]string(nil), values...), normalized)
 		}
-		scanVal := val
-		if key == headerNameAuthorization {
-			scanVal = scanner.ScrubSigV4AuthorizationForTarget(val, targetURL)
-		}
-		result := sc.ScanTextForDLP(ctx, scanVal)
-		if err := result.Err(); err != nil {
-			return false, false, "", "", "", err
-		}
-		if !result.Clean {
-			matches, allows := sc.FilterHeaderDLPMatches(result.Matches, targetURL, key, scanVal)
-			audienceAllows = append(audienceAllows, allows...)
-			matches = filterBodyDLPMatches(matches, targetURL, cfg.Suppress, disabled, func(match scanner.TextDLPMatch, dropReason string) {
-				if p.logger != nil {
-					p.logger.LogDLPDropped(actx, match.PatternName, match.Severity, "header", dropReason)
-				}
-				p.metrics.RecordDLPDroppedMatch(match.PatternName, "header", dropReason)
-			})
-			if len(matches) == 0 {
+		for _, val := range values {
+			if val == "" {
 				continue
 			}
-			allMatches = append(allMatches, matches...)
-			matchedHeaders = append(matchedHeaders, key)
+			scanVal := val
+			if key == headerNameAuthorization {
+				scanVal = scanner.ScrubSigV4AuthorizationForTarget(val, targetURL)
+			}
+			result := sc.ScanTextForDLP(ctx, scanVal)
+			if err := result.Err(); err != nil {
+				return false, false, "", "", "", err
+			}
+			if !result.Clean {
+				matches, allows := sc.FilterHeaderDLPMatches(result.Matches, targetURL, key, scanVal)
+				audienceAllows = append(audienceAllows, allows...)
+				matches = filterBodyDLPMatches(matches, targetURL, cfg.Suppress, disabled, func(match scanner.TextDLPMatch, dropReason string) {
+					if p.logger != nil {
+						p.logger.LogDLPDropped(actx, match.PatternName, match.Severity, "header", dropReason)
+					}
+					p.metrics.RecordDLPDroppedMatch(match.PatternName, "header", dropReason)
+				})
+				if len(matches) == 0 {
+					continue
+				}
+				allMatches = append(allMatches, matches...)
+				matchedHeaders = append(matchedHeaders, key)
+			}
 		}
 	}
 	allMatches = uniqueBodyDLPMatches(allMatches)
@@ -1506,6 +1511,15 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 }
 
 func wsHeaderDLPSource(headers []string) string {
+	if len(headers) > 1 {
+		unique := make(map[string]struct{}, len(headers))
+		for _, header := range headers {
+			unique[header] = struct{}{}
+		}
+		if len(unique) == 1 {
+			return headers[0]
+		}
+	}
 	switch len(headers) {
 	case 0:
 		return ""

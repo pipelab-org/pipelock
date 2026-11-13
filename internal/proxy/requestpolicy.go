@@ -280,13 +280,14 @@ func (p *Proxy) prepareRequestPolicyBody(r *http.Request, in *requestPolicyInput
 // shared finalizer so it is metered, audited, and receipted like any other
 // match. reason is logged as bounded audit context for the failure cause.
 func (p *Proxy) requestPolicyReadBlocked(in requestPolicyInput, reason string) requestPolicyResult {
-	m := p.requestPolicyMatcher()
-	if m == nil {
-		return requestPolicyResult{}
-	}
 	p.logger.LogAnomaly(in.AuditCtx, blockLayerRequestPolicy, reason, 0)
 	d := p.evaluateRequestPolicyUninspectable(in, config.ActionBlock, reqpolicy.PredAnyBody)
 	d = reqpolicy.Stricter(d, p.evaluateRequestPolicyUninspectableBatch(in, config.ActionBlock))
+	// A reload can remove the matching rule during the read. A shadow rule
+	// also cannot make a partially consumed stream safe to forward.
+	if !d.Enforced() || d.Action != config.ActionBlock {
+		d = reqpolicy.Decision{Action: config.ActionBlock, RuleName: "body_uninspectable", Reason: "request body could not be inspected"}
+	}
 	return p.finalizeRequestPolicyDecision(in, d)
 }
 

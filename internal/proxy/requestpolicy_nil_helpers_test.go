@@ -12,10 +12,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
-func TestRequestPolicyReadBlockedNilMatcherAllows(t *testing.T) {
+func TestRequestPolicyReadBlockedNilMatcherBlocks(t *testing.T) {
 	t.Parallel()
 
-	p := &Proxy{}
+	p := newTestProxyWithConfig(t, config.Defaults())
+	p.reqPolicyPtr.Store(nil)
 	in := requestPolicyInput{
 		Host:     "api.vendor.example",
 		Method:   http.MethodPost,
@@ -23,11 +24,8 @@ func TestRequestPolicyReadBlockedNilMatcherAllows(t *testing.T) {
 		BodyRead: false,
 	}
 	got := p.requestPolicyReadBlocked(in, "body unreadable")
-	if got.Block {
-		t.Fatalf("nil matcher read-block = %+v, want allow", got)
-	}
-	if got.Reason != "" || got.Info.Reason != "" {
-		t.Fatalf("nil matcher still surfaced a block reason: %+v", got)
+	if !got.Block {
+		t.Fatalf("nil matcher read-block = %+v, want block", got)
 	}
 }
 
