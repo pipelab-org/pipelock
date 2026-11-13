@@ -165,14 +165,14 @@ func TestPresetDLPPatternsProfiles(t *testing.T) {
 		{
 			name:            "full",
 			profile:         DLPPresetProfileFull,
-			wantLen:         66,
+			wantLen:         69,
 			wantSeverity:    SeverityHigh,
 			wantPatternName: "Google API Key",
 		},
 		{
 			name:            "hostile",
 			profile:         DLPPresetProfileHostile,
-			wantLen:         66,
+			wantLen:         69,
 			wantSeverity:    SeverityCritical,
 			wantPatternName: "Google API Key",
 		},
