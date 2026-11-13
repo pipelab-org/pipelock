@@ -217,7 +217,7 @@ dlp:
       regex: '\bsig=(?:[A-Za-z0-9%]{43,}%3d\b|[A-Za-z0-9+/]{43}=)'
       severity: high
     - name: "Slack Token"
-      regex: '(?:xox[bpras]|xwfp)-[0-9a-zA-Z-]{15,}'
+      regex: 'xox[bpras]-[0-9a-zA-Z-]{15,}'
       severity: critical
     - name: "Slack App Token"
       regex: 'xapp-[0-9]+-[A-Za-z0-9_]+-[0-9]+-[a-f0-9]+'

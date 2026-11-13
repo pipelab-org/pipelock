@@ -295,7 +295,6 @@ func TestDefaultDLPPatternsRedactionMirrorCoverage(t *testing.T) {
 		{name: "Azure SAS Token", variant: " decoded", value: "sig=" + strings.Repeat("A", 43) + "=", class: redact.ClassAzureSAS, exact: true},
 		{name: "Slack Token", value: "xoxb-" + strings.Repeat("A", 15), class: redact.ClassSlackToken},
 		{name: "Slack Token", variant: " rotating", value: "xoxe." + "xoxb-" + strings.Repeat("A", 15), class: redact.ClassSlackToken},
-		{name: "Slack Token", variant: " workflow", value: "xwfp-" + strings.Repeat("A", 15), class: redact.ClassSlackToken},
 		{name: "Hugging Face Token", value: "hf_" + strings.Repeat("A", 34), class: redact.ClassHuggingFaceToken},
 		{name: "Databricks Token", value: "dapi" + strings.Repeat("a", 32), class: redact.ClassDatabricksPAT},
 		{name: "Replicate API Token", value: "r8_" + strings.Repeat("a", 40), class: redact.ClassReplicateAPIToken},

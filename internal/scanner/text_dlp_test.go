@@ -100,7 +100,6 @@ func TestScanTextForDLP_ProviderCredentialNearMisses(t *testing.T) {
 		"Bedrock long-term lookalike":   "ABSK" + strings.Repeat("A", 24),
 		"Bedrock short-term wrong case": "BEDROCK-" + "API-KEY-" + bedrockShortPreamble() + "Ab9",
 		"Bedrock short-term lookalike":  "bedrock-" + "api-key-" + strings.Repeat("A", 24),
-		"Slack workflow too short":      "xwfp-" + strings.Repeat("4d-", 4) + "4",
 	}
 	for name, text := range tests {
 		t.Run(name, func(t *testing.T) {
