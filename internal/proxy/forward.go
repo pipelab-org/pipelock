@@ -1647,11 +1647,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		applyBodyScanRedaction(&bodyReq, p.currentRedactionRuntimeFor(cfg))
 		buf, bodyResult := scanRequestBody(r.Context(), bodyReq)
 		if clientCanceledIncompleteBody(r.Context(), bodyResult) {
-			reason := bodyResult.Reason
-			if reason == "" {
-				reason = bodyResult.ScanError
-			}
-			logRequestCanceled(p.logger, actx, reason)
+			logRequestCanceled(p.logger, actx, bodyResult.Reason)
 			writeClientCanceled(w)
 			return
 		}

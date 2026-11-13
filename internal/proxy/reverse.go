@@ -2127,11 +2127,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	applyBodyScanRedaction(&bodyReq, redaction)
 	bodyBytes, result := scanRequestBody(r.Context(), bodyReq)
 	if clientCanceledIncompleteBody(r.Context(), result) {
-		reason := result.Reason
-		if reason == "" {
-			reason = result.ScanError
-		}
-		logRequestCanceled(rp.logger, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: receiptInput.Target, ClientIP: reverseClientIP(r), RequestID: receiptInput.RequestID, Agent: receiptInput.Agent}), reason)
+		logRequestCanceled(rp.logger, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: receiptInput.Target, ClientIP: reverseClientIP(r), RequestID: receiptInput.RequestID, Agent: receiptInput.Agent}), result.Reason)
 		writeClientCanceled(w)
 		return true, "", nil, false
 	}

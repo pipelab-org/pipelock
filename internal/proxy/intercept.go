@@ -1383,11 +1383,7 @@ func newInterceptHandler(
 			applyBodyScanRedaction(&bodyReq, redaction)
 			bodyBytes, result := scanRequestBody(r.Context(), bodyReq)
 			if clientCanceledIncompleteBody(r.Context(), result) {
-				reason := result.Reason
-				if reason == "" {
-					reason = result.ScanError
-				}
-				logRequestCanceled(ic.Logger, actx, reason)
+				logRequestCanceled(ic.Logger, actx, result.Reason)
 				writeClientCanceled(w)
 				return
 			}
