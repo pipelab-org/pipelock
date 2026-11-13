@@ -160,7 +160,9 @@ func auditQueryLimitFixture() string {
 }
 
 // TestAuditModeWebSocketNegotiationFloor records a completed handshake
-// that forwards Sec-WebSocket-Protocol or Sec-WebSocket-Extensions.
+// whose client sent Sec-WebSocket-Protocol or Sec-WebSocket-Extensions.
+// The subprotocol offer reaches the backend. The extensions offer does not:
+// the proxy drops it, so no extension is negotiated on frames it must read.
 // A benign text frame is echoed. A core credential in a later text frame
 // is a hard block in the relay, so it is not echoed. Neither decision
 // reads enforce.
@@ -168,7 +170,7 @@ func TestAuditModeWebSocketNegotiationFloor(t *testing.T) {
 	for _, header := range []string{"Sec-WebSocket-Protocol", "Sec-WebSocket-Extensions"} {
 		for _, enforce := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/enforce=%t", header, enforce), func(t *testing.T) {
-				backend, frames, backendDone := wsRecordingServer(t)
+				backend, frames, backendDone, handshake := wsRecordingServerWithHandshake(t)
 				addr, cleanup := setupWSProxy(t, func(cfg *config.Config) {
 					cfg.Enforce = &enforce
 				})
@@ -188,6 +190,15 @@ func TestAuditModeWebSocketNegotiationFloor(t *testing.T) {
 				}
 				if got, _, err := wsutil.ReadServerData(conn); err != nil || string(got) != testWSHello {
 					t.Fatalf("benign frame: %q %v", got, err)
+				}
+				// The echo proves the backend handshake finished, so its
+				// headers are recorded.
+				wantUpstream := value
+				if header == "Sec-WebSocket-Extensions" {
+					wantUpstream = ""
+				}
+				if got := handshake().Get(header); got != wantUpstream {
+					t.Fatalf("backend received %s = %q, want %q", header, got, wantUpstream)
 				}
 				credential := "AKIA" + "IOSFODNN7" + testWSExample
 				if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(credential)); err != nil {

@@ -179,6 +179,15 @@ func websocketFrame(t *testing.T, proxyAddr, backend string, opcode ws.OpCode, p
 // receives and signals on done when a connection ends.
 func wsRecordingServer(t *testing.T) (addr string, frames func() int, done <-chan struct{}) {
 	t.Helper()
+	addr, frames, done, _ = wsRecordingServerWithHandshake(t)
+	return addr, frames, done
+}
+
+// wsRecordingServerWithHandshake also reports the request headers of the
+// last handshake the backend received.
+func wsRecordingServerWithHandshake(t *testing.T) (addr string, frames func() int, done <-chan struct{}, handshake func() http.Header) {
+	t.Helper()
+	var seen atomic.Pointer[http.Header]
 	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -187,6 +196,8 @@ func wsRecordingServer(t *testing.T) (addr string, frames func() int, done <-cha
 	ended := make(chan struct{}, 16)
 	srv := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			header := r.Header.Clone()
+			seen.Store(&header)
 			conn, _, _, upgradeErr := ws.UpgradeHTTP(r, w)
 			if upgradeErr != nil {
 				return
@@ -210,5 +221,10 @@ func wsRecordingServer(t *testing.T) (addr string, frames func() int, done <-cha
 	}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
-	return ln.Addr().String(), func() int { return int(received.Load()) }, ended
+	return ln.Addr().String(), func() int { return int(received.Load()) }, ended, func() http.Header {
+		if h := seen.Load(); h != nil {
+			return *h
+		}
+		return nil
+	}
 }
