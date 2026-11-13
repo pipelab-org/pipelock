@@ -2019,6 +2019,7 @@ func newInterceptHandler(
 			rpInput := requestPolicyInput{
 				Host:        r.URL.Hostname(),
 				Method:      r.Method,
+				Config:      ic.Config,
 				Path:        r.URL.EscapedPath(),
 				Query:       r.URL.RawQuery,
 				ContentType: r.Header.Get(headerContentType),

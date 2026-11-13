@@ -1248,7 +1248,7 @@ func TestWSDialUpstreamTrustedDomainCannotBypassNonOverridableSSRF(t *testing.T)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	conn, err := p.wsDialUpstream(ctx, "ws://trusted-metadata.test/latest/meta-data/", nil, cfg)
+	conn, _, err := p.wsDialUpstream(ctx, "ws://trusted-metadata.test/latest/meta-data/", nil, cfg)
 	if conn != nil {
 		_ = conn.Close()
 	}

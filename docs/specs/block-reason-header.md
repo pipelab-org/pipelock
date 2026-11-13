@@ -198,11 +198,11 @@ HTTP-capable block paths emit the same v1 schema; only the framing differs (HTTP
 | Fetch endpoint (`/fetch?url=...`) | HTTP response headers on the 403 JSON body. |
 | Reverse proxy (`pipelock run --reverse-listen`) | HTTP response headers on request-side blocks and on buffered response-side blocks (prompt injection, media policy, a compressed or unscannable body, a scan error, Browser Shield `browser_shield_uninspectable`). The JSON body's `block_reason` field describes the reason in prose, except the full-response policy uses the canonical `response_incomplete` code. A streaming (SSE) response block happens after the upstream headers are sent, so it carries neither the headers nor the JSON body. |
 | MCP HTTP / SSE | HTTP response headers on the 403. |
-| WebSocket | Close-frame reason payload as a JSON document carrying the same fields (see below). |
+| WebSocket | HTTP response headers when the handshake is refused before the client is upgraded; after the upgrade, the close-frame reason payload as a JSON document carrying the same fields (see below). |
 
 ### WebSocket close-frame payload
 
-WebSocket blocks happen via close frames, not response headers. The close-frame `Reason` field carries a UTF-8 JSON document with the same shape as the headers:
+A WebSocket handshake refused before the client is upgraded gets an ordinary HTTP response with the block headers. That covers admission refusals and, when the client offers a subprotocol, a refused upstream destination, because the client is upgraded only after the upstream handshake. Once the client is upgraded, blocks happen via close frames, not response headers. The close-frame `Reason` field carries a UTF-8 JSON document with the same shape as the headers:
 
 ```json
 {

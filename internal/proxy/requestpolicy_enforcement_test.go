@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -392,7 +393,7 @@ func TestRequestPolicyBodyLimit_DefaultFallback(t *testing.T) {
 	t.Parallel()
 	p := newTestProxyWithConfig(t, reqPolicyConfig(graphqlBlockRule()))
 	p.cfgPtr.Store(&config.Config{})
-	if got := p.requestPolicyBodyLimit(); got != defaultRequestPolicyMaxBodyBytes {
+	if got := p.requestPolicyBodyLimit(nil); got != defaultRequestPolicyMaxBodyBytes {
 		t.Fatalf("default limit = %d, want %d", got, defaultRequestPolicyMaxBodyBytes)
 	}
 }
@@ -944,6 +945,56 @@ func TestRequestPolicy_ReverseGraphQL_BlocksWithBodyScanningDisabled(t *testing.
 	assertRequestPolicyBlock(t, w)
 }
 
+// The reverse handler must hand the admitted config to the body read. A reload
+// that raises the limit during the request cannot make an oversize body readable.
+func TestReverseRequestPolicyUsesAdmittedBodyLimit(t *testing.T) {
+	t.Parallel()
+	var hits atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream: %v", err)
+	}
+	rule := graphqlBlockRule()
+	rule.Route.Hosts = []string{upstreamURL.Hostname()}
+	rule.Action = config.ActionWarn
+	cfg := reqPolicyConfig(rule)
+	cfg.RequestBodyScanning.Enabled = false
+	cfg.RequestBodyScanning.MaxBodyBytes = 8
+	p := newTestProxyWithConfig(t, cfg)
+	admitted := p.cfgPtr.Load()
+
+	rpHandler := NewReverseProxy(upstreamURL, &p.cfgPtr, &p.scannerPtr, p.logger, p.metrics, nil, nil, nil)
+	rpHandler.SetRequestPolicyFn(p.ApplyRequestPolicy)
+	rpHandler.SetRequestPolicyPrepareFn(func(r *http.Request, in *requestPolicyInput) requestPolicyResult {
+		live := reqPolicyConfig(rule)
+		live.RequestBodyScanning.Enabled = false
+		live.RequestBodyScanning.MaxBodyBytes = 1 << 20
+		p.cfgPtr.Store(live)
+		return p.PrepareRequestPolicyBody(r, in)
+	})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+rpTestHost+"/graphql",
+		strings.NewReader(deleteRecordGraphQLBody()))
+	req.Host = rpTestHost
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	rpHandler.ServeHTTP(w, req)
+
+	assertRequestPolicyBlock(t, w)
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+	if admitted.RequestBodyScanning.MaxBodyBytes != 8 {
+		t.Fatalf("admitted limit changed to %d", admitted.RequestBodyScanning.MaxBodyBytes)
+	}
+}
+
 func TestRequestPolicy_RedirectHopReportsRequestPolicyReason(t *testing.T) {
 	t.Parallel()
 	// An origin redirects to a host that request_policy blocks for GET. The
@@ -1149,5 +1200,51 @@ func TestRequestPolicy_HotReloadAppliesRuleChange(t *testing.T) {
 	}
 	if got := p.evaluateRequestPolicy(rpTestHost, http.MethodDelete, http.Header{}, "/v1/jobs/1", "", requestPolicyBody{}); got.Matched() {
 		t.Fatal("after rule removal, DELETE should not match")
+	}
+}
+
+// A reload between admission and the body read must not change the limit a
+// request is held to: the admitted configuration decides, in both directions.
+func TestPrepareRequestPolicyBodyUsesAdmittedLimit(t *testing.T) {
+	tests := []struct {
+		name          string
+		admittedLimit int
+		liveLimit     int
+		wantBlock     bool
+	}{
+		{name: "reload raised the limit", admittedLimit: 8, liveLimit: 1 << 20, wantBlock: true},
+		{name: "reload lowered the limit", admittedLimit: 1 << 20, liveLimit: 8, wantBlock: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			admitted := reqPolicyConfig(graphqlBlockRule())
+			admitted.RequestBodyScanning.MaxBodyBytes = tt.admittedLimit
+			p := newTestProxyWithConfig(t, admitted)
+
+			live := reqPolicyConfig(graphqlBlockRule())
+			live.RequestBodyScanning.MaxBodyBytes = tt.liveLimit
+			p.cfgPtr.Store(live)
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+rpTestHost+"/graphql",
+				strings.NewReader(deleteRecordGraphQLBody()))
+			req.Header.Set("Content-Type", "application/json")
+			in := requestPolicyInput{
+				Host:        rpTestHost,
+				Method:      http.MethodPost,
+				Path:        "/graphql",
+				ContentType: "application/json",
+				Headers:     req.Header,
+				Config:      admitted,
+				Transport:   TransportForward,
+				AuditCtx:    audit.LogContext{},
+			}
+			res := p.prepareRequestPolicyBody(req, &in)
+			if res.Block != tt.wantBlock {
+				t.Fatalf("Block = %v, want %v", res.Block, tt.wantBlock)
+			}
+			if !tt.wantBlock && !in.BodyRead {
+				t.Fatal("body within the admitted limit was not read")
+			}
+		})
 	}
 }

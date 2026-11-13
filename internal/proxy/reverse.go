@@ -1618,6 +1618,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		rpInput := requestPolicyInput{
 			Host:        rpHost,
 			Method:      r.Method,
+			Config:      snap.cfg,
 			Path:        rpPath,
 			Query:       rpQuery,
 			ContentType: r.Header.Get(headerContentType),
