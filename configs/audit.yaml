@@ -223,7 +223,7 @@ dlp:
       regex: 'dop_v1_[a-f0-9]{64}'
       severity: critical
     - name: "Heroku OAuth Token"
-      regex: '(?-i:HRKU-)[A-Za-z0-9_]{60}'
+      regex: '(?-i:HRKU-)(?:[A-Za-z0-9_]{60}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
       severity: critical
     - name: "Doppler Token"
       regex: 'dp\.(?:(?:ct|pt|sa|said|scim|audit)\.|st\.(?:[a-z0-9_-]{2,35}\.)?)[A-Za-z0-9]{40,44}'
@@ -232,7 +232,7 @@ dlp:
       regex: 'A3-[A-Z0-9]{6}-(?:[A-Z0-9]{11}(?:-[A-Z0-9]{5}){3}|[A-Z0-9]{6}(?:-[A-Z0-9]{5}){4})'
       severity: critical
     - name: "HashiCorp Vault Token"
-      regex: '(?:hvs\.|(?-i:hvb\.))[A-Za-z0-9]{24,}\b'
+      regex: '(?:hvs\.[A-Za-z0-9]{24,}\b|(?-i:hvb\.)[A-Za-z0-9_-]{24,})'
       severity: critical
     - name: "Vercel Token"
       regex: '(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}\b'

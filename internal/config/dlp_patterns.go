@@ -398,12 +398,12 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Heroku OAuth access tokens are 65 characters and prefixed with HRKU-.
 	// The prefix is case-sensitive. Heroku publishes no alphabet; the body
 	// is the letters, digits, and underscore in the published 65-character
-	// example, exactly 60 characters after the prefix. The older
-	// 41-character UUID-shaped token is a different length. api.heroku.com
-	// and id.heroku.com are both documented hosts, so there is no compiled
-	// audience.
+	// example, exactly 60 characters after the prefix. The same page also
+	// shows the prefix on a UUID, which tokens issued before the longer form
+	// keep until regenerated. api.heroku.com and id.heroku.com are both
+	// documented hosts, so there is no compiled audience.
 	// Source: https://devcenter.heroku.com/articles/oauth
-	{Name: "Heroku OAuth Token", Regex: `(?-i:HRKU-)[A-Za-z0-9_]{60}`, Severity: SeverityCritical},
+	{Name: "Heroku OAuth Token", Regex: `(?-i:HRKU-)(?:[A-Za-z0-9_]{60}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`, Severity: SeverityCritical},
 	// Doppler publishes each token kind and a 40-44 character alphanumeric
 	// payload. Service tokens may also carry a 2-35 character config name.
 	// No word boundary on either side: a letter or digit glued before or
@@ -419,11 +419,14 @@ var defaultDLPPatternSet = []DLPPattern{
 	// https://agilebits.github.io/security-design/1Password_Security_Design.pdf
 	{Name: "1Password Secret Key", Regex: `A3-[A-Z0-9]{6}-(?:[A-Z0-9]{11}(?:-[A-Z0-9]{5}){3}|[A-Z0-9]{6}(?:-[A-Z0-9]{5}){4})`, Severity: SeverityCritical},
 	// Vault 1.10+ service tokens use hvs. plus 24 or more random characters.
-	// Batch tokens use the case-sensitive prefix hvb. with the same body.
-	// The service prefix stays case-insensitive so an uppercased hvs. leak
-	// still matches. Vault is self-hosted, so there is no compiled audience.
-	// Source: https://developer.hashicorp.com/vault/docs/concepts/tokens#token-prefixes
-	{Name: "HashiCorp Vault Token", Regex: `(?:hvs\.|(?-i:hvb\.))[A-Za-z0-9]{24,}\b`, Severity: SeverityCritical},
+	// Batch tokens use the case-sensitive prefix hvb. and an unpadded
+	// base64url body, which may contain or end in - or _, so that branch has
+	// no trailing word boundary. The service prefix stays case-insensitive so
+	// an uppercased hvs. leak still matches. Vault is self-hosted, so there
+	// is no compiled audience.
+	// Sources: https://developer.hashicorp.com/vault/docs/concepts/tokens#token-prefixes
+	// https://github.com/hashicorp/vault/blob/v1.20.0/vault/token_store.go
+	{Name: "HashiCorp Vault Token", Regex: `(?:hvs\.[A-Za-z0-9]{24,}\b|(?-i:hvb\.)[A-Za-z0-9_-]{24,})`, Severity: SeverityCritical},
 	{Name: "Vercel Token", Regex: `(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}\b`, Severity: SeverityCritical},
 	// Supabase secret keys use sb_secret_<22-char-random>_<8-char-checksum>.
 	// Both suffix parts are base64url; the final checksum char may be '-',

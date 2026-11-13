@@ -93,7 +93,7 @@ func TestScanTextForDLP_ProviderCredentialNearMisses(t *testing.T) {
 		"Vault batch label":             "hvb.string",
 		"Heroku token wrong case":       "hrku-" + strings.Repeat("Ab3_", 15),
 		"Heroku token too short":        "HRKU-" + strings.Repeat("Ab3_", 14) + "Ab3",
-		"Heroku legacy uuid token":      "HRKU-" + "01234567-89ab-cdef-0123-456789abcdef",
+		"Heroku short uuid":             "HRKU-" + "01234567-89ab-cdef-0123-" + "456789abcde",
 		"Heroku version label":          "HRKU-1.2.3",
 		"Bedrock long-term too short":   "ABSK" + "QmVkcm9j" + "a0FQSU" + "tleS",
 		"Bedrock long-term wrong case":  "absk" + "QmVkcm9j" + "a0FQSU" + "tleS" + strings.Repeat("Ab", 4),

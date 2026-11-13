@@ -144,7 +144,7 @@ func tokenClasses() []classPattern {
 		{class: ClassHuggingFaceToken, pattern: regexp.MustCompile(`(?i)hf_[A-Za-z0-9]{34,37}\b`), priority: 100},
 		{class: ClassReplicateAPIToken, pattern: regexp.MustCompile(`(?i)r8_[a-f0-9]{40}\b`), priority: 100},
 		{class: ClassTogetherAIKey, pattern: regexp.MustCompile(`(?i)tok_[a-z0-9]{40,}\b`), priority: 100},
-		{class: ClassVaultToken, pattern: regexp.MustCompile(`(?i)(?:hvs\.|(?-i:hvb\.))[A-Za-z0-9]{24,}\b`), priority: 100},
+		{class: ClassVaultToken, pattern: regexp.MustCompile(`(?i)(?:hvs\.[A-Za-z0-9]{24,}\b|(?-i:hvb\.)[A-Za-z0-9_-]{24,})`), priority: 100},
 		{class: ClassVercelToken, pattern: regexp.MustCompile(`(?i)(?:vercel|vc[piark])_[A-Za-z0-9]{24,}\b`), priority: 100},
 		{class: ClassSupabaseKey, pattern: regexp.MustCompile(`(?i)sb_secret_[A-Za-z0-9_-]{22}_(?:[A-Za-z0-9_-]{7}[A-Za-z0-9_]\b|[A-Za-z0-9_-]{7}-\B)`), priority: 100},
 		{class: ClassDatabricksPAT, pattern: regexp.MustCompile(`(?i)dapi[0-9a-f]{32,}\b`), priority: 100},
