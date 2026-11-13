@@ -17,6 +17,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"golang.org/x/net/http/httpguts"
 )
 
@@ -149,6 +150,29 @@ func emitSentFormRun(run string, emit func(string) bool) bool {
 	return true
 }
 
+// issuerDecodedBody returns the plaintext of one supported request content
+// coding. A nil plaintext with known true means the body is identity and the
+// caller records body itself. known is false when the coding is not decoded
+// completely, including a decoded body above the default request-body cap.
+func issuerDecodedBody(header http.Header, body []byte) (plain []byte, known bool) {
+	var values []string
+	if header != nil {
+		values = header.Values("Content-Encoding")
+	}
+	coding, err := responseencoding.ParseRequestCoding(values)
+	if err != nil {
+		return nil, false
+	}
+	if coding == "" {
+		return nil, true
+	}
+	decoded, decErr := responseencoding.ReadDecoded(coding, body, defaultRequestPolicyMaxBodyBytes)
+	if decErr != nil || len(decoded) > defaultRequestPolicyMaxBodyBytes {
+		return nil, false
+	}
+	return decoded, true
+}
+
 func issuerSentHost(target *url.URL) string {
 	if target == nil {
 		return ""
@@ -180,8 +204,9 @@ func (p *Proxy) newObservedIssuerQueryStore() *issuerQueryStore {
 
 // recordSent records every token a request carries to its origin: path
 // segments, query keys and values, and the body, both raw and decoded. A
-// body that was sent but not buffered, or a request over the bound, marks the
-// destination unreadable.
+// supported request content coding is decoded before tokenization. A body
+// that was sent but not buffered, a coding that does not decode, or a
+// request over the bound, marks the destination unreadable.
 func (s *issuerQueryStore) recordSent(session string, target *url.URL, header http.Header, body []byte, bodyKnown bool, _ time.Time) {
 	if s == nil || s.disabled || session == "" {
 		return
@@ -221,7 +246,19 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 		}
 	}
 	if len(body) > 0 {
-		texts = appendFormLike(texts, string(body))
+		// The origin application reads a decoded gzip, x-gzip, or deflate
+		// body. History has to record that plaintext: the compressed bytes
+		// usually do not contain the identifier as a contiguous token, and a
+		// later reflection would otherwise mint as server-issued. A coding
+		// that does not decode completely is unread history.
+		plain, plainKnown := issuerDecodedBody(header, body)
+		if !plainKnown {
+			bodyKnown = false
+		} else if plain != nil {
+			texts = appendFormLike(texts, string(plain))
+		} else {
+			texts = appendFormLike(texts, string(body))
+		}
 	}
 
 	var digests [][32]byte
