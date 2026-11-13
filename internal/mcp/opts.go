@@ -197,6 +197,12 @@ type MCPProxyOpts struct {
 	// Scanning
 	Scanner   *scanner.Scanner
 	ScannerFn func() *scanner.Scanner
+	// AuditMode observes configured MCP request policy. Block and ask on a
+	// liftable contributor become warn; floors still refuse. The zero value
+	// enforces. AuditModeFn, when set, wins over AuditMode until
+	// snapshotScanPolicy pins the bool for one input decision.
+	AuditMode   bool
+	AuditModeFn func() bool
 	// ReloadMu is the publisher's lock, shared with config/scanner reloads.
 	// Request snapshots hold it only while resolving the scanner and policy hash.
 	ReloadMu       *sync.RWMutex
@@ -736,6 +742,13 @@ func (o MCPProxyOpts) scanner() *scanner.Scanner {
 		return o.ScannerFn()
 	}
 	return o.Scanner
+}
+
+func (o MCPProxyOpts) auditMode() bool {
+	if o.AuditModeFn != nil {
+		return o.AuditModeFn()
+	}
+	return o.AuditMode
 }
 
 func (o MCPProxyOpts) inputCfg() *InputScanConfig {
