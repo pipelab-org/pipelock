@@ -6,11 +6,13 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -55,8 +57,10 @@ func TestAuditModeConnectSNIRequireTLS(t *testing.T) {
 				_, _ = conn.Write(payload)
 				buf := make([]byte, len(payload))
 				n, err := io.ReadFull(reader, buf)
-				if err == nil || n != 0 {
-					t.Fatalf("authority failure relayed %d bytes", n)
+				// A read that times out means the tunnel stayed open. Only a
+				// closed connection counts as the refusal.
+				if n != 0 || err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+					t.Fatalf("authority failure relayed %d bytes, read err=%v", n, err)
 				}
 			}
 		})

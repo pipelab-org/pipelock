@@ -21,7 +21,7 @@ import (
 // delivered. On the forward path a refusal increments pipelock_requests_total
 // and writes a block receipt. The forward response and header refusals log
 // anomaly. On the intercept path the same refusals log blocked and
-// intercept_http, increment the TLS block counter, and write no block receipt.
+// intercept_http, increment the TLS block counter, and write a block receipt.
 func TestAuditModeA2ARefusals(t *testing.T) {
 	core := auditFloorValue("core")
 	benign := `{"text":"hello"}`
@@ -31,8 +31,8 @@ func TestAuditModeA2ARefusals(t *testing.T) {
 	forwardResponseRefused := auditModeObservation{status: http.StatusForbidden, upstream: 1, events: "anomaly", blockMetrics: "pipelock_requests_total", blockReceipt: true}
 	forwardHeaderRefused := auditModeObservation{status: http.StatusForbidden, events: "anomaly", blockMetrics: "pipelock_requests_total", blockReceipt: true}
 	forwardReleased := auditModeObservation{status: http.StatusOK, delivered: true, upstream: 1, events: "anomaly,forward_http"}
-	interceptRequestRefused := auditModeObservation{status: http.StatusForbidden, events: "blocked,intercept_http", blockMetrics: "pipelock_tls_request_blocked_total"}
-	interceptResponseRefused := auditModeObservation{status: http.StatusForbidden, upstream: 1, events: "blocked,intercept_http", blockMetrics: "pipelock_tls_response_blocked_total"}
+	interceptRequestRefused := auditModeObservation{status: http.StatusForbidden, events: "blocked,intercept_http", blockMetrics: "pipelock_tls_request_blocked_total", blockReceipt: true}
+	interceptResponseRefused := auditModeObservation{status: http.StatusForbidden, upstream: 1, events: "blocked,intercept_http", blockMetrics: "pipelock_tls_response_blocked_total", blockReceipt: true}
 	interceptReleased := auditModeObservation{status: http.StatusOK, delivered: true, upstream: 1, events: "anomaly,intercept_http"}
 	cases := []struct {
 		name, transport, direction, request, response, header string
@@ -91,6 +91,7 @@ func TestAuditModeA2ARefusals(t *testing.T) {
 					TargetHost: "peer.example", TargetPort: "443", Config: rig.proxy.cfgPtr.Load(),
 					Scanner: rig.proxy.scannerPtr.Load(), Logger: rig.proxy.logger, Metrics: rig.proxy.metrics,
 					ClientIP: testLoopbackIP, RequestID: "audit-mode-a2a", Agent: agentAnonymous,
+					Proxy: rig.proxy,
 				}, roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 					hits.Add(1)
 					return &http.Response{

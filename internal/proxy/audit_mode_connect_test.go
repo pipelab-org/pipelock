@@ -26,7 +26,8 @@ import (
 // counter and the tunnel counter, then returns without a receipt. A
 // blocklisted host is dialed, and the proxy writes 200 only after that dial
 // returns. Delivery is the upstream accept, not the status alone. The audit
-// event is anomaly. The kill switch answers 503 with kill_switch_deny and
+// events are anomaly, then tunnel_open and tunnel_close once the relay ends.
+// The kill switch answers 503 with kill_switch_deny and
 // does not write a block receipt.
 func TestAuditModeConnectRefusals(t *testing.T) {
 	core := auditFloorValue("core")
@@ -43,7 +44,7 @@ func TestAuditModeConnectRefusals(t *testing.T) {
 		},
 		{
 			name: "blocklisted host", blocklist: true,
-			want: auditModeObservation{status: http.StatusOK, delivered: true, events: "anomaly"},
+			want: auditModeObservation{status: http.StatusOK, delivered: true, events: "anomaly,tunnel_open,tunnel_close"},
 		},
 		{
 			name: "kill switch", kill: true,
@@ -112,15 +113,23 @@ func TestAuditModeConnectRefusals(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = resp.Body.Close()
-			events := auditEventTypes(logs.String())
-			blockMetrics := auditBlockMetrics(t, proxy.metrics)
-			blockReceipt := auditBlockReceipt(t, receipts)
+			if resp.StatusCode == http.StatusOK {
+				// An established tunnel carries a ClientHello naming the CONNECT
+				// host, so the tunnel ends as an ordinary relay and not as a
+				// refused opaque payload.
+				_, _ = conn.Write(buildClientHello("127.0.0.1"))
+			}
 			_ = conn.Close()
 			select {
 			case <-handlerDone:
 			case <-time.After(5 * time.Second):
 				t.Fatal("CONNECT handler did not return")
 			}
+			// The handler writes its last audit event when the relay ends, so
+			// the evidence is read only after it returns.
+			events := auditEventTypes(logs.String())
+			blockMetrics := auditBlockMetrics(t, proxy.metrics)
+			blockReceipt := auditBlockReceipt(t, receipts)
 			// The sentinel is dialed only after the handler returns. The accept
 			// loop must observe all earlier connections before the sentinel.
 			sentinel, err := (&net.Dialer{}).DialContext(t.Context(), "tcp4", host)

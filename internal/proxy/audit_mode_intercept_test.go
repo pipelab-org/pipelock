@@ -16,10 +16,10 @@ import (
 // TestAuditModeInterceptRefusals records TLS-intercept handling with enforce
 // false. A core credential and a compressed body stay refused with status 403.
 // Those refusals log blocked and intercept_http, increment
-// pipelock_tls_request_blocked_total, and write no block receipt. An operator
+// pipelock_tls_request_blocked_total, and write a block receipt. An operator
 // pattern and a blocklisted host are delivered, and their audit events are
 // anomaly and intercept_http. The kill switch answers 503, logs blocked and
-// intercept_http, increments the denial counter, and writes no block receipt.
+// intercept_http, increments the denial counter, and writes a block receipt.
 func TestAuditModeInterceptRefusals(t *testing.T) {
 	core := auditFloorValue("core")
 	policy := auditFloorValue("dlp")
@@ -31,7 +31,7 @@ func TestAuditModeInterceptRefusals(t *testing.T) {
 	}{
 		{
 			name: "core credential", body: "token=" + core,
-			want: auditModeObservation{status: http.StatusForbidden, events: "blocked,intercept_http", blockMetrics: "pipelock_tls_request_blocked_total"},
+			want: auditModeObservation{status: http.StatusForbidden, events: "blocked,intercept_http", blockMetrics: "pipelock_tls_request_blocked_total", blockReceipt: true},
 		},
 		{
 			name: "operator pattern", body: "token=" + policy, pattern: true,
@@ -43,11 +43,11 @@ func TestAuditModeInterceptRefusals(t *testing.T) {
 		},
 		{
 			name: "compressed body", body: "not-gzip", encoding: "gzip",
-			want: auditModeObservation{status: http.StatusForbidden, events: "blocked,intercept_http", blockMetrics: "pipelock_tls_request_blocked_total"},
+			want: auditModeObservation{status: http.StatusForbidden, events: "blocked,intercept_http", blockMetrics: "pipelock_tls_request_blocked_total", blockReceipt: true},
 		},
 		{
 			name: "kill switch", kill: true,
-			want: auditModeObservation{status: http.StatusServiceUnavailable, events: "blocked,intercept_http", blockMetrics: "pipelock_kill_switch_denials_total"},
+			want: auditModeObservation{status: http.StatusServiceUnavailable, events: "blocked,intercept_http", blockMetrics: "pipelock_kill_switch_denials_total", blockReceipt: true},
 		},
 	}
 	for _, tc := range cases {
@@ -70,6 +70,7 @@ func TestAuditModeInterceptRefusals(t *testing.T) {
 				Scanner: rig.proxy.scannerPtr.Load(), Logger: rig.proxy.logger, Metrics: rig.proxy.metrics,
 				ClientIP: testLoopbackIP, RequestID: "audit-mode-intercept", Agent: agentAnonymous,
 				KillSwitch: rig.proxy.ks,
+				Proxy:      rig.proxy,
 			}, roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 				hits.Add(1)
 				return &http.Response{
