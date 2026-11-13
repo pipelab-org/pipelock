@@ -79,6 +79,7 @@ func TestBuiltInCredentialAudienceHosts_ReplaceDerivedProviderDefaults(t *testin
 		"Pinecone API Key":      {"api.pinecone.io"},
 		"Groq API Key":          {"api.groq.com"},
 		"Doppler Token":         {"api.doppler.com"},
+		"Heroku OAuth Token":    {"api.heroku.com"},
 		"xAI API Key":           {"api.x.ai"},
 		"Discord Bot Token":     {"discord.com", "gateway.discord.gg"},
 		// Slack bot/user tokens are presented to the Web API and hosted MCP server;

@@ -20,6 +20,7 @@ func TestCredentialAudienceEndpointAndCarrier(t *testing.T) {
 	groq := "gsk_" + strings.Repeat("a", 48)
 	anthropic := "sk-" + "ant-" + strings.Repeat("a", 24)
 	doppler := "dp." + "st." + strings.Repeat("a", 40)
+	heroku := "HRKU-" + strings.Repeat("Ab3_", 15)
 	for _, tc := range []struct {
 		name, target, value, header string
 		allow                       bool
@@ -44,6 +45,13 @@ func TestCredentialAudienceEndpointAndCarrier(t *testing.T) {
 		{"doppler wrong scheme", "https://api.doppler.com/v3/projects", doppler, "Basic", false},
 		{"doppler body", "https://api.doppler.com/v3/projects", doppler, "", false},
 		{"doppler cleartext", "http://api.doppler.com/v3/projects", doppler, "Bearer", false},
+		{"heroku header", "https://api.heroku.com/account", heroku, "Bearer", true},
+		{"heroku identity host", "https://id.heroku.com/oauth/token", heroku, "Bearer", false},
+		{"heroku subdomain", "https://other.heroku.com/account", heroku, "Bearer", false},
+		{"heroku lookalike host", "https://api.heroku.com.vendor.example/account", heroku, "Bearer", false},
+		{"heroku wrong scheme", "https://api.heroku.com/account", heroku, "Basic", false},
+		{"heroku body", "https://api.heroku.com/account", heroku, "", false},
+		{"heroku cleartext", "http://api.heroku.com/account", heroku, "Bearer", false},
 		{"anthropic body", "https://api.anthropic.com/v1/messages", anthropic, "", false},
 		{"anthropic header", "https://api.anthropic.com/v1/messages", anthropic, "X-Api-Key", true},
 		{"anthropic openai sdk bearer", "https://api.anthropic.com/v1/chat/completions", anthropic, "Bearer", true},
