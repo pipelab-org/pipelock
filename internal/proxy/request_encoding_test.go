@@ -595,8 +595,66 @@ func TestPrepareRequestPolicyBodyDecodesSupportedCoding(t *testing.T) {
 		Host: rpTestHost, Method: http.MethodPost, Path: "/graphql",
 		ContentType: "application/json", Headers: declared.Header, AuditCtx: audit.LogContext{},
 	}
-	if res := p.prepareRequestPolicyBody(declared, &declaredIn); !res.Block {
-		t.Fatal("plaintext declared as gzip should block")
+	// A body that does not decode is left as read, so the configured parse
+	// action decides it when the policy cannot parse it.
+	if res := p.prepareRequestPolicyBody(declared, &declaredIn); res.Block {
+		t.Fatalf("an undecodable body was refused before the policy saw it: %+v", res)
+	}
+	if declaredIn.WireBodySet || string(declaredIn.Body) != "not gzip" || !declaredIn.BodyRead {
+		t.Fatalf("wire set=%v body=%q read=%v", declaredIn.WireBodySet, declaredIn.Body, declaredIn.BodyRead)
+	}
+}
+
+// A body the policy path cannot decode is not refused for its coding. The
+// policy sees the bytes as sent and decides them exactly as it decides the
+// same bytes with no Content-Encoding, under each on_parse_error setting.
+func TestRequestPolicyUndecodableBodyDecidedAsSent(t *testing.T) {
+	second := append(gzipRequestBody(t, []byte(`{"query":"query { id }"}`)), gzipRequestBody(t, []byte("more"))...)
+	bodies := []struct {
+		name     string
+		body     []byte
+		encoding []string
+	}{
+		{name: "brotli label on a blocked mutation", body: []byte(deleteRecordGraphQLBody()), encoding: []string{"br"}},
+		{name: "brotli label on a benign query", body: []byte(`{"query":"query { id }"}`), encoding: []string{"br"}},
+		{name: "stacked", body: gzipRequestBody(t, []byte(`{"query":"query { id }"}`)), encoding: []string{"gzip, gzip"}},
+		{name: "declared gzip is plaintext", body: []byte("not gzip"), encoding: []string{"gzip"}},
+		{name: "second gzip member", body: second, encoding: []string{"gzip"}},
+	}
+	for _, tc := range bodies {
+		for _, action := range []string{config.ActionBlock, config.ActionWarn} {
+			t.Run(tc.name+"/"+action, func(t *testing.T) {
+				configure := func(cfg *config.Config) {
+					cfg.RequestBodyScanning.Enabled = false
+					cfg.RequestPolicy.Enabled = true
+					cfg.RequestPolicy.OnParseError = action
+					cfg.RequestPolicy.OnOpaqueOperation = action
+					cfg.RequestPolicy.Rules = []config.RequestPolicyRule{graphqlBlockRule()}
+				}
+				wantStatus, _, _, wantUp := forwardCodedRequest(t, configure, tc.body, nil, "application/json")
+				status, respBody, _, up := forwardCodedRequest(t, configure, tc.body, tc.encoding, "application/json")
+				if status != wantStatus || up.hits.Load() != wantUp.hits.Load() {
+					t.Fatalf("coded status=%d hits=%d, as sent status=%d hits=%d; body=%s", status, up.hits.Load(), wantStatus, wantUp.hits.Load(), respBody)
+				}
+				if up.hits.Load() == 1 && !bytes.Equal(up.body, tc.body) {
+					t.Fatal("forwarded body is not the bytes as sent")
+				}
+			})
+		}
+	}
+	// The setting does reach these bodies: an unparseable one is forwarded
+	// under warn and refused under block.
+	for action, want := range map[string]int{config.ActionWarn: http.StatusNoContent, config.ActionBlock: http.StatusForbidden} {
+		status, _, _, _ := forwardCodedRequest(t, func(cfg *config.Config) {
+			cfg.RequestBodyScanning.Enabled = false
+			cfg.RequestPolicy.Enabled = true
+			cfg.RequestPolicy.OnParseError = action
+			cfg.RequestPolicy.OnOpaqueOperation = action
+			cfg.RequestPolicy.Rules = []config.RequestPolicyRule{graphqlBlockRule()}
+		}, []byte("not gzip"), []string{"gzip"}, "application/json")
+		if status != want {
+			t.Fatalf("on_parse_error=%s status=%d, want %d", action, status, want)
+		}
 	}
 }
 

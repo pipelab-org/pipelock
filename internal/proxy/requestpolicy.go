@@ -266,24 +266,25 @@ func (p *Proxy) prepareRequestPolicyBody(r *http.Request, in *requestPolicyInput
 	if len(raw) > limit {
 		return p.requestPolicyReadBlocked(*in, fmt.Sprintf("request body exceeds max_body_bytes (%d)", limit))
 	}
-	coding, codingErr := responseencoding.ParseRequestCoding(r.Header.Values("Content-Encoding"))
-	if codingErr != nil {
-		return p.requestPolicyReadBlocked(*in, fmt.Sprintf("request body uses Content-Encoding %q; compressed bodies cannot be scanned", strings.Join(r.Header.Values("Content-Encoding"), ",")))
-	}
+	// A single gzip, x-gzip, or deflate body is matched on its decoded text
+	// and forwarded as sent. A coding this path does not decode, or a body
+	// that does not decode completely, is left as read: it then fails to
+	// parse like any other unreadable body, and on_parse_error and
+	// on_opaque_operation decide it, as they did before this path decoded
+	// anything. A decoded size over the limit is refused like any oversized
+	// body.
 	inspected := raw
 	wire := raw
-	if coding != "" {
+	if coding, codingErr := responseencoding.ParseRequestCoding(r.Header.Values("Content-Encoding")); codingErr == nil && coding != "" {
 		decoded, decErr := responseencoding.ReadDecoded(coding, raw, limit)
-		if decErr != nil {
-			return p.requestPolicyReadBlocked(*in, fmt.Sprintf("request body uses Content-Encoding %q; compressed bodies cannot be scanned", strings.Join(r.Header.Values("Content-Encoding"), ",")))
+		if decErr == nil {
+			if len(decoded) > limit {
+				return p.requestPolicyReadBlocked(*in, fmt.Sprintf("request body exceeds max_body_bytes (%d)", limit))
+			}
+			inspected = decoded
+			in.WireBody = append([]byte(nil), wire...)
+			in.WireBodySet = true
 		}
-		if len(decoded) > limit {
-			return p.requestPolicyReadBlocked(*in, fmt.Sprintf("request body exceeds max_body_bytes (%d)", limit))
-		}
-		inspected = decoded
-		wire = raw
-		in.WireBody = append([]byte(nil), wire...)
-		in.WireBodySet = true
 	}
 	r.Body = io.NopCloser(bytes.NewReader(wire))
 	r.ContentLength = int64(len(wire))
