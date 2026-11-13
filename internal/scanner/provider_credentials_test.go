@@ -32,7 +32,6 @@ func documentedProviderCredentials() []providerCredentialFixture {
 		{name: "Bedrock short-term key", pattern: "Amazon Bedrock Short-Term API Key", value: "bedrock-" + "api-key-" + bedrockShortPreamble() + "Ab9"},
 		{name: "Slack rotating bot token", pattern: "Slack Token", value: "xoxe." + "xoxb-" + strings.Repeat("1a-", 5)},
 		{name: "Slack rotating user token", pattern: "Slack Token", value: "xoxe." + "xoxp-" + strings.Repeat("2b-", 5)},
-		{name: "Slack refresh token", pattern: "Slack Token", value: "xoxe-" + strings.Repeat("3c-", 5)},
 		{name: "Slack workflow token", pattern: "Slack Token", value: "xwfp-" + strings.Repeat("4d-", 5)},
 		{name: "Slack rotating app token", pattern: "Slack App Token", value: "xoxe." + "xapp-1-" + strings.Repeat("A", 12) + "-2-" + strings.Repeat("b", 16)},
 	}

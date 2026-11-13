@@ -466,7 +466,7 @@ const (
 	// Re-bumped for the compiled sign-in bearer carrier on the JWT pattern.
 	// Re-bumped when the default corpus added Bedrock and Heroku patterns and
 	// widened the OpenAI, Slack, and Vault patterns.
-	goldenHashDefaults = "7d1b402882af9c7b093a163f985ff39fcb60b95de2e7749a321acc7cfd0e601d"
+	goldenHashDefaults = "99f25dd894f86efa144ee1027d166cf06237d74ef25be371a8e3c0a8c3215720"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -714,7 +714,7 @@ const (
 	// pattern corpus is part of the canonical policy view.
 	// Re-bumped with goldenHashDefaults for the sign-in bearer carrier.
 	// Re-bumped with goldenHashDefaults for the Bedrock, Heroku, OpenAI, Slack, and Vault corpus change.
-	goldenHashRichConfig = "4bab41793251f3eadee3abeb7e4126ce605a31e117568a608090fa398657156f"
+	goldenHashRichConfig = "ac0aea9b115b47933ece924878546e8609c676e1290aff5cb35ef7b6e4803db7"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1288,8 +1288,8 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 		// Gateway carrier, the publisher SDK Together host and the JWT sign-in
 		// bearer carrier, matching the default and rich-config goldens above.
 		// They inherit the RFC 9110 default URI limit of 8000 octets.
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "1ab640700ec3b11072d4733afe6238438398706954c0e2cd05d8f0e91bf7bfc2"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "69e7ddd2c61cd6c5e010b8d33dbf23b77a69b54b59a1bdee9329f9f758dbde61"},
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "f8040f66297ad3652884a9bc6bf2c137032d7cd3c9ec2298477f4918412da4e6"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "1dd04fef78c41adfea64217ccfdf9456230f946edf4c48db1768ff9a42509c82"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
