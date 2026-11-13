@@ -748,8 +748,8 @@ func TestReverseURLTextDLPIncompleteIsScanError(t *testing.T) {
 	cancel()
 	w := httptest.NewRecorder()
 	rp.ServeHTTP(w, httptest.NewRequestWithContext(ctx, http.MethodGet, "http://api.vendor.example/ordinary", nil))
-	if w.Code != http.StatusServiceUnavailable || w.Header().Get("X-Pipelock-Block-Reason") != "parse_error" || !strings.Contains(logs.String(), "text DLP scan incomplete") {
-		t.Fatalf("reverse URL incomplete result: status=%d headers=%v body=%s logs=%s", w.Code, w.Header(), w.Body.String(), logs.String())
+	if w.Code != http.StatusServiceUnavailable || w.Header().Get("X-Pipelock-Block-Reason") != "" || !strings.Contains(logs.String(), `"event":"request_canceled"`) || strings.Contains(logs.String(), `"event":"blocked"`) {
+		t.Fatalf("reverse URL cancel result: status=%d headers=%v body=%s logs=%s", w.Code, w.Header(), w.Body.String(), logs.String())
 	}
 }
 

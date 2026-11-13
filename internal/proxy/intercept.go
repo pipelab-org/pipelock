@@ -485,7 +485,11 @@ func interceptTunnel(
 	handshakeStart := time.Now()
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		ic.Metrics.RecordTLSIntercept("handshake_error")
-		ic.Logger.LogBlocked(ictx, "tls_handshake_error", err.Error())
+		if requestClientCanceled(ctx) {
+			logRequestCanceled(ic.Logger, ictx, err.Error())
+		} else {
+			ic.Logger.LogBlocked(ictx, "tls_handshake_error", err.Error())
+		}
 		return fmt.Errorf("client TLS handshake: %w", err)
 	}
 	ic.Metrics.RecordTLSHandshake("client", time.Since(handshakeStart))
@@ -560,7 +564,7 @@ func interceptTunnel(
 		// inner requests start from a bare context, so the envelope-failure,
 		// authority-mismatch, and primary audit events below all reported
 		// unknown provenance even though the tunnel knew the real grade.
-		BaseContext: ic.baseContext(),
+		BaseContext: ic.tunnelBaseContext(ctx),
 		ConnState: func(_ net.Conn, state http.ConnState) {
 			// Close the listener when the connection finishes so Serve()
 			// exits promptly instead of blocking on Accept() forever.
@@ -1032,6 +1036,12 @@ func newInterceptHandler(
 		}
 		r = r.WithContext(withAllowedSSRFDialScanSnapshot(r.Context(), ic.Scanner, r.URL.Hostname(), effectiveURLPort(r.URL), urlResult))
 
+		// Return before replay capture and session scoring. A canceled URL
+		// admission is not a block.
+		if refuseClientCanceledScan(r.Context(), w, ic.Logger, actx, urlResult) {
+			return
+		}
+
 		// Capture observer: record intercept URL verdict for policy replay.
 		if ic.Proxy != nil {
 			findings := urlResultToFindings(urlResult)
@@ -1372,6 +1382,11 @@ func newInterceptHandler(
 			}
 			applyBodyScanRedaction(&bodyReq, redaction)
 			bodyBytes, result := scanRequestBody(r.Context(), bodyReq)
+			if clientCanceledIncompleteBody(r.Context(), result) {
+				logRequestCanceled(ic.Logger, actx, result.Reason)
+				writeClientCanceled(w)
+				return
+			}
 			if result.CredentialAudienceReceiptErr != nil {
 				blockedErr := newCredentialAudienceReceiptBlockedRequest(result.CredentialAudienceReceiptErr)
 				ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
@@ -1701,7 +1716,7 @@ func newInterceptHandler(
 				}
 				return nil
 			})
-			if headerResult != nil && headerResult.ScanError != "" && refuseTextDLPScanError(w, ic.Logger, actx, ic.RequestID, scanner.ErrTextDLPIncomplete) {
+			if headerResult != nil && headerResult.ScanError != "" && !bodyResultHasFinding(*headerResult) && refuseTextDLPScanErrorForContext(r.Context(), w, ic.Logger, actx, ic.RequestID, scanner.ErrTextDLPIncomplete) {
 				return
 			}
 			if headerResult != nil && headerResult.CredentialAudienceReceiptErr != nil {
@@ -1769,7 +1784,7 @@ func newInterceptHandler(
 				}
 				reason := headerResult.withAudienceExplanation(receiptPattern)
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
-				if headerHardBlock || action == config.ActionAsk || (action == config.ActionBlock && (ic.Config.EnforceEnabled() || escalatedBlock)) {
+				if headerResult.ScanError != "" || headerHardBlock || action == config.ActionAsk || (action == config.ActionBlock && (ic.Config.EnforceEnabled() || escalatedBlock)) {
 					interceptRecordFinding(ic, decide.UpgradedWarningSignal(originalAction, session.SignalBlock), scanner.ScannerDLP, receiptPattern)
 					ic.Logger.LogBlockedDetail(actx, "header_dlp", reason, audit.BlockDetail{
 						Header: headerResult.HeaderName, Patterns: dlpMatchNames(headerResult.DLPMatches),
@@ -3321,6 +3336,15 @@ func (ic *InterceptContext) actorAuthContext() context.Context {
 func (ic *InterceptContext) baseContext() func(net.Listener) context.Context {
 	return func(net.Listener) context.Context {
 		return ic.actorAuthContext()
+	}
+}
+
+// tunnelBaseContext is baseContext with the tunnel's own context attached, so
+// a request served inside the tunnel can tell why the tunnel ended.
+func (ic *InterceptContext) tunnelBaseContext(tunnel context.Context) func(net.Listener) context.Context {
+	base := ic.baseContext()
+	return func(ln net.Listener) context.Context {
+		return context.WithValue(base(ln), ctxKeyInterceptTunnel, tunnel)
 	}
 }
 
