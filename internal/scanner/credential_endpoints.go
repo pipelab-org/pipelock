@@ -15,7 +15,7 @@ import (
 // Escaped delimiters and non-normal paths never earn an endpoint exception.
 func audienceAPIEndpointAllowed(candidate credentialAudienceCandidate, host, target, surface string) bool {
 	switch candidate.patternName {
-	case "Anthropic API Key", "OpenAI API Key", "OpenAI Service Key", "Fireworks API Key", "LLM Router API Key", "Groq API Key", "Doppler Token", "Heroku OAuth Token", "xAI API Key", "Replicate API Token", "Together AI Key", "Hugging Face Token", "Slack Token", "Slack App Token", "Discord Bot Token", "Google API Key", "Answer Engine API Key", "Web Research API Key", "Pinecone API Key", "Google OAuth Token", "GitLab PAT", "GitLab CI Job Token", "GitHub Token", "GitHub Fine-Grained PAT":
+	case "Anthropic API Key", "OpenAI API Key", "OpenAI Service Key", "OpenAI Admin Key", "Fireworks API Key", "LLM Router API Key", "Groq API Key", "Doppler Token", "Heroku OAuth Token", "xAI API Key", "Replicate API Token", "Together AI Key", "Hugging Face Token", "Slack Token", "Slack App Token", "Slack Workflow Token", "Discord Bot Token", "Google API Key", "Answer Engine API Key", "Web Research API Key", "Pinecone API Key", "Google OAuth Token", "GitLab PAT", "GitLab CI Job Token", "GitHub Token", "GitHub Fine-Grained PAT":
 	default:
 		return true
 	}
@@ -95,7 +95,7 @@ func audienceAPIEndpointAllowed(candidate credentialAudienceCandidate, host, tar
 		default:
 			return surface != credentialAudienceAnthropicOAuthSurface && under("/v1")
 		}
-	case "OpenAI API Key", "OpenAI Service Key":
+	case "OpenAI API Key", "OpenAI Service Key", "OpenAI Admin Key":
 		// https://developers.openai.com/api/reference/overview (Bearer, /v1).
 		return under("/v1")
 	case "Fireworks API Key":
@@ -128,7 +128,7 @@ func audienceAPIEndpointAllowed(candidate credentialAudienceCandidate, host, tar
 			return under("/api") || huggingFaceDownloadPathAllowed(path)
 		}
 		return host == "router.huggingface.co" && under("/v1")
-	case "Slack Token", "Slack App Token":
+	case "Slack Token", "Slack App Token", "Slack Workflow Token":
 		// https://docs.slack.dev/apis/web-api/ (Authorization Bearer, /api).
 		// https://docs.slack.dev/ai/slack-mcp-server/ (Bearer, /mcp).
 		if host == "mcp.slack.com" {

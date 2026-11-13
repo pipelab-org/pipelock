@@ -89,7 +89,7 @@ Three proxy modes share the main listener:
 6. Core SSRF literal-IP floor, including private and metadata IP literals
 7. SigV4 presigned-URL credential carve-out
 8. Core DLP immutable floor
-9. DLP (71 built-in credential patterns + checksum validators + env/file leak detection)
+9. DLP (74 built-in credential patterns + checksum validators + env/file leak detection)
 10. Path entropy analysis (also runs query entropy; final filenames may discount a repeated SemVer or score package versions separately)
 11. Subdomain entropy analysis
 12. Nested URL destinations in query parameters (allowlist, blocklist, SSRF on URL-shaped values)

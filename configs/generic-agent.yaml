@@ -124,6 +124,9 @@ dlp:
     - name: "OpenAI Service Key"
       regex: '(?:^|[^A-Za-z0-9_-])sk-svcacct-[a-zA-Z0-9\-_]{20,}'
       severity: critical
+    - name: "OpenAI Admin Key"
+      regex: '(?:^|[^A-Za-z0-9_-])sk-admin-[a-zA-Z0-9\-_]{20,}'
+      severity: critical
     - name: "Fireworks API Key"
       regex: 'fw_[A-Za-z0-9]{22}\b'
       severity: critical
@@ -220,6 +223,12 @@ dlp:
     - name: "Slack App Token"
       regex: 'xapp-[0-9]+-[A-Za-z0-9_]+-[0-9]+-[a-f0-9]+'
       severity: critical
+    - name: "Slack Refresh Token"
+      regex: 'xoxe-[0-9a-zA-Z-]{15,}'
+      severity: critical
+    - name: "Slack Workflow Token"
+      regex: 'xwfp-[0-9a-zA-Z-]{15,}'
+      severity: critical
     - name: "Discord Bot Token"
       regex: '(?:(?-i:[MN])[A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}|(?-i:mfa\.)[A-Za-z0-9\-_]{84,})'
       severity: critical
@@ -269,7 +278,7 @@ dlp:
       regex: 'A3-[A-Z0-9]{6}-(?:[A-Z0-9]{11}(?:-[A-Z0-9]{5}){3}|[A-Z0-9]{6}(?:-[A-Z0-9]{5}){4})'
       severity: critical
     - name: "HashiCorp Vault Token"
-      regex: '(?:hvs\.[A-Za-z0-9]{24,}\b|(?-i:hvb\.)[A-Za-z0-9_-]{24,})'
+      regex: '(?:hvs\.[A-Za-z0-9]{24,}\b|(?-i:hv[sbr]\.)[A-Za-z0-9_-]{24,})'
       severity: critical
     - name: "Vercel Token"
       regex: '(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}\b'

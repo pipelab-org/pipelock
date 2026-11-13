@@ -21,6 +21,7 @@ const (
 	AnthropicKeyBodyRegex        = `sk-ant-[a-zA-Z0-9\-_]{20,}`
 	OpenAIKeyBodyRegex           = `sk-proj-[a-zA-Z0-9\-_]{20,}`
 	OpenAIServiceKeyBodyRegex    = `sk-svcacct-[a-zA-Z0-9\-_]{20,}`
+	OpenAIAdminKeyBodyRegex      = `sk-admin-[a-zA-Z0-9\-_]{20,}`
 	// BitcoinWIFRegex follows the mainnet Base58Check lengths documented at
 	// https://en.bitcoin.it/wiki/Wallet_import_format (51 or 52 characters).
 	BitcoinWIFRegex = `(?:5[1-9A-HJ-NP-Za-km-z]{50}|[KL][1-9A-HJ-NP-Za-km-z]{51})`
@@ -166,6 +167,11 @@ var defaultDLPPatternSet = []DLPPattern{
 	{Name: "OpenAI API Key", Regex: ProviderKeyLeftBoundaryRegex + OpenAIKeyBodyRegex, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.openai.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// Source: https://developers.openai.com/api/reference/overview
 	{Name: "OpenAI Service Key", Regex: ProviderKeyLeftBoundaryRegex + OpenAIServiceKeyBodyRegex, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.openai.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
+	// Admin keys call the organization endpoints under the same /v1 root.
+	// OpenAI publishes the sk-admin- prefix but no body alphabet, so the body
+	// follows the sibling key classes.
+	// Source: https://github.com/openai/openai-openapi (AdminApiKey).
+	{Name: "OpenAI Admin Key", Regex: ProviderKeyLeftBoundaryRegex + OpenAIAdminKeyBodyRegex, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.openai.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// Fireworks API keys use an "fw_" prefix with a 22-character
 	// alphanumeric suffix. Keep the trailing word boundary so longer
 	// opaque base64-ish IDs do not match a 22-character prefix.
@@ -314,6 +320,14 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Source: https://docs.slack.dev/reference/methods/apps.connections.open/
 	// https://docs.slack.dev/authentication/tokens/
 	{Name: "Slack App Token", Regex: `xapp-[0-9]+-[A-Za-z0-9_]+-[0-9]+-[a-f0-9]+`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"slack.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
+	// Token rotation issues a single-use refresh token beside each access
+	// token. It travels in a form body to oauth.v2.access, which no compiled
+	// carrier covers, so it has no audience.
+	// Source: https://docs.slack.dev/authentication/using-token-rotation/
+	{Name: "Slack Refresh Token", Regex: `xoxe-[0-9a-zA-Z-]{15,}`, Severity: SeverityCritical},
+	// Workflow tokens are short-lived bot tokens for the same Web API.
+	// Source: https://docs.slack.dev/authentication/tokens/
+	{Name: "Slack Workflow Token", Regex: `xwfp-[0-9a-zA-Z-]{15,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"slack.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// The first segment is base64 of a snowflake user ID, which is
 	// structurally an UPPERCASE M or N; the bot-token form is three
 	// dot-separated base64url parts, the mfa form is "mfa." + 84 chars.
@@ -399,7 +413,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// id.heroku.com issues tokens and is not sent one as a bearer.
 	// Sources: https://devcenter.heroku.com/articles/oauth
 	// https://devcenter.heroku.com/articles/platform-api-reference
-	{Name: "Heroku OAuth Token", Regex: `(?-i:HRKU-)(?:[A-Za-z0-9_-]{60}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.heroku.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
+	{Name: "Heroku OAuth Token", Regex: `(?-i:HRKU-)(?:[A-Za-z0-9_-]{60}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.heroku.com"}, CredentialAudienceGitHosts: []string{"git.heroku.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer | CredentialAudienceCarrierGitBasic},
 	// Doppler publishes each token kind and a 40-44 character alphanumeric
 	// payload. Service tokens may also carry a 2-35 character config name.
 	// No word boundary on either side: a letter or digit glued before or
@@ -422,7 +436,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// is no compiled audience.
 	// Sources: https://developer.hashicorp.com/vault/docs/concepts/tokens#token-prefixes
 	// https://github.com/hashicorp/vault/blob/v1.20.0/vault/token_store.go
-	{Name: "HashiCorp Vault Token", Regex: `(?:hvs\.[A-Za-z0-9]{24,}\b|(?-i:hvb\.)[A-Za-z0-9_-]{24,})`, Severity: SeverityCritical},
+	{Name: "HashiCorp Vault Token", Regex: `(?:hvs\.[A-Za-z0-9]{24,}\b|(?-i:hv[sbr]\.)[A-Za-z0-9_-]{24,})`, Severity: SeverityCritical},
 	{Name: "Vercel Token", Regex: `(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}\b`, Severity: SeverityCritical},
 	// Supabase secret keys use sb_secret_<22-char-random>_<8-char-checksum>.
 	// Both suffix parts are base64url; the final checksum char may be '-',

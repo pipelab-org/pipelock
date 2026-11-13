@@ -21,6 +21,9 @@ func TestCredentialAudienceEndpointAndCarrier(t *testing.T) {
 	anthropic := "sk-" + "ant-" + strings.Repeat("a", 24)
 	doppler := "dp." + "st." + strings.Repeat("a", 40)
 	heroku := "HRKU-" + strings.Repeat("Ab3_", 15)
+	admin := "sk-" + "admin-" + strings.Repeat("a", 24)
+	workflow := "xwfp-" + strings.Repeat("1", 16)
+	refresh := "xoxe-" + "1-" + strings.Repeat("A", 16)
 	for _, tc := range []struct {
 		name, target, value, header string
 		allow                       bool
@@ -56,6 +59,21 @@ func TestCredentialAudienceEndpointAndCarrier(t *testing.T) {
 		{"heroku wrong scheme", "https://api.heroku.com/account", heroku, "Basic", false},
 		{"heroku body", "https://api.heroku.com/account", heroku, "", false},
 		{"heroku cleartext", "http://api.heroku.com/account", heroku, "Bearer", false},
+		{"openai admin header", "https://api.openai.com/v1/organization/admin_api_keys", admin, "Bearer", true},
+		{"openai admin wrong route", "https://api.openai.com/unrelated", admin, "Bearer", false},
+		{"openai admin subdomain", "https://other.openai.com/v1/organization/users", admin, "Bearer", false},
+		{"openai admin wrong scheme", "https://api.openai.com/v1/organization/users", admin, "Basic", false},
+		{"openai admin body", "https://api.openai.com/v1/organization/users", admin, "", false},
+		{"openai admin cleartext", "http://api.openai.com/v1/organization/users", admin, "Bearer", false},
+		{"slack workflow header", "https://slack.com/api/chat.postMessage", workflow, "Bearer", true},
+		{"slack workflow wrong route", "https://slack.com/unrelated", workflow, "Bearer", false},
+		{"slack workflow escaped route", "https://slack.com/api%2fchat.postMessage", workflow, "Bearer", false},
+		{"slack workflow mcp host", "https://mcp.slack.com/mcp", workflow, "Bearer", false},
+		{"slack workflow subdomain", "https://files.slack.com/api/files.upload", workflow, "Bearer", false},
+		{"slack workflow body", "https://slack.com/api/chat.postMessage", workflow, "", false},
+		{"slack workflow cleartext", "http://slack.com/api/chat.postMessage", workflow, "Bearer", false},
+		{"slack refresh header", "https://slack.com/api/oauth.v2.access", refresh, "Bearer", false},
+		{"slack refresh body", "https://slack.com/api/oauth.v2.access", refresh, "", false},
 		{"anthropic body", "https://api.anthropic.com/v1/messages", anthropic, "", false},
 		{"anthropic header", "https://api.anthropic.com/v1/messages", anthropic, "X-Api-Key", true},
 		{"anthropic openai sdk bearer", "https://api.anthropic.com/v1/chat/completions", anthropic, "Bearer", true},
