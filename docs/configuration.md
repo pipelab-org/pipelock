@@ -1142,7 +1142,7 @@ Core safety-floor patterns (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `
 | xAI API Key | `xai-` | critical |
 | DigitalOcean Token | `dop_v1_` | critical |
 | Doppler Token | `dp.` + documented token kind + optional service config name + 40–44 alphanumeric chars | critical |
-| 1Password Secret Key | `A3-` + six-character identifier + 26 secret letters and numbers in the documented grouping | critical |
+| 1Password Secret Key | `A3-` + six-character identifier + 26 secret characters, grouped 6-5-5-5-5 or 11-5-5-5 | critical |
 | HashiCorp Vault Token | `hvs.` + 24+ alphanumeric chars | critical |
 | Vercel Token | `vercel_\|vc[piark]_` | critical |
 | Supabase Service Key | `sb_secret_<22-char-random>_<8-char-checksum>` | critical |
@@ -1150,7 +1150,7 @@ Core safety-floor patterns (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `
 | PyPI Token | `pypi-` + 85+ base64url chars | critical |
 | Linear API Key | `lin_api_` + 40+ alphanumeric chars | high |
 | Notion API Key | `ntn_` | high |
-| Sentry Auth Token | `sntrys_` + base64 payload + `_` + 43 unpadded base64 chars; previous 40+ alphanumeric form also detected | high |
+| Sentry Auth Token | `sntryu_` + 64 hex chars; `sntrys_` + base64 payload + `_` + 43 unpadded base64 chars; previous 40+ alphanumeric form also detected | high |
 | age Secret Key | `AGE-SECRET-KEY-1` + 58 Bech32 chars (X25519 identity; checksum validity is not required for detection) | critical |
 | JWT Token | JSON-object base64url header and payload, three segments | high |
 | Private Key Header | `-----BEGIN.*PRIVATE KEY-----` | critical |

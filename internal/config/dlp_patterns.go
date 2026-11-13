@@ -372,14 +372,18 @@ var defaultDLPPatternSet = []DLPPattern{
 	{Name: "DigitalOcean Token", Regex: `dop_v1_[a-f0-9]{64}`, Severity: SeverityCritical},
 	// Doppler publishes each token kind and a 40-44 character alphanumeric
 	// payload. Service tokens may also carry a 2-35 character config name.
+	// No leading word boundary: a preceding letter or digit must not hide
+	// the token. The trailing boundary rejects a payload longer than 44.
 	// Source: https://docs.doppler.com/reference/auth-token-formats
-	{Name: "Doppler Token", Regex: `\bdp\.(?:(?:ct|pt|sa|said|scim|audit)\.|st\.(?:[a-z0-9_-]{2,35}\.)?)[A-Za-z0-9]{40,44}\b`, Severity: SeverityCritical},
-	// 1Password's displayed Secret Key has 34 letters and numbers: A3,
-	// a six-character identifier, and 26 secret characters. Match the
-	// grouping shown in section 3.2 of its security design white paper.
+	{Name: "Doppler Token", Regex: `dp\.(?:(?:ct|pt|sa|said|scim|audit)\.|st\.(?:[a-z0-9_-]{2,35}\.)?)[A-Za-z0-9]{40,44}\b`, Severity: SeverityCritical},
+	// 1Password displays A3, a six-character account identifier, and 26
+	// secret characters. The Emergency Kit and the support page group the
+	// secret as 6-5-5-5-5. Section 3.2's example groups it as 11-5-5-5.
+	// Hyphens are display separators. No leading word boundary: a preceding
+	// letter or digit must not hide the key.
 	// Sources: https://support.1password.com/secret-key-security/
-	// https://1passwordstatic.com/files/security/1password-white-paper.pdf
-	{Name: "1Password Secret Key", Regex: `\bA3-[A-Z0-9]{6}-[A-Z0-9]{11}(?:-[A-Z0-9]{5}){3}\b`, Severity: SeverityCritical},
+	// https://agilebits.github.io/security-design/1Password_Security_Design.pdf
+	{Name: "1Password Secret Key", Regex: `A3-[A-Z0-9]{6}-(?:[A-Z0-9]{11}(?:-[A-Z0-9]{5}){3}|[A-Z0-9]{6}(?:-[A-Z0-9]{5}){4})\b`, Severity: SeverityCritical},
 	// Vault 1.10+ service tokens use hvs. plus 24+ random chars.
 	// Source: https://developer.hashicorp.com/vault/docs/concepts/tokens#token-prefixes
 	{Name: "HashiCorp Vault Token", Regex: `hvs\.[A-Za-z0-9]{24,}\b`, Severity: SeverityCritical},
@@ -403,18 +407,20 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Source: https://linear.app/changelog/2021-08-19-github-secret-scanning
 	{Name: "Linear API Key", Regex: `lin_api_[A-Za-z0-9]{40,}\b`, Severity: SeverityHigh},
 	{Name: "Notion API Key", Regex: `ntn_[a-zA-Z0-9]{40,}\b`, Severity: SeverityHigh},
-	// Organization tokens contain a base64 payload, underscore separator,
-	// and a 43-character unpadded base64 secret. Preserve the previous
-	// alphanumeric form as an alternative for compatibility.
+	// Personal tokens are sntryu_ plus 64 hex characters. Organization
+	// tokens are a base64 payload, an underscore, and a 43-character
+	// unpadded base64 secret. The previous sntrys_ alphanumeric form
+	// remains an alternative.
 	// Source: https://docs.sentry.io/security-legal-pii/security/token-formats/
-	{Name: "Sentry Auth Token", Regex: `sntrys_(?:[A-Za-z0-9+/=]+_[A-Za-z0-9+/]{43}|[A-Za-z0-9]{40,}\b)`, Severity: SeverityHigh},
+	{Name: "Sentry Auth Token", Regex: `sntryu_[a-f0-9]{64}\b|sntrys_(?:[A-Za-z0-9+/=]+_[A-Za-z0-9+/]{43}|[A-Za-z0-9]{40,}\b)`, Severity: SeverityHigh},
 
 	// Cryptographic material
 	// age X25519 identities encode 32 bytes in Bech32: 52 data characters
 	// plus six checksum characters, after the HRP and separator. Detect the
-	// shape without rejecting a damaged checksum in a leaked identity.
+	// shape without rejecting a damaged checksum. No leading word boundary:
+	// a preceding letter or digit must not hide the identity.
 	// Source: https://c2sp.org/age#the-x25519-recipient-type
-	{Name: "age Secret Key", Regex: `\bAGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}\b`, Severity: SeverityCritical},
+	{Name: "age Secret Key", Regex: `AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}\b`, Severity: SeverityCritical},
 	// PGP + optional trailing BLOCK keep DLP detection aligned with
 	// the ssh-private-key redaction class (which covers PGP/BLOCK).
 	{Name: "Private Key Header", Regex: `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+|PGP\s+)?PRIVATE\s+KEY(\s+BLOCK)?-----`, Severity: SeverityCritical},

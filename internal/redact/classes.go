@@ -158,7 +158,7 @@ func tokenClasses() []classPattern {
 		{class: ClassPyPIToken, pattern: regexp.MustCompile(`(?i)pypi-[A-Za-z0-9_-]{85,}`), priority: 100},
 		{class: ClassLinearAPIKey, pattern: regexp.MustCompile(`(?i)lin_api_[A-Za-z0-9]{40,}\b`), priority: 100},
 		{class: ClassNotionAPIKey, pattern: regexp.MustCompile(`(?i)ntn_[A-Za-z0-9]{40,}\b`), priority: 100},
-		{class: ClassSentryAuthToken, pattern: regexp.MustCompile(`(?i)sntrys_(?:[A-Za-z0-9+/=]+_[A-Za-z0-9+/]{43}|[A-Za-z0-9]{40,}\b)`), priority: 100},
+		{class: ClassSentryAuthToken, pattern: regexp.MustCompile(`(?i)sntryu_[a-f0-9]{64}\b|sntrys_(?:[A-Za-z0-9+/=]+_[A-Za-z0-9+/]{43}|[A-Za-z0-9]{40,}\b)`), priority: 100},
 		{class: ClassTelegramToken, pattern: regexp.MustCompile(`\b[0-9]{8,10}:[A-Za-z0-9_-]{35}\b`), priority: 100},
 		{class: ClassDiscordToken, pattern: regexp.MustCompile(`(?:\b[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}|\bmfa\.[A-Za-z0-9_-]{84,})`), priority: 100},
 		// Twilio API Key SID: SK + 32 hex (34 total). Boundaries match the
