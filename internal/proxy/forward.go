@@ -247,9 +247,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	targetCtx := newConnectAuditContext(r.Context(), p.logger, target, clientIP, requestID, agent)
 	headerCtx := targetCtx
-	denyConnectCapacity := func() {
+	denyConnect := func(kind forwardDenialKind) {
 		p.emitForwardDenial(forwardDenial{
-			Kind:        forwardDenialConnectSessionCapacity,
+			Kind:        kind,
 			Context:     targetCtx,
 			Writer:      w,
 			RequestID:   requestID,
@@ -341,7 +341,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		sess := sm.GetOrCreate(connectSessionKey)
 		if sess == nil {
-			denyConnectCapacity()
+			denyConnect(forwardDenialConnectSessionCapacity)
 			return
 		}
 		connectRec = sess
@@ -501,7 +501,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	if sr.Blocked {
 		if sr.capacityDenied {
-			denyConnectCapacity()
+			denyConnect(forwardDenialConnectSessionCapacity)
 			return
 		}
 		info, status := sr.blockResponse()
@@ -547,7 +547,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		p.connectCEEReady()
 	}
 	if ceeEntropy.Active && ceeEntropy.Sessions != nil && ceeEntropy.Recorder == nil {
-		denyConnectCapacity()
+		denyConnect(forwardDenialConnectSessionCapacity)
 		return
 	}
 	postCEERec, postCEEAdaptive := connectPostCEEAdaptiveState(ceeEntropy, connectRec, cfg.AdaptiveEnforcement)
@@ -563,7 +563,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 				recorded := ceeRecordSignals(ceeResult{EntropyHit: true}, sm, sessionKey,
 					ceeEntropy.AdaptiveConfig.EscalationThreshold, p.logger, p.metrics, clientIP, requestID)
 				if recorded == nil {
-					denyConnectCapacity()
+					denyConnect(forwardDenialConnectSessionCapacity)
 					return
 				}
 				postCEERec = recorded
@@ -943,19 +943,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if sm := p.sessionMgrPtr.Load(); sm != nil {
 			sess := sm.GetOrCreate(responseTaintSessionKey(cfg, agent, clientIP, id.Auth))
 			if sess == nil {
-				p.emitForwardDenial(forwardDenial{
-					Kind:        forwardDenialConnectInterceptSessionCapacity,
-					Context:     targetCtx,
-					RequestID:   requestID,
-					Agent:       agent,
-					MetricAgent: agentLabel,
-					Started:     start,
-					ActionID:    actionID,
-					Emit:        emitConnectReceipt,
-					Method:      http.MethodConnect,
-					Target:      connectReceiptTarget,
-					Transport:   TransportConnect,
-				})
+				denyConnect(forwardDenialConnectInterceptSessionCapacity)
 				outcomeStatus = strconv.Itoa(http.StatusOK)
 				outcomeBytes = 0
 				outcomeReason = sessionCapacityLayer
@@ -1178,6 +1166,24 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}))
 	}
 	actx := newHTTPAuditContext(r.Context(), p.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
+	denyForward := func(kind forwardDenialKind, pattern string) {
+		p.emitForwardDenial(forwardDenial{
+			Kind:        kind,
+			Pattern:     pattern,
+			Context:     actx,
+			Writer:      w,
+			RequestID:   requestID,
+			Agent:       agent,
+			MetricAgent: agentLabel,
+			Hostname:    r.URL.Hostname(),
+			Started:     start,
+			ActionID:    actionID,
+			Emit:        emitForwardReceipt,
+			Method:      r.Method,
+			Target:      targetURL,
+			Transport:   TransportForward,
+		})
+	}
 
 	// Scan through all layers (URL pipeline)
 	fwdScanCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
@@ -1293,21 +1299,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		sess := sm.GetOrCreate(forwardSessionKey)
 		if sess == nil {
-			p.emitForwardDenial(forwardDenial{
-				Kind:        forwardDenialForwardSessionCapacity,
-				Context:     actx,
-				Writer:      w,
-				RequestID:   requestID,
-				Agent:       agent,
-				MetricAgent: agentLabel,
-				Hostname:    r.URL.Hostname(),
-				Started:     start,
-				ActionID:    actionID,
-				Emit:        emitForwardReceipt,
-				Method:      r.Method,
-				Target:      targetURL,
-				Transport:   TransportForward,
-			})
+			denyForward(forwardDenialForwardSessionCapacity, "")
 			return
 		}
 		forwardRec = sess
@@ -1395,21 +1387,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if sr.Blocked {
 		info, status := sr.blockResponse()
 		if sr.capacityDenied {
-			p.emitForwardDenial(forwardDenial{
-				Kind:        forwardDenialForwardProfileSessionCapacity,
-				Pattern:     sr.Detail,
-				Context:     actx,
-				RequestID:   requestID,
-				Agent:       agent,
-				MetricAgent: agentLabel,
-				Hostname:    r.URL.Hostname(),
-				Started:     start,
-				ActionID:    actionID,
-				Emit:        emitForwardReceipt,
-				Method:      r.Method,
-				Target:      targetURL,
-				Transport:   TransportForward,
-			})
+			denyForward(forwardDenialForwardProfileSessionCapacity, sr.Detail)
 		}
 		writeBlockedError(w,
 			info.WithRequestID(requestID), sr.Detail, status)
@@ -2152,21 +2130,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if ceeBlockAll {
 			if ceeRec == nil {
-				p.emitForwardDenial(forwardDenial{
-					Kind:        forwardDenialForwardSessionCapacity,
-					Context:     actx,
-					Writer:      w,
-					RequestID:   requestID,
-					Agent:       agent,
-					MetricAgent: agentLabel,
-					Hostname:    r.URL.Hostname(),
-					Started:     start,
-					ActionID:    actionID,
-					Emit:        emitForwardReceipt,
-					Method:      r.Method,
-					Target:      targetURL,
-					Transport:   TransportForward,
-				})
+				denyForward(forwardDenialForwardSessionCapacity, "")
 				return
 			}
 			level := recEscalationLevel(ceeRec)
