@@ -122,12 +122,13 @@ func TestAuditModeMCPListenerProtocolAdmission(t *testing.T) {
 }
 
 func TestAuditModeMCPFragmentInspection(t *testing.T) {
-	sc := testMCPScanner()
-	t.Cleanup(sc.Close)
 	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	off := false
 	cfg.Enforce = &off
-	_ = cfg
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
 	opts := MCPProxyOpts{Scanner: sc, CEE: newCEERuntimeMatrixDeps(t)}
 	opts.CEE.Reconfigure(config.CrossRequestDetection{Enabled: true, Action: config.ActionWarn, FragmentReassembly: config.CrossRequestFragments{Enabled: true, MaxBufferBytes: 4096, WindowMinutes: 5}}, nil)
 	first := makeRequest(86, methodToolsCall, map[string]any{"name": "echo", "arguments": map[string]string{"payload": `{"n":1e`}})
