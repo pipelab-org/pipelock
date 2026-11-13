@@ -9,7 +9,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"sync/atomic"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,23 +29,6 @@ import (
 // event is anomaly. The kill switch answers 503 with kill_switch_deny and
 // does not write a block receipt.
 func TestAuditModeConnectRefusals(t *testing.T) {
-	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-	var accepts atomic.Int32
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			accepts.Add(1)
-			_ = conn.Close()
-		}
-	}()
-	host := ln.Addr().String()
 	core := auditFloorValue("core")
 
 	cases := []struct {
@@ -68,13 +52,38 @@ func TestAuditModeConnectRefusals(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp4", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = ln.Close() })
+			accepted := make(chan string, 16)
+			acceptDone := make(chan struct{})
+			go func() {
+				defer close(acceptDone)
+				for {
+					conn, err := ln.Accept()
+					if err != nil {
+						return
+					}
+					select {
+					case accepted <- conn.RemoteAddr().String():
+					case <-t.Context().Done():
+						_ = conn.Close()
+						return
+					}
+					_ = conn.Close()
+				}
+			}()
+			t.Cleanup(func() { _ = ln.Close(); <-acceptDone })
+			host := ln.Addr().String()
 			var logs bytes.Buffer
 			logger, err := audit.NewWithStream("json", "stdout", "", true, true, &logs)
 			if err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(logger.Close)
-			addr, proxy, cleanup := setupForwardProxyWithLogger(t, logger, func(cfg *config.Config) {
+			_, proxy, cleanup := setupForwardProxyWithLogger(t, logger, func(cfg *config.Config) {
 				off := false
 				cfg.Enforce = &off
 				cfg.KillSwitch.Enabled = tc.kill
@@ -86,7 +95,14 @@ func TestAuditModeConnectRefusals(t *testing.T) {
 			proxy.ks = killswitch.New(proxy.cfgPtr.Load())
 			receipts := newReceiptProxyHelperWithMetrics(t, proxy.metrics)
 			proxy.receiptEmitterPtr.Store(receipts.emitter)
-			conn := dialProxy(t, addr)
+			handlerDone := make(chan struct{})
+			handler := proxy.buildHandler(http.NewServeMux())
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer close(handlerDone)
+				handler.ServeHTTP(w, r)
+			}))
+			t.Cleanup(server.Close)
+			conn := dialProxy(t, strings.TrimPrefix(server.URL, "http://"))
 			t.Cleanup(func() { _ = conn.Close() })
 			if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n%s\r\n", host, host, tc.extra); err != nil {
 				t.Fatal(err)
@@ -96,35 +112,45 @@ func TestAuditModeConnectRefusals(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = resp.Body.Close()
-			if tc.want.delivered {
-				waitTCPAccepts(t, &accepts, 1)
-			} else if accepts.Load() != 0 {
-				t.Fatalf("refused CONNECT reached upstream %d times", accepts.Load())
+			events := auditEventTypes(logs.String())
+			blockMetrics := auditBlockMetrics(t, proxy.metrics)
+			blockReceipt := auditBlockReceipt(t, receipts)
+			_ = conn.Close()
+			select {
+			case <-handlerDone:
+			case <-time.After(5 * time.Second):
+				t.Fatal("CONNECT handler did not return")
+			}
+			// The sentinel is dialed only after the handler returns. The accept
+			// loop must observe all earlier connections before the sentinel.
+			sentinel, err := (&net.Dialer{}).DialContext(t.Context(), "tcp4", host)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sentinelAddr := sentinel.LocalAddr().String()
+			_ = sentinel.Close()
+			count := 0
+			for {
+				select {
+				case addr := <-accepted:
+					if addr == sentinelAddr {
+						goto drained
+					}
+					count++
+				case <-time.After(5 * time.Second):
+					t.Fatal("upstream accept loop did not reach sentinel")
+				}
+			}
+		drained:
+			if (count != 0) != tc.want.delivered || count > 1 {
+				t.Fatalf("upstream accepts=%d delivered=%t", count, tc.want.delivered)
 			}
 			got := auditModeObservation{
-				status: resp.StatusCode, delivered: resp.StatusCode == http.StatusOK && accepts.Load() == 1,
-				events: auditEventTypes(logs.String()), blockMetrics: auditBlockMetrics(t, proxy.metrics),
-				blockReceipt: auditBlockReceipt(t, receipts),
+				status: resp.StatusCode, delivered: resp.StatusCode == http.StatusOK && count == 1,
+				events: events, blockMetrics: blockMetrics,
+				blockReceipt: blockReceipt,
 			}
 			assertAuditMode(t, got, tc.want)
-			accepts.Store(0)
 		})
-	}
-}
-
-func waitTCPAccepts(t *testing.T, accepts *atomic.Int32, want int32) {
-	t.Helper()
-	deadline := time.NewTimer(2 * time.Second)
-	defer deadline.Stop()
-	tick := time.NewTicker(5 * time.Millisecond)
-	defer tick.Stop()
-	for accepts.Load() != want {
-		select {
-		case <-deadline.C:
-			t.Fatalf("upstream accepts=%d want %d", accepts.Load(), want)
-		case <-t.Context().Done():
-			t.Fatal(t.Context().Err())
-		case <-tick.C:
-		}
 	}
 }
