@@ -13,7 +13,7 @@ func TestRegexpCompileCache(t *testing.T) {
 	var cache regexpCompileCache
 	compile := func(expression string) *regexp.Regexp {
 		t.Helper()
-		re, err := cache.compile(expression, 2, nil)
+		re, err := cache.compile(expression, 2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -27,18 +27,28 @@ func TestRegexpCompileCache(t *testing.T) {
 	if first == folded || first.MatchString("ABC") || !folded.MatchString("ABC") {
 		t.Fatal("flags were not preserved")
 	}
-	if re, err := cache.compile("[", 2, nil); err == nil || re != nil {
+	if re, err := cache.compile("[", 2); err == nil || re != nil {
 		t.Fatal("invalid expression accepted")
 	}
 	if len(cache.expressions) != 2 {
 		t.Fatal("error changed cache contents")
 	}
+	// At capacity the least recently built expression goes first.
+	cache.finishBuild(100)
+	compile("(?i)abc")
 	compile("def")
-	if len(cache.expressions) != 2 || len(cache.order) != 2 {
+	if len(cache.expressions) != 2 {
 		t.Fatal("cache exceeded retention bound")
 	}
 	if compile("abc") == first {
 		t.Fatal("evicted expression remained cached")
+	}
+	// An expression unused for more than the idle window is dropped.
+	for range 3 {
+		cache.finishBuild(2)
+	}
+	if len(cache.expressions) != 0 {
+		t.Fatalf("idle expressions retained: %d", len(cache.expressions))
 	}
 	// An old scanner's regexp remains valid after eviction.
 	if !first.MatchString("abc") {
@@ -54,7 +64,7 @@ func TestRegexpCompileCacheConcurrentMiss(t *testing.T) {
 	for range cap(results) {
 		wg.Go(func() {
 			<-start
-			re, err := cache.compile("cold-expression", 2, nil)
+			re, err := cache.compile("cold-expression", 2)
 			if err != nil {
 				t.Error(err)
 				return

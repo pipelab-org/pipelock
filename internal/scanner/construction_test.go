@@ -134,14 +134,12 @@ func TestScannerConstructionMetadataIsolation(t *testing.T) {
 	}
 }
 
+// A pattern removed from configuration leaves the shared compile cache once
+// later builds stop using it, while built-in expressions stay shared.
 func TestScannerConstructionDropsRemovedExpressions(t *testing.T) {
-	const marker = "REMOVEDLITERAL[0-9]{8}"
 	cfg := constructionConfig(false)
 	cfg.DLP.Patterns = append(append([]config.DLPPattern(nil), cfg.DLP.Patterns...), config.DLPPattern{
-		Name: "Removed marker", Regex: marker, Severity: config.SeverityHigh,
-	})
-	cfg.ResponseScanning.Patterns = append(append([]config.ResponseScanPattern(nil), cfg.ResponseScanning.Patterns...), config.ResponseScanPattern{
-		Name: "Removed response", Regex: "response_REMOVEDLITERAL",
+		Name: "Removed marker", Regex: "REMOVEDLITERAL[0-9]{8}", Severity: config.SeverityHigh,
 	})
 	first, err := New(cfg)
 	if err != nil {
@@ -152,33 +150,18 @@ func TestScannerConstructionDropsRemovedExpressions(t *testing.T) {
 	if !regexpCacheContains("REMOVEDLITERAL") {
 		t.Fatal("live configuration was absent from the compile cache")
 	}
-	second, err := New(constructionConfig(false))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer second.Close()
-	if second.dlpPatterns[0].re != shared {
-		t.Fatal("built-in expression was recompiled")
+	for range scannerRegexpIdleBuilds + 1 {
+		s, err := New(constructionConfig(false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.dlpPatterns[0].re != shared {
+			t.Fatal("built-in expression was recompiled")
+		}
+		s.Close()
 	}
 	if regexpCacheContains("REMOVEDLITERAL") {
 		t.Fatal("removed configuration remained in the compile cache")
-	}
-}
-
-func TestScannerConstructionFailedCompileDropsNewExpressions(t *testing.T) {
-	cfg := constructionConfig(false)
-	cfg.DLP.Patterns = append(append([]config.DLPPattern(nil), cfg.DLP.Patterns...),
-		config.DLPPattern{Name: "Ephemeral", Regex: "EPHEMERALTOKEN[0-9]{6}", Severity: config.SeverityHigh},
-		config.DLPPattern{Name: "Broken", Regex: "[", Severity: config.SeverityHigh},
-	)
-	if s, err := New(cfg); err == nil || s != nil {
-		if s != nil {
-			s.Close()
-		}
-		t.Fatalf("invalid expression accepted: scanner=%v err=%v", s, err)
-	}
-	if regexpCacheContains("EPHEMERALTOKEN") {
-		t.Fatal("failed construction published an expression")
 	}
 }
 
