@@ -790,7 +790,7 @@ func incompleteFileHoldGuidance() RemediationGuidance {
 
 func unscannedEncodingGuidance() RemediationGuidance {
 	return RemediationGuidance{
-		OperatorKnob: "The request body used a Content-Encoding Pipelock does not decode, so it was not scanned. It is withheld under every `request_body_scanning.action` and `enforce` setting because no finding decided it. Configure the client to send the body without Content-Encoding.",
+		OperatorKnob: "The request body used a Content-Encoding Pipelock does not decode, or a gzip or deflate body that did not decode completely, so it was not scanned. It is withheld under every `request_body_scanning.action` and `enforce` setting because no finding decided it. Configure the client to send the body without Content-Encoding, or as one complete gzip or deflate stream.",
 		AgentReason:  "Request blocked: the compressed request body could not be scanned. Send it without Content-Encoding.",
 	}
 }
