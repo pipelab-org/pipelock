@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -474,8 +475,9 @@ func extractOutboundPayloads(r *http.Request, partitionJSON bool, sessionKey str
 		bodyBytes, err := io.ReadAll(limited)
 		if err == nil && len(bodyBytes) > 0 {
 			// The forwarded bytes stay as read. What is inspected is the
-			// decoded text when the body carries a supported content coding.
-			inspected := ceeDecodedPrefix(r.Header, bodyBytes)
+			// text a receiver can recover when the body carries a supported
+			// content coding.
+			inspected := ceeInspectedBody(r.Header, bodyBytes)
 			parts = append(parts, string(inspected))
 			if partitionJSON {
 				result.bodyFragmentLeaves, result.partitionReason = jsonBodyFragmentLeaves(r.Header.Get("Content-Type"), inspected, sessionKey, partitionKey)
@@ -496,28 +498,51 @@ func extractOutboundPayloads(r *http.Request, partitionJSON bool, sessionKey str
 	return result
 }
 
-// ceeDecodedPrefix returns the text cross-request detection inspects for a
-// request body read up to maxCEEBodyRead. A single gzip, x-gzip, or deflate
-// coding is decoded, bounded by the same limit, so a body nothing else
-// buffered is still inspected as the receiver will read it. The read may have
-// stopped inside the stream, so a decode error keeps what was decoded before
-// it. Identity, any other coding, and a body that yields no decoded bytes
-// return the bytes as read. Detection only: this never refuses a request.
-func ceeDecodedPrefix(header http.Header, wire []byte) []byte {
+// ceeInspectedBody returns what cross-request detection inspects for a
+// request body read up to maxCEEBodyRead. Identity, an unsupported or stacked
+// coding, and a body that does not start a supported stream return the bytes
+// as read.
+//
+// A single gzip, x-gzip, or deflate coding returns the decoded text, bounded
+// by the same limit, so a split value in two compressed requests still lines
+// up. Nothing on this path validated the stream, so everything else a
+// receiver could recover is kept as well: a gzip file name, comment and extra
+// field go before the decoded text, bytes after the stream go after it, and a
+// stream that fails part way is followed by the bytes as read. A clean stream
+// with none of those adds nothing to the decoded text.
+//
+// Detection only: this never refuses a request.
+func ceeInspectedBody(header http.Header, wire []byte) []byte {
 	coding, err := responseencoding.ParseRequestCoding(header.Values("Content-Encoding"))
 	if err != nil || coding == "" {
 		return wire
 	}
-	dec, err := responseencoding.NewDecoder(coding, bytes.NewReader(wire))
+	src := bytes.NewReader(wire)
+	dec, err := responseencoding.NewDecoder(coding, src)
 	if err != nil {
 		return wire
 	}
 	defer func() { _ = dec.Close() }()
-	decoded, _ := io.ReadAll(io.LimitReader(dec, maxCEEBodyRead))
-	if len(decoded) == 0 {
-		return wire
+	var out []byte
+	if gz, ok := dec.(*gzip.Reader); ok {
+		// One member, as the body scan reads it. A later member is then part
+		// of the bytes after the stream.
+		gz.Multistream(false)
+		out = append(out, gz.Name...)
+		out = append(out, gz.Comment...)
+		out = append(out, gz.Extra...)
 	}
-	return decoded
+	decoded, readErr := io.ReadAll(io.LimitReader(dec, maxCEEBodyRead))
+	out = append(out, decoded...)
+	switch {
+	case readErr != nil:
+		out = append(out, wire...)
+	case len(decoded) < maxCEEBodyRead:
+		// The stream ended. bytes.Reader is read byte by byte by the
+		// decoder, so what is left is exactly what follows the stream.
+		out = append(out, wire[len(wire)-src.Len():]...)
+	}
+	return out
 }
 
 // jsonBodyFragmentPayloads partitions a JSON request body into keyed, fixed-

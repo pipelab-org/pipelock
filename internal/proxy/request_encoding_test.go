@@ -1588,26 +1588,40 @@ func reverseAdmittedGzipPolicy(t *testing.T, admittedLimit, liveLimit int, wire 
 	return w.Code, hits.Load()
 }
 
-// ceeDecodedPrefix decodes a supported coding for inspection and otherwise
-// returns the bytes as read. It never reports an error.
-func TestCEEDecodedPrefix(t *testing.T) {
+// ceeInspectedBody returns the decoded text for a clean supported stream and
+// keeps everything else a receiver could recover.
+func TestCEEInspectedBody(t *testing.T) {
 	plain := []byte(strings.Repeat("inspect this text ", 40))
 	gzipped := gzipRequestBody(t, plain)
+	deflated := deflateRequestBody(t, plain)
+	var fields bytes.Buffer
+	zw := gzip.NewWriter(&fields)
+	zw.Header = gzip.Header{Name: "name-field", Comment: "comment-field", Extra: []byte("extra-field")}
+	if _, err := zw.Write(plain); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	join := func(parts ...[]byte) []byte { return bytes.Join(parts, nil) }
 	cases := []struct {
 		name     string
 		encoding []string
 		wire     []byte
 		want     []byte
-		prefix   bool
+		contains [][]byte
 	}{
 		{name: "identity", wire: plain, want: plain},
 		{name: "gzip", encoding: []string{"gzip"}, wire: gzipped, want: plain},
-		{name: "deflate", encoding: []string{"deflate"}, wire: deflateRequestBody(t, plain), want: plain},
-		{name: "read stopped inside the stream", encoding: []string{"gzip"}, wire: gzipped[:len(gzipped)-12], prefix: true},
+		{name: "deflate", encoding: []string{"deflate"}, wire: deflated, want: plain},
 		{name: "unsupported coding", encoding: []string{"br"}, wire: gzipped, want: gzipped},
 		{name: "stacked coding", encoding: []string{"gzip", "gzip"}, wire: gzipped, want: gzipped},
 		{name: "declared gzip is not gzip", encoding: []string{"gzip"}, wire: plain, want: plain},
-		{name: "gzip header only", encoding: []string{"gzip"}, wire: gzipped[:10], want: gzipped[:10]},
+		{name: "bytes after gzip", encoding: []string{"gzip"}, wire: join(gzipped, []byte("tail")), want: join(plain, []byte("tail"))},
+		{name: "bytes after deflate", encoding: []string{"deflate"}, wire: join(deflated, []byte("tail")), want: join(plain, []byte("tail"))},
+		{name: "second gzip member", encoding: []string{"gzip"}, wire: join(gzipped, gzipped), want: join(plain, gzipped)},
+		{name: "gzip header fields", encoding: []string{"gzip"}, wire: fields.Bytes(), want: join([]byte("name-fieldcomment-fieldextra-field"), plain)},
+		{name: "stream fails part way", encoding: []string{"gzip"}, wire: gzipped[:len(gzipped)-12], contains: [][]byte{plain[:18], gzipped[:len(gzipped)-12]}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1615,16 +1629,31 @@ func TestCEEDecodedPrefix(t *testing.T) {
 			for _, v := range tc.encoding {
 				header.Add("Content-Encoding", v)
 			}
-			got := ceeDecodedPrefix(header, tc.wire)
-			if tc.prefix {
-				if len(got) == 0 || !bytes.HasPrefix(plain, got) {
-					t.Fatalf("got %d bytes that are not a prefix of the plaintext", len(got))
+			got := ceeInspectedBody(header, tc.wire)
+			for _, part := range tc.contains {
+				if !bytes.Contains(got, part) {
+					t.Fatalf("inspected %d bytes without an expected part of %d bytes", len(got), len(part))
 				}
-				return
 			}
-			if !bytes.Equal(got, tc.want) {
+			if tc.want != nil && !bytes.Equal(got, tc.want) {
 				t.Fatalf("got %d bytes, want %d", len(got), len(tc.want))
 			}
 		})
+	}
+}
+
+// The inspected stream gains the decoded text, and the forwarded body is the
+// bytes as read.
+func TestExtractOutboundPayloadsDecodesAndForwardsWire(t *testing.T) {
+	wire := append(gzipRequestBody(t, []byte("decoded part")), []byte("plain tail")...)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://api.vendor.example/upload", bytes.NewReader(wire))
+	req.Header.Set("Content-Encoding", "gzip")
+	got := extractOutboundPayloads(req, false, "session", nil)
+	if string(got.outbound) != "decoded partplain tail" {
+		t.Fatalf("inspected stream = %q", got.outbound)
+	}
+	forwarded, err := io.ReadAll(req.Body)
+	if err != nil || !bytes.Equal(forwarded, wire) {
+		t.Fatalf("forwarded body changed: err=%v match=%v", err, bytes.Equal(forwarded, wire))
 	}
 }
