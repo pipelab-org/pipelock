@@ -233,7 +233,7 @@ func TestDLPKeywordsLegacyPolicyHashGolden(t *testing.T) {
 	// independently of changes to the built-in corpus.
 	for _, tc := range []struct{ body, want string }{
 		{keywordConfigYAML(""), "85c76016e5a0725a682561e23f18dd8ebade2ada53e72c7324cbb511f7749ed6"},
-		{"mode: balanced\n", "abfea6aa125f508876ace86dc5c470324759e320a6249a1d80e8cfe8e6aa99e9"},
+		{"mode: balanced\n", "d1110cd583191d606203ac676c8696baf4436a6359c2a33c525b7e11862e4347"},
 		{"mode: balanced\ndlp:\n  include_defaults: false\n", "66df31a95a2ce552d4d50fc55356f0dd204d8bf3999a3bfa90bf9c3332710d86"},
 	} {
 		cfg, err := LoadBytes([]byte(tc.body))

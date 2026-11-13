@@ -303,11 +303,10 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Slack's hosted MCP server accepts user tokens at https://mcp.slack.com/mcp.
 	// Those user tokens share the Slack Token pattern with bot and legacy token
 	// forms, so the compiled audience remains pattern-scoped: every xox* token is
-	// allowed only to these two exact Slack-owned authorities. Rotating bot
-	// and user tokens add an xoxe. prefix (xoxe.xoxb-, xoxe.xoxp-); refresh
-	// tokens use xoxe- and workflow tokens use xwfp-. The same body rule
-	// covers them. A Socket Mode
-	// client opens its gateway on
+	// allowed only to these two exact Slack-owned authorities. Refresh tokens
+	// use xoxe- and workflow tokens use xwfp-; a rotating token's xoxe.
+	// prefix sits before an xoxb-, xoxp- or xapp- body this pattern already
+	// matches. A Socket Mode client opens its gateway on
 	// the pre-authenticated wss:// URL returned by apps.connections.open, which
 	// carries its own ticket, so no token is re-presented to that subdomain and
 	// it is deliberately not an audience host.
@@ -316,13 +315,12 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Sources for the rotating and workflow prefixes:
 	// https://docs.slack.dev/authentication/tokens/
 	// https://docs.slack.dev/authentication/using-token-rotation/
-	{Name: "Slack Token", Regex: `(?:xoxe\.xox[bp]|xox[bpras]|xoxe|xwfp)-[0-9a-zA-Z-]{15,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"slack.com", "mcp.slack.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
+	{Name: "Slack Token", Regex: `(?:xox[bpras]|xoxe|xwfp)-[0-9a-zA-Z-]{15,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"slack.com", "mcp.slack.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// The app-level token authenticates apps.connections.open, also on
 	// https://slack.com/api/..., so it shares the exact-host audience.
-	// Rotating app-level tokens use the same shape with an xoxe. prefix.
 	// Source: https://docs.slack.dev/reference/methods/apps.connections.open/
 	// https://docs.slack.dev/authentication/tokens/
-	{Name: "Slack App Token", Regex: `(?:xoxe\.)?xapp-[0-9]+-[A-Za-z0-9_]+-[0-9]+-[a-f0-9]+`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"slack.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
+	{Name: "Slack App Token", Regex: `xapp-[0-9]+-[A-Za-z0-9_]+-[0-9]+-[a-f0-9]+`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"slack.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// The first segment is base64 of a snowflake user ID, which is
 	// structurally an UPPERCASE M or N; the bot-token form is three
 	// dot-separated base64url parts, the mfa form is "mfa." + 84 chars.

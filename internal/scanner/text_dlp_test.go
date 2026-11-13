@@ -116,35 +116,6 @@ func TestScanTextForDLP_ProviderCredentialNearMisses(t *testing.T) {
 	}
 }
 
-func TestScanTextForDLP_SlackRotatingPrefixCovered(t *testing.T) {
-	t.Parallel()
-	cfg := testConfig()
-	cfg.DLP.ScanEnv = false
-	s := MustNew(cfg)
-	defer s.Close()
-	for _, fixture := range documentedProviderCredentials() {
-		if !strings.HasPrefix(fixture.value, "xoxe.") {
-			continue
-		}
-		t.Run(fixture.name, func(t *testing.T) {
-			result := s.ScanTextForDLP(context.Background(), fixture.value)
-			for _, match := range result.Matches {
-				if match.PatternName != fixture.pattern || match.Encoded != "" {
-					continue
-				}
-				span := match.Span()
-				if !span.Valid() || span.ByteStart < 0 || span.ByteEnd > len(fixture.value) {
-					continue
-				}
-				if strings.HasPrefix(fixture.value[span.ByteStart:span.ByteEnd], "xoxe.") {
-					return
-				}
-			}
-			t.Fatalf("match did not cover the rotating prefix: %+v", result.Matches)
-		})
-	}
-}
-
 func TestScanTextForDLP_ProviderKeyOutboundCarriers(t *testing.T) {
 	t.Parallel()
 	s := MustNew(testConfig())

@@ -1130,8 +1130,8 @@ Core safety-floor patterns (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `
 | GCP Service Account Private Key ID | `"private_key_id":"<40 hex>"` | high |
 | Azure Storage Account Key | `AccountKey=<88-char base64>` | critical |
 | Azure SAS Token | `sig=<base64>%3D` / decoded `sig=<base64>=` | high |
-| Slack Token | `xox[bpras]-`, `xoxe.xox[bp]-`, `xoxe-`, or `xwfp-` + 15+ token chars | critical |
-| Slack App Token | `xapp-` or `xoxe.xapp-` | critical |
+| Slack Token | `xox[bpras]-`, `xoxe-`, or `xwfp-` + 15+ token chars | critical |
+| Slack App Token | `xapp-` | critical |
 | Discord Bot Token | `[MN]*.*.*` / `mfa.*` | critical |
 | Twilio API Key | `SK[a-f0-9]{32}` | critical |
 | SendGrid API Key | `SG.` | critical |

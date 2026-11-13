@@ -138,7 +138,7 @@ func tokenClasses() []classPattern {
 		// (32 bytes -> 44 base64 chars). Match encoded or decoded padding;
 		// the padding itself terminates the value without consuming a query delimiter.
 		{class: ClassAzureSAS, pattern: regexp.MustCompile(`(?i)\bsig=(?:[A-Za-z0-9%]{43,}%3d\b|[A-Za-z0-9+/]{43}=)`), priority: 100},
-		{class: ClassSlackToken, pattern: regexp.MustCompile(`(?:xoxe\.xox[bp]|xox[baprs]|xoxe|xwfp)-[A-Za-z0-9-]{10,}\b`), priority: 100},
+		{class: ClassSlackToken, pattern: regexp.MustCompile(`(?:xox[baprs]|xoxe|xwfp)-[A-Za-z0-9-]{10,}\b`), priority: 100},
 		{class: ClassFireworksAPIKey, pattern: regexp.MustCompile(`(?i)fw_[A-Za-z0-9]{22}\b`), priority: 100},
 		{class: ClassAIProviderKey, pattern: regexp.MustCompile(`(?i)(?:sk-or-v1-[A-Fa-f0-9]{20,}|pplx-[A-Za-z0-9]{20,}|tvly-[A-Za-z0-9]{20,}|pcsk_[A-Za-z0-9]{36,}|gsk_[A-Za-z0-9]{48,}|xai-[A-Za-z0-9_-]{80,})\b`), priority: 100},
 		{class: ClassHuggingFaceToken, pattern: regexp.MustCompile(`(?i)hf_[A-Za-z0-9]{34,37}\b`), priority: 100},
