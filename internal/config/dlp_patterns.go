@@ -375,7 +375,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// No word boundary on either side: a letter or digit glued before or
 	// after the token must not hide it.
 	// Source: https://docs.doppler.com/reference/auth-token-formats
-	{Name: "Doppler Token", Regex: `dp\.(?:(?:ct|pt|sa|said|scim|audit)\.|st\.(?:[a-z0-9_-]{2,35}\.)?)[A-Za-z0-9]{40,44}`, Severity: SeverityCritical},
+	{Name: "Doppler Token", Regex: `dp\.(?:(?:ct|pt|sa|said|scim|audit)\.|st\.(?:[a-z0-9_-]{2,35}\.)?)[A-Za-z0-9]{40,44}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.doppler.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// 1Password displays A3, a six-character account identifier, and 26
 	// secret characters. The Emergency Kit and the support page group the
 	// secret as 6-5-5-5-5. Section 3.2's example groups it as 11-5-5-5.

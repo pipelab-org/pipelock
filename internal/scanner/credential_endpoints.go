@@ -15,7 +15,7 @@ import (
 // Escaped delimiters and non-normal paths never earn an endpoint exception.
 func audienceAPIEndpointAllowed(candidate credentialAudienceCandidate, host, target, surface string) bool {
 	switch candidate.patternName {
-	case "Anthropic API Key", "OpenAI API Key", "OpenAI Service Key", "Fireworks API Key", "LLM Router API Key", "Groq API Key", "xAI API Key", "Replicate API Token", "Together AI Key", "Hugging Face Token", "Slack Token", "Slack App Token", "Discord Bot Token", "Google API Key", "Answer Engine API Key", "Web Research API Key", "Pinecone API Key", "Google OAuth Token", "GitLab PAT", "GitLab CI Job Token", "GitHub Token", "GitHub Fine-Grained PAT":
+	case "Anthropic API Key", "OpenAI API Key", "OpenAI Service Key", "Fireworks API Key", "LLM Router API Key", "Groq API Key", "Doppler Token", "xAI API Key", "Replicate API Token", "Together AI Key", "Hugging Face Token", "Slack Token", "Slack App Token", "Discord Bot Token", "Google API Key", "Answer Engine API Key", "Web Research API Key", "Pinecone API Key", "Google OAuth Token", "GitLab PAT", "GitLab CI Job Token", "GitHub Token", "GitHub Fine-Grained PAT":
 	default:
 		return true
 	}
@@ -108,6 +108,9 @@ func audienceAPIEndpointAllowed(candidate credentialAudienceCandidate, host, tar
 	case "Groq API Key":
 		// https://console.groq.com/docs/overview (Bearer, /openai/v1).
 		return under("/openai/v1")
+	case "Doppler Token":
+		// https://docs.doppler.com/reference/api (Bearer, /v3).
+		return under("/v3")
 	case "xAI API Key", "Replicate API Token", "Together AI Key":
 		// https://docs.x.ai/docs/api-reference
 		// https://replicate.com/docs/reference/http
