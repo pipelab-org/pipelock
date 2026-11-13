@@ -1255,10 +1255,12 @@ func TestForwardGzipBodyUsesDecodedViewForCrossRequestDetection(t *testing.T) {
 		return resp, wire
 	}
 	first, wire := send(testCEEAWSKeyPrefix)
+	defer func() { _ = first.Body.Close() }()
 	if first.StatusCode != http.StatusOK || !bytes.Equal(got, wire) {
 		t.Fatalf("first status=%d wire match=%v", first.StatusCode, bytes.Equal(got, wire))
 	}
 	second, _ := send(testCEEAWSKeySuffix)
+	defer func() { _ = second.Body.Close() }()
 	if second.StatusCode != http.StatusForbidden || second.Header.Get(blockreason.HeaderLayer) != "cross_request" {
 		body, _ := io.ReadAll(second.Body)
 		t.Fatalf("second status=%d layer=%q body=%s", second.StatusCode, second.Header.Get(blockreason.HeaderLayer), body)
@@ -1308,10 +1310,12 @@ func TestInterceptGzipBodyUsesDecodedViewForCrossRequestDetection(t *testing.T) 
 		return resp, wire
 	}
 	first, wire := send(testCEEAWSKeyPrefix)
+	defer func() { _ = first.Body.Close() }()
 	if first.StatusCode != http.StatusOK || !bytes.Equal(got, wire) {
 		t.Fatalf("first status=%d wire match=%v", first.StatusCode, bytes.Equal(got, wire))
 	}
 	second, _ := send(testCEEAWSKeySuffix)
+	defer func() { _ = second.Body.Close() }()
 	if second.StatusCode != http.StatusForbidden || second.Header.Get(blockreason.HeaderLayer) != "cross_request" {
 		body, _ := io.ReadAll(second.Body)
 		t.Fatalf("second status=%d layer=%q body=%s", second.StatusCode, second.Header.Get(blockreason.HeaderLayer), body)
