@@ -127,7 +127,7 @@ These techniques try to exfiltrate secrets through request bodies or headers ins
 | Secret in custom multipart header | `X-Part-Token: sk-ant-...` on a part | Tested | Custom multipart part headers are extracted and scanned |
 | Transfer-encoding bypass | Base64 or quoted-printable secret in a part body | Tested | Multipart `Content-Transfer-Encoding` is decoded before scanning |
 | Content-Type spoofing | JSON body sent as `application/octet-stream` | Tested | Unknown types get fallback raw-text scan (never skipped) |
-| Compressed body bypass | gzip-encoded body to evade regex matching | Tested | Any non-identity Content-Encoding is fail-closed blocked |
+| Compressed body bypass | gzip-encoded body to evade regex matching | Tested | A single gzip or deflate request body is decoded and scanned within `request_body_scanning.max_body_bytes`. Other content codings are refused |
 | Split secret across headers | `X-A: sk-ant-` + `X-B: api03-rest` | Tested | Joined scan concatenates all scanned header values |
 | Split secret across name:value | `X-AKIA1234: EXAMPLE` | Tested | Header name + value concatenated and scanned (all mode) |
 | Secret in Authorization header | `Bearer sk-ant-...` to allowlisted host | Tested | Headers scanned regardless of destination (no allowlist skip) |
