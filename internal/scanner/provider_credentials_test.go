@@ -28,6 +28,7 @@ func documentedProviderCredentials() []providerCredentialFixture {
 		{name: "Vault batch token", pattern: "HashiCorp Vault Token", value: "hvb." + strings.Repeat("Ab", 12)},
 		{name: "Vault batch base64url token", pattern: "HashiCorp Vault Token", value: "hvb." + "A-b_" + strings.Repeat("Cd", 10) + "-"},
 		{name: "Heroku OAuth token", pattern: "Heroku OAuth Token", value: "HRKU-" + strings.Repeat("Ab3_", 15)},
+		{name: "Heroku OAuth token with hyphens", pattern: "Heroku OAuth Token", value: "HRKU-" + "-" + strings.Repeat("Ab3_", 7) + "-" + strings.Repeat("Cd4_", 7) + "A-"},
 		{name: "Heroku UUID token", pattern: "Heroku OAuth Token", value: "HRKU-" + "01234567-89ab-cdef-0123-" + "456789abcdef"},
 		{name: "Bedrock long-term key", pattern: "Amazon Bedrock Long-Term API Key", value: "ABSK" + "QmVkcm9j" + "a0FQSU" + "tleS" + strings.Repeat("Ab", 4) + "+/="},
 		{name: "Bedrock short-term key", pattern: "Amazon Bedrock Short-Term API Key", value: "bedrock-" + "api-key-" + bedrockShortPreamble() + "Ab9"},

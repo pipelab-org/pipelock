@@ -396,14 +396,14 @@ var defaultDLPPatternSet = []DLPPattern{
 	// DigitalOcean personal access tokens: 64 hex chars after prefix.
 	{Name: "DigitalOcean Token", Regex: `dop_v1_[a-f0-9]{64}`, Severity: SeverityCritical},
 	// Heroku OAuth access tokens are 65 characters and prefixed with HRKU-.
-	// The prefix is case-sensitive. Heroku publishes no alphabet; the body
-	// is the letters, digits, and underscore in the published 65-character
-	// example, exactly 60 characters after the prefix. The same page also
+	// The prefix is case-sensitive. Heroku publishes no alphabet; the published
+	// 65-character example uses letters, digits, and an underscore, so the
+	// body takes the base64url set, exactly 60 characters after the prefix. The same page also
 	// shows the prefix on a UUID, which tokens issued before the longer form
 	// keep until regenerated. api.heroku.com and id.heroku.com are both
 	// documented hosts, so there is no compiled audience.
 	// Source: https://devcenter.heroku.com/articles/oauth
-	{Name: "Heroku OAuth Token", Regex: `(?-i:HRKU-)(?:[A-Za-z0-9_]{60}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`, Severity: SeverityCritical},
+	{Name: "Heroku OAuth Token", Regex: `(?-i:HRKU-)(?:[A-Za-z0-9_-]{60}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`, Severity: SeverityCritical},
 	// Doppler publishes each token kind and a 40-44 character alphanumeric
 	// payload. Service tokens may also carry a 2-35 character config name.
 	// No word boundary on either side: a letter or digit glued before or

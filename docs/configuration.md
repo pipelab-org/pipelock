@@ -1145,7 +1145,7 @@ Core safety-floor patterns (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `
 | Groq API Key | `gsk_` | critical |
 | xAI API Key | `xai-` | critical |
 | DigitalOcean Token | `dop_v1_` | critical |
-| Heroku OAuth Token | case-sensitive `HRKU-` + exactly 60 letters, digits, or underscores, or a UUID | critical |
+| Heroku OAuth Token | case-sensitive `HRKU-` + exactly 60 base64url characters, or a UUID | critical |
 | Doppler Token | `dp.` + documented token kind + optional service config name + 40–44 alphanumeric chars | critical |
 | 1Password Secret Key | `A3-` + six-character identifier + 26 secret characters, grouped 6-5-5-5-5 or 11-5-5-5 | critical |
 | HashiCorp Vault Token | `hvs.` + 24+ alphanumeric chars, or case-sensitive `hvb.` + 24+ base64url chars | critical |
