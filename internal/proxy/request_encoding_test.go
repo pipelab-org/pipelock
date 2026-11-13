@@ -1321,3 +1321,234 @@ func TestInterceptGzipBodyUsesDecodedViewForCrossRequestDetection(t *testing.T) 
 		t.Fatalf("second status=%d layer=%q body=%s", second.StatusCode, second.Header.Get(blockreason.HeaderLayer), body)
 	}
 }
+
+// A gzip body whose decoded size sits between two limits must follow the
+// config the request was admitted under. The reload is published after URL
+// admission and before the policy body read. The compressed size is under
+// both limits, so only the decoded-size check can tell them apart.
+func TestCompressedPolicyBodyUsesAdmittedLimit(t *testing.T) {
+	plain := []byte(`{"query":"query { id }","pad":"` + strings.Repeat("a", 400) + `"}`)
+	wire := gzipRequestBody(t, plain)
+	const small = 80
+	const large = 1 << 20
+	if len(wire) >= small || len(plain) <= small || len(plain) >= large {
+		t.Fatalf("fixture wire=%d plain=%d, want wire < %d and plain between the limits", len(wire), len(plain), small)
+	}
+
+	cases := []struct {
+		name         string
+		admitted     int
+		live         int
+		wantUpstream bool
+	}{
+		{name: "reload raised the limit", admitted: small, live: large, wantUpstream: false},
+		{name: "reload lowered the limit", admitted: large, live: small, wantUpstream: true},
+	}
+	for _, tc := range cases {
+		t.Run("forward/"+tc.name, func(t *testing.T) {
+			status, hits := forwardAdmittedGzipPolicy(t, tc.admitted, tc.live, wire)
+			if tc.wantUpstream {
+				if status != http.StatusOK || hits != 1 {
+					t.Fatalf("status=%d hits=%d, want 200 and the original gzip forwarded", status, hits)
+				}
+				return
+			}
+			if status != http.StatusForbidden || hits != 0 {
+				t.Fatalf("status=%d hits=%d, want 403 and no upstream request", status, hits)
+			}
+		})
+		t.Run("intercept/"+tc.name, func(t *testing.T) {
+			status, hits := interceptAdmittedGzipPolicy(t, tc.admitted, tc.live, wire)
+			if tc.wantUpstream {
+				if status != http.StatusOK || hits != 1 {
+					t.Fatalf("status=%d hits=%d, want 200 and the original gzip forwarded", status, hits)
+				}
+				return
+			}
+			if status != http.StatusForbidden || hits != 0 {
+				t.Fatalf("status=%d hits=%d, want 403 and no upstream request", status, hits)
+			}
+		})
+		t.Run("reverse/"+tc.name, func(t *testing.T) {
+			status, hits := reverseAdmittedGzipPolicy(t, tc.admitted, tc.live, wire)
+			if tc.wantUpstream {
+				if status != http.StatusOK || hits != 1 {
+					t.Fatalf("status=%d hits=%d, want 200 and the original gzip forwarded", status, hits)
+				}
+				return
+			}
+			if status != http.StatusForbidden || hits != 0 {
+				t.Fatalf("status=%d hits=%d, want 403 and no upstream request", status, hits)
+			}
+		})
+	}
+}
+
+func policyConfigForHost(host string, limit int) *config.Config {
+	rule := graphqlBlockRule()
+	rule.Route.Hosts = []string{host}
+	cfg := reqPolicyConfig(rule)
+	cfg.RequestBodyScanning.Enabled = false
+	cfg.RequestBodyScanning.MaxBodyBytes = limit
+	return cfg
+}
+
+// publishLiveBodyLimitOnScan stores live when the URL scan finishes. That is
+// after the handler has snapshotted the admitted config and before request
+// policy reads the body.
+func publishLiveBodyLimitOnScan(t *testing.T, p *Proxy, live *config.Config) *atomic.Bool {
+	t.Helper()
+	sc := p.scannerPtr.Load()
+	if sc == nil {
+		t.Fatal("scanner missing")
+	}
+	fired := &atomic.Bool{}
+	sc.SetHeartbeat(func() {
+		fired.Store(true)
+		p.cfgPtr.Store(live)
+	})
+	return fired
+}
+
+func assertAdmittedLimitHeld(t *testing.T, fired *atomic.Bool, p *Proxy, admitted, live *config.Config) {
+	t.Helper()
+	if !fired.Load() {
+		t.Fatal("reload did not run between admission and the body read")
+	}
+	if p.cfgPtr.Load() != live {
+		t.Fatal("live config was not the one published")
+	}
+	if admitted.RequestBodyScanning.MaxBodyBytes == live.RequestBodyScanning.MaxBodyBytes {
+		t.Fatal("admitted and live limits are the same")
+	}
+}
+
+func forwardAdmittedGzipPolicy(t *testing.T, admittedLimit, liveLimit int, wire []byte) (int, int32) {
+	t.Helper()
+	var hits atomic.Int32
+	var got []byte
+	var enc string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		buf, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+		}
+		got = append([]byte(nil), buf...)
+		enc = r.Header.Get("Content-Encoding")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	admitted := policyConfigForHost(rpTestHost, admittedLimit)
+	live := *admitted
+	live.RequestBodyScanning.MaxBodyBytes = liveLimit
+	p := newTestProxyWithConfig(t, admitted)
+	installForwardTestDialer(p, upstream.Listener.Addr().String())
+	fired := publishLiveBodyLimitOnScan(t, p, &live)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+rpTestHost+"/graphql", bytes.NewReader(wire))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	req.RemoteAddr = "127.0.0.1:12345"
+	w := httptest.NewRecorder()
+	p.handleForwardHTTP(w, req)
+	assertAdmittedLimitHeld(t, fired, p, admitted, &live)
+	if hits.Load() == 1 && (enc != "gzip" || !bytes.Equal(got, wire)) {
+		t.Fatalf("forwarded enc=%q match=%v", enc, bytes.Equal(got, wire))
+	}
+	return w.Code, hits.Load()
+}
+
+func interceptAdmittedGzipPolicy(t *testing.T, admittedLimit, liveLimit int, wire []byte) (int, int32) {
+	t.Helper()
+	var hits atomic.Int32
+	var got []byte
+	var enc string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		buf, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+		}
+		got = append([]byte(nil), buf...)
+		enc = r.Header.Get("Content-Encoding")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+	cache, pool, base, _, logger, _ := testInterceptSetup(t)
+	admitted := policyConfigForHost(host, admittedLimit)
+	admitted.TLSInterception = base.TLSInterception
+	admitted.SSRF.IPAllowlist = append([]string(nil), base.SSRF.IPAllowlist...)
+	live := *admitted
+	live.RequestBodyScanning.MaxBodyBytes = liveLimit
+	p := newTestProxyWithConfig(t, admitted)
+	fired := publishLiveBodyLimitOnScan(t, p, &live)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://"+upstream.Listener.Addr().String()+"/graphql", bytes.NewReader(wire))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	resp := interceptAndRequestWithProxy(t, upstream, cache, pool, admitted, p.scannerPtr.Load(), logger, p.metrics, req, p)
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	assertAdmittedLimitHeld(t, fired, p, admitted, &live)
+	if hits.Load() == 1 && (enc != "gzip" || !bytes.Equal(got, wire)) {
+		t.Fatalf("forwarded enc=%q match=%v", enc, bytes.Equal(got, wire))
+	}
+	return resp.StatusCode, hits.Load()
+}
+
+func reverseAdmittedGzipPolicy(t *testing.T, admittedLimit, liveLimit int, wire []byte) (int, int32) {
+	t.Helper()
+	var hits atomic.Int32
+	var got []byte
+	var enc string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		buf, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+		}
+		got = append([]byte(nil), buf...)
+		enc = r.Header.Get("Content-Encoding")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream: %v", err)
+	}
+
+	admitted := policyConfigForHost(upstreamURL.Hostname(), admittedLimit)
+	live := *admitted
+	live.RequestBodyScanning.MaxBodyBytes = liveLimit
+	p := newTestProxyWithConfig(t, admitted)
+	handler := NewReverseProxy(upstreamURL, &p.cfgPtr, &p.scannerPtr, p.logger, p.metrics, nil, nil, nil)
+	handler.SetRequestPolicyFn(p.ApplyRequestPolicy)
+	// The generic reverse path does not scan the operator-chosen upstream, so
+	// the URL-scan heartbeat never runs. Publish the reloaded config at the
+	// start of the body read, after ServeHTTP has snapshotted admission.
+	fired := &atomic.Bool{}
+	handler.SetRequestPolicyPrepareFn(func(r *http.Request, in *requestPolicyInput) requestPolicyResult {
+		fired.Store(true)
+		p.cfgPtr.Store(&live)
+		return p.PrepareRequestPolicyBody(r, in)
+	})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+rpTestHost+"/graphql", bytes.NewReader(wire))
+	req.Host = rpTestHost
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	assertAdmittedLimitHeld(t, fired, p, admitted, &live)
+	if hits.Load() == 1 && (enc != "gzip" || !bytes.Equal(got, wire)) {
+		t.Fatalf("forwarded enc=%q match=%v", enc, bytes.Equal(got, wire))
+	}
+	return w.Code, hits.Load()
+}
