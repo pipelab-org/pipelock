@@ -12,9 +12,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -57,9 +57,11 @@ func TestAuditModeConnectSNIRequireTLS(t *testing.T) {
 				_, _ = conn.Write(payload)
 				buf := make([]byte, len(payload))
 				n, err := io.ReadFull(reader, buf)
-				// A read that times out means the tunnel stayed open. Only a
-				// closed connection counts as the refusal.
-				if n != 0 || err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+				// Only a closed connection counts as the refusal: end of stream,
+				// or a reset when the proxy closes with client bytes unread. A
+				// timeout or any other error means the tunnel stayed open.
+				closed := errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET)
+				if n != 0 || !closed {
 					t.Fatalf("authority failure relayed %d bytes, read err=%v", n, err)
 				}
 			}
