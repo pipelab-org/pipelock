@@ -64,7 +64,11 @@ func TestScan_DocumentedProviderCredentials(t *testing.T) {
 				"https://api.vendor.example/collect/" + url.PathEscape(fixture.value),
 			} {
 				result := s.Scan(context.Background(), target)
-				if result.Allowed || result.Scanner != ScannerDLP || !strings.Contains(result.Reason, fixture.pattern) {
+				wantScanner := ScannerDLP
+				if config.IsCoreDLPPatternName(fixture.pattern) {
+					wantScanner = ScannerCoreDLP
+				}
+				if result.Allowed || result.Scanner != wantScanner || !strings.Contains(result.Reason, fixture.pattern) {
 					t.Fatalf("expected %s DLP refusal, got %+v", fixture.pattern, result)
 				}
 			}

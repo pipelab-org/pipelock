@@ -159,6 +159,12 @@ dlp:
     - name: "AWS Secret Key"
       regex: '(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY|secret.?access.?key|SecretAccessKey)\s*["''=:\s]{1,5}\s*[A-Za-z0-9/+=]{40}'
       severity: critical
+    - name: "Amazon Bedrock Long-Term API Key"
+      regex: '(?-i:ABSKQmVkcm9ja0FQSUtleS)[A-Za-z0-9+/]+={0,2}'
+      severity: critical
+    - name: "Amazon Bedrock Short-Term API Key"
+      regex: '(?-i:bedrock-api-key-YmVkcm9jay5hbWF6b25hd3MuY29tLz9BY3Rpb249Q2FsbFdpdGhCZWFyZXJUb2tlbiZYLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsP)[A-Za-z0-9\\]+={0,2}'
+      severity: critical
     - name: "Google OAuth Token"
       regex: 'ya29\.[a-zA-Z0-9_-]{20,}'
       severity: critical
@@ -216,6 +222,9 @@ dlp:
     - name: "DigitalOcean Token"
       regex: 'dop_v1_[a-f0-9]{64}'
       severity: critical
+    - name: "Heroku OAuth Token"
+      regex: '(?-i:HRKU-)(?:[A-Za-z0-9_-]{60}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
+      severity: critical
     - name: "Doppler Token"
       regex: 'dp\.(?:(?:ct|pt|sa|said|scim|audit)\.|st\.(?:[a-z0-9_-]{2,35}\.)?)[A-Za-z0-9]{40,44}'
       severity: critical
@@ -223,7 +232,7 @@ dlp:
       regex: 'A3-[A-Z0-9]{6}-(?:[A-Z0-9]{11}(?:-[A-Z0-9]{5}){3}|[A-Z0-9]{6}(?:-[A-Z0-9]{5}){4})'
       severity: critical
     - name: "HashiCorp Vault Token"
-      regex: 'hvs\.[A-Za-z0-9]{24,}\b'
+      regex: '(?:hvs\.[A-Za-z0-9]{24,}\b|(?-i:hvb\.)[A-Za-z0-9_-]{24,})'
       severity: critical
     - name: "Vercel Token"
       regex: '(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}\b'

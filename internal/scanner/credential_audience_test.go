@@ -405,6 +405,7 @@ func credentialAudienceURLCases() []credentialAudienceURLCase {
 		{"Pinecone API Key", "pcsk_" + strings.Repeat("a", 36), "https://api.pinecone.io", "api.pinecone.io"},
 		{"Groq API Key", "gsk_" + strings.Repeat("a", 48), "https://api.groq.com/openai/v1/chat/completions", "api.groq.com"},
 		{"Doppler Token", "dp." + "st." + strings.Repeat("a", 40), "https://api.doppler.com/v3/configs/config/secrets", "api.doppler.com"},
+		{"Heroku OAuth Token", "HRKU-" + strings.Repeat("Ab3_", 15), "https://api.heroku.com/account", "api.heroku.com"},
 		{"xAI API Key", "xai-" + strings.Repeat("a", 80), "https://api.x.ai/v1/responses", "api.x.ai"},
 		{"Discord Bot Token", "M" + strings.Repeat("a", 23) + "." + strings.Repeat("b", 6) + "." + strings.Repeat("c", 27), "https://discord.com/api/v10", "discord.com"},
 	}

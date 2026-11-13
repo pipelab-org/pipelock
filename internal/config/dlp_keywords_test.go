@@ -227,12 +227,13 @@ func TestDLPKeywordsLegacyPolicyHashGolden(t *testing.T) {
 	// 06907c6982b07f25905d4d40782cb9d76badd6cb. The balanced default-corpus
 	// case was rebaselined for the Anthropic credential audience change and
 	// the JWT sign-in bearer carrier, then for the Doppler, 1Password and age
-	// patterns and the widened PyPI and Sentry patterns.
+	// patterns and the widened PyPI and Sentry patterns, then for the
+	// Bedrock, Heroku, and Vault corpus change.
 	// Balanced mode without default patterns retains its pre-keyword hash
 	// independently of changes to the built-in corpus.
 	for _, tc := range []struct{ body, want string }{
 		{keywordConfigYAML(""), "85c76016e5a0725a682561e23f18dd8ebade2ada53e72c7324cbb511f7749ed6"},
-		{"mode: balanced\n", "b142281daec0d9e244b15b75f0b7fb6844d63cb39dde28165189bfec61ffa247"},
+		{"mode: balanced\n", "cfc0a8d00bea6a91109ec8c0aa475f4345ac9fdbb36d667eeb3e559704d8f661"},
 		{"mode: balanced\ndlp:\n  include_defaults: false\n", "66df31a95a2ce552d4d50fc55356f0dd204d8bf3999a3bfa90bf9c3332710d86"},
 	} {
 		cfg, err := LoadBytes([]byte(tc.body))
