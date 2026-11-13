@@ -465,7 +465,7 @@ const (
 	// pattern corpus is part of the canonical policy view.
 	// Re-bumped for the compiled sign-in bearer carrier on the JWT pattern.
 	// Re-bumped when the default corpus added Bedrock and Heroku patterns and
-	// widened the OpenAI, Slack, and Vault patterns.
+	// widened the Slack and Vault patterns.
 	goldenHashDefaults = "ec25398e40423953283ea64b966601acd226e3b53a5f282d448b728ac947fe21"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
@@ -713,7 +713,7 @@ const (
 	// (Claude Code first-party credential endpoints). The default
 	// pattern corpus is part of the canonical policy view.
 	// Re-bumped with goldenHashDefaults for the sign-in bearer carrier.
-	// Re-bumped with goldenHashDefaults for the Bedrock, Heroku, OpenAI, Slack, and Vault corpus change.
+	// Re-bumped with goldenHashDefaults for the Bedrock, Heroku, Slack, and Vault corpus change.
 	goldenHashRichConfig = "db5383e86b0a2437c24e4b1a16106cb4d36f28a0396191a35f66b7d7c99b3a20"
 )
 

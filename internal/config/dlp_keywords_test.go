@@ -228,7 +228,7 @@ func TestDLPKeywordsLegacyPolicyHashGolden(t *testing.T) {
 	// case was rebaselined for the Anthropic credential audience change and
 	// the JWT sign-in bearer carrier, then for the Doppler, 1Password and age
 	// patterns and the widened PyPI and Sentry patterns, then for the
-	// Bedrock, Heroku, OpenAI, Slack, and Vault corpus change.
+	// Bedrock, Heroku, Slack, and Vault corpus change.
 	// Balanced mode without default patterns retains its pre-keyword hash
 	// independently of changes to the built-in corpus.
 	for _, tc := range []struct{ body, want string }{
