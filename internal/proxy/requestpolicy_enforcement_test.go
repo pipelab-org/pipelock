@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -942,6 +943,56 @@ func TestRequestPolicy_ReverseGraphQL_BlocksWithBodyScanningDisabled(t *testing.
 	rpHandler.ServeHTTP(w, req)
 
 	assertRequestPolicyBlock(t, w)
+}
+
+// The reverse handler must hand the admitted config to the body read. A reload
+// that raises the limit during the request cannot make an oversize body readable.
+func TestReverseRequestPolicyUsesAdmittedBodyLimit(t *testing.T) {
+	t.Parallel()
+	var hits atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream: %v", err)
+	}
+	rule := graphqlBlockRule()
+	rule.Route.Hosts = []string{upstreamURL.Hostname()}
+	rule.Action = config.ActionWarn
+	cfg := reqPolicyConfig(rule)
+	cfg.RequestBodyScanning.Enabled = false
+	cfg.RequestBodyScanning.MaxBodyBytes = 8
+	p := newTestProxyWithConfig(t, cfg)
+	admitted := p.cfgPtr.Load()
+
+	rpHandler := NewReverseProxy(upstreamURL, &p.cfgPtr, &p.scannerPtr, p.logger, p.metrics, nil, nil, nil)
+	rpHandler.SetRequestPolicyFn(p.ApplyRequestPolicy)
+	rpHandler.SetRequestPolicyPrepareFn(func(r *http.Request, in *requestPolicyInput) requestPolicyResult {
+		live := reqPolicyConfig(rule)
+		live.RequestBodyScanning.Enabled = false
+		live.RequestBodyScanning.MaxBodyBytes = 1 << 20
+		p.cfgPtr.Store(live)
+		return p.PrepareRequestPolicyBody(r, in)
+	})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+rpTestHost+"/graphql",
+		strings.NewReader(deleteRecordGraphQLBody()))
+	req.Host = rpTestHost
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	rpHandler.ServeHTTP(w, req)
+
+	assertRequestPolicyBlock(t, w)
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+	if admitted.RequestBodyScanning.MaxBodyBytes != 8 {
+		t.Fatalf("admitted limit changed to %d", admitted.RequestBodyScanning.MaxBodyBytes)
+	}
 }
 
 func TestRequestPolicy_RedirectHopReportsRequestPolicyReason(t *testing.T) {
