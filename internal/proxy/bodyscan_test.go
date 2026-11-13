@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/hex"
@@ -2364,18 +2365,20 @@ func TestScanRequestBody_CompressedGzip(t *testing.T) {
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
-	_, result := scanRequestBody(context.Background(), BodyScanRequest{
-		Body:            strings.NewReader("compressed data"),
-		ContentType:     "application/json",
+	plain := []byte("clean body text")
+	wire := gzipRequestBody(t, plain)
+	buf, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:            bytes.NewReader(wire),
+		ContentType:     "text/plain",
 		ContentEncoding: "gzip",
 		MaxBytes:        cfg.RequestBodyScanning.MaxBodyBytes,
 		Scanner:         sc,
 	})
-	if result.Clean {
-		t.Fatal("expected fail-closed block on gzip Content-Encoding")
+	if !result.Clean {
+		t.Fatalf("gzip body result = %+v, want clean", result)
 	}
-	if result.Action != config.ActionBlock {
-		t.Fatalf("expected block action, got %q", result.Action)
+	if result.ContentCoding != "gzip" || !bytes.Equal(result.InspectedBody, plain) || !bytes.Equal(buf, wire) {
+		t.Fatalf("coding=%q inspected=%q forward=%d wire=%d", result.ContentCoding, result.InspectedBody, len(buf), len(wire))
 	}
 }
 
@@ -2384,15 +2387,17 @@ func TestScanRequestBody_CompressedDeflate(t *testing.T) {
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
-	_, result := scanRequestBody(context.Background(), BodyScanRequest{
-		Body:            strings.NewReader("compressed data"),
-		ContentType:     "application/json",
+	plain := []byte("clean body text")
+	wire := deflateRequestBody(t, plain)
+	buf, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:            bytes.NewReader(wire),
+		ContentType:     "text/plain",
 		ContentEncoding: "deflate",
 		MaxBytes:        cfg.RequestBodyScanning.MaxBodyBytes,
 		Scanner:         sc,
 	})
-	if result.Clean {
-		t.Fatal("expected fail-closed block on deflate")
+	if !result.Clean || result.ContentCoding != "deflate" || !bytes.Equal(result.InspectedBody, plain) || !bytes.Equal(buf, wire) {
+		t.Fatalf("deflate result clean=%v coding=%q forward match=%v", result.Clean, result.ContentCoding, bytes.Equal(buf, wire))
 	}
 }
 
@@ -2401,15 +2406,37 @@ func TestScanRequestBody_CompressedCaseMismatch(t *testing.T) {
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 
-	_, result := scanRequestBody(context.Background(), BodyScanRequest{
-		Body:            strings.NewReader("data"),
-		ContentType:     "application/json",
+	plain := []byte("data")
+	wire := gzipRequestBody(t, plain)
+	buf, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:            bytes.NewReader(wire),
+		ContentType:     "text/plain",
 		ContentEncoding: "GZip",
 		MaxBytes:        cfg.RequestBodyScanning.MaxBodyBytes,
 		Scanner:         sc,
 	})
-	if result.Clean {
-		t.Fatal("expected fail-closed block on case-insensitive gzip")
+	if !result.Clean || result.ContentCoding != "gzip" || !bytes.Equal(result.InspectedBody, plain) || !bytes.Equal(buf, wire) {
+		t.Fatalf("mixed-case gzip result clean=%v coding=%q", result.Clean, result.ContentCoding)
+	}
+}
+
+func TestScanRequestBody_CompressedUnsupportedCoding(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:            strings.NewReader("compressed data"),
+		ContentType:     "application/json",
+		ContentEncoding: "br",
+		MaxBytes:        cfg.RequestBodyScanning.MaxBodyBytes,
+		Scanner:         sc,
+	})
+	if result.Clean || result.Action != config.ActionBlock || !result.UnscannedEncoding {
+		t.Fatalf("br result = %+v, want fail-closed unscanned block", result)
+	}
+	if !strings.Contains(result.Reason, scanner.UnscannedEncodingSuffix) {
+		t.Fatalf("reason = %q, want suffix %q", result.Reason, scanner.UnscannedEncodingSuffix)
 	}
 }
 

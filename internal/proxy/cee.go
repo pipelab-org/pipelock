@@ -422,6 +422,31 @@ func ceeEntropyExempt(targetURL string, exemptDomains []string) bool {
 // with this stream. Re-wraps r.Body after reading so downstream handlers can
 // still consume it. When partitionJSON is false the caller wants only the raw
 // outbound stream; the body-json partition fields stay empty.
+// callWithInspectedBody presents inspected bytes to fn, then restores the
+// body that will be forwarded. Cross-request entropy reads r.Body, and a
+// decoded content coding must be measured without replacing the compressed
+// bytes the upstream receives.
+func callWithInspectedBody(r *http.Request, inspected []byte, fn func()) {
+	prevBody := r.Body
+	prevLen := r.ContentLength
+	prevGet := r.GetBody
+	held := inspected
+	if held == nil {
+		held = []byte{}
+	}
+	r.Body = io.NopCloser(bytes.NewReader(held))
+	r.ContentLength = int64(len(held))
+	r.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(held)), nil
+	}
+	defer func() {
+		r.Body = prevBody
+		r.ContentLength = prevLen
+		r.GetBody = prevGet
+	}()
+	fn()
+}
+
 func extractOutboundPayloads(r *http.Request, partitionJSON bool, sessionKey string, partitionKey []byte) ceeOutboundPayloads {
 	var parts []string
 	result := ceeOutboundPayloads{}

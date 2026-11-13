@@ -1939,22 +1939,31 @@ func TestReverseProxy_StripFailedFallsBackToBlock(t *testing.T) {
 
 func TestReverseProxy_CompressedBodyBlocked(t *testing.T) {
 	cfg := reverseTestConfig()
-	// Even in warn mode, compressed bodies must be blocked (fail-closed,
-	// nil buffer from scanRequestBody).
 	cfg.RequestBodyScanning.Action = config.ActionWarn
 
-	upstream := func(w http.ResponseWriter, _ *http.Request) {
-		// Should never reach upstream.
-		t.Error("upstream received request despite compressed body")
+	plain := []byte(`{"ok":true}`)
+	wire := gzipRequestBody(t, plain)
+	var got []byte
+	var hits atomic.Int32
+	upstream := func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+		}
+		got = append([]byte(nil), body...)
+		if r.Header.Get("Content-Encoding") != "gzip" {
+			t.Errorf("Content-Encoding = %q, want gzip", r.Header.Get("Content-Encoding"))
+		}
 		w.WriteHeader(http.StatusOK)
 	}
 
 	proxy := reverseTestSetup(t, cfg, upstream)
 
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, proxy.URL+"/api/send",
-		strings.NewReader("some gzipped content"))
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, proxy.URL+"/api/send", bytes.NewReader(wire))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
+	req.ContentLength = int64(len(wire))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -1962,9 +1971,42 @@ func TestReverseProxy_CompressedBodyBlocked(t *testing.T) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// Must block regardless of warn mode - nil buffer fail-closed.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for a clean gzip body, got %d", resp.StatusCode)
+	}
+	if hits.Load() != 1 || !bytes.Equal(got, wire) {
+		t.Fatalf("hits=%d forwarded match=%v", hits.Load(), bytes.Equal(got, wire))
+	}
+}
+
+func TestReverseProxy_UnsupportedContentEncodingBlocked(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.RequestBodyScanning.Action = config.ActionWarn
+
+	var hits atomic.Int32
+	upstream := func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}
+
+	proxy := reverseTestSetup(t, cfg, upstream)
+
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, proxy.URL+"/api/send",
+		strings.NewReader("some brotli content"))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "br")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
 	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("expected 403 (compressed body fail-closed), got %d", resp.StatusCode)
+		t.Fatalf("expected 403 for an unsupported content coding, got %d", resp.StatusCode)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
 	}
 }
 

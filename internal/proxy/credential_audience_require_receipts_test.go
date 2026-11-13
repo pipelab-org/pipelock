@@ -316,7 +316,7 @@ func TestReverseProxy_ScanRequest_CredentialAudienceRequireReceipts(t *testing.T
 				strings.NewReader(`{"key":"`+audienceReceiptTestCredential+`"}`))
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
-			blocked, _, _, _ := handler.scanRequest(rec, req, cfg, sc, nil, reverseBlockReceiptInput{Target: "https://api.vendor.example/v1"})
+			blocked, _, _, _, _ := handler.scanRequest(rec, req, cfg, sc, nil, reverseBlockReceiptInput{Target: "https://api.vendor.example/v1"})
 			if blocked != tc.wantBlocked {
 				t.Fatalf("blocked = %v, want %v; response=%s", blocked, tc.wantBlocked, rec.Body.String())
 			}

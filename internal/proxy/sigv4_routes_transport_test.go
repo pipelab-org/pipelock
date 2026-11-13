@@ -76,7 +76,7 @@ func TestReverseProxy_SigV4CredentialRoutes(t *testing.T) {
 			req := httptest.NewRequestWithContext(t.Context(), tc.method, "https://proxy.vendor.example"+tc.path, strings.NewReader(tc.body))
 			req.Header.Set("Content-Type", tc.contentType)
 			rec := httptest.NewRecorder()
-			blocked, _, _, _ := handler.scanRequest(rec, req, cfg, sc, nil, reverseBlockReceiptInput{Target: tc.upstream + tc.path})
+			blocked, _, _, _, _ := handler.scanRequest(rec, req, cfg, sc, nil, reverseBlockReceiptInput{Target: tc.upstream + tc.path})
 			if blocked != tc.blocked {
 				t.Fatalf("blocked = %v, want %v; response=%s", blocked, tc.blocked, rec.Body.String())
 			}
@@ -151,7 +151,7 @@ func TestReverseProxy_SigV4CredentialRoutesUseJoinedUpstreamPath(t *testing.T) {
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://proxy.vendor.example/v1/graphql", strings.NewReader(body))
 			req.Header.Set("Content-Type", contentTypeJSON)
 			rec := httptest.NewRecorder()
-			blocked, _, _, _ := handler.scanRequest(rec, req, cfg, sc, nil, reverseBlockReceiptInput{Target: "https://api.vendor.example/base/v1/graphql"})
+			blocked, _, _, _, _ := handler.scanRequest(rec, req, cfg, sc, nil, reverseBlockReceiptInput{Target: "https://api.vendor.example/base/v1/graphql"})
 			if blocked != tc.blocked {
 				t.Fatalf("blocked = %v, want %v; response=%s", blocked, tc.blocked, rec.Body.String())
 			}

@@ -20,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/reqpolicy"
+	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 )
 
 // blockLayerRequestPolicy labels request_policy decisions on receipts and audit
@@ -67,6 +68,11 @@ type requestPolicyInput struct {
 	// the body limit comes from it, so a reload between admission and the body
 	// read cannot change the limit this request is held to.
 	Config *config.Config
+	// WireBody is the original compressed body when Body is the decoded view.
+	// WireBodySet distinguishes that original, including an empty one, from
+	// an identity body that was not decoded.
+	WireBody    []byte
+	WireBodySet bool
 
 	Transport string
 	Target    string // full URL or host:port, for receipt/audit correlation
@@ -253,20 +259,39 @@ func (p *Proxy) prepareRequestPolicyBody(r *http.Request, in *requestPolicyInput
 		return requestPolicyResult{}
 	}
 	limit := p.requestPolicyBodyLimit(in.Config)
-	buf, err := io.ReadAll(io.LimitReader(r.Body, int64(limit)+1))
+	raw, err := io.ReadAll(io.LimitReader(r.Body, int64(limit)+1))
 	if err != nil {
 		return p.requestPolicyReadBlocked(*in, fmt.Sprintf("request body could not be inspected: %v", err))
 	}
-	if len(buf) > limit {
+	if len(raw) > limit {
 		return p.requestPolicyReadBlocked(*in, fmt.Sprintf("request body exceeds max_body_bytes (%d)", limit))
 	}
-	r.Body = io.NopCloser(bytes.NewReader(buf))
-	r.ContentLength = int64(len(buf))
-	bufCopy := buf
-	r.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(bufCopy)), nil
+	coding, codingErr := responseencoding.ParseRequestCoding(r.Header.Values("Content-Encoding"))
+	if codingErr != nil {
+		return p.requestPolicyReadBlocked(*in, fmt.Sprintf("request body uses Content-Encoding %q; compressed bodies cannot be scanned", strings.Join(r.Header.Values("Content-Encoding"), ",")))
 	}
-	in.Body = buf
+	inspected := raw
+	wire := raw
+	if coding != "" {
+		decoded, decErr := responseencoding.ReadDecoded(coding, raw, limit)
+		if decErr != nil {
+			return p.requestPolicyReadBlocked(*in, fmt.Sprintf("request body uses Content-Encoding %q; compressed bodies cannot be scanned", strings.Join(r.Header.Values("Content-Encoding"), ",")))
+		}
+		if len(decoded) > limit {
+			return p.requestPolicyReadBlocked(*in, fmt.Sprintf("request body exceeds max_body_bytes (%d)", limit))
+		}
+		inspected = decoded
+		wire = raw
+		in.WireBody = append([]byte(nil), wire...)
+		in.WireBodySet = true
+	}
+	r.Body = io.NopCloser(bytes.NewReader(wire))
+	r.ContentLength = int64(len(wire))
+	wireCopy := wire
+	r.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(wireCopy)), nil
+	}
+	in.Body = inspected
 	in.BodyRead = true
 	return requestPolicyResult{}
 }

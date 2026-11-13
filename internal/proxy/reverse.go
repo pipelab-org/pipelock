@@ -1250,6 +1250,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// Scan request body for DLP patterns (secret exfiltration).
 	forwardedVerdict := config.ActionAllow
 	var reverseBodyBytes []byte
+	var reverseInspected []byte
+	reverseDecoded := false
 	if r.Body != nil && r.ContentLength != 0 && cfg.RequestBodyScanning.Enabled {
 		maxBytes := reverseRequestScanMaxBytes(cfg)
 		if r.ContentLength > int64(maxBytes) {
@@ -1296,7 +1298,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		defer releaseRequestScan()
 
 		redaction := currentRedactionRuntimeForConfig(cfg, rp.redactionRuntimePtr, sc)
-		blocked, verdict, bodyBytes, bodyFinding := rp.scanRequest(w, r, cfg, sc, redaction, reverseBlockReceiptInput{
+		blocked, verdict, bodyBytes, bodyFinding, inspectedBody := rp.scanRequest(w, r, cfg, sc, redaction, reverseBlockReceiptInput{
 			RequestID: requestID,
 			Agent:     agent,
 			Target:    targetURL,
@@ -1316,6 +1318,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			requestScannerVerdict = scannerVerdictForContinuingAction(requestEffectiveAction, cfg.EnforceEnabled())
 		}
 		reverseBodyBytes = bodyBytes
+		reverseInspected = inspectedBody
+		reverseDecoded = inspectedBody != nil
 	}
 
 	// Per-session controls: session profiling / adaptive signals, taint, and
@@ -1524,7 +1528,14 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		if fb := rp.owner.FragmentBufferPtr().Load(); fb != nil {
 			ceePartitionKey = fb.PartitionKey()
 		}
-		ceePayloads := extractOutboundPayloads(r, ceeJSONBodyPartitioningEnabled(cfg), ceeSession, ceePartitionKey)
+		var ceePayloads ceeOutboundPayloads
+		if reverseDecoded {
+			callWithInspectedBody(r, reverseInspected, func() {
+				ceePayloads = extractOutboundPayloads(r, ceeJSONBodyPartitioningEnabled(cfg), ceeSession, ceePartitionKey)
+			})
+		} else {
+			ceePayloads = extractOutboundPayloads(r, ceeJSONBodyPartitioningEnabled(cfg), ceeSession, ceePartitionKey)
+		}
 		ceeAdmission := rp.owner.admitCurrentCEE(r.Context(), ceeAdmitRequest{
 			ActorAuth: actorAuth, Outbound: ceePayloads.outbound, BodyFragmentPayloads: ceePayloads.bodyFragmentPayloads, BodyFragmentLeaves: ceePayloads.bodyFragmentLeaves,
 			PartitionReason: ceePayloads.partitionReason,
@@ -1623,7 +1634,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			Query:       rpQuery,
 			ContentType: r.Header.Get(headerContentType),
 			Headers:     r.Header,
-			Body:        reverseBodyBytes,
+			Body:        requestPolicyBodyView(reverseBodyBytes, reverseInspected, reverseDecoded),
 			BodyRead:    reverseBodyBytes != nil || r.Body == nil || r.Body == http.NoBody,
 			Transport:   TransportReverse,
 			Target:      targetURL,
@@ -1639,13 +1650,24 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			},
 		}
 		if rp.reqPolicyPrepareFn != nil {
+			bodyReadBefore := rpInput.BodyRead
 			if rpRes := rp.reqPolicyPrepareFn(r, &rpInput); rpRes.Block {
 				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, blockLayerRequestPolicy)
 				writeReverseProxyBlock(w, http.StatusForbidden, rpRes.Info.WithRequestID(requestID), "blocked by request policy: "+rpRes.Reason)
 				return
 			}
-			reverseBodyBytes = rpInput.Body
+			// A prepare that reads the body for the first time is the only
+			// point that may replace the forwarded bytes. When the body was
+			// already scanned, Body is the inspected view and must not replace
+			// the compressed bytes recorded for the content digest.
+			if !bodyReadBefore {
+				if rpInput.WireBodySet {
+					reverseBodyBytes = rpInput.WireBody
+				} else {
+					reverseBodyBytes = rpInput.Body
+				}
+			}
 		}
 		if rpRes := rp.reqPolicyFn(rpInput); rpRes.Block {
 			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
@@ -2073,7 +2095,7 @@ func (t *reverseSigningRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 // request had no scannable body) and the caller may hand it to the
 // envelope signer via ctxKeyReverseEnvelopeBody so the signing
 // RoundTripper can compute content-digest without a second drain.
-func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Request, cfg *config.Config, sc *scanner.Scanner, redaction *redactionRuntime, receiptInput reverseBlockReceiptInput) (blocked bool, verdict string, body []byte, finding bool) {
+func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Request, cfg *config.Config, sc *scanner.Scanner, redaction *redactionRuntime, receiptInput reverseBlockReceiptInput) (blocked bool, verdict string, body []byte, finding bool, inspected []byte) {
 	emitReverseReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptShard(opts, receiptShardFromContext(r.Context()))
 		if cfg != nil {
@@ -2130,7 +2152,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	if clientCanceledIncompleteBody(r.Context(), result) {
 		logRequestCanceled(rp.logger, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: receiptInput.Target, ClientIP: reverseClientIP(r), RequestID: receiptInput.RequestID, Agent: receiptInput.Agent}), result.Reason)
 		writeClientCanceled(w)
-		return true, "", nil, false
+		return true, "", nil, false, nil
 	}
 	if result.CredentialAudienceReceiptErr != nil {
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(result.CredentialAudienceReceiptErr)
@@ -2139,7 +2161,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		writeReverseProxyBlock(w, http.StatusForbidden,
 			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(receiptInput.RequestID),
 			blockedErr.reason)
-		return true, config.ActionBlock, nil, true
+		return true, config.ActionBlock, nil, true, nil
 	}
 
 	// Capture observer: record reverse proxy request DLP verdict for policy replay.
@@ -2192,7 +2214,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		r.GetBody = func() (io.ReadCloser, error) {
 			return io.NopCloser(bytes.NewReader(bodyBytesCopy)), nil
 		}
-		return false, config.ActionAllow, bodyBytes, false
+		return false, config.ActionAllow, bodyBytes, false, inspectedBodyForCaller(bodyBytes, result)
 	}
 
 	action := result.Action
@@ -2308,7 +2330,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		writeReverseProxyBlock(w, http.StatusForbidden,
 			blockInfoFor(bodyBlockReason, layer).WithRequestID(requestID),
 			reason)
-		return true, config.ActionBlock, nil, true
+		return true, config.ActionBlock, nil, true, nil
 	}
 
 	if action == config.ActionBlock && cfg.EnforceEnabled() {
@@ -2330,7 +2352,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		writeReverseProxyBlock(w, http.StatusForbidden,
 			blockInfoFor(bodyBlockReason, layer).WithRequestID(requestID),
 			reason)
-		return true, config.ActionBlock, nil, true
+		return true, config.ActionBlock, nil, true, nil
 	}
 
 	// Warn mode: re-wrap body and continue. The observation uses the same
@@ -2342,7 +2364,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	r.GetBody = func() (io.ReadCloser, error) {
 		return io.NopCloser(bytes.NewReader(bodyBytesCopy)), nil
 	}
-	return false, action, bodyBytes, true
+	return false, action, bodyBytes, true, inspectedBodyForCaller(bodyBytes, result)
 }
 
 // modifyResponse scans the upstream response body for prompt injection.
