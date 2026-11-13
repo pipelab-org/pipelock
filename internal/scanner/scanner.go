@@ -600,6 +600,10 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Scanner, error) {
 }
 
 func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudgetEntries int) (*Scanner, error) {
+	finishRegexpScope := beginScannerRegexpScope()
+	kept := false
+	defer func() { finishRegexpScope(kept) }()
+
 	oauthEndpoints, err := config.NormalizeOAuthAuthorizationEndpoints(cfg.FetchProxy.Monitoring.OAuthAuthorizationEndpoints)
 	if err != nil {
 		return nil, err
@@ -735,7 +739,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 			if !strings.HasPrefix(body, "(?i)") {
 				body = "(?i)" + body
 			}
-			cp.withoutLeftBoundary, err = regexp.Compile(body)
+			cp.withoutLeftBoundary, err = compileScannerRegexp(body)
 			if err != nil {
 				return nil, fmt.Errorf("compile DLP pattern %q without left boundary: %w", p.Name, err)
 			}
@@ -1001,6 +1005,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 	}
 
 	s.responseVerdicts.revision = s.responsePatternRevision()
+	kept = true
 	return s, nil
 }
 

@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -131,4 +132,63 @@ func TestScannerConstructionMetadataIsolation(t *testing.T) {
 	if !after.Clean || len(after.InformationalMatches) != 1 || after.InformationalMatches[0].PatternName != "Renamed marker" || after.InformationalMatches[0].Severity != config.SeverityLow || !after.InformationalMatches[0].Warn {
 		t.Fatalf("new metadata not applied: %+v", after)
 	}
+}
+
+func TestScannerConstructionDropsRemovedExpressions(t *testing.T) {
+	const marker = "REMOVEDLITERAL[0-9]{8}"
+	cfg := constructionConfig(false)
+	cfg.DLP.Patterns = append(append([]config.DLPPattern(nil), cfg.DLP.Patterns...), config.DLPPattern{
+		Name: "Removed marker", Regex: marker, Severity: config.SeverityHigh,
+	})
+	cfg.ResponseScanning.Patterns = append(append([]config.ResponseScanPattern(nil), cfg.ResponseScanning.Patterns...), config.ResponseScanPattern{
+		Name: "Removed response", Regex: "response_REMOVEDLITERAL",
+	})
+	first, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared := first.dlpPatterns[0].re
+	first.Close()
+	if !regexpCacheContains("REMOVEDLITERAL") {
+		t.Fatal("live configuration was absent from the compile cache")
+	}
+	second, err := New(constructionConfig(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if second.dlpPatterns[0].re != shared {
+		t.Fatal("built-in expression was recompiled")
+	}
+	if regexpCacheContains("REMOVEDLITERAL") {
+		t.Fatal("removed configuration remained in the compile cache")
+	}
+}
+
+func TestScannerConstructionFailedCompileDropsNewExpressions(t *testing.T) {
+	cfg := constructionConfig(false)
+	cfg.DLP.Patterns = append(append([]config.DLPPattern(nil), cfg.DLP.Patterns...),
+		config.DLPPattern{Name: "Ephemeral", Regex: "EPHEMERALTOKEN[0-9]{6}", Severity: config.SeverityHigh},
+		config.DLPPattern{Name: "Broken", Regex: "[", Severity: config.SeverityHigh},
+	)
+	if s, err := New(cfg); err == nil || s != nil {
+		if s != nil {
+			s.Close()
+		}
+		t.Fatalf("invalid expression accepted: scanner=%v err=%v", s, err)
+	}
+	if regexpCacheContains("EPHEMERALTOKEN") {
+		t.Fatal("failed construction published an expression")
+	}
+}
+
+func regexpCacheContains(fragment string) bool {
+	scannerRegexpCache.mu.Lock()
+	defer scannerRegexpCache.mu.Unlock()
+	for expression := range scannerRegexpCache.expressions {
+		if strings.Contains(expression, fragment) {
+			return true
+		}
+	}
+	return false
 }

@@ -13,7 +13,7 @@ func TestRegexpCompileCache(t *testing.T) {
 	var cache regexpCompileCache
 	compile := func(expression string) *regexp.Regexp {
 		t.Helper()
-		re, err := cache.compile(expression, 2)
+		re, err := cache.compile(expression, 2, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -27,7 +27,7 @@ func TestRegexpCompileCache(t *testing.T) {
 	if first == folded || first.MatchString("ABC") || !folded.MatchString("ABC") {
 		t.Fatal("flags were not preserved")
 	}
-	if re, err := cache.compile("[", 2); err == nil || re != nil {
+	if re, err := cache.compile("[", 2, nil); err == nil || re != nil {
 		t.Fatal("invalid expression accepted")
 	}
 	if len(cache.expressions) != 2 {
@@ -54,7 +54,7 @@ func TestRegexpCompileCacheConcurrentMiss(t *testing.T) {
 	for range cap(results) {
 		wg.Go(func() {
 			<-start
-			re, err := cache.compile("cold-expression", 2)
+			re, err := cache.compile("cold-expression", 2, nil)
 			if err != nil {
 				t.Error(err)
 				return
