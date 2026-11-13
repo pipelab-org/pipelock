@@ -1211,3 +1211,109 @@ func TestReverseGzipBodyUsesDecodedViewForCrossRequestDetection(t *testing.T) {
 		t.Fatalf("second status=%d layer=%q body=%s", second.Code, second.Header().Get(blockreason.HeaderLayer), second.Body.String())
 	}
 }
+
+func TestForwardGzipBodyUsesDecodedViewForCrossRequestDetection(t *testing.T) {
+	var got []byte
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+		}
+		got = append([]byte(nil), body...)
+		if r.ContentLength != int64(len(body)) {
+			t.Errorf("content-length=%d body=%d", r.ContentLength, len(body))
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(backend.Close)
+
+	proxyAddr, proxy, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.Action = config.ActionBlock
+		cfg.CrossRequestDetection = ceeFragmentBlockCfg()
+		cfg.Taint.Enabled = false
+	})
+	t.Cleanup(cleanup)
+	installForwardTestDialer(proxy, backend.Listener.Addr().String())
+	client := forwardHTTPClient(t, proxyAddr)
+
+	send := func(plain string) (*http.Response, []byte) {
+		t.Helper()
+		wire := gzipRequestBody(t, []byte(plain))
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://api.example.com/upload", bytes.NewReader(wire))
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		req.Header.Set("Content-Type", "text/plain")
+		req.Header.Set("Content-Encoding", "gzip")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("do: %v", err)
+		}
+		t.Cleanup(func() { _ = resp.Body.Close() })
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp, wire
+	}
+	first, wire := send(testCEEAWSKeyPrefix)
+	if first.StatusCode != http.StatusOK || !bytes.Equal(got, wire) {
+		t.Fatalf("first status=%d wire match=%v", first.StatusCode, bytes.Equal(got, wire))
+	}
+	second, _ := send(testCEEAWSKeySuffix)
+	if second.StatusCode != http.StatusForbidden || second.Header.Get(blockreason.HeaderLayer) != "cross_request" {
+		body, _ := io.ReadAll(second.Body)
+		t.Fatalf("second status=%d layer=%q body=%s", second.StatusCode, second.Header.Get(blockreason.HeaderLayer), body)
+	}
+}
+
+func TestInterceptGzipBodyUsesDecodedViewForCrossRequestDetection(t *testing.T) {
+	var got []byte
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+		}
+		got = append([]byte(nil), body...)
+		if r.ContentLength != int64(len(body)) {
+			t.Errorf("content-length=%d body=%d", r.ContentLength, len(body))
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Action = config.ActionBlock
+	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
+	cfg.CrossRequestDetection = ceeFragmentBlockCfg()
+	cfg.Taint.Enabled = false
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	proxy, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy: %v", err)
+	}
+	t.Cleanup(proxy.Close)
+
+	send := func(plain string) (*http.Response, []byte) {
+		t.Helper()
+		wire := gzipRequestBody(t, []byte(plain))
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://"+upstream.Listener.Addr().String()+"/upload", bytes.NewReader(wire))
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		req.Header.Set("Content-Type", "text/plain")
+		req.Header.Set("Content-Encoding", "gzip")
+		resp := interceptAndRequestWithProxy(t, upstream, cache, pool, cfg, sc, logger, m, req, proxy)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp, wire
+	}
+	first, wire := send(testCEEAWSKeyPrefix)
+	if first.StatusCode != http.StatusOK || !bytes.Equal(got, wire) {
+		t.Fatalf("first status=%d wire match=%v", first.StatusCode, bytes.Equal(got, wire))
+	}
+	second, _ := send(testCEEAWSKeySuffix)
+	if second.StatusCode != http.StatusForbidden || second.Header.Get(blockreason.HeaderLayer) != "cross_request" {
+		body, _ := io.ReadAll(second.Body)
+		t.Fatalf("second status=%d layer=%q body=%s", second.StatusCode, second.Header.Get(blockreason.HeaderLayer), body)
+	}
+}
