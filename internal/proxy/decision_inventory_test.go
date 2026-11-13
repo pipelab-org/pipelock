@@ -391,7 +391,7 @@ func (h *inventoryHarness) urlRows(t *testing.T, cfg *config.Config, base decisi
 	var rows []decisionInventoryRow
 	core := "AKIA" + "IOSFODNN7EXAMPLE"
 	provider := "sk-" + "proj-" + strings.Repeat("a", 24)
-	for _, tc := range []struct {
+	cases := []struct {
 		name, target, variant string
 	}{
 		{"clean", "https://inventory.openai.com/v1", "stock"},
@@ -408,53 +408,70 @@ func (h *inventoryHarness) urlRows(t *testing.T, cfg *config.Config, base decisi
 		{"metadata-despite-allowance", "https://169.254.169.254/latest/meta-data/", "private-service-allowance"},
 		{"audience-credential-query", "https://api.openai.com/v1?credential=" + provider, "stock"},
 		{"audience-lookalike", "https://api.openai.com.evil.example/v1?credential=" + provider, "admit-lookalike-host"},
-	} {
-		c := cfg.Clone()
-		switch tc.variant {
-		case "admit-blocklisted-host":
-			c.APIAllowlist = append(c.APIAllowlist, "x.pastebin.com")
-		case "admit-private-host", "private-service-allowance":
-			c.APIAllowlist = append(c.APIAllowlist, "10.0.0.8", "private.vendor.example", "169.254.169.254")
-			if tc.variant == "private-service-allowance" {
-				c.SSRF.IPAllowlist = append(c.SSRF.IPAllowlist, "10.0.0.8/32", "169.254.169.254/32")
+	}
+	for _, audit := range []bool{false, true} {
+		for _, tc := range cases {
+			c := cfg.Clone()
+			switch tc.variant {
+			case "admit-blocklisted-host":
+				c.APIAllowlist = append(c.APIAllowlist, "x.pastebin.com")
+			case "admit-private-host", "private-service-allowance":
+				c.APIAllowlist = append(c.APIAllowlist, "10.0.0.8", "private.vendor.example", "169.254.169.254")
+				if tc.variant == "private-service-allowance" {
+					c.SSRF.IPAllowlist = append(c.SSRF.IPAllowlist, "10.0.0.8/32", "169.254.169.254/32")
+				}
+			case "admit-lookalike-host":
+				c.APIAllowlist = append(c.APIAllowlist, "api.openai.com.evil.example")
 			}
-		case "admit-lookalike-host":
-			c.APIAllowlist = append(c.APIAllowlist, "api.openai.com.evil.example")
-		}
-		sc := h.scanner(t, c)
-		result := sc.Scan(t.Context(), tc.target)
-		row := base
-		row.Part, row.Input, row.Variant = "url", tc.name, tc.variant
-		row.Class = &result.Class
-		row.Delivered = !urlResultBlocks(c, sc, tc.target, result)
-		var outcome *httptest.ResponseRecorder
-		{
-			// The handler adds request context the bare scanner call lacks, so
-			// corroborate the URL decision against the real forward handler.
-			p, _, rt := h.proxy(t, c, "ok", "text/plain")
-			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, tc.target, nil)
-			req.RemoteAddr = "192.0.2.10:12345"
-			w := httptest.NewRecorder()
-			p.handleForwardHTTP(w, req)
-			outcome = w
-			if hd := w.Code == http.StatusOK && rt.called; hd != row.Delivered {
-				t.Errorf("URL row %s/%s %s disagrees with the forward handler: handler delivered=%v (status %d), row delivered=%v", base.Preset, base.Runtime, tc.name, hd, w.Code, row.Delivered)
+			variant := tc.variant
+			if audit {
+				// Record the same URL fixture with blocking turned off.
+				// A core credential stays refused. A private address, a metadata
+				// address, an overlong URL, and a blocklisted host are delivered.
+				// The handler transport is in memory, so a dial-time check is
+				// not part of these rows.
+				c.Enforce = new(false)
+				if variant == "stock" {
+					variant = "enforce-false"
+				} else {
+					variant += "+enforce-false"
+				}
 			}
-		}
-		row.Action, row.Disposition = config.ActionAllow, config.ActionAllow
-		if !result.Allowed {
-			row.Detectors = []string{result.Scanner}
-			row.Action = config.ActionBlock
-			row.Disposition = config.ActionWarn
-			if !row.Delivered {
-				row.Disposition = config.ActionBlock
+			sc := h.scanner(t, c)
+			result := sc.Scan(t.Context(), tc.target)
+			row := base
+			row.Part, row.Input, row.Variant = "url", tc.name, variant
+			row.Class = &result.Class
+			row.Delivered = !urlResultBlocks(c, sc, tc.target, result)
+			var outcome *httptest.ResponseRecorder
+			{
+				// The handler adds request context the bare scanner call lacks, so
+				// corroborate the URL decision against the real forward handler.
+				p, _, rt := h.proxy(t, c, "ok", "text/plain")
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, tc.target, nil)
+				req.RemoteAddr = "192.0.2.10:12345"
+				w := httptest.NewRecorder()
+				p.handleForwardHTTP(w, req)
+				outcome = w
+				if hd := w.Code == http.StatusOK && rt.called; hd != row.Delivered {
+					t.Errorf("URL row %s/%s %s disagrees with the forward handler: handler delivered=%v (status %d), row delivered=%v", base.Preset, base.Runtime, tc.name, hd, w.Code, row.Delivered)
+				}
 			}
+			row.Action, row.Disposition = config.ActionAllow, config.ActionAllow
+			if !result.Allowed {
+				row.Detectors = []string{result.Scanner}
+				row.Action = config.ActionBlock
+				row.Disposition = config.ActionWarn
+				if !row.Delivered {
+					row.Disposition = config.ActionBlock
+				}
+			}
+			inventoryBlockHeader(t, &row, outcome)
+			for _, allow := range result.CredentialAudienceAllows {
+				row.Detectors = append(row.Detectors, "credential_audience:"+allow.PatternName)
+			}
+			rows = append(rows, row)
 		}
-		inventoryBlockHeader(t, &row, outcome)
-		for _, allow := range result.CredentialAudienceAllows {
-			row.Detectors = append(row.Detectors, "credential_audience:"+allow.PatternName)
-		}
-		rows = append(rows, row)
 	}
 	return rows
 }
@@ -501,241 +518,257 @@ func (h *inventoryHarness) httpRows(t *testing.T, cfg *config.Config, base decis
 	}
 	var rows []decisionInventoryRow
 	for _, tc := range cases {
-		c := cfg.Clone()
-		inventoryAdmitHost(c)
-		variant := "admit-fixture-host"
-		switch tc.variant {
-		case "admit-lookalike-host":
-			c.APIAllowlist = append(c.APIAllowlist, "api.openai.com.evil.example")
-		case "noncore-warn-override":
-			c.RequestBodyScanning.PatternActions = map[string]string{"Anthropic API Key": config.ActionWarn}
-		case "core-warn-override":
-			c.RequestBodyScanning.PatternActions = map[string]string{"AWS Access ID": config.ActionWarn}
-		case "enforce-false":
-			c.Enforce = new(false)
-		case "enforce-true":
-			c.Enforce = new(true)
-		case "body-trusted":
-			c.RequestBodyScanning.TrustedHosts = append(c.RequestBodyScanning.TrustedHosts, inventoryHost)
-		case "sse-warn":
-			c.ResponseScanning.SSEStreaming.Enabled = true
-			c.ResponseScanning.SSEStreaming.Action = config.ActionWarn
-		case "body-warn":
-			c.RequestBodyScanning.Action = config.ActionWarn
-		case "opaque-without-passthrough", "opaque-passthrough", "opaque-expired-passthrough":
-			c.FetchProxy.MaxResponseMB = 1
-			c.ResponseScanning.SizeExemptScanMaxBytes = 1024 * 1024
-			c.ResponseScanning.Action = config.ActionBlock
-			c.FetchProxy.Monitoring.MaxDataPerMinute = 0
-			c.ResponseScanning.SizeExemptDomains = append(c.ResponseScanning.SizeExemptDomains, inventoryHost)
-			if tc.variant != "opaque-without-passthrough" {
-				expiry := "2026-01-10"
-				if tc.variant == "opaque-expired-passthrough" {
-					expiry = "2025-12-31"
+		// Cases that already name an enforce setting stay as written.
+		// Every other forward fixture is also recorded with blocking off.
+		audits := []bool{false}
+		if tc.variant != "enforce-false" && tc.variant != "enforce-true" {
+			audits = append(audits, true)
+		}
+		for _, audit := range audits {
+			c := cfg.Clone()
+			inventoryAdmitHost(c)
+			variant := "admit-fixture-host"
+			switch tc.variant {
+			case "admit-lookalike-host":
+				c.APIAllowlist = append(c.APIAllowlist, "api.openai.com.evil.example")
+			case "noncore-warn-override":
+				c.RequestBodyScanning.PatternActions = map[string]string{"Anthropic API Key": config.ActionWarn}
+			case "core-warn-override":
+				c.RequestBodyScanning.PatternActions = map[string]string{"AWS Access ID": config.ActionWarn}
+			case "enforce-false":
+				c.Enforce = new(false)
+			case "enforce-true":
+				c.Enforce = new(true)
+			case "body-trusted":
+				c.RequestBodyScanning.TrustedHosts = append(c.RequestBodyScanning.TrustedHosts, inventoryHost)
+			case "sse-warn":
+				c.ResponseScanning.SSEStreaming.Enabled = true
+				c.ResponseScanning.SSEStreaming.Action = config.ActionWarn
+			case "body-warn":
+				c.RequestBodyScanning.Action = config.ActionWarn
+			case "opaque-without-passthrough", "opaque-passthrough", "opaque-expired-passthrough":
+				c.FetchProxy.MaxResponseMB = 1
+				c.ResponseScanning.SizeExemptScanMaxBytes = 1024 * 1024
+				c.ResponseScanning.Action = config.ActionBlock
+				c.FetchProxy.Monitoring.MaxDataPerMinute = 0
+				c.ResponseScanning.SizeExemptDomains = append(c.ResponseScanning.SizeExemptDomains, inventoryHost)
+				if tc.variant != "opaque-without-passthrough" {
+					expiry := "2026-01-10"
+					if tc.variant == "opaque-expired-passthrough" {
+						expiry = "2025-12-31"
+					}
+					c.ResponseScanning.UnscannablePassthrough = []config.UnscannablePassthroughEntry{{
+						Host: inventoryHost, Paths: []string{"/submit"}, ContentTypes: []string{"application/octet-stream"},
+						Reason: "synthetic opaque fixture", Expires: expiry,
+					}}
 				}
-				c.ResponseScanning.UnscannablePassthrough = []config.UnscannablePassthroughEntry{{
-					Host: inventoryHost, Paths: []string{"/submit"}, ContentTypes: []string{"application/octet-stream"},
-					Reason: "synthetic opaque fixture", Expires: expiry,
-				}}
 			}
-		}
-		if tc.variant != "" {
-			variant += "+" + tc.variant
-		}
-		response, mediaType := tc.response, "text/plain"
-		if strings.HasPrefix(tc.variant, "opaque-") {
-			response = strings.Repeat("P", 1024*1024+1) + inventoryInjection
-			mediaType = "application/octet-stream"
-		}
-		if tc.part == "body" {
-			response = "upstream accepted"
-		}
-		if tc.part == "sse-response" {
-			data, err := json.Marshal(map[string]string{"text": tc.response})
-			if err != nil {
-				t.Fatal(err)
+			if tc.variant != "" {
+				variant += "+" + tc.variant
 			}
-			response = "data: " + string(data) + "\n\n"
-			if tc.name == "incomplete-field-limit-warn" {
-				response = fieldLimitSSEBody()
+			if audit {
+				// Blocking off still refuses a core credential, a compressed or
+				// malformed body, an opaque response over the scan ceiling, and
+				// an SSE finding. A strict-preset body can also stay refused
+				// for entropy.
+				c.Enforce = new(false)
+				variant += "+enforce-false"
 			}
-			mediaType = "text/event-stream"
-		}
-		p, obs, rt := h.proxy(t, c, response, mediaType)
-		method := http.MethodGet
-		if tc.part == "body" {
-			method = http.MethodPost
-		}
-		target := tc.target
-		if target == "" {
-			target = inventoryTarget
-		}
-		req := httptest.NewRequestWithContext(t.Context(), method, target, strings.NewReader(tc.body))
-		if tc.authorization != "" {
-			req.Header.Set("Authorization", tc.authorization)
-		}
-		req.RemoteAddr = "192.0.2.10:12345"
-		contentType := tc.contentType
-		if contentType == "" {
-			contentType = "text/plain"
-		}
-		req.Header.Set("Content-Type", contentType)
-		if tc.encoding != "" {
-			req.Header.Set("Content-Encoding", tc.encoding)
-		}
-		var bodyMetadata BodyScanResult
-		if tc.part == "body" {
-			bodyReq := BodyScanRequest{
-				Body: strings.NewReader(tc.body), ContentType: contentType, ContentEncoding: tc.encoding,
-				MaxBytes: c.RequestBodyScanning.MaxBodyBytes, Scanner: p.scannerPtr.Load(),
-				AuditMode: !c.EnforceEnabled(), Host: inventoryHost, Target: inventoryTarget,
-				Action: c.RequestBodyScanning.Action, PatternActions: c.RequestBodyScanning.PatternActions,
-				DisablePatterns: c.RequestBodyScanning.DisablePatterns,
+			response, mediaType := tc.response, "text/plain"
+			if strings.HasPrefix(tc.variant, "opaque-") {
+				response = strings.Repeat("P", 1024*1024+1) + inventoryInjection
+				mediaType = "application/octet-stream"
 			}
-			applyContentEntropyConfig(&bodyReq, c)
-			_, bodyMetadata = scanRequestBody(t.Context(), bodyReq)
-		}
-		w := httptest.NewRecorder()
-		p.handleForwardHTTP(w, req)
-		row := base
-		row.Part, row.Input, row.Variant, row.Status = "forward/"+tc.part, tc.name, variant, w.Code
-		row.Action, row.Disposition = config.ActionAllow, config.ActionAllow
-		row.Delivered = w.Code == http.StatusOK && (tc.part != "body" || rt.called)
-		if tc.part == "body" && w.Code != http.StatusOK && rt.called {
-			t.Errorf("body row %s/%s %s: refused body reached upstream (status %d)", base.Preset, base.Runtime, tc.name, w.Code)
-		}
-		if tc.part == "body" && rt.called && !bytes.Equal(rt.requestBody, []byte(tc.body)) {
-			t.Errorf("body row %s/%s %s: forwarded bytes = %q, want %q", base.Preset, base.Runtime, tc.name, rt.requestBody, tc.body)
-		}
-		if tc.part == "response" && tc.name == "clean" {
-			row.Delivered = row.Delivered && w.Body.String() == response
-		}
-		row.Inspection = inventorySkipped
-		if tc.part == "header" && obs.header != nil {
-			row.Action = obs.header.EffectiveAction
-			row.Detectors = inventoryFindings(obs.header.RawFindings)
-			row.Inspection = inventoryInspected
-		} else if tc.part == "body" && obs.body != nil {
-			row.Action = obs.body.EffectiveAction
-			row.Detectors = inventoryFindings(obs.body.RawFindings)
-			row.Inspection = inventoryInspected
-			row.InspectionSource = "handler-capture"
-		} else if tc.part == "response" && obs.response != nil {
-			row.Action = obs.response.EffectiveAction
-			row.Detectors = inventoryFindings(obs.response.RawFindings)
-			row.Inspection = inventoryInspected
-			if obs.response.SkipReason != "" {
-				row.Inspection = inventorySkipped
-				row.Diagnostic = obs.response.SkipReason
+			if tc.part == "body" {
+				response = "upstream accepted"
 			}
-		}
-		// bodyMetadata comes from a separate probe call, so a clean probe must
-		// not coexist with a handler refusal (the handler also holds the core
-		// credential floor, so only this direction is a fixed contract).
-		if tc.part == "body" && bodyMetadata.Clean && !row.Delivered {
-			t.Errorf("body row %s/%s %s: scan probe was clean but the forward handler refused (status %d)", base.Preset, base.Runtime, tc.name, w.Code)
-		}
-		if tc.part == "body" && (bodyMetadata.FileInspectionIncomplete != "" || bodyMetadata.UnscannedEncoding ||
-			bodyMetadata.ScanError != "" || bodyMetadata.Reason != "" && len(bodyMetadata.DLPMatches) == 0 && len(bodyMetadata.InjectionMatches) == 0 && bodyMetadata.EntropyFinding == nil) {
-			row.Inspection = inventoryIncomplete
-			row.InspectionSource = "scan-request-body-probe"
-			row.Diagnostic = bodyMetadata.Reason
-			if row.Diagnostic == "" {
-				row.Diagnostic = bodyMetadata.FileInspectionIncomplete
-			}
-		}
-		if tc.part == "body" && row.Inspection == inventoryIncomplete {
-			// An incomplete file inspection has no failure layer; an empty name
-			// would record a detector that never existed.
-			if layer := bodyFailureLayer(bodyMetadata, []byte(tc.body)); layer != "" {
-				row.Detectors = append(row.Detectors, layer)
-			}
-		}
-		if strings.HasPrefix(tc.variant, "opaque-") {
-			row.Delivered = w.Code == http.StatusOK && w.Body.String() == response
-			_, passthrough := matchUnscannablePassthrough(unscannablePassthroughRequest{
-				Host: inventoryHost, Path: "/submit", ContentType: mediaType,
-				Header:        http.Header{"Content-Disposition": {"attachment"}},
-				ContentLength: int64(len(response)), SizeExemptDomains: c.ResponseScanning.SizeExemptDomains,
-				Now: responseScanNow(),
-			}, c.ResponseScanning.UnscannablePassthrough)
-			if !row.Delivered && obs.response == nil {
-				// The oversize label must be what the handler reported, not an
-				// assumption: any other refusal here would otherwise be mislabelled.
-				if !strings.Contains(w.Body.String(), "exceeding bounded scan ceiling") {
-					t.Fatalf("opaque response was refused for a reason other than the scan ceiling: %s/%s: %q", base.Preset, tc.name, w.Body.String())
-				}
-				row.Inspection = inventoryIncomplete
-				row.Detectors = []string{string(sizeExemptReadFailureOversize)}
-			}
-			if passthrough {
-				if !row.Delivered || obs.response == nil || obs.response.EffectiveAction != config.ActionAllow {
-					t.Fatalf("opaque passthrough fixture did not reach delivery: %s", tc.name)
-				}
-				row.Inspection = inventorySkipped
-				row.Detectors = []string{"unscannable_passthrough"}
-			}
-		}
-		// SSE can commit HTTP 200 before refusing an event. Actual delivery is
-		// equality of the returned stream, not the already-committed status.
-		if tc.part == "sse-response" {
-			row.Delivered = w.Body.String() == response
-			probe := httptest.NewRecorder()
-			var warning error
-			err := DispatchSSEScan(t.Context(), strings.NewReader(response), probe, probe, p.scannerPtr.Load(),
-				SSEDispatchOptions{
-					GenericSSE: &c.ResponseScanning.SSEStreaming,
-					Generic:    mcp.GenericSSEScanOptions{Target: inventoryTarget, OnFinding: func(err error) { warning = err }},
-				})
-			if c.ResponseScanning.SSEStreaming.Enabled {
-				row.Inspection = inventoryInspected
-			}
-			switch {
-			case err != nil:
-				row.Action = config.ActionBlock
-				row.Detectors = []string{LayerSSEStream}
-				row.Diagnostic = err.Error()
-				if IsSSEStreamScanError(err) {
-					row.Inspection = inventoryIncomplete
-				}
-			case warning != nil:
-				row.Action = config.ActionWarn
-				row.Detectors = []string{LayerSSEStream}
-				row.Diagnostic = warning.Error()
-			default:
-				row.Action = config.ActionAllow
-			}
-			// The row's verdict comes from this probe, not the handler. The
-			// probe omits handler-only options (suppression, scan exemption,
-			// receipt confirmation), so require it to agree with the handler's
-			// delivery. Warn mode can still withhold an uninspectable event,
-			// so compare delivered bytes rather than inferring from the action.
-			if probeDelivered := probe.Body.String() == response; probeDelivered != row.Delivered {
-				t.Errorf("SSE row %s/%s %s: dispatcher probe delivered=%v but the forward handler delivered=%v", base.Preset, base.Runtime, tc.name, probeDelivered, row.Delivered)
-			}
-		}
-		if !row.Delivered {
-			row.Disposition = config.ActionBlock
-			if row.Action == config.ActionAllow {
-				row.Action = config.ActionBlock
-			}
-			if row.Inspection == inventoryIncomplete {
-				row.Disposition = "refuse"
-			}
-		} else if row.Action != config.ActionAllow && (len(row.Detectors) > 0 || row.Inspection == inventoryIncomplete || tc.part == "header" || tc.part == "sse-response" && tc.name != "clean") {
-			row.Disposition = config.ActionWarn
-		}
-		if row.Disposition == config.ActionBlock || row.Disposition == "refuse" {
 			if tc.part == "sse-response" {
-				row.BlockReason, row.BlockReasonSource = obs.blockReceipt()
-				if row.BlockReason == "" {
-					t.Fatal("blocked SSE row has no emitted block receipt")
+				data, err := json.Marshal(map[string]string{"text": tc.response})
+				if err != nil {
+					t.Fatal(err)
 				}
-			} else {
-				inventoryBlockHeader(t, &row, w)
+				response = "data: " + string(data) + "\n\n"
+				if tc.name == "incomplete-field-limit-warn" {
+					response = fieldLimitSSEBody()
+				}
+				mediaType = "text/event-stream"
 			}
+			p, obs, rt := h.proxy(t, c, response, mediaType)
+			method := http.MethodGet
+			if tc.part == "body" {
+				method = http.MethodPost
+			}
+			target := tc.target
+			if target == "" {
+				target = inventoryTarget
+			}
+			req := httptest.NewRequestWithContext(t.Context(), method, target, strings.NewReader(tc.body))
+			if tc.authorization != "" {
+				req.Header.Set("Authorization", tc.authorization)
+			}
+			req.RemoteAddr = "192.0.2.10:12345"
+			contentType := tc.contentType
+			if contentType == "" {
+				contentType = "text/plain"
+			}
+			req.Header.Set("Content-Type", contentType)
+			if tc.encoding != "" {
+				req.Header.Set("Content-Encoding", tc.encoding)
+			}
+			var bodyMetadata BodyScanResult
+			if tc.part == "body" {
+				bodyReq := BodyScanRequest{
+					Body: strings.NewReader(tc.body), ContentType: contentType, ContentEncoding: tc.encoding,
+					MaxBytes: c.RequestBodyScanning.MaxBodyBytes, Scanner: p.scannerPtr.Load(),
+					AuditMode: !c.EnforceEnabled(), Host: inventoryHost, Target: inventoryTarget,
+					Action: c.RequestBodyScanning.Action, PatternActions: c.RequestBodyScanning.PatternActions,
+					DisablePatterns: c.RequestBodyScanning.DisablePatterns,
+				}
+				applyContentEntropyConfig(&bodyReq, c)
+				_, bodyMetadata = scanRequestBody(t.Context(), bodyReq)
+			}
+			w := httptest.NewRecorder()
+			p.handleForwardHTTP(w, req)
+			row := base
+			row.Part, row.Input, row.Variant, row.Status = "forward/"+tc.part, tc.name, variant, w.Code
+			row.Action, row.Disposition = config.ActionAllow, config.ActionAllow
+			row.Delivered = w.Code == http.StatusOK && (tc.part != "body" || rt.called)
+			if tc.part == "body" && w.Code != http.StatusOK && rt.called {
+				t.Errorf("body row %s/%s %s: refused body reached upstream (status %d)", base.Preset, base.Runtime, tc.name, w.Code)
+			}
+			if tc.part == "body" && rt.called && !bytes.Equal(rt.requestBody, []byte(tc.body)) {
+				t.Errorf("body row %s/%s %s: forwarded bytes = %q, want %q", base.Preset, base.Runtime, tc.name, rt.requestBody, tc.body)
+			}
+			if tc.part == "response" && tc.name == "clean" {
+				row.Delivered = row.Delivered && w.Body.String() == response
+			}
+			row.Inspection = inventorySkipped
+			if tc.part == "header" && obs.header != nil {
+				row.Action = obs.header.EffectiveAction
+				row.Detectors = inventoryFindings(obs.header.RawFindings)
+				row.Inspection = inventoryInspected
+			} else if tc.part == "body" && obs.body != nil {
+				row.Action = obs.body.EffectiveAction
+				row.Detectors = inventoryFindings(obs.body.RawFindings)
+				row.Inspection = inventoryInspected
+				row.InspectionSource = "handler-capture"
+			} else if tc.part == "response" && obs.response != nil {
+				row.Action = obs.response.EffectiveAction
+				row.Detectors = inventoryFindings(obs.response.RawFindings)
+				row.Inspection = inventoryInspected
+				if obs.response.SkipReason != "" {
+					row.Inspection = inventorySkipped
+					row.Diagnostic = obs.response.SkipReason
+				}
+			}
+			// bodyMetadata comes from a separate probe call, so a clean probe must
+			// not coexist with a handler refusal (the handler also holds the core
+			// credential floor, so only this direction is a fixed contract).
+			if tc.part == "body" && bodyMetadata.Clean && !row.Delivered {
+				t.Errorf("body row %s/%s %s: scan probe was clean but the forward handler refused (status %d)", base.Preset, base.Runtime, tc.name, w.Code)
+			}
+			if tc.part == "body" && (bodyMetadata.FileInspectionIncomplete != "" || bodyMetadata.UnscannedEncoding ||
+				bodyMetadata.ScanError != "" || bodyMetadata.Reason != "" && len(bodyMetadata.DLPMatches) == 0 && len(bodyMetadata.InjectionMatches) == 0 && bodyMetadata.EntropyFinding == nil) {
+				row.Inspection = inventoryIncomplete
+				row.InspectionSource = "scan-request-body-probe"
+				row.Diagnostic = bodyMetadata.Reason
+				if row.Diagnostic == "" {
+					row.Diagnostic = bodyMetadata.FileInspectionIncomplete
+				}
+			}
+			if tc.part == "body" && row.Inspection == inventoryIncomplete {
+				// An incomplete file inspection has no failure layer; an empty name
+				// would record a detector that never existed.
+				if layer := bodyFailureLayer(bodyMetadata, []byte(tc.body)); layer != "" {
+					row.Detectors = append(row.Detectors, layer)
+				}
+			}
+			if strings.HasPrefix(tc.variant, "opaque-") {
+				row.Delivered = w.Code == http.StatusOK && w.Body.String() == response
+				_, passthrough := matchUnscannablePassthrough(unscannablePassthroughRequest{
+					Host: inventoryHost, Path: "/submit", ContentType: mediaType,
+					Header:        http.Header{"Content-Disposition": {"attachment"}},
+					ContentLength: int64(len(response)), SizeExemptDomains: c.ResponseScanning.SizeExemptDomains,
+					Now: responseScanNow(),
+				}, c.ResponseScanning.UnscannablePassthrough)
+				if !row.Delivered && obs.response == nil {
+					// The oversize label must be what the handler reported, not an
+					// assumption: any other refusal here would otherwise be mislabelled.
+					if !strings.Contains(w.Body.String(), "exceeding bounded scan ceiling") {
+						t.Fatalf("opaque response was refused for a reason other than the scan ceiling: %s/%s: %q", base.Preset, tc.name, w.Body.String())
+					}
+					row.Inspection = inventoryIncomplete
+					row.Detectors = []string{string(sizeExemptReadFailureOversize)}
+				}
+				if passthrough {
+					if !row.Delivered || obs.response == nil || obs.response.EffectiveAction != config.ActionAllow {
+						t.Fatalf("opaque passthrough fixture did not reach delivery: %s", tc.name)
+					}
+					row.Inspection = inventorySkipped
+					row.Detectors = []string{"unscannable_passthrough"}
+				}
+			}
+			// SSE can commit HTTP 200 before refusing an event. Actual delivery is
+			// equality of the returned stream, not the already-committed status.
+			if tc.part == "sse-response" {
+				row.Delivered = w.Body.String() == response
+				probe := httptest.NewRecorder()
+				var warning error
+				err := DispatchSSEScan(t.Context(), strings.NewReader(response), probe, probe, p.scannerPtr.Load(),
+					SSEDispatchOptions{
+						GenericSSE: &c.ResponseScanning.SSEStreaming,
+						Generic:    mcp.GenericSSEScanOptions{Target: inventoryTarget, OnFinding: func(err error) { warning = err }},
+					})
+				if c.ResponseScanning.SSEStreaming.Enabled {
+					row.Inspection = inventoryInspected
+				}
+				switch {
+				case err != nil:
+					row.Action = config.ActionBlock
+					row.Detectors = []string{LayerSSEStream}
+					row.Diagnostic = err.Error()
+					if IsSSEStreamScanError(err) {
+						row.Inspection = inventoryIncomplete
+					}
+				case warning != nil:
+					row.Action = config.ActionWarn
+					row.Detectors = []string{LayerSSEStream}
+					row.Diagnostic = warning.Error()
+				default:
+					row.Action = config.ActionAllow
+				}
+				// The row's verdict comes from this probe, not the handler. The
+				// probe omits handler-only options (suppression, scan exemption,
+				// receipt confirmation), so require it to agree with the handler's
+				// delivery. Warn mode can still withhold an uninspectable event,
+				// so compare delivered bytes rather than inferring from the action.
+				if probeDelivered := probe.Body.String() == response; probeDelivered != row.Delivered {
+					t.Errorf("SSE row %s/%s %s: dispatcher probe delivered=%v but the forward handler delivered=%v", base.Preset, base.Runtime, tc.name, probeDelivered, row.Delivered)
+				}
+			}
+			if !row.Delivered {
+				row.Disposition = config.ActionBlock
+				if row.Action == config.ActionAllow {
+					row.Action = config.ActionBlock
+				}
+				if row.Inspection == inventoryIncomplete {
+					row.Disposition = "refuse"
+				}
+			} else if row.Action != config.ActionAllow && (len(row.Detectors) > 0 || row.Inspection == inventoryIncomplete || tc.part == "header" || tc.part == "sse-response" && tc.name != "clean") {
+				row.Disposition = config.ActionWarn
+			}
+			if row.Disposition == config.ActionBlock || row.Disposition == "refuse" {
+				if tc.part == "sse-response" {
+					row.BlockReason, row.BlockReasonSource = obs.blockReceipt()
+					if row.BlockReason == "" {
+						t.Fatal("blocked SSE row has no emitted block receipt")
+					}
+				} else {
+					inventoryBlockHeader(t, &row, w)
+				}
+			}
+			rows = append(rows, row)
 		}
-		rows = append(rows, row)
 	}
 	return rows
 }
