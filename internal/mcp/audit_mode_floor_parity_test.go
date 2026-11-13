@@ -49,24 +49,26 @@ func TestAuditModeMCPInputFloors(t *testing.T) {
 			}
 			for _, enabled := range []bool{true, false} {
 				for _, enforce := range []bool{false, true} {
-					cfg := config.Defaults()
-					cfg.Internal = nil
-					cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-					cfg.ResponseScanning.Action = config.ActionWarn
-					cfg.Enforce = &enforce
-					sc := scanner.MustNew(cfg)
-					t.Cleanup(sc.Close)
-					opts := testOpts(sc)
-					opts.InputCfg = &InputScanConfig{Enabled: enabled, Action: config.ActionWarn, OnParseError: config.ActionBlock}
-					if got := scanHTTPInputDecision(msg, io.Discard, "session", "session", opts); got.Blocked == nil {
-						t.Errorf("HTTP enabled=%v enforce=%v released the floor", enabled, enforce)
-					}
-					var out bytes.Buffer
-					blocked := make(chan BlockedRequest, 2)
-					ForwardScannedInput(transport.NewStdioReader(bytes.NewReader(append(append([]byte(nil), msg...), '\n'))), transport.NewStdioWriter(&out), io.Discard, config.ActionWarn, config.ActionBlock, blocked, nil, nil, opts)
-					if out.Len() != 0 || len(blocked) == 0 {
-						t.Errorf("stdio enabled=%v enforce=%v forwarded=%d blocked=%d", enabled, enforce, out.Len(), len(blocked))
-					}
+					t.Run(fmt.Sprintf("enabled=%t/enforce=%t", enabled, enforce), func(t *testing.T) {
+						cfg := config.Defaults()
+						cfg.Internal = nil
+						cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+						cfg.ResponseScanning.Action = config.ActionWarn
+						cfg.Enforce = &enforce
+						sc := scanner.MustNew(cfg)
+						t.Cleanup(sc.Close)
+						opts := testOpts(sc)
+						opts.InputCfg = &InputScanConfig{Enabled: enabled, Action: config.ActionWarn, OnParseError: config.ActionBlock}
+						if got := scanHTTPInputDecision(msg, io.Discard, "session", "session", opts); got.Blocked == nil {
+							t.Errorf("HTTP enabled=%v enforce=%v released the floor", enabled, enforce)
+						}
+						var out bytes.Buffer
+						blocked := make(chan BlockedRequest, 2)
+						ForwardScannedInput(transport.NewStdioReader(bytes.NewReader(append(append([]byte(nil), msg...), '\n'))), transport.NewStdioWriter(&out), io.Discard, config.ActionWarn, config.ActionBlock, blocked, nil, nil, opts)
+						if out.Len() != 0 || len(blocked) == 0 {
+							t.Errorf("stdio enabled=%v enforce=%v forwarded=%d blocked=%d", enabled, enforce, out.Len(), len(blocked))
+						}
+					})
 				}
 			}
 		})
@@ -109,13 +111,13 @@ func TestAuditModeMCPRequiredReceipt(t *testing.T) {
 // enforce, so both settings return the same status and do not reach the
 // upstream.
 func TestAuditModeMCPListenerProtocolAdmission(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		t.Error("invalid listener request reached upstream")
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(upstream.Close)
 	for _, enforce := range []bool{false, true} {
 		t.Run(fmt.Sprintf("enforce=%t", enforce), func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				t.Error("invalid listener request reached upstream")
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(upstream.Close)
 			cfg := config.Defaults()
 			cfg.Internal = nil
 			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
