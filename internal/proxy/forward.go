@@ -2048,6 +2048,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		callWithInspectedBody(r, forwardInspected, func() {
 			ceePayloads = extractOutboundPayloads(r, ceeJSONBodyPartitioningEnabled(p.cfgPtr.Load()), ceeSession, ceePartitionKey)
 		})
+		ceePayloads.addValidatedCodingStamp(r.Header, forwardBodyBytes)
 	} else {
 		ceePayloads = extractOutboundPayloads(r, ceeJSONBodyPartitioningEnabled(p.cfgPtr.Load()), ceeSession, ceePartitionKey)
 	}

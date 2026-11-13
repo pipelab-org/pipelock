@@ -1835,9 +1835,11 @@ func TestExtractOutboundPayloadsSeparatesCodingExtras(t *testing.T) {
 		t.Fatalf("forwarded body changed: err=%v match=%v", err, bytes.Equal(forwarded, wire))
 	}
 
+	// The extras are their own streams with JSON partitioning off too, so
+	// the entropy budget is still charged for them.
 	single := extractOutboundPayloads(newRequest(), false, "session", nil)
-	if string(single.outbound) != "decoded partcomment-fieldplain tail" || len(single.bodyFragmentPayloads) != 0 {
-		t.Fatalf("single stream = %q, side streams = %d", single.outbound, len(single.bodyFragmentPayloads))
+	if string(single.outbound) != "decoded part" || string(single.bodyFragmentPayloads[ceeCodingFieldsStream]) != "comment-field" || string(single.bodyFragmentPayloads[ceeCodingRestStream]) != "plain tail" {
+		t.Fatalf("stream = %q, side streams = %q", single.outbound, single.bodyFragmentPayloads)
 	}
 }
 
@@ -2154,6 +2156,102 @@ func TestReverseCompressedBodyReservesDecodedBuffers(t *testing.T) {
 			}
 			if got := rp.requestScanBudget.inflightBytes.Load(); got != 0 {
 				t.Fatalf("in-flight budget not released: %d", got)
+			}
+		})
+	}
+}
+
+// A gzip modification time is four bytes a sender chooses. It is charged to
+// the entropy budget whichever reader decoded the body: with body scanning on
+// the scan hands cross-request detection only the decoded text, and with it
+// off cross-request detection decodes the body itself.
+func TestGzipTimestampChargedToEntropyBudget(t *testing.T) {
+	stamped := func(stamp int64) []byte {
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		zw.Header = gzip.Header{ModTime: time.Unix(stamp, 0)}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	for _, bodyScanning := range []bool{true, false} {
+		for _, stamp := range []int64{0, 0x7a6b3c1d} {
+			t.Run(fmt.Sprintf("body_scanning=%t/stamp=%t", bodyScanning, stamp != 0), func(t *testing.T) {
+				backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					_, _ = io.Copy(io.Discard, r.Body)
+					w.WriteHeader(http.StatusOK)
+				}))
+				t.Cleanup(backend.Close)
+				proxyAddr, proxy, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+					cfg.RequestBodyScanning.Enabled = bodyScanning
+					cfg.RequestBodyScanning.Action = config.ActionBlock
+					cfg.CrossRequestDetection.Enabled = true
+					cfg.CrossRequestDetection.Action = config.ActionBlock
+					cfg.CrossRequestDetection.FragmentReassembly.Enabled = false
+					cfg.CrossRequestDetection.EntropyBudget = config.CrossRequestEntropyBudget{
+						Enabled: true, BitsPerWindow: 1, WindowMinutes: 5, Action: config.ActionBlock,
+					}
+					cfg.Taint.Enabled = false
+				})
+				t.Cleanup(cleanup)
+				installForwardTestDialer(proxy, backend.Listener.Addr().String())
+				client := forwardHTTPClient(t, proxyAddr)
+				req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://api.example.com/", bytes.NewReader(stamped(stamp)))
+				if err != nil {
+					t.Fatalf("request: %v", err)
+				}
+				req.Header.Set("Content-Type", "text/plain")
+				req.Header.Set("Content-Encoding", "gzip")
+				resp, err := client.Do(req)
+				if err != nil {
+					t.Fatalf("do: %v", err)
+				}
+				defer func() { _ = resp.Body.Close() }()
+				want := http.StatusOK
+				if stamp != 0 {
+					want = http.StatusForbidden
+				}
+				if resp.StatusCode != want {
+					body, _ := io.ReadAll(resp.Body)
+					t.Fatalf("status=%d, want %d; body=%s", resp.StatusCode, want, body)
+				}
+			})
+		}
+	}
+}
+
+// addValidatedCodingStamp takes the modification time from the bytes as sent
+// for a gzip body only. zlib has no such field.
+func TestAddValidatedCodingStamp(t *testing.T) {
+	var stamped bytes.Buffer
+	zw := gzip.NewWriter(&stamped)
+	zw.Header = gzip.Header{ModTime: time.Unix(0x64636261, 0)}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		encoding string
+		wire     []byte
+		want     string
+	}{
+		{name: "gzip with a timestamp", encoding: "gzip", wire: stamped.Bytes(), want: "abcd"},
+		{name: "x-gzip with a timestamp", encoding: "x-gzip", wire: stamped.Bytes(), want: "abcd"},
+		{name: "gzip without a timestamp", encoding: "gzip", wire: gzipRequestBody(t, []byte("hello"))},
+		{name: "deflate", encoding: "deflate", wire: deflateRequestBody(t, []byte("hello"))},
+		{name: "identity", wire: stamped.Bytes()},
+		{name: "too short", encoding: "gzip", wire: stamped.Bytes()[:6]},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			header := http.Header{}
+			if tc.encoding != "" {
+				header.Set("Content-Encoding", tc.encoding)
+			}
+			var payloads ceeOutboundPayloads
+			payloads.addValidatedCodingStamp(header, tc.wire)
+			if got := string(payloads.bodyFragmentPayloads[ceeCodingStampStream]); got != tc.want {
+				t.Fatalf("stamp = %q, want %q", got, tc.want)
 			}
 		})
 	}

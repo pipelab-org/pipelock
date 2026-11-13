@@ -239,6 +239,39 @@ func (p ceeOutboundPayloads) inspectionMode() string {
 	return "partitioned"
 }
 
+// addCodingExtra adds bytes to one of the reserved coding streams.
+func (p *ceeOutboundPayloads) addCodingExtra(name string, extra []byte) {
+	if len(extra) == 0 {
+		return
+	}
+	if p.bodyFragmentPayloads == nil {
+		p.bodyFragmentPayloads = make(map[string][]byte, len(ceeCodingStreams))
+	}
+	p.bodyFragmentPayloads[name] = append(p.bodyFragmentPayloads[name], extra...)
+}
+
+// addValidatedCodingStamp records the gzip modification time of a body that
+// another reader already decoded and validated as a single member. That
+// reader hands cross-request detection only the decoded text, and the
+// timestamp is the one sender-chosen header field such a body can still
+// carry, so it is taken from the bytes as sent.
+func (p *ceeOutboundPayloads) addValidatedCodingStamp(header http.Header, wire []byte) {
+	coding, err := responseencoding.ParseRequestCoding(header.Values("Content-Encoding"))
+	if err != nil || (coding != "gzip" && coding != "x-gzip") {
+		return
+	}
+	p.addCodingExtra(ceeCodingStampStream, gzipMemberStamp(wire))
+}
+
+// gzipMemberStamp returns the four modification-time bytes of the gzip member
+// that starts at member, or nil when they are zero or absent.
+func gzipMemberStamp(member []byte) []byte {
+	if len(member) < 8 || bytes.Equal(member[4:8], []byte{0, 0, 0, 0}) {
+		return nil
+	}
+	return member[4:8]
+}
+
 // Reserved body stream names for the parts of a compressed body that are not
 // its decoded text. JSON partitions are named by bucket number, so these
 // cannot collide with one.
@@ -499,21 +532,13 @@ func extractOutboundPayloads(r *http.Request, partitionJSON bool, sessionKey str
 			if partitionJSON {
 				result.bodyFragmentLeaves, result.partitionReason = jsonBodyFragmentLeaves(r.Header.Get("Content-Type"), text, sessionKey, partitionKey)
 				result.bodyFragmentPayloads = concatCEEJSONLeaves(result.bodyFragmentLeaves)
-				// Bytes a sender controls must not sit inside the decoded text,
-				// where they could separate two halves of a split value. Each
-				// kind is reassembled as its own stream.
-				for name, extra := range extras {
-					if result.bodyFragmentPayloads == nil {
-						result.bodyFragmentPayloads = make(map[string][]byte, len(extras))
-					}
-					result.bodyFragmentPayloads[name] = extra
-				}
-			} else {
-				// Without fragment reassembly only the entropy budget reads
-				// this stream, and order does not matter to it.
-				for _, name := range ceeCodingStreams {
-					parts = append(parts, string(extras[name]))
-				}
+			}
+			// Bytes a sender controls must not sit inside the decoded text,
+			// where they could separate two halves of a split value. Each
+			// kind is its own stream: charged to the entropy budget, and
+			// reassembled on its own when fragment reassembly is on.
+			for name, extra := range extras {
+				result.addCodingExtra(name, extra)
 			}
 		}
 		// Concatenate read bytes with any remaining body data beyond the limit.
@@ -550,6 +575,9 @@ func extractOutboundPayloads(r *http.Request, partitionJSON bool, sessionKey str
 //   - ceeCodingRestStream: what was not cleanly decoded. After a clean stream
 //     that is the bytes that follow it. When decoding fails or stops at the
 //     limit, the decoder may have read ahead, so it is the whole body as read.
+//     Those bytes count toward the entropy budget. Text past the limit is not
+//     reassembled across requests, the same as an identity body past
+//     maxCEEBodyRead.
 //
 // A clean single stream with no header fields has no extras.
 //
@@ -587,10 +615,7 @@ func ceeInspectedBody(header http.Header, wire []byte) (text []byte, extras map[
 			fields = append(fields, gz.Name...)
 			fields = append(fields, gz.Comment...)
 			fields = append(fields, gz.Extra...)
-			// The modification time is bytes four to eight of the member.
-			if stamp := wire[memberStart:]; len(stamp) >= 8 && !bytes.Equal(stamp[4:8], []byte{0, 0, 0, 0}) {
-				stamps = append(stamps, stamp[4:8]...)
-			}
+			stamps = append(stamps, gzipMemberStamp(wire[memberStart:])...)
 		}
 		room := maxCEEBodyRead - len(text)
 		decoded, readErr := io.ReadAll(io.LimitReader(dec, int64(room)))

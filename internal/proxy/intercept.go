@@ -1838,6 +1838,7 @@ func newInterceptHandler(
 			callWithInspectedBody(r, interceptInspected, func() {
 				outboundPayloads = extractOutboundPayloads(r, partitionJSON, sessionKey, partitionKey)
 			})
+			outboundPayloads.addValidatedCodingStamp(r.Header, interceptBodyBytes)
 		} else {
 			outboundPayloads = extractOutboundPayloads(r, partitionJSON, sessionKey, partitionKey)
 		}

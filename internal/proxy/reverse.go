@@ -1534,6 +1534,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			callWithInspectedBody(r, reverseInspected, func() {
 				ceePayloads = extractOutboundPayloads(r, ceeJSONBodyPartitioningEnabled(cfg), ceeSession, ceePartitionKey)
 			})
+			ceePayloads.addValidatedCodingStamp(r.Header, reverseBodyBytes)
 		} else {
 			ceePayloads = extractOutboundPayloads(r, ceeJSONBodyPartitioningEnabled(cfg), ceeSession, ceePartitionKey)
 		}
