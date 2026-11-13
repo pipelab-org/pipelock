@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -1589,7 +1590,7 @@ func reverseAdmittedGzipPolicy(t *testing.T, admittedLimit, liveLimit int, wire 
 }
 
 // ceeInspectedBody returns the decoded text for a clean supported stream and
-// keeps everything else a receiver could recover in the scanned stream only.
+// keeps everything else a receiver could recover apart from it.
 func TestCEEInspectedBody(t *testing.T) {
 	plain := []byte(strings.Repeat("inspect this text ", 40))
 	second := []byte("second member text")
@@ -1607,30 +1608,28 @@ func TestCEEInspectedBody(t *testing.T) {
 		}
 		return buf.Bytes()
 	}
-	fields := withFields(gzip.Header{Name: "name-field", Comment: "comment-field", Extra: []byte("extra-field")}, plain)
+	fielded := withFields(gzip.Header{Name: "name-field", Comment: "comment-field", Extra: []byte("extra-field")}, plain)
 	laterFields := withFields(gzip.Header{Comment: "later-comment"}, second)
 	join := func(parts ...[]byte) []byte { return bytes.Join(parts, nil) }
-	cut := gzipped[:len(gzipped)-12]
 	cases := []struct {
-		name         string
-		encoding     []string
-		wire         []byte
-		wantStream   []byte
-		wantDocument []byte
-		streamHas    [][]byte
+		name       string
+		encoding   []string
+		wire       []byte
+		wantText   []byte
+		wantFields []byte
+		wantRest   []byte
 	}{
-		{name: "identity", wire: plain, wantStream: plain, wantDocument: plain},
-		{name: "gzip", encoding: []string{"gzip"}, wire: gzipped, wantStream: plain, wantDocument: plain},
-		{name: "deflate", encoding: []string{"deflate"}, wire: deflated, wantStream: plain, wantDocument: plain},
-		{name: "unsupported coding", encoding: []string{"br"}, wire: gzipped, wantStream: gzipped, wantDocument: gzipped},
-		{name: "stacked coding", encoding: []string{"gzip", "gzip"}, wire: gzipped, wantStream: gzipped, wantDocument: gzipped},
-		{name: "declared gzip is not gzip", encoding: []string{"gzip"}, wire: plain, wantStream: plain, wantDocument: plain},
-		{name: "bytes after gzip", encoding: []string{"gzip"}, wire: join(gzipped, []byte("tail")), wantStream: join(plain, []byte("tail")), wantDocument: plain},
-		{name: "bytes after deflate", encoding: []string{"deflate"}, wire: join(deflated, []byte("tail")), wantStream: join(plain, []byte("tail")), wantDocument: plain},
-		{name: "second gzip member is decoded", encoding: []string{"gzip"}, wire: join(gzipped, gzipRequestBody(t, second)), wantStream: join(plain, second), wantDocument: join(plain, second)},
-		{name: "gzip header fields stay out of the document", encoding: []string{"gzip"}, wire: fields, wantStream: join([]byte("name-fieldcomment-fieldextra-field"), plain), wantDocument: plain},
-		{name: "later member header field", encoding: []string{"gzip"}, wire: join(gzipped, laterFields), wantStream: join(plain, []byte("later-comment"), second), wantDocument: join(plain, second)},
-		{name: "stream fails part way", encoding: []string{"gzip"}, wire: cut, streamHas: [][]byte{plain[:18]}},
+		{name: "identity", wire: plain, wantText: plain},
+		{name: "gzip", encoding: []string{"gzip"}, wire: gzipped, wantText: plain},
+		{name: "deflate", encoding: []string{"deflate"}, wire: deflated, wantText: plain},
+		{name: "unsupported coding", encoding: []string{"br"}, wire: gzipped, wantText: gzipped},
+		{name: "stacked coding", encoding: []string{"gzip", "gzip"}, wire: gzipped, wantText: gzipped},
+		{name: "declared gzip is not gzip", encoding: []string{"gzip"}, wire: plain, wantText: plain},
+		{name: "bytes after gzip", encoding: []string{"gzip"}, wire: join(gzipped, []byte("tail")), wantText: plain, wantRest: []byte("tail")},
+		{name: "bytes after deflate", encoding: []string{"deflate"}, wire: join(deflated, []byte("tail")), wantText: plain, wantRest: []byte("tail")},
+		{name: "second gzip member is decoded", encoding: []string{"gzip"}, wire: join(gzipped, gzipRequestBody(t, second)), wantText: join(plain, second)},
+		{name: "gzip header fields stay out of the text", encoding: []string{"gzip"}, wire: fielded, wantText: plain, wantFields: []byte("name-fieldcomment-fieldextra-field")},
+		{name: "later member field does not split the text", encoding: []string{"gzip"}, wire: join(gzipped, laterFields), wantText: join(plain, second), wantFields: []byte("later-comment")},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1638,48 +1637,80 @@ func TestCEEInspectedBody(t *testing.T) {
 			for _, v := range tc.encoding {
 				header.Add("Content-Encoding", v)
 			}
-			stream, document := ceeInspectedBody(header, tc.wire)
-			for _, part := range tc.streamHas {
-				if !bytes.Contains(stream, part) {
-					t.Fatalf("stream of %d bytes is missing an expected part of %d bytes", len(stream), len(part))
-				}
+			text, fields, rest := ceeInspectedBody(header, tc.wire)
+			if !bytes.Equal(text, tc.wantText) {
+				t.Fatalf("text = %d bytes, want %d", len(text), len(tc.wantText))
 			}
-			if tc.wantStream != nil && !bytes.Equal(stream, tc.wantStream) {
-				t.Fatalf("stream = %d bytes, want %d", len(stream), len(tc.wantStream))
+			if !bytes.Equal(fields, tc.wantFields) {
+				t.Fatalf("fields = %q, want %q", fields, tc.wantFields)
 			}
-			if tc.wantDocument != nil && !bytes.Equal(document, tc.wantDocument) {
-				t.Fatalf("document = %d bytes, want %d", len(document), len(tc.wantDocument))
-			}
-			if len(document) > maxCEEBodyRead {
-				t.Fatalf("document = %d bytes, over the read limit", len(document))
+			if !bytes.Equal(rest, tc.wantRest) {
+				t.Fatalf("rest = %q, want %q", rest, tc.wantRest)
 			}
 		})
 	}
+
+	t.Run("stream fails part way", func(t *testing.T) {
+		text, _, _ := ceeInspectedBody(http.Header{"Content-Encoding": []string{"gzip"}}, gzipped[:len(gzipped)-12])
+		if len(text) == 0 || !bytes.HasPrefix(plain, text) {
+			t.Fatalf("text = %d bytes that are not a prefix of the plaintext", len(text))
+		}
+	})
 }
 
 // A body that decodes to more than the read limit stops at the limit.
 func TestCEEInspectedBodyBoundsDecodedText(t *testing.T) {
 	wire := gzipRequestBody(t, bytes.Repeat([]byte("A"), maxCEEBodyRead*3))
 	header := http.Header{"Content-Encoding": []string{"gzip"}}
-	_, document := ceeInspectedBody(header, wire)
-	if len(document) != maxCEEBodyRead {
-		t.Fatalf("document = %d bytes, want %d", len(document), maxCEEBodyRead)
+	text, _, rest := ceeInspectedBody(header, wire)
+	if len(text) != maxCEEBodyRead {
+		t.Fatalf("text = %d bytes, want %d", len(text), maxCEEBodyRead)
+	}
+	if len(rest) == 0 {
+		t.Fatal("the undecoded remainder was dropped")
 	}
 }
 
-// The inspected stream gains the decoded text, and the forwarded body is the
-// bytes as read.
-func TestExtractOutboundPayloadsDecodesAndForwardsWire(t *testing.T) {
-	wire := append(gzipRequestBody(t, []byte("decoded part")), []byte("plain tail")...)
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://api.vendor.example/upload", bytes.NewReader(wire))
-	req.Header.Set("Content-Encoding", "gzip")
-	got := extractOutboundPayloads(req, false, "session", nil)
-	if string(got.outbound) != "decoded partplain tail" {
-		t.Fatalf("inspected stream = %q", got.outbound)
+// The decoded text is the scanned stream. Bytes a sender controls outside it
+// become their own streams when fragments are reassembled, and join the one
+// stream otherwise. The forwarded body is the bytes as read.
+func TestExtractOutboundPayloadsSeparatesCodingExtras(t *testing.T) {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	zw.Header = gzip.Header{Comment: "comment-field"}
+	if _, err := zw.Write([]byte("decoded part")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	wire := append(buf.Bytes(), []byte("plain tail")...)
+	newRequest := func() *http.Request {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://api.vendor.example/upload", bytes.NewReader(wire))
+		req.Header.Set("Content-Encoding", "gzip")
+		req.Header.Set("Content-Type", "text/plain")
+		return req
+	}
+
+	req := newRequest()
+	got := extractOutboundPayloads(req, true, "session", []byte("partition-key"))
+	if string(got.outbound) != "decoded part" {
+		t.Fatalf("scanned stream = %q", got.outbound)
+	}
+	if string(got.bodyFragmentPayloads[ceeCodingFieldsStream]) != "comment-field" || string(got.bodyFragmentPayloads[ceeCodingRestStream]) != "plain tail" {
+		t.Fatalf("side streams = %q", got.bodyFragmentPayloads)
+	}
+	if got.inspectionMode() != "raw" {
+		t.Fatalf("inspection mode = %q, want raw for a body with no JSON partition", got.inspectionMode())
 	}
 	forwarded, err := io.ReadAll(req.Body)
 	if err != nil || !bytes.Equal(forwarded, wire) {
 		t.Fatalf("forwarded body changed: err=%v match=%v", err, bytes.Equal(forwarded, wire))
+	}
+
+	single := extractOutboundPayloads(newRequest(), false, "session", nil)
+	if string(single.outbound) != "decoded partcomment-fieldplain tail" || len(single.bodyFragmentPayloads) != 0 {
+		t.Fatalf("single stream = %q, side streams = %d", single.outbound, len(single.bodyFragmentPayloads))
 	}
 }
 
@@ -1777,4 +1808,127 @@ func TestGzipJSONFieldSplitWithPolicyOnlyBodyRead(t *testing.T) {
 			return interceptAndRequestWithProxy(t, upstream, cache, pool, cfg, sc, logger, m, req, proxy)
 		})
 	})
+}
+
+// A sender controls gzip header fields and how a body is cut into members.
+// Neither may hide a credential split across two requests when body scanning
+// is off: the decoded text of every member stays contiguous, and the header
+// fields are reassembled as their own stream.
+func TestGzipMembersAndFieldsDoNotHideSplitCredential(t *testing.T) {
+	member := func(h gzip.Header, payload string) []byte {
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		zw.Header = h
+		if _, err := zw.Write([]byte(payload)); err != nil {
+			t.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	cases := []struct {
+		name string
+		body func(part string) []byte
+	}{
+		{
+			name: "comment between the halves",
+			body: func(part string) []byte {
+				return append(member(gzip.Header{}, ""), member(gzip.Header{Comment: "unrelated note"}, part)...)
+			},
+		},
+		{
+			name: "halves cut across members",
+			body: func(part string) []byte {
+				mid := len(part) / 2
+				return append(member(gzip.Header{}, part[:mid]), member(gzip.Header{Name: "b.txt"}, part[mid:])...)
+			},
+		},
+		{
+			name: "halves carried in the comment",
+			body: func(part string) []byte {
+				return member(gzip.Header{Comment: part}, "ordinary text")
+			},
+		},
+		{
+			name: "halves carried in the comment of an empty body",
+			body: func(part string) []byte {
+				return member(gzip.Header{Comment: part}, "")
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var hits atomic.Int32
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits.Add(1)
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(backend.Close)
+			proxyAddr, proxy, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+				cfg.RequestBodyScanning.Enabled = false
+				cfg.CrossRequestDetection = ceeFragmentBlockCfg()
+				cfg.Taint.Enabled = false
+			})
+			t.Cleanup(cleanup)
+			installForwardTestDialer(proxy, backend.Listener.Addr().String())
+			client := forwardHTTPClient(t, proxyAddr)
+			send := func(part string) *http.Response {
+				t.Helper()
+				req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://api.example.com/upload", bytes.NewReader(tc.body(part)))
+				if err != nil {
+					t.Fatalf("request: %v", err)
+				}
+				req.Header.Set("Content-Type", "text/plain")
+				req.Header.Set("Content-Encoding", "gzip")
+				resp, err := client.Do(req)
+				if err != nil {
+					t.Fatalf("do: %v", err)
+				}
+				return resp
+			}
+			first := send(testCEEAWSKeyPrefix)
+			defer func() { _ = first.Body.Close() }()
+			if first.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(first.Body)
+				t.Fatalf("first status=%d body=%s", first.StatusCode, body)
+			}
+			second := send(testCEEAWSKeySuffix)
+			defer func() { _ = second.Body.Close() }()
+			if second.StatusCode != http.StatusForbidden || second.Header.Get(blockreason.HeaderLayer) != "cross_request" {
+				body, _ := io.ReadAll(second.Body)
+				t.Fatalf("second status=%d layer=%q body=%s", second.StatusCode, second.Header.Get(blockreason.HeaderLayer), body)
+			}
+			if hits.Load() != 1 {
+				t.Fatalf("upstream hits = %d, want only the first request", hits.Load())
+			}
+		})
+	}
+}
+
+// The parts of a compressed body outside its decoded text count toward the
+// entropy budget, including when the decoded text is empty and nothing else
+// in the request carries data.
+func TestCeeAdmitChargesCodingExtras(t *testing.T) {
+	for _, stream := range []string{ceeCodingFieldsStream, ceeCodingRestStream} {
+		t.Run(stream, func(t *testing.T) {
+			et := scanner.NewEntropyTracker(1.0, 300)
+			defer et.Close()
+			logger, _ := audit.New("json", "stdout", "", false, false)
+			cfg := config.CrossRequestDetection{
+				EntropyBudget: config.CrossRequestEntropyBudget{
+					Enabled: true, BitsPerWindow: 1.0, WindowMinutes: 5, Action: config.ActionBlock,
+				},
+			}
+			result := ceeAdmit(t.Context(), ceeAdmitOptions{
+				BodyFragmentPayloads: map[string][]byte{stream: []byte("data carried outside the decoded text")},
+				TargetURL:            "http://api.vendor.example", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID,
+				Config: cfg, Entropy: et, Logger: logger, Metrics: metrics.New(),
+			})
+			if !result.Blocked || !result.EntropyHit {
+				t.Fatalf("blocked=%v entropyHit=%v, want the entropy budget to refuse", result.Blocked, result.EntropyHit)
+			}
+		})
+	}
 }
