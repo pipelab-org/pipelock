@@ -6,8 +6,6 @@ package scanner
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
 	"fmt"
 	"net"
 	"net/url"
@@ -457,110 +455,8 @@ func (s *Scanner) matchDecodedCoreResponseMode(content string, suppress coreResp
 	return markFragmentBoundaries(s.matchDecodedCoreResponseRecursiveMode(content, 0, suppress, recoverQP), content)
 }
 
-// matchDecodedCoreResponseRecursive is the recursive implementation of
-// matchDecodedCoreResponse. Mirrors the main scanner's matchDecodedResponseRecursive
-// but uses only core response patterns.
-func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int, suppress coreResponseSuppressor) responseMatchSet {
-	return s.matchDecodedCoreResponseRecursiveMode(content, depth, suppress, true)
-}
-
-func (s *Scanner) matchDecodedCoreResponseRecursiveMode(content string, depth int, suppress coreResponseSuppressor, recoverQP bool) (out responseMatchSet) {
-	if depth >= responseDecodeMaxDepth {
-		return responseMatchSet{}
-	}
-	if decoded := normalize.DecodeTags(content); decoded != content {
-		if found := s.matchDecodedCoreNormalized(decoded, ViewUnicodeTagsDecoded, suppress); len(found.matches) > 0 {
-			return mapResponseTransformSources(found, content, ViewUnicodeTagsDecoded)
-		}
-		if found := s.matchDecodedCoreResponseRecursive(normalize.ForMatching(decoded), depth+1, suppress); len(found.matches) > 0 {
-			return mapResponseTransformSources(found, content, ViewUnicodeTagsDecoded)
-		}
-	}
-	if normalize.ContainsTags(content) {
-		if stripped := normalize.StripZeroWidth(content); hasQuotedPrintable(stripped) {
-			if found := s.matchDecodedCoreResponseRecursiveMode(stripped, depth+1, suppress, recoverQP); len(found.matches) > 0 {
-				return mapResponseStrippedSources(found, content)
-			}
-		}
-		source := content
-		content = normalize.ForMatching(content)
-		defer func() { out = mapResponseTransformSources(out, source, ViewForMatching) }()
-	}
-
-	views := textEncodingViewsMode(content, recoverQP)
-	for _, view := range views {
-		if set := s.matchDecodedCoreNormalized(view.text, spanViewLabel(ViewForMatching, view.encoding+"_decoded"), suppress); len(set.matches) > 0 {
-			set = mapTextEncodingViewSources(set, content, view)
-			if len(set.matches) > 0 {
-				return set
-			}
-		}
-		if set := s.matchDecodedCoreResponseRecursive(view.text, depth+1, suppress); len(set.matches) > 0 {
-			set = mapTextEncodingViewSources(set, content, view)
-			if len(set.matches) > 0 {
-				return set
-			}
-		}
-	}
-
-	// Strategy 1: whole-content decode (strip whitespace first).
-	stripped, sourceOffsets := stripDecodeWhitespace(content, 0)
-	stripped = canonicalMixedBase64(stripped)
-
-	for _, enc := range []*base64.Encoding{
-		base64.StdEncoding, base64.URLEncoding,
-		base64.RawStdEncoding, base64.RawURLEncoding,
-	} {
-		if decoded, err := enc.DecodeString(stripped); err == nil && len(decoded) > 0 {
-			d := string(decoded)
-			if decodedSet := s.matchDecodedCoreNormalized(d, ViewBase64Decoded, suppress); len(decodedSet.matches) > 0 {
-				return mapDecodedSources(decodedSet, d, sourceOffsets, false)
-			}
-			if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress); len(decodedSet.matches) > 0 {
-				return mapDecodedSources(decodedSet, d, sourceOffsets, false)
-			}
-		}
-	}
-	if decoded, err := hex.DecodeString(stripped); err == nil && len(decoded) > 0 {
-		d := string(decoded)
-		if decodedSet := s.matchDecodedCoreNormalized(d, ViewHexDecoded, suppress); len(decodedSet.matches) > 0 {
-			return mapDecodedSources(decodedSet, d, sourceOffsets, true)
-		}
-		if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress); len(decodedSet.matches) > 0 {
-			return mapDecodedSources(decodedSet, d, sourceOffsets, true)
-		}
-	}
-
-	// Strategy 2: segment-level decode.
-	segments := extractEncodedRunSpans(content, minSegmentDecodeLen)
-	for _, seg := range segments {
-		_, sourceOffsets := stripDecodeWhitespace(seg.text, seg.start)
-		for _, enc := range []*base64.Encoding{
-			base64.StdEncoding, base64.URLEncoding,
-			base64.RawStdEncoding, base64.RawURLEncoding,
-		} {
-			if decoded, err := enc.DecodeString(canonicalMixedBase64(seg.text)); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
-				d := string(decoded)
-				if decodedSet := s.matchDecodedCoreNormalized(d, ViewBase64Decoded, suppress); len(decodedSet.matches) > 0 {
-					return mapDecodedSources(decodedSet, d, sourceOffsets, false)
-				}
-				if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress); len(decodedSet.matches) > 0 {
-					return mapDecodedSources(decodedSet, d, sourceOffsets, false)
-				}
-			}
-		}
-		if decoded, err := hex.DecodeString(seg.text); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
-			d := string(decoded)
-			if decodedSet := s.matchDecodedCoreNormalized(d, ViewHexDecoded, suppress); len(decodedSet.matches) > 0 {
-				return mapDecodedSources(decodedSet, d, sourceOffsets, true)
-			}
-			if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress); len(decodedSet.matches) > 0 {
-				return mapDecodedSources(decodedSet, d, sourceOffsets, true)
-			}
-		}
-	}
-
-	return responseMatchSet{}
+func (s *Scanner) matchDecodedCoreResponseRecursiveMode(content string, depth int, suppress coreResponseSuppressor, recoverQP bool) responseMatchSet {
+	return newResponseDecodeMemo(s, true, suppress).recursiveMode(content, depth, recoverQP)
 }
 
 func (s *Scanner) matchDecodedCoreNormalized(decoded, decodedViewLabel string, suppress coreResponseSuppressor) responseMatchSet {
