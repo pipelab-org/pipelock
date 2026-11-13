@@ -228,7 +228,7 @@ type ceeJSONLeaf struct {
 
 func (p ceeOutboundPayloads) inspectionMode() string {
 	partitions := len(p.bodyFragmentPayloads)
-	for _, key := range []string{ceeCodingFieldsStream, ceeCodingRestStream} {
+	for _, key := range ceeCodingStreams {
 		if _, ok := p.bodyFragmentPayloads[key]; ok {
 			partitions--
 		}
@@ -245,7 +245,10 @@ func (p ceeOutboundPayloads) inspectionMode() string {
 const (
 	ceeCodingFieldsStream = "coding-fields"
 	ceeCodingRestStream   = "coding-rest"
+	ceeCodingStampStream  = "coding-stamp"
 )
+
+var ceeCodingStreams = []string{ceeCodingFieldsStream, ceeCodingRestStream, ceeCodingStampStream}
 
 const (
 	ceeJSONPartitionReasonMalformed  = "malformed"
@@ -491,7 +494,7 @@ func extractOutboundPayloads(r *http.Request, partitionJSON bool, sessionKey str
 			// The forwarded bytes stay as read. What is inspected is the
 			// text a receiver can recover when the body carries a supported
 			// content coding.
-			text, fields, rest := ceeInspectedBody(r.Header, bodyBytes)
+			text, extras := ceeInspectedBody(r.Header, bodyBytes)
 			parts = append(parts, string(text))
 			if partitionJSON {
 				result.bodyFragmentLeaves, result.partitionReason = jsonBodyFragmentLeaves(r.Header.Get("Content-Type"), text, sessionKey, partitionKey)
@@ -499,19 +502,18 @@ func extractOutboundPayloads(r *http.Request, partitionJSON bool, sessionKey str
 				// Bytes a sender controls must not sit inside the decoded text,
 				// where they could separate two halves of a split value. Each
 				// kind is reassembled as its own stream.
-				for name, extra := range map[string][]byte{ceeCodingFieldsStream: fields, ceeCodingRestStream: rest} {
-					if len(extra) == 0 {
-						continue
-					}
+				for name, extra := range extras {
 					if result.bodyFragmentPayloads == nil {
-						result.bodyFragmentPayloads = make(map[string][]byte, 2)
+						result.bodyFragmentPayloads = make(map[string][]byte, len(extras))
 					}
 					result.bodyFragmentPayloads[name] = extra
 				}
 			} else {
 				// Without fragment reassembly only the entropy budget reads
 				// this stream, and order does not matter to it.
-				parts = append(parts, string(fields), string(rest))
+				for _, name := range ceeCodingStreams {
+					parts = append(parts, string(extras[name]))
+				}
 			}
 		}
 		// Concatenate read bytes with any remaining body data beyond the limit.
@@ -531,33 +533,53 @@ func extractOutboundPayloads(r *http.Request, partitionJSON bool, sessionKey str
 // ceeInspectedBody splits a request body read up to maxCEEBodyRead into what
 // cross-request detection inspects. text is the body a receiver reads.
 // Identity, an unsupported or stacked coding, and a body that does not start
-// a supported stream return the bytes as read as text and nothing else.
+// a supported stream return the bytes as read as text and no extras.
 //
 // A single gzip, x-gzip, or deflate coding returns the decoded text, bounded
 // by the same limit. Every gzip member is decoded, since a receiver may read
 // them all, and their text is kept contiguous so a value split across members
 // or across requests still lines up.
 //
-// Nothing on this path validated the body, so the rest of what a receiver
-// could recover is returned separately and never mixed into text: fields
-// holds each gzip member's file name, comment and extra field, and rest holds
-// whatever was not decoded, whether that is bytes after the stream, a stream
-// that failed part way, or a body over the limit. A clean single stream has
-// neither.
+// Nothing on this path validated the body, so the rest of what a sender
+// controls is returned as extras, keyed by stream name, and never mixed into
+// text or into each other:
+//
+//   - ceeCodingFieldsStream: each gzip member's file name, comment and extra
+//     field.
+//   - ceeCodingStampStream: each gzip member's modification time, when set.
+//   - ceeCodingRestStream: what was not cleanly decoded. After a clean stream
+//     that is the bytes that follow it. When decoding fails or stops at the
+//     limit, the decoder may have read ahead, so it is the whole body as read.
+//
+// A clean single stream with no header fields has no extras.
 //
 // Detection only: this never refuses a request.
-func ceeInspectedBody(header http.Header, wire []byte) (text, fields, rest []byte) {
+func ceeInspectedBody(header http.Header, wire []byte) (text []byte, extras map[string][]byte) {
 	coding, err := responseencoding.ParseRequestCoding(header.Values("Content-Encoding"))
 	if err != nil || coding == "" {
-		return wire, nil, nil
+		return wire, nil
 	}
 	src := bytes.NewReader(wire)
 	dec, err := responseencoding.NewDecoder(coding, src)
 	if err != nil {
-		return wire, nil, nil
+		return wire, nil
 	}
 	defer func() { _ = dec.Close() }()
+	var fields, stamps []byte
+	finish := func(rest []byte) ([]byte, map[string][]byte) {
+		for name, extra := range map[string][]byte{ceeCodingFieldsStream: fields, ceeCodingStampStream: stamps, ceeCodingRestStream: rest} {
+			if len(extra) == 0 {
+				continue
+			}
+			if extras == nil {
+				extras = make(map[string][]byte, 3)
+			}
+			extras[name] = extra
+		}
+		return text, extras
+	}
 	gz, isGzip := dec.(*gzip.Reader)
+	memberStart := 0
 	for {
 		if isGzip {
 			// One member at a time, so each member's header is seen.
@@ -565,20 +587,25 @@ func ceeInspectedBody(header http.Header, wire []byte) (text, fields, rest []byt
 			fields = append(fields, gz.Name...)
 			fields = append(fields, gz.Comment...)
 			fields = append(fields, gz.Extra...)
+			// The modification time is bytes four to eight of the member.
+			if stamp := wire[memberStart:]; len(stamp) >= 8 && !bytes.Equal(stamp[4:8], []byte{0, 0, 0, 0}) {
+				stamps = append(stamps, stamp[4:8]...)
+			}
 		}
 		room := maxCEEBodyRead - len(text)
 		decoded, readErr := io.ReadAll(io.LimitReader(dec, int64(room)))
 		text = append(text, decoded...)
-		// bytes.Reader is read byte by byte by the decoder, so what is left
-		// is exactly what follows the member just read.
-		rest = wire[len(wire)-src.Len():]
-		if readErr != nil || len(decoded) == room || len(rest) == 0 {
-			return text, fields, rest
+		if readErr != nil || len(decoded) == room {
+			return finish(wire)
 		}
+		// bytes.Reader is read byte by byte by the decoder, so after a clean
+		// member what is left is exactly what follows it.
+		rest := wire[len(wire)-src.Len():]
 		// Reading the next header consumes input, so rest is taken first.
-		if !isGzip || gz.Reset(src) != nil {
-			return text, fields, rest
+		if len(rest) == 0 || !isGzip || gz.Reset(src) != nil {
+			return finish(rest)
 		}
+		memberStart = len(wire) - len(rest)
 	}
 }
 
@@ -808,8 +835,13 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 	logger, m := opts.Logger, opts.Metrics
 	// The parts of a compressed body outside its decoded text are inspected
 	// and charged like the text, including when the text itself is empty.
-	codingExtras := [][]byte{bodyFragmentPayloads[ceeCodingFieldsStream], bodyFragmentPayloads[ceeCodingRestStream]}
-	hasCodingExtras := len(codingExtras[0]) > 0 || len(codingExtras[1]) > 0
+	var codingExtras [][]byte
+	for _, name := range ceeCodingStreams {
+		if extra := bodyFragmentPayloads[name]; len(extra) > 0 {
+			codingExtras = append(codingExtras, extra)
+		}
+	}
+	hasCodingExtras := len(codingExtras) > 0
 	if len(outbound) == 0 && len(keyPayload) == 0 && !hasCodingExtras && (pathPayload == nil || (len(pathPayload.segments) == 0 && !pathPayload.depthExceeded)) {
 		if opts.PartitionReason != "" {
 			m.RecordCrossRequestJSONPartitionFallback(opts.PartitionReason)
@@ -831,9 +863,7 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 			et.Record(identity, outbound)
 		}
 		for _, extra := range codingExtras {
-			if len(extra) > 0 {
-				et.Record(identity, extra)
-			}
+			et.Record(identity, extra)
 		}
 		if len(keyPayload) > 0 {
 			et.Record(identity, keyPayload)

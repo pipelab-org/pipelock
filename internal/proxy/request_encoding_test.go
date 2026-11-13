@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
@@ -1590,7 +1591,7 @@ func reverseAdmittedGzipPolicy(t *testing.T, admittedLimit, liveLimit int, wire 
 }
 
 // ceeInspectedBody returns the decoded text for a clean supported stream and
-// keeps everything else a receiver could recover apart from it.
+// keeps everything else a sender controls apart from it.
 func TestCEEInspectedBody(t *testing.T) {
 	plain := []byte(strings.Repeat("inspect this text ", 40))
 	second := []byte("second member text")
@@ -1610,14 +1611,16 @@ func TestCEEInspectedBody(t *testing.T) {
 	}
 	fielded := withFields(gzip.Header{Name: "name-field", Comment: "comment-field", Extra: []byte("extra-field")}, plain)
 	laterFields := withFields(gzip.Header{Comment: "later-comment"}, second)
+	stamped := withFields(gzip.Header{ModTime: time.Unix(0x64636261, 0)}, nil)
+	laterStamp := withFields(gzip.Header{ModTime: time.Unix(0x68676665, 0)}, second)
 	join := func(parts ...[]byte) []byte { return bytes.Join(parts, nil) }
+	truncated := gzipped[:len(gzipped)-12]
 	cases := []struct {
-		name       string
-		encoding   []string
-		wire       []byte
-		wantText   []byte
-		wantFields []byte
-		wantRest   []byte
+		name     string
+		encoding []string
+		wire     []byte
+		wantText []byte
+		want     map[string]string
 	}{
 		{name: "identity", wire: plain, wantText: plain},
 		{name: "gzip", encoding: []string{"gzip"}, wire: gzipped, wantText: plain},
@@ -1625,11 +1628,14 @@ func TestCEEInspectedBody(t *testing.T) {
 		{name: "unsupported coding", encoding: []string{"br"}, wire: gzipped, wantText: gzipped},
 		{name: "stacked coding", encoding: []string{"gzip", "gzip"}, wire: gzipped, wantText: gzipped},
 		{name: "declared gzip is not gzip", encoding: []string{"gzip"}, wire: plain, wantText: plain},
-		{name: "bytes after gzip", encoding: []string{"gzip"}, wire: join(gzipped, []byte("tail")), wantText: plain, wantRest: []byte("tail")},
-		{name: "bytes after deflate", encoding: []string{"deflate"}, wire: join(deflated, []byte("tail")), wantText: plain, wantRest: []byte("tail")},
+		{name: "bytes after gzip", encoding: []string{"gzip"}, wire: join(gzipped, []byte("tail")), wantText: plain, want: map[string]string{ceeCodingRestStream: "tail"}},
+		{name: "bytes after deflate", encoding: []string{"deflate"}, wire: join(deflated, []byte("tail")), wantText: plain, want: map[string]string{ceeCodingRestStream: "tail"}},
 		{name: "second gzip member is decoded", encoding: []string{"gzip"}, wire: join(gzipped, gzipRequestBody(t, second)), wantText: join(plain, second)},
-		{name: "gzip header fields stay out of the text", encoding: []string{"gzip"}, wire: fielded, wantText: plain, wantFields: []byte("name-fieldcomment-fieldextra-field")},
-		{name: "later member field does not split the text", encoding: []string{"gzip"}, wire: join(gzipped, laterFields), wantText: join(plain, second), wantFields: []byte("later-comment")},
+		{name: "gzip header fields stay out of the text", encoding: []string{"gzip"}, wire: fielded, wantText: plain, want: map[string]string{ceeCodingFieldsStream: "name-fieldcomment-fieldextra-field"}},
+		{name: "later member field does not split the text", encoding: []string{"gzip"}, wire: join(gzipped, laterFields), wantText: join(plain, second), want: map[string]string{ceeCodingFieldsStream: "later-comment"}},
+		{name: "modification time of an empty member", encoding: []string{"gzip"}, wire: stamped, wantText: nil, want: map[string]string{ceeCodingStampStream: "abcd"}},
+		{name: "modification times of two members", encoding: []string{"gzip"}, wire: join(stamped, laterStamp), wantText: second, want: map[string]string{ceeCodingStampStream: "abcdefgh"}},
+		{name: "stream fails part way keeps the body as read", encoding: []string{"gzip"}, wire: truncated, wantText: nil, want: map[string]string{ceeCodingRestStream: string(truncated)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1637,37 +1643,70 @@ func TestCEEInspectedBody(t *testing.T) {
 			for _, v := range tc.encoding {
 				header.Add("Content-Encoding", v)
 			}
-			text, fields, rest := ceeInspectedBody(header, tc.wire)
-			if !bytes.Equal(text, tc.wantText) {
+			text, extras := ceeInspectedBody(header, tc.wire)
+			if tc.name == "stream fails part way keeps the body as read" {
+				if len(text) == 0 || !bytes.HasPrefix(plain, text) {
+					t.Fatalf("text = %d bytes that are not a prefix of the plaintext", len(text))
+				}
+			} else if !bytes.Equal(text, tc.wantText) {
 				t.Fatalf("text = %d bytes, want %d", len(text), len(tc.wantText))
 			}
-			if !bytes.Equal(fields, tc.wantFields) {
-				t.Fatalf("fields = %q, want %q", fields, tc.wantFields)
+			if len(extras) != len(tc.want) {
+				t.Fatalf("extras = %q, want %q", extras, tc.want)
 			}
-			if !bytes.Equal(rest, tc.wantRest) {
-				t.Fatalf("rest = %q, want %q", rest, tc.wantRest)
+			for name, want := range tc.want {
+				if string(extras[name]) != want {
+					t.Fatalf("%s = %q, want %q", name, extras[name], want)
+				}
 			}
 		})
 	}
+}
 
-	t.Run("stream fails part way", func(t *testing.T) {
-		text, _, _ := ceeInspectedBody(http.Header{"Content-Encoding": []string{"gzip"}}, gzipped[:len(gzipped)-12])
-		if len(text) == 0 || !bytes.HasPrefix(plain, text) {
-			t.Fatalf("text = %d bytes that are not a prefix of the plaintext", len(text))
+// A decoder can read ahead of the text it has returned. When decoding stops
+// at the limit, the whole body as read stays inspected, so bytes the decoder
+// consumed and never returned are not lost.
+func TestCEEInspectedBodyKeepsWireWhenDecodingStopsAtLimit(t *testing.T) {
+	stored := func(payload []byte) []byte {
+		var buf bytes.Buffer
+		zw, err := gzip.NewWriterLevel(&buf, gzip.NoCompression)
+		if err != nil {
+			t.Fatal(err)
 		}
-	})
+		if _, err := zw.Write(payload); err != nil {
+			t.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	marker := []byte("marker-after-the-limit")
+	first := gzipRequestBody(t, bytes.Repeat([]byte("A"), maxCEEBodyRead-16*1024))
+	second := stored(append(bytes.Repeat([]byte("B"), 16*1024), marker...))
+	wire := append(append([]byte{}, first...), second...)
+	if len(wire) >= maxCEEBodyRead {
+		t.Fatalf("fixture is %d bytes, want it under the read limit", len(wire))
+	}
+	text, extras := ceeInspectedBody(http.Header{"Content-Encoding": []string{"gzip"}}, wire)
+	if len(text) != maxCEEBodyRead || bytes.Contains(text, marker) {
+		t.Fatalf("text = %d bytes, marker in text = %v; the fixture should stop before the marker", len(text), bytes.Contains(text, marker))
+	}
+	if !bytes.Contains(extras[ceeCodingRestStream], marker) {
+		t.Fatal("bytes after the limit were dropped from inspection")
+	}
 }
 
 // A body that decodes to more than the read limit stops at the limit.
 func TestCEEInspectedBodyBoundsDecodedText(t *testing.T) {
 	wire := gzipRequestBody(t, bytes.Repeat([]byte("A"), maxCEEBodyRead*3))
 	header := http.Header{"Content-Encoding": []string{"gzip"}}
-	text, _, rest := ceeInspectedBody(header, wire)
+	text, extras := ceeInspectedBody(header, wire)
 	if len(text) != maxCEEBodyRead {
 		t.Fatalf("text = %d bytes, want %d", len(text), maxCEEBodyRead)
 	}
-	if len(rest) == 0 {
-		t.Fatal("the undecoded remainder was dropped")
+	if !bytes.Equal(extras[ceeCodingRestStream], wire) {
+		t.Fatal("the body as read was not kept for inspection")
 	}
 }
 
@@ -1911,7 +1950,7 @@ func TestGzipMembersAndFieldsDoNotHideSplitCredential(t *testing.T) {
 // entropy budget, including when the decoded text is empty and nothing else
 // in the request carries data.
 func TestCeeAdmitChargesCodingExtras(t *testing.T) {
-	for _, stream := range []string{ceeCodingFieldsStream, ceeCodingRestStream} {
+	for _, stream := range ceeCodingStreams {
 		t.Run(stream, func(t *testing.T) {
 			et := scanner.NewEntropyTracker(1.0, 300)
 			defer et.Close()
