@@ -43,6 +43,7 @@ func TestScanTextForDLP_DocumentedProviderCredentials(t *testing.T) {
 				"base64":  base64.StdEncoding.EncodeToString([]byte(fixture.value)),
 				"percent": url.QueryEscape(fixture.value),
 				"split":   fixture.value[:len(fixture.value)/2] + " " + fixture.value[len(fixture.value)/2:],
+				"suffix":  fixture.value + "Z",
 			} {
 				t.Run(carrier, func(t *testing.T) {
 					result := s.ScanTextForDLP(context.Background(), text)
@@ -72,7 +73,6 @@ func TestScanTextForDLP_ProviderCredentialNearMisses(t *testing.T) {
 		"diagram paper size":          "Print this diagram on A3 paper and compare it with A4.",
 		"1Password short kit group":   "A3-" + strings.Repeat("B", 6) + "-" + strings.Repeat("C", 5) + strings.Repeat("-D7EF8", 4),
 		"Doppler too short":           "dp.pt." + strings.Repeat("aB3x", 9) + "abc",
-		"Doppler too long":            "dp.pt." + strings.Repeat("aB3x", 11) + "a",
 		"Doppler wrong kind":          "dp.unknown." + strings.Repeat("aB3x", 10),
 		"Doppler invalid alphabet":    "dp.pt." + strings.Repeat("_", 40),
 		"Doppler short environment":   "dp.st.a." + strings.Repeat("aB3x", 10),
@@ -84,7 +84,6 @@ func TestScanTextForDLP_ProviderCredentialNearMisses(t *testing.T) {
 		"PyPI project names":          "Install the pypi-client and read the pypi-package release notes for the next deployment.",
 		"Sentry too short":            "sntrys_" + strings.Repeat("Q", 20) + "_" + strings.Repeat("R", 42),
 		"Sentry personal too short":   "sntryu_" + strings.Repeat("ab", 31),
-		"Sentry personal too long":    "sntryu_" + strings.Repeat("ab", 32) + "a",
 		"Sentry prose":                "The sntrys_ prefix identifies organization tokens. Store them securely and rotate them regularly.",
 		"Sentry personal prose":       "The sntryu_ prefix identifies personal tokens. Store them securely and rotate them regularly.",
 		"Doppler prose":               "The dp.pt. prefix identifies personal tokens. The dp.st. prefix identifies service tokens.",

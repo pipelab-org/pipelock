@@ -247,10 +247,10 @@ dlp:
       regex: 'dop_v1_[a-f0-9]{64}'
       severity: critical
     - name: "Doppler Token"
-      regex: 'dp\.(?:(?:ct|pt|sa|said|scim|audit)\.|st\.(?:[a-z0-9_-]{2,35}\.)?)[A-Za-z0-9]{40,44}\b'
+      regex: 'dp\.(?:(?:ct|pt|sa|said|scim|audit)\.|st\.(?:[a-z0-9_-]{2,35}\.)?)[A-Za-z0-9]{40,44}'
       severity: critical
     - name: "1Password Secret Key"
-      regex: 'A3-[A-Z0-9]{6}-(?:[A-Z0-9]{11}(?:-[A-Z0-9]{5}){3}|[A-Z0-9]{6}(?:-[A-Z0-9]{5}){4})\b'
+      regex: 'A3-[A-Z0-9]{6}-(?:[A-Z0-9]{11}(?:-[A-Z0-9]{5}){3}|[A-Z0-9]{6}(?:-[A-Z0-9]{5}){4})'
       severity: critical
     - name: "HashiCorp Vault Token"
       regex: 'hvs\.[A-Za-z0-9]{24,}\b'
@@ -274,10 +274,10 @@ dlp:
       regex: 'ntn_[a-zA-Z0-9]{40,}\b'
       severity: high
     - name: "Sentry Auth Token"
-      regex: 'sntryu_[a-f0-9]{64}\b|sntrys_(?:[A-Za-z0-9+/=]+_[A-Za-z0-9+/]{43}|[A-Za-z0-9]{40,}\b)'
+      regex: 'sntryu_[a-f0-9]{64}|sntrys_(?:[A-Za-z0-9+/=]+_[A-Za-z0-9+/]{43}|[A-Za-z0-9]{40,}\b)'
       severity: high
     - name: "age Secret Key"
-      regex: 'AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}\b'
+      regex: 'AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}'
       severity: critical
     - name: "Private Key Header"
       regex: '-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+|PGP\s+)?PRIVATE\s+KEY(\s+BLOCK)?-----'
