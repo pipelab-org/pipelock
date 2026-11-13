@@ -301,8 +301,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	r = r.WithContext(withAllowedSSRFDialScanSnapshot(r.Context(), sc, host, targetPort, result))
 
-	// Capture observer: record CONNECT URL verdict for policy replay.
-	{
+	// A context refusal is not a block. Skip the replay record here; header
+	// DLP below still runs, and a finding there is recorded on its own path.
+	// The cancellation return is after that scan so a header secret is not
+	// dropped, and before session scoring so the refusal does not raise it.
+	recordConnectCapture := !clientCanceledContextRefusal(r.Context(), result)
+	if recordConnectCapture {
 		findings := urlResultToFindings(result)
 		action := config.ActionAllow
 		if !result.Allowed {
@@ -414,6 +418,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			connectHeaderReason, http.StatusForbidden)
 		return
 	}
+	if refuseClientCanceledScan(r.Context(), w, p.logger, targetCtx, result) {
+		return
+	}
 
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
 	// signals (SignalBlock) fire even for blocked requests. Pass deferClean=true
@@ -441,9 +448,6 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	var connectGate ContractGateOutput
 
 	if !result.Allowed {
-		if refuseClientCanceledScan(r.Context(), w, p.logger, targetCtx, result) {
-			return
-		}
 		status := http.StatusForbidden
 		if result.Scanner == scanner.ScannerRateLimit {
 			status = http.StatusTooManyRequests
@@ -1221,6 +1225,14 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Return before replay capture and session scoring. A canceled URL
+	// admission is not a block, and scoring it would raise the threat
+	// score for a request that is never forwarded. A2A header findings
+	// above already returned on their own block path.
+	if refuseClientCanceledScan(r.Context(), w, p.logger, actx, result) {
+		return
+	}
+
 	// Capture observer: record forward URL verdict for policy replay.
 	{
 		findings := urlResultToFindings(result)
@@ -1316,9 +1328,6 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	hasFinding := !result.Allowed && (!result.IsAdaptiveNeutral() || result.IsEntropyOnly())
 
 	if !result.Allowed {
-		if refuseClientCanceledScan(r.Context(), w, p.logger, actx, result) {
-			return
-		}
 		status := http.StatusForbidden
 		if result.Scanner == scanner.ScannerRateLimit {
 			status = http.StatusTooManyRequests

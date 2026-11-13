@@ -1036,6 +1036,12 @@ func newInterceptHandler(
 		}
 		r = r.WithContext(withAllowedSSRFDialScanSnapshot(r.Context(), ic.Scanner, r.URL.Hostname(), effectiveURLPort(r.URL), urlResult))
 
+		// Return before replay capture and session scoring. A canceled URL
+		// admission is not a block.
+		if refuseClientCanceledScan(r.Context(), w, ic.Logger, actx, urlResult) {
+			return
+		}
+
 		// Capture observer: record intercept URL verdict for policy replay.
 		if ic.Proxy != nil {
 			findings := urlResultToFindings(urlResult)
@@ -1066,9 +1072,6 @@ func newInterceptHandler(
 		// (fail-closed). The neutral-handling is done inline below - hasFinding
 		// stays false and the signal switch skips SignalBlock.
 		if !urlResult.Allowed && !urlResult.IsProtective() {
-			if refuseClientCanceledScan(r.Context(), w, ic.Logger, actx, urlResult) {
-				return
-			}
 			// Infrastructure errors (e.g. DNS resolver timeout) must not
 			// taint the finding flag - they are score-neutral and are not
 			// evidence of agent misbehavior. Fail-closed block still fires

@@ -348,3 +348,88 @@ func TestRequestClientCanceledCause(t *testing.T) {
 		t.Fatal("nil context reported as a client cancellation")
 	}
 }
+
+func TestClientCancelDoesNotRaiseSessionScore(t *testing.T) {
+	cfg := cancelTestConfig()
+	cfg.SessionProfiling.Enabled = true
+	cfg.SessionProfiling.MaxSessions = 100
+	cfg.SessionProfiling.DomainBurst = 100
+	cfg.SessionProfiling.WindowMinutes = 5
+	cfg.SessionProfiling.SessionTTLMinutes = 30
+	cfg.SessionProfiling.CleanupIntervalSeconds = 600
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = adaptiveTestThreshold
+	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0
+	cfg.WebSocketProxy.Enabled = true
+	logger, logs := newCancelAuditLogger(t)
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	m := metrics.New()
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.Close)
+	p.client = &http.Client{Transport: countingRoundTrip(new(atomic.Int32))}
+
+	scoreOf := func(req *http.Request) float64 {
+		t.Helper()
+		sm := p.sessionMgrPtr.Load()
+		if sm == nil {
+			t.Fatal("session manager missing")
+		}
+		clientIP, _ := requestMeta(req)
+		rec := sm.GetOrCreate(responseTaintSessionKey(cfg, "", clientIP, ""))
+		if rec == nil {
+			t.Fatal("session missing")
+		}
+		return rec.ThreatScore()
+	}
+
+	t.Run("forward", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "http://api.vendor.example/ordinary", nil)
+		before := scoreOf(req)
+		w := httptest.NewRecorder()
+		p.handleForwardHTTP(w, req)
+		if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), clientCanceledStatusText) {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		if score := scoreOf(req); score != before {
+			t.Fatalf("forward cancel threat score = %v, want %v", score, before)
+		}
+	})
+	t.Run("fetch", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/fetch?url=http://api.vendor.example/ordinary", nil)
+		before := scoreOf(req)
+		w := httptest.NewRecorder()
+		p.handleFetch(w, req)
+		if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), clientCanceledStatusText) {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		if score := scoreOf(req); score != before {
+			t.Fatalf("fetch cancel threat score = %v, want %v", score, before)
+		}
+	})
+	t.Run("connect", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		req := httptest.NewRequestWithContext(ctx, http.MethodConnect, "http://api.vendor.example:443", nil)
+		req.Host = "api.vendor.example:443"
+		before := scoreOf(req)
+		w := httptest.NewRecorder()
+		p.handleConnect(w, req)
+		if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), clientCanceledStatusText) {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		if score := scoreOf(req); score != before {
+			t.Fatalf("connect cancel threat score = %v, want %v", score, before)
+		}
+	})
+	if countAuditEvent(logs.String(), "blocked") != 0 {
+		t.Fatalf("cancel logged a block: %s", logs.String())
+	}
+}
