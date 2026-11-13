@@ -109,7 +109,7 @@ func TestBodyParseFailureReceipts(t *testing.T) {
 				rph := newReceiptProxyHelper(t)
 				p.receiptEmitterPtr.Store(rph.emitter)
 				sc := p.scannerPtr.Load()
-				ctx, cancel := context.WithCancel(t.Context())
+				ctx, cancel := proxyStoppedContext(t.Context())
 				defer cancel()
 				var input io.Reader = strings.NewReader(`{"incomplete":`)
 				wantLayer, wantPattern := scanner.ScannerParser, "decoding JSON body"
@@ -248,7 +248,7 @@ func TestBodyParseFailureReverseReceipt(t *testing.T) {
 			rp, owner, _, dir, closeRecorder, key := newReverseParityHarnessWithReceipts(t, cfg, func(_ http.ResponseWriter, _ *http.Request) { t.Error("malformed body reached upstream") })
 			rp.SetRedactionRuntimePtr(owner.RedactionRuntimePtr())
 
-			ctx, cancel := context.WithCancel(t.Context())
+			ctx, cancel := proxyStoppedContext(t.Context())
 			defer cancel()
 			var input io.Reader = strings.NewReader(`{"incomplete":`)
 			wantLayer, wantPattern := scanner.ScannerParser, "decoding JSON body"

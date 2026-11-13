@@ -1168,7 +1168,14 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	// first because phrase order matters; DLP still uses a sorted join below
 	// for deterministic split-secret detection.
 	joinedInOrder := strings.Join(texts, "\n")
-	var inOrderInjection, sortedInjection []scanner.ResponseMatch
+	var inOrderInjection, sortedInjection, fieldInjection []scanner.ResponseMatch
+	// A joined view that already finished keeps its findings when a later
+	// view stops early. Dropping them would let an unfinished scan read as
+	// one that found nothing.
+	stopJoinedScan := func(scanErr string) ([]byte, BodyScanResult) {
+		result.InjectionMatches = mergeJoinedInjectionMatches(result.InjectionMatches, inOrderInjection, sortedInjection, fieldInjection)
+		return stopIncompleteBodyScan(result, scanErr)
+	}
 	injectionResult := req.Scanner.ScanResponseOutbound(ctx, joinedInOrder)
 	if injectionResult.Failed() {
 		return stopIncompleteBodyScan(result, injectionResult.ScanError)
@@ -1183,7 +1190,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	joined := strings.Join(sorted, "\n")
 	injectionResult = req.Scanner.ScanResponseOutbound(ctx, joined)
 	if injectionResult.Failed() {
-		return stopIncompleteBodyScan(result, injectionResult.ScanError)
+		return stopJoinedScan(injectionResult.ScanError)
 	}
 	if !injectionResult.Clean {
 		sortedInjection = injectionResult.Matches
@@ -1191,7 +1198,6 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	// Tokens and regions must not interrupt a split phrase that a narrower
 	// view detects. Preserve the field-only joins and the token-bearing part
 	// reading without regions, as well as the complete reading above.
-	var fieldInjection []scanner.ResponseMatch
 	if len(dlpExtracted.HeaderTokens) > 0 || len(dlpExtracted.MultipartFields) > 0 {
 		joinedFields := []string{strings.Join(sortedBodyTexts(dlpExtracted.GenericTexts), "\n"), strings.Join(sortedBodyTexts(dlpExtracted.MultipartFields), "\n")}
 		if len(dlpExtracted.MultipartFields) > 0 {
@@ -1201,7 +1207,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		for _, joinedFields := range joinedFields {
 			fieldResult := req.Scanner.ScanResponseOutbound(ctx, joinedFields)
 			if fieldResult.Failed() {
-				return stopIncompleteBodyScan(result, fieldResult.ScanError)
+				return stopJoinedScan(fieldResult.ScanError)
 			}
 			fieldInjection = mergeJoinedInjectionMatches(fieldInjection, fieldResult.Matches)
 		}

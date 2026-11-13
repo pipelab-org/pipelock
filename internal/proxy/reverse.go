@@ -818,13 +818,15 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
 		}
 	}
-	refuseRequestScanError := func(err error) bool {
+	// hadFinding keeps an unfinished scan that already matched a secret a
+	// block, whatever ended the request context.
+	refuseRequestScanError := func(err error, hadFinding bool) bool {
 		if !errors.Is(err, scanner.ErrTextDLPIncomplete) {
 			return false
 		}
 		targetURL := reverseTargetURL(rp.upstream, r)
 		actx := newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
-		if requestClientCanceled(r.Context()) {
+		if !hadFinding && requestClientCanceled(r.Context()) {
 			logRequestCanceled(rp.logger, actx, err.Error())
 			writeClientCanceled(w)
 			return true
@@ -1073,7 +1075,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	requestScannerVerdict := config.ActionAllow
 	if pathQuery := r.URL.RequestURI(); pathQuery != "" {
 		pathDLP := sc.ScanTextForDLP(r.Context(), pathQuery)
-		if refuseRequestScanError(pathDLP.Err()) {
+		if refuseRequestScanError(pathDLP.Err(), len(pathDLP.Matches) > 0) {
 			return
 		}
 		filteredMatches, audienceAllows := sc.FilterTextDLPMatchesForDestination(pathDLP.Matches, targetURL, "url")
@@ -1191,7 +1193,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}, func(allow scanner.CredentialAudienceAllow) error {
 			return rp.recordCredentialAudienceAllow(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}), allow, r.Method, targetURL, requestID, agent, receiptShardFromContext(r.Context()))
 		})
-		if headerResult != nil && headerResult.ScanError != "" && !bodyResultHasFinding(*headerResult) && refuseRequestScanError(scanner.ErrTextDLPIncomplete) {
+		if headerResult != nil && headerResult.ScanError != "" && !bodyResultHasFinding(*headerResult) && refuseRequestScanError(scanner.ErrTextDLPIncomplete, false) {
 			return
 		}
 		if headerResult != nil && headerResult.CredentialAudienceReceiptErr != nil {
