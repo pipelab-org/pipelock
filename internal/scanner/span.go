@@ -305,7 +305,7 @@ func (p *compiledPattern) gluedCandidateSpan(text string, loc [2]int) (int, int,
 	if !ok || start != loc[0] {
 		return 0, 0, false
 	}
-	if p.providerKeyPrefix != "" && !providerSuffixHasKeyStrength(p.providerKeyPrefix, text[start:end]) {
+	if len(p.providerKeyPrefixes) > 0 && !providerSuffixHasKeyStrength(p.providerKeyPrefixes, text[start:end]) {
 		return 0, 0, false
 	}
 	return start, end, true
@@ -450,8 +450,12 @@ func (p *compiledPattern) leftBoundaryWindowEnd(source string, loc [2]int) int {
 	if p.providerPrefixRE == nil {
 		return loc[1]
 	}
+	longest := 0
+	for _, prefix := range p.providerKeyPrefixes {
+		longest = max(longest, len(prefix))
+	}
 	end := loc[0]
-	for n := len(p.providerKeyPrefix) + providerKeyMinSuffixRunes; n > 0 && end < loc[1]; n-- {
+	for n := longest + providerKeyMinSuffixRunes; n > 0 && end < loc[1]; n-- {
 		_, size := utf8.DecodeRuneInString(source[end:loc[1]])
 		end += size
 	}

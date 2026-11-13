@@ -61,6 +61,7 @@ func TestGluedBoundaryProseStaysClean(t *testing.T) {
 		"the desk-ant-hill-clearance-report-final",
 		"desk-ant-" + strings.Repeat("a", 20),
 		"kiosk-proj-" + strings.Repeat("a", 20),
+		"kiosk-admin-" + strings.Repeat("a", 20),
 		"risk-svcacct-" + strings.Repeat("a", 20),
 		"task-ant-hill-clearance-report-final",
 		"x" + "sk-ant-" + strings.Repeat("a", 20),
@@ -91,6 +92,7 @@ type gluedBoundaryCase struct {
 func gluedBoundaryCases() []gluedBoundaryCase {
 	anthropic := gluedAnthropicKey()
 	openai := "sk-" + "proj-" + strings.Repeat("Qw7eR9tY", 6)
+	admin := "sk-" + "admin-" + strings.Repeat("Qw7eR9tY", 6)
 	service := "sk-" + "svcacct-" + strings.Repeat("Qw7eR9tY", 6)
 	mailgun := "key-" + strings.Repeat("a1b2c3d4", 4)
 	twilio := "SK" + strings.Repeat("a1b2c3d4", 4)
@@ -108,6 +110,7 @@ func gluedBoundaryCases() []gluedBoundaryCase {
 	for _, secret := range []struct{ pattern, value string }{
 		{"Anthropic API Key", anthropic},
 		{"OpenAI API Key", openai},
+		{"OpenAI API Key", admin},
 		{"OpenAI Service Key", service},
 	} {
 		add(secret.pattern, secret.value, []string{"x", "9", "_", "-"}, true)

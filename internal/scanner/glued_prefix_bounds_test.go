@@ -56,7 +56,10 @@ func TestProviderLeftBoundaryWindowMatchesFullCandidate(t *testing.T) {
 		if p.providerPrefixRE == nil {
 			t.Fatalf("%s has no provider prefix", name)
 		}
-		prefixes := []string{p.providerKeyPrefix, strings.ToUpper(p.providerKeyPrefix), strings.Replace(p.providerKeyPrefix, "s", "ſ", 1), strings.Replace(p.providerKeyPrefix, "k", "K", 1)}
+		var prefixes []string
+		for _, keyPrefix := range p.providerKeyPrefixes {
+			prefixes = append(prefixes, keyPrefix, strings.ToUpper(keyPrefix), strings.Replace(keyPrefix, "s", "ſ", 1), strings.Replace(keyPrefix, "k", "K", 1))
+		}
 		checked := 0
 		for _, lead := range leads {
 			for _, prefix := range prefixes {

@@ -137,17 +137,16 @@ func FuzzResponseCaseMapping(f *testing.F) {
 			}
 		}
 		for _, p := range sc.dlpPatterns {
-			if p.providerKeyPrefix == "" {
-				continue
-			}
-			candidate := p.providerKeyPrefix + prefix + p.providerKeyPrefix + strings.Repeat("a", 24)
-			for _, span := range p.canonicalProviderCandidateSpans(candidate) {
-				if span[0] < 0 || span[0] >= span[1] || span[1] > len(candidate) {
-					t.Fatalf("invalid provider source span: %v", span)
-				}
-				loc := p.withoutLeftBoundary.FindStringIndex(candidate[span[0]:span[1]])
-				if loc == nil || loc[0] != 0 || loc[1] != span[1]-span[0] {
-					t.Fatalf("provider span does not select its original match: %v", span)
+			for _, keyPrefix := range p.providerKeyPrefixes {
+				candidate := keyPrefix + prefix + keyPrefix + strings.Repeat("a", 24)
+				for _, span := range p.canonicalProviderCandidateSpans(candidate) {
+					if span[0] < 0 || span[0] >= span[1] || span[1] > len(candidate) {
+						t.Fatalf("invalid provider source span: %v", span)
+					}
+					loc := p.withoutLeftBoundary.FindStringIndex(candidate[span[0]:span[1]])
+					if loc == nil || loc[0] != 0 || loc[1] != span[1]-span[0] {
+						t.Fatalf("provider span does not select its original match: %v", span)
+					}
 				}
 			}
 		}
@@ -207,27 +206,25 @@ func TestProviderCaseMappingSourceSpans(t *testing.T) {
 	sc := MustNew(testConfig())
 	defer sc.Close()
 	for _, p := range sc.dlpPatterns {
-		if p.providerKeyPrefix == "" {
-			continue
-		}
-		prefix := p.providerKeyPrefix
-		for _, r := range lengthChangingCaseRunes() {
-			before := prefix + strings.Repeat(string(r), 20)
-			for _, size := range []int{19, 20, 24} {
-				nested := prefix + strings.Repeat("a", size)
-				text := before + nested
-				// Only runes accepted by the configured case-insensitive body can
-				// sit inside its greedy outer candidate.
-				if loc := p.withoutLeftBoundary.FindStringIndex(text); loc == nil || loc[0] != 0 {
-					continue
-				}
-				spans := p.canonicalProviderCandidateSpans(text)
-				want := 1
-				if size >= 20 {
-					want = 2
-				}
-				if len(spans) != want || want == 2 && spans[1] != [2]int{len(before), len(text)} {
-					t.Fatalf("U+%04X prefix %q suffix %d: wrong nested source spans: %v", r, prefix, size, spans)
+		for _, prefix := range p.providerKeyPrefixes {
+			for _, r := range lengthChangingCaseRunes() {
+				before := prefix + strings.Repeat(string(r), 20)
+				for _, size := range []int{19, 20, 24} {
+					nested := prefix + strings.Repeat("a", size)
+					text := before + nested
+					// Only runes accepted by the configured case-insensitive body can
+					// sit inside its greedy outer candidate.
+					if loc := p.withoutLeftBoundary.FindStringIndex(text); loc == nil || loc[0] != 0 {
+						continue
+					}
+					spans := p.canonicalProviderCandidateSpans(text)
+					want := 1
+					if size >= 20 {
+						want = 2
+					}
+					if len(spans) != want || want == 2 && spans[1] != [2]int{len(before), len(text)} {
+						t.Fatalf("U+%04X prefix %q suffix %d: wrong nested source spans: %v", r, prefix, size, spans)
+					}
 				}
 			}
 		}

@@ -468,7 +468,7 @@ type compiledPattern struct {
 	name                string
 	re                  *regexp.Regexp
 	withoutLeftBoundary *regexp.Regexp
-	providerKeyPrefix   string
+	providerKeyPrefixes []string
 	providerPrefixRE    *regexp.Regexp
 	// relaxSingleGluedBoundary joins candidateHasLeftBoundary. A miss is still
 	// a finding when exactly one preceding rune caused it and the family
@@ -714,15 +714,19 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		if hasProviderBoundary {
 			switch body {
 			case config.AnthropicKeyBodyRegex:
-				cp.providerKeyPrefix = "sk-ant-"
+				cp.providerKeyPrefixes = []string{"sk-ant-"}
 			case config.OpenAIKeyBodyRegex:
-				cp.providerKeyPrefix = "sk-proj-"
+				cp.providerKeyPrefixes = []string{"sk-proj-", "sk-admin-"}
 			case config.OpenAIServiceKeyBodyRegex:
-				cp.providerKeyPrefix = "sk-svcacct-"
+				cp.providerKeyPrefixes = []string{"sk-svcacct-"}
 			}
 		}
-		if cp.providerKeyPrefix != "" {
-			cp.providerPrefixRE = mustCompileScannerRegexp("(?i)" + regexp.QuoteMeta(cp.providerKeyPrefix))
+		if len(cp.providerKeyPrefixes) > 0 {
+			quoted := make([]string, len(cp.providerKeyPrefixes))
+			for i, prefix := range cp.providerKeyPrefixes {
+				quoted[i] = regexp.QuoteMeta(prefix)
+			}
+			cp.providerPrefixRE = mustCompileScannerRegexp("(?i)(?:" + strings.Join(quoted, "|") + ")")
 			if !strings.HasPrefix(body, "(?i)") {
 				body = "(?i)" + body
 			}
@@ -743,7 +747,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 			cp.gluedDigitExtendsNumber = rejectDigit
 		}
 		requirements := analyzePatternMatchRequirements(cp.re, cp.withoutLeftBoundary)
-		if cp.withoutLeftBoundary != nil && cp.providerKeyPrefix == "" {
+		if cp.withoutLeftBoundary != nil && len(cp.providerKeyPrefixes) == 0 {
 			// The removed \b is zero width, so every bounded hit is also a
 			// body hit at the same offset, and every glued candidate is a
 			// body hit. The body's shape is a necessary condition for both.
@@ -6532,8 +6536,15 @@ func gluedWordBoundaryBody(regex string) (body string, rejectDigit bool, ok bool
 // envLeakMinEntropy with >= because eight repeating symbols land on that
 // floor: log2(8) == 3. looksLikeOpaqueToken uses a strict > for a different
 // decision and is not this gate.
-func providerSuffixHasKeyStrength(prefix, candidate string) bool {
-	if len(candidate) < len(prefix) || !strings.EqualFold(candidate[:len(prefix)], prefix) {
+func providerSuffixHasKeyStrength(prefixes []string, candidate string) bool {
+	prefix := ""
+	for _, p := range prefixes {
+		if len(candidate) >= len(p) && strings.EqualFold(candidate[:len(p)], p) {
+			prefix = p
+			break
+		}
+	}
+	if prefix == "" {
 		return false
 	}
 	suffix := candidate[len(prefix):]
