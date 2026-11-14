@@ -387,3 +387,26 @@ func receiptFromHelper(t *testing.T, rph *receiptProxyHelper, status int) receip
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// TestRequestPolicyUndecodableEncodingNamesTheCause checks that a refusal made
+// by on_undecodable_encoding says so, instead of repeating the reason of the
+// rule whose body it could not read.
+func TestRequestPolicyUndecodableEncodingNamesTheCause(t *testing.T) {
+	plain := []byte(`{"action":"deleteRecord"}`)
+	cfg := undecodablePolicyConfig("", true, discriminatorBlockRule())
+	status, auditText, _ := forwardUndecodable(t, cfg, gzipRequestBody(t, plain), "br")
+	if status != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", status)
+	}
+	if !strings.Contains(auditText, rpRuleName+": "+requestPolicyUndecodableReason) {
+		t.Fatalf("block record does not name the undecodable coding: %s", auditText)
+	}
+	warnCfg := undecodablePolicyConfig(config.ActionWarn, true, discriminatorBlockRule())
+	status, auditText, _ = forwardUndecodable(t, warnCfg, gzipRequestBody(t, plain), "br")
+	if status != http.StatusNoContent {
+		t.Fatalf("warn status = %d, want 204", status)
+	}
+	if !strings.Contains(auditText, "cause="+requestPolicyUndecodableReason) {
+		t.Fatalf("warn record does not name the undecodable coding: %s", auditText)
+	}
+}

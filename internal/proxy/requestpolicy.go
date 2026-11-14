@@ -323,6 +323,10 @@ func (p *Proxy) prepareRequestPolicyBody(r *http.Request, in *requestPolicyInput
 	return requestPolicyResult{}
 }
 
+// requestPolicyUndecodableReason is the reason recorded when a body rule or
+// batch endpoint is decided by on_undecodable_encoding.
+const requestPolicyUndecodableReason = "undecodable_content_encoding"
+
 // requestPolicyUndecodableDecision applies on_undecodable_encoding to every
 // route-matched body predicate and batch endpoint. except rules stay block
 // inside EvaluateUninspectable even when the configured action is warn or
@@ -331,7 +335,13 @@ func (p *Proxy) prepareRequestPolicyBody(r *http.Request, in *requestPolicyInput
 func (p *Proxy) requestPolicyUndecodableDecision(in requestPolicyInput) reqpolicy.Decision {
 	action := p.requestPolicyMatcher().OnUndecodableEncoding()
 	d := p.evaluateRequestPolicyUninspectable(in, action, reqpolicy.PredAnyBody)
-	return reqpolicy.Stricter(d, p.evaluateRequestPolicyUninspectableBatch(in, action))
+	d = reqpolicy.Stricter(d, p.evaluateRequestPolicyUninspectableBatch(in, action))
+	if d.Matched() {
+		// Name the cause. The rule's own reason describes the operation it
+		// guards, which is not why this request was decided.
+		d.Reason = requestPolicyUndecodableReason
+	}
+	return d
 }
 
 // requestPolicyReadBlocked handles a request body that cannot be read or
@@ -459,15 +469,24 @@ func (p *Proxy) finalizeRequestPolicyDecision(in requestPolicyInput, d reqpolicy
 	if !d.Enforced() || d.Action != config.ActionBlock {
 		// Warn or shadow: log the would-be action and forward. Detail carries
 		// only bounded, operator-defined labels - never body or matched content.
-		p.logger.LogAnomaly(in.AuditCtx, blockLayerRequestPolicy,
-			fmt.Sprintf("rule=%s action=%s shadow=%t", d.RuleName, d.Action, d.Shadow), 0)
+		detail := fmt.Sprintf("rule=%s action=%s shadow=%t", d.RuleName, d.Action, d.Shadow)
+		if d.Reason == requestPolicyUndecodableReason {
+			detail += " cause=" + requestPolicyUndecodableReason
+		}
+		p.logger.LogAnomaly(in.AuditCtx, blockLayerRequestPolicy, detail, 0)
 		return requestPolicyResult{}
 	}
 
 	// Enforced block. Receipt recording is best effort: an emission failure
 	// never weakens the policy decision, but it must not leave a response header
 	// pointing at a receipt that was not recorded.
-	p.logger.LogBlocked(in.AuditCtx, blockLayerRequestPolicy, d.RuleName)
+	blockDetail := d.RuleName
+	if d.Reason == requestPolicyUndecodableReason {
+		// The rule name alone does not say the body was never read. The
+		// receipt pattern and the metric label stay the bare rule name.
+		blockDetail += ": " + requestPolicyUndecodableReason
+	}
+	p.logger.LogBlocked(in.AuditCtx, blockLayerRequestPolicy, blockDetail)
 	actionID := ""
 	if in.Emit != nil {
 		candidateActionID := receipt.NewActionID()
