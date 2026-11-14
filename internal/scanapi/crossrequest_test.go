@@ -835,3 +835,62 @@ func TestCrossRequestFragment_CoreCredentialDeniedUnderWarn(t *testing.T) {
 		t.Errorf("expected a critical cross_request_fragment finding, got %+v", second.Findings)
 	}
 }
+
+// TestApplyCrossRequestOutcome_MixedMatchSeverity pins severity per match: when
+// a core credential and a non-core pattern reassemble in the same outcome
+// under action warn, the outcome is denied, the core finding is critical and
+// the non-core finding keeps the warn severity.
+func TestApplyCrossRequestOutcome_MixedMatchSeverity(t *testing.T) {
+	var coreName, plainName string
+	for _, p := range config.Defaults().DLP.Patterns {
+		if config.IsCoreDLPPatternName(p.Name) {
+			if coreName == "" {
+				coreName = p.Name
+			}
+		} else if plainName == "" {
+			plainName = p.Name
+		}
+	}
+	if coreName == "" || plainName == "" {
+		t.Fatalf("need one core and one non-core default pattern, got %q and %q", coreName, plainName)
+	}
+
+	tests := []struct {
+		name       string
+		configured string
+		enforced   string
+		decision   string
+		wantCore   string
+		wantPlain  string
+	}{
+		{name: "warn with a core match", configured: config.ActionWarn, enforced: config.ActionBlock, decision: DecisionDeny, wantCore: "critical", wantPlain: "medium"},
+		{name: "block", configured: config.ActionBlock, enforced: config.ActionBlock, decision: DecisionDeny, wantCore: "critical", wantPlain: "critical"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &Response{Decision: DecisionAllow}
+			applyCrossRequestOutcome(resp, crossRequestOutcome{
+				Matched:          true,
+				Action:           tc.enforced,
+				ConfiguredAction: tc.configured,
+				Matches: []crossRequestMatch{
+					{PatternName: coreName},
+					{PatternName: plainName},
+				},
+			}, "dlp")
+			if resp.Decision != tc.decision {
+				t.Fatalf("decision %q, want %q", resp.Decision, tc.decision)
+			}
+			got := map[string]string{}
+			for _, f := range resp.Findings {
+				got[f.RuleID] = f.Severity
+			}
+			if s := got["CEE-fragment-"+coreName]; s != tc.wantCore {
+				t.Errorf("core finding severity %q, want %q", s, tc.wantCore)
+			}
+			if s := got["CEE-fragment-"+plainName]; s != tc.wantPlain {
+				t.Errorf("non-core finding severity %q, want %q", s, tc.wantPlain)
+			}
+		})
+	}
+}

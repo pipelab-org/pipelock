@@ -188,7 +188,13 @@ type crossRequestOutcome struct {
 	// match; Matches carries every completed pattern with its contributors.
 	Matched bool
 	Matches []crossRequestMatch
-	Action  string // config.ActionBlock or config.ActionWarn
+	// Action is the enforced action: block when the configured action is
+	// block or any match is a core credential, otherwise warn.
+	Action string
+	// ConfiguredAction is cross_request_detection.action as written. It sets
+	// each finding's severity, so a non-core match keeps the warn severity
+	// when a core credential in the same outcome forces the deny.
+	ConfiguredAction string
 }
 
 // crossRequestMatch is one completed cross-request DLP pattern match.
@@ -281,7 +287,7 @@ func checkCrossRequestFragment(
 	if m != nil {
 		m.RecordCrossRequestDLPMatch()
 	}
-	out := crossRequestOutcome{Matched: true, Action: ceeCfg.Action, Matches: make([]crossRequestMatch, 0, len(matches))}
+	out := crossRequestOutcome{Matched: true, Action: ceeCfg.Action, ConfiguredAction: ceeCfg.Action, Matches: make([]crossRequestMatch, 0, len(matches))}
 	// A reassembled core credential is denied whatever the configured action
 	// is, as on the proxy and MCP paths. Only a non-core match can warn.
 	if scanner.HasCoreFragmentMatch(matches) {
@@ -354,7 +360,7 @@ func applyCrossRequestOutcome(resp *Response, outcome crossRequestOutcome, scann
 				Message:      "Cross-request fragment DLP match: secret reassembled across multiple requests in this session (" + m.PatternName + ")",
 				Contributors: m.Contributors,
 			}
-			if outcome.Action == config.ActionWarn {
+			if outcome.ConfiguredAction == config.ActionWarn && !config.IsCoreDLPPatternName(m.PatternName) {
 				finding.Severity = "medium"
 			}
 			resp.Findings = append(resp.Findings, finding)
