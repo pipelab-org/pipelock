@@ -49,7 +49,7 @@ func TestMCPProxyCmdAuditModeStartupWarning(t *testing.T) {
 }
 
 func TestServerMCPListenerAuditModeReloads(t *testing.T) {
-	testport.WithRetry(t, 2, func(addrs []string) error {
+	testport.WithRetry(t, 2, func(addrs []string) (runErr error) {
 		fetchAddr, mcpAddr := addrs[0], addrs[1]
 		var hits atomic.Int32
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -94,8 +94,8 @@ logging:
 			cancel()
 			_ = s.Shutdown(context.Background())
 			stopErr := <-errCh
-			if stopErr != nil && !errors.Is(stopErr, context.Canceled) {
-				t.Errorf("listener stop: %v", stopErr)
+			if runErr == nil && stopErr != nil && !errors.Is(stopErr, context.Canceled) {
+				runErr = fmt.Errorf("listener stop: %w", stopErr)
 			}
 		}()
 		if err := waitForPortOrCommandExitResult(mcpAddr, errCh, buf, upstream); err != nil {
