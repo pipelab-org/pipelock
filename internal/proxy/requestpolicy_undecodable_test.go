@@ -498,28 +498,49 @@ func TestRequestPolicyUndecodableEncodingEmptyBody(t *testing.T) {
 
 // TestPrepareRequestPolicyBodyEmptyReadBodyIsNotUndecodable covers a body
 // stream that is present and yields no bytes, as an empty chunked request
-// does. The no-body guard does not catch it, and a declared coding must not
-// turn it into a refusal.
+// does. The no-body guard does not catch it. A declared coding must not turn
+// it into a refusal, and the request must then be decided exactly as the same
+// empty body with no coding is, whatever on_parse_error says.
 func TestPrepareRequestPolicyBodyEmptyReadBodyIsNotUndecodable(t *testing.T) {
-	for _, enc := range []string{"gzip", "br", "gzip, gzip"} {
-		t.Run(enc, func(t *testing.T) {
-			cfg := undecodablePolicyConfig("", true, discriminatorBlockRule())
-			p := newTestProxyWithConfig(t, cfg)
-			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+rpTestHost+"/v1/upload", io.NopCloser(bytes.NewReader(nil)))
-			req.ContentLength = -1
-			req.TransferEncoding = []string{"chunked"}
-			req.Header.Set("Content-Type", "application/json")
+	decide := func(t *testing.T, p *Proxy, enc string) (bool, bool) {
+		t.Helper()
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+rpTestHost+"/v1/upload", io.NopCloser(bytes.NewReader(nil)))
+		req.ContentLength = -1
+		req.TransferEncoding = []string{"chunked"}
+		req.Header.Set("Content-Type", "application/json")
+		if enc != "" {
 			req.Header.Set("Content-Encoding", enc)
-			in := requestPolicyInput{
-				Host: rpTestHost, Method: http.MethodPost, Path: "/v1/upload",
-				ContentType: "application/json", Headers: req.Header,
-			}
-			if res := p.prepareRequestPolicyBody(req, &in); res.Block {
-				t.Fatalf("empty read body refused for its coding: %+v", res)
-			}
-			if in.UndecodableEncodingSettled {
-				t.Fatal("empty read body marked undecodable")
-			}
-		})
+		}
+		in := requestPolicyInput{
+			Host: rpTestHost, Method: http.MethodPost, Path: "/v1/upload",
+			ContentType: "application/json", Headers: req.Header, AuditCtx: audit.LogContext{},
+		}
+		if res := p.prepareRequestPolicyBody(req, &in); res.Block {
+			return true, in.UndecodableEncodingSettled
+		}
+		return p.applyRequestPolicy(in).Block, in.UndecodableEncodingSettled
+	}
+	for _, parseAction := range []string{config.ActionWarn, config.ActionBlock} {
+		cfg := undecodablePolicyConfig("", true, discriminatorBlockRule())
+		cfg.RequestPolicy.OnParseError = parseAction
+		p := newTestProxyWithConfig(t, cfg)
+		identityBlocked, _ := decide(t, p, "")
+		for _, enc := range []string{"gzip", "br", "gzip, gzip"} {
+			t.Run("on_parse_error_"+parseAction+"/"+enc, func(t *testing.T) {
+				blocked, settled := decide(t, p, enc)
+				if settled {
+					t.Fatal("empty read body marked undecodable")
+				}
+				if blocked != identityBlocked {
+					t.Fatalf("empty body with coding %q blocked=%v, same body with no coding blocked=%v", enc, blocked, identityBlocked)
+				}
+			})
+		}
+		// The empty body is not valid JSON, so on_parse_error decides it:
+		// block refuses and warn forwards. That is what proves ordinary
+		// evaluation ran instead of a silent pass.
+		if want := parseAction == config.ActionBlock; identityBlocked != want {
+			t.Fatalf("on_parse_error %s: empty body blocked=%v, want %v", parseAction, identityBlocked, want)
+		}
 	}
 }
