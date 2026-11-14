@@ -19,8 +19,7 @@ import (
 )
 
 // auditChainSessionCap mirrors the chain matcher's tracked-session cap. The
-// test fails loudly if the cap moves, because the fill below would no longer
-// reach it.
+// test checks every fill verdict and the first overflow so a changed cap fails.
 const auditChainSessionCap = 4096
 
 // TestMCPAuditModeStdioChainCapacityStaysRefused fills the chain matcher with
@@ -34,7 +33,9 @@ func TestMCPAuditModeStdioChainCapacityStaysRefused(t *testing.T) {
 				Enabled: true, Action: config.ActionWarn, WindowSize: 4, WindowSeconds: 300,
 			})
 			for i := range auditChainSessionCap {
-				matcher.Record(fmt.Sprintf("other-session-%d", i), "read_file")
+				if v := matcher.Record(fmt.Sprintf("other-session-%d", i), "read_file"); v.Action == config.ActionBlock {
+					t.Fatalf("matcher reached capacity at session %d: %+v", i, v)
+				}
 			}
 			if v := matcher.Record("probe-session", "read_file"); v.PatternMatch || v.Action != config.ActionBlock {
 				t.Fatalf("matcher is not at capacity: %+v", v)
