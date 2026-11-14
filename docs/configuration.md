@@ -798,7 +798,7 @@ request_policy:
 | `enabled` | `false` | Enable request policy. When disabled the matcher allows everything. |
 | `on_parse_error` | `"block"` | Action when an operation predicate's route matches but the body fails to parse: `block`, `warn`, or `allow`. Fail-closed default. |
 | `on_opaque_operation` | `"block"` | Action when an operation predicate's route matches but the operation is opaque (for example a GraphQL Automatic Persisted Query that ships only a hash): `block`, `warn`, or `allow`. Fail-closed default. |
-| `on_undecodable_encoding` | `"block"` | Action when a body predicate or batch endpoint needs the body and `Content-Encoding` is a coding Pipelock doesn't decode: `block`, `warn`, or `allow`. Fail-closed default. The block record reads `<rule name>: undecodable_content_encoding` and the warn record carries `cause=undecodable_content_encoding`, so the log shows the body was never read. |
+| `on_undecodable_encoding` | `"block"` | Action when a body predicate or batch endpoint needs the body and `Content-Encoding` is a coding Pipelock doesn't decode: `block`, `warn`, or `allow`. Fail-closed default. The block record reads `<rule name>: undecodable_content_encoding` and the warn record carries `cause=undecodable_content_encoding`, so the log shows the body was not decoded for policy inspection. |
 | `rules` | `[]` | Operation safety-rail list. |
 | `batch` | `[]` | JSON batch endpoints whose sub-requests are evaluated recursively. |
 

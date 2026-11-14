@@ -482,7 +482,7 @@ func (p *Proxy) finalizeRequestPolicyDecision(in requestPolicyInput, d reqpolicy
 	// pointing at a receipt that was not recorded.
 	blockDetail := d.RuleName
 	if d.Reason == requestPolicyUndecodableReason {
-		// The rule name alone does not say the body was never read. The
+		// The rule name alone does not say the body was not decoded. The
 		// receipt pattern and the metric label stay the bare rule name.
 		blockDetail += ": " + requestPolicyUndecodableReason
 	}
