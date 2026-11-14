@@ -73,6 +73,11 @@ type requestPolicyInput struct {
 	// an identity body that was not decoded.
 	WireBody    []byte
 	WireBodySet bool
+	// UndecodableEncodingSettled is set after the body was fully read and its
+	// Content-Encoding could not be decoded. Body predicates and batch parsing
+	// must not run on those wire bytes. on_undecodable_encoding already decided
+	// them, separately from on_parse_error.
+	UndecodableEncodingSettled bool
 
 	Transport string
 	Target    string // full URL or host:port, for receipt/audit correlation
@@ -266,25 +271,34 @@ func (p *Proxy) prepareRequestPolicyBody(r *http.Request, in *requestPolicyInput
 	if len(raw) > limit {
 		return p.requestPolicyReadBlocked(*in, fmt.Sprintf("request body exceeds max_body_bytes (%d)", limit))
 	}
-	// A single gzip, x-gzip, or deflate body is matched on its decoded text
-	// and forwarded as sent. A coding this path does not decode, or a body
-	// that does not decode completely, is left as read: it then fails to
-	// parse like any other unreadable body, and on_parse_error and
-	// on_opaque_operation decide it, as they did before this path decoded
-	// anything. A decoded size over the limit is refused like any oversized
-	// body.
+	// A single gzip, x-gzip, or deflate body that finishes is matched on its
+	// decoded text and forwarded as sent. A decoded size over the limit is
+	// refused like any oversized body. A coding this path does not decode, or
+	// a body that does not decode completely, is not inspected: the original
+	// bytes stay forwardable and on_undecodable_encoding decides them. That
+	// action is separate from on_parse_error. The block is content that was
+	// not inspected, so it stays refused when enforce is false. finalize
+	// already refuses every enforced request-policy block and does not consult
+	// EnforceEnabled.
 	inspected := raw
 	wire := raw
-	if coding, codingErr := responseencoding.ParseRequestCoding(r.Header.Values("Content-Encoding")); codingErr == nil && coding != "" {
+	undecodable := false
+	coding, codingErr := responseencoding.ParseRequestCoding(r.Header.Values("Content-Encoding"))
+	switch {
+	case codingErr != nil:
+		undecodable = true
+	case coding != "":
 		decoded, decErr := responseencoding.ReadDecoded(coding, raw, limit)
-		if decErr == nil {
-			if len(decoded) > limit {
-				return p.requestPolicyReadBlocked(*in, fmt.Sprintf("request body exceeds max_body_bytes (%d)", limit))
-			}
-			inspected = decoded
-			in.WireBody = append([]byte(nil), wire...)
-			in.WireBodySet = true
+		if decErr != nil {
+			undecodable = true
+			break
 		}
+		if len(decoded) > limit {
+			return p.requestPolicyReadBlocked(*in, fmt.Sprintf("request body exceeds max_body_bytes (%d)", limit))
+		}
+		inspected = decoded
+		in.WireBody = append([]byte(nil), wire...)
+		in.WireBodySet = true
 	}
 	r.Body = io.NopCloser(bytes.NewReader(wire))
 	r.ContentLength = int64(len(wire))
@@ -294,7 +308,30 @@ func (p *Proxy) prepareRequestPolicyBody(r *http.Request, in *requestPolicyInput
 	}
 	in.Body = inspected
 	in.BodyRead = true
+	if !undecodable {
+		return requestPolicyResult{}
+	}
+	in.UndecodableEncodingSettled = true
+	d := p.requestPolicyUndecodableDecision(*in)
+	// warn and allow stay forwardable. The caller still runs apply so a
+	// stricter route-only rule is metered once, through the same finalizer.
+	// An enforced block stops here: the body stream is intact, but the
+	// decision is already final.
+	if d.Enforced() && d.Action == config.ActionBlock {
+		return p.finalizeRequestPolicyDecision(*in, d)
+	}
 	return requestPolicyResult{}
+}
+
+// requestPolicyUndecodableDecision applies on_undecodable_encoding to every
+// route-matched body predicate and batch endpoint. except rules stay block
+// inside EvaluateUninspectable even when the configured action is warn or
+// allow. The wire bytes are not parsed, so on_parse_error and GraphQL key
+// checks do not run on a coding this path did not decode.
+func (p *Proxy) requestPolicyUndecodableDecision(in requestPolicyInput) reqpolicy.Decision {
+	action := p.requestPolicyMatcher().OnUndecodableEncoding()
+	d := p.evaluateRequestPolicyUninspectable(in, action, reqpolicy.PredAnyBody)
+	return reqpolicy.Stricter(d, p.evaluateRequestPolicyUninspectableBatch(in, action))
 }
 
 // requestPolicyReadBlocked handles a request body that cannot be read or
@@ -327,6 +364,12 @@ func (p *Proxy) requestPolicyReadBlocked(in requestPolicyInput, reason string) r
 // suppress a request_policy block.
 func (p *Proxy) applyRequestPolicy(in requestPolicyInput) requestPolicyResult {
 	d := p.evaluateRequestPolicy(in.Host, in.Method, in.Headers, in.Path, in.ContentType, requestPolicyBody{})
+	if in.UndecodableEncodingSettled {
+		// Route-only rules still apply. Body predicates and the batch envelope
+		// are not evaluated on bytes this path did not decode.
+		d = reqpolicy.Stricter(d, p.requestPolicyUndecodableDecision(in))
+		return p.finalizeRequestPolicyDecision(in, d)
+	}
 	if !in.DeferBodyPredicate {
 		d = reqpolicy.Stricter(d, p.evaluateRequestPolicyBodyPredicates(in))
 	}

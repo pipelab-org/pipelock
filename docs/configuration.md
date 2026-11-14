@@ -758,8 +758,9 @@ Rules match on route (host, effective HTTP method, normalized path, content type
 ```yaml
 request_policy:
   enabled: true
-  on_parse_error: block         # block (default) | warn | allow
-  on_opaque_operation: block    # block (default) | warn | allow
+  on_parse_error: block              # block (default) | warn | allow
+  on_opaque_operation: block         # block (default) | warn | allow
+  on_undecodable_encoding: block     # block (default) | warn | allow
   rules:
     - name: "block-graphql-account-mutations"
       action: block
@@ -797,7 +798,10 @@ request_policy:
 | `enabled` | `false` | Enable request policy. When disabled the matcher allows everything. |
 | `on_parse_error` | `"block"` | Action when an operation predicate's route matches but the body fails to parse: `block`, `warn`, or `allow`. Fail-closed default. |
 | `on_opaque_operation` | `"block"` | Action when an operation predicate's route matches but the operation is opaque (for example a GraphQL Automatic Persisted Query that ships only a hash): `block`, `warn`, or `allow`. Fail-closed default. |
+| `on_undecodable_encoding` | `"block"` | Action when a body predicate or batch endpoint needs the body and `Content-Encoding` is a coding Pipelock doesn't decode: `block`, `warn`, or `allow`. Fail-closed default. |
 | `rules` | `[]` | Operation safety-rail list. |
+
+On upgrade, Pipelock blocks a body whose `Content-Encoding` it doesn't decode, even when `on_parse_error` is `warn` or `allow`. That includes an unknown coding, a stacked coding, and a supported coding that doesn't finish. A plaintext body labeled with one of those codings is refused too, because the bytes aren't inspected. Set `request_policy.on_undecodable_encoding: allow` to forward those bodies again. `warn` records a warning and forwards. A single `gzip`, `x-gzip`, or `deflate` body that finishes is unchanged and is matched on the decoded text. An `except` rule still blocks an undecodable body. Request body scanning, when it is enabled, still refuses a coding it doesn't decode on its own.
 | `batch` | `[]` | JSON batch endpoints whose sub-requests are evaluated recursively. |
 
 **Rule fields:**
@@ -908,9 +912,9 @@ The envelope field names default to the common OData-style JSON batch shape (`re
 
 ### Transport coverage
 
-Request policy is enforced on the fetch proxy, forward proxy, CONNECT, TLS interception, reverse proxy, and redirect hops. On every HTTP transport it runs before the contract gate. WebSocket is covered on two surfaces: the upgrade handshake is matched route-only (host, `GET` method, path, content type), and once the socket is open each complete, UTF-8-validated client text frame is evaluated per frame as an operation body over the handshake route (the upgrade is a `GET`, so the effective method is `GET`). The per-frame body-predicate gate is checked against the live matcher on each frame rather than cached at upgrade, so a hot-reloaded rule applies to already-open sockets, and benign routes still pay no JSON-parse cost. Fragmented frames and binary frames are not evaluated as operation bodies (documented limit).
+Request policy is enforced on the fetch proxy, forward proxy, CONNECT, TLS interception, reverse proxy, and redirect hops. On every HTTP transport it runs before the contract gate. `on_undecodable_encoding` applies where that path reads an HTTP body: the forward proxy's absolute-URI requests, CONNECT after TLS interception, and the reverse proxy. CONNECT metadata, redirect hops, fetch, and WebSocket frames don't decode `Content-Encoding` on this path. WebSocket is covered on two surfaces: the upgrade handshake is matched route-only (host, `GET` method, path, content type), and once the socket is open each complete, UTF-8-validated client text frame is evaluated per frame as an operation body over the handshake route (the upgrade is a `GET`, so the effective method is `GET`). The per-frame body-predicate gate is checked against the live matcher on each frame rather than cached at upgrade, so a hot-reloaded rule applies to already-open sockets, and benign routes still pay no JSON-parse cost. Fragmented frames and binary frames are not evaluated as operation bodies (documented limit).
 
-When a route-matched operation predicate or batch endpoint needs a body that cannot be inspected, the request is blocked outright, independent of the `on_parse_error` / `on_opaque_operation` settings (those apply only to a fully-read body that fails to parse). A body counts as uninspectable when it is unread, exceeds `request_body_scanning.max_body_bytes` (default 5 MiB), or hits a read error. The bounded read has already consumed the body stream, so the request can no longer be forwarded intact.
+When a route-matched operation predicate or batch endpoint needs a body that cannot be inspected, the request is blocked outright, independent of the `on_parse_error` / `on_opaque_operation` settings (those apply only to a fully-read body that fails to parse). A body counts as uninspectable when it is unread, exceeds `request_body_scanning.max_body_bytes` (default 5 MiB), or hits a read error. The bounded read has already consumed the body stream, so the request can no longer be forwarded intact. A fully read body in a coding Pipelock doesn't decode is a separate case: `on_undecodable_encoding` decides it, and `warn` or `allow` can still forward the original bytes. A request with no body, and a rule that doesn't inspect a body, still skip the read.
 
 ### Enforcement, audit, and receipts
 

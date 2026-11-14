@@ -111,11 +111,12 @@ type compiledRule struct {
 // NewMatcher at config (re)load and swap it atomically alongside the rest of
 // the runtime config.
 type Matcher struct {
-	enabled           bool
-	onParseError      string
-	onOpaqueOperation string
-	rules             []compiledRule
-	batches           []compiledBatch
+	enabled               bool
+	onParseError          string
+	onOpaqueOperation     string
+	onUndecodableEncoding string
+	rules                 []compiledRule
+	batches               []compiledBatch
 }
 
 // NewMatcher compiles cfg into a Matcher. It returns an error if any
@@ -135,6 +136,10 @@ func NewMatcher(cfg *config.RequestPolicy) (*Matcher, error) {
 	m.onOpaqueOperation = cfg.OnOpaqueOperation
 	if m.onOpaqueOperation == "" {
 		m.onOpaqueOperation = config.ActionBlock
+	}
+	m.onUndecodableEncoding = cfg.OnUndecodableEncoding
+	if m.onUndecodableEncoding == "" {
+		m.onUndecodableEncoding = config.ActionBlock
 	}
 	for i := range cfg.Rules {
 		r := &cfg.Rules[i]
@@ -261,6 +266,16 @@ func (m *Matcher) OnOpaqueOperation() string {
 		return config.ActionBlock
 	}
 	return m.onOpaqueOperation
+}
+
+// OnUndecodableEncoding returns the configured action when a body predicate or
+// batch endpoint needs the body and its Content-Encoding cannot be decoded.
+// An empty or nil matcher fails closed.
+func (m *Matcher) OnUndecodableEncoding() string {
+	if m == nil || m.onUndecodableEncoding == "" {
+		return config.ActionBlock
+	}
+	return m.onUndecodableEncoding
 }
 
 // Evaluate runs meta against the ruleset and returns the strictest matching

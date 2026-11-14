@@ -31,8 +31,9 @@ then the predicate is evaluated against the operation extracted from its body.
 ```yaml
 request_policy:
   enabled: true
-  on_parse_error: block         # block (default) | warn | allow
-  on_opaque_operation: block    # block (default) | warn | allow
+  on_parse_error: block              # block (default) | warn | allow
+  on_opaque_operation: block         # block (default) | warn | allow
+  on_undecodable_encoding: block     # block (default) | warn | allow
   rules:
     - name: "block-graphql-account-mutations"
       action: block
@@ -65,25 +66,33 @@ dangerous operation cannot hide behind a benign sibling.
 
 ## The fail-closed model (the important part)
 
-The two top-level knobs decide what happens when a rule's route matches but the
-operation **cannot be inspected**. Both default to `block`.
+Three top-level knobs decide what happens when a rule's route matches but the
+operation can't be inspected. Each defaults to `block`.
 
 | Knob | Fires when | Default |
 |------|------------|---------|
 | `on_parse_error` | The body is read but has a JSON syntax or shape error for the configured predicate, or a contained GraphQL query fails to parse. GraphQL key-integrity failures always block, independently of this setting. | `block` |
 | `on_opaque_operation` | The route matches but there is no inspectable operation: a GraphQL Automatic Persisted Query that ships only a hash, an empty/missing `query`, or a non-string discriminator value. | `block` |
+| `on_undecodable_encoding` | The body uses a `Content-Encoding` Pipelock doesn't decode: an unknown coding, a stacked coding, or a supported coding that doesn't finish. | `block` |
 
-Leaving these at `block` is the safe posture: an attacker cannot smuggle a
-dangerous operation past a rule by making it unparseable or opaque. Set them to
-`warn` only during rollout, and to `allow` only for an endpoint you have decided is
-out of scope.
+Leaving these at `block` is the safe posture: a caller can't smuggle a dangerous
+operation past a rule by making it unparseable, opaque, or wrapped in a coding
+Pipelock doesn't decode. Set a knob to `warn` only during rollout, and to `allow`
+only for an endpoint you have decided is out of scope.
 
-Several conditions are **always** unclassifiable and fail closed regardless of the
-two knobs: duplicate GraphQL fragment names, fragment cycles, unresolved fragment
+On upgrade, a body in a coding Pipelock doesn't decode is blocked even when
+`on_parse_error` is `warn` or `allow`. Set `on_undecodable_encoding: allow` to
+forward those bodies again. `warn` records a warning and forwards. A single
+`gzip`, `x-gzip`, or `deflate` body that finishes is still matched on the decoded
+text. An `except` rule still blocks.
+
+Several conditions are always unclassifiable and fail closed regardless of the
+parse and opaque knobs: duplicate GraphQL fragment names, fragment cycles, unresolved fragment
 spreads, expansion-budget exhaustion, and a duplicated top-level discriminator key
-(including case-insensitive aliases, where JSON parsers disagree on which value wins). GraphQL JSON bodies always block exact duplicate keys at any depth, noncanonical aliases of `query` and `operationName`, and invalid UTF-8 with reason `invalid_graphql_json_keys`, independently of `on_parse_error`. Keys in `variables` and `extensions` remain case-sensitive. If a route-matched body is
-**uninspectable** (unread, over `request_body_scanning.max_body_bytes` default
-5 MiB, or a read error), it is blocked outright before the two knobs even apply.
+(including case-insensitive aliases, where JSON parsers disagree on which value wins). GraphQL JSON bodies always block exact duplicate keys at any depth, noncanonical aliases of `query` and `operationName`, and invalid UTF-8 with reason `invalid_graphql_json_keys`, independently of `on_parse_error`. Those key checks run on a body Pipelock decoded, or on a body with no content coding. They don't run on bytes left inside a coding Pipelock refused to decode. Keys in `variables` and `extensions` remain case-sensitive. If a route-matched body is
+uninspectable (unread, over `request_body_scanning.max_body_bytes` default
+5 MiB, or a read error), it is blocked outright before these knobs apply. A request
+with no body, and a rule that doesn't inspect a body, still skip the read.
 
 ## Non-GraphQL JSON APIs: the discriminator predicate
 

@@ -1083,6 +1083,7 @@ func appendActionDowngradeWarnings(warnings *[]ReloadWarning, old, updated *Conf
 	appendExactRequestReloadWarnings(warnings, old.RequestPolicy, updated.RequestPolicy)
 	appendActionDowngradeWarning(warnings, "request_policy.on_parse_error", old.RequestPolicy.OnParseError, updated.RequestPolicy.OnParseError)
 	appendActionDowngradeWarning(warnings, "request_policy.on_opaque_operation", old.RequestPolicy.OnOpaqueOperation, updated.RequestPolicy.OnOpaqueOperation)
+	appendActionDowngradeWarning(warnings, "request_policy.on_undecodable_encoding", old.RequestPolicy.OnUndecodableEncoding, updated.RequestPolicy.OnUndecodableEncoding)
 	if old.ResponseScanning.Enabled && updated.ResponseScanning.Enabled {
 		appendActionDowngradeWarning(warnings, "response_scanning.action", old.ResponseScanning.Action, updated.ResponseScanning.Action)
 	}

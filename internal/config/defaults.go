@@ -373,8 +373,9 @@ func Defaults() *Config {
 			OriginPolicy:             OriginPolicyRewrite,
 		},
 		RequestPolicy: RequestPolicy{
-			OnParseError:      ActionBlock,
-			OnOpaqueOperation: ActionBlock,
+			OnParseError:          ActionBlock,
+			OnOpaqueOperation:     ActionBlock,
+			OnUndecodableEncoding: ActionBlock,
 		},
 		DLP: DLP{
 			ScanEnv:  true,
