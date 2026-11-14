@@ -131,3 +131,41 @@ func TestAuditPolicyBlockOverRoutedRuleStaysBlocked(t *testing.T) {
 		})
 	}
 }
+
+// An A2A content block that holds a floor finding is not observed.
+func TestAuditA2AFloorFindingsStayBlocked(t *testing.T) {
+	inject := []scanner.ResponseMatch{{PatternName: "probe"}}
+	for name, result := range map[string]A2AScanResult{
+		"core credential":       {InjectFindings: inject, DLPFindings: []scanner.TextDLPMatch{{PatternName: "AWS Access ID"}}},
+		"split secret fields":   {InjectFindings: inject, DLPFindings: []scanner.TextDLPMatch{{PatternName: uninspectableSplitSecretFieldsReason}}},
+		"inspection incomplete": {InjectFindings: inject, InspectionIncomplete: true},
+		"scan error":            {InjectFindings: inject, ScanError: "scan failed"},
+		"no finding":            {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := a2aAuditAction(true, result, config.ActionBlock); got != config.ActionBlock {
+				t.Fatalf("action = %q, want block", got)
+			}
+		})
+	}
+	if got := a2aAuditAction(false, A2AScanResult{InjectFindings: inject}, config.ActionBlock); got != config.ActionBlock {
+		t.Fatalf("enforcing action = %q, want block", got)
+	}
+}
+
+// A content verdict that holds a floor finding beside one that lifts is
+// not observed.
+func TestAuditContentFloorFindingsStayBlocked(t *testing.T) {
+	inject := []scanner.ResponseMatch{{PatternName: "probe"}}
+	for name, verdict := range map[string]InputVerdict{
+		"scan error":          {Inject: inject, Error: "scan failed"},
+		"split secret fields": {Inject: inject, Matches: []scanner.TextDLPMatch{{PatternName: uninspectableSplitSecretFieldsReason}}},
+		"core credential":     {Inject: inject, Matches: []scanner.TextDLPMatch{{PatternName: "AWS Access ID"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := auditContentAction(true, verdict, config.ActionBlock); got != config.ActionBlock {
+				t.Fatalf("action = %q, want block", got)
+			}
+		})
+	}
+}

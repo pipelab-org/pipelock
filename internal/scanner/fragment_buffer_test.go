@@ -969,3 +969,15 @@ func TestFragmentBufferNilDeletesAreSafe(t *testing.T) {
 	fb.Delete(testCEEStream("k"))
 	fb.DeletePrefix(testCEEStream("k|body-json|"))
 }
+
+func TestHasCoreFragmentMatch(t *testing.T) {
+	if HasCoreFragmentMatch(nil) {
+		t.Fatal("no matches reported a core credential")
+	}
+	if HasCoreFragmentMatch([]DLPMatch{{PatternName: "Vendor Token"}}) {
+		t.Fatal("an operator pattern reported a core credential")
+	}
+	if !HasCoreFragmentMatch([]DLPMatch{{PatternName: "Vendor Token"}, {PatternName: "AWS Access ID"}}) {
+		t.Fatal("a core credential after another match was not reported")
+	}
+}
