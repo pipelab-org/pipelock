@@ -282,6 +282,11 @@ func checkCrossRequestFragment(
 		m.RecordCrossRequestDLPMatch()
 	}
 	out := crossRequestOutcome{Matched: true, Action: ceeCfg.Action, Matches: make([]crossRequestMatch, 0, len(matches))}
+	// A reassembled core credential is denied whatever the configured action
+	// is, as on the proxy and MCP paths. Only a non-core match can warn.
+	if scanner.HasCoreFragmentMatch(matches) {
+		out.Action = config.ActionBlock
+	}
 	for _, match := range matches {
 		// The documented contract is the EARLIER requests whose retained
 		// bytes contributed; the completing request is the one carrying
@@ -325,8 +330,9 @@ func (h *Handler) runCrossRequest(ctx context.Context, cfg *config.Config, sc *s
 // A blocked outcome always escalates to deny, regardless of the configured
 // cross_request_detection.action: an uninspectable request is never reported
 // as allow or warn (see crossRequestOutcome.Blocked doc comment). A matched
-// outcome escalates to deny only when the configured action is block; in
-// warn mode it escalates a clean result to warn (matching the tool_call
+// outcome escalates to deny when the configured action is block or the match
+// is a core credential (checkCrossRequestFragment sets Action to block for
+// that); in warn mode a non-core match escalates a clean result to warn (matching the tool_call
 // policy-warn precedent already in this package: decide.go / scanToolCall's
 // "a decision only escalates" rule) without overriding an existing deny.
 func applyCrossRequestOutcome(resp *Response, outcome crossRequestOutcome, scannerName string) {
