@@ -6,6 +6,7 @@ package reqpolicy
 import (
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -151,7 +152,7 @@ func TestRuleMatchAttackAmbiguousException(t *testing.T) {
 		Except: &config.RequestPolicyException{Requests: []config.RequestPolicyExactRequest{{
 			URL: "https://api.vendor.example/v1/move", Method: http.MethodPost,
 			BodySHA256: "0000000000000000000000000000000000000000000000000000000000000000",
-			ExpiresAt:  "2099-01-01T00:00:00Z", Owner: "ops", Reason: "approved move",
+			ExpiresAt:  time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339), Owner: "ops", Reason: "approved move",
 		}}},
 	}
 	base := RequestMeta{Host: "api.vendor.example", Method: http.MethodPost, Path: "/v1/move", ContentType: "application/json", JSONBodyParsed: true}
