@@ -1522,7 +1522,9 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 		CredentialAudienceMismatches: scanner.TextDLPCredentialAudienceMismatches(allMatches, targetURL, "header"),
 	})
 	action, hardBlock = headerDLPDecision(result, cfg)
-	if result.ScanError != "" && headerDLPStopsRequest(result.ScanError, hardBlock, action, cfg.EnforceEnabled()) {
+	if result.ScanError != "" {
+		// An unfinished scan always stops the request, so its finding is
+		// returned as a hard block whatever the configured action is.
 		hardBlock = true
 	}
 	receiptPattern = fmt.Sprintf("DLP match in %s header: %s", result.HeaderName, strings.Join(names, ", "))
