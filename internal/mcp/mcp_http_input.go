@@ -896,7 +896,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		effectiveAction = auditContentAction(opts.auditMode(), sc, verdict, action, msg)
 	}
 	if policyVerdict.Matched {
-		effectiveAction = mergeAction(effectiveAction, auditObservedAction(opts.auditMode(), policyVerdict.Action))
+		effectiveAction = mergeAction(effectiveAction, policyAuditAction(opts.auditMode(), policyVerdict))
 	}
 	if bindingAction != "" {
 		effectiveAction = mergeAction(effectiveAction, bindingAction)

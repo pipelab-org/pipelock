@@ -11,6 +11,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -24,6 +25,15 @@ func auditObservedAction(audit bool, action string) string {
 		return config.ActionWarn
 	}
 	return action
+}
+
+// policyAuditAction observes a matched rule's block or ask. A verdict raised
+// because the arguments could not be inspected keeps its action.
+func policyAuditAction(audit bool, verdict policy.Verdict) string {
+	if verdict.CouldNotInspect() {
+		return verdict.Action
+	}
+	return auditObservedAction(audit, verdict.Action)
 }
 
 // chainAuditAction observes a matched pattern's action. A call the matcher

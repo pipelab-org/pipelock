@@ -741,7 +741,7 @@ Examples:
 	return cmd
 }
 
-const mcpRequestAuditModeWarning = "pipelock: configured MCP request policy is observed and not applied; floors, limits and responses still apply"
+const mcpRequestAuditModeWarning = "pipelock: configured MCP request block and ask actions are observed and not applied; floors, limits, redirect, defer and responses still apply"
 
 func warnMCPRequestAuditMode(w io.Writer, cfg *config.Config) {
 	if cfg == nil || cfg.EnforceEnabled() {

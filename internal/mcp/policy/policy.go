@@ -196,6 +196,23 @@ type Verdict struct {
 	IncompleteRules []string
 }
 
+// CouldNotInspect reports whether the verdict comes from input the policy
+// could not fully evaluate, or a rule whose check was incomplete, rather than
+// from a rule that matched. Such a block is not a configured rule decision.
+func (v Verdict) CouldNotInspect() bool {
+	if len(v.IncompleteRules) > 0 {
+		return true
+	}
+	for _, rule := range v.Rules {
+		switch rule {
+		case uninspectableJSONDepthRule, uninspectablePatchTargetsRule, duplicateJSONKeyRule,
+			invalidJSONKeyInputRule, malformedA2AParamsRule, incompletePairCheckRule:
+			return true
+		}
+	}
+	return false
+}
+
 // New compiles policy rules from config. Returns nil if disabled or no rules
 // are configured. Panics on invalid regex; the caller must validate config
 // first (config.Validate compiles all patterns).
