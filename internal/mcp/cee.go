@@ -517,7 +517,7 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 					operatorReason = fmt.Sprintf("cross-request fragment refused: %s; reduce nesting or number size in the JSON tool arguments at their source (typed JSON number and depth limits are fixed)", primary.PatternName)
 				}
 				_, _ = fmt.Fprintf(opts.logW, "pipelock: CEE: %s (session=%s)\n", operatorReason, opts.sessionKey)
-				blockFragment := ceeCfg.Action == config.ActionBlock || inspectionLimit
+				blockFragment := ceeCfg.Action == config.ActionBlock || inspectionLimit || fragmentHasCoreMatch(matches)
 				if opts.audit && !inspectionLimit && !fragmentHasCoreMatch(matches) {
 					blockFragment = false
 				}

@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -103,5 +104,18 @@ func TestAuditA2AAskAndFragmentCoreStayRefused(t *testing.T) {
 	}
 	if fragmentHasCoreMatch(mixed[:1]) {
 		t.Fatal("a non-core match counted as core")
+	}
+
+func TestAuditFragmentCoreWithWarnAction(t *testing.T) {
+	for _, audit := range []bool{false, true} {
+		t.Run(fmt.Sprint(audit), func(t *testing.T) {
+			cee := NewCEEDeps(config.CrossRequestDetection{
+				Enabled: true, Action: config.ActionWarn,
+				FragmentReassembly: config.CrossRequestFragments{Enabled: true, MaxBufferBytes: 4096, WindowMinutes: 5},
+			}, nil)
+			t.Cleanup(cee.Close)
+			opts := MCPProxyOpts{Scanner: auditTestScanner(t, nil), AuditMode: audit, CEE: cee}
+			assertAuditFragment(t, opts, false, "AKI"+"A", testMCPAWSKeySuffix)
+		})
 	}
 }
