@@ -319,9 +319,8 @@ func TestRuleMatchMerge(t *testing.T) {
 		{"unmarked warn then marked block", warn, marked, "marked", true, false},
 		{"allow does not clear a marked block", allow, marked, "marked", true, false},
 		{"shadow marked loses to enforced marked", shadowMarked, marked, "marked", true, false},
-		{"enforced marked loses the mark to a shadow floor", marked, shadowFloor, "marked", false, false},
-		{"shadow floor then enforced marked", shadowFloor, marked, "marked", false, false},
-		{"two shadow blocks clear on an unmarked contributor", shadowFloor, shadowMarked, "shadow", false, true},
+		{"enforced marked keeps the mark beside a shadow floor", marked, shadowFloor, "marked", true, false},
+		{"shadow floor then enforced marked", shadowFloor, marked, "marked", true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -331,7 +330,7 @@ func TestRuleMatchMerge(t *testing.T) {
 				t.Fatalf("Stricter(%s, %s) = %+v", tc.a.RuleName, tc.b.RuleName, got)
 			}
 			rev := Stricter(tc.b, tc.a)
-			if tc.name == "two marked blocks keep the tie" || tc.name == "two shadow blocks clear on an unmarked contributor" {
+			if tc.name == "two marked blocks keep the tie" {
 				if rev.RuleMatch != tc.wantMatch {
 					t.Fatalf("reverse mark = %v", rev.RuleMatch)
 				}

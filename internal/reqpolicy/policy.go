@@ -79,7 +79,7 @@ type Decision struct {
 	Shadow   bool   // matched rule is shadow: log the would-be action, do not enforce
 	// RuleMatch is true only when Action comes from a configured rule whose
 	// route and predicates matched an inspected request. A merged block stays
-	// marked only when every block contributor is marked. Synthetic and
+	// marked only when every enforced block contributor is marked. Synthetic and
 	// could-not-inspect decisions leave it false.
 	RuleMatch bool
 }
@@ -460,7 +460,7 @@ func Stricter(a, b Decision) Decision {
 }
 
 // combineMarked selects the decision Evaluate already selects, then clears
-// RuleMatch when any contributor whose action is block is unmarked. cur is
+// RuleMatch when any enforced contributor whose action is block is unmarked. cur is
 // the incumbent. cand replaces it only when cand is stricter, so an
 // equal-rank tie keeps cur.
 func combineMarked(cur, cand Decision) Decision {
@@ -474,8 +474,11 @@ func combineMarked(cur, cand Decision) Decision {
 	return winner
 }
 
+// unmarkedBlock reports whether d is a block that would refuse the request
+// without being a configured rule match. A shadow decision never refuses, so
+// it cannot hold a floor.
 func unmarkedBlock(d Decision) bool {
-	return d.Action == config.ActionBlock && !d.RuleMatch
+	return d.Enforced() && d.Action == config.ActionBlock && !d.RuleMatch
 }
 
 // betterDecision reports whether cand should replace cur as the selected
