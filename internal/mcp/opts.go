@@ -733,6 +733,10 @@ func (o MCPProxyOpts) snapshotScanPolicy() MCPProxyOpts {
 	o.PolicyHashFn = nil
 	o.ConfigHash = o.captureConfigHash()
 	o.ConfigHashFn = nil
+	// Pin the audit posture for this decision. The live function keeps
+	// following reloads on the next snapshot.
+	o.AuditMode = o.auditMode()
+	o.AuditModeFn = nil
 	o.ReloadMu = nil
 	return o
 }

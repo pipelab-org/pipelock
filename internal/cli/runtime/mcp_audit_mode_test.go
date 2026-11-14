@@ -6,6 +6,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,8 +18,6 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/testport"
 )
-
-const mcpAuditModeStartupWarning = "pipelock: configured MCP request policy is observed and not applied; floors, limits and responses still apply"
 
 func TestMCPProxyCmdAuditModeStartupWarning(t *testing.T) {
 	for _, tc := range []struct {
@@ -42,8 +41,8 @@ func TestMCPProxyCmdAuditModeStartupWarning(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "--listen with WebSocket upstream") {
 				t.Fatalf("err = %v\n%s", err, out.String())
 			}
-			if strings.Contains(out.String(), mcpAuditModeStartupWarning) != tc.want {
-				t.Fatalf("warning present=%t want=%t\n%s", strings.Contains(out.String(), mcpAuditModeStartupWarning), tc.want, out.String())
+			if strings.Contains(out.String(), mcpRequestAuditModeWarning) != tc.want {
+				t.Fatalf("warning present=%t want=%t\n%s", strings.Contains(out.String(), mcpRequestAuditModeWarning), tc.want, out.String())
 			}
 		})
 	}
@@ -94,12 +93,15 @@ logging:
 		defer func() {
 			cancel()
 			_ = s.Shutdown(context.Background())
-			<-errCh
+			stopErr := <-errCh
+			if stopErr != nil && !errors.Is(stopErr, context.Canceled) {
+				t.Errorf("listener stop: %v", stopErr)
+			}
 		}()
 		if err := waitForPortOrCommandExitResult(mcpAddr, errCh, buf, upstream); err != nil {
 			return err
 		}
-		if !buf.contains(mcpAuditModeStartupWarning) {
+		if !buf.contains(mcpRequestAuditModeWarning) {
 			t.Fatalf("listener startup missing audit warning:\n%s", buf.String())
 		}
 		body := postRuntimeAuditProbe(t, mcpAddr)
@@ -119,12 +121,14 @@ logging:
 		observing := s.proxy.CurrentConfig().Clone()
 		off := false
 		observing.Enforce = &off
-		if err := reloadListenerStateToken(s, observing); err != nil {
+		// Reload refuses to turn enforcement off. The listener keeps the
+		// enforced posture instead of observing the downgrade.
+		if err := reloadListenerStateToken(s, observing); err == nil || !strings.Contains(err.Error(), "enforce disabled") {
 			t.Fatalf("reload audit: %v", err)
 		}
-		again := postRuntimeAuditProbe(t, mcpAddr)
-		if hits.Load() != 2 || strings.Contains(again, `"error"`) {
-			t.Fatalf("reload back to audit hits=%d body=%s", hits.Load(), again)
+		stillRefused := postRuntimeAuditProbe(t, mcpAddr)
+		if hits.Load() != 1 || !strings.Contains(stillRefused, `"error"`) {
+			t.Fatalf("downgrade rejected hits=%d body=%s", hits.Load(), stillRefused)
 		}
 		return nil
 	})

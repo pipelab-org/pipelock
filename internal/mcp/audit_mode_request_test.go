@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -318,17 +319,9 @@ func auditA2AURL(uri string) string {
 func auditSplitSecretMessage() string {
 	fields := make([]string, 66)
 	for i := range fields {
-		fields[i] = strings.ReplaceAll(strings.ReplaceAll(`"field_00":"benign"`, "00", twoDigits(i)), "field_", "field_")
-		fields[i] = `"field_` + twoDigits(i) + `":"benign"`
+		fields[i] = `"field_` + fmt.Sprintf("%02d", i) + `":"benign"`
 	}
 	return `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"fetch","arguments":{` + strings.Join(fields, ",") + `}}}`
-}
-
-func twoDigits(i int) string {
-	if i < 10 {
-		return "0" + string(rune('0'+i))
-	}
-	return string(rune('0'+i/10)) + string(rune('0'+i%10))
 }
 
 func auditPlainPrepare(t *testing.T, audit bool) (MCPProxyOpts, *SessionBindingConfig) {

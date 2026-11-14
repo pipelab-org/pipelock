@@ -163,6 +163,16 @@ func buildDoctorReport(cfg *config.Config, cfgLabel string) doctorReport {
 		checkDoctorSentry(cfg),
 		checkDoctorDeploymentBoundary(cfg),
 	}
+	if !doctorGlobalEnforce(cfg) {
+		withPolicy := make([]doctorReportCheck, 0, len(report.Checks)+1)
+		for _, check := range report.Checks {
+			withPolicy = append(withPolicy, check)
+			if check.Name == "mcp_wrapper_scanning" {
+				withPolicy = append(withPolicy, checkDoctorMCPRequestPolicy(cfg))
+			}
+		}
+		report.Checks = withPolicy
+	}
 	for _, warning := range cfg.MCPCompatibilityWarnings() {
 		report.Checks = append(report.Checks, doctorReportCheck{
 			Name:    warning.Field + "_compatibility",
@@ -595,6 +605,18 @@ func checkDoctorMCPWrapperFeatures(cfg *config.Config) doctorReportCheck {
 		Configured: configured,
 		Detail:     "effective configuration by mode: " + strings.Join(modes, "; ") + "; topology, reachability, and enforcement are unproven",
 		Next:       "prove the agent uses the intended MCP proxy or listener; scan mode only inspects supplied input",
+	}
+}
+
+const mcpRequestPolicyAuditDetail = "configured MCP request policy is observed and not applied; floors, limits and responses still apply"
+
+func checkDoctorMCPRequestPolicy(_cfg *config.Config) doctorReportCheck {
+	return doctorReportCheck{
+		Name:       "mcp_request_policy",
+		Surface:    doctorSurfaceMCP,
+		Status:     doctorStatusWarn,
+		Configured: true,
+		Detail:     mcpRequestPolicyAuditDetail,
 	}
 }
 

@@ -585,6 +585,7 @@ func EvaluateMCPInputGates(
 				if action == "" {
 					action = a2aCfg.Action
 				}
+				action = a2aAuditAction(opts.auditMode(), eval.A2AResult, action)
 				eval.A2AEffectiveAction = action
 				if action == config.ActionBlock {
 					eval.BlockingGate = blockingGateA2ABody
@@ -643,9 +644,10 @@ func EvaluateMCPInputGates(
 			eval.ChainMatched = true
 			eval.ChainPatternName = cv.PatternName
 			eval.ChainSeverity = cv.Severity
-			eval.ChainAction = cv.Action
+			action := chainAuditAction(opts.auditMode(), cv.Action)
+			eval.ChainAction = action
 			eval.ChainReason = "chain:" + cv.PatternName
-			if cv.Action == config.ActionBlock {
+			if action == config.ActionBlock {
 				eval.BlockingGate = blockingGateChain
 				return eval
 			}
@@ -847,6 +849,7 @@ func evaluateMCPInputGatesStdio(
 				if action == "" {
 					action = a2aCfg.Action
 				}
+				action = a2aAuditAction(opts.auditMode(), eval.A2AResult, action)
 				eval.A2AEffectiveAction = action
 				if action == config.ActionBlock {
 					eval.BlockingGate = blockingGateA2ABody
@@ -937,9 +940,10 @@ func evaluateMCPInputGatesStdio(
 			eval.ChainMatched = true
 			eval.ChainPatternName = cv.PatternName
 			eval.ChainSeverity = cv.Severity
-			eval.ChainAction = cv.Action
+			action := chainAuditAction(opts.auditMode(), cv.Action)
+			eval.ChainAction = action
 			eval.ChainReason = "chain:" + cv.PatternName
-			if cv.Action == config.ActionBlock {
+			if action == config.ActionBlock {
 				eval.BlockingGate = blockingGateChain
 				return eval
 			}

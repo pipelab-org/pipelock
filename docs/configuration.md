@@ -106,9 +106,13 @@ explain_blocks: true
 |------|----------|----------|
 | **strict** | Allowlist-only. Only `api_allowlist` domains pass. | Regulated industries, high-security |
 | **balanced** | Blocks known-bad, detects suspicious. All domains reachable. | Most developers (default) |
-| **audit** | With `enforce: false`, warns on ordinary findings. Core credentials, SSRF, fail-closed transport checks, and explicit tool-policy rules can still block. The audit preset sets `enforce: false` and disables adaptive escalation. | Evaluation before enforcement |
+| **audit** | With `enforce: false`, warns on ordinary findings. Core credentials, SSRF, and fail-closed transport checks can still block. Explicit HTTP tool-policy rules can still block. MCP client request tool-policy block and ask are observed; the lists below say which MCP checks stay refused. The audit preset sets `enforce: false` and disables adaptive escalation. | Evaluation before enforcement |
 
 `mode: audit` alone leaves `enforce` at its default of `true`, so ordinary URL DLP, entropy and blocklist findings still block. Use the bundled `audit` preset for an observation trial. Changing only the mode name doesn't select that preset or change its scanning actions. Where this reference describes what "audit mode" does, it means `enforce: false`.
+
+With `enforce: false`, an MCP proxy or listener prints: configured MCP request policy is observed and not applied; floors, limits and responses still apply. On a client request, block and ask become a warning for configured DLP, injection, and address-protection findings; for a resource URL finding whose scanner is allowlist, blocklist, configured DLP, or entropy; for tool-policy block and ask; for session binding; for chain detection; for a baseline deviation; for a completed A2A content block; and for the cross-request entropy budget and an ordinary fragment match. A high-entropy subdomain is also a hostname-exfiltration finding, so that message stays refused. One floor finding keeps the whole message refused.
+
+These MCP checks stay refused with `enforce: false`: core credentials, hostname exfiltration, scan errors, inspection limits, uninspectable split-secret fields, URL findings from any other scanner, tool-policy redirect and defer, redaction errors and limits, adaptive escalation and block-all, taint, denial-of-wallet, airlock, frozen tools, the kill switch, authority, identity, envelope failure, batch and bridge protocol, frame parse errors, A2A inspection, configuration, limits, and ask, cross-request owner mismatch, capacity and inspection limits, contract checks, required receipts, and listener admission. MCP responses do not read `enforce`. Response scanning, tool scanning, media policy, and event streams are unchanged.
 
 ## API Allowlist
 

@@ -311,6 +311,9 @@ type ceeRecordMCPOptions struct {
 	matchedPattern   *string
 	blockKind        *string
 	contributors     *[]json.RawMessage
+	// audit observes the entropy budget and ordinary fragment actions.
+	// Inspection limits, owner mismatch, and capacity still refuse.
+	audit bool
 }
 
 // ceeFragmentBlockClientReason is the neutral client-visible reason for a
@@ -336,6 +339,10 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 	}
 	tracker, buffer, m, ceeCfg, release := opts.cee.snapshot()
 	defer release()
+	if opts.audit {
+		ceeCfg.Action = auditObservedAction(true, ceeCfg.Action)
+		ceeCfg.EntropyBudget.Action = auditObservedAction(true, ceeCfg.EntropyBudget.Action)
+	}
 	identity := identitykey.NewMCPCEEIdentity(opts.sessionKey)
 	if tracker == nil && (buffer == nil || !ceeCfg.FragmentReassembly.Enabled) {
 		return ""
