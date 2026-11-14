@@ -435,3 +435,63 @@ func TestRequestPolicyUndecodableBatchOnly(t *testing.T) {
 		})
 	}
 }
+
+// TestRequestPolicyUndecodableEncodingRecordedOnce checks that one request
+// produces one record: a default block is finalized where the body is
+// prepared and is not finalized again, and a warn is recorded once.
+func TestRequestPolicyUndecodableEncodingRecordedOnce(t *testing.T) {
+	plain := []byte(`{"action":"deleteRecord"}`)
+	body := gzipRequestBody(t, plain)
+
+	status, auditText, rec := forwardUndecodable(t, undecodablePolicyConfig("", true, discriminatorBlockRule()), body, "br")
+	if status != http.StatusForbidden {
+		t.Fatalf("block status = %d, want 403", status)
+	}
+	if got := strings.Count(auditText, rpRuleName+": "+requestPolicyUndecodableReason); got != 1 {
+		t.Fatalf("block recorded %d times, want 1: %s", got, auditText)
+	}
+	if rec.ActionRecord.Layer != blockLayerRequestPolicy || rec.ActionRecord.Pattern != rpRuleName {
+		t.Fatalf("block receipt = %+v", rec.ActionRecord)
+	}
+
+	status, auditText, _ = forwardUndecodable(t, undecodablePolicyConfig(config.ActionWarn, true, discriminatorBlockRule()), body, "br")
+	if status != http.StatusNoContent {
+		t.Fatalf("warn status = %d, want 204", status)
+	}
+	if got := strings.Count(auditText, "cause="+requestPolicyUndecodableReason); got != 1 {
+		t.Fatalf("warn recorded %d times, want 1: %s", got, auditText)
+	}
+}
+
+// TestRequestPolicyUndecodableEncodingShadowRuleForwards checks shadow
+// semantics: a shadow rule whose body cannot be decoded is logged with
+// shadow=true and the request is forwarded, even under the default block.
+func TestRequestPolicyUndecodableEncodingShadowRuleForwards(t *testing.T) {
+	rule := discriminatorBlockRule()
+	rule.Shadow = true
+	body := gzipRequestBody(t, []byte(`{"action":"deleteRecord"}`))
+	status, auditText, _ := forwardUndecodable(t, undecodablePolicyConfig("", true, rule), body, "br")
+	if status != http.StatusNoContent {
+		t.Fatalf("shadow status = %d, want 204", status)
+	}
+	if !strings.Contains(auditText, "shadow=true cause="+requestPolicyUndecodableReason) {
+		t.Fatalf("shadow record missing: %s", auditText)
+	}
+}
+
+// TestRequestPolicyUndecodableEncodingEmptyBody checks a request that declares
+// a coding and sends no body. There are no bytes for a body rule to miss, so
+// the request is not refused for its coding.
+func TestRequestPolicyUndecodableEncodingEmptyBody(t *testing.T) {
+	for _, enc := range []string{"gzip", "br"} {
+		t.Run(enc, func(t *testing.T) {
+			status, auditText, _ := forwardUndecodable(t, undecodablePolicyConfig("", true, discriminatorBlockRule()), []byte{}, enc)
+			if status != http.StatusNoContent {
+				t.Fatalf("empty body status = %d, want 204", status)
+			}
+			if strings.Contains(auditText, requestPolicyUndecodableReason) {
+				t.Fatalf("empty body was recorded as undecodable: %s", auditText)
+			}
+		})
+	}
+}
