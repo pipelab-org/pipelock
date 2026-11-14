@@ -1252,6 +1252,15 @@ func loadGoldenConfig(t *testing.T, yamlSrc string) *Config {
 	return cfg
 }
 
+// policyHashGoldenHint is appended to every policy-hash golden failure. The
+// goldens pin different inputs and stay independent, but one new or changed
+// default config field usually moves all of them.
+const policyHashGoldenHint = "\n\nPolicy hashes are pinned in three places that move separately. Check each:\n" +
+	"  internal/config/canonical_golden_test.go (goldenHashDefaults, goldenHashRichConfig, TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden)\n" +
+	"  internal/config/dlp_keywords_test.go (TestDLPKeywordsLegacyPolicyHashGolden)\n" +
+	"  internal/proxy/testdata/decision-inventory-policy.golden.jsonl\n" +
+	"    regenerate: go test ./internal/proxy -run '^TestDecisionInventory$' -update-decision-inventory"
+
 // TestCanonicalPolicyHash_GoldenDefaults pins the canonical hash of
 // the out-of-the-box Defaults() config. Any drift in this value after
 // a refactor means Defaults() or a component of policySemanticView
@@ -1265,7 +1274,7 @@ func TestCanonicalPolicyHash_GoldenDefaults(t *testing.T) {
 	}
 	got := cfg.computeCanonicalPolicyHash()
 	if got != goldenHashDefaults {
-		t.Errorf("Defaults() canonical hash drifted.\n  want %s\n  got  %s\n\nIf this is an intentional policy-semantics change, update goldenHashDefaults and document the bump in the PR body.", goldenHashDefaults, got)
+		t.Errorf("Defaults() canonical hash drifted.\n  want %s\n  got  %s\n\nIf this is an intentional policy-semantics change, update goldenHashDefaults and document the bump in the PR body.%s", goldenHashDefaults, got, policyHashGoldenHint)
 	}
 }
 
@@ -1277,7 +1286,7 @@ func TestCanonicalPolicyHash_GoldenRichConfig(t *testing.T) {
 	cfg := loadGoldenConfig(t, goldenRichYAML)
 	got := cfg.computeCanonicalPolicyHash()
 	if got != goldenHashRichConfig {
-		t.Errorf("rich-config canonical hash drifted.\n  want %s\n  got  %s\n\nIf this is an intentional policy-semantics change, update goldenHashRichConfig and document the bump in the PR body.", goldenHashRichConfig, got)
+		t.Errorf("rich-config canonical hash drifted.\n  want %s\n  got  %s\n\nIf this is an intentional policy-semantics change, update goldenHashRichConfig and document the bump in the PR body.%s", goldenHashRichConfig, got, policyHashGoldenHint)
 	}
 }
 
@@ -1303,7 +1312,7 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := loadGoldenConfig(t, "mcp_tool_scanning:\n  enabled: true\n  action: warn\n  detect_drift: true\n  new_tool_admission: "+tt.admission+"\n")
 			if got := cfg.computeCanonicalPolicyHash(); got != tt.wantHash {
-				t.Errorf("new-tool admission canonical hash drifted: want %s, got %s", tt.wantHash, got)
+				t.Errorf("new-tool admission canonical hash drifted: want %s, got %s%s", tt.wantHash, got, policyHashGoldenHint)
 			}
 		})
 	}

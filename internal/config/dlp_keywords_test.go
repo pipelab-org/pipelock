@@ -244,7 +244,7 @@ func TestDLPKeywordsLegacyPolicyHashGolden(t *testing.T) {
 			t.Fatal(err)
 		}
 		if got := cfg.CanonicalPolicyHash(); got != tc.want {
-			t.Fatalf("omitted fields changed legacy policy identity: got %s want %s", got, tc.want)
+			t.Fatalf("omitted fields changed legacy policy identity: got %s want %s%s", got, tc.want, policyHashGoldenHint)
 		}
 	}
 }

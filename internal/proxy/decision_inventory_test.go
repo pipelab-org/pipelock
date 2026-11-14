@@ -255,6 +255,18 @@ func inventoryAdmitHost(cfg *config.Config) {
 	cfg.APIAllowlist = append(cfg.APIAllowlist, inventoryHost)
 }
 
+// decisionInventoryPolicyHint names the other policy-hash goldens when the
+// policy inventory drifts. One new or changed default config field usually
+// moves all of them, and each is updated separately.
+func decisionInventoryPolicyHint(name string) string {
+	if !strings.Contains(name, "policy") {
+		return ""
+	}
+	return "\n\nPolicy hashes are also pinned in internal/config. Check each:\n" +
+		"  internal/config/canonical_golden_test.go (goldenHashDefaults, goldenHashRichConfig, TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden)\n" +
+		"  internal/config/dlp_keywords_test.go (TestDLPKeywordsLegacyPolicyHashGolden)"
+}
+
 func TestDecisionInventory(t *testing.T) {
 	// Deliberately serial: golden generation and per-preset state are isolated.
 	t.Setenv(config.EnvKillSwitchAPIToken, "")
@@ -379,7 +391,7 @@ func inventoryCheckGolden[T any](t *testing.T, name string, rows []T) {
 		wantLines, gotLines := bytes.Split(want, []byte{'\n'}), bytes.Split(got.Bytes(), []byte{'\n'})
 		for i := 0; i < min(len(wantLines), len(gotLines)); i++ {
 			if !bytes.Equal(wantLines[i], gotLines[i]) {
-				t.Fatalf("decision inventory %s differs at row %d\nwant: %s\ngot:  %s\nregenerate: go test ./internal/proxy -run '^TestDecisionInventory$' -update-decision-inventory", name, i+1, wantLines[i], gotLines[i])
+				t.Fatalf("decision inventory %s differs at row %d\nwant: %s\ngot:  %s\nregenerate: go test ./internal/proxy -run '^TestDecisionInventory$' -update-decision-inventory%s", name, i+1, wantLines[i], gotLines[i], decisionInventoryPolicyHint(name))
 			}
 		}
 		t.Fatalf("decision inventory %s row count changed: want %d, got %d", name, len(wantLines)-1, len(gotLines)-1)
