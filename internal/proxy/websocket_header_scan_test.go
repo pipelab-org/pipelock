@@ -280,3 +280,24 @@ func assertWSHeaderScanDecision(t *testing.T, tc wsHeaderScanCase, w *httptest.R
 		t.Fatal("case has no expected decision")
 	}
 }
+
+// TestDLPScanWSHeadersStopsAtFirstUnfinishedHeader gives the scan a context
+// that has already ended and a credential only in a header scanned later. The
+// scan stops at the first unfinished header, so the later header is not
+// scanned and the result is an incomplete scan with no finding.
+func TestDLPScanWSHeadersStopsAtFirstUnfinishedHeader(t *testing.T) {
+	cfg := wsHeaderVendorConfig(config.ActionBlock, true)
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	p := &Proxy{metrics: metrics.New()}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	headers := http.Header{
+		"Authorization": {"Bearer ordinary"},
+		"Cookie":        {"session=" + wsHeaderVendorToken()},
+	}
+	blocked, _, _, _, pattern, err := p.dlpScanWSHeaders(ctx, headers, sc, cfg, "wss://api.vendor.example/events", audit.LogContext{})
+	if blocked || pattern != "" || !errors.Is(err, scanner.ErrTextDLPIncomplete) {
+		t.Fatalf("scan continued past the unfinished header: blocked=%v pattern=%q err=%v", blocked, pattern, err)
+	}
+}

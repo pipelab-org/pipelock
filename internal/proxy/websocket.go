@@ -1462,6 +1462,7 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 			}
 		}
 	}()
+scanHeaders:
 	for _, key := range []string{
 		headerNameAuthorization, "X-Api-Key", "X-Goog-Api-Key", "Cookie",
 		"Origin", headerNameWSProtocol, "User-Agent",
@@ -1495,11 +1496,17 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 					}
 					p.metrics.RecordDLPDroppedMatch(match.PatternName, "header", dropReason)
 				})
-				if len(matches) == 0 {
-					continue
+				if len(matches) > 0 {
+					allMatches = append(allMatches, matches...)
+					matchedHeaders = append(matchedHeaders, key)
 				}
-				allMatches = append(allMatches, matches...)
-				matchedHeaders = append(matchedHeaders, key)
+			}
+			if scanIncomplete {
+				// The handshake is refused or canceled either way. Scanning
+				// the remaining headers on a stopped context is work a
+				// disconnecting client should not be able to buy. A finding
+				// already collected, including from this value, is kept.
+				break scanHeaders
 			}
 		}
 	}
