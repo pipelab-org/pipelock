@@ -42,13 +42,21 @@ func TestAuditPolicyUninspectableStaysBlocked(t *testing.T) {
 // A URL finding is never observed, whichever stage produced it: an earlier
 // stage can hide the address and credential checks that run after it.
 func TestAuditURLFindingNeverLifts(t *testing.T) {
+	inject := []scanner.ResponseMatch{{PatternName: "probe"}}
+	// The injection finding lifts by itself, so only the URL finding can keep
+	// the mixed verdict blocked.
+	if got := auditContentAction(true, InputVerdict{Inject: inject}, config.ActionBlock); got != config.ActionWarn {
+		t.Fatalf("injection-only action = %q, want warn", got)
+	}
+	if got := a2aAuditAction(true, A2AScanResult{InjectFindings: inject}, config.ActionBlock); got != config.ActionWarn {
+		t.Fatalf("injection-only A2A action = %q, want warn", got)
+	}
 	for _, label := range []string{scanner.ScannerAllowlist, scanner.ScannerBlocklist, scanner.ScannerDLP, scanner.ScannerEntropy, scanner.ScannerSSRF, "future_scanner"} {
-		verdict := InputVerdict{URLFindings: []scanner.Result{{Scanner: label}}}
-		if got := auditContentAction(true, verdict, config.ActionWarn); got != config.ActionBlock {
+		url := []scanner.Result{{Scanner: label}}
+		if got := auditContentAction(true, InputVerdict{Inject: inject, URLFindings: url}, config.ActionBlock); got != config.ActionBlock {
 			t.Errorf("scanner %q: action = %q, want block", label, got)
 		}
-		a2a := A2AScanResult{URLFindings: []scanner.Result{{Scanner: label}}}
-		if got := a2aAuditAction(true, a2a, config.ActionBlock); got != config.ActionBlock {
+		if got := a2aAuditAction(true, A2AScanResult{InjectFindings: inject, URLFindings: url}, config.ActionBlock); got != config.ActionBlock {
 			t.Errorf("scanner %q: A2A action = %q, want block", label, got)
 		}
 	}
