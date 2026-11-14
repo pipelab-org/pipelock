@@ -177,14 +177,26 @@ func TestUpstreamMCPContentDoesNotEscalateSession(t *testing.T) {
 		t.Cleanup(sc.Close)
 		rec := &mockRecorder{}
 		var out, logs bytes.Buffer
-		found, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(toolResultLine(7, upstreamPhrases[0])+"\n")), transport.NewStdioWriter(&out), &logs, nil, MCPProxyOpts{
+		const safeText = "Safe status note."
+		line := toolResultLine(7, safeText+" "+upstreamPhrases[0]+" Keep the note.")
+		found, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(line+"\n")), transport.NewStdioWriter(&out), &logs, nil, MCPProxyOpts{
 			Scanner: sc, Rec: rec, AdaptiveCfg: &cfg.AdaptiveEnforcement, ResponseTrustClass: config.ResponseTrustReasoning,
 		})
 		if err != nil || !found {
 			t.Fatalf("strip found=%t err=%v out=%s", found, err, out.String())
 		}
-		if strings.Contains(out.String(), upstreamPhrases[0]) {
-			t.Fatalf("injection text forwarded: %s", out.String())
+		var reply struct {
+			Result json.RawMessage `json:"result"`
+			Error  json.RawMessage `json:"error"`
+		}
+		if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &reply); err != nil {
+			t.Fatalf("stripped response is not JSON: %v out=%s", err, out.String())
+		}
+		if len(reply.Error) != 0 || len(reply.Result) == 0 {
+			t.Fatalf("strip did not deliver a result: %s", out.String())
+		}
+		if !strings.Contains(out.String(), safeText) || strings.Contains(out.String(), upstreamPhrases[0]) {
+			t.Fatalf("strip kept the wrong text: %s", out.String())
 		}
 		assertRecorderUnchanged(t, rec)
 	})
