@@ -1256,7 +1256,7 @@ func loadGoldenConfig(t *testing.T, yamlSrc string) *Config {
 // goldens pin different inputs and stay independent, but one new or changed
 // default config field usually moves all of them.
 const policyHashGoldenHint = "\n\nPolicy hashes are pinned in three places that move separately. Check each:\n" +
-	"  internal/config/canonical_golden_test.go (goldenHashDefaults, goldenHashRichConfig)\n" +
+	"  internal/config/canonical_golden_test.go (goldenHashDefaults, goldenHashRichConfig, TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden)\n" +
 	"  internal/config/dlp_keywords_test.go (TestDLPKeywordsLegacyPolicyHashGolden)\n" +
 	"  internal/proxy/testdata/decision-inventory-policy.golden.jsonl\n" +
 	"    regenerate: go test ./internal/proxy -run '^TestDecisionInventory$' -update-decision-inventory"
@@ -1312,7 +1312,7 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := loadGoldenConfig(t, "mcp_tool_scanning:\n  enabled: true\n  action: warn\n  detect_drift: true\n  new_tool_admission: "+tt.admission+"\n")
 			if got := cfg.computeCanonicalPolicyHash(); got != tt.wantHash {
-				t.Errorf("new-tool admission canonical hash drifted: want %s, got %s", tt.wantHash, got)
+				t.Errorf("new-tool admission canonical hash drifted: want %s, got %s%s", tt.wantHash, got, policyHashGoldenHint)
 			}
 		})
 	}

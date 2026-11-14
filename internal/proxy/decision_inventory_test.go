@@ -263,7 +263,7 @@ func decisionInventoryPolicyHint(name string) string {
 		return ""
 	}
 	return "\n\nPolicy hashes are also pinned in internal/config. Check each:\n" +
-		"  internal/config/canonical_golden_test.go (goldenHashDefaults, goldenHashRichConfig)\n" +
+		"  internal/config/canonical_golden_test.go (goldenHashDefaults, goldenHashRichConfig, TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden)\n" +
 		"  internal/config/dlp_keywords_test.go (TestDLPKeywordsLegacyPolicyHashGolden)"
 }
 
