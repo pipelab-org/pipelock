@@ -1142,9 +1142,25 @@ func ceeFragmentEvaluate(ctx context.Context, appendResult scanner.FragmentAppen
 			}
 		}
 	}
+	// Join the shared enforce floor. Callers pass the action ceeEffectiveConfig
+	// already downgraded, and a nil config fails closed for a configured block.
+	// A core credential short-circuits that downgrade. An inspection limit
+	// keeps the refusal it already attributed.
+	coreFragment := scanner.HasCoreFragmentMatch(matches)
+	if !inspectionLimit && coreFragment {
+		for _, match := range matches {
+			if config.IsCoreDLPPatternName(match.PatternName) {
+				primary = match
+				break
+			}
+		}
+	}
 	detail := fmt.Sprintf("fragment reassembly DLP match: %s", primary.PatternName)
+	if !inspectionLimit && coreFragment {
+		detail = fmt.Sprintf("fragment reassembly DLP match: %s; core pattern cannot be downgraded", primary.PatternName)
+	}
 	actx := newHTTPAuditContext(ctx, logger, httpAuditEvent{Method: "CEE", TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
-	if ceeCfg.Action == config.ActionBlock || inspectionLimit {
+	if inspectionLimit || enforcedBlock(nil, ceeCfg.Action, coreFragment) {
 		logger.LogBlocked(actx, "cross_request_fragment", detail)
 		return &ceeResult{
 			Blocked:     true,

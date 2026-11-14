@@ -4571,7 +4571,9 @@ func TestWebSocketHandshake_CEEPathWarnCannotEscalateBlockAll(t *testing.T) {
 	})
 	defer proxyCleanup()
 
-	half1, half2 := pathSecretHalves()
+	// A non-core path secret. A core credential would be refused here even
+	// though the configured action is warn.
+	half1, half2 := nonCoreStripeHalves()
 	first, err := dialWSConnToTarget(proxyAddr, "ws://"+backendAddr+"/upload/"+half1)
 	if err != nil {
 		t.Fatalf("first incomplete handshake failed: %v", err)
