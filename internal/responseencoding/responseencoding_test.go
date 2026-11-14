@@ -29,6 +29,7 @@ func TestParseRequestCoding(t *testing.T) {
 		{name: "repeated identity", values: []string{"identity", " Identity "}},
 		{name: "gzip", values: []string{"gzip"}, want: "gzip"},
 		{name: "padded gzip", values: []string{" gzip "}, want: "gzip"},
+		{name: "gzip trailing comma", values: []string{"gzip,"}, want: "gzip"},
 		{name: "mixed case", values: []string{"GZip"}, want: "gzip"},
 		{name: "x-gzip", values: []string{"x-gzip"}, want: "x-gzip"},
 		{name: "deflate", values: []string{"deflate"}, want: "deflate"},

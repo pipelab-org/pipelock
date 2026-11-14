@@ -410,3 +410,28 @@ func TestRequestPolicyUndecodableEncodingNamesTheCause(t *testing.T) {
 		t.Fatalf("warn record does not name the undecodable coding: %s", auditText)
 	}
 }
+
+func TestRequestPolicyUndecodableBatchOnly(t *testing.T) {
+	for _, tc := range []struct {
+		action string
+		block  bool
+	}{{"", true}, {config.ActionWarn, false}, {config.ActionAllow, false}} {
+		t.Run(tc.action, func(t *testing.T) {
+			cfg := batchReqPolicyConfig()
+			cfg.RequestPolicy.Rules = nil
+			cfg.RequestPolicy.OnUndecodableEncoding = tc.action
+			cfg.RequestPolicy.OnParseError = config.ActionBlock
+			p := newTestProxyWithConfig(t, cfg)
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+rpTestHost+"/v1.0/$batch", strings.NewReader("not an envelope"))
+			r.Header.Set("Content-Encoding", "br")
+			in := requestPolicyInput{Host: rpTestHost, Method: http.MethodPost, Path: "/v1.0/$batch", Headers: r.Header}
+			result := p.prepareRequestPolicyBody(r, &in)
+			if !result.Block {
+				result = p.applyRequestPolicy(in)
+			}
+			if result.Block != tc.block {
+				t.Fatalf("block=%t, want %t", result.Block, tc.block)
+			}
+		})
+	}
+}
