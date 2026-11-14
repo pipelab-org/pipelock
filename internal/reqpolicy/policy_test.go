@@ -270,6 +270,9 @@ func TestMatcher_OperationHelpers(t *testing.T) {
 	if got := m.OnOpaqueOperation(); got != config.ActionBlock {
 		t.Fatalf("OnOpaqueOperation = %q, want block", got)
 	}
+	if got := m.OnUndecodableEncoding(); got != config.ActionBlock {
+		t.Fatalf("OnUndecodableEncoding = %q, want block", got)
+	}
 	parseDecision := m.EvaluateUninspectable(meta, m.OnParseError(), PredGraphQL)
 	if parseDecision.Action != config.ActionWarn || parseDecision.RuleName != "api-write" {
 		t.Fatalf("parse decision = %+v, want warn from api-write", parseDecision)
@@ -278,7 +281,7 @@ func TestMatcher_OperationHelpers(t *testing.T) {
 		t.Fatalf("allow uninspectable action should produce no decision, got %+v", got)
 	}
 	var nilM *Matcher
-	if nilM.OnParseError() != config.ActionBlock || nilM.OnOpaqueOperation() != config.ActionBlock {
+	if nilM.OnParseError() != config.ActionBlock || nilM.OnOpaqueOperation() != config.ActionBlock || nilM.OnUndecodableEncoding() != config.ActionBlock {
 		t.Fatal("nil matcher should default fail-closed actions to block")
 	}
 }

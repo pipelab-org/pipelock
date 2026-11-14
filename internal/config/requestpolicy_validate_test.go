@@ -89,6 +89,15 @@ func TestValidateRequestPolicy_Errors(t *testing.T) {
 			want: "on_opaque_operation",
 		},
 		{
+			name: "invalid undecodable encoding action",
+			cfg: func() *Config {
+				c := enabledPolicy(RequestPolicyRule{Name: "r", Action: ActionBlock, Route: RequestPolicyRoute{Methods: []string{"POST"}}})
+				c.RequestPolicy.OnUndecodableEncoding = "retry"
+				return c
+			}(),
+			want: "on_undecodable_encoding",
+		},
+		{
 			name: "no route constraint",
 			cfg:  enabledPolicy(RequestPolicyRule{Name: "r", Action: ActionBlock}),
 			want: "no route constraints",
@@ -274,12 +283,46 @@ func TestApplyDefaults_RequestPolicyFailureActions(t *testing.T) {
 	c := Defaults()
 	c.RequestPolicy.OnParseError = ""
 	c.RequestPolicy.OnOpaqueOperation = ""
+	c.RequestPolicy.OnUndecodableEncoding = ""
 	c.ApplyDefaults()
 	if c.RequestPolicy.OnParseError != ActionBlock {
 		t.Fatalf("OnParseError = %q, want %q", c.RequestPolicy.OnParseError, ActionBlock)
 	}
 	if c.RequestPolicy.OnOpaqueOperation != ActionBlock {
 		t.Fatalf("OnOpaqueOperation = %q, want %q", c.RequestPolicy.OnOpaqueOperation, ActionBlock)
+	}
+	if c.RequestPolicy.OnUndecodableEncoding != ActionBlock {
+		t.Fatalf("OnUndecodableEncoding = %q, want %q", c.RequestPolicy.OnUndecodableEncoding, ActionBlock)
+	}
+}
+
+func TestLoad_RequestPolicyUndecodableEncodingDefault(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{name: "omitted", yaml: "version: 1\n", want: ActionBlock},
+		{name: "yaml null", yaml: "version: 1\nrequest_policy:\n  on_undecodable_encoding:\n", want: ActionBlock},
+		{name: "blank", yaml: "version: 1\nrequest_policy:\n  on_undecodable_encoding: \"  \"\n", want: ActionBlock},
+		{name: "explicit block", yaml: "version: 1\nrequest_policy:\n  on_undecodable_encoding: block\n", want: ActionBlock},
+		{name: "explicit warn", yaml: "version: 1\nrequest_policy:\n  on_undecodable_encoding: warn\n", want: ActionWarn},
+		{name: "explicit allow", yaml: "version: 1\nrequest_policy:\n  on_undecodable_encoding: allow\n", want: ActionAllow},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := LoadBytes([]byte(tc.yaml))
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			if cfg.RequestPolicy.OnUndecodableEncoding != tc.want {
+				t.Fatalf("OnUndecodableEncoding = %q, want %q", cfg.RequestPolicy.OnUndecodableEncoding, tc.want)
+			}
+		})
+	}
+	_, err := LoadBytes([]byte("version: 1\nrequest_policy:\n  on_undecodable_encoding: retry\n"))
+	if err == nil || !strings.Contains(err.Error(), "on_undecodable_encoding") {
+		t.Fatalf("invalid action err = %v", err)
 	}
 }
 

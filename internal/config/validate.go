@@ -2982,6 +2982,13 @@ func (c *Config) validateRequestPolicy(warnings *[]Warning) error {
 	if err := validateRequestPolicyFailureAction("on_opaque_operation", rp.OnOpaqueOperation); err != nil {
 		return err
 	}
+	undecodable := rp.OnUndecodableEncoding
+	if undecodable == "" {
+		undecodable = ActionBlock
+	}
+	if err := validateRequestPolicyFailureAction("on_undecodable_encoding", undecodable); err != nil {
+		return err
+	}
 	if rp.Enabled && len(rp.Rules) == 0 {
 		return fmt.Errorf("request_policy is enabled but has no rules; add rules or set enabled: false")
 	}

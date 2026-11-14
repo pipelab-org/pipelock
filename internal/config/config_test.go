@@ -4193,6 +4193,8 @@ func TestValidateReload_ActionDowngradesWarnForEnforcementSurfaces(t *testing.T)
 	updated.RequestPolicy.OnParseError = ActionWarn
 	old.RequestPolicy.OnOpaqueOperation = ActionBlock
 	updated.RequestPolicy.OnOpaqueOperation = ActionAllow
+	old.RequestPolicy.OnUndecodableEncoding = ActionBlock
+	updated.RequestPolicy.OnUndecodableEncoding = ActionWarn
 	old.MCPToolScanning.Enabled = true
 	updated.MCPToolScanning.Enabled = true
 	old.MCPToolScanning.Action = ActionBlock
@@ -4246,6 +4248,7 @@ func TestValidateReload_ActionDowngradesWarnForEnforcementSurfaces(t *testing.T)
 	for _, field := range []string{
 		"request_policy.on_parse_error",
 		"request_policy.on_opaque_operation",
+		"request_policy.on_undecodable_encoding",
 		"response_scanning.action",
 		"response_scanning.sse_streaming.action",
 		"request_body_scanning.action",
@@ -4268,6 +4271,31 @@ func TestValidateReload_ActionDowngradesWarnForEnforcementSurfaces(t *testing.T)
 	} {
 		if !hasReloadWarning(warnings, field) {
 			t.Fatalf("missing reload warning for %s; warnings=%+v", field, warnings)
+		}
+	}
+}
+
+func TestValidateReload_UndecodableEncodingUnchangedIsSilent(t *testing.T) {
+	old := Defaults()
+	updated := old.Clone()
+	old.RequestPolicy.OnUndecodableEncoding = ActionBlock
+	updated.RequestPolicy.OnUndecodableEncoding = ActionBlock
+	for _, w := range ValidateReload(old, updated) {
+		if w.Field == "request_policy.on_undecodable_encoding" {
+			t.Fatalf("unchanged block warned: %+v", w)
+		}
+	}
+	old.RequestPolicy.OnUndecodableEncoding = ActionWarn
+	updated.RequestPolicy.OnUndecodableEncoding = ActionWarn
+	for _, w := range ValidateReload(old, updated) {
+		if w.Field == "request_policy.on_undecodable_encoding" {
+			t.Fatalf("unchanged warn warned: %+v", w)
+		}
+	}
+	updated.RequestPolicy.OnUndecodableEncoding = ActionBlock
+	for _, w := range ValidateReload(old, updated) {
+		if w.Field == "request_policy.on_undecodable_encoding" {
+			t.Fatalf("upgrade from warn to block warned: %+v", w)
 		}
 	}
 }

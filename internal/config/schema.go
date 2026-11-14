@@ -338,11 +338,12 @@ type SandboxFilesystem struct {
 // composes with the learn-lock contract gate (a ratified allowlist) and with
 // DLP, and is neither. See the request-policy operation-rails design.
 type RequestPolicy struct {
-	Enabled           bool                 `yaml:"enabled"`
-	OnParseError      string               `yaml:"on_parse_error"`      // block (default) | warn | allow
-	OnOpaqueOperation string               `yaml:"on_opaque_operation"` // block (default) | warn | allow
-	Rules             []RequestPolicyRule  `yaml:"rules"`
-	Batch             []RequestPolicyBatch `yaml:"batch"` // JSON batch endpoints whose sub-requests are evaluated recursively
+	Enabled               bool                 `yaml:"enabled"`
+	OnParseError          string               `yaml:"on_parse_error"`          // block (default) | warn | allow
+	OnOpaqueOperation     string               `yaml:"on_opaque_operation"`     // block (default) | warn | allow
+	OnUndecodableEncoding string               `yaml:"on_undecodable_encoding"` // block (default) | warn | allow
+	Rules                 []RequestPolicyRule  `yaml:"rules"`
+	Batch                 []RequestPolicyBatch `yaml:"batch"` // JSON batch endpoints whose sub-requests are evaluated recursively
 }
 
 // RequestPolicyBatch declares a JSON batch endpoint whose request body wraps

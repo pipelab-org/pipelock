@@ -426,6 +426,13 @@ func (c *Config) ApplyDefaults() {
 	if c.RequestPolicy.OnOpaqueOperation == "" {
 		c.RequestPolicy.OnOpaqueOperation = ActionBlock
 	}
+	// Blank YAML (null, "", or whitespace) is the fail-closed default. A
+	// supported coding that finishes is unaffected; this action covers only a
+	// coding the request-policy body path does not decode.
+	c.RequestPolicy.OnUndecodableEncoding = strings.TrimSpace(c.RequestPolicy.OnUndecodableEncoding)
+	if c.RequestPolicy.OnUndecodableEncoding == "" {
+		c.RequestPolicy.OnUndecodableEncoding = ActionBlock
+	}
 	for i := range c.RequestPolicy.Batch {
 		b := &c.RequestPolicy.Batch[i]
 		if b.RequestsField == "" {

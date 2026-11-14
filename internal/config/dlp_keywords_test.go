@@ -230,13 +230,14 @@ func TestDLPKeywordsLegacyPolicyHashGolden(t *testing.T) {
 	// patterns and the widened PyPI and Sentry patterns, then for the
 	// Bedrock, Heroku, and Vault corpus change, and for the OpenAI admin,
 	// Slack refresh and workflow, and Vault recovery patterns, then when
-	// the Vault service body became base64url.
-	// Balanced mode without default patterns retains its pre-keyword hash
-	// independently of changes to the built-in corpus.
+	// the Vault service body became base64url. Rebaselined for the default
+	// request-policy undecodable-encoding action in the canonical config.
+	// Balanced mode without default patterns remains independent of changes
+	// to the built-in corpus.
 	for _, tc := range []struct{ body, want string }{
-		{keywordConfigYAML(""), "85c76016e5a0725a682561e23f18dd8ebade2ada53e72c7324cbb511f7749ed6"},
-		{"mode: balanced\n", "d43548b20dca4da9c578eb634d4586d02dd253f3821ba5c11143d0a496eafa4d"},
-		{"mode: balanced\ndlp:\n  include_defaults: false\n", "66df31a95a2ce552d4d50fc55356f0dd204d8bf3999a3bfa90bf9c3332710d86"},
+		{keywordConfigYAML(""), "882fc3ea1fa59aa15d2ecf7c801383ae365b2f0047165e2ea2675322cb54d6ca"},
+		{"mode: balanced\n", "5e866dd425c2dadc51723d6bff9bf759ce2b6e5eeea82bae039761fb6398457e"},
+		{"mode: balanced\ndlp:\n  include_defaults: false\n", "7c959a3133c38f84225d738e1c293918fafcf1ae1d4efc9ee31798a830f06911"},
 	} {
 		cfg, err := LoadBytes([]byte(tc.body))
 		if err != nil {
