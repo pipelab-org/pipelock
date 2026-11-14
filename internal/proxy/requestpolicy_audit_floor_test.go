@@ -158,6 +158,30 @@ func TestRequestPolicyAuditHiddenFloors(t *testing.T) {
 			body: func(*testing.T) []byte { return []byte(deleteRecordGraphQLBody()) },
 		},
 		{
+			name: "truncated gzip behind route block",
+			build: func(host string) *config.Config {
+				cfg := policyAuditFloorConfig(routeBlock(host, http.MethodPost, "/graphql"), gqlRule(host, http.MethodPost, "/graphql"))
+				cfg.RequestPolicy.OnUndecodableEncoding = config.ActionBlock
+				return cfg
+			},
+			method: http.MethodPost, path: "/graphql", encoding: "gzip",
+			body: func(t *testing.T) []byte {
+				b := gzipRequestBody(t, []byte(deleteRecordGraphQLBody()))
+				return b[:len(b)-1]
+			},
+		},
+		{
+			name: "unsupported coding warns behind route block",
+			lift: true,
+			build: func(host string) *config.Config {
+				cfg := policyAuditFloorConfig(routeBlock(host, http.MethodPost, "/graphql"), gqlRule(host, http.MethodPost, "/graphql"))
+				cfg.RequestPolicy.OnUndecodableEncoding = config.ActionWarn
+				return cfg
+			},
+			method: http.MethodPost, path: "/graphql", encoding: "br",
+			body: func(*testing.T) []byte { return []byte(deleteRecordGraphQLBody()) },
+		},
+		{
 			name: "body over limit",
 			build: func(host string) *config.Config {
 				cfg := policyAuditFloorConfig(routeBlock(host, http.MethodPost, "/graphql"), gqlRule(host, http.MethodPost, "/graphql"))
