@@ -195,9 +195,12 @@ type Verdict struct {
 	// IncompleteRules names the rules behind IncompletePairCheckRule.
 	IncompleteRules []string
 	// RuleDecision is true only when the action comes entirely from
-	// configured rules that matched after a complete evaluation. A verdict
-	// raised because input could not be inspected, or because a rule check
-	// was incomplete, leaves it false, as does any verdict built elsewhere.
+	// configured block, ask or warn rules that matched after a complete
+	// evaluation. A verdict raised because input could not be inspected, or
+	// because a rule check was incomplete, leaves it false, as does any
+	// verdict built elsewhere. It is also false when a redirect or defer rule
+	// matched: a stricter block hides that rule's handling, so the block is
+	// not the whole decision.
 	RuleDecision bool
 }
 
@@ -497,6 +500,7 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 
 	var matchedRules, incompleteRules []string
 	uninspectableMatch := false
+	routedMatch := false
 	strictest := ""
 	redirectProfile := ""
 	var resolutionPolicy config.DeferResolutionPolicy
@@ -638,6 +642,9 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 		if action == "" {
 			action = pc.Action
 		}
+		if action == config.ActionRedirect || action == config.ActionDefer {
+			routedMatch = true
+		}
 		prev := strictest
 		strictest = StricterAction(strictest, action)
 		if strictest != prev && action == config.ActionRedirect {
@@ -679,7 +686,7 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 		ResolutionPolicy: resolutionPolicy,
 		Notes:            linkNotes,
 		IncompleteRules:  incompleteRules,
-		RuleDecision:     len(incompleteRules) == 0 && !uninspectableMatch,
+		RuleDecision:     len(incompleteRules) == 0 && !uninspectableMatch && !routedMatch,
 	}
 }
 

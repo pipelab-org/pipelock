@@ -96,3 +96,30 @@ func TestAuditA2AAskAndFragmentCoreStayRefused(t *testing.T) {
 		t.Fatal("a non-core match counted as core")
 	}
 }
+
+// A block that wins over a redirect or defer rule hides that rule's
+// handling, so audit mode keeps the block instead of forwarding the call.
+func TestAuditPolicyBlockOverRoutedRuleStaysBlocked(t *testing.T) {
+	for _, routed := range []string{config.ActionRedirect, config.ActionDefer} {
+		t.Run(routed, func(t *testing.T) {
+			pc := policy.New(config.MCPToolPolicy{
+				Enabled: true, Action: config.ActionBlock,
+				Rules: []config.ToolPolicyRule{
+					{Name: "route", ToolPattern: "^shell$", Action: routed, RedirectProfile: "safe"},
+					{Name: "wipe", ToolPattern: "^shell$", ArgPattern: `rm\s+-rf`, Action: config.ActionBlock},
+				},
+			})
+			both := pc.CheckRequest([]byte(auditTool("shell", map[string]string{"command": "rm -rf /"})))
+			if both.Action != config.ActionBlock || both.RuleDecision {
+				t.Fatalf("block over %s verdict = %+v", routed, both)
+			}
+			if got := policyAuditAction(true, both); got != config.ActionBlock {
+				t.Fatalf("action = %q, want block", got)
+			}
+			only := pc.CheckRequest([]byte(auditTool("shell", map[string]string{"command": "ls"})))
+			if got := policyAuditAction(true, only); got != routed {
+				t.Fatalf("routed-only action = %q, want %q", got, routed)
+			}
+		})
+	}
+}
