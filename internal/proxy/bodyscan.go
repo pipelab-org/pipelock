@@ -2922,25 +2922,40 @@ func scanRequestHeadersWithSuppress(ctx context.Context, headers http.Header, cf
 	return scanRequestHeadersWithAudience(ctx, headers, cfg, sc, target, suppress, onDropped, nil)
 }
 
+// applyUnfinishedHeaderScan keeps a finding that was collected before a
+// header scan stopped, and records the stop. A stop with no finding is an
+// incomplete scan with nothing else on it. A finished scan is unchanged.
+func applyUnfinishedHeaderScan(unfinished bool, result *BodyScanResult) *BodyScanResult {
+	if !unfinished {
+		return result
+	}
+	if result != nil && bodyResultHasFinding(*result) {
+		result.Clean = false
+		result.Action = config.ActionBlock
+		if result.ScanError == "" {
+			result.ScanError = scanner.ErrTextDLPIncomplete.Error()
+		}
+		return result
+	}
+	return &BodyScanResult{Action: config.ActionBlock, ScanError: scanner.ErrTextDLPIncomplete.Error()}
+}
+
+// headerDLPStopsRequest reports that a header scan must not be forwarded.
+// An unfinished scan stops the request even when its action would only warn
+// or enforcement is off. A finished scan stops for a hard block, or for a
+// block action while enforcement is on.
+func headerDLPStopsRequest(scanErr string, hardBlock bool, action string, enforce bool) bool {
+	return scanErr != "" || hardBlock || (action == config.ActionBlock && enforce)
+}
+
 // scanRequestHeadersWithAudience applies the same destination-aware compiled
 // credential exception as URL and body DLP. An empty or invalid target keeps
 // the match, preserving the original fail-closed header behavior.
 func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner, target string, suppress []config.SuppressEntry, onDropped func(scanner.TextDLPMatch, string), onAudienceAllow func(scanner.CredentialAudienceAllow) error) (result *BodyScanResult) {
 	defer func() {
-		if ctx.Err() == nil {
-			return
-		}
 		// A finding collected before the context ended stays on the result.
 		// Replacing the result would let cancellation hide it.
-		if result != nil && bodyResultHasFinding(*result) {
-			result.Clean = false
-			result.Action = config.ActionBlock
-			if result.ScanError == "" {
-				result.ScanError = scanner.ErrTextDLPIncomplete.Error()
-			}
-			return
-		}
-		result = &BodyScanResult{Action: config.ActionBlock, ScanError: scanner.ErrTextDLPIncomplete.Error()}
+		result = applyUnfinishedHeaderScan(ctx.Err() != nil, result)
 	}()
 	bodyCfg := cfg.RequestBodyScanning
 	disabled := bodyDLPDisabledSet(bodyCfg.DisablePatterns)
@@ -3176,7 +3191,7 @@ func (p *Proxy) evalHeaderDLP(ctx context.Context, e headerDLPParams) (blocked b
 	reason = headerResult.withAudienceExplanation(reason)
 	// An unfinished header scan is not forwarded, including when a finding
 	// was already recorded above and the configured action would only warn.
-	if headerResult.ScanError != "" || headerHardBlock || (action == config.ActionBlock && e.cfg.EnforceEnabled()) {
+	if headerDLPStopsRequest(headerResult.ScanError, headerHardBlock, action, e.cfg.EnforceEnabled()) {
 		p.metrics.RecordBlocked(e.hostname, "header_dlp", time.Since(e.start), metricAgent)
 		return true, true, reason, nil
 	}

@@ -72,14 +72,7 @@ func TestHeaderScanErrorRefusedAcrossHTTPConsumers(t *testing.T) {
 				}
 				cancelledDuringRequest := base.Err() != nil
 				cancel()
-				if kind == "websocket" && w.Code == http.StatusServiceUnavailable && w.Header().Get("X-Pipelock-Block-Reason") == "parse_error" {
-					if !cancelledDuringRequest || calls.Load() != 0 || !strings.Contains(w.Body.String(), scanner.ErrTextDLPIncomplete.Error()) {
-						t.Fatalf("unverified header refusal: canceled=%v upstream=%d body=%s", cancelledDuringRequest, calls.Load(), w.Body.String())
-					}
-					refused = true
-					break
-				}
-				if kind != "websocket" && w.Code == http.StatusServiceUnavailable && strings.Contains(w.Body.String(), clientCanceledStatusText) {
+				if w.Code == http.StatusServiceUnavailable && strings.Contains(w.Body.String(), clientCanceledStatusText) {
 					if !cancelledDuringRequest || calls.Load() != 0 || w.Header().Get("X-Pipelock-Block-Reason") != "" {
 						t.Fatalf("client cancel was treated as a block: canceled=%v upstream=%d headers=%v body=%s", cancelledDuringRequest, calls.Load(), w.Header(), w.Body.String())
 					}

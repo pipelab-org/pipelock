@@ -618,10 +618,12 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Build headers for upstream handshake.
 	fwdHeaders := p.buildWSForwardHeaders(r, parsed, cfg, sc)
 
-	// DLP-scan forwarded header values regardless of destination or enforce mode.
-	// In audit mode, findings are logged as anomalies but traffic is allowed.
+	// DLP-scan forwarded header values regardless of destination.
+	// A finished finding in audit mode is logged and the handshake continues.
+	// An unfinished scan is not forwarded: a finding already in hand is a
+	// refusal, and a stop with no finding is classified by the caller.
 	wsHeaderBlockedResult, wsHeaderHardBlock, wsHeaderAction, wsHeaderReason, wsHeaderPattern, wsHeaderReceiptErr := p.dlpScanWSHeaders(r.Context(), fwdHeaders, sc, cfg, targetURL, actx)
-	if refuseTextDLPScanError(w, log, actx, requestID, wsHeaderReceiptErr) {
+	if refuseTextDLPScanErrorForContext(r.Context(), w, log, actx, requestID, wsHeaderReceiptErr) {
 		return
 	}
 	if wsHeaderReceiptErr != nil {
@@ -657,7 +659,9 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		if action == "" {
 			action = cfg.RequestBodyScanning.Action
 		}
-		wsHeaderBlocked := hardBlock || (action == config.ActionBlock && cfg.EnforceEnabled())
+		// An unfinished scan's finding is returned as a hard block, so warn
+		// and audit mode cannot forward a credential the scan already matched.
+		wsHeaderBlocked := headerDLPStopsRequest("", hardBlock, action, cfg.EnforceEnabled())
 		if wsHeaderBlocked {
 			action = config.ActionBlock
 		} else {
@@ -1445,9 +1449,11 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 	var allMatches []scanner.TextDLPMatch
 	var audienceAllows []scanner.CredentialAudienceAllow
 	matchedHeaders := make([]string, 0, 2)
+	var scanIncomplete bool
 	defer func() {
-		// Record audience allows only when no header blocks the handshake.
-		if len(allMatches) > 0 || ctx.Err() != nil {
+		// Record audience allows only when the whole header scan finished
+		// with nothing to block. An unfinished scan did not clear the rest.
+		if len(allMatches) > 0 || ctx.Err() != nil || scanIncomplete {
 			return
 		}
 		for _, allow := range uniqueCredentialAudienceAllows(audienceAllows) {
@@ -1456,6 +1462,7 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 			}
 		}
 	}()
+scanHeaders:
 	for _, key := range []string{
 		headerNameAuthorization, "X-Api-Key", "X-Goog-Api-Key", "Cookie",
 		"Origin", headerNameWSProtocol, "User-Agent",
@@ -1477,8 +1484,8 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 				scanVal = scanner.ScrubSigV4AuthorizationForTarget(val, targetURL)
 			}
 			result := sc.ScanTextForDLP(ctx, scanVal)
-			if err := result.Err(); err != nil {
-				return false, false, "", "", "", err
+			if result.Err() != nil {
+				scanIncomplete = true
 			}
 			if !result.Clean {
 				matches, allows := sc.FilterHeaderDLPMatches(result.Matches, targetURL, key, scanVal)
@@ -1489,31 +1496,46 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 					}
 					p.metrics.RecordDLPDroppedMatch(match.PatternName, "header", dropReason)
 				})
-				if len(matches) == 0 {
-					continue
+				if len(matches) > 0 {
+					allMatches = append(allMatches, matches...)
+					matchedHeaders = append(matchedHeaders, key)
 				}
-				allMatches = append(allMatches, matches...)
-				matchedHeaders = append(matchedHeaders, key)
+			}
+			if scanIncomplete {
+				// The handshake is refused or canceled either way. Scanning
+				// the remaining headers on a stopped context is work a
+				// disconnecting client should not be able to buy. A finding
+				// already collected, including from this value, is kept.
+				break scanHeaders
 			}
 		}
 	}
 	allMatches = uniqueBodyDLPMatches(allMatches)
-	if len(allMatches) > 0 {
-		names := make([]string, len(allMatches))
-		for i, m := range allMatches {
-			names[i] = m.PatternName
+	unfinished := scanIncomplete || ctx.Err() != nil
+	if len(allMatches) == 0 {
+		if unfinished {
+			return false, false, "", "", "", scanner.ErrTextDLPIncomplete
 		}
-		result := &BodyScanResult{
-			Action:                       requestBodyDLPAction(allMatches, cfg.RequestBodyScanning.Action, cfg.RequestBodyScanning.PatternActions),
-			DLPMatches:                   allMatches,
-			HeaderName:                   wsHeaderDLPSource(matchedHeaders),
-			CredentialAudienceMismatches: scanner.TextDLPCredentialAudienceMismatches(allMatches, targetURL, "header"),
-		}
-		action, hardBlock := headerDLPDecision(result, cfg)
-		receiptPattern := fmt.Sprintf("DLP match in %s header: %s", result.HeaderName, strings.Join(names, ", "))
-		return true, hardBlock, action, result.withAudienceExplanation(receiptPattern), receiptPattern, nil
+		return false, false, "", "", "", nil
 	}
-	return false, false, "", "", "", nil
+	names := make([]string, len(allMatches))
+	for i, m := range allMatches {
+		names[i] = m.PatternName
+	}
+	result := applyUnfinishedHeaderScan(unfinished, &BodyScanResult{
+		Action:                       requestBodyDLPAction(allMatches, cfg.RequestBodyScanning.Action, cfg.RequestBodyScanning.PatternActions),
+		DLPMatches:                   allMatches,
+		HeaderName:                   wsHeaderDLPSource(matchedHeaders),
+		CredentialAudienceMismatches: scanner.TextDLPCredentialAudienceMismatches(allMatches, targetURL, "header"),
+	})
+	action, hardBlock = headerDLPDecision(result, cfg)
+	if result.ScanError != "" {
+		// An unfinished scan always stops the request, so its finding is
+		// returned as a hard block whatever the configured action is.
+		hardBlock = true
+	}
+	receiptPattern = fmt.Sprintf("DLP match in %s header: %s", result.HeaderName, strings.Join(names, ", "))
+	return true, hardBlock, action, result.withAudienceExplanation(receiptPattern), receiptPattern, nil
 }
 
 func wsHeaderDLPSource(headers []string) string {
