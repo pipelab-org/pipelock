@@ -27,33 +27,24 @@ func auditObservedAction(audit bool, action string) string {
 	return action
 }
 
-// policyAuditAction observes a matched rule's block or ask. A verdict raised
-// because the arguments could not be inspected keeps its action.
+// policyAuditAction observes a matched rule's block or ask. Only a verdict
+// the policy marks as a rule decision is observed; one raised because the
+// arguments could not be inspected keeps its action.
 func policyAuditAction(audit bool, verdict policy.Verdict) string {
-	if verdict.CouldNotInspect() {
+	if !verdict.RuleDecision {
 		return verdict.Action
 	}
 	return auditObservedAction(audit, verdict.Action)
 }
 
-// chainAuditAction observes a matched pattern's action. A call the matcher
-// could not track is a resource limit and keeps its block.
+// chainAuditAction observes a matched pattern's action. A verdict that is
+// not a pattern match, such as a call the matcher could not track, keeps its
+// block.
 func chainAuditAction(audit bool, verdict chains.Verdict) string {
-	if verdict.ResourceLimit {
+	if !verdict.PatternMatch {
 		return verdict.Action
 	}
 	return auditObservedAction(audit, verdict.Action)
-}
-
-// fragmentHasCoreMatch reports whether a reassembled cross-request match is a
-// core credential, which audit mode never releases.
-func fragmentHasCoreMatch(matches []scanner.DLPMatch) bool {
-	for _, match := range matches {
-		if config.IsCoreDLPPatternName(match.PatternName) {
-			return true
-		}
-	}
-	return false
 }
 
 // auditContentAction is the content contributor's action after the audit
@@ -206,9 +197,10 @@ func a2aContentLiftable(result A2AScanResult) bool {
 	return len(result.DLPFindings) > 0 || len(result.InjectFindings) > 0 || len(result.URLFindings) > 0 || result.EntropyFinding != nil
 }
 
-// observeBaselineAudit lifts a checker deviation, preserving check failures.
+// observeBaselineAudit lifts a deviation found by a completed check. A
+// decision without that mark, such as a failed check, keeps its block.
 func observeBaselineAudit(opts MCPProxyOpts, decision session.BaselineDecision) session.BaselineDecision {
-	if decision.Failed {
+	if !decision.Deviation {
 		return decision
 	}
 	lifted := auditObservedAction(opts.auditMode(), decision.Action)

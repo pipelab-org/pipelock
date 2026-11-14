@@ -194,23 +194,11 @@ type Verdict struct {
 	Notes []string
 	// IncompleteRules names the rules behind IncompletePairCheckRule.
 	IncompleteRules []string
-}
-
-// CouldNotInspect reports whether the verdict comes from input the policy
-// could not fully evaluate, or a rule whose check was incomplete, rather than
-// from a rule that matched. Such a block is not a configured rule decision.
-func (v Verdict) CouldNotInspect() bool {
-	if len(v.IncompleteRules) > 0 {
-		return true
-	}
-	for _, rule := range v.Rules {
-		switch rule {
-		case uninspectableJSONDepthRule, uninspectablePatchTargetsRule, duplicateJSONKeyRule,
-			invalidJSONKeyInputRule, malformedA2AParamsRule, incompletePairCheckRule:
-			return true
-		}
-	}
-	return false
+	// RuleDecision is true only when the action comes entirely from
+	// configured rules that matched after a complete evaluation. A verdict
+	// raised because input could not be inspected, or because a rule check
+	// was incomplete, leaves it false, as does any verdict built elsewhere.
+	RuleDecision bool
 }
 
 // New compiles policy rules from config. Returns nil if disabled or no rules
@@ -508,6 +496,7 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 	}
 
 	var matchedRules, incompleteRules []string
+	uninspectableMatch := false
 	strictest := ""
 	redirectProfile := ""
 	var resolutionPolicy config.DeferResolutionPolicy
@@ -640,6 +629,7 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 		matchedRule := rule.Name
 		if patchInspection == patchTargetsUninspectable {
 			matchedRule = uninspectablePatchTargetsRule
+			uninspectableMatch = true
 			matchedRules = appendUniqueRule(matchedRules, matchedRule)
 		} else {
 			matchedRules = append(matchedRules, matchedRule)
@@ -689,6 +679,7 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 		ResolutionPolicy: resolutionPolicy,
 		Notes:            linkNotes,
 		IncompleteRules:  incompleteRules,
+		RuleDecision:     len(incompleteRules) == 0 && !uninspectableMatch,
 	}
 }
 
@@ -1519,6 +1510,7 @@ func mergeVerdicts(a, b Verdict) Verdict {
 		out.Rules = appendUniqueRule(out.Rules, r)
 	}
 	out.Notes = appendUniqueNotes(slices.Clone(a.Notes), b.Notes)
+	out.RuleDecision = a.RuleDecision && b.RuleDecision
 	out.IncompleteRules = nil
 	for _, r := range append(slices.Clone(a.IncompleteRules), b.IncompleteRules...) {
 		out.IncompleteRules = appendUniqueRule(out.IncompleteRules, r)
@@ -1611,6 +1603,7 @@ func (pc *Config) checkBatch(line []byte) Verdict {
 	}
 
 	var allRules, allNotes, allIncomplete []string
+	ruleDecision := true
 	strictest := ""
 	redirectProfile := ""
 	var resolutionPolicy config.DeferResolutionPolicy
@@ -1618,6 +1611,7 @@ func (pc *Config) checkBatch(line []byte) Verdict {
 	for _, elem := range batch {
 		v := pc.checkSingle(elem)
 		if v.Matched {
+			ruleDecision = ruleDecision && v.RuleDecision
 			allRules = append(allRules, v.Rules...)
 			allNotes = appendUniqueNotes(allNotes, v.Notes)
 			for _, rule := range v.IncompleteRules {
@@ -1653,6 +1647,7 @@ func (pc *Config) checkBatch(line []byte) Verdict {
 		Rules:            allRules,
 		Notes:            allNotes,
 		IncompleteRules:  allIncomplete,
+		RuleDecision:     ruleDecision,
 		RedirectProfile:  redirectProfile,
 		ResolutionPolicy: resolutionPolicy,
 	}

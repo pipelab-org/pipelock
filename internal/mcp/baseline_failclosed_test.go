@@ -59,7 +59,7 @@ func TestNormalizeBaselineDecision(t *testing.T) {
 type failingMetricsBaselineChecker struct{ nonMetricsBaselineChecker }
 
 func (failingMetricsBaselineChecker) CheckBaselineForMetrics(string, session.BaselineMetrics) session.BaselineDecision {
-	return session.BaselineDecision{Blocked: true, Action: config.ActionBlock, Detail: "baseline check failed", Failed: true}
+	return session.BaselineDecision{Blocked: true, Action: config.ActionBlock, Detail: "baseline check failed"}
 }
 func (failingMetricsBaselineChecker) RecordBaselineMetrics(string, session.BaselineMetrics) {}
 

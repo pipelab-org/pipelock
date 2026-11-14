@@ -461,7 +461,7 @@ func (c auditBaselineCheck) CheckBaselineForRecorder(string, session.Recorder) s
 }
 func (c auditBaselineCheck) RecordBaselineForRecorder(string, session.Recorder) {}
 func (c auditBaselineCheck) CheckBaselineForMetrics(string, session.BaselineMetrics) session.BaselineDecision {
-	return session.BaselineDecision{Blocked: true, Action: c.action, Detail: "baseline deviation"}
+	return session.BaselineDecision{Blocked: true, Action: c.action, Detail: "baseline deviation", Deviation: true}
 }
 func (c auditBaselineCheck) RecordBaselineMetrics(string, session.BaselineMetrics) {}
 

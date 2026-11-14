@@ -1766,10 +1766,10 @@ func (sm *SessionManager) CheckBaselineForRecorder(agentKey string, rec session.
 		return session.BaselineDecision{}
 	}
 	return session.BaselineDecision{
-		Blocked: result.Blocked,
-		Action:  result.Action,
-		Detail:  baselineDecisionDetail(result),
-		Failed:  result.Err != nil,
+		Blocked:   result.Blocked,
+		Action:    result.Action,
+		Detail:    baselineDecisionDetail(result),
+		Deviation: result.Err == nil,
 	}
 }
 
@@ -1785,10 +1785,10 @@ func (sm *SessionManager) CheckBaselineForMetrics(agentKey string, metrics sessi
 		return session.BaselineDecision{}
 	}
 	return session.BaselineDecision{
-		Blocked: result.Blocked,
-		Action:  result.Action,
-		Detail:  baselineDecisionDetail(result),
-		Failed:  result.Err != nil,
+		Blocked:   result.Blocked,
+		Action:    result.Action,
+		Detail:    baselineDecisionDetail(result),
+		Deviation: result.Err == nil,
 	}
 }
 

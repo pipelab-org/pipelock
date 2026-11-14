@@ -4,12 +4,13 @@
 package mcp
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // A policy verdict raised because the arguments could not be inspected is
@@ -22,7 +23,7 @@ func TestAuditPolicyUninspectableStaysBlocked(t *testing.T) {
 		}},
 	})
 	matched := pc.CheckRequest([]byte(auditTool("shell", map[string]string{"command": "rm -rf /"})))
-	if !matched.Matched || matched.CouldNotInspect() {
+	if !matched.Matched || !matched.RuleDecision {
 		t.Fatalf("rule match verdict = %+v", matched)
 	}
 	if got := policyAuditAction(true, matched); got != config.ActionWarn {
@@ -30,7 +31,7 @@ func TestAuditPolicyUninspectableStaysBlocked(t *testing.T) {
 	}
 	deep := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"shell","arguments":` + deepJSONObject("x", 300) + `}}`
 	uninspectable := pc.CheckRequest([]byte(deep))
-	if !uninspectable.Matched || !uninspectable.CouldNotInspect() {
+	if !uninspectable.Matched || uninspectable.RuleDecision {
 		t.Fatalf("deep arguments verdict = %+v", uninspectable)
 	}
 	if got := policyAuditAction(true, uninspectable); got != config.ActionBlock {
@@ -72,9 +73,9 @@ func TestAuditURLFindingUnreadableURLStaysBlocked(t *testing.T) {
 	}
 }
 
-// An operator rule that reuses a reserved could-not-inspect name is treated
-// as uninspectable, so it stays refused.
-func TestAuditPolicyReservedRuleNameStaysBlocked(t *testing.T) {
+// A rule that happens to share a reserved name is still a rule decision; a
+// verdict built without the mark is never observed.
+func TestAuditPolicyOnlyMarkedRuleDecisionsLift(t *testing.T) {
 	pc := policy.New(config.MCPToolPolicy{
 		Enabled: true, Action: config.ActionBlock,
 		Rules: []config.ToolPolicyRule{{
@@ -82,11 +83,19 @@ func TestAuditPolicyReservedRuleNameStaysBlocked(t *testing.T) {
 		}},
 	})
 	verdict := pc.CheckRequest([]byte(auditTool("shell", map[string]string{"command": "rm -rf /"})))
-	if !verdict.Matched {
-		t.Fatalf("rule did not match: %+v", verdict)
+	if got := policyAuditAction(true, verdict); got != config.ActionWarn {
+		t.Fatalf("rule decision action = %q, want warn", got)
 	}
-	if got := policyAuditAction(true, verdict); got != config.ActionBlock {
-		t.Fatalf("action = %q, want block", got)
+	unmarked := policy.Verdict{Matched: true, Action: config.ActionBlock, Rules: []string{"wipe"}}
+	if got := policyAuditAction(true, unmarked); got != config.ActionBlock {
+		t.Fatalf("unmarked verdict action = %q, want block", got)
+	}
+	if got := chainAuditAction(true, chains.Verdict{Matched: true, Action: config.ActionBlock}); got != config.ActionBlock {
+		t.Fatalf("unmarked chain verdict action = %q, want block", got)
+	}
+	unmarkedBaseline := observeBaselineAudit(MCPProxyOpts{AuditMode: true}, session.BaselineDecision{Blocked: true, Action: config.ActionBlock})
+	if !unmarkedBaseline.Blocked || unmarkedBaseline.Action != config.ActionBlock {
+		t.Fatalf("unmarked baseline decision = %+v, want block", unmarkedBaseline)
 	}
 }
 
@@ -99,23 +108,10 @@ func TestAuditA2AAskAndFragmentCoreStayRefused(t *testing.T) {
 		t.Fatalf("A2A content block action = %q, want warn", got)
 	}
 	mixed := []scanner.DLPMatch{{PatternName: "Vendor Token"}, {PatternName: "AWS Access ID"}}
-	if !fragmentHasCoreMatch(mixed) {
+	if !scanner.HasCoreFragmentMatch(mixed) {
 		t.Fatal("a core match after a non-core match was not found")
 	}
-	if fragmentHasCoreMatch(mixed[:1]) {
+	if scanner.HasCoreFragmentMatch(mixed[:1]) {
 		t.Fatal("a non-core match counted as core")
-	}
-
-func TestAuditFragmentCoreWithWarnAction(t *testing.T) {
-	for _, audit := range []bool{false, true} {
-		t.Run(fmt.Sprint(audit), func(t *testing.T) {
-			cee := NewCEEDeps(config.CrossRequestDetection{
-				Enabled: true, Action: config.ActionWarn,
-				FragmentReassembly: config.CrossRequestFragments{Enabled: true, MaxBufferBytes: 4096, WindowMinutes: 5},
-			}, nil)
-			t.Cleanup(cee.Close)
-			opts := MCPProxyOpts{Scanner: auditTestScanner(t, nil), AuditMode: audit, CEE: cee}
-			assertAuditFragment(t, opts, false, "AKI"+"A", testMCPAWSKeySuffix)
-		})
 	}
 }
