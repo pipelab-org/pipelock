@@ -285,6 +285,10 @@ func (p *Proxy) prepareRequestPolicyBody(r *http.Request, in *requestPolicyInput
 	undecodable := false
 	coding, codingErr := responseencoding.ParseRequestCoding(r.Header.Values("Content-Encoding"))
 	switch {
+	case len(raw) == 0:
+		// A body that was read and holds no bytes, such as an empty chunked
+		// request, has nothing a rule could miss. Its declared coding does
+		// not make it undecodable; ordinary empty-body evaluation follows.
 	case codingErr != nil:
 		undecodable = true
 	case coding != "":

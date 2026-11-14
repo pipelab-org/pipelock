@@ -495,3 +495,31 @@ func TestRequestPolicyUndecodableEncodingEmptyBody(t *testing.T) {
 		})
 	}
 }
+
+// TestPrepareRequestPolicyBodyEmptyReadBodyIsNotUndecodable covers a body
+// stream that is present and yields no bytes, as an empty chunked request
+// does. The no-body guard does not catch it, and a declared coding must not
+// turn it into a refusal.
+func TestPrepareRequestPolicyBodyEmptyReadBodyIsNotUndecodable(t *testing.T) {
+	for _, enc := range []string{"gzip", "br", "gzip, gzip"} {
+		t.Run(enc, func(t *testing.T) {
+			cfg := undecodablePolicyConfig("", true, discriminatorBlockRule())
+			p := newTestProxyWithConfig(t, cfg)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+rpTestHost+"/v1/upload", io.NopCloser(bytes.NewReader(nil)))
+			req.ContentLength = -1
+			req.TransferEncoding = []string{"chunked"}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Content-Encoding", enc)
+			in := requestPolicyInput{
+				Host: rpTestHost, Method: http.MethodPost, Path: "/v1/upload",
+				ContentType: "application/json", Headers: req.Header,
+			}
+			if res := p.prepareRequestPolicyBody(req, &in); res.Block {
+				t.Fatalf("empty read body refused for its coding: %+v", res)
+			}
+			if in.UndecodableEncodingSettled {
+				t.Fatal("empty read body marked undecodable")
+			}
+		})
+	}
+}
