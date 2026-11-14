@@ -301,3 +301,99 @@ func TestDLPScanWSHeadersStopsAtFirstUnfinishedHeader(t *testing.T) {
 		t.Fatalf("scan continued past the unfinished header: blocked=%v pattern=%q err=%v", blocked, pattern, err)
 	}
 }
+
+// TestDLPScanWSHeadersEarlierFindingSurvivesLaterStop exercises a completed
+// first value followed by an interruption in the final forwarded header.
+func TestDLPScanWSHeadersEarlierFindingSurvivesLaterStop(t *testing.T) {
+	cfg := wsHeaderVendorConfig(config.ActionWarn, false)
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	probe := &bodyScanCheckpointContext{Context: t.Context(), cancel: func() {}, after: -1}
+	first := sc.ScanTextForDLP(probe, wsHeaderVendorToken())
+	if first.Clean || first.Err() != nil {
+		t.Fatal("credential fixture did not complete with a finding")
+	}
+	firstChecks := probe.checks.Load()
+	base, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ctx := &bodyScanCheckpointContext{Context: base, cancel: cancel, after: firstChecks + 1}
+	p := &Proxy{metrics: metrics.New()}
+	blocked, hard, _, _, pattern, err := p.dlpScanWSHeaders(ctx, http.Header{
+		"Authorization": {wsHeaderVendorToken()},
+		"User-Agent":    {"ordinary"},
+	}, sc, cfg, "wss://api.vendor.example/events", audit.LogContext{})
+	if base.Err() == nil || !blocked || !hard || err != nil || !strings.Contains(pattern, wsHeaderVendorPattern) {
+		t.Fatalf("later stop lost earlier finding: canceled=%v blocked=%v hard=%v pattern=%q err=%v", base.Err(), blocked, hard, pattern, err)
+	}
+}
+
+func TestDLPScanWSHeadersIncompleteAudienceMatchDoesNotRecordAllow(t *testing.T) {
+	cfg := wsHeaderVendorConfig(config.ActionWarn, false)
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, audienceReceiptTestPattern("api.vendor.example"))
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	value := "Bearer " + audienceReceiptTestCredential
+	target := "wss://api.vendor.example/events"
+	var checkpoint int32
+	for step := int32(1); step <= 256; step++ {
+		base, cancel := context.WithCancel(t.Context())
+		ctx := &bodyScanCheckpointContext{Context: base, cancel: cancel, after: step}
+		result := sc.ScanTextForDLP(ctx, value)
+		_, allows := sc.FilterHeaderDLPMatches(result.Matches, target, "Authorization", value)
+		if result.Err() != nil && len(allows) > 0 {
+			checkpoint = step
+			cancel()
+			break
+		}
+		cancel()
+	}
+	if checkpoint == 0 {
+		t.Fatal("no interrupted scan retained an audience-allowed match")
+	}
+	logger, logs := newCancelAuditLogger(t)
+	p := &Proxy{logger: logger, metrics: metrics.New()}
+	base, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ctx := &bodyScanCheckpointContext{Context: base, cancel: cancel, after: checkpoint}
+	blocked, _, _, _, pattern, err := p.dlpScanWSHeaders(ctx, http.Header{"Authorization": {value}}, sc, cfg, target, audit.LogContext{})
+	if blocked || pattern != "" || !errors.Is(err, scanner.ErrTextDLPIncomplete) {
+		t.Fatalf("filtered incomplete scan: blocked=%v pattern=%q err=%v", blocked, pattern, err)
+	}
+	if countAuditEvent(logs.String(), string(audit.EventDLPCredentialAudienceAllow)) != 0 {
+		t.Fatalf("incomplete scan recorded audience allow: %s", logs.String())
+	}
+}
+
+func TestDLPScanWSHeadersIncompleteSuppressedMatch(t *testing.T) {
+	cfg := wsHeaderVendorConfig(config.ActionWarn, false)
+	target := "wss://api.vendor.example/events"
+	cfg.Suppress = []config.SuppressEntry{{Rule: wsHeaderVendorPattern, Path: target, Reason: "test"}}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	value := wsHeaderVendorToken()
+	var checkpoint int32
+	for step := int32(1); step <= 256; step++ {
+		base, cancel := context.WithCancel(t.Context())
+		ctx := &bodyScanCheckpointContext{Context: base, cancel: cancel, after: step}
+		result := sc.ScanTextForDLP(ctx, value)
+		matches, _ := sc.FilterHeaderDLPMatches(result.Matches, target, "Authorization", value)
+		filtered := filterBodyDLPMatches(matches, target, cfg.Suppress, bodyDLPDisabledSet(cfg.RequestBodyScanning.DisablePatterns), nil)
+		if result.Err() != nil && len(matches) > 0 && len(filtered) == 0 {
+			checkpoint = step
+			cancel()
+			break
+		}
+		cancel()
+	}
+	if checkpoint == 0 {
+		t.Fatal("no interrupted scan retained a suppressed match")
+	}
+	base, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ctx := &bodyScanCheckpointContext{Context: base, cancel: cancel, after: checkpoint}
+	p := &Proxy{metrics: metrics.New()}
+	blocked, _, _, _, pattern, err := p.dlpScanWSHeaders(ctx, http.Header{"Authorization": {value}}, sc, cfg, target, audit.LogContext{})
+	if blocked || pattern != "" || !errors.Is(err, scanner.ErrTextDLPIncomplete) {
+		t.Fatalf("suppressed incomplete scan: blocked=%v pattern=%q err=%v", blocked, pattern, err)
+	}
+}
