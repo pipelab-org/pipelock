@@ -102,13 +102,11 @@ var forwardDenialCatalog = [...]forwardDenialSpec{
 	},
 }
 
-// requestPolicyBlockClass is the audit class for an enforced request-policy
-// refusal. An unknown or unclassified kind uses the catalog's fail-closed class.
-func requestPolicyBlockClass() string {
-	spec, ok := forwardDenialSpecFor(forwardDenialRequestPolicy)
-	if !ok || spec.class == "" {
-		return audit.BlockClassInfrastructureError
-	}
+// forwardDenialClass is the audit class a blocked event reports for kind. An
+// unknown kind resolves to the unclassified entry, which is an infrastructure
+// error. Every catalog entry names a class.
+func forwardDenialClass(kind forwardDenialKind) string {
+	spec, _ := forwardDenialSpecFor(kind)
 	return spec.class
 }
 
@@ -146,11 +144,7 @@ type forwardDenial struct {
 func (p *Proxy) emitForwardDenial(d forwardDenial) {
 	spec, _ := forwardDenialSpecFor(d.Kind)
 	reason := spec.reason
-	class := spec.class
-	if class == "" {
-		class = audit.BlockClassInfrastructureError
-	}
-	p.logger.LogBlockedDetail(d.Context, spec.label, reason, audit.BlockDetail{Class: class})
+	p.logger.LogBlockedDetail(d.Context, spec.label, reason, audit.BlockDetail{Class: spec.class})
 	if spec.metric == forwardDenialMetricTunnel {
 		p.metrics.RecordTunnelBlocked(d.MetricAgent)
 	} else {

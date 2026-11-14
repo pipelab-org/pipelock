@@ -2057,8 +2057,6 @@ func newInterceptHandler(
 				ic.Metrics.RecordTLSRequestBlocked(blockLayerRequestPolicy)
 				writeBlockedError(w, rp.Info.WithRequestID(ic.RequestID), "blocked by request policy: "+rp.Reason, http.StatusForbidden)
 				return
-			} else if rp.Observed {
-				interceptPolicyObserved = true
 			}
 			if rp := ic.Proxy.applyRequestPolicy(rpInput); rp.Block {
 				ic.Metrics.RecordTLSRequestBlocked(blockLayerRequestPolicy)

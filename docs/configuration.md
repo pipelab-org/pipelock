@@ -2664,7 +2664,7 @@ nothing. Remove the old keys and set the severity triggers instead.
 
 Forward audit events to external systems. Three independent sinks (webhook, syslog, OTLP), each with its own severity filter. Emission is fire-and-forget and never blocks the proxy.
 
-HTTP `blocked` events include `block_class` when the refusal carries a class. The catalogued HTTP refusals are session capacity and request policy, both classed `protective`. An unknown catalog kind still refuses and is classed `infrastructure_error`. A `blocked` event with no class omits the field. `ws_blocked` does not use it. MCP `blocked` events keep `block_class` together with `protocol`, `transport`, and `direction`.
+HTTP `blocked` events include `block_class` when the refusal carries a class. Session-capacity and request-policy refusals are `protective`. A URL-scan refusal reports the scanner's class when it is not a threat finding: `protective` (for example a rate limit), `config_mismatch`, `infrastructure_error` (for example a DNS failure) or `structural_exemption`. Every other HTTP `blocked` event, including a threat finding such as a blocklist or DLP match, omits the field, so an absent `block_class` on HTTP does not mean the refusal was operational. `ws_blocked` does not use it. MCP `blocked` events keep `block_class` together with `protocol`, `transport`, and `direction`.
 
 ```yaml
 emit:

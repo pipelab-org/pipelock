@@ -2180,8 +2180,6 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		p.metrics.RecordBlocked(r.URL.Hostname(), blockLayerRequestPolicy, time.Since(start), agentLabel)
 		writeBlockedError(w, rp.Info.WithRequestID(requestID), "blocked by request policy: "+rp.Reason, http.StatusForbidden)
 		return
-	} else if rp.Observed {
-		policyObserved.Store(true)
 	}
 	if rp := p.applyRequestPolicy(rpInput); rp.Block {
 		p.metrics.RecordBlocked(r.URL.Hostname(), blockLayerRequestPolicy, time.Since(start), agentLabel)

@@ -303,11 +303,15 @@ func runConnectPolicyAudit(t *testing.T, enforce bool) policyAuditObs {
 	case <-time.After(5 * time.Second):
 		t.Fatal("CONNECT handler did not return")
 	}
-	status := resp.StatusCode
-	if status == http.StatusOK {
-		status = http.StatusOK
+	// The dial completes in the kernel before the accept loop counts it, so a
+	// tunnel that opened waits for the count.
+	if resp.StatusCode == http.StatusOK {
+		deadline := time.Now().Add(5 * time.Second)
+		for hits.Load() == 0 && time.Now().Before(deadline) {
+			runtime.Gosched()
+		}
 	}
-	return policyAuditObs{status: status, upstream: hits.Load(), reason: resp.Header.Get("X-Pipelock-Block-Reason"), logs: logs.String(), metrics: p.metrics, receipts: receipts}
+	return policyAuditObs{status: resp.StatusCode, upstream: hits.Load(), reason: resp.Header.Get("X-Pipelock-Block-Reason"), logs: logs.String(), metrics: p.metrics, receipts: receipts}
 }
 
 func runInterceptPolicyAudit(t *testing.T, enforce bool) policyAuditObs {

@@ -4,8 +4,11 @@
 package proxy
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -357,4 +360,56 @@ func scannerHits(t *testing.T, m *metrics.Metrics, label string) float64 {
 		}
 	}
 	return total
+}
+
+// A URL-scan refusal the scanner classes as protective reports that class on
+// the HTTP blocked event. A threat finding keeps no class.
+func TestHTTPBlockedEventReportsScanResultClass(t *testing.T) {
+	t.Parallel()
+	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+	cfg := policyAuditConfig(true)
+	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 1
+	cfg.FetchProxy.Monitoring.Blocklist = []string{"blocked.vendor.example"}
+	p, logs, _ := policyAuditRig(t, cfg)
+	handler := p.buildHandler(p.buildMux())
+	fetch := func(target string) int {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+url.QueryEscape(target), nil)
+		handler.ServeHTTP(w, req)
+		return w.Code
+	}
+	if code := fetch(upstream.URL + "/one"); code != http.StatusOK {
+		t.Fatalf("first fetch status=%d logs=%s", code, logs.String())
+	}
+	if code := fetch(upstream.URL + "/two"); code == http.StatusOK {
+		t.Fatalf("second fetch was not rate limited: %s", logs.String())
+	}
+	if code := fetch("http://blocked.vendor.example/"); code == http.StatusOK {
+		t.Fatalf("blocklisted fetch was not refused: %s", logs.String())
+	}
+	var rateLimited, blocklisted bool
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		var ev map[string]any
+		if err := json.Unmarshal([]byte(line), &ev); err != nil || ev["event"] != "blocked" {
+			continue
+		}
+		switch ev["scanner"] {
+		case scanner.ScannerRateLimit:
+			rateLimited = true
+			if ev["block_class"] != audit.BlockClassProtective {
+				t.Errorf("rate limit block_class=%v", ev["block_class"])
+			}
+		case scanner.ScannerBlocklist:
+			blocklisted = true
+			if class, ok := ev["block_class"]; ok {
+				t.Errorf("blocklist finding carries block_class=%v", class)
+			}
+		}
+	}
+	if !rateLimited || !blocklisted {
+		t.Fatalf("rateLimited=%t blocklisted=%t logs=%s", rateLimited, blocklisted, logs.String())
+	}
 }

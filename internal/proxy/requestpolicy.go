@@ -31,8 +31,7 @@ import (
 const blockLayerRequestPolicy = "request_policy"
 
 // requestPolicyAuditAction is the decision-counter label for a configured
-// block that audit mode observes instead of refusing. The counter has no
-// existing label for an observed block.
+// block that audit mode observes instead of refusing.
 const requestPolicyAuditAction = "audit_block"
 
 // requestPolicyWouldBlockSuffix marks an anomaly whose enforce-mode action
@@ -483,9 +482,6 @@ func (p *Proxy) finalizeRequestPolicyDecision(in requestPolicyInput, d reqpolicy
 		// and every unmarked block stay on the refusal path below.
 		p.metrics.RecordRequestPolicyDecision(d.RuleName, requestPolicyAuditAction)
 		detail := fmt.Sprintf("rule=%s action=%s shadow=%t%s", d.RuleName, d.Action, d.Shadow, requestPolicyWouldBlockSuffix)
-		if d.Reason == requestPolicyUndecodableReason {
-			detail += " cause=" + requestPolicyUndecodableReason
-		}
 		p.logger.LogAnomaly(in.AuditCtx, blockLayerRequestPolicy, detail, 0)
 		return requestPolicyResult{Observed: true}
 	}
@@ -511,7 +507,7 @@ func (p *Proxy) finalizeRequestPolicyDecision(in requestPolicyInput, d reqpolicy
 		// receipt pattern and the metric label stay the bare rule name.
 		blockDetail += ": " + requestPolicyUndecodableReason
 	}
-	p.logger.LogBlockedDetail(in.AuditCtx, blockLayerRequestPolicy, blockDetail, audit.BlockDetail{Class: requestPolicyBlockClass()})
+	p.logger.LogBlockedDetail(in.AuditCtx, blockLayerRequestPolicy, blockDetail, audit.BlockDetail{Class: forwardDenialClass(forwardDenialRequestPolicy)})
 	actionID := ""
 	if in.Emit != nil {
 		candidateActionID := receipt.NewActionID()
