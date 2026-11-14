@@ -608,7 +608,7 @@ func checkDoctorMCPWrapperFeatures(cfg *config.Config) doctorReportCheck {
 	}
 }
 
-const mcpRequestPolicyAuditDetail = "configured MCP request block and ask actions are observed and not applied; floors, limits, redirect, defer and responses still apply"
+const mcpRequestPolicyAuditDetail = "some configured MCP request block and ask actions are observed; other checks, floors, limits, redirect, defer and responses still apply"
 
 func checkDoctorMCPRequestPolicy() doctorReportCheck {
 	return doctorReportCheck{

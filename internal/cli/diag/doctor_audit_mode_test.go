@@ -10,7 +10,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
-const mcpAuditModeDoctorDetail = "configured MCP request block and ask actions are observed and not applied; floors, limits, redirect, defer and responses still apply"
+const mcpAuditModeDoctorDetail = "some configured MCP request block and ask actions are observed; other checks, floors, limits, redirect, defer and responses still apply"
 
 func TestBuildDoctorReportMCPAuditMode(t *testing.T) {
 	t.Run("enforce", func(t *testing.T) {
