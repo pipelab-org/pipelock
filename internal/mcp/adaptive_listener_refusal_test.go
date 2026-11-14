@@ -14,7 +14,6 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
-	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // The listener's clean-only error relay is an independent refusal policy.
@@ -78,11 +77,8 @@ func TestAdaptiveListenerWarningAndIndependentRefusal(t *testing.T) {
 					t.Fatalf("action=%s delivered=%t reply=%s", action, delivered, body)
 				}
 			}
-			if action == config.ActionWarn && rec.ThreatScore() != before {
-				t.Fatalf("warning burst scored: %v", rec.signals)
-			}
-			if action == config.ActionBlock && rec.ThreatScore() <= before {
-				t.Fatal("explicit response refusals did not score")
+			if rec.ThreatScore() != before {
+				t.Fatalf("upstream tool results scored: action=%s signals=%v", action, rec.signals)
 			}
 			before = rec.ThreatScore()
 			resp, body := request("benign_refusal", 30)
@@ -97,10 +93,10 @@ func TestAdaptiveListenerWarningAndIndependentRefusal(t *testing.T) {
 			if got := strings.Count(events.String(), `"event":"blocked"`); got != blocksBefore+1 || !strings.Contains(events.String(), `"scanner":"response_scan"`) || !strings.Contains(events.String(), `"block_class":"threat"`) {
 				t.Fatalf("independent refusal lost its canonical event: %s", events.String())
 			}
-			if got, want := rec.ThreatScore(), before+session.SignalPoints[session.SignalBlock]; got != want {
-				t.Fatalf("independent refusal score=%v want=%v", got, want)
+			if rec.ThreatScore() != before {
+				t.Fatalf("withheld upstream reply scored: got=%v signals=%v", rec.ThreatScore(), rec.signals)
 			}
-			t.Logf("action=%s: tool-result policy preserved; benign 4xx relayed; withheld finding added %v points", action, session.SignalPoints[session.SignalBlock])
+			t.Logf("action=%s: tool-result policy preserved; benign 4xx relayed; withheld finding added no points", action)
 		})
 	}
 }
