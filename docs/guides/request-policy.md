@@ -82,7 +82,8 @@ only for an endpoint you have decided is out of scope.
 
 On upgrade, a body in a coding Pipelock doesn't decode is blocked even when
 `on_parse_error` is `warn` or `allow`. Set `on_undecodable_encoding: allow` to
-forward those bodies again. `warn` records a warning and forwards. A single
+permit those bodies through this check. `warn` records a warning and permits them;
+other checks can still block them. A single
 `gzip`, `x-gzip`, or `deflate` body that finishes is still matched on the decoded
 text. An `except` rule still blocks.
 

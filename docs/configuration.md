@@ -800,9 +800,9 @@ request_policy:
 | `on_opaque_operation` | `"block"` | Action when an operation predicate's route matches but the operation is opaque (for example a GraphQL Automatic Persisted Query that ships only a hash): `block`, `warn`, or `allow`. Fail-closed default. |
 | `on_undecodable_encoding` | `"block"` | Action when a body predicate or batch endpoint needs the body and `Content-Encoding` is a coding Pipelock doesn't decode: `block`, `warn`, or `allow`. Fail-closed default. |
 | `rules` | `[]` | Operation safety-rail list. |
-
-On upgrade, Pipelock blocks a body whose `Content-Encoding` it doesn't decode, even when `on_parse_error` is `warn` or `allow`. That includes an unknown coding, a stacked coding, and a supported coding that doesn't finish. A plaintext body labeled with one of those codings is refused too, because the bytes aren't inspected. Set `request_policy.on_undecodable_encoding: allow` to forward those bodies again. `warn` records a warning and forwards. A single `gzip`, `x-gzip`, or `deflate` body that finishes is unchanged and is matched on the decoded text. An `except` rule still blocks an undecodable body. Request body scanning, when it is enabled, still refuses a coding it doesn't decode on its own.
 | `batch` | `[]` | JSON batch endpoints whose sub-requests are evaluated recursively. |
+
+On upgrade, Pipelock blocks a body whose `Content-Encoding` it doesn't decode, even when `on_parse_error` is `warn` or `allow`. That includes an unknown coding, a stacked coding, and a supported coding that doesn't finish. A plaintext body labeled with one of those codings is refused too, because the bytes aren't inspected. Set `request_policy.on_undecodable_encoding: allow` to permit those bodies through this check; `warn` records a warning and permits them. Other checks can still block them. A single `gzip`, `x-gzip`, or `deflate` body that finishes is unchanged and is matched on the decoded text. An `except` rule still blocks an undecodable body. Request body scanning, when it is enabled, still refuses a coding it doesn't decode on its own.
 
 **Rule fields:**
 - `name:` bounded, metric-label-safe rule identifier.
