@@ -141,6 +141,8 @@ type requestPolicyBody struct {
 	jsonParsed  bool
 	exactURL    string
 	bodySHA256  string
+	// jsonAmbiguous is true when the body repeats an object key at any depth.
+	jsonAmbiguous bool
 }
 
 func requestPolicyMeta(host, method, path, contentType string, body requestPolicyBody) reqpolicy.RequestMeta {
@@ -149,6 +151,7 @@ func requestPolicyMeta(host, method, path, contentType string, body requestPolic
 		Operations: body.ops, JSONBody: body.jsonDoc, JSONBodyParsed: body.jsonParsed,
 		JSONDupKeys: body.jsonDupKeys,
 		ExactURL:    body.exactURL, JSONBodySHA256: body.bodySHA256,
+		JSONAmbiguous: body.jsonAmbiguous,
 	}
 }
 
@@ -443,7 +446,10 @@ func (p *Proxy) evaluateRequestPolicyBodyPredicates(in requestPolicyInput) reqpo
 	jsonDoc, jsonDupKeys, jsonParsed := parseRequestPolicyJSONBody(in)
 	body := requestPolicyBody{ops: ops, jsonDoc: jsonDoc, jsonDupKeys: jsonDupKeys, jsonParsed: jsonParsed}
 	meta := requestPolicyMeta(in.Host, in.Method, in.Path, in.ContentType, body)
-	if jsonParsed && m.NeedsExactRequest(meta) && jsonscan.RejectDuplicateKeys(in.Body) == nil {
+	if jsonParsed && m.NeedsExactRequest(meta) && jsonscan.RejectDuplicateKeys(in.Body) != nil {
+		body.jsonAmbiguous = true
+	}
+	if jsonParsed && m.NeedsExactRequest(meta) && !body.jsonAmbiguous {
 		u, urlErr := url.Parse(in.Target)
 		canonical, canonOK := config.CanonicalExactRequestURL(in.Target)
 		mediaType, _, typeErr := mime.ParseMediaType(in.ContentType)

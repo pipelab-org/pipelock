@@ -68,6 +68,10 @@ type RequestMeta struct {
 	// carry neither and cannot use exact-request exceptions.
 	ExactURL       string
 	JSONBodySHA256 string
+	// JSONAmbiguous is true when the parsed body repeats an object key at any
+	// depth, so parsers can disagree about what it says. An exact-request
+	// exception cannot be evaluated against such a body.
+	JSONAmbiguous bool
 }
 
 // Decision is the outcome of evaluating request policy against a request.
@@ -332,7 +336,9 @@ func (m *Matcher) ruleDecision(cr *compiledRule, meta RequestMeta) (action strin
 		if cr.except.matches(meta) {
 			return "", false, false
 		}
-		return cr.action, true, true
+		// A body the exception was compared with and did not match is a rule
+		// match. A body it could not be compared with keeps an unmarked block.
+		return cr.action, true, !cr.except.ambiguous(meta)
 	}
 	if cr.graphql != nil && !cr.graphql.matches(meta.Operations) {
 		return "", false, false

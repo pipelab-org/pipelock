@@ -733,7 +733,7 @@ func TestRequestPolicyAuditAttackExcept(t *testing.T) {
 					on = attackForwardHTTPS(t, cfgOn, dup, nil)
 					off = attackForwardHTTPS(t, cfgOff, dup, nil)
 				}
-				assertAttackPair(t, attackObserve, on, off)
+				assertAttackPair(t, attackRefuse, on, off)
 			})
 		}
 	})

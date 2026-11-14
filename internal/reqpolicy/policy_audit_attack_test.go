@@ -136,3 +136,59 @@ func topLevelDuplicateKeys(raw string) map[string]struct{} {
 	}
 	return nil
 }
+
+// An exception a parsed body could not be compared with keeps an unmarked
+// block. A body that was compared and did not match is a rule match.
+func TestRuleMatchAttackAmbiguousException(t *testing.T) {
+	t.Parallel()
+	route := config.RequestPolicyRoute{Hosts: []string{"api.vendor.example"}, Methods: []string{http.MethodPost}, PathPrefixes: []string{"/v1/move"}}
+	field := config.RequestPolicyRule{
+		Name: "field-except", Action: config.ActionBlock, Route: route,
+		Except: &config.RequestPolicyException{Field: "destinationId", Values: []string{"archive"}},
+	}
+	exact := config.RequestPolicyRule{
+		Name: "exact-except", Action: config.ActionBlock, Route: route,
+		Except: &config.RequestPolicyException{Requests: []config.RequestPolicyExactRequest{{
+			URL: "https://api.vendor.example/v1/move", Method: http.MethodPost,
+			BodySHA256: "0000000000000000000000000000000000000000000000000000000000000000",
+			ExpiresAt:  "2099-01-01T00:00:00Z", Owner: "ops", Reason: "approved move",
+		}}},
+	}
+	base := RequestMeta{Host: "api.vendor.example", Method: http.MethodPost, Path: "/v1/move", ContentType: "application/json", JSONBodyParsed: true}
+	cases := []struct {
+		name      string
+		rule      config.RequestPolicyRule
+		edit      func(*RequestMeta)
+		wantMatch bool
+	}{
+		{"field mismatch is a rule match", field, func(m *RequestMeta) { m.JSONBody = map[string]any{"destinationId": "purge"} }, true},
+		{"field missing is a rule match", field, func(m *RequestMeta) { m.JSONBody = map[string]any{"other": "x"} }, true},
+		{"field repeated", field, func(m *RequestMeta) {
+			m.JSONBody = map[string]any{"destinationId": "archive"}
+			m.JSONDupKeys = map[string]struct{}{"destinationId": {}}
+		}, false},
+		{"field alias", field, func(m *RequestMeta) {
+			m.JSONBody = map[string]any{"destinationId": "archive", "DestinationId": "purge"}
+		}, false},
+		{"non-object body", field, func(m *RequestMeta) { m.JSONBody = []any{"archive"} }, false},
+		{"exact mismatch is a rule match", exact, func(m *RequestMeta) {
+			m.JSONBody = map[string]any{"a": "b"}
+			m.ExactURL, m.JSONBodySHA256 = "https://api.vendor.example/v1/move", "1111111111111111111111111111111111111111111111111111111111111111"
+		}, true},
+		{"exact with repeated keys", exact, func(m *RequestMeta) {
+			m.JSONBody = map[string]any{"a": "b"}
+			m.JSONAmbiguous = true
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			meta := base
+			tc.edit(&meta)
+			got := attackMatcher(t, config.ActionAllow, config.ActionAllow, tc.rule).Evaluate(meta)
+			if got.Action != config.ActionBlock || got.RuleMatch != tc.wantMatch {
+				t.Fatalf("Evaluate = %+v, want block with RuleMatch=%t", got, tc.wantMatch)
+			}
+		})
+	}
+}

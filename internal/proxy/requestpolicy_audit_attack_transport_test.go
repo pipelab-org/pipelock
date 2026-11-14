@@ -293,10 +293,10 @@ func TestRequestPolicyAuditAttackReverseRewrite(t *testing.T) {
 	}
 }
 
-func attackWS(t *testing.T, enforce bool, allowBinary bool, rules []config.RequestPolicyRule, parse string) (string, *bytes.Buffer) {
+func attackWS(t *testing.T, enforce bool, allowBinary bool, rules []config.RequestPolicyRule, parse string) (string, *attackLogBuffer) {
 	t.Helper()
-	var logs bytes.Buffer
-	logger, err := audit.NewWithStream("json", "stdout", "", true, true, &logs)
+	logs := &attackLogBuffer{}
+	logger, err := audit.NewWithStream("json", "stdout", "", true, true, logs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +312,7 @@ func attackWS(t *testing.T, enforce bool, allowBinary bool, rules []config.Reque
 	}, nil, nil)
 	t.Cleanup(logger.Close)
 	t.Cleanup(cleanup)
-	return addr, &logs
+	return addr, logs
 }
 
 func attackWSClose(t *testing.T, conn net.Conn) ws.StatusCode {
@@ -893,4 +893,23 @@ func TestRequestPolicyAuditAttackMCPBytes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// attackLogBuffer is an audit stream the WebSocket relay writes while the test
+// reads it.
+type attackLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *attackLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *attackLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
