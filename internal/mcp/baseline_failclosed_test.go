@@ -55,3 +55,18 @@ func TestNormalizeBaselineDecision(t *testing.T) {
 		t.Fatal("a blocking decision should carry a default detail")
 	}
 }
+
+type failingMetricsBaselineChecker struct{ nonMetricsBaselineChecker }
+
+func (failingMetricsBaselineChecker) CheckBaselineForMetrics(string, session.BaselineMetrics) session.BaselineDecision {
+	return session.BaselineDecision{Blocked: true, Action: config.ActionBlock, Detail: "baseline check failed", Failed: true}
+}
+func (failingMetricsBaselineChecker) RecordBaselineMetrics(string, session.BaselineMetrics) {}
+
+func TestAuditBaselineFailureStaysBlocked(t *testing.T) {
+	opts := MCPProxyOpts{Baseline: failingMetricsBaselineChecker{}, AddressProtectionAgent: "id-k", AuditMode: true}
+	d := checkMCPToolCallBaselineAttempt(opts, &baselineTestRecorder{}, "some_tool")
+	if !d.Blocked || d.Action != config.ActionBlock {
+		t.Fatalf("baseline failure must remain blocked: %+v", d)
+	}
+}

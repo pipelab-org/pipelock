@@ -189,6 +189,7 @@ type CapacityEvictor interface {
 
 // BaselineDecision is the transport-neutral behavioral baseline result.
 type BaselineDecision struct {
+	Failed  bool // The check failed; its block is not a policy deviation.
 	Blocked bool
 	Action  string
 	Detail  string

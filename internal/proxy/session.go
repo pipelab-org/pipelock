@@ -1769,6 +1769,7 @@ func (sm *SessionManager) CheckBaselineForRecorder(agentKey string, rec session.
 		Blocked: result.Blocked,
 		Action:  result.Action,
 		Detail:  baselineDecisionDetail(result),
+		Failed:  result.Err != nil,
 	}
 }
 
@@ -1787,6 +1788,7 @@ func (sm *SessionManager) CheckBaselineForMetrics(agentKey string, metrics sessi
 		Blocked: result.Blocked,
 		Action:  result.Action,
 		Detail:  baselineDecisionDetail(result),
+		Failed:  result.Err != nil,
 	}
 }
 

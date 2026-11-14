@@ -168,7 +168,7 @@ func a2aContentLiftable(result A2AScanResult) bool {
 	if result.InspectionIncomplete || result.ScanError != "" || result.IsConfigMismatch() {
 		return false
 	}
-	if result.BudgetExceeded && len(result.DLPFindings) == 0 && len(result.InjectFindings) == 0 && len(result.URLFindings) == 0 && result.EntropyFinding == nil {
+	if result.BudgetExceeded {
 		return false
 	}
 	if mcpA2AOperationalURLFindingsOnly(result) {
@@ -196,9 +196,11 @@ func a2aContentLiftable(result A2AScanResult) bool {
 	return len(result.DLPFindings) > 0 || len(result.InjectFindings) > 0 || len(result.URLFindings) > 0 || result.EntropyFinding != nil
 }
 
-// observeBaselineAudit lifts a checker deviation. Fail-closed decisions never
-// reach it: those returns happen before the checker result is normalized.
+// observeBaselineAudit lifts a checker deviation, preserving check failures.
 func observeBaselineAudit(opts MCPProxyOpts, decision session.BaselineDecision) session.BaselineDecision {
+	if decision.Failed {
+		return decision
+	}
 	lifted := auditObservedAction(opts.auditMode(), decision.Action)
 	if lifted == decision.Action {
 		return decision

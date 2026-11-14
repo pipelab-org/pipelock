@@ -5,6 +5,8 @@ package mcp
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -773,4 +775,21 @@ func postListenerTool(t *testing.T, base, body string) string {
 		t.Fatal(err)
 	}
 	return string(payload)
+}
+
+func TestAuditURLRescansHiddenCore(t *testing.T) {
+	opts, _ := auditBlocklistPrepare(t, true)
+	uri := "https://api.vendor.example/v1?token=" + fakeAWSKey()
+	params, err := json.Marshal(map[string]string{"uri": uri})
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings := scanMCPResourceURI(context.Background(), methodResourcesRead, params, opts.Scanner)
+	if len(findings) != 1 || findings[0].Scanner != scanner.ScannerBlocklist {
+		t.Fatalf("expected blocklist to hide credential: %+v", findings)
+	}
+	verdict := InputVerdict{URLFindings: findings}
+	if contentVerdictLiftable(opts.Scanner, verdict, []string{uri}, true) {
+		t.Fatal("hidden core credential was liftable")
+	}
 }
