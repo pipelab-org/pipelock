@@ -745,8 +745,11 @@ func TestCeeRecordMCP_ReassemblesToolArgumentsAcrossCalls(t *testing.T) {
 	if strings.Contains(reason, "max_buffer_bytes") || strings.Contains(reason, "AWS Access ID") {
 		t.Fatalf("client reason leaked tuning or pattern detail: %q", reason)
 	}
-	if !strings.Contains(logBuf.String(), "cross_request_detection.fragment_reassembly.max_buffer_bytes") {
-		t.Fatalf("operator log missing live remediation knob: %q", logBuf.String())
+	if !strings.Contains(logBuf.String(), "core pattern cannot be downgraded") {
+		t.Fatalf("operator log missing core floor reason: %q", logBuf.String())
+	}
+	if strings.Contains(logBuf.String(), "max_buffer_bytes") {
+		t.Fatalf("core credential operator log offered a downgrade knob: %q", logBuf.String())
 	}
 }
 
@@ -920,11 +923,12 @@ func TestCeeRecordMCP_DeduplicatesEquivalentSingletonFindings(t *testing.T) {
 	t.Cleanup(logger.Close)
 	var logBuf bytes.Buffer
 
-	first := ParseMCPFrame(mcpSingletonCEERequest(1, "alpha", "integrity_checker", "AKI"+"A"))
+	stripePrefix, stripeSuffix := nonCoreStripeHalves()
+	first := ParseMCPFrame(mcpSingletonCEERequest(1, "alpha", "integrity_checker", stripePrefix))
 	if reason := ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, entropyPayload: first.Raw, frame: first, cee: cee, sc: sc, logW: &logBuf, logger: logger}); reason != "" {
 		t.Fatalf("first fragment blocked in warn mode: %s", reason)
 	}
-	second := ParseMCPFrame(mcpSingletonCEERequest(2, "alpha", "integrity_checker", testMCPAWSKeySuffix))
+	second := ParseMCPFrame(mcpSingletonCEERequest(2, "alpha", "integrity_checker", stripeSuffix))
 	if reason := ceeRecordMCP(ceeRecordMCPOptions{sessionKey: testMCPSessionKey, entropyPayload: second.Raw, frame: second, cee: cee, sc: sc, logW: &logBuf, logger: logger}); reason != "" {
 		t.Fatalf("completed secret blocked in warn mode: %s", reason)
 	}
@@ -1310,9 +1314,9 @@ func TestCeeRecordMCP_FragmentDLPWarn(t *testing.T) {
 		Config:  ceeCfg,
 	}
 
-	// Build fake AWS key at runtime to avoid gosec G101.
-	part1 := "AKI" + "A"
-	part2 := testMCPAWSKeySuffix
+	// A non-core credential keeps the configured warn action. A core
+	// credential is refused even when that action is warn.
+	part1, part2 := nonCoreStripeHalves()
 
 	var logBuf bytes.Buffer
 

@@ -466,10 +466,9 @@ func TestCEEIntegration_WarnMode(t *testing.T) {
 		}
 	}
 
-	// Split a fake AWS key across requests as bare tokens (should warn, not block).
-	half := len(testCEEFakeAWSKey) / 2
-	firstHalf := testCEEFakeAWSKey[:half]
-	secondHalf := testCEEFakeAWSKey[half:]
+	// Split a non-core credential as bare tokens. Warn mode must not block it.
+	// A core credential is refused even when the configured action is warn.
+	firstHalf, secondHalf := nonCoreStripeHalves()
 
 	targetURL1 := target.URL + "?" + firstHalf
 	fr1, status1 := fetchThroughProxy(t, ts.URL, targetURL1)

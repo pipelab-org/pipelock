@@ -4298,8 +4298,11 @@ func TestForwardScannedInput_CEEReassemblesToolArgumentsAcrossCalls(t *testing.T
 	if strings.Contains(blocked[0].ErrorMessage, "max_buffer_bytes") || strings.Contains(blocked[0].ErrorMessage, "fragment_reassembly") {
 		t.Fatalf("client error leaked tuning guidance: %q", blocked[0].ErrorMessage)
 	}
-	if !strings.Contains(logBuf.String(), "max_buffer_bytes") {
-		t.Fatalf("operator log lost tuning guidance: %s", logBuf.String())
+	if !strings.Contains(logBuf.String(), "core pattern cannot be downgraded") {
+		t.Fatalf("operator log missing core floor reason: %s", logBuf.String())
+	}
+	if strings.Contains(logBuf.String(), "max_buffer_bytes") {
+		t.Fatalf("core credential operator log offered a downgrade knob: %s", logBuf.String())
 	}
 	if !strings.Contains(serverIn.String(), `"id":1`) {
 		t.Fatalf("first fragment was not forwarded: %s", serverIn.String())

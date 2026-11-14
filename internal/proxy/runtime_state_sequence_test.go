@@ -144,8 +144,12 @@ func TestForwardProxyRuntimeStateSequences(t *testing.T) {
 	t.Run("relevant reload applies tightened action to retained detector history", func(t *testing.T) {
 		h := newRuntimeStateSequenceHarness(t)
 		h.reload(t, func(cfg *config.Config) { cfg.CrossRequestDetection.Action = config.ActionWarn })
-		h.requireAllowed(t, first)
-		h.requireAllowed(t, second)
+		// A credential that is not on the core floor: warn forwards it. A
+		// core credential is refused under warn and would not exercise the
+		// reload this case is about.
+		warnHalf1, warnHalf2 := nonCoreStripeHalves()
+		h.requireAllowed(t, "/upload/"+warnHalf1)
+		h.requireAllowed(t, "/upload/"+warnHalf2)
 		h.reload(t, func(cfg *config.Config) { cfg.CrossRequestDetection.Action = config.ActionBlock })
 		h.requireDenied(t, "/after-policy-tightening")
 	})

@@ -122,12 +122,13 @@ func TestCEEBypass_FetchWarnModeBlockAllUsesFoldedKey(t *testing.T) {
 	ts := httptest.NewServer(p.Handler())
 	defer ts.Close()
 
-	_, code1 := fetchThroughProxyWithAgent(t, ts.URL, target.URL+"/x?p="+testCEEAWSKeyPrefix, "rot-agent-1")
+	stripePrefix, stripeSuffix := nonCoreStripeHalves()
+	_, code1 := fetchThroughProxyWithAgent(t, ts.URL, target.URL+"/x?p="+stripePrefix, "rot-agent-1")
 	if code1 == http.StatusForbidden {
 		t.Fatalf("first fragment should not block, got %d", code1)
 	}
 
-	fr2, code2 := fetchThroughProxyWithAgent(t, ts.URL, target.URL+"/x?p="+testCEEAWSKeySuffix, "rot-agent-2")
+	fr2, code2 := fetchThroughProxyWithAgent(t, ts.URL, target.URL+"/x?p="+stripeSuffix, "rot-agent-2")
 	if code2 != http.StatusOK || fr2.Blocked {
 		t.Fatalf("warning-only CEE must leave the folded session usable "+
 			"(code=%d blocked=%v)", code2, fr2.Blocked)

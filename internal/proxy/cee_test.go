@@ -904,10 +904,9 @@ func TestCeeAdmit_FragmentDLPWarn(t *testing.T) {
 		Action: config.ActionWarn, // warn, not block
 	}
 
-	// Split fake AWS key across two requests for cross-request detection.
-	// Single-request secrets are caught by body DLP, not fragment reassembly.
-	prefix := "AKI" + "A"
-	suffix := "IOSF" + "ODNN7EXAMPLE"
+	// Split a non-core credential. A core credential is refused even when the
+	// configured action is warn; this case is the ordinary warn action.
+	prefix, suffix := nonCoreStripeHalves()
 
 	// First request - prefix only.
 	result := ceeAdmit(context.Background(), ceeAdmitOptions{Outbound: []byte(prefix), TargetURL: "http://example.com", Agent: testCEEAgent, ClientIP: testCEEClientIP, RequestID: testCEERequestID, Config: ceeCfg, Fragments: fb, Scanner: sc, Logger: logger, Metrics: m})

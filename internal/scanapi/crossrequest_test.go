@@ -24,6 +24,9 @@ import (
 const (
 	crossReqAWSPart1 = "AKI" + "A"
 	crossReqAWSPart2 = "IOSF" + "ODNN7EXAMPLE"
+	// A credential that is not on the core floor, split the same way.
+	crossReqStripePart1 = "sk_te" + "st_4eC39HqLy"
+	crossReqStripePart2 = "jWDarjtT1z" + "dp7dc"
 )
 
 // newCrossRequestTestHandler returns a Handler with cross-request fragment
@@ -488,11 +491,13 @@ func TestCrossRequestFragment_WarnActionEscalatesToWarnNotDeny(t *testing.T) {
 	m := metrics.New()
 	h := NewHandler(cfg, sc, nil, m, "test-version")
 
-	first, status := postScanAPI(t, h, dlpScanBody(t, crossReqAWSPart1, "warn-session"))
+	// A non-core credential: warn is the ordinary configured action. A core
+	// credential is denied under warn; see the test below.
+	first, status := postScanAPI(t, h, dlpScanBody(t, crossReqStripePart1, "warn-session"))
 	if status != http.StatusOK || first.Decision != DecisionAllow {
 		t.Fatalf("first request: expected 200/allow, got %d %q", status, first.Decision)
 	}
-	second, status := postScanAPI(t, h, dlpScanBody(t, crossReqAWSPart2, "warn-session"))
+	second, status := postScanAPI(t, h, dlpScanBody(t, crossReqStripePart2, "warn-session"))
 	if status != http.StatusOK {
 		t.Fatalf("second request: expected 200, got %d", status)
 	}
@@ -784,5 +789,108 @@ func TestCrossRequestFragments_StaleGenerationCannotRollBack(t *testing.T) {
 	}
 	if again := c.currentFor(livePtr, liveFn); again != newBuf {
 		t.Fatal("the pre-reload request must not have reset the live buffer")
+	}
+}
+
+// TestCrossRequestFragment_CoreCredentialDeniedUnderWarn pins the core floor on
+// the Scan API: a core credential reassembled across requests is denied with a
+// critical finding even though cross_request_detection.action is warn.
+func TestCrossRequestFragment_CoreCredentialDeniedUnderWarn(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.ScanAPI.Auth.BearerTokens = []string{testToken}
+	maxSessions := 100
+	cfg.CrossRequestDetection = config.CrossRequestDetection{
+		Enabled: true,
+		Action:  config.ActionWarn,
+		FragmentReassembly: config.CrossRequestFragments{
+			Enabled:        true,
+			MaxBufferBytes: 65536,
+			MaxSessions:    &maxSessions,
+			WindowMinutes:  5,
+		},
+	}
+	sc := scanner.MustNew(cfg)
+	h := NewHandler(cfg, sc, nil, metrics.New(), "test-version")
+
+	first, status := postScanAPI(t, h, dlpScanBody(t, crossReqAWSPart1, "core-warn-session"))
+	if status != http.StatusOK || first.Decision != DecisionAllow {
+		t.Fatalf("first request: expected 200/allow, got %d %q", status, first.Decision)
+	}
+	second, status := postScanAPI(t, h, dlpScanBody(t, crossReqAWSPart2, "core-warn-session"))
+	if status != http.StatusOK {
+		t.Fatalf("second request: expected 200, got %d", status)
+	}
+	if second.Decision != DecisionDeny {
+		t.Fatalf("core credential under warn: decision %q, want deny; findings=%+v", second.Decision, second.Findings)
+	}
+	critical := false
+	for _, f := range second.Findings {
+		if f.Scanner == "cross_request_fragment" && f.Severity == "critical" {
+			critical = true
+		}
+	}
+	if !critical {
+		t.Errorf("expected a critical cross_request_fragment finding, got %+v", second.Findings)
+	}
+}
+
+// TestApplyCrossRequestOutcome_MixedMatchSeverity pins severity per match: when
+// a core credential and a non-core pattern reassemble in the same outcome
+// under action warn, the outcome is denied, the core finding is critical and
+// the non-core finding keeps the warn severity.
+func TestApplyCrossRequestOutcome_MixedMatchSeverity(t *testing.T) {
+	var coreName, plainName string
+	for _, p := range config.Defaults().DLP.Patterns {
+		if config.IsCoreDLPPatternName(p.Name) {
+			if coreName == "" {
+				coreName = p.Name
+			}
+		} else if plainName == "" {
+			plainName = p.Name
+		}
+	}
+	if coreName == "" || plainName == "" {
+		t.Fatalf("need one core and one non-core default pattern, got %q and %q", coreName, plainName)
+	}
+
+	tests := []struct {
+		name       string
+		configured string
+		enforced   string
+		decision   string
+		wantCore   string
+		wantPlain  string
+	}{
+		{name: "warn with a core match", configured: config.ActionWarn, enforced: config.ActionBlock, decision: DecisionDeny, wantCore: "critical", wantPlain: "medium"},
+		{name: "block", configured: config.ActionBlock, enforced: config.ActionBlock, decision: DecisionDeny, wantCore: "critical", wantPlain: "critical"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &Response{Decision: DecisionAllow}
+			applyCrossRequestOutcome(resp, crossRequestOutcome{
+				Matched:          true,
+				Action:           tc.enforced,
+				ConfiguredAction: tc.configured,
+				Matches: []crossRequestMatch{
+					{PatternName: coreName},
+					{PatternName: plainName},
+				},
+			}, "dlp")
+			if resp.Decision != tc.decision {
+				t.Fatalf("decision %q, want %q", resp.Decision, tc.decision)
+			}
+			got := map[string]string{}
+			for _, f := range resp.Findings {
+				got[f.RuleID] = f.Severity
+			}
+			if s := got["CEE-fragment-"+coreName]; s != tc.wantCore {
+				t.Errorf("core finding severity %q, want %q", s, tc.wantCore)
+			}
+			if s := got["CEE-fragment-"+plainName]; s != tc.wantPlain {
+				t.Errorf("non-core finding severity %q, want %q", s, tc.wantPlain)
+			}
+		})
 	}
 }

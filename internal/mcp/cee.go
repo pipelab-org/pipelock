@@ -502,8 +502,22 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 						}
 					}
 				}
+				// A core credential in this window is the finding the receipt
+				// and operator log name, unless an inspection limit already
+				// forced the refusal.
+				coreFragment := scanner.HasCoreFragmentMatch(matches)
+				if !inspectionLimit && coreFragment {
+					for _, match := range matches {
+						if config.IsCoreDLPPatternName(match.PatternName) {
+							primary = match
+							break
+						}
+					}
+				}
 				findingKey, kind := mcpCEEFragmentFindingKey(path, payload, primary.PatternName)
-				if !inspectionLimit && mcpCEEFragmentFindingAlreadyRecorded(kind, findingKey, seenSingletonFindings, seenArgumentFindings) {
+				// An earlier non-core copy in this frame must not hide a core
+				// credential that completed in the same window.
+				if !inspectionLimit && !coreFragment && mcpCEEFragmentFindingAlreadyRecorded(kind, findingKey, seenSingletonFindings, seenArgumentFindings) {
 					continue
 				}
 				if m != nil {
@@ -515,12 +529,14 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 					operatorReason = scanner.DecodeFragmentLimitOperatorReason
 				case inspectionLimit:
 					operatorReason = fmt.Sprintf("cross-request fragment refused: %s; reduce nesting or number size in the JSON tool arguments at their source (typed JSON number and depth limits are fixed)", primary.PatternName)
+				case coreFragment:
+					operatorReason = fmt.Sprintf("cross-request fragment DLP match: %s; core pattern cannot be downgraded", primary.PatternName)
 				}
 				_, _ = fmt.Fprintf(opts.logW, "pipelock: CEE: %s (session=%s)\n", operatorReason, opts.sessionKey)
-				// Audit mode observes a configured block, but never one that
-				// holds a reassembled core credential.
-				blockFragment := inspectionLimit ||
-					(ceeCfg.Action == config.ActionBlock && (!opts.audit || scanner.HasCoreFragmentMatch(matches)))
+				// Audit mode observes an ordinary configured block. A
+				// reassembled core credential stays refused in every mode.
+				blockFragment := inspectionLimit || coreFragment ||
+					(ceeCfg.Action == config.ActionBlock && !opts.audit)
 				if blockFragment {
 					if opts.matchedPattern != nil {
 						*opts.matchedPattern = primary.PatternName
