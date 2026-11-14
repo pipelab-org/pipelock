@@ -152,8 +152,8 @@ func TestForwardSessionCapacityEvidence(t *testing.T) {
 					t.Fatalf("forward blocked url=%v event=%v", blocked["url"], blocked)
 				}
 			}
-			if _, ok := blocked["block_class"]; ok {
-				t.Fatalf("blocked event carries block_class: %v", blocked)
+			if blocked["block_class"] != audit.BlockClassProtective {
+				t.Fatalf("block_class=%v", blocked["block_class"])
 			}
 			if got.counters["pipelock_tunnels_total{result=blocked,agent=_default}"] != tc.tunnels ||
 				got.counters["pipelock_requests_total{result=blocked,agent=_default}"] != tc.requests ||

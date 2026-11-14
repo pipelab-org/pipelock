@@ -22,6 +22,7 @@ const (
 	forwardDenialConnectSessionCapacity          forwardDenialKind = "connect_session_capacity"
 	forwardDenialConnectInterceptSessionCapacity forwardDenialKind = "connect_intercept_session_capacity"
 	forwardDenialForwardSessionCapacity          forwardDenialKind = "forward_session_capacity"
+	forwardDenialRequestPolicy                   forwardDenialKind = "request_policy"
 )
 
 type forwardDenialMetric int
@@ -51,6 +52,7 @@ type forwardDenialSpec struct {
 	status        int
 	block         blockreason.Reason
 	freshActionID bool
+	class         string
 }
 
 var forwardDenialCatalog = [...]forwardDenialSpec{
@@ -62,6 +64,7 @@ var forwardDenialCatalog = [...]forwardDenialSpec{
 		write:  forwardDenialWriteHTTP,
 		status: http.StatusServiceUnavailable,
 		block:  blockreason.PatternUnavailable,
+		class:  audit.BlockClassInfrastructureError,
 	},
 	{
 		kind:   forwardDenialConnectSessionCapacity,
@@ -71,6 +74,7 @@ var forwardDenialCatalog = [...]forwardDenialSpec{
 		write:  forwardDenialWriteHTTP,
 		status: http.StatusServiceUnavailable,
 		block:  blockreason.DataBudget,
+		class:  audit.BlockClassProtective,
 	},
 	{
 		kind:          forwardDenialConnectInterceptSessionCapacity,
@@ -78,6 +82,7 @@ var forwardDenialCatalog = [...]forwardDenialSpec{
 		reason:        session.ErrCapacity.Error(),
 		metric:        forwardDenialMetricTunnel,
 		freshActionID: true,
+		class:         audit.BlockClassProtective,
 	},
 	{
 		kind:   forwardDenialForwardSessionCapacity,
@@ -87,7 +92,24 @@ var forwardDenialCatalog = [...]forwardDenialSpec{
 		write:  forwardDenialWriteHTTP,
 		status: http.StatusServiceUnavailable,
 		block:  blockreason.DataBudget,
+		class:  audit.BlockClassProtective,
 	},
+	{
+		kind:   forwardDenialRequestPolicy,
+		label:  blockLayerRequestPolicy,
+		metric: forwardDenialMetricRequest,
+		class:  audit.BlockClassProtective,
+	},
+}
+
+// requestPolicyBlockClass is the audit class for an enforced request-policy
+// refusal. An unknown or unclassified kind uses the catalog's fail-closed class.
+func requestPolicyBlockClass() string {
+	spec, ok := forwardDenialSpecFor(forwardDenialRequestPolicy)
+	if !ok || spec.class == "" {
+		return audit.BlockClassInfrastructureError
+	}
+	return spec.class
 }
 
 func forwardDenialSpecFor(kind forwardDenialKind) (forwardDenialSpec, bool) {
@@ -124,7 +146,11 @@ type forwardDenial struct {
 func (p *Proxy) emitForwardDenial(d forwardDenial) {
 	spec, _ := forwardDenialSpecFor(d.Kind)
 	reason := spec.reason
-	p.logger.LogBlocked(d.Context, spec.label, reason)
+	class := spec.class
+	if class == "" {
+		class = audit.BlockClassInfrastructureError
+	}
+	p.logger.LogBlockedDetail(d.Context, spec.label, reason, audit.BlockDetail{Class: class})
 	if spec.metric == forwardDenialMetricTunnel {
 		p.metrics.RecordTunnelBlocked(d.MetricAgent)
 	} else {

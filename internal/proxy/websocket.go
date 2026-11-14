@@ -850,9 +850,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// operation body, so body-predicate (GraphQL / discriminator) rules defer
 	// to per-frame evaluation in the relay; only route-only rules gate the
 	// handshake here.
-	if rpRes := p.applyRequestPolicy(requestPolicyInput{
+	rpRes := p.applyRequestPolicy(requestPolicyInput{
 		Host:        parsed.Hostname(),
 		Method:      http.MethodGet,
+		Config:      cfg,
 		Path:        parsed.EscapedPath(),
 		ContentType: r.Header.Get(headerContentType),
 		Headers:     r.Header,
@@ -866,7 +867,8 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			return p.emitRequestPolicyReceipt(withReceiptConfig(withReceiptShard(opts, selectedReceiptShard), cfg))
 		},
 		DeferBodyPredicate: true,
-	}); rpRes.Block {
+	})
+	if rpRes.Block {
 		p.metrics.RecordWSBlocked()
 		writeBlockedError(w, rpRes.Info.WithRequestID(requestID), "WebSocket blocked by request policy: "+rpRes.Reason, http.StatusForbidden)
 		return
@@ -1278,7 +1280,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Deferred clean decay: only apply if the entire handshake was clean
 	// (no URL scan hit, no header DLP hit). This prevents same-handshake
 	// raise+decay when a header carries a secret but the URL is clean.
-	if wsRec != nil && cfg.AdaptiveEnforcement.Enabled && !wsHasFinding {
+	if wsRec != nil && cfg.AdaptiveEnforcement.Enabled && !wsHasFinding && !rpRes.Observed {
 		recordCleanForAdaptiveScope(wsRec, wsScope, &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{})
 	}
 
@@ -1854,6 +1856,7 @@ func (r *wsRelay) applyFrameRequestPolicy(log *audit.Logger, msg []byte) bool {
 	in := requestPolicyInput{
 		Host:        r.hostname,
 		Method:      http.MethodGet,
+		Config:      r.cfg,
 		Path:        r.reqPolicyPath,
 		ContentType: contentTypeJSON,
 		Headers:     r.reqPolicyHeaders,

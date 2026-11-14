@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -398,6 +399,14 @@ func runWebSocketPolicyAudit(t *testing.T, enforce bool) policyAuditObs {
 	proxy.receiptEmitterPtr.Store(receipts.emitter)
 	resp := requestWSHandshake(t, addr, backend, nil)
 	defer func() { _ = resp.Body.Close() }()
+	// The proxy writes the client 101 before it dials upstream, so the
+	// backend handshake can land after this response is readable.
+	if !enforce && resp.StatusCode == http.StatusSwitchingProtocols {
+		deadline := time.Now().Add(5 * time.Second)
+		for handshake() == nil && time.Now().Before(deadline) {
+			runtime.Gosched()
+		}
+	}
 	var hits int32
 	if handshake() != nil {
 		hits = 1

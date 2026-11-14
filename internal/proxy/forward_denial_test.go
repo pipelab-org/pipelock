@@ -27,6 +27,7 @@ func TestForwardDenialCatalog(t *testing.T) {
 	allowed := map[string]bool{
 		sessionCapacityLayer:            true,
 		scanner.AuditScannerUnavailable: true,
+		blockLayerRequestPolicy:         true,
 	}
 	seen := map[forwardDenialKind]bool{}
 	for _, spec := range forwardDenialCatalog {
@@ -44,6 +45,9 @@ func TestForwardDenialCatalog(t *testing.T) {
 		}
 		if spec.write == forwardDenialWriteHTTP && (spec.status != http.StatusServiceUnavailable || spec.block == "") {
 			t.Errorf("%s writes status %d reason %q", spec.kind, spec.status, spec.block)
+		}
+		if spec.class == "" {
+			t.Errorf("%s has no block class", spec.kind)
 		}
 	}
 	spec, known := forwardDenialSpecFor("missing")
@@ -181,8 +185,8 @@ func TestForwardDenialEmitterEvidence(t *testing.T) {
 			if blocked["scanner"] != sessionCapacityLayer || blocked["reason"] != tc.wantReason {
 				t.Fatalf("blocked=%v", blocked)
 			}
-			if _, ok := blocked["block_class"]; ok {
-				t.Fatalf("blocked event carries block_class: %v", blocked)
+			if blocked["block_class"] != audit.BlockClassProtective {
+				t.Fatalf("block_class=%v", blocked["block_class"])
 			}
 			if got.counters["pipelock_tunnels_total{result=blocked,agent=_default}"] != tc.tunnels ||
 				got.counters["pipelock_requests_total{result=blocked,agent=_default}"] != tc.requests ||
@@ -248,8 +252,8 @@ func TestForwardDenialUnknownKindRefuses(t *testing.T) {
 	if blocked["scanner"] != scanner.AuditScannerUnavailable || blocked["reason"] != reason || blocked["event"] != "blocked" {
 		t.Fatalf("blocked=%v", blocked)
 	}
-	if _, ok := blocked["block_class"]; ok {
-		t.Fatalf("blocked event carries block_class: %v", blocked)
+	if blocked["block_class"] != audit.BlockClassInfrastructureError {
+		t.Fatalf("block_class=%v", blocked["block_class"])
 	}
 	if got.counters["pipelock_requests_total{result=blocked,agent=_default}"] != 1 ||
 		got.counters["pipelock_tunnels_total{result=blocked,agent=_default}"] != 0 ||
