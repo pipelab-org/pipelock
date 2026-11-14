@@ -37,6 +37,9 @@ type coreFloorParts struct {
 	enforce bool
 	parts   []string
 	blockAt int
+	// sticky means every part after blockAt is refused too, because the
+	// refused bytes stay in the reassembly window.
+	sticky bool
 }
 
 func coreFloorCases() []coreFloorParts {
@@ -49,6 +52,11 @@ func coreFloorCases() []coreFloorParts {
 		{name: "noncore_block", action: config.ActionBlock, enforce: true, parts: []string{stripePrefix, stripeSuffix}, blockAt: 1},
 		{name: "noncore_block_audit", action: config.ActionBlock, enforce: false, parts: []string{stripePrefix, stripeSuffix}, blockAt: -1},
 		{name: "mixed_window", action: config.ActionWarn, enforce: true, parts: []string{stripePrefix, stripeSuffix + awsPrefix, awsSuffix}, blockAt: 2},
+		// The refused bytes stay in the window, so the session keeps being
+		// refused until the window expires. A configured block has always
+		// behaved this way; the core floor now does under warn as well.
+		{name: "core_warn_window_stays_refused", action: config.ActionWarn, enforce: true, parts: []string{awsPrefix, awsSuffix, "ordinary-value"}, blockAt: 1, sticky: true},
+		{name: "noncore_block_window_stays_refused", action: config.ActionBlock, enforce: true, parts: []string{stripePrefix, stripeSuffix, "ordinary-value"}, blockAt: 1, sticky: true},
 	}
 }
 
@@ -92,7 +100,7 @@ func assertCoreFloorStatuses(t *testing.T, tc coreFloorParts, statuses []int) {
 		t.Fatalf("statuses = %v, want %d parts", statuses, len(tc.parts))
 	}
 	for i, status := range statuses {
-		wantBlock := i == tc.blockAt
+		wantBlock := i == tc.blockAt || (tc.sticky && tc.blockAt >= 0 && i > tc.blockAt)
 		blocked := status == http.StatusForbidden
 		if blocked != wantBlock {
 			t.Fatalf("part %d status = %d, want block=%v", i, status, wantBlock)
