@@ -1110,7 +1110,11 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 					}
 					return c.MCPSessionBinding.ListenerRequireStateToken
 				},
-				ScannerFn:                mcpScannerFn,
+				ScannerFn: mcpScannerFn,
+				AuditModeFn: func() bool {
+					current := s.proxy.CurrentConfig()
+					return current != nil && !current.EnforceEnabled()
+				},
 				ReloadMu:                 s.proxy.ReloadLock(),
 				Approver:                 mcpApprover,
 				InputCfgFn:               mcpInputCfgFn,
@@ -1168,6 +1172,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 				}
 			}
 			listenerOpts.ListenerShutdownTimeout = listenerShutdownTimeout
+			warnMCPRequestAuditMode(s.opts.Stderr, s.proxy.CurrentConfig())
 			mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, s.opts.MCPUpstream, s.opts.Stderr, listenerOpts)
 		}()
 	}

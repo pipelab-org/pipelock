@@ -741,6 +741,15 @@ Examples:
 	return cmd
 }
 
+const mcpRequestAuditModeWarning = "pipelock: some configured MCP request block and ask actions are observed; other checks, floors, limits, redirect, defer and responses still apply"
+
+func warnMCPRequestAuditMode(w io.Writer, cfg *config.Config) {
+	if cfg == nil || cfg.EnforceEnabled() {
+		return
+	}
+	_, _ = fmt.Fprintln(w, mcpRequestAuditModeWarning)
+}
+
 func mcpProxyCmd() *cobra.Command {
 	return mcpProxyCmdWithAuditLoggerFactory(audit.NewWithStream)
 }
@@ -1025,6 +1034,7 @@ Key-free evidence capture:
 				},
 				DefaultToolPolicyRules: policy.DefaultToolPolicyRules,
 			}, cmd.ErrOrStderr(), "proxy")
+			warnMCPRequestAuditMode(cmd.ErrOrStderr(), cfg)
 			for _, e := range bundleResult.Errors {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: warning: bundle %s: %s\n", e.Name, e.Reason)
 			}
@@ -1534,6 +1544,7 @@ Key-free evidence capture:
 			if err := recoverDeferredActions(deferManager, deferJournalPath(cfg), mcp.MCPProxyOpts{
 				Scanner: sc, ReceiptEmitter: receiptEmitter, V2ReceiptEmitter: v2ReceiptEmitter,
 				ReceiptGroup: receiptGroup, PolicyHash: captureConfigHash,
+				AuditMode: !cfg.EnforceEnabled(),
 			}, cmd.ErrOrStderr()); err != nil {
 				return err
 			}
@@ -1575,7 +1586,7 @@ Key-free evidence capture:
 							return cfg.MCPSessionBinding.ListenerRequireStateToken
 						},
 						UpstreamHeaders: extraHeaders,
-						Scanner:         sc, Approver: approver,
+						Scanner:         sc, Approver: approver, AuditMode: !cfg.EnforceEnabled(),
 						AuditLogger: auditLogger, CorrelationHeader: cfg.Emit.CorrelationHeader,
 						InputCfg: inputCfg, RequestBodyCfg: &cfg.RequestBodyScanning,
 						ToolCfg: toolCfg, PolicyCfg: policyCfg,
@@ -1635,7 +1646,7 @@ Key-free evidence capture:
 						return err
 					}
 					wsOpts := mcp.MCPProxyOpts{
-						Scanner: sc, Approver: approver,
+						Scanner: sc, Approver: approver, AuditMode: !cfg.EnforceEnabled(),
 						AuditLogger: auditLogger,
 						InputCfg:    inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 						KillSwitch: ks, ChainMatcher: chainMatcher,
@@ -1692,7 +1703,7 @@ Key-free evidence capture:
 				}
 				defer stopDeferAPI()
 				httpOpts := mcp.MCPProxyOpts{
-					Scanner: sc, Approver: approver,
+					Scanner: sc, Approver: approver, AuditMode: !cfg.EnforceEnabled(),
 					AuditLogger: auditLogger,
 					InputCfg:    inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 					KillSwitch: ks, ChainMatcher: chainMatcher,
@@ -1884,7 +1895,7 @@ Key-free evidence capture:
 				sandboxLaunch.Cmd.Stderr = cmd.ErrOrStderr()
 
 				proxyOpts := mcp.MCPProxyOpts{
-					Scanner: sc, Approver: approver,
+					Scanner: sc, Approver: approver, AuditMode: !cfg.EnforceEnabled(),
 					AuditLogger: auditLogger,
 					InputCfg:    inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 					KillSwitch: ks, ChainMatcher: chainMatcher,
@@ -2041,7 +2052,7 @@ Key-free evidence capture:
 			}
 
 			proxyOpts := mcp.MCPProxyOpts{
-				Scanner: sc, Approver: approver,
+				Scanner: sc, Approver: approver, AuditMode: !cfg.EnforceEnabled(),
 				AuditLogger: auditLogger,
 				InputCfg:    inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 				KillSwitch: ks, ChainMatcher: chainMatcher,

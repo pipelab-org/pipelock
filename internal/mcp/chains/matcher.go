@@ -22,6 +22,10 @@ type Verdict struct {
 	PatternName string
 	Severity    string // medium, high, critical
 	Action      string // warn, block
+	// PatternMatch is true only when a configured pattern matched the session
+	// history. A refusal raised because the call could not be tracked (invalid
+	// session key, session capacity) leaves it false.
+	PatternMatch bool
 }
 
 // MetricsRecorder is an optional interface for recording chain detection metrics.
@@ -349,10 +353,11 @@ func (m *Matcher) matchPatterns(sess *sessionHistory, cfg *config.ToolChainDetec
 		if subsequenceMatch(sess.records, p.sequence, maxGap) {
 			if !best.Matched || isBetterMatch(p, best) {
 				best = Verdict{
-					Matched:     true,
-					PatternName: p.name,
-					Severity:    p.severity,
-					Action:      p.action,
+					Matched:      true,
+					PatternName:  p.name,
+					Severity:     p.severity,
+					Action:       p.action,
+					PatternMatch: true,
 				}
 			}
 		}
@@ -375,10 +380,11 @@ func (m *Matcher) matchPatterns(sess *sessionHistory, cfg *config.ToolChainDetec
 		}
 		if !best.Matched || isBetterMatch(p, best) {
 			best = Verdict{
-				Matched:     true,
-				PatternName: p.name,
-				Severity:    p.severity,
-				Action:      p.action,
+				Matched:      true,
+				PatternName:  p.name,
+				Severity:     p.severity,
+				Action:       p.action,
+				PatternMatch: true,
 			}
 		}
 	}

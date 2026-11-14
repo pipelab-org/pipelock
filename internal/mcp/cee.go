@@ -311,6 +311,10 @@ type ceeRecordMCPOptions struct {
 	matchedPattern   *string
 	blockKind        *string
 	contributors     *[]json.RawMessage
+	// audit observes the entropy budget and ordinary fragment actions.
+	// Inspection limits, owner mismatch, capacity, and a reassembled core
+	// credential still refuse.
+	audit bool
 }
 
 // ceeFragmentBlockClientReason is the neutral client-visible reason for a
@@ -336,6 +340,9 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 	}
 	tracker, buffer, m, ceeCfg, release := opts.cee.snapshot()
 	defer release()
+	if opts.audit {
+		ceeCfg.EntropyBudget.Action = auditObservedAction(true, ceeCfg.EntropyBudget.Action)
+	}
 	identity := identitykey.NewMCPCEEIdentity(opts.sessionKey)
 	if tracker == nil && (buffer == nil || !ceeCfg.FragmentReassembly.Enabled) {
 		return ""
@@ -510,7 +517,11 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 					operatorReason = fmt.Sprintf("cross-request fragment refused: %s; reduce nesting or number size in the JSON tool arguments at their source (typed JSON number and depth limits are fixed)", primary.PatternName)
 				}
 				_, _ = fmt.Fprintf(opts.logW, "pipelock: CEE: %s (session=%s)\n", operatorReason, opts.sessionKey)
-				if ceeCfg.Action == config.ActionBlock || inspectionLimit {
+				// Audit mode observes a configured block, but never one that
+				// holds a reassembled core credential.
+				blockFragment := inspectionLimit ||
+					(ceeCfg.Action == config.ActionBlock && (!opts.audit || scanner.HasCoreFragmentMatch(matches)))
+				if blockFragment {
 					if opts.matchedPattern != nil {
 						*opts.matchedPattern = primary.PatternName
 					}

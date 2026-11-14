@@ -400,7 +400,8 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	var preRedactionDLP []scanner.TextDLPMatch
 	if scanEnabled && redactionCfg.Matcher != nil {
 		originalVerdict := scanRequestForAgent(inputScanCtx, msg, sc, action, onParseError, opts.addressProtectionAgent())
-		if !originalVerdict.Clean && originalVerdict.Error == "" && preRedactionBlock(originalVerdict, action) {
+		if !originalVerdict.Clean && originalVerdict.Error == "" && preRedactionBlock(originalVerdict, action) &&
+			auditContentAction(opts.auditMode(), originalVerdict, action) == config.ActionBlock {
 			receiptLayer, receiptPattern, receiptSeverity = contentScanAttribution(originalVerdict)
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinInputVerdictReasons(originalVerdict))
 			denialAudit = mcpInputBlockAudit(originalVerdict)
@@ -660,7 +661,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	}
 
 	taintEval = eval.TaintDecision
-	bindingAction := eval.BindingAction
+	bindingAction := auditObservedAction(opts.auditMode(), eval.BindingAction)
 	bindingReason := eval.BindingReason
 	chainAction := eval.ChainAction
 	chainReason := eval.ChainReason
@@ -754,6 +755,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		inspectionMode, fallbackReason, matchedPattern, ceeBlockKind := "", "", "", ""
 		var ceeContributors []json.RawMessage
 		ceeOpts := ceeRecordMCPOptions{
+			audit:          opts.auditMode(),
 			denialAudit:    &denialAudit,
 			sessionKey:     ceeKey,
 			entropyPayload: msg,
@@ -891,10 +893,10 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		return policy.StricterAction(cur, next)
 	}
 	if !verdict.Clean {
-		effectiveAction = inputVerdictEffectiveAction(verdict, action)
+		effectiveAction = auditContentAction(opts.auditMode(), verdict, action)
 	}
 	if policyVerdict.Matched {
-		effectiveAction = mergeAction(effectiveAction, policyVerdict.Action)
+		effectiveAction = mergeAction(effectiveAction, policyAuditAction(opts.auditMode(), policyVerdict))
 	}
 	if bindingAction != "" {
 		effectiveAction = mergeAction(effectiveAction, bindingAction)
@@ -1309,6 +1311,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		inspectionMode, fallbackReason, matchedPattern, ceeBlockKind := "", "", "", ""
 		var ceeContributors []json.RawMessage
 		ceeOpts := ceeRecordMCPOptions{
+			audit:          opts.auditMode(),
 			denialAudit:    &denialAudit,
 			sessionKey:     ceeKey,
 			entropyPayload: msg,

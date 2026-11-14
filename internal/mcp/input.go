@@ -463,7 +463,8 @@ func ForwardScannedInput(
 		var preRedactionDLP []scanner.TextDLPMatch
 		if redactionCfg.Matcher != nil {
 			originalVerdict := scanRequestForAgent(stdioInputCtx, line, sc, action, onParseError, opts.addressProtectionAgent())
-			if !originalVerdict.Clean && originalVerdict.Error == "" && preRedactionBlock(originalVerdict, action) {
+			if !originalVerdict.Clean && originalVerdict.Error == "" && preRedactionBlock(originalVerdict, action) &&
+				auditContentAction(opts.auditMode(), originalVerdict, action) == config.ActionBlock {
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked (%s)\n", lineNum, joinInputVerdictReasons(originalVerdict))
 				denialAudit = mcpInputBlockAudit(originalVerdict)
 				recordAdaptiveSignal(session.SignalBlock)
@@ -571,7 +572,7 @@ func ForwardScannedInput(
 		}
 		policyVerdict := eval.PolicyVerdict
 		taintDecision := eval.TaintDecision
-		bindingAction := eval.BindingAction
+		bindingAction := auditObservedAction(opts.auditMode(), eval.BindingAction)
 		bindingReason := eval.BindingReason
 		chainAction := eval.ChainAction
 		chainReason := eval.ChainReason
@@ -977,6 +978,7 @@ func ForwardScannedInput(
 			inspectionMode, fallbackReason, matchedPattern, ceeBlockKind := "", "", "", ""
 			var ceeContributors []json.RawMessage
 			ceeOpts := ceeRecordMCPOptions{
+				audit:          opts.auditMode(),
 				denialAudit:    &denialAudit,
 				sessionKey:     ceeStdioKey,
 				entropyPayload: line,
@@ -1191,10 +1193,10 @@ func ForwardScannedInput(
 			return policy.StricterAction(cur, next)
 		}
 		if !verdict.Clean {
-			effectiveAction = inputVerdictEffectiveAction(verdict, action)
+			effectiveAction = auditContentAction(opts.auditMode(), verdict, action)
 		}
 		if policyVerdict.Matched {
-			effectiveAction = mergeAction(effectiveAction, policyVerdict.Action)
+			effectiveAction = mergeAction(effectiveAction, policyAuditAction(opts.auditMode(), policyVerdict))
 		}
 		if bindingAction != "" {
 			effectiveAction = mergeAction(effectiveAction, bindingAction)
@@ -1693,6 +1695,7 @@ func ForwardScannedInput(
 			inspectionMode, fallbackReason, matchedPattern, ceeBlockKind := "", "", "", ""
 			var ceeContributors []json.RawMessage
 			ceeOpts := ceeRecordMCPOptions{
+				audit:          opts.auditMode(),
 				denialAudit:    &denialAudit,
 				sessionKey:     ceeStdioKey,
 				entropyPayload: line,

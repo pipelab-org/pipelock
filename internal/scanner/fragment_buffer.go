@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
@@ -26,6 +27,17 @@ type DLPMatch struct {
 	// Contributors identifies only the retained source requests whose bytes
 	// overlap this occurrence. Values are opaque, caller-sanitized identifiers.
 	Contributors [][]byte
+}
+
+// HasCoreFragmentMatch reports whether a reassembled match is a built-in
+// core credential.
+func HasCoreFragmentMatch(matches []DLPMatch) bool {
+	for _, match := range matches {
+		if config.IsCoreDLPPatternName(match.PatternName) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsInspectionLimit preserves the refusal class on contributor-aware evidence.

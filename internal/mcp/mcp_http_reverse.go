@@ -258,6 +258,8 @@ func RunHTTPListenerProxy(
 	baseOpts := MCPProxyOpts{
 		Scanner:                   opts.scanner(),
 		ScannerFn:                 opts.ScannerFn,
+		AuditMode:                 opts.AuditMode,
+		AuditModeFn:               opts.AuditModeFn,
 		ReloadMu:                  opts.ReloadMu,
 		Approver:                  opts.Approver,
 		InputCfg:                  opts.inputCfg(),

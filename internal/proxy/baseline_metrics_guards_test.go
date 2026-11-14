@@ -39,7 +39,7 @@ func TestBaselineMetricsGuards(t *testing.T) {
 	t.Run("invalid key check fails closed", func(t *testing.T) {
 		sm := newBaselineMetricsGuardSessionManager(t, baselineMetricsGuardConfig(t))
 
-		if d := sm.CheckBaselineForMetrics("bad/../key", m); !d.Blocked || d.Action != config.ActionBlock {
+		if d := sm.CheckBaselineForMetrics("bad/../key", m); !d.Blocked || d.Action != config.ActionBlock || d.Deviation {
 			t.Fatalf("invalid-key check should fail closed, got %+v", d)
 		}
 	})

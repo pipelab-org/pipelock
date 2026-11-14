@@ -112,7 +112,7 @@ func checkMCPToolCallBaselineAttempt(opts MCPProxyOpts, metricsProvider session.
 		return baselineFailClosedDecision("baseline metrics provider unavailable")
 	}
 	decision := metricsChecker.CheckBaselineForMetrics(agentKey, metricsProvider.ProvisionalToolCallMetrics(toolName))
-	return normalizeBaselineDecision(decision)
+	return observeBaselineAudit(opts, normalizeBaselineDecision(decision))
 }
 
 func commitMCPToolCall(metricsProvider session.ToolCallBaselineRecorder, toolName string) {
