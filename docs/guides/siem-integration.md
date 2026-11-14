@@ -73,7 +73,7 @@ on a sink to receive the info events as well.
 
 MCP `blocked` events use `fields.scanner` for the gate that denied the call.
 The labels below are checked against the MCP denial catalog by a test. `block_class` separates content findings from
-protective, configuration, and inspection refusals.
+protective, configuration, and inspection refusals. HTTP `blocked` events carry the same field when the refusal has a class, including session-capacity and request-policy refusals (`protective`). An HTTP `blocked` event with no class omits it.
 
 <!-- BEGIN MCP blocked scanner labels -->
 | Scanner | MCP denial |
