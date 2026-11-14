@@ -661,7 +661,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	}
 
 	taintEval = eval.TaintDecision
-	bindingAction := configuredContributorAction(opts.auditMode(), eval.BindingAction)
+	bindingAction := auditObservedAction(opts.auditMode(), eval.BindingAction)
 	bindingReason := eval.BindingReason
 	chainAction := eval.ChainAction
 	chainReason := eval.ChainReason
@@ -896,7 +896,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		effectiveAction = auditContentAction(opts.auditMode(), sc, verdict, action, msg)
 	}
 	if policyVerdict.Matched {
-		effectiveAction = mergeAction(effectiveAction, configuredContributorAction(opts.auditMode(), policyVerdict.Action))
+		effectiveAction = mergeAction(effectiveAction, auditObservedAction(opts.auditMode(), policyVerdict.Action))
 	}
 	if bindingAction != "" {
 		effectiveAction = mergeAction(effectiveAction, bindingAction)

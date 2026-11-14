@@ -22,6 +22,10 @@ type Verdict struct {
 	PatternName string
 	Severity    string // medium, high, critical
 	Action      string // warn, block
+	// ResourceLimit marks a refusal raised because the call could not be
+	// tracked (invalid session key, session capacity). It is not a configured
+	// pattern action.
+	ResourceLimit bool
 }
 
 // MetricsRecorder is an optional interface for recording chain detection metrics.
@@ -293,7 +297,7 @@ func (m *Matcher) pruneExpiredSessionsWithConfig(now time.Time, cfg *config.Tool
 }
 
 func resourceLimitVerdict(pattern string) Verdict {
-	return Verdict{Matched: true, PatternName: pattern, Severity: "critical", Action: "block"}
+	return Verdict{Matched: true, PatternName: pattern, Severity: "critical", Action: "block", ResourceLimit: true}
 }
 
 // recordResourceLimit emits the resource-limit block to metrics before returning

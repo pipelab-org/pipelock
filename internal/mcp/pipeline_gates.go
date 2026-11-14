@@ -644,7 +644,7 @@ func EvaluateMCPInputGates(
 			eval.ChainMatched = true
 			eval.ChainPatternName = cv.PatternName
 			eval.ChainSeverity = cv.Severity
-			action := chainAuditAction(opts.auditMode(), cv.Action)
+			action := chainAuditAction(opts.auditMode(), cv)
 			eval.ChainAction = action
 			eval.ChainReason = "chain:" + cv.PatternName
 			if action == config.ActionBlock {
@@ -940,7 +940,7 @@ func evaluateMCPInputGatesStdio(
 			eval.ChainMatched = true
 			eval.ChainPatternName = cv.PatternName
 			eval.ChainSeverity = cv.Severity
-			action := chainAuditAction(opts.auditMode(), cv.Action)
+			action := chainAuditAction(opts.auditMode(), cv)
 			eval.ChainAction = action
 			eval.ChainReason = "chain:" + cv.PatternName
 			if action == config.ActionBlock {

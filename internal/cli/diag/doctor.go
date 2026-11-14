@@ -168,7 +168,7 @@ func buildDoctorReport(cfg *config.Config, cfgLabel string) doctorReport {
 		for _, check := range report.Checks {
 			withPolicy = append(withPolicy, check)
 			if check.Name == "mcp_wrapper_scanning" {
-				withPolicy = append(withPolicy, checkDoctorMCPRequestPolicy(cfg))
+				withPolicy = append(withPolicy, checkDoctorMCPRequestPolicy())
 			}
 		}
 		report.Checks = withPolicy
@@ -610,7 +610,7 @@ func checkDoctorMCPWrapperFeatures(cfg *config.Config) doctorReportCheck {
 
 const mcpRequestPolicyAuditDetail = "configured MCP request policy is observed and not applied; floors, limits and responses still apply"
 
-func checkDoctorMCPRequestPolicy(_cfg *config.Config) doctorReportCheck {
+func checkDoctorMCPRequestPolicy() doctorReportCheck {
 	return doctorReportCheck{
 		Name:       "mcp_request_policy",
 		Surface:    doctorSurfaceMCP,

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
@@ -25,12 +26,24 @@ func auditObservedAction(audit bool, action string) string {
 	return action
 }
 
-func chainAuditAction(audit bool, action string) string {
-	return auditObservedAction(audit, action)
+// chainAuditAction observes a matched pattern's action. A call the matcher
+// could not track is a resource limit and keeps its block.
+func chainAuditAction(audit bool, verdict chains.Verdict) string {
+	if verdict.ResourceLimit {
+		return verdict.Action
+	}
+	return auditObservedAction(audit, verdict.Action)
 }
 
-func configuredContributorAction(audit bool, action string) string {
-	return auditObservedAction(audit, action)
+// fragmentHasCoreMatch reports whether a reassembled cross-request match is a
+// core credential, which audit mode never releases.
+func fragmentHasCoreMatch(matches []scanner.DLPMatch) bool {
+	for _, match := range matches {
+		if config.IsCoreDLPPatternName(match.PatternName) {
+			return true
+		}
+	}
+	return false
 }
 
 // auditContentAction is the content contributor's action after the audit

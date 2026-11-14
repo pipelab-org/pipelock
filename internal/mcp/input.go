@@ -572,7 +572,7 @@ func ForwardScannedInput(
 		}
 		policyVerdict := eval.PolicyVerdict
 		taintDecision := eval.TaintDecision
-		bindingAction := configuredContributorAction(opts.auditMode(), eval.BindingAction)
+		bindingAction := auditObservedAction(opts.auditMode(), eval.BindingAction)
 		bindingReason := eval.BindingReason
 		chainAction := eval.ChainAction
 		chainReason := eval.ChainReason
@@ -1196,7 +1196,7 @@ func ForwardScannedInput(
 			effectiveAction = auditContentAction(opts.auditMode(), sc, verdict, action, line)
 		}
 		if policyVerdict.Matched {
-			effectiveAction = mergeAction(effectiveAction, configuredContributorAction(opts.auditMode(), policyVerdict.Action))
+			effectiveAction = mergeAction(effectiveAction, auditObservedAction(opts.auditMode(), policyVerdict.Action))
 		}
 		if bindingAction != "" {
 			effectiveAction = mergeAction(effectiveAction, bindingAction)
