@@ -94,6 +94,9 @@ func a2aContentLiftable(result A2AScanResult) bool {
 	if result.BudgetExceeded {
 		return false
 	}
+	if mcpA2AOperationalURLFindingsOnly(result) {
+		return false
+	}
 	if scanner.ContainsCoreCriticalMatch(result.DLPFindings) ||
 		scanner.ContainsHostnameExfilMatch(result.DLPFindings) ||
 		scanner.HasInspectionLimit(result.DLPFindings) {
