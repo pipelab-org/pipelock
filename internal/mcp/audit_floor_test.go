@@ -39,37 +39,18 @@ func TestAuditPolicyUninspectableStaysBlocked(t *testing.T) {
 	}
 }
 
-// Only the named scanners are observable; a label added later stays refused.
-func TestAuditURLFindingUnknownScannerStaysBlocked(t *testing.T) {
-	for _, label := range []string{scanner.ScannerSSRF, scanner.ScannerCoreSSRF, scanner.ScannerSSRFMetadata, scanner.ScannerRateLimit, "future_scanner"} {
-		if urlFindingPolicyOnly(scanner.Result{Scanner: label}) {
-			t.Errorf("scanner %q is observable", label)
+// A URL finding is never observed, whichever stage produced it: an earlier
+// stage can hide the address and credential checks that run after it.
+func TestAuditURLFindingNeverLifts(t *testing.T) {
+	for _, label := range []string{scanner.ScannerAllowlist, scanner.ScannerBlocklist, scanner.ScannerDLP, scanner.ScannerEntropy, scanner.ScannerSSRF, "future_scanner"} {
+		verdict := InputVerdict{URLFindings: []scanner.Result{{Scanner: label}}}
+		if got := auditContentAction(true, verdict, config.ActionWarn); got != config.ActionBlock {
+			t.Errorf("scanner %q: action = %q, want block", label, got)
 		}
-	}
-	if !urlFindingPolicyOnly(scanner.Result{Scanner: scanner.ScannerBlocklist}) {
-		t.Error("blocklist finding is not observable")
-	}
-}
-
-// A URL finding lifts only when the submitted URL can be read back for the
-// core credential check.
-func TestAuditURLFindingUnreadableURLStaysBlocked(t *testing.T) {
-	sc := auditTestScanner(t, nil)
-	verdict := InputVerdict{URLFindings: []scanner.Result{{Scanner: scanner.ScannerBlocklist}}}
-	for name, msg := range map[string]string{
-		"missing uri":  makeRequest(1, methodResourcesRead, map[string]string{}),
-		"null params":  `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":null}`,
-		"other method": auditTool("send", map[string]string{"url": "https://api.vendor.example/"}),
-	} {
-		t.Run(name, func(t *testing.T) {
-			if got := auditContentAction(true, sc, verdict, config.ActionWarn, []byte(msg)); got != config.ActionBlock {
-				t.Fatalf("action = %q, want block", got)
-			}
-		})
-	}
-	readable := auditResource("https://api.vendor.example/v1")
-	if got := auditContentAction(true, sc, verdict, config.ActionWarn, []byte(readable)); got != config.ActionWarn {
-		t.Fatalf("readable URL action = %q, want warn", got)
+		a2a := A2AScanResult{URLFindings: []scanner.Result{{Scanner: label}}}
+		if got := a2aAuditAction(true, a2a, config.ActionBlock); got != config.ActionBlock {
+			t.Errorf("scanner %q: A2A action = %q, want block", label, got)
+		}
 	}
 }
 

@@ -464,7 +464,7 @@ func ForwardScannedInput(
 		if redactionCfg.Matcher != nil {
 			originalVerdict := scanRequestForAgent(stdioInputCtx, line, sc, action, onParseError, opts.addressProtectionAgent())
 			if !originalVerdict.Clean && originalVerdict.Error == "" && preRedactionBlock(originalVerdict, action) &&
-				auditContentAction(opts.auditMode(), sc, originalVerdict, action, line) == config.ActionBlock {
+				auditContentAction(opts.auditMode(), originalVerdict, action) == config.ActionBlock {
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked (%s)\n", lineNum, joinInputVerdictReasons(originalVerdict))
 				denialAudit = mcpInputBlockAudit(originalVerdict)
 				recordAdaptiveSignal(session.SignalBlock)
@@ -1193,7 +1193,7 @@ func ForwardScannedInput(
 			return policy.StricterAction(cur, next)
 		}
 		if !verdict.Clean {
-			effectiveAction = auditContentAction(opts.auditMode(), sc, verdict, action, line)
+			effectiveAction = auditContentAction(opts.auditMode(), verdict, action)
 		}
 		if policyVerdict.Matched {
 			effectiveAction = mergeAction(effectiveAction, policyAuditAction(opts.auditMode(), policyVerdict))

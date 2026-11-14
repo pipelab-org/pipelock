@@ -401,7 +401,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	if scanEnabled && redactionCfg.Matcher != nil {
 		originalVerdict := scanRequestForAgent(inputScanCtx, msg, sc, action, onParseError, opts.addressProtectionAgent())
 		if !originalVerdict.Clean && originalVerdict.Error == "" && preRedactionBlock(originalVerdict, action) &&
-			auditContentAction(opts.auditMode(), sc, originalVerdict, action, msg) == config.ActionBlock {
+			auditContentAction(opts.auditMode(), originalVerdict, action) == config.ActionBlock {
 			receiptLayer, receiptPattern, receiptSeverity = contentScanAttribution(originalVerdict)
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinInputVerdictReasons(originalVerdict))
 			denialAudit = mcpInputBlockAudit(originalVerdict)
@@ -893,7 +893,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		return policy.StricterAction(cur, next)
 	}
 	if !verdict.Clean {
-		effectiveAction = auditContentAction(opts.auditMode(), sc, verdict, action, msg)
+		effectiveAction = auditContentAction(opts.auditMode(), verdict, action)
 	}
 	if policyVerdict.Matched {
 		effectiveAction = mergeAction(effectiveAction, policyAuditAction(opts.auditMode(), policyVerdict))
