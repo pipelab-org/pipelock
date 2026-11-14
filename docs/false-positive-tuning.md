@@ -86,7 +86,7 @@ See [docs/guides/suppression.md](guides/suppression.md) for the full suppression
 
 ### Using only your own patterns
 
-By default, pipelock merges your custom patterns with the 71 configurable built-in defaults. Set `include_defaults: false` to keep only your own patterns in that list. The independent immutable core DLP floor still detects core credentials, even with an empty configurable list. See the [DLP configuration reference](configuration.md#dlp-data-loss-prevention) for pattern merging and core restrictions.
+By default, pipelock merges your custom patterns with the 74 configurable built-in defaults. Set `include_defaults: false` to keep only your own patterns in that list. The independent immutable core DLP floor still detects core credentials, even with an empty configurable list. See the [DLP configuration reference](configuration.md#dlp-data-loss-prevention) for pattern merging and core restrictions.
 
 ```yaml
 dlp:

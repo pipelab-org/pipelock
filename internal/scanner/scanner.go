@@ -719,6 +719,8 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 				cp.providerKeyPrefix = "sk-proj-"
 			case config.OpenAIServiceKeyBodyRegex:
 				cp.providerKeyPrefix = "sk-svcacct-"
+			case config.OpenAIAdminKeyBodyRegex:
+				cp.providerKeyPrefix = "sk-admin-"
 			}
 		}
 		if cp.providerKeyPrefix != "" {

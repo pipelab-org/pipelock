@@ -394,6 +394,7 @@ func credentialAudienceURLCases() []credentialAudienceURLCase {
 		{"Anthropic API Key", "sk-" + "ant-" + strings.Repeat("a", 24), "https://api.anthropic.com/v1", "api.anthropic.com"},
 		{"OpenAI API Key", "sk-" + "proj-" + strings.Repeat("a", 24), "https://api.openai.com/v1", "api.openai.com"},
 		{"OpenAI Service Key", "sk-" + "svcacct-" + strings.Repeat("a", 24), "https://api.openai.com/v1", "api.openai.com"},
+		{"OpenAI Admin Key", "sk-" + "admin-" + strings.Repeat("a", 24), "https://api.openai.com/v1", "api.openai.com"},
 		{"Fireworks API Key", "fw_" + strings.Repeat("a", 22), "https://api.fireworks.ai/inference/v1", "api.fireworks.ai"},
 		{"LLM Router API Key", "sk-or-v1-" + strings.Repeat("a", 24), "https://openrouter.ai/api/v1", "openrouter.ai"},
 		{"Answer Engine API Key", "pplx-" + strings.Repeat("a", 24), "https://api.perplexity.ai", "api.perplexity.ai"},
