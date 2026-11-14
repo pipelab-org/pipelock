@@ -50,6 +50,9 @@ func TestDefaultMatcher_StructuredClasses(t *testing.T) {
 		{"groq-api-key", "token gsk_" + strings.Repeat("A", 48), ClassAIProviderKey},
 		{"xai-api-key", "token xai-" + strings.Repeat("A", 80), ClassAIProviderKey},
 		{"hashicorp-vault-token", "token hvs." + strings.Repeat("A", 24), ClassVaultToken},
+		{"hashicorp-vault-service-base64url", "token hvs." + strings.Repeat("A", 13) + "_" + strings.Repeat("B", 20), ClassVaultToken},
+		{"hashicorp-vault-service-upper", "token HVS." + strings.Repeat("A", 13) + "_" + strings.Repeat("B", 20), ClassVaultToken},
+		{"hashicorp-vault-service-hyphen-tail", "token hvs." + strings.Repeat("A", 24) + "-" + strings.Repeat("B", 8), ClassVaultToken},
 		{"supabase-service-key", "token sb_secret_" + strings.Repeat("A", 22) + "_" + strings.Repeat("B", 8), ClassSupabaseKey},
 		{"supabase-service-key-hyphen-checksum", "token sb_secret_" + strings.Repeat("A", 22) + "_" + strings.Repeat("B", 7) + "-", ClassSupabaseKey},
 		{"databricks-pat", "token dapi" + "aabbccddeeff00112233445566778899", ClassDatabricksPAT},
@@ -153,8 +156,15 @@ func TestDefaultMatcher_ProviderTokenBoundaries(t *testing.T) {
 		class Class
 	}{
 		{
-			name:  "vault followed by underscore suffix",
-			input: "hvs." + strings.Repeat("A", 24) + "_payload",
+			// Twenty-three body characters stay under the published minimum
+			// even when an underscore makes the old word-boundary branch miss.
+			name:  "vault service token under minimum",
+			input: "hvs." + strings.Repeat("A", 13) + "_" + strings.Repeat("B", 9),
+			class: ClassVaultToken,
+		},
+		{
+			name:  "vault batch wrong case",
+			input: "HVB." + strings.Repeat("A", 13) + "_" + strings.Repeat("B", 20),
 			class: ClassVaultToken,
 		},
 		{

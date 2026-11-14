@@ -18,6 +18,7 @@ func TestGitHubGitLabCredentialAudience_Surfaces(t *testing.T) {
 	pat := "github_pat_" + strings.Repeat("b", 36)
 	gl := "glpat-" + strings.Repeat("c", 20)
 	job := "glcbt-" + strings.Repeat("d", 20)
+	hk := "HRKU-" + strings.Repeat("Ab3_", 15)
 	cases := []struct {
 		name    string
 		token   string
@@ -54,6 +55,14 @@ func TestGitHubGitLabCredentialAudience_Surfaces(t *testing.T) {
 		{"gitlab basic non-git path blocked", gl, "GitLab PAT", "https://gitlab.com/api/v4/user", credentialAudienceAuthorizationBasicSurface, false, ""},
 		{"github basic git path", gh, "GitHub Token", "https://github.com/o/r.git/git-receive-pack", credentialAudienceAuthorizationBasicSurface, true, "github.com"},
 		{"gitlab token-scheme blocked", gl, "GitLab PAT", "https://gitlab.com/api/v4/user", credentialAudienceAuthorizationTokenSurface, false, ""},
+		{"heroku git basic", hk, "Heroku OAuth Token", "https://git.heroku.com/example.git/info/refs?service=git-receive-pack", credentialAudienceAuthorizationBasicSurface, true, "git.heroku.com"},
+		{"heroku git bearer blocked", hk, "Heroku OAuth Token", "https://git.heroku.com/example.git/info/refs?service=git-receive-pack", CredentialAudienceAuthorizationHeaderSurface, false, ""},
+		{"heroku git host api path blocked", hk, "Heroku OAuth Token", "https://git.heroku.com/account", credentialAudienceAuthorizationBasicSurface, false, ""},
+		{"heroku basic at api host blocked", hk, "Heroku OAuth Token", "https://api.heroku.com/example.git/info/refs?service=git-receive-pack", credentialAudienceAuthorizationBasicSurface, false, ""},
+		{"heroku git cleartext blocked", hk, "Heroku OAuth Token", "http://git.heroku.com/example.git/info/refs?service=git-receive-pack", credentialAudienceAuthorizationBasicSurface, false, ""},
+		{"heroku git lookalike blocked", hk, "Heroku OAuth Token", "https://git.heroku.com.vendor.example/example.git/info/refs?service=git-receive-pack", credentialAudienceAuthorizationBasicSurface, false, ""},
+		{"heroku registry blocked", hk, "Heroku OAuth Token", "https://registry.heroku.com/v2/", credentialAudienceAuthorizationBasicSurface, false, ""},
+		{"heroku git body blocked", hk, "Heroku OAuth Token", "https://git.heroku.com/example.git/git-receive-pack", "body", false, ""},
 		{"gitlab other scheme blocked", gl, "GitLab PAT", "https://gitlab.com/api/v4/user", credentialAudienceAuthorizationOtherSurface, false, ""},
 		{"google bearer-only rejects basic", "ya29." + strings.Repeat("g", 40), "Google OAuth Token", "https://www.googleapis.com/drive/v3/files", credentialAudienceAuthorizationBasicSurface, false, ""},
 		{"aws secret at github blocked", "aws_secret_access_key = " + strings.Repeat("A", 40), "AWS Secret Key", "https://api.github.com/", CredentialAudienceAuthorizationHeaderSurface, false, ""},
