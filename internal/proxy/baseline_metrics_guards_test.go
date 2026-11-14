@@ -44,6 +44,14 @@ func TestBaselineMetricsGuards(t *testing.T) {
 		}
 	})
 
+	t.Run("invalid key recorder check fails closed", func(t *testing.T) {
+		sm := newBaselineMetricsGuardSessionManager(t, baselineMetricsGuardConfig(t))
+
+		if d := sm.CheckBaselineForRecorder("bad/../key", &SessionState{}); !d.Blocked || d.Action != config.ActionBlock || d.Deviation {
+			t.Fatalf("invalid-key recorder check should fail closed, got %+v", d)
+		}
+	})
+
 	t.Run("valid key still learning allows", func(t *testing.T) {
 		sm := newBaselineMetricsGuardSessionManager(t, baselineMetricsGuardConfig(t))
 
