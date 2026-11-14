@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -100,10 +101,14 @@ func assertCoreFloorStatuses(t *testing.T, tc coreFloorParts, statuses []int) {
 		t.Fatalf("statuses = %v, want %d parts", statuses, len(tc.parts))
 	}
 	for i, status := range statuses {
-		wantBlock := i == tc.blockAt || (tc.sticky && tc.blockAt >= 0 && i > tc.blockAt)
-		blocked := status == http.StatusForbidden
-		if blocked != wantBlock {
-			t.Fatalf("part %d status = %d, want block=%v", i, status, wantBlock)
+		want := http.StatusOK
+		if i == tc.blockAt || (tc.sticky && tc.blockAt >= 0 && i > tc.blockAt) {
+			want = http.StatusForbidden
+		}
+		// A forwarded part must succeed. Any other status would pass a
+		// "not refused" check while proving nothing about forwarding.
+		if status != want {
+			t.Fatalf("part %d status = %d, want %d", i, status, want)
 		}
 	}
 }
@@ -300,7 +305,13 @@ func TestCoreFloor_WebSocketHandshake(t *testing.T) {
 					_ = conn.Close()
 				}
 				if err != nil {
-					statuses = append(statuses, http.StatusForbidden)
+					// Only the handshake's own HTTP status counts. A dial or
+					// transport failure is not a policy refusal.
+					var statusErr ws.StatusError
+					if !errors.As(err, &statusErr) {
+						t.Fatalf("handshake for %q failed without an HTTP status: %v", part, err)
+					}
+					statuses = append(statuses, int(statusErr))
 					continue
 				}
 				statuses = append(statuses, http.StatusOK)
@@ -333,16 +344,32 @@ func TestCoreFloor_WebSocketFrames(t *testing.T) {
 			var statuses []int
 			for _, part := range tc.parts {
 				if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(part)); err != nil {
-					statuses = append(statuses, http.StatusForbidden)
-					continue
+					t.Fatalf("write %q: %v", part, err)
 				}
 				_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-				if _, _, err := wsutil.ReadServerData(conn); err != nil {
-					statuses = append(statuses, http.StatusForbidden)
+				echoed, _, err := wsutil.ReadServerData(conn)
+				if err == nil {
+					// The echo proves the frame reached the backend.
+					if string(echoed) != part {
+						t.Fatalf("echo = %q, want %q", echoed, part)
+					}
+					statuses = append(statuses, http.StatusOK)
 					continue
 				}
-				statuses = append(statuses, http.StatusOK)
+				// A refusal is the proxy's policy close frame. A timeout or
+				// any other transport error is a test failure, not a refusal.
+				var closed wsutil.ClosedError
+				if !errors.As(err, &closed) || closed.Code != ws.StatusPolicyViolation {
+					t.Fatalf("frame %q ended without a policy close: %v", part, err)
+				}
+				statuses = append(statuses, http.StatusForbidden)
+				// The refusal closed this connection. Dial again from the
+				// same client so the next part is judged against the retained
+				// window, not against a dead connection.
+				_ = conn.Close()
+				conn = dialWS(t, proxyAddr, backendAddr)
 			}
+			_ = conn.Close()
 			assertCoreFloorStatuses(t, tc, statuses)
 		})
 	}

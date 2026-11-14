@@ -196,7 +196,7 @@ Partial canary, environment-secret and file-secret disclosures can produce DLP f
 | `dlp` (text kind) | Per-pattern (configured in DLP pattern definitions) |
 | `prompt_injection` | `high` |
 | `tool_policy` | `medium` for `action: warn`; `high` for every other action, including unknown or empty actions that fail closed |
-| `cross_request_fragment` (match) | `critical`; `medium` when `cross_request_detection.action: warn` |
+| `cross_request_fragment` (match) | `critical`; `medium` when `cross_request_detection.action: warn` and the match is not a core credential. A reassembled core credential stays `critical` |
 | cross-request capacity/ownership/cancel findings | `critical` |
 
 ### Error object
