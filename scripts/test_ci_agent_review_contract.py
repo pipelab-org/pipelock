@@ -31,6 +31,11 @@ def git(cwd: Path, *args: str) -> str:
     ).stdout.strip()
 
 
+def other_sha(sha: str) -> str:
+    """A different full-length hex revision."""
+    return sha[:-1] + ("0" if sha[-1] != "0" else "1")
+
+
 class AgentReviewContractJobTest(unittest.TestCase):
     def setUp(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
@@ -133,8 +138,24 @@ class AgentReviewContractJobTest(unittest.TestCase):
         caller = CALLER.read_text(encoding="utf-8")
         result, output = self.read_pin(caller)
         self.assertEqual(0, result.returncode, result.stderr)
+        uses = [line for line in caller.splitlines() if line.strip().startswith("uses:")]
+        # The maintained template calls the engine from several jobs at one revision.
+        self.assertGreater(len(uses), 1)
+        self.assertEqual(f"sha={uses[0].split('@')[1].split()[0]}\n", output)
+
+    def test_pin_parsing_accepts_repeated_identical_pins(self) -> None:
+        caller = CALLER.read_text(encoding="utf-8")
         uses = next(line for line in caller.splitlines() if line.strip().startswith("uses:"))
-        self.assertEqual(f"sha={uses.split('@')[1].split()[0]}\n", output)
+        sha = uses.split("@")[1].split()[0]
+        single = "jobs:\n  review:\n" + uses + "\n"
+        for name, content in (
+            ("one call", single),
+            ("repeated calls", single + "  again:\n" + uses + "\n" + "  third:\n" + uses + "\n"),
+        ):
+            with self.subTest(calls=name):
+                result, output = self.read_pin(content)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(f"sha={sha}\n", output)
 
     def test_pin_parsing_refuses_anything_but_one_engine_commit(self) -> None:
         caller = CALLER.read_text(encoding="utf-8")
@@ -151,7 +172,8 @@ class AgentReviewContractJobTest(unittest.TestCase):
             "lookalike repository": caller.replace(uses, uses.replace("/agent-review/", "/agent-review-fork/")),
             "other workflow": caller.replace(uses, uses.replace("agent-review-reusable.yaml", "other.yaml")),
             "local workflow": caller.replace(uses, "    uses: ./.github/workflows/agent-review-reusable.yaml"),
-            "second call": caller + "  extra:\n" + uses + "\n",
+            "mixed pins": caller.replace(uses, f"{target}@{other_sha(sha)} # main", 1),
+            "mixed pin on a later call": caller + "  extra:\n" + f"{target}@{other_sha(sha)} # main\n",
             "step call": caller + "      - uses: actions/checkout@" + sha + "\n",
             "no call": caller.replace(uses + "\n", ""),
         }
@@ -179,6 +201,7 @@ class AgentReviewContractJobTest(unittest.TestCase):
         uses = next(line for line in caller.splitlines() if line.strip().startswith("uses:"))
         sha = uses.split("@")[1].split()[0]
         legacy = caller.replace(uses, "    uses: ./.github/workflows/agent-review-reusable.yaml")
+        mixed = caller.replace(uses, uses.replace(sha, other_sha(sha)), 1)
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
             path = temp / "base" / ".github" / "workflows" / "agent-review.yaml"
@@ -186,6 +209,8 @@ class AgentReviewContractJobTest(unittest.TestCase):
             output = temp / "output"
             for name, content, prefix, expected_code, expected_output in (
                 ("pinned", caller, "", 0, f"sha={sha}\n"),
+                ("repeated identical pins", caller + caller, "", 0, f"sha={sha}\n"),
+                ("mixed pins", mixed, "", 1, ""),
                 ("legacy local caller", legacy, "", 0, ""),
                 ("missing caller", None, "", 0, ""),
                 ("read error", caller, "grep() { return 2; };\n", 1, ""),
@@ -209,7 +234,8 @@ class AgentReviewContractJobTest(unittest.TestCase):
                     self.assertEqual(expected_code, result.returncode, result.stderr)
                     self.assertEqual(expected_output, output.read_text(encoding="utf-8"))
                     if expected_code:
-                        self.assertIn("base agent review caller could not be read", result.stderr)
+                        message = "more than one engine revision" if name == "mixed pins" else "could not be read"
+                        self.assertIn(message, result.stderr)
 
     def test_pin_must_be_a_commit_on_engine_main(self) -> None:
         script = step_script(self.block, "Require the pin on the engine main branch")
