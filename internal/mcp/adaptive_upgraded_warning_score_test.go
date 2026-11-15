@@ -70,13 +70,17 @@ func TestAdaptiveUpgradedWarningsDoNotScore(t *testing.T) {
 				if len(rec.signals) == 0 {
 					t.Fatal("finding was not recorded")
 				}
-				if action == config.ActionWarn {
+				// Tool definitions and response bodies are upstream content.
+				// An explicit block still refuses them, and it records the same
+				// zero-point observation as a warning. Agent input still scores.
+				serverContent := stage == "tool" || stage == "response"
+				if serverContent || action == config.ActionWarn {
 					if rec.ThreatScore() != before {
-						t.Fatalf("upgraded warning changed score: before=%.1f after=%.1f signals=%v", before, rec.ThreatScore(), rec.signals)
+						t.Fatalf("observation changed score: before=%.1f after=%.1f signals=%v", before, rec.ThreatScore(), rec.signals)
 					}
 					for _, sig := range rec.signals {
 						if sig != session.SignalWarning {
-							t.Fatalf("upgraded warning recorded %v", sig)
+							t.Fatalf("observation recorded %v", sig)
 						}
 					}
 				} else if rec.ThreatScore() <= before {

@@ -15,6 +15,14 @@ const (
 	mcpAirlockTriggerCritical = "on_critical"
 )
 
+// upstreamContentSignal is the adaptive observation for a finding in content
+// the upstream server sent. The caller still blocks, strips, or warns. This
+// signal adds no session points, so that content cannot lock the agent out.
+// Requests, arguments, and other agent-originated findings keep their own signals.
+func upstreamContentSignal() session.SignalType {
+	return session.SignalWarning
+}
+
 // recordMCPAdaptiveSignal records one MCP threat signal and raises the same
 // per-client recorder's airlock on escalation edges. Keeping the transition
 // edge-bound prevents a timer-deescalated session from being re-armed merely

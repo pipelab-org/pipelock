@@ -654,9 +654,9 @@ func TestRunHTTPListenerProxy_AirlockEnableReloadDeniesHeaderlessToolCall(t *tes
 	}
 }
 
-func TestForwardScanned_ResponseEscalationEmitsAirlockAudit(t *testing.T) {
+func TestForwardScanned_ServerResponseDoesNotRaiseAirlock(t *testing.T) {
 	sc := testScannerWithAction(t, config.ActionBlock)
-	rec := &airlockTestRecorder{tier: config.AirlockTierNone, level: 2, escalate: true}
+	rec := &mockRecorder{}
 	airlockCfg := config.Defaults().Airlock
 	airlockCfg.Enabled = true
 	auditPath := filepath.Join(t.TempDir(), "response-airlock-audit.jsonl")
@@ -687,29 +687,18 @@ func TestForwardScanned_ResponseEscalationEmitsAirlockAudit(t *testing.T) {
 	}
 	auditLogger.Close()
 
+	if !bytes.Contains(output.Bytes(), []byte(`"error"`)) || rec.ThreatScore() != 0 {
+		t.Fatalf("blocked response score=%g output=%s", rec.ThreatScore(), output.String())
+	}
 	data, err := os.ReadFile(filepath.Clean(auditPath))
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	for _, line := range bytes.Split(bytes.TrimSpace(data), []byte("\n")) {
-		if len(bytes.TrimSpace(line)) == 0 {
-			continue
-		}
-		var entry map[string]any
-		if err := json.Unmarshal(line, &entry); err != nil {
-			t.Fatalf("decode audit line: %v; line=%s", err, line)
-		}
-		if entry["event"] != string(audit.EventAirlockEnter) {
-			continue
-		}
-		found = true
-		if entry["session"] != "response-server" {
-			t.Fatalf("airlock audit session = %v, want response-server", entry["session"])
-		}
+	if bytes.Contains(data, []byte(audit.EventAirlockEnter)) {
+		t.Fatalf("server response raised airlock: %s", data)
 	}
-	if !found {
-		t.Fatalf("response escalation emitted no %s event; audit=%s", audit.EventAirlockEnter, data)
+	if !bytes.Contains(data, []byte("response")) {
+		t.Fatalf("blocked response wrote no audit event: %s", data)
 	}
 }
 

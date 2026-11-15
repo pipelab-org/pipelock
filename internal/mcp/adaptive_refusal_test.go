@@ -84,9 +84,9 @@ func TestAdaptiveUniformRefusalMCPListenerInFlightResponse(t *testing.T) {
 	}
 }
 
-// A withheld upstream reply is scored before the listener commits its status.
-// When that finding reaches block_all, a tokenless client on a request-local
-// unbound state must get the same answer as a client bound to a session.
+// A withheld upstream reply does not raise the session. Once an agent finding
+// has put that session at block_all, the withheld reply uses the same uniform
+// refusal as any other denial, and the browser-facing CORS headers stay.
 func TestAdaptiveUniformRefusalMCPListenerKeepsCORSHeaders(t *testing.T) {
 	const origin = "https://app.vendor.example"
 	rec := &listenerDiagnosisRecorder{}
@@ -107,7 +107,16 @@ func TestAdaptiveUniformRefusalMCPListenerKeepsCORSHeaders(t *testing.T) {
 	cfg.Levels.Elevated.BlockAll = boolPtr(true)
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t), Store: &singleRecorderStore{rec: rec}, AdaptiveCfg: cfg, ResponseActionOverride: config.ActionBlock, ListenerAllowedOrigins: []string{origin}, listenerStateTokenRequired: boolPtr(true)})
 	header := http.Header{listenerSessionTokenHeader: {listenerSetupToken(t, baseURL)}, "Origin": {origin}}
+	agentHeader := header.Clone()
+	agentHeader.Set("Authorization", "Bearer "+mcpSyntheticAWSAccessKey())
+	if _, agentBody := doListenerRequest(t, http.MethodPost, baseURL+"/", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{}}}`, agentHeader); rec.EscalationLevel() != 1 {
+		t.Fatalf("agent finding did not raise level: %d %s", rec.EscalationLevel(), agentBody)
+	}
+	scoreBeforeReply := rec.ThreatScore()
 	resp, body := doListenerRequest(t, http.MethodPost, baseURL+"/", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`, header)
+	if rec.ThreatScore() != scoreBeforeReply || rec.EscalationLevel() != 1 {
+		t.Fatalf("withheld upstream reply changed score=%v level=%d, want score=%v level=1", rec.ThreatScore(), rec.EscalationLevel(), scoreBeforeReply)
+	}
 	if resp.StatusCode != http.StatusForbidden || resp.Header.Get(blockreason.HeaderReason) != string(blockreason.EscalationLevel) {
 		t.Fatalf("withheld refusal at block_all: %d %v %s", resp.StatusCode, resp.Header, body)
 	}
@@ -165,10 +174,20 @@ func TestAdaptiveUniformRefusalMCPListenerWithheldUnboundSession(t *testing.T) {
 			if strings.HasPrefix(binding, "bound") {
 				header = http.Header{listenerSessionTokenHeader: {listenerSetupToken(t, baseURL)}}
 			}
-			// Tokenless clients may forward list methods; their replies are scanned.
+			// The agent finding raises the shared recorder. A tokenless list
+			// still uses that recorder, and the withheld reply must not move it.
+			agentHeader := http.Header{}
+			if header != nil {
+				agentHeader = header.Clone()
+			}
+			agentHeader.Set("Authorization", "Bearer "+mcpSyntheticAWSAccessKey())
+			if _, agentBody := doListenerRequest(t, http.MethodPost, baseURL+"/", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{}}}`, agentHeader); rec.EscalationLevel() != 1 {
+				t.Fatalf("agent finding did not raise level: %d %s", rec.EscalationLevel(), agentBody)
+			}
+			scoreBeforeReply := rec.ThreatScore()
 			resp, body := doListenerRequest(t, http.MethodPost, baseURL+"/", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`, header)
-			if rec.EscalationLevel() < 1 {
-				t.Fatalf("withheld finding did not escalate: %d %v %s", resp.StatusCode, resp.Header, body)
+			if rec.ThreatScore() != scoreBeforeReply || rec.EscalationLevel() != 1 {
+				t.Fatalf("withheld upstream finding escalated the session: score=%v level=%d body=%s", rec.ThreatScore(), rec.EscalationLevel(), body)
 			}
 			if below {
 				if resp.StatusCode != http.StatusBadGateway || resp.Header.Get(blockreason.HeaderReason) != "" {

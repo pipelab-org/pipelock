@@ -469,8 +469,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					logReceiptEmitFailure(logW, emitErr, opts.requireReceipts(), config.ActionBlock)
 				}
 			}
+			// The refused media is content the server sent. Keep the block
+			// and record only the zero-point observation.
 			if adaptiveCfg != nil && adaptiveCfg.Enabled {
-				recordMCPAdaptiveSignal(opts, rec, session.SignalBlock, decide.EscalationParams{
+				recordMCPAdaptiveSignal(opts, rec, upstreamContentSignal(), decide.EscalationParams{
 					Threshold:     adaptiveCfg.EscalationThreshold,
 					Logger:        opts.AuditLogger,
 					Metrics:       m,
@@ -722,9 +724,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					// wording can replace the reply's explanation.
 					denialAudit = mcpToolResultDenialAudit(toolResult.ResourceLimit, blockReason)
 
-					// Signal: tool poisoning blocked.
+					// A blocked tool definition is content the server sent. Keep the
+					// block and record only the zero-point observation.
 					if adaptiveCfg != nil && adaptiveCfg.Enabled {
-						recordMCPAdaptiveSignal(opts, rec, decide.UpgradedWarningSignal(preAdaptiveToolAction, session.SignalBlock), decide.EscalationParams{
+						recordMCPAdaptiveSignal(opts, rec, upstreamContentSignal(), decide.EscalationParams{
 							Threshold:     adaptiveCfg.EscalationThreshold,
 							Logger:        opts.AuditLogger,
 							Metrics:       m,
@@ -1142,6 +1145,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		emitTrackedOutcome(mcpResponseStatus(outbound), "mcp_response_scan", outbound)
 
 		// Signal recording: informational card warnings do not affect the score.
+		// Injection, inbound DLP, and strip findings in this response are
+		// upstream content. They keep the verdict above and record only the
+		// zero-point observation, on every transport that shares this scorer.
 		if adaptiveCfg != nil && adaptiveCfg.Enabled && !numberOnlyDecision {
 			ep := decide.EscalationParams{
 				Threshold:     adaptiveCfg.EscalationThreshold,
@@ -1153,15 +1159,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				DenialReason:  firstNonEmpty(pattern, "mcp_response_scan"),
 				PolicyHash:    opts.receiptPolicyHash(),
 			}
-			switch effectiveAction {
-			case config.ActionBlock:
-				recordMCPAdaptiveSignal(opts, rec, decide.UpgradedWarningSignal(originalAction, session.SignalBlock), ep)
-			case config.ActionStrip:
-				recordMCPAdaptiveSignal(opts, rec, session.SignalStrip, ep)
-			default:
-				// Warn/ask: observation only (injection detected but not blocked).
-				recordMCPAdaptiveSignal(opts, rec, session.SignalWarning, ep)
-			}
+			recordMCPAdaptiveSignal(opts, rec, upstreamContentSignal(), ep)
 		}
 
 		// Capture: record response injection verdict.

@@ -1008,7 +1008,7 @@ func RunHTTPListenerProxy(
 			}
 			if problem := reply.framingProblem(rpcID); problem != "" {
 				if problem == refusalFramingDisguised {
-					recordListenerFinding(reqRec, session.SignalBlock, auditSessionKey, mcpReceiptLayerResponse, problem)
+					recordListenerFinding(reqRec, upstreamContentSignal(), auditSessionKey, mcpReceiptLayerResponse, problem)
 				}
 				withhold(problem)
 				return true
@@ -1016,9 +1016,10 @@ func RunHTTPListenerProxy(
 			if ok, finding := reply.scan(requestBaseOpts); !ok {
 				denialAudit = mcpListenerReplyBlockAudit(finding)
 				// The clean-only error relay refuses independently of adaptive
-				// upgrades and the tool-result response action. Preserve that
-				// refusal's score even when ordinary responses are warn-only.
-				recordListenerFinding(reqRec, session.SignalBlock, auditSessionKey, mcpReceiptLayerResponse, finding)
+				// upgrades and the tool-result response action. The withheld
+				// reply is upstream content, so the finding stays an observation
+				// in every response-scanning mode.
+				recordListenerFinding(reqRec, upstreamContentSignal(), auditSessionKey, mcpReceiptLayerResponse, finding)
 				withhold(finding)
 				return true
 			}
