@@ -313,10 +313,12 @@ type assembledEmptyKey struct {
 // Only complete inspections that admitted no lane and no nested terminal are
 // reusable without replaying candidates, keyword context or allowance charges.
 func (s *reassemblyPlan) emptyTerminal(key assembledEmptyKey, remember bool) bool {
-	if !remember {
-		s.emptyMu.RLock()
-		_, ok := s.emptyTerminals[key]
-		s.emptyMu.RUnlock()
+	s.emptyMu.RLock()
+	_, ok := s.emptyTerminals[key]
+	// Entries are never evicted, so a full cache cannot accept this key later.
+	full := len(s.emptyTerminals) >= maxDecodeCandidates || len(key.text) > maxDecodeTotalBytes-s.emptyTerminalBytes
+	s.emptyMu.RUnlock()
+	if ok || !remember || full {
 		return ok
 	}
 	s.emptyMu.Lock()
@@ -324,7 +326,7 @@ func (s *reassemblyPlan) emptyTerminal(key assembledEmptyKey, remember bool) boo
 	if _, ok := s.emptyTerminals[key]; ok {
 		return true
 	}
-	if remember && len(s.emptyTerminals) < maxDecodeCandidates && len(key.text) <= maxDecodeTotalBytes-s.emptyTerminalBytes {
+	if len(s.emptyTerminals) < maxDecodeCandidates && len(key.text) <= maxDecodeTotalBytes-s.emptyTerminalBytes {
 		if s.emptyTerminals == nil {
 			s.emptyTerminals = make(map[assembledEmptyKey]struct{})
 		}
