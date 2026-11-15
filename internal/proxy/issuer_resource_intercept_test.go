@@ -4,8 +4,10 @@
 package proxy
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"io"
@@ -804,12 +806,20 @@ type resourceDeliveryWriter struct {
 	*httptest.ResponseRecorder
 	entered, release chan struct{}
 	fail             bool
+	afterWriteHeader func()
+	gate             sync.Once
+}
+
+func (w *resourceDeliveryWriter) WriteHeader(code int) {
+	if w.afterWriteHeader != nil {
+		w.afterWriteHeader()
+	}
+	w.ResponseRecorder.WriteHeader(code)
 }
 
 func (w *resourceDeliveryWriter) Write(body []byte) (int, error) {
 	n, err := w.ResponseRecorder.Write(body[:len(body)/2])
-	close(w.entered)
-	<-w.release
+	w.gate.Do(func() { close(w.entered); <-w.release })
 	if w.fail {
 		return n, io.ErrClosedPipe
 	}
@@ -831,6 +841,10 @@ func TestInterceptCrossOriginResourcePendingDelivery(t *testing.T) {
 		{"derived CSS", cssType, true},
 		{"derived script", jsType, true},
 		{"derived legacy script", "application/x-javascript", true},
+		{"derived JSON", "application/json", true},
+		{"derived JSON suffix", "application/vnd.vendor+json", true},
+		{"derived Location", "application/octet-stream", true},
+		{"derived streaming Location", "text/event-stream", true},
 	} {
 		for _, outcome := range []string{"success", "write fails", "revoked", "cancelled"} {
 			t.Run(producer.name+"/"+outcome, func(t *testing.T) {
@@ -856,14 +870,26 @@ func TestInterceptCrossOriginResourcePendingDelivery(t *testing.T) {
 					}
 				case jsType, "application/x-javascript":
 					body = `import "` + target.String() + `"; import "` + third.String() + `";`
+				case "application/json", "application/vnd.vendor+json":
+					body = `{"next":"` + target.String() + `","third":"` + third.String() + `"}`
+				case "application/octet-stream":
+					body = "redirecting"
+				case "text/event-stream":
+					body = "data: ok\n\n"
 				default:
 					if producer.derived {
 						body += `<script src="` + third.String() + `"></script>`
 					}
 				}
 				upstream := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					status := http.StatusOK
+					header := http.Header{"Content-Type": {contentType}}
+					if strings.Contains(producer.name, "Location") {
+						status = http.StatusFound
+						header.Set("Location", target.String())
+					}
 					return &http.Response{
-						StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {contentType}},
+						StatusCode: status, Header: header,
 						Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: r,
 					}, nil
 				})
@@ -872,6 +898,15 @@ func TestInterceptCrossOriginResourcePendingDelivery(t *testing.T) {
 				writer := &resourceDeliveryWriter{
 					ResponseRecorder: httptest.NewRecorder(),
 					entered:          make(chan struct{}), release: make(chan struct{}), fail: outcome == "write fails",
+				}
+				if strings.Contains(producer.name, "Location") {
+					writer.afterWriteHeader = func() {
+						store.mu.Lock()
+						defer store.mu.Unlock()
+						if len(store.resourceDeliveries) == 0 {
+							t.Error("Location headers became visible before pending notification")
+						}
+					}
 				}
 				done := make(chan struct{})
 				go func() {
@@ -890,7 +925,7 @@ func TestInterceptCrossOriginResourcePendingDelivery(t *testing.T) {
 					t.Fatal("producer did not reach delivery")
 				}
 				store.mu.Lock()
-				pending := len(store.deliveries)
+				pending := len(store.resourceDeliveries)
 				store.mu.Unlock()
 				if pending != 1 || store.resourcePathIssued(session, target) {
 					t.Fatal("partial delivery must be pending, without usable resource evidence")
@@ -903,7 +938,7 @@ func TestInterceptCrossOriginResourcePendingDelivery(t *testing.T) {
 				thirdDigest, _ := store.pathDigest(third)
 				thirdPending := false
 				store.mu.Lock()
-				for delivery := range store.deliveries[session].pending {
+				for delivery := range store.resourceDeliveries[session].pending {
 					thirdPending = thirdPending || digestListed(delivery.resourcePaths, thirdDigest)
 				}
 				store.mu.Unlock()
@@ -941,6 +976,9 @@ func TestInterceptCrossOriginResourcePendingDelivery(t *testing.T) {
 						t.Fatal("disabling reload failed")
 					}
 				case "cancelled":
+					// Cancellation alone does not prove failed delivery (a TLS
+					// half-close still permits a successful response write).
+					writer.fail = true
 					cancel()
 				}
 				release()
@@ -961,7 +999,7 @@ func TestInterceptCrossOriginResourcePendingDelivery(t *testing.T) {
 					}
 				}
 				store.mu.Lock()
-				pending = len(store.deliveries)
+				pending = len(store.resourceDeliveries)
 				store.mu.Unlock()
 				if pending != 0 {
 					t.Fatal("completed delivery leaked pending state")
@@ -973,3 +1011,102 @@ func TestInterceptCrossOriginResourcePendingDelivery(t *testing.T) {
 		}
 	}
 }
+
+// A TLS close_notify ends the client's request direction without preventing
+// it from reading a complete response. Request cancellation is not a delivery
+// failure when the server's complete write succeeds.
+func TestInterceptResourceProducerTLSHalfClose(t *testing.T) {
+	store, ic := newResourceStore(t)
+	ic.Logger, ic.Metrics = audit.NewNop(), metrics.New()
+	ic.TargetHost, ic.TargetPort = "www.vendor.example", "443"
+	target := mustIssuerQueryURL(t, resourceCDN+resourceTok1+"/entry.js")
+	body := `<script src="` + target.String() + `"></script>` + strings.Repeat(" ", 8192)
+	upstream := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {htmlType}},
+			Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: r,
+		}, nil
+	})
+	entered, release, cancelled, done := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	finish := func() { once.Do(func() { close(release) }) }
+	defer finish()
+	var producerContext context.Context
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(done)
+		producerContext = r.Context()
+		stop := context.AfterFunc(r.Context(), func() { close(cancelled) })
+		defer stop()
+		newInterceptHandler(ic, upstream).ServeHTTP(&resourceHalfCloseWriter{ResponseWriter: w, entered: entered, release: release}, r)
+	}))
+	defer func() { finish(); server.Close() }()
+	pool := x509.NewCertPool()
+	pool.AddCert(server.Certificate())
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	dialer := &tls.Dialer{Config: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}
+	raw, err := dialer.DialContext(ctx, "tcp", server.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = raw.Close() }()
+	if err := raw.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequestWithContext(ctx, http.MethodGet, "https://www.vendor.example/page", nil)
+	if err := request.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("producer did not reach response delivery")
+	}
+	if err := raw.(*tls.Conn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-cancelled:
+	case <-ctx.Done():
+		t.Fatal("half-close did not cancel server request context")
+	}
+	finish()
+	response, err := http.ReadResponse(bufio.NewReader(raw), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	got, err := io.ReadAll(response.Body)
+	if err != nil || string(got) != body || response.StatusCode != http.StatusOK {
+		t.Fatalf("half-close response status/bytes/error = %d/%d/%v", response.StatusCode, len(got), err)
+	}
+	<-done
+	session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
+	if !store.resourcePathIssued(session, target) {
+		t.Fatal("fully delivered half-close response did not issue its declared resource")
+	}
+	if !store.resourcePathIssuedContext(producerContext, session, target) {
+		t.Fatal("read-side EOF hid already delivered evidence")
+	}
+	child := *ic
+	child.TargetHost = target.Hostname()
+	w := httptest.NewRecorder()
+	newInterceptHandler(&child, upstream).ServeHTTP(w,
+		httptest.NewRequestWithContext(t.Context(), http.MethodGet, target.String(), nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("fresh declared-resource request after half-close = %d, want 200", w.Code)
+	}
+}
+
+type resourceHalfCloseWriter struct {
+	http.ResponseWriter
+	entered, release chan struct{}
+}
+
+func (w *resourceHalfCloseWriter) Write(body []byte) (int, error) {
+	close(w.entered)
+	<-w.release
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *resourceHalfCloseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

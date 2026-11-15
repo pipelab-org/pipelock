@@ -149,9 +149,6 @@ func (s *issuerQueryStore) resourcePathIssuedContext(ctx context.Context, sessio
 		return false
 	}
 	for {
-		if ctx.Err() != nil {
-			return false
-		}
 		s.mu.Lock()
 		if s.disabled || s.retired {
 			s.mu.Unlock()
@@ -162,8 +159,15 @@ func (s *issuerQueryStore) resourcePathIssuedContext(ctx context.Context, sessio
 			s.mu.Unlock()
 			return true
 		}
+		// Cancellation stops waiting, but does not erase delivered evidence.
+		// A read-side half-close can cancel an otherwise delivered exchange;
+		// request scanning still independently checks its own context.
+		if ctx.Err() != nil {
+			s.mu.Unlock()
+			return false
+		}
 		var done <-chan struct{}
-		if bucket := s.deliveries[session]; bucket != nil {
+		if bucket := s.resourceDeliveries[session]; bucket != nil {
 			for delivery := range bucket.pending {
 				if digestListed(delivery.resourcePaths, digest) {
 					done = bucket.changed
@@ -193,17 +197,54 @@ func (ic *InterceptContext) beginResourceDelivery(resp *http.Response, body []by
 		return noop
 	}
 	store := ic.issuerQueryStore()
-	if store == nil || !asciiTransparentDocument(body, resp.Header.Get("Content-Type")) {
+	if store == nil {
 		return noop
 	}
 	origin := resp.Request.URL
 	base := origin
 	baseKnown := true
 	originHost, originPort, _ := issuerCookieOrigin(origin)
+	d := &issuedRedirectDelivery{done: make(chan struct{})}
+	pathRemaining := issuerCookieMaxSetCookies
+	observe := func(reference string, linkAttr bool) {
+		if pathRemaining == 0 {
+			return
+		}
+		ref, err := url.Parse(reference)
+		if err != nil || (proof.derived && !issuerPathReference(reference, ref, linkAttr)) {
+			return
+		}
+		if !ref.IsAbs() {
+			if !baseKnown || base == nil {
+				return
+			}
+			ref = base.ResolveReference(ref)
+		}
+		if proof.derived {
+			// Match the delivered recorder: derived producers issue paths on
+			// their own origin only, never query or onward authority.
+			host, port, ok := issuerCookieOrigin(ref)
+			if !ok || host != originHost || port != originPort {
+				return
+			}
+		}
+		pathRemaining--
+		if digest, ok := store.pathDigest(ref); ok {
+			d.resourcePaths = append(d.resourcePaths, digest)
+		}
+	}
+	// Location spends the same path budget before body references in the
+	// delivered recorder. Its validity does not depend on the body's charset.
+	if proof.derived {
+		if location, _ := issuerLocationReference(resp); location != "" {
+			observe(location, false)
+		}
+	}
 	var references []string
 	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0]))
+	bodyEligible := asciiTransparentDocument(body, resp.Header.Get("Content-Type"))
 	switch {
-	case mediaType == "text/html":
+	case mediaType == "text/html" && bodyEligible:
 		var baseHref string
 		if proof.derived {
 			references, _, baseHref, baseKnown = htmlLinkScan(body, issuerCookieMaxSetCookies, 0, nil)
@@ -213,40 +254,22 @@ func (ic *InterceptContext) beginResourceDelivery(resp *http.Response, body []by
 		var usable bool
 		base, usable = sameOriginBase(origin, baseHref)
 		baseKnown = baseKnown && usable
-	case mediaType == "text/css":
+	case mediaType == "text/css" && bodyEligible:
 		accept := sameOriginReferenceFilter(origin)
 		if !proof.derived {
 			accept = crossOriginResourceFilter(origin, base, true)
 		}
-		references = shield.CSSResourceURLs(string(body), issuerCookieMaxSetCookies, accept)
-	case proof.derived && media.IsJavaScriptMediaType(mediaType):
-		references = scriptURLReferences(body, issuerCookieMaxSetCookies)
-	default:
-		return noop
+		references = shield.CSSResourceURLs(string(body), pathRemaining, accept)
+	case proof.derived && media.IsJavaScriptMediaType(mediaType) && bodyEligible:
+		references = scriptURLReferences(body, pathRemaining)
+	case proof.derived && (mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")):
+		walkIssuerJSONStringValues(body, func(value string) bool {
+			observe(value, false)
+			return pathRemaining > 0
+		})
 	}
-	d := &issuedRedirectDelivery{done: make(chan struct{})}
 	for _, reference := range references {
-		ref, err := url.Parse(reference)
-		if err != nil {
-			continue
-		}
-		if !ref.IsAbs() {
-			if !baseKnown || base == nil {
-				continue
-			}
-			ref = base.ResolveReference(ref)
-		}
-		if proof.derived {
-			// A derived producer can notify only for paths on its own origin,
-			// exactly as its delivered recorder does. It never delegates onward.
-			host, port, ok := issuerCookieOrigin(ref)
-			if !ok || host != originHost || port != originPort {
-				continue
-			}
-		}
-		if digest, ok := store.pathDigest(ref); ok {
-			d.resourcePaths = append(d.resourcePaths, digest)
-		}
+		observe(reference, true)
 	}
 	session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 	if store.registerIssuerDelivery(session, d) != nil {

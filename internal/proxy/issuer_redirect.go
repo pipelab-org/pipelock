@@ -269,8 +269,19 @@ func (s *issuerQueryStore) beginIssuedRedirectDelivery(session string, target *u
 	return d, nil
 }
 
-// registerIssuerDelivery shares the existing pending session/entry budget
-// between redirect headers and resource bodies, apart from delivered proof.
+var errIssuerDeliveryInactive = errors.New("issuer delivery store is inactive")
+
+// issuerDeliveryPool selects independent redirect/header and resource/body
+// notification capacity. Each uses the existing session/entry bounds, so the
+// combined notification budget is at most twice one pool's bound. Callers hold mu.
+func (s *issuerQueryStore) issuerDeliveryPool(d *issuedRedirectDelivery) *map[string]*issuedRedirectDeliverySet {
+	if len(d.resourcePaths) != 0 {
+		return &s.resourceDeliveries
+	}
+	return &s.deliveries
+}
+
+// registerIssuerDelivery keeps pending notifications apart from delivered proof.
 func (s *issuerQueryStore) registerIssuerDelivery(session string, d *issuedRedirectDelivery) error {
 	if s == nil || session == "" {
 		return errors.New("invalid issuer delivery session")
@@ -282,19 +293,20 @@ func (s *issuerQueryStore) registerIssuerDelivery(session string, d *issuedRedir
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.disabled || s.retired {
-		return errors.New("issuer delivery store is inactive")
+		return errIssuerDeliveryInactive
 	}
-	bucket := s.deliveries[session]
-	if (bucket == nil && len(s.deliveries) >= issuerCookieMaxSessions) ||
+	pool := s.issuerDeliveryPool(d)
+	bucket := (*pool)[session]
+	if (bucket == nil && len(*pool) >= issuerCookieMaxSessions) ||
 		(bucket != nil && count > issuerCookieMaxEntries-bucket.entries) {
 		return errors.New("issuer delivery capacity exceeded")
 	}
-	if s.deliveries == nil {
-		s.deliveries = make(map[string]*issuedRedirectDeliverySet)
+	if *pool == nil {
+		*pool = make(map[string]*issuedRedirectDeliverySet)
 	}
 	if bucket == nil {
 		bucket = &issuedRedirectDeliverySet{pending: make(map[*issuedRedirectDelivery]struct{}), changed: make(chan struct{})}
-		s.deliveries[session] = bucket
+		(*pool)[session] = bucket
 	}
 	bucket.pending[d] = struct{}{}
 	bucket.entries += count
@@ -304,13 +316,14 @@ func (s *issuerQueryStore) registerIssuerDelivery(session string, d *issuedRedir
 func (s *issuerQueryStore) finishIssuedRedirectDelivery(session string, d *issuedRedirectDelivery) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	bucket := s.deliveries[session]
+	pool := s.issuerDeliveryPool(d)
+	bucket := (*pool)[session]
 	delete(bucket.pending, d)
 	bucket.entries -= len(d.entries) + len(d.resourcePaths)
 	close(bucket.changed)
 	bucket.changed = make(chan struct{})
 	if bucket.entries == 0 {
-		delete(s.deliveries, session)
+		delete(*pool, session)
 	}
 	close(d.done)
 }
@@ -642,6 +655,11 @@ func (ic *InterceptContext) flushIssuedRedirectHeaders(w http.ResponseWriter, re
 	}
 	session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 	delivery, err := store.beginIssuedRedirectDelivery(session, target, scopes)
+	if errors.Is(err, errIssuerDeliveryInactive) {
+		// A disabling reload revokes authority, not delivery of an otherwise
+		// allowed response. Send ordinary headers without recording delegation.
+		return writeHeaders()
+	}
 	if err != nil {
 		return err
 	}

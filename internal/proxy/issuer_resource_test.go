@@ -977,6 +977,67 @@ func TestResourcePendingDeliveryInactiveState(t *testing.T) {
 	}
 }
 
+func TestResourcePendingDeliveryReferenceParity(t *testing.T) {
+	target := resourceCDN + resourceTok1 + "/next"
+	var full strings.Builder
+	full.WriteString("[")
+	for i := 0; i < issuerCookieMaxSetCookies-1; i++ {
+		full.WriteString(`"/entry/` + strconv.Itoa(i) + `",`)
+	}
+	full.WriteString(`"` + target + `"]`)
+	for _, tc := range []struct {
+		name, mediaType, body, location string
+		status                          int
+		root, want                      bool
+	}{
+		{name: "JSON value", mediaType: "application/json", body: `{"next":"` + target + `"}`, want: true},
+		{name: "malformed JSON suffix", mediaType: "application/vnd.vendor+json", body: `[null,{"next":"` + target + `""}]`},
+		{name: "nested value", mediaType: "application/vnd.vendor+json", body: `[null,{"next":"` + target + `"}]`, want: true},
+		{name: "JSON key", mediaType: "application/json", body: `{"` + target + `":"ordinary"}`},
+		{name: "bare value", mediaType: "application/json", body: `"` + strings.TrimPrefix(target, resourceCDN+"/") + `"`},
+		{name: "cross origin", mediaType: "application/json", body: `"https://third.vendor.example` + resourceTok1 + `/next"`},
+		{name: "query only", mediaType: "application/json", body: `"?next=value"`},
+		{name: "deep value", mediaType: "application/json", body: strings.Repeat("[", issuerQueryMaxDepth+1) + `"` + target + `"` + strings.Repeat("]", issuerQueryMaxDepth+1)},
+		{name: "root JSON", mediaType: "application/json", body: `"` + target + `"`, root: true},
+		{name: "Location redirect", status: http.StatusFound, location: target, want: true},
+		{name: "Location created", status: http.StatusCreated, location: target, want: true},
+		{name: "Location accepted", status: http.StatusAccepted, location: target, want: true},
+		{name: "Location no content", status: http.StatusNoContent, location: target, want: true},
+		{name: "Location invalid status", status: http.StatusOK, location: target},
+		{name: "Location body charset", status: http.StatusFound, mediaType: "text/html; charset=utf-16", body: "\x00\x01", location: target, want: true},
+		{name: "root Location", status: http.StatusFound, location: target, root: true},
+		{name: "Location consumes first path slot", status: http.StatusFound, location: "/first", mediaType: "application/json", body: full.String()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, ic := newResourceStore(t)
+			session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
+			response := &http.Response{
+				StatusCode: tc.status, Header: http.Header{"Content-Type": {tc.mediaType}, "Location": {tc.location}},
+				Request: httptest.NewRequestWithContext(t.Context(), http.MethodGet, resourceCDN+"/producer", nil),
+			}
+			proof := issuerDeliveryProof{cleanEnforced: true, derived: !tc.root}
+			finish := ic.beginResourceDelivery(response, []byte(tc.body), proof)
+			defer finish()
+			digest, _ := store.pathDigest(mustIssuerQueryURL(t, target))
+			pending := false
+			store.mu.Lock()
+			if bucket := store.resourceDeliveries[session]; bucket != nil {
+				for delivery := range bucket.pending {
+					pending = pending || digestListed(delivery.resourcePaths, digest)
+				}
+			}
+			store.mu.Unlock()
+			if pending != tc.want || store.resourcePathIssued(session, mustIssuerQueryURL(t, target)) {
+				t.Fatalf("pending = %t, want %t; pending must grant nothing", pending, tc.want)
+			}
+			recordDeliveredIssuerQueryProof(ic, response, []byte(tc.body), true, proof)
+			if got := store.resourcePathIssued(session, mustIssuerQueryURL(t, target)); got != tc.want {
+				t.Fatalf("delivered = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSameOriginReferenceFilter(t *testing.T) {
 	origin := mustIssuerQueryURL(t, "https://www.vendor.example/s.css")
 	accept := sameOriginReferenceFilter(origin)

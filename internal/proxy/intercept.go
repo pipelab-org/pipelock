@@ -2344,10 +2344,22 @@ func newInterceptHandler(
 
 		// Redirect evidence depends on delivered headers, not body completion.
 		// Keep a failed flush on the existing incomplete-stream outcome path.
+		finishResourceDelivery := func() {}
+		resourceDeliveryStarted := false
+		beginResourceDelivery := func(body []byte) {
+			if !resourceDeliveryStarted {
+				finishResourceDelivery = ic.beginResourceDelivery(resp, body, issuerProof)
+				resourceDeliveryStarted = true
+			}
+		}
+		defer func() { finishResourceDelivery() }()
 		flushIssuedRedirect := func() bool {
 			// A declared resource cannot turn an operator's root-route
 			// delegation into onward authority for another origin.
 			if issuerProof.derived {
+				// Streaming paths can issue a same-origin Location only after
+				// completion. Notify follow-ups before those headers are visible.
+				beginResourceDelivery(nil)
 				w.WriteHeader(resp.StatusCode)
 				return false
 			}
@@ -3314,9 +3326,6 @@ func newInterceptHandler(
 			w.Header().Del("Transfer-Encoding")
 			w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
 		}
-		if flushIssuedRedirect() {
-			return
-		}
 		// A resource on another origin is declared only by a response that was
 		// scanned, allowed and fully delivered after an exchange that policy
 		// enforced without any audit or warn downgrade.
@@ -3328,10 +3337,16 @@ func newInterceptHandler(
 			responseScanExempt:    interceptRespExempt,
 			authenticatedArtifact: interceptAuthenticatedArtifact,
 		})
-		finishResourceDelivery := ic.beginResourceDelivery(resp, respBody, issuerProof)
-		defer finishResourceDelivery()
+		beginResourceDelivery(respBody)
+		// Follow-ups can start when Location headers become visible, before
+		// body completion. Register notification before either is delivered.
+		if flushIssuedRedirect() {
+			return
+		}
 		written, writeErr := w.Write(respBody)
-		delivered := writeErr == nil && written == len(respBody) && r.Context().Err() == nil
+		// The client may half-close its request direction and still receive
+		// the complete response. Judge delivery by the write, not read-side EOF.
+		delivered := writeErr == nil && written == len(respBody)
 		recordDeliveredIssuerCookies(ic, r, resp, delivered)
 		recordDeliveredIssuerQueryProof(ic, resp, respBody, delivered, issuerProof)
 		finishResourceDelivery()

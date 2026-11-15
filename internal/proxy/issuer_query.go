@@ -110,6 +110,10 @@ type issuerQueryStore struct {
 	// deliveries coordinates only matching follow-ups while headers are being
 	// flushed. It never grants authority and does not evict delivered evidence.
 	deliveries map[string]*issuedRedirectDeliverySet
+	// Resource body notifications have their own equally bounded pool, so a
+	// slow body cannot consume the capacity needed to deliver redirect headers.
+	// Both pools contain only notifications, never positive authority.
+	resourceDeliveries map[string]*issuedRedirectDeliverySet
 	// ids retains exact origin-bound proofs independently of learning history.
 	// Each entry points to its permanent destination bucket so cache pressure
 	// cannot evict a frozen destination's irreplaceable proofs.
@@ -654,8 +658,7 @@ func recordDeliveredIssuerQueryProof(ic *InterceptContext, response *http.Respon
 		if err != nil {
 			return
 		}
-		pathIssued := linkAttr || candidate.IsAbs() ||
-			(strings.HasPrefix(value, "/") && !strings.HasPrefix(value, "//"))
+		pathIssued := issuerPathReference(value, candidate, linkAttr)
 		if candidate.RawQuery == "" && !pathIssued {
 			return
 		}
@@ -743,11 +746,8 @@ func recordDeliveredIssuerQueryProof(ic *InterceptContext, response *http.Respon
 	// https://github.com/opencontainers/distribution-spec/blob/main/spec.md#pushing-blobs
 	// Same-origin checks apply to every Location. Only redirects may use the
 	// declared OAuth callback exception for another host.
-	redirect := response.StatusCode >= http.StatusMultipleChoices && response.StatusCode < http.StatusBadRequest
-	if redirect || response.StatusCode == http.StatusCreated || response.StatusCode == http.StatusAccepted || response.StatusCode == http.StatusNoContent {
-		if location := response.Header.Get("Location"); location != "" {
-			observe(location, redirect, false)
-		}
+	if location, redirect := issuerLocationReference(response); location != "" {
+		observe(location, redirect, false)
 	}
 	if len(body) == 0 {
 		return
@@ -834,6 +834,34 @@ func recordDeliveredIssuerQueryProof(ic *InterceptContext, response *http.Respon
 	if mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json") {
 		return
 	}
+	walkIssuerJSONStringValues(body, func(value string) bool {
+		observe(value, false, false)
+		if !proof.derived && idRemaining > 0 && issuerServerIDShaped(value) && issuerServerIDIntroducible(value) {
+			idStore.mintServerID(session, response.Request.URL, value, time.Now())
+			idRemaining--
+		}
+		return remaining > 0 || idRemaining > 0
+	})
+}
+
+func issuerPathReference(value string, candidate *url.URL, linkAttr bool) bool {
+	return linkAttr || candidate.IsAbs() ||
+		(strings.HasPrefix(value, "/") && !strings.HasPrefix(value, "//"))
+}
+
+// issuerLocationReference is shared by delivered recording and pending path
+// notification, keeping status eligibility identical for both.
+func issuerLocationReference(response *http.Response) (string, bool) {
+	redirect := response.StatusCode >= http.StatusMultipleChoices && response.StatusCode < http.StatusBadRequest
+	if redirect || response.StatusCode == http.StatusCreated || response.StatusCode == http.StatusAccepted || response.StatusCode == http.StatusNoContent {
+		return response.Header.Get("Location"), redirect
+	}
+	return "", false
+}
+
+// walkIssuerJSONStringValues visits only values in a complete valid JSON body.
+// Returning false stops the walk when the consumer's existing budget is spent.
+func walkIssuerJSONStringValues(body []byte, visit func(string) bool) {
 	// Walk the JSON as a token stream rather than decoding it into generic
 	// maps and slices, which would cost several times the body size on every
 	// intercepted JSON response. json.Valid keeps the old rule that a body
@@ -854,7 +882,7 @@ func recordDeliveredIssuerQueryProof(ic *InterceptContext, response *http.Respon
 			levels[n-1].expectKey = true
 		}
 	}
-	for remaining > 0 || idRemaining > 0 {
+	for {
 		token, err := decoder.Token()
 		if err != nil {
 			return
@@ -876,10 +904,8 @@ func recordDeliveredIssuerQueryProof(ic *InterceptContext, response *http.Respon
 				levels[n-1].expectKey = false
 				continue
 			}
-			observe(t, false, false)
-			if !proof.derived && idRemaining > 0 && issuerServerIDShaped(t) && issuerServerIDIntroducible(t) {
-				idStore.mintServerID(session, response.Request.URL, t, time.Now())
-				idRemaining--
+			if !visit(t) {
+				return
 			}
 			valueDone()
 		default:

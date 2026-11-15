@@ -1218,3 +1218,62 @@ func TestIssuedRedirectEnabledStoreSaturation(t *testing.T) {
 		t.Fatalf("unflushed saturated-store follow-up = %d, want403", got)
 	}
 }
+
+func TestIssuedRedirectResourceDeliveryIsolation(t *testing.T) {
+	for _, pressure := range []string{"sessions", "entries", "retired"} {
+		t.Run(pressure, func(t *testing.T) {
+			e := newDelegationEnv(t, nil)
+			ic := &InterceptContext{Proxy: e.p, Config: e.cfg, ClientIP: "10.0.0.1", Agent: "agent-one", ActorAuth: envelope.ActorAuthBound}
+			store := ic.issuerQueryStore()
+			session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
+			if pressure == "retired" {
+				store.nextGeneration()
+			} else {
+				count, entries := issuerCookieMaxSessions, 1
+				if pressure == "entries" {
+					count, entries = 1, issuerCookieMaxEntries
+				}
+				for i := 0; i < count; i++ {
+					key := strconv.Itoa(i)
+					if pressure == "entries" {
+						key = session
+					}
+					d := &issuedRedirectDelivery{resourcePaths: make([][32]byte, entries), done: make(chan struct{})}
+					if err := store.registerIssuerDelivery(key, d); err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() { store.finishIssuedRedirectDelivery(key, d) })
+				}
+				key := "overflow-session"
+				if pressure == "entries" {
+					key = session
+				}
+				extra := &issuedRedirectDelivery{resourcePaths: [][32]byte{{1}}, done: make(chan struct{})}
+				if err := store.registerIssuerDelivery(key, extra); err == nil {
+					store.finishIssuedRedirectDelivery(key, extra)
+					t.Fatal("resource notification capacity was not enforced")
+				}
+			}
+			target := delegationFilesURL(delegationFilesPath, delegationTicketQuery())
+			response := &http.Response{
+				StatusCode: http.StatusFound, Header: http.Header{"Location": {target}},
+				Request: httptest.NewRequestWithContext(t.Context(), http.MethodGet, delegationSourceURL(), nil),
+			}
+			w := &issuedRedirectFlushWriter{ResponseRecorder: httptest.NewRecorder()}
+			w.Header().Set("Location", target)
+			if err := ic.flushIssuedRedirectHeaders(w, response); err != nil {
+				t.Fatalf("ordinary redirect aborted under %s pressure: %v", pressure, err)
+			}
+			if w.Code != http.StatusFound {
+				t.Fatalf("redirect status = %d, want 302", w.Code)
+			}
+			want := http.StatusOK
+			if pressure == "retired" {
+				want = http.StatusForbidden
+			}
+			if got := e.do("agent-one", http.MethodGet, target); got != want {
+				t.Fatalf("follow-up under %s pressure = %d, want %d", pressure, got, want)
+			}
+		})
+	}
+}
