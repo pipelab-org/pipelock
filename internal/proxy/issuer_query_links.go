@@ -57,7 +57,7 @@ func htmlLinkValues(body []byte, limit int) []string {
 // base past the cut cannot be ruled out, so the caller must not resolve
 // relative links against the response URL.
 func htmlLinksAndBase(body []byte, limit int) (links []string, base string, baseKnown bool) {
-	links, _, base, baseKnown = htmlLinkScan(body, limit, 0)
+	links, _, base, baseKnown = htmlLinkScan(body, limit, 0, nil)
 	return links, base, baseKnown
 }
 
@@ -66,7 +66,9 @@ func htmlLinksAndBase(body []byte, limit int) (links []string, base string, base
 // that limit and apart from the link limit. One tokenizer pass serves both, so
 // the resource roles come from the same parse that decides what is an
 // attribute at all.
-func htmlLinkScan(body []byte, limit, resourceLimit int) (links, resources []string, base string, baseKnown bool) {
+// When origin is supplied, only distinct cross-origin HTTPS paths spend the
+// resource limit, after applying the document's existing base restrictions.
+func htmlLinkScan(body []byte, limit, resourceLimit int, origin *url.URL) (links, resources []string, base string, baseKnown bool) {
 	if (limit <= 0 && resourceLimit <= 0) || len(body) == 0 {
 		return nil, nil, "", true
 	}
@@ -83,6 +85,17 @@ func htmlLinkScan(body []byte, limit, resourceLimit int) (links, resources []str
 	var baseSeen bool
 	if tags == 1 {
 		base, baseSeen = documentBase(body)
+	}
+	// Resolve eligibility before spending resource slots. A late <base> has
+	// already been considered by documentBase, including ambiguous parses.
+	known := !truncated || baseSeen
+	if tags > 1 || (tags == 1 && !baseSeen) {
+		known = false
+	}
+	var acceptResource func(string) bool
+	if origin != nil && resourceLimit > 0 {
+		docBase, usable := sameOriginBase(origin, base)
+		acceptResource = crossOriginResourceFilter(origin, docBase, known && usable)
 	}
 	var out []string
 	// pictureDepth counts open <picture> elements, so a <source> is read as
@@ -142,7 +155,7 @@ func htmlLinkScan(body []byte, limit, resourceLimit int) (links, resources []str
 			}
 		}
 		if collect {
-			resources = htmlResourceRefs(string(tag), attrs, pictureDepth > 0, resources, resourceLimit)
+			resources = htmlResourceRefs(string(tag), attrs, pictureDepth > 0, resources, resourceLimit, acceptResource)
 		}
 	}
 	// Which <base> a browser uses depends on the parse: scripting turns
@@ -150,13 +163,6 @@ func htmlLinkScan(body []byte, limit, resourceLimit int) (links, resources []str
 	// points move elements in and out of the HTML namespace. A document with
 	// exactly one base tag that the tree selected is trusted; anything else
 	// is treated as unknown, so only absolute links are issued.
-	known := !truncated || baseSeen
-	switch {
-	case tags == 0:
-	case tags == 1 && baseSeen:
-	default:
-		known = false
-	}
 	return out, resources, base, known
 }
 

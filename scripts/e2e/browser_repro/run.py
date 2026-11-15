@@ -849,7 +849,13 @@ def main():
             # mediated positive control. Every blocked control must stay away.
             if tls:
                 if report["status"] == "complete":
+                    workspace_cleanup_verified = False
                     problems = collect_tls_evidence(work, args.output, args, env, cancellation, report, fixture, browser)
+                    workspace_cleanup_verified = all(
+                        result.get("streams_drained") is True
+                        and result.get("cleanup", {}).get("cleanup_complete") is True
+                        and result.get("cleanup", {}).get("unexpected_live_descendants") is False
+                        for result in report["processes"].values())
                     if problems:
                         report["status"] = "fail"
                         report["failure"] = "; ".join(problems)[:1024]

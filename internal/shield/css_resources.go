@@ -8,7 +8,9 @@ import "strings"
 // CSSResourceURLs returns literal url() and @import references using the existing
 // CSS Syntax Level 3 lexer. It does not load resources or confer trust on their
 // destinations. Oversize input or a bad lexer token returns no references.
-func CSSResourceURLs(body string, limit int) []string {
+// A non-nil accept filters references before they spend the output limit.
+// It must have no externally visible effects: a later bad token discards all.
+func CSSResourceURLs(body string, limit int, accept func(string) bool) []string {
 	if limit <= 0 || len(body) > maxCSSStyleBytes {
 		return nil
 	}
@@ -42,7 +44,7 @@ func CSSResourceURLs(body string, limit int) []string {
 		case t.kind == ')' && urlClose:
 			value = pending
 		}
-		if value != "" && !strings.HasPrefix(value, "#") && len(out) < limit {
+		if value != "" && !strings.HasPrefix(value, "#") && len(out) < limit && (accept == nil || accept(value)) {
 			out = append(out, value)
 		}
 		if t.kind != cssString || !urlString {

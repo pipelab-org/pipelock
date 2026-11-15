@@ -929,12 +929,12 @@ func newInterceptHandler(
 					// delivered page or stylesheet declared. Only a bodyless
 					// GET or HEAD qualifies, judged from the parsed request.
 					// Path entropy is the only check this skips.
-					if !store.resourcePathIssued(session, r.URL) || !resourceRequestShape(r) {
+					if !store.resourcePathIssuedContext(r.Context(), session, r.URL) || !resourceRequestShape(r) {
 						return false
 					}
 					// An HTTP/2 stream can delay its EOF while a reload or
 					// eviction removes the evidence. Recheck after that wait.
-					if !store.resourcePathIssued(session, r.URL) {
+					if ic.issuerQueryStore() != store || !store.resourcePathIssued(session, r.URL) {
 						return false
 					}
 					resourceUsed = true
@@ -3317,9 +3317,6 @@ func newInterceptHandler(
 		if flushIssuedRedirect() {
 			return
 		}
-		written, writeErr := w.Write(respBody)
-		delivered := writeErr == nil && written == len(respBody)
-		recordDeliveredIssuerCookies(ic, r, resp, delivered)
 		// A resource on another origin is declared only by a response that was
 		// scanned, allowed and fully delivered after an exchange that policy
 		// enforced without any audit or warn downgrade.
@@ -3331,7 +3328,13 @@ func newInterceptHandler(
 			responseScanExempt:    interceptRespExempt,
 			authenticatedArtifact: interceptAuthenticatedArtifact,
 		})
+		finishResourceDelivery := ic.beginResourceDelivery(resp, respBody, issuerProof)
+		defer finishResourceDelivery()
+		written, writeErr := w.Write(respBody)
+		delivered := writeErr == nil && written == len(respBody)
+		recordDeliveredIssuerCookies(ic, r, resp, delivered)
 		recordDeliveredIssuerQueryProof(ic, resp, respBody, delivered, issuerProof)
+		finishResourceDelivery()
 		closeReason := "complete"
 		if !delivered {
 			closeReason = receiptReasonIncomplete

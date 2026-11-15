@@ -80,7 +80,7 @@ func TestHTMLLinkScanResourceRoles(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, got, _, _ := htmlLinkScan([]byte(tc.html), 100, 100)
+			_, got, _, _ := htmlLinkScan([]byte(tc.html), 100, 100, nil)
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("resources = %q, want %q", got, tc.want)
 			}
@@ -94,25 +94,25 @@ func TestHTMLLinkScanLimitsAndWrapper(t *testing.T) {
 		page.WriteString(`<img src="` + resourceCDN + `/i` + string(rune('0'+i)) + `.png"><a href="/l` + string(rune('0'+i)) + `">x</a>`)
 	}
 	body := []byte(page.String())
-	links, resources, _, _ := htmlLinkScan(body, 3, 2)
+	links, resources, _, _ := htmlLinkScan(body, 3, 2, nil)
 	if len(links) != 3 || len(resources) != 2 {
 		t.Fatalf("links=%d resources=%d, want 3 and 2: independent limits", len(links), len(resources))
 	}
 	// The link limit being full must not stop resources, and the reverse.
-	links, resources, _, _ = htmlLinkScan(body, 0, 4)
+	links, resources, _, _ = htmlLinkScan(body, 0, 4, nil)
 	if len(links) != 0 || len(resources) != 4 {
 		t.Fatalf("resource-only scan: links=%d resources=%d", len(links), len(resources))
 	}
-	links, resources, _, _ = htmlLinkScan(body, 4, 0)
+	links, resources, _, _ = htmlLinkScan(body, 4, 0, nil)
 	if len(links) != 4 || len(resources) != 0 {
 		t.Fatalf("link-only scan: links=%d resources=%d", len(links), len(resources))
 	}
-	if l, r, _, known := htmlLinkScan(body, 0, 0); l != nil || r != nil || !known {
+	if l, r, _, known := htmlLinkScan(body, 0, 0, nil); l != nil || r != nil || !known {
 		t.Fatal("scan with no room must return nothing")
 	}
 	// The wrapper keeps the old contract: the same links, no resource work.
 	wrapped, _, _ := htmlLinksAndBase(body, 100)
-	scanned, _, _, _ := htmlLinkScan(body, 100, 100)
+	scanned, _, _, _ := htmlLinkScan(body, 100, 100, nil)
 	if !reflect.DeepEqual(wrapped, scanned) {
 		t.Fatalf("wrapper links differ from scan links: %q vs %q", wrapped, scanned)
 	}
@@ -789,5 +789,115 @@ func TestRecordDeliveredResourceCSSRoom(t *testing.T) {
 	session := sessionKeyFor(nil, "agent-one", "192.0.2.10", envelope.ActorAuthBound)
 	if !store.resourcePathIssued(session, mustIssuerQueryURL(t, resourceCDN+"/late.woff2")) {
 		t.Fatal("same-origin references used up the limit before the CDN reference")
+	}
+}
+
+func TestRecordDeliveredResourceBudgetCountsEligiblePaths(t *testing.T) {
+	for _, mediaType := range []string{"text/html", "text/css"} {
+		for _, noise := range []struct {
+			name, reference string
+		}{
+			{"same origin", "/own/image.png"},
+			{"data placeholder", "data:image/png;base64,AAAA"},
+			{"blob placeholder", "blob:https://www.vendor.example/image"},
+			{"cleartext", "http://cdn.vendor.example/image.png"},
+			{"malformed URL", "https://%zz/image.png"},
+			{"duplicate path", resourceCDN + "/repeated.png"},
+		} {
+			t.Run(mediaType+"/"+noise.name, func(t *testing.T) {
+				store, ic := newResourceStore(t)
+				var body strings.Builder
+				add := func(reference string) {
+					if mediaType == "text/html" {
+						body.WriteString(`<img src="` + reference + `">`)
+					} else {
+						body.WriteString(`a{background:url("` + reference + `")}`)
+					}
+				}
+				for i := 0; i < 2*issuerCookieMaxSetCookies+10; i++ {
+					add(noise.reference)
+				}
+				late := resourceCDN + resourceTok1
+				add(late)
+				recordProducer(t, ic, "https://www.vendor.example/root", mediaType, body.String(), issuerDeliveryProof{cleanEnforced: true})
+				session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
+				if !store.resourcePathIssued(session, mustIssuerQueryURL(t, late)) {
+					t.Fatal("ineligible or repeated references exhausted the resource budget")
+				}
+				store.mu.Lock()
+				held := len(store.resources[session])
+				store.mu.Unlock()
+				want := 1
+				if noise.name == "duplicate path" {
+					want++
+				}
+				if held != want {
+					t.Fatalf("recorded %d resource paths, want %d", held, want)
+				}
+			})
+		}
+	}
+}
+
+func TestCrossOriginResourceFilter(t *testing.T) {
+	origin := mustIssuerQueryURL(t, "https://www.vendor.example/page")
+	for _, tc := range []struct {
+		name, reference string
+		baseKnown       bool
+		want            bool
+	}{
+		{"absolute", resourceCDN + "/image.png", true, true},
+		{"absolute with unknown base", resourceCDN + "/image.png", false, true},
+		{"scheme relative", "//cdn.vendor.example/image.png", true, true},
+		{"scheme relative with unknown base", "//cdn.vendor.example/image.png", false, false},
+		{"same origin", "/own.png", true, false},
+		{"same origin canonical port", "https://WWW.vendor.example:443/own.png", true, false},
+		{"credentials", "https://user@cdn.vendor.example/image.png", true, false},
+		{"oversize path", resourceCDN + "/" + strings.Repeat("x", issuerCookieMaxPairBytes), true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			accept := crossOriginResourceFilter(origin, origin, tc.baseKnown)
+			if got := accept(tc.reference); got != tc.want {
+				t.Fatalf("accepted = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if crossOriginResourceFilter(nil, origin, true)(resourceCDN + "/image.png") {
+		t.Fatal("invalid producer origin accepted")
+	}
+	if crossOriginResourceFilter(origin, nil, true)("//cdn.vendor.example/image.png") {
+		t.Fatal("relative reference without a base accepted")
+	}
+	accept := crossOriginResourceFilter(origin, origin, true)
+	if !accept(resourceCDN + "/image.png?x=one#first") {
+		t.Fatal("positive control: first path rejected")
+	}
+	if accept("https://CDN.vendor.example:443/image.png?x=two#second") {
+		t.Fatal("query, fragment or equivalent origin spelling spent another slot")
+	}
+}
+
+func TestResourcePendingDeliveryInactiveState(t *testing.T) {
+	store, _ := newResourceStore(t)
+	target := mustIssuerQueryURL(t, resourceCDN+resourceTok1)
+	var missing *issuerQueryStore
+	ctx := t.Context()
+	if missing.resourcePathIssuedContext(ctx, resourceSessionOne, target) ||
+		store.resourcePathIssuedContext(ctx, "", target) ||
+		store.resourcePathIssuedContext(ctx, resourceSessionOne, mustIssuerQueryURL(t, resourceCDN+"/"+strings.Repeat("x", issuerCookieMaxPairBytes))) {
+		t.Fatal("missing identity or unusable path acquired pending evidence")
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if store.resourcePathIssuedContext(cancelled, resourceSessionOne, target) {
+		t.Fatal("cancelled lookup acquired pending evidence")
+	}
+	d := &issuedRedirectDelivery{resourcePaths: [][32]byte{{1}}, done: make(chan struct{})}
+	if missing.registerIssuerDelivery(resourceSessionOne, d) == nil || store.registerIssuerDelivery("", d) == nil {
+		t.Fatal("missing identity registered a delivery")
+	}
+	store.nextGeneration()
+	if store.registerIssuerDelivery(resourceSessionOne, d) == nil {
+		t.Fatal("retired generation registered a delivery")
 	}
 }

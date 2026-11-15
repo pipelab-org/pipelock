@@ -29,9 +29,20 @@ func TestCSSResourceURLs(t *testing.T) {
 		{"oversize", strings.Repeat(" ", maxCSSStyleBytes+1), 8, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := CSSResourceURLs(tc.body, tc.limit); !reflect.DeepEqual(got, tc.want) {
+			if got := CSSResourceURLs(tc.body, tc.limit, nil); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("references=%q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestCSSResourceURLsFilteredLimit(t *testing.T) {
+	body := `@import 'skip.css';@import 'keep.css';@import 'later.css';`
+	accept := func(reference string) bool { return reference != "skip.css" }
+	if got := CSSResourceURLs(body, 1, accept); !reflect.DeepEqual(got, []string{"keep.css"}) {
+		t.Fatalf("filtered limit returned %q", got)
+	}
+	if got := CSSResourceURLs(body+`a{content:"unterminated}`, 1, accept); got != nil {
+		t.Fatalf("bad tail after a full filtered list returned %q", got)
 	}
 }

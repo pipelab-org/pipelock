@@ -474,7 +474,8 @@ class TLSMainTests(unittest.TestCase):
     """The opt-in scenario through main(), with processes synthetic and files real."""
 
     def run_main(self, argv_extra, *, prepare=None, receipts=4, verify_valid=True, verify_exit=0, truncated=False,
-                 counts=None, allows=None, scenario_args=("--scenario", "tls-resource"), mode="proxy-only"):
+                 counts=None, allows=None, scenario_args=("--scenario", "tls-resource"), mode="proxy-only",
+                 verify_cleanup_error=False):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -504,6 +505,8 @@ class TLSMainTests(unittest.TestCase):
                 return verify_exit if self.log.name == "verify-receipts" else 0
 
             def stop(self):
+                if self.log.name == "verify-receipts" and verify_cleanup_error:
+                    raise RuntimeError("verifier cleanup was not verified")
                 streams = {"stdout": {"truncated": truncated}}
                 if self.log.name == "proxy":
                     host = f"https://{tls_resource.B_HOST}:{port['value']}"
@@ -604,6 +607,15 @@ class TLSMainTests(unittest.TestCase):
         # Declarations stay early: every CDN URL precedes the filler.
         self.assertLess(page.rindex("assets"), page.index("fixture filler row"))
         self.assertTrue(page.startswith(plain.rstrip("\n")))
+
+    def test_verifier_cleanup_failure_retains_the_workspace(self):
+        code, console, work, output, created = self.run_main([], verify_cleanup_error=True)
+        summary = json.loads((output / "summary.json").read_text())
+        self.assertIn("verify-receipts", created)
+        self.assertEqual((code, console["status"]), (2, "fail"))
+        self.assertIn("verifier cleanup", summary["failure"])
+        self.assertTrue(work.exists())
+        self.assertFalse(summary["workspace_removed"])
 
     def test_http1_diagnostic_is_labelled_and_only_changes_browser_and_probe_protocol(self):
         code, _console, _work, output, created = self.run_main(["--tls-http1"])

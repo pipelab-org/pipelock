@@ -799,3 +799,111 @@ func TestInterceptCrossOriginResourceReceiptKind(t *testing.T) {
 		})
 	}
 }
+
+type resourceDeliveryWriter struct {
+	*httptest.ResponseRecorder
+	entered, release chan struct{}
+	fail             bool
+}
+
+func (w *resourceDeliveryWriter) Write(body []byte) (int, error) {
+	n, err := w.ResponseRecorder.Write(body[:len(body)/2])
+	close(w.entered)
+	<-w.release
+	if w.fail {
+		return n, io.ErrClosedPipe
+	}
+	if err != nil {
+		return n, err
+	}
+	more, err := w.ResponseRecorder.Write(body[n:])
+	return n + more, err
+}
+
+func TestInterceptCrossOriginResourcePendingDelivery(t *testing.T) {
+	for _, contentType := range []string{htmlType, cssType} {
+		for _, outcome := range []string{"success", "write fails", "revoked", "cancelled"} {
+			t.Run(contentType+"/"+outcome, func(t *testing.T) {
+				store, ic := newResourceStore(t)
+				ic.Logger, ic.Metrics = audit.NewNop(), metrics.New()
+				ic.TargetHost, ic.TargetPort = "www.vendor.example", "443"
+				target := mustIssuerQueryURL(t, resourceCDN+resourceTok1+"/entry.js")
+				body := `<script src="` + target.String() + `"></script>`
+				if contentType == cssType {
+					body = `@import url("` + strings.TrimPrefix(target.String(), "https:") + `");`
+				}
+				upstream := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {contentType}},
+						Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: r,
+					}, nil
+				})
+				ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+				defer cancel()
+				writer := &resourceDeliveryWriter{
+					ResponseRecorder: httptest.NewRecorder(),
+					entered:          make(chan struct{}), release: make(chan struct{}), fail: outcome == "write fails",
+				}
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					newInterceptHandler(ic, upstream).ServeHTTP(writer,
+						httptest.NewRequestWithContext(ctx, http.MethodGet, "https://www.vendor.example/page", nil))
+				}()
+				var once sync.Once
+				release := func() { once.Do(func() { close(writer.release) }) }
+				defer func() { release(); <-done }()
+				select {
+				case <-writer.entered:
+				case <-done:
+					t.Fatalf("producer did not enter delivery: %d", writer.Code)
+				case <-ctx.Done():
+					t.Fatal("producer did not reach delivery")
+				}
+				session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
+				store.mu.Lock()
+				pending := len(store.deliveries)
+				store.mu.Unlock()
+				if pending != 1 || store.resourcePathIssued(session, target) {
+					t.Fatal("partial delivery must be pending, without usable resource evidence")
+				}
+				// Wait only for the exact path in the same trusted session.
+				if store.resourcePathIssuedContext(ctx, "another-session", target) ||
+					store.resourcePathIssuedContext(ctx, session, mustIssuerQueryURL(t, target.String()+"x")) {
+					t.Fatal("unrelated request acquired pending resource authority")
+				}
+				waiting := &issuedRedirectWaitContext{Context: ctx, waiting: make(chan struct{})}
+				result := make(chan bool, 1)
+				go func() { result <- store.resourcePathIssuedContext(waiting, session, target) }()
+				select {
+				case <-waiting.waiting:
+				case allowed := <-result:
+					t.Fatalf("resource completed before delivery: %v", allowed)
+				case <-ctx.Done():
+					t.Fatal("resource did not wait for delivery")
+				}
+				switch outcome {
+				case "revoked":
+					off := ic.Config.Clone()
+					off.RequestBodyScanning.IssuerBoundSessionCookies = false
+					if !ic.Proxy.Reload(off, scanner.MustNew(off)) {
+						t.Fatal("disabling reload failed")
+					}
+				case "cancelled":
+					cancel()
+				}
+				release()
+				<-done
+				if got := <-result; got != (outcome == "success") {
+					t.Fatalf("resource after %s = %v", outcome, got)
+				}
+				store.mu.Lock()
+				pending = len(store.deliveries)
+				store.mu.Unlock()
+				if pending != 0 {
+					t.Fatal("completed delivery leaked pending state")
+				}
+			})
+		}
+	}
+}

@@ -4,16 +4,19 @@
 package proxy
 
 import (
+	"context"
 	"crypto/hmac"
 	"errors"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/shield"
 )
 
 // issuerQueryResourcePath names the rule that admitted a request path only
@@ -133,6 +136,101 @@ func (s *issuerQueryStore) resourcePathIssued(session string, target *url.URL) b
 	return false
 }
 
+// resourcePathIssuedContext waits only for a matching producer already being
+// delivered to this session. Pending state grants nothing: every wake checks
+// the live generation and delivered evidence again under the same lock.
+func (s *issuerQueryStore) resourcePathIssuedContext(ctx context.Context, session string, target *url.URL) bool {
+	if s == nil || session == "" {
+		return false
+	}
+	digest, ok := s.pathDigest(target)
+	if !ok {
+		return false
+	}
+	for {
+		if ctx.Err() != nil {
+			return false
+		}
+		s.mu.Lock()
+		if s.disabled || s.retired {
+			s.mu.Unlock()
+			return false
+		}
+		if digestListed(s.resources[session], digest) || digestListed(s.derivedPaths[session], digest) {
+			s.used[session] = time.Now()
+			s.mu.Unlock()
+			return true
+		}
+		var done <-chan struct{}
+		if bucket := s.deliveries[session]; bucket != nil {
+			for delivery := range bucket.pending {
+				if digestListed(delivery.resourcePaths, digest) {
+					done = delivery.done
+					break
+				}
+			}
+		}
+		s.mu.Unlock()
+		if done == nil {
+			return false
+		}
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return false
+		}
+	}
+}
+
+// beginResourceDelivery registers matching-path notification before a clean
+// producer body is written. The existing delivered recorder remains the only
+// place that mints authority. Failed writes, capacity pressure and retired
+// generations therefore keep the ordinary path-entropy refusal.
+func (ic *InterceptContext) beginResourceDelivery(resp *http.Response, body []byte, proof issuerDeliveryProof) func() {
+	noop := func() {}
+	if ic == nil || !proof.cleanEnforced || proof.derived || resp == nil || resp.Request == nil || resp.Request.URL == nil {
+		return noop
+	}
+	store := ic.issuerQueryStore()
+	if store == nil || !asciiTransparentDocument(body, resp.Header.Get("Content-Type")) {
+		return noop
+	}
+	origin := resp.Request.URL
+	base := origin
+	var references []string
+	switch strings.ToLower(strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0])) {
+	case "text/html":
+		var baseHref string
+		_, references, baseHref, _ = htmlLinkScan(body, 0, issuerCookieMaxSetCookies, origin)
+		base, _ = sameOriginBase(origin, baseHref)
+	case "text/css":
+		references = shield.CSSResourceURLs(string(body), issuerCookieMaxSetCookies, crossOriginResourceFilter(origin, base, true))
+	default:
+		return noop
+	}
+	d := &issuedRedirectDelivery{done: make(chan struct{})}
+	for _, reference := range references {
+		ref, err := url.Parse(reference)
+		if err != nil {
+			continue
+		}
+		if !ref.IsAbs() {
+			if base == nil {
+				continue
+			}
+			ref = base.ResolveReference(ref)
+		}
+		if digest, ok := store.pathDigest(ref); ok {
+			d.resourcePaths = append(d.resourcePaths, digest)
+		}
+	}
+	session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
+	if store.registerIssuerDelivery(session, d) != nil {
+		return noop
+	}
+	return sync.OnceFunc(func() { store.finishIssuedRedirectDelivery(session, d) })
+}
+
 // resourceDerived reports whether target is known only through cross-origin
 // resource evidence. A path its own origin linked from a root response is a
 // root: the origin's own link outranks a declaration made by another origin.
@@ -239,6 +337,42 @@ func issuerExchangeEnforcedClean(ic *InterceptContext, facts interceptCleanFacts
 
 type htmlAttr struct{ key, val string }
 
+// crossOriginResourceFilter counts only distinct paths that could actually
+// become resource evidence. Its origin and path rules match pathDigest; query
+// strings and fragments neither create another slot nor receive authority.
+// Unknown or unusable document bases admit only absolute references.
+func crossOriginResourceFilter(origin, base *url.URL, baseKnown bool) func(string) bool {
+	host, port, validOrigin := issuerCookieOrigin(origin)
+	type pathKey struct{ host, port, path string }
+	seen := make(map[pathKey]bool)
+	return func(value string) bool {
+		if !validOrigin {
+			return false
+		}
+		ref, err := url.Parse(value)
+		if err != nil {
+			return false
+		}
+		if !ref.IsAbs() {
+			if !baseKnown || base == nil {
+				return false
+			}
+			ref = base.ResolveReference(ref)
+		}
+		refHost, refPort, ok := issuerCookieOrigin(ref)
+		path := issuerQueryPath(ref)
+		if !ok || (refHost == host && refPort == port) || len(path) > issuerCookieMaxPairBytes {
+			return false
+		}
+		key := pathKey{refHost, refPort, path}
+		if seen[key] {
+			return false
+		}
+		seen[key] = true
+		return true
+	}
+}
+
 // htmlResourceTags are the elements whose attributes can declare a resource.
 func htmlResourceTag(tag string) bool {
 	switch tag {
@@ -280,9 +414,9 @@ func scriptSourceFetched(scriptType string) bool {
 //
 // Anchors, forms, iframes, embeds, objects, prefetch, preconnect and anything a
 // script computes are navigation or unproven and are not resources.
-func htmlResourceRefs(tag string, attrs []htmlAttr, inPicture bool, out []string, limit int) []string {
+func htmlResourceRefs(tag string, attrs []htmlAttr, inPicture bool, out []string, limit int, accept func(string) bool) []string {
 	add := func(v string) {
-		if v = strings.TrimSpace(v); v != "" && len(out) < limit {
+		if v = strings.TrimSpace(v); v != "" && len(out) < limit && (accept == nil || accept(v)) {
 			out = append(out, v)
 		}
 	}

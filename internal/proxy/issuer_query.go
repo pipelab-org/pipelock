@@ -762,21 +762,23 @@ func recordDeliveredIssuerQueryProof(ic *InterceptContext, response *http.Respon
 		}
 		var references []string
 		if mediaType == "text/css" {
-			// A stylesheet's url() and @import are typed resource references,
-			// so they may also declare resources on another origin. The extra
-			// room keeps same-origin references from using up the lexer's limit
-			// before a CDN reference.
 			limit := pathRemaining
 			if mintResources {
 				limit += resourceRemaining
 			}
-			references = shield.CSSResourceURLs(string(body), limit)
+			references = shield.CSSResourceURLs(string(body), limit, nil)
 		} else {
 			references = scriptURLReferences(body, pathRemaining)
 		}
 		for _, reference := range references {
 			observe(reference, false, true)
-			if mediaType == "text/css" {
+		}
+		if mediaType == "text/css" && mintResources {
+			// Keep the existing same-origin observation above separate from
+			// resource admission. Filter before the bounded lexer list fills;
+			// placeholders and repeated or same-origin paths spend no slots.
+			accept := crossOriginResourceFilter(response.Request.URL, base, true)
+			for _, reference := range shield.CSSResourceURLs(string(body), resourceRemaining, accept) {
 				observeResource(reference)
 			}
 		}
@@ -803,7 +805,7 @@ func recordDeliveredIssuerQueryProof(ic *InterceptContext, response *http.Respon
 		if mintResources {
 			resourceLimit = resourceRemaining
 		}
-		links, resources, baseHref, baseKnown := htmlLinkScan(body, remaining, resourceLimit)
+		links, resources, baseHref, baseKnown := htmlLinkScan(body, remaining, resourceLimit, response.Request.URL)
 		docBase, usable := sameOriginBase(response.Request.URL, baseHref)
 		// usableLink reports whether the browser's resolution of a reference
 		// is known. A base Pipelock cannot honor, or cannot see, makes a

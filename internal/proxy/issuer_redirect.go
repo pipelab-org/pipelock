@@ -228,11 +228,13 @@ type issuedLocationEntry struct {
 	scope     [32]byte
 }
 
-// issuedRedirectDelivery is an in-flight header flush. Only keyed URL and
-// authority digests are retained. Closing done is notification, never evidence.
+// issuedRedirectDelivery coordinates in-flight headers or a resource producer's
+// body. Only keyed URL, authority and resource-path digests are retained.
+// Closing done is notification, never evidence.
 type issuedRedirectDelivery struct {
-	entries []issuedLocationEntry
-	done    chan struct{}
+	entries       []issuedLocationEntry
+	resourcePaths [][32]byte
+	done          chan struct{}
 }
 
 // issuedRedirectDeliverySet accounts for scopes, rather than just delivery
@@ -255,12 +257,36 @@ func (s *issuerQueryStore) beginIssuedRedirectDelivery(session string, target *u
 	}
 	host, port, _ := issuedRedirectAuthority(target)
 	entry := issuedLocationEntry{url: s.issuedLocationDigest(canonical), authority: s.issuedAuthorityDigest(host, port)}
+	d := &issuedRedirectDelivery{entries: make([]issuedLocationEntry, 0, len(scopes)), done: make(chan struct{})}
+	for scope := range scopes {
+		entry.scope = scope
+		d.entries = append(d.entries, entry)
+	}
+	if err := s.registerIssuerDelivery(session, d); err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+// registerIssuerDelivery shares the existing pending session/entry budget
+// between redirect headers and resource bodies, apart from delivered proof.
+func (s *issuerQueryStore) registerIssuerDelivery(session string, d *issuedRedirectDelivery) error {
+	if s == nil || session == "" {
+		return errors.New("invalid issuer delivery session")
+	}
+	count := len(d.entries) + len(d.resourcePaths)
+	if count == 0 || count > issuerCookieMaxEntries {
+		return errors.New("issuer delivery capacity exceeded")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.disabled || s.retired {
+		return errors.New("issuer delivery store is inactive")
+	}
 	bucket := s.deliveries[session]
 	if (bucket == nil && len(s.deliveries) >= issuerCookieMaxSessions) ||
-		(bucket != nil && len(scopes) > issuerCookieMaxEntries-bucket.entries) {
-		return nil, errors.New("issued redirect delivery capacity exceeded")
+		(bucket != nil && count > issuerCookieMaxEntries-bucket.entries) {
+		return errors.New("issuer delivery capacity exceeded")
 	}
 	if s.deliveries == nil {
 		s.deliveries = make(map[string]*issuedRedirectDeliverySet)
@@ -269,14 +295,9 @@ func (s *issuerQueryStore) beginIssuedRedirectDelivery(session string, target *u
 		bucket = &issuedRedirectDeliverySet{pending: make(map[*issuedRedirectDelivery]struct{})}
 		s.deliveries[session] = bucket
 	}
-	d := &issuedRedirectDelivery{entries: make([]issuedLocationEntry, 0, len(scopes)), done: make(chan struct{})}
-	for scope := range scopes {
-		entry.scope = scope
-		d.entries = append(d.entries, entry)
-	}
 	bucket.pending[d] = struct{}{}
-	bucket.entries += len(d.entries)
-	return d, nil
+	bucket.entries += count
+	return nil
 }
 
 func (s *issuerQueryStore) finishIssuedRedirectDelivery(session string, d *issuedRedirectDelivery) {
@@ -284,7 +305,7 @@ func (s *issuerQueryStore) finishIssuedRedirectDelivery(session string, d *issue
 	defer s.mu.Unlock()
 	bucket := s.deliveries[session]
 	delete(bucket.pending, d)
-	bucket.entries -= len(d.entries)
+	bucket.entries -= len(d.entries) + len(d.resourcePaths)
 	if bucket.entries == 0 {
 		delete(s.deliveries, session)
 	}
