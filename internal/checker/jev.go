@@ -4,11 +4,12 @@
 package checker
 
 import (
-	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/json"
 	"math"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 // JevAdapter identifies this adapter's request shape and fixed question.
@@ -136,8 +137,10 @@ func (j *Jev) Check(ctx context.Context, item Item, policy Policy) Assessment {
 
 func (j *Jev) decode(data []byte, item Item) Assessment {
 	var resp jevResponse
-	dec := json.NewDecoder(bytes.NewReader(data))
-	if err := dec.Decode(&resp); err != nil || dec.More() {
+	if err := jsonscan.RejectDuplicateFields(data, &resp); err != nil {
+		return failure(StatusInvalid, ReasonMalformed)
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
 		return failure(StatusInvalid, ReasonMalformed)
 	}
 	if resp.Model != nil && *resp.Model != j.model {
