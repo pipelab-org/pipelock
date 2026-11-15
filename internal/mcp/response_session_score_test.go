@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -165,6 +166,30 @@ func TestUpstreamMCPContentDoesNotEscalateSession(t *testing.T) {
 		assertRecorderUnchanged(t, rec)
 	})
 
+	t.Run("media policy block", func(t *testing.T) {
+		sc, cfg := newMCPScannerWithMediaPolicy(t)
+		cfg.AdaptiveEnforcement.Enabled = true
+		cfg.ApplyDefaults()
+		rec := &mockRecorder{}
+		var in strings.Builder
+		for i := 1; i <= 4; i++ {
+			fmt.Fprintf(&in, `{"jsonrpc":"2.0","id":%d,"result":{"content":[{"type":"video","mimeType":"video/mp4","data":"%s"}]}}`+"\n",
+				i, base64.StdEncoding.EncodeToString([]byte("fake video bytes")))
+		}
+		fmt.Fprintf(&in, "%s\n", toolResultLine(99, ordinaryToolText))
+		var out, logs bytes.Buffer
+		_, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(in.String())), transport.NewStdioWriter(&out), &logs, nil, MCPProxyOpts{
+			Scanner: sc, Rec: rec, AdaptiveCfg: &cfg.AdaptiveEnforcement, MediaPolicy: &cfg.MediaPolicy, Transport: testMCPMediaTransport,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := out.String()
+		if strings.Count(body, `"error"`) != 4 || strings.Contains(body, "video/mp4") || !strings.Contains(body, ordinaryToolText) || strings.Contains(body, `"code":-32001`) {
+			t.Fatalf("media policy verdicts: %s", body)
+		}
+		assertRecorderUnchanged(t, rec)
+	})
 	t.Run("stripped response", func(t *testing.T) {
 		cfg := config.Defaults()
 		cfg.Internal = nil

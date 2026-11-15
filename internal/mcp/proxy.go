@@ -469,8 +469,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					logReceiptEmitFailure(logW, emitErr, opts.requireReceipts(), config.ActionBlock)
 				}
 			}
+			// The refused media is content the server sent. Keep the block
+			// and record only the zero-point observation.
 			if adaptiveCfg != nil && adaptiveCfg.Enabled {
-				recordMCPAdaptiveSignal(opts, rec, session.SignalBlock, decide.EscalationParams{
+				recordMCPAdaptiveSignal(opts, rec, upstreamContentSignal(), decide.EscalationParams{
 					Threshold:     adaptiveCfg.EscalationThreshold,
 					Logger:        opts.AuditLogger,
 					Metrics:       m,
