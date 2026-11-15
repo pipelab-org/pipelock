@@ -36,13 +36,13 @@ func TestMCPBlockedProjectionFormats(t *testing.T) {
 					logger.LogBlockedDetail(ctx, "ssrf", "refused", BlockDetail{Class: BlockClassInfrastructureError})
 				}
 				event := sink.onlyEvent(t)
-				if _, ok := event.Fields["block_class"]; ok != mcp {
+				if event.Fields["block_class"] != BlockClassInfrastructureError {
 					t.Fatalf("method=%s mcp=%v fields=%v", method, mcp, event.Fields)
 				}
 				if _, ok := event.Fields["protocol"]; ok != mcp {
 					t.Fatalf("incorrect protocol: %v", event.Fields)
 				}
-				if local && strings.Contains(output.String(), `"block_class"`) != mcp {
+				if local && !strings.Contains(output.String(), `"block_class"`) {
 					t.Fatal(output.String())
 				}
 				if !local && output.Len() != 0 {
@@ -52,15 +52,15 @@ func TestMCPBlockedProjectionFormats(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if strings.Contains(string(encoded), `"block_class"`) != mcp {
+				if !strings.Contains(string(encoded), `"block_class"`) {
 					t.Fatal(string(encoded))
 				}
 				cef := emit.FormatCEFEvent(event, "fixture")
-				if strings.Contains(cef, "pipelockBlockClass=infrastructure_error") != mcp {
+				if !strings.Contains(cef, "pipelockBlockClass=infrastructure_error") {
 					t.Fatal(cef)
 				}
 				ocsf := emit.FormatOCSFEvent(event, "fixture")
-				if strings.Contains(ocsf, `"block_class":"infrastructure_error"`) != mcp {
+				if !strings.Contains(ocsf, `"block_class":"infrastructure_error"`) {
 					t.Fatal(ocsf)
 				}
 			}

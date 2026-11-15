@@ -30,6 +30,14 @@ import (
 // reason code conveys the layer; see requestPolicyBlockInfo).
 const blockLayerRequestPolicy = "request_policy"
 
+// requestPolicyAuditAction is the decision-counter label for a configured
+// block that audit mode observes instead of refusing.
+const requestPolicyAuditAction = "audit_block"
+
+// requestPolicyWouldBlockSuffix marks an anomaly whose enforce-mode action
+// would have been block.
+const requestPolicyWouldBlockSuffix = " would_block=true"
+
 // headerContentType is the request Content-Type header, used to populate
 // RequestMeta.ContentType for content_type-scoped rules.
 const headerContentType = "Content-Type"
@@ -100,9 +108,12 @@ type requestPolicyInput struct {
 // only for an enforced (non-shadow) block; warn and shadow matches return
 // Block=false after being logged and counted, so the request forwards.
 type requestPolicyResult struct {
-	Block  bool
-	Info   blockreason.Info
-	Reason string // operator-facing reason from the matched rule, safe to surface
+	Block bool
+	// Observed is true when audit mode forwarded a configured rule block.
+	// The request continues, and it does not earn clean adaptive credit.
+	Observed bool
+	Info     blockreason.Info
+	Reason   string // operator-facing reason from the matched rule, safe to surface
 }
 
 // evaluateRequestPolicy evaluates the active ruleset against a request. It
@@ -130,6 +141,8 @@ type requestPolicyBody struct {
 	jsonParsed  bool
 	exactURL    string
 	bodySHA256  string
+	// jsonAmbiguous is true when the body repeats an object key at any depth.
+	jsonAmbiguous bool
 }
 
 func requestPolicyMeta(host, method, path, contentType string, body requestPolicyBody) reqpolicy.RequestMeta {
@@ -138,6 +151,7 @@ func requestPolicyMeta(host, method, path, contentType string, body requestPolic
 		Operations: body.ops, JSONBody: body.jsonDoc, JSONBodyParsed: body.jsonParsed,
 		JSONDupKeys: body.jsonDupKeys,
 		ExactURL:    body.exactURL, JSONBodySHA256: body.bodySHA256,
+		JSONAmbiguous: body.jsonAmbiguous,
 	}
 }
 
@@ -276,10 +290,8 @@ func (p *Proxy) prepareRequestPolicyBody(r *http.Request, in *requestPolicyInput
 	// refused like any oversized body. A coding this path does not decode, or
 	// a body that does not decode completely, is not inspected: the original
 	// bytes stay forwardable and on_undecodable_encoding decides them. That
-	// action is separate from on_parse_error. The block is content that was
-	// not inspected, so it stays refused when enforce is false. finalize
-	// already refuses every enforced request-policy block and does not consult
-	// EnforceEnabled.
+	// action is separate from on_parse_error. The decision is unmarked, so
+	// an enforced block stays refused when enforce is false.
 	inspected := raw
 	wire := raw
 	undecodable := false
@@ -434,7 +446,10 @@ func (p *Proxy) evaluateRequestPolicyBodyPredicates(in requestPolicyInput) reqpo
 	jsonDoc, jsonDupKeys, jsonParsed := parseRequestPolicyJSONBody(in)
 	body := requestPolicyBody{ops: ops, jsonDoc: jsonDoc, jsonDupKeys: jsonDupKeys, jsonParsed: jsonParsed}
 	meta := requestPolicyMeta(in.Host, in.Method, in.Path, in.ContentType, body)
-	if jsonParsed && m.NeedsExactRequest(meta) && jsonscan.RejectDuplicateKeys(in.Body) == nil {
+	if jsonParsed && m.NeedsExactRequest(meta) && jsonscan.RejectDuplicateKeys(in.Body) != nil {
+		body.jsonAmbiguous = true
+	}
+	if jsonParsed && m.NeedsExactRequest(meta) && !body.jsonAmbiguous {
 		u, urlErr := url.Parse(in.Target)
 		canonical, canonOK := config.CanonicalExactRequestURL(in.Target)
 		mediaType, _, typeErr := mime.ParseMediaType(in.ContentType)
@@ -468,6 +483,14 @@ func (p *Proxy) finalizeRequestPolicyDecision(in requestPolicyInput, d reqpolicy
 	if !d.Matched() {
 		return requestPolicyResult{}
 	}
+	if p.requestPolicyAuditLift(in, d) {
+		// A configured rule block on inspected content is observed. Nil config
+		// and every unmarked block stay on the refusal path below.
+		p.metrics.RecordRequestPolicyDecision(d.RuleName, requestPolicyAuditAction)
+		detail := fmt.Sprintf("rule=%s action=%s shadow=%t%s", d.RuleName, d.Action, d.Shadow, requestPolicyWouldBlockSuffix)
+		p.logger.LogAnomaly(in.AuditCtx, blockLayerRequestPolicy, detail, 0)
+		return requestPolicyResult{Observed: true}
+	}
 	p.metrics.RecordRequestPolicyDecision(d.RuleName, d.Action)
 
 	if !d.Enforced() || d.Action != config.ActionBlock {
@@ -490,7 +513,7 @@ func (p *Proxy) finalizeRequestPolicyDecision(in requestPolicyInput, d reqpolicy
 		// receipt pattern and the metric label stay the bare rule name.
 		blockDetail += ": " + requestPolicyUndecodableReason
 	}
-	p.logger.LogBlocked(in.AuditCtx, blockLayerRequestPolicy, blockDetail)
+	p.logger.LogBlockedDetail(in.AuditCtx, blockLayerRequestPolicy, blockDetail, audit.BlockDetail{Class: forwardDenialClass(forwardDenialRequestPolicy)})
 	actionID := ""
 	if in.Emit != nil {
 		candidateActionID := receipt.NewActionID()
@@ -513,6 +536,23 @@ func (p *Proxy) finalizeRequestPolicyDecision(in requestPolicyInput, d reqpolicy
 		reason = d.RuleName
 	}
 	return requestPolicyResult{Block: true, Info: p.requestPolicyBlockInfo(actionID), Reason: reason}
+}
+
+// requestPolicyAuditLift reports whether this block is a configured rule
+// match that audit mode observes. The rules are read live on every call, so
+// the enforce flag is too: the admitted config and the live config must both
+// have enforcement off. A tunnel or socket admitted in audit mode therefore
+// refuses once a reload turns enforcement on, and one admitted under
+// enforcement keeps refusing after a reload turns it off. A nil config on
+// either side refuses.
+func (p *Proxy) requestPolicyAuditLift(in requestPolicyInput, d reqpolicy.Decision) bool {
+	if in.Config == nil || in.Config.EnforceEnabled() {
+		return false
+	}
+	if live := p.cfgPtr.Load(); live == nil || live.EnforceEnabled() {
+		return false
+	}
+	return d.Enforced() && d.Action == config.ActionBlock && d.RuleMatch
 }
 
 // requestPolicyBlockInfo builds the X-Pipelock-Block-Reason metadata for a

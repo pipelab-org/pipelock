@@ -297,6 +297,189 @@ func TestStricter(t *testing.T) {
 	}
 }
 
+func TestRuleMatchMerge(t *testing.T) {
+	t.Parallel()
+	marked := Decision{Action: config.ActionBlock, RuleName: "marked", RuleMatch: true}
+	unmarked := Decision{Action: config.ActionBlock, RuleName: "floor"}
+	shadowMarked := Decision{Action: config.ActionBlock, RuleName: "shadow", Shadow: true, RuleMatch: true}
+	shadowFloor := Decision{Action: config.ActionBlock, RuleName: "shadow-floor", Shadow: true}
+	warn := Decision{Action: config.ActionWarn, RuleName: "warn"}
+	allow := Decision{}
+	cases := []struct {
+		name       string
+		a, b       Decision
+		wantName   string
+		wantMatch  bool
+		wantShadow bool
+	}{
+		{"marked then unmarked", marked, unmarked, "floor", false, false},
+		{"unmarked then marked", unmarked, marked, "marked", false, false},
+		{"two marked blocks keep the tie", marked, Decision{Action: config.ActionBlock, RuleName: "second", RuleMatch: true}, "second", true, false},
+		{"marked block beats unmarked warn", marked, warn, "marked", true, false},
+		{"unmarked warn then marked block", warn, marked, "marked", true, false},
+		{"allow does not clear a marked block", allow, marked, "marked", true, false},
+		{"shadow marked loses to enforced marked", shadowMarked, marked, "marked", true, false},
+		{"enforced marked keeps the mark beside a shadow floor", marked, shadowFloor, "marked", true, false},
+		{"shadow floor then enforced marked", shadowFloor, marked, "marked", true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := Stricter(tc.a, tc.b)
+			if got.RuleName != tc.wantName || got.RuleMatch != tc.wantMatch || got.Shadow != tc.wantShadow {
+				t.Fatalf("Stricter(%s, %s) = %+v", tc.a.RuleName, tc.b.RuleName, got)
+			}
+			rev := Stricter(tc.b, tc.a)
+			if tc.name == "two marked blocks keep the tie" {
+				if rev.RuleMatch != tc.wantMatch {
+					t.Fatalf("reverse mark = %v", rev.RuleMatch)
+				}
+				return
+			}
+			if rev.RuleMatch != tc.wantMatch {
+				t.Fatalf("reverse Stricter = %+v", rev)
+			}
+		})
+	}
+}
+
+func TestRuleMatchProducers(t *testing.T) {
+	t.Parallel()
+	inspected := mustMatcher(t, config.RequestPolicyRule{
+		Name: "marked", Action: config.ActionBlock,
+		Route: config.RequestPolicyRoute{Hosts: []string{"api.example.com"}, Methods: []string{http.MethodPost}},
+	})
+	got := inspected.Evaluate(RequestMeta{Host: "api.example.com", Method: http.MethodPost, Path: "/v1/jobs/1"})
+	if !got.RuleMatch || got.Action != config.ActionBlock {
+		t.Fatalf("inspected rule = %+v", got)
+	}
+	var nilM *Matcher
+	if d := nilM.Evaluate(RequestMeta{}); d.RuleMatch || d.Matched() {
+		t.Fatalf("nil matcher = %+v", d)
+	}
+	if (Decision{}).RuleMatch {
+		t.Fatal("zero decision is marked")
+	}
+
+	exceptM, err := NewMatcher(&config.RequestPolicy{
+		Enabled: true, OnParseError: config.ActionAllow,
+		Rules: []config.RequestPolicyRule{exactExceptionRule()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exceptMeta := RequestMeta{Host: "api.service.example.com", Method: http.MethodPost, Path: "/messages/1/move"}
+	exceptDecision := exceptM.EvaluateUninspectable(exceptMeta, config.ActionAllow, PredDiscriminator)
+	if exceptDecision.Action != config.ActionBlock || exceptDecision.RuleMatch {
+		t.Fatalf("uninspectable except = %+v", exceptDecision)
+	}
+
+	disc, err := NewMatcher(&config.RequestPolicy{
+		Enabled: true, OnOpaqueOperation: config.ActionBlock,
+		Rules: []config.RequestPolicyRule{discRule()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opaque := RequestMeta{
+		Host: "api.service.example.com", Method: http.MethodPost, JSONBodyParsed: true,
+		JSONBody: map[string]any{"action": "list"}, JSONDupKeys: map[string]struct{}{"action": {}},
+	}
+	if d := disc.Evaluate(opaque); d.Action != config.ActionBlock || d.RuleMatch {
+		t.Fatalf("opaque discriminator = %+v", d)
+	}
+
+	batch, err := NewMatcher(&config.RequestPolicy{
+		Enabled: true, OnParseError: config.ActionBlock,
+		Rules: []config.RequestPolicyRule{{
+			Name: "marked", Action: config.ActionBlock,
+			Route: config.RequestPolicyRoute{PathPatterns: []string{`/sendMail$`}},
+		}},
+		Batch: []config.RequestPolicyBatch{{
+			Route:          config.RequestPolicyRoute{PathPatterns: []string{`/\$batch$`}},
+			RequestsField:  "requests",
+			MethodField:    "method",
+			URLField:       "url",
+			BodyField:      "body",
+			MaxSubRequests: 64,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	batchMeta := RequestMeta{Host: "graph.example.com", Method: http.MethodPost, Path: "/v1.0/$batch"}
+	if d := batch.UninspectableBatch(batchMeta, config.ActionBlock); d.Action != config.ActionBlock || d.RuleMatch {
+		t.Fatalf("uninspectable batch = %+v", d)
+	}
+	dupBody := []byte(`{"requests":[{"method":"POST","url":"/sendMail"}],"requests":[{"method":"GET","url":"/me"}]}`)
+	dupDecision, dupOK := batch.EvaluateBatch(batchMeta, dupBody)
+	if dupOK || dupDecision.Action != config.ActionBlock || dupDecision.RuleMatch {
+		t.Fatalf("duplicate batch keys ok=%v decision=%+v", dupOK, dupDecision)
+	}
+	mixed := []byte(`{"requests":[` +
+		`{"method":"POST","url":"/v1.0/me/sendMail","body":{}},` +
+		`{"method":"POST","url":"/v1.0/$batch","body":{"query":"mutation { deleteRecord "}}` +
+		`]}`)
+	// The second sub-request is itself a batch whose body cannot be parsed.
+	// Give that nested route a GraphQL predicate so the parse failure is a block.
+	nested, err := NewMatcher(&config.RequestPolicy{
+		Enabled: true, OnParseError: config.ActionBlock,
+		Rules: []config.RequestPolicyRule{
+			{Name: "marked", Action: config.ActionBlock, Route: config.RequestPolicyRoute{PathPatterns: []string{`/sendMail$`}}},
+			{
+				Name: "gql", Action: config.ActionBlock, Route: config.RequestPolicyRoute{PathPatterns: []string{`/\$batch$`}},
+				GraphQL: &config.RequestPolicyGraphQL{OperationTypes: []string{"mutation"}},
+			},
+		},
+		Batch: []config.RequestPolicyBatch{{
+			Route:          config.RequestPolicyRoute{PathPatterns: []string{`/\$batch$`}},
+			RequestsField:  "requests",
+			MethodField:    "method",
+			URLField:       "url",
+			BodyField:      "body",
+			MaxSubRequests: 64,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mixedDecision, mixedOK := nested.EvaluateBatch(batchMeta, mixed)
+	if !mixedOK || mixedDecision.Action != config.ActionBlock || mixedDecision.RuleMatch {
+		t.Fatalf("mixed batch ok=%v decision=%+v", mixedOK, mixedDecision)
+	}
+	warnNested, err := NewMatcher(&config.RequestPolicy{
+		Enabled: true, OnParseError: config.ActionWarn,
+		Rules: []config.RequestPolicyRule{
+			{Name: "marked", Action: config.ActionBlock, Route: config.RequestPolicyRoute{PathPatterns: []string{`/sendMail$`}}},
+			{
+				Name: "gql", Action: config.ActionBlock, Route: config.RequestPolicyRoute{PathPatterns: []string{`/\$batch$`}},
+				GraphQL: &config.RequestPolicyGraphQL{OperationTypes: []string{"mutation"}},
+			},
+		},
+		Batch: []config.RequestPolicyBatch{{
+			Route:          config.RequestPolicyRoute{PathPatterns: []string{`/\$batch$`}},
+			RequestsField:  "requests",
+			MethodField:    "method",
+			URLField:       "url",
+			BodyField:      "body",
+			MaxSubRequests: 64,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	warnDecision, warnOK := warnNested.EvaluateBatch(batchMeta, mixed)
+	if !warnOK || !warnDecision.RuleMatch || warnDecision.Action != config.ActionBlock {
+		t.Fatalf("warn sibling must keep the marked block ok=%v decision=%+v", warnOK, warnDecision)
+	}
+	deep := nested.evaluateSubRequest("graph.example.com", batchSubRequest{
+		method: http.MethodPost, path: "/v1.0/$batch", body: []byte(`{"requests":[]}`),
+	}, maxBatchDepth-1)
+	if deep.Action != config.ActionBlock || deep.RuleMatch {
+		t.Fatalf("nested depth = %+v", deep)
+	}
+}
+
 func TestNewMatcher_BadPattern(t *testing.T) {
 	_, err := NewMatcher(&config.RequestPolicy{Enabled: true, Rules: []config.RequestPolicyRule{{
 		Name:   "bad",

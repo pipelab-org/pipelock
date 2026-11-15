@@ -396,8 +396,11 @@ func (l *Logger) LogBlockedDetail(ctx LogContext, scanner, reason string, detail
 		optStr("display_label", displayLabel).
 		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scanner, reason)).
 		optStr("mitre_technique", technique)
+	if detail.Class != "" {
+		e.optStr("block_class", detail.Class)
+	}
 	if ctx.mcp {
-		e.optStr("block_class", detail.Class).str("protocol", "mcp").optStr("transport", ctx.mcpTransport).optStr("direction", ctx.mcpDirection)
+		e.str("protocol", "mcp").optStr("transport", ctx.mcpTransport).optStr("direction", ctx.mcpDirection)
 	}
 	if len(detail.Patterns) > 0 {
 		e.strs("patterns", detail.Patterns)

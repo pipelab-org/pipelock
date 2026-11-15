@@ -106,6 +106,21 @@ func (e *exactException) matches(meta RequestMeta) bool {
 	return ok
 }
 
+// ambiguous reports whether a parsed body cannot be compared with the
+// exception: repeated keys for an exact request, or a non-object body, a
+// repeated field or an alias of the field for a field exception.
+func (e *exactException) ambiguous(meta RequestMeta) bool {
+	if len(e.requests) > 0 {
+		return meta.JSONAmbiguous
+	}
+	obj, ok := meta.JSONBody.(map[string]any)
+	if !ok {
+		return true
+	}
+	_, duplicated := meta.JSONDupKeys[e.field]
+	return duplicated || jsonscan.HasKeyAlias(obj, e.field)
+}
+
 // compileDiscriminatorPredicate compiles a rule's discriminator predicate,
 // returning nil when the rule has none. Field and patterns are validated at
 // config load, so a compile failure here is defense in depth.

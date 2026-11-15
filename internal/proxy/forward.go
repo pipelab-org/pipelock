@@ -609,6 +609,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	connectRPInput := requestPolicyInput{
 		Host:        host,
 		Method:      http.MethodConnect,
+		Config:      cfg,
 		Path:        "/",
 		ContentType: "",
 		Headers:     r.Header,
@@ -622,7 +623,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			return p.emitRequestPolicyReceipt(withReceiptConfig(withReceiptShard(opts, selectedReceiptShard), cfg))
 		},
 	}
-	if rp := p.applyRequestPolicy(connectRPInput); rp.Block {
+	rp := p.applyRequestPolicy(connectRPInput)
+	if rp.Block {
 		p.metrics.RecordTunnelBlocked(agentLabel)
 		writeBlockedError(w, rp.Info.WithRequestID(requestID), "CONNECT blocked by request policy: "+rp.Reason, http.StatusForbidden)
 		return
@@ -666,7 +668,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if connectRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
+	if connectRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !rp.Observed {
 		recordCleanForAdaptiveScope(connectRec, adaptiveScopeForHost(host), &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{})
 	}
 
@@ -2173,6 +2175,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			return p.emitRequestPolicyReceipt(withReceiptConfig(withReceiptShard(opts, selectedReceiptShard), cfg))
 		},
 	}
+	policyObserved := new(atomic.Bool)
 	if rp := p.prepareRequestPolicyBody(r, &rpInput); rp.Block {
 		p.metrics.RecordBlocked(r.URL.Hostname(), blockLayerRequestPolicy, time.Since(start), agentLabel)
 		writeBlockedError(w, rp.Info.WithRequestID(requestID), "blocked by request policy: "+rp.Reason, http.StatusForbidden)
@@ -2182,6 +2185,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		p.metrics.RecordBlocked(r.URL.Hostname(), blockLayerRequestPolicy, time.Since(start), agentLabel)
 		writeBlockedError(w, rp.Info.WithRequestID(requestID), "blocked by request policy: "+rp.Reason, http.StatusForbidden)
 		return
+	} else if rp.Observed {
+		policyObserved.Store(true)
 	}
 
 	killSwitchActive := false
@@ -2275,6 +2280,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportForward)
 	redirectExempt := new(atomic.Bool)
 	ctx = context.WithValue(ctx, ctxKeyRedirectStructuralExemption, redirectExempt)
+	ctx = context.WithValue(ctx, ctxKeyRequestPolicyObserved, policyObserved)
 	ctx = context.WithValue(ctx, ctxKeyReceiptShard, selectedReceiptShard)
 	ctx = context.WithValue(ctx, ctxKeyRedirectSessionRecorder, forwardRec)
 	if forwardAirlockSess != nil {
@@ -2805,7 +2811,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			outcomeStatus = strconv.Itoa(resp.StatusCode)
 			outcomeBytes = 0
 			outcomeReason = "complete"
-			if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact && !result.IsStructuralExemption() && !redirectExempt.Load() {
+			if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact && !result.IsStructuralExemption() && !redirectExempt.Load() && !policyObserved.Load() {
 				forwardScope := adaptiveScopeForHost(fwdRespHost)
 				recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, !fwdRespExempt && !fwdAuthenticatedArtifact, adaptiveRecoveryContext{
 					sessionKey: sessionKeyFor(cfg, agent, clientIP, id.Auth),
@@ -2889,7 +2895,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		outcomeStatus = strconv.Itoa(resp.StatusCode)
 		outcomeBytes = written
 		outcomeReason = streamCloseReason(copyErr, written, configMaxBytes, "complete")
-		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
+		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact && !policyObserved.Load() {
 			recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(fwdRespHost), &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{})
 		}
 		return
@@ -3051,7 +3057,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						outcomeStatus = strconv.Itoa(resp.StatusCode)
 						outcomeBytes = written
 						outcomeReason = "unscannable_passthrough"
-						if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
+						if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !policyObserved.Load() {
 							recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(fwdRespHost), &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{})
 						}
 						return
@@ -3544,7 +3550,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			outcomeReason = "budget_truncated"
 		}
 		// A structural exemption is adaptive-neutral and earns no clean credit.
-		if structured == nil && forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact && !result.IsStructuralExemption() && !redirectExempt.Load() {
+		if structured == nil && forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact && !result.IsStructuralExemption() && !redirectExempt.Load() && !policyObserved.Load() {
 			forwardScope := adaptiveScopeForHost(fwdRespHost)
 			recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, sc.ResponseScanningEnabled() && !responseBudgetTruncated && !fwdRespExempt && !fwdAuthenticatedArtifact, adaptiveRecoveryContext{
 				assessment: recoveryAssessment,
@@ -3602,7 +3608,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if responseBudgetTruncated {
 		outcomeReason = "budget_truncated"
 	}
-	if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
+	if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact && !policyObserved.Load() {
 		recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(fwdRespHost), &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{})
 	}
 }
