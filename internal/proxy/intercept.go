@@ -2344,22 +2344,15 @@ func newInterceptHandler(
 
 		// Redirect evidence depends on delivered headers, not body completion.
 		// Keep a failed flush on the existing incomplete-stream outcome path.
-		finishResourceDelivery := func() {}
-		resourceDeliveryStarted := false
-		beginResourceDelivery := func(body []byte) {
-			if !resourceDeliveryStarted {
-				finishResourceDelivery = ic.beginResourceDelivery(resp, body, issuerProof)
-				resourceDeliveryStarted = true
-			}
-		}
-		defer func() { finishResourceDelivery() }()
+		var resourceDelivery resourceDeliveryNotification
+		defer resourceDelivery.complete()
 		flushIssuedRedirect := func() bool {
 			// A declared resource cannot turn an operator's root-route
 			// delegation into onward authority for another origin.
 			if issuerProof.derived {
 				// Streaming paths can issue a same-origin Location only after
 				// completion. Notify follow-ups before those headers are visible.
-				beginResourceDelivery(nil)
+				resourceDelivery.begin(ic, resp, nil, issuerProof)
 				w.WriteHeader(resp.StatusCode)
 				return false
 			}
@@ -3337,7 +3330,7 @@ func newInterceptHandler(
 			responseScanExempt:    interceptRespExempt,
 			authenticatedArtifact: interceptAuthenticatedArtifact,
 		})
-		beginResourceDelivery(respBody)
+		resourceDelivery.begin(ic, resp, respBody, issuerProof)
 		// Follow-ups can start when Location headers become visible, before
 		// body completion. Register notification before either is delivered.
 		if flushIssuedRedirect() {
@@ -3349,7 +3342,7 @@ func newInterceptHandler(
 		delivered := writeErr == nil && written == len(respBody)
 		recordDeliveredIssuerCookies(ic, r, resp, delivered)
 		recordDeliveredIssuerQueryProof(ic, resp, respBody, delivered, issuerProof)
-		finishResourceDelivery()
+		resourceDelivery.complete()
 		closeReason := "complete"
 		if !delivered {
 			closeReason = receiptReasonIncomplete

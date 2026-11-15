@@ -187,6 +187,22 @@ func (s *issuerQueryStore) resourcePathIssuedContext(ctx context.Context, sessio
 	}
 }
 
+// resourceDeliveryNotification retains one producer's completion callback for
+// either the buffered or streaming response path. Repeated completion is safe.
+type resourceDeliveryNotification struct{ finish func() }
+
+func (d *resourceDeliveryNotification) begin(ic *InterceptContext, resp *http.Response, body []byte, proof issuerDeliveryProof) {
+	if d.finish == nil {
+		d.finish = ic.beginResourceDelivery(resp, body, proof)
+	}
+}
+
+func (d *resourceDeliveryNotification) complete() {
+	if d.finish != nil {
+		d.finish()
+	}
+}
+
 // beginResourceDelivery registers matching-path notification before a clean
 // producer body is written. The existing delivered recorder remains the only
 // place that mints authority. Failed writes, capacity pressure and retired
