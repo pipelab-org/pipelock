@@ -6,7 +6,9 @@ package scanner
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -29,6 +31,48 @@ func benchResponseConfig() *config.Config {
 }
 
 // --- URL scanning benchmarks ---
+
+// BenchmarkScan_ForwardDistinctParallel exercises a shared scanner with the
+// distinct destinations used by the concurrent forward-proxy receipt load.
+func BenchmarkScan_ForwardDistinctParallel(b *testing.B) {
+	s := MustNew(benchConfig())
+	b.Cleanup(s.Close)
+	credential := "ghp_" + strings.Repeat("A", 36)
+	if result := s.Scan(context.Background(), "http://r000001.load.example:41234/?wk="+credential); result.Allowed || result.Scanner != ScannerCoreDLP {
+		b.Fatalf("credential fixture did not reach core DLP: %+v", result)
+	}
+	var sequence atomic.Uint64
+	b.SetParallelism((128 + runtime.GOMAXPROCS(0) - 1) / runtime.GOMAXPROCS(0))
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			n := sequence.Add(1)
+			token := fmt.Sprintf("value%016d", n)
+			if n%20 == 0 {
+				token = credential
+			}
+			target := fmt.Sprintf("http://r%06d.load.example:41234/?wk=%s", n, token)
+			s.Scan(context.Background(), target)
+		}
+	})
+}
+
+// BenchmarkScanText_ForwardDistinctParallel covers receipt content inspection,
+// which also scans destination strings through the shared scanner.
+func BenchmarkScanText_ForwardDistinctParallel(b *testing.B) {
+	s := MustNew(benchConfig())
+	b.Cleanup(s.Close)
+	var sequence atomic.Uint64
+	b.SetParallelism((128 + runtime.GOMAXPROCS(0) - 1) / runtime.GOMAXPROCS(0))
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			n := sequence.Add(1)
+			target := fmt.Sprintf("http://r%06d.load.example:41234/ok?wk=s1-r0123456789abcdef-m%06d", n, n)
+			s.ScanTextForDLPQuiet(context.Background(), target)
+		}
+	})
+}
 
 func BenchmarkScan_AllowedURL(b *testing.B) {
 	s := MustNew(benchConfig())

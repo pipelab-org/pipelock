@@ -119,9 +119,21 @@ func TestReassemblyEmptyRetentionBounds(t *testing.T) {
 	for index := range maxDecodeCandidates {
 		p.emptyTerminals[assembledEmptyKey{p, string(rune(index)), textDLPAllPatterns, false}] = struct{}{}
 	}
+	existing := assembledEmptyKey{p, string(rune(1)), textDLPAllPatterns, false}
+	if !p.emptyTerminal(existing, true) {
+		t.Fatal("full cache lost existing proof")
+	}
 	p.emptyTerminal(key, true)
 	if len(p.emptyTerminals) != maxDecodeCandidates || p.emptyTerminal(key, false) {
 		t.Fatal("entry retention limit ignored")
+	}
+	body := reassemblyBang(base64.RawStdEncoding.EncodeToString([]byte("MARK1234")))
+	memo := &decodingMemo{reassemblyPlan: p, reassemblyDeferred: true}
+	memo.reassemblyObserve(body)
+	got := finishAssembled(TextDLPResult{Clean: true}, memo)
+	memo.releaseProjection()
+	if got.Clean || len(got.Matches) == 0 {
+		t.Fatal("full cache suppressed a finding", got)
 	}
 }
 
