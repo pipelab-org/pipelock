@@ -432,18 +432,26 @@ func TestRequestPolicyAuditModeMatrix(t *testing.T) {
 	}
 }
 
-func TestRequestPolicyAuditModeKeepsAdmittedConfig(t *testing.T) {
+// The observation needs enforcement off in both the admitted config and the
+// live one, so a reload in either direction can only make an open connection
+// stricter.
+func TestRequestPolicyAuditModeNeedsAdmittedAndLiveAudit(t *testing.T) {
 	t.Parallel()
 	admitted := policyAuditConfig(false, blockRule(http.MethodDelete))
 	p, logs, _ := policyAuditRig(t, admitted)
+	res := p.applyRequestPolicy(auditDecisionInput(admitted))
+	assertAuditDecision(t, true, res, logs.String())
+
 	live := policyAuditConfig(true, blockRule(http.MethodDelete))
 	liveScanner := scanner.MustNew(live)
 	t.Cleanup(liveScanner.Close)
 	if !p.Reload(live, liveScanner) {
 		t.Fatal("reload to enforce")
 	}
-	res := p.applyRequestPolicy(auditDecisionInput(admitted))
-	assertAuditDecision(t, true, res, logs.String())
+	stale := p.applyRequestPolicy(auditDecisionInput(admitted))
+	if !stale.Block || stale.Observed {
+		t.Fatalf("admitted audit kept observing after a reload to enforce: %+v", stale)
+	}
 
 	back := policyAuditConfig(false, blockRule(http.MethodDelete))
 	backScanner := scanner.MustNew(back)

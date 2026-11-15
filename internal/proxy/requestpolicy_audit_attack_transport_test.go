@@ -295,12 +295,18 @@ func TestRequestPolicyAuditAttackReverseRewrite(t *testing.T) {
 
 func attackWS(t *testing.T, enforce bool, allowBinary bool, rules []config.RequestPolicyRule, parse string) (string, *attackLogBuffer) {
 	t.Helper()
+	addr, logs, _ := attackWSProxy(t, enforce, allowBinary, rules, parse)
+	return addr, logs
+}
+
+func attackWSProxy(t *testing.T, enforce bool, allowBinary bool, rules []config.RequestPolicyRule, parse string) (string, *attackLogBuffer, *Proxy) {
+	t.Helper()
 	logs := &attackLogBuffer{}
 	logger, err := audit.NewWithStream("json", "stdout", "", true, true, logs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	addr, _, cleanup := setupWSProxyWithLogger(t, logger, func(cfg *config.Config) {
+	addr, p, cleanup := setupWSProxyWithLogger(t, logger, func(cfg *config.Config) {
 		flag := enforce
 		cfg.Enforce = &flag
 		cfg.RequestPolicy.Enabled = true
@@ -312,7 +318,7 @@ func attackWS(t *testing.T, enforce bool, allowBinary bool, rules []config.Reque
 	}, nil, nil)
 	t.Cleanup(logger.Close)
 	t.Cleanup(cleanup)
-	return addr, logs
+	return addr, logs, p
 }
 
 func attackWSClose(t *testing.T, conn net.Conn) ws.StatusCode {
@@ -381,6 +387,49 @@ func TestRequestPolicyAuditAttackWebSocketFrames(t *testing.T) {
 			}
 			_ = conn.Close()
 		}
+	})
+	t.Run("G4_reload_on_open_socket", func(t *testing.T) {
+		frame := []byte(`{"action":"deleteAll"}`)
+		// Admitted in audit mode: the first frame is observed, and the same
+		// socket refuses the next one once a reload turns enforcement on.
+		addr, logs, p := attackWSProxy(t, false, false, []config.RequestPolicyRule{disc}, config.ActionAllow)
+		conn := dialWS(t, addr, backend)
+		if err := wsutil.WriteClientMessage(conn, ws.OpText, frame); err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if reply, _, err := wsutil.ReadServerData(conn); err != nil || !bytes.Equal(reply, frame) {
+			t.Fatalf("audit frame reply=%q err=%v logs=%s", reply, err, logs.String())
+		}
+		attackFlipEnforce(t, p, true)
+		before := frames()
+		if err := wsutil.WriteClientMessage(conn, ws.OpText, frame); err != nil {
+			t.Fatal(err)
+		}
+		if code := attackWSClose(t, conn); code != ws.StatusPolicyViolation {
+			t.Fatalf("close after reload to enforce=%d logs=%s", code, logs.String())
+		}
+		if frames() != before {
+			t.Fatalf("frame reached upstream after reload to enforce: %d -> %d", before, frames())
+		}
+		_ = conn.Close()
+
+		// Admitted under enforcement: a reload to audit mode does not loosen
+		// the open socket.
+		addr, logs, p = attackWSProxy(t, true, false, []config.RequestPolicyRule{disc}, config.ActionAllow)
+		conn = dialWS(t, addr, backend)
+		attackFlipEnforce(t, p, false)
+		before = frames()
+		if err := wsutil.WriteClientMessage(conn, ws.OpText, frame); err != nil {
+			t.Fatal(err)
+		}
+		if code := attackWSClose(t, conn); code != ws.StatusPolicyViolation {
+			t.Fatalf("close after reload to audit=%d logs=%s", code, logs.String())
+		}
+		if frames() != before {
+			t.Fatalf("frame reached upstream on a socket admitted under enforcement: %d -> %d", before, frames())
+		}
+		_ = conn.Close()
 	})
 	t.Run("G4_text_not_json", func(t *testing.T) {
 		for _, enforce := range []bool{true, false} {
@@ -466,8 +515,10 @@ func TestRequestPolicyAuditAttackReload(t *testing.T) {
 					return &attackReadHook{rest: bytes.NewReader(plain), hook: func() { attackFlipEnforce(t, p, true) }}
 				},
 			})
-			if obs.status != http.StatusOK || obs.upstream != 1 || !strings.Contains(obs.logs, "would_block=true") || strings.Contains(obs.logs, `"event":"blocked"`) {
-				t.Fatalf("admitted audit status=%d upstream=%d logs=%s", obs.status, obs.upstream, obs.logs)
+			// Enforcement turned on while the body was being read: the live
+			// flag wins and the request refuses.
+			if obs.status != http.StatusForbidden || obs.upstream != 0 || obs.reason != "request_policy_deny" || strings.Contains(obs.logs, "would_block=true") {
+				t.Fatalf("admitted audit, reloaded to enforce status=%d upstream=%d reason=%q logs=%s", obs.status, obs.upstream, obs.reason, obs.logs)
 			}
 		})
 		t.Run("H1_admitted_enforce/"+transport, func(t *testing.T) {
@@ -513,20 +564,19 @@ func TestRequestPolicyAuditAttackReload(t *testing.T) {
 			TargetHost: rpTestHost, TargetPort: "443", Config: admittedOff, Scanner: p.scannerPtr.Load(),
 			Logger: p.logger, Metrics: p.metrics, Proxy: p, RequestID: "audit-h2", ClientIP: "192.0.2.1",
 		}
-		var hits atomic.Int32
+		// The tunnel was admitted in audit mode and outlives a reload to
+		// enforce: its inner requests refuse from then on.
 		handler := newInterceptHandler(ic, roundTripFunc(func(*http.Request) (*http.Response, error) {
-			hits.Add(1)
-			rec := httptest.NewRecorder()
-			rec.WriteHeader(http.StatusOK)
-			return rec.Result(), nil
+			t.Fatal("inner request reached upstream after reload to enforce")
+			return nil, nil
 		}))
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://"+rpTestHost+"/v1/upload", bytes.NewReader(body))
 		req.Host = rpTestHost
 		req.Header.Set(headerContentType, contentTypeJSON)
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, req)
-		if w.Code != http.StatusOK || hits.Load() != 1 {
-			t.Fatalf("inner after reload to enforce status=%d hits=%d", w.Code, hits.Load())
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("inner after reload to enforce status=%d", w.Code)
 		}
 		admittedOn := attackConfig(true, config.ActionAllow, config.ActionAllow, "", connectRule, inner)
 		p2, _, _ := policyAuditRig(t, admittedOn)

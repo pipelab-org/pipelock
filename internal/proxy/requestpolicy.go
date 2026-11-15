@@ -483,7 +483,7 @@ func (p *Proxy) finalizeRequestPolicyDecision(in requestPolicyInput, d reqpolicy
 	if !d.Matched() {
 		return requestPolicyResult{}
 	}
-	if requestPolicyAuditLift(in, d) {
+	if p.requestPolicyAuditLift(in, d) {
 		// A configured rule block on inspected content is observed. Nil config
 		// and every unmarked block stay on the refusal path below.
 		p.metrics.RecordRequestPolicyDecision(d.RuleName, requestPolicyAuditAction)
@@ -539,9 +539,17 @@ func (p *Proxy) finalizeRequestPolicyDecision(in requestPolicyInput, d reqpolicy
 }
 
 // requestPolicyAuditLift reports whether this block is a configured rule
-// match that the admitted config observes. A nil config refuses.
-func requestPolicyAuditLift(in requestPolicyInput, d reqpolicy.Decision) bool {
+// match that audit mode observes. The rules are read live on every call, so
+// the enforce flag is too: the admitted config and the live config must both
+// have enforcement off. A tunnel or socket admitted in audit mode therefore
+// refuses once a reload turns enforcement on, and one admitted under
+// enforcement keeps refusing after a reload turns it off. A nil config on
+// either side refuses.
+func (p *Proxy) requestPolicyAuditLift(in requestPolicyInput, d reqpolicy.Decision) bool {
 	if in.Config == nil || in.Config.EnforceEnabled() {
+		return false
+	}
+	if live := p.cfgPtr.Load(); live == nil || live.EnforceEnabled() {
 		return false
 	}
 	return d.Enforced() && d.Action == config.ActionBlock && d.RuleMatch
