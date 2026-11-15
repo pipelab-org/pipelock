@@ -47,10 +47,17 @@ func TestReaper_AdoptedZombieDrained_DirectChildPreserved(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(10*time.Second))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", helper)
+	// Own process group: a shell that does not exec its last command (dash,
+	// the default /bin/sh on Debian and Ubuntu) keeps `sleep 30` as a child
+	// of its own. Signalling only the shell would orphan that sleep to this
+	// subreaper test process, and it would outlive the test binary. The
+	// group signal reaches every process the helper started.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("starting helper: %v", err)
 	}
 	directPID := cmd.Process.Pid
+	t.Cleanup(func() { _ = syscall.Kill(-directPID, syscall.SIGKILL) })
 
 	// Step 1: WITHOUT the reaper, observe the bug. The double-forked
 	// grandchild sleeps 100 ms then exits and becomes a zombie under
@@ -80,8 +87,8 @@ func TestReaper_AdoptedZombieDrained_DirectChildPreserved(t *testing.T) {
 	// Direct child must still be running and reapable by cmd.Wait().
 	// If the reaper had stolen its exit status, Wait would return
 	// ECHILD-derived "wait: no child processes" or hang.
-	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		t.Fatalf("signaling direct child: %v", err)
+	if err := syscall.Kill(-directPID, syscall.SIGTERM); err != nil {
+		t.Fatalf("signaling direct child's process group: %v", err)
 	}
 
 	waitDone := make(chan error, 1)
