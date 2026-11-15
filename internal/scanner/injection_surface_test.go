@@ -71,7 +71,8 @@ func TestPromptInjectionModeForNeverRaises(t *testing.T) {
 	if nilScanner.PromptInjectionModeFor(WithInjectionSurface(context.TODO(), config.InjectionSurfaceMCPToolResult)) != config.ActionBlock {
 		t.Fatal("nil scanner weakened default")
 	}
-	if InjectionSurfaceFromContext(nil) != "" { //nolint:staticcheck // nil context is part of the contract
+	var nilCtx context.Context // a nil context is part of the contract
+	if InjectionSurfaceFromContext(nilCtx) != "" {
 		t.Fatal("nil context carried a surface")
 	}
 }
