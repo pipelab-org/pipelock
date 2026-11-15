@@ -260,8 +260,7 @@ func TestCEEAdaptiveWebSocketDestinationParity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn := dialWS(t, proxyAddr, backend)
-	_ = conn.Close()
+	assertWSHandshakeStatus(t, proxyAddr, backend, http.StatusSwitchingProtocols)
 	assertWSHandshakeStatus(t, proxyAddr, net.JoinHostPort("localhost", port), http.StatusForbidden)
 }
 

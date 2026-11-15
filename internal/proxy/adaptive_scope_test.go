@@ -291,7 +291,7 @@ func TestAdaptiveScope_OverCapEscalationLatchesOverflowBlockAll(t *testing.T) {
 	}
 }
 
-func TestAdaptiveScope_OverCapAirlockFallsBackToGlobal(t *testing.T) {
+func TestAdaptiveScope_OverCapAirlockUsesOverflow(t *testing.T) {
 	cfg := adaptiveScopedAirlockConfig()
 	p, _ := newAdaptiveScopeProxy(t, cfg)
 	sess := scopedSession(t, p)
@@ -301,8 +301,8 @@ func TestAdaptiveScope_OverCapAirlockFallsBackToGlobal(t *testing.T) {
 	}
 	globalAirlock := sess.Airlock()
 	overCapAirlock := sess.AirlockForScope(adaptiveScopeForHost("over-cap-airlock.example"))
-	if globalAirlock != overCapAirlock {
-		t.Fatal("over-cap scoped airlock should fall back to the global airlock")
+	if globalAirlock == overCapAirlock {
+		t.Fatal("over-cap scoped airlock must not use the global airlock")
 	}
 }
 

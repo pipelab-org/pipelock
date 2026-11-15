@@ -266,7 +266,7 @@ func (s *SessionState) ForceSetAirlockTierAllScopes(tier, trigger, source string
 // Mirrors the 10,000-tool MCP baseline cap in spirit.
 const maxAdaptiveScopes = 1024
 
-const adaptiveOverflowScope = "\x00overflow"
+const adaptiveOverflowScope = "overflow:*"
 
 // maxClassifiedDenials bounds remembered denial fingerprints per session.
 // Same cardinality as destination scopes: a client that fans out unique
@@ -319,6 +319,10 @@ func (s *SessionState) overflowScopeLocked(scope string) *adaptiveScopeState {
 	} else {
 		s.overflowSaturated = true
 	}
+	return s.ensureOverflowLaneLocked()
+}
+
+func (s *SessionState) ensureOverflowLaneLocked() *adaptiveScopeState {
 	st := s.scopes[adaptiveOverflowScope]
 	if st == nil {
 		st = &adaptiveScopeState{airlock: s.airlock.inheritedEntry()}
@@ -350,8 +354,8 @@ func (s *SessionState) AirlockForScope(scope string) *AirlockState {
 	defer s.mu.Unlock()
 	st := s.getOrCreateScopeLocked(scope)
 	if st == nil {
-		// Scope cap reached: fall back to the session-wide airlock.
-		return &s.airlock
+		// Reserve the shared lane without adding this destination as a member.
+		st = s.ensureOverflowLaneLocked()
 	}
 	return &st.airlock
 }
@@ -364,7 +368,11 @@ func (s *SessionState) AirlockForScope(scope string) *AirlockState {
 func (s *SessionState) NoteClassifiedDenial(scope, scannerName, reason, policyHash string) bool {
 	key := classifiedDenialKey(scope, scannerName, reason, policyHash)
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	expired := s.expireResidualsBeforePointsLocked(normalizeAdaptiveScope(scope), time.Now())
+	defer func() {
+		s.mu.Unlock()
+		emitAdaptiveResidualExpiries(s, expired, s.residualRecovery)
+	}()
 	if _, seen := s.classifiedDenials[key]; seen {
 		return false
 	}
@@ -388,6 +396,21 @@ func classifiedDenialKey(scope, scannerName, reason, policyHash string) string {
 		reason,
 		policyHash,
 	}, "\x1f")
+}
+
+// clearClassifiedDenialsLocked forgets findings only in the recovered lane.
+func (s *SessionState) clearClassifiedDenialsLocked(scope string) {
+	for key := range s.classifiedDenials {
+		keyScope, _, _ := strings.Cut(key, "\x1f")
+		match := keyScope == scope
+		if scope == adaptiveOverflowScope && keyScope != "" {
+			_, member := s.overflowMembers[keyScope]
+			match = member || (s.overflowSaturated && s.scopes[keyScope] == nil)
+		}
+		if match {
+			delete(s.classifiedDenials, key)
+		}
+	}
 }
 
 type domainEntry struct {
@@ -632,7 +655,7 @@ func (s *SessionState) RecordClean(decayRate float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	decayAdaptiveScore(&s.threatScore, decayRate)
+	s.decayAdaptiveScoreLocked("", &s.threatScore, s.escalationLevel, decayRate)
 }
 
 // RecordCleanWithRecovery decays the global threat score and, when configured,
@@ -643,7 +666,7 @@ func (s *SessionState) RecordCleanWithRecovery(decayRate float64, cleanToDrop in
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	decayAdaptiveScore(&s.threatScore, decayRate)
+	s.decayAdaptiveScoreLocked("", &s.threatScore, s.escalationLevel, decayRate)
 	if cleanToDrop <= 0 || s.escalationLevel <= 0 {
 		return false, 0, 0
 	}
@@ -651,7 +674,11 @@ func (s *SessionState) RecordCleanWithRecovery(decayRate float64, cleanToDrop in
 	if s.cleanRequests < cleanToDrop {
 		return false, 0, 0
 	}
-	return deescalateAdaptiveFields(&s.threatScore, &s.escalationLevel, &s.currentThreshold, &s.lastEscalation, &s.cleanRequests, &s.atBlockAll, blockAllCheck, time.Now())
+	changed, from, to := deescalateAdaptiveFields(&s.threatScore, &s.escalationLevel, &s.currentThreshold, &s.lastEscalation, &s.cleanRequests, &s.atBlockAll, blockAllCheck, time.Now())
+	if changed && to == 0 {
+		s.clearClassifiedDenialsLocked("")
+	}
+	return changed, from, to
 }
 
 // RecordScopedClean decays both the scoped and aggregate scores for a clean
@@ -670,9 +697,9 @@ func (s *SessionState) RecordScopedClean(scope string, decayRate float64) {
 	// broad browsing cannot fill the cap with zero-score entries. Overflow
 	// traffic earns no clean credit because its lane is shared.
 	if st := s.scopes[scope]; st != nil {
-		decayAdaptiveScore(&st.threatScore, decayRate)
+		s.decayAdaptiveScoreLocked(scope, &st.threatScore, st.escalationLevel, decayRate)
 	}
-	decayAdaptiveScore(&s.threatScore, decayRate)
+	s.decayAdaptiveScoreLocked("", &s.threatScore, s.escalationLevel, decayRate)
 }
 
 // RecordScopedCleanWithRecovery applies clean-request recovery to the same
@@ -686,16 +713,28 @@ func (s *SessionState) RecordScopedCleanWithRecovery(scope string, decayRate flo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if st := s.scopes[scope]; st != nil {
-		decayAdaptiveScore(&st.threatScore, decayRate)
+		s.decayAdaptiveScoreLocked(scope, &st.threatScore, st.escalationLevel, decayRate)
 		if cleanToDrop > 0 && st.escalationLevel > 0 {
 			st.cleanRequests++
 			if st.cleanRequests >= cleanToDrop {
-				return deescalateAdaptiveFields(&st.threatScore, &st.escalationLevel, &st.currentThreshold, &st.lastEscalation, &st.cleanRequests, &st.atBlockAll, blockAllCheck, time.Now())
+				changed, from, to := deescalateAdaptiveFields(&st.threatScore, &st.escalationLevel, &st.currentThreshold, &st.lastEscalation, &st.cleanRequests, &st.atBlockAll, blockAllCheck, time.Now())
+				if changed && to == 0 {
+					s.clearClassifiedDenialsLocked(scope)
+				}
+				return changed, from, to
 			}
 		}
 	}
-	decayAdaptiveScore(&s.threatScore, decayRate)
+	s.decayAdaptiveScoreLocked("", &s.threatScore, s.escalationLevel, decayRate)
 	return false, 0, 0
+}
+
+func (s *SessionState) decayAdaptiveScoreLocked(scope string, score *float64, level int, decayRate float64) {
+	previous := *score
+	decayAdaptiveScore(score, decayRate)
+	if level == 0 && previous > 0 && *score == 0 {
+		s.clearClassifiedDenialsLocked(scope)
+	}
 }
 
 func decayAdaptiveScore(score *float64, decayRate float64) {
@@ -818,6 +857,7 @@ func (s *SessionState) tryAutoRecover(levelDuration time.Duration, blockAllCheck
 	}
 	now := time.Now()
 	if previous := expireAdaptiveResidual(&s.threatScore, s.escalationLevel, s.lastSignal, s.lastEscalation, levelDuration, now); previous > 0 {
+		s.clearClassifiedDenialsLocked("")
 		expired = append(expired, adaptiveResidualExpiry{previousScore: previous})
 	}
 	if s.escalationLevel <= 0 || s.lastEscalation.IsZero() {
@@ -827,7 +867,11 @@ func (s *SessionState) tryAutoRecover(levelDuration time.Duration, blockAllCheck
 		return false, 0, 0
 	}
 
-	return deescalateAdaptiveFields(&s.threatScore, &s.escalationLevel, &s.currentThreshold, &s.lastEscalation, &s.cleanRequests, &s.atBlockAll, blockAllCheck, now)
+	changed, from, to := deescalateAdaptiveFields(&s.threatScore, &s.escalationLevel, &s.currentThreshold, &s.lastEscalation, &s.cleanRequests, &s.atBlockAll, blockAllCheck, now)
+	if changed && to == 0 {
+		s.clearClassifiedDenialsLocked("")
+	}
+	return changed, from, to
 }
 
 // TryAutoRecoverScopes applies the same time-based recovery as TryAutoRecover
@@ -850,6 +894,7 @@ func (s *SessionState) TryAutoRecoverScopes(levelDuration time.Duration, blockAl
 	now := time.Now()
 	for scope, st := range s.scopes {
 		if previous := expireAdaptiveResidual(&st.threatScore, st.escalationLevel, st.lastSignal, st.lastEscalation, levelDuration, now); previous > 0 {
+			s.clearClassifiedDenialsLocked(scope)
 			expired = append(expired, adaptiveResidualExpiry{scope: scope, previousScore: previous})
 		}
 		if st.escalationLevel <= 0 || st.lastEscalation.IsZero() {
@@ -860,6 +905,9 @@ func (s *SessionState) TryAutoRecoverScopes(levelDuration time.Duration, blockAl
 		}
 		changed, from, to := deescalateAdaptiveFields(&st.threatScore, &st.escalationLevel, &st.currentThreshold, &st.lastEscalation, &st.cleanRequests, &st.atBlockAll, blockAllCheck, now)
 		if changed {
+			if to == 0 {
+				s.clearClassifiedDenialsLocked(scope)
+			}
 			changes = append(changes, scopedLevelTransition{scope: scope, from: from, to: to})
 		}
 	}
@@ -888,11 +936,23 @@ func (s *SessionState) expireResidualsBeforePointsLocked(scope string, now time.
 	levelDuration := adaptiveLevelDuration(cfg)
 	var expired []adaptiveResidualExpiry
 	if previous := expireAdaptiveResidual(&s.threatScore, s.escalationLevel, s.lastSignal, s.lastEscalation, levelDuration, now); previous > 0 {
+		s.clearClassifiedDenialsLocked("")
 		expired = append(expired, adaptiveResidualExpiry{previousScore: previous})
 	}
-	if st := s.scopeStateLocked(scope); scope != "" && st != nil {
+	st := s.scopeStateLocked(scope)
+	if scope != "" && st == nil && len(s.scopes) >= maxAdaptiveScopes {
+		// A new over-cap destination will join this lane when it scores.
+		// Expire it before recording the new finding's fingerprint.
+		st = s.scopes[adaptiveOverflowScope]
+	}
+	if scope != "" && st != nil {
 		if previous := expireAdaptiveResidual(&st.threatScore, st.escalationLevel, st.lastSignal, st.lastEscalation, levelDuration, now); previous > 0 {
-			expired = append(expired, adaptiveResidualExpiry{scope: scope, previousScore: previous})
+			lane := scope
+			if st == s.scopes[adaptiveOverflowScope] {
+				lane = adaptiveOverflowScope
+			}
+			s.clearClassifiedDenialsLocked(lane)
+			expired = append(expired, adaptiveResidualExpiry{scope: lane, previousScore: previous})
 		}
 	}
 	return expired
