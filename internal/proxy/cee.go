@@ -1191,6 +1191,8 @@ func ceeRecordSignals(result ceeResult, sm *SessionManager, sessionKey string, t
 		ClientIP:  clientIP,
 		RequestID: requestID,
 	}
+	// Fragment DLP is derived from outbound client content, so it remains
+	// session-wide. Server response signals are recorded in destination lanes.
 	if result.FragmentHit {
 		sig := session.SignalWarning
 		if result.Blocked {
@@ -1208,6 +1210,7 @@ type ceeSignalParams struct {
 	Result      ceeResult
 	Sessions    *SessionManager
 	SessionKey  string // the folded CEE key (see ceeSessionKey)
+	Scope       string // destination of the request
 	AdaptiveCfg *config.AdaptiveEnforcement
 	Logger      *audit.Logger
 	Metrics     *metrics.Metrics
@@ -1227,5 +1230,5 @@ func ceeRecordSignalsAndBlockAll(p ceeSignalParams) (session.Recorder, bool) {
 	if rec == nil {
 		return nil, true
 	}
-	return rec, decide.UpgradeAction("", rec.EscalationLevel(), p.AdaptiveCfg) == config.ActionBlock
+	return rec, decide.UpgradeAction("", rec.EffectiveEscalationLevel(p.Scope), p.AdaptiveCfg) == config.ActionBlock
 }

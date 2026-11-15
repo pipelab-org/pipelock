@@ -602,23 +602,15 @@ func TestReverseTaintAskRefusedWithoutApproverBlocks(t *testing.T) {
 
 // --- Control 3 (CEE block_all): a globally escalated session denies a clean req -
 
-// TestReverseCEEBlockAllDeniesGloballyEscalatedSession proves the reverse CEE
-// block_all denial: when the shared folded session sits at a block_all
-// escalation level on the GLOBAL (unscoped) lane but NOT on the reverse
-// upstream's scope, the earlier session-profiling block_all check (which reads
-// the upstream-scoped effective level) does not fire, and a clean reverse
-// request that carries no entropy/fragment finding is instead denied by the CEE
-// block_all path with the adaptive session-deny layer.
-//
-// That global-but-not-upstream-scoped state is exactly what a forward request to
-// a DIFFERENT destination from the same bound identity leaves on the shared key:
-// forward records a destination-scoped signal, which mirrors into the global
-// lane without making it authoritative. It is the only state that reaches the
-// CEE block_all path, because CEE's own escalation goes through the global
-// authoritative lane and would trip the session-profiling block_all first. The
-// precondition below asserts the upstream-scoped level is 0 so the test cannot
-// silently pass by taking the session-profiling path instead.
-func TestReverseCEEBlockAllDeniesGloballyEscalatedSession(t *testing.T) {
+// TestReverseCEEBlockAllIgnoresOtherDestinationEscalation pins the fix for the
+// cross-site lockout. A destination-scoped signal mirrors into the session-wide
+// level without making it authoritative. Cross-request detection used to read
+// that mirrored level, so findings from one host refused a clean request to an
+// unrelated reverse upstream. It now reads the upstream's own effective level,
+// which stays 0 here, so the request must reach the upstream. The CEE block_all
+// arm remains as defense in depth: when the upstream's own level is at
+// block_all, the session-profiling check refuses first.
+func TestReverseCEEBlockAllIgnoresOtherDestinationEscalation(t *testing.T) {
 	cfg := reverseParityBaseConfig(t)
 	cfg.Taint.Enabled = false
 	cfg.SessionProfiling.Enabled = true
@@ -649,9 +641,12 @@ func TestReverseCEEBlockAllDeniesGloballyEscalatedSession(t *testing.T) {
 	cfg.DefaultAgentIdentity = "reverse-agent"
 	cfg.BindDefaultAgentIdentity = true
 
-	rp, p, upstreamURL, dir, closeRecorder, pubKey := newReverseParityHarnessWithReceipts(t, cfg, func(http.ResponseWriter, *http.Request) {
-		t.Error("CEE-block_all-denied request must not reach upstream")
+	var reached atomic.Bool
+	rp, p, upstreamURL, _, closeRecorder, _ := newReverseParityHarnessWithReceipts(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		reached.Store(true)
+		w.WriteHeader(http.StatusOK)
 	})
+	defer closeRecorder()
 
 	const clientHost = "203.0.113.9"
 	idReq := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://reverse.example/clean", nil)
@@ -686,13 +681,13 @@ func TestReverseCEEBlockAllDeniesGloballyEscalatedSession(t *testing.T) {
 	}
 
 	resp := reverseParityRequest(t, rp, http.MethodGet, "http://reverse.example/clean", clientHost+":9400", nil)
-	if resp.Code != http.StatusForbidden {
-		t.Fatalf("clean reverse request on a globally block_all session must be CEE-denied, got %d: %s", resp.Code, resp.Body.String())
+	if resp.Code != http.StatusOK {
+		t.Fatalf("clean reverse request must not be refused for another destination's escalation, got %d: %s", resp.Code, resp.Body.String())
 	}
-	if body := resp.Body.String(); !containsReverseAdaptiveDeny(body) {
-		t.Fatalf("expected an adaptive session-deny block reason, got %q", body)
+	if !reached.Load() {
+		t.Fatal("clean reverse request did not reach the upstream")
 	}
-	headerID := resp.Header().Get(blockreason.HeaderRecordedReceipt)
-	closeRecorder()
-	assertReverseBlockReceipt(t, dir, headerID, pubKey, config.ActionBlock, adaptiveSessionDeny)
+	if got := resp.Header().Get(blockreason.HeaderRecordedReceipt); got != "" {
+		t.Fatalf("allowed request carried a block receipt header %q", got)
+	}
 }

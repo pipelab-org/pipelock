@@ -1929,6 +1929,7 @@ func newInterceptHandler(
 			ceeRec, ceeBlockAll := ceeRecordSignalsAndBlockAll(ceeSignalParams{
 				Result: ceeRes, Sessions: admission.Sessions, SessionKey: sessionKey,
 				AdaptiveCfg: &admission.AdaptiveConfig, Logger: ic.Logger, Metrics: ic.Metrics,
+				Scope:    interceptAdaptiveScope(ic),
 				ClientIP: ic.ClientIP, RequestID: ic.RequestID,
 			})
 
@@ -1967,7 +1968,7 @@ func newInterceptHandler(
 					writeBlockedError(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer).WithRequestID(ic.RequestID), session.ErrCapacity.Error(), http.StatusServiceUnavailable)
 					return
 				}
-				level := recEscalationLevel(ceeRec)
+				_, level := adaptiveBlockState(ceeRec, interceptAdaptiveScope(ic))
 				recordAdaptiveUpgrade(ic.Logger, ic.Metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: ic.ClientIP, RequestID: ic.RequestID})
 				ic.Metrics.RecordTLSRequestBlocked(adaptiveSessionDeny)
 				_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
@@ -3240,7 +3241,12 @@ func newInterceptHandler(
 		// earn no credit, matching the forward and fetch paths. So do structural
 		// exemptions, which are adaptive-neutral.
 		if structured == nil && ic.Recorder != nil && ic.Config.AdaptiveEnforcement.Enabled && !hasFinding && !interceptAuthenticatedArtifact && !interceptRespExempt && recoveryAssessment.IsBenign() && !urlResult.IsStructuralExemption() && !interceptPolicyObserved {
-			ic.Recorder.RecordClean(ic.Config.AdaptiveEnforcement.DecayPerCleanRequest)
+			recordCleanForAdaptiveScope(ic.Recorder, interceptAdaptiveScope(ic), &ic.Config.AdaptiveEnforcement, true, adaptiveRecoveryContext{
+				assessment: recoveryAssessment,
+				sessionKey: sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth),
+				scope:      interceptAdaptiveScope(ic), reason: adaptiveRecoveryClean,
+				clientIP: ic.ClientIP, requestID: ic.RequestID, logger: ic.Logger, metrics: ic.Metrics,
+			})
 		}
 
 		// Record response size for per-domain data budget tracking.

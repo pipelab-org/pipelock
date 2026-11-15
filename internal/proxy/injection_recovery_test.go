@@ -73,8 +73,6 @@ func TestInjectionRecoveryHTTPConsumers(t *testing.T) {
 				case "reverse":
 					rp.ServeHTTP(w, req)
 				case "intercept":
-					// Intercept uses the same recorder's aggregate score; it has no scoped recovery.
-					before = sess.ThreatScore()
 					sc := scanner.MustNew(cfg)
 					defer sc.Close()
 					newInterceptHandler(&InterceptContext{TargetHost: target.Hostname(), TargetPort: target.Port(), Config: cfg, Scanner: sc, Logger: audit.NewNop(), Metrics: metrics.New(), ClientIP: airlockAdmissionClient, Recorder: sess}, &interceptMockRT{body: body, contentType: "text/plain"}).ServeHTTP(w, req)
@@ -83,9 +81,6 @@ func TestInjectionRecoveryHTTPConsumers(t *testing.T) {
 					t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 				}
 				after := sess.ScopedThreatScore(scope)
-				if transport == "intercept" {
-					after = sess.ThreatScore()
-				}
 				want := transport != "reverse" && (mode == "omitted" || mode == config.ActionBlock)
 				if (after < before) != want {
 					t.Fatalf("score %.1f -> %.1f, want recovery=%v", before, after, want)

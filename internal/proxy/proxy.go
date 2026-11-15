@@ -4177,6 +4177,17 @@ func emitAdaptiveResidualExpiries(sess *SessionState, expired []adaptiveResidual
 	}
 }
 
+// responseDenialReason is the adaptive denial fingerprint for a blocked
+// response. It names each matched pattern once, sorted, so a page that repeats
+// a pattern, or lists the same patterns in another order, keeps the same
+// fingerprint and a retry of the same finding scores once. Logs and approval
+// prompts keep the full ordered match list.
+func responseDenialReason(patternNames []string) string {
+	names := slices.Clone(patternNames)
+	slices.Sort(names)
+	return "response injection: " + strings.Join(slices.Compact(names), ", ")
+}
+
 func firstNonEmptyString(values ...string) string {
 	for _, value := range values {
 		if value != "" {
@@ -6224,6 +6235,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			ceeRec, ceeBlockAll = ceeRecordSignalsAndBlockAll(ceeSignalParams{
 				Result: ceeRes, Sessions: sm, SessionKey: sessionKey,
 				AdaptiveCfg: &admission.AdaptiveConfig, Logger: log, Metrics: p.metrics,
+				Scope:    adaptiveScopeForHost(parsed.Hostname()),
 				ClientIP: clientIP, RequestID: requestID,
 			})
 		}
@@ -6282,7 +6294,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 					FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: session.ErrCapacity.Error(), Layer: sessionCapacityLayer})
 				return
 			}
-			level := recEscalationLevel(ceeRec)
+			_, level := adaptiveBlockState(ceeRec, adaptiveScopeForHost(parsed.Hostname()))
 			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 			emitFetchReceipt(receipt.EmitOpts{
 				ActionID:            receipt.NewActionID(),
@@ -7346,12 +7358,15 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 			sessionKey := sessionKeyFor(cfg, agent, clientIP, actorAuth)
 			sess := sm.GetOrCreate(sessionKey)
 			recordAdaptiveSignalForScope(sess, responseScope, sig, &cfg.AdaptiveEnforcement, &cfg.Airlock, decide.EscalationParams{
-				Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
-				Logger:    log,
-				Metrics:   p.metrics,
-				Session:   sessionKey,
-				ClientIP:  clientIP,
-				RequestID: requestID,
+				Threshold:     cfg.AdaptiveEnforcement.EscalationThreshold,
+				Logger:        log,
+				Metrics:       p.metrics,
+				Session:       sessionKey,
+				ClientIP:      clientIP,
+				RequestID:     requestID,
+				DenialScanner: responseScanLayer,
+				DenialReason:  responseDenialReason(patternNames),
+				PolicyHash:    cfg.CanonicalPolicyHash(),
 			})
 		}
 	}

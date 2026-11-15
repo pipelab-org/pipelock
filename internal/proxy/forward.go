@@ -2118,6 +2118,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			ceeRec, ceeBlockAll = ceeRecordSignalsAndBlockAll(ceeSignalParams{
 				Result: ceeRes, Sessions: sm, SessionKey: sessionKey,
 				AdaptiveCfg: &ceeAdmission.AdaptiveConfig, Logger: p.logger, Metrics: p.metrics,
+				Scope:    adaptiveScopeForHost(r.URL.Hostname()),
 				ClientIP: clientIP, RequestID: requestID,
 			})
 		}
@@ -2147,7 +2148,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				denyForwardCapacity()
 				return
 			}
-			level := recEscalationLevel(ceeRec)
+			_, level := adaptiveBlockState(ceeRec, adaptiveScopeForHost(r.URL.Hostname()))
 			recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 			emitSessionDenyReceipt()
 			p.metrics.RecordBlocked(r.URL.Hostname(), adaptiveSessionDeny, time.Since(start), agentLabel)

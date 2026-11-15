@@ -779,6 +779,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		ceeRec, ceeBlockAll := ceeRecordSignalsAndBlockAll(ceeSignalParams{
 			Result: ceeRes, Sessions: ceeAdmission.Sessions, SessionKey: ceeKey,
 			AdaptiveCfg: &ceeAdmission.AdaptiveConfig, Logger: log, Metrics: p.metrics,
+			Scope:    adaptiveScopeForHost(parsed.Hostname()),
 			ClientIP: clientIP, RequestID: requestID,
 		})
 
@@ -823,7 +824,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				writeBlockedError(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer).WithRequestID(requestID), session.ErrCapacity.Error(), http.StatusServiceUnavailable)
 				return
 			}
-			level := recEscalationLevel(ceeRec)
+			_, level := adaptiveBlockState(ceeRec, adaptiveScopeForHost(parsed.Hostname()))
 			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: ceeKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 			p.metrics.RecordWSBlocked()
 			emitWebSocketReceipt(receipt.EmitOpts{
@@ -1993,6 +1994,7 @@ func (r *wsRelay) enforceClientCEE(ctx context.Context, log *audit.Logger, msg [
 		ceeRec, ceeBlockAll = ceeRecordSignalsAndBlockAll(ceeSignalParams{
 			Result: ceeRes, Sessions: sm, SessionKey: sessionKey,
 			AdaptiveCfg: &ceeAdmission.AdaptiveConfig, Logger: r.proxy.logger.WithCorrelation(r.correlation), Metrics: r.proxy.metrics,
+			Scope:    adaptiveScopeForHost(r.hostname),
 			ClientIP: r.clientIP, RequestID: r.requestID,
 		})
 	}
@@ -2020,7 +2022,7 @@ func (r *wsRelay) enforceClientCEE(ctx context.Context, log *audit.Logger, msg [
 			r.denySessionCapacity(audit.DirectionClientToServer)
 			return true
 		}
-		level := recEscalationLevel(ceeRec)
+		_, level := adaptiveBlockState(ceeRec, adaptiveScopeForHost(r.hostname))
 		recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: r.clientIP, RequestID: r.requestID})
 		r.terminalOnce.Do(func() {
 			_ = r.emitReceipt(receipt.EmitOpts{
@@ -2030,7 +2032,7 @@ func (r *wsRelay) enforceClientCEE(ctx context.Context, log *audit.Logger, msg [
 			})
 		})
 		r.writeClientClose(ws.StatusPolicyViolation,
-			adaptiveWSClosePayload(adaptiveAudit{log, r.clientIP, r.requestID}, ceeRec, r.cfg, "", blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(r.requestID)))
+			adaptiveWSClosePayload(adaptiveAudit{log, r.clientIP, r.requestID}, ceeRec, r.cfg, adaptiveScopeForHost(r.hostname), blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(r.requestID)))
 		r.writeUpstreamClose(ws.StatusPolicyViolation, adaptiveBlockedReason)
 		return true
 	}

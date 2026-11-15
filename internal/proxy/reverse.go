@@ -1552,6 +1552,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				ceeRec, ceeBlockAll = ceeRecordSignalsAndBlockAll(ceeSignalParams{
 					Result: ceeRes, Sessions: sm, SessionKey: ceeSession,
 					AdaptiveCfg: &ceeAdmission.AdaptiveConfig, Logger: rp.logger, Metrics: rp.metrics,
+					Scope:    adaptiveScopeForHost(rp.upstream.Hostname()),
 					ClientIP: clientIP, RequestID: requestID,
 				})
 			}
@@ -1590,7 +1591,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 						blockInfoFor(blockreason.DataBudget, sessionCapacityLayer).WithRequestID(requestID), session.ErrCapacity.Error())
 					return
 				}
-				level := recEscalationLevel(ceeRec)
+				_, level := adaptiveBlockState(ceeRec, adaptiveScopeForHost(rp.upstream.Hostname()))
 				recordAdaptiveUpgrade(rp.logger, rp.metrics, adaptiveUpgrade{SessionKey: ceeSession, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, adaptiveSessionDeny)

@@ -249,15 +249,15 @@ func TestAdaptiveScope_ScopeCardinalityIsBounded(t *testing.T) {
 	n := len(sess.scopes)
 	authoritative := sess.globalSignalsAuthoritative
 	sess.mu.Unlock()
-	if n > maxAdaptiveScopes {
-		t.Fatalf("scope map grew to %d entries, want <= %d", n, maxAdaptiveScopes)
+	if n > maxAdaptiveScopes+1 {
+		t.Fatalf("scope map grew to %d entries, want <= %d", n, maxAdaptiveScopes+1)
 	}
-	if !authoritative {
-		t.Fatal("over-cap destination signals must fall back to the global authoritative lane")
+	if authoritative {
+		t.Fatal("over-cap server signals must not make the aggregate authoritative")
 	}
 }
 
-func TestAdaptiveScope_OverCapEscalationLatchesGlobalBlockAll(t *testing.T) {
+func TestAdaptiveScope_OverCapEscalationLatchesOverflowBlockAll(t *testing.T) {
 	cfg := adaptiveScopedAirlockConfig()
 	p, logger := newAdaptiveScopeProxy(t, cfg)
 	sess := scopedSession(t, p)
@@ -283,12 +283,15 @@ func TestAdaptiveScope_OverCapEscalationLatchesGlobalBlockAll(t *testing.T) {
 	}
 	recordAdaptiveSignalForScope(sess, adaptiveScopeForHost("over-cap.example"), session.SignalBlock, &cfg.AdaptiveEnforcement, &cfg.Airlock, ep)
 
-	if !sess.BlockAll() {
-		t.Fatal("over-cap scoped escalation must latch global block_all")
+	sess.mu.Lock()
+	blocked := sess.scopes[adaptiveOverflowScope].atBlockAll
+	sess.mu.Unlock()
+	if !blocked || sess.BlockAll() {
+		t.Fatal("over-cap escalation must latch overflow block_all only")
 	}
 }
 
-func TestAdaptiveScope_OverCapAirlockFallsBackToGlobal(t *testing.T) {
+func TestAdaptiveScope_OverCapAirlockUsesOverflow(t *testing.T) {
 	cfg := adaptiveScopedAirlockConfig()
 	p, _ := newAdaptiveScopeProxy(t, cfg)
 	sess := scopedSession(t, p)
@@ -298,8 +301,8 @@ func TestAdaptiveScope_OverCapAirlockFallsBackToGlobal(t *testing.T) {
 	}
 	globalAirlock := sess.Airlock()
 	overCapAirlock := sess.AirlockForScope(adaptiveScopeForHost("over-cap-airlock.example"))
-	if globalAirlock != overCapAirlock {
-		t.Fatal("over-cap scoped airlock should fall back to the global airlock")
+	if globalAirlock == overCapAirlock {
+		t.Fatal("over-cap scoped airlock must not use the global airlock")
 	}
 }
 
