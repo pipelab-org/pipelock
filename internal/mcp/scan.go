@@ -1309,11 +1309,15 @@ type A2AResponseOpts struct {
 
 // scanContext returns the context for one A2A response scan, bounded by
 // ScanTimeout when it is positive.
+//
+// A2A-shaped content here arrived as an MCP response, so its wording follows
+// the MCP result surface selection; a2a_scanning still decides A2A actions.
 func (o *A2AResponseOpts) scanContext() (context.Context, context.CancelFunc) {
+	ctx := scanner.WithInjectionSurface(o.ScanOpts.scanContext(), config.InjectionSurfaceMCPToolResult)
 	if o.ScanTimeout > 0 {
-		return context.WithTimeout(o.ScanOpts.scanContext(), o.ScanTimeout)
+		return context.WithTimeout(ctx, o.ScanTimeout)
 	}
-	return o.ScanOpts.scanContext(), func() {}
+	return ctx, func() {}
 }
 
 // ScanResponseA2A scans a JSON-RPC 2.0 response with optional A2A-aware
