@@ -4177,6 +4177,17 @@ func emitAdaptiveResidualExpiries(sess *SessionState, expired []adaptiveResidual
 	}
 }
 
+// responseDenialReason is the adaptive denial fingerprint for a blocked
+// response. It names each matched pattern once, sorted, so a page that repeats
+// a pattern, or lists the same patterns in another order, keeps the same
+// fingerprint and a retry of the same finding scores once. Logs and approval
+// prompts keep the full ordered match list.
+func responseDenialReason(patternNames []string) string {
+	names := slices.Clone(patternNames)
+	slices.Sort(names)
+	return "response injection: " + strings.Join(slices.Compact(names), ", ")
+}
+
 func firstNonEmptyString(values ...string) string {
 	for _, value := range values {
 		if value != "" {
@@ -7354,7 +7365,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 				ClientIP:      clientIP,
 				RequestID:     requestID,
 				DenialScanner: responseScanLayer,
-				DenialReason:  fmt.Sprintf("response injection: %s", strings.Join(patternNames, ", ")),
+				DenialReason:  responseDenialReason(patternNames),
 				PolicyHash:    cfg.CanonicalPolicyHash(),
 			})
 		}

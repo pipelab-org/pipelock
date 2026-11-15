@@ -190,3 +190,24 @@ func TestClassifiedDenialOverflowExpiryBeforeNewMember(t *testing.T) {
 		t.Fatal("overflow expiry forgot the new member's finding")
 	}
 }
+
+func TestResponseDenialReasonIsStableAcrossMatchCountsAndOrder(t *testing.T) {
+	base := responseDenialReason([]string{"Prompt Injection", "System Override"})
+	for _, names := range [][]string{
+		{"Prompt Injection", "Prompt Injection", "System Override"},
+		{"System Override", "Prompt Injection"},
+		{"System Override", "Prompt Injection", "System Override", "Prompt Injection"},
+	} {
+		if got := responseDenialReason(names); got != base {
+			t.Fatalf("responseDenialReason(%q) = %q, want %q", names, got, base)
+		}
+	}
+	if got := responseDenialReason([]string{"Prompt Injection"}); got == base {
+		t.Fatalf("a different pattern set must give a different fingerprint, got %q for both", got)
+	}
+	names := []string{"System Override", "Prompt Injection", "System Override"}
+	_ = responseDenialReason(names)
+	if names[0] != "System Override" || len(names) != 3 {
+		t.Fatalf("responseDenialReason modified its input: %q", names)
+	}
+}
