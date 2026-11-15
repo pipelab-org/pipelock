@@ -168,6 +168,8 @@ type SessionState struct {
 	atBlockAll                 bool // true when current level has block_all=true
 	globalSignalsAuthoritative bool
 	scopes                     map[string]*adaptiveScopeState
+	overflowMembers            map[string]struct{}
+	overflowSaturated          bool
 	// classifiedDenials remembers the first scored denial per destination
 	// and finding fingerprint so retries of the same already-enforced
 	// block do not keep adding SignalBlock. Bounded; unknown fingerprints
@@ -258,10 +260,13 @@ func (s *SessionState) ForceSetAirlockTierAllScopes(tier, trigger, source string
 // maxAdaptiveScopes bounds the per-session destination-scope cardinality.
 // Each scope holds its own adaptive lane and airlock (mutex + cancel slice),
 // so an agent that touches an unbounded number of distinct hosts must not be
-// able to grow this map without limit. Past the cap, new destinations fall
-// back to the session-wide (global) lane, which is stricter — fail-safe.
+// able to grow this map without limit. Past the cap, new destinations
+// share an overflow lane. Once its bounded membership table fills,
+// all untracked destinations share that lane to fail closed.
 // Mirrors the 10,000-tool MCP baseline cap in spirit.
 const maxAdaptiveScopes = 1024
+
+const adaptiveOverflowScope = "\x00overflow"
 
 // maxClassifiedDenials bounds remembered denial fingerprints per session.
 // Same cardinality as destination scopes: a client that fans out unique
@@ -277,12 +282,11 @@ func (s *SessionState) getOrCreateScopeLocked(scope string) *adaptiveScopeState 
 	if s.scopes == nil {
 		s.scopes = make(map[string]*adaptiveScopeState)
 	}
-	st := s.scopes[scope]
+	st := s.scopeStateLocked(scope)
 	if st == nil {
 		if len(s.scopes) >= maxAdaptiveScopes {
-			// At cap: signal the caller to use the session-wide lane rather
-			// than allocate another scope. nil never reaches a deref because
-			// every caller guards it.
+			// At cap, the scoring caller admits the destination to the
+			// shared overflow lane; other callers must not allocate it.
 			return nil
 		}
 		// A session-wide operator override also governs destinations first seen
@@ -290,6 +294,35 @@ func (s *SessionState) getOrCreateScopeLocked(scope string) *adaptiveScopeState 
 		// scope from weakening a forced hard/drain state back to none.
 		st = &adaptiveScopeState{airlock: s.airlock.inheritedEntry()}
 		s.scopes[scope] = st
+	}
+	return st
+}
+
+// scopeStateLocked resolves overflow members without allocating state.
+// Saturation conservatively applies overflow enforcement to all unknown scopes.
+func (s *SessionState) scopeStateLocked(scope string) *adaptiveScopeState {
+	if st := s.scopes[scope]; st != nil {
+		return st
+	}
+	if _, ok := s.overflowMembers[scope]; ok || s.overflowSaturated {
+		return s.scopes[adaptiveOverflowScope]
+	}
+	return nil
+}
+
+func (s *SessionState) overflowScopeLocked(scope string) *adaptiveScopeState {
+	if s.overflowMembers == nil {
+		s.overflowMembers = make(map[string]struct{})
+	}
+	if len(s.overflowMembers) < maxAdaptiveScopes {
+		s.overflowMembers[scope] = struct{}{}
+	} else {
+		s.overflowSaturated = true
+	}
+	st := s.scopes[adaptiveOverflowScope]
+	if st == nil {
+		st = &adaptiveScopeState{airlock: s.airlock.inheritedEntry()}
+		s.scopes[adaptiveOverflowScope] = st
 	}
 	return st
 }
@@ -534,28 +567,22 @@ func (s *SessionState) RecordScopedSignal(scope string, sig session.SignalType, 
 	}
 	// Observations must not allocate enforcement lanes: warning-only traffic
 	// cannot exhaust the scope cap and force later destinations into the
-	// stricter session-wide fallback.
+	// shared overflow lane.
 	if sig == session.SignalWarning {
 		s.cleanRequests = 0
-		if st := s.scopes[scope]; st != nil {
+		if st := s.scopeStateLocked(scope); st != nil {
 			st.cleanRequests = 0
 		}
 		return false, "", ""
 	}
 	st := s.getOrCreateScopeLocked(scope)
 	if st == nil {
-		// Scope cap reached: record against the session-wide lane and make it
-		// authoritative, matching the empty-scope (global) fallback above.
-		s.globalSignalsAuthoritative = true
-		return recordAdaptiveSignalFields(
-			&s.threatScore,
-			&s.escalationLevel,
-			&s.currentThreshold,
-			&s.lastEscalation,
-			&s.cleanRequests,
-			sig,
-			threshold,
-		)
+		st = s.overflowScopeLocked(scope)
+		// A newly admitted member did not resolve to the overflow lane
+		// during the earlier residual expiry check.
+		if session.SignalPoints[sig] > 0 {
+			expired = append(expired, s.expireResidualsBeforePointsLocked(adaptiveOverflowScope, s.lastSignal)...)
+		}
 	}
 	if session.SignalPoints[sig] > 0 {
 		st.lastSignal = s.lastSignal
@@ -640,7 +667,8 @@ func (s *SessionState) RecordScopedClean(scope string, decayRate float64) {
 	// A clean request to a destination that never raised a signal has nothing
 	// to decay; do not allocate a scope lane for it. This keeps the scope-map
 	// budget spent on destinations that actually accrued threat, so ordinary
-	// broad browsing cannot fill the cap with zero-score entries.
+	// broad browsing cannot fill the cap with zero-score entries. Overflow
+	// traffic earns no clean credit because its lane is shared.
 	if st := s.scopes[scope]; st != nil {
 		decayAdaptiveScore(&st.threatScore, decayRate)
 	}
@@ -720,7 +748,7 @@ func (s *SessionState) ScopedEscalationLevel(scope string) int {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if st := s.scopes[scope]; st != nil {
+	if st := s.scopeStateLocked(scope); st != nil {
 		return st.escalationLevel
 	}
 	return 0
@@ -735,7 +763,7 @@ func (s *SessionState) EffectiveEscalationLevel(scope string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	level := 0
-	if st := s.scopes[scope]; st != nil {
+	if st := s.scopeStateLocked(scope); st != nil {
 		level = st.escalationLevel
 	}
 	if s.globalSignalsAuthoritative && s.escalationLevel > level {
@@ -751,7 +779,7 @@ func (s *SessionState) ScopedThreatScore(scope string) float64 {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if st := s.scopes[scope]; st != nil {
+	if st := s.scopeStateLocked(scope); st != nil {
 		return st.threatScore
 	}
 	return 0
@@ -862,7 +890,7 @@ func (s *SessionState) expireResidualsBeforePointsLocked(scope string, now time.
 	if previous := expireAdaptiveResidual(&s.threatScore, s.escalationLevel, s.lastSignal, s.lastEscalation, levelDuration, now); previous > 0 {
 		expired = append(expired, adaptiveResidualExpiry{previousScore: previous})
 	}
-	if st := s.scopes[scope]; scope != "" && st != nil {
+	if st := s.scopeStateLocked(scope); scope != "" && st != nil {
 		if previous := expireAdaptiveResidual(&st.threatScore, st.escalationLevel, st.lastSignal, st.lastEscalation, levelDuration, now); previous > 0 {
 			expired = append(expired, adaptiveResidualExpiry{scope: scope, previousScore: previous})
 		}
@@ -969,7 +997,7 @@ func (s *SessionState) ScopedAdaptiveAutoRecoverAt(scope string, levelDuration t
 	if s.globalSignalsAuthoritative {
 		globalETA = adaptiveAutoRecoverAtLocked(s.escalationLevel, s.lastEscalation, levelDuration)
 	}
-	if st := s.scopes[scope]; st != nil {
+	if st := s.scopeStateLocked(scope); st != nil {
 		scopedETA := adaptiveAutoRecoverAtLocked(st.escalationLevel, st.lastEscalation, levelDuration)
 		if s.globalSignalsAuthoritative && s.escalationLevel > st.escalationLevel {
 			return globalETA
@@ -1089,6 +1117,8 @@ func (s *SessionState) resetWhileLocked(cancelInFlight bool) (prevScore float64,
 		scoped.airlock.mu.Unlock()
 	}
 	s.scopes = nil
+	s.overflowMembers = nil
+	s.overflowSaturated = false
 	s.classifiedDenials = nil
 	s.domainWindows = nil
 	s.lastBurstAt = time.Time{}

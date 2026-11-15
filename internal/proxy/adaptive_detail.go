@@ -56,7 +56,7 @@ func adaptiveBlockState(rec session.Recorder, scope string) (float64, int) {
 			return 0, 0
 		}
 		s.mu.Lock()
-		if st := s.scopes[normalizeAdaptiveScope(scope)]; st != nil {
+		if st := s.scopeStateLocked(normalizeAdaptiveScope(scope)); st != nil {
 			score, level = st.threatScore, st.escalationLevel
 		}
 		if scope == "" || (s.globalSignalsAuthoritative && s.escalationLevel > level) {
