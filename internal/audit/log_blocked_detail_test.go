@@ -68,8 +68,8 @@ func TestLogBlockedDetail_InfrastructureErrorOmitsMITRETechnique(t *testing.T) {
 			if tech, present := ev.Fields["mitre_technique"]; present && tech != "" {
 				t.Errorf("infrastructure_error must NOT carry mitre_technique; got %v", tech)
 			}
-			if _, present := ev.Fields["block_class"]; present {
-				t.Error("HTTP event must not export block_class")
+			if ev.Fields["block_class"] != BlockClassInfrastructureError {
+				t.Errorf("HTTP infrastructure_error block_class = %v", ev.Fields["block_class"])
 			}
 			if got := ev.Fields["display_label"]; got != tc.wantDisplayLabel {
 				t.Errorf("display_label = %v, want %s", got, tc.wantDisplayLabel)
@@ -100,6 +100,9 @@ func TestLogBlockedDetail_ThreatClassKeepsMITRETechnique(t *testing.T) {
 	if ev.Fields["mitre_technique"] != "T1046" {
 		t.Errorf("real SSRF must still emit mitre_technique=T1046; got %v", ev.Fields["mitre_technique"])
 	}
+	if ev.Fields["block_class"] != BlockClassThreat {
+		t.Errorf("explicit threat class = %v", ev.Fields["block_class"])
+	}
 	if got, present := ev.Fields["display_label"]; present && got != "" {
 		t.Errorf("threat-class block must not surface a display_label; got %v", got)
 	}
@@ -125,6 +128,9 @@ func TestLogBlockedDetail_LegacyLogBlockedKeepsMITRE_T1046(t *testing.T) {
 	}
 	if ev.Fields["mitre_technique"] != "T1046" {
 		t.Errorf("legacy LogBlocked wrapper must keep T1046 on threat class; got %v", ev.Fields["mitre_technique"])
+	}
+	if _, present := ev.Fields["block_class"]; present {
+		t.Errorf("LogBlocked must not export block_class, got %v", ev.Fields["block_class"])
 	}
 }
 

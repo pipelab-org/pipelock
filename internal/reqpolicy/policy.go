@@ -68,6 +68,10 @@ type RequestMeta struct {
 	// carry neither and cannot use exact-request exceptions.
 	ExactURL       string
 	JSONBodySHA256 string
+	// JSONAmbiguous is true when the parsed body repeats an object key at any
+	// depth, so parsers can disagree about what it says. An exact-request
+	// exception cannot be evaluated against such a body.
+	JSONAmbiguous bool
 }
 
 // Decision is the outcome of evaluating request policy against a request.
@@ -77,6 +81,11 @@ type Decision struct {
 	RuleName string // matched rule name; safe as a bounded metric/audit label
 	Reason   string // operator-facing reason from the matched rule
 	Shadow   bool   // matched rule is shadow: log the would-be action, do not enforce
+	// RuleMatch is true only when Action comes from a configured rule whose
+	// route and predicates matched an inspected request. A merged block stays
+	// marked only when every enforced block contributor is marked. Synthetic and
+	// could-not-inspect decisions leave it false.
+	RuleMatch bool
 }
 
 // Matched reports whether the decision selected a rule (enforced or shadow).
@@ -289,14 +298,12 @@ func (m *Matcher) Evaluate(meta RequestMeta) Decision {
 	var best Decision
 	for i := range m.rules {
 		cr := &m.rules[i]
-		action, matched := m.ruleDecision(cr, meta)
+		action, matched, ruleMatch := m.ruleDecision(cr, meta)
 		if !matched {
 			continue
 		}
-		cand := Decision{Action: action, RuleName: cr.name, Reason: cr.reason, Shadow: cr.shadow}
-		if betterDecision(cand, best) {
-			best = cand
-		}
+		cand := Decision{Action: action, RuleName: cr.name, Reason: cr.reason, Shadow: cr.shadow, RuleMatch: ruleMatch}
+		best = combineMarked(best, cand)
 	}
 	return best
 }
@@ -309,45 +316,49 @@ func (m *Matcher) Evaluate(meta RequestMeta) Decision {
 // ambiguous value type cannot slip past a deny rail; opaque=allow yields no
 // match. GraphQL parse-error / opaque handling stays the caller's job (it is
 // body-global, not per-rule), so this only matches inspectable GraphQL here.
-func (m *Matcher) ruleDecision(cr *compiledRule, meta RequestMeta) (string, bool) {
+func (m *Matcher) ruleDecision(cr *compiledRule, meta RequestMeta) (action string, matched, ruleMatch bool) {
 	if !cr.routeMatches(meta) {
-		return "", false
+		return "", false, false
 	}
 	if cr.except != nil {
 		// An envelope is not an individual request. Its extra JSON fields
 		// cannot exempt a block on the batch endpoint itself; exceptions
 		// are evaluated on the extracted sub-requests instead.
 		if m.MatchesBatch(meta) {
-			return cr.action, true
+			return cr.action, true, true
 		}
 		// Transports run a route-only pass before reading the body. Defer the
 		// decision until the JSON can prove the exception; unreadable or
 		// invalid bodies are blocked by EvaluateUninspectable.
 		if !meta.JSONBodyParsed {
-			return "", false
+			return "", false, false
 		}
 		if cr.except.matches(meta) {
-			return "", false
+			return "", false, false
 		}
-		return cr.action, true
+		// A body the exception was compared with and did not match is a rule
+		// match. A body it could not be compared with keeps an unmarked block.
+		return cr.action, true, !cr.except.ambiguous(meta)
 	}
 	if cr.graphql != nil && !cr.graphql.matches(meta.Operations) {
-		return "", false
+		return "", false, false
 	}
 	if cr.disc != nil {
 		switch cr.disc.eval(meta) {
 		case discNoMatch:
-			return "", false
+			return "", false, false
 		case discOpaque:
 			if m.onOpaqueOperation == "" || m.onOpaqueOperation == config.ActionAllow {
-				return "", false
+				return "", false, false
 			}
-			return m.onOpaqueOperation, true
+			// The opaque action is the matcher's fail-closed setting, not the
+			// rule's own action on an inspected value.
+			return m.onOpaqueOperation, true, false
 		case discMatch:
 			// fall through to the rule's own action
 		}
 	}
-	return cr.action, true
+	return cr.action, true, true
 }
 
 // NeedsExactRequest reports whether a route can use an exact-request exception.
@@ -438,9 +449,7 @@ func (m *Matcher) EvaluateUninspectable(meta RequestMeta, action string, kind Bo
 			continue
 		}
 		cand := Decision{Action: effective, RuleName: cr.name, Reason: cr.reason, Shadow: cr.shadow}
-		if betterDecision(cand, best) {
-			best = cand
-		}
+		best = combineMarked(best, cand)
 	}
 	return best
 }
@@ -452,10 +461,30 @@ func (m *Matcher) EvaluateUninspectable(meta RequestMeta, action string, kind Bo
 // header from downgrading a method-scoped rule, per EffectiveMethod's caveat -
 // combines the per-method results with this.
 func Stricter(a, b Decision) Decision {
-	if betterDecision(a, b) {
-		return a
+	// b stays the incumbent so an equal-rank tie keeps today's second argument.
+	return combineMarked(b, a)
+}
+
+// combineMarked selects the decision Evaluate already selects, then clears
+// RuleMatch when any enforced contributor whose action is block is unmarked. cur is
+// the incumbent. cand replaces it only when cand is stricter, so an
+// equal-rank tie keeps cur.
+func combineMarked(cur, cand Decision) Decision {
+	winner := cur
+	if betterDecision(cand, cur) {
+		winner = cand
 	}
-	return b
+	if unmarkedBlock(cur) || unmarkedBlock(cand) {
+		winner.RuleMatch = false
+	}
+	return winner
+}
+
+// unmarkedBlock reports whether d is a block that would refuse the request
+// without being a configured rule match. A shadow decision never refuses, so
+// it cannot hold a floor.
+func unmarkedBlock(d Decision) bool {
+	return d.Enforced() && d.Action == config.ActionBlock && !d.RuleMatch
 }
 
 // betterDecision reports whether cand should replace cur as the selected

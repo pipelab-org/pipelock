@@ -2030,6 +2030,7 @@ func newInterceptHandler(
 
 		// request_policy runs before the contract gate so a contract allow can
 		// never suppress an operation-policy block.
+		interceptPolicyObserved := false
 		if ic.Proxy != nil {
 			rpInput := requestPolicyInput{
 				Host:        r.URL.Hostname(),
@@ -2061,6 +2062,8 @@ func newInterceptHandler(
 				ic.Metrics.RecordTLSRequestBlocked(blockLayerRequestPolicy)
 				writeBlockedError(w, rp.Info.WithRequestID(ic.RequestID), "blocked by request policy: "+rp.Reason, http.StatusForbidden)
 				return
+			} else if rp.Observed {
+				interceptPolicyObserved = true
 			}
 		}
 
@@ -3232,7 +3235,7 @@ func newInterceptHandler(
 		// must not contribute to score decay. Responses from scan-exempt hosts
 		// earn no credit, matching the forward and fetch paths. So do structural
 		// exemptions, which are adaptive-neutral.
-		if structured == nil && ic.Recorder != nil && ic.Config.AdaptiveEnforcement.Enabled && !hasFinding && !interceptAuthenticatedArtifact && !interceptRespExempt && recoveryAssessment.IsBenign() && !urlResult.IsStructuralExemption() {
+		if structured == nil && ic.Recorder != nil && ic.Config.AdaptiveEnforcement.Enabled && !hasFinding && !interceptAuthenticatedArtifact && !interceptRespExempt && recoveryAssessment.IsBenign() && !urlResult.IsStructuralExemption() && !interceptPolicyObserved {
 			ic.Recorder.RecordClean(ic.Config.AdaptiveEnforcement.DecayPerCleanRequest)
 		}
 

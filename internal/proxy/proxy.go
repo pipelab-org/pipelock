@@ -150,6 +150,10 @@ const (
 	// valid presigned or GitHub-issued SAS URL). The request's deferred clean
 	// credit then skips it, as it does for a direct exemption.
 	ctxKeyRedirectStructuralExemption
+	// ctxKeyRequestPolicyObserved carries a *atomic.Bool set when the admitted
+	// request, or a redirect hop, observed a configured request-policy block.
+	// Clean adaptive credit skips that request.
+	ctxKeyRequestPolicyObserved
 	// ctxKeyRedirectAirlockSession carries the adaptive session key into
 	// CheckRedirect so every hop admits airlock against the same state the
 	// writer raised. Request-controlled identities use the folded CEE-safe key;
@@ -1236,6 +1240,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			if rpRes := p.applyRequestPolicy(requestPolicyInput{
 				Host:        req.URL.Hostname(),
 				Method:      req.Method,
+				Config:      currentCfg,
 				Path:        req.URL.EscapedPath(),
 				Query:       req.URL.RawQuery,
 				ContentType: req.Header.Get(headerContentType),
@@ -1252,6 +1257,10 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				},
 			}); rpRes.Block {
 				return newRedirectBlockedRequest(blockLayerRequestPolicy, rpRes.Reason)
+			} else if rpRes.Observed {
+				if flag, ok := req.Context().Value(ctxKeyRequestPolicyObserved).(*atomic.Bool); ok && flag != nil {
+					flag.Store(true)
+				}
 			}
 
 			contractLoader, _ := req.Context().Value(ctxKeyAgentContractLoader).(*contractruntime.Loader)
@@ -6305,9 +6314,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// headers; the agent's inbound /fetch control-plane headers (Content-Type,
 	// X-HTTP-Method-Override) never reach the upstream, so they must not drive
 	// request_policy matching. Leave Headers/ContentType unset.
+	policyObserved := new(atomic.Bool)
 	if rpRes := p.applyRequestPolicy(requestPolicyInput{
 		Host:      parsed.Hostname(),
 		Method:    http.MethodGet,
+		Config:    cfg,
 		Path:      parsed.EscapedPath(),
 		Query:     parsed.RawQuery,
 		BodyRead:  true,
@@ -6328,6 +6339,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			BlockReason: "blocked by request policy: " + rpRes.Reason,
 		})
 		return
+	} else if rpRes.Observed {
+		policyObserved.Store(true)
 	}
 
 	killSwitchActive := false
@@ -6432,6 +6445,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportFetch)
 	redirectExempt := new(atomic.Bool)
 	ctx = context.WithValue(ctx, ctxKeyRedirectStructuralExemption, redirectExempt)
+	ctx = context.WithValue(ctx, ctxKeyRequestPolicyObserved, policyObserved)
 	ctx = context.WithValue(ctx, ctxKeyReceiptShard, selectedReceiptShard)
 	ctx = context.WithValue(ctx, ctxKeyRedirectSessionRecorder, fetchRec)
 	if fetchAirlockSess != nil {
@@ -7099,7 +7113,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// This ensures warn/near-miss findings do not inadvertently decay score.
 	// A structural exemption (a valid presigned or GitHub-issued SAS URL) is
 	// adaptive-neutral: it neither raises the score nor earns clean credit.
-	if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !result.IsStructuralExemption() && !redirectExempt.Load() {
+	if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !result.IsStructuralExemption() && !redirectExempt.Load() && !policyObserved.Load() {
 		fetchScope := adaptiveScopeForHost(finalHost)
 		recordCleanForAdaptiveScope(fetchRec, fetchScope, &cfg.AdaptiveEnforcement, sc.ResponseScanningEnabled() && !responseScanExempt, adaptiveRecoveryContext{
 			assessment: scanned.result.RecoveryAssessment(),
