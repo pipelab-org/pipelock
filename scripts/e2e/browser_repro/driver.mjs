@@ -6,25 +6,33 @@
 import {spawn} from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
+import http2 from 'node:http2';
 import net from 'node:net';
 import path from 'node:path';
+import tls from 'node:tls';
 import {performance} from 'node:perf_hooks';
-import {checkAPIError,checkManagedIdentity,collectScenarios,isLoginRequired,loginObservation,responseBlockReason} from './contracts.mjs';
+import {checkAPIError,checkManagedIdentity,checkTLSBrowserResources,checkTLSProbe,checkTLSRendered,collectScenarios,isLoginRequired,
+  loginObservation,responseBlockReason,tlsProbePlan,tlsRouteLabel} from './contracts.mjs';
 
 const settings = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const tlsScenario = settings.scenario === 'tls-resource';
 const report = {schema: 1, mode: settings.mode, cases: [], processes: [], unsupported: [
   'agent-browser daemon lifecycle: external dependency is not exercised by this CDP driver',
   'managed Xvnc/noVNC viewer, viewer input arbitration and reconnect: no viewer is launched',
-  'TLS interception and production authentication: fixture uses synthetic HTTP only',
+  ...(tlsScenario ? [
+    'public-site acceptance: generated HTTPS fixtures only; no real CDN, real certificate chain or production page is visited',
+    'computed or script-built URLs: the declared-resource rule does not cover them and this scenario does not claim they pass',
+  ] : ['TLS interception and production authentication: fixture uses synthetic HTTP only']),
   'scanner-only CPU time: use scanner benchmarks separately; request time is not scanner time',
 ]};
-const origin = `http://browser.fixture.example:${settings.port}`;
+const origin = tlsScenario ? `https://${settings.hosts.page}:${settings.port}` : `http://browser.fixture.example:${settings.port}`;
 const proxy = settings.proxy || process.env.HTTP_PROXY;
 if (!proxy) throw Error('A mediated proxy route is required');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 function check(condition, message) { if (!condition) throw Error(message); }
 function ring(text, chunk, max=65536) { return (text+chunk).slice(-max); }
 function routeOf(url) {
+  if (tlsScenario) return tlsRouteLabel(url, settings.hosts, settings.paths);
   try { const u=new URL(url); return u.hostname==='browser.fixture.example' ? u.pathname : 'other-origin'; }
   catch { return 'unknown'; }
 }
@@ -60,11 +68,11 @@ async function directProbe() {
 }
 class Browser {
   constructor(profile) {
-    this.next=1;this.pending=new Map();this.requests=new Map();this.routes=new Map();this.errors=[];this.buffer='';
+    this.next=1;this.pending=new Map();this.requests=new Map();this.extra=new Map();this.finished=new Map();this.routes=new Map();this.errors=[];this.buffer='';
     this.evidence={stdout_bytes:0,stderr_bytes:0,profile:path.basename(profile)};
     this.logs={stdout:Buffer.alloc(0),stderr:Buffer.alloc(0)};
     this.child=spawn(settings.chromium,['--headless=new','--remote-debugging-pipe',`--user-data-dir=${profile}`,
-      `--proxy-server=${proxy}`,'--proxy-bypass-list=<-loopback>','--disable-background-networking',
+      `--proxy-server=${proxy}`,'--proxy-bypass-list=<-loopback>',...(settings.browser_args||[]),'--disable-background-networking',
       '--disable-component-update','--no-first-run','--no-default-browser-check','--window-size=1280,900','about:blank'],
       {stdio:['ignore','pipe','pipe','pipe','pipe']});
     this.exited=false;this.closeObserved=false;this.streamsEnded={stdout:false,stderr:false};
@@ -103,11 +111,20 @@ class Browser {
     } else if(message.method==='Network.requestServedFromCache'){
       const entry=this.requests.get(p.requestId);if(entry)entry.from_cache=true;
     } else if(message.method==='Network.responseReceived'){
-      const entry=this.requests.get(p.requestId);if(entry)Object.assign(entry,{status:p.response.status,
+      const entry=this.requests.get(p.requestId);if(entry)Object.assign(entry,{status:p.response.status,...(tlsScenario?{protocol:p.response.protocol||null}:{}),
         block_reason:responseBlockReason(p.response.headers),
         ttfb_ms:(p.timestamp-entry.start)*1000,from_disk_cache:!!p.response.fromDiskCache,from_service_worker:!!p.response.fromServiceWorker});
+    } else if(tlsScenario&&message.method==='Network.responseReceivedExtraInfo'){
+      // A response the browser masks (for example an opaque 403 image) still reports
+      // its real status and headers here; join it by request id in either order.
+      const info={status:p.statusCode,block_reason:responseBlockReason(p.headers)};
+      const entry=this.requests.get(p.requestId)||this.finished.get(p.requestId);
+      if(entry){entry.status??=info.status;entry.block_reason??=info.block_reason;}
+      else{if(this.extra.size>=256)this.extra.delete(this.extra.keys().next().value);this.extra.set(p.requestId,info);}
     } else if(message.method==='Network.loadingFinished'||message.method==='Network.loadingFailed'){
       const entry=this.requests.get(p.requestId);if(!entry)return;this.requests.delete(p.requestId);
+      const late=tlsScenario?this.extra.get(p.requestId):null;if(late){entry.status??=late.status;entry.block_reason??=late.block_reason;this.extra.delete(p.requestId);}
+      if(this.finished.size>=256)this.finished.delete(this.finished.keys().next().value);this.finished.set(p.requestId,entry);
       Object.assign(entry,{duration_ms:(p.timestamp-entry.start)*1000,encoded_bytes:p.encodedDataLength??null,error:p.errorText??null});delete entry.start;
       const key=this.routes.has(entry.route)||this.routes.size<24?entry.route:'other';
       const items=this.routes.get(key)||[];items.push(entry);this.routes.set(key,items.slice(-24));
@@ -168,6 +185,137 @@ class Browser {
     }
   }
 }
+
+// A Node client for negative probes. It tunnels through the proxy with CONNECT
+// and trusts only the Pipelock CA passed in settings, never a global override.
+function tlsRequest({host,path:target,method='GET',body=null,protocol='http/1.1'}) {
+  return new Promise((resolve,reject)=>{
+    const p=new URL(proxy);const start=performance.now();const authority=`${host}:${settings.port}`;
+    const connect=http.request({hostname:p.hostname,port:p.port,method:'CONNECT',path:authority,headers:{Host:authority}});
+    connect.setTimeout(5000,()=>connect.destroy(Error('CONNECT timed out')));
+    connect.on('error',reject);
+    connect.on('connect',(res,socket)=>{
+      if(res.statusCode!==200){socket.destroy();reject(Error(`CONNECT refused (${res.statusCode})`));return;}
+      const secured=tls.connect({socket,servername:host,ca:[fs.readFileSync(settings.proxy_ca)],ALPNProtocols:[protocol==='h2'?'h2':'http/1.1']});
+      secured.setTimeout(5000,()=>secured.destroy(Error('TLS request timed out')));
+      secured.on('error',reject);
+      const finish=(status,header,text)=>resolve({status,protocol:secured.alpnProtocol||null,elapsed_ms:performance.now()-start,
+        block_reason:header,body:text});
+      if(protocol==='h2'){
+        secured.once('secureConnect',()=>{
+          if(secured.alpnProtocol!=='h2'){secured.destroy();reject(Error('proxy did not negotiate h2'));return;}
+          const session=http2.connect(`https://${authority}`,{createConnection:()=>secured});
+          session.on('error',reject);
+          const headers={':method':method,':path':target};
+          if(body!==null)headers['content-length']=String(Buffer.byteLength(body));
+          const stream=session.request(headers,{endStream:body===null});
+          let status=null,header=null,text='';
+          stream.on('response',h=>{status=Number(h[':status']);header=h['x-pipelock-block-reason']||null;});
+          stream.on('data',chunk=>{text=ring(text,chunk.toString(),4096)});
+          stream.on('error',reject);
+          stream.on('close',()=>{session.close();finish(status,header,text);});
+          if(body!==null)stream.write(body);
+          stream.end();
+        });
+        return;
+      }
+      const lines=[`${method} ${target} HTTP/1.1`,`Host: ${authority}`,'Connection: close'];
+      if(body!==null)lines.push(`Content-Length: ${Buffer.byteLength(body)}`);
+      let raw=Buffer.alloc(0);
+      secured.on('data',chunk=>{raw=Buffer.concat([raw,chunk]).subarray(0,262144);});
+      secured.on('close',()=>{
+        const split=raw.indexOf('\r\n\r\n');
+        if(split<0){reject(Error('no complete HTTP response head'));return;}
+        const head=raw.subarray(0,split).toString('latin1').split('\r\n');
+        const status=Number(/^HTTP\/1\.1 (\d{3})/.exec(head[0])?.[1]);
+        if(!status){reject(Error('unparseable HTTP status line'));return;}
+        const header=name=>head.slice(1).map(line=>line.split(/:\s*/,2)).find(([key])=>key.toLowerCase()===name)?.[1]??null;
+        finish(status,header('x-pipelock-block-reason'),raw.subarray(split+4,split+4+4096).toString('utf8'));
+      });
+      secured.write(lines.join('\r\n')+'\r\n\r\n'+(body??''));
+    });
+    connect.end();
+  });
+}
+async function runTLSProbes(probes, tlsReport) {
+  // Every probe runs: one unexpected result must not hide the rest of the matrix.
+  for(const probe of probes){
+    try{
+      const result=await tlsRequest(probe);
+      if(result.status===403)tlsReport.denials.push({name:probe.name,block_reason:result.block_reason,source:'node',protocol:result.protocol});
+      checkTLSProbe(probe,result);
+      report.cases.push({name:probe.name,status:'pass',http_status:result.status,block_reason:result.block_reason,
+        protocol:result.protocol,elapsed_ms:result.elapsed_ms});
+    }catch(error){
+      report.cases.push({name:probe.name,status:'fail',failure:String(error.message||error).slice(0,512)});
+    }
+  }
+}
+async function runTLS() {
+  const hosts=settings.hosts,paths=settings.paths;
+  const plan=tlsProbePlan({hosts,paths,queryToken:settings.query_token,canary:settings.canary});
+  const tlsReport={origins:{page:hosts.page,cdn:hosts.cdn,third:hosts.third},denials:[],
+    browser_flags:settings.browser_args||[],scope:'generated HTTPS fixtures; no public-site acceptance'};
+  report.tls=tlsReport;
+  // Before the page is delivered, the hashed CDN paths are ordinary high-entropy
+  // paths: refused locally for path entropy, never reaching the origin.
+  await runTLSProbes(plan.before,tlsReport);
+  const browser=new Browser(settings.profile);
+  try{
+    try{
+    await browser.init();await browser.call('Network.clearBrowserCache');
+    browser.phase='tls';
+    await browser.navigate('/','tls');
+    await until(async()=>await browser.evaluate('document.readyState')==='complete');
+    await browser.ready();
+    const dom=await browser.evaluate(`(()=>{const i=document.getElementById('cdn-image');const r=i.getBoundingClientRect();
+      return {protocol:location.protocol,origin:location.origin,title:document.title,state:document.getElementById('state').textContent,
+      heading:document.querySelector('h1').textContent,styledColor:getComputedStyle(document.getElementById('styled')).color,
+      imageComplete:i.complete,imageNatural:i.naturalWidth,imageBox:[r.width,r.height],scriptRan:window.fixture?.scriptRan,rootNatural:document.getElementById('third-root').naturalWidth}})()`);
+    checkTLSRendered(dom,origin,settings.image_side);
+    await browser.click('#count');await until(async()=>(await browser.state())?.count===1);
+    await browser.type('#input','synthetic input');
+    check(await browser.evaluate("document.getElementById('input').value")==='synthetic input','input did not arrive');
+    // The third-origin image is requested because B's stylesheet names it.
+    await until(()=>browser.response('third:third'));
+    const observed={};
+    for(const label of ['cdn:script','cdn:style','cdn:image','third:root','third:third']){
+      const item=browser.response(label);
+      if(item)observed[label]={status:item.status,block_reason:item.block_reason,error:item.error??null,protocol:item.protocol??null};
+    }
+    checkTLSBrowserResources(observed,settings.expect_protocol);
+    if(observed['third:third'].status===403)tlsReport.denials.push({name:'browser_third_origin_resource',
+      block_reason:observed['third:third'].block_reason,source:'browser'});
+    const screenshot=await browser.call('Page.captureScreenshot',{format:'png'});
+    const png=Buffer.from(screenshot.data,'base64');
+    check(png.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))&&png.length>1000,'invalid or empty PNG screenshot');
+    const width=png.readUInt32BE(16),height=png.readUInt32BE(20);check(width>0&&height>0,'empty screenshot geometry');
+    fs.writeFileSync(path.join(settings.output,'tls-ready.png'),png,{mode:0o600});
+    tlsReport.dom=dom;tlsReport.browser_resources=observed;
+    report.cases.push({name:'tls_cdn_page_rendered',status:'pass',app_state:dom.state,
+      screenshot:{width,height,validation:'PNG header and dimensions; inspect pixels separately'}});
+    report.cases.push({name:'tls_browser_network',status:'pass',observed});
+    }catch(error){
+      // Explain a stall or refusal from what the browser actually saw. The probe
+      // matrix below still runs: its results say whether only the browser path failed.
+      report.cases.push({name:'tls_cdn_page_rendered',status:'fail',failure:String(error.message||error).slice(0,512)});
+      const snapshot={routes:{},pending:[...browser.requests.values()].map(item=>({route:item.route,status:item.status??null}))};
+      for(const [route,items] of browser.routes)snapshot.routes[route]=items.map(({status,block_reason,error:failed})=>({status,block_reason,error:failed}));
+      try{snapshot.dom=await browser.evaluate("({state:document.getElementById('state')?.textContent,ready:document.readyState,fixture:window.fixture??null})");}catch{}
+      tlsReport.failure_snapshot=snapshot;
+    }
+  }finally{await browser.close();}
+  // With the page delivered, exactly the declared resources load; each altered or
+  // widened request is refused for the same layer the pre-delivery probes hit.
+  // Real browsers negotiate h2 with the interceptor, so each probe runs over h2
+  // and over HTTP/1.1; a rule that only works for one is not browser acceptance.
+  for(const protocol of settings.probe_protocols){
+    const tag=protocol==='h2'?'h2':'h1';
+    const label=probe=>({...probe,name:`${probe.name}_${tag}`,protocol});
+    await runTLSProbes(plan.allowed.map(label),tlsReport);
+    await runTLSProbes(plan.negatives.map(label),tlsReport);
+  }
+}
 async function run() {
   report.namespace={net:fs.readlinkSync('/proc/self/ns/net'),user:fs.readlinkSync('/proc/self/ns/user')};
   report.runtime_identity={uid:process.getuid(),gid:process.getgid(),exec_path:process.execPath,
@@ -176,6 +324,7 @@ async function run() {
     checkManagedIdentity(settings,report.runtime_identity,{upper:proxy,lower:process.env.http_proxy});
   }
   report.direct_control=await directProbe();
+  if(tlsScenario){if(settings.mode!=='proxy-only')throw Error('the TLS scenario is proxy-only');await runTLS();return;}
   if(settings.mode==='sandbox'||settings.mode==='managed-contain'){
     check(report.namespace.net!==settings.parent_net_namespace,'sandbox inherited host network namespace');
     check(report.direct_control.outcome!=='connected','direct own-host endpoint is reachable inside sandbox');

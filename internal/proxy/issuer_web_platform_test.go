@@ -493,7 +493,7 @@ func TestWebPlatformIssuerEvidenceIsInterceptOnly(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "text/html")
 			if r.URL.Path == "/" {
-				_, _ = io.WriteString(w, `<img src="`+*self+webImagePath+`?`+webImageQuery()+`"><link href="`+*self+webMediaPath+`">`)
+				_, _ = io.WriteString(w, `<img src="`+*self+webImagePath+`?`+webImageQuery()+`"><link href="`+*self+webMediaPath+`"><script src="`+resourceCDN+resourceTok1+`/entry.js"></script>`)
 				return
 			}
 			_, _ = io.WriteString(w, "ok")
@@ -571,7 +571,7 @@ func TestWebPlatformIssuerEvidenceIsInterceptOnly(t *testing.T) {
 				}
 				store := runtime.query
 				store.mu.Lock()
-				held := len(store.sessions) + len(store.paths) + len(store.documents) + len(store.redirects) + len(store.ids)
+				held := len(store.sessions) + len(store.paths) + len(store.resources) + len(store.derivedPaths) + len(store.documents) + len(store.redirects) + len(store.ids)
 				store.mu.Unlock()
 				if held != 0 {
 					t.Fatalf("%s recorded issuer evidence (%d buckets)", transport, held)
