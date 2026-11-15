@@ -27,6 +27,7 @@ import urllib.request
 import urllib.error
 
 from fixture import CANARY, FORBIDDEN_HOST, HOST, Fixture
+import tls_resource
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
@@ -194,12 +195,12 @@ def preserve_browser_report(result_dir, output, mode, owner, report):
     return browser
 
 
-def copy_browser_screenshots(result_dir, output, owner, report=None):
+def copy_browser_screenshots(result_dir, output, owner, report=None, names=("cold.png", "warm.png", "reload.png", "delayed.png")):
     """Copy only bounded regular PNG artifacts from the generated workspace."""
     # The generated driver emits exactly these four names. Do not enumerate
     # arbitrary workspace entries or turn extra PNGs into unbounded evidence.
     errors = []
-    for name in ("cold.png", "warm.png", "reload.png", "delayed.png"):
+    for name in names:
         screenshot = result_dir / name
         try:
             raw = read_regular(screenshot, 8 * 1024 * 1024, owner=owner)
@@ -448,10 +449,10 @@ class Process:
         return errors
 
 
-def probe(command, name, output, env, work, cancellation, report):
+def probe(command, name, output, env, work, cancellation, report, timeout=5):
     process = Process(command, output / name, env, work, cancellation)
     try:
-        code = process.wait(timeout=5)
+        code = process.wait(timeout=timeout)
     finally:
         report["processes"][name] = process.stop()
     if code != 0:
@@ -548,6 +549,110 @@ def config_for():
     }
 
 
+def prepare_tls_scenario(args, work, env, output, cancellation, report):
+    """Create every TLS input inside the workspace; no live trust store is touched.
+
+    The Pipelock CA comes from the shipped ``tls init``. The throwaway NSS
+    database is under the isolated HOME, which is the only place the generated
+    Chromium looks, and it is removed with the workspace. The synthetic upstream
+    CA is exposed to the proxy process alone (see ``proxy_environment``).
+    """
+    ca_dir, keystore = work / "proxy-ca", work / "keystore"
+    steps = [("tls-init", [str(args.pipelock), "tls", "init", "--out", str(ca_dir)]),
+             ("recorder-keygen", [str(args.pipelock), "keygen", "recorder", "--keystore", str(keystore)])]
+    for name, command in steps:
+        probe(command, name, output, env, work, cancellation, report, timeout=30)
+    ca_cert, ca_key = ca_dir / "ca.pem", ca_dir / "ca-key.pem"
+    signing_key = keystore / "agents" / "recorder" / "id_ed25519"
+    for path in (ca_cert, ca_key, signing_key):
+        if not path.is_file():
+            raise RuntimeError(f"expected generated TLS input is missing: {path.name}")
+    nssdb = Path(env["HOME"]) / ".pki" / "nssdb"
+    if not nssdb.resolve().is_relative_to(work.resolve()):
+        raise RuntimeError("browser trust database would leave the runner workspace")
+    nssdb.mkdir(mode=0o700, parents=True)
+    certutil = ["sql:" + str(nssdb)]
+    probe([args.certutil, "-N", "-d", *certutil, "--empty-password"], "nss-init", output, env, work, cancellation, report, timeout=30)
+    probe([args.certutil, "-A", "-d", *certutil, "-n", tls_resource.NSS_NICKNAME, "-t", "C,,", "-i", str(ca_cert)],
+          "nss-trust", output, env, work, cancellation, report, timeout=30)
+    listing = probe([args.certutil, "-L", "-d", *certutil], "nss-list", output, env, work, cancellation, report, timeout=30)
+    trusted = [line for line in listing.splitlines() if line.startswith(tls_resource.NSS_NICKNAME)]
+    if len(trusted) != 1 or not trusted[0].rstrip().endswith("C,,"):
+        raise RuntimeError("the generated proxy CA is not the one trusted CA in the throwaway browser database")
+    report["tls"] = {"scenario": "tls-resource", "nss_database_in_workspace": True, "trust_scope": "throwaway browser database only",
+                     "live_trust_mutated": False, "broad_tls_weakening": False,
+                     "browser_flags": list(browser_flags(args.tls_http1)),
+                     "large_html_bytes": args.bundle_bytes if args.tls_large_html else 0,
+                     "http_version_variant": "http1.1-forced diagnostic" if args.tls_http1 else "browser default (h2)"}
+    return {"ca_cert": ca_cert, "ca_key": ca_key, "signing_key": signing_key}
+
+
+TLS_BROWSER_FLAGS = ("--disable-quic",)
+
+
+def browser_flags(http1=False):
+    """QUIC is off so every request uses the proxy; HTTP/2 stays on unless a diagnostic asks."""
+    return TLS_BROWSER_FLAGS + (("--disable-http2",) if http1 else ())
+
+
+def proxy_environment(env, upstream_ca):
+    """The proxy alone verifies the synthetic upstream through this one CA file."""
+    return {**env, "SSL_CERT_FILE": str(upstream_ca)}
+
+
+def collect_tls_evidence(work, output, args, env, cancellation, report, fixture, browser):
+    """Join fixture arrivals, signed receipts, audit events and browser outcomes."""
+    recorder = work / "recorder"
+    lines, copied = [], output / "receipts"
+    copied.mkdir(mode=0o700)
+    for source in sorted(recorder.glob("evidence-*.jsonl")):
+        raw = read_regular(source, 8 * 1024 * 1024, owner=os.geteuid())
+        (copied / source.name).write_bytes(raw)
+        (copied / source.name).chmod(0o600)
+        lines.extend(raw.decode("utf-8", errors="replace").splitlines())
+    receipts = tls_resource.declared_resource_receipts(lines)
+    stdout = (output / "proxy.stdout").read_text(errors="replace")
+    events = tls_resource.proxy_events(stdout)
+    failures = tls_resource.evaluate_acceptance(
+        port=fixture.port, fixture=fixture.evidence(), receipts=receipts,
+        other_kinds=tls_resource.all_issuer_allow_kinds(lines), events=events, browser=browser)
+    signer = tls_resource.receipt_signers(lines)
+    if report["processes"].get("proxy", {}).get("streams", {}).get("stdout", {}).get("truncated"):
+        failures.append("proxy stdout evidence was truncated; block and allowance counts are not complete")
+    verification = {"signers": signer, "valid": False}
+    if len(signer) == 1:
+        process = Process([str(args.pipelock), "verify-receipt", "--chain", str(copied),
+                           "--whole-recorder", "--require-seal", "--key", signer[0], "--json"],
+                          output / "verify-receipts", env, work, cancellation)
+        try:
+            verification_exit = process.wait(timeout=30)
+        finally:
+            report["processes"]["verify-receipts"] = process.stop()
+        try:
+            result = decode_json((output / "verify-receipts.stdout").read_bytes())
+            verification.update({"valid": verification_exit == 0 and result.get("valid") is True,
+                                 "exit_code": verification_exit, "integrity": result.get("integrity"),
+                                 "status": result.get("status"), "scope": result.get("scope"),
+                                 "end_proof": result.get("end_proof"),
+                                 "receipt_scope": "copied whole recorder; sealed run required"})
+        except (OSError, ValueError, AttributeError):
+            verification["error"] = "verify-receipt output was not valid JSON"
+    if not verification["valid"]:
+        failures.append("signed receipt chain did not verify offline against the single recorder signer")
+    report["tls"].update({
+        "declared_resource_receipts": len(receipts), "issuer_allow_kinds": tls_resource.all_issuer_allow_kinds(lines),
+        "proxy_blocked_events": sum(1 for event in events if event.get("event") == "blocked"
+                                    and tls_resource.event_host(event) in tls_resource.HOSTS),
+        "proxy_background_host_blocks": sorted({tls_resource.event_host(event) for event in events
+                                                if event.get("event") == "blocked"
+                                                and tls_resource.event_host(event) not in tls_resource.HOSTS}),
+        "proxy_block_reasons": sorted({str(event.get("reason", ""))[:64] for event in events if event.get("event") == "blocked"
+                                       and tls_resource.event_host(event) in tls_resource.HOSTS}),
+        "fixture_counts": fixture.evidence()["counts"], "receipt_verification": verification,
+        "assertion": "visible DOM ready state, browser-observed network outcomes, fixture arrivals and signed receipts"})
+    return failures
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pipelock", required=True, type=Path, help="explicit candidate binary; never builds/installs automatically")
@@ -555,20 +660,40 @@ def main():
     parser.add_argument("--mode", choices=["sandbox", "proxy-only"], default="sandbox")
     parser.add_argument("--node", default=shutil.which("node"))
     parser.add_argument("--chromium", default=shutil.which("chromium"))
+    parser.add_argument("--scenario", choices=["default", "tls-resource"], default="default",
+                        help="tls-resource: generated HTTPS page and CDN origins through a TLS-decrypting proxy (proxy-only)")
+    parser.add_argument("--tls-http1", action="store_true",
+                        help="diagnostic variant of tls-resource: force Chromium to HTTP/1.1 (not the browser default)")
+    parser.add_argument("--tls-large-html", action="store_true",
+                        help="tls-resource: pad the declaring page by --bundle-bytes after its early CDN declarations")
+    parser.add_argument("--certutil", default=shutil.which("certutil"))
+    parser.add_argument("--openssl", default=shutil.which("openssl"))
     parser.add_argument("--bundle-bytes", type=int, default=2_000_000)
     args = parser.parse_args()
     if not args.node or not args.chromium:
         parser.error("Node 22+ and Chromium are required; pass explicit executable paths")
+    tls = args.scenario == "tls-resource"
+    if tls and args.mode != "proxy-only":
+        parser.error("--scenario tls-resource requires --mode proxy-only; it makes no containment claim")
+    if (args.tls_http1 or args.tls_large_html) and not tls:
+        parser.error("--tls-http1 and --tls-large-html only apply to --scenario tls-resource")
+    if tls and (not args.certutil or not args.openssl):
+        parser.error("--scenario tls-resource requires certutil and openssl; pass explicit executable paths")
     args.pipelock = args.pipelock.resolve(strict=True)
     args.output = args.output.resolve()
     args.output.mkdir(mode=0o700, parents=False)
     os.umask(0o077)
     report = {"schema": 1, "mode": args.mode, "status": "incomplete", "containment": "not_established",
-              "scope": "generated HTTP fixtures only; no production acceptance", "processes": {}, "versions": {}}
+              "scope": ("generated HTTPS fixtures through a TLS-decrypting proxy; no public-site acceptance" if tls
+                        else "generated HTTP fixtures only; no production acceptance"),
+              "processes": {}, "versions": {}}
+    if tls:
+        report["scenario"] = args.scenario
     cancellation = Cancellation()
     cancellation.install()
     work = None
     workspace_cleanup_verified = False
+    long_lived_started = False
     try:
         report.update({
             "binary_sha256": hashlib.sha256(args.pipelock.read_bytes()).hexdigest(),
@@ -579,7 +704,8 @@ def main():
             "harness_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in HERE.iterdir() if path.suffix in (".py", ".mjs")},
         })
         work = Path(tempfile.mkdtemp(prefix="browser-repro-"))
-        with Fixture(args.bundle_bytes) as fixture:
+        upstream = tls_resource.generate_upstream_pki(work / "upstream", openssl=args.openssl) if tls else None
+        with (tls_resource.TLSResourceFixture(upstream, args.bundle_bytes if args.tls_large_html else 0) if tls else Fixture(args.bundle_bytes)) as fixture:
             env = isolated_environment(work)
             identity = node_identity(probe([args.node, "-p", NODE_IDENTITY], "identity-node",
                                           args.output, env, work, cancellation, report))
@@ -597,30 +723,50 @@ def main():
                 raise RuntimeError("copied Node runtime identity does not match the selected runtime")
             report["node_runtime"]["copied_identity_verified"] = True
             env["PIPELOCK_CONFIG"] = str(work / "pipelock.json")
-            write_json(work / "pipelock.json", config_for())
-            write_json(args.output / "config.json", config_for())
+            if tls:
+                material = prepare_tls_scenario(args, work, env, args.output, cancellation, report)
+                config = tls_resource.tls_config(fixture.port, material["ca_cert"], material["ca_key"],
+                                                 work / "recorder", material["signing_key"])
+            else:
+                config = config_for()
+            write_json(work / "pipelock.json", config)
+            write_json(args.output / "config.json", config)
             report["config_sha256"] = hashlib.sha256((work / "pipelock.json").read_bytes()).hexdigest()
-            report["bundle_sha256"] = hashlib.sha256(fixture.bundle).hexdigest()
-            report["bundle_bytes"] = len(fixture.bundle)
+            if not tls:
+                report["bundle_sha256"] = hashlib.sha256(fixture.bundle).hexdigest()
+                report["bundle_bytes"] = len(fixture.bundle)
             report["parent_net_namespace"] = os.readlink("/proc/self/ns/net")
             # Parent witness is independent of the contained client, and the
             # dynamically selected fixture listener is known to be alive.
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-            with opener.open(f"http://127.0.0.1:{fixture.port}/health", timeout=2) as response:
-                report["parent_fixture_witness"] = response.status
+            if tls:
+                report["parent_fixture_witness"] = tls_resource.tls_witness(fixture.port, upstream["ca"])
+            else:
+                with opener.open(f"http://127.0.0.1:{fixture.port}/health", timeout=2) as response:
+                    report["parent_fixture_witness"] = response.status
             for name in ("driver.mjs", "contracts.mjs"):
                 shutil.copyfile(HERE / name, work / name)
             settings = {"mode": args.mode, "port": fixture.port, "canary": CANARY,
                         "chromium": str(Path(args.chromium).resolve()), "profile": str(work / "profile"),
                         "output": str(work), "parent_net_namespace": report["parent_net_namespace"]}
+            if tls:
+                settings.update({"scenario": args.scenario, "hosts": {"page": tls_resource.A_HOST, "cdn": tls_resource.B_HOST,
+                                                                    "third": tls_resource.C_HOST},
+                                 "paths": tls_resource.resource_paths(), "proxy_ca": str(material["ca_cert"]),
+                                 "browser_args": list(browser_flags(args.tls_http1)),
+                                 "expect_protocol": "http/1.1" if args.tls_http1 else "h2",
+                                 "probe_protocols": ["http/1.1"] if args.tls_http1 else ["h2", "http/1.1"], "image_side": tls_resource.IMAGE_SIDE,
+                                 "query_token": tls_resource.token("query")})
             proxy_process = None
             driver_process = None
+            browser = None
+            long_lived_started = True
             try:
                 if args.mode == "proxy-only":
                     report["containment"] = "not_tested_proxy_only"
                     command = proxy_command(args.pipelock, env["PIPELOCK_CONFIG"])
-                    proxy_process = Process(command,
-                                            args.output / "proxy", env, work, cancellation)
+                    proxy_process = Process(command, args.output / "proxy",
+                                            proxy_environment(env, upstream["ca"]) if tls else env, work, cancellation)
                     settings["proxy"] = wait_owned_proxy(proxy_process, opener, cancellation,
                                                         expected_address="http://" + command[-1])
                     report["proxy_startup_address"] = settings["proxy"]
@@ -644,6 +790,8 @@ def main():
                 if code != 0:
                     report["status"] = "fail"
                     report["failure"] = f"browser command failed (exit {code}); inspect driver.stderr"
+                    if tls and browser is not None and browser.get("failure"):
+                        report["browser_failure"] = str(browser["failure"])[:512]
                 elif browser is not None:
                     report["status"] = browser["status"]
                     if args.mode == "sandbox" and report.get("preflight_exit") != 0:
@@ -655,7 +803,8 @@ def main():
                     report["status"] = "fail"
                     report["failure"] = report["browser_artifact_error"]
                 try:
-                    copy_browser_screenshots(work, args.output, os.geteuid(), report)
+                    copy_browser_screenshots(work, args.output, os.geteuid(), report,
+                                             names=("tls-ready.png",) if tls else ("cold.png", "warm.png", "reload.png", "delayed.png"))
                 except (OSError, ValueError) as error:
                     report["screenshot_artifact_error"] = str(error)[:1024]
                     if code == 0:
@@ -698,11 +847,19 @@ def main():
                         report["failure"] = "required sandbox layer unavailable; see driver.stderr"
             # Two allowed /health arrivals are expected: parent witness and
             # mediated positive control. Every blocked control must stay away.
-            report["health_arrivals"] = fixture.evidence()["counts"].get("/health", 0)
-            if report["status"] == "complete" and report["health_arrivals"] != 2:
+            if tls:
+                if report["status"] == "complete":
+                    problems = collect_tls_evidence(work, args.output, args, env, cancellation, report, fixture, browser)
+                    if problems:
+                        report["status"] = "fail"
+                        report["failure"] = "; ".join(problems)[:1024]
+                        report["tls"]["acceptance_failures"] = problems[:16]
+            else:
+                report["health_arrivals"] = fixture.evidence()["counts"].get("/health", 0)
+            if not tls and report["status"] == "complete" and report["health_arrivals"] != 2:
                 report["status"] = "fail"
                 report["failure"] = "unexpected fixture health arrival; negative-control attribution failed"
-            if report["status"] == "complete":
+            if not tls and report["status"] == "complete":
                 evidence = fixture.evidence()
                 for scenario in ("error", "incomplete", "pending"):
                     if evidence["scenario_counts"].get(scenario) != 1:
@@ -729,6 +886,15 @@ def main():
                 report["status"] = "fail"
                 report["interrupted_signal"] = cancellation.signum
                 report.setdefault("failure", f"runner interrupted by signal {cancellation.signum}")
+            if tls and not long_lived_started and report["processes"] and all(
+                    result.get("streams_drained") is True and result.get("cleanup", {}).get("cleanup_complete") is True
+                    and result.get("cleanup", {}).get("unexpected_live_descendants") is False
+                    for result in report["processes"].values()):
+                # TLS setup holds throwaway CA/signing keys. With no proxy or browser ever started
+                # and every supervised tool reaped, nothing can still use them: remove them.
+                workspace_cleanup_verified = True
+                report.setdefault("browser_artifact_status", "missing")
+                report.setdefault("browser_artifact_error", "browser never started: TLS setup did not complete")
             if work is not None:
                 finalize_workspace(work, args.output / "summary.json", report, workspace_cleanup_verified)
             if cancellation.signum is not None:

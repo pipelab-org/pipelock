@@ -57,8 +57,18 @@ func htmlLinkValues(body []byte, limit int) []string {
 // base past the cut cannot be ruled out, so the caller must not resolve
 // relative links against the response URL.
 func htmlLinksAndBase(body []byte, limit int) (links []string, base string, baseKnown bool) {
-	if limit <= 0 || len(body) == 0 {
-		return nil, "", true
+	links, _, base, baseKnown = htmlLinkScan(body, limit, 0)
+	return links, base, baseKnown
+}
+
+// htmlLinkScan is htmlLinksAndBase plus, when resourceLimit is above zero, the
+// typed subresource references the document declares (htmlResourceRefs), up to
+// that limit and apart from the link limit. One tokenizer pass serves both, so
+// the resource roles come from the same parse that decides what is an
+// attribute at all.
+func htmlLinkScan(body []byte, limit, resourceLimit int) (links, resources []string, base string, baseKnown bool) {
+	if (limit <= 0 && resourceLimit <= 0) || len(body) == 0 {
+		return nil, nil, "", true
 	}
 	truncated := len(body) > issuerQueryMaxHTMLBytes
 	if truncated {
@@ -75,11 +85,21 @@ func htmlLinksAndBase(body []byte, limit int) (links []string, base string, base
 		base, baseSeen = documentBase(body)
 	}
 	var out []string
+	// pictureDepth counts open <picture> elements, so a <source> is read as
+	// an image candidate only inside one.
+	pictureDepth := 0
+	var attrs []htmlAttr
 	z := html.NewTokenizer(bytes.NewReader(body))
 	for {
 		tt := z.Next()
 		if tt == html.ErrorToken {
 			break
+		}
+		if tt == html.EndTagToken && resourceLimit > 0 {
+			if name, _ := z.TagName(); string(name) == "picture" && pictureDepth > 0 {
+				pictureDepth--
+			}
+			continue
 		}
 		if tt != html.StartTagToken && tt != html.SelfClosingTagToken {
 			continue
@@ -89,13 +109,25 @@ func htmlLinksAndBase(body []byte, limit int) (links []string, base string, base
 			// A <base> is not a link; documentBase reads it.
 			continue
 		}
-		if len(out) >= limit {
+		linksFull := len(out) >= limit
+		collect := resourceLimit > 0 && len(resources) < resourceLimit && htmlResourceTag(string(tag))
+		if resourceLimit > 0 && string(tag) == "picture" && tt == html.StartTagToken {
+			pictureDepth++
+		}
+		if linksFull && !collect {
 			continue
 		}
+		attrs = attrs[:0]
 		for hasAttr {
 			key, val, more := z.TagAttr()
 			hasAttr = more
 			attr := strings.ToLower(string(key))
+			if collect {
+				attrs = append(attrs, htmlAttr{key: attr, val: string(val)})
+			}
+			if linksFull {
+				continue
+			}
 			switch {
 			case htmlLinkAttrs[attr]:
 				if v := strings.TrimSpace(string(val)); v != "" && len(out) < limit {
@@ -108,6 +140,9 @@ func htmlLinksAndBase(body []byte, limit int) (links []string, base string, base
 					}
 				}
 			}
+		}
+		if collect {
+			resources = htmlResourceRefs(string(tag), attrs, pictureDepth > 0, resources, resourceLimit)
 		}
 	}
 	// Which <base> a browser uses depends on the parse: scripting turns
@@ -122,7 +157,7 @@ func htmlLinksAndBase(body []byte, limit int) (links []string, base string, base
 	default:
 		known = false
 	}
-	return out, base, known
+	return out, resources, base, known
 }
 
 // documentBase returns the href of the first <base> element with an href in

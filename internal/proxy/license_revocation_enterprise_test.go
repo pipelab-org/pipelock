@@ -110,26 +110,39 @@ func TestLicenseRevocationClosesMainListenerWebSocket(t *testing.T) {
 
 func TestLicenseRevocationClosesConnectBeforeClientHello(t *testing.T) {
 	t.Parallel()
-	target, _ := airlockProbeHoldListener(t)
-	addr, p, cleanup := setupForwardProxyWithInstance(t, revocationConnectionConfig)
-	defer cleanup()
-	conn := dialProxy(t, addr)
-	defer func() { _ = conn.Close() }()
-	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target.Addr(), target.Addr()); err != nil {
-		t.Fatal(err)
+	for _, tc := range []struct {
+		name      string
+		intercept bool
+	}{
+		{name: "raw"},
+		{name: "intercept", intercept: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target, _ := airlockProbeHoldListener(t)
+			addr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+				revocationConnectionConfig(cfg)
+				cfg.TLSInterception.Enabled = tc.intercept
+			})
+			defer cleanup()
+			conn := dialProxy(t, addr)
+			defer func() { _ = conn.Close() }()
+			if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target.Addr(), target.Addr()); err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK || !p.CurrentConfig().ForwardProxy.SNIVerificationEnabled() {
+				t.Fatal("positive control: CONNECT not admitted with SNI verification")
+			}
+			if !p.SetLicenseRevoked(p.CurrentConfig(), true) {
+				t.Fatal("revocation not published")
+			}
+			requireRevocationClose(t, conn)
+		})
 	}
-	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || !p.CurrentConfig().ForwardProxy.SNIVerificationEnabled() {
-		t.Fatal("positive control: CONNECT not admitted with SNI verification")
-	}
-	if !p.SetLicenseRevoked(p.CurrentConfig(), true) {
-		t.Fatal("revocation not published")
-	}
-	requireRevocationClose(t, conn)
 }
 
 func requireLicenseRevocationOutcome(t *testing.T, rph *receiptProxyHelper) {

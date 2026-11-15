@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/shield"
 	"golang.org/x/net/html/charset"
 )
 
@@ -91,6 +92,13 @@ type issuerQueryStore struct {
 	// own origin linked to. They live apart from values so a page that links
 	// to hundreds of assets cannot push a paging token out of its list.
 	paths map[string][][32]byte
+	// resources holds keyed digests of exact resource paths on another origin
+	// that a root HTML or CSS response declared (issuer_resource.go).
+	// derivedPaths holds same-origin paths named by a response that was itself
+	// reached through such a declaration, so a same-origin hop cannot turn a
+	// cross-origin permission into a fresh root.
+	resources    map[string][][32]byte
+	derivedPaths map[string][][32]byte
 	// documents holds keyed digests of the origins that served the session an
 	// HTML document. A request's page-origin value is accepted only for an
 	// origin in this list, so a header the agent wrote cannot name one.
@@ -129,6 +137,8 @@ func newIssuerQueryGeneration(ledger *issuerIDLedger) *issuerQueryStore {
 		sessions:       make(map[string][]issuerQueryEntry),
 		redirects:      make(map[string][][32]byte),
 		paths:          make(map[string][][32]byte),
+		resources:      make(map[string][][32]byte),
+		derivedPaths:   make(map[string][][32]byte),
 		documents:      make(map[string][][32]byte),
 		locations:      make(map[string][]issuedLocationEntry),
 		ids:            make(map[string]*issuerIDCache),
@@ -228,6 +238,8 @@ func (s *issuerQueryStore) admitSessionLocked(session string) {
 	delete(s.sessions, oldest)
 	delete(s.redirects, oldest)
 	delete(s.paths, oldest)
+	delete(s.resources, oldest)
+	delete(s.derivedPaths, oldest)
 	delete(s.documents, oldest)
 	delete(s.locations, oldest)
 	// ID history has its own bounded admission and must outlive query LRU
@@ -585,7 +597,14 @@ func oauthRedirectDeclaration(request *url.URL) (*url.URL, bool) {
 // earlier tree walk stopped at the same depth.
 const issuerQueryMaxDepth = 33
 
+// recordDeliveredIssuerQuery records a delivered response with no proof about
+// its exchange: it keeps same-origin knowledge and can never name a resource on
+// another origin.
 func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, body []byte, delivered bool) {
+	recordDeliveredIssuerQueryProof(ic, response, body, delivered, issuerDeliveryProof{})
+}
+
+func recordDeliveredIssuerQueryProof(ic *InterceptContext, response *http.Response, body []byte, delivered bool, proof issuerDeliveryProof) {
 	if !delivered || ic == nil || response == nil || response.Request == nil || response.Request.URL == nil {
 		return
 	}
@@ -602,7 +621,7 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 	// An OAuth authorization request names where the code must go. Record the
 	// declaration only once the request was allowed and its response
 	// delivered, which is the only way this function is reached.
-	if redirect, declared := oauthRedirectDeclaration(response.Request.URL); declared && store != nil {
+	if redirect, declared := oauthRedirectDeclaration(response.Request.URL); declared && store != nil && !proof.derived {
 		store.declareRedirect(session, response.Request.URL, redirect, time.Now())
 	}
 	remaining := issuerCookieMaxSetCookies
@@ -611,6 +630,13 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 	// that follows them).
 	pathRemaining := issuerCookieMaxSetCookies
 	idRemaining := issuerServerIDMaxPerResponse
+	// resourceRemaining bounds the resources on another origin that one
+	// response may declare. It is a budget of its own for the same reason as the
+	// path one, and drawn from the same constant: no new number. Only a root
+	// response from a fully enforced, clean exchange may declare them; a
+	// derived one never does, so a grant cannot be passed to a third origin.
+	resourceRemaining := issuerCookieMaxSetCookies
+	mintResources := proof.cleanEnforced && !proof.derived
 	// base is what a relative reference resolves against: the response URL,
 	// or an HTML document's own <base href> when it names the same origin.
 	base := response.Request.URL
@@ -659,8 +685,18 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 		} else if pathIssued && pathRemaining > 0 {
 			// Only the origin's own link counts: a cross-host redirect above
 			// returned before this point and issues no path.
-			store.rememberPath(session, candidate, time.Now())
+			if proof.derived {
+				store.rememberDerivedPath(session, candidate, time.Now())
+			} else {
+				store.rememberPath(session, candidate, time.Now())
+			}
 			pathRemaining--
+		}
+		// A resource and its descendants can issue exact paths on their own
+		// origin, but no other kind of authority. Query values or object IDs
+		// could otherwise authorize constructed URLs that lose this provenance.
+		if proof.derived {
+			return
 		}
 		for name, values := range candidate.Query() {
 			if allowed != nil && !allowed[name] {
@@ -673,6 +709,31 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 				store.rememberKind(session, candidate, name, queryValue, kind, time.Now())
 				remaining--
 			}
+		}
+	}
+	// observeResource records the exact path of a resource on ANOTHER https
+	// origin that a typed producer (an HTML subresource element or a CSS url())
+	// declared. Only the path is kept: the query a reference carries is never
+	// recorded, so the destination's query still faces the full entropy gate.
+	// The caller passes only typed references; a script literal, a link, a
+	// form, a frame or a redirect never reaches this function.
+	observeResource := func(value string) {
+		if store == nil || !mintResources || resourceRemaining <= 0 {
+			return
+		}
+		ref, err := url.Parse(value)
+		if err != nil {
+			return
+		}
+		if !ref.IsAbs() {
+			ref = base.ResolveReference(ref)
+		}
+		host, port, valid := issuerCookieOrigin(ref)
+		if !valid || (host == issuerHost && port == issuerPort) {
+			return
+		}
+		if store.rememberResource(session, ref, time.Now()) {
+			resourceRemaining--
 		}
 	}
 	// RFC 9110 section 10.2.2 defines Location for 201 and 3xx responses.
@@ -691,13 +752,45 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 		return
 	}
 	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0]))
+	// Stylesheets and scripts can name further resources just as HTML does.
+	// observe retains the existing same-origin knowledge boundary: this
+	// never delegates to another origin or treats a computed URL as issued.
+	switch mediaType {
+	case "text/css", "text/javascript", "application/javascript", "text/ecmascript", "application/ecmascript":
+		if store == nil || !asciiTransparentDocument(body, response.Header.Get("Content-Type")) {
+			return
+		}
+		var references []string
+		if mediaType == "text/css" {
+			// A stylesheet's url() and @import are typed resource references,
+			// so they may also declare resources on another origin. The extra
+			// room keeps same-origin references from using up the lexer's limit
+			// before a CDN reference.
+			limit := pathRemaining
+			if mintResources {
+				limit += resourceRemaining
+			}
+			references = shield.CSSResourceURLs(string(body), limit)
+		} else {
+			references = scriptURLReferences(body, pathRemaining)
+		}
+		for _, reference := range references {
+			observe(reference, false, true)
+			if mediaType == "text/css" {
+				observeResource(reference)
+			}
+		}
+		return
+	}
 	if mediaType == "text/html" || mediaType == "application/xhtml+xml" {
 		if store == nil {
 			return
 		}
 		// The agent received a document from this origin, so a later request
 		// may name it as the page it is embedded in.
-		store.rememberDocument(session, response.Request.URL, time.Now())
+		if !proof.derived {
+			store.rememberDocument(session, response.Request.URL, time.Now())
+		}
 		if mediaType == "application/xhtml+xml" || !asciiTransparentDocument(body, response.Header.Get("Content-Type")) {
 			// Links and base are read with the HTML tokenizer from the raw
 			// bytes as UTF-8. A browser parses XHTML as XML, and under an
@@ -706,19 +799,36 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 			// URLs, so such a document issues no link at all.
 			return
 		}
-		links, baseHref, baseKnown := htmlLinksAndBase(body, remaining)
+		resourceLimit := 0
+		if mintResources {
+			resourceLimit = resourceRemaining
+		}
+		links, resources, baseHref, baseKnown := htmlLinkScan(body, remaining, resourceLimit)
 		docBase, usable := sameOriginBase(response.Request.URL, baseHref)
+		// usableLink reports whether the browser's resolution of a reference
+		// is known. A base Pipelock cannot honor, or cannot see, makes a
+		// browser resolve relative references against it, so only an absolute
+		// reference names the URL it will request.
+		usableLink := func(link string) bool {
+			if baseKnown && usable {
+				return true
+			}
+			ref, err := url.Parse(link)
+			return err == nil && ref.IsAbs()
+		}
 		for _, link := range links {
-			if !baseKnown || !usable {
-				// The browser resolves this document's relative links
-				// against a base Pipelock cannot honor, or cannot see, so
-				// only an absolute link names the URL it will request.
-				if ref, err := url.Parse(link); err != nil || !ref.IsAbs() {
-					continue
-				}
+			if !usableLink(link) {
+				continue
 			}
 			base = docBase
 			observe(link, false, true)
+		}
+		for _, resource := range resources {
+			if !usableLink(resource) {
+				continue
+			}
+			base = docBase
+			observeResource(resource)
 		}
 		return
 	}
@@ -768,7 +878,7 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 				continue
 			}
 			observe(t, false, false)
-			if idRemaining > 0 && issuerServerIDShaped(t) && issuerServerIDIntroducible(t) {
+			if !proof.derived && idRemaining > 0 && issuerServerIDShaped(t) && issuerServerIDIntroducible(t) {
 				idStore.mintServerID(session, response.Request.URL, t, time.Now())
 				idRemaining--
 			}
@@ -851,7 +961,7 @@ func (p *Proxy) recordIssuerQueryAllow(cfg *config.Config, ctx audit.LogContext,
 	if p.logger != nil {
 		p.logger.LogIssuerQueryAllow(ctx, strings.ToLower(parsed.Hostname()))
 	}
-	if kind != issuerQueryIssuedRedirect && kind != issuerQueryOAuthRedirect && kind != issuerQueryPageOrigin && kind != issuerQueryServerID {
+	if kind != issuerQueryIssuedRedirect && kind != issuerQueryOAuthRedirect && kind != issuerQueryPageOrigin && kind != issuerQueryServerID && kind != issuerQueryResourcePath {
 		kind = issuerQueryObserved
 	}
 	safeTarget := parsed.Scheme + "://" + parsed.Host + parsed.EscapedPath()
