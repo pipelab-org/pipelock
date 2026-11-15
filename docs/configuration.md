@@ -1373,6 +1373,96 @@ and its tool descriptions were assessed benign, so a description surface set to
 assessment (`off`, `not_assessed`, `benign`, `finding` or `incomplete`); a
 `tools/list` stopped by a resource limit reports `incomplete`.
 
+#### External checkers
+
+A surface can be decided by an external checker instead of the built-in one.
+Define it under `checkers` and select it by name:
+
+```yaml
+prompt_injection_detection:
+  checkers:
+    local_model:                      # a service speaking pipelock.checker/v1
+      type: protocol
+      endpoint: http://localhost/check
+      unix_socket: /run/pipelock-checker/checker.sock
+      peer_uid: 990                   # optional: refuse a socket owned by anyone else
+      revision: {checker: runner/v1, model: model/v1, adapter: adapter/v1}
+      timeout_ms: 2000
+      max_request_bytes: 262144
+      max_response_bytes: 16384
+    vendor:                           # the same protocol over HTTPS
+      type: protocol
+      endpoint: https://checker.vendor.example/check
+      ca_file: /etc/pipelock/checker-ca.pem   # optional private CA
+      authorization_env: CHECKER_AUTHORIZATION # full Authorization header value
+      revision: {checker: vendor/v3, model: vendor-model/7, adapter: vendor-adapter/1}
+      timeout_ms: 2000
+      max_request_bytes: 262144
+      max_response_bytes: 16384
+      send_content_off_host: true
+    jev:                              # TypeSafe Jev decision API
+      type: jev
+      model: jev-X.Y.Z                # pin an exact version; jev-latest is refused
+      api_key_env: JEV_API_KEY
+      threshold: 0.8                  # score at or above this is a finding
+      timeout_ms: 3000
+      max_request_bytes: 262144
+      max_response_bytes: 16384
+      send_content_off_host: true
+  surfaces:
+    mcp_tool_result: {checker: local_model, mode: block}
+    mcp_tool_description: {mode: block, watch: jev}   # built-in decides, jev watches
+```
+
+Rules:
+
+- When a surface selects an external checker, the built-in wording rules
+  (including the core wording floor) do not run on that surface, and there is
+  no fallback to them. An external checker's mode is independent of the global
+  `enabled`/`action` setting, which applies to the built-in checker only.
+- `block`: a finding blocks the response, or refuses the `tools/list`, through
+  the surface's normal finding path (a score-only checker cannot strip or
+  ask, so result findings always block). A checker that is down, slow,
+  refuses, returns a malformed or wrongly pinned answer, or reports partial
+  coverage withholds the content as an assessment failure. That is reported
+  as an infrastructure block, never as a detected attack and never as clean.
+- `warn`: findings and failures are delivered and recorded. They produce no
+  injection-driven taint and no adaptive escalation, and only a complete
+  benign assessment earns adaptive clean credit.
+- `off`: no checker call.
+- `watch` names a defined checker that reads the same content and records its
+  outcome while the selected checker decides. It runs off the delivery path
+  with its own timeout; when its slots are busy the call is dropped and the
+  drop is recorded. Its result never changes delivery or counts as a pass.
+- Content leaves the machine only with `send_content_off_host: true`, which
+  is required whenever the endpoint is neither a Unix socket nor a numeric
+  loopback address, and always for `jev`. Startup and `pipelock doctor` name
+  each such checker, its host and the surfaces whose content it receives.
+- Credentials are named by environment variable (`authorization_env`,
+  `api_key_env`) and read at startup and reload. An unset variable is a
+  startup warning, and that checker then reports every item unassessed.
+- Plain `http` requires a numeric loopback address and
+  `allow_loopback_http: true`. Checker calls never use proxy environment
+  variables, never follow redirects, and refuse cloud metadata and
+  link-local addresses.
+- Each checker gets one item per MCP response or `tools/list` (one part per
+  tool, with findings attributed by part). Parts carry the original text plus
+  a decoded Unicode-tag view and a normalized view where they differ; base64
+  and hex decoded views are not sent yet.
+- Outcomes that are not a complete benign assessment, watch results and
+  dropped watch calls are logged as `injection_checker` events, with no
+  content and no provider text. A known-answer self-test runs against every
+  defined checker at startup and after each reload; a failure is logged and
+  changes nothing else.
+- The checker definitions, pins, budgets and environment variable names (not
+  their values) are part of the canonical policy hash. A reload warns when a
+  definition or binding changes.
+
+The Jev request and response shape follows the vendor's published API
+description and has not been verified against the live service in this
+repository. See [docs/checker-protocol.md](checker-protocol.md) for the
+protocol and the adapter.
+
 A configuration without `surfaces` keeps its canonical policy hash. Adding a
 selection changes the hash, even one that matches the global setting, because it
 changes which setting owns the surface. Startup, `pipelock doctor` and validation

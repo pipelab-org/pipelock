@@ -25,9 +25,17 @@ func checkDoctorPromptInjectionDetection(cfg *config.Config) doctorReportCheck {
 		check.Configured = true
 		bindings := make([]string, 0, 2)
 		for _, sp := range policy.Surfaces() {
-			bindings = append(bindings, fmt.Sprintf("%s=%s/%s (%s)", sp.Surface, sp.Checker, sp.Mode, sp.Source))
+			bindings = append(bindings, sp.Surface+"="+sp.Binding())
 		}
 		check.Detail += " Checker bindings: " + strings.Join(bindings, ", ") + "."
+		for _, name := range policy.CheckerNames() {
+			cc, _ := policy.Checker(name)
+			offHost := "stays on this machine"
+			if cc.SendsOffHost() {
+				offHost = "sends checked content off this machine (consented)"
+			}
+			check.Detail += fmt.Sprintf(" Checker %s: type %s, endpoint %s, %s.", name, cc.Type, cc.EndpointHost(), offHost)
+		}
 	}
 	return check
 }

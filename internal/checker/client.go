@@ -260,9 +260,21 @@ func (c *Client) Check(ctx context.Context, item Item, policy Policy) Assessment
 	if int64(len(body)) > policy.MaxRequestBytes {
 		return failure(StatusNotChecked, ReasonOverBudget)
 	}
+	data, fail := c.post(ctx, body, policy.MaxResponseBytes)
+	if fail != nil {
+		return *fail
+	}
+	return settleAfterCall(ctx, DecodeResponse(data, req, item, policy))
+}
+
+// post sends one JSON body to the fixed endpoint over the hardened transport
+// and returns the bounded 200 body, or the typed failure. Callers own the
+// whole-call deadline on ctx.
+func (c *Client) post(ctx context.Context, body []byte, maxResponseBytes int64) ([]byte, *Assessment) {
+	fail := func(a Assessment) ([]byte, *Assessment) { return nil, &a }
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
-		return failure(StatusInvalid, ReasonMalformed)
+		return fail(failure(StatusInvalid, ReasonMalformed))
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
@@ -293,23 +305,23 @@ func (c *Client) Check(ctx context.Context, item Item, policy Policy) Assessment
 	httpClient.Transport = transport
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {
-		return transportFailure(ctx)
+		return fail(transportFailure(ctx))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest {
-		return failure(StatusNotChecked, ReasonRedirect)
+		return fail(failure(StatusNotChecked, ReasonRedirect))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return failure(StatusNotChecked, ReasonUnavailable)
+		return fail(failure(StatusNotChecked, ReasonUnavailable))
 	}
-	data, err = io.ReadAll(io.LimitReader(resp.Body, policy.MaxResponseBytes+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
-		return transportFailure(ctx)
+		return fail(transportFailure(ctx))
 	}
-	if int64(len(data)) > policy.MaxResponseBytes {
-		return failure(StatusInvalid, ReasonTooLarge)
+	if int64(len(data)) > maxResponseBytes {
+		return fail(failure(StatusInvalid, ReasonTooLarge))
 	}
-	return settleAfterCall(ctx, DecodeResponse(data, req, item, policy))
+	return data, nil
 }
 
 // settleAfterCall applies the call's end state to a decoded result. A call

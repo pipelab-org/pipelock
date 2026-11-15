@@ -303,7 +303,8 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 			dlpViews = append(dlpViews, responseDLPView{text: key, card: key, structural: true})
 		}
 	}
-	result, dlpMatches, droppedDLP := scanResponseViewsWithCards(scanner.WithInjectionSurface(opts.scanContext(), config.InjectionSurfaceMCPToolResult), sc, opts, views, dlpViews)
+	surfaceCtx := scanner.WithInjectionSurface(opts.scanContext(), config.InjectionSurfaceMCPToolResult)
+	result, dlpMatches, droppedDLP := scanResponseViewsWithCards(surfaceCtx, sc, opts, views, dlpViews)
 	if result.Failed() {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Action: config.ActionBlock, Error: "response scan failed: " + result.ScanError}
 	}
@@ -327,16 +328,16 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 		dlpMatches = appendUniqueA2ADLPFindings(dlpMatches, responseJSONCardMatches(sc, trimmed, false))
 	}
 	if result.Clean && len(dlpMatches) == 0 {
-		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true, Assessment: result.RecoveryAssessment()}
+		return applyResponseChecker(surfaceCtx, sc, opts, len(trimmed), jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true, Assessment: result.RecoveryAssessment()}, joined, resourceURIs)
 	}
 
-	return jsonrpc.ScanVerdict{
+	return applyResponseChecker(surfaceCtx, sc, opts, len(trimmed), jsonrpc.ScanVerdict{
 		ID:         rpc.ID,
 		Clean:      false,
 		Action:     responseFindingAction(sc, opts, result.Matches, dlpMatches),
 		Matches:    result.Matches,
 		DLPMatches: dlpMatches,
-	}
+	}, joined, resourceURIs)
 }
 
 // responseJSONCardMatches retains the original number spellings in every
@@ -885,7 +886,9 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 	for _, key := range cardKeys {
 		dlpViews = append(dlpViews, responseDLPView{text: key, card: key, structural: true})
 	}
-	result, dlpMatches, droppedDLP := scanResponseViewsWithCards(scanner.WithInjectionSurface(ctx, config.InjectionSurfaceMCPToolResult), sc, opts, []string{joinResponseText(text, envelopeText)}, dlpViews)
+	siblingCtx := scanner.WithInjectionSurface(ctx, config.InjectionSurfaceMCPToolResult)
+	siblingText := joinResponseText(text, envelopeText)
+	result, dlpMatches, droppedDLP := scanResponseViewsWithCards(siblingCtx, sc, opts, []string{siblingText}, dlpViews)
 	if result.Failed() {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Action: config.ActionBlock, Error: "response scan failed: " + result.ScanError}
 	}
@@ -918,16 +921,16 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 	dlpMatches = append(dlpMatches, sc.ScanNumericChannelForKnownValues(numeric)...)
 	dlpMatches = appendUniqueA2ADLPFindings(dlpMatches, responseJSONCardMatches(sc, trimmed, true))
 	if result.Clean && len(dlpMatches) == 0 {
-		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
+		return applyResponseChecker(siblingCtx, sc, opts, len(trimmed), jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}, siblingText)
 	}
 
-	return jsonrpc.ScanVerdict{
+	return applyResponseChecker(siblingCtx, sc, opts, len(trimmed), jsonrpc.ScanVerdict{
 		ID:         rpc.ID,
 		Clean:      false,
 		Action:     responseFindingAction(sc, opts, result.Matches, dlpMatches),
 		Matches:    result.Matches,
 		DLPMatches: dlpMatches,
-	}
+	}, siblingText)
 }
 
 // scanBatch scans a JSON-RPC 2.0 batch response (array of responses).
@@ -1357,7 +1360,20 @@ func ScanResponseA2A(line []byte, sc *scanner.Scanner, a2aOpts *A2AResponseOpts)
 				verdict.Action = config.StricterAction(responseScanAction(sc, a2aOpts.ScanOpts), verdict.Action)
 			}
 		}
-		return verdict
+		// A2A-shaped content arrived as an MCP response: an external
+		// checker owning the result surface decides its wording, over every
+		// string the message carries.
+		var budget jsonrpc.MediaTextBudget
+		whole := jsonrpc.ExtractTextResultWithMediaBudget(json.RawMessage(bytes.TrimSpace(line)), false, &budget)
+		if whole.Truncated || whole.IncompleteReason != "" {
+			if sc.ExternalInjectionSurface(config.InjectionSurfaceMCPToolResult) {
+				return jsonrpc.ScanVerdict{ID: verdict.ID, Action: config.ActionBlock, Error: uninspectableJSONDepthReason}
+			}
+			return verdict
+		}
+		// The checker's own timeout bounds its call, not the A2A scan budget.
+		ctx := scanner.WithInjectionSurface(a2aOpts.ScanOpts.scanContext(), config.InjectionSurfaceMCPToolResult)
+		return applyResponseChecker(ctx, sc, a2aOpts.ScanOpts, len(line), verdict, whole.Text)
 	}
 
 	return a2aFallbackScan(line, sc, a2aOpts)

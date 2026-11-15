@@ -212,6 +212,9 @@ type Assessment struct {
 	Status   Status
 	Reason   Reason
 	Response *Response
+	// Score is set by adapters whose providers return a bare score instead
+	// of a protocol response. It is evidence, never a cutoff by itself.
+	Score *float64
 }
 
 // Checker assesses one item without modifying it or granting authority.

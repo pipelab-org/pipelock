@@ -2433,6 +2433,7 @@ func (c *Config) validateResponseScanning(warnings *[]Warning) error {
 	if notice := c.PromptInjectionNotice(); notice != "" {
 		*warnings = append(*warnings, Warning{Field: "prompt_injection_detection", Message: notice})
 	}
+	*warnings = append(*warnings, c.injectionCheckerWarnings()...)
 	// Validate response scanning config
 	if c.ResponseScanning.Enabled {
 		switch c.ResponseScanning.Action {

@@ -26,6 +26,24 @@ func wirePromptInjectionAudit(sc *scanner.Scanner, logger *audit.Logger) {
 		}
 		logger.LogResponseScan(lctx.WithScanRoute(wc.Transport, wc.ServerName, wc.Agent), config.ActionWarn, len(names), names, nil)
 	})
+	sc.SetInjectionCheckerHook(func(ctx context.Context, ev scanner.InjectionCheckerEvent) {
+		wc := scanner.DLPWarnContextFromCtx(ctx)
+		lctx, err := dlpWarnLogContext(wc)
+		if err != nil {
+			lctx = dlpWarnFallbackLogContext(wc)
+		}
+		logger.LogInjectionChecker(lctx.WithScanRoute(wc.Transport, wc.ServerName, wc.Agent), ev.Checker, ev.Surface, ev.Mode, ev.State, ev.Reason, ev.Watch, ev.Dropped)
+	})
+	// Known-answer self-test for every external checker of this snapshot,
+	// off the startup and reload path. A failure is recorded, never acted on:
+	// each item is still assessed and fails closed on its own.
+	if set := sc.InjectionCheckers(); len(sc.InjectionPolicy().CheckerNames()) > 0 {
+		go func() {
+			for _, name := range set.SelfTest(context.Background()) {
+				logger.LogInjectionChecker(audit.LogContext{}, name, "self_test", "", "self_test_failed", "known_answer_mismatch", false, false)
+			}
+		}()
+	}
 }
 
 // wirePromptInjectionStderr reports warn-only wording observations by pattern

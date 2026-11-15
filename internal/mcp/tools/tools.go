@@ -2527,6 +2527,9 @@ func scanToolsSingle(ctx context.Context, line []byte, sc *scanner.Scanner, cfg 
 	}
 
 	matches, observations, capacityExceeded, epochChanged, assessment := scanToolDefsAssessed(ctx, tools, sc, cfg)
+	if descriptionsWithheld(sc, assessment) {
+		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: ResourceLimitInjectionChecker, ResourceDetail: "injection checker " + assessment.Checker + " did not assess the tool descriptions", RPCID: rpc.ID, ToolNames: names, ToolDefs: tools, Observations: observations, Assessment: assessment}
+	}
 	if epochChanged {
 		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_baseline_reset", RPCID: rpc.ID, ToolNames: names, ToolDefs: tools, Observations: observations, Assessment: incompleteDescriptionAssessment}
 	}
@@ -2893,10 +2896,26 @@ func scanToolDefsAssessed(ctx context.Context, tools []ToolDef, sc *scanner.Scan
 		}
 	}
 
+	// An external checker that owns the description surface reads every
+	// description as one item; the built-in wording rules do not run here.
+	external, externalOK := assessToolDescriptions(ctx, sc, prescans)
+	if externalOK {
+		assessment, assessedAny = external.ext.Recovery(), true
+	}
+
 	for toolIndex, tool := range tools {
 		var match ToolScanMatch
 		match.ToolName = tool.Name
 		hasFinding := false
+		if externalOK && external.flags(toolIndex) {
+			finding := CheckerPatternPrefix + external.ext.Checker
+			if external.ext.Block() {
+				match.Injection = append(match.Injection, scanner.ResponseMatch{PatternName: finding})
+				hasFinding = true
+			} else {
+				observations = append(observations, ToolScanMatch{ToolName: tool.Name, ToolPoison: []string{finding}})
+			}
+		}
 
 		if confusableNames[tool.Name] {
 			match.ToolPoison = append(match.ToolPoison, "Confusable Tool Name Collision")
