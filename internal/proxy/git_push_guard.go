@@ -122,6 +122,12 @@ func gitPushRepoPatternMatch(pattern, value string) (bool, error) {
 	if len(parts) == 2 && parts[1] == "*" && strings.HasPrefix(value, parts[0]+"/") {
 		return true, nil
 	}
+	// filepath.Match reports a malformed pattern only when matching reaches
+	// the bad part. Check the whole pattern first, so an entry that can't be
+	// evaluated is never counted as an ordinary mismatch.
+	if !config.GitPushPatternWellFormed(pattern) {
+		return false, filepath.ErrBadPattern
+	}
 	return filepath.Match(pattern, value)
 }
 

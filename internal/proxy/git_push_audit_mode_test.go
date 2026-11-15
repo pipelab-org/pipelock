@@ -287,6 +287,13 @@ func TestGitPushAllowlistMark(t *testing.T) {
 			method: http.MethodPost, url: mismatch, block: true,
 		},
 		{
+			// The malformed class sits after a literal that already failed
+			// to match, so the matcher alone never reports it.
+			name:   "malformed tail after a failed literal",
+			cfg:    config.GitProtection{Enabled: true, AllowedPushRepos: []string{gitPushHost + "/acme/private*["}},
+			method: http.MethodPost, url: mismatch, block: true,
+		},
+		{
 			name:   "bad pattern does not hide a match",
 			cfg:    config.GitProtection{Enabled: true, AllowedPushRepos: []string{"[", gitPushHost + "/acme/private"}},
 			method: http.MethodPost, url: allowed,

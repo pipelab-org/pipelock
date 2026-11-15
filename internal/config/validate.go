@@ -3378,6 +3378,11 @@ func (c *Config) validateGitProtection() error {
 		if _, err := filepath.Match(repo, "github.com/acme/project"); err != nil {
 			return fmt.Errorf("invalid allowed_push_repos glob pattern %q: %w", repo, err)
 		}
+		// The probe above reports a malformed pattern only when matching
+		// reaches it. Check the whole entry so none loads half-usable.
+		if !GitPushPatternWellFormed(repo) {
+			return fmt.Errorf("invalid allowed_push_repos glob pattern %q: %w", repo, filepath.ErrBadPattern)
+		}
 	}
 	return nil
 }
