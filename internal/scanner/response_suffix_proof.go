@@ -187,7 +187,11 @@ func (v *responseFoldView) contentOffsets(sorted []int) bool {
 	return true
 }
 
-const responseSuffixProofMaxCandidateRatio = 32 // one candidate per 32 bytes
+const (
+	responseSuffixProofMaxCandidateRatio = 32 // one candidate per 32 bytes
+	// Bound repeated anchored matches even when the body is large and sparse.
+	responseSuffixProofMaxCandidates = 256
+)
 
 // Candidate lists contain complete folded offsets, never a truncated search.
 // They are bounded across the view and copied before mapping to source offsets.
@@ -224,7 +228,7 @@ func (p *responseSuffixProof) provesEmpty(v *responseFoldView) bool {
 		return false
 	}
 	content := v.content
-	limit := min(len(content)/responseSuffixProofMaxCandidateRatio+1, 16384)
+	limit := min(len(content)/responseSuffixProofMaxCandidateRatio+1, responseSuffixProofMaxCandidates)
 	var cands []int
 	for _, anchor := range p.anchors {
 		key := responseLiteralKey{text: anchor, fold: true}
