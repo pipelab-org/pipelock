@@ -885,7 +885,7 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 	for _, key := range cardKeys {
 		dlpViews = append(dlpViews, responseDLPView{text: key, card: key, structural: true})
 	}
-	result, dlpMatches, droppedDLP := scanResponseViewsWithCards(ctx, sc, opts, []string{joinResponseText(text, envelopeText)}, dlpViews)
+	result, dlpMatches, droppedDLP := scanResponseViewsWithCards(scanner.WithInjectionSurface(ctx, config.InjectionSurfaceMCPToolResult), sc, opts, []string{joinResponseText(text, envelopeText)}, dlpViews)
 	if result.Failed() {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Action: config.ActionBlock, Error: "response scan failed: " + result.ScanError}
 	}
