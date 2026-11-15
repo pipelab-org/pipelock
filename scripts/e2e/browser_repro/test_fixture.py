@@ -19,8 +19,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import math
+import shutil
+import ssl
+
 from fixture import CANARY, HOST, Fixture, generated_bundle, write_fixtures
-from run import Cancellation, Process, config_for, isolated_environment, write_json
+from run import Cancellation, Process, browser_flags, config_for, isolated_environment, write_json
+import tls_resource
 
 
 class FixtureTests(unittest.TestCase):
@@ -445,6 +450,262 @@ finally:
             write_json(path, {"status": "pending"})
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             self.assertEqual(json.loads(path.read_text()), {"status": "pending"})
+
+
+def shannon(text):
+    return -sum(text.count(char) / len(text) * math.log2(text.count(char) / len(text)) for char in set(text))
+
+
+def receipt_line(extension="declared_resource_path", target=None, verdict="allow", actor=tls_resource.AGENT,
+                 method="GET", layer="entropy_issuer_query_allow", key="a" * 64):
+    return json.dumps({"v": 2, "type": "action_receipt", "detail": {
+        "action_record": {"target": target, "verdict": verdict, "actor": actor, "method": method, "layer": layer},
+        "signer_key": key, "ext": {"entropy_issuer_query_allow": extension}}})
+
+
+class TLSConfigTests(unittest.TestCase):
+    def config(self):
+        return tls_resource.tls_config(1, "/w/ca.pem", "/w/ca-key.pem", "/w/rec", "/w/key")
+
+    def test_only_exact_destinations_and_enforcing_actions_are_configured(self):
+        config = self.config()
+        self.assertEqual(config["mode"], "strict")
+        self.assertEqual(config["api_allowlist"], list(tls_resource.HOSTS))
+        self.assertEqual(config["trusted_domains"], list(tls_resource.HOSTS))
+        self.assertEqual(config["dns"]["host_overrides"], {host: ["127.0.0.1"] for host in tls_resource.HOSTS})
+        self.assertEqual(config["default_agent_identity"], tls_resource.AGENT)
+        self.assertNotIn("bind_default_agent_identity", config)
+        self.assertEqual(config["request_body_scanning"], {"enabled": True, "action": "block", "scan_headers": True,
+                                                           "issuer_bound_session_cookies": True})
+        self.assertEqual(config["response_scanning"], {"enabled": True, "action": "block"})
+        self.assertTrue(config["tls_interception"]["enabled"])
+        self.assertTrue(config["flight_recorder"]["enabled"])
+
+    def test_no_entropy_exemption_rate_budget_ip_or_scanner_relaxation_is_manufactured(self):
+        config = self.config()
+        self.assertEqual(set(config), {"mode", "api_allowlist", "trusted_domains", "default_agent_identity", "dns",
+                                       "forward_proxy", "tls_interception", "request_body_scanning", "response_scanning",
+                                       "canary_tokens", "flight_recorder", "logging"})
+        rendered = json.dumps(config).lower()
+        for forbidden in ("exclusion", "exempt", "allowlist_ip", "ip_allowlist", "internal", "rate", "budget", "threshold",
+                          "disable", "passthrough", "warn"):
+            self.assertNotIn(forbidden, rendered.replace("api_allowlist", ""), forbidden)
+        self.assertEqual(config["forward_proxy"], {"enabled": True})
+        self.assertEqual(config["tls_interception"].keys(), {"enabled", "ca_cert", "ca_key"})
+
+    def test_browser_flags_never_weaken_tls_and_http2_is_only_dropped_by_explicit_diagnostic(self):
+        default = browser_flags()
+        self.assertEqual(default, ("--disable-quic",))
+        self.assertEqual(browser_flags(http1=True), ("--disable-quic", "--disable-http2"))
+        for flags in (default, browser_flags(True)):
+            for flag in flags:
+                self.assertNotIn("certificate", flag)
+                self.assertNotIn("insecure", flag)
+                self.assertNotIn("spki", flag)
+
+    def test_declared_paths_are_stable_distinct_high_entropy_and_not_trimmed_hashes(self):
+        paths = tls_resource.resource_paths()
+        self.assertEqual(paths, tls_resource.resource_paths())
+        self.assertEqual(len(set(paths.values())), 5)
+        for path in paths.values():
+            segment = path.rsplit("/", 1)[1]
+            stem = segment.rsplit(".", 1)[0]
+            self.assertEqual(len(stem), 86)
+            self.assertGreater(shannon(stem), 4.5)
+        self.assertEqual(tls_resource.token("script"), tls_resource.token("script"))
+        self.assertNotEqual(tls_resource.token("script"), tls_resource.token("style"))
+
+
+@unittest.skipUnless(shutil.which("openssl"), "openssl is required for generated upstream certificates")
+class TLSFixtureTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.pki = tls_resource.generate_upstream_pki(self.root / "upstream")
+
+    def get(self, fixture, host, path, method="GET", body=None, cafile=None, hostname=None):
+        context = ssl.create_default_context(cafile=str(cafile or self.pki["ca"]))
+        with socket.create_connection(("127.0.0.1", fixture.port), timeout=3) as raw:
+            with context.wrap_socket(raw, server_hostname=hostname or host) as secured:
+                headers = f"{method} {path} HTTP/1.1\r\nHost: {host}:{fixture.port}\r\nConnection: close\r\n"
+                if body is not None:
+                    headers += f"Content-Length: {len(body)}\r\n"
+                secured.sendall(headers.encode() + b"\r\n" + (body or b""))
+                data = b""
+                while chunk := secured.recv(65536):
+                    data += chunk
+        head, _, payload = data.partition(b"\r\n\r\n")
+        return int(head.split(b" ", 2)[1]), payload
+
+    def test_pki_is_private_workspace_local_and_never_overwritten(self):
+        for path in self.pki.values():
+            self.assertTrue(path.is_file())
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertTrue(path.resolve().is_relative_to(self.root.resolve()))
+        with self.assertRaises(FileExistsError):
+            tls_resource.generate_upstream_pki(self.root / "upstream")
+
+    def test_origins_serve_exact_declared_resources_and_label_only_evidence(self):
+        paths = tls_resource.resource_paths()
+        with tls_resource.TLSResourceFixture(self.pki) as fixture:
+            status, page = self.get(fixture, tls_resource.A_HOST, "/")
+            self.assertEqual(status, 200)
+            cdn = f"https://{tls_resource.B_HOST}:{fixture.port}".encode()
+            for kind in ("script", "style", "image"):
+                self.assertIn(cdn + paths[kind].encode(), page)
+            # The page itself declares the third origin's independent root, never the onward path.
+            self.assertIn(f"https://{tls_resource.C_HOST}:{fixture.port}{paths['root']}".encode(), page)
+            self.assertNotIn(paths["third"].encode(), page)
+            status, script = self.get(fixture, tls_resource.B_HOST, paths["script"])
+            self.assertEqual((status, b"scriptRan" in script), (200, True))
+            status, style = self.get(fixture, tls_resource.B_HOST, paths["style"])
+            self.assertEqual(status, 200)
+            self.assertIn(f"https://{tls_resource.C_HOST}:{fixture.port}{paths['third']}".encode(), style)
+            status, image = self.get(fixture, tls_resource.B_HOST, paths["image"])
+            self.assertEqual((status, image[:8]), (200, b"\x89PNG\r\n\x1a\n"))
+            self.assertEqual(self.get(fixture, tls_resource.C_HOST, paths["third"])[0], 200)
+            self.assertEqual(self.get(fixture, tls_resource.C_HOST, paths["root"])[0], 200)
+            self.assertEqual(self.get(fixture, tls_resource.A_HOST, "/favicon.ico")[0], 404)
+            evidence = fixture.evidence()
+        self.assertEqual(evidence["counts"], {"a:/": 1, "b:script": 1, "b:style": 1, "b:image": 1, "c:third": 1, "c:root": 1, "a:favicon": 1})
+        rendered = json.dumps(evidence)
+        self.assertNotIn("assets", rendered)
+        for kind in paths.values():
+            self.assertNotIn(kind, rendered)
+
+    def test_altered_wrong_host_query_and_post_arrivals_are_counted_as_other_or_post(self):
+        paths = tls_resource.resource_paths()
+        altered = paths["script"][:-4] + "Z.js"
+        with tls_resource.TLSResourceFixture(self.pki) as fixture:
+            self.assertEqual(self.get(fixture, tls_resource.B_HOST, altered)[0], 404)
+            self.assertEqual(self.get(fixture, tls_resource.A_HOST, paths["script"])[0], 404)
+            self.assertEqual(self.get(fixture, tls_resource.C_HOST, paths["script"])[0], 404)
+            # A query still reaches the same exact route; the proxy, not the fixture, refuses it.
+            self.assertEqual(self.get(fixture, tls_resource.B_HOST, paths["script"] + "?v=1")[0], 200)
+            self.assertEqual(self.get(fixture, tls_resource.B_HOST, paths["script"], "POST", b"x=1")[0], 200)
+            counts = fixture.evidence()["counts"]
+        self.assertEqual(counts, {"other": 3, "b:script": 1, "post": 1})
+
+    def test_certificate_verification_is_real_for_name_and_authority(self):
+        with tls_resource.TLSResourceFixture(self.pki) as fixture:
+            with self.assertRaises(ssl.SSLCertVerificationError):
+                self.get(fixture, tls_resource.A_HOST, "/", hostname="unlisted.fixture.example")
+            other = tls_resource.generate_upstream_pki(self.root / "other")
+            with self.assertRaises(ssl.SSLCertVerificationError):
+                self.get(fixture, tls_resource.A_HOST, "/", cafile=other["ca"])
+            self.assertEqual(tls_resource.tls_witness(fixture.port, self.pki["ca"]), "TLSv1.3")
+            with self.assertRaises(ssl.SSLCertVerificationError):
+                tls_resource.tls_witness(fixture.port, other["ca"])
+            self.assertEqual(fixture.evidence()["counts"], {})
+
+    def test_shutdown_releases_the_listener_and_retires_handlers(self):
+        with tls_resource.TLSResourceFixture(self.pki) as fixture:
+            port = fixture.port
+            self.assertEqual(self.get(fixture, tls_resource.A_HOST, "/")[0], 200)
+        with self.assertRaises(OSError):
+            socket.create_connection(("127.0.0.1", port), timeout=1).close()
+        self.assertFalse(fixture.thread.is_alive())
+        self.assertEqual(fixture.server.connections, set())
+
+    def test_failed_handshake_leaves_no_raw_log_or_arrival(self):
+        with tls_resource.TLSResourceFixture(self.pki) as fixture:
+            with socket.create_connection(("127.0.0.1", fixture.port), timeout=2) as raw:
+                raw.sendall(b"GET / HTTP/1.1\r\nHost: page.fixture.example\r\n\r\n")
+                raw.settimeout(3)
+                try:
+                    raw.recv(16)
+                except OSError:
+                    pass
+            deadline = time.monotonic() + 3
+            while fixture.server.connections and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertEqual(fixture.evidence()["counts"], {})
+            self.assertEqual(fixture.server.connections, set())
+
+
+class TLSAcceptanceTests(unittest.TestCase):
+    PORT = 4443
+
+    def good(self):
+        origin = f"https://{tls_resource.B_HOST}:{self.PORT}"
+        receipts = [{"target": origin, "verdict": "allow", "actor": tls_resource.AGENT, "method": "GET",
+                     "layer": "entropy_issuer_query_allow"}] * 6
+        receipts += [{**receipts[0], "target": f"https://{tls_resource.C_HOST}:{self.PORT}"}] * 2
+        events = ([{"event": "entropy_issuer_query_allow", "agent": tls_resource.AGENT, "agent_auth": "config-default"}] * 8
+                  + [{"event": "blocked", "url": f"{origin}/[redacted]", "agent": tls_resource.AGENT}] * 11
+                  + [{"event": "blocked", "target": "www.google.com:443", "agent": tls_resource.AGENT}])
+        return dict(port=self.PORT,
+                    fixture={"counts": {"a:/": 1, "a:favicon": 1, "b:script": 2, "b:style": 2, "b:image": 2, "c:root": 2}},
+                    receipts=receipts, other_kinds=["declared_resource_path"] * 8, events=events,
+                    browser={"tls": {"denials": [{"name": str(index)} for index in range(11)]}})
+
+    def failures(self, **changes):
+        arguments = self.good()
+        arguments.update(changes)
+        return tls_resource.evaluate_acceptance(**arguments)
+
+    def test_complete_join_passes_and_background_host_blocks_are_not_fixture_blocks(self):
+        self.assertEqual(self.failures(), [])
+
+    def test_blank_page_or_fewer_blocks_cannot_pass(self):
+        # No declared resource ever arrived, no receipt, no allowance, fewer blocks.
+        failures = self.failures(fixture={"counts": {"a:/": 1}}, receipts=[], other_kinds=[],
+                                 events=[], browser={"tls": {"denials": [{}]}})
+        joined = " ".join(failures)
+        for name in ("b:script", "b:style", "b:image", "c:root"):
+            self.assertIn(name, joined)
+        # Fewer proxy blocks than the browser/probes observed is its own failure.
+        arguments = self.good()
+        arguments["events"] = [event for event in arguments["events"] if event.get("event") != "blocked"]
+        self.assertTrue(any("blocked events" in failure for failure in tls_resource.evaluate_acceptance(**arguments)))
+
+    def test_denied_traffic_reaching_the_origin_fails(self):
+        for label in ("c:third", "other", "post"):
+            counts = {**self.good()["fixture"]["counts"], label: 1}
+            self.assertTrue(any(label in failure for failure in self.failures(fixture={"counts": counts})), label)
+
+    def test_receipts_must_equal_arrivals_and_name_the_exact_origin_identity_and_rule(self):
+        arguments = self.good()
+        self.assertTrue(any("differ from CDN arrivals" in f for f in self.failures(receipts=arguments["receipts"][:-1])))
+        for field, value in (("target", "https://cdn.fixture.example:1"), ("verdict", "block"),
+                             ("actor", "someone"), ("method", "POST"), ("layer", "other")):
+            changed = [{**arguments["receipts"][0], field: value}] + arguments["receipts"][1:]
+            self.assertTrue(any("unexpected target" in f for f in self.failures(receipts=changed)), field)
+        self.assertTrue(any("other than declared_resource_path" in f for f in
+                            self.failures(other_kinds=["declared_resource_path"] * 7 + ["observed_issuer"])))
+
+    def test_audit_allowances_and_identity_grade_must_match(self):
+        arguments = self.good()
+        short = [event for event in arguments["events"] if event.get("event") != "entropy_issuer_query_allow"][:]
+        self.assertTrue(any("audit allowances" in f for f in self.failures(events=short)))
+        weak = [{**event, "agent_auth": "self-declared"} if event.get("event") == "entropy_issuer_query_allow" else event
+                for event in arguments["events"]]
+        self.assertTrue(any("default identity" in f for f in self.failures(events=weak)))
+        stranger = [{**event, "agent": "anonymous"} if event.get("event") == "blocked" else event for event in arguments["events"]]
+        self.assertTrue(any("block was not attributed" in f for f in self.failures(events=stranger)))
+
+    def test_missing_browser_observations_fail(self):
+        self.assertTrue(any("no TLS scenario observations" in f for f in self.failures(browser={})))
+        self.assertTrue(any("no TLS scenario observations" in f for f in self.failures(browser=None)))
+        self.assertTrue(any("blocked events" in f for f in self.failures(browser={"tls": {"denials": "ten"}})))
+
+    def test_receipt_and_event_parsers_read_structure_and_ignore_malformed_input(self):
+        target = f"https://{tls_resource.B_HOST}:9"
+        lines = [receipt_line(target=target), receipt_line(extension="observed_issuer", target=target), "not json", "{}",
+                 json.dumps({"detail": []}), json.dumps({"detail": {"action_record": {}, "ext": {"x": 1}}}),
+                 json.dumps({"note": "declared_resource_path"})]
+        found = tls_resource.declared_resource_receipts(lines)
+        self.assertEqual(found, [{"target": target, "verdict": "allow", "actor": tls_resource.AGENT, "method": "GET",
+                                  "layer": "entropy_issuer_query_allow"}])
+        self.assertEqual(tls_resource.all_issuer_allow_kinds(lines), ["declared_resource_path", "observed_issuer"])
+        self.assertEqual(tls_resource.receipt_signers(lines + [receipt_line(key="b" * 64), receipt_line(key="nothex")]),
+                         ["a" * 64, "b" * 64])
+        stdout = '{"event":"blocked"}\nplain text\n[1]\n{"event":"startup"}\n'
+        self.assertEqual([event["event"] for event in tls_resource.proxy_events(stdout)], ["blocked", "startup"])
+        self.assertEqual(tls_resource.event_host({"url": "https://cdn.fixture.example:443/[redacted]"}), "cdn.fixture.example")
+        self.assertEqual(tls_resource.event_host({"target": "www.google.com:443"}), "www.google.com")
+        self.assertEqual(tls_resource.event_host({"url": 7}), "")
 
 
 if __name__ == "__main__":

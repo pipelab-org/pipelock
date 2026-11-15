@@ -878,6 +878,7 @@ func newInterceptHandler(
 			interceptScanCtx = scanner.WithOAuthAuthorizationPolicy(interceptScanCtx, ic.Proxy.CurrentConfig())
 		}
 		r = r.WithContext(interceptScanCtx)
+		issuerProof := issuerDeliveryProof{}
 		urlResult := ic.Scanner.Scan(interceptScanCtx, targetURL)
 		// Count the selected scan once, as soon as the issuer rescan below has
 		// settled it. A streamed response keeps this handler open until the
@@ -909,16 +910,38 @@ func newInterceptHandler(
 				// which outranks a same-host issue.
 				allowKind := issuerQueryObserved
 				issuedUsed := false
+				resourceUsed := false
 				allowCtx := scanner.WithIssuerPathAllowance(interceptScanCtx, func(escapedPath string) bool {
 					if issuedURL && escapedPath == r.URL.EscapedPath() {
 						issuedUsed = true
 						allowed = true
 						return true
 					}
-					// Whole path, same origin: a link the origin itself served.
-					if store == nil || escapedPath != r.URL.EscapedPath() || !store.pathIssued(session, r.URL) {
+					if store == nil || escapedPath != r.URL.EscapedPath() {
 						return false
 					}
+					// Whole path, same origin: a link the origin itself served.
+					if store.pathIssued(session, r.URL) {
+						allowed = true
+						return true
+					}
+					// Whole path, another origin: a resource an allowed and
+					// delivered page or stylesheet declared. Only a bodyless
+					// GET or HEAD qualifies, judged from the parsed request.
+					// Path entropy is the only check this skips.
+					if !store.resourcePathIssuedContext(r.Context(), session, r.URL) || !resourceRequestShape(r) {
+						return false
+					}
+					// An HTTP/2 stream can delay its EOF while a reload or
+					// eviction removes the evidence. Recheck after that wait.
+					if ic.issuerQueryStore() != store || !store.resourcePathIssued(session, r.URL) {
+						return false
+					}
+					resourceUsed = true
+					// Keep the provenance with the decision that consumed the
+					// permission. Eviction during the rest of the rescan or its
+					// receipt must not promote this request to a fresh root.
+					issuerProof.derived = true
 					allowed = true
 					return true
 				})
@@ -985,6 +1008,9 @@ func newInterceptHandler(
 					return true
 				})
 				rescanned := ic.Scanner.Scan(allowCtx, targetURL)
+				if resourceUsed && allowKind == issuerQueryObserved {
+					allowKind = issuerQueryResourcePath
+				}
 				if issuedUsed {
 					allowKind = issuerQueryIssuedRedirect
 				}
@@ -1006,6 +1032,11 @@ func newInterceptHandler(
 			}
 		}
 		recordURLDecisions()
+		// Provenance is judged now, before the response exists, so evidence that
+		// is evicted while the request is in flight cannot turn a derived
+		// request into a root. The cleanliness proof stays false until the
+		// buffered response is delivered below.
+		issuerProof.derived = issuerProof.derived || ic.resourceDerived(r.URL)
 		if ic.Proxy != nil {
 			if err := ic.Proxy.recordCredentialAudienceAllows(ic.Config, actx, urlResult.CredentialAudienceAllows, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent, ic.receiptShard); err != nil {
 				blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
@@ -2313,7 +2344,18 @@ func newInterceptHandler(
 
 		// Redirect evidence depends on delivered headers, not body completion.
 		// Keep a failed flush on the existing incomplete-stream outcome path.
+		var resourceDelivery resourceDeliveryNotification
+		defer resourceDelivery.complete()
 		flushIssuedRedirect := func() bool {
+			// A declared resource cannot turn an operator's root-route
+			// delegation into onward authority for another origin.
+			if issuerProof.derived {
+				// Streaming paths can issue a same-origin Location only after
+				// completion. Notify follow-ups before those headers are visible.
+				resourceDelivery.begin(ic, resp, nil, issuerProof)
+				w.WriteHeader(resp.StatusCode)
+				return false
+			}
 			if err := ic.flushIssuedRedirectHeaders(w, resp); err != nil {
 				reason := recordStreamError(r.Context(), ic.Logger, actx, err)
 				emitOutcome(allowReceipt, config.ActionAllow, resp.StatusCode, 0, reason)
@@ -2491,7 +2533,7 @@ func newInterceptHandler(
 			}
 			if streamErr == nil {
 				recordDeliveredIssuerCookies(ic, r, resp, true)
-				recordDeliveredIssuerQuery(ic, resp, nil, true)
+				recordDeliveredIssuerQueryProof(ic, resp, nil, true, issuerProof)
 			}
 			if streamErr != nil {
 				// Distinguish scanning findings from internal/IO errors. In
@@ -2600,7 +2642,7 @@ func newInterceptHandler(
 				return
 			}
 			recordDeliveredIssuerCookies(ic, r, resp, copyErr == nil)
-			recordDeliveredIssuerQuery(ic, resp, nil, true)
+			recordDeliveredIssuerQueryProof(ic, resp, nil, true, issuerProof)
 			// The outcome receipt is the durable record that an exempt host
 			// streamed a body past the scan ceiling unscanned, or that the
 			// stream broke before the body was delivered.
@@ -2744,7 +2786,7 @@ func newInterceptHandler(
 						return
 					}
 					recordDeliveredIssuerCookies(ic, r, resp, copyErr == nil)
-					recordDeliveredIssuerQuery(ic, resp, nil, true)
+					recordDeliveredIssuerQueryProof(ic, resp, nil, true, issuerProof)
 					if ic.Proxy != nil {
 						ic.Proxy.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
 							Subsurface:        "response_intercept",
@@ -3277,13 +3319,30 @@ func newInterceptHandler(
 			w.Header().Del("Transfer-Encoding")
 			w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
 		}
+		// A resource on another origin is declared only by a response that was
+		// scanned, allowed and fully delivered after an exchange that policy
+		// enforced without any audit or warn downgrade.
+		issuerProof.cleanEnforced = issuerExchangeEnforcedClean(ic, interceptCleanFacts{
+			urlResult:             urlResult,
+			receiptVerdict:        receiptVerdict,
+			hasFinding:            hasFinding,
+			policyObserved:        interceptPolicyObserved,
+			responseScanExempt:    interceptRespExempt,
+			authenticatedArtifact: interceptAuthenticatedArtifact,
+		})
+		resourceDelivery.begin(ic, resp, respBody, issuerProof)
+		// Follow-ups can start when Location headers become visible, before
+		// body completion. Register notification before either is delivered.
 		if flushIssuedRedirect() {
 			return
 		}
 		written, writeErr := w.Write(respBody)
+		// The client may half-close its request direction and still receive
+		// the complete response. Judge delivery by the write, not read-side EOF.
 		delivered := writeErr == nil && written == len(respBody)
 		recordDeliveredIssuerCookies(ic, r, resp, delivered)
-		recordDeliveredIssuerQuery(ic, resp, respBody, delivered)
+		recordDeliveredIssuerQueryProof(ic, resp, respBody, delivered, issuerProof)
+		resourceDelivery.complete()
 		closeReason := "complete"
 		if !delivered {
 			closeReason = receiptReasonIncomplete

@@ -57,8 +57,20 @@ func htmlLinkValues(body []byte, limit int) []string {
 // base past the cut cannot be ruled out, so the caller must not resolve
 // relative links against the response URL.
 func htmlLinksAndBase(body []byte, limit int) (links []string, base string, baseKnown bool) {
-	if limit <= 0 || len(body) == 0 {
-		return nil, "", true
+	links, _, base, baseKnown = htmlLinkScan(body, limit, 0, nil)
+	return links, base, baseKnown
+}
+
+// htmlLinkScan is htmlLinksAndBase plus, when resourceLimit is above zero, the
+// typed subresource references the document declares (htmlResourceRefs), up to
+// that limit and apart from the link limit. One tokenizer pass serves both, so
+// the resource roles come from the same parse that decides what is an
+// attribute at all.
+// When origin is supplied, only distinct cross-origin HTTPS paths spend the
+// resource limit, after applying the document's existing base restrictions.
+func htmlLinkScan(body []byte, limit, resourceLimit int, origin *url.URL) (links, resources []string, base string, baseKnown bool) {
+	if (limit <= 0 && resourceLimit <= 0) || len(body) == 0 {
+		return nil, nil, "", true
 	}
 	truncated := len(body) > issuerQueryMaxHTMLBytes
 	if truncated {
@@ -74,12 +86,33 @@ func htmlLinksAndBase(body []byte, limit int) (links []string, base string, base
 	if tags == 1 {
 		base, baseSeen = documentBase(body)
 	}
+	// Resolve eligibility before spending resource slots. A late <base> has
+	// already been considered by documentBase, including ambiguous parses.
+	known := !truncated || baseSeen
+	if tags > 1 || (tags == 1 && !baseSeen) {
+		known = false
+	}
+	var acceptResource func(string) bool
+	if origin != nil && resourceLimit > 0 {
+		docBase, usable := sameOriginBase(origin, base)
+		acceptResource = crossOriginResourceFilter(origin, docBase, known && usable)
+	}
 	var out []string
+	// pictureDepth counts open <picture> elements, so a <source> is read as
+	// an image candidate only inside one.
+	pictureDepth := 0
+	var attrs []htmlAttr
 	z := html.NewTokenizer(bytes.NewReader(body))
 	for {
 		tt := z.Next()
 		if tt == html.ErrorToken {
 			break
+		}
+		if tt == html.EndTagToken && resourceLimit > 0 {
+			if name, _ := z.TagName(); string(name) == "picture" && pictureDepth > 0 {
+				pictureDepth--
+			}
+			continue
 		}
 		if tt != html.StartTagToken && tt != html.SelfClosingTagToken {
 			continue
@@ -89,13 +122,25 @@ func htmlLinksAndBase(body []byte, limit int) (links []string, base string, base
 			// A <base> is not a link; documentBase reads it.
 			continue
 		}
-		if len(out) >= limit {
+		linksFull := len(out) >= limit
+		collect := resourceLimit > 0 && len(resources) < resourceLimit && htmlResourceTag(string(tag))
+		if resourceLimit > 0 && string(tag) == "picture" && tt == html.StartTagToken {
+			pictureDepth++
+		}
+		if linksFull && !collect {
 			continue
 		}
+		attrs = attrs[:0]
 		for hasAttr {
 			key, val, more := z.TagAttr()
 			hasAttr = more
 			attr := strings.ToLower(string(key))
+			if collect {
+				attrs = append(attrs, htmlAttr{key: attr, val: string(val)})
+			}
+			if linksFull {
+				continue
+			}
 			switch {
 			case htmlLinkAttrs[attr]:
 				if v := strings.TrimSpace(string(val)); v != "" && len(out) < limit {
@@ -109,20 +154,16 @@ func htmlLinksAndBase(body []byte, limit int) (links []string, base string, base
 				}
 			}
 		}
+		if collect {
+			resources = htmlResourceRefs(string(tag), attrs, pictureDepth > 0, resources, resourceLimit, acceptResource)
+		}
 	}
 	// Which <base> a browser uses depends on the parse: scripting turns
 	// <noscript> content inert or live, foreign content and integration
 	// points move elements in and out of the HTML namespace. A document with
 	// exactly one base tag that the tree selected is trusted; anything else
 	// is treated as unknown, so only absolute links are issued.
-	known := !truncated || baseSeen
-	switch {
-	case tags == 0:
-	case tags == 1 && baseSeen:
-	default:
-		known = false
-	}
-	return out, base, known
+	return out, resources, base, known
 }
 
 // documentBase returns the href of the first <base> element with an href in

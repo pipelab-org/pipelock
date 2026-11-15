@@ -798,7 +798,16 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	dialCtx, dialCancel := context.WithTimeout(r.Context(), maxDuration)
 	defer dialCancel()
 
-	targetConn, err := p.ssrfSafeDialContext(dialCtx, "tcp", target)
+	var targetConn net.Conn
+	var err error
+	if shouldIntercept {
+		// Validate now, but let the intercept transport open and revalidate
+		// the upstream only when an inner request actually needs it. Browser
+		// preconnects need no speculative upstream TCP connection.
+		_, err = p.resolveAndValidateDialTarget(dialCtx, target)
+	} else {
+		targetConn, err = p.ssrfSafeDialContext(dialCtx, "tcp", target)
+	}
 	if err != nil {
 		var ssrfErr *ssrfDialBlockError
 		if errors.As(err, &ssrfErr) {
@@ -856,12 +865,14 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	clientHijacked = true
 	// Hijacked tunnels no longer participate in net/http cancellation. Close
 	// both sockets on revocation, including while waiting for a TLS ClientHello.
-	// Capture the current upstream: interception later clears targetConn.
+	// Interception has no upstream socket until an inner request needs one.
 	revocationTarget := targetConn
 	stopLicenseClose := context.AfterFunc(r.Context(), func() {
 		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
 			_ = clientConn.Close()
-			_ = revocationTarget.Close()
+			if revocationTarget != nil {
+				_ = revocationTarget.Close()
+			}
 		}
 	})
 	defer stopLicenseClose()
@@ -912,7 +923,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// is enabled and the host is not on the passthrough list, interceptTunnel
 	// takes over the client connection and handles the full request lifecycle.
 	_, port, _ := net.SplitHostPort(target)
-	if cfg.TLSInterception.Enabled && !isPassthrough(host, cfg.TLSInterception.PassthroughDomains) {
+	if shouldIntercept {
 		certCache := p.certCachePtr.Load()
 		if certCache == nil {
 			// Fail-closed: TLS interception is enabled but cert cache is missing.
@@ -924,10 +935,6 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			outcomeReason = "tls_intercept_cert_cache_unavailable"
 			return
 		}
-		// Close the pre-established upstream TCP connection since interceptTunnel
-		// creates its own via the SSRF-safe dialer. This prevents a dangling connection.
-		safeClose(targetConn, "targetConn", p.logger)
-		targetConn = nil
 		p.metrics.RecordTLSIntercept("intercepted")
 		p.logger.LogAnomaly(targetCtx, "tls_intercept", "TLS MITM interception active", 0) // 0: informational, not anomalous
 		// Wrap clientConn with buffered reader so any bytes peeked during

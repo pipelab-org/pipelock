@@ -5131,7 +5131,15 @@ func isLocalInterfaceIP(ip net.IP) (bool, error) {
 	return false, nil
 }
 
-func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+type ssrfDialTarget struct {
+	host, port string
+	addrs      []string
+}
+
+// resolveAndValidateDialTarget performs every dial-time destination check
+// without opening a socket. Intercepted CONNECT admission uses this before
+// accepting the client, then the actual upstream dial repeats the checks.
+func (p *Proxy) resolveAndValidateDialTarget(ctx context.Context, addr string) (ssrfDialTarget, error) {
 	currentSc, _ := ctx.Value(ctxKeyAgentScanner).(*scanner.Scanner)
 	if currentSc == nil {
 		currentSc = p.scannerPtr.Load()
@@ -5139,7 +5147,7 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return nil, fmt.Errorf("ssrfSafeDialContext: split addr %q: %w", addr, err)
+		return ssrfDialTarget{}, fmt.Errorf("ssrfSafeDialContext: split addr %q: %w", addr, err)
 	}
 	// Bind the rebind snapshot to this dial's port: a scan-time snapshot only
 	// vouches for the exact host:port it was taken for.
@@ -5156,15 +5164,18 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 			ip = v4
 		}
 		if err := p.blockIfConfiguredMetricsTarget(ctx, host, port, ip); err != nil {
-			return nil, err
+			return ssrfDialTarget{}, err
 		}
 		if err := blockIfNonOverridableSSRFTarget(ctx, host, ip); err != nil {
-			return nil, err
+			return ssrfDialTarget{}, err
 		}
 		if currentSc.IsInternalIP(ip) && !currentSc.IsIPAllowlisted(ip) && !guardGranted {
-			return nil, newSSRFDialBlockError(ctx, host, ip, ssrfDialBlockDetail(host, ip))
+			return ssrfDialTarget{}, newSSRFDialBlockError(ctx, host, ip, ssrfDialBlockDetail(host, ip))
 		}
-		return p.dialer.DialContext(ctx, network, addr)
+		if err := ctx.Err(); err != nil {
+			return ssrfDialTarget{}, err
+		}
+		return ssrfDialTarget{host: host, port: port, addrs: []string{addr}}, nil
 	}
 
 	// Resolve DNS and validate every IP before connecting. Use the scanner's
@@ -5172,28 +5183,28 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 	// scanner check and this dial-time check, preventing TOCTOU drift.
 	ips, err := currentSc.HostResolver().LookupHost(ctx, host)
 	if err != nil {
-		return nil, fmt.Errorf("ssrfSafeDialContext: DNS lookup %q: %w", host, err)
+		return ssrfDialTarget{}, fmt.Errorf("ssrfSafeDialContext: DNS lookup %q: %w", host, err)
 	}
 
 	if len(ips) == 0 {
-		return nil, fmt.Errorf("SSRF blocked: DNS returned no addresses for %s", host)
+		return ssrfDialTarget{}, fmt.Errorf("SSRF blocked: DNS returned no addresses for %s", host)
 	}
 
 	isTrusted := currentSc.IsTrustedDomain(host)
 	for _, ipStr := range ips {
 		ip := net.ParseIP(ipStr)
 		if ip == nil {
-			return nil, fmt.Errorf("SSRF blocked: unparseable IP %q from DNS for %s", ipStr, host)
+			return ssrfDialTarget{}, fmt.Errorf("SSRF blocked: unparseable IP %q from DNS for %s", ipStr, host)
 		}
 		// Normalize IPv4-mapped IPv6 (::ffff:x.x.x.x) to 4-byte form.
 		if v4 := ip.To4(); v4 != nil {
 			ip = v4
 		}
 		if err := p.blockIfConfiguredMetricsTarget(ctx, host, port, ip); err != nil {
-			return nil, err
+			return ssrfDialTarget{}, err
 		}
 		if err := blockIfNonOverridableSSRFTarget(ctx, host, ip); err != nil {
-			return nil, err
+			return ssrfDialTarget{}, err
 		}
 		if currentSc.IsInternalIP(ip) {
 			if isTrusted || currentSc.IsIPAllowlisted(ip) {
@@ -5205,23 +5216,37 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 			if guardGranted && ssrfDialSnapshotContains(ctx, host, ip) {
 				continue
 			}
-			return nil, newSSRFDialBlockError(ctx, host, ip, ssrfDialBlockDetail(host, ip))
+			return ssrfDialTarget{}, newSSRFDialBlockError(ctx, host, ip, ssrfDialBlockDetail(host, ip))
 		}
 	}
 
-	// Every address above passed validation in this call. Try them in resolver
-	// order until one connects, for at most dialfallback.MaxAttempts attempts
-	// and not past the context's deadline; never re-resolve. Each attempt is
-	// also bounded by the dialer's own Timeout.
+	if err := ctx.Err(); err != nil {
+		return ssrfDialTarget{}, err
+	}
 	addrs := make([]string, len(ips))
 	for i, ipStr := range ips {
 		addrs[i] = net.JoinHostPort(ipStr, port)
 	}
-	conn, err := dialfallback.Dial(ctx, addrs, func(ctx context.Context, dialAddr string) (net.Conn, error) {
+	return ssrfDialTarget{host: host, port: port, addrs: addrs}, nil
+}
+
+func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	target, err := p.resolveAndValidateDialTarget(ctx, addr)
+	if err != nil {
+		return nil, err
+	}
+	ctx = withSSRFDialPort(ctx, target.port)
+	if net.ParseIP(target.host) != nil {
+		return p.dialer.DialContext(ctx, network, addr)
+	}
+	// Every address passed validation in this call. Try them in resolver
+	// order for at most MaxAttempts, without re-resolving or exceeding the
+	// context deadline or the dialer's own Timeout.
+	conn, err := dialfallback.Dial(ctx, target.addrs, func(ctx context.Context, dialAddr string) (net.Conn, error) {
 		return p.dialer.DialContext(ctx, network, dialAddr)
 	})
 	if err != nil {
-		return nil, fmt.Errorf("ssrfSafeDialContext: dial %s: %w", host, err)
+		return nil, fmt.Errorf("ssrfSafeDialContext: dial %s: %w", target.host, err)
 	}
 	return conn, nil
 }

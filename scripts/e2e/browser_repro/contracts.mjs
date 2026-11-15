@@ -53,3 +53,85 @@ export const loginObservation=`(()=>{const form=document.getElementById('fixture
   user:!!form?.querySelector('#user'),code:!!form?.querySelector('#code'),
   submit:!!form?.querySelector('#login'),appReady:window.fixture?.state==='ready'
 }})()`;
+
+// TLS/CDN scenario: pure plan and checks. The page origin (A) declares exact
+// resources on a CDN origin (B); B's stylesheet names a resource on a third
+// origin (C). Hashed paths come from the caller and never enter a report.
+export function tlsRouteLabel(url, hosts, paths) {
+  let parsed;
+  try { parsed=new URL(url); } catch { return 'unknown'; }
+  const key=Object.entries(hosts).find(([,host])=>host===parsed.hostname)?.[0];
+  if(!key)return 'other-origin';
+  const known=Object.entries(paths).find(([,path])=>path===parsed.pathname)?.[0];
+  if(key==='page'&&parsed.pathname==='/')return 'page:/';
+  if(key==='page'&&parsed.pathname==='/favicon.ico')return 'page:favicon';
+  return `${key}:${known||'other'}`;
+}
+
+function alteredPath(path) {
+  // Replace one interior character so the path stays high-entropy but is no
+  // longer the exact declared resource.
+  const at=Math.floor(path.length/2);
+  return path.slice(0,at)+(path[at]==='Q'?'R':'Q')+path.slice(at+1);
+}
+
+export function tlsProbePlan({hosts, paths, queryToken, canary}) {
+  const cdn=hosts.cdn;
+  const refused=(name,host,path,extra={})=>({name,host,path,method:'GET',...extra,
+    expect:{status:403,block_reason:extra.reason||'path_entropy'}});
+  const before=['script','style','image'].map(kind=>refused(`before_delivery_${kind}`,cdn,paths[kind]));
+  // C is allowlisted, so this refusal is the entropy gate, not destination policy.
+  before.push(refused('before_delivery_third_root',hosts.third,paths.root));
+  const allowed=['script','style','image'].map(kind=>({name:`declared_${kind}`,host:cdn,path:paths[kind],
+    method:'GET',expect:{status:200,block_reason:null}}));
+  allowed.push({name:'declared_third_root',host:hosts.third,path:paths.root,method:'GET',expect:{status:200,block_reason:null}});
+  const negatives=[
+    refused('altered_path',cdn,alteredPath(paths.script)),
+    refused('high_entropy_query_on_declared_path',cdn,`${paths.script}?v=${queryToken}`,{reason:'query_entropy'}),
+    refused('canary_on_declared_path',cdn,`${paths.script}?marker=${canary}`,{reason:'dlp_match'}),
+    refused('post_body_on_declared_path',cdn,paths.script,{method:'POST',body:'synthetic=body'}),
+    refused('get_with_body_on_declared_path',cdn,paths.script,{body:'synthetic=body'}),
+    refused('third_origin_resource',hosts.third,paths.third),
+  ];
+  return {before,allowed,negatives};
+}
+
+export function checkTLSProbe(probe, result) {
+  if(result?.status!==probe.expect.status)
+    throw Error(`${probe.name} returned ${result?.status}, expected ${probe.expect.status}`);
+  // A bare 403 (allowlist, rate limit, auth) is not evidence of the entropy gate.
+  if((result.block_reason||null)!==probe.expect.block_reason)
+    throw Error(`${probe.name} block reason ${result.block_reason}, expected ${probe.expect.block_reason}`);
+}
+
+export function checkTLSRendered(dom, expectedOrigin, imageSide) {
+  // A blank page must not pass: every assertion reads what the browser rendered.
+  const failures=[];
+  if(dom?.protocol!=='https:'||dom.origin!==expectedOrigin)failures.push('page was not served over the expected HTTPS origin');
+  if(dom?.state!=='ready')failures.push(`page state ${dom?.state}`);
+  if(dom?.heading!=='Synthetic CDN page')failures.push('page heading missing');
+  if(dom?.styledColor!=='rgb(0, 128, 0)')failures.push('CDN stylesheet did not apply');
+  if(!dom?.imageComplete||dom.imageNatural!==imageSide)failures.push('CDN image did not decode');
+  if(!(dom?.imageBox?.[0]>0&&dom.imageBox[1]>0))failures.push('CDN image is not laid out');
+  if(dom?.rootNatural!==imageSide)failures.push('independently declared third-origin image did not decode');
+  if(dom?.scriptRan!==true)failures.push('CDN script did not run');
+  if(failures.length)throw Error(failures.join('; '));
+}
+
+export function checkTLSBrowserResources(observed, protocol=null) {
+  // observed maps route label to {status, block_reason, error, protocol} from the
+  // browser's own network events. B resources load; C's is refused for path
+  // entropy. When a protocol is named, every CDN load must have used it, so a run
+  // cannot pass over HTTP/1.1 while claiming the browser's default h2.
+  for(const kind of ['script','style','image']){
+    const item=observed[`cdn:${kind}`];
+    if(item?.status!==200||item.error)throw Error(`browser did not load declared ${kind} (${item?.status})`);
+    if(protocol&&item.protocol!==protocol)throw Error(`declared ${kind} used ${item.protocol}, expected ${protocol}`);
+  }
+  const root=observed['third:root'];
+  if(root?.status!==200||root.error)throw Error(`browser did not load the independently declared third-origin root (${root?.status})`);
+  if(protocol&&root.protocol!==protocol)throw Error(`third-origin root used ${root.protocol}, expected ${protocol}`);
+  const third=observed['third:third'];
+  if(third?.status!==403||third.block_reason!=='path_entropy')
+    throw Error('third-origin resource named by the CDN stylesheet was not refused for path entropy');
+}
