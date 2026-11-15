@@ -360,6 +360,7 @@ type Scanner struct {
 	responseVowelFoldPreFilter *responsePreFilter // keyword candidate gate for vowel-fold pass
 	responseVerdicts           responseVerdictCache
 	injectionMode              string
+	injectionPolicy            config.InjectionPolicy
 	injectionWarnHook          atomic.Pointer[InjectionWarnHook]
 	responseAction             string
 	responseEnabled            bool
@@ -885,6 +886,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 	s.knownSecretEncodings = buildKnownSecretEncodings(knownSecretEncodingBudgetBytes, s.envSecrets, s.fileSecrets)
 
 	s.injectionMode = cfg.PromptInjectionMode()
+	s.injectionPolicy = cfg.InjectionPolicy()
 
 	// Declared core-floor observe exceptions are read OUTSIDE the
 	// response_scanning.enabled branch on purpose: the core response floor runs

@@ -303,7 +303,7 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 			dlpViews = append(dlpViews, responseDLPView{text: key, card: key, structural: true})
 		}
 	}
-	result, dlpMatches, droppedDLP := scanResponseViewsWithCards(opts.scanContext(), sc, opts, views, dlpViews)
+	result, dlpMatches, droppedDLP := scanResponseViewsWithCards(scanner.WithInjectionSurface(opts.scanContext(), config.InjectionSurfaceMCPToolResult), sc, opts, views, dlpViews)
 	if result.Failed() {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Action: config.ActionBlock, Error: "response scan failed: " + result.ScanError}
 	}

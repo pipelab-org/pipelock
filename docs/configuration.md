@@ -1330,6 +1330,57 @@ weakening rejected on reload requires an explicit restart with the new config.
 
 Warn-only observations carry the available destination, agent label, transport, and MCP server name. Audit destinations use the same content redaction as other response-scan events. Scans without request context omit unavailable attribution. Encrypted CONNECT tunnel payloads aren't scanned unless TLS interception is enabled.
 
+### Per-surface selection
+
+`prompt_injection_detection.surfaces` selects the checker and mode for one
+surface at a time. Two surfaces accept a selection:
+
+| Surface | Content |
+|---|---|
+| `mcp_tool_result` | MCP JSON-RPC responses and notifications from a server, on every MCP transport (stdio, stdio-to-HTTP and SSE, stdio-to-WebSocket, HTTP listener) |
+| `mcp_tool_description` | Tool definitions in `tools/list` responses, scanned by the tool scanner |
+
+Every other wording consumer (HTTP responses and request bodies, WebSocket,
+A2A, MCP input, Browser Shield, Scan API) keeps following `enabled` and
+`action`. A surface without an entry also follows them.
+
+```yaml
+prompt_injection_detection:
+  surfaces:
+    mcp_tool_result:
+      checker: basic   # optional; basic is the built-in wording checker
+      mode: warn       # off, warn or block
+    mcp_tool_description:
+      mode: block
+```
+
+`mode` is required. `off` runs no wording assessment on that surface, `warn`
+records findings without blocking, stripping, asking or producing
+injection-driven taint, and `block` applies the surface's existing action
+(`response_scanning.action` and the per-server response trust for results,
+`mcp_tool_scanning.action` for descriptions). For the built-in checker the global
+setting is a cap: a surface may lower it but not raise it, so `enabled: false`
+with a surface in `warn` or `block` is rejected with a message naming the
+surface. Unknown surfaces, unknown checkers and unknown keys are rejected.
+
+Structural tool checks (name collisions, dangerous capabilities, parameter
+names, credential acknowledgments) and drift detection are outside this
+setting, as are DLP, destination controls and tool policy.
+
+A tools/list response earns adaptive clean credit only when both its envelope
+and its tool descriptions were assessed benign, so a description surface set to
+`off` or `warn` withholds that credit. Tool-scan results carry the description
+assessment (`off`, `not_assessed`, `benign`, `finding` or `incomplete`); a
+`tools/list` stopped by a resource limit reports `incomplete`.
+
+A configuration without `surfaces` keeps its canonical policy hash. Adding a
+selection changes the hash, even one that matches the global setting, because it
+changes which setting owns the surface. Startup, `pipelock doctor` and validation
+warnings list every surface whose mode is lower than the global setting, and
+`pipelock doctor` prints each surface's binding with its source (`legacy` or
+`surface`). A reload that lowers a surface's mode or changes its checker logs a
+warning naming the old and new binding.
+
 ## Response Scanning
 
 Scans fetched content for prompt injection before returning to the agent. Uses a 6-pass normalization pipeline: zero-width stripping, word boundary reconstruction, leetspeak folding, optional-whitespace matching, vowel folding, and encoding detection. Unicode Tags are also decoded to printable ASCII and checked beside the stripped view, including in mixed visible text. Tag presence alone does not trigger a finding.

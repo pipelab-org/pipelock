@@ -147,6 +147,22 @@ func (c *Config) policySemanticView() canonicalPolicyView {
 	default:
 		view.PromptInjectionDetection = nil
 	}
+	// Only explicit selections enter the hash, so a config without them
+	// keeps its existing canonical hash. A selection identical to the
+	// legacy binding still changes the hash: it changes which setting owns
+	// the surface on a later reload.
+	if c.PromptInjectionDetection != nil && len(c.PromptInjectionDetection.Surfaces) > 0 {
+		if view.PromptInjectionDetection == nil {
+			view.PromptInjectionDetection = &PromptInjectionDetection{}
+		}
+		view.PromptInjectionDetection.Surfaces = cloneInjectionSurfaces(c.PromptInjectionDetection.Surfaces)
+		for name, sc := range view.PromptInjectionDetection.Surfaces {
+			if sc.Checker == "" {
+				sc.Checker = InjectionCheckerBasic
+				view.PromptInjectionDetection.Surfaces[name] = sc
+			}
+		}
+	}
 
 	// Transport structs (FetchProxy, ForwardProxy, WebSocketProxy,
 	// ReverseProxy) stay in the canonical view because they carry

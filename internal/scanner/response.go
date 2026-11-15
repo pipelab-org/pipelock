@@ -122,7 +122,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 // semantics. Declared Content-Type is not consulted, so mislabeled textual
 // content still takes the ordinary scan path.
 func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) (out ResponseScanResult) {
-	defer func() { s.setInjectionAssessment(&out, false) }()
+	defer func() { s.setInjectionAssessment(ctx, &out, false) }()
 	return s.scanResponseBodyWithSuppress(ctx, body, suppressTarget, suppress, s.scanResponseBodyUncached)
 }
 
@@ -131,6 +131,9 @@ func (s *Scanner) scanResponseBodyWithSuppress(ctx context.Context, body []byte,
 		return s.ScanResponseWithSuppress(ctx, "", suppressTarget, suppress)
 	}
 	key, eligible := s.responseVerdicts.key(body, suppressTarget, suppress)
+	// The cache key binds the global wording mode only. A surface label that
+	// lowers it must neither read nor write a global-mode verdict.
+	eligible = eligible && s.PromptInjectionModeFor(ctx) == s.PromptInjectionMode()
 	if eligible {
 		if result, ok := s.responseVerdicts.get(key); ok {
 			if ctx != nil && ctx.Err() != nil {
@@ -186,7 +189,7 @@ func (s *Scanner) scanResponseBodyWithSuppress(ctx context.Context, body []byte,
 }
 
 func (s *Scanner) scanResponseBodyUncached(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) (out ResponseScanResult) {
-	defer func() { s.setInjectionAssessment(&out, false) }()
+	defer func() { s.setInjectionAssessment(ctx, &out, false) }()
 	metadata, image, err := responseImageMetadata(body)
 	if !image {
 		if hasResponseImageSignature(body) {
@@ -226,7 +229,7 @@ func (s *Scanner) scanResponseBodyUncached(ctx context.Context, body []byte, sup
 				// The decoded wording was assessed even when the raw bytes
 				// contain no separate wording view. Retain that coverage while
 				// giving raw-view failures and findings their usual precedence.
-				s.retainDecodedAssessment(&rawResult, decodedResult.Assessment)
+				s.retainDecodedAssessment(ctx, &rawResult, decodedResult.Assessment)
 				return rawResult
 			}
 			return s.scanOpaqueResponseText(ctx, body, suppressTarget, suppress)
@@ -254,13 +257,13 @@ func (s *Scanner) scanResponseBodyUncached(ctx context.Context, body []byte, sup
 
 // retainDecodedAssessment carries completed decoded-view coverage without
 // inferring it from the delivery verdict. Raw failures/findings retain priority.
-func (s *Scanner) retainDecodedAssessment(raw *ResponseScanResult, decoded InjectionAssessment) {
+func (s *Scanner) retainDecodedAssessment(ctx context.Context, raw *ResponseScanResult, decoded InjectionAssessment) {
 	assessed := decoded.Status == AssessmentBenign || decoded.Status == AssessmentFinding || decoded.Status == AssessmentPartial
 	if !assessed {
 		// A raw view cannot stand in for an unassessed decoded view.
 		raw.Assessment = InjectionAssessment{}
 	}
-	s.setInjectionAssessment(raw, assessed)
+	s.setInjectionAssessment(ctx, raw, assessed)
 }
 
 func (s *Scanner) scanTextualResponseBody(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) ResponseScanResult {
@@ -514,9 +517,9 @@ func (s *Scanner) scanResponseWithSuppress(ctx context.Context, content, suppres
 
 func (s *Scanner) scanResponseWithSuppressMemo(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry, forceEncodedDecode bool, memo *responseMatchMemo) (out ResponseScanResult) {
 	result := s.scanResponseMatches(ctx, content, suppressTarget, suppress, forceEncodedDecode, memo)
-	if result.Clean && !result.Failed() && len(result.WarnedMatches) == 0 && s.PromptInjectionMode() != config.ActionAllow {
+	if result.Clean && !result.Failed() && len(result.WarnedMatches) == 0 && s.PromptInjectionModeFor(ctx) != config.ActionAllow {
 		result = s.scanAdditionalInjectionViews(ctx, content, suppressTarget, suppress, result)
-		s.setInjectionAssessment(&result, result.Assessment.Status != AssessmentNotAssessed)
+		s.setInjectionAssessment(ctx, &result, result.Assessment.Status != AssessmentNotAssessed)
 	}
 	if result.Clean || result.Failed() || (s.responseAction != config.ActionStrip && s.responseAction != config.ActionAsk) {
 		return result
@@ -582,7 +585,7 @@ func (s *Scanner) scanResponseWithSuppressMemo(ctx context.Context, content, sup
 		checked = s.scanAdditionalInjectionViews(ctx, candidate, suppressTarget, suppress, checked)
 	}
 	result.InspectionIncomplete = result.InspectionIncomplete || checked.InspectionIncomplete
-	s.setInjectionAssessment(&result, true)
+	s.setInjectionAssessment(ctx, &result, true)
 	if !checked.Clean || checked.Failed() {
 		return result
 	}
@@ -604,7 +607,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	original := content
 	content = exciseVerifiedImageDataURLs(content)
 	assessed := !IsBlankInjectionView(content)
-	defer func() { s.setInjectionAssessment(&out, assessed) }()
+	defer func() { s.setInjectionAssessment(ctx, &out, assessed) }()
 	var suppressedMatches []ResponseMatch
 	var observedCoreMatches []ObservedCoreMatch
 	suppressedSeen := make(map[string]struct{})
@@ -674,7 +677,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 		out.ObservedCoreMatches = observedCoreMatches
 		out.StegoDensity = stegoDensity
 		out.StegoDetected = stegoDetected
-		if !out.Failed() && s.PromptInjectionMode() == config.ActionWarn && len(out.Matches) > 0 {
+		if !out.Failed() && s.PromptInjectionModeFor(ctx) == config.ActionWarn && len(out.Matches) > 0 {
 			out.WarnedMatches = out.Matches
 			out.Matches = nil
 			out.Clean = true
@@ -695,7 +698,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 		}
 	}
 
-	if s.PromptInjectionMode() == config.ActionAllow {
+	if s.PromptInjectionModeFor(ctx) == config.ActionAllow {
 		return ResponseScanResult{Clean: true}
 	}
 

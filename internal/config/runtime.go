@@ -282,6 +282,7 @@ func (c *Config) Clone() *Config {
 			enabled := *p.Enabled
 			p.Enabled = &enabled
 		}
+		p.Surfaces = cloneInjectionSurfaces(p.Surfaces)
 		clone.PromptInjectionDetection = &p
 	}
 	clone.lapsedScannerExceptions = slices.Clone(c.lapsedScannerExceptions)

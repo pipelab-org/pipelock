@@ -3,7 +3,12 @@
 
 package diag
 
-import "github.com/luckyPipewrench/pipelock/internal/config"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+)
 
 func checkDoctorPromptInjectionDetection(cfg *config.Config) doctorReportCheck {
 	check := doctorReportCheck{
@@ -14,7 +19,15 @@ func checkDoctorPromptInjectionDetection(cfg *config.Config) doctorReportCheck {
 		check.Status = doctorStatusWarn
 		check.Configured = true
 		check.Detail = notice
-		check.Next = "restore prompt_injection_detection.enabled=true and action=block to restore the existing wording enforcement policy"
+		check.Next = "restore prompt_injection_detection.enabled=true and action=block, and remove reduced prompt_injection_detection.surfaces entries, to restore the existing wording enforcement policy"
+	}
+	if policy := cfg.InjectionPolicy(); policy.Selected() {
+		check.Configured = true
+		bindings := make([]string, 0, 2)
+		for _, sp := range policy.Surfaces() {
+			bindings = append(bindings, fmt.Sprintf("%s=%s/%s (%s)", sp.Surface, sp.Checker, sp.Mode, sp.Source))
+		}
+		check.Detail += " Checker bindings: " + strings.Join(bindings, ", ") + "."
 	}
 	return check
 }

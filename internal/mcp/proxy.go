@@ -894,8 +894,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			// was detected for this message - a near-miss signal and a clean
 			// decay on the same message would incorrectly counteract each other.
 			if !opts.toolContractDiscovery && !toolPoisonDetected && !toolAcknowledged {
+				recoveryAssessment := verdict.Assessment
+				if isToolsList {
+					recoveryAssessment = toolsListRecoveryAssessment(recoveryAssessment, toolResult)
+				}
 				recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
-					assessment: verdict.Assessment,
+					assessment: recoveryAssessment,
 					sessionKey: opts.adaptiveSessionKey(),
 					reason:     adaptiveRecoveryClean,
 					requestID:  canonicalID(verdict.ID),
@@ -1563,7 +1567,7 @@ func stripResponse(line []byte, sc *scanner.Scanner) ([]byte, error) {
 
 func stripResponseWithOptions(line []byte, sc *scanner.Scanner, ctx context.Context, opts ResponseScanOptions) ([]byte, error) {
 	scan := stripResponseScanner(func(text string) scanner.ResponseScanResult {
-		return sc.ScanResponseWithSuppress(ctx, text, opts.Target, opts.Suppress)
+		return sc.ScanResponseWithSuppress(scanner.WithInjectionSurface(ctx, config.InjectionSurfaceMCPToolResult), text, opts.Target, opts.Suppress)
 	})
 	out, err := stripResponseDepth(line, scan, 0)
 	if err != nil {

@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"context"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -100,12 +101,12 @@ func (r ResponseScanResult) RecoveryAssessment() InjectionAssessment {
 	return r.Assessment
 }
 
-func (s *Scanner) setInjectionAssessment(result *ResponseScanResult, assessed bool) {
+func (s *Scanner) setInjectionAssessment(ctx context.Context, result *ResponseScanResult, assessed bool) {
 	status := AssessmentNotAssessed
 	switch {
 	case result.Failed() || result.InspectionIncomplete:
 		status = AssessmentIncomplete
-	case s.PromptInjectionMode() == config.ActionAllow:
+	case s.PromptInjectionModeFor(ctx) == config.ActionAllow:
 		status = AssessmentOff
 	case len(result.Matches)+len(result.WarnedMatches)+len(result.ObservedCoreMatches)+len(result.SuppressedMatches) > 0:
 		status = AssessmentFinding
