@@ -138,8 +138,8 @@ type ToolScanResult struct {
 	// acknowledgments and drift do not enter it.
 	Assessment scanner.InjectionAssessment `json:"assessment"`
 	RPCID      json.RawMessage             `json:"-"` // parsed ID for block responses (avoids re-parse)
-	ToolNames    []string        `json:"-"` // tool names from tools/list (for session binding)
-	ToolDefs     []ToolDef       `json:"-"` // accepted definitions for transport header binding
+	ToolNames  []string                    `json:"-"` // tool names from tools/list (for session binding)
+	ToolDefs   []ToolDef                   `json:"-"` // accepted definitions for transport header binding
 	// ResourceDetail names the tool, field and bound behind an uninspectable
 	// verdict for the operator log. It is never sent to the agent: it quotes
 	// an upstream-chosen tool name from the very definition being refused.
@@ -3070,6 +3070,9 @@ func scanToolDefsAssessed(ctx context.Context, tools []ToolDef, sc *scanner.Scan
 					continue
 				}
 				if ep.Re.MatchString(target[0]) || ep.Re.MatchString(target[1]) {
+					if ep.ScanField != "name" {
+						addAssessment(scanner.InjectionAssessment{Checker: scanner.InjectionCheckerBasic, Status: scanner.AssessmentFinding})
+					}
 					if ep.ScanField != "name" && wordingMode == config.ActionWarn {
 						sc.ReportInjectionWarnings(ctx, []string{ep.Name})
 						observations = append(observations, ToolScanMatch{ToolName: tool.Name, ToolPoison: []string{ep.Name}})

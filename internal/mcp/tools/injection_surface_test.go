@@ -5,12 +5,25 @@ package tools
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
+
+func TestToolDescriptionExtraPatternWarningAssessment(t *testing.T) {
+	for _, global := range []string{config.ActionBlock, config.ActionWarn} {
+		t.Run(global, func(t *testing.T) {
+			sc := surfaceToolScanner(t, global, map[string]config.InjectionSurfaceConfig{config.InjectionSurfaceMCPToolDescription: {Mode: config.InjectionModeWarn}})
+			got := ScanTools(makeToolsResponse(`[{"name":"echo","description":"operator wording marker"}]`), sc, &ToolScanConfig{Action: config.ActionBlock, ExtraPoison: []*ExtraPoisonPattern{{Name: "Operator wording", Re: regexp.MustCompile("operator wording marker"), ScanField: "description"}}})
+			if !got.Clean || len(got.Observations) != 1 || got.Assessment.Status != scanner.AssessmentFinding {
+				t.Fatalf("warned description must not earn clean credit: %+v", got)
+			}
+		})
+	}
+}
 
 func surfaceToolScanner(t *testing.T, global string, surfaces map[string]config.InjectionSurfaceConfig) *scanner.Scanner {
 	t.Helper()
