@@ -546,10 +546,7 @@ func (p *Proxy) finalizeRequestPolicyDecision(in requestPolicyInput, d reqpolicy
 // enforcement keeps refusing after a reload turns it off. A nil config on
 // either side refuses.
 func (p *Proxy) requestPolicyAuditLift(in requestPolicyInput, d reqpolicy.Decision) bool {
-	if in.Config == nil || in.Config.EnforceEnabled() {
-		return false
-	}
-	if live := p.cfgPtr.Load(); live == nil || live.EnforceEnabled() {
+	if !p.auditEnforcementOff(in.Config) {
 		return false
 	}
 	return d.Enforced() && d.Action == config.ActionBlock && d.RuleMatch

@@ -23,6 +23,7 @@ const (
 	forwardDenialConnectInterceptSessionCapacity forwardDenialKind = "connect_intercept_session_capacity"
 	forwardDenialForwardSessionCapacity          forwardDenialKind = "forward_session_capacity"
 	forwardDenialRequestPolicy                   forwardDenialKind = "request_policy"
+	forwardDenialGitPush                         forwardDenialKind = "git_push"
 )
 
 type forwardDenialMetric int
@@ -97,6 +98,12 @@ var forwardDenialCatalog = [...]forwardDenialSpec{
 	{
 		kind:   forwardDenialRequestPolicy,
 		label:  blockLayerRequestPolicy,
+		metric: forwardDenialMetricRequest,
+		class:  audit.BlockClassProtective,
+	},
+	{
+		kind:   forwardDenialGitPush,
+		label:  scanner.AuditGitProtection,
 		metric: forwardDenialMetricRequest,
 		class:  audit.BlockClassProtective,
 	},
