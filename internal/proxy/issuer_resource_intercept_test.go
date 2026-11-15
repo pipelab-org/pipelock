@@ -821,16 +821,45 @@ func (w *resourceDeliveryWriter) Write(body []byte) (int, error) {
 }
 
 func TestInterceptCrossOriginResourcePendingDelivery(t *testing.T) {
-	for _, contentType := range []string{htmlType, cssType} {
+	for _, producer := range []struct {
+		name, contentType string
+		derived           bool
+	}{
+		{"root HTML", htmlType, false},
+		{"root CSS", cssType, false},
+		{"derived HTML", htmlType, true},
+		{"derived CSS", cssType, true},
+		{"derived script", jsType, true},
+		{"derived legacy script", "application/x-javascript", true},
+	} {
 		for _, outcome := range []string{"success", "write fails", "revoked", "cancelled"} {
-			t.Run(contentType+"/"+outcome, func(t *testing.T) {
+			t.Run(producer.name+"/"+outcome, func(t *testing.T) {
+				contentType := producer.contentType
 				store, ic := newResourceStore(t)
 				ic.Logger, ic.Metrics = audit.NewNop(), metrics.New()
 				ic.TargetHost, ic.TargetPort = "www.vendor.example", "443"
+				sourceURL := "https://www.vendor.example/page"
+				session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
+				if producer.derived {
+					ic.TargetHost = "cdn.vendor.example"
+					sourceURL = resourceCDN + "/producer"
+					store.rememberResource(session, mustIssuerQueryURL(t, sourceURL), time.Now())
+				}
 				target := mustIssuerQueryURL(t, resourceCDN+resourceTok1+"/entry.js")
+				third := mustIssuerQueryURL(t, "https://third.vendor.example"+resourceTok1+"/third.js")
 				body := `<script src="` + target.String() + `"></script>`
-				if contentType == cssType {
+				switch contentType {
+				case cssType:
 					body = `@import url("` + strings.TrimPrefix(target.String(), "https:") + `");`
+					if producer.derived {
+						body += `a{background:url("` + third.String() + `")}`
+					}
+				case jsType, "application/x-javascript":
+					body = `import "` + target.String() + `"; import "` + third.String() + `";`
+				default:
+					if producer.derived {
+						body += `<script src="` + third.String() + `"></script>`
+					}
 				}
 				upstream := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 					return &http.Response{
@@ -848,7 +877,7 @@ func TestInterceptCrossOriginResourcePendingDelivery(t *testing.T) {
 				go func() {
 					defer close(done)
 					newInterceptHandler(ic, upstream).ServeHTTP(writer,
-						httptest.NewRequestWithContext(ctx, http.MethodGet, "https://www.vendor.example/page", nil))
+						httptest.NewRequestWithContext(ctx, http.MethodGet, sourceURL, nil))
 				}()
 				var once sync.Once
 				release := func() { once.Do(func() { close(writer.release) }) }
@@ -860,7 +889,6 @@ func TestInterceptCrossOriginResourcePendingDelivery(t *testing.T) {
 				case <-ctx.Done():
 					t.Fatal("producer did not reach delivery")
 				}
-				session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 				store.mu.Lock()
 				pending := len(store.deliveries)
 				store.mu.Unlock()
@@ -872,13 +900,36 @@ func TestInterceptCrossOriginResourcePendingDelivery(t *testing.T) {
 					store.resourcePathIssuedContext(ctx, session, mustIssuerQueryURL(t, target.String()+"x")) {
 					t.Fatal("unrelated request acquired pending resource authority")
 				}
+				thirdDigest, _ := store.pathDigest(third)
+				thirdPending := false
+				store.mu.Lock()
+				for delivery := range store.deliveries[session].pending {
+					thirdPending = thirdPending || digestListed(delivery.resourcePaths, thirdDigest)
+				}
+				store.mu.Unlock()
+				if producer.derived && thirdPending {
+					t.Fatal("derived producer registered third-origin pending authority")
+				}
 				waiting := &issuedRedirectWaitContext{Context: ctx, waiting: make(chan struct{})}
-				result := make(chan bool, 1)
-				go func() { result <- store.resourcePathIssuedContext(waiting, session, target) }()
+				result := make(chan int, 1)
+				child := *ic
+				child.TargetHost = target.Hostname()
+				childUpstream := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}},
+						Body: io.NopCloser(strings.NewReader("ok")), ContentLength: 2, Request: r,
+					}, nil
+				})
+				go func() {
+					w := httptest.NewRecorder()
+					newInterceptHandler(&child, childUpstream).ServeHTTP(w,
+						httptest.NewRequestWithContext(waiting, http.MethodGet, target.String(), nil))
+					result <- w.Code
+				}()
 				select {
 				case <-waiting.waiting:
-				case allowed := <-result:
-					t.Fatalf("resource completed before delivery: %v", allowed)
+				case status := <-result:
+					t.Fatalf("resource completed before delivery: %d", status)
 				case <-ctx.Done():
 					t.Fatal("resource did not wait for delivery")
 				}
@@ -894,14 +945,21 @@ func TestInterceptCrossOriginResourcePendingDelivery(t *testing.T) {
 				}
 				release()
 				<-done
-				if got := <-result; got != (outcome == "success") {
-					t.Fatalf("resource after %s = %v", outcome, got)
+				want := http.StatusForbidden
+				if outcome == "success" {
+					want = http.StatusOK
+				}
+				if got := <-result; got != want {
+					t.Fatalf("resource after %s = %d, want %d", outcome, got, want)
 				}
 				store.mu.Lock()
 				pending = len(store.deliveries)
 				store.mu.Unlock()
 				if pending != 0 {
 					t.Fatal("completed delivery leaked pending state")
+				}
+				if producer.derived && (store.pathIssued(session, target) || store.resourcePathIssued(session, third)) {
+					t.Fatal("derived delivery promoted a path to root or issued third-origin authority")
 				}
 			})
 		}

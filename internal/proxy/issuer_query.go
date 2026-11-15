@@ -22,6 +22,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/media"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/shield"
 	"golang.org/x/net/html/charset"
@@ -755,8 +756,7 @@ func recordDeliveredIssuerQueryProof(ic *InterceptContext, response *http.Respon
 	// Stylesheets and scripts can name further resources just as HTML does.
 	// observe retains the existing same-origin knowledge boundary: this
 	// never delegates to another origin or treats a computed URL as issued.
-	switch mediaType {
-	case "text/css", "text/javascript", "application/javascript", "text/ecmascript", "application/ecmascript":
+	if mediaType == "text/css" || media.IsJavaScriptMediaType(mediaType) {
 		if store == nil || !asciiTransparentDocument(body, response.Header.Get("Content-Type")) {
 			return
 		}

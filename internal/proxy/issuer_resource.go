@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/media"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/shield"
 )
@@ -188,7 +189,7 @@ func (s *issuerQueryStore) resourcePathIssuedContext(ctx context.Context, sessio
 // generations therefore keep the ordinary path-entropy refusal.
 func (ic *InterceptContext) beginResourceDelivery(resp *http.Response, body []byte, proof issuerDeliveryProof) func() {
 	noop := func() {}
-	if ic == nil || !proof.cleanEnforced || proof.derived || resp == nil || resp.Request == nil || resp.Request.URL == nil {
+	if ic == nil || (!proof.cleanEnforced && !proof.derived) || resp == nil || resp.Request == nil || resp.Request.URL == nil {
 		return noop
 	}
 	store := ic.issuerQueryStore()
@@ -197,14 +198,29 @@ func (ic *InterceptContext) beginResourceDelivery(resp *http.Response, body []by
 	}
 	origin := resp.Request.URL
 	base := origin
+	baseKnown := true
+	originHost, originPort, _ := issuerCookieOrigin(origin)
 	var references []string
-	switch strings.ToLower(strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0])) {
-	case "text/html":
+	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0]))
+	switch {
+	case mediaType == "text/html":
 		var baseHref string
-		_, references, baseHref, _ = htmlLinkScan(body, 0, issuerCookieMaxSetCookies, origin)
-		base, _ = sameOriginBase(origin, baseHref)
-	case "text/css":
-		references = shield.CSSResourceURLs(string(body), issuerCookieMaxSetCookies, crossOriginResourceFilter(origin, base, true))
+		if proof.derived {
+			references, _, baseHref, baseKnown = htmlLinkScan(body, issuerCookieMaxSetCookies, 0, nil)
+		} else {
+			_, references, baseHref, baseKnown = htmlLinkScan(body, 0, issuerCookieMaxSetCookies, origin)
+		}
+		var usable bool
+		base, usable = sameOriginBase(origin, baseHref)
+		baseKnown = baseKnown && usable
+	case mediaType == "text/css":
+		var accept func(string) bool
+		if !proof.derived {
+			accept = crossOriginResourceFilter(origin, base, true)
+		}
+		references = shield.CSSResourceURLs(string(body), issuerCookieMaxSetCookies, accept)
+	case proof.derived && media.IsJavaScriptMediaType(mediaType):
+		references = scriptURLReferences(body, issuerCookieMaxSetCookies)
 	default:
 		return noop
 	}
@@ -215,10 +231,18 @@ func (ic *InterceptContext) beginResourceDelivery(resp *http.Response, body []by
 			continue
 		}
 		if !ref.IsAbs() {
-			if base == nil {
+			if !baseKnown || base == nil {
 				continue
 			}
 			ref = base.ResolveReference(ref)
+		}
+		if proof.derived {
+			// A derived producer can notify only for paths on its own origin,
+			// exactly as its delivered recorder does. It never delegates onward.
+			host, port, ok := issuerCookieOrigin(ref)
+			if !ok || host != originHost || port != originPort {
+				continue
+			}
 		}
 		if digest, ok := store.pathDigest(ref); ok {
 			d.resourcePaths = append(d.resourcePaths, digest)
@@ -394,11 +418,10 @@ func firstAttr(attrs []htmlAttr, key string) (string, bool) {
 // scriptSourceFetched reports whether a script element's type makes a browser
 // fetch its src: classic and module JavaScript only.
 func scriptSourceFetched(scriptType string) bool {
-	switch strings.ToLower(strings.TrimSpace(scriptType)) {
-	case "", "module", "text/javascript", "application/javascript", "text/ecmascript", "application/ecmascript":
-		return true
-	}
-	return false
+	// WHATWG MIME Sniffing section 4.6 requires an essence-string match here,
+	// unlike a response Content-Type. Parameters turn the element into data.
+	typ := strings.ToLower(strings.TrimSpace(scriptType))
+	return typ == "" || typ == "module" || media.IsJavaScriptMediaType(typ)
 }
 
 // htmlResourceRefs appends the URLs one start tag declares as subresources the

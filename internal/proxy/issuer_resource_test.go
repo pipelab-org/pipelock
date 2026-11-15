@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/media"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -85,6 +86,22 @@ func TestHTMLLinkScanResourceRoles(t *testing.T) {
 				t.Fatalf("resources = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestHTMLResourceScriptMIMEEssence(t *testing.T) {
+	for _, typ := range media.JavaScriptMediaTypes {
+		t.Run(typ, func(t *testing.T) {
+			_, resources, _, _ := htmlLinkScan([]byte(`<script type="`+strings.ToUpper(typ)+`" src="`+resourceCDN+`/entry.js"></script>`), 0, 1, nil)
+			if len(resources) != 1 {
+				t.Fatal("browser-supported classic script did not declare its resource")
+			}
+		})
+	}
+	for _, typ := range []string{"application/json", "importmap", "text/javascript;charset=utf-8", "module;charset=utf-8"} {
+		if scriptSourceFetched(typ) {
+			t.Fatalf("data-block type %q declared a resource", typ)
+		}
 	}
 }
 
