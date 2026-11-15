@@ -31,6 +31,7 @@ func TestForwardDenialCatalog(t *testing.T) {
 		sessionCapacityLayer:            true,
 		scanner.AuditScannerUnavailable: true,
 		blockLayerRequestPolicy:         true,
+		scanner.AuditGitProtection:      true,
 	}
 	seen := map[forwardDenialKind]bool{}
 	for _, spec := range forwardDenialCatalog {

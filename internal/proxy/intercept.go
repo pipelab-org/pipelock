@@ -1169,24 +1169,28 @@ func newInterceptHandler(
 			ic.Logger.LogAnomaly(actx, urlResult.Scanner, urlResult.Reason, urlResult.Score)
 		}
 
+		gitPushObserved := false
 		if gitPush := evaluateGitPushAllowlist(ic.Config.GitProtection, r.Method, r.URL); gitPush.Block {
-			ic.Logger.LogBlocked(actx, "git_protection", gitPush.Reason)
-			ic.Metrics.RecordTLSRequestBlocked("git_protection")
-			_ = interceptEmitReceipt(ic, receipt.EmitOpts{
-				ActionID:  actionID,
-				Verdict:   config.ActionBlock,
-				Layer:     "git_protection",
-				Pattern:   gitPush.Reason,
-				Transport: "intercept",
-				Method:    r.Method,
-				Target:    targetURL,
-				RequestID: ic.RequestID,
-				Agent:     ic.Agent,
-			})
-			writeBlockedError(w,
-				blockInfoFor(blockreason.RequestPolicyDeny, "git_protection").WithRequestID(ic.RequestID),
-				"blocked: "+gitPush.Reason, http.StatusForbidden)
-			return
+			block, observed := ic.Proxy.refuseGitPushAllowlist(ic.Config, ic.Logger, actx, gitPush, gitPush.Reason)
+			if block {
+				ic.Metrics.RecordTLSRequestBlocked(scanner.AuditGitProtection)
+				_ = interceptEmitReceipt(ic, receipt.EmitOpts{
+					ActionID:  actionID,
+					Verdict:   config.ActionBlock,
+					Layer:     scanner.AuditGitProtection,
+					Pattern:   gitPush.Reason,
+					Transport: "intercept",
+					Method:    r.Method,
+					Target:    targetURL,
+					RequestID: ic.RequestID,
+					Agent:     ic.Agent,
+				})
+				writeBlockedError(w,
+					blockInfoFor(blockreason.RequestPolicyDeny, scanner.AuditGitProtection).WithRequestID(ic.RequestID),
+					"blocked: "+gitPush.Reason, http.StatusForbidden)
+				return
+			}
+			gitPushObserved = observed
 		}
 
 		// A2A protocol detection: check path and Content-Type for A2A traffic.
@@ -2030,7 +2034,7 @@ func newInterceptHandler(
 
 		// request_policy runs before the contract gate so a contract allow can
 		// never suppress an operation-policy block.
-		interceptPolicyObserved := false
+		interceptPolicyObserved := gitPushObserved
 		if ic.Proxy != nil {
 			rpInput := requestPolicyInput{
 				Host:        r.URL.Hostname(),

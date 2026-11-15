@@ -92,6 +92,10 @@ type Metrics struct {
 	// Request policy operation safety rails (requestpolicy.go).
 	requestPolicyDecisions *prometheus.CounterVec
 
+	// Git push allowlist observations (gitpush.go). Enforce-mode refusals
+	// keep the shared blocked counter and do not increment this one.
+	gitPushDecisions *prometheus.CounterVec
+
 	// Cross-request exfiltration detection (cross_request.go).
 	CrossRequestEntropyExceeded          prometheus.Counter
 	CrossRequestDLPMatch                 prometheus.Counter
@@ -263,6 +267,7 @@ func New() *Metrics {
 	m.registerTLSMetrics(reg)
 	m.registerAirlockMetrics(reg)
 	m.registerRequestPolicyMetrics(reg)
+	m.registerGitPushMetrics(reg)
 	m.registerCrossRequestMetrics(reg)
 	m.registerScanAPIMetrics(reg)
 	m.registerKillSwitchMetrics(reg)

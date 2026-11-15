@@ -151,8 +151,9 @@ const (
 	// credit then skips it, as it does for a direct exemption.
 	ctxKeyRedirectStructuralExemption
 	// ctxKeyRequestPolicyObserved carries a *atomic.Bool set when the admitted
-	// request, or a redirect hop, observed a configured request-policy block.
-	// Clean adaptive credit skips that request.
+	// request, or a redirect hop, observed a configured request-policy block
+	// or a configured git-push allowlist mismatch. Clean adaptive credit skips
+	// that request.
 	ctxKeyRequestPolicyObserved
 	// ctxKeyRedirectAirlockSession carries the adaptive session key into
 	// CheckRedirect so every hop admits airlock against the same state the
@@ -1188,8 +1189,16 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			// admitted request.
 			if gitPush := evaluateGitPushAllowlist(currentCfg.GitProtection, req.Method, req.URL); gitPush.Block {
 				actx := newHTTPAuditContext(req.Context(), logger, httpAuditEvent{Method: req.Method, TargetURL: redirectURL, ClientIP: clientIP, RequestID: requestID, Agent: agentName})
-				logger.LogBlocked(actx, "git_protection", "redirect from "+originalURL+" blocked: "+gitPush.Reason)
-				return newRedirectBlockedRequest("git_protection", gitPush.Reason)
+				blockedDetail := "redirect from " + originalURL + " blocked: " + gitPush.Reason
+				block, observed := p.refuseGitPushAllowlist(currentCfg, logger, actx, gitPush, blockedDetail)
+				if block {
+					return newRedirectBlockedRequest(scanner.AuditGitProtection, gitPush.Reason)
+				}
+				if observed {
+					if flag, ok := req.Context().Value(ctxKeyRequestPolicyObserved).(*atomic.Bool); ok && flag != nil {
+						flag.Store(true)
+					}
+				}
 			}
 			redirectRec, _ := req.Context().Value(ctxKeyRedirectSessionRecorder).(session.Recorder)
 			redirectTaint := evaluateHTTPTaint(currentCfg, redirectRec, req.Method, req.URL)
