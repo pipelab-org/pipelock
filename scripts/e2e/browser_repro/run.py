@@ -450,6 +450,7 @@ class Process:
 
 
 def probe(command, name, output, env, work, cancellation, report, timeout=5):
+    report["processes"][name] = {"streams_drained": False, "cleanup": {"cleanup_complete": False}}
     process = Process(command, output / name, env, work, cancellation)
     try:
         code = process.wait(timeout=timeout)
@@ -600,15 +601,22 @@ def proxy_environment(env, upstream_ca):
     return {**env, "SSL_CERT_FILE": str(upstream_ca)}
 
 
-def collect_tls_evidence(work, output, args, env, cancellation, report, fixture, browser):
-    """Join fixture arrivals, signed receipts, audit events and browser outcomes."""
+def preserve_tls_recorder(work, output):
+    """Copy stopped recorder output even when browser acceptance failed."""
     recorder = work / "recorder"
-    lines, copied = [], output / "receipts"
+    copied = output / "receipts"
     copied.mkdir(mode=0o700)
     for source in sorted(recorder.glob("evidence-*.jsonl")):
         raw = read_regular(source, 8 * 1024 * 1024, owner=os.geteuid())
         (copied / source.name).write_bytes(raw)
         (copied / source.name).chmod(0o600)
+
+
+def collect_tls_evidence(work, output, args, env, cancellation, report, fixture, browser):
+    """Join fixture arrivals, signed receipts, audit events and browser outcomes."""
+    lines, copied = [], output / "receipts"
+    for source in sorted(copied.glob("evidence-*.jsonl")):
+        raw = read_regular(source, 8 * 1024 * 1024, owner=os.geteuid())
         lines.extend(raw.decode("utf-8", errors="replace").splitlines())
     receipts = tls_resource.declared_resource_receipts(lines)
     stdout = (output / "proxy.stdout").read_text(errors="replace")
@@ -837,6 +845,11 @@ def main():
                     for result in report["processes"].values())
                 if not workspace_cleanup_verified:
                     raise RuntimeError("workspace cleanup lacks complete process witnesses")
+                if tls:
+                    # A copy failure must retain the original recorder and keys.
+                    workspace_cleanup_verified = False
+                    preserve_tls_recorder(work, args.output)
+                    workspace_cleanup_verified = True
                 if args.mode == "sandbox" and driver_process and report.get("browser_artifact_status") == "missing":
                     stderr = (args.output / "driver.stderr").read_text(errors="replace")
                     if "unix proxy listen:" in stderr and "operation not permitted" in stderr:

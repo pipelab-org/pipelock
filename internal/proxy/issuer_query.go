@@ -762,11 +762,8 @@ func recordDeliveredIssuerQueryProof(ic *InterceptContext, response *http.Respon
 		}
 		var references []string
 		if mediaType == "text/css" {
-			limit := pathRemaining
-			if mintResources {
-				limit += resourceRemaining
-			}
-			references = shield.CSSResourceURLs(string(body), limit, nil)
+			references = shield.CSSResourceURLs(string(body), pathRemaining,
+				sameOriginReferenceFilter(response.Request.URL))
 		} else {
 			references = scriptURLReferences(body, pathRemaining)
 		}

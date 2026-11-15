@@ -858,6 +858,45 @@ func (c *issuedRedirectWaitContext) Done() <-chan struct{} {
 	return c.Context.Done()
 }
 
+func TestIssuedRedirectPendingAnyProducer(t *testing.T) {
+	store := delegationTestStore(t)
+	target := mustIssuerQueryURL(t, delegationFilesURL(delegationFilesPath, "id=7"))
+	scope := [32]byte{1}
+	scopes := map[[32]byte]struct{}{scope: {}}
+	first, err := store.beginIssuedRedirectDelivery("session", target, scopes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.finishIssuedRedirectDelivery("session", first)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	waiting := &issuedRedirectWaitContext{Context: ctx, waiting: make(chan struct{})}
+	canonical, _ := issuedLocationCanonical(target)
+	result := make(chan bool, 1)
+	go func() {
+		result <- store.waitIssuedRedirectDelivery(waiting, "session", store.issuedLocationDigest(canonical), false, scopes)
+	}()
+	select {
+	case <-waiting.waiting:
+	case <-ctx.Done():
+		t.Fatal("redirect did not wait for the first producer")
+	}
+	second, err := store.beginIssuedRedirectDelivery("session", target, scopes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.rememberIssuedLocation("session", target, scope, time.Now())
+	store.finishIssuedRedirectDelivery("session", second)
+	select {
+	case allowed := <-result:
+		if !allowed {
+			t.Fatal("completed second producer did not satisfy the waiting redirect")
+		}
+	case <-ctx.Done():
+		t.Fatal("second producer did not wake the redirect while the first remained pending")
+	}
+}
+
 func TestIssuedRedirectPendingDelivery(t *testing.T) {
 	for _, transport := range []string{"URL", "CONNECT"} {
 		for _, outcome := range []string{"success", "header write", "flush fails", "revoked", "runtime replaced", "cancelled"} {

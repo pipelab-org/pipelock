@@ -475,7 +475,7 @@ class TLSMainTests(unittest.TestCase):
 
     def run_main(self, argv_extra, *, prepare=None, receipts=4, verify_valid=True, verify_exit=0, truncated=False,
                  counts=None, allows=None, scenario_args=("--scenario", "tls-resource"), mode="proxy-only",
-                 verify_cleanup_error=False):
+                 verify_cleanup_error=False, driver_exit=0, setup_error=None, recorder_copy_error=False):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -490,6 +490,8 @@ class TLSMainTests(unittest.TestCase):
             def __init__(self, command, log, env, cwd, cancellation):
                 self.log, self.command = log, command
                 created.append(log.name)
+                if setup_error == "start" and log.name == "version-chromium":
+                    raise RuntimeError("setup process start was not verified")
                 if log.name == "verify-receipts":
                     created.append(("verifier_command", list(command)))
                 self.process = Mock(poll=Mock(return_value=None))
@@ -502,9 +504,13 @@ class TLSMainTests(unittest.TestCase):
                     (work / "tls-ready.png").write_bytes(PNG)
 
             def wait(self, timeout):
+                if self.log.name == "driver":
+                    return driver_exit
                 return verify_exit if self.log.name == "verify-receipts" else 0
 
             def stop(self):
+                if setup_error == "stop" and self.log.name == "version-chromium":
+                    raise RuntimeError("setup process cleanup was not verified")
                 if self.log.name == "verify-receipts" and verify_cleanup_error:
                     raise RuntimeError("verifier cleanup was not verified")
                 streams = {"stdout": {"truncated": truncated}}
@@ -530,7 +536,11 @@ class TLSMainTests(unittest.TestCase):
             report["tls"] = {"scenario": "tls-resource", "nss_database_in_workspace": True, "live_trust_mutated": False}
             return {"ca_cert": work_dir / "ca.pem", "ca_key": work_dir / "ca-key.pem", "signing_key": work_dir / "key"}
 
+        real_probe = run.probe
+
         def synthetic_probe(command, name, out, env, work_dir, cancellation, report, timeout=5):
+            if setup_error and name == "version-chromium":
+                return real_probe(command, name, out, env, work_dir, cancellation, report, timeout)
             # Like the real probe, record a complete supervised-process witness.
             report["processes"][name] = {"exit_code": 0, "streams_drained": True,
                                          "cleanup": {"cleanup_complete": True, "unexpected_live_descendants": False}}
@@ -561,6 +571,8 @@ class TLSMainTests(unittest.TestCase):
                    "tls_resource.TLSResourceFixture": Fixture}
         if prepare is not False:
             patches["prepare_tls_scenario"] = prepare or fake_prepare
+        if recorder_copy_error:
+            patches["preserve_tls_recorder"] = Mock(side_effect=OSError("recorder copy failed"))
         with stack:
             for target, value in patches.items():
                 stack.enter_context(patch("run." + target, value))
@@ -616,6 +628,35 @@ class TLSMainTests(unittest.TestCase):
         self.assertIn("verifier cleanup", summary["failure"])
         self.assertTrue(work.exists())
         self.assertFalse(summary["workspace_removed"])
+
+    def test_failed_browser_preserves_receipts_without_acceptance(self):
+        code, console, work, output, created = self.run_main([], driver_exit=7)
+        summary = json.loads((output / "summary.json").read_text())
+        self.assertEqual((code, console["status"]), (2, "fail"))
+        self.assertIn("browser command failed", summary["failure"])
+        self.assertTrue((output / "receipts" / "evidence-proxy.run.x-0.jsonl").is_file())
+        self.assertNotIn("verify-receipts", created)
+        self.assertNotIn("receipt_verification", summary["tls"])
+        self.assertFalse(work.exists())
+
+    def test_setup_failure_requires_its_own_cleanup_witness(self):
+        for phase in ("start", "stop"):
+            with self.subTest(phase=phase):
+                code, console, work, output, _created = self.run_main([], setup_error=phase)
+                summary = json.loads((output / "summary.json").read_text())
+                self.assertEqual((code, console["status"]), (2, "fail"))
+                self.assertIn("setup process", summary["failure"])
+                self.assertFalse(summary["workspace_removed"])
+                self.assertTrue(work.exists())
+                self.assertIsNot(summary["processes"]["version-chromium"]["cleanup"]["cleanup_complete"], True)
+
+    def test_recorder_copy_failure_retains_original_evidence(self):
+        code, console, work, output, _created = self.run_main([], recorder_copy_error=True)
+        summary = json.loads((output / "summary.json").read_text())
+        self.assertEqual((code, console["status"]), (2, "fail"))
+        self.assertIn("recorder copy failed", summary["failure"])
+        self.assertFalse(summary["workspace_removed"])
+        self.assertTrue((work / "recorder" / "evidence-proxy.run.x-0.jsonl").is_file())
 
     def test_http1_diagnostic_is_labelled_and_only_changes_browser_and_probe_protocol(self):
         code, _console, _work, output, created = self.run_main(["--tls-http1"])

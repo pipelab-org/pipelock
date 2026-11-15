@@ -952,6 +952,14 @@ func TestInterceptCrossOriginResourcePendingDelivery(t *testing.T) {
 				if got := <-result; got != want {
 					t.Fatalf("resource after %s = %d, want %d", outcome, got, want)
 				}
+				if outcome == "cancelled" {
+					fresh := httptest.NewRecorder()
+					newInterceptHandler(&child, childUpstream).ServeHTTP(fresh,
+						httptest.NewRequestWithContext(t.Context(), http.MethodGet, target.String(), nil))
+					if fresh.Code != http.StatusForbidden {
+						t.Fatalf("fresh request after cancelled delivery = %d, want 403", fresh.Code)
+					}
+				}
 				store.mu.Lock()
 				pending = len(store.deliveries)
 				store.mu.Unlock()

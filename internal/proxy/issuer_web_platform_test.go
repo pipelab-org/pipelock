@@ -493,7 +493,7 @@ func TestWebPlatformIssuerEvidenceIsInterceptOnly(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "text/html")
 			if r.URL.Path == "/" {
-				_, _ = io.WriteString(w, `<img src="`+*self+webImagePath+`?`+webImageQuery()+`"><link href="`+*self+webMediaPath+`">`)
+				_, _ = io.WriteString(w, `<img src="`+*self+webImagePath+`?`+webImageQuery()+`"><link href="`+*self+webMediaPath+`"><script src="`+resourceCDN+resourceTok1+`/entry.js"></script>`)
 				return
 			}
 			_, _ = io.WriteString(w, "ok")

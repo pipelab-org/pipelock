@@ -3331,7 +3331,7 @@ func newInterceptHandler(
 		finishResourceDelivery := ic.beginResourceDelivery(resp, respBody, issuerProof)
 		defer finishResourceDelivery()
 		written, writeErr := w.Write(respBody)
-		delivered := writeErr == nil && written == len(respBody)
+		delivered := writeErr == nil && written == len(respBody) && r.Context().Err() == nil
 		recordDeliveredIssuerCookies(ic, r, resp, delivered)
 		recordDeliveredIssuerQueryProof(ic, resp, respBody, delivered, issuerProof)
 		finishResourceDelivery()

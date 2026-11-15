@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -809,6 +810,63 @@ func TestRecordDeliveredResourceCSSRoom(t *testing.T) {
 	}
 }
 
+func TestRecordDeliveredResourceCSSSameOriginRoom(t *testing.T) {
+	for _, derived := range []bool{false, true} {
+		t.Run(strconv.FormatBool(derived), func(t *testing.T) {
+			store, ic := newResourceStore(t)
+			var css strings.Builder
+			for i := 0; i < 2*issuerCookieMaxSetCookies+10; i++ {
+				css.WriteString(`a{background:url(` + resourceCDN + `/foreign.png)}`)
+			}
+			target := mustIssuerQueryURL(t, "https://www.vendor.example"+resourceTok1+"/font.woff2")
+			css.WriteString(`@font-face{src:url(` + target.String() + `)}`)
+			recordProducer(t, ic, "https://www.vendor.example/s.css", cssType, css.String(), issuerDeliveryProof{cleanEnforced: true, derived: derived})
+			session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
+			if got := store.pathIssued(session, target); got == derived {
+				t.Fatalf("same-origin root evidence = %v, derived = %v", got, derived)
+			}
+			if derived && !store.resourcePathIssued(session, target) {
+				t.Fatal("foreign references exhausted same-origin derived path collection")
+			}
+		})
+	}
+}
+
+func TestResourcePendingDeliveryAnyProducer(t *testing.T) {
+	store, _ := newResourceStore(t)
+	target := mustIssuerQueryURL(t, resourceCDN+resourceTok1)
+	digest, _ := store.pathDigest(target)
+	first := &issuedRedirectDelivery{resourcePaths: [][32]byte{digest}, done: make(chan struct{})}
+	if err := store.registerIssuerDelivery(resourceSessionOne, first); err != nil {
+		t.Fatal(err)
+	}
+	defer store.finishIssuedRedirectDelivery(resourceSessionOne, first)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	waiting := &issuedRedirectWaitContext{Context: ctx, waiting: make(chan struct{})}
+	result := make(chan bool, 1)
+	go func() { result <- store.resourcePathIssuedContext(waiting, resourceSessionOne, target) }()
+	select {
+	case <-waiting.waiting:
+	case <-ctx.Done():
+		t.Fatal("resource did not wait for its first producer")
+	}
+	second := &issuedRedirectDelivery{resourcePaths: [][32]byte{digest}, done: make(chan struct{})}
+	if err := store.registerIssuerDelivery(resourceSessionOne, second); err != nil {
+		t.Fatal(err)
+	}
+	store.rememberResource(resourceSessionOne, target, time.Now())
+	store.finishIssuedRedirectDelivery(resourceSessionOne, second)
+	select {
+	case allowed := <-result:
+		if !allowed {
+			t.Fatal("completed second producer did not satisfy the waiting resource")
+		}
+	case <-ctx.Done():
+		t.Fatal("second producer did not wake the resource while the first remained pending")
+	}
+}
+
 func TestRecordDeliveredResourceBudgetCountsEligiblePaths(t *testing.T) {
 	for _, mediaType := range []string{"text/html", "text/css"} {
 		for _, noise := range []struct {
@@ -916,5 +974,23 @@ func TestResourcePendingDeliveryInactiveState(t *testing.T) {
 	store.nextGeneration()
 	if store.registerIssuerDelivery(resourceSessionOne, d) == nil {
 		t.Fatal("retired generation registered a delivery")
+	}
+}
+
+func TestSameOriginReferenceFilter(t *testing.T) {
+	origin := mustIssuerQueryURL(t, "https://www.vendor.example/s.css")
+	accept := sameOriginReferenceFilter(origin)
+	for _, ref := range []string{"/font.woff2?v=one", "/font.woff2?v=two", "https://WWW.vendor.example:443/font.woff2"} {
+		if !accept(ref) {
+			t.Fatalf("same-origin reference %q was not collected", ref)
+		}
+	}
+	for _, ref := range []string{resourceCDN + "/font.woff2", "http://www.vendor.example/font.woff2", "https://user@www.vendor.example/font.woff2", "https://%zz/font.woff2"} {
+		if accept(ref) {
+			t.Fatalf("ineligible reference %q was collected", ref)
+		}
+	}
+	if sameOriginReferenceFilter(nil)("/font.woff2") {
+		t.Fatal("missing origin collected a reference")
 	}
 }

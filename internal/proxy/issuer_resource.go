@@ -166,7 +166,7 @@ func (s *issuerQueryStore) resourcePathIssuedContext(ctx context.Context, sessio
 		if bucket := s.deliveries[session]; bucket != nil {
 			for delivery := range bucket.pending {
 				if digestListed(delivery.resourcePaths, digest) {
-					done = delivery.done
+					done = bucket.changed
 					break
 				}
 			}
@@ -214,7 +214,7 @@ func (ic *InterceptContext) beginResourceDelivery(resp *http.Response, body []by
 		base, usable = sameOriginBase(origin, baseHref)
 		baseKnown = baseKnown && usable
 	case mediaType == "text/css":
-		var accept func(string) bool
+		accept := sameOriginReferenceFilter(origin)
 		if !proof.derived {
 			accept = crossOriginResourceFilter(origin, base, true)
 		}
@@ -360,6 +360,25 @@ func issuerExchangeEnforcedClean(ic *InterceptContext, facts interceptCleanFacts
 }
 
 type htmlAttr struct{ key, val string }
+
+// sameOriginReferenceFilter applies the delivered observer's HTTPS origin
+// boundary before bounded CSS collection. Keep query variants: each may carry
+// a separate value that the ordinary same-origin observer records.
+func sameOriginReferenceFilter(origin *url.URL) func(string) bool {
+	host, port, valid := issuerCookieOrigin(origin)
+	return func(value string) bool {
+		if !valid {
+			return false
+		}
+		ref, err := url.Parse(value)
+		if err != nil {
+			return false
+		}
+		ref = origin.ResolveReference(ref)
+		refHost, refPort, ok := issuerCookieOrigin(ref)
+		return ok && refHost == host && refPort == port
+	}
+}
 
 // crossOriginResourceFilter counts only distinct paths that could actually
 // become resource evidence. Its origin and path rules match pathDigest; query

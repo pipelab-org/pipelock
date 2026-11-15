@@ -242,6 +242,7 @@ type issuedRedirectDelivery struct {
 type issuedRedirectDeliverySet struct {
 	pending map[*issuedRedirectDelivery]struct{}
 	entries int
+	changed chan struct{}
 }
 
 // beginIssuedRedirectDelivery uses the existing issuer-evidence session and
@@ -292,7 +293,7 @@ func (s *issuerQueryStore) registerIssuerDelivery(session string, d *issuedRedir
 		s.deliveries = make(map[string]*issuedRedirectDeliverySet)
 	}
 	if bucket == nil {
-		bucket = &issuedRedirectDeliverySet{pending: make(map[*issuedRedirectDelivery]struct{})}
+		bucket = &issuedRedirectDeliverySet{pending: make(map[*issuedRedirectDelivery]struct{}), changed: make(chan struct{})}
 		s.deliveries[session] = bucket
 	}
 	bucket.pending[d] = struct{}{}
@@ -306,6 +307,8 @@ func (s *issuerQueryStore) finishIssuedRedirectDelivery(session string, d *issue
 	bucket := s.deliveries[session]
 	delete(bucket.pending, d)
 	bucket.entries -= len(d.entries) + len(d.resourcePaths)
+	close(bucket.changed)
+	bucket.changed = make(chan struct{})
 	if bucket.entries == 0 {
 		delete(s.deliveries, session)
 	}
@@ -341,7 +344,7 @@ func (s *issuerQueryStore) waitIssuedRedirectDelivery(ctx context.Context, sessi
 			for delivery := range bucket.pending {
 				for _, entry := range delivery.entries {
 					if matches(entry) {
-						done = delivery.done
+						done = bucket.changed
 						break
 					}
 				}
