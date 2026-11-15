@@ -2078,12 +2078,13 @@ jobs:
           caller=caller/.github/workflows/agent-review.yaml
           # grep exits 1 for no match; anything else means the caller is unreadable.
           status=0
-          uses="$(grep -E '^[[:space:]-]*uses:' "$caller")" || status=$?
+          uses="$(grep -E '^[[:space:]-]*uses:' "$caller" | sort -u)" || status=$?
           if [ "$status" -gt 1 ]; then
             echo "agent review caller could not be read" >&2
             exit 1
           fi
-          # Exactly one call, to the engine repository, at a full commit SHA.
+          # The template calls the engine from several jobs. Every call must be
+          # one identical line: the engine repository at one full commit SHA.
           pattern='^    uses: pipelab-org/agent-review/\.github/workflows/agent-review-reusable\.yaml@[0-9a-f]{40} # main$'
           if [ "$status" -ne 0 ] || [ "$(wc -l <<<"$uses")" -ne 1 ] || ! grep -Eq "$pattern" <<<"$uses"; then
             echo "agent review caller must call pipelab-org/agent-review at a full commit SHA" >&2
@@ -2126,13 +2127,17 @@ jobs:
           pattern='^    uses: pipelab-org/agent-review/\.github/workflows/agent-review-reusable\.yaml@[0-9a-f]{40} # main$'
           if [ -f "$caller" ]; then
             status=0
-            line="$(grep -E "$pattern" "$caller")" || status=$?
+            line="$(grep -E "$pattern" "$caller" | sort -u)" || status=$?
             if [ "$status" -gt 1 ]; then
               echo "base agent review caller could not be read" >&2
               exit 1
             fi
             if [ "$status" -eq 1 ]; then
               exit 0
+            fi
+            if [ "$(wc -l <<<"$line")" -ne 1 ]; then
+              echo "base agent review caller pins more than one engine revision" >&2
+              exit 1
             fi
             pin="${line##*@}"
             pin="${pin%% *}"
