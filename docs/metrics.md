@@ -308,6 +308,12 @@ active exfiltration attempts.
 |--------|------|--------|-------------|
 | `pipelock_request_policy_decisions_total` | counter | `rule`, `action` | `request_policy` rule matches by rule name and action. `action` values are `block`, `warn`, `shadow_block`, or `shadow_warn`. With `enforce: false`, a configured block that is observed and forwarded is counted as `audit_block`. Shadow matches (would-have-blocked traffic in observe mode) are labeled `shadow_<action>` so operators can distinguish enforced blocks from shadow-mode observations. Cardinality is bounded because rule names are validated to a fixed character set at config load. |
 
+## Git Push Allowlist Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `pipelock_git_push_decisions_total` | counter | `action` | Configured git-push allowlist mismatches observed while enforcement is off. `action` is `audit_block`. An enforced refusal is not counted. The label set has no repository. |
+
 ## Browser Shield Metrics
 
 | Metric | Type | Labels | Description |
