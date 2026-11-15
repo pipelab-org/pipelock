@@ -1337,7 +1337,7 @@ surface at a time. Two surfaces accept a selection:
 
 | Surface | Content |
 |---|---|
-| `mcp_tool_result` | MCP JSON-RPC responses and notifications from a server, on every MCP transport (stdio, stdio-to-HTTP and SSE, stdio-to-WebSocket, HTTP listener) |
+| `mcp_tool_result` | Everything an MCP server sends the agent outside `tools/list` tool definitions: results, `error.message` and `error.data`, notification params, envelope strings and resource URIs, plus the output of a configured redirect handler. Applies on every MCP transport (stdio, stdio-to-HTTP and SSE, stdio-to-WebSocket, HTTP listener) |
 | `mcp_tool_description` | Tool definitions in `tools/list` responses, scanned by the tool scanner |
 
 Every other wording consumer (HTTP responses and request bodies, WebSocket,
