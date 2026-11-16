@@ -32,6 +32,11 @@ func (s *Scanner) ForwardInjectionWarnings(parent *Scanner) {
 	s.SetInjectionWarnHook(func(ctx context.Context, names []string) {
 		parent.ReportInjectionWarnings(ctx, names)
 	})
+	// External checker outcomes follow the same parent, so a profile's
+	// checker failures are never silent either.
+	s.SetInjectionCheckerHook(func(ctx context.Context, ev InjectionCheckerEvent) {
+		parent.ReportInjectionChecker(ctx, ev)
+	})
 }
 
 // PromptInjectionMode is the immutable wording policy of this scanner snapshot.

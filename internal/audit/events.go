@@ -19,6 +19,7 @@ const (
 	EventError                  EventType = eventcatalog.EventError
 	EventAnomaly                EventType = eventcatalog.EventAnomaly
 	EventResponseScan           EventType = eventcatalog.EventResponseScan
+	EventInjectionChecker       EventType = eventcatalog.EventInjectionChecker
 	EventResponseScanSuppressed EventType = eventcatalog.EventResponseScanSuppressed
 	EventRedirect               EventType = eventcatalog.EventRedirect
 	EventRequestCanceled        EventType = eventcatalog.EventRequestCanceled

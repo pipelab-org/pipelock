@@ -37,6 +37,7 @@ const (
 	EventInterceptHTTP               = "intercept_http"
 	EventIssuerQueryAllow            = "entropy_issuer_query_allow"
 	EventKillSwitchDeny              = "kill_switch_deny"
+	EventInjectionChecker            = "injection_checker"
 	EventLicenseExpiry               = "license_expiry"
 	EventMCPUnknownTool              = "mcp_unknown_tool"
 	EventMediaExposure               = "media_exposure"
@@ -107,6 +108,7 @@ func Builtins() []Descriptor {
 		{EventInterceptHTTP, "info", "forward"},
 		{EventIssuerQueryAllow, "", ""},
 		{EventKillSwitchDeny, "critical", "block"},
+		{EventInjectionChecker, "warn", ""},
 		{EventLicenseExpiry, "warn", "warn"},
 		{EventMCPUnknownTool, "warn", "warn"},
 		{EventMediaExposure, "warn", "allow"},

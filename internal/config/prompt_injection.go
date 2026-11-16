@@ -15,6 +15,8 @@ type PromptInjectionDetection struct {
 	// Surfaces selects the checker and mode per surface. Omitted surfaces
 	// follow Enabled and Action. See InjectionPolicy.
 	Surfaces map[string]InjectionSurfaceConfig `yaml:"surfaces,omitempty" json:",omitempty"`
+	// Checkers defines named external checkers a surface can select.
+	Checkers map[string]InjectionCheckerConfig `yaml:"checkers,omitempty" json:",omitempty"`
 }
 
 // PromptInjectionMode returns allow for disabled wording detection, warn for
@@ -65,6 +67,9 @@ func (c *Config) validatePromptInjectionDetection() error {
 	}
 	switch c.PromptInjectionDetection.Action {
 	case "", ActionBlock, ActionWarn:
+		if err := c.validateInjectionCheckers(); err != nil {
+			return err
+		}
 		return c.validateInjectionSurfaces()
 	default:
 		return fmt.Errorf("invalid prompt_injection_detection.action %q: must be block or warn", c.PromptInjectionDetection.Action)

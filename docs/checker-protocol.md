@@ -1,6 +1,6 @@
 # Injection checker protocol v1
 
-`internal/checker` defines one content assessment per request. A checker classifies content; callers retain delivery policy and independent security controls. The package contains the protocol, HTTP client, known-answer health check, and mock conformance tests. It has no scanner, proxy, MCP, configuration, or provider integration.
+`internal/checker` defines one content assessment per request. A checker classifies content; callers retain delivery policy and independent security controls. The package contains the protocol, HTTP client, known-answer health check, the Jev adapter and mock conformance tests. `prompt_injection_detection.checkers` and `surfaces` select a checker for MCP tool results and tool descriptions; see [Per-surface selection](configuration.md#per-surface-selection). No other surface calls an external checker yet.
 
 ## Request
 
@@ -60,7 +60,7 @@ HTTP 200 carries one result:
 }
 ```
 
-Assessed responses require `benign`, `suspicious`, or `abstain` classification and no failure reason. Findings have stable reason IDs and optional references to submitted parts. Benign responses cannot carry findings. Optional scores require a named scale, calibration ID, and finite numeric value. The captured policy pins the scale, calibration, and inclusive minimum/maximum; there is no universal range or cutoff. Scores do not override classification.
+Assessed responses require `benign`, `suspicious`, or `abstain` classification and no failure reason. Findings have stable reason IDs and optional references to submitted parts. A reason ID is 1 to 64 bytes: a lowercase ASCII letter followed by lowercase letters, digits, `_`, `.`, or `-`. Any other value makes the response invalid. Pipelock never logs a checker's reason IDs: an `injection_checker` event records every finding with the reason `suspicious`, because an identifier-shaped value could still be assessed content echoed back. Benign responses cannot carry findings. Optional scores require a named scale, calibration ID, and finite numeric value. The captured policy pins the scale, calibration, and inclusive minimum/maximum; there is no universal range or cutoff. Scores do not override classification.
 
 For an unavailable assessment, keep all identity, revision and completeness fields, omit classification, score, and findings, and replace the status fields with:
 
@@ -96,6 +96,14 @@ The client captures one fixed endpoint and authorization header. It rejects URL 
 Connection-time DNS validation applies the repository's non-overridable destination floor to every resolved address, in every embedded IPv4 form: cloud-metadata endpoints, link-local addresses (including container credential endpoints), multicast, and unspecified addresses. One refused address refuses the lookup. The client dials only checked addresses, without a second lookup, and permits explicitly configured private HTTPS services. Addresses are ordered as RFC 8305 section 4 describes, alternating IPv6 and IPv4 starting with the resolver's first family, and at most three are tried within the call deadline. Each attempt gets an even share of the remaining deadline, with the same two-second floor Go's multi-address dialer uses. Fallback past an address that silently drops connections therefore needs a call timeout above that floor; with a shorter timeout the first attempt receives the whole remaining deadline. No attempt starts after the deadline. When every tried address fails, the call fails closed. Callers own endpoint authorization, hosted-data consent, and local service ownership. The transport ignores ambient proxy variables and never calls a scanner.
 
 The original context deadline and configured whole-call timeout bound connection setup, the HTTP exchange, and response reading. Reading stops at the response budget plus one byte. HTTP/read errors produce typed unavailable results; cancellation and timeout have separate reasons. Raw endpoint, credential, response-body, and transport-error strings do not enter assessment errors.
+
+## Client options
+
+Option errors name the failing setting (`ErrOptionScheme`, `ErrOptionURL`, `ErrOptionAuthorization`, `ErrOptionUnixSocket`, `ErrOptionLoopback`, `ErrOptionCA`), all match `ErrOptions`, and never contain the endpoint or credential. `RootCAs` replaces the system roots for an HTTPS checker, with TLS 1.2 as the minimum. `PeerUID(uid)` is a `VerifyPeer` callback that accepts a Unix socket only when its peer runs as `uid`, using `SO_PEERCRED` on Linux and `LOCAL_PEERCRED` on macOS; other platforms refuse. A zero-value `Policy` is off and sends nothing.
+
+## Jev adapter
+
+`NewJev` sends one item to the TypeSafe Jev decision API (`POST https://api.typesafe.ai/v1/systemone` by default) with a bearer key. The request carries the pinned model, the item's surface and its ordered parts as untrusted content, and one fixed yes/no question with fixed criteria (adapter `pipelock-jev/v1`). The vendor's long-context header is never sent. A `noul` answer at or above the configured threshold is a finding; a lower answer is benign, or incomplete when the item was partial. Responses are parsed strictly: a missing or non-numeric answer, any answer other than the one question asked, a field other than `model`, `answers` and `usage`, a score outside 0 to 1, a reported model other than the pinned one, any non-200 status (including 429 and 529), a redirect, an oversized body, a timeout or an empty key is an assessment failure, never benign. The adapter reuses the client transport: no proxy, no redirects, no connection reuse, connection-time destination checks and the policy's whole-call timeout and byte budgets. The request and response shape follows the vendor's published API description. A live check against a pinned model returned that shape, with an added `usage` object, and the adapter classified a benign and an injected item correctly; it did not exercise rate limiting or long content, and a field the vendor adds later makes results unassessed until the adapter accepts it. Content sent to Jev leaves the machine for a hosted service, so configuration requires `send_content_off_host: true`.
 
 ## Health and conformance
 

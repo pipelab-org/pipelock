@@ -773,6 +773,30 @@ func (l *Logger) LogMediaExposure(ctx LogContext, info MediaExposureInfo) {
 	}
 }
 
+// LogInjectionChecker records an external injection checker outcome that was
+// not a complete benign assessment: a finding, an assessment failure, a
+// watch-only result or a dropped watch call. It carries no content and no
+// provider text.
+func (l *Logger) LogInjectionChecker(ctx LogContext, checkerName, surface, mode, state, reason string, watch, dropped bool) {
+	e := newLogEntry(l.zl.Warn(), EventInjectionChecker).
+		optStr("transport", ctx.scanTransport).
+		optStr("mcp_server", ctx.mcpServer).
+		optStr("request_id", ctx.requestID).
+		correlationField(ctx.correlation).
+		str("checker", checkerName).
+		str("surface", surface).
+		optStr("mode", mode).
+		optStr("state", state).
+		optStr("reason", reason).
+		boolField("watch", watch).
+		boolField("dropped", dropped).
+		agentField(ctx.agent, ctx.agentAuth)
+	e.msg("injection checker outcome")
+	if l.emitter != nil {
+		l.emitEvent(string(EventInjectionChecker), e.fields)
+	}
+}
+
 // LogResponseScan logs a response content scan that found prompt injection patterns.
 // When bundleRules is non-empty, bundle provenance is included in the audit event
 // and webhook payload so SIEM consumers can identify which community rules matched.

@@ -2527,6 +2527,9 @@ func scanToolsSingle(ctx context.Context, line []byte, sc *scanner.Scanner, cfg 
 	}
 
 	matches, observations, capacityExceeded, epochChanged, assessment := scanToolDefsAssessed(ctx, tools, sc, cfg)
+	if descriptionsWithheld(sc, assessment) {
+		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: ResourceLimitInjectionChecker, ResourceDetail: "injection checker " + assessment.Checker + " did not assess the tool descriptions", RPCID: rpc.ID, ToolNames: names, ToolDefs: tools, Observations: observations, Assessment: assessment}
+	}
 	if epochChanged {
 		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_baseline_reset", RPCID: rpc.ID, ToolNames: names, ToolDefs: tools, Observations: observations, Assessment: incompleteDescriptionAssessment}
 	}
@@ -2893,10 +2896,30 @@ func scanToolDefsAssessed(ctx context.Context, tools []ToolDef, sc *scanner.Scan
 		}
 	}
 
+	// An external checker that owns the description surface reads every
+	// description as one item; the built-in wording rules do not run here.
+	external, externalOK := assessToolDescriptions(ctx, sc, prescans)
+	if externalOK {
+		assessment, assessedAny = external.ext.Recovery(), true
+	}
+	// A block-mode checker that found injection, or could not assess the
+	// list, refuses the whole response. Definitions the agent never receives
+	// must not become the drift baseline, whatever mcp_tool_scanning.action is.
+	checkerRefused := externalOK && external.ext.Block()
+
 	for toolIndex, tool := range tools {
 		var match ToolScanMatch
 		match.ToolName = tool.Name
 		hasFinding := false
+		if externalOK && external.flags(toolIndex) {
+			finding := CheckerPatternPrefix + external.ext.Checker
+			if external.ext.Block() {
+				match.Injection = append(match.Injection, scanner.ResponseMatch{PatternName: finding})
+				hasFinding = true
+			} else {
+				observations = append(observations, ToolScanMatch{ToolName: tool.Name, ToolPoison: []string{finding}})
+			}
+		}
 
 		if confusableNames[tool.Name] {
 			match.ToolPoison = append(match.ToolPoison, "Confusable Tool Name Collision")
@@ -3104,9 +3127,10 @@ func scanToolDefsAssessed(ctx context.Context, tools []ToolDef, sc *scanner.Scan
 			// in it reaches the agent. No definition in it may become a
 			// baseline, not even a scanner-clean new tool or a descriptive
 			// change that block mode would otherwise accept.
-			promoteNew := !responseAckRefused && (!blocking || !hasFinding)
-			promoteChanged := !responseAckRefused && !blocking
-			promoteAccepted := !responseAckRefused && (!blocking || !hasFinding)
+			refused := responseAckRefused || checkerRefused
+			promoteNew := !refused && (!blocking || !hasFinding)
+			promoteChanged := !refused && !blocking
+			promoteAccepted := !refused && (!blocking || !hasFinding)
 			if cfg.RequireHeaderContracts {
 				// An invalid header contract removes the definition from the
 				// forwarded list, so the agent never receives it either.

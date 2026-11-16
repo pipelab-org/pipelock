@@ -30,6 +30,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/luckyPipewrench/pipelock/internal/checker/selection"
+
 	"golang.org/x/net/idna"
 	"golang.org/x/net/publicsuffix"
 
@@ -361,6 +363,8 @@ type Scanner struct {
 	responseVerdicts           responseVerdictCache
 	injectionMode              string
 	injectionPolicy            config.InjectionPolicy
+	injectionCheckers          *selection.Set
+	injectionCheckerHook       atomic.Pointer[InjectionCheckerHook]
 	injectionWarnHook          atomic.Pointer[InjectionWarnHook]
 	responseAction             string
 	responseEnabled            bool
@@ -887,6 +891,11 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 
 	s.injectionMode = cfg.PromptInjectionMode()
 	s.injectionPolicy = cfg.InjectionPolicy()
+	checkers, err := selection.New(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("build prompt_injection_detection checkers: %w", err)
+	}
+	s.injectionCheckers = checkers
 
 	// Declared core-floor observe exceptions are read OUTSIDE the
 	// response_scanning.enabled branch on purpose: the core response floor runs
@@ -1312,6 +1321,7 @@ func (s *Scanner) Close() {
 // tearDown releases scanner lifecycle state and flips drained=true. Safe to
 // call exactly once per Close transition.
 func (s *Scanner) tearDown() {
+	s.injectionCheckers.Close()
 	if s.rateLimiter != nil {
 		s.rateLimiter.Close()
 	}
