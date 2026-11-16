@@ -83,7 +83,8 @@ type jevQuestionSpec struct {
 }
 
 type jevResponse struct {
-	Model   *string `json:"model"`
+	Model   *string         `json:"model"`
+	Usage   json.RawMessage `json:"usage"`
 	Answers map[string]struct {
 		Type *string  `json:"type"`
 		Noul *float64 `json:"noul"`
@@ -138,10 +139,7 @@ func (j *Jev) Check(ctx context.Context, item Item, policy Policy) Assessment {
 
 func (j *Jev) decode(data []byte, item Item) Assessment {
 	var resp jevResponse
-	if err := jsonscan.RejectDuplicateFields(data, &resp); err != nil {
-		return failure(StatusInvalid, ReasonMalformed)
-	}
-	if err := json.Unmarshal(data, &resp); err != nil {
+	if err := jsonscan.DecodeStrict(data, &resp); err != nil {
 		return failure(StatusInvalid, ReasonMalformed)
 	}
 	if resp.Model != nil && *resp.Model != j.model {
@@ -150,7 +148,7 @@ func (j *Jev) decode(data []byte, item Item) Assessment {
 	answer, ok := resp.Answers[jevQuestionID]
 	// A reported answer type other than the yes/no question asked means
 	// the score is not this question's probability.
-	if !ok || (answer.Type != nil && *answer.Type != "noul") || answer.Noul == nil || math.IsNaN(*answer.Noul) || math.IsInf(*answer.Noul, 0) || *answer.Noul < 0 || *answer.Noul > 1 {
+	if len(resp.Answers) != 1 || !ok || (answer.Type != nil && *answer.Type != "noul") || answer.Noul == nil || math.IsNaN(*answer.Noul) || math.IsInf(*answer.Noul, 0) || *answer.Noul < 0 || *answer.Noul > 1 {
 		return failure(StatusInvalid, ReasonMalformed)
 	}
 	score := *answer.Noul

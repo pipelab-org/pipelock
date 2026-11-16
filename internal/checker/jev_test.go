@@ -90,6 +90,10 @@ func TestJevClassification(t *testing.T) {
 		{"redirect", `{}`, 307, StateNotAssessed, ReasonRedirect},
 		{"wrong_answer_type", `{"answers":{"redirects_agent":{"type":"choice","noul":0.1}}}`, 200, StateNotAssessed, ReasonMalformed},
 		{"noul_answer_type", `{"answers":{"redirects_agent":{"type":"noul","noul":0.1}}}`, 200, StateBenign, ""},
+		{"usage_metadata", `{"model":"jev-1.14.0","answers":{"redirects_agent":{"type":"noul","noul":0.1}},"usage":{"input_tokens":469,"output_tokens":23}}`, 200, StateBenign, ""},
+		{"unknown_top_field", `{"answers":{"redirects_agent":{"type":"noul","noul":0.1}},"unexpected":true}`, 200, StateNotAssessed, ReasonMalformed},
+		{"unknown_answer_field", `{"answers":{"redirects_agent":{"type":"noul","noul":0.1,"unexpected":true}}}`, 200, StateNotAssessed, ReasonMalformed},
+		{"unknown_question", `{"answers":{"redirects_agent":{"type":"noul","noul":0.1},"other":{"type":"noul","noul":0.9}}}`, 200, StateNotAssessed, ReasonMalformed},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			js, pool := newJevServer(t, func(w http.ResponseWriter) {
