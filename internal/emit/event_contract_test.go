@@ -49,6 +49,7 @@ func TestBuiltinEventCompatibility(t *testing.T) {
 		{"intercept_http", SeverityInfo, true, "forward"},
 		{"entropy_issuer_query_allow", SeverityInfo, false, ""},
 		{"kill_switch_deny", SeverityCritical, true, "block"},
+		{"injection_checker", SeverityWarn, true, ""},
 		{"license_expiry", SeverityWarn, true, "warn"},
 		{"mcp_unknown_tool", SeverityWarn, true, "warn"},
 		{"media_exposure", SeverityWarn, true, "allow"},
