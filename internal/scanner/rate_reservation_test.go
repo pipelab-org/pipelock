@@ -92,7 +92,10 @@ func TestScanWithReservationRejectsInvalidProofs(t *testing.T) {
 		s := rateReservationScanner()
 		t.Cleanup(s.Close)
 		_, proof := s.ScanConnect(t.Context(), target)
-		s.rateLimiter.Record(baseDomain("api.other.example"))
+		// Equal timestamps isolate the domain guard from slot-membership checks.
+		if allowed, _ := s.rateLimiter.checkAndRecordAt(baseDomain("api.other.example"), nil, false, proof.timestamp); !allowed {
+			t.Fatal("other domain precondition failed")
+		}
 		got := s.ScanWithReservation(t.Context(), "https://api.other.example/page", proof)
 		if got.Allowed || got.Scanner != ScannerRateLimit {
 			t.Fatalf("proof for another base domain granted capacity: %+v", got)
@@ -108,6 +111,11 @@ func TestScanWithReservationRejectsInvalidProofs(t *testing.T) {
 		if got, _ := otherScanner.ScanConnect(t.Context(), target); !got.Allowed {
 			t.Fatalf("other scanner CONNECT scan: %+v", got)
 		}
+		// Independent limiters can record the same clock tick. Ownership must
+		// still reject the proof when domain and timestamp both match.
+		otherScanner.rateLimiter.mu.Lock()
+		otherScanner.rateLimiter.requests[proof.domain] = []time.Time{proof.timestamp}
+		otherScanner.rateLimiter.mu.Unlock()
 		got := otherScanner.ScanWithReservation(t.Context(), target, proof)
 		if got.Allowed || got.Scanner != ScannerRateLimit {
 			t.Fatalf("proof crossed limiter instances: %+v", got)
@@ -136,6 +144,28 @@ func TestScanWithReservationRejectsInvalidProofs(t *testing.T) {
 		got := s.ScanWithReservation(t.Context(), target, proof)
 		if got.Allowed || got.Scanner != ScannerRateLimit {
 			t.Fatalf("retired generation accepted prepaid proof: %+v", got)
+		}
+	})
+
+	t.Run("original debit absent from current window", func(t *testing.T) {
+		s := rateReservationScanner()
+		t.Cleanup(s.Close)
+		_, proof := s.ScanConnect(t.Context(), target)
+		s.rateLimiter.mu.Lock()
+		s.rateLimiter.requests[proof.domain] = []time.Time{proof.timestamp.Add(time.Nanosecond)}
+		s.rateLimiter.mu.Unlock()
+		got := s.ScanWithReservation(t.Context(), target, proof)
+		if got.Allowed || got.Scanner != ScannerRateLimit || proof.consumed.Load() {
+			t.Fatalf("absent debit granted capacity: %+v consumed=%t", got, proof.consumed.Load())
+		}
+	})
+
+	t.Run("retired generation cannot mint", func(t *testing.T) {
+		s := rateReservationScanner()
+		s.Close()
+		got, proof := s.ScanConnect(t.Context(), target)
+		if !got.Allowed || proof != nil {
+			t.Fatalf("retired generation should use ordinary admission without minting: %+v proof=%v", got, proof)
 		}
 	})
 

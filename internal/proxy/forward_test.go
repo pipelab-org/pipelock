@@ -5369,76 +5369,77 @@ func TestConnectTLSInterceptRateLimit(t *testing.T) {
 		{name: "http2", proto: 2},
 	} {
 		for _, limit := range []int{1, 2} {
-			t.Run(fmt.Sprintf("%s/limit_%d", testCase.name, limit), func(t *testing.T) {
-				var arrivals atomic.Int32
-				backend, upstreamCA := newIPv4TLSServerForHost(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					arrivals.Add(1)
-					w.Header().Set("Content-Type", "text/plain")
-					_, _ = io.WriteString(w, "rate fixture response")
-				}), "localhost")
-				defer backend.Close()
-				backendPool := x509.NewCertPool()
-				backendPool.AddCert(upstreamCA)
-				proxyAddr, roots, cleanup := setupForwardProxyWithTLS(t, func(cfg *config.Config) {
-					enforce := true
-					cfg.Enforce = &enforce
-					cfg.FetchProxy.Monitoring.MaxReqPerMinute = limit
-				}, backendPool)
-				defer cleanup()
-				_, port, err := net.SplitHostPort(backend.Listener.Addr().String())
-				if err != nil {
-					t.Fatal(err)
-				}
-				target := net.JoinHostPort("localhost", port)
-				host := "localhost"
-				tlsConn, reader, h2 := dialTLSRateLimitTunnel(t, proxyAddr, target, host, roots, testCase.proto, testCase.offerHTTP1ALPN)
-				var h1Client *http.Client
-				if testCase.proto == 1 {
-					h1Client = httpClientOnEstablishedTLSConnection(tlsConn)
-					t.Cleanup(h1Client.CloseIdleConnections)
-				}
-				doInner := func(path string) (*http.Response, error) {
-					if h1Client != nil {
-						req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+target+path, nil)
-						if err != nil {
-							return nil, err
+			for _, enforce := range []bool{true, false} {
+				t.Run(fmt.Sprintf("%s/limit_%d/enforce_%t", testCase.name, limit, enforce), func(t *testing.T) {
+					var arrivals atomic.Int32
+					backend, upstreamCA := newIPv4TLSServerForHost(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						arrivals.Add(1)
+						w.Header().Set("Content-Type", "text/plain")
+						_, _ = io.WriteString(w, "rate fixture response")
+					}), "localhost")
+					defer backend.Close()
+					backendPool := x509.NewCertPool()
+					backendPool.AddCert(upstreamCA)
+					proxyAddr, roots, cleanup := setupForwardProxyWithTLS(t, func(cfg *config.Config) {
+						cfg.Enforce = &enforce
+						cfg.FetchProxy.Monitoring.MaxReqPerMinute = limit
+					}, backendPool)
+					defer cleanup()
+					_, port, err := net.SplitHostPort(backend.Listener.Addr().String())
+					if err != nil {
+						t.Fatal(err)
+					}
+					target := net.JoinHostPort("localhost", port)
+					host := "localhost"
+					tlsConn, reader, h2 := dialTLSRateLimitTunnel(t, proxyAddr, target, host, roots, testCase.proto, testCase.offerHTTP1ALPN)
+					var h1Client *http.Client
+					if testCase.proto == 1 {
+						h1Client = httpClientOnEstablishedTLSConnection(tlsConn)
+						t.Cleanup(h1Client.CloseIdleConnections)
+					}
+					doInner := func(path string) (*http.Response, error) {
+						if h1Client != nil {
+							req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+target+path, nil)
+							if err != nil {
+								return nil, err
+							}
+							req.Header.Set("Accept-Encoding", "identity")
+							return h1Client.Do(req)
 						}
-						req.Header.Set("Accept-Encoding", "identity")
-						return h1Client.Do(req)
+						return doRateLimitTunnelRequest(t, tlsConn, reader, h2, target, path)
 					}
-					return doRateLimitTunnelRequest(t, tlsConn, reader, h2, target, path)
-				}
-				resp, err := doInner("/page")
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := io.Copy(io.Discard, resp.Body); err != nil {
-					t.Fatal(err)
-				}
-				_ = resp.Body.Close()
-				if resp.StatusCode != http.StatusOK || arrivals.Load() != 1 {
-					t.Fatalf("first inner request: status=%d arrivals=%d, want status=200 arrivals=1", resp.StatusCode, arrivals.Load())
-				}
-				second, err := doInner("/second")
-				if err != nil {
-					t.Fatalf("second request after arrivals=%d: %v", arrivals.Load(), err)
-				}
-				if _, err := io.Copy(io.Discard, second.Body); err != nil {
-					t.Fatal(err)
-				}
-				_ = second.Body.Close()
-				wantSecondStatus, wantArrivals := http.StatusOK, int32(2)
-				if limit == 1 {
-					wantSecondStatus, wantArrivals = http.StatusTooManyRequests, 1
-					if got := second.Header.Get("X-Pipelock-Block-Reason"); got != "rate_limit" {
-						t.Errorf("second request block reason = %q, want rate_limit", got)
+					resp, err := doInner("/page")
+					if err != nil {
+						t.Fatal(err)
 					}
-				}
-				t.Logf("CONNECT plus %s GETs: limit=%d statuses=%d,%d arrivals=%d", testCase.name, limit, resp.StatusCode, second.StatusCode, arrivals.Load())
-				if second.StatusCode != wantSecondStatus || arrivals.Load() != wantArrivals {
-					t.Fatalf("second status=%d arrivals=%d, want status=%d arrivals=%d", second.StatusCode, arrivals.Load(), wantSecondStatus, wantArrivals)
-				}
-			})
+					if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+						t.Fatal(err)
+					}
+					_ = resp.Body.Close()
+					if resp.StatusCode != http.StatusOK || arrivals.Load() != 1 {
+						t.Fatalf("first inner request: status=%d arrivals=%d, want status=200 arrivals=1", resp.StatusCode, arrivals.Load())
+					}
+					second, err := doInner("/second")
+					if err != nil {
+						t.Fatalf("second request after arrivals=%d: %v", arrivals.Load(), err)
+					}
+					if _, err := io.Copy(io.Discard, second.Body); err != nil {
+						t.Fatal(err)
+					}
+					_ = second.Body.Close()
+					wantSecondStatus, wantArrivals := http.StatusOK, int32(2)
+					if limit == 1 && enforce {
+						wantSecondStatus, wantArrivals = http.StatusTooManyRequests, 1
+						if got := second.Header.Get("X-Pipelock-Block-Reason"); got != "rate_limit" {
+							t.Errorf("second request block reason = %q, want rate_limit", got)
+						}
+					}
+					t.Logf("CONNECT plus %s GETs: limit=%d statuses=%d,%d arrivals=%d", testCase.name, limit, resp.StatusCode, second.StatusCode, arrivals.Load())
+					if second.StatusCode != wantSecondStatus || arrivals.Load() != wantArrivals {
+						t.Fatalf("second status=%d arrivals=%d, want status=%d arrivals=%d", second.StatusCode, arrivals.Load(), wantSecondStatus, wantArrivals)
+					}
+				})
+			}
 		}
 	}
 }

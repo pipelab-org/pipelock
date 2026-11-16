@@ -24,6 +24,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -1942,19 +1943,27 @@ func TestWrapBufferedReaders_DrainsResizedAndOriginalBuffersThenUsesConn(t *test
 	const staged = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 	writeDone := make(chan error, 1)
 	go func() {
-		_, err := io.WriteString(client, staged+"next")
+		if _, err := io.WriteString(client, staged); err != nil {
+			writeDone <- err
+			return
+		}
+		_, err := io.WriteString(client, "next")
 		writeDone <- err
 	}()
 
-	baseReader := bufio.NewReaderSize(server, len(staged)+16)
+	// The prior protocol reader may be unusable after its buffered prefix is
+	// handed off. Later bytes must come directly from the connection.
+	priorReader := io.MultiReader(io.LimitReader(server, int64(len(staged))), iotest.ErrReader(io.ErrClosedPipe))
+	baseReader := bufio.NewReaderSize(priorReader, len(staged)+16)
 	if _, err := baseReader.Peek(len(staged)); err != nil {
 		t.Fatalf("base Peek: %v", err)
 	}
-	resizedReader := bufio.NewReaderSize(baseReader, 16)
+	// Hide the concrete type so NewReaderSize cannot return baseReader itself.
+	resizedReader := bufio.NewReaderSize(struct{ io.Reader }{baseReader}, 16)
 	if _, err := resizedReader.Peek(8); err != nil {
 		t.Fatalf("resized Peek: %v", err)
 	}
-	if baseReader.Buffered() == 0 || resizedReader.Buffered() == 0 {
+	if baseReader == resizedReader || baseReader.Buffered() == 0 || resizedReader.Buffered() == 0 {
 		t.Fatalf("expected data in both readers; base=%d resized=%d", baseReader.Buffered(), resizedReader.Buffered())
 	}
 
