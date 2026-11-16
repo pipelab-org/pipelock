@@ -1412,7 +1412,6 @@ prompt_injection_detection:
     vendor:                           # the same protocol over HTTPS
       type: protocol
       endpoint: https://checker.vendor.example/check
-      ca_file: /etc/pipelock/checker-ca.pem   # optional private CA
       authorization_env: CHECKER_AUTHORIZATION # full Authorization header value
       revision: {checker: vendor/v3, model: vendor-model/7, adapter: vendor-adapter/1}
       timeout_ms: 2000
@@ -1463,6 +1462,9 @@ Rules:
 - Credentials are named by environment variable (`authorization_env`,
   `api_key_env`) and read at startup and reload. An unset variable is a
   startup warning, and that checker then reports every item unassessed.
+- An `https` protocol checker can set `ca_file` to a PEM bundle of root
+  certificates for a private CA; the file must exist and parse when the
+  configuration loads.
 - Plain `http` requires a numeric loopback address and
   `allow_loopback_http: true`. Checker calls never use proxy environment
   variables, never follow redirects, and refuse cloud metadata and
