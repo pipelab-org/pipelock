@@ -374,3 +374,33 @@ func TestCheckSessionTailCachedBoundsRetainedState(t *testing.T) {
 		t.Fatalf("final-shard miss validated %v, want %v", *validated, want)
 	}
 }
+
+// TestCheckSessionTailCachedRefusesWriteBeforeRehash models a writer outside
+// the recorder that edits a verified shard after the cache lookup and before
+// the shard is hashed again. The re-hash reads the edited bytes, misses, and
+// the shard is validated in full, so the edit is refused as it would be
+// without a cache.
+func TestCheckSessionTailCachedRefusesWriteBeforeRehash(t *testing.T) {
+	c := startShardedRun(t)
+	var cache TailCheckCache
+	if err := c.check(&cache); err != nil {
+		t.Fatal(err)
+	}
+	target := c.shards(t)[0]
+	orig := digestShardFile
+	t.Cleanup(func() { digestShardFile = orig })
+	var edited bool
+	digestShardFile = func(path string) (recorder.EvidenceFileDigest, error) {
+		if path == target && !edited {
+			edited = true
+			flipStoredHash(t, path)
+		}
+		return orig(path)
+	}
+	if err := c.check(&cache); err == nil {
+		t.Fatal("cached check accepted a shard edited before its re-hash")
+	}
+	if !edited {
+		t.Fatal("the edit never ran; the test proves nothing")
+	}
+}
