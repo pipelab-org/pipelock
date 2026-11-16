@@ -1382,9 +1382,11 @@ Structural tool checks (name collisions, dangerous capabilities, parameter
 names, credential acknowledgments) and drift detection are outside this
 setting, as are DLP, destination controls and tool policy.
 
-A tools/list response earns adaptive clean credit only when both its envelope
-and its tool descriptions were assessed benign, so a description surface set to
-`off` or `warn` withholds that credit. Tool-scan results carry the description
+A `tools/list` response never earns adaptive clean credit: the inventory
+envelope carries no assessment of its own. The description assessment is also
+merged in, so a description surface set to `off`, or any wording finding,
+including one `warn` only records, would withhold credit even if the envelope
+were assessed. Tool-scan results carry the description
 assessment (`off`, `not_assessed`, `benign`, `finding` or `incomplete`); a
 `tools/list` stopped by a resource limit reports `incomplete`.
 
