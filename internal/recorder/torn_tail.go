@@ -121,6 +121,7 @@ func inspectJSONLTornPrefix(input io.Reader, path string, validate func([]byte) 
 func inspectJSONLRecords(input io.Reader, path string, validate func([]byte) error, torn bool) error {
 	reader := bufio.NewReader(input)
 	var offset, lastGood int64
+	var incomplete bool
 	for {
 		line, err := reader.ReadSlice('\n')
 		if errors.Is(err, bufio.ErrBufferFull) {
@@ -162,10 +163,11 @@ func inspectJSONLRecords(input io.Reader, path string, validate func([]byte) err
 			lastGood = offset
 		}
 		if errors.Is(err, io.EOF) {
+			incomplete = len(line) > 0 && !complete
 			break
 		}
 	}
-	if torn {
+	if torn || incomplete {
 		return &TornTailError{Path: path, Offset: lastGood, LastGoodOffset: lastGood}
 	}
 	return nil
