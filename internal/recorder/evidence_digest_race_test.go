@@ -55,3 +55,45 @@ func TestValidateEvidenceFileDigestRefusesRestoredTimeTornWrite(t *testing.T) {
 		t.Fatalf("stable full validation: %v, want torn tail", err)
 	}
 }
+
+func TestValidateEvidenceFileDigestRefusesGrowthDuringValidation(t *testing.T) {
+	dir := t.TempDir()
+	rec := newDigestRecorder(t, dir)
+	for range 4 {
+		if err := rec.Record(Entry{SessionID: "digest", Type: "decision"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "evidence-*.jsonl"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("files: %v %v", files, err)
+	}
+	path := files[0]
+	appended := false
+	digest, err := ValidateEvidenceFileDigest(path, func(Entry) error {
+		if appended {
+			return nil
+		}
+		appended = true
+		// The read is bounded to the size at open, so the new bytes are
+		// never parsed; only the change check can see them.
+		f, e := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_APPEND, 0)
+		if e != nil {
+			return e
+		}
+		_, e = f.Write([]byte("{}\n"))
+		if closeErr := f.Close(); e == nil {
+			e = closeErr
+		}
+		return e
+	})
+	if !appended {
+		t.Fatal("writer did not run")
+	}
+	if !errors.Is(err, ErrEvidenceFileChanged) {
+		t.Fatalf("validation during growth: %v, want ErrEvidenceFileChanged", err)
+	}
+	if digest != (EvidenceFileDigest{}) {
+		t.Fatalf("changed file reported digest %+v", digest)
+	}
+}
