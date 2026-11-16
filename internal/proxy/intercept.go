@@ -1098,17 +1098,16 @@ func newInterceptHandler(
 			})
 		}
 
-		// NOTE: outer guard keeps !IsProtective() (not IsAdaptiveNeutral) so
-		// that infrastructure errors still enter this branch and return 403
-		// (fail-closed). The neutral-handling is done inline below - hasFinding
-		// stays false and the signal switch skips SignalBlock.
-		if !urlResult.Allowed && !urlResult.IsProtective() {
+		// Score-neutral results still enforce the URL policy. In particular,
+		// a rate limit must not become an allow merely because it isn't a
+		// threat detection. Keep neutral scoring separate from enforcement.
+		if !urlResult.Allowed {
 			// Infrastructure errors (e.g. DNS resolver timeout) must not
 			// taint the finding flag - they are score-neutral and are not
 			// evidence of agent misbehavior. Fail-closed block still fires
 			// below; this only guards downstream "finding" logic such as
 			// clean-decay suppression.
-			if !urlResult.IsInfrastructureError() {
+			if !urlResult.IsInfrastructureError() && !urlResult.IsProtective() {
 				hasFinding = true
 			}
 			status := http.StatusForbidden
@@ -1122,7 +1121,7 @@ func newInterceptHandler(
 				//     while keeping misconfig probes visible to scoring).
 				//   - Everything else: full SignalBlock.
 				switch {
-				case urlResult.IsInfrastructureError():
+				case urlResult.IsInfrastructureError(), urlResult.IsProtective():
 					// Score-neutral: fail-closed block is still enforced below.
 				case urlResult.IsEntropyOnly():
 					// Heuristic evidence is visible but score-neutral.
@@ -3280,9 +3279,9 @@ func newInterceptHandler(
 		// Record clean request for adaptive score decay. Only apply decay when no
 		// finding was detected; warn/strip paths indicate suspicious traffic and
 		// must not contribute to score decay. Responses from scan-exempt hosts
-		// earn no credit, matching the forward and fetch paths. So do structural
-		// exemptions, which are adaptive-neutral.
-		if structured == nil && ic.Recorder != nil && ic.Config.AdaptiveEnforcement.Enabled && !hasFinding && !interceptAuthenticatedArtifact && !interceptRespExempt && recoveryAssessment.IsBenign() && !urlResult.IsStructuralExemption() && !interceptPolicyObserved {
+		// earn no credit, matching the forward and fetch paths. Adaptive-neutral
+		// URL results earn none either, including rate findings in audit mode.
+		if structured == nil && ic.Recorder != nil && ic.Config.AdaptiveEnforcement.Enabled && !hasFinding && !interceptAuthenticatedArtifact && !interceptRespExempt && recoveryAssessment.IsBenign() && !urlResult.IsAdaptiveNeutral() && !interceptPolicyObserved {
 			recordCleanForAdaptiveScope(ic.Recorder, interceptAdaptiveScope(ic), &ic.Config.AdaptiveEnforcement, true, adaptiveRecoveryContext{
 				assessment: recoveryAssessment,
 				sessionKey: sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth),

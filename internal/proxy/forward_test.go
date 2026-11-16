@@ -5250,6 +5250,69 @@ func TestConnectTLSInterceptInjectionBlocked(t *testing.T) {
 	}
 }
 
+func TestConnectTLSInterceptRateLimit(t *testing.T) {
+	for _, proto := range []int{1, 2} {
+		for _, enforce := range []bool{true, false} {
+			for _, limit := range []int{1, 2} {
+				t.Run(fmt.Sprintf("http%d/enforce_%t/limit_%d", proto, enforce, limit), func(t *testing.T) {
+					var arrivals atomic.Int32
+					backend := newIPv4TLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						arrivals.Add(1)
+						w.Header().Set("Content-Type", "text/plain")
+						_, _ = io.WriteString(w, "ordinary page")
+					}))
+					defer backend.Close()
+					backendPool := x509.NewCertPool()
+					backendPool.AddCert(backend.Certificate())
+					proxyAddr, roots, cleanup := setupForwardProxyWithTLS(t, func(cfg *config.Config) {
+						cfg.Enforce = &enforce
+						cfg.FetchProxy.Monitoring.MaxReqPerMinute = limit
+					}, backendPool)
+					defer cleanup()
+					proxyURL, err := url.Parse("http://" + proxyAddr)
+					if err != nil {
+						t.Fatal(err)
+					}
+					tr := &http.Transport{
+						Proxy:             http.ProxyURL(proxyURL),
+						TLSClientConfig:   &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
+						ForceAttemptHTTP2: proto == 2,
+					}
+					defer tr.CloseIdleConnections()
+					client := &http.Client{Transport: tr, Timeout: 8 * time.Second}
+					req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, backend.URL+"/page", nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					resp, err := client.Do(req)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer func() { _ = resp.Body.Close() }()
+					if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+						t.Fatal(err)
+					}
+					if resp.ProtoMajor != proto {
+						t.Fatalf("protocol = %s, want HTTP/%d", resp.Proto, proto)
+					}
+					wantStatus, wantArrivals := http.StatusOK, int32(1)
+					// CONNECT consumes the first slot before the inner request.
+					if enforce && limit == 1 {
+						wantStatus, wantArrivals = http.StatusTooManyRequests, 0
+						if got := resp.Header.Get("X-Pipelock-Block-Reason"); got != "rate_limit" {
+							t.Errorf("block reason = %q, want rate_limit", got)
+						}
+					}
+					t.Logf("CONNECT plus HTTP/%d GET: limit=%d enforce=%t status=%d arrivals=%d", proto, limit, enforce, resp.StatusCode, arrivals.Load())
+					if resp.StatusCode != wantStatus || arrivals.Load() != wantArrivals {
+						t.Fatalf("status=%d arrivals=%d, want status=%d arrivals=%d", resp.StatusCode, arrivals.Load(), wantStatus, wantArrivals)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestConnectTLSInterceptBinaryDANAllowed(t *testing.T) {
 	body := proxyTestPNGWithIsolatedDAN(t)
 	backend := newIPv4TLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

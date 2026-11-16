@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 // Neutral fixtures cover Graph's composite site ID, b!-prefixed drive ID and
@@ -95,8 +97,12 @@ func TestIssuerLiteralPathCharacters(t *testing.T) {
 // Shaped strings that can never mint, such as timestamps, must not spend the
 // per-response mint budget the later IDs of a long listing need.
 func TestIssuerListingTimestampsKeepIDBudget(t *testing.T) {
-	h := newWebPlatformHarness(t)
 	const items = 200
+	h := newWebPlatformHarness(t, func(cfg *config.Config) {
+		// Admit the listing and its item requests so rate limiting does not
+		// mask the separate per-response issuer-ID budget under test.
+		cfg.FetchProxy.Monitoring.MaxReqPerMinute = items + 1
+	})
 	id := func(i int) string {
 		return fmt.Sprintf("Qx%dvPq2LmZ9tRw4KbNy8JsHd3FgUcVe6Ta%dMo5", i*7919+13, i*104729+7)
 	}

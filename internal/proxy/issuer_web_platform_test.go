@@ -84,21 +84,24 @@ func (h *webPlatformHarness) do(upstream *httptest.Server, path, agent string, h
 	return resp.StatusCode
 }
 
-func newWebPlatformHarness(t *testing.T) *webPlatformHarness {
+func newWebPlatformHarness(t *testing.T, configure ...func(*config.Config)) *webPlatformHarness {
 	t.Helper()
-	return newWebPlatformHarnessThreshold(t, 0)
+	return newWebPlatformHarnessThreshold(t, 0, configure...)
 }
 
 // newWebPlatformHarnessThreshold lowers the URL entropy threshold when it is
 // above zero. A local test server's origin (an IP literal and a port) encodes to
 // a value that scores below the default threshold, so the page-origin rows need
 // the lower bar for their blocking rows to exercise the entropy gate at all.
-func newWebPlatformHarnessThreshold(t *testing.T, threshold float64) *webPlatformHarness {
+func newWebPlatformHarnessThreshold(t *testing.T, threshold float64, configure ...func(*config.Config)) *webPlatformHarness {
 	t.Helper()
 	cache, pool, cfg, _, _, m := testInterceptSetup(t)
 	issuerCookieTestConfig(t, cfg)
 	if threshold > 0 {
 		cfg.FetchProxy.Monitoring.EntropyThreshold = threshold
+	}
+	for _, apply := range configure {
+		apply(cfg)
 	}
 	logger := audit.NewNop()
 	sc := scanner.MustNew(cfg)
