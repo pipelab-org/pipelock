@@ -152,9 +152,10 @@ func TestInjectionRecoveryHTTPNeutralRedirects(t *testing.T) {
 				}
 				hop := *initial
 				hop.Path = "/finish"
-				if kind == "dns" {
+				switch kind {
+				case "dns":
 					hop.Host = "redirect.invalid:" + initial.Port()
-				} else if kind == "policy" {
+				case "policy":
 					hop.Host = "blocked.invalid:" + initial.Port()
 				}
 				if kind == "structural" {
@@ -240,9 +241,10 @@ func TestInjectionRecoveryHTTPNeutralRedirects(t *testing.T) {
 				}
 				if warned && kind != "structural" {
 					label := scanner.ScannerSSRF
-					if kind == "rate" {
+					switch kind {
+					case "rate":
 						label = scanner.ScannerRateLimit
-					} else if kind == "policy" {
+					case "policy":
 						label = scanner.ScannerBlocklist
 					}
 					if !bytes.Contains(events.Bytes(), []byte(`"scanner":"`+label+`"`)) {
