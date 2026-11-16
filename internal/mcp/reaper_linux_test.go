@@ -43,7 +43,10 @@ func TestReaper_AdoptedZombieDrained_DirectChildPreserved(t *testing.T) {
 	// reparents to whichever ancestor has PR_SET_CHILD_SUBREAPER set -
 	// that's this test process. The outer helper then sleeps so the
 	// direct child stays alive while the grandchild becomes a zombie.
-	helper := `( ( sleep 0.1; exit 0 ) & ) ; sleep 30`
+	// The trailing `exit 0` stops any shell from replacing itself with the
+	// final sleep, so every /bin/sh keeps it as a child of its own. That is
+	// the arrangement the group-empty check below has to catch.
+	helper := `( ( sleep 0.1; exit 0 ) & ) ; sleep 30; exit 0`
 	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(10*time.Second))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", helper)
