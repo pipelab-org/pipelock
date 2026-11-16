@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -86,6 +87,11 @@ func TestReaper_AdoptedZombieDrained_DirectChildPreserved(t *testing.T) {
 	// Future grandchildren get drained on SIGCHLD.
 	reaperDone := make(chan struct{})
 	startAdoptedReaper(directPID, reaperDone)
+	// Stop the reaper on every exit path, including a failed check, so its
+	// goroutine and protected-PID registration never outlive this test.
+	var stopReaper sync.Once
+	stop := func() { stopReaper.Do(func() { close(reaperDone) }) }
+	t.Cleanup(stop)
 
 	if !waitForCondition(t, 2*time.Second, func() bool {
 		return countAdoptedZombies(directPID) == 0
@@ -129,7 +135,7 @@ func TestReaper_AdoptedZombieDrained_DirectChildPreserved(t *testing.T) {
 	}
 	groupEmpty = true
 
-	close(reaperDone)
+	stop()
 }
 
 func TestReaper_ProtectedDirectPIDRegistry(t *testing.T) {
