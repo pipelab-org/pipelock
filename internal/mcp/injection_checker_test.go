@@ -109,6 +109,8 @@ func externalScanner(t *testing.T, endpoint, watchEndpoint string, surfaces map[
 	cfg.DLP.ScanEnv = false
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
+	cfg.MCPToolScanning.Enabled = true
+	cfg.MCPToolScanning.Action = config.ActionWarn
 	checkers := map[string]config.InjectionCheckerConfig{}
 	if endpoint != "" {
 		checkers["mock"] = checkerDefinition(endpoint, 2000)
@@ -357,5 +359,26 @@ func TestExternalCheckerA2AShaped(t *testing.T) {
 	}
 	if m.requests.Load() == 0 {
 		t.Fatal("checker not called for an A2A-shaped result")
+	}
+}
+
+// A block-mode checker finding on descriptions refuses the list even when
+// mcp_tool_scanning.action is warn: the checker's mode decides.
+func TestExternalCheckerDescriptionBlockIgnoresWarnAction(t *testing.T) {
+	m := newMockChecker(t, mockSuspicious)
+	sc, _ := externalScanner(t, m.srv.URL+"/check", "", map[string]config.InjectionSurfaceConfig{
+		config.InjectionSurfaceMCPToolDescription: {Checker: "mock", Mode: config.InjectionModeBlock},
+	})
+	var out, log bytes.Buffer
+	opts := MCPProxyOpts{Scanner: sc, ResponseActionOverride: config.ActionBlock, ToolCfg: &tools.ToolScanConfig{Action: config.ActionWarn}}
+	line := `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"lookup","description":"Looks up public documentation","inputSchema":{"type":"object"}}]}}`
+	if _, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(line+"\n")), transport.NewStdioWriter(&out), &log, nil, opts); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"error"`) || strings.Contains(out.String(), "Looks up public documentation") {
+		t.Fatalf("checker block was downgraded by the tool-scanning action: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "selected injection checker found injection") {
+		t.Fatalf("denial does not name the checker refusal: %s", out.String())
 	}
 }

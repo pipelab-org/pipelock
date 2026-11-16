@@ -212,6 +212,12 @@ func (c *Config) validateInjectionSurfaces() error {
 				return fmt.Errorf("%s.watch %q: the watch checker must differ from the deciding checker", field, sc.Watch)
 			}
 		}
+		// Tool descriptions reach an external checker only through the tool
+		// scanner. Without it the checker would never be called and the
+		// descriptions would pass unassessed.
+		if name == InjectionSurfaceMCPToolDescription && (checker != InjectionCheckerBasic && sc.Mode != InjectionModeOff || sc.Watch != "") && !c.MCPToolScanning.Enabled {
+			return fmt.Errorf("%s: an external checker on tool descriptions needs mcp_tool_scanning.enabled: true, which is what reads the descriptions", field)
+		}
 		// The global setting caps the built-in checker everywhere: a surface
 		// may lower it, never raise it. Raising would need the wording rules
 		// the global switch turned off, so the two settings would conflict.

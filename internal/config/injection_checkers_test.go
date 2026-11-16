@@ -26,6 +26,7 @@ prompt_injection_detection:
 `
 
 const jevChecker = `
+mcp_tool_scanning: {enabled: true}
 prompt_injection_detection:
   checkers:
     jev:
@@ -113,6 +114,8 @@ func TestInjectionCheckersRejects(t *testing.T) {
 		{"jev_consent", j("      send_content_off_host: true\n", ""), "send_content_off_host"},
 		{"jev_consent_false", j("send_content_off_host: true", "send_content_off_host: false"), "send_content_off_host"},
 		{"jev_http", j("      model: jev-1.14.0", "      endpoint: http://api.vendor.example/v1\n      model: jev-1.14.0"), "must be https"},
+		{"desc_without_tool_scanning", strings.Replace(jevChecker, "mcp_tool_scanning: {enabled: true}\n", "mcp_tool_scanning: {enabled: false}\n", 1), "needs mcp_tool_scanning.enabled"},
+		{"desc_watch_without_tool_scanning", strings.Replace(strings.Replace(jevChecker, "mcp_tool_scanning: {enabled: true}\n", "", 1), "{checker: jev, mode: warn}", "{mode: block, watch: jev}", 1), "needs mcp_tool_scanning.enabled"},
 		{"jev_revision", j("      model: jev-1.14.0", "      revision: {checker: c, model: m, adapter: a}\n      model: jev-1.14.0"), "do not apply to type jev"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

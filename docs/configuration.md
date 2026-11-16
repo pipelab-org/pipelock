@@ -1420,9 +1420,12 @@ Rules:
   (including the core wording floor) do not run on that surface, and there is
   no fallback to them. An external checker's mode is independent of the global
   `enabled`/`action` setting, which applies to the built-in checker only.
-- `block`: a finding blocks the response, or refuses the `tools/list`, through
-  the surface's normal finding path (a score-only checker cannot strip or
-  ask, so result findings always block). A checker that is down, slow,
+- `block`: a finding blocks the response, or refuses the `tools/list`,
+  whatever `response_scanning.action` or `mcp_tool_scanning.action` says (a
+  score-only checker cannot strip or ask). An external checker on tool
+  descriptions requires `mcp_tool_scanning.enabled: true`, because the tool
+  scanner is what reads the descriptions; a `tools/list` with no description
+  text to send is withheld in block mode. A checker that is down, slow,
   refuses, returns a malformed or wrongly pinned answer, or reports partial
   coverage withholds the content as an assessment failure. That is reported
   as an infrastructure block, never as a detected attack and never as clean.

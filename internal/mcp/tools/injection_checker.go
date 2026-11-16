@@ -111,3 +111,17 @@ func descriptionsWithheld(sc *scanner.Scanner, a scanner.InjectionAssessment) bo
 	}
 	return a.Checker != b.Name || (a.Status != scanner.AssessmentBenign && a.Status != scanner.AssessmentFinding)
 }
+
+// CheckerBlocked reports whether an external checker in block mode found
+// injection in this list's descriptions. Such a list is refused whatever
+// mcp_tool_scanning.action says: the checker's mode decides.
+func (r ToolScanResult) CheckerBlocked() bool {
+	for _, m := range r.Matches {
+		for _, inj := range m.Injection {
+			if strings.HasPrefix(inj.PatternName, CheckerPatternPrefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
