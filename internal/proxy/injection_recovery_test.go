@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -106,6 +107,151 @@ func TestInjectionRecoveryHTTPNeutralURLs(t *testing.T) {
 				after := sess.ScopedThreatScore(scope)
 				if (kind == "clean" && after >= before) || (kind != "clean" && after != before) {
 					t.Fatalf("score %.1f -> %.1f, want recovery=%v", before, after, kind == "clean")
+				}
+			})
+		}
+	}
+}
+
+func TestInjectionRecoveryHTTPNeutralRedirects(t *testing.T) {
+	for _, transport := range []string{TransportFetch, TransportForward} {
+		for _, kind := range []string{"clean", "rate", "dns", "policy", "structural"} {
+			t.Run(transport+"/"+kind, func(t *testing.T) {
+				cfg := airlockAdmissionConfig(t, config.AirlockTierNone)
+				cfg.Airlock.Enabled = false
+				enforce := false
+				cfg.Enforce = &enforce
+				cfg.AdaptiveEnforcement.EscalationThreshold = 100
+				cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
+				if kind == "rate" {
+					cfg.FetchProxy.Monitoring.MaxReqPerMinute = 1
+				}
+				if kind == "policy" {
+					cfg.FetchProxy.Monitoring.Blocklist = []string{"blocked.invalid"}
+				}
+				opts := scanner.Options{}
+				if kind == "dns" {
+					cfg.Internal = []string{"127.0.0.0/8"}
+					opts.UpstreamResolver = failingInterceptResolver{}
+				}
+				var destination string
+				var arrivals atomic.Int32
+				upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					arrivals.Add(1)
+					w.Header().Set("Content-Type", "text/plain")
+					if r.URL.Path == "/start" {
+						w.Header().Set("Location", destination)
+						w.WriteHeader(http.StatusFound)
+					}
+					_, _ = w.Write([]byte("ordinary response"))
+				}))
+				t.Cleanup(upstream.Close)
+				initial, err := url.Parse(upstream.URL + "/start")
+				if err != nil {
+					t.Fatal(err)
+				}
+				hop := *initial
+				hop.Path = "/finish"
+				if kind == "dns" {
+					hop.Host = "redirect.invalid:" + initial.Port()
+				} else if kind == "policy" {
+					hop.Host = "blocked.invalid:" + initial.Port()
+				}
+				if kind == "structural" {
+					signed, parseErr := url.Parse(sigV4CredentialRouteTestURL())
+					if parseErr != nil {
+						t.Fatal(parseErr)
+					}
+					signed.Scheme = initial.Scheme
+					hop = *signed
+				}
+				destination = hop.String()
+				var events bytes.Buffer
+				logger, err := audit.NewWithStream("json", "stdout", "", true, true, airlockLogCallback(func(record []byte) { _, _ = events.Write(record) }))
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(logger.Close)
+				sc, err := scanner.NewWithOptions(cfg, opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(sc.Close)
+				p, err := New(cfg, logger, sc, metrics.New())
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(p.Close)
+				if result := sc.ScanPreflight(t.Context(), initial.String()); !result.Allowed || result.IsAdaptiveNeutral() {
+					t.Fatalf("initial URL must be clean: %+v", result)
+				}
+				if kind == "dns" {
+					if result := sc.ScanPreflight(t.Context(), destination); !result.IsInfrastructureError() {
+						t.Fatalf("redirect must encounter DNS warning: %+v", result)
+					}
+				}
+				if kind == "structural" {
+					if result := sc.ScanPreflight(t.Context(), destination); !result.Allowed || !result.IsStructuralExemption() {
+						t.Fatalf("redirect must be a structural exemption: %+v", result)
+					}
+				}
+				if kind == "dns" || kind == "policy" || kind == "structural" {
+					// Keep the original scanner identity while delivering through the
+					// loopback origin, so both complete response paths execute.
+					rt := p.client.Transport
+					p.client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+						out := r.Clone(r.Context())
+						u := *r.URL
+						u.Host = initial.Host
+						out.URL = &u
+						resp, roundTripErr := rt.RoundTrip(out)
+						if resp != nil {
+							resp.Request = r
+						}
+						return resp, roundTripErr
+					})
+				}
+				scope := adaptiveScopeForHost(hop.Hostname())
+				wantStatus, wantArrivals := http.StatusOK, int32(2)
+				if transport == TransportForward {
+					// Forward returns the first response; redirect preflight
+					// checks the rate budget without spending another slot.
+					scope = adaptiveScopeForHost(initial.Hostname())
+					wantStatus, wantArrivals = http.StatusFound, 1
+				}
+				warned := kind != "clean"
+				sess := p.sessionMgrPtr.Load().GetOrCreate(airlockAdmissionClient)
+				sess.RecordScopedSignal(scope, session.SignalNearMiss, 100)
+				before := sess.ScopedThreatScore(scope)
+				requestURL := initial.String()
+				if transport == TransportFetch {
+					requestURL = "http://proxy.example/fetch?url=" + url.QueryEscape(requestURL)
+				}
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, requestURL, nil)
+				req.RemoteAddr = airlockAdmissionClient + ":12345"
+				w := httptest.NewRecorder()
+				if transport == TransportFetch {
+					p.handleFetch(w, req)
+				} else {
+					p.handleForwardHTTP(w, req)
+				}
+				if w.Code != wantStatus || arrivals.Load() != wantArrivals {
+					t.Fatalf("status=%d arrivals=%d, want %d/%d: %s", w.Code, arrivals.Load(), wantStatus, wantArrivals, w.Body.String())
+				}
+				if warned && kind != "structural" {
+					label := scanner.ScannerSSRF
+					if kind == "rate" {
+						label = scanner.ScannerRateLimit
+					} else if kind == "policy" {
+						label = scanner.ScannerBlocklist
+					}
+					if !bytes.Contains(events.Bytes(), []byte(`"scanner":"`+label+`"`)) {
+						t.Fatalf("redirect warning not observed: %s", events.String())
+					}
+				}
+				after := sess.ScopedThreatScore(scope)
+				if (warned && after != before) || (!warned && after >= before) {
+					t.Fatalf("score %.1f -> %.1f, want recovery=%v", before, after, !warned)
 				}
 			})
 		}

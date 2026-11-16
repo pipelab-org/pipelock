@@ -145,11 +145,10 @@ const (
 	// recorder into CheckRedirect so policy is re-evaluated against the same
 	// identity and state on every hop.
 	ctxKeyRedirectSessionRecorder
-	// ctxKeyRedirectStructuralExemption carries a *atomic.Bool that
-	// CheckRedirect sets when an allowed hop was a structural exemption (a
-	// valid presigned or GitHub-issued SAS URL). The request's deferred clean
-	// credit then skips it, as it does for a direct exemption.
-	ctxKeyRedirectStructuralExemption
+	// ctxKeyRedirectNoCleanCredit carries a *atomic.Bool that
+	// CheckRedirect sets when a hop is denied or adaptive-neutral. Deferred
+	// clean credit skips the exchange even when the initial URL was clean.
+	ctxKeyRedirectNoCleanCredit
 	// ctxKeyRequestPolicyObserved carries a *atomic.Bool set when the admitted
 	// request, or a redirect hop, observed a configured request-policy block
 	// or a configured git-push allowlist mismatch. Clean adaptive credit skips
@@ -1162,8 +1161,8 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				}
 				logger.LogAnomaly(actx, result.Scanner, fmt.Sprintf("redirect from %s: %s", originalURL, result.Reason), result.Score)
 			}
-			if result.Allowed && result.IsStructuralExemption() {
-				if hop, ok := req.Context().Value(ctxKeyRedirectStructuralExemption).(*atomic.Bool); ok {
+			if !result.Allowed || result.IsAdaptiveNeutral() {
+				if hop, ok := req.Context().Value(ctxKeyRedirectNoCleanCredit).(*atomic.Bool); ok {
 					hop.Store(true)
 				}
 			}
@@ -6490,7 +6489,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgentContractLoader, snapshotContractLoader)
 	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportFetch)
 	redirectExempt := new(atomic.Bool)
-	ctx = context.WithValue(ctx, ctxKeyRedirectStructuralExemption, redirectExempt)
+	ctx = context.WithValue(ctx, ctxKeyRedirectNoCleanCredit, redirectExempt)
 	ctx = context.WithValue(ctx, ctxKeyRequestPolicyObserved, policyObserved)
 	ctx = context.WithValue(ctx, ctxKeyReceiptShard, selectedReceiptShard)
 	ctx = context.WithValue(ctx, ctxKeyRedirectSessionRecorder, fetchRec)

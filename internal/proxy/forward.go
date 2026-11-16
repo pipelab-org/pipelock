@@ -2294,7 +2294,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgentContractLoader, snapshotContractLoader)
 	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportForward)
 	redirectExempt := new(atomic.Bool)
-	ctx = context.WithValue(ctx, ctxKeyRedirectStructuralExemption, redirectExempt)
+	ctx = context.WithValue(ctx, ctxKeyRedirectNoCleanCredit, redirectExempt)
 	ctx = context.WithValue(ctx, ctxKeyRequestPolicyObserved, policyObserved)
 	ctx = context.WithValue(ctx, ctxKeyReceiptShard, selectedReceiptShard)
 	ctx = context.WithValue(ctx, ctxKeyRedirectSessionRecorder, forwardRec)
