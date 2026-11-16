@@ -7157,9 +7157,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Deferred RecordClean: apply score decay only when no finding was detected
 	// during the entire fetch lifecycle (URL, header DLP, CEE, response scan).
 	// This ensures warn/near-miss findings do not inadvertently decay score.
-	// A structural exemption (a valid presigned or GitHub-issued SAS URL) is
-	// adaptive-neutral: it neither raises the score nor earns clean credit.
-	if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !result.IsStructuralExemption() && !redirectExempt.Load() && !policyObserved.Load() {
+	// Neutral URL results (including capacity and infrastructure warnings) neither
+	// raise the score nor earn clean credit, even when the response is benign.
+	if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !result.IsAdaptiveNeutral() && !redirectExempt.Load() && !policyObserved.Load() {
 		fetchScope := adaptiveScopeForHost(finalHost)
 		recordCleanForAdaptiveScope(fetchRec, fetchScope, &cfg.AdaptiveEnforcement, sc.ResponseScanningEnabled() && !responseScanExempt, adaptiveRecoveryContext{
 			assessment: scanned.result.RecoveryAssessment(),

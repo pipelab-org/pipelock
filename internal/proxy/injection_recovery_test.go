@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,6 +16,101 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
+
+// A fully scanned response cannot turn a neutral URL warning into clean credit.
+// Exercise the deferred recovery gates, not just request-side signal recording.
+func TestInjectionRecoveryHTTPNeutralURLs(t *testing.T) {
+	for _, transport := range []string{TransportFetch, TransportForward} {
+		for _, kind := range []string{"clean", "rate", "dns"} {
+			t.Run(transport+"/"+kind, func(t *testing.T) {
+				cfg := airlockAdmissionConfig(t, config.AirlockTierNone)
+				cfg.Airlock.Enabled = false
+				enforce := false
+				cfg.Enforce = &enforce
+				cfg.AdaptiveEnforcement.EscalationThreshold = 100
+				cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
+				if kind == "rate" {
+					cfg.FetchProxy.Monitoring.MaxReqPerMinute = 1
+				}
+				_, p, target := newReverseParityHarness(t, cfg, nil)
+				targetURL := *target
+				if kind == "dns" {
+					cfg.Internal = []string{"127.0.0.0/8"}
+					sc, err := scanner.NewWithOptions(cfg, scanner.Options{UpstreamResolver: failingInterceptResolver{}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(sc.Close)
+					if !p.Reload(cfg, sc) {
+						t.Fatal("reload refused")
+					}
+					targetURL.Host = "nonexistent.invalid:" + target.Port()
+					// The scanner's resolver fails deterministically. Delivery still
+					// uses the local origin, so the complete response path runs.
+					rt := p.client.Transport
+					p.client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+						out := r.Clone(r.Context())
+						u := *r.URL
+						u.Host = target.Host
+						out.URL = &u
+						resp, roundTripErr := rt.RoundTrip(out)
+						if resp != nil {
+							resp.Request = r
+						}
+						return resp, roundTripErr
+					})
+				}
+				sc := p.scannerPtr.Load()
+				if kind == "rate" {
+					if result := sc.Scan(t.Context(), targetURL.String()); !result.Allowed {
+						t.Fatalf("prime limiter: %+v", result)
+					}
+				}
+				probe := sc.Scan(t.Context(), targetURL.String())
+				if kind == "clean" {
+					if !probe.Allowed || probe.IsAdaptiveNeutral() {
+						t.Fatalf("clean control: %+v", probe)
+					}
+				} else if probe.Allowed || !probe.IsAdaptiveNeutral() || (kind == "rate" && !probe.IsProtective()) || (kind == "dns" && !probe.IsInfrastructureError()) {
+					t.Fatalf("neutral precondition: %+v", probe)
+				}
+				var events bytes.Buffer
+				logger, err := audit.NewWithStream("json", "stdout", "", true, true, airlockLogCallback(func(record []byte) { _, _ = events.Write(record) }))
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(logger.Close)
+				p.logger = logger
+				sess := p.sessionMgrPtr.Load().GetOrCreate(airlockAdmissionClient)
+				scope := adaptiveScopeForHost(targetURL.Hostname())
+				sess.RecordScopedSignal(scope, session.SignalNearMiss, 100)
+				before := sess.ScopedThreatScore(scope)
+				requestURL := targetURL.String()
+				if transport == TransportFetch {
+					requestURL = "http://proxy.example/fetch?url=" + url.QueryEscape(requestURL)
+				}
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, requestURL, nil)
+				req.RemoteAddr = airlockAdmissionClient + ":12345"
+				w := httptest.NewRecorder()
+				if transport == TransportFetch {
+					p.handleFetch(w, req)
+				} else {
+					p.handleForwardHTTP(w, req)
+				}
+				if w.Code != http.StatusOK {
+					t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+				}
+				if kind != "clean" && !bytes.Contains(events.Bytes(), []byte(`"scanner":"`+probe.Scanner+`"`)) {
+					t.Fatalf("neutral warning not observed: %s", events.String())
+				}
+				after := sess.ScopedThreatScore(scope)
+				if (kind == "clean" && after >= before) || (kind != "clean" && after != before) {
+					t.Fatalf("score %.1f -> %.1f, want recovery=%v", before, after, kind == "clean")
+				}
+			})
+		}
+	}
+}
 
 func benignRecoveryAssessment() scanner.InjectionAssessment {
 	return scanner.InjectionAssessment{Checker: scanner.InjectionCheckerBasic, Status: scanner.AssessmentBenign}

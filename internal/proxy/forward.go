@@ -3564,8 +3564,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if responseBudgetTruncated {
 			outcomeReason = "budget_truncated"
 		}
-		// A structural exemption is adaptive-neutral and earns no clean credit.
-		if structured == nil && forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact && !result.IsStructuralExemption() && !redirectExempt.Load() && !policyObserved.Load() {
+		// Neutral URL results earn no clean credit from a benign response.
+		if structured == nil && forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact && !result.IsAdaptiveNeutral() && !redirectExempt.Load() && !policyObserved.Load() {
 			forwardScope := adaptiveScopeForHost(fwdRespHost)
 			recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, sc.ResponseScanningEnabled() && !responseBudgetTruncated && !fwdRespExempt && !fwdAuthenticatedArtifact, adaptiveRecoveryContext{
 				assessment: recoveryAssessment,
