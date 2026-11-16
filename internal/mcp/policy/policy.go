@@ -751,7 +751,10 @@ func normalizeArgTokensRead(argStrings []string, normFn func(string) string, pre
 		normalized = shellQuoteStripper.Replace(normalized)
 		normalized = shellEscapeRe.ReplaceAllString(normalized, "$1")
 		normalized = shellPositionalRe.ReplaceAllString(normalized, "")
-		normalized = resolveShellConstruction(normalized)
+		normalized, resolved := resolveShellConstruction(normalized)
+		// An expansion skipped at its size bound leaves the view unreadable,
+		// whatever the word reading finds.
+		unreadable = unreadable || !resolved
 		normalized = shellHomeSlashRe.ReplaceAllString(normalized, "/")
 		if words {
 			var u bool
@@ -1774,12 +1777,19 @@ func decodeShellEscapes(s string) string {
 //
 // Iterates until no further changes occur, bounded to prevent infinite loops
 // on pathological input.
-func resolveShellConstruction(s string) string {
+//
+// complete is false when a replacement was skipped because it would grow the
+// string past its size bound. The other replacements still apply, so a
+// command assembled from small variables still resolves. Callers treat an
+// incomplete result as unreadable: a rule that does not match it cannot be
+// ruled out.
+func resolveShellConstruction(s string) (out string, complete bool) {
 	// Every replacement consumes a dollar-prefixed expansion. Assignments
 	// alone are unchanged, even when their values contain shell punctuation.
 	if !strings.Contains(s, "$") {
-		return s
+		return s, true
 	}
+	complete = true
 	const maxIterations = 10
 	// Bound the expanded size. A value that refers to other assigned names
 	// (e.g. a=$b=$c=;) re-expands on every iteration, so without a bound the
@@ -1832,8 +1842,8 @@ func resolveShellConstruction(s string) string {
 			// In bash, ${!v} expands the variable whose name is v's value.
 			// Replacing the prefix ${!varname with ${value converts e.g.
 			// v=IFS;${!v:0:1} → v=IFS;${IFS:0:1}, which shellExpansionRe catches.
-			// Stop expanding once the bound is reached: the string expanded so
-			// far is still scanned, and further growth adds no new command.
+			// A replacement that would pass the bound is skipped and the
+			// result marked incomplete; the other replacements still apply.
 			var ok bool
 			for _, r := range [][2]string{
 				{"${" + m[1] + "}", value},
@@ -1841,7 +1851,7 @@ func resolveShellConstruction(s string) string {
 				{"${!" + m[1], "${" + m[2]},
 			} {
 				if s, ok = replaceBounded(s, r[0], r[1]); !ok {
-					return s
+					complete = false
 				}
 			}
 		}
@@ -1849,7 +1859,7 @@ func resolveShellConstruction(s string) string {
 			break
 		}
 	}
-	return s
+	return s, complete
 }
 
 // expandBraces resolves bash brace expansion patterns. {rm,-rf,/tmp} becomes
