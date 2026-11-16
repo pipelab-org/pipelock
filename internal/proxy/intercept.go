@@ -92,11 +92,12 @@ type InterceptContext struct {
 	TargetHost string
 	TargetPort string
 
-	Config    *config.Config
-	Scanner   *scanner.Scanner
-	CertCache *certgen.CertCache
-	Logger    *audit.Logger
-	Metrics   *metrics.Metrics
+	Config          *config.Config
+	Scanner         *scanner.Scanner
+	RateReservation *scanner.RateReservation
+	CertCache       *certgen.CertCache
+	Logger          *audit.Logger
+	Metrics         *metrics.Metrics
 
 	ClientIP  string
 	RequestID string
@@ -418,19 +419,48 @@ const interceptDefaultMaxResp = 5 * 1024 * 1024 // 5MB
 // connection from verifySNI to interceptTunnel.
 type bufferedConn struct {
 	net.Conn
-	r *bufio.Reader
+	readers   []*bufio.Reader
+	remaining []int
+	readerIdx int
 }
 
 func (c *bufferedConn) Read(p []byte) (int, error) {
-	return c.r.Read(p)
+	for c.readerIdx < len(c.readers) {
+		if c.remaining[c.readerIdx] == 0 {
+			c.readerIdx++
+			continue
+		}
+		if len(p) > c.remaining[c.readerIdx] {
+			p = p[:c.remaining[c.readerIdx]]
+		}
+		n, err := c.readers[c.readerIdx].Read(p)
+		c.remaining[c.readerIdx] -= n
+		return n, err
+	}
+	return c.Conn.Read(p)
 }
 
 // wrapBuffered returns a net.Conn that reads from the bufio.Reader first
 // (draining any buffered bytes from SNI peeking), then falls through to
 // the underlying connection. If nothing is buffered, returns conn as-is.
 func wrapBuffered(conn net.Conn, r *bufio.Reader) net.Conn {
-	if r.Buffered() > 0 {
-		return &bufferedConn{Conn: conn, r: r}
+	return wrapBufferedReaders(conn, r)
+}
+
+func wrapBufferedReaders(conn net.Conn, readers ...*bufio.Reader) net.Conn {
+	bufferedReaders := make([]*bufio.Reader, 0, len(readers))
+	remaining := make([]int, 0, len(readers))
+	for _, reader := range readers {
+		if reader == nil || len(bufferedReaders) > 0 && bufferedReaders[len(bufferedReaders)-1] == reader {
+			continue
+		}
+		if buffered := reader.Buffered(); buffered > 0 {
+			bufferedReaders = append(bufferedReaders, reader)
+			remaining = append(remaining, buffered)
+		}
+	}
+	if len(bufferedReaders) > 0 {
+		return &bufferedConn{Conn: conn, readers: bufferedReaders, remaining: remaining}
 	}
 	return conn
 }
@@ -879,7 +909,7 @@ func newInterceptHandler(
 		}
 		r = r.WithContext(interceptScanCtx)
 		issuerProof := issuerDeliveryProof{}
-		urlResult := ic.Scanner.Scan(interceptScanCtx, targetURL)
+		urlResult := ic.Scanner.ScanWithReservation(interceptScanCtx, targetURL, ic.RateReservation)
 		// Count the selected scan once, as soon as the issuer rescan below has
 		// settled it. A streamed response keeps this handler open until the
 		// stream ends, so waiting for return would hide the count meanwhile.
@@ -1007,7 +1037,7 @@ func newInterceptHandler(
 					allowed = true
 					return true
 				})
-				rescanned := ic.Scanner.Scan(allowCtx, targetURL)
+				rescanned := ic.Scanner.ScanWithReservation(allowCtx, targetURL, ic.RateReservation)
 				if resourceUsed && allowKind == issuerQueryObserved {
 					allowKind = issuerQueryResourcePath
 				}

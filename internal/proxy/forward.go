@@ -274,15 +274,15 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		ClientIP: clientIP, RequestID: requestID, Agent: agent, Transport: "connect", PolicyHash: cfg.CanonicalPolicyHash(),
 	})
 	r = r.WithContext(connectScanCtx)
-	result := sc.Scan(connectScanCtx, syntheticURL)
+	result, connectRateReservation := sc.ScanConnect(connectScanCtx, syntheticURL)
 	// A tunnel to a host a delegated source issued is relieved of the heuristic
 	// subdomain finding only when it will be intercepted: the inner request must
 	// then match the whole issued URL, or the same finding blocks it there.
 	issuedHostRelief := false
 	if entropyFinding(result) && result.Scanner == scanner.ScannerSubdomainEntropy {
 		if allowCtx, used, ok := p.connectIssuedHostContext(connectScanCtx, cfg, host, targetPort, agent, clientIP, id.Auth); ok {
-			if rescanned := sc.Scan(allowCtx, syntheticURL); used.Load() {
-				result, issuedHostRelief = rescanned, true
+			if rescanned, reservation := sc.ScanConnect(allowCtx, syntheticURL); used.Load() {
+				result, connectRateReservation, issuedHostRelief = rescanned, reservation, true
 			}
 		}
 	}
@@ -891,6 +891,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// verifySNI may return a resized reader if the TLS record exceeds the
 	// default 4KB bufio buffer (common with large extension sets).
 	clientReader := buf.Reader
+	sniBaseReader := clientReader
 	if cfg.ForwardProxy.SNIVerificationEnabled() {
 		resized, sniHost, category, sniErr := verifySNI(clientReader, clientConn, host, sniReadTimeoutDefault)
 		clientReader = resized
@@ -939,7 +940,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		p.logger.LogAnomaly(targetCtx, "tls_intercept", "TLS MITM interception active", 0) // 0: informational, not anomalous
 		// Wrap clientConn with buffered reader so any bytes peeked during
 		// SNI verification (ClientHello) are available to the TLS server.
-		interceptConn := wrapBuffered(clientConn, clientReader)
+		interceptConn := wrapBufferedReaders(clientConn, clientReader, sniBaseReader)
 		interceptCtx, interceptCancelCause := context.WithCancelCause(r.Context())
 		defer interceptCancelCause(nil)
 		// An airlock cancellation carries its own cause so a request it
@@ -970,6 +971,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			TargetPort:         port,
 			Config:             cfg,
 			Scanner:            sc,
+			RateReservation:    connectRateReservation,
 			CertCache:          certCache,
 			Logger:             p.logger,
 			Metrics:            p.metrics,
@@ -1025,13 +1027,14 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		_, _ = clientReader.Read(buffered)
 		_, _ = targetConn.Write(buffered)
 	}
+	clientRelayConn := wrapBufferedReaders(clientConn, clientReader, sniBaseReader)
 
 	p.metrics.IncrActiveTunnels()
 	p.logger.LogTunnelOpen(targetCtx)
 
 	// Bidirectional relay with idle timeout
 	idleTimeout := time.Duration(cfg.ForwardProxy.IdleTimeoutSeconds) * time.Second
-	totalBytes, relayErr := bidirectionalCopyWithError(clientConn, targetConn, idleTimeout, time.Time{}, p.ks)
+	totalBytes, relayErr := bidirectionalCopyWithError(clientRelayConn, targetConn, idleTimeout, time.Time{}, p.ks)
 	outcomeStatus = strconv.Itoa(http.StatusOK)
 	outcomeBytes = totalBytes
 	outcomeReason = "complete"

@@ -1934,6 +1934,51 @@ func TestWrapBuffered_NothingBuffered(t *testing.T) {
 	}
 }
 
+func TestWrapBufferedReaders_DrainsResizedAndOriginalBuffersThenUsesConn(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close() //nolint:errcheck
+	defer client.Close() //nolint:errcheck
+
+	const staged = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := io.WriteString(client, staged+"next")
+		writeDone <- err
+	}()
+
+	baseReader := bufio.NewReaderSize(server, len(staged)+16)
+	if _, err := baseReader.Peek(len(staged)); err != nil {
+		t.Fatalf("base Peek: %v", err)
+	}
+	resizedReader := bufio.NewReaderSize(baseReader, 16)
+	if _, err := resizedReader.Peek(8); err != nil {
+		t.Fatalf("resized Peek: %v", err)
+	}
+	if baseReader.Buffered() == 0 || resizedReader.Buffered() == 0 {
+		t.Fatalf("expected data in both readers; base=%d resized=%d", baseReader.Buffered(), resizedReader.Buffered())
+	}
+
+	wrapped := wrapBufferedReaders(server, resizedReader, baseReader)
+	got := make([]byte, len(staged))
+	if _, err := io.ReadFull(wrapped, got); err != nil {
+		t.Fatalf("read staged data: %v", err)
+	}
+	if string(got) != staged {
+		t.Fatalf("staged data = %q, want %q", got, staged)
+	}
+
+	next := make([]byte, 4)
+	if _, err := io.ReadFull(wrapped, next); err != nil {
+		t.Fatalf("read directly from connection: %v", err)
+	}
+	if string(next) != "next" {
+		t.Fatalf("direct connection data = %q, want next", next)
+	}
+	if err := <-writeDone; err != nil {
+		t.Fatalf("write staged data: %v", err)
+	}
+}
+
 func TestSingleConnListener(t *testing.T) {
 	server, client := net.Pipe()
 	defer client.Close() //nolint:errcheck
@@ -1976,7 +2021,7 @@ func TestBufferedConn_RemoteAddr(t *testing.T) {
 	defer client.Close() //nolint:errcheck
 
 	br := bufio.NewReaderSize(server, 64)
-	bc := &bufferedConn{Conn: server, r: br}
+	bc := wrapBuffered(server, br)
 
 	// RemoteAddr delegates to the embedded net.Conn.
 	if bc.RemoteAddr() == nil {

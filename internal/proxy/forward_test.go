@@ -5126,6 +5126,28 @@ func newIPv4TLSServer(t *testing.T, handler http.Handler) *httptest.Server {
 	return srv
 }
 
+func newIPv4TLSServerForHost(t *testing.T, handler http.Handler, host string) (*httptest.Server, *x509.Certificate) {
+	t.Helper()
+	ca, caKey, _, err := certgen.GenerateCA("Test upstream", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := certgen.GenerateLeaf(ca, caKey, host, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("cannot listen on IPv4 loopback: %v", err)
+	}
+	srv := httptest.NewUnstartedServer(handler)
+	srv.Listener = ln
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{*leaf}}
+	srv.StartTLS()
+	return srv, ca
+}
+
 // TestConnectTLSInterceptIntegration exercises the full CONNECT → hijack →
 // SNI verification → interceptTunnel → response scanning path through the
 // actual proxy. This is the production code path (forward.go:272-296).
@@ -5250,66 +5272,323 @@ func TestConnectTLSInterceptInjectionBlocked(t *testing.T) {
 	}
 }
 
-func TestConnectTLSInterceptRateLimit(t *testing.T) {
-	for _, proto := range []int{1, 2} {
-		for _, enforce := range []bool{true, false} {
-			for _, limit := range []int{1, 2} {
-				t.Run(fmt.Sprintf("http%d/enforce_%t/limit_%d", proto, enforce, limit), func(t *testing.T) {
-					var arrivals atomic.Int32
-					backend := newIPv4TLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-						arrivals.Add(1)
-						w.Header().Set("Content-Type", "text/plain")
-						_, _ = io.WriteString(w, "ordinary page")
-					}))
-					defer backend.Close()
-					backendPool := x509.NewCertPool()
-					backendPool.AddCert(backend.Certificate())
-					proxyAddr, roots, cleanup := setupForwardProxyWithTLS(t, func(cfg *config.Config) {
-						cfg.Enforce = &enforce
-						cfg.FetchProxy.Monitoring.MaxReqPerMinute = limit
-					}, backendPool)
-					defer cleanup()
-					proxyURL, err := url.Parse("http://" + proxyAddr)
-					if err != nil {
-						t.Fatal(err)
-					}
-					tr := &http.Transport{
-						Proxy:             http.ProxyURL(proxyURL),
-						TLSClientConfig:   &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
-						ForceAttemptHTTP2: proto == 2,
-					}
-					defer tr.CloseIdleConnections()
-					client := &http.Client{Transport: tr, Timeout: 8 * time.Second}
-					req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, backend.URL+"/page", nil)
-					if err != nil {
-						t.Fatal(err)
-					}
-					resp, err := client.Do(req)
-					if err != nil {
-						t.Fatal(err)
-					}
-					defer func() { _ = resp.Body.Close() }()
-					if _, err := io.Copy(io.Discard, resp.Body); err != nil {
-						t.Fatal(err)
-					}
-					if resp.ProtoMajor != proto {
-						t.Fatalf("protocol = %s, want HTTP/%d", resp.Proto, proto)
-					}
-					wantStatus, wantArrivals := http.StatusOK, int32(1)
-					// CONNECT consumes the first slot before the inner request.
-					if enforce && limit == 1 {
-						wantStatus, wantArrivals = http.StatusTooManyRequests, 0
-						if got := resp.Header.Get("X-Pipelock-Block-Reason"); got != "rate_limit" {
-							t.Errorf("block reason = %q, want rate_limit", got)
-						}
-					}
-					t.Logf("CONNECT plus HTTP/%d GET: limit=%d enforce=%t status=%d arrivals=%d", proto, limit, enforce, resp.StatusCode, arrivals.Load())
-					if resp.StatusCode != wantStatus || arrivals.Load() != wantArrivals {
-						t.Fatalf("status=%d arrivals=%d, want status=%d arrivals=%d", resp.StatusCode, arrivals.Load(), wantStatus, wantArrivals)
-					}
-				})
-			}
+func dialTLSRateLimitTunnel(t *testing.T, proxyAddr, target, serverName string, roots *x509.CertPool, proto int, offerHTTP1ALPN bool) (*tls.Conn, *bufio.Reader, *http.ClientConn) {
+	t.Helper()
+	conn := dialProxy(t, proxyAddr)
+	t.Cleanup(func() { _ = conn.Close() })
+	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(conn)
+	connectResponse, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatalf("CONNECT response: %v", err)
+	}
+	_ = connectResponse.Body.Close()
+	if connectResponse.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT status = %d, want 200", connectResponse.StatusCode)
+	}
+	protocol := "http/1.1"
+	if proto == 2 {
+		protocol = "h2"
+	}
+	var nextProtos []string
+	if proto == 2 {
+		nextProtos = []string{protocol}
+	} else if offerHTTP1ALPN {
+		nextProtos = []string{protocol}
+	}
+	tlsConn := tls.Client(readerConn{Reader: reader, Conn: conn}, &tls.Config{
+		RootCAs: roots, ServerName: serverName, MinVersion: tls.VersionTLS12, NextProtos: nextProtos,
+	})
+	t.Cleanup(func() { _ = tlsConn.Close() })
+	if err := tlsConn.HandshakeContext(t.Context()); err != nil {
+		t.Fatalf("TLS handshake: %v", err)
+	}
+	if got := tlsConn.ConnectionState().NegotiatedProtocol; proto == 2 && got != protocol {
+		t.Fatalf("negotiated protocol = %q, want %q", got, protocol)
+	}
+	if proto == 1 {
+		return tlsConn, bufio.NewReader(tlsConn), nil
+	}
+	var protocols http.Protocols
+	protocols.SetHTTP1(true)
+	protocols.SetHTTP2(true)
+	h2Transport := &http.Transport{
+		Protocols: &protocols,
+		DialTLSContext: func(context.Context, string, string) (net.Conn, error) {
+			return tlsConn, nil
+		},
+	}
+	clientConn, err := h2Transport.NewClientConn(t.Context(), "https", target)
+	if err != nil {
+		t.Fatalf("create HTTP/2 client connection: %v", err)
+	}
+	t.Cleanup(func() { _ = clientConn.Close() })
+	return tlsConn, bufio.NewReader(tlsConn), clientConn
+}
+
+func doRateLimitTunnelRequest(t *testing.T, tlsConn *tls.Conn, reader *bufio.Reader, h2 *http.ClientConn, target, path string) (*http.Response, error) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+target+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if h2 == nil {
+		req.Header.Set("Connection", "keep-alive")
+	}
+	if h2 != nil {
+		return h2.RoundTrip(req)
+	}
+	if err := req.Write(tlsConn); err != nil {
+		return nil, err
+	}
+	return http.ReadResponse(reader, req)
+}
+
+func httpClientOnEstablishedTLSConnection(conn net.Conn) *http.Client {
+	used := false
+	transport := &http.Transport{DialTLSContext: func(context.Context, string, string) (net.Conn, error) {
+		if used {
+			return nil, errors.New("test TLS tunnel already assigned")
 		}
+		used = true
+		return conn, nil
+	}}
+	return &http.Client{Transport: transport}
+}
+
+func TestConnectTLSInterceptRateLimit(t *testing.T) {
+	for _, testCase := range []struct {
+		name           string
+		proto          int
+		offerHTTP1ALPN bool
+	}{
+		{name: "http1_no_alpn", proto: 1},
+		{name: "http1_alpn", proto: 1, offerHTTP1ALPN: true},
+		{name: "http2", proto: 2},
+	} {
+		for _, limit := range []int{1, 2} {
+			t.Run(fmt.Sprintf("%s/limit_%d", testCase.name, limit), func(t *testing.T) {
+				var arrivals atomic.Int32
+				backend, upstreamCA := newIPv4TLSServerForHost(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					arrivals.Add(1)
+					w.Header().Set("Content-Type", "text/plain")
+					_, _ = io.WriteString(w, "rate fixture response")
+				}), "localhost")
+				defer backend.Close()
+				backendPool := x509.NewCertPool()
+				backendPool.AddCert(upstreamCA)
+				proxyAddr, roots, cleanup := setupForwardProxyWithTLS(t, func(cfg *config.Config) {
+					enforce := true
+					cfg.Enforce = &enforce
+					cfg.FetchProxy.Monitoring.MaxReqPerMinute = limit
+				}, backendPool)
+				defer cleanup()
+				_, port, err := net.SplitHostPort(backend.Listener.Addr().String())
+				if err != nil {
+					t.Fatal(err)
+				}
+				target := net.JoinHostPort("localhost", port)
+				host := "localhost"
+				tlsConn, reader, h2 := dialTLSRateLimitTunnel(t, proxyAddr, target, host, roots, testCase.proto, testCase.offerHTTP1ALPN)
+				var h1Client *http.Client
+				if testCase.proto == 1 {
+					h1Client = httpClientOnEstablishedTLSConnection(tlsConn)
+					t.Cleanup(h1Client.CloseIdleConnections)
+				}
+				doInner := func(path string) (*http.Response, error) {
+					if h1Client != nil {
+						req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+target+path, nil)
+						if err != nil {
+							return nil, err
+						}
+						req.Header.Set("Accept-Encoding", "identity")
+						return h1Client.Do(req)
+					}
+					return doRateLimitTunnelRequest(t, tlsConn, reader, h2, target, path)
+				}
+				resp, err := doInner("/page")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+					t.Fatal(err)
+				}
+				_ = resp.Body.Close()
+				if resp.StatusCode != http.StatusOK || arrivals.Load() != 1 {
+					t.Fatalf("first inner request: status=%d arrivals=%d, want status=200 arrivals=1", resp.StatusCode, arrivals.Load())
+				}
+				second, err := doInner("/second")
+				if err != nil {
+					t.Fatalf("second request after arrivals=%d: %v", arrivals.Load(), err)
+				}
+				if _, err := io.Copy(io.Discard, second.Body); err != nil {
+					t.Fatal(err)
+				}
+				_ = second.Body.Close()
+				wantSecondStatus, wantArrivals := http.StatusOK, int32(2)
+				if limit == 1 {
+					wantSecondStatus, wantArrivals = http.StatusTooManyRequests, 1
+					if got := second.Header.Get("X-Pipelock-Block-Reason"); got != "rate_limit" {
+						t.Errorf("second request block reason = %q, want rate_limit", got)
+					}
+				}
+				t.Logf("CONNECT plus %s GETs: limit=%d statuses=%d,%d arrivals=%d", testCase.name, limit, resp.StatusCode, second.StatusCode, arrivals.Load())
+				if second.StatusCode != wantSecondStatus || arrivals.Load() != wantArrivals {
+					t.Fatalf("second status=%d arrivals=%d, want status=%d arrivals=%d", second.StatusCode, arrivals.Load(), wantSecondStatus, wantArrivals)
+				}
+			})
+		}
+	}
+}
+
+func TestConnectTLSInterceptWebSocketUpgradeUsesInnerRequestAccounting(t *testing.T) {
+	for _, limit := range []int{1, 2} {
+		t.Run(fmt.Sprintf("limit_%d", limit), func(t *testing.T) {
+			var arrivals atomic.Int32
+			var upgradeArrivals atomic.Int32
+			backend, upstreamCA := newIPv4TLSServerForHost(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				arrivals.Add(1)
+				if r.URL.Path == "/socket" {
+					upgradeArrivals.Add(1)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}), "localhost")
+			defer backend.Close()
+			backendPool := x509.NewCertPool()
+			backendPool.AddCert(upstreamCA)
+			proxyAddr, roots, cleanup := setupForwardProxyWithTLS(t, func(cfg *config.Config) {
+				enforce := true
+				cfg.Enforce = &enforce
+				cfg.FetchProxy.Monitoring.MaxReqPerMinute = limit
+			}, backendPool)
+			defer cleanup()
+
+			_, port, err := net.SplitHostPort(backend.Listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			target := net.JoinHostPort("localhost", port)
+			tlsConn, reader, _ := dialTLSRateLimitTunnel(t, proxyAddr, target, "localhost", roots, 1, false)
+			pageReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+target+"/page", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pageReq.Header.Set("Connection", "keep-alive")
+			if err := pageReq.Write(tlsConn); err != nil {
+				t.Fatalf("write first inner request: %v", err)
+			}
+			pageResp, err := http.ReadResponse(reader, pageReq)
+			if err != nil {
+				t.Fatalf("first inner response: %v", err)
+			}
+			_, _ = io.Copy(io.Discard, pageResp.Body)
+			_ = pageResp.Body.Close()
+			if pageResp.StatusCode != http.StatusNoContent || arrivals.Load() != 1 {
+				t.Fatalf("first inner request: status=%d arrivals=%d, want 204 and one arrival", pageResp.StatusCode, arrivals.Load())
+			}
+
+			upgradeReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+target+"/socket", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			upgradeReq.Header.Set("Connection", "Upgrade")
+			upgradeReq.Header.Set("Upgrade", "websocket")
+			upgradeReq.Header.Set("Sec-WebSocket-Version", "13")
+			upgradeReq.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+			if err := upgradeReq.Write(tlsConn); err != nil {
+				t.Fatalf("write WebSocket upgrade request: %v", err)
+			}
+			upgradeResp, err := http.ReadResponse(reader, upgradeReq)
+			if err != nil {
+				t.Fatalf("WebSocket upgrade response: %v", err)
+			}
+			_, _ = io.Copy(io.Discard, upgradeResp.Body)
+			_ = upgradeResp.Body.Close()
+
+			wantStatus, wantArrivals := http.StatusNoContent, int32(2)
+			if limit == 1 {
+				wantStatus, wantArrivals = http.StatusTooManyRequests, 1
+				if got := upgradeResp.Header.Get("X-Pipelock-Block-Reason"); got != "rate_limit" {
+					t.Errorf("upgrade block reason = %q, want rate_limit", got)
+				}
+			}
+			wantUpgradeArrivals := int32(1)
+			if limit == 1 {
+				wantUpgradeArrivals = 0
+			}
+			if upgradeResp.StatusCode != wantStatus || arrivals.Load() != wantArrivals || upgradeArrivals.Load() != wantUpgradeArrivals {
+				t.Fatalf("upgrade status=%d arrivals=%d websocket arrivals=%d, want status=%d arrivals=%d websocket arrivals=%d", upgradeResp.StatusCode, arrivals.Load(), upgradeArrivals.Load(), wantStatus, wantArrivals, wantUpgradeArrivals)
+			}
+		})
+	}
+}
+
+func TestConnectTLSInterceptConcurrentHTTP2UsesReservationOnce(t *testing.T) {
+	var arrivals atomic.Int32
+	backend := newIPv4TLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		arrivals.Add(1)
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, "ordinary page")
+	}))
+	defer backend.Close()
+	backendPool := x509.NewCertPool()
+	backendPool.AddCert(backend.Certificate())
+	proxyAddr, roots, cleanup := setupForwardProxyWithTLS(t, func(cfg *config.Config) {
+		enforce := true
+		cfg.Enforce = &enforce
+		cfg.FetchProxy.Monitoring.MaxReqPerMinute = 1
+	}, backendPool)
+	defer cleanup()
+	target := backend.Listener.Addr().String()
+	host, _, err := net.SplitHostPort(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tlsConn, _, clientConn := dialTLSRateLimitTunnel(t, proxyAddr, target, host, roots, 2, false)
+	defer func() { _ = tlsConn.Close() }()
+
+	statuses := make(chan int, 2)
+	errCh := make(chan error, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := doRateLimitTunnelRequest(t, tlsConn, nil, clientConn, target, "/page")
+			if err != nil {
+				errCh <- err
+				return
+			}
+			_, copyErr := io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if copyErr != nil {
+				errCh <- copyErr
+				return
+			}
+			statuses <- resp.StatusCode
+		}()
+	}
+	wg.Wait()
+	close(statuses)
+	close(errCh)
+	for err := range errCh {
+		t.Fatal(err)
+	}
+	var allowed, rateLimited int
+	for status := range statuses {
+		switch status {
+		case http.StatusOK:
+			allowed++
+		case http.StatusTooManyRequests:
+			rateLimited++
+		default:
+			t.Errorf("unexpected HTTP/2 response status %d", status)
+		}
+	}
+	if allowed != 1 || rateLimited != 1 || arrivals.Load() != 1 {
+		t.Fatalf("allowed=%d rateLimited=%d upstream arrivals=%d, want 1, 1, 1", allowed, rateLimited, arrivals.Load())
 	}
 }
 
