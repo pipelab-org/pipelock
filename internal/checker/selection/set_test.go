@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/checker"
 	"github.com/luckyPipewrench/pipelock/internal/checker/checkertest"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func mockChecker(endpoint string) config.InjectionCheckerConfig {
@@ -112,7 +113,62 @@ func TestNilSetIsInert(t *testing.T) {
 	s.dropped()
 }
 
-func TestWatchCopiesItemAndDropsAfterClose(t *testing.T) {
+// gatedChecker signals when a call has started and waits for release before
+// it reads the item or its context, so a test can cancel and mutate first.
+type gatedChecker struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+type gatedResult struct {
+	text      string
+	toolValue string
+	ctxErr    error
+}
+
+func (g gatedChecker) Check(ctx context.Context, item checker.Item, _ checker.Policy) checker.Assessment {
+	g.started <- struct{}{}
+	<-g.release
+	gr := gatedResult{text: item.Parts[0].Text, toolValue: item.Context[0].Value, ctxErr: ctx.Err()}
+	if gr.text != selfTestSuspicious || gr.toolValue != "read_file" || gr.ctxErr != nil {
+		return checker.Assessment{State: checker.StateIncomplete}
+	}
+	return checker.Assessment{State: checker.StateFinding}
+}
+
+func TestWatchIsolatesCallerCancellationAndMutation(t *testing.T) {
+	s := newSet(t, config.Defaults())
+	g := gatedChecker{started: make(chan struct{}), release: make(chan struct{})}
+	b := Binding{Name: "gated", Checker: g, Policy: checker.Policy{Mode: checker.ModeWarn}, Watch: true}
+	item := probeItem("w", selfTestSuspicious)
+	item.Context = []checker.ContextValue{{Name: "tool", Value: "read_file", Origin: checker.OriginOperator, Trust: checker.TrustAuthenticated}}
+	done := make(chan checker.Assessment, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	if !s.Watch(ctx, b, item, func(a checker.Assessment) { done <- a }) {
+		t.Fatal("watch not admitted")
+	}
+	select {
+	case <-g.started:
+	case <-time.After(testwait.Deadline(5 * time.Second)):
+		t.Fatal("watch call never started")
+	}
+	// The call is parked before reading anything: cancel and mutate now.
+	cancel()
+	item.Parts[0].Text = "mutated"
+	item.Context[0].Value = "mutated"
+	item.Completeness.Status = checker.Partial
+	close(g.release)
+	select {
+	case a := <-done:
+		if a.State != checker.StateFinding {
+			t.Fatalf("watch saw caller cancellation or mutation: %+v", a)
+		}
+	case <-time.After(testwait.Deadline(5 * time.Second)):
+		t.Fatal("watch result not delivered")
+	}
+}
+
+func TestWatchDropsAfterClose(t *testing.T) {
 	m := checkertest.NewMockServer(t, checkertest.BehaviorClassify)
 	s, err := New(setConfig(
 		map[string]config.InjectionCheckerConfig{"watch": mockChecker(m.URL)},
@@ -124,29 +180,24 @@ func TestWatchCopiesItemAndDropsAfterClose(t *testing.T) {
 	if !ok {
 		t.Fatal("no watcher")
 	}
-	item := probeItem("w", selfTestSuspicious)
-	item.Context = []checker.ContextValue{{Name: "tool", Value: "read_file", Origin: checker.OriginOperator, Trust: checker.TrustAuthenticated}}
 	done := make(chan checker.Assessment, 1)
-	ctx, cancel := context.WithCancel(context.Background())
-	if !s.Watch(ctx, w, item, func(a checker.Assessment) { done <- a }) {
+	if !s.Watch(context.Background(), w, probeItem("w", selfTestSuspicious), func(a checker.Assessment) { done <- a }) {
 		t.Fatal("watch not admitted")
-	}
-	// Neither caller cancellation nor caller mutation reaches the watch call.
-	cancel()
-	item.Parts[0].Text = "mutated"
-	select {
-	case a := <-done:
-		if a.State != checker.StateFinding {
-			t.Fatalf("watch assessment = %+v", a)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("watch result not delivered")
 	}
 	// A nil callback is allowed.
 	if !s.Watch(context.Background(), w, probeItem("n", selfTestBenign), nil) {
 		t.Fatal("nil-callback watch not admitted")
 	}
+	// Close waits for in-flight calls, so the result is already delivered.
 	s.Close()
+	select {
+	case a := <-done:
+		if a.State != checker.StateFinding {
+			t.Fatalf("watch assessment = %+v", a)
+		}
+	default:
+		t.Fatal("Close returned before the in-flight watch finished")
+	}
 	if s.Watch(context.Background(), w, probeItem("late", selfTestBenign), nil) {
 		t.Fatal("watch admitted after close")
 	}

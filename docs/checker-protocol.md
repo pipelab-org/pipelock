@@ -60,7 +60,7 @@ HTTP 200 carries one result:
 }
 ```
 
-Assessed responses require `benign`, `suspicious`, or `abstain` classification and no failure reason. Findings have stable reason IDs and optional references to submitted parts. Benign responses cannot carry findings. Optional scores require a named scale, calibration ID, and finite numeric value. The captured policy pins the scale, calibration, and inclusive minimum/maximum; there is no universal range or cutoff. Scores do not override classification.
+Assessed responses require `benign`, `suspicious`, or `abstain` classification and no failure reason. Findings have stable reason IDs and optional references to submitted parts. A reason ID is 1 to 64 bytes: a lowercase ASCII letter followed by lowercase letters, digits, `_`, `.`, or `-`. Reason IDs appear in audit events, so any other value makes the response invalid. Benign responses cannot carry findings. Optional scores require a named scale, calibration ID, and finite numeric value. The captured policy pins the scale, calibration, and inclusive minimum/maximum; there is no universal range or cutoff. Scores do not override classification.
 
 For an unavailable assessment, keep all identity, revision and completeness fields, omit classification, score, and findings, and replace the status fields with:
 

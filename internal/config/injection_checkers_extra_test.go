@@ -112,9 +112,19 @@ func TestLoadCheckerCAPool(t *testing.T) {
 	if err := os.WriteFile(notPEM, []byte("not a certificate"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	huge := filepath.Join(dir, "huge.pem")
-	if err := os.WriteFile(huge, []byte(strings.Repeat("A", maxCheckerCAFileBytes+1)), 0o600); err != nil {
+	// A parseable certificate padded past the limit, so only the size check
+	// can reject it.
+	validPEM, err := os.ReadFile(filepath.Clean(writeTestCA(t, t.TempDir())))
+	if err != nil {
 		t.Fatal(err)
+	}
+	huge := filepath.Join(dir, "huge.pem")
+	padded := append(validPEM, strings.Repeat("\n", maxCheckerCAFileBytes+1-len(validPEM))...)
+	if err := os.WriteFile(huge, padded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !x509.NewCertPool().AppendCertsFromPEM(padded) {
+		t.Fatal("padded fixture is not parseable PEM")
 	}
 	for name, path := range map[string]string{
 		"missing":   filepath.Join(dir, "missing.pem"),

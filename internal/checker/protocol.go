@@ -258,6 +258,26 @@ func validPolicy(p Policy) bool {
 		finite(p.Scale.Min) && finite(p.Scale.Max) && p.Scale.Min < p.Scale.Max)
 }
 
+// maxReasonIDBytes bounds a finding's reason ID.
+const maxReasonIDBytes = 64
+
+// validReasonID accepts a stable identifier: a lowercase letter followed by
+// lowercase letters, digits, '_', '.', or '-'. Reason IDs reach audit logs
+// and external sinks, so free text, which could echo assessed content, is
+// rejected rather than logged.
+func validReasonID(id string) bool {
+	if id == "" || len(id) > maxReasonIDBytes || id[0] < 'a' || id[0] > 'z' {
+		return false
+	}
+	for i := 1; i < len(id); i++ {
+		c := id[i]
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' && c != '.' && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
 func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 
 func validItem(item Item) bool {
@@ -375,7 +395,7 @@ func validResult(r Response, item Item, scale *Scale) bool {
 		parts[p.ID] = true
 	}
 	for _, f := range r.Findings {
-		if f.ReasonID == "" {
+		if !validReasonID(f.ReasonID) {
 			return false
 		}
 		for _, id := range f.PartIDs {
