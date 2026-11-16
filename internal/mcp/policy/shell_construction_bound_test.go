@@ -45,6 +45,21 @@ func TestResolveShellConstructionStillExpands(t *testing.T) {
 	}
 }
 
+// `$1=` and `$a=` reference a parameter; they are not assignments, so the
+// trigger and awk's field idiom resolve completely without growing.
+func TestResolveShellConstructionIgnoresParameterReferences(t *testing.T) {
+	d := "$"
+	for _, in := range []string{
+		"echo '" + d + "a=" + d + "b=" + d + "c=;'",
+		"awk '{" + d + "1=" + d + "2=" + d + "3=\"\"; print}'",
+	} {
+		out, complete := resolveShellConstruction(in)
+		if !complete || out != in {
+			t.Errorf("resolveShellConstruction(%q) = %q complete=%v, want it unchanged", in, out, complete)
+		}
+	}
+}
+
 // boundPadding is a large variable expanded often enough to pass the bound.
 func boundPadding() string {
 	return "x=" + strings.Repeat("z", 1024) + ";: " + strings.Repeat("$x ", 70) + ";"

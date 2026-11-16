@@ -1767,6 +1767,21 @@ func decodeShellEscapes(s string) string {
 	return s
 }
 
+// shellAssignments returns up to 10 simpleAssignRe matches, skipping a name
+// that follows "$": `$1=` and `$a=` (awk's `$1=$2=""`) reference a
+// parameter and assign nothing, and treating them as assignments made the
+// expansion feed on itself.
+func shellAssignments(s string) [][]string {
+	var out [][]string
+	for _, ix := range simpleAssignRe.FindAllStringSubmatchIndex(s, 10) {
+		if ix[2] > 0 && s[ix[2]-1] == '$' {
+			continue
+		}
+		out = append(out, []string{s[ix[0]:ix[1]], s[ix[2]:ix[3]], s[ix[4]:ix[5]]})
+	}
+	return out
+}
+
 // resolveShellConstruction iteratively resolves simple command substitutions
 // and variable assignments used to build command names indirectly:
 //   - $(printf rm) → rm
@@ -1813,7 +1828,7 @@ func resolveShellConstruction(s string) (out string, complete bool) {
 	for range maxIterations {
 		prev := s
 		s = simpleCmdSubRe.ReplaceAllString(s, "$1")
-		matches := simpleAssignRe.FindAllStringSubmatch(s, 10)
+		matches := shellAssignments(s)
 
 		// Detect IFS reassignment: IFS=<char> sets the field separator.
 		// When IFS is non-default, variable expansions should split on
