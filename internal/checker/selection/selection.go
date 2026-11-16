@@ -8,6 +8,7 @@ package selection
 
 import (
 	"context"
+	"errors"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -75,6 +76,9 @@ func build(cc config.InjectionCheckerConfig, generation string) (checker.Checker
 	switch cc.Type {
 	case config.InjectionCheckerTypeJev:
 		p.Revision = checker.Revision{Checker: config.InjectionCheckerTypeJev, Model: cc.Model, Adapter: checker.JevAdapter}
+		if cc.Threshold == nil {
+			return nil, p, errors.New("jev checker requires a threshold")
+		}
 		c, err := checker.NewJev(checker.JevOptions{
 			Endpoint: cc.EffectiveEndpoint(), APIKey: os.Getenv(cc.APIKeyEnv), Model: cc.Model, Threshold: *cc.Threshold,
 		})
@@ -85,6 +89,12 @@ func build(cc config.InjectionCheckerConfig, generation string) (checker.Checker
 		}
 		if cc.Score != nil && cc.Score.Min != nil && cc.Score.Max != nil {
 			p.Scale = &checker.Scale{Name: cc.Score.Scale, CalibrationID: cc.Score.CalibrationID, Min: *cc.Score.Min, Max: *cc.Score.Max}
+		}
+		if cc.AuthorizationEnv != "" && os.Getenv(cc.AuthorizationEnv) == "" {
+			// A checker that needs a credential it does not have must not
+			// send unauthenticated requests: an endpoint that answers anyway
+			// could return a benign result for content it never vetted.
+			return unavailable{}, p, nil
 		}
 		opts := checker.Options{
 			Endpoint:          cc.Endpoint,
@@ -161,24 +171,25 @@ func (s *Set) binding(name, mode string, watch bool) (Binding, bool) {
 
 // Watch runs b on a copy of item off the caller's goroutine and reports the
 // outcome. It never blocks: with every slot busy, or after Close, the call is
-// dropped and counted. The call has its own timeout and ignores the caller's
-// cancellation, so a finished delivery never cancels its own evidence.
-func (s *Set) Watch(ctx context.Context, b Binding, item checker.Item, onResult func(checker.Assessment)) {
+// dropped, counted and reported as not admitted. The call has its own timeout
+// and ignores the caller's cancellation, so a finished delivery never cancels
+// its own evidence.
+func (s *Set) Watch(ctx context.Context, b Binding, item checker.Item, onResult func(checker.Assessment)) (admitted bool) {
 	if s == nil {
-		return
+		return false
 	}
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		s.dropped()
-		return
+		return false
 	}
 	select {
 	case s.slots <- struct{}{}:
 	default:
 		s.mu.Unlock()
 		s.dropped()
-		return
+		return false
 	}
 	s.inflight.Add(1)
 	s.mu.Unlock()
@@ -197,6 +208,7 @@ func (s *Set) Watch(ctx context.Context, b Binding, item checker.Item, onResult 
 			onResult(result)
 		}
 	}()
+	return true
 }
 
 func (s *Set) dropped() {
@@ -259,4 +271,15 @@ func (s *Set) SelfTest(ctx context.Context) []string {
 		}
 	}
 	return failed
+}
+
+// unavailable reports every item unassessed without a request. It stands in
+// for a checker whose configured credential is missing.
+type unavailable struct{}
+
+func (unavailable) Check(_ context.Context, _ checker.Item, p checker.Policy) checker.Assessment {
+	if p.Mode == checker.ModeOff || p == (checker.Policy{}) {
+		return checker.Assessment{State: checker.StateOff}
+	}
+	return checker.Assessment{State: checker.StateNotAssessed, Status: checker.StatusNotChecked, Reason: checker.ReasonUnavailable}
 }

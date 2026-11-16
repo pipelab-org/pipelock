@@ -1396,6 +1396,8 @@ A surface can be decided by an external checker instead of the built-in one.
 Define it under `checkers` and select it by name:
 
 ```yaml
+mcp_tool_scanning:
+  enabled: true                       # required for a checker on tool descriptions
 prompt_injection_detection:
   checkers:
     local_model:                      # a service speaking pipelock.checker/v1

@@ -2902,6 +2902,10 @@ func scanToolDefsAssessed(ctx context.Context, tools []ToolDef, sc *scanner.Scan
 	if externalOK {
 		assessment, assessedAny = external.ext.Recovery(), true
 	}
+	// A block-mode checker that found injection, or could not assess the
+	// list, refuses the whole response. Definitions the agent never receives
+	// must not become the drift baseline, whatever mcp_tool_scanning.action is.
+	checkerRefused := externalOK && external.ext.Block()
 
 	for toolIndex, tool := range tools {
 		var match ToolScanMatch
@@ -3123,9 +3127,10 @@ func scanToolDefsAssessed(ctx context.Context, tools []ToolDef, sc *scanner.Scan
 			// in it reaches the agent. No definition in it may become a
 			// baseline, not even a scanner-clean new tool or a descriptive
 			// change that block mode would otherwise accept.
-			promoteNew := !responseAckRefused && (!blocking || !hasFinding)
-			promoteChanged := !responseAckRefused && !blocking
-			promoteAccepted := !responseAckRefused && (!blocking || !hasFinding)
+			refused := responseAckRefused || checkerRefused
+			promoteNew := !refused && (!blocking || !hasFinding)
+			promoteChanged := !refused && !blocking
+			promoteAccepted := !refused && (!blocking || !hasFinding)
 			if cfg.RequireHeaderContracts {
 				// An invalid header contract removes the definition from the
 				// forwarded list, so the agent never receives it either.

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -87,6 +88,8 @@ func TestJevClassification(t *testing.T) {
 		{"overloaded", `{}`, 529, StateNotAssessed, ReasonUnavailable},
 		{"server_error", `{}`, 500, StateNotAssessed, ReasonUnavailable},
 		{"redirect", `{}`, 307, StateNotAssessed, ReasonRedirect},
+		{"wrong_answer_type", `{"answers":{"redirects_agent":{"type":"choice","noul":0.1}}}`, 200, StateNotAssessed, ReasonMalformed},
+		{"noul_answer_type", `{"answers":{"redirects_agent":{"type":"noul","noul":0.1}}}`, 200, StateBenign, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			js, pool := newJevServer(t, func(w http.ResponseWriter) {
@@ -209,6 +212,32 @@ func TestJevFailsClosed(t *testing.T) {
 		p.Timeout = 100 * time.Millisecond
 		if got := newTestJev(t, js, pool, testJevKey).Check(t.Context(), testItem(), p); got.State != StateNotAssessed || got.Reason != ReasonTimeout {
 			t.Fatalf("assessment: %+v", got)
+		}
+	})
+	t.Run("invalid_policy_and_item", func(t *testing.T) {
+		js, pool := newJevServer(t, jevAnswer(`{}`))
+		j := newTestJev(t, js, pool, testJevKey)
+		for name, mutate := range map[string]func(*Policy){
+			"unknown_mode":     func(p *Policy) { p.Mode = "maybe" },
+			"zero_timeout":     func(p *Policy) { p.Timeout = 0 },
+			"zero_request":     func(p *Policy) { p.MaxRequestBytes = 0 },
+			"zero_response":    func(p *Policy) { p.MaxResponseBytes = 0 },
+			"max_response_cap": func(p *Policy) { p.MaxResponseBytes = math.MaxInt64 },
+		} {
+			p := testPolicy()
+			mutate(&p)
+			if got := j.Check(t.Context(), testItem(), p); got.Status != StatusInvalid || got.Reason != ReasonPolicy {
+				t.Fatalf("%s: %+v", name, got)
+			}
+		}
+		empty := testItem()
+		empty.Parts = nil
+		empty.SubmittedBytes = 0
+		if got := j.Check(t.Context(), empty, testPolicy()); got.Status != StatusInvalid || got.Reason != ReasonMalformed {
+			t.Fatalf("empty item: %+v", got)
+		}
+		if js.requests.Load() != 0 {
+			t.Fatalf("invalid input sent %d requests", js.requests.Load())
 		}
 	})
 	t.Run("unsupported_kind", func(t *testing.T) {

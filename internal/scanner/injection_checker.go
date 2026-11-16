@@ -139,8 +139,7 @@ func (s *Scanner) watchInjection(ctx context.Context, set *selection.Set, surfac
 	if !ok {
 		return
 	}
-	before := set.WatchDrops()
-	set.Watch(ctx, b, item, func(a checker.Assessment) {
+	admitted := set.Watch(ctx, b, item, func(a checker.Assessment) {
 		reason := string(a.Reason)
 		if a.State == checker.StateFinding {
 			reason = ExternalAssessment{Assessment: a}.Reason()
@@ -150,7 +149,7 @@ func (s *Scanner) watchInjection(ctx context.Context, set *selection.Set, surfac
 			State: string(a.State), Reason: reason, Watch: true,
 		})
 	})
-	if set.WatchDrops() != before {
+	if !admitted {
 		s.ReportInjectionChecker(ctx, InjectionCheckerEvent{Checker: b.Name, Surface: surface, Watch: true, Dropped: true})
 	}
 }

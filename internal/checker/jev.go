@@ -85,6 +85,7 @@ type jevQuestionSpec struct {
 type jevResponse struct {
 	Model   *string `json:"model"`
 	Answers map[string]struct {
+		Type *string  `json:"type"`
 		Noul *float64 `json:"noul"`
 	} `json:"answers"`
 }
@@ -147,7 +148,9 @@ func (j *Jev) decode(data []byte, item Item) Assessment {
 		return failure(StatusInvalid, ReasonStaleRevision)
 	}
 	answer, ok := resp.Answers[jevQuestionID]
-	if !ok || answer.Noul == nil || math.IsNaN(*answer.Noul) || math.IsInf(*answer.Noul, 0) || *answer.Noul < 0 || *answer.Noul > 1 {
+	// A reported answer type other than the yes/no question asked means
+	// the score is not this question's probability.
+	if !ok || (answer.Type != nil && *answer.Type != "noul") || answer.Noul == nil || math.IsNaN(*answer.Noul) || math.IsInf(*answer.Noul, 0) || *answer.Noul < 0 || *answer.Noul > 1 {
 		return failure(StatusInvalid, ReasonMalformed)
 	}
 	score := *answer.Noul
