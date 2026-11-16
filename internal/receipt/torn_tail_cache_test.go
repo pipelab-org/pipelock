@@ -303,3 +303,32 @@ func TestCheckSessionTailCachedRelinksShardsAfterAChangedOne(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckSessionTailCachedDistinguishesNilAndEmptyKeys(t *testing.T) {
+	c := startShardedRun(t)
+	var cache TailCheckCache
+	if err := CheckSessionTailCached(c.run.rec, c.run.session, nil, &cache); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckSessionTailCached(c.run.rec, c.run.session, []string{}, nil); err == nil {
+		t.Fatal("full check accepted empty signer set")
+	}
+	if err := CheckSessionTailCached(c.run.rec, c.run.session, []string{}, &cache); err == nil {
+		t.Fatal("cached check accepted empty signer set")
+	}
+}
+
+func TestCheckSessionTailCachedSeparatesSignerKeys(t *testing.T) {
+	c := startShardedRun(t)
+	var cache TailCheckCache
+	if err := CheckSessionTailCached(c.run.rec, c.run.session, []string{c.keys[0], "zzzz"}, &cache); err != nil {
+		t.Fatal(err)
+	}
+	keys := []string{c.keys[0] + "\nzzzz"}
+	if err := CheckSessionTailCached(c.run.rec, c.run.session, keys, nil); err == nil {
+		t.Fatal("full check accepted different signer set")
+	}
+	if err := CheckSessionTailCached(c.run.rec, c.run.session, keys, &cache); err == nil {
+		t.Fatal("cached check accepted different signer set")
+	}
+}

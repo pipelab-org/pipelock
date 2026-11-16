@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
@@ -70,7 +69,7 @@ func CheckSessionTailCached(rec *recorder.Recorder, session string, signerKeys [
 type TailCheckCache struct {
 	mu      sync.Mutex
 	session string
-	keys    string
+	keys    []string
 	shards  []verifiedShard
 }
 
@@ -94,10 +93,13 @@ var (
 	digestShardFile   = recorder.DigestEvidenceFile
 )
 
-func signerKeySet(keys []string) string {
-	sorted := slices.Clone(keys)
+func signerKeySet(keys []string) []string {
+	if keys == nil {
+		return nil
+	}
+	sorted := append([]string{}, keys...)
 	slices.Sort(sorted)
-	return strings.Join(slices.Compact(sorted), "\n")
+	return slices.Compact(sorted)
 }
 
 func checkSessionTailLocked(rec *recorder.Recorder, session string, signerKeys []string, cache *TailCheckCache) error {
@@ -110,7 +112,7 @@ func checkSessionTailLocked(rec *recorder.Recorder, session string, signerKeys [
 	if cache != nil {
 		cache.mu.Lock()
 		defer cache.mu.Unlock()
-		if cache.session == session && cache.keys == keySet {
+		if cache.session == session && (cache.keys == nil) == (keySet == nil) && slices.Equal(cache.keys, keySet) {
 			reusable = cache.shards
 		}
 	}
