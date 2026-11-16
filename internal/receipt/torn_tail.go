@@ -49,7 +49,8 @@ func CheckSessionTail(rec *recorder.Recorder, session string, signerKeys []strin
 // the process lives. Re-parsing and re-verifying every signed record on every
 // reload therefore made each reload slower than the last and held every
 // receipt-gated request for its whole duration. The cache keeps, per shard of
-// the verified prefix, the exact bytes' digest and the chain state at its end.
+// the verified prefix, the exact bytes' digest, and for the last shards the
+// chain state at their end.
 // A shard whose bytes still hash to the recorded digest, checked for the same
 // session and signer keys and reached through an unchanged prefix, carries the
 // recorded state forward instead of being parsed again. Any changed byte, a
@@ -76,8 +77,9 @@ type TailCheckCache struct {
 type verifiedShard struct {
 	path   string
 	digest recorder.EvidenceFileDigest
-	// end is the chain state after the shard's last record.
-	end tailChainState
+	// end is the chain state after the shard's last record. Only the last
+	// retainedEndStates shards keep it; see checkSessionTailLocked.
+	end *tailChainState
 }
 
 // tailChainState is what validation of the next shard depends on.
@@ -86,6 +88,9 @@ type tailChainState struct {
 	priorReceipt *Receipt
 	priorV2      *contractreceipt.EvidenceReceipt
 }
+
+// retainedEndStates is how many trailing cached shards keep their end state.
+const retainedEndStates = 2
 
 // Package seams so tests can count full validations.
 var (
@@ -121,24 +126,43 @@ func checkSessionTailLocked(rec *recorder.Recorder, session string, signerKeys [
 		// Whatever happens below, the cache holds exactly the prefix this
 		// call verified: a failure must not leave older entries that a later
 		// call could reach through a changed prefix.
-		defer func() { cache.session, cache.keys, cache.shards = session, keySet, verified }()
+		defer func() {
+			for k := range len(verified) - retainedEndStates {
+				verified[k].end = nil
+			}
+			cache.session, cache.keys, cache.shards = session, keySet, verified
+		}()
 	}
-	var state tailChainState
 	// A cached end state is only valid after the exact shards it followed.
 	// Once one shard is validated afresh, every later shard is too: its
 	// first record must link to that shard's new end, which no cached state
 	// has seen. A shard that lost trailing records still validates on its
 	// own, and only the next shard's link reveals the loss.
-	reusing := true
-	for i, file := range files {
+	//
+	// The first shard to validate afresh needs its predecessor's end state.
+	// Only the last shards keep one, because a reload of a healthy run finds
+	// either no change, a grown final shard or new shards after it. A change
+	// further back finds no stored state, and validation starts over from
+	// the first shard: the cost of the uncached check, paid only on damage.
+	var state tailChainState
+	known, reusing := true, true
+	for i := 0; i < len(files); i++ {
+		file := files[i]
 		if reusing && i < len(reusable) && reusable[i].path == file {
 			if digest, err := digestShardFile(file); err == nil && digest == reusable[i].digest {
 				verified = append(verified, reusable[i])
-				state = reusable[i].end
+				known = reusable[i].end != nil
+				if known {
+					state = *reusable[i].end
+				}
 				continue
 			}
 		}
 		reusing = false
+		if !known {
+			verified, state, known, i = verified[:0], tailChainState{}, true, -1
+			continue
+		}
 		digest, err := validateShardFile(file, func(next recorder.Entry) error {
 			return state.advance(next, session, signerKeys)
 		})
@@ -148,7 +172,8 @@ func checkSessionTailLocked(rec *recorder.Recorder, session string, signerKeys [
 			}
 			return fmt.Errorf("validating evidence file %s: %w", file, err)
 		}
-		verified = append(verified, verifiedShard{path: file, digest: digest, end: state})
+		end := state
+		verified = append(verified, verifiedShard{path: file, digest: digest, end: &end})
 	}
 	return nil
 }

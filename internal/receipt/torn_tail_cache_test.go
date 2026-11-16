@@ -332,3 +332,45 @@ func TestCheckSessionTailCachedSeparatesSignerKeys(t *testing.T) {
 		t.Fatal("cached check accepted different signer set")
 	}
 }
+
+// TestCheckSessionTailCachedBoundsRetainedState keeps memory flat over a long
+// run: only the last shards hold chain state, and a change further back
+// re-validates the whole run instead of trusting a state it no longer has.
+func TestCheckSessionTailCachedBoundsRetainedState(t *testing.T) {
+	c := startShardedRun(t)
+	var cache TailCheckCache
+	if err := c.check(&cache); err != nil {
+		t.Fatal(err)
+	}
+	files := c.shards(t)
+	if len(files) <= retainedEndStates {
+		t.Fatalf("need more than %d shards, have %d", retainedEndStates, len(files))
+	}
+	for i, shard := range cache.shards {
+		if keep := i >= len(cache.shards)-retainedEndStates; (shard.end != nil) != keep {
+			t.Fatalf("shard %d of %d: retained end state=%t, want %t", i, len(cache.shards), shard.end != nil, keep)
+		}
+	}
+
+	// Make the cached digest of the second shard disagree with its bytes.
+	// Its predecessor keeps no stored state, so every shard is validated
+	// again from the first.
+	cache.shards[1].digest.Size++
+	validated := countFullValidations(t)
+	if err := c.check(&cache); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(*validated, files) {
+		t.Fatalf("early miss validated %v, want the whole run %v", *validated, files)
+	}
+
+	// A miss on the final shard reuses the retained state before it.
+	cache.shards[len(cache.shards)-1].digest.Size++
+	*validated = nil
+	if err := c.check(&cache); err != nil {
+		t.Fatal(err)
+	}
+	if want := files[len(files)-1:]; !slices.Equal(*validated, want) {
+		t.Fatalf("final-shard miss validated %v, want %v", *validated, want)
+	}
+}
