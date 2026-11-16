@@ -8,9 +8,11 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -210,6 +212,49 @@ func TestInterceptTunnel_RealSSRF_RecordsSignalBlock(t *testing.T) {
 	}
 	if !foundBlock {
 		t.Errorf("real SSRF (private IP) must record SignalBlock in intercept URL path; got signals=%v", rec.signals)
+	}
+}
+
+// TestInterceptRateLimitNoSignal keeps capacity enforcement separate from
+// adaptive threat scoring in both enforcement and audit mode.
+func TestInterceptRateLimitNoSignal(t *testing.T) {
+	for _, enforce := range []bool{true, false} {
+		t.Run(fmt.Sprintf("enforce_%t", enforce), func(t *testing.T) {
+			_, _, cfg, _, logger, m := testInterceptSetup(t)
+			cfg.Enforce = &enforce
+			cfg.FetchProxy.Monitoring.MaxReqPerMinute = 1
+			cfg.AdaptiveEnforcement.Enabled = true
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			const targetURL = "https://api.vendor.example/page"
+			if result := sc.Scan(t.Context(), targetURL); !result.Allowed {
+				t.Fatalf("prime limiter: %s", result.Reason)
+			}
+			rec := &interceptMockRecorder{}
+			calls := 0
+			rt := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/plain"}}, Body: io.NopCloser(strings.NewReader("ordinary page")), Request: r}, nil
+			})
+			h := newInterceptHandler(&InterceptContext{TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg, Scanner: sc, Logger: logger, Metrics: m, Recorder: rec}, rt)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, targetURL, nil))
+			wantStatus, wantCalls := http.StatusOK, 1
+			if enforce {
+				wantStatus, wantCalls = http.StatusTooManyRequests, 0
+			}
+			if w.Code != wantStatus || calls != wantCalls {
+				t.Fatalf("status=%d upstream=%d want %d/%d", w.Code, calls, wantStatus, wantCalls)
+			}
+			for _, sig := range rec.signals {
+				if sig == session.SignalBlock || sig == session.SignalWarning || sig == session.SignalNearMiss {
+					t.Errorf("rate limit must neither raise nor lower threat score: signals=%v", rec.signals)
+				}
+			}
+			if rec.cleanCalled {
+				t.Error("rate limit must not lower the threat score")
+			}
+		})
 	}
 }
 
