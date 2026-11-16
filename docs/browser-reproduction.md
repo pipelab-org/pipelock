@@ -464,3 +464,21 @@ observed rather than inferred? Are negative controls attributed? Can errors or
 pending work appear ready? Are profiles truly fresh/persistent as claimed? Are
 logs and cleanup bounded/verified? Are scanner/network/render/input timings
 separate? Are unsupported integrations and local acceptance gaps explicit?
+
+## TLS/CDN resource scenario (opt-in, proxy-only)
+
+`run.py --mode proxy-only --scenario tls-resource` runs real Chromium against
+three generated HTTPS origins on loopback: a page, a CDN that serves a hashed
+script, stylesheet and image the page declares, and a third origin. Pipelock
+decrypts the traffic with a CA made by `pipelock tls init`, trusted only in a
+throwaway NSS database under the runner workspace; no live trust store is
+touched and no certificate error is ignored. Entropy, DLP, rate and budget
+settings are the defaults. A pass needs the rendered page, the browser's own
+network outcomes, the fixture's arrival counts and signed receipts to agree,
+with the copied recorder verified using `--whole-recorder --require-seal`,
+and the negative probes (altered path, query, body, onward third-origin path)
+to be refused for the named layer. It makes no containment claim and is a
+generated fixture, not public-site acceptance. `--tls-http1` forces HTTP/1.1
+as a labelled diagnostic (the browser default is h2); `--tls-large-html` pads
+the declaring page by `--bundle-bytes`, declarations first. Needs `certutil`
+and `openssl`.

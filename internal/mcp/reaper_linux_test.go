@@ -43,7 +43,10 @@ func TestReaper_AdoptedZombieDrained_DirectChildPreserved(t *testing.T) {
 	// reparents to whichever ancestor has PR_SET_CHILD_SUBREAPER set -
 	// that's this test process. The outer helper then sleeps so the
 	// direct child stays alive while the grandchild becomes a zombie.
-	helper := `( ( sleep 0.1; exit 0 ) & ) ; sleep 30`
+	// The trailing `exit 0` stops any shell from replacing itself with the
+	// final sleep, so every /bin/sh keeps it as a child of its own. That is
+	// the arrangement the group-empty check below has to catch.
+	helper := `( ( sleep 0.1; exit 0 ) & ) ; sleep 30; exit 0`
 	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(10*time.Second))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", helper)
@@ -57,7 +60,14 @@ func TestReaper_AdoptedZombieDrained_DirectChildPreserved(t *testing.T) {
 		t.Fatalf("starting helper: %v", err)
 	}
 	directPID := cmd.Process.Pid
-	t.Cleanup(func() { _ = syscall.Kill(-directPID, syscall.SIGKILL) })
+	// Backstop for failure paths only. Once the group is confirmed empty its
+	// ID may be reused, so the cleanup must not signal it then.
+	groupEmpty := false
+	t.Cleanup(func() {
+		if !groupEmpty {
+			_ = syscall.Kill(-directPID, syscall.SIGKILL)
+		}
+	})
 
 	// Step 1: WITHOUT the reaper, observe the bug. The double-forked
 	// grandchild sleeps 100 ms then exits and becomes a zombie under
@@ -109,6 +119,15 @@ func TestReaper_AdoptedZombieDrained_DirectChildPreserved(t *testing.T) {
 	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("cmd.Wait() hung — reaper likely consumed the direct child's exit status")
 	}
+
+	// No process the helper started may outlive the test. A survivor here is
+	// adopted by this subreaper test process and leaks past the test binary.
+	if !waitForCondition(t, 2*time.Second, func() bool {
+		return errors.Is(syscall.Kill(-directPID, 0), syscall.ESRCH)
+	}) {
+		t.Fatal("helper process group still has live members after the helper exited")
+	}
+	groupEmpty = true
 
 	close(reaperDone)
 }

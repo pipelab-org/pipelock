@@ -189,18 +189,23 @@ func openDrainTransport(t *testing.T, address, transport string, roots *x509.Cer
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("CONNECT status = %d", resp.StatusCode)
 	}
-	select {
-	case upstream := <-accepted:
-		t.Cleanup(func() { _ = upstream.Close() })
-	case <-time.After(testwait.Deadline(5 * time.Second)):
-		t.Fatal("upstream not accepted")
-	}
 	if transport == "intercept" {
 		tlsConn := tls.Client(conn, &tls.Config{RootCAs: roots, ServerName: "127.0.0.1", MinVersion: tls.VersionTLS12})
 		if err := tlsConn.HandshakeContext(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		conn = tlsConn
+		// Interception defers the upstream dial until an HTTP request needs it.
+		// Leave the upstream handshake pending so shutdown must drain it.
+		if _, err := fmt.Fprintf(conn, "%s / HTTP/1.1\r\nHost: %s\r\n\r\n", http.MethodGet, target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case upstream := <-accepted:
+		t.Cleanup(func() { _ = upstream.Close() })
+	case <-time.After(testwait.Deadline(5 * time.Second)):
+		t.Fatal("upstream not accepted")
 	}
 	return conn, closed
 }
