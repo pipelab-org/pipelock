@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -1961,6 +1962,23 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 			}
 		}
 	}
+	// These independent views share only the acquired scanner and immutable
+	// input. Scan them together, then apply destination policy and callbacks
+	// in source/sorted/raw order, as on the serial path.
+	var ordered, raw, result scanner.TextDLPResult
+	orderedCtx, replayOrdered := scanner.BufferDLPWarnings(ctx)
+	sortedCtx, replaySorted := scanner.BufferDLPWarnings(ctx)
+	rawCtx, replayRaw := scanner.BufferDLPWarnings(ctx)
+	var scanOrdered, scanRaw func()
+	if views.rawDocument != "" {
+		scanRaw = func() {
+			if allowEmbeddedSigV4 {
+				raw = sc.ScanRequestBodyTextPartsWithCardViews(rawCtx, []string{views.rawDocument}, []string{""}, "")
+			} else {
+				raw = sc.ScanTextForDLPWithCardView(rawCtx, views.rawDocument, "")
+			}
+		}
+	}
 	// The sorted text join catches order-independent cross-field secrets.
 	// Cards retain source value order, skipping keys and retaining null barriers.
 	if len(atoms) > 1 {
@@ -1969,46 +1987,45 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 			hasNumber = hasNumber || atom.Number
 		}
 		if hasNumber {
-			var ordered scanner.TextDLPResult
-			if allowEmbeddedSigV4 {
-				ordered = sc.ScanRequestBodyTextPartsWithCardAtoms(ctx, texts, atoms, bodyDLPJoinSeparator)
-			} else {
-				ordered = sc.ScanTextForDLPWithTypedCardView(ctx, strings.Join(texts, bodyDLPJoinSeparator), extract.JoinCardAtoms(atoms, bodyDLPJoinSeparator))
-			}
-			if len(ordered.Matches) > 0 {
-				allMatches = append(allMatches, filterMatches(ordered.Matches)...)
+			scanOrdered = func() {
+				if allowEmbeddedSigV4 {
+					ordered = sc.ScanRequestBodyTextPartsWithCardAtoms(orderedCtx, texts, atoms, bodyDLPJoinSeparator)
+				} else {
+					ordered = sc.ScanTextForDLPWithTypedCardView(orderedCtx, strings.Join(texts, bodyDLPJoinSeparator), extract.JoinCardAtoms(atoms, bodyDLPJoinSeparator))
+				}
 			}
 		}
 	}
-	indices := make([]int, len(texts))
-	for i := range indices {
-		indices[i] = i
+	runBodyDLPViewScans(scanOrdered, scanRaw, func() {
+		indices := make([]int, len(texts))
+		for i := range indices {
+			indices[i] = i
+		}
+		slices.SortStableFunc(indices, func(a, b int) int { return strings.Compare(texts[a], texts[b]) })
+		var sorted []string
+		for _, i := range indices {
+			sorted = append(sorted, texts[i])
+		}
+		if allowEmbeddedSigV4 {
+			// The scanner scrubs Text and Card independently, so keep the sorted
+			// non-card text alongside the original card sequence and provenance.
+			result = sc.ScanRequestBodyTextPartsWithCardAtoms(sortedCtx, sorted, atoms, bodyDLPJoinSeparator)
+		} else {
+			result = sc.ScanTextForDLPWithTypedCardView(sortedCtx, strings.Join(sorted, bodyDLPJoinSeparator), extract.JoinCardAtoms(atoms, bodyDLPJoinSeparator))
+		}
+	})
+	replayOrdered()
+	if len(ordered.Matches) > 0 {
+		allMatches = append(allMatches, filterMatches(ordered.Matches)...)
 	}
-	slices.SortStableFunc(indices, func(a, b int) int { return strings.Compare(texts[a], texts[b]) })
-	var sorted []string
-	for _, i := range indices {
-		sorted = append(sorted, texts[i])
-	}
-	var result scanner.TextDLPResult
-	if allowEmbeddedSigV4 {
-		// The scanner scrubs Text and Card independently, so keep the sorted
-		// non-card text alongside the original card sequence and provenance.
-		result = sc.ScanRequestBodyTextPartsWithCardAtoms(ctx, sorted, atoms, bodyDLPJoinSeparator)
-	} else {
-		result = sc.ScanTextForDLPWithTypedCardView(ctx, strings.Join(sorted, bodyDLPJoinSeparator), extract.JoinCardAtoms(atoms, bodyDLPJoinSeparator))
-	}
+	replaySorted()
 	if len(result.Matches) > 0 {
 		if matches := filterMatches(result.Matches); len(matches) > 0 {
 			allMatches = append(allMatches, matches...)
 		}
 	}
+	replayRaw()
 	if views.rawDocument != "" {
-		var raw scanner.TextDLPResult
-		if allowEmbeddedSigV4 {
-			raw = sc.ScanRequestBodyTextPartsWithCardViews(ctx, []string{views.rawDocument}, []string{""}, "")
-		} else {
-			raw = sc.ScanTextForDLPWithCardView(ctx, views.rawDocument, "")
-		}
 		if len(raw.Matches) > 0 {
 			allMatches = appendNewBodyDLPValues(allMatches, filterMatches(raw.Matches))
 		}
@@ -2021,6 +2038,34 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 		}
 	}
 	return uniqueBodyDLPMatches(allMatches)
+}
+
+// runBodyDLPViewScans joins optional workers before returning or propagating a
+// panic on the caller. The calling HTTP surface retains its panic handling.
+func runBodyDLPViewScans(ordered, raw, sorted func()) {
+	var workers sync.WaitGroup
+	defer workers.Wait()
+	var orderedPanic, rawPanic any
+	if raw != nil {
+		workers.Go(func() {
+			defer func() { rawPanic = recover() }()
+			raw()
+		})
+	}
+	if ordered != nil {
+		workers.Go(func() {
+			defer func() { orderedPanic = recover() }()
+			ordered()
+		})
+	}
+	sorted()
+	workers.Wait()
+	if orderedPanic != nil {
+		panic(orderedPanic)
+	}
+	if rawPanic != nil {
+		panic(rawPanic)
+	}
 }
 
 type droppedBodyDLPMatch struct {
