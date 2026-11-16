@@ -58,19 +58,7 @@ func InspectEvidenceTail(path string, validate func(Entry) error) error {
 // Reload uses this for its current run: an intact final line cannot hide
 // corruption in an earlier complete line. Tail-only legacy queries stay bounded.
 func ValidateEvidenceFile(path string, validate func(Entry) error) error {
-	file, info, err := openRegularEvidenceFile(path, validateEvidenceFileAccess())
-	if err != nil {
-		return err
-	}
-	defer func() { _ = file.Close() }()
-	validator := evidenceTailValidator(validate)
-	if err := inspectJSONLTail(file, info, path, validator); err != nil {
-		return err
-	}
-	err = inspectJSONLRecords(io.NewSectionReader(file, 0, info.Size()), path, validator, false)
-	if changed := ensureEvidenceFileUnchanged(file, info); changed != nil {
-		return changed
-	}
+	_, err := validateEvidenceFile(path, validate, nil)
 	return err
 }
 
@@ -133,6 +121,7 @@ func inspectJSONLTornPrefix(input io.Reader, path string, validate func([]byte) 
 func inspectJSONLRecords(input io.Reader, path string, validate func([]byte) error, torn bool) error {
 	reader := bufio.NewReader(input)
 	var offset, lastGood int64
+	var incomplete bool
 	for {
 		line, err := reader.ReadSlice('\n')
 		if errors.Is(err, bufio.ErrBufferFull) {
@@ -174,10 +163,11 @@ func inspectJSONLRecords(input io.Reader, path string, validate func([]byte) err
 			lastGood = offset
 		}
 		if errors.Is(err, io.EOF) {
+			incomplete = len(line) > 0 && !complete
 			break
 		}
 	}
-	if torn {
+	if torn || incomplete {
 		return &TornTailError{Path: path, Offset: lastGood, LastGoodOffset: lastGood}
 	}
 	return nil

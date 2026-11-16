@@ -675,6 +675,7 @@ type Proxy struct {
 	recorder             *recorder.Recorder                    // flight recorder for tamper-evident evidence (nil = disabled)
 	session              string                                // recorder session this process records under; "proxy" when unset (see WithSession)
 	recoveredSession     atomic.Pointer[string]                // fresh run session adopted after torn-tail recovery; overrides session
+	reloadTailCheck      receipt.TailCheckCache                // evidence shards reload already validated; each reload re-checks only changed bytes
 	receiptEmitterPtr    atomic.Pointer[receipt.Emitter]       // v1 action receipt emitter (nil = disabled)
 	v2EmitterPtr         atomic.Pointer[proxydecision.Emitter] // v2 proxy_decision emitter, dual-emitted with v1 (nil = disabled)
 	receiptGroupPtr      atomic.Pointer[receiptGroupRuntime]   // paired per-shard emitters; nil uses the legacy single chain
@@ -2120,7 +2121,7 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 	activeSession := p.recordingSession()
 	keys := append(p.receiptSignerKeysHeld(), p.receiptEmitterPtr.Load().SignerKeyHex(), fmt.Sprintf("%x", privKey.Public().(ed25519.PublicKey)))
 	tornRecovery := p.receiptEmitterPtr.Load() != nil && p.receiptEmitterPtr.Load().SessionID() != activeSession
-	tailErr := receipt.CheckSessionTail(p.recorder, activeSession, keys)
+	tailErr := receipt.CheckSessionTailCached(p.recorder, activeSession, keys, &p.reloadTailCheck)
 	if tailErr == nil && p.recorder.DurabilityFailed() {
 		// The current run's sync failed. Its bytes may read back intact while
 		// earlier pages were lost, so it is recovered like a torn run: kept
