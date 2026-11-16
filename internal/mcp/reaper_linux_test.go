@@ -122,7 +122,7 @@ func TestReaper_AdoptedZombieDrained_DirectChildPreserved(t *testing.T) {
 
 	// No process the helper started may outlive the test. A survivor here is
 	// adopted by this subreaper test process and leaks past the test binary.
-	if !waitForCondition(t, 2*time.Second, func() bool {
+	if !waitForCondition(t, testwait.Deadline(2*time.Second), func() bool {
 		return errors.Is(syscall.Kill(-directPID, 0), syscall.ESRCH)
 	}) {
 		t.Fatal("helper process group still has live members after the helper exited")
