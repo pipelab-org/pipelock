@@ -2294,7 +2294,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgentContractLoader, snapshotContractLoader)
 	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportForward)
 	redirectExempt := new(atomic.Bool)
-	ctx = context.WithValue(ctx, ctxKeyRedirectStructuralExemption, redirectExempt)
+	ctx = context.WithValue(ctx, ctxKeyRedirectNoCleanCredit, redirectExempt)
 	ctx = context.WithValue(ctx, ctxKeyRequestPolicyObserved, policyObserved)
 	ctx = context.WithValue(ctx, ctxKeyReceiptShard, selectedReceiptShard)
 	ctx = context.WithValue(ctx, ctxKeyRedirectSessionRecorder, forwardRec)
@@ -3564,8 +3564,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if responseBudgetTruncated {
 			outcomeReason = "budget_truncated"
 		}
-		// A structural exemption is adaptive-neutral and earns no clean credit.
-		if structured == nil && forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact && !result.IsStructuralExemption() && !redirectExempt.Load() && !policyObserved.Load() {
+		// Neutral URL results earn no clean credit from a benign response.
+		if structured == nil && forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact && !result.IsAdaptiveNeutral() && !redirectExempt.Load() && !policyObserved.Load() {
 			forwardScope := adaptiveScopeForHost(fwdRespHost)
 			recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, sc.ResponseScanningEnabled() && !responseBudgetTruncated && !fwdRespExempt && !fwdAuthenticatedArtifact, adaptiveRecoveryContext{
 				assessment: recoveryAssessment,
