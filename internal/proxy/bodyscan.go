@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -1961,6 +1962,20 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 			}
 		}
 	}
+	// These independent views share only the acquired scanner and immutable
+	// input. Scan them together, then apply destination policy and callbacks
+	// in source/sorted/raw order, as on the serial path.
+	var viewScans sync.WaitGroup
+	var ordered, raw scanner.TextDLPResult
+	if views.rawDocument != "" {
+		viewScans.Go(func() {
+			if allowEmbeddedSigV4 {
+				raw = sc.ScanRequestBodyTextPartsWithCardViews(ctx, []string{views.rawDocument}, []string{""}, "")
+			} else {
+				raw = sc.ScanTextForDLPWithCardView(ctx, views.rawDocument, "")
+			}
+		})
+	}
 	// The sorted text join catches order-independent cross-field secrets.
 	// Cards retain source value order, skipping keys and retaining null barriers.
 	if len(atoms) > 1 {
@@ -1969,15 +1984,13 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 			hasNumber = hasNumber || atom.Number
 		}
 		if hasNumber {
-			var ordered scanner.TextDLPResult
-			if allowEmbeddedSigV4 {
-				ordered = sc.ScanRequestBodyTextPartsWithCardAtoms(ctx, texts, atoms, bodyDLPJoinSeparator)
-			} else {
-				ordered = sc.ScanTextForDLPWithTypedCardView(ctx, strings.Join(texts, bodyDLPJoinSeparator), extract.JoinCardAtoms(atoms, bodyDLPJoinSeparator))
-			}
-			if len(ordered.Matches) > 0 {
-				allMatches = append(allMatches, filterMatches(ordered.Matches)...)
-			}
+			viewScans.Go(func() {
+				if allowEmbeddedSigV4 {
+					ordered = sc.ScanRequestBodyTextPartsWithCardAtoms(ctx, texts, atoms, bodyDLPJoinSeparator)
+				} else {
+					ordered = sc.ScanTextForDLPWithTypedCardView(ctx, strings.Join(texts, bodyDLPJoinSeparator), extract.JoinCardAtoms(atoms, bodyDLPJoinSeparator))
+				}
+			})
 		}
 	}
 	indices := make([]int, len(texts))
@@ -1997,18 +2010,16 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 	} else {
 		result = sc.ScanTextForDLPWithTypedCardView(ctx, strings.Join(sorted, bodyDLPJoinSeparator), extract.JoinCardAtoms(atoms, bodyDLPJoinSeparator))
 	}
+	viewScans.Wait()
+	if len(ordered.Matches) > 0 {
+		allMatches = append(allMatches, filterMatches(ordered.Matches)...)
+	}
 	if len(result.Matches) > 0 {
 		if matches := filterMatches(result.Matches); len(matches) > 0 {
 			allMatches = append(allMatches, matches...)
 		}
 	}
 	if views.rawDocument != "" {
-		var raw scanner.TextDLPResult
-		if allowEmbeddedSigV4 {
-			raw = sc.ScanRequestBodyTextPartsWithCardViews(ctx, []string{views.rawDocument}, []string{""}, "")
-		} else {
-			raw = sc.ScanTextForDLPWithCardView(ctx, views.rawDocument, "")
-		}
 		if len(raw.Matches) > 0 {
 			allMatches = appendNewBodyDLPValues(allMatches, filterMatches(raw.Matches))
 		}

@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -109,6 +110,54 @@ func TestScanRequestBodyCanceledScanIsNotInjection(t *testing.T) {
 
 func fakeGitHubToken() string {
 	return "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl"
+}
+
+// Keep a transcript-shaped workload alongside the field-split regressions:
+// repeating scans of its source, sorted and raw views dominates large requests.
+func BenchmarkScanRequestBodyLongTranscript(b *testing.B) {
+	cfg := testScannerConfig()
+	sc, err := scanner.New(cfg)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(sc.Close)
+	var messages []map[string]any
+	for i := range 64 {
+		messages = append(messages, map[string]any{
+			"role":    "tool",
+			"content": strings.Repeat(fmt.Sprintf("Entry %d: report totals reconciled; output file retained; status pending review.\n", i), 48),
+		})
+	}
+	encode := func() []byte {
+		body, marshalErr := json.Marshal(map[string]any{"messages": messages, "max_tokens": 2048})
+		if marshalErr != nil {
+			b.Fatal(marshalErr)
+		}
+		return body
+	}
+	body := encode()
+	scan := func(body []byte) BodyScanResult {
+		_, result := scanRequestBody(b.Context(), BodyScanRequest{
+			Body: bytes.NewReader(body), ContentType: "application/json",
+			MaxBytes: len(body) + 1, Scanner: sc, Action: config.ActionBlock,
+		})
+		return result
+	}
+	if result := scan(body); !result.Clean {
+		b.Fatalf("benign transcript refused: %s", result.Reason)
+	}
+	messages = append(messages, map[string]any{"role": "tool", "content": fakeGitHubToken()})
+	if result := scan(encode()); result.Clean || len(result.DLPMatches) == 0 {
+		b.Fatal("late credential must still be detected")
+	}
+	b.SetBytes(int64(len(body)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if result := scan(body); !result.Clean {
+			b.Fatal("benign transcript changed verdict")
+		}
+	}
 }
 
 // highEntropyFiller deterministically generates n characters that read like
