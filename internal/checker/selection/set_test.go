@@ -174,41 +174,85 @@ func TestWatchIsolatesCallerCancellationAndMutation(t *testing.T) {
 	}
 }
 
-func TestWatchDropsAfterClose(t *testing.T) {
-	m := checkertest.NewMockServer(t, checkertest.BehaviorClassify)
-	s, err := New(setConfig(
-		map[string]config.InjectionCheckerConfig{"watch": mockChecker(m.URL)},
-		map[string]config.InjectionSurfaceConfig{config.InjectionSurfaceMCPToolResult: {Mode: config.InjectionModeWarn, Watch: "watch"}}))
+func TestCloseWaitsForInFlightWatch(t *testing.T) {
+	s, err := New(config.Defaults())
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, ok := s.Watcher(config.InjectionSurfaceMCPToolResult)
-	if !ok {
-		t.Fatal("no watcher")
-	}
+	g := gatedChecker{started: make(chan struct{}, 1), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(g.release) }) }
+	t.Cleanup(release)
+	b := Binding{Name: "gated", Checker: g, Policy: checker.Policy{Mode: checker.ModeWarn}, Watch: true}
+	item := probeItem("w", selfTestSuspicious)
+	item.Context = []checker.ContextValue{{Name: "tool", Value: "read_file", Origin: checker.OriginOperator, Trust: checker.TrustAuthenticated}}
 	done := make(chan checker.Assessment, 1)
-	if !s.Watch(context.Background(), w, probeItem("w", selfTestSuspicious), func(a checker.Assessment) { done <- a }) {
+	if !s.Watch(context.Background(), b, item, func(a checker.Assessment) { done <- a }) {
 		t.Fatal("watch not admitted")
 	}
-	// A nil callback is allowed.
-	if !s.Watch(context.Background(), w, probeItem("n", selfTestBenign), nil) {
-		t.Fatal("nil-callback watch not admitted")
+	select {
+	case <-g.started:
+	case <-time.After(testwait.Deadline(5 * time.Second)):
+		t.Fatal("watch call never started")
 	}
-	// Close waits for in-flight calls, so the result is already delivered.
-	s.Close()
+
+	closed := make(chan struct{})
+	go func() {
+		s.Close()
+		close(closed)
+	}()
+	// Once Close has stopped admission it must keep waiting while the call
+	// is parked.
+	testwait.For(t, testwait.Deadline(5*time.Second), func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.closed
+	}, "Close never stopped admission")
+	select {
+	case <-closed:
+		t.Fatal("Close returned while a watch call was still in flight")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	release()
+	select {
+	case <-closed:
+	case <-time.After(testwait.Deadline(5 * time.Second)):
+		t.Fatal("Close did not return after the watch call finished")
+	}
 	select {
 	case a := <-done:
 		if a.State != checker.StateFinding {
 			t.Fatalf("watch assessment = %+v", a)
 		}
 	default:
-		t.Fatal("Close returned before the in-flight watch finished")
+		t.Fatal("Close returned before the watch callback ran")
 	}
-	if s.Watch(context.Background(), w, probeItem("late", selfTestBenign), nil) {
+
+	// Nothing is admitted after Close.
+	if s.Watch(context.Background(), b, probeItem("late", selfTestBenign), nil) {
 		t.Fatal("watch admitted after close")
 	}
 	if s.WatchDrops() != 1 {
 		t.Fatalf("drops = %d, want 1", s.WatchDrops())
+	}
+}
+
+func TestWatchAcceptsNilCallback(t *testing.T) {
+	m := checkertest.NewMockServer(t, checkertest.BehaviorClassify)
+	s := newSet(t, setConfig(
+		map[string]config.InjectionCheckerConfig{"watch": mockChecker(m.URL)},
+		map[string]config.InjectionSurfaceConfig{config.InjectionSurfaceMCPToolResult: {Mode: config.InjectionModeWarn, Watch: "watch"}}))
+	w, ok := s.Watcher(config.InjectionSurfaceMCPToolResult)
+	if !ok {
+		t.Fatal("no watcher")
+	}
+	if !s.Watch(context.Background(), w, probeItem("n", selfTestBenign), nil) {
+		t.Fatal("nil-callback watch not admitted")
+	}
+	s.Close()
+	if m.Requests() != 1 {
+		t.Fatalf("checker saw %d requests, want 1", m.Requests())
 	}
 }
 
