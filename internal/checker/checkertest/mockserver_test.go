@@ -54,12 +54,18 @@ func TestMockServerBehaviours(t *testing.T) {
 		t.Fatalf("uncited = %+v", got)
 	}
 
+	m.SetBehavior(BehaviorEchoReason)
+	got = client.Check(t.Context(), mockItem("echoed_token_1"), mockPolicy())
+	if got.State != checker.StateFinding || got.Response.Findings[0].ReasonID != "echoed_token_1" {
+		t.Fatalf("echo = %+v", got)
+	}
+
 	m.SetBehavior(BehaviorDown)
 	if got := client.Check(t.Context(), mockItem("plain text"), mockPolicy()); got.State != checker.StateNotAssessed {
 		t.Fatalf("down = %+v", got)
 	}
-	if m.Requests() != 4 {
-		t.Fatalf("requests = %d, want 4", m.Requests())
+	if m.Requests() != 5 {
+		t.Fatalf("requests = %d, want 5", m.Requests())
 	}
 }
 

@@ -25,6 +25,9 @@ const (
 	BehaviorDown = "down"
 	// BehaviorUncited answers suspicious with a finding citing no parts.
 	BehaviorUncited = "uncited"
+	// BehaviorEchoReason answers suspicious with the first part's text as the
+	// finding's reason ID, like a checker that echoes assessed content.
+	BehaviorEchoReason = "echo_reason"
 )
 
 // SuspiciousMarker is the text BehaviorClassify treats as an attack.
@@ -81,6 +84,11 @@ func NewMockServer(t testing.TB, behavior string) *MockServer {
 		case BehaviorUncited:
 			resp.Classification = checker.Suspicious
 			resp.Findings = []checker.Finding{{ReasonID: "instruction_override"}}
+		case BehaviorEchoReason:
+			resp.Classification = checker.Suspicious
+			if len(item.Parts) > 0 {
+				resp.Findings = []checker.Finding{{ReasonID: item.Parts[0].Text}}
+			}
 		default:
 			for _, p := range item.Parts {
 				if strings.Contains(p.Text, SuspiciousMarker) {

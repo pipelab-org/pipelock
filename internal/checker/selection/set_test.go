@@ -121,16 +121,17 @@ type gatedChecker struct {
 }
 
 type gatedResult struct {
-	text      string
-	toolValue string
-	ctxErr    error
+	text         string
+	toolValue    string
+	completeness string
+	ctxErr       error
 }
 
 func (g gatedChecker) Check(ctx context.Context, item checker.Item, _ checker.Policy) checker.Assessment {
 	g.started <- struct{}{}
 	<-g.release
-	gr := gatedResult{text: item.Parts[0].Text, toolValue: item.Context[0].Value, ctxErr: ctx.Err()}
-	if gr.text != selfTestSuspicious || gr.toolValue != "read_file" || gr.ctxErr != nil {
+	gr := gatedResult{text: item.Parts[0].Text, toolValue: item.Context[0].Value, completeness: item.Completeness.Status, ctxErr: ctx.Err()}
+	if gr.text != selfTestSuspicious || gr.toolValue != "read_file" || gr.completeness != checker.Complete || gr.ctxErr != nil {
 		return checker.Assessment{State: checker.StateIncomplete}
 	}
 	return checker.Assessment{State: checker.StateFinding}
@@ -138,7 +139,12 @@ func (g gatedChecker) Check(ctx context.Context, item checker.Item, _ checker.Po
 
 func TestWatchIsolatesCallerCancellationAndMutation(t *testing.T) {
 	s := newSet(t, config.Defaults())
-	g := gatedChecker{started: make(chan struct{}), release: make(chan struct{})}
+	// started is buffered and the gate is released at cleanup, before the
+	// set's Close waits for the call, so a failed wait cannot hang the test.
+	g := gatedChecker{started: make(chan struct{}, 1), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(g.release) }) }
+	t.Cleanup(release)
 	b := Binding{Name: "gated", Checker: g, Policy: checker.Policy{Mode: checker.ModeWarn}, Watch: true}
 	item := probeItem("w", selfTestSuspicious)
 	item.Context = []checker.ContextValue{{Name: "tool", Value: "read_file", Origin: checker.OriginOperator, Trust: checker.TrustAuthenticated}}
@@ -157,7 +163,7 @@ func TestWatchIsolatesCallerCancellationAndMutation(t *testing.T) {
 	item.Parts[0].Text = "mutated"
 	item.Context[0].Value = "mutated"
 	item.Completeness.Status = checker.Partial
-	close(g.release)
+	release()
 	select {
 	case a := <-done:
 		if a.State != checker.StateFinding {

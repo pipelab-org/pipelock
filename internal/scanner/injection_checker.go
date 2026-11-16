@@ -88,13 +88,17 @@ func (e ExternalAssessment) Recovery() InjectionAssessment {
 	return InjectionAssessment{Checker: e.Checker, Status: status}
 }
 
-// Reason is the stable reason for a non-benign result, for operator logs.
+// FindingReason is the reason every external finding reports. A checker's
+// own reason IDs never reach events or logs: an identifier-shaped value can
+// still be assessed content echoed back, and events carry no content.
+const FindingReason = "suspicious"
+
+// Reason is the stable, proxy-owned reason for a non-benign result, for
+// operator logs: FindingReason for a finding, otherwise the assessment's
+// failure reason or state.
 func (e ExternalAssessment) Reason() string {
 	if e.Finding() {
-		if r := e.Assessment.Response; r != nil && len(r.Findings) > 0 {
-			return r.Findings[0].ReasonID
-		}
-		return "suspicious"
+		return FindingReason
 	}
 	if e.Assessment.Reason != "" {
 		return string(e.Assessment.Reason)
@@ -140,10 +144,7 @@ func (s *Scanner) watchInjection(ctx context.Context, set *selection.Set, surfac
 		return
 	}
 	admitted := set.Watch(ctx, b, item, func(a checker.Assessment) {
-		reason := string(a.Reason)
-		if a.State == checker.StateFinding {
-			reason = ExternalAssessment{Assessment: a}.Reason()
-		}
+		reason := ExternalAssessment{Assessment: a}.Reason()
 		s.ReportInjectionChecker(context.WithoutCancel(ctx), InjectionCheckerEvent{
 			Checker: b.Name, Surface: surface, Mode: config.InjectionModeWarn,
 			State: string(a.State), Reason: reason, Watch: true,

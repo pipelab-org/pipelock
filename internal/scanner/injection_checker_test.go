@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -104,11 +105,11 @@ func TestAssessInjectionOutcomes(t *testing.T) {
 	}
 
 	found, _ := s.AssessInjection(ctx, config.InjectionSurfaceMCPToolResult, checkerTestItem(checkertest.SuspiciousMarker))
-	if !found.Block() || !found.Finding() || found.Reason() != "instruction_override" || found.Recovery().Status != AssessmentFinding {
+	if !found.Block() || !found.Finding() || found.Reason() != FindingReason || found.Recovery().Status != AssessmentFinding {
 		t.Fatalf("finding = %+v", found)
 	}
 	got := ev.snapshot()
-	if len(got) != 1 || got[0].State != string(checker.StateFinding) || got[0].Mode != config.InjectionModeBlock || got[0].Reason != "instruction_override" || got[0].Watch {
+	if len(got) != 1 || got[0].State != string(checker.StateFinding) || got[0].Mode != config.InjectionModeBlock || got[0].Reason != FindingReason || got[0].Watch {
 		t.Fatalf("finding event = %+v", got)
 	}
 
@@ -161,7 +162,7 @@ func TestWatchInjectionReportsWithoutDeciding(t *testing.T) {
 		t.Fatal("watch-only surface returned a decision")
 	}
 	got := ev.waitFor(t, 1)
-	if !got[0].Watch || got[0].Dropped || got[0].State != string(checker.StateFinding) || got[0].Reason != "instruction_override" || got[0].Checker != "watch" {
+	if !got[0].Watch || got[0].Dropped || got[0].State != string(checker.StateFinding) || got[0].Reason != FindingReason || got[0].Checker != "watch" {
 		t.Fatalf("watch event = %+v", got[0])
 	}
 
@@ -193,5 +194,32 @@ func TestInjectionCheckerHookNilSafety(t *testing.T) {
 	s.ReportInjectionChecker(context.Background(), InjectionCheckerEvent{Checker: "x"})
 	if len(ev.snapshot()) != 0 {
 		t.Fatal("cleared hook still received events")
+	}
+}
+
+// A checker that echoes identifier-shaped assessed content as its reason ID
+// never gets that value into an event, on the deciding or the watch path.
+func TestCheckerReasonIDNeverReachesEvents(t *testing.T) {
+	const echoed = "secret_token_123"
+	m := checkertest.NewMockServer(t, checkertest.BehaviorEchoReason)
+	s, ev := checkerScanner(t, m.URL, config.InjectionSurfaceConfig{Checker: "decide", Mode: config.InjectionModeBlock, Watch: "watch"})
+	out, ok := s.AssessInjection(context.Background(), config.InjectionSurfaceMCPToolResult, checkerTestItem(echoed))
+	if !ok || !out.Finding() || out.Assessment.Response.Findings[0].ReasonID != echoed {
+		t.Fatalf("fixture did not echo the content as the reason ID: %+v", out)
+	}
+	if out.Reason() != FindingReason {
+		t.Fatalf("Reason() = %q, want %q", out.Reason(), FindingReason)
+	}
+	got := ev.waitFor(t, 2)
+	sawWatch, sawDecide := false, false
+	for _, e := range got {
+		if e.Reason != FindingReason || strings.Contains(e.Reason+e.State+e.Mode+e.Checker, echoed) {
+			t.Fatalf("event carries checker reason text: %+v", e)
+		}
+		sawWatch = sawWatch || e.Watch
+		sawDecide = sawDecide || !e.Watch
+	}
+	if !sawWatch || !sawDecide {
+		t.Fatalf("missing an event path: %+v", got)
 	}
 }
