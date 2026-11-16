@@ -132,3 +132,19 @@ func TestInjectionSurfaceBypassesVerdictCache(t *testing.T) {
 		t.Fatal("lowered surface wrote a verdict the global scan reused")
 	}
 }
+
+func TestInjectionSurfaceHelpersNilSafe(t *testing.T) {
+	var parent context.Context // a nil parent is part of the contract
+	ctx := WithInjectionSurface(parent, config.InjectionSurfaceMCPToolResult)
+	if InjectionSurfaceFromContext(ctx) != config.InjectionSurfaceMCPToolResult {
+		t.Fatal("nil parent context lost the surface label")
+	}
+	var nilScanner *Scanner
+	if nilScanner.InjectionPolicy().Selected() {
+		t.Fatal("nil scanner reported a selection")
+	}
+	s := surfaceScanner(t, config.ActionBlock, map[string]config.InjectionSurfaceConfig{config.InjectionSurfaceMCPToolResult: {Mode: config.InjectionModeWarn}})
+	if got := s.InjectionPolicy().For(config.InjectionSurfaceMCPToolResult); got.Mode != config.InjectionModeWarn || !s.InjectionPolicy().Selected() {
+		t.Fatalf("scanner snapshot policy = %+v", got)
+	}
+}
