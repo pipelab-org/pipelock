@@ -7,9 +7,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -26,6 +29,16 @@ import (
 // ErrOptions is deliberately independent of endpoint or credential values.
 var ErrOptions = errors.New("invalid checker client options")
 
+// Option errors contain no endpoint or credential values.
+var (
+	ErrOptionScheme        = fmt.Errorf("%w: scheme", ErrOptions)
+	ErrOptionURL           = fmt.Errorf("%w: URL components", ErrOptions)
+	ErrOptionAuthorization = fmt.Errorf("%w: authorization header", ErrOptions)
+	ErrOptionUnixSocket    = fmt.Errorf("%w: unix socket", ErrOptions)
+	ErrOptionLoopback      = fmt.Errorf("%w: loopback HTTP", ErrOptions)
+	ErrOptionCA            = fmt.Errorf("%w: CA requires HTTPS", ErrOptions)
+)
+
 // Options is operator-owned. HTTP requires explicit loopback opt-in, or a Unix
 // socket. Authorization is a complete Authorization header value, never a URL.
 // VerifyPeer is an optional per-connection socket ownership check. Managed local
@@ -36,6 +49,7 @@ type Options struct {
 	AllowLoopbackHTTP bool
 	UnixSocket        string
 	VerifyPeer        func(net.Conn) error
+	RootCAs           *x509.CertPool
 }
 
 // Client uses a fixed endpoint, a private transport and no retries or proxies.
@@ -49,26 +63,35 @@ type Client struct {
 // at every new connection, and the checked IP is the address actually dialed.
 func NewClient(opts Options) (*Client, error) {
 	u, err := url.Parse(opts.Endpoint)
-	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery ||
-		// net/http refuses invalid header values on every send; reject them
-		// here so a bad credential setting is not reported as an outage.
-		u.Fragment != "" || u.Opaque != "" || !httpguts.ValidHeaderFieldValue(opts.Authorization) ||
-		(u.Scheme != "https" && u.Scheme != "http") {
-		return nil, ErrOptions
+	if err != nil || u.Hostname() == "" {
+		return nil, ErrOptionURL
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return nil, ErrOptionScheme
+	}
+	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" {
+		return nil, ErrOptionURL
+	}
+	if !httpguts.ValidHeaderFieldValue(opts.Authorization) {
+		return nil, ErrOptionAuthorization
+	}
+	if opts.RootCAs != nil && u.Scheme != "https" {
+		return nil, ErrOptionCA
 	}
 	if opts.UnixSocket != "" {
 		if !filepath.IsAbs(opts.UnixSocket) || u.Scheme != "http" || u.Host != "localhost" {
-			return nil, ErrOptions
+			return nil, ErrOptionUnixSocket
 		}
 	} else if u.Scheme == "http" {
 		ip := net.ParseIP(u.Hostname())
 		if !opts.AllowLoopbackHTTP || ip == nil || !ip.IsLoopback() {
-			return nil, ErrOptions
+			return nil, ErrOptionLoopback
 		}
 	}
 	dialer := &net.Dialer{}
 	transport := &http.Transport{
 		Proxy:              nil,
+		TLSClientConfig:    &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: opts.RootCAs},
 		DisableCompression: true,
 		// Disable reuse as well as application retries: net/http can replay a
 		// request on a stale reused connection. Each item gets one connection.
@@ -209,7 +232,7 @@ func attemptDeadline(now, deadline time.Time, remaining int) time.Time {
 // Check takes a snapshot by serializing the item before sending it. The caller
 // must not mutate item or policy concurrently with this method.
 func (c *Client) Check(ctx context.Context, item Item, policy Policy) Assessment {
-	if policy.Mode == ModeOff {
+	if policy.Mode == ModeOff || policy == (Policy{}) {
 		return Assessment{State: StateOff}
 	}
 	if !validPolicy(policy) {
@@ -237,9 +260,21 @@ func (c *Client) Check(ctx context.Context, item Item, policy Policy) Assessment
 	if int64(len(body)) > policy.MaxRequestBytes {
 		return failure(StatusNotChecked, ReasonOverBudget)
 	}
+	data, fail := c.post(ctx, body, policy.MaxResponseBytes)
+	if fail != nil {
+		return *fail
+	}
+	return settleAfterCall(ctx, DecodeResponse(data, req, item, policy))
+}
+
+// post sends one JSON body to the fixed endpoint over the hardened transport
+// and returns the bounded 200 body, or the typed failure. Callers own the
+// whole-call deadline on ctx.
+func (c *Client) post(ctx context.Context, body []byte, maxResponseBytes int64) ([]byte, *Assessment) {
+	fail := func(a Assessment) ([]byte, *Assessment) { return nil, &a }
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
-		return failure(StatusInvalid, ReasonMalformed)
+		return fail(failure(StatusInvalid, ReasonMalformed))
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
@@ -270,23 +305,23 @@ func (c *Client) Check(ctx context.Context, item Item, policy Policy) Assessment
 	httpClient.Transport = transport
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {
-		return transportFailure(ctx)
+		return fail(transportFailure(ctx))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest {
-		return failure(StatusNotChecked, ReasonRedirect)
+		return fail(failure(StatusNotChecked, ReasonRedirect))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return failure(StatusNotChecked, ReasonUnavailable)
+		return fail(failure(StatusNotChecked, ReasonUnavailable))
 	}
-	data, err = io.ReadAll(io.LimitReader(resp.Body, policy.MaxResponseBytes+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
-		return transportFailure(ctx)
+		return fail(transportFailure(ctx))
 	}
-	if int64(len(data)) > policy.MaxResponseBytes {
-		return failure(StatusInvalid, ReasonTooLarge)
+	if int64(len(data)) > maxResponseBytes {
+		return fail(failure(StatusInvalid, ReasonTooLarge))
 	}
-	return settleAfterCall(ctx, DecodeResponse(data, req, item, policy))
+	return data, nil
 }
 
 // settleAfterCall applies the call's end state to a decoded result. A call

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -307,5 +308,25 @@ func TestSelfTest(t *testing.T) {
 				t.Fatalf("%s: %v", name, err)
 			}
 		})
+	}
+}
+
+func TestValidReasonID(t *testing.T) {
+	for id, want := range map[string]bool{
+		"instruction_override": true,
+		"vendor.rule-7":        true,
+		"a":                    true,
+		"":                     false,
+		"Instruction":          false,
+		"7rule":                false,
+		"has space":            false,
+		"ignore all previous":  false,
+		"quote\"":              false,
+		"a" + strings.Repeat("b", maxReasonIDBytes-1): true,
+		"a" + strings.Repeat("b", maxReasonIDBytes):   false,
+	} {
+		if got := validReasonID(id); got != want {
+			t.Errorf("validReasonID(%q) = %v, want %v", id, got, want)
+		}
 	}
 }

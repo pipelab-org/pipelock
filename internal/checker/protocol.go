@@ -212,6 +212,9 @@ type Assessment struct {
 	Status   Status
 	Reason   Reason
 	Response *Response
+	// Score is set by adapters whose providers return a bare score instead
+	// of a protocol response. It is evidence, never a cutoff by itself.
+	Score *float64
 }
 
 // Checker assesses one item without modifying it or granting authority.
@@ -253,6 +256,26 @@ func validPolicy(p Policy) bool {
 	}
 	return p.Scale == nil || (p.Scale.Name != "" && p.Scale.CalibrationID != "" &&
 		finite(p.Scale.Min) && finite(p.Scale.Max) && p.Scale.Min < p.Scale.Max)
+}
+
+// maxReasonIDBytes bounds a finding's reason ID.
+const maxReasonIDBytes = 64
+
+// validReasonID accepts a stable identifier: a lowercase letter followed by
+// lowercase letters, digits, '_', '.', or '-'. Reason IDs reach audit logs
+// and external sinks, so free text, which could echo assessed content, is
+// rejected rather than logged.
+func validReasonID(id string) bool {
+	if id == "" || len(id) > maxReasonIDBytes || id[0] < 'a' || id[0] > 'z' {
+		return false
+	}
+	for i := 1; i < len(id); i++ {
+		c := id[i]
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' && c != '.' && c != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
@@ -372,7 +395,7 @@ func validResult(r Response, item Item, scale *Scale) bool {
 		parts[p.ID] = true
 	}
 	for _, f := range r.Findings {
-		if f.ReasonID == "" {
+		if !validReasonID(f.ReasonID) {
 			return false
 		}
 		for _, id := range f.PartIDs {

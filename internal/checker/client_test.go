@@ -5,6 +5,7 @@ package checker
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"io"
@@ -267,10 +268,9 @@ func TestOptions(t *testing.T) {
 		{Endpoint: "https://localhost", UnixSocket: "/runner.sock"},
 		{Endpoint: "http://api.vendor.example", UnixSocket: "/runner.sock"},
 	} {
-		// The error is exactly the generic sentinel, so no endpoint,
-		// credential or header value can appear in it.
+		// The error wraps the generic sentinel without leaking option values.
 		_, err := NewClient(opts)
-		if !errors.Is(err, ErrOptions) || err.Error() != ErrOptions.Error() {
+		if !errors.Is(err, ErrOptions) {
 			t.Errorf("unexpected error: %v", err)
 		}
 	}
@@ -646,5 +646,61 @@ func TestResponseHeadersBoundedIndependentlyOfBody(t *testing.T) {
 	got := oversized.Check(t.Context(), testItem(), testPolicy())
 	if got.State == StateBenign || got.Status != StatusNotChecked {
 		t.Fatalf("oversized response headers = %+v, want not_checked", got)
+	}
+}
+
+func TestNamedOptions(t *testing.T) {
+	cases := []struct {
+		name string
+		opts Options
+		want error
+	}{
+		{"scheme", Options{Endpoint: "ftp://api.vendor.example"}, ErrOptionScheme},
+		{"url", Options{Endpoint: "https://api.vendor.example/?private=value"}, ErrOptionURL},
+		{"header", Options{Endpoint: "https://api.vendor.example", Authorization: "private\nvalue"}, ErrOptionAuthorization},
+		{"socket", Options{Endpoint: "http://localhost", UnixSocket: "relative"}, ErrOptionUnixSocket},
+		{"loopback", Options{Endpoint: "http://127.0.0.1"}, ErrOptionLoopback},
+		{"ca", Options{Endpoint: "http://127.0.0.1", AllowLoopbackHTTP: true, RootCAs: x509.NewCertPool()}, ErrOptionCA},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewClient(tc.opts)
+			if !errors.Is(err, tc.want) || !errors.Is(err, ErrOptions) || strings.Contains(err.Error(), "private") {
+				t.Fatalf("unexpected option error: %v", err)
+			}
+		})
+	}
+}
+
+func TestZeroPolicyOff(t *testing.T) {
+	var calls atomic.Int32
+	client := clientFor(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1) })
+	if got := client.Check(t.Context(), testItem(), Policy{}); got.State != StateOff || calls.Load() != 0 {
+		t.Fatalf("zero policy: %+v, calls %d", got, calls.Load())
+	}
+	if got := client.Check(t.Context(), testItem(), Policy{Generation: "nonempty"}); got.Reason != ReasonPolicy {
+		t.Fatalf("nonempty policy: %+v", got)
+	}
+}
+
+func TestCustomCA(t *testing.T) {
+	srv := httptest.NewTLSServer(goodHandler(t))
+	defer srv.Close()
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+	for _, tc := range []struct {
+		name  string
+		roots *x509.CertPool
+		want  State
+	}{{"trusted", pool, StateBenign}, {"untrusted", x509.NewCertPool(), StateNotAssessed}} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, err := NewClient(Options{Endpoint: srv.URL, RootCAs: tc.roots})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := client.Check(t.Context(), testItem(), testPolicy()); got.State != tc.want {
+				t.Fatalf("assessment: %+v", got)
+			}
+		})
 	}
 }

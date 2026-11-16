@@ -151,6 +151,12 @@ func (c *Config) policySemanticView() canonicalPolicyView {
 	// keeps its existing canonical hash. A selection identical to the
 	// legacy binding still changes the hash: it changes which setting owns
 	// the surface on a later reload.
+	if c.PromptInjectionDetection != nil && len(c.PromptInjectionDetection.Checkers) > 0 {
+		if view.PromptInjectionDetection == nil {
+			view.PromptInjectionDetection = &PromptInjectionDetection{}
+		}
+		view.PromptInjectionDetection.Checkers = cloneInjectionCheckers(c.PromptInjectionDetection.Checkers)
+	}
 	if c.PromptInjectionDetection != nil && len(c.PromptInjectionDetection.Surfaces) > 0 {
 		if view.PromptInjectionDetection == nil {
 			view.PromptInjectionDetection = &PromptInjectionDetection{}

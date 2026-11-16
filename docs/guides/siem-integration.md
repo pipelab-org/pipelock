@@ -69,6 +69,7 @@ on a sink to receive the info events as well.
 | `adaptive_escalation`* | Session threat score escalated (not to block level) | `session`, `from`, `to`, `client_ip`, `request_id`, `score` |
 | `dlp_warn` | Warn-mode DLP match, or a finding deliberately not enforced | `mode` (`warn` or `informational`), `pattern`, `severity`, `transport`, `reason` (informational only: `suppressed`, `disabled`, or `low_confidence`), `client_ip`, `request_id` |
 | `response_scan_suppressed` | Response-scan finding withheld from enforcement | `mode`, `pattern`, `surface`, `reason` (`suppressed` or `core_observed`), `observe_host`, `observe_owner`, `observe_expires`, `observe_reason` (`core_observed` only), `client_ip`, `request_id` |
+| `injection_checker` | External injection checker outcome that was not a complete benign assessment: a finding, an assessment failure, a watch-only result, a dropped watch call, or a failed startup self-test | `checker`, `surface`, `mode`, `state`, `reason`, `watch`, `dropped`, `transport`, `mcp_server`, `request_id` |
 | `error` | Internal error during request processing | `method`, `url`, `client_ip`, `request_id`, `error` |
 
 MCP `blocked` events use `fields.scanner` for the gate that denied the call.

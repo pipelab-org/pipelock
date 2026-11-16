@@ -170,6 +170,13 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	sc := opts.scanner()
 	approver := opts.Approver
 	toolCfg := opts.toolCfg()
+	// A scanner can be supplied independently of the proxy's tool config.
+	// Preserve description checking even for callers that omit the latter.
+	_, descriptionDecider := sc.InjectionCheckers().Decider(config.InjectionSurfaceMCPToolDescription)
+	if toolCfg == nil && (descriptionDecider || sc.InjectionCheckers().Watches(config.InjectionSurfaceMCPToolDescription)) {
+		// ack-exempt: the caller supplied no tool configuration to carry acknowledgments from.
+		toolCfg = &tools.ToolScanConfig{Action: config.ActionWarn}
+	}
 	if toolCfg != nil && (opts.validateToolHeaders || opts.toolContractDiscovery) {
 		copyCfg := *toolCfg
 		copyCfg.RequireHeaderContracts = true
@@ -653,7 +660,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if toolResult.IsToolsList && (!toolAcknowledged || !toolResult.Clean) {
 				toolCaptureAction := config.ActionAllow
 				if !toolResult.Clean {
-					if toolResult.ResourceLimit != "" || toolResult.CredentialAckRefused() {
+					if toolResult.ResourceLimit != "" || toolResult.CredentialAckRefused() || toolResult.CheckerBlocked() {
 						// Both refuse under every action, so record the block.
 						toolCaptureAction = config.ActionBlock
 					} else if toolCfg.Action != "" {
@@ -684,6 +691,11 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					// A capacity result means the response cannot become a complete
 					// security baseline. Policy warn/strip would forward an
 					// uninspectable definition, so this outcome is always a block.
+					toolAction = config.ActionBlock
+				}
+				if toolResult.CheckerBlocked() {
+					// The selected external checker found injection in block
+					// mode. Its mode, not mcp_tool_scanning.action, decides.
 					toolAction = config.ActionBlock
 				}
 				if toolResult.CredentialAckRefused() {
@@ -717,6 +729,8 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 						}
 					} else if toolResult.CredentialAckRefused() {
 						blockReason = "tools/list refused: a credential-request acknowledgment no longer matches its tool"
+					} else if toolResult.CheckerBlocked() {
+						blockReason = "tools/list refused: the selected injection checker found injection in a tool description"
 					} else if toolScanHasDrift(toolResult) && toolCfg.DriftRemediation != "" {
 						blockReason = "tool definition drift detected; " + toolCfg.DriftRemediation
 					}

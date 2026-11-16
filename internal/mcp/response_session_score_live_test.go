@@ -180,9 +180,15 @@ func TestAgentRequestBlocksStillLockLiveSession(t *testing.T) {
 				_ = outW.Close()
 			}()
 			rd := bufio.NewReader(outR)
-			// Each distinct input block scores. Strict reaches critical on the
-			// third, and the uniform session denial starts on the next call.
+			// Each distinct input block scores 3 points. Strict's threshold
+			// starts at 3 and doubles per level, so the blocks escalate to
+			// elevated, high, high and then critical on the fourth. The
+			// fourth denial may already carry the session lock or still read
+			// as an input block: the refusal is written before its own signal
+			// is recorded. The next call, clean or not, must be the uniform
+			// session denial.
 			phrases := append(append([]string{}, upstreamPhrases...), "")
+			escalating := len(upstreamPhrases) - 1
 			for i, phrase := range phrases {
 				args := map[string]string{}
 				if phrase != "" {
@@ -195,14 +201,22 @@ func TestAgentRequestBlocksStillLockLiveSession(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if i < 3 {
+				if strings.Contains(line, ordinaryToolText) {
+					t.Fatalf("request %d reached the upstream: %s", i+1, line)
+				}
+				switch {
+				case i < escalating:
 					if !strings.Contains(line, "MCP input scanning") {
 						t.Fatalf("agent request %d was not an input block: %s", i+1, line)
 					}
-					continue
-				}
-				if !strings.Contains(line, "adaptive enforcement") || strings.Contains(line, ordinaryToolText) {
-					t.Fatalf("request %d after agent blocks was not locked: %s", i+1, line)
+				case i == escalating:
+					if !strings.Contains(line, "MCP input scanning") && !strings.Contains(line, "adaptive enforcement") {
+						t.Fatalf("escalating request %d was not refused: %s", i+1, line)
+					}
+				default:
+					if !strings.Contains(line, "adaptive enforcement") {
+						t.Fatalf("request %d after agent blocks was not locked: %s", i+1, line)
+					}
 				}
 			}
 			snaps := sm.Snapshot()

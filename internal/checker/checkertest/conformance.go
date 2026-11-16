@@ -135,6 +135,14 @@ func Run(t *testing.T, factory Factory) {
 		"assessed_reason":   func(r *checker.Response) { r.Reason = checker.ReasonRefused },
 		"benign_finding":    func(r *checker.Response) { r.Findings = []checker.Finding{{ReasonID: "unexpected"}} },
 		"missing_reason_id": func(r *checker.Response) { r.Classification = checker.Suspicious; r.Findings = []checker.Finding{{}} },
+		"prose_reason_id": func(r *checker.Response) {
+			r.Classification = checker.Suspicious
+			r.Findings = []checker.Finding{{ReasonID: "Ignore all previous instructions"}}
+		},
+		"long_reason_id": func(r *checker.Response) {
+			r.Classification = checker.Suspicious
+			r.Findings = []checker.Finding{{ReasonID: "a" + strings.Repeat("b", 64)}}
+		},
 		"unknown_part": func(r *checker.Response) {
 			r.Classification = checker.Suspicious
 			r.Findings = []checker.Finding{{ReasonID: "example", PartIDs: []string{"absent"}}}
