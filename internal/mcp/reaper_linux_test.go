@@ -64,9 +64,25 @@ func TestReaper_AdoptedZombieDrained_DirectChildPreserved(t *testing.T) {
 	// Backstop for failure paths only. Once the group is confirmed empty its
 	// ID may be reused, so the cleanup must not signal it then.
 	groupEmpty := false
+	// cmd.Wait runs exactly once on every path, so an early failure still
+	// reaps the helper instead of leaving a zombie a later test could count.
+	var waitOnce sync.Once
+	var waitErr error
+	waitCmd := func() error {
+		waitOnce.Do(func() { waitErr = cmd.Wait() })
+		return waitErr
+	}
 	t.Cleanup(func() {
 		if !groupEmpty {
 			_ = syscall.Kill(-directPID, syscall.SIGKILL)
+		}
+		// Bounded: if a reaper stole the exit status, Wait would never
+		// return, and that failure is already reported by the test.
+		reaped := make(chan struct{})
+		go func() { _ = waitCmd(); close(reaped) }()
+		select {
+		case <-reaped:
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 		}
 	})
 
@@ -108,7 +124,7 @@ func TestReaper_AdoptedZombieDrained_DirectChildPreserved(t *testing.T) {
 	}
 
 	waitDone := make(chan error, 1)
-	go func() { waitDone <- cmd.Wait() }()
+	go func() { waitDone <- waitCmd() }()
 	select {
 	case err := <-waitDone:
 		// Helper exited via SIGTERM; an *exec.ExitError is expected and
