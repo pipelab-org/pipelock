@@ -17,7 +17,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -115,13 +114,64 @@ func TestBodyDLPViewsPanicRemainsOnCaller(t *testing.T) {
 		if recover() == nil {
 			t.Fatal("nil scanner must still panic on the caller")
 		}
-		// An unjoined worker panic would escape the caller's recovery here.
-		runtime.Gosched()
 	}()
 	scanBodyTextViewsForDLPWithAudience(t.Context(), nil, bodyDLPViews{
 		atoms:       []extract.DLPAtom{{Card: "1", Number: true}, {Card: "2", Number: true}},
 		rawDocument: `{"status":"ordinary"}`,
 	}, "", nil, nil, false, nil, "", nil)
+}
+
+func TestBodyDLPViewScansJoinAndPanic(t *testing.T) {
+	for _, source := range []string{"ordered", "raw", "sorted", "none"} {
+		t.Run(source, func(t *testing.T) {
+			release := make(chan struct{})
+			orderedStarted, rawStarted := make(chan struct{}), make(chan struct{})
+			orderedDone, rawDone := make(chan struct{}), make(chan struct{})
+			worker := func(name string, started, done chan struct{}) func() {
+				return func() {
+					defer close(done)
+					close(started)
+					<-release
+					if source == name {
+						panic(name)
+					}
+				}
+			}
+			var got any
+			func() {
+				defer func() { got = recover() }()
+				runBodyDLPViewScans(worker("ordered", orderedStarted, orderedDone), worker("raw", rawStarted, rawDone), func() {
+					<-orderedStarted
+					<-rawStarted
+					close(release)
+					if source == "sorted" {
+						panic(source)
+					}
+				})
+			}()
+			if source == "none" {
+				if got != nil {
+					t.Fatalf("unexpected panic: %v", got)
+				}
+			} else if got != source {
+				t.Fatalf("panic = %v, want %s", got, source)
+			}
+			for _, done := range []chan struct{}{orderedDone, rawDone} {
+				select {
+				case <-done:
+				default:
+					t.Fatal("caller completed before a worker finished")
+				}
+			}
+		})
+	}
+	t.Run("no_workers", func(t *testing.T) {
+		called := false
+		runBodyDLPViewScans(nil, nil, func() { called = true })
+		if !called {
+			t.Fatal("sorted view was not called")
+		}
+	})
 }
 
 func TestScanRequestBodyCancellationDuringViewWarnings(t *testing.T) {
