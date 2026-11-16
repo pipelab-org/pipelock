@@ -4303,6 +4303,9 @@ func (s *Scanner) emitDLPWarns(ctx context.Context, matches []WarnMatch) {
 		ctx = WithDLPWarnContext(ctx, wc)
 	}
 	for _, m := range matches {
+		if bufferDLPWarning(ctx, hook, m) {
+			continue
+		}
 		hook(ctx, m.PatternName, m.Severity)
 	}
 }

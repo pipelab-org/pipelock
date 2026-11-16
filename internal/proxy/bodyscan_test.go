@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -26,6 +27,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -105,6 +107,39 @@ func TestScanRequestBodyCanceledScanIsNotInjection(t *testing.T) {
 	}
 	if len(result.InjectionMatches) != 0 || !strings.Contains(result.Reason, "scan failed") {
 		t.Fatalf("incomplete scan misclassified: %+v", result)
+	}
+}
+
+func TestBodyDLPViewsPanicRemainsOnCaller(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("nil scanner must still panic on the caller")
+		}
+		// An unjoined worker panic would escape the caller's recovery here.
+		runtime.Gosched()
+	}()
+	scanBodyTextViewsForDLPWithAudience(t.Context(), nil, bodyDLPViews{
+		atoms:       []extract.DLPAtom{{Card: "1", Number: true}, {Card: "2", Number: true}},
+		rawDocument: `{"status":"ordinary"}`,
+	}, "", nil, nil, false, nil, "", nil)
+}
+
+func TestScanRequestBodyCancellationDuringViewWarnings(t *testing.T) {
+	cfg := testScannerConfig()
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name: "Cancel observation", Regex: `^\{"status":"cancel-observation","count":1\}$`, Severity: config.SeverityHigh, Action: config.ActionWarn,
+	})
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	sc.SetDLPWarnHook(func(context.Context, string, string) { cancel() })
+	_, result := scanRequestBody(ctx, BodyScanRequest{
+		Body:        strings.NewReader(`{"status":"cancel-observation","count":1}`),
+		ContentType: contentTypeJSON, MaxBytes: 1024, Scanner: sc, Action: config.ActionWarn,
+	})
+	if result.Clean || result.Action != config.ActionBlock || result.ScanError == "" {
+		t.Fatalf("canceled scan must refuse: clean=%v action=%s error=%s", result.Clean, result.Action, result.ScanError)
 	}
 }
 
