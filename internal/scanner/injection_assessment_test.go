@@ -108,7 +108,7 @@ func TestInjectionAssessmentEvidence(t *testing.T) {
 		{Clean: true, SuppressedMatches: []ResponseMatch{{PatternName: "wording"}}},
 		{Clean: true, ObservedCoreMatches: []ObservedCoreMatch{{Match: ResponseMatch{PatternName: "wording"}}}},
 	} {
-		sc.setInjectionAssessment(&result, true)
+		sc.setInjectionAssessment(context.Background(), &result, true)
 		if result.Assessment.Status != AssessmentFinding || !result.Clean {
 			t.Fatalf("accepted finding lost assessment or changed delivery: %+v", result)
 		}

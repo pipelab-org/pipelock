@@ -54,6 +54,7 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 	if (old.PromptInjectionMode() == ActionBlock && updated.PromptInjectionMode() != ActionBlock) || (old.PromptInjectionMode() == ActionWarn && updated.PromptInjectionMode() == ActionAllow) {
 		warnings = append(warnings, ReloadWarning{Field: "prompt_injection_detection", Message: updated.PromptInjectionNotice()})
 	}
+	warnings = append(warnings, injectionSurfaceReloadWarnings(old, updated)...)
 
 	// Mode downgrade: strict → balanced → audit
 	modeRank := map[string]int{ModeStrict: 3, ModeBalanced: 2, ModeAudit: 1}

@@ -325,11 +325,12 @@ func (s *Scanner) ScanCoreResponse(ctx context.Context, content string) []Respon
 		return nil
 	}
 	// The global wording policy caps every wording matcher, this one included.
-	if s.PromptInjectionMode() == config.ActionAllow {
+	mode := s.PromptInjectionModeFor(ctx)
+	if mode == config.ActionAllow {
 		return nil
 	}
 	coreSet := s.scanCoreResponse(content, nil, false)
-	if s.PromptInjectionMode() == config.ActionWarn && len(coreSet.matches) > 0 {
+	if mode == config.ActionWarn && len(coreSet.matches) > 0 {
 		names := make([]string, 0, len(coreSet.matches))
 		for _, match := range coreSet.matches {
 			names = append(names, match.PatternName)

@@ -12,6 +12,9 @@ type PromptInjectionDetection struct {
 	// Action is an enforcement cap. Empty/block preserves each surface's
 	// existing action; warn retains findings without enforcing them.
 	Action string `yaml:"action"`
+	// Surfaces selects the checker and mode per surface. Omitted surfaces
+	// follow Enabled and Action. See InjectionPolicy.
+	Surfaces map[string]InjectionSurfaceConfig `yaml:"surfaces,omitempty" json:",omitempty"`
 }
 
 // PromptInjectionMode returns allow for disabled wording detection, warn for
@@ -31,6 +34,21 @@ func (c *Config) PromptInjectionMode() string {
 
 // PromptInjectionNotice describes the operator-selected reduction in coverage.
 func (c *Config) PromptInjectionNotice() string {
+	return joinInjectionNotices(c.globalPromptInjectionNotice(), c.injectionSurfaceNotice())
+}
+
+func joinInjectionNotices(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	default:
+		return a + " " + b
+	}
+}
+
+func (c *Config) globalPromptInjectionNotice() string {
 	switch c.PromptInjectionMode() {
 	case ActionAllow:
 		return "Regex prompt-injection wording detection is disabled, including core wording rules and MCP tool-description wording checks. Local stdio MCP servers produce no injection-driven taint, so no prompt-injection protection remains there until source trust is tracked separately from wording suspicion. DLP and destination controls still apply to traffic leaving the machine through Pipelock; tool policy, drift, contracts, action limits and the kill switch remain active where configured. With adaptive enforcement enabled, clean traffic no longer lowers session scores; adaptive levels recover by time only, and residual scores at normal level expire after a level_duration_seconds interval without new scored signals."
@@ -47,7 +65,7 @@ func (c *Config) validatePromptInjectionDetection() error {
 	}
 	switch c.PromptInjectionDetection.Action {
 	case "", ActionBlock, ActionWarn:
-		return nil
+		return c.validateInjectionSurfaces()
 	default:
 		return fmt.Errorf("invalid prompt_injection_detection.action %q: must be block or warn", c.PromptInjectionDetection.Action)
 	}

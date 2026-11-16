@@ -201,7 +201,7 @@ func TestInjectionRecoveryDecodedStatus(t *testing.T) {
 			// the decoded assessment; a status-only finding is not reachable.
 			raw.WarnedMatches = []ResponseMatch{{}}
 		}
-		sc.retainDecodedAssessment(&raw, InjectionAssessment{Checker: InjectionCheckerBasic, Status: status})
+		sc.retainDecodedAssessment(context.Background(), &raw, InjectionAssessment{Checker: InjectionCheckerBasic, Status: status})
 		want := status == AssessmentBenign
 		if raw.Assessment.IsBenign() != want {
 			t.Fatalf("decoded=%q raw=%+v", status, raw)

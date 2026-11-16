@@ -132,9 +132,14 @@ type ToolScanResult struct {
 	// exist so an accepted change is visible to the operator rather than
 	// silent.
 	Observations []ToolScanMatch `json:"observations,omitempty"`
-	RPCID        json.RawMessage `json:"-"` // parsed ID for block responses (avoids re-parse)
-	ToolNames    []string        `json:"-"` // tool names from tools/list (for session binding)
-	ToolDefs     []ToolDef       `json:"-"` // accepted definitions for transport header binding
+	// Assessment reports built-in wording coverage of the tool descriptions,
+	// independently of delivery: findings accepted by warn still count as
+	// findings, and a resource limit reports incomplete. Structural checks,
+	// acknowledgments and drift do not enter it.
+	Assessment scanner.InjectionAssessment `json:"assessment"`
+	RPCID      json.RawMessage             `json:"-"` // parsed ID for block responses (avoids re-parse)
+	ToolNames  []string                    `json:"-"` // tool names from tools/list (for session binding)
+	ToolDefs   []ToolDef                   `json:"-"` // accepted definitions for transport header binding
 	// ResourceDetail names the tool, field and bound behind an uninspectable
 	// verdict for the operator log. It is never sent to the agent: it quotes
 	// an upstream-chosen tool name from the very definition being refused.
@@ -2420,7 +2425,7 @@ func ScanToolsForMethodContext(ctx context.Context, line []byte, sc *scanner.Sca
 			// The response scanner owns malformed JSON; no tool state is touched.
 			return ToolScanResult{IsToolsList: false, Clean: true}
 		}
-		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_uninspectable", ResourceDetail: err.Error()}
+		return withDescriptionAssessment(ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_uninspectable", ResourceDetail: err.Error()})
 	}
 
 	// Detect batch response (JSON-RPC 2.0 batch = JSON array).
@@ -2428,10 +2433,25 @@ func ScanToolsForMethodContext(ctx context.Context, line []byte, sc *scanner.Sca
 	// single object, which would return Clean and skip per-element scanning.
 	if trimmed := bytes.TrimSpace(line); len(trimmed) > 0 && trimmed[0] == '[' {
 		// Batch elements do not carry a per-element tracked method.
-		return scanToolsBatch(ctx, trimmed, sc, cfg)
+		return withDescriptionAssessment(scanToolsBatch(ctx, trimmed, sc, cfg))
 	}
 
-	return scanToolsSingle(ctx, line, sc, cfg, method)
+	return withDescriptionAssessment(scanToolsSingle(ctx, line, sc, cfg, method))
+}
+
+// withDescriptionAssessment gives every tools/list result an explicit
+// assessment. A result stopped by a resource limit is incomplete whatever
+// was assessed before it stopped; one that assessed nothing is not_assessed.
+func withDescriptionAssessment(r ToolScanResult) ToolScanResult {
+	if !r.IsToolsList {
+		return r
+	}
+	if r.ResourceLimit != "" {
+		r.Assessment = incompleteDescriptionAssessment
+	} else if r.Assessment.Checker == "" {
+		r.Assessment = scanner.InjectionAssessment{Checker: scanner.InjectionCheckerBasic, Status: scanner.AssessmentNotAssessed}
+	}
+	return r
 }
 
 // scanToolsSingle scans a single JSON-RPC 2.0 response for tool poisoning.
@@ -2500,25 +2520,25 @@ func scanToolsSingle(ctx context.Context, line []byte, sc *scanner.Scanner, cfg 
 	}
 
 	if detail := uninspectableToolDefinition(tools); detail != "" {
-		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_uninspectable", ResourceDetail: detail, RPCID: rpc.ID, ToolNames: names, ToolDefs: tools}
+		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_uninspectable", ResourceDetail: detail, RPCID: rpc.ID, ToolNames: names, ToolDefs: tools, Assessment: incompleteDescriptionAssessment}
 	}
 	if resourceLimit := toolScanCapacityLimit(tools, names, cfg); resourceLimit != "" {
-		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: resourceLimit, RPCID: rpc.ID, ToolNames: names, ToolDefs: tools}
+		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: resourceLimit, RPCID: rpc.ID, ToolNames: names, ToolDefs: tools, Assessment: incompleteDescriptionAssessment}
 	}
 
-	matches, observations, capacityExceeded, epochChanged := scanToolDefsContext(ctx, tools, sc, cfg)
+	matches, observations, capacityExceeded, epochChanged, assessment := scanToolDefsAssessed(ctx, tools, sc, cfg)
 	if epochChanged {
-		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_baseline_reset", RPCID: rpc.ID, ToolNames: names, ToolDefs: tools, Observations: observations}
+		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_baseline_reset", RPCID: rpc.ID, ToolNames: names, ToolDefs: tools, Observations: observations, Assessment: incompleteDescriptionAssessment}
 	}
 	if capacityExceeded {
-		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_baseline_capacity", RPCID: rpc.ID, ToolNames: names, ToolDefs: tools, Observations: observations}
+		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_baseline_capacity", RPCID: rpc.ID, ToolNames: names, ToolDefs: tools, Observations: observations, Assessment: incompleteDescriptionAssessment}
 	}
 
 	if len(matches) == 0 {
-		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: rpc.ID, ToolNames: names, ToolDefs: tools, Observations: observations}
+		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: rpc.ID, ToolNames: names, ToolDefs: tools, Observations: observations, Assessment: assessment}
 	}
 
-	return ToolScanResult{IsToolsList: true, Clean: false, Matches: matches, Observations: observations, RPCID: rpc.ID, ToolNames: names, ToolDefs: tools}
+	return ToolScanResult{IsToolsList: true, Clean: false, Matches: matches, Observations: observations, RPCID: rpc.ID, ToolNames: names, ToolDefs: tools, Assessment: assessment}
 }
 
 // uninspectableToolDefinition rejects a definition whose structured
@@ -2695,6 +2715,7 @@ func scanToolsBatch(ctx context.Context, line []byte, sc *scanner.Scanner, cfg *
 	resourceDetail := ""
 	var firstID json.RawMessage
 	isToolsList := false
+	var assessment scanner.InjectionAssessment
 
 	// A batch is answered as one response, so one element that cannot be
 	// inspected rejects all of it. Check every element before scanning any:
@@ -2717,6 +2738,15 @@ func scanToolsBatch(ctx context.Context, line []byte, sc *scanner.Scanner, cfg *
 			allObservations = append(allObservations, r.Observations...)
 			allNames = append(allNames, r.ToolNames...)
 			allDefs = append(allDefs, r.ToolDefs...)
+			// Members with no description text add no coverage; the rest
+			// merge, so one member's finding or gap governs the batch.
+			if r.Assessment.Checker != "" && r.Assessment.Status != scanner.AssessmentNotAssessed {
+				if assessment.Checker == "" {
+					assessment = r.Assessment
+				} else {
+					assessment = assessment.Merge(r.Assessment)
+				}
+			}
 			if resourceLimit == "" {
 				resourceLimit = r.ResourceLimit
 				resourceDetail = r.ResourceDetail
@@ -2733,10 +2763,10 @@ func scanToolsBatch(ctx context.Context, line []byte, sc *scanner.Scanner, cfg *
 	}
 
 	if len(allMatches) == 0 {
-		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: firstID, ToolNames: allNames, ToolDefs: allDefs, Observations: allObservations}
+		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: firstID, ToolNames: allNames, ToolDefs: allDefs, Observations: allObservations, Assessment: assessment}
 	}
 
-	return ToolScanResult{IsToolsList: true, Clean: false, Matches: allMatches, Observations: allObservations, RPCID: firstID, ToolNames: allNames, ToolDefs: allDefs}
+	return ToolScanResult{IsToolsList: true, Clean: false, Matches: allMatches, Observations: allObservations, RPCID: firstID, ToolNames: allNames, ToolDefs: allDefs, Assessment: assessment}
 }
 
 // scanToolDefs scans a slice of tool definitions for injection, poisoning, and drift.
@@ -2767,9 +2797,46 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 	return scanToolDefsContext(context.Background(), tools, sc, cfg)
 }
 
+// incompleteOr reports incomplete when the scan stopped before every
+// description was assessed.
+func incompleteOr(a scanner.InjectionAssessment, stopped bool) scanner.InjectionAssessment {
+	if stopped {
+		return incompleteDescriptionAssessment
+	}
+	return a
+}
+
+// incompleteDescriptionAssessment marks descriptions that were not all inspected.
+var incompleteDescriptionAssessment = scanner.InjectionAssessment{Checker: scanner.InjectionCheckerBasic, Status: scanner.AssessmentIncomplete}
+
 func scanToolDefsContext(ctx context.Context, tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (matches, observations []ToolScanMatch, capacityExceeded, epochChanged bool) {
+	matches, observations, capacityExceeded, epochChanged, _ = scanToolDefsAssessed(ctx, tools, sc, cfg)
+	return matches, observations, capacityExceeded, epochChanged
+}
+
+// scanToolDefsAssessed is scanToolDefsContext plus the aggregate wording
+// assessment of every tool's description text.
+func scanToolDefsAssessed(ctx context.Context, tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (matches, observations []ToolScanMatch, capacityExceeded, epochChanged bool, assessment scanner.InjectionAssessment) {
+	assessment = scanner.InjectionAssessment{Checker: scanner.InjectionCheckerBasic, Status: scanner.AssessmentNotAssessed}
 	if cfg.HeaderContractsOnly {
-		return nil, nil, false, false
+		return nil, nil, false, false, assessment
+	}
+	// Tool descriptions are their own wording surface: the description
+	// selection can lower the built-in wording mode here, never raise it.
+	ctx = scanner.WithInjectionSurface(ctx, config.InjectionSurfaceMCPToolDescription)
+	wordingMode := sc.PromptInjectionModeFor(ctx)
+	if wordingMode == config.ActionAllow {
+		assessment.Status = scanner.AssessmentOff
+	}
+	// An absent assessment is missing evidence, not an identity element:
+	// the aggregate starts from the first description actually assessed.
+	assessedAny := false
+	addAssessment := func(a scanner.InjectionAssessment) {
+		if !assessedAny {
+			assessment, assessedAny = a, true
+			return
+		}
+		assessment = assessment.Merge(a)
 	}
 	confusableNames := confusableToolNameCollisions(tools)
 	var headerContracts map[string]HeaderContract
@@ -2799,7 +2866,7 @@ func scanToolDefsContext(ctx context.Context, tools []ToolDef, sc *scanner.Scann
 	} else if cfg.DetectDrift {
 		resp, established, epochChanged := driftBaselineForResponse.BeginInventoryResponseAtEpoch(cfg.ExpectedDriftEpoch)
 		if epochChanged {
-			return nil, nil, false, true
+			return nil, nil, false, true, incompleteOr(assessment, true)
 		}
 		establishedBeforeResponse = established
 		// Deferred so every exit, including a mid-loop epoch change or
@@ -2819,7 +2886,7 @@ func scanToolDefsContext(ctx context.Context, tools []ToolDef, sc *scanner.Scann
 	responseAckRefused := false
 	for i, tool := range tools {
 		_, hasAck := findCredentialAck(cfg, tool.Name)
-		prescans[i] = prescanTool(cfg, tool, sc.PromptInjectionMode() != config.ActionAllow || hasAck)
+		prescans[i] = prescanTool(cfg, tool, wordingMode != config.ActionAllow || hasAck)
 		if outcome, ok := credentialAckOutcome(cfg, tool, prescans[i], ackNow); ok {
 			ackOutcomes[i] = outcome
 			responseAckRefused = responseAckRefused || outcome != CredentialAckAcknowledged
@@ -2850,7 +2917,7 @@ func scanToolDefsContext(ctx context.Context, tools []ToolDef, sc *scanner.Scann
 		// to the agent. They retain the tool scanner's action in every mode. Only
 		// a reduced wording policy moves them ahead of the wording cap; the
 		// default keeps the finding order and the receipt pattern it selects.
-		mode := sc.PromptInjectionMode()
+		mode := wordingMode
 		separateCapability := mode == config.ActionWarn || mode == config.ActionAllow
 		if separateCapability {
 			for _, findings := range [][]string{pre.poison, pre.spacedPoison} {
@@ -2868,7 +2935,8 @@ func scanToolDefsContext(ctx context.Context, tools []ToolDef, sc *scanner.Scann
 			match.CredentialAck = outcome
 			hasFinding = true
 		}
-		if text != "" && sc.PromptInjectionMode() != config.ActionAllow {
+		var descriptionAssessment scanner.InjectionAssessment
+		if text != "" && wordingMode != config.ActionAllow {
 			// This is the dedicated tool scanner, whose action is independent of
 			// response scanning. The response path itself never scans tool
 			// descriptions, preserving the tools/list false-positive carve-out.
@@ -2877,6 +2945,7 @@ func scanToolDefsContext(ctx context.Context, tools []ToolDef, sc *scanner.Scann
 				match.Injection = result.Matches
 				hasFinding = true
 			}
+			descriptionAssessment = result.Assessment
 
 			// Tool-specific poisoning patterns on normalized text.
 			// Normalization prevents zero-width char and confusable bypasses.
@@ -2932,7 +3001,13 @@ func scanToolDefsContext(ctx context.Context, tools []ToolDef, sc *scanner.Scann
 		// The operator cap applies only to wording findings, before drift
 		// admission. Structural collisions and acknowledgment refusals retain
 		// their existing behavior, as does drift below.
-		if sc.PromptInjectionMode() == config.ActionWarn && len(match.ToolPoison) > structuralPoisonCount {
+		if text != "" && wordingMode != config.ActionAllow {
+			if len(match.ToolPoison) > structuralPoisonCount || len(match.Injection) > 0 {
+				descriptionAssessment = scanner.InjectionAssessment{Checker: scanner.InjectionCheckerBasic, Status: scanner.AssessmentFinding}
+			}
+			addAssessment(descriptionAssessment)
+		}
+		if wordingMode == config.ActionWarn && len(match.ToolPoison) > structuralPoisonCount {
 			wording := slices.Clone(match.ToolPoison[structuralPoisonCount:])
 			sc.ReportInjectionWarnings(ctx, wording)
 			observations = append(observations, ToolScanMatch{ToolName: tool.Name, ToolPoison: wording})
@@ -2987,7 +3062,7 @@ func scanToolDefsContext(ctx context.Context, tools []ToolDef, sc *scanner.Scann
 				case "name":
 					target = normName
 				case "", "description":
-					if sc.PromptInjectionMode() == config.ActionAllow {
+					if wordingMode == config.ActionAllow {
 						continue
 					}
 					target = normDesc
@@ -2995,7 +3070,10 @@ func scanToolDefsContext(ctx context.Context, tools []ToolDef, sc *scanner.Scann
 					continue
 				}
 				if ep.Re.MatchString(target[0]) || ep.Re.MatchString(target[1]) {
-					if ep.ScanField != "name" && sc.PromptInjectionMode() == config.ActionWarn {
+					if ep.ScanField != "name" {
+						addAssessment(scanner.InjectionAssessment{Checker: scanner.InjectionCheckerBasic, Status: scanner.AssessmentFinding})
+					}
+					if ep.ScanField != "name" && wordingMode == config.ActionWarn {
 						sc.ReportInjectionWarnings(ctx, []string{ep.Name})
 						observations = append(observations, ToolScanMatch{ToolName: tool.Name, ToolPoison: []string{ep.Name}})
 						continue
@@ -3073,7 +3151,7 @@ func scanToolDefsContext(ctx context.Context, tools []ToolDef, sc *scanner.Scann
 				},
 			})
 			if eval.EpochChanged {
-				return matches, observations, false, true
+				return matches, observations, false, true, incompleteOr(assessment, true)
 			}
 			if eval.CapacityExceeded {
 				capacityExceeded = true
@@ -3127,7 +3205,7 @@ func scanToolDefsContext(ctx context.Context, tools []ToolDef, sc *scanner.Scann
 		}
 	}
 
-	return matches, observations, capacityExceeded, false
+	return matches, observations, capacityExceeded, false, incompleteOr(assessment, false)
 }
 
 func confusableToolNameCollisions(tools []ToolDef) map[string]bool {

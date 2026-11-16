@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -43,14 +44,47 @@ func TestReaper_AdoptedZombieDrained_DirectChildPreserved(t *testing.T) {
 	// reparents to whichever ancestor has PR_SET_CHILD_SUBREAPER set -
 	// that's this test process. The outer helper then sleeps so the
 	// direct child stays alive while the grandchild becomes a zombie.
-	helper := `( ( sleep 0.1; exit 0 ) & ) ; sleep 30`
+	// The trailing `exit 0` stops any shell from replacing itself with the
+	// final sleep, so every /bin/sh keeps it as a child of its own. That is
+	// the arrangement the group-empty check below has to catch.
+	helper := `( ( sleep 0.1; exit 0 ) & ) ; sleep 30; exit 0`
 	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(10*time.Second))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", helper)
+	// Own process group: a shell that does not exec its last command (dash,
+	// the default /bin/sh on Debian and Ubuntu) keeps `sleep 30` as a child
+	// of its own. Signalling only the shell would orphan that sleep to this
+	// subreaper test process, and it would outlive the test binary. The
+	// group signal reaches every process the helper started.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("starting helper: %v", err)
 	}
 	directPID := cmd.Process.Pid
+	// Backstop for failure paths only. Once the group is confirmed empty its
+	// ID may be reused, so the cleanup must not signal it then.
+	groupEmpty := false
+	// cmd.Wait runs exactly once on every path, so an early failure still
+	// reaps the helper instead of leaving a zombie a later test could count.
+	var waitOnce sync.Once
+	var waitErr error
+	waitCmd := func() error {
+		waitOnce.Do(func() { waitErr = cmd.Wait() })
+		return waitErr
+	}
+	t.Cleanup(func() {
+		if !groupEmpty {
+			_ = syscall.Kill(-directPID, syscall.SIGKILL)
+		}
+		// Bounded: if a reaper stole the exit status, Wait would never
+		// return, and that failure is already reported by the test.
+		reaped := make(chan struct{})
+		go func() { _ = waitCmd(); close(reaped) }()
+		select {
+		case <-reaped:
+		case <-time.After(testwait.Deadline(5 * time.Second)):
+		}
+	})
 
 	// Step 1: WITHOUT the reaper, observe the bug. The double-forked
 	// grandchild sleeps 100 ms then exits and becomes a zombie under
@@ -69,6 +103,11 @@ func TestReaper_AdoptedZombieDrained_DirectChildPreserved(t *testing.T) {
 	// Future grandchildren get drained on SIGCHLD.
 	reaperDone := make(chan struct{})
 	startAdoptedReaper(directPID, reaperDone)
+	// Stop the reaper on every exit path, including a failed check, so its
+	// goroutine and protected-PID registration never outlive this test.
+	var stopReaper sync.Once
+	stop := func() { stopReaper.Do(func() { close(reaperDone) }) }
+	t.Cleanup(stop)
 
 	if !waitForCondition(t, 2*time.Second, func() bool {
 		return countAdoptedZombies(directPID) == 0
@@ -80,12 +119,12 @@ func TestReaper_AdoptedZombieDrained_DirectChildPreserved(t *testing.T) {
 	// Direct child must still be running and reapable by cmd.Wait().
 	// If the reaper had stolen its exit status, Wait would return
 	// ECHILD-derived "wait: no child processes" or hang.
-	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		t.Fatalf("signaling direct child: %v", err)
+	if err := syscall.Kill(-directPID, syscall.SIGTERM); err != nil {
+		t.Fatalf("signaling direct child's process group: %v", err)
 	}
 
 	waitDone := make(chan error, 1)
-	go func() { waitDone <- cmd.Wait() }()
+	go func() { waitDone <- waitCmd() }()
 	select {
 	case err := <-waitDone:
 		// Helper exited via SIGTERM; an *exec.ExitError is expected and
@@ -103,7 +142,16 @@ func TestReaper_AdoptedZombieDrained_DirectChildPreserved(t *testing.T) {
 		t.Fatal("cmd.Wait() hung — reaper likely consumed the direct child's exit status")
 	}
 
-	close(reaperDone)
+	// No process the helper started may outlive the test. A survivor here is
+	// adopted by this subreaper test process and leaks past the test binary.
+	if !waitForCondition(t, testwait.Deadline(2*time.Second), func() bool {
+		return errors.Is(syscall.Kill(-directPID, 0), syscall.ESRCH)
+	}) {
+		t.Fatal("helper process group still has live members after the helper exited")
+	}
+	groupEmpty = true
+
+	stop()
 }
 
 func TestReaper_ProtectedDirectPIDRegistry(t *testing.T) {
