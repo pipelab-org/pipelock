@@ -270,3 +270,36 @@ func TestCheckSessionTailNilCacheValidatesEveryShard(t *testing.T) {
 		t.Fatalf("uncached checks validated %v, want every shard twice", *validated)
 	}
 }
+
+// TestCheckSessionTailCachedRelinksShardsAfterAChangedOne drops the last
+// record of a verified shard. That shard alone still validates, so only the
+// next shard's link to it reveals the loss; a cached later shard must not
+// carry its old state past the change.
+func TestCheckSessionTailCachedRelinksShardsAfterAChangedOne(t *testing.T) {
+	c := startShardedRun(t)
+	var cache TailCheckCache
+	if err := c.check(&cache); err != nil {
+		t.Fatal(err)
+	}
+	files := c.shards(t)
+	data, err := os.ReadFile(filepath.Clean(files[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := bytes.SplitAfter(data, []byte("\n"))
+	if len(lines) < 3 || len(lines[len(lines)-1]) != 0 {
+		t.Fatalf("first shard has %d lines", len(lines))
+	}
+	truncated := bytes.Join(lines[:len(lines)-2], nil)
+	if err := os.WriteFile(files[0], truncated, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.check(nil); err == nil {
+		t.Fatal("full validation accepted the dropped record; the fixture proves nothing")
+	}
+	for attempt := range 2 {
+		if err := c.check(&cache); err == nil {
+			t.Fatalf("attempt %d: dropped record hidden by a cached later shard", attempt)
+		}
+	}
+}

@@ -122,14 +122,21 @@ func checkSessionTailLocked(rec *recorder.Recorder, session string, signerKeys [
 		defer func() { cache.session, cache.keys, cache.shards = session, keySet, verified }()
 	}
 	var state tailChainState
+	// A cached end state is only valid after the exact shards it followed.
+	// Once one shard is validated afresh, every later shard is too: its
+	// first record must link to that shard's new end, which no cached state
+	// has seen. A shard that lost trailing records still validates on its
+	// own, and only the next shard's link reveals the loss.
+	reusing := true
 	for i, file := range files {
-		if len(verified) == i && i < len(reusable) && reusable[i].path == file {
+		if reusing && i < len(reusable) && reusable[i].path == file {
 			if digest, err := digestShardFile(file); err == nil && digest == reusable[i].digest {
 				verified = append(verified, reusable[i])
 				state = reusable[i].end
 				continue
 			}
 		}
+		reusing = false
 		digest, err := validateShardFile(file, func(next recorder.Entry) error {
 			return state.advance(next, session, signerKeys)
 		})
