@@ -54,10 +54,12 @@ func CheckSessionTail(rec *recorder.Recorder, session string, signerKeys []strin
 // A shard whose bytes still hash to the recorded digest, checked for the same
 // session and signer keys and reached through an unchanged prefix, carries the
 // recorded state forward instead of being parsed again. Any changed byte, a
-// reordered or missing shard, a different session or a different key set
-// misses, and the shard and everything after it are validated in full, so the
-// result is the one a full validation returns. Only shards that validated
-// without error are remembered. A nil cache validates everything.
+// reordered shard, a missing shard before the last, a different session or a
+// different key set misses, and the shard and everything after it are
+// validated in full, so the result is the one a full validation returns. Both
+// checks enumerate the shards present, so a removed final shard reads as a
+// shorter run to either one. Only shards that validated without error are
+// remembered. A nil cache validates everything.
 func CheckSessionTailCached(rec *recorder.Recorder, session string, signerKeys []string, cache *TailCheckCache) error {
 	if rec == nil || rec.IsNop() {
 		return nil
