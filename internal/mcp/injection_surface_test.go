@@ -203,7 +203,7 @@ func TestToolsListRecoveryAssessment(t *testing.T) {
 		benign bool
 	}{
 		{"not_tools_list", tools.ToolScanResult{}, true},
-		{"empty_inventory", tools.ToolScanResult{IsToolsList: true, Assessment: basic(scanner.AssessmentNotAssessed)}, true},
+		{"empty_inventory", tools.ToolScanResult{IsToolsList: true, Assessment: basic(scanner.AssessmentNotAssessed)}, false},
 		{"descriptions_benign", tools.ToolScanResult{IsToolsList: true, ToolDefs: defs, Assessment: basic(scanner.AssessmentBenign)}, true},
 		{"descriptions_off", tools.ToolScanResult{IsToolsList: true, ToolDefs: defs, Assessment: basic(scanner.AssessmentOff)}, false},
 		{"descriptions_warned", tools.ToolScanResult{IsToolsList: true, ToolDefs: defs, Assessment: basic(scanner.AssessmentFinding)}, false},
