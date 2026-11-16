@@ -382,3 +382,19 @@ func TestExternalCheckerDescriptionBlockIgnoresWarnAction(t *testing.T) {
 		t.Fatalf("denial does not name the checker refusal: %s", out.String())
 	}
 }
+
+func TestExternalCheckerDescriptionRequiresToolConfigAtRuntime(t *testing.T) {
+	m := newMockChecker(t, mockSuspicious)
+	sc, _ := externalScanner(t, m.srv.URL+"/check", "", map[string]config.InjectionSurfaceConfig{
+		config.InjectionSurfaceMCPToolDescription: {Checker: "mock", Mode: config.InjectionModeBlock},
+	})
+	var out, log bytes.Buffer
+	line := `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"lookup","description":"Looks up public documentation","inputSchema":{"type":"object"}}]}}`
+	_, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(line+"\n")), transport.NewStdioWriter(&out), &log, nil, MCPProxyOpts{Scanner: sc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"error"`) || strings.Contains(out.String(), "Looks up public documentation") {
+		t.Fatalf("unassessed descriptions delivered: %s", out.String())
+	}
+}

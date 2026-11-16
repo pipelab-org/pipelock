@@ -170,6 +170,13 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	sc := opts.scanner()
 	approver := opts.Approver
 	toolCfg := opts.toolCfg()
+	// A scanner can be supplied independently of the proxy's tool config.
+	// Preserve description checking even for callers that omit the latter.
+	_, descriptionDecider := sc.InjectionCheckers().Decider(config.InjectionSurfaceMCPToolDescription)
+	if toolCfg == nil && (descriptionDecider || sc.InjectionCheckers().Watches(config.InjectionSurfaceMCPToolDescription)) {
+		// ack-exempt: the caller supplied no tool configuration to carry acknowledgments from.
+		toolCfg = &tools.ToolScanConfig{Action: config.ActionWarn}
+	}
 	if toolCfg != nil && (opts.validateToolHeaders || opts.toolContractDiscovery) {
 		copyCfg := *toolCfg
 		copyCfg.RequireHeaderContracts = true
