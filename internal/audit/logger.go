@@ -773,9 +773,6 @@ func (l *Logger) LogMediaExposure(ctx LogContext, info MediaExposureInfo) {
 	}
 }
 
-// LogResponseScan logs a response content scan that found prompt injection patterns.
-// When bundleRules is non-empty, bundle provenance is included in the audit event
-// and webhook payload so SIEM consumers can identify which community rules matched.
 // LogInjectionChecker records an external injection checker outcome that was
 // not a complete benign assessment: a finding, an assessment failure, a
 // watch-only result or a dropped watch call. It carries no content and no
@@ -800,6 +797,9 @@ func (l *Logger) LogInjectionChecker(ctx LogContext, checkerName, surface, mode,
 	}
 }
 
+// LogResponseScan logs a response content scan that found prompt injection patterns.
+// When bundleRules is non-empty, bundle provenance is included in the audit event
+// and webhook payload so SIEM consumers can identify which community rules matched.
 func (l *Logger) LogResponseScan(ctx LogContext, action string, matchCount int, patternNames []string, bundleRules []BundleRuleHit) {
 	const scanner = scannerpkg.AuditResponseScan
 	technique := TechniqueForScanner(scanner)
