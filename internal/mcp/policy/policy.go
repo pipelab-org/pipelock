@@ -1781,6 +1781,25 @@ func resolveShellConstruction(s string) string {
 		return s
 	}
 	const maxIterations = 10
+	// Bound the expanded size. A value that refers to other assigned names
+	// (e.g. a=$b=$c=;) re-expands on every iteration, so without a bound the
+	// string grows geometrically and one short command allocates gigabytes.
+	maxLen := 8 * len(s)
+	if maxLen < 64<<10 {
+		maxLen = 64 << 10
+	}
+	// replaceBounded returns s with old replaced by repl, or ok=false when
+	// the result would exceed maxLen. The size is checked before allocating.
+	replaceBounded := func(s, old, repl string) (string, bool) {
+		n := strings.Count(s, old)
+		if n == 0 {
+			return s, true
+		}
+		if len(s)+n*(len(repl)-len(old)) > maxLen {
+			return s, false
+		}
+		return strings.ReplaceAll(s, old, repl), true
+	}
 	for range maxIterations {
 		prev := s
 		s = simpleCmdSubRe.ReplaceAllString(s, "$1")
@@ -1809,13 +1828,22 @@ func resolveShellConstruction(s string) string {
 				value = strings.ReplaceAll(value, ifsChar, "")
 			}
 			// Direct expansion: ${var} and $var → value.
-			s = strings.ReplaceAll(s, "${"+m[1]+"}", value)
-			s = strings.ReplaceAll(s, "$"+m[1], value)
 			// Indirect expansion: ${!var...} → ${value...}.
 			// In bash, ${!v} expands the variable whose name is v's value.
 			// Replacing the prefix ${!varname with ${value converts e.g.
 			// v=IFS;${!v:0:1} → v=IFS;${IFS:0:1}, which shellExpansionRe catches.
-			s = strings.ReplaceAll(s, "${!"+m[1], "${"+m[2])
+			// Stop expanding once the bound is reached: the string expanded so
+			// far is still scanned, and further growth adds no new command.
+			var ok bool
+			for _, r := range [][2]string{
+				{"${" + m[1] + "}", value},
+				{"$" + m[1], value},
+				{"${!" + m[1], "${" + m[2]},
+			} {
+				if s, ok = replaceBounded(s, r[0], r[1]); !ok {
+					return s
+				}
+			}
 		}
 		if s == prev {
 			break
