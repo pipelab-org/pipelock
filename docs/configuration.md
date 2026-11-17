@@ -2041,6 +2041,71 @@ Limits worth knowing:
 - The HTTP listener under `pipelock run` applies a changed configuration on the next `tools/list`. Pipelock rereads the key when the configuration reloads, which happens when the configuration file changes or on `SIGHUP`; changing only the key file doesn't trigger it. If a reload fails while the key is gone, unreadable, too short, readable by others or different, the running configuration is kept for everything else, but every acknowledgment refuses until a reload succeeds with a usable key.
 - An acknowledged `tools/list` passes tool scanning with the finding present, and it's forwarded only if every later check passes too. Tool scanning logs it, captures it as warned and receipts it with an allow verdict, and it earns no adaptive-enforcement credit.
 
+### OAuth caller verification (`mcp_door`)
+
+`mcp_door` authenticates callers of `pipelock mcp proxy --listen ADDR --upstream URL --config FILE` with an access token issued by an external authorization server. It supports RFC 7662 introspection and RS256 JWT access tokens following RFC 9068. Pipelock doesn't issue tokens or implement client registration. This setting applies to the HTTP MCP listener, including POST, GET streaming/reconnect and DELETE requests. The liveness endpoint and protected-resource metadata remain public. `pipelock run` refuses an enabled door; use the command above.
+
+The default is disabled. Omitted, null, blank and explicit false `enabled` values leave existing listener authentication behavior in place. An enabled door requires an expected issuer, an audience equal to its public HTTPS resource URL, and verifier credentials or pinned public keys. It refuses to start if the profile or verifier material is incomplete. It can bind a non-loopback listener without `--listener-auth-token-file` or `--listener-allow-unauthenticated`. Combining door mode with either flag is an error; failed OAuth authentication never falls back to static-bearer or anonymous access.
+
+JWT configuration:
+
+```yaml
+mcp_door:
+  enabled: true
+  mode: jwt
+  issuer: https://issuer.example
+  audience: https://resource.example/mcp
+  jwks_file: /etc/pipelock/issuer-public.jwks.json
+  enrollments:
+    - subject: user-reference
+      client_id: registered-client
+  required_scopes:
+    - tools:read
+```
+
+`jwks_file` is an absolute path to an operator-pinned JSON Web Key Set (JWKS). It must contain only valid RSA public signing keys of at least 2048 bits, with distinct key IDs. Private keys, encryption keys and keys declaring another algorithm are refused. The supported signature algorithm is RS256. Token type must be `at+jwt` or `application/at+jwt`; issuer, audience, subject, client ID, expiry, issued-at time and token ID are required. Expired and not-yet-valid tokens, future issued-at times, wrong signatures and mismatched issuer or audience are refused. There's no clock-skew allowance. Duplicate JSON member names are refused. Token-supplied key URLs and embedded keys never select verifier keys. An unknown key ID is a verifier-availability failure, not permission to discover or fetch another key.
+
+For introspection, replace the JWT mode and key file with these fields; keep the issuer, audience and enrollment settings:
+
+```yaml
+mcp_door:
+  enabled: true
+  mode: introspection
+  issuer: https://issuer.example
+  audience: https://resource.example/mcp
+  introspection_url: https://issuer.example/oauth/introspect
+  client_id: introspection-client
+  client_secret_file: /etc/pipelock/introspection-client.secret
+  timeout_seconds: 10
+  enrollments:
+    - subject: user-reference
+      client_id: registered-client
+  required_scopes:
+    - tools:read
+```
+
+The introspection endpoint is pinned in configuration, requires HTTPS and is contacted through the configured MCP metadata-safe dial path. Local/private verifier destinations are permitted; cloud metadata destinations are blocked. Redirects are refused. Pipelock authenticates to that endpoint with HTTP Basic using `client_id` and the trimmed contents of `client_secret_file`. The secret file requires an absolute path, owner-only permissions and at most 8192 bytes. A zero or omitted `timeout_seconds` uses 10 seconds; negative or overflowing durations are invalid. No successful introspection result is cached.
+
+Only `active` is universally required by RFC 7662. This door profile explicitly requires `active: true`, `aud` containing the configured audience, a future `exp`, a nonempty `sub`, and a nonempty `client_id`. If `required_scopes` is nonempty, `scope` is also required. Issuer identity is bound to the configured authenticated endpoint; an `iss` field, when returned, must equal the configured issuer. An issuer that returns only `active` can't satisfy this profile. An optional `nbf` or `iat` can't lie in the future.
+
+Enrollment admits exact verified `subject`/`client_id` pairs. An empty enrollment list denies every verified caller. `required_scopes` requires every listed scope; omitting the list adds no scope requirement. These scopes control entry to the listener. They don't select tool policies. Identity-based tool policy and signed identity receipt fields are separate capabilities. Client headers, MCP metadata, body fields and `Mcp-Session-Id` don't select the verified principal. Listener state is partitioned by resource, issuer, subject and client ID; token refresh alone doesn't create a new identity.
+
+| Admission result | HTTP response |
+|---|---|
+| Missing, invalid, incomplete, inactive or expired token; wrong issuer/audience | 401 with Pipelock's own `WWW-Authenticate: Bearer` challenge and `resource_metadata` URL |
+| Valid but unenrolled identity, or a configured tool-policy refusal | 403 |
+| Valid enrolled identity missing a required granted scope | 403 with `insufficient_scope` |
+| Ambiguous/malformed Authorization, Proxy-Authorization, form-token presentation, or an `access_token` query parameter | 400 with `invalid_request` |
+| Verifier timeout, invalid response, failed verifier authentication, unavailable keys or credential file | 503 |
+
+Every admission failure returns before an MCP upstream connection is opened. The door bearer is consumed locally and removed from upstream headers. The issuer must mint tokens for this door; don't assume that the same token authorizes a different backend resource. Existing operator-pinned upstream headers remain a separate credential mechanism.
+
+Pipelock serves RFC 9728 protected-resource metadata locally at `/.well-known/oauth-protected-resource` followed by the resource path. For `https://resource.example/mcp`, the challenge points to `https://resource.example/.well-known/oauth-protected-resource/mcp`. Route that public URL to this listener. The metadata names only the configured resource, issuer and header bearer method.
+
+Verifier files are read at startup and again for each protected request. Missing, malformed or unsafe files fail closed. Replacing the pinned JWKS or introspection secret file applies on the next request. JWT verification has no online revocation check: a copied token remains usable until expiry while its signing key is accepted. Authentication occurs at request admission; an already-open response stream isn't continuously reverified.
+
+The standalone `mcp proxy` command snapshots configuration at startup. Restart it after any `mcp_door` configuration change, including enrollment revocation. The long-lived runtime rejects any reload that changes `mcp_door`, retaining the previous configuration and scanner; unrelated reloads leave the door settings intact. Removing a signing key from the pinned file or revoking a token at the introspection issuer takes effect on subsequent requests without a config reload.
+
 ### Registered local MCP services (`mcp_identities`)
 
 A loopback address names a place, not a program: any local process can bind `127.0.0.1:43111`. When an MCP server runs on the same machine and picks a fresh port and a fresh bearer token on every start, the default acknowledgment binding above changes on every launch, so a reviewed acknowledgment never survives a restart. `mcp_identities` registers such a service by what the kernel can observe about it, and Pipelock then checks that the process on the far end of each connection is that service before it sends anything.
