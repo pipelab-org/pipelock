@@ -226,6 +226,10 @@ func PartitionInboundTextDLPMatches(text string, matches []TextDLPMatch) (enforc
 	haveAWSCtx := false
 	enforceable = make([]TextDLPMatch, 0, len(matches))
 	for _, match := range matches {
+		// Contiguous AWS-shaped tokens remain enforceable even inside longer
+		// alphanumeric runs: a tool result can wrap a real key in an ID or slug
+		// without any credential context. Shape alone cannot establish that the
+		// embedded value is non-secret; relaxing it would admit wrapped keys.
 		if isInboundAWSAccessIDWhitespaceMatch(match) {
 			if !haveAWSCtx {
 				awsCtx = newInboundAWSAccessIDContext(text)

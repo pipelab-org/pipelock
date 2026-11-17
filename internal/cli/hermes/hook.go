@@ -269,7 +269,7 @@ const (
 )
 
 // scanCombined applies DLP and response/injection scans to text and returns a
-// block decision on the first finding. The direction selects the DLP variant
+// block decision listing all enforceable findings. The direction selects the DLP variant
 // (see scanDirection). Empty text short-circuits to allow: nothing to scan
 // means nothing to flag, and a spurious block on an empty-arguments tool call
 // would be a denial of service.
@@ -297,6 +297,16 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 		}
 	}()
 	text, cards := views.text, views.cards
+	var reasons []string
+	seen := make(map[string]bool)
+	addReason := func(reason string) {
+		// Combined and leaf views can report the same finding. Keep each
+		// distinct diagnostic without repeating it for every scanned view.
+		if !seen[reason] {
+			seen[reason] = true
+			reasons = append(reasons, reason)
+		}
+	}
 	// Inspect the original document and complete JSON documents stored in
 	// individual string leaves, before envelope text joins erase their shape.
 	documents := []string{string(views.raw)}
@@ -307,34 +317,28 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 			documents = append(documents, leaf)
 		}
 	}
-	var cardBlock *scanner.TextDLPMatch
 	for _, document := range documents {
 		for _, match := range sc.ScanJSONCardRuns(ctx, document) {
 			if match.IsInformational() {
 				numberOnly = true
 				continue
 			}
-			if cardBlock == nil {
-				cardBlock = &match
-			}
+			addReason(dlpBlockReason(surface, match))
 		}
 	}
-	if cardBlock != nil {
-		return blockDecision(dlpBlockReason(surface, *cardBlock))
-	}
 	if strings.TrimSpace(text) == "" {
+		if len(reasons) > 0 {
+			return blockDecision(strings.Join(reasons, "; "))
+		}
 		return allowDecision()
 	}
 
 	// Outbound runs the full exfil-aware scan; inbound skips the agent's-own-
 	// secret exfil checks. Exactly one variant runs — calling the full scan for
 	// an inbound event would run the exfil checks and emit warn telemetry before
-	// being discarded. Injection scanning (ScanResponse) runs regardless: a
-	// poisoned tool result or operator message is the real inbound threat.
-	firstEnforceable := func(dlp scanner.TextDLPResult, scanned string) *scanner.TextDLPMatch {
-		if len(dlp.Matches) == 0 {
-			return nil
-		}
+	// being discarded. Accumulate DLP findings without returning early so
+	// injection scanning also runs when a credential or card was found.
+	collectEnforceable := func(dlp scanner.TextDLPResult, scanned string) {
 		var enforceable []scanner.TextDLPMatch
 		for _, match := range dlp.Matches {
 			if match.IsInformational() {
@@ -350,10 +354,9 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 		if dir == directionInbound {
 			enforceable = scanner.EnforceableInboundTextDLPMatches(scanned, enforceable)
 		}
-		if len(enforceable) == 0 {
-			return nil
+		for _, match := range enforceable {
+			addReason(dlpBlockReason(surface, match))
 		}
-		return &enforceable[0]
 	}
 	var dlp scanner.TextDLPResult
 	if dir == directionInbound {
@@ -361,9 +364,7 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 	} else {
 		dlp = sc.ScanTextForDLPWithTypedCardView(ctx, text, cards)
 	}
-	if match := firstEnforceable(dlp, text); match != nil {
-		return blockDecision(dlpBlockReason(surface, *match))
-	}
+	collectEnforceable(dlp, text)
 	// A joined view cannot retain each leaf's scalar spelling, so a string
 	// leaf holding an exponent card spelling reads as ordinary text once a
 	// key precedes it. Inspect leaves independently with their card views,
@@ -375,21 +376,23 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 		} else {
 			leaf = sc.ScanTextForDLPWithCardView(ctx, atom.Text, atom.Card)
 		}
-		if match := firstEnforceable(leaf, atom.Text); match != nil {
-			return blockDecision(dlpBlockReason(surface, *match))
-		}
+		collectEnforceable(leaf, atom.Text)
 	}
 
 	resp := sc.ScanResponse(ctx, text)
 	if resp.Failed() {
-		return blockDecision(fmt.Sprintf("pipelock scan failed on %s: %s", surface, resp.ScanError))
+		addReason(fmt.Sprintf("pipelock scan failed on %s: %s", surface, resp.ScanError))
 	}
 	if !resp.Clean && len(resp.Matches) > 0 {
-		first := resp.Matches[0]
-		return blockDecision(fmt.Sprintf("pipelock injection match on %s: %s",
-			surface, first.PatternName))
+		for _, match := range resp.Matches {
+			addReason(fmt.Sprintf("pipelock injection match on %s: %s",
+				surface, match.PatternName))
+		}
 	}
 
+	if len(reasons) > 0 {
+		return blockDecision(strings.Join(reasons, "; "))
+	}
 	return allowDecision()
 }
 
