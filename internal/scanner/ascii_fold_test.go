@@ -275,6 +275,34 @@ func TestASCIIFoldedNormalizationRunUsesExactSource(t *testing.T) {
 	}
 }
 
+// A run reused for a different source must drop its lowered summary and folded
+// input. A stale prefilter summary or folded view would skip a real credential.
+func TestASCIIFoldedNormalizationRunClearsBorrowedStateOnSourceChange(t *testing.T) {
+	sc := decodeRunScanner(t)
+	credential := "ghp_" + strings.Repeat("aB3x", 9)
+	first, second := "plain prose only, nothing here", "note: "+credential+" end"
+	match := func(memo *decodingMemo, run *normalizationRun, text string) []TextDLPMatch {
+		found := memo.matchDecodedKeyWithNormalization(decodedMatchKey{scanner: sc, text: text, encoding: encodingBase64, core: true}, run)
+		return append(found, memo.matchDecodedForWithNormalization(sc, text, encodingBase64, textDLPAllPatterns, run)...)
+	}
+	var run normalizationRun
+	local := &decodingMemo{}
+	if got := match(local, &run, first); len(got) != 0 || !run.loweredReady {
+		t.Fatalf("first source: matches=%v loweredReady=%v", got, run.loweredReady)
+	}
+	want := match(&decodingMemo{}, &normalizationRun{}, second)
+	if len(want) == 0 {
+		t.Fatal("fixture no longer carries a finding")
+	}
+	got := match(local, &run, second)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("source change reused stale borrowed state: got=%+v want=%+v", got, want)
+	}
+	if run.source != second {
+		t.Fatalf("run kept source %q", run.source)
+	}
+}
+
 func TestASCIIFoldedScannerParity(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
