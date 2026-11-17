@@ -93,6 +93,23 @@ class TestLeakAttribution(unittest.TestCase):
         self.assertEqual(listed[0], f"{PKG} TestParent/child")
         self.assertEqual(len(listed), attribution.MAX_TESTS_PER_PROCESS)
 
+    def test_paused_tests_are_not_running(self) -> None:
+        stream = []
+        for i in range(25):
+            stream += [event("run", f"TestA{i:02d}", "2026-11-17T10:00:00Z"),
+                       event("pause", f"TestA{i:02d}", "2026-11-17T10:00:00.1Z")]
+        stream += [event("run", "TestZLeaks", "2026-11-17T10:00:01Z"),
+                   event("pass", "TestZLeaks", "2026-11-17T10:00:03Z")]
+        stream += [event("cont", f"TestA{i:02d}", "2026-11-17T10:00:04Z") for i in range(25)]
+        windows = attribution.collect_windows(stream)
+        self.assertEqual(attribution.running_at(windows, unix("2026-11-17T10:00:02Z")), [f"{PKG} TestZLeaks"])
+        # Resumed tests run again after cont and stay open to the stream end.
+        self.assertIn(f"{PKG} TestA07", attribution.running_at(windows, unix("2026-11-17T10:00:05Z")))
+        report = {"cleanup_processes": [{"pid": 1, "name": "sleep", "started_unix": unix("2026-11-17T10:00:02Z")}]}
+        (message,) = attribution.attribute(report, stream)
+        self.assertIn(f"{PKG} TestZLeaks", message)
+        self.assertNotIn("TestA", message)
+
     def test_attribute_caps_long_lists(self) -> None:
         stream = [event("run", f"TestP{i:02d}", "2026-11-17T10:00:00Z") for i in range(25)]
         report = {"cleanup_processes": [{"pid": 1, "name": "sleep", "started_unix": unix("2026-11-17T10:00:01Z")}]}

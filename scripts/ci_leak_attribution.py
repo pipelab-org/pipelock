@@ -61,9 +61,12 @@ def collect_windows(lines) -> list[tuple[str, str, float, float | None]]:
             continue
         key = (package, test)
         action = event.get("Action")
-        if action == "run":
+        # A test runs from run or cont until pause or its result. Paused
+        # intervals, such as a parallel test waiting at t.Parallel, are not
+        # running and must not crowd the actual spawner out of the list.
+        if action in ("run", "cont"):
             starts[key] = at
-        elif action in ("pass", "fail", "skip") and key in starts:
+        elif action in ("pause", "pass", "fail", "skip") and key in starts:
             windows.append((package, test, starts.pop(key), at))
     # A test still open when the stream ended was running until the end.
     windows.extend((package, test, start, None) for (package, test), start in starts.items())
