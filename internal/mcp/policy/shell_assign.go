@@ -441,6 +441,7 @@ func shellConditionalAt(s string, at []int) map[int]bool {
 	// cmdPos: the next word is a command word, where reserved words count.
 	// "echo fi" does not close an if.
 	cmdPos := true
+	noCloseUntil := -1
 	next := 0
 	for i := 0; i < len(s) && next < len(at); i++ {
 		for next < len(at) && at[next] == i {
@@ -488,6 +489,16 @@ func shellConditionalAt(s string, at []int) map[int]bool {
 			i = to
 			cmdPos = false
 		case '#':
+			if i > 0 && (s[i-1] == ')' || s[i-1] == '}') {
+				// "(:)#x" is a comment and "$(x)#" or "${x}#" is not. Keep
+				// reading so an opener still counts, but let no closer on the
+				// rest of the line end a block: that only over-reads.
+				noCloseUntil = len(s)
+				if k := strings.IndexByte(s[i:], '\n'); k >= 0 {
+					noCloseUntil = i + k
+				}
+				continue
+			}
 			if i == 0 || isShellSpaceByte(s[i-1]) || strings.IndexByte(";&|(<>", s[i-1]) >= 0 {
 				to := len(s) - 1
 				if k := strings.IndexByte(s[i:], '\n'); k >= 0 {
@@ -518,7 +529,9 @@ func shellConditionalAt(s string, at []int) map[int]bool {
 				case "if", "while", "until", "for", "case", "select":
 					depth++
 				case "fi", "done", "esac":
-					depth = max(depth-1, 0)
+					if i >= noCloseUntil {
+						depth = max(depth-1, 0)
+					}
 				}
 			}
 			switch s[i:j] {
@@ -572,17 +585,20 @@ func shellStatementForks(s string, i int) bool {
 	return false
 }
 
-// shellUnsetsName reports whether the text unsets name with the unset
-// builtin anywhere.
-func shellUnsetsName(s, name string) bool {
+// shellUnsetNames returns the names the text unsets with the unset builtin,
+// scanned once per pass. any is set when an operand is an expansion, which
+// can name any variable. An attached redirection ("unset Z>/dev/null") is
+// not part of the operand.
+func shellUnsetNames(s string) (names map[string]bool, anyName bool) {
+	names = make(map[string]bool)
 	for i := 0; ; {
 		k := strings.Index(s[i:], "unset")
 		if k < 0 {
-			return false
+			return names, anyName
 		}
 		k += i
 		i = k + len("unset")
-		if k > 0 && isShellNameByte(s[k-1]) {
+		if (k > 0 && isShellNameByte(s[k-1])) || (i < len(s) && isShellNameByte(s[i])) {
 			continue
 		}
 		rest := s[i:]
@@ -591,10 +607,14 @@ func shellUnsetsName(s, name string) bool {
 			end = len(rest)
 		}
 		for _, w := range strings.Fields(rest[:end]) {
-			// unset "$v" names a variable we cannot read: assume any.
-			if strings.ContainsAny(w, "$`") || strings.Trim(w, `"'\`) == name {
-				return true
+			if op := strings.IndexAny(w, "<>"); op >= 0 {
+				w = w[:op]
 			}
+			if strings.ContainsAny(w, "$`") {
+				anyName = true
+				continue
+			}
+			names[strings.Trim(w, `"'\`)] = true
 		}
 	}
 }
@@ -1390,13 +1410,14 @@ func shellConstructionPass(s string, sb *shellBounds) (out string, changed, fits
 	}
 	slices.Sort(firsts)
 	conditional := shellConditionalAt(s, firsts)
+	unsetNames, unsetAny := shellUnsetNames(s)
 	mayUnset := make([]bool, len(uses))
 	for i, u := range uses {
 		if selfUse[i] >= 0 || sv.names[u.name] == nil {
 			continue
 		}
 		first := firstAssign[u.name]
-		mayUnset[i] = u.pos < first || conditional[first] || shellUnsetsName(s, u.name)
+		mayUnset[i] = u.pos < first || conditional[first] || unsetAny || unsetNames[u.name]
 	}
 	for _, n := range sv.order {
 		for _, v := range n.plain.list {

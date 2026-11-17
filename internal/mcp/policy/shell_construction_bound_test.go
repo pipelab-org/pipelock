@@ -167,6 +167,12 @@ func TestShellConstructionUseBeforeAssignmentReadsUnset(t *testing.T) {
 		// after ";".
 		"! if test -f /nope; then Z=echo; fi; " + use,
 		"if test -f /nope; then echo !fi; Z=echo; fi; " + use,
+		// The hosted review's cases on 7a82b1d.
+		"if false; then echo done; Z=echo; fi; " + use,
+		"Z=echo; unset Z>/dev/null; " + use,
+		"if test -f /nope; then (:)#; fi\nZ=echo\nfi; " + use,
+		"if test -f /nope; then echo " + d + "(true)# fi\nZ=echo\nfi; " + use,
+		"A=echo; A=r; B=m; false && Z=x; " + d + "Z" + d + "A" + d + "B -rf /tmp/target",
 		"echo " + d + "{x}#; if test -f /nope; then\nZ=echo\nfi; " + use,
 		"echo if; if test -f /nope; then Z=echo; fi; " + use,
 		"true;#x\nif test -f /nope; then Z=echo; fi; " + use,
