@@ -99,6 +99,11 @@ type decodingMemo struct {
 	retainedBytes  int
 	incomplete     bool
 	inbound        bool
+	// knownPrefixFindings are pattern matches on views the ordinary decode
+	// graph did not contain. Known-prefix recovery produces them, and a
+	// finished continuation no longer has a candidate-cap refusal to stand
+	// in for that inspection.
+	knownPrefixFindings []TextDLPMatch
 	// shared, when set, replaces views and normalized as the cache. It is
 	// owned by a caller that scans several views of one message.
 	shared *sharedDecodes
@@ -258,6 +263,7 @@ func (m *decodingMemo) reset() {
 	clear(m.decodedMatches)
 	m.retainedBytes = 0
 	m.decodedMatchesBytes = 0
+	m.knownPrefixFindings = nil
 	m.reassemblyRecipeCache.release()
 	m.reassemblyRecipeCache = nil
 }
@@ -433,6 +439,15 @@ func (m *decodingMemo) markIncomplete() {
 	}
 }
 
+// decodeRunFeedsReassembly reports whether this decode's views still need
+// reassembly. A resumed known-prefix walk that finishes has spent the
+// candidate cap and then completed on transferred slots, so the cap refusal
+// is gone and those views have to be inspected. An unfinished resume keeps
+// the refusal, which already decides the scan.
+func decodeRunFeedsReassembly(complete, inbound, resumed bool) bool {
+	return (complete || inbound) && (!resumed || complete)
+}
+
 // inspectionIncomplete reports whether any bound in this scan returned a
 // partial result.
 func (m *decodingMemo) inspectionIncomplete() bool {
@@ -548,7 +563,7 @@ func (m *decodingMemo) decodeRun(text string, includeURL bool, minPrefix, credit
 			if !cached.complete {
 				m.incomplete = true
 			}
-			if (cached.complete || m.inbound) && !cached.resumed && m.textualView(text) && !m.isTextRoot(text) {
+			if decodeRunFeedsReassembly(cached.complete, m.inbound, cached.resumed) && m.textualView(text) && !m.isTextRoot(text) {
 				m.observeDecodedRecipe(key, cached.views, true)
 			}
 			return cached.views
@@ -593,7 +608,7 @@ func (m *decodingMemo) decodeRun(text string, includeURL bool, minPrefix, credit
 		if !complete {
 			m.incomplete = true
 		}
-		if (complete || m.inbound) && !resumed {
+		if decodeRunFeedsReassembly(complete, m.inbound, resumed) {
 			kind, _ := m.viewKind(text)
 			previous, observed := m.reassemblyDecoded[key]
 			if !observed || !previous.textual() && kind.textual() {
@@ -616,7 +631,7 @@ func (m *decodingMemo) decodeRun(text string, includeURL bool, minPrefix, credit
 		if !cached.complete {
 			m.incomplete = true
 		}
-		if (cached.complete || m.inbound) && !cached.resumed && m.textualView(text) && !m.isTextRoot(text) {
+		if decodeRunFeedsReassembly(cached.complete, m.inbound, cached.resumed) && m.textualView(text) && !m.isTextRoot(text) {
 			m.observeDecodedRecipe(key, cached.views, true)
 		}
 		return cached.views
@@ -640,9 +655,10 @@ func (m *decodingMemo) decodeRun(text string, includeURL bool, minPrefix, credit
 		m.views[key] = cached
 	}
 	_, retained := m.views[key]
-	// An existing outbound refusal already decides this scan. Inbound keeps
-	// its partial-view contract and never turns this skip into a refusal.
-	if (complete || m.inbound) && !resumed {
+	// An unfinished resume keeps the candidate-cap refusal, which already
+	// decides this scan. A resume that finishes has cleared that refusal, so
+	// its views join reassembly. Inbound keeps its partial-view contract.
+	if decodeRunFeedsReassembly(complete, m.inbound, resumed) {
 		m.observeDecodedRecipe(key, decoded, retained)
 	}
 	return decoded

@@ -4497,7 +4497,31 @@ func (s *Scanner) checkSecretsInURLWithDecodes(secrets []string, parsed *url.URL
 			}
 		}
 	}
+	if result := knownPrefixPatternResult(decodes); !result.Allowed {
+		return result
+	}
 	return s.checkCanaryInURLWithDecodes(parsed, decodes)
+}
+
+// knownPrefixPatternResult is the DLP deny for a built-in or configured
+// pattern that was visible only on a known-prefix view. No such finding
+// leaves the URL allowed.
+func knownPrefixPatternResult(decodes *decodingMemo) Result {
+	if decodes == nil || len(decodes.knownPrefixFindings) == 0 {
+		return Result{Allowed: true}
+	}
+	match := decodes.knownPrefixFindings[0]
+	reason := fmt.Sprintf("DLP match: %s (%s)", match.PatternName, match.Severity)
+	if match.Encoded != "" {
+		reason += " [" + match.Encoded + "]"
+	}
+	return Result{
+		Allowed: false,
+		Reason:  reason,
+		Scanner: ScannerDLP,
+		Score:   1.0,
+		spans:   []MatchSpan{match.Span()},
+	}
 }
 
 // checkCanaryInURL uses the shared canary views and preserves their span labels.

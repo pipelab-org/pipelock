@@ -64,6 +64,7 @@ func (s *Scanner) decodedKnownSecretViews(text string, decodes *decodingMemo) []
 			}
 			seen[decoded.text] = struct{}{}
 			views = append(views, spanTextView{text: decoded.text, viewLabel: dlpViewLabel(decoded.encoding)})
+			s.noteKnownPrefixPattern(decodes, decoded)
 		}
 	}
 	add(text, true)
@@ -80,6 +81,26 @@ func (s *Scanner) decodedKnownSecretViews(text string, decodes *decodingMemo) []
 		}
 	}
 	return views
+}
+
+// noteKnownPrefixPattern runs the ordinary pattern matchers on one view that
+// only known-prefix recovery produced. The ordinary graph never contained
+// these bytes, and a continuation that finishes does not leave an inspection
+// limit behind them.
+func (s *Scanner) noteKnownPrefixPattern(decodes *decodingMemo, view decodedResult) {
+	if s == nil || decodes == nil || decodes.inbound || decodes.stopRequested() {
+		return
+	}
+	patterns := textDLPAllPatterns
+	if decodes.reassemblyPatternSelected {
+		patterns = decodes.reassemblyPatterns
+	}
+	found := decodes.matchDecodedCore(s, view.text, view.encoding)
+	found = append(found, decodes.matchDecodedFor(s, view.text, view.encoding, patterns)...)
+	if len(found) == 0 {
+		return
+	}
+	decodes.knownPrefixFindings = append(decodes.knownPrefixFindings, found...)
 }
 
 // knownSecretRoots are the texts one known-secret check builds decoded views

@@ -1365,6 +1365,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	if opts.scanSecretLeak && !decodes.stopRequested() {
 		decodes.releaseDetectorCache()
 		matches = append(matches, s.checkSecretLeaks(cleaned, text, decodes)...)
+		matches = append(matches, decodes.knownPrefixFindings...)
 	}
 
 	var enforced, informational []TextDLPMatch
