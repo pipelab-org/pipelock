@@ -1365,7 +1365,9 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	if opts.scanSecretLeak && !decodes.stopRequested() {
 		decodes.releaseDetectorCache()
 		matches = append(matches, s.checkSecretLeaks(cleaned, text, decodes)...)
-		matches = append(matches, decodes.knownPrefixFindings...)
+		if decodes != nil {
+			matches = append(matches, decodes.knownPrefixFindings...)
+		}
 	}
 
 	var enforced, informational []TextDLPMatch
@@ -1459,7 +1461,7 @@ func (s *Scanner) matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource
 	var matches []TextDLPMatch
 	var localFoldedInput asciiFoldedInput
 	foldedInput := &localFoldedInput
-	if lowered.preparedASCII != nil {
+	if lowered != nil && lowered.preparedASCII != nil {
 		foldedInput = lowered.preparedASCII
 	}
 	var shape dlpShapeSummary
