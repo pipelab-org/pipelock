@@ -350,7 +350,7 @@ func TestHTTPListener_DoorCredentialConsumptionAndDiscovery(t *testing.T) {
 				_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`)
 			}))
 			defer upstream.Close()
-			base, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{ListenerDoor: f.verifier, Scanner: testScannerForHTTP(t)})
+			base, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{ListenerDoor: f.verifier, Scanner: testScannerForHTTP(t), ListenerAllowedOrigins: []string{doorTestOrigin}})
 			resp := doorRPC(t, base, http.MethodPost, f.token("a"), principalControlToolsList(1), nil)
 			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != http.StatusOK || calls.Load() != 1 {
@@ -372,6 +372,104 @@ func TestHTTPListener_DoorCredentialConsumptionAndDiscovery(t *testing.T) {
 			}
 			if resp.StatusCode != http.StatusOK || !strings.Contains(string(b), doorTestResource) || calls.Load() != 1 {
 				t.Fatalf("metadata: %d %s", resp.StatusCode, b)
+			}
+			assertDoorCORS(t, base, f)
+		})
+	}
+}
+
+const doorTestOrigin = "https://client.example"
+
+// assertDoorCORS checks that an allowed browser origin can read the public
+// metadata and the OAuth challenge, and that other origins are refused.
+func assertDoorCORS(t *testing.T, base string, f doorFixture) {
+	t.Helper()
+	get := func(origin string) *http.Response {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, base+f.verifier.MetadataPath(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Origin", origin)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	allowed := get(doorTestOrigin)
+	body, err := io.ReadAll(allowed.Body)
+	_ = allowed.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allowed.StatusCode != http.StatusOK || allowed.Header.Get("Access-Control-Allow-Origin") != doorTestOrigin || !strings.Contains(string(body), doorTestResource) {
+		t.Fatalf("allowed-origin metadata: %d acao=%q %s", allowed.StatusCode, allowed.Header.Get("Access-Control-Allow-Origin"), body)
+	}
+	denied := get("https://other.example")
+	_ = denied.Body.Close()
+	if denied.StatusCode != http.StatusForbidden || denied.Header.Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("disallowed-origin metadata: %d", denied.StatusCode)
+	}
+	challenge := doorRPC(t, base, http.MethodPost, f.token("expired"), principalControlToolsList(1), func(r *http.Request) {
+		r.Header.Set("Origin", doorTestOrigin)
+	})
+	_ = challenge.Body.Close()
+	if challenge.StatusCode != http.StatusUnauthorized || challenge.Header.Get("WWW-Authenticate") == "" ||
+		!strings.Contains(challenge.Header.Get("Access-Control-Expose-Headers"), "WWW-Authenticate") {
+		t.Fatalf("browser challenge: %d expose=%q", challenge.StatusCode, challenge.Header.Get("Access-Control-Expose-Headers"))
+	}
+}
+
+// TestHTTPListener_DoorNotificationDenialUnderBlockAll keeps the door's 403
+// for a refused notification once adaptive enforcement blocks the session.
+func TestHTTPListener_DoorNotificationDenialUnderBlockAll(t *testing.T) {
+	f := newDoorFixture(t, config.MCPDoorJWT)
+	for _, door := range []bool{false, true} {
+		t.Run(fmt.Sprint(door), func(t *testing.T) {
+			var dials atomic.Int32
+			blockAll := true
+			opts := MCPProxyOpts{
+				Scanner:  testScannerForHTTP(t),
+				InputCfg: newHTTPInputCfg(config.ActionBlock),
+				PolicyCfg: &policy.Config{Action: config.ActionBlock, Rules: []*policy.CompiledRule{
+					{Name: "restricted-tool", ToolPattern: regexp.MustCompile("^restricted$"), Action: config.ActionBlock},
+				}},
+				AdaptiveCfg: &config.AdaptiveEnforcement{
+					Enabled:             true,
+					EscalationThreshold: 1,
+					Levels:              config.EscalationLevels{Elevated: config.EscalationActions{BlockAll: &blockAll}},
+				},
+				DialContext: func(context.Context, string, string) (net.Conn, error) {
+					dials.Add(1)
+					return nil, errors.New("unexpected upstream dial")
+				},
+				Store: &principalControlAirlockStore{},
+			}
+			token := "legacy"
+			if door {
+				opts.ListenerDoor = f.verifier
+				token = f.token("a")
+			} else {
+				opts.ListenerBearerToken = token
+			}
+			base, _ := startListenerProxyWithOpts(t, "http://127.0.0.1:1", opts)
+			secret := "sk-ant-" + strings.Repeat("x", 25)
+			first := doorRPC(t, base, http.MethodPost, token, principalControlToolCall(1, "echo", fmt.Sprintf(`{"value":%q}`, secret)), nil)
+			firstBody, _ := io.ReadAll(first.Body)
+			_ = first.Body.Close()
+			if !strings.Contains(string(firstBody), "session_deny") {
+				t.Fatalf("session not escalated to block_all: %d %s", first.StatusCode, firstBody)
+			}
+			notification := bytes.Replace(principalControlToolCall(2, "restricted", "{}"), []byte(`"id":2,`), nil, 1)
+			resp := doorRPC(t, base, http.MethodPost, token, notification, nil)
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			want := http.StatusAccepted
+			if door {
+				want = http.StatusForbidden
+			}
+			if resp.StatusCode != want || len(body) != 0 || dials.Load() != 0 {
+				t.Fatalf("notification under block_all: %d want %d body=%s dials=%d", resp.StatusCode, want, body, dials.Load())
 			}
 		})
 	}

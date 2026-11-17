@@ -2104,7 +2104,7 @@ Pipelock serves RFC 9728 protected-resource metadata locally at `/.well-known/oa
 
 Verifier files are read at startup and again for each protected request. Missing, malformed or unsafe files fail closed. Replacing the pinned JWKS or introspection secret file applies on the next request. JWT verification has no online revocation check: a copied token remains usable until expiry while its signing key is accepted. Authentication occurs at request admission; an already-open response stream isn't continuously reverified.
 
-The standalone `mcp proxy` command snapshots configuration at startup. Restart it after any `mcp_door` configuration change, including enrollment revocation. The long-lived runtime rejects any reload that changes `mcp_door`, retaining the previous configuration and scanner; unrelated reloads leave the door settings intact. Removing a signing key from the pinned file or revoking a token at the introspection issuer takes effect on subsequent requests without a config reload.
+The standalone `mcp proxy` command snapshots configuration at startup. Restart it after any `mcp_door` configuration change, including enrollment revocation. The long-lived runtime rejects a reload that changes `mcp_door` while the door is enabled before or after the reload, retaining the previous configuration and scanner. Edits to a disabled `mcp_door` block reload with the rest of the configuration, and unrelated reloads leave the door settings intact. Removing a signing key from the pinned file or revoking a token at the introspection issuer takes effect on subsequent requests without a config reload.
 
 ### Registered local MCP services (`mcp_identities`)
 

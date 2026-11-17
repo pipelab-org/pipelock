@@ -400,11 +400,6 @@ func RunHTTPListenerProxy(
 		// revocation. Set before any branch so error and preflight paths inherit
 		// it; the SSE path overrides Content-Type but not this.
 		w.Header().Set("Cache-Control", "no-store")
-		if opts.ListenerDoor != nil && r.URL.Path == opts.ListenerDoor.MetadataPath() && r.Method == http.MethodGet {
-			opts.ListenerDoor.WriteMetadata(w)
-			return
-		}
-
 		if !listenerOriginAllowed(r.Header.Values("Origin"), opts.ListenerAllowedOrigins) {
 			denialAudit = mcpListenerAdmissionDenialAudit()
 			http.Error(w, "origin not allowed", http.StatusForbidden)
@@ -422,6 +417,12 @@ func RunHTTPListenerProxy(
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
+		}
+		// Protected-resource metadata is public, but follows the same origin
+		// policy so an allowed browser client can read it.
+		if opts.ListenerDoor != nil && r.URL.Path == opts.ListenerDoor.MetadataPath() && r.Method == http.MethodGet {
+			opts.ListenerDoor.WriteMetadata(w)
+			return
 		}
 		// Bearer guessing bound. Runs BEFORE the bearer compare so a spent
 		// budget yields no oracle and a parallel burst cannot outrun the count.
@@ -2696,7 +2697,7 @@ func setListenerCORSHeaders(headers http.Header, origin string) {
 	headers.Set("Access-Control-Allow-Origin", origin)
 	headers.Set("Access-Control-Allow-Methods", strings.Join([]string{http.MethodPost, http.MethodGet, http.MethodDelete}, ", "))
 	headers.Set("Access-Control-Allow-Headers", listenerCORSAllowedHeaders)
-	headers.Set("Access-Control-Expose-Headers", strings.Join([]string{"Mcp-Session-Id", "Pipelock-Session-Token", "X-Pipelock-Receipt", blockreason.HeaderReason, blockreason.HeaderVersion, blockreason.HeaderSeverity, blockreason.HeaderRetry, blockreason.HeaderLayer}, ", "))
+	headers.Set("Access-Control-Expose-Headers", strings.Join([]string{"Mcp-Session-Id", "Pipelock-Session-Token", "X-Pipelock-Receipt", "WWW-Authenticate", blockreason.HeaderReason, blockreason.HeaderVersion, blockreason.HeaderSeverity, blockreason.HeaderRetry, blockreason.HeaderLayer}, ", "))
 	headers.Add("Vary", "Origin")
 	headers.Add("Vary", "Access-Control-Request-Method")
 	headers.Add("Vary", "Access-Control-Request-Headers")
