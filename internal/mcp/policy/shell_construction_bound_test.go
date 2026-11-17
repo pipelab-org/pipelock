@@ -1370,6 +1370,7 @@ func TestShellConditionalAtMarksSkippedText(t *testing.T) {
 		// The hosted review's cases on a2f67e1.
 		"time -p (Z=echo); " + use,
 		"function f-x { Z=echo; }; " + use,
+		"if false; then echo x{} fi; Z=echo; fi; " + use,
 		// Here-document and here-string text is data, not an assignment.
 		"cat <<EOF\nZ=echo\nEOF\n" + use,
 		"cat <<<Z=echo; " + use,
