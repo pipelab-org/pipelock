@@ -166,6 +166,8 @@ func TestShellConstructionUseBeforeAssignmentReadsUnset(t *testing.T) {
 		// A "!" before a block, a reserved word that is data, a comment
 		// after ";".
 		"! if test -f /nope; then Z=echo; fi; " + use,
+		"if test -f /nope; then echo !fi; Z=echo; fi; " + use,
+		"echo " + d + "{x}#; if test -f /nope; then\nZ=echo\nfi; " + use,
 		"echo if; if test -f /nope; then Z=echo; fi; " + use,
 		"true;#x\nif test -f /nope; then Z=echo; fi; " + use,
 	} {
@@ -191,6 +193,7 @@ func TestShellConstructionSpecialBuiltinReadsBothShells(t *testing.T) {
 		"C=x eval true; " + d + "{C}rm -rf /tmp/t",
 		"C=x D=y :; " + d + "{C}rm -rf /tmp/t",
 		"C=x D=y eval true; " + d + "{C}rm -rf /tmp/t",
+		"C=x >/dev/null :; " + d + "{C}rm -rf /tmp/t",
 	} {
 		out, partial, fits := resolveShellConstruction(cmd)
 		if !fits || partial || !strings.Contains(out, "; rm -rf /tmp/t") || !strings.Contains(out, "xrm -rf /tmp/t") {
@@ -201,6 +204,9 @@ func TestShellConstructionSpecialBuiltinReadsBothShells(t *testing.T) {
 			t.Fatalf("%q: verdict %v %q %v", cmd, v.Matched, v.Action, v.Rules)
 		}
 	}
+	// A self-referencing prefix value: the use stays braced, which the policy
+	// reads as empty, so the unset reading still reaches the rule.
+	assertFileDelete(t, defaultBlockPolicy(""), "C="+d+"{C}x :; "+d+"{C}rm -rf /tmp/t")
 }
 
 // Text whose expansion passes the bound blocks under every

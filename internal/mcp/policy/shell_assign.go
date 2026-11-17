@@ -168,7 +168,7 @@ func assignSpansIn(s string, wanted map[string]struct{}) []assignSpan {
 			// resumes at the next assignment.
 			chained = true
 			// "C=x D=y :" is kept by sh and dropped by bash for both names.
-			maybeKept = cur.persists(nameStart) && !commandAssignsPersistIn(s, cur.cmdLo, cur.cmdHi, shellAssigningBuiltin)
+			maybeKept = cur.persists(nameStart) && keptOnlyBySpecialBuiltin(s, cur.cmdLo, cur.cmdHi)
 		default:
 			// "A=r >/tmp/x" and "export A=r dummy" still assign. "A=r cmd"
 			// does not: the value is that command's environment. "A=r $u"
@@ -177,7 +177,7 @@ func assignSpansIn(s string, wanted map[string]struct{}) []assignSpan {
 				continue
 			}
 			soft = true
-			maybeKept = cur.cmdOK && !commandAssignsPersistIn(s, cur.cmdLo, cur.cmdHi, shellAssigningBuiltin)
+			maybeKept = cur.cmdOK && keptOnlyBySpecialBuiltin(s, cur.cmdLo, cur.cmdHi)
 		}
 		i = j
 		if nameStart > 0 && s[nameStart-1] == '$' {
@@ -277,6 +277,14 @@ func commandAssignsPersistIn(s string, start, end int, keeps func(string) bool) 
 	}
 	sawRedirect, sawExpansion, foreign := classifyCommand(s, start, end)
 	return sawRedirect || (!foreign && sawExpansion)
+}
+
+// keptOnlyBySpecialBuiltin reports whether the command word is a special
+// builtin, which sh keeps the prefix assignments of and bash drops, even when
+// a redirection comes first ("C=x >/dev/null :").
+func keptOnlyBySpecialBuiltin(s string, start, end int) bool {
+	return commandWordIsAssigningBuiltin(s, start, end, shellSpecialBuiltin) &&
+		!commandWordIsAssigningBuiltin(s, start, end, shellAssigningBuiltin)
 }
 
 func keptByBuiltin(w string) bool {
@@ -480,7 +488,7 @@ func shellConditionalAt(s string, at []int) map[int]bool {
 			i = to
 			cmdPos = false
 		case '#':
-			if i == 0 || isShellSpaceByte(s[i-1]) || strings.IndexByte(";&|(){}<>", s[i-1]) >= 0 {
+			if i == 0 || isShellSpaceByte(s[i-1]) || strings.IndexByte(";&|(<>", s[i-1]) >= 0 {
 				to := len(s) - 1
 				if k := strings.IndexByte(s[i:], '\n'); k >= 0 {
 					to = i + k - 1
@@ -489,7 +497,9 @@ func shellConditionalAt(s string, at []int) map[int]bool {
 				i = to
 			}
 		case '!':
-			cmdPos = true
+			// Pipeline negation only as a word of its own in command
+			// position: "echo !fi" is an argument, and its fi closes nothing.
+			cmdPos = cmdPos && (i+1 >= len(s) || isShellSpaceByte(s[i+1]) || s[i+1] == '(' || s[i+1] == '{')
 		case ' ', '\t':
 		default:
 			if !isShellNameByte(c) || (i > 0 && isShellNameByte(s[i-1])) {
@@ -1351,11 +1361,11 @@ func shellConstructionPass(s string, sb *shellBounds) (out string, changed, fits
 			sv.order = append(sv.order, n)
 			firstAssign[a.name] = a.opStart
 		}
-		if a.selfRef {
-			continue
-		}
 		if a.maybeKept {
 			n.plain.add("")
+		}
+		if a.selfRef {
+			continue
 		}
 		v := bracedShellRefs(s[a.valueStart:a.valueEnd])
 		if !n.plain.add(v) {
