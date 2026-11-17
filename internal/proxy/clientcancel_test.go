@@ -136,7 +136,7 @@ func assertClientCancel(t *testing.T, logs string, metricBody string, hits int32
 }
 
 func TestClientCancelMidBodyScanNotBlocked(t *testing.T) {
-	payload := []byte(`{"note":"ordinary neutral text"}`)
+	payload := []byte(`{"note":"` + fakeAPIKey() + `"}`)
 	t.Run("forward", func(t *testing.T) {
 		cfg := cancelTestConfig()
 		logger, logs := newCancelAuditLogger(t)

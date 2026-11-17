@@ -79,6 +79,12 @@ func runInterceptTiming(t *testing.T, cfg *config.Config, rt http.RoundTripper, 
 
 func runInterceptTimingRequest(t *testing.T, cfg *config.Config, rt http.RoundTripper, req *http.Request) (map[string]any, int) {
 	t.Helper()
+	entry, code, _ := runInterceptTimingRequestWithResponse(t, cfg, rt, req)
+	return entry, code
+}
+
+func runInterceptTimingRequestWithResponse(t *testing.T, cfg *config.Config, rt http.RoundTripper, req *http.Request) (map[string]any, int, string) {
+	t.Helper()
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
@@ -100,7 +106,7 @@ func runInterceptTimingRequest(t *testing.T, cfg *config.Config, rt http.RoundTr
 	if len(entries) != 1 {
 		t.Fatalf("intercept_http entries = %d, want exactly 1", len(entries))
 	}
-	return entries[0], w.Code
+	return entries[0], w.Code, w.Body.String()
 }
 
 func timingConfig() *config.Config {
@@ -380,7 +386,9 @@ func TestInterceptTiming_RequestBodyInspection(t *testing.T) {
 		wantStatus int
 	}{
 		{name: "allowed", body: func(context.CancelFunc) io.Reader { return strings.NewReader(`{"message":"ordinary output"}`) }, wantStatus: http.StatusOK},
-		{name: "core secret blocked", body: func(context.CancelFunc) io.Reader { return strings.NewReader("AKIA" + "IOSFODNN7EXAMPLE") }, wantStatus: http.StatusForbidden},
+		{name: "core secret blocked", body: func(context.CancelFunc) io.Reader {
+			return strings.NewReader(`{"token":"` + "AKIA" + `IOSFODNN7EXAMPLE"}`)
+		}, wantStatus: http.StatusForbidden},
 		{name: "read failure", body: func(context.CancelFunc) io.Reader { return iotest.ErrReader(errors.New("body read failed")) }, wantStatus: http.StatusForbidden},
 		{name: "canceled during read", body: func(cancel context.CancelFunc) io.Reader { return &cancelTimingReader{cancel: cancel} }, wantStatus: http.StatusServiceUnavailable},
 		{name: "disabled", body: func(context.CancelFunc) io.Reader { return strings.NewReader(`{"message":"ordinary output"}`) }, disabled: true, wantStatus: http.StatusOK},
@@ -395,9 +403,12 @@ func TestInterceptTiming_RequestBodyInspection(t *testing.T) {
 			req := httptest.NewRequestWithContext(ctx, http.MethodPost, "https://api.vendor.example/model", tc.body(cancel))
 			req.Header.Set("Content-Type", "application/json")
 			rt := &slowRT{reached: make(chan struct{})}
-			e, status := runInterceptTimingRequest(t, cfg, rt, req)
+			e, status, response := runInterceptTimingRequestWithResponse(t, cfg, rt, req)
 			if status != tc.wantStatus {
 				t.Fatalf("status=%d want=%d", status, tc.wantStatus)
+			}
+			if tc.name == "core secret blocked" && !strings.Contains(response, "AWS Access ID") {
+				t.Fatalf("expected core-secret refusal: %s", response)
 			}
 			elapsed, present := e["request_body_ms"].(float64)
 			if present == tc.disabled {

@@ -207,11 +207,16 @@ func TestBodyDLPViewsCancelStopsLaterWork(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	var warnings int
+	var audienceCalls int
 	sc.SetDLPWarnHook(func(context.Context, string, string) { warnings++; cancel() })
 	matches := scanBodyTextViewsForDLPWithAudience(ctx, sc, bodyDLPViews{
 		texts:       []string{fakeAPIKey() + " zzcancelviewzz", fakeGitHubToken()},
+		atoms:       []extract.DLPAtom{{Number: true}, {Number: true}},
 		rawDocument: `{"message":"zzcancelviewzz"}`,
-	}, "", nil, nil, false, nil, "body", nil)
+	}, "", nil, nil, false, nil, "body", func(scanner.CredentialAudienceAllow) { audienceCalls++ })
+	if audienceCalls != 0 {
+		t.Fatal("canceled body earned an audience callback")
+	}
 	if warnings != 1 {
 		t.Fatalf("later views ran after cancellation: warnings=%d", warnings)
 	}

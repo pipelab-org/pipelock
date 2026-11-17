@@ -758,6 +758,8 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 	allowance := &assembledAllowance{}
 	originalDecodes := textDecodingMemo(shared, terminalInbound, allowance, kindInsensitive)
 	defer originalDecodes.releaseTextDecodingMemo()
+	originalDecodes.scanCtx = ctx
+	originalDecodes.scanStop = !originalDecodes.terminalCanceled()
 	if !s.hasGenericCardPatterns() {
 		emit := opts.emitWarns
 		opts.emitWarns = false
@@ -802,6 +804,7 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 		if text != cardView {
 			typedDecodes := textDecodingMemo(shared, terminalInbound, allowance, kindInsensitive)
 			defer typedDecodes.releaseTextDecodingMemo()
+			typedDecodes.scanStop = originalDecodes.scanStop
 			typedDecodes.reassemblyPatternLimit = textDLPCardPatterns
 			cardDecodes = typedDecodes
 			terminalMemos = append(terminalMemos, typedDecodes)
@@ -866,6 +869,7 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 		}
 		seenRuns[run] = struct{}{}
 		runDecodes := textDecodingMemo(shared, terminalInbound, allowance, kindInsensitive)
+		runDecodes.scanStop = originalDecodes.scanStop
 		runDecodes.reassemblyPatternLimit = textDLPCardPatterns
 		runResult := s.scanTextForDLPWithDecodes(ctx, run.Digits, opts, runDecodes)
 		runResult = finishAssembled(runResult, runDecodes)
@@ -902,7 +906,8 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 func (s *Scanner) scanTextForDLPWithDecodes(ctx context.Context, text string, opts textDLPOptions, decodes *decodingMemo) TextDLPResult {
 	if decodes != nil {
 		decodes.scanCtx = ctx
-		decodes.scanStop = !decodes.terminalCanceled()
+		// A later pass must not reset a stop inherited from its enclosing scan.
+		decodes.scanStop = decodes.scanStop || !decodes.terminalCanceled()
 	}
 	result := s.scanTextForDLPDetectors(ctx, text, opts, decodes)
 	if ctx.Err() != nil {
@@ -1810,25 +1815,28 @@ func (s *Scanner) checkSecretsInTextWithDecodes(secrets []string, text, patternN
 func (s *Scanner) checkSecretLeaks(cleaned, text string, decodes *decodingMemo) []TextDLPMatch {
 	var matches []TextDLPMatch
 	check := func(original string) {
-		if len(s.envSecrets) == 0 && len(s.fileSecrets) == 0 {
+		if decodes.stopRequested() || len(s.envSecrets) == 0 && len(s.fileSecrets) == 0 {
 			return
 		}
 		roots := newKnownSecretRoots(original)
-		if len(s.envSecrets) > 0 {
+		if len(s.envSecrets) > 0 && !decodes.stopRequested() {
 			matches = append(matches, s.checkSecretsInRoots(s.envSecrets, roots, "Environment Variable Leak", "env", decodes)...)
 		}
-		if len(s.fileSecrets) > 0 {
+		if len(s.fileSecrets) > 0 && !decodes.stopRequested() {
 			matches = append(matches, s.checkSecretsInRoots(s.fileSecrets, roots, "Known Secret Leak", "", decodes)...)
 		}
 	}
 	check(cleaned)
-	if normalize.ContainsTags(text) || (hasTextEncoding(text) && text != cleaned) {
+	if !decodes.stopRequested() && (normalize.ContainsTags(text) || (hasTextEncoding(text) && text != cleaned)) {
 		check(text)
 	}
 	return matches
 }
 
 func (s *Scanner) checkSecretsInRoots(secrets []string, roots knownSecretRoots, patternName, encodedOverride string, decodes *decodingMemo) []TextDLPMatch {
+	if decodes.stopRequested() {
+		return nil
+	}
 	original := roots.original
 	// The memo's normalization records the scan's view ancestry; its value
 	// equals the planned root.
@@ -1845,6 +1853,9 @@ func (s *Scanner) checkSecretsInRoots(secrets []string, roots knownSecretRoots, 
 	}
 
 	for phase := range 2 {
+		if decodes.stopRequested() {
+			return nil
+		}
 		if phase == 1 {
 			texts = s.decodedKnownSecretViews(text, decodes)
 			if original != text && (hasTextEncoding(original) || normalize.ContainsTags(original)) {
@@ -1864,6 +1875,9 @@ func (s *Scanner) checkSecretsInRoots(secrets []string, roots knownSecretRoots, 
 
 		hits := newKnownValueWindowHits(texts)
 		for _, secret := range secrets {
+			if decodes.stopRequested() {
+				return nil
+			}
 			var match knownSecretMatch
 			var start, end int
 			var viewLabel string

@@ -40,6 +40,9 @@ func (s *Scanner) decodedKnownSecretViews(text string, decodes *decodingMemo) []
 	// The root's tag views below repeat the root decode add(text) made.
 	var rootRun decodedRun
 	add := func(value string, root bool) {
+		if decodes.stopRequested() {
+			return
+		}
 		// Decoding cannot grow a candidate; shorter input cannot contain a
 		// whole configured secret or an eligible partial-secret window.
 		if len(value) < minimum {
@@ -63,7 +66,13 @@ func (s *Scanner) decodedKnownSecretViews(text string, decodes *decodingMemo) []
 			views = append(views, spanTextView{text: decoded.text, viewLabel: dlpViewLabel(decoded.encoding)})
 		}
 		var knownRun decodedRun
+		if decodes.stopRequested() {
+			return
+		}
 		for _, decoded := range decodes.decodeKnownSecretRun(value, minimum, base, &knownRun) {
+			if decodes.stopRequested() {
+				return
+			}
 			covered, exists := seen[decoded.text]
 			if knownRun.resumed && knownRun.complete && !covered {
 				s.noteKnownPrefixPattern(decodes, decoded)
@@ -77,7 +86,13 @@ func (s *Scanner) decodedKnownSecretViews(text string, decodes *decodingMemo) []
 		}
 	}
 	add(text, true)
+	if decodes.stopRequested() {
+		return views
+	}
 	for _, decoded := range decodes.decodeAgain(text, rootRun) {
+		if decodes.stopRequested() {
+			return views
+		}
 		if decoded.encoding == encodingUnicodeTags {
 			for _, segment := range textDLPSegments(decodes.normalize(decoded.text)) {
 				add(segment, false)
@@ -85,6 +100,9 @@ func (s *Scanner) decodedKnownSecretViews(text string, decodes *decodingMemo) []
 		}
 	}
 	for _, segment := range textDLPSegments(text) {
+		if decodes.stopRequested() {
+			return views
+		}
 		if segment != text {
 			add(segment, false)
 		}

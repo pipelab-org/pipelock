@@ -6,6 +6,7 @@ package scanner
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"html"
 	"runtime"
 	"strconv"
@@ -73,12 +74,13 @@ func TestScanTextDLPCancellationStopsLaterPattern(t *testing.T) {
 	cfg.Internal = nil
 	cfg.DLP.ScanEnv = false
 	cfg.DLP.Patterns = []config.DLPPattern{
+		{Name: "Kept", Regex: `KEPT[0-9]{4}`, Severity: config.SeverityHigh},
 		{Name: "Early", Regex: `MARK[0-9]{4}`, Severity: config.SeverityHigh},
 		{Name: "Late", Regex: `LATE[0-9]{4}`, Severity: config.SeverityHigh},
 	}
 	sc := MustNew(cfg)
 	defer sc.Close()
-	body := "MARK1234 " + strings.Repeat("neutral status text ", 40) + "LATE5678"
+	body := "KEPT1234 MARK1234 " + strings.Repeat("neutral status text ", 40) + "LATE5678"
 	live := sc.ScanTextForDLP(t.Context(), body)
 	if live.Incomplete || !hasPattern(live, "Early") || !hasPattern(live, "Late") {
 		t.Fatalf("complete scan missed a marker: %+v", live)
@@ -133,6 +135,9 @@ func TestScanTextDLPCancellationStopsLaterPattern(t *testing.T) {
 			if !result.Incomplete || result.Clean {
 				t.Fatalf("cancellation returned verified: %+v", result)
 			}
+			if !hasPattern(result, "Kept") {
+				t.Fatalf("finding collected before cancellation was lost: %+v", result)
+			}
 			for _, match := range append(result.Matches, result.InformationalMatches...) {
 				if match.PatternName == PartialEncodedContentPattern || match.PatternName == UninspectableEncodedContentPattern {
 					t.Fatalf("cancellation became an inspection-limit finding: %+v", result)
@@ -144,6 +149,115 @@ func TestScanTextDLPCancellationStopsLaterPattern(t *testing.T) {
 	again := sc.ScanTextForDLP(t.Context(), body)
 	if again.Incomplete || !hasPattern(again, "Early") || !hasPattern(again, "Late") {
 		t.Fatalf("canceled scan cached as a verified negative: %+v", again)
+	}
+}
+
+func TestScanTextDLPCancellationSurvivesCardPass(t *testing.T) {
+	for _, separate := range []bool{false, true} {
+		t.Run(strconv.FormatBool(separate), func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.DLP.ScanEnv = false
+			cfg.DLP.Patterns = append(cfg.DLP.Patterns,
+				config.DLPPattern{Name: "Cancel first pass", Regex: `MARK[0-9]{4}`, Keywords: []string{"lookup"}, Severity: config.SeverityHigh},
+				config.DLPPattern{Name: "Card counter", Regex: `4111[0-9]{12}`, Validator: config.ValidatorLuhn, Severity: config.SeverityHigh},
+			)
+			sc := MustNew(cfg)
+			t.Cleanup(sc.Close)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var cardCalls, callsAtCancel int
+			var canceled bool
+			for _, patterns := range [][]*compiledPattern{sc.core.dlpPatterns, sc.dlpPatterns} {
+				for _, p := range patterns {
+					if p.genericCard {
+						p.validateAt = func(string, int, int) bool { cardCalls++; return true }
+					}
+					if p.name == "Cancel first pass" {
+						p.validate = func(string) bool {
+							if !canceled {
+								callsAtCancel = cardCalls
+								canceled = true
+								cancel()
+							}
+							return true
+						}
+					}
+				}
+			}
+			text := "lookup MARK1234 4111" + strings.Repeat("1", 12)
+			cardView := text
+			if separate {
+				cardView += " separate view"
+			}
+			result := sc.ScanTextForDLPWithCardView(ctx, text, cardView)
+			if ctx.Err() == nil || !result.Incomplete || result.Clean {
+				t.Fatalf("fixture did not stop during the first pass: %+v", result)
+			}
+			if cardCalls != callsAtCancel {
+				t.Fatalf("card work resumed after cancellation: calls=%d atCancel=%d", cardCalls, callsAtCancel)
+			}
+		})
+	}
+}
+
+type cancelAfterBaseDecodeContext struct {
+	context.Context
+	memo   *decodingMemo
+	cancel context.CancelFunc
+}
+
+func (c *cancelAfterBaseDecodeContext) Done() <-chan struct{} {
+	if len(c.memo.views) > 0 {
+		c.cancel()
+	}
+	return c.Context.Done()
+}
+
+func TestKnownSecretCancellationBetweenDecodeWalks(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	sc.minEnvSecretLen = minKnownSecretSubstringLen
+	parent, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	memo := &decodingMemo{scanStop: true}
+	memo.scanCtx = &cancelAfterBaseDecodeContext{Context: parent, memo: memo, cancel: cancel}
+	text := base64.RawStdEncoding.EncodeToString([]byte("ordinary decoded marker for cancellation"))
+	views := sc.decodedKnownSecretViews(text, memo)
+	if parent.Err() == nil || len(views) == 0 {
+		t.Fatalf("base result was not preserved at cancellation: views=%d error=%v", len(views), parent.Err())
+	}
+	for key := range memo.views {
+		if key.minPrefix > 0 {
+			t.Fatal("known-prefix walk started after the completed base walk canceled")
+		}
+	}
+}
+
+func TestSecretLeakCancellationKeepsEarlierFinding(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	const value = "known-cancellation-marker-abcdefgh"
+	sc.envSecrets = []string{value}
+	control := newDoneCounter(t, 0)
+	first := sc.checkSecretLeaks(value, value, &decodingMemo{scanCtx: control, scanStop: true})
+	if len(first) != 1 || control.hits == 0 {
+		t.Fatal("control did not finish the environment finding")
+	}
+	// The environment-only control's final checkpoint is the next independent
+	// check's entry when a file secret is configured. Derive that boundary
+	// from the control rather than relying on a fixed checkpoint count.
+	sc.fileSecrets = []string{value}
+	ctx := newDoneCounter(t, control.hits)
+	found := sc.checkSecretLeaks(value, value, &decodingMemo{scanCtx: ctx, scanStop: true})
+	if ctx.Err() == nil || len(found) != 1 || found[0].PatternName != "Environment Variable Leak" {
+		t.Fatalf("independent check resumed or earlier finding was lost: findings=%+v error=%v", found, ctx.Err())
 	}
 }
 
