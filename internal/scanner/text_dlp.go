@@ -1303,7 +1303,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	if !decodes.stopRequested() && len(segmentViews) > 1 {
 		compacted, offsets := decodes.compactWhitespace(cleaned)
 		decodes.registerKeywordTransform(cleaned, compacted, "projection")
-		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsInWhitespaceView(compacted, cleaned, offsets))...)
+		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsInWhitespaceView(compacted, cleaned, offsets, decodes))...)
 	}
 
 	// Hostname exfiltration: extract URL hostnames from the text and run the
@@ -1518,11 +1518,14 @@ func (s *Scanner) matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource
 // its spans for every pattern. The built-in Credential in URL grammar alone
 // rejects a match that compaction manufactured from a spaced line-start
 // assignment; this is intentionally not an operator-configurable behavior.
-func (s *Scanner) matchDLPPatternsInWhitespaceView(text, proseSource string, offsets []int) []TextDLPMatch {
+func (s *Scanner) matchDLPPatternsInWhitespaceView(text, proseSource string, offsets []int, decodes *decodingMemo) []TextDLPMatch {
 	// text is already compacted from normalize.ForDLP(proseSource). Do not
 	// transform it again: offsets index this exact emitted view.
 	var matches []TextDLPMatch
 	for _, idx := range s.dlpPreFilter.patternsToCheck(text) {
+		if decodes.stopRequested() {
+			return matches
+		}
 		p := s.dlpPatterns[idx]
 		if start, end, ok := p.matchSpanInJoinedView(text, proseSource, offsets); ok {
 			if p.credentialURLWhitespaceGrammar && !credentialURLWhitespaceMatchAllowed(text, proseSource, offsets, start, end) {

@@ -152,6 +152,42 @@ func TestScanTextDLPCancellationStopsLaterPattern(t *testing.T) {
 	}
 }
 
+func TestWhitespaceDLPCancellationKeepsEarlierFindings(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.DLP.Patterns = []config.DLPPattern{
+		{Name: "Whitespace kept", Regex: `KEPT[0-9]{4}`, Severity: config.SeverityHigh},
+		{Name: "Whitespace cancel", Regex: `MARK[0-9]{4}`, Severity: config.SeverityHigh},
+		{Name: "Whitespace late", Regex: `LATE[0-9]{4}`, Severity: config.SeverityHigh},
+	}
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	const body = "KE PT1234 MA RK1234 LA TE5678"
+	control := sc.ScanTextForDLP(t.Context(), body)
+	if !hasPattern(control, "Whitespace kept") || !hasPattern(control, "Whitespace cancel") || !hasPattern(control, "Whitespace late") {
+		t.Fatalf("control did not reach all whitespace rules: %+v", control)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	lateCalls := 0
+	for _, pattern := range sc.dlpPatterns {
+		switch pattern.name {
+		case "Whitespace cancel":
+			pattern.validate = func(string) bool { cancel(); return true }
+		case "Whitespace late":
+			pattern.validate = func(string) bool { lateCalls++; return true }
+		}
+	}
+	result := sc.ScanTextForDLP(ctx, body)
+	if ctx.Err() == nil || !result.Incomplete || result.Clean || lateCalls != 0 {
+		t.Fatalf("whitespace work did not stop: late=%d result=%+v", lateCalls, result)
+	}
+	if !hasPattern(result, "Whitespace kept") || !hasPattern(result, "Whitespace cancel") {
+		t.Fatalf("earlier whitespace findings were lost: %+v", result)
+	}
+}
+
 func TestScanTextDLPCancellationSurvivesCardPass(t *testing.T) {
 	for _, separate := range []bool{false, true} {
 		t.Run(strconv.FormatBool(separate), func(t *testing.T) {
