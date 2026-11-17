@@ -119,12 +119,16 @@ func TestShellConstructionPaddingStillBlocks(t *testing.T) {
 	}
 }
 
+// rmStartsCommand matches rm as a command word. "echorm -rf" contains the
+// text "rm -rf" too, so a substring check cannot tell the readings apart.
+var rmStartsCommand = regexp.MustCompile(`(^|[;&|]\s*)rm -rf /tmp/target`)
+
 // A use before the name's first assignment runs with the name unset; a later
 // decoy assignment must not be its only reading.
 func TestShellConstructionUseBeforeAssignmentReadsUnset(t *testing.T) {
 	cmd := "A=r; B=m; " + d + "Z" + d + "A" + d + "B -rf /tmp/target; Z=echo"
 	out, partial, fits := resolveShellConstruction(cmd)
-	if !fits || partial || !strings.Contains(out, "; rm -rf /tmp/target") {
+	if !fits || partial || !rmStartsCommand.MatchString(out) {
 		t.Fatalf("out=%q partial=%v fits=%v, want the unset reading", out, partial, fits)
 	}
 	assertFileDelete(t, defaultBlockPolicy(""), cmd)
@@ -141,8 +145,28 @@ func TestShellConstructionUseBeforeAssignmentReadsUnset(t *testing.T) {
 		"Z=echo; unset Z; " + use,
 	} {
 		out, partial, fits := resolveShellConstruction(cmd)
-		if !fits || partial || !strings.Contains(out, "rm -rf /tmp/target") {
+		if !fits || partial || !rmStartsCommand.MatchString(out) {
 			t.Fatalf("%q: out=%q partial=%v fits=%v, want the unset reading", cmd, out, partial, fits)
+		}
+		assertFileDelete(t, defaultBlockPolicy(""), cmd)
+	}
+
+	// Review round: the empty reading pairs with every value of the other
+	// names; a reserved word that is data does not close a block; a quoted
+	// unset still unsets; an assignment in a pipeline or background job does
+	// not reach the shell.
+	for _, cmd := range []string{
+		"A=ls; A=r; B=m; " + d + "Z" + d + "A" + d + "B -rf /tmp/target; Z=echo",
+		"if test -f /nope; then echo fi; Z=echo; fi; " + use,
+		"if test -f /nope; then echo 'fi'; Z=echo; fi; " + use,
+		"Z=echo; unset \"Z\"; " + use,
+		"Z=echo; unset 'Z'; " + use,
+		"Z=echo | cat; " + use,
+		"Z=echo & " + use,
+	} {
+		out, _, fits := resolveShellConstruction(cmd)
+		if !fits || !rmStartsCommand.MatchString(out) {
+			t.Fatalf("%q: out=%q fits=%v, want the unset reading", cmd, out, fits)
 		}
 		assertFileDelete(t, defaultBlockPolicy(""), cmd)
 	}

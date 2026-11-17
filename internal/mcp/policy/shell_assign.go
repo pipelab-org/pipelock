@@ -430,10 +430,13 @@ func shellConditionalAt(s string, at []int) map[int]bool {
 	out := make(map[int]bool, len(at))
 	depth, gated := 0, false
 	var groups []bool // true for a group that counts toward depth
+	// cmdPos: the next word is a command word, where reserved words count.
+	// "echo fi" does not close an if.
+	cmdPos := true
 	next := 0
 	for i := 0; i < len(s) && next < len(at); i++ {
 		for next < len(at) && at[next] == i {
-			out[at[next]] = depth > 0 || gated
+			out[at[next]] = depth > 0 || gated || shellStatementForks(s, i)
 			next++
 		}
 		switch c := s[i]; c {
@@ -442,16 +445,22 @@ func shellConditionalAt(s string, at []int) map[int]bool {
 				gated = true
 				i++
 			} else {
+				// A single "&" ends a statement; what follows "|" runs in a
+				// subshell. The assignment before either is caught by
+				// shellStatementForks.
 				gated = c == '|'
 			}
+			cmdPos = true
 		case ';', '\n':
 			gated = false
+			cmdPos = true
 		case '(', '{':
 			counts := i == 0 || (s[i-1] != '$' && s[i-1] != '<' && s[i-1] != '>')
 			groups = append(groups, counts)
 			if counts {
 				depth++
 			}
+			cmdPos = true
 		case ')', '}':
 			if n := len(groups); n > 0 {
 				if groups[n-1] {
@@ -459,21 +468,44 @@ func shellConditionalAt(s string, at []int) map[int]bool {
 				}
 				groups = groups[:n-1]
 			}
+		case '\'', '"':
+			// Quoted text is data: skip to the closing quote.
+			if k := strings.IndexByte(s[i+1:], c); k >= 0 {
+				i += k + 1
+			}
+			cmdPos = false
+		case '#':
+			if i == 0 || isShellSpaceByte(s[i-1]) {
+				if k := strings.IndexByte(s[i:], '\n'); k >= 0 {
+					i += k - 1
+				} else {
+					i = len(s) - 1
+				}
+			}
+		case ' ', '\t':
 		default:
 			if !isShellNameByte(c) || (i > 0 && isShellNameByte(s[i-1])) {
+				cmdPos = false
 				continue
 			}
 			j := i
 			for j < len(s) && isShellNameByte(s[j]) {
 				j++
 			}
-			if j == len(s) || s[j] != '=' {
+			assign := j < len(s) && (s[j] == '=' || s[j] == '+' && j+1 < len(s) && s[j+1] == '=')
+			if cmdPos && !assign {
 				switch s[i:j] {
 				case "if", "while", "until", "for", "case", "select":
 					depth++
 				case "fi", "done", "esac":
 					depth = max(depth-1, 0)
 				}
+			}
+			switch s[i:j] {
+			case "if", "while", "until", "then", "do", "else", "elif", "time", "!":
+				cmdPos = !assign
+			default:
+				cmdPos = assign && cmdPos
 			}
 			if next < len(at) && at[next] < j {
 				i = at[next] - 1
@@ -483,6 +515,27 @@ func shellConditionalAt(s string, at []int) map[int]bool {
 		}
 	}
 	return out
+}
+
+// shellStatementForks reports whether the statement holding offset i ends in
+// a pipe or "&" before its ";", newline, "&&" or "||": its assignments then
+// run in a subshell or in the background.
+func shellStatementForks(s string, i int) bool {
+	for ; i < len(s); i++ {
+		switch c := s[i]; c {
+		case ';', '\n':
+			return false
+		case '&', '|':
+			if i+1 < len(s) && s[i+1] == c {
+				return false
+			}
+			if c == '&' && (s[i-1] == '>' || s[i-1] == '<' || i+1 < len(s) && s[i+1] == '>') {
+				continue
+			}
+			return true
+		}
+	}
+	return false
 }
 
 // shellUnsetsName reports whether the text unsets name with the unset
@@ -504,7 +557,8 @@ func shellUnsetsName(s, name string) bool {
 			end = len(rest)
 		}
 		for _, w := range strings.Fields(rest[:end]) {
-			if w == name {
+			// unset "$v" names a variable we cannot read: assume any.
+			if strings.ContainsAny(w, "$`") || strings.Trim(w, `"'\`) == name {
 				return true
 			}
 		}
@@ -1622,15 +1676,23 @@ func writeShellCommand(sb *shellBounds, write func(string) bool, copied map[stri
 	if !choices.each(emit) {
 		return false
 	}
-	// One more copy with every name that may still be unset left empty.
+	// More copies with every name that may still be unset left empty, each
+	// combined with every value of the other names while they fit.
 	if !done && slices.ContainsFunc(slots, func(sl shellSlot) bool { return sl.mayUnset }) {
 		copied[key] = struct{}{}
-		if !emit(func(i int) string {
-			if slots[i].mayUnset {
-				return ""
+		empty := make([]shellSlot, len(slots))
+		for i, sl := range slots {
+			empty[i] = sl
+			if sl.mayUnset {
+				empty[i].alts, empty[i].widest = unsetShellValue, 0
 			}
-			return slots[i].alts[0]
-		}) {
+		}
+		rest := newShellChoices(empty)
+		if !sb.fitsCopies(rest.count+1, rest.width(len(seg)+len(between))) {
+			rest = shellChoices{slots: empty, count: 1}
+			sb.partial = true
+		}
+		if !rest.each(emit) {
 			return false
 		}
 	}
