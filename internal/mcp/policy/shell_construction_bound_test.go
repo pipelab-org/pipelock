@@ -1272,6 +1272,60 @@ func TestShellConstructionReadsWhatBashPrints(t *testing.T) {
 	}
 }
 
+// Two uses of one name, one that may be unset and one that may not, carry
+// different value lists. They must not share a choice: the shared index ran
+// past the shorter list and panicked (hosted review on 0693e62).
+func TestShellConstructionMixedUnsetUsesDoNotPanic(t *testing.T) {
+	for _, cmd := range []string{
+		"B=" + d + "A A=r C=" + d + "A; A=x",
+		"echo " + d + "A; A=r; echo " + d + "A; A=x",
+		"test -f /x && A=r; echo " + d + "A" + d + "A; A=s; echo " + d + "A",
+	} {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("%q: panic: %v", cmd, r)
+				}
+			}()
+			if _, _, fits := resolveShellConstruction(cmd); !fits {
+				t.Fatalf("%q: did not fit", cmd)
+			}
+			defaultBlockPolicy("").CheckToolCall("bash", []string{cmd})
+		}()
+	}
+}
+
+// Random scripts built from the shapes the reader handles must never panic:
+// a crash in the policy path is the denial of service this code bounds.
+func TestShellConstructionRandomScriptsDoNotPanic(t *testing.T) {
+	parts := []string{
+		"A=r", "B=m", "A=x", "A=" + d + "A", "A+=x", "Z=echo", "B=" + d + "A", "C=" + d + "A", "Z=" + d + "B",
+		d + "A", d + "{A}", d + "Z", d + "B", d + "C",
+		";", " ", "&&", "||", "|", "&", "\n", "(", ")", "{", "}", d + "(", d + "{",
+		"if", "then", "fi", "else", "while", "do", "done", "case", "esac", "!",
+		":", "eval", "unset", "export", "#", "'", "\"", ">/dev/null", "rm", "-rf", "/tmp/t",
+	}
+	r := testRand(7)
+	for range 20000 {
+		var b strings.Builder
+		for range 1 + r.IntN(18) {
+			b.WriteString(parts[r.IntN(len(parts))])
+			if r.IntN(3) == 0 {
+				b.WriteByte(' ')
+			}
+		}
+		cmd := b.String()
+		func() {
+			defer func() {
+				if p := recover(); p != nil {
+					t.Fatalf("%q: panic: %v", cmd, p)
+				}
+			}()
+			resolveShellConstruction(cmd)
+		}()
+	}
+}
+
 // An assignment the nesting scan skips over, inside quoted text or a
 // comment, is read as conditional rather than certain.
 func TestShellConditionalAtMarksSkippedText(t *testing.T) {

@@ -1035,6 +1035,9 @@ type shellSlot struct {
 type shellSlotKey struct {
 	name     string
 	indirect bool
+	// mayUnset is part of the key: a use that may be unset has one more
+	// value than one that may not, so the two cannot share a choice.
+	mayUnset bool
 }
 
 // maxShellSlotChoices caps the variables with more than one value that one
@@ -1576,7 +1579,7 @@ func shellConstructionPass(s string, sb *shellBounds) (out string, changed, fits
 		if n == nil || len(n.values.list) == 0 {
 			continue
 		}
-		slot := shellSlot{pos: u.pos, end: u.end, key: shellSlotKey{name: u.name, indirect: u.indirect}, alts: n.values.list, widest: n.widest, mayUnset: mayUnset[i]}
+		slot := shellSlot{pos: u.pos, end: u.end, key: shellSlotKey{name: u.name, indirect: u.indirect, mayUnset: mayUnset[i]}, alts: n.values.list, widest: n.widest, mayUnset: mayUnset[i]}
 		if u.indirect {
 			slot.prefix = "${"
 		}
@@ -1667,7 +1670,9 @@ func newShellChoices(slots []shellSlot) shellChoices {
 			continue
 		}
 		for k, key := range keys {
-			if key == sl.key {
+			// A shared choice indexes every slot that follows it, so the
+			// slots must have the same number of values.
+			if key == sl.key && c.sizes[k] == len(sl.alts) {
 				c.which[i] = k
 				break
 			}
