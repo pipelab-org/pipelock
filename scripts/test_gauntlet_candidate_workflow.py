@@ -12,6 +12,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
@@ -437,13 +439,14 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
         # The only credential is the read-only job token, handed to the
         # benchmark runner for its release lookup. Contents read is the job's
         # whole grant, so the token cannot publish or modify anything.
-        # Match the whole line, so a commented-out assignment cannot pass.
-        token_line = "          GH_TOKEN: ${{ github.token }}"
+        # Read the parsed step environment, so a commented-out assignment or
+        # one moved into the script cannot pass.
         self.assertEqual(self.workflow.count("GH_TOKEN"), 1)
         self.assertEqual(self.workflow.count("github.token"), 1)
-        benchmark = step_block(self.workflow, "Run portable canonical benchmark")
-        self.assertIn("        env:\n", benchmark)
-        self.assertIn(token_line, benchmark.splitlines())
+        steps = yaml.safe_load(self.workflow)["jobs"]["candidate"]["steps"]
+        benchmark = [step for step in steps if step.get("name") == "Run portable canonical benchmark"]
+        self.assertEqual(len(benchmark), 1)
+        self.assertEqual(benchmark[0].get("env"), {"GH_TOKEN": "${{ github.token }}"})
         self.assertNotIn("secrets.", self.workflow)
         self.assertNotIn("GITHUB_TOKEN", self.workflow)
         self.assertNotIn("gh pr", self.workflow)
