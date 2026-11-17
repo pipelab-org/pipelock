@@ -203,6 +203,16 @@ environment_failure_reason() {
         return
     fi
 
+    # Door mode is served only by `pipelock mcp proxy --listen`; `run` refuses it
+    # on purpose. `check` has already validated the block. Skip only when the
+    # snippet defines mcp_door and that fixed refusal is the runtime's sole output
+    # line, so no other startup error can ride along with it.
+    local door_refusal='mcp_door requires pipelock mcp proxy --listen; run does not support door mode'
+    if [ "$phase" = "run" ] && grep -qE '^mcp_door:' "$cfg"         && [ "$(grep -cvE '^[[:space:]]*$' "$out" || true)" -eq 1 ]         && grep -qxF "$door_refusal" "$out"; then
+        echo "door configuration runs only under mcp proxy --listen"
+        return
+    fi
+
     # Entitlement/build gates are skippable only when they are the sole emitted
     # refusal. A broad substring match would let an enterprise message conceal a
     # second schema, path, or security-validation error in the same output.

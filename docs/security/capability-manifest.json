@@ -326,6 +326,10 @@
         },
         {
           "kind": "config_section",
+          "value": "mcp_door"
+        },
+        {
+          "kind": "config_section",
           "value": "mcp_identities"
         },
         {

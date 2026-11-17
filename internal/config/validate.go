@@ -676,6 +676,9 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateMCPInputScanning(); err != nil {
 		return warnings, err
 	}
+	if err := c.MCPDoor.Validate(); err != nil {
+		return warnings, err
+	}
 	if err := validateMCPIdentities(c.MCPIdentities); err != nil {
 		return warnings, err
 	}

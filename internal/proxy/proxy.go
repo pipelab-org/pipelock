@@ -2508,6 +2508,13 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	defer p.reloadSerialMu.Unlock()
 
 	oldCfg := p.cfgPtr.Load()
+	// A disabled door block is inert here, so edits to it must not hold back
+	// unrelated reloads; enabling, disabling or changing a live door needs a restart.
+	if (oldCfg.MCPDoor.Enabled || cfg.MCPDoor.Enabled) && !oldCfg.MCPDoor.Equal(cfg.MCPDoor) {
+		p.logger.LogError(audit.NewMethodLogContext("RELOAD"), fmt.Errorf("mcp_door changes require restart, keeping old config"))
+		sc.Close()
+		return false
+	}
 
 	// Build new edition BEFORE swapping config/scanner.
 	// If this fails, keep all existing state unchanged (fail-safe).

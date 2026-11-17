@@ -402,6 +402,9 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		containmentMetricsDenyLog: rate.NewLimiter(rate.Every(time.Second), 5),
 		scannerConstructor:        scanner.New,
 	}
+	if cfg.MCPDoor.Enabled {
+		return nil, errors.New("mcp_door requires pipelock mcp proxy --listen; run does not support door mode")
+	}
 	s.mcpListenerBearerToken = mcpAuthToken
 	if cfg.EvidenceProvenance.CommitmentKeyringPath != "" {
 		keyring, loadErr := commitmentkey.Load(cfg.EvidenceProvenance.CommitmentKeyringPath)

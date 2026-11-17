@@ -199,6 +199,19 @@ func RunHTTPListenerProxy(
 	safeLogW := &syncWriter{w: logW}
 	ctx, stopSession, _ := newSessionBoundContext(ctx, startupParentWatch, nil, safeLogW, opts.sessionExitForTest)
 	defer stopSession()
+	if opts.ListenerDoor != nil {
+		if opts.ListenerBearerToken != "" || opts.ListenerBearerTokenFn != nil || opts.ListenerAllowUnauthenticated || opts.ListenerPrincipalResolver != nil {
+			return fmt.Errorf("MCP door cannot be combined with static, anonymous or alternate principal authentication")
+		}
+		opts.ListenerPrincipalResolver = func(r *http.Request) (ListenerPrincipal, error) {
+			identity, err := opts.ListenerDoor.Verify(r)
+			if err != nil {
+				return ListenerPrincipal{}, err
+			}
+			provider, subject := identity.Partition()
+			return ListenerPrincipal{Provider: provider, Subject: subject, Epoch: 1}, nil
+		}
+	}
 	opts.UpstreamHeaders = canonicalizeListenerUpstreamHeaders(opts.UpstreamHeaders)
 	if err := validateListenerBearerToken(opts.ListenerBearerToken); err != nil {
 		return err
@@ -211,7 +224,7 @@ func RunHTTPListenerProxy(
 		return err
 	}
 	opts.ListenerAllowedOrigins = allowedOrigins
-	if !listenerIsLoopback(ln) && opts.ListenerBearerToken == "" && !opts.ListenerAllowUnauthenticated {
+	if !listenerIsLoopback(ln) && opts.ListenerBearerToken == "" && !opts.ListenerAllowUnauthenticated && opts.ListenerDoor == nil {
 		return fmt.Errorf("non-loopback MCP listener requires bearer authentication or explicit unauthenticated acknowledgement")
 	}
 	if opts.ContractServer == "" {
@@ -405,6 +418,12 @@ func RunHTTPListenerProxy(
 				return
 			}
 		}
+		// Protected-resource metadata is public, but follows the same origin
+		// policy so an allowed browser client can read it.
+		if opts.ListenerDoor != nil && r.URL.Path == opts.ListenerDoor.MetadataPath() && r.Method == http.MethodGet {
+			opts.ListenerDoor.WriteMetadata(w)
+			return
+		}
 		// Bearer guessing bound. Runs BEFORE the bearer compare so a spent
 		// budget yields no oracle and a parallel burst cannot outrun the count.
 		// Only a request that presents a credential to a token-protected
@@ -452,14 +471,18 @@ func RunHTTPListenerProxy(
 			}
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: listener authentication unavailable\n")
 			denialAudit = mcpListenerAdmissionDenialAudit()
-			http.Error(w, "listener authentication unavailable", http.StatusServiceUnavailable)
+			if opts.ListenerDoor != nil {
+				opts.ListenerDoor.WriteFailure(w, tokenErr)
+			} else {
+				http.Error(w, "listener authentication unavailable", http.StatusServiceUnavailable)
+			}
 			return
 		}
 		// A loopback bind is not an authentication boundary when a browser can
 		// reach it through a DNS-rebound hostname. Tokenless loopback listeners
 		// accept only literal loopback authorities or localhost on the actual
 		// bound port. Authenticated listeners may use deployment-specific names.
-		if loopbackListener && listenerToken == "" && !listenerLoopbackHostAllowed(r.Host, ln.Addr()) {
+		if loopbackListener && listenerToken == "" && opts.ListenerDoor == nil && !listenerLoopbackHostAllowed(r.Host, ln.Addr()) {
 			denialAudit = mcpListenerAdmissionDenialAudit()
 			http.Error(w, "host not allowed", http.StatusForbidden)
 			return
@@ -491,6 +514,9 @@ func RunHTTPListenerProxy(
 		// forwarded regardless of the auth outcome, so drop it unconditionally,
 		// and scrub Authorization whenever it also carries the listener token.
 		r.Header.Del(listenerProxyAuthorization)
+		if opts.ListenerDoor != nil {
+			r.Header.Del(listenerAuthorization)
+		}
 		if consumedAuthHeader != "" {
 			r.Header.Del(consumedAuthHeader)
 		}
@@ -1910,6 +1936,7 @@ func RunHTTPListenerProxy(
 		}
 
 		if blocked := decision.Blocked; blocked != nil {
+			scanOpts.ListenerDoor = opts.ListenerDoor
 			writeMCPHTTPInputResult(scanOpts, *blocked, w)
 			return
 		}
@@ -2670,7 +2697,7 @@ func setListenerCORSHeaders(headers http.Header, origin string) {
 	headers.Set("Access-Control-Allow-Origin", origin)
 	headers.Set("Access-Control-Allow-Methods", strings.Join([]string{http.MethodPost, http.MethodGet, http.MethodDelete}, ", "))
 	headers.Set("Access-Control-Allow-Headers", listenerCORSAllowedHeaders)
-	headers.Set("Access-Control-Expose-Headers", strings.Join([]string{"Mcp-Session-Id", "Pipelock-Session-Token", "X-Pipelock-Receipt", blockreason.HeaderReason, blockreason.HeaderVersion, blockreason.HeaderSeverity, blockreason.HeaderRetry, blockreason.HeaderLayer}, ", "))
+	headers.Set("Access-Control-Expose-Headers", strings.Join([]string{"Mcp-Session-Id", "Pipelock-Session-Token", "X-Pipelock-Receipt", "WWW-Authenticate", blockreason.HeaderReason, blockreason.HeaderVersion, blockreason.HeaderSeverity, blockreason.HeaderRetry, blockreason.HeaderLayer}, ", "))
 	headers.Add("Vary", "Origin")
 	headers.Add("Vary", "Access-Control-Request-Method")
 	headers.Add("Vary", "Access-Control-Request-Headers")
