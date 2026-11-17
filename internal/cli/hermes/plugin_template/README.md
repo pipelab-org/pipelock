@@ -33,7 +33,9 @@ The hook never emits a transform without it. `result` and a nonempty `reason`
 must be strings; malformed transforms and unknown decisions block/skip instead
 of returning `None`. `{}` and explicit `{"decision":"allow"}` remain accepted.
 
-Only plain `AWS Access ID` spans with identity DLP normalization are eligible.
+Only plain `AWS Access ID` findings with ASCII matches in the delivered text are eligible.
+The hook locates raw matches, including in multiline text, instead of reusing
+normalized-view offsets. A match that would hide part of a split key blocks delivery.
 The placeholder is `[pipelock:masked:aws-access-id]`. The hook re-scans the entire
 replacement; remaining DLP/injection findings, errors, or incomplete inspection
 block delivery. Other credential patterns and structured results retain their

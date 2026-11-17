@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -623,6 +624,14 @@ func maskableInboundSpans(match scanner.TextDLPMatch, text string) []scanner.Mat
 	}
 	var spans []scanner.MatchSpan
 	for _, hit := range rawAWSAccessIDRe.FindAllStringIndex(text, -1) {
+		// Case-insensitive Go regexes also fold Kelvin signs and long s into
+		// ASCII. Those bytes need normalization and cannot authorize a raw
+		// rewrite or the ASCII prefix-boundary check below.
+		for i := hit[0]; i < hit[1]; i++ {
+			if text[i] >= utf8.RuneSelf {
+				return nil
+			}
+		}
 		spans = append(spans, scanner.MatchSpan{ByteStart: hit[0], ByteEnd: hit[1]})
 	}
 	return spans
@@ -679,8 +688,12 @@ func rawSpansHideSplitAWSKey(ctx context.Context, sc *scanner.Scanner, text stri
 			if from < span.ByteStart {
 				from = span.ByteStart
 			}
-			for i := from; i+n <= span.ByteEnd; i++ {
-				if span.ByteEnd-(i+n) >= 16 || !strings.EqualFold(text[i:i+n], prefix) {
+			for i := from; i < span.ByteEnd; i++ {
+				// A prefix can cross the raw hit's end: normalization may
+				// join AK + zero-width + IA, for example. Keep even a partial
+				// prefix and let the scanner decide whether it forms a key.
+				inside := min(n, span.ByteEnd-i)
+				if span.ByteEnd-(i+n) >= 16 || !strings.EqualFold(text[i:i+inside], prefix[:inside]) {
 					continue
 				}
 				kept := exciseSpansExcept(upperASCIIRange(text, i, span.ByteEnd), spans, i, span.ByteEnd)
