@@ -526,7 +526,9 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 					continue
 				}
 				// Joined siblings may describe the same token. They cannot
-				// authorize masking; a complete re-scan must clear them.
+				// authorize masking; a complete re-scan must clear them. A raw
+				// hit that ends on the sibling's prefix is refused below, or
+				// deleting that prefix would make the re-scan miss the tail.
 				if match.Encoded == "whitespace" || match.Encoded == "subdomain" {
 					continue
 				}
@@ -570,7 +572,7 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 	}
 
 	if len(reasons) > 0 {
-		if !unmaskable && len(spans) > 0 {
+		if !unmaskable && len(spans) > 0 && !rawSpansHideSplitAWSKey(ctx, sc, text, spans) {
 			masked := maskInboundSpans(text, spans)
 			raw, _ := json.Marshal(masked) // Encoding a Go string cannot fail.
 			checked := scanCombinedViews(ctx, sc, hookScanViews{
@@ -609,8 +611,10 @@ var rawAWSAccessIDRe = regexp.MustCompile("(?i)" + config.AWSAccessIDRegex)
 // AWS Access ID finding, or nil when the finding is not eligible or the raw
 // text holds no hit. A token that only exists after normalization
 // (interleaved zero-width or control bytes, fullwidth letters, a key split
-// across lines) has no raw hit or leaves the finding in place, and the caller's
-// re-scan of the masked text then refuses the whole result.
+// across lines) has no raw hit, so the finding stays unmaskable and the
+// result is refused. A raw hit can still end on a later key's prefix;
+// rawSpansHideSplitAWSKey refuses that mask because the re-scan would no
+// longer see the second key.
 func maskableInboundSpans(match scanner.TextDLPMatch, text string) []scanner.MatchSpan {
 	span := match.Span()
 	if match.PatternName != "AWS Access ID" || match.Encoded != "" || !span.Valid() ||
@@ -622,6 +626,169 @@ func maskableInboundSpans(match scanner.TextDLPMatch, text string) []scanner.Mat
 		spans = append(spans, scanner.MatchSpan{ByteStart: hit[0], ByteEnd: hit[1]})
 	}
 	return spans
+}
+
+// awsDetectorPrefixes returns the literal prefix alternation of the built-in
+// AWS Access ID detector. A shape this masker cannot split returns nil, and
+// the caller then refuses the mask.
+func awsDetectorPrefixes(pattern string) []string {
+	const tail = ")[A-Z0-9]{16,}"
+	end := strings.IndexByte(pattern, ')')
+	if !strings.HasPrefix(pattern, "(") || end <= 1 || !strings.HasSuffix(pattern, tail) || end != len(pattern)-len(tail) {
+		return nil
+	}
+	parts := strings.Split(pattern[1:end], "|")
+	for _, part := range parts {
+		if part == "" {
+			return nil
+		}
+		for i := 0; i < len(part); i++ {
+			c := part[i]
+			if (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
+				return nil
+			}
+		}
+	}
+	return parts
+}
+
+// rawSpansHideSplitAWSKey reports whether masking spans would delete part of
+// an enforceable AWS key whose tail sits past the hit. The raw detector is
+// greedy and has no word boundary, so one hit can swallow the next key's
+// prefix, stop at a space, line break, dot, or ignored character, and leave
+// the body. A prefix with sixteen alnum still inside the hit is fully masked.
+// A prefix in the last fifteen of those alnum is not: the re-scan would no
+// longer see it, and the body would be delivered. The detector matches either
+// case, while an inbound key is enforced in uppercase, so the check spells
+// that inside tail in uppercase before asking.
+func rawSpansHideSplitAWSKey(ctx context.Context, sc *scanner.Scanner, text string, spans []scanner.MatchSpan) bool {
+	prefixes := awsDetectorPrefixes(config.AWSAccessIDRegex)
+	if len(prefixes) == 0 {
+		return true
+	}
+	for _, span := range spans {
+		if span.ByteStart < 0 || span.ByteEnd > len(text) || span.ByteEnd <= span.ByteStart {
+			return true
+		}
+		for _, prefix := range prefixes {
+			n := len(prefix)
+			// Sixteen alnum after the prefix means that minimum key is inside
+			// the hit. Only a later prefix, with a shorter inside tail, can
+			// continue past the separator.
+			from := span.ByteEnd - (n + 15)
+			if from < span.ByteStart {
+				from = span.ByteStart
+			}
+			for i := from; i+n <= span.ByteEnd; i++ {
+				if span.ByteEnd-(i+n) >= 16 || !strings.EqualFold(text[i:i+n], prefix) {
+					continue
+				}
+				kept := exciseSpansExcept(upperASCIIRange(text, i, span.ByteEnd), spans, i, span.ByteEnd)
+				if keptHasEnforceableAWSAccessID(ctx, sc, kept) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// upperASCIIRange returns text with ASCII letters in [start, end) uppercased.
+// Only a-z changes, so the byte length and every span offset stay put.
+func upperASCIIRange(text string, start, end int) string {
+	if start < 0 || end > len(text) || start >= end {
+		return text
+	}
+	var buf []byte
+	for i := start; i < end; i++ {
+		c := text[i]
+		if c < 'a' || c > 'z' {
+			continue
+		}
+		if buf == nil {
+			buf = []byte(text)
+		}
+		buf[i] = c - ('a' - 'A')
+	}
+	if buf == nil {
+		return text
+	}
+	return string(buf)
+}
+
+// exciseSpansExcept returns text with every span removed except the half-open
+// range [keepStart, keepEnd), which is the prefix a split key still needs.
+func exciseSpansExcept(text string, spans []scanner.MatchSpan, keepStart, keepEnd int) string {
+	cuts := make([][2]int, 0, len(spans)+1)
+	add := func(lo, hi int) {
+		if lo < 0 {
+			lo = 0
+		}
+		if hi > len(text) {
+			hi = len(text)
+		}
+		if hi > lo {
+			cuts = append(cuts, [2]int{lo, hi})
+		}
+	}
+	for _, span := range spans {
+		lo, hi := span.ByteStart, span.ByteEnd
+		if hi <= keepStart || lo >= keepEnd {
+			add(lo, hi)
+			continue
+		}
+		add(lo, keepStart)
+		add(keepEnd, hi)
+	}
+	slices.SortFunc(cuts, func(a, b [2]int) int {
+		if a[0] != b[0] {
+			return a[0] - b[0]
+		}
+		return a[1] - b[1]
+	})
+	var out strings.Builder
+	pos := 0
+	for _, cut := range cuts {
+		lo, hi := cut[0], cut[1]
+		if lo < pos {
+			lo = pos
+		}
+		if lo >= len(text) {
+			break
+		}
+		if hi > len(text) {
+			hi = len(text)
+		}
+		if lo > pos {
+			out.WriteString(text[pos:lo])
+		}
+		if hi > pos {
+			pos = hi
+		}
+	}
+	if pos < len(text) {
+		out.WriteString(text[pos:])
+	}
+	return out.String()
+}
+
+func keptHasEnforceableAWSAccessID(ctx context.Context, sc *scanner.Scanner, text string) bool {
+	dlp := sc.ScanTextForDLPInbound(ctx, text)
+	if dlp.Err() != nil {
+		return true
+	}
+	matches := make([]scanner.TextDLPMatch, 0, len(dlp.Matches))
+	for _, match := range dlp.Matches {
+		if !match.IsInformational() {
+			matches = append(matches, match)
+		}
+	}
+	for _, match := range scanner.EnforceableInboundTextDLPMatches(text, matches) {
+		if match.PatternName == "AWS Access ID" {
+			return true
+		}
+	}
+	return false
 }
 
 func maskInboundSpans(text string, spans []scanner.MatchSpan) string {

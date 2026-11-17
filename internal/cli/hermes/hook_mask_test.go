@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -401,6 +402,109 @@ func mustMarshal(s string) []byte {
 
 func maskable(match scanner.TextDLPMatch, text string) bool {
 	return len(maskableInboundSpans(match, text)) > 0
+}
+
+// A greedy raw hit can end on the next key's prefix and stop at a separator.
+// Masking that hit deletes the prefix, the re-scan no longer sees a key, and
+// the body would be delivered. The body must not be delivered.
+func TestHookMaskSplitKeyBodyNotDelivered(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.DLP.ScanEnv = false
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	glue := "AKIA" + "0123456789ABC" + "AKIA"
+	body := "IOSFODNN7EXAMPLE"
+	if !rawAWSAccessIDRe.MatchString(glue) || rawAWSAccessIDRe.MatchString(body) {
+		t.Fatal("fixture does not separate a raw hit from a split-key body")
+	}
+	joined := glue + " " + body
+	hits := rawAWSAccessIDRe.FindAllStringIndex(joined, -1)
+	if len(hits) != 1 || hits[0][1] != len(glue) {
+		t.Fatalf("raw hits = %v, want one hit ending at the glued prefix", hits)
+	}
+	a3t := "AKIA" + "0123456789ABCDEF" + "A3T"
+	a3tBody := "X7K9M2PQRSTVWXYZ"
+	if got := a3t[len(a3t)-3:]; got != "A3T" {
+		t.Fatalf("A3T fixture suffix = %q", got)
+	}
+	fullSecond := "AKIA" + "IOSFODNN7EXAMPLE"
+	fullwidth := "\uff21\uff2b\uff29\uff21\uff29\uff2f\uff33\uff26\uff2f\uff24\uff2e\uff2e\uff17\uff25\uff38\uff21\uff2d\uff30\uff2c\uff25"
+	zwKey := strings.Join(strings.Split(fullSecond, ""), "\u200b")
+	encoded := base64.StdEncoding.EncodeToString([]byte(fullSecond))
+
+	tests := []struct {
+		name  string
+		input string
+		block bool
+		want  string
+	}{
+		{name: "space", input: glue + " " + body, block: true},
+		{name: "newline", input: glue + "\n" + body, block: true},
+		{name: "crlf", input: glue + "\r\n" + body, block: true},
+		{name: "tab", input: glue + "\t" + body, block: true},
+		{name: "zero width", input: glue + "\u200b" + body, block: true},
+		{name: "line separator", input: glue + "\u2028" + body, block: true},
+		{name: "nbsp", input: glue + "\u00a0" + body, block: true},
+		{name: "dots", input: glue + "." + "IOSFODNN7.EXAMPLE", block: true},
+		{name: "A3T newline", input: a3t + "\n" + a3tBody, block: true},
+		{name: "prefix then two alnum", input: glue + "ZZ " + body, block: true},
+		{name: "lowercase swallowed prefix", input: strings.ToLower(glue) + " " + body, block: true},
+		{name: "mixed-case swallowed prefix", input: glue[:len(glue)-4] + "aKiA " + body, block: true},
+		{name: "lowercase inside tail", input: glue + "zz " + body, block: true},
+		{name: "fullwidth sibling", input: glue + "\n" + fullwidth, block: true},
+		{name: "zero-width sibling", input: glue + "\n" + zwKey, block: true},
+		{name: "base64 sibling", input: glue + "\n" + encoded, block: true},
+		{name: "second full key still masks", input: glue + " " + fullSecond, want: inboundMaskPlaceholder + " " + inboundMaskPlaceholder},
+	}
+	for _, surface := range []string{HookTransformToolResult, HookPreGatewayDispatch} {
+		for _, tt := range tests {
+			t.Run(surface+"/"+tt.name, func(t *testing.T) {
+				raw, err := json.Marshal(tt.input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if surface == HookPreGatewayDispatch {
+					raw = json.RawMessage(`{"text":` + string(raw) + `,"sender":"user"}`)
+				}
+				got := evaluate(t.Context(), sc, &HookEvent{
+					HookEventName: surface, ToolName: "report", ToolInput: raw,
+					Capabilities: []string{DecisionTransform},
+				})
+				secret := body
+				if tt.name == "A3T newline" {
+					secret = a3tBody
+				}
+				if strings.Contains(got.Result, secret) || strings.Contains(got.Result, fullSecond) || strings.Contains(got.Result, fullwidth) {
+					t.Fatalf("delivered key bytes: %+v", got)
+				}
+				if tt.block {
+					if got.Decision != DecisionBlock || got.Result != "" {
+						t.Fatalf("want block, got %+v", got)
+					}
+					return
+				}
+				if got.Decision != DecisionTransform || got.Result != tt.want {
+					t.Fatalf("want transform %q, got %+v", tt.want, got)
+				}
+			})
+		}
+	}
+	if rawAWSAccessIDRe.MatchString(inboundMaskPlaceholder) {
+		t.Fatal("placeholder matches the raw AWS detector")
+	}
+}
+
+func TestAWSMaskPrefixesFollowDetector(t *testing.T) {
+	t.Parallel()
+	got := awsDetectorPrefixes(config.AWSAccessIDRegex)
+	want := []string{"AKIA", "A3T", "AGPA", "AIDA", "AROA", "AIPA", "ANPA", "ANVA", "ASIA"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("prefixes = %v, want %v", got, want)
+	}
+	if awsDetectorPrefixes("AKIA[A-Z0-9]{16,}") != nil || awsDetectorPrefixes("(?i)(AKIA)[A-Z0-9]{16}") != nil {
+		t.Fatal("a detector shape the masker cannot split must refuse, not guess a boundary")
+	}
 }
 
 // Ordinary tool output is multiline; normalization drops the line breaks, so
