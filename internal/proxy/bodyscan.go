@@ -434,8 +434,9 @@ func contentTypeMatchesAny(mediaType string, allowed []string) bool {
 // Trusted destinations retain request scanning and the configured action.
 // Response-scanning exemptions do not affect this request-side decision.
 // Like the critical-DLP floor, it applies only in enforcement mode: with
-// enforce: false the finding follows the configured action, so an audit-only
-// deployment observes injection instead of dropping the request.
+// enforce: false the finding follows the caller's ordinary request policy.
+// External checker findings use the same enforcement and destination-trust
+// gates as built-in findings. Checker failures use the scan-error path instead.
 func shouldHardBlockBodyPromptInjection(result BodyScanResult, hostname string, cfg *config.Config) bool {
 	if len(result.InjectionMatches) == 0 {
 		return false
@@ -889,6 +890,11 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	if audienceSurface == "" {
 		audienceSurface = "body"
 	}
+	// Credential audience remapping must not change the transport carrier.
+	websocketFrame := audienceSurface == "websocket_frame"
+	// Text and binary client messages share the WebSocket carrier; neither
+	// takes the http_request_body injection surface.
+	websocketCarrier := websocketFrame || audienceSurface == "websocket_binary"
 	collectAudienceAllow := func(allow scanner.CredentialAudienceAllow) {
 		audienceAllows = append(audienceAllows, allow)
 	}
@@ -995,7 +1001,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		return finish(scanned, BodyScanResult{Clean: true})
 	}
 
-	if audienceSurface == "websocket_frame" {
+	if websocketFrame {
 		var invalid bool
 		audienceSurface, _, invalid = req.Scanner.WebSocketCredentialAudienceSurface(ctx, buf, req.suppressTarget())
 		if invalid {
@@ -1237,8 +1243,12 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		}
 		action = config.StrongestAction(action, result.EntropyAction)
 	}
+	injectionCtx := ctx
+	if !websocketCarrier {
+		injectionCtx = scanner.WithInjectionSurface(ctx, config.InjectionSurfaceHTTPRequestBody)
+	}
 	for _, text := range texts {
-		injectionResult := req.Scanner.ScanResponseOutbound(ctx, text)
+		injectionResult := req.Scanner.ScanResponseOutbound(injectionCtx, text)
 		if injectionResult.Failed() {
 			return stopIncompleteBodyScan(result, injectionResult.ScanError)
 		}
@@ -1260,7 +1270,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		result.InjectionMatches = mergeJoinedInjectionMatches(result.InjectionMatches, inOrderInjection, sortedInjection, fieldInjection)
 		return stopIncompleteBodyScan(result, scanErr)
 	}
-	injectionResult := req.Scanner.ScanResponseOutbound(ctx, joinedInOrder)
+	injectionResult := req.Scanner.ScanResponseOutbound(injectionCtx, joinedInOrder)
 	if injectionResult.Failed() {
 		return stopIncompleteBodyScan(result, injectionResult.ScanError)
 	}
@@ -1272,7 +1282,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	// non-JSON body parsers and query maps can otherwise vary).
 	sorted := sortedBodyTexts(texts)
 	joined := strings.Join(sorted, "\n")
-	injectionResult = req.Scanner.ScanResponseOutbound(ctx, joined)
+	injectionResult = req.Scanner.ScanResponseOutbound(injectionCtx, joined)
 	if injectionResult.Failed() {
 		return stopJoinedScan(injectionResult.ScanError)
 	}
@@ -1289,7 +1299,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 			joinedFields = append(joinedFields, strings.Join(partTexts, "\n"), strings.Join(sortedBodyTexts(partTexts), "\n"))
 		}
 		for _, joinedFields := range joinedFields {
-			fieldResult := req.Scanner.ScanResponseOutbound(ctx, joinedFields)
+			fieldResult := req.Scanner.ScanResponseOutbound(injectionCtx, joinedFields)
 			if fieldResult.Failed() {
 				return stopJoinedScan(fieldResult.ScanError)
 			}
@@ -1301,6 +1311,13 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	// occurrences a joined view alone detected, such as a phrase split across
 	// fields.
 	result.InjectionMatches = mergeJoinedInjectionMatches(result.InjectionMatches, inOrderInjection, sortedInjection, fieldInjection)
+	if !websocketCarrier {
+		external := req.Scanner.ComposeBufferedInjection(ctx, scanner.BufferedInjectionScan{Surface: config.InjectionSurfaceHTTPRequestBody, Direction: "request", Content: joinedInOrder, Texts: append([]string{joinedInOrder}, texts...)}, scanner.ResponseScanResult{Clean: len(result.InjectionMatches) == 0, Matches: result.InjectionMatches})
+		if external.Failed() {
+			return stopJoinedScan(external.ScanError)
+		}
+		result.InjectionMatches = external.Matches
+	}
 
 	// Address poisoning detection alongside DLP.
 	// Note: body address findings are currently emitted/counted as body_dlp

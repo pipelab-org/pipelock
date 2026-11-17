@@ -3147,10 +3147,12 @@ func newInterceptHandler(
 			ic.Logger.LogResponseScanExempt(actx, r.URL.Hostname())
 			ic.Metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportConnect)
 		}
+		var responseWarned bool
 		var recoveryAssessment scanner.InjectionAssessment
 		if ic.Scanner.ResponseScanningEnabled() && (!interceptAuthenticatedArtifact || structured != nil) {
 			scanResult := scanStructuredResponse(r.Context(), ic.Scanner, ic.Config, respBody, r.URL.String(), structured)
 			scanResult = retainStructuredShieldScan(preShieldScan, scanResult, respBody, structured)
+			responseWarned = len(scanResult.WarnedMatches) != 0
 			recoveryAssessment = scanResult.RecoveryAssessment()
 			if structured != nil {
 				ic.Logger.LogAnomaly(actx, structuredResponseLayer, structuredResponseEvidence, 0)
@@ -3175,11 +3177,13 @@ func newInterceptHandler(
 				if interceptRespExempt {
 					iRespAction = config.ActionWarn
 				}
+				iRespAction = scanResult.EnforcementAction(iRespAction)
 				if scanResult.Clean {
 					iRespAction = config.ActionAllow
 				} else if scanResult.Failed() || (iRespAction == config.ActionStrip && (scanResult.TransformedContent == "" || resp.StatusCode == http.StatusPartialContent)) {
 					iRespAction = config.ActionBlock
 				}
+				iRespAction = responseCaptureAction(scanResult, iRespAction)
 				ic.Proxy.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
 					Subsurface:        "response_intercept",
 					Transport:         "connect",
@@ -3192,10 +3196,10 @@ func newInterceptHandler(
 					ActionClass:       captureHTTPActionClass(r.Method),
 					Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
 					TransformKind:     capture.TransformRaw,
-					RawFindings:       responseMatchesToFindings(scanResult.Matches, iRespAction),
-					EffectiveFindings: responseMatchesToFindings(scanResult.Matches, iRespAction),
+					RawFindings:       responseCaptureFindings(scanResult, iRespAction),
+					EffectiveFindings: responseCaptureFindings(scanResult, iRespAction),
 					EffectiveAction:   iRespAction,
-					Outcome:           captureOutcome(iRespAction, scanResult.Clean),
+					Outcome:           captureOutcome(iRespAction, scanResult.Clean && len(scanResult.WarnedMatches) == 0),
 				})
 			}
 			if scanResult.Failed() {
@@ -3219,6 +3223,7 @@ func newInterceptHandler(
 				if interceptRespExempt {
 					action = config.ActionWarn
 				}
+				action = scanResult.EnforcementAction(action)
 				// Adaptive enforcement: upgrade the response action before the switch.
 				// Exempt domains skip upgrade - operator's trust decision overrides escalation.
 				originalAction := action
@@ -3368,6 +3373,7 @@ func newInterceptHandler(
 			urlResult:             urlResult,
 			receiptVerdict:        receiptVerdict,
 			hasFinding:            hasFinding,
+			responseWarned:        responseWarned,
 			policyObserved:        interceptPolicyObserved,
 			responseScanExempt:    interceptRespExempt,
 			authenticatedArtifact: interceptAuthenticatedArtifact,

@@ -1217,8 +1217,13 @@ func writeUnparseableResponse(o unparseableResponseOptions) (bool, []byte, error
 	frame, detail, lineNum, sc, writer, logW, opts := o.frame, o.detail, o.lineNum, o.sc, o.writer, o.logW, o.opts
 	denialAudit := mcpResponseInspectionBlockAudit("MCP response is unparseable")
 	_, _ = fmt.Fprintf(logW, "pipelock: line %d: %s\n", lineNum, detail)
-	rawResult := sc.ScanResponse(opts.warnContext(), string(frame.Raw))
-	if !rawResult.Clean {
+	scanCtx := opts.warnContext()
+	rawResult := sc.ScanBufferedInjection(scanCtx, scanner.BufferedInjectionScan{Surface: config.InjectionSurfaceMCPToolResult, Transport: mcpCheckerTransport(scanCtx), Content: string(frame.Raw)})
+	foundInjection := !rawResult.Clean
+	if rawResult.Failed() && sc.ExternalInjectionSurface(config.InjectionSurfaceMCPToolResult) {
+		foundInjection = false
+	}
+	if foundInjection {
 		_, _ = fmt.Fprintf(logW, "pipelock: line %d: injection in non-JSON content (%s)\n", lineNum, strings.Join(matchNames(rawResult.Matches), ", "))
 	}
 	_, _ = fmt.Fprintf(logW, "pipelock: line %d: blocking unparseable response\n", lineNum)
@@ -1231,9 +1236,9 @@ func writeUnparseableResponse(o unparseableResponseOptions) (bool, []byte, error
 	}
 	resp := blockResponseReason(id, "upstream response is not parseable JSON-RPC")
 	if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
-		return !rawResult.Clean, resp, fmt.Errorf("writing block response: %w", err)
+		return foundInjection, resp, fmt.Errorf("writing block response: %w", err)
 	}
-	return !rawResult.Clean, resp, nil
+	return foundInjection, resp, nil
 }
 
 // rejectResponseKeys writes diagnostics without consuming correlation or running

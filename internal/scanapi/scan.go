@@ -308,7 +308,7 @@ func (h *Handler) scanPromptInjection(ctx context.Context, cfg *config.Config, s
 		return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 	}
 
-	result := sc.ScanResponse(ctx, req.Input.Content)
+	result := sc.ScanBufferedInjection(ctx, scanner.BufferedInjectionScan{Surface: config.InjectionSurfaceScanAPI, Transport: "scan_api", Direction: "request", Content: req.Input.Content})
 
 	if err := ctx.Err(); err != nil {
 		return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
@@ -435,7 +435,7 @@ func (h *Handler) scanToolCall(
 			dlpMatches = dlpResult.Matches
 		}
 
-		injResult = sc.ScanResponse(ctx, scanText)
+		injResult = sc.ScanBufferedInjection(ctx, scanner.BufferedInjectionScan{Surface: config.InjectionSurfaceScanAPI, Transport: "scan_api", Direction: "request", Content: scanText})
 		if err := ctx.Err(); err != nil {
 			return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 		}

@@ -7087,12 +7087,13 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		}
 		if scanResult.Clean {
 			respAction = config.ActionAllow
-		} else if scanResult.Failed() || (respAction == config.ActionStrip && scanResult.TransformedContent == "") {
+		} else if scanResult.CheckerBlocked() || scanResult.Failed() || (respAction == config.ActionStrip && scanResult.TransformedContent == "") {
 			// An incomplete scan is a fail-closed runtime error, not a
 			// response-scanning match. Keep replay/capture from presenting it
 			// as a warn/allow verdict.
 			respAction = config.ActionBlock
 		}
+		respAction = responseCaptureAction(scanResult, respAction)
 		p.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
 			Subsurface:        "response_fetch",
 			Transport:         "fetch",
@@ -7105,10 +7106,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			ActionClass:       captureHTTPActionClass(http.MethodGet),
 			Request:           capture.CaptureRequest{Method: r.Method, URL: displayURL},
 			TransformKind:     capture.TransformReadability,
-			RawFindings:       responseMatchesToFindings(scanResult.Matches, respAction),
-			EffectiveFindings: responseMatchesToFindings(scanResult.Matches, respAction),
+			RawFindings:       responseCaptureFindings(scanResult, respAction),
+			EffectiveFindings: responseCaptureFindings(scanResult, respAction),
 			EffectiveAction:   respAction,
-			Outcome:           captureOutcome(respAction, scanResult.Clean),
+			Outcome:           captureOutcome(respAction, scanResult.Clean && len(scanResult.WarnedMatches) == 0),
 		})
 
 		// Use live escalation level so mid-request CEE escalations are reflected.
@@ -7367,6 +7368,8 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 			action = config.ActionBlock
 		}
 	}
+
+	action = result.EnforcementAction(action)
 
 	// recordResponseSignal records an adaptive enforcement signal for the
 	// response scan result. Exempt domains skip scoring - their findings

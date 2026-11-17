@@ -6,12 +6,10 @@ package mcp
 import (
 	"context"
 	"fmt"
-	"strconv"
 
 	"github.com/luckyPipewrench/pipelock/internal/checker"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
-	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -21,29 +19,6 @@ const checkerExtractionVersion = "mcp-text/v1"
 // CheckerPatternPrefix prefixes the pattern name of an external checker
 // finding, followed by the checker name.
 const CheckerPatternPrefix = "checker:"
-
-// checkerTextParts turns ordered texts into checker parts. Each text keeps its
-// original form, and a normalized or decoded view is added as a labelled
-// extra part when it differs, so a checker sees what the built-in matcher
-// would have seen. Empty texts are skipped.
-func checkerTextParts(prefix string, texts ...string) []checker.Part {
-	var parts []checker.Part
-	for i, text := range texts {
-		if text == "" {
-			continue
-		}
-		id := prefix + strconv.Itoa(i)
-		parts = append(parts, checker.Part{ID: id, Role: "content", Representation: "original", Text: text})
-		tags := normalize.DecodeTags(text)
-		if tags != text {
-			parts = append(parts, checker.Part{ID: id + ":tags", Role: "decoded_view", Representation: "unicode_tags/v1", Text: tags})
-		}
-		if m := normalize.ForMatching(tags); m != text && m != tags {
-			parts = append(parts, checker.Part{ID: id + ":normalized", Role: "decoded_view", Representation: "for_matching/v1", Text: m})
-		}
-	}
-	return parts
-}
 
 func checkerItem(surface, transport string, originalBytes int, parts []checker.Part) checker.Item {
 	if transport == "" {
@@ -75,7 +50,7 @@ func applyResponseChecker(ctx context.Context, sc *scanner.Scanner, opts Respons
 	if verdict.Error != "" && verdict.Action == config.ActionBlock {
 		return verdict
 	}
-	parts := checkerTextParts("text-", texts...)
+	parts := scanner.InjectionTextParts(texts...)
 	if len(parts) == 0 {
 		return verdict
 	}
@@ -101,8 +76,5 @@ func applyResponseChecker(ctx context.Context, sc *scanner.Scanner, opts Respons
 }
 
 func (o ResponseScanOptions) checkerTransport() string {
-	if wc := scanner.DLPWarnContextFromCtx(o.scanContext()); wc.Transport != "" {
-		return wc.Transport
-	}
-	return "mcp"
+	return mcpCheckerTransport(o.scanContext())
 }

@@ -3634,12 +3634,14 @@ responseScanning:
 		if revRespExempt {
 			revAction = config.ActionWarn
 		}
+		revAction = result.EnforcementAction(revAction)
 		if result.Clean {
 			revAction = config.ActionAllow
 		} else if result.Failed() || (revAction == config.ActionStrip && (result.TransformedContent == "" || resp.StatusCode == http.StatusPartialContent)) {
 			revAction = config.ActionBlock
 		}
 		captureAgent := reverseCaptureAgent(resp.Request)
+		revAction = responseCaptureAction(result, revAction)
 		rp.captureObs.ObserveResponseVerdict(resp.Request.Context(), &capture.ResponseVerdictRecord{
 			Subsurface:        "response_reverse",
 			Transport:         "reverse",
@@ -3651,10 +3653,10 @@ responseScanning:
 			ActionClass:       captureHTTPActionClass(resp.Request.Method),
 			Request:           capture.CaptureRequest{Method: resp.Request.Method, URL: resp.Request.URL.String()},
 			TransformKind:     capture.TransformRaw,
-			RawFindings:       responseMatchesToFindings(result.Matches, revAction),
-			EffectiveFindings: responseMatchesToFindings(result.Matches, revAction),
+			RawFindings:       responseCaptureFindings(result, revAction),
+			EffectiveFindings: responseCaptureFindings(result, revAction),
 			EffectiveAction:   revAction,
-			Outcome:           captureOutcome(revAction, result.Clean),
+			Outcome:           captureOutcome(revAction, result.Clean && len(result.WarnedMatches) == 0),
 		})
 	}
 
@@ -3684,6 +3686,7 @@ responseScanning:
 	if revRespExempt {
 		action = config.ActionWarn
 	}
+	action = result.EnforcementAction(action)
 
 	if action == config.ActionStrip && (result.TransformedContent == "" || resp.StatusCode == http.StatusPartialContent) {
 		action = config.ActionBlock

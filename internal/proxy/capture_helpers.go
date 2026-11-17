@@ -58,6 +58,19 @@ func responseMatchesToFindings(matches []scanner.ResponseMatch, action string) [
 	return findings
 }
 
+// responseCaptureAction retains advisory evidence on an otherwise clean scan.
+func responseCaptureAction(result scanner.ResponseScanResult, action string) string {
+	if result.Clean && len(result.WarnedMatches) > 0 {
+		return config.ActionWarn
+	}
+	return action
+}
+
+// responseCaptureFindings records enforcing and advisory findings separately.
+func responseCaptureFindings(result scanner.ResponseScanResult, action string) []capture.Finding {
+	return append(responseMatchesToFindings(result.Matches, action), responseMatchesToFindings(result.WarnedMatches, config.ActionWarn)...)
+}
+
 // ceeResultToFindings converts a ceeResult to capture findings.
 func ceeResultToFindings(res ceeResult) []capture.Finding {
 	if !res.EntropyHit && !res.FragmentHit && !res.Blocked {

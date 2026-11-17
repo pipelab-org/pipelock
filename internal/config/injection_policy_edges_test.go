@@ -10,7 +10,7 @@ import "testing"
 func TestInjectionPolicySkipsInvalidEntries(t *testing.T) {
 	cfg := Defaults()
 	cfg.PromptInjectionDetection = &PromptInjectionDetection{Surfaces: map[string]InjectionSurfaceConfig{
-		"http_response":                    {Mode: InjectionModeOff},
+		"unsupported_surface":              {Mode: InjectionModeOff},
 		InjectionSurfaceMCPToolResult:      {Mode: "strip"},
 		InjectionSurfaceMCPToolDescription: {Mode: InjectionModeWarn},
 	}}
@@ -21,7 +21,7 @@ func TestInjectionPolicySkipsInvalidEntries(t *testing.T) {
 	if got := p.For(InjectionSurfaceMCPToolResult); got.Source != InjectionPolicySourceLegacy || got.Mode != InjectionModeBlock {
 		t.Fatalf("invalid result entry widened the policy: %+v", got)
 	}
-	if got := p.For("http_response"); got.Source != InjectionPolicySourceLegacy {
+	if got := p.For("unsupported_surface"); got.Source != InjectionPolicySourceLegacy {
 		t.Fatalf("unselectable surface compiled: %+v", got)
 	}
 	if (&Config{}).InjectionPolicy().Selected() || (*Config)(nil).InjectionPolicy().Selected() {

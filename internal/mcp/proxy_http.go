@@ -95,7 +95,7 @@ func scanMCPListenerHeadersForTarget(
 				if !ok {
 					return &mcpListenerHeaderDLPResult{header: name, reason: blockreason.BadRequest}
 				}
-				if response := sc.ScanResponse(ctx, decoded); !response.Clean {
+				if response := sc.ScanBufferedInjection(ctx, scanner.BufferedInjectionScan{Surface: config.InjectionSurfaceMCPToolInput, Transport: "mcp_http", Direction: "request", Content: decoded}); !response.Clean {
 					if response.Failed() {
 						return &mcpListenerHeaderDLPResult{header: name, reason: blockreason.ParseError}
 					}

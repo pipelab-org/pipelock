@@ -99,11 +99,13 @@ const (
 
 // Evidence records why a decision was made.
 type Evidence struct {
-	Scanner  string `json:"scanner"`            // which scanner triggered (dlp, injection, policy)
-	Pattern  string `json:"pattern"`            // pattern name or rule name
-	Severity string `json:"severity,omitempty"` // critical, high, medium, low
-	Detail   string `json:"detail,omitempty"`   // human-readable detail
-	Action   string `json:"action"`             // block, warn (determines outcome)
+	// checkerBlock retains external scan failures and response refusals through audit mode.
+	checkerBlock bool
+	Scanner      string `json:"scanner"`            // which scanner triggered (dlp, injection, policy)
+	Pattern      string `json:"pattern"`            // pattern name or rule name
+	Severity     string `json:"severity,omitempty"` // critical, high, medium, low
+	Detail       string `json:"detail,omitempty"`   // human-readable detail
+	Action       string `json:"action"`             // block, warn (determines outcome)
 	// core marks a finding from the built-in core credential floor, which
 	// blocks even when enforce is off.
 	core bool
@@ -162,8 +164,8 @@ func decideShell(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, p
 	// operator turns the optional layer off, and the action resolves to block
 	// when only the floor is live.
 	if sc.ResponseScanningEnabled() {
-		injResult := sc.ScanResponse(context.Background(), p.Command)
-		evidence = append(evidence, evidenceFromInjection(injResult, sc.ResponseAction())...)
+		injResult := sc.ScanHookInjection(context.Background(), p.Command, "decide", false)
+		evidence = append(evidence, evidenceFromHookInjection(injResult, sc.ResponseAction(), false)...)
 	}
 
 	// Policy: map shell execution to tool name "bash" to reuse existing rules.
@@ -234,12 +236,19 @@ func decideMCP(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config
 		}
 	}
 
-	// DLP + injection: respect MCP input scanning toggle and action.
+	// DLP retains the MCP input toggle. An explicit hook selection owns
+	// injection independently; absent a selection, preserve the legacy gate.
 	if p.ToolInput != "" && cfg.MCPInputScanning.Enabled {
 		evidence = append(evidence, evidenceFromJSONDLP(sc, scanText, p.ToolInput, argStrings)...)
-
-		injResult := sc.ScanResponse(context.Background(), scanText)
-		evidence = append(evidence, evidenceFromInjection(injResult, cfg.MCPInputScanning.Action)...)
+	}
+	selection := sc.InjectionPolicy().For(config.InjectionSurfaceHookToolInput)
+	if p.ToolInput != "" && (cfg.MCPInputScanning.Enabled || selection.Source == config.InjectionPolicySourceSurface) {
+		action := cfg.MCPInputScanning.Action
+		if selection.Source == config.InjectionPolicySourceSurface {
+			action = selection.Mode
+		}
+		injResult := sc.ScanHookInjection(context.Background(), scanText, "decide", false)
+		evidence = append(evidence, evidenceFromHookInjection(injResult, action, false)...)
 	}
 
 	// Policy: check tool name + args. Pass raw JSON so arg_key rules can
@@ -411,8 +420,8 @@ func decideToolUse(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Co
 		evidence = append(evidence, evidenceFromJSONDLP(sc, scanText, p.ToolInput, argStrings)...)
 
 		if sc.ResponseScanningEnabled() {
-			injResult := sc.ScanResponse(context.Background(), scanText)
-			evidence = append(evidence, evidenceFromInjection(injResult, sc.ResponseAction())...)
+			injResult := sc.ScanHookInjection(context.Background(), scanText, "decide", false)
+			evidence = append(evidence, evidenceFromHookInjection(injResult, sc.ResponseAction(), false)...)
 		}
 	}
 
@@ -442,8 +451,8 @@ func decideFileContent(cfg *config.Config, sc *scanner.Scanner, policyCfg *polic
 		evidence = append(evidence, evidenceFromDLP(dlpResult)...)
 
 		if sc.ResponseScanningEnabled() {
-			injResult := sc.ScanResponse(context.Background(), content)
-			evidence = append(evidence, evidenceFromInjection(injResult, sc.ResponseAction())...)
+			injResult := sc.ScanHookInjection(context.Background(), content, "decide", toolName == "read_file")
+			evidence = append(evidence, evidenceFromHookInjection(injResult, sc.ResponseAction(), toolName == "read_file")...)
 		}
 	}
 
@@ -480,7 +489,7 @@ func buildDecision(cfg *config.Config, evidence []Evidence) Decision {
 	// Warn-only findings or enforce=false: allow with advisory message. Audit
 	// mode never releases incomplete typed inspection or the core credential
 	// floor, matching the proxy transports.
-	mustBlock := slices.ContainsFunc(evidence, func(e Evidence) bool { return e.core || e.inspectionIncomplete })
+	mustBlock := slices.ContainsFunc(evidence, func(e Evidence) bool { return e.core || e.inspectionIncomplete || e.checkerBlock })
 	if !mustBlock && (strictest == config.ActionWarn || !cfg.EnforceEnabled()) {
 		verb := "warning"
 		if !cfg.EnforceEnabled() {
@@ -538,9 +547,22 @@ func evidenceFromDLP(result scanner.TextDLPResult) []Evidence {
 	return ev
 }
 
+// evidenceFromHookInjection preserves the side's existing audit policy. Completed
+// request findings are observed with enforce=false; external response refusals
+// and checker failures keep their unconditional refusal.
+func evidenceFromHookInjection(result scanner.ResponseScanResult, cfgAction string, inbound bool) []Evidence {
+	evidence := evidenceFromInjection(result, cfgAction)
+	if !inbound && !result.Failed() {
+		for i := range evidence {
+			evidence[i].checkerBlock = false
+		}
+	}
+	return evidence
+}
+
 func evidenceFromInjection(result scanner.ResponseScanResult, cfgAction string) []Evidence {
 	if result.Failed() {
-		return []Evidence{{Scanner: scanner.DecideStructuralLabel, Detail: "response scan failed: " + result.ScanError, Action: config.ActionBlock}}
+		return []Evidence{{Scanner: scanner.DecideStructuralLabel, Detail: "response scan failed: " + result.ScanError, Action: config.ActionBlock, checkerBlock: result.Assessment.Checker != "" && result.Assessment.Checker != scanner.InjectionCheckerBasic}}
 	}
 	// Global warn-only wording findings are advisory evidence: they surface to
 	// the user without enforcing, and never carry the matched text.
@@ -556,16 +578,17 @@ func evidenceFromInjection(result scanner.ResponseScanResult, cfgAction string) 
 	if result.Clean {
 		return ev
 	}
-	action := cfgAction
+	action := result.EnforcementAction(cfgAction)
 	if action == "" {
 		action = config.ActionBlock // fail-closed default
 	}
 	for _, m := range result.Matches {
 		ev = append(ev, Evidence{
-			Scanner: scanner.DecideInjectionLabel,
-			Pattern: m.PatternName,
-			Detail:  m.MatchText,
-			Action:  action,
+			Scanner:      scanner.DecideInjectionLabel,
+			Pattern:      m.PatternName,
+			Detail:       m.MatchText,
+			Action:       action,
+			checkerBlock: result.CheckerBlocked(),
 		})
 	}
 	return ev

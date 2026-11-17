@@ -558,7 +558,7 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 		collectEnforceable(leaf, atom.Text)
 	}
 
-	resp := sc.ScanResponse(ctx, text)
+	resp := sc.ScanHookInjection(ctx, text, "hermes", dir == directionInbound)
 	if resp.Failed() {
 		refuse(fmt.Sprintf("pipelock scan failed on %s: %s", surface, resp.ScanError))
 	}
