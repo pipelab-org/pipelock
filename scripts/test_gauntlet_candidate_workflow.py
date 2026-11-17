@@ -437,10 +437,13 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
         # The only credential is the read-only job token, handed to the
         # benchmark runner for its release lookup. Contents read is the job's
         # whole grant, so the token cannot publish or modify anything.
-        token_line = "GH_TOKEN: ${{ github.token }}"
+        # Match the whole line, so a commented-out assignment cannot pass.
+        token_line = "          GH_TOKEN: ${{ github.token }}"
         self.assertEqual(self.workflow.count("GH_TOKEN"), 1)
         self.assertEqual(self.workflow.count("github.token"), 1)
-        self.assertIn(token_line, step_block(self.workflow, "Run portable canonical benchmark"))
+        benchmark = step_block(self.workflow, "Run portable canonical benchmark")
+        self.assertIn("        env:\n", benchmark)
+        self.assertIn(token_line, benchmark.splitlines())
         self.assertNotIn("secrets.", self.workflow)
         self.assertNotIn("GITHUB_TOKEN", self.workflow)
         self.assertNotIn("gh pr", self.workflow)
