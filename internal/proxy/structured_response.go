@@ -328,8 +328,19 @@ func (b *sizeExemptScanBudget) readStructuredResponse(ctx context.Context, prefi
 }
 
 func scanStructuredResponse(ctx context.Context, sc *scanner.Scanner, cfg *config.Config, body []byte, target string, inspection *structuredResponseInspection) scanner.ResponseScanResult {
+	transport := scanner.DLPWarnContextFromCtx(ctx).Transport
+	if transport == "intercept" {
+		transport = TransportConnect
+	}
+	if transport == "" {
+		transport = "http"
+	}
+	surface := config.InjectionSurfaceHTTPResponse
+	if scanner.InjectionSurfaceFromContext(ctx) == config.InjectionSurfaceBrowserShield {
+		surface = config.InjectionSurfaceBrowserShield
+	}
 	if inspection == nil {
-		return sc.ScanResponseBodyWithSuppress(ctx, body, target, cfg.Suppress)
+		return sc.ScanBufferedInjection(ctx, scanner.BufferedInjectionScan{Surface: surface, Transport: transport, UseBody: true, Body: body, Target: target, Suppress: cfg.Suppress})
 	}
 	// Existing response policies may rewrite buffered bytes after admission.
 	// Inspect the delivered representation too; stale extracted parts cannot
@@ -343,6 +354,7 @@ func scanStructuredResponse(ctx context.Context, sc *scanner.Scanner, cfg *confi
 		current.ordinaryCap = inspection.ordinaryCap
 		inspection = current
 	}
+	ctx = scanner.WithInjectionSurface(ctx, surface)
 	result := scanner.ResponseScanResult{Clean: true}
 	if size := compactStructuredLen(body); inspection.ordinaryCap > 0 && size <= inspection.ordinaryCap {
 		compact, err := compactStructuredBody(body, size, inspection.account)
@@ -369,7 +381,11 @@ func scanStructuredResponse(ctx context.Context, sc *scanner.Scanner, cfg *confi
 	// empty transformation uses each transport's existing strip-to-block guard.
 	// No benign assessment is granted; the signed diagnostic names the partial
 	// representation contract, independently of this delivery result.
-	return result
+	texts := make([]string, 0, len(inspection.Parts))
+	for _, part := range inspection.Parts {
+		texts = append(texts, part.Text)
+	}
+	return sc.ComposeBufferedInjection(ctx, scanner.BufferedInjectionScan{Surface: surface, Transport: transport, OriginalBytes: int64(len(body)), Texts: texts}, result)
 }
 
 // mergeStructuredScan folds one scan into result and reports whether the scan

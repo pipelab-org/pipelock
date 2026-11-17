@@ -380,7 +380,7 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 		}
 	}
 
-	resp := sc.ScanResponse(ctx, text)
+	resp := sc.ScanHookInjection(ctx, text, "hermes", dir == directionInbound)
 	if resp.Failed() {
 		return blockDecision(fmt.Sprintf("pipelock scan failed on %s: %s", surface, resp.ScanError))
 	}

@@ -13,11 +13,18 @@ import (
 )
 
 // Injection checker surfaces that accept a per-surface selection. Other
-// wording consumers (HTTP, WebSocket, A2A, MCP input, Scan API) keep following
+// wording consumers (WebSocket, SSE and A2A) keep following
 // the global prompt_injection_detection setting and report that they do.
 const (
 	InjectionSurfaceMCPToolResult      = "mcp_tool_result"
 	InjectionSurfaceMCPToolDescription = "mcp_tool_description"
+	InjectionSurfaceHTTPResponse       = "http_response"
+	InjectionSurfaceBrowserShield      = "browser_shield"
+	InjectionSurfaceHTTPRequestBody    = "http_request_body"
+	InjectionSurfaceMCPToolInput       = "mcp_tool_input"
+	InjectionSurfaceScanAPI            = "scan_api"
+	InjectionSurfaceHookToolInput      = "hook_tool_input"
+	InjectionSurfaceHookToolResult     = "hook_tool_result"
 )
 
 // InjectionCheckerBasic names the built-in wording checker.
@@ -39,7 +46,11 @@ const (
 
 // InjectionSurfaces lists the surfaces that accept a selection, in a stable order.
 func InjectionSurfaces() []string {
-	return []string{InjectionSurfaceMCPToolResult, InjectionSurfaceMCPToolDescription}
+	return []string{
+		InjectionSurfaceMCPToolResult, InjectionSurfaceMCPToolDescription,
+		InjectionSurfaceHTTPResponse, InjectionSurfaceBrowserShield, InjectionSurfaceHTTPRequestBody,
+		InjectionSurfaceMCPToolInput, InjectionSurfaceScanAPI, InjectionSurfaceHookToolInput, InjectionSurfaceHookToolResult,
+	}
 }
 
 // InjectionSurfaceConfig selects the checker and mode for one surface.
@@ -217,6 +228,13 @@ func (c *Config) validateInjectionSurfaces() error {
 		// descriptions would pass unassessed.
 		if name == InjectionSurfaceMCPToolDescription && (checker != InjectionCheckerBasic && sc.Mode != InjectionModeOff || sc.Watch != "") && !c.MCPToolScanning.Enabled {
 			return fmt.Errorf("%s: an external checker on tool descriptions needs mcp_tool_scanning.enabled: true, which is what reads the descriptions", field)
+		}
+		needsExternal := (checker != InjectionCheckerBasic && sc.Mode != InjectionModeOff) || sc.Watch != ""
+		if needsExternal && name == InjectionSurfaceHTTPRequestBody && !c.RequestBodyScanning.Enabled {
+			return fmt.Errorf("%s: an external checker on request bodies needs request_body_scanning.enabled: true, which reads the body", field)
+		}
+		if needsExternal && name == InjectionSurfaceMCPToolInput && !c.MCPInputScanning.Enabled {
+			return fmt.Errorf("%s: an external checker on MCP input needs mcp_input_scanning.enabled: true, which reads requests", field)
 		}
 		// The global setting caps the built-in checker everywhere: a surface
 		// may lower it, never raise it. Raising would need the wording rules

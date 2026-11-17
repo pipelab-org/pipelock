@@ -41,6 +41,8 @@ type ReplayResult struct {
 	SidecarDecrypted bool
 	// CandidateFindings holds findings produced by the candidate scanner.
 	CandidateFindings []Finding
+	// Assessment reports an external wording assessment, including warn failures.
+	Assessment *scanner.InjectionAssessment `json:",omitempty"`
 }
 
 // ReplayEngine replays captured scan decisions against a candidate config.
@@ -355,8 +357,28 @@ func (re *ReplayEngine) replayResponse(summary CaptureSummary, scannerInput stri
 		}
 	}
 
-	result := re.sc.ScanResponse(context.Background(), scannerInput)
-	return re.responseResultToReplay(summary.EffectiveAction, result)
+	surface := config.InjectionSurfaceHTTPResponse
+	switch summary.Subsurface {
+	case "response_mcp", "response_redirect_output", "mcp_stdio", "mcp_http":
+		surface = config.InjectionSurfaceMCPToolResult
+	case "", "response_fetch", "response_forward", "response_connect", "response_intercept", "response_reverse", "fetch", "forward", "connect", "reverse":
+	default:
+		// Other records lack a buffered selection contract (including streams).
+		return re.responseResultToReplay(summary.EffectiveAction, re.sc.ScanResponse(context.Background(), scannerInput))
+	}
+	result := re.sc.ScanBufferedInjection(context.Background(), scanner.BufferedInjectionScan{Surface: surface, Transport: strings.TrimPrefix(summary.Subsurface, "response_"), Content: scannerInput})
+	replay := re.responseResultToReplay(summary.EffectiveAction, result)
+	if re.sc.ExternalInjectionSurface(surface) {
+		replay.Assessment = &result.Assessment
+		for _, m := range result.WarnedMatches {
+			replay.CandidateFindings = append(replay.CandidateFindings, Finding{Kind: KindInjection, Action: config.ActionWarn, PatternName: m.PatternName})
+			if replay.CandidateAction == config.ActionAllow {
+				replay.CandidateAction = config.ActionWarn
+			}
+		}
+		replay.Changed = replay.CandidateAction != replay.OriginalAction
+	}
+	return replay
 }
 
 // replayDLP replays a DLP text scan. Returns summary-only if scannerInput
@@ -460,7 +482,7 @@ func (re *ReplayEngine) responseResultToReplay(originalAction string, result sca
 
 	if !result.Clean {
 		// Use the configured response scanning action, defaulting to block.
-		candidateAction = re.cfg.ResponseScanning.Action
+		candidateAction = result.EnforcementAction(re.cfg.ResponseScanning.Action)
 		if candidateAction == "" {
 			candidateAction = config.ActionBlock
 		}

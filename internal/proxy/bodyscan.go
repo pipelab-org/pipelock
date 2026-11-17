@@ -437,6 +437,9 @@ func contentTypeMatchesAny(mediaType string, allowed []string) bool {
 // enforce: false the finding follows the configured action, so an audit-only
 // deployment observes injection instead of dropping the request.
 func shouldHardBlockBodyPromptInjection(result BodyScanResult, hostname string, cfg *config.Config) bool {
+	if scanner.HasCheckerFinding(result.InjectionMatches) {
+		return true
+	}
 	if len(result.InjectionMatches) == 0 {
 		return false
 	}
@@ -1230,7 +1233,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		action = config.StrongestAction(action, result.EntropyAction)
 	}
 	for _, text := range texts {
-		injectionResult := req.Scanner.ScanResponseOutbound(ctx, text)
+		injectionResult := req.Scanner.ScanResponseOutbound(scanner.WithInjectionSurface(ctx, config.InjectionSurfaceHTTPRequestBody), text)
 		if injectionResult.Failed() {
 			return stopIncompleteBodyScan(result, injectionResult.ScanError)
 		}
@@ -1252,7 +1255,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		result.InjectionMatches = mergeJoinedInjectionMatches(result.InjectionMatches, inOrderInjection, sortedInjection, fieldInjection)
 		return stopIncompleteBodyScan(result, scanErr)
 	}
-	injectionResult := req.Scanner.ScanResponseOutbound(ctx, joinedInOrder)
+	injectionResult := req.Scanner.ScanResponseOutbound(scanner.WithInjectionSurface(ctx, config.InjectionSurfaceHTTPRequestBody), joinedInOrder)
 	if injectionResult.Failed() {
 		return stopIncompleteBodyScan(result, injectionResult.ScanError)
 	}
@@ -1264,7 +1267,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	// non-JSON body parsers and query maps can otherwise vary).
 	sorted := sortedBodyTexts(texts)
 	joined := strings.Join(sorted, "\n")
-	injectionResult = req.Scanner.ScanResponseOutbound(ctx, joined)
+	injectionResult = req.Scanner.ScanResponseOutbound(scanner.WithInjectionSurface(ctx, config.InjectionSurfaceHTTPRequestBody), joined)
 	if injectionResult.Failed() {
 		return stopJoinedScan(injectionResult.ScanError)
 	}
@@ -1281,7 +1284,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 			joinedFields = append(joinedFields, strings.Join(partTexts, "\n"), strings.Join(sortedBodyTexts(partTexts), "\n"))
 		}
 		for _, joinedFields := range joinedFields {
-			fieldResult := req.Scanner.ScanResponseOutbound(ctx, joinedFields)
+			fieldResult := req.Scanner.ScanResponseOutbound(scanner.WithInjectionSurface(ctx, config.InjectionSurfaceHTTPRequestBody), joinedFields)
 			if fieldResult.Failed() {
 				return stopJoinedScan(fieldResult.ScanError)
 			}
@@ -1293,6 +1296,14 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	// occurrences a joined view alone detected, such as a phrase split across
 	// fields.
 	result.InjectionMatches = mergeJoinedInjectionMatches(result.InjectionMatches, inOrderInjection, sortedInjection, fieldInjection)
+	external := req.Scanner.ComposeBufferedInjection(ctx, scanner.BufferedInjectionScan{Surface: config.InjectionSurfaceHTTPRequestBody, Direction: "request", Content: joinedInOrder, Texts: append([]string{joinedInOrder}, texts...)}, scanner.ResponseScanResult{Clean: len(result.InjectionMatches) == 0, Matches: result.InjectionMatches})
+	if external.Failed() {
+		return stopJoinedScan(external.ScanError)
+	}
+	result.InjectionMatches = external.Matches
+	if scanner.HasCheckerFinding(result.InjectionMatches) {
+		action = config.ActionBlock
+	}
 
 	// Address poisoning detection alongside DLP.
 	// Note: body address findings are currently emitted/counted as body_dlp

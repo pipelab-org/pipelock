@@ -144,6 +144,9 @@ func mcpInputVerdictAction(action string, dlpMatches []scanner.TextDLPMatch, inj
 // redaction cannot fix", treating a core credential as an ordinary finding that
 // redaction may scrub.
 func mcpContentActionIgnoringCoreFloor(action string, dlpMatches []scanner.TextDLPMatch, injMatches []scanner.ResponseMatch) string {
+	if scanner.HasCheckerFinding(injMatches) {
+		return config.ActionBlock
+	}
 	if scanner.HasInspectionLimit(dlpMatches) || scanner.ContainsHostnameExfilMatch(dlpMatches) {
 		return config.ActionBlock
 	}
@@ -485,13 +488,13 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 
 		// Run injection patterns on the full raw text (injection patterns
 		// match phrases, not encoded blobs -- full text is appropriate).
-		injResult := sc.ScanResponseOutbound(ctx, raw)
+		injResult := sc.ScanResponseOutbound(scanner.WithInjectionSurface(ctx, config.InjectionSurfaceMCPToolInput), raw)
 
 		// Also scan each extracted string individually for encoded injection
 		// (e.g. base64-encoded phrases) that don't decode in the full blob.
 		if injResult.Clean {
 			for _, s := range strs {
-				r := sc.ScanResponseOutbound(ctx, s)
+				r := sc.ScanResponseOutbound(scanner.WithInjectionSurface(ctx, config.InjectionSurfaceMCPToolInput), s)
 				assessment := mergeInputViewAssessment(injResult, s, r)
 				injResult.Assessment = assessment
 				if !r.Clean {
@@ -504,6 +507,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 		if err := dlpResult.Err(); err != nil {
 			return InputVerdict{ID: rpc.ID, Method: rpc.Method, Action: config.ActionBlock, Error: "response scan incomplete: " + err.Error()}
 		}
+		injResult = sc.ComposeBufferedInjection(ctx, scanner.BufferedInjectionScan{Surface: config.InjectionSurfaceMCPToolInput, Transport: mcpCheckerTransport(ctx), Direction: "request", Content: raw, Texts: mcpInputCheckerTexts(raw, strs)}, injResult)
 		if injResult.Failed() {
 			return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: false, Action: config.ActionBlock, Error: "response scan incomplete: " + injResult.ScanError}
 		}
@@ -607,14 +611,14 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 
 	// Run injection patterns (reuses response scanning patterns).
 	// First scan joined text for injection phrases that span fields.
-	injResult := sc.ScanResponseOutbound(ctx, joined)
+	injResult := sc.ScanResponseOutbound(scanner.WithInjectionSurface(ctx, config.InjectionSurfaceMCPToolInput), joined)
 
 	// Also scan each extracted string individually for injection. Catches
 	// encoded injection (e.g. base64) in a single field that doesn't decode
 	// cleanly when concatenated with other fields.
 	if injResult.Clean {
 		for _, s := range strs {
-			r := sc.ScanResponseOutbound(ctx, s)
+			r := sc.ScanResponseOutbound(scanner.WithInjectionSurface(ctx, config.InjectionSurfaceMCPToolInput), s)
 			assessment := mergeInputViewAssessment(injResult, s, r)
 			injResult.Assessment = assessment
 			if !r.Clean {
@@ -627,6 +631,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 	if err := dlpResult.Err(); err != nil {
 		return InputVerdict{ID: rpc.ID, Method: rpc.Method, Action: config.ActionBlock, Error: "response scan incomplete: " + err.Error()}
 	}
+	injResult = sc.ComposeBufferedInjection(ctx, scanner.BufferedInjectionScan{Surface: config.InjectionSurfaceMCPToolInput, Transport: mcpCheckerTransport(ctx), Direction: "request", Content: joined, Texts: mcpInputCheckerTexts(joined, strs)}, injResult)
 	if injResult.Failed() {
 		return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: false, Action: config.ActionBlock, Error: "response scan incomplete: " + injResult.ScanError}
 	}
@@ -715,13 +720,13 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 		}
 	}
 
-	injResult := sc.ScanResponseOutbound(ctx, text)
+	injResult := sc.ScanResponseOutbound(scanner.WithInjectionSurface(ctx, config.InjectionSurfaceMCPToolInput), text)
 
 	// JSON unicode unescape for injection scanning: same parser differential
 	// fix as DLP above. \u0069gnore → "ignore" must be caught.
 	if injResult.Clean {
 		if unescaped := unescapeJSONUnicode(text); unescaped != text {
-			r := sc.ScanResponseOutbound(ctx, unescaped)
+			r := sc.ScanResponseOutbound(scanner.WithInjectionSurface(ctx, config.InjectionSurfaceMCPToolInput), unescaped)
 			assessment := injResult.RecoveryAssessment().Merge(r.RecoveryAssessment())
 			injResult = r
 			injResult.Assessment = assessment
@@ -732,7 +737,7 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 	// (e.g. base64-encoded phrases) that don't decode in the full blob.
 	if injResult.Clean {
 		for _, s := range strs {
-			r := sc.ScanResponseOutbound(ctx, s)
+			r := sc.ScanResponseOutbound(scanner.WithInjectionSurface(ctx, config.InjectionSurfaceMCPToolInput), s)
 			assessment := mergeInputViewAssessment(injResult, s, r)
 			injResult.Assessment = assessment
 			if !r.Clean {
@@ -745,6 +750,7 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 	if err := dlpResult.Err(); err != nil {
 		return InputVerdict{ID: recoveredID, Action: config.ActionBlock, Error: "response scan incomplete: " + err.Error()}
 	}
+	injResult = sc.ComposeBufferedInjection(ctx, scanner.BufferedInjectionScan{Surface: config.InjectionSurfaceMCPToolInput, Transport: mcpCheckerTransport(ctx), Direction: "request", Content: text, Texts: mcpInputCheckerTexts(text, strs)}, injResult)
 	if injResult.Failed() {
 		return InputVerdict{ID: recoveredID, Clean: false, Action: config.ActionBlock, Error: "response scan incomplete: " + injResult.ScanError}
 	}
@@ -979,4 +985,21 @@ func mergeInputDLP(prior, next scanner.TextDLPResult) scanner.TextDLPResult {
 	prior.Incomplete = prior.Incomplete || next.Incomplete
 	prior.Clean = !prior.Incomplete && !scanner.HasEnforcingMatch(prior.Matches)
 	return prior
+}
+
+func mcpCheckerTransport(ctx context.Context) string {
+	if transport := scanner.DLPWarnContextFromCtx(ctx).Transport; transport != "" {
+		return transport
+	}
+	return "mcp"
+}
+
+// mcpInputCheckerTexts preserves the primary and extracted views, plus the
+// existing JSON Unicode-unescaped view when it changes the primary text.
+func mcpInputCheckerTexts(primary string, extracted []string) []string {
+	texts := append([]string{primary}, extracted...)
+	if unescaped := unescapeJSONUnicode(primary); unescaped != primary {
+		texts = append(texts, unescaped)
+	}
+	return texts
 }

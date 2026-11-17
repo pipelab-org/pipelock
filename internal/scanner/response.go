@@ -81,6 +81,9 @@ type ResponseMatch struct {
 	BundleVersion string `json:"bundle_version,omitempty"`
 	matchLength   int
 	span          MatchSpan
+	// externalCheckerBlock is set only by the deciding external composition.
+	// Pattern names are operator-controlled display text, never block authority.
+	externalCheckerBlock bool
 	// crossesFragmentBoundary is set only when whole-content decoding joined
 	// source text across a reconstructed opaque-response boundary. Decoded
 	// match spans index decoded bytes, so they cannot prove this from offsets.

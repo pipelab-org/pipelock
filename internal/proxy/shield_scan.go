@@ -57,8 +57,25 @@ type fetchResponseScan struct {
 	hidden *scanner.ResponseScanResult
 }
 
-func scanFetchResponse(ctx context.Context, sc *scanner.Scanner, cfg *config.Config, surface fetchResponseSurface, target string) fetchResponseScan {
-	scanned := fetchResponseScan{}
+func scanFetchResponse(ctx context.Context, sc *scanner.Scanner, cfg *config.Config, surface fetchResponseSurface, target string) (scanned fetchResponseScan) {
+	key := config.InjectionSurfaceHTTPResponse
+	if scanner.InjectionSurfaceFromContext(ctx) == config.InjectionSurfaceBrowserShield {
+		key = config.InjectionSurfaceBrowserShield
+	}
+	ctx = scanner.WithInjectionSurface(ctx, key)
+	defer func() {
+		text := surface.content
+		if surface.title != "" {
+			text = surface.title + "\n" + text
+		}
+		opts := scanner.BufferedInjectionScan{Surface: key, Transport: TransportFetch, Content: text, Texts: []string{text, surface.hidden}}
+		if !surface.html {
+			opts.UseBody = true
+			opts.Body = []byte(surface.content)
+			opts.Texts = nil
+		}
+		scanned.result = sc.ComposeBufferedInjection(ctx, opts, scanned.result)
+	}()
 	if surface.html {
 		// Fetch delivers title and content separately. Scan them together once,
 		// preserving cross-field matches; only content is a supported strip target.
@@ -115,7 +132,7 @@ func scanBeforeShield(ctx context.Context, sc *scanner.Scanner, cfg *config.Conf
 		scanned := scanFetchBeforeShield(ctx, sc, cfg, body, headers, parsed)
 		return &scanned.result
 	}
-	result := sc.ScanResponseBodyWithSuppress(ctx, shieldScanSurface(cfg, contentType, body, headers, target), target, cfg.Suppress)
+	result := sc.ScanBufferedInjection(ctx, scanner.BufferedInjectionScan{Surface: config.InjectionSurfaceBrowserShield, Transport: transport, UseBody: true, Body: shieldScanSurface(cfg, contentType, body, headers, target), Target: target, Suppress: cfg.Suppress})
 	result.TransformedContent = "" // Original bytes are classification-only.
 	return &result
 }
@@ -126,7 +143,7 @@ func scanBeforeShield(ctx context.Context, sc *scanner.Scanner, cfg *config.Conf
 func scanFetchBeforeShield(ctx context.Context, sc *scanner.Scanner, cfg *config.Config, original []byte, headers http.Header, target *url.URL) fetchResponseScan {
 	contentType := responseContentType(headers)
 	surface := shieldScanSurface(cfg, contentType, original, headers, target.String())
-	scanned := scanFetchResponse(ctx, sc, cfg, deriveFetchResponse(surface, contentType, target), target.String())
+	scanned := scanFetchResponse(scanner.WithInjectionSurface(ctx, config.InjectionSurfaceBrowserShield), sc, cfg, deriveFetchResponse(surface, contentType, target), target.String())
 	scanned.result.TransformedContent = "" // Original bytes are classification-only.
 	return scanned
 }

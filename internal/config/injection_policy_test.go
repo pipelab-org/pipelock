@@ -74,7 +74,7 @@ func mustValidateWarnings(t *testing.T, cfg *Config) []Warning {
 
 func TestInjectionPolicyRejects(t *testing.T) {
 	for _, tt := range []struct{ name, yaml, want string }{
-		{"unknown_surface", "prompt_injection_detection: {surfaces: {http_response: {mode: warn}}}", "not selectable"},
+		{"unknown_surface", "prompt_injection_detection: {surfaces: {unsupported_surface: {mode: warn}}}", "not selectable"},
 		{"empty_mode", "prompt_injection_detection: {surfaces: {mcp_tool_result: {checker: basic}}}", "must be off, warn or block"},
 		{"null_entry", "prompt_injection_detection: {surfaces: {mcp_tool_result: null}}", "must be off, warn or block"},
 		{"bad_mode", "prompt_injection_detection: {surfaces: {mcp_tool_result: {mode: strip}}}", "must be off, warn or block"},

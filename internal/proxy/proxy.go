@@ -7087,7 +7087,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		}
 		if scanResult.Clean {
 			respAction = config.ActionAllow
-		} else if scanResult.Failed() || (respAction == config.ActionStrip && scanResult.TransformedContent == "") {
+		} else if scanResult.CheckerBlocked() || scanResult.Failed() || (respAction == config.ActionStrip && scanResult.TransformedContent == "") {
 			// An incomplete scan is a fail-closed runtime error, not a
 			// response-scanning match. Keep replay/capture from presenting it
 			// as a warn/allow verdict.
@@ -7367,6 +7367,8 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 			action = config.ActionBlock
 		}
 	}
+
+	action = result.EnforcementAction(action)
 
 	// recordResponseSignal records an adaptive enforcement signal for the
 	// response scan result. Exempt domains skip scoring - their findings

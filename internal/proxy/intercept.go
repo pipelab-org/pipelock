@@ -3170,6 +3170,7 @@ func newInterceptHandler(
 				if interceptRespExempt {
 					iRespAction = config.ActionWarn
 				}
+				iRespAction = scanResult.EnforcementAction(iRespAction)
 				if scanResult.Clean {
 					iRespAction = config.ActionAllow
 				} else if scanResult.Failed() || (iRespAction == config.ActionStrip && (scanResult.TransformedContent == "" || resp.StatusCode == http.StatusPartialContent)) {
@@ -3214,6 +3215,7 @@ func newInterceptHandler(
 				if interceptRespExempt {
 					action = config.ActionWarn
 				}
+				action = scanResult.EnforcementAction(action)
 				// Adaptive enforcement: upgrade the response action before the switch.
 				// Exempt domains skip upgrade - operator's trust decision overrides escalation.
 				originalAction := action

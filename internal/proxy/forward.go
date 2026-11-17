@@ -3397,6 +3397,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				if fwdRespExempt {
 					fwdRespAction = config.ActionWarn
 				}
+				fwdRespAction = scanResult.EnforcementAction(fwdRespAction)
 				if scanResult.Clean {
 					fwdRespAction = config.ActionAllow
 				} else if scanResult.Failed() || (fwdRespAction == config.ActionStrip && (scanResult.TransformedContent == "" || resp.StatusCode == http.StatusPartialContent)) {
@@ -3443,6 +3444,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				if fwdRespExempt {
 					action = config.ActionWarn
 				}
+				action = scanResult.EnforcementAction(action)
 				patternNames := make([]string, len(scanResult.Matches))
 				for i, match := range scanResult.Matches {
 					patternNames[i] = match.PatternName

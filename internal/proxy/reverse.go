@@ -3634,6 +3634,7 @@ responseScanning:
 		if revRespExempt {
 			revAction = config.ActionWarn
 		}
+		revAction = result.EnforcementAction(revAction)
 		if result.Clean {
 			revAction = config.ActionAllow
 		} else if result.Failed() || (revAction == config.ActionStrip && (result.TransformedContent == "" || resp.StatusCode == http.StatusPartialContent)) {
@@ -3684,6 +3685,7 @@ responseScanning:
 	if revRespExempt {
 		action = config.ActionWarn
 	}
+	action = result.EnforcementAction(action)
 
 	if action == config.ActionStrip && (result.TransformedContent == "" || resp.StatusCode == http.StatusPartialContent) {
 		action = config.ActionBlock
