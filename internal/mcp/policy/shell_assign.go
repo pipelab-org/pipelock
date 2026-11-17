@@ -461,7 +461,8 @@ func shellConditionalAt(s string, at []int) (out map[int]bool, ambiguous bool) {
 	// "echo fi" does not close an if.
 	cmdPos := true
 	forks, forkStop := false, -1
-	inExpansion := 0 // open groups that are expansions, not commands
+	inExpansion := 0  // open groups that are expansions, not commands
+	funcName := false // the next word names a function
 	next := 0
 	for i := 0; i < len(s) && next < len(at); i++ {
 		for next < len(at) && at[next] == i {
@@ -487,7 +488,9 @@ func shellConditionalAt(s string, at []int) (out map[int]bool, ambiguous bool) {
 			gated = false
 			cmdPos = true
 		case '(', '{':
-			counts := i == 0 || (s[i-1] != '$' && s[i-1] != '<' && s[i-1] != '>')
+			// A group starts a command: "(" or "{" elsewhere is part of a
+			// word ("x{y}") or an expansion ("$(", "${", "<(", ">(").
+			counts := cmdPos && (i == 0 || (s[i-1] != '$' && s[i-1] != '<' && s[i-1] != '>'))
 			// Inside an expansion nothing is a command group: "$((1))" holds
 			// a "(" that must not count, nor reopen command position.
 			if inExpansion > 0 {
@@ -515,6 +518,10 @@ func shellConditionalAt(s string, at []int) (out map[int]bool, ambiguous bool) {
 					cmdPos = true
 				} else {
 					inExpansion--
+					// "f()" is a function definition: its body follows.
+					if c == ')' && s[i-1] == '(' {
+						cmdPos = true
+					}
 				}
 				groups = groups[:n-1]
 			}
@@ -576,8 +583,17 @@ func shellConditionalAt(s string, at []int) (out map[int]bool, ambiguous bool) {
 					depth--
 				}
 			}
-			switch s[i:j] {
-			case "if", "while", "until", "then", "do", "else", "elif", "time", "!":
+			word := s[i:j]
+			switch {
+			case funcName:
+				// "function f { ...": the body follows the name.
+				funcName = false
+				cmdPos = true
+			case cmdPos && !assign && word == "function":
+				funcName = true
+				cmdPos = false
+			case word == "if" || word == "while" || word == "until" || word == "then" || word == "do" ||
+				word == "else" || word == "elif" || word == "time" || word == "!":
 				// A reserved word starts a command only in command position:
 				// "echo time fi" is all arguments, and its fi closes nothing.
 				cmdPos = cmdPos && !assign
