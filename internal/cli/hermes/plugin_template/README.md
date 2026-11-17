@@ -25,8 +25,10 @@ one of these objects on stdout:
   `{"action":"rewrite","text":"<masked string>"}` from `pre_gateway_dispatch`.
 
 The plugin sends `capabilities: ["transform"]` only for inbound string results
-and gateway text. Gateway `tool_input` is the exact message text; sender metadata
-is carried in `extra` and scanned separately without masking. Structured tool results don't advertise the capability.
+and gateway text. Gateway `tool_input` is `{"text": "<message>", "sender": "<sender>"}`,
+which is the envelope every pipelock release scans. A sender copy under
+`extra.sender`, if a caller also sends one, is scanned block-only and is never
+masked. Structured tool results don't advertise the capability.
 The hook never emits a transform without it. `result` and a nonempty `reason`
 must be strings; malformed transforms and unknown decisions block/skip instead
 of returning `None`. `{}` and explicit `{"decision":"allow"}` remain accepted.

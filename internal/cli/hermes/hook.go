@@ -247,15 +247,25 @@ func evaluate(ctx context.Context, sc *scanner.Scanner, event *HookEvent) HookDe
 		// any version scans the sender. A plugin that can rewrite text also
 		// advertises the transform capability; only then is text split from
 		// the sender so a mask can apply to the one field Hermes replaces.
+		// extra.sender is a second copy of that metadata. It is block-only
+		// on every path; leaving it unscanned allowed the credential through.
+		extraSender, extraErr := gatewayExtraSender(event)
+		if extraErr != nil {
+			return blockDecision("pipelock: invalid gateway metadata")
+		}
+		var decision HookDecision
 		if gw, ok := gatewayEnvelope(event); ok {
-			return scanGatewayDispatch(ctx, sc, event, gw)
+			decision = scanGatewayDispatch(ctx, sc, event, gw)
+		} else {
+			text, cards, truncated := extractToolInputViews(event.ToolInput)
+			if truncated {
+				decision = blockDecision("pipelock: gateway dispatch exceeds maximum inspectable nesting depth")
+			} else {
+				decision = scanCombinedViews(ctx, sc, hookScanViews{text: text, cards: cards, raw: event.ToolInput},
+					"inbound gateway dispatch", directionInbound)
+			}
 		}
-		text, cards, truncated := extractToolInputViews(event.ToolInput)
-		if truncated {
-			return blockDecision("pipelock: gateway dispatch exceeds maximum inspectable nesting depth")
-		}
-		return scanCombinedViews(ctx, sc, hookScanViews{text: text, cards: cards, raw: event.ToolInput},
-			"inbound gateway dispatch", directionInbound)
+		return applyGatewayExtraSender(ctx, sc, decision, extraSender)
 	case HookOnSessionStart, HookOnSessionEnd:
 		// Observer hooks. The current release emits no decision; a follow-up
 		// release may hook these to receipt emission.
@@ -295,6 +305,54 @@ func gatewayEnvelope(event *HookEvent) (gatewayDispatch, bool) {
 	return gatewayDispatch{text: text, sender: fields["sender"]}, true
 }
 
+// gatewayExtraSender returns a sender copy carried beside the envelope.
+// Empty extra is absent. A non-object extra is refused so malformed
+// metadata cannot skip the scan. The error text is not returned to the
+// caller: unmarshal diagnostics can echo the payload.
+func gatewayExtraSender(event *HookEvent) (json.RawMessage, error) {
+	if len(strings.TrimSpace(string(event.Extra))) == 0 {
+		return nil, nil
+	}
+	var extra struct {
+		Sender json.RawMessage `json:"sender"`
+	}
+	if err := json.Unmarshal(event.Extra, &extra); err != nil {
+		return nil, err
+	}
+	return extra.Sender, nil
+}
+
+func scanGatewaySenderValue(ctx context.Context, sc *scanner.Scanner, raw json.RawMessage) HookDecision {
+	if len(raw) == 0 {
+		return allowDecision()
+	}
+	text, cards, truncated := extractToolInputViews(raw)
+	if truncated {
+		return blockDecision("pipelock: gateway sender exceeds maximum inspectable nesting depth")
+	}
+	return scanCombinedViews(ctx, sc, hookScanViews{
+		text: text, cards: cards, raw: raw, requireComplete: true,
+	}, "gateway sender", directionInbound)
+}
+
+func applyGatewayExtraSender(ctx context.Context, sc *scanner.Scanner, decision HookDecision, sender json.RawMessage) HookDecision {
+	extra := scanGatewaySenderValue(ctx, sc, sender)
+	if extra.Decision == "" {
+		decision.warnings = append(decision.warnings, extra.warnings...)
+		return decision
+	}
+	reasons := make([]string, 0, 2)
+	if decision.Reason != "" {
+		reasons = append(reasons, decision.Reason)
+	}
+	if extra.Reason != "" {
+		reasons = append(reasons, extra.Reason)
+	}
+	blocked := blockDecision(strings.Join(reasons, "; "))
+	blocked.warnings = append(decision.warnings, extra.warnings...)
+	return blocked
+}
+
 func scanGatewayDispatch(ctx context.Context, sc *scanner.Scanner, event *HookEvent, gw gatewayDispatch) HookDecision {
 	rawText, _ := json.Marshal(gw.text) // Encoding a Go string cannot fail.
 	text, cards, truncated := extractToolInputViews(rawText)
@@ -307,17 +365,7 @@ func scanGatewayDispatch(ctx context.Context, sc *scanner.Scanner, event *HookEv
 		"inbound gateway dispatch", directionInbound)
 	// The sender is never rewritten, so any sender finding refuses the whole
 	// dispatch.
-	sender := allowDecision()
-	if len(gw.sender) > 0 {
-		senderText, senderCards, senderTruncated := extractToolInputViews(gw.sender)
-		if senderTruncated {
-			sender = blockDecision("pipelock: gateway sender exceeds maximum inspectable nesting depth")
-		} else {
-			sender = scanCombinedViews(ctx, sc, hookScanViews{
-				text: senderText, cards: senderCards, raw: gw.sender, requireComplete: true,
-			}, "gateway sender", directionInbound)
-		}
-	}
+	sender := scanGatewaySenderValue(ctx, sc, gw.sender)
 	if sender.Decision != "" {
 		reasons := []string{sender.Reason}
 		if decision.Reason != "" {

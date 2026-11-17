@@ -341,3 +341,57 @@ func TestGatewayEnvelopeShapes(t *testing.T) {
 		})
 	}
 }
+
+// A sender left only in extra used to be allowed: the envelope scan never
+// saw it, and a string tool_input can still be masked. Both copies must block,
+// and the refusal must not echo the credential.
+func TestGatewayExtraSenderBlocks(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	key := "AKIA" + "IOSFODNN7EXAMPLE"
+	other := "ASIA" + "1234567890ABCDEF"
+	text, _ := json.Marshal("hello")
+	envelope := json.RawMessage(`{"text":` + string(mustMarshal(key)) + `,"sender":"user"}`)
+	for _, tt := range []struct {
+		name, input string
+		extra       string
+		caps        []string
+		want        string
+	}{
+		{name: "string input no capability", input: string(text), extra: `{"sender":"` + key + `"}`, want: DecisionBlock},
+		{name: "string input capability", input: string(text), extra: `{"sender":"` + key + `"}`, caps: []string{DecisionTransform}, want: DecisionBlock},
+		{name: "envelope mask plus extra key", input: string(envelope), extra: `{"sender":"` + other + `"}`, caps: []string{DecisionTransform}, want: DecisionBlock},
+		{name: "object sender", input: string(text), extra: `{"sender":{"id":"` + key + `"}}`, caps: []string{DecisionTransform}, want: DecisionBlock},
+		{name: "invalid extra", input: string(text), extra: `["` + key + `"]`, caps: []string{DecisionTransform}, want: DecisionBlock},
+		{name: "clean extra still masks", input: string(envelope), extra: `{"task_id":"abc"}`, caps: []string{DecisionTransform}, want: DecisionTransform},
+		{name: "absent extra still masks", input: string(envelope), caps: []string{DecisionTransform}, want: DecisionTransform},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			event := HookEvent{HookEventName: HookPreGatewayDispatch, ToolInput: json.RawMessage(tt.input), Capabilities: tt.caps}
+			if tt.extra != "" {
+				event.Extra = json.RawMessage(tt.extra)
+			}
+			got := evaluate(t.Context(), sc, &event)
+			if got.Decision != tt.want || (tt.want != DecisionTransform && got.Result != "") {
+				t.Fatalf("decision=%q result=%q, want %q: %+v", got.Decision, got.Result, tt.want, got)
+			}
+			if strings.Contains(got.Reason, key) || strings.Contains(got.Reason, other) || strings.Contains(got.Result, key) {
+				t.Fatalf("credential bytes in the decision: %+v", got)
+			}
+			if tt.want == DecisionTransform && got.Result != inboundMaskPlaceholder {
+				t.Fatalf("clean extra changed masking: %+v", got)
+			}
+		})
+	}
+}
+
+func mustMarshal(s string) []byte {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
