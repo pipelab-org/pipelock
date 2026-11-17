@@ -163,6 +163,11 @@ func TestShellConstructionUseBeforeAssignmentReadsUnset(t *testing.T) {
 		"Z=echo; unset 'Z'; " + use,
 		"Z=echo | cat; " + use,
 		"Z=echo & " + use,
+		// A "!" before a block, a reserved word that is data, a comment
+		// after ";".
+		"! if test -f /nope; then Z=echo; fi; " + use,
+		"echo if; if test -f /nope; then Z=echo; fi; " + use,
+		"true;#x\nif test -f /nope; then Z=echo; fi; " + use,
 	} {
 		out, _, fits := resolveShellConstruction(cmd)
 		if !fits || !rmStartsCommand.MatchString(out) {
@@ -672,6 +677,13 @@ func TestShellConstructionRedirectValuesMatchBash(t *testing.T) {
 		{`A=r $u /bin/true; B=m; printf %s "$A$B"`, "m", ""},
 		// sh keeps an assignment before a special builtin; bash does only in
 		// POSIX mode. Either shell may run the command, so it is read as kept.
+		{`A=r {fd}>/dev/null; B=m; printf %s "$A$B"`, "rm", ""},
+		{`A=r &>/dev/null; B=m; printf %s "$A$B"`, "rm", ""},
+		{`A=r >|/dev/null; B=m; printf %s "$A$B"`, "rm", ""},
+		{`A=r 2>&-; B=m; printf %s "$A$B"`, "rm", ""},
+		{`A=r <&-; B=m; printf %s "$A$B"`, "rm", ""},
+		{`A=r 3<>/dev/null; B=m; printf %s "$A$B"`, "rm", ""},
+		{`A=r 2>/dev/null >&2; B=m; printf %s "$A$B"`, "rm", ""},
 		{`A=r :; B=m; printf %s "$A$B"`, "m", "rm"},
 		{`A=r eval true; B=m; printf %s "$A$B"`, "m", "rm"},
 	}
@@ -1238,5 +1250,25 @@ func TestShellConstructionReadsWhatBashPrints(t *testing.T) {
 	}
 	if skipped > 40 {
 		t.Fatalf("%d of 400 scripts were past the copy budget", skipped)
+	}
+}
+
+// An assignment the nesting scan skips over, inside quoted text or a
+// comment, is read as conditional rather than certain.
+func TestShellConditionalAtMarksSkippedText(t *testing.T) {
+	for _, tc := range []struct {
+		s  string
+		at int
+	}{
+		{"echo 'Z=1'; true", strings.Index("echo 'Z=1'; true", "=")},
+		{"echo \"Z=1\"; true", strings.Index("echo \"Z=1\"; true", "=")},
+		{"true # Z=1\ntrue", strings.Index("true # Z=1\ntrue", "=")},
+	} {
+		if !shellConditionalAt(tc.s, []int{tc.at})[tc.at] {
+			t.Errorf("%q: assignment at %d read as certain", tc.s, tc.at)
+		}
+	}
+	if s := "Z=1; true"; shellConditionalAt(s, []int{1})[1] {
+		t.Errorf("%q: plain assignment read as conditional", s)
 	}
 }

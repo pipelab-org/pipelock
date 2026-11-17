@@ -469,19 +469,27 @@ func shellConditionalAt(s string, at []int) map[int]bool {
 				groups = groups[:n-1]
 			}
 		case '\'', '"':
-			// Quoted text is data: skip to the closing quote.
+			// Quoted text is data: skip to the closing quote. An unclosed
+			// quote runs to the end. An assignment the skip passes over is
+			// read as conditional.
+			to := len(s) - 1
 			if k := strings.IndexByte(s[i+1:], c); k >= 0 {
-				i += k + 1
+				to = i + 1 + k
 			}
+			next = markSkipped(out, at, next, to)
+			i = to
 			cmdPos = false
 		case '#':
-			if i == 0 || isShellSpaceByte(s[i-1]) {
+			if i == 0 || isShellSpaceByte(s[i-1]) || strings.IndexByte(";&|(){}<>", s[i-1]) >= 0 {
+				to := len(s) - 1
 				if k := strings.IndexByte(s[i:], '\n'); k >= 0 {
-					i += k - 1
-				} else {
-					i = len(s) - 1
+					to = i + k - 1
 				}
+				next = markSkipped(out, at, next, to)
+				i = to
 			}
+		case '!':
+			cmdPos = true
 		case ' ', '\t':
 		default:
 			if !isShellNameByte(c) || (i > 0 && isShellNameByte(s[i-1])) {
@@ -494,6 +502,8 @@ func shellConditionalAt(s string, at []int) map[int]bool {
 			}
 			assign := j < len(s) && (s[j] == '=' || s[j] == '+' && j+1 < len(s) && s[j+1] == '=')
 			if cmdPos && !assign {
+				// Reserved words count only as command words: "echo if" opens
+				// nothing and "echo fi" closes nothing.
 				switch s[i:j] {
 				case "if", "while", "until", "for", "case", "select":
 					depth++
@@ -517,6 +527,16 @@ func shellConditionalAt(s string, at []int) map[int]bool {
 	return out
 }
 
+// markSkipped marks every pending offset up to and including to as
+// conditional and returns the index of the first one after it.
+func markSkipped(out map[int]bool, at []int, next, to int) int {
+	for next < len(at) && at[next] <= to {
+		out[at[next]] = true
+		next++
+	}
+	return next
+}
+
 // shellStatementForks reports whether the statement holding offset i ends in
 // a pipe or "&" before its ";", newline, "&&" or "||": its assignments then
 // run in a subshell or in the background.
@@ -525,6 +545,10 @@ func shellStatementForks(s string, i int) bool {
 		switch c := s[i]; c {
 		case ';', '\n':
 			return false
+		case '\'', '"', '`', '\\', '(', '#':
+			// Quoting, a substitution or a comment can hide the end of the
+			// statement: read the assignment as conditional.
+			return true
 		case '&', '|':
 			if i+1 < len(s) && s[i+1] == c {
 				return false
