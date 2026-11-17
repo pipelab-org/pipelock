@@ -425,8 +425,9 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 // executable, under the same normalizations the views use (argViewNorms).
 func viewsReadGit(word string) bool {
 	for _, n := range argViewNorms {
-		tokens, _ := n.tokens([]string{word})
-		if slices.ContainsFunc(tokens, func(t string) bool { return commandName(t) == "git" }) {
+		tokens, partial := n.tokens([]string{word})
+		// A partial reading cannot show the word is not git.
+		if partial || slices.ContainsFunc(tokens, func(t string) bool { return commandName(t) == "git" }) {
 			return true
 		}
 	}

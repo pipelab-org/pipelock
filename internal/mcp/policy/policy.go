@@ -27,9 +27,14 @@ import (
 const (
 	uninspectableJSONDepthRule    = "uninspectable_json_depth"
 	uninspectablePatchTargetsRule = "uninspectable_patch_targets"
-	duplicateJSONKeyRule          = "duplicate_json_object_key"
-	invalidJSONKeyInputRule       = "invalid_json_key_input"
-	malformedA2AParamsRule        = "malformed_a2a_params"
+	// uninspectableShellConstructionRule names a block for shell text whose
+	// variable expansion would pass maxShellConstructionLen. Blocking, rather
+	// than reporting an incomplete check, keeps padding from turning a rule
+	// match into a warning.
+	uninspectableShellConstructionRule = "uninspectable_shell_construction"
+	duplicateJSONKeyRule               = "duplicate_json_object_key"
+	invalidJSONKeyInputRule            = "invalid_json_key_input"
+	malformedA2AParamsRule             = "malformed_a2a_params"
 	// incompletePairCheckRule names the signal for a rule whose check could
 	// not rule out a match: its pairwise view could not cover an over-long
 	// argument list, or it matches only across separate commands. Its action
@@ -98,16 +103,11 @@ var simpleCmdSubRe = regexp.MustCompile(`\$\(\s*(?:echo|printf)\s+(?:['"]?%\S*['
 
 // backtickCmdSubRe matches backtick command substitutions equivalent to $().
 // `printf rm`, `echo rm` are evasion techniques identical to $(printf rm).
-// Backticks are stripped by shellQuoteStripper, but the command inside needs
-// to be resolved first - otherwise `printf rm` becomes "printf rm" (literal)
-// instead of "rm" (resolved).
+// Those forms are unwrapped here. Other backticks stay until assignments
+// have been read, then they are removed. Stripping them first turns
+// "A=r `true`" into the command word true and drops an assignment bash
+// keeps when the substitution prints nothing.
 var backtickCmdSubRe = regexp.MustCompile("`\\s*(?:echo|printf)\\s+(?:['\"]?%\\S*['\"]?\\s+)*['\"]?(\\w+)['\"]?\\s*`")
-
-// simpleAssignRe matches shell variable assignment followed by separator.
-// "x=rm;$x -rf" hides the command name in a variable.
-// Value group captures non-whitespace/non-separator chars to handle IFS
-// manipulation: "IFS=,;CMD=r,m;$CMD" assigns `,` and `r,m` respectively.
-var simpleAssignRe = regexp.MustCompile(`(\w+)=([^\s;&|]+)\s*[;&|]`)
 
 // braceExpansionRe matches bash brace expansion used to construct commands.
 // {rm,-rf,/tmp} expands to "rm -rf /tmp" at runtime. Requires at least two
@@ -121,7 +121,9 @@ var braceExpansionRe = regexp.MustCompile(`\{([\w./:~@=*?+-]*(?:,[\w./:~@=*?+-]*
 // quoting (e.g. $'\x6d' framing). After decodeShellEscapes, r$'\x6d' becomes
 // r$'m' - the $' prefix and trailing quote prevent regex from seeing "rm".
 // The $' pair is stripped first (ANSI-C opening), then remaining lone quotes.
-var shellQuoteStripper = strings.NewReplacer("$'", "", `$"`, "", "'", "", `"`, "", "`", "")
+// Backticks are not removed here; normalizeArgTokensRead removes them after
+// assignments are read.
+var shellQuoteStripper = strings.NewReplacer("$'", "", `$"`, "", "'", "", `"`, "")
 
 // policyPreNormalize maps ambiguous confusables to their command-relevant Latin
 // equivalent. The shared confusableMap maps Cyrillic у → 'y' (correct for injection
@@ -485,6 +487,9 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 		return uninspectableJSONDepthVerdict()
 	}
 	views := buildArgViews(matchArgs, gitTool, &proof, !pathValues)
+	if viewsOverflow(views) {
+		return uninspectableShellConstructionVerdict()
+	}
 	if !checkInput {
 		for i := range views {
 			views[i].checkXargs = false
@@ -534,6 +539,9 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 				expanded, notes, _ := pc.expandToolPaths(destinationArgs, destinationShape, true, nil)
 				linkNotes = appendUniqueNotes(linkNotes, notes)
 				destinationViews = buildArgViews(expanded, false, nil, false)
+				if viewsOverflow(destinationViews) {
+					return uninspectableShellConstructionVerdict()
+				}
 			}
 			ruleViews = destinationViews
 		}
@@ -570,6 +578,9 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 			credentialDestinations = scopedStrings
 			linkNotes = appendUniqueNotes(linkNotes, scopedNotes)
 			ruleViews = buildArgViews(scopedStrings, gitTool, nil, !pathValues)
+			if viewsOverflow(ruleViews) {
+				return uninspectableShellConstructionVerdict()
+			}
 		}
 		if rule.ArgSource == config.ToolPolicyArgSourcePatchTargets {
 			patchTargets, inspection := extractPatchTargetPaths(argStrings)
@@ -580,6 +591,9 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 				matchStrings := patchTargetMatchStrings(patchFallbackArgs, expandedTargets)
 				credentialDestinations = matchStrings
 				ruleViews = buildArgViews(matchStrings, gitTool, nil, false)
+				if viewsOverflow(ruleViews) {
+					return uninspectableShellConstructionVerdict()
+				}
 			}
 		}
 
@@ -597,10 +611,16 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 		// Keep the shared pairwise matcher unchanged for every other rule and
 		// for calls with more than one string value.
 		if matched, incomplete, handled := pc.matchSingleCredentialArgument(rule, argStrings, rawArgs, credentialViews, pathValues); handled {
+			if candidateViewsOverflow(credentialViews) {
+				return uninspectableShellConstructionVerdict()
+			}
 			argPatternMatched, pairIncomplete = matched, incomplete
 		}
 		if patchInspection != patchTargetsUninspectable {
 			if matched, incomplete, handled := pc.matchCredentialDestinations(rule, credentialDestinations, credentialViews, !pathValues); handled {
+				if candidateViewsOverflow(credentialViews) {
+					return uninspectableShellConstructionVerdict()
+				}
 				argPatternMatched, pairIncomplete = matched, incomplete
 			}
 		}
@@ -732,15 +752,19 @@ func normalizeArgTokens(argStrings []string, normFn func(string) string, preNorm
 // normalizeArgTokensUnexpanded retains the normalized spelling that configured
 // rules consumed before command-option expansion was added.
 func normalizeArgTokensUnexpanded(argStrings []string, normFn func(string) string, preNorm *strings.Replacer) ([]string, string) {
-	tokens, joined, _ := normalizeArgTokensRead(argStrings, normFn, preNorm, false)
+	tokens, joined, _, _ := normalizeArgTokensRead(argStrings, normFn, preNorm, false)
 	return tokens, joined
 }
 
 // normalizeArgTokensRead is normalizeArgTokensUnexpanded with, when words is
 // set, the shell word reading (readShellWords) applied after the text's own
 // assignments are resolved. unreadable reports a word that reading could not
-// expand within its bounds.
-func normalizeArgTokensRead(argStrings []string, normFn func(string) string, preNorm *strings.Replacer, words bool) (tokens []string, joined string, unreadable bool) {
+// expand within its bounds, or a variable with more assigned values than
+// the text could be read with (see resolveShellConstruction).
+//
+// overflow reports text whose variable expansion would pass
+// maxShellConstructionLen; the caller must block rather than match it.
+func normalizeArgTokensRead(argStrings []string, normFn func(string) string, preNorm *strings.Replacer, words bool) (tokens []string, joined string, unreadable, overflow bool) {
 	for _, s := range argStrings {
 		if preNorm != nil {
 			s = preNorm.Replace(s)
@@ -751,10 +775,10 @@ func normalizeArgTokensRead(argStrings []string, normFn func(string) string, pre
 		normalized = shellQuoteStripper.Replace(normalized)
 		normalized = shellEscapeRe.ReplaceAllString(normalized, "$1")
 		normalized = shellPositionalRe.ReplaceAllString(normalized, "")
-		normalized, resolved := resolveShellConstruction(normalized)
-		// An expansion skipped at its size bound leaves the view unreadable,
-		// whatever the word reading finds.
-		unreadable = unreadable || !resolved
+		normalized, partial, fits := resolveShellConstruction(normalized)
+		overflow = overflow || !fits
+		unreadable = unreadable || partial
+		normalized = strings.ReplaceAll(normalized, "`", "")
 		normalized = shellHomeSlashRe.ReplaceAllString(normalized, "/")
 		if words {
 			var u bool
@@ -766,7 +790,7 @@ func normalizeArgTokensRead(argStrings []string, normFn func(string) string, pre
 		normalized = collapsePathSeparators(normalized)
 		tokens = append(tokens, strings.Fields(normalized)...)
 	}
-	return tokens, strings.Join(tokens, " "), unreadable
+	return tokens, strings.Join(tokens, " "), unreadable, overflow
 }
 
 // pathSeparatorRunRe matches a run of `/` and `./` segments that a filesystem
@@ -1528,6 +1552,17 @@ func mergeVerdicts(a, b Verdict) Verdict {
 	return out
 }
 
+// uninspectableShellConstructionVerdict is the block for shell text whose
+// variable expansion cannot be finished within its bounds. The call is not
+// an incomplete check: on_incomplete_check must not turn it into a warning.
+func uninspectableShellConstructionVerdict() Verdict {
+	return Verdict{
+		Matched: true,
+		Action:  config.ActionBlock,
+		Rules:   []string{uninspectableShellConstructionRule},
+	}
+}
+
 // uninspectableJSONDepthVerdict is the synthetic block returned when policy
 // arguments are valid JSON but too deeply nested to inspect.
 func uninspectableJSONDepthVerdict() Verdict {
@@ -1767,114 +1802,121 @@ func decodeShellEscapes(s string) string {
 	return s
 }
 
-// shellAssignments returns up to 10 simpleAssignRe matches, skipping a name
-// that follows "$": `$1=` and `$a=` (awk's `$1=$2=""`) reference a
-// parameter and assign nothing, and treating them as assignments made the
-// expansion feed on itself.
-func shellAssignments(s string) [][]string {
-	var out [][]string
-	for _, ix := range simpleAssignRe.FindAllStringSubmatchIndex(s, 10) {
-		if ix[2] > 0 && s[ix[2]-1] == '$' {
-			continue
-		}
-		out = append(out, []string{s[ix[0]:ix[1]], s[ix[2]:ix[3]], s[ix[4]:ix[5]]})
+// maxShellConstructionPasses caps the substitution passes one call makes.
+// Each pass resolves one level: a value that names another variable, or a
+// command substitution inside another, takes one more. The work budget in
+// resolveShellConstruction is what stops a long text; this stops a short one
+// that never settles.
+const maxShellConstructionPasses = 64
+
+// maxShellConstructionLen bounds the bytes resolveShellConstruction may read
+// and write, in total, for an input of n bytes: max(256 KiB, 16n). A value
+// that names itself (a=$a$a) doubles every time it is read, so the bound is
+// charged as each byte is written, not checked after.
+func maxShellConstructionLen(n int) int {
+	return max(256<<10, 16*n)
+}
+
+func isShellNameByte(c byte) bool {
+	return c == '_' || (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+}
+
+// joinShellContinuations removes a backslash-newline, which the shell deletes
+// before it reads assignments. A carriage return between the backslash and
+// the newline is not that continuation. Quotes have already been stripped by
+// the time the construction resolver runs.
+func joinShellContinuations(s string) string {
+	if !strings.Contains(s, "\\\n") {
+		return s
 	}
-	return out
+	return strings.ReplaceAll(s, "\\\n", "")
+}
+
+// readShellExpansion parses one parameter expansion at s[i]. consumed covers
+// the form substitution replaces. indirect is ${!name, of which only the
+// prefix through the name is consumed. A direct ${name} needs its closing
+// brace; ${name:-x} and other operator forms are left alone.
+func readShellExpansion(s string, i int) (name string, consumed int, indirect, ok bool) {
+	if i < 0 || i >= len(s) || s[i] != '$' {
+		return "", 0, false, false
+	}
+	j := i + 1
+	braced := j < len(s) && s[j] == '{'
+	if braced {
+		j++
+		if j < len(s) && s[j] == '!' {
+			indirect = true
+			j++
+		}
+	}
+	start := j
+	for j < len(s) && isShellNameByte(s[j]) {
+		j++
+	}
+	if j == start {
+		return "", 0, false, false
+	}
+	name = s[start:j]
+	switch {
+	case indirect:
+		return name, j - i, true, true
+	case !braced:
+		return name, j - i, false, true
+	case j < len(s) && s[j] == '}':
+		return name, j + 1 - i, false, true
+	}
+	return "", 0, false, false
 }
 
 // resolveShellConstruction iteratively resolves simple command substitutions
 // and variable assignments used to build command names indirectly:
 //   - $(printf rm) → rm
 //   - $(echo rm) → rm
-//   - $($(printf echo) rm) → rm (nested, resolved over 2 iterations)
+//   - $($(printf echo) rm) → rm (nested, resolved over 2 passes)
 //   - x=rm;$x → x=rm;rm
 //   - v=IFS;${!v} → v=IFS;${IFS} (indirect expansion)
 //
-// Iterates until no further changes occur, bounded to prevent infinite loops
-// on pathological input.
+// See shellConstructionPass for how assignments are read. Passes repeat
+// until one changes nothing.
 //
-// complete is false when a replacement was skipped because it would grow the
-// string past its size bound. The other replacements still apply, so a
-// command assembled from small variables still resolves. Callers treat an
-// incomplete result as unreadable: a rule that does not match it cannot be
-// ruled out.
-func resolveShellConstruction(s string) (out string, complete bool) {
+// partial is set when a name has more values than the copy budget
+// (shellCopyBudget) lets the text be read with: out then reads those uses
+// with the first value only, and the caller reports an incomplete check.
+//
+// fits is false when the text cannot be resolved within its bounds: the
+// passes together would read and write more than maxShellConstructionLen
+// bytes, or the text is still changing after maxShellConstructionPasses.
+// The output, the memory held and the time taken are therefore all linear
+// in len(s). The caller must block: a partial expansion is not the command.
+func resolveShellConstruction(s string) (out string, partial, fits bool) {
 	// Every replacement consumes a dollar-prefixed expansion. Assignments
 	// alone are unchanged, even when their values contain shell punctuation.
+	if !strings.Contains(s, "$") && !strings.Contains(s, "\\\n") {
+		return s, false, true
+	}
+	bounds := &shellBounds{work: maxShellConstructionLen(len(s)), copies: shellCopyBudget(len(s))}
+	s = joinShellContinuations(s)
 	if !strings.Contains(s, "$") {
-		return s, true
+		return s, false, true
 	}
-	complete = true
-	const maxIterations = 10
-	// Bound the expanded size. A value that refers to other assigned names
-	// (e.g. a=$b=$c=;) re-expands on every iteration, so without a bound the
-	// string grows geometrically and one short command allocates gigabytes.
-	maxLen := 8 * len(s)
-	if maxLen < 64<<10 {
-		maxLen = 64 << 10
+	for range maxShellConstructionPasses {
+		if !bounds.spend(len(s)) {
+			return s, bounds.partial, false
+		}
+		unwrapped := s
+		if strings.Contains(s, "$(") {
+			unwrapped = simpleCmdSubRe.ReplaceAllString(s, "$1")
+		}
+		next, changed, ok := shellConstructionPass(unwrapped, bounds)
+		if !ok {
+			return s, bounds.partial, false
+		}
+		if !changed && unwrapped == s {
+			return s, bounds.partial, true
+		}
+		s = next
 	}
-	// replaceBounded returns s with old replaced by repl, or ok=false when
-	// the result would exceed maxLen. The size is checked before allocating.
-	replaceBounded := func(s, old, repl string) (string, bool) {
-		n := strings.Count(s, old)
-		if n == 0 {
-			return s, true
-		}
-		if len(s)+n*(len(repl)-len(old)) > maxLen {
-			return s, false
-		}
-		return strings.ReplaceAll(s, old, repl), true
-	}
-	for range maxIterations {
-		prev := s
-		s = simpleCmdSubRe.ReplaceAllString(s, "$1")
-		matches := shellAssignments(s)
-
-		// Detect IFS reassignment: IFS=<char> sets the field separator.
-		// When IFS is non-default, variable expansions should split on
-		// the IFS char. We apply this by replacing the IFS char with
-		// space in expanded values (over-approximation, safe for detection).
-		ifsChar := ""
-		for _, m := range matches {
-			if m[1] == "IFS" && len(m[2]) == 1 {
-				ifsChar = m[2]
-			}
-		}
-
-		for _, m := range matches {
-			value := m[2]
-			// Apply IFS-aware concatenation: remove the IFS char from
-			// expanded values so "CMD=r,m" with IFS="," expands $CMD
-			// to "rm". In bash, unquoted $CMD would word-split into
-			// separate tokens, but the attacker's intent is command
-			// construction. Concatenation is the safe over-approximation
-			// for detection (reveals the assembled command name).
-			if ifsChar != "" && m[1] != "IFS" {
-				value = strings.ReplaceAll(value, ifsChar, "")
-			}
-			// Direct expansion: ${var} and $var → value.
-			// Indirect expansion: ${!var...} → ${value...}.
-			// In bash, ${!v} expands the variable whose name is v's value.
-			// Replacing the prefix ${!varname with ${value converts e.g.
-			// v=IFS;${!v:0:1} → v=IFS;${IFS:0:1}, which shellExpansionRe catches.
-			// A replacement that would pass the bound is skipped and the
-			// result marked incomplete; the other replacements still apply.
-			var ok bool
-			for _, r := range [][2]string{
-				{"${" + m[1] + "}", value},
-				{"$" + m[1], value},
-				{"${!" + m[1], "${" + m[2]},
-			} {
-				if s, ok = replaceBounded(s, r[0], r[1]); !ok {
-					complete = false
-				}
-			}
-		}
-		if s == prev {
-			break
-		}
-	}
-	return s, complete
+	return s, bounds.partial, false
 }
 
 // expandBraces resolves bash brace expansion patterns. {rm,-rf,/tmp} becomes

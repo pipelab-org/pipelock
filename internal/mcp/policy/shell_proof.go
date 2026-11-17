@@ -193,8 +193,9 @@ func shellCleanPreviews(source string, words []shellProofWord) (string, bool) {
 		if !w.literal {
 			return "", false
 		}
-		_, normalized[i] = normalizeArgTokensUnexpanded([]string{source[w.start:w.end]}, func(s string) string { return s }, nil)
-		if shellResolutionVariable.MatchString(normalized[i]) {
+		var unreadable, overflow bool
+		_, normalized[i], unreadable, overflow = normalizeArgTokensRead([]string{source[w.start:w.end]}, func(s string) string { return s }, nil, false)
+		if unreadable || overflow || shellResolutionVariable.MatchString(normalized[i]) {
 			return "", false
 		}
 	}

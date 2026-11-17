@@ -108,6 +108,18 @@ func (pc *Config) matchSingleCredentialArgument(rule *CompiledRule, args []strin
 // Views depend only on the string, and each credential rule reads the same ones.
 type candidateViews map[string][]argView
 
+// candidateViewsOverflow reports a candidate whose shell expansion stopped
+// early. Matchers copy tokens out of these views; the flag has to be read
+// here so a partial expansion is not treated as the whole argument.
+func candidateViewsOverflow(memo candidateViews) bool {
+	for _, views := range memo {
+		if viewsOverflow(views) {
+			return true
+		}
+	}
+	return false
+}
+
 // credentialCandidateMatches runs every normalization view of one string.
 // pathReadings is the flag buildArgViews takes: false for a file tool's values,
 // which are pathnames and carry their own spellings.
@@ -129,7 +141,7 @@ func (pc *Config) credentialCandidateMatches(rule *CompiledRule, candidate strin
 		if v.wordReading {
 			continue
 		}
-		m, inc := matchArgViews(rule.ArgPattern, argView{tokens: v.tokens, joined: v.joined})
+		m, inc := matchArgViews(rule.ArgPattern, argView{tokens: v.tokens, joined: v.joined, overflow: v.overflow})
 		if m {
 			return true, false
 		}
@@ -139,7 +151,7 @@ func (pc *Config) credentialCandidateMatches(rule *CompiledRule, candidate strin
 		if !v.wordReading {
 			continue
 		}
-		m, inc := matchArgViews(rule.ArgPattern, argView{tokens: v.tokens, joined: v.joined})
+		m, inc := matchArgViews(rule.ArgPattern, argView{tokens: v.tokens, joined: v.joined, overflow: v.overflow})
 		if m {
 			return true, incomplete
 		}
