@@ -480,17 +480,22 @@ func (p *compiledPattern) candidateHasLeftBoundary(source string, candidateLoc [
 // enumerated at every start rather than at the regex's non-overlapping hits.
 func (p *compiledPattern) firstAcceptedSpan(text string, joined func(int, int) bool) (int, int, bool) {
 	if !p.wifOverlapRetry {
-		for _, loc := range p.re.FindAllStringIndex(text, -1) {
-			start, end, ok := p.acceptedSpan(text, loc[0], loc[1])
-			if ok && (joined == nil || joined(start, end)) {
-				return start, end, true
-			}
-		}
-		return 0, 0, false
+		return p.firstAcceptedLocations(text, p.re.FindAllStringIndex(text, -1), joined)
 	}
 	return firstWIFCandidate(text, func(start, end int) bool {
 		return p.accepts(text, start, end) && (joined == nil || joined(start, end))
 	})
+}
+
+// firstAcceptedLocations applies original-view validation to candidate spans.
+func (p *compiledPattern) firstAcceptedLocations(text string, locations [][]int, joined func(int, int) bool) (int, int, bool) {
+	for _, loc := range locations {
+		start, end, ok := p.acceptedSpan(text, loc[0], loc[1])
+		if ok && (joined == nil || joined(start, end)) {
+			return start, end, true
+		}
+	}
+	return 0, 0, false
 }
 
 // firstWIFCandidate visits each canonical WIF start once in one pass over

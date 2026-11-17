@@ -4,10 +4,49 @@
 package scanner
 
 import (
+	"math"
 	"math/rand"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+func TestDecimalCharacterCodeParserReferenceParity(t *testing.T) {
+	inputs := []string{"", "0", "-0", "+65", "65.0", "6.5e1", ".65e2", "0x1.04p6", "0x41", "1_0", "NaN", "Inf", "-Inf", "1114111", "1114112", "55295", "55296", "57343", "57344", "2147483647", "2147483648", "-2147483648", "1e9999", "1e-9999", "not-a-number", strings.Repeat("0", 256) + "65", "1" + strings.Repeat("0", 256), "\xff65"}
+	rnd := rand.New(rand.NewSource(28136)) // #nosec G404 -- deterministic parser parity.
+	for range 2000 {
+		b := make([]byte, rnd.Intn(24))
+		for i := range b {
+			b[i] = byte(rnd.Uint32() & 0xff)
+		}
+		inputs = append(inputs, string(b), strconv.Itoa(rnd.Intn(1<<22)-(1<<21)))
+	}
+	accepted, rejected := 0, 0
+	for _, input := range inputs {
+		want, wantOK := func() (rune, bool) {
+			if code, err := strconv.ParseInt(input, 10, 32); err == nil {
+				return validDecimalCharacterCode(code)
+			}
+			value, err := strconv.ParseFloat(input, 64)
+			if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || math.Trunc(value) != value {
+				return 0, false
+			}
+			return validDecimalCharacterCode(int64(value))
+		}()
+		got, gotOK := parseDecimalCharacterCode(input)
+		if got != want || gotOK != wantOK {
+			t.Fatalf("parser differs for %q: got %d/%v, want %d/%v", input, got, gotOK, want, wantOK)
+		}
+		if gotOK {
+			accepted++
+		} else {
+			rejected++
+		}
+	}
+	if accepted == 0 || rejected == 0 {
+		t.Fatal("parser parity needs accepted and rejected fields")
+	}
+}
 
 func TestDecimalDigitGuardReferenceParity(t *testing.T) {
 	inputs := []string{

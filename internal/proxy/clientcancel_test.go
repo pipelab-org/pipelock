@@ -136,7 +136,7 @@ func assertClientCancel(t *testing.T, logs string, metricBody string, hits int32
 }
 
 func TestClientCancelMidBodyScanNotBlocked(t *testing.T) {
-	payload := []byte(`{"note":"ordinary neutral text"}`)
+	payload := []byte(`{"note":"` + fakeAPIKey() + `"}`)
 	t.Run("forward", func(t *testing.T) {
 		cfg := cancelTestConfig()
 		logger, logs := newCancelAuditLogger(t)
@@ -288,6 +288,10 @@ func TestDeadlineAndLiveIncompleteScanStillBlocked(t *testing.T) {
 
 func TestFindingBeforeCancelStillRecorded(t *testing.T) {
 	cfg := cancelTestConfig()
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name: "cancel after finding", Regex: `cancel-after-finding`,
+		Action: config.ActionWarn, Severity: config.SeverityHigh,
+	})
 	logger, logs := newCancelAuditLogger(t)
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
@@ -301,9 +305,17 @@ func TestFindingBeforeCancelStillRecorded(t *testing.T) {
 	p.client = &http.Client{Transport: countingRoundTrip(&hits)}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	payload := []byte(`{"note":"` + fakeAPIKey() + `"}`)
+	// Cancel only after the scanner has collected the credential and reached
+	// warning delivery. Canceling on the body read stops before any finding.
+	sc.SetDLPWarnHook(func(context.Context, string, string) { cancel() })
+	payload := `{"note":"` + fakeAPIKey() + ` cancel-after-finding"}`
 	w := httptest.NewRecorder()
-	p.handleForwardHTTP(w, postCancelBody(ctx, payload, cancel))
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "http://api.vendor.example/v1", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	p.handleForwardHTTP(w, req)
+	if ctx.Err() == nil {
+		t.Fatal("fixture did not cancel after the finding")
+	}
 	if hits.Load() != 0 || w.Code == http.StatusOK {
 		t.Fatalf("finding was forwarded: hits=%d status=%d body=%s", hits.Load(), w.Code, w.Body.String())
 	}

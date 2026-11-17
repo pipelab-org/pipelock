@@ -71,7 +71,7 @@ func coreWhitespaceMatches(s *Scanner, text string) []TextDLPMatch {
 	if compacted == cleaned {
 		return nil
 	}
-	return s.matchCoreDLPWhitespaceView(compacted, cleaned, offsets)
+	return s.matchCoreDLPWhitespaceView(compacted, cleaned, offsets, nil)
 }
 
 func TestAWSAccessID_JoinedRealKeysStillBlock(t *testing.T) {

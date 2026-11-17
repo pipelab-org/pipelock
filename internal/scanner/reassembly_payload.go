@@ -5,7 +5,9 @@ package scanner
 
 import (
 	"crypto/sha256"
+	"hash"
 	"reflect"
+	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
@@ -35,12 +37,20 @@ type assembledPayload struct {
 }
 
 type assembledDecodeRecipe struct {
-	source     *assembledPayload
-	includeURL bool
-	minPrefix  int
-	inbound    bool
-	current    []decodedResult // borrowed while draining or held as the scan's one replayed decode
-	cache      *assembledRecipeCache
+	source      *assembledPayload
+	includeURL  bool
+	minPrefix   int
+	inbound     bool
+	knownCredit int
+	current     []decodedResult // borrowed while draining or held as the scan's one replayed decode
+	cache       *assembledRecipeCache
+}
+
+// replay uses the same transferred slots as the recorded decode. Without
+// them, a resumed view's ordinal can be absent even though its scan finished.
+func (r *assembledDecodeRecipe) replay(source string) []decodedResult {
+	views, _ := decodeEncodingsForScan(source, r.includeURL, r.minPrefix, decodeBudgetMode{inbound: r.inbound, reportWorkLimits: r.inbound, knownCredit: r.knownCredit}, nil)
+	return views
 }
 
 // assembledRecipeCache holds the decoded views of at most one recipe and
@@ -125,6 +135,33 @@ type assembledPayloadKey struct {
 	size int
 }
 
+type pooledStringHash struct {
+	hasher hash.Hash
+	block  [sha256.BlockSize]byte
+	sum    [sha256.Size]byte
+}
+
+var sha256StringPool = sync.Pool{New: func() any { return &pooledStringHash{hasher: sha256.New()} }}
+
+// sum256String is sha256.Sum256 of text without copying the string into a
+// backing slice. Replay and inspection compare this digest to the one stored
+// when the payload was registered.
+func sum256String(text string) [sha256.Size]byte {
+	h := sha256StringPool.Get().(*pooledStringHash)
+	h.hasher.Reset()
+	for len(text) > 0 {
+		n := copy(h.block[:], text)
+		_, _ = h.hasher.Write(h.block[:n])
+		text = text[n:]
+	}
+	var digest [sha256.Size]byte
+	copy(digest[:], h.hasher.Sum(h.sum[:0]))
+	clear(h.block[:])
+	clear(h.sum[:])
+	sha256StringPool.Put(h)
+	return digest
+}
+
 func assembledPayloadFingerprint(text string) assembledPayloadKey {
 	hash := uint64(14695981039346656037)
 	for i := range len(text) {
@@ -138,7 +175,7 @@ func assembledPayloadFingerprint(text string) assembledPayloadKey {
 // segment's own registered digest verifies the bytes passed to matching.
 func (p *assembledPayload) inspectionText() (string, bool) {
 	text, ok := p.materialize()
-	if !ok || p.digestSet && sha256.Sum256([]byte(text)) != p.digest {
+	if !ok || p.digestSet && sum256String(text) != p.digest {
 		return "", false
 	}
 	return text, true
@@ -155,7 +192,7 @@ func (p *assembledPayload) materialize() (string, bool) {
 			if !ok {
 				return "", false
 			}
-			views, _ = decodeEncodingsBudgetMode(source, p.decode.includeURL, p.decode.minPrefix, p.decode.inbound)
+			views = p.decode.replay(source)
 			p.decode.hold(views)
 		}
 		if p.ordinal < 0 || p.ordinal >= len(views) {
@@ -218,7 +255,7 @@ func (m *decodingMemo) replayPayload(text string) *assembledPayload {
 	if len(candidates) == 0 {
 		return nil
 	}
-	digest := sha256.Sum256([]byte(text))
+	digest := sum256String(text)
 	for _, payload := range candidates {
 		if payload.digest == digest {
 			return payload
@@ -277,7 +314,7 @@ func (m *decodingMemo) addReplayPayload(text string, payload *assembledPayload) 
 		payload.textRoot = true
 	}
 	payload.pending = -1
-	payload.digest = sha256.Sum256([]byte(text))
+	payload.digest = sum256String(text)
 	payload.digestSet = true
 	key := assembledPayloadFingerprint(text)
 	m.reassemblyReplayPayloads[key] = append(m.reassemblyReplayPayloads[key], payload)
@@ -429,7 +466,7 @@ func (m *decodingMemo) observeDecodedRecipe(key decodingMemoKey, views []decoded
 		m.reassemblyObserveDecoded(key.text, views)
 		return
 	}
-	recipe := &assembledDecodeRecipe{source: m.payloadSource(key.text), includeURL: key.includeURL, minPrefix: key.minPrefix, inbound: key.inbound, cache: m.recipeCache()}
+	recipe := &assembledDecodeRecipe{source: m.payloadSource(key.text), includeURL: key.includeURL, minPrefix: key.minPrefix, inbound: key.inbound, knownCredit: key.knownCredit, cache: m.recipeCache()}
 	var borrowed []*assembledPayload
 	for ordinal, view := range views {
 		if existing := m.replayPayload(view.text); existing != nil {

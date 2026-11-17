@@ -4,11 +4,29 @@
 package scanner
 
 import (
+	"encoding/base64"
 	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 )
+
+// base64DecodeScratchLen covers every decode attempted by decodeEncodingsModeInto.
+// The unmodified and mixed-alphabet inputs cannot decode beyond a byte outside
+// the union of the RFC 4648 section 4/5 alphabets (CR/LF are ignored by Go's
+// decoder). Include a full quantum at that boundary for partial-output writes.
+// Normalized variants cannot exceed normalizeEncodedToken's existing carrier
+// bound. This only sizes output storage; the decoder still receives all input.
+func base64DecodeScratchLen(text string) int {
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if encodedTokenBytes[encodedTokenBase64Std][c] || c == '-' || c == '_' || c == '\r' || c == '\n' {
+			continue
+		}
+		return base64.RawStdEncoding.DecodedLen(min(len(text), max(maxReassembledTokenLen, i+4)))
+	}
+	return base64.RawStdEncoding.DecodedLen(len(text))
+}
 
 type encodingSourceRange struct {
 	start, end int
@@ -25,6 +43,109 @@ func canonicalMixedBase64(s string) string {
 }
 
 var mixedBase64Symbols = strings.NewReplacer("-", "+", "_", "/")
+
+// appendMixedBase64Views keeps the raw view before the separator-stripped
+// view, as for the other alphabets. Failed complete decodes need no copy of
+// their whole input. Prefix recovery still uses the original full carrier.
+func appendMixedBase64Views(out []decodedResult, text string, scratch []byte, minimum int) []decodedResult {
+	if !strings.ContainsAny(text, "+/") || !strings.ContainsAny(text, "-_") {
+		return out
+	}
+	if minimum > 0 || mixedBase64AlphabetPossible(text) {
+		// Both symbol families were found in the whole text above, so every
+		// '-' and '_' is canonicalized. Prefix recovery needs only the bytes
+		// the decoder can consume; the alphabet map is bytewise, so mapping
+		// that prefix gives the prefix of the mapped text.
+		raw := text
+		if minimum > 0 {
+			raw = text[:mixedBase64DecodeEnd(text)]
+		}
+		mixed := mixedBase64Symbols.Replace(raw)
+		for _, decoded := range decodeBase64PaddingVariants(mixed, base64.StdEncoding, base64.RawStdEncoding, scratch, minimum) {
+			out = appendBase64View(out, decoded)
+		}
+	}
+	if normalized := normalizeMixedBase64Token(text); normalized != "" {
+		for _, decoded := range decodeBase64PaddingVariants(normalized, base64.StdEncoding, base64.RawStdEncoding, scratch, minimum) {
+			out = appendBase64View(out, decoded)
+		}
+	}
+	return out
+}
+
+// RFC 4648 sections 4 and 5 give these symbols the same sextet values.
+func mixedBase64Byte(c byte) byte {
+	switch c {
+	case '-':
+		return '+'
+	case '_':
+		return '/'
+	default:
+		return c
+	}
+}
+
+// Go's complete decoder accepts only its alphabet, padding and CR/LF. A byte
+// outside their union cannot be repaired by alphabet canonicalization.
+func mixedBase64AlphabetPossible(text string) bool {
+	for i := range len(text) {
+		c := text[i]
+		if c != '\r' && c != '\n' && !encodedTokenBytes[encodedTokenBase64Std][mixedBase64Byte(c)] {
+			return false
+		}
+	}
+	return true
+}
+
+// mixedBase64DecodeEnd returns how much of text Go's standard base64 decoders
+// can consume once '-' and '_' are mapped to '+' and '/'. They ignore CR and LF,
+// accept the alphabet, and stop with an error at the first other byte, having
+// written exactly the groups before it. That byte is included so the error and
+// its offset are unchanged. Padding ('=') makes them inspect what follows, so
+// the whole text is used.
+func mixedBase64DecodeEnd(text string) int {
+	for i := range len(text) {
+		c := text[i]
+		if c == '\r' || c == '\n' {
+			continue
+		}
+		if c == '=' {
+			return len(text)
+		}
+		if !encodedTokenBytes[encodedTokenBase64Std][mixedBase64Byte(c)] {
+			return i + 1
+		}
+	}
+	return len(text)
+}
+
+// normalizeMixedBase64Token is normalizeEncodedToken of the canonicalized
+// carrier, under the same bound, without first copying rejected whole inputs.
+func normalizeMixedBase64Token(text string) string {
+	kept, firstSeparator := 0, -1
+	for i := range len(text) {
+		if encodedTokenBytes[encodedTokenBase64Std][mixedBase64Byte(text[i])] {
+			kept++
+			if kept > maxReassembledTokenLen {
+				return ""
+			}
+		} else if firstSeparator < 0 {
+			firstSeparator = i
+		}
+	}
+	if firstSeparator < 0 || kept < 4 {
+		return ""
+	}
+	var out strings.Builder
+	out.Grow(kept)
+	for i := range len(text) {
+		c := mixedBase64Byte(text[i])
+		if encodedTokenBytes[encodedTokenBase64Std][c] {
+			out.WriteByte(c)
+		}
+	}
+	return out.String()
+}
 
 func hasTextEncoding(s string) bool {
 	return hasQuotedPrintable(s) || hasCharacterCodeRun(s)
@@ -482,11 +603,21 @@ func parseUniformByteGlueRun(s string, start int, withRanges bool) (text string,
 }
 
 func integerByteCode(field string) (byte, bool) {
-	n, err := strconv.ParseUint(field, 10, 8)
-	if err != nil {
+	if field == "" {
 		return 0, false
 	}
-	return byte(n), true // #nosec G115 -- ParseUint bitSize 8 rejects values above 255.
+	// The same base-10, unsigned, eight-bit grammar as ParseUint, without
+	// constructing a NumError (and copying the field) for ordinary numerals
+	// outside the byte range. Check before multiplying to avoid overflow.
+	var n byte
+	for i := range len(field) {
+		c := field[i]
+		if c < '0' || c > '9' || n > 25 || n == 25 && c > '5' {
+			return 0, false
+		}
+		n = n*10 + (c - '0')
+	}
+	return n, true
 }
 
 // A number literal cannot contain arbitrary letters. Keeping them attached

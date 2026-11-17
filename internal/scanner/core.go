@@ -231,6 +231,9 @@ func initCoreScanner(cfg *config.Config) *compiledCoreScanner {
 			validateJoined:                      builtinDLPJoinedValidatorForRegex(p.regex),
 		})
 	}
+	for _, pattern := range cs.dlpPatterns {
+		pattern.prepareASCIIFoldedRegexp()
+	}
 	cs.dlpPreFilter = newDLPPreFilter(cs.dlpPatterns)
 
 	// Compile core response patterns with all variant passes.
@@ -498,7 +501,7 @@ func (s *Scanner) scanCoreDLP(text string) []TextDLPMatch {
 }
 
 func (s *Scanner) scanCoreDLPWithDecodes(text string, decodes *decodingMemo) []TextDLPMatch {
-	if s.core == nil || len(s.core.dlpPatterns) == 0 {
+	if s.core == nil || len(s.core.dlpPatterns) == 0 || decodes.stopRequested() {
 		return nil
 	}
 
@@ -506,8 +509,11 @@ func (s *Scanner) scanCoreDLPWithDecodes(text string, decodes *decodingMemo) []T
 	var matches []TextDLPMatch
 
 	for _, idx := range s.core.dlpPreFilter.patternsToCheck(cleaned) {
+		if decodes.stopRequested() {
+			return matches
+		}
 		p := s.core.dlpPatterns[idx]
-		if start, end, ok := p.matchSpan(cleaned); ok {
+		if start, end, ok := p.matchSpanInView(cleaned, cleaned); ok {
 			matches = append(matches, TextDLPMatch{
 				PatternName:                         p.name,
 				Severity:                            p.severity,
@@ -523,41 +529,53 @@ func (s *Scanner) scanCoreDLPWithDecodes(text string, decodes *decodingMemo) []T
 		}
 	}
 	// URL-decoded variant.
-	if decoded := IterativeDecode(cleaned); decoded != cleaned {
-		matches = append(matches, s.matchCoreDLPPatterns(decoded, "url")...)
+	if !decodes.stopRequested() {
+		if decoded := IterativeDecode(cleaned); decoded != cleaned {
+			matches = append(matches, s.matchCoreDLPPatterns(decoded, "url", decodes)...)
+		}
 	}
 
-	if decoded := decodes.decodeHTML(cleaned); decoded != cleaned {
-		matches = append(matches, s.matchCoreDLPPatterns(decoded, encodingHTML)...)
+	if !decodes.stopRequested() {
+		if decoded := decodes.decodeHTML(cleaned); decoded != cleaned {
+			matches = append(matches, s.matchCoreDLPPatterns(decoded, encodingHTML, decodes)...)
+		}
 	}
 
 	// Subdomain dot-collapse.
-	if strings.Contains(cleaned, ".") {
+	if !decodes.stopRequested() && strings.Contains(cleaned, ".") {
 		dotless := removeHostnameDots(cleaned)
 		if dotless != cleaned {
-			matches = append(matches, s.matchCoreDLPPatterns(dotless, "subdomain")...)
+			matches = append(matches, s.matchCoreDLPPatterns(dotless, "subdomain", decodes)...)
 		}
 	}
 
 	// Whitespace-collapse catches key material split with ordinary spaces,
 	// tabs, or newlines before it reaches the configurable pattern layer.
-	if compacted, offsets := decodes.compactWhitespace(cleaned); compacted != cleaned {
-		matches = append(matches, s.matchCoreDLPWhitespaceView(compacted, cleaned, offsets)...)
+	if !decodes.stopRequested() {
+		if compacted, offsets := decodes.compactWhitespace(cleaned); compacted != cleaned {
+			matches = append(matches, s.matchCoreDLPWhitespaceView(compacted, cleaned, offsets, decodes)...)
+		}
 	}
 
 	// Fixpoint encoding decode: try base64, hex, base32, and URL decoding
 	// until no new bounded candidates appear. Catches stacked encodings while
 	// bounding candidate count and candidate size.
-	matches = append(matches, s.decodeAndMatchCoreWithDecodes(cleaned, decodes)...)
-	if normalize.ContainsTags(text) || (hasTextEncoding(text) && text != cleaned) {
-		matches = append(matches, s.decodeAndMatchCoreWithDecodes(text, decodes)...)
-		for _, d := range decodes.decode(text, true) {
+	if !decodes.stopRequested() {
+		matches = append(matches, s.decodeAndMatchCoreWithDecodes(cleaned, decodes)...)
+	}
+	if !decodes.stopRequested() && (normalize.ContainsTags(text) || (hasTextEncoding(text) && text != cleaned)) {
+		textMatches, run := s.decodeAndMatchCoreRun(text, decodes)
+		matches = append(matches, textMatches...)
+		for _, d := range decodes.decodeAgain(text, run) {
+			if decodes.stopRequested() {
+				break
+			}
 			if d.encoding == encodingUnicodeTags {
 				matches = append(matches, s.decodeCoreDLPTextSegmentsWithDecodes(decodes.normalize(d.text), decodes)...)
 			}
 		}
 	}
-	if len(matches) == 0 {
+	if len(matches) == 0 && !decodes.stopRequested() {
 		matches = append(matches, s.decodeCoreDLPTextSegmentsWithDecodes(cleaned, decodes)...)
 	}
 
@@ -565,23 +583,31 @@ func (s *Scanner) scanCoreDLPWithDecodes(text string, decodes *decodingMemo) []T
 }
 
 // matchCoreDLPPatterns runs core DLP regex patterns against text with encoding tag.
-func (s *Scanner) matchCoreDLPPatterns(text, encoding string) []TextDLPMatch {
-	return s.matchCoreDLPPatternsNormalized(normalize.ForDLP(text), encoding)
+func (s *Scanner) matchCoreDLPPatterns(text, encoding string, decodes *decodingMemo) []TextDLPMatch {
+	return s.matchCoreDLPPatternsNormalized(normalize.ForDLP(text), encoding, decodes)
 }
 
-func (s *Scanner) matchCoreDLPPatternsNormalized(text, encoding string) []TextDLPMatch {
+func (s *Scanner) matchCoreDLPPatternsNormalized(text, encoding string, decodes *decodingMemo) []TextDLPMatch {
 	var lowered dlpLoweredBytes
 	lowered.add(text)
-	return s.matchCoreDLPPatternsLowered(text, encoding, &lowered)
+	return s.matchCoreDLPPatternsLowered(text, encoding, &lowered, decodes)
 }
 
 // matchCoreDLPPatternsLowered is matchCoreDLPPatternsNormalized for a text
 // whose lowered bytes are already recorded.
-func (s *Scanner) matchCoreDLPPatternsLowered(text, encoding string, lowered *dlpLoweredBytes) []TextDLPMatch {
+func (s *Scanner) matchCoreDLPPatternsLowered(text, encoding string, lowered *dlpLoweredBytes, decodes *decodingMemo) []TextDLPMatch {
 	var matches []TextDLPMatch
+	var localFoldedInput asciiFoldedInput
+	foldedInput := &localFoldedInput
+	if lowered.preparedASCII != nil {
+		foldedInput = lowered.preparedASCII
+	}
 	for _, idx := range s.core.dlpPreFilter.patternsToCheckWith(text, lowered) {
+		if decodes.stopRequested() {
+			return matches
+		}
 		p := s.core.dlpPatterns[idx]
-		if start, end, ok := p.matchSpan(text); ok {
+		if start, end, ok := p.matchSpanInPreparedView(text, text, foldedInput, decodes); ok {
 			matches = append(matches, TextDLPMatch{
 				PatternName:                         p.name,
 				Severity:                            p.severity,
@@ -603,9 +629,12 @@ func (s *Scanner) matchCoreDLPPatternsLowered(text, encoding string, lowered *dl
 // matchCoreDLPWhitespaceView is matchCoreDLPPatterns for the whitespace-joined
 // view. compacted is already normalized and is not normalized again, because
 // offsets index these exact bytes.
-func (s *Scanner) matchCoreDLPWhitespaceView(compacted, source string, offsets []int) []TextDLPMatch {
+func (s *Scanner) matchCoreDLPWhitespaceView(compacted, source string, offsets []int, decodes *decodingMemo) []TextDLPMatch {
 	var matches []TextDLPMatch
 	for _, idx := range s.core.dlpPreFilter.patternsToCheck(compacted) {
+		if decodes.stopRequested() {
+			return matches
+		}
 		p := s.core.dlpPatterns[idx]
 		if start, end, ok := p.matchSpanInJoinedView(compacted, source, offsets); ok {
 			matches = append(matches, TextDLPMatch{
@@ -629,11 +658,25 @@ func (s *Scanner) matchCoreDLPWhitespaceView(compacted, source string, offsets [
 // decodeAndMatchCoreWithDecodes runs core DLP patterns over every bounded
 // fixpoint decode candidate, reusing views within the calling scan.
 func (s *Scanner) decodeAndMatchCoreWithDecodes(text string, decodes *decodingMemo) []TextDLPMatch {
+	matches, _ := s.decodeAndMatchCoreRun(text, decodes)
+	return matches
+}
+
+// decodeAndMatchCoreRun also returns the decode run, so a caller that walks
+// the same views next replays the decode instead of recomputing it.
+func (s *Scanner) decodeAndMatchCoreRun(text string, decodes *decodingMemo) ([]TextDLPMatch, decodedRun) {
+	if decodes.stopRequested() {
+		return nil, decodedRun{}
+	}
 	var matches []TextDLPMatch
-	for _, d := range decodes.decode(text, true) {
+	views, run := decodes.decodeOnce(text)
+	for _, d := range views {
+		if decodes.stopRequested() {
+			return matches, run
+		}
 		matches = append(matches, decodes.matchDecodedCore(s, d.text, d.encoding)...)
 	}
-	return matches
+	return matches, run
 }
 
 func (s *Scanner) decodeCoreDLPTextSegmentsWithDecodes(text string, decodes *decodingMemo) []TextDLPMatch {
@@ -641,6 +684,9 @@ func (s *Scanner) decodeCoreDLPTextSegmentsWithDecodes(text string, decodes *dec
 	defer source.release()
 	var matches []TextDLPMatch
 	walkTextDLPSegments(text, func(seg string, start int) bool {
+		if decodes.stopRequested() {
+			return false
+		}
 		source.observeAt(seg, start)
 		if len(seg) < 10 {
 			return true

@@ -50,10 +50,13 @@ func (l *Logger) LogTunnelClose(ctx LogContext, totalBytes int64, duration time.
 // InterceptTiming describes where one TLS-intercepted request spent its time.
 // Upstream is zero when the request never reached the destination.
 type InterceptTiming struct {
-	StatusCode      int
-	SizeBytes       int64
-	Duration        time.Duration
-	Upstream        time.Duration
+	StatusCode int
+	SizeBytes  int64
+	Duration   time.Duration
+	Upstream   time.Duration
+	// RequestBody includes reading, parsing and inspecting the request body.
+	// Nil omits the measurement.
+	RequestBody     *time.Duration
 	ReachedUpstream bool
 	RequestCanceled bool
 }
@@ -83,6 +86,9 @@ func (l *Logger) LogInterceptHTTP(ctx LogContext, t InterceptTiming) {
 		durMS(t.Duration)
 	if t.ReachedUpstream {
 		e.upstreamMS(t.Upstream)
+	}
+	if t.RequestBody != nil {
+		e.int64Field("request_body_ms", t.RequestBody.Milliseconds())
 	}
 	e.boolField("request_canceled", t.RequestCanceled)
 	e.msg("intercepted request")

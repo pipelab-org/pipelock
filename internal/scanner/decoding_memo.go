@@ -15,6 +15,7 @@ import (
 )
 
 type decodingMemoKey struct {
+	knownCredit      int
 	text             string
 	includeURL       bool
 	minPrefix        int
@@ -70,7 +71,12 @@ type decodingMemo struct {
 	// scanCtx bounds terminal finalization. A canceled caller stops later
 	// views and long walks. That stop stays off the inspection-limit flags:
 	// the caller reports cancellation from its own context check.
-	scanCtx                 context.Context
+	scanCtx context.Context
+	// scanStop is set only when the scan starts with a live context. A
+	// context that is already canceled still produces its findings and is
+	// reported incomplete by the caller. A cancel that arrives during the
+	// scan stops later patterns and decode walks.
+	scanStop                bool
 	assembledCharged        map[string]*assembledCharges
 	assembledChargeRegistry *assembledChargeRegistry
 	reassemblyInspected     int
@@ -93,6 +99,11 @@ type decodingMemo struct {
 	retainedBytes  int
 	incomplete     bool
 	inbound        bool
+	// knownPrefixFindings are pattern matches on views the ordinary decode
+	// graph did not contain. Known-prefix recovery produces them, and a
+	// finished continuation no longer has a candidate-cap refusal to stand
+	// in for that inspection.
+	knownPrefixFindings []TextDLPMatch
 	// shared, when set, replaces views and normalized as the cache. It is
 	// owned by a caller that scans several views of one message.
 	shared *sharedDecodes
@@ -151,6 +162,24 @@ func (m *decodingMemo) compactWhitespace(text string) (string, []int) {
 	return compacted, offsets
 }
 
+// releaseDetectorCache ends the local pattern phase's retention. Known-value
+// checks need the decoded views, but not pattern match results or the whitespace
+// offset array. Call only after their synchronous consumers have returned.
+// Shared entries remain live for other scans and keep their existing ownership.
+func (m *decodingMemo) releaseDetectorCache() {
+	if m == nil || m.shared != nil {
+		return
+	}
+	cost := m.decodedMatchesBytes
+	clear(m.decodedMatches)
+	m.decodedMatchesBytes = 0
+	if m.compactReady {
+		cost += cap(m.compactOffsets) * int(reflect.TypeFor[int]().Size())
+		m.compactSource, m.compactText, m.compactOffsets, m.compactReady = "", "", nil, false
+	}
+	m.retainedBytes -= cost
+}
+
 // decodedMatchKey identifies one pattern-set match over a decoded candidate:
 // the core floor or the configured patterns. The result depends only on the
 // scanner's compiled patterns, the candidate bytes and its encoding label.
@@ -165,15 +194,15 @@ type decodedMatchKey struct {
 	cardOnly bool
 }
 
-func (k decodedMatchKey) match(normalized string, lowered *dlpLoweredBytes) []TextDLPMatch {
+func (k decodedMatchKey) match(normalized string, lowered *dlpLoweredBytes, memo *decodingMemo) []TextDLPMatch {
 	if k.core {
-		return k.scanner.matchCoreDLPPatternsLowered(normalized, k.encoding, lowered)
+		return k.scanner.matchCoreDLPPatternsLowered(normalized, k.encoding, lowered, memo)
 	}
 	patterns := textDLPAllPatterns
 	if k.cardOnly {
 		patterns = textDLPCardPatterns
 	}
-	return k.scanner.matchDLPPatternsLowered(normalized, k.encoding, k.text, lowered, patterns)
+	return k.scanner.matchDLPPatternsLoweredWithDecodes(normalized, k.encoding, k.text, lowered, patterns, memo)
 }
 
 // sharedDecodes lets the scans of one message's views reuse each other's
@@ -234,6 +263,7 @@ func (m *decodingMemo) reset() {
 	clear(m.decodedMatches)
 	m.retainedBytes = 0
 	m.decodedMatchesBytes = 0
+	m.knownPrefixFindings = nil
 	m.reassemblyRecipeCache.release()
 	m.reassemblyRecipeCache = nil
 }
@@ -247,24 +277,47 @@ func sharedDecodesFrom(ctx context.Context) *sharedDecodes {
 }
 
 func (s *sharedDecodes) decode(key decodingMemoKey) ([]decodedResult, bool, bool) {
+	views, complete, retained, _ := s.decodeDetailed(key)
+	return views, complete, retained
+}
+
+func (s *sharedDecodes) decodeDetailed(key decodingMemoKey) ([]decodedResult, bool, bool, bool) {
+	return s.decodeDetailedAfter(key, nil)
+}
+
+// decodeDetailedAfter uses a caller's earlier result for the same key in place
+// of recomputing it. The decode is a pure function of its key, so every later
+// step, including the retention attempt, sees the value a fresh call computes.
+func (s *sharedDecodes) decodeDetailedAfter(key decodingMemoKey, prior *decodedRun) ([]decodedResult, bool, bool, bool) {
 	s.mu.Lock()
 	cached, ok := s.store.views[key]
 	s.mu.Unlock()
 	if ok {
-		return cached.views, cached.complete, true
+		return cached.views, cached.complete, true, cached.resumed
 	}
-	decoded, complete := decodeEncodingsForScan(key.text, key.includeURL, key.minPrefix, decodeBudgetMode{inbound: key.inbound, reportWorkLimits: key.reportWorkLimits}, nil)
+	var resumed bool
+	var decoded []decodedResult
+	var complete bool
+	if prior.matches(key) {
+		decoded, complete, resumed = prior.views, prior.complete, prior.resumed
+	} else {
+		decoded, complete = decodeEncodingsForScan(key.text, key.includeURL, key.minPrefix, decodeBudgetMode{inbound: key.inbound, reportWorkLimits: key.reportWorkLimits, knownCredit: key.knownCredit, knownResumed: &resumed}, nil)
+	}
 	s.mu.Lock()
 	s.store.retainDecode(key, decoded, complete)
 	cached, retained := s.store.views[key]
+	if retained {
+		cached.resumed = resumed
+		s.store.views[key] = cached
+	}
 	s.mu.Unlock()
 	if retained {
-		return cached.views, cached.complete, true
+		return cached.views, cached.complete, true, cached.resumed
 	}
-	return decoded, complete, false
+	return decoded, complete, false, resumed
 }
 
-func (s *sharedDecodes) matchDecoded(key decodedMatchKey) []TextDLPMatch {
+func (s *sharedDecodes) matchDecoded(key decodedMatchKey, memo *decodingMemo) []TextDLPMatch {
 	filter := key.scanner.dlpPreFilter
 	if key.core {
 		filter = key.scanner.core.dlpPreFilter
@@ -299,7 +352,10 @@ func (s *sharedDecodes) matchDecoded(key decodedMatchKey) []TextDLPMatch {
 	if !key.cardOnly {
 		lowered = s.loweredFor(normalized)
 	}
-	matches := key.match(normalized, &lowered)
+	matches := key.match(normalized, &lowered, memo)
+	if memo.terminalCanceled() {
+		return slices.Clone(matches)
+	}
 	s.mu.Lock()
 	s.store.retainDecodedMatches(key, matches)
 	s.mu.Unlock()
@@ -369,6 +425,7 @@ func (s *sharedDecodes) normalize(text string) string {
 }
 
 type memoDecode struct {
+	resumed  bool
 	views    []decodedResult
 	complete bool
 	sources  *keywordDecodeSources
@@ -380,6 +437,15 @@ func (m *decodingMemo) markIncomplete() {
 	if m != nil {
 		m.incomplete = true
 	}
+}
+
+// decodeRunFeedsReassembly reports whether this decode's views still need
+// reassembly. A resumed known-prefix walk that finishes has spent the
+// candidate cap and then completed on transferred slots, so the cap refusal
+// is gone and those views have to be inspected. An unfinished resume keeps
+// the refusal, which already decides the scan.
+func decodeRunFeedsReassembly(complete, inbound, resumed bool) bool {
+	return (complete || inbound) && (!resumed || complete)
 }
 
 // inspectionIncomplete reports whether any bound in this scan returned a
@@ -408,16 +474,91 @@ func (m *decodingMemo) decodeKnownSecret(text string, minimum int) []decodedResu
 	return m.decodeMode(text, true, minimum)
 }
 
+// The two required walks each had maxDecodeCandidates slots. Transfer only
+// unused base slots to its paired prefix walk, without adding work capacity
+// or changing the separate recursive byte allowances. An earlier incomplete
+// scan cannot lend credit and is never cleared by the continuation.
+func (m *decodingMemo) decodeKnownSecretWithBase(text string, minimum int, base []decodedResult) []decodedResult {
+	return m.decodeKnownSecretRun(text, minimum, base, nil)
+}
+
+// decodeKnownSecretRun is decodeKnownSecretWithBase that can replay an
+// earlier run of the same key; see decodedRun.
+func (m *decodingMemo) decodeKnownSecretRun(text string, minimum int, base []decodedResult, run *decodedRun) []decodedResult {
+	credit := 0
+	// Keyword provenance has its own maxDecodeCandidates node budget. The
+	// prefix continuation does not carry that source graph, so transferring
+	// slots would clear a refusal without inspecting required source context.
+	if m != nil && !m.inbound && !m.incomplete && !m.keywordMode {
+		credit = max(0, maxDecodeCandidates-len(base))
+	}
+	return m.decodeRun(text, true, minimum, credit, run)
+}
+
 func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) []decodedResult {
+	return m.decodeModeWithCredit(text, includeURL, minPrefix, 0)
+}
+
+func (m *decodingMemo) decodeModeWithCredit(text string, includeURL bool, minPrefix, credit int) []decodedResult {
+	return m.decodeRun(text, includeURL, minPrefix, credit, nil)
+}
+
+// decodedRun is one caller's result of an ordinary memo decode. A caller that
+// needs the same decode again inside one scan hands it back through
+// decodeAgain instead of holding a separate cache: the memo then performs the
+// repeated call's own bookkeeping (incomplete flag, retention attempt and
+// reassembly observation) and skips only the recomputation. A run whose key
+// no longer matches the memo's current direction or accounting is ignored.
+type decodedRun struct {
+	key      decodingMemoKey
+	views    []decodedResult
+	complete bool
+	resumed  bool
+	set      bool
+}
+
+func (r *decodedRun) matches(key decodingMemoKey) bool {
+	return r != nil && r.set && r.key == key
+}
+
+func (r *decodedRun) record(key decodingMemoKey, views []decodedResult, complete, resumed bool) {
+	if r != nil {
+		*r = decodedRun{key: key, views: views, complete: complete, resumed: resumed, set: true}
+	}
+}
+
+// decodeOnce is decode(text, true) that also returns the run for a later
+// decodeAgain.
+func (m *decodingMemo) decodeOnce(text string) ([]decodedResult, decodedRun) {
+	var run decodedRun
+	views := m.decodeRun(text, true, 0, 0, &run)
+	return views, run
+}
+
+// decodeAgain returns exactly what decode(text, true) returns now.
+func (m *decodingMemo) decodeAgain(text string, run decodedRun) []decodedResult {
+	return m.decodeRun(text, true, 0, 0, &run)
+}
+
+func (m *decodingMemo) decodeRun(text string, includeURL bool, minPrefix, credit int, run *decodedRun) []decodedResult {
+	// A prior run is consumed once; record replaces it with this call's run.
+	prior := decodedRun{}
+	if run != nil {
+		prior = *run
+		run.set = false
+	}
 	var mode decodeBudgetMode
 	if m != nil {
 		// Card-only outbound passes retain inbound accounting, but their work
 		// stops must not create a new outbound refusal. The enclosing text scan
 		// owns direction; standalone decode memos use their explicit inbound bit.
 		mode = decodeBudgetMode{inbound: m.inbound, reportWorkLimits: m.inbound && !m.urlAccounting && (m.reassemblyPlan == nil || m.reassemblyInbound)}
+		if minPrefix > 0 && !m.inbound {
+			mode.knownCredit = max(0, min(credit, maxDecodeCandidates))
+		}
 	}
 	if m != nil && m.keywordMode && minPrefix == 0 {
-		key := decodingMemoKey{text: text, includeURL: includeURL, minPrefix: minPrefix, inbound: m.inbound, keyword: true, reportWorkLimits: mode.reportWorkLimits}
+		key := decodingMemoKey{text: text, includeURL: includeURL, minPrefix: minPrefix, knownCredit: mode.knownCredit, inbound: m.inbound, keyword: true, reportWorkLimits: mode.reportWorkLimits}
 		if cached, ok := m.views[key]; ok {
 			if cached.sources != nil {
 				cached.sources.bindParents(text, m.keywordSources[text])
@@ -425,7 +566,7 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 			if !cached.complete {
 				m.incomplete = true
 			}
-			if (cached.complete || m.inbound) && m.textualView(text) && !m.isTextRoot(text) {
+			if decodeRunFeedsReassembly(cached.complete, m.inbound, cached.resumed) && m.textualView(text) && !m.isTextRoot(text) {
 				m.observeDecodedRecipe(key, cached.views, true)
 			}
 			return cached.views
@@ -463,13 +604,14 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 		decoded, _ := decodeEncodingsFixpointMode(text, includeURL, minPrefix)
 		return decoded
 	}
-	key := decodingMemoKey{text: text, includeURL: includeURL, minPrefix: minPrefix, inbound: m.inbound, reportWorkLimits: mode.reportWorkLimits}
+	key := decodingMemoKey{text: text, includeURL: includeURL, minPrefix: minPrefix, knownCredit: mode.knownCredit, inbound: m.inbound, reportWorkLimits: mode.reportWorkLimits}
 	if m.shared != nil {
-		decoded, complete, retained := m.shared.decode(key)
+		decoded, complete, retained, resumed := m.shared.decodeDetailedAfter(key, &prior)
+		run.record(key, decoded, complete, resumed)
 		if !complete {
 			m.incomplete = true
 		}
-		if complete || m.inbound {
+		if decodeRunFeedsReassembly(complete, m.inbound, resumed) {
 			kind, _ := m.viewKind(text)
 			previous, observed := m.reassemblyDecoded[key]
 			if !observed || !previous.textual() && kind.textual() {
@@ -488,23 +630,38 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 		return decoded
 	}
 	if cached, ok := m.views[key]; ok {
+		run.record(key, cached.views, cached.complete, cached.resumed)
 		if !cached.complete {
 			m.incomplete = true
 		}
-		if (cached.complete || m.inbound) && m.textualView(text) && !m.isTextRoot(text) {
+		if decodeRunFeedsReassembly(cached.complete, m.inbound, cached.resumed) && m.textualView(text) && !m.isTextRoot(text) {
 			m.observeDecodedRecipe(key, cached.views, true)
 		}
 		return cached.views
 	}
-	decoded, complete := decodeEncodingsForScan(text, includeURL, minPrefix, mode, nil)
+	var resumed bool
+	var decoded []decodedResult
+	var complete bool
+	if prior.matches(key) {
+		decoded, complete, resumed = prior.views, prior.complete, prior.resumed
+	} else {
+		mode.knownResumed = &resumed
+		decoded, complete = decodeEncodingsForScan(text, includeURL, minPrefix, mode, nil)
+	}
+	run.record(key, decoded, complete, resumed)
 	if !complete {
 		m.incomplete = true
 	}
 	m.retainDecode(key, decoded, complete)
+	if cached, ok := m.views[key]; ok {
+		cached.resumed = resumed
+		m.views[key] = cached
+	}
 	_, retained := m.views[key]
-	// An existing outbound refusal already decides this scan. Inbound keeps
-	// its partial-view contract and never turns this skip into a refusal.
-	if complete || m.inbound {
+	// An unfinished resume keeps the candidate-cap refusal, which already
+	// decides this scan. A resume that finishes has cleared that refusal, so
+	// its views join reassembly. Inbound keeps its partial-view contract.
+	if decodeRunFeedsReassembly(complete, m.inbound, resumed) {
 		m.observeDecodedRecipe(key, decoded, retained)
 	}
 	return decoded
@@ -537,10 +694,36 @@ func (m *decodingMemo) retainDecode(key decodingMemoKey, decoded []decodedResult
 	m.retainedBytes += cost
 }
 
+// normalizationRun borrows one pure transform during a synchronous pair of
+// pattern checks. It owns no graph and never enters a retained memo or cache.
+type normalizationRun struct {
+	source, normalized string
+	lowered            dlpLoweredBytes
+	folded             asciiFoldedInput
+	set, loweredReady  bool
+}
+
 // normalize preserves each call's exact input and normalization depth. A
 // normalized output is not treated as already normalized on a later call.
 func (m *decodingMemo) normalize(text string) string {
-	normalized := m.normalizeUntracked(text)
+	return m.normalizeWithRun(text, nil)
+}
+
+// normalizeWithRun repeats retention and ancestry bookkeeping even when the
+// exact same source's pure normalization is already available to this caller.
+func (m *decodingMemo) normalizeWithRun(text string, run *normalizationRun) string {
+	var normalized string
+	if run != nil && run.set && run.source == text && (m == nil || m.shared == nil) {
+		normalized = run.normalized
+		if m != nil {
+			m.retainNormalized(text, normalized)
+		}
+	} else {
+		normalized = m.normalizeUntracked(text)
+		if run != nil {
+			*run = normalizationRun{source: text, normalized: normalized, set: true}
+		}
+	}
 	if m != nil {
 		if !m.normalizedRetained(text) {
 			m.replayTransformUnretained(text, normalized, assembledPayloadNormalize)
@@ -601,16 +784,20 @@ func (m *decodingMemo) matchDecoded(sc *Scanner, text, encoding string) []TextDL
 // and otherwise runs only the card rules: the same rules, in the same order,
 // select the same matches.
 func (m *decodingMemo) matchDecodedFor(sc *Scanner, text, encoding string, patterns textDLPPatternSet) []TextDLPMatch {
+	return m.matchDecodedForWithNormalization(sc, text, encoding, patterns, nil)
+}
+
+func (m *decodingMemo) matchDecodedForWithNormalization(sc *Scanner, text, encoding string, patterns textDLPPatternSet, run *normalizationRun) []TextDLPMatch {
 	full := decodedMatchKey{scanner: sc, text: text, encoding: encoding}
 	if patterns != textDLPCardPatterns {
-		return patterns.selectMatches(m.matchDecodedKey(full))
+		return patterns.selectMatches(m.matchDecodedKeyWithNormalization(full, run))
 	}
 	if cached, ok := m.cachedDecodedMatches(full); ok && !m.keywordMode {
 		return patterns.selectMatches(cached)
 	}
 	card := full
 	card.cardOnly = true
-	return patterns.selectMatches(m.matchDecodedKey(card))
+	return patterns.selectMatches(m.matchDecodedKeyWithNormalization(card, run))
 }
 
 // cachedDecodedMatches returns a copy of a retained result without computing.
@@ -633,8 +820,12 @@ func (m *decodingMemo) matchDecodedCore(sc *Scanner, text, encoding string) []Te
 }
 
 func (m *decodingMemo) matchDecodedKey(key decodedMatchKey) []TextDLPMatch {
+	return m.matchDecodedKeyWithNormalization(key, nil)
+}
+
+func (m *decodingMemo) matchDecodedKeyWithNormalization(key decodedMatchKey, run *normalizationRun) []TextDLPMatch {
 	if m != nil && m.keywordMode && !key.core {
-		normalized := m.normalize(key.text)
+		normalized := m.normalizeWithRun(key.text, run)
 		var lowered dlpLoweredBytes
 		lowered.add(normalized)
 		patterns := textDLPAllPatterns
@@ -647,18 +838,30 @@ func (m *decodingMemo) matchDecodedKey(key decodedMatchKey) []TextDLPMatch {
 		normalized := normalize.ForDLP(key.text)
 		var lowered dlpLoweredBytes
 		lowered.add(normalized)
-		return key.match(normalized, &lowered)
+		return key.match(normalized, &lowered, nil)
 	}
 	if m.shared != nil {
-		return m.shared.matchDecoded(key)
+		return m.shared.matchDecoded(key, m)
 	}
 	if cached, ok := m.decodedMatches[key]; ok {
 		return slices.Clone(cached)
 	}
-	normalized := m.normalize(key.text)
+	normalized := m.normalizeWithRun(key.text, run)
 	var lowered dlpLoweredBytes
-	lowered.add(normalized)
-	matches := key.match(normalized, &lowered)
+	if run != nil {
+		if !run.loweredReady {
+			run.lowered.add(normalized)
+			run.lowered.preparedASCII = &run.folded
+			run.loweredReady = true
+		}
+		lowered = run.lowered
+	} else {
+		lowered.add(normalized)
+	}
+	matches := key.match(normalized, &lowered, m)
+	if m.terminalCanceled() {
+		return matches
+	}
 	m.retainDecodedMatches(key, matches)
 	return slices.Clone(matches)
 }

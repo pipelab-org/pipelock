@@ -225,14 +225,11 @@ func isDecimalCodeSeparator(r rune) bool {
 }
 
 // parseDecimalCharacterCode accepts only an exact non-negative JSON number
-// value that is a valid Unicode code point. It fast-paths integer spellings and
-// permits equivalent decimal/exponent forms without ever rounding a value into
-// a code point: every accepted value is bounded by utf8.MaxRune, which float64
-// represents exactly.
+// value that is a valid Unicode code point. Decimal/exponent forms retain the
+// same semantics as integer spellings: every accepted integer is bounded by
+// utf8.MaxRune, which float64 represents exactly. An integer parse first would
+// only repeat the rejected-field work and allocate an extra parsing error.
 func parseDecimalCharacterCode(field string) (rune, bool) {
-	if code, err := strconv.ParseInt(field, 10, 32); err == nil {
-		return validDecimalCharacterCode(code)
-	}
 	value, err := strconv.ParseFloat(field, 64)
 	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || math.Trunc(value) != value {
 		return 0, false

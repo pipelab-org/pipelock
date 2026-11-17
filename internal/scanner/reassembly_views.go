@@ -224,6 +224,13 @@ func (m *decodingMemo) terminalCanceled() bool {
 	}
 }
 
+// stopRequested is a cancel that arrived after this scan started. An
+// already-canceled context keeps today's full scan so an incomplete result
+// still carries the findings that scan produces.
+func (m *decodingMemo) stopRequested() bool {
+	return m != nil && m.scanStop && m.terminalCanceled()
+}
+
 func (m *decodingMemo) reassemblyDrain() {
 	var borrowed *assembledDecodeRecipe
 	defer func() {
@@ -249,7 +256,7 @@ func (m *decodingMemo) reassemblyDrain() {
 			borrowed = recipe
 			if recipe != nil {
 				if source, ok := recipe.source.materialize(); ok {
-					recipe.current, _ = decodeEncodingsBudgetMode(source, recipe.includeURL, recipe.minPrefix, recipe.inbound)
+					recipe.current = recipe.replay(source)
 				}
 			}
 		}

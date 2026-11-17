@@ -149,6 +149,7 @@ func ScanGenericSSEStreamWithOptions(
 	}
 	// Server-sent events are responses: a decode bound must not refuse them.
 	ctx = scanner.WithInboundDirection(ctx)
+	viewStats, _ := ctx.Value(sseViewStatsKey{}).(*sseViewStats)
 
 	maxEventBytes := cfg.MaxEventBytes
 	if maxEventBytes <= 0 {
@@ -259,7 +260,13 @@ func ScanGenericSSEStreamWithOptions(
 		clearInjectionTailAfterCurrent := false
 		skipTailInjection := false
 		skipTailDLP := false
-		injectResult := sc.ScanResponseWithSuppress(ctx, text, opts.Target, opts.Suppress)
+		// Fixed event views can be identical. Only complete, finding-free
+		// results are reused; findings still run every warning hook.
+		once := newSSEScanOnce(ctx, sc, opts, viewStats)
+		// Metadata can make every view distinct. Avoid retaining results when
+		// the common rolling/payload duplicate is absent; all scans still run.
+		once.reuse = rollingText == payloadText && cardRollingText == cardPayloadText
+		injectResult := once.response(text)
 		observedCore.record(injectResult)
 		if injectResult.Failed() {
 			return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, injectResult.ScanError)
@@ -268,7 +275,7 @@ func ScanGenericSSEStreamWithOptions(
 			if view == "" {
 				continue
 			}
-			result := sc.ScanResponseWithSuppress(ctx, view, opts.Target, opts.Suppress)
+			result := once.response(view)
 			observedCore.record(result)
 			if result.Failed() {
 				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, result.ScanError)
@@ -288,13 +295,13 @@ func ScanGenericSSEStreamWithOptions(
 			}
 		}
 
-		dlpResult, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLPWithCardView(ctx, text, cardText), opts.Target, opts.Suppress)
+		dlpResult, droppedMatches := once.textDLP(text, cardText, false)
 		if err := checkSSEDLPContext(ctx); err != nil {
 			return err
 		}
 		droppedDLP.record(droppedMatches)
 		for _, view := range [][2]string{{string(event), cardPayloadText}, {rollingText, cardRollingText}, {idDataText, cardIDDataText}} {
-			result, dropped := keepUnsuppressedDLP(sc.ScanTextForDLPWithCardView(ctx, view[0], view[1]), opts.Target, opts.Suppress)
+			result, dropped := once.textDLP(view[0], view[1], false)
 			if err := checkSSEDLPContext(ctx); err != nil {
 				return err
 			}
@@ -321,7 +328,7 @@ func ScanGenericSSEStreamWithOptions(
 			}
 			views = append(views, payloadInjectionTail.views(payloadText)...)
 			for _, view := range views {
-				result := sc.ScanResponseWithSuppress(ctx, view, opts.Target, opts.Suppress)
+				result := once.response(view)
 				observedCore.record(result)
 				if result.Failed() {
 					return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, result.ScanError)
@@ -370,14 +377,14 @@ func ScanGenericSSEStreamWithOptions(
 				}
 				droppedDLP.markSeen(priorTailDrops)
 			}
-			tailDLPResult, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLPWithCardView(ctx, combined, cardTail+cardRollingText), opts.Target, opts.Suppress)
+			tailDLPResult, droppedMatches := once.textDLP(combined, cardTail+cardRollingText, false)
 			if err := checkSSEDLPContext(ctx); err != nil {
 				return err
 			}
 			droppedDLP.record(droppedMatches)
 			if (tailDLPResult.Clean || scanner.OnlyInformational(tailDLPResult.Matches)) && idDataText != "" {
 				var next scanner.TextDLPResult
-				next, droppedMatches = keepUnsuppressedDLP(sc.ScanTextForDLPWithCardView(ctx, tail+idDataText, cardTail+cardIDDataText), opts.Target, opts.Suppress)
+				next, droppedMatches = once.textDLP(tail+idDataText, cardTail+cardIDDataText, false)
 				tailDLPResult = mergeInputDLP(tailDLPResult, next)
 				if err := checkSSEDLPContext(ctx); err != nil {
 					return err
@@ -395,7 +402,7 @@ func ScanGenericSSEStreamWithOptions(
 			}
 		}
 		if !skipTailDLP && !resetDLPTail && payloadTail != "" {
-			result, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLPWithCardView(ctx, payloadTail+payloadText, cardPayloadTail+cardPayloadText), opts.Target, opts.Suppress)
+			result, droppedMatches := once.textDLP(payloadTail+payloadText, cardPayloadTail+cardPayloadText, false)
 			if err := checkSSEDLPContext(ctx); err != nil {
 				return err
 			}
@@ -411,7 +418,7 @@ func ScanGenericSSEStreamWithOptions(
 			}
 		}
 		if !skipTailDLP && !resetDLPTail && numberTail != "" && numberText != "" {
-			result, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLPWithTypedCardView(ctx, numberTail+numberText, numberCardTail+jsonnumber.NumberBoundary+numberCard), opts.Target, opts.Suppress)
+			result, droppedMatches := once.textDLP(numberTail+numberText, numberCardTail+jsonnumber.NumberBoundary+numberCard, true)
 			if err := checkSSEDLPContext(ctx); err != nil {
 				return err
 			}

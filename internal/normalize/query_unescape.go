@@ -27,23 +27,38 @@ func unescapePartial(value string, plusAsSpace bool) string {
 		return value
 	}
 	var out strings.Builder
-	out.Grow(len(value))
+	from := 0
 	for i := 0; i < len(value); i++ {
+		var decoded byte
+		width := 1
 		if value[i] == '%' && i+2 < len(value) {
 			a, aOK := hexNibble(value[i+1])
 			b, bOK := hexNibble(value[i+2])
 			if aOK && bOK {
-				out.WriteByte(a<<4 | b)
-				i += 2
-				continue
+				decoded = a<<4 | b
+				width = 3
 			}
 		}
-		if plusAsSpace && value[i] == '+' {
-			out.WriteByte(' ')
-		} else {
-			out.WriteByte(value[i])
+		if width == 1 {
+			if !plusAsSpace || value[i] != '+' {
+				continue
+			}
+			decoded = ' '
 		}
+		// Malformed percent escapes leave the input unchanged. Allocate only
+		// at the first real transformation, and copy unchanged runs together.
+		if out.Cap() == 0 {
+			out.Grow(len(value))
+		}
+		out.WriteString(value[from:i])
+		out.WriteByte(decoded)
+		i += width - 1
+		from = i + 1
 	}
+	if from == 0 {
+		return value
+	}
+	out.WriteString(value[from:])
 	return out.String()
 }
 

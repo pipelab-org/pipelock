@@ -15,7 +15,9 @@ import (
 	"net/http/httptrace"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -72,6 +74,17 @@ func interceptTimingEntries(t *testing.T, path string) []map[string]any {
 
 func runInterceptTiming(t *testing.T, cfg *config.Config, rt http.RoundTripper, ctx context.Context, target string) (map[string]any, int) {
 	t.Helper()
+	return runInterceptTimingRequest(t, cfg, rt, httptest.NewRequestWithContext(ctx, http.MethodGet, target, nil))
+}
+
+func runInterceptTimingRequest(t *testing.T, cfg *config.Config, rt http.RoundTripper, req *http.Request) (map[string]any, int) {
+	t.Helper()
+	entry, code, _ := runInterceptTimingRequestWithResponse(t, cfg, rt, req)
+	return entry, code
+}
+
+func runInterceptTimingRequestWithResponse(t *testing.T, cfg *config.Config, rt http.RoundTripper, req *http.Request) (map[string]any, int, string) {
+	t.Helper()
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
@@ -86,7 +99,6 @@ func runInterceptTiming(t *testing.T, cfg *config.Config, rt http.RoundTripper, 
 		Logger: logger, Metrics: metrics.New(), ClientIP: "203.0.113.10",
 		RequestID: "intercept-timing", Proxy: p,
 	}, rt)
-	req := httptest.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	logger.Close()
@@ -94,7 +106,7 @@ func runInterceptTiming(t *testing.T, cfg *config.Config, rt http.RoundTripper, 
 	if len(entries) != 1 {
 		t.Fatalf("intercept_http entries = %d, want exactly 1", len(entries))
 	}
-	return entries[0], w.Code
+	return entries[0], w.Code, w.Body.String()
 }
 
 func timingConfig() *config.Config {
@@ -364,4 +376,61 @@ func TestInterceptTiming_RealTransportErrorAfterWriteKeepsUpstreamWait(t *testin
 	if _, ok := e["upstream_ms"]; !ok {
 		t.Fatalf("upstream_ms missing after the request was written: %v", e)
 	}
+}
+
+func TestInterceptTiming_RequestBodyInspection(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		body       func(context.CancelFunc) io.Reader
+		disabled   bool
+		wantStatus int
+	}{
+		{name: "allowed", body: func(context.CancelFunc) io.Reader { return strings.NewReader(`{"message":"ordinary output"}`) }, wantStatus: http.StatusOK},
+		{name: "core secret blocked", body: func(context.CancelFunc) io.Reader {
+			return strings.NewReader(`{"token":"` + "AKIA" + `IOSFODNN7EXAMPLE"}`)
+		}, wantStatus: http.StatusForbidden},
+		{name: "read failure", body: func(context.CancelFunc) io.Reader { return iotest.ErrReader(errors.New("body read failed")) }, wantStatus: http.StatusForbidden},
+		{name: "canceled during read", body: func(cancel context.CancelFunc) io.Reader { return &cancelTimingReader{cancel: cancel} }, wantStatus: http.StatusServiceUnavailable},
+		{name: "disabled", body: func(context.CancelFunc) io.Reader { return strings.NewReader(`{"message":"ordinary output"}`) }, disabled: true, wantStatus: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := timingConfig()
+			cfg.DLP.ScanEnv = false
+			cfg.RequestBodyScanning.Enabled = !tc.disabled
+			cfg.RequestBodyScanning.Action = config.ActionBlock
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			req := httptest.NewRequestWithContext(ctx, http.MethodPost, "https://api.vendor.example/model", tc.body(cancel))
+			req.Header.Set("Content-Type", "application/json")
+			rt := &slowRT{reached: make(chan struct{})}
+			e, status, response := runInterceptTimingRequestWithResponse(t, cfg, rt, req)
+			if status != tc.wantStatus {
+				t.Fatalf("status=%d want=%d", status, tc.wantStatus)
+			}
+			if tc.name == "core secret blocked" && !strings.Contains(response, "AWS Access ID") {
+				t.Fatalf("expected core-secret refusal: %s", response)
+			}
+			elapsed, present := e["request_body_ms"].(float64)
+			if present == tc.disabled {
+				t.Fatalf("request_body_ms=%v disabled=%t", e["request_body_ms"], tc.disabled)
+			}
+			if present && (elapsed < 0 || elapsed > e["duration_ms"].(float64)) {
+				t.Fatalf("invalid body timing: %v", e)
+			}
+			if status != http.StatusOK {
+				select {
+				case <-rt.reached:
+					t.Fatal("refused body reached upstream")
+				default:
+				}
+			}
+		})
+	}
+}
+
+type cancelTimingReader struct{ cancel context.CancelFunc }
+
+func (r *cancelTimingReader) Read([]byte) (int, error) {
+	r.cancel()
+	return 0, context.Canceled
 }
