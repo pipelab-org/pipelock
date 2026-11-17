@@ -98,7 +98,11 @@ func (w *mcpListenerDenialWriter) WriteHeader(status int) {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Cache-Control", "no-store")
 			if w.notification {
-				status = http.StatusAccepted
+				// Door mode answers a refused notification with 403 like any
+				// other tool-policy denial; elsewhere notifications get 202.
+				if w.opts.ListenerDoor == nil || status != http.StatusForbidden {
+					status = http.StatusAccepted
+				}
 			} else if status != http.StatusAccepted {
 				status = http.StatusForbidden
 			}

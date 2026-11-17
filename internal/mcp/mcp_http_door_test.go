@@ -26,6 +26,7 @@ import (
 
 	jose "github.com/go-jose/go-jose/v4"
 
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/door"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
@@ -470,6 +471,32 @@ func TestHTTPListener_DoorNotificationDenialUnderBlockAll(t *testing.T) {
 			}
 			if resp.StatusCode != want || len(body) != 0 || dials.Load() != 0 {
 				t.Fatalf("notification under block_all: %d want %d body=%s dials=%d", resp.StatusCode, want, body, dials.Load())
+			}
+		})
+	}
+}
+
+// TestDoorPolicyNotificationKeeps403UnderBlockAll drives the adaptive
+// projection directly: an escalated session must not turn the door's 403 for a
+// refused notification into the 202 used by bearer listeners.
+func TestDoorPolicyNotificationKeeps403UnderBlockAll(t *testing.T) {
+	f := newDoorFixture(t, config.MCPDoorJWT)
+	for _, door := range []bool{false, true} {
+		t.Run(fmt.Sprint(door), func(t *testing.T) {
+			cfg := adaptiveCfgEnabled()
+			cfg.Levels.Elevated.BlockAll = boolPtr(true)
+			opts := MCPProxyOpts{Rec: &mockRecorder{level: 1}, AdaptiveCfg: cfg}
+			status := http.StatusAccepted
+			if door {
+				opts.ListenerDoor = f.verifier
+				status = http.StatusForbidden
+			}
+			response := httptest.NewRecorder()
+			descriptor := mcpDenialAudit{kind: "policy"}
+			w := &mcpListenerDenialWriter{ResponseWriter: response, opts: opts, descriptor: &descriptor, notification: true}
+			w.WriteHeader(status)
+			if response.Code != status || response.Header().Get(blockreason.HeaderReason) != string(blockreason.EscalationLevel) {
+				t.Fatalf("projected notification: %d reason=%q, want %d with the escalation reason", response.Code, response.Header().Get(blockreason.HeaderReason), status)
 			}
 		})
 	}
