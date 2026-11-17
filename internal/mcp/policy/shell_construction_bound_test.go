@@ -1454,8 +1454,14 @@ func TestShellConstructionUnassignedBoundaryBudget(t *testing.T) {
 	const in = "A=r; $Q$A"
 	// Building A's template and value uses the available work. Preserving
 	// Q's boundary needs more work and must refuse rather than overrun it.
-	bounds := &shellBounds{work: 2 * shellValueCost, copies: shellCopyBudget(len(in))}
+	// Three bytes are left after A's template and value; the boundary needs
+	// four, so it refuses and leaves all three unspent. Without the boundary
+	// the writer would spend some of them.
+	bounds := &shellBounds{work: 2*shellValueCost + 3, copies: shellCopyBudget(len(in))}
 	if _, _, fits := shellConstructionPass(in, bounds); fits {
 		t.Fatal("boundary preservation passed an exhausted work budget")
+	}
+	if bounds.work != 3 {
+		t.Fatalf("work left %d, want 3: the boundary charge was not the refusal", bounds.work)
 	}
 }
