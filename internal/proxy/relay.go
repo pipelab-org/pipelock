@@ -61,6 +61,10 @@ const tunnelBufSize = 32 * 1024
 // idle timeout so very short idle timeouts still reap promptly.
 const watchdogPollInterval = 250 * time.Millisecond
 
+type closeWriter interface {
+	CloseWrite() error
+}
+
 // bidirectionalCopy relays data between two connections until the tunnel goes
 // idle, an absolute deadline passes, the kill switch activates, or a side
 // closes.
@@ -228,8 +232,8 @@ func (tr *tunnelRelay) copyDir(dst, src net.Conn) int64 {
 			if errors.Is(err, io.EOF) {
 				// Genuine end of this direction: signal the peer that no more
 				// data is coming, but leave the other direction free to drain.
-				if tc, ok := dst.(*net.TCPConn); ok {
-					_ = tc.CloseWrite()
+				if conn, ok := dst.(closeWriter); ok {
+					_ = conn.CloseWrite()
 				}
 			} else {
 				// Read error (watchdog/airlock close, reset, timeout): tear down.

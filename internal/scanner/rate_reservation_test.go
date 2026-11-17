@@ -243,6 +243,27 @@ func TestScanConnectDoesNotMintOnEarlyFailureOrDisabledLimit(t *testing.T) {
 	}
 }
 
+func TestScanConnectClearsReservationAfterDataBudgetDenial(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = false
+	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 1
+	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 1
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	s.RecordRequest("vendor.example", 1)
+
+	got, proof := s.ScanConnect(t.Context(), "https://api.vendor.example/page")
+	if got.Allowed || got.Scanner != ScannerDataBudget || proof != nil {
+		t.Fatalf("ScanConnect = %+v proof=%v; want data-budget refusal without reservation", got, proof)
+	}
+	s.rateLimiter.mu.Lock()
+	slots := len(s.rateLimiter.requests["vendor.example"])
+	s.rateLimiter.mu.Unlock()
+	if slots != 1 {
+		t.Fatalf("rate stage recorded %d slots, want 1 before the later refusal", slots)
+	}
+}
+
 func TestScanWithReservationKeepsEarlierURLChecks(t *testing.T) {
 	const clean = "https://api.vendor.example/page"
 	s := rateReservationScanner()

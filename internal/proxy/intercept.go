@@ -440,6 +440,14 @@ func (c *bufferedConn) Read(p []byte) (int, error) {
 	return c.Conn.Read(p)
 }
 
+// CloseWrite preserves directional shutdown when the connection supports it.
+func (c *bufferedConn) CloseWrite() error {
+	if conn, ok := c.Conn.(closeWriter); ok {
+		return conn.CloseWrite()
+	}
+	return nil
+}
+
 // wrapBuffered returns a net.Conn that reads from the bufio.Reader first
 // (draining any buffered bytes from SNI peeking), then falls through to
 // the underlying connection. If nothing is buffered, returns conn as-is.

@@ -1920,6 +1920,30 @@ func TestWrapBuffered(t *testing.T) {
 	}
 }
 
+func TestBufferedConnCloseWriteWithoutHalfClose(t *testing.T) {
+	server, client := net.Pipe()
+	t.Cleanup(func() { _ = server.Close() })
+	t.Cleanup(func() { _ = client.Close() })
+	conn := &bufferedConn{Conn: server}
+	if err := conn.CloseWrite(); err != nil {
+		t.Fatalf("unsupported half-close: %v", err)
+	}
+	if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := io.CopyN(io.Discard, client, 1)
+		readDone <- err
+	}()
+	if _, err := conn.Write([]byte("x")); err != nil {
+		t.Fatalf("unsupported half-close closed the connection: %v", err)
+	}
+	if err := <-readDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestWrapBuffered_NothingBuffered(t *testing.T) {
 	server, client := net.Pipe()
 	defer server.Close() //nolint:errcheck
