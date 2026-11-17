@@ -491,6 +491,8 @@ func shellConditionalAt(s string, at []int) (out map[int]bool, ambiguous bool) {
 			if n := len(groups); n > 0 {
 				if groups[n-1] {
 					depth--
+					// A reserved word may follow a group: "if (x) then".
+					cmdPos = true
 				}
 				groups = groups[:n-1]
 			}
@@ -543,7 +545,13 @@ func shellConditionalAt(s string, at []int) (out map[int]bool, ambiguous bool) {
 				case "if", "while", "until", "for", "case", "select":
 					depth++
 				case "fi", "done", "esac":
-					depth = max(depth-1, 0)
+					if depth == 0 {
+						// More closers than openers: an opener was missed, so
+						// the depth cannot be trusted. The reading is incomplete.
+						markSkipped(out, at, next, len(s))
+						return out, true
+					}
+					depth--
 				}
 			}
 			switch s[i:j] {

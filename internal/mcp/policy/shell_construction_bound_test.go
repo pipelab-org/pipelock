@@ -175,6 +175,7 @@ func TestShellConstructionUseBeforeAssignmentReadsUnset(t *testing.T) {
 		// argument, and one name set while another is not.
 		"if false; then echo time fi; Z=echo; fi; " + use,
 		"if false; then echo do fi; Z=echo; fi; " + use,
+		"if (false) then if :; then :; fi; Z=echo; fi; " + use,
 		"true && A=r; false && Z=echo; B=m; " + d + "Z" + d + "A" + d + "B -rf /tmp/target",
 		"echo if; if test -f /nope; then Z=echo; fi; " + use,
 		"true;#x\nif test -f /nope; then Z=echo; fi; " + use,
@@ -1294,6 +1295,8 @@ func TestShellConditionalAtMarksSkippedText(t *testing.T) {
 		"if test -f /nope; then (:)#; fi\nZ=echo\nfi; A=r; B=m; " + d + "Z" + d + "A" + d + "B -rf /tmp/target",
 		"if test -f /nope; then echo " + d + "(true)# fi\nZ=echo\nfi; A=r; B=m; " + d + "Z" + d + "A" + d + "B -rf /tmp/target",
 		"echo " + d + "{x}#; Z=1; echo " + d + "Z",
+		// A closer with no opener before it means the scan missed one.
+		"true; fi; Z=1; echo " + d + "Z",
 		"echo " + d + "{x}#; if test -f /nope; then\nZ=echo\nfi; A=r; B=m; " + d + "Z" + d + "A" + d + "B -rf /tmp/target",
 	} {
 		if _, partial, fits := resolveShellConstruction(cmd); !fits || !partial {
