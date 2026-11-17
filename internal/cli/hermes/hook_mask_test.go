@@ -43,12 +43,13 @@ func TestHookInboundMasking(t *testing.T) {
 		{name: "structured result", input: map[string]string{"output": key}, block: true},
 		{name: "structured array", input: []string{key}, block: true},
 		{name: "zero width", input: strings.Join(strings.Split(key, ""), "\u200b"), block: true},
-		{name: "nonidentity before key", input: "\n" + key, block: true},
+		{name: "line break before key", input: "\n" + key, want: "\n" + inboundMaskPlaceholder},
 		{name: "base64", input: base64.StdEncoding.EncodeToString([]byte(key)), block: true},
 		{name: "whitespace", input: "AKIA IOSFODNN7 EXAMPLE", block: true},
 		{name: "JSON unicode escaped", input: `{"output":"\u0041\u004b\u0049\u0041` + `IOSFODNN7EXAMPLE"}`, block: true},
 		{name: "DLP and injection", input: key + " " + injection, block: true, reasons: []string{"AWS Access ID", "injection match", "Prompt Injection", "System Prompt Disclosure"}},
-		{name: "remaining same pattern", input: key + " " + "ASIA" + "1234567890ABCDEF", block: true, reasons: []string{"masked result refused"}},
+		{name: "spaced key survives mask", input: key + " then AKIA IOSFODNN7 EXAMPLE", block: true, reasons: []string{"masked result refused"}},
+		{name: "second key of same pattern", input: key + " " + "ASIA" + "1234567890ABCDEF", want: inboundMaskPlaceholder + " " + inboundMaskPlaceholder},
 		{name: "other credential", input: key + " sk-ant-" + strings.Repeat("A", 25), block: true, reasons: []string{"Anthropic API Key"}},
 		{name: "card", input: key + " 41111111" + "11111111", block: true, reasons: []string{"Credit Card"}},
 	}
@@ -117,34 +118,36 @@ func TestHookMaskSpanProvenance(t *testing.T) {
 	matches := sc.ScanTextForDLPInbound(t.Context(), text).Matches
 	var plain scanner.TextDLPMatch
 	for _, match := range matches {
-		if match.PatternName == "AWS Access ID" && maskableInboundMatch(match, text) {
+		if match.PatternName == "AWS Access ID" && maskable(match, text) {
 			plain = match
 			break
 		}
 	}
-	if !maskableInboundMatch(plain, text) {
+	if !maskable(plain, text) {
 		t.Fatal("missing positive plain-span control")
 	}
 	for _, encoded := range []string{"base64", "whitespace", "subdomain"} {
 		t.Run(encoded, func(t *testing.T) {
 			match := plain
 			match.Encoded = encoded
-			if maskableInboundMatch(match, text) {
+			if maskable(match, text) {
 				t.Fatal("encoded evidence must not authorize a raw rewrite")
 			}
 		})
 	}
-	if maskableInboundMatch(plain, "short") {
+	if maskable(plain, "short") {
 		t.Fatal("out-of-range span accepted")
 	}
-	if maskableInboundMatch(plain, "\n"+text) {
-		t.Fatal("nonidentity normalization accepted")
+	// Normalization drops line breaks, so its offsets are not raw offsets.
+	// The verbatim token is still located in the raw text.
+	if got := maskableInboundSpans(plain, "\n"+text); len(got) != 1 || got[0].ByteStart != 1 || got[0].ByteEnd != 1+len(text) {
+		t.Fatalf("multiline raw span = %+v", got)
 	}
 	plain.PatternName = "other credential"
-	if maskableInboundMatch(plain, text) {
+	if maskable(plain, text) {
 		t.Fatal("other patterns must retain block policy")
 	}
-	if maskableInboundMatch(scanner.TextDLPMatch{}, text) {
+	if maskable(scanner.TextDLPMatch{}, text) {
 		t.Fatal("missing span accepted")
 	}
 }
@@ -172,10 +175,10 @@ func TestHookMaskNormalizationCoordinates(t *testing.T) {
 		if normalize.ForDLP(unsafe) == inboundMaskPlaceholder {
 			t.Fatal("fixture must retain original key bytes")
 		}
-		if maskableInboundMatch(match, text) {
-			t.Fatal("normalized coordinates accepted on nonidentity raw text")
+		if maskable(match, text) {
+			t.Fatal("token with no verbatim raw occurrence accepted")
 		}
-		t.Logf("normalized span covers %d of %d raw bytes; identity guard refuses rewrite", span.ByteEnd-span.ByteStart, len(text))
+		t.Logf("normalized span covers %d of %d raw bytes; verbatim lookup refuses rewrite", span.ByteEnd-span.ByteStart, len(text))
 		return
 	}
 	t.Fatal("fixture did not find a plain normalized AWS match")
@@ -230,7 +233,7 @@ func TestHookMaskIncompleteInspection(t *testing.T) {
 	}
 	raw, _ := json.Marshal(text)
 	got := evaluate(t.Context(), sc, &HookEvent{HookEventName: HookTransformToolResult, ToolInput: raw, Capabilities: []string{DecisionTransform}})
-	if got.Decision != DecisionBlock || got.Result != "" || !strings.Contains(got.Reason, "incomplete") {
+	if got.Decision != DecisionBlock || got.Result != "" {
 		t.Fatalf("incomplete inspection must refuse transformation: %+v", got)
 	}
 }
@@ -394,4 +397,70 @@ func mustMarshal(s string) []byte {
 		panic(err)
 	}
 	return b
+}
+
+func maskable(match scanner.TextDLPMatch, text string) bool {
+	return len(maskableInboundSpans(match, text)) > 0
+}
+
+// Ordinary tool output is multiline; normalization drops the line breaks, so
+// masking must not depend on normalization leaving the text unchanged.
+func TestHookMaskMultilineResults(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.DLP.ScanEnv = false
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	key := "AKIA" + "IOSFODNN7EXAMPLE"
+	for _, tt := range []struct {
+		name, input, want string
+		block             bool
+	}{
+		{name: "ulid mid line", input: "line one\ntask 01HQA3TX7K9M2PQRSTVWXYZ012 updated\r\nline three", want: "line one\ntask 01HQ" + inboundMaskPlaceholder + " updated\r\nline three"},
+		{name: "key with unicode prose", input: "caf\u00e9 r\u00e9sum\u00e9\n" + key + "\n\u2014 end", want: "caf\u00e9 r\u00e9sum\u00e9\n" + inboundMaskPlaceholder + "\n\u2014 end"},
+		{name: "repeated token masks every copy", input: key + "\n" + key, want: inboundMaskPlaceholder + "\n" + inboundMaskPlaceholder},
+		{name: "key split by newline blocks", input: "AKIAIOSF\nODNN7EXAMPLE", block: true},
+		{name: "zero-width key in multiline blocks", input: "a\n" + strings.Join(strings.Split(key, ""), "\u200b") + "\nb", block: true},
+		{name: "fullwidth key blocks", input: "a\n\uff21KIAIOSFODNN7EXAMPLE\nb", block: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, _ := json.Marshal(tt.input)
+			got := evaluate(t.Context(), sc, &HookEvent{HookEventName: HookTransformToolResult, ToolInput: raw, Capabilities: []string{DecisionTransform}})
+			if tt.block {
+				if got.Decision != DecisionBlock || got.Result != "" {
+					t.Fatalf("want block, got %+v", got)
+				}
+				return
+			}
+			if got.Decision != DecisionTransform || got.Result != tt.want {
+				t.Fatalf("want transform %q, got %+v", tt.want, got)
+			}
+		})
+	}
+}
+
+// Completeness is required of the masked re-scan only; a clean result whose
+// encoded views were partly inspected keeps today's warn-and-deliver outcome.
+func TestHookTransformCapabilityKeepsCleanOutcome(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.DLP.ScanEnv = false
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	partial := "report &" + strings.Repeat("amp;", 100) + "#65;"
+	found := false
+	for _, match := range sc.ScanTextForDLPInbound(t.Context(), partial).Matches {
+		found = found || match.PatternName == scanner.PartialEncodedContentPattern
+	}
+	if !found {
+		t.Fatal("fixture must reach the scanner's decoding bound")
+	}
+	for _, input := range []string{"hello world", "line one\nline two", partial} {
+		raw, _ := json.Marshal(input)
+		legacy := evaluate(t.Context(), sc, &HookEvent{HookEventName: HookTransformToolResult, ToolInput: raw})
+		capable := evaluate(t.Context(), sc, &HookEvent{HookEventName: HookTransformToolResult, ToolInput: raw, Capabilities: []string{DecisionTransform}})
+		if legacy.Decision != capable.Decision {
+			t.Fatalf("capability changed a clean outcome for %.40q: legacy %+v, capable %+v", input, legacy, capable)
+		}
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -19,7 +20,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
-	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -331,7 +331,7 @@ func scanGatewaySenderValue(ctx context.Context, sc *scanner.Scanner, raw json.R
 		return blockDecision("pipelock: gateway sender exceeds maximum inspectable nesting depth")
 	}
 	return scanCombinedViews(ctx, sc, hookScanViews{
-		text: text, cards: cards, raw: raw, requireComplete: true,
+		text: text, cards: cards, raw: raw,
 	}, "gateway sender", directionInbound)
 }
 
@@ -425,7 +425,9 @@ func inboundScanViews(event *HookEvent, text, cards string) hookScanViews {
 	// Never project joined or decoded leaf coordinates back onto their encoding.
 	views.transform = slices.Contains(event.Capabilities, DecisionTransform) &&
 		json.Unmarshal(event.ToolInput, &delivered) == nil && delivered == text
-	views.requireComplete = views.transform
+	// Completeness gates only the masked re-scan: requiring it here would
+	// newly block clean results whose encoded views were partly inspected,
+	// which the block-only path delivers with a warning today.
 	return views
 }
 
@@ -515,12 +517,11 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 		for _, match := range enforceable {
 			reason := dlpBlockReason(surface, match)
 			addReason(reason)
-			span := match.Span()
 			// Limit this remediation to the reported AWS pattern. Other
 			// credentials, cards, canaries and inspection refusals still block.
 			if masking && scanned == text && match.PatternName == "AWS Access ID" {
-				if maskableInboundMatch(match, text) {
-					spans = append(spans, span)
+				if raw := maskableInboundSpans(match, text); len(raw) > 0 {
+					spans = append(spans, raw...)
 					maskedReasons = append(maskedReasons, strings.Replace(reason, "DLP match", "DLP masked", 1))
 					continue
 				}
@@ -597,11 +598,30 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 // against configured patterns is established by scanning the complete result.
 const inboundMaskPlaceholder = "[pipelock:masked:aws-access-id]"
 
-func maskableInboundMatch(match scanner.TextDLPMatch, text string) bool {
+// rawAWSAccessIDRe is the built-in AWS Access ID detector applied to the raw
+// text with the scanner's case folding. Masking uses raw hits rather than the
+// finding's span: that span indexes normalize.ForDLP(text), which deletes line
+// breaks and folds Unicode, so it neither maps onto raw bytes nor keeps a token
+// at a line end apart from the next line.
+var rawAWSAccessIDRe = regexp.MustCompile("(?i)" + config.AWSAccessIDRegex)
+
+// maskableInboundSpans returns the raw byte ranges to mask for a plain-view
+// AWS Access ID finding, or nil when the finding is not eligible or the raw
+// text holds no hit. A token that only exists after normalization
+// (interleaved zero-width or control bytes, fullwidth letters, a key split
+// across lines) has no raw hit or leaves the finding in place, and the caller's
+// re-scan of the masked text then refuses the whole result.
+func maskableInboundSpans(match scanner.TextDLPMatch, text string) []scanner.MatchSpan {
 	span := match.Span()
-	return match.PatternName == "AWS Access ID" && match.Encoded == "" &&
-		normalize.ForDLP(text) == text && span.Valid() && span.ViewLabel == scanner.ViewDLPNormalized &&
-		span.ByteStart < span.ByteEnd && span.ByteEnd <= len(text)
+	if match.PatternName != "AWS Access ID" || match.Encoded != "" || !span.Valid() ||
+		span.ViewLabel != scanner.ViewDLPNormalized {
+		return nil
+	}
+	var spans []scanner.MatchSpan
+	for _, hit := range rawAWSAccessIDRe.FindAllStringIndex(text, -1) {
+		spans = append(spans, scanner.MatchSpan{ByteStart: hit[0], ByteEnd: hit[1]})
+	}
+	return spans
 }
 
 func maskInboundSpans(text string, spans []scanner.MatchSpan) string {
