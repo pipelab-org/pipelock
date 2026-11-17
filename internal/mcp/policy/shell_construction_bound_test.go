@@ -171,6 +171,11 @@ func TestShellConstructionUseBeforeAssignmentReadsUnset(t *testing.T) {
 		"if false; then echo done; Z=echo; fi; " + use,
 		"Z=echo; unset Z>/dev/null; " + use,
 		"A=echo; A=r; B=m; false && Z=x; " + d + "Z" + d + "A" + d + "B -rf /tmp/target",
+		// The hosted review's cases on 57d0abc: a reserved word that is an
+		// argument, and one name set while another is not.
+		"if false; then echo time fi; Z=echo; fi; " + use,
+		"if false; then echo do fi; Z=echo; fi; " + use,
+		"true && A=r; false && Z=echo; B=m; " + d + "Z" + d + "A" + d + "B -rf /tmp/target",
 		"echo if; if test -f /nope; then Z=echo; fi; " + use,
 		"true;#x\nif test -f /nope; then Z=echo; fi; " + use,
 	} {
@@ -841,7 +846,7 @@ func TestResolveShellConstructionOutput(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"x=rm;" + d + "x -rf /tmp", "x=rm;rm -rf /tmp"},
 		// b is unset when a=$b runs, so that assignment is also read empty.
-		{"a=" + d + "b;b=rm;" + d + "a -rf", "a=rm;a=;b=rm;rm -rf"},
+		{"a=" + d + "b;b=rm;" + d + "a -rf", "a=rm;a=;a=rm;b=rm;rm -rf"},
 		{"X=a; X=b; echo " + d + "X", "X=a; X=b; echo a; echo b"},
 		{"X=a; X=b; echo " + d + "X && echo done", "X=a; X=b; echo a && echo b && echo done"},
 		{"X=a; X=b; echo " + d + "X | cat " + d + "X; echo done", "X=a; X=b; echo a | cat a; echo b | cat b; echo done"},
@@ -854,7 +859,7 @@ func TestResolveShellConstructionOutput(t *testing.T) {
 		{"A=r; A=" + d + "{A}m; echo " + d + "A", "A=r; A=" + d + "{A}m; echo r; echo m; echo rm"},
 		{"v=IFS;" + d + "{!v}", "v=IFS;" + d + "{IFS}"},
 		{"echo " + d + "HOME " + d + "{UNSET:-x}; Y=1; echo " + d + "Y", "echo " + d + "HOME " + d + "{UNSET:-x}; Y=1; echo 1"},
-		{"(A=r;B=m); echo " + d + "A" + d + "B", "(A=r;B=m); echo rm; echo "},
+		{"(A=r;B=m); echo " + d + "A" + d + "B", "(A=r;B=m); echo rm; echo ; echo r; echo m; echo rm"},
 	} {
 		out, _, fits := resolveShellConstruction(tc.in)
 		if !fits || out != tc.want {
@@ -920,9 +925,11 @@ func TestShellConstructionOrdinaryScriptsFinish(t *testing.T) {
 		if !fits {
 			t.Errorf("%s: did not finish", name)
 		}
-		// Only the script that appends thirty times, giving one use dozens
-		// of long values, needs more copies than the budget.
-		if partial != (name == "appended") {
+		// The script that appends thirty times gives one use dozens of long
+		// values. The modes script sets six names inside if/else blocks: each
+		// may be unset or set, independently, and every mix of six does not
+		// fit the copy budget. Both are incomplete readings, which warn.
+		if partial != (name == "appended" || name == "modes") {
 			t.Errorf("%s: partial=%v", name, partial)
 		}
 		if grown := len(out) - len(cmd); grown > shellCopyBudget(len(cmd))+len(cmd) {

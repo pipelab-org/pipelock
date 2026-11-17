@@ -168,7 +168,7 @@ func assignSpansIn(s string, wanted map[string]struct{}) []assignSpan {
 			// resumes at the next assignment.
 			chained = true
 			// "C=x D=y :" is kept by sh and dropped by bash for both names.
-			maybeKept = cur.persists(nameStart) && keptOnlyBySpecialBuiltin(s, cur.cmdLo, cur.cmdHi)
+			maybeKept = cur.persists(nameStart) && cur.keptOnlyBySpecial()
 		default:
 			// "A=r >/tmp/x" and "export A=r dummy" still assign. "A=r cmd"
 			// does not: the value is that command's environment. "A=r $u"
@@ -177,7 +177,7 @@ func assignSpansIn(s string, wanted map[string]struct{}) []assignSpan {
 				continue
 			}
 			soft = true
-			maybeKept = cur.cmdOK && keptOnlyBySpecialBuiltin(s, cur.cmdLo, cur.cmdHi)
+			maybeKept = cur.cmdOK && cur.keptOnlyBySpecial()
 		}
 		i = j
 		if nameStart > 0 && s[nameStart-1] == '$' {
@@ -224,6 +224,20 @@ type assignCursor struct {
 	cmdLo, cmdHi int
 	cmdOK        bool
 	valid        bool
+	// special caches keptOnlyBySpecialBuiltin for the span specialLo:specialHi.
+	specialLo, specialHi int
+	special, specialOK   bool
+}
+
+// keptOnlyBySpecial is keptOnlyBySpecialBuiltin for the current command,
+// computed once per command rather than once per assignment in it.
+func (c *assignCursor) keptOnlyBySpecial() bool {
+	if !c.specialOK || c.specialLo != c.cmdLo || c.specialHi != c.cmdHi {
+		c.specialLo, c.specialHi = c.cmdLo, c.cmdHi
+		c.special = keptOnlyBySpecialBuiltin(c.s, c.cmdLo, c.cmdHi)
+		c.specialOK = true
+	}
+	return c.special
 }
 
 func (c *assignCursor) persists(nameStart int) bool {
@@ -441,10 +455,14 @@ func shellConditionalAt(s string, at []int) (out map[int]bool, ambiguous bool) {
 	// cmdPos: the next word is a command word, where reserved words count.
 	// "echo fi" does not close an if.
 	cmdPos := true
+	forks, forkStop := false, -1
 	next := 0
 	for i := 0; i < len(s) && next < len(at); i++ {
 		for next < len(at) && at[next] == i {
-			out[at[next]] = depth > 0 || gated || shellStatementForks(s, i)
+			if i > forkStop {
+				forks, forkStop = shellStatementForks(s, i)
+			}
+			out[at[next]] = depth > 0 || gated || forks
 			next++
 		}
 		switch c := s[i]; c {
@@ -530,7 +548,9 @@ func shellConditionalAt(s string, at []int) (out map[int]bool, ambiguous bool) {
 			}
 			switch s[i:j] {
 			case "if", "while", "until", "then", "do", "else", "elif", "time", "!":
-				cmdPos = !assign
+				// A reserved word starts a command only in command position:
+				// "echo time fi" is all arguments, and its fi closes nothing.
+				cmdPos = cmdPos && !assign
 			default:
 				cmdPos = assign && cmdPos
 			}
@@ -557,26 +577,30 @@ func markSkipped(out map[int]bool, at []int, next, to int) int {
 // shellStatementForks reports whether the statement holding offset i ends in
 // a pipe or "&" before its ";", newline, "&&" or "||": its assignments then
 // run in a subshell or in the background.
-func shellStatementForks(s string, i int) bool {
+//
+// stop is where the scan decided. The answer holds for every offset up to
+// stop: nothing between decides otherwise, so the caller reuses it instead of
+// rescanning the statement for each assignment in it.
+func shellStatementForks(s string, i int) (forks bool, stop int) {
 	for ; i < len(s); i++ {
 		switch c := s[i]; c {
 		case ';', '\n':
-			return false
+			return false, i
 		case '\'', '"', '`', '\\', '(', '#':
 			// Quoting, a substitution or a comment can hide the end of the
 			// statement: read the assignment as conditional.
-			return true
+			return true, i
 		case '&', '|':
 			if i+1 < len(s) && s[i+1] == c {
-				return false
+				return false, i
 			}
 			if c == '&' && (s[i-1] == '>' || s[i-1] == '<' || i+1 < len(s) && s[i+1] == '>') {
 				continue
 			}
-			return true
+			return true, i
 		}
 	}
-	return false
+	return false, len(s)
 }
 
 // shellUnsetNames returns the names the text unsets with the unset builtin,
@@ -1732,16 +1756,28 @@ func writeShellCommand(sb *shellBounds, write func(string) bool, copied map[stri
 	// combined with every value of the other names while they fit.
 	if !done && slices.ContainsFunc(slots, func(sl shellSlot) bool { return sl.mayUnset }) {
 		copied[key] = struct{}{}
+		// Each name that may be unset is read empty or with any of its
+		// values, independently: one may be set while another is not.
 		empty := make([]shellSlot, len(slots))
 		for i, sl := range slots {
 			empty[i] = sl
 			if sl.mayUnset {
-				empty[i].alts, empty[i].widest = unsetShellValue, 0
+				empty[i].alts = append(append([]string(nil), unsetShellValue...), sl.alts...)
 			}
 		}
 		rest := newShellChoices(empty)
 		if !sb.fitsCopies(rest.count+1, rest.width(len(seg)+len(between))) {
-			rest = shellChoices{slots: empty, count: 1}
+			// Too many mixes: read them all empty with the other names'
+			// values, and mark the reading incomplete.
+			for i, sl := range slots {
+				if sl.mayUnset {
+					empty[i].alts, empty[i].widest = unsetShellValue, 0
+				}
+			}
+			rest = newShellChoices(empty)
+			if !sb.fitsCopies(rest.count+1, rest.width(len(seg)+len(between))) {
+				rest = shellChoices{slots: empty, count: 1}
+			}
 			sb.partial = true
 		}
 		if !rest.each(emit) {
