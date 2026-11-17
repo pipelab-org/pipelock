@@ -422,6 +422,95 @@ func shellAssigningBuiltin(w string) bool {
 	}
 }
 
+// shellConditionalAt reports, for each offset in at (ascending), whether an
+// assignment starting there may not run: it is inside a group, subshell,
+// condition, loop, case or function body, or follows "&&", "||" or "|" in
+// its own statement. "$(", "${", "<(" and ">(" are expansions, not groups.
+func shellConditionalAt(s string, at []int) map[int]bool {
+	out := make(map[int]bool, len(at))
+	depth, gated := 0, false
+	var groups []bool // true for a group that counts toward depth
+	next := 0
+	for i := 0; i < len(s) && next < len(at); i++ {
+		for next < len(at) && at[next] == i {
+			out[at[next]] = depth > 0 || gated
+			next++
+		}
+		switch c := s[i]; c {
+		case '&', '|':
+			if i+1 < len(s) && s[i+1] == c {
+				gated = true
+				i++
+			} else {
+				gated = c == '|'
+			}
+		case ';', '\n':
+			gated = false
+		case '(', '{':
+			counts := i == 0 || (s[i-1] != '$' && s[i-1] != '<' && s[i-1] != '>')
+			groups = append(groups, counts)
+			if counts {
+				depth++
+			}
+		case ')', '}':
+			if n := len(groups); n > 0 {
+				if groups[n-1] {
+					depth--
+				}
+				groups = groups[:n-1]
+			}
+		default:
+			if !isShellNameByte(c) || (i > 0 && isShellNameByte(s[i-1])) {
+				continue
+			}
+			j := i
+			for j < len(s) && isShellNameByte(s[j]) {
+				j++
+			}
+			if j == len(s) || s[j] != '=' {
+				switch s[i:j] {
+				case "if", "while", "until", "for", "case", "select":
+					depth++
+				case "fi", "done", "esac":
+					depth = max(depth-1, 0)
+				}
+			}
+			if next < len(at) && at[next] < j {
+				i = at[next] - 1
+				continue
+			}
+			i = j - 1
+		}
+	}
+	return out
+}
+
+// shellUnsetsName reports whether the text unsets name with the unset
+// builtin anywhere.
+func shellUnsetsName(s, name string) bool {
+	for i := 0; ; {
+		k := strings.Index(s[i:], "unset")
+		if k < 0 {
+			return false
+		}
+		k += i
+		i = k + len("unset")
+		if k > 0 && isShellNameByte(s[k-1]) {
+			continue
+		}
+		rest := s[i:]
+		end := strings.IndexAny(rest, ";&|\n")
+		if end < 0 {
+			end = len(rest)
+		}
+		for _, w := range strings.Fields(rest[:end]) {
+			if w == name {
+				return true
+			}
+		}
+	}
+}
+
 // shellSpecialBuiltin names the POSIX special builtins. In sh, "A=r :" keeps
 // A after the command; bash keeps it only in POSIX mode. A command can run
 // under either, so the assignment is read as kept.
@@ -783,6 +872,8 @@ type shellSlot struct {
 	alts     []string
 	// widest is the length of the longest of alts.
 	widest int
+	// mayUnset is set when the name can still be unset at this use.
+	mayUnset bool
 }
 
 type shellSlotKey struct {
@@ -1199,12 +1290,25 @@ func shellConstructionPass(s string, sb *shellBounds) (out string, changed, fits
 	if len(sv.names) == 0 {
 		return s, false, true
 	}
-	// A use written before the name's first assignment can run while the
-	// name is still unset: "$Z$A$B -rf /x; Z=echo" runs rm. Read it unset too.
+	// A name can still be unset where it is used: the use comes before its
+	// first assignment ("$Z$A$B -rf /x; Z=echo" runs rm), that assignment may
+	// not run (it follows "&&", "||", a condition, a loop, a group or a
+	// function), or the name is unset again. The command is then written
+	// once more with those names empty: one extra copy, not another value
+	// that multiplies with every other name's values.
+	firsts := make([]int, 0, len(firstAssign))
+	for _, at := range firstAssign {
+		firsts = append(firsts, at)
+	}
+	slices.Sort(firsts)
+	conditional := shellConditionalAt(s, firsts)
+	mayUnset := make([]bool, len(uses))
 	for i, u := range uses {
-		if n := sv.names[u.name]; n != nil && selfUse[i] < 0 && u.pos < firstAssign[u.name] {
-			n.plain.add("")
+		if selfUse[i] >= 0 || sv.names[u.name] == nil {
+			continue
 		}
+		first := firstAssign[u.name]
+		mayUnset[i] = u.pos < first || conditional[first] || shellUnsetsName(s, u.name)
 	}
 	for _, n := range sv.order {
 		for _, v := range n.plain.list {
@@ -1312,7 +1416,7 @@ func shellConstructionPass(s string, sb *shellBounds) (out string, changed, fits
 		if n == nil || len(n.values.list) == 0 {
 			continue
 		}
-		slot := shellSlot{pos: u.pos, end: u.end, key: shellSlotKey{name: u.name, indirect: u.indirect}, alts: n.values.list, widest: n.widest}
+		slot := shellSlot{pos: u.pos, end: u.end, key: shellSlotKey{name: u.name, indirect: u.indirect}, alts: n.values.list, widest: n.widest, mayUnset: mayUnset[i]}
 		if u.indirect {
 			slot.prefix = "${"
 		}
@@ -1478,11 +1582,11 @@ func writeShellCommand(sb *shellBounds, write func(string) bool, copied map[stri
 		between = ";"
 	}
 	choices := newShellChoices(slots)
+	key := strings.TrimSpace(seg)
+	_, done := copied[key]
 	if choices.count > 1 {
 		// The same command text has the same slots and the same values
 		// everywhere in one pass, so its copies are the same too.
-		key := strings.TrimSpace(seg)
-		_, done := copied[key]
 		switch {
 		case done:
 			choices = shellChoices{slots: slots, count: 1}
@@ -1494,7 +1598,7 @@ func writeShellCommand(sb *shellBounds, write func(string) bool, copied map[stri
 		}
 	}
 	first := true
-	return choices.each(func(pick func(int) string) bool {
+	emit := func(pick func(int) string) bool {
 		before := sb.work
 		if !first && !write(between) {
 			return false
@@ -1514,5 +1618,21 @@ func writeShellCommand(sb *shellBounds, write func(string) bool, copied map[stri
 		}
 		first = false
 		return true
-	}) && write(sep)
+	}
+	if !choices.each(emit) {
+		return false
+	}
+	// One more copy with every name that may still be unset left empty.
+	if !done && slices.ContainsFunc(slots, func(sl shellSlot) bool { return sl.mayUnset }) {
+		copied[key] = struct{}{}
+		if !emit(func(i int) string {
+			if slots[i].mayUnset {
+				return ""
+			}
+			return slots[i].alts[0]
+		}) {
+			return false
+		}
+	}
+	return write(sep)
 }

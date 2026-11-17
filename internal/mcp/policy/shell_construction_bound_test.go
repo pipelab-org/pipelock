@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
+
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -126,6 +128,30 @@ func TestShellConstructionUseBeforeAssignmentReadsUnset(t *testing.T) {
 		t.Fatalf("out=%q partial=%v fits=%v, want the unset reading", out, partial, fits)
 	}
 	assertFileDelete(t, defaultBlockPolicy(""), cmd)
+
+	// An assignment that may not run, or is undone, leaves the name unset.
+	use := "A=r; B=m; " + d + "Z" + d + "A" + d + "B -rf /tmp/target"
+	for _, cmd := range []string{
+		"test -f /nope && Z=echo; " + use,
+		"test -f /nope || Z=echo; " + use,
+		"if test -f /nope; then Z=echo; fi; " + use,
+		"(Z=echo); " + use,
+		"{ Z=echo; }; " + use,
+		"f() { Z=echo; }; " + use,
+		"Z=echo; unset Z; " + use,
+	} {
+		out, partial, fits := resolveShellConstruction(cmd)
+		if !fits || partial || !strings.Contains(out, "rm -rf /tmp/target") {
+			t.Fatalf("%q: out=%q partial=%v fits=%v, want the unset reading", cmd, out, partial, fits)
+		}
+		assertFileDelete(t, defaultBlockPolicy(""), cmd)
+	}
+
+	// An assignment that always runs first is not read as unset.
+	out, _, _ = resolveShellConstruction("Z=echo; " + use)
+	if strings.Contains(out, "; rm -rf") {
+		t.Fatalf("unconditional assignment read as unset: %q", out)
+	}
 }
 
 // An assignment before a special builtin is kept by sh and dropped by bash,
@@ -627,7 +653,7 @@ func TestShellConstructionRedirectValuesMatchBash(t *testing.T) {
 	}
 	for _, tc := range scripts {
 		t.Run(tc.script, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
 			cmd := exec.CommandContext(ctx, "bash", "-s")
 			cmd.Stdin = strings.NewReader(tc.script)
 			cmd.Env = []string{"PATH=/usr/bin:/bin"}
@@ -769,8 +795,8 @@ func reverseChain(depth int) string {
 func TestResolveShellConstructionOutput(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"x=rm;" + d + "x -rf /tmp", "x=rm;rm -rf /tmp"},
-		// b is unset when a=$b runs, so a is read as rm and as empty.
-		{"a=" + d + "b;b=rm;" + d + "a -rf", "a=rm;a=;b=rm;rm -rf; -rf"},
+		// b is unset when a=$b runs, so that assignment is also read empty.
+		{"a=" + d + "b;b=rm;" + d + "a -rf", "a=rm;a=;b=rm;rm -rf"},
 		{"X=a; X=b; echo " + d + "X", "X=a; X=b; echo a; echo b"},
 		{"X=a; X=b; echo " + d + "X && echo done", "X=a; X=b; echo a && echo b && echo done"},
 		{"X=a; X=b; echo " + d + "X | cat " + d + "X; echo done", "X=a; X=b; echo a | cat a; echo b | cat b; echo done"},
@@ -783,7 +809,7 @@ func TestResolveShellConstructionOutput(t *testing.T) {
 		{"A=r; A=" + d + "{A}m; echo " + d + "A", "A=r; A=" + d + "{A}m; echo r; echo m; echo rm"},
 		{"v=IFS;" + d + "{!v}", "v=IFS;" + d + "{IFS}"},
 		{"echo " + d + "HOME " + d + "{UNSET:-x}; Y=1; echo " + d + "Y", "echo " + d + "HOME " + d + "{UNSET:-x}; Y=1; echo 1"},
-		{"(A=r;B=m); echo " + d + "A" + d + "B", "(A=r;B=m); echo rm"},
+		{"(A=r;B=m); echo " + d + "A" + d + "B", "(A=r;B=m); echo rm; echo "},
 	} {
 		out, _, fits := resolveShellConstruction(tc.in)
 		if !fits || out != tc.want {
@@ -1161,7 +1187,7 @@ func TestShellConstructionReadsWhatBashPrints(t *testing.T) {
 			script = "trap '" + body + "' EXIT; " + pick(names) + "=" + pick(values)
 		}
 		script = "A=a; B=b; C=c; " + script
-		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(10*time.Second))
 		cmd := exec.CommandContext(ctx, "bash", "-s")
 		cmd.Stdin = strings.NewReader(script)
 		cmd.Env = []string{"PATH=/usr/bin:/bin"}

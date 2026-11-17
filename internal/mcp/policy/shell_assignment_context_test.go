@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // Bash is the independent producer: retain assignments in conditions,
@@ -42,7 +44,7 @@ func TestShellConstructionKeptAssignmentsInCommands(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			script := tc.before + `B=m; printf %s "$A$B"` + tc.after
-			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "bash", "--noprofile", "--norc", "-s")
 			cmd.Stdin = strings.NewReader(script)
