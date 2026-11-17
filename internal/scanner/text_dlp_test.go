@@ -4169,3 +4169,47 @@ func TestCheckSecretsInText_PartialMatchSkipsLowEntropyWindows(t *testing.T) {
 		t.Fatal("whole secret must still be detected")
 	}
 }
+
+// Contiguous token shapes are ambiguous without provenance. In particular, a
+// prefix character is not evidence that an AWS-shaped substring is non-secret.
+func TestPartitionInboundAWSContiguousTokens(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = false
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	key := "AKIA" + "IOSFODNN7EXAMPLE"
+	tests := []struct{ name, text string }{
+		{"ULID", "task 01HQ" + "A3T" + "X7K9M2PQRSTVWXYZ012 updated"},
+		{"standalone IAM shape", "id ANPA" + "5JZK8Q2W4E6R7T9Y1 done"},
+		{"lowercase region slug", "msgid asia" + "pacificsupport2024teamlist"},
+		{"mixed case region slug", "Asia" + "PacificSupport2024TeamList"},
+		{"standalone key", key},
+		{"lowercase key", strings.ToLower(key)},
+		{"delimiter after key", key + ";"},
+		{"prefix wrapped key", "x" + key},
+		{"suffix wrapped key", key + "x"},
+		{"both wrapped key", "x" + key + "x"},
+		{"credential context", "aws access key id x" + key},
+		{"base64 key", base64.StdEncoding.EncodeToString([]byte(key))},
+		{"whitespace split key", strings.Join([]string{"AKIA", "IOSFODNN7", "EXAMPLE"}, " ")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.ScanTextForDLPInbound(t.Context(), tt.text)
+			enforceable, low := PartitionInboundTextDLPMatches(tt.text, result.Matches)
+			found := false
+			for _, match := range enforceable {
+				found = found || match.PatternName == patternNameAWSAccessID
+			}
+			if !found {
+				t.Fatalf("AWS-shaped token must remain enforceable: enforceable=%+v low=%+v", enforceable, low)
+			}
+			for _, match := range low {
+				if match.Encoded != "whitespace" {
+					t.Fatalf("only whitespace evidence may be low confidence: %+v", match)
+				}
+			}
+		})
+	}
+}

@@ -11,7 +11,7 @@
 # `pipelock hermes install` to upgrade.
 name: pipelock
 kind: standalone
-version: "1.0"
+version: "1.1"
 description: >-
   Routes Hermes tool calls, tool results, and inbound gateway messages through
   pipelock for DLP and prompt-injection scanning. Fail-closed.

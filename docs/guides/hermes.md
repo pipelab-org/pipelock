@@ -75,7 +75,7 @@ The original headers are retained in the `_pipelock` metadata so `rollback` rest
 | Direction | full | mcp-only | Scanning |
 |---|---|---|---|
 | Any tool call args (`terminal`, `write_file`, `web_extract`, …) | ✅ | — | DLP, input injection, tool-policy rules |
-| Any tool result | ✅ | — | Response injection (6-pass normalisation), redaction |
+| Any tool result | ✅ | — | DLP + response injection; eligible AWS spans masked, other findings block |
 | Hermes → MCP server | ✅ | ✅ | DLP + injection on `tools/call` arguments |
 | MCP server → Hermes | ✅ | ✅ | Response injection, tool-poisoning, chain detection |
 | Gateway dispatch | ✅ | — | `pre_gateway_dispatch` skip/rewrite/allow |
@@ -84,7 +84,43 @@ The **full** column reflects what the plugin scans once enabled; the plugin path
 
 ### Direction-aware DLP
 
-The exfil-class DLP checks — environment-variable and file-secret **value** matching, which detect a secret the proxy holds appearing in text — run only on **outbound** surfaces, where a secret could actually leave: a tool call's arguments (`pre_tool_call`). On **inbound** surfaces — an operator→agent message (`pre_gateway_dispatch`) and a tool result flowing back to the agent (`transform_tool_result`) — those checks are skipped, because a value the agent is *receiving* is not exfiltration. Inbound surfaces still get full prompt-injection scanning plus the generic DLP detectors (regex patterns, seed phrases, canary tokens, hostname exfiltration); only the agent's-own-secret value match is direction-scoped. The Hermes hook also applies a narrow inbound-only precision filter for AWS Access ID matches that exist only because whitespace collapse joined lowercase OCR/prose into a key-shaped string. Raw, decoded, credential-context, and outbound AWS findings still block. This prevents an operator message or a local file read that happens to contain an env value (a path, a config setting) from false-positively blocking the agent, without weakening exfiltration protection on the outbound path. Outbound exfil detection is unchanged.
+The exfil-class DLP checks — environment-variable and file-secret **value** matching, which detect a secret the proxy holds appearing in text — run only on **outbound** surfaces, where a secret could actually leave: a tool call's arguments (`pre_tool_call`). On **inbound** surfaces — an operator→agent message (`pre_gateway_dispatch`) and a tool result flowing back to the agent (`transform_tool_result`) — those checks are skipped, because a value the agent is *receiving* is not exfiltration. Inbound surfaces still get full prompt-injection scanning plus the generic DLP detectors (regex patterns, seed phrases, canary tokens, hostname exfiltration); only the agent's-own-secret value match is direction-scoped. The Hermes hook also applies a narrow inbound-only precision filter for AWS Access ID matches that exist only because whitespace collapse joined lowercase OCR/prose into a key-shaped string. Findings outside that precision filter still enforce. The inbound masking rules below can remove eligible plaintext AWS spans; outbound findings always block. This prevents an operator message or a local file read that happens to contain an env value (a path, a config setting) from false-positively blocking the agent, without weakening exfiltration protection on the outbound path. Outbound exfil detection is unchanged.
+
+The hook scans for injection even when DLP has already found a credential or card. A block reason lists every distinct enforceable finding returned by the scans, including DLP and injection findings together. Scan failures still block, and informational findings still produce warnings.
+
+### Masking inbound AWS findings
+
+The bundled plugin advertises `capabilities: ["transform"]` when it can replace
+an inbound string. On `transform_tool_result` and gateway message text, the hook
+can replace an `AWS Access ID` match with `[pipelock:masked:aws-access-id]` while
+preserving the rest of the string. This applies to ordinary IDs that match the
+AWS pattern and to real plaintext keys: the matched key bytes aren't delivered.
+`pre_tool_call` keeps blocking credentials in tool arguments. Gateway sender
+metadata is scanned separately and remains block-only.
+
+Masking applies when the finding comes from the plain `dlp_normalized` view of
+the exact delivered string. The hook masks every AWS-pattern match it finds in
+that raw string, line breaks included, then scans the masked string again and
+refuses the whole result if any finding remains, so a key that only appears
+after normalization is never masked into delivery. Structured hook values have no
+proven string replacement contract and remain block-only. Strings containing
+JSON text can be masked in place; the hook doesn't decode and re-encode that
+JSON. Encoded keys, zero-width or other normalization changes, cards, other
+credential patterns, seeds, canaries, and hostname findings still block.
+Whitespace/subdomain siblings of a plain AWS match must disappear after masking.
+
+The hook re-scans the entire replacement using inbound DLP enforcement and
+injection scanning. Any remaining enforceable finding, scan error, or incomplete
+inspection blocks the whole result. A transform reason and an operator record on
+stderr name the masked findings without including their matched bytes. Block
+reasons retain DLP and injection findings together.
+
+Re-run `pipelock hermes install --mode full` with your existing config options to
+upgrade the bundled plugin, then restart Hermes to load it. The installer backs
+up changed plugin files. Older plugins and direct shell-hook consumers that
+don't advertise replacement support keep receiving block decisions. A consumer
+that advertises `transform` must replace the original with the returned string
+or refuse delivery; treating a transform as allow would deliver the original.
 
 ### Environment lookups in tool commands
 

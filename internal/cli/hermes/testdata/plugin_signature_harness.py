@@ -28,11 +28,15 @@ the offending hook.
 
 import importlib.util
 import io
+import json
 import logging
 import os
 import sys
 from types import SimpleNamespace
 from unittest.mock import patch
+
+# The harness may inspect the source template; never add artifacts to its embed.
+sys.dont_write_bytecode = True
 
 
 class _Event:
@@ -92,6 +96,84 @@ def _load_plugin(plugin_dir):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def _check_transform_contract(mod):
+    """Exercise the shipped payload and the actual subprocess decision parser."""
+    replacement = "safe [pipelock:masked:aws-access-id] remainder"
+    valid = {"decision": "transform", "result": replacement, "reason": "AWS Access ID masked"}
+    malformed = [
+        {"decision": "transform"},
+        {"decision": "transform", "reason": "masked"},
+        {"decision": "transform", "result": replacement},
+        {"decision": "transform", "result": replacement, "reason": ""},
+        *({"decision": "transform", "result": value, "reason": "masked"}
+          for value in (None, 1, False, [], {})),
+        *({"decision": "transform", "result": replacement, "reason": value}
+          for value in (None, 1, False, [], {})),
+        {"decision": "unknown"},
+        {"reason": "missing decision"},
+        {"decision": None},
+        {"decision": "block", "reason": {}},
+    ]
+    invocations = [
+        (mod._transform_tool_result, {"result": "original"}, replacement, str),
+        (mod._pre_gateway_dispatch, {"event": _Event()},
+         {"action": "rewrite", "text": replacement}, dict),
+    ]
+    for hook, kwargs, expected, expected_type in invocations:
+        for response in [valid, *malformed, {}, {"decision": "allow"}]:
+            captured = []
+            def run(argv, **options):
+                captured.append(json.loads(options["input"]))
+                return SimpleNamespace(returncode=0, stdout=json.dumps(response).encode(), stderr=b"")
+            with patch.object(mod, "_resolve_pipelock", return_value="/synthetic/pipelock"), patch.object(
+                mod, "_resolve_config", return_value=None
+            ), patch.object(mod.subprocess, "run", side_effect=run):
+                got = hook(**kwargs)
+            assert captured[0]["capabilities"] == ["transform"], captured
+            sent = captured[0]["tool_input"]
+            if expected_type is str:
+                assert isinstance(sent, str), captured
+            else:
+                # Gateway keeps the envelope every binary scans, sender included.
+                assert isinstance(sent, dict) and set(sent) == {"text", "sender"}, captured
+                assert isinstance(sent["text"], str), captured
+            if response == valid:
+                assert isinstance(got, expected_type) and got == expected, got
+            elif response in ({}, {"decision": "allow"}):
+                assert got is None, got
+            elif expected_type is str:
+                assert isinstance(got, str) and "blocked" in got and got != "original", got
+            else:
+                assert isinstance(got, dict) and got.get("action") == "skip", got
+
+        failures = [
+            {"side_effect": mod.subprocess.TimeoutExpired("pipelock", 30)},
+            {"side_effect": OSError("cannot start")},
+            {"return_value": SimpleNamespace(returncode=1, stdout=json.dumps(valid).encode(), stderr=b"failed")},
+            *({"return_value": SimpleNamespace(returncode=0, stdout=output, stderr=b"")}
+              for output in (b"", b"not json", b"[]", b"null", b"[" * 2000 + b"0" + b"]" * 2000)),
+        ]
+        for failure in failures:
+            with patch.object(mod, "_resolve_pipelock", return_value="/synthetic/pipelock"), patch.object(
+                mod, "_resolve_config", return_value=None
+            ), patch.object(mod.subprocess, "run", **failure):
+                got = hook(**kwargs)
+            assert (isinstance(got, str) and "blocked" in got) if expected_type is str else got.get("action") == "skip", got
+
+    # A structured result must not advertise or accept a string transform.
+    captured = []
+    def structured_run(argv, **options):
+        captured.append(json.loads(options["input"]))
+        return SimpleNamespace(returncode=0, stdout=json.dumps(valid).encode(), stderr=b"")
+    with patch.object(mod, "_resolve_pipelock", return_value="/synthetic/pipelock"), patch.object(
+        mod, "_resolve_config", return_value=None
+    ), patch.object(mod.subprocess, "run", side_effect=structured_run):
+        got = mod._transform_tool_result(result={"output": "original"})
+        outbound = mod._pre_tool_call(args="original")
+    assert captured[0]["capabilities"] == [] and isinstance(got, str) and "blocked" in got, got
+    assert "capabilities" not in captured[1] and outbound["action"] == "block", outbound
 
 
 def main():
@@ -162,6 +244,8 @@ def main():
                 return 1
     finally:
         logger.removeHandler(handler)
+
+    _check_transform_contract(mod)
 
     captured = []
     mod._invoke = lambda payload: captured.append(payload) or {"decision": "allow"}
