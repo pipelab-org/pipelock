@@ -890,8 +890,8 @@ func (m *decodingMemo) matchDecodedKeyWithNormalization(key decodedMatchKey, run
 }
 
 // textDLPMatchSize is the storage one retained match slot takes in its slice.
-// Match strings are pattern labels shared with the scanner, so they are not
-// charged again.
+// Rule strings are shared with the scanner. Generated view labels are charged
+// separately when retaining results.
 var textDLPMatchSize = int(reflect.TypeFor[TextDLPMatch]().Size())
 
 // decodedMatchReserve is the part of the scan's existing retention allowance
@@ -923,6 +923,9 @@ func (m *decodingMemo) retainDecodedMatchesAt(key decodedMatchCacheKey, matches 
 	}
 	// The retained slice holds its whole backing array, spare capacity included.
 	cost := decodedMatchEntrySize + len(key.encoding) + cap(matches)*textDLPMatchSize
+	for _, match := range matches[:cap(matches)] {
+		cost += len(match.span.ViewLabel)
+	}
 	if key.length == 0 || key.length < decodedMatchMinRetain && len(m.decodedMatches) >= maxDecodeCandidates/2 || len(m.decodedMatches) >= maxDecodeCandidates || cost > maxDecodeTotalBytes-m.decodedMatchesBytes || cost > maxDecodeTotalBytes-m.retainedBytes {
 		return
 	}

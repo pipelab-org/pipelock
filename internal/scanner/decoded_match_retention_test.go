@@ -9,6 +9,28 @@ import (
 	"testing"
 )
 
+func TestDecodedMatchChargesGeneratedViewLabels(t *testing.T) {
+	key := decodedMatchKey{text: strings.Repeat("x", decodedMatchMinRetain), encoding: encodingHex}
+	matches := make([]TextDLPMatch, 1, 2)
+	for i := range matches[:cap(matches)] {
+		matches[:cap(matches)][i].span = newMatchSpan(0, 1, dlpViewLabel(key.encoding), "marker", "", "")
+	}
+	want := decodedMatchEntrySize + len(key.encoding) + cap(matches)*textDLPMatchSize
+	for _, match := range matches[:cap(matches)] {
+		want += len(match.span.ViewLabel)
+	}
+	var memo decodingMemo
+	memo.retainDecodedMatches(key, matches)
+	if memo.decodedMatchesBytes != want {
+		t.Fatalf("charged %d bytes, want %d including generated view labels", memo.decodedMatchesBytes, want)
+	}
+	full := decodingMemo{retainedBytes: maxDecodeTotalBytes - want + 1}
+	full.retainDecodedMatches(key, matches)
+	if len(full.decodedMatches) != 0 {
+		t.Fatal("retained generated labels past the retention allowance")
+	}
+}
+
 // A retained result is charged a fixed entry, not a copy of its candidate,
 // so a message-sized view costs the same as a short one.
 func TestDecodedMatchResultChargeIsFixed(t *testing.T) {
