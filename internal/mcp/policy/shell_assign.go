@@ -1125,7 +1125,8 @@ func (sv *shellValues) resolve() bool {
 // followed by the command's own separator, while the copies fit the copy
 // budget; past it the command is written once with the first value of each
 // name and sb.partial is set. A name with no assignment is left as written.
-// A use is not read as unset when its name is assigned somewhere.
+// A use is read as unset only when it comes before the name's first
+// assignment.
 //
 // fits is false when the work left in sb runs out.
 func shellConstructionPass(s string, sb *shellBounds) (out string, changed, fits bool) {
@@ -1165,6 +1166,7 @@ func shellConstructionPass(s string, sb *shellBounds) (out string, changed, fits
 	}
 
 	sv := &shellValues{shellBounds: sb, names: make(map[string]*assignedName)}
+	firstAssign := make(map[string]int)
 	for si := range spans {
 		a := &spans[si]
 		if _, isUsed := used[a.name]; !isUsed {
@@ -1178,6 +1180,7 @@ func shellConstructionPass(s string, sb *shellBounds) (out string, changed, fits
 			n = &assignedName{name: a.name, pos: len(sv.order)}
 			sv.names[a.name] = n
 			sv.order = append(sv.order, n)
+			firstAssign[a.name] = a.opStart
 		}
 		if a.selfRef {
 			continue
@@ -1195,6 +1198,13 @@ func shellConstructionPass(s string, sb *shellBounds) (out string, changed, fits
 	}
 	if len(sv.names) == 0 {
 		return s, false, true
+	}
+	// A use written before the name's first assignment can run while the
+	// name is still unset: "$Z$A$B -rf /x; Z=echo" runs rm. Read it unset too.
+	for i, u := range uses {
+		if n := sv.names[u.name]; n != nil && selfUse[i] < 0 && u.pos < firstAssign[u.name] {
+			n.plain.add("")
+		}
 	}
 	for _, n := range sv.order {
 		for _, v := range n.plain.list {

@@ -117,6 +117,17 @@ func TestShellConstructionPaddingStillBlocks(t *testing.T) {
 	}
 }
 
+// A use before the name's first assignment runs with the name unset; a later
+// decoy assignment must not be its only reading.
+func TestShellConstructionUseBeforeAssignmentReadsUnset(t *testing.T) {
+	cmd := "A=r; B=m; " + d + "Z" + d + "A" + d + "B -rf /tmp/target; Z=echo"
+	out, partial, fits := resolveShellConstruction(cmd)
+	if !fits || partial || !strings.Contains(out, "; rm -rf /tmp/target") {
+		t.Fatalf("out=%q partial=%v fits=%v, want the unset reading", out, partial, fits)
+	}
+	assertFileDelete(t, defaultBlockPolicy(""), cmd)
+}
+
 // An assignment before a special builtin is kept by sh and dropped by bash,
 // so the use must read both: with the value and unset.
 func TestShellConstructionSpecialBuiltinReadsBothShells(t *testing.T) {
@@ -758,7 +769,8 @@ func reverseChain(depth int) string {
 func TestResolveShellConstructionOutput(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"x=rm;" + d + "x -rf /tmp", "x=rm;rm -rf /tmp"},
-		{"a=" + d + "b;b=rm;" + d + "a -rf", "a=rm;b=rm;rm -rf"},
+		// b is unset when a=$b runs, so a is read as rm and as empty.
+		{"a=" + d + "b;b=rm;" + d + "a -rf", "a=rm;a=;b=rm;rm -rf; -rf"},
 		{"X=a; X=b; echo " + d + "X", "X=a; X=b; echo a; echo b"},
 		{"X=a; X=b; echo " + d + "X && echo done", "X=a; X=b; echo a && echo b && echo done"},
 		{"X=a; X=b; echo " + d + "X | cat " + d + "X; echo done", "X=a; X=b; echo a | cat a; echo b | cat b; echo done"},
