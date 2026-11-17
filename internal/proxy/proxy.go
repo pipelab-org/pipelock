@@ -2508,6 +2508,11 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	defer p.reloadSerialMu.Unlock()
 
 	oldCfg := p.cfgPtr.Load()
+	if !oldCfg.MCPDoor.Equal(cfg.MCPDoor) {
+		p.logger.LogError(audit.NewMethodLogContext("RELOAD"), fmt.Errorf("mcp_door changes require restart, keeping old config"))
+		sc.Close()
+		return false
+	}
 
 	// Build new edition BEFORE swapping config/scanner.
 	// If this fails, keep all existing state unchanged (fail-safe).

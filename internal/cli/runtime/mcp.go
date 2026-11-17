@@ -42,6 +42,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/door"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/identity"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
@@ -941,9 +942,6 @@ Key-free evidence capture:
 			if err != nil {
 				return err
 			}
-			if err := validateMCPListenerBoundary(listenAddr, listenerAuthToken, listenerAllowUnauthenticated); err != nil {
-				return err
-			}
 			// Reject sandbox CLI flag with remote modes.
 			if sandboxEnabled {
 				if hasUpstream {
@@ -973,6 +971,16 @@ Key-free evidence capture:
 
 			cfg, err := cliutil.LoadConfigOrDefault(configFile)
 			if err != nil {
+				return err
+			}
+			if cfg.MCPDoor.Enabled {
+				if !hasListen {
+					return errors.New("mcp_door requires mcp proxy --listen")
+				}
+				if listenerAuthTokenFile != "" || listenerAllowUnauthenticated {
+					return errors.New("mcp_door cannot be combined with listener auth token or unauthenticated flags")
+				}
+			} else if err := validateMCPListenerBoundary(listenAddr, listenerAuthToken, listenerAllowUnauthenticated); err != nil {
 				return err
 			}
 			if err := cfg.ResolveRuntimeCredentials(); err != nil {
@@ -1578,7 +1586,18 @@ Key-free evidence capture:
 					adaptiveFn := mcp.AdaptiveConfigFunc(func() *config.AdaptiveEnforcement {
 						return adaptiveCfg
 					})
+					doorVerifier, doorErr := door.New(door.Options{
+						Config:      cfg.MCPDoor,
+						DialContext: mcp.NewMetadataSafeDialContext(func() *scanner.Scanner { return sc }),
+					})
+					if doorErr != nil {
+						return doorErr
+					}
+					if doorVerifier != nil {
+						defer doorVerifier.Close()
+					}
 					listenerOpts := mcp.MCPProxyOpts{
+						ListenerDoor:                 doorVerifier,
 						ListenerBearerToken:          listenerAuthToken,
 						ListenerAllowedOrigins:       listenerAllowedOrigins,
 						ListenerAllowUnauthenticated: listenerAllowUnauthenticated,

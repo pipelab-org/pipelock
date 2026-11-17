@@ -156,7 +156,12 @@ func writeMCPHTTPInputResult(opts MCPProxyOpts, br BlockedRequest, w http.Respon
 	}
 	_ = finishMCPDenial(&mcpDenial{decision: terminal, reply: blockRequestResponse(br)}, mcpDeniedDelivery(func(reply []byte) error {
 		w.Header().Set("Content-Type", "application/json")
-		if br.IsNotification {
+		if opts.ListenerDoor != nil && terminal.audit.kind == "policy" {
+			w.WriteHeader(http.StatusForbidden)
+			if br.IsNotification {
+				return nil
+			}
+		} else if br.IsNotification {
 			w.WriteHeader(http.StatusAccepted)
 			return nil
 		}

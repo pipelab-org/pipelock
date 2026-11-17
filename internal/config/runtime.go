@@ -383,6 +383,7 @@ func (c *Config) Clone() *Config {
 		clone.Taint.TrustedMCPServers = append([]string(nil), c.Taint.TrustedMCPServers...)
 	}
 	clone.MCPIdentities = cloneMCPIdentities(c.MCPIdentities)
+	clone.MCPDoor = c.MCPDoor.Clone()
 	if c.Containment.MetricsExposure != nil {
 		exposure := *c.Containment.MetricsExposure
 		exposure.AllowedSourceCIDRs = append([]string(nil), c.Containment.MetricsExposure.AllowedSourceCIDRs...)

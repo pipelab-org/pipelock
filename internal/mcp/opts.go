@@ -25,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/door"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -169,6 +170,8 @@ type MCPProxyOpts struct {
 	// listener bearer credential and is the integration seam for OAuth or mTLS.
 	// Client-declared MCP metadata must never be returned as a principal.
 	ListenerPrincipalResolver ListenerPrincipalResolver
+	// ListenerDoor requires OAuth on every protected request; no other auth mode may be combined.
+	ListenerDoor *door.Verifier
 	// ListenerAllowedOrigins is an exact allowlist for browser Origin headers.
 	// An empty list rejects every request carrying Origin.
 	ListenerAllowedOrigins []string
