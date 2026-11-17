@@ -117,6 +117,24 @@ func TestShellConstructionPaddingStillBlocks(t *testing.T) {
 	}
 }
 
+// An assignment before a special builtin is kept by sh and dropped by bash,
+// so the use must read both: with the value and unset.
+func TestShellConstructionSpecialBuiltinReadsBothShells(t *testing.T) {
+	for _, cmd := range []string{
+		"C=x :; " + d + "{C}rm -rf /tmp/t",
+		"C=x eval true; " + d + "{C}rm -rf /tmp/t",
+	} {
+		out, partial, fits := resolveShellConstruction(cmd)
+		if !fits || partial || !strings.Contains(out, "; rm -rf /tmp/t") || !strings.Contains(out, "xrm -rf /tmp/t") {
+			t.Fatalf("%q: out=%q partial=%v fits=%v, want both the unset and the kept reading", cmd, out, partial, fits)
+		}
+		v := defaultBlockPolicy("").CheckToolCall("bash", []string{cmd})
+		if !v.Matched || v.Action != config.ActionBlock || !slices.Contains(v.Rules, ruleFileDelete) {
+			t.Fatalf("%q: verdict %v %q %v", cmd, v.Matched, v.Action, v.Rules)
+		}
+	}
+}
+
 // Text whose expansion passes the bound blocks under every
 // on_incomplete_check setting, including the default warn, and through every
 // entry that reads shell arguments.

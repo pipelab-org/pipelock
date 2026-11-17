@@ -56,6 +56,9 @@ type assignSpan struct {
 	// literal command word: a redirection, or a parameter expansion where a
 	// command name would be. A separator did not end it.
 	soft bool
+	// maybeKept is set when only a special builtin keeps the assignment: sh
+	// keeps it and bash drops it, so uses also read the name as unset.
+	maybeKept bool
 }
 
 func isShellSpaceByte(c byte) bool {
@@ -127,6 +130,7 @@ func assignSpansIn(s string, wanted map[string]struct{}) []assignSpan {
 		valueEnd := i
 		chained := false
 		soft := false
+		maybeKept := false
 		// A comment runs to the end of its line.
 		j := i
 		for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
@@ -171,6 +175,7 @@ func assignSpansIn(s string, wanted map[string]struct{}) []assignSpan {
 				continue
 			}
 			soft = true
+			maybeKept = cur.cmdOK && !commandAssignsPersistIn(s, cur.cmdLo, cur.cmdHi, shellAssigningBuiltin)
 		}
 		i = j
 		if nameStart > 0 && s[nameStart-1] == '$' {
@@ -194,6 +199,7 @@ func assignSpansIn(s string, wanted map[string]struct{}) []assignSpan {
 			appends:    appends,
 			chained:    chained,
 			soft:       soft,
+			maybeKept:  maybeKept,
 		})
 	}
 	return out
@@ -258,14 +264,24 @@ func (c *assignCursor) persists(nameStart int) bool {
 // a later command word cannot be distinguished. Reading an extra value is
 // safer than missing the assignment in A=r >"output file" or A=r > >(true).
 func commandAssignsPersist(s string, start, end int) bool {
-	if commandWordIsAssigningBuiltin(s, start, end) {
+	return commandAssignsPersistIn(s, start, end, keptByBuiltin)
+}
+
+// commandAssignsPersistIn is commandAssignsPersist with the command words that
+// keep an assignment chosen by keeps.
+func commandAssignsPersistIn(s string, start, end int, keeps func(string) bool) bool {
+	if commandWordIsAssigningBuiltin(s, start, end, keeps) {
 		return true
 	}
 	sawRedirect, sawExpansion, foreign := classifyCommand(s, start, end)
 	return sawRedirect || (!foreign && sawExpansion)
 }
 
-func commandWordIsAssigningBuiltin(s string, start, end int) bool {
+func keptByBuiltin(w string) bool {
+	return shellAssigningBuiltin(w) || shellSpecialBuiltin(w)
+}
+
+func commandWordIsAssigningBuiltin(s string, start, end int, keeps func(string) bool) bool {
 	i := skipConditionPrefix(s, start, end)
 	afterWrapper := false
 	for i < end {
@@ -297,7 +313,7 @@ func commandWordIsAssigningBuiltin(s string, start, end int) bool {
 		case shellWrapperWord(word):
 			afterWrapper = true
 		case shellAssignmentWord(word):
-		case shellAssigningBuiltin(word), shellSpecialBuiltin(word):
+		case keeps(word):
 			return true
 		case afterWrapper && word[0] == '-':
 		default:
@@ -1163,6 +1179,9 @@ func shellConstructionPass(s string, sb *shellBounds) (out string, changed, fits
 		}
 		if a.selfRef {
 			continue
+		}
+		if a.maybeKept {
+			n.plain.add("")
 		}
 		v := bracedShellRefs(s[a.valueStart:a.valueEnd])
 		if !n.plain.add(v) {
