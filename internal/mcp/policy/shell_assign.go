@@ -444,209 +444,65 @@ func shellAssigningBuiltin(w string) bool {
 	}
 }
 
-// shellConditionalAt reports, for each offset in at (ascending), whether an
-// assignment starting there may not run: it is inside a group, subshell,
-// condition, loop, case or function body, or follows "&&", "||" or "|" in
-// its own statement. "$(", "${", "<(" and ">(" are expansions, not groups.
-func shellConditionalAt(s string, at []int) (out map[int]bool, ambiguous bool) {
-	out = make(map[int]bool, len(at))
-	depth, gated := 0, false
-	// groups holds each open "(" or "{" and whether it counts toward depth.
-	type openGroup struct {
-		open   byte
-		counts bool
-	}
-	var groups []openGroup
-	// cmdPos: the next word is a command word, where reserved words count.
-	// "echo fi" does not close an if.
-	cmdPos := true
-	forks, forkStop := false, -1
-	inExpansion := 0  // open groups that are expansions, not commands
-	funcName := false // the next word names a function
-	next := 0
-	for i := 0; i < len(s) && next < len(at); i++ {
-		for next < len(at) && at[next] == i {
-			if i > forkStop {
-				forks, forkStop = shellStatementForks(s, i)
-			}
-			out[at[next]] = depth > 0 || gated || forks
-			next++
-		}
-		switch c := s[i]; c {
-		case '&', '|':
-			if i+1 < len(s) && s[i+1] == c {
-				gated = true
-				i++
-			} else {
-				// A single "&" ends a statement; what follows "|" runs in a
-				// subshell. The assignment before either is caught by
-				// shellStatementForks.
-				gated = c == '|'
-			}
-			cmdPos = true
-		case ';', '\n':
-			gated = false
-			cmdPos = true
-		case '(', '{':
-			// A group starts a command: "(" or "{" elsewhere is part of a
-			// word ("x{y}") or an expansion ("$(", "${", "<(", ">(").
-			counts := cmdPos && (i == 0 || (s[i-1] != '$' && s[i-1] != '<' && s[i-1] != '>'))
-			// Inside an expansion nothing is a command group: "$((1))" holds
-			// a "(" that must not count, nor reopen command position.
-			if inExpansion > 0 {
-				counts = false
-			}
-			if !counts {
-				inExpansion++
-			}
-			groups = append(groups, openGroup{open: c, counts: counts})
-			if counts {
-				depth++
-			}
-			cmdPos = true
-		case ')', '}':
-			if n := len(groups); n > 0 {
-				if (groups[n-1].open == '(') != (c == ')') {
-					// "{ ... )" or "( ... }": the count is lost, and with it
-					// which text is a command. The reading is incomplete.
-					markSkipped(out, at, next, len(s))
-					return out, true
-				}
-				if groups[n-1].counts {
-					depth--
-					// A reserved word may follow a group: "if (x) then".
-					cmdPos = true
-				} else {
-					inExpansion--
-					// "f()" is a function definition: its body follows.
-					if c == ')' && s[i-1] == '(' {
-						cmdPos = true
-					}
-				}
-				groups = groups[:n-1]
-			}
-		case '\'', '"':
-			// Quoted text is data: skip to the closing quote. An unclosed
-			// quote runs to the end. An assignment the skip passes over is
-			// read as conditional.
-			to := len(s) - 1
-			if k := strings.IndexByte(s[i+1:], c); k >= 0 {
-				to = i + 1 + k
-			}
-			next = markSkipped(out, at, next, to)
-			i = to
-			cmdPos = false
-		case '#':
-			if i > 0 && (s[i-1] == ')' || s[i-1] == '}') {
-				// "(:)#x" is a comment and "$(x)#" or "${x}#" is not. The
-				// scan cannot tell which, so the reading is incomplete: the
-				// caller marks it partial, the incomplete-check path.
-				markSkipped(out, at, next, len(s))
-				return out, true
-			}
-			if i == 0 || isShellSpaceByte(s[i-1]) || strings.IndexByte(";&|(<>", s[i-1]) >= 0 {
-				to := len(s) - 1
-				if k := strings.IndexByte(s[i:], '\n'); k >= 0 {
-					to = i + k - 1
-				}
-				next = markSkipped(out, at, next, to)
-				i = to
-			}
-		case '!':
-			// Pipeline negation only as a word of its own in command
-			// position: "echo !fi" is an argument, and its fi closes nothing.
-			cmdPos = cmdPos && (i+1 >= len(s) || isShellSpaceByte(s[i+1]) || s[i+1] == '(' || s[i+1] == '{')
-		case ' ', '\t':
-		default:
-			if !isShellNameByte(c) || (i > 0 && isShellNameByte(s[i-1])) {
-				cmdPos = false
-				continue
-			}
-			j := i
-			for j < len(s) && isShellNameByte(s[j]) {
-				j++
-			}
-			assign := j < len(s) && (s[j] == '=' || s[j] == '+' && j+1 < len(s) && s[j+1] == '=')
-			if cmdPos && !assign {
-				// Reserved words count only as command words: "echo if" opens
-				// nothing and "echo fi" closes nothing.
-				switch s[i:j] {
-				case "if", "while", "until", "for", "case", "select":
-					depth++
-				case "fi", "done", "esac":
-					if depth == 0 {
-						// More closers than openers: an opener was missed, so
-						// the depth cannot be trusted. The reading is incomplete.
-						markSkipped(out, at, next, len(s))
-						return out, true
-					}
-					depth--
-				}
-			}
-			word := s[i:j]
-			switch {
-			case funcName:
-				// "function f { ...": the body follows the name.
-				funcName = false
-				cmdPos = true
-			case cmdPos && !assign && word == "function":
-				funcName = true
-				cmdPos = false
-			case word == "if" || word == "while" || word == "until" || word == "then" || word == "do" ||
-				word == "else" || word == "elif" || word == "time" || word == "!":
-				// A reserved word starts a command only in command position:
-				// "echo time fi" is all arguments, and its fi closes nothing.
-				cmdPos = cmdPos && !assign
-			default:
-				cmdPos = assign && cmdPos
-			}
-			if next < len(at) && at[next] < j {
-				i = at[next] - 1
-				continue
-			}
-			i = j - 1
+// shellConditionalAt reports, for each offset in at, whether an assignment
+// starting there may not run, so its name may still be unset where it is used.
+// It fails closed instead of parsing the shell: an assignment counts as certain
+// only when no text before it, and none in its own statement, holds a quote,
+// escape, comment, group, subshell, expansion, pipe, "&", "&&", "||" or
+// reserved word. Every other assignment is read both set and unset, which
+// costs copies, or past the copy budget an incomplete reading, never a missed
+// one.
+func shellConditionalAt(s string, at []int) map[int]bool {
+	uncertain := len(s)
+	for i := 0; i < len(s); i++ {
+		if shellUncertainAt(s, i) {
+			uncertain = i
+			break
 		}
 	}
-	return out, false
+	out := make(map[int]bool, len(at))
+	stmtEnd, stmtUncertain := -1, false
+	for _, a := range at {
+		if a > stmtEnd {
+			stmtEnd, stmtUncertain = shellStatementUncertain(s, a)
+		}
+		out[a] = a > uncertain || stmtUncertain
+	}
+	return out
 }
 
-// markSkipped marks every pending offset up to and including to as
-// conditional and returns the index of the first one after it.
-func markSkipped(out map[int]bool, at []int, next, to int) int {
-	for next < len(at) && at[next] <= to {
-		out[at[next]] = true
-		next++
-	}
-	return next
-}
-
-// shellStatementForks reports whether the statement holding offset i ends in
-// a pipe or "&" before its ";", newline, "&&" or "||": its assignments then
-// run in a subshell or in the background.
-//
-// stop is where the scan decided. The answer holds for every offset up to
-// stop: nothing between decides otherwise, so the caller reuses it instead of
-// rescanning the statement for each assignment in it.
-func shellStatementForks(s string, i int) (forks bool, stop int) {
-	for ; i < len(s); i++ {
-		switch c := s[i]; c {
-		case ';', '\n':
-			return false, i
-		case '\'', '"', '`', '\\', '(', '#':
-			// Quoting, a substitution or a comment can hide the end of the
-			// statement: read the assignment as conditional.
-			return true, i
-		case '&', '|':
-			if i+1 < len(s) && s[i+1] == c {
-				return false, i
-			}
-			if c == '&' && (s[i-1] == '>' || s[i-1] == '<' || i+1 < len(s) && s[i+1] == '>') {
-				continue
-			}
-			return true, i
+// shellStatementUncertain reports whether the statement from offset i to its
+// ";" or newline holds anything shellUncertainAt flags, and where it ends. The
+// answer holds for every later offset in the same statement.
+func shellStatementUncertain(s string, i int) (end int, uncertain bool) {
+	for ; i < len(s) && s[i] != ';' && s[i] != '\n'; i++ {
+		if shellUncertainAt(s, i) {
+			uncertain = true
 		}
 	}
-	return false, len(s)
+	return i, uncertain
+}
+
+// shellUncertainAt reports whether offset i starts text after which an
+// assignment may not run, or that hides where commands start.
+func shellUncertainAt(s string, i int) bool {
+	switch s[i] {
+	case '\'', '"', '`', '\\', '#', '(', ')', '{', '}', '|', '&', '!':
+		return true
+	}
+	if !isShellNameByte(s[i]) || (i > 0 && isShellNameByte(s[i-1])) {
+		return false
+	}
+	j := i
+	for j < len(s) && isShellNameByte(s[j]) {
+		j++
+	}
+	switch s[i:j] {
+	case "if", "then", "else", "elif", "fi", "while", "until", "for", "do", "done",
+		"case", "esac", "select", "function", "time", "coproc":
+		return true
+	}
+	return false
 }
 
 // shellUnsetNames returns the names the text unsets with the unset builtin,
@@ -1476,10 +1332,7 @@ func shellConstructionPass(s string, sb *shellBounds) (out string, changed, fits
 		firsts = append(firsts, at)
 	}
 	slices.Sort(firsts)
-	conditional, ambiguous := shellConditionalAt(s, firsts)
-	if ambiguous {
-		sb.partial = true
-	}
+	conditional := shellConditionalAt(s, firsts)
 	unsetNames, unsetAny := shellUnsetNames(s)
 	mayUnset := make([]bool, len(uses))
 	for i, u := range uses {

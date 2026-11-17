@@ -180,6 +180,9 @@ func TestShellConstructionUseBeforeAssignmentReadsUnset(t *testing.T) {
 		"if false; then echo x{y} fi; Z=echo; fi; " + use,
 		"if false; then echo x(y) fi; Z=echo; fi; " + use,
 		"function f { Z=echo; }; " + use,
+		"if false; then echo " + d + "() fi; Z=echo; fi; " + use,
+		"if false; then echo <() fi; Z=echo; fi; " + use,
+		"f () { Z=echo; }; " + use,
 		"function f() { Z=echo; }; " + use,
 		"if false; then echo " + d + "( (true) ) fi; Z=echo; fi; " + use,
 		"true && A=r; false && Z=echo; B=m; " + d + "Z" + d + "A" + d + "B -rf /tmp/target",
@@ -865,7 +868,7 @@ func TestResolveShellConstructionOutput(t *testing.T) {
 		{"A=r; A+=m; echo " + d + "A", "A=r; A+=m; echo r; echo m; echo rm"},
 		{"A=r; A=" + d + "{A}m; echo " + d + "A", "A=r; A=" + d + "{A}m; echo r; echo m; echo rm"},
 		{"v=IFS;" + d + "{!v}", "v=IFS;" + d + "{IFS}"},
-		{"echo " + d + "HOME " + d + "{UNSET:-x}; Y=1; echo " + d + "Y", "echo " + d + "HOME " + d + "{UNSET:-x}; Y=1; echo 1"},
+		{"echo " + d + "HOME " + d + "{UNSET:-x}; Y=1; echo " + d + "Y", "echo " + d + "HOME " + d + "{UNSET:-x}; Y=1; echo 1; echo ; echo 1"},
 		{"(A=r;B=m); echo " + d + "A" + d + "B", "(A=r;B=m); echo rm; echo ; echo r; echo m; echo rm"},
 	} {
 		out, _, fits := resolveShellConstruction(tc.in)
@@ -1330,8 +1333,8 @@ func TestShellConstructionRandomScriptsDoNotPanic(t *testing.T) {
 	}
 }
 
-// An assignment the nesting scan skips over, inside quoted text or a
-// comment, is read as conditional rather than certain.
+// An assignment after or beside anything the scan does not parse (quotes, a
+// comment, a group, an expansion) is read as conditional rather than certain.
 func TestShellConditionalAtMarksSkippedText(t *testing.T) {
 	for _, tc := range []struct {
 		s  string
@@ -1341,29 +1344,33 @@ func TestShellConditionalAtMarksSkippedText(t *testing.T) {
 		{"echo \"Z=1\"; true", strings.Index("echo \"Z=1\"; true", "=")},
 		{"true # Z=1\ntrue", strings.Index("true # Z=1\ntrue", "=")},
 	} {
-		if out, _ := shellConditionalAt(tc.s, []int{tc.at}); !out[tc.at] {
+		if out := shellConditionalAt(tc.s, []int{tc.at}); !out[tc.at] {
 			t.Errorf("%q: assignment at %d read as certain", tc.s, tc.at)
 		}
 	}
-	if out, _ := shellConditionalAt("Z=1; true", []int{1}); out[1] {
+	if out := shellConditionalAt("Z=1; true", []int{1}); out[1] {
 		t.Errorf("plain assignment read as conditional")
 	}
 
-	// "#" after ")" or "}" may or may not start a comment. The reading is
-	// marked incomplete, the same path as a full copy budget.
+	// Shapes a nesting parser misreads: an ambiguous "#", a closer with no
+	// opener, mismatched brackets, braces inside a word, empty expansions and
+	// function definitions. Each reads the unset Z, so rm is read.
+	use := "A=r; B=m; " + d + "Z" + d + "A" + d + "B -rf /tmp/target"
 	for _, cmd := range []string{
-		"if test -f /nope; then (:)#; fi\nZ=echo\nfi; A=r; B=m; " + d + "Z" + d + "A" + d + "B -rf /tmp/target",
-		"if test -f /nope; then echo " + d + "(true)# fi\nZ=echo\nfi; A=r; B=m; " + d + "Z" + d + "A" + d + "B -rf /tmp/target",
-		"echo " + d + "{x}#; Z=1; echo " + d + "Z",
-		// A closer with no opener before it means the scan missed one.
-		"true; fi; Z=1; echo " + d + "Z",
-		// A closer that does not match its opener loses the count.
-		"echo " + d + "{x:-)}; Z=1; echo " + d + "Z",
-		"{ echo x ); Z=1; echo " + d + "Z",
-		"echo " + d + "{x}#; if test -f /nope; then\nZ=echo\nfi; A=r; B=m; " + d + "Z" + d + "A" + d + "B -rf /tmp/target",
+		"if test -f /nope; then (:)#; fi\nZ=echo\nfi; " + use,
+		"if test -f /nope; then echo " + d + "(true)# fi\nZ=echo\nfi; " + use,
+		"echo " + d + "{x}#; if test -f /nope; then\nZ=echo\nfi; " + use,
+		"true; fi; Z=echo; " + use,
+		"echo " + d + "{x:-)}; Z=echo; " + use,
+		"{ echo x ); Z=echo; " + use,
+		"if false; then echo " + d + "() fi; Z=echo; fi; " + use,
+		"if false; then echo <() fi; Z=echo; fi; " + use,
+		"echo {; (Z=echo); " + use,
+		"f ( ) { Z=echo; }; " + use,
 	} {
-		if _, partial, fits := resolveShellConstruction(cmd); !fits || !partial {
-			t.Errorf("%q: partial=%v fits=%v, want an incomplete reading", cmd, partial, fits)
+		out, _, fits := resolveShellConstruction(cmd)
+		if !fits || !rmStartsCommand.MatchString(out) {
+			t.Errorf("%q: out=%q fits=%v, want the unset reading", cmd, out, fits)
 		}
 	}
 }
