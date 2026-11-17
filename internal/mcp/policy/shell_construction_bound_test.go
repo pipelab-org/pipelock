@@ -856,7 +856,7 @@ func TestResolveShellConstructionOutput(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"x=rm;" + d + "x -rf /tmp", "x=rm;rm -rf /tmp"},
 		// b is unset when a=$b runs, so that assignment is also read empty.
-		{"a=" + d + "b;b=rm;" + d + "a -rf", "a=rm;a=;a=rm;b=rm;rm -rf"},
+		{"a=" + d + "b;b=rm;" + d + "a -rf", "a=rm;a=;a=rm;b=rm;rm -rf; -rf;rm -rf"},
 		{"X=a; X=b; echo " + d + "X", "X=a; X=b; echo a; echo b"},
 		{"X=a; X=b; echo " + d + "X && echo done", "X=a; X=b; echo a && echo b && echo done"},
 		{"X=a; X=b; echo " + d + "X | cat " + d + "X; echo done", "X=a; X=b; echo a | cat a; echo b | cat b; echo done"},
@@ -864,7 +864,7 @@ func TestResolveShellConstructionOutput(t *testing.T) {
 		{"X=a\nX=b\necho " + d + "X\necho done", "X=a\nX=b\necho a\necho b\necho done"},
 		{"X=a; X=b; Y=1; Y=2; echo " + d + "X" + d + "Y", "X=a; X=b; Y=1; Y=2; echo a1; echo b1; echo a2; echo b2"},
 		{"X=a; X=b; cp " + d + "X " + d + "X.bak", "X=a; X=b; cp a a.bak; cp b b.bak"},
-		{"PATH=" + d + "PATH:/x; echo " + d + "PATH", "PATH=" + d + "PATH:/x; echo :/x"},
+		{"PATH=" + d + "PATH:/x; echo " + d + "PATH", "PATH=" + d + "PATH:/x; echo :/x; echo ; echo :/x"},
 		{"A=r; A+=m; echo " + d + "A", "A=r; A+=m; echo r; echo m; echo rm"},
 		{"A=r; A=" + d + "{A}m; echo " + d + "A", "A=r; A=" + d + "{A}m; echo r; echo m; echo rm"},
 		{"v=IFS;" + d + "{!v}", "v=IFS;" + d + "{IFS}"},
@@ -1371,6 +1371,9 @@ func TestShellConditionalAtMarksSkippedText(t *testing.T) {
 		"time -p (Z=echo); " + use,
 		"function f-x { Z=echo; }; " + use,
 		"if false; then echo x{} fi; Z=echo; fi; " + use,
+		// An expansion where a command word goes runs a command, and the
+		// assignment before it belongs to that command only.
+		"U=true; Z=echo " + d + "U; " + use,
 		// Here-document and here-string text is data, not an assignment.
 		"cat <<EOF\nZ=echo\nEOF\n" + use,
 		"cat <<<Z=echo; " + use,
