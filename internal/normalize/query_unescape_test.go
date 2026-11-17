@@ -5,6 +5,7 @@ package normalize
 
 import (
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -12,6 +13,11 @@ func TestQueryUnescapePartial(t *testing.T) {
 	for _, tc := range []struct{ input, want string }{
 		{"", ""},
 		{"plain", "plain"},
+		{"%", "%"},
+		{"%Z", "%Z"},
+		{"%ZZ", "%ZZ"},
+		{"%ZZ+%4Z", "%ZZ %4Z"},
+		{"%ZZ%00%4Ztail", "%ZZ\x00%4Ztail"},
 		{"a+b", "a b"},
 		{"%41%ZZ%42", "A%ZZB"},
 		{"%ZZ%41", "%ZZA"},
@@ -30,6 +36,19 @@ func TestQueryUnescapePartial(t *testing.T) {
 				t.Fatalf("got %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestPartialUnescapeUnchangedAllocations(t *testing.T) {
+	text := strings.Repeat("text %ZZ %4Z % ", 4096)
+	for _, decode := range []func(string) string{QueryUnescapePartial, PercentUnescapePartial} {
+		if allocs := testing.AllocsPerRun(10, func() {
+			if got := decode(text); got != text {
+				t.Fatal("malformed escapes changed")
+			}
+		}); allocs != 0 {
+			t.Fatalf("unchanged text allocated %v objects", allocs)
+		}
 	}
 }
 

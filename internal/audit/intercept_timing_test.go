@@ -34,16 +34,19 @@ func readInterceptEntries(t *testing.T, path string) []map[string]any {
 
 func TestLogInterceptHTTP(t *testing.T) {
 	ctx := LogContext{method: testMethodGet, url: "https://api.vendor.example/v1", clientIP: "10.0.0.5", requestID: "req-7"}
+	bodyTime := 125 * time.Millisecond
 	tests := []struct {
 		name         string
 		timing       InterceptTiming
 		wantUpstream any
 		wantCanceled bool
+		wantBody     any
 	}{
 		{
 			name:         "reached upstream",
-			timing:       InterceptTiming{StatusCode: 200, SizeBytes: 4096, Duration: 900 * time.Millisecond, Upstream: 700 * time.Millisecond, ReachedUpstream: true},
+			timing:       InterceptTiming{StatusCode: 200, SizeBytes: 4096, RequestBody: &bodyTime, Duration: 900 * time.Millisecond, Upstream: 700 * time.Millisecond, ReachedUpstream: true},
 			wantUpstream: float64(700),
+			wantBody:     float64(125),
 		},
 		{
 			name:         "blocked before upstream",
@@ -88,6 +91,11 @@ func TestLogInterceptHTTP(t *testing.T) {
 				t.Errorf("upstream_ms present (%v) for a request that never reached upstream", got)
 			} else if tt.wantUpstream != nil && got != tt.wantUpstream {
 				t.Errorf("upstream_ms = %v, want %v", got, tt.wantUpstream)
+			}
+			if got, ok := e["request_body_ms"]; tt.wantBody == nil && ok {
+				t.Errorf("request_body_ms present without inspection: %v", got)
+			} else if tt.wantBody != nil && got != tt.wantBody {
+				t.Errorf("request_body_ms=%v want=%v", got, tt.wantBody)
 			}
 			if e["request_canceled"] != tt.wantCanceled {
 				t.Errorf("request_canceled = %v, want %v", e["request_canceled"], tt.wantCanceled)

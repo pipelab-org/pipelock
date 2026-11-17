@@ -193,6 +193,63 @@ func TestScanRequestBodyCancellationDuringViewWarnings(t *testing.T) {
 	}
 }
 
+// A warning hook cancels after the first scalar was inspected. Later
+// scalars and joined/raw views must not start, even though the scanner's
+// direct API would still collect findings with a precanceled context.
+func TestBodyDLPViewsCancelStopsLaterWork(t *testing.T) {
+	cfg := testScannerConfig()
+	cfg.DLP.ScanEnv = false
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name: "Cancel first field", Regex: `zzcancelviewzz`, Severity: config.SeverityLow, Action: config.ActionWarn,
+	})
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var warnings int
+	sc.SetDLPWarnHook(func(context.Context, string, string) { warnings++; cancel() })
+	matches := scanBodyTextViewsForDLPWithAudience(ctx, sc, bodyDLPViews{
+		texts:       []string{fakeAPIKey() + " zzcancelviewzz", fakeGitHubToken()},
+		rawDocument: `{"message":"zzcancelviewzz"}`,
+	}, "", nil, nil, false, nil, "body", nil)
+	if warnings != 1 {
+		t.Fatalf("later views ran after cancellation: warnings=%d", warnings)
+	}
+	var keptCore bool
+	for _, match := range matches {
+		if match.PatternName == "AWS Access ID" {
+			keptCore = true
+		}
+		if match.PatternName == "GitHub Token" {
+			t.Fatal("later scalar was scanned after cancellation")
+		}
+	}
+	if !keptCore {
+		t.Fatalf("finding collected before cancellation was lost: %v", dlpMatchNames(matches))
+	}
+	ctx2, cancel2 := context.WithCancel(t.Context())
+	defer cancel2()
+	sc.SetDLPWarnHook(func(context.Context, string, string) { cancel2() })
+	body := fmt.Sprintf(`{"first":%q,"second":%q}`, fakeAPIKey()+" zzcancelviewzz", fakeGitHubToken())
+	replay, result := scanRequestBody(ctx2, BodyScanRequest{
+		Body: strings.NewReader(body), ContentType: contentTypeJSON,
+		MaxBytes: len(body) + 1, Scanner: sc, Action: config.ActionWarn,
+	})
+	if result.Clean || result.ScanError == "" || !isFailClosedBodyResult(result, replay) || !scanner.ContainsCoreCriticalMatch(result.DLPMatches) {
+		t.Fatalf("canceled body must keep its earlier finding and refuse replay: %+v", result)
+	}
+}
+
+func TestBodyDLPViewsPrecancelDoesNotStartScanner(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if matches := scanBodyTextViewsForDLPWithAudience(ctx, nil, bodyDLPViews{
+		texts: []string{"ordinary content"}, rawJSON: `{"count":1}`, rawDocument: `{"count":1}`,
+	}, "", nil, nil, false, nil, "body", nil); len(matches) != 0 {
+		t.Fatalf("unstarted scan returned findings: %v", matches)
+	}
+}
+
 func fakeGitHubToken() string {
 	return "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl"
 }
@@ -242,6 +299,98 @@ func BenchmarkScanRequestBodyLongTranscript(b *testing.B) {
 		if result := scan(body); !result.Clean {
 			b.Fatal("benign transcript changed verdict")
 		}
+	}
+}
+
+// Include escape-heavy natural text and tool schemas: a prose transcript alone
+// understates the work performed for code and structured agent histories.
+func BenchmarkScanRequestBodyAgentHistory(b *testing.B) {
+	const markdown = "## Report files\n\n| File | State | Version |\n|---|---|---|\n| output.json | reviewed | 3 |\n\n" +
+		"The report contains a row for each ordinary operation. " +
+		"[Report details](https://api.vendor.example/reports?state=ready%20items&page=3)\n\n" +
+		"```json\n{\"path\":\"C:\\\\work\\\\reports\\\\output.json\",\"state\":\"ready\",\"sequence\":37}\n```\n"
+	const source = "func renderReport(rows []Row) string {\n" +
+		"\tvar out strings.Builder\n\tfor index, row := range rows {\n" +
+		"\t\tfmt.Fprintf(&out, \"row=%d path=%q state=%s\\n\", index, row.Path, row.State)\n" +
+		"\t}\n\treturn out.String()\n}\n"
+	for _, tc := range []struct {
+		name, content string
+		bytes         int
+		knownSecret   bool
+	}{
+		{name: "markdown_64KiB", content: markdown, bytes: 64 << 10},
+		{name: "source_64KiB", content: source, bytes: 64 << 10},
+		{name: "tools_256KiB", content: markdown + source, bytes: 256 << 10},
+		{name: "tools_known_value_256KiB", content: markdown + source, bytes: 256 << 10, knownSecret: true},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			cfg := testScannerConfig()
+			cfg.DLP.ScanEnv = false
+			if tc.knownSecret {
+				path := filepath.Join(b.TempDir(), "synthetic-secrets")
+				if err := os.WriteFile(path, []byte(highEntropyFiller(40)+"\n"), 0o600); err != nil {
+					b.Fatal(err)
+				}
+				cfg.DLP.SecretsFile = path
+			}
+			sc := scanner.MustNew(cfg)
+			b.Cleanup(sc.Close)
+			text := strings.Repeat(tc.content, tc.bytes/len(tc.content)+1)[:tc.bytes]
+			messages := []map[string]any{{"role": "user", "content": "Prepare the current report."}}
+			for len(text) > 0 {
+				n := min(len(text), 4096)
+				messages = append(messages, map[string]any{"role": "tool", "content": text[:n]})
+				text = text[n:]
+			}
+			var tools []map[string]any
+			for index := range 22 {
+				tools = append(tools, map[string]any{
+					"type": "function",
+					"function": map[string]any{
+						"name":        fmt.Sprintf("report_entry_%d", index),
+						"description": "Returns report entries with a structured summary and an output path.\n\n" + tc.content,
+						"parameters": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"path":     map[string]any{"type": "string", "description": "Path of the report file."},
+								"format":   map[string]any{"type": "string", "enum": []string{"json", "text"}},
+								"sequence": map[string]any{"type": "integer", "description": "Sequence within the current report."},
+							},
+						},
+					},
+				})
+			}
+			encode := func() []byte {
+				body, err := json.Marshal(map[string]any{"messages": messages, "tools": tools, "max_tokens": 2048})
+				if err != nil {
+					b.Fatal(err)
+				}
+				return body
+			}
+			scan := func(body []byte) BodyScanResult {
+				_, result := scanRequestBody(b.Context(), BodyScanRequest{
+					Body: bytes.NewReader(body), ContentType: "application/json",
+					MaxBytes: len(body) + 1, Scanner: sc, Action: config.ActionBlock,
+				})
+				return result
+			}
+			body := encode()
+			if result := scan(body); !result.Clean {
+				b.Fatalf("ordinary agent history refused: reason=%s scan_error=%s patterns=%v", result.Reason, result.ScanError, dlpMatchNames(result.DLPMatches))
+			}
+			messages = append(messages, map[string]any{"role": "tool", "content": fakeGitHubToken()})
+			if result := scan(encode()); result.Clean || len(result.DLPMatches) == 0 || result.ScanError != "" || scanner.HasInspectionLimit(result.DLPMatches) {
+				b.Fatal("late credential must be detected by a completed scan")
+			}
+			b.SetBytes(int64(len(body)))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				if result := scan(body); !result.Clean {
+					b.Fatal("ordinary agent history changed verdict")
+				}
+			}
+		})
 	}
 }
 

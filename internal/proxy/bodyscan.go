@@ -1189,9 +1189,14 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	disabledDLP := bodyDLPDisabledSet(req.DisablePatterns)
 	var matches []scanner.TextDLPMatch
 	for _, view := range bodyDLPExtractionViews(buf, dlpExtracted, fileTexts) {
+		if ctx.Err() != nil {
+			break
+		}
 		matches = append(matches, scanBodyTextViewsForDLPWithAudience(ctx, req.Scanner, view, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, onDropped, audienceSurface, collectAudienceAllow)...)
 	}
-	matches = append(matches, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, dlpExtracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, onDropped, audienceSurface, collectAudienceAllow)...)
+	if ctx.Err() == nil {
+		matches = append(matches, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, dlpExtracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, onDropped, audienceSurface, collectAudienceAllow)...)
+	}
 	matches = uniqueBodyDLPMatches(matches)
 	if len(matches) > 0 {
 		result.DLPMatches = matches
@@ -1203,6 +1208,9 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 			result.RedactedDLPOnly = redactReport != nil && redactReport.Applied
 			action = config.StrongestAction(action, requestBodyDLPAction(preRedactionDLP, req.Action, req.PatternActions))
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return stopIncompleteBodyScan(result, err.Error())
 	}
 	if dnsInspection.Parsed {
 		entropyTexts = dnsInspection.EntropyTexts
@@ -1922,6 +1930,12 @@ func bodyJSONCardView(body []byte, atoms []extract.DLPAtom) string {
 }
 
 func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanner, views bodyDLPViews, target string, suppress []config.SuppressEntry, disabled map[string]struct{}, allowEmbeddedSigV4 bool, onDropped func(scanner.TextDLPMatch, string), audienceSurface string, onAudienceAllow func(scanner.CredentialAudienceAllow)) []scanner.TextDLPMatch {
+	// The scanner's direct API preserves findings for an already-canceled
+	// context. A body caller must not start more work with that context; its
+	// enclosing scan refuses incomplete inspection after retaining findings.
+	if ctx.Err() != nil {
+		return nil
+	}
 	texts := views.texts
 	cards := views.cards
 	if len(cards) != len(texts) {
@@ -1950,6 +1964,9 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 		allMatches = append(allMatches, filterMatches(sc.ScanJSONCardRuns(ctx, views.rawJSON))...)
 	}
 	for i, text := range texts {
+		if ctx.Err() != nil {
+			break
+		}
 		var result scanner.TextDLPResult
 		if allowEmbeddedSigV4 {
 			result = sc.ScanRequestBodyTextPartsWithCardViews(ctx, []string{text}, []string{cards[i]}, "")
@@ -1972,6 +1989,9 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 	var scanOrdered, scanRaw func()
 	if views.rawDocument != "" {
 		scanRaw = func() {
+			if ctx.Err() != nil {
+				return
+			}
 			if allowEmbeddedSigV4 {
 				raw = sc.ScanRequestBodyTextPartsWithCardViews(rawCtx, []string{views.rawDocument}, []string{""}, "")
 			} else {
@@ -1988,6 +2008,9 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 		}
 		if hasNumber {
 			scanOrdered = func() {
+				if ctx.Err() != nil {
+					return
+				}
 				if allowEmbeddedSigV4 {
 					ordered = sc.ScanRequestBodyTextPartsWithCardAtoms(orderedCtx, texts, atoms, bodyDLPJoinSeparator)
 				} else {
@@ -1997,6 +2020,9 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 		}
 	}
 	runBodyDLPViewScans(scanOrdered, scanRaw, func() {
+		if ctx.Err() != nil {
+			return
+		}
 		indices := make([]int, len(texts))
 		for i := range indices {
 			indices[i] = i
@@ -2032,7 +2058,7 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 	}
 	recordUniqueBodyDLPDrops(dropped, onDropped)
 	// Emit audience allows only for a clean result, matching the header path.
-	if onAudienceAllow != nil && len(allMatches) == 0 {
+	if onAudienceAllow != nil && len(allMatches) == 0 && ctx.Err() == nil {
 		for _, allow := range uniqueCredentialAudienceAllows(audienceAllows) {
 			onAudienceAllow(allow)
 		}

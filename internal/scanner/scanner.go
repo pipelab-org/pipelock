@@ -2889,16 +2889,14 @@ const (
 )
 
 // encodedTokenBytes tabulates isEncodedTokenByte for every kind and byte, and
-// foldedBase32TokenBytes the base32 answer after ASCII uppercase folding. The
+// foldedEncodedTokenBytes the same answer after ASCII uppercase folding. The
 // tables are built from the function, so they cannot disagree with it.
-var encodedTokenBytes, foldedBase32TokenBytes = func() (table [encodedTokenKinds][256]bool, folded [256]bool) {
+var encodedTokenBytes, foldedEncodedTokenBytes = func() (table, folded [encodedTokenKinds][256]bool) {
 	for kind := range encodedTokenKinds {
 		for c := range 256 {
 			table[kind][c] = isEncodedTokenByte(byte(c), kind)
+			folded[kind][c] = isEncodedTokenByte(asciiUpperByte(byte(c)), kind)
 		}
-	}
-	for c := range 256 {
-		folded[c] = isEncodedTokenByte(asciiUpperByte(byte(c)), encodedTokenBase32)
 	}
 	return table, folded
 }()
@@ -3059,7 +3057,9 @@ func decodeEncodingsModeInto(out []decodedResult, s string, minPrefix int) []dec
 		// input cannot be one. Skip the decoder's allocation.
 		hexErr = hex.ErrLength
 	} else {
-		decodedHex, hexErr = hex.DecodeString(s)
+		// A decode stops at the first non-hex byte, so bytes after it never
+		// reach the output. Hand the decoder only what it can consume.
+		decodedHex, hexErr = hex.DecodeString(s[:hexDecodeEnd(s)])
 	}
 	if (hexErr == nil || minPrefix > 0) && len(decodedHex) >= max(minPrefix, 1) {
 		out = append(out, decodedResult{text: string(decodedHex), encoding: encodingHex})
@@ -3072,10 +3072,11 @@ func decodeEncodingsModeInto(out []decodedResult, s string, minPrefix int) []dec
 			}
 		}
 	}
-	// Every base64 variant below is no longer than s. One raw-size scratch
-	// buffer therefore covers all attempts without retaining mutable output.
+	// Raw variants stop at the first byte outside both RFC 4648 alphabets;
+	// separator-stripped variants already have a bounded carrier length.
+	// Size scratch for those outputs rather than an unrelated suffix of s.
 	var smallBase64Buffer [256]byte
-	decodedSize := base64.RawStdEncoding.DecodedLen(len(s))
+	decodedSize := base64DecodeScratchLen(s)
 	base64Buffer := smallBase64Buffer[:]
 	if decodedSize > len(base64Buffer) {
 		base64Buffer = make([]byte, decodedSize)
@@ -3115,18 +3116,7 @@ func decodeEncodingsModeInto(out []decodedResult, s string, minPrefix int) []dec
 	}
 	// Keep the existing standard/URL-safe views and append the mixed view;
 	// a new carrier must not replace an older liberal normalization result.
-	if mixed := canonicalMixedBase64(s); mixed != s {
-		for _, decoded := range decodeBase64PaddingVariants(mixed, base64.StdEncoding, base64.RawStdEncoding, base64Buffer, minPrefix) {
-			out = appendBase64View(out, decoded)
-		}
-		// Canonicalize alphabet symbols before stripping separators so neither
-		// family's data bytes are discarded. Reuse the reassembly bound.
-		if normalized := normalizeEncodedToken(mixed, encodedTokenBase64Std); normalized != "" {
-			for _, decoded := range decodeBase64PaddingVariants(normalized, base64.StdEncoding, base64.RawStdEncoding, base64Buffer, minPrefix) {
-				out = appendBase64View(out, decoded)
-			}
-		}
-	}
+	out = appendMixedBase64Views(out, s, base64Buffer, minPrefix)
 	// RFC 4648 base32 and base32hex are case-insensitive. Folding to ASCII
 	// uppercase before decode accepts lower and mixed case without treating
 	// that fold as a separate base32 alphabet. Canonical recipe replay keeps
@@ -3145,22 +3135,31 @@ func decodeEncodingsModeInto(out []decodedResult, s string, minPrefix int) []dec
 		}
 		return out
 	}
-	foldedBase32 := normalize.ASCIIUpper(s)
-	out = appendBase32DecodesMode(out, foldedBase32, minPrefix)
-	if normalized := normalizeEncodedToken(foldedBase32, encodedTokenBase32); normalized != "" && normalized != foldedBase32 {
-		out = appendBase32DecodesMode(out, normalized, minPrefix)
-	}
-	if minPrefix > 0 {
-		// The standard-alphabet view above deletes extended-hex digits, so
-		// glue around a base32hex value needs its own stripped view. Known
-		// values match exact bytes, so this extra view cannot widen patterns.
-		// The standard alphabet already has its own stripped view.
-		if normalized := normalizeEncodedToken(foldedBase32, encodedTokenBase32Hex); normalized != "" && normalized != foldedBase32 {
-			out = appendBase32AlphabetDecodes(out, normalized, minPrefix, base32HexAlphabet)
-		}
-	}
+	out = appendKnownBase32Views(out, s, minPrefix)
 	if decoded := normalize.DecodeJSONUnicodeEscapes(s); decoded != s && decoded != "" {
 		out = append(out, decodedResult{text: decoded, encoding: encodingJSONUnicode})
+	}
+	return out
+}
+
+// appendKnownBase32Views is the known-prefix base32 pass of
+// decodeEncodingsModeInto: the ASCII-uppercase fold of s under each alphabet,
+// then the separator-stripped views. Each alphabet reads only the folded bytes
+// its decoder can consume, so a long carrier of other text is not folded in
+// full. The stripped views read s directly for the same reason.
+func appendKnownBase32Views(out []decodedResult, s string, minPrefix int) []decodedResult {
+	for i, alphabet := range base32Alphabets {
+		out = appendBase32AlphabetDecodes(out, foldedBase32DecodeInput(s, alphabet.hex), minPrefix, base32Alphabets[i:i+1])
+	}
+	if normalized := normalizeFoldedToken(s, encodedTokenBase32); normalized != "" {
+		out = appendBase32DecodesMode(out, normalized, minPrefix)
+	}
+	// The standard-alphabet view above deletes extended-hex digits, so glue
+	// around a base32hex value needs its own stripped view. Known values match
+	// exact bytes, so this extra view cannot widen patterns. The standard
+	// alphabet already has its own stripped view.
+	if normalized := normalizeFoldedToken(s, encodedTokenBase32Hex); normalized != "" {
+		out = appendBase32AlphabetDecodes(out, normalized, minPrefix, base32HexAlphabet)
 	}
 	return out
 }
@@ -3321,6 +3320,9 @@ func appendBase32AlphabetDecodes(out []decodedResult, value string, minPrefix in
 		if !base32PrefixPossible(prefix, alphabet.hex) {
 			continue
 		}
+		// Both decoders stop at the first plain invalid byte, with the same
+		// count and error offset, before reading anything after it.
+		value := value[:base32DecodeEnd(value, alphabet.hex, false)]
 		paddedText := ""
 		decoded, err := alphabet.padded.DecodeString(value)
 		paddedComplete := err == nil
@@ -3371,16 +3373,71 @@ func base32PrefixPossible(value string, hexAlphabet bool) bool {
 		if c == '\r' || c == '\n' {
 			continue
 		}
-		if hexAlphabet {
-			if c >= '0' && c <= '9' || c >= 'A' && c <= 'V' {
-				continue
-			}
-		} else if c >= 'A' && c <= 'Z' || c >= '2' && c <= '7' {
+		if base32AlphabetByte(c, hexAlphabet) {
 			continue
 		}
 		return false
 	}
 	return true
+}
+
+// base32AlphabetByte reports whether c is a data symbol of RFC 4648 section 6
+// (A-Z, 2-7) or section 7 (0-9, A-V). Both tables are uppercase.
+func base32AlphabetByte(c byte, hexAlphabet bool) bool {
+	if hexAlphabet {
+		return c >= '0' && c <= '9' || c >= 'A' && c <= 'V'
+	}
+	return c >= 'A' && c <= 'Z' || c >= '2' && c <= '7'
+}
+
+// base32DecodeEnd returns how much of value a base32 decoder can consume. The
+// decoder ignores CR and LF, accepts data symbols, and stops with an error at
+// the first other byte, having written exactly the groups before it. That byte
+// is included so the error and its offset are unchanged. A padding byte ('='
+// or Go's raw-mode 0xff sentinel) before it makes the decoder look at the
+// bytes that follow and count how many remain, so the whole value is used.
+// With fold, bytes are read as normalize.ASCIIUpper writes them: every byte
+// of 0x80 or more becomes bytes of 0x80 or more and never 0xff or '=', so it
+// is a plain invalid byte at the same offset.
+func base32DecodeEnd(value string, hexAlphabet, fold bool) int {
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if fold {
+			if c >= utf8.RuneSelf {
+				return i + 1
+			}
+			c = asciiUpperByte(c)
+		}
+		if c == '\r' || c == '\n' || base32AlphabetByte(c, hexAlphabet) {
+			continue
+		}
+		if c == '=' || c == 0xff {
+			return len(value)
+		}
+		return i + 1
+	}
+	return len(value)
+}
+
+// foldedBase32DecodeInput is normalize.ASCIIUpper(s) cut where base32DecodeEnd
+// says the decoder stops, so only those bytes are copied. The data prefix is
+// ASCII, with identical folding and offsets. A final non-ASCII byte may be
+// repaired when cut from its rune; both spellings fail at that same byte.
+func foldedBase32DecodeInput(s string, hexAlphabet bool) string {
+	return normalize.ASCIIUpper(s[:base32DecodeEnd(s, hexAlphabet, true)])
+}
+
+// hexDecodeEnd returns how much of s hex.Decode can consume: it writes the
+// pairs before the first non-hex byte and reports that byte, or reports an odd
+// length only when no byte is invalid. The invalid byte is included.
+func hexDecodeEnd(s string) int {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return i + 1
+		}
+	}
+	return len(s)
 }
 
 // decodeEncodingsRecursiveWithDecodes decodes reconstructed URL targets through
@@ -3423,6 +3480,8 @@ func decodeEncodingsBudgetMode(s string, includeURL bool, minPrefix int, inbound
 // decodeBudgetMode keeps view accounting separate from warning policy. An
 // outbound card-only pass uses inbound accounting without gaining new refusals.
 type decodeBudgetMode struct {
+	knownCredit      int
+	knownResumed     *bool
 	inbound          bool
 	reportWorkLimits bool
 }
@@ -3435,12 +3494,33 @@ func decodeEncodingsForScan(s string, includeURL bool, minPrefix int, mode decod
 		// Keep the size shortcut and the outbound card-only pass policy.
 		return nil, !mode.reportWorkLimits
 	}
+	if !mode.inbound && minPrefix > 0 && mode.knownCredit > 0 && sources == nil {
+		return decodeKnownEncodingsForScan(s, includeURL, minPrefix, mode)
+	}
 	var seen decodeSeen
 	seen.add(s)
 	var queue [8]string
 	// Views collect on the stack and are copied once at their final size.
 	var views [32]decodedResult
 	collected, complete := runDecodeWalk(mode, append(queue[:0], s), nil, &seen, includeURL, minPrefix, false, views[:0], sources)
+	collected, phasesComplete := finishDecodePhases(s, collected, &seen, decodePhaseOptions{includeURL: includeURL, minPrefix: minPrefix, mode: mode, sources: sources})
+	if len(collected) == 0 {
+		return nil, complete && phasesComplete
+	}
+	return slices.Clone(collected), complete && phasesComplete
+}
+
+// finishDecodePhases is shared by ordinary and resumable outbound walks. Keeping
+// saved continuation state outside this function lets ordinary scratch stay local.
+type decodePhaseOptions struct {
+	mode       decodeBudgetMode
+	includeURL bool
+	minPrefix  int
+	sources    *keywordDecodeSources
+}
+
+func finishDecodePhases(s string, collected []decodedResult, seen *decodeSeen, opts decodePhaseOptions) ([]decodedResult, bool) {
+	phasesComplete := true
 
 	// Entity roots: the input and every first-part view whose entity decoding
 	// differs. The first part already expanded those texts' other layers.
@@ -3454,30 +3534,27 @@ func decodeEncodingsForScan(s string, includeURL bool, minPrefix int, mode decod
 			continue
 		}
 		decoded, converged := decodeHTMLEntitiesChecked(text)
-		complete = complete && converged
+		phasesComplete = phasesComplete && converged
 		if decoded != text && decoded != "" {
 			root := decodedResult{text: decoded, encoding: encodingHTML}
-			if sources != nil {
-				root.source = sources.add(text, decoded, encodingHTML)
+			if opts.sources != nil {
+				root.source = opts.sources.add(text, decoded, encodingHTML)
 			}
 			roots = append(roots, root)
 		}
 	}
 	if len(roots) > 0 {
-		htmlViews, htmlComplete := runDecodeWalk(mode, nil, roots, &seen, includeURL, minPrefix, true, nil, sources)
+		htmlViews, htmlComplete := runDecodeWalk(opts.mode, nil, roots, seen, opts.includeURL, opts.minPrefix, true, nil, opts.sources)
 		collected = append(collected, htmlViews...)
-		complete = complete && htmlComplete
+		phasesComplete = phasesComplete && htmlComplete
 	}
 	// Existing decode results retain their admission order and budget. Tag
 	// segments expand afterward under the same ceilings, so extra views cannot
 	// displace a finding from the original graph.
-	tagViews, tagComplete := decodeTagSegmentViews(collected, &seen, includeURL, minPrefix, mode, sources)
+	tagViews, tagComplete := decodeTagSegmentViews(collected, seen, opts.includeURL, opts.minPrefix, opts.mode, opts.sources)
 	collected = append(collected, tagViews...)
-	complete = complete && tagComplete
-	if len(collected) == 0 {
-		return nil, complete
-	}
-	return slices.Clone(collected), complete
+	phasesComplete = phasesComplete && tagComplete
+	return collected, phasesComplete
 }
 
 // decodeTagSegmentViews discovers segments in every tag view, including tags
@@ -3549,59 +3626,7 @@ func runDecodeWalk(mode decodeBudgetMode, queue []string, start []decodedResult,
 // same admission rule and their own recursive budget. Admitted views are
 // appended to out; existing entries retain their candidate admission slots.
 func decodeEncodingsWalkTracked(out []decodedResult, queue []string, start []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, withHTML bool, sources *keywordDecodeSources) ([]decodedResult, bool) {
-	consumed := 0
-	freeRoots := len(queue)
-	complete := true
-	admit := func(d decodedResult) bool {
-		if len(d.text) < max(minPrefix, 1) {
-			return true
-		}
-		if seen.has(d.text) {
-			return true
-		}
-		if len(out) >= maxDecodeCandidates {
-			return false
-		}
-		seen.add(d.text)
-		out = append(out, d)
-		queue = append(queue, d.text)
-		return true
-	}
-	for _, d := range start {
-		if !admit(d) {
-			return out, false
-		}
-	}
-	var scratch [16]decodedResult
-	views := scratch[:0]
-	for head := 0; head < len(queue); head++ {
-		var stepComplete bool
-		views, stepComplete = decodeEncodingsOnceInto(views[:0], queue[head], includeURL, minPrefix, withHTML)
-		complete = complete && stepComplete
-		charged := head < freeRoots
-		for _, d := range views {
-			if sources != nil {
-				d.source = sources.add(queue[head], d.text, d.encoding)
-			}
-			if len(d.text) < max(minPrefix, 1) {
-				continue
-			}
-			if seen.has(d.text) {
-				continue
-			}
-			if !charged {
-				if len(queue[head]) > maxDecodeTotalBytes-consumed {
-					return out, false
-				}
-				consumed += len(queue[head])
-				charged = true
-			}
-			if !admit(d) {
-				return out, false
-			}
-		}
-	}
-	return out, complete
+	return decodeOutboundWalk(out, queue, start, seen, outboundDecodeOptions{includeURL: includeURL, minPrefix: minPrefix, withHTML: withHTML, sources: sources})
 }
 
 // decodeEncodingsOnceInto appends one decode step's views of s to out. A walk
@@ -7199,15 +7224,23 @@ func base32FoldedDecodePossible(s string) bool {
 	return true
 }
 
-// normalizeFoldedBase32Token is normalizeEncodedToken(normalize.ASCIIUpper(s),
-// encodedTokenBase32) without the folded copy. The fold changes only ASCII
-// letters and writes bytes of at least 0x80 for every other byte, none of
-// which the base32 alphabet keeps, so the kept bytes are s's ASCII bytes
-// folded. A token that keeps every byte, too few or too many returns "".
+// normalizeFoldedBase32Token is normalizeFoldedToken for the base32 alphabet.
 func normalizeFoldedBase32Token(s string) string {
+	return normalizeFoldedToken(s, encodedTokenBase32)
+}
+
+// normalizeFoldedToken is normalizeEncodedToken(normalize.ASCIIUpper(s), kind)
+// without the folded copy, for the base32 kinds. The fold changes only ASCII
+// letters and writes bytes of at least 0x80 for every other byte, none of
+// which those alphabets keep, so the kept bytes are s's ASCII bytes folded. A
+// token that keeps every byte, too few or too many returns "". Keeping every
+// byte means the result would equal the fold itself, which callers already
+// hold as their first view.
+func normalizeFoldedToken(s string, kind encodedTokenKind) string {
+	table := &foldedEncodedTokenBytes[kind]
 	kept, complete := 0, true
 	for i := 0; i < len(s); i++ {
-		if foldedBase32TokenBytes[s[i]] {
+		if table[s[i]] {
 			kept++
 		} else {
 			complete = false
@@ -7218,7 +7251,7 @@ func normalizeFoldedBase32Token(s string) string {
 	}
 	b := make([]byte, 0, kept)
 	for i := 0; i < len(s); i++ {
-		if foldedBase32TokenBytes[s[i]] {
+		if table[s[i]] {
 			b = append(b, asciiUpperByte(s[i]))
 		}
 	}

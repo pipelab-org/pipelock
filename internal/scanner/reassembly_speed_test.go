@@ -303,16 +303,16 @@ func TestSharedDecodedCoreNormalization(t *testing.T) {
 	shared := sharedDecodesFrom(ctx)
 	plain := inspectionLimitAWSKey()
 	separated := plain[:4] + "\u200b" + plain[4:]
-	first := shared.matchDecoded(decodedMatchKey{scanner: sc, text: plain, encoding: encodingBase64, core: true})
-	second := shared.matchDecoded(decodedMatchKey{scanner: sc, text: separated, encoding: encodingBase64, core: true})
+	first := shared.matchDecoded(decodedMatchKey{scanner: sc, text: plain, encoding: encodingBase64, core: true}, nil)
+	second := shared.matchDecoded(decodedMatchKey{scanner: sc, text: separated, encoding: encodingBase64, core: true}, nil)
 	if len(first) == 0 || !reflect.DeepEqual(first, second) || len(shared.store.decodedMatches) != 1 {
 		t.Fatal("core normalization changed findings or repeated matching")
 	}
 	if _, ok := (&decodingMemo{shared: shared}).cachedDecodedMatches(decodedMatchKey{scanner: sc, text: plain, encoding: encodingBase64, core: true}); ok {
 		t.Fatal("normalized cache key aliased a raw-source lookup")
 	}
-	shared.matchDecoded(decodedMatchKey{scanner: sc, text: plain, encoding: encodingBase64})
-	shared.matchDecoded(decodedMatchKey{scanner: sc, text: separated, encoding: encodingBase64})
+	shared.matchDecoded(decodedMatchKey{scanner: sc, text: plain, encoding: encodingBase64}, nil)
+	shared.matchDecoded(decodedMatchKey{scanner: sc, text: separated, encoding: encodingBase64}, nil)
 	if len(shared.store.decodedMatches) != 3 {
 		t.Fatal("configured source identity was lost")
 	}
@@ -320,8 +320,8 @@ func TestSharedDecodedCoreNormalization(t *testing.T) {
 	// an ASCII credential byte. A normalized cache key must not skip that pass.
 	raw := plain[:4] + "\u0401" + plain[5:]
 	once := normalize.ForDLP(raw)
-	before := shared.matchDecoded(decodedMatchKey{scanner: sc, text: raw, encoding: encodingHex, core: true})
-	after := shared.matchDecoded(decodedMatchKey{scanner: sc, text: once, encoding: encodingHex, core: true})
+	before := shared.matchDecoded(decodedMatchKey{scanner: sc, text: raw, encoding: encodingHex, core: true}, nil)
+	after := shared.matchDecoded(decodedMatchKey{scanner: sc, text: once, encoding: encodingHex, core: true}, nil)
 	if len(before) != 0 || len(after) == 0 {
 		t.Fatal("normalization depth was lost", before, after)
 	}

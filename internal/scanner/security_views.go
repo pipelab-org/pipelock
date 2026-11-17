@@ -29,26 +29,36 @@ func rawQuerySecurityPairs(query string) []rawQuerySecurityPair {
 // decodedKnownSecretViews shares the bounded candidate graph used for pattern
 // DLP. Matching encoded representations alone misses secrets inside a carrier.
 func (s *Scanner) decodedKnownSecretViews(text string, decodes *decodingMemo) []spanTextView {
+	// A root's decode run lives only for this call: the tag views below read
+	// the run add(text) holds. Later checks recompute through the memo, whose
+	// retained bytes stay charged, rather than holding graphs across checks.
 	var views []spanTextView
 	seen := make(map[string]struct{})
 	minimum := min(minKnownSecretSubstringLen, s.minEnvSecretLen)
-	add := func(value string) {
+	// The root's tag views below repeat the root decode add(text) made.
+	var rootRun decodedRun
+	add := func(value string, root bool) {
 		// Decoding cannot grow a candidate; shorter input cannot contain a
 		// whole configured secret or an eligible partial-secret window.
 		if len(value) < minimum {
 			return
 		}
 		// Complete decodes come from the graph pattern DLP shares, under its
-		// own budget. Recovered prefixes walk a separate graph, so a large
-		// recoverable carrier cannot spend the budget those views rely on.
-		for _, decoded := range decodes.decode(value, true) {
+		// own byte budget. Recovered prefixes walk a separate graph and may
+		// use the completed base walk's unused candidate slots.
+		var baseRun *decodedRun
+		if root {
+			baseRun = &rootRun
+		}
+		base := decodes.decodeRun(value, true, 0, 0, baseRun)
+		for _, decoded := range base {
 			if decoded.encoding == encodingUnicodeTags {
 				decoded.text = decodes.normalize(decoded.text)
 			}
 			seen[decoded.text] = struct{}{}
 			views = append(views, spanTextView{text: decoded.text, viewLabel: dlpViewLabel(decoded.encoding)})
 		}
-		for _, decoded := range decodes.decodeKnownSecret(value, minimum) {
+		for _, decoded := range decodes.decodeKnownSecretRun(value, minimum, base, nil) {
 			if _, ok := seen[decoded.text]; ok {
 				continue
 			}
@@ -56,20 +66,31 @@ func (s *Scanner) decodedKnownSecretViews(text string, decodes *decodingMemo) []
 			views = append(views, spanTextView{text: decoded.text, viewLabel: dlpViewLabel(decoded.encoding)})
 		}
 	}
-	add(text)
-	for _, decoded := range decodes.decode(text, true) {
+	add(text, true)
+	for _, decoded := range decodes.decodeAgain(text, rootRun) {
 		if decoded.encoding == encodingUnicodeTags {
 			for _, segment := range textDLPSegments(decodes.normalize(decoded.text)) {
-				add(segment)
+				add(segment, false)
 			}
 		}
 	}
 	for _, segment := range textDLPSegments(text) {
 		if segment != text {
-			add(segment)
+			add(segment, false)
 		}
 	}
 	return views
+}
+
+// knownSecretRoots are the texts one known-secret check builds decoded views
+// for. Each is a pure function of the checked text.
+type knownSecretRoots struct {
+	original, decoded, percent string
+}
+
+func newKnownSecretRoots(original string) knownSecretRoots {
+	text := normalize.ForDLP(original)
+	return knownSecretRoots{original: original, decoded: IterativeDecode(text), percent: iterativePercentDecode(text)}
 }
 
 // The fixpoint graph already provides encoding layers as separate views. Only

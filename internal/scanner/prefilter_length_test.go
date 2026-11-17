@@ -34,7 +34,7 @@ func TestDecodedLengthAdmission(t *testing.T) {
 					t.Fatal("unscreened regexp admitted a rejected candidate")
 				}
 				shared := &sharedDecodes{}
-				got := shared.matchDecoded(decodedMatchKey{scanner: sc, text: input, encoding: "test"})
+				got := shared.matchDecoded(decodedMatchKey{scanner: sc, text: input, encoding: "test"}, nil)
 				if !reflect.DeepEqual(got, want) {
 					t.Fatalf("length admission changed findings for %q: got %+v want %+v", input, got, want)
 				}

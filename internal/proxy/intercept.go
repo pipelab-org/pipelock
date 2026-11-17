@@ -686,6 +686,7 @@ func newInterceptHandler(
 		timing := &interceptTimingWriter{ResponseWriter: w}
 		w = timing
 		var upstreamWait time.Duration
+		var requestBodyElapsed *time.Duration
 		// Set only when the transport reports the request fully written, so a
 		// DNS, dial, TLS or dial-guard failure records no upstream wait.
 		var reachedUpstream atomic.Bool
@@ -699,6 +700,7 @@ func newInterceptHandler(
 				SizeBytes:       timing.bytes,
 				Duration:        time.Since(reqStart),
 				Upstream:        upstreamWait,
+				RequestBody:     requestBodyElapsed,
 				ReachedUpstream: reachedUpstream.Load(),
 				RequestCanceled: r.Context().Err() != nil,
 			})
@@ -1457,7 +1459,10 @@ func newInterceptHandler(
 				bodyReq.ContentEntropyEnabled = false
 			}
 			applyBodyScanRedaction(&bodyReq, redaction)
+			bodyStart := time.Now()
 			bodyBytes, result := scanRequestBody(r.Context(), bodyReq)
+			bodyElapsed := time.Since(bodyStart)
+			requestBodyElapsed = &bodyElapsed
 			if clientCanceledIncompleteBody(r.Context(), result) {
 				logRequestCanceled(ic.Logger, actx, result.Reason)
 				writeClientCanceled(w)
