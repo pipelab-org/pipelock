@@ -1662,11 +1662,20 @@ func writeShellCommand(sb *shellBounds, write func(string) bool, copied map[stri
 		copied[key] = struct{}{}
 		// Each name that may be unset is read empty or with any of its
 		// values, independently: one may be set while another is not.
+		// The empty-or-value list is built once per name and shared by its
+		// slots: a command with thousands of uses of one name with thousands
+		// of values must not clone the list per use before the budget check.
 		empty := make([]shellSlot, len(slots))
+		withUnset := make(map[shellSlotKey][]string)
 		for i, sl := range slots {
 			empty[i] = sl
 			if sl.mayUnset {
-				empty[i].alts = append(append([]string(nil), unsetShellValue...), sl.alts...)
+				alts, ok := withUnset[sl.key]
+				if !ok {
+					alts = append(append(make([]string, 0, len(sl.alts)+1), unsetShellValue...), sl.alts...)
+					withUnset[sl.key] = alts
+				}
+				empty[i].alts = alts
 			}
 		}
 		rest := newShellChoices(empty)

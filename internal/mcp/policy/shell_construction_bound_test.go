@@ -1302,6 +1302,33 @@ func TestShellConstructionMixedUnsetUsesDoNotPanic(t *testing.T) {
 	}
 }
 
+// A name that may be unset, with thousands of values, used thousands of times
+// in one command: the empty-or-value list is shared per name, so memory stays
+// within the same bound as any other input (hosted review on 93ce5db).
+func TestShellConstructionManyUnsetUsesBounded(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("echo " + d + "U; ")
+	for i := range 8192 {
+		b.WriteString("X=v" + strconv.Itoa(i) + ";")
+	}
+	b.WriteString("echo")
+	for range 8192 {
+		b.WriteString(" " + d + "X")
+	}
+	in := b.String()
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_, _, fits := resolveShellConstruction(in)
+	runtime.ReadMemStats(&after)
+	_ = fits
+	limit := maxShellConstructionLen(len(in))
+	const maxAllocPerLimit = 64
+	if alloc := after.TotalAlloc - before.TotalAlloc; alloc/maxAllocPerLimit > uint64(max(limit, 0)) {
+		t.Fatalf("allocated %d bytes for limit %d", alloc, limit)
+	}
+}
+
 // Random scripts built from the shapes the reader handles must never panic:
 // a crash in the policy path is the denial of service this code bounds.
 func TestShellConstructionRandomScriptsDoNotPanic(t *testing.T) {
