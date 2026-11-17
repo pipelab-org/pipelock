@@ -434,12 +434,10 @@ func contentTypeMatchesAny(mediaType string, allowed []string) bool {
 // Trusted destinations retain request scanning and the configured action.
 // Response-scanning exemptions do not affect this request-side decision.
 // Like the critical-DLP floor, it applies only in enforcement mode: with
-// enforce: false the finding follows the configured action, so an audit-only
-// deployment observes injection instead of dropping the request.
+// enforce: false the finding follows the caller's ordinary request policy.
+// External checker findings use the same enforcement and destination-trust
+// gates as built-in findings. Checker failures use the scan-error path instead.
 func shouldHardBlockBodyPromptInjection(result BodyScanResult, hostname string, cfg *config.Config) bool {
-	if scanner.HasCheckerFinding(result.InjectionMatches) {
-		return true
-	}
 	if len(result.InjectionMatches) == 0 {
 		return false
 	}
@@ -1301,9 +1299,6 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		return stopJoinedScan(external.ScanError)
 	}
 	result.InjectionMatches = external.Matches
-	if scanner.HasCheckerFinding(result.InjectionMatches) {
-		action = config.ActionBlock
-	}
 
 	// Address poisoning detection alongside DLP.
 	// Note: body address findings are currently emitted/counted as body_dlp

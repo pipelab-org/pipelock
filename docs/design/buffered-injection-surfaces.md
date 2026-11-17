@@ -45,9 +45,10 @@ active. Compose one external result with the buffered wording result using the
 existing MCP rules. Don't fall back to basic. A block finding is content evidence;
 a block-mode failure is an infrastructure refusal, never a fabricated finding.
 
-A block-mode external result takes precedence over a transport's wording action
-(including warn, strip or ask). Warn records the assessment and delivers without
-injection-driven taint or escalation. Watch runs off the delivery path and never
+A block-mode external response result takes precedence over the transport's
+wording action (including warn, strip or ask). Request findings retain the
+surface's existing audit and destination-trust policy, described below. Warn
+records the assessment and delivers without injection-driven taint or escalation. Watch runs off the delivery path and never
 changes delivery. Only a complete benign assessment earns adaptive clean credit;
 off, incomplete, not-checked and failed assessments don't.
 
@@ -55,9 +56,33 @@ off, incomplete, not-checked and failed assessments don't.
 |---|---|---|---|---|
 | Off | Existing non-wording controls decide | Same | Same | Same |
 | Warn finding or failure | Deliver and record | Forward and record | Return assessment; finding may report warn | Allow with recorded observation; replay reports observation |
-| Block finding | Withhold body using existing response/input refusal | JSON-RPC input refusal | Deny with finding | Deny; replay reports block |
+| Block finding | Response refusal; request policy below | Request policy below | Deny with finding | Request policy below; replay reports block |
 | Block incomplete, not-checked or failure | Withhold using scan-error path | Infrastructure refusal | Existing scan-error response | Scan-error denial; replay reports scan error |
 | Complete benign | Existing non-wording controls decide | Same | Same | Same |
+
+## Request audit and destination trust
+
+A completed external block finding is content evidence, like a built-in injection
+finding. `enforce: false` applies only where the consumer already observes those
+findings. A checker failure, incomplete answer or `not_checked` is a scan error,
+not an injection finding; the existing scan-error refusal is retained.
+
+| Surface | Completed block finding with `enforce: false` | Block-mode checker failure with `enforce: false` |
+|---|---|---|
+| Forward HTTP request body | With `request_body_scanning.action: warn`, record and forward; the existing forward path still refuses `action: block` | Refuse using scan-error path |
+| CONNECT-intercept and reverse request body | Observe and forward unless another control blocks | Refuse using scan-error path |
+| MCP stdio and HTTP listener request body | Warn and forward unless a floor or another control blocks | Refuse with scan error |
+| MCP listener parameter headers | Refuse, as for built-in header injection | Refuse with parse-error reason |
+| Scan API `prompt_injection` and `tool_call` | Return `deny` with findings; this classifier does not read `enforce` | Return HTTP 500 with `assessment_incomplete`, without attack findings |
+| Claude Code / Cursor tool input | Allow with advisory evidence | Deny with scan-error evidence |
+| Hermes tool input | Block; this adapter does not read `enforce` | Block with scan-error reason |
+
+With enforcement on, HTTP body injection hard-blocks untrusted destinations.
+`request_body_scanning.trusted_hosts` makes both built-in and external findings
+follow `request_body_scanning.action`; it does not exempt checker failures or
+other independent controls. MCP, API and hook block findings refuse with
+enforcement on. Response-side external block findings and failures retain their
+refusals regardless of `enforce`, including tool-result hooks.
 
 ## Compatibility and boundaries
 

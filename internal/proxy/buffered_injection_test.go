@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -91,7 +92,7 @@ func TestBufferedCheckerShieldTransports(t *testing.T) {
 }
 
 func TestBufferedCheckerRequestBody(t *testing.T) {
-	for _, state := range []string{"benign", "finding", "failure", "not_checked"} {
+	for _, state := range []string{"benign", "finding", "failure", "not_checked", "incomplete"} {
 		for _, mode := range []string{config.InjectionModeOff, config.InjectionModeWarn, config.InjectionModeBlock} {
 			t.Run(state+"/"+mode, func(t *testing.T) {
 				srv := checkertest.New(t, state)
@@ -104,11 +105,18 @@ func TestBufferedCheckerRequestBody(t *testing.T) {
 					text = checkertest.Directive
 				}
 				_, got := scanRequestBody(t.Context(), BodyScanRequest{Body: strings.NewReader(`{"message":"` + text + `"}`), ContentType: "application/json", MaxBytes: 1024, Scanner: sc, Action: config.ActionWarn})
-				block := mode == config.InjectionModeBlock && state != "benign"
-				if (!got.Clean && got.Action == config.ActionBlock) != block {
-					t.Fatalf("block=%v result=%+v", block, got)
+				finding := mode == config.InjectionModeBlock && state == "finding"
+				block := mode == config.InjectionModeBlock && state != "benign" && !finding
+				if (!got.Clean && got.Action == config.ActionBlock) != block || scanner.HasCheckerFinding(got.InjectionMatches) != finding {
+					t.Fatalf("block=%v finding=%v result=%+v", block, finding, got)
 				}
-				if !block && !got.Clean {
+				if finding && got.Action != "" && got.Action != config.ActionWarn {
+					t.Fatalf("finding replaced request action: %+v", got)
+				}
+				if block && (got.ScanError == "" || len(got.InjectionMatches) != 0) {
+					t.Fatalf("checker failure became a finding: %+v", got)
+				}
+				if !block && !finding && !got.Clean {
 					t.Fatalf("non-blocking checker retained wording findings: %+v", got)
 				}
 				if mode != config.InjectionModeOff && len(srv.Items()) != 1 {
@@ -120,80 +128,112 @@ func TestBufferedCheckerRequestBody(t *testing.T) {
 }
 
 func TestBufferedCheckerRequestTrust(t *testing.T) {
-	cfg := testScannerConfig()
-	off := false
-	cfg.Enforce = &off
-	cfg.RequestBodyScanning.TrustedHosts = []string{"api.vendor.example"}
-	srv := checkertest.New(t, "finding")
-	srv.Configure(cfg, config.InjectionSurfaceHTTPRequestBody, config.InjectionModeBlock)
-	sc := scanner.MustNew(cfg)
-	t.Cleanup(sc.Close)
-	assessed := sc.ScanBufferedInjection(t.Context(), scanner.BufferedInjectionScan{Surface: config.InjectionSurfaceHTTPRequestBody, Content: "ordinary input"})
-	r := BodyScanResult{InjectionMatches: assessed.Matches}
-	if !shouldHardBlockBodyPromptInjection(r, "api.vendor.example", cfg) {
-		t.Fatal("explicit external block was reduced by trust or audit mode")
+	for _, enforce := range []bool{true, false} {
+		for _, trusted := range []bool{true, false} {
+			t.Run(fmt.Sprintf("enforce=%t/trusted=%t", enforce, trusted), func(t *testing.T) {
+				cfg := testScannerConfig()
+				cfg.Enforce = &enforce
+				if trusted {
+					cfg.RequestBodyScanning.TrustedHosts = []string{"api.vendor.example"}
+				}
+				srv := checkertest.New(t, "finding")
+				srv.Configure(cfg, config.InjectionSurfaceHTTPRequestBody, config.InjectionModeBlock)
+				sc := scanner.MustNew(cfg)
+				t.Cleanup(sc.Close)
+				assessed := sc.ScanBufferedInjection(t.Context(), scanner.BufferedInjectionScan{Surface: config.InjectionSurfaceHTTPRequestBody, Content: "ordinary input"})
+				if !assessed.CheckerBlocked() {
+					t.Fatal("fixture did not produce a block finding")
+				}
+				r := BodyScanResult{InjectionMatches: assessed.Matches}
+				if got, want := shouldHardBlockBodyPromptInjection(r, "api.vendor.example", cfg), enforce && !trusted; got != want {
+					t.Fatalf("hard block=%t want=%t", got, want)
+				}
+			})
+		}
 	}
 }
 
 func TestBufferedCheckerRequestTransports(t *testing.T) {
 	for _, transport := range []string{TransportForward, TransportConnect, TransportReverse} {
-		for _, state := range []string{"benign", "finding", "failure", "not_checked"} {
-			for _, mode := range []string{config.InjectionModeWarn, config.InjectionModeBlock} {
-				t.Run(transport+"/"+state+"/"+mode, func(t *testing.T) {
-					srv := checkertest.New(t, state)
-					cfg := testScannerConfig()
-					cfg.DLP.ScanEnv = false
-					disabled := false
-					cfg.Enforce = &disabled
-					cfg.RequestBodyScanning.Action = config.ActionWarn
-					cfg.RequestBodyScanning.TrustedHosts = []string{"api.vendor.example"}
-					srv.Configure(cfg, config.InjectionSurfaceHTTPRequestBody, mode)
-					sc := scanner.MustNew(cfg)
-					t.Cleanup(sc.Close)
-					p, err := New(cfg, audit.NewNop(), sc, metrics.New())
-					if err != nil {
-						t.Fatal(err)
+		for _, enforce := range []bool{true, false} {
+			for _, trusted := range []bool{true, false} {
+				for _, action := range []string{config.ActionWarn, config.ActionBlock} {
+					for _, state := range []string{"builtin", "finding", "failure", "not_checked", "incomplete"} {
+						t.Run(fmt.Sprintf("%s/enforce=%t/trusted=%t/%s/%s", transport, enforce, trusted, action, state), func(t *testing.T) {
+							srv := checkertest.New(t, state)
+							cfg := testScannerConfig()
+							cfg.DLP.ScanEnv = false
+							cfg.AdaptiveEnforcement.Enabled = false
+							cfg.Enforce = &enforce
+							cfg.RequestBodyScanning.Action = action
+							cfg.ResponseScanning.Action = config.ActionBlock
+							if trusted {
+								cfg.RequestBodyScanning.TrustedHosts = []string{"api.vendor.example"}
+							}
+							text := "ordinary input"
+							if state == "builtin" {
+								text = checkertest.Directive
+							} else {
+								srv.Configure(cfg, config.InjectionSurfaceHTTPRequestBody, config.InjectionModeBlock)
+							}
+							status, hits, body := bufferedRequestDelivery(t, cfg, transport, text)
+							finding := state == "builtin" || state == "finding"
+							block := !finding || (enforce && (!trusted || action == config.ActionBlock)) || (transport == TransportForward && action == config.ActionBlock)
+							if (status != http.StatusOK) != block || (hits == 0) != block {
+								t.Fatalf("status=%d hits=%d block=%v: %s", status, hits, block, body)
+							}
+							calls := 1
+							if state == "builtin" {
+								calls = 0
+							}
+							if len(srv.Items()) != calls {
+								t.Fatalf("checker calls=%d want=%d", len(srv.Items()), calls)
+							}
+						})
 					}
-					t.Cleanup(p.Close)
-					var hits atomic.Int32
-					rt := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-						hits.Add(1)
-						return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("ordinary response")), Request: r}, nil
-					})
-					p.client.Transport = rt
-					text := "ordinary input"
-					if state == "benign" {
-						text = checkertest.Directive
-					}
-					req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://api.vendor.example/notes", strings.NewReader(`{"text":"`+text+`"}`))
-					req.Header.Set("Content-Type", "application/json")
-					w := httptest.NewRecorder()
-					switch transport {
-					case TransportForward:
-						p.handleForwardHTTP(w, req)
-					case TransportConnect:
-						req.URL.Scheme, req.URL.Host = "", ""
-						newInterceptHandler(&InterceptContext{TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg, Scanner: sc, Logger: p.logger, Metrics: p.metrics, Proxy: p}, rt).ServeHTTP(w, req)
-					case TransportReverse:
-						upstream, parseErr := url.Parse("https://api.vendor.example")
-						if parseErr != nil {
-							t.Fatal(parseErr)
-						}
-						rp := NewReverseProxy(upstream, &p.cfgPtr, &p.scannerPtr, p.logger, p.metrics, nil, nil, nil)
-						rp.proxy.Transport = rt
-						rp.ServeHTTP(w, req)
-					}
-					block := mode == config.InjectionModeBlock && state != "benign"
-					if (w.Code != http.StatusOK) != block || (hits.Load() == 0) != block {
-						t.Fatalf("status=%d hits=%d block=%v: %s", w.Code, hits.Load(), block, w.Body.String())
-					}
-					if len(srv.Items()) != 1 {
-						t.Fatalf("checker calls=%d", len(srv.Items()))
-					}
-				})
+				}
 			}
 		}
 	}
+}
+
+func bufferedRequestDelivery(t *testing.T, cfg *config.Config, transport, text string) (int, int32, string) {
+	t.Helper()
+	sc, err := scanner.NewWithOptions(cfg, scanner.Options{UpstreamResolver: scanner.NewStaticOverrideResolver(map[string][]string{"api.vendor.example": {"93.184.216.34"}}, nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(sc.Close)
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.Close)
+	var hits atomic.Int32
+	rt := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		hits.Add(1)
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("ordinary response")), Request: r}, nil
+	})
+	p.client.Transport = rt
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://api.vendor.example/notes", strings.NewReader(`{"text":"`+text+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	switch transport {
+	case TransportForward:
+		p.handleForwardHTTP(w, req)
+	case TransportConnect:
+		req.URL.Scheme, req.URL.Host = "", ""
+		newInterceptHandler(&InterceptContext{TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg, Scanner: sc, Logger: p.logger, Metrics: p.metrics, Proxy: p}, rt).ServeHTTP(w, req)
+	case TransportReverse:
+		upstream, parseErr := url.Parse("https://api.vendor.example")
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		rp := NewReverseProxy(upstream, &p.cfgPtr, &p.scannerPtr, p.logger, p.metrics, nil, nil, nil)
+		rp.proxy.Transport = rt
+		rp.ServeHTTP(w, req)
+	}
+	return w.Code, hits.Load(), w.Body.String()
 }
 
 func TestBufferedCheckerStructuredResponse(t *testing.T) {
@@ -227,5 +267,28 @@ func TestBufferedCheckerStructuredResponse(t *testing.T) {
 				t.Fatalf("wrong item: %+v", srv.Items())
 			}
 		})
+	}
+}
+
+func TestBufferedCheckerResponseAudit(t *testing.T) {
+	for _, transport := range []string{TransportFetch, TransportForward, TransportConnect, TransportReverse} {
+		for _, state := range []string{"finding", "failure"} {
+			t.Run(transport+"/"+state, func(t *testing.T) {
+				srv := checkertest.New(t, state)
+				cfg := shieldRewriteMarkerConfig()
+				enforce := false
+				cfg.Enforce = &enforce
+				cfg.BrowserShield.Enabled = false
+				cfg.ResponseScanning.Action = config.ActionWarn
+				srv.Configure(cfg, config.InjectionSurfaceHTTPResponse, config.InjectionModeBlock)
+				status, body := requestShieldScan(t, cfg, transport, []byte("ordinary response"), "text/plain")
+				if status == http.StatusOK {
+					t.Fatalf("response delivered in audit mode: %s", body)
+				}
+				if len(srv.Items()) != 1 {
+					t.Fatalf("checker calls=%d", len(srv.Items()))
+				}
+			})
+		}
 	}
 }

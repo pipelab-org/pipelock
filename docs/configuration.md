@@ -114,6 +114,19 @@ With `enforce: false`, an MCP proxy or listener prints: some configured MCP requ
 
 These MCP checks stay refused with `enforce: false`: core credentials, hostname exfiltration, scan errors, inspection limits, uninspectable split-secret fields, every URL finding in a resource read or an A2A message (an allowlist or blocklist finding can hide a private-address or metadata destination, and a URL a tool receives is never dialed by the proxy), tool-policy redirect and defer, a tool-policy block that also matches a redirect or defer rule, tool arguments the policy could not inspect, redaction errors and limits, adaptive escalation and block-all, taint, denial-of-wallet, airlock, frozen tools, the kill switch, authority, identity, envelope failure, batch and bridge protocol, frame parse errors, A2A inspection, configuration and limits, a core credential reassembled across requests, cross-request owner mismatch, capacity and inspection limits, a call that chain detection could not track, contract checks, required receipts, listener admission, and the listener's request header checks. A2A scanning accepts `warn` or `block`, not `ask`. A reassembled core credential is always refused, including when `cross_request_detection.action` is `warn` and when `enforce` is false. MCP responses do not read `enforce`. Response scanning, tool scanning, media policy, and event streams are unchanged.
 
+With `enforce: false`, completed external-checker block findings follow the same
+request audit policy as built-in injection findings. MCP stdio and listener request bodies warn and
+forward; the listener's parameter-header checks still refuse. HTTP request-body
+findings with `request_body_scanning.action: warn` forward, and CONNECT-intercept
+and reverse body findings also observe a configured `block`; the existing forward
+HTTP body path still refuses `action: block`. Other controls can still refuse.
+Claude Code and Cursor tool-input hooks allow with advisory evidence. Scan API
+classification and Hermes hooks do not read `enforce`, so their block findings
+still deny. External-checker failures (including incomplete and not-checked
+answers) retain scan-error refusals on these surfaces. Response-side external
+block findings and failures remain refused, including MCP responses and
+tool-result hooks, regardless of `enforce`.
+
 ## API Allowlist
 
 Domains that are always allowed in strict mode. In balanced/audit mode, these are exempt from the domain blocklist.
@@ -1456,7 +1469,11 @@ Rules:
   (including the core wording floor) do not run on that surface, and there is
   no fallback to them. An external checker's mode is independent of the global
   `enabled`/`action` setting, which applies to the built-in checker only.
-- `block`: a finding blocks the response, or refuses the `tools/list`,
+- `block`: request findings follow the audit policy in [Modes](#modes). HTTP
+  request-body findings also honor `request_body_scanning.trusted_hosts`: on a
+  trusted destination they follow the body `action`, just like built-in findings.
+  Trust never releases a checker failure. A response finding blocks the response,
+  or refuses the `tools/list`,
   whatever `response_scanning.action` or `mcp_tool_scanning.action` says (a
   score-only checker cannot strip or ask). An external checker on tool
   descriptions requires `mcp_tool_scanning.enabled: true`, because the tool

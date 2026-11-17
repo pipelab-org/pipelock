@@ -4,6 +4,8 @@
 package hermes
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/checker/checkertest"
@@ -41,6 +43,40 @@ func TestBufferedCheckerHermes(t *testing.T) {
 					}
 				})
 			}
+		}
+	}
+}
+
+func TestBufferedCheckerHermesAudit(t *testing.T) {
+	for _, enforce := range []bool{true, false} {
+		for _, state := range []string{"builtin", "finding", "failure", "not_checked", "incomplete"} {
+			t.Run(fmt.Sprintf("enforce=%t/%s", enforce, state), func(t *testing.T) {
+				srv := checkertest.New(t, state)
+				cfg := config.Defaults()
+				cfg.Enforce = &enforce
+				cfg.Internal = nil
+				cfg.DLP.ScanEnv = false
+				cfg.ResponseScanning.Action = config.ActionBlock
+				text := "ordinary hook input"
+				if state == "builtin" {
+					text = checkertest.Directive
+				} else {
+					srv.Configure(cfg, config.InjectionSurfaceHookToolInput, config.InjectionModeBlock)
+				}
+				sc := scanner.MustNew(cfg)
+				t.Cleanup(sc.Close)
+				got := scanCombined(t.Context(), sc, text, "tool", directionOutbound)
+				if got.Decision != DecisionBlock {
+					t.Fatalf("decision=%+v", got)
+				}
+				failure := state != "builtin" && state != "finding"
+				if strings.Contains(got.Reason, "scan failed") != failure {
+					t.Fatalf("wrong failure/finding classification: %+v", got)
+				}
+				if state != "builtin" && len(srv.Items()) != 1 {
+					t.Fatalf("calls=%d", len(srv.Items()))
+				}
+			})
 		}
 	}
 }

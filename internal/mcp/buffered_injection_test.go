@@ -5,12 +5,17 @@ package mcp
 
 import (
 	"bytes"
+	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/checker/checkertest"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -133,5 +138,88 @@ func TestBufferedCheckerUnparseableResponse(t *testing.T) {
 				t.Fatal("unparseable response was not refused")
 			}
 		})
+	}
+}
+
+func TestBufferedCheckerMCPAuditDelivery(t *testing.T) {
+	for _, enforce := range []bool{true, false} {
+		for _, state := range []string{"builtin", "finding", "failure", "not_checked", "incomplete"} {
+			for _, parameter := range []bool{false, true} {
+				t.Run(fmt.Sprintf("enforce=%t/%s/parameter=%t", enforce, state, parameter), func(t *testing.T) {
+					srv := checkertest.New(t, state)
+					cfg := config.Defaults()
+					cfg.Enforce = &enforce
+					cfg.Internal = nil
+					cfg.DLP.ScanEnv = false
+					text := "ordinary argument"
+					if state == "builtin" {
+						text = checkertest.Directive
+					} else {
+						srv.Configure(cfg, config.InjectionSurfaceMCPToolInput, config.InjectionModeBlock)
+					}
+					sc := scanner.MustNew(cfg)
+					t.Cleanup(sc.Close)
+					opts := MCPProxyOpts{Scanner: sc, AuditMode: !cfg.EnforceEnabled(), InputCfg: &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock}}
+					msg := auditTool("notes", map[string]string{"text": text})
+					verdict := ScanRequest(t.Context(), []byte(msg), sc, config.ActionBlock, config.ActionBlock)
+					failure := state != "builtin" && state != "finding"
+					if (verdict.Error != "") != failure || (failure && len(verdict.Inject) != 0) {
+						t.Fatalf("wrong failure/finding classification: %+v", verdict)
+					}
+					finding := state == "builtin" || state == "finding"
+					forward := !enforce && finding && !parameter
+					if !parameter {
+						assertAuditMessage(t, msg, config.ActionBlock, opts, nil, forward)
+					}
+					var hits atomic.Int32
+					upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						hits.Add(1)
+						w.Header().Set("Content-Type", "application/json")
+						_, _ = io.Copy(io.Discard, r.Body)
+						_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+					}))
+					t.Cleanup(upstream.Close)
+					base, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+					if parameter {
+						msg = currentWireBody(1, methodToolsCall, `"name":"notes","arguments":{"text":"ordinary body"}`)
+					}
+					req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, base+"/", strings.NewReader(msg))
+					if err != nil {
+						t.Fatal(err)
+					}
+					req.Header.Set("Content-Type", "application/json")
+					if parameter {
+						req.Header.Set("Mcp-Param-Notes", text)
+						req.Header.Set(listenerProtocolVersion, currentMCPVersion)
+						req.Header.Set(listenerMCPMethod, methodToolsCall)
+						req.Header.Set(listenerMCPName, "notes")
+					}
+					resp, err := http.DefaultClient.Do(req)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer func() { _ = resp.Body.Close() }()
+					body, err := io.ReadAll(resp.Body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if (hits.Load() == 1) != forward {
+						t.Fatalf("listener hits=%d wantForward=%t status=%d body=%s", hits.Load(), forward, resp.StatusCode, body)
+					}
+					if parameter {
+						wantReason := blockreason.PromptInjection
+						if !finding {
+							wantReason = blockreason.ParseError
+						}
+						if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"code":-32001`) || resp.Header.Get(blockreason.HeaderReason) != string(wantReason) {
+							t.Fatalf("header status=%d reason=%q want=%q body=%s", resp.StatusCode, resp.Header.Get(blockreason.HeaderReason), wantReason, body)
+						}
+					}
+					if state != "builtin" && len(srv.Items()) == 0 {
+						t.Fatal("checker was not called")
+					}
+				})
+			}
+		}
 	}
 }

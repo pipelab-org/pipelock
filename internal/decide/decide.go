@@ -99,7 +99,7 @@ const (
 
 // Evidence records why a decision was made.
 type Evidence struct {
-	// checkerBlock retains an explicit external deciding refusal through audit mode.
+	// checkerBlock retains external scan failures and response refusals through audit mode.
 	checkerBlock bool
 	Scanner      string `json:"scanner"`            // which scanner triggered (dlp, injection, policy)
 	Pattern      string `json:"pattern"`            // pattern name or rule name
@@ -165,7 +165,7 @@ func decideShell(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, p
 	// when only the floor is live.
 	if sc.ResponseScanningEnabled() {
 		injResult := sc.ScanHookInjection(context.Background(), p.Command, "decide", false)
-		evidence = append(evidence, evidenceFromInjection(injResult, sc.ResponseAction())...)
+		evidence = append(evidence, evidenceFromHookInjection(injResult, sc.ResponseAction(), false)...)
 	}
 
 	// Policy: map shell execution to tool name "bash" to reuse existing rules.
@@ -241,7 +241,7 @@ func decideMCP(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config
 		evidence = append(evidence, evidenceFromJSONDLP(sc, scanText, p.ToolInput, argStrings)...)
 
 		injResult := sc.ScanHookInjection(context.Background(), scanText, "decide", false)
-		evidence = append(evidence, evidenceFromInjection(injResult, cfg.MCPInputScanning.Action)...)
+		evidence = append(evidence, evidenceFromHookInjection(injResult, cfg.MCPInputScanning.Action, false)...)
 	}
 
 	// Policy: check tool name + args. Pass raw JSON so arg_key rules can
@@ -414,7 +414,7 @@ func decideToolUse(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Co
 
 		if sc.ResponseScanningEnabled() {
 			injResult := sc.ScanHookInjection(context.Background(), scanText, "decide", false)
-			evidence = append(evidence, evidenceFromInjection(injResult, sc.ResponseAction())...)
+			evidence = append(evidence, evidenceFromHookInjection(injResult, sc.ResponseAction(), false)...)
 		}
 	}
 
@@ -445,7 +445,7 @@ func decideFileContent(cfg *config.Config, sc *scanner.Scanner, policyCfg *polic
 
 		if sc.ResponseScanningEnabled() {
 			injResult := sc.ScanHookInjection(context.Background(), content, "decide", toolName == "read_file")
-			evidence = append(evidence, evidenceFromInjection(injResult, sc.ResponseAction())...)
+			evidence = append(evidence, evidenceFromHookInjection(injResult, sc.ResponseAction(), toolName == "read_file")...)
 		}
 	}
 
@@ -538,6 +538,19 @@ func evidenceFromDLP(result scanner.TextDLPResult) []Evidence {
 		})
 	}
 	return ev
+}
+
+// evidenceFromHookInjection preserves the side's existing audit policy. Completed
+// request findings are observed with enforce=false; external response refusals
+// and checker failures keep their unconditional refusal.
+func evidenceFromHookInjection(result scanner.ResponseScanResult, cfgAction string, inbound bool) []Evidence {
+	evidence := evidenceFromInjection(result, cfgAction)
+	if !inbound && !result.Failed() {
+		for i := range evidence {
+			evidence[i].checkerBlock = false
+		}
+	}
+	return evidence
 }
 
 func evidenceFromInjection(result scanner.ResponseScanResult, cfgAction string) []Evidence {
