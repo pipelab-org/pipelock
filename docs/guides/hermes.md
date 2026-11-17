@@ -98,8 +98,11 @@ AWS pattern and to real plaintext keys: the matched key bytes aren't delivered.
 `pre_tool_call` keeps blocking credentials in tool arguments. Gateway sender
 metadata is scanned separately and remains block-only.
 
-Masking requires a plain `dlp_normalized` span that indexes the exact delivered
-string, with no change from DLP normalization. Structured hook values have no
+Masking applies when the finding comes from the plain `dlp_normalized` view of
+the exact delivered string. The hook masks every AWS-pattern match it finds in
+that raw string, line breaks included, then scans the masked string again and
+refuses the whole result if any finding remains, so a key that only appears
+after normalization is never masked into delivery. Structured hook values have no
 proven string replacement contract and remain block-only. Strings containing
 JSON text can be masked in place; the hook doesn't decode and re-encode that
 JSON. Encoded keys, zero-width or other normalization changes, cards, other
