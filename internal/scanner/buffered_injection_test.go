@@ -303,3 +303,19 @@ func TestBufferedInjectionBasicPatternName(t *testing.T) {
 		t.Fatalf("basic name changed the configured action: %+v", got)
 	}
 }
+
+func TestBufferedInjectionLatin1Metadata(t *testing.T) {
+	srv := checkertest.New(t, "benign")
+	cfg := testResponseConfig()
+	srv.Configure(cfg, config.InjectionSurfaceHTTPResponse, config.InjectionModeBlock)
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	body := pngWithMetadata(t, "tEXt", append([]byte("Comment\x00caf"), 0xe9))
+	got := sc.ScanBufferedInjection(t.Context(), BufferedInjectionScan{Surface: config.InjectionSurfaceHTTPResponse, UseBody: true, Body: body})
+	if !got.Clean || got.Failed() || got.Assessment.Status != AssessmentBenign || len(srv.Items()) != 1 {
+		t.Fatalf("benign Latin-1 metadata refused: result=%+v items=%+v", got, srv.Items())
+	}
+	if !strings.Contains(srv.Items()[0].Parts[0].Text, "caf") {
+		t.Fatal("metadata content lost")
+	}
+}

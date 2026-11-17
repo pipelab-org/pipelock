@@ -206,7 +206,10 @@ func bufferedBodyInjectionTexts(ctx context.Context, body []byte) ([]string, err
 		if len(metadata) == 0 {
 			return nil, nil
 		}
-		return []string{string(metadata)}, nil
+		// Metadata combines formats with different encodings. Preserve valid
+		// UTF-8 and ASCII wording, separating invalid byte runs as in the
+		// non-image body view rather than sending invalid protocol text.
+		return []string{string(bytes.ToValidUTF8(metadata, []byte(" ")))}, nil
 	}
 	textual, err := isTextualResponseBody(ctx, body)
 	if err != nil {
