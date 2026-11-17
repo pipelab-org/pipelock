@@ -29,6 +29,23 @@ func rawQuerySecurityPairs(query string) []rawQuerySecurityPair {
 // decodedKnownSecretViews shares the bounded candidate graph used for pattern
 // DLP. Matching encoded representations alone misses secrets inside a carrier.
 func (s *Scanner) decodedKnownSecretViews(text string, decodes *decodingMemo) []spanTextView {
+	return s.decodedKnownSecretViewsAfter(text, decodes, nil)
+}
+
+// knownViewInputs records the inputs one known-value check has already walked
+// for its view list, with the memo's incomplete state at that walk. That state
+// decides transferred candidate credit, so an input walked under another state
+// is walked again.
+type knownViewInputs map[string]bool
+
+// decodedKnownSecretViewsAfter is decodedKnownSecretViews for a later root of
+// the same view list. An input already walked for an earlier root under the
+// same memo state yields the same views, and those already sit earlier in the
+// list. Known-value matching keeps the first match and the first longest
+// partial run, so the repeats cannot change a result. Their known-prefix
+// pattern findings repeat earlier entries, which text DLP deduplicates before
+// reporting; callers that report each finding separately pass nil.
+func (s *Scanner) decodedKnownSecretViewsAfter(text string, decodes *decodingMemo, walked knownViewInputs) []spanTextView {
 	// A root's decode run lives only for this call: the tag views below read
 	// the run add(text) holds. Later checks recompute through the memo, whose
 	// retained bytes stay charged, rather than holding graphs across checks.
@@ -47,6 +64,13 @@ func (s *Scanner) decodedKnownSecretViews(text string, decodes *decodingMemo) []
 		// whole configured secret or an eligible partial-secret window.
 		if len(value) < minimum {
 			return
+		}
+		if walked != nil {
+			incomplete := decodes.inspectionIncomplete()
+			if state, ok := walked[value]; ok && state == incomplete {
+				return
+			}
+			walked[value] = incomplete
 		}
 		// Complete decodes come from the graph pattern DLP shares, under its
 		// own byte budget. Recovered prefixes walk a separate graph and may

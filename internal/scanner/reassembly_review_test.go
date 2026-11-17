@@ -20,7 +20,9 @@ import (
 
 func TestReassemblyReplayMaterializedIdentity(t *testing.T) {
 	for _, inbound := range []bool{false, true} {
-		for _, consumer := range []string{"pending", "parent", "projection", "reclaim"} {
+		// Projection comparison uses the registered bytes' digest and never
+		// materializes; see TestChargesForComparesReplayByRegisteredDigest.
+		for _, consumer := range []string{"pending", "parent", "reclaim"} {
 			t.Run(fmt.Sprintf("inbound=%v/%s", inbound, consumer), func(t *testing.T) {
 				memo := &decodingMemo{reassemblyPlan: reassemblyMarkerPlan(t), reassemblyDeferred: true, reassemblyInbound: inbound, inbound: inbound}
 				defer memo.releaseProjection()
@@ -36,14 +38,6 @@ func TestReassemblyReplayMaterializedIdentity(t *testing.T) {
 				case "parent":
 					memo.reassemblyReplayParents = map[string]*assembledPayload{"child context": payload}
 					_, _ = memo.viewParent("child context")
-				case "projection":
-					other := "ordinary projection source"
-					key := assembledChargeKey{assembledFingerprint(other)[0], 0}
-					budget := assembledBudget{memo: memo, registry: &assembledChargeRegistry{entries: map[assembledChargeKey][]assembledChargeEntry{key: {{replay: payload, charges: new(assembledCharges)}}}}}
-					budget.chargesFor(other)
-					if !budget.incomplete {
-						t.Fatal("projection accepted mismatched replay")
-					}
 				case "reclaim":
 					for i := range maxDecodeTotalBytes/int(reflect.TypeFor[assembledPayload]().Size()) + 1 {
 						value := fmt.Sprintf("%08dabcdefgh", i)
