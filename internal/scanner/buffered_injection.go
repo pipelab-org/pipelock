@@ -21,24 +21,26 @@ const CheckerPatternPrefix = "checker:"
 // retains the response body decoder; Outbound retains outbound decode limits.
 // Neither changes DLP or other deterministic controls in the caller.
 type BufferedInjectionScan struct {
-	// Texts, when present, are ordered extracted parts of the same content unit.
+	// Completeness defaults to complete; extracted-only callers retain partial coverage.
+	Completeness  *checker.Completeness
 	OriginalBytes int64
-	Texts         []string
-	Surface       string
-	Transport     string
-	Direction     string
-	Content       string
-	Body          []byte
-	UseBody       bool
-	Outbound      bool
-	Target        string
-	Suppress      []config.SuppressEntry
+	// Texts, when present, are ordered extracted parts of the same content unit.
+	Texts     []string
+	Surface   string
+	Transport string
+	Direction string
+	Content   string
+	Body      []byte
+	UseBody   bool
+	Outbound  bool
+	Target    string
+	Suppress  []config.SuppressEntry
 }
 
 // ScanBufferedInjection joins a buffered consumer to the existing selection.
 // The legacy scan runs unchanged without an explicit selection. External
 // ownership suppresses all built-in wording, including on off and failure;
-// there is no fallback. Each scan view is one complete checker item.
+// there is no fallback. Callers retain partial semantic coverage in Completeness.
 func (s *Scanner) ScanBufferedInjection(ctx context.Context, o BufferedInjectionScan) ResponseScanResult {
 	if ctx == nil {
 		ctx = context.Background()
@@ -103,11 +105,15 @@ func (s *Scanner) ComposeBufferedInjection(ctx context.Context, o BufferedInject
 	for _, p := range parts {
 		submitted += int64(len(p.Text))
 	}
+	completeness := o.Completeness
+	if completeness == nil {
+		completeness = &checker.Completeness{Status: checker.Complete}
+	}
 	item := checker.Item{
 		ID: "buffered-" + o.Surface, Kind: checker.KindText, Surface: o.Surface,
 		Transport: transport, Direction: direction, ExtractionVersion: "buffered-text/v1",
 		Parts: parts, OriginalBytes: originalBytes, SubmittedBytes: submitted,
-		Completeness: &checker.Completeness{Status: checker.Complete},
+		Completeness: completeness,
 	}
 	ext, ok := s.AssessInjection(ctx, o.Surface, item)
 	if !ok {

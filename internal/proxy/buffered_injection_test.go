@@ -253,6 +253,7 @@ func TestBufferedCheckerStructuredResponse(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			view.ordinaryCap = int64(len(body))
 			got := scanStructuredResponse(t.Context(), sc, cfg, body, "https://api.vendor.example", view)
 			if state == "benign" && (!got.Clean || len(got.Matches) != 0) {
 				t.Fatalf("basic wording ran on external structured surface: %+v", got)
@@ -290,5 +291,52 @@ func TestBufferedCheckerResponseAudit(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestBufferedCheckerStructuredPartialCoverage(t *testing.T) {
+	for _, state := range []string{"benign", "finding", "failure"} {
+		t.Run(state, func(t *testing.T) {
+			srv := checkertest.New(t, state)
+			cfg := testScannerConfig()
+			srv.Configure(cfg, config.InjectionSurfaceHTTPResponse, config.InjectionModeBlock)
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			body := []byte(`{"text":"ordinary text","omitted_number":42}`)
+			view, err := extractStructuredResponse(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			view.ordinaryCap = 1
+			got := scanStructuredResponse(t.Context(), sc, cfg, body, "https://api.vendor.example", view)
+			if got.Clean || got.Assessment.Status == scanner.AssessmentBenign || len(srv.Items()) != 1 || srv.Items()[0].Completeness.Status != "partial" {
+				t.Fatalf("partial coverage earned credit: result=%+v items=%+v", got, srv.Items())
+			}
+			if state == "finding" && !got.CheckerBlocked() {
+				t.Fatalf("partial finding lost: %+v", got)
+			}
+			if state != "finding" && !got.Failed() {
+				t.Fatalf("partial refusal lost: %+v", got)
+			}
+		})
+	}
+}
+
+func TestBufferedCheckerStructuredCopyBudget(t *testing.T) {
+	srv := checkertest.New(t, "benign")
+	cfg := testScannerConfig()
+	srv.Configure(cfg, config.InjectionSurfaceHTTPResponse, config.InjectionModeBlock)
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	body := []byte(`{"text":"ordinary text"}`)
+	view, err := extractStructuredResponse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view.ordinaryCap = int64(len(body))
+	view.account = &structuredResponseAccount{budget: &sizeExemptScanBudget{}, limit: int64(len(body))}
+	got := scanStructuredResponse(t.Context(), sc, cfg, body, "https://api.vendor.example", view)
+	if !got.Failed() || got.ScanError != errStructuredViewBudget.Error() || len(srv.Items()) != 0 {
+		t.Fatalf("unreserved checker copy admitted: result=%+v items=%+v", got, srv.Items())
 	}
 }

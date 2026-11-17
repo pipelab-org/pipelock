@@ -356,10 +356,19 @@ func scanStructuredResponse(ctx context.Context, sc *scanner.Scanner, cfg *confi
 	}
 	ctx = scanner.WithInjectionSurface(ctx, surface)
 	result := scanner.ResponseScanResult{Clean: true}
+	completeness := inspection.Completeness
+	var texts []string
 	if size := compactStructuredLen(body); inspection.ordinaryCap > 0 && size <= inspection.ordinaryCap {
 		compact, err := compactStructuredBody(body, size, inspection.account)
 		if err != nil {
 			return scanner.ResponseScanResult{ScanError: err.Error()}
+		}
+		if sc.ExternalInjectionSurface(surface) || sc.InjectionCheckers().Watches(surface) {
+			if err := inspection.account.charge(int64(len(compact))); err != nil {
+				return scanner.ResponseScanResult{ScanError: err.Error()}
+			}
+			texts = append(texts, string(compact))
+			completeness = checker.Completeness{Status: checker.Complete}
 		}
 		if mergeStructuredScan(&result, sc.ScanResponseBodyWithSuppress(ctx, compact, target, cfg.Suppress)) {
 			return result
@@ -379,13 +388,12 @@ func scanStructuredResponse(ctx context.Context, sc *scanner.Scanner, cfg *confi
 	}
 	// Synthetic coordinates never authorize rewriting the original JSON. An
 	// empty transformation uses each transport's existing strip-to-block guard.
-	// No benign assessment is granted; the signed diagnostic names the partial
-	// representation contract, independently of this delivery result.
-	texts := make([]string, 0, len(inspection.Parts))
+	// Extracted-only views retain their partial representation contract; only
+	// submitting the full compact body can earn a complete benign assessment.
 	for _, part := range inspection.Parts {
 		texts = append(texts, part.Text)
 	}
-	return sc.ComposeBufferedInjection(ctx, scanner.BufferedInjectionScan{Surface: surface, Transport: transport, OriginalBytes: int64(len(body)), Texts: texts}, result)
+	return sc.ComposeBufferedInjection(ctx, scanner.BufferedInjectionScan{Surface: surface, Transport: transport, OriginalBytes: int64(len(body)), Texts: texts, Completeness: &completeness}, result)
 }
 
 // mergeStructuredScan folds one scan into result and reports whether the scan
