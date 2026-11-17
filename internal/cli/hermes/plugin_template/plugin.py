@@ -123,10 +123,29 @@ def _invoke(payload: dict) -> dict:
         return {"decision": "block", "reason": "pipelock hermes hook emitted empty JSON"}
     try:
         decoded = json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         return {"decision": "block", "reason": "pipelock hermes hook emitted invalid JSON"}
     if not isinstance(decoded, dict):
         return {"decision": "block", "reason": "pipelock hermes hook emitted non-object JSON"}
+    decision = decoded.get("decision")
+    if decision not in (None, "allow", "block", "transform") or (decision is None and decoded):
+        return {"decision": "block", "reason": "pipelock hermes hook emitted unknown decision"}
+    if decision == "transform" and (
+        "transform" not in payload.get("capabilities", [])
+        or not (
+            isinstance(payload.get("tool_input"), str)
+            or (
+                isinstance(payload.get("tool_input"), dict)
+                and isinstance(payload["tool_input"].get("text"), str)
+            )
+        )
+        or not isinstance(decoded.get("result"), str)
+        or not isinstance(decoded.get("reason"), str)
+        or not decoded["reason"]
+    ):
+        return {"decision": "block", "reason": "pipelock hermes hook emitted invalid transform"}
+    if decision == "block" and not isinstance(decoded.get("reason", ""), str):
+        return {"decision": "block", "reason": "pipelock hermes hook emitted invalid block"}
     return decoded
 
 
@@ -187,10 +206,16 @@ def _transform_tool_result(
         # them here misclassifies safe results when diagnostic arguments name
         # detector rules or source text.
         "tool_input": result,
+        "capabilities": ["transform"] if isinstance(result, str) else [],
         "extra": {"task_id": task_id, "session_id": session_id, "tool_call_id": tool_call_id},
     })
-    if scan.get("decision") == "block":
-        reason = scan.get("reason") or "pipelock redacted this tool result"
+    if scan.get("decision") == "transform":
+        if isinstance(result, str) and isinstance(scan.get("result"), str) and isinstance(scan.get("reason"), str) and scan["reason"]:
+            return scan["result"]
+        return "[pipelock] tool result blocked: invalid transform"
+    if scan.get("decision") not in (None, "allow") or (scan and "decision" not in scan):
+        reason = scan.get("reason") if isinstance(scan.get("reason"), str) else ""
+        reason = reason or "pipelock redacted this tool result"
         return f"[pipelock] tool result blocked: {reason}"
     return None
 
@@ -206,10 +231,18 @@ def _pre_gateway_dispatch(
     scan = _invoke({
         "hook_event_name": "pre_gateway_dispatch",
         "tool_name": "gateway",
+        # Keep the {"text", "sender"} envelope every pipelock release scans,
+        # so an older binary on PATH still inspects the sender.
         "tool_input": {"text": text, "sender": sender},
+        "capabilities": ["transform"] if isinstance(text, str) else [],
     })
-    if scan.get("decision") == "block":
-        return {"action": "skip", "reason": scan.get("reason") or "pipelock blocked inbound message"}
+    if scan.get("decision") == "transform":
+        if isinstance(text, str) and isinstance(scan.get("result"), str) and isinstance(scan.get("reason"), str) and scan["reason"]:
+            return {"action": "rewrite", "text": scan["result"]}
+        return {"action": "skip", "reason": "pipelock hermes hook emitted invalid transform"}
+    if scan.get("decision") not in (None, "allow") or (scan and "decision" not in scan):
+        reason = scan.get("reason") if isinstance(scan.get("reason"), str) else ""
+        return {"action": "skip", "reason": reason or "pipelock blocked inbound message"}
     return None
 
 

@@ -8,8 +8,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -45,9 +48,12 @@ const (
 	HookOnSessionEnd        = "on_session_end"
 )
 
-// DecisionBlock is emitted in HookDecision.Decision to tell Hermes to refuse
-// the action. Matches Hermes' shell-hook vocabulary.
-const DecisionBlock = "block"
+// Hook decisions tell the consumer to refuse an action or replace inbound text.
+const (
+	DecisionBlock = "block"
+	// DecisionTransform requires negotiated support for replacing the original.
+	DecisionTransform = "transform"
+)
 
 // HookEvent is the inbound JSON shape Hermes pipes on stdin for every hook
 // invocation. Field names match Hermes' documented wire schema so the same
@@ -60,10 +66,12 @@ type HookEvent struct {
 	SessionID     string          `json:"session_id,omitempty"`
 	CWD           string          `json:"cwd,omitempty"`
 	Extra         json.RawMessage `json:"extra,omitempty"`
+	Capabilities  []string        `json:"capabilities,omitempty"`
 }
 
 // HookDecision is the outbound JSON shape written to stdout. An empty struct
 // (`{}`) means "allow"; Decision="block" tells Hermes to refuse the action.
+// Decision="transform" requires replacing the original string with Result.
 // Context is reserved for the pre_llm_call hook contract but is unused at this
 // release.
 type HookDecision struct {
@@ -71,6 +79,7 @@ type HookDecision struct {
 	Decision string   `json:"decision,omitempty"`
 	Reason   string   `json:"reason,omitempty"`
 	Context  string   `json:"context,omitempty"`
+	Result   string   `json:"result,omitempty"`
 }
 
 // hookCmd returns the `pipelock hermes hook` subcommand. Hermes invokes it as
@@ -105,6 +114,11 @@ Wire schema (stdin):
 Wire schema (stdout):
 
   {"decision": "block", "reason": "..."}    or    {}
+
+The bundled plugin advertises capabilities: ["transform"] for inbound string
+results and gateway text. Only then may stdout contain
+  {"decision": "transform", "result": "<masked string>", "reason": "..."}
+The consumer must replace the original text with result, or refuse delivery.
 
 Exit code is 0 when the command completes successfully; the decision JSON
 drives Hermes-side behaviour.`,
@@ -226,16 +240,33 @@ func evaluate(ctx context.Context, sc *scanner.Scanner, event *HookEvent) HookDe
 		if truncated {
 			return blockDecision("pipelock: tool result exceeds maximum inspectable nesting depth")
 		}
-		return scanCombinedViews(ctx, sc, hookScanViews{text: text, cards: cards, raw: event.ToolInput},
+		return scanCombinedViews(ctx, sc, inboundScanViews(event, text, cards),
 			fmt.Sprintf("tool %q result", event.ToolName), directionInbound)
 	case HookPreGatewayDispatch:
-		// Inbound: an operator->agent message being dispatched.
-		text, cards, truncated := extractToolInputViews(event.ToolInput)
-		if truncated {
-			return blockDecision("pipelock: gateway dispatch exceeds maximum inspectable nesting depth")
+		// Inbound: an operator->agent message being dispatched. The plugin
+		// sends {"text": ..., "sender": ...} on every release, so a binary of
+		// any version scans the sender. A plugin that can rewrite text also
+		// advertises the transform capability; only then is text split from
+		// the sender so a mask can apply to the one field Hermes replaces.
+		// extra.sender is a second copy of that metadata. It is block-only
+		// on every path; leaving it unscanned allowed the credential through.
+		extraSender, extraErr := gatewayExtraSender(event)
+		if extraErr != nil {
+			return blockDecision("pipelock: invalid gateway metadata")
 		}
-		return scanCombinedViews(ctx, sc, hookScanViews{text: text, cards: cards, raw: event.ToolInput},
-			"inbound gateway dispatch", directionInbound)
+		var decision HookDecision
+		if gw, ok := gatewayEnvelope(event); ok {
+			decision = scanGatewayDispatch(ctx, sc, event, gw)
+		} else {
+			text, cards, truncated := extractToolInputViews(event.ToolInput)
+			if truncated {
+				decision = blockDecision("pipelock: gateway dispatch exceeds maximum inspectable nesting depth")
+			} else {
+				decision = scanCombinedViews(ctx, sc, hookScanViews{text: text, cards: cards, raw: event.ToolInput},
+					"inbound gateway dispatch", directionInbound)
+			}
+		}
+		return applyGatewayExtraSender(ctx, sc, decision, extraSender)
 	case HookOnSessionStart, HookOnSessionEnd:
 		// Observer hooks. The current release emits no decision; a follow-up
 		// release may hook these to receipt emission.
@@ -245,6 +276,108 @@ func evaluate(ctx context.Context, sc *scanner.Scanner, event *HookEvent) HookDe
 	default:
 		return blockDecision(fmt.Sprintf("pipelock hermes hook: unsupported hook_event_name %q", event.HookEventName))
 	}
+}
+
+type gatewayDispatch struct {
+	text   string
+	sender json.RawMessage
+}
+
+// gatewayEnvelope accepts only the exact {"text": string, "sender": any}
+// object from a plugin that advertised transform support. Any other shape
+// keeps the legacy whole-envelope, block-only scan.
+func gatewayEnvelope(event *HookEvent) (gatewayDispatch, bool) {
+	if !slices.Contains(event.Capabilities, DecisionTransform) {
+		return gatewayDispatch{}, false
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(event.ToolInput, &fields); err != nil {
+		return gatewayDispatch{}, false
+	}
+	for key := range fields {
+		if key != "text" && key != "sender" {
+			return gatewayDispatch{}, false
+		}
+	}
+	var text string
+	if raw, ok := fields["text"]; !ok || json.Unmarshal(raw, &text) != nil {
+		return gatewayDispatch{}, false
+	}
+	return gatewayDispatch{text: text, sender: fields["sender"]}, true
+}
+
+// gatewayExtraSender returns a sender copy carried beside the envelope.
+// Empty extra is absent. A non-object extra is refused so malformed
+// metadata cannot skip the scan. The error text is not returned to the
+// caller: unmarshal diagnostics can echo the payload.
+func gatewayExtraSender(event *HookEvent) (json.RawMessage, error) {
+	if len(strings.TrimSpace(string(event.Extra))) == 0 {
+		return nil, nil
+	}
+	var extra struct {
+		Sender json.RawMessage `json:"sender"`
+	}
+	if err := json.Unmarshal(event.Extra, &extra); err != nil {
+		return nil, err
+	}
+	return extra.Sender, nil
+}
+
+func scanGatewaySenderValue(ctx context.Context, sc *scanner.Scanner, raw json.RawMessage) HookDecision {
+	if len(raw) == 0 {
+		return allowDecision()
+	}
+	text, cards, truncated := extractToolInputViews(raw)
+	if truncated {
+		return blockDecision("pipelock: gateway sender exceeds maximum inspectable nesting depth")
+	}
+	return scanCombinedViews(ctx, sc, hookScanViews{
+		text: text, cards: cards, raw: raw,
+	}, "gateway sender", directionInbound)
+}
+
+func applyGatewayExtraSender(ctx context.Context, sc *scanner.Scanner, decision HookDecision, sender json.RawMessage) HookDecision {
+	extra := scanGatewaySenderValue(ctx, sc, sender)
+	if extra.Decision == "" {
+		decision.warnings = append(decision.warnings, extra.warnings...)
+		return decision
+	}
+	reasons := make([]string, 0, 2)
+	if decision.Reason != "" {
+		reasons = append(reasons, decision.Reason)
+	}
+	if extra.Reason != "" {
+		reasons = append(reasons, extra.Reason)
+	}
+	blocked := blockDecision(strings.Join(reasons, "; "))
+	blocked.warnings = append(decision.warnings, extra.warnings...)
+	return blocked
+}
+
+func scanGatewayDispatch(ctx context.Context, sc *scanner.Scanner, event *HookEvent, gw gatewayDispatch) HookDecision {
+	rawText, _ := json.Marshal(gw.text) // Encoding a Go string cannot fail.
+	text, cards, truncated := extractToolInputViews(rawText)
+	if truncated {
+		return blockDecision("pipelock: gateway dispatch exceeds maximum inspectable nesting depth")
+	}
+	textEvent := *event
+	textEvent.ToolInput = rawText
+	decision := scanCombinedViews(ctx, sc, inboundScanViews(&textEvent, text, cards),
+		"inbound gateway dispatch", directionInbound)
+	// The sender is never rewritten, so any sender finding refuses the whole
+	// dispatch.
+	sender := scanGatewaySenderValue(ctx, sc, gw.sender)
+	if sender.Decision != "" {
+		reasons := []string{sender.Reason}
+		if decision.Reason != "" {
+			reasons = append([]string{decision.Reason}, reasons...)
+		}
+		blocked := blockDecision(strings.Join(reasons, "; "))
+		blocked.warnings = append(decision.warnings, sender.warnings...)
+		return blocked
+	}
+	decision.warnings = append(decision.warnings, sender.warnings...)
+	return decision
 }
 
 // scanDirection classifies a hook event for DLP scan selection.
@@ -269,7 +402,7 @@ const (
 )
 
 // scanCombined applies DLP and response/injection scans to text and returns a
-// block decision on the first finding. The direction selects the DLP variant
+// block decision listing all enforceable findings. The direction selects the DLP variant
 // (see scanDirection). Empty text short-circuits to allow: nothing to scan
 // means nothing to flag, and a spurious block on an empty-arguments tool call
 // would be a denial of service.
@@ -281,8 +414,22 @@ func scanCombined(ctx context.Context, sc *scanner.Scanner, text, surface string
 }
 
 type hookScanViews struct {
-	text, cards string
-	raw         json.RawMessage
+	text, cards                string
+	raw                        json.RawMessage
+	transform, requireComplete bool
+}
+
+func inboundScanViews(event *HookEvent, text, cards string) hookScanViews {
+	views := hookScanViews{text: text, cards: cards, raw: event.ToolInput}
+	var delivered string
+	// Structured values have no proven string replacement contract with Hermes.
+	// Never project joined or decoded leaf coordinates back onto their encoding.
+	views.transform = slices.Contains(event.Capabilities, DecisionTransform) &&
+		json.Unmarshal(event.ToolInput, &delivered) == nil && delivered == text
+	// Completeness gates only the masked re-scan: requiring it here would
+	// newly block clean results whose encoded views were partly inspected,
+	// which the block-only path delivers with a warning today.
+	return views
 }
 
 func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanViews, surface string, dir scanDirection) (decision HookDecision) {
@@ -290,13 +437,31 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 	partialEncoded := false
 	defer func() {
 		if numberOnly {
-			decision.warnings = []string{"pipelock: warning: informational JSON card run detected (action=warn)"}
+			decision.warnings = append(decision.warnings, "pipelock: warning: informational JSON card run detected (action=warn)")
 		}
 		if partialEncoded {
 			decision.warnings = append(decision.warnings, "pipelock: warning: "+scanner.PartialEncodedContentPattern+" (action=warn)")
 		}
 	}()
 	text, cards := views.text, views.cards
+	masking := dir == directionInbound && views.transform
+	var spans []scanner.MatchSpan
+	var maskedReasons []string
+	unmaskable := false
+	var reasons []string
+	seen := make(map[string]bool)
+	addReason := func(reason string) {
+		// Combined and leaf views can report the same finding. Keep each
+		// distinct diagnostic without repeating it for every scanned view.
+		if !seen[reason] {
+			seen[reason] = true
+			reasons = append(reasons, reason)
+		}
+	}
+	refuse := func(reason string) {
+		unmaskable = true
+		addReason(reason)
+	}
 	// Inspect the original document and complete JSON documents stored in
 	// individual string leaves, before envelope text joins erase their shape.
 	documents := []string{string(views.raw)}
@@ -307,39 +472,39 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 			documents = append(documents, leaf)
 		}
 	}
-	var cardBlock *scanner.TextDLPMatch
 	for _, document := range documents {
 		for _, match := range sc.ScanJSONCardRuns(ctx, document) {
 			if match.IsInformational() {
 				numberOnly = true
 				continue
 			}
-			if cardBlock == nil {
-				cardBlock = &match
-			}
+			refuse(dlpBlockReason(surface, match))
 		}
 	}
-	if cardBlock != nil {
-		return blockDecision(dlpBlockReason(surface, *cardBlock))
-	}
 	if strings.TrimSpace(text) == "" {
+		if len(reasons) > 0 {
+			return blockDecision(strings.Join(reasons, "; "))
+		}
 		return allowDecision()
 	}
 
 	// Outbound runs the full exfil-aware scan; inbound skips the agent's-own-
 	// secret exfil checks. Exactly one variant runs — calling the full scan for
 	// an inbound event would run the exfil checks and emit warn telemetry before
-	// being discarded. Injection scanning (ScanResponse) runs regardless: a
-	// poisoned tool result or operator message is the real inbound threat.
-	firstEnforceable := func(dlp scanner.TextDLPResult, scanned string) *scanner.TextDLPMatch {
-		if len(dlp.Matches) == 0 {
-			return nil
+	// being discarded. Accumulate DLP findings without returning early so
+	// injection scanning also runs when a credential or card was found.
+	collectEnforceable := func(dlp scanner.TextDLPResult, scanned string) {
+		if err := dlp.Err(); err != nil {
+			refuse(fmt.Sprintf("pipelock scan failed on %s: %s", surface, err))
 		}
 		var enforceable []scanner.TextDLPMatch
 		for _, match := range dlp.Matches {
 			if match.IsInformational() {
 				if match.PatternName == scanner.PartialEncodedContentPattern {
 					partialEncoded = true
+					if views.requireComplete {
+						refuse("pipelock: incomplete encoded inspection on " + surface)
+					}
 				} else {
 					numberOnly = true
 				}
@@ -350,10 +515,27 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 		if dir == directionInbound {
 			enforceable = scanner.EnforceableInboundTextDLPMatches(scanned, enforceable)
 		}
-		if len(enforceable) == 0 {
-			return nil
+		for _, match := range enforceable {
+			reason := dlpBlockReason(surface, match)
+			addReason(reason)
+			// Limit this remediation to the reported AWS pattern. Other
+			// credentials, cards, canaries and inspection refusals still block.
+			if masking && scanned == text && match.PatternName == "AWS Access ID" {
+				if raw := maskableInboundSpans(match, text); len(raw) > 0 {
+					spans = append(spans, raw...)
+					maskedReasons = append(maskedReasons, strings.Replace(reason, "DLP match", "DLP masked", 1))
+					continue
+				}
+				// Joined siblings may describe the same token. They cannot
+				// authorize masking; a complete re-scan must clear them. A raw
+				// hit that ends on the sibling's prefix is refused below, or
+				// deleting that prefix would make the re-scan miss the tail.
+				if match.Encoded == "whitespace" || match.Encoded == "subdomain" {
+					continue
+				}
+			}
+			unmaskable = true
 		}
-		return &enforceable[0]
 	}
 	var dlp scanner.TextDLPResult
 	if dir == directionInbound {
@@ -361,9 +543,7 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 	} else {
 		dlp = sc.ScanTextForDLPWithTypedCardView(ctx, text, cards)
 	}
-	if match := firstEnforceable(dlp, text); match != nil {
-		return blockDecision(dlpBlockReason(surface, *match))
-	}
+	collectEnforceable(dlp, text)
 	// A joined view cannot retain each leaf's scalar spelling, so a string
 	// leaf holding an exponent card spelling reads as ordinary text once a
 	// key precedes it. Inspect leaves independently with their card views,
@@ -375,22 +555,278 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 		} else {
 			leaf = sc.ScanTextForDLPWithCardView(ctx, atom.Text, atom.Card)
 		}
-		if match := firstEnforceable(leaf, atom.Text); match != nil {
-			return blockDecision(dlpBlockReason(surface, *match))
-		}
+		collectEnforceable(leaf, atom.Text)
 	}
 
 	resp := sc.ScanResponse(ctx, text)
 	if resp.Failed() {
-		return blockDecision(fmt.Sprintf("pipelock scan failed on %s: %s", surface, resp.ScanError))
+		refuse(fmt.Sprintf("pipelock scan failed on %s: %s", surface, resp.ScanError))
+	}
+	if views.requireComplete && resp.InspectionIncomplete {
+		refuse("pipelock: incomplete injection inspection on " + surface)
 	}
 	if !resp.Clean && len(resp.Matches) > 0 {
-		first := resp.Matches[0]
-		return blockDecision(fmt.Sprintf("pipelock injection match on %s: %s",
-			surface, first.PatternName))
+		for _, match := range resp.Matches {
+			refuse(fmt.Sprintf("pipelock injection match on %s: %s",
+				surface, match.PatternName))
+		}
 	}
 
+	if len(reasons) > 0 {
+		if !unmaskable && len(spans) > 0 && !rawSpansHideSplitAWSKey(ctx, sc, text, spans) {
+			masked := maskInboundSpans(text, spans)
+			raw, _ := json.Marshal(masked) // Encoding a Go string cannot fail.
+			checked := scanCombinedViews(ctx, sc, hookScanViews{
+				text: masked, cards: jsonnumber.EscapeCardBoundaries(masked), raw: raw, requireComplete: true,
+			}, surface, dir)
+			if checked.Decision != "" || ctx.Err() != nil {
+				return blockDecision(strings.Join(reasons, "; ") + "; pipelock: masked result refused: " + checked.Reason)
+			}
+			reason := strings.Join(slices.Compact(maskedReasons), "; ")
+			for _, original := range reasons {
+				if !slices.Contains(maskedReasons, strings.Replace(original, "DLP match", "DLP masked", 1)) {
+					reason += "; cleared after masking: " + original
+				}
+			}
+			decision = HookDecision{Decision: DecisionTransform, Result: masked, Reason: reason}
+			decision.warnings = append(checked.warnings, reason)
+			return decision
+		}
+		return blockDecision(strings.Join(reasons, "; "))
+	}
 	return allowDecision()
+}
+
+// inboundMaskPlaceholder contains no JSON quoting or escape bytes. Its safety
+// against configured patterns is established by scanning the complete result.
+const inboundMaskPlaceholder = "[pipelock:masked:aws-access-id]"
+
+// rawAWSAccessIDRe is the built-in AWS Access ID detector applied to the raw
+// text with the scanner's case folding. Masking uses raw hits rather than the
+// finding's span: that span indexes normalize.ForDLP(text), which deletes line
+// breaks and folds Unicode, so it neither maps onto raw bytes nor keeps a token
+// at a line end apart from the next line.
+var rawAWSAccessIDRe = regexp.MustCompile("(?i)" + config.AWSAccessIDRegex)
+
+// maskableInboundSpans returns the raw byte ranges to mask for a plain-view
+// AWS Access ID finding, or nil when the finding is not eligible or the raw
+// text holds no hit. A token that only exists after normalization
+// (interleaved zero-width or control bytes, fullwidth letters, a key split
+// across lines) has no raw hit, so the finding stays unmaskable and the
+// result is refused. A raw hit can still end on a later key's prefix;
+// rawSpansHideSplitAWSKey refuses that mask because the re-scan would no
+// longer see the second key.
+func maskableInboundSpans(match scanner.TextDLPMatch, text string) []scanner.MatchSpan {
+	span := match.Span()
+	if match.PatternName != "AWS Access ID" || match.Encoded != "" || !span.Valid() ||
+		span.ViewLabel != scanner.ViewDLPNormalized {
+		return nil
+	}
+	var spans []scanner.MatchSpan
+	for _, hit := range rawAWSAccessIDRe.FindAllStringIndex(text, -1) {
+		// Case-insensitive Go regexes also fold Kelvin signs and long s into
+		// ASCII. Those bytes need normalization and cannot authorize a raw
+		// rewrite or the ASCII prefix-boundary check below.
+		for i := hit[0]; i < hit[1]; i++ {
+			if text[i] >= utf8.RuneSelf {
+				return nil
+			}
+		}
+		spans = append(spans, scanner.MatchSpan{ByteStart: hit[0], ByteEnd: hit[1]})
+	}
+	return spans
+}
+
+// awsDetectorPrefixes returns the literal prefix alternation of the built-in
+// AWS Access ID detector. A shape this masker cannot split returns nil, and
+// the caller then refuses the mask.
+func awsDetectorPrefixes(pattern string) []string {
+	const tail = ")[A-Z0-9]{16,}"
+	end := strings.IndexByte(pattern, ')')
+	if !strings.HasPrefix(pattern, "(") || end <= 1 || !strings.HasSuffix(pattern, tail) || end != len(pattern)-len(tail) {
+		return nil
+	}
+	parts := strings.Split(pattern[1:end], "|")
+	for _, part := range parts {
+		if part == "" {
+			return nil
+		}
+		for i := 0; i < len(part); i++ {
+			c := part[i]
+			if (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
+				return nil
+			}
+		}
+	}
+	return parts
+}
+
+// rawSpansHideSplitAWSKey reports whether masking spans would delete part of
+// an enforceable AWS key whose tail sits past the hit. The raw detector is
+// greedy and has no word boundary, so one hit can swallow the next key's
+// prefix, stop at a space, line break, dot, or ignored character, and leave
+// the body. A prefix with sixteen alnum still inside the hit is fully masked.
+// A prefix in the last fifteen of those alnum is not: the re-scan would no
+// longer see it, and the body would be delivered. The detector matches either
+// case, while an inbound key is enforced in uppercase, so the check spells
+// that inside tail in uppercase before asking.
+func rawSpansHideSplitAWSKey(ctx context.Context, sc *scanner.Scanner, text string, spans []scanner.MatchSpan) bool {
+	prefixes := awsDetectorPrefixes(config.AWSAccessIDRegex)
+	if len(prefixes) == 0 {
+		return true
+	}
+	for _, span := range spans {
+		if span.ByteStart < 0 || span.ByteEnd > len(text) || span.ByteEnd <= span.ByteStart {
+			return true
+		}
+		for _, prefix := range prefixes {
+			n := len(prefix)
+			// Sixteen alnum after the prefix means that minimum key is inside
+			// the hit. Only a later prefix, with a shorter inside tail, can
+			// continue past the separator.
+			from := span.ByteEnd - (n + 15)
+			if from < span.ByteStart {
+				from = span.ByteStart
+			}
+			for i := from; i < span.ByteEnd; i++ {
+				// A prefix can cross the raw hit's end: normalization may
+				// join AK + zero-width + IA, for example. Keep even a partial
+				// prefix and let the scanner decide whether it forms a key.
+				inside := min(n, span.ByteEnd-i)
+				if span.ByteEnd-(i+n) >= 16 || !strings.EqualFold(text[i:i+inside], prefix[:inside]) {
+					continue
+				}
+				kept := exciseSpansExcept(upperASCIIRange(text, i, span.ByteEnd), spans, i, span.ByteEnd)
+				if keptHasEnforceableAWSAccessID(ctx, sc, kept) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// upperASCIIRange returns text with ASCII letters in [start, end) uppercased.
+// Only a-z changes, so the byte length and every span offset stay put.
+func upperASCIIRange(text string, start, end int) string {
+	if start < 0 || end > len(text) || start >= end {
+		return text
+	}
+	var buf []byte
+	for i := start; i < end; i++ {
+		c := text[i]
+		if c < 'a' || c > 'z' {
+			continue
+		}
+		if buf == nil {
+			buf = []byte(text)
+		}
+		buf[i] = c - ('a' - 'A')
+	}
+	if buf == nil {
+		return text
+	}
+	return string(buf)
+}
+
+// exciseSpansExcept returns text with every span removed except the half-open
+// range [keepStart, keepEnd), which is the prefix a split key still needs.
+func exciseSpansExcept(text string, spans []scanner.MatchSpan, keepStart, keepEnd int) string {
+	cuts := make([][2]int, 0, len(spans)+1)
+	add := func(lo, hi int) {
+		if lo < 0 {
+			lo = 0
+		}
+		if hi > len(text) {
+			hi = len(text)
+		}
+		if hi > lo {
+			cuts = append(cuts, [2]int{lo, hi})
+		}
+	}
+	for _, span := range spans {
+		lo, hi := span.ByteStart, span.ByteEnd
+		if hi <= keepStart || lo >= keepEnd {
+			add(lo, hi)
+			continue
+		}
+		add(lo, keepStart)
+		add(keepEnd, hi)
+	}
+	slices.SortFunc(cuts, func(a, b [2]int) int {
+		if a[0] != b[0] {
+			return a[0] - b[0]
+		}
+		return a[1] - b[1]
+	})
+	var out strings.Builder
+	pos := 0
+	for _, cut := range cuts {
+		lo, hi := cut[0], cut[1]
+		if lo < pos {
+			lo = pos
+		}
+		if lo >= len(text) {
+			break
+		}
+		if hi > len(text) {
+			hi = len(text)
+		}
+		if lo > pos {
+			out.WriteString(text[pos:lo])
+		}
+		if hi > pos {
+			pos = hi
+		}
+	}
+	if pos < len(text) {
+		out.WriteString(text[pos:])
+	}
+	return out.String()
+}
+
+func keptHasEnforceableAWSAccessID(ctx context.Context, sc *scanner.Scanner, text string) bool {
+	dlp := sc.ScanTextForDLPInbound(ctx, text)
+	if dlp.Err() != nil {
+		return true
+	}
+	matches := make([]scanner.TextDLPMatch, 0, len(dlp.Matches))
+	for _, match := range dlp.Matches {
+		if !match.IsInformational() {
+			matches = append(matches, match)
+		}
+	}
+	for _, match := range scanner.EnforceableInboundTextDLPMatches(text, matches) {
+		if match.PatternName == "AWS Access ID" {
+			return true
+		}
+	}
+	return false
+}
+
+func maskInboundSpans(text string, spans []scanner.MatchSpan) string {
+	slices.SortFunc(spans, func(a, b scanner.MatchSpan) int {
+		if a.ByteStart != b.ByteStart {
+			return a.ByteStart - b.ByteStart
+		}
+		return a.ByteEnd - b.ByteEnd
+	})
+	var out strings.Builder
+	end := 0
+	for i := 0; i < len(spans); {
+		start, stop := spans[i].ByteStart, spans[i].ByteEnd
+		i++
+		// Core/config duplicates and overlapping spans describe one removal.
+		for i < len(spans) && spans[i].ByteStart <= stop {
+			stop = max(stop, spans[i].ByteEnd)
+			i++
+		}
+		out.WriteString(text[end:start])
+		out.WriteString(inboundMaskPlaceholder)
+		end = stop
+	}
+	out.WriteString(text[end:])
+	return out.String()
 }
 
 func dlpBlockReason(surface string, match scanner.TextDLPMatch) string {
