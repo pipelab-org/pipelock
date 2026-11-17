@@ -1937,8 +1937,8 @@ func TestWrapBuffered_NothingBuffered(t *testing.T) {
 
 func TestWrapBufferedReaders_DrainsResizedAndOriginalBuffersThenUsesConn(t *testing.T) {
 	server, client := net.Pipe()
-	defer server.Close() //nolint:errcheck
-	defer client.Close() //nolint:errcheck
+	defer func() { _ = server.Close() }()
+	defer func() { _ = client.Close() }()
 
 	const staged = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 	writeDone := make(chan error, 1)
