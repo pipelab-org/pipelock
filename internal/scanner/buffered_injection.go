@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/checker"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -135,11 +136,14 @@ func (s *Scanner) ComposeBufferedInjection(ctx context.Context, o BufferedInject
 	return result
 }
 
-// InjectionTextParts preserves source text and labels Unicode views, matching
-// the MCP checker seam. It never adds base64 or hex decoded checker views.
+// InjectionTextParts preserves valid source text and labels Unicode views,
+// matching the MCP checker seam. Invalid byte runs become spaces, as in the
+// response body view, before any checker parts or normalized views are built.
+// It never adds base64 or hex decoded checker views.
 func InjectionTextParts(texts ...string) []checker.Part {
 	var parts []checker.Part
 	for i, text := range texts {
+		text = strings.ToValidUTF8(text, " ")
 		if text == "" {
 			continue
 		}

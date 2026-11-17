@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -338,5 +339,27 @@ func TestBufferedCheckerStructuredCopyBudget(t *testing.T) {
 	got := scanStructuredResponse(t.Context(), sc, cfg, body, "https://api.vendor.example", view)
 	if !got.Failed() || got.ScanError != errStructuredViewBudget.Error() || len(srv.Items()) != 0 {
 		t.Fatalf("unreserved checker copy admitted: result=%+v items=%+v", got, srv.Items())
+	}
+}
+
+func TestBufferedCheckerRequestInvalidUTF8(t *testing.T) {
+	srv := checkertest.New(t, "benign")
+	cfg := testScannerConfig()
+	srv.Configure(cfg, config.InjectionSurfaceHTTPRequestBody, config.InjectionModeBlock)
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	text := "ordinary" + string([]byte{0xff, 0xfe}) + "request"
+	forwarded, got := scanRequestBody(t.Context(), BodyScanRequest{Body: strings.NewReader(text), ContentType: "text/plain", MaxBytes: 1024, Scanner: sc, Action: config.ActionBlock})
+	if !got.Clean || got.ScanError != "" || string(forwarded) != text {
+		t.Fatalf("benign invalid-byte request refused or changed: %+v", got)
+	}
+	items := srv.Items()
+	if len(items) != 1 || len(items[0].Parts) == 0 {
+		t.Fatalf("checker calls=%d", len(items))
+	}
+	for _, part := range items[0].Parts {
+		if !utf8.ValidString(part.Text) || part.Text != "ordinary request" {
+			t.Fatalf("unexpected checker text %q", part.Text)
+		}
 	}
 }

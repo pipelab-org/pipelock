@@ -5,10 +5,12 @@ package scanner
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/checker/checkertest"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -317,5 +319,52 @@ func TestBufferedInjectionLatin1Metadata(t *testing.T) {
 	}
 	if !strings.Contains(srv.Items()[0].Parts[0].Text, "caf") {
 		t.Fatal("metadata content lost")
+	}
+}
+
+func TestBufferedInjectionInvalidUTF8(t *testing.T) {
+	text := "ordinary" + string([]byte{0xff, 0xfe}) + "text"
+	for _, surface := range bufferedTestSurfaces() {
+		for _, compose := range []bool{false, true} {
+			t.Run(surface+"/compose="+fmt.Sprint(compose), func(t *testing.T) {
+				srv := checkertest.New(t, "benign")
+				cfg := testResponseConfig()
+				srv.Configure(cfg, surface, config.InjectionModeBlock)
+				sc := MustNew(cfg)
+				t.Cleanup(sc.Close)
+				opts := BufferedInjectionScan{Surface: surface, Content: text}
+				var got ResponseScanResult
+				if compose {
+					opts.Texts = []string{text, "ｈｅｌｌｏ" + string([]byte{0xff}) + "world"}
+					got = sc.ComposeBufferedInjection(t.Context(), opts, ResponseScanResult{Clean: true})
+				} else {
+					got = sc.ScanBufferedInjection(t.Context(), opts)
+				}
+				if !got.Clean || got.Failed() || !got.RecoveryAssessment().IsBenign() {
+					t.Fatalf("benign invalid-byte text refused: %+v", got)
+				}
+				items := srv.Items()
+				if len(items) != 1 || items[0].OriginalBytes != int64(len(text)) || items[0].Parts[0].Text != "ordinary text" {
+					t.Fatalf("unexpected checker items: %+v", items)
+				}
+				var submitted int64
+				for _, part := range items[0].Parts {
+					if !utf8.ValidString(part.Text) {
+						t.Fatalf("invalid checker text %q", part.Text)
+					}
+					submitted += int64(len(part.Text))
+				}
+				if items[0].SubmittedBytes != submitted {
+					t.Fatal("submitted byte count did not use cleaned text")
+				}
+			})
+		}
+	}
+}
+
+func TestInjectionTextPartsInvalidUTF8(t *testing.T) {
+	parts := InjectionTextParts("", "a"+string([]byte{0xff, 0xfe})+"b", "ｈｅｌｌｏ"+string([]byte{0xff})+"world")
+	if len(parts) != 3 || parts[0].Text != "a b" || parts[1].Text != "ｈｅｌｌｏ world" || parts[2].Text != "hello world" {
+		t.Fatalf("unexpected cleaned parts: %+v", parts)
 	}
 }
