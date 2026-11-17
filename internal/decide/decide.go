@@ -236,12 +236,19 @@ func decideMCP(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config
 		}
 	}
 
-	// DLP + injection: respect MCP input scanning toggle and action.
+	// DLP retains the MCP input toggle. An explicit hook selection owns
+	// injection independently; absent a selection, preserve the legacy gate.
 	if p.ToolInput != "" && cfg.MCPInputScanning.Enabled {
 		evidence = append(evidence, evidenceFromJSONDLP(sc, scanText, p.ToolInput, argStrings)...)
-
+	}
+	selection := sc.InjectionPolicy().For(config.InjectionSurfaceHookToolInput)
+	if p.ToolInput != "" && (cfg.MCPInputScanning.Enabled || selection.Source == config.InjectionPolicySourceSurface) {
+		action := cfg.MCPInputScanning.Action
+		if selection.Source == config.InjectionPolicySourceSurface {
+			action = selection.Mode
+		}
 		injResult := sc.ScanHookInjection(context.Background(), scanText, "decide", false)
-		evidence = append(evidence, evidenceFromHookInjection(injResult, cfg.MCPInputScanning.Action, false)...)
+		evidence = append(evidence, evidenceFromHookInjection(injResult, action, false)...)
 	}
 
 	// Policy: check tool name + args. Pass raw JSON so arg_key rules can
