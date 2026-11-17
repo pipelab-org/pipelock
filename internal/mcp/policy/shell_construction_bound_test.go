@@ -170,10 +170,7 @@ func TestShellConstructionUseBeforeAssignmentReadsUnset(t *testing.T) {
 		// The hosted review's cases on 7a82b1d.
 		"if false; then echo done; Z=echo; fi; " + use,
 		"Z=echo; unset Z>/dev/null; " + use,
-		"if test -f /nope; then (:)#; fi\nZ=echo\nfi; " + use,
-		"if test -f /nope; then echo " + d + "(true)# fi\nZ=echo\nfi; " + use,
 		"A=echo; A=r; B=m; false && Z=x; " + d + "Z" + d + "A" + d + "B -rf /tmp/target",
-		"echo " + d + "{x}#; if test -f /nope; then\nZ=echo\nfi; " + use,
 		"echo if; if test -f /nope; then Z=echo; fi; " + use,
 		"true;#x\nif test -f /nope; then Z=echo; fi; " + use,
 	} {
@@ -1276,11 +1273,24 @@ func TestShellConditionalAtMarksSkippedText(t *testing.T) {
 		{"echo \"Z=1\"; true", strings.Index("echo \"Z=1\"; true", "=")},
 		{"true # Z=1\ntrue", strings.Index("true # Z=1\ntrue", "=")},
 	} {
-		if !shellConditionalAt(tc.s, []int{tc.at})[tc.at] {
+		if out, _ := shellConditionalAt(tc.s, []int{tc.at}); !out[tc.at] {
 			t.Errorf("%q: assignment at %d read as certain", tc.s, tc.at)
 		}
 	}
-	if s := "Z=1; true"; shellConditionalAt(s, []int{1})[1] {
-		t.Errorf("%q: plain assignment read as conditional", s)
+	if out, _ := shellConditionalAt("Z=1; true", []int{1}); out[1] {
+		t.Errorf("plain assignment read as conditional")
+	}
+
+	// "#" after ")" or "}" may or may not start a comment. The reading is
+	// marked incomplete, the same path as a full copy budget.
+	for _, cmd := range []string{
+		"if test -f /nope; then (:)#; fi\nZ=echo\nfi; A=r; B=m; " + d + "Z" + d + "A" + d + "B -rf /tmp/target",
+		"if test -f /nope; then echo " + d + "(true)# fi\nZ=echo\nfi; A=r; B=m; " + d + "Z" + d + "A" + d + "B -rf /tmp/target",
+		"echo " + d + "{x}#; Z=1; echo " + d + "Z",
+		"echo " + d + "{x}#; if test -f /nope; then\nZ=echo\nfi; A=r; B=m; " + d + "Z" + d + "A" + d + "B -rf /tmp/target",
+	} {
+		if _, partial, fits := resolveShellConstruction(cmd); !fits || !partial {
+			t.Errorf("%q: partial=%v fits=%v, want an incomplete reading", cmd, partial, fits)
+		}
 	}
 }

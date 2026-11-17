@@ -434,14 +434,13 @@ func shellAssigningBuiltin(w string) bool {
 // assignment starting there may not run: it is inside a group, subshell,
 // condition, loop, case or function body, or follows "&&", "||" or "|" in
 // its own statement. "$(", "${", "<(" and ">(" are expansions, not groups.
-func shellConditionalAt(s string, at []int) map[int]bool {
-	out := make(map[int]bool, len(at))
+func shellConditionalAt(s string, at []int) (out map[int]bool, ambiguous bool) {
+	out = make(map[int]bool, len(at))
 	depth, gated := 0, false
 	var groups []bool // true for a group that counts toward depth
 	// cmdPos: the next word is a command word, where reserved words count.
 	// "echo fi" does not close an if.
 	cmdPos := true
-	noCloseUntil := -1
 	next := 0
 	for i := 0; i < len(s) && next < len(at); i++ {
 		for next < len(at) && at[next] == i {
@@ -490,14 +489,11 @@ func shellConditionalAt(s string, at []int) map[int]bool {
 			cmdPos = false
 		case '#':
 			if i > 0 && (s[i-1] == ')' || s[i-1] == '}') {
-				// "(:)#x" is a comment and "$(x)#" or "${x}#" is not. Keep
-				// reading so an opener still counts, but let no closer on the
-				// rest of the line end a block: that only over-reads.
-				noCloseUntil = len(s)
-				if k := strings.IndexByte(s[i:], '\n'); k >= 0 {
-					noCloseUntil = i + k
-				}
-				continue
+				// "(:)#x" is a comment and "$(x)#" or "${x}#" is not. The
+				// scan cannot tell which, so the reading is incomplete: the
+				// caller marks it partial, the incomplete-check path.
+				markSkipped(out, at, next, len(s))
+				return out, true
 			}
 			if i == 0 || isShellSpaceByte(s[i-1]) || strings.IndexByte(";&|(<>", s[i-1]) >= 0 {
 				to := len(s) - 1
@@ -529,9 +525,7 @@ func shellConditionalAt(s string, at []int) map[int]bool {
 				case "if", "while", "until", "for", "case", "select":
 					depth++
 				case "fi", "done", "esac":
-					if i >= noCloseUntil {
-						depth = max(depth-1, 0)
-					}
+					depth = max(depth-1, 0)
 				}
 			}
 			switch s[i:j] {
@@ -547,7 +541,7 @@ func shellConditionalAt(s string, at []int) map[int]bool {
 			i = j - 1
 		}
 	}
-	return out
+	return out, false
 }
 
 // markSkipped marks every pending offset up to and including to as
@@ -1409,7 +1403,10 @@ func shellConstructionPass(s string, sb *shellBounds) (out string, changed, fits
 		firsts = append(firsts, at)
 	}
 	slices.Sort(firsts)
-	conditional := shellConditionalAt(s, firsts)
+	conditional, ambiguous := shellConditionalAt(s, firsts)
+	if ambiguous {
+		sb.partial = true
+	}
 	unsetNames, unsetAny := shellUnsetNames(s)
 	mayUnset := make([]bool, len(uses))
 	for i, u := range uses {
