@@ -1445,6 +1445,18 @@ func shellConstructionPass(s string, sb *shellBounds) (out string, changed, fits
 			continue
 		}
 		n := sv.names[u.name]
+		if n == nil && !u.indirect && s[u.pos+1] != '{' && i+1 < len(uses) &&
+			u.end == uses[i+1].pos && sv.names[uses[i+1].name] != nil {
+			// Keep the name's boundary when a neighboring assigned value is
+			// written out: $Q$A must not become $Qr when A holds r. Leave
+			// the reference intact; the separate word view reads it empty.
+			if !sb.spend(len(u.name) + 3) {
+				return s, false, false
+			}
+			ref := "${" + u.name + "}"
+			slots = append(slots, shellSlot{pos: u.pos, end: u.end, alts: []string{ref}, widest: len(ref)})
+			continue
+		}
 		if n == nil || len(n.values.list) == 0 {
 			continue
 		}
