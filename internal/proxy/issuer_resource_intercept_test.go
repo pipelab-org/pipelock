@@ -22,6 +22,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
+	"github.com/luckyPipewrench/pipelock/internal/checker/checkertest"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -1110,3 +1111,27 @@ func (w *resourceHalfCloseWriter) Write(body []byte) (int, error) {
 }
 
 func (w *resourceHalfCloseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func TestInterceptCrossOriginResourceExternalWarning(t *testing.T) {
+	for _, state := range []string{"finding", "benign"} {
+		t.Run(state, func(t *testing.T) {
+			srv := checkertest.New(t, state)
+			e := newResourceEnv(t, func(cfg *config.Config) {
+				srv.Configure(cfg, config.InjectionSurfaceHTTPResponse, config.InjectionModeWarn)
+			})
+			path := resourcePath("external-warning", "app.js")
+			e.b.set(path, resourceRoute{contentType: jsType, body: "ordinary resource"})
+			e.expect(e.b, path, http.StatusForbidden, "control before producer page")
+			e.page(`<script src="` + e.b.URL + path + `"></script>`)
+			items := srv.Items()
+			if len(items) != 1 || items[0].Surface != config.InjectionSurfaceHTTPResponse {
+				t.Fatalf("producer response did not reach checker: %+v", items)
+			}
+			want := http.StatusForbidden
+			if state == "benign" {
+				want = http.StatusOK
+			}
+			e.expect(e.b, path, want, "warned producer must not mint a grant; benign producer must")
+		})
+	}
+}

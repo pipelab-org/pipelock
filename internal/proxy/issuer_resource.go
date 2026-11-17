@@ -377,6 +377,7 @@ type interceptCleanFacts struct {
 	urlResult             scanner.Result
 	receiptVerdict        string
 	hasFinding            bool
+	responseWarned        bool
 	policyObserved        bool
 	responseScanExempt    bool
 	authenticatedArtifact bool
@@ -395,7 +396,7 @@ func issuerExchangeEnforcedClean(ic *InterceptContext, facts interceptCleanFacts
 	if !facts.urlResult.Allowed || facts.urlResult.IsStructuralExemption() || len(facts.urlResult.WarnMatches) != 0 {
 		return false
 	}
-	return !facts.hasFinding && !facts.policyObserved && facts.receiptVerdict == config.ActionAllow
+	return !facts.hasFinding && !facts.responseWarned && !facts.policyObserved && facts.receiptVerdict == config.ActionAllow
 }
 
 type htmlAttr struct{ key, val string }

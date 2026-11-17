@@ -3142,10 +3142,12 @@ func newInterceptHandler(
 			ic.Logger.LogResponseScanExempt(actx, r.URL.Hostname())
 			ic.Metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportConnect)
 		}
+		var responseWarned bool
 		var recoveryAssessment scanner.InjectionAssessment
 		if ic.Scanner.ResponseScanningEnabled() && (!interceptAuthenticatedArtifact || structured != nil) {
 			scanResult := scanStructuredResponse(r.Context(), ic.Scanner, ic.Config, respBody, r.URL.String(), structured)
 			scanResult = retainStructuredShieldScan(preShieldScan, scanResult, respBody, structured)
+			responseWarned = len(scanResult.WarnedMatches) != 0
 			recoveryAssessment = scanResult.RecoveryAssessment()
 			if structured != nil {
 				ic.Logger.LogAnomaly(actx, structuredResponseLayer, structuredResponseEvidence, 0)
@@ -3366,6 +3368,7 @@ func newInterceptHandler(
 			urlResult:             urlResult,
 			receiptVerdict:        receiptVerdict,
 			hasFinding:            hasFinding,
+			responseWarned:        responseWarned,
 			policyObserved:        interceptPolicyObserved,
 			responseScanExempt:    interceptRespExempt,
 			authenticatedArtifact: interceptAuthenticatedArtifact,

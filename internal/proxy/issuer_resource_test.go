@@ -321,6 +321,7 @@ func TestIssuerExchangeEnforcedClean(t *testing.T) {
 		}},
 		{"structural exemption", func(f *interceptCleanFacts) { f.urlResult.Class = scanner.ClassStructuralExemption }},
 		{"finding", func(f *interceptCleanFacts) { f.hasFinding = true }},
+		{"response warning", func(f *interceptCleanFacts) { f.responseWarned = true }},
 		{"policy observed", func(f *interceptCleanFacts) { f.policyObserved = true }},
 		{"warn receipt", func(f *interceptCleanFacts) { f.receiptVerdict = config.ActionWarn }},
 		{"empty receipt verdict", func(f *interceptCleanFacts) { f.receiptVerdict = "" }},
