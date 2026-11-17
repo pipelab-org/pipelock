@@ -1367,6 +1367,12 @@ func TestShellConditionalAtMarksSkippedText(t *testing.T) {
 		"if false; then echo <() fi; Z=echo; fi; " + use,
 		"echo {; (Z=echo); " + use,
 		"f ( ) { Z=echo; }; " + use,
+		// The hosted review's cases on a2f67e1.
+		"time -p (Z=echo); " + use,
+		"function f-x { Z=echo; }; " + use,
+		// Here-document and here-string text is data, not an assignment.
+		"cat <<EOF\nZ=echo\nEOF\n" + use,
+		"cat <<<Z=echo; " + use,
 	} {
 		out, _, fits := resolveShellConstruction(cmd)
 		if !fits || !rmStartsCommand.MatchString(out) {

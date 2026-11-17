@@ -487,7 +487,7 @@ func shellStatementUncertain(s string, i int) (end int, uncertain bool) {
 // assignment may not run, or that hides where commands start.
 func shellUncertainAt(s string, i int) bool {
 	switch s[i] {
-	case '\'', '"', '`', '\\', '#', '(', ')', '{', '}', '|', '&', '!':
+	case '\'', '"', '`', '\\', '#', '(', ')', '{', '}', '|', '&', '!', '<':
 		return true
 	}
 	if !isShellNameByte(s[i]) || (i > 0 && isShellNameByte(s[i-1])) {
