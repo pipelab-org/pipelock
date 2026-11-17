@@ -176,6 +176,8 @@ func TestShellConstructionUseBeforeAssignmentReadsUnset(t *testing.T) {
 		"if false; then echo time fi; Z=echo; fi; " + use,
 		"if false; then echo do fi; Z=echo; fi; " + use,
 		"if (false) then if :; then :; fi; Z=echo; fi; " + use,
+		"if false; then echo " + d + "((1)) fi; Z=echo; fi; " + use,
+		"if false; then echo " + d + "( (true) ) fi; Z=echo; fi; " + use,
 		"true && A=r; false && Z=echo; B=m; " + d + "Z" + d + "A" + d + "B -rf /tmp/target",
 		"echo if; if test -f /nope; then Z=echo; fi; " + use,
 		"true;#x\nif test -f /nope; then Z=echo; fi; " + use,

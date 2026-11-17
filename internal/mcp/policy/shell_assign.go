@@ -456,6 +456,7 @@ func shellConditionalAt(s string, at []int) (out map[int]bool, ambiguous bool) {
 	// "echo fi" does not close an if.
 	cmdPos := true
 	forks, forkStop := false, -1
+	inExpansion := 0 // open groups that are expansions, not commands
 	next := 0
 	for i := 0; i < len(s) && next < len(at); i++ {
 		for next < len(at) && at[next] == i {
@@ -482,6 +483,14 @@ func shellConditionalAt(s string, at []int) (out map[int]bool, ambiguous bool) {
 			cmdPos = true
 		case '(', '{':
 			counts := i == 0 || (s[i-1] != '$' && s[i-1] != '<' && s[i-1] != '>')
+			// Inside an expansion nothing is a command group: "$((1))" holds
+			// a "(" that must not count, nor reopen command position.
+			if inExpansion > 0 {
+				counts = false
+			}
+			if !counts {
+				inExpansion++
+			}
 			groups = append(groups, counts)
 			if counts {
 				depth++
@@ -493,6 +502,8 @@ func shellConditionalAt(s string, at []int) (out map[int]bool, ambiguous bool) {
 					depth--
 					// A reserved word may follow a group: "if (x) then".
 					cmdPos = true
+				} else {
+					inExpansion--
 				}
 				groups = groups[:n-1]
 			}
