@@ -431,8 +431,10 @@ func (pf *dlpPreFilter) candidates(text string) []int {
 // bytePairFilter) the bytes strings.ToLower(text) produces contain, without
 // building that string. One record serves every prefilter scanning the text.
 type dlpLoweredBytes struct {
-	present [4]uint64
-	pairs   bytePairFilter
+	// Borrowed only by paired, local matchers; shared summary values keep nil.
+	preparedASCII *asciiFoldedInput
+	present       [4]uint64
+	pairs         bytePairFilter
 }
 
 func (l *dlpLoweredBytes) add(text string) {

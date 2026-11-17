@@ -1457,6 +1457,11 @@ func (s *Scanner) matchDLPPatternsWithDecodes(text, encoding, source string, dec
 
 func (s *Scanner) matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource string, lowered *dlpLoweredBytes, patterns textDLPPatternSet, decodes *decodingMemo) []TextDLPMatch {
 	var matches []TextDLPMatch
+	var localFoldedInput asciiFoldedInput
+	foldedInput := &localFoldedInput
+	if lowered.preparedASCII != nil {
+		foldedInput = lowered.preparedASCII
+	}
 	var shape dlpShapeSummary
 	var candidates []int
 	if patterns == textDLPCardPatterns {
@@ -1477,7 +1482,7 @@ func (s *Scanner) matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource
 		if s.dlpPreFilter.shapeRejects(p.shapeGate, text, &shape) {
 			continue
 		}
-		if start, end, ok := p.matchSpanWithDecodes(text, proseSource, decodes); ok {
+		if start, end, ok := p.matchSpanInPreparedView(text, proseSource, foldedInput, decodes); ok {
 			matches = append(matches, TextDLPMatch{
 				keywordGated:                        p.keywords != nil,
 				genericCard:                         p.genericCard,

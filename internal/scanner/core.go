@@ -231,6 +231,9 @@ func initCoreScanner(cfg *config.Config) *compiledCoreScanner {
 			validateJoined:                      builtinDLPJoinedValidatorForRegex(p.regex),
 		})
 	}
+	for _, pattern := range cs.dlpPatterns {
+		pattern.prepareASCIIFoldedRegexp()
+	}
 	cs.dlpPreFilter = newDLPPreFilter(cs.dlpPatterns)
 
 	// Compile core response patterns with all variant passes.
@@ -594,12 +597,17 @@ func (s *Scanner) matchCoreDLPPatternsNormalized(text, encoding string, decodes 
 // whose lowered bytes are already recorded.
 func (s *Scanner) matchCoreDLPPatternsLowered(text, encoding string, lowered *dlpLoweredBytes, decodes *decodingMemo) []TextDLPMatch {
 	var matches []TextDLPMatch
+	var localFoldedInput asciiFoldedInput
+	foldedInput := &localFoldedInput
+	if lowered.preparedASCII != nil {
+		foldedInput = lowered.preparedASCII
+	}
 	for _, idx := range s.core.dlpPreFilter.patternsToCheckWith(text, lowered) {
 		if decodes.stopRequested() {
 			return matches
 		}
 		p := s.core.dlpPatterns[idx]
-		if start, end, ok := p.matchSpanInView(text, text); ok {
+		if start, end, ok := p.matchSpanInPreparedView(text, text, foldedInput, decodes); ok {
 			matches = append(matches, TextDLPMatch{
 				PatternName:                         p.name,
 				Severity:                            p.severity,

@@ -694,10 +694,36 @@ func (m *decodingMemo) retainDecode(key decodingMemoKey, decoded []decodedResult
 	m.retainedBytes += cost
 }
 
+// normalizationRun borrows one pure transform during a synchronous pair of
+// pattern checks. It owns no graph and never enters a retained memo or cache.
+type normalizationRun struct {
+	source, normalized string
+	lowered            dlpLoweredBytes
+	folded             asciiFoldedInput
+	set, loweredReady  bool
+}
+
 // normalize preserves each call's exact input and normalization depth. A
 // normalized output is not treated as already normalized on a later call.
 func (m *decodingMemo) normalize(text string) string {
-	normalized := m.normalizeUntracked(text)
+	return m.normalizeWithRun(text, nil)
+}
+
+// normalizeWithRun repeats retention and ancestry bookkeeping even when the
+// exact same source's pure normalization is already available to this caller.
+func (m *decodingMemo) normalizeWithRun(text string, run *normalizationRun) string {
+	var normalized string
+	if run != nil && run.set && run.source == text && (m == nil || m.shared == nil) {
+		normalized = run.normalized
+		if m != nil {
+			m.retainNormalized(text, normalized)
+		}
+	} else {
+		normalized = m.normalizeUntracked(text)
+		if run != nil {
+			*run = normalizationRun{source: text, normalized: normalized, set: true}
+		}
+	}
 	if m != nil {
 		if !m.normalizedRetained(text) {
 			m.replayTransformUnretained(text, normalized, assembledPayloadNormalize)
@@ -758,16 +784,20 @@ func (m *decodingMemo) matchDecoded(sc *Scanner, text, encoding string) []TextDL
 // and otherwise runs only the card rules: the same rules, in the same order,
 // select the same matches.
 func (m *decodingMemo) matchDecodedFor(sc *Scanner, text, encoding string, patterns textDLPPatternSet) []TextDLPMatch {
+	return m.matchDecodedForWithNormalization(sc, text, encoding, patterns, nil)
+}
+
+func (m *decodingMemo) matchDecodedForWithNormalization(sc *Scanner, text, encoding string, patterns textDLPPatternSet, run *normalizationRun) []TextDLPMatch {
 	full := decodedMatchKey{scanner: sc, text: text, encoding: encoding}
 	if patterns != textDLPCardPatterns {
-		return patterns.selectMatches(m.matchDecodedKey(full))
+		return patterns.selectMatches(m.matchDecodedKeyWithNormalization(full, run))
 	}
 	if cached, ok := m.cachedDecodedMatches(full); ok && !m.keywordMode {
 		return patterns.selectMatches(cached)
 	}
 	card := full
 	card.cardOnly = true
-	return patterns.selectMatches(m.matchDecodedKey(card))
+	return patterns.selectMatches(m.matchDecodedKeyWithNormalization(card, run))
 }
 
 // cachedDecodedMatches returns a copy of a retained result without computing.
@@ -790,8 +820,12 @@ func (m *decodingMemo) matchDecodedCore(sc *Scanner, text, encoding string) []Te
 }
 
 func (m *decodingMemo) matchDecodedKey(key decodedMatchKey) []TextDLPMatch {
+	return m.matchDecodedKeyWithNormalization(key, nil)
+}
+
+func (m *decodingMemo) matchDecodedKeyWithNormalization(key decodedMatchKey, run *normalizationRun) []TextDLPMatch {
 	if m != nil && m.keywordMode && !key.core {
-		normalized := m.normalize(key.text)
+		normalized := m.normalizeWithRun(key.text, run)
 		var lowered dlpLoweredBytes
 		lowered.add(normalized)
 		patterns := textDLPAllPatterns
@@ -812,9 +846,18 @@ func (m *decodingMemo) matchDecodedKey(key decodedMatchKey) []TextDLPMatch {
 	if cached, ok := m.decodedMatches[key]; ok {
 		return slices.Clone(cached)
 	}
-	normalized := m.normalize(key.text)
+	normalized := m.normalizeWithRun(key.text, run)
 	var lowered dlpLoweredBytes
-	lowered.add(normalized)
+	if run != nil {
+		if !run.loweredReady {
+			run.lowered.add(normalized)
+			run.lowered.preparedASCII = &run.folded
+			run.loweredReady = true
+		}
+		lowered = run.lowered
+	} else {
+		lowered.add(normalized)
+	}
 	matches := key.match(normalized, &lowered, m)
 	if m.terminalCanceled() {
 		return matches

@@ -103,8 +103,9 @@ func (s *Scanner) noteKnownPrefixPattern(decodes *decodingMemo, view decodedResu
 	if decodes.reassemblyPatternSelected {
 		patterns = decodes.reassemblyPatterns
 	}
-	found := decodes.matchDecodedCore(s, view.text, view.encoding)
-	found = append(found, decodes.matchDecodedFor(s, view.text, view.encoding, patterns)...)
+	var run normalizationRun
+	found := decodes.matchDecodedKeyWithNormalization(decodedMatchKey{scanner: s, text: view.text, encoding: view.encoding, core: true}, &run)
+	found = append(found, decodes.matchDecodedForWithNormalization(s, view.text, view.encoding, patterns, &run)...)
 	if len(found) == 0 {
 		return
 	}

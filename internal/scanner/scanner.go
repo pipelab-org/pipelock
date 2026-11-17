@@ -468,13 +468,15 @@ func (s *Scanner) getDLPWarnHook() func(ctx context.Context, patternName, severi
 }
 
 type compiledPattern struct {
-	keywords            *config.DLPKeywordMatcher
-	keywordContext      *keywordCandidateContext
-	name                string
-	re                  *regexp.Regexp
-	withoutLeftBoundary *regexp.Regexp
-	providerKeyPrefix   string
-	providerPrefixRE    *regexp.Regexp
+	// The folded alternative is valid only for the immutable source expression.
+	asciiFoldedRE, asciiFoldedSource *regexp.Regexp
+	keywords                         *config.DLPKeywordMatcher
+	keywordContext                   *keywordCandidateContext
+	name                             string
+	re                               *regexp.Regexp
+	withoutLeftBoundary              *regexp.Regexp
+	providerKeyPrefix                string
+	providerPrefixRE                 *regexp.Regexp
 	// relaxSingleGluedBoundary joins candidateHasLeftBoundary. A miss is still
 	// a finding when exactly one preceding rune caused it and the family
 	// strength check passes. Longer prose prefixes keep failing that check.
@@ -778,6 +780,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		if opts.ToolCommandEnvLookups && p.Regex == config.URLKeywordAssignmentRegex {
 			cp.validateAt = toolCommandCredentialInURLCandidate
 		}
+		cp.prepareASCIIFoldedRegexp()
 		s.dlpPatterns = append(s.dlpPatterns, cp)
 		s.keywordPatterns = s.keywordPatterns || keywords != nil
 	}
