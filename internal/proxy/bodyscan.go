@@ -890,6 +890,8 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	if audienceSurface == "" {
 		audienceSurface = "body"
 	}
+	// Credential audience remapping must not change the transport carrier.
+	websocketFrame := audienceSurface == "websocket_frame"
 	collectAudienceAllow := func(allow scanner.CredentialAudienceAllow) {
 		audienceAllows = append(audienceAllows, allow)
 	}
@@ -996,7 +998,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		return finish(scanned, BodyScanResult{Clean: true})
 	}
 
-	if audienceSurface == "websocket_frame" {
+	if websocketFrame {
 		var invalid bool
 		audienceSurface, _, invalid = req.Scanner.WebSocketCredentialAudienceSurface(ctx, buf, req.suppressTarget())
 		if invalid {
@@ -1231,7 +1233,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		action = config.StrongestAction(action, result.EntropyAction)
 	}
 	injectionCtx := ctx
-	if audienceSurface != "websocket_frame" {
+	if !websocketFrame {
 		injectionCtx = scanner.WithInjectionSurface(ctx, config.InjectionSurfaceHTTPRequestBody)
 	}
 	for _, text := range texts {
@@ -1298,7 +1300,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	// occurrences a joined view alone detected, such as a phrase split across
 	// fields.
 	result.InjectionMatches = mergeJoinedInjectionMatches(result.InjectionMatches, inOrderInjection, sortedInjection, fieldInjection)
-	if audienceSurface != "websocket_frame" {
+	if !websocketFrame {
 		external := req.Scanner.ComposeBufferedInjection(ctx, scanner.BufferedInjectionScan{Surface: config.InjectionSurfaceHTTPRequestBody, Direction: "request", Content: joinedInOrder, Texts: append([]string{joinedInOrder}, texts...)}, scanner.ResponseScanResult{Clean: len(result.InjectionMatches) == 0, Matches: result.InjectionMatches})
 		if external.Failed() {
 			return stopJoinedScan(external.ScanError)

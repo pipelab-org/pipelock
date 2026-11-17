@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -27,6 +28,43 @@ func TestBufferedCheckerWebSocketBodyIsolation(t *testing.T) {
 					t.Fatalf("want builtin finding=%t calls=%d result=%+v", wantFinding, len(srv.Items()), got)
 				}
 			})
+		}
+	}
+}
+
+func TestBufferedCheckerDiscordGatewayIsolation(t *testing.T) {
+	credential := "M" + strings.Repeat("a", 23) + "." + strings.Repeat("b", 6) + "." + strings.Repeat("c", 27)
+	const target = "wss://gateway.discord.gg/?v=10&encoding=json"
+	for _, op := range []int{2, 6, 0} {
+		for _, text := range []string{"ordinary message", checkertest.Directive} {
+			for _, mode := range []string{config.InjectionModeOff, config.InjectionModeBlock} {
+				t.Run(fmt.Sprintf("op%d/%s/%s", op, text, mode), func(t *testing.T) {
+					srv := checkertest.New(t, "benign")
+					cfg := testScannerConfig()
+					srv.Configure(cfg, config.InjectionSurfaceHTTPRequestBody, mode)
+					sc := scanner.MustNew(cfg)
+					t.Cleanup(sc.Close)
+					frame := fmt.Sprintf(`{"op":%d,"d":{"token":%q,"message":%q}}`, op, credential, text)
+					if op == 0 {
+						frame = fmt.Sprintf(`{"op":0,"d":{"message":%q}}`, text)
+					}
+					surface, _, invalid := sc.WebSocketCredentialAudienceSurface(t.Context(), []byte(frame), target)
+					if invalid || (op != 0 && surface != "discord_gateway_auth") {
+						t.Fatalf("fixture did not reach auth audience: surface=%s invalid=%t", surface, invalid)
+					}
+					forwarded, got := scanRequestBody(t.Context(), BodyScanRequest{Body: strings.NewReader(frame), ContentType: "application/json", MaxBytes: 1024, Scanner: sc, Action: config.ActionBlock, AudienceSurface: "websocket_frame", Target: target})
+					if len(srv.Items()) != 0 {
+						t.Fatalf("WebSocket frame disclosed to HTTP checker: calls=%d", len(srv.Items()))
+					}
+					wantFinding := text == checkertest.Directive
+					if got.Clean == wantFinding || (len(got.InjectionMatches) > 0) != wantFinding || scanner.HasCheckerFinding(got.InjectionMatches) {
+						t.Fatalf("want builtin finding=%t result=%+v", wantFinding, got)
+					}
+					if !wantFinding && string(forwarded) != frame {
+						t.Fatal("clean frame changed")
+					}
+				})
+			}
 		}
 	}
 }
