@@ -520,7 +520,7 @@ func TestHookMaskMultilineResults(t *testing.T) {
 		name, input, want string
 		block             bool
 	}{
-		{name: "ulid mid line", input: "line one\ntask 01HQA3TX7K9M2PQRSTVWXYZ012 updated\r\nline three", want: "line one\ntask 01HQ" + inboundMaskPlaceholder + " updated\r\nline three"},
+		{name: "ulid mid line", input: "line one\ntask 01HQA3" + "TX7K9M2PQRSTVWXYZ012 updated\r\nline three", want: "line one\ntask 01HQ" + inboundMaskPlaceholder + " updated\r\nline three"},
 		{name: "key with unicode prose", input: "caf\u00e9 r\u00e9sum\u00e9\n" + key + "\n\u2014 end", want: "caf\u00e9 r\u00e9sum\u00e9\n" + inboundMaskPlaceholder + "\n\u2014 end"},
 		{name: "repeated token masks every copy", input: key + "\n" + key, want: inboundMaskPlaceholder + "\n" + inboundMaskPlaceholder},
 		{name: "key split by newline blocks", input: "AKIAIOSF\nODNN7EXAMPLE", block: true},
