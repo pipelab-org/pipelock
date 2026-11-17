@@ -1411,3 +1411,57 @@ func TestShellConditionalAtMarksSkippedText(t *testing.T) {
 		}
 	}
 }
+
+func TestShellConstructionUnassignedNames(t *testing.T) {
+	for _, cmd := range []string{
+		"A=r; B=m; $Q$A$B -rf /tmp/target",
+		"A=r; B=m; $Q${A}$B -rf /tmp/target",
+		"A=r; B=m; $A$Q$B -rf /tmp/target",
+		"A=r; B=m; $A${Q}$B -rf /tmp/target",
+		"r${Q}m -rf /tmp/target",
+	} {
+		t.Run(cmd, func(t *testing.T) { assertFileDelete(t, defaultBlockPolicy(""), cmd) })
+	}
+	// Bare names consume the longest run of name characters: $Qrm names
+	// Qrm, not Q followed by rm, even when another variable is assigned.
+	for _, cmd := range []string{
+		"echo $HOME/rm-notes", "ls $DIR/rm",
+		"A=x; echo $HOME/rm-notes", "A=x; ls $DIR/rm",
+		"$Qrm -rf /tmp/target", "A=r; $Qrm -rf /tmp/target", "r$Qm -rf /tmp/target",
+	} {
+		t.Run(cmd, func(t *testing.T) {
+			if v := defaultBlockPolicy("").CheckToolCall("bash", []string{cmd}); v.Matched {
+				t.Fatalf("%q matched %v", cmd, v.Rules)
+			}
+		})
+	}
+}
+
+// Preserving a boundary must retain the unresolved reference outside the
+// word view: the environment may supply a nonempty value.
+func TestShellConstructionUnassignedBoundaryReadings(t *testing.T) {
+	out, _, fits := resolveShellConstruction("A=r; B=m; $Q$A$B -rf /tmp/target")
+	if !fits || !strings.Contains(out, "${Q}rm -rf") {
+		t.Fatalf("out=%q fits=%v, want unresolved Q before rm", out, fits)
+	}
+	words, unreadable := readShellWords(out)
+	if unreadable || !strings.Contains(words, "rm -rf") {
+		t.Fatalf("words=%q unreadable=%v, want empty Q reading", words, unreadable)
+	}
+}
+
+func TestShellConstructionUnassignedBoundaryBudget(t *testing.T) {
+	const in = "A=r; $Q$A"
+	// Building A's template and value uses the available work. Preserving
+	// Q's boundary needs more work and must refuse rather than overrun it.
+	// Three bytes are left after A's template and value; the boundary needs
+	// four, so it refuses and leaves all three unspent. Without the boundary
+	// the writer would spend some of them.
+	bounds := &shellBounds{work: 2*shellValueCost + 3, copies: shellCopyBudget(len(in))}
+	if _, _, fits := shellConstructionPass(in, bounds); fits {
+		t.Fatal("boundary preservation passed an exhausted work budget")
+	}
+	if bounds.work != 3 {
+		t.Fatalf("work left %d, want 3: the boundary charge was not the refusal", bounds.work)
+	}
+}
