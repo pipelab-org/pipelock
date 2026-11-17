@@ -1864,19 +1864,22 @@ func (s *Scanner) checkSecretsInRoots(secrets []string, roots knownSecretRoots, 
 			return nil
 		}
 		if phase == 1 {
-			texts = s.decodedKnownSecretViews(text, decodes)
+			// The roots below differ in a few bytes, so most of their
+			// segments repeat; each repeated input is walked once per list.
+			walked := make(knownViewInputs)
+			texts = s.decodedKnownSecretViewsAfter(text, decodes, walked)
 			if original != text && (hasTextEncoding(original) || normalize.ContainsTags(original)) {
-				texts = append(texts, s.decodedKnownSecretViews(original, decodes)...)
+				texts = append(texts, s.decodedKnownSecretViewsAfter(original, decodes, walked)...)
 			}
 			// URL serialization can escape a separator into path data. Split
 			// the decoded view too, as known-value URL scanning already does.
 			if decoded != text {
-				texts = append(texts, relabelKnownSecretViews(s.decodedKnownSecretViews(decoded, decodes), "url_decoded")...)
+				texts = append(texts, relabelKnownSecretViews(s.decodedKnownSecretViewsAfter(decoded, decodes, walked), "url_decoded")...)
 			}
 			// Form decoding turns an escaped '+' into a space; the RFC 3986
 			// view keeps it as data.
 			if percent != text && percent != decoded {
-				texts = append(texts, relabelKnownSecretViews(s.decodedKnownSecretViews(percent, decodes), "percent_decoded")...)
+				texts = append(texts, relabelKnownSecretViews(s.decodedKnownSecretViewsAfter(percent, decodes, walked), "percent_decoded")...)
 			}
 		}
 

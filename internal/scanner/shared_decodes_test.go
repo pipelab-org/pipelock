@@ -271,12 +271,12 @@ func TestRetainDecodedMatchesChargesMatchStorage(t *testing.T) {
 	matches := make([]TextDLPMatch, 3)
 	var m decodingMemo
 	m.retainDecodedMatches(key, matches)
-	if want := len(key.text) + len(key.encoding) + 3*textDLPMatchSize; m.decodedMatchesBytes != want {
+	if want := decodedMatchEntrySize + len(key.encoding) + 3*textDLPMatchSize; m.decodedMatchesBytes != want {
 		t.Fatalf("charged %d bytes, want %d", m.decodedMatchesBytes, want)
 	}
 
 	var full decodingMemo
-	full.decodedMatchesBytes = maxDecodeTotalBytes - len(key.text) - len(key.encoding)
+	full.decodedMatchesBytes = maxDecodeTotalBytes - decodedMatchEntrySize - len(key.encoding)
 	full.retainDecodedMatches(key, matches)
 	if len(full.decodedMatches) != 0 {
 		t.Fatal("a result whose matches exceed the remaining budget was retained")
@@ -294,7 +294,7 @@ func TestRetainDecodedMatchesChargesSpareCapacity(t *testing.T) {
 	matches := make([]TextDLPMatch, 1, 4)
 	var m decodingMemo
 	m.retainDecodedMatches(key, matches)
-	if want := len(key.text) + len(key.encoding) + 4*textDLPMatchSize; m.decodedMatchesBytes != want {
+	if want := decodedMatchEntrySize + len(key.encoding) + 4*textDLPMatchSize; m.decodedMatchesBytes != want {
 		t.Fatalf("charged %d bytes, want %d", m.decodedMatchesBytes, want)
 	}
 }

@@ -3,7 +3,10 @@
 
 package scanner
 
-import "sort"
+import (
+	"crypto/sha256"
+	"sort"
+)
 
 // Coordinates are decoded-byte offsets in one RFC 4648 codec and phase of
 // an exact source view. Sorted disjoint intervals retain holes, so confirming
@@ -26,9 +29,13 @@ type (
 		codec      int
 	}
 	assembledChargeEntry struct {
-		source  string
-		replay  *assembledPayload
-		charges *assembledCharges
+		source string
+		replay *assembledPayload
+		// projection is the SHA-256 of a replay entry's codec projection,
+		// taken from the bytes registered. A comparison needs only that
+		// stream, so it never re-derives the payload.
+		projection [sha256.Size]byte
+		charges    *assembledCharges
 	}
 	assembledChargeRegistry struct {
 		entries map[assembledChargeKey][]assembledChargeEntry
@@ -62,21 +69,20 @@ func (b *assembledBudget) chargesFor(text string) *assembledCharges {
 	c := new(assembledCharges)
 	for codec, projection := range assembledFingerprint(text) {
 		key := assembledChargeKey{projection, codec}
+		var digest [sha256.Size]byte
+		digested := false
 		for _, entry := range b.registry.entries[key] {
-			source := entry.source
 			if entry.replay != nil {
-				var ok bool
-				source, ok = entry.replay.inspectionText()
-				if !ok {
-					b.incomplete = true
-					if b.memo != nil {
-						b.memo.markIncomplete()
-						b.memo.reassemblyIncomplete = true
-					}
-					continue
+				if !digested {
+					digest, digested = assembledProjectionDigest(text, codec), true
 				}
+				if digest == entry.projection {
+					c.canonical[codec] = entry.charges
+					break
+				}
+				continue
 			}
-			if assembledSameProjection(text, source, codec) {
+			if assembledSameProjection(text, entry.source, codec) {
 				c.canonical[codec] = entry.charges
 				break
 			}
@@ -85,6 +91,10 @@ func (b *assembledBudget) chargesFor(text string) *assembledCharges {
 			entry := assembledChargeEntry{source: text, replay: replay, charges: c}
 			if replay != nil {
 				entry.source = ""
+				if !digested {
+					digest = assembledProjectionDigest(text, codec)
+				}
+				entry.projection = digest
 			}
 			b.registry.entries[key] = append(b.registry.entries[key], entry)
 			b.registry.size++

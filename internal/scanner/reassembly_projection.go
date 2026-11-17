@@ -4,11 +4,13 @@
 package scanner
 
 import (
+	"crypto/sha256"
 	"sync"
 )
 
 // Fingerprints use the FNV-1a recurrence published by hash/fnv. They are only
-// an index: exact projection comparison below is required before reusing work.
+// an index: exact projection comparison, or equality of SHA-256 projection
+// digests for a replayed payload, is required before reusing work.
 type (
 	assembledProjection struct {
 		hash    uint64
@@ -41,6 +43,33 @@ func assembledFingerprint(text string) (out [5]assembledProjection) {
 		}
 	}
 	return out
+}
+
+// assembledProjectionDigest is the SHA-256 of text's symbol values in one
+// codec. Two texts have equal digests exactly when assembledSameProjection
+// holds for them, barring a SHA-256 collision.
+func assembledProjectionDigest(text string, codec int) [sha256.Size]byte {
+	alphabet := &reassemblyCodecs[codec]
+	h := sha256.New()
+	var block [sha256.BlockSize]byte
+	n := 0
+	for i := range len(text) {
+		v := alphabet.values[text[i]]
+		if v < 0 {
+			continue
+		}
+		// Values are int16; both bytes keep distinct values distinct.
+		block[n], block[n+1] = byte(v), byte(uint16(v)>>8) // #nosec G115 -- v is non-negative here; both bytes are kept.
+		n += 2
+		if n == len(block) {
+			_, _ = h.Write(block[:])
+			n = 0
+		}
+	}
+	_, _ = h.Write(block[:n])
+	var digest [sha256.Size]byte
+	h.Sum(digest[:0])
+	return digest
 }
 
 func assembledSameProjection(a, b string, codec int) bool {

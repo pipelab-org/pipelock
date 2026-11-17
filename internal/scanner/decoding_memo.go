@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"context"
+	"crypto/sha256"
 	"reflect"
 	"slices"
 	"strings"
@@ -108,8 +109,9 @@ type decodingMemo struct {
 	// owned by a caller that scans several views of one message.
 	shared *sharedDecodes
 	// decodedMatches holds pattern results for decoded candidates; see
-	// matchDecoded. Its entries count toward their own byte budget.
-	decodedMatches      map[decodedMatchKey][]TextDLPMatch
+	// matchDecoded. Keys hold a digest instead of the candidate, so each
+	// entry has a fixed charge; see decodedMatchReserve.
+	decodedMatches      map[decodedMatchCacheKey][]TextDLPMatch
 	decodedMatchesBytes int
 	// The whitespace-compacted view of the last text compacted in this scan.
 	// The core floor and configured patterns both compact the same view.
@@ -162,22 +164,18 @@ func (m *decodingMemo) compactWhitespace(text string) (string, []int) {
 	return compacted, offsets
 }
 
-// releaseDetectorCache ends the local pattern phase's retention. Known-value
-// checks need the decoded views, but not pattern match results or the whitespace
-// offset array. Call only after their synchronous consumers have returned.
-// Shared entries remain live for other scans and keep their existing ownership.
+// releaseDetectorCache ends the local pattern phase's whitespace retention.
+// Pattern results stay: known-prefix recovery repeats the same pattern checks
+// on views the ordinary phase already matched, and each retained result keeps
+// its fixed charge until the memo is released. Call only after the pattern
+// phase's synchronous consumers have returned. Shared entries remain live for
+// other scans and keep their existing ownership.
 func (m *decodingMemo) releaseDetectorCache() {
-	if m == nil || m.shared != nil {
+	if m == nil || m.shared != nil || !m.compactReady {
 		return
 	}
-	cost := m.decodedMatchesBytes
-	clear(m.decodedMatches)
-	m.decodedMatchesBytes = 0
-	if m.compactReady {
-		cost += cap(m.compactOffsets) * int(reflect.TypeFor[int]().Size())
-		m.compactSource, m.compactText, m.compactOffsets, m.compactReady = "", "", nil, false
-	}
-	m.retainedBytes -= cost
+	m.retainedBytes -= cap(m.compactOffsets) * int(reflect.TypeFor[int]().Size())
+	m.compactSource, m.compactText, m.compactOffsets, m.compactReady = "", "", nil, false
 }
 
 // decodedMatchKey identifies one pattern-set match over a decoded candidate:
@@ -192,6 +190,28 @@ type decodedMatchKey struct {
 	normalizedCore bool
 	// cardOnly marks a configured-pattern result restricted to card rules.
 	cardOnly bool
+}
+
+// decodedMatchCacheKey stores a decodedMatchKey without its candidate text.
+// The retained entry holds the SHA-256 digest and length of that text, so a
+// result occupies a fixed charge instead of a copy of a view that can reach
+// the full message size. Every other key field is kept as it is.
+type decodedMatchCacheKey struct {
+	scanner        *Scanner
+	digest         [sha256.Size]byte
+	length         int
+	encoding       string
+	core           bool
+	normalizedCore bool
+	cardOnly       bool
+}
+
+// decodedMatchEntrySize is one retained entry's fixed storage: its key and
+// the result slice header.
+var decodedMatchEntrySize = int(reflect.TypeFor[decodedMatchCacheKey]().Size() + reflect.TypeFor[[]TextDLPMatch]().Size())
+
+func (k decodedMatchKey) cacheKey() decodedMatchCacheKey {
+	return decodedMatchCacheKey{scanner: k.scanner, digest: sum256String(k.text), length: len(k.text), encoding: k.encoding, core: k.core, normalizedCore: k.normalizedCore, cardOnly: k.cardOnly}
 }
 
 func (k decodedMatchKey) match(normalized string, lowered *dlpLoweredBytes, memo *decodingMemo) []TextDLPMatch {
@@ -333,8 +353,9 @@ func (s *sharedDecodes) matchDecoded(key decodedMatchKey, memo *decodingMemo) []
 		key.text = normalized
 		key.normalizedCore = true
 	}
+	cacheKey := key.cacheKey()
 	s.mu.Lock()
-	cached, ok := s.store.decodedMatches[key]
+	cached, ok := s.store.decodedMatches[cacheKey]
 	s.mu.Unlock()
 	if ok {
 		return slices.Clone(cached)
@@ -344,7 +365,7 @@ func (s *sharedDecodes) matchDecoded(key decodedMatchKey, memo *decodingMemo) []
 	}
 	if !key.cardOnly && !filter.admitsLength(normalized) {
 		s.mu.Lock()
-		s.store.retainDecodedMatches(key, nil)
+		s.store.retainDecodedMatchesAt(cacheKey, nil)
 		s.mu.Unlock()
 		return nil
 	}
@@ -357,7 +378,7 @@ func (s *sharedDecodes) matchDecoded(key decodedMatchKey, memo *decodingMemo) []
 		return slices.Clone(matches)
 	}
 	s.mu.Lock()
-	s.store.retainDecodedMatches(key, matches)
+	s.store.retainDecodedMatchesAt(cacheKey, matches)
 	s.mu.Unlock()
 	return slices.Clone(matches)
 }
@@ -389,7 +410,7 @@ func (s *sharedDecodes) loweredFor(text string) dlpLoweredBytes {
 		return value
 	}
 	cost := len(text) + (capacity-cap(s.loweredValues))*loweredViewSize
-	if cost > maxDecodeTotalBytes-s.store.retainedBytes {
+	if cost > s.store.generalRetentionRemaining() {
 		return value
 	}
 	if s.lowered == nil {
@@ -676,7 +697,7 @@ func (m *decodingMemo) retainDecode(key decodingMemoKey, decoded []decodedResult
 	if key.text == "" || len(m.views)+len(m.normalized) >= maxDecodeCandidates {
 		return
 	}
-	remaining := maxDecodeTotalBytes - m.retainedBytes
+	remaining := m.generalRetentionRemaining()
 	cost := len(key.text)
 	if cost > remaining {
 		return
@@ -758,7 +779,7 @@ func (m *decodingMemo) retainNormalized(text, normalized string) {
 	if text == "" || len(m.views)+len(m.normalized) >= maxDecodeCandidates {
 		return
 	}
-	remaining := maxDecodeTotalBytes - m.retainedBytes
+	remaining := m.generalRetentionRemaining()
 	if len(text) > remaining || len(normalized) > remaining-len(text) {
 		return
 	}
@@ -805,13 +826,14 @@ func (m *decodingMemo) cachedDecodedMatches(key decodedMatchKey) ([]TextDLPMatch
 	if m == nil {
 		return nil, false
 	}
+	cacheKey := key.cacheKey()
 	if m.shared != nil {
 		m.shared.mu.Lock()
 		defer m.shared.mu.Unlock()
-		cached, ok := m.shared.store.decodedMatches[key]
+		cached, ok := m.shared.store.decodedMatches[cacheKey]
 		return slices.Clone(cached), ok
 	}
-	cached, ok := m.decodedMatches[key]
+	cached, ok := m.decodedMatches[cacheKey]
 	return slices.Clone(cached), ok
 }
 
@@ -843,7 +865,8 @@ func (m *decodingMemo) matchDecodedKeyWithNormalization(key decodedMatchKey, run
 	if m.shared != nil {
 		return m.shared.matchDecoded(key, m)
 	}
-	if cached, ok := m.decodedMatches[key]; ok {
+	cacheKey := key.cacheKey()
+	if cached, ok := m.decodedMatches[cacheKey]; ok {
 		return slices.Clone(cached)
 	}
 	normalized := m.normalizeWithRun(key.text, run)
@@ -862,26 +885,55 @@ func (m *decodingMemo) matchDecodedKeyWithNormalization(key decodedMatchKey, run
 	if m.terminalCanceled() {
 		return matches
 	}
-	m.retainDecodedMatches(key, matches)
+	m.retainDecodedMatchesAt(cacheKey, matches)
 	return slices.Clone(matches)
 }
 
 // textDLPMatchSize is the storage one retained match slot takes in its slice.
-// Match strings are pattern labels shared with the scanner, so they are not
-// charged again.
+// Rule strings are shared with the scanner. Generated view labels are charged
+// separately when retaining results.
 var textDLPMatchSize = int(reflect.TypeFor[TextDLPMatch]().Size())
 
+// decodedMatchReserve is the part of the scan's existing retention allowance
+// that only pattern results may fill. Every entry's key has a fixed charge, so
+// a full table of match-free results fits in it; whole-message transforms
+// retained for reassembly can no longer starve the table. Results with matches
+// charge their slots and labels on top and may also draw on the rest of the
+// allowance. The allowance itself is unchanged: other retention sees the
+// reserve as already spent until the results use it. As for every retained
+// map in this memo, the charge counts entry contents, not the map's own
+// runtime storage, which the entry limit bounds.
+// Candidates shorter than decodedMatchMinRetain may fill only half of the
+// table's existing entry limit, keeping the rest for long candidates whose
+// repeated matching costs far more. A result never depends on whether it was
+// retained.
+const decodedMatchMinRetain = 256
+
+var decodedMatchReserve = maxDecodeCandidates * (decodedMatchEntrySize + 32)
+
+// generalRetentionRemaining is what non-result retention may still charge.
+func (m *decodingMemo) generalRetentionRemaining() int {
+	return maxDecodeTotalBytes - m.retainedBytes - max(0, decodedMatchReserve-m.decodedMatchesBytes)
+}
+
 func (m *decodingMemo) retainDecodedMatches(key decodedMatchKey, matches []TextDLPMatch) {
+	m.retainDecodedMatchesAt(key.cacheKey(), matches)
+}
+
+func (m *decodingMemo) retainDecodedMatchesAt(key decodedMatchCacheKey, matches []TextDLPMatch) {
 	if _, ok := m.decodedMatches[key]; ok {
 		return
 	}
 	// The retained slice holds its whole backing array, spare capacity included.
-	cost := len(key.text) + len(key.encoding) + cap(matches)*textDLPMatchSize
-	if key.text == "" || len(m.decodedMatches) >= maxDecodeCandidates || cost > maxDecodeTotalBytes-m.decodedMatchesBytes || cost > maxDecodeTotalBytes-m.retainedBytes {
+	cost := decodedMatchEntrySize + len(key.encoding) + cap(matches)*textDLPMatchSize
+	for _, match := range matches[:cap(matches)] {
+		cost += len(match.span.ViewLabel)
+	}
+	if key.length == 0 || key.length < decodedMatchMinRetain && len(m.decodedMatches) >= maxDecodeCandidates/2 || len(m.decodedMatches) >= maxDecodeCandidates || cost > maxDecodeTotalBytes-m.decodedMatchesBytes || cost > maxDecodeTotalBytes-m.retainedBytes {
 		return
 	}
 	if m.decodedMatches == nil {
-		m.decodedMatches = make(map[decodedMatchKey][]TextDLPMatch)
+		m.decodedMatches = make(map[decodedMatchCacheKey][]TextDLPMatch)
 	}
 	m.decodedMatches[key] = matches
 	m.decodedMatchesBytes += cost

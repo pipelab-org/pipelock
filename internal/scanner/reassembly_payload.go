@@ -522,7 +522,7 @@ func (m *decodingMemo) reservePayloadBytes(cost int) bool {
 		defer m.shared.mu.Unlock()
 		owner = &m.shared.store
 	}
-	if cost > maxDecodeTotalBytes-owner.retainedBytes {
+	if cost > owner.generalRetentionRemaining() {
 		return false
 	}
 	owner.retainedBytes += cost

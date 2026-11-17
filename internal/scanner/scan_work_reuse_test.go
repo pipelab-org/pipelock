@@ -29,21 +29,25 @@ func TestDetectorCacheLifetime(t *testing.T) {
 	if len(views) == 0 || len(memo.decodedMatches) == 0 || !memo.compactReady || len(memo.compactOffsets) == 0 {
 		t.Fatal("fixture did not populate each cache")
 	}
-	viewCount, normalizedCount := len(memo.views), len(memo.normalized)
-	released := memo.decodedMatchesBytes + cap(memo.compactOffsets)*(strconv.IntSize/8)
-	if !memo.reservePayloadBytes(maxDecodeTotalBytes-memo.retainedBytes) || memo.reservePayloadBytes(1) {
+	viewCount, normalizedCount, results, resultBytes := len(memo.views), len(memo.normalized), len(memo.decodedMatches), memo.decodedMatchesBytes
+	released := cap(memo.compactOffsets) * (strconv.IntSize / 8)
+	if !memo.reservePayloadBytes(memo.generalRetentionRemaining()) || memo.reservePayloadBytes(1) {
 		t.Fatal("fixture did not exhaust the existing retention allowance")
 	}
 	memo.incomplete = true
 	memo.releaseDetectorCache()
-	if len(memo.decodedMatches) != 0 || memo.decodedMatchesBytes != 0 || memo.compactReady || memo.compactOffsets != nil || memo.compactSource != "" || memo.compactText != "" {
-		t.Fatal("finished detector caches are still retained")
+	if memo.compactReady || memo.compactOffsets != nil || memo.compactSource != "" || memo.compactText != "" {
+		t.Fatal("finished whitespace view is still retained")
+	}
+	// Known-prefix recovery reuses pattern results; they stay charged.
+	if len(memo.decodedMatches) != results || memo.decodedMatchesBytes != resultBytes {
+		t.Fatal("pattern results were released before the known-value phase")
 	}
 	if !memo.incomplete || len(memo.views) != viewCount || len(memo.normalized) != normalizedCount {
 		t.Fatal("cache release changed inspection state or decoded views")
 	}
-	if memo.retainedBytes != maxDecodeTotalBytes-released {
-		t.Fatalf("retained bytes %d, want %d", memo.retainedBytes, maxDecodeTotalBytes-released)
+	if got := memo.generalRetentionRemaining(); got != released {
+		t.Fatalf("released %d bytes to general retention, want %d", got, released)
 	}
 	memo.releaseDetectorCache()
 	if !memo.reservePayloadBytes(released) || memo.reservePayloadBytes(1) {
