@@ -895,11 +895,14 @@ func (m *decodingMemo) matchDecodedKeyWithNormalization(key decodedMatchKey, run
 var textDLPMatchSize = int(reflect.TypeFor[TextDLPMatch]().Size())
 
 // decodedMatchReserve is the part of the scan's existing retention allowance
-// that only pattern results may fill. Every entry has a fixed charge, so a
-// full result table fits in it; whole-message transforms retained for
-// reassembly can no longer starve the table. The allowance itself is
-// unchanged: other retention sees the reserve as already spent until the
-// results use it.
+// that only pattern results may fill. Every entry's key has a fixed charge, so
+// a full table of match-free results fits in it; whole-message transforms
+// retained for reassembly can no longer starve the table. Results with matches
+// charge their slots and labels on top and may also draw on the rest of the
+// allowance. The allowance itself is unchanged: other retention sees the
+// reserve as already spent until the results use it. As for every retained
+// map in this memo, the charge counts entry contents, not the map's own
+// runtime storage, which the entry limit bounds.
 // Candidates shorter than decodedMatchMinRetain may fill only half of the
 // table's existing entry limit, keeping the rest for long candidates whose
 // repeated matching costs far more. A result never depends on whether it was
