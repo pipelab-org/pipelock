@@ -167,6 +167,8 @@ func assignSpansIn(s string, wanted map[string]struct{}) []assignSpan {
 			// "A=r B=m;" and "export A=r B=m" assign both names. The scan
 			// resumes at the next assignment.
 			chained = true
+			// "C=x D=y :" is kept by sh and dropped by bash for both names.
+			maybeKept = cur.persists(nameStart) && !commandAssignsPersistIn(s, cur.cmdLo, cur.cmdHi, shellAssigningBuiltin)
 		default:
 			// "A=r >/tmp/x" and "export A=r dummy" still assign. "A=r cmd"
 			// does not: the value is that command's environment. "A=r $u"

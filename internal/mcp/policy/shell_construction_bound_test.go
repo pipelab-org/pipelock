@@ -123,6 +123,8 @@ func TestShellConstructionSpecialBuiltinReadsBothShells(t *testing.T) {
 	for _, cmd := range []string{
 		"C=x :; " + d + "{C}rm -rf /tmp/t",
 		"C=x eval true; " + d + "{C}rm -rf /tmp/t",
+		"C=x D=y :; " + d + "{C}rm -rf /tmp/t",
+		"C=x D=y eval true; " + d + "{C}rm -rf /tmp/t",
 	} {
 		out, partial, fits := resolveShellConstruction(cmd)
 		if !fits || partial || !strings.Contains(out, "; rm -rf /tmp/t") || !strings.Contains(out, "xrm -rf /tmp/t") {
