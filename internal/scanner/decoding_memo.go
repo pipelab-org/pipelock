@@ -486,7 +486,10 @@ func (m *decodingMemo) decodeKnownSecretWithBase(text string, minimum int, base 
 // earlier run of the same key; see decodedRun.
 func (m *decodingMemo) decodeKnownSecretRun(text string, minimum int, base []decodedResult, run *decodedRun) []decodedResult {
 	credit := 0
-	if m != nil && !m.inbound && !m.incomplete {
+	// Keyword provenance has its own maxDecodeCandidates node budget. The
+	// prefix continuation does not carry that source graph, so transferring
+	// slots would clear a refusal without inspecting required source context.
+	if m != nil && !m.inbound && !m.incomplete && !m.keywordMode {
 		credit = max(0, maxDecodeCandidates-len(base))
 	}
 	return m.decodeRun(text, true, minimum, credit, run)

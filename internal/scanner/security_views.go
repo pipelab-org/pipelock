@@ -33,7 +33,9 @@ func (s *Scanner) decodedKnownSecretViews(text string, decodes *decodingMemo) []
 	// the run add(text) holds. Later checks recompute through the memo, whose
 	// retained bytes stay charged, rather than holding graphs across checks.
 	var views []spanTextView
-	seen := make(map[string]struct{})
+	// The value records pattern coverage from a completed continuation. A
+	// known-only view from an ordinary walk is seen but not yet inspected.
+	seen := make(map[string]bool)
 	minimum := min(minKnownSecretSubstringLen, s.minEnvSecretLen)
 	// The root's tag views below repeat the root decode add(text) made.
 	var rootRun decodedRun
@@ -55,16 +57,23 @@ func (s *Scanner) decodedKnownSecretViews(text string, decodes *decodingMemo) []
 			if decoded.encoding == encodingUnicodeTags {
 				decoded.text = decodes.normalize(decoded.text)
 			}
-			seen[decoded.text] = struct{}{}
+			if _, exists := seen[decoded.text]; !exists {
+				seen[decoded.text] = false
+			}
 			views = append(views, spanTextView{text: decoded.text, viewLabel: dlpViewLabel(decoded.encoding)})
 		}
-		for _, decoded := range decodes.decodeKnownSecretRun(value, minimum, base, nil) {
-			if _, ok := seen[decoded.text]; ok {
+		var knownRun decodedRun
+		for _, decoded := range decodes.decodeKnownSecretRun(value, minimum, base, &knownRun) {
+			covered, exists := seen[decoded.text]
+			if knownRun.resumed && knownRun.complete && !covered {
+				s.noteKnownPrefixPattern(decodes, decoded)
+				covered = true
+			}
+			seen[decoded.text] = covered
+			if exists {
 				continue
 			}
-			seen[decoded.text] = struct{}{}
 			views = append(views, spanTextView{text: decoded.text, viewLabel: dlpViewLabel(decoded.encoding)})
-			s.noteKnownPrefixPattern(decodes, decoded)
 		}
 	}
 	add(text, true)
@@ -83,10 +92,9 @@ func (s *Scanner) decodedKnownSecretViews(text string, decodes *decodingMemo) []
 	return views
 }
 
-// noteKnownPrefixPattern runs the ordinary pattern matchers on one view that
-// only known-prefix recovery produced. The ordinary graph never contained
-// these bytes, and a continuation that finishes does not leave an inspection
-// limit behind them.
+// noteKnownPrefixPattern runs the ordinary pattern matchers on a completed
+// continuation's views. A view seen in an earlier known-prefix walk may not
+// have had pattern coverage, and the continuation no longer leaves a refusal.
 func (s *Scanner) noteKnownPrefixPattern(decodes *decodingMemo, view decodedResult) {
 	if s == nil || decodes == nil || decodes.inbound || decodes.stopRequested() {
 		return

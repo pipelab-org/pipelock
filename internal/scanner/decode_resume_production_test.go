@@ -39,10 +39,15 @@ func decimalGlueRun(payload string) string {
 // bound, so the recovered glue runs exist only on the known-prefix walk.
 func resumedProductionCarrier(t *testing.T) string {
 	t.Helper()
+	return productionPrefixCarrier(t, resumedProductionCredential, maxDecodeCandidates-1)
+}
+
+func productionPrefixCarrier(t *testing.T, tail string, fillers int) string {
+	t.Helper()
 	var inner strings.Builder
 	// The recovered document is admitted first. 4095 following runs fill the
 	// rest of the first walk, so the credential run is the next admission.
-	for i := range maxDecodeCandidates - 1 {
+	for i := range fillers {
 		payload := fmt.Sprintf("pad%013d", i)
 		if len(payload) < minKnownSecretSubstringLen {
 			t.Fatalf("filler %d is shorter than the known-prefix floor", i)
@@ -53,7 +58,7 @@ func resumedProductionCarrier(t *testing.T) string {
 		inner.WriteString(decimalGlueRun(payload))
 		inner.WriteByte('\n')
 	}
-	inner.WriteString(decimalGlueRun(resumedProductionCredential))
+	inner.WriteString(decimalGlueRun(tail))
 	encoded := base64.RawStdEncoding.EncodeToString([]byte(inner.String()))
 	if len(encoded) <= maxReassembledTokenLen {
 		t.Fatalf("carrier alphabet %d did not pass the normalize bound", len(encoded))
@@ -112,6 +117,9 @@ func TestResumedProductionPrefixHidesBuiltInCredential(t *testing.T) {
 	result := sc.ScanTextForDLP(t.Context(), text)
 	aws := containsPattern(result, "AWS")
 	limit := HasInspectionLimit(result.Matches)
+	if result.Incomplete || limit {
+		t.Fatalf("completed continuation was not replayable: incomplete=%v matches=%v", result.Incomplete, matchNames(result.Matches))
+	}
 	if result.Clean && !limit {
 		t.Fatalf("completion removed the refusal and pattern matching missed the resumed credential: matches=%v", matchNames(result.Matches))
 	}
@@ -139,4 +147,164 @@ func containsPattern(result TextDLPResult, name string) bool {
 		}
 	}
 	return false
+}
+
+// Prefix findings use the same destination exemptions and warning action as
+// ordinary URL pattern matches, including warnings before a later secret deny.
+func TestKnownPrefixURLPatternPolicy(t *testing.T) {
+	const marker = "MARK123456789012"
+	const known = "unrelatedQ7mZp2Lx9Vr4Tn8K"
+	carrier := productionPrefixCarrier(t, marker, maxDecodeCandidates-1)
+	for _, tc := range []struct {
+		name, pattern, action       string
+		exempt, knownInURL, allowed bool
+		warnings                    int
+	}{
+		{name: "block", pattern: "Marker"},
+		{name: "warn", pattern: "Marker", action: config.ActionWarn, allowed: true, warnings: 1},
+		{name: "exempt", pattern: "Marker", exempt: true, allowed: true},
+		{name: "warn before secret deny", pattern: "Marker", action: config.ActionWarn, knownInURL: true, warnings: 1},
+		{name: "custom core name warn", pattern: "AWS Access ID", action: config.ActionWarn, allowed: true, warnings: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.DLP.ScanEnv = false
+			pattern := config.DLPPattern{Name: tc.pattern, Regex: `MARK[0-9]{12}`, Severity: config.SeverityHigh, Action: tc.action}
+			if tc.exempt {
+				pattern.ExemptDomains = []string{"api.vendor.example"}
+			}
+			cfg.DLP.Patterns = []config.DLPPattern{pattern}
+			sc := MustNew(cfg)
+			t.Cleanup(sc.Close)
+			sc.fileSecrets = []string{known}
+			target := "https://api.vendor.example/?q=" + carrier
+			if tc.knownInURL {
+				target += "&copy=" + known
+			}
+			parsed, err := url.Parse(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, warnings := sc.checkDLP(parsed)
+			if result.Allowed != tc.allowed {
+				t.Fatalf("allowed=%v want=%v reason=%q", result.Allowed, tc.allowed, result.Reason)
+			}
+			if len(warnings) != tc.warnings {
+				t.Fatalf("warnings=%v want=%d", warnings, tc.warnings)
+			}
+			for _, warning := range warnings {
+				if warning.PatternName != tc.pattern {
+					t.Fatalf("unexpected warning %q", warning.PatternName)
+				}
+			}
+			if !tc.allowed {
+				want := tc.pattern
+				if tc.knownInURL {
+					want = "known secret leak detected"
+				}
+				if !strings.Contains(result.Reason, want) {
+					t.Fatalf("reason=%q want=%q", result.Reason, want)
+				}
+			}
+		})
+	}
+}
+
+func TestKnownPrefixRecipePreservesTransferredSlots(t *testing.T) {
+	text := resumedProductionCarrier(t)
+	key := decodingMemoKey{text: text, includeURL: true, minPrefix: minKnownSecretSubstringLen, knownCredit: maxDecodeCandidates}
+	views, complete := decodeEncodingsForScan(text, true, key.minPrefix, decodeBudgetMode{knownCredit: key.knownCredit}, nil)
+	if !complete || len(views) <= maxDecodeCandidates {
+		t.Fatalf("continuation complete=%v views=%d", complete, len(views))
+	}
+	memo := &decodingMemo{reassemblyDeferred: true, retainedBytes: maxDecodeTotalBytes}
+	t.Cleanup(memo.releaseProjection)
+	memo.observeDecodedRecipe(key, views, false)
+	var tail *assembledPayload
+	for i := maxDecodeCandidates; i < len(views); i++ {
+		if !strings.Contains(views[i].text, resumedProductionCredential) {
+			continue
+		}
+		payload := memo.replayPayload(views[i].text)
+		if payload == nil || payload.decode == nil {
+			t.Fatal("resumed view has no decode recipe")
+		}
+		if payload.decode.knownCredit != key.knownCredit {
+			t.Fatal("recipe lost the transferred slots")
+		}
+		if got, ok := payload.inspectionText(); !ok || got != views[i].text {
+			t.Fatal("resumed view could not be replayed exactly")
+		}
+		tail = payload
+	}
+	if tail == nil {
+		t.Fatal("no credential in the resumed recipe tail")
+	}
+}
+
+// A completed graph that never paused keeps its existing pattern coverage.
+// Only clearing a candidate refusal introduces the extra inspection obligation.
+func TestKnownPrefixOrdinaryCompletionKeepsPatternCoverage(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.DLP.Patterns = []config.DLPPattern{{Name: "Marker", Regex: `MARK[0-9]{12}`, Severity: config.SeverityHigh}}
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	memo := &decodingMemo{}
+	text := productionPrefixCarrier(t, "MARK123456789012", 256)
+	views := sc.decodedKnownSecretViews(text, memo)
+	if memo.incomplete || len(views) == 0 {
+		t.Fatal("ordinary known-prefix graph did not finish")
+	}
+	if len(memo.knownPrefixFindings) != 0 {
+		t.Fatal("a graph that did not resume acquired extra pattern findings")
+	}
+}
+
+// Keyword source graphs keep their existing node bound. A continuation must
+// not clear an inspection refusal without the exact source context it needs.
+func TestKnownPrefixKeywordContextKeepsInspectionLimit(t *testing.T) {
+	const marker = "MARK123456789012"
+	for _, resumed := range []bool{false, true} {
+		name := "ordinary"
+		if resumed {
+			name = "candidate limit"
+		}
+		t.Run(name, func(t *testing.T) {
+			text := base64.RawStdEncoding.EncodeToString([]byte(decimalGlueRun(marker)))
+			if resumed {
+				text = productionPrefixCarrier(t, marker, maxDecodeCandidates-1)
+			}
+			text += " account"
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.DLP.ScanEnv = false
+			window := 256
+			cfg.DLP.Patterns = []config.DLPPattern{{Name: "Marker", Regex: `MARK[0-9]{12}`, Severity: config.SeverityHigh, Keywords: []string{"account"}, KeywordWindow: &window}}
+			sc := MustNew(cfg)
+			t.Cleanup(sc.Close)
+			sc.fileSecrets = []string{"unrelated" + "Q7mZp2Lx9Vr4Tn8K"}
+			result := sc.ScanTextForDLP(t.Context(), text)
+			if resumed {
+				if result.Clean || !HasInspectionLimit(result.Matches) {
+					t.Fatalf("uninspected source context cleared refusal: clean=%v incomplete=%v matches=%v", result.Clean, result.Incomplete, matchNames(result.Matches))
+				}
+			} else if result.Clean || result.Incomplete || !containsPattern(result, "Marker") {
+				t.Fatalf("ordinary source context changed: clean=%v incomplete=%v matches=%v", result.Clean, result.Incomplete, matchNames(result.Matches))
+			}
+			parsed, err := url.Parse("https://api.vendor.example/?q=" + url.QueryEscape(text))
+			if err != nil {
+				t.Fatal(err)
+			}
+			urlResult, _ := sc.checkDLP(parsed)
+			if urlResult.Allowed {
+				t.Fatal("URL allowed uninspected keyword context")
+			}
+			if resumed && !strings.Contains(urlResult.Reason, "inspection limit") {
+				t.Fatalf("URL lost inspection refusal: %q", urlResult.Reason)
+			}
+		})
+	}
 }

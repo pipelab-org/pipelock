@@ -256,7 +256,7 @@ func (m *decodingMemo) reassemblyDrain() {
 			borrowed = recipe
 			if recipe != nil {
 				if source, ok := recipe.source.materialize(); ok {
-					recipe.current, _ = decodeEncodingsBudgetMode(source, recipe.includeURL, recipe.minPrefix, recipe.inbound)
+					recipe.current = recipe.replay(source)
 				}
 			}
 		}

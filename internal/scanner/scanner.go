@@ -3765,6 +3765,13 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 
 	var credentialAudienceAllows []CredentialAudienceAllow
 	defer func() {
+		// A known-value helper can return a later deny before ordinary URL
+		// finalization. Preserve warnings from the prefix views it inspected.
+		prefix, warnings := s.knownPrefixPatternResult(parsed, decodes)
+		credentialAudienceAllows = append(credentialAudienceAllows, prefix.CredentialAudienceAllows...)
+		if len(warnings) > 0 {
+			warnMatches = deduplicateWarnMatches(append(warnMatches, warnings...))
+		}
 		result.CredentialAudienceAllows = deduplicateCredentialAudienceAllows(credentialAudienceAllows)
 	}()
 
@@ -4497,31 +4504,53 @@ func (s *Scanner) checkSecretsInURLWithDecodes(secrets []string, parsed *url.URL
 			}
 		}
 	}
-	if result := knownPrefixPatternResult(decodes); !result.Allowed {
+	if result, _ := s.knownPrefixPatternResult(parsed, decodes); !result.Allowed {
 		return result
 	}
 	return s.checkCanaryInURLWithDecodes(parsed, decodes)
 }
 
-// knownPrefixPatternResult is the DLP deny for a built-in or configured
-// pattern that was visible only on a known-prefix view. No such finding
-// leaves the URL allowed.
-func knownPrefixPatternResult(decodes *decodingMemo) Result {
-	if decodes == nil || len(decodes.knownPrefixFindings) == 0 {
-		return Result{Allowed: true}
+// knownPrefixPatternResult applies URL policy to findings on recovered views.
+// The matchers retain each pattern's warning and audience metadata; domain
+// exemptions still come from that pattern's compiled configuration.
+func (s *Scanner) knownPrefixPatternResult(parsed *url.URL, decodes *decodingMemo) (Result, []WarnMatch) {
+	result := Result{Allowed: true}
+	if decodes == nil {
+		return result, nil
 	}
-	match := decodes.knownPrefixFindings[0]
-	reason := fmt.Sprintf("DLP match: %s (%s)", match.PatternName, match.Severity)
-	if match.Encoded != "" {
-		reason += " [" + match.Encoded + "]"
+	var warnings []WarnMatch
+	for _, match := range decodes.knownPrefixFindings {
+		exempt := false
+		for _, pattern := range s.dlpPatterns {
+			if pattern.name == match.PatternName && pattern.bundle == match.Bundle && pattern.bundleVersion == match.BundleVersion && pattern.exemptsHost(parsed.Hostname()) {
+				exempt = true
+				break
+			}
+		}
+		if exempt {
+			continue
+		}
+		kept, allows := s.FilterTextDLPMatchesForDestination([]TextDLPMatch{match}, parsed.String(), "url")
+		result.CredentialAudienceAllows = append(result.CredentialAudienceAllows, allows...)
+		if len(kept) == 0 {
+			continue
+		}
+		if match.Warn {
+			warnings = append(warnings, WarnMatch{PatternName: match.PatternName, Severity: match.Severity, span: match.Span()})
+			continue
+		}
+		result.Allowed = false
+		result.Reason = fmt.Sprintf("DLP match: %s (%s)", match.PatternName, match.Severity)
+		if match.Encoded != "" {
+			result.Reason += " [" + match.Encoded + "]"
+		}
+		result.Scanner = ScannerDLP
+		result.Score = 1.0
+		result.spans = []MatchSpan{match.Span()}
+		result.CredentialAudienceMismatches = TextDLPCredentialAudienceMismatches(kept, parsed.String(), "url")
+		return result, warnings
 	}
-	return Result{
-		Allowed: false,
-		Reason:  reason,
-		Scanner: ScannerDLP,
-		Score:   1.0,
-		spans:   []MatchSpan{match.Span()},
-	}
+	return result, warnings
 }
 
 // checkCanaryInURL uses the shared canary views and preserves their span labels.

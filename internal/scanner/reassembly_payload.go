@@ -37,12 +37,20 @@ type assembledPayload struct {
 }
 
 type assembledDecodeRecipe struct {
-	source     *assembledPayload
-	includeURL bool
-	minPrefix  int
-	inbound    bool
-	current    []decodedResult // borrowed while draining or held as the scan's one replayed decode
-	cache      *assembledRecipeCache
+	source      *assembledPayload
+	includeURL  bool
+	minPrefix   int
+	inbound     bool
+	knownCredit int
+	current     []decodedResult // borrowed while draining or held as the scan's one replayed decode
+	cache       *assembledRecipeCache
+}
+
+// replay uses the same transferred slots as the recorded decode. Without
+// them, a resumed view's ordinal can be absent even though its scan finished.
+func (r *assembledDecodeRecipe) replay(source string) []decodedResult {
+	views, _ := decodeEncodingsForScan(source, r.includeURL, r.minPrefix, decodeBudgetMode{inbound: r.inbound, reportWorkLimits: r.inbound, knownCredit: r.knownCredit}, nil)
+	return views
 }
 
 // assembledRecipeCache holds the decoded views of at most one recipe and
@@ -184,7 +192,7 @@ func (p *assembledPayload) materialize() (string, bool) {
 			if !ok {
 				return "", false
 			}
-			views, _ = decodeEncodingsBudgetMode(source, p.decode.includeURL, p.decode.minPrefix, p.decode.inbound)
+			views = p.decode.replay(source)
 			p.decode.hold(views)
 		}
 		if p.ordinal < 0 || p.ordinal >= len(views) {
@@ -458,7 +466,7 @@ func (m *decodingMemo) observeDecodedRecipe(key decodingMemoKey, views []decoded
 		m.reassemblyObserveDecoded(key.text, views)
 		return
 	}
-	recipe := &assembledDecodeRecipe{source: m.payloadSource(key.text), includeURL: key.includeURL, minPrefix: key.minPrefix, inbound: key.inbound, cache: m.recipeCache()}
+	recipe := &assembledDecodeRecipe{source: m.payloadSource(key.text), includeURL: key.includeURL, minPrefix: key.minPrefix, inbound: key.inbound, knownCredit: key.knownCredit, cache: m.recipeCache()}
 	var borrowed []*assembledPayload
 	for ordinal, view := range views {
 		if existing := m.replayPayload(view.text); existing != nil {
