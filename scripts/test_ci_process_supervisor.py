@@ -133,6 +133,57 @@ sys.exit("orphan retained until command completion")
             self.assertIn("orphan reaped while command is running", result.stdout)
             self.assertTrue(json.loads(status.read_text())["cleanup_complete"])
 
+    def test_reports_leaked_process_start_time(self) -> None:
+        """A descendant left alive is reported with its start time, not its arguments."""
+        script = r'''
+import subprocess, sys
+subprocess.Popen(["sleep", "30"], start_new_session=True)
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            status = Path(tmp) / "status.json"
+            before = time.time()
+            result = subprocess.run(
+                [sys.executable, str(SUPERVISOR), "--status-file", str(status),
+                 "--", sys.executable, "-c", script],
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+            after = time.time()
+            self.assertEqual(result.returncode, 125, result.stdout + result.stderr)
+            report = json.loads(status.read_text())
+            self.assertTrue(report["unexpected_live_descendants"])
+            leaked = [entry for entry in report["cleanup_processes"] if entry["name"] == "sleep"]
+            self.assertEqual(len(leaked), 1, report)
+            self.assertEqual(set(leaked[0]), {"pid", "name", "started_unix"})
+            # Tick resolution and the boot-clock conversion allow small skew.
+            self.assertGreaterEqual(leaked[0]["started_unix"], before - 1)
+            self.assertLessEqual(leaked[0]["started_unix"], after + 1)
+
+    def test_wrapper_names_tests_running_when_a_process_leaked(self) -> None:
+        """A leak from a passing run names the test that was running when it started."""
+        script = r'''
+import datetime, json, subprocess, time
+def emit(action, test):
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    print(json.dumps({"Time": now, "Action": action, "Package": "example.com/p/pkg", "Test": test}), flush=True)
+emit("run", "TestQuiet")
+emit("pass", "TestQuiet")
+time.sleep(0.2)
+emit("run", "TestLeaks")
+subprocess.Popen(["sleep", "30"], start_new_session=True)
+time.sleep(0.2)
+emit("pass", "TestLeaks")
+'''
+        result = subprocess.run(
+            ["bash", str(WRAPPER), "--packages", "example.com/p/pkg",
+             "--attempt-timeout-seconds", "10", "--", sys.executable, "-c", script],
+            cwd=ROOT, text=True, capture_output=True, timeout=20, check=False,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("did not complete with clean descendants", result.stderr)
+        self.assertIn("ci-leak-attribution: leaked process sleep", result.stderr)
+        self.assertIn("example.com/p/pkg TestLeaks", result.stderr)
+        self.assertNotIn("TestQuiet", result.stderr)
+
     def test_interruption_allows_command_cleanup_handlers(self) -> None:
         """TERM and INT reach the command before the forced-cleanup deadline."""
         script = r'''

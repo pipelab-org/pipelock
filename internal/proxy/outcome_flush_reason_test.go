@@ -99,7 +99,7 @@ func TestInterceptOutcomeFlushSSEVerdicts(t *testing.T) {
 	}{
 		{"blocked_failed_flush", marker, io.ErrClosedPipe, config.ActionBlock, LayerSSEStream},
 		{"blocked_delivered", marker, nil, config.ActionBlock, LayerSSEStream},
-		{"allowed_failed_flush", "ordinary event", io.ErrClosedPipe, config.ActionAllow, receiptReasonIncomplete},
+		{"allowed_failed_flush", "ordinary event", io.ErrClosedPipe, config.ActionAllow, receiptReasonSSEStreamCancelled},
 		{"allowed_delivered", "ordinary event", nil, config.ActionAllow, LayerSSEStream},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

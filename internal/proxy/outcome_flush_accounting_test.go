@@ -22,6 +22,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -101,7 +102,7 @@ func TestOutcomeFlushDeadlineErrors(t *testing.T) {
 					if err := receipt.VerifyWithKey(rcpt, rph.pubHex); err != nil {
 						t.Fatal(err)
 					}
-					reason, verdict := receiptReasonIncomplete, config.ActionAllow
+					reason, verdict := httpstream.Cancelled, config.ActionAllow
 					if surface == "fetch" {
 						reason, verdict = "delivery_error", config.ActionWarn
 					}
@@ -222,7 +223,13 @@ func TestInterceptOutcomeFlushAccountsBudget(t *testing.T) {
 					}
 					if rcpt.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome {
 						outcomes++
+						// A copy failure is an incomplete upstream body. A
+						// completed copy whose final flush failed is a failed
+						// client write.
 						wantReason := receiptReasonIncomplete
+						if !copyFailure {
+							wantReason = httpstream.Cancelled
+						}
 						if surface == "exempt" && !copyFailure {
 							wantReason = receiptReasonExemptOverCapUnscanned
 						}

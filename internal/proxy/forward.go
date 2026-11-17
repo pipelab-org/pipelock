@@ -778,7 +778,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if cfg.FlightRecorder.RequireReceipts && !clientHijacked && aborted == nil {
 			flushErr = flushResponseBeforeOutcome(w, r, cfg)
 			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason, config.ActionAllow) {
-				outcomeReason, outcomeBytes = receiptReasonIncomplete, -1
+				outcomeReason, outcomeBytes = flushFailureReason(outcomeReason), -1
 			}
 		}
 		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
@@ -2433,7 +2433,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if cfg.FlightRecorder.RequireReceipts && aborted == nil {
 			flushErr = flushResponseBeforeOutcome(w, r, cfg)
 			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason, config.ActionAllow) {
-				outcomeReason, outcomeBytes = receiptReasonIncomplete, -1
+				outcomeReason, outcomeBytes = flushFailureReason(outcomeReason), -1
 			}
 		}
 		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
