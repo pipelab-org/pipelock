@@ -40,11 +40,24 @@ func TestMCPDoorReload(t *testing.T) {
 				t.Run(tt.name, func(t *testing.T) {
 					next := cfg.Clone()
 					tt.modify(&next.MCPDoor)
-					if p.Reload(next, scanner.MustNew(next)) {
-						t.Fatal("door change accepted without restart")
+					// Off: only enabling the door needs a restart; edits to the
+					// inert disabled block must not refuse unrelated reloads.
+					wantRefused := enabled || next.MCPDoor.Enabled
+					if got := !p.Reload(next, scanner.MustNew(next)); got != wantRefused {
+						t.Fatalf("reload refused=%v, want %v", got, wantRefused)
 					}
-					if p.CurrentConfig() != cfg {
+					if wantRefused && p.CurrentConfig() != cfg {
 						t.Fatal("rejected reload replaced active config")
+					}
+					if !wantRefused {
+						if p.CurrentConfig().MCPDoor.Enabled {
+							t.Fatal("inert door edit enabled the door")
+						}
+						// Restore the original runtime for the next case.
+						if !p.Reload(cfg, scanner.MustNew(cfg)) {
+							t.Fatal("restoring original config refused")
+						}
+						cfg = p.CurrentConfig()
 					}
 				})
 			}
