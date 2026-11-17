@@ -558,6 +558,8 @@ func TestMetadataResourcePaths(t *testing.T) {
 	for _, tc := range []struct{ resource, metadata string }{
 		{"https://resource.example", "https://resource.example/.well-known/oauth-protected-resource"},
 		{"https://resource.example/", "https://resource.example/.well-known/oauth-protected-resource"},
+		{"https://resource.example/mcp/", "https://resource.example/.well-known/oauth-protected-resource/mcp/"},
+		{"https://resource.example/a%2Fb/", "https://resource.example/.well-known/oauth-protected-resource/a%2Fb/"},
 		{"https://resource.example/a%2Fb", "https://resource.example/.well-known/oauth-protected-resource/a%2Fb"},
 	} {
 		v := &Verifier{cfg: config.MCPDoor{Audience: tc.resource}}

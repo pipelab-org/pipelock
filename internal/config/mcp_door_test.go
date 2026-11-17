@@ -10,10 +10,11 @@ import (
 	"testing"
 )
 
-func validDoor() MCPDoor {
+func validDoor(t *testing.T) MCPDoor {
+	t.Helper()
 	return MCPDoor{
 		Enabled: true, Issuer: "https://issuer.example", Audience: "https://resource.example/mcp",
-		Mode: MCPDoorJWT, JWKSFile: filepath.Join(string(filepath.Separator), "keys.json"),
+		Mode: MCPDoorJWT, JWKSFile: filepath.Join(t.TempDir(), "keys.json"),
 		Enrollments:    []MCPDoorEnrollment{{Subject: "subject", ClientID: "client"}},
 		RequiredScopes: []string{"tools:read"},
 	}
@@ -34,7 +35,7 @@ func TestMCPDoorDefaults(t *testing.T) {
 	if _, err := LoadBytes([]byte("mcp_door:\n  enabled: true")); err == nil {
 		t.Fatal("incomplete enabled profile accepted")
 	}
-	raw := fmt.Sprintf("mcp_door:\n  enabled: true\n  issuer: https://issuer.example\n  audience: https://resource.example/mcp\n  mode: jwt\n  jwks_file: %q\n", validDoor().JWKSFile)
+	raw := fmt.Sprintf("mcp_door:\n  enabled: true\n  issuer: https://issuer.example\n  audience: https://resource.example/mcp\n  mode: jwt\n  jwks_file: %q\n", validDoor(t).JWKSFile)
 	cfg, err := LoadBytes([]byte(raw))
 	if err != nil {
 		t.Fatal(err)
@@ -66,7 +67,7 @@ func TestMCPDoorValidation(t *testing.T) {
 			d.Mode = MCPDoorIntrospection
 			d.JWKSFile = ""
 			d.ClientID = "verifier"
-			d.ClientSecretFile = validDoor().JWKSFile
+			d.ClientSecretFile = validDoor(t).JWKSFile
 		}},
 		{"introspection credential", func(d *MCPDoor) {
 			d.Mode = MCPDoorIntrospection
@@ -89,14 +90,14 @@ func TestMCPDoorValidation(t *testing.T) {
 		{"invalid scope", func(d *MCPDoor) { d.RequiredScopes = []string{"read write"} }},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			d := validDoor()
+			d := validDoor(t)
 			tt.modify(&d)
 			if err := d.Validate(); err == nil || !strings.Contains(err.Error(), "mcp_door") {
 				t.Fatalf("validation = %v", err)
 			}
 		})
 	}
-	d := validDoor()
+	d := validDoor(t)
 	if err := d.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +105,7 @@ func TestMCPDoorValidation(t *testing.T) {
 	d.JWKSFile = ""
 	d.IntrospectionURL = "https://issuer.example/introspect"
 	d.ClientID = "verifier"
-	d.ClientSecretFile = validDoor().JWKSFile
+	d.ClientSecretFile = validDoor(t).JWKSFile
 	if err := d.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +117,7 @@ func TestMCPDoorValidation(t *testing.T) {
 
 func TestMCPDoorCloneAndHash(t *testing.T) {
 	c := Defaults()
-	c.MCPDoor = validDoor()
+	c.MCPDoor = validDoor(t)
 	clone := c.Clone()
 	if !c.MCPDoor.Equal(clone.MCPDoor) {
 		t.Fatal("clone changed door")

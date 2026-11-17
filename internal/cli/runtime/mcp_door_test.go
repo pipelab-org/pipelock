@@ -90,7 +90,7 @@ func TestMCPDoorStartupRefusals(t *testing.T) {
 		{"issuer", strings.Replace(raw, "  issuer: https://issuer.example\n", "", 1), nil, "issuer"},
 		{"audience", strings.Replace(raw, "  audience: https://resource.example/mcp\n", "", 1), nil, "audience"},
 		{"missing keys", strings.Replace(raw, "  jwks_file:", "  unused_file:", 1), nil, "field unused_file"},
-		{"unavailable keys", "mcp_door:\n  enabled: true\n  issuer: https://issuer.example\n  audience: https://resource.example/mcp\n  mode: jwt\n  jwks_file: /nonexistent/keys.json\n", nil, "verifier material unavailable"},
+		{"unavailable keys", fmt.Sprintf("mcp_door:\n  enabled: true\n  issuer: https://issuer.example\n  audience: https://resource.example/mcp\n  mode: jwt\n  jwks_file: %q\n", filepath.Join(t.TempDir(), "missing.json")), nil, "verifier material unavailable"},
 		{"anonymous fallback", raw, []string{"--listener-allow-unauthenticated"}, "cannot be combined"},
 		{"static fallback", raw, []string{"--listener-auth-token-file", tokenFile}, "cannot be combined"},
 	} {

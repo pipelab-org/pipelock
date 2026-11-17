@@ -119,9 +119,14 @@ func (v *Verifier) Close() { v.client.CloseIdleConnections() }
 // MetadataURL is the RFC 9728 path-based protected-resource metadata URL.
 func (v *Verifier) MetadataURL() string {
 	u, _ := url.Parse(v.cfg.Audience)
-	escaped := "/.well-known/oauth-protected-resource" + strings.TrimSuffix(u.EscapedPath(), "/")
-	u.Path = "/.well-known/oauth-protected-resource" + strings.TrimSuffix(u.Path, "/")
-	u.RawPath = escaped
+	path, escaped := u.Path, u.EscapedPath()
+	// RFC 9728 section 3.1 removes the host's terminating slash, not a
+	// trailing slash belonging to a non-root resource path.
+	if path == "/" && escaped == "/" {
+		path, escaped = "", ""
+	}
+	u.Path = "/.well-known/oauth-protected-resource" + path
+	u.RawPath = "/.well-known/oauth-protected-resource" + escaped
 	return u.String()
 }
 

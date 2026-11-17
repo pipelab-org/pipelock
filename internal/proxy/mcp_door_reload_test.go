@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -17,7 +18,7 @@ func TestMCPDoorReload(t *testing.T) {
 		t.Run(map[bool]string{false: "off", true: "on"}[enabled], func(t *testing.T) {
 			cfg := config.Defaults()
 			cfg.Internal = nil
-			cfg.MCPDoor = config.MCPDoor{Enabled: enabled, Issuer: "https://issuer.example", Audience: "https://resource.example/mcp", Mode: config.MCPDoorJWT, JWKSFile: "/keys.json"}
+			cfg.MCPDoor = config.MCPDoor{Enabled: enabled, Issuer: "https://issuer.example", Audience: "https://resource.example/mcp", Mode: config.MCPDoorJWT, JWKSFile: filepath.Join(t.TempDir(), "keys.json")}
 			p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
 			if err != nil {
 				t.Fatal(err)
