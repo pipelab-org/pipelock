@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,6 +17,17 @@ type RateLimiter struct {
 	maxPerMinute int
 	requests     map[string][]time.Time
 	lastCleanup  time.Time
+	closed       bool
+}
+
+// RateReservation is an opaque proof that one specific rate-limit slot was
+// committed. Its fields are private so callers can only use a reservation
+// returned by ScanConnect.
+type RateReservation struct {
+	owner     *RateLimiter
+	domain    string
+	timestamp time.Time
+	consumed  atomic.Bool
 }
 
 // NewRateLimiter creates a rate limiter with the specified limit.
@@ -67,10 +79,21 @@ func (rl *RateLimiter) Record(domain string) {
 // This prevents TOCTOU races where concurrent requests could both pass
 // IsAllowed() before either calls Record().
 func (rl *RateLimiter) CheckAndRecord(domain string) bool {
+	allowed, _ := rl.checkAndRecord(domain, nil, false)
+	return allowed
+}
+
+// checkAndRecord optionally consumes a one-use reservation for a previously
+// recorded slot or mints one for the slot it records. Validation and debit
+// happen under the same lock as ordinary admission.
+func (rl *RateLimiter) checkAndRecord(domain string, reservation *RateReservation, mint bool) (bool, *RateReservation) {
+	return rl.checkAndRecordAt(domain, reservation, mint, time.Now())
+}
+
+func (rl *RateLimiter) checkAndRecordAt(domain string, reservation *RateReservation, mint bool, now time.Time) (bool, *RateReservation) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	now := time.Now()
 	rl.maybeCleanupLocked(now)
 	cutoff := now.Add(-time.Minute)
 
@@ -82,18 +105,33 @@ func (rl *RateLimiter) CheckAndRecord(domain string) bool {
 		}
 	}
 
+	rl.requests[domain] = valid
+	if reservation != nil && !rl.closed && reservation.owner == rl && reservation.domain == domain && reservation.timestamp.After(cutoff) {
+		for _, ts := range valid {
+			if ts.Equal(reservation.timestamp) && reservation.consumed.CompareAndSwap(false, true) {
+				return true, nil
+			}
+		}
+	}
 	if len(valid) >= rl.maxPerMinute {
-		rl.requests[domain] = valid
-		return false
+		return false, nil
 	}
 
 	rl.requests[domain] = append(valid, now)
-	return true
+	if mint && !rl.closed {
+		return true, &RateReservation{owner: rl, domain: domain, timestamp: now}
+	}
+	return true, nil
 }
 
-// Close is retained for scanner lifecycle symmetry. RateLimiter owns no
-// background resources, so closing it is intentionally a no-op.
-func (rl *RateLimiter) Close() {}
+// Close retires reservations from this limiter generation. Ordinary rate
+// checks remain available for in-flight scans that fall back to normal
+// atomic admission.
+func (rl *RateLimiter) Close() {
+	rl.mu.Lock()
+	rl.closed = true
+	rl.mu.Unlock()
+}
 
 func (rl *RateLimiter) cleanup() {
 	rl.mu.Lock()

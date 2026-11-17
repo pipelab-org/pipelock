@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -25,6 +26,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -107,8 +109,140 @@ func TestScanRequestBodyCanceledScanIsNotInjection(t *testing.T) {
 	}
 }
 
+func TestBodyDLPViewsPanicRemainsOnCaller(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("nil scanner must still panic on the caller")
+		}
+	}()
+	scanBodyTextViewsForDLPWithAudience(t.Context(), nil, bodyDLPViews{
+		atoms:       []extract.DLPAtom{{Card: "1", Number: true}, {Card: "2", Number: true}},
+		rawDocument: `{"status":"ordinary"}`,
+	}, "", nil, nil, false, nil, "", nil)
+}
+
+func TestBodyDLPViewScansJoinAndPanic(t *testing.T) {
+	for _, source := range []string{"ordered", "raw", "sorted", "none"} {
+		t.Run(source, func(t *testing.T) {
+			release := make(chan struct{})
+			orderedStarted, rawStarted := make(chan struct{}), make(chan struct{})
+			orderedDone, rawDone := make(chan struct{}), make(chan struct{})
+			worker := func(name string, started, done chan struct{}) func() {
+				return func() {
+					defer close(done)
+					close(started)
+					<-release
+					if source == name {
+						panic(name)
+					}
+				}
+			}
+			var got any
+			func() {
+				defer func() { got = recover() }()
+				runBodyDLPViewScans(worker("ordered", orderedStarted, orderedDone), worker("raw", rawStarted, rawDone), func() {
+					<-orderedStarted
+					<-rawStarted
+					close(release)
+					if source == "sorted" {
+						panic(source)
+					}
+				})
+			}()
+			if source == "none" {
+				if got != nil {
+					t.Fatalf("unexpected panic: %v", got)
+				}
+			} else if got != source {
+				t.Fatalf("panic = %v, want %s", got, source)
+			}
+			for _, done := range []chan struct{}{orderedDone, rawDone} {
+				select {
+				case <-done:
+				default:
+					t.Fatal("caller completed before a worker finished")
+				}
+			}
+		})
+	}
+	t.Run("no_workers", func(t *testing.T) {
+		called := false
+		runBodyDLPViewScans(nil, nil, func() { called = true })
+		if !called {
+			t.Fatal("sorted view was not called")
+		}
+	})
+}
+
+func TestScanRequestBodyCancellationDuringViewWarnings(t *testing.T) {
+	cfg := testScannerConfig()
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name: "Cancel observation", Regex: `^\{"status":"cancel-observation","count":1\}$`, Severity: config.SeverityHigh, Action: config.ActionWarn,
+	})
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	sc.SetDLPWarnHook(func(context.Context, string, string) { cancel() })
+	_, result := scanRequestBody(ctx, BodyScanRequest{
+		Body:        strings.NewReader(`{"status":"cancel-observation","count":1}`),
+		ContentType: contentTypeJSON, MaxBytes: 1024, Scanner: sc, Action: config.ActionWarn,
+	})
+	if result.Clean || result.Action != config.ActionBlock || result.ScanError == "" {
+		t.Fatalf("canceled scan must refuse: clean=%v action=%s error=%s", result.Clean, result.Action, result.ScanError)
+	}
+}
+
 func fakeGitHubToken() string {
 	return "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl"
+}
+
+// Keep a transcript-shaped workload alongside the field-split regressions:
+// repeating scans of its source, sorted and raw views dominates large requests.
+func BenchmarkScanRequestBodyLongTranscript(b *testing.B) {
+	cfg := testScannerConfig()
+	sc, err := scanner.New(cfg)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(sc.Close)
+	var messages []map[string]any
+	for i := range 64 {
+		messages = append(messages, map[string]any{
+			"role":    "tool",
+			"content": strings.Repeat(fmt.Sprintf("Entry %d: report totals reconciled; output file retained; status pending review.\n", i), 48),
+		})
+	}
+	encode := func() []byte {
+		body, marshalErr := json.Marshal(map[string]any{"messages": messages, "max_tokens": 2048})
+		if marshalErr != nil {
+			b.Fatal(marshalErr)
+		}
+		return body
+	}
+	body := encode()
+	scan := func(body []byte) BodyScanResult {
+		_, result := scanRequestBody(b.Context(), BodyScanRequest{
+			Body: bytes.NewReader(body), ContentType: "application/json",
+			MaxBytes: len(body) + 1, Scanner: sc, Action: config.ActionBlock,
+		})
+		return result
+	}
+	if result := scan(body); !result.Clean {
+		b.Fatalf("benign transcript refused: %s", result.Reason)
+	}
+	messages = append(messages, map[string]any{"role": "tool", "content": fakeGitHubToken()})
+	if result := scan(encode()); result.Clean || len(result.DLPMatches) == 0 {
+		b.Fatal("late credential must still be detected")
+	}
+	b.SetBytes(int64(len(body)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if result := scan(body); !result.Clean {
+			b.Fatal("benign transcript changed verdict")
+		}
+	}
 }
 
 // highEntropyFiller deterministically generates n characters that read like

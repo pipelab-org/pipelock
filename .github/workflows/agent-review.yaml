@@ -29,7 +29,7 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-    uses: pipelab-org/agent-review/.github/workflows/agent-review-reusable.yaml@ca0e322521d6d0f8b651546a7d935a93026d71f7 # main
+    uses: pipelab-org/agent-review/.github/workflows/agent-review-reusable.yaml@1aa9741927ec5546036506a0ec764e1b41b1a241 # main
     with:
       progress_only: true
   review:
@@ -62,7 +62,7 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-    uses: pipelab-org/agent-review/.github/workflows/agent-review-reusable.yaml@ca0e322521d6d0f8b651546a7d935a93026d71f7 # main
+    uses: pipelab-org/agent-review/.github/workflows/agent-review-reusable.yaml@1aa9741927ec5546036506a0ec764e1b41b1a241 # main
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       ANTHROPIC_API_KEY_2: ${{ secrets.ANTHROPIC_API_KEY_2 }}
@@ -91,7 +91,7 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-    uses: pipelab-org/agent-review/.github/workflows/agent-review-reusable.yaml@ca0e322521d6d0f8b651546a7d935a93026d71f7 # main
+    uses: pipelab-org/agent-review/.github/workflows/agent-review-reusable.yaml@1aa9741927ec5546036506a0ec764e1b41b1a241 # main
     with:
       progress_only: true
       progress_cancelled: true

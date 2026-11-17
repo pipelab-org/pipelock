@@ -117,7 +117,7 @@ func TestProxy_DNSHostOverrides_WSFixtureRoutesViaTrustedHostname(t *testing.T) 
 	// in the package-local bufferedConn so wsutil.ReadServerData consumes
 	// any frame bytes already buffered by http.ReadResponse rather than
 	// losing them past the bufio boundary.
-	rw := &bufferedConn{Conn: tcpConn, r: br}
+	rw := wrapBuffered(tcpConn, br)
 	if err := wsutil.WriteClientMessage(rw, ws.OpText, []byte("hello via trusted host")); err != nil {
 		t.Fatalf("write frame: %v", err)
 	}

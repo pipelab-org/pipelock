@@ -184,6 +184,8 @@ fetch_proxy:
 | `monitoring.path_entropy_exclusions` | 6 vendor routes | Host plus literal path-prefix exemptions for the URL-path entropy gate only; subdomain entropy, query entropy, DLP and SSRF still apply. An omitted scheme matches HTTPS. An explicit `http` entry matches that cleartext route only, and the path is visible on the network. The two schemes do not exempt each other. Optional `expires` is temporary and capped at 180 days. Ships with Google Docs, Sheets, Slides, Forms and Drive file routes and the Cloudflare challenge route; your own entries are added to the shipped routes, and an empty list disables them |
 | `monitoring.query_entropy_param_exclusions` | `[]` | Exact HTTPS endpoint+parameter query-value entropy exclusions; DLP, SSRF, query-key entropy, adjacent parameters, path/subdomain entropy, rate limits, and data budgets still apply. Optional `expires` is temporary and capped at 180 days |
 
+For TLS-intercepted CONNECT, the CONNECT scan consumes a request slot. One eligible inner HTTP request may use that same committed slot; each later inner request consumes another slot. Pages whose logical requests exceed `monitoring.max_requests_per_minute` for a base domain still reach the configured ceiling.
+
 Native OAuth clients can generate random `state` and `nonce` values and register an HTTP loopback callback whose port changes between logins (RFC 6749 sections 4.1.1 and 10.12, RFC 8252 sections 7.3 and 8.3, OpenID Connect Core section 3.1.2.1). For an authorization endpoint you trust to handle these parameters as protocol data, configure an exact endpoint grant:
 
 ```yaml
