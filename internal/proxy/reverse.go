@@ -2023,7 +2023,7 @@ func (t *reverseOutcomeTracker) RecordFlushError() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if !t.emitted && outcomeReasonClaimsDelivery(t.reason, config.ActionAllow) {
-		t.reason, t.bytesTransferred = receiptReasonIncomplete, -1
+		t.reason, t.bytesTransferred = flushFailureReason(t.reason), -1
 		exact := false
 		t.bytesExact = &exact
 	}

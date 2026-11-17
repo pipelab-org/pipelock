@@ -26,6 +26,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -396,7 +397,7 @@ func TestInterceptTunnelOutcomeFlushStalledClient(t *testing.T) {
 	// After the TLS handshake and request, the client never reads a response.
 	select {
 	case ar := <-observed:
-		if ar.Verdict != config.ActionAllow || ar.Pattern != "status=200 bytes=unknown reason=incomplete" {
+		if ar.Verdict != config.ActionAllow || ar.Pattern != "status=200 bytes=unknown reason="+httpstream.Cancelled {
 			t.Fatalf("stalled tunnel outcome = %+v", ar)
 		}
 	case <-time.After(3 * time.Second):

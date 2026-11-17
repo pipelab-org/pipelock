@@ -202,6 +202,7 @@ run_and_tee() {
 
   local supervision_file="${stdout_file}.supervision"
   local supervised=0
+  local attribute_leaks=0
   # Linux CI uses a dedicated subreaper so setsid children still have an owner.
   # Other hosts retain the process-group cleanup and bounded capture fallback.
   if [ "$(uname -s)" = Linux ]; then
@@ -245,6 +246,7 @@ sys.exit(0 if complete and not unexpected else 1)
 PY
     then
       echo "ci-test-with-retry: ${pass_label} did not complete with clean descendants; incomplete attempts are not retried" >&2
+      attribute_leaks=1
       process_cleanup_failed=1
     fi
   fi
@@ -282,6 +284,12 @@ PY
   wait "$stderr_tee_pid" || stderr_tee_status=$?
   active_capture_readers=()
   rm -f -- "$stdout_fifo" "$stderr_fifo"
+  if [ "$attribute_leaks" -eq 1 ]; then
+    # Name the tests running when each leftover process started, so a leak
+    # from a run whose tests all passed still points at the test that spawned
+    # it. The capture is complete only after both readers exit.
+    python3 "$script_dir/ci_leak_attribution.py" "$supervision_file" "$stdout_file" || true
+  fi
 
   if [ "$stdout_tee_status" -ne 0 ] || [ "$stderr_tee_status" -ne 0 ]; then
     echo "ci-test-with-retry: failed to capture complete test output (stdout=${stdout_tee_status}, stderr=${stderr_tee_status})" >&2

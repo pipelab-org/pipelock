@@ -64,8 +64,21 @@ def interrupt_command(process: subprocess.Popen[bytes], signum: int,
         time.sleep(0.01)
 
 
+def process_start_unix(pid: int) -> float | None:
+    """Return when pid started, in Unix seconds, without reading its arguments."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(errors="replace")
+        # Field 22 (starttime) counts clock ticks since boot. The command name
+        # is parenthesized and may contain spaces, so split after its close.
+        ticks = int(stat[stat.rindex(")") + 2:].split()[19])
+        boot_unix = time.time() - time.clock_gettime(time.CLOCK_BOOTTIME)
+        return round(boot_unix + ticks / os.sysconf("SC_CLK_TCK"), 3)
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 def cleanup_children(
-    process: subprocess.Popen[bytes], cleanup_processes: dict[int, str],
+    process: subprocess.Popen[bytes], cleanup_processes: dict[int, dict[str, object]],
 ) -> tuple[bool, bool]:
     """Kill and reap only our children until adoption has exposed the entire tree."""
     deadline = time.monotonic() + CLEANUP_SECONDS
@@ -85,7 +98,9 @@ def cleanup_children(
                         name = Path(f"/proc/{pid}/comm").read_text(errors="replace").strip()
                     except OSError:
                         name = "unavailable"
-                    cleanup_processes[pid] = name
+                    # The start time names the test that leaked it without
+                    # exposing the process's arguments.
+                    cleanup_processes[pid] = {"name": name, "started_unix": process_start_unix(pid)}
                 try:
                     os.kill(pid, signal.SIGKILL)
                 except ProcessLookupError:
@@ -123,7 +138,7 @@ def supervise(command: list[str], status_file: Path,
     returncode = 125
     complete = False
     had_live_descendants = False
-    cleanup_processes: dict[int, str] = {}
+    cleanup_processes: dict[int, dict[str, object]] = {}
     try:
         while not received_signal:
             # Adopted zombies need collecting during the command as well as at
@@ -150,7 +165,7 @@ def supervise(command: list[str], status_file: Path,
             "unexpected_live_descendants": unexpected_descendants,
             "exit_code": returncode,
             "cleanup_processes": [
-                {"pid": pid, "name": name} for pid, name in sorted(cleanup_processes.items())
+                {"pid": pid, **details} for pid, details in sorted(cleanup_processes.items())
             ],
         }
         status_file.write_text(json.dumps(report) + "\n", encoding="utf-8")

@@ -6,6 +6,7 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -32,6 +33,22 @@ func sseStreamReason(reason string) string {
 		return receiptReasonSSEStreamCancelled
 	}
 	return reason
+}
+
+// flushFailureReason replaces a delivery-claiming outcome reason when the
+// final flush to the client fails. The proxy had already read the upstream
+// body, so the failure is a failed write to the client. It is recorded the way
+// httpstream.Reason records a failed client write mid-stream, as cancellation,
+// and never as an incomplete upstream response. The same stalled or departed
+// client then gets one reason whether its failure surfaces while the body is
+// copied or at the final flush. An HTTP/2 client that resets the stream after
+// the body is buffered fails only the flush, so a cancelled request would
+// otherwise read as an upstream fault. Neither reason claims delivery.
+func flushFailureReason(deliveredReason string) string {
+	if strings.HasPrefix(deliveredReason, "sse_stream") {
+		return receiptReasonSSEStreamCancelled
+	}
+	return httpstream.Cancelled
 }
 
 // outcomeReasonClaimsDelivery identifies allowed outcomes that claim delivery.

@@ -99,7 +99,7 @@ func TestInterceptOutcomeFlushSSEVerdicts(t *testing.T) {
 	}{
 		{"blocked_failed_flush", marker, io.ErrClosedPipe, config.ActionBlock, LayerSSEStream},
 		{"blocked_delivered", marker, nil, config.ActionBlock, LayerSSEStream},
-		{"allowed_failed_flush", "ordinary event", io.ErrClosedPipe, config.ActionAllow, receiptReasonIncomplete},
+		{"allowed_failed_flush", "ordinary event", io.ErrClosedPipe, config.ActionAllow, receiptReasonSSEStreamCancelled},
 		{"allowed_delivered", "ordinary event", nil, config.ActionAllow, LayerSSEStream},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -202,6 +202,57 @@ func TestOutcomeFlushRetainsPanics(t *testing.T) {
 					if strings.Contains(rcpt.ActionRecord.Pattern, "reason=complete") {
 						t.Fatalf("panic attested complete delivery: %+v", rcpt.ActionRecord)
 					}
+				}
+			}
+			if outcomes != 1 {
+				t.Fatalf("outcomes = %d, want 1", outcomes)
+			}
+		})
+	}
+}
+
+// TestForwardOutcomeFlushKeepsSSEIdentity checks that a forward SSE stream
+// whose scan succeeded but whose final flush failed records the SSE
+// cancellation reason, as the same client departure does mid-stream.
+func TestForwardOutcomeFlushKeepsSSEIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		flush  error
+		reason string
+	}{
+		{"failed_flush", io.ErrClosedPipe, receiptReasonSSEStreamCancelled},
+		{"delivered", nil, "complete"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: ordinary event\n\n")
+			}))
+			t.Cleanup(origin.Close)
+			rph := newReceiptProxyHelper(t)
+			t.Cleanup(func() { _ = rph.rec.Close() })
+			handler := setupFetchProxyWithReceipts(t, rph, func(cfg *config.Config) {
+				cfg.APIAllowlist = nil
+				cfg.FlightRecorder.RequireReceipts = true
+				cfg.ForwardProxy.Enabled = true
+				cfg.ResponseScanning.Enabled = true
+				cfg.ResponseScanning.SSEStreaming.Enabled = true
+				cfg.ResponseScanning.SSEStreaming.Action = config.ActionBlock
+			})
+			writer := &issuedRedirectFlushWriter{ResponseRecorder: httptest.NewRecorder(), err: tc.flush}
+			handler.ServeHTTP(writer, httptest.NewRequestWithContext(t.Context(), http.MethodGet, origin.URL, nil))
+			if !strings.Contains(writer.Body.String(), "ordinary event") {
+				t.Fatalf("event not written: %q", writer.Body.String())
+			}
+			var outcomes int
+			for _, rcpt := range rph.findReceipts(t) {
+				ar := rcpt.ActionRecord
+				if ar.DecisionPhase != receipt.DecisionPhaseOutcome {
+					continue
+				}
+				outcomes++
+				if ar.Verdict != config.ActionAllow || !strings.Contains(ar.Pattern, "reason="+tc.reason) {
+					t.Fatalf("outcome verdict=%s pattern=%q, want reason=%s", ar.Verdict, ar.Pattern, tc.reason)
 				}
 			}
 			if outcomes != 1 {

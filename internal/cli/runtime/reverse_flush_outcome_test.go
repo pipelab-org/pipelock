@@ -123,7 +123,7 @@ func TestReverseOutcomeProgressFlushFailure(t *testing.T) {
 			continue
 		}
 		outcomes++
-		if ar.Verdict != config.ActionAllow || ar.Pattern != "status=200 bytes=unknown reason=incomplete bytes_exact=false" {
+		if ar.Verdict != config.ActionAllow || ar.Pattern != "status=200 bytes=unknown reason=stream_cancelled bytes_exact=false" {
 			t.Fatalf("flush outcome = %+v", ar)
 		}
 	}

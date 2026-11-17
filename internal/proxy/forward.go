@@ -778,7 +778,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if cfg.FlightRecorder.RequireReceipts && !clientHijacked && aborted == nil {
 			flushErr = flushResponseBeforeOutcome(w, r, cfg)
 			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason, config.ActionAllow) {
-				outcomeReason, outcomeBytes = receiptReasonIncomplete, -1
+				outcomeReason, outcomeBytes = flushFailureReason(outcomeReason), -1
 			}
 		}
 		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
@@ -2427,13 +2427,19 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	outcomeStatus := "unknown"
 	outcomeBytes := int64(-1)
 	outcomeReason := "incomplete"
+	// A scanned SSE stream records "complete" on success. Its failed final
+	// flush keeps the SSE cancellation reason a mid-stream departure records.
+	sseDelivered := false
 	defer func() {
 		aborted := recover()
 		var flushErr error
 		if cfg.FlightRecorder.RequireReceipts && aborted == nil {
 			flushErr = flushResponseBeforeOutcome(w, r, cfg)
 			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason, config.ActionAllow) {
-				outcomeReason, outcomeBytes = receiptReasonIncomplete, -1
+				outcomeReason, outcomeBytes = flushFailureReason(outcomeReason), -1
+				if sseDelivered {
+					outcomeReason = receiptReasonSSEStreamCancelled
+				}
 			}
 		}
 		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
@@ -2829,6 +2835,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			outcomeStatus = strconv.Itoa(resp.StatusCode)
 			outcomeBytes = 0
 			outcomeReason = "complete"
+			sseDelivered = true
 			if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact && !result.IsStructuralExemption() && !redirectExempt.Load() && !policyObserved.Load() {
 				forwardScope := adaptiveScopeForHost(fwdRespHost)
 				recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, !fwdRespExempt && !fwdAuthenticatedArtifact, adaptiveRecoveryContext{

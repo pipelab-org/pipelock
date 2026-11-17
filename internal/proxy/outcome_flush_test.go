@@ -26,6 +26,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -636,7 +637,7 @@ func runOutcomeFlushFailure(t *testing.T, surface string, disconnect bool, write
 		if err := receipt.VerifyWithKey(rcpt, rph.pubHex); err != nil {
 			t.Fatal(err)
 		}
-		wantReason, wantVerdict := receiptReasonIncomplete, config.ActionAllow
+		wantReason, wantVerdict := httpstream.Cancelled, config.ActionAllow
 		if surface == "fetch" {
 			wantReason, wantVerdict = "delivery_error", config.ActionWarn
 		} else if !strings.Contains(ar.Pattern, "bytes=unknown") {
