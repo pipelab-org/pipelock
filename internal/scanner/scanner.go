@@ -1297,6 +1297,11 @@ func (s *Scanner) Close() {
 	}
 	s.closed = true
 	s.closeMu.Unlock()
+	// A retiring generation must not let an in-flight tunnel claim prepaid
+	// admission. Ordinary scans still use the limiter's normal atomic path.
+	if s.rateLimiter != nil {
+		s.rateLimiter.Close()
+	}
 
 	drainDone := make(chan struct{})
 	go func() {
@@ -1413,14 +1418,32 @@ func HintForBlock(r *Result) string {
 // reject is still progress and must register so a flood of cancelled-
 // context probes does not falsely trip the wedge detector.
 func (s *Scanner) Scan(ctx context.Context, rawURL string) Result {
-	return s.scanWithRateRecording(ctx, rawURL, true, false)
+	result, _ := s.scanWithRateRecording(ctx, rawURL, scanOptions{recordRate: true})
+	return result
+}
+
+// ScanConnect scans the CONNECT authority and, only when the complete scan is
+// allowed after recording an actual rate-limit debit, returns a one-use proof
+// for that exact committed slot. The proxy may pass it to one inner request.
+func (s *Scanner) ScanConnect(ctx context.Context, rawURL string) (Result, *RateReservation) {
+	return s.scanWithRateRecording(ctx, rawURL, scanOptions{recordRate: true, mintReservation: true})
+}
+
+// ScanWithReservation runs the ordinary URL pipeline while allowing one
+// eligible request to claim the supplied CONNECT debit at the rate gate.
+// Invalid, expired, consumed, retired, or mismatched reservations fall back to
+// ordinary atomic rate admission.
+func (s *Scanner) ScanWithReservation(ctx context.Context, rawURL string, reservation *RateReservation) Result {
+	result, _ := s.scanWithRateRecording(ctx, rawURL, scanOptions{recordRate: true, reservation: reservation})
+	return result
 }
 
 // ScanWebSocket runs the URL pipeline on the client-supplied ws/wss target.
 // The byte ceiling applies before the handshake scheme is mapped to HTTP(S),
 // so normalization cannot consume part of the configured URL allowance.
 func (s *Scanner) ScanWebSocket(ctx context.Context, rawURL string) Result {
-	return s.scanWithRateRecording(ctx, rawURL, true, true)
+	result, _ := s.scanWithRateRecording(ctx, rawURL, scanOptions{recordRate: true, websocket: true})
+	return result
 }
 
 // ScanPreflight runs the same URL checks as Scan, including the current rate
@@ -1429,10 +1452,18 @@ func (s *Scanner) ScanWebSocket(ctx context.Context, rawURL string) Result {
 // The actual request must still call Scan to atomically check and consume its
 // rate-limit slot; this result neither reserves a slot nor authorizes dispatch.
 func (s *Scanner) ScanPreflight(ctx context.Context, rawURL string) Result {
-	return s.scanWithRateRecording(ctx, rawURL, false, false)
+	result, _ := s.scanWithRateRecording(ctx, rawURL, scanOptions{})
+	return result
 }
 
-func (s *Scanner) scanWithRateRecording(ctx context.Context, rawURL string, recordRate, websocket bool) (result Result) {
+type scanOptions struct {
+	recordRate      bool
+	websocket       bool
+	reservation     *RateReservation
+	mintReservation bool
+}
+
+func (s *Scanner) scanWithRateRecording(ctx context.Context, rawURL string, options scanOptions) (result Result, reservation *RateReservation) {
 	defer func() {
 		if h := s.heartbeat.Load(); h != nil {
 			h.fn()
@@ -1445,9 +1476,9 @@ func (s *Scanner) scanWithRateRecording(ctx context.Context, rawURL string, reco
 		result.Reason = "request context unavailable"
 		result.Score = 1.0
 		result.Hint = HintForScanner(ScannerContext)
-		return result
+		return result, nil
 	}
-	r := s.scan(ctx, rawURL, recordRate, websocket)
+	r := s.scan(ctx, rawURL, options, &reservation)
 	if !r.Allowed && r.Hint == "" {
 		if r.Scanner == ScannerLength {
 			// The length gate formats only byte counts into its reason. It
@@ -1457,13 +1488,16 @@ func (s *Scanner) scanWithRateRecording(ctx context.Context, rawURL string, reco
 			r.Hint = HintForBlock(&r)
 		}
 	}
-	return r
+	if !r.Allowed {
+		reservation = nil
+	}
+	return r, reservation
 }
 
 // scan checks a URL against all scanners and returns the result.
 // DLP runs on the hostname BEFORE DNS resolution to prevent secret exfiltration
 // via DNS queries (e.g., "sk-ant-xxx.evil.com" leaks the key during resolution).
-func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket bool) (result Result) {
+func (s *Scanner) scan(ctx context.Context, rawURL string, options scanOptions, minted **RateReservation) (result Result) {
 	decisions := URLDecisions{valid: true}
 	decisions.checks[urlContext] = DecisionAllowed
 	defer func() { result.Decisions = decisions }()
@@ -1487,7 +1521,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket
 	}
 
 	decisions.checks[urlScheme] = DecisionAllowed
-	if websocket {
+	if options.websocket {
 		// RFC 6455 section 3 defines ws/wss handshakes over HTTP/HTTPS.
 		switch parsed.Scheme {
 		case "ws":
@@ -1690,7 +1724,10 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket
 	}
 
 	// Rate limit check (per-domain)
-	result = s.checkRateLimit(hostname, recordRate)
+	result, reservation := s.checkRateLimitWithReservation(hostname, options.recordRate, options.reservation, options.mintReservation)
+	if reservation != nil && minted != nil {
+		*minted = reservation
+	}
 	decisions.record(urlRateLimit, result)
 	if !result.Allowed {
 		return result
@@ -2297,14 +2334,20 @@ func checkPathTraversal(parsed *url.URL) Result {
 // Uses baseDomain normalization to prevent subdomain rotation bypass
 // (e.g., a.evil.com, b.evil.com each getting separate rate limit windows).
 func (s *Scanner) checkRateLimit(hostname string, recordRate bool) Result {
+	result, _ := s.checkRateLimitWithReservation(hostname, recordRate, nil, false)
+	return result
+}
+
+func (s *Scanner) checkRateLimitWithReservation(hostname string, recordRate bool, reservation *RateReservation, mint bool) (Result, *RateReservation) {
 	if s.rateLimiter == nil {
-		return Result{Allowed: true}
+		return Result{Allowed: true}, nil
 	}
 
 	domain := baseDomain(hostname)
 	var allowed bool
+	var minted *RateReservation
 	if recordRate {
-		allowed = s.rateLimiter.CheckAndRecord(domain)
+		allowed, minted = s.rateLimiter.checkAndRecord(domain, reservation, mint)
 	} else {
 		allowed = s.rateLimiter.IsAllowed(domain)
 	}
@@ -2315,10 +2358,10 @@ func (s *Scanner) checkRateLimit(hostname string, recordRate bool) Result {
 			Scanner: ScannerRateLimit,
 			Score:   0.7,
 			Class:   ClassProtective,
-		}
+		}, nil
 	}
 
-	return Result{Allowed: true}
+	return Result{Allowed: true}, minted
 }
 
 // maxDecodeRounds is a safety ceiling for iterative URL decoding.
