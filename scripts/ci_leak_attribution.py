@@ -72,12 +72,16 @@ def collect_windows(lines) -> list[tuple[str, str, float, float | None]]:
 
 def running_at(windows, moment: float) -> list[str]:
     """Return the tests running at moment, most specific (deepest) first."""
-    names = [
-        f"{package} {test}"
+    running = {
+        (package, test)
         for package, test, start, end in windows
         if start - EDGE_SECONDS <= moment and (end is None or moment <= end + EDGE_SECONDS)
-    ]
-    return sorted(set(names), key=lambda name: (-name.count("/"), name))
+    }
+    # Depth is the subtest nesting of the test name alone. Package paths also
+    # contain slashes, and counting them would let top-level tests from deeply
+    # nested packages push the actual subtest past the display cap.
+    ranked = sorted(running, key=lambda item: (-item[1].count("/"), item[0], item[1]))
+    return [f"{package} {test}" for package, test in ranked]
 
 
 def attribute(report: dict, lines) -> list[str]:

@@ -82,6 +82,17 @@ class TestLeakAttribution(unittest.TestCase):
         self.assertEqual(messages[1], "leaked process sh (pid 12): start time unavailable")
         self.assertIn("no test was running then", messages[2])
 
+    def test_depth_ranks_subtests_not_package_paths(self) -> None:
+        deep = "example.com/a/b/c/d/e"
+        stream = [event("run", "TestParent", "2026-11-17T10:00:00Z"),
+                  event("run", "TestParent/child", "2026-11-17T10:00:00Z")]
+        stream += [event("run", f"TestTop{i:02d}", "2026-11-17T10:00:00Z", deep) for i in range(25)]
+        report = {"cleanup_processes": [{"pid": 1, "name": "sleep", "started_unix": unix("2026-11-17T10:00:01Z")}]}
+        (message,) = attribution.attribute(report, stream)
+        listed = message.split("\n  ")[1:]
+        self.assertEqual(listed[0], f"{PKG} TestParent/child")
+        self.assertEqual(len(listed), attribution.MAX_TESTS_PER_PROCESS)
+
     def test_attribute_caps_long_lists(self) -> None:
         stream = [event("run", f"TestP{i:02d}", "2026-11-17T10:00:00Z") for i in range(25)]
         report = {"cleanup_processes": [{"pid": 1, "name": "sleep", "started_unix": unix("2026-11-17T10:00:01Z")}]}
