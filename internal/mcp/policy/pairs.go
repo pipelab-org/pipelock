@@ -57,6 +57,10 @@ type argView struct {
 	// reading could not expand within its bounds; a rule that matches no
 	// view then reports an incomplete check instead of passing.
 	unreadable bool
+	// overflow marks every view of arguments whose shell variable expansion
+	// would pass maxShellConstructionLen. The policy blocks such arguments
+	// (see viewsOverflow); the views hold only a partial expansion.
+	overflow bool
 	// findPaths caches findPathsOnly(segments) for a plain view; it does not
 	// depend on the pattern. nil means not computed.
 	findPaths [][]string
@@ -74,9 +78,10 @@ func dropCrossLineShortReadings(args []string, n argViewNorm, expanded []string,
 		return expanded
 	}
 	allowed := map[string]struct{}{}
-	sawSplit := false
+	sawSplit, partial := false, false
 	keep := func(arg string) {
-		lt, _ := n.tokens([]string{arg})
+		lt, p := n.tokens([]string{arg})
+		partial = partial || p
 		norm, _ := normalizeLineOptions(lt, gitTool, nil)
 		for _, token := range norm {
 			allowed[token] = struct{}{}
@@ -93,7 +98,9 @@ func dropCrossLineShortReadings(args []string, n argViewNorm, expanded []string,
 			keep(line)
 		}
 	}
-	if !sawSplit {
+	// A line whose expansion stopped early proves nothing about which
+	// readings a single line produces, so none are dropped.
+	if !sawSplit || partial {
 		return expanded
 	}
 	out := make([]string, 0, len(expanded))
@@ -173,10 +180,13 @@ type argViewNorm struct {
 	words bool
 }
 
-// tokens normalizes args under n.
-func (n argViewNorm) tokens(args []string) ([]string, string) {
-	tokens, joined, _ := normalizeArgTokensRead(args, n.fn, n.pre, n.words)
-	return tokens, joined
+// tokens normalizes args under n. partial reports a shell expansion that
+// stopped at a bound, or one read with fewer values than the text assigns:
+// the tokens are then not the whole reading, and the caller must not draw
+// a conclusion from what is missing.
+func (n argViewNorm) tokens(args []string) (tokens []string, partial bool) {
+	tokens, _, unreadable, overflow := normalizeArgTokensRead(args, n.fn, n.pre, n.words)
+	return tokens, unreadable || overflow
 }
 
 // argViewNorms are the normalizations the rule views read arguments under.
@@ -197,6 +207,12 @@ var argViewNorms = []argViewNorm{
 // normalizeLineOptions). proof decides which builtin subcommands keep their own
 // reading (see gitProof); nil reads args themselves without a recorded shape.
 //
+// viewsOverflow reports views built from arguments whose shell variable
+// expansion would pass maxShellConstructionLen. Every view carries the flag.
+func viewsOverflow(views []argView) bool {
+	return len(views) > 0 && views[0].overflow
+}
+
 // pathReadings adds the pathname readings of shell operands (see
 // pathOperandReadings). It is false for values that are not shell text, so file
 // content and descriptions never gain a pathname spelling; file tools supply
@@ -213,7 +229,16 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof, pathReadings bo
 	priorProof.variableExecutable = false
 	retainPrior := proof.variableExecutable && !proof.unproved
 	norms := argViewNorms
-	unreadable := false
+	unreadable, overflow := false, false
+	// tok is n.tokens for derived views (segments, pathname readings). A
+	// derived view reads a shorter text with its own expansion bounds, so its
+	// overflow, and a partial reading, must mark the whole set too.
+	tok := func(n argViewNorm, args []string) ([]string, string) {
+		tokens, joined, u, o := normalizeArgTokensRead(args, n.fn, n.pre, n.words)
+		unreadable = unreadable || u
+		overflow = overflow || o
+		return tokens, joined
+	}
 	views := make([]argView, 0, 2*len(norms)+1)
 	// add keeps the first of identical views. matchArgViewSet skips a view the
 	// same as an earlier one, so dropping it here only saves the work of
@@ -231,8 +256,9 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof, pathReadings bo
 		views = append(views, v)
 	}
 	for _, n := range norms {
-		tokens, joined, u := normalizeArgTokensRead(args, n.fn, n.pre, n.words)
+		tokens, joined, u, o := normalizeArgTokensRead(args, n.fn, n.pre, n.words)
 		unreadable = unreadable || u
+		overflow = overflow || o
 		v := argView{tokens: tokens, joined: joined, unsplit: unsplit, plain: plain, inputKnown: inputKnown, checkXargs: true}
 		switch {
 		case len(segs) == 1:
@@ -240,7 +266,7 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof, pathReadings bo
 		case len(segs) > 1:
 			v.segments = make([][]string, 0, len(segs))
 			for _, seg := range segs {
-				t, _ := n.tokens([]string{seg})
+				t, _ := tok(n, []string{seg})
 				v.segments = append(v.segments, t)
 			}
 		}
@@ -304,15 +330,15 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof, pathReadings bo
 		}
 		for _, reading := range pathOperandReadings(args) {
 			for _, n := range norms {
-				tokens, joined := n.tokens(reading)
+				tokens, joined := tok(n, reading)
 				v := argView{tokens: tokens, joined: joined, unsplit: unsplit, plain: plain, wordReading: true, interpreted: true, inputKnown: pathInputKnown, checkXargs: true}
 				for i, seg := range segs {
 					for _, part := range segReadings[i] {
-						t, _ := n.tokens(part)
+						t, _ := tok(n, part)
 						v.segments = append(v.segments, t)
 					}
 					// An unchanged segment remains part of the command set.
-					t, _ := n.tokens([]string{seg})
+					t, _ := tok(n, []string{seg})
 					v.segments = append(v.segments, t)
 				}
 				add(v)
@@ -322,6 +348,7 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof, pathReadings bo
 	folded := make(map[string]string)
 	for i := range views {
 		views[i].unreadable = unreadable
+		views[i].overflow = overflow
 		for _, token := range views[i].tokens {
 			if _, ok := folded[token]; !ok {
 				folded[token] = foldString(token)
@@ -782,6 +809,11 @@ func fileRefs(words []string) []string {
 // commands, or a revised pattern, can then turn a match into an incomplete
 // check only where that earlier check found no match either.
 func matchArgViews(pat *regexp.Regexp, views ...argView) (matched, incomplete bool) {
+	// A view whose shell expansion passed its bound holds only a partial
+	// reading. Count it as a match so no caller passes it as clean.
+	if slices.ContainsFunc(views, func(v argView) bool { return v.overflow }) {
+		return true, false
+	}
 	var original, words []argView
 	for _, v := range views {
 		if v.wordReading {
@@ -848,6 +880,11 @@ func matchOptionViews(pat *regexp.Regexp, views ...argView) (matched, incomplete
 }
 
 func matchArgViewSet(pat *regexp.Regexp, memo *afterPartsMemo, views ...argView) (matched, incomplete bool) {
+	// A view whose shell expansion passed its bound holds only a partial
+	// reading. Count it as a match so no caller passes it as clean.
+	if slices.ContainsFunc(views, func(v argView) bool { return v.overflow }) {
+		return true, false
+	}
 	for i, v := range views {
 		if slices.ContainsFunc(views[:i], func(prev argView) bool { return sameArgView(prev, v) }) {
 			continue
