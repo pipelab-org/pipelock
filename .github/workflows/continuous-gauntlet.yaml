@@ -119,6 +119,14 @@ jobs:
       - name: Run portable canonical benchmark
         id: portable_runner
         shell: bash
+        env:
+          # The runner looks up the pinned release through the GitHub API.
+          # Without a token that lookup shares the hosted runner's anonymous
+          # rate limit and fails with 403. The runner reads the token once,
+          # unsets it before anything else runs, and deletes its header file
+          # after the lookup, so the benchmarked binary never sees it. The
+          # job grants contents: read only, so the token cannot write.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           job_deadline=$((JOB_STARTED_EPOCH + JOB_TIMEOUT_MINUTES * 60))
