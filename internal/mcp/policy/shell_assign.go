@@ -297,7 +297,7 @@ func commandWordIsAssigningBuiltin(s string, start, end int) bool {
 		case shellWrapperWord(word):
 			afterWrapper = true
 		case shellAssignmentWord(word):
-		case shellAssigningBuiltin(word):
+		case shellAssigningBuiltin(word), shellSpecialBuiltin(word):
 			return true
 		case afterWrapper && word[0] == '-':
 		default:
@@ -398,6 +398,18 @@ func skipConditionPrefix(s string, start, end int) int {
 func shellAssigningBuiltin(w string) bool {
 	switch w {
 	case "export", "declare", "typeset", "local", "readonly":
+		return true
+	default:
+		return false
+	}
+}
+
+// shellSpecialBuiltin names the POSIX special builtins. In sh, "A=r :" keeps
+// A after the command; bash keeps it only in POSIX mode. A command can run
+// under either, so the assignment is read as kept.
+func shellSpecialBuiltin(w string) bool {
+	switch w {
+	case ":", ".", "eval", "exec", "exit", "return", "set", "shift", "times", "trap", "unset":
 		return true
 	default:
 		return false

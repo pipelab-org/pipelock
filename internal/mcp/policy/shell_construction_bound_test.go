@@ -589,6 +589,10 @@ func TestShellConstructionRedirectValuesMatchBash(t *testing.T) {
 		{`A=r ${u}; B=m; printf %s "$A$B"`, "rm", ""},
 		{`A=r $(true); B=m; printf %s "$A$B"`, "rm", ""},
 		{`A=r $u /bin/true; B=m; printf %s "$A$B"`, "m", ""},
+		// sh keeps an assignment before a special builtin; bash does only in
+		// POSIX mode. Either shell may run the command, so it is read as kept.
+		{`A=r :; B=m; printf %s "$A$B"`, "m", "rm"},
+		{`A=r eval true; B=m; printf %s "$A$B"`, "m", "rm"},
 	}
 	for _, tc := range scripts {
 		t.Run(tc.script, func(t *testing.T) {
