@@ -451,7 +451,12 @@ func shellAssigningBuiltin(w string) bool {
 func shellConditionalAt(s string, at []int) (out map[int]bool, ambiguous bool) {
 	out = make(map[int]bool, len(at))
 	depth, gated := 0, false
-	var groups []bool // true for a group that counts toward depth
+	// groups holds each open "(" or "{" and whether it counts toward depth.
+	type openGroup struct {
+		open   byte
+		counts bool
+	}
+	var groups []openGroup
 	// cmdPos: the next word is a command word, where reserved words count.
 	// "echo fi" does not close an if.
 	cmdPos := true
@@ -491,14 +496,20 @@ func shellConditionalAt(s string, at []int) (out map[int]bool, ambiguous bool) {
 			if !counts {
 				inExpansion++
 			}
-			groups = append(groups, counts)
+			groups = append(groups, openGroup{open: c, counts: counts})
 			if counts {
 				depth++
 			}
 			cmdPos = true
 		case ')', '}':
 			if n := len(groups); n > 0 {
-				if groups[n-1] {
+				if (groups[n-1].open == '(') != (c == ')') {
+					// "{ ... )" or "( ... }": the count is lost, and with it
+					// which text is a command. The reading is incomplete.
+					markSkipped(out, at, next, len(s))
+					return out, true
+				}
+				if groups[n-1].counts {
 					depth--
 					// A reserved word may follow a group: "if (x) then".
 					cmdPos = true

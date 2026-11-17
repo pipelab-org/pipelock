@@ -1299,6 +1299,9 @@ func TestShellConditionalAtMarksSkippedText(t *testing.T) {
 		"echo " + d + "{x}#; Z=1; echo " + d + "Z",
 		// A closer with no opener before it means the scan missed one.
 		"true; fi; Z=1; echo " + d + "Z",
+		// A closer that does not match its opener loses the count.
+		"echo " + d + "{x:-)}; Z=1; echo " + d + "Z",
+		"{ echo x ); Z=1; echo " + d + "Z",
 		"echo " + d + "{x}#; if test -f /nope; then\nZ=echo\nfi; A=r; B=m; " + d + "Z" + d + "A" + d + "B -rf /tmp/target",
 	} {
 		if _, partial, fits := resolveShellConstruction(cmd); !fits || !partial {
