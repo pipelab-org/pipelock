@@ -3176,6 +3176,7 @@ func newInterceptHandler(
 				} else if scanResult.Failed() || (iRespAction == config.ActionStrip && (scanResult.TransformedContent == "" || resp.StatusCode == http.StatusPartialContent)) {
 					iRespAction = config.ActionBlock
 				}
+				iRespAction = responseCaptureAction(scanResult, iRespAction)
 				ic.Proxy.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
 					Subsurface:        "response_intercept",
 					Transport:         "connect",
@@ -3188,10 +3189,10 @@ func newInterceptHandler(
 					ActionClass:       captureHTTPActionClass(r.Method),
 					Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
 					TransformKind:     capture.TransformRaw,
-					RawFindings:       responseMatchesToFindings(scanResult.Matches, iRespAction),
-					EffectiveFindings: responseMatchesToFindings(scanResult.Matches, iRespAction),
+					RawFindings:       responseCaptureFindings(scanResult, iRespAction),
+					EffectiveFindings: responseCaptureFindings(scanResult, iRespAction),
 					EffectiveAction:   iRespAction,
-					Outcome:           captureOutcome(iRespAction, scanResult.Clean),
+					Outcome:           captureOutcome(iRespAction, scanResult.Clean && len(scanResult.WarnedMatches) == 0),
 				})
 			}
 			if scanResult.Failed() {

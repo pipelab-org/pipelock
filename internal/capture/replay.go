@@ -370,12 +370,7 @@ func (re *ReplayEngine) replayResponse(summary CaptureSummary, scannerInput stri
 	replay := re.responseResultToReplay(summary.EffectiveAction, result)
 	if re.sc.ExternalInjectionSurface(surface) {
 		replay.Assessment = &result.Assessment
-		for _, m := range result.WarnedMatches {
-			replay.CandidateFindings = append(replay.CandidateFindings, Finding{Kind: KindInjection, Action: config.ActionWarn, PatternName: m.PatternName})
-			if replay.CandidateAction == config.ActionAllow {
-				replay.CandidateAction = config.ActionWarn
-			}
-		}
+
 		replay.Changed = replay.CandidateAction != replay.OriginalAction
 	}
 	return replay
@@ -493,6 +488,13 @@ func (re *ReplayEngine) responseResultToReplay(originalAction string, result sca
 				PatternName: m.PatternName,
 				MatchText:   m.MatchText,
 			})
+		}
+	}
+
+	for _, m := range result.WarnedMatches {
+		findings = append(findings, Finding{Kind: KindInjection, Action: config.ActionWarn, PatternName: m.PatternName})
+		if candidateAction == config.ActionAllow {
+			candidateAction = config.ActionWarn
 		}
 	}
 

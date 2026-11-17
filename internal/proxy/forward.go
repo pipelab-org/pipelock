@@ -3403,6 +3403,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				} else if scanResult.Failed() || (fwdRespAction == config.ActionStrip && (scanResult.TransformedContent == "" || resp.StatusCode == http.StatusPartialContent)) {
 					fwdRespAction = config.ActionBlock
 				}
+				fwdRespAction = responseCaptureAction(scanResult, fwdRespAction)
 				p.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
 					Subsurface:        "response_forward",
 					Transport:         "forward",
@@ -3415,10 +3416,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					ActionClass:       captureHTTPActionClass(r.Method),
 					Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
 					TransformKind:     capture.TransformRaw,
-					RawFindings:       responseMatchesToFindings(scanResult.Matches, fwdRespAction),
-					EffectiveFindings: responseMatchesToFindings(scanResult.Matches, fwdRespAction),
+					RawFindings:       responseCaptureFindings(scanResult, fwdRespAction),
+					EffectiveFindings: responseCaptureFindings(scanResult, fwdRespAction),
 					EffectiveAction:   fwdRespAction,
-					Outcome:           captureOutcome(fwdRespAction, scanResult.Clean),
+					Outcome:           captureOutcome(fwdRespAction, scanResult.Clean && len(scanResult.WarnedMatches) == 0),
 				})
 			}
 			if scanResult.Failed() {

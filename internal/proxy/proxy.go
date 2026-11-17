@@ -7093,6 +7093,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			// as a warn/allow verdict.
 			respAction = config.ActionBlock
 		}
+		respAction = responseCaptureAction(scanResult, respAction)
 		p.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
 			Subsurface:        "response_fetch",
 			Transport:         "fetch",
@@ -7105,10 +7106,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			ActionClass:       captureHTTPActionClass(http.MethodGet),
 			Request:           capture.CaptureRequest{Method: r.Method, URL: displayURL},
 			TransformKind:     capture.TransformReadability,
-			RawFindings:       responseMatchesToFindings(scanResult.Matches, respAction),
-			EffectiveFindings: responseMatchesToFindings(scanResult.Matches, respAction),
+			RawFindings:       responseCaptureFindings(scanResult, respAction),
+			EffectiveFindings: responseCaptureFindings(scanResult, respAction),
 			EffectiveAction:   respAction,
-			Outcome:           captureOutcome(respAction, scanResult.Clean),
+			Outcome:           captureOutcome(respAction, scanResult.Clean && len(scanResult.WarnedMatches) == 0),
 		})
 
 		// Use live escalation level so mid-request CEE escalations are reflected.

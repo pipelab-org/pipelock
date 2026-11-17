@@ -81,3 +81,24 @@ func TestBufferedCheckerReplayMCPSurface(t *testing.T) {
 		t.Fatal("stream replay used buffered selection")
 	}
 }
+
+func TestBufferedCheckerReplayCapturedWarning(t *testing.T) {
+	for _, external := range []bool{false, true} {
+		cfg := config.Defaults()
+		cfg.DLP.ScanEnv = false
+		text := checkertest.Directive
+		if external {
+			srv := checkertest.New(t, "finding")
+			srv.Configure(cfg, config.InjectionSurfaceHTTPResponse, config.InjectionModeWarn)
+			text = "ordinary upstream content"
+		} else {
+			cfg.PromptInjectionDetection = &config.PromptInjectionDetection{Action: config.InjectionModeWarn}
+		}
+		sc := scanner.MustNew(cfg)
+		t.Cleanup(sc.Close)
+		got := NewReplayEngine(cfg, sc).ReplayRecord(CaptureSummary{Surface: SurfaceResponse, Subsurface: "response_fetch", EffectiveAction: config.ActionWarn}, text)
+		if got.CandidateAction != config.ActionWarn || got.Changed || len(got.CandidateFindings) == 0 {
+			t.Fatalf("external=%t warning replay differs: %+v", external, got)
+		}
+	}
+}
