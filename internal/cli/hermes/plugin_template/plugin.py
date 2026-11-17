@@ -132,7 +132,13 @@ def _invoke(payload: dict) -> dict:
         return {"decision": "block", "reason": "pipelock hermes hook emitted unknown decision"}
     if decision == "transform" and (
         "transform" not in payload.get("capabilities", [])
-        or not isinstance(payload.get("tool_input"), str)
+        or not (
+            isinstance(payload.get("tool_input"), str)
+            or (
+                isinstance(payload.get("tool_input"), dict)
+                and isinstance(payload["tool_input"].get("text"), str)
+            )
+        )
         or not isinstance(decoded.get("result"), str)
         or not isinstance(decoded.get("reason"), str)
         or not decoded["reason"]
@@ -225,9 +231,10 @@ def _pre_gateway_dispatch(
     scan = _invoke({
         "hook_event_name": "pre_gateway_dispatch",
         "tool_name": "gateway",
-        "tool_input": text,
+        # Keep the {"text", "sender"} envelope every pipelock release scans,
+        # so an older binary on PATH still inspects the sender.
+        "tool_input": {"text": text, "sender": sender},
         "capabilities": ["transform"] if isinstance(text, str) else [],
-        "extra": {"sender": sender},
     })
     if scan.get("decision") == "transform":
         if isinstance(text, str) and isinstance(scan.get("result"), str) and isinstance(scan.get("reason"), str) and scan["reason"]:

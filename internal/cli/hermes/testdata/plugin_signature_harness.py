@@ -132,7 +132,13 @@ def _check_transform_contract(mod):
             ), patch.object(mod.subprocess, "run", side_effect=run):
                 got = hook(**kwargs)
             assert captured[0]["capabilities"] == ["transform"], captured
-            assert isinstance(captured[0]["tool_input"], str), captured
+            sent = captured[0]["tool_input"]
+            if expected_type is str:
+                assert isinstance(sent, str), captured
+            else:
+                # Gateway keeps the envelope every binary scans, sender included.
+                assert isinstance(sent, dict) and set(sent) == {"text", "sender"}, captured
+                assert isinstance(sent["text"], str), captured
             if response == valid:
                 assert isinstance(got, expected_type) and got == expected, got
             elif response in ({}, {"decision": "allow"}):
