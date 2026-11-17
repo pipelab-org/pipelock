@@ -136,7 +136,7 @@ func TestMCPDoorCommandNonLoopback(t *testing.T) {
 		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`)
 	}))
 	defer upstream.Close()
-	testport.WithRetry(t, 1, func(addrs []string) error {
+	testport.WithRetry(t, 1, func(addrs []string) (runErr error) {
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 		cmd := McpCmd()
@@ -147,19 +147,25 @@ func TestMCPDoorCommandNonLoopback(t *testing.T) {
 		cmd.SetArgs([]string{"proxy", "--listen", strings.Replace(addrs[0], "127.0.0.1", "0.0.0.0", 1), "--upstream", upstream.URL, "--config", path})
 		done := make(chan error, 1)
 		go func() { done <- cmd.Execute() }()
-		t.Cleanup(func() {
+		exited := false
+		defer func() {
 			cancel()
+			if exited {
+				return
+			}
 			select {
 			case err := <-done:
-				if err != nil && !errors.Is(err, context.Canceled) {
-					t.Error(err)
+				if runErr == nil && err != nil && !errors.Is(err, context.Canceled) {
+					runErr = fmt.Errorf("door command stop: %w", err)
 				}
 			case <-time.After(testwait.Deadline(10 * time.Second)):
-				t.Error("door command did not stop")
+				if runErr == nil {
+					runErr = errors.New("door command did not stop")
+				}
 			}
-		})
+		}()
 		base := "http://" + addrs[0]
-		testwait.For(t, 10*time.Second, func() bool {
+		ready := func() bool {
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/health", nil)
 			if err != nil {
 				return false
@@ -170,7 +176,20 @@ func TestMCPDoorCommandNonLoopback(t *testing.T) {
 			}
 			_ = resp.Body.Close()
 			return resp.StatusCode == http.StatusOK
-		}, "door command listener")
+		}
+		// A bind collision makes the command exit before it is ready; return that
+		// error so WithRetry can try another port instead of waiting out the deadline.
+		deadline := time.After(testwait.Deadline(10 * time.Second))
+		for !ready() {
+			select {
+			case err := <-done:
+				exited = true
+				return fmt.Errorf("door command exited before ready: %w; stderr %s", err, stderr.String())
+			case <-deadline:
+				return fmt.Errorf("door command listener not ready; stderr %s", stderr.String())
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
 		for _, auth := range []string{"", token} {
 			req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/", bytes.NewBufferString(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}`))
 			if err != nil {
