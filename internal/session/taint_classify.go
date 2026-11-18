@@ -270,7 +270,7 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 	if opts.HostileMCP {
 		words := splitArgumentKey(operation)
 		switch {
-		case operation == "retry_with_browser_use_agent" || isMCPDelegation(words):
+		case isMCPBrowserAgentDelegation(words) || isMCPDelegation(words):
 			browse, allowRead = false, false
 		case len(words) > 0 && words[0] == "browser":
 			browse, allowRead = isMCPBrowserInspection(operation, argsJSON), false
@@ -293,6 +293,14 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 		refs = targets.urls
 	}
 	return ActionClassification{Class: ActionClassUnknown, Sensitivity: failSafeSensitivity(opts, false), ActionRef: targetPath, OverrideRefs: refs}
+}
+
+// isMCPBrowserAgentDelegation matches the published Browser Use retry tool as
+// words. splitArgumentKey already folds capitalization and separators, and a
+// longer name is a different operation.
+func isMCPBrowserAgentDelegation(words []string) bool {
+	return len(words) == 5 && words[0] == "retry" && words[1] == "with" &&
+		words[2] == "browser" && words[3] == "use" && words[4] == "agent"
 }
 
 func isMCPDelegation(words []string) bool {
