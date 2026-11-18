@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -165,6 +166,86 @@ func TestStdioTaskPermissionClassifiesCallsAfterExposure(t *testing.T) {
 	}
 }
 
+func TestStdioTaskPermissionBrowserAndDelegation(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, tool, args string
+		allowHostile     bool
+	}{
+		{"navigate", "browser_navigate", `{"url":"https://docs.vendor.example/guide"}`, true},
+		{"snapshot", "browser_snapshot", `{}`, true},
+		{"list_tabs", "browser_tabs", `{"action":"list"}`, true},
+		{"click", "browser_click", `{"element":"Details","ref":"e1"}`, false},
+		{"type", "browser_type", `{"element":"Search","ref":"e1","text":"notes"}`, false},
+		{"evaluate", "browser_evaluate", `{"function":"() => document.title"}`, false},
+		{"close_tab", "browser_tabs", `{"action":"close","index":0}`, false},
+		{"screenshot_file", "browser_take_screenshot", `{"filename":"snapshot.png"}`, false},
+		{"retry", "retry_with_browser_use_agent", `{"task":"summarize"}`, false},
+		{"open_subtask", "open_subtask", `{"task":"summarize"}`, false},
+		{"spawn_subagent", "spawn_subagent", `{"task":"summarize"}`, false},
+		{"delegate_run", "delegate_run", `{"task":"summarize"}`, false},
+		{"list_subagents", "list_subagents", `{}`, true},
+		{"prefetch", "prefetch_cache", `{}`, true},
+		{"browser_namespace_only", "mcp__browser__frobnicate", `{}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, hostile := range []bool{false, true} {
+				t.Run("hostile="+strconv.FormatBool(hostile), func(t *testing.T) {
+					cfg := config.Defaults()
+					approver := hitl.New(1, hitl.WithTerminal(false))
+					defer approver.Close()
+					opts := MCPProxyOpts{
+						Scanner: testScannerWithAction(t, config.ActionWarn), Rec: &taintRecorder{},
+						TaintCfg: &cfg.Taint, TaintExternalSource: true, Approver: approver,
+					}
+					if hostile {
+						observeMCPResponseFindings(opts, []session.HostileFindingKind{session.FindingDLP})
+					}
+					frame := string(principalControlToolCall(1, tc.tool, tc.args)) + "\n"
+					var sent bytes.Buffer
+					blocked := make(chan BlockedRequest, 1)
+					ForwardScannedInput(transport.NewStdioReader(strings.NewReader(frame)), transport.NewStdioWriter(&sent), io.Discard,
+						config.ActionWarn, config.ActionBlock, blocked, nil, nil, opts)
+					denial, refused := <-blocked
+					if !hostile || tc.allowHostile {
+						if sent.String() != frame || refused {
+							t.Errorf("upstream=%s denial=%q, want one unmodified frame and no denial", sent.String(), denial.ErrorMessage)
+						}
+					} else if sent.Len() != 0 || !refused || !strings.Contains(denial.ErrorMessage, "task_approval_unavailable") {
+						t.Errorf("upstream=%s denial=%q, want zero upstream bytes and task_approval_unavailable", sent.String(), denial.ErrorMessage)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestStdioTaskPermissionBrowserClickExactGrant(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	rec := &httpTaskPermissionRecorder{}
+	approver := hitl.New(1, hitl.WithTerminal(false))
+	defer approver.Close()
+	opts := MCPProxyOpts{
+		Scanner: testScannerForHTTP(t), Rec: rec, TaintCfg: &cfg.Taint, TaintExternalSource: true,
+		Approver: approver, ServerBinding: "test-server", taskSubject: "test-subject",
+	}
+	session.BindTaskSubject(rec, opts.taskSubject)
+	observeMCPResponseFindings(opts, []session.HostileFindingKind{session.FindingDLP})
+	exact := principalControlToolCall(1, "browser_click", `{"element":"Details","ref":"e1"}`)
+	other := principalControlToolCall(2, "browser_click", `{"element":"Summary","ref":"e2"}`)
+	rec.action = mcpTaskAction(opts, ParseMCPFrame(exact))
+	var sent bytes.Buffer
+	blocked := make(chan BlockedRequest, 2)
+	in := strings.NewReader(string(exact) + "\n" + string(other) + "\n")
+	ForwardScannedInput(transport.NewStdioReader(in), transport.NewStdioWriter(&sent), io.Discard,
+		config.ActionWarn, config.ActionBlock, blocked, nil, nil, opts)
+	denial := <-blocked
+	if sent.String() != string(exact)+"\n" || string(denial.ID) != "2" || !strings.Contains(denial.ErrorMessage, "task_approval_unavailable") {
+		t.Fatalf("upstream=%s denial=%q, want only the exact granted call", sent.String(), denial.ErrorMessage)
+	}
+}
+
 type taskPermissionTestStore struct{ rec session.Recorder }
 
 func (s taskPermissionTestStore) GetOrCreate(string) session.Recorder { return s.rec }
@@ -174,7 +255,7 @@ type httpTaskPermissionRecorder struct {
 	listenerDiagnosisRecorder
 	subject  string
 	action   session.TaskAction
-	rotated  bool
+	rotated  atomic.Bool
 	checks   int
 	expireAt int
 	expired  atomic.Bool
@@ -184,7 +265,7 @@ func (r *httpTaskPermissionRecorder) BindTaskSubject(subject string) { r.subject
 
 func (r *httpTaskPermissionRecorder) TaskPolicySnapshot(subject string, action session.TaskAction) (session.SessionRisk, session.TaskContext, bool) {
 	r.checks++
-	matched := subject != "" && subject == r.subject && action == r.action && !r.rotated && !r.expired.Load()
+	matched := subject != "" && subject == r.subject && action == r.action && !r.rotated.Load() && !r.expired.Load()
 	if r.expireAt > 0 && r.checks >= r.expireAt {
 		matched = false
 	}
@@ -193,7 +274,8 @@ func (r *httpTaskPermissionRecorder) TaskPolicySnapshot(subject string, action s
 
 func (r *httpTaskPermissionRecorder) TaskSnapshot() session.TaskContext {
 	task := session.TaskContext{CurrentTaskID: "original-task"}
-	if r.rotated {
+	rotated := r.rotated.Load()
+	if rotated {
 		task.CurrentTaskID = "next-task"
 	}
 	return task
@@ -304,7 +386,7 @@ func TestHTTPTaskPermissionRechecksAtSend(t *testing.T) {
 					// The input gate and its finalizer have both checked the grant.
 					// This is the per-send upstream gate, before the send lock.
 					if tc.rotate && rec.checks >= 2 {
-						rec.rotated = true
+						rec.rotated.Store(true)
 					}
 					return nil
 				},
@@ -394,7 +476,7 @@ func TestStdioTaskPermissionRechecksAfterReceipt(t *testing.T) {
 			emitter, _, _, _ := newReceiptTestHarnessWithObserver(t, func(r *receipt.Receipt) {
 				observed.observe(r)
 				if r.ActionRecord.Verdict == action {
-					rec.rotated = true
+					rec.rotated.Store(true)
 				}
 			})
 			opts := MCPProxyOpts{
@@ -415,8 +497,8 @@ func TestStdioTaskPermissionRechecksAfterReceipt(t *testing.T) {
 			ForwardScannedInput(transport.NewStdioReader(strings.NewReader(string(msg)+"\n")),
 				transport.NewStdioWriter(&sent), &logs, config.ActionWarn, config.ActionBlock, blocked, nil, nil, opts)
 			denial, refused := <-blocked
-			if !rec.rotated || sent.Len() != 0 || !refused || denial.ErrorCode != -32002 || !strings.Contains(denial.ErrorMessage, session.TaskApprovalStale) {
-				t.Fatalf("rotated=%t upstream=%q refusal=%q logs=%q, want no delivery and a stale-task refusal", rec.rotated, sent.String(), denial.ErrorMessage, logs.String())
+			if !rec.rotated.Load() || sent.Len() != 0 || !refused || denial.ErrorCode != -32002 || !strings.Contains(denial.ErrorMessage, session.TaskApprovalStale) {
+				t.Fatalf("rotated=%t upstream=%q refusal=%q logs=%q, want no delivery and a stale-task refusal", rec.rotated.Load(), sent.String(), denial.ErrorMessage, logs.String())
 			}
 			records := observed.snapshot()
 			if len(records) != 2 || records[1].Verdict != config.ActionBlock || records[1].TaintDecision != config.ActionBlock ||
@@ -478,6 +560,52 @@ func TestWSTaskPermissionHarnessSurfacesStartupError(t *testing.T) {
 			}, func() { t.Error("startup failure reached response wait") })
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("WebSocket harness error=%v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestReverseTaskPermissionRechecksAfterHeaderDiscovery(t *testing.T) {
+	for _, tc := range []struct {
+		name, wantReply string
+		wantCalls       int32
+	}{
+		{"current", `"result"`, 1},
+		{"rotated", session.TaskApprovalStale, 0},
+		{"expired", session.TaskPermissionRequired, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const tool = "write_file"
+			cfg := config.Defaults()
+			rec := &httpTaskPermissionRecorder{}
+			rec.ObserveRisk(session.ClassifyMCPResponseFindings(mcpTaintSourceKind, true, []session.HostileFindingKind{session.FindingDLP}))
+			opts := paramContractOpts(t)
+			opts.Store = taskPermissionTestStore{rec: rec}
+			opts.TaintCfg = &cfg.Taint
+			opts.ServerBinding = "test-server"
+			opts.ListenerPrincipalResolver = func(*http.Request) (ListenerPrincipal, error) {
+				return ListenerPrincipal{Provider: "test", Subject: "operator-test-agent"}, nil
+			}
+			body := currentWireBody(2, methodToolsCall, `"name":"write_file","arguments":{"region":"body"}`)
+			rec.action = mcpTaskAction(opts, ParseMCPFrame([]byte(body)))
+			f := &headerStateFixture{
+				beforeList: func() {
+					rec.rotated.Store(tc.name == "rotated")
+					rec.expired.Store(tc.name == "expired")
+				},
+			}
+			f.definitions.Store(strings.Replace(headerStateDefs(headerStateSchema, "Write a test file"), `"echo"`, strconv.Quote(tool), 1))
+			upstream := httptest.NewServer(http.HandlerFunc(f.serveUpstream))
+			t.Cleanup(upstream.Close)
+			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+			headers := currentWireHeaders(methodToolsCall, tool)
+			headers.Set("Proxy-Authorization", headerStateBearer)
+			headers.Set("Mcp-Param-Region", "body")
+			status, _, reply := postWireContractRequest(t, baseURL, body, headers)
+			if status != http.StatusOK || f.lists.Load() != 1 || f.calls.Load() != tc.wantCalls || !strings.Contains(reply, tc.wantReply) ||
+				(tc.wantCalls == 0 && !strings.Contains(reply, `"code":-32002`)) {
+				t.Fatalf("status=%d discoveries=%d upstream calls=%d, want calls=%d and %q, response=%s",
+					status, f.lists.Load(), f.calls.Load(), tc.wantCalls, tc.wantReply, reply)
 			}
 		})
 	}
@@ -675,7 +803,7 @@ func TestMCPTaskPermissionRefusesIfApprovalOutlivesTask(t *testing.T) {
 		_ = w.Close()
 		_ = r.Close()
 	})
-	prompt := &taskApprovalOutput{input: w, beforeAnswer: func() { rec.rotated = true }}
+	prompt := &taskApprovalOutput{input: w, beforeAnswer: func() { rec.rotated.Store(true) }}
 	approver := hitl.New(1, hitl.WithInput(r), hitl.WithOutput(prompt), hitl.WithTerminal(true))
 	t.Cleanup(approver.Close)
 	opts := MCPProxyOpts{

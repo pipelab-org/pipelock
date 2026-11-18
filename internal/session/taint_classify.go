@@ -4,7 +4,9 @@
 package session
 
 import (
+	"encoding/json"
 	"maps"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -14,14 +16,17 @@ import (
 	"unicode"
 
 	"github.com/luckyPipewrench/pipelock/internal/extract"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
-// ClassificationOptions controls fail-safe action classification.
+// ClassificationOptions controls action classification.
 type ClassificationOptions struct {
 	FailSafe bool
+	// HostileMCP applies the stricter read and browse rules for hostile MCP sessions.
+	HostileMCP bool
 }
 
 // ActionClassification carries an action class plus whether classification
@@ -260,14 +265,25 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 	if operation != toolName {
 		category = chains.ClassifyTool(operation, argsJSON, nil)
 	}
-	if looksLikeBrowseTool(strings.ToLower(operation)) || (category == "network" && hasMCPNetworkNameEvidence(operation, argsJSON)) {
+	browse := looksLikeBrowseTool(strings.ToLower(operation)) || (category == "network" && hasMCPNetworkNameEvidence(operation, argsJSON))
+	allowRead := true
+	if opts.HostileMCP {
+		words := splitArgumentKey(operation)
+		switch {
+		case operation == "retry_with_browser_use_agent" || isMCPDelegation(words):
+			browse, allowRead = false, false
+		case len(words) > 0 && words[0] == "browser":
+			browse, allowRead = isMCPBrowserInspection(operation, argsJSON), false
+		}
+	}
+	if browse {
 		if hasMutatingNetworkIntent(argsJSON) {
 			return ActionClassification{Class: ActionClassPublish, Sensitivity: SensitivityElevated, ActionRef: targetURL, OverrideRefs: targets.urls, Confident: true}
 		}
 		return ActionClassification{Class: ActionClassBrowse, Sensitivity: SensitivityNormal, ActionRef: targetURL, OverrideRefs: targets.urls, Confident: true}
 	}
 
-	if looksLikeReadTool(operation) || category == "read" || category == "list" {
+	if allowRead && (looksLikeReadTool(operation) || category == "read" || category == "list") {
 		return ActionClassification{Class: ActionClassRead, Sensitivity: failSafeSensitivity(opts, pathClass.Confident), ActionRef: targetPath, OverrideRefs: pathClass.OverrideRefs, Confident: pathClass.Confident}
 	}
 
@@ -277,6 +293,89 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 		refs = targets.urls
 	}
 	return ActionClassification{Class: ActionClassUnknown, Sensitivity: failSafeSensitivity(opts, false), ActionRef: targetPath, OverrideRefs: refs}
+}
+
+func isMCPDelegation(words []string) bool {
+	if len(words) == 0 {
+		return false
+	}
+	switch words[0] {
+	case "spawn", "delegate", "dispatch":
+		return true
+	case "open":
+		if len(words) < 2 {
+			return false
+		}
+		switch words[1] {
+		case "subtask", "subagent":
+			return true
+		case "sub":
+			return len(words) >= 3 && (words[2] == "task" || words[2] == "agent")
+		}
+	}
+	return false
+}
+
+// The exact operations come from the published Playwright MCP and Browser Use
+// tool schemas. Unrecognized browser operations need a separate task decision.
+func isMCPBrowserInspection(operation, argsJSON string) bool {
+	switch operation {
+	case "browser_navigate", "browser_navigate_back", "browser_wait_for",
+		"browser_route_list", "browser_get_config",
+		"browser_cookie_get", "browser_cookie_list",
+		"browser_localstorage_get", "browser_localstorage_list",
+		"browser_sessionstorage_get", "browser_sessionstorage_list",
+		"browser_generate_locator", "browser_verify_element_visible", "browser_verify_list_visible",
+		"browser_verify_text_visible", "browser_verify_value",
+		"browser_go_back", "browser_switch_tab", "browser_get_state", "browser_get_html",
+		"browser_extract_content", "browser_list_tabs", "browser_list_sessions":
+		return true
+	case "browser_tabs":
+		return isMCPBrowserTabInspection(argsJSON)
+	case "browser_snapshot", "browser_take_screenshot", "browser_find", "browser_console_messages", "browser_screenshot":
+		if argsJSON == "" {
+			return true
+		}
+		args, ok := mcpBrowserArgumentObject(argsJSON)
+		if !ok {
+			return false
+		}
+		for key := range args {
+			switch strings.Join(splitArgumentKey(key), "") {
+			case "file", "filename", "filepath", "path", "output", "outputfile", "outputfilename", "outputfilepath", "outputpath", "savepath":
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func isMCPBrowserTabInspection(argsJSON string) bool {
+	args, ok := mcpBrowserArgumentObject(argsJSON)
+	if !ok {
+		return false
+	}
+	switch args["action"] {
+	case "list", "new":
+		return len(args) == 1
+	case "select":
+		index, ok := args["index"].(json.Number)
+		if !ok || len(args) != 2 {
+			return false
+		}
+		value, err := index.Float64()
+		return err == nil && value >= 0 && math.Trunc(value) == value
+	default:
+		return false
+	}
+}
+
+func mcpBrowserArgumentObject(argsJSON string) (map[string]any, bool) {
+	decoded, _ := decodeJSONValue(argsJSON)
+	args, ok := decoded.(map[string]any)
+	return args, ok && jsonscan.RejectDuplicateKeys([]byte(argsJSON)) == nil
 }
 
 // firstMutatingMCPCommand scans only declared command-bearing fields. It keeps

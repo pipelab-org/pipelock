@@ -2031,6 +2031,19 @@ func RunHTTPListenerProxy(
 		forwardListenerUpstreamHeaders(upReq, r, false)
 		responseencoding.RequestIdentity(upReq.Header)
 
+		// Tool-header discovery can wait after admission. Recheck the task at
+		// the send boundary using the same effective call that admission checked.
+		if refusal := mcpTaskReleaseRefusal(scanOpts, decision.taskFrame, decision.taskTaint, false); refusal != "" {
+			blocked := inputMCPDenial(scanOpts, mcpTaintDenialAudit(), &BlockedRequest{
+				ID: frame.ID, IsNotification: isRPCNotification(frame.ID),
+				ErrorCode: -32002, ErrorMessage: "pipelock: " + refusal,
+			})
+			reason, _, _ := strings.Cut(refusal, " ")
+			emitMCPBlockedOutcomeReceipt(scanOpts.receiptEmitter(), scanOpts.v2ReceiptEmitter(), scanOpts.ReceiptGroup, safeLogW, decision.Outcome.Receipt, -1, reason, scanOpts.requireReceipts())
+			scanOpts.ListenerDoor = opts.ListenerDoor
+			writeMCPHTTPInputResult(scanOpts, *blocked, w)
+			return
+		}
 		upResp, err := upstreamClient.Do(upReq)
 		if err != nil {
 			if handleMetadataDialError(err, frame.ID) {
