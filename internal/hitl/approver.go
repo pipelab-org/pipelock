@@ -29,6 +29,20 @@ const (
 	DecisionStrip
 )
 
+// Outcome records why a terminal approval succeeded or failed.
+type Outcome int
+
+const (
+	OutcomeUnavailable Outcome = iota
+	OutcomeAllow
+	OutcomeStrip
+	OutcomeDeclined
+	OutcomeNonTerminal
+	OutcomeTimeout
+	OutcomeInputLost
+	OutcomeUnconfirmed
+)
+
 // Request contains threat context for the operator prompt.
 type Request struct {
 	Agent    string
@@ -36,12 +50,15 @@ type Request struct {
 	Preview  string
 	Reason   string
 	Patterns []string
+	// Confirmation binds task approval to this prompt. Legacy Ask callers
+	// leave it empty and retain the standard allow, block, and strip prompt.
+	Confirmation string
 }
 
 // internal request wraps a Request with a response channel.
 type request struct {
 	req      *Request
-	response chan Decision
+	response chan Outcome
 }
 
 // Approver handles human-in-the-loop terminal prompts.
@@ -121,26 +138,39 @@ func New(timeoutSeconds int, opts ...Option) *Approver {
 // responds or the timeout expires. Returns DecisionBlock if stdin is not
 // a terminal, on timeout, or on any error (fail-closed).
 func (a *Approver) Ask(req *Request) Decision {
-	if !a.isTerminal {
+	switch a.AskOutcome(req) {
+	case OutcomeAllow:
+		return DecisionAllow
+	case OutcomeStrip:
+		return DecisionStrip
+	default:
 		return DecisionBlock
+	}
+}
+
+// AskOutcome submits a request and distinguishes a refusal from an
+// unavailable terminal, timed out prompt, or loss of terminal input.
+func (a *Approver) AskOutcome(req *Request) Outcome {
+	if !a.isTerminal {
+		return OutcomeNonTerminal
 	}
 
 	r := request{
 		req:      req,
-		response: make(chan Decision, 1),
+		response: make(chan Outcome, 1),
 	}
 
 	select {
 	case a.queue <- r:
 	case <-a.ctx.Done():
-		return DecisionBlock
+		return OutcomeUnavailable
 	}
 
 	select {
 	case d := <-r.response:
 		return d
 	case <-a.ctx.Done():
-		return DecisionBlock
+		return OutcomeUnavailable
 	}
 }
 
@@ -181,14 +211,11 @@ func (a *Approver) worker() {
 // readLines reads from input sequentially. Only this goroutine touches
 // the bufio.Reader, eliminating data races when prompts time out.
 func (a *Approver) readLines(lines chan<- string) {
+	defer close(lines)
 	reader := bufio.NewReader(a.input)
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
-			select {
-			case lines <- "":
-			case <-a.ctx.Done():
-			}
 			return
 		}
 		select {
@@ -204,7 +231,10 @@ func (a *Approver) readLines(lines chan<- string) {
 func (a *Approver) drainStaleLines(lines <-chan string) {
 	for {
 		select {
-		case <-lines:
+		case _, ok := <-lines:
+			if !ok {
+				return
+			}
 		default:
 			return
 		}
@@ -212,7 +242,7 @@ func (a *Approver) drainStaleLines(lines <-chan string) {
 }
 
 // prompt displays the threat details and reads the operator's decision.
-func (a *Approver) prompt(lines <-chan string, req *Request) Decision {
+func (a *Approver) prompt(lines <-chan string, req *Request) Outcome {
 	// Drain stale input only if the previous prompt timed out, because
 	// a timeout leaves the operator's late response sitting in the channel.
 	if a.lastPromptTimedOut {
@@ -235,27 +265,46 @@ func (a *Approver) prompt(lines <-chan string, req *Request) Decision {
 	if req.Preview != "" {
 		_, _ = fmt.Fprintf(a.output, "Preview:  %s\n", termsafe.Escape(truncate(req.Preview, 200)))
 	}
-	_, _ = fmt.Fprintf(a.output, "\nAllow (y), Block (N), or Strip (s)? [%ds timeout] ", int(a.timeout.Seconds()))
+	if req.Confirmation == "" {
+		_, _ = fmt.Fprintf(a.output, "\nAllow (y), Block (N), or Strip (s)? [%ds timeout] ", int(a.timeout.Seconds()))
+	} else {
+		_, _ = fmt.Fprintf(a.output, "\nTo approve this action once, enter y %s. To block, enter n. [%ds timeout] ",
+			termsafe.Escape(req.Confirmation), int(a.timeout.Seconds()))
+	}
 
 	select {
-	case input := <-lines:
+	case input, ok := <-lines:
+		if !ok {
+			_, _ = fmt.Fprintln(a.output, "-> Blocked.")
+			return OutcomeInputLost
+		}
+		if req.Confirmation != "" {
+			switch input {
+			case "y " + req.Confirmation:
+				input = "y"
+			case "", "n", "no":
+			default:
+				_, _ = fmt.Fprintln(a.output, "-> Confirmation did not match. Blocked.")
+				return OutcomeUnconfirmed
+			}
+		}
 		switch input {
 		case "y", "yes":
 			_, _ = fmt.Fprintln(a.output, "-> Allowed.")
-			return DecisionAllow
+			return OutcomeAllow
 		case "s", "strip":
 			_, _ = fmt.Fprintln(a.output, "-> Stripped.")
-			return DecisionStrip
+			return OutcomeStrip
 		default:
 			_, _ = fmt.Fprintln(a.output, "-> Blocked.")
-			return DecisionBlock
+			return OutcomeDeclined
 		}
 	case <-time.After(a.timeout):
 		_, _ = fmt.Fprintln(a.output, "\nTimeout — blocked.")
 		a.lastPromptTimedOut = true
-		return DecisionBlock
+		return OutcomeTimeout
 	case <-a.ctx.Done():
-		return DecisionBlock
+		return OutcomeUnavailable
 	}
 }
 
@@ -275,5 +324,18 @@ func isStdinTerminal() bool {
 	if err != nil {
 		return false
 	}
-	return fi.Mode()&os.ModeCharDevice != 0
+	return isTerminalInfo(fi)
+}
+
+// isTerminalInfo treats a character device as a terminal unless it is the null
+// device. A service started with stdin on the null device has no operator to
+// answer, so a prompt there must report an unavailable terminal, not lost input.
+func isTerminalInfo(fi os.FileInfo) bool {
+	if fi.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	if null, err := os.Stat(os.DevNull); err == nil && os.SameFile(fi, null) {
+		return false
+	}
+	return true
 }

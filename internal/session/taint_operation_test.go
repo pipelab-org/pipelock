@@ -9,6 +9,48 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
+func TestMCPClassifyOperationEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		tool string
+		want session.ActionClass
+	}{
+		{"mcp__read__frobnicate", session.ActionClassUnknown},
+		{"mcp__fetch__frobnicate", session.ActionClassUnknown},
+		{"mcp__browse__x", session.ActionClassUnknown},
+		{"mcp__download__frobnicate", session.ActionClassUnknown},
+		{"service.area.frobnicate", session.ActionClassUnknown},
+		{"mcp__fs__read_text_file", session.ActionClassRead},
+		{"mcp__service__read_file", session.ActionClassRead},
+		{"mcp__service__fetch_page", session.ActionClassBrowse},
+	} {
+		t.Run(tc.tool, func(t *testing.T) {
+			if got := session.ClassifyMCPToolCallWithOptions(tc.tool, `{}`, nil, nil, session.ClassificationOptions{}).Class; got != tc.want {
+				t.Fatalf("class = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMCPClassifyExecArgumentKeys(t *testing.T) {
+	for _, tc := range []struct {
+		name, tool, args string
+		want             session.ActionClass
+	}{
+		{"search_value", "search_files", `{"query":"command","path":"/repo"}`, session.ActionClassRead},
+		{"command_key", "search_files", `{"command":"echo test"}`, session.ActionClassExec},
+		{"cmd_key", "search_files", `{"nested":[{"cmd":"echo test"}]}`, session.ActionClassExec},
+		{"script_key", "search_files", `{"script":"echo test"}`, session.ActionClassExec},
+		{"read_with_command", "read_file", `{"path":"/repo","command":"echo test"}`, session.ActionClassExec},
+		{"malformed", "search_files", `{"command":`, session.ActionClassExec},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := session.ClassifyMCPToolCallWithOptions(tc.tool, tc.args, nil, nil, session.ClassificationOptions{}).Class; got != tc.want {
+				t.Fatalf("class = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestMCPBoundedOperationEvidence(t *testing.T) {
 	for _, prefix := range []string{"", "mcp__service__", "service.", "service:"} {
 		for _, tool := range []string{"list_thread_pull_requests", "list_posts", "get_input", "listPosts", "getInput", "listThreadPullRequests"} {
@@ -105,11 +147,26 @@ func TestMCPConservativeMutationEvidence(t *testing.T) {
 }
 
 func TestMCPReadOperationObjects(t *testing.T) {
-	for _, name := range []string{"get_comment", "get_merge_status", "get_merge_base", "check_push_status", "get_reply", "show_posts", "query_posts", "describe_pull_request", "check_pull_request"} {
-		got := session.ClassifyMCPToolCallWithOptions(name, `{}`, nil, nil, session.ClassificationOptions{})
-		if got.Class != session.ActionClassRead {
-			t.Fatalf("%s: read object classified as mutation: %+v", name, got)
-		}
+	for _, tt := range []struct {
+		name string
+		want session.ActionClass
+	}{
+		{"get_comment", session.ActionClassRead},
+		{"get_merge_status", session.ActionClassRead},
+		{"get_merge_base", session.ActionClassRead},
+		{"get_reply", session.ActionClassRead},
+		{"check_push_status", session.ActionClassUnknown},
+		{"show_posts", session.ActionClassUnknown},
+		{"query_posts", session.ActionClassUnknown},
+		{"describe_pull_request", session.ActionClassUnknown},
+		{"check_pull_request", session.ActionClassUnknown},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := session.ClassifyMCPToolCallWithOptions(tt.name, `{}`, nil, nil, session.ClassificationOptions{})
+			if got.Class != tt.want {
+				t.Fatalf("got %+v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -163,6 +220,67 @@ func TestMCPWatchMutationWithIdentifierArguments(t *testing.T) {
 				t.Fatalf("%s: mutation allowed: %+v", name, decision)
 			}
 		}
+	}
+}
+
+func TestUploadVerbIsNotASafeBrowse(t *testing.T) {
+	pm := session.PolicyMatrix{Profile: "balanced"}
+	for _, name := range []string{
+		"upload_data", "upload_file", "file_upload", "uploadFile", "Upload_File",
+		"mcp__storage__upload_file", "browser_file_upload", "api_upload",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := session.ClassifyMCPToolCallWithOptions(name, `{}`, nil, nil, session.ClassificationOptions{})
+			if got.Class != session.ActionClassPublish {
+				t.Fatalf("got %+v, want publish", got)
+			}
+			hostile := pm.EvaluateWithOptions(session.TaintExternalHostile, got.Class, got.Sensitivity, session.AuthorityUserBroad, session.PolicyEvaluateOptions{
+				CheckTaskPermission:     true,
+				ClassificationConfident: got.Confident,
+			})
+			if hostile.Decision != session.PolicyAsk || hostile.Reason != session.TaskPermissionRequired {
+				t.Fatalf("hostile decision %+v, want task permission", hostile)
+			}
+			clean := pm.EvaluateWithOptions(session.TaintTrusted, got.Class, got.Sensitivity, session.AuthorityUserBroad, session.PolicyEvaluateOptions{
+				CheckTaskPermission:     true,
+				ClassificationConfident: got.Confident,
+			})
+			if clean.Decision != session.PolicyAllow || clean.Reason != "trusted_or_allowlisted_context" {
+				t.Fatalf("clean decision %+v, want allow", clean)
+			}
+		})
+	}
+
+	// The noun "uploads" and a server id are not the upload verb. A list stays a
+	// read. An unrelated tool on a server named upload stays unknown.
+	reads := []string{"list_uploads", "mcp__upload__list_files"}
+	for _, name := range reads {
+		got := session.ClassifyMCPToolCallWithOptions(name, `{}`, nil, nil, session.ClassificationOptions{})
+		if got.Class != session.ActionClassRead {
+			t.Fatalf("%s: got %+v, want read", name, got)
+		}
+	}
+	unknown := session.ClassifyMCPToolCallWithOptions("mcp__upload__frobnicate", `{}`, nil, nil, session.ClassificationOptions{})
+	if unknown.Class != session.ActionClassUnknown {
+		t.Fatalf("namespace upload: got %+v, want unknown", unknown)
+	}
+	ask := pm.EvaluateWithOptions(session.TaintExternalHostile, unknown.Class, unknown.Sensitivity, session.AuthorityUserBroad, session.PolicyEvaluateOptions{
+		CheckTaskPermission:     true,
+		ClassificationConfident: unknown.Confident,
+	})
+	if ask.Reason != session.TaskPermissionRequired {
+		t.Fatalf("namespace upload hostile: %+v", ask)
+	}
+
+	// Browse restoration stays for a navigation name and a delete still wins
+	// over a fetch substring.
+	nav := session.ClassifyMCPToolCallWithOptions("browser_navigate", `{"url":"https://docs.vendor.example/guide"}`, nil, nil, session.ClassificationOptions{})
+	if nav.Class != session.ActionClassBrowse {
+		t.Fatalf("browser_navigate: got %+v, want browse", nav)
+	}
+	deleted := session.ClassifyMCPToolCallWithOptions("fetcher_admin_delete", `{}`, nil, nil, session.ClassificationOptions{})
+	if deleted.Class != session.ActionClassWrite {
+		t.Fatalf("fetcher_admin_delete: got %+v, want write", deleted)
 	}
 }
 

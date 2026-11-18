@@ -269,6 +269,7 @@ func RunHTTPListenerProxy(
 	// once here so we do not re-run opts.redactionConfig() three times.
 	baseRedactionCfg := opts.redactionConfig()
 	baseOpts := MCPProxyOpts{
+		TaskOperatorAPI:           opts.TaskOperatorAPI,
 		Scanner:                   opts.scanner(),
 		ScannerFn:                 opts.ScannerFn,
 		AuditMode:                 opts.AuditMode,
@@ -705,6 +706,8 @@ func RunHTTPListenerProxy(
 				setClientState(state)
 				stateBound = true
 				principalBound = true
+				requestBaseOpts.taskSubject = listenerPrincipal.key
+				session.BindTaskSubject(state.recorder, listenerPrincipal.key)
 			}
 		}
 		// The legacy session-header partition is only safe for a client that

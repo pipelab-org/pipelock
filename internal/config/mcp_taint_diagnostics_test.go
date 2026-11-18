@@ -101,6 +101,22 @@ func TestMCPTaintDiagnostics_RecoveryParity(t *testing.T) {
 	}
 }
 
+func TestMCPTaintRecoveryGuidanceNamesTaskPermission(t *testing.T) {
+	if !strings.Contains(MCPTaintRecoveryGuidance, "exact task permission") {
+		t.Fatal("recovery guidance does not name the task permission an invocation can receive")
+	}
+	if strings.Contains(MCPTaintRecoveryGuidance, "The only configured override") {
+		t.Fatal("recovery guidance still calls a trust override the only remedy for hostile history")
+	}
+	docs, err := os.ReadFile("../../docs/configuration.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(docs), MCPTaintRecoveryGuidance) {
+		t.Fatal("configuration.md does not carry the task-permission recovery guidance")
+	}
+}
+
 func TestMCPTaintDiagnostics_DocsPreserveHeadlessAndHTTPOverrideScope(t *testing.T) {
 	docs, err := os.ReadFile("../../docs/configuration.md")
 	if err != nil {
@@ -117,7 +133,10 @@ func TestMCPTaintDiagnostics_DocsPreserveHeadlessAndHTTPOverrideScope(t *testing
 		"the agent sends chat requests through the forward proxy",
 		"When taint policy returns `decision: \"ask\"`, Pipelock can only prompt an operator if it was started with an interactive terminal.",
 		"The prompt appears in the terminal running Pipelock and accepts allow/block input.",
-		"In headless deployments such as Docker or Kubernetes, there is no terminal to ask, so `ask` fails closed and blocks; configure an allowlist, a narrow trust override, or `taint.policy: permissive` during tuning, then retry the request.",
+		"In headless deployments such as Docker or Kubernetes, an `ask` without a terminal fails closed.",
+		"In headless mode, satisfy a task-permission ask with an exact task grant.",
+		"A matching trust override can cover an ordinary taint-policy ask.",
+		"HTTP GET and MCP calls classified as browsing may still deliver low-entropy query values",
 		"Configured overrides accept risk only within their matching scope and expiry (for MCP, only the action scope can match)",
 	} {
 		if !strings.Contains(section, want) {

@@ -31,6 +31,9 @@ type httpInputDecision struct {
 	Deferred       *DeferredRequest
 	ForwardMessage []byte
 	Outcome        TrackedRequestOutcome
+	taskFrame      MCPFrame
+	taskTaint      taintDecision
+	pendingReceipt *mcpToolReceiptOpts
 }
 
 const redirectResultRedirected = "redirected"
@@ -58,6 +61,7 @@ type DeferredRequest struct {
 	authorityRef        string
 	authorityCarrierErr error
 	authorityFrame      MCPFrame
+	taskTaint           taintDecision
 }
 
 // scanHTTPInput checks a single input message for DLP/injection/policy/CEE.
@@ -135,6 +139,20 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 	}()
 	defer func() {
+		if result.Blocked == nil && result.Deferred == nil && receiptVerdict != config.ActionRedirect {
+			result.taskFrame = frame
+			result.taskTaint = taintEval
+			if reason := mcpTaskReleaseRefusal(opts, frame, taintEval, false); reason != "" {
+				refusalReason := taintEval.recordTaskReleaseRefusal(reason)
+				receiptLayer, receiptPattern, receiptSeverity = mcpReceiptLayerTaint, refusalReason, taintReceiptSeverity(taintEval)
+				denialAudit = mcpTaintDenialAudit()
+				receiptVerdict = config.ActionBlock
+				result.Blocked = &BlockedRequest{
+					ID: frame.ID, IsNotification: isRPCNotification(frame.ID),
+					ErrorCode: -32002, ErrorMessage: "pipelock: " + reason,
+				}
+			}
+		}
 		if redirectReceiptEmitted && receiptVerdict == config.ActionRedirect {
 			return
 		}
@@ -226,6 +244,13 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			receiptOpts.ParentActionID = actionID
 			receiptOpts.ActionID = receipt.NewActionID()
 		}
+		if opts.deferBestEffortTaskReceipt && !requireReceipts && result.Blocked == nil && result.Deferred == nil &&
+			emitActionID != "" && (emitVerdict == config.ActionAllow || emitVerdict == config.ActionWarn) {
+			// The bridge selects either a single receipt or an intent and
+			// outcome once the final task check has run.
+			result.pendingReceipt = &receiptOpts
+			return
+		}
 		if err := emitMCPToolReceipt(receiptOpts); err != nil && requiredReceipt && result.Blocked == nil {
 			denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
 			result.Deferred = nil
@@ -282,13 +307,14 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// authority check clears pending allow evidence and replaces the forward
 	// result before the caller can perform any upstream write.
 	defer func() {
-		if opts.AuthorityVerifier == nil || result.Blocked != nil {
+		if result.Blocked != nil {
 			return
 		}
 		if result.Deferred != nil {
+			// Release needs the effective frame even without an authority verifier.
+			result.Deferred.authorityFrame = frame
 			result.Deferred.authorityRef = authorityRef
 			result.Deferred.authorityCarrierErr = authorityCarrierErr
-			result.Deferred.authorityFrame = frame
 			return
 		}
 		if err := authorizeMCP(opts.warnContext(), authorityRef, authorityCarrierErr, frame, opts); err != nil {
@@ -614,6 +640,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 		return result
 	case blockingGateTaintBlock, blockingGateTaintAskDenied:
+		taintEval = eval.TaintDecision
 		denialAudit = mcpTaintDenialAudit()
 		logTaintDecision()
 		receiptVerdict = config.ActionBlock
@@ -622,7 +649,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			IsNotification: isRPCNotification(verdict.ID),
 			LogMessage:     "blocked by taint policy",
 			ErrorCode:      -32002,
-			ErrorMessage:   "pipelock: " + eval.TaintDecision.Result.Reason,
+			ErrorMessage:   eval.TaintDecision.refusalMessage(),
 		}
 		return result
 	}
@@ -1041,6 +1068,17 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 		return result
 	case config.ActionRedirect:
+		if reason := mcpTaskReleaseRefusal(opts, frame, taintEval, true); reason != "" {
+			refusalReason := taintEval.recordTaskReleaseRefusal(reason)
+			receiptLayer, receiptPattern, receiptSeverity = mcpReceiptLayerTaint, refusalReason, taintReceiptSeverity(taintEval)
+			denialAudit = mcpTaintDenialAudit()
+			receiptVerdict = config.ActionBlock
+			result.Blocked = &BlockedRequest{
+				ID: frame.ID, IsNotification: isRPCNotification(frame.ID),
+				ErrorCode: -32002, ErrorMessage: "pipelock: " + reason,
+			}
+			return result
+		}
 		// Batch requests cannot be redirected element-by-element. Fail closed.
 		trimmedMsg := bytes.TrimSpace(msg)
 		if len(trimmedMsg) > 0 && trimmedMsg[0] == '[' {
@@ -1278,6 +1316,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			ResolverProfileName: resolverProfileName,
 			ArgDigest:           argsDigest(toolArgs),
 			Arguments:           toolArgs,
+			taskTaint:           taintEval,
 		}
 		return result
 	case config.ActionAsk:

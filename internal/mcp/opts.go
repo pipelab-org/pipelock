@@ -144,6 +144,8 @@ type MCPProxyOpts struct {
 	responseDenial func(*mcpTerminalDecision)
 	// Modern HTTP lists enforce structural contracts independently of drift trust.
 	validateToolHeaders bool
+	// The HTTP bridge can record an intent and outcome if its send-time task check refuses.
+	deferBestEffortTaskReceipt bool
 	// Internal discovery inspects definitions without claiming client delivery.
 	toolContractDiscovery bool
 	// JSON listener scanning writes to a buffer. Defer inventory admission until
@@ -415,6 +417,11 @@ type MCPProxyOpts struct {
 	// ServerRevision is the registered identity revision of a verified local
 	// service, empty for a legacy launch. It versions the adaptive session key.
 	ServerRevision string
+	// taskSubject is set only by a verified listener principal or a local
+	// stdio invocation. Request routing identifiers never fill it.
+	taskSubject string
+	// TaskOperatorAPI indicates that an authenticated task grant route is available.
+	TaskOperatorAPI bool
 	// ServerIdentityFn re-resolves the server identity for each request of a
 	// long-lived listener, so a hot reload that changes or removes the
 	// registration is seen. Its result replaces the five static identity fields

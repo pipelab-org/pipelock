@@ -2780,7 +2780,9 @@ See "Published agent services" in `contain-cli.md` for install, verification, an
 
 ## Kill Switch
 
-The activation-source list below describes `pipelock run`, including its integrated MCP listener. Standalone `pipelock mcp proxy` reads configuration and sentinel-file activation but doesn't run the kill-switch/session API, SIGUSR1 toggle or Conductor producers. With `defer.enabled`, `kill_switch.api_listen` and an API token configured, supported MCP modes can run the authenticated deferred operator API at `/api/v1/deferred`; see [deferred actions](#defer-action) for supported transports. All sources already active in a shared controller still deny MCP traffic; source wiring and controller enforcement are separate boundaries.
+The activation sources below apply to `pipelock run`, including its integrated MCP listener. Standalone `pipelock mcp proxy` uses configuration and sentinel-file activation. It omits the kill-switch API, SIGUSR1 toggle, Conductor activation sources, and the other session administration routes described below.
+
+With `session_profiling.enabled: true`, `kill_switch.api_listen`, and an API token, standalone MCP serves authenticated session listing at `GET /api/v1/sessions` and task rotation and grants at `POST /api/v1/sessions/{key}/task`. These routes work with deferred policy disabled. With `defer.enabled` and the same listener and token, supported MCP modes also serve `/api/v1/deferred`. See [deferred actions](#defer-action) for supported transports. All active sources on a shared kill-switch controller still deny MCP traffic.
 
 Emergency deny-all with seven independent activation sources: `enabled`,
 `sentinel_file`, API, `SIGUSR1`, Conductor remote kill, Conductor
@@ -2858,7 +2860,7 @@ When `kill_switch.api_token` is configured, the session admin API is available a
 | `/api/v1/sessions/{key}/reset` | POST | Reset enforcement state for a client identity |
 | `/api/v1/sessions/{key}/terminate` | POST | Destructive full tear-down (cancel in-flight, clear CEE) |
 | `/api/v1/sessions/{key}/airlock` | POST | Transition the session's airlock tier (admin override) |
-| `/api/v1/sessions/{key}/task` | POST | Rotate the session's task boundary |
+| `/api/v1/sessions/{key}/task` | POST | Rotate an identity session's task or install an exact permission for the current task |
 | `/api/v1/sessions/{key}/trust` | POST | Grant a task-scoped trust override |
 | `/api/v1/adaptive/status` | GET | Summarize adaptive state, escalation counts, recent event counts, and top anomalies |
 | `/api/v1/adaptive/flush` | POST | Reset identity-session adaptive state and clear shared IP-domain burst tracking |
@@ -2874,7 +2876,7 @@ The `{key}` parameter is URL-encoded. For example, `my-agent|10.0.0.1` becomes `
 
 **Rate limiting:** every mutating action (`reset`, `airlock`, `task`, `trust`, `terminate`, baseline `ratify`, baseline `forget`) and every detail lookup (`inspect`, `explain`) is rate-limited to 10 requests per minute per action. Each action tracks its own sliding-window counter so abuse of one endpoint cannot starve another — an operator can still hit `/reset` or `/airlock` during incident response even if `/task` or `/trust` is under load. Only `GET /api/v1/sessions` and `GET /api/v1/baseline` (the list endpoints) are unbounded; they are used as entry points for recovery tooling and have no destructive side effect. Responses that hit the limit return `429 Too Many Requests` with `Retry-After: 60`. **Failed authentication:** separately, a client address that presents 10 wrong bearer tokens within 60 seconds gets `429` with `Retry-After` before any further token is compared, on every endpoint including the list endpoints. The same bound applies to the kill-switch API, the Scan API, and the MCP HTTP listener bearer.
 
-Sessions are classified as `identity` (operator-targetable, e.g. `my-agent|10.0.0.1`) or `invocation` (internal MCP sessions, e.g. `mcp-stdio-42`). Only identity sessions can be reset, mutated, or terminated.
+Sessions are classified as `identity` (operator-targetable, e.g. `my-agent|10.0.0.1`) or `invocation` (internal MCP sessions, e.g. `mcp-stdio-42`). Reset, termination, task rotation, and `/trust` target identity sessions. Exact task permissions can also be installed on verified MCP invocations.
 
 **Operator CLI:** the admin API is exposed through `pipelock session <subcommand>` for airlock recovery and identity reset (`session reset` maps to `POST /api/v1/sessions/{key}/reset`), `pipelock adaptive <subcommand>` for fleet-level adaptive state, and `pipelock baseline <subcommand>` for behavioral-baseline inspection and ratification. See [cli/session.md](cli/session.md), [cli/adaptive.md](cli/adaptive.md), and [cli/baseline.md](cli/baseline.md) for the operator references. `session release` only moves session-wide airlock; destination-scoped scores and airlock need `session reset`.
 
@@ -4511,7 +4513,7 @@ Profile lifecycle: `observe` → `learn` → `ratify` → `locked`. Enforcement 
 
 ## Taint-Aware Policy Escalation (v2.1)
 
-Classifies each session by how recently it observed untrusted content and escalates scrutiny on protected operations. Under `strict` or `balanced`, a session that fetched untrusted content from a non-allowlisted source is evaluated before it edits a file under `*/auth/*`: a protected write returns `PolicyAsk` when authority is below `AuthorityUserExact`, and `PolicyAllow` with exact user authority. An allowlisted response uses the `allowlisted_reference` source level. Hostile taint returns `PolicyBlock` for sensitive actions. Under `permissive` the taint is still recorded and the operation is allowed (`taint_permissive_observe_only`), so that policy observes without restricting. Runs across fetch, forward proxy, reverse proxy, WebSocket, MCP stdio, MCP HTTP/SSE, and A2A.
+Classifies each session by the content it observed and escalates scrutiny on protected operations. Under `strict` or `balanced`, a protected write such as an edit under `*/auth/*` requires confirmation after untrusted exposure when authority is below `AuthorityUserExact`. An allowlisted response uses the `allowlisted_reference` source level. After hostile exposure, the MCP and visible forward-HTTP task checks below govern consequential actions. Other taint paths retain their own hostile-exposure blocks. Under `permissive`, taint is recorded for observation (`taint_permissive_observe_only`).
 
 MCP history requires an active taint recorder. Standalone `pipelock mcp proxy` creates its session store only with `session_profiling.enabled: true`; taint enabled alone doesn't create one. Subprocess stdio and stdio-to-HTTP/WS upstreams use invocation-scoped, in-memory state. Listener state uses authenticated principals or the legacy session partition described above. These scopes don't promise persistence across process restarts or state expiry/eviction. `pipelock doctor`, `explain mcp-response`, and the dashboard report configuration prerequisites without claiming live coverage.
 
@@ -4570,6 +4572,16 @@ taint:
 
 ### Common taint decisions
 
+After the current sink records hostile exposure, balanced and strict mode require an exact task permission or one-time terminal approval for consequential MCP calls and visible forward HTTP writes. MCP protocol discovery, MCP calls classified as reads or browsing, and HTTP GET can still proceed subject to independent policy. The classifier checks for secret, write, publish, and execution evidence before recognizing read or browse intent. Tools without recognized evidence, including delegation tools with no other evidence, remain unknown. Wording-only findings preserve the source's trust level and don't make a session hostile.
+
+Standalone `pipelock mcp proxy` serves its task endpoint on `kill_switch.api_listen` when session profiling is enabled and an operator API token is configured. It serves this route with deferred tool policy disabled. Use a distinct operator address when running multiple processes. Local MCP launches and authenticated MCP listener principals can receive grants. Forward HTTP grants require a bound actor such as a per-agent listener identity. HTTP headers, anonymous IP-based session buckets, and legacy `/trust` overrides carry no task permission.
+
+A grant or terminal approval clears the task check for the exact call. Independent controls, including DLP, tool policy, airlock, live-lock, and the kill switch, may still refuse it. Each terminal prompt has a one-time confirmation. Stdio with piped input cannot prompt on that input. The refusal distinguishes an unavailable channel, an explicit decline, timeout, lost terminal input, and an unconfirmed prompt. See [the session operator guide](cli/session.md#grant-a-task-permission).
+
+Task grants live in the process that recorded the exposure. Anonymous HTTP listener requests remain request-local. The check covers MCP subprocess stdio, stdio-to-HTTP/SSE, verified HTTP listener sessions, MCP WebSocket upstream, and visible forward HTTP. Inspected HTTPS, opaque CONNECT, the generic WebSocket relay, native tool hooks, and other processes have no task permission check. HTTP GET and MCP calls classified as browsing may still deliver low-entropy query values outside existing DLP and entropy coverage.
+
+An automatic HTTP redirect or in-process MCP tool redirect can change the destination or action. Pipelock refuses those redirected side effects after hostile exposure. Submit the intended operation directly for its own task decision. An independently deferred MCP action is checked again before release.
+
 `external_publish_after_untrusted_external_exposure` means the session consumed
 untrusted external content, then attempted a publish-like operation such as
 `POST`, `PUT`, `PATCH`, or `DELETE` without exact user authority or an operator
@@ -4608,11 +4620,13 @@ keep their configured enforcement behavior.
 When taint policy returns `decision: "ask"`, Pipelock can only prompt an
 operator if it was started with an interactive terminal. The prompt appears in
 the terminal running Pipelock and accepts allow/block input. In headless
-deployments such as Docker or Kubernetes, there is no terminal to ask, so `ask`
-fails closed and blocks; configure an allowlist, a narrow trust override, or
-`taint.policy: permissive` during tuning, then retry the request.
+deployments such as Docker or Kubernetes, an `ask` without a terminal fails
+closed. In headless mode, satisfy a task-permission ask with an exact task grant.
+A matching trust override can cover an ordinary taint-policy ask. An allowlist
+changes future source observations. During tuning, `taint.policy: permissive`
+records taint without enforcing taint policy.
 
-MCP stdio uses stdin for JSON-RPC: inline terminal approval is unavailable and ask fails closed. Every MCP session (stdio, HTTP/WS bridges, and listener principal, token and legacy partitions) is invocation-scoped, so admin task boundaries and runtime trust grants are rejected for all of them. The only configured override for existing hostile history is an action-scoped taint.trust_overrides entry without source_match (MCP sources record no origin URL), optionally expiring. pipelock run applies it on reload; standalone pipelock mcp proxy reads taint config only at startup, and the restart that applies an override also discards that invocation's in-memory history. Source trust classifies future observations, including wording-only findings. Existing hostile history remains in effect. Inline approval cannot override a hostile block.
+MCP stdio uses stdin for JSON-RPC: inline terminal approval is unavailable and ask fails closed. Every MCP session (stdio, HTTP/WS bridges, and listener principal, token and legacy partitions) is invocation-scoped, so admin task boundaries and runtime trust grants are rejected for all of them. A verified invocation can receive an exact task permission on the operator task route; that permission lasts until expiry or process exit because task rotation stays rejected. An action-scoped taint.trust_overrides entry without source_match (MCP sources record no origin URL) does not satisfy the task check. pipelock run applies it on reload; standalone pipelock mcp proxy reads taint config only at startup, and the restart that applies an override also discards that invocation's in-memory history. Source trust classifies future observations, including wording-only findings. Existing hostile history remains in effect. Inline approval cannot override a hostile block.
 
 Configured overrides accept risk only within their matching scope and expiry (for MCP, only the action scope can match); they don't remove taint or override another scanner or identity gate. Deferred tool approvals aren't recovery for a taint refusal.
 

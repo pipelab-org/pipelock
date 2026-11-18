@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -72,6 +74,74 @@ func TestApprover_Allow(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "Allowed") {
 		t.Errorf("expected 'Allowed' confirmation, got: %s", output.String())
+	}
+}
+
+func TestAskOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		input    string
+		terminal bool
+		timeout  bool
+		want     Outcome
+	}{
+		{name: "allow", input: "y\n", terminal: true, want: OutcomeAllow},
+		{name: "decline", input: "n\n", terminal: true, want: OutcomeDeclined},
+		{name: "blank", input: "\n", terminal: true, want: OutcomeDeclined},
+		{name: "lost_input", terminal: true, want: OutcomeInputLost},
+		{name: "non_terminal", input: "y\n", want: OutcomeNonTerminal},
+		{name: "timeout", terminal: true, timeout: true, want: OutcomeTimeout},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var input io.Reader = strings.NewReader(tc.input)
+			if tc.timeout {
+				r, w := io.Pipe()
+				defer func() { _ = w.Close() }()
+				defer func() { _ = r.Close() }()
+				input = r
+			}
+			a := New(1, WithInput(input), WithOutput(io.Discard), WithTerminal(tc.terminal))
+			defer a.Close()
+			if got := a.AskOutcome(&Request{Reason: "approve exact task action"}); got != tc.want {
+				t.Fatalf("outcome = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAskOutcomeInputLossPersists(t *testing.T) {
+	a := New(1, WithInput(strings.NewReader("")), WithOutput(io.Discard), WithTerminal(true))
+	t.Cleanup(a.Close)
+	for prompt := 1; prompt <= 2; prompt++ {
+		start := time.Now()
+		if got := a.AskOutcome(&Request{}); got != OutcomeInputLost {
+			t.Fatalf("prompt %d: outcome = %v after %s, want %v", prompt, got, time.Since(start), OutcomeInputLost)
+		}
+	}
+}
+
+func TestPromptInputLossAfterTimeout(t *testing.T) {
+	a := &Approver{ctx: t.Context(), output: io.Discard, timeout: 10 * time.Millisecond, input: strings.NewReader("")}
+	lines := make(chan string, 1)
+	if got := a.prompt(lines, &Request{}); got != OutcomeTimeout {
+		t.Fatalf("first outcome = %v, want %v", got, OutcomeTimeout)
+	}
+	// EOF arrives between prompts, so the next prompt's stale-input drain sees it.
+	a.readLines(lines)
+	if got := a.prompt(lines, &Request{}); got != OutcomeInputLost {
+		t.Fatalf("outcome after EOF = %v, want %v", got, OutcomeInputLost)
+	}
+}
+
+func TestAskOutcomePreservesLegacyAsk(t *testing.T) {
+	for _, tc := range []struct {
+		input string
+		want  Decision
+	}{{"y\n", DecisionAllow}, {"s\n", DecisionStrip}, {"n\n", DecisionBlock}, {"", DecisionBlock}} {
+		a, _ := testApprover(t, tc.input, 5)
+		if got := a.Ask(&Request{}); got != tc.want {
+			t.Errorf("Ask(%q) = %v, want %v", tc.input, got, tc.want)
+		}
 	}
 }
 
@@ -380,12 +450,12 @@ func TestApprover_TimeoutThenSuccess(t *testing.T) {
 
 	// First request: no input → times out → sets lastPromptTimedOut = true.
 	d1 := a.prompt(lines, &Request{URL: "https://example.com", Reason: "first"})
-	if d1 != DecisionBlock {
+	if d1 != OutcomeTimeout {
 		t.Fatalf("expected timeout block, got %d", d1)
 	}
 
 	lines <- "stale"
-	done := make(chan Decision, 1)
+	done := make(chan Outcome, 1)
 	go func() {
 		done <- a.prompt(lines, &Request{URL: "https://example.com", Reason: "second"})
 	}()
@@ -398,7 +468,7 @@ func TestApprover_TimeoutThenSuccess(t *testing.T) {
 	// Second request: drainStaleLines removes "stale", then prompt reads "y".
 	select {
 	case d2 := <-done:
-		if d2 != DecisionAllow {
+		if d2 != OutcomeAllow {
 			t.Fatalf("expected allow after drain, got %d", d2)
 		}
 	case <-time.After(time.Second):
@@ -483,5 +553,77 @@ func TestApprover_StripWordResponse(t *testing.T) {
 	d := a.Ask(&Request{URL: "https://example.com", Reason: "test"})
 	if d != DecisionStrip {
 		t.Fatalf("expected DecisionStrip for 'strip', got %d", d)
+	}
+}
+
+func TestIsTerminalInfoRejectsNullDevice(t *testing.T) {
+	null, err := os.Stat(os.DevNull)
+	if err != nil {
+		t.Skipf("null device unavailable: %v", err)
+	}
+	if isTerminalInfo(null) {
+		t.Fatalf("%s must not count as an approval terminal", os.DevNull)
+	}
+	regular, err := os.Stat(filepathForTerminalTest(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isTerminalInfo(regular) {
+		t.Fatal("a regular file must not count as an approval terminal")
+	}
+}
+
+func filepathForTerminalTest(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "stdin")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestAskOutcomeRequiresCurrentConfirmation(t *testing.T) {
+	t.Parallel()
+	const confirmation = "current-action"
+	for _, tc := range []struct {
+		name, input string
+		want        Outcome
+	}{
+		{"confirmed", "Y CURRENT-ACTION\n", OutcomeAllow},
+		{"bare_allow", "y\n", OutcomeUnconfirmed},
+		{"old_confirmation", "y earlier-action\n", OutcomeUnconfirmed},
+		{"strip", "s\n", OutcomeUnconfirmed},
+		{"declined", "no\n", OutcomeDeclined},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, output := testApprover(t, tc.input, 5)
+			if got := a.AskOutcome(&Request{Confirmation: confirmation}); got != tc.want {
+				t.Errorf("outcome = %v, want %v", got, tc.want)
+			}
+			if !strings.Contains(output.String(), "enter y "+confirmation) {
+				t.Errorf("prompt did not explain exact confirmation: %q", output.String())
+			}
+		})
+	}
+}
+
+func TestAskOutcomeReportsShutdownBeforeEnqueue(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	a := &Approver{ctx: ctx, queue: make(chan request), isTerminal: true}
+	if got := a.AskOutcome(&Request{}); got != OutcomeUnavailable {
+		t.Errorf("outcome = %v, want unavailable after channel shutdown", got)
+	}
+}
+
+func TestIsTerminalInfoRecognizesControllingTerminalDevice(t *testing.T) {
+	t.Parallel()
+	fi, err := os.Stat("/dev/tty")
+	if err != nil {
+		t.Skipf("controlling terminal device unavailable: %v", err)
+	}
+	if !isTerminalInfo(fi) {
+		t.Fatal("controlling terminal device was treated as unavailable")
 	}
 }

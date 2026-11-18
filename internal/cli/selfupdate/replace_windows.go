@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"golang.org/x/sys/windows"
 
@@ -26,10 +27,39 @@ func moveWithoutReplace(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	if err := windows.MoveFile(from, to); err != nil {
+	move := func() error { return windows.MoveFile(from, to) }
+	if err := retryEphemeralMove(move, time.Sleep, time.Now); err != nil {
 		return &os.LinkError{Op: "rename", Old: src, New: dst, Err: err}
 	}
 	return nil
+}
+
+// Antivirus scanners and indexers open newly written or just-launched
+// executables without FILE_SHARE_DELETE, so renaming one can fail for a
+// moment. A failed MoveFileW moves nothing, so retrying cannot clobber. The
+// error set and two-second window follow Go's cmd/go/internal/robustio.
+const (
+	moveRetryWindow   = 2 * time.Second
+	moveRetryMaxDelay = 100 * time.Millisecond
+)
+
+func retryEphemeralMove(move func() error, sleep func(time.Duration), now func() time.Time) error {
+	deadline := now().Add(moveRetryWindow)
+	delay := time.Millisecond
+	for {
+		err := move()
+		if err == nil || !isEphemeralMoveError(err) || !now().Before(deadline) {
+			return err
+		}
+		sleep(delay)
+		delay = min(2*delay, moveRetryMaxDelay)
+	}
+}
+
+func isEphemeralMoveError(err error) bool {
+	return errors.Is(err, windows.ERROR_SHARING_VIOLATION) ||
+		errors.Is(err, windows.ERROR_LOCK_VIOLATION) ||
+		errors.Is(err, windows.ERROR_ACCESS_DENIED)
 }
 
 func replaceBinary(tmpPath, target string) error {

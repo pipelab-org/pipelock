@@ -1201,7 +1201,16 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				}
 			}
 			redirectRec, _ := req.Context().Value(ctxKeyRedirectSessionRecorder).(session.Recorder)
-			redirectTaint := evaluateHTTPTaint(currentCfg, redirectRec, req.Method, req.URL)
+			var redirectTask *forwardTaskAction
+			if redirectTransport == TransportForward {
+				// An automatic redirect has no exact task grant. Treat the
+				// new destination as a separate action.
+				redirectTask = &forwardTaskAction{}
+			}
+			redirectTaint := evaluateHTTPTaskTaint(currentCfg, redirectRec, req.Method, req.URL, redirectTask)
+			if redirectTaint.Result.Reason == session.TaskPermissionRequired {
+				redirectTaint.Result.Decision = session.PolicyBlock
+			}
 			if redirectTaint.Result.Decision == session.PolicyAsk || redirectTaint.Result.Decision == session.PolicyBlock {
 				actx := newHTTPAuditContext(req.Context(), logger, httpAuditEvent{Method: req.Method, TargetURL: redirectURL, ClientIP: clientIP, RequestID: requestID, Agent: agentName})
 				logger.LogTaintDecision(actx, audit.TaintDecision{
@@ -1213,6 +1222,9 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			}
 			switch redirectTaint.Result.Decision {
 			case session.PolicyBlock:
+				if redirectTaint.Result.Reason == session.TaskPermissionRequired {
+					return newRedirectTaintBlockedRequest(redirectTaint, "task_permission_required (submit the redirected operation directly for a separate task decision)")
+				}
 				return newRedirectTaintBlockedRequest(redirectTaint, redirectTaint.Result.Reason)
 			case session.PolicyAsk:
 				approved, blockReason := p.resolveTaintAsk(agentName, redirectURL, req.Method, redirectTaint.Result.Reason)

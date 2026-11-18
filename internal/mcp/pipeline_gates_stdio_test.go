@@ -178,9 +178,7 @@ func TestEvaluateMCPInputGatesStdio_FrozenToolAllowsKnownTool(t *testing.T) {
 	}
 }
 
-func TestEvaluateMCPInputGatesStdio_TaintBlock(t *testing.T) {
-	// Hostile external taint + sensitive write resolves to PolicyBlock
-	// directly (no approval dialog). Short-circuits on "taint_block".
+func TestEvaluateMCPInputGatesStdio_TaintTaskApprovalUnavailable(t *testing.T) {
 	t.Parallel()
 
 	sc := testScannerWithAction(t, config.ActionWarn)
@@ -212,8 +210,8 @@ func TestEvaluateMCPInputGatesStdio_TaintBlock(t *testing.T) {
 		config.ActionBlock,
 	)
 
-	if eval.BlockingGate != blockingGateTaintBlock {
-		t.Errorf("BlockingGate = %q, want %s", eval.BlockingGate, blockingGateTaintBlock)
+	if eval.BlockingGate != blockingGateTaintAskDenied || eval.TaintDecision.Result.Reason != "task_approval_unavailable" {
+		t.Errorf("gate=%q decision=%+v, want unavailable task approval", eval.BlockingGate, eval.TaintDecision.Result)
 	}
 	if !eval.TaintAuditDecisionSet {
 		t.Error("TaintAuditDecisionSet = false, want true (pre-approval snapshot)")

@@ -313,10 +313,13 @@ func ForwardScannedInput(
 		close(blockedCh)
 	}()
 	var forwardMu sync.Mutex
-	forwardMessage := func(msg []byte) error {
+	forwardMessage := func(msg []byte, taskReleaseReason func() string) (string, error) {
 		forwardMu.Lock()
 		defer forwardMu.Unlock()
-		return writer.WriteMessage(msg)
+		if reason := taskReleaseReason(); reason != "" {
+			return reason, nil
+		}
+		return "", writer.WriteMessage(msg)
 	}
 
 	// Helper: record an adaptive signal and handle escalation side-effects.
@@ -691,6 +694,7 @@ func ForwardScannedInput(
 			}
 		}
 		receiptEmitted := false
+		forwardReceiptVerdict := ""
 		redirectReceiptActionID := ""
 		receiptDecisionPhase := ""
 		receiptDeferID := ""
@@ -751,6 +755,17 @@ func ForwardScannedInput(
 			if len(contractGate) > 0 {
 				receiptOpts.ContractGate = &contractGate[0]
 			}
+			if receiptVerdict == config.ActionBlock && forwardReceiptVerdict != "" && actionID != "" {
+				if requireReceipts && forwardReceiptVerdict == config.ActionAllow {
+					intent := opts.withReceiptPolicyHash(receiptOpts.receiptOptions())
+					emitMCPBlockedOutcomeReceipt(receiptEmitter, opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, intent, -1, pattern, requireReceipts)
+					return nil
+				}
+				// The earlier verdict was single-phase. Give its release
+				// refusal a distinct action ID so it isn't an unmatched outcome.
+				receiptOpts.ParentActionID = actionID
+				receiptOpts.ActionID = receipt.NewActionID()
+			}
 			return emitMCPToolReceipt(receiptOpts)
 		}
 
@@ -775,6 +790,36 @@ func ForwardScannedInput(
 					SourceKind:  decision.Risk.SecurityOriginKind(),
 				},
 			)
+		}
+		refuseTaskRelease := func(reason string) {
+			refusalReason := taintDecision.recordTaskReleaseRefusal(reason)
+			receiptLayerOverride, receiptPatternOverride, receiptSeverityOverride = mcpReceiptLayerTaint, refusalReason, taintReceiptSeverity(taintDecision)
+			sendMCPDenial(opts, mcpTaintDenialAudit(), BlockedRequest{
+				ID: verdict.ID, IsNotification: isRPCNotification(verdict.ID),
+				ErrorCode: -32002, ErrorMessage: "pipelock: " + reason,
+			}, blockedCh)
+			_ = emitToolReceipt(config.ActionBlock)
+		}
+		checkTaskRelease := func(redirected bool) bool {
+			if reason := mcpTaskReleaseRefusal(opts, frame, taintDecision, redirected); reason != "" {
+				refuseTaskRelease(reason)
+				return false
+			}
+			return true
+		}
+		taskReleaseReason := func() string {
+			return mcpTaskReleaseRefusal(opts, frame, taintDecision, false)
+		}
+		writeReleasedMessage := func(msg []byte) (bool, error) {
+			refusal, err := forwardMessage(msg, taskReleaseReason)
+			if refusal != "" {
+				if isTrackableRequest(msg, verdict.ID) {
+					_, _ = consumeTrackedRequestOutcome(tracker, verdict.ID)
+				}
+				refuseTaskRelease(refusal)
+				return false, nil
+			}
+			return true, err
 		}
 
 		// DoW diagnostic log. Runs on any !allowed outcome (block or
@@ -899,7 +944,7 @@ func ForwardScannedInput(
 				IsNotification: isRPCNotification(verdict.ID),
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked by taint policy", lineNum),
 				ErrorCode:      -32002,
-				ErrorMessage:   "pipelock: " + taintDecision.Result.Reason,
+				ErrorMessage:   taintDecision.refusalMessage(),
 			}, blockedCh)
 			_ = emitToolReceipt(config.ActionBlock)
 			continue
@@ -1073,6 +1118,9 @@ func ForwardScannedInput(
 				sendMCPDenial(opts, mcpAuthorityDenialAudit(), *authorityBlockedRequest(frame), blockedCh)
 				continue
 			}
+			if !checkTaskRelease(false) {
+				continue
+			}
 			fwdLine := line
 			if verdict.Method == methodToolsCall {
 				buildOpts := envelope.BuildOpts{
@@ -1117,6 +1165,7 @@ func ForwardScannedInput(
 				}, blockedCh)
 				continue
 			}
+			forwardReceiptVerdict = receiptVerdict
 			// Track request ID immediately before forwarding so response-side
 			// can validate without leaving stale state when a required
 			// receipt fails before the request is written.
@@ -1146,9 +1195,11 @@ func ForwardScannedInput(
 			} else if isTrackableRequest(fwdLine, verdict.ID) {
 				tracker.TrackRequest(verdict.ID, verdict.Method)
 			}
-			if err := forwardMessage(fwdLine); err != nil {
+			if released, err := writeReleasedMessage(fwdLine); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
+			} else if !released {
+				continue
 			}
 			commitMCPToolCall(baselineMetricsRecorder(opts, rec), baselineIdentity)
 			if !hadAdaptiveFinding {
@@ -1278,6 +1329,9 @@ func ForwardScannedInput(
 				ErrorData:      mcpBlockReasonData(blockReason),
 			}, blockedCh)
 		case config.ActionRedirect:
+			if !checkTaskRelease(true) {
+				continue
+			}
 			// Batch requests cannot be redirected element-by-element.
 			// Fail closed: block the entire batch.
 			trimmed := bytes.TrimSpace(line)
@@ -1510,6 +1564,7 @@ func ForwardScannedInput(
 			// block unrelated upstream work. OnceFunc also makes the manager's
 			// deferred cleanup safe after this early denial cleanup.
 			var finishDeniedRelease func()
+			var taskRefusal string
 			holdErr := manager.Hold(deferred.HeldAction{
 				DeferID:       actionID,
 				ActionID:      actionID,
@@ -1554,6 +1609,13 @@ func ForwardScannedInput(
 					// kill-switch claim and this write; see
 					// claimDeferredRelease for the ordering argument.
 					prepared, finish := lockAndClaimDeferredRelease(&forwardMu, opts, deferredGeneration, res)
+					if prepared.FinalDecision == config.ActionAllow {
+						if reason := mcpTaskReleaseRefusal(opts, heldAuthorityFrame, taintDecision, false); reason != "" {
+							prepared.FinalDecision = config.ActionBlock
+							prepared.Reason = reason
+							taskRefusal = reason
+						}
+					}
 					if finish != nil {
 						finish = sync.OnceFunc(finish)
 						finishDeniedRelease = finish
@@ -1627,10 +1689,14 @@ func ForwardScannedInput(
 								}, blockedCh)
 								return
 							}
+							message := "pipelock: deferred action denied"
+							if taskRefusal != "" {
+								message = "pipelock: " + taskRefusal
+							}
 							sendMCPDenial(denialOpts, denialAudit, BlockedRequest{
 								ID:           heldID,
 								ErrorCode:    -32002,
-								ErrorMessage: "pipelock: deferred action denied",
+								ErrorMessage: message,
 							}, blockedCh)
 						}
 					}
@@ -1792,6 +1858,9 @@ func ForwardScannedInput(
 				continue
 			}
 			// Inject envelope for warn-mode tool calls before forwarding.
+			if !checkTaskRelease(false) {
+				continue
+			}
 			fwdLine := line
 			if verdict.Method == methodToolsCall {
 				buildOpts := envelope.BuildOpts{
@@ -1833,13 +1902,16 @@ func ForwardScannedInput(
 				continue
 			}
 			receiptEmitted = true
+			forwardReceiptVerdict = receipt.NormalizeVerdict(effectiveAction)
 			// Forward anyway (warn mode).
 			if isTrackableRequest(fwdLine, verdict.ID) {
 				tracker.TrackRequest(verdict.ID, verdict.Method)
 			}
-			if err := forwardMessage(fwdLine); err != nil {
+			if released, err := writeReleasedMessage(fwdLine); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
+			} else if !released {
+				continue
 			}
 			commitMCPToolCall(baselineMetricsRecorder(opts, rec), baselineIdentity)
 		}

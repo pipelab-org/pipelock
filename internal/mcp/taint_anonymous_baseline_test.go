@@ -33,16 +33,23 @@ func TestHTTPListener_TaintControlsForStatelessCallers(t *testing.T) {
 		{name: "store_and_identity_required", withStore: true, requireIdentity: true},
 		{name: "store_and_identity_required_with_override", withStore: true, requireIdentity: true, withOverride: true},
 		{name: "verified_principal_control", withStore: true, verified: true},
+		{name: "anonymous_requests_stay_request_local", withStore: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var upstreamCalls atomic.Int32
+			store := &listenerDiagnosisStore{}
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				upstreamCalls.Add(1)
+				first := upstreamCalls.Add(1) == 1
 				var frame struct {
 					ID json.RawMessage `json:"id"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&frame); err != nil {
 					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				if first && !tc.verified && !tc.requireIdentity {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = fmt.Fprintf(w, "data: %s\n\n", makeResponse(1, "server credential: "+"AKIA"+"IOSFODNN7EXAMPLE"))
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
@@ -53,9 +60,9 @@ func TestHTTPListener_TaintControlsForStatelessCallers(t *testing.T) {
 			if tc.withOverride {
 				cfg.Taint.TrustOverrides = []config.TaintTrustOverride{{Scope: "action", ActionMatch: "mcp:execute_command*"}}
 			}
-			opts := MCPProxyOpts{Scanner: testScannerForHTTP(t), InputCfg: newHTTPInputCfg(config.ActionBlock), TaintCfg: &cfg.Taint}
+			opts := MCPProxyOpts{Scanner: testScannerWithAction(t, config.ActionBlock), InputCfg: newHTTPInputCfg(config.ActionBlock), TaintCfg: &cfg.Taint}
 			if tc.withStore {
-				opts.Store = &listenerDiagnosisStore{}
+				opts.Store = store
 			}
 			if tc.requireIdentity {
 				opts.listenerStateTokenRequired = boolPtr(true)
@@ -71,7 +78,7 @@ func TestHTTPListener_TaintControlsForStatelessCallers(t *testing.T) {
 			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
 			status, read := mustPrincipalControlRPC(t, baseURL, bearer, principalControlToolCall(1, "read_file", `{"path":"/workspace/security-guide.md"}`))
 			_, exec := mustPrincipalControlRPC(t, baseURL, bearer, principalControlToolCall(2, "execute_command", `{"command":"id"}`))
-			t.Logf("taint_enabled=%t store=%t first_read_status=%d first_read_error=%q scoped_exec_error=%q upstream_calls=%d", cfg.Taint.Enabled, tc.withStore, status, principalControlRPCError(t, read), principalControlRPCError(t, exec), upstreamCalls.Load())
+			t.Logf("taint_enabled=%t store=%t first_read_status=%d scoped_exec_error=%q upstream_calls=%d", cfg.Taint.Enabled, tc.withStore, status, principalControlRPCError(t, exec), upstreamCalls.Load())
 			switch {
 			case tc.verified:
 				if principalControlRPCError(t, read) != "" || !strings.Contains(principalControlRPCError(t, exec), "mutating_exec_after_untrusted_external_exposure") || upstreamCalls.Load() != 1 {
@@ -80,6 +87,10 @@ func TestHTTPListener_TaintControlsForStatelessCallers(t *testing.T) {
 			case tc.requireIdentity:
 				if !strings.Contains(read, "authenticated principal") || !strings.Contains(exec, "authenticated principal") || upstreamCalls.Load() != 0 {
 					t.Fatal("expected identity-required anonymous calls to refuse before the scoped taint allowance can help")
+				}
+			default:
+				if !strings.Contains(read, `"code":-32000`) || principalControlRPCError(t, exec) != "" || upstreamCalls.Load() != 2 {
+					t.Fatal("expected a scanned first response and an independent second anonymous request")
 				}
 			}
 		})

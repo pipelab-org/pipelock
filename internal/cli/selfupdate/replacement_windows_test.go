@@ -541,3 +541,102 @@ func TestReplacementConcurrentCleanup(t *testing.T) {
 		}
 	}
 }
+
+// fakeMoveClock advances only when the retry loop sleeps.
+type fakeMoveClock struct {
+	now    time.Time
+	sleeps []time.Duration
+}
+
+func (c *fakeMoveClock) sleep(d time.Duration) { c.sleeps = append(c.sleeps, d); c.now = c.now.Add(d) }
+func (c *fakeMoveClock) clock() time.Time      { return c.now }
+
+func TestRetryEphemeralMove(t *testing.T) {
+	for _, transient := range []error{windows.ERROR_SHARING_VIOLATION, windows.ERROR_LOCK_VIOLATION, windows.ERROR_ACCESS_DENIED} {
+		t.Run("recovers from "+transient.Error(), func(t *testing.T) {
+			clock := &fakeMoveClock{now: time.Unix(0, 0)}
+			calls := 0
+			err := retryEphemeralMove(func() error {
+				calls++
+				if calls < 3 {
+					return transient
+				}
+				return nil
+			}, clock.sleep, clock.clock)
+			if err != nil || calls != 3 || len(clock.sleeps) != 2 {
+				t.Fatalf("err=%v calls=%d sleeps=%v", err, calls, clock.sleeps)
+			}
+		})
+	}
+	t.Run("permanent error is not retried", func(t *testing.T) {
+		clock := &fakeMoveClock{now: time.Unix(0, 0)}
+		calls := 0
+		err := retryEphemeralMove(func() error { calls++; return windows.ERROR_ALREADY_EXISTS }, clock.sleep, clock.clock)
+		if !errors.Is(err, windows.ERROR_ALREADY_EXISTS) || calls != 1 || len(clock.sleeps) != 0 {
+			t.Fatalf("err=%v calls=%d sleeps=%v", err, calls, clock.sleeps)
+		}
+	})
+	t.Run("persistent violation gives up after the window", func(t *testing.T) {
+		clock := &fakeMoveClock{now: time.Unix(0, 0)}
+		err := retryEphemeralMove(func() error { return windows.ERROR_SHARING_VIOLATION }, clock.sleep, clock.clock)
+		if !errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
+			t.Fatalf("err=%v", err)
+		}
+		var total time.Duration
+		for _, d := range clock.sleeps {
+			if d > moveRetryMaxDelay {
+				t.Fatalf("delay %v exceeds cap", d)
+			}
+			total += d
+		}
+		if total < moveRetryWindow || total >= moveRetryWindow+moveRetryMaxDelay {
+			t.Fatalf("total wait %v outside [%v, %v)", total, moveRetryWindow, moveRetryWindow+moveRetryMaxDelay)
+		}
+	})
+}
+
+// A real handle without FILE_SHARE_DELETE makes MoveFileW fail; releasing it
+// during the retry lets the same move complete without clobbering anything.
+func TestWindowsMoveRetriesTransientSharingViolation(t *testing.T) {
+	src, _ := replacementFixture(t)
+	dst := filepath.Join(filepath.Dir(src), "moved.exe")
+	path, err := windows.UTF16PtrFromString(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := windows.CreateFile(path, windows.GENERIC_READ, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	to, err := windows.UTF16PtrFromString(dst)
+	if err != nil {
+		_ = windows.CloseHandle(handle)
+		t.Fatal(err)
+	}
+	failures := 0
+	released := false
+	err = retryEphemeralMove(func() error {
+		err := windows.MoveFile(path, to)
+		if err != nil {
+			failures++
+		}
+		return err
+	}, func(time.Duration) {
+		if !released {
+			released = true
+			if err := windows.CloseHandle(handle); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}, time.Now)
+	if !released {
+		_ = windows.CloseHandle(handle)
+	}
+	if err != nil || failures != 1 {
+		t.Fatalf("move err=%v failures=%d", err, failures)
+	}
+	assertReplacementBytes(t, dst, originalBytes)
+	if _, err := os.Lstat(src); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("source remains: %v", err)
+	}
+}

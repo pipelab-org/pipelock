@@ -95,6 +95,29 @@ When the config file is used as the token source, the CLI refuses to
 read world- or group-readable files — restrict your token file to
 `0600` permissions before running any session command.
 
+## Grant a task permission
+
+After Pipelock records hostile exposure, a bound actor can retry an exact action with an operator grant. Find the session key and `current_task_id` through the authenticated `GET /api/v1/sessions` endpoint. For standalone MCP, this endpoint and `/task` are on the dedicated operator listener configured by `kill_switch.api_listen`. Pass the operator bearer token to both endpoints.
+
+Send `POST /api/v1/sessions/{key}/task` with the current task ID and the verified action's selector. The action refusal includes the digest when this route is available. For MCP, copy the exact tool name and destination binding from the action you are approving. The MCP digest covers the compact JSON-RPC `params` bytes after input redaction, including the arguments. For visible forward HTTP, omit `tool` and supply the HTTP method and full outbound URL. The HTTP digest covers the effective end-to-end headers serialized by Go's `http.Header.Write`, a blank CRLF line, and the exact outbound body. Review the action before granting its digest.
+
+```json
+{
+  "task_id": "task-ID-from-session-list",
+  "permission": {
+    "action": {
+      "method": "tools/call",
+      "destination": "binding-from-refusal",
+      "tool": "write_file",
+      "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "expires_at": "2027-01-01T00:00:00Z"
+  }
+}
+```
+
+The API returns `204` on installation and `409` if the task generation has changed. Installation preserves the current taint. On an identity session, exact matches are valid until expiry or task rotation. An invocation session accepts the grant and still rejects rotation, so that grant lasts until expiry or the process exits. Use a short expiry for the intended operation. A terminal confirmation authorizes one request and installs no grant.
+
 ## session list
 
 ```sh

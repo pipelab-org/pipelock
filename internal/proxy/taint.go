@@ -4,7 +4,10 @@
 package proxy
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"net/http"
 	"net/url"
 	"path"
 	"strings"
@@ -73,6 +76,15 @@ func observeHTTPResponseFindings(rec session.Recorder, cfg *config.Config, rawUR
 }
 
 func evaluateHTTPTaint(cfg *config.Config, rec session.Recorder, method string, parsedURL *url.URL) taintDecision {
+	return evaluateHTTPTaskTaint(cfg, rec, method, parsedURL, nil)
+}
+
+type forwardTaskAction struct {
+	subject string
+	action  session.TaskAction
+}
+
+func evaluateHTTPTaskTaint(cfg *config.Config, rec session.Recorder, method string, parsedURL *url.URL, task *forwardTaskAction) taintDecision {
 	decision := taintDecision{
 		ActionClass: session.ActionClassRead,
 		Sensitivity: session.SensitivityNormal,
@@ -92,28 +104,89 @@ func evaluateHTTPTaint(cfg *config.Config, rec session.Recorder, method string, 
 	decision.ActionClass = classified.Class
 	decision.Sensitivity = classified.Sensitivity
 	decision.ActionRef = httpActionRef(decision.ActionClass, method, parsedURL)
-	if tp, ok := rec.(session.TaskContextProvider); ok {
+	var matched bool
+	if state, ok := rec.(session.TaskPermissionState); ok && task != nil {
+		decision.Risk, decision.Task, matched = state.TaskPolicySnapshot(task.subject, task.action)
+	} else if tp, ok := rec.(session.TaskContextProvider); ok {
 		decision.Task = tp.TaskSnapshot()
+	}
+	decision.Result = session.PolicyMatrix{Profile: cfg.Taint.Policy}.EvaluateWithOptions(
+		decision.Risk.Level, decision.ActionClass, decision.Sensitivity, decision.Authority,
+		session.PolicyEvaluateOptions{
+			FailSafeClassification:  cfg.Taint.FailSafeClassification,
+			ClassificationConfident: classified.Confident,
+			CheckTaskPermission:     task != nil,
+			TaskPermissionMatched:   matched,
+		},
+	)
+	switch decision.Result.Reason {
+	case session.TaskPermissionRequired, session.TaskPermissionGranted:
+		return decision
+	}
+	if tp, ok := rec.(session.TaskContextProvider); ok {
 		if runtimeTrustOverrideApplies(tp.RuntimeTrustOverrides(), decision.Task, decision.Risk, decision.ActionRef) {
 			decision.Result = session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: "taint_runtime_task_override"}
 			decision.TaskOverrideApplied = true
 			return decision
 		}
 	}
-	decision.Result = session.PolicyMatrix{Profile: cfg.Taint.Policy}.EvaluateWithOptions(
-		decision.Risk.Level,
-		decision.ActionClass,
-		decision.Sensitivity,
-		decision.Authority,
-		session.PolicyEvaluateOptions{
-			FailSafeClassification:  cfg.Taint.FailSafeClassification,
-			ClassificationConfident: classified.Confident,
-		},
-	)
 	if trustOverrideApplies(cfg.Taint.TrustOverrides, decision.Risk, decision.ActionRef) {
 		decision.Result = session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: "taint_trust_override"}
 	}
 	return decision
+}
+
+// forwardRequestTaskAction binds the emitted URL, end-to-end headers, and
+// body. Unbuffered bodies and trailers cannot satisfy an exact permission.
+func forwardRequestTaskAction(req *http.Request, body []byte) session.TaskAction {
+	if len(req.Trailer) > 0 || (req.Body != nil && req.Body != http.NoBody && body == nil) {
+		return session.TaskAction{}
+	}
+	h := sha256.New()
+	if err := req.Header.Write(h); err != nil {
+		return session.TaskAction{}
+	}
+	_, _ = h.Write([]byte("\r\n"))
+	_, _ = h.Write(body)
+	return session.TaskAction{Method: req.Method, Destination: req.URL.String(), Digest: hex.EncodeToString(h.Sum(nil))}
+}
+
+func (p *Proxy) resolveForwardTaskApproval(rec session.Recorder, task forwardTaskAction, decision *taintDecision, agent string) (string, string) {
+	outcome := hitl.OutcomeUnavailable
+	if !task.action.Valid() {
+		return "task_action_unavailable", "the complete outbound request could not be bound for approval"
+	}
+	if p.approver != nil {
+		outcome = p.approver.AskOutcome(&hitl.Request{
+			Agent:        agent,
+			URL:          task.action.Destination,
+			Reason:       session.TaskPermissionRequired + " (SHA-256 " + task.action.Digest + ")",
+			Preview:      task.action.Method + " " + task.action.Destination,
+			Confirmation: session.TaskApprovalConfirmation(),
+		})
+	}
+	if outcome != hitl.OutcomeAllow {
+		reason, detail := session.TaskApprovalRefusal(outcome)
+		if task.subject != "" && p.sessionAPI != nil && p.sessionAPI.currentAPIToken() != "" {
+			detail += "; an operator can grant this action using POST /api/v1/sessions/{key}/task; digest " + task.action.Digest
+		}
+		return reason, detail
+	}
+	if tp, ok := rec.(session.TaskContextProvider); ok && tp.TaskSnapshot().CurrentTaskID != decision.Task.CurrentTaskID {
+		return session.TaskApprovalStale, "the task changed while approval was pending"
+	}
+	decision.Authority = session.AuthorityOperatorOverride
+	decision.Result = session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: session.TaskApprovalGranted}
+	return "", ""
+}
+
+func forwardTaskAdmissionCurrent(rec session.Recorder, task forwardTaskAction, decision taintDecision) bool {
+	state, ok := rec.(session.TaskPermissionState)
+	if !ok {
+		return decision.Result.Reason != session.TaskPermissionGranted
+	}
+	_, current, matched := state.TaskPolicySnapshot(task.subject, task.action)
+	return current.CurrentTaskID == decision.Task.CurrentTaskID && (decision.Result.Reason != session.TaskPermissionGranted || matched)
 }
 
 func httpActionRef(action session.ActionClass, method string, parsedURL *url.URL) string {

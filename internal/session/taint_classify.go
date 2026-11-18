@@ -247,17 +247,6 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 		return ActionClassification{Class: ActionClassPublish, Sensitivity: SensitivityElevated, ActionRef: targetURL, OverrideRefs: targets.urls, Confident: true}
 	}
 
-	if looksLikeBrowseTool(name) || (category == "network" && hasMCPNetworkNameEvidence(toolName, argsJSON)) {
-		if hasMutatingNetworkIntent(argsJSON) {
-			return ActionClassification{Class: ActionClassPublish, Sensitivity: SensitivityElevated, ActionRef: targetURL, OverrideRefs: targets.urls, Confident: true}
-		}
-		return ActionClassification{Class: ActionClassBrowse, Sensitivity: SensitivityNormal, ActionRef: targetURL, OverrideRefs: targets.urls, Confident: true}
-	}
-
-	if looksLikeReadTool(name) || category == "read" || category == "list" {
-		return ActionClassification{Class: ActionClassRead, Sensitivity: failSafeSensitivity(opts, pathClass.Confident), ActionRef: targetPath, OverrideRefs: pathClass.OverrideRefs, Confident: pathClass.Confident}
-	}
-
 	if hasExecIntent(argsJSON) {
 		if command := firstMutatingMCPCommand(argsJSON); command != "" {
 			return ActionClassification{Class: ActionClassExec, Sensitivity: classifyShellSensitivity(command, targetPath, protectedPatterns, elevatedPatterns), ActionRef: targetPath, OverrideRefs: targets.refs, Confident: true}
@@ -265,11 +254,29 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 		return ActionClassification{Class: ActionClassExec, Sensitivity: SensitivityProtected, ActionRef: targetPath, OverrideRefs: targets.refs, Confident: true}
 	}
 
-	sensitivity := SensitivityNormal
-	if opts.FailSafe {
-		sensitivity = SensitivityProtected
+	// Consider read and browse evidence after the effect checks, including
+	// exec arguments. Only the operation can supply read or browse evidence.
+	operation := mcpToolOperationName(toolName)
+	if operation != toolName {
+		category = chains.ClassifyTool(operation, argsJSON, nil)
 	}
-	return ActionClassification{Class: ActionClassRead, Sensitivity: sensitivity, ActionRef: targetPath, OverrideRefs: pathClass.OverrideRefs, Confident: false}
+	if looksLikeBrowseTool(strings.ToLower(operation)) || (category == "network" && hasMCPNetworkNameEvidence(operation, argsJSON)) {
+		if hasMutatingNetworkIntent(argsJSON) {
+			return ActionClassification{Class: ActionClassPublish, Sensitivity: SensitivityElevated, ActionRef: targetURL, OverrideRefs: targets.urls, Confident: true}
+		}
+		return ActionClassification{Class: ActionClassBrowse, Sensitivity: SensitivityNormal, ActionRef: targetURL, OverrideRefs: targets.urls, Confident: true}
+	}
+
+	if looksLikeReadTool(operation) || category == "read" || category == "list" {
+		return ActionClassification{Class: ActionClassRead, Sensitivity: failSafeSensitivity(opts, pathClass.Confident), ActionRef: targetPath, OverrideRefs: pathClass.OverrideRefs, Confident: pathClass.Confident}
+	}
+
+	refs := pathClass.OverrideRefs
+	if targetPath == "" {
+		targetPath = targetURL
+		refs = targets.urls
+	}
+	return ActionClassification{Class: ActionClassUnknown, Sensitivity: failSafeSensitivity(opts, false), ActionRef: targetPath, OverrideRefs: refs}
 }
 
 // firstMutatingMCPCommand scans only declared command-bearing fields. It keeps
@@ -759,7 +766,15 @@ func looksLikeWriteTool(name string) bool {
 }
 
 func looksLikeReadTool(name string) bool {
-	return containsAny(name, "read", "cat", "open", "list", "search", "find", "get")
+	// Require a whole read word so an unrelated object name such as "widget"
+	// doesn't count as read evidence just because it contains "get".
+	for _, word := range splitArgumentKey(name) {
+		switch word {
+		case "read", "cat", "open", "list", "search", "find", "get":
+			return true
+		}
+	}
+	return false
 }
 
 func looksLikeBrowseTool(name string) bool {
@@ -770,11 +785,32 @@ func looksLikeBrowseTool(name string) bool {
 // remove known object words behind an explicit read operation.
 func looksLikePublishTool(name, argsJSON string) bool {
 	return containsAny(mcpOperationEvidenceName(name, argsJSON), "http", "request", "post", "put", "patch", "publish", "send", "webhook") ||
-		hasMutatingNetworkMethod(argsJSON)
+		hasMutatingNetworkMethod(argsJSON) ||
+		operationHasWord(name, "upload")
+}
+
+// operationHasWord matches one whole word of the tool component. The server id
+// in an mcp__server__tool name is not the operation, so it cannot count.
+func operationHasWord(name, word string) bool {
+	for _, got := range splitArgumentKey(mcpToolOperationName(name)) {
+		if got == word {
+			return true
+		}
+	}
+	return false
+}
+
+func mcpToolOperationName(name string) string {
+	if alias, ok := normalize.MCPToolNameAlias(name); ok {
+		return alias
+	}
+	return name
 }
 
 func hasMCPNetworkNameEvidence(name, argsJSON string) bool {
-	return containsAny(mcpOperationEvidenceName(name, argsJSON), "fetch", "curl", "wget", "http", "request", "post", "put", "send", "upload", "download", "api")
+	// "upload" is publish evidence above, not browse evidence. A substring
+	// would also match the noun "uploads".
+	return containsAny(mcpOperationEvidenceName(name, argsJSON), "fetch", "curl", "wget", "http", "request", "post", "put", "send", "download", "api")
 }
 
 // Only a complete, known read-object shape can remove noun evidence. Any
@@ -856,6 +892,9 @@ func hasWriteIntent(argsJSON string) bool {
 }
 
 func hasExecIntent(argsJSON string) bool {
+	if decoded, ok := decodeJSONValue(argsJSON); ok {
+		return jsonHasAnyKey(decoded, "command", "cmd", "script", "shell", "program", "argv")
+	}
 	lower := normalizeIntentJSON(argsJSON)
 	return containsAny(lower, `"command"`, `"cmd"`, `"script"`, `"shell"`, `"program"`, `"argv"`)
 }

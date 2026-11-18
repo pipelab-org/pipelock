@@ -943,8 +943,10 @@ type SessionTerminateResult struct {
 }
 
 type taskRequest struct {
-	Label  string `json:"label"`
-	Reason string `json:"reason"`
+	Label      string                  `json:"label"`
+	Reason     string                  `json:"reason"`
+	TaskID     string                  `json:"task_id"`
+	Permission *session.TaskPermission `json:"permission"`
 }
 
 type trustOverrideRequest struct {
@@ -1081,6 +1083,15 @@ func (h *SessionAPIHandler) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Permission != nil {
+		h.handleTaskPermission(w, sm, key, clientIP, req)
+		return
+	}
+	if req.TaskID != "" {
+		http.Error(w, "task_id requires a permission", http.StatusBadRequest)
+		return
+	}
+
 	prev, current, cleared, found, taskErr := sm.BeginNewTask(key, req.Label)
 	if !found {
 		h.logSessionAdmin("task_not_found", clientIP, key, "session not found", http.StatusNotFound)
@@ -1117,6 +1128,37 @@ func (h *SessionAPIHandler) HandleTask(w http.ResponseWriter, r *http.Request) {
 		TaintCleared:            true,
 		RuntimeOverridesCleared: cleared,
 	})
+}
+
+func (h *SessionAPIHandler) handleTaskPermission(w http.ResponseWriter, sm *SessionManager, key, clientIP string, req taskRequest) {
+	if req.Label != "" {
+		http.Error(w, "a permission does not rotate or relabel the task", http.StatusBadRequest)
+		return
+	}
+	// Keep this distinct from /trust and task rotation. A verified launch
+	// session can accept an exact grant without clearing its exposure.
+	sm.mu.RLock()
+	sess := sm.sessions[key]
+	var err error
+	if sess != nil {
+		err = sess.installTaskPermission(req.TaskID, *req.Permission)
+	}
+	sm.mu.RUnlock()
+	if sess == nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, errTaskPermissionGeneration) {
+			status = http.StatusConflict
+		}
+		h.logSessionAdmin("task_permission_rejected", clientIP, key, err.Error(), status)
+		http.Error(w, err.Error(), status)
+		return
+	}
+	h.logSessionAdmin("task_permission_installed", clientIP, key, req.Reason, http.StatusNoContent)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // HandleTrust grants a runtime trust override bound to the current task.

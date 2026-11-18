@@ -744,8 +744,8 @@ func TestEvaluateMCPTaint_TrustOverrideIgnoresMoreSevereBenignSource(t *testing.
 		Rec:      rec,
 		TaintCfg: &cfg.Taint,
 	}, "write_file", `{"path":"/repo/auth/middleware.go","content":"x"}`)
-	if decision.Result.Decision != session.PolicyBlock {
-		t.Fatalf("decision = %v, want block when a second source still contaminates", decision.Result.Decision)
+	if decision.Result.Reason != session.TaskPermissionRequired {
+		t.Fatalf("decision = %v, want task permission check after hostile exposure", decision.Result)
 	}
 }
 
@@ -785,15 +785,12 @@ func TestEvaluateMCPTaint_TrustOverrideIgnoresOriginOutrankingALaterSource(t *te
 		Rec:      rec,
 		TaintCfg: &cfg.Taint,
 	}, "write_file", `{"path":"/repo/auth/middleware.go","content":"x"}`)
-	if decision.Result.Decision != session.PolicyBlock {
-		t.Fatalf("decision = %v, want block when a later source still contaminates", decision.Result.Decision)
+	if decision.Result.Reason != session.TaskPermissionRequired {
+		t.Fatalf("decision = %v, want task permission check after hostile exposure", decision.Result)
 	}
 }
 
-// A single hostile source must stay nameable. This is the availability half of
-// the ambiguity rule: if escalation alone erased attribution, the operator's
-// narrowest remedy would never work and the override knob would be dead.
-func TestEvaluateMCPTaint_TrustOverrideStillMatchesSingleEscalatingSource(t *testing.T) {
+func TestEvaluateMCPTaint_TrustOverrideDoesNotConferTaskPermission(t *testing.T) {
 	t.Parallel()
 
 	sc := testScannerWithAction(t, config.ActionWarn)
@@ -817,8 +814,8 @@ func TestEvaluateMCPTaint_TrustOverrideStillMatchesSingleEscalatingSource(t *tes
 		Rec:      rec,
 		TaintCfg: &cfg.Taint,
 	}, "write_file", `{"path":"/repo/auth/middleware.go","content":"x"}`)
-	if decision.Result.Decision != session.PolicyAllow {
-		t.Fatalf("decision = %v, want allow for the one source the override names", decision.Result.Decision)
+	if decision.Result.Reason != session.TaskPermissionRequired {
+		t.Fatalf("decision = %v, want task permission even for the single source the override names", decision.Result)
 	}
 }
 

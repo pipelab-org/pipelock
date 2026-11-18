@@ -667,14 +667,14 @@ func EvaluateMCPInputGates(
 	// triggers the inline approver dialog so HITL runs in the
 	// request-processing goroutine, matching the pre-refactor call site.
 	taintIdentity := mcpFrameCollisionSafeCallableIdentity(frame, eval.ContentVerdict.Method)
-	if taintIdentity != "" {
+	if taintIdentity != "" || frame.IsToolsCall() {
 		// Cross-agent contamination was already observed before the
 		// short-circuiting gates above; the cross_agent source is on the
 		// session, so the taint snapshot below still carries it as evidence.
 		taintOpts := opts
 		taintOpts.TaintCfg = opts.taintCfg()
 		taintOpts.TaintCfgFn = nil
-		eval.TaintDecision = evaluateMCPTaint(taintOpts, taintIdentity, mcpFrameCallableArgs(frame))
+		eval.TaintDecision = evaluateMCPTaskTaint(taintOpts, taintIdentity, mcpFrameCallableArgs(frame), mcpTaskAction(taintOpts, frame))
 		switch eval.TaintDecision.Result.Decision {
 		case session.PolicyBlock:
 			eval.TaintAuditDecision = eval.TaintDecision
@@ -684,6 +684,14 @@ func EvaluateMCPInputGates(
 		case session.PolicyAsk:
 			eval.TaintAuditDecision = eval.TaintDecision
 			eval.TaintAuditDecisionSet = true
+			if eval.TaintDecision.Result.Reason == session.TaskPermissionRequired {
+				eval.TaintApproved = resolveMCPTaskApproval(opts, &eval.TaintDecision, taintIdentity)
+				if !eval.TaintApproved {
+					eval.TaintAuditDecision = eval.TaintDecision
+					eval.BlockingGate = blockingGateTaintAskDenied
+				}
+				return eval
+			}
 			preview := strings.TrimSpace(fmt.Sprintf("%s %s", taintIdentity, eval.TaintDecision.ActionRef))
 			approved, hasApprover := taintDecisionRequiresApproval(opts, taintIdentity, taintApprovalReason(eval.TaintDecision), preview)
 			if !hasApprover || !approved {
@@ -960,14 +968,14 @@ func evaluateMCPInputGatesStdio(
 	// triggers the inline approver dialog so HITL runs in the
 	// request-processing goroutine, matching the pre-refactor call site.
 	taintIdentity := mcpFrameCollisionSafeCallableIdentity(frame, eval.ContentVerdict.Method)
-	if taintIdentity != "" {
+	if taintIdentity != "" || frame.IsToolsCall() {
 		// Cross-agent contamination was already observed before the
 		// short-circuiting gates above; the cross_agent source is on the
 		// session, so the taint snapshot below still carries it as evidence.
 		taintOpts := opts
 		taintOpts.TaintCfg = opts.taintCfg()
 		taintOpts.TaintCfgFn = nil
-		eval.TaintDecision = evaluateMCPTaint(taintOpts, taintIdentity, mcpFrameCallableArgs(frame))
+		eval.TaintDecision = evaluateMCPTaskTaint(taintOpts, taintIdentity, mcpFrameCallableArgs(frame), mcpTaskAction(taintOpts, frame))
 		switch eval.TaintDecision.Result.Decision {
 		case session.PolicyBlock:
 			eval.TaintAuditDecision = eval.TaintDecision
@@ -977,6 +985,14 @@ func evaluateMCPInputGatesStdio(
 		case session.PolicyAsk:
 			eval.TaintAuditDecision = eval.TaintDecision
 			eval.TaintAuditDecisionSet = true
+			if eval.TaintDecision.Result.Reason == session.TaskPermissionRequired {
+				eval.TaintApproved = resolveMCPTaskApproval(opts, &eval.TaintDecision, taintIdentity)
+				if !eval.TaintApproved {
+					eval.TaintAuditDecision = eval.TaintDecision
+					eval.BlockingGate = blockingGateTaintAskDenied
+				}
+				return eval
+			}
 			preview := strings.TrimSpace(fmt.Sprintf("%s %s", taintIdentity, eval.TaintDecision.ActionRef))
 			approved, hasApprover := taintDecisionRequiresApproval(opts, taintIdentity, taintApprovalReason(eval.TaintDecision), preview)
 			if !hasApprover || !approved {

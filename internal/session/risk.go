@@ -38,6 +38,8 @@ const (
 	ActionClassSecret
 	ActionClassPublish
 	ActionClassNetwork
+	// Unknown includes undeclared MCP calls, including unverified delegation.
+	ActionClassUnknown
 )
 
 // ActionSensitivity describes the sensitivity of a target object/action.
@@ -365,6 +367,8 @@ type PolicyDecisionResult struct {
 type PolicyEvaluateOptions struct {
 	FailSafeClassification  bool
 	ClassificationConfident bool
+	CheckTaskPermission     bool
+	TaskPermissionMatched   bool
 }
 
 // RiskState is implemented by session recorders that track taint state.
@@ -498,6 +502,13 @@ func (pm PolicyMatrix) EvaluateWithOptions(
 		return PolicyDecisionResult{Decision: PolicyAllow, Reason: "taint_permissive_observe_only"}
 	}
 
+	if opts.CheckTaskPermission && taint >= TaintExternalHostile && !isAlwaysAllowedAction(action) {
+		if opts.TaskPermissionMatched {
+			return PolicyDecisionResult{Decision: PolicyAllow, Reason: TaskPermissionGranted}
+		}
+		return PolicyDecisionResult{Decision: PolicyAsk, Reason: TaskPermissionRequired}
+	}
+
 	if taint >= TaintExternalHostile && isSensitiveAction(action, sensitivity) {
 		return PolicyDecisionResult{Decision: PolicyBlock, Reason: "sensitive_action_after_hostile_external_exposure"}
 	}
@@ -510,7 +521,7 @@ func (pm PolicyMatrix) EvaluateWithOptions(
 	// when the toggle is on AND the classification was low-confidence, so
 	// confidently-normal reads are unaffected (regression-safe when off).
 	if opts.FailSafeClassification && !opts.ClassificationConfident &&
-		sensitivity >= SensitivityProtected && isAlwaysAllowedAction(action) {
+		sensitivity >= SensitivityProtected && (isAlwaysAllowedAction(action) || action == ActionClassUnknown) {
 		return PolicyDecisionResult{Decision: PolicyAsk, Reason: "fail_safe_low_confidence_read_after_untrusted_exposure"}
 	}
 
@@ -563,7 +574,7 @@ func isSensitiveAction(action ActionClass, sensitivity ActionSensitivity) bool {
 		return true
 	}
 	switch action {
-	case ActionClassWrite, ActionClassExec, ActionClassSecret, ActionClassPublish:
+	case ActionClassWrite, ActionClassExec, ActionClassSecret, ActionClassPublish, ActionClassUnknown:
 		return true
 	default:
 		return false

@@ -1840,6 +1840,8 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 			return session.ErrCapacity
 		}
 		defer opts.Store.Delete(invocationKey)
+		opts.taskSubject = invocationKey
+		session.BindTaskSubject(rec, opts.taskSubject)
 	}
 	defer recordMCPBaselineSample(opts, rec)
 
