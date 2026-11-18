@@ -38,13 +38,22 @@ func EvidenceChainPin(receipts []contractreceipt.EvidenceReceipt, trusted []stri
 	if len(trusted) == 0 || len(receipts) == 0 {
 		return nil, nil
 	}
-	declared := strings.ToLower(strings.TrimSpace(receipts[0].Signature.SignerKeyID))
+	signerKeyID := receipts[0].Signature.SignerKeyID
+	declared := strings.ToLower(strings.TrimSpace(signerKeyID))
 	for _, k := range trusted {
 		if strings.ToLower(strings.TrimSpace(k)) == declared {
 			return decodeEd25519Hex(declared)
 		}
 	}
-	return nil, fmt.Errorf("evidence receipt signer %q is not in the trusted key set", receipts[0].Signature.SignerKeyID)
+	return nil, fmt.Errorf("evidence receipt signer %q is not in the trusted key set", signerKeyID)
+}
+
+func evidenceVerificationKey(receipts []contractreceipt.EvidenceReceipt, trusted []string) (ed25519.PublicKey, error) {
+	if len(trusted) == 0 && len(receipts) > 0 {
+		declared := strings.ToLower(strings.TrimSpace(receipts[0].Signature.SignerKeyID))
+		return decodeEd25519Hex(declared)
+	}
+	return EvidenceChainPin(receipts, trusted)
 }
 
 func decodeEd25519Hex(keyHex string) (ed25519.PublicKey, error) {
@@ -53,6 +62,20 @@ func decodeEd25519Hex(keyHex string) (ed25519.PublicKey, error) {
 		return nil, fmt.Errorf("signer key %q is not a %d-byte hex Ed25519 public key", keyHex, ed25519.PublicKeySize)
 	}
 	return ed25519.PublicKey(raw), nil
+}
+
+// VerifyEvidenceReceipt verifies one EvidenceReceipt v2 at any chain position.
+// With no expected key it checks integrity against the declared signer only.
+func VerifyEvidenceReceipt(r contractreceipt.EvidenceReceipt, expectedKey string) error {
+	var trusted []string
+	if expectedKey != "" {
+		trusted = []string{expectedKey}
+	}
+	key, err := evidenceVerificationKey([]contractreceipt.EvidenceReceipt{r}, trusted)
+	if err != nil {
+		return err
+	}
+	return contractreceipt.VerifyWithKey(r, key, contractreceipt.SignerKeyID(key))
 }
 
 // VerifyEvidenceChainTrusted verifies an EvidenceReceipt v2 chain against a
@@ -66,17 +89,7 @@ func decodeEd25519Hex(keyHex string) (ed25519.PublicKey, error) {
 // SignaturesVerified is false and the caller must report the chain as
 // unpinned, never as provenance.
 func VerifyEvidenceChainTrusted(receipts []contractreceipt.EvidenceReceipt, trusted []string, opts contractreceipt.ChainVerifyOptions) contractreceipt.ChainResult {
-	var (
-		pin ed25519.PublicKey
-		err error
-	)
-	if len(trusted) == 0 {
-		if len(receipts) > 0 {
-			pin, err = decodeEd25519Hex(strings.ToLower(strings.TrimSpace(receipts[0].Signature.SignerKeyID)))
-		}
-	} else {
-		pin, err = EvidenceChainPin(receipts, trusted)
-	}
+	pin, err := evidenceVerificationKey(receipts, trusted)
 	if err != nil {
 		return contractreceipt.ChainResult{Valid: false, Error: err.Error()}
 	}

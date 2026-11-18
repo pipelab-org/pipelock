@@ -63,7 +63,7 @@ func VerifyReceiptCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "verify-receipt [file]",
 		Short: "Verify a signed action receipt or receipt chain",
-		Long: `Verifies Ed25519 signatures on action receipts and Fleet Receipt Reports.
+		Long: `Verifies Ed25519 signatures on ActionReceipt v1, EvidenceReceipt v2, and Fleet Receipt Reports.
 
 For a single receipt JSON file: verifies the signature and prints details.
 For a flight recorder JSONL file: extracts all receipts and verifies the
@@ -73,7 +73,7 @@ and the transcript_root seal. For a multi-file chain spanning restarts or
 rotations, pass --chain DIR.
 
 A current run writes an ActionReceipt v1 chain and an EvidenceReceipt v2
-chain into the same files; every mode verifies both, and the result is valid
+chain into the same files; chain modes verify both, and the result is valid
 only when every chain present verifies. A single file must hold the session
 its name claims, and its recorder entry hash chain must hold from genesis.
 
@@ -1215,45 +1215,132 @@ func verifySingleReceiptDetailed(out io.Writer, path, expectedKey string, opts v
 	if err != nil {
 		return fmt.Errorf("reading receipt: %w", err)
 	}
+	isEvidence, err := isStandaloneEvidenceReceipt(data)
+	if err != nil {
+		return fmt.Errorf("parsing receipt: %w", err)
+	}
+	if isEvidence {
+		return verifySingleEvidenceReceipt(out, path, data, expectedKey, opts)
+	}
+	return verifySingleActionReceipt(out, path, data, expectedKey, opts)
+}
 
+// Use exact top-level discriminator names. The selected parser then enforces
+// its own full schema, including duplicate keys and case aliases.
+func isStandaloneEvidenceReceipt(data []byte) (bool, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return false, fmt.Errorf("invalid receipt JSON: %w", err)
+	}
+	version, hasVersion := fields["version"]
+	recordType, hasRecordType := fields["record_type"]
+	_, hasReceiptVersion := fields["receipt_version"]
+	switch {
+	case hasVersion && (hasRecordType || hasReceiptVersion):
+		return false, errors.New("ambiguous receipt format: version conflicts with record_type or receipt_version")
+	case hasVersion:
+		var v int
+		if err := json.Unmarshal(version, &v); err != nil {
+			return false, fmt.Errorf("receipt version must be an integer: %w", err)
+		}
+		if v != receipt.ReceiptVersion {
+			return false, fmt.Errorf("unsupported receipt version %d (expected %d)", v, receipt.ReceiptVersion)
+		}
+		return false, nil
+	case hasRecordType:
+		var kind *contractreceipt.RecordType
+		if err := json.Unmarshal(recordType, &kind); err != nil {
+			return false, fmt.Errorf("receipt record_type must be a string: %w", err)
+		}
+		if kind == nil {
+			return false, errors.New("receipt record_type must be a string")
+		}
+		if *kind != contractreceipt.RecordTypeEvidenceV2 {
+			return false, fmt.Errorf("unsupported receipt record_type %q", *kind)
+		}
+		if !hasReceiptVersion {
+			return false, errors.New("EvidenceReceipt v2 requires receipt_version")
+		}
+		return true, nil
+	default:
+		return false, errors.New("missing receipt format discriminator: expected version or record_type")
+	}
+}
+
+func verifySingleActionReceipt(out io.Writer, path string, data []byte, expectedKey string, opts verifyReceiptOptions) error {
 	r, err := receipt.Unmarshal(data)
 	if err != nil {
 		return fmt.Errorf("parsing receipt: %w", err)
 	}
-
 	if expectedKey == "" {
-		if err := receipt.VerifyInternalConsistencyOnly(r); err != nil {
-			_, _ = fmt.Fprintf(out, "FAILED: %s: %v\n", path, err)
-			return fmt.Errorf("verification failed: %w", err)
-		}
-		_, _ = fmt.Fprintf(out, "UNPINNED: %s\n", path)
-		_, _ = fmt.Fprintln(out, unpinnedReceiptBanner)
-		if !opts.AllowUnpinned {
-			printReceiptDetails(out, r, opts.Print)
-			printReceiptLimits(out)
-			if err := printContainmentForReceipts(out, []receipt.Receipt{r}, opts.Posture); err != nil {
-				return err
-			}
-			return fmt.Errorf("verification unpinned: pass --key for provenance or --allow-unpinned for structural-only verification")
-		}
-		printReceiptDetails(out, r, opts.Print)
-		printReceiptLimits(out)
-		if err := printContainmentForReceipts(out, []receipt.Receipt{r}, opts.Posture); err != nil {
-			return err
-		}
-		return nil
+		err = receipt.VerifyInternalConsistencyOnly(r)
+	} else {
+		err = receipt.VerifyWithKey(r, expectedKey)
 	}
+	if err := printSingleReceiptStatus(out, path, expectedKey == "", err); err != nil {
+		return err
+	}
+	printReceiptDetails(out, r, opts.Print)
+	var postureSummary receiptPostureSummary
+	postureSummary.add(r)
+	return finishSingleReceipt(out, expectedKey == "", postureSummary, opts)
+}
 
-	if err := receipt.VerifyWithKey(r, expectedKey); err != nil {
+func verifySingleEvidenceReceipt(out io.Writer, path string, data []byte, expectedKey string, opts verifyReceiptOptions) error {
+	r, err := contractreceipt.ParseEvidenceReceipt(data)
+	if err != nil {
+		return fmt.Errorf("parsing evidence receipt: %w", err)
+	}
+	if err := printSingleReceiptStatus(out, path, expectedKey == "", receipt.VerifyEvidenceReceipt(r, expectedKey)); err != nil {
+		return err
+	}
+	printReceiptDisplayField(out, "  Event ID:    ", r.EventID, opts.Print)
+	_, _ = fmt.Fprintf(out, "  Payload kind: %s\n", r.PayloadKind)
+	_, _ = fmt.Fprintf(out, "  Timestamp:   %s\n", r.Timestamp.UTC().Format(time.RFC3339Nano))
+	_, _ = fmt.Fprintf(out, "  Signer:      %s\n", r.Signature.SignerKeyID)
+	_, _ = fmt.Fprintf(out, "  Chain seq:   %d\n", r.ChainSeq)
+	printReceiptDisplayField(out, "  Chain prev:  ", r.ChainPrevHash, opts.Print)
+	if r.PolicyHash != "" {
+		printReceiptDisplayField(out, "  Policy Hash: ", r.PolicyHash, opts.Print)
+	}
+	_, _ = fmt.Fprintln(out, "  Scope:       Single receipt. Chain continuity and completeness are unverified.")
+	printReceiptLimits(out)
+	// A standalone v2 envelope has no signed session binding for a posture
+	// capsule, so no containment grade can be tied to this event.
+	_, _ = fmt.Fprintln(out, standaloneEvidenceContainmentLine)
+	if opts.Posture.Path != "" {
+		_, _ = fmt.Fprintln(out, "  containment reason: --posture is not applied to a standalone EvidenceReceipt v2")
+	}
+	return unpinnedSingleReceiptResult(expectedKey == "", opts)
+}
+
+const standaloneEvidenceContainmentLine = "Containment: NOT ASSESSED (a standalone EvidenceReceipt v2 does not bind a posture capsule to its session)"
+
+func printSingleReceiptStatus(out io.Writer, path string, unpinned bool, err error) error {
+	if err != nil {
 		_, _ = fmt.Fprintf(out, "FAILED: %s: %v\n", path, err)
 		return fmt.Errorf("verification failed: %w", err)
 	}
+	if unpinned {
+		_, _ = fmt.Fprintf(out, "UNPINNED: %s\n", path)
+		_, _ = fmt.Fprintln(out, unpinnedReceiptBanner)
+	} else {
+		_, _ = fmt.Fprintf(out, "OK: %s\n", path)
+	}
+	return nil
+}
 
-	_, _ = fmt.Fprintf(out, "OK: %s\n", path)
-	printReceiptDetails(out, r, opts.Print)
+func finishSingleReceipt(out io.Writer, unpinned bool, summary receiptPostureSummary, opts verifyReceiptOptions) error {
 	printReceiptLimits(out)
-	if err := printContainmentForReceipts(out, []receipt.Receipt{r}, opts.Posture); err != nil {
+	if err := printContainmentForSummary(out, summary, opts.Posture); err != nil {
 		return err
+	}
+	return unpinnedSingleReceiptResult(unpinned, opts)
+}
+
+func unpinnedSingleReceiptResult(unpinned bool, opts verifyReceiptOptions) error {
+	if unpinned && !opts.AllowUnpinned {
+		return fmt.Errorf("verification unpinned: pass --key for provenance or --allow-unpinned for structural-only verification")
 	}
 	return nil
 }
@@ -2131,10 +2218,6 @@ func printReceiptLimits(out io.Writer) {
 		limit, _ := evidence.ByID(id)
 		_, _ = fmt.Fprintf(out, "  Limit:      %s: %s\n", limit.ID, limit.Summary)
 	}
-}
-
-func printContainmentForReceipts(out io.Writer, receipts []receipt.Receipt, opts receiptPostureOptions) error {
-	return printContainmentForSummary(out, summarizeReceiptsForPosture(receipts), opts)
 }
 
 func printContainmentForSummary(out io.Writer, summary receiptPostureSummary, opts receiptPostureOptions) error {
