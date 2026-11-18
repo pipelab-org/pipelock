@@ -48,6 +48,7 @@ func TestRenderDetailTaintCauseFromAPIShapes(t *testing.T) {
 	for _, tc := range []struct{ name, raw, want string }{
 		{"older proxy hostile", `{"key":"client","taint_level":"external_hostile","contaminated":true}`, "  taint_cause:      hostile: cause not recorded (older state or aggregate finding)\n"},
 		{"current proxy wording", `{"key":"client","taint_level":"external_hostile","contaminated":true,"finding_kinds":["prompt_injection_wording"]}`, "  taint_cause:      hostile because of prompt-injection wording only\n"},
+		{"current proxy warning", `{"key":"client","taint_level":"internal_generated","finding_kinds":["prompt_injection_wording"]}`, "  taint_cause:      warning: prompt-injection wording only\n"},
 		{"current proxy unknown kind", `{"key":"client","taint_level":"external_hostile","finding_kinds":["\u001b[2Jfuture"]}`, "  taint_cause:      hostile: cause not recorded (older state or aggregate finding)\n"},
 		{"untrusted", `{"key":"client","taint_level":"external_untrusted","contaminated":true}`, ""},
 	} {

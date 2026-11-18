@@ -207,6 +207,7 @@ func buildResponseExplainReport(ctx context.Context, cfg *config.Config, cfgLabe
 	}
 	if len(result.Matches) > 0 {
 		report.Notes = append(report.Notes, "Response finding kinds: "+session.DescribeFindingKinds([]session.HostileFindingKind{session.FindingWording})+".")
+		report.Notes = append(report.Notes, explainWordingTaintWarning)
 	}
 	for _, match := range result.Matches {
 		span := match.Span()

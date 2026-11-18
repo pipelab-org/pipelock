@@ -126,7 +126,7 @@ func renderExplanation(w io.Writer, e proxy.SessionExplanation) error {
 	fmt.Fprintf(buf, "Session %s explanation\n", termsafe.Escape(e.Key))
 	fmt.Fprintf(buf, "  tier:                %s\n", defaultIfEmpty(e.Tier, "none"))
 	fmt.Fprintf(buf, "  reason:              %s\n", defaultDash(e.Reason))
-	if cause := taintCause("", e.FindingKinds); cause != "" {
+	if cause := taintCause(e.TaintLevel, e.FindingKinds); cause != "" {
 		fmt.Fprintf(buf, "  taint_cause:         %s\n", cause)
 	}
 	if e.Trigger != "" {
@@ -170,13 +170,16 @@ func renderExplanation(w io.Writer, e proxy.SessionExplanation) error {
 	return err
 }
 
-// taintCause names recorded hostile causes. A hostile taint level reported
+// taintCause describes recorded findings in the context of the taint level.
+// A hostile taint level reported
 // without finding_kinds comes from a proxy that predates cause attribution, so
 // it is described as unrecorded rather than omitted.
 func taintCause(level string, kinds []risksession.HostileFindingKind) string {
 	risk := risksession.SessionRisk{FindingKinds: kinds}
 	if level == risksession.TaintExternalHostile.String() {
 		risk.Level = risksession.TaintExternalHostile
+	} else if level != "" && risksession.OnlyWordingFindings(kinds) {
+		return "warning: prompt-injection wording only"
 	}
 	return risk.HostileCause()
 }

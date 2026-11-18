@@ -130,7 +130,7 @@ func (sr *SessionRisk) Observe(observation RiskObservation) {
 	if observation.PromptHit && len(kinds) == 0 {
 		kinds = []HostileFindingKind{FindingUnattributed}
 	}
-	observation.PromptHit = observation.PromptHit || len(kinds) > 0
+	observation.PromptHit = observation.PromptHit || (len(kinds) > 0 && !OnlyWordingFindings(kinds))
 	// Source metadata can be inherited across an agent boundary. Only new
 	// observation evidence reasserts PromptHit; propagation keeps its old trigger.
 	sr.FindingKinds = MergeFindingKinds(sr.HostileFindingKinds(), kinds, observation.Source.FindingKinds)

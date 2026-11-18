@@ -170,6 +170,9 @@ func TestSessionInspectionFindingKinds(t *testing.T) {
 		t.Fatalf("inspection lost causes: %+v", snaps)
 	}
 	explanation := buildExplanation(sessionAdminSnapshot{SessionSnapshot: snaps[0]}, nil)
+	if explanation.TaintLevel != session.TaintExternalHostile.String() {
+		t.Fatalf("explain API lost taint level: %+v", explanation)
+	}
 	encoded, err := json.Marshal(explanation)
 	if err != nil {
 		t.Fatal(err)

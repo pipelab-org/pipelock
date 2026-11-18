@@ -9,8 +9,8 @@ import (
 	"strings"
 )
 
-// HostileFindingKind records why an existing hostile observation was made.
-// These labels describe evidence; policy still uses the existing taint level.
+// HostileFindingKind labels evidence that can accompany a hostile observation.
+// Wording alone is warning evidence. Policy uses the session's taint level.
 type HostileFindingKind string
 
 const (
@@ -66,7 +66,21 @@ func MergeFindingKinds(sets ...[]HostileFindingKind) []HostileFindingKind {
 	return out
 }
 
-// HostileFindingKinds returns recorded causes, including conservative recovery
+// OnlyWordingFindings reports whether every finding is a wording suspicion.
+// Unknown kinds count as independent evidence, even before normalization.
+func OnlyWordingFindings(kinds []HostileFindingKind) bool {
+	if len(kinds) == 0 {
+		return false
+	}
+	for _, kind := range kinds {
+		if kind != FindingWording {
+			return false
+		}
+	}
+	return true
+}
+
+// HostileFindingKinds returns recorded findings, including conservative recovery
 // for in-memory states that predate cause attribution.
 func (sr SessionRisk) HostileFindingKinds() []HostileFindingKind {
 	kinds := MergeFindingKinds(sr.FindingKinds)

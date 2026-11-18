@@ -28,7 +28,8 @@ func TestExplainResponseFindingKinds(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(strings.Join(report.Notes, "\n"), tc.want) {
+			notes := strings.Join(report.Notes, "\n")
+			if !strings.Contains(notes, tc.want) || strings.Contains(notes, explainWordingTaintWarning) != (tc.name == "wording") {
 				t.Fatalf("explain omitted cause: %+v", report)
 			}
 		})
@@ -49,10 +50,10 @@ func TestExplainResponseFindingKindsHTTP(t *testing.T) {
 			}
 			notes := strings.Join(report.Notes, "\n")
 			if tc.want == "" {
-				if strings.Contains(notes, "Response finding kinds:") {
+				if strings.Contains(notes, "Response finding kinds:") || strings.Contains(notes, explainWordingTaintWarning) {
 					t.Fatalf("clean response has hostile cause: %s", notes)
 				}
-			} else if !strings.Contains(notes, tc.want) {
+			} else if !strings.Contains(notes, tc.want) || !strings.Contains(notes, explainWordingTaintWarning) {
 				t.Fatalf("explain omitted cause: %s", notes)
 			}
 		})

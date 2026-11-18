@@ -1321,8 +1321,7 @@ prompt_injection_detection:
   enabled: false
 ```
 
-To retain wording observations without blocking, stripping, asking, or producing
-injection-driven taint:
+To log wording matches without blocking, stripping, or asking:
 
 ```yaml
 prompt_injection_detection:
@@ -1335,19 +1334,9 @@ The action accepts `block` and `warn`; `block` preserves the existing surface
 action rather than forcing every surface to block. `enabled: false` takes
 precedence over the action.
 
-With wording detection disabled on local stdio MCP servers, no injection-driven
-taint is produced, so no prompt-injection protection remains there until source
-trust is tracked separately from wording suspicion. Warn-only also produces no
-injection-driven taint. DLP, including the core credential floor, and destination
-controls still protect traffic leaving the machine through Pipelock. SSRF, tool
-policy, tool drift and structural checks, contracts, action limits, and the kill
-switch retain their existing behavior. Tool-name rules, dangerous-capability
-checks and parameter-name checks keep using `mcp_tool_scanning.action`, including
-when wording detection is off or warn-only. Browser shield structural protections
-also remain active. That includes `browser_shield.strip_hidden_traps`, which
-removes hidden HTML and SVG elements and comments that contain instruction words such
-as "ignore" or "instruction"; this setting does not change it. Set
-`browser_shield.strip_hidden_traps: false` to stop that stripping as well.
+Wording alone preserves the source's session taint level in every mode. On local stdio MCP servers, disabling wording detection also removes wording-based response refusals and warnings. DLP, including the core credential floor, and destination controls still protect traffic leaving the machine through Pipelock. SSRF, tool policy, tool drift and structural checks, contracts, action limits, and the kill switch retain their existing behavior.
+
+Tool-name rules, dangerous-capability checks and parameter-name checks keep using `mcp_tool_scanning.action`, including when wording detection is off or warn-only. Browser Shield structural protections also remain active. When enabled, `browser_shield.strip_hidden_traps` removes hidden HTML and SVG elements and comments that contain instruction words such as "ignore" or "instruction". Set `browser_shield.strip_hidden_traps: false` to stop that stripping.
 
 Adaptive enforcement grants traffic-based score reduction only after a response or MCP message that the wording checker assessed and found clean. With wording detection disabled, or with `response_scanning.enabled: false`, clean traffic no longer lowers the score or counts toward `clean_requests_to_deescalate`, and adaptive recovery uses the timers described in [Adaptive Enforcement](#adaptive-enforcement). Those timers also expire residual scores at normal level. Warn-only keeps clean-request recovery for traffic with no wording match.
 
@@ -1652,7 +1641,7 @@ response_scanning:
 
 `reasoning` maps to `warn`; `untrusted` maps to `block`. Pipelock applies the stricter of that mapping and `response_scanning.action`, so `block`, `ask`, and `strip` still apply to a reasoning server. Unknown trust values fail config validation, duplicate server entries fail validation, and entries are surfaced as warnings when `response_scanning.enabled` is false. The trust decision applies to MCP stdio, stdio-to-HTTP, reverse Streamable HTTP/SSE, and WebSocket surfaces because they share the MCP response scan gate. Block logs and JSON-RPC errors name the server, matched pattern, and trust class so operators can see whether a server needs an explicit trust-class review.
 
-Response trust does not make a server trusted for taint propagation. If a reasoning server is also an operator-trusted source whose clean responses should not contaminate the session, add the same `--server-name` value (or the registered `mcp_identities` name) under `taint.trusted_mcp_servers`. Prompt-injection findings still raise hostile taint.
+Response trust does not make a server trusted for taint propagation. If a reasoning server is also an operator-trusted source whose responses should not raise source-based taint, add the same `--server-name` value (or the registered `mcp_identities` name) under `taint.trusted_mcp_servers`. Independent findings such as DLP and tool poisoning can still raise hostile taint.
 
 Launch MCP proxies with a stable server name so the entry can match (the name is an operator label unless the upstream is registered under `mcp_identities`): use `pipelock mcp proxy --server-name analysis-server ...` for per-server wrappers, or `pipelock run --mcp-listen ... --mcp-upstream ... --mcp-server-name analysis-server` for the long-lived MCP listener.
 
@@ -4526,7 +4515,9 @@ Classifies each session by how recently it observed untrusted content and escala
 
 MCP history requires an active taint recorder. Standalone `pipelock mcp proxy` creates its session store only with `session_profiling.enabled: true`; taint enabled alone doesn't create one. Subprocess stdio and stdio-to-HTTP/WS upstreams use invocation-scoped, in-memory state. Listener state uses authenticated principals or the legacy session partition described above. These scopes don't promise persistence across process restarts or state expiry/eviction. `pipelock doctor`, `explain mcp-response`, and the dashboard report configuration prerequisites without claiming live coverage.
 
-For subprocess stdio, content origin is **undeclared**. Clean responses default to `internal_generated`; that label doesn't establish that the content was generated locally or is trustworthy. The embedding API's `TaintExternalSource` option can declare external content, but `mcp proxy` has no corresponding CLI flag. HTTP/SSE and WS upstreams declare external content by default. `taint.trusted_mcp_servers` accepts risk for future clean responses from the resolved server; it doesn't clear existing hostile history, and prompt-injection hits can still raise hostile taint unless `prompt_injection_detection` is off or warn-only. No classification default changes based on these diagnostics.
+For subprocess stdio, content origin is **undeclared**. Responses default to `internal_generated`; that label doesn't establish that the content was generated locally or is trustworthy. The embedding API's `TaintExternalSource` option can declare external content, but `mcp proxy` has no corresponding CLI flag. HTTP/SSE and WS upstreams declare external content by default. `taint.trusted_mcp_servers` affects future source classification for the resolved server and keeps existing hostile history.
+
+A finding based on wording alone is a taint warning. It preserves the response's source classification, even when the same warning appears repeatedly. Independent response findings such as DLP and tool poisoning still raise hostile taint when recorded, including when they accompany a wording warning. Response delivery follows the configured scanner action, and MCP tool policy still checks each tool call.
 
 ```yaml
 taint:
@@ -4538,7 +4529,7 @@ taint:
     - "docs.anthropic.com"
     - "docs.github.com"
     - "developer.mozilla.org"
-  trusted_mcp_servers:                 # MCP server names (--server-name labels or registered names) that do NOT raise session taint
+  trusted_mcp_servers:                 # MCP server names (--server-name labels or registered names) trusted for source classification
     - "docs-cache"
   protected_paths:                     # tainted sessions are blocked (or escalated) on these paths
     - "*/auth/*"
@@ -4572,7 +4563,7 @@ taint:
 | `recent_sources` | int | `10` | How many recent taint sources to keep per session for receipt reporting. |
 | `fail_safe_classification` | bool | `false` | When true, unknown or low-confidence read/tool classifications are treated as protected instead of passing the read-only shortcut. |
 | `allowlisted_domains` | []string | 3 high-trust documentation domains | Responses from these domains do not raise taint. Supports `MatchDomain` wildcards. |
-| `trusted_mcp_servers` | []string | empty | MCP server names whose clean responses do not raise session taint. Entries match the server name, the `pipelock mcp proxy --server-name` operator label or a registered `mcp_identities` name; URLs and slashes are rejected. This does not disable MCP response scanning, and prompt-injection hits can still raise hostile taint unless `prompt_injection_detection` is off or warn-only. |
+| `trusted_mcp_servers` | []string | empty | MCP server names whose responses do not raise source-based taint. Entries match the server name, the `pipelock mcp proxy --server-name` operator label or a registered `mcp_identities` name; URLs and slashes are rejected. Response scanning remains active, and independent findings such as DLP and tool poisoning can still raise hostile taint. |
 | `protected_paths` | []string | 7 patterns (see above) | Globs for file paths or tool args that are blocked for tainted sessions. |
 | `elevated_paths` | []string | `*/config/*`, `*/middleware*` | Globs that trigger warn/ask rather than block. |
 | `trust_overrides` | []object | empty | Narrow exemptions (see below). |
@@ -4648,7 +4639,7 @@ Task boundaries are surfaced on every emitted receipt as `session_task_id`, and 
 
 ### Classification details
 
-- **Taint level** is raised when a response arrives from a non-allowlisted domain, when an MCP tool returns content from an external source, or when prompt-injection signals fire on response content. `taint.allowlisted_domains` applies to URL/HTTP response sources only; MCP response taint is keyed by the server name (the proxy's `--server-name` label, or the registered `mcp_identities` name) through `taint.trusted_mcp_servers`.
+- **Taint level** reflects the response source and any independent findings that raise hostile taint. Wording alone preserves the source level. For URL/HTTP responses, `taint.allowlisted_domains` identifies allowlisted sources. For MCP responses, `taint.trusted_mcp_servers` matches the proxy's `--server-name` label or registered `mcp_identities` name.
 - **Action sensitivity** is derived from the target path (or tool-argument path) against `protected_paths` and `elevated_paths`.
 - **Authority kind** records which authority tier gated the action: `external`, `policy`, `user_broad`, `user_exact`, or `operator_override`.
 

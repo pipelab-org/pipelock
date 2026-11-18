@@ -1925,18 +1925,18 @@ func TestWSProxyInjectionWarn_ContaminatesSessionBeforeSensitiveAction(t *testin
 // allowlist is ever consulted, so wantTainted=false there follows from the
 // target being localhost and NOT from the payload being clean. A clean frame
 // from a non-allowlisted host classifies TaintExternalUntrusted and does set
-// Contaminated; only PromptHit distinguishes clean from injected content here.
+// Contaminated. FindingKinds records wording warnings independently of taint.
 func TestWSProxyResponseTaintControls(t *testing.T) {
 	tests := []struct {
-		name          string
-		injection     bool
-		responseScan  bool
-		taintEnabled  bool
-		wantTainted   bool
-		wantPromptHit bool
+		name         string
+		injection    bool
+		responseScan bool
+		taintEnabled bool
+		wantTainted  bool
+		wantWarning  bool
 	}{
 		{name: "clean trusted response", responseScan: true, taintEnabled: true},
-		{name: "injection response", injection: true, responseScan: true, taintEnabled: true, wantTainted: true, wantPromptHit: true},
+		{name: "injection response", injection: true, responseScan: true, taintEnabled: true, wantWarning: true},
 		{name: "taint disabled", injection: true, responseScan: true},
 	}
 	for _, tt := range tests {
@@ -1972,8 +1972,8 @@ func TestWSProxyResponseTaintControls(t *testing.T) {
 			if risk.Contaminated != tt.wantTainted {
 				t.Fatalf("contaminated = %v, want %v", risk.Contaminated, tt.wantTainted)
 			}
-			if risk.PromptHit != tt.wantPromptHit {
-				t.Fatalf("prompt hit = %v, want %v", risk.PromptHit, tt.wantPromptHit)
+			if risk.PromptHit || session.OnlyWordingFindings(risk.FindingKinds) != tt.wantWarning {
+				t.Fatalf("response finding = %+v, want warning=%t and no hostile latch", risk, tt.wantWarning)
 			}
 		})
 	}

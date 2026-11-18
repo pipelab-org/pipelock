@@ -135,8 +135,8 @@ func TestMCPTaintDiagnostics_PromptHitNoteFollowsWordingMode(t *testing.T) {
 	for _, tc := range []struct {
 		name, body, want, notWant string
 	}{
-		{"default", "", "prompt hits can still raise hostile taint", "raise no hostile taint"},
-		{"explicit_block", "prompt_injection_detection: {enabled: true, action: block}\n", "prompt hits can still raise hostile taint", "raise no hostile taint"},
+		{"default", "", "wording alone does not make the session hostile", "raise no hostile taint"},
+		{"explicit_block", "prompt_injection_detection: {enabled: true, action: block}\n", "wording alone does not make the session hostile", "raise no hostile taint"},
 		{"off", "prompt_injection_detection: {enabled: false}\n", "prompt_injection_detection is off, so wording matches raise no hostile taint", "can still raise hostile taint"},
 		{"warn", "prompt_injection_detection: {action: warn}\n", "prompt_injection_detection is warn-only, so wording matches are logged but raise no hostile taint", "can still raise hostile taint"},
 	} {

@@ -388,6 +388,9 @@ func buildMCPExplainReportWithA2AContext(cfg *config.Config, cfgLabel, serverNam
 	report.Action = effectiveMCPExplainAction(verdict)
 	if kinds := mcp.ResponseTaintFindingKinds(verdict); len(kinds) > 0 {
 		report.Notes = append(report.Notes, "Response finding kinds: "+session.DescribeFindingKinds(kinds)+".")
+		if session.OnlyWordingFindings(kinds) {
+			report.Notes = append(report.Notes, explainWordingTaintWarning)
+		}
 	}
 	report.Patterns = dedupeMCPResponsePatternNames(verdict.Matches, verdict.DLPMatches)
 	report.Allowed = report.Action == config.ActionWarn
