@@ -94,43 +94,59 @@ func TestStdioTaskPermissionNonTerminalApprover(t *testing.T) {
 	}
 }
 
-func TestStdioTaskPermissionRefusesUndeclaredToolsAfterHostileExposure(t *testing.T) {
+func TestStdioTaskPermissionClassifiesCallsAfterExposure(t *testing.T) {
 	t.Parallel()
+	const safeReadReason = "taint_safe_read_only_action"
 	for _, tc := range []struct {
-		name         string
-		tool         string
-		args         string
-		finding      session.HostileFindingKind
-		wantDelivery int
+		name       string
+		tool       string
+		args       string
+		finding    session.HostileFindingKind
+		wantClass  session.ActionClass
+		wantReason string
 	}{
-		{"delegation", "delegate_task", `{"task":"summarize","recipient":"other-agent"}`, session.FindingDLP, 0},
-		{"unknown", "frobnicate_widget", `{"id":"1"}`, session.FindingToolPoisoning, 0},
-		{"read_name", "get_status", `{"path":"/workspace/status.txt"}`, session.FindingDLP, 0},
-		{"clean_write", "write_file", `{"path":"/workspace/status.txt","content":"ready"}`, "", 1},
-		{"wording_only", "delegate_task", `{"task":"summarize"}`, session.FindingWording, 1},
+		{"read", "read_file", `{"path":"/workspace/notes.txt"}`, session.FindingDLP, session.ActionClassRead, safeReadReason},
+		{"list", "list_directory", `{"path":"/workspace"}`, session.FindingDLP, session.ActionClassRead, safeReadReason},
+		{"search", "search_files", `{"query":"notes"}`, session.FindingDLP, session.ActionClassRead, safeReadReason},
+		{"get", "get_file", `{"path":"/workspace/notes.txt"}`, session.FindingDLP, session.ActionClassRead, safeReadReason},
+		{"get_status", "get_status", `{"path":"/workspace/status.txt"}`, session.FindingDLP, session.ActionClassRead, safeReadReason},
+		{"fetch", "fetch_page", `{"url":"https://docs.vendor.example/guide"}`, session.FindingDLP, session.ActionClassBrowse, safeReadReason},
+		{"browse", "browse_docs", `{"url":"https://docs.vendor.example/guide"}`, session.FindingDLP, session.ActionClassBrowse, safeReadReason},
+		{"delegation", "delegate_task", `{"task":"summarize","recipient":"other-agent"}`, session.FindingDLP, session.ActionClassUnknown, session.TaskPermissionRequired},
+		{"unknown", "frobnicate_widget", `{"id":"1"}`, session.FindingDLP, session.ActionClassUnknown, session.TaskPermissionRequired},
+		// Exec arguments take precedence over a read name, even though main classifies this as a read.
+		{"read_with_exec_args", "read_file", `{"path":"/workspace/notes.txt","command":"echo test"}`, session.FindingDLP, session.ActionClassExec, session.TaskPermissionRequired},
+		{"browse_with_mutating_args", "browse_docs", `{"url":"https://docs.vendor.example/guide","method":"POST"}`, session.FindingDLP, session.ActionClassPublish, session.TaskPermissionRequired},
+		{"clean_write", "write_file", `{"path":"/workspace/status.txt","content":"ready"}`, "", session.ActionClassWrite, "trusted_or_allowlisted_context"},
+		{"wording_only", "delegate_task", `{"task":"summarize"}`, session.FindingWording, session.ActionClassUnknown, "no_taint_escalation_required"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Defaults()
 			cfg.Taint.FailSafeClassification = false
 			rec := &taintRecorder{}
-			opts := MCPProxyOpts{Scanner: testScannerWithAction(t, config.ActionWarn), Rec: rec, TaintCfg: &cfg.Taint, TaintExternalSource: true}
+			approver := hitl.New(1, hitl.WithTerminal(false))
+			defer approver.Close()
+			opts := MCPProxyOpts{Scanner: testScannerWithAction(t, config.ActionWarn), Rec: rec, TaintCfg: &cfg.Taint, TaintExternalSource: true, Approver: approver}
 			if tc.finding != "" {
 				observeMCPResponseFindings(opts, []session.HostileFindingKind{tc.finding})
 			}
+			decision := evaluateMCPTaint(opts, tc.tool, tc.args)
+			if decision.ActionClass != tc.wantClass || decision.Result.Reason != tc.wantReason {
+				t.Errorf("class=%s reason=%q, want class=%s reason=%q", decision.ActionClass, decision.Result.Reason, tc.wantClass, tc.wantReason)
+			}
 			msg := principalControlToolCall(1, tc.tool, tc.args)
+			frame := string(msg) + "\n"
 			var sent bytes.Buffer
 			blocked := make(chan BlockedRequest, 1)
-			ForwardScannedInput(transport.NewStdioReader(strings.NewReader(string(msg)+"\n")), transport.NewStdioWriter(&sent), io.Discard,
+			ForwardScannedInput(transport.NewStdioReader(strings.NewReader(frame)), transport.NewStdioWriter(&sent), io.Discard,
 				config.ActionWarn, config.ActionBlock, blocked, nil, nil, opts)
-			if count := bytes.Count(sent.Bytes(), []byte("\n")); count != tc.wantDelivery {
-				t.Errorf("upstream deliveries = %d, want %d", count, tc.wantDelivery)
-			}
 			denial, refused := <-blocked
-			if tc.wantDelivery == 0 && (!refused || !strings.Contains(denial.ErrorMessage, "task_approval_unavailable")) {
-				t.Errorf("denial = %q, want task_approval_unavailable", denial.ErrorMessage)
-			}
-			if tc.wantDelivery > 0 && refused {
-				t.Errorf("unexpected denial: %s", denial.ErrorMessage)
+			if tc.wantReason == session.TaskPermissionRequired {
+				if sent.Len() != 0 || !refused || !strings.Contains(denial.ErrorMessage, "task_approval_unavailable") {
+					t.Errorf("upstream=%s denial=%q, want zero upstream bytes and task_approval_unavailable", sent.String(), denial.ErrorMessage)
+				}
+			} else if sent.String() != frame || refused {
+				t.Errorf("upstream=%s denial=%q, want one unmodified frame and no denial", sent.String(), denial.ErrorMessage)
 			}
 		})
 	}
@@ -177,7 +193,7 @@ func TestTaskPermissionRefusesHostileCallsAcrossMCPTransports(t *testing.T) {
 				Scanner: testScannerForHTTP(t), TaintCfg: &cfg.Taint,
 				Store: taskPermissionTestStore{rec: rec},
 			}
-			msg := principalControlToolCall(1, "get_status", `{"path":"/workspace/summary.txt"}`)
+			msg := principalControlToolCall(1, "frobnicate_widget", `{"id":"1"}`)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			var output lockedHTTPBuffer

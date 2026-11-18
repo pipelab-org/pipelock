@@ -93,10 +93,10 @@ func TestClassifyMCPToolCall(t *testing.T) {
 			wantAction: "/home/developer/.ssh/id_rsa",
 		},
 		{
-			name:       "undeclared browse tool is unknown",
+			name:       "browse tool",
 			toolName:   "browse_url",
 			argsJSON:   `{"url":"https://example.com/docs"}`,
-			wantClass:  session.ActionClassUnknown,
+			wantClass:  session.ActionClassBrowse,
 			wantLevel:  session.SensitivityNormal,
 			wantAction: "https://example.com/docs",
 		},

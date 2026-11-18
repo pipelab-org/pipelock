@@ -4570,13 +4570,13 @@ taint:
 
 ### Common taint decisions
 
-After the current sink records hostile exposure, balanced and strict mode require an exact task permission or one-time terminal approval for consequential MCP calls and visible forward HTTP writes. An undeclared MCP tool is unknown even when its name sounds like a read or delegation. MCP protocol discovery and reads and HTTP GET remain available subject to independent policy. Wording-only findings preserve the source's trust level and do not make a session hostile.
+After the current sink records hostile exposure, balanced and strict mode require an exact task permission or one-time terminal approval for consequential MCP calls and visible forward HTTP writes. MCP protocol discovery, MCP calls classified as reads or browsing, and HTTP GET can still proceed subject to independent policy. The classifier checks for secret, write, publish, and execution evidence before recognizing read or browse intent. Tools without recognized evidence, including delegation tools with no other evidence, remain unknown. Wording-only findings preserve the source's trust level and don't make a session hostile.
 
 Standalone `pipelock mcp proxy` serves its task endpoint on `kill_switch.api_listen` when session profiling is enabled and an operator API token is configured. It serves this route with deferred tool policy disabled. Use a distinct operator address when running multiple processes. Local MCP launches and authenticated MCP listener principals can receive grants. Forward HTTP grants require a bound actor such as a per-agent listener identity. HTTP headers, anonymous IP-based session buckets, and legacy `/trust` overrides carry no task permission.
 
 A grant or terminal approval clears the task check for the exact call. Independent controls, including DLP, tool policy, airlock, live-lock, and the kill switch, may still refuse it. Each terminal prompt has a one-time confirmation. Stdio with piped input cannot prompt on that input. The refusal distinguishes an unavailable channel, an explicit decline, timeout, lost terminal input, and an unconfirmed prompt. See [the session operator guide](cli/session.md#grant-a-task-permission).
 
-Task grants live in the process that recorded the exposure. Anonymous HTTP listener requests remain request-local. The check covers MCP subprocess stdio, stdio-to-HTTP/SSE, verified HTTP listener sessions, MCP WebSocket upstream, and visible forward HTTP. Inspected HTTPS, opaque CONNECT, the generic WebSocket relay, native tool hooks, and other processes have no task permission check. GET and browse requests may still deliver low-entropy query values outside existing DLP and entropy coverage.
+Task grants live in the process that recorded the exposure. Anonymous HTTP listener requests remain request-local. The check covers MCP subprocess stdio, stdio-to-HTTP/SSE, verified HTTP listener sessions, MCP WebSocket upstream, and visible forward HTTP. Inspected HTTPS, opaque CONNECT, the generic WebSocket relay, native tool hooks, and other processes have no task permission check. HTTP GET and MCP calls classified as browsing may still deliver low-entropy query values outside existing DLP and entropy coverage.
 
 An automatic HTTP redirect or in-process MCP tool redirect can change the destination or action. Pipelock refuses those redirected side effects after hostile exposure. Submit the intended operation directly for its own task decision. An independently deferred MCP action is checked again before release.
 
@@ -4618,9 +4618,11 @@ keep their configured enforcement behavior.
 When taint policy returns `decision: "ask"`, Pipelock can only prompt an
 operator if it was started with an interactive terminal. The prompt appears in
 the terminal running Pipelock and accepts allow/block input. In headless
-deployments such as Docker or Kubernetes, there is no terminal to ask, so `ask`
-fails closed and blocks; configure an allowlist, a narrow trust override, or
-`taint.policy: permissive` during tuning, then retry the request.
+deployments such as Docker or Kubernetes, an `ask` without a terminal fails
+closed. In headless mode, satisfy a task-permission ask with an exact task grant.
+A matching trust override can cover an ordinary taint-policy ask. An allowlist
+changes future source observations. During tuning, `taint.policy: permissive`
+records taint without enforcing taint policy.
 
 MCP stdio uses stdin for JSON-RPC: inline terminal approval is unavailable and ask fails closed. Every MCP session (stdio, HTTP/WS bridges, and listener principal, token and legacy partitions) is invocation-scoped, so admin task boundaries and runtime trust grants are rejected for all of them. A verified invocation can receive an exact task permission on the operator task route; that permission lasts until expiry or process exit because task rotation stays rejected. An action-scoped taint.trust_overrides entry without source_match (MCP sources record no origin URL) does not satisfy the task check. pipelock run applies it on reload; standalone pipelock mcp proxy reads taint config only at startup, and the restart that applies an override also discards that invocation's in-memory history. Source trust classifies future observations, including wording-only findings. Existing hostile history remains in effect. Inline approval cannot override a hostile block.
 

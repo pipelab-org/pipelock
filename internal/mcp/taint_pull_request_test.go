@@ -19,9 +19,9 @@ func TestPullRequestReadTaintConsumers(t *testing.T) {
 			class      session.ActionClass
 			policy     session.PolicyDecision
 		}{
-			{"list_pull_requests", `{"owner":"example","repo":"example"}`, session.ActionClassUnknown, session.PolicyAllow},
-			{"search_pull_requests", `{"query":"repo:example/example"}`, session.ActionClassUnknown, session.PolicyAllow},
-			{"pull_request_read", `{"method":"get","owner":"example","repo":"example","pullNumber":1}`, session.ActionClassUnknown, session.PolicyAllow},
+			{"list_pull_requests", `{"owner":"example","repo":"example"}`, session.ActionClassRead, session.PolicyAllow},
+			{"search_pull_requests", `{"query":"repo:example/example"}`, session.ActionClassRead, session.PolicyAllow},
+			{"pull_request_read", `{"method":"get","owner":"example","repo":"example","pullNumber":1}`, session.ActionClassRead, session.PolicyAllow},
 			{"pull_request_read", `{"method":"DELETE"}`, session.ActionClassPublish, session.PolicyAsk},
 			{"request_copilot_review", `{}`, session.ActionClassPublish, session.PolicyAsk},
 		} {
@@ -57,8 +57,6 @@ func TestPullRequestReadTaintConsumers(t *testing.T) {
 				wantCapture := "read"
 				if tc.class == session.ActionClassPublish {
 					wantCapture = "write"
-				} else if tc.tool == "pull_request_read" {
-					wantCapture = "unclassified"
 				}
 				if got := captureMCPFrameActionClass(tc.tool, methodToolsCall, tc.args); got != wantCapture {
 					t.Fatalf("capture class=%q, want %q", got, wantCapture)

@@ -15,8 +15,8 @@ func TestMCPBoundedOperationEvidence(t *testing.T) {
 			for _, failSafe := range []bool{false, true} {
 				t.Run(prefix+tool+map[bool]string{false: "/off", true: "/on"}[failSafe], func(t *testing.T) {
 					got := session.ClassifyMCPToolCallWithOptions(prefix+tool, `{}`, nil, nil, session.ClassificationOptions{FailSafe: failSafe})
-					if got.Class != session.ActionClassUnknown || got.Confident {
-						t.Fatalf("got %+v, want unknown", got)
+					if got.Class != session.ActionClassRead || got.Confident {
+						t.Fatalf("got %+v, want low-confidence read", got)
 					}
 					want := session.SensitivityNormal
 					if failSafe {
@@ -105,11 +105,26 @@ func TestMCPConservativeMutationEvidence(t *testing.T) {
 }
 
 func TestMCPReadOperationObjects(t *testing.T) {
-	for _, name := range []string{"get_comment", "get_merge_status", "get_merge_base", "check_push_status", "get_reply", "show_posts", "query_posts", "describe_pull_request", "check_pull_request"} {
-		got := session.ClassifyMCPToolCallWithOptions(name, `{}`, nil, nil, session.ClassificationOptions{})
-		if got.Class != session.ActionClassUnknown {
-			t.Fatalf("%s: read object classified as mutation: %+v", name, got)
-		}
+	for _, tt := range []struct {
+		name string
+		want session.ActionClass
+	}{
+		{"get_comment", session.ActionClassRead},
+		{"get_merge_status", session.ActionClassRead},
+		{"get_merge_base", session.ActionClassRead},
+		{"get_reply", session.ActionClassRead},
+		{"check_push_status", session.ActionClassUnknown},
+		{"show_posts", session.ActionClassUnknown},
+		{"query_posts", session.ActionClassUnknown},
+		{"describe_pull_request", session.ActionClassUnknown},
+		{"check_pull_request", session.ActionClassUnknown},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := session.ClassifyMCPToolCallWithOptions(tt.name, `{}`, nil, nil, session.ClassificationOptions{})
+			if got.Class != tt.want {
+				t.Fatalf("got %+v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -126,8 +141,8 @@ func TestMCPReadOnlyNamesWithEmbeddedNeedles(t *testing.T) {
 	} {
 		for _, failSafe := range []bool{false, true} {
 			got := session.ClassifyMCPToolCallWithOptions(name, `{}`, nil, nil, session.ClassificationOptions{FailSafe: failSafe})
-			if got.Class != session.ActionClassUnknown {
-				t.Fatalf("%s (failSafe=%v): undeclared name classified as %+v", name, failSafe, got)
+			if got.Class != session.ActionClassRead {
+				t.Fatalf("%s (failSafe=%v): read-only name classified as %+v", name, failSafe, got)
 			}
 		}
 	}

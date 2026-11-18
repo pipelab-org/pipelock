@@ -254,8 +254,19 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 		return ActionClassification{Class: ActionClassExec, Sensitivity: SensitivityProtected, ActionRef: targetPath, OverrideRefs: targets.refs, Confident: true}
 	}
 
-	// The callable name and server-supplied descriptions do not establish
-	// read-only behavior. Standard protocol reads bypass tools/call entirely.
+	// Consider read and browse evidence after the effect checks, including
+	// exec arguments. Calls without recognized evidence remain unknown.
+	if looksLikeBrowseTool(name) || (category == "network" && hasMCPNetworkNameEvidence(toolName, argsJSON)) {
+		if hasMutatingNetworkIntent(argsJSON) {
+			return ActionClassification{Class: ActionClassPublish, Sensitivity: SensitivityElevated, ActionRef: targetURL, OverrideRefs: targets.urls, Confident: true}
+		}
+		return ActionClassification{Class: ActionClassBrowse, Sensitivity: SensitivityNormal, ActionRef: targetURL, OverrideRefs: targets.urls, Confident: true}
+	}
+
+	if looksLikeReadTool(toolName) || category == "read" || category == "list" {
+		return ActionClassification{Class: ActionClassRead, Sensitivity: failSafeSensitivity(opts, pathClass.Confident), ActionRef: targetPath, OverrideRefs: pathClass.OverrideRefs, Confident: pathClass.Confident}
+	}
+
 	refs := pathClass.OverrideRefs
 	if targetPath == "" {
 		targetPath = targetURL
@@ -750,11 +761,31 @@ func looksLikeWriteTool(name string) bool {
 	return containsAny(name, "write", "edit", "update", "create", "delete", "remove", "rename", "move", "patch")
 }
 
+func looksLikeReadTool(name string) bool {
+	// Require a whole read word so an unrelated object name such as "widget"
+	// doesn't count as read evidence just because it contains "get".
+	for _, word := range splitArgumentKey(name) {
+		switch word {
+		case "read", "cat", "open", "list", "search", "find", "get":
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeBrowseTool(name string) bool {
+	return containsAny(name, "browse", "fetch", "scrape", "crawl")
+}
+
 // Preserve conservative substring evidence, including concatenated verbs. Only
 // remove known object words behind an explicit read operation.
 func looksLikePublishTool(name, argsJSON string) bool {
 	return containsAny(mcpOperationEvidenceName(name, argsJSON), "http", "request", "post", "put", "patch", "publish", "send", "webhook") ||
 		hasMutatingNetworkMethod(argsJSON)
+}
+
+func hasMCPNetworkNameEvidence(name, argsJSON string) bool {
+	return containsAny(mcpOperationEvidenceName(name, argsJSON), "fetch", "curl", "wget", "http", "request", "post", "put", "send", "upload", "download", "api")
 }
 
 // Only a complete, known read-object shape can remove noun evidence. Any
