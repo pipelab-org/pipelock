@@ -329,5 +329,18 @@ func isStdinTerminal() bool {
 	if err != nil {
 		return false
 	}
-	return fi.Mode()&os.ModeCharDevice != 0
+	return isTerminalInfo(fi)
+}
+
+// isTerminalInfo treats a character device as a terminal unless it is the null
+// device. A service started with stdin on the null device has no operator to
+// answer, so a prompt there must report an unavailable terminal, not lost input.
+func isTerminalInfo(fi os.FileInfo) bool {
+	if fi.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	if null, err := os.Stat(os.DevNull); err == nil && os.SameFile(fi, null) {
+		return false
+	}
+	return true
 }

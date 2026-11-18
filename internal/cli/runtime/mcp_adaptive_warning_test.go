@@ -42,7 +42,7 @@ dlp:
 	}
 	p := startE2EProxy(t, []string{"proxy", "--config", path, "--upstream", upstream.URL})
 	for i := range 25 {
-		msg := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"coordinate","arguments":{"text":"coordination-marker"}}}`, i+2)
+		msg := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"read_coordination_notes","arguments":{"text":"coordination-marker"}}}`, i+2)
 		got, ok := p.tryCall(msg)
 		if !ok || !json.Valid([]byte(got)) || !strings.Contains(got, `"jsonrpc":"2.0"`) || strings.Contains(got, `"error"`) {
 			t.Fatalf("warning call %d: %q; stderr: %s", i, got, p.stderr.String())

@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -527,4 +529,30 @@ func TestApprover_StripWordResponse(t *testing.T) {
 	if d != DecisionStrip {
 		t.Fatalf("expected DecisionStrip for 'strip', got %d", d)
 	}
+}
+
+func TestIsTerminalInfoRejectsNullDevice(t *testing.T) {
+	null, err := os.Stat(os.DevNull)
+	if err != nil {
+		t.Skipf("null device unavailable: %v", err)
+	}
+	if isTerminalInfo(null) {
+		t.Fatalf("%s must not count as an approval terminal", os.DevNull)
+	}
+	regular, err := os.Stat(filepathForTerminalTest(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isTerminalInfo(regular) {
+		t.Fatal("a regular file must not count as an approval terminal")
+	}
+}
+
+func filepathForTerminalTest(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "stdin")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
