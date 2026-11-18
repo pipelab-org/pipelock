@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
@@ -268,15 +269,20 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 	browse := looksLikeBrowseTool(strings.ToLower(operation)) || (category == "network" && hasMCPNetworkNameEvidence(operation, argsJSON))
 	allowRead := true
 	if opts.HostileMCP {
-		// Match both the camel-case split and the case-folded split, so
-		// irregular capitalization cannot break a leading word into pieces.
+		// Irregular capitalization can split a leading word into fragments,
+		// so also match the case-folded split and a case-insensitive leading
+		// word that ends at a word boundary.
 		words := splitArgumentKey(operation)
 		folded := splitArgumentKey(strings.ToLower(operation))
 		switch {
 		case isMCPBrowserAgentDelegation(words) || isMCPBrowserAgentDelegation(folded) ||
-			isMCPDelegation(words) || isMCPDelegation(folded):
+			isMCPBrowserAgentDelegationName(operation) ||
+			isMCPDelegation(words) || isMCPDelegation(folded) ||
+			hasLeadingMCPWord(operation, "spawn") || hasLeadingMCPWord(operation, "delegate") ||
+			hasLeadingMCPWord(operation, "dispatch"):
 			browse, allowRead = false, false
-		case startsWithMCPWord(words, "browser") || startsWithMCPWord(folded, "browser"):
+		case startsWithMCPWord(words, "browser") || startsWithMCPWord(folded, "browser") ||
+			hasLeadingMCPWord(operation, "browser"):
 			browse, allowRead = isMCPBrowserInspection(operation, argsJSON), false
 		}
 	}
@@ -309,6 +315,34 @@ func isMCPBrowserAgentDelegation(words []string) bool {
 
 func startsWithMCPWord(words []string, word string) bool {
 	return len(words) > 0 && words[0] == word
+}
+
+// hasLeadingMCPWord reports whether operation begins with word in any
+// capitalization and the word ends there: at the end of the name or before a
+// character that is not a lowercase letter. "bRoWsErClick" and "browser_x"
+// match; "browserless" does not.
+func hasLeadingMCPWord(operation, word string) bool {
+	if len(operation) < len(word) || !strings.EqualFold(operation[:len(word)], word) {
+		return false
+	}
+	if len(operation) == len(word) {
+		return true
+	}
+	next, _ := utf8.DecodeRuneInString(operation[len(word):])
+	return !unicode.IsLower(next)
+}
+
+// isMCPBrowserAgentDelegationName matches the Browser Use retry tool in any
+// capitalization with separators removed, which also covers mixed-case camel
+// forms that the word splits cannot recover.
+func isMCPBrowserAgentDelegationName(operation string) bool {
+	compact := strings.Map(func(r rune) rune {
+		if r == '_' || r == '-' || r == '.' || unicode.IsSpace(r) {
+			return -1
+		}
+		return unicode.ToLower(r)
+	}, operation)
+	return compact == "retrywithbrowseruseagent"
 }
 
 func isMCPDelegation(words []string) bool {

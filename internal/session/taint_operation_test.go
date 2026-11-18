@@ -87,6 +87,9 @@ func TestMCPClassifyHostileBrowserOperations(t *testing.T) {
 		{"BROWSER_CLICK", `{}`, session.ActionClassUnknown},
 		{"mcp__playwright__bRoWsEr_click", `{}`, session.ActionClassUnknown},
 		{"BrOwSeR_navigate", `{"url":"https://docs.vendor.example/guide"}`, session.ActionClassUnknown},
+		{"bRoWsErClick", `{}`, session.ActionClassUnknown},
+		{"BrOwSeRtAbS", `{}`, session.ActionClassBrowse},
+		{"BrowserlessGet", `{}`, session.ActionClassBrowse},
 	} {
 		t.Run(tc.tool+"/"+tc.args, func(t *testing.T) {
 			classified := session.ClassifyMCPToolCallWithOptions(tc.tool, tc.args, nil, nil, session.ClassificationOptions{HostileMCP: true})
@@ -129,6 +132,9 @@ func TestMCPClassifyHostileDelegationOperations(t *testing.T) {
 		{"oPeN_SuBtAsK", session.ActionClassUnknown},
 		{"SpAwN_fetch", session.ActionClassExec},
 		{"rEtRy_WiTh_BrOwSeR_uSe_AgEnT", session.ActionClassUnknown},
+		{"DeLeGaTeGetTask", session.ActionClassUnknown},
+		{"dIsPaTcHGetJob", session.ActionClassWrite},
+		{"rEtRyWiThBrOwSeRuSeAgEnT", session.ActionClassUnknown},
 	} {
 		t.Run(tc.tool, func(t *testing.T) {
 			classified := session.ClassifyMCPToolCallWithOptions(tc.tool, `{}`, nil, nil, session.ClassificationOptions{HostileMCP: true})
