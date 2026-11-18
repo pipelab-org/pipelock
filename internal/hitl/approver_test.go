@@ -581,3 +581,49 @@ func filepathForTerminalTest(t *testing.T) string {
 	}
 	return path
 }
+
+func TestAskOutcomeRequiresCurrentConfirmation(t *testing.T) {
+	t.Parallel()
+	const confirmation = "current-action"
+	for _, tc := range []struct {
+		name, input string
+		want        Outcome
+	}{
+		{"confirmed", "Y CURRENT-ACTION\n", OutcomeAllow},
+		{"bare_allow", "y\n", OutcomeUnconfirmed},
+		{"old_confirmation", "y earlier-action\n", OutcomeUnconfirmed},
+		{"strip", "s\n", OutcomeUnconfirmed},
+		{"declined", "no\n", OutcomeDeclined},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, output := testApprover(t, tc.input, 5)
+			if got := a.AskOutcome(&Request{Confirmation: confirmation}); got != tc.want {
+				t.Errorf("outcome = %v, want %v", got, tc.want)
+			}
+			if !strings.Contains(output.String(), "enter y "+confirmation) {
+				t.Errorf("prompt did not explain exact confirmation: %q", output.String())
+			}
+		})
+	}
+}
+
+func TestAskOutcomeReportsShutdownBeforeEnqueue(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	a := &Approver{ctx: ctx, queue: make(chan request), isTerminal: true}
+	if got := a.AskOutcome(&Request{}); got != OutcomeUnavailable {
+		t.Errorf("outcome = %v, want unavailable after channel shutdown", got)
+	}
+}
+
+func TestIsTerminalInfoRecognizesControllingTerminalDevice(t *testing.T) {
+	t.Parallel()
+	fi, err := os.Stat("/dev/tty")
+	if err != nil {
+		t.Skipf("controlling terminal device unavailable: %v", err)
+	}
+	if !isTerminalInfo(fi) {
+		t.Fatal("controlling terminal device was treated as unavailable")
+	}
+}

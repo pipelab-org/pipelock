@@ -18,6 +18,7 @@ func TestMCPClassifyOperationEvidence(t *testing.T) {
 		{"mcp__fetch__frobnicate", session.ActionClassUnknown},
 		{"mcp__browse__x", session.ActionClassUnknown},
 		{"mcp__download__frobnicate", session.ActionClassUnknown},
+		{"service.area.frobnicate", session.ActionClassUnknown},
 		{"mcp__fs__read_text_file", session.ActionClassRead},
 		{"mcp__service__read_file", session.ActionClassRead},
 		{"mcp__service__fetch_page", session.ActionClassBrowse},

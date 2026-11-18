@@ -21,15 +21,17 @@ import (
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type taskApprovalOutput struct {
-	input *io.PipeWriter
-	first string
-	count int
+	input        *io.PipeWriter
+	first        string
+	count        int
+	beforeAnswer func()
 }
 
 func (w *taskApprovalOutput) Write(p []byte) (int, error) {
@@ -39,6 +41,9 @@ func (w *taskApprovalOutput) Write(p []byte) (int, error) {
 		w.count++
 		if w.count == 1 {
 			w.first = challenge
+		}
+		if w.beforeAnswer != nil {
+			w.beforeAnswer()
 		}
 		// Approve the first operation. Offer the same response again even
 		// though the second operation has different arguments.
@@ -163,22 +168,33 @@ func (taskPermissionTestStore) Delete(string)                         {}
 
 type httpTaskPermissionRecorder struct {
 	listenerDiagnosisRecorder
-	subject string
-	action  session.TaskAction
-	rotated bool
-	checks  int
+	subject  string
+	action   session.TaskAction
+	rotated  bool
+	checks   int
+	expireAt int
 }
 
 func (r *httpTaskPermissionRecorder) BindTaskSubject(subject string) { r.subject = subject }
 
 func (r *httpTaskPermissionRecorder) TaskPolicySnapshot(subject string, action session.TaskAction) (session.SessionRisk, session.TaskContext, bool) {
 	r.checks++
+	matched := subject != "" && subject == r.subject && action == r.action && !r.rotated
+	if r.expireAt > 0 && r.checks >= r.expireAt {
+		matched = false
+	}
+	return r.RiskSnapshot(), r.TaskSnapshot(), matched
+}
+
+func (r *httpTaskPermissionRecorder) TaskSnapshot() session.TaskContext {
 	task := session.TaskContext{CurrentTaskID: "original-task"}
 	if r.rotated {
 		task.CurrentTaskID = "next-task"
 	}
-	return r.RiskSnapshot(), task, subject != "" && subject == r.subject && action == r.action && !r.rotated
+	return task
 }
+
+func (*httpTaskPermissionRecorder) RuntimeTrustOverrides() []session.TrustOverride { return nil }
 
 func TestMCPTaskReleaseRequiresAdmittedCallableIdentity(t *testing.T) {
 	cfg := config.Defaults()
@@ -270,74 +286,345 @@ func TestHTTPTaskPermissionRechecksAtSend(t *testing.T) {
 
 func TestTaskPermissionRefusesHostileCallsAcrossMCPTransports(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"stdio_to_http", "http_listener", "websocket"} {
+	for _, mode := range []string{"stdio", "stdio_to_http", "http_listener", "websocket"} {
 		t.Run(mode, func(t *testing.T) {
-			var deliveries atomic.Int32
-			answer := []byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[]}}`)
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if mode == "websocket" {
-					conn, _, _, err := (ws.HTTPUpgrader{}).Upgrade(r, w)
-					if err != nil {
-						return
+			for _, tc := range []struct {
+				name, answer, reason string
+				terminal, timeout    bool
+			}{
+				{name: "unavailable", reason: "task_approval_unavailable"},
+				{name: "declined", answer: "n\n", terminal: true, reason: "task_approval_denied"},
+				{name: "timed_out", timeout: true, terminal: true, reason: "task_approval_timeout"},
+				{name: "input_lost", terminal: true, reason: "task_approval_input_lost"},
+				{name: "unconfirmed", answer: "y\n", terminal: true, reason: "task_approval_unconfirmed"},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					t.Parallel()
+					var input io.Reader = strings.NewReader(tc.answer)
+					if tc.timeout {
+						r, w := io.Pipe()
+						t.Cleanup(func() {
+							_ = w.Close()
+							_ = r.Close()
+						})
+						input = r
 					}
-					defer func() { _ = conn.Close() }()
-					if _, _, err := gobwasutil.ReadClientData(conn); err == nil {
-						deliveries.Add(1)
-						_ = gobwasutil.WriteServerMessage(conn, ws.OpText, answer)
+					var approver *hitl.Approver
+					if tc.terminal {
+						approver = hitl.New(1, hitl.WithTerminal(true), hitl.WithInput(input), hitl.WithOutput(io.Discard))
+						t.Cleanup(approver.Close)
 					}
-					return
-				}
-				if r.Method == http.MethodPost {
-					deliveries.Add(1)
-					w.Header().Set("Content-Type", "application/json")
-					_, _ = w.Write(answer)
-					return
-				}
-				w.WriteHeader(http.StatusMethodNotAllowed)
-			}))
-			defer upstream.Close()
-
-			rec := &listenerDiagnosisRecorder{}
-			rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingToolPoisoning}))
-			cfg := config.Defaults()
-			opts := MCPProxyOpts{
-				Scanner: testScannerForHTTP(t), TaintCfg: &cfg.Taint,
-				Store: taskPermissionTestStore{rec: rec},
-			}
-			msg := principalControlToolCall(1, "frobnicate_widget", `{"id":"1"}`)
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			var output lockedHTTPBuffer
-			switch mode {
-			case "stdio_to_http":
-				if err := RunHTTPProxy(ctx, strings.NewReader(string(msg)+"\n"), &output, io.Discard, upstream.URL, nil, opts); err != nil {
-					t.Fatal(err)
-				}
-			case "http_listener":
-				opts.ListenerBearerToken = principalStateTestBearer
-				opts.ListenerPrincipalResolver = func(*http.Request) (ListenerPrincipal, error) {
-					return ListenerPrincipal{Provider: "test", Subject: "operator-test-agent"}, nil
-				}
-				baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
-				_, response := mustPrincipalControlRPC(t, baseURL, principalStateTestBearer, msg)
-				_, _ = output.Write([]byte(response))
-			case "websocket":
-				r, w := io.Pipe()
-				done := make(chan error, 1)
-				go func() { done <- RunWSProxy(ctx, r, &output, io.Discard, wsURL(upstream), opts) }()
-				defer func() { _ = w.Close() }()
-				if _, err := w.Write(append(msg, '\n')); err != nil {
-					t.Fatal(err)
-				}
-				testwait.For(t, time.Second, func() bool { return output.contains("task_approval_unavailable") }, "MCP WebSocket refusal")
-				_ = w.Close()
-				if err := <-done; err != nil {
-					t.Fatal(err)
-				}
-			}
-			if !output.contains("task_approval_unavailable") || deliveries.Load() != 0 {
-				t.Fatalf("upstream deliveries=%d response=%s", deliveries.Load(), output.String())
+					observed := &allReceipts{}
+					emitter, _, _, _ := newReceiptTestHarnessWithObserver(t, observed.observe)
+					rec := &listenerDiagnosisRecorder{}
+					rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingToolPoisoning}))
+					cfg := config.Defaults()
+					opts := MCPProxyOpts{
+						Scanner: testScannerForHTTP(t), TaintCfg: &cfg.Taint, Approver: approver,
+						Store: taskPermissionTestStore{rec: rec}, Rec: rec, ReceiptEmitter: emitter,
+					}
+					msg := principalControlToolCall(1, "frobnicate_widget", `{"id":"1"}`)
+					response, deliveries := runTaskPermissionMCPCall(t, mode, tc.reason, msg, opts)
+					if !strings.Contains(response, tc.reason) || deliveries != 0 {
+						t.Fatalf("upstream deliveries=%d response=%q, want zero deliveries and %q", deliveries, response, tc.reason)
+					}
+					if records := observed.snapshot(); len(records) != 1 || records[0].Verdict != config.ActionBlock || records[0].Pattern != tc.reason {
+						t.Errorf("receipts = %+v, want one block with %q", records, tc.reason)
+					}
+				})
 			}
 		})
+	}
+}
+
+func runTaskPermissionMCPCall(t *testing.T, mode, reason string, msg []byte, opts MCPProxyOpts) (string, int) {
+	t.Helper()
+	if mode == "stdio" {
+		opts.Transport = deferred.SurfaceMCPStdio
+		var sent bytes.Buffer
+		blocked := make(chan BlockedRequest, 1)
+		ForwardScannedInput(transport.NewStdioReader(strings.NewReader(string(msg)+"\n")),
+			transport.NewStdioWriter(&sent), io.Discard, config.ActionWarn, config.ActionBlock, blocked, nil, nil, opts)
+		denial := <-blocked
+		return denial.ErrorMessage, bytes.Count(sent.Bytes(), []byte("\n"))
+	}
+
+	var deliveries atomic.Int32
+	answer := []byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[]}}`)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if mode == "websocket" {
+			conn, _, _, err := (ws.HTTPUpgrader{}).Upgrade(r, w)
+			if err != nil {
+				return
+			}
+			defer func() { _ = conn.Close() }()
+			if _, _, err := gobwasutil.ReadClientData(conn); err == nil {
+				deliveries.Add(1)
+				_ = gobwasutil.WriteServerMessage(conn, ws.OpText, answer)
+			}
+			return
+		}
+		if r.Method == http.MethodPost {
+			deliveries.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(answer)
+			return
+		}
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}))
+	t.Cleanup(upstream.Close)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	var output lockedHTTPBuffer
+	switch mode {
+	case "stdio_to_http":
+		if err := RunHTTPProxy(ctx, strings.NewReader(string(msg)+"\n"), &output, io.Discard, upstream.URL, nil, opts); err != nil {
+			t.Fatal(err)
+		}
+	case "http_listener":
+		opts.ListenerBearerToken = principalStateTestBearer
+		opts.ListenerPrincipalResolver = func(*http.Request) (ListenerPrincipal, error) {
+			return ListenerPrincipal{Provider: "test", Subject: "operator-test-agent"}, nil
+		}
+		baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+		_, response := mustPrincipalControlRPC(t, baseURL, principalStateTestBearer, msg)
+		_, _ = output.Write([]byte(response))
+	case "websocket":
+		r, w := io.Pipe()
+		defer func() { _ = w.Close() }()
+		done := make(chan error, 1)
+		go func() { done <- RunWSProxy(ctx, r, &output, io.Discard, wsURL(upstream), opts) }()
+		if _, err := w.Write(append(msg, '\n')); err != nil {
+			t.Fatal(err)
+		}
+		testwait.For(t, 3*time.Second, func() bool { return output.contains(reason) || output.contains(`"result"`) }, "MCP WebSocket response")
+		_ = w.Close()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	default:
+		t.Fatalf("unknown transport %q", mode)
+	}
+	return output.String(), int(deliveries.Load())
+}
+
+func TestMCPTaskPermissionRefusesIfApprovalOutlivesTask(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	rec := &httpTaskPermissionRecorder{}
+	rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingDLP}))
+	r, w := io.Pipe()
+	t.Cleanup(func() {
+		_ = w.Close()
+		_ = r.Close()
+	})
+	prompt := &taskApprovalOutput{input: w, beforeAnswer: func() { rec.rotated = true }}
+	approver := hitl.New(1, hitl.WithInput(r), hitl.WithOutput(prompt), hitl.WithTerminal(true))
+	t.Cleanup(approver.Close)
+	opts := MCPProxyOpts{
+		Scanner: testScannerForHTTP(t), Rec: rec, TaintCfg: &cfg.Taint, Approver: approver,
+		ServerBinding: "test-server", ServerRevision: "v1", TaskOperatorAPI: true, taskSubject: "verified-worker",
+	}
+	response, deliveries := runTaskPermissionMCPCall(t, "stdio", session.TaskApprovalStale, []byte(deferKillTestCall), opts)
+	if !strings.Contains(response, "the task changed while approval was pending") || deliveries != 0 || prompt.count != 1 {
+		t.Fatalf("response=%q deliveries=%d prompts=%d, want refusal of the stale approval", response, deliveries, prompt.count)
+	}
+}
+
+func TestMCPTaskPermissionRefusesChangedRelease(t *testing.T) {
+	t.Parallel()
+	const missing = session.TaskPermissionRequired + " (the action needs a current task permission or approval before release)"
+	const redirected = session.TaskPermissionRequired + " (a tool-policy redirect changes the approved destination)"
+	for _, tc := range []struct {
+		name, mode, policyAction, reason string
+		expireAt                         int
+	}{
+		{"stdio_clean", "stdio", "", missing, 2},
+		{"stdio_warn", "stdio", config.ActionWarn, missing, 2},
+		{"stdio_redirect", "stdio", config.ActionRedirect, redirected, 0},
+		{"bridge_input_finalizer", "stdio_to_http", "", missing, 2},
+		{"bridge_redirect", "stdio_to_http", config.ActionRedirect, redirected, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			rec := &httpTaskPermissionRecorder{expireAt: tc.expireAt}
+			rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingDLP}))
+			opts := MCPProxyOpts{
+				Scanner: testScannerForHTTP(t), TaintCfg: &cfg.Taint, Rec: rec,
+				Store: taskPermissionTestStore{rec: rec}, ServerBinding: "test-server", taskSubject: "verified-worker",
+			}
+			msg := []byte(deferKillTestCall)
+			rec.BindTaskSubject(opts.taskSubject)
+			rec.action = mcpTaskAction(opts, ParseMCPFrame(msg))
+			if tc.policyAction != "" {
+				opts.PolicyCfg = policy.New(config.MCPToolPolicy{Enabled: true, Action: config.ActionWarn, Rules: []config.ToolPolicyRule{
+					{Name: "route-tool", ToolPattern: "^" + ParseMCPFrame(msg).ToolCallName + "$", Action: tc.policyAction, RedirectProfile: "local"},
+				}})
+			}
+			response, deliveries := runTaskPermissionMCPCall(t, tc.mode, tc.reason, msg, opts)
+			if !strings.Contains(response, tc.reason) || deliveries != 0 {
+				t.Fatalf("response=%q deliveries=%d, want %q and no delivery", response, deliveries, tc.reason)
+			}
+		})
+	}
+}
+
+func TestHTTPTaskPermissionBridgeRefusesAtSendWithoutNotificationReply(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		notification bool
+		writeFails   bool
+	}{
+		{name: "request"},
+		{name: "notification", notification: true},
+		{name: "reply_write_error", writeFails: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream, calls := countingUpstream(t)
+			cfg := config.Defaults()
+			rec := &httpTaskPermissionRecorder{expireAt: 3}
+			rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingDLP}))
+			observed := &allReceipts{}
+			emitter, _, _, _ := newReceiptTestHarnessWithObserver(t, observed.observe)
+			opts := MCPProxyOpts{
+				Scanner: testScannerForHTTP(t), TaintCfg: &cfg.Taint,
+				Store: taskPermissionTestStore{rec: rec}, ServerBinding: "test-server", ReceiptEmitter: emitter, RequireReceipts: true,
+			}
+			frame := ParseMCPFrame([]byte(deferKillTestCall))
+			msg := deferKillTestCall
+			if tc.notification {
+				msg = makeRequest(1, methodToolsCall, map[string]any{"name": frame.ToolCallName, "arguments": frame.Args})
+				msg = strings.Replace(msg, `"id":1,`, "", 1)
+				if len(ParseMCPFrame([]byte(msg)).ID) != 0 {
+					t.Fatal("fixture still has a request ID")
+				}
+			}
+			rec.action = mcpTaskAction(opts, ParseMCPFrame([]byte(msg)))
+			var output, logs bytes.Buffer
+			var client io.Writer = &output
+			if tc.writeFails {
+				client = &scanFailingWriter{err: io.ErrClosedPipe}
+			}
+			if err := RunHTTPProxy(t.Context(), strings.NewReader(msg+"\n"), client, &logs, upstream.URL, nil, opts); err != nil {
+				t.Fatal(err)
+			}
+			if calls.Load() != 0 || rec.checks != 3 {
+				t.Fatalf("upstream deliveries=%d permission checks=%d output=%q, want refusal at send", calls.Load(), rec.checks, output.String())
+			}
+			switch {
+			case tc.notification:
+				if output.Len() != 0 {
+					t.Errorf("notification received a JSON-RPC reply: %q", output.String())
+				}
+			case tc.writeFails:
+				if !strings.Contains(logs.String(), "failed to send task refusal") {
+					t.Errorf("denial write failure was not logged: %q", logs.String())
+				}
+			default:
+				if !strings.Contains(output.String(), session.TaskPermissionRequired) {
+					t.Errorf("response = %q, want task permission refusal", output.String())
+				}
+			}
+			records := observed.snapshot()
+			if len(records) != 2 || records[0].ActionID != records[1].ActionID || records[1].Verdict != config.ActionBlock ||
+				!strings.Contains(records[1].Pattern, "reason="+session.TaskPermissionRequired) {
+				t.Errorf("receipts = %+v, want the intent closed by a task-permission block", records)
+			}
+		})
+	}
+}
+
+func TestMCPTaskPermissionExplainsOperatorGrant(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	rec := &listenerDiagnosisRecorder{}
+	rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingDLP}))
+	opts := MCPProxyOpts{
+		Scanner: testScannerForHTTP(t), Rec: rec, TaintCfg: &cfg.Taint,
+		ServerBinding: "test-server", ServerRevision: "v1", TaskOperatorAPI: true, taskSubject: "verified-worker",
+	}
+	msg := []byte(deferKillTestCall)
+	response, deliveries := runTaskPermissionMCPCall(t, "stdio", "task_approval_unavailable", msg, opts)
+	if deliveries != 0 || !strings.Contains(response, "POST /api/v1/sessions/{key}/task") ||
+		!strings.Contains(response, "destination test-server/v1, digest "+mcpTaskAction(opts, ParseMCPFrame(msg)).Digest) {
+		t.Fatalf("response=%q deliveries=%d, want refusal with the operator route and exact action", response, deliveries)
+	}
+}
+
+func TestMCPTaskReleaseRefusesMissingCallableWhenTaintEnabled(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		enabled bool
+		want    string
+	}{
+		{"enabled", true, session.TaskPermissionRequired + " (the action has no callable identity)"},
+		{"disabled", false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Taint.Enabled = tc.enabled
+			rec := &listenerDiagnosisRecorder{}
+			rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingDLP}))
+			opts := MCPProxyOpts{Rec: rec, TaintCfg: &cfg.Taint}
+			frame := ParseMCPFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}`))
+			if got := mcpTaskReleaseRefusal(opts, frame, taintDecision{}, false); got != tc.want {
+				t.Errorf("release refusal = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDeferredStdioTaskPermissionRefusesReleaseAfterHostileExposure(t *testing.T) {
+	t.Parallel()
+	manager := newDeferKillManager(t)
+	observed := &resolutionReceipts{}
+	emitter, _, _, _ := newReceiptTestHarnessWithObserver(t, observed.observe)
+	rules := deferApprovalPolicy(config.DeferResolverProfile{})
+	rules.Rules[0].ResolutionPolicy.ResolverProfile = ""
+	cfg := config.Defaults()
+	rec := &listenerDiagnosisRecorder{}
+	opts := MCPProxyOpts{
+		Scanner: testInputScanner(t), PolicyCfg: rules, DeferManager: manager, ReceiptEmitter: emitter,
+		Transport: deferred.SurfaceMCPStdio, Rec: rec, TaintCfg: &cfg.Taint,
+	}
+	input, send := io.Pipe()
+	var upstream syncBuffer
+	blocked := make(chan BlockedRequest, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ForwardScannedInput(transport.NewStdioReader(input), transport.NewStdioWriter(&upstream), io.Discard,
+			config.ActionWarn, config.ActionBlock, blocked, nil, nil, opts)
+	}()
+	t.Cleanup(func() {
+		_ = send.Close()
+		<-done
+	})
+	if _, err := io.WriteString(send, deferKillTestCall); err != nil {
+		t.Fatal(err)
+	}
+	testwait.For(t, 5*time.Second, func() bool { return len(manager.Snapshot()) == 1 }, "deferred stdio action")
+	held := manager.Snapshot()[0]
+	rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingDLP}))
+	if err := manager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceApproval); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case denial := <-blocked:
+		if denial.ErrorCode != -32002 || denial.ErrorMessage != "pipelock: deferred action denied" {
+			t.Errorf("deferred refusal = %d %q", denial.ErrorCode, denial.ErrorMessage)
+		}
+	default:
+		t.Error("deferred task denial produced no client refusal")
+	}
+	if upstream.String() != "" {
+		t.Errorf("deferred action was delivered upstream: %q", upstream.String())
+	}
+	assertTerminalJournal(t, manager, held.DeferID, deferred.StateResolvedBlock, deferred.SourceApproval)
+	if records := observed.snapshot(); len(records) != 1 || records[0].Verdict != config.ActionBlock {
+		t.Errorf("resolution receipts = %+v, want one final block", records)
 	}
 }
