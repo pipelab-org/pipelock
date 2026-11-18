@@ -279,7 +279,17 @@ func mcpTaskReleaseRefusal(opts MCPProxyOpts, frame MCPFrame, admitted taintDeci
 			return ""
 		}
 	default:
-		return ""
+		// Release only what the current policy still allows. A decision that
+		// now asks or blocks (for example a fail-safe read after the session
+		// turned hostile) is refused unless this exact action was approved.
+		switch current.Result.Decision {
+		case session.PolicyAllow, session.PolicyWarn:
+			return ""
+		case session.PolicyAsk:
+			if !redirected && admitted.RequiresReauth && current.taskAction == admitted.taskAction {
+				return ""
+			}
+		}
 	}
 	if redirected {
 		return session.TaskPermissionRequired + " (a tool-policy redirect changes the approved destination)"

@@ -216,6 +216,36 @@ func TestMCPTaskReleaseRequiresAdmittedCallableIdentity(t *testing.T) {
 	}
 }
 
+func TestMCPTaskReleaseRefusesNonAllowDecisionAfterHostileExposure(t *testing.T) {
+	read := ParseMCPFrame([]byte(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"notes.txt"}}}`))
+	for _, tc := range []struct {
+		name       string
+		failSafe   bool
+		wantRefuse bool
+	}{
+		// Admitted while clean; after a hostile finding the fail-safe
+		// low-confidence read no longer evaluates to allow, so release
+		// must refuse it instead of falling through.
+		{"fail_safe_low_confidence_read", true, true},
+		{"ordinary_read", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Taint.FailSafeClassification = tc.failSafe
+			rec := &listenerDiagnosisRecorder{}
+			rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingDLP}))
+			opts := MCPProxyOpts{Rec: rec, TaintCfg: &cfg.Taint}
+			reason := mcpTaskReleaseRefusal(opts, read, taintDecision{}, false)
+			if got := reason != ""; got != tc.wantRefuse {
+				t.Fatalf("release refusal = %q, want refusal %t", reason, tc.wantRefuse)
+			}
+			if tc.wantRefuse && !strings.Contains(reason, session.TaskPermissionRequired) {
+				t.Fatalf("release refusal = %q, want %s", reason, session.TaskPermissionRequired)
+			}
+		})
+	}
+}
+
 func TestDeferredHTTPReleaseChecksTaskPermissionWithoutAuthorityVerifier(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
