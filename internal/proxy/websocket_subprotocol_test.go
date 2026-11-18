@@ -23,6 +23,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -138,9 +139,10 @@ func TestWSSubprotocolNegotiation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			target, offers, _ := wsSelectingBackend(t, tt.choose)
-			proxyAddr, p, cleanup := setupWSProxyDefaultWithProxy(t, func(cfg *config.Config) {
+			handlerDone := make(chan struct{})
+			proxyAddr, p, cleanup := setupWSProxyWithHandlerDone(t, func(cfg *config.Config) {
 				cfg.FlightRecorder.RequireReceipts = tt.requireReceipts
-			})
+			}, nil, func() { close(handlerDone) })
 			defer cleanup()
 			if tt.requireReceipts {
 				p.receiptEmitterPtr.Store(newReceiptProxyHelper(t).emitter)
@@ -160,6 +162,18 @@ func TestWSSubprotocolNegotiation(t *testing.T) {
 				t.Fatalf("upstream saw offers %q, want %q", got, tt.wantOffers)
 			}
 			requireWSEcho(t, conn)
+			if !tt.requireReceipts {
+				return
+			}
+			// The relay writes its closing receipts into this test's temporary
+			// directory, and server shutdown does not wait for a hijacked
+			// connection. Wait for the handler before the directory is removed.
+			_ = conn.Close()
+			select {
+			case <-handlerDone:
+			case <-time.After(testwait.Deadline(10 * time.Second)):
+				t.Fatal("WebSocket handler did not finish after the client closed")
+			}
 		})
 	}
 }
