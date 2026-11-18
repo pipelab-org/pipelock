@@ -181,6 +181,67 @@ func TestMCPWatchMutationWithIdentifierArguments(t *testing.T) {
 	}
 }
 
+func TestUploadVerbIsNotASafeBrowse(t *testing.T) {
+	pm := session.PolicyMatrix{Profile: "balanced"}
+	for _, name := range []string{
+		"upload_data", "upload_file", "file_upload", "uploadFile", "Upload_File",
+		"mcp__storage__upload_file", "browser_file_upload", "api_upload",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := session.ClassifyMCPToolCallWithOptions(name, `{}`, nil, nil, session.ClassificationOptions{})
+			if got.Class != session.ActionClassPublish {
+				t.Fatalf("got %+v, want publish", got)
+			}
+			hostile := pm.EvaluateWithOptions(session.TaintExternalHostile, got.Class, got.Sensitivity, session.AuthorityUserBroad, session.PolicyEvaluateOptions{
+				CheckTaskPermission:     true,
+				ClassificationConfident: got.Confident,
+			})
+			if hostile.Decision != session.PolicyAsk || hostile.Reason != session.TaskPermissionRequired {
+				t.Fatalf("hostile decision %+v, want task permission", hostile)
+			}
+			clean := pm.EvaluateWithOptions(session.TaintTrusted, got.Class, got.Sensitivity, session.AuthorityUserBroad, session.PolicyEvaluateOptions{
+				CheckTaskPermission:     true,
+				ClassificationConfident: got.Confident,
+			})
+			if clean.Decision != session.PolicyAllow || clean.Reason != "trusted_or_allowlisted_context" {
+				t.Fatalf("clean decision %+v, want allow", clean)
+			}
+		})
+	}
+
+	// The noun "uploads" and a server id are not the upload verb. A list stays a
+	// read. An unrelated tool on a server named upload stays unknown.
+	reads := []string{"list_uploads", "mcp__upload__list_files"}
+	for _, name := range reads {
+		got := session.ClassifyMCPToolCallWithOptions(name, `{}`, nil, nil, session.ClassificationOptions{})
+		if got.Class != session.ActionClassRead {
+			t.Fatalf("%s: got %+v, want read", name, got)
+		}
+	}
+	unknown := session.ClassifyMCPToolCallWithOptions("mcp__upload__frobnicate", `{}`, nil, nil, session.ClassificationOptions{})
+	if unknown.Class != session.ActionClassUnknown {
+		t.Fatalf("namespace upload: got %+v, want unknown", unknown)
+	}
+	ask := pm.EvaluateWithOptions(session.TaintExternalHostile, unknown.Class, unknown.Sensitivity, session.AuthorityUserBroad, session.PolicyEvaluateOptions{
+		CheckTaskPermission:     true,
+		ClassificationConfident: unknown.Confident,
+	})
+	if ask.Reason != session.TaskPermissionRequired {
+		t.Fatalf("namespace upload hostile: %+v", ask)
+	}
+
+	// Browse restoration stays for a navigation name and a delete still wins
+	// over a fetch substring.
+	nav := session.ClassifyMCPToolCallWithOptions("browser_navigate", `{"url":"https://docs.vendor.example/guide"}`, nil, nil, session.ClassificationOptions{})
+	if nav.Class != session.ActionClassBrowse {
+		t.Fatalf("browser_navigate: got %+v, want browse", nav)
+	}
+	deleted := session.ClassifyMCPToolCallWithOptions("fetcher_admin_delete", `{}`, nil, nil, session.ClassificationOptions{})
+	if deleted.Class != session.ActionClassWrite {
+		t.Fatalf("fetcher_admin_delete: got %+v, want write", deleted)
+	}
+}
+
 func TestMCPExplicitMutationMethodPrecedesWrite(t *testing.T) {
 	for _, name := range []string{"get_put", "get_pull_put", "write_file", "update_item"} {
 		for _, method := range []string{"POST", "PUT", "PATCH", "DELETE", "QUERY"} {

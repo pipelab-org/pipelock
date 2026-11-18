@@ -117,6 +117,8 @@ func TestStdioTaskPermissionClassifiesCallsAfterExposure(t *testing.T) {
 		// Exec arguments take precedence over a read name, even though main classifies this as a read.
 		{"read_with_exec_args", "read_file", `{"path":"/workspace/notes.txt","command":"echo test"}`, session.FindingDLP, session.ActionClassExec, session.TaskPermissionRequired},
 		{"browse_with_mutating_args", "browse_docs", `{"url":"https://docs.vendor.example/guide","method":"POST"}`, session.FindingDLP, session.ActionClassPublish, session.TaskPermissionRequired},
+		{"upload", "upload_file", `{"path":"/workspace/notes.txt"}`, session.FindingDLP, session.ActionClassPublish, session.TaskPermissionRequired},
+		{"clean_upload", "upload_file", `{"path":"/workspace/notes.txt"}`, "", session.ActionClassPublish, "trusted_or_allowlisted_context"},
 		{"clean_write", "write_file", `{"path":"/workspace/status.txt","content":"ready"}`, "", session.ActionClassWrite, "trusted_or_allowlisted_context"},
 		{"wording_only", "delegate_task", `{"task":"summarize"}`, session.FindingWording, session.ActionClassUnknown, "no_taint_escalation_required"},
 	} {

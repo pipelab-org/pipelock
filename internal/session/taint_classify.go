@@ -781,11 +781,29 @@ func looksLikeBrowseTool(name string) bool {
 // remove known object words behind an explicit read operation.
 func looksLikePublishTool(name, argsJSON string) bool {
 	return containsAny(mcpOperationEvidenceName(name, argsJSON), "http", "request", "post", "put", "patch", "publish", "send", "webhook") ||
-		hasMutatingNetworkMethod(argsJSON)
+		hasMutatingNetworkMethod(argsJSON) ||
+		operationHasWord(name, "upload")
+}
+
+// operationHasWord matches one whole word of the tool component. The server id
+// in an mcp__server__tool name is not the operation, so it cannot count.
+func operationHasWord(name, word string) bool {
+	operation := name
+	if alias, ok := normalize.MCPToolNameAlias(name); ok {
+		operation = alias
+	}
+	for _, got := range splitArgumentKey(operation) {
+		if got == word {
+			return true
+		}
+	}
+	return false
 }
 
 func hasMCPNetworkNameEvidence(name, argsJSON string) bool {
-	return containsAny(mcpOperationEvidenceName(name, argsJSON), "fetch", "curl", "wget", "http", "request", "post", "put", "send", "upload", "download", "api")
+	// "upload" is publish evidence above, not browse evidence. A substring
+	// would also match the noun "uploads".
+	return containsAny(mcpOperationEvidenceName(name, argsJSON), "fetch", "curl", "wget", "http", "request", "post", "put", "send", "download", "api")
 }
 
 // Only a complete, known read-object shape can remove noun evidence. Any
