@@ -82,6 +82,11 @@ func TestMCPClassifyHostileBrowserOperations(t *testing.T) {
 		{"mcp__browser__frobnicate", `{}`, session.ActionClassUnknown},
 		{"mcp__browser__list_items", `{}`, session.ActionClassRead},
 		{"browserless_get", `{}`, session.ActionClassBrowse},
+		// Irregular capitalization must not split the leading word apart.
+		{"bRoWsEr_click", `{}`, session.ActionClassUnknown},
+		{"BROWSER_CLICK", `{}`, session.ActionClassUnknown},
+		{"mcp__playwright__bRoWsEr_click", `{}`, session.ActionClassUnknown},
+		{"BrOwSeR_navigate", `{"url":"https://docs.vendor.example/guide"}`, session.ActionClassUnknown},
 	} {
 		t.Run(tc.tool+"/"+tc.args, func(t *testing.T) {
 			classified := session.ClassifyMCPToolCallWithOptions(tc.tool, tc.args, nil, nil, session.ClassificationOptions{HostileMCP: true})
@@ -120,6 +125,10 @@ func TestMCPClassifyHostileDelegationOperations(t *testing.T) {
 		{"open_subtasker", session.ActionClassRead},
 		{"delegated_get", session.ActionClassRead},
 		{"prefetch_cache", session.ActionClassBrowse},
+		{"DeLeGaTe_get_task", session.ActionClassUnknown},
+		{"oPeN_SuBtAsK", session.ActionClassUnknown},
+		{"SpAwN_fetch", session.ActionClassExec},
+		{"rEtRy_WiTh_BrOwSeR_uSe_AgEnT", session.ActionClassUnknown},
 	} {
 		t.Run(tc.tool, func(t *testing.T) {
 			classified := session.ClassifyMCPToolCallWithOptions(tc.tool, `{}`, nil, nil, session.ClassificationOptions{HostileMCP: true})

@@ -268,11 +268,15 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 	browse := looksLikeBrowseTool(strings.ToLower(operation)) || (category == "network" && hasMCPNetworkNameEvidence(operation, argsJSON))
 	allowRead := true
 	if opts.HostileMCP {
+		// Match both the camel-case split and the case-folded split, so
+		// irregular capitalization cannot break a leading word into pieces.
 		words := splitArgumentKey(operation)
+		folded := splitArgumentKey(strings.ToLower(operation))
 		switch {
-		case isMCPBrowserAgentDelegation(words) || isMCPDelegation(words):
+		case isMCPBrowserAgentDelegation(words) || isMCPBrowserAgentDelegation(folded) ||
+			isMCPDelegation(words) || isMCPDelegation(folded):
 			browse, allowRead = false, false
-		case len(words) > 0 && words[0] == "browser":
+		case startsWithMCPWord(words, "browser") || startsWithMCPWord(folded, "browser"):
 			browse, allowRead = isMCPBrowserInspection(operation, argsJSON), false
 		}
 	}
@@ -301,6 +305,10 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 func isMCPBrowserAgentDelegation(words []string) bool {
 	return len(words) == 5 && words[0] == "retry" && words[1] == "with" &&
 		words[2] == "browser" && words[3] == "use" && words[4] == "agent"
+}
+
+func startsWithMCPWord(words []string, word string) bool {
+	return len(words) > 0 && words[0] == word
 }
 
 func isMCPDelegation(words []string) bool {

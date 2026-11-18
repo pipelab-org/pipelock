@@ -187,6 +187,8 @@ func TestStdioTaskPermissionBrowserAndDelegation(t *testing.T) {
 		{"list_subagents", "list_subagents", `{}`, true},
 		{"prefetch", "prefetch_cache", `{}`, true},
 		{"browser_namespace_only", "mcp__browser__frobnicate", `{}`, false},
+		{"mixed_case_click", "bRoWsEr_click", `{"element":"Details","ref":"e1"}`, false},
+		{"mixed_case_delegate", "DeLeGaTe_get_task", `{"task":"summarize"}`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, hostile := range []bool{false, true} {
