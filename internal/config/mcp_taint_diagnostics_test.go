@@ -45,7 +45,7 @@ func TestMCPTaintDiagnostics_ConfigAndReload(t *testing.T) {
 				want := map[string][]string{
 					"taint.mcp_recorder": {wantRecorder, "config-only"},
 					"taint.mcp_listener": {"authenticated principal", "legacy", "2026-07-28", "request-local only", "NOT active", "verified caller identity", "shared listener bearer"},
-					"taint.mcp_origin":   {"origin is undeclared", "internal_generated", "no corresponding CLI flag", "taint.trusted_mcp_servers", "future clean observations only"},
+					"taint.mcp_origin":   {"origin is undeclared", "internal_generated", "no corresponding CLI flag", "taint.trusted_mcp_servers", "source classification applies to wording-only findings too"},
 					"taint.mcp_recovery": {"inline terminal approval is unavailable", "runtime trust grants are rejected for all", "taint.trust_overrides", "record no origin URL", "pipelock run applies it on reload", "reads taint config only at startup"},
 				}
 				if cfg.MCPSessionBinding.ListenerRequireStateToken != nil && *cfg.MCPSessionBinding.ListenerRequireStateToken {

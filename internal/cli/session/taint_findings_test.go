@@ -73,8 +73,15 @@ func TestRenderDetailTaintCauseFromAPIShapes(t *testing.T) {
 		})
 	}
 	var out bytes.Buffer
-	if err := renderExplanation(&out, proxy.SessionExplanation{Key: "client", FindingKinds: []risksession.HostileFindingKind{risksession.FindingDLP}}); err != nil {
+	if err := renderExplanation(&out, proxy.SessionExplanation{
+		Key: "client", TaintLevel: risksession.TaintExternalUntrusted.String(),
+		FindingKinds: []risksession.HostileFindingKind{risksession.FindingWording},
+	}); err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "  taint_level:         external_untrusted\n") ||
+		!strings.Contains(out.String(), "  taint_cause:         warning: prompt-injection wording only\n") {
+		t.Fatalf("explanation omitted the source level or wording warning: %s", out.String())
 	}
 	tier, cause := -1, -1
 	for _, line := range strings.Split(out.String(), "\n") {

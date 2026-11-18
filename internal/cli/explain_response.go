@@ -193,6 +193,9 @@ func buildResponseExplainReport(ctx context.Context, cfg *config.Config, cfgLabe
 		report.Error = escapeExplainEventTerminalControls(result.ScanError)
 		return report, nil
 	}
+	if len(result.Matches) > 0 || len(result.WarnedMatches) > 0 {
+		report.Notes = append(report.Notes, explainWordingTaintWarning)
+	}
 	if result.Clean {
 		return report, nil
 	}
@@ -207,7 +210,6 @@ func buildResponseExplainReport(ctx context.Context, cfg *config.Config, cfgLabe
 	}
 	if len(result.Matches) > 0 {
 		report.Notes = append(report.Notes, "Response finding kinds: "+session.DescribeFindingKinds([]session.HostileFindingKind{session.FindingWording})+".")
-		report.Notes = append(report.Notes, explainWordingTaintWarning)
 	}
 	for _, match := range result.Matches {
 		span := match.Span()

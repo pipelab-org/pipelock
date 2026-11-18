@@ -35,7 +35,7 @@ func TestExplainPromptInjectionDetection(t *testing.T) {
 			if strings.Contains(notes, "DLP and destination controls") != (mode != config.ActionBlock) {
 				t.Fatal(notes)
 			}
-			if mode == config.ActionAllow && !strings.Contains(notes, "no prompt-injection protection remains") {
+			if mode == config.ActionAllow && !strings.Contains(notes, "no longer produce wording-based warnings or refusals") {
 				t.Fatal(notes)
 			}
 		})

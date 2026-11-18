@@ -32,6 +32,9 @@ func TestHostileFindingKindsVerdictEquivalence(t *testing.T) {
 			}
 		}
 		wantHostile := len(kinds) > 1 || (len(kinds) == 1 && kinds[0] != session.FindingWording)
+		if onlyWording := len(kinds) > 0 && !wantHostile; session.OnlyWordingFindings(kinds) != onlyWording {
+			t.Fatalf("kinds %v: want wording-only=%t", kinds, onlyWording)
+		}
 		for level := session.TaintTrusted; level <= session.TaintExternalHostile; level++ {
 			var old, attributed session.SessionRisk
 			source := session.TaintSourceRef{URL: "https://api.vendor.example/result", Kind: "http_response", Level: level, Timestamp: time.Unix(1, 0).UTC()}

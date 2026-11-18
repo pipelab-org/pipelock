@@ -4511,13 +4511,13 @@ Profile lifecycle: `observe` → `learn` → `ratify` → `locked`. Enforcement 
 
 ## Taint-Aware Policy Escalation (v2.1)
 
-Classifies each session by how recently it observed untrusted content and escalates scrutiny on protected operations. Under `strict` or `balanced`, a session that fetched untrusted content from a non-allowlisted source is evaluated before it edits a file under `*/auth/*`: a protected write returns `PolicyAsk` when authority is below `AuthorityUserExact`, and `PolicyAllow` with exact user authority. An allowlisted source does not raise taint, and hostile taint returns `PolicyBlock` for sensitive actions. Under `permissive` the taint is still recorded and the operation is allowed (`taint_permissive_observe_only`), so that policy observes without restricting. Runs across fetch, forward proxy, reverse proxy, WebSocket, MCP stdio, MCP HTTP/SSE, and A2A.
+Classifies each session by how recently it observed untrusted content and escalates scrutiny on protected operations. Under `strict` or `balanced`, a session that fetched untrusted content from a non-allowlisted source is evaluated before it edits a file under `*/auth/*`: a protected write returns `PolicyAsk` when authority is below `AuthorityUserExact`, and `PolicyAllow` with exact user authority. An allowlisted response uses the `allowlisted_reference` source level. Hostile taint returns `PolicyBlock` for sensitive actions. Under `permissive` the taint is still recorded and the operation is allowed (`taint_permissive_observe_only`), so that policy observes without restricting. Runs across fetch, forward proxy, reverse proxy, WebSocket, MCP stdio, MCP HTTP/SSE, and A2A.
 
 MCP history requires an active taint recorder. Standalone `pipelock mcp proxy` creates its session store only with `session_profiling.enabled: true`; taint enabled alone doesn't create one. Subprocess stdio and stdio-to-HTTP/WS upstreams use invocation-scoped, in-memory state. Listener state uses authenticated principals or the legacy session partition described above. These scopes don't promise persistence across process restarts or state expiry/eviction. `pipelock doctor`, `explain mcp-response`, and the dashboard report configuration prerequisites without claiming live coverage.
 
 For subprocess stdio, content origin is **undeclared**. Responses default to `internal_generated`; that label doesn't establish that the content was generated locally or is trustworthy. The embedding API's `TaintExternalSource` option can declare external content, but `mcp proxy` has no corresponding CLI flag. HTTP/SSE and WS upstreams declare external content by default. `taint.trusted_mcp_servers` affects future source classification for the resolved server and keeps existing hostile history.
 
-A finding based on wording alone is a taint warning. It preserves the response's source classification, even when the same warning appears repeatedly. Independent response findings such as DLP and tool poisoning still raise hostile taint when recorded, including when they accompany a wording warning. Response delivery follows the configured scanner action, and MCP tool policy still checks each tool call.
+A finding based on wording alone is a taint warning. It preserves the response's source classification, even when the same warning appears repeatedly. Independent response findings such as DLP and tool poisoning still raise hostile taint when recorded, including when they accompany a wording warning. Response delivery follows the configured scanner action. When a wording-only response is delivered, later actions use the session's existing taint and the applicable request-side checks, including MCP tool policy.
 
 ```yaml
 taint:
@@ -4525,7 +4525,7 @@ taint:
   policy: balanced                     # strict, balanced, permissive (default: balanced)
   recent_sources: 10                   # bounded history of recent taint-raising events (default: 10)
   fail_safe_classification: false      # unknown read/tool classifications become protected when true
-  allowlisted_domains:                 # fetches from these domains do NOT raise session taint
+  allowlisted_domains:                 # domains classified as allowlisted references
     - "docs.anthropic.com"
     - "docs.github.com"
     - "developer.mozilla.org"
@@ -4562,7 +4562,7 @@ taint:
 | `policy` | string | `balanced` | `strict` is the most conservative taint policy, `balanced` is the security default, and `permissive` observes taint without changing enforcement. |
 | `recent_sources` | int | `10` | How many recent taint sources to keep per session for receipt reporting. |
 | `fail_safe_classification` | bool | `false` | When true, unknown or low-confidence read/tool classifications are treated as protected instead of passing the read-only shortcut. |
-| `allowlisted_domains` | []string | 3 high-trust documentation domains | Responses from these domains do not raise taint. Supports `MatchDomain` wildcards. |
+| `allowlisted_domains` | []string | 3 high-trust documentation domains | Responses use the `allowlisted_reference` source level. Independent findings can still raise hostile taint. Supports `MatchDomain` wildcards. |
 | `trusted_mcp_servers` | []string | empty | MCP server names whose responses do not raise source-based taint. Entries match the server name, the `pipelock mcp proxy --server-name` operator label or a registered `mcp_identities` name; URLs and slashes are rejected. Response scanning remains active, and independent findings such as DLP and tool poisoning can still raise hostile taint. |
 | `protected_paths` | []string | 7 patterns (see above) | Globs for file paths or tool args that are blocked for tainted sessions. |
 | `elevated_paths` | []string | `*/config/*`, `*/middleware*` | Globs that trigger warn/ask rather than block. |
@@ -4612,7 +4612,7 @@ deployments such as Docker or Kubernetes, there is no terminal to ask, so `ask`
 fails closed and blocks; configure an allowlist, a narrow trust override, or
 `taint.policy: permissive` during tuning, then retry the request.
 
-MCP stdio uses stdin for JSON-RPC: inline terminal approval is unavailable and ask fails closed. Every MCP session (stdio, HTTP/WS bridges, and listener principal, token and legacy partitions) is invocation-scoped, so admin task boundaries and runtime trust grants are rejected for all of them. The only configured override for existing hostile history is an action-scoped taint.trust_overrides entry without source_match (MCP sources record no origin URL), optionally expiring. pipelock run applies it on reload; standalone pipelock mcp proxy reads taint config only at startup, and the restart that applies an override also discards that invocation's in-memory history. Source trust affects only future clean observations; it does not clear hostile history. Inline approval cannot override a hostile block.
+MCP stdio uses stdin for JSON-RPC: inline terminal approval is unavailable and ask fails closed. Every MCP session (stdio, HTTP/WS bridges, and listener principal, token and legacy partitions) is invocation-scoped, so admin task boundaries and runtime trust grants are rejected for all of them. The only configured override for existing hostile history is an action-scoped taint.trust_overrides entry without source_match (MCP sources record no origin URL), optionally expiring. pipelock run applies it on reload; standalone pipelock mcp proxy reads taint config only at startup, and the restart that applies an override also discards that invocation's in-memory history. Source trust classifies future observations, including wording-only findings. Existing hostile history remains in effect. Inline approval cannot override a hostile block.
 
 Configured overrides accept risk only within their matching scope and expiry (for MCP, only the action scope can match); they don't remove taint or override another scanner or identity gate. Deferred tool approvals aren't recovery for a taint refusal.
 

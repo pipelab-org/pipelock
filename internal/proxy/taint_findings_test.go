@@ -159,6 +159,42 @@ func TestWebSocketLegacyFindingDedupPreservesPolicyState(t *testing.T) {
 	}
 }
 
+func TestWebSocketWordingFindingDedupPreservesIndependentEvidence(t *testing.T) {
+	sm := NewSessionManager(&config.SessionProfiling{Enabled: true, MaxSessions: 10, SessionTTLMinutes: 30, CleanupIntervalSeconds: 60}, nil, nil)
+	defer sm.Close()
+	p := &Proxy{}
+	p.sessionMgrPtr.Store(sm)
+	cfg := config.Defaults()
+	cfg.Taint.Enabled = true
+	const key = "websocket-wording-dedup"
+	relay := &wsRelay{proxy: p, cfg: cfg, targetURL: "ws://api.vendor.example/events", taintSessionKey: key}
+	if !relay.observeUpstreamResponseFindings(nil) {
+		t.Fatal("clean observation denied")
+	}
+	wording := []session.HostileFindingKind{session.FindingWording}
+	for range 3 {
+		if !relay.observeUpstreamResponseFindings(wording) {
+			t.Fatal("wording observation denied")
+		}
+	}
+	rec := sm.GetOrCreate(key)
+	before := rec.RiskSnapshot()
+	if len(before.Sources) != 2 || len(before.Sources[0].FindingKinds) != 0 ||
+		!slices.Equal(before.Sources[1].FindingKinds, wording) || !slices.Equal(before.FindingKinds, wording) ||
+		before.PromptHit || before.Level != session.TaintExternalUntrusted {
+		t.Fatalf("expected one clean observation and one wording observation at the original source level: %+v", before)
+	}
+	if !relay.observeUpstreamResponseFindings([]session.HostileFindingKind{session.FindingDLP}) {
+		t.Fatal("independent observation denied")
+	}
+	after := rec.RiskSnapshot()
+	want := []session.HostileFindingKind{session.FindingDLP, session.FindingWording}
+	if len(after.Sources) != 3 || !slices.Equal(after.FindingKinds, want) ||
+		!after.PromptHit || after.Level != session.TaintExternalHostile {
+		t.Fatalf("independent evidence should still make the session hostile: %+v", after)
+	}
+}
+
 func TestSessionInspectionFindingKinds(t *testing.T) {
 	sm := NewSessionManager(&config.SessionProfiling{Enabled: true, MaxSessions: 10, SessionTTLMinutes: 30, CleanupIntervalSeconds: 60}, nil, nil)
 	defer sm.Close()

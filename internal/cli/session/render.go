@@ -126,6 +126,7 @@ func renderExplanation(w io.Writer, e proxy.SessionExplanation) error {
 	fmt.Fprintf(buf, "Session %s explanation\n", termsafe.Escape(e.Key))
 	fmt.Fprintf(buf, "  tier:                %s\n", defaultIfEmpty(e.Tier, "none"))
 	fmt.Fprintf(buf, "  reason:              %s\n", defaultDash(e.Reason))
+	fmt.Fprintf(buf, "  taint_level:         %s\n", defaultDash(e.TaintLevel))
 	if cause := taintCause(e.TaintLevel, e.FindingKinds); cause != "" {
 		fmt.Fprintf(buf, "  taint_cause:         %s\n", cause)
 	}
