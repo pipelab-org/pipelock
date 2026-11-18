@@ -278,11 +278,13 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 		case isMCPBrowserAgentDelegation(words) || isMCPBrowserAgentDelegation(folded) ||
 			isMCPBrowserAgentDelegationName(operation) ||
 			isMCPDelegation(words) || isMCPDelegation(folded) ||
-			hasLeadingMCPWord(operation, "spawn") || hasLeadingMCPWord(operation, "delegate") ||
-			hasLeadingMCPWord(operation, "dispatch"):
+			hasLeadingMCPWords(operation, "spawn") || hasLeadingMCPWords(operation, "delegate") ||
+			hasLeadingMCPWords(operation, "dispatch") ||
+			hasLeadingMCPWords(operation, "open", "sub", "task") ||
+			hasLeadingMCPWords(operation, "open", "sub", "agent"):
 			browse, allowRead = false, false
 		case startsWithMCPWord(words, "browser") || startsWithMCPWord(folded, "browser") ||
-			hasLeadingMCPWord(operation, "browser"):
+			hasLeadingMCPWords(operation, "browser"):
 			browse, allowRead = isMCPBrowserInspection(operation, argsJSON), false
 		}
 	}
@@ -317,18 +319,26 @@ func startsWithMCPWord(words []string, word string) bool {
 	return len(words) > 0 && words[0] == word
 }
 
-// hasLeadingMCPWord reports whether operation begins with word in any
-// capitalization and the word ends there: at the end of the name or before a
-// character that is not a lowercase letter. "bRoWsErClick" and "browser_x"
-// match; "browserless" does not.
-func hasLeadingMCPWord(operation, word string) bool {
-	if len(operation) < len(word) || !strings.EqualFold(operation[:len(word)], word) {
-		return false
+// hasLeadingMCPWords reports whether operation begins with words in any
+// capitalization, optionally separated by '_', '-', '.' or spaces, and the
+// last word ends there: at the end of the name or before a character that is
+// not a lowercase letter. "bRoWsErClick", "oPeNsUbAgEnT_get" and "browser_x"
+// match; "browserless" and "open_subtasker" do not.
+func hasLeadingMCPWords(operation string, words ...string) bool {
+	rest := operation
+	for i, word := range words {
+		if i > 0 {
+			rest = strings.TrimLeft(rest, "_-. ")
+		}
+		if len(rest) < len(word) || !strings.EqualFold(rest[:len(word)], word) {
+			return false
+		}
+		rest = rest[len(word):]
 	}
-	if len(operation) == len(word) {
+	if rest == "" {
 		return true
 	}
-	next, _ := utf8.DecodeRuneInString(operation[len(word):])
+	next, _ := utf8.DecodeRuneInString(rest)
 	return !unicode.IsLower(next)
 }
 

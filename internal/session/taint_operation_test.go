@@ -135,6 +135,9 @@ func TestMCPClassifyHostileDelegationOperations(t *testing.T) {
 		{"DeLeGaTeGetTask", session.ActionClassUnknown},
 		{"dIsPaTcHGetJob", session.ActionClassWrite},
 		{"rEtRyWiThBrOwSeRuSeAgEnT", session.ActionClassUnknown},
+		{"oPeNsUbAgEnT_get", session.ActionClassUnknown},
+		{"OpEn_SuB_tAsK_list", session.ActionClassUnknown},
+		{"openSubtaskViewer", session.ActionClassUnknown},
 	} {
 		t.Run(tc.tool, func(t *testing.T) {
 			classified := session.ClassifyMCPToolCallWithOptions(tc.tool, `{}`, nil, nil, session.ClassificationOptions{HostileMCP: true})

@@ -190,6 +190,8 @@ func TestStdioTaskPermissionBrowserAndDelegation(t *testing.T) {
 		{"mixed_case_click", "bRoWsEr_click", `{"element":"Details","ref":"e1"}`, false},
 		{"mixed_case_delegate", "DeLeGaTe_get_task", `{"task":"summarize"}`, false},
 		{"mixed_case_camel_click", "bRoWsErClick", `{"element":"Details","ref":"e1"}`, false},
+		{"mixed_case_camel_delegate", "DeLeGaTeGetTask", `{"task":"summarize"}`, false},
+		{"mixed_case_open_subagent", "oPeNsUbAgEnT_get", `{"task":"summarize"}`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, hostile := range []bool{false, true} {
