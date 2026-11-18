@@ -1528,6 +1528,7 @@ func ForwardScannedInput(
 			// block unrelated upstream work. OnceFunc also makes the manager's
 			// deferred cleanup safe after this early denial cleanup.
 			var finishDeniedRelease func()
+			var taskRefusal string
 			holdErr := manager.Hold(deferred.HeldAction{
 				DeferID:       actionID,
 				ActionID:      actionID,
@@ -1576,6 +1577,7 @@ func ForwardScannedInput(
 						if reason := mcpTaskReleaseRefusal(opts, heldAuthorityFrame, taintDecision, false); reason != "" {
 							prepared.FinalDecision = config.ActionBlock
 							prepared.Reason = reason
+							taskRefusal = reason
 						}
 					}
 					if finish != nil {
@@ -1651,10 +1653,14 @@ func ForwardScannedInput(
 								}, blockedCh)
 								return
 							}
+							message := "pipelock: deferred action denied"
+							if taskRefusal != "" {
+								message = "pipelock: " + taskRefusal
+							}
 							sendMCPDenial(denialOpts, denialAudit, BlockedRequest{
 								ID:           heldID,
 								ErrorCode:    -32002,
-								ErrorMessage: "pipelock: deferred action denied",
+								ErrorMessage: message,
 							}, blockedCh)
 						}
 					}

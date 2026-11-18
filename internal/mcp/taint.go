@@ -496,6 +496,25 @@ func emitMCPToolReceipt(opts mcpToolReceiptOpts) error {
 		}
 		return nil
 	}
+	if _, err := opts.ProxyOpts.emitAdmittedReceiptDecision(MCPDecision{
+		Receipt:        opts.receiptOptions(),
+		RequireReceipt: opts.RequireReceipt || (opts.ProxyOpts.ReceiptGroup != nil && opts.RequireReceipts),
+		RequiredMode:   opts.RequireReceipts,
+		Durable:        opts.Durable,
+	}); err != nil {
+		logReceiptEmitFailure(opts.Log, err, opts.RequireReceipts, opts.Verdict)
+		// RequireReceipt escalates v1 or v2 decision-receipt failures to a
+		// block (ErrReceiptRequired). A best-effort emit failure with require
+		// off stays non-blocking, preserving the default warn-and-forward
+		// posture.
+		if errors.Is(err, ErrReceiptRequired) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (opts mcpToolReceiptOpts) receiptOptions() receipt.EmitOpts {
 	target := opts.Target
 	if target == "" {
 		target = opts.ToolName
@@ -535,22 +554,7 @@ func emitMCPToolReceipt(opts mcpToolReceiptOpts) error {
 	if opts.ContractGate != nil {
 		emitOpts = mcpWithContractReceipt(emitOpts, *opts.ContractGate)
 	}
-	if _, err := opts.ProxyOpts.emitAdmittedReceiptDecision(MCPDecision{
-		Receipt:        emitOpts,
-		RequireReceipt: opts.RequireReceipt || (opts.ProxyOpts.ReceiptGroup != nil && opts.RequireReceipts),
-		RequiredMode:   opts.RequireReceipts,
-		Durable:        opts.Durable,
-	}); err != nil {
-		logReceiptEmitFailure(opts.Log, err, opts.RequireReceipts, opts.Verdict)
-		// RequireReceipt escalates v1 or v2 decision-receipt failures to a
-		// block (ErrReceiptRequired). A best-effort emit failure with require
-		// off stays non-blocking, preserving the default warn-and-forward
-		// posture.
-		if errors.Is(err, ErrReceiptRequired) {
-			return err
-		}
-	}
-	return nil
+	return emitOpts
 }
 
 func requiredReceiptFailureMessage(err error) string {

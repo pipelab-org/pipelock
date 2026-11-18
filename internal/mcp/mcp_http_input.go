@@ -33,6 +33,7 @@ type httpInputDecision struct {
 	Outcome        TrackedRequestOutcome
 	taskFrame      MCPFrame
 	taskTaint      taintDecision
+	pendingReceipt *mcpToolReceiptOpts
 }
 
 const redirectResultRedirected = "redirected"
@@ -240,6 +241,13 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		if redirectReceiptEmitted && receiptVerdict == config.ActionBlock {
 			receiptOpts.ParentActionID = actionID
 			receiptOpts.ActionID = receipt.NewActionID()
+		}
+		if opts.deferBestEffortTaskReceipt && !requireReceipts && result.Blocked == nil && result.Deferred == nil &&
+			emitActionID != "" && (emitVerdict == config.ActionAllow || emitVerdict == config.ActionWarn) {
+			// The bridge selects either a single receipt or an intent and
+			// outcome once the final task check has run.
+			result.pendingReceipt = &receiptOpts
+			return
 		}
 		if err := emitMCPToolReceipt(receiptOpts); err != nil && requiredReceipt && result.Blocked == nil {
 			denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
@@ -630,6 +638,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 		return result
 	case blockingGateTaintBlock, blockingGateTaintAskDenied:
+		taintEval = eval.TaintDecision
 		denialAudit = mcpTaintDenialAudit()
 		logTaintDecision()
 		receiptVerdict = config.ActionBlock

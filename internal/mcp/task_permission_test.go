@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
@@ -260,9 +261,11 @@ func TestHTTPTaskPermissionRechecksAtSend(t *testing.T) {
 			cfg := config.Defaults()
 			rec := &httpTaskPermissionRecorder{}
 			rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingDLP}))
+			observed := &allReceipts{}
+			emitter, _, _, _ := newReceiptTestHarnessWithObserver(t, observed.observe)
 			opts := MCPProxyOpts{
 				Scanner: testScannerForHTTP(t), TaintCfg: &cfg.Taint,
-				Store: taskPermissionTestStore{rec: rec}, ServerBinding: "test-server",
+				Store: taskPermissionTestStore{rec: rec}, ServerBinding: "test-server", ReceiptEmitter: emitter,
 				ContractLoaderFn: func() *contractruntime.Loader {
 					// The input gate and its finalizer have both checked the grant.
 					// This is the per-send upstream gate, before the send lock.
@@ -280,12 +283,33 @@ func TestHTTPTaskPermissionRechecksAtSend(t *testing.T) {
 			if got := calls.Load(); got != tc.wantCalls || !strings.Contains(output.String(), tc.wantReply) {
 				t.Fatalf("upstream requests = %d, want %d. Response = %s, want %q", got, tc.wantCalls, output.String(), tc.wantReply)
 			}
+			if !tc.rotate {
+				records := observed.snapshot()
+				if len(records) != 1 || records[0].Verdict != config.ActionAllow || records[0].DecisionPhase != "" {
+					t.Errorf("receipts = %+v, want a single-phase allow after a successful task recheck", records)
+				}
+			}
 		})
 	}
 }
 
 func TestTaskPermissionRefusesHostileCallsAcrossMCPTransports(t *testing.T) {
 	t.Parallel()
+	cfg := config.Defaults()
+	msg := principalControlToolCall(1, "frobnicate_widget", `{"id":"1"}`)
+	exposure := session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingToolPoisoning})
+	stdioReceipts := &allReceipts{}
+	stdioEmitter, _, _, _ := newReceiptTestHarnessWithObserver(t, stdioReceipts.observe)
+	stdioRec := &listenerDiagnosisRecorder{}
+	stdioRec.ObserveRisk(exposure)
+	_, _ = runTaskPermissionMCPCall(t, "stdio", "task_approval_unavailable", msg, MCPProxyOpts{
+		Scanner: testScannerForHTTP(t), TaintCfg: &cfg.Taint, Rec: stdioRec, ReceiptEmitter: stdioEmitter,
+	})
+	stdio := stdioReceipts.snapshot()
+	if len(stdio) != 1 || stdio[0].TaintDecision != config.ActionBlock || stdio[0].TaintDecisionReason != "task_approval_unavailable" ||
+		stdio[0].SessionTaintLevel != session.TaintExternalHostile.String() || stdio[0].AuthorityKind == "" {
+		t.Fatalf("stdio reference receipts = %+v, want a hostile task approval refusal", stdio)
+	}
 	for _, mode := range []string{"stdio", "stdio_to_http", "http_listener", "websocket"} {
 		t.Run(mode, func(t *testing.T) {
 			for _, tc := range []struct {
@@ -317,19 +341,29 @@ func TestTaskPermissionRefusesHostileCallsAcrossMCPTransports(t *testing.T) {
 					observed := &allReceipts{}
 					emitter, _, _, _ := newReceiptTestHarnessWithObserver(t, observed.observe)
 					rec := &listenerDiagnosisRecorder{}
-					rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingToolPoisoning}))
-					cfg := config.Defaults()
+					rec.ObserveRisk(exposure)
 					opts := MCPProxyOpts{
 						Scanner: testScannerForHTTP(t), TaintCfg: &cfg.Taint, Approver: approver,
 						Store: taskPermissionTestStore{rec: rec}, Rec: rec, ReceiptEmitter: emitter,
 					}
-					msg := principalControlToolCall(1, "frobnicate_widget", `{"id":"1"}`)
 					response, deliveries := runTaskPermissionMCPCall(t, mode, tc.reason, msg, opts)
 					if !strings.Contains(response, tc.reason) || deliveries != 0 {
 						t.Fatalf("upstream deliveries=%d response=%q, want zero deliveries and %q", deliveries, response, tc.reason)
 					}
-					if records := observed.snapshot(); len(records) != 1 || records[0].Verdict != config.ActionBlock || records[0].Pattern != tc.reason {
-						t.Errorf("receipts = %+v, want one block with %q", records, tc.reason)
+					records := observed.snapshot()
+					if len(records) != 1 || records[0].Verdict != config.ActionBlock || records[0].Pattern != tc.reason {
+						t.Fatalf("receipts = %+v, want one block with %q", records, tc.reason)
+					}
+					record, reference := records[0], stdio[0]
+					if record.TaintDecision != reference.TaintDecision || record.TaintDecisionReason != tc.reason ||
+						record.SessionTaintLevel != reference.SessionTaintLevel || record.AuthorityKind != reference.AuthorityKind ||
+						record.SessionContaminated != reference.SessionContaminated || record.TaskOverrideApplied != reference.TaskOverrideApplied ||
+						len(record.RecentTaintSources) != len(reference.RecentTaintSources) {
+						t.Errorf("signed taint = %s/%s/%s/%s (contaminated=%t, override=%t), want %s/%s/%s/%s (contaminated=%t, override=%t)",
+							record.TaintDecision, record.TaintDecisionReason, record.SessionTaintLevel, record.AuthorityKind,
+							record.SessionContaminated, record.TaskOverrideApplied,
+							reference.TaintDecision, tc.reason, reference.SessionTaintLevel, reference.AuthorityKind,
+							reference.SessionContaminated, reference.TaskOverrideApplied)
 					}
 				})
 			}
@@ -346,13 +380,15 @@ func runTaskPermissionMCPCall(t *testing.T, mode, reason string, msg []byte, opt
 		ForwardScannedInput(transport.NewStdioReader(strings.NewReader(string(msg)+"\n")),
 			transport.NewStdioWriter(&sent), io.Discard, config.ActionWarn, config.ActionBlock, blocked, nil, nil, opts)
 		denial := <-blocked
-		return denial.ErrorMessage, bytes.Count(sent.Bytes(), []byte("\n"))
+		return denial.ErrorMessage, sent.Len()
 	}
 
 	var deliveries atomic.Int32
+	wsReadDone := make(chan struct{})
 	answer := []byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[]}}`)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if mode == "websocket" {
+			defer close(wsReadDone)
 			conn, _, _, err := (ws.HTTPUpgrader{}).Upgrade(r, w)
 			if err != nil {
 				return
@@ -395,13 +431,18 @@ func runTaskPermissionMCPCall(t *testing.T, mode, reason string, msg []byte, opt
 		defer func() { _ = w.Close() }()
 		done := make(chan error, 1)
 		go func() { done <- RunWSProxy(ctx, r, &output, io.Discard, wsURL(upstream), opts) }()
-		if _, err := w.Write(append(msg, '\n')); err != nil {
+		if _, err := io.WriteString(w, string(msg)+"\n"); err != nil {
 			t.Fatal(err)
 		}
 		testwait.For(t, 3*time.Second, func() bool { return output.contains(reason) || output.contains(`"result"`) }, "MCP WebSocket response")
 		_ = w.Close()
 		if err := <-done; err != nil {
 			t.Fatal(err)
+		}
+		select {
+		case <-wsReadDone:
+		case <-ctx.Done():
+			t.Fatal("upstream WebSocket reader did not finish")
 		}
 	default:
 		t.Fatalf("unknown transport %q", mode)
@@ -476,21 +517,23 @@ func TestHTTPTaskPermissionBridgeRefusesAtSendWithoutNotificationReply(t *testin
 		name         string
 		notification bool
 		writeFails   bool
+		bestEffort   bool
 	}{
 		{name: "request"},
 		{name: "notification", notification: true},
 		{name: "reply_write_error", writeFails: true},
+		{name: "best_effort_request", bestEffort: true},
+		{name: "best_effort_notification", notification: true, bestEffort: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			upstream, calls := countingUpstream(t)
 			cfg := config.Defaults()
 			rec := &httpTaskPermissionRecorder{expireAt: 3}
 			rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingDLP}))
-			observed := &allReceipts{}
-			emitter, _, _, _ := newReceiptTestHarnessWithObserver(t, observed.observe)
+			emitter, _, dir, pubKey := newReceiptTestHarness(t)
 			opts := MCPProxyOpts{
 				Scanner: testScannerForHTTP(t), TaintCfg: &cfg.Taint,
-				Store: taskPermissionTestStore{rec: rec}, ServerBinding: "test-server", ReceiptEmitter: emitter, RequireReceipts: true,
+				Store: taskPermissionTestStore{rec: rec}, ServerBinding: "test-server", ReceiptEmitter: emitter, RequireReceipts: !tc.bestEffort,
 			}
 			frame := ParseMCPFrame([]byte(deferKillTestCall))
 			msg := deferKillTestCall
@@ -527,10 +570,22 @@ func TestHTTPTaskPermissionBridgeRefusesAtSendWithoutNotificationReply(t *testin
 					t.Errorf("response = %q, want task permission refusal", output.String())
 				}
 			}
-			records := observed.snapshot()
-			if len(records) != 2 || records[0].ActionID != records[1].ActionID || records[1].Verdict != config.ActionBlock ||
+			signed := readActionReceipts(t, dir)
+			records := make([]receipt.ActionRecord, 0, len(signed))
+			for _, record := range signed {
+				if err := receipt.VerifyWithKey(record, pubKey); err != nil {
+					t.Errorf("receipt signature: %v", err)
+				}
+				records = append(records, record.ActionRecord)
+			}
+			if len(records) != 2 || records[0].ActionID != records[1].ActionID ||
+				records[0].DecisionPhase != receipt.DecisionPhaseIntent || records[0].Verdict != config.ActionAllow ||
+				records[1].DecisionPhase != receipt.DecisionPhaseOutcome || records[1].Verdict != config.ActionBlock ||
 				!strings.Contains(records[1].Pattern, "reason="+session.TaskPermissionRequired) {
-				t.Errorf("receipts = %+v, want the intent closed by a task-permission block", records)
+				for _, record := range records {
+					t.Logf("receipt phase=%q verdict=%q pattern=%q", record.DecisionPhase, record.Verdict, record.Pattern)
+				}
+				t.Errorf("got %d receipts, want the intent closed by a task-permission block", len(records))
 			}
 		})
 	}
@@ -614,7 +669,7 @@ func TestDeferredStdioTaskPermissionRefusesReleaseAfterHostileExposure(t *testin
 	}
 	select {
 	case denial := <-blocked:
-		if denial.ErrorCode != -32002 || denial.ErrorMessage != "pipelock: deferred action denied" {
+		if denial.ErrorCode != -32002 || !strings.HasPrefix(denial.ErrorMessage, "pipelock: "+session.TaskPermissionRequired+" (") {
 			t.Errorf("deferred refusal = %d %q", denial.ErrorCode, denial.ErrorMessage)
 		}
 	default:

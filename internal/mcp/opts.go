@@ -144,6 +144,8 @@ type MCPProxyOpts struct {
 	responseDenial func(*mcpTerminalDecision)
 	// Modern HTTP lists enforce structural contracts independently of drift trust.
 	validateToolHeaders bool
+	// The HTTP bridge can record an intent and outcome if its send-time task check refuses.
+	deferBestEffortTaskReceipt bool
 	// Internal discovery inspects definitions without claiming client delivery.
 	toolContractDiscovery bool
 	// JSON listener scanning writes to a buffer. Defer inventory admission until

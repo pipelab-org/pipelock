@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -283,6 +284,9 @@ func RunHTTPProxy(
 		// instead of re-parsing.
 		fwdOpts := fwdOpts // Each deferred closure retains this message's policy snapshot.
 		frame := ParseMCPFrame(msg)
+		if taintCfg := fwdOpts.TaintCfg; fwdOpts.TaintCfgFn != nil || (taintCfg != nil && taintCfg.Enabled) {
+			fwdOpts.deferBestEffortTaskReceipt = true
+		}
 		fwdOpts.validateToolHeaders = bridgeHeaders.version(msg) >= currentMCPVersion
 		if fwdOpts.validateToolHeaders {
 			fwdOpts.ToolCfg = fwdToolCfg
@@ -637,6 +641,7 @@ func RunHTTPProxy(
 		}
 
 		if gate, gateErr := evaluateMCPUpstreamGate(ctx, upstreamURL, opts); gateErr != nil {
+			emitBridgePendingReceipt(decision.pendingReceipt)
 			denialAudit = mcpListenerContractEvalDenialAudit()
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream evaluation failed: %v\n", gateErr)
 			// Notifications have no id; JSON-RPC forbids responses to
@@ -653,6 +658,7 @@ func RunHTTPProxy(
 			emitTrackedContractRefusedOutcome(safeLogW, tracker, frame.ID, mcpContractGateOutput{}, mcpContractEvaluationFailedReason, errResp, fwdOpts)
 			continue
 		} else if gate.Verdict == config.ActionBlock {
+			emitBridgePendingReceipt(decision.pendingReceipt)
 			denialAudit = mcpUpstreamGateDenialAudit(gate)
 			if gate.WinningSource == contractruntime.WinningSourceScanner {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream scanner denied: %s\n", gate.Reason)
@@ -674,6 +680,7 @@ func RunHTTPProxy(
 
 		requestHeaders, headerErr := bridgeHeaders.prepare(ctx, decision.ForwardMessage)
 		if headerErr != nil {
+			emitBridgePendingReceipt(decision.pendingReceipt)
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: header contract refused: %q\n", headerErr.Error())
 			denialAudit, message, reason := bridgeHeaderRefusal(headerErr)
 			// Notifications are never tracked: close their intent from the input
@@ -695,6 +702,7 @@ func RunHTTPProxy(
 		unlockInventory := func() {}
 		if frame.Method == "tools/list" {
 			if lockErr := contractState.contractMu.Lock(ctx); lockErr != nil {
+				emitBridgePendingReceipt(decision.pendingReceipt)
 				// Only cancellation fails this wait. Close the request's
 				// tracked outcome and leave through the shared shutdown path,
 				// which settles other pending outcomes and ends the session.
@@ -741,9 +749,16 @@ func RunHTTPProxy(
 				outcome, _ = consumeTrackedRequestOutcome(tracker, frame.ID)
 			}
 			reason, _, _ := strings.Cut(taskRefusal, " ")
+			if pending := decision.pendingReceipt; pending != nil {
+				pending.DecisionPhase = receipt.DecisionPhaseIntent
+				emitBridgePendingReceipt(pending)
+				outcome.Receipt = pending.ProxyOpts.withReceiptPolicyHash(pending.receiptOptions())
+			}
 			emitMCPBlockedOutcomeReceipt(fwdOpts.receiptEmitter(), fwdOpts.v2ReceiptEmitter(), fwdOpts.ReceiptGroup, safeLogW, outcome.Receipt, int64(len(errResp)), reason, fwdOpts.requireReceipts())
 			continue
 		}
+		// Keep receipt I/O out of the task-check-to-send interval.
+		emitBridgePendingReceipt(decision.pendingReceipt)
 		if err != nil {
 			unlockInventory()
 			// SendMessage returns context cancellation/deadline errors as-is
@@ -827,6 +842,12 @@ func RunHTTPProxy(
 	emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "upstream_closed")
 
 	return lastScanErr
+}
+
+func emitBridgePendingReceipt(pending *mcpToolReceiptOpts) {
+	if pending != nil {
+		_ = emitMCPToolReceipt(*pending)
+	}
 }
 
 func emitBridgeHeaderContractRefusal(logW io.Writer, outcome TrackedRequestOutcome, reason string, opts MCPProxyOpts) {
