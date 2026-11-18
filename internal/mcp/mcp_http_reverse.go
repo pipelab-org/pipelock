@@ -2071,8 +2071,13 @@ func RunHTTPListenerProxy(
 			writeMCPHTTPInputResult(scanOpts, *blocked, w)
 			return
 		}
+		// Without taint enforcement, preserve the admission record before
+		// sending so evidence does not depend on upstream response headers.
+		if taintCfg := scanOpts.taintCfg(); taintCfg == nil || !taintCfg.Enabled {
+			emitPendingReceipt()
+		}
 		upResp, err := upstreamClient.Do(upReq)
-		// Keep receipt I/O out of the task-check-to-send interval.
+		// Keep receipt I/O out of the task-check-to-send interval when taint is enabled.
 		emitPendingReceipt()
 		if err != nil {
 			if handleMetadataDialError(err, frame.ID) {

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -119,6 +120,52 @@ func TestHTTPListener_ContractRefusalClosesBestEffortAllow(t *testing.T) {
 				t.Fatalf("intent=%+v outcome=%+v, want a paired block for %q", intent, outcome, tc.reason)
 			}
 		})
+	}
+}
+
+func TestHTTPListener_BestEffortAllowBeforeUpstreamResponse(t *testing.T) {
+	h := newMCPDecisionReceiptHarness(t)
+	opts := MCPProxyOpts{InputCfg: newHTTPInputCfg(config.ActionBlock), Scanner: promptWordingScanner(t, config.ActionBlock)}
+	opts.ReceiptEmitter, opts.V2ReceiptEmitter, opts.PolicyHash = h.v1, h.v2, mcpTestPolicyHash
+	type observation struct {
+		seq uint64
+		err error
+	}
+	observed := make(chan observation, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		tail, err := h.v1.ConfirmedTailObservation()
+		observed <- observation{seq: tail.ChainSeq, err: err}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":2,"result":{"content":[]}}`)
+	}))
+	t.Cleanup(upstream.Close)
+	url, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+	before, err := h.v1.ConfirmedTailObservation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, _, body := postWireContractRequest(t, url, currentWireBody(2, methodToolsCall, `"name":"echo","arguments":{}`), currentWireHeaders(methodToolsCall, "echo"))
+	if status != http.StatusOK {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	select {
+	case got := <-observed:
+		if got.err != nil || got.seq <= before.ChainSeq {
+			t.Fatalf("allow missing when upstream received request: sequence before=%d at upstream=%d err=%v", before.ChainSeq, got.seq, got.err)
+		}
+	default:
+		t.Fatal("upstream did not receive the request")
+	}
+	_ = mcpV2Receipts(t, h)
+	var allows int
+	for _, r := range readActionReceipts(t, h.dir) {
+		if r.ActionRecord.Target == "echo" && r.ActionRecord.Verdict == config.ActionAllow {
+			allows++
+		}
+	}
+	if allows != 1 {
+		t.Fatalf("got %d allow receipts for one call", allows)
 	}
 }
 
