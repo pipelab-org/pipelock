@@ -53,7 +53,8 @@ OK: receipt.json
 
 A pinned EvidenceReceipt v2 also starts with `OK:` and shows the event ID, payload
 kind, timestamp, signer, chain sequence and predecessor hash. A standalone check
-verifies only the supplied receipt. Use `--chain DIR` to check chain continuity
+verifies only the supplied receipt and reports containment as not assessed,
+because a single v2 receipt does not bind a posture capsule. Use `--chain DIR` to check chain continuity
 and evaluate the proof of the chain's end.
 
 ### Unpinned (structural-only) verification
@@ -77,8 +78,9 @@ pipelock verify-receipt receipt.json --allow-unpinned
 ```
 
 Exit code 0 means the signature check passed with a pinned key or you explicitly
-accepted an unpinned result. Exit code 1 means invalid, malformed, or unpinned
-without `--allow-unpinned`.
+accepted an unpinned result, and the report was written. Exit code 1 means
+invalid, malformed, unpinned without `--allow-unpinned`, or the report could not
+be written.
 
 ## Verifying a Fleet Receipt Report
 

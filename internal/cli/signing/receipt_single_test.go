@@ -10,6 +10,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -87,6 +88,13 @@ func TestVerifyReceiptCmdSingleEvidenceReceipt(t *testing.T) {
 		{name: "unpinned opt in", data: valid, flags: unpinned, wantStatus: "UNPINNED:"},
 		{name: "unpinned default", data: valid, wantStatus: "UNPINNED:", wantErr: "verification unpinned"},
 		{
+			// A standalone v2 receipt cannot bind a posture capsule, so the
+			// capsule is never read or graded, even when it would fail to load.
+			name: "posture is not assessed", data: valid,
+			flags:      []string{pinned[0], pinned[1], "--posture", filepath.Join(dir, "missing-posture.json")},
+			wantStatus: "OK:",
+		},
+		{
 			name: "explicit pin never falls back or uses later keys",
 			data: valid,
 			flags: []string{
@@ -155,7 +163,7 @@ func TestVerifyReceiptCmdSingleEvidenceReceipt(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "receipt.json")
+			path := filepath.Join(physicalTempDir(t), "receipt.json")
 			if err := os.WriteFile(path, tc.data, 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -183,7 +191,13 @@ func TestVerifyReceiptCmdSingleEvidenceReceipt(t *testing.T) {
 			if got, want := strings.Contains(out.String(), unpinnedReceiptBanner), tc.wantStatus == "UNPINNED:"; got != want {
 				t.Fatalf("verify receipt output = %q, want unpinned banner=%t", &out, want)
 			}
-			for _, detail := range []string{"Payload kind: proxy_decision", "Chain seq:   1", "Chain continuity and completeness are unverified."} {
+			if strings.Contains(out.String(), "Containment: PROXY-ENV") || strings.Contains(out.String(), "Containment: KERNEL") {
+				t.Fatalf("standalone v2 output graded containment: %q", &out)
+			}
+			if slices.Contains(tc.flags, "--posture") != strings.Contains(out.String(), "--posture is not applied to a standalone EvidenceReceipt v2") {
+				t.Fatalf("verify receipt output = %q, want posture note only when --posture is set", &out)
+			}
+			for _, detail := range []string{"Payload kind: proxy_decision", "Chain seq:   1", "Chain continuity and completeness are unverified.", standaloneEvidenceContainmentLine} {
 				if !strings.Contains(out.String(), detail) {
 					t.Errorf("verify receipt output = %q, want %q", &out, detail)
 				}
@@ -194,6 +208,13 @@ func TestVerifyReceiptCmdSingleEvidenceReceipt(t *testing.T) {
 
 func TestVerifyReceiptCmdSingleFileCompatibility(t *testing.T) {
 	v1Path, v1Key := writeReceiptFailureFixture(t)
+	// The command prints the resolved path; compare against it so a symlinked
+	// temp directory does not fail a correct verdict.
+	if resolved, err := filepath.EvalSymlinks(v1Path); err == nil {
+		v1Path = resolved
+	} else {
+		t.Fatal(err)
+	}
 	dir := filepath.Join(parityClassesDir, "v2-only-shard")
 	tests := []struct {
 		name     string

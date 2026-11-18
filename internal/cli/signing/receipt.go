@@ -1304,10 +1304,17 @@ func verifySingleEvidenceReceipt(out io.Writer, path string, data []byte, expect
 		printReceiptDisplayField(out, "  Policy Hash: ", r.PolicyHash, opts.Print)
 	}
 	_, _ = fmt.Fprintln(out, "  Scope:       Single receipt. Chain continuity and completeness are unverified.")
-	// A standalone v2 envelope does not supply the signed session_open
-	// binding required for a kernel containment claim.
-	return finishSingleReceipt(out, expectedKey == "", receiptPostureSummary{from: r.Timestamp, to: r.Timestamp}, opts)
+	printReceiptLimits(out)
+	// A standalone v2 envelope has no signed session binding for a posture
+	// capsule, so no containment grade can be tied to this event.
+	_, _ = fmt.Fprintln(out, standaloneEvidenceContainmentLine)
+	if opts.Posture.Path != "" {
+		_, _ = fmt.Fprintln(out, "  containment reason: --posture is not applied to a standalone EvidenceReceipt v2")
+	}
+	return unpinnedSingleReceiptResult(expectedKey == "", opts)
 }
+
+const standaloneEvidenceContainmentLine = "Containment: NOT ASSESSED (a standalone EvidenceReceipt v2 does not bind a posture capsule to its session)"
 
 func printSingleReceiptStatus(out io.Writer, path string, unpinned bool, err error) error {
 	if err != nil {
@@ -1328,6 +1335,10 @@ func finishSingleReceipt(out io.Writer, unpinned bool, summary receiptPostureSum
 	if err := printContainmentForSummary(out, summary, opts.Posture); err != nil {
 		return err
 	}
+	return unpinnedSingleReceiptResult(unpinned, opts)
+}
+
+func unpinnedSingleReceiptResult(unpinned bool, opts verifyReceiptOptions) error {
 	if unpinned && !opts.AllowUnpinned {
 		return fmt.Errorf("verification unpinned: pass --key for provenance or --allow-unpinned for structural-only verification")
 	}
