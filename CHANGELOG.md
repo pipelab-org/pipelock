@@ -13,7 +13,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- After hostile exposure, balanced and strict taint policy require exact task permission or one-time terminal approval for consequential MCP calls and visible forward HTTP writes. Undeclared MCP tools can no longer take the read shortcut. Operators can install expiring permissions through the authenticated session task endpoint, including on standalone MCP proxies. [Task permission guide](docs/cli/session.md#grant-a-task-permission).
 - Document how SSH and other non-HTTP egress can be declined: the forward proxy refuses SSH sent directly only when the optional `forward_proxy.sni_require_tls` check is on, and `pipelock sandbox` leaves no direct route out. Includes the sandbox caveats and an opt-in tool-policy warning rule. See [current unsupported paths](docs/security/current-unsupported-paths.md#ssh-and-other-non-http-egress).
 - Verify each admitted replay descriptor once per text DLP scan so later trims skip already-checked views. Large encoded bodies finish sooner; drain still checks the digest of every matched view. ([#2173](https://github.com/pipelab-org/pipelock/pull/2173))
 - Pin the Compose and Kubernetes recipe images to the published v3.8.0 `ghcr.io/pipelab-org` digests, and note in the 3.8 upgrade guide that tool-policy rules also match a bounded reading of shell expansions, and that request scanning reads ZIP and ZIP-based Office text within limits, with TLS interception off in defaults and all 7 presets and PDF text still only raw-byte scanned.
