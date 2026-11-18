@@ -4,6 +4,10 @@
 package mcp
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -71,6 +75,8 @@ type taintDecision struct {
 	OverrideRefs        []string
 	RequiresReauth      bool
 	TaskOverrideApplied bool
+	taskAction          session.TaskAction
+	taskRefusal         string
 }
 
 func observeMCPResponseTaint(opts MCPProxyOpts, promptHit bool) {
@@ -102,6 +108,10 @@ func observeMCPResponseFindings(opts MCPProxyOpts, kinds []session.HostileFindin
 }
 
 func evaluateMCPTaint(opts MCPProxyOpts, toolName, argsJSON string) taintDecision {
+	return evaluateMCPTaskTaint(opts, toolName, argsJSON, session.TaskAction{})
+}
+
+func evaluateMCPTaskTaint(opts MCPProxyOpts, toolName, argsJSON string, action session.TaskAction) taintDecision {
 	decision := taintDecision{
 		ActionClass: session.ActionClassRead,
 		Sensitivity: session.SensitivityNormal,
@@ -128,16 +138,12 @@ func evaluateMCPTaint(opts MCPProxyOpts, toolName, argsJSON string) taintDecisio
 	decision.ActionRef = mcpActionRef(toolName, decision.ActionRef)
 	decision.OverrideRefs = mcpOverrideRefs(toolName, classified.OverrideRefs, decision.ActionRef)
 	decision.ActionRef = mcpReportedActionRef(decision.OverrideRefs, decision.ActionRef)
-	if tp, ok := opts.Rec.(session.TaskContextProvider); ok {
+
+	var matched bool
+	if state, ok := opts.Rec.(session.TaskPermissionState); ok {
+		decision.Risk, decision.Task, matched = state.TaskPolicySnapshot(opts.taskSubject, action)
+	} else if tp, ok := opts.Rec.(session.TaskContextProvider); ok {
 		decision.Task = tp.TaskSnapshot()
-		if taintRuntimeTrustOverrideApplies(tp.RuntimeTrustOverrides(), decision.Task, decision.Risk, decision.OverrideRefs) {
-			decision.Result = session.PolicyDecisionResult{
-				Decision: session.PolicyAllow,
-				Reason:   "taint_runtime_task_override",
-			}
-			decision.TaskOverrideApplied = true
-			return decision
-		}
 	}
 	decision.Result = session.PolicyMatrix{Profile: taintCfg.Policy}.EvaluateWithOptions(
 		decision.Risk.Level,
@@ -147,8 +153,26 @@ func evaluateMCPTaint(opts MCPProxyOpts, toolName, argsJSON string) taintDecisio
 		session.PolicyEvaluateOptions{
 			FailSafeClassification:  taintCfg.FailSafeClassification,
 			ClassificationConfident: classified.Confident,
+			CheckTaskPermission:     true,
+			TaskPermissionMatched:   matched,
 		},
 	)
+	switch decision.Result.Reason {
+	case session.TaskPermissionRequired, session.TaskPermissionGranted:
+		decision.taskAction = action
+		return decision
+	}
+
+	if tp, ok := opts.Rec.(session.TaskContextProvider); ok {
+		if taintRuntimeTrustOverrideApplies(tp.RuntimeTrustOverrides(), decision.Task, decision.Risk, decision.OverrideRefs) {
+			decision.Result = session.PolicyDecisionResult{
+				Decision: session.PolicyAllow,
+				Reason:   "taint_runtime_task_override",
+			}
+			decision.TaskOverrideApplied = true
+			return decision
+		}
+	}
 	if taintTrustOverrideApplies(taintCfg.TrustOverrides, decision.Risk, decision.OverrideRefs) {
 		decision.Result = session.PolicyDecisionResult{
 			Decision: session.PolicyAllow,
@@ -156,6 +180,96 @@ func evaluateMCPTaint(opts MCPProxyOpts, toolName, argsJSON string) taintDecisio
 		}
 	}
 	return decision
+}
+
+func mcpTaskAction(opts MCPProxyOpts, frame MCPFrame) session.TaskAction {
+	destination := opts.ServerBinding
+	if destination != "" && opts.ServerRevision != "" {
+		destination += "/" + opts.ServerRevision
+	}
+	var payload bytes.Buffer
+	if params := mcpFrameParams(frame); len(params) > 0 {
+		if err := json.Compact(&payload, params); err != nil {
+			return session.TaskAction{}
+		}
+	}
+	digest := sha256.Sum256(payload.Bytes())
+	return session.TaskAction{
+		Method:      frame.Method,
+		Destination: destination,
+		Tool:        frame.ToolCallName,
+		Digest:      hex.EncodeToString(digest[:]),
+	}
+}
+
+func resolveMCPTaskApproval(opts MCPProxyOpts, decision *taintDecision, name string) bool {
+	outcome := hitl.OutcomeUnavailable
+	if opts.Approver != nil && decision.taskAction.Digest != "" {
+		req := buildHITLRequestForTaint(name, taintApprovalReason(*decision),
+			fmt.Sprintf("%s %s (SHA-256 %s)", decision.ActionRef, decision.taskAction.Destination, decision.taskAction.Digest))
+		req.Confirmation = session.TaskApprovalConfirmation()
+		req.Reason += " (SHA-256 " + decision.taskAction.Digest + ")"
+		outcome = opts.Approver.AskOutcome(req)
+	}
+	if outcome == hitl.OutcomeAllow {
+		if tp, ok := opts.Rec.(session.TaskContextProvider); ok && tp.TaskSnapshot().CurrentTaskID != decision.Task.CurrentTaskID {
+			decision.Result = session.PolicyDecisionResult{Decision: session.PolicyBlock, Reason: session.TaskApprovalStale}
+			decision.taskRefusal = "the task changed while approval was pending"
+			return false
+		}
+		approveTaintDecision(decision)
+		decision.Result = session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: session.TaskApprovalGranted}
+		return true
+	}
+	reason, detail := session.TaskApprovalRefusal(outcome)
+	decision.Result = session.PolicyDecisionResult{Decision: session.PolicyBlock, Reason: reason}
+	decision.taskRefusal = detail
+	if opts.TaskOperatorAPI && decision.taskAction.Valid() && opts.taskSubject != "" {
+		decision.taskRefusal += "; an operator can grant this action using POST /api/v1/sessions/{key}/task"
+		decision.taskRefusal += "; destination " + decision.taskAction.Destination + ", digest " + decision.taskAction.Digest
+	}
+	return false
+}
+
+func (d taintDecision) refusalMessage() string {
+	message := "pipelock: " + d.Result.Reason
+	if d.taskRefusal != "" {
+		message += " (" + d.taskRefusal + ")"
+	}
+	return message
+}
+
+func mcpTaskReleaseRefusal(opts MCPProxyOpts, frame MCPFrame, admitted taintDecision, redirected bool) string {
+	if admitted.taskAction.Digest == "" {
+		state, ok := opts.Rec.(session.RiskState)
+		if !ok || state.RiskSnapshot().Level < session.TaintExternalHostile {
+			return ""
+		}
+	}
+	identity := mcpFrameCollisionSafeCallableIdentity(frame, frame.Method)
+	if identity == "" && !frame.IsToolsCall() {
+		return ""
+	}
+	current := evaluateMCPTaskTaint(opts, identity, mcpFrameCallableArgs(frame), mcpTaskAction(opts, frame))
+	if admitted.taskAction.Digest != "" && current.Task.CurrentTaskID != admitted.Task.CurrentTaskID {
+		return session.TaskApprovalStale + " (the task changed before release)"
+	}
+	switch current.Result.Reason {
+	case session.TaskPermissionGranted:
+		if !redirected {
+			return ""
+		}
+	case session.TaskPermissionRequired:
+		if !redirected && admitted.RequiresReauth && current.taskAction == admitted.taskAction {
+			return ""
+		}
+	default:
+		return ""
+	}
+	if redirected {
+		return session.TaskPermissionRequired + " (a tool-policy redirect changes the approved destination)"
+	}
+	return session.TaskPermissionRequired + " (the action needs a current task permission or approval before release)"
 }
 
 func taintDecisionRequiresApproval(opts MCPProxyOpts, toolName, reason, preview string) (bool, bool) {

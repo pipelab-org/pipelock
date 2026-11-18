@@ -75,6 +75,49 @@ func TestApprover_Allow(t *testing.T) {
 	}
 }
 
+func TestAskOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		input    string
+		terminal bool
+		timeout  bool
+		want     Outcome
+	}{
+		{name: "allow", input: "y\n", terminal: true, want: OutcomeAllow},
+		{name: "decline", input: "n\n", terminal: true, want: OutcomeDeclined},
+		{name: "lost_input", terminal: true, want: OutcomeInputLost},
+		{name: "non_terminal", input: "y\n", want: OutcomeNonTerminal},
+		{name: "timeout", terminal: true, timeout: true, want: OutcomeTimeout},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var input io.Reader = strings.NewReader(tc.input)
+			if tc.timeout {
+				r, w := io.Pipe()
+				defer func() { _ = w.Close() }()
+				defer func() { _ = r.Close() }()
+				input = r
+			}
+			a := New(1, WithInput(input), WithOutput(io.Discard), WithTerminal(tc.terminal))
+			defer a.Close()
+			if got := a.AskOutcome(&Request{Reason: "approve exact task action"}); got != tc.want {
+				t.Fatalf("outcome = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAskOutcomePreservesLegacyAsk(t *testing.T) {
+	for _, tc := range []struct {
+		input string
+		want  Decision
+	}{{"y\n", DecisionAllow}, {"s\n", DecisionStrip}, {"n\n", DecisionBlock}, {"", DecisionBlock}} {
+		a, _ := testApprover(t, tc.input, 5)
+		if got := a.Ask(&Request{}); got != tc.want {
+			t.Errorf("Ask(%q) = %v, want %v", tc.input, got, tc.want)
+		}
+	}
+}
+
 func TestApprover_AllowYes(t *testing.T) {
 	a, _ := testApprover(t, "yes\n", 5)
 
@@ -376,16 +419,16 @@ func TestApprover_TimeoutThenSuccess(t *testing.T) {
 		output:  output,
 		ctx:     ctx,
 	}
-	lines := make(chan string, 2)
+	lines := make(chan terminalLine, 2)
 
 	// First request: no input → times out → sets lastPromptTimedOut = true.
 	d1 := a.prompt(lines, &Request{URL: "https://example.com", Reason: "first"})
-	if d1 != DecisionBlock {
+	if d1 != OutcomeTimeout {
 		t.Fatalf("expected timeout block, got %d", d1)
 	}
 
-	lines <- "stale"
-	done := make(chan Decision, 1)
+	lines <- terminalLine{value: "stale"}
+	done := make(chan Outcome, 1)
 	go func() {
 		done <- a.prompt(lines, &Request{URL: "https://example.com", Reason: "second"})
 	}()
@@ -393,12 +436,12 @@ func TestApprover_TimeoutThenSuccess(t *testing.T) {
 	testwait.For(t, time.Second, func() bool {
 		return output.count("PIPELOCK: THREAT DETECTED") >= 2
 	}, "second HITL prompt after stale input drain")
-	lines <- "y"
+	lines <- terminalLine{value: "y"}
 
 	// Second request: drainStaleLines removes "stale", then prompt reads "y".
 	select {
 	case d2 := <-done:
-		if d2 != DecisionAllow {
+		if d2 != OutcomeAllow {
 			t.Fatalf("expected allow after drain, got %d", d2)
 		}
 	case <-time.After(time.Second):

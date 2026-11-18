@@ -186,6 +186,8 @@ func RunHTTPProxy(
 			return session.ErrCapacity
 		}
 		defer opts.Store.Delete(invocationKey)
+		opts.taskSubject = invocationKey
+		session.BindTaskSubject(rec, opts.taskSubject)
 	}
 	defer recordMCPBaselineSample(opts, rec)
 
@@ -462,6 +464,14 @@ func RunHTTPProxy(
 					// kill-switch claim and SendMessage; see
 					// claimDeferredRelease for the ordering argument.
 					prepared, finish := lockAndClaimDeferredRelease(&upstreamMu, fwdOpts, deferredGeneration, res)
+					if prepared.FinalDecision == config.ActionAllow {
+						if reason := mcpTaskReleaseRefusal(fwdOpts, deferredReq.authorityFrame, deferredReq.taskTaint, false); reason != "" {
+							prepared.FinalDecision = config.ActionBlock
+							prepared.Reason = reason
+							gateAudit = mcpTaintDenialAudit()
+							gateBlock = &BlockedRequest{ID: deferredReq.ID, ErrorCode: -32002, ErrorMessage: "pipelock: " + reason}
+						}
+					}
 					if finish != nil {
 						finish = sync.OnceFunc(finish)
 						finishDeniedRelease = finish

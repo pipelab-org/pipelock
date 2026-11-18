@@ -16,13 +16,13 @@ func TestMCPPullRequestReadsAfterExternalExposure(t *testing.T) {
 				t.Run(prefix+tool+"/"+method, func(t *testing.T) {
 					args := `{"owner":"example","repo":"example","pullNumber":1,"method":"` + method + `"}`
 					got := session.ClassifyMCPToolCallWithOptions(prefix+tool, args, nil, nil, session.ClassificationOptions{})
-					if got.Class != session.ActionClassRead || got.Confident {
-						t.Fatalf("got %+v, want low-confidence read", got)
+					if got.Class != session.ActionClassUnknown || got.Confident {
+						t.Fatalf("got %+v, want unknown", got)
 					}
 					for _, profile := range []string{"balanced", "strict", "permissive"} {
 						d := (session.PolicyMatrix{Profile: profile}).EvaluateWithOptions(session.TaintExternalUntrusted, got.Class, got.Sensitivity, session.AuthorityUserBroad, session.PolicyEvaluateOptions{ClassificationConfident: got.Confident})
-						if d.Decision != session.PolicyAllow || d.Reason != "taint_safe_read_only_action" {
-							t.Fatalf("%s: got %+v, want safe read allow", profile, d)
+						if d.Decision != session.PolicyAllow || d.Reason == "taint_safe_read_only_action" {
+							t.Fatalf("%s: got %+v, want legacy untrusted-context allow without read authority", profile, d)
 						}
 					}
 				})
@@ -104,7 +104,7 @@ func TestMCPPullRequestReadFailSafeConfidence(t *testing.T) {
 			if failSafe && profile != "permissive" {
 				want = session.PolicyAsk
 			}
-			if got.Class != session.ActionClassRead || got.Confident || d.Decision != want {
+			if got.Class != session.ActionClassUnknown || got.Confident || d.Decision != want {
 				t.Fatalf("%s/failSafe=%v: %+v / %+v", profile, failSafe, got, d)
 			}
 		}

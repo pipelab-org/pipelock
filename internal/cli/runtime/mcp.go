@@ -359,30 +359,19 @@ func deferJournalPath(cfg *config.Config) string {
 	return filepath.Join(cfg.FlightRecorder.Dir, "deferred-actions.jsonl")
 }
 
-// startDeferredOperatorAPI starts the operator-only admin listener that exposes
-// the deferred (held-action) control surface for `pipelock mcp proxy`. It binds
-// kill_switch.api_listen on a dedicated port and serves ONLY the deferred
-// routes, wired to the live deferManager that admitted the holds, so an
-// operator can list, approve, and deny held actions out of band.
-//
-// This dedicated listener IS the confused-deputy boundary: the deferred routes
-// are reachable ONLY here, never on the MCP data listener (--listen) nor the
-// child's stdio, so a proxied agent cannot approve its own held actions. When
-// api_listen is unset (or defer is disabled / no live manager) the surface is
-// simply not exposed - deferred control is unavailable, NOT silently mounted on
-// an agent-facing port - and the returned stop is a no-op.
-//
-// A bind failure is fatal to the proxy: an operator who configured api_listen
-// but cannot reach the steering wheel should fail closed, matching the
-// api_listen fail-fast in `pipelock run`.
-func startDeferredOperatorAPI(
+// startMCPOperatorAPI serves authenticated task and deferred-action controls on
+// a dedicated listener, separate from the MCP data listener and stdio.
+func startMCPOperatorAPI(
 	ctx context.Context,
 	cfg *config.Config,
 	deferManager *deferred.Manager,
 	logger *audit.Logger,
 	stderr io.Writer,
+	sessions *atomic.Pointer[proxy.SessionManager],
 ) (func(), error) {
-	if cfg == nil || cfg.KillSwitch.APIListen == "" || deferManager == nil || !deferManager.Enabled() {
+	deferredAvailable := deferManager != nil && deferManager.Enabled()
+	taskAvailable := sessions != nil && sessions.Load() != nil
+	if cfg == nil || cfg.KillSwitch.APIListen == "" || (!deferredAvailable && !taskAvailable) {
 		return func() {}, nil
 	}
 	apiToken := cfg.EffectiveKillSwitchAPIToken()
@@ -390,13 +379,20 @@ func startDeferredOperatorAPI(
 		return func() {}, fmt.Errorf("kill_switch.api_listen requires kill_switch.api_token, api_token_file or %s to be set", killswitch.EnvAPIToken)
 	}
 	sessionAPI := proxy.NewSessionAPIHandler(proxy.SessionAPIOptions{
-		Logger:   logger,
-		Deferred: deferManager,
-		APIToken: apiToken,
+		Logger:        logger,
+		Deferred:      deferManager,
+		APIToken:      apiToken,
+		SessionMgrPtr: sessions,
 	})
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/deferred", sessionAPI.HandleDeferredList)
-	mux.HandleFunc("/api/v1/deferred/", sessionAPI.HandleDeferredAction)
+	if deferredAvailable {
+		mux.HandleFunc("/api/v1/deferred", sessionAPI.HandleDeferredList)
+		mux.HandleFunc("/api/v1/deferred/", sessionAPI.HandleDeferredAction)
+	}
+	if taskAvailable {
+		mux.HandleFunc("/api/v1/sessions", sessionAPI.HandleList)
+		mux.HandleFunc("/api/v1/sessions/{key}/task", sessionAPI.HandleTask)
+	}
 
 	ln, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.KillSwitch.APIListen)
 	if lnErr != nil {
@@ -405,11 +401,10 @@ func startDeferredOperatorAPI(
 	srv := newHTTPServer(mux)
 	go func() {
 		if serveErr := srv.Serve(ln); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-			_, _ = fmt.Fprintf(stderr, "pipelock: deferred operator API stopped: %v\n", serveErr)
+			_, _ = fmt.Fprintf(stderr, "pipelock: MCP operator API stopped: %v\n", serveErr)
 		}
 	}()
-	_, _ = fmt.Fprintf(stderr, "pipelock: deferred operator API on %s (routes: /api/v1/deferred, /api/v1/deferred/{id}/{approve,deny})\n",
-		cfg.KillSwitch.APIListen)
+	_, _ = fmt.Fprintf(stderr, "pipelock: MCP operator API on %s (task=%t, deferred=%t)\n", ln.Addr(), taskAvailable, deferredAvailable)
 	stop := func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
 		defer cancel()
@@ -418,22 +413,14 @@ func startDeferredOperatorAPI(
 	return stop, nil
 }
 
-func startDeferredOperatorAPIOrReport(
+func startDeferredOperatorAPI(
 	ctx context.Context,
 	cfg *config.Config,
 	deferManager *deferred.Manager,
 	logger *audit.Logger,
 	stderr io.Writer,
-	sentryClient *plsentry.Client,
 ) (func(), error) {
-	stop, err := startDeferredOperatorAPI(ctx, cfg, deferManager, logger, stderr)
-	if err != nil {
-		if sentryClient != nil {
-			sentryClient.CaptureError(err)
-		}
-		return nil, err
-	}
-	return stop, nil
+	return startMCPOperatorAPI(ctx, cfg, deferManager, logger, stderr, nil)
 }
 
 func resolvedMCPDoWAgentName(requested, resolved string, found bool) string {
@@ -1219,6 +1206,7 @@ Key-free evidence capture:
 
 			// The session store remains optional.
 			var store session.Store
+			var operatorSessions atomic.Pointer[proxy.SessionManager]
 			var baselineChecker session.BaselineChecker
 			var adaptiveCfg *config.AdaptiveEnforcement
 			if cfg.AdaptiveEnforcement.Enabled {
@@ -1237,6 +1225,7 @@ Key-free evidence capture:
 				}
 				defer sm.Close()
 				store = sm.AsStore()
+				operatorSessions.Store(sm)
 				baselineChecker = sm
 			}
 			// Denial-of-wallet tracking: _default budget is free tier (always
@@ -1556,6 +1545,15 @@ Key-free evidence capture:
 			}, cmd.ErrOrStderr()); err != nil {
 				return err
 			}
+			stopOperatorAPI, err := startMCPOperatorAPI(heartbeatCtx, cfg, deferManager, auditLogger, cmd.ErrOrStderr(), &operatorSessions)
+			if err != nil {
+				if sentryClient != nil {
+					sentryClient.CaptureError(err)
+				}
+				return err
+			}
+			defer stopOperatorAPI()
+			taskOperatorAPI := cfg.KillSwitch.APIListen != "" && operatorSessions.Load() != nil
 			if hasUpstream {
 				if len(envVars) > 0 {
 					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: --env is ignored in HTTP transport mode (no child process)")
@@ -1597,6 +1595,7 @@ Key-free evidence capture:
 						defer doorVerifier.Close()
 					}
 					listenerOpts := mcp.MCPProxyOpts{
+						TaskOperatorAPI:              taskOperatorAPI,
 						ListenerDoor:                 doorVerifier,
 						ListenerBearerToken:          listenerAuthToken,
 						ListenerAllowedOrigins:       listenerAllowedOrigins,
@@ -1665,7 +1664,8 @@ Key-free evidence capture:
 						return err
 					}
 					wsOpts := mcp.MCPProxyOpts{
-						Scanner: sc, Approver: approver, AuditMode: !cfg.EnforceEnabled(),
+						TaskOperatorAPI: taskOperatorAPI,
+						Scanner:         sc, Approver: approver, AuditMode: !cfg.EnforceEnabled(),
 						AuditLogger: auditLogger,
 						InputCfg:    inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 						KillSwitch: ks, ChainMatcher: chainMatcher,
@@ -1716,13 +1716,9 @@ Key-free evidence capture:
 				if err := validateMCPDeferSurface(deferred.SurfaceMCPHTTPUpstream, cfg); err != nil {
 					return err
 				}
-				stopDeferAPI, deferAPIErr := startDeferredOperatorAPIOrReport(ctx, cfg, deferManager, auditLogger, cmd.ErrOrStderr(), sentryClient)
-				if deferAPIErr != nil {
-					return deferAPIErr
-				}
-				defer stopDeferAPI()
 				httpOpts := mcp.MCPProxyOpts{
-					Scanner: sc, Approver: approver, AuditMode: !cfg.EnforceEnabled(),
+					TaskOperatorAPI: taskOperatorAPI,
+					Scanner:         sc, Approver: approver, AuditMode: !cfg.EnforceEnabled(),
 					AuditLogger: auditLogger,
 					InputCfg:    inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 					KillSwitch: ks, ChainMatcher: chainMatcher,
@@ -1819,12 +1815,6 @@ Key-free evidence capture:
 				ctx, cancel := signal.NotifyContext(heartbeatCtx, syscall.SIGINT, syscall.SIGTERM)
 				defer cancel()
 
-				stopDeferAPI, deferAPIErr := startDeferredOperatorAPIOrReport(ctx, cfg, deferManager, auditLogger, cmd.ErrOrStderr(), sentryClient)
-				if deferAPIErr != nil {
-					return deferAPIErr
-				}
-				defer stopDeferAPI()
-
 				mcpStrict := sandboxStrict || cfg.Sandbox.Strict
 				if mcpStrict && (sandboxBestEffort || cfg.Sandbox.BestEffort) {
 					return errors.New("--sandbox-strict and --sandbox-best-effort are mutually exclusive")
@@ -1914,7 +1904,8 @@ Key-free evidence capture:
 				sandboxLaunch.Cmd.Stderr = cmd.ErrOrStderr()
 
 				proxyOpts := mcp.MCPProxyOpts{
-					Scanner: sc, Approver: approver, AuditMode: !cfg.EnforceEnabled(),
+					TaskOperatorAPI: taskOperatorAPI,
+					Scanner:         sc, Approver: approver, AuditMode: !cfg.EnforceEnabled(),
 					AuditLogger: auditLogger,
 					InputCfg:    inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 					KillSwitch: ks, ChainMatcher: chainMatcher,
@@ -1973,12 +1964,6 @@ Key-free evidence capture:
 			}
 			ctx, cancel := signal.NotifyContext(heartbeatCtx, syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
-
-			stopDeferAPI, deferAPIErr := startDeferredOperatorAPIOrReport(ctx, cfg, deferManager, auditLogger, cmd.ErrOrStderr(), sentryClient)
-			if deferAPIErr != nil {
-				return deferAPIErr
-			}
-			defer stopDeferAPI()
 
 			// Wrap stderr in a mutex so file sentry goroutines and RunProxy
 			// (which wraps logW in its own syncWriter) don't interleave.
@@ -2071,7 +2056,8 @@ Key-free evidence capture:
 			}
 
 			proxyOpts := mcp.MCPProxyOpts{
-				Scanner: sc, Approver: approver, AuditMode: !cfg.EnforceEnabled(),
+				TaskOperatorAPI: taskOperatorAPI,
+				Scanner:         sc, Approver: approver, AuditMode: !cfg.EnforceEnabled(),
 				AuditLogger: auditLogger,
 				InputCfg:    inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 				KillSwitch: ks, ChainMatcher: chainMatcher,

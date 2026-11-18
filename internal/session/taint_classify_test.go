@@ -93,10 +93,10 @@ func TestClassifyMCPToolCall(t *testing.T) {
 			wantAction: "/home/developer/.ssh/id_rsa",
 		},
 		{
-			name:       "browse tool stays browse",
+			name:       "undeclared browse tool is unknown",
 			toolName:   "browse_url",
 			argsJSON:   `{"url":"https://example.com/docs"}`,
-			wantClass:  session.ActionClassBrowse,
+			wantClass:  session.ActionClassUnknown,
 			wantLevel:  session.SensitivityNormal,
 			wantAction: "https://example.com/docs",
 		},
@@ -165,13 +165,13 @@ func TestClassifyMCPToolCallWithOptions_FailSafeUnknownTool(t *testing.T) {
 	t.Parallel()
 
 	off := session.ClassifyMCPToolCallWithOptions("mystery_tool", `{}`, nil, nil, session.ClassificationOptions{})
-	if off.Class != session.ActionClassRead || off.Sensitivity != session.SensitivityNormal || off.Confident {
-		t.Fatalf("fail-safe off classification = %+v, want read normal low-confidence", off)
+	if off.Class != session.ActionClassUnknown || off.Sensitivity != session.SensitivityNormal || off.Confident {
+		t.Fatalf("fail-safe off classification = %+v, want unknown normal low-confidence", off)
 	}
 
 	on := session.ClassifyMCPToolCallWithOptions("mystery_tool", `{}`, nil, nil, session.ClassificationOptions{FailSafe: true})
-	if on.Class != session.ActionClassRead || on.Sensitivity != session.SensitivityProtected || on.Confident {
-		t.Fatalf("fail-safe on classification = %+v, want read protected low-confidence", on)
+	if on.Class != session.ActionClassUnknown || on.Sensitivity != session.SensitivityProtected || on.Confident {
+		t.Fatalf("fail-safe on classification = %+v, want unknown protected low-confidence", on)
 	}
 }
 

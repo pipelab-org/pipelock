@@ -415,6 +415,11 @@ type MCPProxyOpts struct {
 	// ServerRevision is the registered identity revision of a verified local
 	// service, empty for a legacy launch. It versions the adaptive session key.
 	ServerRevision string
+	// taskSubject is set only by a verified listener principal or a local
+	// stdio invocation. Request routing identifiers never fill it.
+	taskSubject string
+	// TaskOperatorAPI indicates that an authenticated task grant route is available.
+	TaskOperatorAPI bool
 	// ServerIdentityFn re-resolves the server identity for each request of a
 	// long-lived listener, so a hot reload that changes or removes the
 	// registration is seen. Its result replaces the five static identity fields

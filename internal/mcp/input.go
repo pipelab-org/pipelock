@@ -776,6 +776,18 @@ func ForwardScannedInput(
 				},
 			)
 		}
+		checkTaskRelease := func(redirected bool) bool {
+			reason := mcpTaskReleaseRefusal(opts, frame, taintDecision, redirected)
+			if reason == "" {
+				return true
+			}
+			sendMCPDenial(opts, mcpTaintDenialAudit(), BlockedRequest{
+				ID: verdict.ID, IsNotification: isRPCNotification(verdict.ID),
+				ErrorCode: -32002, ErrorMessage: "pipelock: " + reason,
+			}, blockedCh)
+			_ = emitToolReceipt(config.ActionBlock)
+			return false
+		}
 
 		// DoW diagnostic log. Runs on any !allowed outcome (block or
 		// warn). Held in a local so the block-dispatch case below can
@@ -899,7 +911,7 @@ func ForwardScannedInput(
 				IsNotification: isRPCNotification(verdict.ID),
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked by taint policy", lineNum),
 				ErrorCode:      -32002,
-				ErrorMessage:   "pipelock: " + taintDecision.Result.Reason,
+				ErrorMessage:   taintDecision.refusalMessage(),
 			}, blockedCh)
 			_ = emitToolReceipt(config.ActionBlock)
 			continue
@@ -1071,6 +1083,9 @@ func ForwardScannedInput(
 				receiptLayerOverride, receiptPatternOverride, receiptSeverityOverride = authorityReceiptAttribution()
 				_ = emitToolReceipt(config.ActionBlock, contractGate)
 				sendMCPDenial(opts, mcpAuthorityDenialAudit(), *authorityBlockedRequest(frame), blockedCh)
+				continue
+			}
+			if !checkTaskRelease(false) {
 				continue
 			}
 			fwdLine := line
@@ -1278,6 +1293,9 @@ func ForwardScannedInput(
 				ErrorData:      mcpBlockReasonData(blockReason),
 			}, blockedCh)
 		case config.ActionRedirect:
+			if !checkTaskRelease(true) {
+				continue
+			}
 			// Batch requests cannot be redirected element-by-element.
 			// Fail closed: block the entire batch.
 			trimmed := bytes.TrimSpace(line)
@@ -1554,6 +1572,12 @@ func ForwardScannedInput(
 					// kill-switch claim and this write; see
 					// claimDeferredRelease for the ordering argument.
 					prepared, finish := lockAndClaimDeferredRelease(&forwardMu, opts, deferredGeneration, res)
+					if prepared.FinalDecision == config.ActionAllow {
+						if reason := mcpTaskReleaseRefusal(opts, heldAuthorityFrame, taintDecision, false); reason != "" {
+							prepared.FinalDecision = config.ActionBlock
+							prepared.Reason = reason
+						}
+					}
 					if finish != nil {
 						finish = sync.OnceFunc(finish)
 						finishDeniedRelease = finish
@@ -1792,6 +1816,9 @@ func ForwardScannedInput(
 				continue
 			}
 			// Inject envelope for warn-mode tool calls before forwarding.
+			if !checkTaskRelease(false) {
+				continue
+			}
 			fwdLine := line
 			if verdict.Method == methodToolsCall {
 				buildOpts := envelope.BuildOpts{

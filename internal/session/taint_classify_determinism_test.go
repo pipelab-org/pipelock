@@ -47,7 +47,7 @@ func TestClassifyMCPToolCall_ActionRefIsStableAcrossRuns(t *testing.T) {
 			argsJSON: `{"zeta_url":"https://zeta.vendor.example/z",` +
 				`"alpha_url":"https://alpha.vendor.example/a",` +
 				`"mid_url":"https://mid.vendor.example/m"}`,
-			wantClass: session.ActionClassBrowse,
+			wantClass: session.ActionClassUnknown,
 			wantRef:   "https://alpha.vendor.example/a",
 		},
 		{
@@ -56,7 +56,7 @@ func TestClassifyMCPToolCall_ActionRefIsStableAcrossRuns(t *testing.T) {
 			argsJSON: `{"zeta_path":"/srv/zeta/data.txt",` +
 				`"alpha_path":"/srv/alpha/data.txt",` +
 				`"mid_path":"/srv/mid/data.txt"}`,
-			wantClass: session.ActionClassRead,
+			wantClass: session.ActionClassUnknown,
 			wantRef:   "/srv/alpha/data.txt",
 		},
 		{
@@ -66,7 +66,7 @@ func TestClassifyMCPToolCall_ActionRefIsStableAcrossRuns(t *testing.T) {
 				`"alpha_url":"https://alpha.vendor.example/a"},` +
 				`"also":{"beta_url":"https://beta.vendor.example/b"}}`,
 			// "also" sorts before "outer", so its subtree is walked first.
-			wantClass: session.ActionClassBrowse,
+			wantClass: session.ActionClassUnknown,
 			wantRef:   "https://beta.vendor.example/b",
 		},
 	}

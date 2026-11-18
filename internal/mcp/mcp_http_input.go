@@ -58,6 +58,7 @@ type DeferredRequest struct {
 	authorityRef        string
 	authorityCarrierErr error
 	authorityFrame      MCPFrame
+	taskTaint           taintDecision
 }
 
 // scanHTTPInput checks a single input message for DLP/injection/policy/CEE.
@@ -135,6 +136,16 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 	}()
 	defer func() {
+		if result.Blocked == nil && result.Deferred == nil && receiptVerdict != config.ActionRedirect {
+			if reason := mcpTaskReleaseRefusal(opts, frame, taintEval, false); reason != "" {
+				denialAudit = mcpTaintDenialAudit()
+				receiptVerdict = config.ActionBlock
+				result.Blocked = &BlockedRequest{
+					ID: frame.ID, IsNotification: isRPCNotification(frame.ID),
+					ErrorCode: -32002, ErrorMessage: "pipelock: " + reason,
+				}
+			}
+		}
 		if redirectReceiptEmitted && receiptVerdict == config.ActionRedirect {
 			return
 		}
@@ -622,7 +633,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			IsNotification: isRPCNotification(verdict.ID),
 			LogMessage:     "blocked by taint policy",
 			ErrorCode:      -32002,
-			ErrorMessage:   "pipelock: " + eval.TaintDecision.Result.Reason,
+			ErrorMessage:   eval.TaintDecision.refusalMessage(),
 		}
 		return result
 	}
@@ -1041,6 +1052,15 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 		return result
 	case config.ActionRedirect:
+		if reason := mcpTaskReleaseRefusal(opts, frame, taintEval, true); reason != "" {
+			denialAudit = mcpTaintDenialAudit()
+			receiptVerdict = config.ActionBlock
+			result.Blocked = &BlockedRequest{
+				ID: frame.ID, IsNotification: isRPCNotification(frame.ID),
+				ErrorCode: -32002, ErrorMessage: "pipelock: " + reason,
+			}
+			return result
+		}
 		// Batch requests cannot be redirected element-by-element. Fail closed.
 		trimmedMsg := bytes.TrimSpace(msg)
 		if len(trimmedMsg) > 0 && trimmedMsg[0] == '[' {
@@ -1278,6 +1298,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			ResolverProfileName: resolverProfileName,
 			ArgDigest:           argsDigest(toolArgs),
 			Arguments:           toolArgs,
+			taskTaint:           taintEval,
 		}
 		return result
 	case config.ActionAsk:

@@ -4,11 +4,18 @@
 package runtime
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,8 +23,154 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/proxy"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
+
+type taskGrantTestStore struct {
+	session.Store
+	keys chan string
+}
+
+func (s taskGrantTestStore) GetOrCreate(key string) session.Recorder {
+	rec := s.Store.GetOrCreate(key)
+	s.keys <- key
+	return rec
+}
+
+func TestMCPOperatorAPIInstallsLiveTaskPermissionWithoutDefer(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.KillSwitch.APIListen = "127.0.0.1:0"
+	cfg.KillSwitch.APIToken = "operator-test-token"
+	var sessions atomic.Pointer[proxy.SessionManager]
+	manager := proxy.NewSessionManager(&cfg.SessionProfiling, nil, nil)
+	defer manager.Close()
+	sessions.Store(manager)
+	var startup bytes.Buffer
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stop, err := startMCPOperatorAPI(ctx, cfg, nil, audit.NewNop(), &startup, &sessions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	fields := strings.Fields(startup.String())
+	if len(fields) < 6 {
+		t.Fatalf("missing operator listener address: %q", startup.String())
+	}
+	baseURL := "http://" + fields[5]
+
+	var delivered atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		delivered.Add(1)
+		var frame struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&frame); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"content":[]}}`, frame.ID)
+	}))
+	defer upstream.Close()
+	cfg.Internal = nil
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+	in, send := io.Pipe()
+	receive, out := io.Pipe()
+	defer func() { _ = receive.Close() }()
+	defer func() { _ = send.Close() }()
+	store := taskGrantTestStore{Store: manager.AsStore(), keys: make(chan string, 1)}
+	done := make(chan error, 1)
+	const binding = "server-binding"
+	go func() {
+		err := mcp.RunHTTPProxy(ctx, in, out, io.Discard, upstream.URL, nil, mcp.MCPProxyOpts{
+			Scanner: sc, Store: store, TaintCfg: &cfg.Taint, ServerBinding: binding, TaskOperatorAPI: true,
+		})
+		_ = out.CloseWithError(err)
+		done <- err
+	}()
+	var key string
+	select {
+	case key = <-store.keys:
+	case <-ctx.Done():
+		t.Fatal("MCP bridge did not create an invocation")
+	}
+	rec := manager.SessionByKey(key)
+	taskID := rec.TaskSnapshot().CurrentTaskID
+	rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingDLP}))
+	const params = `{"name":"write_file","arguments":{"path":"/workspace/status.txt","content":"ready"}}`
+	output := bufio.NewReader(receive)
+	call := func(id int, args string) string {
+		t.Helper()
+		if _, err := fmt.Fprintf(send, "{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"tools/call\",\"params\":%s}\n", id, args); err != nil {
+			t.Fatal(err)
+		}
+		line, err := output.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		return line
+	}
+	if reply := call(1, params); !strings.Contains(reply, "task_approval_unavailable") || delivered.Load() != 0 {
+		t.Fatalf("ungranted write delivered=%d response=%s", delivered.Load(), reply)
+	}
+	action := session.TaskAction{Method: "tools/call", Destination: binding, Tool: "write_file", Digest: fmt.Sprintf("%x", sha256.Sum256([]byte(params)))}
+	grant := struct {
+		TaskID     string                 `json:"task_id"`
+		Permission session.TaskPermission `json:"permission"`
+	}{taskID, session.TaskPermission{Action: action, ExpiresAt: time.Now().Add(time.Hour)}}
+	raw, err := json.Marshal(grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(method, path, token string) int {
+		t.Helper()
+		req, err := http.NewRequestWithContext(ctx, method, baseURL+path, bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return resp.StatusCode
+	}
+	path := "/api/v1/sessions/" + key + "/task"
+	if status := request(http.MethodPost, path, ""); status != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated task status = %d", status)
+	}
+	if status := request(http.MethodPost, path, cfg.KillSwitch.APIToken); status != http.StatusNoContent {
+		t.Fatalf("authenticated task status = %d", status)
+	}
+	if risk, task, matched := rec.TaskPolicySnapshot(key, action); !matched || risk.Level != session.TaintExternalHostile || task.CurrentTaskID != taskID {
+		t.Fatalf("live recorder matched=%t, risk=%s, task=%s", matched, risk.Level, task.CurrentTaskID)
+	}
+	if reply := call(2, params); !strings.Contains(reply, `"result"`) || delivered.Load() != 1 {
+		t.Fatalf("granted write delivered=%d response=%s", delivered.Load(), reply)
+	}
+	for n, changed := range []string{strings.Replace(params, "status.txt", "other.txt", 1), strings.Replace(params, "ready", "changed", 1)} {
+		if reply := call(3+n, changed); !strings.Contains(reply, "task_approval_unavailable") || delivered.Load() != 1 {
+			t.Fatalf("mismatched write delivered=%d response=%s", delivered.Load(), reply)
+		}
+	}
+	_ = send.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
 
 func deferredOpTestManager(t *testing.T) *deferred.Manager {
 	t.Helper()

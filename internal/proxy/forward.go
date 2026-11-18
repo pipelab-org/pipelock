@@ -1319,7 +1319,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		forwardRec = sess
 	}
-	forwardTaint := evaluateHTTPTaint(cfg, forwardRec, r.Method, r.URL)
+	var forwardTask forwardTaskAction
+	if id.Auth == envelope.ActorAuthBound {
+		forwardTask.subject = "forward:" + agent
+		session.BindTaskSubject(forwardRec, forwardTask.subject)
+	}
+	forwardTaint := evaluateHTTPTaskTaint(cfg, forwardRec, r.Method, r.URL, &forwardTask)
 	forwardRequiresReauth := false
 
 	// Airlock action classification for forward proxy. Admission reads the same
@@ -1451,7 +1456,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		gitPushObserved = observed
 	}
 
-	if forwardTaint.Result.Decision == session.PolicyAsk || forwardTaint.Result.Decision == session.PolicyBlock {
+	if forwardTaint.Result.Reason != session.TaskPermissionRequired &&
+		(forwardTaint.Result.Decision == session.PolicyAsk || forwardTaint.Result.Decision == session.PolicyBlock) {
 		p.logger.LogTaintDecision(
 			actx,
 			audit.TaintDecision{
@@ -1494,6 +1500,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			"blocked: "+forwardTaint.Result.Reason, http.StatusForbidden)
 		return
 	case session.PolicyAsk:
+		if forwardTaint.Result.Reason == session.TaskPermissionRequired {
+			break // Match or ask once the complete outbound request is available.
+		}
 		forwardRequiresReauth = true
 		approved, blockReason := p.resolveTaintAsk(agent, targetURL, r.Method, forwardTaint.Result.Reason)
 		if !approved {
@@ -2336,6 +2345,57 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	applyFullResponsePolicy(outReq.Header, nil)
 	responseencoding.RequestIdentity(outReq.Header)
 
+	if forwardTaint.Result.Reason == session.TaskPermissionRequired &&
+		forwardBodyBytes == nil && outReq.Body != nil && outReq.Body != http.NoBody {
+		// Even with request-body scanning disabled, an exact permission must
+		// account for every byte. Reuse the configured request body bound.
+		body, err := io.ReadAll(io.LimitReader(outReq.Body, int64(cfg.RequestBodyScanning.MaxBodyBytes)+1))
+		_ = outReq.Body.Close()
+		if err == nil && len(body) <= cfg.RequestBodyScanning.MaxBodyBytes {
+			forwardBodyBytes = body
+			outReq.Body = io.NopCloser(bytes.NewReader(body))
+			outReq.ContentLength = int64(len(body))
+			outReq.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(body)), nil
+			}
+		}
+	}
+	writeTaskDenial := func(reason, detail string) {
+		forwardTaint.Result = session.PolicyDecisionResult{Decision: session.PolicyBlock, Reason: reason}
+		emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
+			ActionID: actionID, RequestID: requestID, Agent: agent, Method: r.Method, Target: targetURL,
+			Layer: "taint_policy", Pattern: reason, Taint: forwardTaint,
+		})))
+		p.metrics.RecordBlocked(r.URL.Hostname(), "taint_policy", time.Since(start), agentLabel)
+		writeBlockedError(w, blockInfoFor(blockreason.AuthorityMismatch, "taint_policy").WithRequestID(requestID),
+			"blocked: "+reason+" ("+detail+")", http.StatusForbidden)
+	}
+	taskTaint := evaluateHTTPTaskTaint(cfg, forwardRec, outReq.Method, outReq.URL, &forwardTask)
+	if forwardTaint.Result.Reason == session.TaskPermissionRequired && forwardTaint.Task.CurrentTaskID != taskTaint.Task.CurrentTaskID {
+		writeTaskDenial(session.TaskApprovalStale, "the task changed before this action could be evaluated")
+		return
+	}
+	if taskTaint.Result.Reason == session.TaskPermissionRequired {
+		forwardTask.action = forwardRequestTaskAction(outReq, forwardBodyBytes)
+		matchedTask := evaluateHTTPTaskTaint(cfg, forwardRec, outReq.Method, outReq.URL, &forwardTask)
+		if matchedTask.Task.CurrentTaskID != taskTaint.Task.CurrentTaskID {
+			writeTaskDenial(session.TaskApprovalStale, "the task changed before this action could be evaluated")
+			return
+		}
+		taskTaint = matchedTask
+	}
+	switch taskTaint.Result.Reason {
+	case session.TaskPermissionGranted:
+		forwardTaint = taskTaint
+	case session.TaskPermissionRequired:
+		forwardTaint = taskTaint
+		forwardRequiresReauth = true
+		if reason, detail := p.resolveForwardTaskApproval(forwardRec, forwardTask, &forwardTaint, agent); reason != "" {
+			writeTaskDenial(reason, detail)
+			return
+		}
+	}
+
 	// Inject mediation envelope (and attach RFC 9421 signature when the
 	// envelope emitter has a signer) before forwarding on the allow
 	// path. forwardBodyBytes is the buffered request body when body
@@ -2389,6 +2449,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	switch forwardTaint.Result.Reason {
+	case session.TaskPermissionGranted, session.TaskApprovalGranted:
+		if !forwardTaskAdmissionCurrent(forwardRec, forwardTask, forwardTaint) {
+			writeTaskDenial(session.TaskApprovalStale, "the task changed or its permission expired before release")
+			return
+		}
+	}
 	forwardAllowReceipt := withReceiptShard(withForwardRedaction(receipt.EmitOpts{
 		ActionID:            actionID,
 		Verdict:             forwardReceiptVerdict,

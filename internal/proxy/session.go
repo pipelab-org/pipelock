@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -192,6 +193,8 @@ type SessionState struct {
 	// Task-boundary state for taint overrides and evidence binding.
 	task             session.TaskContext
 	runtimeOverrides []session.TrustOverride
+	taskSubject      string
+	taskPermissions  []session.TaskPermission
 
 	// recentEvents is a bounded ring buffer of notable events (blocks,
 	// anomalies, airlock transitions). Read by the operator admin API to
@@ -1225,6 +1228,65 @@ func (s *SessionState) TaskSnapshot() session.TaskContext {
 	return s.task
 }
 
+// BindTaskSubject pins the verified caller or launch identity for this
+// recorder's lifetime. A recorder reused by another subject conveys no grant.
+func (s *SessionState) BindTaskSubject(subject string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.taskSubject == "" {
+		s.taskSubject = subject
+	}
+}
+
+func (s *SessionState) TaskPolicySnapshot(subject string, action session.TaskAction) (session.SessionRisk, session.TaskContext, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var matched bool
+	if subject != "" && subject == s.taskSubject && action.Digest != "" {
+		now := time.Now()
+		for _, permission := range s.taskPermissions {
+			if permission.Action == action && now.Before(permission.ExpiresAt) {
+				matched = true
+				break
+			}
+		}
+	}
+	return s.risk.Snapshot(), s.task, matched
+}
+
+const maxTaskPermissions = 32
+
+var (
+	errTaskPermissionSubject    = errors.New("session has no verified task subject")
+	errTaskPermissionGeneration = errors.New("task generation does not match the current task")
+	errTaskPermissionCount      = errors.New("task permission limit exceeded")
+	errTaskPermissionAction     = errors.New("task permission requires an exact action and a future expiry")
+)
+
+func (s *SessionState) installTaskPermission(taskID string, permission session.TaskPermission) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.taskSubject == "" {
+		return errTaskPermissionSubject
+	}
+	if taskID == "" || taskID != s.task.CurrentTaskID {
+		return errTaskPermissionGeneration
+	}
+	now := time.Now()
+	if !permission.Action.Valid() || !permission.ExpiresAt.After(now) {
+		return errTaskPermissionAction
+	}
+	s.taskPermissions = slices.DeleteFunc(s.taskPermissions, func(p session.TaskPermission) bool {
+		return !now.Before(p.ExpiresAt) || p.Action == permission.Action
+	})
+	if len(s.taskPermissions) >= maxTaskPermissions {
+		return errTaskPermissionCount
+	}
+	s.taskPermissions = append(s.taskPermissions, permission)
+	s.lastActivity = now
+	return nil
+}
+
 // RuntimeTrustOverrides returns a copy of the session's runtime overrides.
 func (s *SessionState) RuntimeTrustOverrides() []session.TrustOverride {
 	s.mu.Lock()
@@ -1269,6 +1331,7 @@ func (s *SessionState) BeginNewTask(label string) (prev, current session.TaskCon
 	}
 	prev = s.task
 	s.task = newTaskContext(label, now)
+	s.taskPermissions = nil
 	s.risk = session.SessionRisk{}
 
 	if len(s.runtimeOverrides) > 0 {

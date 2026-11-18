@@ -27,8 +27,8 @@ func TestClassifyWithOptions_BranchCoverage(t *testing.T) {
 		{"write", "write_file", `{"path":"/repo/auth/middleware.go","content":"x"}`, session.ActionClassWrite},
 		{"exec", "shell", `{"command":"git push origin main"}`, session.ActionClassExec},
 		{"secret", "read_file", `{"path":"/home/u/.ssh/id_rsa"}`, session.ActionClassSecret},
-		{"browse", "browse_url", `{"url":"https://example.com/docs"}`, session.ActionClassBrowse},
-		{"unknown_read", "mystery_tool", `{}`, session.ActionClassRead},
+		{"undeclared_browse", "browse_url", `{"url":"https://example.com/docs"}`, session.ActionClassUnknown},
+		{"unknown", "mystery_tool", `{}`, session.ActionClassUnknown},
 	}
 	for _, tc := range mcp {
 		for _, fs := range []bool{false, true} {
