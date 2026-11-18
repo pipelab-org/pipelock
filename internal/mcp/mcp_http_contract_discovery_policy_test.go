@@ -81,6 +81,47 @@ func TestHTTPListener_ContractDiscoveryRefusalWordingPolicy(t *testing.T) {
 	}
 }
 
+// In best-effort mode the listener admits a call before its header contract is
+// checked. A contract refusal must record an intent and a blocked outcome under
+// one action ID, never a bare allow for a call that was not sent.
+func TestHTTPListener_ContractRefusalClosesBestEffortAllow(t *testing.T) {
+	for _, tc := range []struct{ name, defs, mirror, reason string }{
+		{"mismatch", headerStateDefs(headerStateSchema, "Echo input"), "different", "mcp_param_header_mismatch"},
+		{"invalid", headerStateDefs(headerStateInvalid, "Echo input"), "", "tool_header_contract_invalid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newMCPDecisionReceiptHarness(t)
+			opts := paramContractOpts(t)
+			opts.ReceiptEmitter, opts.V2ReceiptEmitter, opts.PolicyHash = h.v1, h.v2, mcpTestPolicyHash
+			f := newDiscoveryFixture(t, opts, func(w http.ResponseWriter, _ *http.Request, frame MCPFrame, _ int) {
+				discoveryList(w, frame, tc.defs, "")
+			})
+			if status, body := f.call(t, tc.mirror, "first"); status != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", status, body)
+			}
+			_ = mcpV2Receipts(t, h) // closes recorder
+			var intent, outcome *receipt.ActionRecord
+			for _, r := range readActionReceipts(t, h.dir) {
+				rec := r.ActionRecord
+				switch rec.DecisionPhase {
+				case receipt.DecisionPhaseIntent:
+					intent = &rec
+				case receipt.DecisionPhaseOutcome:
+					outcome = &rec
+				case "":
+					if rec.Verdict == config.ActionAllow && rec.Target == "echo" {
+						t.Fatalf("bare allow recorded for a refused call: %+v", rec)
+					}
+				}
+			}
+			if intent == nil || outcome == nil || intent.ActionID != outcome.ActionID ||
+				outcome.Verdict != config.ActionBlock || !strings.Contains(outcome.Pattern, tc.reason) {
+				t.Fatalf("intent=%+v outcome=%+v, want a paired block for %q", intent, outcome, tc.reason)
+			}
+		})
+	}
+}
+
 // warn-mode wording in a privately discovered list does not refuse
 // a legitimate call, is attributed to the request route, and promotes nothing.
 func TestHTTPListener_ContractDiscoveryWarnWording(t *testing.T) {

@@ -579,10 +579,13 @@ func TestReverseTaskPermissionRechecksAfterHeaderDiscovery(t *testing.T) {
 			cfg := config.Defaults()
 			rec := &httpTaskPermissionRecorder{}
 			rec.ObserveRisk(session.ClassifyMCPResponseFindings(mcpTaintSourceKind, true, []session.HostileFindingKind{session.FindingDLP}))
+			observed := &allReceipts{}
+			emitter, _, _, _ := newReceiptTestHarnessWithObserver(t, observed.observe)
 			opts := paramContractOpts(t)
 			opts.Store = taskPermissionTestStore{rec: rec}
 			opts.TaintCfg = &cfg.Taint
 			opts.ServerBinding = "test-server"
+			opts.ReceiptEmitter = emitter
 			opts.ListenerPrincipalResolver = func(*http.Request) (ListenerPrincipal, error) {
 				return ListenerPrincipal{Provider: "test", Subject: "operator-test-agent"}, nil
 			}
@@ -606,6 +609,25 @@ func TestReverseTaskPermissionRechecksAfterHeaderDiscovery(t *testing.T) {
 				(tc.wantCalls == 0 && !strings.Contains(reply, `"code":-32002`)) {
 				t.Fatalf("status=%d discoveries=%d upstream calls=%d, want calls=%d and %q, response=%s",
 					status, f.lists.Load(), f.calls.Load(), tc.wantCalls, tc.wantReply, reply)
+			}
+			if tc.wantCalls == 1 {
+				records := observed.snapshot()
+				if len(records) != 1 || records[0].Verdict != config.ActionAllow || records[0].DecisionPhase != "" {
+					t.Fatalf("receipts = %+v, want one single-phase allow for the delivered call", records)
+				}
+			}
+			if tc.wantCalls == 0 {
+				// The refusal receipt must record the release-time taint
+				// block, not the admission decision that allowed the call.
+				refused := false
+				for _, record := range observed.snapshot() {
+					if record.Verdict == config.ActionBlock && record.TaintDecision == config.ActionBlock && record.TaintDecisionReason == tc.wantReply {
+						refused = true
+					}
+				}
+				if !refused {
+					t.Fatalf("receipts = %+v, want a block recording taint reason %q", observed.snapshot(), tc.wantReply)
+				}
 			}
 		})
 	}

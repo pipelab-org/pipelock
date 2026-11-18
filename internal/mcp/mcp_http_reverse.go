@@ -916,7 +916,9 @@ func RunHTTPListenerProxy(
 		}
 		// intent is the call's allowed intent when the input scan wrote one; it
 		// is zero for GET and DELETE, which have none.
-		blockedByUpstreamContract := func(rpcID json.RawMessage, gateOpts MCPProxyOpts, intent receipt.EmitOpts) bool {
+		// intent is read only on refusal so a held best-effort receipt becomes an
+		// intent only for a call that is actually refused.
+		blockedByUpstreamContract := func(rpcID json.RawMessage, gateOpts MCPProxyOpts, intent func() receipt.EmitOpts) bool {
 			if gate, gateErr := evaluateMCPUpstreamGateForMethod(r.Context(), upstreamURL, r.Method, gateOpts); gateErr != nil {
 				denialAudit = mcpListenerContractEvalDenialAudit()
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream evaluation failed: %v\n", gateErr)
@@ -928,7 +930,7 @@ func RunHTTPListenerProxy(
 					pattern:         mcpContractEvaluationFailedReason,
 					target:          "mcp:contract:upstream",
 					receiptSeverity: config.SeverityHigh,
-					intent:          intent,
+					intent:          intent(),
 				})
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
@@ -948,7 +950,7 @@ func RunHTTPListenerProxy(
 					mutateReceipt: func(opts receipt.EmitOpts) receipt.EmitOpts {
 						return mcpWithContractReceipt(opts, gate)
 					},
-					intent:        intent,
+					intent:        intent(),
 					outcomeReason: mcpContractDeniedReason,
 				})
 				w.Header().Set("Content-Type", "application/json")
@@ -1224,7 +1226,7 @@ func RunHTTPListenerProxy(
 					return
 				}
 			}
-			if blockedByUpstreamContract(nil, requestBaseOpts, receipt.EmitOpts{}) {
+			if blockedByUpstreamContract(nil, requestBaseOpts, noListenerIntent) {
 				return
 			}
 			if blockedByForwardedHeaderDLP() {
@@ -1396,7 +1398,7 @@ func RunHTTPListenerProxy(
 					return
 				}
 			}
-			if blockedByUpstreamContract(nil, requestBaseOpts, receipt.EmitOpts{}) {
+			if blockedByUpstreamContract(nil, requestBaseOpts, noListenerIntent) {
 				return
 			}
 			if blockedByForwardedHeaderDLP() {
@@ -1927,7 +1929,28 @@ func RunHTTPListenerProxy(
 		if listenerPrincipal.actor != "" {
 			scanOpts.AuthorityActor = listenerPrincipal.actor
 		}
+		// Contract and task checks can refuse after admission on this listener.
+		scanOpts.deferBestEffortTaskReceipt = true
 		decision := scanHTTPInputDecision(body, safeLogW, chainSessionKey, auditSessionKey, scanOpts)
+		// A best-effort allow waits for the send-time task check. A refusal
+		// writes it as an intent and closes it as blocked; every other exit
+		// writes the held allow.
+		pendingReceipt := decision.pendingReceipt
+		emitPendingReceipt := func() {
+			if pendingReceipt != nil {
+				emitPendingMCPInputReceipt(pendingReceipt)
+				pendingReceipt = nil
+			}
+		}
+		defer emitPendingReceipt()
+		refusalIntent := func() receipt.EmitOpts {
+			if pendingReceipt == nil {
+				return decision.Outcome.Receipt
+			}
+			intent := pendingRefusalIntent(pendingReceipt)
+			pendingReceipt = nil
+			return intent
+		}
 		if decision.Synthetic != nil {
 			w.Header().Set("Content-Type", "application/json")
 			if decision.Synthetic.notification {
@@ -1949,7 +1972,7 @@ func RunHTTPListenerProxy(
 			return
 		}
 
-		if blockedByUpstreamContract(frame.ID, scanOpts, decision.Outcome.Receipt) {
+		if blockedByUpstreamContract(frame.ID, scanOpts, refusalIntent) {
 			return
 		}
 		if requestBaseOpts.validateToolHeaders && frame.Method == methodToolsCall {
@@ -1957,10 +1980,10 @@ func RunHTTPListenerProxy(
 			if toolCfg := requestBaseOpts.toolCfg(); toolCfg != nil {
 				headerBaseline = clientState.baseline
 			}
-			// The input scan already wrote this call's allowed intent. A refusal
-			// here must close it as blocked, or the chain shows a bare allow.
+			// The input scan admitted this call. A refusal here must close its
+			// intent as blocked, or the chain shows a bare allow.
 			closeContractIntent := func(reason string) {
-				if intent := decision.Outcome.Receipt; intent.ActionID != "" {
+				if intent := refusalIntent(); intent.ActionID != "" {
 					intent.Layer = mcpReceiptLayerHeaderContract
 					emitMCPBlockedOutcomeReceipt(requestBaseOpts.receiptEmitter(), requestBaseOpts.v2ReceiptEmitter(), requestBaseOpts.ReceiptGroup, safeLogW, intent, -1, reason, requestBaseOpts.requireReceipts())
 				}
@@ -2038,13 +2061,19 @@ func RunHTTPListenerProxy(
 				ID: frame.ID, IsNotification: isRPCNotification(frame.ID),
 				ErrorCode: -32002, ErrorMessage: "pipelock: " + refusal,
 			})
-			reason, _, _ := strings.Cut(refusal, " ")
-			emitMCPBlockedOutcomeReceipt(scanOpts.receiptEmitter(), scanOpts.v2ReceiptEmitter(), scanOpts.ReceiptGroup, safeLogW, decision.Outcome.Receipt, -1, reason, scanOpts.requireReceipts())
+			reason := decision.taskTaint.recordTaskReleaseRefusal(refusal)
+			refusalReceipt := refusalIntent()
+			refusalReceipt.Layer = mcpReceiptLayerTaint
+			refusalReceipt.TaintDecision = config.ActionBlock
+			refusalReceipt.TaintDecisionReason = reason
+			emitMCPBlockedOutcomeReceipt(scanOpts.receiptEmitter(), scanOpts.v2ReceiptEmitter(), scanOpts.ReceiptGroup, safeLogW, refusalReceipt, -1, reason, scanOpts.requireReceipts())
 			scanOpts.ListenerDoor = opts.ListenerDoor
 			writeMCPHTTPInputResult(scanOpts, *blocked, w)
 			return
 		}
 		upResp, err := upstreamClient.Do(upReq)
+		// Keep receipt I/O out of the task-check-to-send interval.
+		emitPendingReceipt()
 		if err != nil {
 			if handleMetadataDialError(err, frame.ID) {
 				return
@@ -3265,3 +3294,6 @@ func listenerLoopbackHostAllowed(authority string, addr net.Addr) bool {
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
 }
+
+// noListenerIntent marks a listener refusal with no admitted call to close.
+func noListenerIntent() receipt.EmitOpts { return receipt.EmitOpts{} }
