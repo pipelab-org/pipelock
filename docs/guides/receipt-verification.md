@@ -28,15 +28,15 @@ use the cross-implementation conformance suite.
 
 ## Verifying a single receipt
 
-Verification is **safe by default**: pin the trusted signer key with `--key` so
-the receipt is checked against a key you trust, not merely for internal
-consistency. The value is a hex key or a path to a public-key file.
+`pipelock verify-receipt` accepts a standalone ActionReceipt v1 or EvidenceReceipt v2
+JSON object. Pin the signer with `--key` to check the signature against a trusted
+public key. The value is a hex key or a path to a public-key file.
 
 ```bash
 pipelock verify-receipt receipt.json --key 70b991eb77816fc4ef0ae6a54d8a4119ddc5a16c9711c332c39e743079f6c63e
 ```
 
-Output on success:
+A pinned ActionReceipt v1 prints:
 
 ```text
 OK: receipt.json
@@ -51,12 +51,16 @@ OK: receipt.json
   Chain prev:  sha256:a1b2c3d4...
 ```
 
+A pinned EvidenceReceipt v2 also starts with `OK:` and shows the event ID, payload
+kind, timestamp, signer, chain sequence and predecessor hash. A standalone check
+verifies only the supplied receipt and reports containment as not assessed,
+because a single v2 receipt does not bind a posture capsule. Use `--chain DIR` to check chain continuity
+and evaluate the proof of the chain's end.
+
 ### Unpinned (structural-only) verification
 
-Without `--key`, the verifier can confirm the signature is self-consistent and
-the hash linkage holds, but it cannot prove *who* signed the receipt. That is
-not a pass on its own, so an unpinned run prints a loud banner and **exits
-non-zero**:
+Without `--key`, the verifier checks the signature against the key declared in
+the receipt. An unpinned run reports `UNPINNED` and **exits nonzero** by default:
 
 ```text
 UNPINNED: receipt.json
@@ -73,8 +77,10 @@ have the key on hand):
 pipelock verify-receipt receipt.json --allow-unpinned
 ```
 
-Exit code 0 means valid (and signer-pinned, unless you passed `--allow-unpinned`);
-exit code 1 means invalid, malformed, or unpinned without `--allow-unpinned`.
+Exit code 0 means the signature check passed with a pinned key or you explicitly
+accepted an unpinned result, and the report was written. Exit code 1 means
+invalid, malformed, unpinned without `--allow-unpinned`, or the report could not
+be written.
 
 ## Verifying a Fleet Receipt Report
 
