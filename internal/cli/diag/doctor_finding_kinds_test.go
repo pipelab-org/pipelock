@@ -21,7 +21,7 @@ func TestDoctorMCPFindingKinds(t *testing.T) {
 			}
 		}
 	}
-	for _, want := range []string{"hostile because of prompt-injection wording only", "mixed findings list their causes", "cause not recorded (older state or aggregate finding)", "no live session history"} {
+	for _, want := range []string{"Wording alone is a warning and does not make the session hostile", "DLP and tool poisoning still make the session hostile", "cause not recorded (older state or aggregate finding)", "no live session history"} {
 		t.Run(want, func(t *testing.T) {
 			if !strings.Contains(detail, want) {
 				t.Fatalf("doctor omitted %q: %s", want, detail)

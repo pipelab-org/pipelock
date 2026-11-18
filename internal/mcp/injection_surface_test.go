@@ -185,8 +185,9 @@ func TestInjectionSurfaceResultNoTaint(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if rec.RiskSnapshot().PromptHit != (mode == config.InjectionModeBlock) {
-				t.Fatalf("taint=%+v", rec.RiskSnapshot())
+			risk := rec.RiskSnapshot()
+			if risk.PromptHit || (len(risk.FindingKinds) > 0) != (mode == config.InjectionModeBlock) {
+				t.Fatalf("taint=%+v", risk)
 			}
 		})
 	}

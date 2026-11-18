@@ -127,7 +127,7 @@ func TestForwardScanned_TrustedMCPResponseDoesNotContaminateSession(t *testing.T
 	}
 }
 
-func TestForwardScanned_PromptHitMarksSessionHostile(t *testing.T) {
+func TestForwardScanned_WordingPreservesExternalSourceTaint(t *testing.T) {
 	t.Parallel()
 
 	sc := testScannerWithAction(t, config.ActionWarn)
@@ -153,15 +153,12 @@ func TestForwardScanned_PromptHitMarksSessionHostile(t *testing.T) {
 	if !found {
 		t.Fatal("expected injection response to be detected")
 	}
-	if rec.RiskSnapshot().Level != session.TaintExternalHostile {
-		t.Fatalf("taint level = %v, want external_hostile", rec.RiskSnapshot().Level)
-	}
-	if !rec.RiskSnapshot().PromptHit {
-		t.Fatal("expected prompt_hit to be sticky")
+	if risk := rec.RiskSnapshot(); risk.Level != session.TaintExternalUntrusted || !risk.Contaminated || risk.PromptHit {
+		t.Fatalf("expected external source taint without a hostile latch: %+v", risk)
 	}
 }
 
-func TestForwardScanned_TrustedMCPPromptHitStillMarksSessionHostile(t *testing.T) {
+func TestForwardScanned_WordingPreservesTrustedSourceTaint(t *testing.T) {
 	t.Parallel()
 
 	sc := testScannerWithAction(t, config.ActionWarn)
@@ -189,11 +186,8 @@ func TestForwardScanned_TrustedMCPPromptHitStillMarksSessionHostile(t *testing.T
 		t.Fatal("expected injection response to be detected")
 	}
 	risk := rec.RiskSnapshot()
-	if risk.Level != session.TaintExternalHostile {
-		t.Fatalf("taint level = %v, want external_hostile", risk.Level)
-	}
-	if !risk.Contaminated || !risk.PromptHit {
-		t.Fatalf("trusted prompt hit should still contaminate as hostile: %+v", risk)
+	if risk.Level != session.TaintInternalGenerated || risk.Contaminated || risk.PromptHit {
+		t.Fatalf("expected trusted source classification without a hostile latch: %+v", risk)
 	}
 }
 
@@ -257,8 +251,8 @@ func TestForwardScanned_StrippedResponseObservesTaint(t *testing.T) {
 	if !rec.RiskSnapshot().Contaminated {
 		t.Fatal("stripped response should still observe external taint")
 	}
-	if rec.RiskSnapshot().Level != session.TaintExternalHostile {
-		t.Fatalf("taint level = %v, want external_hostile", rec.RiskSnapshot().Level)
+	if risk := rec.RiskSnapshot(); risk.Level != session.TaintExternalUntrusted || risk.PromptHit {
+		t.Fatalf("expected stripped response's external source taint without a hostile latch: %+v", risk)
 	}
 }
 

@@ -3523,6 +3523,9 @@ func (r *wsRelay) observeUpstreamResponseFindings(kinds []session.HostileFinding
 		if source.URL != r.targetURL || source.Kind != "websocket_response" {
 			continue
 		}
+		if session.OnlyWordingFindings(kinds) && session.OnlyWordingFindings(source.FindingKinds) {
+			return true
+		}
 		if len(kinds) == 0 || source.MatchReason == "prompt_injection_pattern" {
 			if len(kinds) > 0 {
 				rec.recordRetainedFindingKinds(taskID, kinds)

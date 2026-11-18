@@ -1872,7 +1872,7 @@ func TestWSProxyInjectionWarn(t *testing.T) {
 	}
 }
 
-func TestWSProxyInjectionWarn_ContaminatesSessionBeforeSensitiveAction(t *testing.T) {
+func TestWSProxyInjectionWarn_PreservesSourceTaintAcrossReload(t *testing.T) {
 	backendAddr, backendCleanup := wsInjectionServer(t)
 	defer backendCleanup()
 
@@ -1906,16 +1906,17 @@ func TestWSProxyInjectionWarn_ContaminatesSessionBeforeSensitiveAction(t *testin
 		t.Fatal("session manager not initialized")
 	}
 	sess := sm.GetOrCreate(ceeSessionKey(nil, agent, "127.0.0.1", envelope.ActorAuthSelfDeclared))
-	if risk := sess.RiskSnapshot(); !risk.Contaminated {
-		t.Fatal("WebSocket injection finding left the session falsely clean")
+	if risk := sess.RiskSnapshot(); risk.Level != session.TaintTrusted || risk.Contaminated ||
+		risk.PromptHit || !session.OnlyWordingFindings(risk.FindingKinds) {
+		t.Fatalf("loopback WebSocket warning did not preserve source taint across reload: %+v", risk)
 	}
 	target, err := url.Parse("https://api.vendor.example/auth/update")
 	if err != nil {
 		t.Fatalf("parse sensitive target: %v", err)
 	}
 	decision := evaluateHTTPTaint(p.CurrentConfig(), sess, http.MethodPost, target)
-	if decision.Result.Decision != session.PolicyBlock {
-		t.Fatalf("sensitive follow-up decision = %v, want block", decision.Result.Decision)
+	if decision.Result.Decision != session.PolicyAllow {
+		t.Fatalf("sensitive follow-up decision = %v, want allow", decision.Result.Decision)
 	}
 }
 
@@ -1925,18 +1926,18 @@ func TestWSProxyInjectionWarn_ContaminatesSessionBeforeSensitiveAction(t *testin
 // allowlist is ever consulted, so wantTainted=false there follows from the
 // target being localhost and NOT from the payload being clean. A clean frame
 // from a non-allowlisted host classifies TaintExternalUntrusted and does set
-// Contaminated; only PromptHit distinguishes clean from injected content here.
+// Contaminated. FindingKinds records wording warnings independently of taint.
 func TestWSProxyResponseTaintControls(t *testing.T) {
 	tests := []struct {
-		name          string
-		injection     bool
-		responseScan  bool
-		taintEnabled  bool
-		wantTainted   bool
-		wantPromptHit bool
+		name         string
+		injection    bool
+		responseScan bool
+		taintEnabled bool
+		wantTainted  bool
+		wantWarning  bool
 	}{
 		{name: "clean trusted response", responseScan: true, taintEnabled: true},
-		{name: "injection response", injection: true, responseScan: true, taintEnabled: true, wantTainted: true, wantPromptHit: true},
+		{name: "injection response", injection: true, responseScan: true, taintEnabled: true, wantWarning: true},
 		{name: "taint disabled", injection: true, responseScan: true},
 	}
 	for _, tt := range tests {
@@ -1972,8 +1973,8 @@ func TestWSProxyResponseTaintControls(t *testing.T) {
 			if risk.Contaminated != tt.wantTainted {
 				t.Fatalf("contaminated = %v, want %v", risk.Contaminated, tt.wantTainted)
 			}
-			if risk.PromptHit != tt.wantPromptHit {
-				t.Fatalf("prompt hit = %v, want %v", risk.PromptHit, tt.wantPromptHit)
+			if risk.PromptHit || session.OnlyWordingFindings(risk.FindingKinds) != tt.wantWarning {
+				t.Fatalf("response finding = %+v, want warning=%t and no hostile latch", risk, tt.wantWarning)
 			}
 		})
 	}

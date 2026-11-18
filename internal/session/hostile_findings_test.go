@@ -22,8 +22,8 @@ var allHostileKinds = []session.HostileFindingKind{
 }
 
 func TestHostileFindingKindsVerdictEquivalence(t *testing.T) {
-	// Every subset, including no findings, is compared with the pre-existing
-	// boolean path at every source level and every policy matrix input.
+	// Compare every subset to the legacy caller with the expected latch bit.
+	// Wording alone keeps the source level. Independent evidence still latches.
 	for mask := 0; mask < 1<<len(allHostileKinds); mask++ {
 		var kinds []session.HostileFindingKind
 		for bit, kind := range allHostileKinds {
@@ -31,10 +31,14 @@ func TestHostileFindingKindsVerdictEquivalence(t *testing.T) {
 				kinds = append(kinds, kind)
 			}
 		}
+		wantHostile := len(kinds) > 1 || (len(kinds) == 1 && kinds[0] != session.FindingWording)
+		if onlyWording := len(kinds) > 0 && !wantHostile; session.OnlyWordingFindings(kinds) != onlyWording {
+			t.Fatalf("kinds %v: want wording-only=%t", kinds, onlyWording)
+		}
 		for level := session.TaintTrusted; level <= session.TaintExternalHostile; level++ {
 			var old, attributed session.SessionRisk
 			source := session.TaintSourceRef{URL: "https://api.vendor.example/result", Kind: "http_response", Level: level, Timestamp: time.Unix(1, 0).UTC()}
-			old.Observe(session.RiskObservation{Source: source, PromptHit: len(kinds) > 0})
+			old.Observe(session.RiskObservation{Source: source, PromptHit: wantHostile})
 			attributed.Observe(session.RiskObservation{Source: source, FindingKinds: kinds})
 			if old.Level != attributed.Level || old.PromptHit != attributed.PromptHit || old.Contaminated != attributed.Contaminated || old.Sources[0].MatchReason != attributed.Sources[0].MatchReason {
 				t.Fatalf("mask=%d level=%v boolean=%+v attributed=%+v", mask, level, old, attributed)
@@ -43,10 +47,10 @@ func TestHostileFindingKindsVerdictEquivalence(t *testing.T) {
 			// pre-attribution boolean path produced, so a change shared by both
 			// entry points cannot pass as equivalence.
 			wantLevel, wantReason := level, ""
-			if len(kinds) > 0 {
+			if wantHostile {
 				wantLevel, wantReason = session.TaintExternalHostile, "prompt_injection_pattern"
 			}
-			if attributed.Level != wantLevel || attributed.Sources[0].Level != wantLevel || attributed.PromptHit != (len(kinds) > 0) ||
+			if attributed.Level != wantLevel || attributed.Sources[0].Level != wantLevel || attributed.PromptHit != wantHostile ||
 				attributed.Contaminated != (wantLevel >= session.TaintExternalUntrusted) || attributed.Sources[0].MatchReason != wantReason {
 				t.Fatalf("mask=%d level=%v departs from the boolean outcome: %+v", mask, level, attributed)
 			}
@@ -95,8 +99,10 @@ func TestHostileFindingKindsStickyUnion(t *testing.T) {
 			for range 3 {
 				risk.Observe(session.RiskObservation{Source: session.TaintSourceRef{Kind: "response"}, FindingKinds: []session.HostileFindingKind{kind}, MaxSources: 1})
 			}
-			if !slices.Equal(risk.FindingKinds, []session.HostileFindingKind{kind}) || !risk.PromptHit || !risk.Contaminated || risk.Level != session.TaintExternalHostile {
-				t.Fatalf("kind lost or verdict changed: %+v", risk)
+			hostile := kind != session.FindingWording
+			if !slices.Equal(risk.FindingKinds, []session.HostileFindingKind{kind}) ||
+				risk.PromptHit != hostile || risk.Contaminated != hostile || (risk.Level == session.TaintExternalHostile) != hostile {
+				t.Fatalf("kind=%s, want hostile=%t: %+v", kind, hostile, risk)
 			}
 			risk.Observe(session.RiskObservation{FindingKinds: allHostileKinds, MaxSources: 1})
 			risk.Observe(session.RiskObservation{Source: session.TaintSourceRef{Kind: "clean"}, MaxSources: 1})

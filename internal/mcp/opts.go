@@ -249,9 +249,8 @@ type MCPProxyOpts struct {
 	// content by default (HTTP/SSE and WebSocket upstreams).
 	TaintExternalSource bool
 	// TaintTrustedSource marks this MCP server's responses as operator-trusted
-	// for taint classification. Prompt-injection hits can still raise hostile
-	// taint unless prompt_injection_detection is off or warn-only; this only
-	// changes clean response-source classification.
+	// for taint classification. Independent findings such as DLP and tool
+	// poisoning can still raise hostile taint.
 	TaintTrustedSource bool
 	// TaintTrustedSourceFn returns the current MCP taint trust decision for
 	// hot-reload-aware proxy surfaces. Nil falls back to TaintTrustedSource.

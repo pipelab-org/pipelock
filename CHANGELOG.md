@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes / Upgrade Notes
+
+- **Wording-only prompt-injection findings preserve source taint.** In v3.8, a wording match could make a session hostile and block later sensitive actions even if the response was delivered. Wording alone now preserves the source’s trust level and is recorded as a warning. The effective response scan action still governs delivery, and independent findings such as DLP or tool poisoning can still raise hostile taint. If you relied on the old follow-up block, enable response scanning and set the effective response scan action to `block` where you want to refuse matched responses. For the built-in wording checker, keep `prompt_injection_detection.enabled: true` and `prompt_injection_detection.action: block` (the defaults). An applicable per-surface wording mode of `warn` or `off` prevents wording matches from blocking delivery. [Wording detection](docs/configuration.md#prompt-injection-wording-detection) and [session taint](docs/configuration.md#taint-aware-policy-escalation-v21).
+
 ### Changed
 
 - Document how SSH and other non-HTTP egress can be declined: the forward proxy refuses SSH sent directly only when the optional `forward_proxy.sni_require_tls` check is on, and `pipelock sandbox` leaves no direct route out. Includes the sandbox caveats and an opt-in tool-policy warning rule. See [current unsupported paths](docs/security/current-unsupported-paths.md#ssh-and-other-non-http-egress).

@@ -909,6 +909,7 @@ type SessionDetail struct {
 // evidence (event excerpt) crossed the threshold, and when the next
 // automatic de-escalation will fire.
 type SessionExplanation struct {
+	TaintLevel           string                       `json:"taint_level,omitempty"`
 	FindingKinds         []session.HostileFindingKind `json:"finding_kinds,omitempty"`
 	Key                  string                       `json:"key"`
 	Tier                 string                       `json:"tier"`
@@ -1563,6 +1564,7 @@ func buildExplanation(snap sessionAdminSnapshot, airlockCfg *config.Airlock) Ses
 	}
 
 	exp := SessionExplanation{
+		TaintLevel:         snap.TaintLevel,
 		Key:                snap.Key,
 		FindingKinds:       snap.FindingKinds,
 		Tier:               tier,

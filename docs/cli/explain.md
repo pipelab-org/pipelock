@@ -1,6 +1,6 @@
 # `pipelock explain`
 
-`explain response` and `explain mcp-response` name wording-only evidence, mixed finding kinds, or an unattributed cause. These reports have no live session history. `pipelock session explain` and session inspection report the accumulated `finding_kinds` for a live session. Older hostile state without recorded causes stays hostile and reports that its cause was not recorded. Signed receipts omit finding-kind metadata.
+`explain response` and `explain mcp-response` describe the findings in the supplied response. Wording alone is a taint warning. The configured scanner action decides response delivery. `pipelock session explain` and session inspection show live session findings alongside the current taint level. Older hostile state without recorded causes stays hostile and reports that its cause was not recorded. Signed receipts omit finding-kind metadata.
 
 `pipelock explain <url>` runs a URL through the scanner pipeline using the loaded config and explains the verdict so that a block is **remediable**. For a blocked URL it prints the scanner/layer that produced the verdict, the matching pattern (for DLP and blocklist), which part of the URL was inspected, the destination host, the effective config path, and — most importantly — the **exact remediation knob that scanner consults**, plus any broader option and its tradeoff.
 

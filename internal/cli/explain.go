@@ -26,6 +26,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+const explainWordingTaintWarning = "Taint treats wording alone as a warning. Response delivery follows the configured scan action."
+
 // explain output view labels. For a raw URL the matching surface is URL
 // scanning; we report which component of the URL the blocking scanner
 // inspects so the operator knows whether the credential is in the host, the

@@ -20,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contententropy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -170,7 +171,8 @@ func TestMCPResponseFindingKindsTransports(t *testing.T) {
 				if out.Len() == 0 || strings.Contains(out.String(), `"error"`) {
 					t.Fatalf("warn response not forwarded: %s log=%s", out.String(), log.String())
 				}
-				if got := rec.RiskSnapshot(); !slices.Equal(got.FindingKinds, tc.want) || got.PromptHit != (len(tc.want) > 0) {
+				hostile := tc.name == "dlp" || tc.name == "mixed"
+				if got := rec.RiskSnapshot(); !slices.Equal(got.FindingKinds, tc.want) || got.PromptHit != hostile || (got.Level == session.TaintExternalHostile) != hostile {
 					t.Fatalf("kinds=%v prompt_hit=%t want=%v", got.FindingKinds, got.PromptHit, tc.want)
 				}
 			})
@@ -200,11 +202,52 @@ func TestMCPToolFindingKinds(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if strings.Contains(out.String(), `"error"`) || !slices.Equal(rec.RiskSnapshot().FindingKinds, []session.HostileFindingKind{want}) {
+			risk := rec.RiskSnapshot()
+			if strings.Contains(out.String(), `"error"`) || !slices.Equal(risk.FindingKinds, []session.HostileFindingKind{want}) || risk.Level != session.TaintExternalHostile {
 				t.Fatalf("kinds=%v output=%s log=%s", rec.RiskSnapshot().FindingKinds, out.String(), log.String())
 			}
 		})
 	}
+}
+
+func TestStdioWordingWarningKeepsIndependentActionControls(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Taint.ProtectedPaths = []string{"*/auth/*"}
+	rec := &taintRecorder{}
+	opts := MCPProxyOpts{
+		Scanner: testScannerWithAction(t, config.ActionWarn), Rec: rec, TaintCfg: &cfg.Taint,
+		PolicyCfg: policy.New(config.MCPToolPolicy{
+			Enabled: true, Action: config.ActionBlock,
+			Rules: []config.ToolPolicyRule{{Name: "reserved", ToolPattern: "^reserved_tool$"}},
+		}),
+	}
+	runResponse := func(line string) {
+		t.Helper()
+		var out, log bytes.Buffer
+		found, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(line+"\n")), transport.NewStdioWriter(&out), &log, nil, opts)
+		if err != nil || !found || out.Len() == 0 || strings.Contains(out.String(), `"error"`) || !strings.Contains(log.String(), "action=warn") {
+			t.Fatalf("warn response: found=%t err=%v out=%s log=%s", found, err, &out, &log)
+		}
+	}
+	checkCall := func(name, path string, want bool) {
+		t.Helper()
+		msg := makeRequest(1, methodToolsCall, map[string]any{"name": name, "arguments": map[string]string{"path": path}})
+		var out, log bytes.Buffer
+		blocked := make(chan BlockedRequest, 1)
+		ForwardScannedInput(transport.NewStdioReader(strings.NewReader(msg+"\n")), transport.NewStdioWriter(&out), &log,
+			config.ActionBlock, config.ActionBlock, blocked, nil, nil, opts)
+		if (out.Len() != 0) != want {
+			t.Fatalf("%s %s: want forwarded=%t, out=%s log=%s", name, path, want, &out, &log)
+		}
+	}
+	runResponse(injectionResponse)
+	runResponse(injectionResponse)
+	checkCall("read_file", "/repo/notes.txt", true)
+	checkCall("write_file", "/repo/notes.txt", true)
+	checkCall("reserved_tool", "/repo/notes.txt", false)
+	runResponse(`{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"AKIA` + "Z7P6R5T4V3X2Y1W0" + `"}]}}`)
+	checkCall("read_file", "/repo/notes.txt", true)
+	checkCall("write_file", "/repo/auth/settings.txt", false)
 }
 
 func TestMCPToolFindingKindsKeepIndependentFields(t *testing.T) {
@@ -241,7 +284,8 @@ func TestMCPToolFindingKindsWordingProducer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out.String(), `"error"`) || !slices.Equal(rec.RiskSnapshot().FindingKinds, []session.HostileFindingKind{session.FindingWording}) {
+	risk := rec.RiskSnapshot()
+	if strings.Contains(out.String(), `"error"`) || !slices.Equal(risk.FindingKinds, []session.HostileFindingKind{session.FindingWording}) || risk.PromptHit || risk.Level != session.TaintInternalGenerated {
 		t.Fatalf("kinds=%v output=%s log=%s", rec.RiskSnapshot().FindingKinds, out.String(), log.String())
 	}
 }

@@ -4,7 +4,7 @@
 package config
 
 // MCPTaintRecoveryGuidance describes only remedies the MCP runtime can use.
-const MCPTaintRecoveryGuidance = "MCP stdio uses stdin for JSON-RPC: inline terminal approval is unavailable and ask fails closed. Every MCP session (stdio, HTTP/WS bridges, and listener principal, token and legacy partitions) is invocation-scoped, so admin task boundaries and runtime trust grants are rejected for all of them. The only configured override for existing hostile history is an action-scoped taint.trust_overrides entry without source_match (MCP sources record no origin URL), optionally expiring. pipelock run applies it on reload; standalone pipelock mcp proxy reads taint config only at startup, and the restart that applies an override also discards that invocation's in-memory history. Source trust affects only future clean observations; it does not clear hostile history. Inline approval cannot override a hostile block."
+const MCPTaintRecoveryGuidance = "MCP stdio uses stdin for JSON-RPC: inline terminal approval is unavailable and ask fails closed. Every MCP session (stdio, HTTP/WS bridges, and listener principal, token and legacy partitions) is invocation-scoped, so admin task boundaries and runtime trust grants are rejected for all of them. The only configured override for existing hostile history is an action-scoped taint.trust_overrides entry without source_match (MCP sources record no origin URL), optionally expiring. pipelock run applies it on reload; standalone pipelock mcp proxy reads taint config only at startup, and the restart that applies an override also discards that invocation's in-memory history. Source trust classifies future observations, including wording-only findings. Existing hostile history remains in effect. Inline approval cannot override a hostile block."
 
 // MCPTaintDiagnostics describes configuration prerequisites, not live coverage.
 // Recorder allocation is owned by the MCP entry points; listener identity and
@@ -27,14 +27,13 @@ func (c *Config) MCPTaintDiagnostics() []Warning {
 	return []Warning{
 		{Field: "taint.mcp_recorder", Message: recorder + "; config-only assessment, not proof of a running recorder"},
 		{Field: "taint.mcp_listener", Message: listener + "; anonymous 2026-07-28 stateless calls are request-local only: cross-request taint protection is NOT active; use verified caller identity and an admitted cross-request recorder, not a session header on the current protocol; a shared listener bearer shares one principal"},
-		{Field: "taint.mcp_origin", Message: "stdio subprocess content origin is undeclared: clean responses default to internal_generated, which is not verified provenance; the embedding TaintExternalSource option declares external content, but mcp proxy has no corresponding CLI flag; HTTP/WS upstreams declare external content unless taint.trusted_mcp_servers trusts the resolved server; that trust affects future clean observations only, and " + c.mcpPromptHitTaintNote()},
+		{Field: "taint.mcp_origin", Message: "stdio subprocess content origin is undeclared: responses default to internal_generated, which is not verified provenance; the embedding TaintExternalSource option declares external content, but mcp proxy has no corresponding CLI flag; HTTP/WS upstreams declare external content unless taint.trusted_mcp_servers trusts the resolved server; source classification applies to wording-only findings too. Also, " + c.mcpPromptHitTaintNote()},
 		{Field: "taint.mcp_recovery", Message: MCPTaintRecoveryGuidance},
-		{Field: "taint.mcp_finding_kinds", Message: "Hostile history records finding_kinds independently of source trust. Wording alone is described as hostile because of prompt-injection wording only; mixed findings list their causes. Legacy or aggregate evidence reports cause not recorded (older state or aggregate finding). This config-only check has no live session history."},
+		{Field: "taint.mcp_finding_kinds", Message: "Session history records finding_kinds independently of source trust. Wording alone is a warning and does not make the session hostile. Independent findings such as DLP and tool poisoning still make the session hostile when recorded. Legacy or aggregate evidence reports cause not recorded (older state or aggregate finding). This config-only check has no live session history."},
 	}
 }
 
-// mcpPromptHitTaintNote states whether prompt-injection wording matches can
-// still raise hostile taint under the configured prompt_injection_detection mode.
+// mcpPromptHitTaintNote describes wording detection under the configured mode.
 func (c *Config) mcpPromptHitTaintNote() string {
 	switch c.PromptInjectionMode() {
 	case ActionAllow:
@@ -42,6 +41,6 @@ func (c *Config) mcpPromptHitTaintNote() string {
 	case ActionWarn:
 		return "prompt_injection_detection is warn-only, so wording matches are logged but raise no hostile taint"
 	default:
-		return "prompt hits can still raise hostile taint"
+		return "wording alone does not make the session hostile; response delivery follows the configured scan action"
 	}
 }
