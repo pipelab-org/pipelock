@@ -366,8 +366,15 @@ func isMCPBrowserTabInspection(argsJSON string) bool {
 		return false
 	}
 	switch args["action"] {
-	case "list", "new":
+	case "list":
 		return len(args) == 1
+	case "new":
+		// Opening a tab at a URL is navigation; any other key is not inspected.
+		if len(args) == 1 {
+			return true
+		}
+		url, ok := args["url"].(string)
+		return ok && url != "" && len(args) == 2
 	case "select":
 		index, ok := args["index"].(json.Number)
 		if !ok || len(args) != 2 {
