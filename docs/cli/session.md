@@ -116,7 +116,7 @@ Send `POST /api/v1/sessions/{key}/task` with the current task ID and the verifie
 }
 ```
 
-The API returns `204` on installation and `409` if the task generation has changed. Installation preserves the current taint. Subsequent exact matches are valid until expiry or task rotation. Use a short expiry for the intended operation. A terminal confirmation authorizes one request and installs no grant.
+The API returns `204` on installation and `409` if the task generation has changed. Installation preserves the current taint. On an identity session, exact matches are valid until expiry or task rotation. An invocation session accepts the grant and still rejects rotation, so that grant lasts until expiry or the process exits. Use a short expiry for the intended operation. A terminal confirmation authorizes one request and installs no grant.
 
 ## session list
 

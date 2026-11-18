@@ -101,6 +101,22 @@ func TestMCPTaintDiagnostics_RecoveryParity(t *testing.T) {
 	}
 }
 
+func TestMCPTaintRecoveryGuidanceNamesTaskPermission(t *testing.T) {
+	if !strings.Contains(MCPTaintRecoveryGuidance, "exact task permission") {
+		t.Fatal("recovery guidance does not name the task permission an invocation can receive")
+	}
+	if strings.Contains(MCPTaintRecoveryGuidance, "The only configured override") {
+		t.Fatal("recovery guidance still calls a trust override the only remedy for hostile history")
+	}
+	docs, err := os.ReadFile("../../docs/configuration.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(docs), MCPTaintRecoveryGuidance) {
+		t.Fatal("configuration.md does not carry the task-permission recovery guidance")
+	}
+}
+
 func TestMCPTaintDiagnostics_DocsPreserveHeadlessAndHTTPOverrideScope(t *testing.T) {
 	docs, err := os.ReadFile("../../docs/configuration.md")
 	if err != nil {
