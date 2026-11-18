@@ -1053,3 +1053,44 @@ func TestDeferredStdioTaskPermissionRefusesReleaseAfterHostileExposure(t *testin
 		t.Errorf("resolution receipts = %+v, want one final block", records)
 	}
 }
+
+// Mixed-case browser and delegation names classify the same way on every MCP
+// transport: refused after hostile exposure with nothing sent upstream, while
+// an allowed browsing operation still forwards.
+func TestTaskPermissionMixedCaseNamesAcrossMCPTransports(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	exposure := session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingToolPoisoning})
+	for _, mode := range []string{"stdio", "stdio_to_http", "http_listener", "websocket"} {
+		for _, tc := range []struct {
+			tool, args string
+			allowed    bool
+		}{
+			{"bRoWsErClick", `{"element":"Details","ref":"e1"}`, false},
+			{"DeLeGaTeGetTask", `{"task":"summarize"}`, false},
+			{"oPeNsUbAgEnT_get", `{"task":"summarize"}`, false},
+			{"browser_navigate", `{"url":"https://docs.vendor.example/guide"}`, true},
+		} {
+			t.Run(mode+"/"+tc.tool, func(t *testing.T) {
+				t.Parallel()
+				rec := &listenerDiagnosisRecorder{}
+				rec.ObserveRisk(exposure)
+				opts := MCPProxyOpts{
+					Scanner: testScannerForHTTP(t), TaintCfg: &cfg.Taint,
+					Store: taskPermissionTestStore{rec: rec}, Rec: rec,
+				}
+				response, deliveries := runTaskPermissionMCPCall(t, mode, principalControlToolCall(1, tc.tool, tc.args), opts)
+				if tc.allowed {
+					// stdio reports upstream bytes; other modes count requests.
+					if deliveries == 0 {
+						t.Fatalf("upstream deliveries=%d response=%q, want the allowed call forwarded", deliveries, response)
+					}
+					return
+				}
+				if deliveries != 0 || !strings.Contains(response, "task_approval_unavailable") {
+					t.Fatalf("upstream deliveries=%d response=%q, want zero deliveries and a task approval refusal", deliveries, response)
+				}
+			})
+		}
+	}
+}
