@@ -31,6 +31,8 @@ type httpInputDecision struct {
 	Deferred       *DeferredRequest
 	ForwardMessage []byte
 	Outcome        TrackedRequestOutcome
+	taskFrame      MCPFrame
+	taskTaint      taintDecision
 }
 
 const redirectResultRedirected = "redirected"
@@ -137,6 +139,8 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	}()
 	defer func() {
 		if result.Blocked == nil && result.Deferred == nil && receiptVerdict != config.ActionRedirect {
+			result.taskFrame = frame
+			result.taskTaint = taintEval
 			if reason := mcpTaskReleaseRefusal(opts, frame, taintEval, false); reason != "" {
 				denialAudit = mcpTaintDenialAudit()
 				receiptVerdict = config.ActionBlock
@@ -293,13 +297,14 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// authority check clears pending allow evidence and replaces the forward
 	// result before the caller can perform any upstream write.
 	defer func() {
-		if opts.AuthorityVerifier == nil || result.Blocked != nil {
+		if result.Blocked != nil {
 			return
 		}
 		if result.Deferred != nil {
+			// Release needs the effective frame even without an authority verifier.
+			result.Deferred.authorityFrame = frame
 			result.Deferred.authorityRef = authorityRef
 			result.Deferred.authorityCarrierErr = authorityCarrierErr
-			result.Deferred.authorityFrame = frame
 			return
 		}
 		if err := authorizeMCP(opts.warnContext(), authorityRef, authorityCarrierErr, frame, opts); err != nil {

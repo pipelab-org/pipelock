@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -714,11 +715,35 @@ func RunHTTPProxy(
 			})
 		}
 		// POST to upstream.
+		var taskRefusal string
 		respReader, err := func() (transport.MessageReader, error) {
 			upstreamMu.Lock()
 			defer upstreamMu.Unlock()
+			taskRefusal = mcpTaskReleaseRefusal(fwdOpts, decision.taskFrame, decision.taskTaint, false)
+			if taskRefusal != "" {
+				return nil, nil
+			}
 			return httpClient.SendMessageWithOptions(ctx, decision.ForwardMessage, transport.HTTPMessageOptions{Headers: requestHeaders})
 		}()
+		if taskRefusal != "" {
+			unlockInventory()
+			denialAudit := mcpTaintDenialAudit()
+			outcome := decision.Outcome
+			var errResp []byte
+			if isRPCNotification(frame.ID) {
+				dropMCPDenial(fwdOpts, denialAudit, "input")
+			} else {
+				block := BlockedRequest{ID: frame.ID, ErrorCode: -32002, ErrorMessage: "pipelock: " + taskRefusal}
+				errResp = blockRequestResponse(block)
+				if wErr := writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, errResp); wErr != nil {
+					_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send task refusal: %v\n", wErr)
+				}
+				outcome, _ = consumeTrackedRequestOutcome(tracker, frame.ID)
+			}
+			reason, _, _ := strings.Cut(taskRefusal, " ")
+			emitMCPBlockedOutcomeReceipt(fwdOpts.receiptEmitter(), fwdOpts.v2ReceiptEmitter(), fwdOpts.ReceiptGroup, safeLogW, outcome.Receipt, int64(len(errResp)), reason, fwdOpts.requireReceipts())
+			continue
+		}
 		if err != nil {
 			unlockInventory()
 			// SendMessage returns context cancellation/deadline errors as-is

@@ -61,11 +61,6 @@ type request struct {
 	response chan Outcome
 }
 
-type terminalLine struct {
-	value string
-	lost  bool
-}
-
 // Approver handles human-in-the-loop terminal prompts.
 // If stdin is not a terminal, all requests auto-block (fail-closed).
 type Approver struct {
@@ -195,7 +190,7 @@ func (a *Approver) Close() {
 func (a *Approver) worker() {
 	defer a.wg.Done()
 
-	lines := make(chan terminalLine, 1)
+	lines := make(chan string, 1)
 	go a.readLines(lines)
 
 	for {
@@ -215,19 +210,16 @@ func (a *Approver) worker() {
 
 // readLines reads from input sequentially. Only this goroutine touches
 // the bufio.Reader, eliminating data races when prompts time out.
-func (a *Approver) readLines(lines chan<- terminalLine) {
+func (a *Approver) readLines(lines chan<- string) {
+	defer close(lines)
 	reader := bufio.NewReader(a.input)
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
-			select {
-			case lines <- terminalLine{lost: true}:
-			case <-a.ctx.Done():
-			}
 			return
 		}
 		select {
-		case lines <- terminalLine{value: strings.TrimSpace(strings.ToLower(line))}:
+		case lines <- strings.TrimSpace(strings.ToLower(line)):
 		case <-a.ctx.Done():
 			return
 		}
@@ -236,10 +228,13 @@ func (a *Approver) readLines(lines chan<- terminalLine) {
 
 // drainStaleLines discards any buffered lines from the channel that were
 // left over from previous prompts (e.g., timeout or extra input).
-func (a *Approver) drainStaleLines(lines <-chan terminalLine) {
+func (a *Approver) drainStaleLines(lines <-chan string) {
 	for {
 		select {
-		case <-lines:
+		case _, ok := <-lines:
+			if !ok {
+				return
+			}
 		default:
 			return
 		}
@@ -247,7 +242,7 @@ func (a *Approver) drainStaleLines(lines <-chan terminalLine) {
 }
 
 // prompt displays the threat details and reads the operator's decision.
-func (a *Approver) prompt(lines <-chan terminalLine, req *Request) Outcome {
+func (a *Approver) prompt(lines <-chan string, req *Request) Outcome {
 	// Drain stale input only if the previous prompt timed out, because
 	// a timeout leaves the operator's late response sitting in the channel.
 	if a.lastPromptTimedOut {
@@ -278,22 +273,22 @@ func (a *Approver) prompt(lines <-chan terminalLine, req *Request) Outcome {
 	}
 
 	select {
-	case input := <-lines:
-		if input.lost {
+	case input, ok := <-lines:
+		if !ok {
 			_, _ = fmt.Fprintln(a.output, "-> Blocked.")
 			return OutcomeInputLost
 		}
 		if req.Confirmation != "" {
-			switch input.value {
+			switch input {
 			case "y " + req.Confirmation:
-				input.value = "y"
+				input = "y"
 			case "", "n", "no":
 			default:
 				_, _ = fmt.Fprintln(a.output, "-> Confirmation did not match. Blocked.")
 				return OutcomeUnconfirmed
 			}
 		}
-		switch input.value {
+		switch input {
 		case "y", "yes":
 			_, _ = fmt.Fprintln(a.output, "-> Allowed.")
 			return OutcomeAllow

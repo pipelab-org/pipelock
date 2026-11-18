@@ -87,6 +87,7 @@ func TestAskOutcome(t *testing.T) {
 	}{
 		{name: "allow", input: "y\n", terminal: true, want: OutcomeAllow},
 		{name: "decline", input: "n\n", terminal: true, want: OutcomeDeclined},
+		{name: "blank", input: "\n", terminal: true, want: OutcomeDeclined},
 		{name: "lost_input", terminal: true, want: OutcomeInputLost},
 		{name: "non_terminal", input: "y\n", want: OutcomeNonTerminal},
 		{name: "timeout", terminal: true, timeout: true, want: OutcomeTimeout},
@@ -105,6 +106,30 @@ func TestAskOutcome(t *testing.T) {
 				t.Fatalf("outcome = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestAskOutcomeInputLossPersists(t *testing.T) {
+	a := New(1, WithInput(strings.NewReader("")), WithOutput(io.Discard), WithTerminal(true))
+	t.Cleanup(a.Close)
+	for prompt := 1; prompt <= 2; prompt++ {
+		start := time.Now()
+		if got := a.AskOutcome(&Request{}); got != OutcomeInputLost {
+			t.Fatalf("prompt %d: outcome = %v after %s, want %v", prompt, got, time.Since(start), OutcomeInputLost)
+		}
+	}
+}
+
+func TestPromptInputLossAfterTimeout(t *testing.T) {
+	a := &Approver{ctx: t.Context(), output: io.Discard, timeout: 10 * time.Millisecond, input: strings.NewReader("")}
+	lines := make(chan string, 1)
+	if got := a.prompt(lines, &Request{}); got != OutcomeTimeout {
+		t.Fatalf("first outcome = %v, want %v", got, OutcomeTimeout)
+	}
+	// EOF arrives between prompts, so the next prompt's stale-input drain sees it.
+	a.readLines(lines)
+	if got := a.prompt(lines, &Request{}); got != OutcomeInputLost {
+		t.Fatalf("outcome after EOF = %v, want %v", got, OutcomeInputLost)
 	}
 }
 
@@ -421,7 +446,7 @@ func TestApprover_TimeoutThenSuccess(t *testing.T) {
 		output:  output,
 		ctx:     ctx,
 	}
-	lines := make(chan terminalLine, 2)
+	lines := make(chan string, 2)
 
 	// First request: no input → times out → sets lastPromptTimedOut = true.
 	d1 := a.prompt(lines, &Request{URL: "https://example.com", Reason: "first"})
@@ -429,7 +454,7 @@ func TestApprover_TimeoutThenSuccess(t *testing.T) {
 		t.Fatalf("expected timeout block, got %d", d1)
 	}
 
-	lines <- terminalLine{value: "stale"}
+	lines <- "stale"
 	done := make(chan Outcome, 1)
 	go func() {
 		done <- a.prompt(lines, &Request{URL: "https://example.com", Reason: "second"})
@@ -438,7 +463,7 @@ func TestApprover_TimeoutThenSuccess(t *testing.T) {
 	testwait.For(t, time.Second, func() bool {
 		return output.count("PIPELOCK: THREAT DETECTED") >= 2
 	}, "second HITL prompt after stale input drain")
-	lines <- terminalLine{value: "y"}
+	lines <- "y"
 
 	// Second request: drainStaleLines removes "stale", then prompt reads "y".
 	select {

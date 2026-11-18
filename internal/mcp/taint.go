@@ -247,8 +247,17 @@ func mcpTaskReleaseRefusal(opts MCPProxyOpts, frame MCPFrame, admitted taintDeci
 		}
 	}
 	identity := mcpFrameCollisionSafeCallableIdentity(frame, frame.Method)
-	if identity == "" && !frame.IsToolsCall() {
-		return ""
+	if identity == "" {
+		if admitted.taskAction.Digest == "" {
+			// Non-callable protocol messages do not need a task permission.
+			if !frame.IsToolsCall() {
+				return ""
+			}
+			if cfg := opts.taintCfg(); cfg == nil || !cfg.Enabled {
+				return ""
+			}
+		}
+		return session.TaskPermissionRequired + " (the action has no callable identity)"
 	}
 	current := evaluateMCPTaskTaint(opts, identity, mcpFrameCallableArgs(frame), mcpTaskAction(opts, frame))
 	if admitted.taskAction.Digest != "" && current.Task.CurrentTaskID != admitted.Task.CurrentTaskID {

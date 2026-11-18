@@ -9,6 +9,47 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
+func TestMCPClassifyOperationEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		tool string
+		want session.ActionClass
+	}{
+		{"mcp__read__frobnicate", session.ActionClassUnknown},
+		{"mcp__fetch__frobnicate", session.ActionClassUnknown},
+		{"mcp__browse__x", session.ActionClassUnknown},
+		{"mcp__download__frobnicate", session.ActionClassUnknown},
+		{"mcp__fs__read_text_file", session.ActionClassRead},
+		{"mcp__service__read_file", session.ActionClassRead},
+		{"mcp__service__fetch_page", session.ActionClassBrowse},
+	} {
+		t.Run(tc.tool, func(t *testing.T) {
+			if got := session.ClassifyMCPToolCallWithOptions(tc.tool, `{}`, nil, nil, session.ClassificationOptions{}).Class; got != tc.want {
+				t.Fatalf("class = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMCPClassifyExecArgumentKeys(t *testing.T) {
+	for _, tc := range []struct {
+		name, tool, args string
+		want             session.ActionClass
+	}{
+		{"search_value", "search_files", `{"query":"command","path":"/repo"}`, session.ActionClassRead},
+		{"command_key", "search_files", `{"command":"echo test"}`, session.ActionClassExec},
+		{"cmd_key", "search_files", `{"nested":[{"cmd":"echo test"}]}`, session.ActionClassExec},
+		{"script_key", "search_files", `{"script":"echo test"}`, session.ActionClassExec},
+		{"read_with_command", "read_file", `{"path":"/repo","command":"echo test"}`, session.ActionClassExec},
+		{"malformed", "search_files", `{"command":`, session.ActionClassExec},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := session.ClassifyMCPToolCallWithOptions(tc.tool, tc.args, nil, nil, session.ClassificationOptions{}).Class; got != tc.want {
+				t.Fatalf("class = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestMCPBoundedOperationEvidence(t *testing.T) {
 	for _, prefix := range []string{"", "mcp__service__", "service.", "service:"} {
 		for _, tool := range []string{"list_thread_pull_requests", "list_posts", "get_input", "listPosts", "getInput", "listThreadPullRequests"} {

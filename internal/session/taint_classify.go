@@ -255,15 +255,19 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 	}
 
 	// Consider read and browse evidence after the effect checks, including
-	// exec arguments. Calls without recognized evidence remain unknown.
-	if looksLikeBrowseTool(name) || (category == "network" && hasMCPNetworkNameEvidence(toolName, argsJSON)) {
+	// exec arguments. Only the operation can supply read or browse evidence.
+	operation := mcpToolOperationName(toolName)
+	if operation != toolName {
+		category = chains.ClassifyTool(operation, argsJSON, nil)
+	}
+	if looksLikeBrowseTool(strings.ToLower(operation)) || (category == "network" && hasMCPNetworkNameEvidence(operation, argsJSON)) {
 		if hasMutatingNetworkIntent(argsJSON) {
 			return ActionClassification{Class: ActionClassPublish, Sensitivity: SensitivityElevated, ActionRef: targetURL, OverrideRefs: targets.urls, Confident: true}
 		}
 		return ActionClassification{Class: ActionClassBrowse, Sensitivity: SensitivityNormal, ActionRef: targetURL, OverrideRefs: targets.urls, Confident: true}
 	}
 
-	if looksLikeReadTool(toolName) || category == "read" || category == "list" {
+	if looksLikeReadTool(operation) || category == "read" || category == "list" {
 		return ActionClassification{Class: ActionClassRead, Sensitivity: failSafeSensitivity(opts, pathClass.Confident), ActionRef: targetPath, OverrideRefs: pathClass.OverrideRefs, Confident: pathClass.Confident}
 	}
 
@@ -788,16 +792,19 @@ func looksLikePublishTool(name, argsJSON string) bool {
 // operationHasWord matches one whole word of the tool component. The server id
 // in an mcp__server__tool name is not the operation, so it cannot count.
 func operationHasWord(name, word string) bool {
-	operation := name
-	if alias, ok := normalize.MCPToolNameAlias(name); ok {
-		operation = alias
-	}
-	for _, got := range splitArgumentKey(operation) {
+	for _, got := range splitArgumentKey(mcpToolOperationName(name)) {
 		if got == word {
 			return true
 		}
 	}
 	return false
+}
+
+func mcpToolOperationName(name string) string {
+	if alias, ok := normalize.MCPToolNameAlias(name); ok {
+		return alias
+	}
+	return name
 }
 
 func hasMCPNetworkNameEvidence(name, argsJSON string) bool {
@@ -885,6 +892,9 @@ func hasWriteIntent(argsJSON string) bool {
 }
 
 func hasExecIntent(argsJSON string) bool {
+	if decoded, ok := decodeJSONValue(argsJSON); ok {
+		return jsonHasAnyKey(decoded, "command", "cmd", "script", "shell", "program", "argv")
+	}
 	lower := normalizeIntentJSON(argsJSON)
 	return containsAny(lower, `"command"`, `"cmd"`, `"script"`, `"shell"`, `"program"`, `"argv"`)
 }

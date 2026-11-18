@@ -18,6 +18,8 @@ import (
 	gobwasutil "github.com/gobwas/ws/wsutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -158,6 +160,113 @@ type taskPermissionTestStore struct{ rec session.Recorder }
 
 func (s taskPermissionTestStore) GetOrCreate(string) session.Recorder { return s.rec }
 func (taskPermissionTestStore) Delete(string)                         {}
+
+type httpTaskPermissionRecorder struct {
+	listenerDiagnosisRecorder
+	subject string
+	action  session.TaskAction
+	rotated bool
+	checks  int
+}
+
+func (r *httpTaskPermissionRecorder) BindTaskSubject(subject string) { r.subject = subject }
+
+func (r *httpTaskPermissionRecorder) TaskPolicySnapshot(subject string, action session.TaskAction) (session.SessionRisk, session.TaskContext, bool) {
+	r.checks++
+	task := session.TaskContext{CurrentTaskID: "original-task"}
+	if r.rotated {
+		task.CurrentTaskID = "next-task"
+	}
+	return r.RiskSnapshot(), task, subject != "" && subject == r.subject && action == r.action && !r.rotated
+}
+
+func TestMCPTaskReleaseRequiresAdmittedCallableIdentity(t *testing.T) {
+	cfg := config.Defaults()
+	rec := &listenerDiagnosisRecorder{}
+	rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingDLP}))
+	opts := MCPProxyOpts{Rec: rec, TaintCfg: &cfg.Taint}
+	admitted := taintDecision{taskAction: mcpTaskAction(opts, ParseMCPFrame([]byte(deferKillTestCall)))}
+	if reason := mcpTaskReleaseRefusal(opts, MCPFrame{}, admitted, false); !strings.Contains(reason, session.TaskPermissionRequired) {
+		t.Errorf("release refusal = %q, want %s", reason, session.TaskPermissionRequired)
+	}
+	metadata := ParseMCPFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	if reason := mcpTaskReleaseRefusal(opts, metadata, taintDecision{}, false); reason != "" {
+		t.Errorf("metadata release refusal = %q, want allow", reason)
+	}
+}
+
+func TestDeferredHTTPReleaseChecksTaskPermissionWithoutAuthorityVerifier(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		grant     bool
+		wantCalls int32
+		wantReply string
+	}{
+		{"missing_grant", false, 0, session.TaskPermissionRequired},
+		{"exact_grant", true, 1, `"result"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			rec := &httpTaskPermissionRecorder{}
+			run := startHTTPDeferRun(t, deferKillTestController(), func(opts *MCPProxyOpts) {
+				opts.Store = taskPermissionTestStore{rec: rec}
+				opts.TaintCfg = &cfg.Taint
+				opts.ServerBinding = "test-server"
+				if tc.grant {
+					rec.action = mcpTaskAction(*opts, ParseMCPFrame([]byte(deferKillTestCall)))
+				}
+			})
+			defer run.stop(t)
+			rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingDLP}))
+			held := run.manager.Snapshot()[0]
+			if err := run.manager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceApproval); err != nil {
+				t.Fatal(err)
+			}
+			if got, reply := run.calls.Load(), run.stdout.String(); got != tc.wantCalls || !strings.Contains(reply, tc.wantReply) {
+				t.Fatalf("upstream requests = %d, want %d. Response = %s, want %q", got, tc.wantCalls, reply, tc.wantReply)
+			}
+		})
+	}
+}
+
+func TestHTTPTaskPermissionRechecksAtSend(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		rotate    bool
+		wantCalls int32
+		wantReply string
+	}{
+		{"rotated_task", true, 0, session.TaskApprovalStale},
+		{"current_grant", false, 1, `"result"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream, calls := countingUpstream(t)
+			cfg := config.Defaults()
+			rec := &httpTaskPermissionRecorder{}
+			rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingDLP}))
+			opts := MCPProxyOpts{
+				Scanner: testScannerForHTTP(t), TaintCfg: &cfg.Taint,
+				Store: taskPermissionTestStore{rec: rec}, ServerBinding: "test-server",
+				ContractLoaderFn: func() *contractruntime.Loader {
+					// The input gate and its finalizer have both checked the grant.
+					// This is the per-send upstream gate, before the send lock.
+					if tc.rotate && rec.checks >= 2 {
+						rec.rotated = true
+					}
+					return nil
+				},
+			}
+			rec.action = mcpTaskAction(opts, ParseMCPFrame([]byte(deferKillTestCall)))
+			var output bytes.Buffer
+			if err := RunHTTPProxy(t.Context(), strings.NewReader(deferKillTestCall), &output, io.Discard, upstream.URL, nil, opts); err != nil {
+				t.Fatal(err)
+			}
+			if got := calls.Load(); got != tc.wantCalls || !strings.Contains(output.String(), tc.wantReply) {
+				t.Fatalf("upstream requests = %d, want %d. Response = %s, want %q", got, tc.wantCalls, output.String(), tc.wantReply)
+			}
+		})
+	}
+}
 
 func TestTaskPermissionRefusesHostileCallsAcrossMCPTransports(t *testing.T) {
 	t.Parallel()
