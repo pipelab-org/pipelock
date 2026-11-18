@@ -551,9 +551,8 @@ func TestReverseSessionProfilingAnomalyBlockEmitsReceipt(t *testing.T) {
 // path enforces a taint ASK verdict: a write carried under UNTRUSTED (not
 // hostile) external taint resolves to PolicyAsk, and with no HITL approver
 // wired the ask is refused, so the request is denied with the taint_policy
-// layer. Distinct from TestReverseTaintFromResponseBlocksLaterRequest, which
-// exercises the hostile PolicyBlock arm; this covers the PolicyAsk arm and the
-// refused-ask block. Untrusted taint is seeded with the same production
+// layer. This covers the PolicyAsk arm and the refused-ask block.
+// Untrusted taint is seeded with the same production
 // observation helper the response path uses (an external read with no
 // injection), then a write from that identity is asked-and-refused.
 func TestReverseTaintAskRefusedWithoutApproverBlocks(t *testing.T) {

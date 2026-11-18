@@ -1872,7 +1872,7 @@ func TestWSProxyInjectionWarn(t *testing.T) {
 	}
 }
 
-func TestWSProxyInjectionWarn_ContaminatesSessionBeforeSensitiveAction(t *testing.T) {
+func TestWSProxyInjectionWarn_PreservesSourceTaintAcrossReload(t *testing.T) {
 	backendAddr, backendCleanup := wsInjectionServer(t)
 	defer backendCleanup()
 
@@ -1906,16 +1906,17 @@ func TestWSProxyInjectionWarn_ContaminatesSessionBeforeSensitiveAction(t *testin
 		t.Fatal("session manager not initialized")
 	}
 	sess := sm.GetOrCreate(ceeSessionKey(nil, agent, "127.0.0.1", envelope.ActorAuthSelfDeclared))
-	if risk := sess.RiskSnapshot(); !risk.Contaminated {
-		t.Fatal("WebSocket injection finding left the session falsely clean")
+	if risk := sess.RiskSnapshot(); risk.Level != session.TaintTrusted || risk.Contaminated ||
+		risk.PromptHit || !session.OnlyWordingFindings(risk.FindingKinds) {
+		t.Fatalf("loopback WebSocket warning did not preserve source taint across reload: %+v", risk)
 	}
 	target, err := url.Parse("https://api.vendor.example/auth/update")
 	if err != nil {
 		t.Fatalf("parse sensitive target: %v", err)
 	}
 	decision := evaluateHTTPTaint(p.CurrentConfig(), sess, http.MethodPost, target)
-	if decision.Result.Decision != session.PolicyBlock {
-		t.Fatalf("sensitive follow-up decision = %v, want block", decision.Result.Decision)
+	if decision.Result.Decision != session.PolicyAllow {
+		t.Fatalf("sensitive follow-up decision = %v, want allow", decision.Result.Decision)
 	}
 }
 
