@@ -4,7 +4,6 @@
 package receipt
 
 import (
-	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"slices"
@@ -418,13 +417,9 @@ func NewEvidenceChainWalker(trusted []string, opts contractreceipt.ChainVerifyOp
 func (w *EvidenceChainWalker) Add(r contractreceipt.EvidenceReceipt) {
 	w.count++
 	if w.count == 1 {
-		var pin ed25519.PublicKey
-		if len(w.trusted) == 0 {
-			pin, w.pinErr = decodeEd25519Hex(strings.ToLower(strings.TrimSpace(r.Signature.SignerKeyID)))
-		} else {
-			pin, w.pinErr = EvidenceChainPin([]contractreceipt.EvidenceReceipt{r}, w.trusted)
-		}
-		if w.pinErr != nil {
+		pin, err := evidenceVerificationKey([]contractreceipt.EvidenceReceipt{r}, w.trusted)
+		if err != nil {
+			w.pinErr = err
 			return
 		}
 		opts := w.opts
