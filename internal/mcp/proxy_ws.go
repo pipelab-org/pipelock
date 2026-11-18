@@ -270,7 +270,11 @@ func RunWSProxy(
 		}
 
 		// Input scanning: DLP, injection, policy, chain detection.
-		decision := scanHTTPInputDecision(msg, safeLogW, sessionKey, sessionKey, wsOpts)
+		inputOpts := wsOpts
+		if taintCfg := inputOpts.TaintCfg; inputOpts.TaintCfgFn != nil || (taintCfg != nil && taintCfg.Enabled) {
+			inputOpts.deferBestEffortTaskReceipt = true
+		}
+		decision := scanHTTPInputDecision(msg, safeLogW, sessionKey, sessionKey, inputOpts)
 		if decision.Synthetic != nil {
 			if err := deliverMCPSynthetic(decision.Synthetic, safeClientOut); err != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: synthetic response write error: %v\n", err)
@@ -289,6 +293,7 @@ func RunWSProxy(
 		// until the first message has passed every existing gate plus the grant
 		// check in scanHTTPInputDecision.
 		if err := startUpstream(); err != nil {
+			emitPendingMCPInputReceipt(decision.pendingReceipt)
 			if sessionExit.inProgress() && errors.Is(err, context.Canceled) {
 				break
 			}
@@ -307,8 +312,27 @@ func RunWSProxy(
 			}
 		}
 
+		if refusal := mcpTaskReleaseRefusal(wsOpts, decision.taskFrame, decision.taskTaint, false); refusal != "" {
+			outcome := mcpLocalRefusedOutcome(tracker, frame.ID, decision)
+			block := inputMCPDenial(wsOpts, mcpTaintDenialAudit(), &BlockedRequest{
+				ID: frame.ID, IsNotification: isRPCNotification(frame.ID),
+				ErrorCode: -32002, ErrorMessage: "pipelock: " + refusal,
+			})
+			if wErr := deliverMCPInputResult(wsOpts, *block, safeClientOut); wErr != nil {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send task refusal: %v\n", wErr)
+			}
+			intent := outcome.Receipt
+			intent.Layer = mcpReceiptLayerTaint
+			intent.TaintDecision = config.ActionBlock
+			intent.TaintDecisionReason = decision.taskTaint.recordTaskReleaseRefusal(refusal)
+			emitMCPBlockedOutcomeReceipt(wsOpts.receiptEmitter(), wsOpts.v2ReceiptEmitter(), wsOpts.ReceiptGroup, safeLogW, intent, -1, intent.TaintDecisionReason, wsOpts.requireReceipts())
+			continue
+		}
+
 		// Forward to upstream.
-		if writeErr := wsClient.WriteMessage(decision.ForwardMessage); writeErr != nil {
+		writeErr := wsClient.WriteMessage(decision.ForwardMessage)
+		emitPendingMCPInputReceipt(decision.pendingReceipt)
+		if writeErr != nil {
 			stdinErr = fmt.Errorf("upstream write: %w", writeErr)
 			break
 		}

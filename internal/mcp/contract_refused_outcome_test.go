@@ -165,34 +165,38 @@ func TestRunHTTPProxyLiveLock_PerMessageUpstreamDenialRecordsBlockedOutcome(t *t
 			wantReason:    mcpContractEvaluationFailedReason,
 		},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var upstreamHits atomic.Int32
-			upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-				upstreamHits.Add(1)
-			}))
-			defer upstream.Close()
+		for _, mode := range []string{"best_effort", "required"} {
+			t.Run(tc.name+"/"+mode, func(t *testing.T) {
+				var upstreamHits atomic.Int32
+				upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+					upstreamHits.Add(1)
+				}))
+				defer upstream.Close()
 
-			h := newMCPDecisionReceiptHarness(t)
-			var stdout, stderr strings.Builder
-			err := RunHTTPProxy(context.Background(), strings.NewReader(tc.message+"\n"), &stdout, &stderr, upstream.URL, nil,
-				contractRefusedOpts(t, h, tc.withHTTPRules))
-			if err != nil {
-				t.Fatalf("RunHTTPProxy: %v", err)
-			}
-			if upstreamHits.Load() != 0 {
-				t.Fatalf("upstream hits = %d, want 0", upstreamHits.Load())
-			}
-			if strings.Contains(stderr.String(), "receipt emission failed") {
-				t.Fatalf("receipt emission failed: %s", stderr.String())
-			}
-			if got := strings.TrimSpace(stdout.String()) != ""; got != tc.wantResponse {
-				t.Fatalf("client response written = %v, want %v: %s", got, tc.wantResponse, stdout.String())
-			}
-			if got := strings.Join(v2Verdicts(t, h), ","); got != "allow,block" {
-				t.Fatalf("v2 verdicts = %s, want allow,block", got)
-			}
-			assertContractRefusedChain(t, readActionReceipts(t, h.dir), tc.wantReason)
-		})
+				h := newMCPDecisionReceiptHarness(t)
+				var stdout, stderr strings.Builder
+				opts := contractRefusedOpts(t, h, tc.withHTTPRules)
+				opts.RequireReceipts = mode == "required"
+				opts.TaintCfg = &config.Defaults().Taint
+				err := RunHTTPProxy(context.Background(), strings.NewReader(tc.message+"\n"), &stdout, &stderr, upstream.URL, nil, opts)
+				if err != nil {
+					t.Fatalf("RunHTTPProxy: %v", err)
+				}
+				if upstreamHits.Load() != 0 {
+					t.Fatalf("upstream hits = %d, want 0", upstreamHits.Load())
+				}
+				if strings.Contains(stderr.String(), "receipt emission failed") {
+					t.Fatalf("receipt emission failed: %s", stderr.String())
+				}
+				if got := strings.TrimSpace(stdout.String()) != ""; got != tc.wantResponse {
+					t.Fatalf("client response written = %v, want %v: %s", got, tc.wantResponse, stdout.String())
+				}
+				if got := strings.Join(v2Verdicts(t, h), ","); got != "allow,block" {
+					t.Fatalf("v2 verdicts = %s, want allow,block", got)
+				}
+				assertContractRefusedChain(t, readActionReceipts(t, h.dir), tc.wantReason)
+			})
+		}
 	}
 }
 

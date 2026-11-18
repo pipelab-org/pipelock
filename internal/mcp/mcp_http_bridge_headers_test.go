@@ -203,10 +203,11 @@ func headerBaselineForTest(t *testing.T, schema string) *tools.ToolBaseline {
 }
 
 func TestHTTPBridgeHeaderDiscoveryRefuses(t *testing.T) {
-	for _, scenario := range []string{"HTTP error", "malformed", "oversize", "repeated cursor", "absent", "invalid", "input required", "wrong id", "inspection block", "invalid value", "best effort absent", "disabled scanning", "disabled invalid"} {
+	for _, scenario := range []string{"HTTP error", "malformed", "oversize", "repeated cursor", "absent", "invalid", "input required", "wrong id", "inspection block", "invalid value", "best effort absent", "disabled scanning", "disabled invalid", "malformed version", "best effort malformed version"} {
 		t.Run(scenario, func(t *testing.T) {
-			var calls atomic.Int32
+			var calls, lists atomic.Int32
 			up := bridgeHeaderUpstream(t, func(w http.ResponseWriter, _ *http.Request, f MCPFrame) {
+				lists.Add(1)
 				switch scenario {
 				case "HTTP error":
 					w.WriteHeader(http.StatusForbidden)
@@ -235,16 +236,25 @@ func TestHTTPBridgeHeaderDiscoveryRefuses(t *testing.T) {
 			})
 			h := newMCPDecisionReceiptHarness(t)
 			opts := bridgeHeaderOpts(t)
+			opts.TaintCfg = &config.Defaults().Taint
 			opts.InputCfg = newHTTPInputCfg(config.ActionBlock)
 			if scenario == "disabled scanning" || scenario == "disabled invalid" {
 				opts.ToolCfg = nil
 			}
-			opts.ReceiptEmitter, opts.V2ReceiptEmitter, opts.PolicyHash, opts.RequireReceipts = h.v1, h.v2, mcpTestPolicyHash, scenario != "best effort absent"
+			opts.ReceiptEmitter, opts.V2ReceiptEmitter, opts.PolicyHash, opts.RequireReceipts = h.v1, h.v2, mcpTestPolicyHash, !strings.HasPrefix(scenario, "best effort ")
 			args := `{"region":"body"}`
 			if scenario == "invalid value" {
 				args = `{"region":{}}`
 			}
-			out, logs := runBridgeHeaderInput(t, up.URL, bridgeHeaderCall(args), nil, opts)
+			input := bridgeHeaderCall(args)
+			localRefusal := strings.HasSuffix(scenario, "malformed version")
+			if localRefusal {
+				input = strings.Replace(input, currentMCPVersion, "invalid", 1)
+			}
+			out, logs := runBridgeHeaderInput(t, up.URL, input, nil, opts)
+			if localRefusal && lists.Load() != 0 {
+				t.Fatalf("malformed version made %d discovery requests", lists.Load())
+			}
 			if calls.Load() != 0 || !strings.Contains(out, `"code":-32020`) {
 				t.Fatalf("refusal: calls=%d out=%s logs=%s", calls.Load(), out, logs)
 			}
@@ -260,14 +270,6 @@ func TestHTTPBridgeHeaderDiscoveryRefuses(t *testing.T) {
 				case receipt.DecisionPhaseOutcome:
 					outcome = &record
 				}
-			}
-			if !opts.RequireReceipts {
-				// A best-effort allow is single-phase, so nothing may claim to
-				// close it; the completeness verifier would read a broken chain.
-				if intent != nil || outcome != nil {
-					t.Fatalf("best-effort refusal wrote phased receipts: intent=%+v outcome=%+v", intent, outcome)
-				}
-				return
 			}
 			if intent == nil || outcome == nil || intent.ActionID != outcome.ActionID || intent.Verdict != config.ActionAllow || outcome.Verdict != config.ActionBlock || outcome.Layer != mcpReceiptLayerHeaderContract {
 				t.Fatalf("intent=%+v outcome=%+v logs=%s", intent, outcome, logs)
@@ -366,6 +368,7 @@ func TestHTTPBridgeHeaderRoutedNotificationRefused(t *testing.T) {
 				}))
 				defer upstream.Close()
 				opts := bridgeHeaderOpts(t)
+				opts.TaintCfg = &config.Defaults().Taint
 				logger, events := newListenerEventLogger(t)
 				opts.AuditLogger = logger
 				h := openReceiptHarness(t, &opts, required)
@@ -409,6 +412,9 @@ func TestHTTPBridgeHeaderRoutedNotificationRefused(t *testing.T) {
 							t.Fatalf("intent %s for a refused notification has no blocked outcome", a.ActionID)
 						}
 					}
+				}
+				if strings.HasPrefix(tc.name, "tools_call_") && intents != 1 {
+					t.Errorf("refused tools/call left %d intents, want one", intents)
 				}
 				if intents != headerOutcomes {
 					t.Errorf("intents=%d header-contract outcomes=%d", intents, headerOutcomes)

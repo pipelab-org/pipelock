@@ -143,6 +143,8 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			result.taskFrame = frame
 			result.taskTaint = taintEval
 			if reason := mcpTaskReleaseRefusal(opts, frame, taintEval, false); reason != "" {
+				refusalReason := taintEval.recordTaskReleaseRefusal(reason)
+				receiptLayer, receiptPattern, receiptSeverity = mcpReceiptLayerTaint, refusalReason, taintReceiptSeverity(taintEval)
 				denialAudit = mcpTaintDenialAudit()
 				receiptVerdict = config.ActionBlock
 				result.Blocked = &BlockedRequest{
@@ -1067,6 +1069,8 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		return result
 	case config.ActionRedirect:
 		if reason := mcpTaskReleaseRefusal(opts, frame, taintEval, true); reason != "" {
+			refusalReason := taintEval.recordTaskReleaseRefusal(reason)
+			receiptLayer, receiptPattern, receiptSeverity = mcpReceiptLayerTaint, refusalReason, taintReceiptSeverity(taintEval)
 			denialAudit = mcpTaintDenialAudit()
 			receiptVerdict = config.ActionBlock
 			result.Blocked = &BlockedRequest{

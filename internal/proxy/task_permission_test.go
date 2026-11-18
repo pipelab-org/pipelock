@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -251,6 +252,16 @@ func TestTaskPermissionAPIRejectsInvalidGrantsWithoutChangingTask(t *testing.T) 
 	taskID := sess.TaskSnapshot().CurrentTaskID
 	action := session.TaskAction{Method: http.MethodPost, Destination: "http://peer.vendor.example/update", Digest: strings.Repeat("a", 64)}
 	valid := session.TaskPermission{Action: action, ExpiresAt: time.Now().Add(time.Hour)}
+	other := valid
+	other.Action.Destination = "http://peer.vendor.example/notes"
+	if err := sess.installTaskPermission(taskID, other); err != nil {
+		t.Fatalf("seeding unrelated permission: %v", err)
+	}
+	storedPermissions := func() []session.TaskPermission {
+		sess.mu.Lock()
+		defer sess.mu.Unlock()
+		return slices.Clone(sess.taskPermissions)
+	}
 
 	grantBody := func(t *testing.T, req taskRequest) string {
 		t.Helper()
@@ -278,12 +289,16 @@ func TestTaskPermissionAPIRejectsInvalidGrantsWithoutChangingTask(t *testing.T) 
 		{"expiry_in_past", taskPath, token, grantBody(t, taskRequest{TaskID: taskID, Permission: &expired}), "task permission requires an exact action and a future expiry", http.StatusBadRequest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			before := storedPermissions()
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, tc.path, strings.NewReader(tc.body))
 			req.Header.Set("Authorization", "Bearer "+tc.token)
 			w := httptest.NewRecorder()
 			handler.HandleTask(w, req)
 			if w.Code != tc.status || strings.TrimSpace(w.Body.String()) != tc.reason {
 				t.Errorf("status=%d body=%q, want %d with %q", w.Code, w.Body, tc.status, tc.reason)
+			}
+			if after := storedPermissions(); !slices.Equal(before, after) {
+				t.Errorf("rejected request changed stored permissions: before=%+v after=%+v", before, after)
 			}
 			risk, current, matched := sess.TaskPolicySnapshot(key, action)
 			if risk.Level != session.TaintExternalHostile || current.CurrentTaskID != taskID || matched {
@@ -338,8 +353,21 @@ func TestTaskPermissionCapacityAllowsReplacementAndPrunesExpiry(t *testing.T) {
 	}
 
 	sess.mu.Lock()
-	sess.taskPermissions[0].ExpiresAt = time.Now().Add(-time.Hour)
+	count := len(sess.taskPermissions)
+	index := slices.IndexFunc(sess.taskPermissions, func(p session.TaskPermission) bool { return p.Action == first.Action })
+	if count != maxTaskPermissions || index < 0 {
+		sess.mu.Unlock()
+		t.Fatalf("replacement index=%d count=%d, want the same action and %d permissions", index, count, maxTaskPermissions)
+	}
+	if storedExpiry := sess.taskPermissions[index].ExpiresAt; !storedExpiry.Equal(first.ExpiresAt) {
+		sess.mu.Unlock()
+		t.Fatalf("replacement expiry=%v, want %v", storedExpiry, first.ExpiresAt)
+	}
+	sess.taskPermissions[index].ExpiresAt = time.Now().Add(-time.Hour)
 	sess.mu.Unlock()
+	if _, _, ok := sess.TaskPolicySnapshot(subject, first.Action); ok {
+		t.Fatal("replacement action remained active after its stored entry was expired")
+	}
 	if err := sess.installTaskPermission(task.CurrentTaskID, extra); err != nil {
 		t.Fatalf("install after expiry: %v", err)
 	}

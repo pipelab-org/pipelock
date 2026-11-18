@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -59,16 +58,6 @@ func emitTrackedTerminalOutcome(logW io.Writer, tracker *RequestTracker, id json
 		return
 	}
 	emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, outcome.Receipt, mcpResponseStatus(resp), int64(len(resp)), reason, opts.requireReceipts())
-}
-
-// emitTrackedContractRefusedOutcome closes the tracked intent of a request the
-// live upstream contract refused after its intent receipt was written.
-func emitTrackedContractRefusedOutcome(logW io.Writer, tracker *RequestTracker, id json.RawMessage, gate mcpContractGateOutput, reason string, resp []byte, opts MCPProxyOpts) {
-	outcome, ok := consumeTrackedRequestOutcome(tracker, id)
-	if !ok {
-		return
-	}
-	emitContractRefusedOutcome(logW, outcome, gate, reason, int64(len(resp)), opts)
 }
 
 // emitContractRefusedOutcome writes the blocked outcome for a call the live
@@ -641,24 +630,24 @@ func RunHTTPProxy(
 		}
 
 		if gate, gateErr := evaluateMCPUpstreamGate(ctx, upstreamURL, opts); gateErr != nil {
-			emitBridgePendingReceipt(decision.pendingReceipt)
+			outcome := mcpLocalRefusedOutcome(tracker, frame.ID, decision)
 			denialAudit = mcpListenerContractEvalDenialAudit()
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream evaluation failed: %v\n", gateErr)
 			// Notifications have no id; JSON-RPC forbids responses to
 			// them. Mirror the kill-switch and input-scan paths above.
 			if isRPCNotification(frame.ID) {
 				dropMCPDenial(fwdOpts, denialAudit, "input")
-				emitContractRefusedOutcome(safeLogW, decision.Outcome, mcpContractGateOutput{}, mcpContractEvaluationFailedReason, 0, fwdOpts)
+				emitContractRefusedOutcome(safeLogW, outcome, mcpContractGateOutput{}, mcpContractEvaluationFailedReason, 0, fwdOpts)
 				continue
 			}
 			errResp := blockRequestResponse(mcpContractBlockRequest(frame.ID, mcpContractGateOutput{}, "pipelock: contract upstream evaluation failed"))
 			if wErr := writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, errResp); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send contract response: %v\n", wErr)
 			}
-			emitTrackedContractRefusedOutcome(safeLogW, tracker, frame.ID, mcpContractGateOutput{}, mcpContractEvaluationFailedReason, errResp, fwdOpts)
+			emitContractRefusedOutcome(safeLogW, outcome, mcpContractGateOutput{}, mcpContractEvaluationFailedReason, int64(len(errResp)), fwdOpts)
 			continue
 		} else if gate.Verdict == config.ActionBlock {
-			emitBridgePendingReceipt(decision.pendingReceipt)
+			outcome := mcpLocalRefusedOutcome(tracker, frame.ID, decision)
 			denialAudit = mcpUpstreamGateDenialAudit(gate)
 			if gate.WinningSource == contractruntime.WinningSourceScanner {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream scanner denied: %s\n", gate.Reason)
@@ -667,42 +656,39 @@ func RunHTTPProxy(
 			}
 			if isRPCNotification(frame.ID) {
 				dropMCPDenial(fwdOpts, denialAudit, "input")
-				emitContractRefusedOutcome(safeLogW, decision.Outcome, gate, mcpContractDeniedReason, 0, fwdOpts)
+				emitContractRefusedOutcome(safeLogW, outcome, gate, mcpContractDeniedReason, 0, fwdOpts)
 				continue
 			}
 			errResp := blockRequestResponse(mcpContractBlockRequest(frame.ID, gate, "pipelock: upstream URL blocked by live-lock contract"))
 			if wErr := writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, errResp); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send contract response: %v\n", wErr)
 			}
-			emitTrackedContractRefusedOutcome(safeLogW, tracker, frame.ID, gate, mcpContractDeniedReason, errResp, fwdOpts)
+			emitContractRefusedOutcome(safeLogW, outcome, gate, mcpContractDeniedReason, int64(len(errResp)), fwdOpts)
 			continue
 		}
 
 		requestHeaders, headerErr := bridgeHeaders.prepare(ctx, decision.ForwardMessage)
 		if headerErr != nil {
-			emitBridgePendingReceipt(decision.pendingReceipt)
+			outcome := mcpLocalRefusedOutcome(tracker, frame.ID, decision)
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: header contract refused: %q\n", headerErr.Error())
 			denialAudit, message, reason := bridgeHeaderRefusal(headerErr)
 			// Notifications are never tracked: close their intent from the input
 			// decision, as the upstream gate above does.
 			if isRPCNotification(frame.ID) {
 				dropMCPDenial(fwdOpts, denialAudit, "input")
-				emitBridgeHeaderContractRefusal(safeLogW, decision.Outcome, reason, fwdOpts)
+				emitBridgeHeaderContractRefusal(safeLogW, outcome, reason, fwdOpts)
 				continue
 			}
 			response := blockRequestResponse(BlockedRequest{ID: frame.ID, ErrorCode: -32020, ErrorMessage: message})
 			_ = writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, response)
-			outcome, ok := consumeTrackedRequestOutcome(tracker, frame.ID)
-			if ok {
-				emitBridgeHeaderContractRefusal(safeLogW, outcome, reason, fwdOpts)
-			}
+			emitBridgeHeaderContractRefusal(safeLogW, outcome, reason, fwdOpts)
 			continue
 		}
 
 		unlockInventory := func() {}
 		if frame.Method == "tools/list" {
 			if lockErr := contractState.contractMu.Lock(ctx); lockErr != nil {
-				emitBridgePendingReceipt(decision.pendingReceipt)
+				emitPendingMCPInputReceipt(decision.pendingReceipt)
 				// Only cancellation fails this wait. Close the request's
 				// tracked outcome and leave through the shared shutdown path,
 				// which settles other pending outcomes and ends the session.
@@ -736,7 +722,7 @@ func RunHTTPProxy(
 		if taskRefusal != "" {
 			unlockInventory()
 			denialAudit := mcpTaintDenialAudit()
-			outcome := decision.Outcome
+			outcome := mcpLocalRefusedOutcome(tracker, frame.ID, decision)
 			var errResp []byte
 			if isRPCNotification(frame.ID) {
 				dropMCPDenial(fwdOpts, denialAudit, "input")
@@ -746,19 +732,16 @@ func RunHTTPProxy(
 				if wErr := writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, errResp); wErr != nil {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send task refusal: %v\n", wErr)
 				}
-				outcome, _ = consumeTrackedRequestOutcome(tracker, frame.ID)
 			}
-			reason, _, _ := strings.Cut(taskRefusal, " ")
-			if pending := decision.pendingReceipt; pending != nil {
-				pending.DecisionPhase = receipt.DecisionPhaseIntent
-				emitBridgePendingReceipt(pending)
-				outcome.Receipt = pending.ProxyOpts.withReceiptPolicyHash(pending.receiptOptions())
-			}
+			reason := decision.taskTaint.recordTaskReleaseRefusal(taskRefusal)
+			outcome.Receipt.Layer = mcpReceiptLayerTaint
+			outcome.Receipt.TaintDecision = config.ActionBlock
+			outcome.Receipt.TaintDecisionReason = reason
 			emitMCPBlockedOutcomeReceipt(fwdOpts.receiptEmitter(), fwdOpts.v2ReceiptEmitter(), fwdOpts.ReceiptGroup, safeLogW, outcome.Receipt, int64(len(errResp)), reason, fwdOpts.requireReceipts())
 			continue
 		}
 		// Keep receipt I/O out of the task-check-to-send interval.
-		emitBridgePendingReceipt(decision.pendingReceipt)
+		emitPendingMCPInputReceipt(decision.pendingReceipt)
 		if err != nil {
 			unlockInventory()
 			// SendMessage returns context cancellation/deadline errors as-is
@@ -844,7 +827,25 @@ func RunHTTPProxy(
 	return lastScanErr
 }
 
-func emitBridgePendingReceipt(pending *mcpToolReceiptOpts) {
+// mcpLocalRefusedOutcome closes tracking and preserves the admission identity.
+// In best-effort mode, a locally refused call needs an intent before its
+// blocked outcome can be recorded under that same identity.
+func mcpLocalRefusedOutcome(tracker *RequestTracker, id json.RawMessage, decision httpInputDecision) TrackedRequestOutcome {
+	outcome := decision.Outcome
+	if !isRPCNotification(id) {
+		if tracked, ok := consumeTrackedRequestOutcome(tracker, id); ok {
+			outcome = tracked
+		}
+	}
+	if pending := decision.pendingReceipt; pending != nil {
+		pending.DecisionPhase = receipt.DecisionPhaseIntent
+		emitPendingMCPInputReceipt(pending)
+		outcome.Receipt = pending.ProxyOpts.withReceiptPolicyHash(pending.receiptOptions())
+	}
+	return outcome
+}
+
+func emitPendingMCPInputReceipt(pending *mcpToolReceiptOpts) {
 	if pending != nil {
 		_ = emitMCPToolReceipt(*pending)
 	}

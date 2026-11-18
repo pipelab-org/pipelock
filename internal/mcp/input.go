@@ -313,10 +313,13 @@ func ForwardScannedInput(
 		close(blockedCh)
 	}()
 	var forwardMu sync.Mutex
-	forwardMessage := func(msg []byte) error {
+	forwardMessage := func(msg []byte, taskReleaseReason func() string) (string, error) {
 		forwardMu.Lock()
 		defer forwardMu.Unlock()
-		return writer.WriteMessage(msg)
+		if reason := taskReleaseReason(); reason != "" {
+			return reason, nil
+		}
+		return "", writer.WriteMessage(msg)
 	}
 
 	// Helper: record an adaptive signal and handle escalation side-effects.
@@ -691,6 +694,7 @@ func ForwardScannedInput(
 			}
 		}
 		receiptEmitted := false
+		forwardReceiptVerdict := ""
 		redirectReceiptActionID := ""
 		receiptDecisionPhase := ""
 		receiptDeferID := ""
@@ -751,6 +755,17 @@ func ForwardScannedInput(
 			if len(contractGate) > 0 {
 				receiptOpts.ContractGate = &contractGate[0]
 			}
+			if receiptVerdict == config.ActionBlock && forwardReceiptVerdict != "" && actionID != "" {
+				if requireReceipts && forwardReceiptVerdict == config.ActionAllow {
+					intent := opts.withReceiptPolicyHash(receiptOpts.receiptOptions())
+					emitMCPBlockedOutcomeReceipt(receiptEmitter, opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, intent, -1, pattern, requireReceipts)
+					return nil
+				}
+				// The earlier verdict was single-phase. Give its release
+				// refusal a distinct action ID so it isn't an unmatched outcome.
+				receiptOpts.ParentActionID = actionID
+				receiptOpts.ActionID = receipt.NewActionID()
+			}
 			return emitMCPToolReceipt(receiptOpts)
 		}
 
@@ -776,17 +791,35 @@ func ForwardScannedInput(
 				},
 			)
 		}
-		checkTaskRelease := func(redirected bool) bool {
-			reason := mcpTaskReleaseRefusal(opts, frame, taintDecision, redirected)
-			if reason == "" {
-				return true
-			}
+		refuseTaskRelease := func(reason string) {
+			refusalReason := taintDecision.recordTaskReleaseRefusal(reason)
+			receiptLayerOverride, receiptPatternOverride, receiptSeverityOverride = mcpReceiptLayerTaint, refusalReason, taintReceiptSeverity(taintDecision)
 			sendMCPDenial(opts, mcpTaintDenialAudit(), BlockedRequest{
 				ID: verdict.ID, IsNotification: isRPCNotification(verdict.ID),
 				ErrorCode: -32002, ErrorMessage: "pipelock: " + reason,
 			}, blockedCh)
 			_ = emitToolReceipt(config.ActionBlock)
-			return false
+		}
+		checkTaskRelease := func(redirected bool) bool {
+			if reason := mcpTaskReleaseRefusal(opts, frame, taintDecision, redirected); reason != "" {
+				refuseTaskRelease(reason)
+				return false
+			}
+			return true
+		}
+		taskReleaseReason := func() string {
+			return mcpTaskReleaseRefusal(opts, frame, taintDecision, false)
+		}
+		writeReleasedMessage := func(msg []byte) (bool, error) {
+			refusal, err := forwardMessage(msg, taskReleaseReason)
+			if refusal != "" {
+				if isTrackableRequest(msg, verdict.ID) {
+					_, _ = consumeTrackedRequestOutcome(tracker, verdict.ID)
+				}
+				refuseTaskRelease(refusal)
+				return false, nil
+			}
+			return true, err
 		}
 
 		// DoW diagnostic log. Runs on any !allowed outcome (block or
@@ -1132,6 +1165,7 @@ func ForwardScannedInput(
 				}, blockedCh)
 				continue
 			}
+			forwardReceiptVerdict = receiptVerdict
 			// Track request ID immediately before forwarding so response-side
 			// can validate without leaving stale state when a required
 			// receipt fails before the request is written.
@@ -1161,9 +1195,11 @@ func ForwardScannedInput(
 			} else if isTrackableRequest(fwdLine, verdict.ID) {
 				tracker.TrackRequest(verdict.ID, verdict.Method)
 			}
-			if err := forwardMessage(fwdLine); err != nil {
+			if released, err := writeReleasedMessage(fwdLine); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
+			} else if !released {
+				continue
 			}
 			commitMCPToolCall(baselineMetricsRecorder(opts, rec), baselineIdentity)
 			if !hadAdaptiveFinding {
@@ -1866,13 +1902,16 @@ func ForwardScannedInput(
 				continue
 			}
 			receiptEmitted = true
+			forwardReceiptVerdict = receipt.NormalizeVerdict(effectiveAction)
 			// Forward anyway (warn mode).
 			if isTrackableRequest(fwdLine, verdict.ID) {
 				tracker.TrackRequest(verdict.ID, verdict.Method)
 			}
-			if err := forwardMessage(fwdLine); err != nil {
+			if released, err := writeReleasedMessage(fwdLine); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
+			} else if !released {
+				continue
 			}
 			commitMCPToolCall(baselineMetricsRecorder(opts, rec), baselineIdentity)
 		}

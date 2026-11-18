@@ -239,6 +239,12 @@ func (d taintDecision) refusalMessage() string {
 	return message
 }
 
+func (d *taintDecision) recordTaskReleaseRefusal(refusal string) string {
+	reason, _, _ := strings.Cut(refusal, " ")
+	d.Result = session.PolicyDecisionResult{Decision: session.PolicyBlock, Reason: reason}
+	return reason
+}
+
 func mcpTaskReleaseRefusal(opts MCPProxyOpts, frame MCPFrame, admitted taintDecision, redirected bool) string {
 	if admitted.taskAction.Digest == "" {
 		state, ok := opts.Rec.(session.RiskState)
