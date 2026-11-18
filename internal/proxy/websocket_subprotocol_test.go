@@ -145,12 +145,30 @@ func TestWSSubprotocolNegotiation(t *testing.T) {
 			}, nil, func() { close(handlerDone) })
 			defer cleanup()
 			if tt.requireReceipts {
-				p.receiptEmitterPtr.Store(newReceiptProxyHelper(t).emitter)
+				receipts := newReceiptProxyHelper(t)
+				p.receiptEmitterPtr.Store(receipts.emitter)
+				t.Cleanup(func() {
+					if err := receipts.rec.Close(); err != nil {
+						t.Errorf("close receipt recorder: %v", err)
+					}
+				})
 			}
 
 			resp, conn := rawWSHandshake(t, ws.HandshakeHeaderHTTP(http.Header{headerNameWSProtocol: tt.rawOffers}),
 				wsProxyURL(proxyAddr, target), true)
-			defer func() { _ = conn.Close() }()
+			defer func() {
+				_ = conn.Close()
+				if !tt.requireReceipts {
+					return
+				}
+				// Server shutdown does not wait for hijacked connections.
+				// Let the handler finish writing receipts before test cleanup.
+				select {
+				case <-handlerDone:
+				case <-time.After(testwait.Deadline(10 * time.Second)):
+					t.Error("WebSocket handler did not finish after the client closed")
+				}
+			}()
 
 			if resp.StatusCode != http.StatusSwitchingProtocols {
 				t.Fatalf("handshake status = %d, want 101", resp.StatusCode)
@@ -162,18 +180,6 @@ func TestWSSubprotocolNegotiation(t *testing.T) {
 				t.Fatalf("upstream saw offers %q, want %q", got, tt.wantOffers)
 			}
 			requireWSEcho(t, conn)
-			if !tt.requireReceipts {
-				return
-			}
-			// The relay writes its closing receipts into this test's temporary
-			// directory, and server shutdown does not wait for a hijacked
-			// connection. Wait for the handler before the directory is removed.
-			_ = conn.Close()
-			select {
-			case <-handlerDone:
-			case <-time.After(testwait.Deadline(10 * time.Second)):
-				t.Fatal("WebSocket handler did not finish after the client closed")
-			}
 		})
 	}
 }
