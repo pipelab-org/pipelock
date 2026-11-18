@@ -821,7 +821,7 @@ func RunHTTPListenerProxy(
 			_, _ = w.Write(upstreamErrorResponse(nil, sessionCapacityErr))
 			return
 		}
-		rejectMissingListenerState := func(id json.RawMessage) {
+		rejectMissingListenerState := func(id json.RawMessage, intent receipt.EmitOpts) {
 			emitListenerBlockDecision(mcpListenerBlockDecision{
 				reason:          blockreason.SessionBinding,
 				headerSeverity:  blockreason.SeverityCritical,
@@ -830,6 +830,7 @@ func RunHTTPListenerProxy(
 				pattern:         "listener_session_token_required",
 				target:          "mcp:listener-session",
 				receiptSeverity: config.SeverityHigh,
+				intent:          intent,
 			})
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
@@ -1243,7 +1244,7 @@ func RunHTTPListenerProxy(
 				return
 			}
 			if !stateBound && (requireStateToken || (principalControls && listenerPrincipal.key == "")) {
-				rejectMissingListenerState(nil)
+				rejectMissingListenerState(nil, receipt.EmitOpts{})
 				return
 			}
 			bindStateRequestContext()
@@ -1415,7 +1416,7 @@ func RunHTTPListenerProxy(
 				return
 			}
 			if !stateBound && (requireStateToken || (principalControls && listenerPrincipal.key == "")) {
-				rejectMissingListenerState(nil)
+				rejectMissingListenerState(nil, receipt.EmitOpts{})
 				return
 			}
 			bindStateRequestContext()
@@ -1968,7 +1969,11 @@ func RunHTTPListenerProxy(
 		}
 
 		if !stateBound && (requireStateToken || (principalControls && listenerPrincipal.key == "")) && listenerMethodRequiresPrincipal(frame.Method) {
-			rejectMissingListenerState(frame.ID)
+			var intent receipt.EmitOpts
+			if pendingReceipt != nil {
+				intent = refusalIntent()
+			}
+			rejectMissingListenerState(frame.ID, intent)
 			return
 		}
 
@@ -2098,7 +2103,7 @@ func RunHTTPListenerProxy(
 		upResp.Body = newIdleTimeoutReader(upResp.Body, upstreamIdleReadTimeout)
 		defer func() { _ = upResp.Body.Close() }()
 		if clientState.revoked.Load() {
-			rejectMissingListenerState(frame.ID)
+			rejectMissingListenerState(frame.ID, receipt.EmitOpts{})
 			return
 		}
 
@@ -2112,7 +2117,7 @@ func RunHTTPListenerProxy(
 				commitMCPToolCall(baselineRec, mcpFrameBaselineIdentity(frame))
 				w.WriteHeader(http.StatusAccepted)
 			}) {
-				rejectMissingListenerState(frame.ID)
+				rejectMissingListenerState(frame.ID, receipt.EmitOpts{})
 			}
 			return
 		}
@@ -2380,7 +2385,7 @@ func RunHTTPListenerProxy(
 			if !clientState.commitIfActive(func() {
 				writeOutput(output)
 			}) {
-				rejectMissingListenerState(frame.ID)
+				rejectMissingListenerState(frame.ID, receipt.EmitOpts{})
 			}
 			return
 		}
@@ -2406,7 +2411,7 @@ func RunHTTPListenerProxy(
 			return
 		}
 		if !clientState.commitIfActive(commitResponse) {
-			rejectMissingListenerState(frame.ID)
+			rejectMissingListenerState(frame.ID, receipt.EmitOpts{})
 		}
 	})
 
