@@ -1173,18 +1173,8 @@ func RunHTTPListenerProxy(
 		}
 
 		admitLegacyMethod := func() (receipt.EmitOpts, bool) {
-			if !requestBaseOpts.requireReceipts() {
-				return receipt.EmitOpts{}, true
-			}
-			admission := requestBaseOpts.withReceiptPolicyHash(receipt.EmitOpts{
-				ActionID: receipt.NewActionID(), Verdict: config.ActionForward,
-				Transport: requestBaseOpts.Transport, Method: r.Method, Target: upstreamURL,
-				Layer: "mcp_transport_admission",
-			})
-			if group := requestBaseOpts.ReceiptGroup; group != nil && group.Shards != nil {
-				admission = group.Shards.Admit(admission)
-			}
-			if _, err := requestBaseOpts.emitReceiptDecision(MCPDecision{Receipt: admission, RequireReceipt: true}); err != nil {
+			admission, err := admitDurableTransport(requestBaseOpts, r.Method, upstreamURL)
+			if err != nil {
 				logReceiptEmitFailure(safeLogW, err, true, config.ActionForward)
 				denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
 				emitListenerBlockDecision(mcpListenerBlockDecision{
@@ -1198,7 +1188,9 @@ func RunHTTPListenerProxy(
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("receipt emission failed")))
 				return receipt.EmitOpts{}, false
 			}
-			blockreason.SetRecordedReceipt(w.Header(), admission.ActionID)
+			if admission.ActionID != "" {
+				blockreason.SetRecordedReceipt(w.Header(), admission.ActionID)
+			}
 			return admission, true
 		}
 
@@ -1271,11 +1263,13 @@ func RunHTTPListenerProxy(
 
 			// Opening a GET subscription is a transport action. Its durable
 			// admission does not create a paired tool-call outcome.
-			if _, admitted := admitLegacyMethod(); !admitted {
+			admission, admitted := admitLegacyMethod()
+			if !admitted {
 				return
 			}
 			upResp, err := upstreamStreamClient.Do(upReq)
 			if err != nil {
+				warnTransportAdmission(safeLogW, requestBaseOpts, admission, "upstream_error")
 				if handleMetadataDialError(err, nil) {
 					return
 				}
@@ -1295,9 +1289,15 @@ func RunHTTPListenerProxy(
 			defer func() { _ = upResp.Body.Close() }()
 
 			if relayUpstreamClientError(upResp, nil, clientState.recorder, listenerStateAuditKey(), TrackedRequestOutcome{}) {
+				warnTransportAdmission(safeLogW, requestBaseOpts, admission, "upstream_http_client_error")
 				return
 			}
 			if upResp.StatusCode >= 400 {
+				reason := "upstream_http_unexpected_status"
+				if upResp.StatusCode >= 500 && upResp.StatusCode < 600 {
+					reason = "upstream_http_server_error"
+				}
+				warnTransportAdmission(safeLogW, requestBaseOpts, admission, reason)
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
@@ -1305,6 +1305,11 @@ func RunHTTPListenerProxy(
 				return
 			}
 			if upResp.StatusCode != http.StatusOK {
+				reason := "upstream_http_unexpected_status"
+				if upResp.StatusCode >= 300 && upResp.StatusCode < 400 {
+					reason = "upstream_http_redirect"
+				}
+				warnTransportAdmission(safeLogW, requestBaseOpts, admission, reason)
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream GET returned HTTP %d\n", upResp.StatusCode)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
@@ -1322,6 +1327,7 @@ func RunHTTPListenerProxy(
 				if denialAudit.kind == "" {
 					denialAudit = mcpListenerInspectionDenialAudit()
 				}
+				warnTransportAdmission(safeLogW, requestBaseOpts, admission, "upstream_http_compressed_response")
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("compressed response cannot be scanned")))
 				return
@@ -1329,6 +1335,7 @@ func RunHTTPListenerProxy(
 			if !transport.HasSingleSSEContentType(upResp.Header) {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream GET returned non-SSE Content-Type %q\n", upResp.Header.Get("Content-Type"))
 				w.Header().Set("Content-Type", "application/json")
+				warnTransportAdmission(safeLogW, requestBaseOpts, admission, "upstream_sse_validation_failed")
 				w.WriteHeader(http.StatusBadGateway)
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
 				return
@@ -1447,18 +1454,7 @@ func RunHTTPListenerProxy(
 			}
 			upResp, err := upstreamClient.Do(upReq)
 			if err != nil {
-				if admission.ActionID != "" {
-					failure := mcpOutcomeReceiptOpts(admission, "error", -1, "upstream_error")
-					// The transport admission is single-phase. Keep the failure
-					// on its action and shard without opening an intent pair.
-					failure.DecisionPhase = ""
-					failure.Verdict, failure.Layer = config.ActionWarn, mcpOutcomeLayer
-					if _, emitErr := requestBaseOpts.emitReceiptDecision(MCPDecision{
-						Receipt: failure, RequireReceipt: true, RequiredMode: true,
-					}); emitErr != nil {
-						logReceiptEmitFailure(safeLogW, emitErr, true, failure.Verdict)
-					}
-				}
+				warnTransportAdmission(safeLogW, requestBaseOpts, admission, "upstream_error")
 				if handleMetadataDialError(err, nil) {
 					return
 				}
@@ -1483,11 +1479,19 @@ func RunHTTPListenerProxy(
 			// sessions, 404 for an unknown one) is relayed, and the session
 			// state below is kept because nothing was terminated.
 			if relayUpstreamClientError(upResp, nil, clientState.recorder, listenerStateAuditKey(), TrackedRequestOutcome{}) {
+				warnTransportAdmission(safeLogW, requestBaseOpts, admission, "upstream_http_client_error")
 				return
 			}
 			if !validMCPSessionDeleteStatus(upResp.StatusCode) {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream DELETE returned unsupported HTTP %d\n", upResp.StatusCode)
 				w.Header().Set("Content-Type", "application/json")
+				reason := "upstream_http_unexpected_status"
+				if upResp.StatusCode >= 500 && upResp.StatusCode < 600 {
+					reason = "upstream_http_server_error"
+				} else if upResp.StatusCode >= 300 && upResp.StatusCode < 400 {
+					reason = "upstream_http_redirect"
+				}
+				warnTransportAdmission(safeLogW, requestBaseOpts, admission, reason)
 				w.WriteHeader(http.StatusBadGateway)
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
 				return

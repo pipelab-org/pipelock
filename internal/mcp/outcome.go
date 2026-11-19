@@ -104,3 +104,45 @@ func (h *mcpOutcomeHandle) requiredGroupFailure(err error) {
 		}
 	}
 }
+
+// admitDurableTransport records the single-phase receipt for opening an MCP
+// stream. Best-effort mode records nothing. Required mode returns the error
+// instead of opening when that receipt cannot be written.
+func admitDurableTransport(opts MCPProxyOpts, method, target string) (receipt.EmitOpts, error) {
+	if !opts.requireReceipts() {
+		return receipt.EmitOpts{}, nil
+	}
+	admission := opts.withReceiptPolicyHash(receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   config.ActionForward,
+		Transport: opts.Transport,
+		Method:    method,
+		Target:    target,
+		Layer:     "mcp_transport_admission",
+	})
+	if group := opts.ReceiptGroup; group != nil && group.Shards != nil {
+		admission = group.Shards.Admit(admission)
+	}
+	if _, err := opts.emitReceiptDecision(MCPDecision{Receipt: admission, RequireReceipt: true}); err != nil {
+		return receipt.EmitOpts{}, err
+	}
+	return admission, nil
+}
+
+// warnTransportAdmission closes an admitted stream on the same action and shard.
+// An empty action means this open was not recorded.
+func warnTransportAdmission(logW io.Writer, opts MCPProxyOpts, admission receipt.EmitOpts, reason string) {
+	if admission.ActionID == "" {
+		return
+	}
+	failure := mcpOutcomeReceiptOpts(admission, "error", -1, reason)
+	// Transport admissions are single-phase. A failure stays on that action
+	// without opening an intent pair.
+	failure.DecisionPhase = ""
+	failure.Verdict, failure.Layer = config.ActionWarn, mcpOutcomeLayer
+	if _, err := opts.emitReceiptDecision(MCPDecision{
+		Receipt: failure, RequireReceipt: true, RequiredMode: true,
+	}); err != nil {
+		logReceiptEmitFailure(logW, err, true, failure.Verdict)
+	}
+}

@@ -944,6 +944,114 @@ func TestHTTPListenerRecordsDeleteUpstreamSendFailure(t *testing.T) {
 	}
 }
 
+func TestHTTPListenerRecordsGetUpstreamSendFailure(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		conn, _, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			t.Errorf("hijack upstream connection: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}))
+	t.Cleanup(upstream.Close)
+	h := newMCPDecisionReceiptHarness(t)
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner: testScannerForHTTP(t), ReceiptEmitter: h.v1, V2ReceiptEmitter: h.v2,
+		PolicyHash: mcpTestPolicyHash, RequireReceipts: true,
+	})
+	resp, body := doListenerRequest(t, http.MethodGet, baseURL+"/", "", http.Header{"Accept": {"text/event-stream"}})
+	if resp.StatusCode != http.StatusBadGateway || !bytes.Contains(body, []byte("upstream HTTP request failed")) {
+		t.Fatalf("client response = %d %s, want sanitized 502", resp.StatusCode, body)
+	}
+	if err := h.rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	records := readActionReceipts(t, h.dir)
+	if len(records) != 2 {
+		for _, record := range records {
+			t.Logf("verdict=%s phase=%q pattern=%q", record.ActionRecord.Verdict, record.ActionRecord.DecisionPhase, record.ActionRecord.Pattern)
+		}
+		t.Fatalf("GET receipt count = %d, want admission and upstream send failure", len(records))
+	}
+	admission, failed := records[0].ActionRecord, records[1].ActionRecord
+	if admission.Verdict != config.ActionForward || admission.Method != http.MethodGet ||
+		admission.Layer != "mcp_transport_admission" ||
+		admission.ActionID != resp.Header.Get(blockreason.HeaderRecordedReceipt) ||
+		failed.ActionID != admission.ActionID || failed.DecisionPhase != "" ||
+		failed.Verdict != config.ActionWarn || failed.Pattern != "status=error bytes=unknown reason=upstream_error" {
+		t.Fatalf("admission=%+v failed=%+v", admission, failed)
+	}
+}
+
+func TestHTTPListenerRecordsGetUpstreamStatusFailure(t *testing.T) {
+	cases := []struct {
+		name   string
+		reply  upstreamStatusReply
+		reason string
+	}{
+		{
+			name:   "server_error",
+			reply:  upstreamStatusReply{status: http.StatusInternalServerError, header: http.Header{"Content-Type": {"text/event-stream"}}},
+			reason: "upstream_http_server_error",
+		},
+		{
+			name:   "redirect",
+			reply:  upstreamStatusReply{status: http.StatusFound, header: http.Header{"Location": {"https://mcp.vendor.example/events"}}},
+			reason: "upstream_http_redirect",
+		},
+		{
+			name:   "compressed",
+			reply:  upstreamStatusReply{status: http.StatusOK, header: http.Header{"Content-Type": {"text/event-stream"}}, body: []byte("data: {}\n\n"), gzipped: true},
+			reason: "upstream_http_compressed_response",
+		},
+		{
+			name:   "not_sse",
+			reply:  upstreamStatusReply{status: http.StatusOK, header: http.Header{"Content-Type": {"application/json"}}, body: []byte(`{"jsonrpc":"2.0","method":"notifications/message"}`)},
+			reason: "upstream_sse_validation_failed",
+		},
+		{
+			name:   "client_error",
+			reply:  upstreamStatusReply{status: http.StatusMethodNotAllowed, header: http.Header{"Content-Type": {"application/json"}}, body: []byte(`{"jsonrpc":"2.0","error":{"code":-32601,"message":"method not found"}}`)},
+			reason: "upstream_http_client_error",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := newUpstreamStatusServer(t, tc.reply)
+			h := newMCPDecisionReceiptHarness(t)
+			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+				Scanner: testScannerForHTTP(t), ReceiptEmitter: h.v1, V2ReceiptEmitter: h.v2,
+				PolicyHash: mcpTestPolicyHash, RequireReceipts: true,
+			})
+			resp, body := doListenerRequest(t, http.MethodGet, baseURL+"/", "", http.Header{"Accept": {"text/event-stream"}})
+			if resp.StatusCode == http.StatusOK {
+				t.Fatalf("client response = %d %s, want a refusal", resp.StatusCode, body)
+			}
+			if err := h.rec.Close(); err != nil {
+				t.Fatal(err)
+			}
+			records := readActionReceipts(t, h.dir)
+			if len(records) != 2 {
+				for _, record := range records {
+					t.Logf("verdict=%s phase=%q layer=%s pattern=%q", record.ActionRecord.Verdict, record.ActionRecord.DecisionPhase, record.ActionRecord.Layer, record.ActionRecord.Pattern)
+				}
+				t.Fatalf("GET receipt count = %d, want admission and failure", len(records))
+			}
+			admission, failed := records[0].ActionRecord, records[1].ActionRecord
+			want := "status=error bytes=unknown reason=" + tc.reason
+			if admission.Layer != "mcp_transport_admission" || admission.Verdict != config.ActionForward ||
+				failed.ActionID != admission.ActionID || failed.DecisionPhase != "" ||
+				failed.Verdict != config.ActionWarn || failed.Pattern != want {
+				t.Fatalf("admission=%+v failed=%+v, want %s", admission, failed, want)
+			}
+		})
+	}
+}
+
 func TestHTTPListenerSettlesIntentWhenSSEWriteFails(t *testing.T) {
 	upstream := newUpstreamStatusServer(t, upstreamStatusReply{
 		status: http.StatusOK, header: http.Header{"Content-Type": {"text/event-stream"}},
