@@ -6,9 +6,11 @@ package receipt
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/verification"
@@ -59,5 +61,42 @@ func TestVerifyPredecessorAELPreservesLegacyContinuity(t *testing.T) {
 	}
 	if err := VerifyPredecessorAEL(filepath.Join(dir, "missing"), recorder.DefaultSessionBase, verification.Options{}); err == nil {
 		t.Fatal("accepted a missing recorder directory")
+	}
+}
+
+func TestVerifyPredecessorAELRefusesOversizedSealedRun(t *testing.T) {
+	_, key := generateTestKey(t)
+	dir := t.TempDir()
+	rec := newTestRecorder(t, dir, key)
+	t.Cleanup(func() {
+		if err := rec.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	session, err := recorder.AcquireRunSession(rec, recorder.DefaultSessionBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	emitter := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: key, Session: session})
+	if err := emitter.EmitSessionOpen(); err != nil {
+		t.Fatal(err)
+	}
+	if err := emitter.EmitSessionClose("fixture complete"); err != nil {
+		t.Fatal(err)
+	}
+	if err := emitter.EmitTranscriptRoot(session); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyPredecessorAEL(dir, recorder.DefaultSessionBase, verification.Options{}); err != nil {
+		t.Fatalf("sealed predecessor = %v", err)
+	}
+	if err := os.Truncate(filepath.Join(emitter.nativeAEL.Dir(), "recorders", "pipelock.jsonl"), (256<<20)+1); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyPredecessorAEL(dir, recorder.DefaultSessionBase, verification.Options{}); !errors.Is(err, ael.ErrStreamTooLarge) {
+		t.Fatalf("oversized predecessor = %v, want %v", err, ael.ErrStreamTooLarge)
 	}
 }

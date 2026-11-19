@@ -436,3 +436,67 @@ func TestNativeWarningBudgetKeepsAdmittingEmitter(t *testing.T) {
 		t.Fatal("replacement recorded an outstanding warning")
 	}
 }
+
+func TestNativeAdmissionRefusalsSettleReservations(t *testing.T) {
+	var absent *Emitter
+	if lease, err := absent.ReserveNativeRecords(1); lease != nil || err != nil || absent.NativeCapacity() != nil {
+		t.Fatalf("absent emitter admission = %v, %v", lease, err)
+	}
+	_, key := generateTestKey(t)
+	rec := newTestRecorder(t, t.TempDir(), key)
+	t.Cleanup(func() {
+		if err := rec.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	capacity := ael.NewCapacity(8192)
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: key, NativeCapacity: capacity})
+	if opts, err := e.AdmitNative(EmitOpts{}, 1); err != nil || opts.NativeLease != nil {
+		t.Fatalf("admission before open = %v, %v", opts.NativeLease, err)
+	}
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatal(err)
+	}
+	short, err := e.AdmitNative(EmitOpts{}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts, err := short.ReserveNativeTerminal(); opts.NativeLease != nil || !errors.Is(err, ael.ErrInvalidLease) {
+		t.Fatalf("terminal without room = %v, %v", opts.NativeLease, err)
+	}
+
+	admitted, err := e.AdmitNative(EmitOpts{ShardSelected: true, ShardIndex: 2}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admitted.ReleaseNativeAdmission()
+	admitted, err = admitted.ReserveNativeTerminal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admitted.ReleaseNativeAdmission()
+	copied := (EmitOpts{Target: "fixture"}).InheritAdmission(admitted)
+	if !copied.ShardSelected || copied.ShardIndex != 2 || copied.NativeLease != admitted.NativeLease ||
+		copied.NativeTerminalLease != admitted.NativeTerminalLease || copied.Target != "fixture" {
+		t.Fatal("inherited route lost its selected shard or reservation")
+	}
+	if denied, err := e.AdmitNative(EmitOpts{}, 100); denied.NativeLease != nil || !errors.Is(err, ael.ErrCapacity) {
+		t.Fatalf("over-capacity request = %v, %v", denied.NativeLease, err)
+	}
+	if denied, err := e.AdmitNative(EmitOpts{}, 1); denied.NativeLease != nil || !errors.Is(err, ael.ErrCapacity) {
+		t.Fatalf("request after stop = %v, %v", denied.NativeLease, err)
+	}
+	if denied, err := copied.ReserveNativeChild(1); denied.NativeLease != nil ||
+		denied.NativeTerminalLease != nil || !errors.Is(err, ael.ErrCapacity) {
+		t.Fatalf("child after stop = %v, %v, %v", denied.NativeLease, denied.NativeTerminalLease, err)
+	}
+	admitted.ReleaseNativeAdmission()
+	select {
+	case <-capacity.Drained():
+	default:
+		t.Fatal("refused leases held the stopped coordinator open")
+	}
+	if err := e.EmitSessionClose("fixture complete"); err != nil {
+		t.Fatal(err)
+	}
+}

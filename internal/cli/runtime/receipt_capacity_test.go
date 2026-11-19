@@ -846,9 +846,29 @@ func TestNativeCapacityExitInterruptsScanAPIBodyRead(t *testing.T) {
 		t.Fatalf("scan API status = %d, want %d", response.StatusCode, http.StatusContinue)
 	}
 
+	active, err := s.liveReceiptEmitter().ReserveNativeRecords(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer active.Release()
 	if _, err := s.liveReceiptEmitter().ReserveNativeRecords(1 << 20); !errors.Is(err, ael.ErrCapacity) {
 		t.Fatalf("stop = %v, want %v", err, ael.ErrCapacity)
 	}
+	late, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+"/api/v1/scan", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused, err := http.DefaultClient.Do(late)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refusalBody, readErr := io.ReadAll(refused.Body)
+	closeErr := refused.Body.Close()
+	if readErr != nil || closeErr != nil || refused.StatusCode != http.StatusServiceUnavailable ||
+		string(refusalBody) != ael.ErrCapacity.Error()+"\n" {
+		t.Fatalf("late Scan API request: status=%d body=%q read=%v close=%v", refused.StatusCode, refusalBody, readErr, closeErr)
+	}
+	active.Release()
 	select {
 	case err := <-run:
 		if !errors.Is(err, ael.ErrCapacity) || cliutil.ExitCodeOf(err) != 1 {
