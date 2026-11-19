@@ -1200,6 +1200,9 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		if openControl && e.receiptHashRecorded(receiptHash) {
 			e.sessionOpenEmitted = true
 			e.openNonce = sessionControl.Open.OpenNonce
+			if e.nativeAEL != nil {
+				e.MarkUnhealthy(emitErr)
+			}
 			if durable && errors.Is(recordErr, recorder.ErrDurability) {
 				e.openErr = emitErr
 			}
@@ -1357,6 +1360,9 @@ func (e *Emitter) prepareNativeAEL(ar ActionRecord, control *SessionControl, lea
 	// open the session before mediating traffic.
 	if !e.sessionOpenEmitted {
 		return nil, nil
+	}
+	if len(ar.ActionID) > maxActionIDBytes {
+		return nil, fmt.Errorf("%w: action_id exceeds %d bytes", aelpkg.ErrRecordTooLarge, maxActionIDBytes)
 	}
 	direction := "internal"
 	switch ar.ActionType {

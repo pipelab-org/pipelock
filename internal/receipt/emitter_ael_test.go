@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -362,5 +363,28 @@ func TestEmitterNativeAELInitializationFailureQuarantinesAfterReceiptPersistence
 				}
 			}
 		})
+	}
+}
+
+func TestNativeEmitterRefusesOversizedActionID(t *testing.T) {
+	_, key := generateTestKey(t)
+	rec := newTestRecorder(t, t.TempDir(), key)
+	t.Cleanup(func() {
+		if err := rec.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: key})
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := e.HealthSnapshot()
+	opts := EmitOpts{ActionID: strings.Repeat("x", maxActionIDBytes+1), Target: "fixture", Transport: "fetch", Verdict: config.ActionAllow}
+	if err := e.EmitDurable(opts); !errors.Is(err, ael.ErrRecordTooLarge) {
+		t.Fatalf("emit disposition = %v, want %v", err, ael.ErrRecordTooLarge)
+	}
+	after, _ := e.HealthSnapshot()
+	if before.ChainSeq != after.ChainSeq {
+		t.Fatalf("refused receipt advanced sequence from %d to %d", before.ChainSeq, after.ChainSeq)
 	}
 }

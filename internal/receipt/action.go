@@ -279,9 +279,6 @@ func (ar ActionRecord) Validate() error {
 	if ar.ActionID == "" {
 		return fmt.Errorf("action_id is required")
 	}
-	if len(ar.ActionID) > maxActionIDBytes {
-		return fmt.Errorf("action_id exceeds %d bytes", maxActionIDBytes)
-	}
 	if !ValidActionType(ar.ActionType) {
 		return fmt.Errorf("invalid action_type %q", ar.ActionType)
 	}
