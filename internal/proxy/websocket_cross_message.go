@@ -163,7 +163,7 @@ func (r *wsRelay) closeUpstreamCrossMessage(log *audit.Logger, reason, upstreamR
 		Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
 		Agent: r.agent, AgentAuth: string(r.actorAuth),
 	})
-	_ = r.emitReceipt(receipt.EmitOpts{
+	_ = r.emitReceipt(boundaryDownstreamDelivery, receipt.EmitOpts{
 		ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: layer, Pattern: reason,
 		Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
 	})
@@ -181,7 +181,11 @@ func (r *wsRelay) blockCrossMessageIncomplete(log *audit.Logger, direction strin
 		Agent: r.agent, AgentAuth: string(r.actorAuth),
 	})
 	r.proxy.metrics.RecordWSScanHit("ws_protocol")
-	_ = r.emitReceipt(receipt.EmitOpts{
+	boundary := boundaryUpstreamSend
+	if direction == audit.DirectionServerToClient {
+		boundary = boundaryDownstreamDelivery
+	}
+	_ = r.emitReceipt(boundary, receipt.EmitOpts{
 		ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: "ws_protocol", Pattern: crossMessageIncompleteReason,
 		Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
 	})

@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -223,7 +224,7 @@ func TestV3WebSocketIntentPrecedesUpstreamHandshake(t *testing.T) {
 }
 
 func TestV3WebSocketPayloadWaitsForReceipt(t *testing.T) {
-	for _, point := range []string{"open", "upstream", "downstream"} {
+	for _, point := range []string{"open", "upstream", "downstream", "denied"} {
 		t.Run(point, func(t *testing.T) {
 			p, writer, dir, keys := newTestV3HTTPProxy(t, "websocket")
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -237,9 +238,9 @@ func TestV3WebSocketPayloadWaitsForReceipt(t *testing.T) {
 				}
 				defer func() { _ = conn.Close() }()
 				message, _, readErr := wsutil.ReadClientData(conn)
-				if point == "upstream" {
+				if point == "upstream" || point == "denied" {
 					if readErr == nil {
-						backendResult <- fmt.Errorf("upstream received a payload after writer closure")
+						backendResult <- fmt.Errorf("upstream received a refused payload")
 					} else {
 						backendResult <- nil
 					}
@@ -281,7 +282,11 @@ func TestV3WebSocketPayloadWaitsForReceipt(t *testing.T) {
 				}
 			}
 			const message = "ordinary message"
-			if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(message)); err != nil {
+			opcode := ws.OpText
+			if point == "denied" {
+				opcode = ws.OpBinary
+			}
+			if err := wsutil.WriteClientMessage(conn, opcode, []byte(message)); err != nil {
 				t.Fatal(err)
 			}
 			got, _, err := wsutil.ReadServerData(conn)
@@ -290,7 +295,7 @@ func TestV3WebSocketPayloadWaitsForReceipt(t *testing.T) {
 					t.Fatalf("client received %q (%v)", got, err)
 				}
 			} else if err == nil {
-				t.Fatalf("client received payload after writer closure: %q", got)
+				t.Fatalf("client received a refused payload: %q", got)
 			}
 			if err := conn.Close(); err != nil {
 				t.Fatal(err)
@@ -308,16 +313,27 @@ func TestV3WebSocketPayloadWaitsForReceipt(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
-			if point != "open" {
+			if point == "upstream" || point == "downstream" {
 				return
 			}
 			if err := writer.Close(ctx, nil); err != nil {
 				t.Fatal(err)
 			}
 			result, err := v3.VerifyPaths(ctx, []string{dir}, v3.Options{Directory: true, Keys: keys})
-			if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil ||
-				*result.Counts.EffectsCompleted != 4 {
-				t.Fatalf("WebSocket handshake and payload receipts missing: %+v (%v)", result, err)
+			if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil {
+				t.Fatalf("WebSocket history failed verification: %+v (%v)", result, err)
+			}
+			if point == "denied" {
+				if *result.Counts.EffectsCompleted != 2 || result.Counts.Decisions == nil ||
+					!slices.ContainsFunc(*result.Counts.Decisions, func(count v3.StateCount) bool {
+						return count.State == "blocked" && count.Count == 1
+					}) {
+					t.Fatalf("WebSocket policy refusal receipt missing: %+v", result)
+				}
+				return
+			}
+			if *result.Counts.EffectsCompleted != 4 {
+				t.Fatalf("WebSocket handshake and payload receipts missing: %+v", result)
 			}
 		})
 	}

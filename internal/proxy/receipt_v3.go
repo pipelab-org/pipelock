@@ -20,6 +20,7 @@ const (
 	boundaryUpstreamSend       = "upstream_send"
 	boundaryTunnelOpen         = "tunnel_open"
 	boundaryDownstreamDelivery = "downstream_delivery"
+	boundaryNoEffect           = "none"
 )
 
 type v3TransportReceipt struct {
@@ -27,8 +28,7 @@ type v3TransportReceipt struct {
 	policy v3.PolicySnapshot
 }
 
-func (p *Proxy) confirmTransportReceipt(ctx context.Context, cfg *config.Config, opts receipt.EmitOpts, boundary string) (*v3TransportReceipt, error) {
-	attempt := int64(1)
+func prepareV3TransportReceipt(cfg *config.Config, opts receipt.EmitOpts) v3TransportReceipt {
 	actor := opts.Agent
 	if actor == "" {
 		actor = "pipelock"
@@ -36,12 +36,11 @@ func (p *Proxy) confirmTransportReceipt(ctx context.Context, cfg *config.Config,
 	action := v3.Action{
 		ActionID: opts.ActionID, ParentActionID: opts.ParentActionID,
 		ActionType: string(receipt.ClassifyHTTP(opts.Method)), Actor: actor, Principal: "local",
-		Attempt: &attempt, Caller: v3.Caller{Authn: "none"},
+		Caller: v3.Caller{Authn: "none"},
 		Data: v3.Data{
 			SideEffectClass: string(receipt.SideEffectFromMethod(opts.Method)),
 			Reversibility:   string(receipt.ReversibilityFromMethod(opts.Method)),
 		},
-		EffectBoundary: boundary, EffectRelation: "before", Phase: "intent",
 		Layer: opts.Layer, Method: opts.Method, Pattern: opts.Pattern,
 		RequestID: opts.RequestID, Severity: opts.Severity,
 		Target: receipt.SanitizeSignedTarget(opts.Target, nil), Transport: opts.Transport, Verdict: opts.Verdict,
@@ -52,13 +51,22 @@ func (p *Proxy) confirmTransportReceipt(ctx context.Context, cfg *config.Config,
 	if digest != "" && !strings.HasPrefix(digest, "sha256:") {
 		digest = "sha256:" + digest
 	}
-	policy := v3.CapturePolicy(digest)
-	if err := p.receiptV3.WriteAction(ctx, action, policy); err != nil {
-		p.recordRequiredReceiptBlock(err, opts.Transport)
+	return v3TransportReceipt{action: action, policy: v3.CapturePolicy(digest)}
+}
+
+func (p *Proxy) confirmTransportReceipt(ctx context.Context, cfg *config.Config, opts receipt.EmitOpts, boundary string) (*v3TransportReceipt, error) {
+	entry := prepareV3TransportReceipt(cfg, opts)
+	attempt := int64(1)
+	entry.action.Attempt = &attempt
+	entry.action.EffectBoundary, entry.action.EffectRelation, entry.action.Phase = boundary, "before", "intent"
+	if err := p.receiptV3.WriteAction(ctx, entry.action, entry.policy); err != nil {
+		if cfg.FlightRecorder.RequireReceipts {
+			p.recordRequiredReceiptBlock(err, opts.Transport)
+		}
 		p.logReceiptEmissionFailure(opts, err)
 		return nil, err
 	}
-	return &v3TransportReceipt{action: action, policy: policy}, nil
+	return &entry, nil
 }
 
 func (p *Proxy) recordTransportOutcome(ctx context.Context, opts receipt.EmitOpts, entry *v3TransportReceipt, completed bool) {
