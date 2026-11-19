@@ -295,6 +295,14 @@ func (s *stderrSyncWriter) Write(p []byte) (int, error) {
 	return s.w.Write(p)
 }
 
+func (opts ServerOpts) applyReverseProxyOverride(cfg *config.Config) {
+	if opts.ReverseProxy {
+		cfg.ReverseProxy.Enabled = true
+		cfg.ReverseProxy.Listen = opts.ReverseListen
+		cfg.ReverseProxy.Upstream = opts.ReverseUpstream
+	}
+}
+
 // NewServer validates opts, loads config, applies CLI overrides, and builds
 // every runtime component. No ports are bound; that is Start's job. On any
 // construction failure NewServer closes whatever was partially built and
@@ -374,11 +382,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	if opts.ListenChanged {
 		cfg.FetchProxy.Listen = opts.Listen
 	}
-	if opts.ReverseProxy {
-		cfg.ReverseProxy.Enabled = true
-		cfg.ReverseProxy.Listen = opts.ReverseListen
-		cfg.ReverseProxy.Upstream = opts.ReverseUpstream
-	}
+	opts.applyReverseProxyOverride(cfg)
 
 	cfg.ApplyDefaults()
 	warnings, err := cfg.ValidateWithWarnings()

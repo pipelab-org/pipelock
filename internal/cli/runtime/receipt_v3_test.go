@@ -79,7 +79,8 @@ func TestServerV3CoverageRequiresRestart(t *testing.T) {
 	}
 	cfgPath := writeServerTestConfig(t, fmt.Sprintf(
 		"mode: balanced\nflight_recorder:\n  enabled: true\n  receipt_format: v3\n  require_receipts: true\n  dir: %q\n  signing_key_path: %q\n", dir, keyPath))
-	s, err := NewServer(ServerOpts{ConfigFile: cfgPath})
+	const upstream = "https://upstream.vendor.example"
+	s, err := NewServer(ServerOpts{ConfigFile: cfgPath, ReverseProxy: true, ReverseUpstream: upstream})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +109,10 @@ func TestServerV3CoverageRequiresRestart(t *testing.T) {
 			}
 		})
 	}
-	candidate := before.Clone()
+	candidate, err := config.LoadForRuntime(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	candidate.FetchProxy.TimeoutSeconds++
 	if err := s.Reload(candidate); err != nil {
 		t.Fatal(err)
@@ -116,5 +120,8 @@ func TestServerV3CoverageRequiresRestart(t *testing.T) {
 	if s.proxy.CurrentConfig().FetchProxy.TimeoutSeconds != candidate.FetchProxy.TimeoutSeconds ||
 		s.liveReceiptEmitter() != nil || s.liveV2ReceiptEmitter() != nil {
 		t.Fatal("unrelated reload did not preserve the v3 writer selection")
+	}
+	if live := s.proxy.CurrentConfig().ReverseProxy; !live.Enabled || live.Upstream != upstream {
+		t.Fatalf("reload lost CLI reverse proxy settings: %+v", live)
 	}
 }

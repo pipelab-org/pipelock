@@ -144,6 +144,7 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 
 	oldCfg := s.proxy.CurrentConfig()
 	if s.receiptWriter != nil && oldCfg != nil {
+		s.opts.applyReverseProxyOverride(newCfg)
 		if coverageErr := checkV3ReloadCoverage(oldCfg, newCfg, s.opts.MCPListen != ""); coverageErr != nil {
 			return fmt.Errorf("rejected: %w", coverageErr)
 		}
