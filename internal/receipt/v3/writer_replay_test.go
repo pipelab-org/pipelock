@@ -127,7 +127,7 @@ func TestStreamWriterReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = in.Close() }()
-	out, err := os.OpenFile(os.Getenv("PIPELOCK_RECEIPT_REPLAY_OUTPUT"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	out, err := openWriterReplayOutput(in, os.Getenv("PIPELOCK_RECEIPT_REPLAY_OUTPUT"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,6 +144,62 @@ func TestStreamWriterReplay(t *testing.T) {
 		if err := encoder.Encode(runWriterReplay(t, base, steps)); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func openWriterReplayOutput(in *os.File, path string) (_ *os.File, err error) {
+	input, err := in.Stat()
+	if err != nil {
+		return nil, err
+	}
+	out, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, out.Close())
+		}
+	}()
+	output, err := out.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if os.SameFile(input, output) {
+		return nil, errors.New("receipt replay output refers to its input")
+	}
+	if err := out.Truncate(0); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func TestStreamWriterReplayRejectsInputAsOutput(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "replay.jsonl")
+	const replay = "[]\n"
+	if err := os.WriteFile(path, []byte(replay), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(dir, "alias.jsonl")
+	if err := os.Link(path, alias); err != nil {
+		t.Fatal(err)
+	}
+	in, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = in.Close() }()
+	for _, output := range []string{path, alias} {
+		out, err := openWriterReplayOutput(in, output)
+		if err == nil {
+			_ = out.Close()
+			t.Errorf("replay accepted %q as output", filepath.Base(output))
+		}
+	}
+	remaining, err := io.ReadAll(in)
+	if err != nil || string(remaining) != replay {
+		t.Fatalf("input contents = %q, error = %v", remaining, err)
 	}
 }
 
