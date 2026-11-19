@@ -406,12 +406,6 @@ func actionFields(fields map[string]any) bool {
 		return false
 	}
 	if hold, ok := fields["hold"].(map[string]any); ok {
-		depth, hasDepth := hold["cascade_depth"].(int64)
-		hasLinkage := hold["linkage"] != nil
-		hasParent := hold["parent"] != nil
-		if hasDepth != hasLinkage || hasParent != (hasDepth && depth > 1) {
-			return false
-		}
 		switch fields["phase"] {
 		case "hold":
 			if hold["policy"] == nil || hold["correction"] != nil ||
@@ -419,7 +413,7 @@ func actionFields(fields map[string]any) bool {
 				return false
 			}
 		case "resolution":
-			if hold["policy"] != nil ||
+			if hold["policy"] != nil || hold["parent"] != nil ||
 				hold["resolution_policy"] == nil || hold["resolution_source"] == nil {
 				return false
 			}

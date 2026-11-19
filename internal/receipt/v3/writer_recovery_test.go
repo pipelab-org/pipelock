@@ -18,10 +18,8 @@ import (
 func writerTestHold(id string) Action {
 	hold := writerTestIntent(id)
 	hold.Attempt = nil
-	depth := int64(2)
 	hold.Hold = &Hold{
 		ID: id + "-approval", Parent: "prior-approval", Policy: "operator",
-		CascadeDepth: &depth, Linkage: "session_pending_ancestor",
 	}
 	hold.Phase, hold.EffectBoundary, hold.Verdict = phaseHold, approvalBoundary, "defer"
 	hold.Session = &Session{ID: "example-work", TaskLabel: "read"}

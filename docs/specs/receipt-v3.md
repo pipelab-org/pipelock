@@ -63,7 +63,7 @@ Payloads use RFC 8785 over a restricted data model. Signature and digest checks 
 - The caller's `mcp_door_verified` requires `resource`, `issuer`, `subject`, and `client_id` from a successful door verification. The `none` form has only the authorization label. The caller object never contains a token. For MCP HTTP listener requests with successful door verification, producers write `caller.authn: mcp_door_verified` and copy `resource`, `issuer`, `subject`, and `client_id` from the verified identity. Outcomes and hold resolutions that use the original action retain its caller, including resolutions recovered from a signed hold. Producers without a verified door identity write `none`.
 - Include `normalization` only when text normalization ran for that decision. Carry the id and digest of the live view manifest that the decision used. The canonical bytes of that manifest are not defined, and the production profile table is empty. An unresolved digest is `NORMALIZATION_UNKNOWN`. The signed id and digest stay as written.
 - Checker selection `unavailable` requires disposition `not_run` and omits `config_hash`. Other selections require `config_hash`. Writers produce `selection` `configured` for an explicit surface selection and for the legacy global mode. They do not produce `fallback` or `unavailable`; they omit `checker` instead. `disposition` is `passed` for a benign assessment, `flagged` for a finding, `error` for an incomplete or failed check, and `not_run` for mode `off` or an assessment that did not run. A partial built-in assessment has no disposition, so writers omit `checker`. A configured checker error does not run the built-in checker afterward. There is no verdict-payload hash in this version.
-- Holds carry the defer bounds as `hold.policy` and may carry a parent hold. That string is not the action's `policy.hash`. Resolutions carry resolution policy and source. A hold or resolution carrying cascade attribution includes both a positive integer `cascade_depth` and a string `linkage`. Include `parent` exactly when the cascade depth exceeds one. A correcting block resolution carries `correction:true`, which is absent otherwise.
+- Holds carry the defer bounds as `hold.policy` and may carry a parent hold. That string is not the action's `policy.hash`. Resolutions carry resolution policy and source. A correcting block resolution carries `correction:true`, which is absent otherwise.
 - Ask `observed` is true for `approval_api` and false for `host_prompt`. It reports the channel, not the answer. A host prompt is `asked_unobserved` even if the host protocol acknowledges the request. Omit `ask` when no channel was observed. A step-up verdict does not add `ask` by itself.
 - Sort redaction classes by `class` with no duplicates.
 
@@ -335,10 +335,8 @@ The frozen AARP recipe records its key ID to public key mappings in `aarp_trust.
 
 | Member | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `cascade_depth` | `positive` | conditional or optional |  |
 | `correction` | `bool` | conditional or optional |  |
 | `id` | `string` | yes |  |
-| `linkage` | `string` | conditional or optional |  |
 | `parent` | `string` | conditional or optional |  |
 | `policy` | `string` | conditional or optional |  |
 | `resolution_policy` | `string` | conditional or optional |  |

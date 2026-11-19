@@ -122,11 +122,10 @@ func (s *deferredReceiptSettlement) confirmV3Hold(o MCPProxyOpts, opts receipt.E
 			action.Session.ID = held.Authority.SessionID
 			action.Session.OriginalID = held.Authority.SessionIDOriginal
 		}
-		depth := int64(held.CascadeDepth)
 		action.Phase, action.Verdict = "hold", config.ActionDefer
 		action.EffectBoundary, action.EffectRelation = mcpV3Approval, "before"
 		action.Hold = &v3.Hold{
-			ID: held.DeferID, CascadeDepth: &depth, Linkage: held.Linkage, Parent: held.ParentDeferID,
+			ID: held.DeferID, Parent: held.ParentDeferID,
 			Policy: deferred.ReceiptPolicyString(held.Policy, held.RulePolicy),
 		}
 		ctx, cancel := context.WithDeadline(o.warnContext(), held.Deadline)
@@ -148,7 +147,7 @@ func (s *deferredReceiptSettlement) settleV3Hold(o MCPProxyOpts, res deferred.Re
 	action := entry.action
 	hold := *action.Hold
 	hold.ResolutionPolicy, hold.ResolutionSource = hold.Policy, res.ResolutionSource
-	hold.Policy = ""
+	hold.Policy, hold.Parent = "", ""
 	action.Phase, action.Verdict, action.EffectRelation = "resolution", res.FinalDecision, "after"
 	switch res.FinalDecision {
 	case config.ActionStepUp, config.ActionAsk:

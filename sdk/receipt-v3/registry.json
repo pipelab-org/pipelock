@@ -2624,20 +2624,12 @@
       }
     },
     "Hold": {
-      "cascade_depth": {
-        "required": false,
-        "type": "positive"
-      },
       "correction": {
         "required": false,
         "type": "bool"
       },
       "id": {
         "required": true,
-        "type": "string"
-      },
-      "linkage": {
-        "required": false,
         "type": "string"
       },
       "parent": {

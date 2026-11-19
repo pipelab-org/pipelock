@@ -184,8 +184,7 @@ func blockingHoldResolution(action Action, source, relation string, correction b
 		policy = action.Hold.ResolutionPolicy
 	}
 	hold := &Hold{
-		ID: action.Hold.ID, Parent: action.Hold.Parent,
-		CascadeDepth: action.Hold.CascadeDepth, Linkage: action.Hold.Linkage,
+		ID: action.Hold.ID,
 		ResolutionPolicy: policy, ResolutionSource: source,
 	}
 	if correction {

@@ -169,53 +169,6 @@ func v3NestedBodyRecipes(t *testing.T) []v3Recipe {
 		recipes = append(recipes, v3NestedInvalid(t, s, sample, row.name))
 	}
 
-	return append(recipes, v3HoldCascadeRecipes(t)...)
-}
-
-func v3HoldCascadeRecipes(t *testing.T) []v3Recipe {
-	t.Helper()
-	const depth, linkage, parent = "cascade_depth", "linkage", "parent"
-	var recipes []v3Recipe
-	for _, phase := range []string{"hold", "resolution"} {
-		for _, tc := range []struct {
-			name string
-			edit func(v3Common)
-		}{
-			{name: "linked-child"},
-			{name: "linked-root", edit: func(o v3Common) { o[depth] = 1; delete(o, parent) }},
-			{name: "missing-depth", edit: func(o v3Common) { delete(o, depth) }},
-			{name: "missing-linkage", edit: func(o v3Common) { delete(o, linkage) }},
-			{name: "missing-parent", edit: func(o v3Common) { delete(o, parent) }},
-			{name: "wrong-depth-type", edit: func(o v3Common) { o[depth] = "2" }},
-			{name: "wrong-linkage-type", edit: func(o v3Common) { o[linkage] = 1 }},
-			{name: "wrong-parent-type", edit: func(o v3Common) { o[parent] = 1 }},
-			{name: "root-with-parent", edit: func(o v3Common) { o[depth] = 1 }},
-		} {
-			s := v3New(t)
-			sample := v3NestedSample(s, "action", phase)
-			hold := sample.body["hold"].(v3Common)
-			hold[depth], hold[linkage], hold[parent] = 2, "session_pending_ancestor", "parent"
-			if tc.edit != nil {
-				tc.edit(hold)
-			}
-			name := phase + "-cascade-" + tc.name
-			if strings.HasPrefix(tc.name, "linked-") {
-				if phase == "resolution" {
-					first := v3NestedSample(s, "action", "hold")
-					cascade := maps.Clone(hold)
-					cascade["policy"] = "example"
-					delete(cascade, "resolution_policy")
-					delete(cascade, "resolution_source")
-					first.body["hold"] = cascade
-					s.add(t, "action", first.body, nil)
-				}
-				s.add(t, "action", sample.body, nil)
-				recipes = append(recipes, v3Recipe{group: 4, name: name, verdict: "VALID", files: []v3File{s.finish(t)}})
-			} else {
-				recipes = append(recipes, v3NestedInvalid(t, s, sample, name))
-			}
-		}
-	}
 	return recipes
 }
 
