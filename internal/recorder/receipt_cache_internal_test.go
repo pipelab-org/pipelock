@@ -138,5 +138,46 @@ func TestReceiptContentBoundsConcurrentInspection(t *testing.T) {
 				t.Errorf("active projection returned (%v, %v)", result.content, result.err)
 			}
 		}
+
+		// A context that is already done when capacity is free either loses
+		// the admission select or is admitted and then refused by the
+		// post-admission check. The select chooses at random, so repeat it
+		// until both branches have run with overwhelming probability.
+		done, cancelDone := context.WithCancel(t.Context())
+		cancelDone()
+		for range 64 {
+			if _, content, err := rec.ScanReceiptContent(done, recorderSessionProducer, []byte(`{"session_id":"ordinary receipt"}`)); content != nil || !errors.Is(err, scanner.ErrTextDLPIncomplete) {
+				t.Errorf("projection canceled with free capacity returned (%v, %v)", content, err)
+			}
+		}
+		// A projection error after admission still returns its slot.
+		if _, content, err := rec.ScanReceiptContent(t.Context(), recorderSessionProducer, []byte(`not json`)); content != nil || err == nil {
+			t.Errorf("malformed projection returned (%v, %v)", content, err)
+		}
+
+		// Every slot is still available: fill them all again.
+		refill := make(chan struct{})
+		refilled := make(chan struct{}, slots)
+		rec.contentDetector = func(context.Context, string) scanner.TextDLPResult {
+			select {
+			case <-refill:
+				return scanner.TextDLPResult{Clean: true}
+			default:
+			}
+			refilled <- struct{}{}
+			<-refill
+			return scanner.TextDLPResult{Clean: true}
+		}
+		again := make(chan scanResult, slots)
+		for range slots {
+			go scan(t.Context(), again)
+			<-refilled
+		}
+		close(refill)
+		for range slots {
+			if result := <-again; result.content == nil || result.err != nil {
+				t.Errorf("refilled projection returned (%v, %v)", result.content, result.err)
+			}
+		}
 	})
 }
