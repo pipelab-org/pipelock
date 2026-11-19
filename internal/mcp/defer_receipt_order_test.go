@@ -224,7 +224,9 @@ func TestRequiredDeferredCallWithoutJournal(t *testing.T) {
 			t.Cleanup(func() {
 				_ = send.Close()
 				cancel()
-				<-done
+				if err := <-done; err != nil {
+					t.Logf("proxy exited during cleanup: %v", err)
+				}
 			})
 			var calls func() int32
 			if surface == deferred.SurfaceMCPStdio {

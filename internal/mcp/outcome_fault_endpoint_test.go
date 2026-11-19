@@ -213,12 +213,15 @@ func (p *settlementProbe) runStdio(t *testing.T, ctx context.Context, cancel con
 		case settlementDial:
 		case settlementUpgradeAppend:
 			select {
-			case <-done:
+			case err := <-done:
+				if err == nil || !strings.Contains(err.Error(), "recording upstream WebSocket admission") {
+					t.Fatalf("expected WebSocket admission recording error, got %v", err)
+				}
 				return
 			case <-p.upgraded:
-				t.Error("WebSocket upgraded with no admission")
 				cancel()
-				<-done
+				err := <-done
+				t.Errorf("WebSocket upgraded with no admission (proxy exit: %v)", err)
 				return
 			case <-ctx.Done():
 				t.Fatal("WebSocket did not refuse an unwritable admission")
@@ -243,7 +246,10 @@ func (p *settlementProbe) runStdio(t *testing.T, ctx context.Context, cancel con
 			cancel()
 			_ = feed.Close()
 			select {
-			case <-done:
+			case err := <-done:
+				if err != nil {
+					t.Logf("proxy exited during cleanup: %v", err)
+				}
 			case <-time.After(settlementBound):
 				t.Error("transport did not exit after cancellation")
 			}
@@ -316,8 +322,11 @@ func (p *settlementProbe) runStdio(t *testing.T, ctx context.Context, cancel con
 		select {
 		case <-out.written:
 			_ = feed.Close()
-		case <-done:
+		case err := <-done:
 			finished = true
+			if err != nil {
+				t.Logf("proxy exited after admission failure: %v", err)
+			}
 			return
 		case <-ctx.Done():
 			t.Fatal("no client refusal after admission append failed")
@@ -349,8 +358,11 @@ func (p *settlementProbe) runStdio(t *testing.T, ctx context.Context, cancel con
 		_ = feed.Close()
 	}
 	select {
-	case <-done:
+	case err := <-done:
 		finished = true
+		if err != nil {
+			t.Logf("proxy exited: %v", err)
+		}
 		if p.cell.transport == settlementStdio && p.cell.fault == settlementWriteUpstream {
 			if !strings.Contains(logs.String(), "input forward error") {
 				t.Error("subprocess did not report the failed send")
@@ -408,7 +420,10 @@ func (p *settlementProbe) runListener(t *testing.T, ctx context.Context, cancel 
 		cancel()
 		listener.closeConnections()
 		select {
-		case <-done:
+		case err := <-done:
+			if err != nil {
+				t.Logf("HTTP listener exited: %v", err)
+			}
 		case <-time.After(settlementBound):
 			t.Error("HTTP listener did not stop")
 		}

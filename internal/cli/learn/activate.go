@@ -187,10 +187,11 @@ func runPromote(cmd *cobra.Command, flags lifecycleFlags) error {
 	if err != nil {
 		return err
 	}
+	const committedKind = contractreceipt.PayloadContractPromoteCommitted
 	record := func(validationErr error) error {
 		outcome, reason := lifecycleValidationOutcome(validationErr)
 		committedReceipt, err := activation.SignReceipt(
-			contractreceipt.PayloadContractPromoteCommitted,
+			committedKind,
 			activation.PromoteCommittedPayload(targetHash, priorHash, intentID, outcome, reason),
 			lifecycleReceiptContext(intentID+"-committed", lc.now, targetHash, flags.contractHash, selector.SelectorID, generation, "learn", "learn promote"),
 			lc.receiptKey,
@@ -268,6 +269,7 @@ func runRollback(cmd *cobra.Command, flags lifecycleFlags) error {
 	if err != nil {
 		return err
 	}
+	const committedKind = contractreceipt.PayloadContractRollbackCommitted
 	record := func(validationErr error) error {
 		outcome, reason := lifecycleValidationOutcome(validationErr)
 		commitPayload, err := activation.RollbackCommittedPayload(target.ManifestHash, current.ManifestHash, authID, outcome, reason)
@@ -275,7 +277,7 @@ func runRollback(cmd *cobra.Command, flags lifecycleFlags) error {
 			return err
 		}
 		commitReceipt, err := activation.SignReceipt(
-			contractreceipt.PayloadContractRollbackCommitted,
+			committedKind,
 			commitPayload,
 			lifecycleReceiptContext(authID+"-committed", lc.now, rollbackManifestHash, "", "", generation, "learn", "learn rollback"),
 			lc.receiptKey,

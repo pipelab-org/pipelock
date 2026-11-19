@@ -42,7 +42,7 @@ func TestOptionalBridgeIntentPrecedesUpstreamResponse(t *testing.T) {
 	t.Cleanup(release)
 	emitter, _, dir, key := newReceiptTestHarness(t)
 	opts := MCPProxyOpts{Scanner: testInputScanner(t), ReceiptEmitter: emitter, TaintCfg: &config.Defaults().Taint}
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
@@ -104,7 +104,7 @@ func TestOptionalBridgeKilledAtUpstreamLeavesSignedIntent(t *testing.T) {
 		<-r.Context().Done()
 	}))
 	t.Cleanup(upstream.Close)
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(10*time.Second))
 	defer cancel()
 	dir := t.TempDir()
 	bin, err := os.Executable()
@@ -125,8 +125,8 @@ func TestOptionalBridgeKilledAtUpstreamLeavesSignedIntent(t *testing.T) {
 	case err := <-done:
 		t.Fatalf("bridge exited before reaching upstream: %v\n%s", err, &output)
 	case <-ctx.Done():
-		<-done
-		t.Fatalf("upstream never received request: %v\n%s", ctx.Err(), &output)
+		waitErr := <-done
+		t.Fatalf("upstream never received request: %v (bridge exit: %v)\n%s", ctx.Err(), waitErr, &output)
 	}
 	if err := child.Process.Kill(); err != nil {
 		t.Fatal(err)
@@ -204,7 +204,7 @@ func TestOptionalWebSocketIntentPrecedesFrameResponse(t *testing.T) {
 		observed <- observation{entries: entries, err: err}
 	})
 	t.Cleanup(upstream.Close)
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
 	defer cancel()
 	input, send := io.Pipe()
 	t.Cleanup(func() { _ = send.Close() })
