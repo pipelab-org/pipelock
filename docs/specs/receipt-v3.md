@@ -35,7 +35,7 @@ Verify the entry whose key ID equals `signer`. Other entries must pass the layou
 Write `A` for the public key, `R` for the first 32 bytes of the signature, and `S` for the last 32 bytes. Verify pure Ed25519 with these constraints.
 
 1. The little-endian integer `S` is less than the group order `L`.
-2. `A` and `R` canonically encode curve points. Each 255-bit y coordinate is less than 2²⁵⁵−19, each point decodes under RFC 8032 §5.1.3, and x equal to zero requires a zero sign bit.
+2. `A` and `R` canonically encode curve points. Each 255-bit y coordinate is less than 2²⁵⁵−19, each point decodes under the RFC 8032 point-decoding procedure, and x equal to zero requires a zero sign bit. [RFC 8032](https://www.rfc-editor.org/rfc/rfc8032.html)
 3. Neither point is the identity. `[L]A` must be the identity using unreduced point multiplication.
 4. Compute `k` from SHA-512 of `R || A || PAE` as a little-endian integer modulo `L`. Compare the canonical encoding of `[S]B − [k]A` to `R` byte for byte. With a cofactored library, also check `[L]R` is the identity. Multiplication by eight is injective in the prime-order subgroup, so the equations then agree.
 

@@ -251,7 +251,7 @@ func (o MCPProxyOpts) recordV3MCPRefusal(logW io.Writer, intent receipt.EmitOpts
 
 func (o MCPProxyOpts) writeMCPGeneratedResponse(logW io.Writer, writer transport.MessageWriter, parent receipt.EmitOpts, response []byte, reason string) error {
 	if o.ReceiptV3 == nil {
-		return writer.WriteMessage(response)
+		return writeMCPResponseDisposition(o, mcpDenialAudit{}, writer, response, false)
 	}
 	decision := v3MCPChild(parent, mcpOutcomeLayer, reason)
 	decision.Verdict = config.ActionAllow

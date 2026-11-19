@@ -55,7 +55,7 @@ func emitRequestScopedTimeout(
 func writeTrackedTerminalResponse(logW io.Writer, writer transport.MessageWriter, tracker *RequestTracker, id json.RawMessage, resp []byte, opts MCPProxyOpts) {
 	const reason = "upstream_error"
 	if opts.ReceiptV3 == nil {
-		if err := writer.WriteMessage(resp); err != nil {
+		if err := writeMCPResponseDisposition(opts, mcpDenialAudit{}, writer, resp, false); err != nil {
 			_, _ = fmt.Fprintf(logW, "pipelock: failed to send error response: %v\n", err)
 		}
 		emitTrackedTerminalOutcome(logW, tracker, id, resp, reason, opts)
