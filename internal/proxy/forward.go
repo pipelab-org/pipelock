@@ -309,6 +309,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := p.recordCredentialAudienceAllows(cfg, targetCtx, result.CredentialAudienceAllows, TransportConnect, http.MethodConnect, syntheticURL, requestID, agent, selectedReceiptShard); err != nil {
+		if refuseReceiptCapacity(w, err) {
+			return
+		}
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 		p.logger.LogBlocked(targetCtx, blockedErr.layer, blockedErr.detail)
 		p.metrics.RecordBlocked(host, blockedErr.layer, time.Since(start), agentLabel)
@@ -372,6 +375,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if connectHeaderReceiptErr != nil {
+		if refuseReceiptCapacity(w, connectHeaderReceiptErr) {
+			return
+		}
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(connectHeaderReceiptErr)
 		p.logger.LogBlocked(headerCtx, blockedErr.layer, blockedErr.detail)
 		p.metrics.RecordBlocked(host, blockedErr.layer, time.Since(start), agentLabel)
@@ -1242,6 +1248,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	result := sc.Scan(fwdScanCtx, targetURL)
 	p.metrics.RecordURLDecisions(TransportForward, result.Decisions)
 	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportForward, r.Method, targetURL, requestID, agent, selectedReceiptShard); err != nil {
+		if refuseReceiptCapacity(w, err) {
+			return
+		}
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 		p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 		p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
@@ -1708,8 +1717,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				p.metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
 			},
-			OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) error {
-				return p.recordCredentialAudienceAllow(cfg, actx, allow, TransportForward, r.Method, targetURL, requestID, agent, selectedReceiptShard)
+			OnCredentialAudienceAllows: func(allows []scanner.CredentialAudienceAllow) error {
+				return p.recordCredentialAudienceAllows(cfg, actx, allows, TransportForward, r.Method, targetURL, requestID, agent, selectedReceiptShard)
 			},
 		}
 		applyContentEntropyConfig(&bodyReq, cfg)
@@ -1726,6 +1735,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		inspected := inspectedBodyBytes(buf, bodyResult)
 		if bodyResult.CredentialAudienceReceiptErr != nil {
+			if refuseReceiptCapacity(w, bodyResult.CredentialAudienceReceiptErr) {
+				return
+			}
 			blockedErr := newCredentialAudienceReceiptBlockedRequest(bodyResult.CredentialAudienceReceiptErr)
 			p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
@@ -2002,6 +2014,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if forwardHeaderReceiptErr != nil {
+		if refuseReceiptCapacity(w, forwardHeaderReceiptErr) {
+			return
+		}
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(forwardHeaderReceiptErr)
 		p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 		p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
@@ -2591,6 +2606,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := p.client.Do(outReq)
 	if err != nil {
+		if refuseReceiptCapacity(w, err) {
+			outcomeStatus = strconv.Itoa(http.StatusServiceUnavailable)
+			outcomeReason = nativeCapacityStopReason
+			return
+		}
 		var ssrfErr *ssrfDialBlockError
 		if errors.As(err, &ssrfErr) {
 			p.logger.LogBlocked(actx, scanner.ScannerSSRF, ssrfErr.logDetail())

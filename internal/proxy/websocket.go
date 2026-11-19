@@ -172,35 +172,34 @@ func (r *wsRelay) resetDroppedDLP() {
 	r.droppedDLPMu.Unlock()
 }
 
-func (r *wsRelay) recordCredentialAudienceAllow(allow scanner.CredentialAudienceAllow) error {
-	if r.proxy == nil {
+func (r *wsRelay) recordCredentialAudienceAllows(allows []scanner.CredentialAudienceAllow) error {
+	if r.proxy == nil || len(allows) == 0 {
 		return nil
 	}
-	key := allow.PatternName + "\x00" + allow.Surface + "\x00" + allow.Destination
+	allows = uniqueCredentialAudienceAllows(allows)
+	keyFor := func(allow scanner.CredentialAudienceAllow) string {
+		return allow.PatternName + "\x00" + allow.Surface + "\x00" + allow.Destination
+	}
 	r.audienceMu.Lock()
-	if r.audienceAllows == nil {
-		r.audienceAllows = make(map[string]struct{})
+	defer r.audienceMu.Unlock()
+	pending := allows[:0]
+	for _, allow := range allows {
+		if _, exists := r.audienceAllows[keyFor(allow)]; !exists {
+			pending = append(pending, allow)
+		}
 	}
-	if _, exists := r.audienceAllows[key]; exists {
-		r.audienceMu.Unlock()
-		return nil
-	}
-	r.audienceMu.Unlock()
 	actx := newHTTPAuditContext(r.auditProvenanceCtx(), r.proxy.logger, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
-	if err := r.proxy.recordCredentialAudienceAllow(r.cfg, actx, allow, TransportWS, "WS", r.targetURL, r.requestID, r.agent, firstReceiptShard(r.clientFrameAdmission, r.receiptShard)); err != nil {
-		// Do not mark the key seen: a duplicate must retry and fail too
-		// rather than be treated as confirmed.
-		return err
-	}
-	// Mark seen only after the record call confirmed. Concurrent duplicate
-	// emits are acceptable; a false "confirmed" is not.
-	r.audienceMu.Lock()
-	if r.audienceAllows == nil {
-		r.audienceAllows = make(map[string]struct{})
-	}
-	r.audienceAllows[key] = struct{}{}
-	r.audienceMu.Unlock()
-	return nil
+	admission := firstReceiptShard(r.clientFrameAdmission, r.receiptShard)
+	return confirmCredentialAudienceAllows(admission, pending, func(allow scanner.CredentialAudienceAllow, reserved receipt.EmitOpts) error {
+		if err := r.proxy.recordCredentialAudienceAllow(r.cfg, actx, allow, TransportWS, "WS", r.targetURL, r.requestID, r.agent, reserved); err != nil {
+			return err
+		}
+		if r.audienceAllows == nil {
+			r.audienceAllows = make(map[string]struct{})
+		}
+		r.audienceAllows[keyFor(allow)] = struct{}{}
+		return nil
+	})
 }
 
 // blockOnCredentialAudienceReceiptFailure closes the WebSocket relay in both
@@ -212,6 +211,9 @@ func (r *wsRelay) recordCredentialAudienceAllow(allow scanner.CredentialAudience
 // and scanClientMessageBody surfaces CredentialAudienceReceiptErr, which
 // handleClientMessageBodyResult checks first.
 func (r *wsRelay) blockOnCredentialAudienceReceiptFailure(log *audit.Logger, err error) bool {
+	if isNativeCapacityStop(err) {
+		return false
+	}
 	blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 	log.LogBlocked(newHTTPAuditContext(r.auditProvenanceCtx(), log, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent}), blockedErr.layer, blockedErr.detail)
 	r.proxy.metrics.RecordWSScanHit(blockedErr.layer)
@@ -441,6 +443,9 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	result := sc.ScanWebSocket(wsScanCtx, targetURL)
 	p.metrics.RecordURLDecisions(TransportWS, result.Decisions)
 	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportWS, "WS", targetURL, requestID, agent, selectedReceiptShard); err != nil {
+		if refuseReceiptCapacity(w, err) {
+			return
+		}
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 		log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 		writeBlockedError(w,
@@ -647,6 +652,9 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if wsHeaderReceiptErr != nil {
+		if refuseReceiptCapacity(w, wsHeaderReceiptErr) {
+			return
+		}
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(wsHeaderReceiptErr)
 		log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 		writeBlockedError(w,
@@ -1490,11 +1498,7 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 		if len(allMatches) > 0 || ctx.Err() != nil || scanIncomplete {
 			return
 		}
-		for _, allow := range uniqueCredentialAudienceAllows(audienceAllows) {
-			if err := p.recordCredentialAudienceAllow(cfg, actx, allow, TransportWS, "WS", targetURL, actx.RequestID(), actx.Agent(), receiptShardFromContext(ctx)); err != nil && receiptErr == nil {
-				receiptErr = err
-			}
-		}
+		receiptErr = p.recordCredentialAudienceAllows(cfg, actx, audienceAllows, TransportWS, "WS", targetURL, actx.RequestID(), actx.Agent(), receiptShardFromContext(ctx))
 	}()
 scanHeaders:
 	for _, key := range []string{
@@ -1965,8 +1969,8 @@ func (r *wsRelay) scanClientMessageBodyWithSurface(ctx context.Context, msg []by
 		OnDroppedDLP: func(match scanner.TextDLPMatch, reason string) {
 			r.recordClientFrameDroppedDLP(match, reason)
 		},
-		OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) error {
-			return r.recordCredentialAudienceAllow(allow)
+		OnCredentialAudienceAllows: func(allows []scanner.CredentialAudienceAllow) error {
+			return r.recordCredentialAudienceAllows(allows)
 		},
 	}
 	applyWebSocketContentEntropyConfig(&bodyReq, r.cfg)
@@ -2166,10 +2170,8 @@ func (r *wsRelay) handleClientTextResult(ctx context.Context, log *audit.Logger,
 		surface = "websocket_frame"
 	}
 	filteredMatches, audienceAllows := r.scanner.FilterTextDLPMatchesForDestination(dlpResult.Matches, r.targetURL, surface)
-	for _, allow := range audienceAllows {
-		if err := r.recordCredentialAudienceAllow(allow); err != nil {
-			return true, r.blockOnCredentialAudienceReceiptFailure(log, err)
-		}
+	if err := r.recordCredentialAudienceAllows(audienceAllows); err != nil {
+		return true, r.blockOnCredentialAudienceReceiptFailure(log, err)
 	}
 	if opts.crossMessage && r.blockCrossMessageRedaction(log, filteredMatches) {
 		return true, true
@@ -2227,10 +2229,8 @@ func (r *wsRelay) decideClientCrossMessageTextViews(ctx context.Context, log *au
 		r.scanner.EmitTextDLPWarnMatches(ctx, crossWarns)
 	}
 	crossDLP, audienceAllows := r.scanner.FilterTextDLPMatchesForDestination(crossDLP, r.targetURL, "websocket_frame")
-	for _, allow := range audienceAllows {
-		if err := r.recordCredentialAudienceAllow(allow); err != nil {
-			return true, r.blockOnCredentialAudienceReceiptFailure(log, err)
-		}
+	if err := r.recordCredentialAudienceAllows(audienceAllows); err != nil {
+		return true, r.blockOnCredentialAudienceReceiptFailure(log, err)
 	}
 
 	var crossAddr []addressprotect.Finding

@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -117,7 +118,101 @@ func TestNativeCapacityHTTPAdmission(t *testing.T) {
 	}
 }
 
-func newNativeCapacityProxy(t *testing.T, slots int64) (*Proxy, *receipt.Emitter, string) {
+func TestNativeCapacityReservesEachCredentialAudienceAllow(t *testing.T) {
+	const (
+		host       = "api.vendor.example"
+		allowCount = nativeRequestRecords + 1
+	)
+	for _, tc := range []struct {
+		name       string
+		slots      int64
+		wantStatus int
+		wantAllows int
+	}{
+		{"admitted", nativeRequestRecords + allowCount, http.StatusOK, allowCount},
+		{"refused", nativeRequestRecords + allowCount - 4, http.StatusServiceUnavailable, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, emitter, dir := newNativeCapacityProxy(t, tc.slots, func(cfg *config.Config) {
+				cfg.ResponseScanning.Enabled = false
+				cfg.RequestBodyScanning.Enabled = true
+				cfg.RequestBodyScanning.ScanHeaders = true
+				cfg.RequestBodyScanning.HeaderMode = config.HeaderModeSensitive
+				cfg.RequestBodyScanning.SensitiveHeaders = []string{headerNameAuthorization}
+				for i := range allowCount {
+					pattern := audienceReceiptTestPattern(host)
+					pattern.Name = fmt.Sprintf("Test audience %03d", i)
+					cfg.DLP.Patterns = append(cfg.DLP.Patterns, pattern)
+				}
+			})
+			var hits atomic.Int32
+			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				hits.Add(1)
+				_, _ = io.WriteString(w, "ok")
+			}))
+			defer upstream.Close()
+
+			endpoint, err := url.Parse(upstream.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			target := *endpoint
+			target.Host = net.JoinHostPort(host, target.Port())
+			p.client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				out := req.Clone(req.Context())
+				out.URL.Host = endpoint.Host
+				return upstream.Client().Transport.RoundTrip(out)
+			})
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+url.QueryEscape(target.String()), nil)
+			req.Header.Set(headerNameAuthorization, "Bearer "+audienceReceiptTestCredential)
+			res := httptest.NewRecorder()
+			p.handleFetch(res, req)
+			if res.Code != tc.wantStatus {
+				t.Fatalf("fetch status = %d, want %d, response %s", res.Code, tc.wantStatus, res.Body)
+			}
+			if tc.wantStatus == http.StatusServiceUnavailable {
+				if !strings.Contains(res.Body.String(), ael.ErrCapacity.Error()) || hits.Load() != 0 {
+					t.Fatalf("capacity refusal: body %s and %d upstream hits", res.Body, hits.Load())
+				}
+			} else {
+				if hits.Load() != 1 {
+					t.Fatalf("upstream hits = %d, want 1", hits.Load())
+				}
+				if _, err := emitter.ReserveNativeRecords(int(tc.slots)); !errors.Is(err, ael.ErrCapacity) {
+					t.Fatalf("force the next admission to stop: %v", err)
+				}
+			}
+			verifyNativeCapacityClose(t, emitter, dir)
+			rows, err := recorder.QuerySession(dir, emitter.Session(), &recorder.QueryFilter{Type: "action_receipt"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			patterns := make(map[string]struct{})
+			var signedCount int
+			for _, row := range rows.Entries {
+				signed, err := receipt.Unmarshal(row.RawDetail)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if signed.ActionRecord.Layer != credentialAudienceReceiptExtensionKey {
+					continue
+				}
+				if err := receipt.VerifyWithKey(signed, emitter.SignerKeyHex()); err != nil {
+					t.Fatal(err)
+				}
+				signedCount++
+				patterns[signed.ActionRecord.Pattern] = struct{}{}
+			}
+			if signedCount != tc.wantAllows || len(patterns) != tc.wantAllows {
+				t.Fatalf("signed allows = %d, distinct patterns = %d, want %d", signedCount, len(patterns), tc.wantAllows)
+			}
+			t.Logf("HTTP %d, upstream hits %d, verified individual allows %d", res.Code, hits.Load(), signedCount)
+		})
+	}
+}
+
+func newNativeCapacityProxy(t *testing.T, slots int64, configure ...func(*config.Config)) (*Proxy, *receipt.Emitter, string) {
 	t.Helper()
 	cfg := config.Defaults()
 	cfg.Internal = nil
@@ -127,6 +222,9 @@ func newNativeCapacityProxy(t *testing.T, slots int64) (*Proxy, *receipt.Emitter
 	cfg.ForwardProxy.Enabled = true
 	cfg.WebSocketProxy.Enabled = true
 	cfg.FlightRecorder.RequireReceipts = true
+	for _, apply := range configure {
+		apply(cfg)
+	}
 	sc, err := scanner.New(cfg)
 	if err != nil {
 		t.Fatal(err)

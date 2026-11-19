@@ -1137,12 +1137,18 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				shard := receiptShardFromContext(req.Context())
 				shard.Transport = redirectTransport
 				if err := p.recordIssuerQueryAllow(currentCfg, redirectAuditCtx, redirectURL, requestID, agentName, req.Method, issuerQueryIssuedRedirect, shard); err != nil {
+					if isNativeCapacityStop(err) {
+						return err
+					}
 					blockedErr := newIssuerAllowReceiptBlockedRequest(err)
 					logger.LogBlocked(redirectAuditCtx, blockedErr.layer, blockedErr.detail)
 					return blockedErr
 				}
 			}
 			if err := p.recordCredentialAudienceAllows(currentCfg, redirectAuditCtx, result.CredentialAudienceAllows, redirectTransport, req.Method, redirectURL, requestID, agentName, receiptShardFromContext(req.Context())); err != nil {
+				if isNativeCapacityStop(err) {
+					return err
+				}
 				blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 				logger.LogBlocked(redirectAuditCtx, blockedErr.layer, blockedErr.detail)
 				return blockedErr
@@ -5565,7 +5571,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	defer selectedReceiptShard.ReleaseNativeAdmission()
 	warnCtx, finishWarnings := p.receiptWarningContext(r.Context(), selectedReceiptShard)
 	defer finishWarnings()
-	r = r.WithContext(warnCtx)
+	r = r.WithContext(context.WithValue(warnCtx, ctxKeyReceiptShard, selectedReceiptShard))
 
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()
@@ -5716,6 +5722,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	result := sc.Scan(scanCtx, targetURL)
 	p.metrics.RecordURLDecisions(TransportFetch, result.Decisions)
 	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportFetch, http.MethodGet, targetURL, requestID, agent, selectedReceiptShard); err != nil {
+		if refuseReceiptCapacity(w, err) {
+			return
+		}
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 		p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 		p.metrics.RecordBlocked(parsed.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
@@ -6061,6 +6070,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if headerReceiptErr != nil {
+		if refuseReceiptCapacity(w, headerReceiptErr) {
+			return
+		}
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(headerReceiptErr)
 		log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 		p.metrics.RecordBlocked(parsed.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
@@ -6692,6 +6704,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	responseencoding.RequestIdentity(req.Header)
 	resp, err := p.client.Do(req) //nolint:gosec // G704: URL validated by scanner pipeline before reaching here
 	if err != nil {
+		if refuseReceiptCapacity(w, err) {
+			outcomeStatus = strconv.Itoa(http.StatusServiceUnavailable)
+			outcomeReason = nativeCapacityStopReason
+			return
+		}
 		var ssrfErr *ssrfDialBlockError
 		if errors.As(err, &ssrfErr) {
 			log.LogBlocked(actx, scanner.ScannerSSRF, ssrfErr.logDetail())

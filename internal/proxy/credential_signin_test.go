@@ -93,7 +93,7 @@ func TestSignInBearer_RequestHeaderScan(t *testing.T) {
 			t.Run(mode+"/"+tc.name, func(t *testing.T) {
 				var allows []scanner.CredentialAudienceAllow
 				result := scanRequestHeadersForTargetWithAudience(t.Context(), tc.headers, cfg, sc, tc.target, nil,
-					func(allow scanner.CredentialAudienceAllow) error { allows = append(allows, allow); return nil })
+					func(allow []scanner.CredentialAudienceAllow) error { allows = append(allows, allow...); return nil })
 				clean := result == nil || result.Clean
 				if clean != tc.clean {
 					t.Fatalf("clean=%t want %t result=%#v allows=%#v", clean, tc.clean, result, allows)
@@ -140,7 +140,7 @@ func testSignInBearerHeaderReload(t *testing.T, cfg *config.Config, token, targe
 		result := scanRequestHeadersForTargetWithAudience(t.Context(), http.Header{
 			"Authorization": {"Bearer " + token}, "User-Agent": {"client"},
 		}, p.cfgPtr.Load(), p.scannerPtr.Load(), target, nil,
-			func(a scanner.CredentialAudienceAllow) error { allows = append(allows, a); return nil })
+			func(a []scanner.CredentialAudienceAllow) error { allows = append(allows, a...); return nil })
 		clean := result == nil || result.Clean
 		recorded := false
 		for _, a := range allows {
@@ -223,7 +223,7 @@ func TestRegistryBearer_RequestHeaderScan(t *testing.T) {
 				result := scanRequestHeadersForTargetWithAudience(t.Context(), http.Header{
 					"Authorization": {tc.value}, "User-Agent": {"client"},
 				}, cfg, sc, "https://"+host+"/v2/", nil,
-					func(a scanner.CredentialAudienceAllow) error { allows = append(allows, a); return nil })
+					func(a []scanner.CredentialAudienceAllow) error { allows = append(allows, a...); return nil })
 				clean := result == nil || result.Clean
 				if clean != tc.allow {
 					t.Fatalf("clean=%t want %t", clean, tc.allow)

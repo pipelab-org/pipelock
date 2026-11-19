@@ -121,6 +121,14 @@ func refuseReceiptAdmission(w http.ResponseWriter, err error) {
 	writeHTTPError(w, err.Error(), http.StatusServiceUnavailable)
 }
 
+func refuseReceiptCapacity(w http.ResponseWriter, err error) bool {
+	if !isNativeCapacityStop(err) {
+		return false
+	}
+	refuseReceiptAdmission(w, ael.ErrCapacity)
+	return true
+}
+
 func withReceiptShard(opts, selected receipt.EmitOpts) receipt.EmitOpts {
 	return opts.InheritAdmission(selected)
 }
