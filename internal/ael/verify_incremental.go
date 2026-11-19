@@ -200,6 +200,9 @@ func (v *RunVerifier) Advance(requireClose bool) (VerifiedHead, error) {
 		v.prev, v.count, v.closed = next.prev, next.count, next.closed
 	}
 	after, err := v.fileOps.stat(f)
+	if err == nil && after.Size() > maxVerifyStreamBytes {
+		return v.fail(ErrStreamTooLarge)
+	}
 	if err != nil || !os.SameFile(before, after) || after.Size() < before.Size() ||
 		(requireClose && (before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()))) {
 		return v.fail(errors.New("native AEL stream changed during verification"))
@@ -273,6 +276,9 @@ func (v *RunVerifier) verifyPrefixUnchanged(complete bool) error {
 		return errors.New("native AEL stream bytes changed after verification")
 	}
 	after, err := v.fileOps.stat(f)
+	if err == nil && after.Size() > maxVerifyStreamBytes {
+		return ErrStreamTooLarge
+	}
 	if err != nil || !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) || complete && after.Size() != v.verifiedOffset {
 		return errors.New("native AEL stream changed during final verification")
 	}

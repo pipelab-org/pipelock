@@ -56,14 +56,14 @@ func VerifyPresentRun(recorderDir, run, signerHex string) (VerifiedHead, error) 
 // VerifyRunWithOptions preserves the complete/present run contracts while
 // reporting authenticated records and checking ceremony cancellation.
 func VerifyRunWithOptions(recorderDir, run, signerHex string, requireClose bool, options verification.Options) (VerifiedHead, error) {
-	return verifyRunWithOptions(recorderDir, run, signerHex, requireClose, options)
+	return verifyRunWithOptions(recorderDir, run, signerHex, requireClose, options, (*os.File).Stat)
 }
 
 func verifyRun(recorderDir, run, signerHex string, requireClose bool) (VerifiedHead, error) {
-	return verifyRunWithOptions(recorderDir, run, signerHex, requireClose, verification.Options{})
+	return verifyRunWithOptions(recorderDir, run, signerHex, requireClose, verification.Options{}, (*os.File).Stat)
 }
 
-func verifyRunWithOptions(recorderDir, run, signerHex string, requireClose bool, options verification.Options) (VerifiedHead, error) {
+func verifyRunWithOptions(recorderDir, run, signerHex string, requireClose bool, options verification.Options, stat func(*os.File) (os.FileInfo, error)) (VerifiedHead, error) {
 	if err := options.Check(); err != nil {
 		return VerifiedHead{}, err
 	}
@@ -142,7 +142,10 @@ func verifyRunWithOptions(recorderDir, run, signerHex string, requireClose bool,
 	if requireClose && (!closed || count < 2) {
 		return VerifiedHead{}, errors.New("native AEL run has no signed close")
 	}
-	after, err := f.Stat()
+	after, err := stat(f)
+	if err == nil && after.Size() > maxVerifyStreamBytes {
+		return VerifiedHead{}, ErrStreamTooLarge
+	}
 	if err != nil || !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
 		return VerifiedHead{}, errors.New("native AEL stream changed during verification")
 	}

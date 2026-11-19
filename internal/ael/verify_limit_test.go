@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/verification"
 )
 
 func TestReadBoundedAELLineCountsGrowthAcrossRecords(t *testing.T) {
@@ -58,5 +60,19 @@ func TestReadBoundedAELLineCountsGrowthAcrossRecords(t *testing.T) {
 				t.Fatalf("bounded stream = %q, %v, total=%d", line, err, total)
 			}
 		})
+	}
+}
+
+func TestVerifyRunClassifiesOversizeAtFinalStat(t *testing.T) {
+	emitter, dir, signer := newIncrementalRun(t)
+	closeIncrementalRun(t, emitter)
+	_, err := verifyRunWithOptions(dir, incrementalRunID, signer, true, verification.Options{}, func(file *os.File) (os.FileInfo, error) {
+		if err := os.Truncate(file.Name(), maxVerifyStreamBytes+1); err != nil {
+			return nil, err
+		}
+		return file.Stat()
+	})
+	if !errors.Is(err, ErrStreamTooLarge) {
+		t.Fatalf("VerifyRun error=%v, want %v", err, ErrStreamTooLarge)
 	}
 }

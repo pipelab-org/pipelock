@@ -540,9 +540,10 @@ func TestRunVerifierAdvanceFinalizedIsIdempotent(t *testing.T) {
 
 func TestRunVerifierRejectsPostCheckpointTruncationAndOversize(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		mutate func(*testing.T, string)
-		want   string
+		name    string
+		mutate  func(*testing.T, string)
+		want    string
+		wantErr error
 	}{
 		{
 			name: "truncated checkpoint",
@@ -562,7 +563,7 @@ func TestRunVerifierRejectsPostCheckpointTruncationAndOversize(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
-			want: "native AEL stream exceeds 256 MiB",
+			wantErr: ErrStreamTooLarge,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -575,7 +576,12 @@ func TestRunVerifierRejectsPostCheckpointTruncationAndOversize(t *testing.T) {
 				t.Fatal(err)
 			}
 			tc.mutate(t, filepath.Join(emitter.Dir(), "recorders", "pipelock.jsonl"))
-			if _, err := verifier.Advance(false); err == nil || !strings.Contains(err.Error(), tc.want) {
+			_, err = verifier.Advance(false)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("Advance error=%v, want %v", err, tc.wantErr)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Advance error=%v, want %q", err, tc.want)
 			}
 		})
@@ -1111,5 +1117,42 @@ func replaceIncrementalTestFile(t *testing.T, path string) {
 	}
 	if os.SameFile(original, actual) {
 		t.Fatal("replacement precondition failed: original file identity retained")
+	}
+}
+
+func TestRunVerifierClassifiesOversizeAtFinalStat(t *testing.T) {
+	for _, check := range []string{"advance live", "advance closed", "verify prefix"} {
+		t.Run(check, func(t *testing.T) {
+			emitter, dir, signer := newIncrementalRun(t)
+			closeIncrementalRun(t, emitter)
+			v, err := NewRunVerifier(dir, incrementalRunID, signer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if check == "verify prefix" {
+				if _, err := v.Advance(false); err != nil {
+					t.Fatal(err)
+				}
+			}
+			v.fileOps.stat = func(file *os.File) (os.FileInfo, error) {
+				if err := os.Truncate(file.Name(), maxVerifyStreamBytes+1); err != nil {
+					return nil, err
+				}
+				return file.Stat()
+			}
+			if check == "verify prefix" {
+				err = v.VerifyPrefixUnchanged()
+			} else {
+				_, err = v.Advance(check == "advance closed")
+				defer func() {
+					if _, retryErr := v.Advance(false); !errors.Is(retryErr, ErrStreamTooLarge) {
+						t.Errorf("retry error=%v, want %v", retryErr, ErrStreamTooLarge)
+					}
+				}()
+			}
+			if !errors.Is(err, ErrStreamTooLarge) {
+				t.Fatalf("verification error=%v, want %v", err, ErrStreamTooLarge)
+			}
+		})
 	}
 }
