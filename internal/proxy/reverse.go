@@ -807,7 +807,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer selectedReceiptShard.ReleaseNativeAdmission()
-	requestCtx, stopNativeRequest := nativeRequestContext(r.Context(), selectedReceiptShard)
+	requestCtx, stopNativeRequest := nativeRequestContext(r.Context(), w, selectedReceiptShard)
 	defer stopNativeRequest()
 	warnCtx, finishWarnings := receipt.WithDLPWarningBudget(requestCtx, rp.receiptEmitter(), selectedReceiptShard)
 	if rp.owner != nil {

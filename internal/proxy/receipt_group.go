@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -75,12 +76,20 @@ const (
 
 // nativeRequestContext interrupts upstream HTTP work on capacity stop.
 // The handler still owns its receipt reservation until its outcome is written.
-func nativeRequestContext(ctx context.Context, admission receipt.EmitOpts) (context.Context, func()) {
+func nativeRequestContext(ctx context.Context, w http.ResponseWriter, admission receipt.EmitOpts) (context.Context, func()) {
 	if admission.NativeLease == nil {
 		return ctx, func() {}
 	}
 	ctx, cancel := context.WithCancelCause(ctx)
-	stop := admission.NativeLease.OnStop(func() { cancel(ael.ErrCapacity) })
+	stop := admission.NativeLease.OnStop(func() {
+		cancel(ael.ErrCapacity)
+		// The capacity watcher closes the listener only after this lease
+		// settles. A client that has stopped reading blocks in the response
+		// write, and cancelling the request does not unblock that write.
+		if w != nil {
+			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(-time.Second))
+		}
+	})
 	return ctx, func() {
 		stop()
 		cancel(nil)

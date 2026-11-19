@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -499,4 +500,120 @@ func TestEmbeddedMCPNativeCapacityClosesReceiptGroupAndRestarts(t *testing.T) {
 	if got := receipt.VerifyReceiptGroup(dir, next.GroupID, trusted); got.Verdict != receipt.GroupValid {
 		t.Fatalf("closed successor group: %+v", got)
 	}
+}
+
+func stallingForwardUpstream(t *testing.T) (*httptest.Server, <-chan struct{}) {
+	t.Helper()
+	blocked := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		controller := http.NewResponseController(w)
+		chunk := make([]byte, 32<<10)
+		written := 0
+		for {
+			if err := controller.SetWriteDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+				return
+			}
+			if _, err := w.Write(chunk); err != nil {
+				if written >= 4 {
+					close(blocked)
+					<-r.Context().Done()
+				}
+				return
+			}
+			written++
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	return upstream, blocked
+}
+
+func holdUnreadForwardResponse(ctx context.Context, client *http.Client, rawURL string, release <-chan struct{}) <-chan error {
+	firstErr := make(chan error, 1)
+	go func() {
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if reqErr != nil {
+			firstErr <- reqErr
+			return
+		}
+		resp, doErr := client.Do(req)
+		if resp != nil {
+			defer func() { _ = resp.Body.Close() }()
+		}
+		if doErr != nil {
+			firstErr <- doErr
+			return
+		}
+		<-release
+	}()
+	return firstErr
+}
+
+func TestNativeCapacityExitUnblocksStalledForwardClient(t *testing.T) {
+	dir, configPath := drainReceiptConfig(t, 1)
+	data, err := os.ReadFile(filepath.Clean(configPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, []byte("  require_receipts: true\ninternal: []\nssrf:\n  ip_allowlist: [127.0.0.0/8]\nforward_proxy:\n  enabled: true\n  sni_verification: false\nresponse_scanning:\n  enabled: true\n  exempt_domains: [\"127.0.0.1\"]\n")...)
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	upstream, upstreamBlocked := stallingForwardUpstream(t)
+	slot := ael.ActivityRecordLimit(len(receipt.ActionUnclassified), 36)
+	s, logs := newTestServerForStart(t, func(o *ServerOpts) {
+		o.ConfigFile = configPath
+		o.Listen, o.ListenChanged = serverTestEphemeralListen, true
+		o.nativeAELCapacityLimit = 100*slot + 2048
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	run := runJoined(t, ctx, s.Start, nil)
+	address := drainListenerAddress(t, logs, "  Listen: ")
+	proxyURL, err := url.Parse("http://" + address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stalledClient := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL), DisableCompression: true}}
+	releaseStall := make(chan struct{})
+	t.Cleanup(func() { close(releaseStall) })
+	firstErr := holdUnreadForwardResponse(ctx, stalledClient, upstream.URL, releaseStall)
+	select {
+	case <-upstreamBlocked:
+	case err := <-firstErr:
+		t.Fatalf("forward request ended before the client stalled the response: %v", err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+
+	const exitLimit = 2 * time.Second
+	stoppedAt := time.Now()
+	exit, cancelExit := context.WithDeadline(ctx, stoppedAt.Add(exitLimit))
+	defer cancelExit()
+	req, err := http.NewRequestWithContext(exit, http.MethodGet, upstream.URL+"/capacity-stop", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := stalledClient.Do(req)
+	if err != nil {
+		t.Fatalf("capacity refusal request: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil || resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(body), ael.ErrCapacity.Error()) {
+		t.Fatalf("capacity refusal: status=%d body=%q error=%v", resp.StatusCode, body, err)
+	}
+	select {
+	case err := <-run:
+		if !errors.Is(err, ael.ErrCapacity) || cliutil.ExitCodeOf(err) != 1 {
+			t.Fatalf("capacity exit: %v", err)
+		}
+	case <-exit.Done():
+		t.Fatal("stalled forward client delayed the capacity exit")
+	}
+	if elapsed := time.Since(stoppedAt); elapsed > exitLimit {
+		t.Fatalf("capacity exit returned after %s, limit %s", elapsed, exitLimit)
+	}
+	assertDrainEvidence(t, dir, false, false)
 }
