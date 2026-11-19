@@ -28,6 +28,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
@@ -690,4 +691,41 @@ func TestV3WebSocketFailedClientUpgradeSettlesUpstream(t *testing.T) {
 		}
 	}
 	t.Fatalf("upstream intent was not settled as withheld: %v", *result.Counts.Decisions)
+}
+
+func TestV3ReverseEnvelopeMatchesSendReceipt(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportReverse, true, nil)
+	target := &url.URL{Scheme: "https", Host: "upstream.vendor.example"}
+	reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
+	reverse.SetOwnerProxy(p)
+	var emitter atomic.Pointer[envelope.Emitter]
+	emitter.Store(envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: testEnvelopeConfigHash}))
+	reverse.SetEnvelopeEmitter(&emitter)
+	var mediationHeader string
+	reverse.proxy.Transport.(*reverseSigningRoundTripper).base = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		mediationHeader = r.Header.Get(envelope.HeaderName)
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody, Request: r,
+		}, nil
+	})
+	w := httptest.NewRecorder()
+	reverse.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("response status = %d, want 200", w.Code)
+	}
+	mediation, err := envelope.Parse(mediationHeader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptID := w.Header().Get(blockreason.HeaderRecordedReceipt)
+	if receiptID == "" || mediation.ReceiptID != receiptID {
+		t.Fatalf("upstream envelope action = %q, confirmed send receipt = %q", mediation.ReceiptID, receiptID)
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil || *result.Counts.EffectsCompleted != 2 {
+		t.Fatalf("reverse send and delivery did not verify: %+v (%v)", result, err)
+	}
 }

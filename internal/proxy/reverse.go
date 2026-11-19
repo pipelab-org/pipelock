@@ -1851,8 +1851,12 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		if actor == "" {
 			actor = "anonymous"
 		}
+		envelopeActionID := reverseActionID
+		if rp.owner == nil || rp.owner.receiptV3 == nil {
+			envelopeActionID = receipt.NewActionID()
+		}
 		opts := envelope.BuildOpts{
-			ActionID:   receipt.NewActionID(),
+			ActionID:   envelopeActionID,
 			Action:     string(receipt.ClassifyHTTP(r.Method)),
 			Verdict:    forwardedVerdict,
 			SideEffect: string(receipt.SideEffectFromMethod(r.Method)),
