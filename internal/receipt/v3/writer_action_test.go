@@ -187,6 +187,26 @@ func (ctx waitingReceiptContext) Done() <-chan struct{} {
 func TestStreamWriterCancelsWaitBehindFlush(t *testing.T) {
 	opts := writerTestOptions(t.TempDir())
 	w := requireWriter(t, opts, localWriterStorage())
+	effects := make(chan string, 2)
+	upstream := httptest.NewServer(http.HandlerFunc(func(resp http.ResponseWriter, req *http.Request) {
+		effects <- req.URL.Path
+		resp.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+	admitAndSend := func(ctx context.Context, id string) error {
+		if err := w.WriteAction(ctx, writerTestIntent(id), PolicySnapshot{}); err != nil {
+			return err
+		}
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL+"/"+id, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := upstream.Client().Do(req)
+		if err != nil {
+			return err
+		}
+		return resp.Body.Close()
+	}
 	entered, resume := make(chan struct{}), make(chan struct{})
 	w.active.file = syncCallbackFile{
 		writerFile: w.active.file,
@@ -197,7 +217,7 @@ func TestStreamWriterCancelsWaitBehindFlush(t *testing.T) {
 	}
 	first := make(chan error, 1)
 	go func() {
-		first <- w.WriteAction(t.Context(), writerTestIntent("first"), PolicySnapshot{})
+		first <- admitAndSend(t.Context(), "first")
 	}()
 	<-entered
 
@@ -206,17 +226,24 @@ func TestStreamWriterCancelsWaitBehindFlush(t *testing.T) {
 	ctxWithWait := waitingReceiptContext{Context: ctx, waiting: make(chan struct{})}
 	second := make(chan error, 1)
 	go func() {
-		second <- w.WriteAction(ctxWithWait, writerTestIntent("second"), PolicySnapshot{})
+		second <- admitAndSend(ctxWithWait, "second")
 	}()
 	<-ctxWithWait.waiting
 	cancel()
 	err := <-second
+	beforeConfirmation := len(effects)
 	close(resume)
 	if err := <-first; err != nil {
 		t.Fatal(err)
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled waiter: %v", err)
+	}
+	if beforeConfirmation != 0 || len(effects) != 1 {
+		t.Fatalf("endpoint observed %d calls before confirmation and %d in total", beforeConfirmation, len(effects))
+	}
+	if got := <-effects; got != "/first" {
+		t.Fatalf("endpoint observed %q, want /first", got)
 	}
 	if w.active.confirmed.Seq != 1 || w.durability.DurabilityBlocks != 0 {
 		t.Fatalf("cancelled waiter changed receipts or counters: %+v / %+v", w.active.confirmed, w.durability)
