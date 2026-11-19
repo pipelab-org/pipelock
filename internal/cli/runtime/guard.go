@@ -104,6 +104,10 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 	if len(opts.Command) == 0 {
 		return errors.New("guard command is empty")
 	}
+	if opts.Stderr == nil {
+		opts.Stderr = io.Discard
+	}
+	opts.Stderr = &stderrSyncWriter{w: opts.Stderr}
 	opts.Config = opts.Config.Clone()
 	if err := opts.Config.ResolveRuntimeCredentials(); err != nil {
 		return err
