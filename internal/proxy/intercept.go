@@ -120,6 +120,7 @@ type InterceptContext struct {
 	Proxy          *Proxy
 	// receiptShard is selected once for each decrypted inner HTTP request.
 	receiptShard    receipt.EmitOpts
+	tunnelAdmission receipt.EmitOpts
 	EnvelopeEmitter *envelope.Emitter
 	// EnvelopeEmitterSet distinguishes an explicit nil admission snapshot
 	// from tests that omitted the snapshot entirely.
@@ -217,6 +218,9 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
 		opts = withReceiptConfig(opts, ic.Config)
 	}
 	opts = withReceiptShard(opts, ic.receiptShard)
+	if opts.Layer == nativeStreamCloseLayer {
+		opts = opts.NativeTerminal()
+	}
 	if ic.Proxy.receiptGroupPtr.Load() != nil {
 		e := ic.Proxy.receiptEmitterPtr.Load()
 		if e == nil {
@@ -341,7 +345,7 @@ func interceptEmitOutcomeReceipt(ic *InterceptContext, opts receipt.EmitOpts, ve
 	if ic.Config != nil {
 		opts = withReceiptConfig(opts, ic.Config)
 	}
-	opts = withReceiptShard(opts, ic.receiptShard)
+	opts = withReceiptShard(opts, ic.receiptShard).NativeTerminal()
 	if group := ic.Proxy.receiptGroupPtr.Load(); group != nil {
 		if err := group.shards.Emit(opts); err != nil {
 			ic.Proxy.logReceiptChannelBroken(opts, err)
@@ -628,6 +632,11 @@ func interceptTunnel(
 	// Serve blocks until the connection closes or the server is shut down.
 	// Normal termination returns http.ErrServerClosed (from srv.Close above)
 	// or net.ErrClosed (from listener). Both are expected.
+	stopCapacityClose := ic.tunnelAdmission.NativeLease.OnStop(func() {
+		// Shutdown closes idle connections and lets admitted requests finish.
+		_ = srv.Shutdown(context.WithoutCancel(ctx))
+	})
+	defer stopCapacityClose()
 	err := srv.Serve(ln)
 	close(done)
 	// HTTP/2 connection shutdown can outlive Serve: wait for the active
@@ -658,7 +667,16 @@ func newInterceptHandler(
 		ic := &requestContext
 		w = ic.Proxy.withAdaptiveRefusal(w, adaptiveRefusalOptions{config: ic.Config, agent: ic.Agent, clientIP: ic.ClientIP, auth: ic.ActorAuth, host: func() string { return ic.TargetHost }, transport: "intercept", level: func() int { return interceptEscalationLevel(ic) }})
 		if ic.Proxy != nil {
-			ic.receiptShard = ic.Proxy.admitReceiptShard()
+			var admissionErr error
+			ic.receiptShard, admissionErr = ic.Proxy.reserveReceiptAdmission()
+			if admissionErr != nil {
+				refuseReceiptAdmission(w, admissionErr)
+				return
+			}
+			defer ic.receiptShard.ReleaseNativeAdmission()
+			warnCtx, finishWarnings := ic.Proxy.receiptWarningContext(r.Context(), ic.receiptShard)
+			defer finishWarnings()
+			r = r.WithContext(warnCtx)
 		}
 		if !ic.Proxy.stateIdentityConfigCurrent(ic.Config, ic.ActorAuth) {
 			ic.Logger.LogBlocked(newHTTPAuditContext(r.Context(), ic.Logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent}), "identity_reload", stateIdentityReloadReason)
@@ -2470,9 +2488,10 @@ func newInterceptHandler(
 				ic.Metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportConnect)
 			}
 			sseOpts := SSEDispatchOptions{
-				IsA2A:      isA2A,
-				A2A:        &ic.Config.A2AScanning,
-				GenericSSE: &ic.Config.ResponseScanning.SSEStreaming,
+				nativeAdmission: ic.receiptShard,
+				IsA2A:           isA2A,
+				A2A:             &ic.Config.A2AScanning,
+				GenericSSE:      &ic.Config.ResponseScanning.SSEStreaming,
 				Generic: mcp.GenericSSEScanOptions{
 					Target:             targetURL,
 					Suppress:           ic.Config.Suppress,
@@ -2555,6 +2574,15 @@ func newInterceptHandler(
 
 			flusher, _ := serverWriter.(http.Flusher)
 			streamErr := DispatchSSEScan(r.Context(), resp.Body, httpstream.Writer{Writer: w}, flusher, ic.Scanner, sseOpts)
+			if isNativeCapacityStop(streamErr) {
+				if ic.Config.FlightRecorder.RequireReceipts {
+					emitOutcome(sseAllowReceipt, config.ActionAllow, resp.StatusCode, -1, nativeCapacityStopReason)
+				} else {
+					_ = interceptEmitReceipt(ic, nativeStreamCloseReceipt(sseAllowReceipt))
+				}
+				_ = httpstream.Abort(r.Context(), streamErr)
+				return
+			}
 			if errors.Is(streamErr, mcp.ErrReceiptRequired) {
 				if ic.Proxy != nil {
 					ic.Proxy.recordRequiredReceiptBlock(streamErr, TransportConnect)

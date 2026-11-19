@@ -303,6 +303,11 @@ func ForwardScannedInput(
 	// the next message). Stop the watcher before the final cancel below.
 	killWatchCtx, stopKillWatch := context.WithCancel(context.Background())
 	go watchDeferredKillSwitch(killWatchCtx, ks, opts.deferManager())
+	capacityDeferralsDone := make(chan struct{})
+	go func() {
+		defer close(capacityDeferralsDone)
+		watchCapacityDeferrals(killWatchCtx, opts)
+	}()
 	defer func() {
 		stopKillWatch()
 		resolverRuntime.Cancel()
@@ -310,6 +315,7 @@ func ForwardScannedInput(
 			manager.ResolveAll(config.ActionBlock, deferred.SourceCancel)
 		}
 		resolverRuntime.Wait()
+		<-capacityDeferralsDone
 		close(blockedCh)
 	}()
 	var forwardMu sync.Mutex
@@ -347,8 +353,19 @@ func ForwardScannedInput(
 	// lineNum counts non-empty messages, not raw lines. StdioReader skips
 	// empty lines internally, so this is a message index.
 	lineNum := 0
+	baseOpts := opts
+	var admission receipt.EmitOpts
+	finishWarnings := func() {}
+	defer func() {
+		finishWarnings()
+		admission.ReleaseNativeAdmission()
+	}()
 
 	for {
+		finishWarnings()
+		admission.ReleaseNativeAdmission()
+		admission = receipt.EmitOpts{}
+		opts := baseOpts
 		line, err := reader.ReadMessage()
 		if err != nil {
 			expectedClose := opts.sessionExit.inProgress() && isSessionExitCloseErr(err)
@@ -379,6 +396,14 @@ func ForwardScannedInput(
 		// redaction step so downstream gates (DoW, taint) see the
 		// redacted args while ID / Method / ToolCallName stay stable.
 		frame := ParseMCPFrame(line)
+		var admissionErr error
+		admission, admissionErr = opts.admitNativeRequest()
+		if admissionErr != nil {
+			sendMCPDenial(opts, nativeAdmissionAudit(), nativeAdmissionDenial(frame.ID, admissionErr), blockedCh)
+			return
+		}
+		opts.nativeAdmission = admission
+		opts.WarnContext, finishWarnings = opts.nativeWarningContext(opts.warnContext(), admission)
 
 		// Kill switch: deny all messages when active.
 		if ks != nil {
@@ -707,7 +732,7 @@ func ForwardScannedInput(
 		receiptSeverityOverride := ""
 		// Keep the admission choice for the later response outcome. Blocked
 		// requests also choose once when their first receipt is emitted.
-		var receiptShard receipt.EmitOpts
+		receiptShard := admission
 
 		emitToolReceipt := func(receiptVerdict string, contractGate ...mcpContractGateOutput) error {
 			if verdict.Method != methodToolsCall && receiptVerdict == config.ActionAllow && !opts.requireReceipts() {
@@ -814,7 +839,8 @@ func ForwardScannedInput(
 			refusal, err := forwardMessage(msg, taskReleaseReason)
 			if refusal != "" {
 				if isTrackableRequest(msg, verdict.ID) {
-					_, _ = consumeTrackedRequestOutcome(tracker, verdict.ID)
+					outcome, _ := consumeTrackedRequestOutcome(tracker, verdict.ID)
+					outcome.releaseNativeLease()
 				}
 				refuseTaskRelease(refusal)
 				return false, nil
@@ -1189,11 +1215,17 @@ func ForwardScannedInput(
 					PolicyHash:          policyHash,
 				})
 				outcomeReceipt = mcpWithContractReceipt(outcomeReceipt, contractGate)
-				outcomeReceipt.ShardIndex = receiptShard.ShardIndex
-				outcomeReceipt.ShardSelected = receiptShard.ShardSelected
-				tracker.TrackOutcome(verdict.ID, TrackedRequestOutcome{Receipt: outcomeReceipt, Method: verdict.Method})
+				outcomeReceipt = outcomeReceipt.InheritAdmission(receiptShard)
+				if err := trackNativeOutcome(tracker, verdict.ID, TrackedRequestOutcome{Receipt: outcomeReceipt, Method: verdict.Method}); err != nil {
+					emitMCPBlockedOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, outcomeReceipt, -1, "request_tracking_failed", true)
+					sendMCPDenial(opts, nativeAdmissionAudit(), nativeAdmissionDenial(verdict.ID, err), blockedCh)
+					continue
+				}
 			} else if isTrackableRequest(fwdLine, verdict.ID) {
-				tracker.TrackRequest(verdict.ID, verdict.Method)
+				if err := trackNativeOutcome(tracker, verdict.ID, TrackedRequestOutcome{Receipt: admission, Method: verdict.Method}); err != nil {
+					sendMCPDenial(opts, nativeAdmissionAudit(), nativeAdmissionDenial(verdict.ID, err), blockedCh)
+					continue
+				}
 			}
 			if released, err := writeReleasedMessage(fwdLine); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
@@ -1565,7 +1597,8 @@ func ForwardScannedInput(
 			// deferred cleanup safe after this early denial cleanup.
 			var finishDeniedRelease func()
 			var taskRefusal string
-			holdErr := manager.Hold(deferred.HeldAction{
+			heldOpts, finishHeldAdmission, holdErr := opts.splitDeferredAdmission()
+			heldAction := deferred.HeldAction{
 				DeferID:       actionID,
 				ActionID:      actionID,
 				ShardIndex:    receiptShard.ShardIndex,
@@ -1583,7 +1616,7 @@ func ForwardScannedInput(
 					SessionIDOriginal: receiptSessionIDOriginal,
 				},
 				BeforeAllow: func() (func(), bool) {
-					return deferredReleasePrecheck(opts, deferredGeneration)
+					return deferredReleasePrecheck(heldOpts, deferredGeneration)
 				},
 				// Prepare settles the final decision before the manager
 				// journals it, so the journal and the receipt agree. On an
@@ -1592,7 +1625,7 @@ func ForwardScannedInput(
 				// returns or panics.
 				Prepare: func(res deferred.Resolution) (deferred.Resolution, func()) {
 					if res.FinalDecision == config.ActionAllow {
-						if authErr := authorizeMCP(stdioInputCtx, heldAuthorityRef, heldAuthorityCarrierErr, heldAuthorityFrame, opts); authErr != nil {
+						if authErr := authorizeMCP(heldOpts.warnContext(), heldAuthorityRef, heldAuthorityCarrierErr, heldAuthorityFrame, heldOpts); authErr != nil {
 							res.FinalDecision = config.ActionBlock
 							res.ResolutionSource = deferred.SourceAuthority
 							res.Reason = "authority verification failed"
@@ -1608,7 +1641,7 @@ func ForwardScannedInput(
 					// first so no wait for another write sits between the
 					// kill-switch claim and this write; see
 					// claimDeferredRelease for the ordering argument.
-					prepared, finish := lockAndClaimDeferredRelease(&forwardMu, opts, deferredGeneration, res)
+					prepared, finish := lockAndClaimDeferredRelease(&forwardMu, heldOpts, deferredGeneration, res)
 					if prepared.FinalDecision == config.ActionAllow {
 						if reason := mcpTaskReleaseRefusal(opts, heldAuthorityFrame, taintDecision, false); reason != "" {
 							prepared.FinalDecision = config.ActionBlock
@@ -1620,21 +1653,22 @@ func ForwardScannedInput(
 						finish = sync.OnceFunc(finish)
 						finishDeniedRelease = finish
 					}
-					prepared = receiptSettle.probeAllow(opts, prepared)
+					prepared = receiptSettle.probeAllow(heldOpts, prepared)
 					return prepared, finish
 				},
 				// The release receipt is written while the journal shows the
 				// release as pending: the allow first, then a corrective block
 				// if the journal cannot record the allow as final.
 				AfterJournal: func(res deferred.Resolution) error {
-					return receiptSettle.commitAllow(opts, logW, res)
+					return receiptSettle.commitAllow(heldOpts, logW, res)
 				},
 				Resolve: func(res deferred.Resolution) {
-					denialOpts := opts
+					defer finishHeldAdmission()
+					denialOpts := heldOpts
 					denialOpts.denialTerminal = &terminalSlot
 					denialAudit := mcpDeferredDenialAudit(res)
 					authorityDenied := res.ResolutionSource == deferred.SourceAuthority
-					if emitErr := receiptSettle.ensure(opts, logW, res); emitErr != nil {
+					if emitErr := receiptSettle.ensure(heldOpts, logW, res); emitErr != nil {
 						if finishDeniedRelease != nil {
 							finishDeniedRelease()
 						}
@@ -1701,8 +1735,15 @@ func ForwardScannedInput(
 						}
 					}
 				},
-			})
+			}
+			if holdErr == nil {
+				holdErr = manager.Hold(heldAction)
+			}
+			if holdErr == nil && heldOpts.nativeAdmission.NativeLease.Stopping() {
+				_ = manager.Resolve(actionID, config.ActionBlock, deferred.SourceCancel)
+			}
 			if holdErr != nil {
+				finishHeldAdmission()
 				errorMessage, emitErr := emitHoldFailureResolution(opts, logW, holdErr, holdFailureResolution{
 					DeferID:       actionID,
 					ShardIndex:    receiptShard.ShardIndex,

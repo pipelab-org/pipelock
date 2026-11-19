@@ -468,6 +468,7 @@ func (rp *ReverseProxyHandler) emitOutcomeReceiptWithPattern(cfg *config.Config,
 	if cfg == nil || !cfg.FlightRecorder.RequireReceipts {
 		return
 	}
+	opts = opts.NativeTerminal()
 	opts.DecisionPhase = receipt.DecisionPhaseOutcome
 	opts.Verdict = config.ActionAllow
 	opts.Layer = receiptOutcomeLayer
@@ -792,9 +793,26 @@ func (rp *ReverseProxyHandler) recordRequestWarningSignal(agent, clientIP, reque
 // then forward to upstream via the reverse proxy.
 func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var selectedReceiptShard receipt.EmitOpts
+	var admissionErr error
 	if rp.owner != nil {
-		selectedReceiptShard = rp.owner.admitReceiptShard()
+		selectedReceiptShard, admissionErr = rp.owner.reserveReceiptAdmission()
+	} else {
+		selectedReceiptShard, admissionErr = rp.receiptEmitter().AdmitNative(receipt.EmitOpts{}, nativeRequestRecords)
+		if admissionErr == nil {
+			selectedReceiptShard, admissionErr = selectedReceiptShard.ReserveNativeTerminal()
+		}
 	}
+	if admissionErr != nil {
+		refuseReceiptAdmission(w, admissionErr)
+		return
+	}
+	defer selectedReceiptShard.ReleaseNativeAdmission()
+	warnCtx, finishWarnings := receipt.WithDLPWarningBudget(r.Context(), rp.receiptEmitter(), selectedReceiptShard)
+	if rp.owner != nil {
+		warnCtx, finishWarnings = rp.owner.receiptWarningContext(r.Context(), selectedReceiptShard)
+	}
+	defer finishWarnings()
+	r = r.WithContext(warnCtx)
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyReceiptShard, selectedReceiptShard))
 	snap, releaseScanner, scOK := rp.snapshotAndAcquire()
 	defer releaseScanner()
@@ -3131,9 +3149,10 @@ responseScanning:
 		actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
 		sseLayer := LayerSSEStream
 		sseOpts := SSEDispatchOptions{
-			IsA2A:      false,
-			A2A:        &cfg.A2AScanning,
-			GenericSSE: &cfg.ResponseScanning.SSEStreaming,
+			nativeAdmission: receiptShardFromContext(resp.Request.Context()),
+			IsA2A:           false,
+			A2A:             &cfg.A2AScanning,
+			GenericSSE:      &cfg.ResponseScanning.SSEStreaming,
 			Generic: mcp.GenericSSEScanOptions{
 				Target:             resp.Request.URL.String(),
 				Suppress:           cfg.Suppress,
@@ -3168,6 +3187,13 @@ responseScanning:
 				observeHTTPResponseFindings(responseTaintRec, cfg, targetURL, sseContentType, "reverse_response", session.MergeFindingKinds(sseResponseFindingKinds, sseTaintFindingKinds(err)))
 			}
 			if err == nil {
+				return
+			}
+			if isNativeCapacityStop(err) {
+				recordReverseOutcome(resp.StatusCode, -1, nativeCapacityStopReason)
+				if !cfg.FlightRecorder.RequireReceipts {
+					_ = rp.emitReceipt(nativeStreamCloseReceipt(receipt.EmitOpts{Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL, RequestID: requestID, Agent: agent}).InheritAdmission(sseOpts.nativeAdmission).NativeTerminal())
+				}
 				return
 			}
 			if errors.Is(err, mcp.ErrReceiptRequired) {

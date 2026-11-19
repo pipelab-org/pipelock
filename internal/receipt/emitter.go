@@ -594,6 +594,7 @@ func (e *Emitter) SignerKeyHex() string {
 // EmitOpts holds the per-decision context for emitting a receipt.
 type EmitOpts struct {
 	NativeLease            *aelpkg.Lease
+	NativeTerminalLease    *aelpkg.Lease
 	promptInjectionModeSet bool
 	promptInjectionMode    string
 	// ContentScanContext can cancel an ordinary action's content inspection.
@@ -811,6 +812,79 @@ func (e *Emitter) ReserveNativeRecords(records int) (*aelpkg.Lease, error) {
 	}
 	const uuidTextBytes = len("00000000-0000-7000-8000-000000000000")
 	return e.nativeAEL.Reserve(records, aelpkg.ActivityRecordLimit(len(ActionUnclassified), uuidTextBytes))
+}
+
+// AdmitNative reserves native evidence space for the lifetime of a mediated
+// unit. The shared stop remains in force across signed runs.
+func (e *Emitter) AdmitNative(opts EmitOpts, records int) (EmitOpts, error) {
+	select {
+	case <-e.NativeCapacity().Stopped():
+		return opts, aelpkg.ErrCapacity
+	default:
+	}
+	if e == nil || !e.nativeAEL.Opened() || errors.Is(e.HealthError(), errEmitterRetired) {
+		// An aborted replacement can leave the retired writer published.
+		// Continue policy inspection so an existing denial keeps its reason.
+		// Required effects still pass the receipt health gate before forwarding.
+		return opts, nil
+	}
+	lease, err := e.ReserveNativeRecords(records)
+	if err != nil {
+		return opts, err
+	}
+	opts.NativeLease = lease
+	return opts, nil
+}
+
+// ReserveNativeChild admits another unit on the same signed stream.
+func (opts EmitOpts) ReserveNativeChild(records int) (EmitOpts, error) {
+	lease, err := opts.NativeLease.Reserve(records)
+	opts.NativeLease = lease
+	opts.NativeTerminalLease = nil
+	return opts, err
+}
+
+// ReserveNativeTerminal sets aside part of the admitted budget for terminal
+// evidence. Supporting decisions cannot consume the terminal reservation.
+func (opts EmitOpts) ReserveNativeTerminal() (EmitOpts, error) {
+	// A terminal outcome, a stream close decision, and a failure marker.
+	const terminalRecords = 3
+	terminal, err := opts.NativeLease.Split(terminalRecords)
+	if err != nil {
+		opts.NativeLease.Release()
+		return EmitOpts{}, err
+	}
+	opts.NativeTerminalLease = terminal
+	return opts, nil
+}
+
+// ReleaseNativeAdmission settles both parts of the unit's reservation.
+func (opts EmitOpts) ReleaseNativeAdmission() {
+	opts.NativeLease.Release()
+	opts.NativeTerminalLease.Release()
+}
+
+// NativeTerminal routes standalone close or outcome evidence to its reserved
+// slots. The returned options also keep any follow-up failure marker there.
+func (opts EmitOpts) NativeTerminal() EmitOpts {
+	if opts.NativeTerminalLease != nil {
+		opts.NativeLease = opts.NativeTerminalLease
+		opts.NativeTerminalLease = nil
+	}
+	return opts
+}
+
+// InheritAdmission routes a receipt to the shard and reservation for its unit.
+func (opts EmitOpts) InheritAdmission(admission EmitOpts) EmitOpts {
+	if admission.ShardSelected {
+		opts.ShardIndex = admission.ShardIndex
+		opts.ShardSelected = true
+	}
+	if admission.NativeLease != nil {
+		opts.NativeLease = admission.NativeLease
+		opts.NativeTerminalLease = admission.NativeTerminalLease
+	}
+	return opts
 }
 
 // Emit creates, signs, and records an action receipt for a proxy decision.

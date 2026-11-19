@@ -120,7 +120,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	var receiptContractGate *mcpContractGateOutput
 	redirectReceiptEmitted := false
 	requireReceipts := opts.requireReceipts()
-	var receiptShard receipt.EmitOpts
+	receiptShard := opts.nativeAdmission
 
 	// Parse the inbound frame once. Every gate below reads ID / Method /
 	// tool fields from this frame instead of re-parsing. Redaction may
@@ -298,8 +298,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			if receiptContractGate != nil {
 				outcomeReceipt = mcpWithContractReceipt(outcomeReceipt, *receiptContractGate)
 			}
-			outcomeReceipt.ShardIndex = receiptShard.ShardIndex
-			outcomeReceipt.ShardSelected = receiptShard.ShardSelected
+			outcomeReceipt = outcomeReceipt.InheritAdmission(receiptShard)
 			result.Outcome = TrackedRequestOutcome{Receipt: outcomeReceipt, Method: mcpMethod}
 		}
 	}()

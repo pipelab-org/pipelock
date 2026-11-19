@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
@@ -55,10 +56,11 @@ func IsSSECompressed(h http.Header) bool {
 // LLM SSE scanner runs (still flushing pass-through when GenericSSE
 // is nil or disabled).
 type SSEDispatchOptions struct {
-	IsA2A      bool
-	A2A        *config.A2AScanning
-	GenericSSE *config.GenericSSEScanning
-	Generic    mcp.GenericSSEScanOptions
+	nativeAdmission receipt.EmitOpts
+	IsA2A           bool
+	A2A             *config.A2AScanning
+	GenericSSE      *config.GenericSSEScanning
+	Generic         mcp.GenericSSEScanOptions
 }
 
 // sseFindingReceiptConfirmer admits warned events before their wire write.
@@ -69,6 +71,11 @@ func sseFindingReceiptConfirmer(cfg *config.Config, opts receipt.EmitOpts, emit 
 		return nil
 	}
 	return func(finding error) error {
+		opts, err := opts.ReserveNativeChild(2)
+		if err != nil {
+			return err
+		}
+		defer opts.NativeLease.Release()
 		opts.ActionID = receipt.NewActionID()
 		opts.Verdict = config.ActionWarn
 		opts.Layer = LayerSSEStream
@@ -99,10 +106,21 @@ func DispatchSSEScan(
 	sc *scanner.Scanner,
 	opts SSEDispatchOptions,
 ) error {
-	if opts.IsA2A {
-		return mcp.ScanA2AStreamWithOptions(ctx, body, w, flusher, sc, mcp.A2AStreamOptions{Config: opts.A2A, Warning: opts.Generic})
+	lease := opts.nativeAdmission.NativeLease
+	if source, ok := body.(io.Closer); ok {
+		stopCapacityClose := lease.OnStop(func() { _ = source.Close() })
+		defer stopCapacityClose()
 	}
-	return mcp.ScanGenericSSEStreamWithOptions(ctx, body, w, flusher, sc, opts.GenericSSE, opts.Generic)
+	var err error
+	if opts.IsA2A {
+		err = mcp.ScanA2AStreamWithOptions(ctx, body, w, flusher, sc, mcp.A2AStreamOptions{Config: opts.A2A, Warning: opts.Generic})
+	} else {
+		err = mcp.ScanGenericSSEStreamWithOptions(ctx, body, w, flusher, sc, opts.GenericSSE, opts.Generic)
+	}
+	if lease.Stopping() && !IsSSEStreamFinding(err) && !IsSSEStreamScanError(err) {
+		return ael.ErrCapacity
+	}
+	return err
 }
 
 // IsSSEStreamFinding reports whether err originated from a streaming
@@ -220,5 +238,22 @@ func HijackResponseForSSE(
 		}
 	}()
 
+	if opts.nativeAdmission.NativeLease != nil {
+		return &nativeSSEBody{PipeReader: pr, upstream: upstream, finished: done}
+	}
 	return pr
+}
+
+// The handler's reservation must outlive the final stream evidence.
+type nativeSSEBody struct {
+	*io.PipeReader
+	upstream io.Closer
+	finished <-chan struct{}
+}
+
+func (b *nativeSSEBody) Close() error {
+	err := b.PipeReader.Close()
+	_ = b.upstream.Close()
+	<-b.finished
+	return err
 }

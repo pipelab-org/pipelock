@@ -7,14 +7,19 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -255,5 +260,113 @@ func TestEmitDLPWarnMissingTransport(t *testing.T) {
 	}
 	if !strings.Contains(string(body), `pipelock_dlp_warn_matches_total{pattern="warn-transport",transport="unknown"} 1`) {
 		t.Fatalf("expected transport=unknown in metrics, got:\n%s", string(body))
+	}
+}
+
+func TestNativeHeaderWarningsBoundSignedEvidence(t *testing.T) {
+	_, key, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir}, nil, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+	session, err := acquireRunSession(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := receipt.NewEmitter(receipt.EmitterConfig{Recorder: rec, PrivKey: key, ConfigHash: runtimeTestPolicyHash, Session: session})
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatal(err)
+	}
+	const pattern = "fixture advisory"
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/path", nil)
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.ScanHeaders = true
+	cfg.RequestBodyScanning.SensitiveHeaders = nil
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name: pattern, Regex: "^FIXTURE-ADVISORY$", Severity: config.SeverityHigh, Action: config.ActionWarn,
+	})
+	for i := range 17 {
+		header := fmt.Sprintf("X-Fixture-%02d", i)
+		cfg.RequestBodyScanning.SensitiveHeaders = append(cfg.RequestBodyScanning.SensitiveHeaders, header)
+		req.Header.Set(header, "FIXTURE-ADVISORY")
+	}
+	sc, err := scanner.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var auditLog syncBuffer
+	logger, err := audit.NewWithStream("json", "stdout", "", true, true, &auditLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
+	sc.SetDLPWarnHook(func(ctx context.Context, name, severity string) {
+		emitDLPWarn(logger, nil, e, ctx, name, severity)
+	})
+
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+	target, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cp atomic.Pointer[config.Config]
+	var sp atomic.Pointer[scanner.Scanner]
+	var ep atomic.Pointer[receipt.Emitter]
+	cp.Store(cfg)
+	sp.Store(sc)
+	ep.Store(e)
+	rp := proxy.NewReverseProxy(target, &cp, &sp, logger, metrics.New(), nil, nil, nil)
+	rp.SetReceiptEmitter(&ep)
+	response := httptest.NewRecorder()
+	rp.ServeHTTP(response, req)
+	if response.Code != http.StatusNoContent || hits.Load() != 1 {
+		t.Fatalf("upstream effect: status=%d hits=%d body=%s", response.Code, hits.Load(), response.Body)
+	}
+	if err := emitSessionCloseAndTranscriptRoot(e, session); err != nil {
+		t.Fatal(err)
+	}
+	result, err := recorder.QuerySession(dir, session, &recorder.QueryFilter{Type: "action_receipt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var individual, summary int
+	for _, entry := range result.Entries {
+		raw, err := json.Marshal(entry.Detail)
+		if err != nil {
+			t.Fatal(err)
+		}
+		signed, err := receipt.Unmarshal(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch signed.ActionRecord.Pattern {
+		case pattern:
+			individual++
+		case `additional warnings by pattern: {"fixture advisory":1}`:
+			summary++
+		default:
+			continue
+		}
+		if err := receipt.VerifyWithKey(signed, e.SignerKeyHex()); err != nil {
+			t.Fatalf("verify signed warning: %v", err)
+		}
+	}
+	if individual != 16 || summary != 1 {
+		t.Fatalf("signed warnings = %d individual and %d summary, want 16 and 1", individual, summary)
+	}
+	if got := strings.Count(auditLog.String(), `"event":"dlp_warn"`); got != 17 {
+		t.Fatalf("audit warnings = %d, want 17", got)
 	}
 }

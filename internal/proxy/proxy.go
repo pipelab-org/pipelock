@@ -1841,6 +1841,7 @@ func (p *Proxy) emitOutcomeReceiptWithPattern(cfg *config.Config, opts receipt.E
 	if cfg == nil || !cfg.FlightRecorder.RequireReceipts {
 		return
 	}
+	opts = opts.NativeTerminal()
 	opts.DecisionPhase = receipt.DecisionPhaseOutcome
 	opts.Layer = receiptOutcomeLayer
 	opts.Pattern = pattern
@@ -2226,6 +2227,7 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 		return receiptEmitterStage{}, fmt.Errorf("loading posture binding: %w", bindErr)
 	}
 	emitter := receipt.NewEmitter(receipt.EmitterConfig{
+		NativeCapacity:      p.receiptEmitterPtr.Load().NativeCapacity(),
 		Recorder:            p.recorder,
 		PrivKey:             privKey,
 		ConfigHash:          cfg.Hash(),
@@ -3153,7 +3155,7 @@ func (p *Proxy) SetLicenseRevoked(cfg *config.Config, revoked bool) bool {
 // Used by the license expiry watchdog to unbind per-agent listeners when
 // the enterprise license expires at runtime.
 func (p *Proxy) ShutdownAgentServers() error {
-	ctx, cancel := context.WithTimeout(context.Background(), p.shutdownGraceOrDefault())
+	ctx, cancel := httpstream.DrainContext(p.shutdownGraceOrDefault(), p.receiptEmitterPtr.Load().NativeCapacity().Stopped())
 	defer cancel()
 	for _, gs := range p.agentServers {
 		gs.Gate.StopHijacks()
@@ -5503,7 +5505,7 @@ func (p *Proxy) start(ctx context.Context, ln net.Listener) error {
 		}
 		return p.server.ListenAndServe()
 	}, func() error {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), p.shutdownGraceOrDefault())
+		shutdownCtx, cancel := httpstream.DrainContext(p.shutdownGraceOrDefault(), p.receiptEmitterPtr.Load().NativeCapacity().Stopped())
 		defer cancel()
 		mainGate.StopHijacks()
 		for _, gs := range p.agentServers {
@@ -5555,7 +5557,15 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	// Pre-generate a single ActionID for correlation between envelope and receipt.
 	actionID := receipt.NewActionID()
-	selectedReceiptShard := p.admitReceiptShard()
+	selectedReceiptShard, admissionErr := p.reserveReceiptAdmission()
+	if admissionErr != nil {
+		refuseReceiptAdmission(w, admissionErr)
+		return
+	}
+	defer selectedReceiptShard.ReleaseNativeAdmission()
+	warnCtx, finishWarnings := p.receiptWarningContext(r.Context(), selectedReceiptShard)
+	defer finishWarnings()
+	r = r.WithContext(warnCtx)
 
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()

@@ -379,6 +379,20 @@ func (c *HTTPClient) SendMessageWithOptions(ctx context.Context, msg []byte, opt
 	return reader, nil
 }
 
+// IsStreamingResponse reports whether an HTTP response reader carries SSE.
+func IsStreamingResponse(reader MessageReader) bool {
+	switch r := reader.(type) {
+	case *closingSSEReader:
+		return true
+	case *sessionResponseReader:
+		return IsStreamingResponse(r.reader)
+	case *initializeResponseReader:
+		return IsStreamingResponse(r.reader)
+	default:
+		return false
+	}
+}
+
 // sessionResponseReader defers header-state admission until a framed message
 // passes the caller's key guard. Invalid bytes still reach the response scanner.
 type sessionResponseReader struct {

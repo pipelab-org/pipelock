@@ -136,7 +136,15 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
 	// Pre-generate a single ActionID for correlation between envelope and receipt.
 	actionID := receipt.NewActionID()
-	selectedReceiptShard := p.admitReceiptShard()
+	selectedReceiptShard, admissionErr := p.reserveReceiptAdmission()
+	if admissionErr != nil {
+		refuseReceiptAdmission(w, admissionErr)
+		return
+	}
+	defer selectedReceiptShard.ReleaseNativeAdmission()
+	warnCtx, finishWarnings := p.receiptWarningContext(r.Context(), selectedReceiptShard)
+	defer finishWarnings()
+	r = r.WithContext(warnCtx)
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyReceiptShard, selectedReceiptShard))
 	emitConnectReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptShard(opts, selectedReceiptShard)
@@ -781,10 +789,17 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 				outcomeReason, outcomeBytes = flushFailureReason(outcomeReason), -1
 			}
 		}
+		if clientHijacked && selectedReceiptShard.NativeLease.Stopping() {
+			outcomeReason = nativeCapacityStopReason
+		}
 		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
 			outcomeReason = "license_revoked"
 		}
-		p.emitOutcomeReceipt(cfg, allowReceipt, outcomeStatus, outcomeBytes, outcomeReason)
+		if outcomeReason == nativeCapacityStopReason && !cfg.FlightRecorder.RequireReceipts {
+			_ = p.emitReceipt(nativeStreamCloseReceipt(allowReceipt).NativeTerminal())
+		} else {
+			p.emitOutcomeReceipt(cfg, allowReceipt, outcomeStatus, outcomeBytes, outcomeReason)
+		}
 		if aborted != nil {
 			panic(aborted)
 		}
@@ -993,6 +1008,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			EnvelopeEmitterSet: true,
 			Recorder:           interceptRec,
 			KillSwitch:         p.ks,
+			tunnelAdmission:    selectedReceiptShard,
 		}); err != nil {
 			p.logger.LogError(targetCtx, err)
 			outcomeReason = "intercept_error"
@@ -1005,6 +1021,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Register airlock cancel for raw CONNECT tunnels. When the session
 	// escalates to hard/drain, closing both ends terminates the relay.
+	stopCapacityClose := selectedReceiptShard.NativeLease.OnStop(func() {
+		_ = clientConn.Close()
+		_ = targetConn.Close()
+	})
+	defer stopCapacityClose()
 	var airlockCancelled atomic.Bool
 	for _, connectAirlockSess := range connectAirlockSessions {
 		connectAirlockSess.AirlockForScope(adaptiveScopeForHost(host)).RegisterCancel(func() {
@@ -1078,7 +1099,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Pre-generate a single ActionID for correlation between envelope and receipt.
 	actionID := receipt.NewActionID()
-	selectedReceiptShard := p.admitReceiptShard()
+	selectedReceiptShard, admissionErr := p.reserveReceiptAdmission()
+	if admissionErr != nil {
+		refuseReceiptAdmission(w, admissionErr)
+		return
+	}
+	defer selectedReceiptShard.ReleaseNativeAdmission()
+	warnCtx, finishWarnings := p.receiptWarningContext(r.Context(), selectedReceiptShard)
+	defer finishWarnings()
+	r = r.WithContext(warnCtx)
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyReceiptShard, selectedReceiptShard))
 
 	// Resolve per-agent config and scanner from a single registry snapshot.
@@ -1101,6 +1130,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	emitForwardReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptShard(opts, selectedReceiptShard)
 		opts = withReceiptConfig(opts, cfg)
+		if opts.Layer == nativeStreamCloseLayer {
+			opts = opts.NativeTerminal()
+		}
 		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
 			if opts.Verdict == config.ActionBlock {
 				blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
@@ -2754,9 +2786,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportForward)
 		}
 		sseOpts := SSEDispatchOptions{
-			IsA2A:      isA2A,
-			A2A:        &cfg.A2AScanning,
-			GenericSSE: &cfg.ResponseScanning.SSEStreaming,
+			nativeAdmission: selectedReceiptShard,
+			IsA2A:           isA2A,
+			A2A:             &cfg.A2AScanning,
+			GenericSSE:      &cfg.ResponseScanning.SSEStreaming,
 			Generic: mcp.GenericSSEScanOptions{
 				Target:             targetURL,
 				Suppress:           cfg.Suppress,
@@ -2834,6 +2867,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(resp.StatusCode)
 		flusher, _ := w.(http.Flusher)
 		if err := DispatchSSEScan(r.Context(), resp.Body, httpstream.Writer{Writer: w}, flusher, sc, sseOpts); err != nil {
+			if isNativeCapacityStop(err) {
+				outcomeStatus = strconv.Itoa(resp.StatusCode)
+				outcomeReason = nativeCapacityStopReason
+				if !cfg.FlightRecorder.RequireReceipts {
+					emitForwardReceipt(nativeStreamCloseReceipt(forwardAllowReceipt))
+				}
+				_ = httpstream.Abort(r.Context(), err)
+				return
+			}
 			if errors.Is(err, mcp.ErrReceiptRequired) {
 				p.recordRequiredReceiptBlock(err, TransportForward)
 				outcomeStatus = strconv.Itoa(resp.StatusCode)

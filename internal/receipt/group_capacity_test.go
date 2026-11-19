@@ -148,3 +148,52 @@ func TestReceiptGroupCapacityClosesAfterAdmittedOutcomes(t *testing.T) {
 	}
 	t.Log("verified successor with fresh capacity")
 }
+
+func TestNativeTerminalSlotsSurviveExhaustedSupportingSlots(t *testing.T) {
+	_, key := generateTestKey(t)
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: t.TempDir()}, nil, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+	session, err := recorder.AcquireRunSession(rec, recorder.DefaultSessionBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: key, Session: session})
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatal(err)
+	}
+	decision := func() EmitOpts {
+		return EmitOpts{ActionID: NewActionID(), Verdict: config.ActionAllow, Transport: "fetch", Target: "https://api.vendor.example/"}
+	}
+	tooSmall, err := e.AdmitNative(decision(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tooSmall.ReserveNativeTerminal(); !errors.Is(err, ael.ErrInvalidLease) {
+		t.Fatalf("wrong terminal admission error: %v", err)
+	}
+	admission, err := e.AdmitNative(EmitOpts{}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admission, err = admission.ReserveNativeTerminal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Emit(decision().InheritAdmission(admission)); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Emit(decision().InheritAdmission(admission)); !errors.Is(err, ael.ErrInvalidLease) {
+		t.Fatalf("supporting decision consumed terminal slots: %v", err)
+	}
+	terminal := decision().InheritAdmission(admission).NativeTerminal()
+	if err := e.Emit(terminal); err != nil {
+		t.Fatalf("terminal receipt: %v", err)
+	}
+	admission.ReleaseNativeAdmission()
+	if err := e.EmitSessionClose("graceful_shutdown"); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -288,3 +288,93 @@ func TestCapacityPreparedRecordPreconditions(t *testing.T) {
 		t.Fatal("aborted record accepted")
 	}
 }
+
+func TestCapacitySplitsAlreadyReservedRecordsAfterStop(t *testing.T) {
+	e, dir, signer := newIncrementalRun(t)
+	const records = 2
+	activity := Activity{Class: "read", Direction: "in", ID: "fixture"}
+	bound := ActivityRecordLimit(len(activity.Class), len(activity.ID))
+	e.capacity = NewCapacity(e.written + maxCloseBytes + records*bound)
+	parent, err := e.Reserve(records, bound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := make(chan struct{})
+	finish := parent.OnStop(func() { close(closed) })
+	if _, err := e.Reserve(1, bound); !errors.Is(err, ErrCapacity) {
+		t.Fatalf("reserve past capacity: %v", err)
+	}
+	<-closed
+	finish()
+	child, err := parent.Split(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []int{-1, 0, 2} {
+		if _, err := parent.Split(invalid); !errors.Is(err, ErrInvalidLease) {
+			t.Fatalf("split %d: %v", invalid, err)
+		}
+	}
+	parent.Release()
+	select {
+	case <-e.capacity.Drained():
+		t.Fatal("drained while split reservation was active")
+	default:
+	}
+	if _, err := parent.Split(1); !errors.Is(err, ErrInvalidLease) {
+		t.Fatalf("split released lease: %v", err)
+	}
+	record, err := e.PrepareActivity(activity, child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := record.Append(false); err != nil {
+		t.Fatal(err)
+	}
+	child.Release()
+	<-e.capacity.Drained()
+	if err := e.EmitClose(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyRun(dir, e.run, signer); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCapacityLeaseCanDisarmStreamStop(t *testing.T) {
+	e, _, _ := newIncrementalRun(t)
+	var missing *Lease
+	if lease, err := missing.Split(1); lease != nil || err != nil {
+		t.Fatalf("split nil lease: %v, %v", lease, err)
+	}
+	if lease, err := missing.Reserve(1); lease != nil || err != nil {
+		t.Fatalf("reserve with nil lease: %v, %v", lease, err)
+	}
+	missing.OnStop(func() { t.Error("nil lease closed a stream") })()
+	if missing.Stopping() {
+		t.Fatal("nil lease reports a stop")
+	}
+	bound := ActivityRecordLimit(4, 8)
+	parent, err := e.Reserve(1, bound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parent.Stopping() {
+		t.Fatal("admission stopped before the limit")
+	}
+	finish := parent.OnStop(func() { t.Error("disarmed stream was closed") })
+	finish()
+	child, err := parent.Reserve(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child.Release()
+	e.capacity.mu.Lock()
+	e.capacity.stopLocked()
+	e.capacity.mu.Unlock()
+	if !parent.Stopping() {
+		t.Fatal("admitted lease did not see the capacity stop")
+	}
+	parent.Release()
+	<-e.capacity.Drained()
+}

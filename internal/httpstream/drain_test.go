@@ -601,3 +601,18 @@ func TestGateFailedHijackKeepsDrainGrace(t *testing.T) {
 		t.Fatal("a failed hijack let shutdown cancel the fallback handler")
 	}
 }
+
+func TestDrainContextPreservesCapacityStopSettlement(t *testing.T) {
+	stopped := make(chan struct{})
+	normal, cancel := DrainContext(time.Second, stopped)
+	defer cancel()
+	if _, ok := normal.Deadline(); !ok {
+		t.Fatal("ordinary shutdown requires a deadline")
+	}
+	close(stopped)
+	capacity, cancelCapacity := DrainContext(time.Second, stopped)
+	defer cancelCapacity()
+	if _, ok := capacity.Deadline(); ok {
+		t.Fatal("capacity shutdown must let the gate settle")
+	}
+}

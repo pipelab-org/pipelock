@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/cli/runtimeconfig"
@@ -82,6 +83,8 @@ type ServerOpts struct {
 
 	// listenerShutdownTimeout overrides auxiliary receipt-listener grace periods in tests.
 	listenerShutdownTimeout time.Duration
+
+	nativeAELCapacityLimit int64
 
 	// expireForTesting overrides the retention pass. Unexported and threaded
 	// through opts rather than a package-level variable so parallel tests do
@@ -646,6 +649,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			}
 			shards, groupOpts, groupErr := buildServerReceiptShardGroup(receipt.EmitterConfig{
 				StartupVerification: startupVerification,
+				NativeCapacity:      ael.NewCapacity(opts.nativeAELCapacityLimit),
 				Recorder:            rec, PrivKey: recPrivKey, ConfigHash: cfg.Hash(),
 				Principal: "local", Actor: "pipelock", Metrics: m,
 				PriorSignerKeys:     cfg.FlightRecorder.ReceiptGroupPriorSignerKeys,
@@ -674,6 +678,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			// effective policy should produce identical envelope ph
 			// regardless of YAML formatting.
 			s.receiptEmitter = receipt.NewEmitter(receipt.EmitterConfig{
+				NativeCapacity:      ael.NewCapacity(opts.nativeAELCapacityLimit),
 				Recorder:            rec,
 				PrivKey:             recPrivKey,
 				ConfigHash:          cfg.Hash(),

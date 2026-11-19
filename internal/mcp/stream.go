@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
@@ -19,6 +20,9 @@ import (
 
 func recordListenerStreamError(ctx context.Context, logW io.Writer, opts MCPProxyOpts, intent receipt.EmitOpts, standalone bool, err error) {
 	reason := httpstream.Reason(ctx, err)
+	if errors.Is(err, ael.ErrCapacity) {
+		reason = "native_ael_capacity"
+	}
 	if reason == httpstream.Incomplete {
 		_, _ = fmt.Fprintf(logW, "pipelock: response stream %s: %v\n", reason, err)
 		if opts.AuditLogger != nil {
@@ -50,6 +54,9 @@ func emitTrackedStreamError(ctx context.Context, logW io.Writer, tracker *Reques
 		outcome.Receipt = mcpStreamReceipt(opts, http.MethodPost)
 	}
 	reason, status := httpstream.Reason(ctx, err), "incomplete"
+	if errors.Is(err, ael.ErrCapacity) {
+		reason = "native_ael_capacity"
+	}
 	if reason == httpstream.Cancelled {
 		status = "cancelled"
 	}
@@ -69,4 +76,25 @@ func mcpStreamReceipt(opts MCPProxyOpts, method string) receipt.EmitOpts {
 		return opts.ReceiptGroup.Shards.Admit(intent)
 	}
 	return intent
+}
+
+func refuseListenerStreamCapacity(w http.ResponseWriter, r *http.Request, stream *sseMessageWriter) {
+	if !stream.Wrote() {
+		http.Error(w, ael.ErrCapacity.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	_ = httpstream.Abort(r.Context(), ael.ErrCapacity)
+}
+
+// scanMCPHTTPResponse keeps the stream terminal reservation separate from
+// the individual event reservations used by ForwardScanned.
+func scanMCPHTTPResponse(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) (bool, error) {
+	if transport.IsStreamingResponse(reader) {
+		opts.nativeSSE = true
+		if body, ok := reader.(io.Closer); ok {
+			stop := opts.nativeAdmission.NativeLease.OnStop(func() { _ = body.Close() })
+			defer stop()
+		}
+	}
+	return ForwardScanned(opts.withResponseTimeout(reader), writer, logW, tracker, opts)
 }

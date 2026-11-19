@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 )
 
 // Gate counts handlers and their asynchronous receipt-producing work. Its zero
@@ -233,6 +234,18 @@ func (g *Gate) StopHijacks() {
 type GatedServer struct {
 	Server *http.Server
 	Gate   *Gate
+}
+
+// DrainContext sets the normal shutdown deadline. After a native evidence
+// capacity stop, streams close explicitly and the gate must join deferred
+// evidence work before the recorder seals.
+func DrainContext(timeout time.Duration, capacityStopped <-chan struct{}) (context.Context, context.CancelFunc) {
+	select {
+	case <-capacityStopped:
+		return context.WithCancel(context.Background())
+	default:
+		return context.WithTimeout(context.Background(), timeout)
+	}
 }
 
 // DrainServer joins handlers and registered child work within ctx. net/http

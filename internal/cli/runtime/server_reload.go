@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/cli/runtimeconfig"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
@@ -142,6 +143,11 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 		}
 	}
 
+	select {
+	case <-s.liveReceiptEmitter().NativeCapacity().Stopped():
+		return ael.ErrCapacity
+	default:
+	}
 	oldCfg := s.proxy.CurrentConfig()
 	if s.receiptShardSet != nil && oldCfg != nil && oldCfg.FlightRecorder.SigningKeyPath != "" &&
 		oldCfg.FlightRecorder.SigningKeyPath == newCfg.FlightRecorder.SigningKeyPath {

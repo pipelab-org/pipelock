@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/net/netutil"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
@@ -359,6 +360,8 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	// own shutdown, then Wait() for every goroutine to finish (HTTP shutdown
 	// goroutines complete only after in-flight handlers drain).
 	var lifecycleWG sync.WaitGroup
+	capacity := s.liveReceiptEmitter().NativeCapacity()
+	watchNativeCapacity(ctx, &lifecycleWG, capacity, cancel, s.opts.Stderr)
 	proxyDrainIncomplete := false
 	var mcpErr, reverseProxyErr, scanAPIErr chan error
 	listenerShutdownTimeout := s.opts.listenerShutdownTimeout
@@ -396,7 +399,9 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		// deferred cleanup closes the recorder; this is a no-op when receipts are
 		// off or none were emitted.
 		if !proxyDrainIncomplete {
-			s.sealTranscriptRoot()
+			if err := s.sealTranscriptRoot(); errors.Is(startErr, ael.ErrCapacity) && err != nil {
+				startErr = errors.Join(startErr, err)
+			}
 		}
 	}()
 
@@ -894,7 +899,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		go func() {
 			defer lifecycleWG.Done()
 			srvErr := httpstream.ServeUntilShutdown(ctx, func() error { return scanAPISrv.Serve(scanAPILn) }, func() error { //nolint:gosec // G118: fresh context preserves shutdown grace after cancellation
-				shutdownCtx, shutCancel := context.WithTimeout(context.Background(), listenerShutdownTimeout)
+				shutdownCtx, shutCancel := httpstream.DrainContext(listenerShutdownTimeout, capacity.Stopped())
 				defer shutCancel()
 				return httpstream.DrainServer(shutdownCtx, httpstream.GatedServer{Server: scanAPISrv, Gate: scanAPIGate})
 			})
@@ -1230,7 +1235,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		go func() {
 			defer lifecycleWG.Done()
 			srvErr := httpstream.ServeUntilShutdown(ctx, func() error { return rpSrv.Serve(rpLn) }, func() error { //nolint:gosec // G118: fresh context preserves the shutdown grace period after cancellation
-				shutdownCtx, shutCancel := context.WithTimeout(context.Background(), listenerShutdownTimeout)
+				shutdownCtx, shutCancel := httpstream.DrainContext(listenerShutdownTimeout, capacity.Stopped())
 				defer shutCancel()
 				return httpstream.DrainServer(shutdownCtx, httpstream.GatedServer{Server: rpSrv, Gate: rpGate})
 			})
@@ -1346,8 +1351,8 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		if groupErr := s.requiredReceiptGroupError(); groupErr != nil {
 			return groupErr
 		}
-		if s.receiptRotationRequested.Load() {
-			return errReceiptGroupKeyRotation
+		if restartErr := s.receiptRestartError(capacity); restartErr != nil {
+			return restartErr
 		}
 		if heartbeatErr := getRequiredHeartbeatErr(); heartbeatErr != nil {
 			return heartbeatErr
@@ -1386,8 +1391,8 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	if heartbeatErr := getRequiredHeartbeatErr(); heartbeatErr != nil {
 		return heartbeatErr
 	}
-	if s.receiptRotationRequested.Load() {
-		return errReceiptGroupKeyRotation
+	if restartErr := s.receiptRestartError(capacity); restartErr != nil {
+		return restartErr
 	}
 
 	s.logger.LogShutdown("signal received")

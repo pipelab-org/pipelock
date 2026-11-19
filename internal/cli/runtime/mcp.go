@@ -27,6 +27,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/cli/runtimeconfig"
@@ -1391,6 +1392,13 @@ Key-free evidence capture:
 			}
 			heartbeatCtx, heartbeatCancel := context.WithCancel(cmd.Context())
 			defer heartbeatCancel()
+			capacity := receiptEmitter.NativeCapacity()
+			var capacityWG sync.WaitGroup
+			watchNativeCapacity(heartbeatCtx, &capacityWG, capacity, heartbeatCancel, cmd.ErrOrStderr())
+			defer func() {
+				heartbeatCancel()
+				capacityWG.Wait()
+			}()
 			var mcpLn net.Listener
 			if hasListen {
 				mcpLn, err = (&net.ListenConfig{}).Listen(heartbeatCtx, "tcp", listenAddr)
@@ -1466,6 +1474,11 @@ Key-free evidence capture:
 				)
 			}
 			defer func() {
+				select {
+				case <-capacity.Stopped():
+					runErr = errors.Join(runErr, ael.ErrCapacity)
+				default:
+				}
 				stopReceiptLifecycle(runErr)
 				if failure := requiredHeartbeatErr(); failure != nil {
 					runErr = errors.Join(runErr, failure)

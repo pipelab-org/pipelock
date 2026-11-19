@@ -607,6 +607,16 @@ func (s *ReceiptShardSet) Admit(opts EmitOpts) EmitOpts {
 	return opts
 }
 
+// AdmitNative selects a shard and reserves space before admitting a unit.
+func (s *ReceiptShardSet) AdmitNative(opts EmitOpts, records int) (EmitOpts, error) {
+	opts = s.Admit(opts)
+	e, err := s.selectedEmitter(opts)
+	if err != nil {
+		return opts, err
+	}
+	return e.AdmitNative(opts, records)
+}
+
 func (s *ReceiptShardSet) selectedEmitter(opts EmitOpts) (*Emitter, error) {
 	if s == nil || !s.ready.Load() {
 		return nil, errors.New("receipt group transition is not ready for admission")

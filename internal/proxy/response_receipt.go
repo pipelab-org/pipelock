@@ -45,7 +45,7 @@ func mediaRewriteReceipt(opts receipt.EmitOpts) receipt.EmitOpts {
 }
 
 func firstReceiptShard(selected, fallback receipt.EmitOpts) receipt.EmitOpts {
-	if selected.ShardSelected {
+	if selected.ShardSelected || selected.NativeLease != nil {
 		return selected
 	}
 	return fallback

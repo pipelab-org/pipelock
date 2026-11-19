@@ -13,6 +13,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -236,6 +237,11 @@ func RunHTTPProxy(
 	fwdOpts.DeferResolverRuntime = resolverRuntime
 	killWatchCtx, stopKillWatch := context.WithCancel(ctx)
 	go watchDeferredKillSwitch(killWatchCtx, fwdOpts.KillSwitch, fwdOpts.deferManager())
+	capacityDeferralsDone := make(chan struct{})
+	go func() {
+		defer close(capacityDeferralsDone)
+		watchCapacityDeferrals(killWatchCtx, fwdOpts)
+	}()
 	defer func() {
 		stopKillWatch()
 		resolverRuntime.Cancel()
@@ -243,6 +249,7 @@ func RunHTTPProxy(
 			manager.ResolveAll(config.ActionBlock, deferred.SourceCancel)
 		}
 		resolverRuntime.Wait()
+		<-capacityDeferralsDone
 	}()
 
 	bridgeHeaders := &mcpBridgeHeaders{client: httpClient, state: contractState, opts: fwdOpts, log: safeLogW}
@@ -253,8 +260,17 @@ func RunHTTPProxy(
 	var wg sync.WaitGroup
 	var getStreamOnce sync.Once
 	var lastScanErr error
+	var admission receipt.EmitOpts
+	finishWarnings := func() {}
+	defer func() {
+		finishWarnings()
+		admission.ReleaseNativeAdmission()
+	}()
 
 	for {
+		finishWarnings()
+		admission.ReleaseNativeAdmission()
+		admission = receipt.EmitOpts{}
 		msg, err := readMCPInputMessage(ctx, clientIn, clientReader)
 		if err != nil {
 			if errors.Is(err, io.EOF) || (sessionExit.inProgress() && (isSessionExitCloseErr(err) || errors.Is(err, context.Canceled))) {
@@ -273,6 +289,15 @@ func RunHTTPProxy(
 		// instead of re-parsing.
 		fwdOpts := fwdOpts // Each deferred closure retains this message's policy snapshot.
 		frame := ParseMCPFrame(msg)
+		var admissionErr error
+		admission, admissionErr = fwdOpts.admitNativeRequest()
+		if admissionErr != nil {
+			writeNativeAdmissionDenial(fwdOpts, safeLogW, safeClientOut, frame.ID, admissionErr)
+			lastScanErr = admissionErr
+			break
+		}
+		fwdOpts.nativeAdmission = admission
+		fwdOpts.WarnContext, finishWarnings = fwdOpts.nativeWarningContext(fwdOpts.warnContext(), admission)
 		if taintCfg := fwdOpts.TaintCfg; fwdOpts.TaintCfgFn != nil || (taintCfg != nil && taintCfg.Enabled) {
 			fwdOpts.deferBestEffortTaskReceipt = true
 		}
@@ -365,7 +390,8 @@ func RunHTTPProxy(
 			// block unrelated upstream work. OnceFunc also makes the manager's
 			// deferred cleanup safe after this early denial cleanup.
 			var finishDeniedRelease func()
-			holdErr := manager.Hold(deferred.HeldAction{
+			heldOpts, finishHeldAdmission, holdErr := fwdOpts.splitDeferredAdmission()
+			heldAction := deferred.HeldAction{
 				DeferID:       deferredReq.DeferID,
 				ActionID:      deferredReq.DeferID,
 				ShardIndex:    deferredReq.ShardIndex,
@@ -383,7 +409,7 @@ func RunHTTPProxy(
 					SessionIDOriginal: deferredReq.SessionIDOriginal,
 				},
 				BeforeAllow: func() (func(), bool) {
-					return deferredReleasePrecheck(fwdOpts, deferredGeneration)
+					return deferredReleasePrecheck(heldOpts, deferredGeneration)
 				},
 				// Prepare settles the final decision before the manager
 				// journals it, so the journal and the receipt agree. On an
@@ -457,7 +483,7 @@ func RunHTTPProxy(
 					// first so no wait for another send sits between the
 					// kill-switch claim and SendMessage; see
 					// claimDeferredRelease for the ordering argument.
-					prepared, finish := lockAndClaimDeferredRelease(&upstreamMu, fwdOpts, deferredGeneration, res)
+					prepared, finish := lockAndClaimDeferredRelease(&upstreamMu, heldOpts, deferredGeneration, res)
 					if prepared.FinalDecision == config.ActionAllow {
 						if reason := mcpTaskReleaseRefusal(fwdOpts, deferredReq.authorityFrame, deferredReq.taskTaint, false); reason != "" {
 							prepared.FinalDecision = config.ActionBlock
@@ -470,24 +496,25 @@ func RunHTTPProxy(
 						finish = sync.OnceFunc(finish)
 						finishDeniedRelease = finish
 					}
-					prepared = receiptSettle.probeAllow(fwdOpts, prepared)
+					prepared = receiptSettle.probeAllow(heldOpts, prepared)
 					return prepared, finish
 				},
 				// The release receipt is written while the journal shows the
 				// release as pending: the allow first, then a corrective block
 				// if the journal cannot record the allow as final.
 				AfterJournal: func(res deferred.Resolution) error {
-					return receiptSettle.commitAllow(fwdOpts, safeLogW, res)
+					return receiptSettle.commitAllow(heldOpts, safeLogW, res)
 				},
 				Resolve: func(res deferred.Resolution) {
-					denialOpts := fwdOpts
+					defer finishHeldAdmission()
+					denialOpts := heldOpts
 					denialOpts.denialTerminal = &terminalSlot
 					denialAudit := mcpDeferredDenialAudit(res)
 					if gateBlock != nil {
 						denialAudit = gateAudit
 					}
 					authorityDenied := res.ResolutionSource == deferred.SourceAuthority
-					if emitErr := receiptSettle.ensure(fwdOpts, safeLogW, res); emitErr != nil {
+					if emitErr := receiptSettle.ensure(heldOpts, safeLogW, res); emitErr != nil {
 						if finishDeniedRelease != nil {
 							finishDeniedRelease()
 						}
@@ -583,8 +610,15 @@ func RunHTTPProxy(
 						}
 					}
 				},
-			})
+			}
+			if holdErr == nil {
+				holdErr = manager.Hold(heldAction)
+			}
+			if holdErr == nil && heldOpts.nativeAdmission.NativeLease.Stopping() {
+				_ = manager.Resolve(deferredReq.DeferID, config.ActionBlock, deferred.SourceCancel)
+			}
 			if holdErr != nil {
+				finishHeldAdmission()
 				errorMessage, emitErr := emitHoldFailureResolution(fwdOpts, safeLogW, holdErr, holdFailureResolution{
 					DeferID:       deferredReq.DeferID,
 					ShardIndex:    deferredReq.ShardIndex,
@@ -771,8 +805,13 @@ func RunHTTPProxy(
 
 		// Scan and forward response. Apply the optional per-read response
 		// timeout (no-op when disabled) so a hung HTTP upstream fails closed.
-		respReader = fwdOpts.withResponseTimeout(respReader)
-		foundInjection, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, tracker, fwdOpts)
+		foundInjection, scanErr := scanMCPHTTPResponse(respReader, safeClientOut, safeLogW, tracker, fwdOpts)
+		if errors.Is(scanErr, ael.ErrCapacity) {
+			emitTrackedStreamError(ctx, safeLogW, tracker, frame.ID, fwdOpts, scanErr)
+			lastScanErr = scanErr
+			unlockInventory()
+			break
+		}
 		if errors.Is(scanErr, transport.ErrResponseTimeout) {
 			emitRequestScopedTimeout(
 				respReader,

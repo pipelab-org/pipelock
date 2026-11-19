@@ -100,6 +100,74 @@ func (e *Emitter) Reserve(records int, recordLimit int64) (*Lease, error) {
 	return &Lease{emitter: e, remaining: size, recordLimit: recordLimit}, nil
 }
 
+// Reserve admits another unit on the same stream as this lease.
+func (l *Lease) Reserve(records int) (*Lease, error) {
+	if l == nil {
+		return nil, nil
+	}
+	return l.emitter.Reserve(records, l.recordLimit)
+}
+
+// Split transfers slots to a separately settled part of an admitted unit.
+// The run may already be stopping. No new bytes are reserved.
+func (l *Lease) Split(records int) (*Lease, error) {
+	if l == nil {
+		return nil, nil
+	}
+	e := l.emitter
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if l.released || records <= 0 || int64(records) > l.remaining/l.recordLimit {
+		return nil, ErrInvalidLease
+	}
+	size := int64(records) * l.recordLimit
+	l.remaining -= size
+	e.capacity.mu.Lock()
+	e.capacity.active++
+	e.capacity.mu.Unlock()
+	return &Lease{emitter: e, remaining: size, recordLimit: l.recordLimit}, nil
+}
+
+// Stopped closes when the run stops admitting new work.
+func (l *Lease) Stopped() <-chan struct{} {
+	if l == nil {
+		return nil
+	}
+	return l.emitter.capacity.Stopped()
+}
+
+// OnStop runs closeStream when the run stops admitting work. The returned
+// function disarms the callback or joins it if it is already running.
+func (l *Lease) OnStop(closeStream func()) func() {
+	if l == nil {
+		return func() {}
+	}
+	finished := make(chan struct{})
+	stop := make(chan struct{})
+	go func() {
+		defer close(finished)
+		select {
+		case <-l.Stopped():
+			closeStream()
+		case <-stop:
+		}
+	}()
+	return func() {
+		close(stop)
+		<-finished
+	}
+}
+
+// Stopping reports whether the run has stopped admitting work.
+func (l *Lease) Stopping() bool {
+	select {
+	case <-l.Stopped():
+		return true
+	default:
+		return false
+	}
+}
+
 // Release returns the unused record slots to the writer and settles the unit.
 func (l *Lease) Release() {
 	if l == nil {

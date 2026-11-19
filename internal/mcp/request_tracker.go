@@ -44,7 +44,14 @@ type TrackedRequestOutcome struct {
 	Receipt receipt.EmitOpts
 	// Method is the JSON-RPC method of the matching request, used by
 	// response-side A2A routing (Agent Card vs field-aware body scan).
-	Method string
+	Method          string
+	ownsNativeLease bool
+}
+
+func (o TrackedRequestOutcome) releaseNativeLease() {
+	if o.ownsNativeLease {
+		o.Receipt.NativeLease.Release()
+	}
 }
 
 type trackedRequest struct {
@@ -107,25 +114,28 @@ func (t *RequestTracker) TrackRequest(id json.RawMessage, method string) {
 // receipt metadata. Nil/null IDs are ignored (notifications don't expect
 // responses). If the pending set exceeds maxTrackedRequests, the oldest entry
 // is evicted.
-func (t *RequestTracker) TrackOutcome(id json.RawMessage, outcome TrackedRequestOutcome) {
+func (t *RequestTracker) TrackOutcome(id json.RawMessage, outcome TrackedRequestOutcome) bool {
 	if t == nil {
-		return
+		return false
 	}
 	key := canonicalID(id)
 	if key == "" {
-		return
+		return false
 	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	if _, exists := t.pending[key]; exists {
-		return // already tracked
+		return false // already tracked
 	}
 
 	// Evict oldest if at capacity.
 	if len(t.pending) >= maxTrackedRequests {
 		oldest := t.order[0]
+		if t.pending[oldest].outcome.ownsNativeLease {
+			return false
+		}
 		delete(t.pending, oldest)
 		t.order = t.order[1:]
 	}
@@ -133,6 +143,7 @@ func (t *RequestTracker) TrackOutcome(id json.RawMessage, outcome TrackedRequest
 	t.pending[key] = trackedRequest{outcome: outcome}
 	t.order = append(t.order, key)
 	t.seeded = true
+	return true
 }
 
 // Validate checks whether id was previously tracked, consuming it on
@@ -163,6 +174,20 @@ func (t *RequestTracker) claimRejectedOutcome(id json.RawMessage) (TrackedReques
 	request.rejectionOutcomeClaimed = true
 	t.pending[key] = request
 	return request.outcome, true
+}
+
+// nativeAdmission finds the held response lease without consuming the request.
+func (t *RequestTracker) nativeAdmission(id json.RawMessage) receipt.EmitOpts {
+	if t == nil {
+		return receipt.EmitOpts{}
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	outcome := t.pending[canonicalID(id)].outcome
+	if outcome.ownsNativeLease {
+		return outcome.Receipt
+	}
+	return receipt.EmitOpts{}
 }
 
 // Consume checks whether id was previously tracked and returns the associated
