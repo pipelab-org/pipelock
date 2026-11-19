@@ -1914,8 +1914,9 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			var flushErr error
 			if completed {
 				flushErr = flushResponseBeforeOutcome(w, r, cfg)
+				completed = flushErr == nil
 			}
-			rp.owner.recordTransportOutcome(r.Context(), reverseAllowReceipt, entry, completed && flushErr == nil)
+			rp.owner.recordTransportOutcome(r.Context(), reverseAllowReceipt, entry, completed)
 			_ = httpstream.Abort(r.Context(), flushErr)
 		}()
 		rp.proxy.ServeHTTP(forwardWriter, r)
