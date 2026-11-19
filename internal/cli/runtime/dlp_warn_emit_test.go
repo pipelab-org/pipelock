@@ -369,4 +369,8 @@ func TestNativeHeaderWarningsBoundSignedEvidence(t *testing.T) {
 	if got := strings.Count(auditLog.String(), `"event":"dlp_warn"`); got != 17 {
 		t.Fatalf("audit warnings = %d, want 17", got)
 	}
+	emitDLPWarn(logger, nil, e, req.Context(), pattern, config.SeverityHigh)
+	if !strings.Contains(auditLog.String(), "emit DLP warn receipt") {
+		t.Fatal("warning after seal did not report the receipt failure")
+	}
 }

@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -341,4 +342,116 @@ func TestDeferredNativeReservationSettlesAtCapacity(t *testing.T) {
 		t.Fatal("settled deferred call retained capacity")
 	}
 	verifyMCPNativeClose(t, e, dir)
+}
+
+func TestNativeCapacityRefusesMCPBridgesBeforeUpstream(t *testing.T) {
+	e, dir := newNativeMCPEmitter(t, nativeMCPRequestRecords+4)
+	if _, err := e.ReserveNativeRecords(2 * nativeMCPRequestRecords); !errors.Is(err, ael.ErrCapacity) {
+		t.Fatalf("capacity admission = %v", err)
+	}
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer upstream.Close()
+	opts := MCPProxyOpts{Scanner: testInputScanner(t), ReceiptEmitter: e, RequireReceipts: true}
+	const request = `{"jsonrpc":"2.0","id":1,"method":"ping"}`
+	const notification = `{"jsonrpc":"2.0","method":"notifications/initialized"}`
+	for _, input := range []string{request, notification} {
+		var out bytes.Buffer
+		if err := RunHTTPProxy(t.Context(), strings.NewReader(input+"\n"), &out, io.Discard, upstream.URL, nil, opts); !errors.Is(err, ael.ErrCapacity) {
+			t.Fatalf("POST bridge capacity result = %v", err)
+		}
+		if wantsReply := input == request; strings.Contains(out.String(), ael.ErrCapacity.Error()) != wantsReply {
+			t.Fatalf("POST capacity reply = %q", out.String())
+		}
+	}
+	reader, writer := io.Pipe()
+	_ = reader.Close()
+	defer func() { _ = writer.Close() }()
+	var logs bytes.Buffer
+	if err := RunHTTPProxy(t.Context(), strings.NewReader(request+"\n"), writer, &logs, upstream.URL, nil, opts); !errors.Is(err, ael.ErrCapacity) {
+		t.Fatalf("capacity result with closed stdout = %v", err)
+	}
+	if !strings.Contains(logs.String(), "write capacity refusal") {
+		t.Fatalf("missing stdout error: %s", logs.String())
+	}
+	streamErr, setupErr := scanGETStream(t.Context(), transport.NewHTTPClient(upstream.URL, nil), transport.NewStdioWriter(io.Discard), io.Discard, opts, NewRequestTracker())
+	if streamErr != nil || !errors.Is(setupErr, ael.ErrCapacity) {
+		t.Fatalf("GET capacity result = %v, %v", streamErr, setupErr)
+	}
+	if err := RunWSProxy(t.Context(), strings.NewReader(request), io.Discard, io.Discard, wsURL(upstream), opts); !errors.Is(err, ael.ErrCapacity) {
+		t.Fatalf("WebSocket bridge capacity result = %v", err)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("refused bridges reached upstream %d times", hits.Load())
+	}
+	verifyMCPNativeClose(t, e, dir)
+}
+
+func TestNativeCapacityTrackedRequestsKeepTheirOwnReservation(t *testing.T) {
+	const request = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{}}}`
+	const trackingRefusal = "could not reserve a pending receipt outcome for this request ID"
+	for _, mode := range []string{"stdio", "best_effort_stdio", "http", "websocket"} {
+		t.Run(mode, func(t *testing.T) {
+			e, dir := newNativeMCPEmitter(t, 4*nativeMCPRequestRecords)
+			ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+			defer cancel()
+			opts := MCPProxyOpts{Scanner: testInputScanner(t), Transport: transportMCPStdio, ReceiptEmitter: e, RequireReceipts: mode != "best_effort_stdio"}
+			input := request + "\n" + request + "\n"
+			switch mode {
+			case "stdio", "best_effort_stdio":
+				var out bytes.Buffer
+				blocked := make(chan BlockedRequest, 2)
+				tracker := NewRequestTracker()
+				ForwardScannedInput(transport.NewStdioReader(strings.NewReader(input)), transport.NewStdioWriter(&out), io.Discard, config.ActionWarn, config.ActionBlock, blocked, nil, tracker, opts)
+				if got := strings.Count(out.String(), request); got != 1 {
+					t.Fatalf("duplicate stdio request reached upstream, count = %d", got)
+				}
+				refusal, ok := <-blocked
+				if !ok || !strings.Contains(refusal.ErrorMessage, trackingRefusal) {
+					t.Fatalf("duplicate stdio refusal = %+v", refusal)
+				}
+				emitPendingIncompleteOutcomes(io.Discard, tracker, opts, "test_complete")
+			case "http":
+				var hits atomic.Int32
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					hits.Add(1)
+					w.WriteHeader(http.StatusAccepted)
+				}))
+				defer upstream.Close()
+				var out bytes.Buffer
+				if err := RunHTTPProxy(ctx, strings.NewReader(input), &out, io.Discard, upstream.URL, nil, opts); err != nil {
+					t.Fatal(err)
+				}
+				if hits.Load() != 1 || !strings.Contains(out.String(), trackingRefusal) {
+					t.Fatalf("duplicate HTTP request: upstream hits=%d output=%s", hits.Load(), out.String())
+				}
+			case "websocket":
+				upstream, frames := wsDrainServer(t)
+				defer upstream.Close()
+				reader, writer := io.Pipe()
+				defer func() { _ = writer.Close() }()
+				var out lockedHTTPBuffer
+				done := make(chan error, 1)
+				go func() { done <- RunWSProxy(ctx, reader, &out, io.Discard, wsURL(upstream), opts) }()
+				if _, err := io.WriteString(writer, input); err != nil {
+					t.Fatal(err)
+				}
+				testwait.For(t, time.Second, func() bool { return out.contains(trackingRefusal) && frames.Load() == 1 }, "duplicate WebSocket refusal")
+				_ = writer.Close()
+				if err := <-done; err != nil {
+					t.Fatal(err)
+				}
+				if frames.Load() != 1 {
+					t.Fatalf("duplicate frame reached upstream, count = %d", frames.Load())
+				}
+			}
+			if _, err := e.ReserveNativeRecords(5 * nativeMCPRequestRecords); !errors.Is(err, ael.ErrCapacity) {
+				t.Fatalf("capacity admission = %v", err)
+			}
+			verifyMCPNativeClose(t, e, dir)
+		})
+	}
 }

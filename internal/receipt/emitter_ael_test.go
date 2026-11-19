@@ -64,6 +64,41 @@ func TestEmitterNativeAELLifecycle(t *testing.T) {
 	}
 }
 
+func TestNativeWarningBudgetReportsWriterFailure(t *testing.T) {
+	_, priv := generateTestKey(t)
+	rec := newTestRecorder(t, t.TempDir(), priv)
+	t.Cleanup(func() { _ = rec.Close() })
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: testConfigHash})
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatal(err)
+	}
+	admission, err := e.AdmitNative(EmitOpts{}, DLPWarningSlots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admission.ReleaseNativeAdmission()
+	ctx, finish := WithDLPWarningBudget(t.Context(), e, admission)
+	writeErr := errors.New("evidence write unavailable")
+	e.MarkUnhealthy(writeErr)
+	var reports []error
+	report := func(err error) { reports = append(reports, err) }
+	warn := EmitOpts{ActionID: NewActionID(), Verdict: config.ActionWarn, Layer: "dlp", Pattern: "fixture"}
+	EmitDLPWarning(t.Context(), e, warn, report)
+	for range DLPWarningSlots {
+		EmitDLPWarning(ctx, e, warn, report)
+	}
+	finish()
+	finish()
+	if len(reports) != 1+DLPWarningSlots {
+		t.Fatalf("reported %d write failures, want %d", len(reports), 1+DLPWarningSlots)
+	}
+	for _, err := range reports {
+		if !errors.Is(err, writeErr) {
+			t.Fatalf("write failure = %v, want %v", err, writeErr)
+		}
+	}
+}
+
 func TestEmitterCloseNativeAELForRotation(t *testing.T) {
 	t.Parallel()
 	var nilEmitter *Emitter

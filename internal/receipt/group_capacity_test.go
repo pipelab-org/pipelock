@@ -33,6 +33,9 @@ func TestReceiptGroupCapacityClosesAfterAdmittedOutcomes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := set.AdmitNative(EmitOpts{ShardSelected: true, ShardIndex: -1}, 1); err == nil {
+		t.Fatal("invalid shard admitted an obligation")
+	}
 	opts := set.Admit(EmitOpts{
 		ActionID: NewActionID(), Verdict: config.ActionAllow, Method: "GET",
 		Transport: "fetch", Target: "https://api.vendor.example/data", DecisionPhase: DecisionPhaseIntent,

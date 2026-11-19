@@ -212,6 +212,142 @@ func TestNativeCapacityReservesEachCredentialAudienceAllow(t *testing.T) {
 	}
 }
 
+func TestNativeCapacityRefusesAuthorizationAtProxyBoundaries(t *testing.T) {
+	const (
+		host          = "api.vendor.example"
+		intercepted   = "intercept"
+		headerCarrier = "header"
+		urlCarrier    = "url"
+		bodyCarrier   = "body"
+	)
+	var hits atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	endpoint, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := *endpoint
+	destination.Host = net.JoinHostPort(host, endpoint.Port())
+
+	for _, tc := range []struct{ transport, carrier string }{
+		{TransportConnect, headerCarrier},
+		{TransportFetch, urlCarrier},
+		{TransportForward, headerCarrier},
+		{TransportForward, urlCarrier},
+		{TransportForward, bodyCarrier},
+		{TransportReverse, headerCarrier},
+		{TransportReverse, urlCarrier},
+		{TransportReverse, bodyCarrier},
+		{intercepted, headerCarrier},
+		{intercepted, urlCarrier},
+		{intercepted, bodyCarrier},
+		{TransportWS, headerCarrier},
+		{TransportWS, urlCarrier},
+	} {
+		t.Run(tc.transport+"/"+tc.carrier, func(t *testing.T) {
+			p, e, dir := newNativeCapacityProxy(t, nativeRequestRecords+4, func(cfg *config.Config) {
+				cfg.RequestBodyScanning.Enabled = true
+				cfg.RequestBodyScanning.ScanHeaders = true
+				cfg.RequestBodyScanning.HeaderMode = config.HeaderModeSensitive
+				cfg.RequestBodyScanning.SensitiveHeaders = []string{headerNameAuthorization}
+				for i := range 16 {
+					pattern := audienceReceiptTestPattern(host)
+					pattern.Name = fmt.Sprintf("Test gateway %02d", i)
+					cfg.DLP.Patterns = append(cfg.DLP.Patterns, pattern)
+				}
+			})
+			outbound := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				out := req.Clone(req.Context())
+				out.URL.Host = endpoint.Host
+				return upstream.Client().Transport.RoundTrip(out)
+			})
+			p.client.Transport = outbound
+			target := destination
+			method := http.MethodGet
+			var body io.Reader
+			switch tc.carrier {
+			case urlCarrier:
+				target.RawQuery = url.Values{"fixture": []string{audienceReceiptTestCredential}}.Encode()
+			case bodyCarrier:
+				method = http.MethodPost
+				body = strings.NewReader(fmt.Sprintf(`{"fixture":%q}`, audienceReceiptTestCredential))
+			}
+
+			var handler http.Handler = http.HandlerFunc(p.handleForwardHTTP)
+			requestURL := target.String()
+			switch tc.transport {
+			case TransportConnect:
+				handler = http.HandlerFunc(p.handleConnect)
+				method = http.MethodConnect
+				requestURL = target.Host
+			case TransportFetch:
+				handler = http.HandlerFunc(p.handleFetch)
+				requestURL = "/fetch?url=" + url.QueryEscape(target.String())
+			case TransportReverse:
+				rp := NewReverseProxy(&destination, p.ConfigPtr(), p.ScannerPtr(), p.logger, p.metrics, p.ks, nil, nil)
+				rp.SetOwnerProxy(p)
+				rp.SetReceiptEmitter(p.ReceiptEmitterPtr())
+				rp.SetSafeDialer(p.SafeDialer())
+				handler = rp
+				requestURL = "/"
+				if target.RawQuery != "" {
+					requestURL += "?" + target.RawQuery
+				}
+			case intercepted:
+				ic := &InterceptContext{
+					TargetHost: target.Hostname(), TargetPort: target.Port(), Config: p.CurrentConfig(),
+					Scanner: p.ScannerPtr().Load(), Logger: p.logger, Metrics: p.metrics, Proxy: p,
+				}
+				handler = newInterceptHandler(ic, outbound)
+			case TransportWS:
+				handler = http.HandlerFunc(p.handleWebSocket)
+				target.Scheme = "wss"
+				requestURL = "/ws?url=" + url.QueryEscape(target.String())
+			}
+			req := httptest.NewRequestWithContext(t.Context(), method, requestURL, body)
+			if tc.carrier == headerCarrier {
+				req.Header.Set(headerNameAuthorization, "Bearer "+audienceReceiptTestCredential)
+			}
+			if tc.carrier == bodyCarrier {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+			if res.Code != http.StatusServiceUnavailable || !strings.Contains(res.Body.String(), ael.ErrCapacity.Error()) {
+				t.Fatalf("capacity refusal = %d %s", res.Code, res.Body)
+			}
+			if hits.Load() != 0 {
+				t.Fatalf("refused work reached upstream %d times", hits.Load())
+			}
+			verifyNativeCapacityClose(t, e, dir)
+		})
+	}
+}
+
+func TestNativeCapacityRefusesUnreservableIssuerCookieBatch(t *testing.T) {
+	p, e, dir := newNativeCapacityProxy(t, nativeRequestRecords+4)
+	admission, err := p.reserveReceiptAdmission()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admission.ReleaseNativeAdmission()
+	ic := &InterceptContext{Proxy: p, Config: p.CurrentConfig(), receiptShard: admission}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.vendor.example/", nil)
+	allowance := issuerCookieAllowance{Name: "fixture", Patterns: make([]string, nativeRequestRecords)}
+	for i := range allowance.Patterns {
+		allowance.Patterns[i] = "fixture"
+	}
+	if err := ic.recordIssuerCookieAllows(audit.NewRequestLogContext("fixture"), req, req.URL.String(), []issuerCookieAllowance{allowance}); !errors.Is(err, ael.ErrCapacity) {
+		t.Fatalf("issuer-cookie batch admission = %v", err)
+	}
+	admission.ReleaseNativeAdmission()
+	verifyNativeCapacityClose(t, e, dir)
+}
+
 func newNativeCapacityProxy(t *testing.T, slots int64, configure ...func(*config.Config)) (*Proxy, *receipt.Emitter, string) {
 	t.Helper()
 	cfg := config.Defaults()
@@ -276,7 +412,16 @@ func verifyNativeCapacityClose(t *testing.T, e *receipt.Emitter, dir string) {
 }
 
 func TestNativeCapacityClosesWebSocket(t *testing.T) {
-	p, e, dir := newNativeCapacityProxy(t, nativeRequestRecords+2*nativeWSMessageRecords+4)
+	for _, required := range []bool{true, false} {
+		t.Run(nativeReceiptModeName(required), func(t *testing.T) {
+			testNativeCapacityClosesWebSocket(t, required)
+		})
+	}
+}
+
+func testNativeCapacityClosesWebSocket(t *testing.T, required bool) {
+	t.Helper()
+	p, e, dir := newNativeCapacityProxy(t, nativeRequestRecords+2*nativeWSMessageRecords+4, func(cfg *config.Config) { cfg.FlightRecorder.RequireReceipts = required })
 	upstreamAddr, closeUpstream := wsEchoServer(t)
 	defer closeUpstream()
 	_, port, err := net.SplitHostPort(upstreamAddr)
@@ -313,11 +458,94 @@ func TestNativeCapacityClosesWebSocket(t *testing.T) {
 	}
 	waitCapacityDrain(t, ctx, e)
 	verifyNativeCapacityClose(t, e, dir)
-	verifyNativeStreamOutcome(t, e, dir, TransportWS)
+	verifyNativeStreamOutcome(t, e, dir, TransportWS, required)
+}
+
+func TestNativeCapacityRefusesUnreservedWebSocketMessages(t *testing.T) {
+	for _, direction := range []string{"client", "upstream"} {
+		t.Run(direction, func(t *testing.T) {
+			p, e, dir := newNativeCapacityProxy(t, nativeRequestRecords+4)
+			ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+			defer cancel()
+			begin := make(chan struct{})
+			upResult := make(chan error, 1)
+			payload := []byte("fixture message")
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				up, _, _, err := ws.UpgradeHTTP(r, w)
+				if err != nil {
+					upResult <- err
+					return
+				}
+				defer func() { _ = up.Close() }()
+				if direction == "upstream" {
+					select {
+					case <-begin:
+					case <-ctx.Done():
+						return
+					}
+					if err := wsutil.WriteServerMessage(up, ws.OpText, payload); err != nil {
+						upResult <- err
+						return
+					}
+				}
+				_, _, err = wsutil.ReadClientData(up)
+				upResult <- err
+			}))
+			defer upstream.Close()
+			defer cancel()
+			_, port, err := net.SplitHostPort(upstream.Listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := httptest.NewServer(p.Handler())
+			defer server.Close()
+			target := "ws://api.vendor.example:" + port + "/"
+			conn, _, _, err := (ws.Dialer{}).Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws?url="+url.QueryEscape(target))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = conn.Close() }()
+			deadline, _ := ctx.Deadline()
+			if err := conn.SetDeadline(deadline); err != nil {
+				t.Fatal(err)
+			}
+			close(begin)
+			if direction == "client" {
+				if err := wsutil.WriteClientMessage(conn, ws.OpText, payload); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, _, err = wsutil.ReadServerData(conn)
+			var closed wsutil.ClosedError
+			if !errors.As(err, &closed) || closed.Code != ws.StatusGoingAway || closed.Reason != nativeCapacityStopReason {
+				t.Fatalf("message refusal = %v", err)
+			}
+			select {
+			case err := <-upResult:
+				if !errors.As(err, &closed) {
+					t.Fatalf("upstream received data or missed the close: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("upstream did not settle")
+			}
+			waitCapacityDrain(t, ctx, e)
+			verifyNativeCapacityClose(t, e, dir)
+			verifyNativeStreamOutcome(t, e, dir, TransportWS, true)
+		})
+	}
 }
 
 func TestNativeCapacityClosesConnectTunnel(t *testing.T) {
-	p, e, dir := newNativeCapacityProxy(t, nativeRequestRecords+4)
+	for _, required := range []bool{true, false} {
+		t.Run(nativeReceiptModeName(required), func(t *testing.T) {
+			testNativeCapacityClosesConnectTunnel(t, required)
+		})
+	}
+}
+
+func testNativeCapacityClosesConnectTunnel(t *testing.T, required bool) {
+	t.Helper()
+	p, e, dir := newNativeCapacityProxy(t, nativeRequestRecords+4, func(cfg *config.Config) { cfg.FlightRecorder.RequireReceipts = required })
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
@@ -383,7 +611,7 @@ func TestNativeCapacityClosesConnectTunnel(t *testing.T) {
 	}
 	waitCapacityDrain(t, ctx, e)
 	verifyNativeCapacityClose(t, e, dir)
-	verifyNativeStreamOutcome(t, e, dir, TransportConnect)
+	verifyNativeStreamOutcome(t, e, dir, TransportConnect, required)
 }
 
 func assertCapacityRefusesFetch(t *testing.T, p *Proxy, ctx context.Context) {
@@ -392,6 +620,20 @@ func assertCapacityRefusesFetch(t *testing.T, p *Proxy, ctx context.Context) {
 	p.Handler().ServeHTTP(w, httptest.NewRequestWithContext(ctx, http.MethodGet, "/fetch?url=https://api.vendor.example/", nil))
 	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), ael.ErrCapacity.Error()) {
 		t.Fatalf("capacity refusal = %d %s", w.Code, w.Body.String())
+	}
+	for _, tc := range []struct {
+		method  string
+		target  string
+		handler http.HandlerFunc
+	}{
+		{http.MethodConnect, "api.vendor.example:443", p.handleConnect},
+		{http.MethodGet, "/ws?url=wss://api.vendor.example/", p.handleWebSocket},
+	} {
+		res := httptest.NewRecorder()
+		tc.handler(res, httptest.NewRequestWithContext(ctx, tc.method, tc.target, nil))
+		if res.Code != http.StatusServiceUnavailable || !strings.Contains(res.Body.String(), ael.ErrCapacity.Error()) {
+			t.Fatalf("%s %s capacity refusal = %d %s", tc.method, tc.target, res.Code, res.Body.String())
+		}
 	}
 }
 
@@ -404,7 +646,7 @@ func waitCapacityDrain(t *testing.T, ctx context.Context, e *receipt.Emitter) {
 	}
 }
 
-func verifyNativeStreamOutcome(t *testing.T, e *receipt.Emitter, dir, transport string) {
+func verifyNativeStreamOutcome(t *testing.T, e *receipt.Emitter, dir, transport string, required bool) {
 	t.Helper()
 	result, err := recorder.QuerySession(dir, e.Session(), &recorder.QueryFilter{Type: "action_receipt"})
 	if err != nil {
@@ -416,8 +658,13 @@ func verifyNativeStreamOutcome(t *testing.T, e *receipt.Emitter, dir, transport 
 			t.Fatal(err)
 		}
 		record := signed.ActionRecord
-		if record.Transport != transport || record.DecisionPhase != receipt.DecisionPhaseOutcome ||
-			!strings.Contains(record.Pattern, nativeCapacityStopReason) {
+		if record.Transport != transport || !strings.Contains(record.Pattern, nativeCapacityStopReason) {
+			continue
+		}
+		if required && record.DecisionPhase != receipt.DecisionPhaseOutcome {
+			continue
+		}
+		if !required && (record.DecisionPhase != "" || record.Layer != nativeStreamCloseLayer || record.Verdict != config.ActionWarn) {
 			continue
 		}
 		if err := receipt.VerifyWithKey(signed, e.SignerKeyHex()); err != nil {
@@ -428,10 +675,29 @@ func verifyNativeStreamOutcome(t *testing.T, e *receipt.Emitter, dir, transport 
 	t.Fatalf("missing signed %s capacity outcome", transport)
 }
 
+func nativeReceiptModeName(required bool) string {
+	if required {
+		return "required"
+	}
+	return "best_effort"
+}
+
 func TestNativeCapacityClosesHTTPSSE(t *testing.T) {
-	for _, transport := range []string{TransportForward, TransportReverse, "intercept"} {
-		t.Run(transport, func(t *testing.T) {
-			p, e, dir := newNativeCapacityProxy(t, nativeRequestRecords+4)
+	const intercepted = "intercept"
+	for _, tc := range []struct {
+		transport string
+		required  bool
+	}{
+		{TransportForward, true},
+		{TransportForward, false},
+		{TransportReverse, true},
+		{TransportReverse, false},
+		{intercepted, true},
+		{intercepted, false},
+	} {
+		transport := tc.transport
+		t.Run(transport+"/"+nativeReceiptModeName(tc.required), func(t *testing.T) {
+			p, e, dir := newNativeCapacityProxy(t, nativeRequestRecords+4, func(cfg *config.Config) { cfg.FlightRecorder.RequireReceipts = tc.required })
 			ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 			defer cancel()
 			upstreamClosed := make(chan struct{})
@@ -513,7 +779,7 @@ func TestNativeCapacityClosesHTTPSSE(t *testing.T) {
 			}
 			waitCapacityDrain(t, ctx, e)
 			verifyNativeCapacityClose(t, e, dir)
-			verifyNativeStreamOutcome(t, e, dir, transport)
+			verifyNativeStreamOutcome(t, e, dir, transport, tc.required)
 		})
 	}
 }

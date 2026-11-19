@@ -134,6 +134,61 @@ func TestReceiptHeartbeatCapacityLeavesEmitterSealable(t *testing.T) {
 	}
 }
 
+func TestNativeCapacityStopRefusesReloadWhileAdmissionSettles(t *testing.T) {
+	root := t.TempDir()
+	_, key, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(root, "receipt.key")
+	if err := signing.SavePrivateKey(key, keyPath); err != nil {
+		t.Fatal(err)
+	}
+	configPath := writeServerTestConfig(t, fmt.Sprintf("flight_recorder:\n  enabled: true\n  dir: %q\n  signing_key_path: %q\n", filepath.Join(root, "evidence"), keyPath))
+	s, _ := newTestServerForStart(t, func(opts *ServerOpts) {
+		opts.ConfigFile = configPath
+		opts.nativeAELCapacityLimit = 3000
+	})
+	e := s.liveReceiptEmitter()
+	capacity := e.NativeCapacity()
+	s.receiptRotationRequested.Store(true)
+	if err := s.receiptRestartError(capacity); !errors.Is(err, errReceiptGroupKeyRotation) {
+		t.Fatalf("key restart = %v", err)
+	}
+	admitted, err := e.AdmitNative(receipt.EmitOpts{}, 1)
+	if err != nil || admitted.NativeLease == nil {
+		t.Fatalf("admission = %v, %v", admitted.NativeLease, err)
+	}
+	defer admitted.ReleaseNativeAdmission()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	read, write := io.Pipe()
+	defer func() { _ = read.Close(); _ = write.Close() }()
+	var wg sync.WaitGroup
+	watchNativeCapacity(ctx, &wg, capacity, cancel, write)
+	if _, err := e.ReserveNativeRecords(10); !errors.Is(err, ael.ErrCapacity) {
+		t.Fatalf("capacity admission = %v", err)
+	}
+	if line, err := bufio.NewReader(read).ReadString('\n'); err != nil || !strings.Contains(line, ael.ErrCapacity.Error()) {
+		t.Fatalf("capacity notice = %q, %v", line, err)
+	}
+	s.reloadMu.Lock()
+	reloadErr := s.executeReloadLocked(s.currentConfig(), false, &reloadAttempt{})
+	s.reloadMu.Unlock()
+	if !errors.Is(reloadErr, ael.ErrCapacity) {
+		t.Fatalf("reload = %v", reloadErr)
+	}
+	if err := s.receiptRestartError(capacity); !errors.Is(err, ael.ErrCapacity) {
+		t.Fatalf("capacity restart = %v", err)
+	}
+	cancel()
+	wg.Wait()
+	admitted.ReleaseNativeAdmission()
+	if err := s.sealTranscriptRoot(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEmbeddedMCPNativeCapacityClosesReceiptGroupAndRestarts(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "evidence")
