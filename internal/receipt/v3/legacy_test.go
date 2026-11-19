@@ -225,7 +225,7 @@ func TestLegacyEndpointSelection(t *testing.T) {
 	seq := uint64(2)
 	first := legacyIdentity{legacyAction, "first"}
 	second := legacyIdentity{legacyEvidence, "second"}
-	item := legacyPresentation{InventoryChain: InventoryChain{Seq: 2}, cliHead: "verified-root", verdict: prefixVerdict}
+	item := legacyPresentation{InventoryChain: InventoryChain{Seq: 5}, cliHead: "verified-root", cliSeq: seq, verdict: prefixVerdict}
 	for _, tc := range []struct {
 		name                string
 		keys                []legacyIdentity

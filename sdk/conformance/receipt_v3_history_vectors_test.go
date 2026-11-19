@@ -5,7 +5,9 @@ package conformance_test
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"testing"
@@ -292,6 +294,86 @@ func v3CutoverRecipes(t *testing.T) []v3Recipe {
 		recipes = append(recipes, v3Recipe{
 			group: 9, name: row.name, verdict: row.verdict, code: row.code, request: req,
 			files: []v3File{row.file, {name, row.legacy}},
+		})
+	}
+	return append(recipes, v3RotatedCutoverRecipes(t)...)
+}
+
+func v3RotatedCutoverRecipes(t *testing.T) []v3Recipe {
+	t.Helper()
+	before, after := v3Key("rotation prior"), v3Key("rotation successor")
+	priorSigner := hex.EncodeToString(v3Public(before))
+	const priorCount = 3
+	var legacy bytes.Buffer
+	var heads [priorCount + 1]string
+	var chain []actionreceipt.Receipt
+	var prefixBytes int
+	prev := actionreceipt.GenesisHash
+	for i := range heads {
+		key, seq := before, uint64(i)
+		var transition *actionreceipt.KeyTransition
+		if i == priorCount {
+			prefixBytes = legacy.Len()
+			key, seq = after, 0
+			transition = &actionreceipt.KeyTransition{PriorSignerKey: priorSigner, PriorChainSeq: priorCount - 1, PriorChainHash: prev}
+		}
+		record := actionreceipt.ActionRecord{
+			Version: actionreceipt.ActionRecordVersion, ActionID: fmt.Sprintf("example-%d", i), ActionType: actionreceipt.ActionRead,
+			Timestamp: time.Date(2026, 1, 1, 0, 0, i, 0, time.UTC),
+			Target:    "api.vendor.example", Transport: "fetch", Verdict: "allow",
+			ChainPrevHash: prev, ChainSeq: seq, KeyTransition: transition,
+		}
+		signed, err := actionreceipt.Sign(record, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chain = append(chain, signed)
+		line, err := actionreceipt.Marshal(signed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		legacy.Write(line)
+		legacy.WriteByte('\n')
+		head, err := record.Hash()
+		if err != nil {
+			t.Fatal(err)
+		}
+		heads[i] = "sha256:" + head
+		prev, err = actionreceipt.ReceiptHash(signed)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	keys := []string{priorSigner, hex.EncodeToString(v3Public(after))}
+	if result := actionreceipt.VerifyChainTrusted(chain, keys); !result.Valid {
+		t.Fatalf("rotation receipt recipe is invalid: %s", result.Error)
+	}
+	var recipes []v3Recipe
+	for _, tc := range []struct {
+		name          string
+		pin           int
+		presented     []byte
+		verdict, code string
+	}{
+		{"rotation-match", priorCount, legacy.Bytes(), "VALID PREFIX, END UNPROVEN", "LEGACY_END_UNPROVEN"},
+		{"rotation-extension", priorCount - 1, legacy.Bytes(), "INVALID", "LEGACY_EXTENDED_AFTER_CUTOVER"},
+		{"rotation-truncation", priorCount, legacy.Bytes()[:prefixBytes], "INVALID", "LEGACY_CHAIN_TRUNCATED"},
+	} {
+		s := v3New(t)
+		s.records = nil
+		inventory := v3Canonical(t, v3.Inventory{V: 1, Chains: []v3.InventoryChain{{
+			Chain: heads[0], Format: "action_v1", Record: heads[tc.pin], Seq: int64(tc.pin),
+		}}})
+		digest := v3.Digest(inventory)
+		open := v3DefaultOpen(s.key, s.lineage)
+		open["legacy_cutover"] = v3Common{"chains": 1, "inventory": digest}
+		s.add(t, "stream_open", open, nil)
+		recipes = append(recipes, v3Recipe{
+			group: 9, name: tc.name, verdict: tc.verdict, code: tc.code,
+			request: v3Request{Directory: true, AllowPrefix: true, Keys: []string{
+				priorSigner, hex.EncodeToString(v3Public(after)), hex.EncodeToString(v3Public(s.key)),
+			}},
+			files: []v3File{s.finish(t), {"activation-receipts.jsonl", tc.presented}, {v3.InventoryFilename(digest), inventory}},
 		})
 	}
 	return recipes

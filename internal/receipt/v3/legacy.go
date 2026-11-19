@@ -271,7 +271,7 @@ func (v *verification) verifyLegacyEndpoint(presented map[legacyIdentity]legacyP
 	if item.verdict == legacyInvalid || item.forked || item.Seq < 0 {
 		return nil
 	}
-	if _, err := endproof.Pin(item.cliHead, uint64(item.Seq), end.Head, end.Sequence); err != nil {
+	if _, err := endproof.Pin(item.cliHead, item.cliSeq, end.Head, end.Sequence); err != nil {
 		v.accept("expect-legacy-end", target.chain, false)
 		item.verdict = legacyInvalid
 	} else {
@@ -433,7 +433,11 @@ func (v *verification) legacyActions(batch legacyBatch, keys []string, reports m
 	for len(records) != 0 {
 		first := records[0].ActionRecord
 		n := 1
-		for n < len(records) && (batch.recorder || records[n].ActionRecord.ChainSeq != 0) {
+		for n < len(records) {
+			record := records[n].ActionRecord
+			if !batch.recorder && record.ChainSeq == 0 && record.KeyTransition == nil {
+				break
+			}
 			n++
 		}
 		chain := records[:n]
@@ -463,9 +467,9 @@ func (v *verification) legacyActions(batch legacyBatch, keys []string, reports m
 		hash, _ := last.Hash()
 		item := legacyPresentation{
 			InventoryChain: InventoryChain{Chain: key.chain, Format: key.format, Record: legacyHash(hash)},
-			verdict:        verdict, cliHead: result.RootHash, session: batch.session,
+			verdict:        verdict, cliHead: result.RootHash, cliSeq: last.ChainSeq, session: batch.session,
 		}
-		v.saveLegacy(presented, positions, item, last.ChainSeq, v.skip == codeLegacyInvalid || result.Valid)
+		v.saveLegacy(presented, positions, item, uint64(len(chain)-1), v.skip == codeLegacyInvalid || result.Valid)
 		records = records[n:]
 	}
 }
@@ -511,7 +515,7 @@ func (v *verification) legacyEvidence(batch legacyBatch, keys []string, reports 
 		result := walker.Result()
 		item := legacyPresentation{
 			InventoryChain: InventoryChain{Chain: key.chain, Format: key.format, Record: legacyHash(hash)},
-			verdict:        prefixVerdict, cliHead: result.RootHash, session: batch.session,
+			verdict:        prefixVerdict, cliHead: result.RootHash, cliSeq: last.ChainSeq, session: batch.session,
 		}
 		v.saveLegacy(presented, positions, item, last.ChainSeq, result.Valid)
 		records = records[n:]
@@ -538,7 +542,7 @@ func saveLegacyPosition(positions map[legacyIdentity]map[int64]string, key legac
 }
 
 func (v *verification) saveLegacy(presented map[legacyIdentity]legacyPresentation, positions map[legacyIdentity]map[int64]string, item legacyPresentation, seq uint64, valid bool) {
-	if seq > maxInteger {
+	if seq > maxInteger || item.cliSeq > maxInteger {
 		v.addCode(codeLegacyInvalid, "")
 		return
 	}
