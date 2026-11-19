@@ -30,17 +30,35 @@ func testDecisionIndexFinding(t *testing.T) {
 	if err := a.index.reset(); err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"first", "first", "second"} {
-		if err := a.index.remember(id, false); err != nil {
-			t.Fatal(err)
+	remember := func() {
+		t.Helper()
+		for _, id := range []string{"first", "first", "second"} {
+			if err := a.index.remember(id, false); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
+	remember()
 	if err := verification.appraiseHistory(&a, nil, &verifiedStream{}); err != nil {
 		t.Fatal(err)
 	}
 	if !hasFinding(verification.result, codeDecisionIndexFull) || a.fullHistory || len(a.index.ids) != 1 {
 		t.Fatalf("limit not enforced: %+v, %+v", a.index, verification.result.Findings)
 	}
+	baseline := verification.result
+	verification.result = Result{}
+	a.index.skipLimit = true
+	if err := a.index.reset(); err != nil {
+		t.Fatal(err)
+	}
+	remember()
+	if err := verification.appraiseHistory(&a, nil, &verifiedStream{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(a.index.ids) != 2 {
+		t.Fatal("disabled limit still drops a decision identifier")
+	}
+	requireMutation(t, codeDecisionIndexFull, baseline, verification.result)
 }
 
 func TestDecisionIndexRejectsUnusableTransaction(t *testing.T) {

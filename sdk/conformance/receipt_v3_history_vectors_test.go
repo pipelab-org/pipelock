@@ -5,6 +5,7 @@ package conformance_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"math"
 	"os"
 	"testing"
@@ -208,6 +209,34 @@ func v3CutoverRecipes(t *testing.T) []v3Recipe {
 		req := v3Request{Directory: true, Keys: []string{}, AllowUnpinned: true}
 		recipes = append(recipes, v3Recipe{group: 9, name: row.name, verdict: row.verdict, code: row.code, request: req, files: files})
 	}
+	corrupt := chain[0]
+	sig, tail := corrupt.Signature[:1], corrupt.Signature[1:]
+	replacement := "0"
+	if sig == replacement {
+		replacement = "1"
+	}
+	corrupt.Signature = replacement + tail
+	entry := entries[0]
+	entry.RawDetail, entry.Detail = nil, corrupt
+	entry.Hash = recorder.ComputeHash(entry)
+	line, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory := v3Canonical(t, v3.Inventory{V: 1, Chains: []v3.InventoryChain{{
+		Chain: wanted.Chain, Format: wanted.Format, Record: "sha256:" + first,
+	}}})
+	rootWithLegacy := v3New(t)
+	rootWithLegacy.records = nil
+	open := v3DefaultOpen(rootWithLegacy.key, rootWithLegacy.lineage)
+	digest := v3.Digest(inventory)
+	open["legacy_cutover"] = v3Common{"chains": 1, "inventory": digest}
+	rootWithLegacy.add(t, "stream_open", open, nil)
+	recipes = append(recipes, v3Recipe{
+		group: 9, name: "legacy-bad-signature", code: "LEGACY_INVALID", verdict: "INVALID",
+		request: v3Request{Directory: true, Keys: []string{}, AllowUnpinned: true},
+		files:   []v3File{rootWithLegacy.finish(t), {legacyName, append(line, '\n')}, {v3.InventoryFilename(digest), inventory}},
+	})
 	// The inventory binds no old chains here. An old chain is either an
 	// unlisted chain or has unknown membership when the root is absent.
 	root := v3New(t)

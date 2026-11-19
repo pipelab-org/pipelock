@@ -49,12 +49,13 @@ type tornFile struct {
 }
 
 type fileState struct {
-	stream   string
-	start    int64
-	last     stagedRecord
-	broken   bool
-	torn     bool
-	complete bool
+	stream      string
+	start       int64
+	last        stagedRecord
+	broken      bool
+	afterDamage bool
+	torn        bool
+	complete    bool
 }
 
 func (v *verification) add(f Finding) {
@@ -87,7 +88,7 @@ func verifyPaths(ctx context.Context, paths []string, opts Options, skip string)
 	if opts.ExplicitV3 && len(paths) != 1 {
 		return Result{}, errors.New("explicit v3 format requires exactly one file")
 	}
-	files, legacy, inventories, ignored, err := discover(paths, opts)
+	files, legacy, inventories, ignored, err := discover(paths, opts, skip)
 	if err != nil {
 		return Result{}, err
 	}
@@ -168,7 +169,7 @@ func (v *verification) discoverKey(input inputFile) error {
 	if !complete {
 		return nil
 	}
-	record, code := parseLine(line)
+	record, code := parseLine(line, v.skip)
 	if code != "" || record.Seq != 0 || record.Kind != kindStreamOpen {
 		return nil
 	}
@@ -190,7 +191,8 @@ func (v *verification) stageFiles(files []inputFile) error {
 		return fmt.Errorf("start record staging: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	const insert = "INSERT OR IGNORE INTO records (stream,seq,id,payload,unknown,body_code) VALUES (?,?,?,?,?,?)"
+	const insert = `INSERT INTO records (stream,seq,id,payload,unknown,body_code,after_damage) VALUES (?,?,?,?,?,?,?)
+ON CONFLICT (stream,seq,id) DO UPDATE SET after_damage = min(after_damage,excluded.after_damage)`
 	stmt, err := tx.PrepareContext(v.ctx, insert)
 	if err != nil {
 		return fmt.Errorf("prepare record staging: %w", err)
@@ -244,7 +246,11 @@ func (v *verification) stageFile(input inputFile, stmt *sql.Stmt) (fileState, er
 		return state, err
 	}
 	defer func() { _ = file.Close() }()
-	reader := bufio.NewReaderSize(file, maxLineBytes+1)
+	limit := maxLineBytes + 1
+	if v.skip == codeLineSize {
+		limit++
+	}
+	reader := bufio.NewReaderSize(file, limit)
 	for offset := int64(0); ; offset++ {
 		if err := v.ctx.Err(); err != nil {
 			return state, err
@@ -257,15 +263,13 @@ func (v *verification) stageFile(input inputFile, stmt *sql.Stmt) (fileState, er
 			if !state.complete && !state.broken {
 				v.addCode(codeFileLayout, state.stream)
 			} else if state.complete && len(line) != 0 {
-				state.torn = true
+				state.torn = v.skip != codeTornTail
 			}
 			return state, nil
 		}
 		if !v.stageLine(line, &state, offset, stmt, &err) {
 			state.broken = true
-			if state.stream != "" {
-				v.addStream(state.stream).broken = true
-			}
+			state.afterDamage = true
 			if err != nil {
 				return state, err
 			}
@@ -274,12 +278,12 @@ func (v *verification) stageFile(input inputFile, stmt *sql.Stmt) (fileState, er
 }
 
 func (v *verification) stageLine(line []byte, state *fileState, offset int64, stmt *sql.Stmt, outErr *error) bool {
-	record, code := parseLine(line)
+	record, code := parseLine(line, v.skip)
 	if code != "" {
 		v.addCode(code, state.stream)
 		return false
 	}
-	if code = checkSignature(record, v.keys[record.Signer]); code != "" && code != v.skip {
+	if code = checkSignature(record, v.keys[record.Signer], v.skip); code != "" {
 		v.addCode(code, state.stream)
 		return false
 	}
@@ -294,9 +298,6 @@ func (v *verification) stageLine(line []byte, state *fileState, offset int64, st
 			state.stream, state.start = record.Stream, record.Seq-offset
 		}
 		state.complete = true
-		if state.broken {
-			v.addStream(state.stream).broken = true
-		}
 	}
 	if v.skip != codeStreamOrder && !state.broken && (record.Stream != state.stream || record.Seq != state.start+offset) {
 		v.add(item.finding(codeStreamOrder))
@@ -310,13 +311,14 @@ func (v *verification) stageLine(line []byte, state *fileState, offset int64, st
 		v.add(item.finding(codeStreamOrder))
 		return false
 	}
-	unknown, code := checkBody(record)
+	unknown, code := checkBody(record, v.skip)
 	state.last = item
 	v.addStream(state.stream)
-	if _, err := stmt.ExecContext(v.ctx, record.Stream, record.Seq, record.ID, record.Payload, unknown, code); err != nil {
+	if _, err := stmt.ExecContext(v.ctx, record.Stream, record.Seq, record.ID, record.Payload, unknown, code, state.afterDamage); err != nil {
 		*outErr = fmt.Errorf("stage verified record: %w", err)
 		return false
 	}
+	state.afterDamage = false
 	return true
 }
 
@@ -335,12 +337,12 @@ func localOrderFailure(record Record, state *fileState) bool {
 	return state.last.id != "" && (record.Prev != state.last.id || record.Signer != state.last.Signer)
 }
 
-func checkBody(r Record) (bool, string) {
-	if len(r.Crit) != 0 {
+func checkBody(r Record, skip string) (bool, string) {
+	if skip != codeUnknownCrit && len(r.Crit) != 0 {
 		return true, codeUnknownCrit
 	}
 	kind, known := wireKinds[r.Kind]
-	if !known || r.BodyV != kind.version {
+	if !known || r.BodyV != kind.version && (skip != codeUnknownControl || !kind.control) {
 		if known && kind.control {
 			return true, codeUnknownControl
 		}
@@ -348,7 +350,7 @@ func checkBody(r Record) (bool, string) {
 	}
 	if r.Kind == kindAction {
 		unknown, valid := matchObject(r.values, kind.body)
-		if !valid {
+		if skip != codeBodySchema && !valid {
 			return false, codeBodySchema
 		}
 		if !actionFields(r.values) {
@@ -360,7 +362,7 @@ func checkBody(r Record) (bool, string) {
 	if !valid {
 		return false, codeBodySchema
 	}
-	if unknown && kind.control {
+	if skip != codeUnknownControl && unknown && kind.control {
 		return true, codeUnknownControl
 	}
 	switch r.Kind {
@@ -429,7 +431,7 @@ func unmarshalBody[T any](r stagedRecord) (T, error) {
 
 // Check the body and trust only after establishing the record's position.
 func (v *verification) checkStagedBody(current stagedRecord) bool {
-	if current.bodyCode != "" && current.bodyCode != v.skip {
+	if current.bodyCode != "" {
 		v.add(current.finding(current.bodyCode))
 		return findingClasses[current.bodyCode] != invalid
 	}
@@ -442,15 +444,6 @@ func (v *verification) checkStagedBody(current stagedRecord) bool {
 func (v *verification) verifyStreams() error {
 	for _, id := range sortedKeys(v.streams) {
 		s := v.streams[id]
-		if s.broken {
-			if err := walkRecords(v.ctx, v.store, id, maxInteger, func(record stagedRecord) error {
-				v.checkStagedBody(record)
-				return nil
-			}); err != nil {
-				return err
-			}
-			continue
-		}
 		if err := v.verifyStream(id, s); err != nil {
 			return err
 		}
@@ -482,6 +475,14 @@ func (v *verification) verifyStream(id string, s *verifiedStream) error {
 		case current.Seq != prior.Seq+1 || current.Prev != prior.id ||
 			current.Signer != prior.Signer || current.Kind == kindStreamOpen:
 			orderCode = codeStreamOrder
+		}
+		// A damaged physical predecessor can explain a missing position, but
+		// a second, intact copy of this record still has to pass the check.
+		if orderCode == codeStreamOrder && current.afterDamage &&
+			(current.Seq > prior.Seq+1 || prior.id == "" && current.Seq > 0) {
+			s.broken = true
+			v.checkStagedBody(current)
+			return nil
 		}
 		if orderCode != "" && orderCode != v.skip {
 			v.add(current.finding(orderCode))
@@ -525,7 +526,7 @@ func (v *verification) verifyStream(id string, s *verifiedStream) error {
 			return nil
 		}
 		if previous.id != "" {
-			if previous.Seq == current.Seq {
+			if previous.Seq == current.Seq && v.skip != codeFork {
 				s.contenders = []stagedRecord{previous, current}
 				return nil
 			}

@@ -4,6 +4,7 @@
 package v3
 
 import (
+	"bytes"
 	"encoding/json"
 	"go/ast"
 	"go/parser"
@@ -83,6 +84,7 @@ func TestImplementedFindingTargets(t *testing.T) {
 }
 
 func TestCorpusCheckMutations(t *testing.T) {
+	covered := map[string]bool{codeDecisionIndexFull: true, codeLegacyGroupIncomplete: true}
 	for _, name := range []string{
 		"g01-empty-input",
 		"g01-filename-start",
@@ -104,10 +106,41 @@ func TestCorpusCheckMutations(t *testing.T) {
 		"g09-legacy-truncated",
 		"g09-unknown-membership",
 		"g09-unlisted-legacy",
+		"g06-unknown-action-type",
+		"g03-empty-optional-member",
+		"g09-inventory-mismatch",
+		"g09-inventory-absent",
+		"g06-higher-action",
+		"g04-open-end",
+		"g06-unknown-event",
+		"g12-fork-order",
+		"g04-disconnected",
+		"g09-inventory-over-1024-chains",
+		"g09-legacy-prefix",
+		"g09-legacy-bad-signature",
+		"g01-duplicate-keyid",
+		"g01-overlong-line",
+		"g03-member-order",
+		"g04-predecessor-absent",
+		"g04-predecessor-truncated",
+		"g04-root-fork",
+		"g02-small-order-key",
+		"g02-identity-r",
+		"g02-scalar-at-order",
+		"g02-signer-missing",
+		"g04-succession-fork",
+		"g04-torn-tail",
+		"g04-unconfirmed-tail",
+		"g06-higher-close",
+		"g06-unknown-critical-feature",
+		"g01-unsupported-version",
+		"g01-unrecognized-input",
+		"g01-unclaimed-v3",
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := filepath.Join(corpusRoot, name)
 			recipe := readMutationRecipe(t, dir)
+			covered[recipe.Finding] = true
 			keys, err := DecodeKeys(recipe.Keys)
 			if err != nil {
 				t.Fatal(err)
@@ -136,13 +169,32 @@ func TestCorpusCheckMutations(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if hasFinding(result, recipe.Finding) {
-				t.Fatalf("disabled check still produced %s", recipe.Finding)
-			}
-			if result.ExitCode != 0 {
-				t.Fatalf("disabled check still rejects with exit %d: %+v", result.ExitCode, result.Findings)
-			}
+			requireMutation(t, recipe.Finding, baseline, result)
 		})
+	}
+	for code := range findingClasses {
+		// The browser reader owns its archive limit.
+		if code != codeUseHostVerifier && !covered[code] {
+			t.Errorf("finding %s has no check-disable mutation", code)
+		}
+	}
+}
+
+func requireMutation(t *testing.T, code string, baseline, mutant Result) {
+	t.Helper()
+	if !hasFinding(baseline, code) || hasFinding(mutant, code) {
+		t.Fatalf("disabled check %s did not remove its finding: %+v", code, mutant.Findings)
+	}
+	before, err := baseline.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := mutant.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(before, after) {
+		t.Fatalf("disabled check %s did not change the full result", code)
 	}
 }
 

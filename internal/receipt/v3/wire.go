@@ -51,8 +51,8 @@ func Genesis(stream string) string {
 
 const profilePrefix = "{\"payloadType\":\"application/vnd.pipelock.receipt."
 
-func parseLine(line []byte) (Record, string) {
-	if len(line) > maxLineBytes {
+func parseLine(line []byte, skip string) (Record, string) {
+	if skip != codeLineSize && len(line) > maxLineBytes {
 		return Record{}, codeLineSize
 	}
 	content, ok := bytes.CutPrefix(line, []byte(layoutPrefix))
@@ -71,7 +71,7 @@ func parseLine(line []byte) (Record, string) {
 	sigWidth := base64.StdEncoding.EncodedLen(layoutSignatureBytes)
 	for {
 		key, rest, valid := fixedMember(content, layoutEntryPrefix, keyWidth)
-		if !valid || !isDigest(string(key)) || string(key) <= last {
+		if !valid || !isDigest(string(key)) || skip != codeLineLayout && string(key) <= last {
 			return Record{}, codeLineLayout
 		}
 		encoded, rest, valid := fixedMember(rest, layoutSignaturePrefix, sigWidth)
@@ -106,7 +106,7 @@ func parseLine(line []byte) (Record, string) {
 	if !ok || len(payload) == 0 || payload[0] != '{' {
 		return Record{}, codeLineLayout
 	}
-	cursor := payloadParser{data: payload}
+	cursor := payloadParser{data: payload, allowUnordered: skip == codePayloadLayout}
 	values, parsed := cursor.object(1)
 	if !parsed {
 		return Record{}, codePayloadLayout
@@ -115,7 +115,7 @@ func parseLine(line []byte) (Record, string) {
 		return Record{}, codeLineLayout
 	}
 
-	if _, valid := matchObject(values, "Common"); !valid || !sortedStrings(values["crit"], true) {
+	if _, valid := matchObject(values, "Common"); skip != codeCommonSchema && (!valid || !sortedStrings(values["crit"], true)) {
 		return Record{}, codeCommonSchema
 	}
 	var common Common
@@ -131,6 +131,10 @@ func parseLine(line []byte) (Record, string) {
 			record.sig = entry
 			return record, ""
 		}
+	}
+	if skip == codeSignerMissing {
+		record.sig = sigs[0]
+		return record, ""
 	}
 	return Record{}, codeSignerMissing
 }
@@ -202,26 +206,26 @@ type validatedKey struct {
 	valid  bool
 }
 
-func checkSignature(record Record, key validatedKey) string {
-	if Digest(key.public) != record.Signer {
+func checkSignature(record Record, key validatedKey, skip string) string {
+	if skip != codeSignatureKey && Digest(key.public) != record.Signer {
 		return codeSignatureKey
 	}
-	return verifyEd25519(PAE(record.Payload), key, record.sig.raw)
+	return verifyEd25519(PAE(record.Payload), key, record.sig.raw, skip)
 }
 
-func verifyEd25519(message []byte, key validatedKey, signature []byte) string {
-	if !key.valid {
+func verifyEd25519(message []byte, key validatedKey, signature []byte, skip string) string {
+	if skip != codeSignatureKey && !key.valid {
 		return codeSignatureKey
 	}
-	if _, err := new(edwards25519.Scalar).SetCanonicalBytes(signature[32:]); err != nil {
+	if _, err := new(edwards25519.Scalar).SetCanonicalBytes(signature[32:]); err != nil && skip != codeSignatureScalar {
 		return codeSignatureScalar
 	}
-	if _, valid := canonicalPoint(signature[:32]); !valid {
+	if _, valid := canonicalPoint(signature[:32]); !valid && skip != codeSignaturePoint {
 		return codeSignaturePoint
 	}
 	// Go's pure Ed25519 verifier compares the encoded result of the
 	// cofactorless equation with R.
-	if !ed25519.Verify(key.public, message, signature) {
+	if skip != codeSignatureEquation && !ed25519.Verify(key.public, message, signature) {
 		return codeSignatureEquation
 	}
 	return ""
@@ -240,7 +244,7 @@ type dsseEntry struct {
 // ExportDSSE converts a storage line to a DSSE envelope. It validates the
 // storage structure and retains the signatures without checking their trust.
 func ExportDSSE(line []byte) ([]byte, string) {
-	record, code := parseLine(line)
+	record, code := parseLine(line, "")
 	if code != "" {
 		return nil, code
 	}

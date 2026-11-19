@@ -13,8 +13,9 @@ import (
 )
 
 type payloadParser struct {
-	data []byte
-	pos  int
+	data           []byte
+	pos            int
+	allowUnordered bool
 }
 
 func (p *payloadParser) eat(ch byte) bool {
@@ -36,7 +37,7 @@ func (p *payloadParser) object(depth int) (map[string]any, bool) {
 	last := ""
 	for {
 		key, ok := p.string()
-		if !ok || !memberName(key) || key <= last || !p.eat(':') {
+		if !ok || !memberName(key) || !p.allowUnordered && key <= last || !p.eat(':') {
 			return nil, false
 		}
 		value, ok := p.value(depth)

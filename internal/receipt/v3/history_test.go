@@ -163,7 +163,7 @@ func TestCutoverInventoryBytes(t *testing.T) {
 					tc.pin.Inventory = Digest([]byte(tc.data))
 				}
 			}
-			_, code, err := readInventory(name, tc.pin)
+			_, code, err := readInventory(name, tc.pin, "")
 			if err != nil || code != tc.code {
 				t.Fatalf("got %s %v, want %s", code, err, tc.code)
 			}
@@ -173,8 +173,35 @@ func TestCutoverInventoryBytes(t *testing.T) {
 
 func TestCutoverInventoryReadFailure(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing")
-	if _, _, err := readInventory(path, Cutover{Inventory: Digest(nil)}); !errors.Is(err, os.ErrNotExist) {
+	if _, _, err := readInventory(path, Cutover{Inventory: Digest(nil)}, ""); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected missing inventory read error, got %v", err)
+	}
+}
+
+func TestCutoverInventoryResolvesSymlinkBeforeDotDot(t *testing.T) {
+	root := t.TempDir()
+	resolvedDir := filepath.Join(root, "resolved")
+	child := filepath.Join(resolvedDir, "child")
+	if err := os.MkdirAll(child, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(child, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	id := EmptyInventoryDigest()
+	name := InventoryFilename(id)
+	for file, data := range map[string]string{
+		filepath.Join(root, name):        "{}",
+		filepath.Join(resolvedDir, name): emptyInventory,
+	} {
+		if err := os.WriteFile(file, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := link + string(os.PathSeparator) + ".." + string(os.PathSeparator) + name
+	if _, code, err := readInventory(path, Cutover{Inventory: id}, ""); code != "" || err != nil {
+		t.Fatalf("resolved inventory: %s, %v", code, err)
 	}
 }
 
@@ -395,10 +422,17 @@ func testIncompleteLegacyGroup(t *testing.T) {
 	root := signedStream(t, 1, nil, &Cutover{Inventory: digest, Chains: 1})
 	root.close()
 	root.write(dir)
-	result, err := VerifyPaths(t.Context(), []string{dir}, Options{Directory: true, Keys: []ed25519.PublicKey{root.public()}})
+	paths := []string{dir}
+	opts := Options{Directory: true, Keys: []ed25519.PublicKey{root.public()}}
+	result, err := VerifyPaths(t.Context(), paths, opts)
 	if err != nil || !hasFinding(result, codeLegacyGroupIncomplete) {
 		t.Fatalf("expected incomplete group: %+v, %v", result, err)
 	}
+	mutant, err := verifyPaths(t.Context(), paths, opts, codeLegacyGroupIncomplete)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireMutation(t, codeLegacyGroupIncomplete, result, mutant)
 }
 
 func TestTornReceiptOrdering(t *testing.T) {
@@ -483,7 +517,7 @@ func TestAcceptUnsealedDiscontinuity(t *testing.T) {
 
 func TestStreamOpenCannotRepeat(t *testing.T) {
 	root := signedStream(t, 1, nil, &Cutover{Inventory: EmptyInventoryDigest()})
-	record, code := parseLine(root.lines)
+	record, code := parseLine(root.lines, "")
 	if code != "" {
 		t.Fatal(code)
 	}

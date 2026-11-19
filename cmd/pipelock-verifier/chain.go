@@ -122,14 +122,18 @@ end_proof, scope, and signer trust.`,
 				return cliutil.ExitCodeError(cliutil.ExitConfig, detectErr)
 			}
 			if claimed {
-				keys, err := resolveSignerKeys(opts.signerKeys)
-				if err != nil {
-					return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+				var keys []string
+				if len(opts.signerKeys) != 0 {
+					var err error
+					keys, err = resolveSignerKeys(opts.signerKeys)
+					if err != nil {
+						return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+					}
 				}
 				return v3Flags.Run(cmd, receiptv3.Input{
 					Paths: paths, Directory: dir, Keys: keys, Head: opts.expectHeadHash,
 					Seq: seq, SeqSet: cmd.Flags().Changed("expect-seq"),
-					AllowPrefix: opts.allowPrefix, AllowUnpinned: opts.allowUnpinned,
+					AllowPrefix: opts.allowPrefix, AllowUnpinned: opts.allowUnpinned, GenericLegacyLabels: true,
 					LegacyOptions: opts.groupID != "" || opts.sessionExplicit || len(opts.endorsementPaths) != 0 ||
 						opts.expectSignerKeyID != "" || opts.expectContractHash != "" || opts.expectManifestHash != "" ||
 						opts.expectPayloadKind != "",

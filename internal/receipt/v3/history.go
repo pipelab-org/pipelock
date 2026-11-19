@@ -19,8 +19,10 @@ func (v *verification) verifySuccession() error {
 			parent := v.streams[p.Stream]
 			switch {
 			case parent == nil || parent.open.id == "" && len(parent.contenders) == 0:
-				stream.missing = true
-				v.add(stream.open.finding(codePredecessorNotPresented))
+				if v.skip != codePredecessorNotPresented {
+					stream.missing = true
+					v.add(stream.open.finding(codePredecessorNotPresented))
+				}
 			default:
 				parent.successors = append(parent.successors, stream)
 			}
@@ -29,7 +31,7 @@ func (v *verification) verifySuccession() error {
 	for _, id := range sortedKeys(v.streams) {
 		parent := v.streams[id]
 		for _, child := range parent.successors {
-			if len(parent.successors) > 1 {
+			if v.skip != codeSuccessionFork && len(parent.successors) > 1 {
 				v.add(child.open.finding(codeSuccessionFork))
 			}
 			if parent.open.id != "" {
@@ -56,10 +58,17 @@ func (v *verification) checkPin(parent, child *verifiedStream) error {
 	if err != nil {
 		// The pin was physically absent or beyond the verified shared prefix.
 		if errors.Is(err, sql.ErrNoRows) {
-			v.add(child.open.finding(codePredecessorTruncated))
-			return nil
+			if v.skip != codePredecessorTruncated {
+				v.add(child.open.finding(codePredecessorTruncated))
+				return nil
+			}
+			id = pin.Record
+			if pin.Ended == "closed" {
+				kind = kindStreamClose
+			}
+		} else {
+			return fmt.Errorf("look up predecessor pin: %w", err)
 		}
-		return fmt.Errorf("look up predecessor pin: %w", err)
 	}
 	if v.skip != codePinMismatch && (id != pin.Record || pin.Ended == "closed" && kind != kindStreamClose ||
 		pin.Ended == "unsealed" && kind == kindStreamClose) {
@@ -72,7 +81,7 @@ func (v *verification) checkPin(parent, child *verifiedStream) error {
 		}
 		return nil
 	}
-	if len(parent.successors) != 1 || !sameLineage || len(parent.contenders) > 0 {
+	if v.skip == codeUnconfirmed || len(parent.successors) != 1 || !sameLineage || len(parent.contenders) > 0 {
 		return nil
 	}
 	parent.limit = pin.Seq
@@ -145,7 +154,7 @@ func (v *verification) segments(members []*verifiedStream) []segment {
 			}
 		}
 	}
-	if rootCount > 1 {
+	if v.skip != codeRootFork && rootCount > 1 {
 		for _, member := range members {
 			if member.body.Previous == nil {
 				v.add(member.open.finding(codeRootFork))
@@ -174,7 +183,7 @@ func (v *verification) segments(members []*verifiedStream) []segment {
 			forked = true
 		}
 	}
-	if len(pieces) != 1 || forked {
+	if v.skip != codeHistoryDisconnected && (len(pieces) != 1 || forked) {
 		v.addCode(codeHistoryDisconnected, members[0].open.Stream)
 	}
 	return pieces
@@ -231,7 +240,7 @@ func (v *verification) checkExpectations(cutoverEnds map[string]stagedRecord) {
 	}
 	for _, id := range sortedKeys(v.streams) {
 		stream := v.streams[id]
-		if stream.open.id == "" || proved[id] {
+		if v.skip == codeEndUnproven || stream.open.id == "" || proved[id] {
 			continue
 		}
 		switch stream.summary.End {

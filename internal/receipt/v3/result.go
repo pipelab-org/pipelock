@@ -77,6 +77,7 @@ type Counts struct {
 
 type LegacyResult struct {
 	Chain   string `json:"chain"`
+	Class   string `json:"class"`
 	Format  string `json:"format"`
 	Verdict string `json:"verdict"`
 }

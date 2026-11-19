@@ -45,12 +45,13 @@ type v3File struct {
 }
 
 type v3Recipe struct {
-	group   int
-	name    string
-	code    string
-	verdict string
-	request v3Request
-	files   []v3File
+	group        int
+	name         string
+	code         string
+	verdict      string
+	extraInvalid []string
+	request      v3Request
+	files        []v3File
 }
 
 type v3Common map[string]any
@@ -276,8 +277,13 @@ func v3RunRecipe(t *testing.T, recipe v3Recipe) {
 	}) {
 		t.Fatalf("missing targeted finding %s among %+v", recipe.code, result.Findings)
 	}
+	for _, extra := range recipe.extraInvalid {
+		if !slices.ContainsFunc(result.Findings, func(f v3.Finding) bool { return f.Class == "invalid" && f.Code == extra }) {
+			t.Fatalf("missing additional finding %s among %+v", extra, result.Findings)
+		}
+	}
 	for _, f := range result.Findings {
-		if f.Class == "invalid" && recipe.code != f.Code {
+		if f.Class == "invalid" && recipe.code != f.Code && !slices.Contains(recipe.extraInvalid, f.Code) {
 			t.Fatalf("unexpected invalid finding %s for target %s", f.Code, recipe.code)
 		}
 	}

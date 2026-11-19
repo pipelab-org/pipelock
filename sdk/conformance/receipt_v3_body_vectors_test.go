@@ -230,6 +230,28 @@ func v3SpecialRecipes(t *testing.T) []v3Recipe {
 		files: []v3File{broken.file(0, 1), broken.file(1, 3)},
 	})
 
+	damaged := broken.file(0, 1)
+	damaged.name = "copy/" + damaged.name
+	damaged.bytes = []byte("{}\n")
+	emptyInventory := v3Canonical(t, v3.Inventory{V: 1, Chains: []v3.InventoryChain{}})
+	emptyName := v3.InventoryFilename(v3.EmptyInventoryDigest())
+	damagedInventory := append(bytes.Clone(emptyInventory), '\n')
+	recipes = append(recipes,
+		v3Recipe{group: 12, name: "damaged-copy-order", code: "STREAM_ORDER", verdict: "INVALID", extraInvalid: []string{"LINE_LAYOUT"}, files: []v3File{broken.file(0, 1), broken.file(1, 3), damaged}},
+		v3Recipe{
+			group: 12, name: "damaged-inventory-first", code: "CUTOVER_INVENTORY_MISMATCH", verdict: "INVALID",
+			files: []v3File{valid, {"a/" + emptyName, damagedInventory}, {"b/" + emptyName, emptyInventory}},
+		},
+		v3Recipe{
+			group: 12, name: "damaged-inventory-last", code: "CUTOVER_INVENTORY_MISMATCH", verdict: "INVALID",
+			files: []v3File{valid, {"a/" + emptyName, emptyInventory}, {"b/" + emptyName, damagedInventory}},
+		},
+		v3Recipe{
+			group: 12, name: "damaged-unpinned-inventory", code: "CUTOVER_INVENTORY_MISMATCH", verdict: "INVALID",
+			files: []v3File{valid, {v3.InventoryFilename(v3.Digest(nil)), damagedInventory}},
+		},
+	)
+
 	afterClose := v3New(t)
 	afterClose.close(t)
 	afterClose.add(t, "heartbeat", v3Common{"beat": 1}, nil)
@@ -320,6 +342,9 @@ func v3CheckSpecial(t *testing.T, recipe v3Recipe, paths []string, opts v3.Optio
 		}
 		v3Fixture(t, filepath.Join(v3Corpus, filepath.Base(t.Name())), "export.dsse.jsonl", exported.Bytes())
 	case 12:
+		if recipe.name == "damaged-copy-order" {
+			v3CheckDamagedCopy(t, paths, opts, full)
+		}
 		slices.Reverse(paths)
 		result, err := v3.VerifyPaths(t.Context(), paths, opts)
 		if err != nil {
@@ -329,6 +354,29 @@ func v3CheckSpecial(t *testing.T, recipe v3Recipe, paths []string, opts v3.Optio
 		if err != nil || !bytes.Equal(data, full) {
 			t.Fatalf("result changed with file order: %v", err)
 		}
+	}
+}
+
+func v3CheckDamagedCopy(t *testing.T, paths []string, opts v3.Options, withDamage []byte) {
+	t.Helper()
+	var damaged v3.Result
+	if err := json.Unmarshal(withDamage, &damaged); err != nil {
+		t.Fatal(err)
+	}
+	damaged.Findings = slices.DeleteFunc(damaged.Findings, func(f v3.Finding) bool {
+		return f.Code == "LINE_LAYOUT" && f.Seq == nil
+	})
+	filtered, err := damaged.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := v3.VerifyPaths(t.Context(), paths[:len(paths)-1], opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := baseline.JSON()
+	if err != nil || !bytes.Equal(original, filtered) {
+		t.Fatalf("damaged copy changed the original result after excluding the damage: %v\n%s\n%s", err, original, filtered)
 	}
 }
 

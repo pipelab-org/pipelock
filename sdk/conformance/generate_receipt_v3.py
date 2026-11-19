@@ -200,6 +200,11 @@ def markdown():
     out += table(("Code", "Class"), ((f"`{code}`", cls) for code, cls in REG["findings"].items()))
     out.extend(("### Limits", ""))
     out += table(("Limit", "Value"), ((name.replace("_", " "), f"{value:,}") for name, value in LIMITS.items()))
+    out.extend(("### Effect-specific producers", ""))
+    out += table(("Source location", "Registered call site", "Boundary", "Condition", "Group B fields", "Status"), (
+        (f'`{row["source"]}`', f'`{site}`', f'`{REG["emit_sites"][site]}`', row["when"], row["fields"], "DRAFTED FROM CODE")
+        for site, row in REG["emit_attribution"].items()
+    ))
     return "\n".join((*out, END))
 
 

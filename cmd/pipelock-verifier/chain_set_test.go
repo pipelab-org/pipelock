@@ -8,9 +8,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 )
 
 // The run-chain fixtures are real evidence directories written by pipelock
@@ -66,6 +69,7 @@ func TestChainDir_RunChainFixturesMatchGoReference(t *testing.T) {
 			if err := json.Unmarshal([]byte(stdout), &got); err != nil {
 				t.Fatalf("decode report: %v\n%s", err, stdout)
 			}
+			compareReceiptV3LegacyRunSet(t, v, key, code, got)
 			if got.Valid != exp.Valid || got.Base != "proxy" {
 				t.Fatalf("valid=%v base=%q, want valid=%v base proxy", got.Valid, got.Base, exp.Valid)
 			}
@@ -103,6 +107,33 @@ func TestChainDir_RunChainFixturesMatchGoReference(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func compareReceiptV3LegacyRunSet(t *testing.T, fixture, key string, code int, old chainSetReport) {
+	t.Helper()
+	const opener = "11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl"
+	dir := copyFixtureDir(t, fixture)
+	data, err := os.ReadFile("../../sdk/conformance/testdata/v3/g01-valid-line/" + opener)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, opener), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, _ := runRoot(t, "chain", "--allow-prefix", dir, "--dir", "--key", key, "--json")
+	var mixed v3.Result
+	if err := json.Unmarshal([]byte(stdout), &mixed); err != nil {
+		t.Fatalf("decode mixed result: %v, stdout %s, stderr %s", err, stdout, stderr)
+	}
+	failed := slices.ContainsFunc(mixed.Legacy, func(row v3.LegacyResult) bool { return row.Class == "failure" })
+	if len(mixed.Legacy) == 0 || failed != (code != 0) {
+		t.Fatalf("mixed legacy class differs from exit %d: %+v", code, mixed.Legacy)
+	}
+	if !old.Continuity.Healthy && !slices.ContainsFunc(mixed.Legacy, func(row v3.LegacyResult) bool {
+		return row.Chain == old.Base && row.Class == "failure" && row.Verdict == "INVALID"
+	}) {
+		t.Fatalf("mixed legacy report lacks the old base failure for %q: %+v", old.Base, mixed.Legacy)
 	}
 }
 

@@ -77,7 +77,7 @@ func TestWycheproofEd25519(t *testing.T) {
 			if errA != nil || errM != nil || errS != nil || len(sig) != 64 {
 				t.Fatalf("bad source vector: %v %v %v", errA, errM, errS)
 			}
-			code := verifyEd25519(m, validateKey(a), sig)
+			code := verifyEd25519(m, validateKey(a), sig, "")
 			torsion := slices.Contains(row.Flags, "SmallOrderPublicKey") || slices.Contains(row.Flags, "MixedOrderPublicKey")
 			if torsion && code != codeSignatureKey {
 				t.Fatalf("wanted key rejection, got %q (suite result %s)", code, row.Result)

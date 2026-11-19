@@ -127,12 +127,18 @@ func TestLegacyPositionBoundsAndConflictingCopies(t *testing.T) {
 	v := verification{}
 	saveLegacyPosition(positions, key, 0, "first")
 	saveLegacyPosition(positions, key, 0, "other")
-	v.saveLegacy(presented, positions, key, 0, "other", true, prefixVerdict)
+	v.saveLegacy(presented, positions, legacyPresentation{
+		InventoryChain: InventoryChain{Chain: key.chain, Format: key.format, Record: legacyHash("other")},
+		verdict:        prefixVerdict,
+	}, 0, true)
 	if !presented[key].forked {
 		t.Fatal("conflicting receipt copies were accepted as identical")
 	}
 	saveLegacyPosition(positions, key, maxInteger+1, "past-bound")
-	v.saveLegacy(presented, positions, key, maxInteger+1, "past-bound", true, prefixVerdict)
+	v.saveLegacy(presented, positions, legacyPresentation{
+		InventoryChain: InventoryChain{Chain: key.chain, Format: key.format, Record: legacyHash("past-bound")},
+		verdict:        prefixVerdict,
+	}, maxInteger+1, true)
 	if !hasFinding(v.result, codeLegacyInvalid) {
 		t.Fatal("out-of-range sequence was accepted")
 	}
@@ -163,5 +169,87 @@ func TestLegacyNeedsDirectoryScopeForCutover(t *testing.T) {
 				t.Fatalf("expected %q, got %v", tc.want, err)
 			}
 		})
+	}
+}
+
+func TestLegacyDiagnosticLabels(t *testing.T) {
+	for _, tc := range []struct {
+		name, format, verdict string
+		opts                  Options
+		class, label          string
+	}{
+		{"closed without pin", legacyAction, "VALID", Options{}, legacyFailure, "CHAIN UNPINNED"},
+		{"closed with unpinned opt-in", legacyAction, "VALID", Options{AllowUnpinned: true}, legacyPass, "CHAIN UNPINNED"},
+		{"evidence chain broken", legacyEvidence, "INVALID", Options{}, legacyFailure, "EVIDENCE CHAIN BROKEN"},
+		{"prefix refused", legacyEvidence, prefixVerdict, Options{AllowUnpinned: true}, legacyFailure, prefixVerdict},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := verification{opts: tc.opts}
+			row := v.legacyResult(legacyPresentation{InventoryChain: InventoryChain{Format: tc.format}, verdict: tc.verdict})
+			if row.Class != tc.class || row.Verdict != tc.label {
+				t.Fatalf("legacy class and label: %+v", row)
+			}
+		})
+	}
+	v := verification{}
+	v.failedLegacy("example", recorder.ErrEvidenceChanged)
+	if v.result.Legacy[0].Verdict != "CHAIN UNAVAILABLE" || v.result.Legacy[0].Class != legacyFailure {
+		t.Fatalf("unavailable legacy row: %+v", v.result.Legacy[0])
+	}
+}
+
+func TestLegacyInvalidGroupInventoryLabel(t *testing.T) {
+	dir := t.TempDir()
+	stream := signedStream(t, 1, nil, &Cutover{Inventory: EmptyInventoryDigest()})
+	stream.close()
+	stream.write(dir)
+	if err := os.WriteFile(filepath.Join(dir, "receipt-group-unknown.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := VerifyPaths(t.Context(), []string{dir}, Options{Directory: true, AllowUnpinned: true})
+	if err != nil || !hasFinding(result, codeLegacyInvalid) || len(result.Legacy) != 1 ||
+		result.Legacy[0].Verdict != "GROUP_INVALID" || result.Legacy[0].Class != legacyFailure {
+		t.Fatalf("unexpected group inventory result: %+v, %v", result, err)
+	}
+}
+
+func TestLegacyEndpointSelection(t *testing.T) {
+	seq := uint64(2)
+	first := legacyIdentity{legacyAction, "first"}
+	second := legacyIdentity{legacyEvidence, "second"}
+	item := legacyPresentation{InventoryChain: InventoryChain{Seq: 2}, cliHead: "verified-root", verdict: prefixVerdict}
+	for _, tc := range []struct {
+		name                string
+		keys                []legacyIdentity
+		unreadable, wantErr bool
+		accepted            int
+	}{
+		{"missing", nil, false, true, 0},
+		{"ambiguous", []legacyIdentity{first, second}, false, true, 0},
+		{"unavailable", nil, true, false, 0},
+		{"one matching chain", []legacyIdentity{first}, false, false, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := verification{opts: Options{LegacyEnd: &LegacyEnd{Head: item.cliHead, Sequence: &seq}}}
+			if tc.unreadable {
+				v.failedLegacy(first.chain, recorder.ErrEvidenceChanged)
+			}
+			presented := map[legacyIdentity]legacyPresentation{}
+			for _, key := range tc.keys {
+				presented[key] = item
+			}
+			if err := v.verifyLegacyEndpoint(presented); (err != nil) != tc.wantErr || len(v.result.Accepted) != tc.accepted {
+				t.Fatalf("legacy endpoint result: accepted=%+v, error=%v", v.result.Accepted, err)
+			}
+		})
+	}
+}
+
+func TestLegacyContinuityReadFailure(t *testing.T) {
+	v := verification{}
+	v.verifyLegacyContinuity(filepath.Join(t.TempDir(), "missing"), "example", nil, false)
+	if !hasFinding(v.result, codeLegacyInvalid) || len(v.result.Legacy) != 1 ||
+		v.result.Legacy[0].Verdict != "RESTART CONTINUITY INCOMPLETE" || v.result.Legacy[0].Class != legacyFailure {
+		t.Fatalf("continuity diagnostic: %+v", v.result)
 	}
 }

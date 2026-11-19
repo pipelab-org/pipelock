@@ -88,15 +88,16 @@ func (s *SeqFlag) String() string {
 func (*SeqFlag) Type() string { return "sequence" }
 
 type Input struct {
-	Paths         []string
-	Directory     string
-	Keys          []string
-	Head          string
-	Seq           SeqFlag
-	SeqSet        bool
-	AllowPrefix   bool
-	AllowUnpinned bool
-	LegacyOptions bool
+	Paths               []string
+	Directory           string
+	Keys                []string
+	Head                string
+	Seq                 SeqFlag
+	SeqSet              bool
+	AllowPrefix         bool
+	AllowUnpinned       bool
+	LegacyOptions       bool
+	GenericLegacyLabels bool
 }
 
 // Run writes the same canonical result document in both executables.
@@ -112,21 +113,31 @@ func (f Flags) Run(cmd *cobra.Command, in Input) error {
 		Keys: keys, AllowPrefix: in.AllowPrefix, AllowUnpinned: in.AllowUnpinned,
 		ExpectLineage: f.Lineage, AcceptDiscontinuities: f.Discontinuity,
 		AllowPartialHistories: f.Partial, Directory: in.Directory != "",
-		ExplicitV3: f.Format == "v3", DiskIndex: f.DiskIndex,
+		ExplicitV3: f.Format == "v3", DiskIndex: f.DiskIndex, GenericLegacyLabels: in.GenericLegacyLabels,
 	}
 	if in.Head != "" {
 		head, err := v3.ParseHead(in.Head)
-		if err != nil {
+		if err == nil {
+			opts.ExpectHeads = []v3.Head{head}
+		} else if in.Directory != "" && !strings.Contains(in.Head, ":") {
+			opts.LegacyEnd = &v3.LegacyEnd{Head: in.Head}
+		} else {
 			return usage(err)
 		}
-		opts.ExpectHeads = []v3.Head{head}
 	}
 	if in.SeqSet {
-		sequence, err := v3.ParseSequence(in.Seq.V3)
-		if err != nil {
-			return usage(err)
+		if in.Seq.V3 == "" && in.Directory != "" {
+			if opts.LegacyEnd == nil {
+				opts.LegacyEnd = &v3.LegacyEnd{}
+			}
+			opts.LegacyEnd.Sequence = &in.Seq.Legacy
+		} else {
+			sequence, err := v3.ParseSequence(in.Seq.V3)
+			if err != nil {
+				return usage(err)
+			}
+			opts.ExpectSequences = []v3.Sequence{sequence}
 		}
-		opts.ExpectSequences = []v3.Sequence{sequence}
 	}
 	paths := in.Paths
 	if in.Directory != "" {

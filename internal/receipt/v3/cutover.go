@@ -54,10 +54,11 @@ type legacyIdentity struct {
 type legacyPresentation struct {
 	InventoryChain
 	verdict string
+	cliHead string
 	forked  bool
 }
 
-func (v *verification) verifyCutover(oldFiles []string, inventories map[string]string, claimed bool) (map[string]stagedRecord, error) {
+func (v *verification) verifyCutover(oldFiles []string, inventories map[string][]string, claimed bool) (map[string]stagedRecord, error) {
 	old, err := v.verifyLegacy(oldFiles)
 	if err != nil {
 		return nil, err
@@ -69,6 +70,7 @@ func (v *verification) verifyCutover(oldFiles []string, inventories map[string]s
 	if !claimed {
 		return unproven, nil
 	}
+	checkedInventories := map[string]bool{}
 	known := v.cutoverMembershipKnown()
 	listed := map[legacyIdentity]bool{}
 	for _, id := range sortedKeys(v.streams) {
@@ -77,12 +79,24 @@ func (v *verification) verifyCutover(oldFiles []string, inventories map[string]s
 		if cutover == nil {
 			continue
 		}
-		inventory, code, err := readInventory(inventories[cutover.Inventory], *cutover)
-		if err != nil {
-			return nil, err
+		checkedInventories[cutover.Inventory] = true
+		paths := inventories[cutover.Inventory]
+		if len(paths) == 0 {
+			paths = []string{""}
 		}
-		if code != "" {
-			v.add(stream.open.finding(code))
+		var inventory Inventory
+		for _, path := range paths {
+			candidate, code, err := readInventory(path, *cutover, v.skip)
+			if err != nil {
+				return nil, err
+			}
+			if code != "" {
+				v.add(stream.open.finding(code))
+				continue
+			}
+			inventory = candidate
+		}
+		if inventory.Chains == nil {
 			known = false
 			continue
 		}
@@ -91,7 +105,7 @@ func (v *verification) verifyCutover(oldFiles []string, inventories map[string]s
 			listed[key] = true
 			actual, presented := old[key]
 			switch {
-			case !presented:
+			case v.skip != codeLegacyChainNotPresented && !presented:
 				v.add(stream.open.finding(codeLegacyChainNotPresented))
 			case v.skip != codeLegacyExtendedAfterCutover && actual.Seq > row.Seq:
 				v.add(stream.open.finding(codeLegacyExtendedAfterCutover))
@@ -99,8 +113,22 @@ func (v *verification) verifyCutover(oldFiles []string, inventories map[string]s
 				v.add(stream.open.finding(codeLegacyChainTruncated))
 			case v.skip != codeLegacyChainHeadMismatch && (actual.forked || actual.Record != row.Record):
 				v.add(stream.open.finding(codeLegacyChainHeadMismatch))
-			case actual.verdict == prefixVerdict:
+			case v.skip != codeLegacyEndUnproven && actual.verdict == prefixVerdict:
 				unproven[stream.open.id] = stream.open
+			}
+		}
+	}
+	for _, id := range sortedKeys(inventories) {
+		if checkedInventories[id] {
+			continue
+		}
+		for _, path := range inventories[id] {
+			_, code, err := readInventory(path, Cutover{Inventory: id, Chains: -1}, v.skip)
+			if err != nil {
+				return nil, err
+			}
+			if code != "" {
+				v.addCode(code, "")
 			}
 		}
 	}
@@ -146,18 +174,21 @@ func (v *verification) cutoverMembershipKnown() bool {
 	return true
 }
 
-func readInventory(path string, pin Cutover) (Inventory, string, error) {
+func readInventory(path string, pin Cutover, skip string) (Inventory, string, error) {
 	data := []byte(emptyInventory)
 	if path != "" {
-		var err error
-		data, err = os.ReadFile(filepath.Clean(path))
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return Inventory{}, "", fmt.Errorf("resolve cutover inventory: %w", err)
+		}
+		data, err = os.ReadFile(filepath.Clean(resolved))
 		if err != nil {
 			return Inventory{}, "", fmt.Errorf("read cutover inventory: %w", err)
 		}
-	} else if pin.Inventory != EmptyInventoryDigest() {
+	} else if skip != codeCutoverInventoryNotPresented && pin.Inventory != EmptyInventoryDigest() {
 		return Inventory{}, codeCutoverInventoryNotPresented, nil
 	}
-	if Digest(data) != pin.Inventory {
+	if skip != codeCutoverInventoryMismatch && Digest(data) != pin.Inventory {
 		return Inventory{}, codeCutoverInventoryMismatch, nil
 	}
 	var inventory Inventory
@@ -168,14 +199,14 @@ func readInventory(path string, pin Cutover) (Inventory, string, error) {
 		return Inventory{}, codeCutoverInventoryMismatch, nil
 	}
 	canonical, err := canonicalJSON(inventory)
-	if err != nil || !bytes.Equal(data, canonical) {
+	if err != nil || skip != codeCutoverInventoryMismatch && !bytes.Equal(data, canonical) {
 		return Inventory{}, codeCutoverInventoryMismatch, nil
 	}
 	return inventory, "", nil
 }
 
 func (i Inventory) valid(chains int64) bool {
-	if i.V != 1 || i.Chains == nil || int64(len(i.Chains)) != chains ||
+	if i.V != 1 || i.Chains == nil || chains >= 0 && int64(len(i.Chains)) != chains ||
 		i.Journal != "" && !isDigest(i.Journal) {
 		return false
 	}
@@ -208,6 +239,6 @@ func validLegacyRow(row InventoryChain) bool {
 
 func sortLegacy(rows []LegacyResult) {
 	slices.SortFunc(rows, func(a, b LegacyResult) int {
-		return cmp.Or(cmp.Compare(a.Format, b.Format), cmp.Compare(a.Chain, b.Chain))
+		return cmp.Or(cmp.Compare(a.Format, b.Format), cmp.Compare(a.Chain, b.Chain), cmp.Compare(a.Verdict, b.Verdict), cmp.Compare(a.Class, b.Class))
 	})
 }

@@ -34,11 +34,19 @@ type Sequence struct {
 	Seq    int64
 }
 
+// LegacyEnd is an independent endpoint expectation for a single legacy chain.
+type LegacyEnd struct {
+	Head     string
+	Sequence *uint64
+}
+
 // Options contains caller-supplied evidence requirements.
 type Options struct {
 	Keys                  []ed25519.PublicKey
 	ExpectHeads           []Head
 	ExpectSequences       []Sequence
+	LegacyEnd             *LegacyEnd
+	GenericLegacyLabels   bool
 	ExpectLineage         string
 	AcceptDiscontinuities []string
 	AllowPartialHistories []string
@@ -50,6 +58,9 @@ type Options struct {
 }
 
 func (opts Options) validate() error {
+	if opts.LegacyEnd != nil && (!opts.Directory || opts.LegacyEnd.Head == "" && opts.LegacyEnd.Sequence == nil) {
+		return errors.New("legacy endpoint expectations require mixed directory scope and an expected head or sequence")
+	}
 	if opts.ExplicitV3 && opts.Directory {
 		return errors.New("explicit v3 format applies only to a single file")
 	}
@@ -183,8 +194,8 @@ func startsWithProfile(path string) (bool, error) {
 	return bytes.Equal(prefix, []byte(profilePrefix)), nil
 }
 
-func discover(paths []string, opts Options) (files []inputFile, legacy []string, inventory map[string]string, ignored int, err error) {
-	inventory = make(map[string]string)
+func discover(paths []string, opts Options, skip string) (files []inputFile, legacy []string, inventory map[string][]string, ignored int, err error) {
+	inventory = make(map[string][]string)
 	if opts.Directory {
 		if len(paths) != 1 || opts.ExplicitV3 {
 			return nil, nil, nil, 0, errors.New("directory scope requires exactly one directory")
@@ -214,7 +225,7 @@ func discover(paths []string, opts Options) (files []inputFile, legacy []string,
 	for _, path := range slices.Compact(ordered) {
 		base := filepath.Base(path)
 		if id, ok := inventoryID(base); ok {
-			inventory[id] = path
+			inventory[id] = append(inventory[id], path)
 			continue
 		}
 		file, identified := identify(path)
@@ -222,6 +233,9 @@ func discover(paths []string, opts Options) (files []inputFile, legacy []string,
 			identified = true
 		}
 		if identified {
+			if skip == codeUnknownProfile && file.code == codeUnknownProfile {
+				file.code = ""
+			}
 			files = append(files, file)
 			continue
 		}
@@ -229,7 +243,7 @@ func discover(paths []string, opts Options) (files []inputFile, legacy []string,
 		if checkErr != nil {
 			return nil, nil, nil, 0, checkErr
 		}
-		if claimed {
+		if claimed && skip != codeV3ContentUnclaimed {
 			file.code = codeV3ContentUnclaimed
 			files = append(files, file)
 			continue
@@ -259,7 +273,7 @@ func newStore(ctx context.Context) (*recordStore, error) {
 PRAGMA journal_mode=OFF;
 CREATE TABLE records (
 	stream TEXT NOT NULL, seq INTEGER NOT NULL, id TEXT NOT NULL,
-	payload BLOB NOT NULL, unknown INTEGER NOT NULL, body_code TEXT NOT NULL,
+	payload BLOB NOT NULL, unknown INTEGER NOT NULL, body_code TEXT NOT NULL, after_damage INTEGER NOT NULL DEFAULT 0,
 	PRIMARY KEY (stream, seq, id)
 ) WITHOUT ROWID;
 CREATE TABLE decision_ids (
@@ -310,9 +324,10 @@ func readBounded(r *bufio.Reader) (line []byte, complete bool, err error) {
 
 type stagedRecord struct {
 	Common
-	id       string
-	unknown  bool
-	bodyCode string
+	id          string
+	unknown     bool
+	bodyCode    string
+	afterDamage bool
 }
 
 func (r stagedRecord) position() *Position {
@@ -328,7 +343,7 @@ type recordQuery interface {
 }
 
 func walkRecords(ctx context.Context, source recordQuery, stream string, end int64, apply func(stagedRecord) error) error {
-	rows, err := source.QueryContext(ctx, "SELECT id, payload, unknown, body_code FROM records WHERE stream=? AND seq<=? ORDER BY seq,id", stream, end)
+	rows, err := source.QueryContext(ctx, "SELECT id, payload, unknown, body_code, after_damage FROM records WHERE stream=? AND seq<=? ORDER BY seq,id", stream, end)
 	if err != nil {
 		return fmt.Errorf("query verified stream records: %w", err)
 	}
@@ -336,7 +351,7 @@ func walkRecords(ctx context.Context, source recordQuery, stream string, end int
 	for rows.Next() {
 		var record stagedRecord
 		var payload []byte
-		if err := rows.Scan(&record.id, &payload, &record.unknown, &record.bodyCode); err != nil {
+		if err := rows.Scan(&record.id, &payload, &record.unknown, &record.bodyCode, &record.afterDamage); err != nil {
 			return fmt.Errorf("read verified stream record: %w", err)
 		}
 		if err := json.Unmarshal(payload, &record.Common); err != nil {

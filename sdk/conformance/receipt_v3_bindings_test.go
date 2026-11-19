@@ -28,6 +28,10 @@ var receiptEmissionCalls = strings.Fields(
 		"emitOutcomeReceipt emitObservedOutcomeReceipt emitOutcomeReceiptWithPattern " +
 		"recordIssuerQueryAllow recordIssuerCookieAllow recordCredentialAudienceAllow recordCredentialAudienceAllows " +
 		"emitDeferredReceipt emitAllowPathReceipt emitReceiptFailureMarker recordReceiptEmitterUnavailable " +
+		"emitReceipt emitMCPReceiptDecision emitMCPOutcome emitMCPToolScanReceipt " +
+		"emitForwardDenial emitHoldFailureResolution emitKillSwitchDenialReceipt confirmShieldIntervention " +
+		"commitAllow ensure blockCrossMessageIncomplete closeUpstreamCrossMessage sseFindingReceiptConfirmer emitV1 " +
+		"emitCredentialAudienceReceipt emitCredentialAudienceReceiptWithFallback emitRequiredV2Receipt emitReceiptFailureMarkerWithLogger " +
 		"emitReceiptDecisionWithControl EmitMCPDecision EmitMCPGroupDecision emitMCPDecision emitMCPV2Decision emitMCPBlockedOutcomeReceipt " +
 		"emitReceiptWithEmitter emitRequiredReceiptWithEmitter interceptEmitReceipt " +
 		"emitV2Receipt emitV2 emitRequiredV2 emitGroupV2Receipt emitDLPWarn " +
@@ -41,11 +45,17 @@ func TestReceiptV3EmitterBindings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	type attribution struct {
+		Source string `json:"source"`
+		Fields string `json:"fields"`
+		When   string `json:"when"`
+	}
 	var registry struct {
-		EmitSites  map[string]string   `json:"emit_sites"`
-		Exclusions map[string]string   `json:"emit_exclusions"`
-		Forwarders map[string]string   `json:"emit_forwarders"`
-		Enums      map[string][]string `json:"enums"`
+		Attribution map[string]attribution `json:"emit_attribution"`
+		EmitSites   map[string]string      `json:"emit_sites"`
+		Exclusions  map[string]string      `json:"emit_exclusions"`
+		Forwarders  map[string]string      `json:"emit_forwarders"`
+		Enums       map[string][]string    `json:"enums"`
 	}
 	if err := json.Unmarshal(raw, &registry); err != nil {
 		t.Fatal(err)
@@ -78,6 +88,13 @@ func TestReceiptV3EmitterBindings(t *testing.T) {
 			boundary, bound := registry.EmitSites[key]
 			exclusion, excluded := registry.Exclusions[key]
 			forwarder, forwarded := registry.Forwarders[key]
+			if entry, documented := registry.Attribution[key]; bound && documented {
+				pos := fset.Position(node.Pos())
+				source := fmt.Sprintf("%s:%d", filepath.ToSlash(strings.TrimPrefix(path, root+string(filepath.Separator))), pos.Line)
+				if entry.Source != source || strings.TrimSpace(entry.Fields) == "" || strings.TrimSpace(entry.When) == "" {
+					t.Errorf("incorrect producer attribution at %s: %+v, expected %s", key, entry, source)
+				}
+			}
 			if testing.Verbose() {
 				var source bytes.Buffer
 				if err := format.Node(&source, fset, node); err != nil {
@@ -124,7 +141,15 @@ func TestReceiptV3EmitterBindings(t *testing.T) {
 			}
 		}
 	}
+	for site := range registry.Attribution {
+		if _, ok := registry.EmitSites[site]; !ok {
+			t.Errorf("producer attribution has no effect binding %s", site)
+		}
+	}
 	for site, boundary := range registry.EmitSites {
+		if _, ok := registry.Attribution[site]; !ok {
+			t.Errorf("effect binding has no producer attribution %s", site)
+		}
 		if !slices.Contains(discovered, site) {
 			t.Errorf("unknown emission site %s", site)
 		}

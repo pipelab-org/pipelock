@@ -13,13 +13,14 @@ import (
 )
 
 type decisionIndex struct {
-	ctx    context.Context
-	tx     *sql.Tx
-	ids    map[string]bool
-	pieces map[string]pieceEntry
-	disk   bool
-	maxIDs int
-	full   bool
+	ctx       context.Context
+	tx        *sql.Tx
+	ids       map[string]bool
+	pieces    map[string]pieceEntry
+	disk      bool
+	skipLimit bool
+	maxIDs    int
+	full      bool
 }
 
 type pieceEntry struct {
@@ -50,7 +51,7 @@ func (d *decisionIndex) remember(id string, opaque bool) error {
 	}
 	if previous, found := d.ids[id]; found {
 		d.ids[id] = previous || opaque
-	} else if len(d.ids) < d.maxIDs {
+	} else if d.skipLimit || len(d.ids) < d.maxIDs {
 		d.ids[id] = opaque
 	} else {
 		d.full = true
@@ -180,7 +181,7 @@ func (v *verification) appraiseDecisions() error {
 	}
 	defer func() { _ = tx.Rollback() }()
 	a := appraisal{
-		index:     decisionIndex{ctx: v.ctx, tx: tx, disk: v.opts.DiskIndex, maxIDs: maxDecisions},
+		index:     decisionIndex{ctx: v.ctx, tx: tx, disk: v.opts.DiskIndex, maxIDs: maxDecisions, skipLimit: v.skip == codeDecisionIndexFull},
 		decisions: map[string]int64{}, uninterpreted: map[string]int64{}, fullHistory: true,
 	}
 	for _, lineage := range sortedKeys(v.histories) {
@@ -205,13 +206,13 @@ func (v *verification) appraiseHistory(a *appraisal, pieces []segment, first *ve
 		for _, stream := range piece.streams {
 			err := walkRecords(v.ctx, a.index.tx, stream.open.Stream, stream.limit, func(r stagedRecord) error {
 				if r.Kind != kindAction {
-					if r.unknown && !wireKinds[r.Kind].control {
+					if v.skip != codeEventUninterpreted && r.unknown && !wireKinds[r.Kind].control {
 						a.uninterpreted[r.Kind]++
 						v.add(r.finding(codeEventUninterpreted))
 					}
 					return nil
 				}
-				if r.BodyV != wireKinds[kindAction].version {
+				if v.skip != codeDecisionsNotAppraised && r.BodyV != wireKinds[kindAction].version {
 					future = true
 					a.uninterpreted[kindAction]++
 					return nil
@@ -252,7 +253,7 @@ func (v *verification) inspectAction(a *appraisal, stream *verifiedStream, r sta
 	if binding := body.Normalization; v.skip != codeNormalizationUnknown && binding != nil && normalizationProfiles[binding.Digest] != binding.ID {
 		v.add(r.finding(codeNormalizationUnknown))
 	}
-	if err := a.index.remember(body.ActionID, r.unknown); err != nil {
+	if err := a.index.remember(body.ActionID, r.unknown && v.skip != codeActionUninterpreted); err != nil {
 		return err
 	}
 	if body.Hold != nil && (body.Phase == "hold" || body.Phase == "resolution") {
@@ -265,7 +266,7 @@ func (v *verification) inspectAction(a *appraisal, stream *verifiedStream, r sta
 		}
 	}
 	switch {
-	case r.unknown:
+	case r.unknown && v.skip != codeActionUninterpreted:
 		a.uninterpreted[kindAction]++
 		v.add(r.finding(codeActionUninterpreted))
 	case !actionShape(body, stream.body.Coverage.ReceiptsRequired):

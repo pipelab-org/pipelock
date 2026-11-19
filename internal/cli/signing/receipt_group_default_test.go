@@ -10,10 +10,12 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
@@ -95,6 +97,9 @@ func TestVerifyReceiptDefaultGroupDirectoryAndMixedLegacy(t *testing.T) {
 			if !strings.Contains(out.String(), "GROUP_VALID") || !strings.Contains(out.String(), "(session proxy)") {
 				t.Fatalf("group or legacy result missing: %s", out.String())
 			}
+			if !whole {
+				assertMixedGroupLabel(t, dir, hex.EncodeToString(pub), out.String(), "pass")
+			}
 		})
 	}
 }
@@ -142,6 +147,17 @@ func TestVerifyReceiptDefaultGroupDirectoryRejectsIncompleteAndOrphanGate(t *tes
 			if !strings.Contains(out.String(), want) {
 				t.Fatalf("output lacks %s: %s", want, out.String())
 			}
+			assertMixedGroupLabel(t, dir, hex.EncodeToString(pub), out.String(), "failure")
 		})
+	}
+}
+
+func assertMixedGroupLabel(t *testing.T, dir, key, oldOutput, oldClass string) {
+	t.Helper()
+	label, _, _ := strings.Cut(oldOutput, " ")
+	rows := mixedLegacyResults(t, dir, "--key", key, "--allow-prefix")
+	groups := slices.DeleteFunc(rows, func(row v3.LegacyResult) bool { return row.Format != "receipt_group" })
+	if len(groups) != 1 || groups[0].Verdict != label || groups[0].Class != oldClass {
+		t.Fatalf("mixed group rows %+v differ from legacy class %q label %q", groups, oldClass, label)
 	}
 }

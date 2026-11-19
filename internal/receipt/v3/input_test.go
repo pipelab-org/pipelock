@@ -266,11 +266,11 @@ func TestWireRejectsMalformedMembers(t *testing.T) {
 			}
 		})
 	}
-	record, code := parseLine(stream.lines)
+	record, code := parseLine(stream.lines, "")
 	if code != "" {
 		t.Fatal(code)
 	}
-	if code := checkSignature(record, validatedKey{}); code != codeSignatureKey {
+	if code := checkSignature(record, validatedKey{}, ""); code != codeSignatureKey {
 		t.Fatalf("used a key outside the signer's identity: %s", code)
 	}
 }
