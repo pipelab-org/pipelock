@@ -23,6 +23,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -138,12 +139,30 @@ func TestWSSubprotocolNegotiation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			target, offers, _ := wsSelectingBackend(t, tt.choose)
-			proxyAddr, p, cleanup := setupWSProxyDefaultWithProxy(t, func(cfg *config.Config) {
+			handlerDone := make(chan struct{})
+			proxyAddr, p, cleanup := setupWSProxyWithHandlerDone(t, func(cfg *config.Config) {
 				cfg.FlightRecorder.RequireReceipts = tt.requireReceipts
-			})
+			}, nil, func() { close(handlerDone) })
 			defer cleanup()
 			if tt.requireReceipts {
-				p.receiptEmitterPtr.Store(newReceiptProxyHelper(t).emitter)
+				receipts := newReceiptProxyHelper(t)
+				p.receiptEmitterPtr.Store(receipts.emitter)
+				t.Cleanup(func() {
+					if err := receipts.rec.Close(); err != nil {
+						t.Errorf("close receipt recorder: %v", err)
+					}
+				})
+				// Server shutdown does not wait for hijacked connections. Cleanups
+				// run last-in first-out, so this wait runs before the recorder
+				// closes and the directory is removed, on every exit path,
+				// including a failed handshake.
+				t.Cleanup(func() {
+					select {
+					case <-handlerDone:
+					case <-time.After(testwait.Deadline(10 * time.Second)):
+						t.Error("WebSocket handler did not finish after the client closed")
+					}
+				})
 			}
 
 			resp, conn := rawWSHandshake(t, ws.HandshakeHeaderHTTP(http.Header{headerNameWSProtocol: tt.rawOffers}),
