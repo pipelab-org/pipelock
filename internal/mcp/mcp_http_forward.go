@@ -737,6 +737,7 @@ func RunHTTPProxy(
 			// and sanitizes upstream request failures/status errors so raw
 			// upstream bytes cannot cross this logging boundary.
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)
+			warnTransportAdmission(safeLogW, fwdOpts, decision.admission, "upstream_error")
 			// A notification has no ID to answer, so a failure on one gets no
 			// client reply; an error response with a null ID is a reply the
 			// client never asked for. Notifications are never tracked, so an

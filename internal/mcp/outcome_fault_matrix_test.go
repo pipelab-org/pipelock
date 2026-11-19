@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -39,17 +40,19 @@ const (
 	settlementListenerJSON
 	settlementListenerSSE
 	settlementListenerGET
+	settlementListenerDELETE
 	settlementTransportCount
 )
 
 var settlementTransports = [settlementTransportCount]string{
-	settlementStdio:        "stdio_subprocess",
-	settlementBridgeJSON:   "stdio_http",
-	settlementBridgeSSE:    "http_bridge_sse",
-	settlementWebSocket:    "stdio_websocket",
-	settlementListenerJSON: "http_listener",
-	settlementListenerSSE:  "http_listener_sse",
-	settlementListenerGET:  "http_listener_get",
+	settlementStdio:          "stdio_subprocess",
+	settlementBridgeJSON:     "stdio_http",
+	settlementBridgeSSE:      "http_bridge_sse",
+	settlementWebSocket:      "stdio_websocket",
+	settlementListenerJSON:   "http_listener",
+	settlementListenerSSE:    "http_listener_sse",
+	settlementListenerGET:    "http_listener_get",
+	settlementListenerDELETE: "http_listener_delete",
 }
 
 type settlementFault uint8
@@ -70,6 +73,7 @@ const (
 	settlementOutcomeAppend
 	settlementShutdown
 	settlementDuplicate
+	settlementUpgradeAppend
 	settlementFaultCount
 )
 
@@ -89,16 +93,33 @@ var settlementFaults = [settlementFaultCount]string{
 	settlementOutcomeAppend: "outcome_append",
 	settlementShutdown:      "shutdown_in_flight",
 	settlementDuplicate:     "concurrent_duplicate_id",
+	settlementUpgradeAppend: "upgrade_admission_append",
 }
 
 type settlementCell struct {
-	transport settlementTransport
-	fault     settlementFault
-	required  bool
-	deferred  bool
+	transport    settlementTransport
+	fault        settlementFault
+	required     bool
+	deferred     bool
+	notification bool
 }
 
 func (c settlementCell) listener() bool { return c.transport >= settlementListenerJSON }
+
+func (c settlementCell) listenerMethod() string {
+	switch c.transport {
+	case settlementListenerGET:
+		return http.MethodGet
+	case settlementListenerDELETE:
+		return http.MethodDelete
+	default:
+		return http.MethodPost
+	}
+}
+
+func (c settlementCell) bridgeLifecycle() bool {
+	return c.bridge() && c.fault == settlementSuccess && !c.deferred && !c.notification
+}
 
 func (c settlementCell) subprocessStartFailure() bool {
 	return c.transport == settlementStdio && c.fault == settlementDial
@@ -114,8 +135,14 @@ func (c settlementCell) sse() bool {
 
 func (c settlementCell) exclusion() string {
 	switch {
+	case c.fault == settlementUpgradeAppend && (c.transport != settlementWebSocket || !c.required):
+		return "only required WebSocket opens have an upgrade admission"
 	case c.deferred && c.transport != settlementStdio && c.transport != settlementBridgeJSON && c.transport != settlementBridgeSSE:
 		return "deferred release is implemented by the subprocess and HTTP bridge"
+	case c.transport == settlementListenerDELETE && c.fault != settlementSuccess &&
+		c.fault != settlementDial && c.fault != settlementWriteUpstream &&
+		(c.fault != settlementIntentAppend || !c.required):
+		return "DELETE has no tool-call ID or response stream to exercise"
 	case c.transport == settlementListenerGET && c.fault == settlementDuplicate:
 		return "GET accepts server requests and notifications, with no pending client request IDs"
 	case c.transport == settlementListenerGET && c.fault == settlementOutcomeAppend:
@@ -148,7 +175,9 @@ func TestMCPOutcomeFaultMatrix(t *testing.T) {
 			}
 			for _, required := range []bool{false, true} {
 				for _, deferred := range []bool{false, true} {
-					cell := settlementCell{settlementTransport(transportID), settlementFault(faultID), required, deferred}
+					cell := settlementCell{
+						transport: settlementTransport(transportID), fault: settlementFault(faultID), required: required, deferred: deferred,
+					}
 					mode, path := "best_effort", "tool_call"
 					if required {
 						mode = "required"
@@ -166,21 +195,43 @@ func TestMCPOutcomeFaultMatrix(t *testing.T) {
 			}
 		}
 	}
+	t.Run("notification", func(t *testing.T) {
+		for transportID := settlementStdio; transportID <= settlementListenerJSON; transportID++ {
+			for _, required := range []bool{false, true} {
+				for _, fault := range []settlementFault{settlementSuccess, settlementWriteUpstream} {
+					cell := settlementCell{transport: transportID, fault: fault, required: required, notification: true}
+					mode := "best_effort"
+					if required {
+						mode = "required"
+					}
+					t.Run(settlementTransports[transportID]+"/"+mode+"/"+settlementFaults[fault], func(t *testing.T) {
+						runSettlementCell(t, cell)
+					})
+				}
+			}
+		}
+	})
 }
 
 var errSettlementFault = errors.New("injected I/O failure")
 
 const (
-	settlementTool         = "send_tool"
-	settlementOtherTool    = "send_other"
-	settlementReply        = `{"jsonrpc":"2.0","id":1,"result":{}}`
-	settlementNotify       = `{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"ready"}}`
-	settlementBound        = 15 * time.Second
-	settlementReady        = "ready"
-	settlementStop         = "stop"
-	settlementFaultMarker  = "fault-injected"
-	settlementObservations = "observations"
-	settlementResponses    = "responses"
+	settlementTool          = "send_tool"
+	settlementOtherTool     = "send_other"
+	settlementReply         = `{"jsonrpc":"2.0","id":1,"result":{}}`
+	settlementHandshake     = `{"jsonrpc":"2.0","method":"notifications/initialized"}`
+	settlementNotify        = `{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"ready"}}`
+	settlementBound         = 15 * time.Second
+	settlementReady         = "ready"
+	settlementStop          = "stop"
+	settlementFaultMarker   = "fault-injected"
+	settlementObservations  = "observations"
+	settlementResponses     = "responses"
+	settlementWireLog       = "wire"
+	settlementSynced        = "synced-actions"
+	settlementUpgrade       = "WS"
+	settlementSession       = "test-session"
+	settlementSessionHeader = "Mcp-Session-Id"
 )
 
 type settlementProbe struct {
@@ -194,6 +245,13 @@ type settlementProbe struct {
 	upgraded  chan struct{}
 	dialed    chan net.Conn
 	allowSend sync.Once
+
+	upstream       string
+	finishUpstream func()
+	subscriptions  atomic.Int32
+	syncMu         sync.Mutex
+	synced         []string
+	forward        []string
 }
 
 func newSettlementProbe(dir string, cell settlementCell) *settlementProbe {
@@ -236,11 +294,18 @@ func settlementObserved(dir, name string) ([]string, error) {
 
 func settlementToolName(raw []byte) string {
 	frame := ParseMCPFrame(raw)
-	return frame.RoutingName
+	if frame.RoutingName != "" {
+		return frame.RoutingName
+	}
+	return frame.Method
+}
+
+func settlementSyncMarker(dir, tool string) string {
+	return filepath.Join(dir, "synced-"+strings.ReplaceAll(tool, "/", "-"))
 }
 
 func recordSettlementSend(dir, tool string) error {
-	if _, err := os.Stat(filepath.Join(dir, "synced-"+tool)); err == nil {
+	if _, err := os.Stat(settlementSyncMarker(dir, tool)); err == nil {
 		tool += ":synced"
 	}
 	return appendSettlementObservation(dir, settlementObservations, tool)
@@ -251,7 +316,10 @@ func (p *settlementProbe) observeSend(t *testing.T, tool string) {
 	if err := recordSettlementSend(p.dir, tool); err != nil {
 		t.Error(err)
 	}
-	p.send <- struct{}{}
+	select {
+	case p.send <- struct{}{}:
+	default:
+	}
 }
 
 func (p *settlementProbe) observeResponse(t *testing.T, tool string) {
@@ -259,6 +327,86 @@ func (p *settlementProbe) observeResponse(t *testing.T, tool string) {
 	if err := appendSettlementObservation(p.dir, settlementResponses, tool); err != nil {
 		t.Error(err)
 	}
+}
+
+// settlementWire records inbound traffic even when the fixture cannot serve it.
+type settlementWire struct {
+	Kind      string
+	Method    string
+	Target    string
+	RequestID string
+	Synced    []string
+	Forward   []string // Appended single-phase candidates for P6.
+	Failed    bool
+	Unsent    bool
+	Exception string
+}
+
+func (op settlementWire) String() string {
+	return fmt.Sprintf("%s %s %q id=%q", op.Kind, op.Method, op.Target, op.RequestID)
+}
+
+func settlementWireRPC(kind string, raw []byte, synced []string) settlementWire {
+	frame := ParseMCPFrame(raw)
+	target := frame.Method
+	if frame.ToolCallName != "" {
+		target = frame.ToolCallName
+	} else if frame.RoutingName != "" {
+		target = frame.RoutingName
+	}
+	return settlementWire{Kind: kind, Method: frame.Method, Target: target, RequestID: canonicalID(frame.ID), Synced: synced}
+}
+
+func recordSettlementWire(dir string, op settlementWire) error {
+	data, err := json.Marshal(op)
+	if err != nil {
+		return err
+	}
+	return appendSettlementObservation(dir, settlementWireLog, string(data))
+}
+
+func (p *settlementProbe) syncedActions(t *testing.T) []string {
+	t.Helper()
+	actions, err := settlementObserved(p.dir, settlementSynced)
+	if err != nil {
+		t.Error(err)
+	}
+	return actions
+}
+
+func (p *settlementProbe) observeWire(t *testing.T, op settlementWire) {
+	t.Helper()
+	if op.Failed {
+		p.syncMu.Lock()
+		op.Forward = slices.Clone(p.forward)
+		p.syncMu.Unlock()
+	}
+	if err := recordSettlementWire(p.dir, op); err != nil {
+		t.Error(err)
+	}
+}
+
+func (p *settlementProbe) observeOpenFailure(t *testing.T) {
+	t.Helper()
+	method := p.cell.listenerMethod()
+	if p.cell.transport == settlementWebSocket {
+		method = settlementUpgrade
+	}
+	p.observeWire(t, settlementWire{
+		Kind: method, Method: method, Target: p.upstream,
+		Synced: p.syncedActions(t), Failed: true, Unsent: true,
+	})
+}
+
+func (p *settlementProbe) observeSendFailure(t *testing.T, kind string) {
+	t.Helper()
+	msg := deferKillTestCall
+	if p.cell.notification {
+		msg = settlementHandshake
+	}
+	op := settlementWireRPC(kind, []byte(msg), p.syncedActions(t))
+	op.Failed, op.Unsent = true, true
+	p.observeWire(t, op)
 }
 
 type settlementConn struct {
@@ -291,8 +439,14 @@ func (o settlementOutput) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func (p *settlementProbe) dial(ctx context.Context, network, address string) (net.Conn, error) {
+func (p *settlementProbe) dial(t *testing.T, ctx context.Context, network, address string) (net.Conn, error) {
+	t.Helper()
 	if p.cell.fault == settlementDial {
+		if p.cell.transport == settlementWebSocket || p.cell.listenerMethod() != http.MethodPost {
+			p.observeOpenFailure(t)
+		} else {
+			p.observeSendFailure(t, http.MethodPost)
+		}
 		p.fault.Add(1)
 		return nil, errSettlementFault
 	}
@@ -307,6 +461,7 @@ func (p *settlementProbe) dial(ctx context.Context, network, address string) (ne
 	if p.cell.fault != settlementWriteUpstream {
 		return conn, nil
 	}
+	var failOnce sync.Once
 	return settlementConn{Conn: conn, fail: func() bool {
 		if p.cell.transport == settlementWebSocket {
 			select {
@@ -315,7 +470,18 @@ func (p *settlementProbe) dial(ctx context.Context, network, address string) (ne
 				return false
 			}
 		}
-		p.fault.Add(1)
+		failOnce.Do(func() {
+			if p.cell.listenerMethod() != http.MethodPost {
+				p.observeOpenFailure(t)
+			} else {
+				kind := http.MethodPost
+				if p.cell.transport == settlementWebSocket {
+					kind = settlementUpgrade
+				}
+				p.observeSendFailure(t, kind)
+			}
+			p.fault.Add(1)
+		})
 		return true
 	}}, nil
 }
@@ -323,15 +489,55 @@ func (p *settlementProbe) dial(ctx context.Context, network, address string) (ne
 func (p *settlementProbe) httpUpstream(t *testing.T) string {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tool := http.MethodGet
+		synced := p.syncedActions(t)
+		target := "http://" + r.Host + r.URL.RequestURI()
+		op := settlementWire{Kind: r.Method, Method: r.Method, Target: target, Synced: synced}
+		tool := r.Method
 		if r.Method == http.MethodPost {
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
+				p.observeWire(t, op)
 				t.Error(err)
 				return
 			}
+			op = settlementWireRPC(r.Method, body, synced)
+			// Internal paginated tools/list discovery has no client request to admit.
+			if op.Method == "tools/list" && op.RequestID == "1" && r.Header.Get(listenerMCPMethod) == "tools/list" {
+				frame := ParseMCPFrame(body)
+				if frame.ProtocolVersionPresent && frame.ClientCapabilitiesPresent {
+					op.Exception = "proxy-owned tools/list discovery"
+				}
+			}
 			tool = settlementToolName(body)
-		} else if p.cell.transport != settlementListenerGET || r.Method != http.MethodGet {
+		}
+		if p.cell.bridge() && r.Method == http.MethodDelete && r.Header.Get(settlementSessionHeader) == settlementSession {
+			// The bridge DELETE is best-effort cleanup even if the receipt writer is broken.
+			op.Exception = "bridge session cleanup"
+			p.observeWire(t, op)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if p.cell.bridgeLifecycle() && r.Method == http.MethodGet {
+			op.Failed = p.subscriptions.Add(1) == 1
+			p.observeWire(t, op)
+			if op.Failed {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: "+settlementNotify+"\n\n")
+			if err := http.NewResponseController(w).Flush(); err != nil {
+				t.Error(err)
+				return
+			}
+			select {
+			case <-p.release:
+			case <-r.Context().Done():
+			}
+			return
+		}
+		p.observeWire(t, op)
+		if r.Method != http.MethodPost && r.Method != p.cell.listenerMethod() {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
@@ -339,6 +545,17 @@ func (p *settlementProbe) httpUpstream(t *testing.T) string {
 			close(p.both)
 		}
 		p.observeSend(t, tool)
+		if p.cell.notification {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if p.cell.bridgeLifecycle() {
+			w.Header().Set(settlementSessionHeader, settlementSession)
+		}
 		if p.cell.fault == settlementDuplicate && tool == settlementTool {
 			select {
 			case <-p.both:
@@ -394,19 +611,32 @@ func (p *settlementProbe) httpUpstream(t *testing.T) string {
 	}))
 	t.Cleanup(server.Close)
 	t.Cleanup(p.stopWaiting)
+	p.upstream = server.URL
+	p.finishUpstream = func() {
+		p.stopWaiting()
+		server.Close()
+	}
 	return server.URL
 }
 
 func (p *settlementProbe) wsUpstream(t *testing.T) string {
 	t.Helper()
+	var handlers sync.WaitGroup
+	upgraded := sync.OnceFunc(func() { close(p.upgraded) })
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlers.Add(1)
+		defer handlers.Done()
+		p.observeWire(t, settlementWire{
+			Kind: settlementUpgrade, Method: settlementUpgrade, Target: "ws://" + r.Host + r.URL.RequestURI(),
+			Synced: p.syncedActions(t),
+		})
 		conn, _, _, err := ws.UpgradeHTTP(r, w)
 		if err != nil {
 			t.Error(err)
 			return
 		}
 		defer func() { _ = conn.Close() }()
-		close(p.upgraded)
+		upgraded()
 		raw, _, err := wsio.ReadClientData(conn)
 		if err != nil {
 			if p.cell.fault != settlementWriteUpstream && p.cell.fault != settlementIntentAppend {
@@ -414,8 +644,12 @@ func (p *settlementProbe) wsUpstream(t *testing.T) string {
 			}
 			return
 		}
+		p.observeWire(t, settlementWireRPC(settlementUpgrade, raw, p.syncedActions(t)))
 		tool := settlementToolName(raw)
 		p.observeSend(t, tool)
+		if p.cell.notification {
+			return
+		}
 		switch p.cell.fault {
 		case settlementReadEmpty:
 			p.fault.Add(1)
@@ -430,11 +664,14 @@ func (p *settlementProbe) wsUpstream(t *testing.T) string {
 			if readErr != nil {
 				return
 			}
+			p.observeWire(t, settlementWireRPC(settlementUpgrade, second, p.syncedActions(t)))
 			p.observeSend(t, settlementToolName(second))
 		}
 		if p.holdResponse() {
 			_ = conn.SetReadDeadline(time.Now().Add(settlementBound))
-			_, _, _ = wsio.ReadClientData(conn)
+			if extra, _, err := wsio.ReadClientData(conn); err == nil {
+				p.observeWire(t, settlementWireRPC(settlementUpgrade, extra, p.syncedActions(t)))
+			}
 			return
 		}
 		body := settlementReply
@@ -447,17 +684,32 @@ func (p *settlementProbe) wsUpstream(t *testing.T) string {
 		_ = wsio.WriteServerMessage(conn, ws.OpText, []byte(body))
 	}))
 	t.Cleanup(server.Close)
-	return wsURL(server)
+	p.upstream = wsURL(server)
+	p.finishUpstream = func() {
+		server.Close()
+		handlers.Wait()
+	}
+	return p.upstream
+}
+
+func settlementAdmission(a receipt.ActionRecord) bool {
+	return a.DecisionPhase == receipt.DecisionPhaseIntent ||
+		(a.DecisionPhase == receipt.DecisionPhaseResolution && a.Verdict == config.ActionAllow) ||
+		(a.DecisionPhase == "" && a.Verdict == config.ActionForward)
 }
 
 func (p *settlementProbe) markDurable(f *os.File) error {
-	if err := f.Sync(); err != nil {
-		return err
-	}
+	// Read before syncing so an append concurrent with Sync cannot be
+	// mistaken for a record covered by this sync.
 	entries, err := recorder.ReadEntries(f.Name())
 	if err != nil {
 		return err
 	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	p.syncMu.Lock()
+	defer p.syncMu.Unlock()
 	for _, entry := range entries {
 		if entry.Type != actionReceiptEntryType {
 			continue
@@ -467,20 +719,26 @@ func (p *settlementProbe) markDurable(f *os.File) error {
 			return err
 		}
 		a := r.ActionRecord
-		if a.DecisionPhase == receipt.DecisionPhaseIntent ||
-			a.Layer == "mcp_transport_admission" {
+		if settlementAdmission(a) && !slices.Contains(p.synced, a.ActionID) {
+			p.synced = append(p.synced, a.ActionID)
+		}
+		if settlementAdmission(a) {
 			tool := strings.TrimPrefix(a.Target, "tool:")
-			if a.Method == http.MethodGet {
-				tool = http.MethodGet
+			if a.Method == http.MethodGet || a.Method == http.MethodDelete {
+				tool = a.Method
 			}
-			if tool == settlementTool || tool == settlementOtherTool || tool == http.MethodGet {
-				if err := os.WriteFile(filepath.Join(p.dir, "synced-"+tool), nil, 0o600); err != nil {
+			if tool == settlementTool || tool == settlementOtherTool || tool == http.MethodGet || tool == http.MethodDelete || tool == methodNotificationsInitialized {
+				if err := os.WriteFile(settlementSyncMarker(p.dir, tool), nil, 0o600); err != nil {
 					return err
 				}
 			}
 		}
 	}
-	return nil
+	next := filepath.Join(p.dir, settlementSynced+".next")
+	if err := os.WriteFile(next, []byte(strings.Join(p.synced, "\n")), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(next, filepath.Join(p.dir, settlementSynced))
 }
 
 func (p *settlementProbe) appendGuard(e recorder.Entry) error {
@@ -499,14 +757,23 @@ func (p *settlementProbe) appendGuard(e recorder.Entry) error {
 	switch p.cell.fault {
 	case settlementIntentAppend:
 		intent := a.DecisionPhase == receipt.DecisionPhaseIntent ||
-			p.cell.transport == settlementListenerGET && a.Layer == "mcp_transport_admission"
+			p.cell.listenerMethod() != http.MethodPost && a.Layer == "mcp_transport_admission"
 		if intent && p.fault.CompareAndSwap(0, 1) {
+			return errSettlementFault
+		}
+	case settlementUpgradeAppend:
+		if a.Layer == "mcp_transport_admission" && a.Method == settlementUpgrade && p.fault.CompareAndSwap(0, 1) {
 			return errSettlementFault
 		}
 	case settlementOutcomeAppend:
 		if a.DecisionPhase == receipt.DecisionPhaseOutcome && p.fault.CompareAndSwap(0, 1) {
 			return errSettlementFault
 		}
+	}
+	if a.DecisionPhase == "" && a.Verdict == config.ActionForward {
+		p.syncMu.Lock()
+		p.forward = append(p.forward, a.ActionID)
+		p.syncMu.Unlock()
 	}
 	return nil
 }
@@ -519,10 +786,13 @@ func runSettlementCell(t *testing.T, cell settlementCell) {
 	opts.Scanner = testInputScanner(t)
 	opts.RequireReceipts = cell.required
 	opts.Transport = ""
+	opts.AuthorityDestination = ""
 	if cell.transport == settlementStdio {
 		opts.Transport = deferred.SurfaceMCPStdio
 	}
-	opts.DialContext = probe.dial
+	opts.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return probe.dial(t, ctx, network, address)
+	}
 	if cell.fault == settlementTimeout {
 		opts.InputCfg = &InputScanConfig{ResponseTimeoutSeconds: 1}
 	}
@@ -540,10 +810,13 @@ func runSettlementCell(t *testing.T, cell settlementCell) {
 	switch cell.transport {
 	case settlementStdio, settlementBridgeJSON, settlementBridgeSSE, settlementWebSocket:
 		probe.runStdio(t, ctx, cancel, opts)
-	case settlementListenerJSON, settlementListenerSSE, settlementListenerGET:
+	case settlementListenerJSON, settlementListenerSSE, settlementListenerGET, settlementListenerDELETE:
 		probe.runListener(t, ctx, cancel, opts)
 	default:
 		t.Fatal("transport has no matrix driver")
+	}
+	if probe.finishUpstream != nil {
+		probe.finishUpstream()
 	}
 	if err := rec.Close(); err != nil {
 		t.Fatal(err)
@@ -575,7 +848,7 @@ func (p *settlementProbe) assertReceipts(t *testing.T, signer string) {
 
 	wantSends := 1
 	switch p.cell.fault {
-	case settlementDial, settlementWriteUpstream:
+	case settlementDial, settlementWriteUpstream, settlementUpgradeAppend:
 		wantSends = 0
 	case settlementIntentAppend:
 		if p.cell.required || p.cell.deferred {
@@ -598,15 +871,13 @@ func (p *settlementProbe) assertReceipts(t *testing.T, signer string) {
 
 func (p *settlementProbe) assertSettlePairs(t *testing.T, signer string, sends, replies map[string]int) {
 	t.Helper()
-	type located struct {
-		action receipt.ActionRecord
-		shard  string
-	}
-	intents := make(map[string]located)
-	terminals := make(map[string][]located)
-	approvals := make(map[string]located)
-	corrections := make(map[string][]located)
-	var getAdmissions int
+
+	intents := make(map[string]settlementReceipt)
+	terminals := make(map[string][]settlementReceipt)
+	approvals := make(map[string]settlementReceipt)
+	corrections := make(map[string][]settlementReceipt)
+	var legacyAdmissions int
+	var records []settlementReceipt
 	paths, err := filepath.Glob(filepath.Join(p.dir, "evidence-*.jsonl"))
 	if err != nil {
 		t.Fatal(err)
@@ -628,9 +899,10 @@ func (p *settlementProbe) assertSettlePairs(t *testing.T, signer string, sends, 
 				t.Fatal(err)
 			}
 			a := r.ActionRecord
-			loc := located{action: a, shard: entry.SessionID}
-			if a.Layer == "mcp_transport_admission" && a.Method == http.MethodGet {
-				getAdmissions++
+			loc := settlementReceipt{action: a, shard: entry.SessionID, sequence: entry.Sequence}
+			records = append(records, loc)
+			if a.Layer == "mcp_transport_admission" && a.Method == p.cell.listenerMethod() {
+				legacyAdmissions++
 			}
 			switch a.DecisionPhase {
 			case receipt.DecisionPhaseIntent:
@@ -647,6 +919,7 @@ func (p *settlementProbe) assertSettlePairs(t *testing.T, signer string, sends, 
 			}
 		}
 	}
+	p.assertWireReceipts(t, records)
 	for id, intent := range intents {
 		if parent := intent.action.ParentActionID; p.cell.deferred && parent != "" {
 			approval, ok := approvals[parent]
@@ -700,17 +973,133 @@ func (p *settlementProbe) assertSettlePairs(t *testing.T, signer string, sends, 
 			}
 		}
 	}
-	if p.cell.transport == settlementListenerGET {
+	if p.cell.listenerMethod() != http.MethodPost {
 		wantAdmissions := 0
 		if p.cell.required && p.cell.fault != settlementIntentAppend {
 			wantAdmissions = 1
 		}
-		if getAdmissions != wantAdmissions {
-			t.Errorf("GET admissions = %d, want %d", getAdmissions, wantAdmissions)
+		if legacyAdmissions != wantAdmissions {
+			t.Errorf("%s admissions = %d, want %d", p.cell.listenerMethod(), legacyAdmissions, wantAdmissions)
 		}
 	}
-	if len(intents) == 0 && p.cell.transport != settlementListenerGET && p.cell.fault != settlementIntentAppend &&
-		!p.cell.subprocessStartFailure() {
+	if len(intents) == 0 && !p.cell.notification && p.cell.listenerMethod() == http.MethodPost && p.cell.fault != settlementIntentAppend &&
+		!p.cell.subprocessStartFailure() && p.cell.fault != settlementUpgradeAppend {
 		t.Error("test did not produce an admission receipt")
+	}
+}
+
+type settlementReceipt struct {
+	action   receipt.ActionRecord
+	shard    string
+	sequence uint64
+}
+
+func (op settlementWire) matches(a receipt.ActionRecord) bool {
+	// Legacy JSON-RPC receipts identify the operation by its signed target.
+	// Transport admissions also carry the HTTP verb or upgrade method.
+	target := a.Target
+	if op.Method == methodToolsCall {
+		target = strings.TrimPrefix(target, "tool:")
+	}
+	return a.ActionID != "" &&
+		(a.Method == op.Method || (a.Method == "" && op.Kind != op.Method)) &&
+		target == receipt.SanitizeSignedTarget(op.Target, nil) &&
+		(a.RequestID == "" || a.RequestID == op.RequestID)
+}
+
+func (op settlementWire) consumeDurableAdmission(admissions map[string]settlementReceipt, used map[string]bool) bool {
+	for _, id := range op.Synced {
+		a := admissions[id].action
+		if !op.matches(a) {
+			continue
+		}
+		// The allow resolution and release intent authorize the same send.
+		key := a.ActionID
+		if a.ParentActionID != "" {
+			key = a.ParentActionID
+		}
+		if !used[key] {
+			used[key] = true
+			return true
+		}
+	}
+	return false
+}
+
+func (p *settlementProbe) assertWireReceipts(t *testing.T, records []settlementReceipt) {
+	t.Helper()
+	file, err := os.Open(filepath.Join(p.dir, settlementWireLog)) // #nosec G304 -- test-owned evidence directory.
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	admissions := make(map[string]settlementReceipt)
+	failures := make(map[string][]settlementReceipt)
+	for _, record := range records {
+		a := record.action
+		if settlementAdmission(a) {
+			admissions[a.ActionID] = record
+		}
+		if a.DecisionPhase == "" && a.Layer == mcpOutcomeLayer && a.Verdict == config.ActionWarn &&
+			strings.HasPrefix(a.Pattern, "status=error ") {
+			failures[a.ActionID] = append(failures[a.ActionID], record)
+		}
+	}
+	used := make(map[string]bool)
+	usedForward := make(map[string]bool)
+	var bridgeGets, bridgeDeletes int
+	decoder := json.NewDecoder(file)
+	for {
+		var op settlementWire
+		if err := decoder.Decode(&op); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if p.cell.bridgeLifecycle() && op.Kind == http.MethodGet {
+			bridgeGets++
+		}
+		switch op.Exception {
+		case "bridge session cleanup":
+			bridgeDeletes++
+			continue
+		case "proxy-owned tools/list discovery":
+			continue
+		}
+		if p.cell.required && !op.Unsent && !op.consumeDurableAdmission(admissions, used) {
+			t.Errorf("P5: upstream observed %s without a preceding durable record", op)
+		}
+		// Successful observations also consume any matching admission so a
+		// later failed reconnect cannot borrow an earlier action.
+		forwardIDs := op.Synced
+		if op.Failed {
+			forwardIDs = op.Forward
+		}
+		matchedForward := false
+		for _, id := range forwardIDs {
+			candidate := admissions[id]
+			a := candidate.action
+			if a.Verdict != config.ActionForward || usedForward[id] || !op.matches(a) {
+				continue
+			}
+			usedForward[id] = true
+			matchedForward = true
+			if op.Failed && !slices.ContainsFunc(failures[id], func(failure settlementReceipt) bool {
+				return failure.shard == candidate.shard && failure.sequence > candidate.sequence &&
+					failure.action.Method == a.Method && failure.action.Target == a.Target
+			}) {
+				t.Errorf("P6: failed upstream operation %s has no failure record on action %s", op, id)
+			}
+			break
+		}
+		if p.cell.required && op.Failed && !matchedForward && (op.Kind == op.Method || p.cell.notification) {
+			t.Errorf("expected a single-phase admission for the injected failure of %s", op)
+		}
+	}
+	if p.cell.bridgeLifecycle() && (bridgeGets != 2 || bridgeDeletes != 1) {
+		t.Errorf("bridge lifecycle observed GET=%d DELETE=%d, want 2 and 1", bridgeGets, bridgeDeletes)
 	}
 }

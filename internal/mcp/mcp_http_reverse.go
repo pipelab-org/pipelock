@@ -1957,7 +1957,12 @@ func RunHTTPListenerProxy(
 		refusalIntent := func() TrackedRequestOutcome { return decision.Outcome }
 		terminalStatus, terminalReason := "incomplete", "listener_request_ended"
 		terminalSize := int64(-1)
-		defer func() { decision.Outcome.settle(safeLogW, scanOpts, terminalStatus, terminalSize, terminalReason) }()
+		defer func() {
+			if terminalStatus == "error" {
+				warnTransportAdmission(safeLogW, scanOpts, decision.admission, terminalReason)
+			}
+			decision.Outcome.settle(safeLogW, scanOpts, terminalStatus, terminalSize, terminalReason)
+		}()
 		if decision.Synthetic != nil {
 			w.Header().Set("Content-Type", "application/json")
 			if decision.Synthetic.notification {
@@ -2138,6 +2143,7 @@ func RunHTTPListenerProxy(
 
 		// A 4xx is relayed once scanned; see relayUpstreamClientError.
 		if relayUpstreamClientError(upResp, frame.ID, reqRec, auditSessionKey, decision.Outcome) {
+			terminalStatus, terminalReason = "error", "upstream_http_client_error"
 			return
 		}
 

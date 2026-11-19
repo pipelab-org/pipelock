@@ -58,7 +58,7 @@ func TestMCPSettlementStdioEndpoint(t *testing.T) {
 	}
 
 	reader := transport.NewStdioReader(os.Stdin)
-	raw, err := reader.ReadMessage()
+	raw, err := readSettlementStdio(t, dir, reader)
 	if errors.Is(err, io.EOF) {
 		return
 	}
@@ -69,6 +69,9 @@ func TestMCPSettlementStdioEndpoint(t *testing.T) {
 	if err := recordSettlementSend(dir, tool); err != nil {
 		t.Fatal(err)
 	}
+	if tool == methodNotificationsInitialized {
+		return
+	}
 	switch fault {
 	case settlementReadEmpty:
 		markSettlementFixtureFault(t, dir)
@@ -78,10 +81,10 @@ func TestMCPSettlementStdioEndpoint(t *testing.T) {
 		_, _ = io.WriteString(os.Stdout, "{\"jsonrpc\"")
 		return
 	case settlementTimeout, settlementClientCancel, settlementShutdown:
-		_, _ = reader.ReadMessage()
+		_, _ = readSettlementStdio(t, dir, reader)
 		return
 	case settlementDuplicate:
-		second, err := reader.ReadMessage()
+		second, err := readSettlementStdio(t, dir, reader)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -97,6 +100,21 @@ func TestMCPSettlementStdioEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = fmt.Fprintln(os.Stdout, reply)
+}
+
+func readSettlementStdio(t *testing.T, dir string, reader *transport.StdioReader) ([]byte, error) {
+	t.Helper()
+	raw, err := reader.ReadMessage()
+	if err == nil {
+		synced, syncErr := settlementObserved(dir, settlementSynced)
+		if syncErr != nil {
+			t.Fatal(syncErr)
+		}
+		if logErr := recordSettlementWire(dir, settlementWireRPC("stdio", raw, synced)); logErr != nil {
+			t.Fatal(logErr)
+		}
+	}
+	return raw, err
 }
 
 func markSettlementFixtureFault(t *testing.T, dir string) {
@@ -191,7 +209,21 @@ func (p *settlementProbe) runStdio(t *testing.T, ctx context.Context, cancel con
 			opts.AuthorityDestination = url
 		}
 		go func() { done <- RunWSProxy(ctx, input, out, &logs, url, opts) }()
-		if p.cell.fault != settlementDial {
+		switch p.cell.fault {
+		case settlementDial:
+		case settlementUpgradeAppend:
+			select {
+			case <-done:
+				return
+			case <-p.upgraded:
+				t.Error("WebSocket upgraded with no admission")
+				cancel()
+				<-done
+				return
+			case <-ctx.Done():
+				t.Fatal("WebSocket did not refuse an unwritable admission")
+			}
+		default:
 			select {
 			case <-p.upgraded:
 			case <-ctx.Done():
@@ -220,6 +252,9 @@ func (p *settlementProbe) runStdio(t *testing.T, ctx context.Context, cancel con
 
 	if !p.cell.subprocessStartFailure() {
 		call := deferKillTestCall
+		if p.cell.notification {
+			call = settlementHandshake + "\n"
+		}
 		if p.cell.transport == settlementWebSocket && p.cell.fault == settlementDial {
 			call = strings.Replace(call, "\"arguments\":{}", "\"arguments\":{},\"_meta\":{\"com.pipelock/authority\":\"grant\"}", 1)
 		}
@@ -288,6 +323,17 @@ func (p *settlementProbe) runStdio(t *testing.T, ctx context.Context, cancel con
 			t.Fatal("no client refusal after admission append failed")
 		}
 	}
+	if p.cell.bridgeLifecycle() {
+		// The POST result and the second GET's notification prove the
+		// reconnect completed before stdin EOF triggers session cleanup.
+		for range 2 {
+			select {
+			case <-out.written:
+			case <-ctx.Done():
+				t.Fatal("bridge did not complete its subscription reconnect")
+			}
+		}
+	}
 	if resolved != nil {
 		select {
 		case err := <-resolved:
@@ -305,6 +351,12 @@ func (p *settlementProbe) runStdio(t *testing.T, ctx context.Context, cancel con
 	select {
 	case <-done:
 		finished = true
+		if p.cell.transport == settlementStdio && p.cell.fault == settlementWriteUpstream {
+			if !strings.Contains(logs.String(), "input forward error") {
+				t.Error("subprocess did not report the failed send")
+			}
+			p.observeSendFailure(t, "stdio")
+		}
 		if p.cell.fault == settlementTimeout && strings.Contains(logs.String(), "timeout") {
 			p.fault.Add(1)
 		}
@@ -375,8 +427,8 @@ func (p *settlementProbe) runListener(t *testing.T, ctx context.Context, cancel 
 	send := func(body string) {
 		var request *http.Request
 		var err error
-		if p.cell.transport == settlementListenerGET {
-			request, err = http.NewRequestWithContext(requestCtx, http.MethodGet, url+"/", nil)
+		if method := p.cell.listenerMethod(); method != http.MethodPost {
+			request, err = http.NewRequestWithContext(requestCtx, method, url+"/", nil)
 		} else {
 			request, err = http.NewRequestWithContext(requestCtx, http.MethodPost, url+"/", strings.NewReader(body))
 		}
@@ -396,7 +448,11 @@ func (p *settlementProbe) runListener(t *testing.T, ctx context.Context, cancel 
 	// Concurrent listener requests each have an independent correlation set.
 	// The second receives no reply from upstream.
 	var requests sync.WaitGroup
-	requests.Go(func() { send(deferKillTestCall) })
+	call := deferKillTestCall
+	if p.cell.notification {
+		call = settlementHandshake
+	}
+	requests.Go(func() { send(call) })
 	if p.cell.fault == settlementDuplicate {
 		p.awaitSend(t, ctx)
 		requests.Go(func() { send(strings.Replace(deferKillTestCall, settlementTool, settlementOtherTool, 1)) })

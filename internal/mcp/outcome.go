@@ -132,10 +132,14 @@ func admitDurableTransport(opts MCPProxyOpts, method, target string) (receipt.Em
 // warnTransportAdmission closes an admitted stream on the same action and shard.
 // An empty action means this open was not recorded.
 func warnTransportAdmission(logW io.Writer, opts MCPProxyOpts, admission receipt.EmitOpts, reason string) {
+	recordTransportAdmissionFailure(logW, opts, admission, "error", reason)
+}
+
+func recordTransportAdmissionFailure(logW io.Writer, opts MCPProxyOpts, admission receipt.EmitOpts, status, reason string) {
 	if admission.ActionID == "" {
 		return
 	}
-	failure := mcpOutcomeReceiptOpts(admission, "error", -1, reason)
+	failure := mcpOutcomeReceiptOpts(admission, status, -1, reason)
 	// Transport admissions are single-phase. A failure stays on that action
 	// without opening an intent pair.
 	failure.DecisionPhase = ""

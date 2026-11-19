@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -142,6 +143,7 @@ func RunWSProxy(
 
 	var wg sync.WaitGroup
 	var lastScanErr error
+	var admission receipt.EmitOpts
 	var upstreamEnded bool // read only after the response goroutine is joined
 	var upstreamBlocked bool
 	defer func() {
@@ -162,7 +164,11 @@ func RunWSProxy(
 			pending.Outcome.settle(safeLogW, wsOpts, status, -1, reason)
 		}
 		if len(pendingOutcomes) == 0 && upstreamEnded && ctx.Err() == nil && errors.Is(lastScanErr, transport.ErrIncompleteResponse) {
-			emitMCPStandaloneStreamReceipt(wsOpts, safeLogW, mcpStreamReceipt(wsOpts, "WS"), "incomplete", httpstream.Incomplete)
+			if admission.ActionID != "" {
+				recordTransportAdmissionFailure(safeLogW, wsOpts, admission, "incomplete", httpstream.Incomplete)
+			} else {
+				emitMCPStandaloneStreamReceipt(wsOpts, safeLogW, mcpStreamReceipt(wsOpts, "WS"), "incomplete", httpstream.Incomplete)
+			}
 		}
 	}()
 
@@ -171,8 +177,14 @@ func RunWSProxy(
 			return nil
 		}
 		var err error
+		admission, err = admitDurableTransport(wsOpts, "WS", upstreamURL)
+		if err != nil {
+			logReceiptEmitFailure(safeLogW, err, true, config.ActionForward)
+			return fmt.Errorf("recording upstream WebSocket admission: %w", err)
+		}
 		wsClient, err = transport.NewWSClientWithDialer(innerCtx, upstreamURL, opts.DialContext)
 		if err != nil {
+			warnTransportAdmission(safeLogW, wsOpts, admission, "upstream_handshake_failed")
 			return fmt.Errorf("connecting to upstream: %w", err)
 		}
 		go func(client *transport.WSClient) {
@@ -290,6 +302,7 @@ func RunWSProxy(
 		// until the first message has passed every existing gate plus the grant
 		// check in scanHTTPInputDecision.
 		if err := startUpstream(); err != nil {
+			warnTransportAdmission(safeLogW, wsOpts, decision.admission, "upstream_handshake_failed")
 			decision.Outcome.settle(safeLogW, wsOpts, "error", -1, "upstream_handshake_failed")
 			if sessionExit.inProgress() && errors.Is(err, context.Canceled) {
 				break
@@ -329,6 +342,7 @@ func RunWSProxy(
 		writeErr := wsClient.WriteMessage(decision.ForwardMessage)
 		if writeErr != nil {
 			tracker.removeOwnedOutcome(frame.ID, registration)
+			warnTransportAdmission(safeLogW, wsOpts, decision.admission, mcpUpstreamWriteFailed)
 			decision.Outcome.settle(safeLogW, wsOpts, "error", -1, mcpUpstreamWriteFailed)
 			stdinErr = fmt.Errorf("upstream write: %w", writeErr)
 			break

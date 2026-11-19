@@ -31,6 +31,7 @@ type httpInputDecision struct {
 	Deferred       *DeferredRequest
 	ForwardMessage []byte
 	Outcome        TrackedRequestOutcome
+	admission      receipt.EmitOpts
 	taskFrame      MCPFrame
 	taskTaint      taintDecision
 }
@@ -262,6 +263,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				ErrorData:      mcpBlockReasonData(blockreason.ReceiptEmissionFailed),
 			}
 			return
+		}
+		if emitVerdict == config.ActionForward && result.Blocked == nil {
+			result.admission = receiptOpts.receiptOptions()
 		}
 		if result.Deferred != nil {
 			result.Deferred.ShardIndex = receiptShard.ShardIndex

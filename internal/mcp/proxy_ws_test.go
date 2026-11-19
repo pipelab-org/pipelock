@@ -320,17 +320,18 @@ func TestRunWSProxy_RequireReceiptsRecordsInitializeOutcome(t *testing.T) {
 		t.Fatalf("recorder.Close: %v", err)
 	}
 	receipts := readActionReceipts(t, dir)
-	if len(receipts) != 2 {
-		t.Fatalf("receipt count = %d, want intent/outcome pair", len(receipts))
+	if len(receipts) != 3 {
+		t.Fatalf("receipt count = %d, want upgrade admission and initialize pair", len(receipts))
 	}
-	if receipts[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent || receipts[1].ActionRecord.DecisionPhase != receipt.DecisionPhaseOutcome {
-		t.Fatalf("phases = %q/%q, want intent/outcome", receipts[0].ActionRecord.DecisionPhase, receipts[1].ActionRecord.DecisionPhase)
+	upgrade, intent, outcome := receipts[0].ActionRecord, receipts[1].ActionRecord, receipts[2].ActionRecord
+	if upgrade.DecisionPhase != "" || upgrade.Method != "WS" || upgrade.Verdict != config.ActionForward {
+		t.Fatalf("upgrade admission = %+v", upgrade)
 	}
-	if receipts[0].ActionRecord.ActionID == "" {
-		t.Fatal("intent action_id is empty")
+	if intent.DecisionPhase != receipt.DecisionPhaseIntent || outcome.DecisionPhase != receipt.DecisionPhaseOutcome {
+		t.Fatalf("phases = %q/%q, want intent/outcome", intent.DecisionPhase, outcome.DecisionPhase)
 	}
-	if receipts[0].ActionRecord.ActionID != receipts[1].ActionRecord.ActionID {
-		t.Fatalf("outcome action_id = %q, want %q", receipts[1].ActionRecord.ActionID, receipts[0].ActionRecord.ActionID)
+	if intent.ActionID == "" || intent.ActionID != outcome.ActionID || intent.ActionID == upgrade.ActionID {
+		t.Fatalf("upgrade, intent, outcome action IDs = %q/%q/%q", upgrade.ActionID, intent.ActionID, outcome.ActionID)
 	}
 }
 

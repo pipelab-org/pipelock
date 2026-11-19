@@ -70,7 +70,7 @@ func TestDeferredResolutionKeepsAdmissionShard(t *testing.T) {
 	if err := rec.Close(); err != nil {
 		t.Fatal(err)
 	}
-	assertMCPTransportReceiptShard(t, dir, shards, intent.ActionID)
+	assertMCPTransportReceiptShard(t, dir, shards, intent.ActionID, 0)
 	open, _ := set.Opening()
 	if got := receipt.VerifyReceiptGroup(dir, open.GroupID, []string{open.SignerKey}); got.Verdict != receipt.GroupValid {
 		t.Fatalf("group verdict = %+v", got)
@@ -111,7 +111,7 @@ func newMCPTransportReceiptGroup(t *testing.T) (MCPProxyOpts, *recorder.Recorder
 	}, rec, dir, opening.Shards
 }
 
-func assertMCPTransportReceiptShard(t *testing.T, dir string, shards []receipt.ReceiptGroupShard, actionID string) {
+func assertMCPTransportReceiptShard(t *testing.T, dir string, shards []receipt.ReceiptGroupShard, actionID string, wantOtherV2 int) {
 	t.Helper()
 	for i, shard := range shards {
 		paths, err := filepath.Glob(filepath.Join(dir, "evidence-"+shard.SessionID+"-*.jsonl"))
@@ -135,8 +135,8 @@ func assertMCPTransportReceiptShard(t *testing.T, dir string, shards []receipt.R
 			if v1 != 2 || v2 != 2 {
 				t.Fatalf("shard %d action %s: v1=%d v2=%d, want paired decision and outcome", i, actionID, v1, v2)
 			}
-		} else if v1 != 0 || v2 != 0 {
-			t.Fatalf("other shard %d: v1=%d v2=%d, want no action receipts", i, v1, v2)
+		} else if v1 != 0 || v2 != wantOtherV2 {
+			t.Fatalf("other shard %d: v1=%d v2=%d, want 0 and %d", i, v1, v2, wantOtherV2)
 		}
 	}
 }
@@ -239,7 +239,7 @@ func TestMCPStreamOutcomesKeepAdmissionShard(t *testing.T) {
 			if err := rec.Close(); err != nil {
 				t.Fatal(err)
 			}
-			assertMCPTransportReceiptShard(t, dir, shards, intent.ActionID)
+			assertMCPTransportReceiptShard(t, dir, shards, intent.ActionID, 0)
 		})
 	}
 }
@@ -262,7 +262,7 @@ func TestMCPContractRefusalKeepsAdmissionShard(t *testing.T) {
 	if err := rec.Close(); err != nil {
 		t.Fatal(err)
 	}
-	assertMCPTransportReceiptShard(t, dir, shards, intent.ActionID)
+	assertMCPTransportReceiptShard(t, dir, shards, intent.ActionID, 0)
 }
 
 func TestMCPStreamRequiredOutcomeFailureClasses(t *testing.T) {
@@ -493,7 +493,6 @@ func TestMCPWebSocketOutcomeKeepsAdmissionShard(t *testing.T) {
 	defer srv.Close()
 	opts, rec, dir, shards := newMCPTransportReceiptGroup(t)
 	opts.Scanner = testScannerForWS(t)
-	_ = opts.ReceiptGroup.Shards.Admit(receipt.EmitOpts{})
 	stdin, input := io.Pipe()
 	var stdout, stderr lockedHTTPBuffer
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -510,7 +509,7 @@ func TestMCPWebSocketOutcomeKeepsAdmissionShard(t *testing.T) {
 	if err := rec.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// This is the first real admission after the dummy selection above.
+	// The upgrade takes the first shard and initialize takes the next.
 	var actionID string
 	for _, entry := range readReceiptEntriesHTTP(t, dir) {
 		if entry.Type != "action_receipt" || !bytes.Contains(entry.RawDetail, []byte(`"decision_phase":"intent"`)) {
@@ -529,7 +528,7 @@ func TestMCPWebSocketOutcomeKeepsAdmissionShard(t *testing.T) {
 	if actionID == "" {
 		t.Fatal("missing WebSocket intent")
 	}
-	assertMCPTransportReceiptShard(t, dir, shards, actionID)
+	assertMCPTransportReceiptShard(t, dir, shards, actionID, 1)
 }
 
 func TestRequiredBridgeGETAdmitsBeforeOpen(t *testing.T) {
@@ -675,7 +674,7 @@ func TestMCPWebSocketStandaloneFailureUsesSelectedShard(t *testing.T) {
 	if err := rec.Close(); err != nil {
 		t.Fatal(err)
 	}
-	assertMCPStandaloneDiagnosticShard(t, dir, shards, 1, 1)
+	assertMCPStandaloneDiagnosticShard(t, dir, shards, 1, 2)
 }
 
 func assertMCPStandaloneDiagnosticShard(t *testing.T, dir string, shards []receipt.ReceiptGroupShard, selected, wantV2 int) {

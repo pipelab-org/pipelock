@@ -702,6 +702,7 @@ func ForwardScannedInput(
 		var receiptShard receipt.EmitOpts
 
 		var outcome TrackedRequestOutcome
+		var forwardAdmission receipt.EmitOpts
 		emitToolReceipt := func(receiptVerdict string, contractGate ...mcpContractGateOutput) error {
 			// Delegate to the shared helper so stdio and HTTP/WS emit
 			// tool receipts through the same EmitMCPDecision entry.
@@ -762,7 +763,13 @@ func ForwardScannedInput(
 				outcome.Method = verdict.Method
 				receiptOpts.Outcome = &outcome
 			}
-			return emitMCPToolReceipt(receiptOpts)
+			if err := emitMCPToolReceipt(receiptOpts); err != nil {
+				return err
+			}
+			if receiptVerdict == config.ActionForward {
+				forwardAdmission = receiptOpts.receiptOptions()
+			}
+			return nil
 		}
 
 		logTaintDecision := func() {
@@ -1177,6 +1184,7 @@ func ForwardScannedInput(
 			}
 			forwardReceiptVerdict = receiptVerdict
 			if released, err := writeReleasedMessage(fwdLine); err != nil {
+				warnTransportAdmission(logW, opts, forwardAdmission, mcpUpstreamWriteFailed)
 				outcome.settle(logW, opts, "error", -1, mcpUpstreamWriteFailed)
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
