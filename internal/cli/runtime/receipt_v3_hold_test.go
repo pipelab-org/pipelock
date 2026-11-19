@@ -4,11 +4,17 @@
 package runtime
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -16,9 +22,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 func TestV3HoldCarriesLegacyRecoveryAttribution(t *testing.T) {
@@ -149,7 +157,7 @@ func findV3RecoveryResolution(t *testing.T, dir string) v3.Action {
 	defer func() { _ = root.Close() }()
 	for _, file := range files {
 		if !strings.HasSuffix(file.Name(), ".receipt-v3.jsonl") {
-			t.Fatalf("unexpected file in v3 evidence: %s", file.Name())
+			continue
 		}
 		data, err := root.ReadFile(file.Name())
 		if err != nil {
@@ -179,4 +187,97 @@ func findV3RecoveryResolution(t *testing.T, dir string) v3.Action {
 	}
 	t.Fatal("recovered hold resolution missing")
 	return v3.Action{}
+}
+
+func TestMCPV3RestartSettlesUnsealedHold(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires Linux subprocess signals")
+	}
+	const seedEnv = "PIPELOCK_TEST_RECEIPT_HOLD_DIR"
+	const holdID = "pending-approval"
+	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	if dir := os.Getenv(seedEnv); dir != "" {
+		cfg := config.Defaults()
+		cfg.FlightRecorder.Dir = dir
+		cfg.FlightRecorder.Redact = false
+		cfg.FlightRecorder.RequireReceipts = true
+		writer, err := openRuntimeReceiptV3(t.Context(), cfg, key, nil, posturebinding.Result{}, []string{deferred.SurfaceMCPStdio})
+		if err != nil {
+			t.Fatal(err)
+		}
+		action := v3.Action{
+			ActionID: "held-call", ActionType: "read", Actor: "example", Principal: "local",
+			Caller: v3.Caller{Authn: "none"}, Data: v3.Data{SideEffectClass: "external_read", Reversibility: "full"},
+			EffectBoundary: "approval_prompt", EffectRelation: "before", Phase: "hold", Verdict: "defer",
+			Hold: &v3.Hold{ID: holdID, Policy: "operator"}, Method: "tools/call", Target: "lookup",
+			Transport: deferred.SurfaceMCPStdio,
+		}
+		if err := writer.WriteAction(t.Context(), action, v3.CapturePolicy("sha256:"+runtimeTestPolicyHash)); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = fmt.Fprintln(os.Stdout, "hold confirmed")
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		return
+	}
+
+	dir := t.TempDir()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	child := exec.CommandContext(ctx, exe, "-test.run=^TestMCPV3RestartSettlesUnsealedHold$") // #nosec G204 -- current test executable
+	child.Env = append(os.Environ(), seedEnv+"="+dir)
+	stdout, err := child.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdin, err := child.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stdin.Close() }()
+	child.Stderr = os.Stderr
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	ready, readErr := bufio.NewReader(stdout).ReadString('\n')
+	killErr := child.Process.Kill()
+	waitErr := child.Wait()
+	if ready != "hold confirmed\n" || readErr != nil || killErr != nil || waitErr == nil {
+		t.Fatalf("hold writer did not stop after confirmation: readiness=%q read=%v kill=%v wait=%v", ready, readErr, killErr, waitErr)
+	}
+
+	// A switched runtime must ignore the legacy journal even when it is unreadable.
+	journal := filepath.Join(dir, "deferred-actions.jsonl")
+	if err := os.Mkdir(journal, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "signer.key")
+	if err := signing.SavePrivateKey(key, keyPath); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	body := fmt.Sprintf("flight_recorder:\n  enabled: true\n  dir: %q\n  signing_key_path: %q\n  require_receipts: true\n  redact: false\ndefer:\n  enabled: true\n", dir, keyPath)
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	cmd := mcpProxyCmd()
+	cmd.SetArgs([]string{"--config", cfgPath, "--", "/bin/true"})
+	cmd.SetIn(strings.NewReader(""))
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(&stderr)
+	if err := cmd.ExecuteContext(ctx); err != nil {
+		t.Fatalf("restart: %v\n%s", err, &stderr)
+	}
+	action := findV3RecoveryResolution(t, dir)
+	if action.ActionID != "held-call" || action.Hold == nil || action.Hold.ID != holdID ||
+		action.Verdict != config.ActionBlock || action.Hold.ResolutionSource != deferred.SourceRestartRecovery {
+		t.Fatalf("restart did not settle the signed hold: %+v", action)
+	}
+	if info, err := os.Stat(journal); err != nil || !info.IsDir() {
+		t.Fatalf("restart changed the legacy journal sentinel: %v, %v", info, err)
+	}
 }
