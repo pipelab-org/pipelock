@@ -406,10 +406,14 @@ func mcpOutcomeReceiptOpts(opts receipt.EmitOpts, status string, bytesTransferre
 	return opts
 }
 
-// A stream can fail before an admitted request exists. Record these
-// diagnostics as single-phase warnings on every recorder.
+// A stream can fail without an admitted request. Grouped recorders use a
+// single-phase warning for this diagnostic. Keep the legacy single-chain shape.
 func emitMCPStandaloneStreamReceipt(proxyOpts MCPProxyOpts, logW io.Writer, opts receipt.EmitOpts, status, reason string) {
 	opts = proxyOpts.withReceiptPolicyHash(opts)
+	if proxyOpts.ReceiptGroup == nil {
+		emitMCPOutcomeReceipt(proxyOpts.receiptEmitter(), proxyOpts.v2ReceiptEmitter(), nil, logW, opts, status, -1, reason, proxyOpts.requireReceipts())
+		return
+	}
 	if opts.ActionID == "" {
 		return
 	}

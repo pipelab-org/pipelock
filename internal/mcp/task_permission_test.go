@@ -367,6 +367,18 @@ func TestDeferredHTTPReleaseChecksTaskPermissionWithoutAuthorityVerifier(t *test
 	}
 }
 
+func assertDeliveredTaskReceiptPair(t *testing.T, records []receipt.ActionRecord) {
+	t.Helper()
+	// The intent records permission at admission. The outcome records the
+	// upstream result after the send-time task check allowed delivery.
+	if len(records) != 2 || records[0].DecisionPhase != receipt.DecisionPhaseIntent ||
+		records[1].DecisionPhase != receipt.DecisionPhaseOutcome || records[0].ActionID != records[1].ActionID ||
+		records[0].Verdict != config.ActionAllow || records[1].Verdict != config.ActionAllow ||
+		!strings.HasPrefix(records[1].Pattern, "status=result ") || !strings.HasSuffix(records[1].Pattern, " reason=complete") {
+		t.Fatalf("receipts = %+v, want the allow intent and its completed result", records)
+	}
+}
+
 func TestHTTPTaskPermissionRechecksAtSend(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -405,10 +417,7 @@ func TestHTTPTaskPermissionRechecksAtSend(t *testing.T) {
 				t.Fatalf("upstream requests = %d, want %d. Response = %s, want %q", got, tc.wantCalls, output.String(), tc.wantReply)
 			}
 			if !tc.rotate {
-				records := observed.snapshot()
-				if len(records) != 1 || records[0].Verdict != config.ActionAllow || records[0].DecisionPhase != "" {
-					t.Errorf("receipts = %+v, want a single-phase allow after a successful task recheck", records)
-				}
+				assertDeliveredTaskReceiptPair(t, observed.snapshot())
 			}
 		})
 	}
@@ -629,10 +638,7 @@ func TestReverseTaskPermissionRechecksAfterHeaderDiscovery(t *testing.T) {
 					status, f.lists.Load(), f.calls.Load(), tc.wantCalls, tc.wantReply, reply)
 			}
 			if tc.wantCalls == 1 {
-				records := observed.snapshot()
-				if len(records) != 1 || records[0].Verdict != config.ActionAllow || records[0].DecisionPhase != "" {
-					t.Fatalf("receipts = %+v, want one single-phase allow for the delivered call", records)
-				}
+				assertDeliveredTaskReceiptPair(t, observed.snapshot())
 			}
 			if tc.wantCalls == 0 {
 				// The refusal receipt must record the release-time taint

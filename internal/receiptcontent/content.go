@@ -78,6 +78,10 @@ const (
 	// A secret split between it and another field is still found when the
 	// two are neighbors in projection order.
 	Standalone
+	// FixedBridge keeps exact FixedValues matches in the atom and structured
+	// views and available to bridge fragments. It omits those matches from
+	// the joined-value view. Other values are ordinary Content.
+	FixedBridge
 )
 
 // Limits bound projection work before any expanded allocation. MaxDetailBytes
@@ -110,9 +114,9 @@ type Schema struct {
 	Fields map[string]Class
 	Enums  map[string][]string
 	// FixedValues names exact producer constants or retained operator values.
-	// They remain in every content view. In fragment reassembly they may stand
-	// as one bridge piece between client fragments, but they never combine
-	// with each other and do not widen the client search. A changed value
+	// In fragment reassembly they may stand as one bridge piece between
+	// client fragments. They never combine with each other or widen the client
+	// search. A changed value
 	// stays a client candidate. Only declared leaves may be listed here.
 	FixedValues map[string][]string
 	// Outer derives the recorder mirror fields from the exact detail bytes.
@@ -146,7 +150,7 @@ func Register(s Schema) *Producer {
 	}
 	p := &Producer{schema: &Schema{Kind: s.Kind, Outer: s.Outer, Fields: map[string]Class{}}, enums: map[string]map[string]struct{}{}}
 	for path, class := range s.Fields {
-		if class < Content || class > Standalone {
+		if class < Content || class > FixedBridge {
 			panic(fmt.Sprintf("receiptcontent: %s: invalid class for %q", s.Kind, path))
 		}
 		p.schema.Fields[path] = class
@@ -175,9 +179,9 @@ func Register(s Schema) *Producer {
 
 // WithFixedValues derives an immutable producer capability with additional
 // exact fixed values. The owner supplies constants or retained configuration,
-// never per-request text. This changes only how the fragment search spends its
-// work, not content scanning or redaction. Existing capabilities and the supplied map are not
-// mutated; a different value at the same path remains a fragment candidate.
+// never per-request text. Fixed values can bridge fragments. A FixedBridge
+// match also stays out of the joined-value view. Existing capabilities and
+// the supplied map remain immutable.
 func (p *Producer) WithFixedValues(values map[string][]string) *Producer {
 	fixed := make(map[string]map[string]struct{}, len(p.fixed)+len(values))
 	for path, set := range p.fixed {
@@ -185,7 +189,7 @@ func (p *Producer) WithFixedValues(values map[string][]string) *Producer {
 	}
 	for path, list := range values {
 		class, declared := p.schema.Fields[path]
-		if !declared || (class != Content && class != Identity && class != RunSession) {
+		if !declared || (class != Content && class != Identity && class != RunSession && class != FixedBridge) {
 			panic(fmt.Sprintf("receiptcontent: %s: fixed values require a declared content leaf %q", p.Kind(), path))
 		}
 		set := make(map[string]struct{}, len(fixed[path])+len(list))
@@ -257,14 +261,15 @@ type Atom struct {
 	Path  string
 	Field string
 	Kind  AtomKind
-	// Fixed marks text the producer owns: it is scanned in every view and
-	// bridges client fragments, but is not itself a client fragment.
+	// Fixed marks text the producer owns that can bridge client fragments.
 	Fixed    bool
 	Identity bool
 	// Standalone marks Content that stays out of the fragment search (see the
 	// Standalone class); it is still scanned in every other view.
 	Standalone bool
 	Text       string
+
+	omitFromJoinedValues bool
 }
 
 // Projection is the content-only view of one detail. It is immutable.
@@ -285,7 +290,7 @@ func (p *Projection) Atoms() []Atom { return append([]Atom(nil), p.atoms...) }
 func (p *Projection) Structured() []byte { return append([]byte(nil), p.structured...) }
 
 // Digest binds the projection: equal digests mean equal content, keys,
-// identity classes, fragment eligibility, and mirror text.
+// identity classes, scan eligibility, and mirror text.
 func (p *Projection) Digest() [32]byte { return p.digest }
 
 // Project builds the projection of detail under the producer's schema. When
@@ -385,9 +390,8 @@ func project(p *Producer, detail []byte, outer *Outer) (*Projection, error) {
 	for _, a := range w.atoms {
 		// Identity is part of the binding: the same text under a different
 		// class must not satisfy a prior scan's redaction decision. Fragment
-		// eligibility is also bound, so a scan under a narrower search cannot
-		// attest a projection with a wider search.
-		_, _ = fmt.Fprintf(h, "\x00%s\x00%d\x00%t\x00%t\x00%t", a.Path, a.Kind, a.Identity, a.Fixed, a.Standalone)
+		// and joined-value eligibility are also bound to the scan.
+		_, _ = fmt.Fprintf(h, "\x00%s\x00%d\x00%t\x00%t\x00%t\x00%t", a.Path, a.Kind, a.Identity, a.Fixed, a.Standalone, a.omitFromJoinedValues)
 	}
 	proj := &Projection{kind: kind, atoms: w.atoms, structured: structured}
 	copy(proj.digest[:], h.Sum(nil))
@@ -532,6 +536,9 @@ func (w *walker) leaf(v any, text, schemaPath, path string, class Class, classif
 		_, fixed = w.p.fixed[schemaPath][text]
 	}
 	standalone := classified && class == Standalone && !fixed
-	w.atoms = append(w.atoms, Atom{Path: path, Field: schemaPath, Kind: AtomValue, Identity: identity, Fixed: fixed, Standalone: standalone, Text: text})
+	w.atoms = append(w.atoms, Atom{
+		Path: path, Field: schemaPath, Kind: AtomValue, Identity: identity, Fixed: fixed,
+		Standalone: standalone, Text: text, omitFromJoinedValues: fixed && class == FixedBridge,
+	})
 	return v, true, nil
 }

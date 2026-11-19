@@ -319,9 +319,13 @@ func TestServer_AuxiliaryUnreadConnectionsSeal(t *testing.T) {
 					o.MCPUpstream = serverTestUpstreamURL
 				}
 				if listener == "reverse proxy" {
+					upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						w.WriteHeader(http.StatusNoContent)
+					}))
+					t.Cleanup(upstream.Close)
 					o.ReverseProxy = true
 					o.ReverseListen = serverTestEphemeralListen
-					o.ReverseUpstream = serverTestUpstreamURL
+					o.ReverseUpstream = upstream.URL
 				}
 			})
 			prefix := "pipelock: reverse proxy listening on "

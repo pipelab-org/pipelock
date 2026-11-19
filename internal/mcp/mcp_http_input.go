@@ -1249,7 +1249,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				IsNotification: isNotification,
 				LogMessage:     "blocked (defer disabled)",
 				ErrorCode:      -32002,
-				ErrorMessage:   "pipelock: " + err.Error(),
+				ErrorMessage:   deferredAdmissionMessage(err),
 			}
 			return result
 		}

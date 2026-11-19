@@ -1507,7 +1507,7 @@ func ForwardScannedInput(
 					IsNotification: isNotification,
 					LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (defer disabled)", lineNum),
 					ErrorCode:      -32002,
-					ErrorMessage:   "pipelock: " + err.Error(),
+					ErrorMessage:   deferredAdmissionMessage(err),
 				}, blockedCh)
 				effectiveAction = config.ActionBlock
 				break

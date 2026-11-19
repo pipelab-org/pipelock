@@ -192,7 +192,7 @@ func Scan(ctx context.Context, det Detector, p *Projection) (Report, error) {
 	var values strings.Builder
 	var valuePaths, valueFields []string
 	for _, a := range p.atoms {
-		if a.Kind == AtomValue {
+		if a.Kind == AtomValue && !a.omitFromJoinedValues {
 			values.WriteString(a.Text)
 			valuePaths = append(valuePaths, a.Path)
 			valueFields = append(valueFields, a.Field)

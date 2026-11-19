@@ -440,6 +440,24 @@ func TestMCPReceiptParityOpts(t *testing.T) {
 	}
 }
 
+func TestRequiredDeferJournalUsesValidatedRecorderDirectory(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.FlightRecorder.RequireReceipts = true
+	cfg.FlightRecorder.SigningKeyPath = filepath.Join(t.TempDir(), "signing.key")
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "flight_recorder.require_receipts requires flight_recorder.dir") {
+		t.Fatalf("validation without recorder directory = %v, want flight_recorder.dir required", err)
+	}
+
+	cfg.FlightRecorder.Dir = t.TempDir()
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	manager := buildDeferManager(cfg, nil)
+	if got, want := manager.JournalPath(), filepath.Join(cfg.FlightRecorder.Dir, "deferred-actions.jsonl"); got != want {
+		t.Fatalf("required deferred journal = %q, want %q", got, want)
+	}
+}
+
 func TestBuildDeferManagerAndSurfaceValidation(t *testing.T) {
 	if got := buildDeferManager(nil, nil); got != nil {
 		t.Fatalf("buildDeferManager(nil) = %+v, want nil", got)

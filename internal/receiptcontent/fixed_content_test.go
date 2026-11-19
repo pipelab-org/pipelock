@@ -12,6 +12,34 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+func TestFixedBridgePreservesJoinedValues(t *testing.T) {
+	base := &Producer{schema: &Schema{
+		Kind: "test.fixed_bridge_join", Fields: map[string]Class{"a": Content, "b": FixedBridge, "c": Standalone},
+	}}
+	producer := base.WithFixedValues(map[string][]string{"b": {"known"}})
+	for _, tc := range []struct {
+		name, middle, match string
+		view                View
+	}{
+		{"known value stays out of the join", "known", "leftright", ViewValues},
+		{"known value still scanned alone", "known", "known", ViewAtom},
+		{"known value can bridge", "known", "knownleft", ViewFragments},
+		{"custom value stays in the join", "custom", "leftcustomright", ViewValues},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := producer.Project(mustJSON(t, map[string]string{"a": "left", "b": tc.middle, "c": "right"}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			detect := func(_ context.Context, text string) scanner.TextDLPResult {
+				return scanner.TextDLPResult{Clean: text != tc.match}
+			}
+			rep, err := Scan(t.Context(), detect, p)
+			requireView(t, rep, err, tc.view)
+		})
+	}
+}
+
 func TestFixedValuesBridgeButNeverCombine(t *testing.T) {
 	base := &Producer{schema: &Schema{Kind: "test.fixed", Fields: map[string]Class{"a": Content, "b": Content, "c": Content}}}
 	values := map[string][]string{"b": {"operator"}}

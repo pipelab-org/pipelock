@@ -211,7 +211,7 @@ func actionReceiptFields() map[string]receiptcontent.Class {
 		"contract_selector_id":                cContent,
 		"contract_generation":                 cContent,
 		"transport":                           cContent,
-		"method":                              cContent,
+		"method":                              receiptcontent.FixedBridge,
 		"layer":                               cContent,
 		// The pattern is free text Pipelock formats per decision (an outcome
 		// line interpolates status, size and reason). It is scanned alone, in

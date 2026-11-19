@@ -16,12 +16,19 @@ import (
 
 func deferredAdmissionError(manager *deferred.Manager, requireReceipts bool) error {
 	if manager == nil || !manager.Enabled() {
-		return errors.New("defer is disabled")
+		return deferred.ErrDisabled
 	}
 	if requireReceipts && manager.JournalPath() == "" {
-		return errors.New("a deferred action journal is required with required receipts")
+		return errors.New("a deferred action journal is required with required receipts (configure flight_recorder.dir)")
 	}
 	return nil
+}
+
+func deferredAdmissionMessage(err error) string {
+	if errors.Is(err, deferred.ErrDisabled) {
+		return "pipelock: defer is disabled"
+	}
+	return "pipelock: " + err.Error()
 }
 
 func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {

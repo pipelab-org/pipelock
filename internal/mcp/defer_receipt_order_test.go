@@ -257,7 +257,8 @@ func TestRequiredDeferredCallWithoutJournal(t *testing.T) {
 			if surface == deferred.SurfaceMCPStdio {
 				denial = (<-blocked).ErrorMessage
 			}
-			if !strings.Contains(denial, "deferred action journal is required") || calls() != 0 {
+			if !strings.Contains(denial, "deferred action journal is required") ||
+				!strings.Contains(denial, "flight_recorder.dir") || calls() != 0 {
 				t.Fatalf("denial = %q, upstream calls = %d", denial, calls())
 			}
 		})

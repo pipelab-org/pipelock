@@ -229,7 +229,8 @@ func TestMCPListenerStreamIntegrity(t *testing.T) {
 					wantReason = httpstream.Cancelled
 				}
 				found := false
-				outcomeIDs := make(map[string]bool)
+				var intentID string
+				outcomes := make(map[string]string)
 				for _, rec := range receipts {
 					if method == http.MethodGet {
 						if rec.ActionRecord.Layer != "outcome" {
@@ -239,11 +240,17 @@ func TestMCPListenerStreamIntegrity(t *testing.T) {
 							t.Fatalf("completed GET subscription emitted a new outcome receipt: %+v", rec.ActionRecord)
 						}
 					}
-					if rec.ActionRecord.Layer == "outcome" {
-						if outcomeIDs[rec.ActionRecord.ActionID] {
+					switch rec.ActionRecord.DecisionPhase {
+					case receipt.DecisionPhaseIntent:
+						if intentID != "" {
+							t.Fatal("multiple request intents")
+						}
+						intentID = rec.ActionRecord.ActionID
+					case receipt.DecisionPhaseOutcome:
+						if _, exists := outcomes[rec.ActionRecord.ActionID]; exists {
 							t.Fatalf("duplicate outcome for action %s", rec.ActionRecord.ActionID)
 						}
-						outcomeIDs[rec.ActionRecord.ActionID] = true
+						outcomes[rec.ActionRecord.ActionID] = rec.ActionRecord.Pattern
 					}
 					if rec.ActionRecord.Layer == "outcome" && strings.Contains(rec.ActionRecord.Pattern, "reason="+wantReason) {
 						found = true
@@ -251,6 +258,11 @@ func TestMCPListenerStreamIntegrity(t *testing.T) {
 				}
 				if ending != "complete" && !found {
 					t.Fatalf("missing %s outcome: %+v", wantReason, receipts)
+				}
+				if method == http.MethodPost && ending != "complete" && ending != "completed_rpc_then_break" {
+					if len(outcomes) != 1 || !strings.HasSuffix(outcomes[intentID], "reason="+wantReason) {
+						t.Fatalf("interrupted POST intent %q must have one matching %s outcome, got %v", intentID, wantReason, outcomes)
+					}
 				}
 				logger.Close()
 				logBytes, err := os.ReadFile(filepath.Clean(auditPath))
