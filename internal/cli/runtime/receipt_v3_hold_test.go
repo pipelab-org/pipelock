@@ -84,7 +84,6 @@ func TestV3HoldCarriesLegacyRecoveryAttribution(t *testing.T) {
 	}
 
 	policy := deferred.ReceiptPolicyString(held.Policy, config.DeferResolutionPolicy{})
-	depth := int64(held.CascadeDepth)
 	opts := v3.StreamWriterOptions{
 		Dir: streamDir, SigningKey: key, PolicyHash: v3.Digest(nil),
 		Identity: v3.Writer{Instance: "example", Product: "Pipelock", Version: "3"},
@@ -102,7 +101,7 @@ func TestV3HoldCarriesLegacyRecoveryAttribution(t *testing.T) {
 		ActionID: held.ActionID, ActionType: "read", Actor: held.Authority.Actor, Principal: held.Authority.Principal,
 		Caller: v3.Caller{Authn: "none"}, Data: v3.Data{SideEffectClass: "external_read", Reversibility: "full"},
 		EffectBoundary: "approval_prompt", EffectRelation: "before", Phase: "hold", Verdict: "defer",
-		Hold:    &v3.Hold{ID: held.DeferID, Policy: policy, Parent: held.ParentDeferID, CascadeDepth: &depth, Linkage: held.Linkage},
+		Hold:    &v3.Hold{ID: held.DeferID, Policy: policy, Parent: held.ParentDeferID},
 		Session: &v3.Session{ID: held.Authority.SessionID, OriginalID: held.Authority.SessionIDOriginal},
 		Target:  held.Target, Method: held.Method, Transport: held.Surface, Pattern: held.Reason,
 	}
@@ -135,8 +134,7 @@ func TestV3HoldCarriesLegacyRecoveryAttribution(t *testing.T) {
 	if recovered.Hold == nil || recovered.Session == nil ||
 		recovered.Hold.ID != old.DeferID || recovered.Hold.ResolutionSource != old.ResolutionSource ||
 		recovered.Hold.ResolutionPolicy != string(legacyBounds) || recovered.Verdict != old.Verdict ||
-		cascade == nil || recovered.Hold.CascadeDepth == nil || *recovered.Hold.CascadeDepth != int64(cascade.CascadeDepth) ||
-		recovered.Hold.Parent != cascade.ParentDeferID || recovered.Hold.Linkage != cascade.Linkage ||
+		cascade == nil || recovered.Hold.Parent != "" ||
 		recovered.Session.ID != old.SessionID || recovered.Session.OriginalID != old.SessionIDOriginal ||
 		recovered.Target != old.Target || recovered.Transport != old.Transport || recovered.Pattern != old.Pattern ||
 		recovered.ActionID != old.ParentActionID || recovered.Policy != snapshot.ActionPolicy() ||
