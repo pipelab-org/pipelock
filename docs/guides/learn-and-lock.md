@@ -264,6 +264,11 @@ Two ergonomic notes the help text alone does not surface:
 - **`learn promote` reads from the contract store's `history/` directory.** `learn ratify` writes the ratified contract YAML to `--out`, but does not stage it inside the store. Before invoking `learn promote --contract <hash>`, copy the ratified file to `<contract-store>/history/sha256-<hash>.yaml`. A future v2.4.x ergonomic improvement will auto-stage it.
 - **Promote requires the activation key in the keystore AND the receipt-signing key in the roster.** `--activation-key <key-id>` looks up the key by ID in `--keystore`, signs the manifest, and signs the lifecycle receipts under the keystore's receipt-signing agent (`--receipt-key-agent`, defaults to `receipt-signing`). The runtime then verifies those receipts against the roster. If the receipt-signing key is not named in the roster, the receipts the operator just produced will not validate on load.
 
+Promote and rollback sync both lifecycle receipts before replacing the active
+manifest. After an interrupted command, use the active manifest to check which
+generation took effect. An accepted validation receipt can survive a crash
+before the manifest is published.
+
 ### Promoting in a Kubernetes deployment
 
 Pipelock's published image is `FROM scratch`: no shell, no `tar`, no `cp`, no `ls`. `kubectl exec`, `kubectl cp`, and `kubectl debug --target=<pipelock-container>` therefore cannot ship the active manifest into the pipelock pod's `pipelock-active-manifest` PVC directly. The operator pattern is a short-lived shuttle pod that mounts the same PVC:
