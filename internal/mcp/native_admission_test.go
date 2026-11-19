@@ -12,7 +12,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestStdioNativeCapacitySettlesAdmittedReply(t *testing.T) {
@@ -87,6 +90,68 @@ func TestStdioNativeCapacitySettlesAdmittedReply(t *testing.T) {
 		t.Fatal("stdio capacity did not drain after settling its response")
 	}
 	verifyMCPNativeClose(t, e, dir)
+}
+
+func TestStdioNativeCapacityStopsIdleInput(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("shell subprocess test requires unix")
+	}
+	const request = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{}}}`
+	const reply = `{"jsonrpc":"2.0","id":1,"result":{"content":[]}}`
+	const late = `{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"after capacity"}}`
+	const script = `
+IFS= read -r request || exit 2
+case "$request" in *'"id":1'*) ;; *) exit 3;; esac
+printf '%s\n' "$1"
+if IFS= read -r request; then exit 4; fi
+printf '%s\n' "$2"
+`
+	for _, mode := range []string{"subprocess", "sandboxed"} {
+		t.Run(mode, func(t *testing.T) {
+			e, dir := newNativeMCPEmitter(t, nativeMCPRequestRecords+4)
+			ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+			defer cancel()
+			input, client := io.Pipe()
+			defer func() { _ = client.Close() }()
+			defer func() { _ = input.Close() }()
+			var out lockedHTTPBuffer
+			opts := MCPProxyOpts{Scanner: testInputScanner(t), ReceiptEmitter: e, RequireReceipts: true}
+			done := make(chan error, 1)
+			go func() {
+				args := []string{"sh", "-c", script, "sh", reply, late}
+				if mode == "sandboxed" {
+					cmd := exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // fixed test command
+					done <- RunProxyWithSandbox(ctx, cmd, input, &out, io.Discard, opts)
+					return
+				}
+				done <- RunProxy(ctx, input, &out, io.Discard, args, opts)
+			}()
+			if _, err := io.WriteString(client, request+"\n"); err != nil {
+				t.Fatal(err)
+			}
+			testwait.For(t, time.Second, func() bool { return out.contains(reply) }, "subprocess response forwarded")
+			if _, err := e.ReserveNativeRecords(2 * nativeMCPRequestRecords); !errors.Is(err, ael.ErrCapacity) {
+				t.Fatalf("capacity admission = %v", err)
+			}
+			select {
+			case err := <-done:
+				if !errors.Is(err, ael.ErrCapacity) {
+					t.Fatalf("capacity result = %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("proxy did not stop with stdin open")
+			}
+			if out.contains(late) {
+				t.Fatalf("unadmitted message delivered: %s", out.String())
+			}
+			select {
+			case <-e.NativeCapacity().Drained():
+			default:
+				t.Fatal("stdio leases did not settle")
+			}
+			verifyMCPNativeClose(t, e, dir)
+		})
+	}
 }
 
 func newNativeMCPEmitter(t *testing.T, slots int64) (*receipt.Emitter, string) {

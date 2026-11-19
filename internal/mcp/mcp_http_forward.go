@@ -142,6 +142,7 @@ func RunHTTPProxy(
 	safeLogW := &syncWriter{w: logW}
 	ctx, cancel, sessionExit := newSessionBoundContext(ctx, startupParentWatch, clientIn, safeLogW, opts.sessionExitForTest)
 	defer cancel()
+	defer opts.closeNativeInputOnStop(clientIn)()
 
 	// Set transport for capture records if not already set by caller.
 	if opts.Transport == "" {
@@ -869,6 +870,9 @@ func RunHTTPProxy(
 	wg.Wait()
 	emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "upstream_closed")
 
+	if err := opts.nativeCapacityStopError(); err != nil {
+		return err
+	}
 	return lastScanErr
 }
 

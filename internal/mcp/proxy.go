@@ -2089,6 +2089,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	sessionExit := &sessionExitState{}
 	sessionCtx, sessionStop := context.WithCancel(ctx)
 	defer sessionStop()
+	defer opts.closeNativeInputOnStop(clientIn)()
 	// The parent PID is captured at function entry to narrow the startup
 	// window, but a launcher that dies before that first syscall remains an
 	// inherent PPID-watch limitation. A harness-owned owner pipe or cgroup is
@@ -2379,6 +2380,9 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "upstream_closed")
 	}
 
+	if err := opts.nativeCapacityStopError(); err != nil {
+		return err
+	}
 	if scanErr != nil {
 		return fmt.Errorf("scanning: %w", scanErr)
 	}

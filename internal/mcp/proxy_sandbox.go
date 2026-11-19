@@ -187,6 +187,7 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	sessionExit := &sessionExitState{}
 	sessionCtx, stopSession := context.WithCancel(ctx)
 	defer stopSession()
+	defer opts.closeNativeInputOnStop(clientIn)()
 	sessionOpts := startupParentWatch
 	sessionGrace := defaultParentExitGrace
 	if h := opts.sessionExitForTest; h != nil {
@@ -287,6 +288,7 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	}()
 
 	fwdOpts := inputOpts
+	fwdOpts.nativeStdio = true
 	fwdOpts.ToolCfg = fwdToolCfg // session-specific baseline
 	fwdOpts.ToolCfgFn = nil
 	// Apply the optional per-read response timeout (no-op when disabled) so a
@@ -359,6 +361,9 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "upstream_closed")
 	}
 
+	if err := opts.nativeCapacityStopError(); err != nil {
+		return err
+	}
 	if scanErr != nil {
 		return fmt.Errorf("scanning: %w", scanErr)
 	}

@@ -607,6 +607,12 @@ func TestDrainContextPreservesCapacityStopSettlement(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const timeout = time.Second
 		stopped := make(chan struct{})
+		unrecorded, cancelUnrecorded := DrainContext(timeout, nil)
+		defer cancelUnrecorded()
+		<-unrecorded.Done()
+		if err := unrecorded.Err(); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("ordinary drain without a stop channel = %v", err)
+		}
 		ordinary, cancelOrdinary := DrainContext(timeout, stopped)
 		defer cancelOrdinary()
 		<-ordinary.Done()

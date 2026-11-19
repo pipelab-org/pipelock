@@ -103,6 +103,39 @@ func (o MCPProxyOpts) nativeCapacity() *ael.Capacity {
 	return o.receiptEmitter().NativeCapacity()
 }
 
+func (o MCPProxyOpts) nativeCapacityStopError() error {
+	select {
+	case <-o.nativeCapacity().Stopped():
+		return ael.ErrCapacity
+	default:
+		return nil
+	}
+}
+
+// Stop a stdio read that started before capacity was reached. The response
+// side remains open to settle replies already tracked against reserved space.
+func (o MCPProxyOpts) closeNativeInputOnStop(input io.Reader) func() {
+	closer, ok := input.(io.Closer)
+	stopped := o.nativeCapacity().Stopped()
+	if !ok || stopped == nil {
+		return func() {}
+	}
+	disarm := make(chan struct{})
+	joined := make(chan struct{})
+	go func() {
+		defer close(joined)
+		select {
+		case <-stopped:
+			_ = closer.Close()
+		case <-disarm:
+		}
+	}()
+	return func() {
+		close(disarm)
+		<-joined
+	}
+}
+
 // Deferred resolution outlives the request input iteration. Transfer its
 // slots before registering the hold, then settle them in the callback.
 func (o MCPProxyOpts) splitDeferredAdmission() (MCPProxyOpts, func(), error) {

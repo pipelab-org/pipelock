@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
@@ -708,17 +709,16 @@ func (r *SingleMessageReader) Close() error {
 type closingSSEReader struct {
 	sse    *SSEReader
 	body   io.ReadCloser
-	closed bool
+	closed atomic.Bool
 }
 
 func (r *closingSSEReader) ReadMessage() ([]byte, error) {
-	if r.closed {
+	if r.closed.Load() {
 		return nil, io.EOF
 	}
 	msg, err := r.sse.ReadMessage()
 	if err != nil {
-		r.closed = true
-		r.body.Close() //nolint:errcheck,gosec // best-effort cleanup on stream end
+		_ = r.Close()
 		return nil, err
 	}
 	return msg, nil
@@ -728,6 +728,9 @@ func (r *closingSSEReader) ReadMessage() ([]byte, error) {
 // slow or hung SSE upstream (e.g. an MCP response timeout). Safe to call more
 // than once; a redundant close is ignored.
 func (r *closingSSEReader) Close() error {
+	if !r.closed.CompareAndSwap(false, true) {
+		return nil
+	}
 	return r.body.Close()
 }
 
