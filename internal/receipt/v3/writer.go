@@ -456,11 +456,15 @@ func (w *StreamWriter) tryContinueAfterWriteError(ctx context.Context, writeErr 
 		w.fatal = err
 		return errors.Join(writeErr, err)
 	}
-	if err := w.replayActionRepairs(ctx, true); err != nil {
+	return errors.Join(writeErr, w.settleActionRepairs(ctx))
+}
+
+func (w *StreamWriter) settleActionRepairs(ctx context.Context) error {
+	err := w.replayActionRepairs(context.WithoutCancel(ctx), true)
+	if err != nil {
 		w.fatal = err
-		return errors.Join(writeErr, err)
 	}
-	return writeErr
+	return err
 }
 
 func (w *StreamWriter) prepareAppend(ctx context.Context) error {

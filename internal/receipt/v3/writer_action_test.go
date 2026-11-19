@@ -205,6 +205,35 @@ func TestStreamWriterActionCancellationAndAttribution(t *testing.T) {
 	}
 }
 
+func TestStreamWriterSettlesCancelledActionAfterWriteError(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	opts.Heartbeat = 0
+	fault := writerReplayFault{}
+	w, err := openStreamWriter(t.Context(), opts, fault.storage(opts.Dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = abandonWriterReplay(w) })
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	w.active.file = syncCallbackFile{writerFile: w.active.file, syncCallback: cancel}
+	// The intent flush succeeds. The following refusal append writes no bytes.
+	fault = writerReplayFault{step: writerReplayStep{FaultAt: 3}}
+	if err := w.WriteAction(ctx, writerTestIntent("cancelled"), PolicySnapshot{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("wanted cancellation after intent flush, got %v", err)
+	}
+	if err := abandonWriterReplay(w); err != nil {
+		t.Fatal(err)
+	}
+	w = nil
+
+	result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if got := writerTestCount(t, result, outcomeNotReleased); got != 1 {
+		t.Fatalf("refused outcomes after losing writer state = %d, want 1", got)
+	}
+}
+
 func assertActionPolicy(t *testing.T, dir, stream string, seq int64, want ActionPolicy) {
 	t.Helper()
 	root, err := os.OpenRoot(dir)

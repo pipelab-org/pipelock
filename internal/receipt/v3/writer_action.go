@@ -55,9 +55,7 @@ func (w *StreamWriter) WriteAction(ctx context.Context, action Action, policy Po
 	}
 	if err := ctx.Err(); err != nil && actionGatesEffect(action) {
 		w.queueActionRepair(action, true)
-		// The request context may no longer wait. Retain the repair if a
-		// second I/O error prevents this append from being confirmed.
-		return errors.Join(err, w.replayActionRepairs(context.WithoutCancel(ctx), false))
+		return errors.Join(err, w.settleActionRepairs(ctx))
 	}
 	return nil
 }
@@ -130,7 +128,7 @@ func blockingHoldResolution(action Action, source, relation string, correction b
 
 // A repair remains queued until its own confirmation. In particular, a
 // second failed successor must carry the original observation forward.
-// Startup and write-error recovery retry a failed repair append.
+// Retry after retirement when settling repairs before admission or return.
 func (w *StreamWriter) replayActionRepairs(ctx context.Context, retryWriteErrors bool) error {
 	for len(w.repairs) != 0 {
 		if err := w.ensureAppendSpace(ctx); err != nil {
