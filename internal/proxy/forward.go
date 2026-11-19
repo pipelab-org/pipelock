@@ -2542,16 +2542,14 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	responseBudgetTruncated := false
 
 	// Required receipt scanning and durability can outlast task admission.
-	if !taskAdmissionCurrent() {
-		if cfg.FlightRecorder.RequireReceipts {
-			outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, session.TaskApprovalStale
-			outcomeReceipt.Verdict = config.ActionBlock
-			outcomeReceipt.TaintDecision = session.PolicyBlock.String()
-			outcomeReceipt.TaintDecisionReason = session.TaskApprovalStale
-			writeTaskDenialResponse(session.TaskApprovalStale, staleTaskDetail)
-		} else {
-			writeTaskDenial(session.TaskApprovalStale, staleTaskDetail)
-		}
+	// Without required receipts nothing waits between the check above and
+	// the send, so only the required path needs to look again.
+	if cfg.FlightRecorder.RequireReceipts && !taskAdmissionCurrent() {
+		outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, session.TaskApprovalStale
+		outcomeReceipt.Verdict = config.ActionBlock
+		outcomeReceipt.TaintDecision = session.PolicyBlock.String()
+		outcomeReceipt.TaintDecisionReason = session.TaskApprovalStale
+		writeTaskDenialResponse(session.TaskApprovalStale, staleTaskDetail)
 		return
 	}
 	resp, err := p.client.Do(outReq)

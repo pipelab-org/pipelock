@@ -5,6 +5,10 @@ package proxy
 
 import (
 	"bytes"
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +17,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -26,7 +31,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -690,4 +698,142 @@ func TestForwardTaskReleaseRequiresCurrentGrant(t *testing.T) {
 	if forwardTaskAdmissionCurrent(rec, task, decision) {
 		t.Fatal("expired task grant remained eligible for release")
 	}
+}
+
+// A client that leaves while its required receipt waits for a scan slot gets
+// no intent, no upstream request and no response write, and the emitter stays
+// healthy.
+func TestForwardRequiredReceiptQueuedScanEndsWithClient(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+	_, p, stop := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+	})
+	t.Cleanup(stop)
+	installForwardTestDialer(p, upstream.Listener.Addr().String())
+
+	cfg := config.Defaults()
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	rec, err := recorder.NewWithScanner(recorder.Config{Enabled: true, Dir: dir, Redact: true}, sc, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipts := &receiptProxyHelper{dir: dir, rec: rec, priv: priv, pubHex: hex.EncodeToString(priv.Public().(ed25519.PublicKey))}
+	receipts.emitter = receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder: rec, PrivKey: priv, ConfigHash: coverageTestConfigHash,
+		Principal: coverageTestPrincipal, Actor: coverageTestActor, Metrics: p.metrics,
+	})
+	if err := receipts.emitter.EmitSessionOpen(); err != nil {
+		t.Fatal(err)
+	}
+	p.receiptEmitterPtr.Store(receipts.emitter)
+
+	holdReceiptScanSlots(t, rec)
+	reqCtx, cancelReq := context.WithCancel(t.Context())
+	defer cancelReq()
+	req := httptest.NewRequestWithContext(reqCtx, http.MethodPost, "http://peer.vendor.example/update", nil)
+	w := httptest.NewRecorder()
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		p.handleForwardHTTP(w, req)
+	}()
+	waitForQueuedReceiptScan(t, finished)
+	cancelReq()
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled request stayed queued for a receipt scan slot")
+	}
+	if w.Code != http.StatusOK || w.Body.Len() != 0 || calls.Load() != 0 {
+		t.Fatalf("status=%d body=%q upstream calls=%d, want an unwritten response and no upstream call", w.Code, w.Body, calls.Load())
+	}
+	if err := receipts.emitter.HealthError(); err != nil {
+		t.Fatalf("client cancellation changed emitter health: %v", err)
+	}
+	assertMetricsNotContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="forward"} 1`)
+}
+
+var slotHoldProducer = receiptcontent.Register(receiptcontent.Schema{Kind: "pipelock.test.proxy_scan_slot_hold.v1"})
+
+// heldScanContext parks a receipt scan just after it takes a recorder slot.
+type heldScanContext struct {
+	context.Context
+	release <-chan struct{}
+}
+
+func (ctx heldScanContext) Err() error {
+	<-ctx.release
+	return ctx.Context.Err()
+}
+
+// holdReceiptScanSlots occupies every receipt scan slot of rec until the test
+// ends, so the next scan has to queue.
+func holdReceiptScanSlots(t *testing.T, rec *recorder.Recorder) {
+	t.Helper()
+	release := make(chan struct{})
+	held := make(chan struct{})
+	slots := runtime.GOMAXPROCS(0)
+	var done sync.WaitGroup
+	for range slots {
+		done.Go(func() {
+			_, _, _ = rec.ScanReceiptContent(heldScanContext{Context: t.Context(), release: release}, slotHoldProducer, nil)
+			held <- struct{}{}
+		})
+	}
+	t.Cleanup(func() {
+		close(release)
+		for range slots {
+			<-held
+		}
+		done.Wait()
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for countGoroutinesIn("heldScanContext.Err(") < slots {
+		if time.Now().After(deadline) {
+			t.Fatal("receipt scan slots were not all held")
+		}
+		runtime.Gosched()
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// waitForQueuedReceiptScan waits until a receipt scan is blocked waiting for
+// a slot, or fails if the request finished first.
+func waitForQueuedReceiptScan(t *testing.T, finished <-chan struct{}) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		buf := make([]byte, 1<<22)
+		for _, g := range strings.Split(string(buf[:runtime.Stack(buf, true)]), "\n\n") {
+			if strings.Contains(g, "[select") && strings.Contains(g, "(*Recorder).ScanReceiptContent") {
+				return
+			}
+		}
+		select {
+		case <-finished:
+			t.Fatal("request finished before its receipt scan queued")
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("receipt scan never queued for a slot")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func countGoroutinesIn(frame string) int {
+	buf := make([]byte, 1<<22)
+	return strings.Count(string(buf[:runtime.Stack(buf, true)]), frame)
 }
