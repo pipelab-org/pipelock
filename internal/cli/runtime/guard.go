@@ -34,6 +34,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/verification"
 )
 
 // GuardLaunchOptions is the fully resolved operator request.
@@ -405,6 +406,12 @@ func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scann
 	evidence.recorder = rec
 	var runSession string
 	if cfg.FlightRecorder.ReceiptChainCount() == 1 {
+		if len(privateKey) != 0 {
+			if err := verifyPredecessorAEL(rec, verification.Options{Context: ctx}); err != nil {
+				evidence.close()
+				return nil, err
+			}
+		}
 		runSession, err = acquireRunSession(rec)
 		if err != nil {
 			evidence.close()
@@ -437,7 +444,7 @@ func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scann
 		}, cfg.FlightRecorder.ReceiptChainCount(), cfg.FlightRecorder.SigningKeyPath, true)
 		if groupErr != nil {
 			evidence.close()
-			return nil, fmt.Errorf("opening Guard receipt shard group: %w", groupErr)
+			return nil, fmt.Errorf("opening Guard receipt shard group: %w", withNativePredecessorRestartHint(groupErr))
 		}
 		evidence.shards = shards
 		evidence.emitter = shards.ProcessEmitter()
