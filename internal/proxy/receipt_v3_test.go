@@ -35,9 +35,9 @@ import (
 
 func TestV3HTTPTransportIntentPrecedesUpstreamSend(t *testing.T) {
 	for _, transport := range []string{"fetch", "forward", "reverse"} {
-		for _, stage := range []string{"healthy", "before_send", "before_delivery"} {
+		for _, stage := range []string{"healthy", "before_send", "before_delivery", "advisory"} {
 			t.Run(transport+"/"+stage, func(t *testing.T) {
-				p, writer, dir, keys := newTestV3HTTPProxy(t, transport)
+				p, writer, dir, keys := newTestV3HTTPProxy(t, transport, stage != "advisory")
 				if stage == "before_send" {
 					if err := writer.Close(t.Context(), nil); err != nil {
 						t.Fatal(err)
@@ -134,7 +134,7 @@ func (w *v3ResponseRecorder) WriteHeader(code int) {
 	w.ResponseRecorder.WriteHeader(code)
 }
 
-func newTestV3HTTPProxy(t *testing.T, surface string) (*Proxy, *v3.StreamWriter, string, []ed25519.PublicKey) {
+func newTestV3HTTPProxy(t *testing.T, surface string, required bool) (*Proxy, *v3.StreamWriter, string, []ed25519.PublicKey) {
 	t.Helper()
 	dir := t.TempDir()
 	keySeed := sha256.Sum256([]byte("receipt transport fixture"))
@@ -149,12 +149,12 @@ func newTestV3HTTPProxy(t *testing.T, surface string) (*Proxy, *v3.StreamWriter,
 	cfg.WebSocketProxy.MaxConnectionSeconds = 10
 	cfg.WebSocketProxy.IdleTimeoutSeconds = 2
 	cfg.ResponseScanning.Enabled = false
-	cfg.FlightRecorder.RequireReceipts = true
+	cfg.FlightRecorder.RequireReceipts = required
 	writer, err := v3.OpenStreamWriter(t.Context(), v3.StreamWriterOptions{
 		Dir: dir, SigningKey: key, PolicyHash: v3.Digest(nil),
 		Identity: v3.Writer{Instance: "example", Product: "Pipelock", Version: "3"},
 		Coverage: v3.Coverage{
-			ReceiptsRequired: true, Surfaces: []string{surface},
+			ReceiptsRequired: required, Surfaces: []string{surface},
 			RedactionRuleset: v3.Ruleset{ID: "example", Version: "1", Hash: v3.Digest(nil)},
 		},
 	})
@@ -172,7 +172,7 @@ func newTestV3HTTPProxy(t *testing.T, surface string) (*Proxy, *v3.StreamWriter,
 }
 
 func TestV3ConnectIntentPrecedesTunnelDial(t *testing.T) {
-	p, writer, dir, keys := newTestV3HTTPProxy(t, "connect")
+	p, writer, dir, keys := newTestV3HTTPProxy(t, "connect", true)
 	target, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -223,7 +223,7 @@ func TestV3ConnectIntentPrecedesTunnelDial(t *testing.T) {
 }
 
 func TestV3WebSocketIntentPrecedesUpstreamHandshake(t *testing.T) {
-	p, writer, dir, keys := newTestV3HTTPProxy(t, "websocket")
+	p, writer, dir, keys := newTestV3HTTPProxy(t, "websocket", true)
 	beforeEffect := make(chan bool, 1)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		result, verifyErr := v3.VerifyPaths(r.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
@@ -260,7 +260,7 @@ func TestV3WebSocketIntentPrecedesUpstreamHandshake(t *testing.T) {
 func TestV3WebSocketPayloadWaitsForReceipt(t *testing.T) {
 	for _, point := range []string{"open", "upstream", "downstream", "denied"} {
 		t.Run(point, func(t *testing.T) {
-			p, writer, dir, keys := newTestV3HTTPProxy(t, "websocket")
+			p, writer, dir, keys := newTestV3HTTPProxy(t, "websocket", true)
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			backendResult := make(chan error, 1)
@@ -395,7 +395,7 @@ func assertTransportReceiptOrder(t *testing.T, observed <-chan bool, done <-chan
 func TestV3InterceptIntentPrecedesRoundTrip(t *testing.T) {
 	for _, closed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("closed=%t", closed), func(t *testing.T) {
-			p, writer, dir, keys := newTestV3HTTPProxy(t, "intercept")
+			p, writer, dir, keys := newTestV3HTTPProxy(t, "intercept", true)
 			if closed {
 				if err := writer.Close(t.Context(), nil); err != nil {
 					t.Fatal(err)
@@ -447,7 +447,7 @@ func TestV3InterceptIntentPrecedesRoundTrip(t *testing.T) {
 }
 
 func TestV3ExceptionAllowanceReceipts(t *testing.T) {
-	p, writer, dir, keys := newTestV3HTTPProxy(t, "intercept")
+	p, writer, dir, keys := newTestV3HTTPProxy(t, "intercept", true)
 	cfg := p.CurrentConfig()
 	decision := receipt.EmitOpts{Method: http.MethodGet, Target: "https://api.vendor.example", Transport: "intercept"}
 	first := scanner.CredentialAudienceAllow{PatternName: "first", Surface: "header", Destination: "api.vendor.example"}
@@ -474,7 +474,7 @@ func TestV3ExceptionAllowanceReceipts(t *testing.T) {
 }
 
 func TestV3ResponsePolicyAdmissions(t *testing.T) {
-	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportForward)
+	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportForward, true)
 	cfg := p.CurrentConfig()
 	opts := receipt.EmitOpts{
 		ActionID: receipt.NewActionID(), Target: "https://api.vendor.example", Transport: TransportForward,

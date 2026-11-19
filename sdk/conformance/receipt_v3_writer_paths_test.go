@@ -15,8 +15,9 @@ import (
 )
 
 type receiptWriterSite struct {
-	pkg  string
-	node ast.Node
+	pkg      string
+	node     ast.Node
+	disabled bool
 }
 
 func (s receiptWriterSite) fingerprint() string {
@@ -51,6 +52,9 @@ func (index *receiptWriterIndex) addFile(pkg string, file *ast.File) {
 }
 
 func (index *receiptWriterIndex) reachesWriter(site receiptWriterSite) bool {
+	if site.disabled {
+		return false
+	}
 	seen := make(map[ast.Node]bool)
 	var visit func(ast.Node) bool
 	var resolve func(ast.Expr) bool
@@ -145,8 +149,31 @@ func isReceiptV3Selector(expr ast.Expr) bool {
 	return ok && (field.Sel.Name == "ReceiptV3" || field.Sel.Name == "receiptV3")
 }
 
+// A site in the branch that requires the writer to be absent cannot write
+// even if its callee has a writer path.
+func receiptSiteDisabled(node ast.Node, parents []ast.Node) bool {
+	for i, parent := range parents {
+		branch, ok := parent.(*ast.IfStmt)
+		if !ok {
+			continue
+		}
+		child := node
+		if i+1 < len(parents) {
+			child = parents[i+1]
+		}
+		on, known := receiptV3Guard(branch.Cond)
+		if known && ((!on && child == branch.Body) || (on && child == branch.Else)) {
+			return true
+		}
+	}
+	return false
+}
+
 // receiptV3Guard evaluates guards whose result follows from v3 being enabled.
 func receiptV3Guard(expr ast.Expr) (value, known bool) {
+	if paren, ok := expr.(*ast.ParenExpr); ok {
+		return receiptV3Guard(paren.X)
+	}
 	binary, ok := expr.(*ast.BinaryExpr)
 	if !ok {
 		return false, false
@@ -189,7 +216,9 @@ func disabled(o options) {
 	}
 }
 func enabled(o options) {
-	if o.ReceiptV3 != nil {
+	if o.ReceiptV3 == nil {
+		legacy()
+	} else {
 		o.ReceiptV3.WriteAction()
 	}
 }
@@ -206,4 +235,15 @@ func enabled(o options) {
 			t.Errorf("call %d writer reachability = %t, want %t", i, got, want)
 		}
 	}
+
+	ast.PreorderStack(file.Decls[2], nil, func(node ast.Node, parents []ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if ok && callWritesReceiptV3(call) {
+			site := receiptWriterSite{pkg: "example", node: call, disabled: receiptSiteDisabled(call, parents)}
+			if index.reachesWriter(site) {
+				t.Error("write bound inside disabled branch was accepted")
+			}
+		}
+		return true
+	})
 }

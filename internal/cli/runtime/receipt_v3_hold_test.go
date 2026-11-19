@@ -27,6 +27,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestV3HoldCarriesLegacyRecoveryAttribution(t *testing.T) {
@@ -225,7 +226,7 @@ func TestMCPV3RestartSettlesUnsealedHold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(30*time.Second))
 	defer cancel()
 	child := exec.CommandContext(ctx, exe, "-test.run=^TestMCPV3RestartSettlesUnsealedHold$") // #nosec G204 -- current test executable
 	child.Env = append(os.Environ(), seedEnv+"="+dir)

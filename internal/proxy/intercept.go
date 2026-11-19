@@ -2314,18 +2314,19 @@ func newInterceptHandler(
 			_ = httpstream.Abort(r.Context(), flushErr)
 		}
 		requiredIntentEmitted := false
-		if ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
+		required := ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts
+		if required || (ic.Proxy != nil && ic.Proxy.receiptV3 != nil) {
 			if ic.Proxy != nil && ic.Proxy.receiptV3 != nil {
 				var err error
 				upstreamReceipt, err = ic.Proxy.confirmTransportReceipt(r.Context(), ic.Config, allowReceipt, boundaryUpstreamSend)
-				if err != nil {
+				if err != nil && required {
 					writeInterceptReceiptDenial(w, ic.Logger, actx, allowReceipt.RequestID, err)
 					return
 				}
 			} else if interceptEmitReceiptOrBlock(ic, w, actx, allowReceipt) {
 				return
 			}
-			requiredIntentEmitted = true
+			requiredIntentEmitted = required
 		}
 		emitBlockedPostRoundTripOutcome := func(status int, reason string) {
 			if requiredIntentEmitted {

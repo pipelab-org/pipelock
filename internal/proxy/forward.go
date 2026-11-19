@@ -752,14 +752,14 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		allowReceipt = withContractReceipt(connectGate, allowReceipt)
 	}
 	var tunnelReceipt *v3TransportReceipt
-	if cfg.FlightRecorder.RequireReceipts {
+	if cfg.FlightRecorder.RequireReceipts || p.receiptV3 != nil {
 		var err error
 		if p.receiptV3 != nil {
 			tunnelReceipt, err = p.confirmTransportReceipt(r.Context(), cfg, allowReceipt, boundaryTunnelOpen)
 		} else {
 			err = p.emitRequiredReceipt(withReceiptConfig(allowReceipt, cfg))
 		}
-		if err != nil {
+		if err != nil && cfg.FlightRecorder.RequireReceipts {
 			blockedErr := newReceiptEmissionBlockedRequest(err)
 			p.logger.LogBlocked(targetCtx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordTunnelBlocked(agentLabel)
@@ -768,7 +768,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 				"CONNECT blocked: "+blockedErr.reason, http.StatusForbidden)
 			return
 		}
-		blockreason.SetRecordedReceipt(w.Header(), allowReceipt.ActionID)
+		if cfg.FlightRecorder.RequireReceipts {
+			blockreason.SetRecordedReceipt(w.Header(), allowReceipt.ActionID)
+		}
 	}
 	if !shouldIntercept {
 		// This tunnel can send bytes we cannot record, even when a later
@@ -2504,7 +2506,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		forwardAllowReceipt = withContractReceipt(forwardGate, forwardAllowReceipt)
 	}
 	var upstreamReceipt, downstreamReceipt *v3TransportReceipt
-	if cfg.FlightRecorder.RequireReceipts {
+	if cfg.FlightRecorder.RequireReceipts || p.receiptV3 != nil {
 		var err error
 		if p.receiptV3 != nil {
 			upstreamReceipt, err = p.confirmTransportReceipt(r.Context(), cfg, forwardAllowReceipt, boundaryUpstreamSend)
@@ -2513,7 +2515,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			intent.ContentScanContext = r.Context()
 			err = p.emitRequiredReceipt(intent)
 		}
-		if err != nil {
+		if err != nil && cfg.FlightRecorder.RequireReceipts {
 			// A client that went away gets the ordinary cancellation answer.
 			// A cancellation Pipelock made itself, such as a revoked license,
 			// stays a block below so the caller never sees an empty success.
@@ -2530,7 +2532,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				"blocked: "+blockedErr.reason, http.StatusForbidden)
 			return
 		}
-		blockreason.SetRecordedReceipt(w.Header(), forwardAllowReceipt.ActionID)
+		if cfg.FlightRecorder.RequireReceipts {
+			blockreason.SetRecordedReceipt(w.Header(), forwardAllowReceipt.ActionID)
+		}
 	}
 	outcomeStatus := "unknown"
 	outcomeBytes := int64(-1)
@@ -2578,10 +2582,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	responseBudgetTruncated := false
 
-	// Required receipt scanning and durability can outlast task admission.
-	// Without required receipts nothing waits between the check above and
-	// the send, so only the required path needs to look again.
-	if cfg.FlightRecorder.RequireReceipts && !taskAdmissionCurrent() {
+	// Receipt scanning or a durable write can outlast task admission.
+	if (cfg.FlightRecorder.RequireReceipts || p.receiptV3 != nil) && !taskAdmissionCurrent() {
+		p.recordTransportNotReleased(r.Context(), forwardAllowReceipt, upstreamReceipt)
 		outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, session.TaskApprovalStale
 		outcomeReceipt.Verdict = config.ActionBlock
 		outcomeReceipt.TaintDecision = session.PolicyBlock.String()

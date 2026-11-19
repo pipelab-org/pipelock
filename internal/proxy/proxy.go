@@ -6636,14 +6636,14 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		fetchAllowReceipt = withContractReceipt(fetchGate, fetchAllowReceipt)
 	}
 	var upstreamReceipt *v3TransportReceipt
-	if cfg.FlightRecorder.RequireReceipts {
+	if cfg.FlightRecorder.RequireReceipts || p.receiptV3 != nil {
 		var rcptErr error
 		if p.receiptV3 != nil {
 			upstreamReceipt, rcptErr = p.confirmTransportReceipt(r.Context(), cfg, fetchAllowReceipt, boundaryUpstreamSend)
 		} else {
 			rcptErr = p.emitRequiredReceipt(withReceiptConfig(fetchAllowReceipt, cfg))
 		}
-		if rcptErr != nil {
+		if rcptErr != nil && cfg.FlightRecorder.RequireReceipts {
 			blockedErr := newReceiptEmissionBlockedRequest(rcptErr)
 			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordBlocked(parsed.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
@@ -6657,7 +6657,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				})
 			return
 		}
-		blockreason.SetRecordedReceipt(w.Header(), fetchAllowReceipt.ActionID)
+		if cfg.FlightRecorder.RequireReceipts {
+			blockreason.SetRecordedReceipt(w.Header(), fetchAllowReceipt.ActionID)
+		}
 	}
 	outcomeStatus := "unknown"
 	outcomeReason := "incomplete"

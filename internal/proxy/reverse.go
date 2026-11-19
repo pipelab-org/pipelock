@@ -1764,7 +1764,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		Agent:     agent,
 	}), selectedReceiptShard)
 	var v3Upstream *reverseV3Send
-	if cfg.FlightRecorder.RequireReceipts {
+	if cfg.FlightRecorder.RequireReceipts || (rp.owner != nil && rp.owner.receiptV3 != nil) {
 		// Pin the policy hash to the admission snapshot
 		// (cfg == snap.cfg), not a possibly-reloaded rp.cfgPtr. The v2
 		// receipt consumes opts.PolicyHash; withReceiptPolicyHash is
@@ -1782,7 +1782,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		} else {
 			err = rp.emitRequiredReceipt(withReceiptConfig(reverseAllowReceipt, cfg))
 		}
-		if err != nil {
+		if err != nil && cfg.FlightRecorder.RequireReceipts {
 			blockedErr := newReceiptEmissionBlockedRequest(err)
 			rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), blockedErr.layer, blockedErr.detail)
 			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
@@ -1792,8 +1792,10 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				blockedErr.reason)
 			return
 		}
-		blockreason.SetRecordedReceipt(w.Header(), reverseAllowReceipt.ActionID)
-		responseReceiptState.admissionReceiptID = reverseAllowReceipt.ActionID
+		if cfg.FlightRecorder.RequireReceipts {
+			blockreason.SetRecordedReceipt(w.Header(), reverseAllowReceipt.ActionID)
+			responseReceiptState.admissionReceiptID = reverseAllowReceipt.ActionID
+		}
 	}
 	var outcomeTracker *reverseOutcomeTracker
 	var forwardWriter *reverseInformationalGuardWriter

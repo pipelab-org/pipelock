@@ -974,7 +974,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		clientConn = p.withAdaptiveClose(clientConn, refusalOpts)
 		return true
 	}
-	if !cfg.FlightRecorder.RequireReceipts && !negotiateProtocol {
+	if p.receiptV3 == nil && !cfg.FlightRecorder.RequireReceipts && !negotiateProtocol {
 		if !upgradeClient() {
 			return
 		}
@@ -1165,14 +1165,14 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var upstreamReceipt *v3TransportReceipt
-	if cfg.FlightRecorder.RequireReceipts {
+	if cfg.FlightRecorder.RequireReceipts || p.receiptV3 != nil {
 		var err error
 		if p.receiptV3 != nil {
 			upstreamReceipt, err = p.confirmTransportReceipt(r.Context(), cfg, admissionReceipt, boundaryUpstreamSend)
 		} else {
 			err = p.emitRequiredReceipt(withReceiptConfig(admissionReceipt, cfg))
 		}
-		if err != nil {
+		if err != nil && cfg.FlightRecorder.RequireReceipts {
 			blockedErr := newReceiptEmissionBlockedRequest(err)
 			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordWSBlocked()
@@ -1181,18 +1181,20 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				"WebSocket blocked: "+blockedErr.reason, http.StatusForbidden)
 			return
 		}
-		blockreason.SetRecordedReceipt(w.Header(), admissionReceipt.ActionID)
+		if cfg.FlightRecorder.RequireReceipts {
+			blockreason.SetRecordedReceipt(w.Header(), admissionReceipt.ActionID)
+		}
 	}
 
 	confirmClientUpgrade := func() bool {
-		if p.receiptV3 == nil || !cfg.FlightRecorder.RequireReceipts {
+		if p.receiptV3 == nil {
 			return upgradeClient()
 		}
 		delivery := admissionReceipt
 		delivery.ActionID = receipt.NewActionID()
 		delivery.ParentActionID = admissionReceipt.ActionID
 		entry, err := p.confirmTransportReceipt(r.Context(), cfg, delivery, boundaryDownstreamDelivery)
-		if err != nil {
+		if err != nil && cfg.FlightRecorder.RequireReceipts {
 			blocked := newReceiptEmissionBlockedRequest(err)
 			writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, blocked.layer).WithRequestID(requestID),
 				"WebSocket blocked: "+blocked.reason, http.StatusForbidden)
@@ -1226,7 +1228,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 
-	if cfg.FlightRecorder.RequireReceipts {
+	if cfg.FlightRecorder.RequireReceipts || p.receiptV3 != nil {
 		// Upgrade the client connection only after the required intent receipt is
 		// durable. A 101 response is client egress; under require_receipts it must
 		// not be written before fsync succeeds. With a subprotocol offer the
