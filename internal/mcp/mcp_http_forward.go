@@ -43,13 +43,28 @@ func emitRequestScopedTimeout(
 		outcome, ok := consumeTrackedRequestOutcome(tracker, id)
 		if ok {
 			resp := timeoutErrorResponse(id)
-			if wErr := writer.WriteMessage(resp); wErr != nil {
+			if wErr := opts.writeMCPGeneratedResponse(logW, writer, outcome.Receipt, resp, "response_timeout"); wErr != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", wErr)
 			}
 			emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, outcome.Receipt, "error", int64(len(resp)), "response_timeout", opts.requireReceipts())
 		}
 	}
 	_, _ = fmt.Fprintln(logW, logMessage)
+}
+
+func writeTrackedTerminalResponse(logW io.Writer, writer transport.MessageWriter, tracker *RequestTracker, id json.RawMessage, resp []byte, opts MCPProxyOpts) {
+	const reason = "upstream_error"
+	if opts.ReceiptV3 == nil {
+		if err := writer.WriteMessage(resp); err != nil {
+			_, _ = fmt.Fprintf(logW, "pipelock: failed to send error response: %v\n", err)
+		}
+		emitTrackedTerminalOutcome(logW, tracker, id, resp, reason, opts)
+		return
+	}
+	outcome, _ := consumeTrackedRequestOutcome(tracker, id)
+	if err := opts.writeMCPGeneratedResponse(logW, writer, outcome.Receipt, resp, reason); err != nil {
+		_, _ = fmt.Fprintf(logW, "pipelock: failed to send error response: %v\n", err)
+	}
 }
 
 func emitTrackedTerminalOutcome(logW io.Writer, tracker *RequestTracker, id json.RawMessage, resp []byte, reason string, opts MCPProxyOpts) {
@@ -66,6 +81,10 @@ func emitTrackedTerminalOutcome(logW io.Writer, tracker *RequestTracker, id json
 func emitContractRefusedOutcome(logW io.Writer, outcome TrackedRequestOutcome, gate mcpContractGateOutput, reason string, bytesTransferred int64, opts MCPProxyOpts) {
 	receiptOpts := mcpWithContractReceipt(outcome.Receipt, gate)
 	receiptOpts.Layer = mcpContractReceiptLayer
+	if opts.ReceiptV3 != nil {
+		opts.recordV3MCPRefusal(logW, receiptOpts, mcpV3Upstream, reason)
+		return
+	}
 	emitMCPBlockedOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, receiptOpts, bytesTransferred, reason, opts.requireReceipts())
 }
 
@@ -531,9 +550,8 @@ func RunHTTPProxy(
 						if sendErr != nil {
 							errResp := upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP request failed"))
 							if !deferredReq.IsNotification {
-								_ = safeClientOut.WriteMessage(errResp)
+								writeTrackedTerminalResponse(safeLogW, safeClientOut, tracker, deferredReq.ID, errResp, fwdOpts)
 							}
-							emitTrackedTerminalOutcome(safeLogW, tracker, deferredReq.ID, errResp, "upstream_error", fwdOpts)
 							return
 						}
 						respReader = fwdOpts.withResponseTimeout(respReader)
@@ -782,10 +800,7 @@ func RunHTTPProxy(
 			// which could contain prompt injection payloads.
 			rpcID := frame.ID
 			errResp := upstreamErrorResponse(rpcID, fmt.Errorf("upstream HTTP request failed"))
-			if wErr := safeClientOut.WriteMessage(errResp); wErr != nil {
-				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send error response: %v\n", wErr)
-			}
-			emitTrackedTerminalOutcome(safeLogW, tracker, frame.ID, errResp, "upstream_error", fwdOpts)
+			writeTrackedTerminalResponse(safeLogW, safeClientOut, tracker, frame.ID, errResp, fwdOpts)
 			continue
 		}
 
@@ -880,5 +895,9 @@ func emitPendingMCPInputReceipt(pending *mcpToolReceiptOpts) {
 func emitBridgeHeaderContractRefusal(logW io.Writer, outcome TrackedRequestOutcome, reason string, opts MCPProxyOpts) {
 	intent := outcome.Receipt
 	intent.Layer = mcpReceiptLayerHeaderContract
+	if opts.ReceiptV3 != nil {
+		opts.recordV3MCPRefusal(logW, intent, mcpV3Upstream, reason)
+		return
+	}
 	emitMCPBlockedOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, intent, -1, reason, opts.requireReceipts())
 }

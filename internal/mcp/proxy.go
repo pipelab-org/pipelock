@@ -106,7 +106,7 @@ func emitPendingTimeoutResponses(writer transport.MessageWriter, logW io.Writer,
 	}
 	for _, pending := range tracker.DrainPendingOutcomes() {
 		resp := timeoutErrorResponse(pending.ID)
-		if wErr := writer.WriteMessage(resp); wErr != nil {
+		if wErr := opts.writeMCPGeneratedResponse(logW, writer, pending.Outcome.Receipt, resp, "response_timeout"); wErr != nil {
 			_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", wErr)
 		}
 		emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, pending.Outcome.Receipt, "error", int64(len(resp)), "response_timeout", opts.requireReceipts())
@@ -1327,6 +1327,11 @@ func emitRejectedResponseOutcome(raw, outbound []byte, logW io.Writer, tracker *
 	reason := "response_key_validation"
 	if opts.warnContext().Err() != nil {
 		reason = "response_scan_error"
+	}
+	if opts.ReceiptV3 != nil {
+		outcome.Receipt.Layer = mcpOutcomeLayer
+		opts.recordV3MCPRefusal(logW, outcome.Receipt, mcpV3Delivery, reason)
+		return
 	}
 	emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, outcome.Receipt, "error", int64(len(outbound)), reason, opts.requireReceipts())
 }

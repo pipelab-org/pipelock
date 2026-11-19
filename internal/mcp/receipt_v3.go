@@ -223,6 +223,39 @@ func (o MCPProxyOpts) confirmV3ResponseDelivery(logW io.Writer, opts receipt.Emi
 	return nil
 }
 
+// v3MCPChild derives correlation and policy from the request while assigning
+// a separate identity to the new gate or delivery.
+func v3MCPChild(parent receipt.EmitOpts, layer, reason string) receipt.EmitOpts {
+	parent.ParentActionID, parent.ActionID = parent.ActionID, receipt.NewActionID()
+	parent.Layer, parent.Pattern = layer, reason
+	return parent
+}
+
+func (o MCPProxyOpts) recordV3MCPRefusal(logW io.Writer, intent receipt.EmitOpts, boundary, reason string) {
+	refusal := v3MCPChild(intent, intent.Layer, reason)
+	refusal.Verdict = config.ActionBlock
+	entry := o.prepareV3Receipt(o.withReceiptPolicyHash(refusal))
+	entry.action.Phase, entry.action.EffectBoundary, entry.action.EffectRelation = "decision", boundary, "not_attempted"
+	if err := o.ReceiptV3.WriteAction(context.WithoutCancel(o.warnContext()), entry.action, entry.policy); err != nil {
+		logReceiptEmitFailure(logW, err, o.requireReceipts(), refusal.Verdict)
+	}
+}
+
+func (o MCPProxyOpts) writeMCPGeneratedResponse(logW io.Writer, writer transport.MessageWriter, parent receipt.EmitOpts, response []byte, reason string) error {
+	if o.ReceiptV3 == nil {
+		return writer.WriteMessage(response)
+	}
+	decision := v3MCPChild(parent, mcpOutcomeLayer, reason)
+	decision.Verdict = config.ActionAllow
+	decision.Transport = firstNonEmpty(decision.Transport, o.Transport)
+	decision.Target = firstNonEmpty(decision.Target, "mcp://response")
+	var delivery mcpV3Receipt
+	if err := o.confirmV3ResponseDelivery(logW, decision, &delivery); err != nil {
+		return err
+	}
+	return delivery.writeV3Response(o, logW, writer, response)
+}
+
 func (r *mcpV3Receipt) writeV3Response(o MCPProxyOpts, logW io.Writer, writer transport.MessageWriter, content []byte) error {
 	if r.action.Attempt != nil {
 		if err := o.warnContext().Err(); err != nil {

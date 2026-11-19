@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
@@ -551,5 +553,47 @@ func TestMCPV3ConfirmsWebSocketBeforeHandshake(t *testing.T) {
 				t.Fatalf("handshake lacked an earlier intent: contacts=%d confirmed=%v error=%v", contacts.Load(), confirmed.Load(), err)
 			}
 		})
+	}
+}
+
+func TestMCPV3GeneratedReplyAndRefusal(t *testing.T) {
+	dir, writer, verify := newMCPV3Stream(t, "bridge")
+	opts := MCPProxyOpts{
+		Scanner: testScannerForHTTP(t), Transport: transportMCPStdio,
+		RequireReceipts: true, ReceiptV3: writer,
+	}
+	intent := receipt.EmitOpts{ActionID: receipt.NewActionID(), Transport: opts.Transport, Method: http.MethodPost, Target: "https://upstream.vendor.example"}
+	outcome := TrackedRequestOutcome{Receipt: intent}
+	emitContractRefusedOutcome(io.Discard, outcome, mcpContractGateOutput{}, mcpContractDeniedReason, 0, opts)
+	emitBridgeHeaderContractRefusal(io.Discard, outcome, "header_contract", opts)
+	calls := 0
+	client := v3TestPeer(func([]byte) error {
+		calls++
+		result, err := v3.VerifyPaths(t.Context(), []string{dir}, verify)
+		if err != nil {
+			return err
+		}
+		if !hasMCPV3State(result, "outcome_unknown") {
+			return errors.New("client write reached before the delivery intent")
+		}
+		return nil
+	})
+	reply := timeoutErrorResponse([]byte("1"))
+	if err := opts.writeMCPGeneratedResponse(io.Discard, client, intent, reply, "response_timeout"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := opts.writeMCPGeneratedResponse(io.Discard, client, intent, reply, "response_timeout"); err == nil {
+		t.Fatal("generated reply passed a closed receipt writer")
+	}
+	if calls != 1 {
+		t.Fatalf("client saw %d writes, want one", calls)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, verify)
+	if err != nil || result.Verdict != "VALID" || result.Counts.Decisions == nil ||
+		!slices.Contains(*result.Counts.Decisions, v3.StateCount{State: "blocked", Count: 2}) || !hasMCPV3State(result, "completed") {
+		t.Fatalf("refusal or reply absent: %+v (%v)", result, err)
 	}
 }
