@@ -120,8 +120,12 @@ func TestReceiptContentBoundsConcurrentInspection(t *testing.T) {
 			<-entered
 		}
 		extra := make(chan scanResult, 1)
+		queued := make(chan struct{}, 1)
+		rec.SetContentScanWaitForTest(func() { queued <- struct{}{} })
 		ctx, cancel := context.WithCancel(t.Context())
 		go scan(ctx, extra)
+		<-queued
+		rec.SetContentScanWaitForTest(nil)
 		synctest.Wait()
 		if len(entered) != 0 {
 			t.Error("queued projection entered inspection while all slots were in use")
@@ -179,16 +183,27 @@ func TestReceiptContentBoundsConcurrentInspection(t *testing.T) {
 			<-refill
 			return scanner.TextDLPResult{Clean: true}
 		}
-		again := make(chan scanResult, slots)
+		again := make(chan scanResult, slots+1)
 		for range slots {
 			go scan(t.Context(), again)
 			<-refilled
 		}
+		// One more scan queues and is admitted once a slot frees.
+		rec.SetContentScanWaitForTest(func() { queued <- struct{}{} })
+		go scan(t.Context(), again)
+		<-queued
+		rec.SetContentScanWaitForTest(nil)
 		close(refill)
-		for range slots {
+		for range slots + 1 {
 			if result := <-again; result.content == nil || result.err != nil {
 				t.Errorf("refilled projection returned (%v, %v)", result.content, result.err)
 			}
 		}
 	})
+}
+
+func TestSetContentScanWaitForTestNilRecorder(t *testing.T) {
+	var rec *Recorder
+	rec.SetContentScanWaitForTest(func() {})
+	rec.SetContentScanWaitForTest(nil)
 }
