@@ -15,6 +15,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 func writerTestIntent(id string) Action {
@@ -224,5 +227,45 @@ func TestStreamWriterCancelsWaitBehindFlush(t *testing.T) {
 	result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
 	if writerTestCount(t, result, "outcome_unknown") != 1 {
 		t.Fatalf("cancelled waiter entered the history: %+v", result)
+	}
+}
+
+func TestStreamWriterRefusesUnscannedCallerIdentity(t *testing.T) {
+	const subject = "example-subject"
+	for _, tc := range []struct {
+		name   string
+		result scanner.TextDLPResult
+		want   error
+	}{
+		{name: "identity finding", result: scanner.TextDLPResult{}, want: receiptcontent.ErrRejected},
+		{name: "incomplete scan", result: scanner.TextDLPResult{Incomplete: true}, want: scanner.ErrTextDLPIncomplete},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := writerTestOptions(t.TempDir())
+			opts.Coverage.ContentScan = true
+			seen := false
+			opts.Detector = func(_ context.Context, text string) scanner.TextDLPResult {
+				if text == subject {
+					seen = true
+					return tc.result
+				}
+				return scanner.TextDLPResult{Clean: true}
+			}
+			w := requireWriter(t, opts, localWriterStorage())
+			action := writerTestIntent("request")
+			action.Caller = Caller{
+				Authn: "mcp_door_verified", Subject: subject, Issuer: "issuer.vendor.example",
+				Resource: "api.vendor.example", ClientID: "example-client",
+			}
+			if err := w.WriteAction(t.Context(), action, PolicySnapshot{}); !errors.Is(err, tc.want) {
+				t.Fatalf("unverified caller identity reached writer: %v", err)
+			}
+			if !seen || w.active.confirmed.Seq != 0 {
+				t.Fatalf("caller field scan or non-publication missing: seen=%t seq=%d", seen, w.active.confirmed.Seq)
+			}
+			if err := w.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

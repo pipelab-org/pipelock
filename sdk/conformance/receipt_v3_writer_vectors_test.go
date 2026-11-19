@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,12 +22,14 @@ func v3WriterRecipes(t *testing.T) []v3Recipe {
 	t.Helper()
 	var recipes []v3Recipe
 	for _, tc := range []struct {
-		group int
-		name  string
+		group   int
+		name    string
+		rotated bool
 	}{
 		{group: 5, name: "writer-rollover"},
 		{group: 7, name: "writer-completed-action"},
 		{group: 9, name: "writer-switch-legacy"},
+		{group: 9, name: "writer-switch-endorsed-rotation", rotated: true},
 	} {
 		dir := t.TempDir()
 		key := v3Key("first")
@@ -47,7 +50,9 @@ func v3WriterRecipes(t *testing.T) []v3Recipe {
 		}
 		req := v3Request{Directory: true}
 		recipe := v3Recipe{group: tc.group, name: tc.name, verdict: "VALID", request: req}
-		if tc.group == 9 {
+		if tc.rotated {
+			v3PrepareRotatedLegacy(t, &opts, &recipe)
+		} else if tc.group == 9 {
 			legacy, err := os.ReadFile("testdata/frozen/v1/action-receipt-v1-chain.jsonl")
 			if err != nil {
 				t.Fatal(err)
@@ -141,4 +146,50 @@ func v3LegacyWriterKeys(t *testing.T, path string, data []byte) []string {
 		t.Fatalf("read legacy chain: %v", err)
 	}
 	return []string{chain[0].SignerKey}
+}
+
+func v3PrepareRotatedLegacy(t *testing.T, opts *v3.StreamWriterOptions, recipe *v3Recipe) {
+	t.Helper()
+	const fixture = "testdata/parity/rotated"
+	const rootKey = "signer-key.hex"
+	const nextKey = "rotated-signer-key.hex"
+	const endorsementName = "rotation-endorsement.json"
+	root, err := os.OpenRoot(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	entries, err := os.ReadDir(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pins []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == "expect.json" {
+			continue
+		}
+		data, err := root.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if name == rootKey || name == nextKey {
+			key := strings.TrimSpace(string(data))
+			pins = append(pins, key)
+			if name == rootKey {
+				recipe.request.Keys = []string{key, hex.EncodeToString(v3Public(opts.SigningKey))}
+			}
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(opts.Dir, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	opts.PriorSignerKeys, err = v3.DecodeKeys(pins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipe.verdict, recipe.code = "VALID PREFIX, END UNPROVEN", "LEGACY_END_UNPROVEN"
+	recipe.request.Endorsements = []string{endorsementName}
+	recipe.request.AllowPrefix = true
 }

@@ -64,7 +64,7 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 	reports := map[string]legacy.BaseReport{}
 	verifyBatch := func(batch legacyBatch) {
 		v.legacyActions(batch, keys, reports, presented, positions)
-		v.legacyEvidence(batch, keys, presented, positions)
+		v.legacyEvidence(batch, keys, reports, presented, positions)
 	}
 	for _, path := range paths {
 		name := filepath.Base(path)
@@ -482,7 +482,9 @@ func (v *verification) legacyActionWalker(session string, keys []string, reports
 	return legacy.NewChainWalker(scoped)
 }
 
-func (v *verification) legacyEvidence(batch legacyBatch, keys []string, presented map[legacyIdentity]legacyPresentation, positions map[legacyIdentity]map[int64]string) {
+func (v *verification) legacyEvidence(batch legacyBatch, keys []string, reports map[string]legacy.BaseReport, presented map[legacyIdentity]legacyPresentation, positions map[legacyIdentity]map[int64]string) {
+	base, _ := legacy.RunSessionBase(batch.session)
+	scoped, _ := legacy.ScopedChainTrust(reports[base], batch.session, keys, v.opts.LegacySelection.Endorsements)
 	records := batch.evidence
 	for len(records) != 0 {
 		n := 1
@@ -497,7 +499,7 @@ func (v *verification) legacyEvidence(batch legacyBatch, keys []string, presente
 		if selection.Bindings != nil && (selection.Session == "" || selection.Session == batch.session) {
 			verifyOptions = *selection.Bindings
 		}
-		walker := legacy.NewEvidenceChainWalker(keys, verifyOptions)
+		walker := legacy.NewEvidenceChainWalker(scoped, verifyOptions)
 		for _, item := range chain {
 			walker.Add(item)
 			hash, _ := contract.ReceiptHash(item)

@@ -7,10 +7,14 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	legacy "github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
 func TestStreamWriterCutoverCommitsAtFirstStream(t *testing.T) {
@@ -124,5 +128,43 @@ func TestStreamWriterRepairsOnlyTornJournal(t *testing.T) {
 				t.Fatalf("refused cutover left extra files: %v (%v)", entries, err)
 			}
 		})
+	}
+}
+
+func TestStreamWriterInventoriesMoreThan1024LegacyChains(t *testing.T) {
+	dir := t.TempDir()
+	opts := writerTestOptions(dir)
+	var chains bytes.Buffer
+	for i := range 1025 {
+		rec, err := legacy.Sign(legacy.ActionRecord{
+			Version: legacy.ActionRecordVersion, ActionID: fmt.Sprintf("request-%d", i),
+			ActionType: legacy.ActionRead,
+			Timestamp:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			Target:     "api.vendor.example", Verdict: "allow", Transport: "fetch", ChainPrevHash: "genesis",
+		}, opts.SigningKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		line, err := legacy.Marshal(rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chains.Write(line)
+		chains.WriteByte('\n')
+	}
+	if err := os.WriteFile(filepath.Join(dir, "activation-receipts.jsonl"), chains.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writer := requireWriter(t, opts, localWriterStorage())
+	pin := writer.open.LegacyCutover
+	if pin.Chains != 1025 {
+		t.Fatalf("cutover inventoried %d chains, want 1025", pin.Chains)
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result := verifyWritten(t, dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if len(result.Legacy) != 1025 {
+		t.Fatalf("verified %d legacy chains, want 1025", len(result.Legacy))
 	}
 }
