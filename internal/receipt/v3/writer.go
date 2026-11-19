@@ -34,18 +34,19 @@ const (
 // StreamWriterOptions captures the settings that describe a stream for its
 // whole lifetime. Prior keys are used only for startup verification.
 type StreamWriterOptions struct {
-	Dir             string
-	SigningKey      ed25519.PrivateKey
-	PriorSignerKeys []ed25519.PublicKey
-	Coverage        Coverage
-	Identity        Writer
-	PolicyHash      string
-	Posture         *Posture
-	RecorderSession string
-	Heartbeat       time.Duration
-	Detector        receiptcontent.Detector
-	Clock           func() time.Time
-	Random          io.Reader
+	Dir              string
+	SigningKey       ed25519.PrivateKey
+	PriorSignerKeys  []ed25519.PublicKey
+	Coverage         Coverage
+	Identity         Writer
+	PolicyHash       string
+	Posture          *Posture
+	RecorderSession  string
+	Heartbeat        time.Duration
+	OnHeartbeatError func(error)
+	Detector         receiptcontent.Detector
+	Clock            func() time.Time
+	Random           io.Reader
 }
 
 type writerStream struct {
@@ -59,17 +60,18 @@ type writerStream struct {
 // StreamWriter owns the evidence directory for its lifetime. It serializes
 // appends, including their flushes, and never reuses a failed stream.
 type StreamWriter struct {
-	dir       string
-	key       ed25519.PrivateKey
-	lock      *recorder.EvidenceCeremonyLock
-	storage   writerStorage
-	gate      chan struct{}
-	detector  receiptcontent.Detector
-	open      StreamOpen
-	signer    string
-	now       func() time.Time
-	random    io.Reader
-	fileBytes int
+	dir           string
+	key           ed25519.PrivateKey
+	lock          *recorder.EvidenceCeremonyLock
+	storage       writerStorage
+	gate          chan struct{}
+	detector      receiptcontent.Detector
+	open          StreamOpen
+	signer        string
+	now           func() time.Time
+	random        io.Reader
+	fileBytes     int
+	stopHeartbeat func()
 
 	active     writerStream
 	previous   *Previous
@@ -100,8 +102,11 @@ func openStreamWriter(ctx context.Context, opts StreamWriterOptions, storage wri
 	if opts.Coverage.ContentScan && opts.Detector == nil {
 		return nil, errors.New("receipt content scanning requires a detector")
 	}
-	dir := filepath.Clean(opts.Dir)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	dir, err := filepath.Abs(opts.Dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve receipt evidence directory: %w", err)
+	}
+	if err := makeWriterDirectory(dir, storage.syncDir); err != nil {
 		return nil, fmt.Errorf("create receipt evidence directory: %w", err)
 	}
 	lock, err := recorder.AcquireEvidenceCeremonyLock(dir)
@@ -157,6 +162,9 @@ func openStreamWriter(ctx context.Context, opts StreamWriterOptions, storage wri
 			err = errors.Join(err, w.active.file.Close())
 		}
 		return nil, fmt.Errorf("settle pending receipt holds before admitting traffic: %w", err)
+	}
+	if opts.Heartbeat > 0 {
+		w.startHeartbeats(opts.Heartbeat, opts.OnHeartbeatError)
 	}
 	return w, nil
 }
@@ -521,6 +529,9 @@ func (w *StreamWriter) writeClose(ctx context.Context, reason string, operationa
 // Close writes a shutdown record if the stream is usable and releases the
 // directory lock. The optional operational binding is a snapshot.
 func (w *StreamWriter) Close(ctx context.Context, operational *Recorder) error {
+	if w.stopHeartbeat != nil {
+		w.stopHeartbeat()
+	}
 	w.gate <- struct{}{}
 	defer w.release()
 	if w.closed {

@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/directorysync"
 )
 
 const (
@@ -39,17 +41,39 @@ func localWriterStorage() writerStorage {
 		link:       os.Link,
 		rename:     os.Rename,
 		remove:     os.Remove,
-		syncDir:    syncWriterDir,
+		syncDir:    directorysync.Sync,
 		syncFile:   syncWriterFile,
 	}
 }
 
-func syncWriterDir(path string) error {
-	file, err := os.Open(filepath.Clean(path))
-	if err != nil {
+// A new directory needs the same publication barrier as a new stream file.
+// A failed parent flush must prevent startup even if the name is visible.
+func makeWriterDirectory(path string, syncDir func(string) error) error {
+	parent := filepath.Dir(path)
+	info, err := os.Stat(path)
+	switch {
+	case err == nil:
+		if !info.IsDir() {
+			return errors.New("receipt evidence path is not a directory")
+		}
+	case !errors.Is(err, fs.ErrNotExist) || parent == path:
 		return err
+	default:
+		if err := makeWriterDirectory(parent, syncDir); err != nil {
+			return err
+		}
+		if err := os.Mkdir(path, 0o750); err != nil && !errors.Is(err, fs.ErrExist) {
+			return err
+		}
 	}
-	return errors.Join(file.Sync(), file.Close())
+	// An existing name can be left by a failed parent flush. Confirm it
+	// again before publishing into the directory on a retry.
+	if parent != path {
+		if err := syncDir(parent); err != nil {
+			return fmt.Errorf("flush parent of receipt directory: %w", err)
+		}
+	}
+	return nil
 }
 
 func syncWriterFile(path string) error {

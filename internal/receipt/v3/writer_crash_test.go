@@ -35,9 +35,12 @@ func TestReceiptWriterCrashChild(t *testing.T) {
 	opts := writerTestOptions(os.Getenv(crashDirKey))
 	storage := localWriterStorage()
 	if mode == crashBeforeName {
-		storage.syncDir = func(string) error {
-			os.Exit(crashProcessExit)
-			return nil
+		realSync := storage.syncDir
+		storage.syncDir = func(path string) error {
+			if path == opts.Dir {
+				os.Exit(crashProcessExit)
+			}
+			return realSync(path)
 		}
 	}
 	w, err := openStreamWriter(t.Context(), opts, storage)

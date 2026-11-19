@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -178,7 +179,13 @@ func TestStreamWriterStartupRequiresNameFlushAndCompletedScan(t *testing.T) {
 	dir := t.TempDir()
 	opts := writerTestOptions(dir)
 	storage := localWriterStorage()
-	storage.syncDir = func(string) error { return fault }
+	syncDir := storage.syncDir
+	storage.syncDir = func(path string) error {
+		if path == dir {
+			return fault
+		}
+		return syncDir(path)
+	}
 	if _, err := openStreamWriter(t.Context(), opts, storage); !errors.Is(err, fault) {
 		t.Fatalf("want directory flush failure, got %v", err)
 	}
@@ -224,5 +231,61 @@ func TestStreamWriterStartupRequiresNameFlushAndCompletedScan(t *testing.T) {
 	found, err = DirectoryHasV3(dir)
 	if err != nil || found {
 		t.Fatalf("cancelled startup published evidence: %v, %v", found, err)
+	}
+}
+
+func TestStreamWriterRefusesUnflushedEvidenceDirectory(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "evidence")
+	opts := writerTestOptions(dir)
+	storage := localWriterStorage()
+	errSync := errors.New("injected parent flush failure")
+	realSync := storage.syncDir
+	storage.syncDir = func(path string) error {
+		if path == parent {
+			return errSync
+		}
+		return realSync(path)
+	}
+	for range 2 {
+		if _, err := openStreamWriter(t.Context(), opts, storage); !errors.Is(err, errSync) {
+			t.Fatalf("writer did not refuse an unconfirmed directory name: %v", err)
+		}
+		hasV3, err := DirectoryHasV3(dir)
+		if err != nil || hasV3 {
+			t.Fatalf("unconfirmed directory has v3 evidence: %t, %v", hasV3, err)
+		}
+	}
+	w := requireWriter(t, opts, localWriterStorage())
+	if err := w.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStreamWriterScheduledHeartbeat(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	opts.Heartbeat = 0
+	w := requireWriter(t, opts, localWriterStorage())
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ticks := make(chan time.Time)
+	flushed := make(chan struct{})
+	w.active.file = syncCallbackFile{
+		writerFile: w.active.file,
+		syncCallback: sync.OnceFunc(func() {
+			close(flushed)
+		}),
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.runHeartbeats(ctx, ticks, nil)
+	}()
+	ticks <- time.Now()
+	<-flushed
+	cancel()
+	<-done
+	if w.active.beat != 1 || w.active.confirmed.Seq != 1 {
+		t.Fatalf("heartbeat was not confirmed: beat=%d seq=%d", w.active.beat, w.active.confirmed.Seq)
 	}
 }
