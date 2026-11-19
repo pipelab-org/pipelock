@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -78,6 +79,127 @@ func TestHTTPListener_ContractDiscoveryRefusalWordingPolicy(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// In best-effort mode the listener admits a call before its header contract is
+// checked. A contract refusal must record an intent and a blocked outcome under
+// one action ID, never a bare allow for a call that was not sent.
+func TestHTTPListener_ContractRefusalClosesBestEffortAllow(t *testing.T) {
+	for _, tc := range []struct{ name, defs, mirror, reason string }{
+		{"mismatch", headerStateDefs(headerStateSchema, "Echo input"), "different", "mcp_param_header_mismatch"},
+		{"invalid", headerStateDefs(headerStateInvalid, "Echo input"), "", "tool_header_contract_invalid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newMCPDecisionReceiptHarness(t)
+			opts := paramContractOpts(t)
+			opts.ReceiptEmitter, opts.V2ReceiptEmitter, opts.PolicyHash = h.v1, h.v2, mcpTestPolicyHash
+			f := newDiscoveryFixture(t, opts, func(w http.ResponseWriter, _ *http.Request, frame MCPFrame, _ int) {
+				discoveryList(w, frame, tc.defs, "")
+			})
+			if status, body := f.call(t, tc.mirror, "first"); status != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", status, body)
+			}
+			_ = mcpV2Receipts(t, h) // closes recorder
+			var intent, outcome *receipt.ActionRecord
+			for _, r := range readActionReceipts(t, h.dir) {
+				rec := r.ActionRecord
+				switch rec.DecisionPhase {
+				case receipt.DecisionPhaseIntent:
+					intent = &rec
+				case receipt.DecisionPhaseOutcome:
+					outcome = &rec
+				case "":
+					if rec.Verdict == config.ActionAllow && rec.Target == "echo" {
+						t.Fatalf("bare allow recorded for a refused call: %+v", rec)
+					}
+				}
+			}
+			if intent == nil || outcome == nil || intent.ActionID != outcome.ActionID ||
+				outcome.Verdict != config.ActionBlock || !strings.Contains(outcome.Pattern, tc.reason) {
+				t.Fatalf("intent=%+v outcome=%+v, want a paired block for %q", intent, outcome, tc.reason)
+			}
+		})
+	}
+}
+
+func TestHTTPListener_BestEffortAllowBeforeUpstreamResponse(t *testing.T) {
+	h := newMCPDecisionReceiptHarness(t)
+	opts := MCPProxyOpts{InputCfg: newHTTPInputCfg(config.ActionBlock), Scanner: promptWordingScanner(t, config.ActionBlock)}
+	opts.ReceiptEmitter, opts.V2ReceiptEmitter, opts.PolicyHash = h.v1, h.v2, mcpTestPolicyHash
+	type observation struct {
+		seq uint64
+		err error
+	}
+	observed := make(chan observation, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		tail, err := h.v1.ConfirmedTailObservation()
+		observed <- observation{seq: tail.ChainSeq, err: err}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":2,"result":{"content":[]}}`)
+	}))
+	t.Cleanup(upstream.Close)
+	url, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+	before, err := h.v1.ConfirmedTailObservation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, _, body := postWireContractRequest(t, url, currentWireBody(2, methodToolsCall, `"name":"echo","arguments":{}`), currentWireHeaders(methodToolsCall, "echo"))
+	if status != http.StatusOK {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	select {
+	case got := <-observed:
+		if got.err != nil || got.seq <= before.ChainSeq {
+			t.Fatalf("allow missing when upstream received request: sequence before=%d at upstream=%d err=%v", before.ChainSeq, got.seq, got.err)
+		}
+	default:
+		t.Fatal("upstream did not receive the request")
+	}
+	_ = mcpV2Receipts(t, h)
+	var allows int
+	for _, r := range readActionReceipts(t, h.dir) {
+		if r.ActionRecord.Target == "echo" && r.ActionRecord.Verdict == config.ActionAllow {
+			allows++
+		}
+	}
+	if allows != 1 {
+		t.Fatalf("got %d allow receipts for one call", allows)
+	}
+}
+
+func TestHTTPListener_MissingStateClosesBestEffortAllow(t *testing.T) {
+	h := newMCPDecisionReceiptHarness(t)
+	opts := MCPProxyOpts{
+		InputCfg: newHTTPInputCfg(config.ActionBlock), Scanner: promptWordingScanner(t, config.ActionBlock),
+		ListenerStateTokenRequiredFn: func() *bool { required := true; return &required },
+	}
+	opts.ReceiptEmitter, opts.V2ReceiptEmitter, opts.PolicyHash = h.v1, h.v2, mcpTestPolicyHash
+	f := newDiscoveryFixture(t, opts, func(w http.ResponseWriter, _ *http.Request, frame MCPFrame, _ int) {
+		discoveryList(w, frame, "[]", "")
+	})
+	status, _, body := postWireContractRequest(t, f.url, currentWireBody(2, methodToolsCall, `"name":"echo","arguments":{}`), currentWireHeaders(methodToolsCall, "echo"))
+	if status != http.StatusForbidden || f.calls.Load() != 0 {
+		t.Fatalf("status=%d calls=%d body=%s", status, f.calls.Load(), body)
+	}
+	_ = mcpV2Receipts(t, h)
+	var intent, outcome string
+	for _, r := range readActionReceipts(t, h.dir) {
+		rec := r.ActionRecord
+		switch {
+		case rec.Target == "echo" && rec.Verdict == config.ActionAllow:
+			if rec.DecisionPhase != receipt.DecisionPhaseIntent {
+				t.Fatalf("bare allow recorded for a refused call: %+v", rec)
+			}
+			intent = rec.ActionID
+		case rec.DecisionPhase == receipt.DecisionPhaseOutcome && rec.Verdict == config.ActionBlock &&
+			strings.Contains(rec.Pattern, "listener_session_token_required"):
+			outcome = rec.ActionID
+		}
+	}
+	if intent == "" || intent != outcome {
+		t.Fatalf("intent=%q outcome=%q, want a paired block", intent, outcome)
 	}
 }
 

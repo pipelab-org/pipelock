@@ -838,11 +838,17 @@ func mcpLocalRefusedOutcome(tracker *RequestTracker, id json.RawMessage, decisio
 		}
 	}
 	if pending := decision.pendingReceipt; pending != nil {
-		pending.DecisionPhase = receipt.DecisionPhaseIntent
-		emitPendingMCPInputReceipt(pending)
-		outcome.Receipt = pending.ProxyOpts.withReceiptPolicyHash(pending.receiptOptions())
+		outcome.Receipt = pendingRefusalIntent(pending)
 	}
 	return outcome
+}
+
+// pendingRefusalIntent writes a held best-effort allow as an intent and
+// returns the identity its blocked outcome must reuse.
+func pendingRefusalIntent(pending *mcpToolReceiptOpts) receipt.EmitOpts {
+	pending.DecisionPhase = receipt.DecisionPhaseIntent
+	emitPendingMCPInputReceipt(pending)
+	return pending.ProxyOpts.withReceiptPolicyHash(pending.receiptOptions())
 }
 
 func emitPendingMCPInputReceipt(pending *mcpToolReceiptOpts) {

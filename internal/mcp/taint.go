@@ -122,15 +122,26 @@ func evaluateMCPTaskTaint(opts MCPProxyOpts, toolName, argsJSON string, action s
 	if taintCfg == nil || !taintCfg.Enabled {
 		return decision
 	}
-	if rs, ok := opts.Rec.(session.RiskState); ok {
-		decision.Risk = rs.RiskSnapshot()
+	var matched bool
+	if state, ok := opts.Rec.(session.TaskPermissionState); ok {
+		decision.Risk, decision.Task, matched = state.TaskPolicySnapshot(opts.taskSubject, action)
+	} else {
+		if rs, ok := opts.Rec.(session.RiskState); ok {
+			decision.Risk = rs.RiskSnapshot()
+		}
+		if tp, ok := opts.Rec.(session.TaskContextProvider); ok {
+			decision.Task = tp.TaskSnapshot()
+		}
 	}
 	classified := session.ClassifyMCPToolCallWithOptions(
 		toolName,
 		argsJSON,
 		taintCfg.ProtectedPaths,
 		taintCfg.ElevatedPaths,
-		session.ClassificationOptions{FailSafe: taintCfg.FailSafeClassification},
+		session.ClassificationOptions{
+			FailSafe:   taintCfg.FailSafeClassification,
+			HostileMCP: decision.Risk.Level >= session.TaintExternalHostile,
+		},
 	)
 	decision.ActionClass = classified.Class
 	decision.Sensitivity = classified.Sensitivity
@@ -139,12 +150,6 @@ func evaluateMCPTaskTaint(opts MCPProxyOpts, toolName, argsJSON string, action s
 	decision.OverrideRefs = mcpOverrideRefs(toolName, classified.OverrideRefs, decision.ActionRef)
 	decision.ActionRef = mcpReportedActionRef(decision.OverrideRefs, decision.ActionRef)
 
-	var matched bool
-	if state, ok := opts.Rec.(session.TaskPermissionState); ok {
-		decision.Risk, decision.Task, matched = state.TaskPolicySnapshot(opts.taskSubject, action)
-	} else if tp, ok := opts.Rec.(session.TaskContextProvider); ok {
-		decision.Task = tp.TaskSnapshot()
-	}
 	decision.Result = session.PolicyMatrix{Profile: taintCfg.Policy}.EvaluateWithOptions(
 		decision.Risk.Level,
 		decision.ActionClass,

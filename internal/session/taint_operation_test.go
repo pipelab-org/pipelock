@@ -9,6 +9,145 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
+func TestMCPClassifyHostileBrowserOperations(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		tool, args string
+		want       session.ActionClass
+	}{
+		{"mcp__playwright__browser_navigate", `{"url":"https://docs.vendor.example/guide"}`, session.ActionClassBrowse},
+		{"browser_navigate_back", `{}`, session.ActionClassBrowse},
+		{"browser_wait_for", `{"text":"Details"}`, session.ActionClassBrowse},
+		{"browser_snapshot", "", session.ActionClassBrowse},
+		{"browser_take_screenshot", `{"type":"png"}`, session.ActionClassBrowse},
+		{"browser_take_screenshot", `{"filename":""}`, session.ActionClassUnknown},
+		{"browser_find", `{"query":"Details"}`, session.ActionClassBrowse},
+		{"browser_console_messages", `{"level":"info","outputPath":"console.txt"}`, session.ActionClassUnknown},
+		{"browser_snapshot", `{"file_path":"capture.txt"}`, session.ActionClassUnknown},
+		{"browser_snapshot", `[]`, session.ActionClassUnknown},
+		{"browser_snapshot", `{"filename":`, session.ActionClassUnknown},
+		{"browser_tabs", `{"action":"new"}`, session.ActionClassBrowse},
+		{"browser_tabs", `{"action":"new","url":"https://docs.vendor.example/start"}`, session.ActionClassBrowse},
+		{"browser_tabs", `{"action":"new","url":""}`, session.ActionClassUnknown},
+		{"browser_tabs", `{"action":"new","url":7}`, session.ActionClassUnknown},
+		{"browser_tabs", `{"action":"new","url":"https://docs.vendor.example/","index":0}`, session.ActionClassUnknown},
+		{"browser_tabs", `{"action":"select","index":1.0}`, session.ActionClassBrowse},
+		{"browser_tabs", `{"action":"list","isolatedContext":false}`, session.ActionClassUnknown},
+		{"browser_tabs", `{"action":"new","isolatedContext":null}`, session.ActionClassUnknown},
+		{"browser_tabs", `{"action":"list","index":0}`, session.ActionClassUnknown},
+		{"browser_tabs", `{"action":"list","action":"list"}`, session.ActionClassUnknown},
+		{"browser_tabs", `{"action":{"name":"list"}}`, session.ActionClassUnknown},
+		{"browser_tabs", `{"action":"select"}`, session.ActionClassUnknown},
+		{"browser_tabs", `{"action":"select","index":"1"}`, session.ActionClassUnknown},
+		{"browser_tabs", `{"action":"select","index":-1}`, session.ActionClassUnknown},
+		{"browser_tabs", `{"action":"select","index":1.5}`, session.ActionClassUnknown},
+		{"browser_tabs", `{"action":"select","index":1e999}`, session.ActionClassUnknown},
+		{"browser_tabs", `{"action":"close","index":0}`, session.ActionClassUnknown},
+		{"browser_tabs", `{}`, session.ActionClassUnknown},
+		{"browser_tabs", "", session.ActionClassUnknown},
+		{"browser_route_list", `{}`, session.ActionClassBrowse},
+		{"browser_get_config", `{}`, session.ActionClassBrowse},
+		{"browser_cookie_get", `{"name":"display-mode"}`, session.ActionClassBrowse},
+		{"browser_cookie_list", `{}`, session.ActionClassBrowse},
+		{"browser_localstorage_get", `{"key":"display-mode"}`, session.ActionClassBrowse},
+		{"browser_localstorage_list", `{}`, session.ActionClassBrowse},
+		{"browser_sessionstorage_get", `{"key":"display-mode"}`, session.ActionClassBrowse},
+		{"browser_sessionstorage_list", `{}`, session.ActionClassBrowse},
+		{"browser_generate_locator", `{}`, session.ActionClassBrowse},
+		{"browser_verify_element_visible", `{}`, session.ActionClassBrowse},
+		{"browser_verify_list_visible", `{}`, session.ActionClassBrowse},
+		{"browser_verify_text_visible", `{}`, session.ActionClassBrowse},
+		{"browser_verify_value", `{}`, session.ActionClassBrowse},
+		{"browser_verify_custom", `{}`, session.ActionClassUnknown},
+		{"browser_screenshot", `{}`, session.ActionClassBrowse},
+		{"browser_go_back", `{}`, session.ActionClassBrowse},
+		{"browser_switch_tab", `{}`, session.ActionClassBrowse},
+		{"browser_get_state", `{}`, session.ActionClassBrowse},
+		{"browser_get_html", `{}`, session.ActionClassBrowse},
+		{"browser_extract_content", `{}`, session.ActionClassBrowse},
+		{"browser_list_tabs", `{}`, session.ActionClassBrowse},
+		{"browser_list_sessions", `{}`, session.ActionClassBrowse},
+		{"browser_cookie_set", `{"name":"display-mode","value":"compact"}`, session.ActionClassUnknown},
+		{"browser_storage_state", `{}`, session.ActionClassUnknown},
+		{"browser_login", `{}`, session.ActionClassUnknown},
+		{"browser_feedback", `{}`, session.ActionClassUnknown},
+		{"browser_click", `{}`, session.ActionClassUnknown},
+		{"browserGetUnknown", `{}`, session.ActionClassUnknown},
+		{"browser_get_html_extra", `{}`, session.ActionClassUnknown},
+		{"browser_file_upload", `{"paths":["/workspace/photo.png"]}`, session.ActionClassPublish},
+		{"browser_mouse_move_xy", `{}`, session.ActionClassWrite},
+		{"browser_run_code_unsafe", `{}`, session.ActionClassExec},
+		{"browser_snapshot", `{"command":"echo test"}`, session.ActionClassExec},
+		{"browser_snapshot", `{"filename":"/workspace/.env"}`, session.ActionClassSecret},
+		{"mcp__browser__frobnicate", `{}`, session.ActionClassUnknown},
+		{"mcp__browser__list_items", `{}`, session.ActionClassRead},
+		{"browserless_get", `{}`, session.ActionClassBrowse},
+		// Irregular capitalization must not split the leading word apart.
+		{"bRoWsEr_click", `{}`, session.ActionClassUnknown},
+		{"BROWSER_CLICK", `{}`, session.ActionClassUnknown},
+		{"mcp__playwright__bRoWsEr_click", `{}`, session.ActionClassUnknown},
+		{"BrOwSeR_navigate", `{"url":"https://docs.vendor.example/guide"}`, session.ActionClassUnknown},
+		{"bRoWsErClick", `{}`, session.ActionClassUnknown},
+		{"BrOwSeRtAbS", `{}`, session.ActionClassBrowse},
+		{"BrowserlessGet", `{}`, session.ActionClassBrowse},
+	} {
+		t.Run(tc.tool+"/"+tc.args, func(t *testing.T) {
+			classified := session.ClassifyMCPToolCallWithOptions(tc.tool, tc.args, nil, nil, session.ClassificationOptions{HostileMCP: true})
+			if classified.Class != tc.want {
+				t.Errorf("class=%s, want %s", classified.Class, tc.want)
+			}
+		})
+	}
+}
+
+func TestMCPClassifyHostileDelegationOperations(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		tool string
+		want session.ActionClass
+	}{
+		{"open_subtask", session.ActionClassUnknown},
+		{"open_sub_task", session.ActionClassUnknown},
+		{"openSubAgent", session.ActionClassUnknown},
+		{"open-sub-agent", session.ActionClassUnknown},
+		{"mcp__agents__open_subagent", session.ActionClassUnknown},
+		// The existing conservative write classifier finds "patch" in "dispatch".
+		{"dispatch_fetch", session.ActionClassWrite},
+		{"delegate_get_task", session.ActionClassUnknown},
+		{"spawn_subagent", session.ActionClassExec},
+		{"delegate_run", session.ActionClassExec},
+		{"retry_with_browser_use_agent", session.ActionClassUnknown},
+		{"Retry_With_Browser_Use_Agent", session.ActionClassUnknown},
+		{"retry-with-browser-use-agent", session.ActionClassUnknown},
+		{"RetryWithBrowserUseAgent", session.ActionClassUnknown},
+		{"mcp__agents__RetryWithBrowserUseAgent", session.ActionClassUnknown},
+		{"retry_with_browser_use_agent_status", session.ActionClassBrowse},
+		{"list_subagents", session.ActionClassRead},
+		{"get_subagent", session.ActionClassRead},
+		{"open_file", session.ActionClassRead},
+		{"open_subtasker", session.ActionClassRead},
+		{"delegated_get", session.ActionClassRead},
+		{"prefetch_cache", session.ActionClassBrowse},
+		{"DeLeGaTe_get_task", session.ActionClassUnknown},
+		{"oPeN_SuBtAsK", session.ActionClassUnknown},
+		{"SpAwN_fetch", session.ActionClassExec},
+		{"rEtRy_WiTh_BrOwSeR_uSe_AgEnT", session.ActionClassUnknown},
+		{"DeLeGaTeGetTask", session.ActionClassUnknown},
+		{"dIsPaTcHGetJob", session.ActionClassWrite},
+		{"rEtRyWiThBrOwSeRuSeAgEnT", session.ActionClassUnknown},
+		{"oPeNsUbAgEnT_get", session.ActionClassUnknown},
+		{"OpEn_SuB_tAsK_list", session.ActionClassUnknown},
+		{"openSubtaskViewer", session.ActionClassUnknown},
+	} {
+		t.Run(tc.tool, func(t *testing.T) {
+			classified := session.ClassifyMCPToolCallWithOptions(tc.tool, `{}`, nil, nil, session.ClassificationOptions{HostileMCP: true})
+			if classified.Class != tc.want {
+				t.Errorf("class=%s, want %s", classified.Class, tc.want)
+			}
+		})
+	}
+}
+
 func TestMCPClassifyOperationEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		tool string
