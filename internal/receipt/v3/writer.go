@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -43,6 +44,8 @@ type StreamWriterOptions struct {
 	RecorderSession string
 	Heartbeat       time.Duration
 	Detector        receiptcontent.Detector
+	Clock           func() time.Time
+	Random          io.Reader
 }
 
 type writerStream struct {
@@ -65,6 +68,7 @@ type StreamWriter struct {
 	open      StreamOpen
 	signer    string
 	now       func() time.Time
+	random    io.Reader
 	fileBytes int
 
 	active     writerStream
@@ -117,12 +121,18 @@ func openStreamWriter(ctx context.Context, opts StreamWriterOptions, storage wri
 	w := &StreamWriter{
 		dir: dir, key: key, signer: Digest(public), lock: lock, storage: storage,
 		gate: make(chan struct{}, 1), detector: opts.Detector,
-		now: time.Now, fileBytes: writerFileBytes,
+		now: opts.Clock, random: opts.Random, fileBytes: writerFileBytes,
 		open: StreamOpen{
 			Coverage: coverage, Writer: opts.Identity, RecorderSession: opts.RecorderSession,
 			Policy:    StreamPolicy{Hash: opts.PolicyHash, Source: "writer_config"},
 			SignerKey: SignerKey{Alg: "ed25519", Public: base64.StdEncoding.EncodeToString(public)},
 		},
+	}
+	if w.now == nil {
+		w.now = time.Now
+	}
+	if w.random == nil {
+		w.random = rand.Reader
 	}
 	if opts.Posture != nil {
 		posture := *opts.Posture
@@ -297,10 +307,12 @@ func lastStreamFile(dir string, entries []os.DirEntry, stream string) (string, e
 	return "", errors.New("cannot locate the verified predecessor receipt file")
 }
 
-func newStreamID() string {
+func (w *StreamWriter) newStreamID() (string, error) {
 	var raw [16]byte
-	rand.Read(raw[:])
-	return hex.EncodeToString(raw[:])
+	if _, err := io.ReadFull(w.random, raw[:]); err != nil {
+		return "", fmt.Errorf("generate receipt stream identity: %w", err)
+	}
+	return hex.EncodeToString(raw[:]), nil
 }
 
 func (w *StreamWriter) common(kind, stream, prev string, seq int64) Common {
@@ -311,7 +323,10 @@ func (w *StreamWriter) common(kind, stream, prev string, seq int64) Common {
 }
 
 func (w *StreamWriter) publishOpen(ctx context.Context) error {
-	stream := newStreamID()
+	stream, err := w.newStreamID()
+	if err != nil {
+		return err
+	}
 	open := w.open
 	open.Previous = w.previous
 	if open.Previous != nil {

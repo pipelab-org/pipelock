@@ -36,7 +36,11 @@ func (w *StreamWriter) prepareCutover(ctx context.Context, keys []ed25519.Public
 	if err := w.publishInventory(pin, body, entries); err != nil {
 		return err
 	}
-	w.open.Lineage = newStreamID()
+	lineage, err := w.newStreamID()
+	if err != nil {
+		return err
+	}
+	w.open.Lineage = lineage
 	w.open.LegacyCutover = &pin
 	return nil
 }
