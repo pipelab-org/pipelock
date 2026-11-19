@@ -470,7 +470,10 @@ func TestNativeCapacityExitCancelsStalledReverseUpstream(t *testing.T) {
 	}
 	t.Logf("reverse upstream canceled, capacity exit returned in %s", elapsed)
 	select {
-	case <-admitted:
+	case err := <-admitted:
+		if err != nil {
+			t.Fatalf("first reverse request: %v", err)
+		}
 	case <-exit.Done():
 		t.Fatal("first reverse request did not return")
 	}
