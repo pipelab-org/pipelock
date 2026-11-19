@@ -241,6 +241,23 @@ func v3SignatureRecipes(t *testing.T) []v3Recipe {
 	payloadSmall := smallStream.records[0].payload
 	opener := v3SignWith(payloadSmall, id, ed25519.Sign(s.key, v3.PAE(payloadSmall)))
 	recipes = append(recipes, v3Invalid(2, "small-order-key", "SIGNATURE_KEY", v3File{file.name, opener.line}))
+	// Move R by a low-order point and keep S. The cofactorless equation
+	// rejects the result; multiplying both sides by the cofactor would not.
+	low := v3LowOrderPoint(t)
+	cofactorStream := v3New(t)
+	cofactorFile := cofactorStream.finish(t)
+	cofactorPayload := cofactorStream.records[0].payload
+	cofactorSig := ed25519.Sign(cofactorStream.key, v3.PAE(cofactorPayload))
+	base, err := new(edwards25519.Point).SetBytes(cofactorSig[:32])
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := new(edwards25519.Point).Add(base, low)
+	copy(cofactorSig[:32], moved.Bytes())
+	movedLine := v3SignWith(cofactorPayload, v3.Digest(v3Public(cofactorStream.key)), cofactorSig)
+	recipes = append(recipes, v3Invalid(2, "cofactored-equation", "SIGNATURE_EQUATION", v3File{
+		cofactorFile.name, slices.Concat(movedLine.line, cofactorStream.records[1].line),
+	}))
 	return append(append(recipes, v3WycheproofRecipes(t)...),
 		v3Recipe{group: 2, name: "valid-signature", verdict: "VALID", files: []v3File{file}},
 		v3Recipe{group: 2, name: "ignore-extra-signature", verdict: "VALID", files: []v3File{{file.name, slices.Concat(extra, s.records[1].line)}}},
@@ -302,6 +319,40 @@ func v3WycheproofRecipes(t *testing.T) []v3Recipe {
 		recipes = append(recipes, v3Invalid(2, name, code, s.file(0, 1)))
 	}
 	return recipes
+}
+
+func v3LowOrderPoint(t *testing.T) *edwards25519.Point {
+	t.Helper()
+	data, err := os.ReadFile("testdata/v3/wycheproof/ed25519.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var suite struct {
+		Vectors []struct {
+			Public string   `json:"public_key"`
+			Flags  []string `json:"flags"`
+		}
+	}
+	if err := json.Unmarshal(data, &suite); err != nil {
+		t.Fatal(err)
+	}
+	identity := edwards25519.NewIdentityPoint()
+	for _, row := range suite.Vectors {
+		if !slices.Contains(row.Flags, "SmallOrderPublicKey") {
+			continue
+		}
+		raw, err := hex.DecodeString(row.Public)
+		if err != nil {
+			t.Fatal(err)
+		}
+		point, err := new(edwards25519.Point).SetBytes(raw)
+		if err != nil || point.Equal(identity) == 1 || !bytes.Equal(point.Bytes(), raw) {
+			continue
+		}
+		return point
+	}
+	t.Fatal("no canonical low-order point")
+	return nil
 }
 
 func v3ConformancePoint(encoded []byte) bool {
