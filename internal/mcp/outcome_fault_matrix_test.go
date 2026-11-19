@@ -1070,6 +1070,9 @@ func (p *settlementProbe) assertSettlePairs(t *testing.T, signer string, sends, 
 		}
 	}
 	p.assertWireReceipts(t, records)
+	if p.cell.required {
+		assertSettlementV2(t, records, v2Outcomes)
+	}
 	if p.cell.transport == settlementWebSocket && p.cell.required {
 		for _, admission := range records {
 			if admission.action.Layer != mcpTransportAdmissionLayer || admission.action.Method != settlementUpgrade {
@@ -1104,9 +1107,6 @@ func (p *settlementProbe) assertSettlePairs(t *testing.T, signer string, sends, 
 			t.Errorf("P1: %s %s has %d terminal settlements", intent.action.Target, intent.action.DecisionPhase, len(terminal))
 		}
 		for _, got := range terminal {
-			if p.cell.required {
-				assertSettlementV2(t, got, v2Outcomes)
-			}
 			if got.shard != intent.shard || got.action.Target != intent.action.Target {
 				t.Errorf("P4: %s on shard %s settled %s on shard %s", got.action.Target, got.shard, intent.action.Target, intent.shard)
 			}
@@ -1205,18 +1205,32 @@ func decodeSettlementV2Decision(t *testing.T, raw json.RawMessage) (contractrece
 	return v2, decision
 }
 
-func assertSettlementV2(t *testing.T, outcome settlementReceipt, outcomes []settlementV2Receipt) {
+func assertSettlementV2(t *testing.T, records []settlementReceipt, outcomes []settlementV2Receipt) {
 	t.Helper()
-	matches := 0
-	for _, got := range outcomes {
-		if got.pos.shard == outcome.shard && got.pos.seq > outcome.sequence &&
-			got.decision.Target == outcome.action.Target && got.decision.Transport == outcome.action.Transport &&
-			got.decision.Verdict == outcome.action.Verdict && got.decision.RuleID == outcome.action.Pattern {
-			matches++
+	claimed := make([]bool, len(outcomes))
+	for _, outcome := range records {
+		if outcome.action.Layer != mcpOutcomeLayer || !strings.HasPrefix(outcome.action.Pattern, "status=") {
+			continue
+		}
+		match := -1
+		for i, got := range outcomes {
+			if !claimed[i] && got.pos.shard == outcome.shard && got.pos.seq > outcome.sequence &&
+				got.decision.Target == outcome.action.Target && got.decision.Transport == outcome.action.Transport &&
+				got.decision.Verdict == outcome.action.Verdict && got.decision.RuleID == outcome.action.Pattern &&
+				(match == -1 || got.pos.seq < outcomes[match].pos.seq) {
+				match = i
+			}
+		}
+		if match >= 0 {
+			claimed[match] = true
+		} else if outcome.action.DecisionPhase == receipt.DecisionPhaseOutcome {
+			t.Errorf("required outcome %s for %s has no matching v2 outcome on %s", outcome.action.Pattern, outcome.action.Target, outcome.shard)
 		}
 	}
-	if matches != 1 {
-		t.Errorf("required outcome %s for %s has %d matching v2 outcomes on %s", outcome.action.Pattern, outcome.action.Target, matches, outcome.shard)
+	for i, got := range outcomes {
+		if !claimed[i] {
+			t.Errorf("unclaimed v2 outcome %s for %s on %s at %d", got.decision.RuleID, got.decision.Target, got.pos.shard, got.pos.seq)
+		}
 	}
 }
 

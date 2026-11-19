@@ -1234,8 +1234,22 @@ func TestDeferredStdioRechecksTaskAfterOutcomeEviction(t *testing.T) {
 	if err := disk.Close(); err != nil {
 		t.Fatal(err)
 	}
+	receipts := readActionReceipts(t, dir)
+	var releaseID string
+	for _, r := range receipts {
+		a := r.ActionRecord
+		if a.ParentActionID == hold.ActionID && a.DecisionPhase == receipt.DecisionPhaseIntent {
+			if releaseID != "" {
+				t.Fatal("multiple release intents")
+			}
+			releaseID = a.ActionID
+		}
+	}
+	if releaseID == "" {
+		t.Fatal("missing release intent")
+	}
 	var correction, terminal int
-	for _, r := range readActionReceipts(t, dir) {
+	for _, r := range receipts {
 		a := r.ActionRecord
 		if a.ParentActionID != hold.ActionID || a.Verdict != config.ActionBlock {
 			continue
@@ -1244,7 +1258,9 @@ func TestDeferredStdioRechecksTaskAfterOutcomeEviction(t *testing.T) {
 		case receipt.DecisionPhaseResolution:
 			correction++
 		case receipt.DecisionPhaseOutcome:
-			terminal++
+			if a.ActionID == releaseID {
+				terminal++
+			}
 		}
 	}
 	if correction != 1 || terminal != 1 {

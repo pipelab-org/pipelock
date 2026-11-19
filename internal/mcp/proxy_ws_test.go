@@ -298,24 +298,47 @@ func TestRunWSProxy_RequireReceiptsRecordsInitializeOutcome(t *testing.T) {
 	pr, pw := io.Pipe()
 	defer func() { _ = pw.Close() }()
 	var stdout, stderr lockedHTTPBuffer
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
+		defer func() { _ = pr.Close() }()
 		done <- RunWSProxy(ctx, struct{ io.Reader }{pr}, &stdout, &stderr, wsURL(srv), MCPProxyOpts{
 			Scanner:         sc,
 			ReceiptEmitter:  emitter,
 			RequireReceipts: true,
 		})
 	}()
-	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}` + "\n"))
+	written := make(chan error, 1)
+	go func() {
+		_, err := pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}` + "\n"))
+		written <- err
+	}()
+	select {
+	case err := <-written:
+		if err != nil {
+			select {
+			case proxyErr := <-done:
+				t.Fatalf("initialize write: %v (RunWSProxy: %v)", err, proxyErr)
+			case <-ctx.Done():
+				t.Fatalf("initialize write: %v (timed out waiting for RunWSProxy)", err)
+			}
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out writing initialize request")
+	}
 	waitForResponse(t, responseSent)
 	testwait.For(t, time.Second, func() bool {
 		return stdout.contains(`"id":1`)
 	}, "initialize response forwarded to stdout")
 	// Let upstream EOF finish the admission before closing the local input.
-	if err := <-done; err != nil {
-		t.Fatalf("RunWSProxy: %v", err)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunWSProxy: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for RunWSProxy")
 	}
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)

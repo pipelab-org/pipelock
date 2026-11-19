@@ -252,31 +252,40 @@ func TestMCPListenerStreamIntegrity(t *testing.T) {
 
 func assertMCPListenerPOSTOutcomes(t *testing.T, receipts []receipt.Receipt, ending, wantReason string) {
 	t.Helper()
-	found := false
 	var intentID string
-	outcomes := make(map[string]string)
 	for _, rec := range receipts {
-		switch rec.ActionRecord.DecisionPhase {
-		case receipt.DecisionPhaseIntent:
+		if rec.ActionRecord.DecisionPhase == receipt.DecisionPhaseIntent {
 			if intentID != "" {
 				t.Fatal("multiple request intents")
 			}
 			intentID = rec.ActionRecord.ActionID
-		case receipt.DecisionPhaseOutcome:
-			if _, exists := outcomes[rec.ActionRecord.ActionID]; exists {
-				t.Fatalf("duplicate outcome for action %s", rec.ActionRecord.ActionID)
-			}
-			outcomes[rec.ActionRecord.ActionID] = rec.ActionRecord.Pattern
-		}
-		if rec.ActionRecord.Layer == mcpOutcomeLayer && strings.Contains(rec.ActionRecord.Pattern, "reason="+wantReason) {
-			found = true
 		}
 	}
-	if ending != "complete" && !found {
-		t.Fatalf("missing %s outcome: %+v", wantReason, receipts)
+	var streamDiagnostics int
+	outcomes := make(map[string]string)
+	for _, rec := range receipts {
+		a := rec.ActionRecord
+		// The legacy single-chain stream diagnostic carries an outcome phase
+		// and the HTTP method, while request outcomes carry the intent ID.
+		if ending == "completed_rpc_then_break" && a.ActionID != intentID &&
+			a.Method == http.MethodPost && a.Layer == mcpOutcomeLayer &&
+			strings.HasSuffix(a.Pattern, "reason="+wantReason) {
+			streamDiagnostics++
+			continue
+		}
+		if a.DecisionPhase != receipt.DecisionPhaseOutcome {
+			continue
+		}
+		if _, exists := outcomes[a.ActionID]; exists {
+			t.Fatalf("duplicate outcome for action %s", a.ActionID)
+		}
+		outcomes[a.ActionID] = a.Pattern
+	}
+	if ending == "completed_rpc_then_break" && streamDiagnostics != 1 {
+		t.Fatalf("stream diagnostic count = %d, want 1", streamDiagnostics)
 	}
 	if ending == "complete" || ending == "completed_rpc_then_break" {
-		if !strings.HasPrefix(outcomes[intentID], "status=result ") || (ending == "complete" && len(outcomes) != 1) {
+		if len(outcomes) != 1 || !strings.HasPrefix(outcomes[intentID], "status=result ") {
 			t.Fatalf("completed POST intent %q must have one result outcome, got %v", intentID, outcomes)
 		}
 	} else if len(outcomes) != 1 || !strings.HasSuffix(outcomes[intentID], "reason="+wantReason) {
