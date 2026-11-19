@@ -182,14 +182,7 @@ func (w *StreamWriter) prepareStart(ctx context.Context, keys []ed25519.PublicKe
 		return fmt.Errorf("read receipt evidence directory: %w", err)
 	}
 	if !hasV3Entry(entries) {
-		for _, entry := range entries {
-			if legacyCandidate(entry.Name()) {
-				return errors.New("legacy evidence requires a receipt cutover inventory")
-			}
-		}
-		w.open.Lineage = newStreamID()
-		w.open.LegacyCutover = &Cutover{Inventory: EmptyInventoryDigest()}
-		return w.storage.cleanup(w.dir, entries)
+		return w.prepareCutover(ctx, keys, entries)
 	}
 	var history HistoryResult
 	var head StreamResult

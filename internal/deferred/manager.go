@@ -917,47 +917,23 @@ func PendingJournal(path string) ([]HeldAction, error) {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	pending := map[string]journalEntry{}
-	terminal := map[string]struct{}{}
+	replay := newJournalReplay()
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxJournalLineBytes)
 	for scanner.Scan() {
 		var entry journalEntry
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
 			return nil, fmt.Errorf("parse defer journal: %w", err)
 		}
-		if entry.ReleasePending && entry.State != StateHeld {
-			return nil, fmt.Errorf("defer journal integrity: release_pending on state %q for defer_id %q", entry.State, entry.DeferID)
-		}
-		switch entry.State {
-		case StateHeld:
-			if _, seen := terminal[entry.DeferID]; seen {
-				return nil, fmt.Errorf("defer journal integrity: held entry after terminal state for defer_id %q", entry.DeferID)
-			}
-			if _, seen := pending[entry.DeferID]; entry.ReleasePending && !seen {
-				return nil, fmt.Errorf("defer journal integrity: release_pending without a prior hold for defer_id %q", entry.DeferID)
-			}
-			// A release-pending entry stays pending: its allow never reached
-			// the journal as final, so the call was not sent and recovery
-			// closes it to block.
-			pending[entry.DeferID] = entry
-		case StateResolvedAllow, StateResolvedBlock, StateResolvedStepUp:
-			delete(pending, entry.DeferID)
-			terminal[entry.DeferID] = struct{}{}
-		case StateAdmissionRejected:
-			// Audit-only marker for an action that was never held. It must not
-			// touch hold lifecycle: for a duplicate defer_id it shares a live
-			// hold's id, so resolving/terminalizing it here would drop that
-			// live hold from recovery.
-		default:
-			return nil, fmt.Errorf("defer journal integrity: unknown state %q for defer_id %q", entry.State, entry.DeferID)
+		if err := replay.apply(entry); err != nil {
+			return nil, err
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("scan defer journal: %w", err)
 	}
-	out := make([]HeldAction, 0, len(pending))
-	for _, entry := range pending {
+	out := make([]HeldAction, 0, len(replay.pending))
+	for _, entry := range replay.pending {
 		out = append(out, HeldAction{
 			DeferID:       entry.DeferID,
 			ActionID:      entry.ActionID,

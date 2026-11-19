@@ -27,6 +27,7 @@ type writerFile interface {
 type writerStorage struct {
 	createTemp func(string, string) (writerFile, error)
 	link       func(string, string) error
+	rename     func(string, string) error
 	remove     func(string) error
 	syncDir    func(string) error
 	syncFile   func(string) error
@@ -36,6 +37,7 @@ func localWriterStorage() writerStorage {
 	return writerStorage{
 		createTemp: func(dir, pattern string) (writerFile, error) { return os.CreateTemp(dir, pattern) },
 		link:       os.Link,
+		rename:     os.Rename,
 		remove:     os.Remove,
 		syncDir:    syncWriterDir,
 		syncFile:   syncWriterFile,
