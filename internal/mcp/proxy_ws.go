@@ -146,6 +146,7 @@ func RunWSProxy(
 	var admission receipt.EmitOpts
 	var upstreamEnded bool // read only after the response goroutine is joined
 	var upstreamBlocked bool
+	var upstreamWriteFailed bool
 	defer func() {
 		cancel()
 		if wsClient != nil {
@@ -165,7 +166,9 @@ func RunWSProxy(
 		}
 		if admission.ActionID != "" && wsClient != nil {
 			status, reason := "cancelled", httpstream.Cancelled
-			if upstreamEnded && ctx.Err() == nil {
+			if upstreamWriteFailed {
+				status, reason = "error", mcpUpstreamWriteFailed
+			} else if upstreamEnded && ctx.Err() == nil {
 				switch {
 				case lastScanErr != nil:
 					status, reason = "incomplete", httpstream.Incomplete
@@ -210,9 +213,15 @@ func RunWSProxy(
 		go func(client *transport.WSClient) {
 			defer wg.Done()
 			defer cancel() // Signal main goroutine if upstream closes first.
-			foundInjection, scanErr := ForwardScanned(client, safeClientOut, safeLogW, tracker, wsOpts)
+			responseOpts := wsOpts
+			responseOpts.responseDenial = func(denial *mcpTerminalDecision) {
+				upstreamBlocked = true
+				if wsOpts.responseDenial != nil {
+					wsOpts.responseDenial(denial)
+				}
+			}
+			_, scanErr := ForwardScanned(client, safeClientOut, safeLogW, tracker, responseOpts)
 			upstreamEnded = innerCtx.Err() == nil
-			upstreamBlocked = foundInjection
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream scan error: %v\n", scanErr)
 				logMCPIncompleteResponse(safeLogW, wsOpts, "WS", scanErr)
@@ -350,6 +359,7 @@ func RunWSProxy(
 		// Forward to upstream.
 		writeErr := wsClient.WriteMessage(decision.ForwardMessage)
 		if writeErr != nil {
+			upstreamWriteFailed = ctx.Err() == nil
 			tracker.removeOwnedOutcome(frame.ID, registration)
 			warnTransportAdmission(safeLogW, wsOpts, decision.admission, mcpUpstreamWriteFailed)
 			decision.Outcome.settle(safeLogW, wsOpts, "error", -1, mcpUpstreamWriteFailed)

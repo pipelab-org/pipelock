@@ -1084,6 +1084,9 @@ func (p *settlementProbe) assertSettlePairs(t *testing.T, signer string, sends, 
 					continue
 				}
 				results++
+				if p.cell.fault == settlementWriteUpstream && result.action.Pattern != "status=error bytes=unknown reason=upstream_write_failed" {
+					t.Errorf("WebSocket write failure recorded %q", result.action.Pattern)
+				}
 				if result.shard != admission.shard || result.sequence <= admission.sequence {
 					t.Errorf("WebSocket result on %s at %d does not follow admission on %s at %d",
 						result.shard, result.sequence, admission.shard, admission.sequence)
