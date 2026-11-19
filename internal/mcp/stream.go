@@ -17,20 +17,22 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
-func recordListenerStreamError(ctx context.Context, logW io.Writer, opts MCPProxyOpts, intent receipt.EmitOpts, standalone bool, err error) {
+func recordListenerStreamError(ctx context.Context, logW io.Writer, opts MCPProxyOpts, outcome TrackedRequestOutcome, standalone bool, err error) {
 	reason := httpstream.Reason(ctx, err)
 	if reason == httpstream.Incomplete {
 		_, _ = fmt.Fprintf(logW, "pipelock: response stream %s: %v\n", reason, err)
 		if opts.AuditLogger != nil {
-			opts.AuditLogger.LogError(audit.NewMethodLogContext(intent.Method), fmt.Errorf("response stream %s: %w", reason, err))
+			opts.AuditLogger.LogError(audit.NewMethodLogContext(outcome.Receipt.Method), fmt.Errorf("response stream %s: %w", reason, err))
 		}
 	}
-	intent = opts.withReceiptPolicyHash(intent)
+	outcome.Receipt = opts.withReceiptPolicyHash(outcome.Receipt)
 	if standalone {
-		emitMCPStandaloneStreamReceipt(opts, logW, intent, "200", reason)
-	} else {
-		emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, intent, "200", -1, reason, opts.requireReceipts())
+		emitMCPStandaloneStreamReceipt(opts, logW, outcome.Receipt, "200", reason)
+		return
 	}
+	// The listener request-end path settles this same handle. A direct outcome
+	// write would leave two terminal receipts for one intent.
+	outcome.settle(logW, opts, "200", -1, reason)
 }
 
 func logMCPIncompleteResponse(logW io.Writer, opts MCPProxyOpts, method string, err error) {

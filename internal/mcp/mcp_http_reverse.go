@@ -1375,7 +1375,7 @@ func RunHTTPListenerProxy(
 				return
 			}
 			if scanErr != nil {
-				recordListenerStreamError(r.Context(), safeLogW, reqOpts, mcpStreamReceipt(reqOpts, r.Method), true, scanErr)
+				recordListenerStreamError(r.Context(), safeLogW, reqOpts, TrackedRequestOutcome{Receipt: mcpStreamReceipt(reqOpts, r.Method)}, true, scanErr)
 				_ = httpstream.Abort(r.Context(), scanErr)
 				return
 			}
@@ -2278,11 +2278,11 @@ func RunHTTPListenerProxy(
 				return
 			}
 			if scanErr != nil {
-				streamOutcome := decision.Outcome.Receipt
+				streamOutcome := decision.Outcome
 				_, pending := responseTracker.Consume(frame.ID)
-				standalone := !pending || streamOutcome.ActionID == ""
+				standalone := !pending || streamOutcome.Receipt.ActionID == ""
 				if standalone {
-					streamOutcome = mcpStreamReceipt(reqOpts, r.Method)
+					streamOutcome = TrackedRequestOutcome{Receipt: mcpStreamReceipt(reqOpts, r.Method)}
 				}
 				recordListenerStreamError(r.Context(), safeLogW, reqOpts, streamOutcome, standalone, scanErr)
 				_ = httpstream.Abort(r.Context(), scanErr)

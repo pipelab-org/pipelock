@@ -140,6 +140,75 @@ func assertMCPTransportReceiptShard(t *testing.T, dir string, shards []receipt.R
 	}
 }
 
+func TestListenerStreamErrorSettlesOpenIntentOnce(t *testing.T) {
+	opts, rec, dir, _ := newMCPTransportReceiptGroup(t)
+	_ = opts.ReceiptGroup.Shards.Admit(receipt.EmitOpts{})
+	var outcome TrackedRequestOutcome
+	intent := opts.ReceiptGroup.Shards.Admit(receipt.EmitOpts{
+		ActionID: "listener-stream-end", Verdict: config.ActionAllow,
+		Transport: opts.Transport, Target: "initialize", Method: "initialize",
+		PolicyHash: mcpTestPolicyHash,
+	})
+	if _, err := opts.emitReceiptDecision(MCPDecision{
+		Receipt: intent, outcome: &outcome, RequireReceipt: true, RequiredMode: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if outcome.handle == nil || outcome.Receipt.ActionID != intent.ActionID {
+		t.Fatal("confirmed intent did not grant one settlement handle")
+	}
+	var log bytes.Buffer
+	// A stream that fails after bytes were written records one outcome. The
+	// listener's request-end settlement must not append a second one.
+	recordListenerStreamError(context.Background(), &log, opts, outcome, false, transport.ErrIncompleteResponse)
+	outcome.settle(&log, opts, "incomplete", -1, "listener_request_ended")
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var outcomes int
+	var patterns []string
+	for _, rcpt := range readDirActionReceipts(t, dir) {
+		if rcpt.ActionRecord.ActionID != intent.ActionID || rcpt.ActionRecord.DecisionPhase != receipt.DecisionPhaseOutcome {
+			continue
+		}
+		outcomes++
+		patterns = append(patterns, rcpt.ActionRecord.Pattern)
+	}
+	if outcomes != 1 || len(patterns) != 1 || patterns[0] != "status=200 bytes=unknown reason=incomplete" {
+		t.Fatalf("outcome receipts = %d (%q), want the stream failure alone", outcomes, patterns)
+	}
+}
+
+func readDirActionReceipts(t *testing.T, dir string) []receipt.Receipt {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(dir, "evidence-*.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipts []receipt.Receipt
+	for _, path := range paths {
+		entries, err := recorder.ReadEntries(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if entry.Type != actionReceiptEntryType {
+				continue
+			}
+			detailJSON, err := json.Marshal(entry.Detail)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rcpt, err := receipt.Unmarshal(detailJSON)
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipts = append(receipts, rcpt)
+		}
+	}
+	return receipts
+}
+
 func TestMCPStreamOutcomesKeepAdmissionShard(t *testing.T) {
 	for _, path := range []string{"listener", "tracked_upstream"} {
 		t.Run(path, func(t *testing.T) {
@@ -160,7 +229,7 @@ func TestMCPStreamOutcomesKeepAdmissionShard(t *testing.T) {
 			var log bytes.Buffer
 			switch path {
 			case "listener":
-				recordListenerStreamError(context.Background(), &log, opts, intent, false, transport.ErrIncompleteResponse)
+				recordListenerStreamError(context.Background(), &log, opts, TrackedRequestOutcome{Receipt: intent}, false, transport.ErrIncompleteResponse)
 			case "tracked_upstream":
 				tracker := NewRequestTracker()
 				tracker.TrackOutcome(json.RawMessage(`1`), TrackedRequestOutcome{Receipt: intent})
@@ -220,7 +289,7 @@ func TestMCPStreamRequiredOutcomeFailureClasses(t *testing.T) {
 			opts.ReceiptGroup.OnRequiredFailure = func(error) { stops++ }
 			tc.breakShard(opts.ReceiptGroup, rec)
 			var log bytes.Buffer
-			recordListenerStreamError(context.Background(), &log, opts, intent, false, io.ErrUnexpectedEOF)
+			recordListenerStreamError(context.Background(), &log, opts, TrackedRequestOutcome{Receipt: intent}, false, io.ErrUnexpectedEOF)
 			if !bytes.Contains(log.Bytes(), []byte("receipt")) {
 				t.Fatalf("required outcome failure was not logged: %q", log.String())
 			}
@@ -251,7 +320,7 @@ func TestMCPBestEffortStreamOutcomeFailureKeepsGroupRunning(t *testing.T) {
 					ActionID: "stream-best-effort", Verdict: config.ActionAllow,
 					Transport: opts.Transport, Target: "initialize", PolicyHash: mcpTestPolicyHash,
 				})
-				recordListenerStreamError(context.Background(), &log, opts, intent, false, io.ErrUnexpectedEOF)
+				recordListenerStreamError(context.Background(), &log, opts, TrackedRequestOutcome{Receipt: intent}, false, io.ErrUnexpectedEOF)
 			case "outcome":
 				intent := opts.ReceiptGroup.Shards.Admit(receipt.EmitOpts{
 					ActionID: "outcome-best-effort", Verdict: config.ActionAllow,
