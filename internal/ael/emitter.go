@@ -214,7 +214,7 @@ func writeExclusive(path string, data []byte, mode os.FileMode) error {
 
 func (e *Emitter) EmitOpen() error      { return e.emit("open", nil, true) }
 func (e *Emitter) EmitHeartbeat() error { return e.emit("heartbeat", nil, false) }
-func (e *Emitter) EmitClose() error     { return e.emit("close", nil, true) }
+func (e *Emitter) EmitClose() error     { return e.emit(closeRecordKind, nil, true) }
 
 func activityFields(activity Activity) (map[string]any, error) {
 	if activity.Class == "" || activity.ID == "" {
@@ -250,7 +250,10 @@ func (e *Emitter) PrepareOpen() (*PreparedRecord, error) { return e.prepare("ope
 func (e *Emitter) PrepareHeartbeat() (*PreparedRecord, error) {
 	return e.prepare("heartbeat", nil, nil)
 }
-func (e *Emitter) PrepareClose() (*PreparedRecord, error) { return e.prepare("close", nil, nil) }
+
+func (e *Emitter) PrepareClose() (*PreparedRecord, error) {
+	return e.prepare(closeRecordKind, nil, nil)
+}
 
 func (e *Emitter) Opened() bool {
 	if e == nil {
@@ -347,7 +350,7 @@ func (e *Emitter) prepareLocked(kind string, extra map[string]any, lease *Lease)
 	if kind == "open" {
 		payload["hmax"], payload["htol"] = e.hmax, e.htol
 	}
-	if kind == "close" {
+	if kind == closeRecordKind {
 		payload["count"], payload["head"] = e.seq+1, e.prev
 	}
 	canonical, err := json.Marshal(payload)
@@ -360,7 +363,6 @@ func (e *Emitter) prepareLocked(kind string, extra map[string]any, lease *Lease)
 	}
 	if lease != nil {
 		lease.remaining -= lease.recordLimit
-		e.reserved -= lease.recordLimit
 	}
 	record := &PreparedRecord{emitter: e, lease: lease, kind: kind, canonical: canonical, size: size}
 	e.prepared = record
@@ -384,11 +386,15 @@ func (r *PreparedRecord) cancelLocked() {
 		return
 	}
 	e.prepared = nil
+	if r.lease != nil {
+		if !r.lease.released {
+			r.lease.remaining += r.lease.recordLimit
+			return
+		}
+		e.reserved -= r.lease.recordLimit
+	}
 	if r.settlesAdmission() {
 		e.capacity.settle()
-	} else if r.lease != nil {
-		r.lease.remaining += r.lease.recordLimit
-		e.reserved += r.lease.recordLimit
 	}
 }
 
@@ -396,7 +402,7 @@ func (r *PreparedRecord) settlesAdmission() bool {
 	if r.lease != nil {
 		return r.lease.released
 	}
-	return r.kind != "close"
+	return r.kind != closeRecordKind
 }
 
 func (r *PreparedRecord) Append(durable bool) error {
@@ -415,6 +421,9 @@ func (r *PreparedRecord) appendLocked(durable bool) error {
 		return errors.New("native AEL record is no longer pending")
 	}
 	e.prepared = nil
+	if r.lease != nil {
+		e.reserved -= r.lease.recordLimit
+	}
 	if r.settlesAdmission() {
 		defer e.capacity.settle()
 	}
@@ -432,7 +441,7 @@ func (r *PreparedRecord) appendLocked(durable bool) error {
 	if kind == "open" {
 		e.opened = true
 	}
-	if kind == "close" {
+	if kind == closeRecordKind {
 		e.closed = true
 	}
 	n, err := e.file.WriteString(line)
@@ -449,7 +458,7 @@ func (r *PreparedRecord) appendLocked(durable bool) error {
 		e.lastErr = err
 		return fmt.Errorf("persist native AEL %s: %w", kind, err)
 	}
-	if kind == "close" {
+	if kind == closeRecordKind {
 		if err := e.file.Close(); err != nil {
 			e.lastErr = err
 			return fmt.Errorf("close native AEL stream: %w", err)

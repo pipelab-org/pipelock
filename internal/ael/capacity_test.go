@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestCapacityConcurrentAdmissionsLeaveVerifiableClose(t *testing.T) {
@@ -99,8 +100,9 @@ func TestCapacityAccountsForPreparedRecordUntilCanceled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if available := e.availableBytes(); available != bound-pending.size {
-		t.Fatalf("available=%d, want %d", available, bound-pending.size)
+	if competing, err := e.Reserve(1, 1); !errors.Is(err, ErrCapacity) {
+		competing.Release()
+		t.Fatalf("reserve against pending slot: %v, want %v", err, ErrCapacity)
 	}
 	pending.Cancel()
 	pending.Cancel()
@@ -304,8 +306,12 @@ func TestCapacitySplitsAlreadyReservedRecordsAfterStop(t *testing.T) {
 	if _, err := e.Reserve(1, bound); !errors.Is(err, ErrCapacity) {
 		t.Fatalf("reserve past capacity: %v", err)
 	}
-	<-closed
-	finish()
+	defer finish()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("stop callback did not run")
+	}
 	child, err := parent.Split(1)
 	if err != nil {
 		t.Fatal(err)
@@ -332,7 +338,11 @@ func TestCapacitySplitsAlreadyReservedRecordsAfterStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	child.Release()
-	<-e.capacity.Drained()
+	select {
+	case <-e.capacity.Drained():
+	default:
+		t.Fatal("capacity did not drain after the final release")
+	}
 	if err := e.EmitClose(); err != nil {
 		t.Fatal(err)
 	}
@@ -376,5 +386,9 @@ func TestCapacityLeaseCanDisarmStreamStop(t *testing.T) {
 		t.Fatal("admitted lease did not see the capacity stop")
 	}
 	parent.Release()
-	<-e.capacity.Drained()
+	select {
+	case <-e.capacity.Drained():
+	default:
+		t.Fatal("capacity did not drain after the final release")
+	}
 }

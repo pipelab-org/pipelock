@@ -12,6 +12,8 @@ import (
 	"time"
 )
 
+const closeRecordKind = "close"
+
 // ErrCapacity means the run is closing so its native evidence stays verifiable.
 var ErrCapacity = errors.New("native AEL stream reached capacity; restart required")
 
@@ -217,7 +219,7 @@ func (c *Capacity) settle() {
 
 func (e *Emitter) availableBytes() int64 {
 	available := e.capacity.limit - e.written - e.reserved - maxCloseBytes
-	if e.prepared != nil && e.prepared.kind != "close" {
+	if e.prepared != nil && e.prepared.kind != closeRecordKind && e.prepared.lease == nil {
 		available -= e.prepared.size
 	}
 	return available
@@ -250,7 +252,7 @@ func (e *Emitter) checkRecordSpace(kind string, size int64, lease *Lease) error 
 	if size > maxVerifyRecordBytes {
 		return ErrRecordTooLarge
 	}
-	if kind == "close" {
+	if kind == closeRecordKind {
 		if size > maxCloseBytes || e.written+size > e.capacity.limit {
 			return ErrCapacity
 		}
