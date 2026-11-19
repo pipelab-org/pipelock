@@ -420,40 +420,6 @@
     },
     "Hold": {
       "additionalProperties": false,
-      "allOf": [
-        {
-          "else": {
-            "not": {
-              "required": [
-                "parent"
-              ]
-            }
-          },
-          "if": {
-            "properties": {
-              "cascade_depth": {
-                "minimum": 2
-              }
-            },
-            "required": [
-              "cascade_depth"
-            ]
-          },
-          "then": {
-            "required": [
-              "parent"
-            ]
-          }
-        }
-      ],
-      "dependentRequired": {
-        "cascade_depth": [
-          "linkage"
-        ],
-        "linkage": [
-          "cascade_depth"
-        ]
-      },
       "minProperties": 1,
       "properties": {
         "correction": {

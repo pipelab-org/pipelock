@@ -90,16 +90,6 @@ def object_schema(name):
             },
             "then": then,
         })
-    if name == "Hold":
-        result["dependentRequired"] = {
-            "cascade_depth": ["linkage"],
-            "linkage": ["cascade_depth"],
-        }
-        conditions.append({
-            "if": {"required": ["cascade_depth"], "properties": {"cascade_depth": {"minimum": 2}}},
-            "then": {"required": ["parent"]},
-            "else": {"not": {"required": ["parent"]}},
-        })
     if conditions:
         result["allOf"] = conditions
     if name == "StreamOpen":
