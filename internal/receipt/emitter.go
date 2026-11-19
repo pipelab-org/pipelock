@@ -1414,8 +1414,9 @@ func (e *Emitter) AbortNativeAEL() error {
 var errEmitterRetired = errors.New("receipt emitter retired after signer rotation")
 
 // RetireNativeAEL atomically closes the native run and bricks this emitter so
-// stale or already-admitted calls cannot append receipts after key rotation.
-func (e *Emitter) RetireNativeAEL() error {
+// stale calls cannot append receipts after key rotation. An optional snapshot
+// rejects retirement when the chain advanced during replacement staging.
+func (e *Emitter) RetireNativeAEL(expected ...HealthSnapshot) error {
 	if e == nil {
 		return nil
 	}
@@ -1423,6 +1424,9 @@ func (e *Emitter) RetireNativeAEL() error {
 	defer e.emissionGate.Unlock()
 	e.chainMu.Lock()
 	defer e.chainMu.Unlock()
+	if len(expected) != 0 && (expected[0].ChainSeq != e.chainSeq || expected[0].PrevHash != e.chainPrevHash) {
+		return errors.New("receipt chain advanced during rotation staging")
+	}
 	if e.nativeAEL != nil && e.nativeAEL.Opened() {
 		if err := e.nativeAEL.EmitCloseIfIdle(); err != nil {
 			if errors.Is(err, aelpkg.ErrActiveAdmission) {

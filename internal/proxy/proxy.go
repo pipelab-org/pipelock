@@ -2589,6 +2589,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		}
 		return false
 	}
+	receiptHeadBeforeStage, _ := p.receiptEmitterPtr.Load().HealthSnapshot()
 	receiptStage, rcptErr := p.buildReceiptEmitter(cfg)
 	if rcptErr != nil {
 		p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
@@ -2708,7 +2709,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	// here cannot leave the current receipt chain behind a staged record.
 	currentReceiptEmitter := p.receiptEmitterPtr.Load()
 	if current := currentReceiptEmitter; current != nil && !receiptStage.tornRecovery && !receiptStage.reuseExisting && current != receiptStage.emitter {
-		if err := current.RetireNativeAEL(); err != nil {
+		if err := current.RetireNativeAEL(receiptHeadBeforeStage); err != nil {
 			p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
 				fmt.Errorf("native AEL rotation close failed, keeping old config: %w", err))
 			sc.Close()
