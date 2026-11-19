@@ -663,3 +663,27 @@ func TestV3TransportPolicyAttribution(t *testing.T) {
 		})
 	}
 }
+
+func TestV3WebSocketFailedClientUpgradeSettlesUpstream(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, "websocket", true, nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/ws?url=ws://127.0.0.1:80/", nil)
+	r.Header.Set("Upgrade", "websocket")
+	r.Header.Set("Connection", "Upgrade")
+	r.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	r.Header.Set("Sec-WebSocket-Version", "13")
+	// The recorder has no hijacker, so the valid upgrade fails before dialing.
+	p.handleWebSocket(httptest.NewRecorder(), r)
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Integrity != "ok" || result.Counts.Decisions == nil {
+		t.Fatalf("verify WebSocket receipts: %+v (%v)", result, err)
+	}
+	for _, count := range *result.Counts.Decisions {
+		if count.State == "not_released" && count.Count == 1 {
+			return
+		}
+	}
+	t.Fatalf("upstream intent was not settled as withheld: %v", *result.Counts.Decisions)
+}

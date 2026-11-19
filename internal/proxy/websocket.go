@@ -1228,6 +1228,13 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 
+	upstreamAttempted := false
+	defer func() {
+		if !upstreamAttempted && upstreamReceipt != nil {
+			p.recordTransportNotReleased(r.Context(), admissionReceipt, upstreamReceipt)
+		}
+	}()
+
 	if cfg.FlightRecorder.RequireReceipts || p.receiptV3 != nil {
 		// Upgrade the client connection only after the required intent receipt is
 		// durable. A 101 response is client egress; under require_receipts it must
@@ -1250,6 +1257,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// trusted caller before sending the handshake. Requests refused by the
 	// admission checks above cannot taint even that caller's evidence.
 	p.taintIssuerSessionForStream(cfg, agent, clientIP, id.Auth, parsed)
+	upstreamAttempted = true
 	upstreamConn, upstreamProtocol, dialErr := p.wsDialUpstream(r.Context(), targetURL, fwdHeaders, cfg)
 	p.recordTransportOutcome(r.Context(), admissionReceipt, upstreamReceipt, dialErr == nil && upstreamConn != nil)
 	if dialErr != nil {

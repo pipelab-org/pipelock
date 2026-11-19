@@ -1270,6 +1270,10 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `handleWebSocket` selects this receipt call"
     },
+    "internal/proxy/websocket.go/(*Proxy).handleWebSocket/recordTransportNotReleased/948726440687d30e": {
+      "fields": "A not_released outcome using the confirmed intent identity, boundary and policy. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
+      "when": "When a confirmed WebSocket handshake ends before the upstream dial is attempted."
+    },
     "internal/proxy/websocket.go/(*Proxy).handleWebSocket/recordTransportOutcome/2bcaad9f47873e0c": {
       "fields": "Copies the decision context and captured policy. `outcome_class` and `effect_relation` describe the observed result at this boundary. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
       "when": "After the writer confirmed the intent and the transport observed the effect result."
@@ -1989,6 +1993,7 @@
     "internal/proxy/websocket.go/(*Proxy).handleWebSocket/emitOutcomeReceipt/c9562714aa65176b": "none",
     "internal/proxy/websocket.go/(*Proxy).handleWebSocket/emitRequestPolicyReceipt/58c76ccbed0e20bf": "upstream_send",
     "internal/proxy/websocket.go/(*Proxy).handleWebSocket/recordCredentialAudienceAllows/26a2117f92b72901": "upstream_send",
+    "internal/proxy/websocket.go/(*Proxy).handleWebSocket/recordTransportNotReleased/948726440687d30e": "upstream_send",
     "internal/proxy/websocket.go/(*Proxy).handleWebSocket/recordTransportOutcome/2bcaad9f47873e0c": "upstream_send",
     "internal/proxy/websocket.go/(*Proxy).handleWebSocket/recordTransportOutcome/d774e3fb512bc7a4": "downstream_delivery",
     "internal/proxy/websocket.go/(*wsRelay).applyFrameRequestPolicy/emitRequestPolicyReceipt/1c1c7766827c8d95": "upstream_send",
