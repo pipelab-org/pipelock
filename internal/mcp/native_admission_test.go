@@ -177,7 +177,7 @@ printf '%s\n' "$2"
 			go func() {
 				args := []string{"sh", "-c", script, "sh", reply, late}
 				if mode == "sandboxed" {
-					cmd := exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // fixed test command
+					cmd := sandboxTestCommand(ctx, args)
 					done <- RunProxyWithSandbox(ctx, cmd, input, &out, io.Discard, opts)
 					return
 				}
@@ -859,7 +859,7 @@ printf '%s\n' "$1"
 				go func() {
 					args := []string{"sh", "-c", script, "sh", received, heldNativeReply}
 					if mode == "sandboxed" {
-						cmd := exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // fixed test command
+						cmd := sandboxTestCommand(ctx, args)
 						done <- RunProxyWithSandbox(ctx, cmd, input, output, io.Discard, opts)
 						return
 					}
@@ -940,4 +940,9 @@ func assertNativeMCPOutcome(t *testing.T, e *receipt.Emitter, dir, want string) 
 		}
 		t.Fatalf("tools/call terminal outcomes = %q, want one paired outcome containing %q", patterns, want)
 	}
+}
+
+// sandboxTestCommand builds the fixed shell command these tests run under the sandbox.
+func sandboxTestCommand(ctx context.Context, args []string) *exec.Cmd {
+	return exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // fixed test command
 }
