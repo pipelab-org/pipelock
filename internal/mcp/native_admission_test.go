@@ -149,7 +149,7 @@ printf '%s\n' "$2"
 	for _, mode := range []string{"subprocess", "sandboxed"} {
 		t.Run(mode, func(t *testing.T) {
 			e, dir := newNativeMCPEmitter(t, nativeMCPRequestRecords+4)
-			ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(8*time.Second))
 			defer cancel()
 			input, client := io.Pipe()
 			defer func() { _ = client.Close() }()
@@ -297,7 +297,7 @@ func TestHTTPBridgeNativeCapacityClosesGetStream(t *testing.T) {
 func testHTTPBridgeNativeCapacityClosesStream(t *testing.T, method string) {
 	t.Helper()
 	e, dir := newNativeMCPEmitter(t, nativeMCPRequestRecords+nativeMCPEventRecords+4)
-	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(8*time.Second))
 	defer cancel()
 	sc, fixtureInput := nativeMCPFindingScanner(t, e)
 	const finding = "fixture reply finding"
@@ -410,7 +410,7 @@ func testHTTPBridgeNativeCapacityClosesStream(t *testing.T, method string) {
 
 func TestDeferredNativeReservationSettlesAtCapacity(t *testing.T) {
 	e, dir := newNativeMCPEmitter(t, nativeMCPRequestRecords+4)
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
 	defer cancel()
 	manager := deferred.NewManager(deferred.Config{
 		Enabled: true, Timeout: time.Minute, MaxPending: 1, MaxPendingPerSession: 1, MaxPendingBytes: 1024,
@@ -514,7 +514,7 @@ func TestNativeCapacityTrackedRequestsKeepTheirOwnReservation(t *testing.T) {
 	for _, mode := range []string{"stdio", "best_effort_stdio", "http", "websocket"} {
 		t.Run(mode, func(t *testing.T) {
 			e, dir := newNativeMCPEmitter(t, 4*nativeMCPRequestRecords)
-			ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(8*time.Second))
 			defer cancel()
 			opts := MCPProxyOpts{Scanner: testInputScanner(t), Transport: transportMCPStdio, ReceiptEmitter: e, RequireReceipts: mode != "best_effort_stdio"}
 			input := request + "\n" + request + "\n"
