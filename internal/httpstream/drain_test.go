@@ -6,17 +6,21 @@ package httpstream
 import (
 	"bufio"
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
@@ -638,4 +642,61 @@ func TestDrainContextPreservesCapacityStopSettlement(t *testing.T) {
 			t.Fatalf("explicit cancellation = %v", err)
 		}
 	})
+}
+
+func TestCapacityGraceInterruptsRequestBodyRead(t *testing.T) {
+	_, key, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: t.TempDir()}, nil, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := rec.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	emitter := ael.NewEmitter(rec, key, "0123456789abcdef0123456789abcdef", 30, ael.NewCapacity(4096))
+	if err := emitter.EmitOpen(); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := emitter.Reserve(1, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+
+	const grace = 50 * time.Millisecond
+	type result struct{ err, cause error }
+	got := make(chan result, 1)
+	entered := make(chan struct{})
+	_, addr, _, _ := gatedTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, stop := WithCapacityGrace(r.Context(), w, lease, grace)
+		defer stop()
+		close(entered)
+		_, err := io.ReadAll(r.Body)
+		got <- result{err, context.Cause(ctx)}
+	}))
+	conn := dialTest(t, addr)
+	if _, err := io.WriteString(conn, "POST / HTTP/1.1\r\nHost: vendor.example\r\nContent-Length: 4\r\n\r\na"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(testwait.Deadline(time.Second)):
+		t.Fatal("request did not reach the endpoint")
+	}
+	if _, err := emitter.Reserve(10, 1000); !errors.Is(err, ael.ErrCapacity) {
+		t.Fatalf("stop = %v, want %v", err, ael.ErrCapacity)
+	}
+	select {
+	case result := <-got:
+		if !errors.Is(result.err, os.ErrDeadlineExceeded) || !errors.Is(result.cause, ael.ErrCapacity) {
+			t.Fatalf("read=%v cause=%v", result.err, result.cause)
+		}
+	case <-time.After(testwait.Deadline(time.Second)):
+		t.Fatal("capacity cutoff did not interrupt the request body read")
+	}
 }

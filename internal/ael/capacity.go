@@ -153,17 +153,25 @@ func (l *Lease) OnStopAfter(grace time.Duration, cutoff func()) func() {
 	if l == nil {
 		return func() {}
 	}
+	return l.emitter.capacity.OnStopAfter(grace, cutoff)
+}
+
+// OnStopAfter schedules a cutoff relative to the shared capacity stop.
+func (c *Capacity) OnStopAfter(grace time.Duration, cutoff func()) func() {
+	if c == nil {
+		return func() {}
+	}
 	finished := make(chan struct{})
 	stop := make(chan struct{})
 	go func() {
 		defer close(finished)
 		select {
-		case <-l.Stopped():
+		case <-c.Stopped():
 		case <-stop:
 			return
 		}
 		if grace > 0 {
-			timer := time.NewTimer(time.Until(l.emitter.capacity.stoppedAt.Add(grace)))
+			timer := time.NewTimer(time.Until(c.stoppedAt.Add(grace)))
 			defer timer.Stop()
 			select {
 			case <-timer.C:

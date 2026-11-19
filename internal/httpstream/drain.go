@@ -233,16 +233,31 @@ func (g *Gate) StopHijacks() {
 }
 
 // WithCapacityGrace lets an admitted HTTP request settle after capacity stop.
-// At the cutoff, cancel upstream I/O and wake a blocked downstream write.
+// At the cutoff, cancel upstream I/O and expire socket reads and writes.
 func WithCapacityGrace(ctx context.Context, w http.ResponseWriter, lease *ael.Lease, grace time.Duration) (context.Context, func()) {
 	if lease == nil {
 		return ctx, func() {}
 	}
+	return withCapacityGrace(ctx, w, grace, lease.OnStopAfter)
+}
+
+// WithCapacityStop bounds listener work that does not hold a native lease.
+func WithCapacityStop(ctx context.Context, w http.ResponseWriter, capacity *ael.Capacity, grace time.Duration) (context.Context, func()) {
+	if capacity == nil {
+		return ctx, func() {}
+	}
+	return withCapacityGrace(ctx, w, grace, capacity.OnStopAfter)
+}
+
+func withCapacityGrace(ctx context.Context, w http.ResponseWriter, grace time.Duration, onStopAfter func(time.Duration, func()) func()) (context.Context, func()) {
 	ctx, cancel := context.WithCancelCause(ctx)
-	stop := lease.OnStopAfter(grace, func() {
+	stop := onStopAfter(grace, func() {
 		cancel(ael.ErrCapacity)
 		if w != nil {
-			_ = http.NewResponseController(w).SetWriteDeadline(time.Now())
+			controller := http.NewResponseController(w)
+			deadline := time.Now()
+			_ = controller.SetReadDeadline(deadline)
+			_ = controller.SetWriteDeadline(deadline)
 		}
 	})
 	return ctx, func() {

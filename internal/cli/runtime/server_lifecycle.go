@@ -866,7 +866,18 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 			func() *scanner.Scanner { return s.proxy.ScannerPtr().Load() },
 			s.currentToolPolicyCfg,
 		)
-		scanAPIMux.Handle("/api/v1/scan", scanHandler)
+		scanAPIMux.HandleFunc("/api/v1/scan", func(w http.ResponseWriter, r *http.Request) {
+			select {
+			case <-capacity.Stopped():
+				w.Header().Set("Connection", "close")
+				http.Error(w, ael.ErrCapacity.Error(), http.StatusServiceUnavailable)
+				return
+			default:
+			}
+			requestCtx, stop := httpstream.WithCapacityStop(r.Context(), w, capacity, listenerShutdownTimeout)
+			defer stop()
+			scanHandler.ServeHTTP(w, r.WithContext(requestCtx))
+		})
 
 		scanAPILn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.ScanAPI.Listen)
 		if lnErr != nil {

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -26,6 +27,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestSingleReceiptRestartRefusesOverLimitNativePredecessor(t *testing.T) {
@@ -472,7 +474,7 @@ func TestNativeCapacityExitCancelsStalledReverseUpstream(t *testing.T) {
 	select {
 	case err := <-admitted:
 		if err != nil {
-			t.Fatalf("first reverse request: %v", err)
+			t.Logf("first reverse request ended at cutoff: %v", err)
 		}
 	case <-exit.Done():
 		t.Fatal("first reverse request did not return")
@@ -796,6 +798,64 @@ func TestNativeCapacityExitUnblocksStalledForwardClient(t *testing.T) {
 	}
 	if elapsed := time.Since(stoppedAt); elapsed > exitLimit {
 		t.Fatalf("capacity exit returned after %s, limit %s", elapsed, exitLimit)
+	}
+	assertDrainEvidence(t, dir, false, false)
+}
+
+func TestNativeCapacityExitInterruptsScanAPIBodyRead(t *testing.T) {
+	dir, cfgPath := drainReceiptConfig(t, 1)
+	const grace = 50 * time.Millisecond
+	s, logs := newTestServerForStart(t, func(o *ServerOpts) {
+		o.ConfigFile = cfgPath
+		o.Listen, o.ListenChanged = serverTestEphemeralListen, true
+		o.listenerShutdownTimeout = grace
+	})
+	s.cfg.ScanAPI.Listen = serverTestEphemeralListen
+	s.cfg.ScanAPI.Auth.BearerTokens = []string{"scan-api-" + "fixture-token"}
+	s.cfg.ScanAPI.Timeouts.Read = "30s"
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(4*time.Second))
+	defer cancel()
+	run := runJoined(t, ctx, s.Start, nil)
+	addr := drainListenerAddress(t, logs, "pipelock: scan API listening on ")
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := conn.SetDeadline(deadline); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = fmt.Fprintf(conn, "POST /api/v1/scan HTTP/1.1\r\nHost: vendor.example\r\nContent-Type: application/json\r\nAuthorization: Bearer %s\r\nExpect: 100-continue\r\nContent-Length: 12\r\n\r\n", s.cfg.ScanAPI.Auth.BearerTokens[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusContinue {
+		t.Fatalf("scan API status = %d, want %d", response.StatusCode, http.StatusContinue)
+	}
+
+	if _, err := s.liveReceiptEmitter().ReserveNativeRecords(1 << 20); !errors.Is(err, ael.ErrCapacity) {
+		t.Fatalf("stop = %v, want %v", err, ael.ErrCapacity)
+	}
+	select {
+	case err := <-run:
+		if !errors.Is(err, ael.ErrCapacity) || cliutil.ExitCodeOf(err) != 1 {
+			t.Fatalf("capacity exit: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("Scan API body read held the capacity drain open")
 	}
 	assertDrainEvidence(t, dir, false, false)
 }
