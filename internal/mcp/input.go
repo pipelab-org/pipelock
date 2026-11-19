@@ -1944,9 +1944,13 @@ func ForwardScannedInput(
 			}
 			receiptEmitted = true
 			forwardReceiptVerdict = receipt.NormalizeVerdict(effectiveAction)
-			// Forward anyway (warn mode).
+			// The warning receipt is single-phase. Retain a lease for
+			// scanning and recording the admitted response.
 			if isTrackableRequest(fwdLine, verdict.ID) {
-				tracker.TrackRequest(verdict.ID, verdict.Method)
+				if err := trackNativeOutcome(tracker, verdict.ID, TrackedRequestOutcome{Receipt: admission, Method: verdict.Method}); err != nil {
+					sendMCPDenial(opts, nativeAdmissionAudit(), nativeAdmissionDenial(verdict.ID, err), blockedCh)
+					continue
+				}
 			}
 			if released, err := writeReleasedMessage(fwdLine); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)

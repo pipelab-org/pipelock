@@ -363,7 +363,8 @@ func TestNativeHeaderWarningsBoundSignedEvidence(t *testing.T) {
 			t.Fatalf("verify signed warning: %v", err)
 		}
 	}
-	if individual != 16 || summary != 1 {
+	t.Logf("header warnings: wrote %d individual + %d overflow receipts, reserved %d", individual, summary, receipt.DLPWarningSlots)
+	if individual != receipt.DLPWarningSlots-1 || summary != 1 {
 		t.Fatalf("signed warnings = %d individual and %d summary, want 16 and 1", individual, summary)
 	}
 	if got := strings.Count(auditLog.String(), `"event":"dlp_warn"`); got != 17 {

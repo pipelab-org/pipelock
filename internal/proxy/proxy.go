@@ -5569,7 +5569,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer selectedReceiptShard.ReleaseNativeAdmission()
-	warnCtx, finishWarnings := p.receiptWarningContext(r.Context(), selectedReceiptShard)
+	requestCtx, stopNativeRequest := nativeRequestContext(r.Context(), selectedReceiptShard)
+	defer stopNativeRequest()
+	warnCtx, finishWarnings := p.receiptWarningContext(requestCtx, selectedReceiptShard)
 	defer finishWarnings()
 	r = r.WithContext(context.WithValue(warnCtx, ctxKeyReceiptShard, selectedReceiptShard))
 

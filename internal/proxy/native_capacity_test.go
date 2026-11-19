@@ -10,13 +10,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -34,24 +35,37 @@ import (
 )
 
 func TestNativeCapacityHTTPAdmission(t *testing.T) {
-	for _, transport := range []string{TransportFetch, TransportForward, TransportReverse, "intercept"} {
-		t.Run(transport, func(t *testing.T) {
-			p, e, dir := newNativeCapacityProxy(t, nativeRequestRecords+4)
+	for _, tc := range []struct {
+		name      string
+		transport string
+		stallBody bool
+	}{
+		{name: "fetch", transport: TransportFetch},
+		{name: "forward", transport: TransportForward},
+		{name: "reverse_headers", transport: TransportReverse},
+		{name: "reverse_body", transport: TransportReverse, stallBody: true},
+		{name: "intercept", transport: "intercept"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, e, dir := newNativeCapacityProxy(t, nativeRequestRecords+4, configureNativeWarningFixtures)
+			headers := nativeWarningFixtures(t, p, e)
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			entered := make(chan struct{}, 2)
-			release := make(chan struct{})
-			releaseUpstream := sync.OnceFunc(func() { close(release) })
+			upstreamCanceled := make(chan struct{}, 2)
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				entered <- struct{}{}
-				select {
-				case <-release:
-					_, _ = io.WriteString(w, "completed")
-				case <-r.Context().Done():
+				if tc.stallBody {
+					w.Header().Set("Content-Type", "text/plain")
+					_, _ = io.WriteString(w, "partial")
+					if err := http.NewResponseController(w).Flush(); err != nil {
+						return
+					}
 				}
+				entered <- struct{}{}
+				<-r.Context().Done()
+				upstreamCanceled <- struct{}{}
 			}))
 			defer upstream.Close()
-			defer releaseUpstream()
 			dst, err := url.Parse(upstream.URL)
 			if err != nil {
 				t.Fatal(err)
@@ -59,7 +73,7 @@ func TestNativeCapacityHTTPAdmission(t *testing.T) {
 			dst.Host = "api.vendor.example:" + dst.Port()
 			handler := p.Handler()
 			target := dst.String()
-			switch transport {
+			switch tc.transport {
 			case TransportFetch:
 				target = "/fetch?url=" + url.QueryEscape(target)
 			case TransportReverse:
@@ -83,7 +97,9 @@ func TestNativeCapacityHTTPAdmission(t *testing.T) {
 			}
 			request := func() *httptest.ResponseRecorder {
 				w := httptest.NewRecorder()
-				handler.ServeHTTP(w, httptest.NewRequestWithContext(ctx, http.MethodGet, target, nil))
+				req := httptest.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+				req.Header = headers.Clone()
+				handler.ServeHTTP(w, req)
 				return w
 			}
 			done := make(chan *httptest.ResponseRecorder, 1)
@@ -95,6 +111,8 @@ func TestNativeCapacityHTTPAdmission(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("admitted request did not reach upstream")
 			}
+			const drainLimit = 2 * time.Second
+			stoppedAt := time.Now()
 			refused := request()
 			if refused.Code != http.StatusServiceUnavailable || !strings.Contains(refused.Body.String(), ael.ErrCapacity.Error()) {
 				t.Fatalf("second request = %d %s", refused.Code, refused.Body.String())
@@ -104,16 +122,57 @@ func TestNativeCapacityHTTPAdmission(t *testing.T) {
 				t.Fatal("refused request reached upstream")
 			default:
 			}
-			releaseUpstream()
+			drain, cancelDrain := context.WithDeadline(ctx, stoppedAt.Add(drainLimit))
+			defer cancelDrain()
 			select {
-			case got := <-done:
-				if got.Code != http.StatusOK || !strings.Contains(got.Body.String(), "completed") {
-					t.Fatalf("first request = %d %s", got.Code, got.Body.String())
-				}
-			case <-ctx.Done():
-				t.Fatal("first request did not finish")
+			case <-upstreamCanceled:
+			case <-drain.Done():
+				t.Fatal("upstream did not observe capacity cancellation")
 			}
-			verifyNativeCapacityClose(t, e, dir)
+			waitCapacityDrain(t, drain, e)
+			select {
+			case <-done:
+			case <-drain.Done():
+				t.Fatal("admitted handler did not return after capacity stop")
+			}
+			drainTime := time.Since(stoppedAt)
+			if drainTime > drainLimit {
+				t.Fatalf("capacity drained in %s, limit %s", drainTime, drainLimit)
+			}
+			records := verifyNativeCapacityClose(t, e, dir)
+			if want := receipt.DLPWarningSlots + 2; records != want {
+				t.Fatalf("%s: wrote %d native records, want %d", tc.name, records, want)
+			}
+			assertNativeRecordBudget(t, tc.name, records, nativeRequestRecords)
+			entries, err := recorder.QuerySession(dir, e.Session(), &recorder.QueryFilter{Type: "action_receipt"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			outcomes := 0
+			individual, overflow := 0, 0
+			for _, entry := range entries.Entries {
+				signed, err := receipt.Unmarshal(entry.RawDetail)
+				if err != nil {
+					t.Fatal(err)
+				}
+				record := signed.ActionRecord
+				if record.DecisionPhase == receipt.DecisionPhaseOutcome {
+					outcomes++
+				}
+				if strings.HasPrefix(record.Pattern, nativeFixtureWarningPrefix) {
+					individual++
+				}
+				if strings.Contains(record.Pattern, "additional warnings by pattern:") {
+					overflow++
+				}
+			}
+			if outcomes != 1 {
+				t.Fatalf("signed outcome receipts = %d, want 1", outcomes)
+			}
+			if individual != receipt.DLPWarningSlots-1 || overflow != 1 {
+				t.Fatalf("warning receipts = %d individual and %d overflow", individual, overflow)
+			}
+			t.Logf("stalled upstream canceled and native stream sealed with %d outcome; stop to drain %s", outcomes, drainTime)
 		})
 	}
 }
@@ -183,7 +242,8 @@ func TestNativeCapacityReservesEachCredentialAudienceAllow(t *testing.T) {
 					t.Fatalf("force the next admission to stop: %v", err)
 				}
 			}
-			verifyNativeCapacityClose(t, emitter, dir)
+			records := verifyNativeCapacityClose(t, emitter, dir)
+			assertNativeRecordBudget(t, "fetch excluding audience batch", records-tc.wantAllows, nativeRequestRecords)
 			rows, err := recorder.QuerySession(dir, emitter.Session(), &recorder.QueryFilter{Type: "action_receipt"})
 			if err != nil {
 				t.Fatal(err)
@@ -207,6 +267,7 @@ func TestNativeCapacityReservesEachCredentialAudienceAllow(t *testing.T) {
 			if signedCount != tc.wantAllows || len(patterns) != tc.wantAllows {
 				t.Fatalf("signed allows = %d, distinct patterns = %d, want %d", signedCount, len(patterns), tc.wantAllows)
 			}
+			assertNativeRecordBudget(t, "credential-audience batch", signedCount, allowCount)
 			t.Logf("HTTP %d, upstream hits %d, verified individual allows %d", res.Code, hits.Load(), signedCount)
 		})
 	}
@@ -328,24 +389,91 @@ func TestNativeCapacityRefusesAuthorizationAtProxyBoundaries(t *testing.T) {
 	}
 }
 
-func TestNativeCapacityRefusesUnreservableIssuerCookieBatch(t *testing.T) {
-	p, e, dir := newNativeCapacityProxy(t, nativeRequestRecords+4)
-	admission, err := p.reserveReceiptAdmission()
-	if err != nil {
-		t.Fatal(err)
+func TestNativeCapacityIssuerCookieBatch(t *testing.T) {
+	const count = nativeRequestRecords + 1
+	for _, admitted := range []bool{true, false} {
+		t.Run(fmt.Sprintf("admitted=%t", admitted), func(t *testing.T) {
+			slots := int64(nativeRequestRecords + 4)
+			if admitted {
+				slots += count
+			}
+			p, e, dir := newNativeCapacityProxy(t, slots)
+			admission, err := p.reserveReceiptAdmission()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer admission.ReleaseNativeAdmission()
+			ic := &InterceptContext{Proxy: p, Config: p.CurrentConfig(), receiptShard: admission}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.vendor.example/", nil)
+			allowances := []issuerCookieAllowance{
+				{Name: "first", Patterns: make([]string, count-1)},
+				{Name: "last", Patterns: []string{"last pattern"}},
+			}
+			for i := range allowances[0].Patterns {
+				allowances[0].Patterns[i] = fmt.Sprintf("fixture pattern %d", i)
+			}
+			err = ic.recordIssuerCookieAllows(audit.NewRequestLogContext("fixture"), req, req.URL.String(), allowances)
+			want := count
+			if !admitted {
+				want = 0
+				if !errors.Is(err, ael.ErrCapacity) {
+					t.Fatalf("issuer-cookie batch admission = %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = e.ReserveNativeRecords(int(slots))
+				if !errors.Is(err, ael.ErrCapacity) {
+					t.Fatalf("new admission = %v", err)
+				}
+			}
+			admission.ReleaseNativeAdmission()
+			records := verifyNativeCapacityClose(t, e, dir)
+			if records != want {
+				t.Fatalf("issuer-cookie batch: wrote %d native records, want %d", records, want)
+			}
+			assertNativeRecordBudget(t, "issuer-cookie batch", records, count)
+		})
 	}
-	defer admission.ReleaseNativeAdmission()
-	ic := &InterceptContext{Proxy: p, Config: p.CurrentConfig(), receiptShard: admission}
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.vendor.example/", nil)
-	allowance := issuerCookieAllowance{Name: "fixture", Patterns: make([]string, nativeRequestRecords)}
-	for i := range allowance.Patterns {
-		allowance.Patterns[i] = "fixture"
+}
+
+const nativeFixtureWarningPrefix = "fixture advisory "
+
+func configureNativeWarningFixtures(cfg *config.Config) {
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.ScanHeaders = true
+	cfg.RequestBodyScanning.SensitiveHeaders = nil
+	for i := range receipt.DLPWarningSlots {
+		cfg.RequestBodyScanning.SensitiveHeaders = append(cfg.RequestBodyScanning.SensitiveHeaders, fmt.Sprintf("X-Fixture-%02d", i))
+		cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+			Name: fmt.Sprintf("%s%02d", nativeFixtureWarningPrefix, i), Regex: fmt.Sprintf("FIXTURE-ADVISORY-%02d", i),
+			Severity: config.SeverityLow, Action: config.ActionWarn,
+		})
 	}
-	if err := ic.recordIssuerCookieAllows(audit.NewRequestLogContext("fixture"), req, req.URL.String(), []issuerCookieAllowance{allowance}); !errors.Is(err, ael.ErrCapacity) {
-		t.Fatalf("issuer-cookie batch admission = %v", err)
+}
+
+func nativeWarningFixtures(t *testing.T, p *Proxy, e *receipt.Emitter) http.Header {
+	t.Helper()
+	p.ScannerPtr().Load().SetDLPWarnHook(func(ctx context.Context, name, severity string) {
+		receipt.EmitDLPWarning(ctx, e, receipt.EmitOpts{
+			ActionID: receipt.NewActionID(), Target: "fixture", Transport: "fixture",
+			Verdict: config.ActionWarn, Layer: "dlp", Pattern: name, Severity: severity,
+		}, func(err error) { t.Errorf("emit native warning: %v", err) })
+	})
+	h := make(http.Header)
+	for i := range receipt.DLPWarningSlots {
+		h.Set(fmt.Sprintf("X-Fixture-%02d", i), fmt.Sprintf("FIXTURE-ADVISORY-%02d", i))
 	}
-	admission.ReleaseNativeAdmission()
-	verifyNativeCapacityClose(t, e, dir)
+	return h
+}
+
+func assertNativeRecordBudget(t *testing.T, unit string, records, reserved int) {
+	t.Helper()
+	if records > reserved {
+		t.Fatalf("%s: wrote %d native records, reserved %d", unit, records, reserved)
+	}
+	t.Logf("%s: wrote %d native records, reserved %d", unit, records, reserved)
 }
 
 func newNativeCapacityProxy(t *testing.T, slots int64, configure ...func(*config.Config)) (*Proxy, *receipt.Emitter, string) {
@@ -392,7 +520,7 @@ func newNativeCapacityProxy(t *testing.T, slots int64, configure ...func(*config
 	return p, e, dir
 }
 
-func verifyNativeCapacityClose(t *testing.T, e *receipt.Emitter, dir string) {
+func verifyNativeCapacityClose(t *testing.T, e *receipt.Emitter, dir string) int {
 	t.Helper()
 	select {
 	case <-e.NativeCapacity().Drained():
@@ -406,9 +534,15 @@ func verifyNativeCapacityClose(t *testing.T, e *receipt.Emitter, dir string) {
 	if err != nil || len(runs) != 1 {
 		t.Fatalf("native evidence paths %v, error %v", runs, err)
 	}
-	if _, err := ael.VerifyRun(dir, filepath.Base(runs[0]), e.SignerKeyHex()); err != nil {
+	head, err := ael.VerifyRun(dir, filepath.Base(runs[0]), e.SignerKeyHex())
+	if err != nil {
 		t.Fatalf("verify native close: %v", err)
 	}
+	if head.RecordCount <= math.MaxInt {
+		return int(head.RecordCount) - 2 // Open and close are outside the unit.
+	}
+	t.Fatalf("unexpected native record count %d", head.RecordCount)
+	return 0
 }
 
 func TestNativeCapacityClosesWebSocket(t *testing.T) {
@@ -421,10 +555,37 @@ func TestNativeCapacityClosesWebSocket(t *testing.T) {
 
 func testNativeCapacityClosesWebSocket(t *testing.T, required bool) {
 	t.Helper()
-	p, e, dir := newNativeCapacityProxy(t, nativeRequestRecords+2*nativeWSMessageRecords+4, func(cfg *config.Config) { cfg.FlightRecorder.RequireReceipts = required })
-	upstreamAddr, closeUpstream := wsEchoServer(t)
-	defer closeUpstream()
-	_, port, err := net.SplitHostPort(upstreamAddr)
+	const frameWarningPrefix = "fixture frame advisory "
+	const frameFinding = "fixture response advisory"
+	p, e, dir := newNativeCapacityProxy(t, nativeRequestRecords+2*nativeWSMessageRecords+4, configureNativeWarningFixtures, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = required
+		cfg.ResponseScanning.Enabled = true
+		cfg.ResponseScanning.Action = config.ActionWarn
+		cfg.ResponseScanning.Patterns = append(cfg.ResponseScanning.Patterns, config.ResponseScanPattern{Name: frameFinding, Regex: frameFinding})
+		for i := range receipt.DLPWarningSlots {
+			cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+				Name: fmt.Sprintf("%s%02d", frameWarningPrefix, i), Regex: fmt.Sprintf("FIXTURE-FRAME-%02d", i),
+				Severity: config.SeverityLow, Action: config.ActionWarn,
+			})
+		}
+	})
+	headers := nativeWarningFixtures(t, p, e)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, _, err := ws.UpgradeHTTP(r, w)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		if _, _, err := wsutil.ReadClientData(conn); err != nil {
+			return
+		}
+		if err := wsutil.WriteServerMessage(conn, ws.OpText, []byte(frameFinding)); err != nil {
+			return
+		}
+		_, _, _ = wsutil.ReadClientData(conn)
+	}))
+	defer upstream.Close()
+	_, port, err := net.SplitHostPort(upstream.Listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +593,12 @@ func testNativeCapacityClosesWebSocket(t *testing.T, required bool) {
 	defer proxyServer.Close()
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	target := "ws://api.vendor.example:" + port + "/"
+	var markers []string
+	for _, values := range headers {
+		markers = append(markers, values...)
+	}
+	slices.Sort(markers)
+	target := "ws://api.vendor.example:" + port + "/" + strings.Join(markers, "/")
 	conn, _, _, err := (ws.Dialer{}).Dial(ctx, "ws"+strings.TrimPrefix(proxyServer.URL, "http")+"/ws?url="+url.QueryEscape(target))
 	if err != nil {
 		t.Fatal(err)
@@ -442,12 +608,16 @@ func testNativeCapacityClosesWebSocket(t *testing.T, required bool) {
 	if err := conn.SetDeadline(deadline); err != nil {
 		t.Fatal(err)
 	}
-	payload := []byte("fixture message")
+	var frameParts []string
+	for i := range receipt.DLPWarningSlots {
+		frameParts = append(frameParts, fmt.Sprintf("FIXTURE-FRAME-%02d", i))
+	}
+	payload := []byte(strings.Join(frameParts, " "))
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, payload); err != nil {
 		t.Fatal(err)
 	}
 	got, _, err := wsutil.ReadServerData(conn)
-	if err != nil || string(got) != string(payload) {
+	if err != nil || string(got) != frameFinding {
 		t.Fatalf("upstream echo = %q, %v", got, err)
 	}
 	assertCapacityRefusesFetch(t, p, ctx)
@@ -457,7 +627,45 @@ func testNativeCapacityClosesWebSocket(t *testing.T, required bool) {
 		t.Fatalf("WebSocket terminal frame = %v", err)
 	}
 	waitCapacityDrain(t, ctx, e)
-	verifyNativeCapacityClose(t, e, dir)
+	records := verifyNativeCapacityClose(t, e, dir)
+	rows, err := recorder.QuerySession(dir, e.Session(), &recorder.QueryFilter{Type: "action_receipt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frameWarnings, frameFindings := 0, 0
+	for _, row := range rows.Entries {
+		signed, err := receipt.Unmarshal(row.RawDetail)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch pattern := signed.ActionRecord.Pattern; {
+		case strings.Contains(pattern, frameWarningPrefix):
+			frameWarnings++
+		case pattern == frameFinding:
+			frameFindings++
+		}
+	}
+	if frameWarnings != receipt.DLPWarningSlots {
+		t.Fatalf("WebSocket message warning receipts = %d, want %d", frameWarnings, receipt.DLPWarningSlots)
+	}
+	wantFindings := 0
+	if required {
+		wantFindings = 1
+	}
+	if frameFindings != wantFindings {
+		t.Fatalf("WebSocket message finding receipts = %d, want %d", frameFindings, wantFindings)
+	}
+	assertNativeRecordBudget(t, "WebSocket client message", frameWarnings, nativeWSMessageRecords)
+	assertNativeRecordBudget(t, "WebSocket upstream message", frameFindings, nativeWSMessageRecords)
+	connectionRecords := records - frameWarnings - frameFindings
+	wantConnection := receipt.DLPWarningSlots + 1
+	if required {
+		wantConnection++
+	}
+	if connectionRecords != wantConnection {
+		t.Fatalf("WebSocket connection: wrote %d native records, want %d", connectionRecords, wantConnection)
+	}
+	assertNativeRecordBudget(t, "WebSocket connection", connectionRecords, nativeRequestRecords)
 	verifyNativeStreamOutcome(t, e, dir, TransportWS, required)
 }
 
@@ -545,7 +753,8 @@ func TestNativeCapacityClosesConnectTunnel(t *testing.T) {
 
 func testNativeCapacityClosesConnectTunnel(t *testing.T, required bool) {
 	t.Helper()
-	p, e, dir := newNativeCapacityProxy(t, nativeRequestRecords+4, func(cfg *config.Config) { cfg.FlightRecorder.RequireReceipts = required })
+	p, e, dir := newNativeCapacityProxy(t, nativeRequestRecords+4, configureNativeWarningFixtures, func(cfg *config.Config) { cfg.FlightRecorder.RequireReceipts = required })
+	headers := nativeWarningFixtures(t, p, e)
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
@@ -580,7 +789,13 @@ func testNativeCapacityClosesConnectTunnel(t *testing.T, required bool) {
 		t.Fatal(err)
 	}
 	target := "api.vendor.example:" + port
-	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target); err != nil {
+	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n", target, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := headers.Write(conn); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(conn, "\r\n"); err != nil {
 		t.Fatal(err)
 	}
 	reader := bufio.NewReader(conn)
@@ -610,7 +825,11 @@ func testNativeCapacityClosesConnectTunnel(t *testing.T, required bool) {
 		t.Fatal("CONNECT upstream was not closed")
 	}
 	waitCapacityDrain(t, ctx, e)
-	verifyNativeCapacityClose(t, e, dir)
+	records := verifyNativeCapacityClose(t, e, dir)
+	if want := receipt.DLPWarningSlots + 2; records != want {
+		t.Fatalf("CONNECT: wrote %d native records, want %d", records, want)
+	}
+	assertNativeRecordBudget(t, "CONNECT outer", records, nativeRequestRecords)
 	verifyNativeStreamOutcome(t, e, dir, TransportConnect, required)
 }
 
@@ -684,6 +903,7 @@ func nativeReceiptModeName(required bool) string {
 
 func TestNativeCapacityClosesHTTPSSE(t *testing.T) {
 	const intercepted = "intercept"
+	const eventFinding = "fixture stream advisory"
 	for _, tc := range []struct {
 		transport string
 		required  bool
@@ -697,13 +917,20 @@ func TestNativeCapacityClosesHTTPSSE(t *testing.T) {
 	} {
 		transport := tc.transport
 		t.Run(transport+"/"+nativeReceiptModeName(tc.required), func(t *testing.T) {
-			p, e, dir := newNativeCapacityProxy(t, nativeRequestRecords+4, func(cfg *config.Config) { cfg.FlightRecorder.RequireReceipts = tc.required })
+			p, e, dir := newNativeCapacityProxy(t, nativeRequestRecords+nativeSSEFindingRecords+4, func(cfg *config.Config) {
+				cfg.FlightRecorder.RequireReceipts = tc.required
+				cfg.ResponseScanning.Enabled = true
+				cfg.ResponseScanning.Action = config.ActionWarn
+				cfg.ResponseScanning.SSEStreaming.Enabled = true
+				cfg.ResponseScanning.SSEStreaming.Action = config.ActionWarn
+				cfg.ResponseScanning.Patterns = append(cfg.ResponseScanning.Patterns, config.ResponseScanPattern{Name: eventFinding, Regex: eventFinding})
+			})
 			ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 			defer cancel()
 			upstreamClosed := make(chan struct{})
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/event-stream")
-				_, _ = io.WriteString(w, "data: {\"message\":\"fixture\"}\n\n")
+				_, _ = fmt.Fprintf(w, "data: {\"message\":%q}\n\n", eventFinding)
 				if err := http.NewResponseController(w).Flush(); err != nil {
 					return
 				}
@@ -778,7 +1005,30 @@ func TestNativeCapacityClosesHTTPSSE(t *testing.T) {
 				t.Fatalf("unexpected event after capacity: %q", rest)
 			}
 			waitCapacityDrain(t, ctx, e)
-			verifyNativeCapacityClose(t, e, dir)
+			records := verifyNativeCapacityClose(t, e, dir)
+			rows, err := recorder.QuerySession(dir, e.Session(), &recorder.QueryFilter{Type: "action_receipt"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			eventRecords := 0
+			for _, row := range rows.Entries {
+				signed, err := receipt.Unmarshal(row.RawDetail)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if signed.ActionRecord.Layer == LayerSSEStream && strings.Contains(signed.ActionRecord.Pattern, eventFinding) {
+					eventRecords++
+				}
+			}
+			wantEventRecords := 0
+			if tc.required {
+				wantEventRecords = 1
+			}
+			if eventRecords != wantEventRecords {
+				t.Fatalf("%s SSE event: wrote %d native records, want %d", transport, eventRecords, wantEventRecords)
+			}
+			assertNativeRecordBudget(t, transport+" SSE event", eventRecords, nativeSSEFindingRecords)
+			assertNativeRecordBudget(t, transport+" SSE subscription", records-eventRecords, nativeRequestRecords)
 			verifyNativeStreamOutcome(t, e, dir, transport, tc.required)
 		})
 	}

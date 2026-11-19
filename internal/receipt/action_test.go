@@ -6,6 +6,7 @@ package receipt
 import (
 	"encoding/json"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -125,6 +126,15 @@ func TestActionRecord_Validate(t *testing.T) {
 			name:    "missing_action_id",
 			modify:  func(ar *ActionRecord) { ar.ActionID = "" },
 			wantErr: "action_id is required",
+		},
+		{
+			name:   "action_id_at_limit",
+			modify: func(ar *ActionRecord) { ar.ActionID = strings.Repeat("é", 18) },
+		},
+		{
+			name:    "action_id_over_limit",
+			modify:  func(ar *ActionRecord) { ar.ActionID = strings.Repeat("é", 18) + "a" },
+			wantErr: "action_id exceeds 36 bytes",
 		},
 		{
 			name:    "invalid_action_type",

@@ -73,6 +73,20 @@ const (
 	nativeStreamCloseLayer   = "session_close"
 )
 
+// nativeRequestContext interrupts upstream HTTP work on capacity stop.
+// The handler still owns its receipt reservation until its outcome is written.
+func nativeRequestContext(ctx context.Context, admission receipt.EmitOpts) (context.Context, func()) {
+	if admission.NativeLease == nil {
+		return ctx, func() {}
+	}
+	ctx, cancel := context.WithCancelCause(ctx)
+	stop := admission.NativeLease.OnStop(func() { cancel(ael.ErrCapacity) })
+	return ctx, func() {
+		stop()
+		cancel(nil)
+	}
+}
+
 func isNativeCapacityStop(err error) bool {
 	return errors.Is(err, ael.ErrCapacity)
 }

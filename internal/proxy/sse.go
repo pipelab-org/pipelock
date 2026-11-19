@@ -63,6 +63,8 @@ type SSEDispatchOptions struct {
 	Generic         mcp.GenericSSEScanOptions
 }
 
+const nativeSSEFindingRecords = 2
+
 // sseFindingReceiptConfirmer admits warned events before their wire write.
 // Errors are receipt failures, not content findings: a warn-mode caller must
 // terminate on them rather than treating a failed confirmation as visibility.
@@ -71,7 +73,7 @@ func sseFindingReceiptConfirmer(cfg *config.Config, opts receipt.EmitOpts, emit 
 		return nil
 	}
 	return func(finding error) error {
-		opts, err := opts.ReserveNativeChild(2)
+		opts, err := opts.ReserveNativeChild(nativeSSEFindingRecords)
 		if err != nil {
 			return err
 		}

@@ -9,7 +9,9 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
+	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
@@ -26,10 +28,18 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestStdioNativeCapacitySettlesAdmittedReply(t *testing.T) {
+	t.Run("intent", func(t *testing.T) { testStdioNativeCapacitySettlesAdmittedReply(t, false) })
+	t.Run("warned_and_redacted", func(t *testing.T) { testStdioNativeCapacitySettlesAdmittedReply(t, true) })
+}
+
+func testStdioNativeCapacitySettlesAdmittedReply(t *testing.T, warn bool) {
+	t.Helper()
 	e, dir := newNativeMCPEmitter(t, nativeMCPRequestRecords+4)
 	capacity := e.NativeCapacity()
 	input, upstream := io.Pipe()
@@ -37,13 +47,26 @@ func TestStdioNativeCapacitySettlesAdmittedReply(t *testing.T) {
 	defer func() { _ = upstream.Close() }()
 	tracker := NewRequestTracker()
 	blocked := make(chan BlockedRequest, 2)
+	sc, fixtureInput := nativeMCPFindingScanner(t, e)
+	risk := &taintRecorder{}
+	cfg := config.Defaults()
 	opts := MCPProxyOpts{
-		Scanner: testInputScanner(t), Transport: transportMCPStdio,
+		Scanner: sc, Transport: transportMCPStdio, RedactMatcher: testRedactionMatcher(),
 		ReceiptEmitter: e, RequireReceipts: true, nativeStdio: true,
+		Rec: risk, TaintCfg: &cfg.Taint, TaintExternalSource: true,
 	}
-	const call = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{}}}`
+	const clean = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{}}}`
+	call := clean
+	redactValue := "AIza" + strings.Repeat("A", 35)
+	wantRequest, wantReply := 1, 2
+	if warn {
+		call = makeRequest(1, methodToolsCall, map[string]any{
+			"name": "echo", "arguments": map[string]string{"prompt": fixtureInput + " " + redactValue},
+		})
+		wantRequest, wantReply = receipt.DLPWarningSlots+1, 1
+	}
 	const secondCall = `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{}}}`
-	const reply = `{"jsonrpc":"2.0","id":1,"result":{"content":[]}}`
+	const reply = `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"fixture reply finding"}]}}`
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -59,7 +82,10 @@ func TestStdioNativeCapacitySettlesAdmittedReply(t *testing.T) {
 	reader := transport.NewStdioReader(input)
 	got, err := reader.ReadMessage()
 	if err != nil || !bytes.Contains(got, []byte(`"id":1`)) {
-		t.Fatalf("first upstream message = %q, %v", got, err)
+		t.Fatalf("first upstream call was not delivered: %v", err)
+	}
+	if warn && (bytes.Contains(got, []byte(redactValue)) || !bytes.Contains(got, []byte("<pl:google-api-key:"))) {
+		t.Fatal("first upstream call was not redacted")
 	}
 	select {
 	case denial := <-blocked:
@@ -73,14 +99,22 @@ func TestStdioNativeCapacitySettlesAdmittedReply(t *testing.T) {
 		t.Fatalf("refused call reached upstream: %v", err)
 	}
 	<-done
+	requestRecords := mcpNativeRecordCount(t, e, dir, false)
+	if requestRecords != wantRequest {
+		t.Fatalf("stdio call: wrote %d native records, want %d", requestRecords, wantRequest)
+	}
 	select {
 	case <-capacity.Drained():
 		t.Fatal("unsettled stdio response did not keep its reservation")
 	default:
 	}
 	var client bytes.Buffer
-	if _, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(reply)), transport.NewStdioWriter(&client), io.Discard, tracker, opts); err != nil {
-		t.Fatal(err)
+	found, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(reply)), transport.NewStdioWriter(&client), io.Discard, tracker, opts)
+	if err != nil || !found {
+		t.Fatalf("scan of warned response: finding=%t error=%v", found, err)
+	}
+	if observed := risk.RiskSnapshot(); !observed.Contaminated || observed.Level < session.TaintExternalUntrusted {
+		t.Fatalf("MCP reply did not apply external taint: %+v", observed)
 	}
 	if !strings.Contains(client.String(), reply) {
 		t.Fatalf("client response = %q", client.String())
@@ -90,7 +124,12 @@ func TestStdioNativeCapacitySettlesAdmittedReply(t *testing.T) {
 	default:
 		t.Fatal("stdio capacity did not drain after settling its response")
 	}
-	verifyMCPNativeClose(t, e, dir)
+	records := verifyMCPNativeClose(t, e, dir)
+	if records-requestRecords != wantReply {
+		t.Fatalf("stdio reply: wrote %d native records, want %d", records-requestRecords, wantReply)
+	}
+	assertMCPNativeRecordBudget(t, "stdio tracked reply", records-requestRecords, nativeMCPPendingRecords)
+	assertMCPNativeRecordBudget(t, "stdio call and response", records, nativeMCPRequestRecords)
 }
 
 func TestStdioNativeCapacityStopsIdleInput(t *testing.T) {
@@ -180,18 +219,71 @@ func newNativeMCPEmitter(t *testing.T, slots int64) (*receipt.Emitter, string) {
 	return e, dir
 }
 
-func verifyMCPNativeClose(t *testing.T, e *receipt.Emitter, dir string) {
+func verifyMCPNativeClose(t *testing.T, e *receipt.Emitter, dir string) int {
 	t.Helper()
 	if err := e.EmitSessionClose("graceful_shutdown"); err != nil {
 		t.Fatal(err)
 	}
+	return mcpNativeRecordCount(t, e, dir, true)
+}
+
+func mcpNativeRecordCount(t *testing.T, e *receipt.Emitter, dir string, closed bool) int {
+	t.Helper()
 	runs, err := filepath.Glob(filepath.Join(dir, "ael", "*"))
 	if err != nil || len(runs) != 1 {
 		t.Fatalf("native evidence paths %v, error %v", runs, err)
 	}
-	if _, err := ael.VerifyRun(dir, filepath.Base(runs[0]), e.SignerKeyHex()); err != nil {
-		t.Fatalf("verify native close: %v", err)
+	run := filepath.Base(runs[0])
+	verify := ael.VerifyPresentRun
+	controlRecords := 1
+	if closed {
+		verify = ael.VerifyRun
+		controlRecords++
 	}
+	head, err := verify(dir, run, e.SignerKeyHex())
+	if err != nil {
+		t.Fatalf("verify native run: %v", err)
+	}
+	if head.RecordCount <= math.MaxInt {
+		return int(head.RecordCount) - controlRecords
+	}
+	t.Fatalf("unexpected native record count %d", head.RecordCount)
+	return 0
+}
+
+func nativeMCPFindingScanner(t *testing.T, e *receipt.Emitter) (*scanner.Scanner, string) {
+	t.Helper()
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionWarn
+	const responseFinding = "fixture reply finding"
+	cfg.ResponseScanning.Patterns = append(cfg.ResponseScanning.Patterns, config.ResponseScanPattern{Name: responseFinding, Regex: responseFinding})
+	var markers []string
+	for i := range receipt.DLPWarningSlots {
+		marker := fmt.Sprintf("FIXTURE-ADVISORY-%02d", i)
+		markers = append(markers, marker)
+		cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+			Name: fmt.Sprintf("fixture advisory %d", i), Regex: marker, Severity: config.SeverityLow, Action: config.ActionWarn,
+		})
+	}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	sc.SetDLPWarnHook(func(ctx context.Context, name, severity string) {
+		receipt.EmitDLPWarning(ctx, e, receipt.EmitOpts{
+			ActionID: receipt.NewActionID(), Target: "fixture", Transport: transportMCPStdio,
+			Verdict: config.ActionWarn, Layer: "dlp", Pattern: name, Severity: severity,
+		}, func(err error) { t.Errorf("emit native warning: %v", err) })
+	})
+	return sc, strings.Join(markers, " ")
+}
+
+func assertMCPNativeRecordBudget(t *testing.T, unit string, records, reserved int) {
+	t.Helper()
+	if records > reserved {
+		t.Fatalf("%s: wrote %d native records, reserved %d", unit, records, reserved)
+	}
+	t.Logf("%s: wrote %d native records, reserved %d", unit, records, reserved)
 }
 
 func TestHTTPBridgeNativeCapacityClosesPostStream(t *testing.T) {
@@ -207,10 +299,14 @@ func testHTTPBridgeNativeCapacityClosesStream(t *testing.T, method string) {
 	e, dir := newNativeMCPEmitter(t, nativeMCPRequestRecords+nativeMCPEventRecords+4)
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()
-	const call = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{}}}`
-	reply := `{"jsonrpc":"2.0","id":1,"result":{"content":[]}}`
+	sc, fixtureInput := nativeMCPFindingScanner(t, e)
+	const finding = "fixture reply finding"
+	call := makeRequest(1, methodToolsCall, map[string]any{
+		"name": "echo", "arguments": map[string]string{"prompt": fixtureInput},
+	})
+	reply := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":%q}]}}`, finding)
 	if method == http.MethodGet {
-		reply = `{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"fixture"}}`
+		reply = fmt.Sprintf(`{"jsonrpc":"2.0","method":"notifications/message","params":{"content":%q}}`, finding)
 	}
 	type upstreamRequest struct{ method, body string }
 	request := make(chan upstreamRequest, 1)
@@ -229,7 +325,7 @@ func testHTTPBridgeNativeCapacityClosesStream(t *testing.T, method string) {
 	defer upstream.Close()
 	defer cancel()
 	opts := MCPProxyOpts{
-		Scanner: testInputScanner(t), Transport: "mcp_http",
+		Scanner: sc, Transport: "mcp_http",
 		ReceiptEmitter: e, RequireReceipts: true, AuthorityDestination: upstream.URL,
 	}
 	clientRead, clientWrite := io.Pipe()
@@ -274,24 +370,42 @@ func testHTTPBridgeNativeCapacityClosesStream(t *testing.T, method string) {
 	case <-ctx.Done():
 		t.Fatal("HTTP bridge did not return after capacity stop")
 	}
-	verifyMCPNativeClose(t, e, dir)
+	records := verifyMCPNativeClose(t, e, dir)
 	entries, err := recorder.QuerySession(dir, e.Session(), &recorder.QueryFilter{Type: "action_receipt"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	findings, terminal, outcomes := 0, 0, 0
 	for _, entry := range entries.Entries {
 		signed, err := receipt.Unmarshal(entry.RawDetail)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(signed.ActionRecord.Pattern, "reason=native_ael_capacity") {
+		record := signed.ActionRecord
+		if record.Layer == "mcp_response_scan" && record.Pattern == finding {
+			findings++
+		}
+		if strings.Contains(record.Pattern, "reason=native_ael_capacity") {
 			if err := receipt.VerifyWithKey(signed, e.SignerKeyHex()); err != nil {
 				t.Fatal(err)
 			}
-			return
+			terminal++
+		} else if record.DecisionPhase == receipt.DecisionPhaseOutcome {
+			outcomes++
 		}
 	}
-	t.Fatal("missing signed capacity outcome")
+	if findings != 1 || terminal != 1 {
+		t.Fatalf("%s SSE exchange: finding receipts=%d terminal receipts=%d, want one each", method, findings, terminal)
+	}
+	if method == http.MethodGet {
+		assertMCPNativeRecordBudget(t, "MCP SSE event", findings, nativeMCPEventRecords)
+		assertMCPNativeRecordBudget(t, "MCP SSE subscription", records-findings, nativeMCPRequestRecords)
+	} else {
+		if outcomes != 1 || records != receipt.DLPWarningSlots+4 {
+			t.Fatalf("MCP HTTP POST: wrote %d native records and %d outcomes, want warning overflow, finding, intent and outcome", records, outcomes)
+		}
+		assertMCPNativeRecordBudget(t, "MCP HTTP POST", records, nativeMCPRequestRecords)
+	}
 }
 
 func TestDeferredNativeReservationSettlesAtCapacity(t *testing.T) {
@@ -341,7 +455,11 @@ func TestDeferredNativeReservationSettlesAtCapacity(t *testing.T) {
 	default:
 		t.Fatal("settled deferred call retained capacity")
 	}
-	verifyMCPNativeClose(t, e, dir)
+	records := verifyMCPNativeClose(t, e, dir)
+	if records != 1 {
+		t.Fatalf("deferred cancel: wrote %d native records, want 1", records)
+	}
+	assertMCPNativeRecordBudget(t, "deferred cancel", records, nativeMCPPendingRecords)
 }
 
 func TestNativeCapacityRefusesMCPBridgesBeforeUpstream(t *testing.T) {

@@ -810,8 +810,7 @@ func (e *Emitter) ReserveNativeRecords(records int) (*aelpkg.Lease, error) {
 	if e == nil {
 		return nil, nil
 	}
-	const uuidTextBytes = len("00000000-0000-7000-8000-000000000000")
-	return e.nativeAEL.Reserve(records, aelpkg.ActivityRecordLimit(len(ActionUnclassified), uuidTextBytes))
+	return e.nativeAEL.Reserve(records, aelpkg.ActivityRecordLimit(len(ActionUnclassified), maxActionIDBytes))
 }
 
 // AdmitNative reserves native evidence space for the lifetime of a mediated

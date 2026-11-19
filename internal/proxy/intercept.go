@@ -674,7 +674,9 @@ func newInterceptHandler(
 				return
 			}
 			defer ic.receiptShard.ReleaseNativeAdmission()
-			warnCtx, finishWarnings := ic.Proxy.receiptWarningContext(r.Context(), ic.receiptShard)
+			requestCtx, stopNativeRequest := nativeRequestContext(r.Context(), ic.receiptShard)
+			defer stopNativeRequest()
+			warnCtx, finishWarnings := ic.Proxy.receiptWarningContext(requestCtx, ic.receiptShard)
 			defer finishWarnings()
 			r = r.WithContext(context.WithValue(warnCtx, ctxKeyReceiptShard, ic.receiptShard))
 		}
