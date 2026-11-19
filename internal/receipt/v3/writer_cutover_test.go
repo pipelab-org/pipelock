@@ -96,6 +96,7 @@ func TestStreamWriterCutoverCommitsAtFirstStream(t *testing.T) {
 func TestStreamWriterRepairsOnlyTornJournal(t *testing.T) {
 	const held = "{\"defer_id\":\"example\",\"state\":\"deferred_held\"}\n"
 	const damaged = "{\"defer_id\":"
+	const invalid = `{"defer_id":"example","state":123}`
 	for _, tc := range []struct {
 		name string
 		data string
@@ -104,6 +105,7 @@ func TestStreamWriterRepairsOnlyTornJournal(t *testing.T) {
 	}{
 		{name: "pending with torn tail", data: held + damaged, want: held, err: "unresolved legacy holds"},
 		{name: "malformed complete entry", data: held + damaged + "\n", want: held + damaged + "\n", err: "parse defer journal"},
+		{name: "complete invalid entry without newline", data: invalid, want: invalid, err: "parse defer journal"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -111,7 +113,12 @@ func TestStreamWriterRepairsOnlyTornJournal(t *testing.T) {
 				t.Fatal(err)
 			}
 			opts := writerTestOptions(dir)
-			if _, err := OpenStreamWriter(t.Context(), opts); err == nil || !strings.Contains(err.Error(), tc.err) {
+			writer, err := OpenStreamWriter(t.Context(), opts)
+			if err == nil {
+				_ = writer.Close(t.Context(), nil)
+				t.Fatalf("wanted %s, cutover succeeded", tc.err)
+			}
+			if !strings.Contains(err.Error(), tc.err) {
 				t.Fatalf("wanted %s, got %v", tc.err, err)
 			}
 			root, err := os.OpenRoot(dir)

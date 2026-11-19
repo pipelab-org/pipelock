@@ -5,6 +5,7 @@ package deferred
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -79,7 +80,7 @@ func InspectJournalCutover(source io.Reader) (JournalCutover, error) {
 		if len(line) != 0 {
 			var entry journalEntry
 			if decodeErr := json.Unmarshal(line, &entry); decodeErr != nil {
-				if !last {
+				if !last || !errors.Is(json.NewDecoder(bytes.NewReader(line)).Decode(new(json.RawMessage)), io.ErrUnexpectedEOF) {
 					return JournalCutover{}, fmt.Errorf("parse defer journal for cutover: %w", decodeErr)
 				}
 				result.Torn = true
