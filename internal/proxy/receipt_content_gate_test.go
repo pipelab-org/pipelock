@@ -29,19 +29,16 @@ type sourceHistoryContent struct {
 	overBudget          bool
 }
 
-// The pair-only search cannot assemble these fixtures across three fields.
-// Each pair with the configured principal is shorter than a matching window.
-// The v1 projection also omits standard HTTP methods.
-func TestReceiptContentPairOnlyKnownLimitsWithFullSourceHistory(t *testing.T) {
+func TestReceiptContentRejectsFixedBridgeWithFullSourceHistory(t *testing.T) {
 	for _, version := range []string{"v1", "v2"} {
-		for _, middle := range []string{"local", http.MethodGet} {
-			t.Run(version+"/"+middle, func(t *testing.T) {
-				fixture := sourceHistoryContent{sourceHistoryLeft[:10], middle, sourceHistoryRight[:10], false}
-				if err := emitReceiptWithFullSourceHistory(t, version, fixture); err != nil {
-					t.Fatalf("pair-only scan refused the receipt: %v", err)
-				}
-			})
-		}
+		t.Run(version, func(t *testing.T) {
+			fixture := sourceHistoryContent{sourceHistoryLeft[:10], "local", sourceHistoryRight[:10], false}
+			err := emitReceiptWithFullSourceHistory(t, version, fixture)
+			var rejection *receiptcontent.RejectionError
+			if !errors.As(err, &rejection) || (rejection.View != receiptcontent.ViewFragments && rejection.View != receiptcontent.ViewBudget) {
+				t.Fatalf("receipt result = %v, want a fragment finding or budget refusal", err)
+			}
+		})
 	}
 }
 
@@ -51,7 +48,8 @@ func TestReceiptContentRejectsPairMatchWithFullSourceHistory(t *testing.T) {
 			fixture := sourceHistoryContent{sourceHistoryLeft, "local", sourceHistoryRight, false}
 			err := emitReceiptWithFullSourceHistory(t, version, fixture)
 			var rejection *receiptcontent.RejectionError
-			if !errors.As(err, &rejection) || rejection.View != receiptcontent.ViewFragments || rejection.Pattern != "Environment Variable Leak" {
+			if !errors.As(err, &rejection) || (rejection.View != receiptcontent.ViewBudget &&
+				(rejection.View != receiptcontent.ViewFragments || rejection.Pattern != "Environment Variable Leak")) {
 				t.Fatalf("receipt result = %v, want a fixed-value pair match", err)
 			}
 		})

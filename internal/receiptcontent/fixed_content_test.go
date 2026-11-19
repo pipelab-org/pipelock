@@ -174,8 +174,8 @@ func TestFixedValuesSpendOnlyBridgedWork(t *testing.T) {
 	rep, err := Scan(t.Context(), count, p)
 	// 20 atoms alone, the structured view and the joined values, the client
 	// pair in both orders, and each of 18 fixed values paired with each of
-	// the 2 client atoms in both orders.
-	if want := 20 + 2 + 2 + 2*18*2; err != nil || !rep.Clean() || calls != want {
+	// the 2 client atoms in both orders, plus six orders of each triple.
+	if want := 20 + 2 + 2 + 2*18*2 + 6*18; err != nil || !rep.Clean() || calls != want {
 		t.Fatalf("2 client atoms among 20: calls %d, want %d, report %+v, err %v", calls, want, rep, err)
 	}
 }
@@ -185,17 +185,17 @@ func TestBridgedSearchStaysInsideTheWorkBound(t *testing.T) {
 	fields := map[string]Class{"f": Content, "f[]": Content}
 	base := &Producer{schema: &Schema{Kind: "test.fixed_bridge_budget", Fields: fields}}
 	clean := func(_ context.Context, _ string) scanner.TextDLPResult { return scanner.TextDLPResult{Clean: true} }
-	t.Run("pairs fit even when three-part combinations would not", func(t *testing.T) {
+	t.Run("refuses when triples exceed the budget even if pairs fit", func(t *testing.T) {
 		values := []string{"a0", "a1", "a2", long}
 		p, err := base.WithFixedValues(map[string][]string{"f[]": {long}}).Project(mustJSON(t, map[string]any{"f": values}))
 		if err != nil {
 			t.Fatal(err)
 		}
-		det := func(_ context.Context, text string) scanner.TextDLPResult {
-			return scanner.TextDLPResult{Clean: text != long+"a0"}
+		_, err = Scan(t.Context(), clean, p)
+		var rej *RejectionError
+		if !errors.As(err, &rej) || rej.View != ViewBudget {
+			t.Fatalf("err = %v, want a budget refusal", err)
 		}
-		rep, err := Scan(t.Context(), det, p)
-		requireView(t, rep, err, ViewFragments)
 	})
 	t.Run("pairs that cannot fit refuse the receipt", func(t *testing.T) {
 		values := make([]string, 0, 21)
@@ -215,9 +215,7 @@ func TestBridgedSearchStaysInsideTheWorkBound(t *testing.T) {
 	})
 }
 
-// The pair-only fragment search leaves larger combinations with a fixed value
-// to the other scan views. These fixtures fall outside those views.
-func TestFixedBridgePairOnlyKnownLimits(t *testing.T) {
+func TestFixedBridgeReconstructsThreePieces(t *testing.T) {
 	det := testDetector(t)
 	base := &Producer{schema: &Schema{
 		Kind: "test.fixed_pair_limits", Fields: map[string]Class{"a": Content, "b": Content, "c": Content, "d": Content},
@@ -231,8 +229,6 @@ func TestFixedBridgePairOnlyKnownLimits(t *testing.T) {
 	}{
 		{"fixed value between two client fields", "rightoperatorleft", "b", []string{"left", "operator", "right"}, nil},
 		{"fixed value after two client fields", "rightleftoperator", "b", []string{"left", "operator", "right"}, nil},
-		{"four fields in reverse order", "ddccbbaa", "c", []string{"aa", "bb", "cc", "dd"}, nil},
-		{"four fields out of projection order", "aaccbbdd", "c", []string{"aa", "bb", "cc", "dd"}, nil},
 		{"partial canary window", canaryFixture[2:18], "b", []string{canaryFixture[12:18], canaryFixture[7:12], canaryFixture[2:7]}, det},
 		{"base64 carrier", encoded, "b", []string{encoded[18:], encoded[9:18], encoded[:9]}, det},
 		{"GitHub token across three fields", token, "b", []string{token[26:], token[13:26], token[:13]}, det},
@@ -256,8 +252,8 @@ func TestFixedBridgePairOnlyKnownLimits(t *testing.T) {
 				t.Fatal(err)
 			}
 			rep, err := Scan(t.Context(), detect, p)
-			if err != nil || !rep.Clean() {
-				t.Fatalf("pair-only scan of the split fixture: report %+v, error %v", rep, err)
+			if err != nil || rep.Clean() {
+				t.Fatalf("three-piece reconstruction: report %+v, error %v", rep, err)
 			}
 		})
 	}

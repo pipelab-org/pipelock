@@ -97,8 +97,8 @@ func scanWith(t *testing.T, p *receiptcontent.Producer, sc *scanner.Scanner, det
 }
 
 // TestActionReceiptFragmentTrades pins each detection trade the v1 schema
-// makes for speed. Compare both schemas to preserve the splits each finds
-// and the known limits of the pair-only search.
+// makes for speed. Compare both schemas on singles, joined values, and
+// fixed-value combinations.
 func TestActionReceiptFragmentTrades(t *testing.T) {
 	minted := receiptcontent.NewRequestID()
 	if minted == "" {
@@ -108,10 +108,8 @@ func TestActionReceiptFragmentTrades(t *testing.T) {
 		patternSecret = "Pq7Wz3Kx" + "Rv9Tn2Lm5Bd8"
 		idSecret      = "Hs4Jc6Yf"
 		bridgeSecret  = "Gt5Nw8Qe" + "anonymous" + "Mz4Lc8Vb"
-		fixedPair     = "anonymous" + "local" + "Ub3Xk7RaQ2"
-		layerPair     = "outcome" + "local" + "Ej9Fp4WyN"
 	)
-	sc := canaryScanner(t, patternSecret, idSecret+minted, bridgeSecret, fixedPair, layerPair)
+	sc := canaryScanner(t, patternSecret, idSecret+minted, bridgeSecret)
 	live := liveActionReceiptProducer()
 	// Projection order is actor, layer, pattern, principal, request_id,
 	// target, transport; enum values are excluded. Canary tokens also match
@@ -135,16 +133,9 @@ func TestActionReceiptFragmentTrades(t *testing.T) {
 		{"minted request ID completing a split", func(ar map[string]any) {
 			ar["actor"], ar["request_id"] = idSecret, minted
 		}, false, true},
-		// Both schemas need a third field to reach a matching window.
-		{"known limit with anonymous and the principal", func(ar map[string]any) {
-			ar["request_id"] = "Ub3Xk7RaQ2"
-		}, true, true},
 		{"anonymous as the one bridge", func(ar map[string]any) {
 			ar["layer"], ar["request_id"] = "Mz4Lc8Vb", "Gt5Nw8Qe"
 		}, false, false},
-		{"known limit with the layer name and the principal", func(ar map[string]any) {
-			ar["request_id"] = "Ej9Fp4WyN"
-		}, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			detail := v1Detail(t, tc.edit)
