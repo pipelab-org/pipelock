@@ -53,6 +53,7 @@ type lifecycleFlags struct {
 	rollbackTarget        string
 	intentID              string
 	authorizationID       string
+	receiptSync           lifecycleReceiptSync
 }
 
 type lifecycleContext struct {
@@ -200,7 +201,7 @@ func runPromote(cmd *cobra.Command, flags lifecycleFlags) error {
 		if err != nil {
 			return err
 		}
-		return appendLifecycleReceipts(lc.receiptOut, intentReceipt, committedReceipt)
+		return appendLifecycleReceiptsWithSync(lc.receiptOut, flags.receiptSync, intentReceipt, committedReceipt)
 	}
 	if err := writeAndAcceptManifest(lc.store, envelope, lc.opts, priorHash, generation-1, record); err != nil {
 		return err
@@ -286,7 +287,7 @@ func runRollback(cmd *cobra.Command, flags lifecycleFlags) error {
 		if err != nil {
 			return err
 		}
-		return appendLifecycleReceipts(lc.receiptOut, authReceipt, commitReceipt)
+		return appendLifecycleReceiptsWithSync(lc.receiptOut, flags.receiptSync, authReceipt, commitReceipt)
 	}
 	if err := writeAndAcceptManifest(lc.store, envelope, lc.opts, current.ManifestHash, current.Envelope.Body.Generation, record); err != nil {
 		return err
@@ -600,14 +601,35 @@ func prepareLifecycleReceiptPath(path string, syncDir func(string) error) (strin
 	return clean, nil
 }
 
+type lifecycleReceiptSync struct {
+	file func(*os.File) error
+	dir  func(string) error
+}
+
 func appendLifecycleReceipts(path string, receipts ...contractreceipt.EvidenceReceipt) error {
+	return appendLifecycleReceiptsWithSync(path, lifecycleReceiptSync{}, receipts...)
+}
+
+func appendLifecycleReceiptsWithSync(path string, syncReceipt lifecycleReceiptSync, receipts ...contractreceipt.EvidenceReceipt) error {
+	if syncReceipt.file == nil {
+		syncReceipt.file = (*os.File).Sync
+	}
+	if syncReceipt.dir == nil {
+		syncReceipt.dir = directorysync.Sync
+	}
 	clean, err := checkedWritePath(path)
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(filepath.Clean(clean), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(filepath.Clean(clean), os.O_CREATE|os.O_APPEND|os.O_RDWR, 0o600)
 	if err != nil {
 		return fmt.Errorf("open lifecycle receipts: %w", err)
+	}
+	// Validation and recording share the store lock. An interrupted encode
+	// can leave the next receipt joined to the previous partial line.
+	if err := checkLifecycleReceiptTail(f); err != nil {
+		_ = f.Close()
+		return err
 	}
 	enc := json.NewEncoder(f)
 	for _, receipt := range receipts {
@@ -616,15 +638,33 @@ func appendLifecycleReceipts(path string, receipts ...contractreceipt.EvidenceRe
 			return fmt.Errorf("write lifecycle receipt: %w", err)
 		}
 	}
-	if err := f.Sync(); err != nil {
+	if err := syncReceipt.file(f); err != nil {
 		_ = f.Close()
 		return fmt.Errorf("sync lifecycle receipts: %w", err)
 	}
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("close lifecycle receipts: %w", err)
 	}
-	if err := directorysync.Sync(filepath.Dir(clean)); err != nil {
+	if err := syncReceipt.dir(filepath.Dir(clean)); err != nil {
 		return fmt.Errorf("sync lifecycle receipt directory: %w", err)
+	}
+	return nil
+}
+
+func checkLifecycleReceiptTail(f *os.File) error {
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat lifecycle receipts: %w", err)
+	}
+	if info.Size() == 0 {
+		return nil
+	}
+	var last [1]byte
+	if _, err := f.ReadAt(last[:], info.Size()-1); err != nil {
+		return fmt.Errorf("read lifecycle receipt tail: %w", err)
+	}
+	if last[0] != '\n' {
+		return errors.New("lifecycle receipt file has an incomplete final JSONL record")
 	}
 	return nil
 }

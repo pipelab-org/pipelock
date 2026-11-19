@@ -5,6 +5,7 @@ package learn
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -12,10 +13,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
 	"github.com/luckyPipewrench/pipelock/internal/directorysync"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestLifecycleReceiptInterruptedAppendLeavesManifestUnchanged(t *testing.T) {
@@ -43,11 +46,20 @@ func TestLifecycleReceiptInterruptedAppendLeavesManifestUnchanged(t *testing.T) 
 		receiptPath := filepath.Join(fixture.root, "limited-receipts.jsonl")
 		const fileLimit = 64 << 10
 		const receiptRoom = 1500
-		if err := os.WriteFile(receiptPath, []byte(strings.Repeat(" ", fileLimit-receiptRoom)), 0o600); err != nil {
+		priorReceipts, err := os.ReadFile(filepath.Join(fixture.root, "first-receipts.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		prefix := append(bytes.Repeat([]byte(" "), fileLimit-receiptRoom-len(priorReceipts)), priorReceipts...)
+		if err := os.WriteFile(receiptPath, prefix, 0o600); err != nil {
 			t.Fatal(err)
 		}
 		signal.Ignore(unix.SIGXFSZ)
-		if err := unix.Setrlimit(unix.RLIMIT_FSIZE, &unix.Rlimit{Cur: fileLimit, Max: fileLimit}); err != nil {
+		var originalLimit unix.Rlimit
+		if err := unix.Getrlimit(unix.RLIMIT_FSIZE, &originalLimit); err != nil {
+			t.Fatal(err)
+		}
+		if err := unix.Setrlimit(unix.RLIMIT_FSIZE, &unix.Rlimit{Cur: fileLimit, Max: originalLimit.Max}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -76,6 +88,47 @@ func TestLifecycleReceiptInterruptedAppendLeavesManifestUnchanged(t *testing.T) 
 			t.Fatalf("active manifest changed after interrupted receipt append: %v", err)
 		}
 
+		if err := unix.Setrlimit(unix.RLIMIT_FSIZE, &originalLimit); err != nil {
+			t.Fatal(err)
+		}
+		const wantRetryError = "lifecycle receipt file has an incomplete final JSONL record"
+		if err := run(lifecycleTestCmd(nil, nil), flags); err == nil || err.Error() != wantRetryError {
+			t.Fatalf("retry on incomplete receipt file = %v, want %q", err, wantRetryError)
+		}
+		unchanged, err := os.ReadFile(filepath.Clean(receiptPath))
+		if err != nil || !bytes.Equal(unchanged, raw) {
+			t.Fatalf("retry changed the interrupted receipt log: %v", err)
+		}
+		afterRetry, err := os.ReadFile(filepath.Clean(manifestPath))
+		if err != nil || !bytes.Equal(afterRetry, before) {
+			t.Fatalf("retry changed the active manifest: %v", err)
+		}
+
+		flags.receiptOut = filepath.Join(fixture.root, "recovered-receipts.jsonl")
+		const retryID = "recovered-operation"
+		flags.intentID, flags.authorizationID = retryID, retryID
+		if err := run(lifecycleTestCmd(nil, nil), flags); err != nil {
+			t.Fatal(err)
+		}
+		receipts := readLifecycleReceipts(t, flags.receiptOut)
+		active := fixture.latestAccepted(t)
+		if len(receipts) != 2 || active.Envelope.Body.Generation != 3 {
+			t.Fatalf("recovery published %d receipts at generation %d", len(receipts), active.Envelope.Body.Generation)
+		}
+		for _, rcpt := range receipts {
+			if rcpt.ActiveManifestHash != active.ManifestHash {
+				t.Fatalf("receipt manifest %q, want %q", rcpt.ActiveManifestHash, active.ManifestHash)
+			}
+			var link struct {
+				IntentID        string `json:"intent_id"`
+				AuthorizationID string `json:"authorization_id"`
+			}
+			mustUnmarshalPayload(t, rcpt, &link)
+			if (operation == "promote" && link.IntentID != retryID) || (operation == "rollback" && link.AuthorizationID != retryID) {
+				t.Fatalf("receipt %s missing link to recovered operation: %+v", rcpt.PayloadKind, link)
+			}
+		}
+
 		return
 	}
 	for _, operation := range []string{"promote", "rollback"} {
@@ -84,7 +137,9 @@ func TestLifecycleReceiptInterruptedAppendLeavesManifestUnchanged(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			cmd := exec.CommandContext(t.Context(), bin, "-test.run=^TestLifecycleReceiptInterruptedAppendLeavesManifestUnchanged$") // #nosec G204 -- re-executes the current test binary.
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(10*time.Second))
+			defer cancel()
+			cmd := exec.CommandContext(ctx, bin, "-test.run=^TestLifecycleReceiptInterruptedAppendLeavesManifestUnchanged$") // #nosec G204 -- re-executes the current test binary.
 			cmd.Env = append(os.Environ(), childMode+"="+operation)
 			if output, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("interrupted %s: %v\n%s", operation, err, output)
@@ -124,5 +179,41 @@ func TestLifecycleReceiptPathCreatesNestedDirectories(t *testing.T) {
 	info, err := os.Stat(filepath.Dir(path))
 	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o750 {
 		t.Fatalf("receipt directory mode = %v, error = %v", info, err)
+	}
+}
+
+func TestLifecycleReceiptAppendSyncErrorsKeepActiveManifest(t *testing.T) {
+	injected := errors.New("receipt append sync failed")
+	for _, boundary := range []struct {
+		name string
+		sync lifecycleReceiptSync
+		want string
+	}{
+		{"file", lifecycleReceiptSync{file: func(*os.File) error { return injected }}, "sync lifecycle receipts: receipt append sync failed"},
+		{"directory", lifecycleReceiptSync{dir: func(string) error { return injected }}, "sync lifecycle receipt directory: receipt append sync failed"},
+	} {
+		t.Run(boundary.name, func(t *testing.T) {
+			fixture := newLifecycleTestFixture(t)
+			first := fixture.putContract(t, "worker-a")
+			second := fixture.putContract(t, "worker-b")
+			if err := runPromote(lifecycleTestCmd(nil, nil), fixture.promoteFlags(first, "worker-a", filepath.Join(fixture.root, "initial.jsonl"))); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(fixture.storeDir, "active.json")
+			before, err := os.ReadFile(filepath.Clean(path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			flags := fixture.promoteFlags(second, "worker-b", filepath.Join(fixture.root, "next.jsonl"))
+			flags.receiptSync = boundary.sync
+			err = runPromote(lifecycleTestCmd(nil, nil), flags)
+			if !errors.Is(err, injected) || err.Error() != boundary.want {
+				t.Fatalf("append error = %v, want %q", err, boundary.want)
+			}
+			after, err := os.ReadFile(filepath.Clean(path))
+			if err != nil || !bytes.Equal(after, before) {
+				t.Fatalf("active manifest changed after sync failure: %v", err)
+			}
+		})
 	}
 }
