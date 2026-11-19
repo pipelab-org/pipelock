@@ -358,9 +358,9 @@
       "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
       "when": "The upstream WebSocket handshake fails with an admitted request pending."
     },
-    "internal/mcp/proxy_ws.go/RunWSProxy/settle/2ed037bfdc7d7be1": {
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/879584910ff6a2d6": {
       "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
-      "when": "The WebSocket task authority recheck refuses the request at the send boundary."
+      "when": "A WebSocket task authority recheck refuses the request before or after request tracker registration."
     },
     "internal/mcp/proxy_ws.go/RunWSProxy/settle/af3c00839de40c1e": {
       "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
@@ -1759,7 +1759,7 @@
     "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPStandaloneStreamReceipt/dfc3d9d2b14295c0": "downstream_delivery",
     "internal/mcp/proxy_ws.go/RunWSProxy/settle/1072ca5eb0af9429": "downstream_delivery",
     "internal/mcp/proxy_ws.go/RunWSProxy/settle/7364bbf9dcdf8185": "upstream_send",
-    "internal/mcp/proxy_ws.go/RunWSProxy/settle/2ed037bfdc7d7be1": "upstream_send",
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/879584910ff6a2d6": "upstream_send",
     "internal/mcp/proxy_ws.go/RunWSProxy/settle/af3c00839de40c1e": "upstream_send",
     "internal/mcp/proxy_ws.go/RunWSProxy/settle/2d200dd7420bfdb6": "upstream_send",
     "internal/mcp/stream.go/emitTrackedStreamError/emitMCPStandaloneStreamReceipt/e1cd46399f2c6ca5": "downstream_delivery",

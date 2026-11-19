@@ -478,6 +478,51 @@ func TestWSTaskPermissionRechecksAfterHandshake(t *testing.T) {
 	}
 }
 
+func TestWSTaskPermissionRechecksAfterOutcomeRegistration(t *testing.T) {
+	cfg := config.Defaults()
+	rec := &httpTaskPermissionRecorder{subject: "test-subject"}
+	rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingDLP}))
+	emitter, _, _, _ := newReceiptTestHarnessWithObserver(t, func(r *receipt.Receipt) {
+		if strings.HasSuffix(r.ActionRecord.Pattern, "reason=request_tracker_capacity") {
+			rec.rotated.Store(true)
+		}
+	})
+	opts := MCPProxyOpts{Rec: rec, TaintCfg: &cfg.Taint, ReceiptEmitter: emitter, Transport: "mcp_ws", taskSubject: rec.subject}
+	frame := ParseMCPFrame([]byte(deferKillTestCall))
+	rec.action = mcpTaskAction(opts, frame)
+	decision := httpInputDecision{
+		taskFrame: frame,
+		taskTaint: taintDecision{Task: rec.TaskSnapshot(), taskAction: rec.action},
+	}
+	if refusal := mcpTaskReleaseRefusal(opts, frame, decision.taskTaint, false); refusal != "" {
+		t.Fatalf("task permission refused before registration: %s", refusal)
+	}
+
+	var oldest TrackedRequestOutcome
+	if _, err := opts.emitAdmittedReceiptDecision(MCPDecision{
+		Receipt: receipt.EmitOpts{
+			ActionID: "pending-before-release", Verdict: config.ActionAllow, Transport: opts.Transport,
+			Target: "tool:lookup", PolicyHash: mcpTestPolicyHash, MCPMethod: methodToolsCall,
+		},
+		outcome: &oldest,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tracker := NewRequestTracker()
+	tracker.TrackOutcome(json.RawMessage("999"), oldest)
+	for id := 1000; id < 999+maxTrackedRequests; id++ {
+		tracker.Track(json.RawMessage(strconv.Itoa(id)))
+	}
+
+	registration, refusal := registerWSTaskOutcome(io.Discard, opts, tracker, frame, decision)
+	if registration == nil || !rec.rotated.Load() {
+		t.Fatal("registration did not finish evicting the oldest outcome")
+	}
+	if !strings.Contains(refusal, session.TaskApprovalStale) || tracker.Validate(frame.ID) {
+		t.Fatalf("refusal = %q, registration still tracked = %t", refusal, tracker.Validate(frame.ID))
+	}
+}
+
 func TestStdioTaskPermissionRechecksAfterReceipt(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

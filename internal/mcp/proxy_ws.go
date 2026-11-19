@@ -239,6 +239,23 @@ func RunWSProxy(
 		}
 	}
 
+	refuseTaskRelease := func(frame MCPFrame, decision httpInputDecision, refusal string) {
+		outcome := decision.Outcome
+		block := inputMCPDenial(wsOpts, mcpTaintDenialAudit(), &BlockedRequest{
+			ID: frame.ID, IsNotification: isRPCNotification(frame.ID),
+			ErrorCode: -32002, ErrorMessage: "pipelock: " + refusal,
+		})
+		if wErr := deliverMCPInputResult(wsOpts, *block, safeClientOut); wErr != nil {
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send task refusal: %v\n", wErr)
+		}
+		intent := outcome.Receipt
+		intent.Layer = mcpReceiptLayerTaint
+		intent.TaintDecision = config.ActionBlock
+		intent.TaintDecisionReason = decision.taskTaint.recordTaskReleaseRefusal(refusal)
+		outcome.Receipt = intent
+		outcome.settle(safeLogW, wsOpts, mcpOutcomeStatusBlocked, -1, intent.TaintDecisionReason)
+	}
+
 	// Stdin -> upstream loop (runs on main goroutine).
 	var stdinErr error
 	for {
@@ -330,20 +347,7 @@ func RunWSProxy(
 		}
 
 		if refusal := mcpTaskReleaseRefusal(wsOpts, decision.taskFrame, decision.taskTaint, false); refusal != "" {
-			outcome := decision.Outcome
-			block := inputMCPDenial(wsOpts, mcpTaintDenialAudit(), &BlockedRequest{
-				ID: frame.ID, IsNotification: isRPCNotification(frame.ID),
-				ErrorCode: -32002, ErrorMessage: "pipelock: " + refusal,
-			})
-			if wErr := deliverMCPInputResult(wsOpts, *block, safeClientOut); wErr != nil {
-				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send task refusal: %v\n", wErr)
-			}
-			intent := outcome.Receipt
-			intent.Layer = mcpReceiptLayerTaint
-			intent.TaintDecision = config.ActionBlock
-			intent.TaintDecisionReason = decision.taskTaint.recordTaskReleaseRefusal(refusal)
-			outcome.Receipt = intent
-			outcome.settle(safeLogW, wsOpts, mcpOutcomeStatusBlocked, -1, intent.TaintDecisionReason)
+			refuseTaskRelease(frame, decision, refusal)
 			continue
 		}
 
@@ -352,8 +356,12 @@ func RunWSProxy(
 		// server-initiated calls, to prevent tracker pollution.
 		var registration *requestRegistration
 		if isTrackableRequest(msg, frame.ID) {
-			decision.Outcome.Method = frame.Method
-			registration = trackMCPOutcome(safeLogW, wsOpts, tracker, frame.ID, decision.Outcome)
+			var refusal string
+			registration, refusal = registerWSTaskOutcome(safeLogW, wsOpts, tracker, frame, decision)
+			if refusal != "" {
+				refuseTaskRelease(frame, decision, refusal)
+				continue
+			}
 		}
 
 		// Forward to upstream.
@@ -406,4 +414,17 @@ func a2aCardURLForWSUpstream(raw string) string {
 		u.Scheme = "https"
 	}
 	return u.String()
+}
+
+// Registering can settle an evicted outcome and invoke receipt observers.
+// Check the current task permission after those observers have returned.
+func registerWSTaskOutcome(logW io.Writer, opts MCPProxyOpts, tracker *RequestTracker, frame MCPFrame, decision httpInputDecision) (*requestRegistration, string) {
+	outcome := decision.Outcome
+	outcome.Method = frame.Method
+	registration := trackMCPOutcome(logW, opts, tracker, frame.ID, outcome)
+	refusal := mcpTaskReleaseRefusal(opts, decision.taskFrame, decision.taskTaint, false)
+	if refusal != "" {
+		tracker.removeOwnedOutcome(frame.ID, registration)
+	}
+	return registration, refusal
 }
