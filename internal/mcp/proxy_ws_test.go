@@ -296,12 +296,13 @@ func TestRunWSProxy_RequireReceiptsRecordsInitializeOutcome(t *testing.T) {
 	sc := testScannerForWS(t)
 
 	pr, pw := io.Pipe()
+	defer func() { _ = pw.Close() }()
 	var stdout, stderr lockedHTTPBuffer
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), MCPProxyOpts{
+		done <- RunWSProxy(ctx, struct{ io.Reader }{pr}, &stdout, &stderr, wsURL(srv), MCPProxyOpts{
 			Scanner:         sc,
 			ReceiptEmitter:  emitter,
 			RequireReceipts: true,
@@ -312,7 +313,7 @@ func TestRunWSProxy_RequireReceiptsRecordsInitializeOutcome(t *testing.T) {
 	testwait.For(t, time.Second, func() bool {
 		return stdout.contains(`"id":1`)
 	}, "initialize response forwarded to stdout")
-	_ = pw.Close()
+	// Let upstream EOF finish the admission before closing the local input.
 	if err := <-done; err != nil {
 		t.Fatalf("RunWSProxy: %v", err)
 	}
@@ -320,18 +321,27 @@ func TestRunWSProxy_RequireReceiptsRecordsInitializeOutcome(t *testing.T) {
 		t.Fatalf("recorder.Close: %v", err)
 	}
 	receipts := readActionReceipts(t, dir)
-	if len(receipts) != 3 {
-		t.Fatalf("receipt count = %d, want upgrade admission and initialize pair", len(receipts))
+	if len(receipts) != 4 {
+		t.Fatalf("receipt count = %d, want upgrade and initialize pairs", len(receipts))
 	}
-	upgrade, intent, outcome := receipts[0].ActionRecord, receipts[1].ActionRecord, receipts[2].ActionRecord
-	if upgrade.DecisionPhase != "" || upgrade.Method != "WS" || upgrade.Verdict != config.ActionForward {
-		t.Fatalf("upgrade admission = %+v", upgrade)
+	upgrade, intent, outcome, terminal := receipts[0].ActionRecord, receipts[1].ActionRecord, receipts[2].ActionRecord, receipts[3].ActionRecord
+	assertMCPTransportReceiptPair(t, upgrade, terminal, receipt.ActionRecord{
+		Method: settlementUpgrade, Transport: "mcp_ws", Target: wsURL(srv),
+		Verdict: config.ActionForward, Pattern: completedMCPStreamPattern,
+	})
+	assertMCPWebSocketInitializePair(t, intent, outcome, upgrade.ActionID)
+}
+
+func assertMCPWebSocketInitializePair(t *testing.T, intent, outcome receipt.ActionRecord, upgradeID string) {
+	t.Helper()
+	if intent.ActionID == "" || intent.ActionID == upgradeID || intent.DecisionPhase != receipt.DecisionPhaseIntent ||
+		intent.Target != "initialize" || intent.Method != "" || intent.Transport != "mcp_ws" || intent.Verdict != config.ActionAllow {
+		t.Fatalf("initialize intent = %+v", intent)
 	}
-	if intent.DecisionPhase != receipt.DecisionPhaseIntent || outcome.DecisionPhase != receipt.DecisionPhaseOutcome {
-		t.Fatalf("phases = %q/%q, want intent/outcome", intent.DecisionPhase, outcome.DecisionPhase)
-	}
-	if intent.ActionID == "" || intent.ActionID != outcome.ActionID || intent.ActionID == upgrade.ActionID {
-		t.Fatalf("upgrade, intent, outcome action IDs = %q/%q/%q", upgrade.ActionID, intent.ActionID, outcome.ActionID)
+	if outcome.ActionID != intent.ActionID || outcome.DecisionPhase != receipt.DecisionPhaseOutcome ||
+		outcome.Target != intent.Target || outcome.Method != intent.Method || outcome.Transport != intent.Transport ||
+		outcome.Verdict != config.ActionAllow || outcome.Layer != mcpOutcomeLayer || outcome.Pattern != "status=result bytes=36 reason=complete" {
+		t.Fatalf("initialize outcome = %+v", outcome)
 	}
 }
 

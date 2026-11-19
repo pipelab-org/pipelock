@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -629,4 +630,49 @@ func mustJSON(t *testing.T, value any) []byte {
 		t.Fatalf("Marshal: %v", err)
 	}
 	return append(raw, '\n')
+}
+
+func TestAppendLifecycleReceiptsRefusesIncompleteTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipts.jsonl")
+	before := []byte("{}\n{\"payload\":")
+	if err := os.WriteFile(path, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const wantError = "lifecycle receipt file has an incomplete final JSONL record"
+	err := appendLifecycleReceipts(path, contractreceipt.EvidenceReceipt{})
+	if err == nil || err.Error() != wantError {
+		t.Fatalf("append = %v, want %q", err, wantError)
+	}
+	after, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("receipt log changed from %q to %q", before, after)
+	}
+}
+
+func TestCheckLifecycleReceiptTailDescriptorErrors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipts.jsonl")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	err = checkLifecycleReceiptTail(f)
+	var pathErr *os.PathError
+	if err == nil || !strings.HasPrefix(err.Error(), "read lifecycle receipt tail: ") ||
+		!errors.As(err, &pathErr) || pathErr.Op != "read" || pathErr.Path != path {
+		t.Fatalf("write-only descriptor error = %v, want wrapped tail read error for %s", err, path)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = checkLifecycleReceiptTail(f)
+	if !errors.Is(err, os.ErrClosed) || !strings.HasPrefix(err.Error(), "stat lifecycle receipts: ") {
+		t.Fatalf("closed descriptor error = %v, want wrapped stat error", err)
+	}
 }

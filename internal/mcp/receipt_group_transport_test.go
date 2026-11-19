@@ -494,15 +494,15 @@ func TestMCPWebSocketOutcomeKeepsAdmissionShard(t *testing.T) {
 	opts, rec, dir, shards := newMCPTransportReceiptGroup(t)
 	opts.Scanner = testScannerForWS(t)
 	stdin, input := io.Pipe()
+	defer func() { _ = input.Close() }()
 	var stdout, stderr lockedHTTPBuffer
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), opts) }()
+	go func() { done <- RunWSProxy(ctx, struct{ io.Reader }{stdin}, &stdout, &stderr, wsURL(srv), opts) }()
 	_, _ = io.WriteString(input, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`+"\n")
 	waitForResponse(t, responseSent)
 	testwait.For(t, time.Second, func() bool { return stdout.contains(`"id":1`) }, "WebSocket response forwarded")
-	_ = input.Close()
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
@@ -510,25 +510,45 @@ func TestMCPWebSocketOutcomeKeepsAdmissionShard(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The upgrade takes the first shard and initialize takes the next.
-	var actionID string
+	records := make(map[string][]receipt.ActionRecord)
 	for _, entry := range readReceiptEntriesHTTP(t, dir) {
-		if entry.Type != "action_receipt" || !bytes.Contains(entry.RawDetail, []byte(`"decision_phase":"intent"`)) {
+		if entry.Type != actionReceiptEntryType {
 			continue
 		}
-		var detail struct {
-			ActionRecord struct {
-				ActionID string `json:"action_id"`
-			} `json:"action_record"`
-		}
-		if err := json.Unmarshal(entry.RawDetail, &detail); err != nil {
+		signed, err := receipt.Unmarshal(entry.RawDetail)
+		if err != nil {
 			t.Fatal(err)
 		}
-		actionID = detail.ActionRecord.ActionID
+		if signed.ActionRecord.SessionControl != nil {
+			continue
+		}
+		records[entry.SessionID] = append(records[entry.SessionID], signed.ActionRecord)
 	}
-	if actionID == "" {
-		t.Fatal("missing WebSocket intent")
+	upgrade, initialize := records[shards[0].SessionID], records[shards[1].SessionID]
+	if len(records) != 2 || len(upgrade) != 2 || len(initialize) != 2 {
+		t.Fatalf("want upgrade and initialize pairs on separate shards, got %v", records)
 	}
-	assertMCPTransportReceiptShard(t, dir, shards, actionID, 1)
+	assertMCPTransportReceiptPair(t, upgrade[0], upgrade[1], receipt.ActionRecord{
+		Method: settlementUpgrade, Transport: "mcp_ws", Target: wsURL(srv),
+		Verdict: config.ActionForward, Pattern: completedMCPStreamPattern,
+	})
+	assertMCPWebSocketInitializePair(t, initialize[0], initialize[1], upgrade[0].ActionID)
+	assertMCPTransportReceiptShard(t, dir, shards, initialize[0].ActionID, 2)
+}
+
+const completedMCPStreamPattern = "status=completed bytes=unknown reason=stream_completed"
+
+func assertMCPTransportReceiptPair(t *testing.T, admission, terminal receipt.ActionRecord, want receipt.ActionRecord) {
+	t.Helper()
+	if admission.ActionID == "" || admission.Layer != mcpTransportAdmissionLayer || admission.DecisionPhase != "" ||
+		admission.Method != want.Method || admission.Transport != want.Transport || admission.Target != want.Target || admission.Verdict != config.ActionForward {
+		t.Fatalf("transport admission = %+v", admission)
+	}
+	if terminal.ActionID != admission.ActionID || terminal.Layer != mcpOutcomeLayer || terminal.DecisionPhase != "" ||
+		terminal.Method != want.Method || terminal.Transport != want.Transport || terminal.Target != want.Target ||
+		terminal.Verdict != want.Verdict || terminal.Pattern != want.Pattern {
+		t.Fatalf("transport terminal = %+v, want %s with pattern %q for %s", terminal, want.Verdict, want.Pattern, admission.ActionID)
+	}
 }
 
 func TestRequiredBridgeGETAdmitsBeforeOpen(t *testing.T) {

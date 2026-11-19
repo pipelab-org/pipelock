@@ -220,54 +220,21 @@ func TestMCPListenerStreamIntegrity(t *testing.T) {
 				if ending == "cancel" || ending == "handler_cancel" {
 					wantReason = httpstream.Cancelled
 				}
-				found := false
-				var intentID string
-				var getAdmissions int
-				outcomes := make(map[string]string)
-				for _, rec := range receipts {
-					if method == http.MethodGet {
-						if rec.ActionRecord.Layer == "mcp_transport_admission" &&
-							rec.ActionRecord.Verdict == config.ActionForward && rec.ActionRecord.DecisionPhase == "" {
-							getAdmissions++
-							continue
-						}
-						if rec.ActionRecord.Layer != "outcome" {
-							t.Fatalf("GET subscription emitted a new decision receipt: %+v", rec.ActionRecord)
-						}
-						if ending == "complete" {
-							t.Fatalf("completed GET subscription emitted a new outcome receipt: %+v", rec.ActionRecord)
-						}
+				if method == http.MethodGet {
+					if len(receipts) != 2 {
+						t.Fatalf("GET receipt count = %d, want admission and terminal", len(receipts))
 					}
-					switch rec.ActionRecord.DecisionPhase {
-					case receipt.DecisionPhaseIntent:
-						if intentID != "" {
-							t.Fatal("multiple request intents")
-						}
-						intentID = rec.ActionRecord.ActionID
-					case receipt.DecisionPhaseOutcome:
-						if _, exists := outcomes[rec.ActionRecord.ActionID]; exists {
-							t.Fatalf("duplicate outcome for action %s", rec.ActionRecord.ActionID)
-						}
-						outcomes[rec.ActionRecord.ActionID] = rec.ActionRecord.Pattern
+					verdict, pattern := config.ActionWarn, "status=error bytes=unknown reason="+wantReason
+					if ending == "complete" {
+						verdict, pattern = config.ActionForward, completedMCPStreamPattern
 					}
-					if rec.ActionRecord.Layer == "outcome" && strings.Contains(rec.ActionRecord.Pattern, "reason="+wantReason) {
-						found = true
-					}
-				}
-				if method == http.MethodGet && getAdmissions != 1 {
-					t.Fatalf("GET admission receipts = %d, want one", getAdmissions)
-				}
-				if ending != "complete" && !found {
-					t.Fatalf("missing %s outcome: %+v", wantReason, receipts)
-				}
-				if method == http.MethodPost {
-					if ending == "complete" || ending == "completed_rpc_then_break" {
-						if !strings.HasPrefix(outcomes[intentID], "status=result ") || (ending == "complete" && len(outcomes) != 1) {
-							t.Fatalf("completed POST intent %q must have one result outcome, got %v", intentID, outcomes)
-						}
-					} else if len(outcomes) != 1 || !strings.HasSuffix(outcomes[intentID], "reason="+wantReason) {
-						t.Fatalf("interrupted POST intent %q must have one matching %s outcome, got %v", intentID, wantReason, outcomes)
-					}
+					assertMCPTransportReceiptPair(t, receipts[0].ActionRecord, receipts[1].ActionRecord,
+						receipt.ActionRecord{
+							Method: http.MethodGet, Transport: "mcp_http_listener", Target: upstream.URL,
+							Verdict: verdict, Pattern: pattern,
+						})
+				} else {
+					assertMCPListenerPOSTOutcomes(t, receipts, ending, wantReason)
 				}
 				logger.Close()
 				logBytes, err := os.ReadFile(filepath.Clean(auditPath))
@@ -280,5 +247,39 @@ func TestMCPListenerStreamIntegrity(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func assertMCPListenerPOSTOutcomes(t *testing.T, receipts []receipt.Receipt, ending, wantReason string) {
+	t.Helper()
+	found := false
+	var intentID string
+	outcomes := make(map[string]string)
+	for _, rec := range receipts {
+		switch rec.ActionRecord.DecisionPhase {
+		case receipt.DecisionPhaseIntent:
+			if intentID != "" {
+				t.Fatal("multiple request intents")
+			}
+			intentID = rec.ActionRecord.ActionID
+		case receipt.DecisionPhaseOutcome:
+			if _, exists := outcomes[rec.ActionRecord.ActionID]; exists {
+				t.Fatalf("duplicate outcome for action %s", rec.ActionRecord.ActionID)
+			}
+			outcomes[rec.ActionRecord.ActionID] = rec.ActionRecord.Pattern
+		}
+		if rec.ActionRecord.Layer == mcpOutcomeLayer && strings.Contains(rec.ActionRecord.Pattern, "reason="+wantReason) {
+			found = true
+		}
+	}
+	if ending != "complete" && !found {
+		t.Fatalf("missing %s outcome: %+v", wantReason, receipts)
+	}
+	if ending == "complete" || ending == "completed_rpc_then_break" {
+		if !strings.HasPrefix(outcomes[intentID], "status=result ") || (ending == "complete" && len(outcomes) != 1) {
+			t.Fatalf("completed POST intent %q must have one result outcome, got %v", intentID, outcomes)
+		}
+	} else if len(outcomes) != 1 || !strings.HasSuffix(outcomes[intentID], "reason="+wantReason) {
+		t.Fatalf("interrupted POST intent %q must have one matching %s outcome, got %v", intentID, wantReason, outcomes)
 	}
 }
