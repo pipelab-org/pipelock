@@ -306,14 +306,17 @@ func v3RotatedCutoverRecipes(t *testing.T) []v3Recipe {
 	const priorCount = 3
 	var legacy bytes.Buffer
 	var heads [priorCount + 2]string
+	var sequences [len(heads)]int64
 	var chain []actionreceipt.Receipt
 	var prefixBytes int
 	prev := actionreceipt.GenesisHash
 	for i := range heads {
 		key, seq := before, uint64(i)
+		sequences[i] = int64(i)
 		var transition *actionreceipt.KeyTransition
 		if i >= priorCount {
 			key, seq = after, uint64(i-priorCount)
+			sequences[i] = int64(i - priorCount)
 		}
 		if i == len(heads)-1 {
 			prefixBytes = legacy.Len()
@@ -366,7 +369,7 @@ func v3RotatedCutoverRecipes(t *testing.T) []v3Recipe {
 		s := v3New(t)
 		s.records = nil
 		inventory := v3Canonical(t, v3.Inventory{V: 1, Chains: []v3.InventoryChain{{
-			Chain: heads[0], Format: "action_v1", Record: heads[tc.pin], Seq: int64(chain[tc.pin].ActionRecord.ChainSeq),
+			Chain: heads[0], Format: "action_v1", Record: heads[tc.pin], Seq: sequences[tc.pin],
 		}}})
 		digest := v3.Digest(inventory)
 		open := v3DefaultOpen(s.key, s.lineage)
