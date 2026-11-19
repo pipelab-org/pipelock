@@ -58,7 +58,11 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 	}
 	sessions := map[string]string{}
 	groupDirs := map[string]bool{}
-	batches := []legacyBatch{}
+	positions := map[legacyIdentity]map[int64]string{}
+	verifyBatch := func(batch legacyBatch) {
+		v.legacyActions(batch, keys, presented, positions)
+		v.legacyEvidence(batch, keys, presented, positions)
+	}
 	for _, path := range paths {
 		name := filepath.Base(path)
 		if v.opts.Directory {
@@ -76,7 +80,7 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 		case err != nil:
 			v.failedLegacy("", err)
 		case len(batch.action) != 0 || len(batch.evidence) != 0:
-			batches = append(batches, batch)
+			verifyBatch(batch)
 		case operational && v.opts.Directory || v.skip == codeUnrecognizedFile:
 			v.result.IgnoredFiles++
 		default:
@@ -159,7 +163,7 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 		case err != nil:
 			v.failedLegacy(session, err)
 		case len(batch.action) != 0 || len(batch.evidence) != 0:
-			batches = append(batches, batch)
+			verifyBatch(batch)
 		default:
 			v.result.IgnoredFiles++
 		}
@@ -167,11 +171,6 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 	for _, base := range sortedKeys(bases) {
 		dir := bases[base]
 		v.verifyLegacyContinuity(dir, base, keys, groupDirs[dir])
-	}
-	positions := map[legacyIdentity]map[int64]string{}
-	for _, batch := range batches {
-		v.legacyActions(batch, keys, presented, positions)
-		v.legacyEvidence(batch, keys, presented, positions)
 	}
 	if err := v.verifyLegacyEndpoint(presented); err != nil {
 		return nil, err

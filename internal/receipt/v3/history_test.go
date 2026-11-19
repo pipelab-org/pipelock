@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -547,5 +548,28 @@ func TestAllForkBranchesReported(t *testing.T) {
 	}
 	if forks != len(paths) || result.Verdict != "INVALID" {
 		t.Fatalf("got %d forks and verdict %q", forks, result.Verdict)
+	}
+}
+
+func TestInventoryRefusesNonRegularFile(t *testing.T) {
+	if _, _, err := readInventory(t.TempDir(), Cutover{Inventory: EmptyInventoryDigest()}, ""); err == nil || !strings.Contains(err.Error(), "open cutover inventory") {
+		t.Fatalf("non-regular inventory error = %v", err)
+	}
+}
+
+func TestInventoryRejectsWrongDigestBeforeDecoding(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "inventory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	if err := file.Truncate(8 << 20); err != nil {
+		t.Fatal(err)
+	}
+	if _, code, err := readInventoryFile(file, Cutover{Inventory: EmptyInventoryDigest()}, ""); err != nil || code != codeCutoverInventoryMismatch {
+		t.Fatalf("mismatched inventory: finding %q, error %v", code, err)
+	}
+	if offset, err := file.Seek(0, io.SeekCurrent); err != nil || offset != 8<<20 {
+		t.Fatalf("expected digest pass to finish without rewinding: offset %d, error %v", offset, err)
 	}
 }

@@ -4,12 +4,13 @@
 package v3
 
 import (
-	"bytes"
 	"cmp"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"io"
 	"slices"
 	"strings"
 )
@@ -175,47 +176,101 @@ func (v *verification) cutoverMembershipKnown() bool {
 }
 
 func readInventory(path string, pin Cutover, skip string) (Inventory, string, error) {
-	data := []byte(emptyInventory)
-	if path != "" {
-		resolved, err := filepath.EvalSymlinks(path)
-		if err != nil {
-			return Inventory{}, "", fmt.Errorf("resolve cutover inventory: %w", err)
+	if path == "" {
+		switch {
+		case pin.Inventory != EmptyInventoryDigest():
+			if skip == codeCutoverInventoryNotPresented {
+				return Inventory{}, codeCutoverInventoryMismatch, nil
+			}
+			return Inventory{}, codeCutoverInventoryNotPresented, nil
+		case pin.Chains > 0:
+			return Inventory{}, codeCutoverInventoryMismatch, nil
+		default:
+			return Inventory{Chains: []InventoryChain{}, V: 1}, "", nil
 		}
-		data, err = os.ReadFile(filepath.Clean(resolved))
-		if err != nil {
-			return Inventory{}, "", fmt.Errorf("read cutover inventory: %w", err)
+	}
+	file, err := openEvidence(path)
+	if err != nil {
+		return Inventory{}, "", fmt.Errorf("open cutover inventory: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	return readInventoryFile(file, pin, skip)
+}
+
+func readInventoryFile(file io.ReadSeeker, pin Cutover, skip string) (Inventory, string, error) {
+	checkDigest := skip != codeCutoverInventoryMismatch
+	digest := sha256.New()
+	if checkDigest {
+		if _, err := io.Copy(digest, file); err != nil {
+			return Inventory{}, "", fmt.Errorf("hash cutover inventory: %w", err)
 		}
-	} else if skip != codeCutoverInventoryNotPresented && pin.Inventory != EmptyInventoryDigest() {
-		return Inventory{}, codeCutoverInventoryNotPresented, nil
+		if "sha256:"+hex.EncodeToString(digest.Sum(nil)) != pin.Inventory {
+			return Inventory{}, codeCutoverInventoryMismatch, nil
+		}
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return Inventory{}, "", fmt.Errorf("rewind cutover inventory: %w", err)
+		}
+		digest.Reset()
 	}
-	if skip != codeCutoverInventoryMismatch && Digest(data) != pin.Inventory {
-		return Inventory{}, codeCutoverInventoryMismatch, nil
-	}
-	var inventory Inventory
-	if err := json.Unmarshal(data, &inventory); err != nil {
-		return Inventory{}, codeCutoverInventoryMismatch, nil
-	}
-	if !inventory.valid(pin.Chains) {
-		return Inventory{}, codeCutoverInventoryMismatch, nil
-	}
-	canonical, err := canonicalJSON(inventory)
-	if err != nil || skip != codeCutoverInventoryMismatch && !bytes.Equal(data, canonical) {
+	inventory, canonical, valid := decodeInventory(io.TeeReader(file, digest), pin.Chains)
+	// Bind both the parsed bytes and their canonical encoding to the pin.
+	// The second hash catches edits between hashing and decoding.
+	if !valid || checkDigest && (canonical != pin.Inventory || "sha256:"+hex.EncodeToString(digest.Sum(nil)) != pin.Inventory) {
 		return Inventory{}, codeCutoverInventoryMismatch, nil
 	}
 	return inventory, "", nil
 }
 
-func (i Inventory) valid(chains int64) bool {
-	if i.V != 1 || i.Chains == nil || chains >= 0 && int64(len(i.Chains)) != chains ||
-		i.Journal != "" && !isDigest(i.Journal) {
-		return false
+func decodeInventory(input io.Reader, chains int64) (Inventory, string, bool) {
+	var inventory Inventory
+	d := json.NewDecoder(input)
+	h := sha256.New()
+	token := func(want any) bool {
+		got, err := d.Token()
+		return err == nil && got == want
 	}
-	for index, row := range i.Chains {
-		if !validLegacyRow(row) || index > 0 && compareLegacy(i.Chains[index-1], row) >= 0 {
-			return false
+	if !token(json.Delim('{')) || !token("chains") || !token(json.Delim('[')) {
+		return Inventory{}, "", false
+	}
+	_, _ = io.WriteString(h, "{\"chains\":[")
+	inventory.Chains = []InventoryChain{}
+	for d.More() {
+		var row InventoryChain
+		if err := d.Decode(&row); err != nil || !validLegacyRow(row) {
+			return Inventory{}, "", false
 		}
+		n := len(inventory.Chains)
+		if chains >= 0 && int64(n) >= chains || n > 0 && compareLegacy(inventory.Chains[n-1], row) >= 0 {
+			return Inventory{}, "", false
+		}
+		if n > 0 {
+			_, _ = io.WriteString(h, ",")
+		}
+		// The row's fields appear in canonical order and valid values
+		// contain only ASCII characters that need no escaping.
+		_, _ = fmt.Fprintf(h, "{\"chain\":%q,\"format\":%q,\"record\":%q,\"seq\":%d}", row.Chain, row.Format, row.Record, row.Seq)
+		inventory.Chains = append(inventory.Chains, row)
 	}
-	return true
+	if !token(json.Delim(']')) || chains >= 0 && int64(len(inventory.Chains)) != chains {
+		return Inventory{}, "", false
+	}
+	_, _ = io.WriteString(h, "]")
+	key, err := d.Token()
+	if err == nil && key == "journal" {
+		if err := d.Decode(&inventory.Journal); err != nil || !isDigest(inventory.Journal) {
+			return Inventory{}, "", false
+		}
+		_, _ = fmt.Fprintf(h, ",\"journal\":%q", inventory.Journal)
+		key, err = d.Token()
+	}
+	if err != nil || key != "v" || d.Decode(&inventory.V) != nil || inventory.V != 1 || !token(json.Delim('}')) {
+		return Inventory{}, "", false
+	}
+	if _, err := d.Token(); !errors.Is(err, io.EOF) {
+		return Inventory{}, "", false
+	}
+	_, _ = io.WriteString(h, ",\"v\":1}")
+	return inventory, "sha256:" + hex.EncodeToString(h.Sum(nil)), true
 }
 
 func compareLegacy(a, b InventoryChain) int {
@@ -227,11 +282,11 @@ func validLegacyRow(row InventoryChain) bool {
 		return false
 	}
 	switch row.Format {
-	case "action_v1":
+	case legacyAction:
 		return isDigest(row.Chain) || isLowerHex(row.Chain, 32)
-	case "evidence_v2":
+	case legacyEvidence:
 		return isDigest(row.Chain)
-	case "receipt_group":
+	case legacyGroup:
 		return isLowerHex(row.Chain, 32)
 	}
 	return false
