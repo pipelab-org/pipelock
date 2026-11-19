@@ -155,7 +155,11 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 		}
 		// The session came from top-level input discovery. Its recorder
 		// history lives there even if another recorder has a subdirectory.
-		location := recorder.EvidenceLocation{Root: dir, Dir: dir}
+		root, absErr := filepath.Abs(dir)
+		if absErr != nil {
+			return nil, fmt.Errorf("resolve legacy receipt directory: %w", absErr)
+		}
+		location := recorder.EvidenceLocation{Root: root, Dir: root}
 		batch := legacyBatch{recorder: true, session: session}
 		err := recorder.WithSessionHistorySnapshot(location, session, func() error {
 			var readErr error

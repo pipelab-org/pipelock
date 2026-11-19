@@ -141,8 +141,13 @@ Examples:
 			if chainDir != "" {
 				var v3Root bool
 				if locationID == "" {
-					if root, openErr := recorder.OpenEvidenceDirectory(chainDir); openErr == nil {
-						v3Root, _ = v3.DirectoryHasV3(chainDir)
+					var absErr error
+					targetDir, absErr = filepath.Abs(chainDir)
+					if absErr != nil {
+						return configError(fmt.Errorf("resolve receipt directory: %w", absErr))
+					}
+					if root, openErr := recorder.OpenEvidenceDirectory(targetDir); openErr == nil {
+						v3Root, _ = v3.DirectoryHasV3(targetDir)
 						_ = root.Close()
 					}
 				}
