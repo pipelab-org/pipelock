@@ -645,6 +645,7 @@ func RunHTTPProxy(
 		}
 
 		if gate, gateErr := evaluateMCPUpstreamGate(ctx, upstreamURL, opts); gateErr != nil {
+			decision.v3Upstream.finish(fwdOpts, safeLogW, false, nil)
 			outcome := mcpLocalRefusedOutcome(tracker, frame.ID, decision)
 			denialAudit = mcpListenerContractEvalDenialAudit()
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream evaluation failed: %v\n", gateErr)
@@ -662,6 +663,7 @@ func RunHTTPProxy(
 			emitContractRefusedOutcome(safeLogW, outcome, mcpContractGateOutput{}, mcpContractEvaluationFailedReason, int64(len(errResp)), fwdOpts)
 			continue
 		} else if gate.Verdict == config.ActionBlock {
+			decision.v3Upstream.finish(fwdOpts, safeLogW, false, nil)
 			outcome := mcpLocalRefusedOutcome(tracker, frame.ID, decision)
 			denialAudit = mcpUpstreamGateDenialAudit(gate)
 			if gate.WinningSource == contractruntime.WinningSourceScanner {
