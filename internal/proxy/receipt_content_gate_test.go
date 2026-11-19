@@ -22,29 +22,68 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
-func TestReceiptContentWithFullSourceHistory(t *testing.T) {
+const sourceHistoryLeft, sourceHistoryRight = "Xk9mQ2vL7pR4", "Bn6Yc3Zd5Qa8"
+
+type sourceHistoryContent struct {
+	left, middle, right string
+	overBudget          bool
+}
+
+// The pair-only search cannot assemble these fixtures across three fields.
+// Each pair with the configured principal is shorter than a matching window.
+// The v1 projection also omits standard HTTP methods.
+func TestReceiptContentPairOnlyKnownLimitsWithFullSourceHistory(t *testing.T) {
 	for _, version := range []string{"v1", "v2"} {
-		for _, bridge := range []string{"local", http.MethodGet} {
-			t.Run(version+"/"+bridge, func(t *testing.T) {
-				testReceiptContentWithSources(t, version, bridge, false)
+		for _, middle := range []string{"local", http.MethodGet} {
+			t.Run(version+"/"+middle, func(t *testing.T) {
+				fixture := sourceHistoryContent{sourceHistoryLeft[:10], middle, sourceHistoryRight[:10], false}
+				if err := emitReceiptWithFullSourceHistory(t, version, fixture); err != nil {
+					t.Fatalf("pair-only scan refused the receipt: %v", err)
+				}
 			})
 		}
-		t.Run(version+"/incomplete", func(t *testing.T) {
-			testReceiptContentWithSources(t, version, "local", true)
+	}
+}
+
+func TestReceiptContentRejectsPairMatchWithFullSourceHistory(t *testing.T) {
+	for _, version := range []string{"v1", "v2"} {
+		t.Run(version, func(t *testing.T) {
+			fixture := sourceHistoryContent{sourceHistoryLeft, "local", sourceHistoryRight, false}
+			err := emitReceiptWithFullSourceHistory(t, version, fixture)
+			var rejection *receiptcontent.RejectionError
+			if !errors.As(err, &rejection) || rejection.View != receiptcontent.ViewFragments || rejection.Pattern != "Environment Variable Leak" {
+				t.Fatalf("receipt result = %v, want a fixed-value pair match", err)
+			}
 		})
 	}
 }
 
-func testReceiptContentWithSources(t *testing.T, version, bridge string, incomplete bool) {
+func TestReceiptContentRefusesOverBudgetWithFullSourceHistory(t *testing.T) {
+	for _, version := range []string{"v1", "v2"} {
+		t.Run(version, func(t *testing.T) {
+			fixture := sourceHistoryContent{sourceHistoryLeft, "local", sourceHistoryRight, true}
+			err := emitReceiptWithFullSourceHistory(t, version, fixture)
+			var rejection *receiptcontent.RejectionError
+			if !errors.As(err, &rejection) || rejection.View != receiptcontent.ViewBudget {
+				t.Fatalf("receipt result = %v, want incomplete reconstruction", err)
+			}
+		})
+	}
+}
+
+func emitReceiptWithFullSourceHistory(t *testing.T, version string, fixture sourceHistoryContent) error {
 	t.Helper()
-	const left, right = "Xk9mQ2vL7pR4", "Bn6Yc3Zd5Qa8"
-	t.Setenv("PIPELOCK_TEST_RECEIPT_CONTENT_VALUE", left+bridge+right)
+	whole := fixture.left + fixture.middle + fixture.right
+	t.Setenv("PIPELOCK_TEST_RECEIPT_CONTENT_VALUE", whole)
 	key := ed25519.NewKeyFromSeed([]byte(strings.Repeat("k", ed25519.SeedSize)))
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.DLP.ScanEnv = true
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
+	if res := sc.ScanTextForDLPQuiet(t.Context(), whole); res.Err() != nil || res.Clean {
+		t.Fatal("complete fixture must match")
+	}
 	r, err := recorder.NewWithScanner(recorder.Config{Enabled: true, Dir: t.TempDir(), Redact: true}, sc, key)
 	if err != nil {
 		t.Fatal(err)
@@ -63,19 +102,19 @@ func testReceiptContentWithSources(t *testing.T, version, bridge string, incompl
 				Level: session.TaintExternalUntrusted, Timestamp: time.Date(2026, 1, 1, 0, 0, i, 0, time.UTC), MatchReason: "external",
 			})
 		}
-		if incomplete {
+		if fixture.overBudget {
 			for i := range opts.RecentTaintSources {
 				opts.RecentTaintSources[i].MatchReason = strings.Repeat("ordinary text ", 2000)
 			}
 		} else {
-			opts.SessionTaskLabel, opts.Agent = left, right
+			opts.SessionTaskLabel, opts.Agent = fixture.left, fixture.right
 		}
 		err = em.Emit(opts)
 	} else {
 		// V2 records policy sources rather than taint history, and has no
-		// method field. Bind the bridge value as retained producer content.
+		// method field. Use the middle value as its configured principal.
 		em := proxydecision.NewEmitter(proxydecision.EmitterConfig{
-			Recorder: r, Signer: proxydecision.NewKeyedSigner(key), Principal: bridge, Actor: "pipelock",
+			Recorder: r, Signer: proxydecision.NewKeyedSigner(key), Principal: fixture.middle, Actor: "pipelock",
 		})
 		decision, ok := v2DecisionFromOpts(opts)
 		if !ok {
@@ -84,26 +123,17 @@ func testReceiptContentWithSources(t *testing.T, version, bridge string, incompl
 		for i := range 10 {
 			decision.PolicySources = append(decision.PolicySources, fmt.Sprintf("source-%d", i))
 		}
-		if incomplete {
+		if fixture.overBudget {
 			for i := range decision.PolicySources {
 				decision.PolicySources[i] += strings.Repeat(" ordinary text", 2000)
 			}
 		} else {
-			decision.Target = left
-			decision.PolicySources[1] = right
+			decision.Target = fixture.left
+			decision.PolicySources[1] = fixture.right
 		}
 		err = em.Emit(decision)
 	}
-	var rejection *receiptcontent.RejectionError
-	if !errors.As(err, &rejection) {
-		t.Fatalf("receipt result = %v, want content refusal", err)
-	}
-	if incomplete && rejection.View != receiptcontent.ViewBudget {
-		t.Fatalf("receipt result = %v, want incomplete reconstruction", err)
-	}
-	if !incomplete && rejection.Pattern != "Environment Variable Leak" && rejection.View != receiptcontent.ViewBudget {
-		t.Fatalf("receipt result = %v, want detection or incomplete reconstruction", err)
-	}
+	return err
 }
 
 func TestReceiptWritersRefuseInterruptedContentScan(t *testing.T) {

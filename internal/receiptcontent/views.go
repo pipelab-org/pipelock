@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sort"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -29,8 +28,8 @@ const (
 	// ViewValues scans all value atoms joined in projection order, so a token
 	// split across adjacent values is reassembled.
 	ViewValues View = "values_join"
-	// ViewFragments scans ordered 2..4-part subsequences of the atoms, so a
-	// token split across non-adjacent fields is reassembled.
+	// ViewFragments scans ordered 2..4-part subsequences of client atoms and
+	// pairs of one client atom and one fixed value.
 	ViewFragments View = "fragments"
 	// ViewStructured scans the content-only JSON, preserving the field
 	// context that structured detector rules depend on.
@@ -192,7 +191,7 @@ func Scan(ctx context.Context, det Detector, p *Projection) (Report, error) {
 	var values strings.Builder
 	var valuePaths, valueFields []string
 	for _, a := range p.atoms {
-		if a.Kind == AtomValue && !a.omitFromJoinedValues {
+		if a.Kind == AtomValue {
 			values.WriteString(a.Text)
 			valuePaths = append(valuePaths, a.Path)
 			valueFields = append(valueFields, a.Field)
@@ -222,8 +221,8 @@ func Scan(ctx context.Context, det Detector, p *Projection) (Report, error) {
 
 // scanFragments reuses the scanner's ordered-subsequence combination order.
 // Client-influenced atoms combine freely. A fixed value or derived mirror can
-// carry no client fragment, so it joins a combination only as the single
-// bridge piece (see bridgeFragments), and repeated fixed text counts once.
+// carry no client fragment, so it pairs with just one client fragment
+// (see bridgeFragments). Repeated fixed text counts once.
 // A projection with at most scanner.SubsequenceMaxParts candidates is searched at sizes
 // 2..scanner.SubsequenceMaxSize, the same sizes the request path combines,
 // and is refused before any candidate is built when that work exceeds
@@ -284,180 +283,58 @@ func scanFragments(ctx context.Context, det Detector, p *Projection) (*Finding, 
 	for i := range cands {
 		cands[i] = fragmentPiece{text: parts[i], path: paths[i], field: fields[i], pos: positions[i]}
 	}
-	return bridgeFragments(ctx, det, p.kind, cands, bridges, maxSize)
+	return bridgeFragments(ctx, det, p.kind, cands, bridges)
 }
 
-// fragmentPiece is one fixed value standing in a bridged combination. pos is
-// its place in projection order, which the 4-part forward and reverse orders
-// are defined over.
+// fragmentPiece keeps the projected position and diagnostic fields of a pair member.
 type fragmentPiece struct {
 	text, path, field string
 	pos               int
 }
 
-// bridgeFragments completes the search over combinations that hold exactly
-// one fixed value. Two client fragments can surround that value, so a
-// pair-only scan is insufficient whenever two client fragments exist.
-func bridgeFragments(ctx context.Context, det Detector, kind string, cands, bridges []fragmentPiece, maxSize int) (*Finding, error) {
-	minSize := min(3, len(cands)+1)
-	size := widestBridgedSearch(cands, bridges, max(maxSize, minSize))
-	if size < minSize && minSize == 3 {
-		// At size three every order is tested. Two occurrences of each
-		// client text retain every possible pair, including equal pieces.
-		// Preserve the original positions and paths for diagnostics.
-		once := make(map[string]int, len(cands))
-		compact := make([]fragmentPiece, 0, len(cands))
-		for _, part := range cands {
-			if once[part.text] < 2 {
-				compact = append(compact, part)
-				once[part.text]++
-			}
-		}
-		cands = compact
-		size = widestBridgedSearch(cands, bridges, minSize)
+// bridgeFragments scans a client fragment and a fixed value in both orders.
+// Its complete pair search must fit before any pair is built.
+func bridgeFragments(ctx context.Context, det Detector, kind string, cands, bridges []fragmentPiece) (*Finding, error) {
+	var work int64
+	// The projection bounds both the number of atoms and their text sizes.
+	for _, cand := range cands {
+		work += int64(len(cand.text)) * int64(len(bridges))
 	}
-	if size < minSize {
+	for _, bridge := range bridges {
+		work += int64(len(bridge.text)) * int64(len(cands))
+	}
+	limit, ok := combinationCandidates(scanner.SubsequenceMaxParts, scanner.SubsequenceMaxSize)
+	if !ok || 2*work > maxFragmentWorkBytes || 2*int64(len(cands))*int64(len(bridges)) > limit {
 		return nil, &RejectionError{Kind: kind, View: ViewBudget, Reason: fmt.Sprintf("%d content atoms and %d fixed values exceed the reconstruction work bound", len(cands), len(bridges))}
 	}
-	var b strings.Builder
 	seen := make(map[string]struct{})
-	piece := make([]fragmentPiece, 0, size)
-	for k := 2; k <= size && k-1 <= len(cands); k++ {
-		idx := make([]int, k-1)
-		for i := range idx {
-			idx[i] = i
-		}
-		for {
-			for _, br := range bridges {
-				piece = piece[:0]
-				for _, i := range idx {
-					piece = append(piece, cands[i])
-				}
-				piece = append(piece, br)
-				sort.SliceStable(piece, func(i, j int) bool { return piece[i].pos < piece[j].pos })
-				for _, order := range fragmentOrders[k] {
-					b.Reset()
-					for _, o := range order {
-						b.WriteString(piece[o].text)
-					}
-					text := b.String()
-					if _, ok := seen[text]; ok {
-						continue
-					}
-					seen[text] = struct{}{}
-					res := det(ctx, text)
-					if err := res.Err(); err != nil {
-						return nil, err
-					}
-					if !res.Clean {
-						hit, hitFields := make([]string, 0, k), make([]string, 0, k)
-						for _, o := range order {
-							hit = append(hit, piece[o].path)
-							hitFields = append(hitFields, piece[o].field)
-						}
-						return &Finding{View: ViewFragments, Paths: hit, Fields: hitFields, Pattern: firstPattern(res)}, nil
-					}
-				}
+	for _, cand := range cands {
+		for _, bridge := range bridges {
+			pair := [2]fragmentPiece{cand, bridge}
+			if bridge.pos < cand.pos {
+				pair = [2]fragmentPiece{bridge, cand}
 			}
-			if !scanner.NextSubsequence(idx, len(cands)) {
-				break
+			for _, order := range fragmentOrders[2] {
+				first, second := pair[order[0]], pair[order[1]]
+				text := first.text + second.text
+				if _, ok := seen[text]; ok {
+					continue
+				}
+				seen[text] = struct{}{}
+				res := det(ctx, text)
+				if err := res.Err(); err != nil {
+					return nil, err
+				}
+				if !res.Clean {
+					return &Finding{
+						View: ViewFragments, Paths: []string{first.path, second.path},
+						Fields: []string{first.field, second.field}, Pattern: firstPattern(res),
+					}, nil
+				}
 			}
 		}
 	}
 	return nil, nil
-}
-
-// widestBridgedSearch returns the largest size in maxSize..2 whose bridged
-// combinations fit the byte budget and the candidate count of a full 20-part
-// search, or 0 when even pairs do not fit.
-func widestBridgedSearch(cands, bridges []fragmentPiece, maxSize int) int {
-	limit, ok := combinationCandidates(scanner.SubsequenceMaxParts, scanner.SubsequenceMaxSize)
-	if !ok || limit <= 0 {
-		return 0
-	}
-	for size := maxSize; size >= 2; size-- {
-		if size-1 > len(cands) {
-			continue
-		}
-		work, wok := bridgedWork(cands, bridges, size)
-		calls, cok := bridgedCandidates(len(cands), len(bridges), size)
-		if wok && cok && work <= maxFragmentWorkBytes && calls <= limit {
-			return size
-		}
-	}
-	return 0
-}
-
-// bridgedCandidates is the number of detector calls a bridged search of sizes
-// 2..maxSize makes: each combination of k-1 candidates takes each fixed value
-// in every tried order of k pieces. The bool is false on overflow.
-func bridgedCandidates(c, f, maxSize int) (int64, bool) {
-	var total int64
-	for k := 2; k <= maxSize && k-1 <= c; k++ {
-		ways, ok := binomial64(c, k-1)
-		if !ok {
-			return 0, false
-		}
-		prod, ok := mul64(ways, int64(f))
-		if !ok {
-			return 0, false
-		}
-		prod, ok = mul64(prod, int64(len(fragmentOrders[k])))
-		if !ok {
-			return 0, false
-		}
-		if total > math.MaxInt64-prod {
-			return 0, false
-		}
-		total += prod
-	}
-	return total, true
-}
-
-// bridgedWork is the total length of every text the bridged search builds.
-// Each candidate lies in C(c-1, k-2) combinations of k-1 candidates, and each
-// fixed value in C(c, k-1), every one of them taken with each of the other
-// side and in every tried order. The bool is false on overflow.
-func bridgedWork(cands, bridges []fragmentPiece, maxSize int) (int64, bool) {
-	c, f := len(cands), len(bridges)
-	var total int64
-	add := func(plen, ways, mult int64) bool {
-		prod, ok := mul64(plen, ways)
-		if !ok {
-			return false
-		}
-		if prod, ok = mul64(prod, mult); !ok {
-			return false
-		}
-		if total > math.MaxInt64-prod {
-			return false
-		}
-		total += prod
-		return true
-	}
-	for k := 2; k <= maxSize && k-1 <= c; k++ {
-		orders := int64(len(fragmentOrders[k]))
-		candWays, ok := binomial64(c-1, k-2)
-		if !ok {
-			return 0, false
-		}
-		bridgeWays, ok := binomial64(c, k-1)
-		if !ok {
-			return 0, false
-		}
-		for _, part := range cands {
-			mult, ok := mul64(int64(f), orders)
-			if !ok || !add(int64(len(part.text)), candWays, mult) {
-				return 0, false
-			}
-		}
-		for _, br := range bridges {
-			if !add(int64(len(br.text)), bridgeWays, orders) {
-				return 0, false
-			}
-		}
-	}
-	return total, true
 }
 
 // combineFragments scans every combination of size 2..maxSize. Every order of

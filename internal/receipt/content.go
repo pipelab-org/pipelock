@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 
 	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -42,8 +41,6 @@ var actionReceiptProducer = receiptcontent.Register(receiptcontent.Schema{
 	FixedValues: map[string][]string{
 		"action_record.transport": {"proxy", "fetch", "forward", "connect", "intercept", "websocket", "mcp_http", "mcp_stdio", "reverse", sessionControlTransport},
 		"action_record.target":    {sessionOpenTarget, sessionHeartbeatTarget, sessionCloseTarget},
-		// Standard methods may complete a secret split across other fields.
-		"action_record.method": {http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodConnect, http.MethodOptions, http.MethodTrace},
 		// The unattributed-agent sentinel. Operators cannot configure it as an
 		// agent name, so the text is always Pipelock's own.
 		"action_record.actor": {anonymousAgent},
@@ -82,6 +79,9 @@ var actionReceiptEnums = map[string][]string{
 		"external_publish_after_untrusted_external_exposure", "mutating_network_after_untrusted_external_exposure",
 		"no_taint_escalation_required",
 	},
+	// The request method comes from the client; only the standard methods
+	// are a known vocabulary.
+	"action_record.method": {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "CONNECT", "OPTIONS", "TRACE"},
 }
 
 // anonymousAgent is the agent name Pipelock records for a request that names
@@ -211,7 +211,7 @@ func actionReceiptFields() map[string]receiptcontent.Class {
 		"contract_selector_id":                cContent,
 		"contract_generation":                 cContent,
 		"transport":                           cContent,
-		"method":                              receiptcontent.FixedBridge,
+		"method":                              cEnum,
 		"layer":                               cContent,
 		// The pattern is free text Pipelock formats per decision (an outcome
 		// line interpolates status, size and reason). It is scanned alone, in
