@@ -224,6 +224,7 @@ func RunHTTPProxy(
 
 	// Session-scoped opts: override Rec and ToolCfg from the caller's opts.
 	fwdOpts := opts
+	fwdOpts.v3DirectResponseDelivery = true
 	fwdOpts.Rec = rec
 	fwdOpts.ToolCfg = fwdToolCfg
 	fwdOpts.ToolCfgFn = nil

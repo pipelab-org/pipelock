@@ -12,6 +12,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 )
@@ -185,6 +186,33 @@ func (s *deferredReceiptSettlement) confirmV3Release(o MCPProxyOpts) (*mcpV3Rece
 }
 
 // finish writes the observed result of a confirmed upstream send.
+func (o MCPProxyOpts) confirmV3ResponseDelivery(logW io.Writer, opts receipt.EmitOpts, delivery *mcpV3Receipt) error {
+	required := o.requireReceipts()
+	_, err := o.emitReceiptDecision(MCPDecision{
+		v3Boundary: mcpV3Delivery, v3Confirmed: delivery, Receipt: o.withReceiptPolicyHash(opts),
+		RequireReceipt: required, RequiredMode: required, Durable: required,
+	})
+	if err != nil {
+		logReceiptEmitFailure(logW, err, required, opts.Verdict)
+		if required {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *mcpV3Receipt) writeV3Response(o MCPProxyOpts, logW io.Writer, writer transport.MessageWriter, content []byte) error {
+	if r.action.Attempt != nil {
+		if err := o.warnContext().Err(); err != nil {
+			r.finish(o, logW, false, nil)
+			return err
+		}
+	}
+	err := writer.WriteMessage(content)
+	r.finish(o, logW, true, err)
+	return err
+}
+
 func (r *mcpV3Receipt) finishRedirect(o MCPProxyOpts, logW io.Writer, result RedirectResult) {
 	var dispatchErr error
 	if !result.Success {

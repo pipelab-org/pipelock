@@ -153,6 +153,8 @@ type MCPProxyOpts struct {
 	// JSON listener scanning writes to a buffer. Defer inventory admission until
 	// the real downstream write succeeds; streaming transports commit directly.
 	toolInventoryDelivery func(commit, release func())
+	// The response writer delivers directly to the client rather than staging bytes.
+	v3DirectResponseDelivery bool
 	// A bridge queues held-action decisions until its inventory lock is released.
 	// A release can itself acquire a header contract; resolving under the writer
 	// hold would deadlock. Private discovery never invokes this callback.

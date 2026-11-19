@@ -287,6 +287,7 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	}()
 
 	fwdOpts := inputOpts
+	fwdOpts.v3DirectResponseDelivery = true
 	fwdOpts.ToolCfg = fwdToolCfg // session-specific baseline
 	fwdOpts.ToolCfgFn = nil
 	// Apply the optional per-read response timeout (no-op when disabled) so a

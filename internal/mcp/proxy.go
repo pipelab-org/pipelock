@@ -72,8 +72,12 @@ func (sw *syncWriter) WriteMessage(msg []byte) error {
 	buf := make([]byte, len(msg)+1)
 	copy(buf, msg)
 	buf[len(msg)] = '\n'
-	if _, err := sw.w.Write(buf); err != nil {
+	n, err := sw.w.Write(buf)
+	if err != nil {
 		return fmt.Errorf("writing message: %w", err)
+	}
+	if n != len(buf) {
+		return fmt.Errorf("writing message: %w", io.ErrShortWrite)
 	}
 	return nil
 }
@@ -929,7 +933,18 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 				continue
 			}
-			if err := writer.WriteMessage(line); err != nil {
+			var delivery mcpV3Receipt
+			if opts.ReceiptV3 != nil && opts.v3DirectResponseDelivery {
+				receiptOpts := withMCPResponseShard(trackedOutcome.Receipt, receipt.EmitOpts{
+					ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Layer: "mcp_response_scan",
+					Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(frame.ID),
+				})
+				if err := opts.confirmV3ResponseDelivery(logW, receiptOpts, &delivery); err != nil {
+					releaseToolInventory()
+					return foundInjection, err
+				}
+			}
+			if err := delivery.writeV3Response(opts, logW, writer, line); err != nil {
 				releaseToolInventory()
 				return foundInjection, fmt.Errorf("writing line: %w", err)
 			}
@@ -1089,10 +1104,16 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		if !originalReceiptOpts.ShardSelected && opts.ReceiptGroup != nil && opts.ReceiptGroup.Shards != nil {
 			originalReceiptOpts = opts.ReceiptGroup.Shards.Admit(originalReceiptOpts)
 		}
-		_, emitErr := opts.emitReceiptDecision(MCPDecision{
+		var delivery mcpV3Receipt
+		receiptDecision := MCPDecision{
 			Receipt:        originalReceiptOpts,
 			RequireReceipt: opts.requireReceipts() && effectiveAction != config.ActionBlock,
-		})
+		}
+		if opts.v3DirectResponseDelivery {
+			receiptDecision.v3Boundary = mcpV3Delivery
+			receiptDecision.v3Confirmed = &delivery
+		}
+		_, emitErr := opts.emitReceiptDecision(receiptDecision)
 		receiptFailureBlock := false
 		originalReceiptPersisted := emitErr != nil && errors.Is(emitErr, errMCPV2ReceiptEmit)
 		if emitErr != nil {
@@ -1132,6 +1153,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 		if effectiveAction == config.ActionWarn || effectiveAction == config.ActionAllow {
 			if err := reserveToolInventory(); err != nil {
+				delivery.finish(opts, logW, false, nil)
 				resolveToolInventory(config.ActionBlock)
 				if writeErr := blockToolInventoryCapacity(writer, logW, opts, lineNum, toolResult.RPCID, emitTrackedOutcome); writeErr != nil {
 					return foundInjection, writeErr
@@ -1152,9 +1174,15 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				opts.AuditLogger.LogResponseScan(ctx, effectiveAction, len(names), names, nil)
 			}
 		}
-		if err := writeMCPResponseDisposition(opts, denialAudit, writer, outbound, effectiveAction == config.ActionBlock); err != nil {
+		var writeErr error
+		if effectiveAction == config.ActionBlock {
+			writeErr = writeMCPResponseDisposition(opts, denialAudit, writer, outbound, true)
+		} else {
+			writeErr = delivery.writeV3Response(opts, logW, writer, outbound)
+		}
+		if writeErr != nil {
 			releaseToolInventory()
-			return foundInjection, fmt.Errorf("%s: %w", writeContext, err)
+			return foundInjection, fmt.Errorf("%s: %w", writeContext, writeErr)
 		}
 		_, _ = fmt.Fprintf(logW, "pipelock: line %d: response action=%s\n", lineNum, effectiveAction)
 		if effectiveAction == config.ActionWarn || effectiveAction == config.ActionAllow {
@@ -2203,6 +2231,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	serverReader := opts.withResponseTimeout(transport.NewStdioReader(serverOut))
 
 	fwdOpts := opts
+	fwdOpts.v3DirectResponseDelivery = true
 	fwdOpts.Rec = rec
 	fwdOpts.WarnContext = ctx
 	// Session teardown closes serverOut to release a descendant holding the

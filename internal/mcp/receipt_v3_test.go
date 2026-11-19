@@ -157,8 +157,13 @@ func exerciseMCPV3Upstream(t *testing.T, surface string, live bool) {
 		t.Fatal(err)
 	}
 	result, err := v3.VerifyPaths(t.Context(), []string{dir}, verify)
-	if err != nil || result.Verdict != "VALID" || !hasMCPV3State(result, "completed") {
-		t.Fatalf("upstream outcome not recorded: %+v (%v)", result, err)
+	wantCompleted := int64(1)
+	if surface == "bridge" {
+		wantCompleted = 2
+	}
+	if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil ||
+		*result.Counts.EffectsCompleted != wantCompleted {
+		t.Fatalf("expected %d completed effects: %+v (%v)", wantCompleted, result, err)
 	}
 }
 
@@ -191,6 +196,59 @@ func newMCPV3Stream(t *testing.T, surface string) (string, *v3.StreamWriter, v3.
 	}
 	t.Cleanup(func() { _ = writer.Close(context.Background(), nil) })
 	return dir, writer, v3.Options{Keys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Directory: true, AllowPrefix: true}
+}
+
+func TestMCPV3ConfirmsDirectResponseDelivery(t *testing.T) {
+	for _, live := range []bool{true, false} {
+		name := "closed"
+		if live {
+			name = "live"
+		}
+		t.Run(name, func(t *testing.T) {
+			dir, writer, verify := newMCPV3Stream(t, transportMCPStdio)
+			if !live {
+				if err := writer.Close(t.Context(), nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			opts := MCPProxyOpts{
+				Scanner: testScannerForHTTP(t), Transport: transportMCPStdio,
+				RequireReceipts: true, ReceiptV3: writer, v3DirectResponseDelivery: true,
+			}
+			hits := 0
+			peer := v3TestPeer(func(msg []byte) error {
+				hits++
+				if string(msg) != cleanToolsCallResponse {
+					t.Errorf("client received %q", msg)
+				}
+				result, err := v3.VerifyPaths(t.Context(), []string{dir}, verify)
+				if err != nil || !hasMCPV3State(result, "outcome_unknown") {
+					t.Errorf("client write reached before a verified delivery intent: %+v (%v)", result, err)
+				}
+				return nil
+			})
+			if _, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(cleanToolsCallResponse)), peer,
+				io.Discard, NewRequestTracker(), opts); (err == nil) != live {
+				t.Fatalf("response writer error %v (writer live=%t)", err, live)
+			}
+			if !live {
+				if hits != 0 {
+					t.Fatalf("client saw %d writes after recorder closure", hits)
+				}
+				return
+			}
+			if hits != 1 {
+				t.Fatalf("client saw %d writes, want one", hits)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, verify)
+			if err != nil || result.Verdict != "VALID" || !hasMCPV3State(result, "completed") {
+				t.Fatalf("delivery outcome missing: %+v (%v)", result, err)
+			}
+		})
+	}
 }
 
 func TestMCPV3RedirectDispatchOutcome(t *testing.T) {
@@ -360,7 +418,12 @@ func TestMCPV3DeferredSendUsesHoldAndIntent(t *testing.T) {
 				t.Fatal(err)
 			}
 			result, err = v3.VerifyPaths(ctx, []string{dir}, verify)
-			if err != nil || result.Verdict != "VALID" || !hasMCPV3State(result, "completed") {
+			wantCompleted := int64(1)
+			if surface == deferred.SurfaceMCPHTTPUpstream {
+				wantCompleted = 2
+			}
+			if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil ||
+				*result.Counts.EffectsCompleted != wantCompleted {
 				t.Fatalf("held call did not settle: %+v (%v)", result, err)
 			}
 		})
