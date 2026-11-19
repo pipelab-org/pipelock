@@ -37,7 +37,7 @@ func v3NestedBodyRecipes(t *testing.T) []v3Recipe {
 	type site struct {
 		name, shape string
 		base        func(*v3Stream) nestedBody
-		locate      func(v3Common) v3Common
+		path        []string
 	}
 	var sites []site
 	for _, kind := range []string{"stream_open", "stream_close", "action"} {
@@ -51,19 +51,8 @@ func v3NestedBodyRecipes(t *testing.T) []v3Recipe {
 					continue
 				}
 				child := append(slices.Clone(path), name)
-				locate := func(body v3Common) v3Common {
-					for _, part := range child {
-						switch value := body[part].(type) {
-						case v3Common:
-							body = value
-						case []v3Common:
-							body = value[0]
-						}
-					}
-					return body
-				}
 				sites = append(sites, site{
-					name: kind + "-" + strings.Join(child, "-"), shape: nested, locate: locate,
+					name: kind + "-" + strings.Join(child, "-"), shape: nested, path: child,
 					base: func(s *v3Stream) nestedBody { return v3NestedSample(s, kind, child[0]) },
 				})
 				visit(nested, child)
@@ -79,15 +68,23 @@ func v3NestedBodyRecipes(t *testing.T) []v3Recipe {
 			}
 			s := v3New(t)
 			sample := site.base(s)
-			if _, ok := site.locate(sample.body)[name]; !ok {
+			obj, ok := v3NestedObject(sample.body, site.path)
+			if !ok {
+				t.Fatalf("nested sample lacks object %s", site.name)
+			}
+			if _, ok := obj[name]; !ok {
 				t.Fatalf("nested sample %s lacks required field %s", site.name, name)
 			}
-			delete(site.locate(sample.body), name)
+			delete(obj, name)
 			recipes = append(recipes, v3NestedInvalid(t, s, sample, site.name+"-missing-"+name))
 		}
 		s := v3New(t)
 		sample := site.base(s)
-		site.locate(sample.body)["runtime_label"] = "value"
+		obj, ok := v3NestedObject(sample.body, site.path)
+		if !ok {
+			t.Fatalf("nested sample lacks object %s", site.name)
+		}
+		obj["runtime_label"] = "value"
 		recipes = append(recipes, v3NestedInvalid(t, s, sample, site.name+"-data-derived"))
 	}
 	for _, row := range []struct {
@@ -223,6 +220,31 @@ func v3NestedSample(s *v3Stream, kind, field string) nestedBody {
 		body[field] = v3Common{"decision": "example"}
 	}
 	return nestedBody{kind, body}
+}
+
+func v3NestedObject(body v3Common, path []string) (v3Common, bool) {
+	for _, part := range path {
+		switch value := body[part].(type) {
+		case v3Common:
+			body = value
+		case []v3Common:
+			if len(value) == 0 {
+				return nil, false
+			}
+			body = value[0]
+		default:
+			return nil, false
+		}
+	}
+	return body, body != nil
+}
+
+func TestReceiptV3NestedObjectRequiresPath(t *testing.T) {
+	for _, child := range []any{nil, "example", []v3Common{}, []v3Common{nil}} {
+		if object, ok := v3NestedObject(v3Common{"parent": v3Common{"child": child}}, []string{"parent", "child"}); ok {
+			t.Fatalf("found nested object %v through %v", object, child)
+		}
+	}
 }
 
 func v3NestedInvalid(t *testing.T, s *v3Stream, sample nestedBody, name string) v3Recipe {

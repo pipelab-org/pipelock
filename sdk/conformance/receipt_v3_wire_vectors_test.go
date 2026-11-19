@@ -6,6 +6,7 @@ package conformance_test
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -241,19 +242,29 @@ func v3SignatureRecipes(t *testing.T) []v3Recipe {
 	payloadSmall := smallStream.records[0].payload
 	opener := v3SignWith(payloadSmall, id, ed25519.Sign(s.key, v3.PAE(payloadSmall)))
 	recipes = append(recipes, v3Invalid(2, "small-order-key", "SIGNATURE_KEY", v3File{file.name, opener.line}))
-	// Move R by a low-order point and keep S. The cofactorless equation
-	// rejects the result; multiplying both sides by the cofactor would not.
+	// Add a torsion point to R before computing the signing challenge.
 	low := v3LowOrderPoint(t)
 	cofactorStream := v3New(t)
 	cofactorFile := cofactorStream.finish(t)
 	cofactorPayload := cofactorStream.records[0].payload
-	cofactorSig := ed25519.Sign(cofactorStream.key, v3.PAE(cofactorPayload))
-	base, err := new(edwards25519.Point).SetBytes(cofactorSig[:32])
+	message := v3.PAE(cofactorPayload)
+	secret := sha512.Sum512(cofactorStream.key.Seed())
+	signingScalar, err := new(edwards25519.Scalar).SetBytesWithClamping(secret[:32])
 	if err != nil {
 		t.Fatal(err)
 	}
-	moved := new(edwards25519.Point).Add(base, low)
-	copy(cofactorSig[:32], moved.Bytes())
+	nonceHash := sha512.Sum512(slices.Concat(secret[32:], message))
+	nonce, err := new(edwards25519.Scalar).SetUniformBytes(nonceHash[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	point := new(edwards25519.Point).ScalarBaseMult(nonce)
+	point.Add(point, low)
+	encodedPoint := point.Bytes()
+	challenge := v3Ed25519Challenge(t, encodedPoint, v3Public(cofactorStream.key), message)
+	scalar := new(edwards25519.Scalar).MultiplyAdd(challenge, signingScalar, nonce)
+	cofactorSig := slices.Concat(encodedPoint, scalar.Bytes())
+	v3CheckCofactoredSignature(t, cofactorStream.key, message, cofactorSig)
 	movedLine := v3SignWith(cofactorPayload, v3.Digest(v3Public(cofactorStream.key)), cofactorSig)
 	recipes = append(recipes, v3Invalid(2, "cofactored-equation", "SIGNATURE_EQUATION", v3File{
 		cofactorFile.name, slices.Concat(movedLine.line, cofactorStream.records[1].line),
@@ -410,4 +421,38 @@ func v3StreamRecipes(t *testing.T) []v3Recipe {
 	bad := v3File{"copy/" + file.name, slices.Concat([]byte{0xef, 0xbb, 0xbf}, file.bytes)}
 	recipes = append(recipes, v3Recipe{group: 4, name: "damaged-copy", code: "LINE_LAYOUT", verdict: "INVALID", files: []v3File{file, bad}})
 	return recipes
+}
+
+func v3CheckCofactoredSignature(t *testing.T, key ed25519.PrivateKey, message, sig []byte) {
+	t.Helper()
+	public, err := new(edwards25519.Point).SetBytes(v3Public(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	point, err := new(edwards25519.Point).SetBytes(sig[:32])
+	if err != nil {
+		t.Fatal(err)
+	}
+	challenge := v3Ed25519Challenge(t, sig[:32], v3Public(key), message)
+	scalar, err := new(edwards25519.Scalar).SetCanonicalBytes(sig[32:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	left := new(edwards25519.Point).ScalarBaseMult(scalar)
+	right := new(edwards25519.Point).ScalarMult(challenge, public)
+	right.Add(right, point)
+	if left.Equal(right) == 1 ||
+		new(edwards25519.Point).MultByCofactor(left).Equal(new(edwards25519.Point).MultByCofactor(right)) != 1 {
+		t.Fatal("signature did not distinguish the cofactored and cofactorless equations")
+	}
+}
+
+func v3Ed25519Challenge(t *testing.T, point, public, message []byte) *edwards25519.Scalar {
+	t.Helper()
+	sum := sha512.Sum512(slices.Concat(point, public, message))
+	challenge, err := new(edwards25519.Scalar).SetUniformBytes(sum[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return challenge
 }

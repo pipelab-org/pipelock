@@ -312,6 +312,11 @@ func TestReceiptV3EmitterBindingChanges(t *testing.T) {
 			).Replace(base),
 		},
 		{
+			name:    "parenthesized emitter",
+			source:  strings.Replace(base, emit, "(emitReceipt)(ReceiptOptions{Verdict: \"warn\"})", 1),
+			newSite: true, staleSite: true, newSiteLine: 4,
+		},
+		{
 			name:    "unbound call before bound call",
 			source:  strings.Replace(base, emit, `emitReceipt(ReceiptOptions{Verdict: "warn"})`+"\n"+emit, 1),
 			newSite: true, newSiteLine: 4,
@@ -392,7 +397,7 @@ func TestReceiptV3EmitterBindingChanges(t *testing.T) {
 }
 
 func calledName(call *ast.CallExpr) string {
-	switch target := call.Fun.(type) {
+	switch target := ast.Unparen(call.Fun).(type) {
 	case *ast.Ident:
 		return target.Name
 	case *ast.SelectorExpr:

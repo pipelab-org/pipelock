@@ -4,7 +4,6 @@
 package v3
 
 import (
-	"bytes"
 	"encoding/json"
 	"go/ast"
 	"go/parser"
@@ -70,17 +69,25 @@ func TestImplementedFindingTargets(t *testing.T) {
 			if !found || !token.IsExported(code) {
 				return true
 			}
-			for defined := range findingClasses {
-				if strings.EqualFold(strings.ReplaceAll(defined, "_", ""), code) {
-					if !targets[defined] {
-						t.Errorf("%s emits %s without a test target", fset.Position(id.Pos()), defined)
-					}
-					break
-				}
+			defined := findingCodeForIdentifier(code)
+			switch {
+			case defined == "":
+				t.Errorf("%s uses unregistered finding %s", fset.Position(id.Pos()), id.Name)
+			case !targets[defined]:
+				t.Errorf("%s uses %s without a test target", fset.Position(id.Pos()), defined)
 			}
 			return true
 		})
 	}
+}
+
+func findingCodeForIdentifier(name string) string {
+	for code := range findingClasses {
+		if strings.EqualFold(strings.ReplaceAll(code, "_", ""), name) {
+			return code
+		}
+	}
+	return ""
 }
 
 func TestCorpusCheckMutations(t *testing.T) {
@@ -185,16 +192,23 @@ func requireMutation(t *testing.T, code string, baseline, mutant Result) {
 	if !hasFinding(baseline, code) || hasFinding(mutant, code) {
 		t.Fatalf("disabled check %s did not remove its finding: %+v", code, mutant.Findings)
 	}
-	before, err := baseline.JSON()
-	if err != nil {
-		t.Fatal(err)
-	}
-	after, err := mutant.JSON()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Equal(before, after) {
-		t.Fatalf("disabled check %s did not change the full result", code)
+	switch code {
+	case codePinMismatch:
+		if baseline.Integrity != "failed" || mutant.Integrity != "ok" || mutant.Verdict != "VALID" || mutant.ExitCode != 0 {
+			t.Fatalf("disabled pin check did not permit the history: %+v", mutant)
+		}
+	case codeUnconfirmed:
+		if slices.EqualFunc(baseline.Histories, mutant.Histories, func(a, b HistoryResult) bool {
+			return a.Lineage == b.Lineage && slices.EqualFunc(a.Streams, b.Streams, func(a, b StreamResult) bool {
+				return a.End == b.End && a.Records == b.Records
+			})
+		}) {
+			t.Fatal("disabled unconfirmed check did not change effective stream state")
+		}
+	case codeNoEvidence:
+		if baseline.Verdict != "INCOMPLETE" || mutant.Verdict != "VALID" || mutant.ExitCode != 0 {
+			t.Fatalf("disabled evidence requirement did not permit the empty input: %+v", mutant)
+		}
 	}
 }
 
