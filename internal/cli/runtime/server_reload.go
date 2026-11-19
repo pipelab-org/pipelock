@@ -325,7 +325,9 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 		oldFR.EvidenceHealth.MaxAnchorLag = newFR.EvidenceHealth.MaxAnchorLag
 		oldFR.Anchor = newFR.Anchor
 		if !reflect.DeepEqual(oldFR, newFR) {
-			if oldCfg.FlightRecorder.ReceiptChainCount() != newCfg.FlightRecorder.ReceiptChainCount() {
+			if oldCfg.FlightRecorder.ReceiptFormat != newCfg.FlightRecorder.ReceiptFormat {
+				_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: flight_recorder.receipt_format changed; restart required")
+			} else if oldCfg.FlightRecorder.ReceiptChainCount() != newCfg.FlightRecorder.ReceiptChainCount() {
 				liveChains := oldCfg.FlightRecorder.ReceiptChainCount()
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder.receipt_chains changed; restart required; continuing with %d\n", liveChains)
 			} else if oldCfg.FlightRecorder.RequireContainmentEvidence != newCfg.FlightRecorder.RequireContainmentEvidence {

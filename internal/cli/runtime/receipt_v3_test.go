@@ -40,3 +40,27 @@ func TestReceiptV3Selection(t *testing.T) {
 		t.Fatalf("switched directory accepted a legacy restart: %v", err)
 	}
 }
+
+func TestServerReloadReceiptFormatRequiresRestart(t *testing.T) {
+	s, stderr := newRequireReceiptsReloadServer(t)
+	before := s.proxy.CurrentConfig()
+	unchanged := before.Clone()
+	if err := s.Reload(unchanged); err != nil {
+		t.Fatal(err)
+	}
+	const warning = "flight_recorder.receipt_format changed; restart required"
+	if stderr.contains(warning) {
+		t.Fatal("unchanged receipt format reported a restart")
+	}
+	update := before.Clone()
+	update.FlightRecorder.ReceiptFormat = config.ReceiptFormatV3
+	update.FetchProxy.TimeoutSeconds++
+	if err := s.Reload(update); err != nil {
+		t.Fatal(err)
+	}
+	live := s.proxy.CurrentConfig()
+	if live.FlightRecorder.ReceiptFormat != before.FlightRecorder.ReceiptFormat ||
+		live.FetchProxy.TimeoutSeconds != update.FetchProxy.TimeoutSeconds || !stderr.contains(warning) {
+		t.Fatalf("receipt format or unrelated settings changed incorrectly: %+v, %s", live.FlightRecorder, stderr.String())
+	}
+}
