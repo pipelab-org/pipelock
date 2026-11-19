@@ -2492,7 +2492,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		intent := withReceiptConfig(forwardAllowReceipt, cfg)
 		intent.ContentScanContext = r.Context()
 		if err := p.emitRequiredReceipt(intent); err != nil {
-			if receipt.IsContentScanCanceled(err) {
+			// A client that went away gets the ordinary cancellation answer.
+			// A cancellation Pipelock made itself, such as a revoked license,
+			// stays a block below so the caller never sees an empty success.
+			if receipt.IsContentScanCanceled(err) && requestClientCanceled(r.Context()) {
+				logRequestCanceled(p.logger, actx, "")
+				writeClientCanceled(w)
 				return
 			}
 			blockedErr := newReceiptEmissionBlockedRequest(err)

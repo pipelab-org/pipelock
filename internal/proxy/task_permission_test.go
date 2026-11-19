@@ -8,7 +8,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -700,69 +699,83 @@ func TestForwardTaskReleaseRequiresCurrentGrant(t *testing.T) {
 	}
 }
 
-// A client that leaves while its required receipt waits for a scan slot gets
-// no intent, no upstream request and no response write, and the emitter stays
-// healthy.
-func TestForwardRequiredReceiptQueuedScanEndsWithClient(t *testing.T) {
+// A forward request whose required receipt is still waiting for a scan slot
+// never reaches the upstream once its context ends. A client that left gets
+// the ordinary cancellation answer; a cancellation Pipelock made itself, such
+// as a revoked license, stays a block. Neither case marks the emitter
+// unhealthy.
+func TestForwardRequiredReceiptQueuedScanCancellation(t *testing.T) {
 	t.Parallel()
-	var calls atomic.Int32
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		calls.Add(1)
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	t.Cleanup(upstream.Close)
-	_, p, stop := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
-		cfg.FlightRecorder.RequireReceipts = true
-	})
-	t.Cleanup(stop)
-	installForwardTestDialer(p, upstream.Listener.Addr().String())
+	for _, tc := range []struct {
+		name   string
+		cause  error
+		status int
+		body   string
+	}{
+		{name: "client_gone", cause: context.Canceled, status: http.StatusServiceUnavailable, body: clientCanceledStatusText},
+		{name: "license_revoked", cause: errAgentLicenseRevoked, status: http.StatusForbidden, body: "receipt emission failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var calls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			t.Cleanup(upstream.Close)
+			_, p, stop := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+				cfg.FlightRecorder.RequireReceipts = true
+			})
+			t.Cleanup(stop)
+			installForwardTestDialer(p, upstream.Listener.Addr().String())
 
-	cfg := config.Defaults()
-	sc := scanner.MustNew(cfg)
-	t.Cleanup(sc.Close)
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := t.TempDir()
-	rec, err := recorder.NewWithScanner(recorder.Config{Enabled: true, Dir: dir, Redact: true}, sc, priv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	receipts := &receiptProxyHelper{dir: dir, rec: rec, priv: priv, pubHex: hex.EncodeToString(priv.Public().(ed25519.PublicKey))}
-	receipts.emitter = receipt.NewEmitter(receipt.EmitterConfig{
-		Recorder: rec, PrivKey: priv, ConfigHash: coverageTestConfigHash,
-		Principal: coverageTestPrincipal, Actor: coverageTestActor, Metrics: p.metrics,
-	})
-	if err := receipts.emitter.EmitSessionOpen(); err != nil {
-		t.Fatal(err)
-	}
-	p.receiptEmitterPtr.Store(receipts.emitter)
+			sc := scanner.MustNew(config.Defaults())
+			t.Cleanup(sc.Close)
+			_, priv, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec, err := recorder.NewWithScanner(recorder.Config{Enabled: true, Dir: t.TempDir(), Redact: true}, sc, priv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = rec.Close() })
+			emitter := receipt.NewEmitter(receipt.EmitterConfig{
+				Recorder: rec, PrivKey: priv, ConfigHash: coverageTestConfigHash,
+				Principal: coverageTestPrincipal, Actor: coverageTestActor, Metrics: p.metrics,
+			})
+			if err := emitter.EmitSessionOpen(); err != nil {
+				t.Fatal(err)
+			}
+			p.receiptEmitterPtr.Store(emitter)
 
-	holdReceiptScanSlots(t, rec)
-	reqCtx, cancelReq := context.WithCancel(t.Context())
-	defer cancelReq()
-	req := httptest.NewRequestWithContext(reqCtx, http.MethodPost, "http://peer.vendor.example/update", nil)
-	w := httptest.NewRecorder()
-	finished := make(chan struct{})
-	go func() {
-		defer close(finished)
-		p.handleForwardHTTP(w, req)
-	}()
-	waitForQueuedReceiptScan(t, finished)
-	cancelReq()
-	select {
-	case <-finished:
-	case <-time.After(5 * time.Second):
-		t.Fatal("canceled request stayed queued for a receipt scan slot")
+			holdReceiptScanSlots(t, rec)
+			reqCtx, cancelReq := context.WithCancelCause(t.Context())
+			defer cancelReq(nil)
+			req := httptest.NewRequestWithContext(reqCtx, http.MethodPost, "http://peer.vendor.example/update", nil)
+			w := httptest.NewRecorder()
+			finished := make(chan struct{})
+			go func() {
+				defer close(finished)
+				p.handleForwardHTTP(w, req)
+			}()
+			waitForQueuedReceiptScan(t, finished)
+			cancelReq(tc.cause)
+			select {
+			case <-finished:
+			case <-time.After(5 * time.Second):
+				t.Fatal("canceled request stayed queued for a receipt scan slot")
+			}
+			if w.Code != tc.status || !strings.Contains(w.Body.String(), tc.body) || calls.Load() != 0 {
+				t.Fatalf("status=%d body=%q upstream calls=%d, want status=%d body containing %q and no upstream call",
+					w.Code, w.Body, calls.Load(), tc.status, tc.body)
+			}
+			if err := emitter.HealthError(); err != nil {
+				t.Fatalf("cancellation changed emitter health: %v", err)
+			}
+			assertMetricsNotContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="forward"} 1`)
+		})
 	}
-	if w.Code != http.StatusOK || w.Body.Len() != 0 || calls.Load() != 0 {
-		t.Fatalf("status=%d body=%q upstream calls=%d, want an unwritten response and no upstream call", w.Code, w.Body, calls.Load())
-	}
-	if err := receipts.emitter.HealthError(); err != nil {
-		t.Fatalf("client cancellation changed emitter health: %v", err)
-	}
-	assertMetricsNotContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="forward"} 1`)
 }
 
 var slotHoldProducer = receiptcontent.Register(receiptcontent.Schema{Kind: "pipelock.test.proxy_scan_slot_hold.v1"})
