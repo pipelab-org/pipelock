@@ -107,10 +107,7 @@ func verifyPredecessorAEL(rec *recorder.Recorder, options verification.Options) 
 	if rec.IsNop() {
 		return nil
 	}
-	if err := receipt.VerifyPredecessorAEL(rec.Dir(), recorder.DefaultSessionBase, options); err != nil {
-		return fmt.Errorf("%s: %w", nativePredecessorRestartHint, err)
-	}
-	return nil
+	return withNativePredecessorRestartHint(receipt.VerifyPredecessorAEL(rec.Dir(), recorder.DefaultSessionBase, options))
 }
 
 // recorderSessionOf returns the session rec is bound to, falling back to the

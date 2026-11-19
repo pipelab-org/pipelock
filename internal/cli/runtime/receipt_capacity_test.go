@@ -94,6 +94,57 @@ func TestSingleReceiptRestartRefusesOverLimitNativePredecessor(t *testing.T) {
 	}
 }
 
+// A damaged predecessor is not a size problem, so the refusal must not tell
+// the operator that moving to a new directory is the remedy.
+func TestSingleReceiptRestartOmitsDirectoryHintForDamagedPredecessor(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "evidence")
+	keyPath := filepath.Join(root, "receipt.key")
+	_, key, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := signing.SavePrivateKey(key, keyPath); err != nil {
+		t.Fatal(err)
+	}
+	opts := ServerOpts{
+		ConfigFile: writeServerTestConfig(t, fmt.Sprintf("mode: balanced\nflight_recorder:\n  enabled: true\n  require_receipts: true\n  dir: %q\n  signing_key_path: %q\n", dir, keyPath)),
+		Stdout:     io.Discard, Stderr: io.Discard,
+	}
+	first, err := NewServer(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.sealTranscriptRoot(); err != nil {
+		t.Fatal(err)
+	}
+	first.cleanup()
+	paths, err := filepath.Glob(filepath.Join(dir, "ael", "*", "recorders", "*.jsonl"))
+	if err != nil || len(paths) != 1 {
+		t.Fatalf("native streams = %v, err = %v", paths, err)
+	}
+	data, err := os.ReadFile(filepath.Clean(paths[0]))
+	if err != nil || len(data) < 2 {
+		t.Fatalf("read native stream: %d bytes, err = %v", len(data), err)
+	}
+	data[len(data)/2] ^= 0x01
+	if err := os.WriteFile(paths[0], data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	refused, err := NewServer(opts)
+	if refused != nil {
+		refused.cleanup()
+		t.Fatal("opened a successor over a damaged predecessor")
+	}
+	if err == nil {
+		t.Fatal("startup accepted a damaged predecessor")
+	}
+	if errors.Is(err, ael.ErrStreamTooLarge) || strings.Contains(err.Error(), nativePredecessorRestartHint) {
+		t.Fatalf("damaged predecessor refusal names the size remedy: %v", err)
+	}
+}
+
 func TestReceiptGroupRestartNamesDirectoryForOverLimitPredecessor(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "evidence")
