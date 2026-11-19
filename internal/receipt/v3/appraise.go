@@ -217,6 +217,7 @@ func (v *verification) appraiseHistory(a *appraisal, pieces []segment, first *ve
 				}
 				if v.skip != codeDecisionsNotAppraised && r.BodyV != wireKinds[kindAction].version {
 					future = true
+					v.actionVersionNeeded = max(v.actionVersionNeeded, r.BodyV)
 					a.uninterpreted[kindAction]++
 					return nil
 				}

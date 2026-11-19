@@ -142,6 +142,12 @@ func openStreamWriter(ctx context.Context, opts StreamWriterOptions, storage wri
 	if err := w.publishOpen(ctx); err != nil {
 		return nil, err
 	}
+	if err := w.replayActionRepairs(ctx); err != nil {
+		if w.active.file != nil {
+			err = errors.Join(err, w.active.file.Close())
+		}
+		return nil, fmt.Errorf("settle pending receipt holds before admitting traffic: %w", err)
+	}
 	return w, nil
 }
 
@@ -185,13 +191,24 @@ func (w *StreamWriter) prepareStart(ctx context.Context, keys []ed25519.PublicKe
 		w.open.LegacyCutover = &Cutover{Inventory: EmptyInventoryDigest()}
 		return w.storage.cleanup(w.dir, entries)
 	}
-	result, err := VerifyPaths(ctx, []string{w.dir}, Options{Directory: true, DiskIndex: true, Keys: keys})
+	var history HistoryResult
+	var head StreamResult
+	opts := Options{Directory: true, DiskIndex: true, Keys: keys}
+	_, err = verifyPathsInspect(ctx, []string{w.dir}, opts, "", func(v *verification) error {
+		var headErr error
+		history, head, headErr = startupHead(v.result, v.actionVersionNeeded)
+		if headErr != nil {
+			return headErr
+		}
+		repairs, err := v.recoverHolds(history.Lineage)
+		if err != nil {
+			return err
+		}
+		w.repairs = repairs
+		return nil
+	})
 	if err != nil {
 		return fmt.Errorf("verify receipt history before restart: %w", err)
-	}
-	history, head, err := startupHead(result)
-	if err != nil {
-		return err
 	}
 	path, err := lastStreamFile(w.dir, entries, head.Stream)
 	if err != nil {
@@ -215,7 +232,7 @@ func (w *StreamWriter) prepareStart(ctx context.Context, keys []ed25519.PublicKe
 	return nil
 }
 
-func startupHead(result Result) (HistoryResult, StreamResult, error) {
+func startupHead(result Result, neededActionVersion int64) (HistoryResult, StreamResult, error) {
 	for _, finding := range result.Findings {
 		if finding.Code == codeTrust {
 			for _, history := range result.Histories {
@@ -233,6 +250,16 @@ func startupHead(result Result) (HistoryResult, StreamResult, error) {
 		}
 		if finding.Class == invalid || finding.Class == unsupported {
 			return HistoryResult{}, StreamResult{}, startupFinding(finding)
+		}
+	}
+	for _, finding := range result.Findings {
+		if finding.Code == codeDecisionsNotAppraised {
+			return HistoryResult{}, StreamResult{}, fmt.Errorf("receipt startup verification refused %s: action body version %d required", codeDecisionsNotAppraised, neededActionVersion)
+		}
+	}
+	for _, finding := range result.Findings {
+		if finding.Code == codeActionUninterpreted {
+			return HistoryResult{}, StreamResult{}, fmt.Errorf("receipt startup verification refused %s: compatible action body version %d vocabulary required", codeActionUninterpreted, wireKinds[kindAction].version)
 		}
 	}
 	if len(result.Histories) != 1 {
