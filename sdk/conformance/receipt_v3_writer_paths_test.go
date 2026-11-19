@@ -4,11 +4,7 @@
 package conformance_test
 
 import (
-	"bytes"
-	"crypto/sha256"
-	"fmt"
 	"go/ast"
-	"go/format"
 	"go/parser"
 	"go/token"
 	"testing"
@@ -18,14 +14,6 @@ type receiptWriterSite struct {
 	pkg      string
 	node     ast.Node
 	disabled bool
-}
-
-func (s receiptWriterSite) fingerprint() string {
-	var source bytes.Buffer
-	if err := format.Node(&source, token.NewFileSet(), s.node); err != nil {
-		return "unavailable"
-	}
-	return fmt.Sprintf("%x", sha256.Sum256(source.Bytes()))[:16]
 }
 
 type receiptWriterIndex struct {

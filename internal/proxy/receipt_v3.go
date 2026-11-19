@@ -106,6 +106,9 @@ func (p *Proxy) recordTransportOutcome(ctx context.Context, opts receipt.EmitOpt
 }
 
 func (p *Proxy) recordTransportNotReleased(ctx context.Context, opts receipt.EmitOpts, entry *v3TransportReceipt) {
+	if entry == nil {
+		return
+	}
 	action := entry.action
 	action.Phase, action.OutcomeClass = "outcome", "not_released"
 	action.Verdict, action.EffectRelation = config.ActionBlock, "not_attempted"
