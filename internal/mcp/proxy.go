@@ -168,6 +168,7 @@ func isRequest(msg []byte) bool {
 // Returns true if any response security finding was detected.
 func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) (bool, error) {
 	opts = opts.snapshotScanPolicy()
+	recordsDelivery := opts.ReceiptV3 != nil && (opts.v3DirectResponseDelivery || opts.stageV3ResponseDelivery != nil)
 	if opts.ServerIdentityFn != nil {
 		writer = &serverIdentityMessageWriter{writer: writer, opts: opts}
 	}
@@ -934,7 +935,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				continue
 			}
 			var delivery mcpV3Receipt
-			if opts.ReceiptV3 != nil && opts.v3DirectResponseDelivery {
+			if recordsDelivery {
 				receiptOpts := withMCPResponseShard(trackedOutcome.Receipt, receipt.EmitOpts{
 					ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Layer: "mcp_response_scan",
 					Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(frame.ID),
@@ -1109,7 +1110,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			Receipt:        originalReceiptOpts,
 			RequireReceipt: opts.requireReceipts() && effectiveAction != config.ActionBlock,
 		}
-		if opts.v3DirectResponseDelivery {
+		if recordsDelivery {
 			receiptDecision.v3Boundary = mcpV3Delivery
 			receiptDecision.v3Confirmed = &delivery
 		}

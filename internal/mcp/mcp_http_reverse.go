@@ -2341,6 +2341,19 @@ func RunHTTPListenerProxy(
 		w.opts.denialTerminal = &responseTerminal
 		var inventoryCommits []func()
 		var inventoryReleases []func()
+		var responseDeliveries []mcpV3Receipt
+		var deliveryAttempted bool
+		var deliveryErr error
+		if reqOpts.ReceiptV3 != nil {
+			reqOpts.stageV3ResponseDelivery = func(entry mcpV3Receipt) {
+				responseDeliveries = append(responseDeliveries, entry)
+			}
+			defer func() {
+				for i := range responseDeliveries {
+					responseDeliveries[i].finish(reqOpts, safeLogW, deliveryAttempted, deliveryErr)
+				}
+			}()
+		}
 		reqOpts.toolInventoryDelivery = func(commit, release func()) {
 			inventoryCommits = append(inventoryCommits, commit)
 			inventoryReleases = append(inventoryReleases, release)
@@ -2363,21 +2376,28 @@ func RunHTTPListenerProxy(
 					w.WriteHeader(http.StatusAccepted)
 					return
 				}
+				if len(responseDeliveries) > 0 && r.Context().Err() != nil {
+					return
+				}
 				if commitBeforeWrite {
 					for _, commit := range inventoryCommits {
 						commit()
 					}
 				}
 				n, err := w.Write(output)
-				if err == nil && n == len(output) && !commitBeforeWrite {
-					// net/http buffers small writes. Flush before treating delivery as
-					// successful, so a failed socket write cannot seed client-seen state.
-					if flushErr := http.NewResponseController(w.ResponseWriter).Flush(); flushErr == nil {
+				if err == nil && n != len(output) {
+					err = io.ErrShortWrite
+				}
+				// Flush before treating a buffered net/http write as completed.
+				if err == nil && (!commitBeforeWrite || len(responseDeliveries) > 0) {
+					err = http.NewResponseController(w.ResponseWriter).Flush()
+					if err == nil && !commitBeforeWrite {
 						for _, commit := range inventoryCommits {
 							commit()
 						}
 					}
 				}
+				deliveryAttempted, deliveryErr = !w.uniform, err
 			})
 		}
 		foundInjection, scanErr := ForwardScanned(reader, bufWriter, safeLogW, responseTracker, reqOpts)

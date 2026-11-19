@@ -158,7 +158,7 @@ func exerciseMCPV3Upstream(t *testing.T, surface string, live bool) {
 	}
 	result, err := v3.VerifyPaths(t.Context(), []string{dir}, verify)
 	wantCompleted := int64(1)
-	if surface == "bridge" {
+	if surface == "bridge" || surface == "listener" {
 		wantCompleted = 2
 	}
 	if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil ||
@@ -248,6 +248,38 @@ func TestMCPV3ConfirmsDirectResponseDelivery(t *testing.T) {
 				t.Fatalf("delivery outcome missing: %+v (%v)", result, err)
 			}
 		})
+	}
+}
+
+func TestMCPV3ListenerRefusesUnconfirmedResponse(t *testing.T) {
+	_, writer, _ := newMCPV3Stream(t, "listener")
+	received := make(chan error, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isMCPUpstreamRequest(r) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		received <- writer.Close(r.Context(), nil)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, cleanToolsCallResponse)
+	}))
+	t.Cleanup(upstream.Close)
+	opts := MCPProxyOpts{
+		Scanner: testScannerForHTTP(t), Transport: "mcp_http_listener",
+		RequireReceipts: true, ReceiptV3: writer,
+	}
+	url, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+	status, body := postToolsCall(t, url)
+	if status != http.StatusBadGateway || strings.Contains(body, "result") {
+		t.Fatalf("listener delivered an unconfirmed response: %d %s", status, body)
+	}
+	select {
+	case err := <-received:
+		if err != nil {
+			t.Fatal(err)
+		}
+	default:
+		t.Fatal("listener did not reach the upstream endpoint")
 	}
 }
 
