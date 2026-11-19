@@ -594,6 +594,9 @@ func (e *Emitter) SignerKeyHex() string {
 type EmitOpts struct {
 	promptInjectionModeSet bool
 	promptInjectionMode    string
+	// ContentScanContext can cancel an ordinary action's content inspection.
+	// Once the scan succeeds, the emission owns append and confirmation.
+	ContentScanContext context.Context `json:"-"`
 	// ShardIndex is selected once at admission and copied into later outcome,
 	// failure-marker, and v2 emissions. It is runtime-only, never signed JSON.
 	ShardIndex            int
@@ -865,9 +868,15 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		reduceActionTargets(&tmpl.ActionRecord)
 	} else {
 		var scanErr error
-		tmpl, content, scanErr = e.scanActionContent(tmpl)
+		ctx := opts.ContentScanContext
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		tmpl, content, scanErr = e.scanActionContent(ctx, tmpl)
 		if scanErr != nil {
-			e.recordFailure(FailReasonContent)
+			if !IsContentScanCanceled(scanErr) {
+				e.recordFailure(FailReasonContent)
+			}
 			return fmt.Errorf("validating receipt content: %w", scanErr)
 		}
 	}

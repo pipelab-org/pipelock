@@ -18,6 +18,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -163,11 +164,15 @@ type Recorder struct {
 	contentDetector receiptcontent.Detector
 	// contentCache is set only when contentDetector is a cached scanner
 	// generation (NewWithScanner).
-	contentCache *receiptcontent.CachedDetector
-	privKey      ed25519.PrivateKey
-	escrowPub    *[x25519KeySize]byte
-	observer     EntryObserver
-	metrics      MetricsSink
+	contentCache     *receiptcontent.CachedDetector
+	contentScanSlots chan struct{}
+	// contentScanWait, when set by a test, runs when a receipt content scan
+	// finds every slot taken and is about to wait for one.
+	contentScanWait atomic.Pointer[func()]
+	privKey         ed25519.PrivateKey
+	escrowPub       *[x25519KeySize]byte
+	observer        EntryObserver
+	metrics         MetricsSink
 
 	mu      sync.Mutex
 	groupMu sync.Mutex
@@ -403,6 +408,21 @@ func New(cfg Config, redactFn RedactFunc, privKey ed25519.PrivateKey) (*Recorder
 	}
 
 	return r, nil
+}
+
+// SetContentScanWaitForTest installs fn to run whenever a receipt content
+// scan finds every inspection slot taken and is about to wait. Passing nil
+// removes it. Like SetSyncForTest it is exported for tests in other packages;
+// it is not wired to config or agent input.
+func (r *Recorder) SetContentScanWaitForTest(fn func()) {
+	if r == nil {
+		return
+	}
+	if fn == nil {
+		r.contentScanWait.Store(nil)
+		return
+	}
+	r.contentScanWait.Store(&fn)
 }
 
 // SetSyncForTest replaces the File.Sync implementation used by RecordDurable.
@@ -2121,6 +2141,7 @@ func NewWithScanner(cfg Config, sc *scanner.Scanner, key ed25519.PrivateKey) (*R
 		}
 		r.contentCache = cached
 		r.contentDetector = cached.Detect
+		r.contentScanSlots = make(chan struct{}, runtime.GOMAXPROCS(0))
 	}
 	return r, nil
 }

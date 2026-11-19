@@ -11,8 +11,11 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/google/uuid"
@@ -149,6 +152,91 @@ func (f *boundaryFixture) receipts(t *testing.T) []Receipt {
 
 func baseOpts() EmitOpts {
 	return EmitOpts{ActionID: NewActionID(), Target: testTarget, Verdict: config.ActionAllow, Transport: testTransport, Method: "GET"}
+}
+
+// heldContentScanContext pauses a scan at its cancellation check just after
+// it acquires a recorder slot.
+type heldContentScanContext struct {
+	context.Context
+	release <-chan struct{}
+}
+
+func (ctx heldContentScanContext) Err() error {
+	<-ctx.release
+	return ctx.Context.Err()
+}
+
+func TestEmitDurableCanceledQueuedContentScanLeavesEmitterHealthy(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newBoundaryFixture(t)
+		t.Cleanup(func() { _ = f.rec.Close() })
+		metrics := &stubMetrics{}
+		f.em.metrics = metrics
+
+		release := make(chan struct{})
+		releaseSlots := sync.OnceFunc(func() { close(release) })
+		defer releaseSlots()
+		holds, stopHolds := context.WithCancel(t.Context())
+		defer stopHolds()
+		holder := heldContentScanContext{Context: holds, release: release}
+		for range runtime.GOMAXPROCS(0) {
+			go func() {
+				_, _, _ = f.rec.ScanReceiptContent(holder, actionReceiptProducer, nil)
+			}()
+		}
+		synctest.Wait()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		opts := baseOpts()
+		opts.ContentScanContext = ctx
+		done := make(chan error, 1)
+		go func() { done <- f.em.EmitDurable(opts) }()
+		synctest.Wait()
+		select {
+		case err := <-done:
+			t.Fatalf("emission returned before cancellation while slots were held: %v", err)
+		default:
+		}
+
+		cancel()
+		synctest.Wait()
+		select {
+		case err := <-done:
+			if !IsContentScanCanceled(err) || !errors.Is(err, context.Canceled) {
+				t.Fatalf("queued emission returned %v, want caller cancellation", err)
+			}
+		default:
+			t.Fatal("canceled emission stayed queued while slots were held")
+		}
+		stopHolds()
+		releaseSlots()
+		synctest.Wait()
+
+		deadline, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+		defer cancel()
+		opts.ContentScanContext = deadline
+		if err := f.em.EmitDurable(opts); !IsContentScanCanceled(err) || !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("expired scan returned %v, want caller deadline", err)
+		}
+		if err := f.em.HealthError(); err != nil {
+			t.Fatalf("canceled scans changed emitter health: %v", err)
+		}
+		if got := metrics.snapshot(); len(got) != 0 {
+			t.Fatalf("canceled scans emitted failure metrics: %v", got)
+		}
+		if snap, ok := f.em.HealthSnapshot(); !ok || snap.ChainSeq != 0 || !snap.LastEmit.IsZero() {
+			t.Fatalf("canceled scans changed chain state: snapshot=%+v ok=%v", snap, ok)
+		}
+
+		opts.ContentScanContext = t.Context()
+		if err := f.em.EmitDurable(opts); err != nil {
+			t.Fatalf("control receipt: %v", err)
+		}
+		if got := f.receipts(t); len(got) != 1 || got[0].ActionRecord.ActionID != opts.ActionID {
+			t.Fatalf("persisted receipts = %v, want just the control receipt", got)
+		}
+	})
 }
 
 func TestWedgedHeadAndSignerKeyNoLongerRefuseReceipts(t *testing.T) {

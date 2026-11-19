@@ -2360,15 +2360,18 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	writeTaskDenialResponse := func(reason, detail string) {
+		p.metrics.RecordBlocked(r.URL.Hostname(), "taint_policy", time.Since(start), agentLabel)
+		writeBlockedError(w, blockInfoFor(blockreason.AuthorityMismatch, "taint_policy").WithRequestID(requestID),
+			"blocked: "+reason+" ("+detail+")", http.StatusForbidden)
+	}
 	writeTaskDenial := func(reason, detail string) {
 		forwardTaint.Result = session.PolicyDecisionResult{Decision: session.PolicyBlock, Reason: reason}
 		emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
 			ActionID: actionID, RequestID: requestID, Agent: agent, Method: r.Method, Target: targetURL,
 			Layer: "taint_policy", Pattern: reason, Taint: forwardTaint,
 		})))
-		p.metrics.RecordBlocked(r.URL.Hostname(), "taint_policy", time.Since(start), agentLabel)
-		writeBlockedError(w, blockInfoFor(blockreason.AuthorityMismatch, "taint_policy").WithRequestID(requestID),
-			"blocked: "+reason+" ("+detail+")", http.StatusForbidden)
+		writeTaskDenialResponse(reason, detail)
 	}
 	taskTaint := evaluateHTTPTaskTaint(cfg, forwardRec, outReq.Method, outReq.URL, &forwardTask)
 	if forwardTaint.Result.Reason == session.TaskPermissionRequired && forwardTaint.Task.CurrentTaskID != taskTaint.Task.CurrentTaskID {
@@ -2449,12 +2452,18 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	switch forwardTaint.Result.Reason {
-	case session.TaskPermissionGranted, session.TaskApprovalGranted:
-		if !forwardTaskAdmissionCurrent(forwardRec, forwardTask, forwardTaint) {
-			writeTaskDenial(session.TaskApprovalStale, "the task changed or its permission expired before release")
-			return
+	const staleTaskDetail = "the task changed or its permission expired before release"
+	taskAdmissionCurrent := func() bool {
+		switch forwardTaint.Result.Reason {
+		case session.TaskPermissionGranted, session.TaskApprovalGranted:
+			return forwardTaskAdmissionCurrent(forwardRec, forwardTask, forwardTaint)
+		default:
+			return true
 		}
+	}
+	if !taskAdmissionCurrent() {
+		writeTaskDenial(session.TaskApprovalStale, staleTaskDetail)
+		return
 	}
 	forwardAllowReceipt := withReceiptShard(withForwardRedaction(receipt.EmitOpts{
 		ActionID:            actionID,
@@ -2480,7 +2489,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		forwardAllowReceipt = withContractReceipt(forwardGate, forwardAllowReceipt)
 	}
 	if cfg.FlightRecorder.RequireReceipts {
-		if err := p.emitRequiredReceipt(withReceiptConfig(forwardAllowReceipt, cfg)); err != nil {
+		intent := withReceiptConfig(forwardAllowReceipt, cfg)
+		intent.ContentScanContext = r.Context()
+		if err := p.emitRequiredReceipt(intent); err != nil {
+			// A client that went away gets the ordinary cancellation answer.
+			// A cancellation Pipelock made itself, such as a revoked license,
+			// stays a block below so the caller never sees an empty success.
+			if receipt.IsContentScanCanceled(err) && requestClientCanceled(r.Context()) {
+				logRequestCanceled(p.logger, actx, "")
+				writeClientCanceled(w)
+				return
+			}
 			blockedErr := newReceiptEmissionBlockedRequest(err)
 			p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
@@ -2494,6 +2513,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	outcomeStatus := "unknown"
 	outcomeBytes := int64(-1)
 	outcomeReason := "incomplete"
+	outcomeReceipt := forwardAllowReceipt
+	outcomeReceipt.Verdict = config.ActionAllow
 	// A scanned SSE stream records "complete" on success. Its failed final
 	// flush keeps the SSE cancellation reason a mid-stream departure records.
 	sseDelivered := false
@@ -2512,7 +2533,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
 			outcomeReason = "license_revoked"
 		}
-		p.emitOutcomeReceipt(cfg, forwardAllowReceipt, outcomeStatus, outcomeBytes, outcomeReason)
+		p.emitOutcomeReceiptWithPattern(cfg, outcomeReceipt, receiptOutcomePattern(outcomeStatus, outcomeBytes, outcomeReason))
 		if aborted != nil {
 			panic(aborted)
 		}
@@ -2525,6 +2546,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	responseBudgetTruncated := false
 
+	// Required receipt scanning and durability can outlast task admission.
+	// Without required receipts nothing waits between the check above and
+	// the send, so only the required path needs to look again.
+	if cfg.FlightRecorder.RequireReceipts && !taskAdmissionCurrent() {
+		outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, session.TaskApprovalStale
+		outcomeReceipt.Verdict = config.ActionBlock
+		outcomeReceipt.TaintDecision = session.PolicyBlock.String()
+		outcomeReceipt.TaintDecisionReason = session.TaskApprovalStale
+		writeTaskDenialResponse(session.TaskApprovalStale, staleTaskDetail)
+		return
+	}
 	resp, err := p.client.Do(outReq)
 	if err != nil {
 		var ssrfErr *ssrfDialBlockError

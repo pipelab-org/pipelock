@@ -5,6 +5,9 @@ package proxy
 
 import (
 	"bytes"
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,17 +15,25 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -527,6 +538,125 @@ func TestForwardTaskPermissionRefusesRotationDuringRequestBinding(t *testing.T) 
 	}
 }
 
+func TestForwardTaskPermissionAtReceiptConfirmation(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		rotate bool
+		status int
+		calls  int32
+		reason string
+	}{
+		{name: "task_changed", rotate: true, status: http.StatusForbidden, reason: session.TaskApprovalStale},
+		{name: "grant_current", status: http.StatusNoContent, calls: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const actor = "bound-worker"
+			const target = "http://peer.vendor.example/update"
+			var calls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			t.Cleanup(upstream.Close)
+			_, p, stop := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+				cfg.SessionProfiling.Enabled = true
+				cfg.FlightRecorder.RequireReceipts = true
+				cfg.Agents = map[string]config.AgentProfile{actor: {}}
+			})
+			t.Cleanup(stop)
+			p.approver = nil
+			installForwardTestDialer(p, upstream.Listener.Addr().String())
+			receipts := newReceiptProxyHelperWithMetrics(t, p.metrics)
+			t.Cleanup(func() { _ = receipts.rec.Close() })
+			if err := receipts.emitter.EmitSessionOpen(); err != nil {
+				t.Fatal(err)
+			}
+			p.receiptEmitterPtr.Store(receipts.emitter)
+
+			req := httptest.NewRequestWithContext(edition.WithAgentOverride(t.Context(), actor), http.MethodPost, target, nil)
+			_, id := p.resolveAgentFromRequest(req)
+			if id.Auth != envelope.ActorAuthBound {
+				t.Fatalf("actor auth = %s, want bound", id.Auth)
+			}
+			clientIP, _ := requestMeta(req)
+			cfg := p.cfgPtr.Load()
+			rec := p.sessionMgrPtr.Load().GetOrCreate(responseTaintSessionKey(cfg, id.Name, clientIP, id.Auth))
+			observeHTTPResponseFindings(rec, cfg, "http://status.vendor.example/source", "text/plain", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+			rec.BindTaskSubject("forward:" + actor)
+			responseencoding.RequestIdentity(req.Header)
+			if err := rec.installTaskPermission(rec.TaskSnapshot().CurrentTaskID, session.TaskPermission{
+				Action: forwardRequestTaskAction(req, nil), ExpiresAt: time.Now().Add(time.Hour),
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			syncStarted := make(chan struct{})
+			releaseSync := make(chan struct{})
+			release := sync.OnceFunc(func() { close(releaseSync) })
+			defer release()
+			var firstSync sync.Once
+			receipts.rec.SetSyncForTest(func(f *os.File) error {
+				firstSync.Do(func() {
+					close(syncStarted)
+					<-releaseSync
+				})
+				return f.Sync()
+			})
+			w := httptest.NewRecorder()
+			finished := make(chan struct{})
+			go func() {
+				defer close(finished)
+				p.handleForwardHTTP(w, req)
+			}()
+			select {
+			case <-syncStarted:
+			case <-finished:
+				t.Fatalf("request returned before confirmation: status=%d body=%q", w.Code, w.Body)
+			case <-time.After(5 * time.Second):
+				t.Fatal("required receipt did not reach confirmation")
+			}
+			if tc.rotate {
+				rec.BeginNewTask("next task")
+			}
+			release()
+			select {
+			case <-finished:
+			case <-time.After(5 * time.Second):
+				t.Fatal("request did not finish after confirmation")
+			}
+
+			if w.Code != tc.status || calls.Load() != tc.calls || !strings.Contains(w.Body.String(), tc.reason) {
+				t.Fatalf("status=%d upstream calls=%d body=%q, want status=%d calls=%d reason=%q",
+					w.Code, calls.Load(), w.Body, tc.status, tc.calls, tc.reason)
+			}
+			chain := receipts.findReceipts(t)
+			if len(chain) != 3 {
+				t.Fatalf("receipt count=%d, want session_open plus one intent and one outcome", len(chain))
+			}
+			if verified := receipt.VerifyChain(chain, receipts.pubHex); !verified.Valid {
+				t.Fatalf("verify receipts: %s", verified.Error)
+			}
+			intent, outcome := chain[1].ActionRecord, chain[2].ActionRecord
+			if intent.DecisionPhase != receipt.DecisionPhaseIntent || intent.Verdict != config.ActionAllow ||
+				intent.TaintDecisionReason != session.TaskPermissionGranted ||
+				outcome.DecisionPhase != receipt.DecisionPhaseOutcome || outcome.ActionID != intent.ActionID ||
+				w.Header().Get(blockreason.HeaderRecordedReceipt) != intent.ActionID {
+				t.Fatalf("expected a granted intent and linked outcome, got intent=%+v outcome=%+v", intent, outcome)
+			}
+			if tc.rotate {
+				if outcome.Verdict != config.ActionBlock || outcome.TaintDecision != session.PolicyBlock.String() ||
+					outcome.TaintDecisionReason != session.TaskApprovalStale ||
+					outcome.Pattern != receiptOutcomePattern("403", 0, session.TaskApprovalStale) {
+					t.Fatalf("expected a blocked stale-task outcome, got %+v", outcome)
+				}
+			} else if outcome.Verdict != config.ActionAllow || outcome.Pattern != receiptOutcomePattern("204", 0, "complete") {
+				t.Fatalf("expected a successful outcome, got %+v", outcome)
+			}
+		})
+	}
+}
+
 func TestForwardTaskReleaseRequiresCurrentGrant(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
@@ -567,4 +697,151 @@ func TestForwardTaskReleaseRequiresCurrentGrant(t *testing.T) {
 	if forwardTaskAdmissionCurrent(rec, task, decision) {
 		t.Fatal("expired task grant remained eligible for release")
 	}
+}
+
+// A forward request whose required receipt is still waiting for a scan slot
+// never reaches the upstream once its context ends. A client that left gets
+// the ordinary cancellation answer; a cancellation Pipelock made itself, such
+// as a revoked license, stays a block. Neither case marks the emitter
+// unhealthy.
+func TestForwardRequiredReceiptQueuedScanCancellation(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		cause  error
+		status int
+		body   string
+	}{
+		{name: "client_gone", cause: context.Canceled, status: http.StatusServiceUnavailable, body: clientCanceledStatusText},
+		{name: "license_revoked", cause: errAgentLicenseRevoked, status: http.StatusForbidden, body: "receipt emission failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var calls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			t.Cleanup(upstream.Close)
+			_, p, stop := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+				cfg.FlightRecorder.RequireReceipts = true
+			})
+			t.Cleanup(stop)
+			installForwardTestDialer(p, upstream.Listener.Addr().String())
+
+			sc := scanner.MustNew(config.Defaults())
+			t.Cleanup(sc.Close)
+			_, priv, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec, err := recorder.NewWithScanner(recorder.Config{Enabled: true, Dir: t.TempDir(), Redact: true}, sc, priv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = rec.Close() })
+			emitter := receipt.NewEmitter(receipt.EmitterConfig{
+				Recorder: rec, PrivKey: priv, ConfigHash: coverageTestConfigHash,
+				Principal: coverageTestPrincipal, Actor: coverageTestActor, Metrics: p.metrics,
+			})
+			if err := emitter.EmitSessionOpen(); err != nil {
+				t.Fatal(err)
+			}
+			p.receiptEmitterPtr.Store(emitter)
+
+			holdReceiptScanSlots(t, rec)
+			queued := waitForQueuedReceiptScan(t, rec)
+			reqCtx, cancelReq := context.WithCancelCause(t.Context())
+			defer cancelReq(nil)
+			req := httptest.NewRequestWithContext(reqCtx, http.MethodPost, "http://peer.vendor.example/update", nil)
+			w := httptest.NewRecorder()
+			finished := make(chan struct{})
+			go func() {
+				defer close(finished)
+				p.handleForwardHTTP(w, req)
+			}()
+			select {
+			case <-queued:
+			case <-finished:
+				t.Fatalf("request finished before its receipt scan queued: status=%d body=%q", w.Code, w.Body)
+			case <-time.After(5 * time.Second):
+				t.Fatal("receipt scan never queued for a slot")
+			}
+			cancelReq(tc.cause)
+			select {
+			case <-finished:
+			case <-time.After(5 * time.Second):
+				t.Fatal("canceled request stayed queued for a receipt scan slot")
+			}
+			if w.Code != tc.status || !strings.Contains(w.Body.String(), tc.body) || calls.Load() != 0 {
+				t.Fatalf("status=%d body=%q upstream calls=%d, want status=%d body containing %q and no upstream call",
+					w.Code, w.Body, calls.Load(), tc.status, tc.body)
+			}
+			if err := emitter.HealthError(); err != nil {
+				t.Fatalf("cancellation changed emitter health: %v", err)
+			}
+			assertMetricsNotContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="forward"} 1`)
+		})
+	}
+}
+
+var slotHoldProducer = receiptcontent.Register(receiptcontent.Schema{Kind: "pipelock.test.proxy_scan_slot_hold.v1"})
+
+// heldScanContext parks a receipt scan just after it takes a recorder slot and
+// reports that it holds one.
+type heldScanContext struct {
+	context.Context
+	holding chan<- struct{}
+	release <-chan struct{}
+}
+
+func (ctx heldScanContext) Err() error {
+	select {
+	case ctx.holding <- struct{}{}:
+	default:
+	}
+	<-ctx.release
+	return ctx.Context.Err()
+}
+
+// holdReceiptScanSlots occupies every receipt scan slot of rec until the test
+// ends, so the next scan has to queue.
+func holdReceiptScanSlots(t *testing.T, rec *recorder.Recorder) {
+	t.Helper()
+	slots := runtime.GOMAXPROCS(0)
+	holding := make(chan struct{}, slots)
+	release := make(chan struct{})
+	var done sync.WaitGroup
+	for range slots {
+		done.Go(func() {
+			_, _, _ = rec.ScanReceiptContent(heldScanContext{Context: t.Context(), holding: holding, release: release}, slotHoldProducer, nil)
+		})
+	}
+	t.Cleanup(func() {
+		close(release)
+		done.Wait()
+	})
+	timeout := time.After(5 * time.Second)
+	for range slots {
+		select {
+		case <-holding:
+		case <-timeout:
+			t.Fatal("receipt scan slots were not all held")
+		}
+	}
+}
+
+// waitForQueuedReceiptScan installs a wait hook on rec and returns a channel
+// that receives once a scan has found every slot taken.
+func waitForQueuedReceiptScan(t *testing.T, rec *recorder.Recorder) <-chan struct{} {
+	t.Helper()
+	queued := make(chan struct{}, 1)
+	rec.SetContentScanWaitForTest(func() {
+		select {
+		case queued <- struct{}{}:
+		default:
+		}
+	})
+	t.Cleanup(func() { rec.SetContentScanWaitForTest(nil) })
+	return queued
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -426,8 +427,7 @@ func (e *Emitter) contentProducer() *receiptcontent.Producer {
 // detector. Redactable content values (never identities or member names) are
 // sanitized before signing and the template is scanned again; anything still
 // flagged is a typed content rejection that leaves the chain untouched.
-func (e *Emitter) scanActionContent(tmpl Receipt) (Receipt, *recorder.ContentScan, error) {
-	ctx := context.Background()
+func (e *Emitter) scanActionContent(ctx context.Context, tmpl Receipt) (Receipt, *recorder.ContentScan, error) {
 	redactedOnce := false
 	for {
 		raw, err := json.Marshal(tmpl)
@@ -478,6 +478,13 @@ func (e *Emitter) scanActionContent(tmpl Receipt) (Receipt, *recorder.ContentSca
 		tmpl = next
 		redactedOnce = true
 	}
+}
+
+// IsContentScanCanceled reports whether the caller abandoned receipt content
+// inspection before append.
+func IsContentScanCanceled(err error) bool {
+	return errors.Is(err, scanner.ErrTextDLPIncomplete) &&
+		(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
 }
 
 // reduceActionTargets removes URL content only after keyword-dependent
