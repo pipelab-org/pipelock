@@ -602,7 +602,7 @@ func (w *v3DeliveryFlushFailure) FlushError() error {
 }
 
 func TestV3OptionalDeliveryFlushFailure(t *testing.T) {
-	for _, surface := range []string{TransportReverse, "intercept"} {
+	for _, surface := range []string{TransportFetch, TransportReverse, "intercept"} {
 		t.Run(surface, func(t *testing.T) {
 			p, writer, dir, keys := newTestV3HTTPProxy(t, surface, false, nil)
 			upstream := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
@@ -617,6 +617,10 @@ func TestV3OptionalDeliveryFlushFailure(t *testing.T) {
 			target := &url.URL{Scheme: "https", Host: "upstream.vendor.example"}
 			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target.String(), nil)
 			switch surface {
+			case TransportFetch:
+				p.client.Transport = upstream
+				p.handleFetch(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+					"/fetch?url="+url.QueryEscape(target.String()), nil))
 			case TransportReverse:
 				reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
 				reverse.SetOwnerProxy(p)

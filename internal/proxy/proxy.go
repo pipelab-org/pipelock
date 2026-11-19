@@ -6679,7 +6679,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			verdict = config.ActionWarn
 		}
 		var flushErr error
-		if cfg.FlightRecorder.RequireReceipts && aborted == nil {
+		if aborted == nil && (cfg.FlightRecorder.RequireReceipts || downstreamReceipt != nil) {
 			flushErr = flushResponseBeforeOutcome(w, r, cfg)
 			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason, verdict) {
 				delivery.err = flushErr
