@@ -87,7 +87,7 @@ func TestMCPListenerStreamIntegrity(t *testing.T) {
 					t.Skip("GET subscriptions carry notifications rather than client request results")
 				}
 				payload := "data: " + jsonProgressNotification50 + "\n\n"
-				if ending == "completed_rpc_then_break" {
+				if method == http.MethodPost && (ending == "complete" || ending == "completed_rpc_then_break") {
 					payload += "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}}\n\n"
 				}
 				release := make(chan struct{})
@@ -260,8 +260,12 @@ func TestMCPListenerStreamIntegrity(t *testing.T) {
 				if ending != "complete" && !found {
 					t.Fatalf("missing %s outcome: %+v", wantReason, receipts)
 				}
-				if method == http.MethodPost && ending != "complete" && ending != "completed_rpc_then_break" {
-					if len(outcomes) != 1 || !strings.HasSuffix(outcomes[intentID], "reason="+wantReason) {
+				if method == http.MethodPost {
+					if ending == "complete" || ending == "completed_rpc_then_break" {
+						if !strings.HasPrefix(outcomes[intentID], "status=result ") || (ending == "complete" && len(outcomes) != 1) {
+							t.Fatalf("completed POST intent %q must have one result outcome, got %v", intentID, outcomes)
+						}
+					} else if len(outcomes) != 1 || !strings.HasSuffix(outcomes[intentID], "reason="+wantReason) {
 						t.Fatalf("interrupted POST intent %q must have one matching %s outcome, got %v", intentID, wantReason, outcomes)
 					}
 				}

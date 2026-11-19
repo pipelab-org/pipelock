@@ -40,8 +40,13 @@ func trackMCPOutcome(logW io.Writer, opts MCPProxyOpts, tracker *RequestTracker,
 }
 
 func (o TrackedRequestOutcome) settle(logW io.Writer, opts MCPProxyOpts, status string, size int64, reason string) bool {
+	settled, _ := o.settleResult(logW, opts, status, size, reason)
+	return settled
+}
+
+func (o TrackedRequestOutcome) settleResult(logW io.Writer, opts MCPProxyOpts, status string, size int64, reason string) (bool, error) {
 	if o.Receipt.ActionID == "" {
-		return false
+		return false, nil
 	}
 	h := o.handle
 	if h == nil {
@@ -52,10 +57,10 @@ func (o TrackedRequestOutcome) settle(logW io.Writer, opts MCPProxyOpts, status 
 		} else {
 			emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, o.Receipt, status, size, reason, opts.requireReceipts())
 		}
-		return true
+		return true, nil
 	}
 	if !h.settled.CompareAndSwap(false, true) {
-		return false
+		return false, nil
 	}
 	r := mcpOutcomeReceiptOpts(o.Receipt, status, size, reason)
 	r.Verdict = config.ActionAllow
@@ -64,11 +69,12 @@ func (o TrackedRequestOutcome) settle(logW io.Writer, opts MCPProxyOpts, status 
 	} else {
 		r.Layer = mcpOutcomeLayer
 	}
-	return h.emit(logW, r)
+	err := h.emit(logW, r)
+	return err == nil, err
 }
 
-func (h *mcpOutcomeHandle) emit(logW io.Writer, r receipt.EmitOpts) bool {
-	durable := h.required && r.Verdict == config.ActionBlock
+func (h *mcpOutcomeHandle) emit(logW io.Writer, r receipt.EmitOpts) error {
+	durable := h.required
 	write := h.v1.Emit
 	if durable {
 		write = h.v1.EmitDurable
@@ -82,17 +88,17 @@ func (h *mcpOutcomeHandle) emit(logW io.Writer, r receipt.EmitOpts) bool {
 	if err != nil {
 		h.requiredGroupFailure(err)
 		logReceiptEmitFailure(logW, err, h.required, r.Verdict)
-		return false
+		return err
 	}
 	// Preserve the existing v2 refusal and required-mode evidence.
 	if h.v2 != nil && (h.required || r.Verdict == config.ActionBlock) {
 		if err := emitMCPV2Decision(h.v2, r, h.required, durable); err != nil {
 			h.requiredGroupFailure(err)
 			logReceiptEmitFailure(logW, err, h.required, r.Verdict)
-			return false
+			return err
 		}
 	}
-	return true
+	return nil
 }
 
 func (h *mcpOutcomeHandle) requiredGroupFailure(err error) {
@@ -104,6 +110,8 @@ func (h *mcpOutcomeHandle) requiredGroupFailure(err error) {
 		}
 	}
 }
+
+const mcpTransportAdmissionLayer = "mcp_transport_admission"
 
 // admitDurableTransport records the single-phase receipt for opening an MCP
 // stream. Best-effort mode records nothing. Required mode returns the error
@@ -118,7 +126,7 @@ func admitDurableTransport(opts MCPProxyOpts, method, target string) (receipt.Em
 		Transport: opts.Transport,
 		Method:    method,
 		Target:    target,
-		Layer:     "mcp_transport_admission",
+		Layer:     mcpTransportAdmissionLayer,
 	})
 	if group := opts.ReceiptGroup; group != nil && group.Shards != nil {
 		admission = group.Shards.Admit(admission)
@@ -132,21 +140,24 @@ func admitDurableTransport(opts MCPProxyOpts, method, target string) (receipt.Em
 // warnTransportAdmission closes an admitted stream on the same action and shard.
 // An empty action means this open was not recorded.
 func warnTransportAdmission(logW io.Writer, opts MCPProxyOpts, admission receipt.EmitOpts, reason string) {
-	recordTransportAdmissionFailure(logW, opts, admission, "error", reason)
+	recordTransportAdmissionResult(logW, opts, admission, "error", reason)
 }
 
-func recordTransportAdmissionFailure(logW io.Writer, opts MCPProxyOpts, admission receipt.EmitOpts, status, reason string) {
+func recordTransportAdmissionResult(logW io.Writer, opts MCPProxyOpts, admission receipt.EmitOpts, status, reason string) {
 	if admission.ActionID == "" {
 		return
 	}
-	failure := mcpOutcomeReceiptOpts(admission, status, -1, reason)
-	// Transport admissions are single-phase. A failure stays on that action
-	// without opening an intent pair.
-	failure.DecisionPhase = ""
-	failure.Verdict, failure.Layer = config.ActionWarn, mcpOutcomeLayer
+	result := mcpOutcomeReceiptOpts(admission, status, -1, reason)
+	// Transport admissions are single-phase. Keep the result on the same
+	// action without opening an intent pair.
+	result.DecisionPhase = ""
+	result.Verdict, result.Layer = config.ActionWarn, mcpOutcomeLayer
+	if status == "completed" {
+		result.Verdict = config.ActionForward
+	}
 	if _, err := opts.emitReceiptDecision(MCPDecision{
-		Receipt: failure, RequireReceipt: true, RequiredMode: true,
+		Receipt: result, RequireReceipt: true, RequiredMode: true,
 	}); err != nil {
-		logReceiptEmitFailure(logW, err, true, failure.Verdict)
+		logReceiptEmitFailure(logW, err, true, result.Verdict)
 	}
 }

@@ -354,7 +354,7 @@ func resolveLifecycle(flags lifecycleFlags) (lifecycleContext, error) {
 	if receiptOut == "" {
 		receiptOut = filepath.Join(storeDir, defaultLifecycleReceiptOut)
 	}
-	receiptOut, err = prepareLifecycleReceiptPath(receiptOut)
+	receiptOut, err = prepareLifecycleReceiptPath(receiptOut, directorysync.Sync)
 	if err != nil {
 		return lifecycleContext{}, err
 	}
@@ -576,32 +576,25 @@ func lifecycleReceiptContext(eventID string, now time.Time, activeManifestHash, 
 	}
 }
 
-// prepareLifecycleReceiptPath makes newly created directories reachable after
-// power loss before the receipt file is populated and synced.
-func prepareLifecycleReceiptPath(path string) (string, error) {
-	clean := filepath.Clean(path)
-	if !filepath.IsAbs(clean) {
-		return checkedWritePath(clean)
-	}
-	var created []string
-	for dir := filepath.Dir(clean); ; {
-		_, err := os.Stat(dir)
-		if err == nil {
-			break
-		}
-		parent := filepath.Dir(dir)
-		if !errors.Is(err, os.ErrNotExist) || parent == dir {
-			return "", fmt.Errorf("inspect lifecycle receipt directory: %w", err)
-		}
-		created = append(created, dir)
-		dir = parent
-	}
-	if _, err := checkedWritePath(clean); err != nil {
+// Sync the receipt directory ancestry even on a retry: a previous attempt
+// may have created directories and stopped before their entries reached disk.
+func prepareLifecycleReceiptPath(path string, syncDir func(string) error) (string, error) {
+	clean, err := checkedWritePath(path)
+	if err != nil {
 		return "", err
 	}
-	for i := len(created) - 1; i >= 0; i-- {
-		if err := directorysync.Sync(filepath.Dir(created[i])); err != nil {
-			return "", fmt.Errorf("sync lifecycle receipt parent directory: %w", err)
+	dir := filepath.Dir(clean)
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolve lifecycle receipt directory: %w", err)
+	}
+	synced := make(map[string]bool)
+	for _, base := range []string{dir, resolved} {
+		for current := base; !synced[current]; current = filepath.Dir(current) {
+			if err := syncDir(current); err != nil {
+				return "", fmt.Errorf("sync lifecycle receipt directory %s: %w", current, err)
+			}
+			synced[current] = true
 		}
 	}
 	return clean, nil

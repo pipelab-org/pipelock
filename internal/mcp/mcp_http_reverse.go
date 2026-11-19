@@ -783,7 +783,7 @@ func RunHTTPListenerProxy(
 			v2Emitter := requestBaseOpts.v2ReceiptEmitter()
 			if dec.intent.handle != nil {
 				if dec.intent.handle.settled.CompareAndSwap(false, true) {
-					receiptEmitted = dec.intent.handle.emit(safeLogW, receiptOpts)
+					receiptEmitted = dec.intent.handle.emit(safeLogW, receiptOpts) == nil
 				}
 			} else if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil || requestBaseOpts.requireReceipts() {
 				if _, emitErr := requestBaseOpts.emitReceiptDecision(MCPDecision{
@@ -1374,6 +1374,13 @@ func RunHTTPListenerProxy(
 			foundInjection, scanErr := ForwardScanned(transport.NewSSEReader(upResp.Body), stateWriter, safeLogW, NewStrictRequestTracker(), reqOpts)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
+				streamReceipt := admission
+				if streamReceipt.ActionID == "" && streamWriter.Wrote() {
+					streamReceipt = mcpStreamReceipt(reqOpts, r.Method)
+				}
+				if streamReceipt.ActionID != "" {
+					recordListenerStreamError(r.Context(), safeLogW, reqOpts, TrackedRequestOutcome{Receipt: streamReceipt}, true, scanErr)
+				}
 			}
 			if scanErr != nil && !streamWriter.Wrote() {
 				w.Header().Set("Cache-Control", "no-store")
@@ -1386,7 +1393,6 @@ func RunHTTPListenerProxy(
 				return
 			}
 			if scanErr != nil {
-				recordListenerStreamError(r.Context(), safeLogW, reqOpts, TrackedRequestOutcome{Receipt: mcpStreamReceipt(reqOpts, r.Method)}, true, scanErr)
 				_ = httpstream.Abort(r.Context(), scanErr)
 				return
 			}

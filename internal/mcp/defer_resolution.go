@@ -177,8 +177,8 @@ func (s *deferredReceiptSettlement) emit(opts MCPProxyOpts, logW io.Writer, res 
 // the journal cannot commit, the manager calls back with the corrective block.
 func (s *deferredReceiptSettlement) commitRelease(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
 	if res.FinalDecision != config.ActionAllow {
-		s.release.settle(logW, opts, mcpOutcomeStatusBlocked, -1, res.Reason)
-		return s.commitAllow(opts, logW, res)
+		_, outcomeErr := s.release.settleResult(logW, opts, mcpOutcomeStatusBlocked, -1, res.Reason)
+		return errors.Join(outcomeErr, s.commitAllow(opts, logW, res))
 	}
 	if err := s.commitAllow(opts, logW, res); err != nil {
 		return err

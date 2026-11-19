@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -104,6 +105,10 @@ type settlementCell struct {
 	notification bool
 }
 
+func (c settlementCell) pairedNotification() bool {
+	return c.notification && (c.fault == settlementTimeout || c.fault == settlementScanError)
+}
+
 func (c settlementCell) listener() bool { return c.transport >= settlementListenerJSON }
 
 func (c settlementCell) listenerMethod() string {
@@ -198,7 +203,11 @@ func TestMCPOutcomeFaultMatrix(t *testing.T) {
 	t.Run("notification", func(t *testing.T) {
 		for transportID := settlementStdio; transportID <= settlementListenerJSON; transportID++ {
 			for _, required := range []bool{false, true} {
-				for _, fault := range []settlementFault{settlementSuccess, settlementWriteUpstream} {
+				faults := []settlementFault{settlementSuccess, settlementWriteUpstream}
+				if transportID == settlementBridgeJSON || transportID == settlementBridgeSSE {
+					faults = append(faults, settlementTimeout, settlementScanError)
+				}
+				for _, fault := range faults {
 					cell := settlementCell{transport: transportID, fault: fault, required: required, notification: true}
 					mode := "best_effort"
 					if required {
@@ -249,6 +258,7 @@ type settlementProbe struct {
 	upstream       string
 	finishUpstream func()
 	subscriptions  atomic.Int32
+	httpPostWrites atomic.Int32
 	syncMu         sync.Mutex
 	synced         []string
 	forward        []string
@@ -409,6 +419,35 @@ func (p *settlementProbe) observeSendFailure(t *testing.T, kind string) {
 	p.observeWire(t, op)
 }
 
+type upstreamWriteObserver struct {
+	net.Conn
+	beforeWrite func([]byte)
+}
+
+func (c upstreamWriteObserver) Write(b []byte) (int, error) {
+	c.beforeWrite(b)
+	return c.Conn.Write(b)
+}
+
+func (p *settlementProbe) observeHTTPPostWrite(t *testing.T, raw []byte) {
+	t.Helper()
+	if !bytes.HasPrefix(raw, []byte("POST ")) {
+		return
+	}
+	_, body, ok := bytes.Cut(raw, []byte("\r\n\r\n"))
+	if !ok || len(body) == 0 {
+		return
+	}
+	tool := settlementToolName(body)
+	switch tool {
+	case settlementTool, settlementOtherTool, methodNotificationsInitialized:
+		p.httpPostWrites.Add(1)
+		if _, err := os.Stat(settlementSyncMarker(p.dir, tool)); err != nil {
+			t.Errorf("P5: POST write for %s started without durable admission: %v", tool, err)
+		}
+	}
+}
+
 type settlementConn struct {
 	net.Conn
 	fail func() bool
@@ -457,6 +496,9 @@ func (p *settlementProbe) dial(t *testing.T, ctx context.Context, network, addre
 	}
 	if p.cell.fault == settlementTimeout && (p.cell.transport == settlementWebSocket || p.cell.listener()) {
 		p.dialed <- conn
+	}
+	if p.cell.required && (p.cell.bridge() || p.cell.listener()) && p.cell.listenerMethod() == http.MethodPost {
+		conn = upstreamWriteObserver{Conn: conn, beforeWrite: func(b []byte) { p.observeHTTPPostWrite(t, b) }}
 	}
 	if p.cell.fault != settlementWriteUpstream {
 		return conn, nil
@@ -518,7 +560,8 @@ func (p *settlementProbe) httpUpstream(t *testing.T) string {
 			return
 		}
 		if p.cell.bridgeLifecycle() && r.Method == http.MethodGet {
-			op.Failed = p.subscriptions.Add(1) == 1
+			subscription := p.subscriptions.Add(1)
+			op.Failed = subscription == 1
 			p.observeWire(t, op)
 			if op.Failed {
 				w.WriteHeader(http.StatusServiceUnavailable)
@@ -530,12 +573,15 @@ func (p *settlementProbe) httpUpstream(t *testing.T) string {
 				t.Error(err)
 				return
 			}
-			select {
-			case <-p.release:
-			case <-r.Context().Done():
+			if subscription == 3 {
+				select {
+				case <-p.release:
+				case <-r.Context().Done():
+				}
 			}
 			return
 		}
+		op.Failed = r.Method == http.MethodGet && (p.cell.fault == settlementReadEmpty || p.cell.fault == settlementReadSSE)
 		p.observeWire(t, op)
 		if r.Method != http.MethodPost && r.Method != p.cell.listenerMethod() {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -545,7 +591,7 @@ func (p *settlementProbe) httpUpstream(t *testing.T) string {
 			close(p.both)
 		}
 		p.observeSend(t, tool)
-		if p.cell.notification {
+		if p.cell.notification && !p.cell.pairedNotification() {
 			w.WriteHeader(http.StatusAccepted)
 			return
 		}
@@ -568,7 +614,7 @@ func (p *settlementProbe) httpUpstream(t *testing.T) string {
 		if p.cell.sse() {
 			w.Header().Set("Content-Type", "text/event-stream")
 		}
-		if p.cell.fault == settlementReadEmpty {
+		if p.cell.fault == settlementReadEmpty || (p.cell.pairedNotification() && p.cell.fault == settlementScanError) {
 			w.Header().Set("Content-Length", "20")
 			w.WriteHeader(http.StatusOK)
 			p.fault.Add(1)
@@ -579,6 +625,9 @@ func (p *settlementProbe) httpUpstream(t *testing.T) string {
 			fragment := "{\"jsonrpc\""
 			if p.cell.sse() {
 				fragment = "data: " + fragment
+			}
+			if r.Method == http.MethodGet {
+				fragment = "data: " + settlementNotify + "\n\n" + fragment
 			}
 			_, _ = io.WriteString(w, fragment)
 			p.fault.Add(1)
@@ -622,6 +671,9 @@ func (p *settlementProbe) httpUpstream(t *testing.T) string {
 func (p *settlementProbe) wsUpstream(t *testing.T) string {
 	t.Helper()
 	var handlers sync.WaitGroup
+	var connMu sync.Mutex
+	connections := make(map[net.Conn]struct{})
+	closing := false
 	upgraded := sync.OnceFunc(func() { close(p.upgraded) })
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handlers.Add(1)
@@ -635,7 +687,20 @@ func (p *settlementProbe) wsUpstream(t *testing.T) string {
 			t.Error(err)
 			return
 		}
-		defer func() { _ = conn.Close() }()
+		connMu.Lock()
+		if closing {
+			connMu.Unlock()
+			_ = conn.Close()
+			return
+		}
+		connections[conn] = struct{}{}
+		connMu.Unlock()
+		defer func() {
+			_ = conn.Close()
+			connMu.Lock()
+			delete(connections, conn)
+			connMu.Unlock()
+		}()
 		upgraded()
 		raw, _, err := wsio.ReadClientData(conn)
 		if err != nil {
@@ -683,19 +748,34 @@ func (p *settlementProbe) wsUpstream(t *testing.T) string {
 		}
 		_ = wsio.WriteServerMessage(conn, ws.OpText, []byte(body))
 	}))
-	t.Cleanup(server.Close)
 	p.upstream = wsURL(server)
-	p.finishUpstream = func() {
+	p.finishUpstream = sync.OnceFunc(func() {
+		connMu.Lock()
+		closing = true
+		for conn := range connections {
+			_ = conn.Close()
+		}
+		connMu.Unlock()
 		server.Close()
-		handlers.Wait()
-	}
+		done := make(chan struct{})
+		go func() {
+			handlers.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(settlementBound):
+			t.Error("WebSocket fixture handlers did not stop")
+		}
+	})
+	t.Cleanup(p.finishUpstream)
 	return p.upstream
 }
 
 func settlementAdmission(a receipt.ActionRecord) bool {
 	return a.DecisionPhase == receipt.DecisionPhaseIntent ||
 		(a.DecisionPhase == receipt.DecisionPhaseResolution && a.Verdict == config.ActionAllow) ||
-		(a.DecisionPhase == "" && a.Verdict == config.ActionForward)
+		(a.DecisionPhase == "" && a.Verdict == config.ActionForward && a.Layer != mcpOutcomeLayer)
 }
 
 func (p *settlementProbe) markDurable(f *os.File) error {
@@ -860,6 +940,9 @@ func (p *settlementProbe) assertReceipts(t *testing.T, signer string) {
 	if len(sends) != wantSends {
 		t.Errorf("upstream sends = %v, want %d", sends, wantSends)
 	}
+	if p.cell.required && (p.cell.bridge() || p.cell.listener()) && p.cell.listenerMethod() == http.MethodPost && int(p.httpPostWrites.Load()) != len(sends) {
+		t.Errorf("P5: observed %d POST writes at the socket for %d upstream sends", p.httpPostWrites.Load(), len(sends))
+	}
 	if p.cell.fault != settlementSuccess && p.fault.Load() == 0 {
 		if _, err := os.Stat(filepath.Join(p.dir, settlementFaultMarker)); err != nil {
 			t.Error("injection point was not reached")
@@ -938,11 +1021,23 @@ func (p *settlementProbe) assertSettlePairs(t *testing.T, signer string, sends, 
 			}
 			tool := strings.TrimPrefix(intent.action.Target, "tool:")
 			status, _, _ := strings.Cut(got.action.Pattern, " ")
+			if p.cell.pairedNotification() {
+				want := "status=incomplete"
+				if p.cell.fault == settlementTimeout {
+					want = "status=error"
+				}
+				if status != want {
+					t.Errorf("notification outcome = %s, want %s", got.action.Pattern, want)
+				}
+			}
 			if p.cell.fault == settlementSuccess && status != "status=result" {
 				t.Errorf("successful call did not record its response: %s", got.action.Pattern)
 			}
 			switch status {
 			case "status=forwarded":
+				if !p.cell.notification {
+					t.Errorf("forwarded receipt did not settle a call expecting a response: %s", got.action.Pattern)
+				}
 				if sends[tool] == 0 {
 					t.Errorf("P2: receipt claimed send for %s without an observed send", tool)
 				}
@@ -981,6 +1076,9 @@ func (p *settlementProbe) assertSettlePairs(t *testing.T, signer string, sends, 
 		if legacyAdmissions != wantAdmissions {
 			t.Errorf("%s admissions = %d, want %d", p.cell.listenerMethod(), legacyAdmissions, wantAdmissions)
 		}
+	}
+	if p.cell.pairedNotification() && len(intents) != 1 {
+		t.Errorf("notification intents = %d, want 1", len(intents))
 	}
 	if len(intents) == 0 && !p.cell.notification && p.cell.listenerMethod() == http.MethodPost && p.cell.fault != settlementIntentAppend &&
 		!p.cell.subprocessStartFailure() && p.cell.fault != settlementUpgradeAppend {
@@ -1038,14 +1136,18 @@ func (p *settlementProbe) assertWireReceipts(t *testing.T, records []settlementR
 	defer func() { _ = file.Close() }()
 	admissions := make(map[string]settlementReceipt)
 	failures := make(map[string][]settlementReceipt)
+	streamEnds := make(map[string][]string)
 	for _, record := range records {
 		a := record.action
 		if settlementAdmission(a) {
 			admissions[a.ActionID] = record
 		}
-		if a.DecisionPhase == "" && a.Layer == mcpOutcomeLayer && a.Verdict == config.ActionWarn &&
-			strings.HasPrefix(a.Pattern, "status=error ") {
-			failures[a.ActionID] = append(failures[a.ActionID], record)
+		if a.DecisionPhase == "" && a.Layer == mcpOutcomeLayer {
+			if a.Verdict == config.ActionWarn && strings.HasPrefix(a.Pattern, "status=error ") {
+				failures[a.ActionID] = append(failures[a.ActionID], record)
+			}
+			status, _, _ := strings.Cut(a.Pattern, " ")
+			streamEnds[a.ActionID] = append(streamEnds[a.ActionID], status)
 		}
 	}
 	used := make(map[string]bool)
@@ -1087,11 +1189,26 @@ func (p *settlementProbe) assertWireReceipts(t *testing.T, records []settlementR
 			}
 			usedForward[id] = true
 			matchedForward = true
-			if op.Failed && !slices.ContainsFunc(failures[id], func(failure settlementReceipt) bool {
-				return failure.shard == candidate.shard && failure.sequence > candidate.sequence &&
-					failure.action.Method == a.Method && failure.action.Target == a.Target
-			}) {
-				t.Errorf("P6: failed upstream operation %s has no failure record on action %s", op, id)
+			if p.cell.bridgeLifecycle() && op.Kind == http.MethodGet && !op.Failed {
+				want := "status=completed"
+				if bridgeGets == 3 {
+					want = "status=cancelled"
+				}
+				if got := streamEnds[id]; len(got) != 1 || got[0] != want {
+					t.Errorf("subscription %d termination = %v, want [%s]", bridgeGets, got, want)
+				}
+			}
+			if op.Failed {
+				matchedFailures := 0
+				for _, failure := range failures[id] {
+					if failure.shard == candidate.shard && failure.sequence > candidate.sequence &&
+						failure.action.Method == a.Method && failure.action.Target == a.Target {
+						matchedFailures++
+					}
+				}
+				if matchedFailures != 1 {
+					t.Errorf("P6: failed upstream operation %s has %d failure records on action %s, want 1", op, matchedFailures, id)
+				}
 			}
 			break
 		}
@@ -1099,7 +1216,7 @@ func (p *settlementProbe) assertWireReceipts(t *testing.T, records []settlementR
 			t.Errorf("expected a single-phase admission for the injected failure of %s", op)
 		}
 	}
-	if p.cell.bridgeLifecycle() && (bridgeGets != 2 || bridgeDeletes != 1) {
-		t.Errorf("bridge lifecycle observed GET=%d DELETE=%d, want 2 and 1", bridgeGets, bridgeDeletes)
+	if p.cell.bridgeLifecycle() && (bridgeGets != 3 || bridgeDeletes != 1) {
+		t.Errorf("bridge lifecycle observed GET=%d DELETE=%d, want 3 and 1", bridgeGets, bridgeDeletes)
 	}
 }

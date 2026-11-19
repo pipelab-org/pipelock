@@ -170,7 +170,39 @@ func (p *settlementProbe) runStdio(t *testing.T, ctx context.Context, cancel con
 		}
 	})
 	done := make(chan error, 1)
+
 	startRead := make(chan struct{})
+	started, finished := false, false
+	startProxy := func(run func() error) {
+		started = true
+		go func() {
+			err := run()
+			_ = input.CloseWithError(err)
+			done <- err
+		}()
+	}
+	defer func() {
+		if !started || finished {
+			return
+		}
+		cancel()
+		_ = feed.Close()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Logf("proxy exited during cleanup: %v", err)
+			}
+		case <-time.After(settlementBound):
+			t.Error("transport did not exit after cancellation")
+		}
+	}()
+	writeInput := func(call string) {
+		stop := context.AfterFunc(ctx, func() { _ = feed.CloseWithError(ctx.Err()) })
+		defer stop()
+		if _, err := io.WriteString(feed, call); err != nil {
+			t.Fatalf("write fixture input: %v", err)
+		}
+	}
 	switch p.cell.transport {
 	case settlementStdio:
 		if p.cell.fault == settlementTimeout {
@@ -190,11 +222,11 @@ func (p *settlementProbe) runStdio(t *testing.T, ctx context.Context, cancel con
 			command = []string{filepath.Join(p.dir, "missing-program")}
 			p.fault.Add(1)
 		}
-		go func() {
-			done <- RunProxy(ctx, input, out, &logs, command, opts,
+		startProxy(func() error {
+			return RunProxy(ctx, input, out, &logs, command, opts,
 				settlementEndpointEnv+"="+p.dir, "PIPELOCK_TEST_SETTLEMENT_FAULT="+strconv.Itoa(int(p.cell.fault)),
 				"GORACE=atexit_sleep_ms=0")
-		}()
+		})
 		if p.cell.fault == settlementWriteUpstream {
 			testwait.For(t, settlementBound/2, func() bool {
 				_, err := os.Stat(filepath.Join(p.dir, settlementReady))
@@ -208,20 +240,19 @@ func (p *settlementProbe) runStdio(t *testing.T, ctx context.Context, cancel con
 			opts.AuthorityActor = "operator"
 			opts.AuthorityDestination = url
 		}
-		go func() { done <- RunWSProxy(ctx, input, out, &logs, url, opts) }()
+		startProxy(func() error { return RunWSProxy(ctx, input, out, &logs, url, opts) })
 		switch p.cell.fault {
 		case settlementDial:
 		case settlementUpgradeAppend:
 			select {
 			case err := <-done:
+				finished = true
 				if err == nil || !strings.Contains(err.Error(), "recording upstream WebSocket admission") {
 					t.Fatalf("expected WebSocket admission recording error, got %v", err)
 				}
 				return
 			case <-p.upgraded:
-				cancel()
-				err := <-done
-				t.Errorf("WebSocket upgraded with no admission (proxy exit: %v)", err)
+				t.Error("WebSocket upgraded with no admission")
 				return
 			case <-ctx.Done():
 				t.Fatal("WebSocket did not refuse an unwritable admission")
@@ -235,46 +266,34 @@ func (p *settlementProbe) runStdio(t *testing.T, ctx context.Context, cancel con
 		}
 	case settlementBridgeJSON, settlementBridgeSSE:
 		url := p.httpUpstream(t)
-		go func() { done <- RunHTTPProxy(ctx, input, out, &logs, url, nil, opts) }()
+		startProxy(func() error { return RunHTTPProxy(ctx, input, out, &logs, url, nil, opts) })
 	default:
 		t.Fatal("stdio driver missing transport")
 	}
 
-	finished := false
-	defer func() {
-		if !finished {
-			cancel()
-			_ = feed.Close()
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Logf("proxy exited during cleanup: %v", err)
-				}
-			case <-time.After(settlementBound):
-				t.Error("transport did not exit after cancellation")
-			}
-		}
-	}()
-
 	if !p.cell.subprocessStartFailure() {
 		call := deferKillTestCall
-		if p.cell.notification {
+		if p.cell.pairedNotification() {
+			call = strings.Replace(call, `"id":1,`, "", 1)
+		} else if p.cell.notification {
 			call = settlementHandshake + "\n"
 		}
 		if p.cell.transport == settlementWebSocket && p.cell.fault == settlementDial {
 			call = strings.Replace(call, "\"arguments\":{}", "\"arguments\":{},\"_meta\":{\"com.pipelock/authority\":\"grant\"}", 1)
 		}
-		_, err := io.WriteString(feed, call)
-		if err != nil {
-			t.Fatal(err)
-		}
+		writeInput(call)
 	}
 	var resolved <-chan error
 	if p.cell.deferred && !p.cell.subprocessStartFailure() {
+		var hold deferred.HeldAction
 		testwait.For(t, settlementBound/2, func() bool {
-			return len(opts.DeferManager.Snapshot()) == 1
+			holds := opts.DeferManager.Snapshot()
+			if len(holds) != 1 {
+				return false
+			}
+			hold = holds[0]
+			return true
 		}, "held call")
-		hold := opts.DeferManager.Snapshot()[0]
 		if p.cell.transport == settlementStdio {
 			if err := opts.DeferManager.Resolve(hold.DeferID, config.ActionAllow, deferred.SourceApproval); err != nil {
 				t.Fatal(err)
@@ -289,9 +308,7 @@ func (p *settlementProbe) runStdio(t *testing.T, ctx context.Context, cancel con
 	}
 	if p.cell.fault == settlementDuplicate {
 		p.awaitSend(t, ctx)
-		if _, err := io.WriteString(feed, strings.Replace(deferKillTestCall, settlementTool, settlementOtherTool, 1)); err != nil {
-			t.Fatal(err)
-		}
+		writeInput(strings.Replace(deferKillTestCall, settlementTool, settlementOtherTool, 1))
 		p.fault.Add(1)
 	}
 	if p.holdResponse() {
@@ -333,9 +350,9 @@ func (p *settlementProbe) runStdio(t *testing.T, ctx context.Context, cancel con
 		}
 	}
 	if p.cell.bridgeLifecycle() {
-		// The POST result and the second GET's notification prove the
-		// reconnect completed before stdin EOF triggers session cleanup.
-		for range 2 {
+		// Observe the POST result and both subscription notifications. The
+		// last stream stays open until stdin EOF triggers session cleanup.
+		for range 3 {
 			select {
 			case <-out.written:
 			case <-ctx.Done():
@@ -360,6 +377,9 @@ func (p *settlementProbe) runStdio(t *testing.T, ctx context.Context, cancel con
 	select {
 	case err := <-done:
 		finished = true
+		if p.cell.pairedNotification() && len(out.written) != 0 {
+			t.Error("notification unexpectedly received a response")
+		}
 		if err != nil {
 			t.Logf("proxy exited: %v", err)
 		}

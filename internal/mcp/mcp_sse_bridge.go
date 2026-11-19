@@ -216,17 +216,19 @@ func startGETStream(
 			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, tracker, opts)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream scan error: %v\n", scanErr)
-				if errors.Is(scanErr, transport.ErrIncompleteResponse) && ctx.Err() == nil {
-					// A subscription has no pending JSON-RPC request identity.
-					// Record its interrupted transport separately from outcomes
-					// for complete messages already delivered on the stream.
-					streamReceipt := admission
-					if streamReceipt.ActionID == "" {
-						streamReceipt = mcpStreamReceipt(opts, http.MethodGet)
-					}
-					emitMCPStandaloneStreamReceipt(opts, safeLogW, streamReceipt, "200", httpstream.Incomplete)
-				}
 				logMCPIncompleteResponse(safeLogW, opts, http.MethodGet, scanErr)
+			}
+			if admission.ActionID != "" {
+				switch {
+				case ctx.Err() != nil || (scanErr != nil && httpstream.Reason(ctx, scanErr) == httpstream.Cancelled):
+					recordTransportAdmissionResult(safeLogW, opts, admission, "cancelled", httpstream.Cancelled)
+				case scanErr != nil:
+					warnTransportAdmission(safeLogW, opts, admission, httpstream.Reason(ctx, scanErr))
+				default:
+					recordTransportAdmissionResult(safeLogW, opts, admission, "completed", "stream_completed")
+				}
+			} else if errors.Is(scanErr, transport.ErrIncompleteResponse) && ctx.Err() == nil {
+				emitMCPStandaloneStreamReceipt(opts, safeLogW, mcpStreamReceipt(opts, http.MethodGet), "200", httpstream.Incomplete)
 			}
 
 			// Stream ended - reconnect with backoff unless cancelled.

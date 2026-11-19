@@ -6,6 +6,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -461,10 +462,7 @@ func TestWSTaskPermissionRechecksAfterHandshake(t *testing.T) {
 			}
 			records := observed.snapshot()
 			if !tc.expire {
-				if len(records) != 2 || records[0].DecisionPhase != receipt.DecisionPhaseIntent ||
-					records[1].DecisionPhase != receipt.DecisionPhaseOutcome || records[0].ActionID != records[1].ActionID {
-					t.Fatalf("receipts=%+v, want one intent and its outcome for the delivered frame", records)
-				}
+				assertDeliveredTaskReceiptPair(t, records)
 				return
 			}
 			if !strings.Contains(response, `"code":-32002`) {
@@ -533,6 +531,52 @@ func TestStdioTaskPermissionRechecksAfterReceipt(t *testing.T) {
 				t.Fatalf("allow and refused release have phases %q and %q with matching ID %v", records[0].DecisionPhase, records[1].DecisionPhase, records[0].ActionID == records[1].ActionID)
 			}
 		})
+	}
+}
+
+func TestStdioTaskPermissionRechecksAfterTrackerEvictionReceipt(t *testing.T) {
+	cfg := config.Defaults()
+	rec := &httpTaskPermissionRecorder{}
+	rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingDLP}))
+	const evicted = "evicted"
+	emitter, _, _, _ := newReceiptTestHarnessWithObserver(t, func(r *receipt.Receipt) {
+		if r.ActionRecord.ActionID == evicted && r.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome {
+			rec.rotated.Store(true)
+		}
+	})
+	opts := MCPProxyOpts{
+		Scanner: testScannerForHTTP(t), TaintCfg: &cfg.Taint, Rec: rec, ReceiptEmitter: emitter,
+		ServerBinding: "test-server", taskSubject: "verified-worker", Transport: deferred.SurfaceMCPStdio,
+		InputCfg: newHTTPInputCfg(config.ActionWarn), RequireReceipts: true,
+	}
+	msg := []byte(deferKillTestCall)
+	rec.BindTaskSubject(opts.taskSubject)
+	rec.action = mcpTaskAction(opts, ParseMCPFrame(msg))
+	tracker := NewRequestTracker()
+	var prior TrackedRequestOutcome
+	if _, err := opts.emitReceiptDecision(MCPDecision{
+		Receipt: receipt.EmitOpts{
+			ActionID: evicted, Verdict: config.ActionAllow, Transport: opts.Transport,
+			PolicyHash: mcpTestPolicyHash, MCPMethod: methodToolsCall, Target: "tool:evicted",
+		},
+		RequireReceipt: true, RequiredMode: true, outcome: &prior,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tracker.TrackOutcome(json.RawMessage(`"evicted"`), prior)
+	for i := range maxTrackedRequests - 1 {
+		tracker.Track(json.RawMessage(strconv.Itoa(i + 2)))
+	}
+	var upstream, logs bytes.Buffer
+	blocked := make(chan BlockedRequest, 1)
+	ForwardScannedInput(transport.NewStdioReader(strings.NewReader(string(msg)+"\n")),
+		transport.NewStdioWriter(&upstream), &logs, config.ActionWarn, config.ActionBlock, blocked, nil, tracker, opts)
+	denial, refused := <-blocked
+	if !rec.rotated.Load() || upstream.Len() != 0 || !refused || !strings.Contains(denial.ErrorMessage, session.TaskApprovalStale) {
+		t.Fatalf("rotated=%t upstream=%q refusal=%q logs=%q", rec.rotated.Load(), upstream.String(), denial.ErrorMessage, logs.String())
+	}
+	if _, ok := tracker.Consume(ParseMCPFrame(msg).ID); ok {
+		t.Error("refused call left a tracker registration")
 	}
 }
 

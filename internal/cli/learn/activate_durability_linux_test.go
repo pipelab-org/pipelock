@@ -14,6 +14,8 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/luckyPipewrench/pipelock/internal/directorysync"
 )
 
 func TestLifecycleReceiptInterruptedAppendLeavesManifestUnchanged(t *testing.T) {
@@ -91,9 +93,31 @@ func TestLifecycleReceiptInterruptedAppendLeavesManifestUnchanged(t *testing.T) 
 	}
 }
 
+func TestLifecycleReceiptPathRetrySyncsExistingAncestors(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "first")
+	path := filepath.Join(first, "second", "lifecycle.jsonl")
+	syncErr := errors.New("interrupted directory sync")
+	if _, err := prepareLifecycleReceiptPath(path, func(string) error { return syncErr }); !errors.Is(err, syncErr) {
+		t.Fatalf("initial prepare error = %v, want %v", err, syncErr)
+	}
+	synced := make(map[string]bool)
+	if _, err := prepareLifecycleReceiptPath(path, func(dir string) error {
+		synced[dir] = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, ancestor := range []string{root, first} {
+		if !synced[ancestor] {
+			t.Errorf("retry skipped directory sync for %s", ancestor)
+		}
+	}
+}
+
 func TestLifecycleReceiptPathCreatesNestedDirectories(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "first", "second", "lifecycle.jsonl")
-	clean, err := prepareLifecycleReceiptPath(path)
+	clean, err := prepareLifecycleReceiptPath(path, directorysync.Sync)
 	if err != nil || clean != path {
 		t.Fatalf("receipt path = %q, error = %v", clean, err)
 	}

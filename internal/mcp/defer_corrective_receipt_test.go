@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
@@ -78,6 +80,84 @@ func TestDeferredReleaseCorrectiveReceiptPrecedesTerminalJournal(t *testing.T) {
 	}
 }
 
+func TestDeferredReleaseOutcomeFailureKeepsJournalPending(t *testing.T) {
+	h := newMCPDecisionReceiptHarness(t)
+	opts := MCPProxyOpts{
+		ReceiptEmitter: h.v1, V2ReceiptEmitter: h.v2,
+		RequireReceipts: true, PolicyHash: mcpTestPolicyHash, Transport: deferred.SurfaceMCPStdio,
+	}
+	h.rec.SetReceiptAppendGuardForTest(func(entry recorder.Entry) error {
+		detail, ok := entry.Detail.(json.RawMessage)
+		if !ok {
+			return nil
+		}
+		r, err := receipt.Unmarshal(detail)
+		if err == nil && r.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome && r.ActionRecord.Verdict == config.ActionBlock {
+			return io.ErrClosedPipe
+		}
+		return nil
+	})
+	var settlement deferredReceiptSettlement
+	writes := 0
+	manager := deferred.NewManager(deferred.Config{
+		Enabled: true, JournalPath: filepath.Join(t.TempDir(), "journal.jsonl"),
+		JournalWriteGuard: func(write func() error) error {
+			writes++
+			if writes == 3 {
+				return io.ErrClosedPipe
+			}
+			return write()
+		},
+	})
+	if err := manager.Hold(deferred.HeldAction{
+		DeferID: "held", ActionID: "held", Target: "tool", Method: methodToolsCall,
+		AfterJournal: func(res deferred.Resolution) error { return settlement.commitRelease(opts, io.Discard, res) },
+		Resolve: func(res deferred.Resolution) {
+			if res.FinalDecision != config.ActionBlock {
+				t.Fatalf("final = %s, want block", res.FinalDecision)
+			}
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Resolve("held", config.ActionAllow, deferred.SourceOperator); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := deferred.PendingJournal(manager.JournalPath()); err != nil || len(pending) != 1 {
+		t.Fatalf("pending holds = %d, err = %v, want 1 after corrective outcome failure", len(pending), err)
+	}
+}
+
+func assertFailedDeferredReleasePair(t *testing.T, records []receipt.Receipt, parentID string) {
+	t.Helper()
+	var intentID string
+	for _, r := range records {
+		a := r.ActionRecord
+		if a.DecisionPhase == receipt.DecisionPhaseIntent && a.ParentActionID == parentID {
+			if intentID != "" {
+				t.Fatal("multiple intents for one released call")
+			}
+			intentID = a.ActionID
+		}
+	}
+	if intentID == "" {
+		t.Fatal("missing released call intent")
+	}
+	var outcomes int
+	for _, r := range records {
+		a := r.ActionRecord
+		if a.DecisionPhase == receipt.DecisionPhaseOutcome && a.ActionID == intentID {
+			outcomes++
+			if !strings.HasPrefix(a.Pattern, "status=error ") || !strings.HasSuffix(a.Pattern, "reason="+mcpUpstreamWriteFailed) {
+				t.Errorf("unexpected released call outcome: %s", a.Pattern)
+			}
+		}
+	}
+	if outcomes != 1 {
+		t.Errorf("released call outcomes = %d, want 1", outcomes)
+	}
+}
+
 type deferredReleaseFailWriter struct{}
 
 func (deferredReleaseFailWriter) WriteMessage([]byte) error { return io.ErrClosedPipe }
@@ -93,12 +173,13 @@ func TestDeferredStdioReleaseRecordsUpstreamWriteFailure(t *testing.T) {
 		PolicyHash: mcpTestPolicyHash, Transport: deferred.SurfaceMCPStdio,
 	}
 	input, feed := io.Pipe()
+	blocked := make(chan BlockedRequest, 1)
 	done := make(chan struct{})
 	tracker := NewRequestTracker()
 	go func() {
 		defer close(done)
 		ForwardScannedInput(transport.NewStdioReader(input), deferredReleaseFailWriter{}, io.Discard,
-			config.ActionWarn, config.ActionBlock, make(chan BlockedRequest, 1), nil, tracker, opts)
+			config.ActionWarn, config.ActionBlock, blocked, nil, tracker, opts)
 	}()
 	t.Cleanup(func() {
 		_ = feed.Close()
@@ -119,8 +200,10 @@ func TestDeferredStdioReleaseRecordsUpstreamWriteFailure(t *testing.T) {
 	if err := h.rec.Close(); err != nil {
 		t.Fatal(err)
 	}
+	records := readActionReceipts(t, h.dir)
+	assertFailedDeferredReleasePair(t, records, hold.ActionID)
 	var resolutions []receipt.ActionRecord
-	for _, r := range readActionReceipts(t, h.dir) {
+	for _, r := range records {
 		if r.ActionRecord.DecisionPhase == receipt.DecisionPhaseResolution {
 			resolutions = append(resolutions, r.ActionRecord)
 		}
@@ -133,6 +216,14 @@ func TestDeferredStdioReleaseRecordsUpstreamWriteFailure(t *testing.T) {
 		failed.Pattern != "upstream_write_failed" || failed.ResolutionSource != deferred.SourceCancel ||
 		failed.DeferID != hold.DeferID || failed.ParentActionID != hold.ActionID {
 		t.Fatalf("approved=%+v failed=%+v", approved, failed)
+	}
+	select {
+	case response := <-blocked:
+		if canonicalID(response.ID) != canonicalID(ParseMCPFrame([]byte(deferKillTestCall)).ID) || response.ErrorCode == 0 {
+			t.Fatalf("unexpected terminal error: %+v", response)
+		}
+	default:
+		t.Error("client did not receive a terminal error after the held write failed")
 	}
 	if tracker.HasPending() {
 		t.Fatal("failed write left a pending upstream response")
@@ -197,8 +288,10 @@ func TestDeferredHTTPReleaseRecordsUpstreamSendFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	records := readActionReceipts(t, h.dir)
+	assertFailedDeferredReleasePair(t, records, hold.ActionID)
 	var resolutions []receipt.ActionRecord
-	for _, r := range readActionReceipts(t, h.dir) {
+	for _, r := range records {
 		if r.ActionRecord.DecisionPhase == receipt.DecisionPhaseResolution {
 			resolutions = append(resolutions, r.ActionRecord)
 		}

@@ -165,7 +165,7 @@ func RunWSProxy(
 		}
 		if len(pendingOutcomes) == 0 && upstreamEnded && ctx.Err() == nil && errors.Is(lastScanErr, transport.ErrIncompleteResponse) {
 			if admission.ActionID != "" {
-				recordTransportAdmissionFailure(safeLogW, wsOpts, admission, "incomplete", httpstream.Incomplete)
+				recordTransportAdmissionResult(safeLogW, wsOpts, admission, "incomplete", httpstream.Incomplete)
 			} else {
 				emitMCPStandaloneStreamReceipt(wsOpts, safeLogW, mcpStreamReceipt(wsOpts, "WS"), "incomplete", httpstream.Incomplete)
 			}

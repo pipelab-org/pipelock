@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
@@ -774,6 +775,9 @@ func RunHTTPProxy(
 				"pipelock: upstream response timeout; failed request closed, session continues",
 				fwdOpts,
 			)
+			if isRPCNotification(frame.ID) {
+				decision.Outcome.settle(safeLogW, fwdOpts, "error", -1, "response_timeout")
+			}
 			lastScanErr = scanErr
 			unlockInventory()
 			continue
@@ -781,7 +785,16 @@ func RunHTTPProxy(
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			logMCPIncompleteResponse(safeLogW, fwdOpts, frame.Method, scanErr)
-			if errors.Is(scanErr, transport.ErrIncompleteResponse) || ctx.Err() != nil {
+			if isRPCNotification(frame.ID) {
+				status, reason := "incomplete", "scan_error"
+				if errors.Is(scanErr, transport.ErrIncompleteResponse) || ctx.Err() != nil {
+					reason = httpstream.Reason(ctx, scanErr)
+					if reason == httpstream.Cancelled {
+						status = "cancelled"
+					}
+				}
+				decision.Outcome.settle(safeLogW, fwdOpts, status, -1, reason)
+			} else if errors.Is(scanErr, transport.ErrIncompleteResponse) || ctx.Err() != nil {
 				emitTrackedStreamError(ctx, safeLogW, tracker, frame.ID, fwdOpts, scanErr)
 			} else {
 				emitTrackedIncompleteOutcome(safeLogW, tracker, frame.ID, "scan_error", fwdOpts)
@@ -793,7 +806,9 @@ func RunHTTPProxy(
 
 		tracker.removeOwnedOutcome(frame.ID, registration)
 		if isRPCNotification(frame.ID) {
-			decision.Outcome.settle(safeLogW, fwdOpts, "forwarded", -1, "notification_forwarded")
+			if scanErr == nil {
+				decision.Outcome.settle(safeLogW, fwdOpts, "forwarded", -1, "notification_forwarded")
+			}
 		} else {
 			decision.Outcome.settle(safeLogW, fwdOpts, "incomplete", -1, "upstream_no_response")
 		}

@@ -27,6 +27,10 @@ func recordListenerStreamError(ctx context.Context, logW io.Writer, opts MCPProx
 	}
 	outcome.Receipt = opts.withReceiptPolicyHash(outcome.Receipt)
 	if standalone {
+		if outcome.Receipt.Layer == mcpTransportAdmissionLayer {
+			warnTransportAdmission(logW, opts, outcome.Receipt, reason)
+			return
+		}
 		emitMCPStandaloneStreamReceipt(opts, logW, outcome.Receipt, "200", reason)
 		return
 	}

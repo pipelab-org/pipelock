@@ -370,6 +370,13 @@ func TestRequestTrackerOutcomeOwnership(t *testing.T) {
 	tracker := NewRequestTracker()
 	owner := tracker.trackOutcome(id, first)
 	other := tracker.trackOutcome(quoted, second)
+	if owner == nil || other == nil || owner == other {
+		t.Fatal("distinct requests must acquire distinct registrations")
+	}
+	tracker.removeOwnedOutcome(quoted, other)
+	if _, ok := tracker.Consume(quoted); ok {
+		t.Fatal("the matching registration did not remove its request")
+	}
 	tracker.removeOwnedOutcome(id, other)
 	if got, ok := tracker.Consume(id); !ok || got.handle != first.handle {
 		t.Fatal("another request removed the current registration")

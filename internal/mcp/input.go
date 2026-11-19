@@ -824,6 +824,10 @@ func ForwardScannedInput(
 				if isTrackableRequest(msg, verdict.ID) {
 					outcome.Method = verdict.Method
 					registration = trackMCPOutcome(logW, opts, tracker, verdict.ID, outcome)
+					if reason := taskReleaseReason(); reason != "" {
+						tracker.removeOwnedOutcome(verdict.ID, registration)
+						return reason, nil
+					}
 				}
 				return "", writer.WriteMessage(msg)
 			}()
@@ -1662,6 +1666,11 @@ func ForwardScannedInput(
 							res.Reason = mcpUpstreamWriteFailed
 							// Settlement logs any receipt write failure.
 							_ = receiptSettle.ensure(opts, logW, res)
+							if !heldNotification {
+								sendMCPDenial(denialOpts, mcpDeferredDenialAudit(res), BlockedRequest{
+									ID: heldID, ErrorCode: -32603, ErrorMessage: "pipelock: upstream write failed",
+								}, blockedCh)
+							}
 							_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 							return
 						}

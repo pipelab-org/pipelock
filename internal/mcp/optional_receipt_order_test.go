@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +28,44 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
+
+func observeSignedIntentAtWrite(t *testing.T, dir, key string, isRequest func([]byte) bool) (func(context.Context, string, string) (net.Conn, error), <-chan struct{}) {
+	t.Helper()
+	observed := make(chan struct{})
+	check := sync.OnceFunc(func() {
+		defer close(observed)
+		records, err := receipt.ExtractReceipts(filepath.Join(dir, "evidence-proxy-0.jsonl"))
+		if err != nil || len(records) != 1 || records[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
+			t.Errorf("upstream write started without one signed intent: records=%d error=%v", len(records), err)
+			return
+		}
+		if err := receipt.VerifyWithKey(records[0], key); err != nil {
+			t.Errorf("verify intent at upstream write: %v", err)
+		}
+	})
+	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
+		var d net.Dialer
+		c, err := d.DialContext(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return upstreamWriteObserver{Conn: c, beforeWrite: func(b []byte) {
+			if isRequest(b) {
+				check()
+			}
+		}}, nil
+	}
+	return dial, observed
+}
+
+func requireObservedUpstreamWrite(t *testing.T, observed <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-observed:
+	default:
+		t.Error("upstream request arrived without a socket write observation")
+	}
+}
 
 func TestOptionalBridgeIntentPrecedesUpstreamResponse(t *testing.T) {
 	arrived := make(chan struct{})
@@ -41,7 +81,8 @@ func TestOptionalBridgeIntentPrecedesUpstreamResponse(t *testing.T) {
 	t.Cleanup(server.Close)
 	t.Cleanup(release)
 	emitter, _, dir, key := newReceiptTestHarness(t)
-	opts := MCPProxyOpts{Scanner: testInputScanner(t), ReceiptEmitter: emitter, TaintCfg: &config.Defaults().Taint}
+	dial, beforeWrite := observeSignedIntentAtWrite(t, dir, key, func(b []byte) bool { return bytes.HasPrefix(b, []byte("POST ")) })
+	opts := MCPProxyOpts{Scanner: testInputScanner(t), ReceiptEmitter: emitter, TaintCfg: &config.Defaults().Taint, DialContext: dial}
 	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
 	defer cancel()
 	done := make(chan error, 1)
@@ -50,6 +91,7 @@ func TestOptionalBridgeIntentPrecedesUpstreamResponse(t *testing.T) {
 	}()
 	select {
 	case <-arrived:
+		requireObservedUpstreamWrite(t, beforeWrite)
 	case err := <-done:
 		t.Fatalf("bridge exited before upstream saw the request: %v", err)
 	case <-ctx.Done():
@@ -192,6 +234,78 @@ func TestOwnedOutcomeStaysOnAdmissionWriter(t *testing.T) {
 	}
 }
 
+func TestRequiredBridgeNativeWriteFailureLeavesOpenIntent(t *testing.T) {
+	emitter, _, dir, key := newReceiptTestHarness(t)
+	if err := emitter.EmitSessionOpen(); err != nil {
+		t.Fatal(err)
+	}
+	if err := emitter.AbortNativeAEL(); err != nil {
+		t.Fatal(err)
+	}
+	var sends atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		sends.Add(1)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(upstream.Close)
+	opts := MCPProxyOpts{Scanner: testInputScanner(t), ReceiptEmitter: emitter, RequireReceipts: true}
+	var out, logs bytes.Buffer
+	if err := RunHTTPProxy(t.Context(), strings.NewReader(deferKillTestCall), &out, &logs, upstream.URL, nil, opts); err != nil {
+		t.Fatal(err)
+	}
+	if sends.Load() != 0 || emitter.HealthError() == nil || !strings.Contains(out.String(), "-32007") {
+		t.Fatalf("sends=%d writer health=%v reply=%q logs=%q", sends.Load(), emitter.HealthError(), out.String(), logs.String())
+	}
+	records := readActionReceipts(t, dir)
+	if len(records) != 2 || records[1].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
+		t.Fatalf("want session open and one unmatched intent, got %+v", records)
+	}
+	report := completeness.Analyze(records, receipt.VerifyChainTrusted(records, []string{key}))
+	if report.Status != completeness.StatusLimited || report.Reason != completeness.ReasonOpenAction {
+		t.Fatalf("completeness = %s/%s, want LIMITED/open_action", report.Status, report.Reason)
+	}
+}
+
+func TestRequiredOutcomeConfirmsSync(t *testing.T) {
+	h := newMCPDecisionReceiptHarness(t)
+	var synced atomic.Bool
+	h.rec.SetSyncForTest(func(f *os.File) error {
+		if err := f.Sync(); err != nil {
+			return err
+		}
+		entries, err := recorder.ReadEntries(f.Name())
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if entry.Type == actionReceiptEntryType {
+				r, err := receipt.Unmarshal(entry.RawDetail)
+				if err != nil {
+					return err
+				}
+				if r.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome {
+					synced.Store(true)
+				}
+			}
+		}
+		return nil
+	})
+	opts := MCPProxyOpts{ReceiptEmitter: h.v1, V2ReceiptEmitter: h.v2, RequireReceipts: true}
+	var outcome TrackedRequestOutcome
+	if _, err := opts.emitReceiptDecision(MCPDecision{
+		Receipt: receipt.EmitOpts{
+			ActionID: "required-outcome", Target: "tool:confirm", Verdict: config.ActionAllow,
+			Transport: "mcp_stdio", PolicyHash: mcpTestPolicyHash, MCPMethod: methodToolsCall,
+		},
+		RequireReceipt: true, RequiredMode: true, outcome: &outcome,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.settle(io.Discard, opts, "result", 4, "complete") || !synced.Load() {
+		t.Fatal("required outcome returned without sync confirmation")
+	}
+}
+
 func TestOptionalWebSocketIntentPrecedesFrameResponse(t *testing.T) {
 	emitter, _, dir, signer := newReceiptTestHarness(t)
 	type observation struct {
@@ -209,7 +323,8 @@ func TestOptionalWebSocketIntentPrecedesFrameResponse(t *testing.T) {
 	input, send := io.Pipe()
 	t.Cleanup(func() { _ = send.Close() })
 	var out syncBuffer
-	opts := MCPProxyOpts{Scanner: testScannerForWS(t), ReceiptEmitter: emitter, TaintCfg: &config.Defaults().Taint}
+	dial, beforeWrite := observeSignedIntentAtWrite(t, dir, signer, func(b []byte) bool { return len(b) != 0 && b[0] == 0x81 })
+	opts := MCPProxyOpts{Scanner: testScannerForWS(t), ReceiptEmitter: emitter, TaintCfg: &config.Defaults().Taint, DialContext: dial}
 	done := make(chan error, 1)
 	go func() { done <- RunWSProxy(ctx, input, &out, io.Discard, wsURL(upstream), opts) }()
 	if _, err := io.WriteString(send, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`+"\n"); err != nil {
@@ -217,6 +332,7 @@ func TestOptionalWebSocketIntentPrecedesFrameResponse(t *testing.T) {
 	}
 	select {
 	case got := <-observed:
+		requireObservedUpstreamWrite(t, beforeWrite)
 		if got.err != nil || len(got.entries) != 1 {
 			t.Fatalf("upstream observed frame before a signed receipt: entries=%d error=%v", len(got.entries), got.err)
 		}
