@@ -858,4 +858,17 @@ func TestNativeCapacityExitInterruptsScanAPIBodyRead(t *testing.T) {
 		t.Fatal("Scan API body read held the capacity drain open")
 	}
 	assertDrainEvidence(t, dir, false, false)
+	assertNativeRuntimeClose(t, dir, s.liveReceiptEmitter().SignerKeyHex())
+}
+
+func assertNativeRuntimeClose(t *testing.T, dir, signer string) {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(dir, "ael", "*", "recorders", "pipelock.jsonl"))
+	if err != nil || len(paths) != 1 {
+		t.Fatalf("native streams = %v, error = %v", paths, err)
+	}
+	run := filepath.Base(filepath.Dir(filepath.Dir(paths[0])))
+	if _, err := ael.VerifyRun(dir, run, signer); err != nil {
+		t.Fatalf("verify signed native close: %v", err)
+	}
 }
