@@ -25,6 +25,10 @@ func recordListenerStreamError(ctx context.Context, logW io.Writer, opts MCPProx
 			opts.AuditLogger.LogError(audit.NewMethodLogContext(intent.Method), fmt.Errorf("response stream %s: %w", reason, err))
 		}
 	}
+	if opts.ReceiptV3 != nil {
+		recordMCPStreamDiagnostic(opts, logW, intent, standalone, reason)
+		return
+	}
 	intent = opts.withReceiptPolicyHash(intent)
 	if standalone {
 		emitMCPStandaloneStreamReceipt(opts, logW, intent, "200", reason)
@@ -49,7 +53,12 @@ func emitTrackedStreamError(ctx context.Context, logW io.Writer, tracker *Reques
 	if standalone {
 		outcome.Receipt = mcpStreamReceipt(opts, http.MethodPost)
 	}
-	reason, status := httpstream.Reason(ctx, err), "incomplete"
+	reason := httpstream.Reason(ctx, err)
+	if opts.ReceiptV3 != nil {
+		recordMCPStreamDiagnostic(opts, logW, outcome.Receipt, standalone, reason)
+		return
+	}
+	status := "incomplete"
 	if reason == httpstream.Cancelled {
 		status = "cancelled"
 	}
@@ -58,6 +67,18 @@ func emitTrackedStreamError(ctx context.Context, logW io.Writer, tracker *Reques
 	} else {
 		emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, outcome.Receipt, status, -1, reason, opts.requireReceipts())
 	}
+}
+
+// A terminal stream error stops further delivery. It does not change the
+// outcomes of complete messages that already reached the client.
+func recordMCPStreamDiagnostic(opts MCPProxyOpts, logW io.Writer, parent receipt.EmitOpts, standalone bool, reason string) {
+	if standalone {
+		parent.ActionID = ""
+	}
+	parent.Transport = firstNonEmpty(parent.Transport, opts.Transport)
+	parent.Target = firstNonEmpty(parent.Target, opts.AuthorityDestination, "mcp://response")
+	parent.Layer = "mcp_response_stream"
+	opts.recordV3MCPRefusal(logW, parent, mcpV3Delivery, reason)
 }
 
 func mcpStreamReceipt(opts MCPProxyOpts, method string) receipt.EmitOpts {

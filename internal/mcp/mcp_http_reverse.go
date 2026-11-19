@@ -1384,6 +1384,9 @@ func RunHTTPListenerProxy(
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			}
 			if scanErr != nil && !streamWriter.Wrote() {
+				if reqOpts.ReceiptV3 != nil {
+					recordListenerStreamError(r.Context(), safeLogW, reqOpts, mcpStreamReceipt(reqOpts, r.Method), true, scanErr)
+				}
 				w.Header().Set("Cache-Control", "no-store")
 				w.Header().Set("Content-Type", "application/json")
 				if !stateWriter.denied && !mcpDenialWasFinalized(scanErr) {
@@ -2323,6 +2326,10 @@ func RunHTTPListenerProxy(
 			// content-type set above with the standard application/json
 			// upstream-error envelope.
 			if scanErr != nil && !streamWriter.Wrote() {
+				if reqOpts.ReceiptV3 != nil {
+					intent := decision.Outcome.Receipt
+					recordListenerStreamError(r.Context(), safeLogW, reqOpts, intent, intent.ActionID == "", scanErr)
+				}
 				w.Header().Set("Cache-Control", "no-store")
 				w.Header().Set("Content-Type", "application/json")
 				if !revocableWriter.denied && !mcpDenialWasFinalized(scanErr) {

@@ -23,6 +23,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -707,5 +708,74 @@ func readMCPV3Actions(t *testing.T, dir string) []v3.Action {
 		if envelope.Payload.Kind == "action" {
 			actions = append(actions, envelope.Payload.Body)
 		}
+	}
+}
+
+func TestMCPV3StreamTerminalDiagnostic(t *testing.T) {
+	for _, tc := range []struct {
+		name, reason string
+		run          func(*testing.T, MCPProxyOpts, receipt.EmitOpts)
+		wantParent   bool
+	}{
+		{"listener", httpstream.Incomplete, func(t *testing.T, opts MCPProxyOpts, parent receipt.EmitOpts) {
+			recordListenerStreamError(t.Context(), io.Discard, opts, parent, false, io.ErrUnexpectedEOF)
+		}, true},
+		{"bridge", httpstream.Cancelled, func(t *testing.T, opts MCPProxyOpts, parent receipt.EmitOpts) {
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			tracker := NewRequestTracker()
+			id := json.RawMessage("1")
+			tracker.TrackOutcome(id, TrackedRequestOutcome{Receipt: parent})
+			emitTrackedStreamError(ctx, io.Discard, tracker, id, opts, io.ErrUnexpectedEOF)
+			if _, pending := tracker.Consume(id); pending {
+				t.Error("terminal request stayed in the tracker")
+			}
+		}, true},
+		{"standalone", httpstream.Incomplete, func(_ *testing.T, opts MCPProxyOpts, _ receipt.EmitOpts) {
+			emitMCPStandaloneStreamReceipt(opts, io.Discard, mcpStreamReceipt(opts, http.MethodGet), "200", httpstream.Incomplete)
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, writer, verify := newMCPV3Stream(t, "listener")
+			opts := MCPProxyOpts{
+				Scanner: testScannerForHTTP(t), Transport: transportMCPStdio,
+				RequireReceipts: true, ReceiptV3: writer,
+			}
+			parent := receipt.EmitOpts{
+				ActionID: receipt.NewActionID(), Method: http.MethodPost, Verdict: config.ActionAllow,
+				Transport: opts.Transport, Target: "https://upstream.vendor.example",
+			}
+			var delivery mcpV3Receipt
+			if err := opts.confirmV3ResponseDelivery(io.Discard, parent, &delivery); err != nil {
+				t.Fatal(err)
+			}
+			if err := delivery.writeV3Response(opts, io.Discard, v3TestPeer(func([]byte) error { return nil }), []byte(cleanToolsCallResponse)); err != nil {
+				t.Fatal(err)
+			}
+			tc.run(t, opts, parent)
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, verify)
+			if err != nil || result.Verdict != "VALID" || !hasMCPV3State(result, "completed") || !hasMCPV3State(result, "blocked") {
+				t.Fatalf("delivery or terminal diagnostic failed verification: %+v (%v)", result, err)
+			}
+			actions := readMCPV3Actions(t, dir)
+			if len(actions) != 3 {
+				t.Fatalf("expected delivery intent and outcome plus one diagnostic, got %+v", actions)
+			}
+			got := actions[2]
+			if got.ActionID == parent.ActionID || got.Pattern != tc.reason || got.EffectBoundary != mcpV3Delivery ||
+				got.EffectRelation != "not_attempted" || got.Attempt != nil || got.OutcomeClass != "" {
+				t.Fatalf("invalid terminal diagnostic: %+v", got)
+			}
+			wantParent := ""
+			if tc.wantParent {
+				wantParent = parent.ActionID
+			}
+			if got.ParentActionID != wantParent {
+				t.Fatalf("diagnostic parent %q, want %q", got.ParentActionID, wantParent)
+			}
+		})
 	}
 }
