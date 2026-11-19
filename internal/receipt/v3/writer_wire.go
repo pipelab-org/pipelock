@@ -158,6 +158,8 @@ var heartbeatProjection = receiptcontent.Register(receiptcontent.Schema{
 func scanWriterRecord(ctx context.Context, det receiptcontent.Detector, kind string, detail []byte) error {
 	var producer *receiptcontent.Producer
 	switch kind {
+	case kindAction:
+		producer = actionProjection
 	case kindStreamOpen:
 		producer = openProjection
 	case kindStreamClose:

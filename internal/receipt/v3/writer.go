@@ -73,6 +73,7 @@ type StreamWriter struct {
 	closed     bool
 	closeErr   error
 	durability Durability
+	repairs    []Action
 }
 
 // OpenStreamWriter verifies and re-flushes any predecessor before publishing
@@ -402,6 +403,13 @@ func (w *StreamWriter) persist(kind string, line []byte, seq int64) error {
 }
 
 func (w *StreamWriter) prepareAppend(ctx context.Context) error {
+	if err := w.replayActionRepairs(ctx); err != nil {
+		return err
+	}
+	return w.ensureAppendSpace(ctx)
+}
+
+func (w *StreamWriter) ensureAppendSpace(ctx context.Context) error {
 	if err := w.ensureStream(ctx); err != nil {
 		return err
 	}
@@ -439,7 +447,7 @@ func (w *StreamWriter) Rollover(ctx context.Context) error {
 		return err
 	}
 	defer w.release()
-	if err := w.ensureStream(ctx); err != nil {
+	if err := w.prepareAppend(ctx); err != nil {
 		return err
 	}
 	return w.rollover(ctx)
@@ -467,13 +475,14 @@ func (w *StreamWriter) Close(ctx context.Context, operational *Recorder) error {
 	if w.closed {
 		return w.closeErr
 	}
+	w.closeErr = w.replayActionRepairs(ctx)
 	w.closed = true
-	if w.active.file != nil {
+	if w.active.file != nil && w.closeErr == nil {
 		w.closeErr = w.writeClose(ctx, closeShutdown, operational)
-		if w.active.file != nil {
-			w.closeErr = errors.Join(w.closeErr, w.active.file.Close())
-			w.active.file = nil
-		}
+	}
+	if w.active.file != nil {
+		w.closeErr = errors.Join(w.closeErr, w.active.file.Close())
+		w.active.file = nil
 	}
 	if w.previous != nil && w.previous.Ended == endedWriteError && w.fatal == nil {
 		// A failed close is part of the unconfirmed tail, even if all its
