@@ -1176,7 +1176,8 @@ func RunHTTPListenerProxy(
 			}
 		}
 
-		admitLegacyMethod := func() bool {
+		var v3Delete mcpV3Receipt
+		admitDelete := func() bool {
 			if !requestBaseOpts.requireReceipts() {
 				return true
 			}
@@ -1185,7 +1186,9 @@ func RunHTTPListenerProxy(
 				Transport: requestBaseOpts.Transport, Method: r.Method, Target: upstreamURL,
 				Layer: "mcp_transport_admission",
 			})
-			if _, err := requestBaseOpts.emitReceiptDecision(MCPDecision{Receipt: admission, RequireReceipt: true}); err != nil {
+			if _, err := requestBaseOpts.emitReceiptDecision(MCPDecision{
+				Receipt: admission, RequireReceipt: true, v3Boundary: mcpV3Upstream, v3Confirmed: &v3Delete,
+			}); err != nil {
 				logReceiptEmitFailure(safeLogW, err, true, config.ActionForward)
 				denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
 				emitListenerBlockDecision(mcpListenerBlockDecision{
@@ -1441,10 +1444,15 @@ func RunHTTPListenerProxy(
 			forwardListenerUpstreamHeaders(upReq, r, false)
 			responseencoding.RequestIdentity(upReq.Header)
 
-			if !admitLegacyMethod() {
+			if !admitDelete() {
+				return
+			}
+			if v3Delete.action.Attempt != nil && upReq.Context().Err() != nil {
+				v3Delete.finish(requestBaseOpts, safeLogW, false, nil)
 				return
 			}
 			upResp, err := upstreamClient.Do(upReq)
+			v3Delete.finish(requestBaseOpts, safeLogW, true, err)
 			if err != nil {
 				if handleMetadataDialError(err, nil) {
 					return

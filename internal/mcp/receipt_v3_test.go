@@ -27,7 +27,7 @@ type v3TestPeer func([]byte) error
 func (f v3TestPeer) WriteMessage(msg []byte) error { return f(msg) }
 
 func TestMCPV3ConfirmsUpstreamSend(t *testing.T) {
-	for _, surface := range []string{"stdio", "bridge", "listener"} {
+	for _, surface := range []string{"stdio", "bridge", "listener", "listener-delete"} {
 		t.Run(surface, func(t *testing.T) {
 			for _, live := range []bool{true, false} {
 				name := "closed"
@@ -44,7 +44,11 @@ func TestMCPV3ConfirmsUpstreamSend(t *testing.T) {
 
 func exerciseMCPV3Upstream(t *testing.T, surface string, live bool) {
 	t.Helper()
-	dir, writer, verify := newMCPV3Stream(t, surface)
+	receiptSurface := surface
+	if surface == "listener-delete" {
+		receiptSurface = "listener"
+	}
+	dir, writer, verify := newMCPV3Stream(t, receiptSurface)
 	if !live {
 		if err := writer.Close(t.Context(), nil); err != nil {
 			t.Fatal(err)
@@ -74,6 +78,11 @@ func exerciseMCPV3Upstream(t *testing.T, surface string, live bool) {
 		}
 	default:
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if surface == "listener-delete" && r.Method == http.MethodDelete {
+				observe(r.Context())
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
 			if !isMCPUpstreamRequest(r) {
 				w.WriteHeader(http.StatusNotFound)
 				return
@@ -95,9 +104,30 @@ func exerciseMCPV3Upstream(t *testing.T, surface string, live bool) {
 		} else {
 			opts.Transport = "mcp_http_listener"
 			url, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
-			status, body := postToolsCall(t, url)
-			if strings.Contains(body, "result") != live {
-				t.Fatalf("unexpected listener reply %d %s", status, body)
+			if surface == "listener-delete" {
+				req, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, url, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := resp.Body.Close(); err != nil {
+					t.Fatal(err)
+				}
+				want := http.StatusForbidden
+				if live {
+					want = http.StatusNoContent
+				}
+				if resp.StatusCode != want {
+					t.Fatalf("DELETE status %d, want %d", resp.StatusCode, want)
+				}
+			} else {
+				status, body := postToolsCall(t, url)
+				if strings.Contains(body, "result") != live {
+					t.Fatalf("unexpected listener reply %d %s", status, body)
+				}
 			}
 		}
 	}
