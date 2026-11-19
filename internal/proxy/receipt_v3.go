@@ -48,9 +48,9 @@ func prepareV3TransportReceipt(cfg *config.Config, opts receipt.EmitOpts) v3Tran
 		Target: receipt.SanitizeSignedTarget(opts.Target, nil), Transport: opts.Transport, Verdict: opts.Verdict,
 	}
 	action.SetAttribution(opts)
-	// cfg is the request snapshot retained by the effect producer.
+	// Prefer the producer's decision-time policy, which can be newer than cfg.
 	digest := opts.PolicyHash
-	if cfg != nil {
+	if digest == "" && cfg != nil {
 		digest = cfg.CanonicalPolicyHash()
 	}
 	if digest != "" && !strings.HasPrefix(digest, "sha256:") {

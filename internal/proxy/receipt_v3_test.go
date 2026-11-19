@@ -643,3 +643,23 @@ func TestV3OptionalDeliveryFlushFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestV3TransportPolicyAttribution(t *testing.T) {
+	cfg := testScannerConfig()
+	snapshot := v3.Digest([]byte("decision policy"))
+	for _, tt := range []struct {
+		name     string
+		provided string
+		want     string
+	}{
+		{name: "producer snapshot", provided: snapshot, want: snapshot},
+		{name: "request snapshot", want: "sha256:" + cfg.CanonicalPolicyHash()},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			entry := prepareV3TransportReceipt(cfg, receipt.EmitOpts{PolicyHash: tt.provided})
+			if got := entry.policy.ActionPolicy().Hash; got != tt.want {
+				t.Fatalf("receipt policy hash = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

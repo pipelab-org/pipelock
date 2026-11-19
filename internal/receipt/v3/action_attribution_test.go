@@ -4,6 +4,8 @@
 package v3
 
 import (
+	"crypto/ed25519"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -61,5 +63,34 @@ func TestSetAttributionContractGeneration(t *testing.T) {
 				t.Fatalf("contract attribution = %+v, want generation %d", action.Contract, tc.want)
 			}
 		})
+	}
+}
+
+func TestStreamWriterSignsShieldAttribution(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	w := requireWriter(t, opts, localWriterStorage())
+	action := writerTestIntent("shield")
+	action.SetAttribution(receipt.EmitOpts{Shield: &receipt.ShieldSummary{
+		Pipeline: "html", TotalRewrites: 5, TrackingBeacons: 4, AgentTraps: 1,
+		FingerprintShimInjected: true, BodyBytes: 100, ScannedBytes: 80, Partial: true,
+	}})
+	if err := w.WriteAction(t.Context(), action, PolicySnapshot{}); err != nil {
+		t.Fatal(err)
+	}
+	stream := w.active.id
+	if err := w.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	actions := readRecoveryActions(t, opts.Dir, stream)
+	if len(actions) != 1 {
+		t.Fatalf("signed actions = %d, want 1", len(actions))
+	}
+	want := Shield{
+		Pipeline: "html", TotalRewrites: new(int64(5)), TrackingBeacons: new(int64(4)), AgentTraps: new(int64(1)),
+		FingerprintShimInjected: new(true), BodyBytes: new(int64(100)), ScannedBytes: new(int64(80)), Partial: new(true),
+	}
+	if !reflect.DeepEqual(actions[0].Shield, &want) {
+		t.Fatalf("signed Browser Shield summary = %+v, want %+v", actions[0].Shield, want)
 	}
 }

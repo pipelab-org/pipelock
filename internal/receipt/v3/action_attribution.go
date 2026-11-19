@@ -17,6 +17,7 @@ func (a *Action) SetAttribution(opts receipt.EmitOpts) {
 	a.Taint = taintAttribution(opts)
 	a.Contract = contractAttribution(opts)
 	a.Redaction = redactionAttribution(opts)
+	a.Shield = shieldAttribution(opts.Shield)
 }
 
 func sessionAttribution(opts receipt.EmitOpts) *Session {
@@ -88,4 +89,32 @@ func redactionAttribution(opts receipt.EmitOpts) *Redaction {
 	}
 	slices.SortFunc(value.Classes, func(a, b RedactionClass) int { return strings.Compare(a.Class, b.Class) })
 	return &value
+}
+
+func shieldAttribution(summary *receipt.ShieldSummary) *Shield {
+	if summary == nil {
+		return nil
+	}
+	count := func(value int) *int64 {
+		if value == 0 {
+			return nil
+		}
+		return new(int64(value))
+	}
+	shield := &Shield{
+		Pipeline: summary.Pipeline, TotalRewrites: count(summary.TotalRewrites),
+		ExtensionProbes: count(summary.ExtensionProbes), TrackingBeacons: count(summary.TrackingBeacons),
+		AgentTraps: count(summary.AgentTraps), SVGForeignObjects: count(summary.SVGForeignObjects),
+		SVGEventHandlers: count(summary.SVGEventHandlers), SVGExternalReferences: count(summary.SVGExternalReferences),
+		SVGHiddenText: count(summary.SVGHiddenText), SVGAnimationInjections: count(summary.SVGAnimationInjections),
+		BodyBytes: count(summary.BodyBytes), ScannedBytes: count(summary.ScannedBytes),
+		AdaptiveSignalsRecorded: count(summary.AdaptiveSignalsRecorded), AdaptiveSignalMaxPerBody: count(summary.AdaptiveSignalMaxPerBody),
+	}
+	if summary.FingerprintShimInjected {
+		shield.FingerprintShimInjected = new(true)
+	}
+	if summary.Partial {
+		shield.Partial = new(true)
+	}
+	return shield
 }
