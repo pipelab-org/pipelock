@@ -7957,6 +7957,9 @@ func TestHTTPListener_RequireReceiptsRecordsInitializeOutcome(t *testing.T) {
 		body, _ := io.ReadAll(response.Body)
 		t.Fatalf("status = %d, want %d: %s", response.StatusCode, http.StatusOK, body)
 	}
+	if _, err := io.Copy(io.Discard, response.Body); err != nil {
+		t.Fatalf("read initialize response: %v", err)
+	}
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}

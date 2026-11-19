@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"sync/atomic"
@@ -26,6 +27,16 @@ type mcpOutcomeHandle struct {
 
 func isPairedMCPMethod(method string) bool {
 	return method == methodToolsCall || method == "initialize" || method == "tools/list" || IsA2AMethod(method)
+}
+
+// trackMCPOutcome settles handles that lost correlation without attributing
+// a response to them. Writes happen after releasing the tracker's lock.
+func trackMCPOutcome(logW io.Writer, opts MCPProxyOpts, tracker *RequestTracker, id json.RawMessage, outcome TrackedRequestOutcome) *requestRegistration {
+	registration, unowned := tracker.registerOutcome(id, outcome)
+	for _, pending := range unowned {
+		pending.outcome.settle(logW, opts, "incomplete", -1, pending.reason)
+	}
+	return registration
 }
 
 func (o TrackedRequestOutcome) settle(logW io.Writer, opts MCPProxyOpts, status string, size int64, reason string) bool {
@@ -62,7 +73,13 @@ func (h *mcpOutcomeHandle) emit(logW io.Writer, r receipt.EmitOpts) bool {
 	if durable {
 		write = h.v1.EmitDurable
 	}
-	if err := write(r); err != nil {
+	err := write(r)
+	if errors.Is(err, receipt.ErrReceiptNotAppended) {
+		// Keep the same claim and writer. An error after chain advancement
+		// can mean the first append reached disk and must never be retried.
+		err = write(r)
+	}
+	if err != nil {
 		h.requiredGroupFailure(err)
 		logReceiptEmitFailure(logW, err, h.required, r.Verdict)
 		return false
@@ -79,7 +96,7 @@ func (h *mcpOutcomeHandle) emit(logW io.Writer, r receipt.EmitOpts) bool {
 }
 
 func (h *mcpOutcomeHandle) requiredGroupFailure(err error) {
-	if h.required && h.group != nil && (errors.Is(err, receipt.ErrReceiptPostAdvance) ||
+	if h.required && h.group != nil && (errors.Is(err, receipt.ErrReceiptPostAdvance) || errors.Is(err, receipt.ErrReceiptNotAppended) ||
 		h.v1.HealthError() != nil || (h.v2 != nil && h.v2.HealthError() != nil)) {
 		h.group.Shards.MarkUnhealthy(err)
 		if h.group.OnRequiredFailure != nil {

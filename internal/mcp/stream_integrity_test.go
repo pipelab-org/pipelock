@@ -215,24 +215,22 @@ func TestMCPListenerStreamIntegrity(t *testing.T) {
 				if err := h.rec.Close(); err != nil {
 					t.Fatal(err)
 				}
-				var receipts []receipt.Receipt
-				if method == http.MethodGet && ending == "complete" {
-					_, err := os.Stat(filepath.Join(h.dir, "evidence-proxy-0.jsonl"))
-					if !errors.Is(err, os.ErrNotExist) {
-						t.Fatalf("completed GET subscription created receipt evidence: %v", err)
-					}
-				} else {
-					receipts = readActionReceipts(t, h.dir)
-				}
+				receipts := readActionReceipts(t, h.dir)
 				wantReason := httpstream.Incomplete
 				if ending == "cancel" || ending == "handler_cancel" {
 					wantReason = httpstream.Cancelled
 				}
 				found := false
 				var intentID string
+				var getAdmissions int
 				outcomes := make(map[string]string)
 				for _, rec := range receipts {
 					if method == http.MethodGet {
+						if rec.ActionRecord.Layer == "mcp_transport_admission" &&
+							rec.ActionRecord.Verdict == config.ActionForward && rec.ActionRecord.DecisionPhase == "" {
+							getAdmissions++
+							continue
+						}
 						if rec.ActionRecord.Layer != "outcome" {
 							t.Fatalf("GET subscription emitted a new decision receipt: %+v", rec.ActionRecord)
 						}
@@ -255,6 +253,9 @@ func TestMCPListenerStreamIntegrity(t *testing.T) {
 					if rec.ActionRecord.Layer == "outcome" && strings.Contains(rec.ActionRecord.Pattern, "reason="+wantReason) {
 						found = true
 					}
+				}
+				if method == http.MethodGet && getAdmissions != 1 {
+					t.Fatalf("GET admission receipts = %d, want one", getAdmissions)
 				}
 				if ending != "complete" && !found {
 					t.Fatalf("missing %s outcome: %+v", wantReason, receipts)

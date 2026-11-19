@@ -1269,10 +1269,11 @@ func RunHTTPListenerProxy(
 			forwardListenerUpstreamHeaders(upReq, r, true)
 			responseencoding.RequestIdentity(upReq.Header)
 
-			// A GET opens the legacy server-to-client event stream. It carries no
-			// tool call, so it is not a mediated action and gets no admission
-			// receipt; every message delivered on the stream is scanned and its
-			// decision is confirmed before delivery.
+			// Opening a GET subscription is a transport action. Its durable
+			// admission does not create a paired tool-call outcome.
+			if _, admitted := admitLegacyMethod(); !admitted {
+				return
+			}
 			upResp, err := upstreamStreamClient.Do(upReq)
 			if err != nil {
 				if handleMetadataDialError(err, nil) {
@@ -1951,7 +1952,8 @@ func RunHTTPListenerProxy(
 		decision := scanHTTPInputDecision(body, safeLogW, chainSessionKey, auditSessionKey, scanOpts)
 		refusalIntent := func() TrackedRequestOutcome { return decision.Outcome }
 		terminalStatus, terminalReason := "incomplete", "listener_request_ended"
-		defer func() { decision.Outcome.settle(safeLogW, scanOpts, terminalStatus, -1, terminalReason) }()
+		terminalSize := int64(-1)
+		defer func() { decision.Outcome.settle(safeLogW, scanOpts, terminalStatus, terminalSize, terminalReason) }()
 		if decision.Synthetic != nil {
 			w.Header().Set("Content-Type", "application/json")
 			if decision.Synthetic.notification {
@@ -2239,6 +2241,7 @@ func RunHTTPListenerProxy(
 		reqOpts := requestBaseOpts
 		reqOpts.A2ACardAuthFingerprint = CardCacheKeyFromRequest("", upReq.Header.Get("Authorization")).authFingerprint
 		reqOpts.responseDenial = w.responseDenial
+		reqOpts.listenerOwnsResponseOutcome = true
 		reqOpts.Rec = reqRec
 		reqOpts.BaselineRec = baselineRec
 		reqOpts.AdaptiveCfg = adaptiveCfg
@@ -2322,6 +2325,11 @@ func RunHTTPListenerProxy(
 			return
 		}
 		var responseTerminal mcpDeferredTerminal
+		var responseStatus, responseReason string
+		var responseSize int64
+		reqOpts.bufferedResponseOutcome = func(status, reason string, size int64) {
+			responseStatus, responseReason, responseSize = status, reason, size
+		}
 		reqOpts.denialTerminal = &responseTerminal
 		w.opts.denialTerminal = &responseTerminal
 		var inventoryCommits []func()
@@ -2353,14 +2361,26 @@ func RunHTTPListenerProxy(
 						commit()
 					}
 				}
+				if responseStatus != "" {
+					terminalReason = "response_not_delivered"
+				}
 				n, err := w.Write(output)
-				if err == nil && n == len(output) && !commitBeforeWrite {
-					// net/http buffers small writes. Flush before treating delivery as
-					// successful, so a failed socket write cannot seed client-seen state.
-					if flushErr := http.NewResponseController(w.ResponseWriter).Flush(); flushErr == nil {
-						for _, commit := range inventoryCommits {
-							commit()
-						}
+				if err != nil || n != len(output) {
+					return
+				}
+				if responseStatus != "" || !commitBeforeWrite {
+					// Flush the buffered body before settling. HTTP finishes
+					// the response framing when the handler returns.
+					if err := http.NewResponseController(w.ResponseWriter).Flush(); err != nil {
+						return
+					}
+				}
+				if responseStatus != "" {
+					terminalStatus, terminalReason, terminalSize = responseStatus, responseReason, responseSize
+				}
+				if !commitBeforeWrite {
+					for _, commit := range inventoryCommits {
+						commit()
 					}
 				}
 			})

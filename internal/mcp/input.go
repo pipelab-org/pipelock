@@ -816,7 +816,7 @@ func ForwardScannedInput(
 				}
 				if isTrackableRequest(msg, verdict.ID) {
 					outcome.Method = verdict.Method
-					registration = tracker.trackOutcome(verdict.ID, outcome)
+					registration = trackMCPOutcome(logW, opts, tracker, verdict.ID, outcome)
 				}
 				return "", writer.WriteMessage(msg)
 			}()
@@ -1612,7 +1612,7 @@ func ForwardScannedInput(
 				// release as pending: the allow first, then a corrective block
 				// if the journal cannot record the allow as final.
 				AfterJournal: func(res deferred.Resolution) error {
-					return receiptSettle.commitAllow(opts, logW, res)
+					return receiptSettle.commitRelease(opts, logW, res)
 				},
 				Resolve: func(res deferred.Resolution) {
 					denialOpts := opts
@@ -1640,13 +1640,15 @@ func ForwardScannedInput(
 					}
 					switch res.FinalDecision {
 					case config.ActionAllow:
+						releaseOutcome := receiptSettle.release
 						var registration *requestRegistration
 						if isTrackableRequest(heldLine, heldID) {
-							registration = tracker.trackOutcome(heldID, TrackedRequestOutcome{Method: heldAuthorityFrame.Method})
+							registration = trackMCPOutcome(logW, opts, tracker, heldID, releaseOutcome)
 						}
 						// forwardMu is held by Prepare's release claim.
 						if err := writer.WriteMessage(heldLine); err != nil {
 							tracker.removeOwnedOutcome(heldID, registration)
+							releaseOutcome.settle(logW, opts, "error", -1, mcpUpstreamWriteFailed)
 							res.FinalDecision = config.ActionBlock
 							res.ResolutionSource = deferred.SourceCancel
 							res.Reason = mcpUpstreamWriteFailed
@@ -1654,6 +1656,9 @@ func ForwardScannedInput(
 							_ = receiptSettle.ensure(opts, logW, res)
 							_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 							return
+						}
+						if heldNotification {
+							releaseOutcome.settle(logW, opts, "forwarded", -1, "notification_forwarded")
 						}
 						commitMCPToolCall(baselineMetricsRecorder(opts, rec), heldBaselineIdentity)
 					default:

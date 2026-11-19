@@ -111,6 +111,10 @@ var ErrExtensionMerge = errors.New("receipt extension merge failed")
 // missing position cannot be safely retried on another shard.
 var ErrReceiptPostAdvance = errors.New("receipt chain advanced before persistence failed")
 
+// ErrReceiptNotAppended means the recorder refused the receipt before its
+// chain position was consumed. Retrying on the same writer cannot duplicate it.
+var ErrReceiptNotAppended = errors.New("receipt was not appended")
+
 // Emitter produces signed action receipts and writes them to the flight recorder.
 // It is safe for concurrent use - the underlying recorder handles its own locking.
 type Emitter struct {
@@ -1074,7 +1078,7 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 			} else {
 				e.recordFailure(FailReasonRecord)
 			}
-			return fmt.Errorf("recording receipt before chain advance: %w", recordErr)
+			return fmt.Errorf("recording receipt before chain advance: %w: %w", ErrReceiptNotAppended, recordErr)
 		}
 		// A failed first write may leave no successor chain at all. Never
 		// claim its predecessor; later attempts have advanced chain state

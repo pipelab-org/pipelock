@@ -211,8 +211,17 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	// empty lines internally, so this is a message index. ScanStream (scan.go)
 	// preserves raw line counting for user-facing diagnostics.
 	lineNum := 0
+	var claimedOutcome TrackedRequestOutcome
+	settleUndelivered := func() {
+		if claimedOutcome.handle != nil {
+			claimedOutcome.settle(logW, opts, "incomplete", -1, "response_not_delivered")
+			claimedOutcome = TrackedRequestOutcome{}
+		}
+	}
+	defer settleUndelivered()
 
 	for {
+		settleUndelivered()
 		line, err := reader.ReadMessage()
 		if err != nil {
 			// A clean stream end is io.EOF; a proxy-initiated connection
@@ -403,6 +412,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					continue
 				}
 				hasTrackedOutcome = trackedOutcome.Receipt.ActionID != ""
+				if !opts.listenerOwnsResponseOutcome {
+					claimedOutcome = trackedOutcome
+				}
 			}
 		}
 
@@ -410,7 +422,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if !hasTrackedOutcome {
 				return
 			}
-			trackedOutcome.settle(logW, opts, status, int64(len(outbound)), reason)
+			if opts.bufferedResponseOutcome != nil {
+				opts.bufferedResponseOutcome(status, reason, int64(len(outbound)))
+			} else {
+				trackedOutcome.settle(logW, opts, status, int64(len(outbound)), reason)
+			}
+			claimedOutcome = TrackedRequestOutcome{}
 		}
 
 		blockScanError := func(scanError string) error {

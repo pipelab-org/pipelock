@@ -466,7 +466,7 @@ func RunHTTPProxy(
 				// release as pending: the allow first, then a corrective block
 				// if the journal cannot record the allow as final.
 				AfterJournal: func(res deferred.Resolution) error {
-					return receiptSettle.commitAllow(fwdOpts, safeLogW, res)
+					return receiptSettle.commitRelease(fwdOpts, safeLogW, res)
 				},
 				Resolve: func(res deferred.Resolution) {
 					denialOpts := fwdOpts
@@ -498,13 +498,16 @@ func RunHTTPProxy(
 					switch res.FinalDecision {
 					case config.ActionAllow:
 						// upstreamMu is held by Prepare's release claim.
+						releaseOutcome := receiptSettle.release
 						var registration *requestRegistration
 						if isTrackableRequest(deferredReq.ForwardMessage, deferredReq.ID) {
-							registration = tracker.trackOutcome(deferredReq.ID, TrackedRequestOutcome{Method: deferredReq.Method})
+							registration = trackMCPOutcome(safeLogW, fwdOpts, tracker, deferredReq.ID, releaseOutcome)
 						}
+						defer tracker.removeOwnedOutcome(deferredReq.ID, registration)
+						defer releaseOutcome.settle(safeLogW, fwdOpts, "incomplete", -1, "upstream_no_response")
 						respReader, sendErr := httpClient.SendMessageWithOptions(ctx, deferredReq.ForwardMessage, transport.HTTPMessageOptions{Headers: releaseHeaders})
 						if sendErr != nil {
-							tracker.removeOwnedOutcome(deferredReq.ID, registration)
+							releaseOutcome.settle(safeLogW, fwdOpts, "error", -1, mcpUpstreamWriteFailed)
 							res.FinalDecision = config.ActionBlock
 							res.ResolutionSource = deferred.SourceCancel
 							res.Reason = mcpUpstreamWriteFailed
@@ -514,6 +517,9 @@ func RunHTTPProxy(
 								_ = safeClientOut.WriteMessage(upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP request failed")))
 							}
 							return
+						}
+						if deferredReq.IsNotification {
+							releaseOutcome.settle(safeLogW, fwdOpts, "forwarded", -1, "notification_forwarded")
 						}
 						respReader = fwdOpts.withResponseTimeout(respReader)
 						foundInjection, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, tracker, fwdOpts)
@@ -700,7 +706,7 @@ func RunHTTPProxy(
 			}
 			if isRequest(msg) {
 				decision.Outcome.Method = frame.Method
-				registration = tracker.trackOutcome(frame.ID, decision.Outcome)
+				registration = trackMCPOutcome(safeLogW, fwdOpts, tracker, frame.ID, decision.Outcome)
 			}
 			return httpClient.SendMessageWithOptions(ctx, decision.ForwardMessage, transport.HTTPMessageOptions{Headers: requestHeaders})
 		}()

@@ -322,7 +322,7 @@ func RunWSProxy(
 		var registration *requestRegistration
 		if isTrackableRequest(msg, frame.ID) {
 			decision.Outcome.Method = frame.Method
-			registration = tracker.trackOutcome(frame.ID, decision.Outcome)
+			registration = trackMCPOutcome(safeLogW, wsOpts, tracker, frame.ID, decision.Outcome)
 		}
 
 		// Forward to upstream.

@@ -112,6 +112,7 @@ func emitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 // Prepare, AfterJournal and Resolve run in sequence on the resolving
 // goroutine, so the struct needs no lock.
 type deferredReceiptSettlement struct {
+	release  TrackedRequestOutcome
 	done     bool
 	err      error
 	decision string
@@ -169,6 +170,29 @@ func (s *deferredReceiptSettlement) emit(opts MCPProxyOpts, logW io.Writer, res 
 	s.err = emitDeferredResolutionReceipt(opts, logW, res)
 	s.done, s.decision, s.source = true, res.FinalDecision, res.ResolutionSource
 	return s.err
+}
+
+// commitRelease records the allow resolution and the request intent while
+// the journal still marks the release pending. If either append fails or
+// the journal cannot commit, the manager calls back with the corrective block.
+func (s *deferredReceiptSettlement) commitRelease(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
+	if res.FinalDecision != config.ActionAllow {
+		s.release.settle(logW, opts, mcpOutcomeStatusBlocked, -1, res.Reason)
+		return s.commitAllow(opts, logW, res)
+	}
+	if err := s.commitAllow(opts, logW, res); err != nil {
+		return err
+	}
+	s.release.Method = res.Method
+	return emitMCPToolReceipt(mcpToolReceiptOpts{
+		ProxyOpts: opts, Log: logW, Outcome: &s.release,
+		Shard:    receipt.EmitOpts{ShardIndex: res.ShardIndex, ShardSelected: res.ShardSelected},
+		ActionID: receipt.NewActionID(), ParentActionID: res.ParentActionID,
+		MCPMethod: res.Method, ToolName: res.Target, Transport: opts.Transport,
+		Verdict: config.ActionAllow, Layer: mcpReceiptLayerPolicy,
+		RequireReceipts: opts.requireReceipts(), RequireReceipt: true,
+		SessionID: res.Authority.SessionID, SessionIDOriginal: res.Authority.SessionIDOriginal,
+	})
 }
 
 // holdFailureResolution carries the surface-specific fields for a failed

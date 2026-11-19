@@ -120,26 +120,44 @@ func (t *RequestTracker) TrackOutcome(id json.RawMessage, outcome TrackedRequest
 }
 
 func (t *RequestTracker) trackOutcome(id json.RawMessage, outcome TrackedRequestOutcome) *requestRegistration {
+	registration, _ := t.registerOutcome(id, outcome)
+	return registration
+}
+
+type unattributedOutcome struct {
+	outcome TrackedRequestOutcome
+	reason  string
+}
+
+func (t *RequestTracker) registerOutcome(id json.RawMessage, outcome TrackedRequestOutcome) (*requestRegistration, []unattributedOutcome) {
 	if t == nil {
-		return nil
+		return nil, nil
 	}
 	key := canonicalID(id)
 	if key == "" {
-		return nil
+		return nil, nil
 	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	var unowned []unattributedOutcome
+	retire := func(o TrackedRequestOutcome, reason string) {
+		if o.handle != nil {
+			unowned = append(unowned, unattributedOutcome{outcome: o, reason: reason})
+		}
+	}
 	if prior, exists := t.pending[key]; exists {
 		// A response to a duplicate outstanding ID has no unique owner.
 		if prior.outcome.handle != nil || outcome.handle != nil {
 			t.markAmbiguous(key)
+			retire(prior.outcome, "ambiguous_request_id")
+			retire(outcome, "ambiguous_request_id")
 			prior.outcome.Receipt = receipt.EmitOpts{}
 			prior.outcome.handle = nil
 			t.pending[key] = prior
 		}
-		return nil
+		return nil, unowned
 	}
 
 	// Evict oldest if at capacity.
@@ -147,12 +165,14 @@ func (t *RequestTracker) trackOutcome(id json.RawMessage, outcome TrackedRequest
 		oldest := t.order[0]
 		if t.pending[oldest].outcome.handle != nil {
 			t.markAmbiguous(oldest)
+			retire(t.pending[oldest].outcome, "request_tracker_capacity")
 		}
 		delete(t.pending, oldest)
 		t.order = t.order[1:]
 	}
 
 	if _, ambiguous := t.ambiguousIDs[key]; ambiguous || t.ambiguityLimitReached {
+		retire(outcome, "ambiguous_request_id")
 		outcome.Receipt = receipt.EmitOpts{}
 		outcome.handle = nil
 	}
@@ -160,7 +180,7 @@ func (t *RequestTracker) trackOutcome(id json.RawMessage, outcome TrackedRequest
 	t.pending[key] = trackedRequest{registration: registration, outcome: outcome}
 	t.order = append(t.order, key)
 	t.seeded = true
-	return registration
+	return registration, unowned
 }
 
 // markAmbiguous requires t.mu and bounds the ambiguity history.

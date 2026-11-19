@@ -142,6 +142,10 @@ type MCPProxyOpts struct {
 	// The listener carries the finalized response denial to its HTTP adapter
 	// before delivery commits headers or adds SSE framing.
 	responseDenial func(*mcpTerminalDecision)
+	// The HTTP listener keeps the outcome handle through its response adapter.
+	listenerOwnsResponseOutcome bool
+	// A buffered listener response cannot settle on the buffer write.
+	bufferedResponseOutcome func(status, reason string, size int64)
 	// Modern HTTP lists enforce structural contracts independently of drift trust.
 	validateToolHeaders bool
 	// Internal discovery inspects definitions without claiming client delivery.
