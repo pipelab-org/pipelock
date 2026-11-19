@@ -101,6 +101,8 @@ func (p *Proxy) admitReceiptShard() receipt.EmitOpts {
 }
 
 func (p *Proxy) reserveReceiptAdmission() (receipt.EmitOpts, error) {
+	p.reloadMu.RLock()
+	defer p.reloadMu.RUnlock()
 	admission := p.admitReceiptShard()
 	var err error
 	if group := p.receiptGroupPtr.Load(); group != nil {

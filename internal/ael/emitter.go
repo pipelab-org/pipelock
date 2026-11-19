@@ -287,6 +287,26 @@ func (e *Emitter) Abort() error {
 	return err
 }
 
+// ErrActiveAdmission means the stream still owes evidence for admitted work.
+var ErrActiveAdmission = errors.New("native AEL stream has outstanding admissions")
+
+// EmitCloseIfIdle closes an old signing stream only after its admissions settle.
+func (e *Emitter) EmitCloseIfIdle() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.capacity.mu.Lock()
+	active := e.capacity.active
+	e.capacity.mu.Unlock()
+	if active != 0 {
+		return ErrActiveAdmission
+	}
+	record, err := e.prepareLocked(closeRecordKind, nil, nil)
+	if err != nil {
+		return err
+	}
+	return record.appendLocked(true)
+}
+
 func (e *Emitter) emit(kind string, extra map[string]any, durable bool) error {
 	if e == nil {
 		return nil

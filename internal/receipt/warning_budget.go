@@ -33,6 +33,9 @@ func WithDLPWarningBudget(ctx context.Context, emitter *Emitter, admission EmitO
 	if admission.NativeLease == nil {
 		return ctx, func() {}
 	}
+	if admission.nativeEmitter != nil {
+		emitter = admission.nativeEmitter
+	}
 	b := &warningBudget{emitter: emitter, admission: admission}
 	return context.WithValue(ctx, warningBudgetKey{}, b), b.finish
 }

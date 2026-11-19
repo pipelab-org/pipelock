@@ -595,6 +595,7 @@ func (e *Emitter) SignerKeyHex() string {
 type EmitOpts struct {
 	NativeLease            *aelpkg.Lease
 	NativeTerminalLease    *aelpkg.Lease
+	nativeEmitter          *Emitter
 	promptInjectionModeSet bool
 	promptInjectionMode    string
 	// ContentScanContext can cancel an ordinary action's content inspection.
@@ -832,6 +833,7 @@ func (e *Emitter) AdmitNative(opts EmitOpts, records int) (EmitOpts, error) {
 		return opts, err
 	}
 	opts.NativeLease = lease
+	opts.nativeEmitter = e
 	return opts, nil
 }
 
@@ -882,6 +884,7 @@ func (opts EmitOpts) InheritAdmission(admission EmitOpts) EmitOpts {
 	if admission.NativeLease != nil {
 		opts.NativeLease = admission.NativeLease
 		opts.NativeTerminalLease = admission.NativeTerminalLease
+		opts.nativeEmitter = admission.nativeEmitter
 	}
 	return opts
 }
@@ -1421,7 +1424,10 @@ func (e *Emitter) RetireNativeAEL() error {
 	e.chainMu.Lock()
 	defer e.chainMu.Unlock()
 	if e.nativeAEL != nil && e.nativeAEL.Opened() {
-		if err := e.nativeAEL.EmitClose(); err != nil {
+		if err := e.nativeAEL.EmitCloseIfIdle(); err != nil {
+			if errors.Is(err, aelpkg.ErrActiveAdmission) {
+				return err
+			}
 			e.recordFailure(FailReasonAEL)
 			closeErr := fmt.Errorf("closing native AEL run: %w", err)
 			e.MarkUnhealthy(closeErr)

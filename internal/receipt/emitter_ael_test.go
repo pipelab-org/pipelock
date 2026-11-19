@@ -16,6 +16,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 func TestEmitterNativeAELLifecycle(t *testing.T) {
@@ -386,5 +387,52 @@ func TestNativeEmitterRefusesOversizedActionID(t *testing.T) {
 	after, _ := e.HealthSnapshot()
 	if before.ChainSeq != after.ChainSeq {
 		t.Fatalf("refused receipt advanced sequence from %d to %d", before.ChainSeq, after.ChainSeq)
+	}
+}
+
+func TestNativeWarningBudgetKeepsAdmittingEmitter(t *testing.T) {
+	_, key := generateTestKey(t)
+	admittingRecorder := newTestRecorder(t, t.TempDir(), key)
+	replacementRecorder := newTestRecorder(t, t.TempDir(), key)
+	for _, rec := range []*recorder.Recorder{admittingRecorder, replacementRecorder} {
+		t.Cleanup(func() {
+			if err := rec.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	admitting := NewEmitter(EmitterConfig{Recorder: admittingRecorder, PrivKey: key})
+	replacement := NewEmitter(EmitterConfig{Recorder: replacementRecorder, PrivKey: key})
+	for _, e := range []*Emitter{admitting, replacement} {
+		if err := e.EmitSessionOpen(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	selected, err := admitting.AdmitNative(EmitOpts{}, DLPWarningSlots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer selected.ReleaseNativeAdmission()
+	ctx, finish := WithDLPWarningBudget(t.Context(), replacement, selected)
+	before, _ := admitting.HealthSnapshot()
+	otherBefore, _ := replacement.HealthSnapshot()
+	var failures []error
+	for range DLPWarningSlots + 1 {
+		EmitDLPWarning(ctx, replacement, EmitOpts{
+			ActionID: NewActionID(), Verdict: config.ActionWarn, Layer: "dlp", Pattern: "fixture",
+			Target: "https://api.vendor.example/", Transport: "fetch",
+		}, func(err error) { failures = append(failures, err) })
+	}
+	finish()
+	if len(failures) != 0 {
+		t.Fatalf("admitted warning write failed: %v", failures[0])
+	}
+	after, _ := admitting.HealthSnapshot()
+	otherAfter, _ := replacement.HealthSnapshot()
+	if got := after.ChainSeq - before.ChainSeq; got != DLPWarningSlots {
+		t.Fatalf("admitting emitter wrote %d warnings, want %d", got, DLPWarningSlots)
+	}
+	if otherAfter.ChainSeq != otherBefore.ChainSeq {
+		t.Fatal("replacement recorded an outstanding warning")
 	}
 }
