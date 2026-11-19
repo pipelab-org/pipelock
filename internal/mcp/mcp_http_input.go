@@ -1128,6 +1128,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		if len(policyVerdict.Rules) > 0 {
 			policyRuleName = policyVerdict.Rules[0]
 		}
+		var v3Redirect mcpV3Receipt
 		if requireReceipts {
 			if opts.ReceiptGroup != nil && opts.ReceiptGroup.Shards != nil {
 				receiptShard = opts.ReceiptGroup.Shards.Admit(receiptShard)
@@ -1139,7 +1140,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				ToolName: toolName, Verdict: config.ActionRedirect,
 				Layer: receiptLayer, Pattern: receiptPattern, Severity: receiptSeverity,
 				Decision: taintEval, Report: redactionReport, RedactionProfile: redactionCfg.Profile,
-				RequireReceipt: true, RequireReceipts: true,
+				RequireReceipt: true, RequireReceipts: true, v3Confirmed: &v3Redirect,
 			}); err != nil {
 				denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
 				receiptVerdict = config.ActionBlock
@@ -1153,7 +1154,13 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			}
 			redirectReceiptEmitted = true
 		}
-		redirectResult := executeRedirect(profile, policyVerdict.RedirectProfile, verdict.ID, toolArgs, policyRuleName, redirectRT)
+		var redirectResult RedirectResult
+		if v3Redirect.action.Attempt != nil && inputScanCtx.Err() != nil {
+			redirectResult.Error = inputScanCtx.Err().Error()
+		} else {
+			redirectResult = executeRedirect(profile, policyVerdict.RedirectProfile, verdict.ID, toolArgs, policyRuleName, redirectRT)
+		}
+		v3Redirect.finishRedirect(opts, logW, redirectResult)
 		// Determine final outcome before audit logging so the event
 		// reflects the actual result delivered to the client.
 		var br *BlockedRequest

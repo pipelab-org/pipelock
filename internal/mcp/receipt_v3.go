@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -184,6 +185,14 @@ func (s *deferredReceiptSettlement) confirmV3Release(o MCPProxyOpts) (*mcpV3Rece
 }
 
 // finish writes the observed result of a confirmed upstream send.
+func (r *mcpV3Receipt) finishRedirect(o MCPProxyOpts, logW io.Writer, result RedirectResult) {
+	var dispatchErr error
+	if !result.Success {
+		dispatchErr = errors.New("redirect handler failed")
+	}
+	r.finish(o, logW, result.started, dispatchErr)
+}
+
 func (r *mcpV3Receipt) finish(o MCPProxyOpts, logW io.Writer, attempted bool, sendErr error) {
 	if r == nil || r.action.Attempt == nil {
 		return

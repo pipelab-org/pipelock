@@ -708,7 +708,7 @@ func ForwardScannedInput(
 		// Keep the admission choice for the later response outcome. Blocked
 		// requests also choose once when their first receipt is emitted.
 		var receiptShard receipt.EmitOpts
-		var v3Upstream mcpV3Receipt
+		var v3Upstream, v3Redirect mcpV3Receipt
 
 		emitToolReceipt := func(receiptVerdict string, contractGate ...mcpContractGateOutput) error {
 			if opts.ReceiptV3 != nil && receiptVerdict == config.ActionDefer {
@@ -773,8 +773,9 @@ func ForwardScannedInput(
 				receiptOpts.ParentActionID = actionID
 				receiptOpts.ActionID = receipt.NewActionID()
 			}
-			if receiptVerdict != config.ActionRedirect {
-				receiptOpts.v3Confirmed = &v3Upstream
+			receiptOpts.v3Confirmed = &v3Upstream
+			if receiptVerdict == config.ActionRedirect {
+				receiptOpts.v3Confirmed = &v3Redirect
 			}
 			return emitMCPToolReceipt(receiptOpts)
 		}
@@ -1396,7 +1397,13 @@ func ForwardScannedInput(
 				receiptEmitted = true
 				redirectReceiptActionID = actionID
 			}
-			result := executeRedirect(profile, policyVerdict.RedirectProfile, verdict.ID, toolArgs, policyRuleName, redirectRT)
+			var result RedirectResult
+			if v3Redirect.action.Attempt != nil && stdioInputCtx.Err() != nil {
+				result.Error = stdioInputCtx.Err().Error()
+			} else {
+				result = executeRedirect(profile, policyVerdict.RedirectProfile, verdict.ID, toolArgs, policyRuleName, redirectRT)
+			}
+			v3Redirect.finishRedirect(opts, logW, result)
 			// Determine final outcome before audit logging so the event
 			// reflects the actual result delivered to the client.
 			finalResult := "blocked"

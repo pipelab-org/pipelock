@@ -10,6 +10,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17,6 +20,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
@@ -187,6 +191,93 @@ func newMCPV3Stream(t *testing.T, surface string) (string, *v3.StreamWriter, v3.
 	}
 	t.Cleanup(func() { _ = writer.Close(context.Background(), nil) })
 	return dir, writer, v3.Options{Keys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Directory: true, AllowPrefix: true}
+}
+
+func TestMCPV3RedirectDispatchOutcome(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("redirect executable requires a Unix shell")
+	}
+	for _, surface := range []string{transportMCPStdio, transportMCPHTTP} {
+		for _, tc := range []struct {
+			name, outcome string
+			wantStarted   bool
+		}{
+			{name: "completed", outcome: "completed", wantStarted: true},
+			{name: "handler failure", outcome: "attempt_unknown", wantStarted: true},
+			{name: "missing executable", outcome: "not_released"},
+			{name: "closed writer"},
+		} {
+			t.Run(surface+"/"+tc.name, func(t *testing.T) {
+				dir, writer, verify := newMCPV3Stream(t, surface)
+				marker := filepath.Join(t.TempDir(), "executed")
+				command := "printf executed > \"$1\"; printf 'ordinary reply'"
+				if tc.name == "handler failure" {
+					command += "; exit 7"
+				}
+				handler := []string{"/bin/sh", "-c", command, "handler", marker}
+				if tc.name == "missing executable" {
+					handler = []string{filepath.Join(t.TempDir(), "missing")}
+				}
+				if tc.name == "closed writer" {
+					if err := writer.Close(t.Context(), nil); err != nil {
+						t.Fatal(err)
+					}
+				}
+				opts := MCPProxyOpts{
+					Scanner: testInputScanner(t), Transport: surface, RequireReceipts: true, ReceiptV3: writer,
+					PolicyCfg: policy.New(config.MCPToolPolicy{
+						Enabled: true, Action: config.ActionWarn,
+						RedirectProfiles: map[string]config.RedirectProfile{"audited": {Exec: handler, Reason: "audited operation"}},
+						Rules: []config.ToolPolicyRule{{
+							Name: "redirect", ToolPattern: "^echo$", Action: config.ActionRedirect, RedirectProfile: "audited",
+						}},
+					}),
+				}
+				if surface == transportMCPStdio {
+					blocked := make(chan BlockedRequest, 2)
+					ForwardScannedInput(transport.NewStdioReader(strings.NewReader(cleanToolsCallRequest)),
+						v3TestPeer(func([]byte) error {
+							t.Error("redirect forwarded the original request")
+							return nil
+						}), io.Discard, config.ActionBlock, config.ActionBlock, blocked, nil, nil, opts)
+				} else {
+					scanHTTPInputDecision([]byte(cleanToolsCallRequest), io.Discard, "session", "session", opts)
+				}
+				_, statErr := os.Stat(marker)
+				if got := statErr == nil; got != tc.wantStarted {
+					t.Fatalf("redirect started=%t, want %t (%v)", got, tc.wantStarted, statErr)
+				}
+				if err := writer.Close(t.Context(), nil); err != nil {
+					t.Fatal(err)
+				}
+				result, err := v3.VerifyPaths(t.Context(), []string{dir}, verify)
+				if err != nil || result.Verdict != "VALID" {
+					t.Fatalf("redirect evidence failed verification: %+v (%v)", result, err)
+				}
+				if tc.outcome != "" {
+					assertMCPV3RedirectOutcome(t, dir, tc.outcome)
+				}
+			})
+		}
+	}
+}
+
+func assertMCPV3RedirectOutcome(t *testing.T, dir, outcome string) {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(dir, "*.receipt-v3.jsonl"))
+	if err != nil || len(paths) != 1 {
+		t.Fatalf("want one receipt file, got %v (%v)", paths, err)
+	}
+	data, err := os.ReadFile(filepath.Clean(paths[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range strings.Split(string(data), "\n") {
+		if strings.Contains(record, `"effect_boundary":"redirect_dispatch"`) && strings.Contains(record, `"outcome_class":"`+outcome+`"`) {
+			return
+		}
+	}
+	t.Fatalf("no redirect dispatch outcome %q", outcome)
 }
 
 func TestMCPV3DeferredSendUsesHoldAndIntent(t *testing.T) {

@@ -63,6 +63,7 @@ type rpcToolResult struct {
 
 // RedirectResult holds the outcome of a redirect execution attempt.
 type RedirectResult struct {
+	started bool
 	// Success is true when the handler ran and exited 0.
 	Success bool
 	// Response is the synthetic JSON-RPC success response (only when Success).
@@ -152,6 +153,7 @@ func executeRedirect(profile config.RedirectProfile, profileName string, request
 
 	if err != nil {
 		return RedirectResult{
+			started:   cmd.Process != nil,
 			Error:     fmt.Sprintf("redirect handler failed: %v (stderr: %s)", err, stderr.String()),
 			LatencyMs: latencyMs,
 		}
@@ -169,6 +171,7 @@ func executeRedirect(profile config.RedirectProfile, profileName string, request
 	}
 	data, _ := json.Marshal(resp) //nolint:errcheck // marshaling known-good struct
 	return RedirectResult{
+		started:   true,
 		Success:   true,
 		Response:  data,
 		LatencyMs: latencyMs,
