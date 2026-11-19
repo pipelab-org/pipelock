@@ -1760,6 +1760,15 @@
       "count": 1,
       "reason": "Fixed CLIProxyAPI tag used as the xAI sign-in bearer source in this document; not the current Pipelock release.",
       "format": "version"
+    },
+    {
+      "id": "receipt-v3-rfc8032-section",
+      "path": "docs/specs/receipt-v3.md",
+      "pattern": "RFC 8032 §(?P<value>5\\.1\\.3)(?![0-9])",
+      "expected": "5.1.3",
+      "count": 1,
+      "reason": "RFC 8032 section number for point decoding, not a release version.",
+      "format": "version"
     }
   ],
   "external": [

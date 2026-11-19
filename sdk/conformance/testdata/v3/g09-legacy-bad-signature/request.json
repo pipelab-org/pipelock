@@ -1,0 +1,1 @@
+{"directory":true,"check":"legacy-bad-signature","finding":"LEGACY_INVALID","inputs":["11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl","evidence-conformance-session-0.jsonl","receipt-v3-cutover-38c6519e511e2b8128a38b63981011753a7f7c3cc32bc625c2555314d39dbd0e.json"],"keys":[],"allow_unpinned":true}

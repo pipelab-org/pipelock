@@ -199,3 +199,25 @@ func RecorderFileChains(name string, entries []recorder.Entry) ([]Receipt, []con
 	}
 	return actions, evidence, true, nil
 }
+
+// ReadSessionChains reads both formats inside the caller's session snapshot.
+func ReadSessionChains(location recorder.EvidenceLocation, session string) ([]Receipt, []contractreceipt.EvidenceReceipt, error) {
+	bare, err := IsBareEvidenceSession(location, session)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !bare {
+		if err := recorder.VerifySessionHistoryChain(location, session); err != nil {
+			return nil, nil, err
+		}
+	}
+	evidence, err := contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(location, session)
+	if err != nil {
+		return nil, nil, err
+	}
+	if bare {
+		return nil, evidence, nil
+	}
+	actions, err := ExtractReceiptsFromResolvedSessionDir(location, session)
+	return actions, evidence, err
+}

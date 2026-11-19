@@ -1,0 +1,1 @@
+{"check":"invalid-inventory-version","finding":"CUTOVER_INVENTORY_MISMATCH","inputs":["11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl","receipt-v3-cutover-0dd5264f12a1e53589d0703ee0aa11573728155ee43e5c652d88d31b1421e3b3.json"],"keys":["d2ba0b3426fe6fc96e593249a5b02d22e3167cd233af72ab77660be3334c0e17"]}

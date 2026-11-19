@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
@@ -176,6 +177,12 @@ func TestChain_MixedSessionVerifiesBothChains(t *testing.T) {
 				if err := json.Unmarshal([]byte(stdout), &got); err != nil {
 					t.Fatalf("decode: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
 				}
+
+				format := "evidence_v2"
+				if strings.HasPrefix(got.Error, "action receipt chain: ") {
+					format = "action_v1"
+				}
+				compareV3LegacyChainRow(t, mixedRunFile(dir), key, format, code, got.Status)
 				if wantErr[name] == "" {
 					if code != 0 || !got.Valid || got.RecordType != recordTypeEvidenceV2 || got.Error != "" {
 						t.Fatalf("exit %d valid=%v record_type=%q error=%q, want a clean v2 report", code, got.Valid, got.RecordType, got.Error)
@@ -219,6 +226,43 @@ func TestChain_MixedSessionVerifiesBothChains(t *testing.T) {
 	}
 }
 
+func compareV3LegacyChainRow(t *testing.T, file, key, format string, code int, label string, extra ...string) {
+	t.Helper()
+	const (
+		opener  = "11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl"
+		fixture = "../../sdk/conformance/testdata/v3/g01-valid-line/" + opener
+	)
+	dir := t.TempDir()
+	for _, path := range []string{file, fixture} {
+		data, err := os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, filepath.Base(path)), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	args := []string{"chain", "--allow-prefix", dir, "--dir", "--json"}
+	if key != "" {
+		args = append(args, "--key", key)
+	}
+	stdout, stderr, _ := runRoot(t, append(args, extra...)...)
+	var result v3.Result
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("decode mixed verification: %v, stdout %s, stderr %s", err, stdout, stderr)
+	}
+	class := "pass"
+	if code != 0 {
+		class = "failure"
+	}
+	for _, row := range result.Legacy {
+		if row.Format == format && row.Class == class && row.Verdict == label {
+			return
+		}
+	}
+	t.Fatalf("mixed legacy rows %+v differ from %s class %q label %q", result.Legacy, format, class, label)
+}
+
 // Without a key both chains fail only for being unpinned. The report must
 // read exactly as it does for a v2-only session rather than listing the
 // banner twice.
@@ -232,10 +276,15 @@ func TestChain_MixedSessionUnpinnedReportsOnce(t *testing.T) {
 	if code != 1 || got.Valid || got.Error != unpinnedReceiptBanner {
 		t.Fatalf("exit %d valid=%v error=%q, want the unpinned banner alone", code, got.Valid, got.Error)
 	}
-	_, _, code = runRoot(t, "chain", "--allow-prefix", mixedRunFile(filepath.Join(runChainFixtures, "valid")), "--allow-unpinned")
+	file := mixedRunFile(filepath.Join(runChainFixtures, "valid"))
+	stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", file, "--allow-unpinned", "--json")
 	if code != 0 {
-		t.Fatalf("--allow-unpinned exit %d, want 0", code)
+		t.Fatalf("--allow-unpinned exit %d, want 0: %s", code, stderr)
 	}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatal(err)
+	}
+	compareV3LegacyChainRow(t, file, "", "evidence_v2", code, got.Status, "--allow-unpinned")
 }
 
 // Session membership is parsed equality. For session S the name
@@ -275,5 +324,33 @@ func TestChain_ExplicitSessionIgnoresPrefixSibling(t *testing.T) {
 	sibSession := mixedRunSession + "-evil"
 	if code != 1 || got.Valid || !strings.HasPrefix(got.Error, "restart continuity: ") || !strings.Contains(got.Error, sibSession) {
 		t.Fatalf("exit %d valid=%v error=%q: want the named run clean and the base finding on %s", code, got.Valid, got.Error, sibSession)
+	}
+}
+
+func TestChainV3LocationScope(t *testing.T) {
+	const opener = "11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl"
+	data, err := os.ReadFile("../../sdk/conformance/testdata/v3/g01-valid-line/" + opener)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, opener)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"missing location", []string{"--dir", "--location", "missing", dir}, "resolve evidence location"},
+		{"explicit file", []string{"--format", "v3", "--location", "missing", path}, "--location requires --dir"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, code := runRoot(t, append([]string{"chain"}, tc.args...)...)
+			if stdout != "" || !strings.Contains(stderr, tc.want) || code == 0 {
+				t.Fatalf("exit %d, stdout %q, stderr %q, want %q", code, stdout, stderr, tc.want)
+			}
+		})
 	}
 }

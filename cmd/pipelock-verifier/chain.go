@@ -21,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/evidence/completeness"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	actionreceipt "github.com/luckyPipewrench/pipelock/internal/receipt"
+	receiptv3 "github.com/luckyPipewrench/pipelock/internal/receipt/v3/command"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
@@ -62,9 +63,11 @@ type chainOptions struct {
 
 func newChainCmd() *cobra.Command {
 	var opts chainOptions
+	var v3Flags receiptv3.Flags
+	var seq receiptv3.SeqFlag
 
 	cmd := &cobra.Command{
-		Use:     "chain PATH",
+		Use:     "chain PATH [PATH ...]",
 		Aliases: []string{"evidence"},
 		Short:   "Verify a Pipelock receipt chain",
 		Long: `Verifies the hash linkage of a Pipelock receipt chain. PATH may be a
@@ -96,11 +99,54 @@ session, a group close, or an independently supplied
 --expect-head/--expect-seq proves its endpoint. Restart links, recovery
 seals, and closes in a legacy shared session such as "proxy" do not. JSON separates integrity,
 end_proof, scope, and signer trust.`,
-		Args:          exactOneArg,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 || opts.asDir {
+				return exactOneArg(cmd, args)
+			}
+			return nil
+		},
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.sessionExplicit = cmd.Flags().Changed("session")
+			paths := args
+			var dir string
+			if opts.asDir {
+				dir, paths = args[0], nil
+				location, err := recorder.ResolveEvidenceLocation(dir, opts.locationID)
+				if err != nil {
+					return evidenceLocationError(fmt.Errorf("resolve evidence location: %w", err))
+				}
+				dir = location.Dir
+			} else if opts.locationID != "" {
+				return cliutil.ExitCodeError(cliutil.ExitConfig, errors.New("--location requires --dir"))
+			}
+			claimed, detectErr := v3Flags.Detect(paths, dir, seq)
+			if detectErr != nil {
+				return cliutil.ExitCodeError(cliutil.ExitConfig, detectErr)
+			}
+			if claimed {
+				var keys []string
+				if len(opts.signerKeys) != 0 {
+					var err error
+					keys, err = resolveSignerKeys(opts.signerKeys)
+					if err != nil {
+						return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+					}
+				}
+				return v3Flags.Run(cmd, receiptv3.Input{
+					Paths: paths, Directory: dir, Keys: keys, Head: opts.expectHeadHash,
+					Seq: seq, SeqSet: cmd.Flags().Changed("expect-seq"),
+					AllowPrefix: opts.allowPrefix, AllowUnpinned: opts.allowUnpinned, GenericLegacyLabels: true,
+					LegacyOptions: opts.groupID != "" || opts.sessionExplicit || len(opts.endorsementPaths) != 0 ||
+						opts.expectSignerKeyID != "" || opts.expectContractHash != "" || opts.expectManifestHash != "" ||
+						opts.expectPayloadKind != "",
+				})
+			}
+			if err := exactOneArg(cmd, args); err != nil {
+				return err
+			}
+			opts.expectSeq = seq.Legacy
 			if cmd.Flags().Changed("expect-seq") {
 				opts.expectFinalSeq = &opts.expectSeq
 			}
@@ -120,7 +166,8 @@ end_proof, scope, and signer trust.`,
 	cmd.Flags().StringVar(&opts.expectPayloadKind, "expect-payload-kind", "", "EvidenceReceipt v2: require payload_kind")
 	cmd.Flags().StringVar(&opts.expectHeadHash, "expect-head", "", "require the selected chain tip to equal this independently known receipt hash")
 	cmd.Flags().BoolVar(&opts.allowPrefix, "allow-prefix", false, "return success for a valid prefix while reporting its unproven end")
-	cmd.Flags().Var(endproof.SeqFlag{Seq: &opts.expectSeq}, "expect-seq", "require this independently known final sequence for the selected chain")
+	v3Flags.Bind(cmd)
+	cmd.Flags().Var(&seq, "expect-seq", "require this independently known final sequence for the selected chain")
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit a structured JSON verdict on stdout")
 	cmd.Flags().BoolVar(&opts.asDir, "dir", false, "treat PATH as a session directory rather than a single file")
 	cmd.Flags().BoolVar(&opts.allowUnpinned, "allow-unpinned", false, "allow structural-only verification without a trusted signer key")

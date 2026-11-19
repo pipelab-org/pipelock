@@ -1,0 +1,1 @@
+{"directory":true,"check":"legacy-head-mismatch","finding":"LEGACY_CHAIN_HEAD_MISMATCH","inputs":["11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl","evidence-conformance-session-0.jsonl","receipt-v3-cutover-a8cd2a170c4d9cecdd4eddae5145539096bec5f3f01631575bdf8718ce109466.json"],"keys":[],"allow_unpinned":true}

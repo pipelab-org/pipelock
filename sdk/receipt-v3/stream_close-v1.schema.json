@@ -1,0 +1,81 @@
+{
+  "$defs": {
+    "Durability": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "durability_blocks": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "fsync_errors_gated": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "durability_blocks",
+        "fsync_errors_gated"
+      ],
+      "type": "object"
+    },
+    "Recorder": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "entries": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "transcript_root": {
+          "minLength": 1,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entries",
+        "session",
+        "transcript_root"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "minProperties": 1,
+  "properties": {
+    "durability": {
+      "$ref": "#/$defs/Durability"
+    },
+    "reason": {
+      "enum": [
+        "rollover",
+        "shutdown"
+      ],
+      "type": "string"
+    },
+    "recorder": {
+      "$ref": "#/$defs/Recorder"
+    },
+    "records": {
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "durability",
+    "reason",
+    "records"
+  ],
+  "title": "Receipt v3 stream_close body v1",
+  "type": "object"
+}

@@ -1,0 +1,1 @@
+{"accepted":[],"completeness":"end_unproven","exit_code":1,"finding_codes":["STREAM_ORDER"],"integrity":"failed","trust":{"keys":["sha256:0b79ac38dbaaf217ed2966844505fc19bdc437c5c5998761a462f923d5cdef4f","sha256:d833c007e59dfc2b10510e96938f9c95c3b72e629484ce53a1b33df7eebc3a13"],"mode":"unpinned"},"trust_state":"unpinned","verdict":"INVALID"}

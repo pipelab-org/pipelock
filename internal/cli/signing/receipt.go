@@ -30,6 +30,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
 	"github.com/luckyPipewrench/pipelock/internal/posture"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	receiptv3 "github.com/luckyPipewrench/pipelock/internal/receipt/v3/command"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	sigutil "github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -58,12 +59,16 @@ func VerifyReceiptCmd() *cobra.Command {
 	var requireSeal bool
 	var allowPrefix, jsonOutput bool
 	var expectHead string
-	var expectSeq uint64
+	var expectSeq receiptv3.SeqFlag
+	var v3Flags receiptv3.Flags
 
 	cmd := &cobra.Command{
-		Use:   "verify-receipt [file]",
+		Use:   "verify-receipt [file ...]",
 		Short: "Verify a signed action receipt or receipt chain",
-		Long: `Verifies Ed25519 signatures on ActionReceipt v1, EvidenceReceipt v2, and Fleet Receipt Reports.
+		Long: `Verifies Ed25519 signatures on ActionReceipt v1, EvidenceReceipt v2, Receipt v3 and Fleet Receipt Reports.
+
+For v3, pass the stream files or --chain DIR. The command emits the canonical
+verification result. With --format v3, one file may use a different name.
 
 For a single receipt JSON file: verifies the signature and prints details.
 For a flight recorder JSONL file: extracts all receipts and verifies the
@@ -122,9 +127,43 @@ Examples:
   pipelock verify-receipt fleet-receipt.dsse.json --fleet-report --key fleet-report.pub
   pipelock verify-receipt receipt.json --allow-unpinned`,
 		Args: func(_ *cobra.Command, args []string) error {
+			if chainDir == "" && len(args) > 1 {
+				return nil
+			}
 			return validateReceiptSourceArgs(args, chainDir)
 		},
 		RunE: func(cmd *cobra.Command, args []string) (retErr error) {
+			if chainDir == "" && locationID != "" {
+				return configError(errors.New("--location requires --chain"))
+			}
+			targetDir := chainDir
+			if chainDir != "" {
+				targetDir = ""
+				if location, err := recorder.ResolveEvidenceLocation(chainDir, locationID); err == nil {
+					targetDir = location.Dir
+				}
+			}
+			claimed, detectErr := v3Flags.Detect(args, targetDir, expectSeq)
+			if detectErr != nil {
+				return configError(detectErr)
+			}
+			if claimed {
+				keys, err := resolveExpectedKeyHexes(expectedKeys)
+				if err != nil {
+					return configError(fmt.Errorf("loading public key: %w", err))
+				}
+				return v3Flags.Run(cmd, receiptv3.Input{
+					Paths: args, Directory: targetDir, Keys: keys, Head: expectHead,
+					Seq: expectSeq, SeqSet: cmd.Flags().Changed("expect-seq"),
+					AllowPrefix: allowPrefix, AllowUnpinned: allowUnpinned,
+					LegacyOptions: wholeRecorder || requireSeal || allowUnanchoredSeal || fleetReport ||
+						groupID != "" || cmd.Flags().Changed("session") || cleanReport != "" || posturePath != "" ||
+						postureKey != "" || showRaw || hexdump || len(endorsementPaths) > 0,
+				})
+			}
+			if len(args) > 1 {
+				return validateReceiptSourceArgs(args, chainDir)
+			}
 			out := &firstOutputErrWriter{w: cmd.OutOrStdout()}
 			var reports []chainCLIReport
 			if jsonOutput {
@@ -138,7 +177,7 @@ Examples:
 			}
 			var expectedSeq *uint64
 			if cmd.Flags().Changed("expect-seq") {
-				expectedSeq = &expectSeq
+				expectedSeq = &expectSeq.Legacy
 			}
 			if (expectHead != "" || expectedSeq != nil || jsonOutput) && (fleetReport || (jsonOutput && cleanReport != "") || (chainDir == "" && (len(args) == 0 || !strings.HasSuffix(args[0], ".jsonl")))) {
 				return configError(errors.New("end-proof and JSON flags require a receipt chain"))
@@ -302,7 +341,7 @@ Examples:
 				var evidenceReceipts []contractreceipt.EvidenceReceipt
 				readErr := recorder.WithSessionHistorySnapshot(*resolvedLocation, sessionID, func() error {
 					var readErr error
-					receipts, evidenceReceipts, readErr = readReceiptSessionChains(*resolvedLocation, sessionID)
+					receipts, evidenceReceipts, readErr = receipt.ReadSessionChains(*resolvedLocation, sessionID)
 					return readErr
 				})
 				if readErr != nil {
@@ -365,7 +404,8 @@ Examples:
 	cmd.Flags().BoolVar(&allowPrefix, "allow-prefix", false, "return success for a valid prefix while reporting its unproven end")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "emit integrity, end proof, scope, and signer trust as JSON for chains")
 	cmd.Flags().StringVar(&expectHead, "expect-head", "", "require the selected chain tip to equal this independently known receipt hash")
-	cmd.Flags().Var(endproof.SeqFlag{Seq: &expectSeq}, "expect-seq", "require this independently known final sequence for the selected chain")
+	v3Flags.Bind(cmd)
+	cmd.Flags().Var(&expectSeq, "expect-seq", "require this independently known final sequence for the selected chain")
 	cmd.Flags().BoolVar(&wholeRecorder, "whole-recorder", false, "verify every present recorder entry and transcript-root seal")
 	cmd.Flags().BoolVar(&requireSeal, "require-seal", false, "with --whole-recorder, fail if any run lacks a transcript-root seal")
 	cmd.Flags().BoolVar(&allowUnpinned, "allow-unpinned", false, "allow structural-only verification without a trusted signer key")
@@ -1682,7 +1722,7 @@ func verifyChainFromResolvedSessionDirDetailed(out io.Writer, location recorder.
 	var evidenceReceipts []contractreceipt.EvidenceReceipt
 	err := recorder.WithSessionHistorySnapshot(location, sessionID, func() error {
 		var readErr error
-		receipts, evidenceReceipts, readErr = readReceiptSessionChains(location, sessionID)
+		receipts, evidenceReceipts, readErr = receipt.ReadSessionChains(location, sessionID)
 		afterSessionEvidenceRead()
 		return readErr
 	})
@@ -2473,26 +2513,4 @@ func validateReceiptSourceArgs(args []string, chainDir string) error {
 		return fmt.Errorf("accepts 1 arg(s), received %d", len(args))
 	}
 	return nil
-}
-
-// readReceiptSessionChains runs inside the caller's session snapshot.
-func readReceiptSessionChains(location recorder.EvidenceLocation, session string) ([]receipt.Receipt, []contractreceipt.EvidenceReceipt, error) {
-	bare, err := receipt.IsBareEvidenceSession(location, session)
-	if err != nil {
-		return nil, nil, err
-	}
-	if !bare {
-		if err := recorder.VerifySessionHistoryChain(location, session); err != nil {
-			return nil, nil, err
-		}
-	}
-	evidence, err := contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(location, session)
-	if err != nil {
-		return nil, nil, err
-	}
-	if bare {
-		return nil, evidence, nil
-	}
-	actions, err := receipt.ExtractReceiptsFromResolvedSessionDir(location, session)
-	return actions, evidence, err
 }

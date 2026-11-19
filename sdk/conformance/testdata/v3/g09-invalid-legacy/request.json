@@ -1,0 +1,1 @@
+{"directory":true,"check":"invalid-legacy","finding":"LEGACY_INVALID","inputs":["11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl","activation-receipts.jsonl"],"keys":[],"allow_unpinned":true}
