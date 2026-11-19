@@ -2011,7 +2011,7 @@ func RunHTTPListenerProxy(
 			closeContractIntent := func(reason string) {
 				if intent := refusalIntent(); intent.ActionID != "" {
 					intent.Layer = mcpReceiptLayerHeaderContract
-					emitMCPBlockedOutcomeReceipt(requestBaseOpts.receiptEmitter(), requestBaseOpts.v2ReceiptEmitter(), requestBaseOpts.ReceiptGroup, safeLogW, intent, -1, reason, requestBaseOpts.requireReceipts())
+					emitMCPUpstreamRefusal(requestBaseOpts, safeLogW, intent, -1, reason)
 				}
 			}
 			if headerBaseline != nil && frame.RoutingNameErr == nil && frame.RoutingName != "" {
@@ -2093,7 +2093,7 @@ func RunHTTPListenerProxy(
 			refusalReceipt.Layer = mcpReceiptLayerTaint
 			refusalReceipt.TaintDecision = config.ActionBlock
 			refusalReceipt.TaintDecisionReason = reason
-			emitMCPBlockedOutcomeReceipt(scanOpts.receiptEmitter(), scanOpts.v2ReceiptEmitter(), scanOpts.ReceiptGroup, safeLogW, refusalReceipt, -1, reason, scanOpts.requireReceipts())
+			emitMCPUpstreamRefusal(scanOpts, safeLogW, refusalReceipt, -1, reason)
 			scanOpts.ListenerDoor = opts.ListenerDoor
 			writeMCPHTTPInputResult(scanOpts, *blocked, w)
 			return

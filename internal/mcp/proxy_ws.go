@@ -299,6 +299,7 @@ func RunWSProxy(
 		// until the first message has passed every existing gate plus the grant
 		// check in scanHTTPInputDecision.
 		if err := startUpstream(); err != nil {
+			decision.v3Upstream.finish(wsOpts, safeLogW, false, nil)
 			emitPendingMCPInputReceipt(decision.pendingReceipt)
 			if sessionExit.inProgress() && errors.Is(err, context.Canceled) {
 				break
@@ -331,12 +332,14 @@ func RunWSProxy(
 			intent.Layer = mcpReceiptLayerTaint
 			intent.TaintDecision = config.ActionBlock
 			intent.TaintDecisionReason = decision.taskTaint.recordTaskReleaseRefusal(refusal)
-			emitMCPBlockedOutcomeReceipt(wsOpts.receiptEmitter(), wsOpts.v2ReceiptEmitter(), wsOpts.ReceiptGroup, safeLogW, intent, -1, intent.TaintDecisionReason, wsOpts.requireReceipts())
+			decision.v3Upstream.finish(wsOpts, safeLogW, false, nil)
+			emitMCPUpstreamRefusal(wsOpts, safeLogW, intent, -1, intent.TaintDecisionReason)
 			continue
 		}
 
 		// Forward to upstream.
 		writeErr := wsClient.WriteMessage(decision.ForwardMessage)
+		decision.v3Upstream.finish(wsOpts, safeLogW, true, writeErr)
 		emitPendingMCPInputReceipt(decision.pendingReceipt)
 		if writeErr != nil {
 			stdinErr = fmt.Errorf("upstream write: %w", writeErr)

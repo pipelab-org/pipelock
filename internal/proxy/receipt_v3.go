@@ -74,6 +74,23 @@ func (p *Proxy) confirmTransportReceipt(ctx context.Context, cfg *config.Config,
 	return &entry, nil
 }
 
+func (p *Proxy) emitRecordedEffectRefusal(ctx context.Context, opts receipt.EmitOpts, boundary string) bool {
+	if p.receiptV3 == nil || opts.Verdict != config.ActionBlock {
+		return p.emitRecordedReceipt(opts)
+	}
+	return p.recordV3TransportRefusal(ctx, nil, opts, boundary) == nil
+}
+
+func (p *Proxy) recordV3TransportRefusal(ctx context.Context, cfg *config.Config, opts receipt.EmitOpts, boundary string) error {
+	entry := prepareV3TransportReceipt(cfg, opts)
+	entry.action.Phase, entry.action.EffectBoundary, entry.action.EffectRelation = "decision", boundary, "not_attempted"
+	if err := p.receiptV3.WriteAction(context.WithoutCancel(ctx), entry.action, entry.policy); err != nil {
+		p.logReceiptEmissionFailure(opts, err)
+		return err
+	}
+	return nil
+}
+
 func (p *Proxy) recordTransportOutcome(ctx context.Context, opts receipt.EmitOpts, entry *v3TransportReceipt, completed bool) {
 	if entry == nil {
 		return

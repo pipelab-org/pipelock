@@ -231,6 +231,14 @@ func v3MCPChild(parent receipt.EmitOpts, layer, reason string) receipt.EmitOpts 
 	return parent
 }
 
+func emitMCPUpstreamRefusal(opts MCPProxyOpts, logW io.Writer, intent receipt.EmitOpts, bytesTransferred int64, reason string) {
+	if opts.ReceiptV3 != nil {
+		opts.recordV3MCPRefusal(logW, intent, mcpV3Upstream, reason)
+		return
+	}
+	emitMCPBlockedOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, intent, bytesTransferred, reason, opts.requireReceipts())
+}
+
 func (o MCPProxyOpts) recordV3MCPRefusal(logW io.Writer, intent receipt.EmitOpts, boundary, reason string) {
 	refusal := v3MCPChild(intent, intent.Layer, reason)
 	refusal.Verdict = config.ActionBlock

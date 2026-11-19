@@ -81,11 +81,7 @@ func emitTrackedTerminalOutcome(logW io.Writer, tracker *RequestTracker, id json
 func emitContractRefusedOutcome(logW io.Writer, outcome TrackedRequestOutcome, gate mcpContractGateOutput, reason string, bytesTransferred int64, opts MCPProxyOpts) {
 	receiptOpts := mcpWithContractReceipt(outcome.Receipt, gate)
 	receiptOpts.Layer = mcpContractReceiptLayer
-	if opts.ReceiptV3 != nil {
-		opts.recordV3MCPRefusal(logW, receiptOpts, mcpV3Upstream, reason)
-		return
-	}
-	emitMCPBlockedOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, receiptOpts, bytesTransferred, reason, opts.requireReceipts())
+	emitMCPUpstreamRefusal(opts, logW, receiptOpts, bytesTransferred, reason)
 }
 
 func emitTrackedIncompleteOutcome(logW io.Writer, tracker *RequestTracker, id json.RawMessage, reason string, opts MCPProxyOpts) {
@@ -573,7 +569,9 @@ func RunHTTPProxy(
 							if outcome, pending := consumeTrackedRequestOutcome(tracker, deferredReq.ID); pending {
 								errResp := upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP response failed"))
 								if !deferredReq.IsNotification {
-									_ = safeClientOut.WriteMessage(errResp)
+									if err := fwdOpts.writeMCPGeneratedResponse(safeLogW, safeClientOut, outcome.Receipt, errResp, "scan_error"); err != nil {
+										_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send scan error response: %v\n", err)
+									}
 								}
 								emitMCPOutcomeReceipt(fwdOpts.receiptEmitter(), fwdOpts.v2ReceiptEmitter(), fwdOpts.ReceiptGroup, safeLogW, outcome.Receipt, "error", int64(len(errResp)), "scan_error", fwdOpts.requireReceipts())
 							}
@@ -775,7 +773,7 @@ func RunHTTPProxy(
 			outcome.Receipt.Layer = mcpReceiptLayerTaint
 			outcome.Receipt.TaintDecision = config.ActionBlock
 			outcome.Receipt.TaintDecisionReason = reason
-			emitMCPBlockedOutcomeReceipt(fwdOpts.receiptEmitter(), fwdOpts.v2ReceiptEmitter(), fwdOpts.ReceiptGroup, safeLogW, outcome.Receipt, int64(len(errResp)), reason, fwdOpts.requireReceipts())
+			emitMCPUpstreamRefusal(fwdOpts, safeLogW, outcome.Receipt, int64(len(errResp)), reason)
 			continue
 		}
 		// Keep receipt I/O out of the task-check-to-send interval.
@@ -895,9 +893,5 @@ func emitPendingMCPInputReceipt(pending *mcpToolReceiptOpts) {
 func emitBridgeHeaderContractRefusal(logW io.Writer, outcome TrackedRequestOutcome, reason string, opts MCPProxyOpts) {
 	intent := outcome.Receipt
 	intent.Layer = mcpReceiptLayerHeaderContract
-	if opts.ReceiptV3 != nil {
-		opts.recordV3MCPRefusal(logW, intent, mcpV3Upstream, reason)
-		return
-	}
-	emitMCPBlockedOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, intent, -1, reason, opts.requireReceipts())
+	emitMCPUpstreamRefusal(opts, logW, intent, -1, reason)
 }

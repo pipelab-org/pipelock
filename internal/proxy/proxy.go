@@ -1684,6 +1684,9 @@ func (p *Proxy) emitReceipt(opts receipt.EmitOpts) error {
 // that was never recorded. The enforced block remains independent of this
 // error.
 func (p *Proxy) emitRequestPolicyReceipt(opts receipt.EmitOpts) error {
+	if p.receiptV3 != nil {
+		return p.recordV3TransportRefusal(context.Background(), nil, opts, boundaryUpstreamSend)
+	}
 	e := p.receiptEmitterPtr.Load()
 	if e == nil && requestPolicyReceiptsConfigured(p.cfgPtr.Load()) {
 		return p.recordReceiptEmitterUnavailable(opts)
@@ -5302,12 +5305,12 @@ func (p *Proxy) buildHandler(mux *http.ServeMux) http.Handler {
 					// so emit a forward receipt here to keep the
 					// audit chain unbroken.
 					actionID := receipt.NewActionID()
-					if p.emitRecordedReceipt(forwardKillSwitchReceiptOpts(
+					if p.emitRecordedEffectRefusal(r.Context(), forwardKillSwitchReceiptOpts(
 						actionID,
 						requestID,
 						r.Method,
 						r.URL.String(),
-					)) {
+					), boundaryUpstreamSend) {
 						blockreason.SetRecordedReceipt(w.Header(), actionID)
 					}
 					writeBlockedError(w,
@@ -7366,7 +7369,11 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 
 	out = content
 	emitResponseReceipt := func(opts receipt.EmitOpts) {
-		if p.emitRecordedReceipt(opts) {
+		if p.receiptV3 != nil && opts.Verdict == config.ActionBlock {
+			opts.ParentActionID, opts.ActionID = opts.ActionID, receipt.NewActionID()
+			opts = withReceiptConfig(opts, cfg)
+		}
+		if p.emitRecordedEffectRefusal(reqCtx, opts, boundaryDownstreamDelivery) {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
 		}
 	}

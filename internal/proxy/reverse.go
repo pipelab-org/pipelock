@@ -355,6 +355,13 @@ func (rp *ReverseProxyHandler) emitRecordedReceipt(opts receipt.EmitOpts) bool {
 	return e != nil && rp.emitReceiptWithEmitter(opts, e) == nil
 }
 
+func (rp *ReverseProxyHandler) emitRecordedUpstreamRefusal(ctx context.Context, opts receipt.EmitOpts) bool {
+	if rp.owner == nil || rp.owner.receiptV3 == nil || opts.Verdict != config.ActionBlock {
+		return rp.emitRecordedReceipt(opts)
+	}
+	return rp.owner.recordV3TransportRefusal(ctx, nil, opts, boundaryUpstreamSend) == nil
+}
+
 func (rp *ReverseProxyHandler) emitReceipt(opts receipt.EmitOpts) error {
 	e := rp.receiptEmitter()
 	if e == nil {
@@ -368,6 +375,9 @@ func (rp *ReverseProxyHandler) emitReceipt(opts receipt.EmitOpts) error {
 // shared request-policy finalizer does not surface a receipt reference without
 // evidence; ordinary optional receipt emission remains a no-op when disabled.
 func (rp *ReverseProxyHandler) emitRequestPolicyReceipt(opts receipt.EmitOpts) error {
+	if rp != nil && rp.owner != nil && rp.owner.receiptV3 != nil {
+		return rp.owner.recordV3TransportRefusal(context.Background(), nil, opts, boundaryUpstreamSend)
+	}
 	e := rp.receiptEmitter()
 	if e == nil && rp != nil && rp.cfgPtr != nil && requestPolicyReceiptsConfigured(rp.cfgPtr.Load()) {
 		return rp.recordReceiptEmitterUnavailable(opts)
@@ -814,7 +824,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		if snap.cfg != nil {
 			opts = withReceiptConfig(opts, snap.cfg)
 		}
-		if rp.emitRecordedReceipt(opts) {
+		if rp.emitRecordedUpstreamRefusal(r.Context(), opts) {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
 		}
 	}
@@ -2179,7 +2189,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		if cfg != nil {
 			opts = withReceiptConfig(opts, cfg)
 		}
-		if rp.emitRecordedReceipt(opts) {
+		if rp.emitRecordedUpstreamRefusal(r.Context(), opts) {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
 		}
 	}
@@ -2548,6 +2558,13 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		blockreason.SetRecordedReceipt(responseReceiptState.header, responseReceiptState.recordedBlockReceiptID)
 	}()
 	emitReverseReceipt := func(opts receipt.EmitOpts) {
+		if rp.owner != nil && rp.owner.receiptV3 != nil && opts.Verdict == config.ActionBlock {
+			opts.ParentActionID, _ = resp.Request.Context().Value(ctxKeyReverseActionID).(string)
+			if err := rp.owner.recordV3TransportRefusal(resp.Request.Context(), cfg, opts, boundaryDownstreamDelivery); err == nil && responseReceiptState != nil {
+				responseReceiptState.recordedBlockReceiptID = opts.ActionID
+			}
+			return
+		}
 		opts = withReceiptShard(opts, receiptShardFromContext(resp.Request.Context()))
 		if cfg != nil {
 			opts = withReceiptConfig(opts, cfg)
@@ -3951,7 +3968,10 @@ func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Reque
 		if cfg, _ := r.Context().Value(ctxKeyReverseEnvelopeCfg).(*config.Config); cfg != nil {
 			opts = withReceiptConfig(opts, cfg)
 		}
-		if rp.emitRecordedReceipt(withReceiptShard(opts, receiptShardFromContext(r.Context()))) {
+		if rp.owner != nil && rp.owner.receiptV3 != nil {
+			opts.ParentActionID, opts.ActionID = opts.ActionID, receipt.NewActionID()
+		}
+		if rp.emitRecordedUpstreamRefusal(r.Context(), withReceiptShard(opts, receiptShardFromContext(r.Context()))) {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
 		}
 		written := writeReverseProxyBlock(w, http.StatusForbidden, ssrfErr.blockInfo().WithRequestID(requestID), string(ssrfErr.reason))
