@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -74,17 +75,26 @@ func TestReceiptWriterCrashChild(t *testing.T) {
 	if mode != crashControl {
 		t.Fatalf("unexpected crash checkpoint %q", mode)
 	}
-	server := os.Getenv(crashEndpointKey)
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server, nil)
+	endpoint, err := netip.ParseAddrPort(os.Getenv(crashEndpointKey))
+	if err != nil || !endpoint.Addr().IsLoopback() || endpoint.Port() == 0 {
+		t.Fatal("expected a loopback crash-test endpoint")
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+endpoint.String(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := http.DefaultClient.Do(req) //nolint:gosec // Controlled loopback endpoint from the parent test.
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	res, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := res.Body.Close(); err != nil {
 		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("unexpected crash-test response status %d", res.StatusCode)
 	}
 	outcome := intent
 	outcome.Phase, outcome.EffectRelation, outcome.OutcomeClass = phaseOutcome, relationAfter, "completed"
@@ -97,6 +107,10 @@ func TestReceiptWriterCrashChild(t *testing.T) {
 }
 
 func TestStreamWriterCrashAndPowerLoss(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	const (
 		keep = "keep"
 		lose = "lose"
@@ -120,7 +134,7 @@ func TestStreamWriterCrashAndPowerLoss(t *testing.T) {
 				w.WriteHeader(http.StatusNoContent)
 			}))
 			t.Cleanup(upstream.Close)
-			runWriterCrashChild(t, dir, tc.mode, upstream.URL)
+			runWriterCrashChild(t, executable, dir, tc.mode, upstream.Listener.Addr().String())
 			if got := hits.Load(); got != tc.hits {
 				t.Fatalf("upstream observed %d effects, want %d", got, tc.hits)
 			}
@@ -149,13 +163,9 @@ func TestStreamWriterCrashAndPowerLoss(t *testing.T) {
 	}
 }
 
-func runWriterCrashChild(t *testing.T, dir, mode, endpoint string) {
+func runWriterCrashChild(t *testing.T, executable, dir, mode, endpoint string) {
 	t.Helper()
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestReceiptWriterCrashChild$") //nolint:gosec // Re-executes this test binary.
+	cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestReceiptWriterCrashChild$")
 	cmd.Env = append(os.Environ(), crashModeKey+"="+mode, crashDirKey+"="+dir, crashEndpointKey+"="+endpoint)
 	out, err := cmd.CombinedOutput()
 	if mode == crashControl {

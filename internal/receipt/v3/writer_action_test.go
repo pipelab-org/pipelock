@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -202,6 +204,31 @@ func TestStreamWriterActionCancellationAndAttribution(t *testing.T) {
 	result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
 	if writerTestCount(t, result, outcomeNotReleased) != 1 {
 		t.Fatalf("cancelled intent did not settle: %+v", result)
+	}
+}
+
+func TestStreamWriterContractGenerationBounds(t *testing.T) {
+	w := requireWriter(t, writerTestOptions(t.TempDir()), localWriterStorage())
+	intent := writerTestIntent("contract")
+	for _, generation := range []uint64{maxInteger + 1, math.MaxInt64 + 1} {
+		intent.SetAttribution(receipt.EmitOpts{ContractGeneration: generation})
+		if err := w.WriteAction(t.Context(), intent, PolicySnapshot{}); err == nil {
+			t.Fatalf("writer accepted out-of-range contract generation %d", generation)
+		}
+		if w.active.confirmed.Seq != 0 {
+			t.Fatalf("out-of-range generation %d advanced the stream", generation)
+		}
+	}
+
+	intent.SetAttribution(receipt.EmitOpts{ContractGeneration: maxInteger})
+	if intent.Contract == nil || intent.Contract.Generation == nil || *intent.Contract.Generation != maxInteger {
+		t.Fatalf("contract attribution lost the maximum wire generation: %+v", intent.Contract)
+	}
+	if err := w.WriteAction(t.Context(), intent, PolicySnapshot{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
 	}
 }
 

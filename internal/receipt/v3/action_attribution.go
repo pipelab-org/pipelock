@@ -62,9 +62,14 @@ func contractAttribution(opts receipt.EmitOpts) *Contract {
 		WinningSource: opts.ContractWinningSource, LiveVerdict: opts.ContractLiveVerdict,
 		PolicySources: opts.ContractPolicySources,
 	}
-	if opts.ContractGeneration > 0 {
-		generation := int64(opts.ContractGeneration) //nolint:gosec // The writer rejects negative and out-of-range generations.
-		value.Generation = &generation
+	switch generation := opts.ContractGeneration; {
+	case generation > maxInteger:
+		// Preserve rejection by the writer's unsigned field validation.
+		invalid := int64(-1)
+		value.Generation = &invalid
+	case generation != 0:
+		signed := int64(generation)
+		value.Generation = &signed
 	}
 	return &value
 }
