@@ -120,6 +120,8 @@ type InterceptContext struct {
 	Proxy          *Proxy
 	// receiptShard is selected once for each decrypted inner HTTP request.
 	receiptShard    receipt.EmitOpts
+	receiptUpstream *v3TransportReceipt
+	receiptResponse bool
 	EnvelopeEmitter *envelope.Emitter
 	// EnvelopeEmitterSet distinguishes an explicit nil admission snapshot
 	// from tests that omitted the snapshot entirely.
@@ -217,6 +219,14 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
 		opts = withReceiptConfig(opts, ic.Config)
 	}
 	opts = withReceiptShard(opts, ic.receiptShard)
+	if ic.Proxy.receiptV3 != nil && opts.Verdict == config.ActionBlock {
+		boundary := boundaryUpstreamSend
+		if ic.receiptResponse {
+			boundary = boundaryDownstreamDelivery
+		}
+		opts = linkTransportRefusal(opts, ic.receiptUpstream)
+		return ic.Proxy.recordV3TransportRefusal(context.Background(), ic.Config, opts, boundary)
+	}
 	if ic.Proxy.receiptGroupPtr.Load() != nil {
 		e := ic.Proxy.receiptEmitterPtr.Load()
 		if e == nil {
@@ -2376,6 +2386,8 @@ func newInterceptHandler(
 				}
 			},
 		})))
+		ic.receiptResponse = resp != nil
+		ic.receiptUpstream = upstreamReceipt
 		if upstreamReceipt != nil {
 			ic.Proxy.recordTransportOutcome(r.Context(), allowReceipt, upstreamReceipt, resp != nil)
 		}

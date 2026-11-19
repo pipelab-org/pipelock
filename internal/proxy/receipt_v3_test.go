@@ -772,32 +772,56 @@ func TestV3ReverseSSERefusalLeavesHeaderStateUntouched(t *testing.T) {
 	}
 }
 
-func TestV3FetchRecordsURLScanRefusal(t *testing.T) {
-	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportFetch, true, nil)
-	const denied = "denied.vendor.example"
-	cfg := p.ConfigPtr().Load().Clone()
-	cfg.FetchProxy.Monitoring.Blocklist = append(cfg.FetchProxy.Monitoring.Blocklist, denied)
-	sc := scanner.MustNew(cfg)
-	t.Cleanup(sc.Close)
-	if !p.Reload(cfg, sc) {
-		t.Fatal("test scanner reload failed")
-	}
-	p.client.Transport = roundTripperFunc(func(*http.Request) (*http.Response, error) {
-		t.Error("blocked fetch reached the upstream transport")
-		return nil, io.ErrClosedPipe
-	})
-	w := httptest.NewRecorder()
-	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://"+denied, nil)
-	p.handleFetch(w, r)
-	if w.Code != http.StatusForbidden || w.Header().Get(blockreason.HeaderRecordedReceipt) == "" {
-		t.Fatalf("fetch denial status=%d receipt=%q", w.Code, w.Header().Get(blockreason.HeaderRecordedReceipt))
-	}
-	if err := writer.Close(t.Context(), nil); err != nil {
-		t.Fatal(err)
-	}
-	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
-	if err != nil || result.Verdict != "VALID" || result.Counts.Decisions == nil ||
-		!slices.ContainsFunc(*result.Counts.Decisions, func(count v3.StateCount) bool { return count.State == "blocked" && count.Count == 1 }) {
-		t.Fatalf("fetch refusal was not signed: %+v (%v)", result, err)
+func TestV3TransportRecordsURLScanRefusal(t *testing.T) {
+	for _, surface := range []string{TransportFetch, TransportForward, TransportConnect, "websocket", "intercept"} {
+		t.Run(surface, func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, surface, true, nil)
+			const denied = "denied.vendor.example"
+			cfg := p.ConfigPtr().Load().Clone()
+			cfg.FetchProxy.Monitoring.Blocklist = append(cfg.FetchProxy.Monitoring.Blocklist, denied)
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			if !p.Reload(cfg, sc) {
+				t.Fatal("test scanner reload failed")
+			}
+			p.client.Transport = roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				t.Error("blocked request reached the upstream transport")
+				return nil, io.ErrClosedPipe
+			})
+			w := httptest.NewRecorder()
+
+			switch surface {
+			case TransportFetch:
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://"+denied, nil)
+				p.handleFetch(w, r)
+			case TransportForward:
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+denied, nil)
+				p.handleForwardHTTP(w, r)
+			case TransportConnect:
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodConnect, denied+":443", nil)
+				p.handleConnect(w, r)
+			case "websocket":
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/ws?url=ws://"+denied, nil)
+				p.handleWebSocket(w, r)
+			case "intercept":
+				ic := &InterceptContext{
+					Proxy: p, Config: cfg, Scanner: sc, Logger: audit.NewNop(), Metrics: metrics.New(),
+					TargetHost: denied, TargetPort: "443",
+				}
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+denied, nil)
+				newInterceptHandler(ic, p.client.Transport).ServeHTTP(w, r)
+			}
+			if w.Code != http.StatusForbidden || (surface != "intercept" && w.Header().Get(blockreason.HeaderRecordedReceipt) == "") {
+				t.Fatalf("denial status=%d receipt=%q", w.Code, w.Header().Get(blockreason.HeaderRecordedReceipt))
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || result.Verdict != "VALID" || result.Counts.Decisions == nil ||
+				!slices.ContainsFunc(*result.Counts.Decisions, func(count v3.StateCount) bool { return count.State == "blocked" && count.Count == 1 }) {
+				t.Fatalf("refusal was not signed: %+v (%v)", result, err)
+			}
+		})
 	}
 }

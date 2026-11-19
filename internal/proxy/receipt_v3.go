@@ -97,6 +97,16 @@ func (p *Proxy) emitRecordedEffectRefusal(ctx context.Context, opts receipt.Emit
 	return p.recordV3TransportRefusal(ctx, nil, opts, boundary) == nil
 }
 
+func linkTransportRefusal(opts receipt.EmitOpts, parent *v3TransportReceipt) receipt.EmitOpts {
+	if parent != nil {
+		opts.ParentActionID = parent.action.ActionID
+		if opts.ActionID == opts.ParentActionID {
+			opts.ActionID = receipt.NewActionID()
+		}
+	}
+	return opts
+}
+
 func (p *Proxy) recordV3TransportRefusal(ctx context.Context, cfg *config.Config, opts receipt.EmitOpts, boundary string) error {
 	entry := prepareV3TransportReceipt(cfg, opts)
 	entry.action.Phase, entry.action.EffectBoundary, entry.action.EffectRelation = "decision", boundary, "not_attempted"

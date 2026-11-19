@@ -141,6 +141,14 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	emitConnectReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptShard(opts, selectedReceiptShard)
 		opts = withReceiptConfig(opts, cfg)
+		if p.receiptV3 != nil {
+			if opts.Verdict == config.ActionBlock {
+				if err := p.recordV3TransportRefusal(r.Context(), cfg, opts, boundaryTunnelOpen); err == nil {
+					blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
+				}
+			}
+			return
+		}
 		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
 		}
@@ -1115,9 +1123,20 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Carry the provenance grade from the moment identity resolves, so every
 	// audit context built from r.Context() below reports the real grade.
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
+	var upstreamReceipt *v3TransportReceipt
+	refusalBoundary := boundaryUpstreamSend
 	emitForwardReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptShard(opts, selectedReceiptShard)
 		opts = withReceiptConfig(opts, cfg)
+		if p.receiptV3 != nil {
+			if opts.Verdict == config.ActionBlock {
+				opts = linkTransportRefusal(opts, upstreamReceipt)
+				if err := p.recordV3TransportRefusal(r.Context(), cfg, opts, refusalBoundary); err == nil {
+					blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
+				}
+			}
+			return
+		}
 		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
 			if opts.Verdict == config.ActionBlock {
 				blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
@@ -2505,7 +2524,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if forwardGate.HasContractContext() {
 		forwardAllowReceipt = withContractReceipt(forwardGate, forwardAllowReceipt)
 	}
-	var upstreamReceipt, downstreamReceipt *v3TransportReceipt
+	var downstreamReceipt *v3TransportReceipt
 	if cfg.FlightRecorder.RequireReceipts || p.receiptV3 != nil {
 		var err error
 		if p.receiptV3 != nil {
@@ -2674,6 +2693,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		outcomeReason = "fetch_failed"
 		return
 	}
+	refusalBoundary = boundaryDownstreamDelivery
 	defer safeClose(resp.Body, "resp.Body", p.logger)
 	stripUpstreamPipelockNamespace(resp)
 	if !applyFullResponsePolicy(nil, resp) {

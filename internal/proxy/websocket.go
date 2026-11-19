@@ -326,9 +326,19 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Carry the provenance grade from the moment identity resolves, so every
 	// audit context built from r.Context() below reports the real grade.
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
+	var upstreamReceipt *v3TransportReceipt
 	emitWebSocketReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptShard(opts, selectedReceiptShard)
 		opts = withReceiptConfig(opts, cfg)
+		if p.receiptV3 != nil {
+			if opts.Verdict == config.ActionBlock {
+				opts = linkTransportRefusal(opts, upstreamReceipt)
+				if err := p.recordV3TransportRefusal(r.Context(), cfg, opts, boundaryUpstreamSend); err == nil {
+					blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
+				}
+			}
+			return
+		}
 		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
 		}
@@ -1164,7 +1174,6 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var upstreamReceipt *v3TransportReceipt
 	if cfg.FlightRecorder.RequireReceipts || p.receiptV3 != nil {
 		var err error
 		if p.receiptV3 != nil {
@@ -1419,7 +1428,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if wsGate.HasContractContext() {
 		closeReceipt = withContractReceipt(wsGate, closeReceipt)
 	}
-	if !cfg.FlightRecorder.RequireReceipts || stats.blocked || relay.redactionLog != nil {
+	if p.receiptV3 == nil && (!cfg.FlightRecorder.RequireReceipts || stats.blocked || relay.redactionLog != nil) {
 		emitWebSocketReceipt(closeReceipt)
 	}
 

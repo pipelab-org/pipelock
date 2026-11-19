@@ -5591,18 +5591,13 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// it only at fetch time would report "unknown" for each event on the way.
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
 	refusalBoundary := boundaryUpstreamSend
-	var refusalParent string
+	var upstreamReceipt *v3TransportReceipt
 	emitFetchReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptShard(opts, selectedReceiptShard)
 		opts = withReceiptConfig(opts, cfg)
 		if p.receiptV3 != nil {
 			if opts.Verdict == config.ActionBlock {
-				if refusalParent != "" {
-					opts.ParentActionID = refusalParent
-					if opts.ActionID == refusalParent {
-						opts.ActionID = receipt.NewActionID()
-					}
-				}
+				opts = linkTransportRefusal(opts, upstreamReceipt)
 				if err := p.recordV3TransportRefusal(r.Context(), cfg, opts, refusalBoundary); err == nil {
 					blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
 				}
@@ -6651,7 +6646,6 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if fetchGate.HasContractContext() {
 		fetchAllowReceipt = withContractReceipt(fetchGate, fetchAllowReceipt)
 	}
-	var upstreamReceipt *v3TransportReceipt
 	if cfg.FlightRecorder.RequireReceipts || p.receiptV3 != nil {
 		var rcptErr error
 		if p.receiptV3 != nil {
@@ -6723,9 +6717,6 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	responseencoding.RequestIdentity(req.Header)
 	resp, err := p.client.Do(req) //nolint:gosec // G704: URL validated by scanner pipeline before reaching here
 	p.recordTransportOutcome(r.Context(), fetchAllowReceipt, upstreamReceipt, resp != nil)
-	if upstreamReceipt != nil {
-		refusalParent = upstreamReceipt.action.ActionID
-	}
 	if err != nil {
 		var ssrfErr *ssrfDialBlockError
 		if errors.As(err, &ssrfErr) {
