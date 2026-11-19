@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -168,4 +169,60 @@ func assertActionPolicy(t *testing.T, dir, stream string, seq int64, want Action
 		}
 	}
 	t.Fatalf("record %d missing", seq)
+}
+
+type waitingReceiptContext struct {
+	context.Context
+	waiting chan struct{}
+}
+
+func (ctx waitingReceiptContext) Done() <-chan struct{} {
+	close(ctx.waiting)
+	return ctx.Context.Done()
+}
+
+func TestStreamWriterCancelsWaitBehindFlush(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	w := requireWriter(t, opts, localWriterStorage())
+	entered, resume := make(chan struct{}), make(chan struct{})
+	w.active.file = syncCallbackFile{
+		writerFile: w.active.file,
+		syncCallback: sync.OnceFunc(func() {
+			close(entered)
+			<-resume
+		}),
+	}
+	first := make(chan error, 1)
+	go func() {
+		first <- w.WriteAction(t.Context(), writerTestIntent("first"), PolicySnapshot{})
+	}()
+	<-entered
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ctxWithWait := waitingReceiptContext{Context: ctx, waiting: make(chan struct{})}
+	second := make(chan error, 1)
+	go func() {
+		second <- w.WriteAction(ctxWithWait, writerTestIntent("second"), PolicySnapshot{})
+	}()
+	<-ctxWithWait.waiting
+	cancel()
+	err := <-second
+	close(resume)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled waiter: %v", err)
+	}
+	if w.active.confirmed.Seq != 1 || w.durability.DurabilityBlocks != 0 {
+		t.Fatalf("cancelled waiter changed receipts or counters: %+v / %+v", w.active.confirmed, w.durability)
+	}
+	if err := w.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if writerTestCount(t, result, "outcome_unknown") != 1 {
+		t.Fatalf("cancelled waiter entered the history: %+v", result)
+	}
 }

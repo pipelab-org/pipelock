@@ -437,6 +437,19 @@ func (w *StreamWriter) persist(kind string, line []byte, seq int64) error {
 	return nil
 }
 
+// A failed stream is retired before opening its successor. A second
+// failure leaves the outstanding repairs queued for the next admission.
+func (w *StreamWriter) tryContinueAfterWriteError(ctx context.Context, writeErr error) error {
+	if w.previous == nil || w.previous.Ended != endedWriteError {
+		return writeErr
+	}
+	ctx = context.WithoutCancel(ctx)
+	if err := w.ensureStream(ctx); err != nil {
+		return errors.Join(writeErr, err)
+	}
+	return errors.Join(writeErr, w.replayActionRepairs(ctx))
+}
+
 func (w *StreamWriter) prepareAppend(ctx context.Context) error {
 	if err := w.replayActionRepairs(ctx); err != nil {
 		return err
@@ -469,7 +482,7 @@ func (w *StreamWriter) WriteHeartbeat(ctx context.Context) error {
 		FsyncErrorsGated: w.durability.FsyncErrorsGated,
 	}
 	if err := w.commit(ctx, kindHeartbeat, body); err != nil {
-		return err
+		return w.tryContinueAfterWriteError(ctx, err)
 	}
 	w.active.beat++
 	return nil
@@ -485,7 +498,10 @@ func (w *StreamWriter) Rollover(ctx context.Context) error {
 	if err := w.prepareAppend(ctx); err != nil {
 		return err
 	}
-	return w.rollover(ctx)
+	if err := w.rollover(ctx); err != nil {
+		return w.tryContinueAfterWriteError(ctx, err)
+	}
+	return nil
 }
 
 func (w *StreamWriter) rollover(ctx context.Context) error {

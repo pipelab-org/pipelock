@@ -49,6 +49,7 @@ func (w *StreamWriter) WriteAction(ctx context.Context, action Action, policy Po
 	if err := w.commit(ctx, kindAction, action); err != nil {
 		if w.previous != nil && w.previous.Ended == endedWriteError {
 			w.queueActionRepair(action, false)
+			return w.tryContinueAfterWriteError(ctx, err)
 		}
 		return err
 	}
@@ -67,7 +68,7 @@ func actionGatesEffect(action Action) bool {
 }
 
 func (w *StreamWriter) queueActionRepair(action Action, confirmed bool) {
-	if actionGatesEffect(action) && w.open.Coverage.ReceiptsRequired {
+	if !confirmed && actionGatesEffect(action) && w.open.Coverage.ReceiptsRequired {
 		w.durability.DurabilityBlocks++
 	}
 	switch action.Phase {
