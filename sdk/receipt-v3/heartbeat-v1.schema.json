@@ -1,0 +1,30 @@
+{
+  "$defs": {},
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "minProperties": 1,
+  "properties": {
+    "beat": {
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "durability_blocks": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "fsync_errors_gated": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "beat",
+    "durability_blocks",
+    "fsync_errors_gated"
+  ],
+  "title": "Receipt v3 heartbeat body v1",
+  "type": "object"
+}

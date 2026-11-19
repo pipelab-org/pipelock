@@ -1,0 +1,1320 @@
+{
+  "conditions": {
+    "ActionPolicy": [
+      {
+        "field": "source",
+        "require": [
+          "hash"
+        ],
+        "value": "request_snapshot"
+      },
+      {
+        "field": "source",
+        "forbid": [
+          "hash"
+        ],
+        "value": "unavailable"
+      }
+    ],
+    "Ask": [
+      {
+        "equals": {
+          "observed": true
+        },
+        "field": "channel",
+        "value": "approval_api"
+      },
+      {
+        "equals": {
+          "observed": false
+        },
+        "field": "channel",
+        "value": "host_prompt"
+      }
+    ],
+    "Caller": [
+      {
+        "field": "authn",
+        "require": [
+          "client_id",
+          "issuer",
+          "resource",
+          "subject"
+        ],
+        "value": "mcp_door_verified"
+      },
+      {
+        "field": "authn",
+        "forbid": [
+          "client_id",
+          "issuer",
+          "resource",
+          "subject"
+        ],
+        "value": "none"
+      }
+    ],
+    "Checker": [
+      {
+        "equals": {
+          "disposition": "not_run"
+        },
+        "field": "selection",
+        "forbid": [
+          "config_hash"
+        ],
+        "value": "unavailable"
+      },
+      {
+        "field": "selection",
+        "require": [
+          "config_hash"
+        ],
+        "value": "configured"
+      },
+      {
+        "field": "selection",
+        "require": [
+          "config_hash"
+        ],
+        "value": "fallback"
+      }
+    ]
+  },
+  "emit_sites": {
+    "internal/cli/runtime/evidence_health.go/emitViolation/Emit/1": "none",
+    "internal/cli/runtime/guard.go/activateReceipts/EmitDurable/1": "hook_execution",
+    "internal/cli/runtime/mcp.go/recoverDeferredActions/EmitDeferredResolutionReceipt/1": "approval_prompt",
+    "internal/mcp/defer_resolution.go/EmitDeferredResolutionReceipt/emitMCPToolReceipt/1": "approval_prompt",
+    "internal/mcp/defer_resolution.go/emitDeferredResolutionReceipt/EmitDeferredResolutionReceipt/1": "approval_prompt",
+    "internal/mcp/input.go/ForwardScannedInput/emitMCPToolReceipt/1": "upstream_send",
+    "internal/mcp/input.go/ForwardScannedInput/emitReceiptDecision/1": "none",
+    "internal/mcp/input.go/ForwardScannedInput/emitReceiptDecision/2": "none",
+    "internal/mcp/killswitch_deferred.go/emitKillSwitchDenialReceipt/emitReceiptDecision/1": "none",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/emitMCPOutcomeReceipt/1": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/emitMCPOutcomeReceipt/2": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/emitPendingMCPInputReceipt/emitMCPToolReceipt/1": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/emitRequestScopedTimeout/emitMCPOutcomeReceipt/1": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/emitTrackedIncompleteOutcome/emitMCPOutcomeReceipt/1": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/emitTrackedTerminalOutcome/emitMCPOutcomeReceipt/1": "upstream_send",
+    "internal/mcp/mcp_http_input.go/scanHTTPInputDecision/emitMCPToolReceipt/1": "upstream_send",
+    "internal/mcp/mcp_http_input.go/scanHTTPInputDecision/emitMCPToolReceipt/2": "redirect_dispatch",
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitMCPOutcomeReceipt/1": "upstream_send",
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/1": "redirect_dispatch",
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/2": "upstream_send",
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/3": "none",
+    "internal/mcp/mcp_sse_bridge.go/startGETStream/emitMCPStandaloneStreamReceipt/1": "downstream_delivery",
+    "internal/mcp/pipeline_decision.go/emitMCPStandaloneStreamReceipt/emitMCPOutcomeReceipt/1": "downstream_delivery",
+    "internal/mcp/proxy.go/ForwardScanned/confirmMCPResponseEffect/1": "downstream_delivery",
+    "internal/mcp/proxy.go/ForwardScanned/confirmMCPResponseEffect/2": "downstream_delivery",
+    "internal/mcp/proxy.go/ForwardScanned/confirmMCPResponseEffect/3": "downstream_delivery",
+    "internal/mcp/proxy.go/ForwardScanned/emitMCPOutcomeReceipt/1": "upstream_send",
+    "internal/mcp/proxy.go/ForwardScanned/emitReceiptDecision/1": "none",
+    "internal/mcp/proxy.go/ForwardScanned/emitReceiptDecision/2": "upstream_send",
+    "internal/mcp/proxy.go/ForwardScanned/emitReceiptDecision/3": "upstream_send",
+    "internal/mcp/proxy.go/emitMCPToolScanReceipt/emitReceiptDecision/1": "downstream_delivery",
+    "internal/mcp/proxy.go/emitPendingIncompleteOutcomes/emitMCPOutcomeReceipt/1": "upstream_send",
+    "internal/mcp/proxy.go/emitPendingTimeoutResponses/emitMCPOutcomeReceipt/1": "upstream_send",
+    "internal/mcp/proxy.go/emitRejectedResponseOutcome/emitMCPOutcomeReceipt/1": "downstream_delivery",
+    "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPOutcomeReceipt/1": "downstream_delivery",
+    "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPStandaloneStreamReceipt/1": "downstream_delivery",
+    "internal/mcp/response_receipt.go/confirmMCPResponseEffect/emitReceiptDecision/1": "downstream_delivery",
+    "internal/mcp/stream.go/emitTrackedStreamError/emitMCPOutcomeReceipt/1": "downstream_delivery",
+    "internal/mcp/stream.go/emitTrackedStreamError/emitMCPStandaloneStreamReceipt/1": "downstream_delivery",
+    "internal/mcp/stream.go/recordListenerStreamError/emitMCPOutcomeReceipt/1": "downstream_delivery",
+    "internal/mcp/stream.go/recordListenerStreamError/emitMCPStandaloneStreamReceipt/1": "downstream_delivery",
+    "internal/mcp/taint.go/emitMCPToolReceipt/emitAdmittedReceiptDecision/1": "upstream_send",
+    "internal/proxy/bodyscan.go/evalHeaderDLP/recordCredentialAudienceAllow/1": "upstream_send",
+    "internal/proxy/credential_audience.go/emitCredentialAudienceReceipt/emitAllowPathReceipt/1": "upstream_send",
+    "internal/proxy/credential_audience.go/emitCredentialAudienceReceipt/emitAllowPathReceipt/2": "upstream_send",
+    "internal/proxy/credential_audience.go/recordCredentialAudienceAllow/recordCredentialAudienceAllow/1": "upstream_send",
+    "internal/proxy/credential_audience.go/recordCredentialAudienceAllow/recordCredentialAudienceAllow/2": "upstream_send",
+    "internal/proxy/credential_audience.go/recordCredentialAudienceAllows/recordCredentialAudienceAllow/1": "upstream_send",
+    "internal/proxy/credential_audience.go/recordCredentialAudienceAllows/recordCredentialAudienceAllow/2": "upstream_send",
+    "internal/proxy/forward.go/handleConnect/emitOutcomeReceipt/1": "tunnel_open",
+    "internal/proxy/forward.go/handleConnect/emitRecordedReceipt/1": "tunnel_open",
+    "internal/proxy/forward.go/handleConnect/emitRequestPolicyReceipt/1": "none",
+    "internal/proxy/forward.go/handleConnect/emitRequiredReceipt/1": "tunnel_open",
+    "internal/proxy/forward.go/handleConnect/recordCredentialAudienceAllows/1": "tunnel_open",
+    "internal/proxy/forward.go/handleConnect/recordIssuerQueryAllow/1": "tunnel_open",
+    "internal/proxy/forward.go/handleForwardHTTP/confirmResponseDecision/1": "downstream_delivery",
+    "internal/proxy/forward.go/handleForwardHTTP/confirmResponseDecision/2": "downstream_delivery",
+    "internal/proxy/forward.go/handleForwardHTTP/confirmResponseDecision/3": "downstream_delivery",
+    "internal/proxy/forward.go/handleForwardHTTP/confirmResponseDecision/4": "downstream_delivery",
+    "internal/proxy/forward.go/handleForwardHTTP/confirmResponseDecision/5": "downstream_delivery",
+    "internal/proxy/forward.go/handleForwardHTTP/confirmResponseDecision/6": "downstream_delivery",
+    "internal/proxy/forward.go/handleForwardHTTP/confirmResponseDecision/7": "downstream_delivery",
+    "internal/proxy/forward.go/handleForwardHTTP/emitAllowPathReceipt/1": "upstream_send",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/1": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/10": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/11": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/12": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/13": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/14": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/15": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/16": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/17": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/18": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/19": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/2": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/20": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/21": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/22": "upstream_send",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/23": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/24": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/25": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/26": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/27": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/28": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/29": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/3": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/30": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/31": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/32": "downstream_delivery",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/33": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/34": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/35": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/36": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/37": "downstream_delivery",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/38": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/39": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/4": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/40": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/41": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/5": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/6": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/7": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/8": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitForwardReceipt/9": "none",
+    "internal/proxy/forward.go/handleForwardHTTP/emitOutcomeReceipt/1": "upstream_send",
+    "internal/proxy/forward.go/handleForwardHTTP/emitRequestPolicyReceipt/1": "upstream_send",
+    "internal/proxy/forward.go/handleForwardHTTP/emitRequiredReceipt/1": "upstream_send",
+    "internal/proxy/forward.go/handleForwardHTTP/recordCredentialAudienceAllow/1": "upstream_send",
+    "internal/proxy/forward.go/handleForwardHTTP/recordCredentialAudienceAllows/1": "upstream_send",
+    "internal/proxy/forward_denial.go/emitForwardDenial/Emit/1": "none",
+    "internal/proxy/intercept.go/interceptConfirmResponseOrBlock/confirmResponseDecision/1": "downstream_delivery",
+    "internal/proxy/intercept.go/interceptEmitOutcomeReceipt/emitReceiptFailureMarker/1": "none",
+    "internal/proxy/intercept.go/interceptEmitOutcomeReceipt/emitReceiptFailureMarker/2": "none",
+    "internal/proxy/intercept.go/interceptEmitReceipt/recordReceiptEmitterUnavailable/1": "none",
+    "internal/proxy/intercept.go/interceptEmitReceiptOrBlock/interceptEmitRequiredReceipt/1": "upstream_send",
+    "internal/proxy/intercept.go/interceptEmitRequiredReceipt/emitReceiptFailureMarker/1": "none",
+    "internal/proxy/intercept.go/interceptEmitRequiredReceipt/recordReceiptEmitterUnavailable/1": "none",
+    "internal/proxy/intercept.go/newInterceptHandler/emitAllowPathReceipt/1": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/emitAllowPathReceipt/2": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/emitRequestPolicyReceipt/1": "upstream_send",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/1": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/2": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/3": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/4": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/5": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/6": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/7": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitOutcomeReceipt/1": "upstream_send",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceiptOrBlock/1": "upstream_send",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceiptOrBlock/2": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceiptOrBlock/3": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceiptOrBlock/4": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllow/1": "upstream_send",
+    "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllow/2": "upstream_send",
+    "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllow/3": "upstream_send",
+    "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllow/4": "upstream_send",
+    "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllow/5": "upstream_send",
+    "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllow/6": "upstream_send",
+    "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllows/1": "upstream_send",
+    "internal/proxy/intercept.go/newInterceptHandler/recordIssuerCookieAllow/1": "upstream_send",
+    "internal/proxy/intercept.go/newInterceptHandler/recordIssuerQueryAllow/1": "upstream_send",
+    "internal/proxy/proxy.go/New/emitRequestPolicyReceipt/1": "upstream_send",
+    "internal/proxy/proxy.go/New/recordCredentialAudienceAllows/1": "upstream_send",
+    "internal/proxy/proxy.go/New/recordIssuerQueryAllow/1": "upstream_send",
+    "internal/proxy/proxy.go/applyShieldResponse/confirmResponseDecision/1": "downstream_delivery",
+    "internal/proxy/proxy.go/buildHandler/emitRecordedReceipt/1": "upstream_send",
+    "internal/proxy/proxy.go/confirmShieldIntervention/confirmResponseDecision/1": "downstream_delivery",
+    "internal/proxy/proxy.go/emitOutcomeReceipt/emitOutcomeReceiptWithPattern/1": "upstream_send",
+    "internal/proxy/proxy.go/emitOutcomeReceiptWithPattern/emitReceiptFailureMarker/1": "none",
+    "internal/proxy/proxy.go/emitRequestPolicyReceipt/recordReceiptEmitterUnavailable/1": "none",
+    "internal/proxy/proxy.go/emitRequiredReceipt/recordReceiptEmitterUnavailable/1": "none",
+    "internal/proxy/proxy.go/emitRequiredReceiptWithEmitter/emitReceiptFailureMarker/1": "none",
+    "internal/proxy/proxy.go/filterAndActOnResponseScan/emitAllowPathReceipt/1": "upstream_send",
+    "internal/proxy/proxy.go/filterAndActOnResponseScan/emitRecordedReceipt/1": "upstream_send",
+    "internal/proxy/proxy.go/handleFetch/confirmResponseDecision/1": "downstream_delivery",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/1": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/10": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/11": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/12": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/13": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/14": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/15": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/16": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/17": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/18": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/19": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/2": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/20": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/21": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/22": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/23": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/24": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/25": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/26": "upstream_send",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/3": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/4": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/5": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/6": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/7": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/8": "none",
+    "internal/proxy/proxy.go/handleFetch/emitFetchReceipt/9": "none",
+    "internal/proxy/proxy.go/handleFetch/emitOutcomeReceiptWithPattern/1": "upstream_send",
+    "internal/proxy/proxy.go/handleFetch/emitRequestPolicyReceipt/1": "upstream_send",
+    "internal/proxy/proxy.go/handleFetch/emitRequiredReceipt/1": "upstream_send",
+    "internal/proxy/proxy.go/handleFetch/recordCredentialAudienceAllows/1": "upstream_send",
+    "internal/proxy/requestpolicy.go/finalizeRequestPolicyDecision/Emit/1": "none",
+    "internal/proxy/response_receipt.go/confirmResponseDecision/emitAllowPathReceipt/1": "upstream_send",
+    "internal/proxy/response_receipt.go/confirmResponseDecision/emitAllowPathReceipt/2": "upstream_send",
+    "internal/proxy/reverse.go/EmitOnce/emitObservedOutcomeReceipt/1": "upstream_send",
+    "internal/proxy/reverse.go/EmitOnce/emitOutcomeReceipt/1": "upstream_send",
+    "internal/proxy/reverse.go/ServeHTTP/emitRecordedReceipt/1": "upstream_send",
+    "internal/proxy/reverse.go/ServeHTTP/emitRequestPolicyReceipt/1": "upstream_send",
+    "internal/proxy/reverse.go/ServeHTTP/emitRequiredReceipt/1": "upstream_send",
+    "internal/proxy/reverse.go/ServeHTTP/emitReverseReceipt/1": "none",
+    "internal/proxy/reverse.go/ServeHTTP/emitReverseReceipt/10": "none",
+    "internal/proxy/reverse.go/ServeHTTP/emitReverseReceipt/11": "none",
+    "internal/proxy/reverse.go/ServeHTTP/emitReverseReceipt/12": "none",
+    "internal/proxy/reverse.go/ServeHTTP/emitReverseReceipt/13": "none",
+    "internal/proxy/reverse.go/ServeHTTP/emitReverseReceipt/14": "none",
+    "internal/proxy/reverse.go/ServeHTTP/emitReverseReceipt/15": "none",
+    "internal/proxy/reverse.go/ServeHTTP/emitReverseReceipt/16": "none",
+    "internal/proxy/reverse.go/ServeHTTP/emitReverseReceipt/17": "none",
+    "internal/proxy/reverse.go/ServeHTTP/emitReverseReceipt/18": "none",
+    "internal/proxy/reverse.go/ServeHTTP/emitReverseReceipt/19": "none",
+    "internal/proxy/reverse.go/ServeHTTP/emitReverseReceipt/2": "none",
+    "internal/proxy/reverse.go/ServeHTTP/emitReverseReceipt/3": "none",
+    "internal/proxy/reverse.go/ServeHTTP/emitReverseReceipt/4": "none",
+    "internal/proxy/reverse.go/ServeHTTP/emitReverseReceipt/5": "none",
+    "internal/proxy/reverse.go/ServeHTTP/emitReverseReceipt/6": "none",
+    "internal/proxy/reverse.go/ServeHTTP/emitReverseReceipt/7": "none",
+    "internal/proxy/reverse.go/ServeHTTP/emitReverseReceipt/8": "none",
+    "internal/proxy/reverse.go/ServeHTTP/emitReverseReceipt/9": "none",
+    "internal/proxy/reverse.go/ServeHTTP/recordCredentialAudienceAllow/1": "upstream_send",
+    "internal/proxy/reverse.go/ServeHTTP/recordCredentialAudienceAllows/1": "upstream_send",
+    "internal/proxy/reverse.go/ServeHTTP/recordCredentialAudienceAllows/2": "upstream_send",
+    "internal/proxy/reverse.go/emitObservedOutcomeReceipt/emitOutcomeReceiptWithPattern/1": "upstream_send",
+    "internal/proxy/reverse.go/emitOutcomeReceipt/emitOutcomeReceiptWithPattern/1": "upstream_send",
+    "internal/proxy/reverse.go/emitOutcomeReceiptWithPattern/emitReceiptFailureMarker/1": "none",
+    "internal/proxy/reverse.go/emitRequestPolicyReceipt/recordReceiptEmitterUnavailable/1": "none",
+    "internal/proxy/reverse.go/emitRequiredReceipt/recordReceiptEmitterUnavailable/1": "none",
+    "internal/proxy/reverse.go/emitRequiredReceiptWithEmitter/emitReceiptFailureMarker/1": "none",
+    "internal/proxy/reverse.go/errorHandler/emitRecordedReceipt/1": "upstream_send",
+    "internal/proxy/reverse.go/modifyResponse/confirmResponseDecision/1": "downstream_delivery",
+    "internal/proxy/reverse.go/modifyResponse/confirmResponseDecision/2": "downstream_delivery",
+    "internal/proxy/reverse.go/modifyResponse/emitAllowPathReceipt/1": "upstream_send",
+    "internal/proxy/reverse.go/modifyResponse/emitRecordedReceipt/1": "none",
+    "internal/proxy/reverse.go/modifyResponse/emitReverseReceipt/1": "none",
+    "internal/proxy/reverse.go/modifyResponse/emitReverseReceipt/10": "none",
+    "internal/proxy/reverse.go/modifyResponse/emitReverseReceipt/11": "none",
+    "internal/proxy/reverse.go/modifyResponse/emitReverseReceipt/12": "none",
+    "internal/proxy/reverse.go/modifyResponse/emitReverseReceipt/13": "none",
+    "internal/proxy/reverse.go/modifyResponse/emitReverseReceipt/14": "none",
+    "internal/proxy/reverse.go/modifyResponse/emitReverseReceipt/15": "none",
+    "internal/proxy/reverse.go/modifyResponse/emitReverseReceipt/16": "none",
+    "internal/proxy/reverse.go/modifyResponse/emitReverseReceipt/17": "none",
+    "internal/proxy/reverse.go/modifyResponse/emitReverseReceipt/18": "none",
+    "internal/proxy/reverse.go/modifyResponse/emitReverseReceipt/19": "none",
+    "internal/proxy/reverse.go/modifyResponse/emitReverseReceipt/2": "none",
+    "internal/proxy/reverse.go/modifyResponse/emitReverseReceipt/20": "none",
+    "internal/proxy/reverse.go/modifyResponse/emitReverseReceipt/3": "none",
+    "internal/proxy/reverse.go/modifyResponse/emitReverseReceipt/4": "none",
+    "internal/proxy/reverse.go/modifyResponse/emitReverseReceipt/5": "none",
+    "internal/proxy/reverse.go/modifyResponse/emitReverseReceipt/6": "none",
+    "internal/proxy/reverse.go/modifyResponse/emitReverseReceipt/7": "none",
+    "internal/proxy/reverse.go/modifyResponse/emitReverseReceipt/8": "none",
+    "internal/proxy/reverse.go/modifyResponse/emitReverseReceipt/9": "none",
+    "internal/proxy/reverse.go/scanRequest/emitRecordedReceipt/1": "upstream_send",
+    "internal/proxy/reverse.go/scanRequest/emitReverseReceipt/1": "none",
+    "internal/proxy/reverse.go/scanRequest/emitReverseReceipt/2": "none",
+    "internal/proxy/reverse.go/scanRequest/recordCredentialAudienceAllow/1": "upstream_send",
+    "internal/proxy/websocket.go/applyFrameRequestPolicy/emitRequestPolicyReceipt/1": "downstream_delivery",
+    "internal/proxy/websocket.go/decideClientCrossMessageTextViews/recordCredentialAudienceAllow/1": "upstream_send",
+    "internal/proxy/websocket.go/dlpScanWSHeaders/recordCredentialAudienceAllow/1": "upstream_send",
+    "internal/proxy/websocket.go/enforceUpstreamTextPayload/emitAllowPathReceipt/1": "upstream_send",
+    "internal/proxy/websocket.go/handleClientTextResult/recordCredentialAudienceAllow/1": "upstream_send",
+    "internal/proxy/websocket.go/handleWebSocket/emitOutcomeReceipt/1": "upstream_send",
+    "internal/proxy/websocket.go/handleWebSocket/emitOutcomeReceipt/2": "none",
+    "internal/proxy/websocket.go/handleWebSocket/emitRequestPolicyReceipt/1": "upstream_send",
+    "internal/proxy/websocket.go/handleWebSocket/emitRequiredReceipt/1": "upstream_send",
+    "internal/proxy/websocket.go/handleWebSocket/recordCredentialAudienceAllows/1": "upstream_send",
+    "internal/proxy/websocket.go/recordCredentialAudienceAllow/recordCredentialAudienceAllow/1": "upstream_send",
+    "internal/proxy/websocket.go/scanClientMessageBodyWithSurface/recordCredentialAudienceAllow/1": "upstream_send",
+    "internal/proxy/websocket.go/upstreamToClient/confirmResponseDecision/1": "downstream_delivery"
+  },
+  "enums": {
+    "action_policy_source": [
+      "request_snapshot",
+      "unavailable"
+    ],
+    "action_type": [
+      "actuate",
+      "authorize",
+      "commit",
+      "delegate",
+      "derive",
+      "read",
+      "spend",
+      "unclassified",
+      "write"
+    ],
+    "algorithm": [
+      "ed25519"
+    ],
+    "ask_channel": [
+      "approval_api",
+      "host_prompt"
+    ],
+    "authn": [
+      "mcp_door_verified",
+      "none"
+    ],
+    "boundary": [
+      "approval_prompt",
+      "downstream_delivery",
+      "hook_execution",
+      "none",
+      "redirect_dispatch",
+      "tunnel_open",
+      "upstream_send"
+    ],
+    "checker_disposition": [
+      "error",
+      "flagged",
+      "not_run",
+      "passed"
+    ],
+    "checker_mode": [
+      "block",
+      "off",
+      "warn"
+    ],
+    "checker_selection": [
+      "configured",
+      "fallback",
+      "unavailable"
+    ],
+    "checker_surface": [
+      "browser_shield",
+      "hook_tool_input",
+      "hook_tool_result",
+      "http_request_body",
+      "http_response",
+      "mcp_tool_description",
+      "mcp_tool_input",
+      "mcp_tool_result",
+      "scan_api"
+    ],
+    "close_reason": [
+      "rollover",
+      "shutdown"
+    ],
+    "ended": [
+      "closed",
+      "unsealed",
+      "write_error"
+    ],
+    "outcome": [
+      "attempt_unknown",
+      "completed",
+      "failed_after_attempt",
+      "failed_before_attempt",
+      "not_released"
+    ],
+    "phase": [
+      "decision",
+      "hold",
+      "intent",
+      "outcome",
+      "resolution"
+    ],
+    "relation": [
+      "after",
+      "before",
+      "not_applicable",
+      "not_attempted",
+      "unknown"
+    ],
+    "stream_policy_source": [
+      "writer_config"
+    ],
+    "verdict": [
+      "allow",
+      "ask",
+      "block",
+      "defer",
+      "forward",
+      "redirect",
+      "strip",
+      "warn"
+    ]
+  },
+  "findings": {
+    "ACTION_UNINTERPRETED": "incomplete",
+    "BODY_SCHEMA": "invalid",
+    "CLOCK_REGRESSION": "warning",
+    "COMMON_SCHEMA": "invalid",
+    "CUTOVER_INVENTORY_MISMATCH": "invalid",
+    "CUTOVER_INVENTORY_NOT_PRESENTED": "incomplete",
+    "DATA_AFTER_CLOSE": "invalid",
+    "DECISIONS_NOT_APPRAISED": "incomplete",
+    "DECISION_INCONSISTENT": "invalid",
+    "DECISION_INDEX_FULL": "incomplete",
+    "END_UNPROVEN": "end_unproven",
+    "EVENT_UNINTERPRETED": "info",
+    "EXPECTATION_NOT_MET": "invalid",
+    "FILE_LAYOUT": "invalid",
+    "FORK": "invalid",
+    "HEARTBEAT_GAP": "warning",
+    "HISTORY_DISCONNECTED": "incomplete",
+    "LEGACY_CHAIN_HEAD_MISMATCH": "invalid",
+    "LEGACY_CHAIN_NOT_PRESENTED": "incomplete",
+    "LEGACY_CHAIN_TRUNCATED": "invalid",
+    "LEGACY_CHAIN_UNLISTED": "invalid",
+    "LEGACY_END_UNPROVEN": "end_unproven",
+    "LEGACY_EXTENDED_AFTER_CUTOVER": "invalid",
+    "LEGACY_GROUP_INCOMPLETE": "incomplete",
+    "LEGACY_INVALID": "invalid",
+    "LEGACY_MEMBERSHIP_UNKNOWN": "incomplete",
+    "LINEAGE_MISMATCH": "invalid",
+    "LINE_LAYOUT": "invalid",
+    "LINE_SIZE": "invalid",
+    "NORMALIZATION_UNKNOWN": "warning",
+    "NO_EVIDENCE": "incomplete",
+    "PAYLOAD_LAYOUT": "invalid",
+    "PIN_MISMATCH": "invalid",
+    "PREDECESSOR_NOT_PRESENTED": "incomplete",
+    "PREDECESSOR_TRUNCATED": "invalid",
+    "ROOT_FORK": "invalid",
+    "SIGNATURE_EQUATION": "invalid",
+    "SIGNATURE_KEY": "invalid",
+    "SIGNATURE_POINT": "invalid",
+    "SIGNATURE_SCALAR": "invalid",
+    "SIGNER_MISSING": "invalid",
+    "STREAM_ORDER": "invalid",
+    "SUCCESSION_FORK": "invalid",
+    "TAIL_AFTER_SUCCESSION": "invalid",
+    "TORN_TAIL": "info",
+    "TRUST": "invalid",
+    "UNCONFIRMED": "info",
+    "UNKNOWN_CONTROL": "unsupported",
+    "UNKNOWN_CRIT": "unsupported",
+    "UNKNOWN_PROFILE": "unsupported",
+    "UNRECOGNIZED_FILE": "invalid",
+    "USE_HOST_VERIFIER": "unsupported",
+    "V3_CONTENT_UNCLAIMED": "invalid"
+  },
+  "kinds": {
+    "action": {
+      "body": "Action",
+      "body_v": 1,
+      "class": "event"
+    },
+    "heartbeat": {
+      "body": "Heartbeat",
+      "body_v": 1,
+      "class": "event"
+    },
+    "stream_close": {
+      "body": "StreamClose",
+      "body_v": 1,
+      "class": "control"
+    },
+    "stream_open": {
+      "body": "StreamOpen",
+      "body_v": 1,
+      "class": "control"
+    }
+  },
+  "layout": {
+    "entry_prefix": "{\"keyid\":\"",
+    "entry_separator": ",",
+    "entry_suffix": "\"}",
+    "file_suffix": ".receipt-v3.jsonl",
+    "genesis_domain": "pipelock-receipt-v3-genesis",
+    "payload_prefix": "],\"payload\":",
+    "prefix": "{\"payloadType\":\"application/vnd.pipelock.receipt.v3+json\",\"signatures\":[",
+    "public_key_bytes": 32,
+    "signature_bytes": 64,
+    "signature_prefix": "\",\"sig\":\"",
+    "start_digits": 16,
+    "suffix": "}\n"
+  },
+  "limits": {
+    "browser_archive_bytes": 8388608,
+    "browser_archive_files": 4096,
+    "browser_entry_bytes": 33554432,
+    "browser_total_bytes": 33554432,
+    "decisions": 10000000,
+    "depth": 16,
+    "integer": 9007199254740991,
+    "line_bytes": 1048576,
+    "member_bytes": 64,
+    "signatures": 4,
+    "target_bytes": 2048,
+    "writer_instance_bytes": 128
+  },
+  "normalization_profiles": {},
+  "objects": {
+    "Action": {
+      "action_id": {
+        "required": true,
+        "type": "action_id"
+      },
+      "action_type": {
+        "required": true,
+        "type": "@action_type"
+      },
+      "actor": {
+        "required": true,
+        "type": "string"
+      },
+      "ask": {
+        "required": false,
+        "type": "Ask"
+      },
+      "attempt": {
+        "required": false,
+        "type": "positive"
+      },
+      "caller": {
+        "required": true,
+        "type": "Caller"
+      },
+      "checker": {
+        "required": false,
+        "type": "Checker"
+      },
+      "contestation_window": {
+        "required": false,
+        "type": "string"
+      },
+      "contract": {
+        "required": false,
+        "type": "Contract"
+      },
+      "data": {
+        "required": true,
+        "type": "Data"
+      },
+      "delegation_chain": {
+        "required": false,
+        "type": "[]string"
+      },
+      "effect_boundary": {
+        "required": true,
+        "type": "@boundary"
+      },
+      "effect_relation": {
+        "required": true,
+        "type": "@relation"
+      },
+      "hold": {
+        "required": false,
+        "type": "Hold"
+      },
+      "intent": {
+        "required": false,
+        "type": "string"
+      },
+      "jurisdiction": {
+        "required": false,
+        "type": "string"
+      },
+      "layer": {
+        "required": false,
+        "type": "string"
+      },
+      "method": {
+        "required": false,
+        "type": "string"
+      },
+      "normalization": {
+        "required": false,
+        "type": "Normalization"
+      },
+      "outcome_class": {
+        "required": false,
+        "type": "@outcome"
+      },
+      "parent_action_id": {
+        "required": false,
+        "type": "action_id"
+      },
+      "pattern": {
+        "required": false,
+        "type": "string"
+      },
+      "phase": {
+        "required": true,
+        "type": "@phase"
+      },
+      "policy": {
+        "required": true,
+        "type": "ActionPolicy"
+      },
+      "precedent_refs": {
+        "required": false,
+        "type": "[]string"
+      },
+      "principal": {
+        "required": true,
+        "type": "string"
+      },
+      "redaction": {
+        "required": false,
+        "type": "Redaction"
+      },
+      "remedy_class": {
+        "required": false,
+        "type": "string"
+      },
+      "request_id": {
+        "required": false,
+        "type": "string"
+      },
+      "rulebook_id": {
+        "required": false,
+        "type": "string"
+      },
+      "session": {
+        "required": false,
+        "type": "Session"
+      },
+      "severity": {
+        "required": false,
+        "type": "string"
+      },
+      "shield": {
+        "required": false,
+        "type": "Shield"
+      },
+      "taint": {
+        "required": false,
+        "type": "Taint"
+      },
+      "target": {
+        "required": true,
+        "type": "target"
+      },
+      "transport": {
+        "required": true,
+        "type": "string"
+      },
+      "venue": {
+        "required": false,
+        "type": "string"
+      },
+      "verdict": {
+        "required": true,
+        "type": "@verdict"
+      }
+    },
+    "ActionPolicy": {
+      "hash": {
+        "required": false,
+        "type": "digest"
+      },
+      "source": {
+        "required": true,
+        "type": "@action_policy_source"
+      }
+    },
+    "Ask": {
+      "channel": {
+        "required": true,
+        "type": "@ask_channel"
+      },
+      "observed": {
+        "required": true,
+        "type": "bool"
+      }
+    },
+    "Caller": {
+      "authn": {
+        "required": true,
+        "type": "@authn"
+      },
+      "client_id": {
+        "required": false,
+        "type": "string"
+      },
+      "issuer": {
+        "required": false,
+        "type": "string"
+      },
+      "resource": {
+        "required": false,
+        "type": "string"
+      },
+      "subject": {
+        "required": false,
+        "type": "string"
+      }
+    },
+    "Checker": {
+      "config_hash": {
+        "required": false,
+        "type": "digest"
+      },
+      "disposition": {
+        "required": true,
+        "type": "@checker_disposition"
+      },
+      "mode": {
+        "required": true,
+        "type": "@checker_mode"
+      },
+      "selection": {
+        "required": true,
+        "type": "@checker_selection"
+      },
+      "surface": {
+        "required": true,
+        "type": "@checker_surface"
+      }
+    },
+    "Common": {
+      "body": {
+        "description": "Kind-specific signed statement.",
+        "required": true,
+        "type": "object"
+      },
+      "body_v": {
+        "description": "Version of the body.",
+        "required": true,
+        "type": "positive"
+      },
+      "crit": {
+        "description": "Sorted unique mandatory feature names.",
+        "required": false,
+        "type": "[]name"
+      },
+      "ext": {
+        "description": "Signed extensions.",
+        "required": false,
+        "type": "object"
+      },
+      "kind": {
+        "description": "Record kind.",
+        "required": true,
+        "type": "name"
+      },
+      "prev": {
+        "description": "Previous record ID or genesis digest.",
+        "required": true,
+        "type": "digest"
+      },
+      "seq": {
+        "description": "Position from zero.",
+        "required": true,
+        "type": "uint"
+      },
+      "signer": {
+        "description": "Fingerprint of the signing key.",
+        "required": true,
+        "type": "digest"
+      },
+      "stream": {
+        "description": "Stream ID.",
+        "required": true,
+        "type": "id128"
+      },
+      "ts": {
+        "description": "UTC with milliseconds.",
+        "required": true,
+        "type": "time"
+      },
+      "v": {
+        "description": "Receipt profile version.",
+        "required": true,
+        "type": "version"
+      }
+    },
+    "Contract": {
+      "generation": {
+        "required": false,
+        "type": "uint"
+      },
+      "hash": {
+        "required": false,
+        "type": "string"
+      },
+      "live_verdict": {
+        "required": false,
+        "type": "string"
+      },
+      "manifest_hash": {
+        "required": false,
+        "type": "string"
+      },
+      "policy_sources": {
+        "required": false,
+        "type": "[]string"
+      },
+      "rule_id": {
+        "required": false,
+        "type": "string"
+      },
+      "selector_id": {
+        "required": false,
+        "type": "string"
+      },
+      "winning_source": {
+        "required": false,
+        "type": "string"
+      }
+    },
+    "Coverage": {
+      "content_scan": {
+        "required": true,
+        "type": "bool"
+      },
+      "receipts_required": {
+        "required": true,
+        "type": "bool"
+      },
+      "redaction_ruleset": {
+        "required": true,
+        "type": "Ruleset"
+      },
+      "surfaces": {
+        "required": true,
+        "type": "[]string"
+      }
+    },
+    "Cutover": {
+      "chains": {
+        "required": true,
+        "type": "uint"
+      },
+      "inventory": {
+        "required": true,
+        "type": "digest"
+      }
+    },
+    "Data": {
+      "classes_in": {
+        "required": false,
+        "type": "[]string"
+      },
+      "classes_out": {
+        "required": false,
+        "type": "[]string"
+      },
+      "reversibility": {
+        "required": true,
+        "type": "string"
+      },
+      "side_effect_class": {
+        "required": true,
+        "type": "string"
+      }
+    },
+    "Durability": {
+      "durability_blocks": {
+        "required": true,
+        "type": "uint"
+      },
+      "fsync_errors_gated": {
+        "required": true,
+        "type": "uint"
+      }
+    },
+    "Heartbeat": {
+      "beat": {
+        "required": true,
+        "type": "positive"
+      },
+      "durability_blocks": {
+        "required": true,
+        "type": "uint"
+      },
+      "fsync_errors_gated": {
+        "required": true,
+        "type": "uint"
+      }
+    },
+    "Hold": {
+      "correction": {
+        "required": false,
+        "type": "bool"
+      },
+      "id": {
+        "required": true,
+        "type": "string"
+      },
+      "parent": {
+        "required": false,
+        "type": "string"
+      },
+      "policy": {
+        "required": false,
+        "type": "string"
+      },
+      "resolution_policy": {
+        "required": false,
+        "type": "string"
+      },
+      "resolution_source": {
+        "required": false,
+        "type": "string"
+      }
+    },
+    "Normalization": {
+      "digest": {
+        "required": true,
+        "type": "digest"
+      },
+      "id": {
+        "required": true,
+        "type": "string"
+      }
+    },
+    "Posture": {
+      "capsule_sha256": {
+        "required": true,
+        "type": "digest"
+      },
+      "contained_uid": {
+        "required": true,
+        "type": "string"
+      },
+      "containment_nonce": {
+        "required": true,
+        "type": "string"
+      },
+      "signer_key_id": {
+        "required": true,
+        "type": "string"
+      }
+    },
+    "Previous": {
+      "ended": {
+        "required": true,
+        "type": "@ended"
+      },
+      "record": {
+        "required": true,
+        "type": "digest"
+      },
+      "seq": {
+        "required": true,
+        "type": "uint"
+      },
+      "stream": {
+        "required": true,
+        "type": "id128"
+      }
+    },
+    "Recorder": {
+      "entries": {
+        "required": true,
+        "type": "uint"
+      },
+      "session": {
+        "required": true,
+        "type": "string"
+      },
+      "transcript_root": {
+        "required": true,
+        "type": "digest"
+      }
+    },
+    "Redaction": {
+      "cache_boundary_kept": {
+        "required": false,
+        "type": "bool"
+      },
+      "classes": {
+        "required": false,
+        "type": "[]RedactionClass"
+      },
+      "parser": {
+        "required": false,
+        "type": "string"
+      },
+      "profile": {
+        "required": false,
+        "type": "string"
+      },
+      "provider": {
+        "required": false,
+        "type": "string"
+      },
+      "total_redactions": {
+        "required": false,
+        "type": "uint"
+      }
+    },
+    "RedactionClass": {
+      "class": {
+        "required": true,
+        "type": "string"
+      },
+      "count": {
+        "required": true,
+        "type": "uint"
+      }
+    },
+    "Ruleset": {
+      "hash": {
+        "required": true,
+        "type": "string"
+      },
+      "id": {
+        "required": true,
+        "type": "string"
+      },
+      "version": {
+        "required": true,
+        "type": "string"
+      }
+    },
+    "Session": {
+      "contaminated": {
+        "required": false,
+        "type": "bool"
+      },
+      "id": {
+        "required": false,
+        "type": "string"
+      },
+      "original_id": {
+        "required": false,
+        "type": "string"
+      },
+      "taint_level": {
+        "required": false,
+        "type": "string"
+      },
+      "taint_sources": {
+        "required": false,
+        "type": "[]TaintSource"
+      },
+      "task_id": {
+        "required": false,
+        "type": "string"
+      },
+      "task_label": {
+        "required": false,
+        "type": "string"
+      }
+    },
+    "Shield": {
+      "adaptive_signal_max_per_body": {
+        "required": false,
+        "type": "uint"
+      },
+      "adaptive_signals_recorded": {
+        "required": false,
+        "type": "uint"
+      },
+      "agent_traps": {
+        "required": false,
+        "type": "uint"
+      },
+      "body_bytes": {
+        "required": false,
+        "type": "uint"
+      },
+      "extension_probes": {
+        "required": false,
+        "type": "uint"
+      },
+      "fingerprint_shim_injected": {
+        "required": false,
+        "type": "bool"
+      },
+      "partial": {
+        "required": false,
+        "type": "bool"
+      },
+      "pipeline": {
+        "required": false,
+        "type": "string"
+      },
+      "scanned_bytes": {
+        "required": false,
+        "type": "uint"
+      },
+      "svg_animation_injections": {
+        "required": false,
+        "type": "uint"
+      },
+      "svg_event_handlers": {
+        "required": false,
+        "type": "uint"
+      },
+      "svg_external_references": {
+        "required": false,
+        "type": "uint"
+      },
+      "svg_foreign_objects": {
+        "required": false,
+        "type": "uint"
+      },
+      "svg_hidden_text": {
+        "required": false,
+        "type": "uint"
+      },
+      "total_rewrites": {
+        "required": false,
+        "type": "uint"
+      },
+      "tracking_beacons": {
+        "required": false,
+        "type": "uint"
+      }
+    },
+    "SignerKey": {
+      "alg": {
+        "required": true,
+        "type": "@algorithm"
+      },
+      "public": {
+        "required": true,
+        "type": "key"
+      }
+    },
+    "StreamClose": {
+      "durability": {
+        "required": true,
+        "type": "Durability"
+      },
+      "reason": {
+        "required": true,
+        "type": "@close_reason"
+      },
+      "recorder": {
+        "required": false,
+        "type": "Recorder"
+      },
+      "records": {
+        "required": true,
+        "type": "positive"
+      }
+    },
+    "StreamOpen": {
+      "coverage": {
+        "required": true,
+        "type": "Coverage"
+      },
+      "heartbeat_seconds": {
+        "required": false,
+        "type": "uint"
+      },
+      "legacy_cutover": {
+        "description": "Required on the first stream only.",
+        "required": false,
+        "type": "Cutover"
+      },
+      "lineage": {
+        "required": true,
+        "type": "id128"
+      },
+      "policy": {
+        "required": true,
+        "type": "StreamPolicy"
+      },
+      "posture": {
+        "required": false,
+        "type": "Posture"
+      },
+      "previous": {
+        "description": "Required after the first stream.",
+        "required": false,
+        "type": "Previous"
+      },
+      "recorder_session": {
+        "required": false,
+        "type": "string"
+      },
+      "signer_key": {
+        "required": true,
+        "type": "SignerKey"
+      },
+      "writer": {
+        "required": true,
+        "type": "Writer"
+      }
+    },
+    "StreamPolicy": {
+      "hash": {
+        "required": true,
+        "type": "digest"
+      },
+      "source": {
+        "required": true,
+        "type": "@stream_policy_source"
+      }
+    },
+    "Taint": {
+      "authority_kind": {
+        "required": false,
+        "type": "string"
+      },
+      "decision": {
+        "required": false,
+        "type": "string"
+      },
+      "reason": {
+        "required": false,
+        "type": "string"
+      },
+      "task_override_applied": {
+        "required": false,
+        "type": "bool"
+      }
+    },
+    "TaintSource": {
+      "kind": {
+        "required": true,
+        "type": "string"
+      },
+      "level": {
+        "required": true,
+        "type": "uint"
+      },
+      "match_reason": {
+        "required": false,
+        "type": "string"
+      },
+      "receipt_id": {
+        "required": false,
+        "type": "string"
+      },
+      "timestamp": {
+        "required": true,
+        "type": "string"
+      },
+      "url": {
+        "required": true,
+        "type": "string"
+      }
+    },
+    "Writer": {
+      "binary_digest": {
+        "required": false,
+        "type": "digest"
+      },
+      "instance": {
+        "required": true,
+        "type": "instance"
+      },
+      "product": {
+        "required": true,
+        "type": "string"
+      },
+      "version": {
+        "required": true,
+        "type": "string"
+      }
+    }
+  },
+  "profile": "application/vnd.pipelock.receipt.v3+json"
+}

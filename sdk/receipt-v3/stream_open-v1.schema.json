@@ -1,0 +1,281 @@
+{
+  "$defs": {
+    "Coverage": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "content_scan": {
+          "type": "boolean"
+        },
+        "receipts_required": {
+          "type": "boolean"
+        },
+        "redaction_ruleset": {
+          "$ref": "#/$defs/Ruleset"
+        },
+        "surfaces": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 0,
+          "type": "array"
+        }
+      },
+      "required": [
+        "content_scan",
+        "receipts_required",
+        "redaction_ruleset",
+        "surfaces"
+      ],
+      "type": "object"
+    },
+    "Cutover": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "chains": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inventory": {
+          "minLength": 1,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "chains",
+        "inventory"
+      ],
+      "type": "object"
+    },
+    "Posture": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "capsule_sha256": {
+          "minLength": 1,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "contained_uid": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "containment_nonce": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "signer_key_id": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "capsule_sha256",
+        "contained_uid",
+        "containment_nonce",
+        "signer_key_id"
+      ],
+      "type": "object"
+    },
+    "Previous": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "ended": {
+          "enum": [
+            "closed",
+            "unsealed",
+            "write_error"
+          ],
+          "type": "string"
+        },
+        "record": {
+          "minLength": 1,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "seq": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stream": {
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ended",
+        "record",
+        "seq",
+        "stream"
+      ],
+      "type": "object"
+    },
+    "Ruleset": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "hash": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "hash",
+        "id",
+        "version"
+      ],
+      "type": "object"
+    },
+    "SignerKey": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "alg": {
+          "enum": [
+            "ed25519"
+          ],
+          "type": "string"
+        },
+        "public": {
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "alg",
+        "public"
+      ],
+      "type": "object"
+    },
+    "StreamPolicy": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "hash": {
+          "minLength": 1,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "writer_config"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "hash",
+        "source"
+      ],
+      "type": "object"
+    },
+    "Writer": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "binary_digest": {
+          "minLength": 1,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "instance": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+          "x-pipelock-maxBytes": 128
+        },
+        "product": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "instance",
+        "product",
+        "version"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "minProperties": 1,
+  "oneOf": [
+    {
+      "required": [
+        "previous"
+      ]
+    },
+    {
+      "required": [
+        "legacy_cutover"
+      ]
+    }
+  ],
+  "properties": {
+    "coverage": {
+      "$ref": "#/$defs/Coverage"
+    },
+    "heartbeat_seconds": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "legacy_cutover": {
+      "$ref": "#/$defs/Cutover"
+    },
+    "lineage": {
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{32}$",
+      "type": "string"
+    },
+    "policy": {
+      "$ref": "#/$defs/StreamPolicy"
+    },
+    "posture": {
+      "$ref": "#/$defs/Posture"
+    },
+    "previous": {
+      "$ref": "#/$defs/Previous"
+    },
+    "recorder_session": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "signer_key": {
+      "$ref": "#/$defs/SignerKey"
+    },
+    "writer": {
+      "$ref": "#/$defs/Writer"
+    }
+  },
+  "required": [
+    "coverage",
+    "lineage",
+    "policy",
+    "signer_key",
+    "writer"
+  ],
+  "title": "Receipt v3 stream_open body v1",
+  "type": "object"
+}

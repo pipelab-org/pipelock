@@ -1,0 +1,928 @@
+{
+  "$defs": {
+    "ActionPolicy": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "source": {
+                "const": "request_snapshot"
+              }
+            },
+            "required": [
+              "source"
+            ]
+          },
+          "then": {
+            "required": [
+              "hash"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "source": {
+                "const": "unavailable"
+              }
+            },
+            "required": [
+              "source"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "hash"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "minProperties": 1,
+      "properties": {
+        "hash": {
+          "minLength": 1,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "request_snapshot",
+            "unavailable"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "type": "object"
+    },
+    "Ask": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "channel": {
+                "const": "approval_api"
+              }
+            },
+            "required": [
+              "channel"
+            ]
+          },
+          "then": {
+            "properties": {
+              "observed": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "channel": {
+                "const": "host_prompt"
+              }
+            },
+            "required": [
+              "channel"
+            ]
+          },
+          "then": {
+            "properties": {
+              "observed": {
+                "const": false
+              }
+            }
+          }
+        }
+      ],
+      "minProperties": 1,
+      "properties": {
+        "channel": {
+          "enum": [
+            "approval_api",
+            "host_prompt"
+          ],
+          "type": "string"
+        },
+        "observed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "channel",
+        "observed"
+      ],
+      "type": "object"
+    },
+    "Caller": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "authn": {
+                "const": "mcp_door_verified"
+              }
+            },
+            "required": [
+              "authn"
+            ]
+          },
+          "then": {
+            "required": [
+              "client_id",
+              "issuer",
+              "resource",
+              "subject"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "authn": {
+                "const": "none"
+              }
+            },
+            "required": [
+              "authn"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "client_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "issuer"
+                  ]
+                },
+                {
+                  "required": [
+                    "resource"
+                  ]
+                },
+                {
+                  "required": [
+                    "subject"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "minProperties": 1,
+      "properties": {
+        "authn": {
+          "enum": [
+            "mcp_door_verified",
+            "none"
+          ],
+          "type": "string"
+        },
+        "client_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "issuer": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "resource": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "subject": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "authn"
+      ],
+      "type": "object"
+    },
+    "Checker": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "selection": {
+                "const": "unavailable"
+              }
+            },
+            "required": [
+              "selection"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "config_hash"
+                  ]
+                }
+              ]
+            },
+            "properties": {
+              "disposition": {
+                "const": "not_run"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "selection": {
+                "const": "configured"
+              }
+            },
+            "required": [
+              "selection"
+            ]
+          },
+          "then": {
+            "required": [
+              "config_hash"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "selection": {
+                "const": "fallback"
+              }
+            },
+            "required": [
+              "selection"
+            ]
+          },
+          "then": {
+            "required": [
+              "config_hash"
+            ]
+          }
+        }
+      ],
+      "minProperties": 1,
+      "properties": {
+        "config_hash": {
+          "minLength": 1,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "error",
+            "flagged",
+            "not_run",
+            "passed"
+          ],
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "block",
+            "off",
+            "warn"
+          ],
+          "type": "string"
+        },
+        "selection": {
+          "enum": [
+            "configured",
+            "fallback",
+            "unavailable"
+          ],
+          "type": "string"
+        },
+        "surface": {
+          "enum": [
+            "browser_shield",
+            "hook_tool_input",
+            "hook_tool_result",
+            "http_request_body",
+            "http_response",
+            "mcp_tool_description",
+            "mcp_tool_input",
+            "mcp_tool_result",
+            "scan_api"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "disposition",
+        "mode",
+        "selection",
+        "surface"
+      ],
+      "type": "object"
+    },
+    "Contract": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hash": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "live_verdict": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "manifest_hash": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "policy_sources": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "rule_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "selector_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "winning_source": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Data": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "classes_in": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "classes_out": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "reversibility": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "side_effect_class": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "reversibility",
+        "side_effect_class"
+      ],
+      "type": "object"
+    },
+    "Hold": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "correction": {
+          "type": "boolean"
+        },
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "parent": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "policy": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "resolution_policy": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "resolution_source": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "Normalization": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "digest": {
+          "minLength": 1,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "digest",
+        "id"
+      ],
+      "type": "object"
+    },
+    "Redaction": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "cache_boundary_kept": {
+          "type": "boolean"
+        },
+        "classes": {
+          "items": {
+            "$ref": "#/$defs/RedactionClass"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "parser": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "profile": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "provider": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "total_redactions": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "RedactionClass": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "class": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "count": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "class",
+        "count"
+      ],
+      "type": "object"
+    },
+    "Session": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "contaminated": {
+          "type": "boolean"
+        },
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "original_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "taint_level": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "taint_sources": {
+          "items": {
+            "$ref": "#/$defs/TaintSource"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "task_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "task_label": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Shield": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "adaptive_signal_max_per_body": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "adaptive_signals_recorded": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "agent_traps": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "body_bytes": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "extension_probes": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "fingerprint_shim_injected": {
+          "type": "boolean"
+        },
+        "partial": {
+          "type": "boolean"
+        },
+        "pipeline": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "scanned_bytes": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "svg_animation_injections": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "svg_event_handlers": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "svg_external_references": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "svg_foreign_objects": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "svg_hidden_text": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "total_rewrites": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tracking_beacons": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "Taint": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "authority_kind": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "decision": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "task_override_applied": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "TaintSource": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "kind": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "level": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "match_reason": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "receipt_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "timestamp": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "url": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "level",
+        "timestamp",
+        "url"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "minProperties": 1,
+  "properties": {
+    "action_id": {
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+      "type": "string"
+    },
+    "action_type": {
+      "enum": [
+        "actuate",
+        "authorize",
+        "commit",
+        "delegate",
+        "derive",
+        "read",
+        "spend",
+        "unclassified",
+        "write"
+      ],
+      "type": "string"
+    },
+    "actor": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "ask": {
+      "$ref": "#/$defs/Ask"
+    },
+    "attempt": {
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "caller": {
+      "$ref": "#/$defs/Caller"
+    },
+    "checker": {
+      "$ref": "#/$defs/Checker"
+    },
+    "contestation_window": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "contract": {
+      "$ref": "#/$defs/Contract"
+    },
+    "data": {
+      "$ref": "#/$defs/Data"
+    },
+    "delegation_chain": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "effect_boundary": {
+      "enum": [
+        "approval_prompt",
+        "downstream_delivery",
+        "hook_execution",
+        "none",
+        "redirect_dispatch",
+        "tunnel_open",
+        "upstream_send"
+      ],
+      "type": "string"
+    },
+    "effect_relation": {
+      "enum": [
+        "after",
+        "before",
+        "not_applicable",
+        "not_attempted",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "hold": {
+      "$ref": "#/$defs/Hold"
+    },
+    "intent": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "jurisdiction": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "layer": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "method": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "normalization": {
+      "$ref": "#/$defs/Normalization"
+    },
+    "outcome_class": {
+      "enum": [
+        "attempt_unknown",
+        "completed",
+        "failed_after_attempt",
+        "failed_before_attempt",
+        "not_released"
+      ],
+      "type": "string"
+    },
+    "parent_action_id": {
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+      "type": "string"
+    },
+    "pattern": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "phase": {
+      "enum": [
+        "decision",
+        "hold",
+        "intent",
+        "outcome",
+        "resolution"
+      ],
+      "type": "string"
+    },
+    "policy": {
+      "$ref": "#/$defs/ActionPolicy"
+    },
+    "precedent_refs": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "principal": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "redaction": {
+      "$ref": "#/$defs/Redaction"
+    },
+    "remedy_class": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "request_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "rulebook_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "session": {
+      "$ref": "#/$defs/Session"
+    },
+    "severity": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "shield": {
+      "$ref": "#/$defs/Shield"
+    },
+    "taint": {
+      "$ref": "#/$defs/Taint"
+    },
+    "target": {
+      "maxLength": 2048,
+      "minLength": 1,
+      "type": "string",
+      "x-pipelock-maxBytes": 2048
+    },
+    "transport": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "venue": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "verdict": {
+      "enum": [
+        "allow",
+        "ask",
+        "block",
+        "defer",
+        "forward",
+        "redirect",
+        "strip",
+        "warn"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "action_id",
+    "action_type",
+    "actor",
+    "caller",
+    "data",
+    "effect_boundary",
+    "effect_relation",
+    "phase",
+    "policy",
+    "principal",
+    "target",
+    "transport",
+    "verdict"
+  ],
+  "title": "Receipt v3 action body v1",
+  "type": "object"
+}
