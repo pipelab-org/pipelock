@@ -108,13 +108,17 @@ func testStdioNativeCapacitySettlesAdmittedReply(t *testing.T, warn bool) {
 		t.Fatal("unsettled stdio response did not keep its reservation")
 	default:
 	}
+	const serverRequest = `{"jsonrpc":"2.0","id":1,"method":"ping"}`
 	var client bytes.Buffer
-	found, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(reply)), transport.NewStdioWriter(&client), io.Discard, tracker, opts)
+	found, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(serverRequest+"\n"+reply)), transport.NewStdioWriter(&client), io.Discard, tracker, opts)
 	if err != nil || !found {
 		t.Fatalf("scan of warned response: finding=%t error=%v", found, err)
 	}
 	if observed := risk.RiskSnapshot(); !observed.Contaminated || observed.Level < session.TaintExternalUntrusted {
 		t.Fatalf("MCP reply did not apply external taint: %+v", observed)
+	}
+	if strings.Contains(client.String(), serverRequest) {
+		t.Fatalf("server request used the pending response reservation: %s", client.String())
 	}
 	if !strings.Contains(client.String(), reply) {
 		t.Fatalf("client response = %q", client.String())
@@ -133,19 +137,31 @@ func testStdioNativeCapacitySettlesAdmittedReply(t *testing.T, warn bool) {
 }
 
 func TestStdioNativeCapacityStopsIdleInput(t *testing.T) {
+	testStdioNativeCapacityStopsChild(t, false)
+}
+
+func TestStdioNativeCapacityStopsChildThatIgnoresEOF(t *testing.T) {
+	testStdioNativeCapacityStopsChild(t, true)
+}
+
+func testStdioNativeCapacityStopsChild(t *testing.T, ignoresEOF bool) {
+	t.Helper()
 	if runtime.GOOS == osWindows {
 		t.Skip("shell subprocess test requires unix")
 	}
 	const request = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{}}}`
 	const reply = `{"jsonrpc":"2.0","id":1,"result":{"content":[]}}`
 	const late = `{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"after capacity"}}`
-	const script = `
+	script := `
 IFS= read -r request || exit 2
 case "$request" in *'"id":1'*) ;; *) exit 3;; esac
 printf '%s\n' "$1"
 if IFS= read -r request; then exit 4; fi
 printf '%s\n' "$2"
 `
+	if ignoresEOF {
+		script += "exec sleep 30\n"
+	}
 	for _, mode := range []string{"subprocess", "sandboxed"} {
 		t.Run(mode, func(t *testing.T) {
 			e, dir := newNativeMCPEmitter(t, nativeMCPRequestRecords+4)
@@ -155,7 +171,8 @@ printf '%s\n' "$2"
 			defer func() { _ = client.Close() }()
 			defer func() { _ = input.Close() }()
 			var out lockedHTTPBuffer
-			opts := MCPProxyOpts{Scanner: testInputScanner(t), ReceiptEmitter: e, RequireReceipts: true}
+			const grace = 100 * time.Millisecond
+			opts := MCPProxyOpts{Scanner: testInputScanner(t), ReceiptEmitter: e, RequireReceipts: true, ListenerShutdownTimeout: grace}
 			done := make(chan error, 1)
 			go func() {
 				args := []string{"sh", "-c", script, "sh", reply, late}
@@ -170,6 +187,7 @@ printf '%s\n' "$2"
 				t.Fatal(err)
 			}
 			testwait.For(t, time.Second, func() bool { return out.contains(reply) }, "subprocess response forwarded")
+			stoppedAt := time.Now()
 			if _, err := e.ReserveNativeRecords(2 * nativeMCPRequestRecords); !errors.Is(err, ael.ErrCapacity) {
 				t.Fatalf("capacity admission = %v", err)
 			}
@@ -178,8 +196,11 @@ printf '%s\n' "$2"
 				if !errors.Is(err, ael.ErrCapacity) {
 					t.Fatalf("capacity result = %v", err)
 				}
-			case <-ctx.Done():
+			case <-time.After(testwait.Deadline(time.Second)):
 				t.Fatal("proxy did not stop with stdin open")
+			}
+			if ignoresEOF && time.Since(stoppedAt) < grace {
+				t.Fatal("subprocess exited before the capacity grace")
 			}
 			if out.contains(late) {
 				t.Fatalf("unadmitted message delivered: %s", out.String())
@@ -572,4 +593,91 @@ func TestNativeCapacityTrackedRequestsKeepTheirOwnReservation(t *testing.T) {
 			verifyMCPNativeClose(t, e, dir)
 		})
 	}
+}
+
+func TestHTTPListenerCapacitySettlesIntentBeforeUpstreamHeaders(t *testing.T) {
+	e, dir := newNativeMCPEmitter(t, nativeMCPRequestRecords+4)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(4*time.Second))
+	defer cancel()
+	entered, canceled := make(chan struct{}), make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			t.Errorf("read request: %v", err)
+			return
+		}
+		close(entered)
+		select {
+		case <-r.Context().Done():
+			close(canceled)
+		case <-ctx.Done():
+		}
+	}))
+	defer upstream.Close()
+	opts := MCPProxyOpts{Scanner: testScannerForHTTP(t), ReceiptEmitter: e, RequireReceipts: true, ListenerShutdownTimeout: 50 * time.Millisecond}
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/", strings.NewReader(cleanToolsCallRequest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	result := make(chan error, 1)
+	go func() {
+		response, err := upstream.Client().Do(req)
+		if err == nil {
+			if closeErr := response.Body.Close(); closeErr != nil {
+				err = closeErr
+			} else if response.StatusCode != http.StatusBadGateway {
+				err = fmt.Errorf("status = %d, want %d", response.StatusCode, http.StatusBadGateway)
+			}
+		}
+		result <- err
+	}()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("admitted request did not reach upstream")
+	}
+	if _, err := e.ReserveNativeRecords(2 * nativeMCPRequestRecords); !errors.Is(err, ael.ErrCapacity) {
+		t.Fatalf("stop = %v, want %v", err, ael.ErrCapacity)
+	}
+	select {
+	case <-canceled:
+	case <-ctx.Done():
+		t.Fatal("upstream headers wait was not canceled")
+	}
+	select {
+	case err := <-result:
+		if err != nil && !errors.Is(err, io.EOF) {
+			t.Fatalf("client result = %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("client did not return")
+	}
+	select {
+	case <-e.NativeCapacity().Drained():
+	case <-ctx.Done():
+		t.Fatal("native admissions did not drain")
+	}
+	var intent, outcome receipt.ActionRecord
+	entries, err := recorder.QuerySession(dir, e.Session(), &recorder.QueryFilter{Type: "action_receipt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries.Entries {
+		signed, err := receipt.Unmarshal(entry.RawDetail)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch signed.ActionRecord.DecisionPhase {
+		case receipt.DecisionPhaseIntent:
+			intent = signed.ActionRecord
+		case receipt.DecisionPhaseOutcome:
+			outcome = signed.ActionRecord
+		}
+	}
+	if intent.ActionID == "" || outcome.ActionID != intent.ActionID || !strings.Contains(outcome.Pattern, "reason="+nativeCapacityReason) {
+		t.Fatalf("upstream cutoff intent=%q outcome=%q pattern=%q", intent.ActionID, outcome.ActionID, outcome.Pattern)
+	}
+	verifyMCPNativeClose(t, e, dir)
 }

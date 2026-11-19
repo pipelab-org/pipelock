@@ -289,7 +289,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 
 		if opts.nativeStdio {
-			selected := tracker.nativeAdmission(frame.ID)
+			var selected receipt.EmitOpts
+			if frame.Method == "" && isResponse(line) {
+				selected = tracker.nativeAdmission(frame.ID)
+			}
 			if selected.NativeLease == nil {
 				var admissionErr error
 				eventAdmission, admissionErr = opts.admitNativeRequest()
@@ -2097,6 +2100,16 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	sessionCtx, sessionStop := context.WithCancel(ctx)
 	defer sessionStop()
 	defer opts.closeNativeInputOnStop(clientIn)()
+	defer opts.nativeCapacity().OnStopAfter(opts.shutdownGrace(), func() {
+		interruptNativeOutput(clientOut)
+		_ = serverIn.Close()
+		processExit.terminate(func() {
+			terminateProcessGroup(childPgid)
+			_ = killDirectChild()
+		}, killDirectChild)
+		_ = serverOut.Close()
+		_ = serverErr.Close()
+	})()
 	// The parent PID is captured at function entry to narrow the startup
 	// window, but a launcher that dies before that first syscall remains an
 	// inherent PPID-watch limitation. A harness-owned owner pipe or cgroup is

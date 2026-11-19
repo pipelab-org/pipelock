@@ -82,7 +82,10 @@ func RunWSProxy(
 		return err
 	}
 	defer streamAdmission.ReleaseNativeAdmission()
-	stopCapacityClose := streamAdmission.NativeLease.OnStopAfter(opts.shutdownGrace(), cancel)
+	stopCapacityClose := streamAdmission.NativeLease.OnStopAfter(opts.shutdownGrace(), func() {
+		cancel()
+		interruptNativeOutput(clientOut)
+	})
 	defer stopCapacityClose()
 
 	// Per-invocation adaptive enforcement recorder.

@@ -547,20 +547,40 @@ func RunHTTPProxy(
 					case config.ActionAllow:
 						// upstreamMu is held by Prepare's release claim.
 						if isRequest(deferredReq.ForwardMessage) {
-							tracker.TrackRequest(deferredReq.ID, deferredReq.Method)
+							outcome := TrackedRequestOutcome{Receipt: heldOpts.nativeAdmission, Method: deferredReq.Method}
+							if err := trackNativeOutcome(tracker, deferredReq.ID, outcome); err != nil {
+								if finishDeniedRelease != nil {
+									finishDeniedRelease()
+								}
+								writeNativeAdmissionDenial(heldOpts, safeLogW, safeClientOut, deferredReq.ID, err)
+								return
+							}
 						}
-						respReader, sendErr := httpClient.SendMessageWithOptions(ctx, deferredReq.ForwardMessage, transport.HTTPMessageOptions{Headers: releaseHeaders})
+						releaseCtx, stopRelease := httpstream.WithCapacityGrace(heldOpts.warnContext(), nil, heldOpts.nativeAdmission.NativeLease, heldOpts.shutdownGrace())
+						defer stopRelease()
+						releaseOpts := heldOpts
+						releaseOpts.WarnContext = releaseCtx
+						respReader, sendErr := httpClient.SendMessageWithOptions(releaseCtx, deferredReq.ForwardMessage, transport.HTTPMessageOptions{Headers: releaseHeaders})
 						if sendErr != nil {
+							if errors.Is(context.Cause(releaseCtx), ael.ErrCapacity) {
+								emitTrackedStreamError(releaseCtx, safeLogW, tracker, deferredReq.ID, releaseOpts, ael.ErrCapacity)
+								return
+							}
 							errResp := upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP request failed"))
 							if !deferredReq.IsNotification {
 								_ = safeClientOut.WriteMessage(errResp)
 							}
-							emitTrackedTerminalOutcome(safeLogW, tracker, deferredReq.ID, errResp, "upstream_error", fwdOpts)
+							emitTrackedTerminalOutcome(safeLogW, tracker, deferredReq.ID, errResp, "upstream_error", releaseOpts)
 							return
 						}
-						respReader = fwdOpts.withResponseTimeout(respReader)
-						foundInjection, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, tracker, fwdOpts)
-						if errors.Is(scanErr, transport.ErrResponseTimeout) {
+						if transport.IsStreamingResponse(respReader) {
+							releaseOpts.nativeSSE = true
+						}
+						respReader = releaseOpts.withResponseTimeout(respReader)
+						foundInjection, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, tracker, releaseOpts)
+						if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(context.Cause(releaseCtx), ael.ErrCapacity) {
+							emitTrackedStreamError(releaseCtx, safeLogW, tracker, deferredReq.ID, releaseOpts, ael.ErrCapacity)
+						} else if errors.Is(scanErr, transport.ErrResponseTimeout) {
 							emitRequestScopedTimeout(
 								respReader,
 								safeClientOut,
@@ -568,13 +588,14 @@ func RunHTTPProxy(
 								tracker,
 								deferredReq.ID,
 								"pipelock: upstream response timeout on deferred request; failed request closed",
-								fwdOpts,
+								releaseOpts,
 							)
 						} else if scanErr != nil {
 							_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 							// Only an unanswered request gets a terminal error. A stream
 							// can fail after its response already consumed the ID.
 							if outcome, pending := consumeTrackedRequestOutcome(tracker, deferredReq.ID); pending {
+								defer outcome.releaseNativeLease()
 								errResp := upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP response failed"))
 								if !deferredReq.IsNotification {
 									_ = safeClientOut.WriteMessage(errResp)

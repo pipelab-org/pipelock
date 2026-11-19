@@ -1690,10 +1690,18 @@ func ForwardScannedInput(
 					switch res.FinalDecision {
 					case config.ActionAllow:
 						if isTrackableRequest(heldLine, heldID) {
-							tracker.TrackRequest(heldID, heldAuthorityFrame.Method)
+							outcome := TrackedRequestOutcome{Receipt: heldOpts.nativeAdmission, Method: heldAuthorityFrame.Method}
+							if err := trackNativeOutcome(tracker, heldID, outcome); err != nil {
+								if finishDeniedRelease != nil {
+									finishDeniedRelease()
+								}
+								sendMCPDenial(heldOpts, nativeAdmissionAudit(), nativeAdmissionDenial(heldID, err), blockedCh)
+								return
+							}
 						}
 						// forwardMu is held by Prepare's release claim.
 						if err := writer.WriteMessage(heldLine); err != nil {
+							emitTrackedIncompleteOutcome(logW, tracker, heldID, "upstream_closed", heldOpts)
 							_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 							return
 						}

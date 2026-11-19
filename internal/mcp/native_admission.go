@@ -145,9 +145,10 @@ func (o MCPProxyOpts) closeNativeInputOnStop(input io.Reader) func() {
 }
 
 // Deferred resolution outlives the request input iteration. Transfer its
-// slots before registering the hold, then settle them in the callback.
+// slots for resolution and an eventual response before registering the hold.
+// The response can take its own reservation before the resolution settles.
 func (o MCPProxyOpts) splitDeferredAdmission() (MCPProxyOpts, func(), error) {
-	lease, err := o.nativeAdmission.NativeLease.Split(nativeMCPPendingRecords)
+	lease, err := o.nativeAdmission.NativeLease.Split(2 * nativeMCPPendingRecords)
 	if err != nil || lease == nil {
 		return o, func() {}, err
 	}
@@ -171,5 +172,17 @@ func watchCapacityDeferrals(ctx context.Context, o MCPProxyOpts) {
 	case <-stopped:
 		manager.ResolveAll(config.ActionBlock, deferred.SourceCancel)
 	case <-ctx.Done():
+	}
+}
+
+// interruptNativeOutput wakes stream writes on a deadline-aware output or pipe.
+func interruptNativeOutput(out io.Writer) {
+	if deadline, ok := out.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		if err := deadline.SetWriteDeadline(time.Now()); err == nil {
+			return
+		}
+	}
+	if closer, ok := out.(io.Closer); ok {
+		_ = closer.Close()
 	}
 }

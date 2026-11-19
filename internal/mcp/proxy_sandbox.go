@@ -188,6 +188,15 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	sessionCtx, stopSession := context.WithCancel(ctx)
 	defer stopSession()
 	defer opts.closeNativeInputOnStop(clientIn)()
+	defer opts.nativeCapacity().OnStopAfter(opts.shutdownGrace(), func() {
+		interruptNativeOutput(clientOut)
+		_ = serverIn.Close()
+		processExit.terminate(func() {
+			terminateProcessGroup(childPgid)
+			_ = killDirectChild()
+		}, killDirectChild)
+		_ = serverOut.Close()
+	})()
 	sessionOpts := startupParentWatch
 	sessionGrace := defaultParentExitGrace
 	if h := opts.sessionExitForTest; h != nil {

@@ -2106,6 +2106,10 @@ func RunHTTPListenerProxy(
 		// Keep receipt I/O out of the task-check-to-send interval when taint is enabled.
 		emitPendingReceipt()
 		if err != nil {
+			if errors.Is(context.Cause(upReq.Context()), ael.ErrCapacity) && decision.Outcome.Receipt.ActionID != "" {
+				intent := decision.Outcome.Receipt.InheritAdmission(admission)
+				emitMCPOutcomeReceipt(scanOpts.receiptEmitter(), scanOpts.v2ReceiptEmitter(), scanOpts.ReceiptGroup, safeLogW, intent, "502", -1, nativeCapacityReason, scanOpts.requireReceipts())
+			}
 			if handleMetadataDialError(err, frame.ID) {
 				return
 			}

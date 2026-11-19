@@ -1669,3 +1669,77 @@ func TestRunWSProxy_StdinReadError(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
+
+type observedPipeWriter struct {
+	*io.PipeWriter
+	entered chan struct{}
+}
+
+func (w observedPipeWriter) Write(p []byte) (int, error) {
+	close(w.entered)
+	return w.PipeWriter.Write(p)
+}
+
+func TestRunWSProxyCapacityInterruptsBlockedDownstream(t *testing.T) {
+	e, dir := newNativeMCPEmitter(t, 2*nativeMCPRequestRecords+4)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(4*time.Second))
+	defer cancel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, _, err := ws.UpgradeHTTP(r, w)
+		if err != nil {
+			t.Errorf("upgrade upstream: %v", err)
+			return
+		}
+		defer func() {
+			if err := conn.Close(); err != nil {
+				t.Error(err)
+			}
+		}()
+		if _, err := gobwasutil.ReadClientMessage(conn, nil); err != nil {
+			t.Errorf("read upstream request: %v", err)
+			return
+		}
+		if err := gobwasutil.WriteServerMessage(conn, ws.OpText, []byte(`{"jsonrpc":"2.0","id":1,"result":{}}`)); err != nil {
+			t.Errorf("write upstream reply: %v", err)
+		}
+	}))
+	defer upstream.Close()
+	in, request := io.Pipe()
+	defer func() {
+		if err := request.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	unread, out := io.Pipe()
+	defer func() {
+		if err := unread.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	entered := make(chan struct{})
+	opts := MCPProxyOpts{Scanner: testScannerForWS(t), ReceiptEmitter: e, RequireReceipts: true, ListenerShutdownTimeout: 50 * time.Millisecond}
+	done := make(chan error, 1)
+	go func() {
+		done <- RunWSProxy(ctx, in, observedPipeWriter{PipeWriter: out, entered: entered}, io.Discard, wsURL(upstream), opts)
+	}()
+	if _, err := io.WriteString(request, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{}}}`+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("reply did not reach downstream write")
+	}
+	if _, err := e.ReserveNativeRecords(3 * nativeMCPRequestRecords); !errors.Is(err, ael.ErrCapacity) {
+		t.Fatalf("stop = %v, want %v", err, ael.ErrCapacity)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ael.ErrCapacity) {
+			t.Fatalf("WebSocket exit = %v, want %v", err, ael.ErrCapacity)
+		}
+	case <-time.After(testwait.Deadline(time.Second)):
+		t.Fatal("capacity cutoff did not interrupt the blocked downstream write")
+	}
+	verifyMCPNativeClose(t, e, dir)
+}
