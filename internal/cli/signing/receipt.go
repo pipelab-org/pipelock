@@ -133,6 +133,9 @@ Examples:
 			return validateReceiptSourceArgs(args, chainDir)
 		},
 		RunE: func(cmd *cobra.Command, args []string) (retErr error) {
+			if chainDir == "" && locationID != "" {
+				return configError(errors.New("--location requires --chain"))
+			}
 			targetDir := chainDir
 			if chainDir != "" {
 				targetDir = ""

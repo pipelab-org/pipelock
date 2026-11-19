@@ -326,3 +326,31 @@ func TestChain_ExplicitSessionIgnoresPrefixSibling(t *testing.T) {
 		t.Fatalf("exit %d valid=%v error=%q: want the named run clean and the base finding on %s", code, got.Valid, got.Error, sibSession)
 	}
 }
+
+func TestChainV3LocationScope(t *testing.T) {
+	const opener = "11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl"
+	data, err := os.ReadFile("../../sdk/conformance/testdata/v3/g01-valid-line/" + opener)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, opener)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"missing location", []string{"--dir", "--location", "missing", dir}, "resolve evidence location"},
+		{"explicit file", []string{"--format", "v3", "--location", "missing", path}, "--location requires --dir"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, code := runRoot(t, append([]string{"chain"}, tc.args...)...)
+			if stdout != "" || !strings.Contains(stderr, tc.want) || code == 0 {
+				t.Fatalf("exit %d, stdout %q, stderr %q, want %q", code, stdout, stderr, tc.want)
+			}
+		})
+	}
+}

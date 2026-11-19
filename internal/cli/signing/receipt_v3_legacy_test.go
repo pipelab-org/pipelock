@@ -6,6 +6,7 @@ package signing
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -189,4 +190,14 @@ func mixedLegacyResults(t *testing.T, dir string, flags ...string) []v3.LegacyRe
 		t.Fatalf("decode mixed result: %v, output %s", err, mixed.String())
 	}
 	return result.Legacy
+}
+
+func TestVerifyReceiptV3RefusesFileLocation(t *testing.T) {
+	cmd := VerifyReceiptCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--format", "v3", "--location", "missing", "example.jsonl"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--location requires --chain") {
+		t.Fatalf("file location error = %v", err)
+	}
 }

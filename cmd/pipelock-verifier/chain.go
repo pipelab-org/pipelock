@@ -113,9 +113,13 @@ end_proof, scope, and signer trust.`,
 			var dir string
 			if opts.asDir {
 				dir, paths = args[0], nil
-				if location, err := recorder.ResolveEvidenceLocation(dir, opts.locationID); err == nil {
-					dir = location.Dir
+				location, err := recorder.ResolveEvidenceLocation(dir, opts.locationID)
+				if err != nil {
+					return evidenceLocationError(fmt.Errorf("resolve evidence location: %w", err))
 				}
+				dir = location.Dir
+			} else if opts.locationID != "" {
+				return cliutil.ExitCodeError(cliutil.ExitConfig, errors.New("--location requires --dir"))
 			}
 			claimed, detectErr := v3Flags.Detect(paths, dir, seq)
 			if detectErr != nil {
