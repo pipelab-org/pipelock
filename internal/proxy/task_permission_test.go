@@ -750,6 +750,7 @@ func TestForwardRequiredReceiptQueuedScanCancellation(t *testing.T) {
 			p.receiptEmitterPtr.Store(emitter)
 
 			holdReceiptScanSlots(t, rec)
+			queued := waitForQueuedReceiptScan(t, rec)
 			reqCtx, cancelReq := context.WithCancelCause(t.Context())
 			defer cancelReq(nil)
 			req := httptest.NewRequestWithContext(reqCtx, http.MethodPost, "http://peer.vendor.example/update", nil)
@@ -759,7 +760,13 @@ func TestForwardRequiredReceiptQueuedScanCancellation(t *testing.T) {
 				defer close(finished)
 				p.handleForwardHTTP(w, req)
 			}()
-			waitForQueuedReceiptScan(t, finished)
+			select {
+			case <-queued:
+			case <-finished:
+				t.Fatalf("request finished before its receipt scan queued: status=%d body=%q", w.Code, w.Body)
+			case <-time.After(5 * time.Second):
+				t.Fatal("receipt scan never queued for a slot")
+			}
 			cancelReq(tc.cause)
 			select {
 			case <-finished:
@@ -780,13 +787,19 @@ func TestForwardRequiredReceiptQueuedScanCancellation(t *testing.T) {
 
 var slotHoldProducer = receiptcontent.Register(receiptcontent.Schema{Kind: "pipelock.test.proxy_scan_slot_hold.v1"})
 
-// heldScanContext parks a receipt scan just after it takes a recorder slot.
+// heldScanContext parks a receipt scan just after it takes a recorder slot and
+// reports that it holds one.
 type heldScanContext struct {
 	context.Context
+	holding chan<- struct{}
 	release <-chan struct{}
 }
 
 func (ctx heldScanContext) Err() error {
+	select {
+	case ctx.holding <- struct{}{}:
+	default:
+	}
 	<-ctx.release
 	return ctx.Context.Err()
 }
@@ -795,58 +808,40 @@ func (ctx heldScanContext) Err() error {
 // ends, so the next scan has to queue.
 func holdReceiptScanSlots(t *testing.T, rec *recorder.Recorder) {
 	t.Helper()
-	release := make(chan struct{})
-	held := make(chan struct{})
 	slots := runtime.GOMAXPROCS(0)
+	holding := make(chan struct{}, slots)
+	release := make(chan struct{})
 	var done sync.WaitGroup
 	for range slots {
 		done.Go(func() {
-			_, _, _ = rec.ScanReceiptContent(heldScanContext{Context: t.Context(), release: release}, slotHoldProducer, nil)
-			held <- struct{}{}
+			_, _, _ = rec.ScanReceiptContent(heldScanContext{Context: t.Context(), holding: holding, release: release}, slotHoldProducer, nil)
 		})
 	}
 	t.Cleanup(func() {
 		close(release)
-		for range slots {
-			<-held
-		}
 		done.Wait()
 	})
-	deadline := time.Now().Add(5 * time.Second)
-	for countGoroutinesIn("heldScanContext.Err(") < slots {
-		if time.Now().After(deadline) {
+	timeout := time.After(5 * time.Second)
+	for range slots {
+		select {
+		case <-holding:
+		case <-timeout:
 			t.Fatal("receipt scan slots were not all held")
 		}
-		runtime.Gosched()
-		time.Sleep(time.Millisecond)
 	}
 }
 
-// waitForQueuedReceiptScan waits until a receipt scan is blocked waiting for
-// a slot, or fails if the request finished first.
-func waitForQueuedReceiptScan(t *testing.T, finished <-chan struct{}) {
+// waitForQueuedReceiptScan installs a wait hook on rec and returns a channel
+// that receives once a scan has found every slot taken.
+func waitForQueuedReceiptScan(t *testing.T, rec *recorder.Recorder) <-chan struct{} {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		buf := make([]byte, 1<<22)
-		for _, g := range strings.Split(string(buf[:runtime.Stack(buf, true)]), "\n\n") {
-			if strings.Contains(g, "[select") && strings.Contains(g, "(*Recorder).ScanReceiptContent") {
-				return
-			}
-		}
+	queued := make(chan struct{}, 1)
+	rec.SetContentScanWaitForTest(func() {
 		select {
-		case <-finished:
-			t.Fatal("request finished before its receipt scan queued")
+		case queued <- struct{}{}:
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("receipt scan never queued for a slot")
-		}
-		time.Sleep(time.Millisecond)
-	}
-}
-
-func countGoroutinesIn(frame string) int {
-	buf := make([]byte, 1<<22)
-	return strings.Count(string(buf[:runtime.Stack(buf, true)]), frame)
+	})
+	t.Cleanup(func() { rec.SetContentScanWaitForTest(nil) })
+	return queued
 }

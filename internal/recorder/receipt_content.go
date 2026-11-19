@@ -58,10 +58,22 @@ func (r *Recorder) ScanReceiptContent(ctx context.Context, p *receiptcontent.Pro
 		// as the process has CPUs, so a burst of short scans cannot keep a
 		// longer scan sharing a CPU with the whole burst. The slot covers inspection
 		// only and is returned before signing, appending or confirming.
+		acquired := false
 		select {
 		case slots <- struct{}{}:
+			acquired = true
+		default:
+			if wait := r.contentScanWait.Load(); wait != nil {
+				(*wait)()
+			}
+			select {
+			case slots <- struct{}{}:
+				acquired = true
+			case <-ctx.Done():
+			}
+		}
+		if acquired {
 			defer func() { <-slots }()
-		case <-ctx.Done():
 		}
 		if err := ctx.Err(); err != nil {
 			return receiptcontent.Report{}, nil, errors.Join(scanner.ErrTextDLPIncomplete, err)
