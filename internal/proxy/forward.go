@@ -2499,7 +2499,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if forwardGate.HasContractContext() {
 		forwardAllowReceipt = withContractReceipt(forwardGate, forwardAllowReceipt)
 	}
-	var upstreamReceipt *v3TransportReceipt
+	var upstreamReceipt, downstreamReceipt *v3TransportReceipt
 	if cfg.FlightRecorder.RequireReceipts {
 		var err error
 		if p.receiptV3 != nil {
@@ -2551,6 +2551,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
 			outcomeReason = "license_revoked"
 		}
+		p.recordTransportOutcome(r.Context(), forwardAllowReceipt, downstreamReceipt,
+			aborted == nil && flushErr == nil && outcomeReasonClaimsDelivery(outcomeReason, config.ActionAllow))
 		p.emitOutcomeReceiptWithPattern(cfg, outcomeReceipt, receiptOutcomePattern(outcomeStatus, outcomeBytes, outcomeReason))
 		if aborted != nil {
 			panic(aborted)
@@ -2561,6 +2563,14 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if !cfg.FlightRecorder.RequireReceipts {
 			emitForwardReceipt(forwardAllowReceipt)
 		}
+	}
+	confirmResponseDelivery := func() bool {
+		var deliver bool
+		downstreamReceipt, deliver = p.confirmHTTPResponseDelivery(w, r.Context(), cfg, forwardAllowReceipt)
+		if !deliver {
+			outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, receiptEmissionFailedLayer
+		}
+		return deliver
 	}
 	responseBudgetTruncated := false
 
@@ -2850,6 +2860,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		copyResponseHeaders(w.Header(), resp.Header)
+		if !confirmResponseDelivery() {
+			return
+		}
 		w.WriteHeader(resp.StatusCode)
 		flusher, _ := w.(http.Flusher)
 		if err := DispatchSSEScan(r.Context(), resp.Body, httpstream.Writer{Writer: w}, flusher, sc, sseOpts); err != nil {
@@ -2992,6 +3005,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		p.logger.LogResponseScanExemptFullTrust(actx, fwdRespHost)
 		p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportForward)
 		copyResponseHeaders(w.Header(), resp.Header)
+		if !confirmResponseDelivery() {
+			return
+		}
 		w.WriteHeader(resp.StatusCode)
 		written, copyErr := httpstream.Copy(w, resp.Body)
 		outcomeStatus = strconv.Itoa(resp.StatusCode)
@@ -3166,6 +3182,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 							return
 						}
 						copyResponseHeaders(w.Header(), resp.Header)
+						if !confirmResponseDelivery() {
+							return
+						}
 						w.WriteHeader(resp.StatusCode)
 						written, copyErr := httpstream.Copy(w, io.MultiReader(bytes.NewReader(respBody), resp.Body))
 						outcomeStatus = strconv.Itoa(resp.StatusCode)
@@ -3672,8 +3691,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Del("Transfer-Encoding")
 			w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
 		}
+		if !confirmResponseDelivery() {
+			return
+		}
 		w.WriteHeader(resp.StatusCode)
-		n, _ := w.Write(respBody)
+		n, writeErr := w.Write(respBody)
 		written := int64(n)
 
 		sc.RecordRequest(strings.ToLower(r.URL.Hostname()), int(written))
@@ -3694,6 +3716,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		outcomeReason = "complete"
 		if responseBudgetTruncated {
 			outcomeReason = "budget_truncated"
+		}
+		if downstreamReceipt != nil && (writeErr != nil || n != len(respBody)) {
+			outcomeReason = "delivery_error"
 		}
 		// Neutral URL results earn no clean credit from a benign response.
 		if structured == nil && forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact && !result.IsAdaptiveNeutral() && !redirectExempt.Load() && !policyObserved.Load() {
@@ -3720,6 +3745,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// max_response_mb should remain a silent streaming cap on this no-scan path
 	// is a separate backward-compat decision, intentionally left unchanged.)
 	copyResponseHeaders(w.Header(), resp.Header)
+	if !confirmResponseDelivery() {
+		return
+	}
 	w.WriteHeader(resp.StatusCode)
 	written, copyErr := httpstream.Copy(w, io.LimitReader(resp.Body, maxBytes))
 

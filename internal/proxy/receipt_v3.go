@@ -6,11 +6,13 @@ package proxy
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
@@ -133,4 +135,29 @@ func (r *wsRelay) writePayload(ctx context.Context, boundary string, opcode ws.O
 	err = write(conn, opcode, payload)
 	r.proxy.recordTransportOutcome(ctx, opts, intent, err == nil)
 	return false, err
+}
+
+// confirmHTTPResponseDelivery gates the first write of an approved upstream
+// response. The downstream action has its own ID and points at the send.
+func (p *Proxy) confirmHTTPResponseDelivery(w http.ResponseWriter, ctx context.Context, cfg *config.Config, send receipt.EmitOpts) (*v3TransportReceipt, bool) {
+	if p == nil || p.receiptV3 == nil {
+		return nil, true
+	}
+	opts := deliveryReceiptOpts(send)
+	entry, err := p.confirmTransportReceipt(ctx, cfg, opts, boundaryDownstreamDelivery)
+	if err == nil || !cfg.FlightRecorder.RequireReceipts {
+		return entry, true
+	}
+	// Some callers have already staged upstream headers.
+	clear(w.Header())
+	writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(opts.RequestID),
+		receiptEmissionBlockReason, http.StatusForbidden)
+	return nil, false
+}
+
+func deliveryReceiptOpts(send receipt.EmitOpts) receipt.EmitOpts {
+	opts := send
+	opts.ActionID, opts.ParentActionID = receipt.NewActionID(), send.ActionID
+	opts.Layer, opts.Pattern, opts.Verdict = "", "", config.ActionAllow
+	return opts
 }

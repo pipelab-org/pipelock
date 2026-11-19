@@ -184,7 +184,7 @@ func NewReverseProxy(
 	}
 
 	// ModifyResponse scans response bodies for injection.
-	proxy.ModifyResponse = rp.modifyResponse
+	proxy.ModifyResponse = rp.modifyResponseWithReceipt
 
 	// ErrorHandler returns a JSON error on upstream failures.
 	proxy.ErrorHandler = rp.errorHandler
@@ -1872,6 +1872,42 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			outcomeTracker.Record(status, written, httpstream.Reason(r.Context(), err))
 		},
 	}
+	if rp.owner != nil && rp.owner.receiptV3 != nil {
+		confirm := func() (*v3TransportReceipt, error) {
+			entry, err := rp.owner.confirmTransportReceipt(r.Context(), cfg, deliveryReceiptOpts(reverseAllowReceipt), boundaryDownstreamDelivery)
+			if err != nil && cfg.FlightRecorder.RequireReceipts {
+				return nil, fmt.Errorf("%w: %w", errReverseDeliveryReceipt, err)
+			}
+			return entry, nil
+		}
+		responseReceiptState.confirmDelivery = confirm
+		forwardWriter.beforeInformational = func(write func()) {
+			if responseReceiptState.deliveryErr != nil {
+				return
+			}
+			entry, err := confirm()
+			responseReceiptState.deliveryErr = err
+			if err == nil {
+				write()
+				rp.owner.recordTransportOutcome(r.Context(), reverseAllowReceipt, entry, true)
+			}
+		}
+		returned := false
+		defer func() {
+			entry := responseReceiptState.delivery
+			if entry == nil {
+				return
+			}
+			completed := returned && !forwardWriter.hijacked && !forwardWriter.writeFailed && r.Context().Err() == nil
+			if completed && cfg.FlightRecorder.RequireReceipts {
+				completed = flushResponseBeforeOutcome(w, r, cfg) == nil
+			}
+			rp.owner.recordTransportOutcome(r.Context(), reverseAllowReceipt, entry, completed)
+		}()
+		rp.proxy.ServeHTTP(forwardWriter, r)
+		returned = true
+		return
+	}
 	rp.proxy.ServeHTTP(forwardWriter, r)
 }
 
@@ -1882,17 +1918,22 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 // them and a forged X-Pipelock-Block-Reason would reach the client first.
 type reverseInformationalGuardWriter struct {
 	http.ResponseWriter
-	onWriteError func(int, int64, error)
-	status       int
-	written      int64
-	hijacked     bool
+	onWriteError        func(int, int64, error)
+	beforeInformational func(func())
+	writeFailed         bool
+	status              int
+	written             int64
+	hijacked            bool
 }
 
 func (w *reverseInformationalGuardWriter) Write(p []byte) (int, error) {
 	n, err := (httpstream.Writer{Writer: w.ResponseWriter}).Write(p)
 	w.written += int64(n)
-	if err != nil && w.onWriteError != nil {
-		w.onWriteError(w.status, w.written, err)
+	if err != nil {
+		w.writeFailed = true
+		if w.onWriteError != nil {
+			w.onWriteError(w.status, w.written, err)
+		}
 	}
 	return n, err
 }
@@ -1907,6 +1948,10 @@ func (w *reverseInformationalGuardWriter) WriteHeader(code int) {
 			if isPipelockNamespaceName(name) {
 				delete(h, name)
 			}
+		}
+		if w.beforeInformational != nil {
+			w.beforeInformational(func() { w.ResponseWriter.WriteHeader(code) })
+			return
 		}
 	}
 	w.ResponseWriter.WriteHeader(code)
@@ -2426,6 +2471,9 @@ type reverseResponseReceiptState struct {
 	admissionReceiptID     string
 	recordedBlockReceiptID string
 	responseBlocked        bool
+	confirmDelivery        func() (*v3TransportReceipt, error)
+	delivery               *v3TransportReceipt
+	deliveryErr            error
 }
 
 func reverseResponseReceiptStateFrom(resp *http.Response) *reverseResponseReceiptState {
@@ -2434,6 +2482,24 @@ func reverseResponseReceiptStateFrom(resp *http.Response) *reverseResponseReceip
 	}
 	state, _ := resp.Request.Context().Value(ctxKeyReverseResponseReceipt).(*reverseResponseReceiptState)
 	return state
+}
+
+var errReverseDeliveryReceipt = errors.New("confirm reverse response delivery receipt")
+
+func (rp *ReverseProxyHandler) modifyResponseWithReceipt(resp *http.Response) error {
+	state := reverseResponseReceiptStateFrom(resp)
+	if state != nil && state.deliveryErr != nil {
+		return state.deliveryErr
+	}
+	if err := rp.modifyResponse(resp); err != nil {
+		return err
+	}
+	if state == nil || state.responseBlocked || state.confirmDelivery == nil {
+		return nil
+	}
+	entry, err := state.confirmDelivery()
+	state.delivery = entry
+	return err
 }
 
 // modifyResponse scans and transforms an upstream response before the reverse proxy forwards it.
@@ -3845,6 +3911,12 @@ func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Reque
 		outcomeTracker.Record(status, bytesTransferred, reason)
 	}
 	actx := newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
+	if errors.Is(err, errReverseDeliveryReceipt) {
+		writeReverseProxyBlock(w, http.StatusForbidden,
+			blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID),
+			receiptEmissionBlockReason)
+		return
+	}
 	if blockedErr, ok := blockedRequestErrorFrom(err); ok {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, blockedErr.layer)

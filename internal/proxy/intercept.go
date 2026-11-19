@@ -2282,6 +2282,12 @@ func newInterceptHandler(
 		})
 		var upstreamReceipt *v3TransportReceipt
 		// Outcomes run on the inner HTTP writer, before any stream abort.
+		var downstreamReceipt *v3TransportReceipt
+		defer func() {
+			if downstreamReceipt != nil {
+				ic.Proxy.recordTransportOutcome(r.Context(), allowReceipt, downstreamReceipt, false)
+			}
+		}()
 		// Release buffered bytes before synchronous required receipt storage.
 		emitOutcome := func(opts receipt.EmitOpts, verdict string, status int, transferred int64, reason string) {
 			var flushErr error
@@ -2290,6 +2296,11 @@ func newInterceptHandler(
 				if flushErr != nil && outcomeReasonClaimsDelivery(reason, verdict) {
 					reason, transferred = flushFailureReason(reason), -1
 				}
+			}
+			if downstreamReceipt != nil {
+				ic.Proxy.recordTransportOutcome(r.Context(), opts, downstreamReceipt,
+					flushErr == nil && outcomeReasonClaimsDelivery(reason, verdict))
+				downstreamReceipt = nil
 			}
 			if upstreamReceipt == nil {
 				interceptEmitOutcomeReceipt(ic, opts, verdict, status, transferred, reason)
@@ -2406,6 +2417,12 @@ func newInterceptHandler(
 		var resourceDelivery resourceDeliveryNotification
 		defer resourceDelivery.complete()
 		flushIssuedRedirect := func() bool {
+			var deliver bool
+			downstreamReceipt, deliver = ic.Proxy.confirmHTTPResponseDelivery(w, r.Context(), ic.Config, allowReceipt)
+			if !deliver {
+				emitOutcome(allowReceipt, config.ActionBlock, http.StatusForbidden, 0, receiptEmissionFailedLayer)
+				return true
+			}
 			// A declared resource cannot turn an operator's root-route
 			// delegation into onward authority for another origin.
 			if issuerProof.derived {

@@ -6653,6 +6653,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Count decoded source bytes before shield rewriting or text extraction.
 	// -1 signs bytes=unknown on paths that end before the body is read.
 	capturedBytes := int64(-1)
+	var downstreamReceipt *v3TransportReceipt
 	defer func() {
 		aborted := recover()
 		// A policy denial describes withheld upstream content, even if its
@@ -6681,6 +6682,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		// written to the client is a separate key so receipt consumers that
 		// read bytes= see the same unit before and after this field existed.
 		pattern := receiptOutcomePattern(outcomeStatus, capturedBytes, outcomeReason) + " delivered_bytes=" + strconv.FormatInt(delivery.bytes, 10)
+		p.recordTransportOutcome(r.Context(), fetchAllowReceipt, downstreamReceipt,
+			aborted == nil && delivery.err == nil && outcomeReason == "complete")
 		p.emitOutcomeReceiptWithPattern(cfg, opts, pattern)
 		if aborted != nil {
 			panic(aborted)
@@ -7227,6 +7230,13 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		emitFetchReceipt(fetchAllowReceipt)
 	}
 	log.LogAllowed(actx, resp.StatusCode, len(body), duration)
+
+	var deliver bool
+	downstreamReceipt, deliver = p.confirmHTTPResponseDelivery(w, r.Context(), cfg, fetchAllowReceipt)
+	if !deliver {
+		outcomeStatus, outcomeReason = strconv.Itoa(http.StatusForbidden), receiptEmissionFailedLayer
+		return
+	}
 
 	shieldRewrite := shieldRewriteHeaderValue(shieldSummary)
 	setShieldRewriteHeader(w.Header(), shieldSummary)

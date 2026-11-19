@@ -33,10 +33,10 @@ import (
 
 func TestV3HTTPTransportIntentPrecedesUpstreamSend(t *testing.T) {
 	for _, transport := range []string{"fetch", "forward", "reverse"} {
-		for _, closed := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/closed=%t", transport, closed), func(t *testing.T) {
+		for _, stage := range []string{"healthy", "before_send", "before_delivery"} {
+			t.Run(transport+"/"+stage, func(t *testing.T) {
 				p, writer, dir, keys := newTestV3HTTPProxy(t, transport)
-				if closed {
+				if stage == "before_send" {
 					if err := writer.Close(t.Context(), nil); err != nil {
 						t.Fatal(err)
 					}
@@ -50,10 +50,22 @@ func TestV3HTTPTransportIntentPrecedesUpstreamSend(t *testing.T) {
 						*result.Counts.EffectsUnknown == 1 {
 						before.Store(true)
 					}
+					if stage == "before_delivery" {
+						if err := writer.Close(r.Context(), nil); err != nil {
+							t.Error(err)
+						}
+					}
 					_, _ = w.Write([]byte("example"))
 				}))
 				t.Cleanup(upstream.Close)
-				response := httptest.NewRecorder()
+				var deliveredWithIntent bool
+				onDelivery := func() {
+					result, verifyErr := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+					deliveredWithIntent = verifyErr == nil && result.Integrity == "ok" &&
+						result.Counts.EffectsCompleted != nil && result.Counts.EffectsUnknown != nil &&
+						*result.Counts.EffectsUnknown >= 1 && *result.Counts.EffectsCompleted+*result.Counts.EffectsUnknown == 2
+				}
+				response := &v3ResponseRecorder{ResponseRecorder: httptest.NewRecorder(), onHeader: onDelivery}
 				switch transport {
 				case "fetch":
 					req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL, nil)
@@ -70,23 +82,31 @@ func TestV3HTTPTransportIntentPrecedesUpstreamSend(t *testing.T) {
 					reverse.SetOwnerProxy(p)
 					reverse.ServeHTTP(response, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
 				}
-				if closed {
+				if stage == "before_send" {
 					if hits.Load() != 0 || response.Code != http.StatusForbidden ||
 						response.Header().Get(blockreason.HeaderReason) != string(blockreason.ReceiptEmissionFailed) {
 						t.Fatalf("failed receipt reached upstream or wrong response: hits=%d code=%d body=%s", hits.Load(), response.Code, response.Body)
 					}
 					return
 				}
-				if hits.Load() != 1 || !before.Load() || response.Code != http.StatusOK {
-					t.Fatalf("upstream effect lacked its earlier intent: hits=%d prior=%t code=%d body=%s", hits.Load(), before.Load(), response.Code, response.Body)
+				if stage == "before_delivery" {
+					if hits.Load() != 1 || response.Code != http.StatusForbidden ||
+						response.Header().Get(blockreason.HeaderReason) != string(blockreason.ReceiptEmissionFailed) ||
+						strings.Contains(response.Body.String(), "example") {
+						t.Fatalf("unconfirmed response was delivered: hits=%d code=%d body=%s", hits.Load(), response.Code, response.Body)
+					}
+					return
+				}
+				if hits.Load() != 1 || !before.Load() || !deliveredWithIntent || response.Code != http.StatusOK {
+					t.Fatalf("effect lacked its earlier intent: hits=%d upstream=%t downstream=%t code=%d body=%s", hits.Load(), before.Load(), deliveredWithIntent, response.Code, response.Body)
 				}
 				if err := writer.Close(t.Context(), nil); err != nil {
 					t.Fatal(err)
 				}
 				result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
 				if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil ||
-					*result.Counts.EffectsCompleted != 1 {
-					t.Fatalf("upstream outcome missing: %+v (%v)", result, err)
+					*result.Counts.EffectsCompleted != 2 {
+					t.Fatalf("two HTTP outcomes required: %+v (%v)", result, err)
 				}
 				entries, err := os.ReadDir(dir)
 				if err != nil {
@@ -98,6 +118,18 @@ func TestV3HTTPTransportIntentPrecedesUpstreamSend(t *testing.T) {
 			})
 		}
 	}
+}
+
+type v3ResponseRecorder struct {
+	*httptest.ResponseRecorder
+	onHeader func()
+}
+
+func (w *v3ResponseRecorder) WriteHeader(code int) {
+	if code == http.StatusOK {
+		w.onHeader()
+	}
+	w.ResponseRecorder.WriteHeader(code)
 }
 
 func newTestV3HTTPProxy(t *testing.T, surface string) (*Proxy, *v3.StreamWriter, string, []ed25519.PublicKey) {
@@ -405,8 +437,8 @@ func TestV3InterceptIntentPrecedesRoundTrip(t *testing.T) {
 				t.Fatal(err)
 			}
 			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
-			if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil || *result.Counts.EffectsCompleted != 1 {
-				t.Fatalf("intercepted upstream outcome missing: %+v (%v)", result, err)
+			if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil || *result.Counts.EffectsCompleted != 2 {
+				t.Fatalf("two intercepted HTTP outcomes required: %+v (%v)", result, err)
 			}
 		})
 	}
