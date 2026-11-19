@@ -4,8 +4,12 @@
 package mcp
 
 import (
+	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -132,5 +136,80 @@ func TestDeferredStdioReleaseRecordsUpstreamWriteFailure(t *testing.T) {
 	}
 	if tracker.HasPending() {
 		t.Fatal("failed write left a pending upstream response")
+	}
+}
+
+func TestDeferredHTTPReleaseRecordsUpstreamSendFailure(t *testing.T) {
+	attempted := make(chan struct{}, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		conn, _, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			t.Errorf("hijack upstream connection: %v", err)
+			return
+		}
+		select {
+		case attempted <- struct{}{}:
+		default:
+		}
+		_ = conn.Close()
+	}))
+	t.Cleanup(upstream.Close)
+
+	h := newMCPDecisionReceiptHarness(t)
+	manager := newDeferKillManager(t)
+	policyCfg := deferApprovalPolicy(config.DeferResolverProfile{})
+	policyCfg.Rules[0].ResolutionPolicy.ResolverProfile = ""
+	opts := MCPProxyOpts{
+		Scanner: testInputScanner(t), PolicyCfg: policyCfg, DeferManager: manager,
+		ReceiptEmitter: h.v1, V2ReceiptEmitter: h.v2, RequireReceipts: true,
+		PolicyHash: mcpTestPolicyHash,
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	input, feed := io.Pipe()
+	run := &httpDeferRun{stdout: &syncBuffer{}, inputW: feed, cancel: cancel, done: make(chan error, 1)}
+	go func() {
+		run.done <- RunHTTPProxy(ctx, input, run.stdout, io.Discard, upstream.URL, nil, opts)
+	}()
+	t.Cleanup(func() { run.stop(t) })
+
+	if _, err := io.WriteString(feed, deferKillTestCall); err != nil {
+		t.Fatal(err)
+	}
+	testwait.For(t, 5*time.Second, func() bool { return len(manager.Snapshot()) == 1 }, "deferred HTTP hold")
+	hold := manager.Snapshot()[0]
+	if err := manager.Resolve(hold.DeferID, config.ActionAllow, deferred.SourceApproval); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-attempted:
+	default:
+		t.Fatal("no upstream POST was attempted")
+	}
+	if got := run.stdout.String(); !strings.Contains(got, "upstream HTTP request failed") {
+		t.Fatalf("client response = %q, want sanitized upstream error", got)
+	}
+	if err := h.rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var resolutions []receipt.ActionRecord
+	for _, r := range readActionReceipts(t, h.dir) {
+		if r.ActionRecord.DecisionPhase == receipt.DecisionPhaseResolution {
+			resolutions = append(resolutions, r.ActionRecord)
+		}
+	}
+	if len(resolutions) != 2 {
+		t.Fatalf("resolution receipt count = %d, want approval and upstream send failure", len(resolutions))
+	}
+	approved, failed := resolutions[0], resolutions[1]
+	if approved.Verdict != config.ActionAllow || failed.Verdict != config.ActionBlock ||
+		failed.Pattern != "upstream_write_failed" || failed.ResolutionSource != deferred.SourceCancel ||
+		failed.DeferID != hold.DeferID || failed.ParentActionID != hold.ActionID {
+		t.Fatalf("approved=%+v failed=%+v", approved, failed)
 	}
 }

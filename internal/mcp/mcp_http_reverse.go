@@ -1172,15 +1172,18 @@ func RunHTTPListenerProxy(
 			}
 		}
 
-		admitLegacyMethod := func() bool {
+		admitLegacyMethod := func() (receipt.EmitOpts, bool) {
 			if !requestBaseOpts.requireReceipts() {
-				return true
+				return receipt.EmitOpts{}, true
 			}
 			admission := requestBaseOpts.withReceiptPolicyHash(receipt.EmitOpts{
 				ActionID: receipt.NewActionID(), Verdict: config.ActionForward,
 				Transport: requestBaseOpts.Transport, Method: r.Method, Target: upstreamURL,
 				Layer: "mcp_transport_admission",
 			})
+			if group := requestBaseOpts.ReceiptGroup; group != nil && group.Shards != nil {
+				admission = group.Shards.Admit(admission)
+			}
 			if _, err := requestBaseOpts.emitReceiptDecision(MCPDecision{Receipt: admission, RequireReceipt: true}); err != nil {
 				logReceiptEmitFailure(safeLogW, err, true, config.ActionForward)
 				denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
@@ -1193,10 +1196,10 @@ func RunHTTPListenerProxy(
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("receipt emission failed")))
-				return false
+				return receipt.EmitOpts{}, false
 			}
 			blockreason.SetRecordedReceipt(w.Header(), admission.ActionID)
-			return true
+			return admission, true
 		}
 
 		if r.Method == http.MethodGet {
@@ -1437,11 +1440,24 @@ func RunHTTPListenerProxy(
 			forwardListenerUpstreamHeaders(upReq, r, false)
 			responseencoding.RequestIdentity(upReq.Header)
 
-			if !admitLegacyMethod() {
+			admission, admitted := admitLegacyMethod()
+			if !admitted {
 				return
 			}
 			upResp, err := upstreamClient.Do(upReq)
 			if err != nil {
+				if admission.ActionID != "" {
+					failure := mcpOutcomeReceiptOpts(admission, "error", -1, "upstream_error")
+					// The transport admission is single-phase. Keep the failure
+					// on its action and shard without opening an intent pair.
+					failure.DecisionPhase = ""
+					failure.Verdict, failure.Layer = config.ActionWarn, mcpOutcomeLayer
+					if _, emitErr := requestBaseOpts.emitReceiptDecision(MCPDecision{
+						Receipt: failure, RequireReceipt: true, RequiredMode: true,
+					}); emitErr != nil {
+						logReceiptEmitFailure(safeLogW, emitErr, true, failure.Verdict)
+					}
+				}
 				if handleMetadataDialError(err, nil) {
 					return
 				}
@@ -2205,6 +2221,7 @@ func RunHTTPListenerProxy(
 		responseTracker.TrackOutcome(frame.ID, outcome)
 		upstreamIsSSE := transport.HasSingleSSEContentType(upResp.Header)
 		if setupState && upstreamIsSSE {
+			terminalStatus, terminalReason = "error", "upstream_sse_session_setup"
 			w.Header().Set("Content-Type", "application/json")
 			denialAudit = mcpListenerInspectionDenialAudit()
 			w.WriteHeader(http.StatusBadGateway)
@@ -2272,6 +2289,7 @@ func RunHTTPListenerProxy(
 			// content-type set above with the standard application/json
 			// upstream-error envelope.
 			if scanErr != nil && !streamWriter.Wrote() {
+				terminalStatus, terminalReason = "error", "upstream_sse_validation_failed"
 				w.Header().Set("Cache-Control", "no-store")
 				w.Header().Set("Content-Type", "application/json")
 				if !revocableWriter.denied && !mcpDenialWasFinalized(scanErr) {
@@ -2283,8 +2301,9 @@ func RunHTTPListenerProxy(
 			}
 			if scanErr != nil {
 				streamOutcome := decision.Outcome
-				_, pending := responseTracker.Consume(frame.ID)
-				standalone := !pending || streamOutcome.Receipt.ActionID == ""
+				// Correlation can consume the ID before a write fails. Use the
+				// receipt handle to tell whether the intent still needs settling.
+				standalone := streamOutcome.handle == nil || streamOutcome.handle.settled.Load()
 				if standalone {
 					streamOutcome = TrackedRequestOutcome{Receipt: mcpStreamReceipt(reqOpts, r.Method)}
 				}
@@ -2354,6 +2373,7 @@ func RunHTTPListenerProxy(
 			}
 		}
 		if scanErr != nil {
+			terminalStatus, terminalReason = "error", "upstream_response_validation_failed"
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			w.Header().Set("Content-Type", "application/json")
 			if denialAudit.kind == "" && !mcpDenialWasFinalized(scanErr) {

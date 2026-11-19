@@ -51,14 +51,6 @@ func emitRequestScopedTimeout(
 	_, _ = fmt.Fprintln(logW, logMessage)
 }
 
-func emitTrackedTerminalOutcome(logW io.Writer, tracker *RequestTracker, id json.RawMessage, resp []byte, reason string, opts MCPProxyOpts) {
-	outcome, ok := consumeTrackedRequestOutcome(tracker, id)
-	if !ok {
-		return
-	}
-	outcome.settle(logW, opts, mcpResponseStatus(resp), int64(len(resp)), reason)
-}
-
 // emitContractRefusedOutcome writes the blocked outcome for a call the live
 // upstream contract refused. Notifications are never tracked, so their caller
 // passes the outcome from the input decision directly.
@@ -506,16 +498,21 @@ func RunHTTPProxy(
 					switch res.FinalDecision {
 					case config.ActionAllow:
 						// upstreamMu is held by Prepare's release claim.
-						if isRequest(deferredReq.ForwardMessage) {
-							tracker.TrackRequest(deferredReq.ID, deferredReq.Method)
+						var registration *requestRegistration
+						if isTrackableRequest(deferredReq.ForwardMessage, deferredReq.ID) {
+							registration = tracker.trackOutcome(deferredReq.ID, TrackedRequestOutcome{Method: deferredReq.Method})
 						}
 						respReader, sendErr := httpClient.SendMessageWithOptions(ctx, deferredReq.ForwardMessage, transport.HTTPMessageOptions{Headers: releaseHeaders})
 						if sendErr != nil {
-							errResp := upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP request failed"))
+							tracker.removeOwnedOutcome(deferredReq.ID, registration)
+							res.FinalDecision = config.ActionBlock
+							res.ResolutionSource = deferred.SourceCancel
+							res.Reason = mcpUpstreamWriteFailed
+							// Settlement logs any receipt write failure.
+							_ = receiptSettle.ensure(fwdOpts, safeLogW, res)
 							if !deferredReq.IsNotification {
-								_ = safeClientOut.WriteMessage(errResp)
+								_ = safeClientOut.WriteMessage(upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP request failed")))
 							}
-							emitTrackedTerminalOutcome(safeLogW, tracker, deferredReq.ID, errResp, "upstream_error", fwdOpts)
 							return
 						}
 						respReader = fwdOpts.withResponseTimeout(respReader)
