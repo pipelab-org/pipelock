@@ -21,7 +21,7 @@ import (
 
 const incrementalRunID = "0123456789abcdef0123456789abcdef"
 
-func newIncrementalRun(t *testing.T) (*Emitter, string, string) {
+func newIncrementalRun(t *testing.T, capacity ...*Capacity) (*Emitter, string, string) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -33,7 +33,7 @@ func newIncrementalRun(t *testing.T) (*Emitter, string, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = rec.Close() })
-	emitter := NewEmitter(rec, priv, incrementalRunID, 30)
+	emitter := NewEmitter(rec, priv, incrementalRunID, 30, capacity...)
 	if emitter == nil {
 		t.Fatal("nil emitter")
 	}
@@ -1155,4 +1155,39 @@ func TestRunVerifierClassifiesOversizeAtFinalStat(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunVerifierRefusesReplacedOrOversizedStream(t *testing.T) {
+	t.Run("replacement", func(t *testing.T) {
+		emitter, dir, signer := newIncrementalRun(t)
+		closeIncrementalRun(t, emitter)
+		v, err := NewRunVerifier(dir, incrementalRunID, signer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v.fileOps.open = func(path string) (*os.File, os.FileInfo, error) {
+			replaceIncrementalTestFile(t, path)
+			return openRegularAEL(path)
+		}
+		if _, err := v.Advance(false); err == nil || err.Error() != "native AEL stream was replaced" {
+			t.Fatalf("advance replacement = %v", err)
+		}
+	})
+	t.Run("oversized verified prefix", func(t *testing.T) {
+		emitter, dir, signer := newIncrementalRun(t)
+		closeIncrementalRun(t, emitter)
+		v, err := NewRunVerifier(dir, incrementalRunID, signer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := v.Advance(true); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Truncate(filepath.Join(emitter.Dir(), "recorders", "pipelock.jsonl"), maxVerifyStreamBytes+1); err != nil {
+			t.Fatal(err)
+		}
+		if err := v.VerifyUnchanged(); !errors.Is(err, ErrStreamTooLarge) {
+			t.Fatalf("verified prefix = %v, want %v", err, ErrStreamTooLarge)
+		}
+	})
 }

@@ -5,11 +5,13 @@ package ael
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -390,5 +392,114 @@ func TestCapacityLeaseCanDisarmStreamStop(t *testing.T) {
 	case <-e.capacity.Drained():
 	default:
 		t.Fatal("capacity did not drain after the final release")
+	}
+}
+
+func TestCapacityRetirementRefusesOutstandingAdmission(t *testing.T) {
+	capacity := NewCapacity(8192)
+	e, dir, signer := newIncrementalRun(t, capacity)
+	if got := e.Capacity(); got != capacity {
+		t.Fatal("emitter did not use the supplied coordinator")
+	}
+	activity := Activity{Class: "fixture", Direction: "out", ID: "unit"}
+	lease, err := e.Reserve(1, ActivityRecordLimit(len(activity.Class), len(activity.ID)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	record, err := e.PrepareActivity(activity, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := record.Append(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.EmitCloseIfIdle(); !errors.Is(err, ErrActiveAdmission) {
+		t.Fatalf("retirement with spent lease = %v, want %v", err, ErrActiveAdmission)
+	}
+	lease.Release()
+	if err := e.EmitCloseIfIdle(); err != nil {
+		t.Fatal(err)
+	}
+	if head, err := VerifyRun(dir, incrementalRunID, signer); err != nil || head.RecordCount != 3 {
+		t.Fatalf("verified retirement head=%+v error=%v", head, err)
+	}
+	if err := e.EmitCloseIfIdle(); err == nil || err.Error() != "native AEL run is closed" {
+		t.Fatalf("second retirement = %v", err)
+	}
+}
+
+func TestCapacityAdmissionRefusesUnhealthyEmitter(t *testing.T) {
+	e, _, _ := newIncrementalRun(t)
+	t.Cleanup(func() {
+		if err := e.Abort(); err != nil {
+			t.Error(err)
+		}
+	})
+	e.fileSync = func(*os.File) error { return io.ErrClosedPipe }
+	activity := Activity{Class: "fixture", Direction: "out", ID: "unit"}
+	if err := e.EmitActivity(activity, true); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("durable append = %v, want %v", err, io.ErrClosedPipe)
+	}
+	if lease, err := e.Reserve(1, 1000); lease != nil || !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("admission lease=%v error=%v", lease, err)
+	}
+}
+
+func TestCapacityWakeCutoffCanBeDisarmedDuringGrace(t *testing.T) {
+	var absent *Capacity
+	absent.OnStopAfter(0, func() { t.Error("absent capacity ran the cutoff") })()
+	synctest.Test(t, func(t *testing.T) {
+		const grace = time.Second
+		c := NewCapacity(8192)
+		reached := make(chan struct{})
+		disarm := c.OnStopAfter(grace, func() { close(reached) })
+		c.mu.Lock()
+		c.stopLocked()
+		c.mu.Unlock()
+		synctest.Wait()
+		select {
+		case <-reached:
+			t.Fatal("cutoff fired at the start of grace")
+		default:
+		}
+		disarm()
+		<-time.After(grace)
+		synctest.Wait()
+		select {
+		case <-reached:
+			t.Fatal("disarmed cutoff fired")
+		default:
+		}
+
+		cutoff := make(chan time.Time, 1)
+		join := c.OnStopAfter(grace, func() { cutoff <- time.Now() })
+		defer join()
+		synctest.Wait()
+		select {
+		case firedAt := <-cutoff:
+			if want := c.stoppedAt.Add(grace); !firedAt.Equal(want) {
+				t.Fatalf("cutoff at %s, want stop plus grace %s", firedAt, want)
+			}
+		default:
+			t.Fatal("cutoff registered after grace did not run immediately")
+		}
+	})
+}
+
+func TestCapacityRefusesTimestampOutsideRFC3339(t *testing.T) {
+	e, dir, signer := newIncrementalRun(t)
+	now := e.now
+	e.now = func() time.Time { return time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC) }
+	activity := Activity{Class: "fixture", Direction: "out", ID: "unit"}
+	if err := e.EmitActivity(activity, true); err == nil || err.Error() != "native AEL timestamp is outside the RFC3339 year range" {
+		t.Fatalf("activity timestamp refusal = %v", err)
+	}
+	e.now = now
+	if err := e.EmitClose(); err != nil {
+		t.Fatal(err)
+	}
+	if head, err := VerifyRun(dir, incrementalRunID, signer); err != nil || head.RecordCount != 2 {
+		t.Fatalf("verified head after timestamp refusal=%+v error=%v", head, err)
 	}
 }

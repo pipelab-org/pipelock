@@ -645,6 +645,12 @@ func TestDrainContextPreservesCapacityStopSettlement(t *testing.T) {
 }
 
 func TestCapacityGraceInterruptsRequestBodyRead(t *testing.T) {
+	t.Run("reserved request", func(t *testing.T) { testCapacityBodyReadCutoff(t, true) })
+	t.Run("unreserved listener", func(t *testing.T) { testCapacityBodyReadCutoff(t, false) })
+}
+
+func testCapacityBodyReadCutoff(t *testing.T, reserved bool) {
+	t.Helper()
 	_, key, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -673,11 +679,17 @@ func TestCapacityGraceInterruptsRequestBodyRead(t *testing.T) {
 	got := make(chan result, 1)
 	entered := make(chan struct{})
 	_, addr, _, _ := gatedTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, stop := WithCapacityGrace(r.Context(), w, lease, grace)
+		var requestCtx context.Context
+		var stop func()
+		if reserved {
+			requestCtx, stop = WithCapacityGrace(r.Context(), w, lease, grace)
+		} else {
+			requestCtx, stop = WithCapacityStop(r.Context(), w, emitter.Capacity(), grace)
+		}
 		defer stop()
 		close(entered)
 		_, err := io.ReadAll(r.Body)
-		got <- result{err, context.Cause(ctx)}
+		got <- result{err, context.Cause(requestCtx)}
 	}))
 	conn := dialTest(t, addr)
 	if _, err := io.WriteString(conn, "POST / HTTP/1.1\r\nHost: vendor.example\r\nContent-Length: 4\r\n\r\na"); err != nil {
@@ -698,5 +710,16 @@ func TestCapacityGraceInterruptsRequestBodyRead(t *testing.T) {
 		}
 	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("capacity cutoff did not interrupt the request body read")
+	}
+}
+
+func TestCapacityGraceWithoutCoordinatorPreservesContext(t *testing.T) {
+	parent := t.Context()
+	withoutLease, stopLease := WithCapacityGrace(parent, nil, nil, 0)
+	withoutCapacity, stopCapacity := WithCapacityStop(parent, nil, nil, 0)
+	stopLease()
+	stopCapacity()
+	if withoutLease != parent || withoutCapacity != parent || context.Cause(parent) != nil {
+		t.Fatal("inactive capacity helper changed the parent request context")
 	}
 }

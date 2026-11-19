@@ -447,9 +447,6 @@ func (r *PreparedRecord) appendLocked(durable bool) error {
 	if r.settlesAdmission() {
 		defer e.capacity.settle()
 	}
-	if e.closed {
-		return errors.New("native AEL run is closed")
-	}
 	kind := r.kind
 	canonical := r.canonical
 	sig := ed25519.Sign(e.privKey, canonical)
