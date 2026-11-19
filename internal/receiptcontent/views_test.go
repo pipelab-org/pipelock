@@ -582,7 +582,7 @@ func TestIncompleteDetectorReturnsScanError(t *testing.T) {
 		}
 	}
 	det := func(context.Context, string) scanner.TextDLPResult { return scanner.TextDLPResult{Incomplete: true} }
-	f, err := bridgeFragments(t.Context(), det, "test", []fragmentPiece{{text: "first", pos: 0}}, []fragmentPiece{{text: "second", pos: 1}}, 3)
+	f, err := bridgeFragments(t.Context(), det, "test", []fragmentPiece{{text: "first", pos: 0}}, []fragmentPiece{{text: "second", pos: 1}})
 	if f != nil || !errors.Is(err, scanner.ErrTextDLPIncomplete) {
 		t.Fatalf("bridged fragments: finding=%+v error=%v", f, err)
 	}
