@@ -33,21 +33,11 @@ func TestReadVerifierFileNamedPipe(t *testing.T) {
 
 func TestReadVerifierFileRechecksOpenedInput(t *testing.T) {
 	dir := t.TempDir()
-	const name = "artifact"
-	path := filepath.Join(dir, name)
+	path := filepath.Join(dir, "artifact")
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := root.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	if err := checkVerifierFileType(root, name); err != nil {
+	if err := checkVerifierFileType(path); err != nil {
 		t.Fatalf("check original input: %v", err)
 	}
 	replacement := filepath.Join(dir, "replacement")
@@ -58,7 +48,7 @@ func TestReadVerifierFileRechecksOpenedInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireNonRegularVerifierInput(t, func() error {
-		file, err := openCheckedVerifierFile(root, name, verifierOpenFlags)
+		file, err := openCheckedVerifierFile(path, verifierOpenFlags)
 		if file != nil {
 			return file.Close()
 		}
@@ -123,30 +113,20 @@ func requireNonRegularVerifierInput(t *testing.T, read func() error) {
 
 func TestReadVerifierFilePathDisappears(t *testing.T) {
 	dir := t.TempDir()
-	const name = "artifact"
-	path := filepath.Join(dir, name)
+	path := filepath.Join(dir, "artifact")
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := root.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	if err := checkVerifierFileType(root, name); err != nil {
+	if err := checkVerifierFileType(path); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkVerifierFileType(root, name); !errors.Is(err, os.ErrNotExist) {
+	if err := checkVerifierFileType(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("removed input check error = %v, want %v", err, os.ErrNotExist)
 	}
-	file, err := openCheckedVerifierFile(root, name, verifierOpenFlags)
+	file, err := openCheckedVerifierFile(path, verifierOpenFlags)
 	if file != nil {
 		if err := file.Close(); err != nil {
 			t.Error(err)
@@ -155,5 +135,37 @@ func TestReadVerifierFilePathDisappears(t *testing.T) {
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("removed input open error = %v, want %v", err, os.ErrNotExist)
+	}
+}
+
+func TestReadVerifierFileSearchableDirectory(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("directory permission bits do not restrict root")
+	}
+	dir := filepath.Join(t.TempDir(), "searchable")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	const artifact = "receipt"
+	path := filepath.Join(dir, "receipt.json")
+	if err := os.WriteFile(path, []byte(artifact), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Search permission without read permission: the name can be opened but
+	// the directory cannot be listed.
+	if err := unix.Chmod(dir, 0o100); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := unix.Chmod(dir, 0o750); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := os.ReadDir(dir); err == nil {
+		t.Fatal("test directory is still listable")
+	}
+	got, err := ReadVerifierFile(path)
+	if err != nil || string(got) != artifact {
+		t.Fatalf("ReadVerifierFile = %q, %v, want %q", got, err, artifact)
 	}
 }

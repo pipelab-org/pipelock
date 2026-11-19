@@ -18,18 +18,15 @@ const MaxVerifierInputBytes int64 = 8 << 20
 
 var errVerifierFileType = errors.New("input must be a regular file")
 
-// ReadVerifierFile reads one bounded, regular verification artifact.
+// ReadVerifierFile reads one bounded, regular verification artifact. It opens
+// the resolved path directly, so a file in a searchable directory that the
+// caller cannot list stays readable.
 func ReadVerifierFile(path string) ([]byte, error) {
 	clean, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return nil, err
 	}
-	root, err := os.OpenRoot(filepath.Dir(clean))
-	if err != nil {
-		return nil, err
-	}
-	file, err := openVerifierFile(root, filepath.Base(clean))
-	_ = root.Close()
+	file, err := openVerifierFile(clean)
 	if err != nil {
 		return nil, err
 	}
@@ -51,8 +48,8 @@ func readBoundedVerifierInput(input io.Reader) ([]byte, error) {
 
 // openCheckedVerifierFile verifies the opened file, including replacements that
 // occurred after checking the path.
-func openCheckedVerifierFile(root *os.Root, name string, flags int) (*os.File, error) {
-	file, err := root.OpenFile(name, flags, 0)
+func openCheckedVerifierFile(path string, flags int) (*os.File, error) {
+	file, err := os.OpenFile(filepath.Clean(path), flags, 0)
 	if err != nil {
 		return nil, err
 	}

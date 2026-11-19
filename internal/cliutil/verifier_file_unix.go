@@ -12,15 +12,17 @@ import (
 
 const verifierOpenFlags = os.O_RDONLY | syscall.O_NONBLOCK
 
-func openVerifierFile(root *os.Root, name string) (*os.File, error) {
-	if err := checkVerifierFileType(root, name); err != nil {
+// openVerifierFile checks the type before opening so a named pipe is refused
+// without a reader, then opens without blocking and rechecks the opened file.
+func openVerifierFile(path string) (*os.File, error) {
+	if err := checkVerifierFileType(path); err != nil {
 		return nil, err
 	}
-	return openCheckedVerifierFile(root, name, verifierOpenFlags)
+	return openCheckedVerifierFile(path, verifierOpenFlags)
 }
 
-func checkVerifierFileType(root *os.Root, name string) error {
-	info, err := root.Stat(name)
+func checkVerifierFileType(path string) error {
+	info, err := os.Stat(path)
 	if err != nil {
 		return err
 	}
