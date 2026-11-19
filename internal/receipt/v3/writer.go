@@ -383,7 +383,7 @@ func (w *StreamWriter) ensureStream(ctx context.Context) error {
 		return errors.New("receipt writer is closed")
 	}
 	if w.fatal != nil {
-		return fmt.Errorf("receipt stream publication needs a verified restart: %w", w.fatal)
+		return fmt.Errorf("receipt writer needs a verified restart: %w", w.fatal)
 	}
 	if w.active.file == nil {
 		return w.publishOpen(ctx)
@@ -445,17 +445,22 @@ func (w *StreamWriter) persist(kind string, line []byte, seq int64) error {
 	return nil
 }
 
-// A failed stream is retired before opening its successor. A second
-// failure leaves the outstanding repairs queued for the next admission.
+// Recover the failed stream and confirm outstanding repairs before returning.
+// If a successor cannot be used, only a verified restart can resume writes.
 func (w *StreamWriter) tryContinueAfterWriteError(ctx context.Context, writeErr error) error {
 	if w.previous == nil || w.previous.Ended != endedWriteError {
 		return writeErr
 	}
 	ctx = context.WithoutCancel(ctx)
 	if err := w.ensureStream(ctx); err != nil {
+		w.fatal = err
 		return errors.Join(writeErr, err)
 	}
-	return errors.Join(writeErr, w.replayActionRepairs(ctx, false))
+	if err := w.replayActionRepairs(ctx, true); err != nil {
+		w.fatal = err
+		return errors.Join(writeErr, err)
+	}
+	return writeErr
 }
 
 func (w *StreamWriter) prepareAppend(ctx context.Context) error {

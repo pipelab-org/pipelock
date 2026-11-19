@@ -130,7 +130,7 @@ func blockingHoldResolution(action Action, source, relation string, correction b
 
 // A repair remains queued until its own confirmation. In particular, a
 // second failed successor must carry the original observation forward.
-// Startup retries a failed append before admitting traffic.
+// Startup and write-error recovery retry a failed repair append.
 func (w *StreamWriter) replayActionRepairs(ctx context.Context, retryWriteErrors bool) error {
 	for len(w.repairs) != 0 {
 		if err := w.ensureAppendSpace(ctx); err != nil {

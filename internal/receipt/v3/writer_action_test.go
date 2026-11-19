@@ -106,6 +106,70 @@ func TestStreamWriterActionBarrierAndRepair(t *testing.T) {
 	}
 }
 
+func TestStreamWriterSettlesOutcomeAfterWriteErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		secondFault   int
+		failSuccessor bool
+	}{
+		{name: "repair append fails", secondFault: 6},
+		{name: "successor link fails", secondFault: 4, failSuccessor: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := writerTestOptions(t.TempDir())
+			opts.Heartbeat = 0
+			fault := writerReplayFault{}
+			w, err := openStreamWriter(t.Context(), opts, fault.storage(opts.Dir))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = abandonWriterReplay(w) })
+			policy := CapturePolicy(Digest([]byte("request config")))
+			intent := writerTestIntent("request")
+			if err := w.WriteAction(t.Context(), intent, policy); err != nil {
+				t.Fatal(err)
+			}
+			outcome := intent
+			outcome.Phase, outcome.EffectRelation, outcome.OutcomeClass = phaseOutcome, relationAfter, "completed"
+			fault = writerReplayFault{step: writerReplayStep{FaultAt: 1, ExtraFaultAt: tc.secondFault}}
+			if err := w.WriteAction(t.Context(), outcome, policy); !errors.Is(err, errWriterReplay) {
+				t.Fatalf("outcome write error = %v, want %v", err, errWriterReplay)
+			}
+			if tc.failSuccessor {
+				fault = writerReplayFault{}
+				if err := w.WriteAction(t.Context(), writerTestIntent("later"), policy); err == nil || len(fault.calls) != 0 {
+					t.Fatalf("writer resumed admission: error = %v, storage calls = %v", err, fault.calls)
+				}
+			}
+			if err := abandonWriterReplay(w); err != nil {
+				t.Fatal(err)
+			}
+			w = nil
+
+			result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+			if tc.failSuccessor {
+				if got := writerTestCount(t, result, "outcome_unknown"); got != 1 {
+					t.Fatalf("unknown outcomes = %d, want 1", got)
+				}
+				return
+			}
+			if got := writerTestCount(t, result, "completed"); got != 1 {
+				t.Fatalf("completed outcomes = %d, want 1", got)
+			}
+			streams := result.Histories[0].Streams
+			if len(streams) != 3 {
+				t.Fatalf("streams after losing writer state = %d, want 3", len(streams))
+			}
+			for _, stream := range streams {
+				if stream.End == "superseded_write_error" && stream.Tip != nil && stream.Tip.Seq == 0 {
+					return
+				}
+			}
+			t.Fatalf("missing write-error pin at the failed repair stream opening: %+v", streams)
+		})
+	}
+}
+
 type syncCallbackFile struct {
 	writerFile
 	syncCallback func()

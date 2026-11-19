@@ -23,12 +23,13 @@ const (
 )
 
 type writerReplayStep struct {
-	Op      string
-	Action  Action
-	File    string
-	Keep    int64
-	FaultAt int
-	Landing string
+	Op           string
+	Action       Action
+	File         string
+	Keep         int64
+	FaultAt      int
+	ExtraFaultAt int
+	Landing      string
 }
 
 type writerReplayObservation struct {
@@ -48,7 +49,7 @@ var errWriterReplay = errors.New("injected receipt storage error")
 
 func (f *writerReplayFault) trip(operation string) bool {
 	f.calls = append(f.calls, operation)
-	return f.step.FaultAt == len(f.calls)
+	return f.step.FaultAt == len(f.calls) || f.step.ExtraFaultAt == len(f.calls)
 }
 
 func (f *writerReplayFault) call(operation string, fn func() error) error {
@@ -113,7 +114,8 @@ func (f *writerReplayFault) storage(dir string) writerStorage {
 
 // TestStreamWriterReplay accepts a JSON stream of operation arrays and writes
 // one observation array per input. FaultAt is the one-based storage call
-// within a step. Truncate and remove select the bytes and names left by a crash.
+// within a step. ExtraFaultAt can fail a second storage call. Truncate and
+// remove select the bytes and names left by a crash.
 func TestStreamWriterReplay(t *testing.T) {
 	input := os.Getenv("PIPELOCK_RECEIPT_REPLAY_INPUT")
 	if input == "" {
@@ -170,7 +172,7 @@ func runWriterReplay(t *testing.T, base string, steps []writerReplayStep) []writ
 	for _, step := range steps {
 		fault = writerReplayFault{step: step}
 		w, err = applyWriterReplayStep(t.Context(), opts, storage, w, step, root)
-		if step.FaultAt != 0 && len(fault.calls) < step.FaultAt {
+		if len(fault.calls) < max(step.FaultAt, step.ExtraFaultAt) {
 			t.Fatalf("unreached storage fault %+v: %v", step, fault.calls)
 		}
 		observation := observeWriterReplay(t, opts, root)
