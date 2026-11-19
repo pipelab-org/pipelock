@@ -169,11 +169,14 @@ type holdFailureResolution struct {
 	Reason        string
 }
 
-// emitHoldFailureResolution classifies a failed Hold (capacity vs cascade
-// limit), emits the blocking resolution receipt, and returns the client-facing
-// error message plus any receipt gap. Shared by the stdio and HTTP-forward
-// defer paths.
+// emitHoldFailureResolution returns the client-facing denial and any receipt
+// error. Capacity and cascade denials also record the rejected admission.
 func emitHoldFailureResolution(opts MCPProxyOpts, logW io.Writer, holdErr error, hf holdFailureResolution) (string, error) {
+	if opts.ReceiptV3 != nil && errors.Is(holdErr, ErrReceiptRequired) {
+		// Confirmation failed before publishing the hold. Preserve the
+		// original error for the receipt-gap audit at the caller.
+		return "pipelock: defer receipt confirmation failed", holdErr
+	}
 	source := deferred.HoldFailureSource(holdErr)
 	cascadeDepth := 0
 	parentDeferID := ""

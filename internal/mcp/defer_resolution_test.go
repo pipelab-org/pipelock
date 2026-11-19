@@ -234,3 +234,30 @@ func TestLogHoldFailureReceiptGap(t *testing.T) {
 	}
 	logHoldFailureReceiptGap(nil, "defer-xyz", errors.New("x")) // must not panic on nil writer
 }
+
+func TestEmitHoldFailureResolutionReportsConfirmationFailure(t *testing.T) {
+	_, writer, _ := newMCPV3Stream(t, transportMCPStdio)
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	opts := MCPProxyOpts{RequireReceipts: true, ReceiptV3: writer, Transport: transportMCPStdio}
+	m := deferred.NewManager(deferred.Config{Enabled: true})
+	var settlement deferredReceiptSettlement
+	action := receipt.EmitOpts{
+		ActionID: receipt.NewActionID(), MCPMethod: "tools/call", Target: "mcp://vendor.example",
+		Transport: opts.Transport, Verdict: config.ActionDefer,
+	}
+	holdErr := m.Hold(deferred.HeldAction{
+		DeferID: action.ActionID, ActionID: action.ActionID,
+		ConfirmHold: settlement.confirmV3Hold(opts, action),
+		Resolve:     func(deferred.Resolution) { t.Error("failed confirmation resolved a hold") },
+	})
+	if !errors.Is(holdErr, ErrReceiptRequired) || m.HeldCount() != 0 {
+		t.Fatalf("hold error = %v, live holds = %d", holdErr, m.HeldCount())
+	}
+	var log bytes.Buffer
+	msg, err := emitHoldFailureResolution(opts, &log, holdErr, holdFailureResolution{DeferID: action.ActionID})
+	if msg != "pipelock: defer receipt confirmation failed" || err != holdErr {
+		t.Fatalf("hold denial = %q, error = %v, want receipt confirmation failure %v", msg, err, holdErr)
+	}
+}
