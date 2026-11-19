@@ -163,12 +163,21 @@ func RunWSProxy(
 			}
 			pending.Outcome.settle(safeLogW, wsOpts, status, -1, reason)
 		}
-		if len(pendingOutcomes) == 0 && upstreamEnded && ctx.Err() == nil && errors.Is(lastScanErr, transport.ErrIncompleteResponse) {
-			if admission.ActionID != "" {
-				recordTransportAdmissionResult(safeLogW, wsOpts, admission, "incomplete", httpstream.Incomplete)
-			} else {
-				emitMCPStandaloneStreamReceipt(wsOpts, safeLogW, mcpStreamReceipt(wsOpts, "WS"), "incomplete", httpstream.Incomplete)
+		if admission.ActionID != "" && wsClient != nil {
+			status, reason := "cancelled", httpstream.Cancelled
+			if upstreamEnded && ctx.Err() == nil {
+				switch {
+				case lastScanErr != nil:
+					status, reason = "incomplete", httpstream.Incomplete
+				case upstreamBlocked:
+					status, reason = "blocked", "policy_blocked"
+				default:
+					status, reason = "completed", "stream_completed"
+				}
 			}
+			recordTransportAdmissionResult(safeLogW, wsOpts, admission, status, reason)
+		} else if len(pendingOutcomes) == 0 && upstreamEnded && ctx.Err() == nil && errors.Is(lastScanErr, transport.ErrIncompleteResponse) {
+			emitMCPStandaloneStreamReceipt(wsOpts, safeLogW, mcpStreamReceipt(wsOpts, "WS"), "incomplete", httpstream.Incomplete)
 		}
 	}()
 

@@ -69,11 +69,11 @@ func (o TrackedRequestOutcome) settleResult(logW io.Writer, opts MCPProxyOpts, s
 	} else {
 		r.Layer = mcpOutcomeLayer
 	}
-	err := h.emit(logW, r)
+	err := h.emit(logW, r, false)
 	return err == nil, err
 }
 
-func (h *mcpOutcomeHandle) emit(logW io.Writer, r receipt.EmitOpts) error {
+func (h *mcpOutcomeHandle) emit(logW io.Writer, r receipt.EmitOpts, allowFallback bool) error {
 	durable := h.required
 	write := h.v1.Emit
 	if durable {
@@ -86,7 +86,13 @@ func (h *mcpOutcomeHandle) emit(logW io.Writer, r receipt.EmitOpts) error {
 		err = write(r)
 	}
 	if err != nil {
-		h.requiredGroupFailure(err)
+		if allowFallback && errors.Is(err, receipt.ErrReceiptNotAppended) {
+			// The listener's deferred settlement still owns the request.
+			// Keep the writer usable only when the v1 chain did not advance.
+			h.settled.Store(false)
+		} else {
+			h.requiredGroupFailure(err)
+		}
 		logReceiptEmitFailure(logW, err, h.required, r.Verdict)
 		return err
 	}

@@ -6,6 +6,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +27,7 @@ import (
 	wsio "github.com/gobwas/ws/wsutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -261,6 +263,7 @@ type settlementProbe struct {
 	httpPostWrites atomic.Int32
 	syncMu         sync.Mutex
 	synced         []string
+	syncedEntries  map[settlementEntryPosition]bool
 	forward        []string
 }
 
@@ -268,6 +271,7 @@ func newSettlementProbe(dir string, cell settlementCell) *settlementProbe {
 	return &settlementProbe{
 		dir: dir, cell: cell, send: make(chan struct{}, 2), both: make(chan struct{}),
 		release: make(chan struct{}), upgraded: make(chan struct{}), dialed: make(chan net.Conn, 1),
+		syncedEntries: make(map[settlementEntryPosition]bool),
 	}
 }
 
@@ -791,6 +795,7 @@ func (p *settlementProbe) markDurable(f *os.File) error {
 	p.syncMu.Lock()
 	defer p.syncMu.Unlock()
 	for _, entry := range entries {
+		p.syncedEntries[settlementEntryPosition{entry.SessionID, entry.Sequence}] = true
 		if entry.Type != actionReceiptEntryType {
 			continue
 		}
@@ -898,10 +903,56 @@ func runSettlementCell(t *testing.T, cell settlementCell) {
 	if probe.finishUpstream != nil {
 		probe.finishUpstream()
 	}
+	probe.assertOutcomesSynced(t)
 	if err := rec.Close(); err != nil {
 		t.Fatal(err)
 	}
 	probe.assertReceipts(t, open.SignerKey)
+}
+
+type settlementEntryPosition struct {
+	shard string
+	seq   uint64
+}
+
+func (p *settlementProbe) assertOutcomesSynced(t *testing.T) {
+	t.Helper()
+	if !p.cell.required {
+		return
+	}
+	paths, err := filepath.Glob(filepath.Join(p.dir, "evidence-*.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.syncMu.Lock()
+	defer p.syncMu.Unlock()
+	for _, path := range paths {
+		entries, err := recorder.ReadEntries(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if p.syncedEntries[settlementEntryPosition{entry.SessionID, entry.Sequence}] {
+				continue
+			}
+			var outcome bool
+			switch entry.Type {
+			case actionReceiptEntryType:
+				r, err := receipt.Unmarshal(entry.RawDetail)
+				if err != nil {
+					t.Fatal(err)
+				}
+				a := r.ActionRecord
+				outcome = a.DecisionPhase == receipt.DecisionPhaseOutcome || a.Layer == mcpOutcomeLayer
+			case "evidence_receipt":
+				_, decision := decodeSettlementV2Decision(t, entry.RawDetail)
+				outcome = strings.HasPrefix(decision.RuleID, "status=")
+			}
+			if outcome {
+				t.Errorf("required outcome at %s:%d was not synced before recorder close", entry.SessionID, entry.Sequence)
+			}
+		}
+	}
 }
 
 func (p *settlementProbe) assertReceipts(t *testing.T, signer string) {
@@ -958,6 +1009,12 @@ func (p *settlementProbe) assertSettlePairs(t *testing.T, signer string, sends, 
 	intents := make(map[string]settlementReceipt)
 	terminals := make(map[string][]settlementReceipt)
 	approvals := make(map[string]settlementReceipt)
+	releaseIntents := make(map[string]bool)
+	var v2Outcomes []settlementV2Receipt
+	pubKey, err := hex.DecodeString(signer)
+	if err != nil {
+		t.Fatal(err)
+	}
 	corrections := make(map[string][]settlementReceipt)
 	var legacyAdmissions int
 	var records []settlementReceipt
@@ -971,6 +1028,16 @@ func (p *settlementProbe) assertSettlePairs(t *testing.T, signer string, sends, 
 			t.Fatal(err)
 		}
 		for _, entry := range entries {
+			if p.cell.required && entry.Type == "evidence_receipt" {
+				v2, decision := decodeSettlementV2Decision(t, entry.RawDetail)
+				if strings.HasPrefix(decision.RuleID, "status=") {
+					if err := contractreceipt.VerifyWithKey(v2, pubKey, v2.Signature.SignerKeyID); err != nil {
+						t.Fatal(err)
+					}
+					pos := settlementEntryPosition{entry.SessionID, entry.Sequence}
+					v2Outcomes = append(v2Outcomes, settlementV2Receipt{decision: decision, pos: pos})
+				}
+			}
 			if entry.Type != actionReceiptEntryType {
 				continue
 			}
@@ -1003,19 +1070,43 @@ func (p *settlementProbe) assertSettlePairs(t *testing.T, signer string, sends, 
 		}
 	}
 	p.assertWireReceipts(t, records)
+	if p.cell.transport == settlementWebSocket && p.cell.required {
+		for _, admission := range records {
+			if admission.action.Layer != mcpTransportAdmissionLayer || admission.action.Method != settlementUpgrade {
+				continue
+			}
+			results := 0
+			for _, result := range records {
+				if result.action.ActionID != admission.action.ActionID || result.action.Layer != mcpOutcomeLayer || result.action.DecisionPhase != "" {
+					continue
+				}
+				results++
+				if result.shard != admission.shard || result.sequence <= admission.sequence {
+					t.Errorf("WebSocket result on %s at %d does not follow admission on %s at %d",
+						result.shard, result.sequence, admission.shard, admission.sequence)
+				}
+			}
+			if results != 1 {
+				t.Errorf("WebSocket admission has %d transport results, want 1", results)
+			}
+		}
+	}
 	for id, intent := range intents {
 		if parent := intent.action.ParentActionID; p.cell.deferred && parent != "" {
 			approval, ok := approvals[parent]
 			if !ok || approval.shard != intent.shard || approval.action.Target != intent.action.Target {
 				t.Errorf("P1/P4: release intent for %s did not use the approval's identity and shard", intent.action.Target)
 			}
-			delete(approvals, parent)
+			releaseIntents[parent] = true
 		}
 		terminal := terminals[id]
 		if len(terminal) != 1 {
 			t.Errorf("P1: %s %s has %d terminal settlements", intent.action.Target, intent.action.DecisionPhase, len(terminal))
 		}
 		for _, got := range terminal {
+			if p.cell.required {
+				assertSettlementV2(t, got, v2Outcomes)
+			}
 			if got.shard != intent.shard || got.action.Target != intent.action.Target {
 				t.Errorf("P4: %s on shard %s settled %s on shard %s", got.action.Target, got.shard, intent.action.Target, intent.shard)
 			}
@@ -1063,8 +1154,12 @@ func (p *settlementProbe) assertSettlePairs(t *testing.T, signer string, sends, 
 	if p.cell.deferred {
 		for id, approval := range approvals {
 			corrected := corrections[id]
-			if p.cell.fault != settlementIntentAppend || len(corrected) != 1 || corrected[0].shard != approval.shard {
-				t.Errorf("P1: approval for %s has no release intent or same-shard correction", approval.action.Target)
+			needsCorrection := !releaseIntents[id] || p.cell.fault == settlementWriteUpstream
+			if needsCorrection && (len(corrected) != 1 || corrected[0].shard != approval.shard || corrected[0].sequence <= approval.sequence) {
+				t.Errorf("P1: approval for %s has no same-shard correction after approval", approval.action.Target)
+			}
+			if !needsCorrection && p.cell.fault == settlementSuccess && len(corrected) != 0 {
+				t.Errorf("P1: successful release for %s recorded a correction", approval.action.Target)
 			}
 		}
 	}
@@ -1090,6 +1185,39 @@ type settlementReceipt struct {
 	action   receipt.ActionRecord
 	shard    string
 	sequence uint64
+}
+
+type settlementV2Receipt struct {
+	decision contractreceipt.PayloadProxyDecisionStruct
+	pos      settlementEntryPosition
+}
+
+func decodeSettlementV2Decision(t *testing.T, raw json.RawMessage) (contractreceipt.EvidenceReceipt, contractreceipt.PayloadProxyDecisionStruct) {
+	t.Helper()
+	var v2 contractreceipt.EvidenceReceipt
+	if err := json.Unmarshal(raw, &v2); err != nil {
+		t.Fatal(err)
+	}
+	var decision contractreceipt.PayloadProxyDecisionStruct
+	if err := json.Unmarshal(v2.Payload, &decision); err != nil {
+		t.Fatal(err)
+	}
+	return v2, decision
+}
+
+func assertSettlementV2(t *testing.T, outcome settlementReceipt, outcomes []settlementV2Receipt) {
+	t.Helper()
+	matches := 0
+	for _, got := range outcomes {
+		if got.pos.shard == outcome.shard && got.pos.seq > outcome.sequence &&
+			got.decision.Target == outcome.action.Target && got.decision.Transport == outcome.action.Transport &&
+			got.decision.Verdict == outcome.action.Verdict && got.decision.RuleID == outcome.action.Pattern {
+			matches++
+		}
+	}
+	if matches != 1 {
+		t.Errorf("required outcome %s for %s has %d matching v2 outcomes on %s", outcome.action.Pattern, outcome.action.Target, matches, outcome.shard)
+	}
 }
 
 func (op settlementWire) matches(a receipt.ActionRecord) bool {
@@ -1136,7 +1264,7 @@ func (p *settlementProbe) assertWireReceipts(t *testing.T, records []settlementR
 	defer func() { _ = file.Close() }()
 	admissions := make(map[string]settlementReceipt)
 	failures := make(map[string][]settlementReceipt)
-	streamEnds := make(map[string][]string)
+	streamEnds := make(map[string][]settlementReceipt)
 	for _, record := range records {
 		a := record.action
 		if settlementAdmission(a) {
@@ -1146,8 +1274,7 @@ func (p *settlementProbe) assertWireReceipts(t *testing.T, records []settlementR
 			if a.Verdict == config.ActionWarn && strings.HasPrefix(a.Pattern, "status=error ") {
 				failures[a.ActionID] = append(failures[a.ActionID], record)
 			}
-			status, _, _ := strings.Cut(a.Pattern, " ")
-			streamEnds[a.ActionID] = append(streamEnds[a.ActionID], status)
+			streamEnds[a.ActionID] = append(streamEnds[a.ActionID], record)
 		}
 	}
 	used := make(map[string]bool)
@@ -1189,15 +1316,22 @@ func (p *settlementProbe) assertWireReceipts(t *testing.T, records []settlementR
 			}
 			usedForward[id] = true
 			matchedForward = true
-			if p.cell.bridgeLifecycle() && op.Kind == http.MethodGet && !op.Failed {
+			if !op.Failed && op.Kind == http.MethodGet &&
+				(p.cell.bridgeLifecycle() || p.cell.transport == settlementListenerGET && p.cell.fault == settlementSuccess) {
 				want := "status=completed"
 				if bridgeGets == 3 {
 					want = "status=cancelled"
 				}
-				if got := streamEnds[id]; len(got) != 1 || got[0] != want {
-					t.Errorf("subscription %d termination = %v, want [%s]", bridgeGets, got, want)
+				got := streamEnds[id]
+				if len(got) != 1 {
+					t.Errorf("subscription %d termination = %v, want one %s", bridgeGets, got, want)
+				} else if status, _, _ := strings.Cut(got[0].action.Pattern, " "); status != want ||
+					got[0].shard != candidate.shard || got[0].sequence <= candidate.sequence {
+					t.Errorf("subscription %d termination = %s shard %s seq %d, want %s on admission shard %s after seq %d",
+						bridgeGets, status, got[0].shard, got[0].sequence, want, candidate.shard, candidate.sequence)
 				}
 			}
+
 			if op.Failed {
 				matchedFailures := 0
 				for _, failure := range failures[id] {

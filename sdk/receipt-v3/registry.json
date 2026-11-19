@@ -118,6 +118,10 @@
       "fields": "Set `phase` to `resolution` and carry the original hold action ID and `hold.id`. Record `hold.resolution_policy` and `hold.resolution_source`. Set `hold.correction:true` when a block replaces an allow. Copy the authority `session` when present. Set `taint` to user-broad authority, allow, and `defer_resolution`. Omit `ask` for these allow and block resolutions. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
       "when": "The stdio deferred release journal calls back with the allow or its corrective block."
     },
+    "internal/mcp/input.go/ForwardScannedInput/commitRelease/ceb9ffe2e6f3f741": {
+      "fields": "Set `phase` to `resolution` and carry the original hold action ID and `hold.id`. Record `hold.resolution_policy` and `hold.resolution_source`. Set `hold.correction:true` when a block replaces an allow. Copy the authority `session` when present. Set `taint` to user-broad authority, allow, and `defer_resolution`. Omit `ask` for these allow and block resolutions. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
+      "when": "Outcome registration changes the task permission before a deferred release can write upstream."
+    },
     "internal/mcp/input.go/ForwardScannedInput/ensure/670f73a952693616": {
       "fields": "Set `phase` to `resolution` and carry the original hold action ID and `hold.id`. Record `hold.resolution_policy` and `hold.resolution_source`. Set `hold.correction:true` for the block replacing the release allow. Copy the authority `session` when present. Set `taint` to user-broad authority, allow, and `defer_resolution`. Omit `ask` for these allow and block resolutions. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
       "when": "Writing a released stdio request fails and the final resolution is corrected to a cancellation block."
@@ -342,7 +346,7 @@
       "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
       "when": "An identified response is rejected while its original intent is tracked."
     },
-    "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPStandaloneStreamReceipt/72c4de758b7d15cf": {
+    "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPStandaloneStreamReceipt/dfc3d9d2b14295c0": {
       "fields": "Set `phase` and `effect_relation` from the standalone stream warning. Set `policy.source` to `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
       "when": "The upstream WebSocket ends incomplete with no pending request outcomes or recorded admission and the context is still active."
     },
@@ -1563,6 +1567,8 @@
     "internal/mcp/outcome.go/(TrackedRequestOutcome).settleResult/emitMCPBlockedOutcomeReceipt/2717074d9f4f981a": "Passes the caller's blocked outcome and original intent to the writer when there is no tracked writer handle.",
     "internal/mcp/outcome.go/(TrackedRequestOutcome).settleResult/emitMCPOutcomeReceipt/81511a9960797d1d": "Passes the caller's observed outcome and original intent to the writer when there is no tracked writer handle.",
     "internal/mcp/outcome.go/(*mcpOutcomeHandle).emit/emitMCPV2Decision/9dba973033f3cb80": "Mirrors the supplied outcome on the paired v2 writer for required recording or a block.",
+    "internal/mcp/outcome.go/(*mcpOutcomeHandle).emit/write/069d9efbeb80ce13": "Writes the terminal outcome through the v1 emitter that wrote the intent.",
+    "internal/mcp/outcome.go/(*mcpOutcomeHandle).emit/write/f0ee796ccb56fd6c": "Retries the same v1 outcome only when the chain did not advance.",
     "internal/mcp/pipeline_decision.go/EmitMCPDecision/emitMCPDecision/3c6653a3623644ad": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
     "internal/mcp/pipeline_decision.go/emitMCPBlockedOutcomeReceipt/emitMCPOutcome/bcd428d19034bea3": "Carries the effect boundary and decision context selected by its caller.",
     "internal/mcp/pipeline_decision.go/emitMCPDecision/Emit/ce5c5b39ecdc51a7": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
@@ -1693,6 +1699,7 @@
     "internal/mcp/input.go/ForwardScannedInput/ensure/b39e31fb6b2f91f0": "approval_prompt",
     "internal/mcp/input.go/ForwardScannedInput/emitMCPToolReceipt/256763ef8d42b2fc": "upstream_send",
     "internal/mcp/input.go/ForwardScannedInput/commitRelease/1a23debd619197ad": "approval_prompt",
+    "internal/mcp/input.go/ForwardScannedInput/commitRelease/ceb9ffe2e6f3f741": "upstream_send",
     "internal/mcp/input.go/ForwardScannedInput/ensure/670f73a952693616": "approval_prompt",
     "internal/mcp/input.go/ForwardScannedInput/settle/ebcc6adb666adb88": "upstream_send",
     "internal/mcp/input.go/ForwardScannedInput/settle/f05c94d6f607fb47": "upstream_send",
@@ -1749,7 +1756,7 @@
     "internal/mcp/proxy.go/ForwardScanned/settle/2f1b2bcfbccb185b": "upstream_send",
     "internal/mcp/proxy.go/ForwardScanned/settle/25c35fd78cabde2d": "upstream_send",
     "internal/mcp/proxy.go/emitRejectedResponseOutcome/settle/0162ee9d92d1487f": "downstream_delivery",
-    "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPStandaloneStreamReceipt/72c4de758b7d15cf": "downstream_delivery",
+    "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPStandaloneStreamReceipt/dfc3d9d2b14295c0": "downstream_delivery",
     "internal/mcp/proxy_ws.go/RunWSProxy/settle/1072ca5eb0af9429": "downstream_delivery",
     "internal/mcp/proxy_ws.go/RunWSProxy/settle/7364bbf9dcdf8185": "upstream_send",
     "internal/mcp/proxy_ws.go/RunWSProxy/settle/2ed037bfdc7d7be1": "upstream_send",

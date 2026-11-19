@@ -1657,6 +1657,24 @@ func ForwardScannedInput(
 						if isTrackableRequest(heldLine, heldID) {
 							registration = trackMCPOutcome(logW, opts, tracker, heldID, releaseOutcome)
 						}
+						if reason := mcpTaskReleaseRefusal(opts, heldAuthorityFrame, taintDecision, false); reason != "" {
+							tracker.removeOwnedOutcome(heldID, registration)
+							res.FinalDecision = config.ActionBlock
+							res.ResolutionSource = deferred.SourceCancel
+							res.Reason = reason
+							_ = receiptSettle.commitRelease(opts, logW, res)
+							if finishDeniedRelease != nil {
+								finishDeniedRelease()
+							}
+							if heldNotification {
+								dropMCPDenial(denialOpts, mcpDeferredDenialAudit(res), "input")
+							} else {
+								sendMCPDenial(denialOpts, mcpDeferredDenialAudit(res), BlockedRequest{
+									ID: heldID, ErrorCode: -32002, ErrorMessage: "pipelock: " + reason,
+								}, blockedCh)
+							}
+							return
+						}
 						// forwardMu is held by Prepare's release claim.
 						if err := writer.WriteMessage(heldLine); err != nil {
 							tracker.removeOwnedOutcome(heldID, registration)

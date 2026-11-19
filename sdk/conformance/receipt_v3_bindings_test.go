@@ -180,6 +180,11 @@ func receiptEmissionSites(fset *token.FileSet, path string, file *ast.File) ([]r
 					switch name := calledName(call); name {
 					case "commitRelease", "settle", "settleResult":
 						callee = name
+					case "write":
+						if target, ok := ast.Unparen(call.Fun).(*ast.Ident); ok &&
+							target.Name == name && path == "internal/mcp/outcome.go" && owner == "(*mcpOutcomeHandle).emit" {
+							callee = name
+						}
 					}
 				}
 			}

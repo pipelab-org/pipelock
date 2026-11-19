@@ -1157,3 +1157,97 @@ func TestTaskPermissionMixedCaseNamesAcrossMCPTransports(t *testing.T) {
 		}
 	}
 }
+
+func TestDeferredStdioRechecksTaskAfterOutcomeEviction(t *testing.T) {
+	manager := newDeferKillManager(t)
+	rules := deferApprovalPolicy(config.DeferResolverProfile{})
+	rules.Rules[0].ResolutionPolicy.ResolverProfile = ""
+	cfg := config.Defaults()
+	risk := &listenerDiagnosisRecorder{}
+	seenEviction := false
+	emitter, disk, dir, _ := newReceiptTestHarnessWithObserver(t, func(r *receipt.Receipt) {
+		if strings.Contains(r.ActionRecord.Pattern, "reason=request_tracker_capacity") {
+			seenEviction = true
+			risk.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingDLP}))
+		}
+	})
+	opts := MCPProxyOpts{
+		Scanner: testInputScanner(t), PolicyCfg: rules, DeferManager: manager, ReceiptEmitter: emitter,
+		Transport: deferred.SurfaceMCPStdio, Rec: risk, TaintCfg: &cfg.Taint,
+	}
+	var oldest TrackedRequestOutcome
+	if _, err := opts.emitAdmittedReceiptDecision(MCPDecision{
+		Receipt: receipt.EmitOpts{
+			ActionID: "pending-before-hold", Verdict: config.ActionAllow, Transport: opts.Transport,
+			Target: "tool:lookup", PolicyHash: mcpTestPolicyHash, MCPMethod: methodToolsCall,
+		},
+		outcome: &oldest,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if oldest.handle == nil {
+		t.Fatal("pending intent has no outcome handle")
+	}
+	tracker := NewRequestTracker()
+	tracker.TrackOutcome(json.RawMessage("999"), oldest)
+	for id := 1000; id < 999+maxTrackedRequests; id++ {
+		tracker.Track(json.RawMessage(strconv.Itoa(id)))
+	}
+
+	input, feed := io.Pipe()
+	var upstream syncBuffer
+	blocked := make(chan BlockedRequest, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ForwardScannedInput(transport.NewStdioReader(input), transport.NewStdioWriter(&upstream), io.Discard,
+			config.ActionWarn, config.ActionBlock, blocked, nil, tracker, opts)
+	}()
+	t.Cleanup(func() {
+		if err := feed.Close(); err != nil {
+			t.Error(err)
+		}
+		<-done
+	})
+	if _, err := io.WriteString(feed, deferKillTestCall); err != nil {
+		t.Fatal(err)
+	}
+	testwait.For(t, 5*time.Second, func() bool { return len(manager.Snapshot()) == 1 }, "deferred stdio action")
+	hold := manager.Snapshot()[0]
+	if err := manager.Resolve(hold.DeferID, config.ActionAllow, deferred.SourceApproval); err != nil {
+		t.Fatal(err)
+	}
+	if !seenEviction {
+		t.Fatal("tracker did not evict the oldest outcome")
+	}
+	if got := upstream.String(); got != "" {
+		t.Fatalf("deferred action was sent after task refusal: %q", got)
+	}
+	select {
+	case denial := <-blocked:
+		if denial.ErrorCode != -32002 || !strings.Contains(denial.ErrorMessage, session.TaskPermissionRequired) {
+			t.Errorf("deferred refusal = %+v", denial)
+		}
+	default:
+		t.Error("deferred task refusal produced no client response")
+	}
+	if err := disk.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var correction, terminal int
+	for _, r := range readActionReceipts(t, dir) {
+		a := r.ActionRecord
+		if a.ParentActionID != hold.ActionID || a.Verdict != config.ActionBlock {
+			continue
+		}
+		switch a.DecisionPhase {
+		case receipt.DecisionPhaseResolution:
+			correction++
+		case receipt.DecisionPhaseOutcome:
+			terminal++
+		}
+	}
+	if correction != 1 || terminal != 1 {
+		t.Fatalf("after task refusal: %d corrections and %d release outcomes, want one each", correction, terminal)
+	}
+}

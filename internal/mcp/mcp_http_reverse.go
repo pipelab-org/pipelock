@@ -783,7 +783,7 @@ func RunHTTPListenerProxy(
 			v2Emitter := requestBaseOpts.v2ReceiptEmitter()
 			if dec.intent.handle != nil {
 				if dec.intent.handle.settled.CompareAndSwap(false, true) {
-					receiptEmitted = dec.intent.handle.emit(safeLogW, receiptOpts) == nil
+					receiptEmitted = dec.intent.handle.emit(safeLogW, receiptOpts, true) == nil
 				}
 			} else if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil || requestBaseOpts.requireReceipts() {
 				if _, emitErr := requestBaseOpts.emitReceiptDecision(MCPDecision{
@@ -1381,6 +1381,8 @@ func RunHTTPListenerProxy(
 				if streamReceipt.ActionID != "" {
 					recordListenerStreamError(r.Context(), safeLogW, reqOpts, TrackedRequestOutcome{Receipt: streamReceipt}, true, scanErr)
 				}
+			} else if admission.ActionID != "" {
+				recordTransportAdmissionResult(safeLogW, reqOpts, admission, "completed", "stream_completed")
 			}
 			if scanErr != nil && !streamWriter.Wrote() {
 				w.Header().Set("Cache-Control", "no-store")
