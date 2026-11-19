@@ -469,7 +469,7 @@ func (v *verification) legacyActions(batch legacyBatch, keys []string, reports m
 			InventoryChain: InventoryChain{Chain: key.chain, Format: key.format, Record: legacyHash(hash)},
 			verdict:        verdict, cliHead: result.RootHash, cliSeq: last.ChainSeq, session: batch.session,
 		}
-		v.saveLegacy(presented, positions, item, uint64(len(chain)-1), v.skip == codeLegacyInvalid || result.Valid)
+		v.saveLegacy(presented, positions, item, uint64(len(chain))-1, v.skip == codeLegacyInvalid || result.Valid)
 		records = records[n:]
 	}
 }

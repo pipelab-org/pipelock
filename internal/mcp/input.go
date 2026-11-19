@@ -1595,7 +1595,7 @@ func ForwardScannedInput(
 					SessionIDOriginal: receiptSessionIDOriginal,
 				},
 				ConfirmHold: receiptSettle.confirmV3Hold(opts, mcpToolReceiptOpts{
-					ActionID: actionID, MCPMethod: verdict.Method, ToolName: heldToolName,
+					ProxyOpts: opts, ActionID: actionID, MCPMethod: verdict.Method, ToolName: heldToolName,
 					Transport: opts.Transport, SessionID: receiptSessionID, SessionIDOriginal: receiptSessionIDOriginal,
 					Layer: scanner.AuditMCPDefer, Pattern: reasonStr, Decision: taintDecision,
 					Report: redactionReport, RedactionProfile: redactionCfg.Profile,

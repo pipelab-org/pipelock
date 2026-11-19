@@ -65,7 +65,7 @@ func (d *decisionIndex) reset() error {
 
 func (d *decisionIndex) remember(id string, opaque bool) error {
 	if d.disk {
-		if _, err := d.rememberID.Exec(id, opaque); err != nil {
+		if _, err := d.rememberID.ExecContext(context.Background(), id, opaque); err != nil {
 			return fmt.Errorf("index decision identifier: %w", err)
 		}
 		return nil
@@ -85,7 +85,7 @@ func (d *decisionIndex) opaque(id string) (bool, error) {
 		return d.ids[id], nil
 	}
 	var opaque bool
-	if err := d.readOpaque.QueryRow(id).Scan(&opaque); err != nil {
+	if err := d.readOpaque.QueryRowContext(context.Background(), id).Scan(&opaque); err != nil {
 		return false, fmt.Errorf("look up decision identifier: %w", err)
 	}
 	return opaque, nil
@@ -107,7 +107,7 @@ func (d *decisionIndex) get(id string) (pieceEntry, error) {
 		return d.pieces[id], nil
 	}
 	var data []byte
-	if err := d.readPiece.QueryRow(id).Scan(&data); err != nil {
+	if err := d.readPiece.QueryRowContext(context.Background(), id).Scan(&data); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return pieceEntry{}, nil
 		}
@@ -133,7 +133,7 @@ func (d *decisionIndex) put(id string, entry pieceEntry) error {
 	if err != nil {
 		return fmt.Errorf("encode connected decision state: %w", err)
 	}
-	if _, err := d.writePiece.Exec(id, data); err != nil {
+	if _, err := d.writePiece.ExecContext(context.Background(), id, data); err != nil {
 		return fmt.Errorf("store connected decision state: %w", err)
 	}
 	return nil
@@ -170,7 +170,7 @@ func (d *decisionIndex) eachPiece(apply func(pieceEntry)) error {
 
 func (d *decisionIndex) badShape(segment int, id string) (bool, error) {
 	var bad bool
-	if err := d.readBadShape.QueryRow(segment, id).Scan(&bad); err != nil {
+	if err := d.readBadShape.QueryRowContext(context.Background(), segment, id).Scan(&bad); err != nil {
 		return false, fmt.Errorf("look up decision shape: %w", err)
 	}
 	return bad, nil
@@ -197,7 +197,7 @@ type appraisal struct {
 func (v *verification) appraiseDecisions() error {
 	// Streams and bulk operations remain cancellable. The transaction and its
 	// bounded index lookups don't each need a cancellation goroutine.
-	tx, err := v.store.Begin()
+	tx, err := v.store.BeginTx(context.Background(), nil)
 	if err != nil {
 		return fmt.Errorf("start decision appraisal: %w", err)
 	}
