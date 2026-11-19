@@ -230,7 +230,7 @@ func (r *mcpV3Receipt) writeV3Response(o MCPProxyOpts, logW io.Writer, writer tr
 			return err
 		}
 	}
-	err := writer.WriteMessage(content)
+	err := writeMCPResponseDisposition(o, mcpDenialAudit{}, writer, content, false)
 	if r.action.Attempt != nil && o.finishV3ResponseDelivery != nil {
 		o.finishV3ResponseDelivery(*r, err)
 		r.action.Attempt = nil
