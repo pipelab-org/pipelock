@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/verification"
@@ -210,6 +211,11 @@ func openReceiptShardSet(template EmitterConfig, base string, count, processInde
 	}
 	if count < 2 || count > 32 || processIndex < 0 || processIndex >= count {
 		return nil, errors.New("receipt group requires 2 to 32 shards and a valid process index")
+	}
+	// One coordinator per run. A nil value would otherwise become a private
+	// ceiling inside each shard, and filling one stream would leave the others open.
+	if template.NativeCapacity == nil {
+		template.NativeCapacity = ael.NewCapacity(0)
 	}
 	if err := evidencename.ValidateOperatorSessionID(base); err != nil {
 		return nil, fmt.Errorf("receipt group base session: %w", err)

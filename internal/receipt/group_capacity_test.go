@@ -15,6 +15,34 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/verification"
 )
 
+func TestOpenReceiptGroupSharesOneCapacityWhenUnset(t *testing.T) {
+	_, key := generateTestKey(t)
+	dir := t.TempDir()
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, SignCheckpoints: true}, nil, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+	set, err := OpenInitialReceiptShardSet(EmitterConfig{
+		Recorder: rec, PrivKey: key, ConfigHash: testConfigHash,
+		Principal: testPrincipal, Actor: testActor,
+	}, recorder.DefaultSessionBase, 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shards := set.Emitters()
+	if len(shards) != 2 || shards[0].NativeCapacity() == nil || shards[0].NativeCapacity() != shards[1].NativeCapacity() {
+		t.Fatalf("shards allocated separate capacity coordinators: %p %p", shards[0].NativeCapacity(), shards[1].NativeCapacity())
+	}
+	if _, err := shards[0].ReserveNativeRecords(1 << 20); !errors.Is(err, ael.ErrCapacity) {
+		t.Fatalf("oversized admission = %v", err)
+	}
+	if lease, err := shards[1].ReserveNativeRecords(1); !errors.Is(err, ael.ErrCapacity) {
+		lease.Release()
+		t.Fatalf("peer shard still accepts admissions after the other shard stopped: %v", err)
+	}
+}
+
 func TestReceiptGroupCapacityClosesAfterAdmittedOutcomes(t *testing.T) {
 	_, key := generateTestKey(t)
 	dir := t.TempDir()
