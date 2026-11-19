@@ -214,21 +214,21 @@ func startGETStream(
 			backoff = time.Second
 
 			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, tracker, opts)
-			if scanErr != nil {
-				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream scan error: %v\n", scanErr)
-				logMCPIncompleteResponse(safeLogW, opts, http.MethodGet, scanErr)
-			}
 			if admission.ActionID != "" {
 				switch {
-				case ctx.Err() != nil || (scanErr != nil && httpstream.Reason(ctx, scanErr) == httpstream.Cancelled):
-					recordTransportAdmissionResult(safeLogW, opts, admission, "cancelled", httpstream.Cancelled)
-				case scanErr != nil:
-					warnTransportAdmission(safeLogW, opts, admission, httpstream.Reason(ctx, scanErr))
-				default:
+				case scanErr == nil:
 					recordTransportAdmissionResult(safeLogW, opts, admission, "completed", "stream_completed")
+				case httpstream.Reason(ctx, scanErr) == httpstream.Cancelled:
+					recordTransportAdmissionResult(safeLogW, opts, admission, "cancelled", httpstream.Cancelled)
+				default:
+					warnTransportAdmission(safeLogW, opts, admission, httpstream.Incomplete)
 				}
 			} else if errors.Is(scanErr, transport.ErrIncompleteResponse) && ctx.Err() == nil {
 				emitMCPStandaloneStreamReceipt(opts, safeLogW, mcpStreamReceipt(opts, http.MethodGet), "200", httpstream.Incomplete)
+			}
+			if scanErr != nil {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream scan error: %v\n", scanErr)
+				logMCPIncompleteResponse(safeLogW, opts, http.MethodGet, scanErr)
 			}
 
 			// Stream ended - reconnect with backoff unless cancelled.
