@@ -2106,6 +2106,7 @@ func RunHTTPListenerProxy(
 		// to follow redirects; forwarding a 3xx body would let an upstream
 		// smuggle arbitrary response content around the normal status contract.
 		if upResp.StatusCode >= 300 && upResp.StatusCode < 400 {
+			terminalStatus, terminalReason = "error", "upstream_http_redirect"
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream POST returned HTTP %d redirect\n", upResp.StatusCode)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
@@ -2120,7 +2121,8 @@ func RunHTTPListenerProxy(
 
 		// Upstream failure (5xx): sanitize before forwarding (don't leak body
 		// content that could contain injection payloads).
-		if upResp.StatusCode >= 400 {
+		if upResp.StatusCode >= 500 && upResp.StatusCode < 600 {
+			terminalStatus, terminalReason = "error", "upstream_http_server_error"
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
@@ -2128,6 +2130,7 @@ func RunHTTPListenerProxy(
 			return
 		}
 		if upResp.StatusCode != http.StatusOK {
+			terminalStatus, terminalReason = "error", "upstream_http_unexpected_status"
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream POST returned unexpected HTTP %d\n", upResp.StatusCode)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
@@ -2162,6 +2165,7 @@ func RunHTTPListenerProxy(
 				compressedErr = responseencoding.DecodeResponse(upResp)
 			}
 			if compressedErr != nil {
+				terminalStatus, terminalReason = "error", "upstream_http_compressed_response"
 				contentEncoding := strings.Join(upResp.Header.Values("Content-Encoding"), ",")
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: blocking compressed upstream response (Content-Encoding=%q)\n", contentEncoding)
 				info := blockreason.MustNew(blockreason.CompressedResponse, blockreason.SeverityWarn, blockreason.RetryPolicy)

@@ -329,7 +329,7 @@ func RunWSProxy(
 		writeErr := wsClient.WriteMessage(decision.ForwardMessage)
 		if writeErr != nil {
 			tracker.removeOwnedOutcome(frame.ID, registration)
-			decision.Outcome.settle(safeLogW, wsOpts, "error", -1, "upstream_write_failed")
+			decision.Outcome.settle(safeLogW, wsOpts, "error", -1, mcpUpstreamWriteFailed)
 			stdinErr = fmt.Errorf("upstream write: %w", writeErr)
 			break
 		}

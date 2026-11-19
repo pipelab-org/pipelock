@@ -1177,7 +1177,7 @@ func ForwardScannedInput(
 			}
 			forwardReceiptVerdict = receiptVerdict
 			if released, err := writeReleasedMessage(fwdLine); err != nil {
-				outcome.settle(logW, opts, "error", -1, "upstream_write_failed")
+				outcome.settle(logW, opts, "error", -1, mcpUpstreamWriteFailed)
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
 			} else if !released {
@@ -1640,11 +1640,18 @@ func ForwardScannedInput(
 					}
 					switch res.FinalDecision {
 					case config.ActionAllow:
+						var registration *requestRegistration
 						if isTrackableRequest(heldLine, heldID) {
-							tracker.TrackRequest(heldID, heldAuthorityFrame.Method)
+							registration = tracker.trackOutcome(heldID, TrackedRequestOutcome{Method: heldAuthorityFrame.Method})
 						}
 						// forwardMu is held by Prepare's release claim.
 						if err := writer.WriteMessage(heldLine); err != nil {
+							tracker.removeOwnedOutcome(heldID, registration)
+							res.FinalDecision = config.ActionBlock
+							res.ResolutionSource = deferred.SourceCancel
+							res.Reason = mcpUpstreamWriteFailed
+							// Settlement logs any receipt write failure.
+							_ = receiptSettle.ensure(opts, logW, res)
 							_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 							return
 						}

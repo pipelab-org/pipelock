@@ -7,9 +7,13 @@ import (
 	"io"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestDeferredReleaseCorrectiveReceiptPrecedesTerminalJournal(t *testing.T) {
@@ -67,5 +71,66 @@ func TestDeferredReleaseCorrectiveReceiptPrecedesTerminalJournal(t *testing.T) {
 	}
 	if pending, err := deferred.PendingJournal(manager.JournalPath()); err != nil || len(pending) != 0 {
 		t.Fatalf("pending = %d, err=%v; want 0", len(pending), err)
+	}
+}
+
+type deferredReleaseFailWriter struct{}
+
+func (deferredReleaseFailWriter) WriteMessage([]byte) error { return io.ErrClosedPipe }
+
+func TestDeferredStdioReleaseRecordsUpstreamWriteFailure(t *testing.T) {
+	h := newMCPDecisionReceiptHarness(t)
+	manager := newDeferKillManager(t)
+	policyCfg := deferApprovalPolicy(config.DeferResolverProfile{})
+	policyCfg.Rules[0].ResolutionPolicy.ResolverProfile = ""
+	opts := MCPProxyOpts{
+		Scanner: testInputScanner(t), PolicyCfg: policyCfg, DeferManager: manager,
+		ReceiptEmitter: h.v1, V2ReceiptEmitter: h.v2, RequireReceipts: true,
+		PolicyHash: mcpTestPolicyHash, Transport: deferred.SurfaceMCPStdio,
+	}
+	input, feed := io.Pipe()
+	done := make(chan struct{})
+	tracker := NewRequestTracker()
+	go func() {
+		defer close(done)
+		ForwardScannedInput(transport.NewStdioReader(input), deferredReleaseFailWriter{}, io.Discard,
+			config.ActionWarn, config.ActionBlock, make(chan BlockedRequest, 1), nil, tracker, opts)
+	}()
+	t.Cleanup(func() {
+		_ = feed.Close()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("stdio input loop did not stop")
+		}
+	})
+	if _, err := io.WriteString(feed, deferKillTestCall); err != nil {
+		t.Fatal(err)
+	}
+	testwait.For(t, 5*time.Second, func() bool { return len(manager.Snapshot()) == 1 }, "deferred stdio hold")
+	hold := manager.Snapshot()[0]
+	if err := manager.Resolve(hold.DeferID, config.ActionAllow, deferred.SourceApproval); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var resolutions []receipt.ActionRecord
+	for _, r := range readActionReceipts(t, h.dir) {
+		if r.ActionRecord.DecisionPhase == receipt.DecisionPhaseResolution {
+			resolutions = append(resolutions, r.ActionRecord)
+		}
+	}
+	if len(resolutions) != 2 {
+		t.Fatalf("resolution receipt count = %d, want approval and upstream write failure", len(resolutions))
+	}
+	approved, failed := resolutions[0], resolutions[1]
+	if approved.Verdict != config.ActionAllow || failed.Verdict != config.ActionBlock ||
+		failed.Pattern != "upstream_write_failed" || failed.ResolutionSource != deferred.SourceCancel ||
+		failed.DeferID != hold.DeferID || failed.ParentActionID != hold.ActionID {
+		t.Fatalf("approved=%+v failed=%+v", approved, failed)
+	}
+	if tracker.HasPending() {
+		t.Fatal("failed write left a pending upstream response")
 	}
 }

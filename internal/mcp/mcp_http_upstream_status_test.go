@@ -21,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -839,5 +840,48 @@ func TestUpstreamRequestFailedMessageParity(t *testing.T) {
 	}
 	if reply.Error.Message != transport.UpstreamRequestFailedMessage {
 		t.Fatalf("bridge message %q differs from transport.UpstreamRequestFailedMessage %q", reply.Error.Message, transport.UpstreamRequestFailedMessage)
+	}
+}
+
+func TestHTTPListenerRecordsRejectedUpstreamResponseOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		status, clientStatus int
+		header               http.Header
+		reason               string
+	}{
+		{"redirect", http.StatusTemporaryRedirect, http.StatusBadGateway, nil, "upstream_http_redirect"},
+		{"server_error", http.StatusServiceUnavailable, http.StatusBadGateway, nil, "upstream_http_server_error"},
+		{"unexpected_status", http.StatusCreated, http.StatusBadGateway, nil, "upstream_http_unexpected_status"},
+		{"unscannable_encoding", http.StatusOK, http.StatusForbidden, http.Header{"Content-Encoding": {"gzip"}}, "upstream_http_compressed_response"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newMCPDecisionReceiptHarness(t)
+			const upstreamBody = "upstream body withheld"
+			upstream := newUpstreamStatusServer(t, upstreamStatusReply{status: tc.status, header: tc.header, body: []byte(upstreamBody)})
+			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+				Scanner: testScannerForHTTP(t), ReceiptEmitter: h.v1, V2ReceiptEmitter: h.v2,
+				PolicyHash: mcpTestPolicyHash, RequireReceipts: true,
+			})
+			resp, body := doListenerRequest(t, http.MethodPost, baseURL+"/", upstreamStatusInitialize, nil)
+			if resp.StatusCode != tc.clientStatus || bytes.Contains(body, []byte(upstreamBody)) {
+				t.Fatalf("client response = %d %s, want sanitized %d", resp.StatusCode, body, tc.clientStatus)
+			}
+			if err := h.rec.Close(); err != nil {
+				t.Fatal(err)
+			}
+			records := readActionReceipts(t, h.dir)
+			want := "status=error bytes=unknown reason=" + tc.reason
+			if len(records) != 2 ||
+				records[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent ||
+				records[1].ActionRecord.DecisionPhase != receipt.DecisionPhaseOutcome ||
+				records[0].ActionRecord.ActionID != records[1].ActionRecord.ActionID ||
+				records[1].ActionRecord.Pattern != want {
+				for _, r := range records {
+					t.Logf("phase=%q pattern=%q", r.ActionRecord.DecisionPhase, r.ActionRecord.Pattern)
+				}
+				t.Fatalf("want one intent and its outcome %q", want)
+			}
+		})
 	}
 }

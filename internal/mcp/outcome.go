@@ -13,6 +13,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
+const mcpUpstreamWriteFailed = "upstream_write_failed"
+
 // One confirmed v1 intent grants a single terminal write on that writer.
 type mcpOutcomeHandle struct {
 	v1       *receipt.Emitter
