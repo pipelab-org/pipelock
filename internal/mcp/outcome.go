@@ -23,6 +23,7 @@ type mcpOutcomeHandle struct {
 	group    *MCPReceiptGroup
 	required bool
 	settled  atomic.Bool
+	fallback *receipt.EmitOpts // Published by release of the settlement claim.
 }
 
 func isPairedMCPMethod(method string) bool {
@@ -62,6 +63,10 @@ func (o TrackedRequestOutcome) settleResult(logW io.Writer, opts MCPProxyOpts, s
 	if !h.settled.CompareAndSwap(false, true) {
 		return false, nil
 	}
+	if h.fallback != nil {
+		err := h.emit(logW, *h.fallback, false)
+		return err == nil, err
+	}
 	r := mcpOutcomeReceiptOpts(o.Receipt, status, size, reason)
 	r.Verdict = config.ActionAllow
 	if status == mcpOutcomeStatusBlocked {
@@ -89,6 +94,7 @@ func (h *mcpOutcomeHandle) emit(logW io.Writer, r receipt.EmitOpts, allowFallbac
 		if allowFallback && errors.Is(err, receipt.ErrReceiptNotAppended) {
 			// The listener's deferred settlement still owns the request.
 			// Keep the writer usable only when the v1 chain did not advance.
+			h.fallback = &r
 			h.settled.Store(false)
 		} else {
 			h.requiredGroupFailure(err)

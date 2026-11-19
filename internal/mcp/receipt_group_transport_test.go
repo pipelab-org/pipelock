@@ -831,6 +831,63 @@ func assertMCPStandaloneDiagnosticShard(t *testing.T, dir string, shards []recei
 	}
 }
 
+func TestListenerRefusalFallbackKeepsBlockedReceipt(t *testing.T) {
+	opts, rec, dir, _ := newMCPTransportReceiptGroup(t)
+	opts.Scanner = testScannerForHTTP(t)
+	opts.InputCfg = newHTTPInputCfg(config.ActionBlock)
+	required := true
+	opts.listenerStateTokenRequired = &required
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("listener forwarded request without its session token")
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer upstream.Close()
+
+	var outcomes atomic.Int32
+	rec.SetReceiptAppendGuardForTest(func(entry recorder.Entry) error {
+		if entry.Type != actionReceiptEntryType {
+			return nil
+		}
+		raw, ok := entry.Detail.(json.RawMessage)
+		if !ok {
+			return nil
+		}
+		signed, err := receipt.Unmarshal(raw)
+		if err != nil {
+			return err
+		}
+		if signed.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome && outcomes.Add(1) <= 2 {
+			return errors.New("injected listener outcome append refusal")
+		}
+		return nil
+	})
+	url, logs := startListenerProxyWithOpts(t, upstream.URL, opts)
+	if status, _, body := postWireContractRequest(t, url, deferKillTestCall, nil); status != http.StatusForbidden {
+		t.Fatalf("listener status = %d, want forbidden: %s; logs: %s", status, body, logs.String())
+	}
+	testwait.For(t, time.Second, func() bool { return outcomes.Load() >= 3 }, "listener fallback append")
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var records []receipt.ActionRecord
+	for _, signed := range readDirActionReceipts(t, dir) {
+		if signed.ActionRecord.DecisionPhase != "" {
+			records = append(records, signed.ActionRecord)
+		}
+	}
+	if len(records) != 2 {
+		t.Fatalf("receipt count = %d, want intent and blocked outcome", len(records))
+	}
+	intent, outcome := records[0], records[1]
+	const pattern = "status=blocked bytes=unknown reason=listener_session_token_required"
+	if intent.DecisionPhase != receipt.DecisionPhaseIntent || outcome.DecisionPhase != receipt.DecisionPhaseOutcome ||
+		outcome.ActionID != intent.ActionID || outcome.Verdict != config.ActionBlock ||
+		outcome.Layer != "mcp_listener_session" || outcome.Pattern != pattern {
+		t.Fatalf("listener fallback outcome = %s %s %q, want blocked session refusal for intent %s",
+			outcome.Verdict, outcome.Layer, outcome.Pattern, intent.ActionID)
+	}
+}
+
 func TestBlockedOutcomeClaimAfterFailedAppend(t *testing.T) {
 	for _, afterAdvance := range []bool{false, true} {
 		name := "before advance"
