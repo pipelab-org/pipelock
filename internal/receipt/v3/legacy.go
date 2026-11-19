@@ -197,6 +197,9 @@ func (v *verification) verifyLegacyContinuity(dir, base string, keys []string, g
 		TrustedKeys: keys, Endorsements: endorsements, ExcludeReceiptGroupSessions: grouped,
 	})
 	if err == nil && report.Healthy() {
+		if len(endorsements) == 0 {
+			return legacy.BaseReport{}
+		}
 		return report
 	}
 	label := "RESTART CONTINUITY FAILED"
@@ -549,11 +552,17 @@ func (v *verification) saveLegacy(presented map[legacyIdentity]legacyPresentatio
 		v.addCode(codeLegacyInvalid, "")
 		return
 	}
-	item.Seq = int64(seq)
+	// Use chain order to select the longest presentation and the signed sequence
+	// for the cutover row. A rotation can reset the signed sequence.
+	item.position = int64(seq)
+	item.Seq = int64(item.cliSeq)
 	key := legacyIdentity{item.Format, item.Chain}
+	if item.Format == legacyAction {
+		item.actionPositions = positions[key]
+	}
 	previous, exists := presented[key]
 	wasInvalid := previous.verdict == legacyInvalid
-	if !exists || item.Seq > previous.Seq {
+	if !exists || item.position > previous.position {
 		previous = item
 	}
 	if !valid {

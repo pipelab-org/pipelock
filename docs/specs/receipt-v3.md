@@ -121,11 +121,11 @@ The inventory is one canonical JSON object using the payload data model, with `v
 
 | Format | Identity | Terminal position |
 | --- | --- | --- |
-| action_v1 | Signed run nonce at genesis, or the first canonical action record's hash for a chain without a nonce | Zero-based position across the verified chain and canonical action-record hash of the last receipt |
+| action_v1 | Signed run nonce at genesis, or the first canonical action record's hash for a chain without a nonce | Sequence and canonical action-record hash of the last receipt |
 | evidence_v2 | Signed genesis receipt's v2 hash | Sequence and v2 hash of the last receipt |
 | receipt_group | Signed group ID | Shard count and digest of the close manifest, or the open manifest for an incomplete group |
 
-The v1 position counts through signer rotations, even when the signed sequence resets. The action-record hash identifies a nonce-less v1 chain without relying on its file name. The signed genesis hash distinguishes v2 chains that share a signer. Use digest strings for legacy hashes. The fixed empty inventory bytes are `{"chains":[],"v":1}`. Their digest is `sha256:5fba275c695ef4915395ac61c90788e9022c8ad4858e046ac1440726f0144d1f`. With neither old chains nor a journal, use that digest and zero chains and omit the file.
+The action-record hash identifies a nonce-less v1 chain without relying on its file name. The signed genesis hash distinguishes v2 chains that share a signer. Use digest strings for legacy hashes. The fixed empty inventory bytes are `{"chains":[],"v":1}`. Their digest is `sha256:5fba275c695ef4915395ac61c90788e9022c8ad4858e046ac1440726f0144d1f`. With neither old chains nor a journal, use that digest and zero chains and omit the file.
 
 Cutover inventories every old chain in the evidence directory, without an epoch or chain cap. A writer refuses a partial inventory. It verifies the old evidence and refuses unresolved holds before switching. While holding the directory lock it persists the inventory, then publishes and flushes the first v3 file carrying the pin. That first file commits the switch. The same directory cannot subsequently resume legacy writes.
 

@@ -54,11 +54,26 @@ type legacyIdentity struct {
 
 type legacyPresentation struct {
 	InventoryChain
-	verdict string
-	cliHead string
-	cliSeq  uint64
-	session string
-	forked  bool
+	verdict         string
+	cliHead         string
+	cliSeq          uint64
+	session         string
+	forked          bool
+	position        int64
+	actionPositions map[int64]string
+}
+
+func (p legacyPresentation) containsEarlierAction(digest string) bool {
+	if p.Record == digest || p.forked {
+		return false
+	}
+	hash := strings.TrimPrefix(digest, "sha256:")
+	for _, observed := range p.actionPositions {
+		if observed == hash {
+			return true
+		}
+	}
+	return false
 }
 
 func (v *verification) verifyCutover(oldFiles []string, inventories map[string][]string, claimed bool) (map[string]stagedRecord, error) {
@@ -107,12 +122,13 @@ func (v *verification) verifyCutover(oldFiles []string, inventories map[string][
 			key := legacyIdentity{row.Format, row.Chain}
 			listed[key] = true
 			actual, presented := old[key]
+			extended := actual.Seq > row.Seq || actual.containsEarlierAction(row.Record)
 			switch {
 			case v.skip != codeLegacyChainNotPresented && !presented:
 				v.add(stream.open.finding(codeLegacyChainNotPresented))
-			case v.skip != codeLegacyExtendedAfterCutover && actual.Seq > row.Seq:
+			case v.skip != codeLegacyExtendedAfterCutover && extended:
 				v.add(stream.open.finding(codeLegacyExtendedAfterCutover))
-			case v.skip != codeLegacyChainTruncated && actual.Seq < row.Seq:
+			case v.skip != codeLegacyChainTruncated && !extended && actual.Seq < row.Seq:
 				v.add(stream.open.finding(codeLegacyChainTruncated))
 			case v.skip != codeLegacyChainHeadMismatch && (actual.forked || actual.Record != row.Record):
 				v.add(stream.open.finding(codeLegacyChainHeadMismatch))

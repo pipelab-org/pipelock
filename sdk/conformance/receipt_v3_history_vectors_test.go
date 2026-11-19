@@ -305,16 +305,20 @@ func v3RotatedCutoverRecipes(t *testing.T) []v3Recipe {
 	priorSigner := hex.EncodeToString(v3Public(before))
 	const priorCount = 3
 	var legacy bytes.Buffer
-	var heads [priorCount + 1]string
+	var heads [priorCount + 2]string
 	var chain []actionreceipt.Receipt
 	var prefixBytes int
 	prev := actionreceipt.GenesisHash
 	for i := range heads {
 		key, seq := before, uint64(i)
 		var transition *actionreceipt.KeyTransition
-		if i == priorCount {
+		if i >= priorCount {
+			key, seq = after, uint64(i-priorCount)
+		}
+		if i == len(heads)-1 {
 			prefixBytes = legacy.Len()
-			key, seq = after, 0
+		}
+		if i == priorCount {
 			transition = &actionreceipt.KeyTransition{PriorSignerKey: priorSigner, PriorChainSeq: priorCount - 1, PriorChainHash: prev}
 		}
 		record := actionreceipt.ActionRecord{
@@ -355,14 +359,14 @@ func v3RotatedCutoverRecipes(t *testing.T) []v3Recipe {
 		presented     []byte
 		verdict, code string
 	}{
-		{"rotation-match", priorCount, legacy.Bytes(), "VALID PREFIX, END UNPROVEN", "LEGACY_END_UNPROVEN"},
+		{"rotation-match", len(heads) - 1, legacy.Bytes(), "VALID PREFIX, END UNPROVEN", "LEGACY_END_UNPROVEN"},
 		{"rotation-extension", priorCount - 1, legacy.Bytes(), "INVALID", "LEGACY_EXTENDED_AFTER_CUTOVER"},
-		{"rotation-truncation", priorCount, legacy.Bytes()[:prefixBytes], "INVALID", "LEGACY_CHAIN_TRUNCATED"},
+		{"rotation-truncation", len(heads) - 1, legacy.Bytes()[:prefixBytes], "INVALID", "LEGACY_CHAIN_TRUNCATED"},
 	} {
 		s := v3New(t)
 		s.records = nil
 		inventory := v3Canonical(t, v3.Inventory{V: 1, Chains: []v3.InventoryChain{{
-			Chain: heads[0], Format: "action_v1", Record: heads[tc.pin], Seq: int64(tc.pin),
+			Chain: heads[0], Format: "action_v1", Record: heads[tc.pin], Seq: int64(chain[tc.pin].ActionRecord.ChainSeq),
 		}}})
 		digest := v3.Digest(inventory)
 		open := v3DefaultOpen(s.key, s.lineage)

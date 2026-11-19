@@ -75,12 +75,12 @@ func (w *StreamWriter) buildCutoverInventory(ctx context.Context, keys []ed25519
 		if chain.forked {
 			return Inventory{}, errors.New("receipt cutover refused a forked legacy chain")
 		}
+		if !validLegacyRow(chain.InventoryChain) {
+			return Inventory{}, errors.New("receipt cutover could not identify every legacy chain")
+		}
 		inventory.Chains = append(inventory.Chains, chain.InventoryChain)
 	}
 	slices.SortFunc(inventory.Chains, compareLegacy)
-	if !inventory.valid(int64(len(inventory.Chains))) {
-		return Inventory{}, errors.New("receipt cutover could not identify every legacy chain")
-	}
 	return inventory, nil
 }
 
