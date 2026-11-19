@@ -4,6 +4,8 @@
 package proxy
 
 import (
+	"context"
+
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -13,6 +15,9 @@ import (
 // Optional mode retains best-effort recording; required mode confirms every
 // configured family before the caller changes state or delivers bytes.
 func (p *Proxy) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpts) error {
+	if p != nil && p.receiptV3 != nil {
+		return p.confirmV3ResponseDecision(cfg, opts)
+	}
 	if cfg != nil {
 		opts = withReceiptConfig(opts, cfg)
 	}
@@ -26,6 +31,9 @@ func (p *Proxy) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpt
 }
 
 func (rp *ReverseProxyHandler) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpts) error {
+	if rp.owner != nil && rp.owner.receiptV3 != nil {
+		return rp.owner.confirmV3ResponseDecision(cfg, opts)
+	}
 	if cfg != nil {
 		opts = withReceiptConfig(opts, cfg)
 	}
@@ -33,6 +41,15 @@ func (rp *ReverseProxyHandler) confirmResponseDecision(cfg *config.Config, opts 
 		return rp.emitAllowPathReceipt(cfg, opts)
 	}
 	_ = rp.emitReceipt(opts)
+	return nil
+}
+
+func (p *Proxy) confirmV3ResponseDecision(cfg *config.Config, opts receipt.EmitOpts) error {
+	opts.Verdict = receipt.NormalizeVerdict(opts.Verdict)
+	_, err := p.confirmTransportReceipt(context.Background(), cfg, opts, boundaryDownstreamDelivery)
+	if cfg != nil && cfg.FlightRecorder.RequireReceipts {
+		return err
+	}
 	return nil
 }
 

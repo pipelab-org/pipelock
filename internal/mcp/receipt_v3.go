@@ -185,6 +185,28 @@ func (s *deferredReceiptSettlement) confirmV3Release(o MCPProxyOpts) (*mcpV3Rece
 	return &entry, nil
 }
 
+// confirmV3StreamAdmission confirms the upstream connection before dialing or
+// subscribing. The callers report the result of that contact separately.
+func (o MCPProxyOpts) confirmV3StreamAdmission(logW io.Writer, method string) (mcpV3Receipt, error) {
+	var entry mcpV3Receipt
+	if o.ReceiptV3 == nil {
+		return entry, nil
+	}
+	required := o.requireReceipts()
+	decision := mcpStreamReceipt(o, method)
+	decision.Verdict = config.ActionAllow
+	_, err := o.emitReceiptDecision(MCPDecision{
+		Receipt: decision, RequireReceipt: required, v3Boundary: mcpV3Upstream, v3Confirmed: &entry,
+	})
+	if err != nil {
+		logReceiptEmitFailure(logW, err, required, decision.Verdict)
+		if required {
+			return entry, err
+		}
+	}
+	return entry, nil
+}
+
 // finish writes the observed result of a confirmed upstream send.
 func (o MCPProxyOpts) confirmV3ResponseDelivery(logW io.Writer, opts receipt.EmitOpts, delivery *mcpV3Receipt) error {
 	required := o.requireReceipts()

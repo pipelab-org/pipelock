@@ -26,6 +26,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
@@ -469,5 +470,32 @@ func TestV3ExceptionAllowanceReceipts(t *testing.T) {
 	}
 	if err := p.recordV3IssuerCookieAllows(cfg, ctx, cookies, decision); err == nil {
 		t.Fatal("required allowances accepted a closed writer")
+	}
+}
+
+func TestV3ResponsePolicyAdmissions(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportForward)
+	cfg := p.CurrentConfig()
+	opts := receipt.EmitOpts{
+		ActionID: receipt.NewActionID(), Target: "https://api.vendor.example", Transport: TransportForward,
+		Method: http.MethodGet, Verdict: config.ActionStrip, Layer: "media_policy", Pattern: "image media rewritten",
+	}
+	if err := p.confirmResponseDecision(cfg, opts); err != nil {
+		t.Fatal(err)
+	}
+	opts.ActionID = receipt.NewActionID()
+	opts.Verdict, opts.Layer, opts.Pattern = config.ActionWarn, LayerSSEStream, "stream finding"
+	if err := p.emitAllowPathReceipt(cfg, opts); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 2 {
+		t.Fatalf("policy admissions unavailable before delivery: %+v (%v)", result, err)
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.confirmResponseDecision(cfg, opts); err == nil {
+		t.Fatal("closed writer admitted a response decision")
 	}
 }

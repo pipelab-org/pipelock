@@ -65,7 +65,7 @@ func (p *Proxy) confirmTransportReceipt(ctx context.Context, cfg *config.Config,
 	entry.action.Attempt = &attempt
 	entry.action.EffectBoundary, entry.action.EffectRelation, entry.action.Phase = boundary, "before", "intent"
 	if err := p.receiptV3.WriteAction(ctx, entry.action, entry.policy); err != nil {
-		if cfg.FlightRecorder.RequireReceipts {
+		if cfg != nil && cfg.FlightRecorder.RequireReceipts {
 			p.recordRequiredReceiptBlock(err, opts.Transport)
 		}
 		p.logReceiptEmissionFailure(opts, err)

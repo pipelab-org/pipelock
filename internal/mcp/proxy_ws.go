@@ -136,6 +136,7 @@ func RunWSProxy(
 	wsOpts.Transport = "mcp_ws"
 	wsOpts.TaintExternalSource = true
 	wsOpts.WarnContext = innerCtx
+	wsOpts.v3DirectResponseDelivery = true
 	wsOpts.sessionExit = sessionExit
 
 	clientReader := transport.NewStdioReader(clientIn)
@@ -170,8 +171,13 @@ func RunWSProxy(
 		if wsClient != nil {
 			return nil
 		}
+		handshake, receiptErr := wsOpts.confirmV3StreamAdmission(safeLogW, "WS")
+		if receiptErr != nil {
+			return receiptErr
+		}
 		var err error
 		wsClient, err = transport.NewWSClientWithDialer(innerCtx, upstreamURL, opts.DialContext)
+		handshake.finish(wsOpts, safeLogW, true, err)
 		if err != nil {
 			return fmt.Errorf("connecting to upstream: %w", err)
 		}

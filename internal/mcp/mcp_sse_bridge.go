@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 )
@@ -174,20 +173,9 @@ func startGETStream(
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream resuming: kill switch cleared\n")
 			}
 
-			var subscription mcpV3Receipt
-			if opts.ReceiptV3 != nil {
-				required := opts.requireReceipts()
-				decision := mcpStreamReceipt(opts, http.MethodGet)
-				decision.Verdict = config.ActionAllow
-				_, receiptErr := opts.emitReceiptDecision(MCPDecision{
-					Receipt: decision, RequireReceipt: required, v3Boundary: mcpV3Upstream, v3Confirmed: &subscription,
-				})
-				if receiptErr != nil {
-					logReceiptEmitFailure(safeLogW, receiptErr, required, decision.Verdict)
-					if required {
-						return
-					}
-				}
+			subscription, receiptErr := opts.confirmV3StreamAdmission(safeLogW, http.MethodGet)
+			if receiptErr != nil {
+				return
 			}
 			reader, err := httpClient.OpenGETStream(ctx)
 			subscription.finish(opts, safeLogW, true, err)

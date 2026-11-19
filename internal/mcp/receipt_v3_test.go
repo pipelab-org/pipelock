@@ -517,3 +517,39 @@ func TestMCPV3ConfirmsGETSubscriptionBeforeContact(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPV3ConfirmsWebSocketBeforeHandshake(t *testing.T) {
+	for _, stage := range []string{"healthy", "closed"} {
+		t.Run(stage, func(t *testing.T) {
+			dir, writer, verifyOpts := newMCPV3Stream(t, deferred.SurfaceMCPWS)
+			if stage == "closed" {
+				if err := writer.Close(t.Context(), nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var contacts atomic.Int32
+			var confirmed atomic.Bool
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				contacts.Add(1)
+				result, err := v3.VerifyPaths(req.Context(), []string{dir}, verifyOpts)
+				confirmed.Store(err == nil && result.Counts.EffectsUnknown != nil && *result.Counts.EffectsUnknown == 1)
+				w.WriteHeader(http.StatusMethodNotAllowed)
+			}))
+			t.Cleanup(srv.Close)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			opts := MCPProxyOpts{ReceiptV3: writer, RequireReceipts: true}
+			err := RunWSProxy(ctx, strings.NewReader(""), io.Discard, io.Discard,
+				"ws"+strings.TrimPrefix(srv.URL, "http"), opts)
+			if stage == "closed" {
+				if contacts.Load() != 0 || !errors.Is(err, ErrReceiptRequired) {
+					t.Fatalf("upstream received an unconfirmed handshake: contacts=%d error=%v", contacts.Load(), err)
+				}
+				return
+			}
+			if contacts.Load() != 1 || !confirmed.Load() || err == nil {
+				t.Fatalf("handshake lacked an earlier intent: contacts=%d confirmed=%v error=%v", contacts.Load(), confirmed.Load(), err)
+			}
+		})
+	}
+}
