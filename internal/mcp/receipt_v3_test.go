@@ -31,7 +31,7 @@ type v3TestPeer func([]byte) error
 func (f v3TestPeer) WriteMessage(msg []byte) error { return f(msg) }
 
 func TestMCPV3ConfirmsUpstreamSend(t *testing.T) {
-	for _, surface := range []string{"stdio", "bridge", "listener", "listener-delete"} {
+	for _, surface := range []string{"stdio", "bridge", "listener", "listener-sse", "listener-delete"} {
 		t.Run(surface, func(t *testing.T) {
 			for _, live := range []bool{true, false} {
 				name := "closed"
@@ -49,7 +49,7 @@ func TestMCPV3ConfirmsUpstreamSend(t *testing.T) {
 func exerciseMCPV3Upstream(t *testing.T, surface string, live bool) {
 	t.Helper()
 	receiptSurface := surface
-	if surface == "listener-delete" {
+	if surface == "listener-delete" || surface == "listener-sse" {
 		receiptSurface = "listener"
 	}
 	dir, writer, verify := newMCPV3Stream(t, receiptSurface)
@@ -92,6 +92,11 @@ func exerciseMCPV3Upstream(t *testing.T, surface string, live bool) {
 				return
 			}
 			observe(r.Context())
+			if surface == "listener-sse" {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "event: message\ndata: "+cleanToolsCallResponse+"\n\n")
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, cleanToolsCallResponse)
 		}))
@@ -158,7 +163,7 @@ func exerciseMCPV3Upstream(t *testing.T, surface string, live bool) {
 	}
 	result, err := v3.VerifyPaths(t.Context(), []string{dir}, verify)
 	wantCompleted := int64(1)
-	if surface == "bridge" || surface == "listener" {
+	if surface == "bridge" || surface == "listener" || surface == "listener-sse" {
 		wantCompleted = 2
 	}
 	if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil ||
@@ -252,34 +257,43 @@ func TestMCPV3ConfirmsDirectResponseDelivery(t *testing.T) {
 }
 
 func TestMCPV3ListenerRefusesUnconfirmedResponse(t *testing.T) {
-	_, writer, _ := newMCPV3Stream(t, "listener")
-	received := make(chan error, 1)
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !isMCPUpstreamRequest(r) {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		received <- writer.Close(r.Context(), nil)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, cleanToolsCallResponse)
-	}))
-	t.Cleanup(upstream.Close)
-	opts := MCPProxyOpts{
-		Scanner: testScannerForHTTP(t), Transport: "mcp_http_listener",
-		RequireReceipts: true, ReceiptV3: writer,
-	}
-	url, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
-	status, body := postToolsCall(t, url)
-	if status != http.StatusBadGateway || strings.Contains(body, "result") {
-		t.Fatalf("listener delivered an unconfirmed response: %d %s", status, body)
-	}
-	select {
-	case err := <-received:
-		if err != nil {
-			t.Fatal(err)
-		}
-	default:
-		t.Fatal("listener did not reach the upstream endpoint")
+	for _, wire := range []string{"json", "sse"} {
+		t.Run(wire, func(t *testing.T) {
+			_, writer, _ := newMCPV3Stream(t, "listener")
+			received := make(chan error, 1)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !isMCPUpstreamRequest(r) {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				received <- writer.Close(r.Context(), nil)
+				if wire == "sse" {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "event: message\ndata: "+cleanToolsCallResponse+"\n\n")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, cleanToolsCallResponse)
+			}))
+			t.Cleanup(upstream.Close)
+			opts := MCPProxyOpts{
+				Scanner: testScannerForHTTP(t), Transport: "mcp_http_listener",
+				RequireReceipts: true, ReceiptV3: writer,
+			}
+			url, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+			status, body := postToolsCall(t, url)
+			if status != http.StatusBadGateway || strings.Contains(body, "result") {
+				t.Fatalf("listener delivered an unconfirmed response: %d %s", status, body)
+			}
+			select {
+			case err := <-received:
+				if err != nil {
+					t.Fatal(err)
+				}
+			default:
+				t.Fatal("listener did not reach the upstream endpoint")
+			}
+		})
 	}
 }
 

@@ -209,13 +209,11 @@ func (r *mcpV3Receipt) writeV3Response(o MCPProxyOpts, logW io.Writer, writer tr
 		}
 	}
 	err := writer.WriteMessage(content)
-	if o.stageV3ResponseDelivery == nil {
-		r.finish(o, logW, true, err)
-	} else if err != nil {
-		r.finish(o, logW, false, nil)
-	} else if r.action.Attempt != nil {
-		o.stageV3ResponseDelivery(*r)
+	if r.action.Attempt != nil && o.finishV3ResponseDelivery != nil {
+		o.finishV3ResponseDelivery(*r, err)
 		r.action.Attempt = nil
+	} else {
+		r.finish(o, logW, true, err)
 	}
 	return err
 }

@@ -155,8 +155,8 @@ type MCPProxyOpts struct {
 	toolInventoryDelivery func(commit, release func())
 	// The response writer delivers directly to the client rather than staging bytes.
 	v3DirectResponseDelivery bool
-	// Buffered response adapters settle these intents at the client write.
-	stageV3ResponseDelivery func(mcpV3Receipt)
+	// Listener adapters settle the confirmed intent at the client write.
+	finishV3ResponseDelivery func(mcpV3Receipt, error)
 	// A bridge queues held-action decisions until its inventory lock is released.
 	// A release can itself acquire a header contract; resolving under the writer
 	// hold would deadlock. Private discovery never invokes this callback.

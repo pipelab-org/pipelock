@@ -168,7 +168,7 @@ func isRequest(msg []byte) bool {
 // Returns true if any response security finding was detected.
 func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) (bool, error) {
 	opts = opts.snapshotScanPolicy()
-	recordsDelivery := opts.ReceiptV3 != nil && (opts.v3DirectResponseDelivery || opts.stageV3ResponseDelivery != nil)
+	recordsDelivery := opts.ReceiptV3 != nil && (opts.v3DirectResponseDelivery || opts.finishV3ResponseDelivery != nil)
 	if opts.ServerIdentityFn != nil {
 		writer = &serverIdentityMessageWriter{writer: writer, opts: opts}
 	}

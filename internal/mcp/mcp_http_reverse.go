@@ -1367,6 +1367,12 @@ func RunHTTPListenerProxy(
 				streamWriter.flusher = flusher
 			}
 			stateWriter := &listenerStateMessageWriter{state: clientState, writer: streamWriter, opts: reqOpts}
+			if reqOpts.ReceiptV3 != nil {
+				streamWriter.responseWriter = w.ResponseWriter
+				reqOpts.finishV3ResponseDelivery = func(entry mcpV3Receipt, writeErr error) {
+					entry.finish(reqOpts, safeLogW, !stateWriter.denied && !w.uniform, writeErr)
+				}
+			}
 			foundInjection, scanErr := ForwardScanned(transport.NewSSEReader(upResp.Body), stateWriter, safeLogW, NewStrictRequestTracker(), reqOpts)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
@@ -2293,6 +2299,11 @@ func RunHTTPListenerProxy(
 				releaseContract()
 			}
 			revocableWriter := &listenerStateMessageWriter{state: clientState, writer: streamWriter, opts: reqOpts}
+			if reqOpts.ReceiptV3 != nil {
+				reqOpts.finishV3ResponseDelivery = func(entry mcpV3Receipt, writeErr error) {
+					entry.finish(reqOpts, safeLogW, !revocableWriter.denied && !w.uniform, writeErr)
+				}
+			}
 			streamReader := &requestDoneReader{MessageReader: reader, tracker: responseTracker, release: releaseContract}
 			foundInjection, scanErr := ForwardScanned(streamReader, revocableWriter, safeLogW, responseTracker, reqOpts)
 			if scanErr != nil {
@@ -2345,7 +2356,11 @@ func RunHTTPListenerProxy(
 		var deliveryAttempted bool
 		var deliveryErr error
 		if reqOpts.ReceiptV3 != nil {
-			reqOpts.stageV3ResponseDelivery = func(entry mcpV3Receipt) {
+			reqOpts.finishV3ResponseDelivery = func(entry mcpV3Receipt, bufferErr error) {
+				if bufferErr != nil {
+					entry.finish(reqOpts, safeLogW, false, nil)
+					return
+				}
 				responseDeliveries = append(responseDeliveries, entry)
 			}
 			defer func() {
