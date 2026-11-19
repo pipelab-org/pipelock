@@ -362,6 +362,10 @@ func (e *guardEvidence) activateReceipts(proof guardfs.ExecutionProof) error {
 
 func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, m *metrics.Metrics, stderr io.Writer) (*guardEvidence, error) {
 	if err := refuseUnwiredReceiptV3(cfg.FlightRecorder); err != nil {
+		var directoryErr *os.PathError
+		if errors.As(err, &directoryErr) {
+			return nil, fmt.Errorf("creating Guard flight recorder: %w", err)
+		}
 		return nil, fmt.Errorf("guard uses legacy receipts: %w", err)
 	}
 	evidence := &guardEvidence{
