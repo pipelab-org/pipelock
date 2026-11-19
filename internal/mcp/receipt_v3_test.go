@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -775,6 +776,60 @@ func TestMCPV3StreamTerminalDiagnostic(t *testing.T) {
 			}
 			if got.ParentActionID != wantParent {
 				t.Fatalf("diagnostic parent %q, want %q", got.ParentActionID, wantParent)
+			}
+		})
+	}
+}
+
+func TestMCPV3ReceiptFailureStopsInteractiveChild(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("shell subprocess test requires Unix")
+	}
+	for _, sandboxed := range []bool{false, true} {
+		name := "stdio"
+		if sandboxed {
+			name = "sandbox"
+		}
+		t.Run(name, func(t *testing.T) {
+			_, writer, _ := newMCPV3Stream(t, transportMCPStdio)
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			opts := MCPProxyOpts{
+				Scanner: testInputScanner(t), Transport: transportMCPStdio,
+				RequireReceipts: true, ReceiptV3: writer,
+			}
+			clientIn, clientInput := io.Pipe()
+			defer func() { _ = clientInput.Close() }()
+			defer func() { _ = clientIn.Close() }()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			const script = "printf '%s\\n' '" + cleanToolsCallResponse + "'; read -r line"
+			done := make(chan error, 1)
+			go func() {
+				if sandboxed {
+					cmd := exec.CommandContext(ctx, "/bin/sh", "-c", script)
+					done <- RunProxyWithSandbox(ctx, cmd, clientIn, io.Discard, io.Discard, opts)
+					return
+				}
+				done <- RunProxy(ctx, clientIn, io.Discard, io.Discard, []string{"/bin/sh", "-c", script}, opts)
+			}()
+			timer := time.NewTimer(testwait.Deadline(2 * time.Second))
+			defer timer.Stop()
+			select {
+			case err := <-done:
+				if !errors.Is(err, ErrReceiptRequired) {
+					t.Fatalf("proxy returned %v, want receipt confirmation error", err)
+				}
+			case <-timer.C:
+				cancel()
+				_ = clientIn.Close()
+				select {
+				case <-done:
+				case <-time.After(testwait.Deadline(2 * time.Second)):
+					t.Error("proxy did not stop after test cancellation")
+				}
+				t.Fatal("proxy did not stop the interactive child after receipt confirmation failed")
 			}
 		})
 	}

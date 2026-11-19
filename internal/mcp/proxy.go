@@ -2251,14 +2251,12 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	}
 	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, tracker, fwdOpts)
 	timedOut := errors.Is(scanErr, transport.ErrResponseTimeout)
+	receiptFailed := opts.ReceiptV3 != nil && errors.Is(scanErr, ErrReceiptRequired)
 
-	// On an upstream response timeout the child is still alive (it accepted a
-	// request and never replied). Stop request intake before emitting pending
-	// timeout responses below, then terminate the child so cmd.Wait() returns
-	// instead of blocking forever on the hung process. The pgid teardown after
-	// Wait() then reaps any descendants.
-	if timedOut && cmd.Process != nil {
-		_, _ = fmt.Fprintf(safeLogW, "pipelock: terminating MCP subprocess after upstream response timeout\n")
+	// A fatal response error can stop forwarding while the child still waits
+	// for input. Close the pipes and kill the direct child before waiting.
+	if (timedOut || receiptFailed) && cmd.Process != nil {
+		_, _ = fmt.Fprintf(safeLogW, "pipelock: terminating MCP subprocess: %v\n", scanErr)
 		if c, ok := clientIn.(io.Closer); ok {
 			_ = c.Close()
 		}
@@ -2318,7 +2316,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		logAsync(safeLogW, "pipelock: timed out draining MCP subprocess stderr after child exit\n")
 	}
 
-	if timedOut {
+	if timedOut || receiptFailed {
 		// Closing a closable clientIn above wakes the usual CLI/pipe readers.
 		// If a custom Reader cannot be interrupted, do not let a request that
 		// already failed closed wedge shutdown forever.
@@ -2333,9 +2331,13 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		select {
 		case <-done:
 		case <-drainCtx.Done():
-			_, _ = fmt.Fprintf(safeLogW, "pipelock: timed out waiting for MCP input drain after upstream response timeout\n")
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: timed out waiting for MCP input drain after response failure\n")
 		}
-		emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker, fwdOpts)
+		if timedOut {
+			emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker, fwdOpts)
+		} else {
+			emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "receipt_emission_failed")
+		}
 	} else if sessionExit.inProgress() {
 		// An arbitrary io.Reader cannot be interrupted by closing the client
 		// side. Once session teardown has killed the server, do not let one

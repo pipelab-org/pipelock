@@ -298,12 +298,12 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 		opts.outputForwardDoneForTest()
 	}
 	timedOut := errors.Is(scanErr, transport.ErrResponseTimeout)
+	receiptFailed := opts.ReceiptV3 != nil && errors.Is(scanErr, ErrReceiptRequired)
 
-	// On an upstream response timeout the sandboxed child is still alive; kill
-	// it before Wait() so Wait() returns instead of blocking forever, then fall
-	// through to the existing sandbox teardown below.
-	if timedOut && sandboxCmd.Process != nil {
-		_, _ = fmt.Fprintf(safeLogW, "pipelock: terminating sandboxed MCP subprocess after upstream response timeout\n")
+	// A fatal response error can stop forwarding while the child still waits
+	// for input. Close the pipes and kill the direct child before waiting.
+	if (timedOut || receiptFailed) && sandboxCmd.Process != nil {
+		_, _ = fmt.Fprintf(safeLogW, "pipelock: terminating sandboxed MCP subprocess: %v\n", scanErr)
 		if c, ok := clientIn.(io.Closer); ok {
 			_ = c.Close()
 		}
@@ -356,6 +356,8 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	}
 	if timedOut {
 		emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker, fwdOpts)
+	} else if receiptFailed {
+		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "receipt_emission_failed")
 	} else {
 		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "upstream_closed")
 	}
