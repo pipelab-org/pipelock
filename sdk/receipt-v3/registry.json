@@ -282,7 +282,7 @@
       "fields": "Set `phase` and `effect_relation` from the single-phase stream-open decision. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
       "when": "Required recording admits an outgoing MCP transport before the stream opens."
     },
-    "internal/mcp/outcome.go/recordTransportAdmissionResult/emitReceiptDecision/7e5bf7d017ad744c": {
+    "internal/mcp/outcome.go/recordTransportAdmissionResult/emitReceiptDecision/d8703e9682a44e42": {
       "fields": "Set `phase` and `effect_relation` from the single-phase result. Use the admission action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
       "when": "An admitted MCP transport reports completion, cancellation or failure."
     },
@@ -1571,8 +1571,8 @@
     "internal/mcp/outcome.go/(*mcpOutcomeHandle).emit/write/f0ee796ccb56fd6c": "Retries the same v1 outcome only when the chain did not advance.",
     "internal/mcp/pipeline_decision.go/EmitMCPDecision/emitMCPDecision/3c6653a3623644ad": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
     "internal/mcp/pipeline_decision.go/emitMCPBlockedOutcomeReceipt/emitMCPOutcome/bcd428d19034bea3": "Carries the effect boundary and decision context selected by its caller.",
-    "internal/mcp/pipeline_decision.go/emitMCPDecision/Emit/ce5c5b39ecdc51a7": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
-    "internal/mcp/pipeline_decision.go/emitMCPDecision/EmitDurable/afc6513b4947a49d": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
+    "internal/mcp/pipeline_decision.go/emitMCPDecision/Emit/64fa2342334dade6": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
+    "internal/mcp/pipeline_decision.go/emitMCPDecision/EmitDurable/757f33093bccbf83": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
     "internal/mcp/pipeline_decision.go/emitMCPDecision/emitMCPV2Decision/38e23fe6c3a08d0c": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
     "internal/mcp/pipeline_decision.go/emitMCPOutcome/EmitMCPDecision/eb775056b5d86901": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
     "internal/mcp/pipeline_decision.go/emitMCPOutcome/EmitMCPGroupDecision/197779fd7df2721c": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
@@ -1740,7 +1740,7 @@
     "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/settle/372a756eb6e09189": "upstream_send",
     "internal/mcp/mcp_sse_bridge.go/startGETStream/emitMCPStandaloneStreamReceipt/5bf4b53293695454": "downstream_delivery",
     "internal/mcp/outcome.go/admitDurableTransport/emitReceiptDecision/d0795603b2d98f19": "upstream_send",
-    "internal/mcp/outcome.go/recordTransportAdmissionResult/emitReceiptDecision/7e5bf7d017ad744c": "upstream_send",
+    "internal/mcp/outcome.go/recordTransportAdmissionResult/emitReceiptDecision/d8703e9682a44e42": "upstream_send",
     "internal/mcp/outcome.go/trackMCPOutcome/settle/0c363f159765438e": "upstream_send",
     "internal/mcp/proxy.go/ForwardScanned/confirmMCPResponseEffect/42a32a294c9efefb": "downstream_delivery",
     "internal/mcp/proxy.go/ForwardScanned/confirmMCPResponseEffect/fd70af366c26a517": "downstream_delivery",

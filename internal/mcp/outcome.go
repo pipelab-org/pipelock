@@ -162,7 +162,7 @@ func recordTransportAdmissionResult(logW io.Writer, opts MCPProxyOpts, admission
 		result.Verdict = config.ActionForward
 	}
 	if _, err := opts.emitReceiptDecision(MCPDecision{
-		Receipt: result, RequireReceipt: true, RequiredMode: true,
+		Receipt: result, RequireReceipt: true, RequiredMode: true, retryV1NotAppended: true,
 	}); err != nil {
 		logReceiptEmitFailure(logW, err, true, result.Verdict)
 	}

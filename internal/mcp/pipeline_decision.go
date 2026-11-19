@@ -74,7 +74,8 @@ type MCPDecision struct {
 	// family must confirm this write before the caller can commit its state.
 	Durable bool
 
-	outcome *TrackedRequestOutcome
+	outcome            *TrackedRequestOutcome
+	retryV1NotAppended bool
 }
 
 // EmitMCPDecision emits the receipt and (optionally) injects the
@@ -218,10 +219,17 @@ func emitMCPDecision(
 	if receiptRequired && d.Receipt.ActionID == "" {
 		err = fmt.Errorf("empty action id: %w", ErrReceiptRequired)
 	} else if receiptEmitter != nil && d.Receipt.ActionID != "" {
-		if syncReceipt {
-			err = receiptEmitter.EmitDurable(d.Receipt)
-		} else {
-			err = receiptEmitter.Emit(d.Receipt)
+		for attempt := 0; ; attempt++ {
+			if syncReceipt {
+				err = receiptEmitter.EmitDurable(d.Receipt)
+			} else {
+				err = receiptEmitter.Emit(d.Receipt)
+			}
+			// A pre-append refusal leaves the v1 chain unchanged. Quarantined
+			// writers and errors after advancement must never be retried.
+			if attempt != 0 || !d.retryV1NotAppended || !errors.Is(err, receipt.ErrReceiptNotAppended) {
+				break
+			}
 		}
 		v1Emitted = err == nil
 		if v1Emitted && d.outcome != nil && d.Receipt.DecisionPhase == receipt.DecisionPhaseIntent {

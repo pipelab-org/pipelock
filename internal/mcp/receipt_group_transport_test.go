@@ -496,15 +496,40 @@ func TestMCPWebSocketOutcomeKeepsAdmissionShard(t *testing.T) {
 	stdin, input := io.Pipe()
 	defer func() { _ = input.Close() }()
 	var stdout, stderr lockedHTTPBuffer
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- RunWSProxy(ctx, struct{ io.Reader }{stdin}, &stdout, &stderr, wsURL(srv), opts) }()
-	_, _ = io.WriteString(input, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`+"\n")
+	go func() {
+		defer func() { _ = stdin.Close() }()
+		done <- RunWSProxy(ctx, struct{ io.Reader }{stdin}, &stdout, &stderr, wsURL(srv), opts)
+	}()
+	written := make(chan error, 1)
+	go func() {
+		_, err := io.WriteString(input, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`+"\n")
+		written <- err
+	}()
+	select {
+	case err := <-written:
+		if err != nil {
+			select {
+			case proxyErr := <-done:
+				t.Fatalf("initialize write: %v (RunWSProxy: %v)", err, proxyErr)
+			case <-ctx.Done():
+				t.Fatalf("initialize write: %v (timed out waiting for RunWSProxy)", err)
+			}
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out writing initialize request")
+	}
 	waitForResponse(t, responseSent)
 	testwait.For(t, time.Second, func() bool { return stdout.contains(`"id":1`) }, "WebSocket response forwarded")
-	if err := <-done; err != nil {
-		t.Fatal(err)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunWSProxy: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for RunWSProxy")
 	}
 	if err := rec.Close(); err != nil {
 		t.Fatal(err)
@@ -551,6 +576,35 @@ func assertMCPTransportReceiptPair(t *testing.T, admission, terminal receipt.Act
 	}
 }
 
+func TestTransportResultRetriesRefusedV1Append(t *testing.T) {
+	opts, rec, dir, shards := newMCPTransportReceiptGroup(t)
+	opts.Transport = "mcp_ws"
+	_ = opts.ReceiptGroup.Shards.Admit(receipt.EmitOpts{})
+	const target = "wss://api.vendor.example/mcp"
+	admission, err := admitDurableTransport(opts, settlementUpgrade, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempts := 0
+	rec.SetReceiptAppendGuardForTest(func(entry recorder.Entry) error {
+		if entry.Type == actionReceiptEntryType {
+			attempts++
+			if attempts == 1 {
+				return errors.New("injected transport result append refusal")
+			}
+		}
+		return nil
+	})
+	recordTransportAdmissionResult(io.Discard, opts, admission, "completed", "stream_completed")
+	if attempts != 2 {
+		t.Fatalf("v1 terminal append attempts = %d, want 2", attempts)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertMCPTransportReceiptShard(t, dir, shards, admission.ActionID, 0)
+}
+
 func TestRequiredBridgeGETAdmitsBeforeOpen(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -564,13 +618,21 @@ func TestRequiredBridgeGETAdmitsBeforeOpen(t *testing.T) {
 			opts, rec, dir, _ := newMCPTransportReceiptGroup(t)
 			opts.Scanner = testScannerForHTTP(t)
 			opts.Transport = "mcp_http_upstream"
+			observed := make(chan settlementReceipt, 1)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet {
 					http.NotFound(w, r)
 					return
 				}
-				if !bridgeGETReceiptRecorded(t, dir, `"layer":"mcp_transport_admission"`, `"verdict":"forward"`) {
-					t.Error("upstream GET opened before its transport admission was recorded")
+				admissions := bridgeGETReceipts(t, dir, mcpTransportAdmissionLayer)
+				if len(admissions) != 1 || admissions[0].action.Verdict != config.ActionForward || admissions[0].action.ActionID == "" {
+					t.Errorf("upstream GET opened without exactly one forward admission: %+v", admissions)
+				} else {
+					select {
+					case observed <- admissions[0]:
+					default:
+						t.Error("unexpected additional upstream GET")
+					}
 				}
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.WriteHeader(tc.status)
@@ -585,13 +647,28 @@ func TestRequiredBridgeGETAdmitsBeforeOpen(t *testing.T) {
 			})
 			var stderr lockedHTTPBuffer
 			startGETStream(ctx, transport.NewHTTPClient(srv.URL, nil), &syncWriter{w: io.Discard}, &syncWriter{w: &stderr}, opts, NewRequestTracker(), &wg)
+			var admission settlementReceipt
+			select {
+			case admission = <-observed:
+			case <-time.After(testwait.Deadline(3 * time.Second)):
+				t.Fatal("handler did not observe a GET admission")
+			}
 			testwait.For(t, 3*time.Second, func() bool {
-				return bridgeGETReceiptRecorded(t, dir, `"layer":"`+mcpOutcomeLayer+`"`, "reason="+tc.reason)
+				return len(bridgeGETReceipts(t, dir, mcpOutcomeLayer)) > 0
 			}, "required GET result recorded")
 			cancel()
 			wg.Wait()
 			if err := rec.Close(); err != nil {
 				t.Fatal(err)
+			}
+			outcomes := bridgeGETReceipts(t, dir, mcpOutcomeLayer)
+			if len(outcomes) != 1 {
+				t.Fatalf("GET outcome count = %d, want 1", len(outcomes))
+			}
+			outcome := outcomes[0]
+			if outcome.action.ActionID != admission.action.ActionID || outcome.shard != admission.shard ||
+				outcome.sequence <= admission.sequence || !strings.HasSuffix(outcome.action.Pattern, "reason="+tc.reason) {
+				t.Fatalf("GET outcome %+v does not settle admission %+v with reason %s", outcome, admission, tc.reason)
 			}
 		})
 	}
@@ -631,29 +708,36 @@ func TestRequiredBridgeGETStaysClosedWhenAdmissionFails(t *testing.T) {
 	}
 }
 
-func bridgeGETReceiptRecorded(t *testing.T, dir, layer, detail string) bool {
+func bridgeGETReceipts(t *testing.T, dir, layer string) []settlementReceipt {
 	t.Helper()
 	paths, err := filepath.Glob(filepath.Join(dir, "evidence-*.jsonl"))
 	if err != nil {
 		t.Error(err)
-		return false
+		return nil
 	}
+	var receipts []settlementReceipt
 	for _, path := range paths {
 		entries, err := recorder.ReadEntries(path)
 		if err != nil {
 			t.Error(err)
-			return false
+			return nil
 		}
 		for _, entry := range entries {
-			if entry.Type == "action_receipt" &&
-				bytes.Contains(entry.RawDetail, []byte(layer)) &&
-				bytes.Contains(entry.RawDetail, []byte(`"method":"GET"`)) &&
-				bytes.Contains(entry.RawDetail, []byte(detail)) {
-				return true
+			if entry.Type != actionReceiptEntryType {
+				continue
+			}
+			signed, err := receipt.Unmarshal(entry.RawDetail)
+			if err != nil {
+				t.Error(err)
+				return nil
+			}
+			a := signed.ActionRecord
+			if a.Layer == layer && a.Method == http.MethodGet {
+				receipts = append(receipts, settlementReceipt{action: a, shard: entry.SessionID, sequence: entry.Sequence})
 			}
 		}
 	}
-	return false
+	return receipts
 }
 
 func TestMCPGETSSEIncompleteOutcomeUsesSelectedShard(t *testing.T) {
