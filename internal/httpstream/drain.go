@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 )
 
 // Gate counts handlers and their asynchronous receipt-producing work. Its zero
@@ -227,6 +229,25 @@ func (g *Gate) StopHijacks() {
 	g.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+}
+
+// WithCapacityGrace lets an admitted HTTP request settle after capacity stop.
+// At the cutoff, cancel upstream I/O and wake a blocked downstream write.
+func WithCapacityGrace(ctx context.Context, w http.ResponseWriter, lease *ael.Lease, grace time.Duration) (context.Context, func()) {
+	if lease == nil {
+		return ctx, func() {}
+	}
+	ctx, cancel := context.WithCancelCause(ctx)
+	stop := lease.OnStopAfter(grace, func() {
+		cancel(ael.ErrCapacity)
+		if w != nil {
+			_ = http.NewResponseController(w).SetWriteDeadline(time.Now())
+		}
+	})
+	return ctx, func() {
+		stop()
+		cancel(nil)
 	}
 }
 

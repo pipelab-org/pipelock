@@ -91,13 +91,10 @@ func refuseListenerStreamCapacity(w http.ResponseWriter, r *http.Request, stream
 
 // scanMCPHTTPResponse keeps the stream terminal reservation separate from
 // the individual event reservations used by ForwardScanned.
-func scanMCPHTTPResponse(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) (bool, error) {
+func scanMCPHTTPResponse(ctx context.Context, reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) (bool, error) {
 	if transport.IsStreamingResponse(reader) {
 		opts.nativeSSE = true
-		if body, ok := reader.(io.Closer); ok {
-			stop := opts.nativeAdmission.NativeLease.OnStop(func() { _ = body.Close() })
-			defer stop()
-		}
+		opts.WarnContext = ctx
 	}
 	return ForwardScanned(opts.withResponseTimeout(reader), writer, logW, tracker, opts)
 }

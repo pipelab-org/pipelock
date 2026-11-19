@@ -81,7 +81,7 @@ type ServerOpts struct {
 	// harnesses. It is unexported so CLI/operator input cannot enable it.
 	allowEphemeralListenersForTesting bool
 
-	// listenerShutdownTimeout overrides auxiliary receipt-listener grace periods in tests.
+	// listenerShutdownTimeout overrides receipt-listener grace periods in tests.
 	listenerShutdownTimeout time.Duration
 
 	nativeAELCapacityLimit int64
@@ -782,6 +782,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		_, _ = fmt.Fprintf(opts.Stderr, "  Envelope: enabled (mediation envelopes injected)\n")
 	}
 
+	proxyOpts = append(proxyOpts, proxy.WithShutdownGrace(opts.listenerShutdownTimeout))
 	p, pErr := proxy.New(cfg, logger, sc, m, proxyOpts...)
 	if pErr != nil {
 		s.cleanup()

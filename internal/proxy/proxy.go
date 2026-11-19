@@ -661,7 +661,7 @@ type Proxy struct {
 	tlsTransport         *http.Transport // shared Transport for TLS interception upstream connections
 	server               *http.Server
 	agentServers         []httpstream.GatedServer // per-agent listeners (managed by CLI)
-	shutdownGrace        time.Duration            // test hook: graceful shutdown bound; zero means defaultShutdownGrace
+	shutdownGrace        time.Duration            // graceful shutdown bound; zero means defaultShutdownGrace
 	startTime            time.Time
 	reloadSerialMu       sync.Mutex   // serializes staging by concurrent Reload calls
 	reloadMu             sync.RWMutex // serializes publication and coherent request-time runtime snapshots
@@ -5569,7 +5569,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer selectedReceiptShard.ReleaseNativeAdmission()
-	requestCtx, stopNativeRequest := nativeRequestContext(r.Context(), w, selectedReceiptShard)
+	requestCtx, stopNativeRequest := p.nativeRequestContext(r.Context(), w, selectedReceiptShard)
 	defer stopNativeRequest()
 	warnCtx, finishWarnings := p.receiptWarningContext(requestCtx, selectedReceiptShard)
 	defer finishWarnings()

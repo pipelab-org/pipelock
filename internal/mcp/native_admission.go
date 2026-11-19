@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -94,6 +95,13 @@ func writeNativeAdmissionDenial(o MCPProxyOpts, logW io.Writer, out transport.Me
 
 func nativeAdmissionAudit() mcpDenialAudit {
 	return mcpInputGateBlockAudit(scanner.AuditReceiptEmission, mcpReceiptEmissionReason, audit.BlockClassInfrastructureError)
+}
+
+func (o MCPProxyOpts) shutdownGrace() time.Duration {
+	if o.ListenerShutdownTimeout > 0 {
+		return o.ListenerShutdownTimeout
+	}
+	return 5 * time.Second
 }
 
 func (o MCPProxyOpts) nativeCapacity() *ael.Capacity {

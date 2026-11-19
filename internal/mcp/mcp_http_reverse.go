@@ -593,7 +593,9 @@ func RunHTTPListenerProxy(
 		}
 		requestBaseOpts.nativeAdmission = admission
 		defer admission.ReleaseNativeAdmission()
-		admissionCtx, finishWarnings := requestBaseOpts.nativeWarningContext(r.Context(), admission)
+		requestCtx, stopCapacity := httpstream.WithCapacityGrace(r.Context(), w, admission.NativeLease, opts.shutdownGrace())
+		defer stopCapacity()
+		admissionCtx, finishWarnings := requestBaseOpts.nativeWarningContext(requestCtx, admission)
 		defer finishWarnings()
 		r = r.WithContext(admissionCtx)
 		requestBaseOpts.WarnContext = admissionCtx
@@ -1372,8 +1374,6 @@ func RunHTTPListenerProxy(
 			}
 			stateWriter := &listenerStateMessageWriter{state: clientState, writer: streamWriter, opts: reqOpts}
 			reqOpts.nativeSSE = true
-			stopCapacityClose := admission.NativeLease.OnStop(func() { _ = upResp.Body.Close() })
-			defer stopCapacityClose()
 			foundInjection, scanErr := ForwardScanned(transport.NewSSEReader(upResp.Body), stateWriter, safeLogW, NewStrictRequestTracker(), reqOpts)
 			if errors.Is(scanErr, ael.ErrCapacity) {
 				recordListenerStreamError(r.Context(), safeLogW, reqOpts, mcpStreamReceipt(reqOpts, r.Method), true, scanErr)
@@ -2240,6 +2240,9 @@ func RunHTTPListenerProxy(
 		if outcome.Method == "" {
 			outcome.Method = frame.Method
 		}
+		// The response can settle against the request admission even if its
+		// SSE envelope arrives after capacity stopped admitting new events.
+		outcome.Receipt = outcome.Receipt.InheritAdmission(admission)
 		responseTracker.TrackOutcome(frame.ID, outcome)
 		upstreamIsSSE := transport.HasSingleSSEContentType(upResp.Header)
 		if setupState && upstreamIsSSE {
@@ -2299,8 +2302,6 @@ func RunHTTPListenerProxy(
 			revocableWriter := &listenerStateMessageWriter{state: clientState, writer: streamWriter, opts: reqOpts}
 			streamReader := &requestDoneReader{MessageReader: reader, tracker: responseTracker, release: releaseContract}
 			reqOpts.nativeSSE = true
-			stopCapacityClose := admission.NativeLease.OnStop(func() { _ = upResp.Body.Close() })
-			defer stopCapacityClose()
 			foundInjection, scanErr := ForwardScanned(streamReader, revocableWriter, safeLogW, responseTracker, reqOpts)
 			if errors.Is(scanErr, ael.ErrCapacity) {
 				streamOutcome := decision.Outcome.Receipt
@@ -2459,12 +2460,8 @@ func RunHTTPListenerProxy(
 	}
 
 	_, _ = fmt.Fprintf(safeLogW, "pipelock: MCP reverse proxy listening on %s\n", ln.Addr())
-	timeout := opts.ListenerShutdownTimeout
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
 	serveErr := httpstream.ServeUntilShutdown(ctx, func() error { return srv.Serve(ln) }, func() error { //nolint:gosec // G118: fresh context preserves the shutdown grace period after cancellation
-		shutdownCtx, shutdownCancel := httpstream.DrainContext(timeout, opts.nativeCapacity().Stopped())
+		shutdownCtx, shutdownCancel := httpstream.DrainContext(opts.shutdownGrace(), opts.nativeCapacity().Stopped())
 		defer shutdownCancel()
 		return httpstream.DrainServer(shutdownCtx, httpstream.GatedServer{Server: srv, Gate: gate})
 	})

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // ErrCapacity means the run is closing so its native evidence stays verifiable.
@@ -22,12 +23,13 @@ var ErrInvalidLease = errors.New("native AEL record has no available reservation
 
 // Capacity coordinates admission and drain across all streams in a run.
 type Capacity struct {
-	mu       sync.Mutex
-	limit    int64
-	stopped  chan struct{}
-	drained  chan struct{}
-	stopping bool
-	active   int
+	mu        sync.Mutex
+	limit     int64
+	stopped   chan struct{}
+	drained   chan struct{}
+	stopping  bool
+	stoppedAt time.Time
+	active    int
 }
 
 // NewCapacity uses the verifier ceiling. A smaller positive limit is used by
@@ -55,6 +57,7 @@ func (c *Capacity) stopLocked() {
 		return
 	}
 	c.stopping = true
+	c.stoppedAt = time.Now()
 	close(c.stopped)
 	if c.active == 0 {
 		close(c.drained)
@@ -139,6 +142,12 @@ func (l *Lease) Stopped() <-chan struct{} {
 // OnStop runs closeStream when the run stops admitting work. The returned
 // function disarms the callback or joins it if it is already running.
 func (l *Lease) OnStop(closeStream func()) func() {
+	return l.OnStopAfter(0, closeStream)
+}
+
+// OnStopAfter runs cutoff after the run stops and grace elapses. The returned
+// function disarms either wait and joins a cutoff that has already started.
+func (l *Lease) OnStopAfter(grace time.Duration, cutoff func()) func() {
 	if l == nil {
 		return func() {}
 	}
@@ -148,9 +157,19 @@ func (l *Lease) OnStop(closeStream func()) func() {
 		defer close(finished)
 		select {
 		case <-l.Stopped():
-			closeStream()
 		case <-stop:
+			return
 		}
+		if grace > 0 {
+			timer := time.NewTimer(time.Until(l.emitter.capacity.stoppedAt.Add(grace)))
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-stop:
+				return
+			}
+		}
+		cutoff()
 	}()
 	return func() {
 		close(stop)

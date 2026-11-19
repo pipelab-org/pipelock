@@ -47,7 +47,9 @@ func TestNativeCapacityHTTPAdmission(t *testing.T) {
 		{name: "intercept", transport: "intercept"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			const grace = 150 * time.Millisecond
 			p, e, dir := newNativeCapacityProxy(t, nativeRequestRecords+4, configureNativeWarningFixtures)
+			p.shutdownGrace = grace
 			headers := nativeWarningFixtures(t, p, e)
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
@@ -103,7 +105,15 @@ func TestNativeCapacityHTTPAdmission(t *testing.T) {
 				return w
 			}
 			done := make(chan *httptest.ResponseRecorder, 1)
-			go func() { done <- request() }()
+			joined := make(chan struct{})
+			go func() {
+				defer close(joined)
+				done <- request()
+			}()
+			defer func() {
+				cancel()
+				<-joined
+			}()
 			select {
 			case <-entered:
 			case early := <-done:
@@ -158,6 +168,9 @@ func TestNativeCapacityHTTPAdmission(t *testing.T) {
 				record := signed.ActionRecord
 				if record.DecisionPhase == receipt.DecisionPhaseOutcome {
 					outcomes++
+					if tc.transport == TransportReverse && !strings.Contains(record.Pattern, "reason="+nativeCapacityStopReason) {
+						t.Errorf("reverse cutoff outcome = %q", record.Pattern)
+					}
 				}
 				if strings.HasPrefix(record.Pattern, nativeFixtureWarningPrefix) {
 					individual++
@@ -925,6 +938,7 @@ func TestNativeCapacityClosesHTTPSSE(t *testing.T) {
 				cfg.ResponseScanning.SSEStreaming.Action = config.ActionWarn
 				cfg.ResponseScanning.Patterns = append(cfg.ResponseScanning.Patterns, config.ResponseScanPattern{Name: eventFinding, Regex: eventFinding})
 			})
+			p.shutdownGrace = 150 * time.Millisecond
 			ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 			defer cancel()
 			upstreamClosed := make(chan struct{})

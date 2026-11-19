@@ -1848,15 +1848,19 @@ func (r *wsRelay) run(ctx context.Context) wsRelayStats {
 	var wg sync.WaitGroup
 
 	stopCapacityWake := r.receiptShard.NativeLease.OnStop(func() {
+		// A read has no message reservation yet. Wake it so an idle
+		// connection can close as soon as the admitted writes finish.
 		now := time.Now()
 		_ = r.clientConn.SetReadDeadline(now)
 		_ = r.upstreamConn.SetReadDeadline(now)
-		// Finish in-flight writes within the connection's idle allowance.
-		// A peer that stopped reading cannot keep the terminal lease open.
-		_ = r.clientConn.SetWriteDeadline(now.Add(idleTimeout))
-		_ = r.upstreamConn.SetWriteDeadline(now.Add(idleTimeout))
 	})
 	defer stopCapacityWake()
+	stopCapacityWrite := r.receiptShard.NativeLease.OnStopAfter(r.proxy.shutdownGraceOrDefault(), func() {
+		now := time.Now()
+		_ = r.clientConn.SetWriteDeadline(now)
+		_ = r.upstreamConn.SetWriteDeadline(now)
+	})
+	defer stopCapacityWrite()
 
 	wg.Add(1)
 	go func() {

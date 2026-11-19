@@ -82,7 +82,7 @@ func RunWSProxy(
 		return err
 	}
 	defer streamAdmission.ReleaseNativeAdmission()
-	stopCapacityClose := streamAdmission.NativeLease.OnStop(cancel)
+	stopCapacityClose := streamAdmission.NativeLease.OnStopAfter(opts.shutdownGrace(), cancel)
 	defer stopCapacityClose()
 
 	// Per-invocation adaptive enforcement recorder.
@@ -286,6 +286,9 @@ func RunWSProxy(
 		}
 		if admissionErr != nil {
 			writeNativeAdmissionDenial(wsOpts, safeLogW, transport.NewStdioWriter(safeClientOut), frame.ID, admissionErr)
+			if errors.Is(admissionErr, ael.ErrCapacity) {
+				continue
+			}
 			return admissionErr
 		}
 		inputOpts := wsOpts
@@ -386,6 +389,12 @@ func RunWSProxy(
 			break
 		}
 		commitMCPToolCall(baselineMetricsRecorder(wsOpts, rec), mcpFrameBaselineIdentity(frame))
+	}
+
+	// Keep the upstream open for replies already admitted when stdin ends
+	// during a capacity stop. The capacity cutoff bounds the wait.
+	if streamAdmission.NativeLease.Stopping() && tracker.HasPending() {
+		<-innerCtx.Done()
 	}
 
 	// Close the WS connection to unblock ForwardScanned's ReadMessage. The

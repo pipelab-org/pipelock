@@ -807,7 +807,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer selectedReceiptShard.ReleaseNativeAdmission()
-	requestCtx, stopNativeRequest := nativeRequestContext(r.Context(), w, selectedReceiptShard)
+	requestCtx, stopNativeRequest := rp.owner.nativeRequestContext(r.Context(), w, selectedReceiptShard)
 	defer stopNativeRequest()
 	warnCtx, finishWarnings := receipt.WithDLPWarningBudget(requestCtx, rp.receiptEmitter(), selectedReceiptShard)
 	if rp.owner != nil {
@@ -2797,6 +2797,14 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		return nil
 	}
 
+	closeResponseAfterReadError := func() error {
+		_ = resp.Body.Close()
+		if cause := context.Cause(resp.Request.Context()); isNativeCapacityStop(cause) {
+			return cause
+		}
+		return nil
+	}
+
 	// Media policy runs regardless of response-scanning state so an
 	// operator who disables response scanning for performance cannot
 	// silently bypass image metadata stripping, audio/video blocks, size
@@ -2819,7 +2827,9 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		peeked := bufio.NewReaderSize(resp.Body, mediaSignatureBytes)
 		head, err := peeked.Peek(mediaSignatureBytes)
 		if err != nil && !errors.Is(err, io.EOF) {
-			_ = resp.Body.Close()
+			if err := closeResponseAfterReadError(); err != nil {
+				return err
+			}
 			actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
 			rp.logger.LogBlocked(actx, "media_policy", "media response read error")
 			rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
@@ -2896,7 +2906,9 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			limited := io.LimitReader(resp.Body, maxRead+1)
 			body, err := io.ReadAll(limited)
 			if err != nil {
-				_ = resp.Body.Close()
+				if err := closeResponseAfterReadError(); err != nil {
+					return err
+				}
 				// Mirror the block-event surface of every other
 				// media-policy deny path: structured audit log,
 				// reverse-proxy-specific scan-blocked metric, and
@@ -3058,7 +3070,9 @@ responseScanning:
 			limited := io.LimitReader(resp.Body, int64(responseBodyLimit)+1)
 			body, err := io.ReadAll(limited)
 			if err != nil {
-				_ = resp.Body.Close()
+				if err := closeResponseAfterReadError(); err != nil {
+					return err
+				}
 				rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "read_error")
 				actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
@@ -3309,8 +3323,10 @@ responseScanning:
 	limited := io.LimitReader(resp.Body, int64(maxBytes)+1)
 	body, err := io.ReadAll(limited)
 	if err != nil {
+		if err := closeResponseAfterReadError(); err != nil {
+			return err
+		}
 		// Fail-closed: can't read body, can't scan it.
-		_ = resp.Body.Close()
 		reason := "response scan failed: response read error"
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "scan_error")
@@ -3350,7 +3366,9 @@ responseScanning:
 		var releaseSizeExemptScan sizeExemptScanRelease
 		body, releaseSizeExemptScan, scanFailure = rp.sizeExemptScanBudget.readBoundedSizeExemptResponse(revHost, body, resp.Body, admittedScanLimit, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes, sizeRemedies{})
 		if scanFailure != nil {
-			_ = resp.Body.Close()
+			if err := closeResponseAfterReadError(); err != nil {
+				return err
+			}
 			rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
 			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, string(scanFailure.Kind))
 			actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
@@ -3464,7 +3482,9 @@ responseScanning:
 			var releaseSizeExemptScan sizeExemptScanRelease
 			body, releaseSizeExemptScan, scanFailure = rp.sizeExemptScanBudget.readBoundedSizeExemptResponse(revHost, body, resp.Body, admittedScanLimit, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes, sizeRemedies{})
 			if scanFailure != nil {
-				_ = resp.Body.Close()
+				if err := closeResponseAfterReadError(); err != nil {
+					return err
+				}
 				rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, string(scanFailure.Kind))
 				actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
@@ -3907,7 +3927,11 @@ func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Reque
 	body, _ := json.Marshal(resp)
 	body = append(body, '\n')
 	written, _ := writeSyntheticResponse(w, http.StatusBadGateway, body)
-	recordErrorOutcome(http.StatusBadGateway, int64(written), "upstream_error")
+	reason := "upstream_error"
+	if isNativeCapacityStop(err) {
+		reason = nativeCapacityStopReason
+	}
+	recordErrorOutcome(http.StatusBadGateway, int64(written), reason)
 }
 
 // writeReverseProxyBlock writes a JSON block response for request-side blocks

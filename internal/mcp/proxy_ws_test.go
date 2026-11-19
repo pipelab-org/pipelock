@@ -339,6 +339,8 @@ func TestRunWSProxyNativeCapacityClosesAdmittedStream(t *testing.T) {
 	defer cancel()
 	requests := make(chan string, 4)
 	closed := make(chan struct{})
+	release := make(chan struct{})
+	const delayedReply = `{"jsonrpc":"2.0","id":2,"result":{"content":[]}}`
 	const reply = `{"jsonrpc":"2.0","id":1,"result":{"content":[]}}`
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, _, _, err := ws.UpgradeHTTP(r, w)
@@ -358,11 +360,17 @@ func TestRunWSProxyNativeCapacityClosesAdmittedStream(t *testing.T) {
 					continue
 				}
 				requests <- string(msg.Payload)
-				if strings.Contains(string(msg.Payload), `"id":1`) {
-					if err := gobwasutil.WriteServerMessage(conn, ws.OpText, []byte(reply)); err != nil {
-						t.Errorf("write upstream response: %v", err)
+				response := reply
+				if strings.Contains(string(msg.Payload), `"id":2`) {
+					select {
+					case <-release:
+					case <-ctx.Done():
 						return
 					}
+					response = delayedReply
+				}
+				if err := gobwasutil.WriteServerMessage(conn, ws.OpText, []byte(response)); err != nil {
+					return
 				}
 			}
 		}
@@ -372,7 +380,7 @@ func TestRunWSProxyNativeCapacityClosesAdmittedStream(t *testing.T) {
 	defer func() { _ = client.Close() }()
 	defer cancel()
 	var stdout lockedHTTPBuffer
-	opts := MCPProxyOpts{Scanner: testScannerForWS(t), ReceiptEmitter: e, RequireReceipts: true}
+	opts := MCPProxyOpts{Scanner: testScannerForWS(t), ReceiptEmitter: e, RequireReceipts: true, ListenerShutdownTimeout: time.Second}
 	done := make(chan error, 1)
 	go func() {
 		done <- RunWSProxy(ctx, input, &stdout, io.Discard, wsURL(upstream), opts)
@@ -400,6 +408,8 @@ func TestRunWSProxyNativeCapacityClosesAdmittedStream(t *testing.T) {
 	send(2)
 	observe(2)
 	send(3)
+	testwait.For(t, time.Second, func() bool { return stdout.contains(ael.ErrCapacity.Error()) }, "capacity refusal delivered")
+	close(release)
 	select {
 	case err := <-done:
 		if !errors.Is(err, ael.ErrCapacity) {
@@ -408,8 +418,8 @@ func TestRunWSProxyNativeCapacityClosesAdmittedStream(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("proxy did not return")
 	}
-	if !stdout.contains(ael.ErrCapacity.Error()) {
-		t.Fatalf("capacity refusal missing from %s", stdout.String())
+	if !stdout.contains(delayedReply) {
+		t.Fatalf("admitted reply after capacity stop missing from %s", stdout.String())
 	}
 	select {
 	case <-closed:

@@ -285,22 +285,127 @@ func TestNativeCapacityStopRefusesReloadWhileAdmissionSettles(t *testing.T) {
 	}
 }
 
+func TestNativeCapacityExitCompletesAdmittedReverseRequests(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		t.Run(method, func(t *testing.T) {
+			dir, configPath := drainReceiptConfig(t, 1)
+			data, err := os.ReadFile(filepath.Clean(configPath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(configPath, append(data, "  require_receipts: true\n"...), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			const responseBody = "complete upstream response"
+			effect, release := make(chan string, 1), make(chan struct{})
+			releaseUpstream := sync.OnceFunc(func() { close(release) })
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read upstream request: %v", err)
+					return
+				}
+				effect <- r.Method + " " + string(body)
+				select {
+				case <-release:
+					w.Header().Set("Content-Type", "text/plain")
+					_, _ = io.WriteString(w, responseBody)
+				case <-r.Context().Done():
+				}
+			}))
+			t.Cleanup(upstream.Close)
+			t.Cleanup(releaseUpstream)
+
+			slot := ael.ActivityRecordLimit(len(receipt.ActionUnclassified), 36)
+			s, logs := newTestServerForStart(t, func(o *ServerOpts) {
+				o.ConfigFile = configPath
+				o.Listen, o.ListenChanged = serverTestEphemeralListen, true
+				o.ReverseProxy, o.ReverseListen, o.ReverseUpstream = true, serverTestEphemeralListen, upstream.URL
+				o.nativeAELCapacityLimit = 100*slot + 2048
+			})
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			run := runJoined(t, ctx, s.Start, releaseUpstream)
+			address := drainListenerAddress(t, logs, "pipelock: reverse proxy listening on ")
+			type result struct {
+				code int
+				body string
+				err  error
+			}
+			request := func(method string, body io.Reader) result {
+				req, err := http.NewRequestWithContext(ctx, method, "http://"+address+"/", body)
+				if err != nil {
+					return result{err: err}
+				}
+				resp, err := upstream.Client().Do(req)
+				if err != nil {
+					return result{err: err}
+				}
+				defer func() { _ = resp.Body.Close() }()
+				data, err := io.ReadAll(resp.Body)
+				return result{code: resp.StatusCode, body: string(data), err: err}
+			}
+			admitted := make(chan result, 1)
+			go func() { admitted <- request(method, strings.NewReader("request")) }()
+			select {
+			case observed := <-effect:
+				if observed != method+" request" {
+					t.Fatalf("upstream observed %q", observed)
+				}
+			case early := <-admitted:
+				t.Fatalf("request ended before upstream effect: %+v", early)
+			case <-ctx.Done():
+				t.Fatal("request did not reach upstream")
+			}
+			if refused := request(http.MethodGet, nil); refused.err != nil || refused.code != http.StatusServiceUnavailable || !strings.Contains(refused.body, ael.ErrCapacity.Error()) {
+				t.Fatalf("capacity refusal: %+v", refused)
+			}
+			releaseUpstream()
+			got := <-admitted
+			if got.err != nil || got.code != http.StatusOK || got.body != responseBody {
+				t.Errorf("admitted response: %+v, want HTTP 200 with full body", got)
+			}
+			if err := <-run; !errors.Is(err, ael.ErrCapacity) || cliutil.ExitCodeOf(err) != 1 {
+				t.Fatalf("capacity exit: %v", err)
+			}
+			var outcomes int
+			for _, ar := range readRuntimeActionRecords(t, dir) {
+				if ar.DecisionPhase != receipt.DecisionPhaseOutcome || ar.Method != method {
+					continue
+				}
+				outcomes++
+				want := fmt.Sprintf("status=200 bytes=%d reason=complete", len(responseBody))
+				if ar.Pattern != want {
+					t.Errorf("outcome = %q, want %q", ar.Pattern, want)
+				}
+			}
+			if outcomes != 1 {
+				t.Fatalf("outcomes = %d, want 1", outcomes)
+			}
+			assertDrainEvidence(t, dir, false, false)
+		})
+	}
+}
+
 func TestNativeCapacityExitCancelsStalledReverseUpstream(t *testing.T) {
 	dir, configPath := drainReceiptConfig(t, 1)
-	entered, canceled := make(chan struct{}, 1), make(chan struct{}, 1)
+	entered, canceled := make(chan struct{}, 1), make(chan time.Time, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		entered <- struct{}{}
 		<-r.Context().Done()
-		canceled <- struct{}{}
+		canceled <- time.Now()
 	}))
 	defer upstream.Close()
 
+	const grace = 150 * time.Millisecond
 	slot := ael.ActivityRecordLimit(len(receipt.ActionUnclassified), 36)
 	s, logs := newTestServerForStart(t, func(o *ServerOpts) {
 		o.ConfigFile = configPath
 		o.Listen, o.ListenChanged = serverTestEphemeralListen, true
 		o.ReverseProxy, o.ReverseListen, o.ReverseUpstream = true, serverTestEphemeralListen, upstream.URL
 		o.nativeAELCapacityLimit = 100*slot + 2048
+		o.listenerShutdownTimeout = grace
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -341,7 +446,10 @@ func TestNativeCapacityExitCancelsStalledReverseUpstream(t *testing.T) {
 		t.Fatalf("capacity refusal: status=%d body=%q error=%v", status, body, err)
 	}
 	select {
-	case <-canceled:
+	case canceledAt := <-canceled:
+		if elapsed := canceledAt.Sub(stoppedAt); elapsed < grace {
+			t.Errorf("upstream canceled after %s, before the %s grace expired", elapsed, grace)
+		}
 	case <-exit.Done():
 		t.Fatal("stalled reverse upstream was not canceled")
 	}
@@ -354,6 +462,9 @@ func TestNativeCapacityExitCancelsStalledReverseUpstream(t *testing.T) {
 		t.Fatal("stalled reverse upstream delayed the capacity exit")
 	}
 	elapsed := time.Since(stoppedAt)
+	if elapsed < grace {
+		t.Fatalf("capacity exit returned after %s, before the %s grace expired", elapsed, grace)
+	}
 	if elapsed > exitLimit {
 		t.Fatalf("capacity exit returned after %s, limit %s", elapsed, exitLimit)
 	}
@@ -386,7 +497,7 @@ func TestEmbeddedMCPNativeCapacityClosesReceiptGroupAndRestarts(t *testing.T) {
 	}
 	entered := make(chan struct{}, 2)
 	upstreamStreamClosed := make(chan struct{})
-	var serveSSE atomic.Bool
+	var holdSSEOpen atomic.Bool
 	release := make(chan struct{})
 	releaseUpstream := sync.OnceFunc(func() { close(release) })
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -397,18 +508,15 @@ func TestEmbeddedMCPNativeCapacityClosesReceiptGroupAndRestarts(t *testing.T) {
 			return
 		}
 		const reply = `{"jsonrpc":"2.0","id":1,"result":{"content":[]}}`
-		if serveSSE.Load() {
-			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", reply)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", reply)
+		if holdSSEOpen.Load() {
 			if err := http.NewResponseController(w).Flush(); err != nil {
 				return
 			}
 			<-r.Context().Done()
 			close(upstreamStreamClosed)
-			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, reply)
 	}))
 	t.Cleanup(upstream.Close)
 	t.Cleanup(releaseUpstream)
@@ -420,6 +528,7 @@ func TestEmbeddedMCPNativeCapacityClosesReceiptGroupAndRestarts(t *testing.T) {
 			o.Listen, o.ListenChanged = serverTestEphemeralListen, true
 			o.MCPListen, o.MCPUpstream = serverTestEphemeralListen, upstream.URL
 			o.nativeAELCapacityLimit = slots*slot + 2048
+			o.listenerShutdownTimeout = time.Second
 		})
 	}
 	waitListener := func(buf *syncBuffer) string {
@@ -498,9 +607,9 @@ func TestEmbeddedMCPNativeCapacityClosesReceiptGroupAndRestarts(t *testing.T) {
 	if got := receipt.VerifyReceiptGroup(dir, open.GroupID, trusted); got.Verdict != receipt.GroupValid {
 		t.Fatalf("closed group: %+v", got)
 	}
-	t.Logf("HTTP 503 %q, admitted HTTP 200, runtime returned %v (exit 1), group %s", ael.ErrCapacity, ael.ErrCapacity, receipt.GroupValid)
+	t.Logf("HTTP 503 %q, admitted SSE reply, runtime returned %v (exit 1), group %s", ael.ErrCapacity, ael.ErrCapacity, receipt.GroupValid)
 
-	serveSSE.Store(true)
+	holdSSEOpen.Store(true)
 	restarted, restartedLogs := newServer(128)
 	next, _ := restarted.receiptShardSet.Opening()
 	if next.PreviousGroupID != open.GroupID || next.GroupID == open.GroupID {
@@ -612,14 +721,25 @@ func TestNativeCapacityExitUnblocksStalledForwardClient(t *testing.T) {
 	}
 
 	upstream, upstreamBlocked := stallingForwardUpstream(t)
+	const grace = 150 * time.Millisecond
 	slot := ael.ActivityRecordLimit(len(receipt.ActionUnclassified), 36)
 	s, logs := newTestServerForStart(t, func(o *ServerOpts) {
 		o.ConfigFile = configPath
 		o.Listen, o.ListenChanged = serverTestEphemeralListen, true
 		o.nativeAELCapacityLimit = 100*slot + 2048
+		o.listenerShutdownTimeout = grace
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
+	capacity := s.liveReceiptEmitter().NativeCapacity()
+	drained := make(chan time.Time, 1)
+	go func() {
+		select {
+		case <-capacity.Drained():
+			drained <- time.Now()
+		case <-ctx.Done():
+		}
+	}()
 	run := runJoined(t, ctx, s.Start, nil)
 	address := drainListenerAddress(t, logs, "  Listen: ")
 	proxyURL, err := url.Parse("http://" + address)
@@ -654,6 +774,14 @@ func TestNativeCapacityExitUnblocksStalledForwardClient(t *testing.T) {
 	_ = resp.Body.Close()
 	if err != nil || resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(body), ael.ErrCapacity.Error()) {
 		t.Fatalf("capacity refusal: status=%d body=%q error=%v", resp.StatusCode, body, err)
+	}
+	select {
+	case drainedAt := <-drained:
+		if elapsed := drainedAt.Sub(stoppedAt); elapsed < grace {
+			t.Errorf("forward request settled after %s, before the %s grace expired", elapsed, grace)
+		}
+	case <-exit.Done():
+		t.Fatal("stalled forward request did not settle")
 	}
 	select {
 	case err := <-run:

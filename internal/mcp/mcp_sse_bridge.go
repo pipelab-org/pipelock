@@ -236,20 +236,18 @@ func scanGETStream(ctx context.Context, client *transport.HTTPClient, writer tra
 		return nil, err
 	}
 	defer admission.ReleaseNativeAdmission()
-	streamCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	stop := admission.NativeLease.OnStop(cancel)
+	streamCtx, stop := httpstream.WithCapacityGrace(ctx, nil, admission.NativeLease, opts.shutdownGrace())
 	defer stop()
 	reader, err := client.OpenGETStream(streamCtx)
 	if err != nil {
 		return nil, err
 	}
 	opts.nativeAdmission = admission
-	warnContext, stopWarnings := opts.nativeWarningContext(opts.warnContext(), admission)
+	warnContext, stopWarnings := opts.nativeWarningContext(streamCtx, admission)
 	opts.WarnContext = warnContext
 	defer stopWarnings()
-	_, scanErr = scanMCPHTTPResponse(reader, writer, logW, tracker, opts)
-	if admission.NativeLease.Stopping() {
+	_, scanErr = scanMCPHTTPResponse(streamCtx, reader, writer, logW, tracker, opts)
+	if errors.Is(scanErr, ael.ErrCapacity) {
 		recordListenerStreamError(ctx, logW, opts, mcpStreamReceipt(opts, http.MethodGet), true, ael.ErrCapacity)
 		return ael.ErrCapacity, nil
 	}

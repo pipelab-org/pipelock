@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
@@ -267,14 +268,18 @@ func RunHTTPProxy(
 	var lastScanErr error
 	var admission receipt.EmitOpts
 	finishWarnings := func() {}
-	defer func() {
+	stopCapacity := func() {}
+	settleAdmission := func() {
 		finishWarnings()
+		stopCapacity()
 		admission.ReleaseNativeAdmission()
-	}()
+	}
+	defer settleAdmission()
 
 	for {
-		finishWarnings()
-		admission.ReleaseNativeAdmission()
+		settleAdmission()
+		finishWarnings = func() {}
+		stopCapacity = func() {}
 		admission = receipt.EmitOpts{}
 		msg, err := readMCPInputMessage(ctx, clientIn, clientReader)
 		if err != nil {
@@ -749,6 +754,8 @@ func RunHTTPProxy(
 			})
 		}
 		// POST to upstream.
+		var requestCtx context.Context
+		requestCtx, stopCapacity = httpstream.WithCapacityGrace(ctx, nil, admission.NativeLease, fwdOpts.shutdownGrace())
 		var taskRefusal string
 		respReader, err := func() (transport.MessageReader, error) {
 			upstreamMu.Lock()
@@ -757,7 +764,7 @@ func RunHTTPProxy(
 			if taskRefusal != "" {
 				return nil, nil
 			}
-			return httpClient.SendMessageWithOptions(ctx, decision.ForwardMessage, transport.HTTPMessageOptions{Headers: requestHeaders})
+			return httpClient.SendMessageWithOptions(requestCtx, decision.ForwardMessage, transport.HTTPMessageOptions{Headers: requestHeaders})
 		}()
 		if taskRefusal != "" {
 			unlockInventory()
@@ -785,6 +792,10 @@ func RunHTTPProxy(
 		emitPendingMCPInputReceipt(decision.pendingReceipt)
 		if err != nil {
 			unlockInventory()
+			if errors.Is(context.Cause(requestCtx), ael.ErrCapacity) {
+				emitTrackedStreamError(requestCtx, safeLogW, tracker, frame.ID, fwdOpts, ael.ErrCapacity)
+				break
+			}
 			// SendMessage returns context cancellation/deadline errors as-is
 			// and sanitizes upstream request failures/status errors so raw
 			// upstream bytes cannot cross this logging boundary.
@@ -812,10 +823,10 @@ func RunHTTPProxy(
 
 		// Scan and forward response. Apply the optional per-read response
 		// timeout (no-op when disabled) so a hung HTTP upstream fails closed.
-		foundInjection, scanErr := scanMCPHTTPResponse(respReader, safeClientOut, safeLogW, tracker, fwdOpts)
-		if errors.Is(scanErr, ael.ErrCapacity) {
-			emitTrackedStreamError(ctx, safeLogW, tracker, frame.ID, fwdOpts, scanErr)
-			lastScanErr = scanErr
+		foundInjection, scanErr := scanMCPHTTPResponse(requestCtx, respReader, safeClientOut, safeLogW, tracker, fwdOpts)
+		if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(context.Cause(requestCtx), ael.ErrCapacity) {
+			emitTrackedStreamError(requestCtx, safeLogW, tracker, frame.ID, fwdOpts, ael.ErrCapacity)
+			lastScanErr = ael.ErrCapacity
 			unlockInventory()
 			break
 		}

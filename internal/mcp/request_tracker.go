@@ -183,11 +183,7 @@ func (t *RequestTracker) nativeAdmission(id json.RawMessage) receipt.EmitOpts {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	outcome := t.pending[canonicalID(id)].outcome
-	if outcome.ownsNativeLease {
-		return outcome.Receipt
-	}
-	return receipt.EmitOpts{}
+	return t.pending[canonicalID(id)].outcome.Receipt
 }
 
 // Consume checks whether id was previously tracked and returns the associated

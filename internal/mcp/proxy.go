@@ -235,7 +235,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		opts.WarnContext = baseWarnContext
 		opts.nativeAdmission = streamAdmission
 		line, err := reader.ReadMessage()
-		if opts.nativeSSE && err != nil && streamAdmission.NativeLease.Stopping() {
+		if opts.nativeSSE && err != nil && errors.Is(context.Cause(baseWarnContext), ael.ErrCapacity) {
 			return foundInjection, ael.ErrCapacity
 		}
 		if err != nil {
@@ -262,14 +262,24 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 			return foundInjection, fmt.Errorf("reading input: %w", err)
 		}
+		// Parse the inbound frame once per message; every gate below reads
+		// ID / Method / tool fields from this frame instead of re-parsing.
+		frame := ParseMCPFrame(line)
 		if opts.nativeSSE {
-			var admissionErr error
-			eventAdmission, admissionErr = streamAdmission.ReserveNativeChild(nativeMCPEventRecords)
-			if admissionErr != nil {
-				return foundInjection, admissionErr
+			var admission receipt.EmitOpts
+			if frame.Method == "" && isResponse(line) {
+				admission = tracker.nativeAdmission(frame.ID)
 			}
-			opts.nativeAdmission = eventAdmission
-			opts.WarnContext, finishWarnings = opts.nativeWarningContext(baseWarnContext, eventAdmission)
+			if admission.NativeLease == nil {
+				var admissionErr error
+				eventAdmission, admissionErr = streamAdmission.ReserveNativeChild(nativeMCPEventRecords)
+				if admissionErr != nil {
+					return foundInjection, admissionErr
+				}
+				admission = eventAdmission
+			}
+			opts.nativeAdmission = admission
+			opts.WarnContext, finishWarnings = opts.nativeWarningContext(baseWarnContext, admission)
 		}
 		lineNum++
 		var denialAudit mcpDenialAudit
@@ -278,9 +288,6 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			return foundInjection, &mcpFinalizedDenialError{err: err}
 		}
 
-		// Parse the inbound frame once per message; every gate below reads
-		// ID / Method / tool fields from this frame instead of re-parsing.
-		frame := ParseMCPFrame(line)
 		if opts.nativeStdio {
 			selected := tracker.nativeAdmission(frame.ID)
 			if selected.NativeLease == nil {

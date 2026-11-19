@@ -108,18 +108,13 @@ func DispatchSSEScan(
 	sc *scanner.Scanner,
 	opts SSEDispatchOptions,
 ) error {
-	lease := opts.nativeAdmission.NativeLease
-	if source, ok := body.(io.Closer); ok {
-		stopCapacityClose := lease.OnStop(func() { _ = source.Close() })
-		defer stopCapacityClose()
-	}
 	var err error
 	if opts.IsA2A {
 		err = mcp.ScanA2AStreamWithOptions(ctx, body, w, flusher, sc, mcp.A2AStreamOptions{Config: opts.A2A, Warning: opts.Generic})
 	} else {
 		err = mcp.ScanGenericSSEStreamWithOptions(ctx, body, w, flusher, sc, opts.GenericSSE, opts.Generic)
 	}
-	if lease.Stopping() && !IsSSEStreamFinding(err) && !IsSSEStreamScanError(err) {
+	if isNativeCapacityStop(context.Cause(ctx)) && !IsSSEStreamFinding(err) && !IsSSEStreamScanError(err) {
 		return ael.ErrCapacity
 	}
 	return err
