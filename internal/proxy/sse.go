@@ -114,7 +114,9 @@ func DispatchSSEScan(
 	} else {
 		err = mcp.ScanGenericSSEStreamWithOptions(ctx, body, w, flusher, sc, opts.GenericSSE, opts.Generic)
 	}
-	if isNativeCapacityStop(context.Cause(ctx)) && !IsSSEStreamFinding(err) && !IsSSEStreamScanError(err) {
+	cause := context.Cause(ctx)
+	if isNativeCapacityStop(cause) && !IsSSEStreamFinding(err) &&
+		(!IsSSEStreamScanError(err) || errors.Is(err, ctx.Err()) || errors.Is(err, cause)) {
 		return ael.ErrCapacity
 	}
 	return err

@@ -2318,6 +2318,17 @@ func newInterceptHandler(
 			interceptEmitOutcomeReceipt(ic, opts, verdict, status, transferred, reason)
 			_ = httpstream.Abort(r.Context(), flushErr)
 		}
+		finishDownloadError := func(opts receipt.EmitOpts, status int, transferred int64, err error) {
+			if isNativeCapacityStop(context.Cause(r.Context())) {
+				if ic.Config.FlightRecorder.RequireReceipts {
+					emitOutcome(opts, config.ActionAllow, status, transferred, nativeCapacityStopReason)
+				} else {
+					_ = interceptEmitReceipt(ic, nativeStreamCloseReceipt(opts))
+				}
+				return
+			}
+			emitOutcome(opts, config.ActionAllow, status, transferred, recordStreamError(r.Context(), ic.Logger, actx, err))
+		}
 		requiredIntentEmitted := false
 		if ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
 			if interceptEmitReceiptOrBlock(ic, w, actx, allowReceipt) {
@@ -2717,8 +2728,7 @@ func newInterceptHandler(
 			ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
 			recordResponseScanExemptOverCapUnscanned(ic.Metrics, ic.Logger, actx, r.URL.Hostname(), TransportConnect, written, maxResp)
 			if copyErr != nil {
-				reason := recordStreamError(r.Context(), ic.Logger, actx, copyErr)
-				emitOutcome(allowReceipt, config.ActionAllow, resp.StatusCode, written, reason)
+				finishDownloadError(allowReceipt, resp.StatusCode, written, copyErr)
 				_ = httpstream.Abort(r.Context(), copyErr)
 				return
 			}
@@ -2861,8 +2871,7 @@ func newInterceptHandler(
 					// Account before outcome emission on both copy success and failure.
 					ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
 					if copyErr != nil {
-						reason := recordStreamError(r.Context(), ic.Logger, actx, copyErr)
-						emitOutcome(passthroughOutcome, config.ActionAllow, resp.StatusCode, written, reason)
+						finishDownloadError(passthroughOutcome, resp.StatusCode, written, copyErr)
 						_ = httpstream.Abort(r.Context(), copyErr)
 						return
 					}

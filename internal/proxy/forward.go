@@ -2564,6 +2564,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	outcomeReason := "incomplete"
 	outcomeReceipt := forwardAllowReceipt
 	outcomeReceipt.Verdict = config.ActionAllow
+	finishDownloadError := func(err error) string {
+		if isNativeCapacityStop(context.Cause(r.Context())) {
+			if !cfg.FlightRecorder.RequireReceipts {
+				emitForwardReceipt(nativeStreamCloseReceipt(forwardAllowReceipt))
+			}
+			return nativeCapacityStopReason
+		}
+		return recordStreamError(r.Context(), p.logger, actx, err)
+	}
 	// A scanned SSE stream records "complete" on success. Its failed final
 	// flush keeps the SSE cancellation reason a mid-stream departure records.
 	sseDelivered := false
@@ -3043,7 +3052,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		outcomeBytes = written
 		recordResponseScanExemptOverCapUnscanned(p.metrics, p.logger, actx, fwdRespHost, TransportForward, written, configMaxBytes)
 		if copyErr != nil {
-			outcomeReason = recordStreamError(r.Context(), p.logger, actx, copyErr)
+			outcomeReason = finishDownloadError(copyErr)
 			sc.RecordRequest(strings.ToLower(r.URL.Hostname()), int(written))
 			_ = resolved.Budget.RecordBytes(written)
 			emitForwardAllowReceipt()
@@ -3216,7 +3225,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						outcomeStatus = strconv.Itoa(resp.StatusCode)
 						outcomeBytes = written
 						if copyErr != nil {
-							outcomeReason = recordStreamError(r.Context(), p.logger, actx, copyErr)
+							outcomeReason = finishDownloadError(copyErr)
 							sc.RecordRequest(strings.ToLower(r.URL.Hostname()), int(written))
 							_ = resolved.Budget.RecordBytes(written)
 							_ = httpstream.Abort(r.Context(), copyErr)
@@ -3776,7 +3785,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	outcomeStatus = strconv.Itoa(resp.StatusCode)
 	outcomeBytes = written
 	if copyErr != nil {
-		outcomeReason = recordStreamError(r.Context(), p.logger, actx, copyErr)
+		outcomeReason = finishDownloadError(copyErr)
 		emitForwardAllowReceipt()
 		_ = httpstream.Abort(r.Context(), copyErr)
 		return
