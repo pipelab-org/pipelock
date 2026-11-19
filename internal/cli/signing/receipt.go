@@ -139,9 +139,18 @@ Examples:
 			}
 			targetDir := chainDir
 			if chainDir != "" {
-				targetDir = ""
-				if location, err := recorder.ResolveEvidenceLocation(chainDir, locationID); err == nil {
-					targetDir = location.Dir
+				var v3Root bool
+				if locationID == "" {
+					if root, openErr := recorder.OpenEvidenceDirectory(chainDir); openErr == nil {
+						v3Root, _ = v3.DirectoryHasV3(chainDir)
+						_ = root.Close()
+					}
+				}
+				if !v3Root {
+					targetDir = ""
+					if location, err := recorder.ResolveEvidenceLocation(chainDir, locationID); err == nil {
+						targetDir = location.Dir
+					}
 				}
 			}
 			claimed, detectErr := v3Flags.Detect(args, targetDir, expectSeq)
