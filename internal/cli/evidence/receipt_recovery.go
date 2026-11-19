@@ -19,7 +19,7 @@ func receiptRecoveryCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "receipt-recovery DIR",
 		Short: "Check whether a stopped v3 receipt history can be resumed",
-		Long:  "Check the directory lock and verify a v3 receipt history against pinned keys. A successful check allows an unproven end. The writer flushes the predecessor again during startup.",
+		Long:  "Check the directory lock and verify a v3 receipt history against pinned keys. An unproven end can pass this check. Incomplete histories require recovery before restart. The writer flushes the predecessor again during startup.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			keys := make([]ed25519.PublicKey, 0, len(keyInputs))

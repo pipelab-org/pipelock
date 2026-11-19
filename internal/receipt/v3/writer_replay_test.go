@@ -60,13 +60,13 @@ func (f *writerReplayFault) call(operation string, fn func() error) error {
 }
 
 type writerReplayFile struct {
-	writerFile
+	StreamFile
 	fault *writerReplayFault
 }
 
 func (f writerReplayFile) Write(data []byte) (int, error) {
 	if !f.fault.trip(replayWrite) {
-		return f.writerFile.Write(data)
+		return f.StreamFile.Write(data)
 	}
 	switch f.fault.step.Landing {
 	case "full":
@@ -75,18 +75,18 @@ func (f writerReplayFile) Write(data []byte) (int, error) {
 	default:
 		return 0, errWriterReplay
 	}
-	n, err := f.writerFile.Write(data)
+	n, err := f.StreamFile.Write(data)
 	return n, errors.Join(err, errWriterReplay)
 }
 
 func (f writerReplayFile) Sync() error {
-	return f.fault.call(replayFlush, f.writerFile.Sync)
+	return f.fault.call(replayFlush, f.StreamFile.Sync)
 }
 
 func (f *writerReplayFault) storage(dir string) writerStorage {
 	local := localWriterStorage()
 	return writerStorage{
-		createTemp: func(dir, prefix string) (writerFile, error) {
+		createTemp: func(dir, prefix string) (StreamFile, error) {
 			file, err := local.createTemp(dir, prefix)
 			if err != nil {
 				return nil, err

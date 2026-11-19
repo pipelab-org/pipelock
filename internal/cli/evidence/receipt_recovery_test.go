@@ -70,3 +70,19 @@ func TestReceiptRecoveryChecksLockAndPreservesEvidence(t *testing.T) {
 		t.Fatalf("startup inspection changed evidence: %v", err)
 	}
 }
+
+func TestReceiptRecoveryReportsNoEvidence(t *testing.T) {
+	dir := t.TempDir()
+	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	var out bytes.Buffer
+	cmd := receiptRecoveryCmd()
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{dir, "--key", hex.EncodeToString(key.Public().(ed25519.PublicKey))})
+	err := cmd.ExecuteContext(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "NO_EVIDENCE") ||
+		!strings.Contains(err.Error(), "supply the directory containing the v3 receipt files") ||
+		!strings.Contains(out.String(), "\"verdict\":\"INCOMPLETE\"") {
+		t.Fatalf("empty history did not report incomplete evidence: %v\n%s", err, &out)
+	}
+}

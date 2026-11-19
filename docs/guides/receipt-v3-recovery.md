@@ -30,11 +30,17 @@ If the original private key is unavailable, use a new signing key and add the pr
 
 Stop the process that owns the evidence directory and rerun `receipt-recovery`. A second writer needs its own directory.
 
-## Startup reports invalid or unsupported history
+## Startup reports invalid, unsupported, or incomplete history
 
 Keep a copy of any directory that reports `PREDECESSOR_TRUNCATED` or `DECISION_INCONSISTENT`. Start in a new empty evidence directory and retain the original files for verification. Acceptance flags apply to unproven ends and permitted gaps. Neither flag clears an integrity failure.
 
 For `ACTION_UNINTERPRETED` or `DECISIONS_NOT_APPRAISED`, the startup check names the action body version that the writer needs. Use a compatible release, or preserve the existing directory and start a new history elsewhere.
+
+For missing streams, cutover inventories, or legacy receipt files, restore the complete evidence from a trusted copy and rerun the check. This applies to `LEGACY_MEMBERSHIP_UNKNOWN` and `LEGACY_GROUP_INCOMPLETE`. If you can't restore the files, preserve the directory and start in a new empty one.
+
+For `NO_EVIDENCE`, rerun the check against the directory containing the v3 receipt files.
+
+If offline verification reports `DECISION_INDEX_FULL`, rerun `pipelock verify-receipt` with `--disk-index`. If startup still can't appraise every decision, preserve the directory for verification and start in a new empty one.
 
 ## Switch an existing legacy directory
 

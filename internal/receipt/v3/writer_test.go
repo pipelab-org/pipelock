@@ -104,24 +104,24 @@ func TestStreamWriterLifecycleAndRotation(t *testing.T) {
 }
 
 type errorWriterFile struct {
-	writerFile
+	StreamFile
 	writeErr error
 	syncErr  error
 }
 
 func (f errorWriterFile) Write(line []byte) (int, error) {
 	if f.writeErr != nil {
-		n, err := f.writerFile.Write(line[:len(line)/2])
+		n, err := f.StreamFile.Write(line[:len(line)/2])
 		return n, errors.Join(err, f.writeErr)
 	}
-	return f.writerFile.Write(line)
+	return f.StreamFile.Write(line)
 }
 
 func (f errorWriterFile) Sync() error {
 	if f.syncErr != nil {
 		return f.syncErr
 	}
-	return f.writerFile.Sync()
+	return f.StreamFile.Sync()
 }
 
 func TestStreamWriterNeverConfirmsFailedTail(t *testing.T) {
@@ -135,9 +135,9 @@ func TestStreamWriterNeverConfirmsFailedTail(t *testing.T) {
 			fault := errors.New("injected storage failure")
 			switch operation {
 			case "write":
-				writer.active.file = errorWriterFile{writerFile: writer.active.file, writeErr: fault}
+				writer.active.file = errorWriterFile{StreamFile: writer.active.file, writeErr: fault}
 			case "flush", "close":
-				writer.active.file = errorWriterFile{writerFile: writer.active.file, syncErr: fault}
+				writer.active.file = errorWriterFile{StreamFile: writer.active.file, syncErr: fault}
 			case "directory":
 				writer.fileBytes = writer.active.bytes + maxLineBytes
 				writer.storage.syncDir = func(string) error {
@@ -271,7 +271,7 @@ func TestStreamWriterScheduledHeartbeat(t *testing.T) {
 	ticks := make(chan time.Time)
 	flushed := make(chan struct{})
 	w.active.file = syncCallbackFile{
-		writerFile: w.active.file,
+		StreamFile: w.active.file,
 		syncCallback: sync.OnceFunc(func() {
 			close(flushed)
 		}),

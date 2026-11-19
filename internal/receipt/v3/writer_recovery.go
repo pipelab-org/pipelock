@@ -5,9 +5,12 @@ package v3
 
 import (
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 )
+
+var errMissingRecoveryHold = errors.New("allow resolution without a stored hold")
 
 type heldActionState struct {
 	hold    Action
@@ -38,7 +41,10 @@ func (v *verification) recoverHolds(lineage string) ([]Action, error) {
 				holds[action.ActionID] = heldActionState{hold: action}
 			case phaseResolution:
 				if action.Verdict == verdictAllow {
-					hold := holds[action.ActionID]
+					hold, ok := holds[action.ActionID]
+					if !ok {
+						return fmt.Errorf("%w (record %s)", errMissingRecoveryHold, record.id)
+					}
 					hold.allowed = true
 					holds[action.ActionID] = hold
 				} else {

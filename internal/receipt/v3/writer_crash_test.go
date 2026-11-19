@@ -53,8 +53,8 @@ func TestReceiptWriterCrashChild(t *testing.T) {
 
 	syncFault := errors.New("injected flush failure")
 	if mode == crashBeforeRepair {
-		w.active.file = errorWriterFile{writerFile: w.active.file, syncErr: syncFault}
-		w.storage.createTemp = func(string, string) (writerFile, error) {
+		w.active.file = errorWriterFile{StreamFile: w.active.file, syncErr: syncFault}
+		w.storage.createTemp = func(string, string) (StreamFile, error) {
 			os.Exit(crashProcessExit)
 			return nil, nil
 		}

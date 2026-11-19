@@ -23,13 +23,6 @@ func InspectStartup(ctx context.Context, dir string, keys []ed25519.PublicKey) (
 		return Result{}, fmt.Errorf("acquire exclusive receipt writer lock: %w", err)
 	}
 	defer func() { err = errors.Join(err, lock.Close()) }()
-	present, err := DirectoryHasV3(dir)
-	if err != nil {
-		return Result{}, err
-	}
-	if !present {
-		return Result{}, errors.New("directory has no v3 receipt stream")
-	}
 	var refusal error
 	result, err := verifyPathsInspect(ctx, []string{dir}, Options{Directory: true, DiskIndex: true, Keys: keys}, "", func(v *verification) error {
 		_, _, refusal = startupHead(v.result, v.actionVersionNeeded)

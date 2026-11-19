@@ -60,9 +60,9 @@ func TestStreamWriterActionBarrierAndRepair(t *testing.T) {
 			failure := errors.New("storage failure")
 			switch faultKind {
 			case "write":
-				w.active.file = errorWriterFile{writerFile: w.active.file, writeErr: failure}
+				w.active.file = errorWriterFile{StreamFile: w.active.file, writeErr: failure}
 			case "flush":
-				w.active.file = errorWriterFile{writerFile: w.active.file, syncErr: failure}
+				w.active.file = errorWriterFile{StreamFile: w.active.file, syncErr: failure}
 			}
 			intent := writerTestIntent("request")
 			policy := CapturePolicy(Digest([]byte("original snapshot")))
@@ -171,12 +171,12 @@ func TestStreamWriterSettlesOutcomeAfterWriteErrors(t *testing.T) {
 }
 
 type syncCallbackFile struct {
-	writerFile
+	StreamFile
 	syncCallback func()
 }
 
 func (f syncCallbackFile) Sync() error {
-	err := f.writerFile.Sync()
+	err := f.StreamFile.Sync()
 	f.syncCallback()
 	return err
 }
@@ -186,7 +186,7 @@ func TestStreamWriterActionCancellationAndAttribution(t *testing.T) {
 	w := requireWriter(t, opts, localWriterStorage())
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	w.active.file = syncCallbackFile{writerFile: w.active.file, syncCallback: cancel}
+	w.active.file = syncCallbackFile{StreamFile: w.active.file, syncCallback: cancel}
 	intent := writerTestIntent("cancelled")
 	// Supplied body attribution must be ignored in favor of the captured
 	// policy, including when the producer did not capture one.
@@ -217,7 +217,7 @@ func TestStreamWriterSettlesCancelledActionAfterWriteError(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	w.active.file = syncCallbackFile{writerFile: w.active.file, syncCallback: cancel}
+	w.active.file = syncCallbackFile{StreamFile: w.active.file, syncCallback: cancel}
 	// The intent flush succeeds. The following refusal append writes no bytes.
 	fault = writerReplayFault{step: writerReplayStep{FaultAt: 3}}
 	if err := w.WriteAction(ctx, writerTestIntent("cancelled"), PolicySnapshot{}); !errors.Is(err, context.Canceled) || !errors.Is(err, ErrEffectNotReleased) {
@@ -302,7 +302,7 @@ func TestStreamWriterCancelsWaitBehindFlush(t *testing.T) {
 	}
 	entered, resume := make(chan struct{}), make(chan struct{})
 	w.active.file = syncCallbackFile{
-		writerFile: w.active.file,
+		StreamFile: w.active.file,
 		syncCallback: sync.OnceFunc(func() {
 			close(entered)
 			<-resume
@@ -410,7 +410,7 @@ func TestStreamWriterAdmissionBatchReservesExactCount(t *testing.T) {
 		t.Fatalf("batch records were not verified before return: %+v", result)
 	}
 	failure := errors.New("batch flush failed")
-	w.active.file = errorWriterFile{writerFile: w.active.file, syncErr: failure}
+	w.active.file = errorWriterFile{StreamFile: w.active.file, syncErr: failure}
 	third, fourth := writerTestIntent("third"), writerTestIntent("fourth")
 	if err := w.WriteAdmissionBatch(ctx, []Action{third, fourth}, policy); !errors.Is(err, failure) {
 		t.Fatalf("batch reported success after a failed flush: %v", err)

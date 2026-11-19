@@ -46,8 +46,15 @@ func (m *Metrics) registerReceiptMetrics(reg *prometheus.Registry) {
 		Help:      "Total requests blocked because require_receipts was enabled and a signed action receipt could not be emitted.",
 	}, []string{"reason", "transport"})
 
+	m.optionalReceiptWithholds = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "optional_receipt_withholds_total",
+		Help:      "Total effects withheld after a v3 receipt write failed and recorded that the effect was not released, with require_receipts disabled.",
+	}, []string{"transport"})
+
 	reg.MustRegister(m.receiptEmitFailures)
 	reg.MustRegister(m.requiredReceiptBlockings)
+	reg.MustRegister(m.optionalReceiptWithholds)
 }
 
 // RecordEmitFailure increments the receipt-emit-failure counter for a
@@ -89,6 +96,13 @@ func (m *Metrics) RecordRequiredReceiptBlock(reason, transport string) {
 	m.mu.Unlock()
 	if m.requiredReceiptBlockings != nil {
 		m.requiredReceiptBlockings.WithLabelValues(reason, transport).Inc()
+	}
+}
+
+// RecordOptionalReceiptWithhold counts an effect withheld with optional receipts.
+func (m *Metrics) RecordOptionalReceiptWithhold(transport string) {
+	if m != nil && m.optionalReceiptWithholds != nil {
+		m.optionalReceiptWithholds.WithLabelValues(normalizeReceiptTransport(transport)).Inc()
 	}
 }
 

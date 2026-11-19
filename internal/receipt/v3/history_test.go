@@ -434,6 +434,9 @@ func testIncompleteLegacyGroup(t *testing.T) {
 	if err != nil || !hasFinding(result, codeLegacyGroupIncomplete) {
 		t.Fatalf("expected incomplete group: %+v, %v", result, err)
 	}
+	if _, _, err := startupHead(result, 0); result.Verdict != "INCOMPLETE" || err == nil || !strings.Contains(err.Error(), codeLegacyGroupIncomplete) {
+		t.Errorf("incomplete legacy group passed startup verification: %s (%v)", result.Verdict, err)
+	}
 	mutant, err := verifyPaths(t.Context(), paths, opts, codeLegacyGroupIncomplete)
 	if err != nil {
 		t.Fatal(err)

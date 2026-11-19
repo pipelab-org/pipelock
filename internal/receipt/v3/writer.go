@@ -47,12 +47,16 @@ type StreamWriterOptions struct {
 	Detector         receiptcontent.Detector
 	Clock            func() time.Time
 	Random           io.Reader
+
+	// CreateTempFile creates a new file in dir, as os.CreateTemp does.
+	// A nil factory uses the local filesystem directly.
+	CreateTempFile func(dir, pattern string) (StreamFile, error)
 }
 
 type writerStream struct {
 	id        string
 	confirmed Position
-	file      writerFile
+	file      StreamFile
 	bytes     int
 	beat      int64
 }
@@ -85,7 +89,11 @@ type StreamWriter struct {
 // OpenStreamWriter verifies and re-flushes any predecessor before publishing
 // a new stream. A second writer cannot inspect or mutate the directory.
 func OpenStreamWriter(ctx context.Context, opts StreamWriterOptions) (*StreamWriter, error) {
-	return openStreamWriter(ctx, opts, localWriterStorage())
+	storage := localWriterStorage()
+	if opts.CreateTempFile != nil {
+		storage.createTemp = opts.CreateTempFile
+	}
+	return openStreamWriter(ctx, opts, storage)
 }
 
 func openStreamWriter(ctx context.Context, opts StreamWriterOptions, storage writerStorage) (_ *StreamWriter, err error) {
@@ -244,6 +252,7 @@ func (w *StreamWriter) prepareStart(ctx context.Context, keys []ed25519.PublicKe
 }
 
 func startupHead(result Result, neededActionVersion int64) (HistoryResult, StreamResult, error) {
+	var incompleteFinding Finding
 	for _, finding := range result.Findings {
 		if finding.Code == codeTrust {
 			for _, history := range result.Histories {
@@ -254,24 +263,19 @@ func startupHead(result Result, neededActionVersion int64) (HistoryResult, Strea
 				}
 			}
 		}
-		switch finding.Code {
-		case codeHistoryDisconnected, codePredecessorNotPresented, codeCutoverInventoryNotPresented,
-			codeLegacyChainNotPresented:
+		switch finding.Class {
+		case invalid, unsupported:
 			return HistoryResult{}, StreamResult{}, startupFinding(finding)
-		}
-		if finding.Class == invalid || finding.Class == unsupported {
-			return HistoryResult{}, StreamResult{}, startupFinding(finding)
+		case incomplete:
+			// A newer body version takes priority over an unknown value
+			// in the current version when both compatibility findings apply.
+			if incompleteFinding.Code == "" || finding.Code == codeDecisionsNotAppraised {
+				incompleteFinding = finding
+			}
 		}
 	}
-	for _, finding := range result.Findings {
-		if finding.Code == codeDecisionsNotAppraised {
-			return HistoryResult{}, StreamResult{}, fmt.Errorf("receipt startup verification refused %s: action body version %d required", codeDecisionsNotAppraised, neededActionVersion)
-		}
-	}
-	for _, finding := range result.Findings {
-		if finding.Code == codeActionUninterpreted {
-			return HistoryResult{}, StreamResult{}, fmt.Errorf("receipt startup verification refused %s: compatible action body version %d vocabulary required", codeActionUninterpreted, wireKinds[kindAction].version)
-		}
+	if incompleteFinding.Code != "" {
+		return HistoryResult{}, StreamResult{}, startupIncompleteFinding(incompleteFinding, neededActionVersion)
 	}
 	if len(result.Histories) != 1 {
 		return HistoryResult{}, StreamResult{}, errors.New("receipt startup requires exactly one verified history")
@@ -302,6 +306,23 @@ func startupHead(result Result, neededActionVersion int64) (HistoryResult, Strea
 
 func startupFinding(finding Finding) error {
 	return fmt.Errorf("receipt startup verification refused %s (stream %s, record %s)", finding.Code, finding.Stream, finding.Record)
+}
+
+func startupIncompleteFinding(finding Finding, neededActionVersion int64) error {
+	base := startupFinding(finding)
+	const newHistory = "preserve this directory and start in a new empty evidence directory"
+	switch finding.Code {
+	case codeDecisionsNotAppraised:
+		return fmt.Errorf("%w: action body version %d required. Use a compatible release or %s", base, neededActionVersion, newHistory)
+	case codeActionUninterpreted:
+		return fmt.Errorf("%w: compatible action body version %d vocabulary required. Use a compatible release or %s", base, wireKinds[kindAction].version, newHistory)
+	case codeNoEvidence:
+		return fmt.Errorf("%w: supply the directory containing the v3 receipt files", base)
+	case codeDecisionIndexFull:
+		return fmt.Errorf("%w: %s. Use a verifier that can appraise all decisions to inspect the original history", base, newHistory)
+	default:
+		return fmt.Errorf("%w: restore the complete evidence from a trusted copy and retry, or %s", base, newHistory)
+	}
 }
 
 func lastStreamFile(dir string, entries []os.DirEntry, stream string) (string, error) {

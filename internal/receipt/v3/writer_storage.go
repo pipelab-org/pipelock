@@ -20,14 +20,15 @@ const (
 	writerFileBytes  = 64 << 20
 )
 
-type writerFile interface {
+// StreamFile is a writable temporary file that can be flushed before publication.
+type StreamFile interface {
 	io.WriteCloser
 	Name() string
 	Sync() error
 }
 
 type writerStorage struct {
-	createTemp func(string, string) (writerFile, error)
+	createTemp func(string, string) (StreamFile, error)
 	link       func(string, string) error
 	rename     func(string, string) error
 	remove     func(string) error
@@ -37,7 +38,7 @@ type writerStorage struct {
 
 func localWriterStorage() writerStorage {
 	return writerStorage{
-		createTemp: func(dir, pattern string) (writerFile, error) { return os.CreateTemp(dir, pattern) },
+		createTemp: func(dir, pattern string) (StreamFile, error) { return os.CreateTemp(dir, pattern) },
 		link:       os.Link,
 		rename:     os.Rename,
 		remove:     os.Remove,
@@ -84,7 +85,7 @@ func syncWriterFile(path string) error {
 	return errors.Join(file.Sync(), file.Close())
 }
 
-func writeWriterLine(file writerFile, line []byte) error {
+func writeWriterLine(file StreamFile, line []byte) error {
 	n, err := file.Write(line)
 	if err != nil {
 		return fmt.Errorf("append receipt record: %w", err)
@@ -97,7 +98,7 @@ func writeWriterLine(file writerFile, line []byte) error {
 
 // Publish never removes the final name. A failed directory sync can leave
 // that name visible until a power loss, but it has not confirmed the record.
-func (s writerStorage) publish(dir, name string, line []byte) (writerFile, bool, error) {
+func (s writerStorage) publish(dir, name string, line []byte) (StreamFile, bool, error) {
 	file, err := s.createTemp(dir, writerTempPrefix)
 	if err != nil {
 		return nil, false, fmt.Errorf("create receipt file: %w", err)
@@ -132,28 +133,4 @@ func (s writerStorage) cleanup(dir string, entries []os.DirEntry) error {
 
 func writerFilename(stream string, seq int64) string {
 	return fmt.Sprintf("%s-%0*d%s", stream, layoutStartDigits, seq, layoutFileSuffix)
-}
-
-// syncFaultFile fails one flush, then delegates. The pointer stays in the
-// writer so the one-shot error is consumed once.
-type syncFaultFile struct {
-	writerFile
-	err error
-}
-
-func (f *syncFaultFile) Sync() error {
-	if f.err != nil {
-		err := f.err
-		f.err = nil
-		return err
-	}
-	return f.writerFile.Sync()
-}
-
-// ArmNextSyncFailure makes the next flush of the open stream file fail once.
-func (w *StreamWriter) ArmNextSyncFailure(err error) {
-	if w == nil || w.active.file == nil || err == nil {
-		return
-	}
-	w.active.file = &syncFaultFile{writerFile: w.active.file, err: err}
 }

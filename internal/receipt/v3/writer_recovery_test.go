@@ -27,6 +27,60 @@ func writerTestHold(id string) Action {
 	return hold
 }
 
+func TestStartupHeadRefusesIncompleteHistory(t *testing.T) {
+	for _, code := range []string{codeLegacyGroupIncomplete, codeLegacyMembershipUnknown, codeDecisionIndexFull, codeNoEvidence} {
+		t.Run(code, func(t *testing.T) {
+			result := Result{
+				Findings:  []Finding{{Class: incomplete, Code: code}},
+				Histories: []HistoryResult{{Streams: []StreamResult{{Stream: "stream", Tip: &Position{}}}}},
+			}
+			_, _, err := startupHead(result, 0)
+			if err == nil || !strings.Contains(err.Error(), code) {
+				t.Fatalf("startup refusal for %s = %v", code, err)
+			}
+		})
+	}
+}
+
+func TestStartupHeadNamesNewerActionVersionWhenVocabularyIsAlsoUnknown(t *testing.T) {
+	result := Result{Findings: []Finding{
+		{Class: incomplete, Code: codeActionUninterpreted},
+		{Class: incomplete, Code: codeDecisionsNotAppraised},
+	}}
+	_, _, err := startupHead(result, 2)
+	if err == nil || !strings.Contains(err.Error(), "action body version 2 required") {
+		t.Fatalf("startup did not report the newer action body version: %v", err)
+	}
+}
+
+func TestRecoverHoldsRefusesAllowWithoutHold(t *testing.T) {
+	dir := t.TempDir()
+	stream := signedStream(t, 1, nil, &Cutover{Inventory: EmptyInventoryDigest()})
+	action := blockingHoldResolution(writerTestHold("missing"), "operator", relationAfter, false)
+	action.Verdict = verdictAllow
+	action.Policy = PolicySnapshot{}.ActionPolicy()
+	stream.add(kindAction, action)
+	stream.close()
+	stream.write(dir)
+
+	opts := Options{Directory: true, Keys: []ed25519.PublicKey{stream.public()}}
+	result, err := verifyPathsInspect(t.Context(), []string{dir}, opts, "", func(v *verification) error {
+		// Inspect the staged records directly, bypassing the startup verdict gate.
+		verified := v.streams[stream.id]
+		if verified == nil {
+			t.Fatal("expected a staged stream")
+		}
+		actions, err := v.recoverHolds(verified.body.Lineage)
+		if len(actions) != 0 {
+			t.Fatalf("hold recovery synthesized actions: %+v", actions)
+		}
+		return err
+	})
+	if !errors.Is(err, errMissingRecoveryHold) {
+		t.Fatalf("recovery refusal = %v (findings %v)", err, result.Findings)
+	}
+}
+
 func TestStreamWriterRecoversHoldsFromVerifiedHistory(t *testing.T) {
 	opts := writerTestOptions(t.TempDir())
 	w := requireWriter(t, opts, localWriterStorage())

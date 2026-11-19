@@ -81,6 +81,8 @@ func (p *Proxy) confirmTransportReceipt(ctx context.Context, cfg *config.Config,
 	if err := p.receiptV3.WriteAction(ctx, entry.action, entry.policy); err != nil {
 		if cfg != nil && cfg.FlightRecorder.RequireReceipts {
 			p.recordRequiredReceiptBlock(err, opts.Transport)
+		} else if receiptWriteWithholdsEffect(cfg, err) {
+			p.metrics.RecordOptionalReceiptWithhold(opts.Transport)
 		}
 		p.logReceiptEmissionFailure(opts, err)
 		return nil, err
