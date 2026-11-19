@@ -906,6 +906,7 @@ func TestGuardHeartbeatCapacityStopsChildAndSealsEvidence(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FlightRecorder.Enabled = true
 	cfg.FlightRecorder.RequireReceipts = true
+	cfg.FlightRecorder.Completeness.HeartbeatInterval = "25ms"
 	cfg.FlightRecorder.Dir = filepath.Join(t.TempDir(), "evidence")
 	cfg.FlightRecorder.SigningKeyPath = filepath.Join(t.TempDir(), "receipt.key")
 	if err := signing.SavePrivateKey(key, cfg.FlightRecorder.SigningKeyPath); err != nil {
@@ -916,12 +917,12 @@ func TestGuardHeartbeatCapacityStopsChildAndSealsEvidence(t *testing.T) {
 	cmd := []string{binary}
 	var log bytes.Buffer
 	var childCanceled bool
-	parent, cancel := context.WithTimeout(t.Context(), testwait.Deadline(2*time.Second))
+	parent, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
 	defer cancel()
 	err = launchGuard(GuardLaunchOptions{
 		Context: parent, Config: cfg, Workspace: workspace, Command: cmd,
 		Stderr: &log,
-		// The stream fits the open, pre-exec evidence, and reserved close.
+		// Leave room for startup evidence and the reserved close. Heartbeats fill the rest.
 		nativeAELCapacityLimit: 1950,
 	}, func(launch sandbox.StandaloneLaunchConfig) error {
 		proof := guardfs.NewExecutionProof(
