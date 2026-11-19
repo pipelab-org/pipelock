@@ -1,0 +1,1 @@
+{"directory":true,"check":"legacy-prefix","finding":"LEGACY_END_UNPROVEN","inputs":["11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl","evidence-conformance-session-0.jsonl","receipt-v3-cutover-004574131d53e4d9633ec4ec434460624699f5860ba53cb7c0e678a78090c5ea.json"],"keys":[],"allow_unpinned":true}

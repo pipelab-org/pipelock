@@ -122,10 +122,10 @@ The inventory is one canonical JSON object using the payload data model, with `v
 | Format | Identity | Terminal position |
 | --- | --- | --- |
 | action_v1 | Signed run nonce at genesis, or the first canonical action record's hash for a chain without a nonce | Sequence and canonical action-record hash of the last receipt |
-| evidence_v2 | First receipt's v2 hash | Sequence and v2 hash of the last receipt |
+| evidence_v2 | Signed genesis receipt's v2 hash | Sequence and v2 hash of the last receipt |
 | receipt_group | Signed group ID | Shard count and digest of the close manifest, or the open manifest for an incomplete group |
 
-Use digest strings for legacy hashes. The fixed empty inventory bytes are `{"chains":[],"v":1}`. Their digest is `sha256:5fba275c695ef4915395ac61c90788e9022c8ad4858e046ac1440726f0144d1f`. With neither old chains nor a journal, use that digest and zero chains and omit the file.
+The action-record hash identifies a nonce-less v1 chain without relying on its file name. The signed genesis hash distinguishes v2 chains that share a signer. Use digest strings for legacy hashes. The fixed empty inventory bytes are `{"chains":[],"v":1}`. Their digest is `sha256:5fba275c695ef4915395ac61c90788e9022c8ad4858e046ac1440726f0144d1f`. With neither old chains nor a journal, use that digest and zero chains and omit the file.
 
 Cutover inventories every old chain in the evidence directory, without an epoch or chain cap. A writer refuses a partial inventory. It verifies the old evidence and refuses unresolved holds before switching. While holding the directory lock it persists the inventory, then publishes and flushes the first v3 file carrying the pin. That first file commits the switch. The same directory cannot subsequently resume legacy writes.
 
@@ -598,9 +598,13 @@ Shared corpus inputs, pins, caller flags, expected documents and projections are
 
 <!-- END generated receipt v3 registry -->
 
+## Launch profile exclusions
+
+The local-process guard keeps its existing receipt format and writes to its own output. It refuses to write to a directory switched to v3. Evidence health warnings belong in the operational log. Neither source emits a v3 action.
+
 ## Producer attribution
 
-The emission registry published beside this specification assigns each catalogued site an effect boundary. Carry a decision-time policy snapshot through every later phase of the same effect. Carry the original action ID for a hold, its resolutions, and retries of the same effect. Omit optional attribution a producer cannot establish.
+The emission registry assigns each effect-specific producer a boundary. A shared emission call carries the decision selected by its caller. The registry records legacy controls and other sources outside the action profile by name. Carry a decision-time policy snapshot through every later phase of the same effect. Carry the original action ID for a hold, its resolutions, and retries of the same effect. Omit optional attribution a producer cannot establish.
 
 | Producer or decision context | Boundary | Attribution and conditions |
 | --- | --- | --- |
@@ -617,6 +621,6 @@ The emission registry published beside this specification assigns each catalogue
 
 For a checker disposition, map an affirmative assessment to passed, a finding to flagged, failed or incomplete assessment to error, and disabled or unexecuted assessment to not_run. Watch-only assessments do not replace the checker that decided delivery. The checker configuration digest is captured with the effective checker policy at decision time. A later reload cannot supply it.
 
-A production text-normalization profile must resolve from a digest-keyed registry of exact profile documents. Hash the exact published profile document bytes. Provenance replay transforms have their own profile documents and digests; they must not be substituted for a live normalization profile. A verifier that cannot resolve a production profile reports the unresolved binding.
+The normalization digest identifies the live manifest describing the normalization views used by the decision. The manifest byte format is pending owner sign-off. Until a production manifest is registered, the profile table remains empty and the verifier reports `NORMALIZATION_UNKNOWN` for unresolved bindings. A provenance replay transform has a separate identity and digest.
 
 The existing hook protocol with a nested permission decision emits allow or deny, or uses exit status for denial. The protocol with a top-level permission member forwards the decision outcome. The v3 ask vocabulary does not assign new values to either hook protocol.

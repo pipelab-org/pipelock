@@ -1,0 +1,1 @@
+{"directory":true,"check":"legacy-truncated","finding":"LEGACY_CHAIN_TRUNCATED","inputs":["11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl","evidence-conformance-session-0.jsonl","receipt-v3-cutover-46ad1cd9ddada27cedc18c724c539d4f255a4efd69e15881e0c444f8f88776c1.json"],"keys":[],"allow_unpinned":true}

@@ -338,7 +338,7 @@ Examples:
 				var evidenceReceipts []contractreceipt.EvidenceReceipt
 				readErr := recorder.WithSessionHistorySnapshot(*resolvedLocation, sessionID, func() error {
 					var readErr error
-					receipts, evidenceReceipts, readErr = readReceiptSessionChains(*resolvedLocation, sessionID)
+					receipts, evidenceReceipts, readErr = receipt.ReadSessionChains(*resolvedLocation, sessionID)
 					return readErr
 				})
 				if readErr != nil {
@@ -1719,7 +1719,7 @@ func verifyChainFromResolvedSessionDirDetailed(out io.Writer, location recorder.
 	var evidenceReceipts []contractreceipt.EvidenceReceipt
 	err := recorder.WithSessionHistorySnapshot(location, sessionID, func() error {
 		var readErr error
-		receipts, evidenceReceipts, readErr = readReceiptSessionChains(location, sessionID)
+		receipts, evidenceReceipts, readErr = receipt.ReadSessionChains(location, sessionID)
 		afterSessionEvidenceRead()
 		return readErr
 	})
@@ -2510,26 +2510,4 @@ func validateReceiptSourceArgs(args []string, chainDir string) error {
 		return fmt.Errorf("accepts 1 arg(s), received %d", len(args))
 	}
 	return nil
-}
-
-// readReceiptSessionChains runs inside the caller's session snapshot.
-func readReceiptSessionChains(location recorder.EvidenceLocation, session string) ([]receipt.Receipt, []contractreceipt.EvidenceReceipt, error) {
-	bare, err := receipt.IsBareEvidenceSession(location, session)
-	if err != nil {
-		return nil, nil, err
-	}
-	if !bare {
-		if err := recorder.VerifySessionHistoryChain(location, session); err != nil {
-			return nil, nil, err
-		}
-	}
-	evidence, err := contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(location, session)
-	if err != nil {
-		return nil, nil, err
-	}
-	if bare {
-		return nil, evidence, nil
-	}
-	actions, err := receipt.ExtractReceiptsFromResolvedSessionDir(location, session)
-	return actions, evidence, err
 }

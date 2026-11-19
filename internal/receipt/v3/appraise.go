@@ -18,6 +18,7 @@ type decisionIndex struct {
 	ids    map[string]bool
 	pieces map[string]pieceEntry
 	disk   bool
+	maxIDs int
 	full   bool
 }
 
@@ -49,7 +50,7 @@ func (d *decisionIndex) remember(id string, opaque bool) error {
 	}
 	if previous, found := d.ids[id]; found {
 		d.ids[id] = previous || opaque
-	} else if len(d.ids) < maxDecisions {
+	} else if len(d.ids) < d.maxIDs {
 		d.ids[id] = opaque
 	} else {
 		d.full = true
@@ -179,7 +180,7 @@ func (v *verification) appraiseDecisions() error {
 	}
 	defer func() { _ = tx.Rollback() }()
 	a := appraisal{
-		index:     decisionIndex{ctx: v.ctx, tx: tx, disk: v.opts.DiskIndex},
+		index:     decisionIndex{ctx: v.ctx, tx: tx, disk: v.opts.DiskIndex, maxIDs: maxDecisions},
 		decisions: map[string]int64{}, uninterpreted: map[string]int64{}, fullHistory: true,
 	}
 	for _, lineage := range sortedKeys(v.histories) {
@@ -248,7 +249,7 @@ func (v *verification) inspectAction(a *appraisal, stream *verifiedStream, r sta
 	if err != nil {
 		return err
 	}
-	if binding := body.Normalization; binding != nil && normalizationProfiles[binding.Digest] != binding.ID {
+	if binding := body.Normalization; v.skip != codeNormalizationUnknown && binding != nil && normalizationProfiles[binding.Digest] != binding.ID {
 		v.add(r.finding(codeNormalizationUnknown))
 	}
 	if err := a.index.remember(body.ActionID, r.unknown); err != nil {
@@ -325,6 +326,9 @@ func (v *verification) stepDecision(d *decisionIndex, segment int, unknownStart 
 			}
 			entry.Failed = bad
 		}
+	}
+	if v.skip == codeDecisionInconsistent {
+		return nil
 	}
 	if !entry.Failed && entry.Decision.State != "uninterpreted" && !entry.Decision.advance(action, unknownStart) {
 		entry.Failed = true

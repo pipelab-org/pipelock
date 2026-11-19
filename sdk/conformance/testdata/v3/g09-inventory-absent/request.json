@@ -1,0 +1,1 @@
+{"directory":true,"check":"inventory-absent","finding":"CUTOVER_INVENTORY_NOT_PRESENTED","inputs":["11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl","evidence-conformance-session-0.jsonl"],"keys":[],"allow_unpinned":true}

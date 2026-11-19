@@ -93,11 +93,11 @@ func (v *verification) verifyCutover(oldFiles []string, inventories map[string]s
 			switch {
 			case !presented:
 				v.add(stream.open.finding(codeLegacyChainNotPresented))
-			case actual.Seq > row.Seq:
+			case v.skip != codeLegacyExtendedAfterCutover && actual.Seq > row.Seq:
 				v.add(stream.open.finding(codeLegacyExtendedAfterCutover))
-			case actual.Seq < row.Seq:
+			case v.skip != codeLegacyChainTruncated && actual.Seq < row.Seq:
 				v.add(stream.open.finding(codeLegacyChainTruncated))
-			case actual.forked || actual.Record != row.Record:
+			case v.skip != codeLegacyChainHeadMismatch && (actual.forked || actual.Record != row.Record):
 				v.add(stream.open.finding(codeLegacyChainHeadMismatch))
 			case actual.verdict == prefixVerdict:
 				unproven[stream.open.id] = stream.open
@@ -105,7 +105,7 @@ func (v *verification) verifyCutover(oldFiles []string, inventories map[string]s
 		}
 	}
 	for key := range old {
-		if listed[key] {
+		if listed[key] || known && v.skip == codeLegacyChainUnlisted || !known && v.skip == codeLegacyMembershipUnknown {
 			continue
 		}
 		if known {

@@ -4,9 +4,11 @@
 package conformance_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"go/ast"
+	"go/format"
 	"go/parser"
 	"go/token"
 	"io/fs"
@@ -19,13 +21,19 @@ import (
 
 var receiptEmissionCalls = strings.Fields(
 	"emitReceiptDecision emitAdmittedReceiptDecision emitMCPStandaloneStreamReceipt emitMCPOutcomeReceipt emitMCPToolReceipt " +
-		"EmitDeferredResolutionReceipt emitMCPDeferredKillSwitchReceipt confirmMCPResponseEffect " +
+		"EmitDeferredResolutionReceipt emitDeferredResolutionReceipt emitMCPDeferredKillSwitchReceipt confirmMCPResponseEffect " +
 		"emitForwardReceipt emitFetchReceipt emitReverseReceipt emitTunnelReceipt emitWSReceipt " +
 		"emitRecordedReceipt emitRequiredReceipt emitRequestPolicyReceipt confirmResponseDecision confirmResponseOrBlock " +
 		"interceptConfirmResponseOrBlock interceptEmitReceiptOrBlock interceptEmitRequiredReceipt interceptEmitOutcomeReceipt " +
 		"emitOutcomeReceipt emitObservedOutcomeReceipt emitOutcomeReceiptWithPattern " +
 		"recordIssuerQueryAllow recordIssuerCookieAllow recordCredentialAudienceAllow recordCredentialAudienceAllows " +
-		"emitDeferredReceipt emitAllowPathReceipt emitReceiptFailureMarker recordReceiptEmitterUnavailable")
+		"emitDeferredReceipt emitAllowPathReceipt emitReceiptFailureMarker recordReceiptEmitterUnavailable " +
+		"emitReceiptDecisionWithControl EmitMCPDecision EmitMCPGroupDecision emitMCPDecision emitMCPV2Decision emitMCPBlockedOutcomeReceipt " +
+		"emitReceiptWithEmitter emitRequiredReceiptWithEmitter interceptEmitReceipt " +
+		"emitV2Receipt emitV2 emitRequiredV2 emitGroupV2Receipt emitDLPWarn " +
+		"EmitSessionOpen EmitSessionClose EmitHeartbeat EmitTranscriptRoot " +
+		"BuildProxyDecisionReceipt BuildProxyDecisionWithSpansReceipt BuildSecretEgressDecisionReceipt " +
+		"SignReceipt EmitBatch RecordPrescanned buildReceipt")
 
 func TestReceiptV3EmitterBindings(t *testing.T) {
 	root := "../.."
@@ -34,8 +42,10 @@ func TestReceiptV3EmitterBindings(t *testing.T) {
 		t.Fatal(err)
 	}
 	var registry struct {
-		EmitSites map[string]string   `json:"emit_sites"`
-		Enums     map[string][]string `json:"enums"`
+		EmitSites  map[string]string   `json:"emit_sites"`
+		Exclusions map[string]string   `json:"emit_exclusions"`
+		Forwarders map[string]string   `json:"emit_forwarders"`
+		Enums      map[string][]string `json:"enums"`
 	}
 	if err := json.Unmarshal(raw, &registry); err != nil {
 		t.Fatal(err)
@@ -43,46 +53,75 @@ func TestReceiptV3EmitterBindings(t *testing.T) {
 	var discovered []string
 	counts := make(map[string]int)
 	fset := token.NewFileSet()
-	for _, dir := range []string{"internal/mcp", "internal/proxy", "internal/deferred", "internal/cli/runtime", "internal/cli/setup"} {
-		err := filepath.WalkDir(filepath.Join(root, dir), func(path string, entry fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
-				return nil
-			}
-			file, err := parser.ParseFile(fset, path, nil, 0)
-			if err != nil {
-				return fmt.Errorf("parse emission sites in %s: %w", path, err)
-			}
-			for _, decl := range file.Decls {
-				fn, isFunc := decl.(*ast.FuncDecl)
-				if !isFunc || fn.Body == nil {
-					continue
-				}
-				ast.Inspect(fn.Body, func(node ast.Node) bool {
-					call, isCall := node.(*ast.CallExpr)
-					if !isCall {
-						return true
-					}
-					callee := calledName(call)
-					if !slices.Contains(receiptEmissionCalls, callee) && !literalReceiptEmission(call, callee) {
-						return true
-					}
-					key := filepath.ToSlash(strings.TrimPrefix(path, root+string(filepath.Separator))) + "/" + fn.Name.Name + "/" + callee
-					counts[key]++
-					key = fmt.Sprintf("%s/%d", key, counts[key])
-					discovered = append(discovered, key)
-					if _, exists := registry.EmitSites[key]; !exists {
-						t.Errorf("unbound emission site %s (%s)", key, fset.Position(node.Pos()))
-					}
-					return true
-				})
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if entry.Name() == ".git" || entry.Name() == "node_modules" || entry.Name() == "testdata" {
+				return filepath.SkipDir
 			}
 			return nil
-		})
+		}
+		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 		if err != nil {
-			t.Fatal(err)
+			return fmt.Errorf("parse emission sites in %s: %w", path, err)
+		}
+		check := func(owner, callee string, node ast.Node) {
+			key := filepath.ToSlash(strings.TrimPrefix(path, root+string(filepath.Separator))) + "/" + owner + "/" + callee
+			counts[key]++
+			key = fmt.Sprintf("%s/%d", key, counts[key])
+			discovered = append(discovered, key)
+			boundary, bound := registry.EmitSites[key]
+			exclusion, excluded := registry.Exclusions[key]
+			forwarder, forwarded := registry.Forwarders[key]
+			if testing.Verbose() {
+				var source bytes.Buffer
+				if err := format.Node(&source, fset, node); err != nil {
+					t.Errorf("format emission source %s: %v", key, err)
+				}
+				t.Logf("%s %s %s %s %s", key, fset.Position(node.Pos()), boundary, exclusion+forwarder, source.String())
+			}
+			switch {
+			case (bound && excluded) || (forwarded && (bound || excluded)):
+				t.Errorf("duplicate emission binding %s", key)
+			case !bound && strings.TrimSpace(exclusion) == "" && strings.TrimSpace(forwarder) == "":
+				t.Errorf("unbound emission site %s (%s)", key, fset.Position(node.Pos()))
+			}
+		}
+		for _, decl := range file.Decls {
+			owner := "package"
+			if fn, ok := decl.(*ast.FuncDecl); ok {
+				owner = fn.Name.Name
+			}
+			ast.Inspect(decl, func(node ast.Node) bool {
+				switch node := node.(type) {
+				case *ast.CallExpr:
+					callee := calledName(node)
+					if slices.Contains(receiptEmissionCalls, callee) || directReceiptEmission(node, callee) {
+						check(owner, callee, node)
+					}
+				case *ast.CompositeLit:
+					if name := receiptConstruction(node, file); name != "" {
+						check(owner, name, node)
+					}
+				}
+				return true
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sites := range []map[string]string{registry.Exclusions, registry.Forwarders} {
+		for site, reason := range sites {
+			if !slices.Contains(discovered, site) || strings.TrimSpace(reason) == "" {
+				t.Errorf("unknown or undocumented emission site %s", site)
+			}
 		}
 	}
 	for site, boundary := range registry.EmitSites {
@@ -106,23 +145,41 @@ func calledName(call *ast.CallExpr) string {
 	}
 }
 
-func literalReceiptEmission(call *ast.CallExpr, callee string) bool {
-	if callee != "Emit" && callee != "EmitDurable" {
-		return false
+// Receipt emitters take one decision or options value. Audit emitters take a
+// context and event arguments. Check the call even when its options are built
+// elsewhere, including through interface-typed receivers and function fields.
+func directReceiptEmission(call *ast.CallExpr, name string) bool {
+	return (name == "Emit" || name == "EmitDurable") && len(call.Args) == 1
+}
+
+func receiptConstruction(lit *ast.CompositeLit, file *ast.File) string {
+	if len(lit.Elts) == 0 {
+		return ""
 	}
-	for _, arg := range call.Args {
-		literal, ok := arg.(*ast.CompositeLit)
-		if !ok {
-			continue
+	switch typ := lit.Type.(type) {
+	case *ast.Ident:
+		if file.Name.Name == "receipt" && (typ.Name == "ActionRecord" || typ.Name == "Receipt" || typ.Name == "EvidenceReceipt") {
+			return typ.Name
 		}
-		selector, ok := literal.Type.(*ast.SelectorExpr)
-		if !ok || selector.Sel.Name != "EmitOpts" {
-			continue
+	case *ast.SelectorExpr:
+		pkg, ok := typ.X.(*ast.Ident)
+		if !ok || typ.Sel.Name != "ActionRecord" && typ.Sel.Name != "Receipt" && typ.Sel.Name != "EvidenceReceipt" {
+			return ""
 		}
-		pkg, ok := selector.X.(*ast.Ident)
-		if ok && pkg.Name == "receipt" {
-			return true
+		for _, imp := range file.Imports {
+			path := strings.Trim(imp.Path.Value, "\"")
+			if path != "github.com/luckyPipewrench/pipelock/internal/receipt" &&
+				path != "github.com/luckyPipewrench/pipelock/internal/contract/receipt" {
+				continue
+			}
+			name := "receipt"
+			if imp.Name != nil {
+				name = imp.Name.Name
+			}
+			if pkg.Name == name {
+				return typ.Sel.Name
+			}
 		}
 	}
-	return false
+	return ""
 }

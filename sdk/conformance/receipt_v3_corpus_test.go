@@ -27,6 +27,8 @@ var updateReceiptV3 = flag.Bool("update-receipt-v3", false, "regenerate receipt 
 const v3Corpus = "testdata/v3"
 
 type v3Request struct {
+	Directory     bool     `json:"directory,omitempty"`
+	ExpectLineage string   `json:"expect_lineage,omitempty"`
 	Check         string   `json:"check"`
 	Finding       string   `json:"finding,omitempty"`
 	Inputs        []string `json:"inputs"`
@@ -204,6 +206,9 @@ func TestReceiptV3Corpus(t *testing.T) {
 	recipes = append(recipes, v3BodyRecipes(t)...)
 	recipes = append(recipes, v3TrustRecipes(t)...)
 	recipes = append(recipes, v3SpecialRecipes(t)...)
+	recipes = append(recipes, v3HistoryRecipes(t)...)
+	recipes = append(recipes, v3DecisionRecipes(t)...)
+	recipes = append(recipes, v3CutoverRecipes(t)...)
 	for _, recipe := range recipes {
 		t.Run(fmt.Sprintf("g%02d-%s", recipe.group, recipe.name), func(t *testing.T) {
 			v3RunRecipe(t, recipe)
@@ -235,6 +240,11 @@ func v3RunRecipe(t *testing.T, recipe v3Recipe) {
 	}
 	v3Fixture(t, directory, "request.json", append(v3Canonical(t, request), '\n'))
 	if request.Legacy {
+		path := filepath.Join(capture, recipe.files[0].name)
+		claimed, err := v3.ClaimsInput(path, false)
+		if err != nil || claimed {
+			t.Fatalf("legacy evidence was claimed by the v3 detector: %t, %v", claimed, err)
+		}
 		v3CheckLegacy(t, recipe.files[0], request.Keys)
 		v3Fixture(t, directory, "expect.json", []byte("{\"legacy_compatible\":true}\n"))
 		return
@@ -245,11 +255,14 @@ func v3RunRecipe(t *testing.T, recipe v3Recipe) {
 	}
 	opts := v3.Options{
 		Keys: keys, AllowPrefix: request.AllowPrefix, AllowUnpinned: request.AllowUnpinned,
-		ExplicitV3: request.Format == "v3",
+		ExplicitV3: request.Format == "v3", Directory: request.Directory, ExpectLineage: request.ExpectLineage,
 	}
 	paths := make([]string, 0, len(recipe.files))
 	for _, file := range recipe.files {
 		paths = append(paths, filepath.Join(capture, file.name))
+	}
+	if request.Directory {
+		paths = []string{capture}
 	}
 	result, err := v3.VerifyPaths(t.Context(), paths, opts)
 	if err != nil {

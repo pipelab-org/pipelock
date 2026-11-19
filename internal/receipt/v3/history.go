@@ -46,7 +46,7 @@ func (v *verification) verifySuccession() error {
 func (v *verification) checkPin(parent, child *verifiedStream) error {
 	pin := child.body.Previous
 	sameLineage := parent.body.Lineage == child.body.Lineage
-	if !sameLineage && parent.body.Lineage != "" {
+	if v.skip != codeLineageMismatch && !sameLineage && parent.body.Lineage != "" {
 		v.add(child.open.finding(codeLineageMismatch))
 	}
 	var id, kind string
@@ -61,13 +61,13 @@ func (v *verification) checkPin(parent, child *verifiedStream) error {
 		}
 		return fmt.Errorf("look up predecessor pin: %w", err)
 	}
-	if id != pin.Record || pin.Ended == "closed" && kind != kindStreamClose ||
-		pin.Ended == "unsealed" && kind == kindStreamClose {
+	if v.skip != codePinMismatch && (id != pin.Record || pin.Ended == "closed" && kind != kindStreamClose ||
+		pin.Ended == "unsealed" && kind == kindStreamClose) {
 		v.add(child.open.finding(codePinMismatch))
 		return nil
 	}
 	if pin.Ended != "write_error" {
-		if parent.last.Seq > pin.Seq {
+		if v.skip != codeTailAfterSuccession && parent.last.Seq > pin.Seq {
 			v.add(child.open.finding(codeTailAfterSuccession))
 		}
 		return nil
@@ -255,7 +255,7 @@ func (v *verification) checkExpectations(cutoverEnds map[string]stagedRecord) {
 }
 
 func (v *verification) accept(kind, value string, satisfied bool) {
-	if !satisfied {
+	if v.skip != codeExpectationNotMet && !satisfied {
 		v.addCode(codeExpectationNotMet, "")
 		return
 	}

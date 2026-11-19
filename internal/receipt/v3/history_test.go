@@ -7,12 +7,17 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	legacyreceipt "github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 type testStream struct {
@@ -143,6 +148,8 @@ func TestCutoverInventoryBytes(t *testing.T) {
 		{name: "not supplied", pin: Cutover{Inventory: Digest(nil)}, code: codeCutoverInventoryNotPresented},
 		{name: "final newline", data: emptyInventory + "\n", code: codeCutoverInventoryMismatch},
 		{name: "duplicate member", data: "{\"chains\":[],\"v\":1,\"v\":1}", code: codeCutoverInventoryMismatch},
+		{name: "malformed JSON", data: "{", code: codeCutoverInventoryMismatch},
+		{name: "unknown format", data: `{"chains":[{"chain":"example","format":"future","record":"` + Digest(nil) + `","seq":0}],"v":1}`, pin: Cutover{Chains: 1}, code: codeCutoverInventoryMismatch},
 		{name: "invalid row", data: "{\"chains\":[{\"chain\":\"example\",\"format\":\"future\",\"record\":\"example\",\"seq\":0}],\"v\":1}", pin: Cutover{Chains: 1}, code: codeCutoverInventoryMismatch},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -161,6 +168,13 @@ func TestCutoverInventoryBytes(t *testing.T) {
 				t.Fatalf("got %s %v, want %s", code, err, tc.code)
 			}
 		})
+	}
+}
+
+func TestCutoverInventoryReadFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing")
+	if _, _, err := readInventory(path, Cutover{Inventory: Digest(nil)}); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected missing inventory read error, got %v", err)
 	}
 }
 
@@ -349,5 +363,155 @@ func TestCutoverBindsLegacyHead(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func testIncompleteLegacyGroup(t *testing.T) {
+	dir := t.TempDir()
+	stream := signedStream(t, 1, nil, &Cutover{Inventory: EmptyInventoryDigest()})
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, SignCheckpoints: true}, nil, stream.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+	group, err := legacyreceipt.OpenInitialReceiptShardSet(legacyreceipt.EmitterConfig{
+		Recorder: rec, PrivKey: stream.key, ConfigHash: strings.TrimPrefix(Digest(nil), "sha256:"),
+		Principal: "example", Actor: "example",
+	}, "example", 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	open, hash := group.Opening()
+	inventory, err := canonicalJSON(Inventory{V: 1, Chains: []InventoryChain{
+		{Format: legacyGroup, Chain: open.GroupID, Record: legacyHash(hash), Seq: int64(open.ShardCount)},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := Digest(inventory)
+	if err := os.WriteFile(filepath.Join(dir, InventoryFilename(digest)), inventory, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := signedStream(t, 1, nil, &Cutover{Inventory: digest, Chains: 1})
+	root.close()
+	root.write(dir)
+	result, err := VerifyPaths(t.Context(), []string{dir}, Options{Directory: true, Keys: []ed25519.PublicKey{root.public()}})
+	if err != nil || !hasFinding(result, codeLegacyGroupIncomplete) {
+		t.Fatalf("expected incomplete group: %+v, %v", result, err)
+	}
+}
+
+func TestTornReceiptOrdering(t *testing.T) {
+	for _, tc := range []struct {
+		name, finding string
+		closed        bool
+	}{
+		{"after close", codeDataAfterClose, true},
+		{"before later shard", codeFileLayout, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			s := signedStream(t, 1, nil, &Cutover{Inventory: EmptyInventoryDigest()})
+			s.close()
+			var later []byte
+			if !tc.closed {
+				first, rest, _ := bytes.Cut(s.lines, []byte{'\n'})
+				later = bytes.Clone(rest)
+				s.lines = append(slices.Clip(first), '\n')
+			}
+			s.lines = append(s.lines, '{')
+			files := []string{s.write(dir)}
+			if later != nil {
+				path := filepath.Join(dir, fmt.Sprintf("%s-%016d%s", s.id, 1, layoutFileSuffix))
+				if err := os.WriteFile(path, later, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				files = append(files, path)
+			}
+			result, err := VerifyPaths(t.Context(), files, Options{})
+			if err != nil || !hasFinding(result, tc.finding) {
+				t.Fatalf("expected %s, got %+v, %v", tc.finding, result, err)
+			}
+		})
+	}
+}
+
+func TestCutoverMembershipWithContestedOpener(t *testing.T) {
+	const lineage = "example"
+	stream := &verifiedStream{body: StreamOpen{Lineage: lineage, LegacyCutover: &Cutover{Inventory: EmptyInventoryDigest()}}}
+	v := verification{histories: map[string][]*verifiedStream{lineage: {stream}}}
+	for _, tc := range []struct {
+		name, kind string
+		body       StreamOpen
+		want       bool
+	}{
+		{"not an opener", kindHeartbeat, StreamOpen{}, true},
+		{"later branch", kindStreamOpen, StreamOpen{Lineage: lineage, Previous: &Previous{}}, true},
+		{"possible root", kindStreamOpen, StreamOpen{Lineage: lineage}, false},
+		{"history without a root", kindStreamOpen, StreamOpen{Lineage: "other", Previous: &Previous{}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(tc.body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			v.contested = map[string][]stagedRecord{"example": {{Common: Common{Kind: tc.kind, Body: data}}}}
+			if got := v.cutoverMembershipKnown(); got != tc.want {
+				t.Fatalf("cutover membership known = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAcceptUnsealedDiscontinuity(t *testing.T) {
+	dir := t.TempDir()
+	root := signedStream(t, 1, nil, &Cutover{Inventory: EmptyInventoryDigest()})
+	successor := signedStream(t, 2, &Previous{Stream: root.id, Record: root.tip, Ended: "unsealed"}, nil)
+	successor.close()
+	paths := []string{root.write(dir), successor.write(dir)}
+	opts := Options{Keys: []ed25519.PublicKey{root.public()}, AcceptDiscontinuities: []string{successor.open}}
+	result, err := VerifyPaths(t.Context(), paths, opts)
+	if err != nil || result.Verdict != "VALID, GAPS ACCEPTED" || result.ExitCode != 0 {
+		t.Fatalf("unexpected accepted discontinuity: %+v, %v", result, err)
+	}
+	opts.ExpectSequences = []Sequence{{Stream: fmt.Sprintf("%032x", 3), Seq: 0}}
+	result, err = VerifyPaths(t.Context(), paths, opts)
+	if err != nil || !hasFinding(result, codeExpectationNotMet) {
+		t.Fatalf("unpresented stream met an expectation: %+v, %v", result, err)
+	}
+}
+
+func TestStreamOpenCannotRepeat(t *testing.T) {
+	root := signedStream(t, 1, nil, &Cutover{Inventory: EmptyInventoryDigest()})
+	record, code := parseLine(root.lines)
+	if code != "" {
+		t.Fatal(code)
+	}
+	root.add(kindStreamOpen, record.Body)
+	result, err := VerifyPaths(t.Context(), []string{root.write(t.TempDir())}, Options{})
+	if err != nil || !hasFinding(result, codeStreamOrder) {
+		t.Fatalf("repeat opener did not fail its stream rule: %+v, %v", result, err)
+	}
+}
+
+func TestAllForkBranchesReported(t *testing.T) {
+	var paths []string
+	for beat := int64(1); beat <= 3; beat++ {
+		stream := signedStream(t, 1, nil, &Cutover{Inventory: EmptyInventoryDigest()})
+		stream.add(kindHeartbeat, Heartbeat{Beat: beat})
+		paths = append(paths, stream.write(t.TempDir()))
+	}
+	result, err := VerifyPaths(t.Context(), paths, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	forks := 0
+	for _, finding := range result.Findings {
+		if finding.Code == codeFork {
+			forks++
+		}
+	}
+	if forks != len(paths) || result.Verdict != "INVALID" {
+		t.Fatalf("got %d forks and verdict %q", forks, result.Verdict)
 	}
 }

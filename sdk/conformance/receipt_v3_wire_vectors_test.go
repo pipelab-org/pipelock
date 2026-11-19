@@ -8,10 +8,14 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
+
+	"filippo.io/edwards25519"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 )
@@ -237,10 +241,72 @@ func v3SignatureRecipes(t *testing.T) []v3Recipe {
 	payloadSmall := smallStream.records[0].payload
 	opener := v3SignWith(payloadSmall, id, ed25519.Sign(s.key, v3.PAE(payloadSmall)))
 	recipes = append(recipes, v3Invalid(2, "small-order-key", "SIGNATURE_KEY", v3File{file.name, opener.line}))
-	return append(recipes,
+	return append(append(recipes, v3WycheproofRecipes(t)...),
 		v3Recipe{group: 2, name: "valid-signature", verdict: "VALID", files: []v3File{file}},
 		v3Recipe{group: 2, name: "ignore-extra-signature", verdict: "VALID", files: []v3File{{file.name, slices.Concat(extra, s.records[1].line)}}},
 	)
+}
+
+// The raw suite tests its original signed messages. These receipts preserve
+// each rejected key and signature, with the signed-message container changed
+// to the receipt preimage. The positive control signs that new preimage.
+func v3WycheproofRecipes(t *testing.T) []v3Recipe {
+	t.Helper()
+	data, err := os.ReadFile("testdata/v3/wycheproof/ed25519.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var suite struct {
+		Vectors []struct {
+			ID        int    `json:"tcId"`
+			Public    string `json:"public_key"`
+			Signature string `json:"sig"`
+			Result    string
+			Flags     []string
+		}
+	}
+	if err := json.Unmarshal(data, &suite); err != nil {
+		t.Fatal(err)
+	}
+	if len(suite.Vectors) == 0 {
+		t.Fatal("no signature cases")
+	}
+	var recipes []v3Recipe
+	for _, row := range suite.Vectors {
+		name := fmt.Sprintf("wycheproof-%03d", row.ID)
+		s := v3New(t)
+		if row.Result == "valid" {
+			recipes = append(recipes, v3Recipe{group: 2, name: name, verdict: "VALID", files: []v3File{s.finish(t)}})
+			continue
+		}
+		public, keyErr := hex.DecodeString(row.Public)
+		sig, sigErr := hex.DecodeString(row.Signature)
+		if keyErr != nil || sigErr != nil || len(public) != ed25519.PublicKeySize || len(sig) != ed25519.SignatureSize {
+			t.Fatalf("bad source vector %d: %v, %v", row.ID, keyErr, sigErr)
+		}
+		code := "SIGNATURE_EQUATION"
+		switch {
+		case slices.Contains(row.Flags, "SmallOrderPublicKey"), slices.Contains(row.Flags, "MixedOrderPublicKey"):
+			code = "SIGNATURE_KEY"
+		case slices.Contains(row.Flags, "SignatureMalleability"):
+			code = "SIGNATURE_SCALAR"
+		case !v3ConformancePoint(sig[:32]):
+			code = "SIGNATURE_POINT"
+		}
+		s.records = nil
+		body := v3DefaultOpen(s.key, s.lineage)
+		body["signer_key"].(v3Common)["public"] = base64.StdEncoding.EncodeToString(public)
+		id := v3.Digest(public)
+		s.add(t, "stream_open", body, func(p v3Common) { p["signer"] = id })
+		s.records[0] = v3SignWith(s.records[0].payload, id, sig)
+		recipes = append(recipes, v3Invalid(2, name, code, s.file(0, 1)))
+	}
+	return recipes
+}
+
+func v3ConformancePoint(encoded []byte) bool {
+	p, err := new(edwards25519.Point).SetBytes(encoded)
+	return err == nil && bytes.Equal(p.Bytes(), encoded) && p.Equal(edwards25519.NewIdentityPoint()) == 0
 }
 
 func v3StreamRecipes(t *testing.T) []v3Recipe {

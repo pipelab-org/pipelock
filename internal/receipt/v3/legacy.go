@@ -12,10 +12,10 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	contract "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	legacy "github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -29,6 +29,7 @@ const (
 type legacyBatch struct {
 	action   []legacy.Receipt
 	evidence []contract.EvidenceReceipt
+	recorder bool
 }
 
 func legacyCandidate(name string) bool {
@@ -50,7 +51,7 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 	for _, key := range v.opts.Keys {
 		keys = append(keys, hex.EncodeToString(key))
 	}
-	sessions := map[string][]string{}
+	sessions := map[string]string{}
 	groupDirs := map[string]bool{}
 	batches := []legacyBatch{}
 	for _, path := range paths {
@@ -61,7 +62,7 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 		}
 		if v.opts.Directory {
 			if session, _, ok := recorder.ParseEvidenceFilename(name); ok {
-				sessions[session] = append(sessions[session], path)
+				sessions[session] = filepath.Dir(path)
 				continue
 			}
 		}
@@ -78,39 +79,29 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 		}
 	}
 	for _, session := range sortedKeys(sessions) {
-		paths := sessions[session]
-		slices.SortFunc(paths, func(a, b string) int {
-			_, startA, _ := recorder.ParseEvidenceFilename(filepath.Base(a))
-			_, startB, _ := recorder.ParseEvidenceFilename(filepath.Base(b))
-			if startA != startB {
-				if startA < startB {
-					return -1
-				}
-				return 1
-			}
-			return strings.Compare(a, b)
-		})
-		var all legacyBatch
-		for _, path := range paths {
-			batch, operational, err := readLegacy(path)
-			switch {
-			case err != nil:
-				v.addCode(codeLegacyInvalid, "")
-			case len(batch.action) != 0 || len(batch.evidence) != 0:
-				all.action = append(all.action, batch.action...)
-				all.evidence = append(all.evidence, batch.evidence...)
-			case operational:
-				v.result.IgnoredFiles++
-			default:
-				v.addCode(codeUnrecognizedFile, "")
-			}
+		location, locationErr := recorder.ResolveEvidenceLocation(sessions[session], "")
+		if locationErr != nil {
+			return nil, fmt.Errorf("resolve legacy input: %w", locationErr)
 		}
-		batches = append(batches, all)
+		batch := legacyBatch{recorder: true}
+		err := recorder.WithSessionHistorySnapshot(location, session, func() error {
+			var readErr error
+			batch.action, batch.evidence, readErr = legacy.ReadSessionChains(location, session)
+			return readErr
+		})
+		switch {
+		case err != nil:
+			v.addCode(codeLegacyInvalid, "")
+		case len(batch.action) != 0 || len(batch.evidence) != 0:
+			batches = append(batches, batch)
+		default:
+			v.result.IgnoredFiles++
+		}
 	}
 	positions := map[legacyIdentity]map[int64]string{}
 	for _, batch := range batches {
-		v.legacyActions(batch.action, keys, presented, positions)
-		v.legacyEvidence(batch.evidence, keys, presented, positions)
+		v.legacyActions(batch, keys, presented, positions)
+		v.legacyEvidence(batch, keys, presented, positions)
 	}
 	for _, dir := range sortedKeys(groupDirs) {
 		_, err := legacy.VerifyReceiptGroups(dir, keys, func(group legacy.ReceiptGroupResult) error {
@@ -178,7 +169,8 @@ func readLegacy(path string) (legacyBatch, bool, error) {
 			break
 		}
 	}
-	return batch, entryMode == "recorder", nil
+	batch.recorder = entryMode == "recorder"
+	return batch, batch.recorder, nil
 }
 
 func (b *legacyBatch) add(line []byte, last **recorder.Entry, name string) (string, error) {
@@ -243,11 +235,12 @@ func (b *legacyBatch) addEvidence(line []byte) error {
 	return nil
 }
 
-func (v *verification) legacyActions(records []legacy.Receipt, keys []string, presented map[legacyIdentity]legacyPresentation, positions map[legacyIdentity]map[int64]string) {
+func (v *verification) legacyActions(batch legacyBatch, keys []string, presented map[legacyIdentity]legacyPresentation, positions map[legacyIdentity]map[int64]string) {
+	records := batch.action
 	for len(records) != 0 {
 		first := records[0].ActionRecord
 		n := 1
-		for n < len(records) && records[n].ActionRecord.ChainSeq != 0 {
+		for n < len(records) && (batch.recorder || records[n].ActionRecord.ChainSeq != 0) {
 			n++
 		}
 		chain := records[:n]
@@ -266,8 +259,8 @@ func (v *verification) legacyActions(records []legacy.Receipt, keys []string, pr
 		}
 		result := walker.Result()
 		verdict := prefixVerdict
-		if legacy.IsGracefulSessionCloseSeal(chain[len(chain)-1]) && first.RunNonce != "" {
-			verdict = "VALID"
+		if len(endproof.ActionEvidence(chain)) > 0 {
+			verdict = endproof.Valid
 		}
 		last := chain[len(chain)-1].ActionRecord
 		hash, _ := last.Hash()
@@ -276,10 +269,11 @@ func (v *verification) legacyActions(records []legacy.Receipt, keys []string, pr
 	}
 }
 
-func (v *verification) legacyEvidence(records []contract.EvidenceReceipt, keys []string, presented map[legacyIdentity]legacyPresentation, positions map[legacyIdentity]map[int64]string) {
+func (v *verification) legacyEvidence(batch legacyBatch, keys []string, presented map[legacyIdentity]legacyPresentation, positions map[legacyIdentity]map[int64]string) {
+	records := batch.evidence
 	for len(records) != 0 {
 		n := 1
-		for n < len(records) && records[n].ChainSeq != 0 {
+		for n < len(records) && (batch.recorder || records[n].ChainSeq != 0) {
 			n++
 		}
 		chain := records[:n]

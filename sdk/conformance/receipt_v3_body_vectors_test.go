@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -164,7 +165,7 @@ func v3BodyRecipes(t *testing.T) []v3Recipe {
 	s.add(t, "action", body, nil)
 	recipes = append(recipes, v3Recipe{group: 6, name: "unknown-normalization-profile", code: "NORMALIZATION_UNKNOWN", verdict: "VALID", files: []v3File{s.finish(t)}})
 
-	return recipes
+	return append(recipes, v3NestedBodyRecipes(t)...)
 }
 
 func v3TrustRecipes(t *testing.T) []v3Recipe {
@@ -212,6 +213,55 @@ func v3SpecialRecipes(t *testing.T) []v3Recipe {
 		{group: 12, name: "fork-order", verdict: "INVALID", code: "FORK", files: []v3File{left, right}},
 		{group: 12, name: "duplicate-order", verdict: "VALID", files: []v3File{valid, {"copy/" + valid.name, valid.bytes}}},
 	}
+	nonOpen := v3New(t)
+	nonOpen.records = nil
+	nonOpen.add(t, "action", v3DefaultAction(), nil)
+	contender := nonOpen.file(0, 1)
+	contender.name = "copy/" + contender.name
+	recipes = append(recipes, v3Recipe{
+		group: 12, name: "contested-non-opener", verdict: "INVALID", code: "FORK",
+		files: []v3File{valid, contender},
+	})
+	broken := v3New(t)
+	broken.add(t, "heartbeat", v3Common{"beat": 1}, func(p v3Common) { p["prev"] = v3.Digest(nil) })
+	broken.close(t)
+	recipes = append(recipes, v3Recipe{
+		group: 12, name: "predecessor-before-body", verdict: "INVALID", code: "STREAM_ORDER",
+		files: []v3File{broken.file(0, 1), broken.file(1, 3)},
+	})
+
+	afterClose := v3New(t)
+	afterClose.close(t)
+	afterClose.add(t, "heartbeat", v3Common{"beat": 1}, nil)
+	recipes = append(recipes, v3Recipe{
+		group: 12, name: "close-before-body", verdict: "INVALID", code: "DATA_AFTER_CLOSE",
+		files: []v3File{afterClose.file(0, 2), afterClose.file(2, 3)},
+	})
+	critical := &v3Stream{id: s.id, lineage: s.lineage, key: v3Key("other")}
+	critical.add(t, "stream_open", v3DefaultOpen(critical.key, critical.lineage), func(p v3Common) {
+		p["crit"] = []string{"future"}
+	})
+	recipes = append(recipes, v3Recipe{
+		group: 8, name: "body-before-trust", verdict: "UNSUPPORTED", code: "UNKNOWN_CRIT",
+		files: []v3File{critical.file(0, 1)},
+	})
+
+	const chains = 1025
+	rows := make([]v3.InventoryChain, 0, chains)
+	for i := range chains {
+		rows = append(rows, v3.InventoryChain{Format: "action_v1", Chain: fmt.Sprintf("%032x", i), Seq: 0, Record: v3.Digest(nil)})
+	}
+	inventory := v3Canonical(t, v3.Inventory{V: 1, Chains: rows})
+	root := v3New(t)
+	root.records = nil
+	body := v3DefaultOpen(root.key, root.lineage)
+	digest := v3.Digest(inventory)
+	body["legacy_cutover"] = v3Common{"inventory": digest, "chains": chains}
+	root.add(t, "stream_open", body, nil)
+	recipes = append(recipes, v3Recipe{
+		group: 9, name: "inventory-over-1024-chains", verdict: "INCOMPLETE", code: "LEGACY_CHAIN_NOT_PRESENTED",
+		files: []v3File{root.finish(t), {v3.InventoryFilename(digest), inventory}},
+	})
 	for _, source := range []string{
 		"frozen/v1/action-receipt-v1-chain.jsonl",
 		"frozen/v1/action-receipt-v1-single.json",

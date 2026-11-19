@@ -58,9 +58,7 @@ type fileState struct {
 }
 
 func (v *verification) add(f Finding) {
-	if f.Code != v.skip {
-		v.result.Findings = append(v.result.Findings, f)
-	}
+	v.result.Findings = append(v.result.Findings, f)
 }
 
 func (v *verification) addCode(code, stream string) {
@@ -135,7 +133,7 @@ func verifyPaths(ctx context.Context, paths []string, opts Options, skip string)
 	if len(files) == 0 && len(v.result.Legacy) != 0 {
 		return Result{}, errors.New("legacy-only evidence requires the legacy verification path")
 	}
-	if len(files) == 0 && len(legacy) == 0 {
+	if v.skip != codeNoEvidence && len(files) == 0 && len(legacy) == 0 {
 		v.addCode(codeNoEvidence, "")
 	}
 	v.result.finish(opts)
@@ -192,7 +190,7 @@ func (v *verification) stageFiles(files []inputFile) error {
 		return fmt.Errorf("start record staging: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	const insert = "INSERT OR IGNORE INTO records (stream,seq,id,payload,unknown) VALUES (?,?,?,?,?)"
+	const insert = "INSERT OR IGNORE INTO records (stream,seq,id,payload,unknown,body_code) VALUES (?,?,?,?,?,?)"
 	stmt, err := tx.PrepareContext(v.ctx, insert)
 	if err != nil {
 		return fmt.Errorf("prepare record staging: %w", err)
@@ -216,6 +214,9 @@ func (v *verification) stageFiles(files []inputFile) error {
 	for _, tail := range tails {
 		switch {
 		case tail.last.Kind == kindStreamClose:
+			if v.skip == codeDataAfterClose {
+				continue
+			}
 			v.add(tail.last.finding(codeDataAfterClose))
 		case tail.start < maxStarts[tail.last.Stream]:
 			v.addCode(codeFileLayout, tail.last.Stream)
@@ -231,6 +232,9 @@ func (v *verification) stageFiles(files []inputFile) error {
 
 func (v *verification) stageFile(input inputFile, stmt *sql.Stmt) (fileState, error) {
 	state := fileState{stream: input.stream, start: input.start}
+	if v.skip == codeFileLayout && input.code == "" {
+		state = fileState{start: -1}
+	}
 	if input.code != "" {
 		v.addCode(input.code, state.stream)
 		return state, nil
@@ -272,9 +276,6 @@ func (v *verification) stageFile(input inputFile, stmt *sql.Stmt) (fileState, er
 func (v *verification) stageLine(line []byte, state *fileState, offset int64, stmt *sql.Stmt, outErr *error) bool {
 	record, code := parseLine(line)
 	if code != "" {
-		if code == v.skip {
-			code = codeFileLayout
-		}
 		v.addCode(code, state.stream)
 		return false
 	}
@@ -297,11 +298,11 @@ func (v *verification) stageLine(line []byte, state *fileState, offset int64, st
 			v.addStream(state.stream).broken = true
 		}
 	}
-	if !state.broken && (record.Stream != state.stream || record.Seq != state.start+offset) {
+	if v.skip != codeStreamOrder && !state.broken && (record.Stream != state.stream || record.Seq != state.start+offset) {
 		v.add(item.finding(codeStreamOrder))
 		return false
 	}
-	if offset > 0 && state.last.Kind == kindStreamClose {
+	if v.skip != codeDataAfterClose && offset > 0 && state.last.Kind == kindStreamClose {
 		v.add(item.finding(codeDataAfterClose))
 		return false
 	}
@@ -310,18 +311,9 @@ func (v *verification) stageLine(line []byte, state *fileState, offset int64, st
 		return false
 	}
 	unknown, code := checkBody(record)
-	if code != "" && code != v.skip {
-		v.add(item.finding(code))
-		if findingClasses[code] == invalid {
-			return false
-		}
-	}
-	if len(v.trusted) != 0 && !v.trusted[record.Signer] {
-		v.add(item.finding(codeTrust))
-	}
 	state.last = item
 	v.addStream(state.stream)
-	if _, err := stmt.ExecContext(v.ctx, record.Stream, record.Seq, record.ID, record.Payload, unknown); err != nil {
+	if _, err := stmt.ExecContext(v.ctx, record.Stream, record.Seq, record.ID, record.Payload, unknown, code); err != nil {
 		*outErr = fmt.Errorf("stage verified record: %w", err)
 		return false
 	}
@@ -333,7 +325,9 @@ func localOrderFailure(record Record, state *fileState) bool {
 		return false
 	}
 	if record.Seq == 0 {
-		return record.Kind != kindStreamOpen || record.Prev != Genesis(record.Stream)
+		// Compare claims at position zero before deciding whether any one
+		// of them can open the stream.
+		return false
 	}
 	if record.Kind == kindStreamOpen {
 		return true
@@ -433,14 +427,36 @@ func unmarshalBody[T any](r stagedRecord) (T, error) {
 	return body, nil
 }
 
+// Check the body and trust only after establishing the record's position.
+func (v *verification) checkStagedBody(current stagedRecord) bool {
+	if current.bodyCode != "" && current.bodyCode != v.skip {
+		v.add(current.finding(current.bodyCode))
+		return findingClasses[current.bodyCode] != invalid
+	}
+	if v.skip != codeTrust && len(v.trusted) != 0 && !v.trusted[current.Signer] {
+		v.add(current.finding(codeTrust))
+	}
+	return true
+}
+
 func (v *verification) verifyStreams() error {
 	for _, id := range sortedKeys(v.streams) {
 		s := v.streams[id]
 		if s.broken {
+			if err := walkRecords(v.ctx, v.store, id, maxInteger, func(record stagedRecord) error {
+				v.checkStagedBody(record)
+				return nil
+			}); err != nil {
+				return err
+			}
 			continue
 		}
 		if err := v.verifyStream(id, s); err != nil {
 			return err
+		}
+		if s.broken {
+			s.open, s.last, s.body = stagedRecord{}, stagedRecord{}, StreamOpen{}
+			continue
 		}
 		if s.open.Kind == kindStreamOpen && !s.open.unknown {
 			v.histories[s.body.Lineage] = append(v.histories[s.body.Lineage], s)
@@ -453,30 +469,40 @@ func (v *verification) verifyStream(id string, s *verifiedStream) error {
 	var previous stagedRecord
 	var beat int64
 	publish := func(current stagedRecord) error {
-		if s.last.id == "" {
+		prior := s.last
+		s.last = current
+		var orderCode string
+		switch {
+		case prior.id == "":
 			if current.Seq != 0 || current.Kind != kindStreamOpen || current.Prev != Genesis(id) {
-				v.add(current.finding(codeStreamOrder))
+				orderCode = codeStreamOrder
 			}
-			if current.Kind == kindStreamOpen {
-				s.open = current
-				if !current.unknown {
-					body, err := unmarshalBody[StreamOpen](current)
-					if err != nil {
-						return err
-					}
-					s.body = body
+		case prior.Kind == kindStreamClose:
+			orderCode = codeDataAfterClose
+		case current.Seq != prior.Seq+1 || current.Prev != prior.id ||
+			current.Signer != prior.Signer || current.Kind == kindStreamOpen:
+			orderCode = codeStreamOrder
+		}
+		if orderCode != "" && orderCode != v.skip {
+			v.add(current.finding(orderCode))
+			return nil
+		}
+		if !v.checkStagedBody(current) {
+			s.broken = true
+			return nil
+		}
+		if current.Seq == 0 && current.Kind == kindStreamOpen {
+			s.open = current
+			if !current.unknown {
+				body, err := unmarshalBody[StreamOpen](current)
+				if err != nil {
+					return err
 				}
+				s.body = body
 			}
-		} else {
-			switch {
-			case s.last.Kind == kindStreamClose:
-				v.add(current.finding(codeDataAfterClose))
-			case current.Seq != s.last.Seq+1 || current.Prev != s.last.id ||
-				current.Signer != s.open.Signer || current.Kind == kindStreamOpen:
-				v.add(current.finding(codeStreamOrder))
-			case current.TS < s.last.TS:
-				v.add(current.finding(codeClockRegression))
-			}
+		}
+		if v.skip != codeClockRegression && prior.id != "" && current.TS < prior.TS {
+			v.add(current.finding(codeClockRegression))
 		}
 		if current.Kind == kindHeartbeat && !current.unknown {
 			h, err := unmarshalBody[Heartbeat](current)
@@ -484,11 +510,10 @@ func (v *verification) verifyStream(id string, s *verifiedStream) error {
 				return err
 			}
 			beat++
-			if h.Beat != beat {
+			if v.skip != codeHeartbeatGap && h.Beat != beat {
 				v.add(current.finding(codeHeartbeatGap))
 			}
 		}
-		s.last = current
 		s.summary.Records++
 		return nil
 	}

@@ -1,0 +1,1 @@
+{"directory":true,"check":"legacy-extended","finding":"LEGACY_EXTENDED_AFTER_CUTOVER","inputs":["11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl","evidence-conformance-session-0.jsonl","receipt-v3-cutover-f14357da6abc68c44ea621fefe0804e1da2506a0df05e35cdfcc8a872cb1f50b.json"],"keys":[],"allow_unpinned":true}

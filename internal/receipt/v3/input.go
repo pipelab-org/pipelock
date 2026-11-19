@@ -259,7 +259,7 @@ func newStore(ctx context.Context) (*recordStore, error) {
 PRAGMA journal_mode=OFF;
 CREATE TABLE records (
 	stream TEXT NOT NULL, seq INTEGER NOT NULL, id TEXT NOT NULL,
-	payload BLOB NOT NULL, unknown INTEGER NOT NULL,
+	payload BLOB NOT NULL, unknown INTEGER NOT NULL, body_code TEXT NOT NULL,
 	PRIMARY KEY (stream, seq, id)
 ) WITHOUT ROWID;
 CREATE TABLE decision_ids (
@@ -310,8 +310,9 @@ func readBounded(r *bufio.Reader) (line []byte, complete bool, err error) {
 
 type stagedRecord struct {
 	Common
-	id      string
-	unknown bool
+	id       string
+	unknown  bool
+	bodyCode string
 }
 
 func (r stagedRecord) position() *Position {
@@ -327,7 +328,7 @@ type recordQuery interface {
 }
 
 func walkRecords(ctx context.Context, source recordQuery, stream string, end int64, apply func(stagedRecord) error) error {
-	rows, err := source.QueryContext(ctx, "SELECT id, payload, unknown FROM records WHERE stream=? AND seq<=? ORDER BY seq,id", stream, end)
+	rows, err := source.QueryContext(ctx, "SELECT id, payload, unknown, body_code FROM records WHERE stream=? AND seq<=? ORDER BY seq,id", stream, end)
 	if err != nil {
 		return fmt.Errorf("query verified stream records: %w", err)
 	}
@@ -335,7 +336,7 @@ func walkRecords(ctx context.Context, source recordQuery, stream string, end int
 	for rows.Next() {
 		var record stagedRecord
 		var payload []byte
-		if err := rows.Scan(&record.id, &payload, &record.unknown); err != nil {
+		if err := rows.Scan(&record.id, &payload, &record.unknown, &record.bodyCode); err != nil {
 			return fmt.Errorf("read verified stream record: %w", err)
 		}
 		if err := json.Unmarshal(payload, &record.Common); err != nil {

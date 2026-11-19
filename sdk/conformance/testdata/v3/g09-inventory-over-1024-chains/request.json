@@ -1,0 +1,1 @@
+{"check":"inventory-over-1024-chains","finding":"LEGACY_CHAIN_NOT_PRESENTED","inputs":["11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl","receipt-v3-cutover-7e46c4b9ffdded133ad099e0524c6339e0423eb7b1f3ef0e3076495cecb32f45.json"],"keys":["d2ba0b3426fe6fc96e593249a5b02d22e3167cd233af72ab77660be3334c0e17"]}
