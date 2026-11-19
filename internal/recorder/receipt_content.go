@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 // ContentScan is a clean receipt content scan performed by one recorder with
@@ -50,6 +51,31 @@ func (r *Recorder) ScanReceiptContent(ctx context.Context, p *receiptcontent.Pro
 	det := r.ReceiptDetector()
 	if det == nil {
 		return receiptcontent.Report{}, &ContentScan{recorder: r, kind: p.Kind(), off: true}, nil
+	}
+	if slots := r.contentScanSlots; slots != nil {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		// Receipt projections can spend very different amounts of CPU on
+		// fragment views. Admit only as many active projections per recorder
+		// as the process has CPUs, so a burst of short scans cannot keep a
+		// longer scan sharing a CPU with the whole burst. The slot covers inspection
+		// only and is returned before signing, appending or confirming.
+		select {
+		case slots <- struct{}{}:
+			defer func() { <-slots }()
+		case <-ctx.Done():
+			return receiptcontent.Report{}, nil, scanner.ErrTextDLPIncomplete
+		}
+		if ctx.Err() != nil {
+			return receiptcontent.Report{}, nil, scanner.ErrTextDLPIncomplete
+		}
+		// Different fragments can contain the same encoded segments. Reuse
+		// their exact decoder results within this projection. Every candidate
+		// still runs the detector with its own inspection budget.
+		var release func()
+		ctx, release = scanner.WithSharedDecodes(ctx)
+		defer release()
 	}
 	proj, err := p.Project(detail)
 	if err != nil {

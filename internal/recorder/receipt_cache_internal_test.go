@@ -4,7 +4,11 @@
 package recorder
 
 import (
+	"context"
+	"errors"
+	"runtime"
 	"testing"
+	"testing/synctest"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -69,4 +73,70 @@ func TestReceiptDetectorCacheBinding(t *testing.T) {
 	if off.contentCache != nil || off.ReceiptDetector() != nil {
 		t.Fatal("recorder without redaction built a receipt detector")
 	}
+}
+
+func TestReceiptContentBoundsConcurrentInspection(t *testing.T) {
+	sc := scanner.MustNew(config.Defaults())
+	t.Cleanup(sc.Close)
+	dir := t.TempDir()
+	synctest.Test(t, func(t *testing.T) {
+		slots := runtime.GOMAXPROCS(0)
+		rec, err := NewWithScanner(Config{Enabled: true, Dir: dir, Redact: true}, sc, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := rec.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		release := make(chan struct{})
+		entered := make(chan struct{}, slots+1)
+		rec.contentDetector = func(ctx context.Context, _ string) scanner.TextDLPResult {
+			select {
+			case <-release:
+				return scanner.TextDLPResult{Clean: true}
+			default:
+			}
+			entered <- struct{}{}
+			select {
+			case <-release:
+				return scanner.TextDLPResult{Clean: true}
+			case <-ctx.Done():
+				return scanner.TextDLPResult{Incomplete: true}
+			}
+		}
+		type scanResult struct {
+			content *ContentScan
+			err     error
+		}
+		scan := func(ctx context.Context, result chan<- scanResult) {
+			_, content, err := rec.ScanReceiptContent(ctx, recorderSessionProducer, []byte(`{"session_id":"ordinary receipt"}`))
+			result <- scanResult{content, err}
+		}
+		active := make(chan scanResult, slots)
+		for range slots {
+			go scan(t.Context(), active)
+			<-entered
+		}
+		extra := make(chan scanResult, 1)
+		ctx, cancel := context.WithCancel(t.Context())
+		go scan(ctx, extra)
+		synctest.Wait()
+		if len(entered) != 0 {
+			t.Error("queued projection entered inspection while all slots were in use")
+		}
+		cancel()
+		result := <-extra
+		if result.content != nil || !errors.Is(result.err, scanner.ErrTextDLPIncomplete) {
+			t.Errorf("canceled projection returned (%v, %v)", result.content, result.err)
+		}
+		close(release)
+		for range slots {
+			result := <-active
+			if result.content == nil || result.err != nil {
+				t.Errorf("active projection returned (%v, %v)", result.content, result.err)
+			}
+		}
+	})
 }

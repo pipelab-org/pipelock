@@ -18,6 +18,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -163,11 +164,12 @@ type Recorder struct {
 	contentDetector receiptcontent.Detector
 	// contentCache is set only when contentDetector is a cached scanner
 	// generation (NewWithScanner).
-	contentCache *receiptcontent.CachedDetector
-	privKey      ed25519.PrivateKey
-	escrowPub    *[x25519KeySize]byte
-	observer     EntryObserver
-	metrics      MetricsSink
+	contentCache     *receiptcontent.CachedDetector
+	contentScanSlots chan struct{}
+	privKey          ed25519.PrivateKey
+	escrowPub        *[x25519KeySize]byte
+	observer         EntryObserver
+	metrics          MetricsSink
 
 	mu      sync.Mutex
 	groupMu sync.Mutex
@@ -2121,6 +2123,7 @@ func NewWithScanner(cfg Config, sc *scanner.Scanner, key ed25519.PrivateKey) (*R
 		}
 		r.contentCache = cached
 		r.contentDetector = cached.Detect
+		r.contentScanSlots = make(chan struct{}, runtime.GOMAXPROCS(0))
 	}
 	return r, nil
 }
