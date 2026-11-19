@@ -271,3 +271,54 @@ func TestRepairReceiptGroupTransitionRefusesInvalidPredecessorClose(t *testing.T
 		t.Fatalf("repair error = %v, want %q", err, want)
 	}
 }
+
+func TestStartupRefusesTransitionPublicationConflicts(t *testing.T) {
+	for _, missingOpening := range []bool{true, false} {
+		name := "occupied transition path"
+		if missingOpening {
+			name = "missing successor opening"
+		}
+		t.Run(name, func(t *testing.T) {
+			prepared, r, _, _ := startupPreparedWindow(t, true)
+			opening, _ := prepared.Opening()
+			transitionName, err := ReceiptGroupFileName(opening.GroupID, "transition")
+			if err != nil {
+				t.Fatal(err)
+			}
+			transition := filepath.Join(r.Dir(), transitionName)
+			original := []byte("existing transition")
+			if missingOpening {
+				openName, err := ReceiptGroupFileName(opening.GroupID, "open")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(filepath.Join(r.Dir(), openName)); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(transition, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			err = prepared.Activate(testConfigHash)
+			if prepared.ready.Load() {
+				t.Fatal("receipt group ready after failed publication")
+			}
+			if missingOpening {
+				const suffix = ": successor opening changed before transition"
+				if !errors.Is(err, recorder.ErrEvidenceChanged) || !strings.HasSuffix(err.Error(), suffix) {
+					t.Fatalf("activation error = %v, want changed successor opening", err)
+				}
+				if _, err := os.Stat(transition); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("transition unexpectedly exists after refusal: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.HasPrefix(err.Error(), "publish receipt group transition: ") {
+				t.Fatalf("activation error = %v, want publication refusal", err)
+			}
+			got, err := os.ReadFile(filepath.Clean(transition))
+			if err != nil || string(got) != string(original) {
+				t.Fatalf("existing transition = %q, %v, want unchanged bytes", got, err)
+			}
+		})
+	}
+}
