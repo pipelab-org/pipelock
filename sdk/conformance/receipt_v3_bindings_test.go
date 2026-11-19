@@ -175,6 +175,14 @@ func receiptEmissionSites(fset *token.FileSet, path string, file *ast.File) ([]r
 				return false
 			}
 			callee := receiptEmissionName(node, file)
+			if callee == "" && strings.HasPrefix(path, "internal/mcp/") {
+				if call, ok := node.(*ast.CallExpr); ok {
+					switch name := calledName(call); name {
+					case "commitRelease", "settle", "settleResult":
+						callee = name
+					}
+				}
+			}
 			if callee == "" {
 				return true
 			}
