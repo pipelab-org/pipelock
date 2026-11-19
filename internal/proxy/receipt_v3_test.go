@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"github.com/gobwas/ws"
+	"github.com/gobwas/ws/wsutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
@@ -217,6 +219,107 @@ func TestV3WebSocketIntentPrecedesUpstreamHandshake(t *testing.T) {
 	if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil ||
 		*result.Counts.EffectsCompleted != 2 {
 		t.Fatalf("WebSocket upstream and downstream handshake receipts missing: %+v (%v)", result, err)
+	}
+}
+
+func TestV3WebSocketPayloadWaitsForReceipt(t *testing.T) {
+	for _, point := range []string{"open", "upstream", "downstream"} {
+		t.Run(point, func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, "websocket")
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			backendResult := make(chan error, 1)
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, _, _, err := ws.UpgradeHTTP(r, w)
+				if err != nil {
+					backendResult <- err
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				message, _, readErr := wsutil.ReadClientData(conn)
+				if point == "upstream" {
+					if readErr == nil {
+						backendResult <- fmt.Errorf("upstream received a payload after writer closure")
+					} else {
+						backendResult <- nil
+					}
+					return
+				}
+				if readErr != nil {
+					backendResult <- readErr
+					return
+				}
+				if point == "downstream" {
+					if err := writer.Close(ctx, nil); err != nil {
+						backendResult <- err
+						return
+					}
+				}
+				backendResult <- wsutil.WriteServerMessage(conn, ws.OpText, message)
+			}))
+			t.Cleanup(backend.Close)
+			done := make(chan struct{})
+			proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer close(done)
+				p.handleWebSocket(w, r)
+			}))
+			t.Cleanup(proxy.Close)
+			target := "ws://" + strings.TrimPrefix(backend.URL, "http://")
+			conn, err := wsTestDial(ctx, ws.Dialer{}, "ws://"+strings.TrimPrefix(proxy.URL, "http://")+"/ws?url="+url.QueryEscape(target))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = conn.Close() }()
+			if deadline, ok := ctx.Deadline(); ok {
+				if err := conn.SetDeadline(deadline); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if point == "upstream" {
+				if err := writer.Close(ctx, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			const message = "ordinary message"
+			if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(message)); err != nil {
+				t.Fatal(err)
+			}
+			got, _, err := wsutil.ReadServerData(conn)
+			if point == "open" {
+				if err != nil || string(got) != message {
+					t.Fatalf("client received %q (%v)", got, err)
+				}
+			} else if err == nil {
+				t.Fatalf("client received payload after writer closure: %q", got)
+			}
+			if err := conn.Close(); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-backendResult:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			select {
+			case <-done:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			if point != "open" {
+				return
+			}
+			if err := writer.Close(ctx, nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(ctx, []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil ||
+				*result.Counts.EffectsCompleted != 4 {
+				t.Fatalf("WebSocket handshake and payload receipts missing: %+v (%v)", result, err)
+			}
+		})
 	}
 }
 

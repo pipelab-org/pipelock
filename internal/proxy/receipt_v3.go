@@ -5,7 +5,11 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"strings"
+
+	"github.com/gobwas/ws"
+	"github.com/gobwas/ws/wsutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -82,4 +86,43 @@ func (p *Proxy) writeV3TransportOutcome(ctx context.Context, opts receipt.EmitOp
 	if err := p.receiptV3.WriteAction(context.WithoutCancel(ctx), action, policy); err != nil {
 		p.logReceiptEmissionFailure(opts, err)
 	}
+}
+
+var errWSClientClosing = errors.New("WebSocket client is closing")
+
+// writePayload carries the decision for one complete message or Ping/Pong
+// through the write. Protocol Close frames carry no relayed payload.
+func (r *wsRelay) writePayload(ctx context.Context, boundary string, opcode ws.OpCode, payload []byte, opts receipt.EmitOpts) (blocked bool, err error) {
+	write, conn := wsutil.WriteClientMessage, r.upstreamConn
+	if boundary == boundaryDownstreamDelivery {
+		write, conn = wsutil.WriteServerMessage, r.clientConn
+	}
+	if r.proxy.receiptV3 == nil {
+		return false, write(conn, opcode, payload)
+	}
+	if opts.ActionID == "" {
+		opts.ActionID = receipt.NewActionID()
+	}
+	if opts.Verdict == "" {
+		opts.Verdict = config.ActionAllow
+	}
+	opts.ParentActionID = r.requestActionID
+	opts.Transport, opts.Method = TransportWS, "WS"
+	opts.Target, opts.RequestID, opts.Agent = r.targetURL, r.requestID, r.agent
+	intent, err := r.proxy.confirmTransportReceipt(ctx, r.cfg, opts, boundary)
+	if err != nil && r.cfg.FlightRecorder.RequireReceipts {
+		return ctx.Err() == nil, err
+	}
+	if err = ctx.Err(); err == nil && boundary == boundaryDownstreamDelivery && r.clientClosing.Load() {
+		err = errWSClientClosing
+	}
+	if err != nil {
+		if intent != nil {
+			r.proxy.recordTransportNotReleased(ctx, opts, intent)
+		}
+		return false, err
+	}
+	err = write(conn, opcode, payload)
+	r.proxy.recordTransportOutcome(ctx, opts, intent, err == nil)
+	return false, err
 }

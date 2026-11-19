@@ -21,7 +21,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/gobwas/ws"
-	"github.com/gobwas/ws/wsutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -3094,7 +3093,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				return
 			}
 			// Ping/Pong: forward to upstream (proxy is CLIENT to upstream).
-			err = wsutil.WriteClientMessage(r.upstreamConn, hdr.OpCode, payload)
+			blocked, err = r.writePayload(ctx, boundaryUpstreamSend, hdr.OpCode, payload, receipt.EmitOpts{})
 			if err != nil {
 				return
 			}
@@ -3213,6 +3212,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			}
 		}
 
+		var sendReceipt receipt.EmitOpts
 		if r.cfg.RequestBodyScanning.Enabled && r.scanText {
 			surface := "websocket_binary"
 			if isTextMessage {
@@ -3231,6 +3231,8 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				return
 			}
 			msg = buf
+			sendReceipt.RedactionProfile = r.cfg.Redaction.DefaultProfile
+			sendReceipt.RedactionReport = bodyResult.RedactionReport
 		}
 
 		if isTextMessage && r.scanText {
@@ -3333,7 +3335,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		if frag.Opcode != 0 {
 			opCode = frag.Opcode
 		}
-		err = wsutil.WriteClientMessage(r.upstreamConn, opCode, msg)
+		blocked, err = r.writePayload(ctx, boundaryUpstreamSend, opCode, msg, sendReceipt)
 		if err != nil {
 			return
 		}
@@ -3345,6 +3347,11 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 // enforceUpstreamTextPayload applies response injection policy to any textual
 // WebSocket payload, including Ping and Pong application data.
 func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Logger, msg []byte, allowTransform bool) ([]byte, bool) {
+	var delivery receipt.EmitOpts
+	return r.inspectUpstreamTextPayload(ctx, log, msg, allowTransform, &delivery)
+}
+
+func (r *wsRelay) inspectUpstreamTextPayload(ctx context.Context, log *audit.Logger, msg []byte, allowTransform bool, delivery *receipt.EmitOpts) ([]byte, bool) {
 	if len(msg) == 0 {
 		return msg, false
 	}
@@ -3486,7 +3493,9 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 	// A warning or successful strip permits this response to leave an already
 	// established socket. Its handshake receipt cannot confirm this later
 	// decision, and a clean-stream summary does not describe the finding.
-	if r.cfg.FlightRecorder.RequireReceipts {
+	if r.proxy.receiptV3 != nil {
+		delivery.Verdict, delivery.Layer, delivery.Pattern = wsAction, responseScanLayer, strings.Join(patternNames, ", ")
+	} else if r.cfg.FlightRecorder.RequireReceipts {
 		err := r.proxy.emitAllowPathReceipt(r.cfg, withReceiptShard(receipt.EmitOpts{
 			ActionID: receipt.NewActionID(), ParentActionID: r.requestActionID, Verdict: wsAction, Layer: responseScanLayer,
 			Pattern: strings.Join(patternNames, ", "), Transport: TransportWS,
@@ -3758,7 +3767,8 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				r.writeClientClose(ws.StatusNormalClosure, "upstream closed")
 				return
 			}
-			payload, responseBlocked := r.enforceUpstreamTextPayload(ctx, log, payload, false)
+			var delivery receipt.EmitOpts
+			payload, responseBlocked := r.inspectUpstreamTextPayload(ctx, log, payload, false, &delivery)
 			if responseBlocked {
 				blocked = true
 				return
@@ -3771,10 +3781,12 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				continue
 			}
 			// Forward Ping/Pong to client (proxy is SERVER to client, no masking).
-			err = wsutil.WriteServerMessage(r.clientConn, hdr.OpCode, payload)
+			blocked, err = r.writePayload(ctx, boundaryDownstreamDelivery, hdr.OpCode, payload, delivery)
+			if errors.Is(err, errWSClientClosing) {
+				continue
+			}
 			if err != nil {
-				// The client went away; the upstream did not break off.
-				r.upstreamCancelled = true
+				r.upstreamCancelled = !blocked
 				return
 			}
 			bytesTransferred += int64(len(payload))
@@ -3848,6 +3860,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		}
 
 		// Complete message. Count and scan.
+		var delivery receipt.EmitOpts
 		if opCode == ws.OpBinary {
 			if !r.observeUpstreamResponseFindings(nil) {
 				return bytesTransferred, textFrames, binaryFrames, true
@@ -3880,7 +3893,9 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				return
 			}
 			if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
-				if r.cfg.FlightRecorder.RequireReceipts {
+				if r.proxy.receiptV3 != nil {
+					delivery = mediaRewriteReceipt(delivery)
+				} else if r.cfg.FlightRecorder.RequireReceipts {
 					if err := r.proxy.confirmResponseDecision(r.cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: r.requestActionID, Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent}, r.receiptShard))); err != nil {
 						r.proxy.recordRequiredReceiptBlock(err, TransportWS)
 						payload := blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(r.requestID).CloseFramePayload()
@@ -3906,7 +3921,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			}
 
 			var responseBlocked bool
-			msg, responseBlocked = r.enforceUpstreamTextPayload(ctx, log, msg, true)
+			msg, responseBlocked = r.inspectUpstreamTextPayload(ctx, log, msg, true, &delivery)
 			if responseBlocked {
 				blocked = true
 				return
@@ -3925,9 +3940,12 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			continue
 		}
 		// Forward complete message to client (proxy is SERVER, no masking).
-		err = wsutil.WriteServerMessage(r.clientConn, opCode, msg)
+		blocked, err = r.writePayload(ctx, boundaryDownstreamDelivery, opCode, msg, delivery)
+		if errors.Is(err, errWSClientClosing) {
+			continue
+		}
 		if err != nil {
-			r.upstreamCancelled = true
+			r.upstreamCancelled = !blocked
 			return
 		}
 		bytesTransferred += int64(len(msg))
