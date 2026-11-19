@@ -147,6 +147,37 @@ func (p *Proxy) writeV3TransportOutcome(ctx context.Context, opts receipt.EmitOp
 	}
 }
 
+type fetchV3RedirectKey struct{}
+
+// fetchV3RedirectReceipts tracks the one outstanding upstream send for a
+// fetch. net/http calls CheckRedirect serially between sends.
+type fetchV3RedirectReceipts struct {
+	receipt *v3TransportReceipt
+	opts    receipt.EmitOpts
+	rootID  string
+}
+
+func (f *fetchV3RedirectReceipts) finish(p *Proxy, ctx context.Context, completed bool) {
+	p.recordTransportOutcome(ctx, f.opts, f.receipt, completed)
+	f.receipt = nil
+}
+
+func (f *fetchV3RedirectReceipts) confirm(p *Proxy, req *http.Request, cfg *config.Config) error {
+	hop := f.opts
+	hop.ActionID = receipt.NewActionID()
+	hop.ParentActionID = f.rootID
+	hop.Method, hop.Target = req.Method, req.URL.String()
+	hop.PolicyHash = cfg.CanonicalPolicyHash()
+	entry, err := p.confirmTransportReceipt(req.Context(), cfg, hop, boundaryUpstreamSend)
+	if receiptWriteWithholdsEffect(cfg, err) {
+		blocked := newReceiptEmissionBlockedRequest(err)
+		blocked.target = hop.Target
+		return blocked
+	}
+	f.opts, f.receipt = hop, entry
+	return nil
+}
+
 var errWSClientClosing = errors.New("WebSocket client is closing")
 
 // writePayload carries the decision for one complete message or Ping/Pong

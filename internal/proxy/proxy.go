@@ -306,6 +306,9 @@ func newReceiptEmissionBlockedRequest(err error) *blockedRequestError {
 }
 
 func redirectBlockedInfo(blockedErr *blockedRequestError) blockreason.Info {
+	if blockedErr != nil && blockedErr.layer == blockLayerReceiptEmission {
+		return blockInfoFor(blockreason.ReceiptEmissionFailed, blockLayerReceiptEmission)
+	}
 	if blockedErr != nil && blockedErr.layer == "kill_switch" {
 		return blockInfoFor(blockreason.KillSwitchActive, "kill_switch")
 	}
@@ -1054,6 +1057,10 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 		Transport: killSwitchEgressTransport{next: transport, ks: p.ks, onDeny: p.recordEgressKillSwitchDeny},
 		Timeout:   time.Duration(cfg.FetchProxy.TimeoutSeconds) * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) (retErr error) {
+			fetchReceipts, _ := req.Context().Value(fetchV3RedirectKey{}).(*fetchV3RedirectReceipts)
+			if fetchReceipts != nil {
+				fetchReceipts.finish(p, req.Context(), true)
+			}
 			if len(via) >= 5 {
 				return fmt.Errorf("too many redirects (max 5)")
 			}
@@ -1347,6 +1354,11 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			// degrades to an unsigned or stale-signature hop.
 			if err := p.refreshEnvelopeForRedirect(req, via, currentCfg); err != nil {
 				return err
+			}
+			if fetchReceipts != nil {
+				if err := fetchReceipts.confirm(p, req, currentCfg); err != nil {
+					return err
+				}
 			}
 			// Fetch follows this hop internally. Record its actual destination
 			// and outgoing headers before dispatch, just like the initial send.
@@ -6714,9 +6726,16 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		_ = httpstream.Abort(r.Context(), flushErr)
 	}()
 
+	var fetchReceipts *fetchV3RedirectReceipts
+	if p.receiptV3 != nil {
+		fetchReceipts = &fetchV3RedirectReceipts{receipt: upstreamReceipt, opts: fetchAllowReceipt, rootID: fetchAllowReceipt.ActionID}
+		req = req.WithContext(context.WithValue(req.Context(), fetchV3RedirectKey{}, fetchReceipts))
+	}
 	responseencoding.RequestIdentity(req.Header)
 	resp, err := p.client.Do(req) //nolint:gosec // G704: URL validated by scanner pipeline before reaching here
-	p.recordTransportOutcome(r.Context(), fetchAllowReceipt, upstreamReceipt, resp != nil)
+	if fetchReceipts != nil {
+		fetchReceipts.finish(p, req.Context(), resp != nil)
+	}
 	if err != nil {
 		var ssrfErr *ssrfDialBlockError
 		if errors.As(err, &ssrfErr) {

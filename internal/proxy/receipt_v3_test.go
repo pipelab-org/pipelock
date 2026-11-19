@@ -825,3 +825,59 @@ func TestV3TransportRecordsURLScanRefusal(t *testing.T) {
 		})
 	}
 }
+
+func TestV3FetchConfirmsEachRedirectSend(t *testing.T) {
+	for _, closeBeforeRedirect := range []bool{false, true} {
+		t.Run(fmt.Sprintf("writer_closed=%t", closeBeforeRedirect), func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, TransportFetch, true, nil)
+			hits := 0
+			p.client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				hits++
+				resp := &http.Response{Request: req, Header: make(http.Header), Body: http.NoBody}
+				switch req.URL.Path {
+				case "/start":
+					resp.StatusCode = http.StatusFound
+					resp.Header.Set("Location", "/next")
+					if closeBeforeRedirect {
+						if err := writer.Close(t.Context(), nil); err != nil {
+							t.Error(err)
+						}
+					}
+				case "/next":
+					resp.StatusCode = http.StatusOK
+					resp.Header.Set(headerContentType, "text/plain")
+					resp.Body = io.NopCloser(strings.NewReader("example"))
+					result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+					if err != nil || result.Counts.EffectsCompleted == nil || *result.Counts.EffectsCompleted != 1 ||
+						result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 1 {
+						t.Errorf("redirect reached upstream without a new intent after the first result")
+					}
+				default:
+					t.Errorf("unexpected path %q", req.URL.Path)
+				}
+				return resp, nil
+			})
+			w := httptest.NewRecorder()
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+				"/fetch?url=https://upstream.vendor.example/start", nil)
+			p.handleFetch(w, r)
+			if closeBeforeRedirect {
+				if hits != 1 || w.Code != http.StatusForbidden {
+					t.Fatalf("failed redirect confirmation: sends = %d, status = %d", hits, w.Code)
+				}
+				return
+			}
+			if hits != 2 || w.Code != http.StatusOK {
+				t.Fatalf("confirmed redirect: sends = %d, status = %d", hits, w.Code)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil ||
+				*result.Counts.EffectsCompleted != 3 {
+				t.Fatalf("expected two completed sends and one delivery: %+v (%v)", result, err)
+			}
+		})
+	}
+}
