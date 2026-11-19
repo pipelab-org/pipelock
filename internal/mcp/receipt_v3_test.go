@@ -825,7 +825,8 @@ func TestMCPV3ReceiptFailureStopsInteractiveChild(t *testing.T) {
 				cancel()
 				_ = clientIn.Close()
 				select {
-				case <-done:
+				case err := <-done:
+					t.Logf("proxy returned after test cancellation: %v", err)
 				case <-time.After(testwait.Deadline(2 * time.Second)):
 					t.Error("proxy did not stop after test cancellation")
 				}
