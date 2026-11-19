@@ -202,12 +202,6 @@ func startGETStream(
 
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream scan error: %v\n", scanErr)
-				if errors.Is(scanErr, transport.ErrIncompleteResponse) && ctx.Err() == nil {
-					// A subscription has no pending JSON-RPC request identity.
-					// Record its interrupted transport separately from outcomes
-					// for complete messages already delivered on the stream.
-					emitMCPStandaloneStreamReceipt(opts, safeLogW, mcpStreamReceipt(opts, http.MethodGet), "200", httpstream.Incomplete)
-				}
 				logMCPIncompleteResponse(safeLogW, opts, http.MethodGet, scanErr)
 			}
 
@@ -258,6 +252,11 @@ func scanGETStream(ctx context.Context, client *transport.HTTPClient, writer tra
 	if admission.NativeLease.Stopping() {
 		recordListenerStreamError(ctx, logW, opts, mcpStreamReceipt(opts, http.MethodGet), true, ael.ErrCapacity)
 		return ael.ErrCapacity, nil
+	}
+	if errors.Is(scanErr, transport.ErrIncompleteResponse) && ctx.Err() == nil {
+		// A subscription has no pending request identity. Sign its own
+		// terminal diagnostic while its stream reservation is active.
+		emitMCPStandaloneStreamReceipt(opts, logW, mcpStreamReceipt(opts, http.MethodGet), "200", httpstream.Incomplete)
 	}
 	return scanErr, nil
 }

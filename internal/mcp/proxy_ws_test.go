@@ -23,6 +23,7 @@ import (
 	"github.com/gobwas/ws"
 	gobwasutil "github.com/gobwas/ws/wsutil"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -31,6 +32,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
@@ -329,6 +331,114 @@ func TestRunWSProxy_RequireReceiptsRecordsInitializeOutcome(t *testing.T) {
 	if receipts[0].ActionRecord.ActionID != receipts[1].ActionRecord.ActionID {
 		t.Fatalf("outcome action_id = %q, want %q", receipts[1].ActionRecord.ActionID, receipts[0].ActionRecord.ActionID)
 	}
+}
+
+func TestRunWSProxyNativeCapacityClosesAdmittedStream(t *testing.T) {
+	e, dir := newNativeMCPEmitter(t, 2*nativeMCPRequestRecords+4)
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+	defer cancel()
+	requests := make(chan string, 4)
+	closed := make(chan struct{})
+	const reply = `{"jsonrpc":"2.0","id":1,"result":{"content":[]}}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, _, err := ws.UpgradeHTTP(r, w)
+		if err != nil {
+			t.Errorf("upgrade upstream: %v", err)
+			return
+		}
+		defer close(closed)
+		defer func() { _ = conn.Close() }()
+		for {
+			msgs, err := gobwasutil.ReadClientMessage(conn, nil)
+			if err != nil {
+				return
+			}
+			for _, msg := range msgs {
+				if msg.OpCode != ws.OpText {
+					continue
+				}
+				requests <- string(msg.Payload)
+				if strings.Contains(string(msg.Payload), `"id":1`) {
+					if err := gobwasutil.WriteServerMessage(conn, ws.OpText, []byte(reply)); err != nil {
+						t.Errorf("write upstream response: %v", err)
+						return
+					}
+				}
+			}
+		}
+	}))
+	defer upstream.Close()
+	input, client := io.Pipe()
+	defer func() { _ = client.Close() }()
+	defer cancel()
+	var stdout lockedHTTPBuffer
+	opts := MCPProxyOpts{Scanner: testScannerForWS(t), ReceiptEmitter: e, RequireReceipts: true}
+	done := make(chan error, 1)
+	go func() {
+		done <- RunWSProxy(ctx, input, &stdout, io.Discard, wsURL(upstream), opts)
+	}()
+	send := func(id int) {
+		t.Helper()
+		if _, err := fmt.Fprintf(client, `{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"echo","arguments":{}}}`+"\n", id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	observe := func(id int) {
+		t.Helper()
+		select {
+		case got := <-requests:
+			if !strings.Contains(got, fmt.Sprintf(`"id":%d`, id)) {
+				t.Fatalf("upstream request = %q, want ID %d", got, id)
+			}
+		case <-ctx.Done():
+			t.Fatalf("upstream did not receive request %d", id)
+		}
+	}
+	send(1)
+	observe(1)
+	testwait.For(t, time.Second, func() bool { return stdout.contains(reply) }, "admitted response delivered")
+	send(2)
+	observe(2)
+	send(3)
+	select {
+	case err := <-done:
+		if !errors.Is(err, ael.ErrCapacity) {
+			t.Fatalf("proxy result = %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("proxy did not return")
+	}
+	if !stdout.contains(ael.ErrCapacity.Error()) {
+		t.Fatalf("capacity refusal missing from %s", stdout.String())
+	}
+	select {
+	case <-closed:
+	case <-ctx.Done():
+		t.Fatal("upstream WebSocket did not close")
+	}
+	select {
+	case got := <-requests:
+		t.Fatalf("refused frame reached upstream: %q", got)
+	default:
+	}
+	verifyMCPNativeClose(t, e, dir)
+	entries, err := recorder.QuerySession(dir, e.Session(), &recorder.QueryFilter{Type: "action_receipt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries.Entries {
+		signed, err := receipt.Unmarshal(entry.RawDetail)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(signed.ActionRecord.Pattern, "status=closed bytes=unknown reason="+nativeCapacityReason) {
+			if err := receipt.VerifyWithKey(signed, e.SignerKeyHex()); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+	}
+	t.Fatal("missing signed WebSocket close")
 }
 
 func TestRunWSProxy_ConfusedDeputy_SeededNullIDResponseBlocked(t *testing.T) {

@@ -236,16 +236,38 @@ type GatedServer struct {
 	Gate   *Gate
 }
 
-// DrainContext sets the normal shutdown deadline. After a native evidence
-// capacity stop, streams close explicitly and the gate must join deferred
+// DrainContext times out ordinary shutdown. A native evidence capacity stop
+// disarms the timeout so streams can close and the gate can join deferred
 // evidence work before the recorder seals.
 func DrainContext(timeout time.Duration, capacityStopped <-chan struct{}) (context.Context, context.CancelFunc) {
+	if capacityStopped == nil {
+		return context.WithTimeout(context.Background(), timeout)
+	}
 	select {
 	case <-capacityStopped:
 		return context.WithCancel(context.Background())
 	default:
-		return context.WithTimeout(context.Background(), timeout)
 	}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	timer := time.AfterFunc(timeout, func() {
+		select {
+		case <-capacityStopped:
+		default:
+			cancel(context.DeadlineExceeded)
+		}
+	})
+	return drainTimeoutContext{ctx}, func() {
+		timer.Stop()
+		cancel(context.Canceled)
+	}
+}
+
+// The timeout is conditional, so Deadline cannot promise a time. Preserve
+// context.DeadlineExceeded for callers that distinguish timeouts from cancellation.
+type drainTimeoutContext struct{ context.Context }
+
+func (ctx drainTimeoutContext) Err() error {
+	return context.Cause(ctx.Context)
 }
 
 // DrainServer joins handlers and registered child work within ctx. net/http

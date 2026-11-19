@@ -18,10 +18,12 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
+const nativeCapacityReason = "native_ael_capacity"
+
 func recordListenerStreamError(ctx context.Context, logW io.Writer, opts MCPProxyOpts, intent receipt.EmitOpts, standalone bool, err error) {
 	reason := httpstream.Reason(ctx, err)
 	if errors.Is(err, ael.ErrCapacity) {
-		reason = "native_ael_capacity"
+		reason = nativeCapacityReason
 	}
 	if reason == httpstream.Incomplete {
 		_, _ = fmt.Fprintf(logW, "pipelock: response stream %s: %v\n", reason, err)
@@ -49,13 +51,14 @@ func logMCPIncompleteResponse(logW io.Writer, opts MCPProxyOpts, method string, 
 
 func emitTrackedStreamError(ctx context.Context, logW io.Writer, tracker *RequestTracker, id json.RawMessage, opts MCPProxyOpts, err error) {
 	outcome, pending := consumeTrackedRequestOutcome(tracker, id)
+	defer outcome.releaseNativeLease()
 	standalone := !pending || outcome.Receipt.ActionID == ""
 	if standalone {
 		outcome.Receipt = mcpStreamReceipt(opts, http.MethodPost)
 	}
 	reason, status := httpstream.Reason(ctx, err), "incomplete"
 	if errors.Is(err, ael.ErrCapacity) {
-		reason = "native_ael_capacity"
+		reason = nativeCapacityReason
 	}
 	if reason == httpstream.Cancelled {
 		status = "cancelled"

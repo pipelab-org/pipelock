@@ -43,6 +43,7 @@ func emitRequestScopedTimeout(
 	if len(id) != 0 {
 		outcome, ok := consumeTrackedRequestOutcome(tracker, id)
 		if ok {
+			defer outcome.releaseNativeLease()
 			resp := timeoutErrorResponse(id)
 			if wErr := writer.WriteMessage(resp); wErr != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", wErr)
@@ -58,6 +59,7 @@ func emitTrackedTerminalOutcome(logW io.Writer, tracker *RequestTracker, id json
 	if !ok {
 		return
 	}
+	defer outcome.releaseNativeLease()
 	emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, outcome.Receipt, mcpResponseStatus(resp), int64(len(resp)), reason, opts.requireReceipts())
 }
 
@@ -65,6 +67,7 @@ func emitTrackedTerminalOutcome(logW io.Writer, tracker *RequestTracker, id json
 // upstream contract refused. Notifications are never tracked, so their caller
 // passes the outcome from the input decision directly.
 func emitContractRefusedOutcome(logW io.Writer, outcome TrackedRequestOutcome, gate mcpContractGateOutput, reason string, bytesTransferred int64, opts MCPProxyOpts) {
+	defer outcome.releaseNativeLease()
 	receiptOpts := mcpWithContractReceipt(outcome.Receipt, gate)
 	receiptOpts.Layer = mcpContractReceiptLayer
 	emitMCPBlockedOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, receiptOpts, bytesTransferred, reason, opts.requireReceipts())
@@ -75,6 +78,7 @@ func emitTrackedIncompleteOutcome(logW io.Writer, tracker *RequestTracker, id js
 	if !ok {
 		return
 	}
+	defer outcome.releaseNativeLease()
 	emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, outcome.Receipt, "incomplete", -1, reason, opts.requireReceipts())
 }
 
@@ -653,13 +657,14 @@ func RunHTTPProxy(
 		// Track request ID before sending to upstream for confused deputy protection.
 		// Only track requests (have "method"), not client responses to
 		// server-initiated calls, to prevent tracker pollution.
-		if isRequest(msg) {
-			if decision.Outcome.Receipt.ActionID != "" {
-				outcome := decision.Outcome
-				outcome.Method = frame.Method
-				tracker.TrackOutcome(frame.ID, outcome)
-			} else {
-				tracker.TrackRequest(frame.ID, frame.Method)
+		if isTrackableRequest(msg, frame.ID) {
+			outcome := decision.Outcome
+			outcome.Receipt = outcome.Receipt.InheritAdmission(admission)
+			outcome.Method = frame.Method
+			if err := trackNativeOutcome(tracker, frame.ID, outcome); err != nil {
+				emitMCPBlockedOutcomeReceipt(fwdOpts.receiptEmitter(), fwdOpts.v2ReceiptEmitter(), fwdOpts.ReceiptGroup, safeLogW, outcome.Receipt, -1, "request_tracking_failed", fwdOpts.requireReceipts())
+				writeNativeAdmissionDenial(fwdOpts, safeLogW, safeClientOut, frame.ID, err)
+				continue
 			}
 		}
 
@@ -772,6 +777,7 @@ func RunHTTPProxy(
 			outcome.Receipt.TaintDecision = config.ActionBlock
 			outcome.Receipt.TaintDecisionReason = reason
 			emitMCPBlockedOutcomeReceipt(fwdOpts.receiptEmitter(), fwdOpts.v2ReceiptEmitter(), fwdOpts.ReceiptGroup, safeLogW, outcome.Receipt, int64(len(errResp)), reason, fwdOpts.requireReceipts())
+			outcome.releaseNativeLease()
 			continue
 		}
 		// Keep receipt I/O out of the task-check-to-send interval.
@@ -877,6 +883,8 @@ func mcpLocalRefusedOutcome(tracker *RequestTracker, id json.RawMessage, decisio
 		}
 	}
 	if pending := decision.pendingReceipt; pending != nil {
+		outcome.releaseNativeLease()
+		outcome.ownsNativeLease = false
 		outcome.Receipt = pendingRefusalIntent(pending)
 	}
 	return outcome
@@ -897,6 +905,7 @@ func emitPendingMCPInputReceipt(pending *mcpToolReceiptOpts) {
 }
 
 func emitBridgeHeaderContractRefusal(logW io.Writer, outcome TrackedRequestOutcome, reason string, opts MCPProxyOpts) {
+	defer outcome.releaseNativeLease()
 	intent := outcome.Receipt
 	intent.Layer = mcpReceiptLayerHeaderContract
 	emitMCPBlockedOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, intent, -1, reason, opts.requireReceipts())

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
@@ -603,16 +604,32 @@ func TestGateFailedHijackKeepsDrainGrace(t *testing.T) {
 }
 
 func TestDrainContextPreservesCapacityStopSettlement(t *testing.T) {
-	stopped := make(chan struct{})
-	normal, cancel := DrainContext(time.Second, stopped)
-	defer cancel()
-	if _, ok := normal.Deadline(); !ok {
-		t.Fatal("ordinary shutdown requires a deadline")
-	}
-	close(stopped)
-	capacity, cancelCapacity := DrainContext(time.Second, stopped)
-	defer cancelCapacity()
-	if _, ok := capacity.Deadline(); ok {
-		t.Fatal("capacity shutdown must let the gate settle")
-	}
+	synctest.Test(t, func(t *testing.T) {
+		const timeout = time.Second
+		stopped := make(chan struct{})
+		ordinary, cancelOrdinary := DrainContext(timeout, stopped)
+		defer cancelOrdinary()
+		<-ordinary.Done()
+		if err := ordinary.Err(); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("ordinary drain = %v", err)
+		}
+
+		inProgress, cancelInProgress := DrainContext(timeout, stopped)
+		defer cancelInProgress()
+		close(stopped)
+		atCapacity, cancelAtCapacity := DrainContext(timeout, stopped)
+		defer cancelAtCapacity()
+
+		<-time.After(2 * timeout)
+		synctest.Wait()
+		for _, drain := range []context.Context{inProgress, atCapacity} {
+			if err := drain.Err(); err != nil {
+				t.Fatalf("capacity drain ended early: %v", err)
+			}
+		}
+		cancelInProgress()
+		if err := inProgress.Err(); !errors.Is(err, context.Canceled) {
+			t.Fatalf("explicit cancellation = %v", err)
+		}
+	})
 }
