@@ -41,15 +41,16 @@ type writerReplayObservation struct {
 }
 
 type writerReplayFault struct {
-	step  writerReplayStep
-	calls []string
+	step              writerReplayStep
+	calls             []string
+	additionalFaultAt int
 }
 
 var errWriterReplay = errors.New("injected receipt storage error")
 
 func (f *writerReplayFault) trip(operation string) bool {
 	f.calls = append(f.calls, operation)
-	return f.step.FaultAt == len(f.calls) || f.step.ExtraFaultAt == len(f.calls)
+	return f.step.FaultAt == len(f.calls) || f.step.ExtraFaultAt == len(f.calls) || f.additionalFaultAt == len(f.calls)
 }
 
 func (f *writerReplayFault) call(operation string, fn func() error) error {

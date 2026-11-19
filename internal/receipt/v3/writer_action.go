@@ -219,20 +219,23 @@ func blockingHoldResolution(action Action, source, relation string, correction b
 
 // A repair remains queued until its own confirmation. In particular, a
 // second failed successor must carry the original observation forward.
-// Retry after retirement when settling repairs before admission or return.
+// Give each repair one retry on a new successor before requiring recovery.
 func (w *StreamWriter) replayActionRepairs(ctx context.Context, retryWriteErrors bool) error {
+	retried := false
 	for len(w.repairs) != 0 {
 		if err := w.ensureAppendSpace(ctx); err != nil {
 			return err
 		}
 		if err := w.commit(ctx, kindAction, w.repairs[0]); err != nil {
-			if retryWriteErrors && w.previous != nil && w.previous.Ended == endedWriteError {
+			if retryWriteErrors && !retried && w.previous != nil && w.previous.Ended == endedWriteError {
+				retried = true
 				continue
 			}
 			return fmt.Errorf("replay receipt action after durability interruption: %w", err)
 		}
 		w.repairs[0] = Action{}
 		w.repairs = w.repairs[1:]
+		retried = false
 	}
 	return nil
 }

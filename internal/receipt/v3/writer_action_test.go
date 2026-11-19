@@ -112,9 +112,11 @@ func TestStreamWriterSettlesOutcomeAfterWriteErrors(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		secondFault   int
+		thirdFault    int
 		failSuccessor bool
 	}{
 		{name: "repair append fails", secondFault: 6},
+		{name: "repair append fails on consecutive successors", secondFault: 6, thirdFault: 11, failSuccessor: true},
 		{name: "successor link fails", secondFault: 4, failSuccessor: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -133,7 +135,7 @@ func TestStreamWriterSettlesOutcomeAfterWriteErrors(t *testing.T) {
 			}
 			outcome := intent
 			outcome.Phase, outcome.EffectRelation, outcome.OutcomeClass = phaseOutcome, relationAfter, "completed"
-			fault = writerReplayFault{step: writerReplayStep{FaultAt: 1, ExtraFaultAt: tc.secondFault}}
+			fault = writerReplayFault{step: writerReplayStep{FaultAt: 1, ExtraFaultAt: tc.secondFault}, additionalFaultAt: tc.thirdFault}
 			if err := w.WriteAction(t.Context(), outcome, policy); !errors.Is(err, errWriterReplay) {
 				t.Fatalf("outcome write error = %v, want %v", err, errWriterReplay)
 			}
