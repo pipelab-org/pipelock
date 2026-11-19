@@ -36,6 +36,20 @@ Keep a copy of any directory that reports `PREDECESSOR_TRUNCATED` or `DECISION_I
 
 For `ACTION_UNINTERPRETED` or `DECISIONS_NOT_APPRAISED`, the startup check names the action body version that the writer needs. Use a compatible release, or preserve the existing directory and start a new history elsewhere.
 
+## Switch an existing legacy directory
+
+Stop the legacy writer and verify its directory with the public keys you trust.
+
+```sh
+pipelock verify-receipt --chain ./evidence --key ./current.pub
+```
+
+Resolve any pending legacy holds while the legacy runtime still owns the directory, then stop it again. The v3 writer refuses a switch while holds remain unresolved. Keep the old receipts and journal in place. If the evidence uses earlier signing keys, put those public keys in `flight_recorder.receipt_group_prior_signer_keys`.
+
+On a release that writes v3 receipts, set `flight_recorder.receipt_format: v3` and start with the same `flight_recorder.dir`. The first v3 stream pins the inventory of the legacy evidence. Stop the writer and run `verify-receipt --chain` again with all trusted signer keys. Keep the `receipt-v3-cutover-*.json` inventory alongside both sets of receipts.
+
 ## Return to legacy receipts
 
 Stop the writer, choose a new empty directory for `flight_recorder.dir`, and set `flight_recorder.receipt_format: legacy`. Use the new directory also when rolling back to a binary released before v3 support. Preserve the switched directory with its cutover inventory and legacy chains so it can still be verified.
+
+Verify the new legacy directory with `verify-receipt --chain` and its signer key before relying on the new receipts.
