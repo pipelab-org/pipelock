@@ -1753,15 +1753,26 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		RequestID: requestID,
 		Agent:     agent,
 	}), selectedReceiptShard)
+	var v3Upstream *reverseV3Send
 	if cfg.FlightRecorder.RequireReceipts {
-		// Pin the v2 proxy_decision policy hash to the admission snapshot
+		// Pin the policy hash to the admission snapshot
 		// (cfg == snap.cfg), not a possibly-reloaded rp.cfgPtr. The v2
 		// receipt consumes opts.PolicyHash; withReceiptPolicyHash is
 		// first-write-wins, so emitRequiredReceipt's internal load becomes a
 		// no-op. Mirrors the forward/fetch/websocket required-allow call
 		// sites, which pre-apply the snapshot hash so a hot reload between
 		// admission and emit cannot bind the allow to a successor policy.
-		if err := rp.emitRequiredReceipt(withReceiptConfig(reverseAllowReceipt, cfg)); err != nil {
+		var err error
+		if rp.owner != nil && rp.owner.receiptV3 != nil {
+			var entry *v3TransportReceipt
+			entry, err = rp.owner.confirmTransportReceipt(r.Context(), cfg, reverseAllowReceipt, boundaryUpstreamSend)
+			if err == nil {
+				v3Upstream = &reverseV3Send{entry: entry}
+			}
+		} else {
+			err = rp.emitRequiredReceipt(withReceiptConfig(reverseAllowReceipt, cfg))
+		}
+		if err != nil {
 			blockedErr := newReceiptEmissionBlockedRequest(err)
 			rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), blockedErr.layer, blockedErr.detail)
 			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
@@ -1776,7 +1787,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	}
 	var outcomeTracker *reverseOutcomeTracker
 	var forwardWriter *reverseInformationalGuardWriter
-	if cfg.FlightRecorder.RequireReceipts {
+	if cfg.FlightRecorder.RequireReceipts && v3Upstream == nil {
 		outcomeTracker = newReverseOutcomeTracker(cfg, withReceiptConfig(reverseAllowReceipt, cfg))
 		defer func() {
 			aborted := recover()
@@ -1798,6 +1809,16 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}()
 	}
 	ctx = context.WithValue(r.Context(), ctxKeyReverseActionID, reverseActionID)
+	if v3Upstream != nil {
+		ctx = context.WithValue(ctx, reverseV3SendKey{}, v3Upstream)
+		defer func() {
+			if v3Upstream.attempted {
+				rp.owner.recordTransportOutcome(ctx, reverseAllowReceipt, v3Upstream.entry, v3Upstream.completed)
+			} else {
+				rp.owner.recordTransportNotReleased(ctx, reverseAllowReceipt, v3Upstream.entry)
+			}
+		}()
+	}
 	if outcomeTracker != nil {
 		ctx = context.WithValue(ctx, ctxKeyReverseOutcome, outcomeTracker)
 	}
@@ -1902,6 +1923,14 @@ func (w *reverseInformationalGuardWriter) Hijack() (net.Conn, *bufio.ReadWriter,
 		w.hijacked = true
 	}
 	return conn, rw, err
+}
+
+type reverseV3SendKey struct{}
+
+type reverseV3Send struct {
+	entry     *v3TransportReceipt
+	attempted bool
+	completed bool
 }
 
 // reverseSigningRoundTripper wraps the base transport used by
@@ -2070,24 +2099,25 @@ func (t *reverseSigningRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 	// global atomic. A reload between ServeHTTP and RoundTrip must
 	// not flip the signing decision for an in-flight request.
 	em, _ := req.Context().Value(ctxKeyReverseEnvelopeEmitter).(*envelope.Emitter)
-	if em == nil {
-		// No emitter was live at admission time - signing was off
-		// for this request. Forward unsigned.
-		t.recordIssuerSend(req)
-		return t.base.RoundTrip(req)
-	}
-	opts, ok := req.Context().Value(ctxKeyReverseEnvelopeOpts).(envelope.BuildOpts)
-	if !ok {
-		return nil, newEnvelopeBlockedRequest(
-			fmt.Errorf("reverse proxy envelope: missing build opts on context"),
-		)
-	}
-	body, _ := req.Context().Value(ctxKeyReverseEnvelopeBody).([]byte)
-
-	if err := em.InjectAndSign(req, body, opts); err != nil {
-		return nil, newEnvelopeBlockedRequest(err)
+	if em != nil {
+		opts, ok := req.Context().Value(ctxKeyReverseEnvelopeOpts).(envelope.BuildOpts)
+		if !ok {
+			return nil, newEnvelopeBlockedRequest(
+				fmt.Errorf("reverse proxy envelope: missing build opts on context"),
+			)
+		}
+		body, _ := req.Context().Value(ctxKeyReverseEnvelopeBody).([]byte)
+		if err := em.InjectAndSign(req, body, opts); err != nil {
+			return nil, newEnvelopeBlockedRequest(err)
+		}
 	}
 	t.recordIssuerSend(req)
+	if send, _ := req.Context().Value(reverseV3SendKey{}).(*reverseV3Send); send != nil {
+		send.attempted = true
+		response, err := t.base.RoundTrip(req)
+		send.completed = response != nil
+		return response, err
+	}
 	return t.base.RoundTrip(req)
 }
 

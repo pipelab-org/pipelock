@@ -275,14 +275,18 @@ func interceptEmitReceiptOrBlock(ic *InterceptContext, w http.ResponseWriter, ac
 			}
 			m.RecordRequiredReceiptBlock(requiredReceiptBlockMetricReason(err), opts.Transport)
 		}
-		blockedErr := newReceiptEmissionBlockedRequest(err)
-		ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
-		writeBlockedError(w,
-			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(opts.RequestID),
-			receiptEmissionBlockReason, http.StatusForbidden)
+		writeInterceptReceiptDenial(w, ic.Logger, actx, opts.RequestID, err)
 		return true
 	}
 	return false
+}
+
+func writeInterceptReceiptDenial(w http.ResponseWriter, logger *audit.Logger, actx audit.LogContext, requestID string, err error) {
+	blockedErr := newReceiptEmissionBlockedRequest(err)
+	logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+	writeBlockedError(w,
+		blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(requestID),
+		receiptEmissionBlockReason, http.StatusForbidden)
 }
 
 func interceptEmitRequiredReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
@@ -2276,6 +2280,7 @@ func newInterceptHandler(
 			RequestID: ic.RequestID,
 			Agent:     ic.Agent,
 		})
+		var upstreamReceipt *v3TransportReceipt
 		// Outcomes run on the inner HTTP writer, before any stream abort.
 		// Release buffered bytes before synchronous required receipt storage.
 		emitOutcome := func(opts receipt.EmitOpts, verdict string, status int, transferred int64, reason string) {
@@ -2286,12 +2291,21 @@ func newInterceptHandler(
 					reason, transferred = flushFailureReason(reason), -1
 				}
 			}
-			interceptEmitOutcomeReceipt(ic, opts, verdict, status, transferred, reason)
+			if upstreamReceipt == nil {
+				interceptEmitOutcomeReceipt(ic, opts, verdict, status, transferred, reason)
+			}
 			_ = httpstream.Abort(r.Context(), flushErr)
 		}
 		requiredIntentEmitted := false
 		if ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
-			if interceptEmitReceiptOrBlock(ic, w, actx, allowReceipt) {
+			if ic.Proxy != nil && ic.Proxy.receiptV3 != nil {
+				var err error
+				upstreamReceipt, err = ic.Proxy.confirmTransportReceipt(r.Context(), ic.Config, allowReceipt, boundaryUpstreamSend)
+				if err != nil {
+					writeInterceptReceiptDenial(w, ic.Logger, actx, allowReceipt.RequestID, err)
+					return
+				}
+			} else if interceptEmitReceiptOrBlock(ic, w, actx, allowReceipt) {
 				return
 			}
 			requiredIntentEmitted = true
@@ -2344,6 +2358,9 @@ func newInterceptHandler(
 				}
 			},
 		})))
+		if upstreamReceipt != nil {
+			ic.Proxy.recordTransportOutcome(r.Context(), allowReceipt, upstreamReceipt, resp != nil)
+		}
 		// The transport reports the write on its own goroutine and can
 		// return a response before that callback runs. A response is proof
 		// the request was sent; the wait then starts at connection ready.

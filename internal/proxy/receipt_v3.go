@@ -68,7 +68,18 @@ func (p *Proxy) recordTransportOutcome(ctx context.Context, opts receipt.EmitOpt
 	} else {
 		action.OutcomeClass, action.EffectRelation = "attempt_unknown", "unknown"
 	}
-	if err := p.receiptV3.WriteAction(context.WithoutCancel(ctx), action, entry.policy); err != nil {
+	p.writeV3TransportOutcome(ctx, opts, action, entry.policy)
+}
+
+func (p *Proxy) recordTransportNotReleased(ctx context.Context, opts receipt.EmitOpts, entry *v3TransportReceipt) {
+	action := entry.action
+	action.Phase, action.OutcomeClass = "outcome", "not_released"
+	action.Verdict, action.EffectRelation = config.ActionBlock, "not_attempted"
+	p.writeV3TransportOutcome(ctx, opts, action, entry.policy)
+}
+
+func (p *Proxy) writeV3TransportOutcome(ctx context.Context, opts receipt.EmitOpts, action v3.Action, policy v3.PolicySnapshot) {
+	if err := p.receiptV3.WriteAction(context.WithoutCancel(ctx), action, policy); err != nil {
 		p.logReceiptEmissionFailure(opts, err)
 	}
 }

@@ -8,9 +8,11 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -27,7 +29,7 @@ import (
 )
 
 func TestV3HTTPTransportIntentPrecedesUpstreamSend(t *testing.T) {
-	for _, transport := range []string{"fetch", "forward"} {
+	for _, transport := range []string{"fetch", "forward", "reverse"} {
 		for _, closed := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/closed=%t", transport, closed), func(t *testing.T) {
 				p, writer, dir, keys := newTestV3HTTPProxy(t, transport)
@@ -49,12 +51,21 @@ func TestV3HTTPTransportIntentPrecedesUpstreamSend(t *testing.T) {
 				}))
 				t.Cleanup(upstream.Close)
 				response := httptest.NewRecorder()
-				if transport == "fetch" {
+				switch transport {
+				case "fetch":
 					req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL, nil)
 					p.handleFetch(response, req)
-				} else {
+				case "forward":
 					req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL, nil)
 					p.handleForwardHTTP(response, req)
+				case "reverse":
+					target, err := url.Parse(upstream.URL)
+					if err != nil {
+						t.Fatal(err)
+					}
+					reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
+					reverse.SetOwnerProxy(p)
+					reverse.ServeHTTP(response, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
 				}
 				if closed {
 					if hits.Load() != 0 || response.Code != http.StatusForbidden ||
@@ -225,5 +236,59 @@ func assertTransportReceiptOrder(t *testing.T, observed <-chan bool, done <-chan
 	case <-done:
 	case <-timer.C:
 		t.Fatal("transport did not end")
+	}
+}
+
+func TestV3InterceptIntentPrecedesRoundTrip(t *testing.T) {
+	for _, closed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("closed=%t", closed), func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, "intercept")
+			if closed {
+				if err := writer.Close(t.Context(), nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+			cfg.FlightRecorder.RequireReceipts = true
+			atEntry := make(chan bool, 1)
+			rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				result, err := v3.VerifyPaths(req.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+				atEntry <- err == nil && result.Integrity == "ok" && result.Counts.EffectsUnknown != nil && *result.Counts.EffectsUnknown == 1
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{headerContentType: []string{"text/plain"}},
+					Body:       io.NopCloser(strings.NewReader("example")),
+				}, nil
+			})
+			target := net.JoinHostPort(testLoopbackIP, "443")
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+target+"/example", nil)
+			resp := interceptWithRT(t, cache, pool, cfg, sc, logger, m, rt,
+				&InterceptContext{Proxy: p, TargetHost: testLoopbackIP, TargetPort: "443"}, req)
+			defer func() { _ = resp.Body.Close() }()
+			if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+				t.Fatal(err)
+			}
+			if closed {
+				if resp.StatusCode != http.StatusForbidden || len(atEntry) != 0 {
+					t.Fatalf("unconfirmed receipt reached the upstream transport, status=%d", resp.StatusCode)
+				}
+				return
+			}
+			select {
+			case confirmed := <-atEntry:
+				if !confirmed || resp.StatusCode != http.StatusOK {
+					t.Fatalf("upstream saw no confirmed intent, status=%d", resp.StatusCode)
+				}
+			default:
+				t.Fatalf("upstream was not reached, status=%d", resp.StatusCode)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil || *result.Counts.EffectsCompleted != 1 {
+				t.Fatalf("intercepted upstream outcome missing: %+v (%v)", result, err)
+			}
+		})
 	}
 }
