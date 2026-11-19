@@ -247,6 +247,29 @@ func v3CutoverRecipes(t *testing.T) []v3Recipe {
 		request: v3Request{Directory: true, Keys: []string{}, AllowUnpinned: true},
 		files:   []v3File{rootWithLegacy.finish(t), {legacyName, append(line, '\n')}, {v3.InventoryFilename(digest), inventory}},
 	})
+	for _, row := range []struct {
+		name, inventory string
+	}{
+		{"empty-inventory-count", ""},
+		{"invalid-inventory-journal", `{"chains":[],"journal":"invalid","v":1}`},
+		{"invalid-inventory-version", `{"chains":[],"v":2}`},
+		{"inventory-trailing-data", `{"chains":[],"v":1}{}`},
+	} {
+		stream := v3New(t)
+		stream.records = nil
+		body := v3DefaultOpen(stream.key, stream.lineage)
+		chains, digest := 1, v3.EmptyInventoryDigest()
+		if row.inventory != "" {
+			chains, digest = 0, v3.Digest([]byte(row.inventory))
+		}
+		body["legacy_cutover"] = v3Common{"chains": chains, "inventory": digest}
+		stream.add(t, "stream_open", body, nil)
+		recipe := v3Invalid(9, row.name, "CUTOVER_INVENTORY_MISMATCH", stream.finish(t))
+		if row.inventory != "" {
+			recipe.files = append(recipe.files, v3File{v3.InventoryFilename(digest), []byte(row.inventory)})
+		}
+		recipes = append(recipes, recipe)
+	}
 	// The inventory binds no old chains here. An old chain is either an
 	// unlisted chain or has unknown membership when the root is absent.
 	root := v3New(t)

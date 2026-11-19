@@ -6,6 +6,7 @@ package v3
 import (
 	"crypto/ed25519"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"testing"
 )
@@ -101,6 +102,33 @@ func TestDecisionIndexRejectsUnusableTransaction(t *testing.T) {
 	}
 	if _, err := decodePiece([]byte("[")); err == nil {
 		t.Fatal("accepted corrupt decision state")
+	}
+}
+
+func TestDecisionIndexRefusesMalformedPiece(t *testing.T) {
+	ctx := t.Context()
+	store, err := newStore(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.close()
+	tx, err := store.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := tx.Rollback(); err != nil {
+			t.Error(err)
+		}
+	}()
+	if _, err := tx.ExecContext(ctx, "INSERT INTO decision_pieces VALUES (?, ?)", "decision", []byte("{")); err != nil {
+		t.Fatal(err)
+	}
+	index := decisionIndex{ctx: ctx, tx: tx, disk: true}
+	err = index.eachPiece(func(pieceEntry) { t.Error("appraised a malformed decision piece") })
+	var syntax *json.SyntaxError
+	if !errors.As(err, &syntax) {
+		t.Fatalf("iterate malformed decision piece: got %v, want a JSON syntax error", err)
 	}
 }
 

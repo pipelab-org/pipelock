@@ -34,6 +34,8 @@ func v3LayoutRecipes(t *testing.T) []v3Recipe {
 		{"second-payload", "}}\n", "},\"payload\":{}}\n"},
 		{"empty-signatures", string(head.line[bytes.IndexByte(head.line, '[')+1 : bytes.IndexByte(head.line, ']')]), ""},
 		{"missing-padding", "==\"}", "=\"}"},
+		{"signature-entry-suffix", "==\"}", "==\"]"},
+		{"signature-keyid-hex", "\"keyid\":\"sha256:" + v3.Digest(v3Public(s.key))[7:8], "\"keyid\":\"sha256:G"},
 	}
 	for _, tc := range change {
 		recipes = append(recipes, v3Invalid(1, tc.name, "LINE_LAYOUT", v3File{first, v3LineTransform(t, head, tc.from, tc.to)}))

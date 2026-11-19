@@ -6,6 +6,7 @@ package v3
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -117,6 +118,13 @@ func TestLegacyBatchDiscrimination(t *testing.T) {
 				t.Fatalf("wrapped %t, v1 %d, v2 %d, error %v", wrapped, len(batch.action), len(batch.evidence), err)
 			}
 		})
+	}
+}
+
+func TestReadLegacyRefusesDisappearedEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.jsonl")
+	if _, _, err := readLegacy(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read missing legacy evidence: got %v, want %v", err, os.ErrNotExist)
 	}
 }
 

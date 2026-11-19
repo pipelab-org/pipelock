@@ -140,6 +140,11 @@ func TestVerificationReadErrors(t *testing.T) {
 			}
 		})
 	}
+	_, err := VerifyPaths(t.Context(), nil, Options{LegacyEnd: &LegacyEnd{}})
+	const want = "legacy endpoint expectations require mixed directory scope and an expected head or sequence"
+	if err == nil || err.Error() != want {
+		t.Fatalf("legacy endpoint error = %v, want %q", err, want)
+	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if _, err := VerifyPaths(ctx, nil, Options{}); !errors.Is(err, context.Canceled) {
@@ -193,6 +198,29 @@ func TestVerifierRefusesScratchDatabaseFailures(t *testing.T) {
 				t.Fatal("verification used a closed scratch database")
 			}
 		})
+	}
+}
+
+func TestRecordStagingRefusesDisappearedEvidence(t *testing.T) {
+	ctx := t.Context()
+	store, err := newStore(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.close()
+
+	stream := signedStream(t, 1, nil, &Cutover{Inventory: EmptyInventoryDigest()})
+	path := stream.write(t.TempDir())
+	file, ok := identify(path)
+	if !ok {
+		t.Fatal("signed test stream was not identified")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	v := verification{ctx: ctx, store: store}
+	if err := v.stageFiles([]inputFile{file}); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stage disappeared evidence: got %v, want %v", err, os.ErrNotExist)
 	}
 }
 

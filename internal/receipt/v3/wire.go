@@ -237,11 +237,6 @@ func validateKey(raw []byte) validatedKey {
 	return validatedKey{public: raw, valid: valid && primeOrder(point)}
 }
 
-type dsseEntry struct {
-	KeyID string `json:"keyid"`
-	Sig   string `json:"sig"`
-}
-
 // ExportDSSE converts a storage line to a DSSE envelope. It validates the
 // storage structure and retains the signatures without checking their trust.
 func ExportDSSE(line []byte) ([]byte, string) {
@@ -249,18 +244,20 @@ func ExportDSSE(line []byte) ([]byte, string) {
 	if code != "" {
 		return nil, code
 	}
-	entries := make([]dsseEntry, 0, len(record.sigs))
-	for _, entry := range record.sigs {
-		entries = append(entries, dsseEntry{entry.key, base64.StdEncoding.EncodeToString(entry.raw)})
+
+	// The envelope values are base64, fixed text, or validated key IDs.
+	// None require JSON escaping.
+	data := base64.StdEncoding.AppendEncode([]byte("{\"payload\":\""), record.Payload)
+	data = append(data, "\",\"payloadType\":\""+PayloadType+"\",\"signatures\":["...)
+	for i, entry := range record.sigs {
+		if i != 0 {
+			data = append(data, layoutEntrySeparator...)
+		}
+		data = append(data, layoutEntryPrefix...)
+		data = append(data, entry.key...)
+		data = append(data, layoutSignaturePrefix...)
+		data = base64.StdEncoding.AppendEncode(data, entry.raw)
+		data = append(data, layoutEntrySuffix...)
 	}
-	envelope := struct {
-		Payload     string      `json:"payload"`
-		PayloadType string      `json:"payloadType"`
-		Signatures  []dsseEntry `json:"signatures"`
-	}{base64.StdEncoding.EncodeToString(record.Payload), PayloadType, entries}
-	data, err := json.Marshal(envelope)
-	if err != nil {
-		return nil, codeLineLayout
-	}
-	return data, ""
+	return append(data, ']', '}'), ""
 }
