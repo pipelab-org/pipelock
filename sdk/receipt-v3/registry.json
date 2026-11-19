@@ -1632,6 +1632,7 @@
     "internal/proxy/proxy.go/(*Proxy).emitRequiredReceiptWithEmitter/emitReceiptFailureMarker/24b8dc6319659168": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/proxy.go/(*Proxy).emitRequiredReceiptWithEmitter/emitRequiredV2Receipt/14afe9243447f2b1": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/proxy.go/(*Proxy).handleFetch/emitReceiptWithEmitter/14d873cb5b97b06b": "Copies the transport decision's evidence options. The calling decision determines the boundary.",
+    "internal/proxy/proxy.go/(*Proxy).handleFetch/recordV3TransportRefusal/bb4458711c942ed6": "Carries the boundary and policy context of the fetch refusal.",
     "internal/proxy/proxy.go/(*Proxy).recordShieldIntervention/confirmShieldIntervention/f81b616de6591c12": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/receipt_v3.go/(*Proxy).confirmHTTPResponseDelivery/confirmTransportReceipt/a445a3e21bd79a4b": "Confirms the downstream intent with the producing handler's attribution.",
     "internal/proxy/receipt_v3.go/(*Proxy).confirmTransportReceipt/WriteAction/fef0753bd0f6df46": "Writes the action and policy snapshot supplied by the effect producer.",

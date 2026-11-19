@@ -771,3 +771,33 @@ func TestV3ReverseSSERefusalLeavesHeaderStateUntouched(t *testing.T) {
 		t.Fatalf("stream refusal was not signed: %+v (%v)", result, err)
 	}
 }
+
+func TestV3FetchRecordsURLScanRefusal(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportFetch, true, nil)
+	const denied = "denied.vendor.example"
+	cfg := p.ConfigPtr().Load().Clone()
+	cfg.FetchProxy.Monitoring.Blocklist = append(cfg.FetchProxy.Monitoring.Blocklist, denied)
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	if !p.Reload(cfg, sc) {
+		t.Fatal("test scanner reload failed")
+	}
+	p.client.Transport = roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		t.Error("blocked fetch reached the upstream transport")
+		return nil, io.ErrClosedPipe
+	})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://"+denied, nil)
+	p.handleFetch(w, r)
+	if w.Code != http.StatusForbidden || w.Header().Get(blockreason.HeaderRecordedReceipt) == "" {
+		t.Fatalf("fetch denial status=%d receipt=%q", w.Code, w.Header().Get(blockreason.HeaderRecordedReceipt))
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Verdict != "VALID" || result.Counts.Decisions == nil ||
+		!slices.ContainsFunc(*result.Counts.Decisions, func(count v3.StateCount) bool { return count.State == "blocked" && count.Count == 1 }) {
+		t.Fatalf("fetch refusal was not signed: %+v (%v)", result, err)
+	}
+}

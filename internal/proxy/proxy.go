@@ -5590,9 +5590,25 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// resolved. Every audit context below derives from r.Context(), so setting
 	// it only at fetch time would report "unknown" for each event on the way.
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
+	refusalBoundary := boundaryUpstreamSend
+	var refusalParent string
 	emitFetchReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptShard(opts, selectedReceiptShard)
 		opts = withReceiptConfig(opts, cfg)
+		if p.receiptV3 != nil {
+			if opts.Verdict == config.ActionBlock {
+				if refusalParent != "" {
+					opts.ParentActionID = refusalParent
+					if opts.ActionID == refusalParent {
+						opts.ActionID = receipt.NewActionID()
+					}
+				}
+				if err := p.recordV3TransportRefusal(r.Context(), cfg, opts, refusalBoundary); err == nil {
+					blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
+				}
+			}
+			return
+		}
 		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
 			if opts.Verdict == config.ActionBlock {
 				blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
@@ -6707,6 +6723,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	responseencoding.RequestIdentity(req.Header)
 	resp, err := p.client.Do(req) //nolint:gosec // G704: URL validated by scanner pipeline before reaching here
 	p.recordTransportOutcome(r.Context(), fetchAllowReceipt, upstreamReceipt, resp != nil)
+	if upstreamReceipt != nil {
+		refusalParent = upstreamReceipt.action.ActionID
+	}
 	if err != nil {
 		var ssrfErr *ssrfDialBlockError
 		if errors.As(err, &ssrfErr) {
@@ -6804,6 +6823,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		outcomeReason = "fetch_failed"
 		return
 	}
+	refusalBoundary = boundaryDownstreamDelivery
 	defer safeClose(resp.Body, "resp.Body", p.logger)
 
 	// Decode supported single-layer encodings before the existing decoded-body
