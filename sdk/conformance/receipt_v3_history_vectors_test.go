@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"testing"
+	"time"
 
 	actionreceipt "github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
@@ -47,6 +48,10 @@ func v3HistoryRecipes(t *testing.T) []v3Recipe {
 	second := v3Successor(t, root, secondStream, "closed", 1, nil)
 	third := v3Successor(t, root, thirdStream, "closed", 1, nil)
 	secondFile, thirdFile := second.finish(t), third.finish(t)
+	unsealedSuccessor := v3Successor(t, unsealed, secondStream, "unsealed", 0, nil)
+	openSuccessor := unsealedSuccessor.file(0, 1)
+	closedSuccessor := unsealedSuccessor.finish(t)
+	accept := v3Request{AcceptDiscontinuities: []string{unsealedSuccessor.records[0].id}}
 	independent := &v3Stream{id: secondStream, lineage: root.lineage, key: root.key}
 	independent.add(t, "stream_open", v3DefaultOpen(root.key, root.lineage), nil)
 	fork := independent.finish(t)
@@ -55,6 +60,8 @@ func v3HistoryRecipes(t *testing.T) []v3Recipe {
 	}
 	return []v3Recipe{
 		{group: 4, name: "pinned-close", verdict: "VALID", files: []v3File{rootFile, secondFile}},
+		{group: 4, name: "accepted-gap-open-successor", verdict: "VALID PREFIX, END UNPROVEN", code: "END_UNPROVEN", request: accept, files: []v3File{unsealedFile, openSuccessor}},
+		{group: 4, name: "accepted-gap-closed-successor", verdict: "VALID, GAPS ACCEPTED", request: accept, files: []v3File{unsealedFile, closedSuccessor}},
 		{group: 4, name: "root-fork", verdict: "INVALID", code: "ROOT_FORK", files: []v3File{rootFile, fork}},
 		{group: 4, name: "succession-fork", verdict: "INVALID", code: "SUCCESSION_FORK", files: []v3File{rootFile, secondFile, thirdFile}},
 		{group: 4, name: "lineage-mismatch", verdict: "INVALID", code: "LINEAGE_MISMATCH", files: []v3File{
@@ -262,4 +269,23 @@ func v3CutoverRecipes(t *testing.T) []v3Recipe {
 		})
 	}
 	return recipes
+}
+
+func v3OperationalOnlyRecipe(t *testing.T) v3Recipe {
+	t.Helper()
+	entry := recorder.Entry{
+		Version: 1, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), SessionID: "example", Type: "decision", Transport: "mcp",
+		Summary: "example", PrevHash: recorder.GenesisHash,
+		Detail: json.RawMessage("{}"), RawDetail: json.RawMessage("{}"),
+	}
+	entry.Hash = recorder.ComputeHash(entry)
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v3Recipe{
+		group: 7, name: "operational-logs-only", verdict: "INCOMPLETE", code: "NO_EVIDENCE",
+		request: v3Request{Directory: true},
+		files:   []v3File{{"evidence-example-0.jsonl", append(data, '\n')}},
+	}
 }

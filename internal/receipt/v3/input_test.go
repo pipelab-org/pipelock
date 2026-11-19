@@ -20,24 +20,25 @@ func TestCallerPins(t *testing.T) {
 	stream := strings.Repeat("1", 32)
 	head := Digest(nil)
 	for _, tc := range []struct {
-		seq string
-		ok  bool
+		seq  string
+		want int64
+		ok   bool
 	}{
-		{"1", true},
-		{"9007199254740991", true},
-		{"", false},
-		{"-1", false},
-		{"01", false},
-		{"+1", false},
-		{"9007199254740992", false},
+		{"1", 1, true},
+		{"9007199254740991", 9007199254740991, true},
+		{"", 0, false},
+		{"-1", 0, false},
+		{"01", 0, false},
+		{"+1", 0, false},
+		{"9007199254740992", 0, false},
 	} {
 		t.Run(tc.seq, func(t *testing.T) {
 			pin, err := ParseSequence(stream + ":" + tc.seq)
-			if (err == nil) != tc.ok || tc.ok && pin.Stream != stream {
+			if (err == nil) != tc.ok || tc.ok && (pin.Stream != stream || pin.Seq != tc.want) {
 				t.Fatalf("sequence %+v, error %v", pin, err)
 			}
 			pos, err := ParseHead(stream + ":" + tc.seq + ":" + head)
-			if (err == nil) != tc.ok || tc.ok && (pos.Record != head || pos.Seq != pin.Seq || pos.Stream != stream) {
+			if (err == nil) != tc.ok || tc.ok && (pos.Record != head || pos.Seq != tc.want || pos.Stream != stream) {
 				t.Fatalf("head %+v, error %v", pos, err)
 			}
 		})
@@ -53,7 +54,7 @@ func TestCallerPins(t *testing.T) {
 		{AllowPartialHistories: []string{"bad"}},
 		{AcceptDiscontinuities: []string{"bad"}},
 	} {
-		if _, err := VerifyPaths(t.Context(), nil, opts); err == nil {
+		if err := opts.validate(); err == nil {
 			t.Fatal("accepted invalid verification options")
 		}
 	}
@@ -111,7 +112,7 @@ func TestBoundedLineReads(t *testing.T) {
 				reader = io.MultiReader(reader, iotest.ErrReader(tc.err))
 			}
 			input := bufio.NewReaderSize(reader, 16)
-			line, complete, err := readBounded(input)
+			line, complete, err := readBounded(t.Context(), input)
 			if !errors.Is(err, tc.err) || complete != tc.complete || len(line) != tc.length {
 				t.Fatalf("length %d, complete %t, error %v", len(line), complete, err)
 			}
@@ -241,8 +242,8 @@ func TestResultCanonicalStrings(t *testing.T) {
 }
 
 func TestScratchDirectoryCreationFailure(t *testing.T) {
-	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
-	if _, err := newStore(t.Context()); err == nil || !strings.Contains(err.Error(), "scratch directory") {
+	parent := filepath.Join(t.TempDir(), "missing")
+	if _, err := newStoreIn(t.Context(), parent); err == nil || !strings.Contains(err.Error(), "scratch directory") {
 		t.Fatalf("unexpected scratch-directory result: %v", err)
 	}
 }
@@ -283,5 +284,77 @@ func TestParserRefusesTruncatedValues(t *testing.T) {
 				t.Fatalf("accepted malformed payload %q", data)
 			}
 		})
+	}
+}
+
+func TestDirectoryClaimsAfterUnreadableCandidate(t *testing.T) {
+	dir := t.TempDir()
+	unreadable := filepath.Join(dir, "activation-receipts.jsonl")
+	if err := os.WriteFile(unreadable, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(unreadable, 0); err != nil {
+		t.Skipf("cannot make candidate unreadable: %v", err)
+	}
+	if _, err := ClaimsInput(dir, true); err == nil {
+		t.Skip("candidate remains readable")
+	}
+	path := filepath.Join(dir, "z.receipt-v4.jsonl")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if claimed, err := ClaimsInput(dir, true); !claimed || err != nil {
+		t.Fatalf("directory claim = %t, error = %v", claimed, err)
+	}
+}
+
+func TestEvidenceDiscoveryFollowsDirectoryPath(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "resolved")
+	child := filepath.Join(dir, "child")
+	if err := os.MkdirAll(child, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(child, link); err != nil {
+		t.Skipf("cannot create symbolic link: %v", err)
+	}
+	stream := signedStream(t, 1, nil, &Cutover{Inventory: EmptyInventoryDigest()})
+	stream.close()
+	stream.write(dir)
+	path := link + string(os.PathSeparator) + ".."
+	result, err := VerifyPaths(t.Context(), []string{path}, Options{Directory: true})
+	if err != nil || result.Verdict != "SELF-CONSISTENT ONLY" {
+		t.Fatalf("resolved directory verdict = %q, error = %v", result.Verdict, err)
+	}
+}
+
+func TestSchemaMutationHandlesInvalidShapes(t *testing.T) {
+	stream := signedStream(t, 1, nil, &Cutover{Inventory: EmptyInventoryDigest()})
+	stream.add(kindAction, []int{1})
+	line := bytes.SplitAfter(stream.lines, []byte{'\n'})[1]
+	if _, code := parseLine(line, ""); code != codeCommonSchema {
+		t.Fatalf("non-object body: got %s, want %s", code, codeCommonSchema)
+	}
+	parseLine(line, codeCommonSchema)
+	for _, fields := range []map[string]any{
+		{},
+		{"policy": map[string]any{}, "redaction": map[string]any{"classes": []any{"example"}}},
+	} {
+		var record Record
+		record.Kind, record.BodyV, record.values = kindAction, 1, fields
+		if _, code := checkBody(record, ""); code != codeBodySchema {
+			t.Fatalf("malformed action: got %s, want %s", code, codeBodySchema)
+		}
+		checkBody(record, codeBodySchema)
+	}
+}
+
+func TestBoundedLineDrainCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	reader := bufio.NewReaderSize(strings.NewReader(strings.Repeat("x", 64)+"\n"), 16)
+	cancel()
+	if _, _, err := readBounded(ctx, reader); !errors.Is(err, context.Canceled) {
+		t.Fatalf("oversized line drain error = %v", err)
 	}
 }

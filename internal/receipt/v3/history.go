@@ -249,7 +249,9 @@ func (v *verification) checkExpectations(cutoverEnds map[string]stagedRecord) {
 		case "superseded_unsealed", "superseded_write_error":
 			// Acceptance names the successor's first record.
 			successor := stream.successors[0].open
-			v.add(successor.finding(codeEndUnproven))
+			if !slices.Contains(v.opts.AcceptDiscontinuities, successor.id) {
+				v.add(successor.finding(codeEndUnproven))
+			}
 		}
 	}
 	for _, lineage := range sortedKeys(v.histories) {

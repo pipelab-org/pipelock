@@ -26,17 +26,29 @@ var updateReceiptV3 = flag.Bool("update-receipt-v3", false, "regenerate receipt 
 
 const v3Corpus = "testdata/v3"
 
+type v3AARPAuthority struct {
+	MediatorID string `json:"mediator_id"`
+	Role       string `json:"role"`
+}
+
+type v3AARPTrust struct {
+	Keys      map[string]string          `json:"keys"`
+	Mediators map[string]v3AARPAuthority `json:"mediators"`
+}
+
 type v3Request struct {
-	Directory     bool     `json:"directory,omitempty"`
-	ExpectLineage string   `json:"expect_lineage,omitempty"`
-	Check         string   `json:"check"`
-	Finding       string   `json:"finding,omitempty"`
-	Inputs        []string `json:"inputs"`
-	Keys          []string `json:"keys"`
-	AllowPrefix   bool     `json:"allow_prefix,omitempty"`
-	AllowUnpinned bool     `json:"allow_unpinned,omitempty"`
-	Format        string   `json:"format,omitempty"`
-	Legacy        bool     `json:"legacy,omitempty"`
+	AARPTrust             *v3AARPTrust `json:"aarp_trust,omitempty"`
+	AcceptDiscontinuities []string     `json:"accept_discontinuities,omitempty"`
+	Directory             bool         `json:"directory,omitempty"`
+	ExpectLineage         string       `json:"expect_lineage,omitempty"`
+	Check                 string       `json:"check"`
+	Finding               string       `json:"finding,omitempty"`
+	Inputs                []string     `json:"inputs"`
+	Keys                  []string     `json:"keys"`
+	AllowPrefix           bool         `json:"allow_prefix,omitempty"`
+	AllowUnpinned         bool         `json:"allow_unpinned,omitempty"`
+	Format                string       `json:"format,omitempty"`
+	Legacy                bool         `json:"legacy,omitempty"`
 }
 
 type v3File struct {
@@ -210,6 +222,7 @@ func TestReceiptV3Corpus(t *testing.T) {
 	recipes = append(recipes, v3HistoryRecipes(t)...)
 	recipes = append(recipes, v3DecisionRecipes(t)...)
 	recipes = append(recipes, v3CutoverRecipes(t)...)
+	recipes = append(recipes, v3OperationalOnlyRecipe(t))
 	for _, recipe := range recipes {
 		t.Run(fmt.Sprintf("g%02d-%s", recipe.group, recipe.name), func(t *testing.T) {
 			v3RunRecipe(t, recipe)
@@ -225,11 +238,10 @@ func v3RunRecipe(t *testing.T, recipe v3Recipe) {
 	request := recipe.request
 	request.Check, request.Finding = recipe.name, recipe.code
 	request.Inputs = []string{}
-	if request.Keys == nil {
+	if request.Keys == nil && request.AARPTrust == nil {
 		request.Keys = []string{hex.EncodeToString(v3Public(v3Key("first")))}
 	}
 	for _, file := range recipe.files {
-		v3Fixture(t, directory, file.name, file.bytes)
 		path := filepath.Join(capture, file.name)
 		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 			t.Fatal(err)
@@ -239,15 +251,15 @@ func v3RunRecipe(t *testing.T, recipe v3Recipe) {
 		}
 		request.Inputs = append(request.Inputs, file.name)
 	}
-	v3Fixture(t, directory, "request.json", append(v3Canonical(t, request), '\n'))
+	requestJSON := append(v3Canonical(t, request), '\n')
 	if request.Legacy {
 		path := filepath.Join(capture, recipe.files[0].name)
 		claimed, err := v3.ClaimsInput(path, false)
 		if err != nil || claimed {
 			t.Fatalf("legacy evidence was claimed by the v3 detector: %t, %v", claimed, err)
 		}
-		v3CheckLegacy(t, recipe.files[0], request.Keys)
-		v3Fixture(t, directory, "expect.json", []byte("{\"legacy_compatible\":true}\n"))
+		v3CheckLegacy(t, recipe.files[0], request)
+		v3WriteFixtures(t, directory, recipe.files, requestJSON, []v3File{{"expect.json", []byte("{\"legacy_compatible\":true}\n")}})
 		return
 	}
 	keys, err := v3.DecodeKeys(request.Keys)
@@ -255,7 +267,7 @@ func v3RunRecipe(t *testing.T, recipe v3Recipe) {
 		t.Fatal(err)
 	}
 	opts := v3.Options{
-		Keys: keys, AllowPrefix: request.AllowPrefix, AllowUnpinned: request.AllowUnpinned,
+		Keys: keys, AcceptDiscontinuities: request.AcceptDiscontinuities, AllowPrefix: request.AllowPrefix, AllowUnpinned: request.AllowUnpinned,
 		ExplicitV3: request.Format == "v3", Directory: request.Directory, ExpectLineage: request.ExpectLineage,
 	}
 	paths := make([]string, 0, len(recipe.files))
@@ -295,9 +307,20 @@ func v3RunRecipe(t *testing.T, recipe v3Recipe) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	v3Fixture(t, directory, "expect.json", append(full, '\n'))
-	v3Fixture(t, directory, "projection.json", append(projection, '\n'))
-	v3CheckSpecial(t, recipe, paths, opts, full)
+	special := v3CheckSpecial(t, recipe, paths, opts, full)
+	outputs := append([]v3File{{"expect.json", append(full, '\n')}, {"projection.json", append(projection, '\n')}}, special...)
+	v3WriteFixtures(t, directory, recipe.files, requestJSON, outputs)
+}
+
+func v3WriteFixtures(t *testing.T, directory string, inputs []v3File, request []byte, outputs []v3File) {
+	t.Helper()
+	for _, file := range inputs {
+		v3Fixture(t, directory, file.name, file.bytes)
+	}
+	v3Fixture(t, directory, "request.json", request)
+	for _, file := range outputs {
+		v3Fixture(t, directory, file.name, file.bytes)
+	}
 }
 
 func v3Fixture(t *testing.T, directory, name string, want []byte) {

@@ -139,7 +139,7 @@ func seqOrAbsent(seq *int64) int64 {
 func (r Result) acceptedFinding(f Finding) bool {
 	return slices.ContainsFunc(r.Accepted, func(a Acceptance) bool {
 		return f.Code == codePredecessorNotPresented && a.Kind == "allow-partial-history" && a.Value == f.Stream ||
-			(f.Code == codeEndUnproven || f.Code == codeLegacyEndUnproven) &&
+			f.Code == codeLegacyEndUnproven &&
 				a.Kind == "accept-discontinuity" && a.Value == f.Record
 	})
 }

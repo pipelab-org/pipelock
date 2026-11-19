@@ -155,22 +155,26 @@ func identify(path string) (inputFile, bool) {
 // ClaimsInput identifies a v3 or later receipt claim before legacy dispatch.
 func ClaimsInput(path string, directory bool) (bool, error) {
 	if directory {
-		entries, err := os.ReadDir(path)
+		dir, entries, err := readInputDirectory(path)
 		if err != nil {
-			return false, fmt.Errorf("read evidence directory: %w", err)
+			return false, err
 		}
+		var probeErr error
 		for _, entry := range entries {
 			if _, known := identify(entry.Name()); known {
 				return true, nil
 			}
 			if !entry.IsDir() && legacyCandidate(entry.Name()) && entry.Type().IsRegular() {
-				claimed, err := startsWithProfile(filepath.Join(path, entry.Name()))
-				if err != nil || claimed {
-					return claimed, err
+				claimed, err := startsWithProfile(filepath.Join(dir, entry.Name()))
+				if claimed {
+					return true, nil
+				}
+				if probeErr == nil {
+					probeErr = err
 				}
 			}
 		}
-		return false, nil
+		return false, probeErr
 	}
 	if _, known := identify(path); known {
 		return true, nil
@@ -194,16 +198,27 @@ func startsWithProfile(path string) (bool, error) {
 	return bytes.Equal(prefix, []byte(profilePrefix)), nil
 }
 
+func readInputDirectory(path string) (string, []os.DirEntry, error) {
+	dir, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve evidence directory: %w", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", nil, fmt.Errorf("read evidence directory: %w", err)
+	}
+	return dir, entries, nil
+}
+
 func discover(paths []string, opts Options, skip string) (files []inputFile, legacy []string, inventory map[string][]string, ignored int, err error) {
 	inventory = make(map[string][]string)
 	if opts.Directory {
 		if len(paths) != 1 || opts.ExplicitV3 {
 			return nil, nil, nil, 0, errors.New("directory scope requires exactly one directory")
 		}
-		dir := paths[0]
-		entries, readErr := os.ReadDir(dir)
-		if readErr != nil {
-			return nil, nil, nil, 0, fmt.Errorf("read evidence directory: %w", readErr)
+		dir, entries, err := readInputDirectory(paths[0])
+		if err != nil {
+			return nil, nil, nil, 0, err
 		}
 		paths = nil
 		for _, entry := range entries {
@@ -259,7 +274,11 @@ type recordStore struct {
 }
 
 func newStore(ctx context.Context) (*recordStore, error) {
-	dir, err := os.MkdirTemp("", "pipelock-v3-verify-")
+	return newStoreIn(ctx, "")
+}
+
+func newStoreIn(ctx context.Context, parent string) (*recordStore, error) {
+	dir, err := os.MkdirTemp(parent, "pipelock-v3-verify-")
 	if err != nil {
 		return nil, fmt.Errorf("create verification scratch directory: %w", err)
 	}
@@ -300,7 +319,7 @@ func (s *recordStore) close() {
 	_ = os.RemoveAll(s.dir)
 }
 
-func readBounded(r *bufio.Reader) (line []byte, complete bool, err error) {
+func readBounded(ctx context.Context, r *bufio.Reader) (line []byte, complete bool, err error) {
 	// ReadSlice returns at most the configured buffer size. Drain an overlong
 	// line without allocating its attacker-controlled length.
 	line, err = r.ReadSlice('\n')
@@ -313,6 +332,9 @@ func readBounded(r *bufio.Reader) (line []byte, complete bool, err error) {
 		return nil, false, err
 	}
 	for errors.Is(err, bufio.ErrBufferFull) {
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
 		_, err = r.ReadSlice('\n')
 	}
 	if err != nil && !errors.Is(err, io.EOF) {

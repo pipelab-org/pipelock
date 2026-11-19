@@ -134,7 +134,7 @@ func verifyPaths(ctx context.Context, paths []string, opts Options, skip string)
 	if len(files) == 0 && len(v.result.Legacy) != 0 {
 		return Result{}, errors.New("legacy-only evidence requires the legacy verification path")
 	}
-	if v.skip != codeNoEvidence && len(files) == 0 && len(legacy) == 0 {
+	if v.skip != codeNoEvidence && len(files) == 0 && len(v.result.Findings) == 0 {
 		v.addCode(codeNoEvidence, "")
 	}
 	v.result.finish(opts)
@@ -162,7 +162,7 @@ func (v *verification) discoverKey(input inputFile) error {
 		return err
 	}
 	defer func() { _ = file.Close() }()
-	line, complete, err := readBounded(bufio.NewReaderSize(file, maxLineBytes+1))
+	line, complete, err := readBounded(v.ctx, bufio.NewReaderSize(file, maxLineBytes+1))
 	if err != nil {
 		return fmt.Errorf("read opening record: %w", err)
 	}
@@ -255,7 +255,7 @@ func (v *verification) stageFile(input inputFile, stmt *sql.Stmt) (fileState, er
 		if err := v.ctx.Err(); err != nil {
 			return state, err
 		}
-		line, complete, err := readBounded(reader)
+		line, complete, err := readBounded(v.ctx, reader)
 		if err != nil {
 			return state, fmt.Errorf("read receipt file: %w", err)
 		}
@@ -353,7 +353,8 @@ func checkBody(r Record, skip string) (bool, string) {
 		if skip != codeBodySchema && !valid {
 			return false, codeBodySchema
 		}
-		if !actionFields(r.values) {
+		// The structural check also protects the typed field reads below.
+		if valid && !actionFields(r.values) {
 			return false, codeBodySchema
 		}
 		return unknown, ""

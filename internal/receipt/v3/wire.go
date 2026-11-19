@@ -122,9 +122,10 @@ func parseLine(line []byte, skip string) (Record, string) {
 	if err := json.Unmarshal(payload, &common); err != nil {
 		return Record{}, codeCommonSchema
 	}
+	body, _ := values["body"].(map[string]any)
 	record := Record{
 		Common: common, Payload: bytes.Clone(payload),
-		ID: Digest(PAE(payload)), values: values["body"].(map[string]any), sigs: sigs,
+		ID: Digest(PAE(payload)), values: body, sigs: sigs,
 	}
 	for _, entry := range sigs {
 		if entry.key == record.Signer {

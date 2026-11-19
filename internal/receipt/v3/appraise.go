@@ -205,6 +205,9 @@ func (v *verification) appraiseHistory(a *appraisal, pieces []segment, first *ve
 	for _, piece := range pieces {
 		for _, stream := range piece.streams {
 			err := walkRecords(v.ctx, a.index.tx, stream.open.Stream, stream.limit, func(r stagedRecord) error {
+				if r.bodyCode != "" {
+					return nil
+				}
 				if r.Kind != kindAction {
 					if v.skip != codeEventUninterpreted && r.unknown && !wireKinds[r.Kind].control {
 						a.uninterpreted[r.Kind]++
@@ -285,7 +288,7 @@ func (v *verification) appraiseSegment(a *appraisal, piece segment) error {
 	}
 	for _, stream := range piece.streams {
 		err := walkRecords(v.ctx, a.index.tx, stream.open.Stream, stream.limit, func(r stagedRecord) error {
-			if r.Kind != kindAction {
+			if r.Kind != kindAction || r.bodyCode != "" {
 				return nil
 			}
 			return v.stepDecision(&a.index, stream.segment, !piece.rooted, r)

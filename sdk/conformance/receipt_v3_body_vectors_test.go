@@ -160,12 +160,51 @@ func v3BodyRecipes(t *testing.T) []v3Recipe {
 	s.add(t, "heartbeat", v3Heartbeat(), func(m v3Common) { m["crit"] = []string{"future"} })
 	recipes = append(recipes, v3Recipe{group: 6, name: "unknown-critical-feature", code: "UNKNOWN_CRIT", verdict: "UNSUPPORTED", files: []v3File{s.finish(t)}})
 	s = v3New(t)
+	badCriticalAction := v3DefaultAction()
+	badCriticalAction["action_id"] = 1
+	s.add(t, "action", badCriticalAction, func(m v3Common) { m["crit"] = []string{"future"} })
+	recipes = append(recipes, v3Recipe{group: 6, name: "unknown-critical-action", code: "UNKNOWN_CRIT", verdict: "UNSUPPORTED", files: []v3File{s.finish(t)}})
+	s = v3New(t)
 	body := v3DefaultAction()
 	body["normalization"] = v3Common{"id": "example", "digest": v3.Digest(nil)}
 	s.add(t, "action", body, nil)
 	recipes = append(recipes, v3Recipe{group: 6, name: "unknown-normalization-profile", code: "NORMALIZATION_UNKNOWN", verdict: "VALID", files: []v3File{s.finish(t)}})
 
-	return append(recipes, v3NestedBodyRecipes(t)...)
+	return append(append(recipes, v3NestedBodyRecipes(t)...), v3ByteLimitRecipes(t)...)
+}
+
+func v3ByteLimitRecipes(t *testing.T) []v3Recipe {
+	t.Helper()
+	var recipes []v3Recipe
+	for _, tc := range []struct {
+		name, unit string
+		count      int
+	}{
+		{"target-exact-bytes", "a", 2048},
+		{"target-excess-bytes", "é", 1025},
+		{"writer-exact-bytes", "a", 128},
+		{"writer-excess-bytes", "é", 65},
+	} {
+		s := v3New(t)
+		value := strings.Repeat(tc.unit, tc.count)
+		if strings.HasPrefix(tc.name, "target") {
+			action := v3DefaultAction()
+			action["target"] = value
+			s.add(t, "action", action, nil)
+		} else {
+			s.records = nil
+			body := v3DefaultOpen(s.key, s.lineage)
+			body["writer"].(v3Common)["instance"] = value
+			s.add(t, "stream_open", body, nil)
+		}
+		file := s.finish(t)
+		if strings.Contains(tc.name, "excess") {
+			recipes = append(recipes, v3Invalid(6, tc.name, "BODY_SCHEMA", file))
+		} else {
+			recipes = append(recipes, v3Recipe{group: 6, name: tc.name, verdict: "VALID", files: []v3File{file}})
+		}
+	}
+	return recipes
 }
 
 func v3TrustRecipes(t *testing.T) []v3Recipe {
@@ -298,13 +337,13 @@ func v3SpecialRecipes(t *testing.T) []v3Recipe {
 		}
 		recipes = append(recipes, v3Recipe{
 			group: 10, name: strings.TrimSuffix(name, filepath.Ext(name)),
-			request: v3Request{Legacy: true, Keys: v3LegacyKeys(t, name, data)}, files: []v3File{{name, data}},
+			request: v3LegacyRequest(t, name, data), files: []v3File{{name, data}},
 		})
 	}
 	return recipes
 }
 
-func v3CheckSpecial(t *testing.T, recipe v3Recipe, paths []string, opts v3.Options, full []byte) {
+func v3CheckSpecial(t *testing.T, recipe v3Recipe, paths []string, opts v3.Options, full []byte) []v3File {
 	t.Helper()
 	switch recipe.group {
 	case 11:
@@ -336,11 +375,11 @@ func v3CheckSpecial(t *testing.T, recipe v3Recipe, paths []string, opts v3.Optio
 			if err != nil {
 				t.Fatal(err)
 			}
-			if dsse.PayloadType != v3.PayloadType || !ed25519.Verify(v3Public(v3Key("first")), v3.PAE(payload), sig) {
+			if dsse.PayloadType != v3.PayloadType || !ed25519.Verify(v3Public(v3Key("first")), fmt.Appendf(nil, "DSSEv1 %d %s %d %s", len(dsse.PayloadType), dsse.PayloadType, len(payload), payload), sig) {
 				t.Fatal("DSSE signature mismatch")
 			}
 		}
-		v3Fixture(t, filepath.Join(v3Corpus, filepath.Base(t.Name())), "export.dsse.jsonl", exported.Bytes())
+		return []v3File{{"export.dsse.jsonl", exported.Bytes()}}
 	case 12:
 		if recipe.name == "damaged-copy-order" {
 			v3CheckDamagedCopy(t, paths, opts, full)
@@ -355,6 +394,7 @@ func v3CheckSpecial(t *testing.T, recipe v3Recipe, paths []string, opts v3.Optio
 			t.Fatalf("result changed with file order: %v", err)
 		}
 	}
+	return nil
 }
 
 func v3CheckDamagedCopy(t *testing.T, paths []string, opts v3.Options, withDamage []byte) {
@@ -380,13 +420,25 @@ func v3CheckDamagedCopy(t *testing.T, paths []string, opts v3.Options, withDamag
 	}
 }
 
-func v3LegacyKeys(t *testing.T, name string, data []byte) []string {
+func v3LegacyRequest(t *testing.T, name string, data []byte) v3Request {
 	t.Helper()
+	request := v3Request{Legacy: true}
 	if strings.HasSuffix(name, ".aarp.json") {
 		signer, _ := keyFromSeed(seedSigner)
 		issuer, _ := keyFromSeed(seedIssuer)
-		return []string{hex.EncodeToString(signer), hex.EncodeToString(issuer)}
+		request.Keys = []string{}
+		request.AARPTrust = &v3AARPTrust{
+			Keys:      map[string]string{keyIDSigner: hex.EncodeToString(signer), keyIDIssuer: hex.EncodeToString(issuer)},
+			Mediators: map[string]v3AARPAuthority{keyIDSigner: {MediatorID: mediatorID, Role: roleMediator}},
+		}
+		return request
 	}
+	request.Keys = v3LegacyKeys(t, name, data)
+	return request
+}
+
+func v3LegacyKeys(t *testing.T, name string, data []byte) []string {
+	t.Helper()
 	if strings.HasSuffix(name, ".jsonl") {
 		line, _, _ := bytes.Cut(data, []byte{'\n'})
 		var record struct {
@@ -413,16 +465,31 @@ func v3LegacyKeys(t *testing.T, name string, data []byte) []string {
 	return []string{receipt.Signature.SignerKeyID}
 }
 
-func v3CheckLegacy(t *testing.T, file v3File, keys []string) {
+func v3CheckLegacy(t *testing.T, file v3File, request v3Request) {
 	t.Helper()
+	keys := request.Keys
 	switch {
 	case strings.HasSuffix(file.name, ".aarp.json"):
 		envelope, err := aarp.Unmarshal(file.bytes)
 		if err != nil {
 			t.Fatal(err)
 		}
-		result, err := aarp.Verify(envelope, aarpFrozenVerifyOptions())
-		if err != nil || !result.AssertionSigned {
+		if request.AARPTrust == nil {
+			t.Fatal("legacy envelope request lacks trust inputs")
+		}
+		opts := aarp.VerifyOptions{TrustedKeys: map[string]ed25519.PublicKey{}, Trust: map[string]aarp.TrustEntry{}}
+		for id, encoded := range request.AARPTrust.Keys {
+			key, err := v3.DecodeKeys([]string{encoded})
+			if err != nil {
+				t.Fatal(err)
+			}
+			opts.TrustedKeys[id] = key[0]
+		}
+		for id, binding := range request.AARPTrust.Mediators {
+			opts.Trust[id] = aarp.TrustEntry{MediatorID: binding.MediatorID, Role: binding.Role}
+		}
+		result, err := aarp.Verify(envelope, opts)
+		if err != nil || !result.AssertionSigned || !slices.Contains(result.VerifiedClaims, aarp.ClaimMediatorKeyPinned) {
 			t.Fatalf("legacy envelope verification: %v", err)
 		}
 	case strings.HasSuffix(file.name, ".jsonl"):

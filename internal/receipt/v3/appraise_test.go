@@ -155,7 +155,7 @@ func TestAppraisalRejectsHoldCollisionsAndInvalidShapes(t *testing.T) {
 		actions []Action
 	}{
 		{"hold identity", []Action{base, other}},
-		{"unexpected attempt", []Action{incorrect, incorrect}},
+		{"unexpected attempt", []Action{incorrect}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := signedStream(t, 1, nil, &Cutover{Inventory: EmptyInventoryDigest()})
