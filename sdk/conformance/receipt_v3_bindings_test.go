@@ -27,7 +27,7 @@ var receiptEmissionCalls = strings.Fields(
 		"emitRecordedReceipt emitRequiredReceipt emitRequestPolicyReceipt confirmResponseDecision confirmResponseOrBlock " +
 		"interceptConfirmResponseOrBlock interceptEmitReceiptOrBlock interceptEmitRequiredReceipt interceptEmitOutcomeReceipt " +
 		"emitOutcomeReceipt emitObservedOutcomeReceipt emitOutcomeReceiptWithPattern " +
-		"recordIssuerQueryAllow recordIssuerCookieAllow recordCredentialAudienceAllow recordCredentialAudienceAllows " +
+		"recordIssuerQueryAllow recordIssuerCookieAllow recordCredentialAudienceAllow recordCredentialAudienceAllows recordV3IssuerCookieAllows recordV3CredentialAudienceAllows recordV3ExceptionAllows " +
 		"emitDeferredReceipt emitAllowPathReceipt emitReceiptFailureMarker recordReceiptEmitterUnavailable " +
 		"emitReceipt emitMCPReceiptDecision emitMCPOutcome emitMCPToolScanReceipt " +
 		"emitForwardDenial emitHoldFailureResolution emitKillSwitchDenialReceipt confirmShieldIntervention " +
@@ -38,7 +38,7 @@ var receiptEmissionCalls = strings.Fields(
 		"emitV2Receipt emitV2 emitRequiredV2 emitGroupV2Receipt emitDLPWarn " +
 		"EmitSessionOpen EmitSessionClose EmitHeartbeat EmitTranscriptRoot " +
 		"BuildProxyDecisionReceipt BuildProxyDecisionWithSpansReceipt BuildSecretEgressDecisionReceipt " +
-		"SignReceipt EmitBatch RecordPrescanned buildReceipt confirmTransportReceipt recordTransportOutcome recordTransportNotReleased writePayload finishRedirect confirmV3ResponseDelivery writeV3Response WriteAction")
+		"SignReceipt EmitBatch RecordPrescanned buildReceipt confirmTransportReceipt recordTransportOutcome recordTransportNotReleased writePayload finishRedirect confirmV3ResponseDelivery writeV3Response WriteAction WriteAdmissionBatch")
 
 type receiptProducerAttribution struct {
 	Fields string `json:"fields"`

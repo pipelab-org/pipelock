@@ -1773,10 +1773,16 @@ func newInterceptHandler(
 				// Under require_receipts every allow must be durably recorded
 				// before forwarding; nothing has been written to w yet.
 				var issuerAllowErr error
-				for _, allowance := range allowances {
-					for _, pattern := range allowance.Patterns {
-						if err := ic.Proxy.recordIssuerCookieAllow(ic.Config, actx, pattern, allowance.Name, targetURL, ic.RequestID, ic.Agent, r.Method, ic.receiptShard); err != nil && issuerAllowErr == nil {
-							issuerAllowErr = err
+				if ic.Proxy != nil && ic.Proxy.receiptV3 != nil {
+					issuerAllowErr = ic.Proxy.recordV3IssuerCookieAllows(ic.Config, actx, allowances, receipt.EmitOpts{
+						Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent,
+					})
+				} else {
+					for _, allowance := range allowances {
+						for _, pattern := range allowance.Patterns {
+							if err := ic.Proxy.recordIssuerCookieAllow(ic.Config, actx, pattern, allowance.Name, targetURL, ic.RequestID, ic.Agent, r.Method, ic.receiptShard); err != nil && issuerAllowErr == nil {
+								issuerAllowErr = err
+							}
 						}
 					}
 				}

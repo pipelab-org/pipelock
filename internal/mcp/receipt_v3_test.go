@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -471,6 +472,47 @@ func TestMCPV3DeferredSendUsesHoldAndIntent(t *testing.T) {
 			if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil ||
 				*result.Counts.EffectsCompleted != wantCompleted {
 				t.Fatalf("held call did not settle: %+v (%v)", result, err)
+			}
+		})
+	}
+}
+
+func TestMCPV3ConfirmsGETSubscriptionBeforeContact(t *testing.T) {
+	for _, stage := range []string{"healthy", "closed"} {
+		t.Run(stage, func(t *testing.T) {
+			dir, writer, verifyOpts := newMCPV3Stream(t, deferred.SurfaceMCPHTTPUpstream)
+			if stage == "closed" {
+				if err := writer.Close(t.Context(), nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var contacts atomic.Int32
+			var confirmed atomic.Bool
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				contacts.Add(1)
+				result, err := v3.VerifyPaths(req.Context(), []string{dir}, verifyOpts)
+				confirmed.Store(err == nil && result.Counts.EffectsUnknown != nil && *result.Counts.EffectsUnknown == 1)
+				w.WriteHeader(http.StatusMethodNotAllowed)
+			}))
+			t.Cleanup(srv.Close)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			opts := MCPProxyOpts{
+				ReceiptV3: writer, RequireReceipts: true,
+				Transport: deferred.SurfaceMCPHTTPUpstream, AuthorityDestination: srv.URL,
+			}
+			var wg sync.WaitGroup
+			startGETStream(ctx, transport.NewHTTPClient(srv.URL, nil), &syncWriter{w: io.Discard},
+				&syncWriter{w: io.Discard}, opts, NewRequestTracker(), &wg)
+			wg.Wait()
+			if stage == "closed" {
+				if contacts.Load() != 0 {
+					t.Fatal("upstream received a subscription with no confirmed receipt")
+				}
+				return
+			}
+			if contacts.Load() != 1 || !confirmed.Load() {
+				t.Fatalf("subscription contact lacked prior intent: contacts=%d confirmed=%v", contacts.Load(), confirmed.Load())
 			}
 		})
 	}

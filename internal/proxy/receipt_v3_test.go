@@ -27,6 +27,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -441,5 +442,32 @@ func TestV3InterceptIntentPrecedesRoundTrip(t *testing.T) {
 				t.Fatalf("two intercepted HTTP outcomes required: %+v (%v)", result, err)
 			}
 		})
+	}
+}
+
+func TestV3ExceptionAllowanceReceipts(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, "intercept")
+	cfg := p.CurrentConfig()
+	decision := receipt.EmitOpts{Method: http.MethodGet, Target: "https://api.vendor.example", Transport: "intercept"}
+	first := scanner.CredentialAudienceAllow{PatternName: "first", Surface: "header", Destination: "api.vendor.example"}
+	second := first
+	second.PatternName = "second"
+	ctx := audit.NewRequestLogContext("request")
+	if err := p.recordV3CredentialAudienceAllows(cfg, ctx, []scanner.CredentialAudienceAllow{first, second, first}, decision); err != nil {
+		t.Fatal(err)
+	}
+	cookies := []issuerCookieAllowance{{Name: "example", Patterns: []string{"first", "second"}}}
+	if err := p.recordV3IssuerCookieAllows(cfg, ctx, cookies, decision); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Verdict != "VALID" || result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 4 {
+		t.Fatalf("expected one admission per distinct allowance: %+v (%v)", result, err)
+	}
+	if err := p.recordV3IssuerCookieAllows(cfg, ctx, cookies, decision); err == nil {
+		t.Fatal("required allowances accepted a closed writer")
 	}
 }

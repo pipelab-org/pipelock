@@ -389,3 +389,34 @@ func TestStreamWriterRefusesUnscannedCallerIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestStreamWriterAdmissionBatchReservesExactCount(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	w := requireWriter(t, opts, localWriterStorage())
+	ctx := t.Context()
+	policy := CapturePolicy(Digest(nil))
+	first, second := writerTestIntent("first"), writerTestIntent("second")
+	if err := w.WriteAdmissionBatch(ctx, []Action{first, first}, policy); err == nil || w.active.confirmed.Seq != 0 {
+		t.Fatalf("invalid batch advanced the confirmed position: seq=%d error=%v", w.active.confirmed.Seq, err)
+	}
+	if err := w.WriteAdmissionBatch(ctx, []Action{first, second}, policy); err != nil {
+		t.Fatal(err)
+	}
+	if w.active.confirmed.Seq != 2 {
+		t.Fatalf("confirmed sequence %d, want 2", w.active.confirmed.Seq)
+	}
+	public := opts.SigningKey.Public().(ed25519.PublicKey)
+	if result := verifyWritten(t, opts.Dir, public); writerTestCount(t, result, "outcome_unknown") != 2 {
+		t.Fatalf("batch records were not verified before return: %+v", result)
+	}
+	failure := errors.New("batch flush failed")
+	w.active.file = errorWriterFile{writerFile: w.active.file, syncErr: failure}
+	third, fourth := writerTestIntent("third"), writerTestIntent("fourth")
+	if err := w.WriteAdmissionBatch(ctx, []Action{third, fourth}, policy); !errors.Is(err, failure) {
+		t.Fatalf("batch reported success after a failed flush: %v", err)
+	}
+	result := verifyWritten(t, opts.Dir, public)
+	if writerTestCount(t, result, "outcome_unknown") != 2 || writerTestCount(t, result, "not_released") != 2 {
+		t.Fatalf("batch refusal did not settle both unconfirmed allowances: %+v", result)
+	}
+}

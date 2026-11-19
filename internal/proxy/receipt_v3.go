@@ -49,7 +49,10 @@ func prepareV3TransportReceipt(cfg *config.Config, opts receipt.EmitOpts) v3Tran
 	}
 	action.SetAttribution(opts)
 	// cfg is the request snapshot retained by the effect producer.
-	digest := cfg.CanonicalPolicyHash()
+	digest := opts.PolicyHash
+	if cfg != nil {
+		digest = cfg.CanonicalPolicyHash()
+	}
 	if digest != "" && !strings.HasPrefix(digest, "sha256:") {
 		digest = "sha256:" + digest
 	}
@@ -160,4 +163,31 @@ func deliveryReceiptOpts(send receipt.EmitOpts) receipt.EmitOpts {
 	opts.ActionID, opts.ParentActionID = receipt.NewActionID(), send.ActionID
 	opts.Layer, opts.Pattern, opts.Verdict = "", "", config.ActionAllow
 	return opts
+}
+
+func (p *Proxy) recordV3ExceptionAllows(cfg *config.Config, opts []receipt.EmitOpts) error {
+	if len(opts) == 0 {
+		return nil
+	}
+	required := cfg != nil && cfg.FlightRecorder.RequireReceipts
+	actions := make([]v3.Action, 0, len(opts))
+	var policy v3.PolicySnapshot
+	for _, emit := range opts {
+		tx := prepareV3TransportReceipt(cfg, emit)
+		action := tx.action
+		action.EffectBoundary, action.EffectRelation, action.Phase = boundaryUpstreamSend, "before", "decision"
+		if required {
+			attempt := int64(1)
+			action.Phase, action.Attempt = "intent", &attempt
+		}
+		actions = append(actions, action)
+		policy = tx.policy
+	}
+	if err := p.receiptV3.WriteAdmissionBatch(context.Background(), actions, policy); err != nil {
+		p.logReceiptEmissionFailure(opts[0], err)
+		if required {
+			return err
+		}
+	}
+	return nil
 }

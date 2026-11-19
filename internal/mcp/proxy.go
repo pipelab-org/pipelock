@@ -1388,7 +1388,7 @@ func emitMCPToolScanReceipt(
 			Pattern:   pattern,
 			Severity:  config.SeverityHigh,
 		})),
-		RequireReceipt: opts.requireReceipts() && verdict != config.ActionBlock,
+		v3Boundary: mcpV3Delivery, RequireReceipt: opts.requireReceipts() && verdict != config.ActionBlock,
 	})
 	if err != nil {
 		logReceiptEmitFailure(logW, err, opts.requireReceipts(), verdict)

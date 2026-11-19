@@ -60,6 +60,80 @@ func (w *StreamWriter) WriteAction(ctx context.Context, action Action, policy Po
 	return nil
 }
 
+// WriteAdmissionBatch reserves consecutive positions for the actions and
+// confirms all of them together before the caller can attempt the effect.
+func (w *StreamWriter) WriteAdmissionBatch(ctx context.Context, actions []Action, policy PolicySnapshot) error {
+	if len(actions) == 0 {
+		return nil
+	}
+	if w == nil {
+		return errors.New("receipt writer is unavailable")
+	}
+	if err := w.acquire(ctx); err != nil {
+		return err
+	}
+	defer w.release()
+
+	seen := make(map[string]struct{}, len(actions))
+	for _, action := range actions {
+		if (action.Phase != phaseIntent && action.Phase != phaseDecision) ||
+			!releases(action.Verdict) || !actionShape(action, w.open.Coverage.ReceiptsRequired) {
+			return errors.New("receipt batch requires admission actions")
+		}
+		if _, duplicate := seen[action.ActionID]; duplicate {
+			return errors.New("receipt batch repeats an action ID")
+		}
+		seen[action.ActionID] = struct{}{}
+	}
+	if err := w.prepareAppend(ctx); err != nil {
+		return err
+	}
+	if int64(len(actions)) > maxInteger-2-w.active.confirmed.Seq {
+		if err := w.rollover(ctx); err != nil {
+			return err
+		}
+	}
+	first := w.active.confirmed.Seq + 1
+	tip := w.active.confirmed
+	var batch []byte
+	for _, action := range actions {
+		action.Policy = policy.ActionPolicy()
+		tip.Seq++
+		line, pos, err := w.encode(ctx, w.common(kindAction, w.active.id, tip.Record, tip.Seq), action)
+		if err != nil {
+			return err
+		}
+		if len(line) > w.fileBytes-maxLineBytes-len(batch) {
+			return errors.New("receipt admission batch exceeds the segment limit")
+		}
+		batch = append(batch, line...)
+		tip.Record = pos
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := w.persist(kindAction, batch, first); err != nil {
+		w.durability.FsyncErrorsGated++
+		w.retire(endedWriteError)
+		for _, action := range actions {
+			action.Policy = policy.ActionPolicy()
+			w.queueActionRepair(action, false)
+		}
+		return w.tryContinueAfterWriteError(ctx, err)
+	}
+	w.active.confirmed = tip
+	if err := ctx.Err(); err != nil {
+		for _, action := range actions {
+			if action.Phase == phaseIntent {
+				action.Policy = policy.ActionPolicy()
+				w.queueActionRepair(action, true)
+			}
+		}
+		return errors.Join(err, w.settleActionRepairs(ctx))
+	}
+	return nil
+}
+
 func actionGatesEffect(action Action) bool {
 	return action.Phase == phaseHold || action.Phase == phaseIntent ||
 		action.Phase == phaseResolution && action.Verdict == verdictAllow

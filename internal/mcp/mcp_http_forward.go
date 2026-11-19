@@ -684,6 +684,7 @@ func RunHTTPProxy(
 
 		requestHeaders, headerErr := bridgeHeaders.prepare(ctx, decision.ForwardMessage)
 		if headerErr != nil {
+			decision.v3Upstream.finish(fwdOpts, safeLogW, false, nil)
 			outcome := mcpLocalRefusedOutcome(tracker, frame.ID, decision)
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: header contract refused: %q\n", headerErr.Error())
 			denialAudit, message, reason := bridgeHeaderRefusal(headerErr)
@@ -703,6 +704,7 @@ func RunHTTPProxy(
 		unlockInventory := func() {}
 		if frame.Method == "tools/list" {
 			if lockErr := contractState.contractMu.Lock(ctx); lockErr != nil {
+				decision.v3Upstream.finish(fwdOpts, safeLogW, false, nil)
 				emitPendingMCPInputReceipt(decision.pendingReceipt)
 				// Only cancellation fails this wait. Close the request's
 				// tracked outcome and leave through the shared shutdown path,
