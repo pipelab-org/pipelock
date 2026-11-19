@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 )
@@ -173,8 +174,24 @@ func startGETStream(
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream resuming: kill switch cleared\n")
 			}
 
+			admission, admitErr := admitDurableTransport(opts, http.MethodGet, opts.AuthorityDestination)
+			if admitErr != nil {
+				logReceiptEmitFailure(safeLogW, admitErr, true, config.ActionForward)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(backoff):
+				}
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+				continue
+			}
+
 			reader, err := httpClient.OpenGETStream(ctx)
 			if err != nil {
+				warnTransportAdmission(safeLogW, opts, admission, "upstream_error")
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream: %v\n", err)
 				// Permanent error - server does not support GET streams.
 				if errors.Is(err, transport.ErrStreamNotSupported) {
@@ -203,7 +220,11 @@ func startGETStream(
 					// A subscription has no pending JSON-RPC request identity.
 					// Record its interrupted transport separately from outcomes
 					// for complete messages already delivered on the stream.
-					emitMCPStandaloneStreamReceipt(opts, safeLogW, mcpStreamReceipt(opts, http.MethodGet), "200", httpstream.Incomplete)
+					streamReceipt := admission
+					if streamReceipt.ActionID == "" {
+						streamReceipt = mcpStreamReceipt(opts, http.MethodGet)
+					}
+					emitMCPStandaloneStreamReceipt(opts, safeLogW, streamReceipt, "200", httpstream.Incomplete)
 				}
 				logMCPIncompleteResponse(safeLogW, opts, http.MethodGet, scanErr)
 			}

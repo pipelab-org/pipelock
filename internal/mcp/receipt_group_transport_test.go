@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -531,6 +532,96 @@ func TestMCPWebSocketOutcomeKeepsAdmissionShard(t *testing.T) {
 	assertMCPTransportReceiptShard(t, dir, shards, actionID)
 }
 
+func TestRequiredBridgeGETAdmitsBeforeOpen(t *testing.T) {
+	opts, rec, dir, _ := newMCPTransportReceiptGroup(t)
+	opts.Scanner = testScannerForHTTP(t)
+	opts.Transport = "mcp_http_upstream"
+	var opened atomic.Bool
+	var early error
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		if !bridgeGETAdmissionRecorded(t, dir) {
+			early = errors.New("upstream GET opened before its durable transport admission")
+		}
+		opened.Store(true)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	opts.AuthorityDestination = srv.URL
+	ctx, cancel := context.WithCancel(t.Context())
+	var wg sync.WaitGroup
+	var stderr lockedHTTPBuffer
+	startGETStream(ctx, transport.NewHTTPClient(srv.URL, nil), &syncWriter{w: io.Discard}, &syncWriter{w: &stderr}, opts, NewRequestTracker(), &wg)
+	testwait.For(t, 3*time.Second, opened.Load, "required GET opened")
+	cancel()
+	wg.Wait()
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if early != nil {
+		t.Fatal(early)
+	}
+}
+
+func TestRequiredBridgeGETStaysClosedWhenAdmissionFails(t *testing.T) {
+	var gets atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			gets.Add(1)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	opts, rec, _, _ := newMCPTransportReceiptGroup(t)
+	opts.Scanner = testScannerForHTTP(t)
+	opts.Transport = "mcp_http_upstream"
+	opts.AuthorityDestination = srv.URL
+	rec.SetReceiptAppendGuardForTest(func(recorder.Entry) error {
+		return errors.New("injected admission failure")
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	var wg sync.WaitGroup
+	var stderr lockedHTTPBuffer
+	startGETStream(ctx, transport.NewHTTPClient(srv.URL, nil), &syncWriter{w: io.Discard}, &syncWriter{w: &stderr}, opts, NewRequestTracker(), &wg)
+	testwait.For(t, 3*time.Second, func() bool { return stderr.contains("receipt emission failed") }, "admission refusal")
+	cancel()
+	wg.Wait()
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if gets.Load() != 0 {
+		t.Fatalf("upstream GETs = %d, want 0 when the transport admission cannot be recorded", gets.Load())
+	}
+}
+
+func bridgeGETAdmissionRecorded(t *testing.T, dir string) bool {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(dir, "evidence-*.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range paths {
+		entries, err := recorder.ReadEntries(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if entry.Type == "action_receipt" &&
+				bytes.Contains(entry.RawDetail, []byte(`"layer":"mcp_transport_admission"`)) &&
+				bytes.Contains(entry.RawDetail, []byte(`"method":"GET"`)) &&
+				bytes.Contains(entry.RawDetail, []byte(`"verdict":"forward"`)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func TestMCPGETSSEIncompleteOutcomeUsesSelectedShard(t *testing.T) {
 	const notification = "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/updated\"}\n\n"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -554,7 +645,7 @@ func TestMCPGETSSEIncompleteOutcomeUsesSelectedShard(t *testing.T) {
 	if err := rec.Close(); err != nil {
 		t.Fatal(err)
 	}
-	assertMCPStandaloneDiagnosticShard(t, dir, shards, 1)
+	assertMCPStandaloneDiagnosticShard(t, dir, shards, 1, 2)
 }
 
 func TestMCPWebSocketStandaloneFailureUsesSelectedShard(t *testing.T) {
@@ -584,10 +675,10 @@ func TestMCPWebSocketStandaloneFailureUsesSelectedShard(t *testing.T) {
 	if err := rec.Close(); err != nil {
 		t.Fatal(err)
 	}
-	assertMCPStandaloneDiagnosticShard(t, dir, shards, 1)
+	assertMCPStandaloneDiagnosticShard(t, dir, shards, 1, 1)
 }
 
-func assertMCPStandaloneDiagnosticShard(t *testing.T, dir string, shards []receipt.ReceiptGroupShard, selected int) {
+func assertMCPStandaloneDiagnosticShard(t *testing.T, dir string, shards []receipt.ReceiptGroupShard, selected, wantV2 int) {
 	t.Helper()
 	for i, shard := range shards {
 		paths, err := filepath.Glob(filepath.Join(dir, "evidence-"+shard.SessionID+"-*.jsonl"))
@@ -598,7 +689,7 @@ func assertMCPStandaloneDiagnosticShard(t *testing.T, dir string, shards []recei
 		if err != nil {
 			t.Fatal(err)
 		}
-		var diagnostic, v2 int
+		var diagnostic, admission, v2 int
 		for _, entry := range entries {
 			if entry.Type == "action_receipt" && bytes.Contains(entry.RawDetail, []byte("reason=incomplete")) {
 				if bytes.Contains(entry.RawDetail, []byte(`"decision_phase":`)) || !bytes.Contains(entry.RawDetail, []byte(`"verdict":"warn"`)) {
@@ -606,15 +697,18 @@ func assertMCPStandaloneDiagnosticShard(t *testing.T, dir string, shards []recei
 				}
 				diagnostic++
 			}
+			if entry.Type == "action_receipt" && bytes.Contains(entry.RawDetail, []byte(`"layer":"mcp_transport_admission"`)) {
+				admission++
+			}
 			if entry.Type == "evidence_receipt" {
 				v2++
 			}
 		}
-		if i == selected && (diagnostic != 1 || v2 != 1) {
-			t.Fatalf("selected shard %d: diagnostic=%d v2=%d, want paired 1/1", i, diagnostic, v2)
+		if i == selected && (diagnostic != 1 || v2 != wantV2 || (wantV2 > 1 && admission != 1) || (wantV2 == 1 && admission != 0)) {
+			t.Fatalf("selected shard %d: diagnostic=%d admission=%d v2=%d, want 1 and v2=%d", i, diagnostic, admission, v2, wantV2)
 		}
-		if i != selected && (diagnostic != 0 || v2 != 0) {
-			t.Fatalf("other shard %d: diagnostic=%d v2=%d, want 0/0", i, diagnostic, v2)
+		if i != selected && (diagnostic != 0 || v2 != 0 || admission != 0) {
+			t.Fatalf("other shard %d: diagnostic=%d admission=%d v2=%d, want 0/0/0", i, diagnostic, admission, v2)
 		}
 	}
 }
