@@ -77,8 +77,8 @@ func TestEmitterCloseNativeAELForRotation(t *testing.T) {
 	if err := bareEmitter.AbortNativeAEL(); err != nil {
 		t.Fatalf("bare AbortNativeAEL: %v", err)
 	}
-	if err := bareEmitter.emitNativeAEL(ActionRecord{}, nil, false); err != nil {
-		t.Fatalf("emitNativeAEL without native emitter: %v", err)
+	if record, err := bareEmitter.prepareNativeAEL(ActionRecord{}, nil, nil); record != nil || err != nil {
+		t.Fatalf("prepareNativeAEL without native emitter: record=%v error=%v", record, err)
 	}
 
 	dir := t.TempDir()

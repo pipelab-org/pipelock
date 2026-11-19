@@ -218,6 +218,7 @@ type Emitter struct {
 
 // EmitterConfig holds the configuration for creating an Emitter.
 type EmitterConfig struct {
+	NativeCapacity *aelpkg.Capacity
 	// StartupVerification reports and cancels successor history verification.
 	// It is not retained by receipt emission or by a later startup.
 	StartupVerification verification.Options
@@ -359,7 +360,7 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 		e.linkPredecessor()
 		e.chainMu.Unlock()
 	}
-	e.nativeAEL = aelpkg.NewEmitter(cfg.Recorder, cfg.PrivKey, runNonce, cfg.HeartbeatSeconds)
+	e.nativeAEL = aelpkg.NewEmitter(cfg.Recorder, cfg.PrivKey, runNonce, cfg.HeartbeatSeconds, cfg.NativeCapacity)
 	return e
 }
 
@@ -592,6 +593,7 @@ func (e *Emitter) SignerKeyHex() string {
 
 // EmitOpts holds the per-decision context for emitting a receipt.
 type EmitOpts struct {
+	NativeLease            *aelpkg.Lease
 	promptInjectionModeSet bool
 	promptInjectionMode    string
 	// ContentScanContext can cancel an ordinary action's content inspection.
@@ -790,6 +792,25 @@ func (e *Emitter) EmitSessionClose(closeReason string) error {
 			Close: &SessionClose{CloseReason: closeReason},
 		}, nil
 	})
+}
+
+// NativeCapacity returns the coordinator for this emitter's native stream.
+func (e *Emitter) NativeCapacity() *aelpkg.Capacity {
+	if e == nil {
+		return nil
+	}
+	return e.nativeAEL.Capacity()
+}
+
+// ReserveNativeRecords holds the maximum encoded size of each record the
+// mediated unit can owe. NewActionID returns canonical UUIDv7 text and
+// ActionUnclassified is the longest valid class.
+func (e *Emitter) ReserveNativeRecords(records int) (*aelpkg.Lease, error) {
+	if e == nil {
+		return nil, nil
+	}
+	const uuidTextBytes = len("00000000-0000-7000-8000-000000000000")
+	return e.nativeAEL.Reserve(records, aelpkg.ActivityRecordLimit(len(ActionUnclassified), uuidTextBytes))
 }
 
 // Emit creates, signs, and records an action receipt for a proxy decision.
@@ -1003,6 +1024,18 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 
 	openControl := isSessionOpenControl(sessionControl)
 	closeControl := isSessionCloseControl(sessionControl)
+	native, prepareErr := e.prepareNativeAEL(ar, sessionControl, opts.NativeLease)
+	if errors.Is(prepareErr, aelpkg.ErrCapacity) || errors.Is(prepareErr, aelpkg.ErrRecordTooLarge) || errors.Is(prepareErr, aelpkg.ErrInvalidLease) {
+		e.recordFailure(FailReasonAEL)
+		return fmt.Errorf("emitting native AEL record: %w", prepareErr)
+	}
+	defer native.Cancel()
+	appendNative := func(durable bool) error {
+		if prepareErr != nil {
+			return prepareErr
+		}
+		return native.Append(durable)
+	}
 
 	entry := recorder.Entry{
 		SessionID: e.session,
@@ -1050,7 +1083,7 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		pending := deferredDurableEmission{rcpt: rcpt, ticket: ticket}
 		// The AEL record is appended in the same order as its receipt; its
 		// sync is reserved here and confirmed with the receipt's.
-		if aelErr := e.emitNativeAEL(ar, nil, false); aelErr != nil {
+		if aelErr := appendNative(false); aelErr != nil {
 			pending.aelErr = fmt.Errorf("emitting native AEL record: %w", aelErr)
 		} else if e.nativeAEL != nil && e.sessionOpenEmitted {
 			pending.waitAEL, aelErr = e.nativeAEL.ReserveDurability()
@@ -1117,7 +1150,7 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		e.linked = true
 		e.linkPredecessor()
 	}
-	if err := e.emitNativeAEL(ar, sessionControl, durable); err != nil {
+	if err := appendNative(durable); err != nil {
 		e.recordFailure(FailReasonAEL)
 		emitErr := fmt.Errorf("emitting native AEL record: %w", err)
 		// The receipt is already persisted and its chain position consumed. Do not
@@ -1225,36 +1258,24 @@ func mergePostureAvailabilityExtension(ext json.RawMessage, value string) (json.
 	return merged, nil
 }
 
-func (e *Emitter) emitNativeAEL(ar ActionRecord, control *SessionControl, durable bool) error {
+func (e *Emitter) prepareNativeAEL(ar ActionRecord, control *SessionControl, lease *aelpkg.Lease) (*aelpkg.PreparedRecord, error) {
 	if e.nativeAEL == nil {
-		return nil
-	}
-	ensureOpen := func() error {
-		if e.nativeAEL.Opened() {
-			return nil
-		}
-		return e.nativeAEL.EmitOpen()
+		return nil, nil
 	}
 	if control != nil {
 		switch control.Kind {
 		case SessionControlOpen:
-			return e.nativeAEL.EmitOpen()
+			return e.nativeAEL.PrepareOpen()
 		case SessionControlHeartbeat:
 			if !e.sessionOpenEmitted {
-				return nil
+				return nil, nil
 			}
-			if err := ensureOpen(); err != nil {
-				return err
-			}
-			return e.nativeAEL.EmitHeartbeat()
+			return e.nativeAEL.PrepareHeartbeat()
 		case SessionControlClose:
 			if !e.sessionOpenEmitted {
-				return nil
+				return nil, nil
 			}
-			if err := ensureOpen(); err != nil {
-				return err
-			}
-			return e.nativeAEL.EmitClose()
+			return e.nativeAEL.PrepareClose()
 		}
 	}
 	// Receipt emitters are also used directly by compatibility tools and unit
@@ -1262,10 +1283,7 @@ func (e *Emitter) emitNativeAEL(ar ActionRecord, control *SessionControl, durabl
 	// only for a run with an explicit open record; production runtimes always
 	// open the session before mediating traffic.
 	if !e.sessionOpenEmitted {
-		return nil
-	}
-	if err := ensureOpen(); err != nil {
-		return err
+		return nil, nil
 	}
 	direction := "internal"
 	switch ar.ActionType {
@@ -1274,11 +1292,11 @@ func (e *Emitter) emitNativeAEL(ar ActionRecord, control *SessionControl, durabl
 	case ActionWrite, ActionDelegate, ActionSpend, ActionCommit, ActionActuate:
 		direction = "out"
 	}
-	return e.nativeAEL.EmitActivity(aelpkg.Activity{
+	return e.nativeAEL.PrepareActivity(aelpkg.Activity{
 		Class:     string(ar.ActionType),
 		ID:        ar.ActionID,
 		Direction: direction,
-	}, durable)
+	}, lease)
 }
 
 // CloseNativeAEL closes this emitter's native AEL run when the proxy replaces

@@ -29,7 +29,8 @@ const (
 	maxVerifyStreamBytes = 256 << 20
 )
 
-var errAELStreamTooLarge = errors.New("native AEL stream exceeds 256 MiB")
+// ErrStreamTooLarge identifies a native stream above the verification ceiling.
+var ErrStreamTooLarge = errors.New("native AEL stream exceeds 256 MiB")
 
 // VerifiedHead is the final signed native AEL record, including the close.
 type VerifiedHead struct {
@@ -95,7 +96,7 @@ func verifyRunWithOptions(recorderDir, run, signerHex string, requireClose bool,
 	}
 	defer func() { _ = f.Close() }()
 	if before.Size() > maxVerifyStreamBytes {
-		return VerifiedHead{}, errAELStreamTooLarge
+		return VerifiedHead{}, ErrStreamTooLarge
 	}
 	r := bufio.NewReaderSize(f, maxVerifyRecordBytes)
 	prev := zeroHash
@@ -112,7 +113,7 @@ func verifyRunWithOptions(recorderDir, run, signerHex string, requireClose bool,
 				return VerifiedHead{}, err
 			}
 		}
-		if errors.Is(readErr, errAELStreamTooLarge) {
+		if errors.Is(readErr, ErrStreamTooLarge) {
 			return VerifiedHead{}, readErr
 		}
 		if errors.Is(readErr, bufio.ErrBufferFull) {
@@ -215,7 +216,7 @@ func verifyRunRecord(line []byte, state runRecordState) (runRecordState, error) 
 func readBoundedAELLine(r *bufio.Reader, total *int64, limit int64) ([]byte, error) {
 	line, err := r.ReadSlice('\n')
 	if int64(len(line)) > limit-*total {
-		return nil, errAELStreamTooLarge
+		return nil, ErrStreamTooLarge
 	}
 	*total += int64(len(line))
 	return line, err

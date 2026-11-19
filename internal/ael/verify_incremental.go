@@ -124,7 +124,7 @@ func newRunVerifierWithSnapshot(recorderDir, run, signerHex string, snapshot fun
 	}
 	_ = stream.Close()
 	if streamInfo.Size() > maxVerifyStreamBytes {
-		return nil, errAELStreamTooLarge
+		return nil, ErrStreamTooLarge
 	}
 	verifier.streamInfo = streamInfo
 	if err := verifier.verifyLayout(); err != nil {
@@ -157,8 +157,11 @@ func (v *RunVerifier) Advance(requireClose bool) (VerifiedHead, error) {
 		return v.fail(err)
 	}
 	defer func() { _ = f.Close() }()
-	if !os.SameFile(v.streamInfo, before) || before.Size() > maxVerifyStreamBytes {
-		return v.fail(errors.New("native AEL stream was replaced or exceeds limit"))
+	if before.Size() > maxVerifyStreamBytes {
+		return v.fail(ErrStreamTooLarge)
+	}
+	if !os.SameFile(v.streamInfo, before) {
+		return v.fail(errors.New("native AEL stream was replaced"))
 	}
 	if before.Size() < v.verifiedOffset {
 		return v.fail(errors.New("native AEL stream was truncated after verification"))
@@ -173,7 +176,7 @@ func (v *RunVerifier) Advance(requireClose bool) (VerifiedHead, error) {
 	streamBytes := v.verifiedOffset
 	for {
 		line, readErr := readBoundedAELLine(r, &streamBytes, v.fileOps.maxReadStream)
-		if errors.Is(readErr, errAELStreamTooLarge) {
+		if errors.Is(readErr, ErrStreamTooLarge) {
 			return v.fail(readErr)
 		}
 		if errors.Is(readErr, bufio.ErrBufferFull) {
@@ -252,6 +255,9 @@ func (v *RunVerifier) verifyPrefixUnchanged(complete bool) error {
 		return err
 	}
 	defer func() { _ = f.Close() }()
+	if before.Size() > maxVerifyStreamBytes {
+		return ErrStreamTooLarge
+	}
 	if !os.SameFile(v.streamInfo, before) || before.Size() < v.verifiedOffset || complete && before.Size() != v.verifiedOffset {
 		return errors.New("native AEL stream size or identity changed after verification")
 	}

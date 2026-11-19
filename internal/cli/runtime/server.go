@@ -614,6 +614,12 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		s.recorder = rec
 		var runSession string
 		if cfg.FlightRecorder.ReceiptChainCount() == 1 {
+			if len(recPrivKey) != 0 {
+				if err := verifyPredecessorAEL(rec, startupVerification); err != nil {
+					s.cleanup()
+					return nil, err
+				}
+			}
 			var sessErr error
 			runSession, sessErr = acquireRunSession(rec)
 			if sessErr != nil {

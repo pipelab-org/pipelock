@@ -14,6 +14,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/verification"
 )
 
 // buildServerReceiptShardGroup is the startup construction path below the
@@ -87,6 +88,16 @@ func acquireRunSession(rec *recorder.Recorder) (string, error) {
 		return "", fmt.Errorf("acquiring flight recorder run session: %w", err)
 	}
 	return session, nil
+}
+
+func verifyPredecessorAEL(rec *recorder.Recorder, options verification.Options) error {
+	if rec.IsNop() {
+		return nil
+	}
+	if err := receipt.VerifyPredecessorAEL(rec.Dir(), recorder.DefaultSessionBase, options); err != nil {
+		return fmt.Errorf("preserve the evidence directory and set flight_recorder.dir to a new empty directory before restarting: %w", err)
+	}
+	return nil
 }
 
 // recorderSessionOf returns the session rec is bound to, falling back to the

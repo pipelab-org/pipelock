@@ -82,12 +82,16 @@ type Emitter struct {
 	fileSync       func(*os.File) error
 	syncBatch      *durabilityBatch
 	syncMu         sync.Mutex
+	capacity       *Capacity
+	written        int64
+	reserved       int64
+	prepared       *PreparedRecord
 }
 
 // NewEmitter creates the manifest, published key, and compact record stream.
 // Initialization errors are sticky and surface through the first lifecycle
 // emission so require_receipts can fail closed.
-func NewEmitter(rec *recorder.Recorder, privKey ed25519.PrivateKey, run string, heartbeatSeconds int) *Emitter {
+func NewEmitter(rec *recorder.Recorder, privKey ed25519.PrivateKey, run string, heartbeatSeconds int, capacity ...*Capacity) *Emitter {
 	if rec == nil || len(privKey) != ed25519.PrivateKeySize || !runIDPattern.MatchString(run) || rec.Dir() == "" {
 		return nil
 	}
@@ -101,8 +105,22 @@ func NewEmitter(rec *recorder.Recorder, privKey ed25519.PrivateKey, run string, 
 		heartbeatTolerance = max(1, heartbeatSeconds/10)
 	}
 	e := &Emitter{privKey: privKey, run: run, keyID: hex.EncodeToString(sum[:]), hmax: heartbeatSeconds, htol: heartbeatTolerance, now: time.Now, prev: zeroHash}
+	if len(capacity) != 0 {
+		e.capacity = capacity[0]
+	}
+	if e.capacity == nil {
+		e.capacity = NewCapacity(0)
+	}
 	e.lastErr = e.initializeArtifact(rec.Dir(), pub)
 	return e
+}
+
+// Capacity returns the admission coordinator for this native stream.
+func (e *Emitter) Capacity() *Capacity {
+	if e == nil {
+		return nil
+	}
+	return e.capacity
 }
 
 func (e *Emitter) Dir() string {
@@ -198,17 +216,41 @@ func (e *Emitter) EmitOpen() error      { return e.emit("open", nil, true) }
 func (e *Emitter) EmitHeartbeat() error { return e.emit("heartbeat", nil, false) }
 func (e *Emitter) EmitClose() error     { return e.emit("close", nil, true) }
 
-func (e *Emitter) EmitActivity(activity Activity, durable bool) error {
+func activityFields(activity Activity) (map[string]any, error) {
 	if activity.Class == "" || activity.ID == "" {
-		return errors.New("AEL activity class and id are required")
+		return nil, errors.New("AEL activity class and id are required")
 	}
 	switch activity.Direction {
 	case "in", "out", "internal":
 	default:
-		return fmt.Errorf("invalid AEL activity direction %q", activity.Direction)
+		return nil, fmt.Errorf("invalid AEL activity direction %q", activity.Direction)
 	}
-	return e.emit("activity", map[string]any{"event": map[string]any{"class": activity.Class, "dir": activity.Direction, "id": activity.ID}}, durable)
+	return map[string]any{"event": map[string]any{"class": activity.Class, "dir": activity.Direction, "id": activity.ID}}, nil
 }
+
+// PrepareActivity encodes and reserves a record before its paired receipt is
+// persisted. The receipt writer must either append it or cancel it.
+func (e *Emitter) PrepareActivity(activity Activity, lease *Lease) (*PreparedRecord, error) {
+	fields, err := activityFields(activity)
+	if err != nil {
+		return nil, err
+	}
+	return e.prepare("activity", fields, lease)
+}
+
+func (e *Emitter) EmitActivity(activity Activity, durable bool) error {
+	fields, err := activityFields(activity)
+	if err != nil {
+		return err
+	}
+	return e.emit("activity", fields, durable)
+}
+
+func (e *Emitter) PrepareOpen() (*PreparedRecord, error) { return e.prepare("open", nil, nil) }
+func (e *Emitter) PrepareHeartbeat() (*PreparedRecord, error) {
+	return e.prepare("heartbeat", nil, nil)
+}
+func (e *Emitter) PrepareClose() (*PreparedRecord, error) { return e.prepare("close", nil, nil) }
 
 func (e *Emitter) Opened() bool {
 	if e == nil {
@@ -227,6 +269,9 @@ func (e *Emitter) Abort() error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.prepared != nil {
+		e.prepared.cancelLocked()
+	}
 	if e.file == nil {
 		return nil
 	}
@@ -245,24 +290,57 @@ func (e *Emitter) emit(kind string, extra map[string]any, durable bool) error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	record, err := e.prepareLocked(kind, extra, nil)
+	if err != nil {
+		return err
+	}
+	return record.appendLocked(durable)
+}
+
+// PreparedRecord holds the next encoded record until its receipt is persisted.
+type PreparedRecord struct {
+	emitter   *Emitter
+	lease     *Lease
+	kind      string
+	canonical []byte
+	size      int64
+}
+
+func (e *Emitter) prepare(kind string, extra map[string]any, lease *Lease) (*PreparedRecord, error) {
+	if e == nil {
+		return nil, nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.prepareLocked(kind, extra, lease)
+}
+
+func (e *Emitter) prepareLocked(kind string, extra map[string]any, lease *Lease) (*PreparedRecord, error) {
+	if e.prepared != nil {
+		return nil, errors.New("native AEL stream has a pending record")
+	}
 	if e.lastErr != nil {
-		return fmt.Errorf("native AEL emitter unhealthy: %w", e.lastErr)
+		return nil, fmt.Errorf("native AEL emitter unhealthy: %w", e.lastErr)
 	}
 	if e.closed {
-		return errors.New("native AEL run is closed")
+		return nil, errors.New("native AEL run is closed")
 	}
 	if kind == "open" {
 		if e.opened || e.seq != 0 {
-			return errors.New("native AEL run is already open")
+			return nil, errors.New("native AEL run is already open")
 		}
 	} else if !e.opened {
-		return errors.New("native AEL run is not open")
+		return nil, errors.New("native AEL run is not open")
 	}
-	if e.seq > maxSafeInt {
+	if e.seq >= maxSafeInt {
 		e.lastErr = errors.New("native AEL sequence exceeds the canonical JSON safe-integer limit")
-		return e.lastErr
+		return nil, e.lastErr
 	}
-	payload := map[string]any{"key": e.keyID, "prev": e.prev, "recorder": recorderID, "run": e.run, "seq": e.seq, "ts": e.now().UTC().Format(time.RFC3339Nano), "type": kind, "v": recordVersion}
+	ts := e.now().UTC()
+	if ts.Year() < 0 || ts.Year() > 9999 {
+		return nil, errors.New("native AEL timestamp is outside the RFC3339 year range")
+	}
+	payload := map[string]any{"key": e.keyID, "prev": e.prev, "recorder": recorderID, "run": e.run, "seq": e.seq, "ts": ts.Format(time.RFC3339Nano), "type": kind, "v": recordVersion}
 	for key, value := range extra {
 		payload[key] = value
 	}
@@ -274,8 +352,77 @@ func (e *Emitter) emit(kind string, extra map[string]any, durable bool) error {
 	}
 	canonical, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("marshal canonical AEL payload: %w", err)
+		return nil, fmt.Errorf("marshal canonical AEL payload: %w", err)
 	}
+	size := int64(recordLineSize(len(canonical)))
+	if err := e.checkRecordSpace(kind, size, lease); err != nil {
+		return nil, err
+	}
+	if lease != nil {
+		lease.remaining -= lease.recordLimit
+		e.reserved -= lease.recordLimit
+	}
+	record := &PreparedRecord{emitter: e, lease: lease, kind: kind, canonical: canonical, size: size}
+	e.prepared = record
+	return record, nil
+}
+
+// Cancel discards an unpersisted record and restores its reservation.
+func (r *PreparedRecord) Cancel() {
+	if r == nil {
+		return
+	}
+	e := r.emitter
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	r.cancelLocked()
+}
+
+func (r *PreparedRecord) cancelLocked() {
+	e := r.emitter
+	if e.prepared != r {
+		return
+	}
+	e.prepared = nil
+	if r.settlesAdmission() {
+		e.capacity.settle()
+	} else if r.lease != nil {
+		r.lease.remaining += r.lease.recordLimit
+		e.reserved += r.lease.recordLimit
+	}
+}
+
+func (r *PreparedRecord) settlesAdmission() bool {
+	if r.lease != nil {
+		return r.lease.released
+	}
+	return r.kind != "close"
+}
+
+func (r *PreparedRecord) Append(durable bool) error {
+	if r == nil {
+		return nil
+	}
+	e := r.emitter
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return r.appendLocked(durable)
+}
+
+func (r *PreparedRecord) appendLocked(durable bool) error {
+	e := r.emitter
+	if e.prepared != r {
+		return errors.New("native AEL record is no longer pending")
+	}
+	e.prepared = nil
+	if r.settlesAdmission() {
+		defer e.capacity.settle()
+	}
+	if e.closed {
+		return errors.New("native AEL run is closed")
+	}
+	kind := r.kind
+	canonical := r.canonical
 	sig := ed25519.Sign(e.privKey, canonical)
 	line := base64.RawURLEncoding.EncodeToString(canonical) + "." + base64.RawURLEncoding.EncodeToString(sig) + "\n"
 	next := sha256.Sum256(canonical)
@@ -288,7 +435,9 @@ func (e *Emitter) emit(kind string, extra map[string]any, durable bool) error {
 	if kind == "close" {
 		e.closed = true
 	}
-	if _, err = e.file.WriteString(line); err == nil && durable {
+	n, err := e.file.WriteString(line)
+	e.written += int64(n)
+	if err == nil && durable {
 		fn := e.fileSync
 		if fn == nil {
 			err = e.file.Sync()

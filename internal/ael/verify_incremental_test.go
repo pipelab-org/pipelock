@@ -562,7 +562,7 @@ func TestRunVerifierRejectsPostCheckpointTruncationAndOversize(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
-			want: "replaced or exceeds limit",
+			want: "native AEL stream exceeds 256 MiB",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -730,7 +730,7 @@ func TestRunVerifierRejectsStreamGrowthPastConfiguredReadBound(t *testing.T) {
 	if writeErr != nil || closeErr != nil {
 		t.Fatalf("append suffix: write=%v close=%v", writeErr, closeErr)
 	}
-	if _, err := verifier.Advance(false); !errors.Is(err, errAELStreamTooLarge) {
+	if _, err := verifier.Advance(false); !errors.Is(err, ErrStreamTooLarge) {
 		t.Fatalf("stream-bound error=%v", err)
 	}
 }
@@ -822,8 +822,11 @@ func TestNewRunVerifierRejectsOversizedInitialStream(t *testing.T) {
 	if err := os.Truncate(path, maxVerifyStreamBytes+1); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewRunVerifier(dir, incrementalRunID, signer); !errors.Is(err, errAELStreamTooLarge) {
+	if _, err := NewRunVerifier(dir, incrementalRunID, signer); !errors.Is(err, ErrStreamTooLarge) {
 		t.Fatalf("oversized initial stream error=%v", err)
+	}
+	if _, err := VerifyRun(dir, incrementalRunID, signer); !errors.Is(err, ErrStreamTooLarge) {
+		t.Fatalf("oversized full stream error=%v", err)
 	}
 }
 

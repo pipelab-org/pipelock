@@ -59,6 +59,7 @@ import (
 	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/verification"
 )
 
 // reservedTransportHeaders are header names operators must not override via
@@ -1273,6 +1274,11 @@ Key-free evidence capture:
 				defer func() { _ = rec.Close() }()
 				var runSession string
 				if cfg.FlightRecorder.ReceiptChainCount() == 1 {
+					if len(recPrivKey) != 0 {
+						if err := verifyPredecessorAEL(rec, verification.Options{Context: cmd.Context()}); err != nil {
+							return err
+						}
+					}
 					var sessErr error
 					runSession, sessErr = acquireRunSession(rec)
 					if sessErr != nil {

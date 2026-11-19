@@ -51,7 +51,7 @@ func TestReadBoundedAELLineCountsGrowthAcrossRecords(t *testing.T) {
 			}
 			line, err := readBoundedAELLine(r, &total, tc.limit)
 			if tc.fail {
-				if !errors.Is(err, errAELStreamTooLarge) || total != 6 {
+				if !errors.Is(err, ErrStreamTooLarge) || total != 6 {
 					t.Fatalf("growth beyond limit = %q, %v, total=%d", line, err, total)
 				}
 			} else if err != nil || string(line) != "more\n" || total != 11 {
