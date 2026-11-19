@@ -1237,6 +1237,9 @@ Key-free evidence capture:
 			// named agents are configured.
 			dowWiring := buildMCPDoWWiring(cfg, dowAgentName)
 
+			if err := refuseUnwiredReceiptV3(cfg.FlightRecorder); err != nil {
+				return err
+			}
 			var receiptEmitter *receipt.Emitter
 			var v2ReceiptEmitter *proxydecision.Emitter
 			var receiptGroup *mcp.MCPReceiptGroup

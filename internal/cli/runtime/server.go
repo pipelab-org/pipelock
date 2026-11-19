@@ -580,6 +580,9 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	// separate code path (capture.Writer above). This path wires the
 	// YAML-config-driven recorder into the proxy so enforcement decisions
 	// are hash-chained to disk.
+	if err := refuseUnwiredReceiptV3(cfg.FlightRecorder); err != nil {
+		return nil, err
+	}
 	var recPrivKey ed25519.PrivateKey
 	if cfg.FlightRecorder.Enabled && cfg.FlightRecorder.Dir != "" {
 		recCfg := recorder.Config{

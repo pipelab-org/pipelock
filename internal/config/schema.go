@@ -1931,10 +1931,16 @@ type BudgetConfig struct {
 	DoWMinSubjectTrust string `yaml:"dow_min_subject_trust,omitempty"`
 }
 
+const (
+	ReceiptFormatLegacy = "legacy"
+	ReceiptFormatV3     = "v3"
+)
+
 // FlightRecorder configures the tamper-evident evidence recording system.
 type FlightRecorder struct {
 	Enabled                     bool                         `yaml:"enabled"`
 	Dir                         string                       `yaml:"dir"`
+	ReceiptFormat               string                       `yaml:"receipt_format,omitempty" json:"-"`        // omitted follows the evidence directory; restart-only
 	ReceiptChains               int                          `yaml:"receipt_chains" json:"-"`                  // independent signed receipt chains (0=legacy default of 1; restart-only)
 	CheckpointInterval          int                          `yaml:"checkpoint_interval"`                      // entries between signed checkpoints (default 1000)
 	RetentionDays               int                          `yaml:"retention_days"`                           // auto-expire raw sidecars after N days (0=forever)

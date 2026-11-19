@@ -361,6 +361,9 @@ func (e *guardEvidence) activateReceipts(proof guardfs.ExecutionProof) error {
 }
 
 func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, m *metrics.Metrics, stderr io.Writer) (*guardEvidence, error) {
+	if err := refuseUnwiredReceiptV3(cfg.FlightRecorder); err != nil {
+		return nil, fmt.Errorf("guard uses legacy receipts: %w", err)
+	}
 	evidence := &guardEvidence{
 		stop: func() {}, ctx: ctx, heartbeat: cfg.FlightRecorder.HeartbeatIntervalDuration(),
 		stderr: stderr, require: cfg.FlightRecorder.RequireReceipts,
