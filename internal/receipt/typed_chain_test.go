@@ -394,3 +394,61 @@ func TestEvidenceChainPinRejectsMalformedDeclaredKey(t *testing.T) {
 		t.Fatal("empty chain pins nothing")
 	}
 }
+
+func TestReadSessionChainsDiscriminatesFrozenFormats(t *testing.T) {
+	mixed := copyRunChainFixture(t)
+	legacyPath := "../../sdk/conformance/testdata/secret-egress-v1/valid-transformed-intent.json"
+	raw, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bare := t.TempDir()
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err != nil {
+		t.Fatal(err)
+	}
+	bareLine := append([]byte(`{"type":"evidence_receipt","detail":`), compact.Bytes()...)
+	bareLine = append(bareLine, '}', '\n')
+	if err := os.WriteFile(runFile(bare, "example"), bareLine, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	broken := copyRunChainFixture(t)
+	path := runFile(broken, fixtureRun1)
+	valid, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := bytes.Replace(valid, []byte(recorder.GenesisHash), []byte("incorrect"), 1)
+	if bytes.Equal(changed, valid) {
+		t.Fatal("expected recorder genesis to replace")
+	}
+	if err := os.WriteFile(path, changed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, dir, session       string
+		action, evidence, failed bool
+	}{
+		{"mixed recorder", mixed, fixtureRun1, true, true, false},
+		{"bare evidence", bare, "example", false, true, false},
+		{"damaged recorder", broken, fixtureRun1, false, false, true},
+		{"missing session", mixed, "absent", false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			location, err := recorder.ResolveEvidenceLocation(tc.dir, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = recorder.WithSessionHistorySnapshot(location, tc.session, func() error {
+				actions, evidence, err := ReadSessionChains(location, tc.session)
+				if (len(actions) > 0) != tc.action || (len(evidence) > 0) != tc.evidence {
+					t.Fatalf("read %d action and %d evidence receipts: %v", len(actions), len(evidence), err)
+				}
+				return err
+			})
+			if (err != nil) != tc.failed {
+				t.Fatalf("session read error = %v, want failure %t", err, tc.failed)
+			}
+		})
+	}
+}
