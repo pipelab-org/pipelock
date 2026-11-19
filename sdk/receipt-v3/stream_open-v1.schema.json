@@ -14,6 +14,7 @@
           "$ref": "#/$defs/Ruleset"
         },
         "surfaces": {
+          "description": "Check separately that entries are in nondecreasing UTF-8 byte order. Empty arrays and repeated entries are allowed.",
           "items": {
             "minLength": 1,
             "type": "string"
@@ -195,6 +196,7 @@
           "type": "string"
         },
         "instance": {
+          "description": "Enforce x-pipelock-maxBytes separately on the UTF-8 encoding.",
           "maxLength": 128,
           "minLength": 1,
           "type": "string",

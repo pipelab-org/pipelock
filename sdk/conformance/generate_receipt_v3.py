@@ -28,8 +28,10 @@ STRINGS = {
         "format": "date-time",
         "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
     },
-    "target": {"maxLength": LIMITS["target_bytes"], "x-pipelock-maxBytes": LIMITS["target_bytes"]},
-    "instance": {"maxLength": LIMITS["writer_instance_bytes"], "x-pipelock-maxBytes": LIMITS["writer_instance_bytes"]},
+    "target": {"maxLength": LIMITS["target_bytes"], "x-pipelock-maxBytes": LIMITS["target_bytes"],
+                 "description": "Enforce x-pipelock-maxBytes separately on the UTF-8 encoding."},
+    "instance": {"maxLength": LIMITS["writer_instance_bytes"], "x-pipelock-maxBytes": LIMITS["writer_instance_bytes"],
+                 "description": "Enforce x-pipelock-maxBytes separately on the UTF-8 encoding."},
 }
 INTEGERS = {"uint": 0, "positive": 1, "version": 3}
 INITIALISMS = {
@@ -64,6 +66,11 @@ def object_schema(name):
     fields = OBJECTS[name]
     result = {"type": "object", "additionalProperties": False, "minProperties": 1,
               "properties": {key: schema(field["type"], field["required"]) for key, field in fields.items()}}
+    if name == "Coverage":
+        result["properties"]["surfaces"]["description"] = (
+            "Check separately that entries are in nondecreasing UTF-8 byte order. "
+            "Empty arrays and repeated entries are allowed."
+        )
     required = [key for key, field in fields.items() if field["required"]]
     if required:
         result["required"] = required

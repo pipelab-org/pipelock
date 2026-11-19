@@ -881,6 +881,7 @@
       "$ref": "#/$defs/Taint"
     },
     "target": {
+      "description": "Enforce x-pipelock-maxBytes separately on the UTF-8 encoding.",
       "maxLength": 2048,
       "minLength": 1,
       "type": "string",
