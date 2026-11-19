@@ -295,19 +295,28 @@ type fragmentPiece struct {
 	pos               int
 }
 
-// bridgeFragments completes the search over combinations that hold exactly one
-// fixed value. A fixed value cannot carry a client fragment, but the text a
-// detector matches may contain one: a credential with "local" inside it, split
-// as the client text before and after, reassembles only through the receipt's
-// own "local". Combinations of fixed values alone, or with two or more of
-// them, are not searched; they hold no client text or need a secret that
-// contains two separate constants. The search size is the one the client-only
-// search used, lowered to the widest that fits the same limits. It is never a
-// prefix of a larger combination set, and a receipt whose pairs do not fit is
-// refused, which the client-only search would also have done.
+// bridgeFragments completes the search over combinations that hold exactly
+// one fixed value. Two client fragments can surround that value, so a
+// pair-only scan is insufficient whenever two client fragments exist.
 func bridgeFragments(ctx context.Context, det Detector, kind string, cands, bridges []fragmentPiece, maxSize int) (*Finding, error) {
-	size := widestBridgedSearch(cands, bridges, maxSize)
-	if size < 2 {
+	minSize := min(3, len(cands)+1)
+	size := widestBridgedSearch(cands, bridges, max(maxSize, minSize))
+	if size < minSize && minSize == 3 {
+		// At size three every order is tested. Two occurrences of each
+		// client text retain every possible pair, including equal pieces.
+		// Preserve the original positions and paths for diagnostics.
+		once := make(map[string]int, len(cands))
+		compact := make([]fragmentPiece, 0, len(cands))
+		for _, part := range cands {
+			if once[part.text] < 2 {
+				compact = append(compact, part)
+				once[part.text]++
+			}
+		}
+		cands = compact
+		size = widestBridgedSearch(cands, bridges, minSize)
+	}
+	if size < minSize {
 		return nil, &RejectionError{Kind: kind, View: ViewBudget, Reason: fmt.Sprintf("%d content atoms and %d fixed values exceed the reconstruction work bound", len(cands), len(bridges))}
 	}
 	var b strings.Builder

@@ -185,23 +185,16 @@ func TestBridgedSearchStaysInsideTheWorkBound(t *testing.T) {
 	fields := map[string]Class{"f": Content, "f[]": Content}
 	base := &Producer{schema: &Schema{Kind: "test.fixed_bridge_budget", Fields: fields}}
 	clean := func(_ context.Context, _ string) scanner.TextDLPResult { return scanner.TextDLPResult{Clean: true} }
-	t.Run("search narrows to the widest size that fits", func(t *testing.T) {
+	t.Run("unavailable three-part bridges refuse the receipt", func(t *testing.T) {
 		values := []string{"a0", "a1", "a2", long}
 		p, err := base.WithFixedValues(map[string][]string{"f[]": {long}}).Project(mustJSON(t, map[string]any{"f": values}))
 		if err != nil {
 			t.Fatal(err)
 		}
-		var longest int
-		det := func(_ context.Context, text string) scanner.TextDLPResult {
-			longest = max(longest, len(text))
-			return clean(nil, text)
-		}
-		rep, err := Scan(t.Context(), det, p)
-		if err != nil || !rep.Clean() {
-			t.Fatalf("report %+v, err %v", rep, err)
-		}
-		if longest < len(long) {
-			t.Fatalf("bridged pairs were not searched: longest text %d", longest)
+		_, err = Scan(t.Context(), clean, p)
+		var rej *RejectionError
+		if !errors.As(err, &rej) || rej.View != ViewBudget {
+			t.Fatalf("err = %v, want a bridge budget refusal", err)
 		}
 	})
 	t.Run("pairs that cannot fit refuse the receipt", func(t *testing.T) {

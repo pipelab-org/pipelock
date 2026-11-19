@@ -59,7 +59,7 @@ func TestActionReceiptFragmentCandidates(t *testing.T) {
 			candidates = append(candidates, a.Field)
 		}
 	}
-	// A standard method is an enum value, not a candidate.
+	// A standard method participates only as a fixed bridge.
 	if len(candidates) != 2 {
 		t.Fatalf("candidates = %v, want policy_hash override and target", candidates)
 	}
@@ -80,7 +80,7 @@ func TestActionReceiptDetectorCallBudget(t *testing.T) {
 			ActionID: NewActionID(), Target: testTarget, Verdict: "allow", Transport: "forward", Method: "GET", RequestID: "req-2743",
 			DecisionPhase: DecisionPhaseIntent, SessionTaintLevel: "trusted", AuthorityKind: "user_broad",
 			TaintDecision: "allow", TaintDecisionReason: "taint_safe_read_only_action",
-		}, 200},
+		}, 210},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw, err := json.Marshal(Receipt{Version: ReceiptVersion, ActionRecord: f.em.contentRecord(tc.opts, ActionRead, SideEffectExternalRead, ReversibilityFull, testConfigHash)})
