@@ -23,7 +23,7 @@ import (
 var receiptEmissionCalls = strings.Fields(
 	"emitReceiptDecision emitAdmittedReceiptDecision emitMCPStandaloneStreamReceipt emitMCPOutcomeReceipt emitMCPToolReceipt " +
 		"EmitDeferredResolutionReceipt emitDeferredResolutionReceipt emitMCPDeferredKillSwitchReceipt confirmMCPResponseEffect " +
-		"confirmHTTPResponseDelivery emitForwardReceipt emitFetchReceipt emitReverseReceipt emitTunnelReceipt emitWSReceipt " +
+		"confirmHTTPResponseDelivery emitForwardReceipt emitFetchReceipt emitReverseReceipt emitStreamReceipt emitTunnelReceipt emitWSReceipt " +
 		"emitRecordedReceipt emitRecordedEffectRefusal emitRecordedUpstreamRefusal emitRequiredReceipt emitRequestPolicyReceipt confirmResponseDecision confirmV3ResponseDecision confirmResponseOrBlock " +
 		"interceptConfirmResponseOrBlock interceptEmitReceiptOrBlock interceptEmitRequiredReceipt interceptEmitOutcomeReceipt " +
 		"emitOutcomeReceipt emitObservedOutcomeReceipt emitOutcomeReceiptWithPattern " +

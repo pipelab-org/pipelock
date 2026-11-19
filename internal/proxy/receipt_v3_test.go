@@ -729,3 +729,45 @@ func TestV3ReverseEnvelopeMatchesSendReceipt(t *testing.T) {
 		t.Fatalf("reverse send and delivery did not verify: %+v (%v)", result, err)
 	}
 }
+
+func TestV3ReverseSSERefusalLeavesHeaderStateUntouched(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportReverse, false, nil)
+	cfg := p.ConfigPtr().Load().Clone()
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.SSEStreaming.Enabled = true
+	cfg.ResponseScanning.SSEStreaming.Action = config.ActionBlock
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	target := &url.URL{Scheme: "https", Host: "upstream.vendor.example"}
+	reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
+	reverse.SetOwnerProxy(p)
+
+	state := &reverseResponseReceiptState{header: make(http.Header)}
+	ctx := context.WithValue(t.Context(), ctxKeyReverseResponseReceipt, state)
+	ctx = context.WithValue(ctx, ctxKeyReverseEnvelopeCfg, cfg)
+	ctx = context.WithValue(ctx, ctxKeyReverseScanner, sc)
+	resp := &http.Response{
+		Request:    httptest.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil),
+		StatusCode: http.StatusOK,
+		Header:     http.Header{headerContentType: []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader("data: \xff\n\n")),
+	}
+	if err := reverse.modifyResponse(resp); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if _, err := io.Copy(io.Discard, resp.Body); !IsSSEStreamFinding(err) {
+		t.Fatalf("stream did not stop on invalid UTF-8: %v", err)
+	}
+	if state.recordedBlockReceiptID != "" {
+		t.Fatal("stream callback modified synchronous refusal header state")
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Verdict != "VALID" || result.Counts.Decisions == nil ||
+		!slices.ContainsFunc(*result.Counts.Decisions, func(count v3.StateCount) bool { return count.State == "blocked" && count.Count == 1 }) {
+		t.Fatalf("stream refusal was not signed: %+v (%v)", result, err)
+	}
+}

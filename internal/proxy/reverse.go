@@ -2566,7 +2566,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		blockreason.SetRecordedReceipt(resp.Header, responseReceiptState.recordedBlockReceiptID)
 		blockreason.SetRecordedReceipt(responseReceiptState.header, responseReceiptState.recordedBlockReceiptID)
 	}()
-	emitReverseReceipt := func(opts receipt.EmitOpts) {
+	emitReverseReceiptWithHeader := func(opts receipt.EmitOpts, responseReceiptState *reverseResponseReceiptState) {
 		if rp.owner != nil && rp.owner.receiptV3 != nil && opts.Verdict == config.ActionBlock {
 			opts.ParentActionID, _ = resp.Request.Context().Value(ctxKeyReverseActionID).(string)
 			if err := rp.owner.recordV3TransportRefusal(resp.Request.Context(), cfg, opts, boundaryDownstreamDelivery); err == nil && responseReceiptState != nil {
@@ -2589,6 +2589,9 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		// than writing a new HTTP block response, so no response header remains
 		// writable here.
 		_ = rp.emitReceipt(opts)
+	}
+	emitReverseReceipt := func(opts receipt.EmitOpts) {
+		emitReverseReceiptWithHeader(opts, responseReceiptState)
 	}
 
 	clientIP, _ := resp.Request.Context().Value(ctxKeyClientIP).(string)
@@ -3276,6 +3279,14 @@ responseScanning:
 				},
 			},
 		}
+		// The stream callback cannot publish a response header, even if it
+		// finishes before modifyResponse returns.
+		emitStreamReceipt := emitReverseReceipt
+		if rp.owner != nil && rp.owner.receiptV3 != nil {
+			emitStreamReceipt = func(opts receipt.EmitOpts) {
+				emitReverseReceiptWithHeader(opts, nil)
+			}
+		}
 		onComplete := func(err error) {
 			// Record the response-taint observation now the async scan is done and
 			// the final finding state is known. OnFinding (warn mode) and an
@@ -3307,7 +3318,7 @@ responseScanning:
 				reason := "response scan failed: " + err.Error()
 				rp.logger.LogError(actx, fmt.Errorf("%s", reason))
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "scan_error")
-				emitReverseReceipt(receipt.EmitOpts{
+				emitStreamReceipt(receipt.EmitOpts{
 					ActionID:  actionID,
 					Verdict:   config.ActionBlock,
 					Layer:     "response_scan_error",
@@ -3345,7 +3356,7 @@ responseScanning:
 			// downstream chain analysis sees a coherent decision graph.
 			rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{sseLayer + ": " + err.Error()}, nil)
 			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, sseLayer)
-			emitReverseReceipt(receipt.EmitOpts{
+			emitStreamReceipt(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     sseLayer,
