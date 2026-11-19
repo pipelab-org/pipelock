@@ -1172,7 +1172,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		} else {
 			err = p.emitRequiredReceipt(withReceiptConfig(admissionReceipt, cfg))
 		}
-		if err != nil && cfg.FlightRecorder.RequireReceipts {
+		if receiptWriteWithholdsEffect(cfg, err) {
 			blockedErr := newReceiptEmissionBlockedRequest(err)
 			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordWSBlocked()
@@ -1194,7 +1194,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		delivery.ActionID = receipt.NewActionID()
 		delivery.ParentActionID = admissionReceipt.ActionID
 		entry, err := p.confirmTransportReceipt(r.Context(), cfg, delivery, boundaryDownstreamDelivery)
-		if err != nil && cfg.FlightRecorder.RequireReceipts {
+		if receiptWriteWithholdsEffect(cfg, err) {
 			blocked := newReceiptEmissionBlockedRequest(err)
 			writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, blocked.layer).WithRequestID(requestID),
 				"WebSocket blocked: "+blocked.reason, http.StatusForbidden)

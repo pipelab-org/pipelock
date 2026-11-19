@@ -6643,7 +6643,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		} else {
 			rcptErr = p.emitRequiredReceipt(withReceiptConfig(fetchAllowReceipt, cfg))
 		}
-		if rcptErr != nil && cfg.FlightRecorder.RequireReceipts {
+		if receiptWriteWithholdsEffect(cfg, rcptErr) {
 			blockedErr := newReceiptEmissionBlockedRequest(rcptErr)
 			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordBlocked(parsed.Hostname(), blockedErr.layer, time.Since(start), agentLabel)

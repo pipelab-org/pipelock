@@ -27,6 +27,10 @@ const (
 	outcomeNotReleased   = "not_released"
 )
 
+// ErrEffectNotReleased means this writer has recorded that the effect was not
+// released. The caller must not release it.
+var ErrEffectNotReleased = errors.New("receipt recorded that the effect was not released")
+
 // WriteAction appends one phase under its decision-time policy. A successful
 // return is the receipt barrier for an intent or a hold. Callers still own
 // the effect and report its observation as a separate phase.
@@ -48,14 +52,15 @@ func (w *StreamWriter) WriteAction(ctx context.Context, action Action, policy Po
 	}
 	if err := w.commit(ctx, kindAction, action); err != nil {
 		if w.previous != nil && w.previous.Ended == endedWriteError {
-			w.queueActionRepair(action, false)
-			return w.tryContinueAfterWriteError(ctx, err)
+			withheld := w.queueActionRepair(action, false)
+			err = w.tryContinueAfterWriteError(ctx, err)
+			return withheldEffect(err, withheld)
 		}
 		return err
 	}
 	if err := ctx.Err(); err != nil && actionGatesEffect(action) {
-		w.queueActionRepair(action, true)
-		return errors.Join(err, w.settleActionRepairs(ctx))
+		withheld := w.queueActionRepair(action, true)
+		return withheldEffect(errors.Join(err, w.settleActionRepairs(ctx)), withheld)
 	}
 	return nil
 }
@@ -115,23 +120,32 @@ func (w *StreamWriter) WriteAdmissionBatch(ctx context.Context, actions []Action
 	if err := w.persist(kindAction, batch, first); err != nil {
 		w.durability.FsyncErrorsGated++
 		w.retire(endedWriteError)
+		withheld := false
 		for _, action := range actions {
 			action.Policy = policy.ActionPolicy()
-			w.queueActionRepair(action, false)
+			withheld = w.queueActionRepair(action, false) || withheld
 		}
-		return w.tryContinueAfterWriteError(ctx, err)
+		return withheldEffect(w.tryContinueAfterWriteError(ctx, err), withheld)
 	}
 	w.active.confirmed = tip
 	if err := ctx.Err(); err != nil {
+		withheld := false
 		for _, action := range actions {
 			if action.Phase == phaseIntent {
 				action.Policy = policy.ActionPolicy()
-				w.queueActionRepair(action, true)
+				withheld = w.queueActionRepair(action, true) || withheld
 			}
 		}
-		return errors.Join(err, w.settleActionRepairs(ctx))
+		return withheldEffect(errors.Join(err, w.settleActionRepairs(ctx)), withheld)
 	}
 	return nil
+}
+
+func withheldEffect(err error, withheld bool) error {
+	if withheld {
+		err = errors.Join(ErrEffectNotReleased, err)
+	}
+	return err
 }
 
 func actionGatesEffect(action Action) bool {
@@ -139,7 +153,8 @@ func actionGatesEffect(action Action) bool {
 		action.Phase == phaseResolution && action.Verdict == verdictAllow
 }
 
-func (w *StreamWriter) queueActionRepair(action Action, confirmed bool) {
+// queueActionRepair reports whether the repair says the effect was not released.
+func (w *StreamWriter) queueActionRepair(action Action, confirmed bool) bool {
 	if !confirmed && actionGatesEffect(action) && w.open.Coverage.ReceiptsRequired {
 		w.durability.DurabilityBlocks++
 	}
@@ -161,7 +176,7 @@ func (w *StreamWriter) queueActionRepair(action Action, confirmed bool) {
 		}
 	case phaseResolution:
 		if action.Verdict != verdictAllow {
-			return
+			return false
 		}
 		source := "durability_failure"
 		if confirmed {
@@ -170,12 +185,15 @@ func (w *StreamWriter) queueActionRepair(action Action, confirmed bool) {
 		action = blockingHoldResolution(action, source, relationAfter, confirmed)
 	case phaseOutcome:
 		if confirmed {
-			return
+			return false
 		}
+		w.repairs = append(w.repairs, action)
+		return false
 	default:
-		return
+		return false
 	}
 	w.repairs = append(w.repairs, action)
+	return true
 }
 
 func blockingHoldResolution(action Action, source, relation string, correction bool) Action {

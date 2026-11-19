@@ -1782,7 +1782,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		} else {
 			err = rp.emitRequiredReceipt(withReceiptConfig(reverseAllowReceipt, cfg))
 		}
-		if err != nil && cfg.FlightRecorder.RequireReceipts {
+		if receiptWriteWithholdsEffect(cfg, err) {
 			blockedErr := newReceiptEmissionBlockedRequest(err)
 			rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), blockedErr.layer, blockedErr.detail)
 			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
@@ -1887,7 +1887,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	if rp.owner != nil && rp.owner.receiptV3 != nil {
 		confirm := func() (*v3TransportReceipt, error) {
 			entry, err := rp.owner.confirmTransportReceipt(r.Context(), cfg, deliveryReceiptOpts(reverseAllowReceipt), boundaryDownstreamDelivery)
-			if err != nil && cfg.FlightRecorder.RequireReceipts {
+			if receiptWriteWithholdsEffect(cfg, err) {
 				return nil, fmt.Errorf("%w: %w", errReverseDeliveryReceipt, err)
 			}
 			return entry, nil

@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -132,6 +133,66 @@ func (w *v3ResponseRecorder) WriteHeader(code int) {
 		w.onHeader()
 	}
 	w.ResponseRecorder.WriteHeader(code)
+}
+
+func TestV3OptionalFlushFailureDoesNotRelease(t *testing.T) {
+	for _, transport := range []string{"fetch", "forward", "reverse"} {
+		t.Run(transport, func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, transport, false)
+			writer.ArmNextSyncFailure(errors.New("flush failed"))
+			var hits atomic.Int64
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				hits.Add(1)
+				_, _ = w.Write([]byte("example"))
+			}))
+			t.Cleanup(upstream.Close)
+			response := httptest.NewRecorder()
+			switch transport {
+			case "fetch":
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL, nil)
+				p.handleFetch(response, req)
+			case "forward":
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL, nil)
+				p.handleForwardHTTP(response, req)
+			case "reverse":
+				target, err := url.Parse(upstream.URL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
+				reverse.SetOwnerProxy(p)
+				reverse.ServeHTTP(response, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+			}
+			if hits.Load() != 0 || response.Code != http.StatusForbidden ||
+				response.Header().Get(blockreason.HeaderReason) != string(blockreason.ReceiptEmissionFailed) {
+				t.Fatalf("optional flush failure released the effect: hits=%d code=%d reason=%s body=%s",
+					hits.Load(), response.Code, response.Header().Get(blockreason.HeaderReason), response.Body.String())
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var notReleased int64
+			if result.Counts.Decisions != nil {
+				for _, count := range *result.Counts.Decisions {
+					if count.State == "not_released" {
+						notReleased = count.Count
+					}
+				}
+			}
+			completed := int64(0)
+			if result.Counts.EffectsCompleted != nil {
+				completed = *result.Counts.EffectsCompleted
+			}
+			if notReleased != 1 || completed != 0 {
+				t.Fatalf("history after withheld effect: not_released=%d completed=%d verdict=%s findings=%v",
+					notReleased, completed, result.Verdict, result.Findings)
+			}
+		})
+	}
 }
 
 func newTestV3HTTPProxy(t *testing.T, surface string, required bool) (*Proxy, *v3.StreamWriter, string, []ed25519.PublicKey) {

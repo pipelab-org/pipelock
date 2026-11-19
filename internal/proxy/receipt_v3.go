@@ -59,6 +59,20 @@ func prepareV3TransportReceipt(cfg *config.Config, opts receipt.EmitOpts) v3Tran
 	return v3TransportReceipt{action: action, policy: v3.CapturePolicy(digest)}
 }
 
+// receiptWriteWithholdsEffect reports whether a failed receipt write must stop
+// the effect. Required mode withholds on every failure. A v3 record that says
+// the effect was not released withholds even when receipts are optional,
+// because releasing it would contradict that record.
+func receiptWriteWithholdsEffect(cfg *config.Config, err error) bool {
+	if err == nil {
+		return false
+	}
+	if cfg != nil && cfg.FlightRecorder.RequireReceipts {
+		return true
+	}
+	return errors.Is(err, v3.ErrEffectNotReleased)
+}
+
 func (p *Proxy) confirmTransportReceipt(ctx context.Context, cfg *config.Config, opts receipt.EmitOpts, boundary string) (*v3TransportReceipt, error) {
 	entry := prepareV3TransportReceipt(cfg, opts)
 	attempt := int64(1)
@@ -143,7 +157,7 @@ func (r *wsRelay) writePayload(ctx context.Context, boundary string, opcode ws.O
 	opts.Transport, opts.Method = TransportWS, "WS"
 	opts.Target, opts.RequestID, opts.Agent = r.targetURL, r.requestID, r.agent
 	intent, err := r.proxy.confirmTransportReceipt(ctx, r.cfg, opts, boundary)
-	if err != nil && r.cfg.FlightRecorder.RequireReceipts {
+	if receiptWriteWithholdsEffect(r.cfg, err) {
 		return ctx.Err() == nil, err
 	}
 	if err = ctx.Err(); err == nil && boundary == boundaryDownstreamDelivery && r.clientClosing.Load() {
@@ -168,7 +182,7 @@ func (p *Proxy) confirmHTTPResponseDelivery(w http.ResponseWriter, ctx context.C
 	}
 	opts := deliveryReceiptOpts(send)
 	entry, err := p.confirmTransportReceipt(ctx, cfg, opts, boundaryDownstreamDelivery)
-	if err == nil || !cfg.FlightRecorder.RequireReceipts {
+	if !receiptWriteWithholdsEffect(cfg, err) {
 		return entry, true
 	}
 	// Some callers have already staged upstream headers.

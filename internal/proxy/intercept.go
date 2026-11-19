@@ -2319,7 +2319,7 @@ func newInterceptHandler(
 			if ic.Proxy != nil && ic.Proxy.receiptV3 != nil {
 				var err error
 				upstreamReceipt, err = ic.Proxy.confirmTransportReceipt(r.Context(), ic.Config, allowReceipt, boundaryUpstreamSend)
-				if err != nil && required {
+				if receiptWriteWithholdsEffect(ic.Config, err) {
 					writeInterceptReceiptDenial(w, ic.Logger, actx, allowReceipt.RequestID, err)
 					return
 				}

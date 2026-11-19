@@ -88,7 +88,7 @@ func TestStreamWriterActionBarrierAndRepair(t *testing.T) {
 				if err := w.WriteAction(t.Context(), outcome, policy); err != nil {
 					t.Fatal(err)
 				}
-			} else if !errors.Is(err, failure) {
+			} else if !errors.Is(err, failure) || !errors.Is(err, ErrEffectNotReleased) {
 				t.Fatalf("unexpected intent error: %v", err)
 			}
 			if err := w.Close(t.Context(), nil); err != nil {
@@ -191,7 +191,7 @@ func TestStreamWriterActionCancellationAndAttribution(t *testing.T) {
 	// Supplied body attribution must be ignored in favor of the captured
 	// policy, including when the producer did not capture one.
 	intent.Policy = ActionPolicy{Source: "request_snapshot", Hash: opts.PolicyHash}
-	if err := w.WriteAction(ctx, intent, PolicySnapshot{}); !errors.Is(err, context.Canceled) {
+	if err := w.WriteAction(ctx, intent, PolicySnapshot{}); !errors.Is(err, context.Canceled) || !errors.Is(err, ErrEffectNotReleased) {
 		t.Fatalf("wanted cancellation after intent flush, got %v", err)
 	}
 	if err := w.Close(t.Context(), nil); err != nil {
@@ -220,7 +220,7 @@ func TestStreamWriterSettlesCancelledActionAfterWriteError(t *testing.T) {
 	w.active.file = syncCallbackFile{writerFile: w.active.file, syncCallback: cancel}
 	// The intent flush succeeds. The following refusal append writes no bytes.
 	fault = writerReplayFault{step: writerReplayStep{FaultAt: 3}}
-	if err := w.WriteAction(ctx, writerTestIntent("cancelled"), PolicySnapshot{}); !errors.Is(err, context.Canceled) {
+	if err := w.WriteAction(ctx, writerTestIntent("cancelled"), PolicySnapshot{}); !errors.Is(err, context.Canceled) || !errors.Is(err, ErrEffectNotReleased) {
 		t.Fatalf("wanted cancellation after intent flush, got %v", err)
 	}
 	if err := abandonWriterReplay(w); err != nil {

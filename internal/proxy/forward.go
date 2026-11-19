@@ -759,7 +759,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		} else {
 			err = p.emitRequiredReceipt(withReceiptConfig(allowReceipt, cfg))
 		}
-		if err != nil && cfg.FlightRecorder.RequireReceipts {
+		if receiptWriteWithholdsEffect(cfg, err) {
 			blockedErr := newReceiptEmissionBlockedRequest(err)
 			p.logger.LogBlocked(targetCtx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordTunnelBlocked(agentLabel)
@@ -2515,7 +2515,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			intent.ContentScanContext = r.Context()
 			err = p.emitRequiredReceipt(intent)
 		}
-		if err != nil && cfg.FlightRecorder.RequireReceipts {
+		if receiptWriteWithholdsEffect(cfg, err) {
 			// A client that went away gets the ordinary cancellation answer.
 			// A cancellation Pipelock made itself, such as a revoked license,
 			// stays a block below so the caller never sees an empty success.

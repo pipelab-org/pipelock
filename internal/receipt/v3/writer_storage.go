@@ -133,3 +133,27 @@ func (s writerStorage) cleanup(dir string, entries []os.DirEntry) error {
 func writerFilename(stream string, seq int64) string {
 	return fmt.Sprintf("%s-%0*d%s", stream, layoutStartDigits, seq, layoutFileSuffix)
 }
+
+// syncFaultFile fails one flush, then delegates. The pointer stays in the
+// writer so the one-shot error is consumed once.
+type syncFaultFile struct {
+	writerFile
+	err error
+}
+
+func (f *syncFaultFile) Sync() error {
+	if f.err != nil {
+		err := f.err
+		f.err = nil
+		return err
+	}
+	return f.writerFile.Sync()
+}
+
+// ArmNextSyncFailure makes the next flush of the open stream file fail once.
+func (w *StreamWriter) ArmNextSyncFailure(err error) {
+	if w == nil || w.active.file == nil || err == nil {
+		return
+	}
+	w.active.file = &syncFaultFile{writerFile: w.active.file, err: err}
+}

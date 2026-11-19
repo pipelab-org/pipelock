@@ -47,7 +47,7 @@ func (rp *ReverseProxyHandler) confirmResponseDecision(cfg *config.Config, opts 
 func (p *Proxy) confirmV3ResponseDecision(cfg *config.Config, opts receipt.EmitOpts) error {
 	opts.Verdict = receipt.NormalizeVerdict(opts.Verdict)
 	_, err := p.confirmTransportReceipt(context.Background(), cfg, opts, boundaryDownstreamDelivery)
-	if cfg != nil && cfg.FlightRecorder.RequireReceipts {
+	if receiptWriteWithholdsEffect(cfg, err) {
 		return err
 	}
 	return nil
