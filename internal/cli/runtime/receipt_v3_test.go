@@ -4,12 +4,14 @@
 package runtime
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 func TestReceiptV3Selection(t *testing.T) {
@@ -62,5 +64,57 @@ func TestServerReloadReceiptFormatRequiresRestart(t *testing.T) {
 	if live.FlightRecorder.ReceiptFormat != before.FlightRecorder.ReceiptFormat ||
 		live.FetchProxy.TimeoutSeconds != update.FetchProxy.TimeoutSeconds || !stderr.contains(warning) {
 		t.Fatalf("receipt format or unrelated settings changed incorrectly: %+v, %s", live.FlightRecorder, stderr.String())
+	}
+}
+
+func TestServerV3CoverageRequiresRestart(t *testing.T) {
+	dir := t.TempDir()
+	_, key, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "signer.key")
+	if err := signing.SavePrivateKey(key, keyPath); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := writeServerTestConfig(t, fmt.Sprintf(
+		"mode: balanced\nflight_recorder:\n  enabled: true\n  receipt_format: v3\n  require_receipts: true\n  dir: %q\n  signing_key_path: %q\n", dir, keyPath))
+	s, err := NewServer(ServerOpts{ConfigFile: cfgPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.cleanup)
+	if s.receiptWriter == nil || s.liveReceiptEmitter() != nil || s.liveV2ReceiptEmitter() != nil {
+		t.Fatal("v3 startup did not select a single receipt writer")
+	}
+	before := s.proxy.CurrentConfig()
+	for _, tc := range []struct {
+		field string
+		edit  func(*config.Config)
+	}{
+		{"receipt_format", func(c *config.Config) { c.FlightRecorder.ReceiptFormat = config.ReceiptFormatLegacy }},
+		{"require_receipts", func(c *config.Config) { c.FlightRecorder.RequireReceipts = false }},
+		{"redact", func(c *config.Config) { c.FlightRecorder.Redact = !c.FlightRecorder.Redact }},
+		{"surfaces", func(c *config.Config) { c.ForwardProxy.Enabled = !c.ForwardProxy.Enabled }},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			candidate := before.Clone()
+			tc.edit(candidate)
+			if err := s.Reload(candidate); err == nil || !strings.Contains(err.Error(), tc.field) || !strings.Contains(err.Error(), "restart required") {
+				t.Fatalf("coverage change did not require restart: %v", err)
+			}
+			if s.proxy.CurrentConfig() != before {
+				t.Fatal("rejected reload replaced the live config")
+			}
+		})
+	}
+	candidate := before.Clone()
+	candidate.FetchProxy.TimeoutSeconds++
+	if err := s.Reload(candidate); err != nil {
+		t.Fatal(err)
+	}
+	if s.proxy.CurrentConfig().FetchProxy.TimeoutSeconds != candidate.FetchProxy.TimeoutSeconds ||
+		s.liveReceiptEmitter() != nil || s.liveV2ReceiptEmitter() != nil {
+		t.Fatal("unrelated reload did not preserve the v3 writer selection")
 	}
 }

@@ -9,12 +9,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	wireReceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
@@ -87,4 +89,43 @@ func openRuntimeReceiptV3(ctx context.Context, cfg *config.Config, key ed25519.P
 			RedactionRuleset: v3.Ruleset{ID: rules.RedactionRulesetID, Version: rules.RedactionRulesetVersion, Hash: rules.RedactionRulesetHash},
 		},
 	})
+}
+
+func serverReceiptSurfaces(cfg *config.Config, hasMCPListener bool) []string {
+	surfaces := []string{"fetch"}
+	if cfg.ForwardProxy.Enabled {
+		surfaces = append(surfaces, "connect", "forward")
+		if cfg.TLSInterception.Enabled {
+			surfaces = append(surfaces, "intercept")
+		}
+	}
+	if cfg.WebSocketProxy.Enabled {
+		surfaces = append(surfaces, "websocket")
+	}
+	if cfg.ReverseProxy.Enabled {
+		surfaces = append(surfaces, "reverse")
+	}
+	if hasMCPListener {
+		surfaces = append(surfaces, deferred.SurfaceMCPHTTPListener)
+	}
+	return surfaces
+}
+
+func checkV3ReloadCoverage(oldCfg, newCfg *config.Config, hasMCPListener bool) error {
+	oldFR, newFR := oldCfg.FlightRecorder, newCfg.FlightRecorder
+	switch {
+	case oldFR.ReceiptFormat != newFR.ReceiptFormat:
+		return errors.New("flight_recorder.receipt_format changed; restart required")
+	case oldFR.RequireReceipts != newFR.RequireReceipts:
+		return errors.New("flight_recorder.require_receipts changed; restart required")
+	case oldFR.Redact != newFR.Redact:
+		return errors.New("flight_recorder.redact changed; restart required")
+	case oldFR.RequireContainmentEvidence != newFR.RequireContainmentEvidence ||
+		oldFR.PostureSignerKey != newFR.PostureSignerKey:
+		return errors.New("flight_recorder containment posture changed; restart required")
+	case !slices.Equal(serverReceiptSurfaces(oldCfg, hasMCPListener), serverReceiptSurfaces(newCfg, hasMCPListener)):
+		return errors.New("receipt coverage surfaces changed; restart required")
+	default:
+		return nil
+	}
 }

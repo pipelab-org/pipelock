@@ -1100,6 +1100,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 				mcpCaptureObs = s.captureWriter
 			}
 			listenerOpts := mcp.MCPProxyOpts{
+				ReceiptV3:                    s.receiptWriter,
 				ListenerBearerToken:          s.mcpListenerBearerToken,
 				ListenerAllowedOrigins:       s.opts.MCPAllowedOrigins,
 				ListenerAllowUnauthenticated: s.opts.MCPAllowUnauthenticated,

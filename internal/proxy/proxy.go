@@ -769,6 +769,11 @@ func WithReceiptEmitter(e *receipt.Emitter) Option {
 	}
 }
 
+// WithReceiptV3 attaches the stream writer selected at startup.
+func WithReceiptV3(writer *v3.StreamWriter) Option {
+	return func(p *Proxy) { p.receiptV3 = writer }
+}
+
 // noteReceiptSignerKey records a key this process loaded to sign receipts.
 // A reload may resume a session tail signed by any recorded key: each one is
 // a key this process held, whereas a key found only in the evidence
@@ -2117,6 +2122,9 @@ type receiptEmitterStage struct {
 //     while keeping an old receipt emitter would attest the wrong policy
 //     hash for future actions.
 func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, error) {
+	if p.receiptV3 != nil {
+		return receiptEmitterStage{}, nil
+	}
 	keyPath := cfg.FlightRecorder.SigningKeyPath
 
 	if keyPath == "" {

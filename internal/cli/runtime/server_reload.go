@@ -143,6 +143,11 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 	}
 
 	oldCfg := s.proxy.CurrentConfig()
+	if s.receiptWriter != nil && oldCfg != nil {
+		if coverageErr := checkV3ReloadCoverage(oldCfg, newCfg, s.opts.MCPListen != ""); coverageErr != nil {
+			return fmt.Errorf("rejected: %w", coverageErr)
+		}
+	}
 	if s.receiptShardSet != nil && oldCfg != nil && oldCfg.FlightRecorder.SigningKeyPath != "" &&
 		oldCfg.FlightRecorder.SigningKeyPath == newCfg.FlightRecorder.SigningKeyPath {
 		key, keyErr := signing.LoadPrivateKeyFile(oldCfg.FlightRecorder.SigningKeyPath)
@@ -371,7 +376,7 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 		// emitter before publishing the config. Let that recovery run: it either
 		// installs a healthy emitter and applies the enable atomically or rejects
 		// the reload while the old posture remains live.
-		if newCfg.FlightRecorder.RequireReceipts && !s.liveReceiptEmitterReady() {
+		if newCfg.FlightRecorder.RequireReceipts && s.receiptWriter == nil && !s.liveReceiptEmitterReady() {
 			if oldCfg.FlightRecorder.RequireReceipts {
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder.require_receipts is enabled but the current signed receipt emitter is unhealthy — the reload will attempt to rebuild it and will be rejected if recovery fails; the required posture remains fail-closed.\n")
 			} else if s.recorder == nil || strings.TrimSpace(newCfg.FlightRecorder.SigningKeyPath) == "" {
@@ -1377,6 +1382,12 @@ func preserveLicenseInputsRestartOnly(newCfg, oldCfg *config.Config) {
 // mirrors the original RunCmd deferred closures so shutdown sequencing is
 // preserved.
 func (s *Server) cleanup() {
+	if s.receiptWriter != nil {
+		if err := s.receiptWriter.Close(context.Background(), nil); err != nil {
+			_, _ = fmt.Fprintf(s.opts.Stderr, "  Receipts: closing v3 stream: %v\n", err)
+		}
+		s.receiptWriter = nil
+	}
 	if s.recorder != nil {
 		_ = s.recorder.Close()
 		s.recorder = nil
