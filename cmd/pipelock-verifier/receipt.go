@@ -13,7 +13,6 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
-	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	actionreceipt "github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
@@ -92,32 +91,20 @@ func runReceipt(stdout, stderr io.Writer, target string, opts receiptOptions) er
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("read receipt: %w", err))
 	}
-	if err := jsonscan.RejectUnsafeNumbers(data); err != nil {
+	isEvidence, err := actionreceipt.IsStandaloneEvidenceReceipt(data)
+	if err != nil {
+		err = fmt.Errorf("parsing receipt: %w", err)
 		report := receiptReport{Path: target, Valid: false, Error: err.Error()}
 		emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
-		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("parse receipt: %w", err))
+		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 	}
-
-	recordType, detectErr := detectSingleReceiptRecordType(data)
-	if detectErr != nil {
-		report := receiptReport{Path: target, Valid: false, Error: detectErr.Error()}
-		emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
-		return cliutil.ExitCodeError(cliutil.ExitConfig, detectErr)
-	}
-
-	switch recordType {
-	case recordTypeEvidenceV2:
+	if isEvidence {
 		return runEvidenceReceipt(stdout, stderr, target, data, keyHex, opts)
-	case recordTypeActionV1, "":
-		if opts.anySet() || opts.recheckSource != "" {
-			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("EvidenceReceipt expectation flags require record_type=%s", recordTypeEvidenceV2))
-		}
-		return runActionReceipt(stdout, stderr, target, data, keyHex, opts)
-	default:
-		report := receiptReport{Path: target, Valid: false, Error: "unsupported receipt record_type"}
-		emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
-		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("unsupported receipt record_type"))
 	}
+	if opts.anySet() || opts.recheckSource != "" {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("EvidenceReceipt expectation flags require record_type=%s", recordTypeEvidenceV2))
+	}
+	return runActionReceipt(stdout, stderr, target, data, keyHex, opts)
 }
 
 func runActionReceipt(stdout, stderr io.Writer, clean string, data []byte, keyHex string, opts receiptOptions) error {

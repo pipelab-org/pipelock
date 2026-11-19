@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	clisigning "github.com/luckyPipewrench/pipelock/internal/cli/signing"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
@@ -604,5 +605,40 @@ func TestReceipt_FileNamedAsDirectoryRefused(t *testing.T) {
 		if code != 2 || !strings.Contains(stdout+stderr, "not a directory") {
 			t.Fatalf("%q: exit %d, want 2 not-a-directory\n%s%s", input, code, stdout, stderr)
 		}
+	}
+}
+
+func TestStandaloneReceiptDiscriminatorParity(t *testing.T) {
+	for name, data := range map[string]string{
+		"unknown record type":   `{"record_type":"future"}`,
+		"non-string type":       `{"record_type":true}`,
+		"null type":             `{"record_type":null}`,
+		"unsupported version":   `{"version":2}`,
+		"non-integer version":   `{"version":"1"}`,
+		"null version":          `{"version":null}`,
+		"missing discriminator": `{}`,
+		"ambiguous version":     `{"version":1,"record_type":"evidence_receipt_v2","receipt_version":2}`,
+		"wrong v2 version":      `{"record_type":"evidence_receipt_v2","receipt_version":1}`,
+		"missing v2 version":    `{"record_type":"evidence_receipt_v2"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "receipt.json")
+			if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			cmd := clisigning.VerifyReceiptCmd()
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+			cmd.SetArgs([]string{path})
+			mainErr := cmd.Execute()
+			standaloneErr := runReceipt(&out, &out, path, receiptOptions{})
+			if mainErr == nil || standaloneErr == nil {
+				t.Fatalf("main = %v, standalone = %v; both must refuse", mainErr, standaloneErr)
+			}
+			if mainErr.Error() != standaloneErr.Error() {
+				t.Fatalf("main = %q, standalone = %q", mainErr, standaloneErr)
+			}
+		})
 	}
 }

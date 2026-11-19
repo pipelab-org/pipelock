@@ -1251,11 +1251,11 @@ func verifiedChainResult(receipts []receipt.Receipt, trustedKeys []string, opts 
 }
 
 func verifySingleReceiptDetailed(out io.Writer, path, expectedKey string, opts verifyReceiptOptions) error {
-	data, err := os.ReadFile(filepath.Clean(path))
+	data, err := cliutil.ReadVerifierFile(path)
 	if err != nil {
 		return fmt.Errorf("reading receipt: %w", err)
 	}
-	isEvidence, err := isStandaloneEvidenceReceipt(data)
+	isEvidence, err := receipt.IsStandaloneEvidenceReceipt(data)
 	if err != nil {
 		return fmt.Errorf("parsing receipt: %w", err)
 	}
@@ -1263,48 +1263,6 @@ func verifySingleReceiptDetailed(out io.Writer, path, expectedKey string, opts v
 		return verifySingleEvidenceReceipt(out, path, data, expectedKey, opts)
 	}
 	return verifySingleActionReceipt(out, path, data, expectedKey, opts)
-}
-
-// Use exact top-level discriminator names. The selected parser then enforces
-// its own full schema, including duplicate keys and case aliases.
-func isStandaloneEvidenceReceipt(data []byte) (bool, error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return false, fmt.Errorf("invalid receipt JSON: %w", err)
-	}
-	version, hasVersion := fields["version"]
-	recordType, hasRecordType := fields["record_type"]
-	_, hasReceiptVersion := fields["receipt_version"]
-	switch {
-	case hasVersion && (hasRecordType || hasReceiptVersion):
-		return false, errors.New("ambiguous receipt format: version conflicts with record_type or receipt_version")
-	case hasVersion:
-		var v int
-		if err := json.Unmarshal(version, &v); err != nil {
-			return false, fmt.Errorf("receipt version must be an integer: %w", err)
-		}
-		if v != receipt.ReceiptVersion {
-			return false, fmt.Errorf("unsupported receipt version %d (expected %d)", v, receipt.ReceiptVersion)
-		}
-		return false, nil
-	case hasRecordType:
-		var kind *contractreceipt.RecordType
-		if err := json.Unmarshal(recordType, &kind); err != nil {
-			return false, fmt.Errorf("receipt record_type must be a string: %w", err)
-		}
-		if kind == nil {
-			return false, errors.New("receipt record_type must be a string")
-		}
-		if *kind != contractreceipt.RecordTypeEvidenceV2 {
-			return false, fmt.Errorf("unsupported receipt record_type %q", *kind)
-		}
-		if !hasReceiptVersion {
-			return false, errors.New("EvidenceReceipt v2 requires receipt_version")
-		}
-		return true, nil
-	default:
-		return false, errors.New("missing receipt format discriminator: expected version or record_type")
-	}
 }
 
 func verifySingleActionReceipt(out io.Writer, path string, data []byte, expectedKey string, opts verifyReceiptOptions) error {
