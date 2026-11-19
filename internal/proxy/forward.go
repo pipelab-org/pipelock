@@ -751,8 +751,15 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if connectGate.HasContractContext() {
 		allowReceipt = withContractReceipt(connectGate, allowReceipt)
 	}
+	var tunnelReceipt *v3TransportReceipt
 	if cfg.FlightRecorder.RequireReceipts {
-		if err := p.emitRequiredReceipt(withReceiptConfig(allowReceipt, cfg)); err != nil {
+		var err error
+		if p.receiptV3 != nil {
+			tunnelReceipt, err = p.confirmTransportReceipt(r.Context(), cfg, allowReceipt, boundaryTunnelOpen)
+		} else {
+			err = p.emitRequiredReceipt(withReceiptConfig(allowReceipt, cfg))
+		}
+		if err != nil {
 			blockedErr := newReceiptEmissionBlockedRequest(err)
 			p.logger.LogBlocked(targetCtx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordTunnelBlocked(agentLabel)
@@ -772,6 +779,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	outcomeBytes := int64(-1)
 	outcomeReason := "incomplete"
 	clientHijacked := false
+	tunnelOpened := false
 	defer func() {
 		aborted := recover()
 		var flushErr error
@@ -785,6 +793,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			outcomeReason = "license_revoked"
 		}
 		p.emitOutcomeReceipt(cfg, allowReceipt, outcomeStatus, outcomeBytes, outcomeReason)
+		p.recordTransportOutcome(r.Context(), allowReceipt, tunnelReceipt, tunnelOpened)
 		if aborted != nil {
 			panic(aborted)
 		}
@@ -881,9 +890,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// normal header serialization, so carry the already-validated recorded
 	// receipt explicitly when required-receipt admission completed.
 	if recordedReceipt := w.Header().Get(blockreason.HeaderRecordedReceipt); recordedReceipt != "" {
-		_, _ = fmt.Fprintf(clientConn, "HTTP/1.1 200 Connection Established\r\n%s: %s\r\n\r\n", blockreason.HeaderRecordedReceipt, recordedReceipt)
+		_, writeErr := fmt.Fprintf(clientConn, "HTTP/1.1 200 Connection Established\r\n%s: %s\r\n\r\n", blockreason.HeaderRecordedReceipt, recordedReceipt)
+		tunnelOpened = writeErr == nil
 	} else {
-		_, _ = clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+		_, writeErr := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+		tunnelOpened = writeErr == nil
 	}
 
 	// SNI verification: read ClientHello via Peek, check SNI matches CONNECT
@@ -2488,10 +2499,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if forwardGate.HasContractContext() {
 		forwardAllowReceipt = withContractReceipt(forwardGate, forwardAllowReceipt)
 	}
+	var upstreamReceipt *v3TransportReceipt
 	if cfg.FlightRecorder.RequireReceipts {
-		intent := withReceiptConfig(forwardAllowReceipt, cfg)
-		intent.ContentScanContext = r.Context()
-		if err := p.emitRequiredReceipt(intent); err != nil {
+		var err error
+		if p.receiptV3 != nil {
+			upstreamReceipt, err = p.confirmTransportReceipt(r.Context(), cfg, forwardAllowReceipt, boundaryUpstreamSend)
+		} else {
+			intent := withReceiptConfig(forwardAllowReceipt, cfg)
+			intent.ContentScanContext = r.Context()
+			err = p.emitRequiredReceipt(intent)
+		}
+		if err != nil {
 			// A client that went away gets the ordinary cancellation answer.
 			// A cancellation Pipelock made itself, such as a revoked license,
 			// stays a block below so the caller never sees an empty success.
@@ -2558,6 +2576,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, err := p.client.Do(outReq)
+	p.recordTransportOutcome(r.Context(), forwardAllowReceipt, upstreamReceipt, resp != nil)
 	if err != nil {
 		var ssrfErr *ssrfDialBlockError
 		if errors.As(err, &ssrfErr) {

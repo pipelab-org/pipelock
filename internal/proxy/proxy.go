@@ -56,6 +56,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
 	"github.com/luckyPipewrench/pipelock/internal/proxyhealth"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
@@ -672,10 +673,11 @@ type Proxy struct {
 	a2aCardBaseline      *mcp.CardBaseline // Agent Card drift detection across requests
 	captureObs           capture.CaptureObserver
 	sizeExemptScanBudget sizeExemptScanBudget
-	recorder             *recorder.Recorder                    // flight recorder for tamper-evident evidence (nil = disabled)
-	session              string                                // recorder session this process records under; "proxy" when unset (see WithSession)
-	recoveredSession     atomic.Pointer[string]                // fresh run session adopted after torn-tail recovery; overrides session
-	reloadTailCheck      receipt.TailCheckCache                // evidence shards reload already validated; each reload re-checks only changed bytes
+	recorder             *recorder.Recorder     // flight recorder for tamper-evident evidence (nil = disabled)
+	session              string                 // recorder session this process records under; "proxy" when unset (see WithSession)
+	recoveredSession     atomic.Pointer[string] // fresh run session adopted after torn-tail recovery; overrides session
+	reloadTailCheck      receipt.TailCheckCache // evidence shards reload already validated; each reload re-checks only changed bytes
+	receiptV3            *v3.StreamWriter
 	receiptEmitterPtr    atomic.Pointer[receipt.Emitter]       // v1 action receipt emitter (nil = disabled)
 	v2EmitterPtr         atomic.Pointer[proxydecision.Emitter] // v2 proxy_decision emitter, dual-emitted with v1 (nil = disabled)
 	receiptGroupPtr      atomic.Pointer[receiptGroupRuntime]   // paired per-shard emitters; nil uses the legacy single chain
@@ -6622,8 +6624,15 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if fetchGate.HasContractContext() {
 		fetchAllowReceipt = withContractReceipt(fetchGate, fetchAllowReceipt)
 	}
+	var upstreamReceipt *v3TransportReceipt
 	if cfg.FlightRecorder.RequireReceipts {
-		if rcptErr := p.emitRequiredReceipt(withReceiptConfig(fetchAllowReceipt, cfg)); rcptErr != nil {
+		var rcptErr error
+		if p.receiptV3 != nil {
+			upstreamReceipt, rcptErr = p.confirmTransportReceipt(r.Context(), cfg, fetchAllowReceipt, boundaryUpstreamSend)
+		} else {
+			rcptErr = p.emitRequiredReceipt(withReceiptConfig(fetchAllowReceipt, cfg))
+		}
+		if rcptErr != nil {
 			blockedErr := newReceiptEmissionBlockedRequest(rcptErr)
 			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordBlocked(parsed.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
@@ -6681,6 +6690,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	responseencoding.RequestIdentity(req.Header)
 	resp, err := p.client.Do(req) //nolint:gosec // G704: URL validated by scanner pipeline before reaching here
+	p.recordTransportOutcome(r.Context(), fetchAllowReceipt, upstreamReceipt, resp != nil)
 	if err != nil {
 		var ssrfErr *ssrfDialBlockError
 		if errors.As(err, &ssrfErr) {

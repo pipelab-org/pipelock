@@ -1154,8 +1154,15 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var upstreamReceipt *v3TransportReceipt
 	if cfg.FlightRecorder.RequireReceipts {
-		if err := p.emitRequiredReceipt(withReceiptConfig(admissionReceipt, cfg)); err != nil {
+		var err error
+		if p.receiptV3 != nil {
+			upstreamReceipt, err = p.confirmTransportReceipt(r.Context(), cfg, admissionReceipt, boundaryUpstreamSend)
+		} else {
+			err = p.emitRequiredReceipt(withReceiptConfig(admissionReceipt, cfg))
+		}
+		if err != nil {
 			blockedErr := newReceiptEmissionBlockedRequest(err)
 			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordWSBlocked()
@@ -1167,6 +1174,24 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		blockreason.SetRecordedReceipt(w.Header(), admissionReceipt.ActionID)
 	}
 
+	confirmClientUpgrade := func() bool {
+		if p.receiptV3 == nil || !cfg.FlightRecorder.RequireReceipts {
+			return upgradeClient()
+		}
+		delivery := admissionReceipt
+		delivery.ActionID = receipt.NewActionID()
+		delivery.ParentActionID = admissionReceipt.ActionID
+		entry, err := p.confirmTransportReceipt(r.Context(), cfg, delivery, boundaryDownstreamDelivery)
+		if err != nil {
+			blocked := newReceiptEmissionBlockedRequest(err)
+			writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, blocked.layer).WithRequestID(requestID),
+				"WebSocket blocked: "+blocked.reason, http.StatusForbidden)
+			return false
+		}
+		upgraded := upgradeClient()
+		p.recordTransportOutcome(r.Context(), delivery, entry, upgraded)
+		return upgraded
+	}
 	outcomeStatus := "unknown"
 	outcomeBytes := int64(-1)
 	outcomeReason := "incomplete"
@@ -1197,7 +1222,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		// not be written before fsync succeeds. With a subprotocol offer the
 		// upgrade waits further, until the upstream has made its selection.
 		if !negotiateProtocol {
-			if !upgradeClient() {
+			if !confirmClientUpgrade() {
 				return
 			}
 			defer safeClose(clientConn, "ws.clientConn", log)
@@ -1214,6 +1239,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// admission checks above cannot taint even that caller's evidence.
 	p.taintIssuerSessionForStream(cfg, agent, clientIP, id.Auth, parsed)
 	upstreamConn, upstreamProtocol, dialErr := p.wsDialUpstream(r.Context(), targetURL, fwdHeaders, cfg)
+	p.recordTransportOutcome(r.Context(), admissionReceipt, upstreamReceipt, dialErr == nil && upstreamConn != nil)
 	if dialErr != nil {
 		var ssrfErr *ssrfDialBlockError
 		if errors.As(dialErr, &ssrfErr) {
@@ -1257,7 +1283,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	defer safeClose(upstreamConn, "ws.upstreamConn", log)
 	if negotiateProtocol {
 		selectedProtocol = upstreamProtocol
-		if !upgradeClient() {
+		if !confirmClientUpgrade() {
 			return
 		}
 		defer safeClose(clientConn, "ws.clientConn", log)
