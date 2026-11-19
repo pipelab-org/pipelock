@@ -708,8 +708,12 @@ func ForwardScannedInput(
 		// Keep the admission choice for the later response outcome. Blocked
 		// requests also choose once when their first receipt is emitted.
 		var receiptShard receipt.EmitOpts
+		var v3Upstream mcpV3Receipt
 
 		emitToolReceipt := func(receiptVerdict string, contractGate ...mcpContractGateOutput) error {
+			if opts.ReceiptV3 != nil && receiptVerdict == config.ActionDefer {
+				return nil // The manager confirms the hold after deriving its ancestry.
+			}
 			if verdict.Method != methodToolsCall && receiptVerdict == config.ActionAllow && !opts.requireReceipts() {
 				return nil
 			}
@@ -756,6 +760,9 @@ func ForwardScannedInput(
 				receiptOpts.ContractGate = &contractGate[0]
 			}
 			if receiptVerdict == config.ActionBlock && forwardReceiptVerdict != "" && actionID != "" {
+				if v3Upstream.action.Attempt != nil {
+					return nil // The transport records the refusal on the confirmed intent.
+				}
 				if requireReceipts && forwardReceiptVerdict == config.ActionAllow {
 					intent := opts.withReceiptPolicyHash(receiptOpts.receiptOptions())
 					emitMCPBlockedOutcomeReceipt(receiptEmitter, opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, intent, -1, pattern, requireReceipts)
@@ -765,6 +772,9 @@ func ForwardScannedInput(
 				// refusal a distinct action ID so it isn't an unmatched outcome.
 				receiptOpts.ParentActionID = actionID
 				receiptOpts.ActionID = receipt.NewActionID()
+			}
+			if receiptVerdict != config.ActionRedirect {
+				receiptOpts.v3Confirmed = &v3Upstream
 			}
 			return emitMCPToolReceipt(receiptOpts)
 		}
@@ -1169,7 +1179,7 @@ func ForwardScannedInput(
 			// Track request ID immediately before forwarding so response-side
 			// can validate without leaving stale state when a required
 			// receipt fails before the request is written.
-			if isTrackableRequest(fwdLine, verdict.ID) && opts.requireReceipts() && actionID != "" {
+			if isTrackableRequest(fwdLine, verdict.ID) && opts.requireReceipts() && actionID != "" && opts.ReceiptV3 == nil {
 				outcomeReceipt := opts.withReceiptPolicyHash(receipt.EmitOpts{
 					ActionID:            actionID,
 					Verdict:             config.ActionAllow,
@@ -1195,7 +1205,9 @@ func ForwardScannedInput(
 			} else if isTrackableRequest(fwdLine, verdict.ID) {
 				tracker.TrackRequest(verdict.ID, verdict.Method)
 			}
-			if released, err := writeReleasedMessage(fwdLine); err != nil {
+			released, writeErr := writeReleasedMessage(fwdLine)
+			v3Upstream.finish(opts, logW, released || writeErr != nil, writeErr)
+			if err := writeErr; err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
 			} else if !released {
@@ -1582,6 +1594,12 @@ func ForwardScannedInput(
 					SessionID:         receiptSessionID,
 					SessionIDOriginal: receiptSessionIDOriginal,
 				},
+				ConfirmHold: receiptSettle.confirmV3Hold(opts, mcpToolReceiptOpts{
+					ActionID: actionID, MCPMethod: verdict.Method, ToolName: heldToolName,
+					Transport: opts.Transport, SessionID: receiptSessionID, SessionIDOriginal: receiptSessionIDOriginal,
+					Layer: scanner.AuditMCPDefer, Pattern: reasonStr, Decision: taintDecision,
+					Report: redactionReport, RedactionProfile: redactionCfg.Profile,
+				}.receiptOptions()),
 				BeforeAllow: func() (func(), bool) {
 					return deferredReleasePrecheck(opts, deferredGeneration)
 				},
@@ -1655,11 +1673,24 @@ func ForwardScannedInput(
 					}
 					switch res.FinalDecision {
 					case config.ActionAllow:
+						release, err := receiptSettle.confirmV3Release(opts)
+						if err != nil {
+							if finishDeniedRelease != nil {
+								finishDeniedRelease()
+							}
+							sendMCPDenial(denialOpts, mcpReceiptMcpInputDenialAudit(), BlockedRequest{
+								ID: heldID, IsNotification: heldNotification,
+								ErrorCode: -32007, ErrorMessage: requiredReceiptFailureMessage(err),
+							}, blockedCh)
+							return
+						}
 						if isTrackableRequest(heldLine, heldID) {
 							tracker.TrackRequest(heldID, heldAuthorityFrame.Method)
 						}
 						// forwardMu is held by Prepare's release claim.
-						if err := writer.WriteMessage(heldLine); err != nil {
+						err = writer.WriteMessage(heldLine)
+						release.finish(opts, logW, true, err)
+						if err != nil {
 							_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 							return
 						}
@@ -1907,7 +1938,9 @@ func ForwardScannedInput(
 			if isTrackableRequest(fwdLine, verdict.ID) {
 				tracker.TrackRequest(verdict.ID, verdict.Method)
 			}
-			if released, err := writeReleasedMessage(fwdLine); err != nil {
+			released, writeErr := writeReleasedMessage(fwdLine)
+			v3Upstream.finish(opts, logW, released || writeErr != nil, writeErr)
+			if err := writeErr; err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
 			} else if !released {

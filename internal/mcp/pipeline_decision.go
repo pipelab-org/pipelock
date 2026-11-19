@@ -34,6 +34,9 @@ var errMCPV2ReceiptEmit = errors.New("mcp v2 proxydecision receipt emit failed")
 // would force this file to evolve every time the receipt schema gains
 // a field; wrapping keeps MCPDecision as pure routing.
 type MCPDecision struct {
+	v3Boundary  string
+	v3Confirmed *mcpV3Receipt
+
 	// Receipt is handed straight to receipt.Emitter.Emit when the decision should
 	// produce a receipt. A zero-value Receipt (in particular, empty ActionID) is
 	// the skip signal unless RequireReceipt is set, in which case the decision

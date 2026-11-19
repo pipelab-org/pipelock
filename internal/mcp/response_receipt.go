@@ -16,7 +16,7 @@ func confirmMCPResponseEffect(logW io.Writer, opts MCPProxyOpts, selected receip
 		return nil
 	}
 	decision = withMCPResponseShard(selected, decision)
-	_, err := opts.emitReceiptDecision(MCPDecision{Receipt: opts.withReceiptPolicyHash(decision), RequireReceipt: true, RequiredMode: true, Durable: true})
+	_, err := opts.emitReceiptDecision(MCPDecision{v3Boundary: mcpV3Delivery, Receipt: opts.withReceiptPolicyHash(decision), RequireReceipt: true, RequiredMode: true, Durable: true})
 	if err != nil {
 		logReceiptEmitFailure(logW, err, true, decision.Verdict)
 	}

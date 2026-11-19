@@ -382,6 +382,7 @@ func RunHTTPProxy(
 					SessionID:         deferredReq.SessionID,
 					SessionIDOriginal: deferredReq.SessionIDOriginal,
 				},
+				ConfirmHold: receiptSettle.confirmV3Hold(fwdOpts, deferredReq.v3Receipt),
 				BeforeAllow: func() (func(), bool) {
 					return deferredReleasePrecheck(fwdOpts, deferredGeneration)
 				},
@@ -508,11 +509,24 @@ func RunHTTPProxy(
 					}
 					switch res.FinalDecision {
 					case config.ActionAllow:
+						release, err := receiptSettle.confirmV3Release(fwdOpts)
+						if err != nil {
+							if finishDeniedRelease != nil {
+								finishDeniedRelease()
+							}
+							if !deferredReq.IsNotification {
+								_ = writeMCPInputDenial(denialOpts, mcpReceiptMcpInputDenialAudit(), safeClientOut, blockRequestResponse(BlockedRequest{
+									ID: deferredReq.ID, ErrorCode: -32007, ErrorMessage: requiredReceiptFailureMessage(err),
+								}))
+							}
+							return
+						}
 						// upstreamMu is held by Prepare's release claim.
 						if isRequest(deferredReq.ForwardMessage) {
 							tracker.TrackRequest(deferredReq.ID, deferredReq.Method)
 						}
 						respReader, sendErr := httpClient.SendMessageWithOptions(ctx, deferredReq.ForwardMessage, transport.HTTPMessageOptions{Headers: releaseHeaders})
+						release.finish(fwdOpts, safeLogW, true, sendErr)
 						if sendErr != nil {
 							errResp := upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP request failed"))
 							if !deferredReq.IsNotification {
@@ -719,6 +733,7 @@ func RunHTTPProxy(
 			}
 			return httpClient.SendMessageWithOptions(ctx, decision.ForwardMessage, transport.HTTPMessageOptions{Headers: requestHeaders})
 		}()
+		decision.v3Upstream.finish(fwdOpts, safeLogW, taskRefusal == "", err)
 		if taskRefusal != "" {
 			unlockInventory()
 			denialAudit := mcpTaintDenialAudit()

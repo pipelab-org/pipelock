@@ -209,7 +209,11 @@ func RunHTTPListenerProxy(
 				return ListenerPrincipal{}, err
 			}
 			provider, subject := identity.Partition()
-			return ListenerPrincipal{Provider: provider, Subject: subject, Epoch: 1}, nil
+			principal := ListenerPrincipal{Provider: provider, Subject: subject, Epoch: 1}
+			if opts.ReceiptV3 != nil {
+				principal.verifiedDoor = &identity
+			}
+			return principal, nil
 		}
 	}
 	opts.UpstreamHeaders = canonicalizeListenerUpstreamHeaders(opts.UpstreamHeaders)
@@ -300,6 +304,7 @@ func RunHTTPListenerProxy(
 		RedirectRT:                opts.redirectRT(),
 		RedirectRTFn:              opts.RedirectRTFn,
 		Transport:                 "mcp_http_listener",
+		ReceiptV3:                 opts.ReceiptV3,
 		ReceiptEmitter:            opts.receiptEmitter(),
 		ReceiptEmitterFn:          opts.ReceiptEmitterFn,
 		RequireReceipts:           opts.requireReceipts(),
@@ -584,6 +589,7 @@ func RunHTTPListenerProxy(
 		// without restarting the long-lived listener.
 		adaptiveCfg := opts.adaptiveCfg()
 		requestBaseOpts := baseOpts.snapshotScanPolicy()
+		requestBaseOpts.receiptCaller = listenerPrincipal.verifiedDoor
 		reqScanner := requestBaseOpts.scanner()
 		if reqScanner == nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scanner unavailable\n")
@@ -1944,6 +1950,7 @@ func RunHTTPListenerProxy(
 			}
 		}
 		defer emitPendingReceipt()
+		defer decision.v3Upstream.finish(scanOpts, safeLogW, false, nil)
 		refusalIntent := func() receipt.EmitOpts {
 			if pendingReceipt == nil {
 				return decision.Outcome.Receipt
@@ -2062,6 +2069,7 @@ func RunHTTPListenerProxy(
 		// Tool-header discovery can wait after admission. Recheck the task at
 		// the send boundary using the same effective call that admission checked.
 		if refusal := mcpTaskReleaseRefusal(scanOpts, decision.taskFrame, decision.taskTaint, false); refusal != "" {
+			decision.v3Upstream.finish(scanOpts, safeLogW, false, nil)
 			blocked := inputMCPDenial(scanOpts, mcpTaintDenialAudit(), &BlockedRequest{
 				ID: frame.ID, IsNotification: isRPCNotification(frame.ID),
 				ErrorCode: -32002, ErrorMessage: "pipelock: " + refusal,
@@ -2082,6 +2090,7 @@ func RunHTTPListenerProxy(
 			emitPendingReceipt()
 		}
 		upResp, err := upstreamClient.Do(upReq)
+		decision.v3Upstream.finish(scanOpts, safeLogW, true, err)
 		// Keep receipt I/O out of the task-check-to-send interval when taint is enabled.
 		emitPendingReceipt()
 		if err != nil {
@@ -2741,8 +2750,10 @@ func listenerPrincipalForRequest(r *http.Request, opts MCPProxyOpts, states *mcp
 			return mcpListenerPrincipal{}, fmt.Errorf("listener principal provider and subject must both be set")
 		}
 		if principal.Provider != "" {
-			return states.principal("verified-principal-v1:"+principal.Provider,
+			resolved, err := states.principal("verified-principal-v1:"+principal.Provider,
 				principal.Subject, principal.Epoch)
+			resolved.verifiedDoor = principal.verifiedDoor
+			return resolved, err
 		}
 	}
 	return mcpListenerPrincipal{}, nil

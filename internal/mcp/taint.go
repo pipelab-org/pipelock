@@ -475,6 +475,7 @@ func taintApprovalReason(decision taintDecision) string {
 type mcpToolReceiptOpts struct {
 	// ProxyOpts carries the scanner and policy snapshot that made this decision.
 	ProxyOpts        MCPProxyOpts
+	v3Confirmed      *mcpV3Receipt
 	Shard            receipt.EmitOpts
 	Log              io.Writer
 	Transport        string
@@ -517,7 +518,13 @@ func emitMCPToolReceipt(opts mcpToolReceiptOpts) error {
 		}
 		return nil
 	}
+	boundary := mcpV3Upstream
+	if opts.Verdict == config.ActionRedirect {
+		boundary = mcpV3Redirect
+	}
 	if _, err := opts.ProxyOpts.emitAdmittedReceiptDecision(MCPDecision{
+		v3Boundary:     boundary,
+		v3Confirmed:    opts.v3Confirmed,
 		Receipt:        opts.receiptOptions(),
 		RequireReceipt: opts.RequireReceipt || (opts.ProxyOpts.ReceiptGroup != nil && opts.RequireReceipts),
 		RequiredMode:   opts.RequireReceipts,

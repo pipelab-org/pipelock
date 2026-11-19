@@ -34,6 +34,7 @@ type httpInputDecision struct {
 	taskFrame      MCPFrame
 	taskTaint      taintDecision
 	pendingReceipt *mcpToolReceiptOpts
+	v3Upstream     mcpV3Receipt
 }
 
 const redirectResultRedirected = "redirected"
@@ -41,6 +42,7 @@ const redirectResultRedirected = "redirected"
 // DeferredRequest is a scanned action that must not reach the target until the
 // held-action manager resolves it.
 type DeferredRequest struct {
+	v3Receipt           receipt.EmitOpts
 	ID                  json.RawMessage
 	IsNotification      bool
 	DeferID             string
@@ -244,13 +246,18 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			receiptOpts.ParentActionID = actionID
 			receiptOpts.ActionID = receipt.NewActionID()
 		}
-		if opts.deferBestEffortTaskReceipt && !requireReceipts && result.Blocked == nil && result.Deferred == nil &&
+		if opts.ReceiptV3 == nil && opts.deferBestEffortTaskReceipt && !requireReceipts && result.Blocked == nil && result.Deferred == nil &&
 			emitActionID != "" && (emitVerdict == config.ActionAllow || emitVerdict == config.ActionWarn) {
 			// The bridge selects either a single receipt or an intent and
 			// outcome once the final task check has run.
 			result.pendingReceipt = &receiptOpts
 			return
 		}
+		if opts.ReceiptV3 != nil && result.Deferred != nil {
+			result.Deferred.v3Receipt = receiptOpts.receiptOptions()
+			return
+		}
+		receiptOpts.v3Confirmed = &result.v3Upstream
 		if err := emitMCPToolReceipt(receiptOpts); err != nil && requiredReceipt && result.Blocked == nil {
 			denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
 			result.Deferred = nil
@@ -271,7 +278,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		// Only a required allow is written as an intent. A best-effort allow is a
 		// single-phase decision, and an outcome naming it reads as a broken chain
 		// ("outcome without matching intent") to the completeness verifier.
-		if requiredReceipt && result.Blocked == nil && receipt.NormalizeVerdict(emitVerdict) == config.ActionAllow {
+		if opts.ReceiptV3 == nil && requiredReceipt && result.Blocked == nil && receipt.NormalizeVerdict(emitVerdict) == config.ActionAllow {
 			outcomeReceipt := opts.withReceiptPolicyHash(receipt.EmitOpts{
 				ActionID:            emitActionID,
 				Verdict:             emitVerdict,

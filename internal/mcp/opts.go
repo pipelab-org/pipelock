@@ -30,6 +30,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -54,9 +55,10 @@ type DoWAttribution struct {
 // has accepted it. Provider separates trust domains; Epoch invalidates prior
 // state after verifier-policy or subject revocation changes.
 type ListenerPrincipal struct {
-	Provider string
-	Subject  string
-	Epoch    uint64
+	Provider     string
+	Subject      string
+	Epoch        uint64
+	verifiedDoor *door.Identity
 }
 
 // ListenerPrincipalResolver authenticates an HTTP listener request and returns
@@ -471,6 +473,8 @@ type MCPProxyOpts struct {
 
 	// ReceiptEmitter emits signed action receipts for MCP decisions.
 	// Nil-safe (no-op when nil).
+	ReceiptV3         *v3.StreamWriter
+	receiptCaller     *door.Identity
 	ReceiptEmitter    *receipt.Emitter
 	ReceiptEmitterFn  func() *receipt.Emitter
 	RequireReceipts   bool
@@ -937,6 +941,9 @@ func (o MCPProxyOpts) emitAdmittedReceiptDecision(d MCPDecision) ([]byte, error)
 
 func (o MCPProxyOpts) emitMCPReceiptDecision(d MCPDecision, admit bool) ([]byte, error) {
 	d.Receipt = o.withReceiptPolicyHash(d.Receipt)
+	if o.ReceiptV3 != nil {
+		return d.InboundMsg, o.writeV3Decision(d)
+	}
 	if o.ReceiptGroup != nil {
 		if admit && o.ReceiptGroup.Shards != nil && d.Receipt.ActionID != "" && !d.Receipt.ShardSelected {
 			d.Receipt = o.ReceiptGroup.Shards.Admit(d.Receipt)

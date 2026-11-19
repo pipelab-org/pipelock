@@ -159,8 +159,11 @@ type HeldAction struct {
 	Deadline      time.Time
 	Payload       []byte
 	ArgDigest     string
-	Resolve       func(Resolution)
-	BeforeAllow   func() (release func(), ok bool)
+	// ConfirmHold persists the computed hold before publication in journal-free
+	// mode. It runs under the manager lock and must not call back into it.
+	ConfirmHold func(HeldAction) error
+	Resolve     func(Resolution)
+	BeforeAllow func() (release func(), ok bool)
 	// Prepare, when set, runs after BeforeAllow and before the terminal
 	// journal entry. It may downgrade the resolution (for example when a
 	// release-boundary check cancels an allow) so the journal records the
@@ -321,6 +324,9 @@ func (m *Manager) Hold(action HeldAction) error {
 	if action.Resolve == nil {
 		return fmt.Errorf("resolve callback is required")
 	}
+	if action.ConfirmHold != nil && m.cfg.JournalPath != "" {
+		return errors.New("hold confirmation requires journal-free operation")
+	}
 	if action.SizeBytes < 0 {
 		action.SizeBytes = 0
 	}
@@ -368,26 +374,28 @@ func (m *Manager) Hold(action HeldAction) error {
 		m.journalRejectedHold(action, SourceCascadeLimit)
 		return limitErr
 	}
-	journalAction := action
-	stored := action
-	held := &stored
-	// Commit the StateHeld journal entry BEFORE publishing the hold, while still
-	// holding m.mu. A concurrent admission rejection for a related id blocks on
-	// m.mu until this returns, so it cannot append its StateAdmissionRejected
-	// entry ahead of this hold's StateHeld and causally invert the audit trail.
-	// On journal failure nothing is published, so no rollback is needed.
-	if err := m.appendJournal(journalEntryFromHeld(journalAction, StateHeld, "")); err != nil {
+	// Confirm before publishing the hold. The lock keeps any related
+	// admission or resolution from preceding its record.
+	delay := m.cfg.Timeout
+	if confirm := action.ConfirmHold; confirm != nil {
+		action.ConfirmHold = nil
+		if err := confirm(action); err != nil {
+			m.mu.Unlock()
+			return fmt.Errorf("confirm defer hold: %w", err)
+		}
+		delay = time.Until(action.Deadline)
+	} else if err := m.appendJournal(journalEntryFromHeld(action, StateHeld, "")); err != nil {
 		m.mu.Unlock()
 		return fmt.Errorf("journal defer hold: %w", err)
 	}
-	m.holds[action.DeferID] = held
+	m.holds[action.DeferID] = &action
 	m.sessionHolds[action.Authority.SessionID] = append(m.sessionHolds[action.Authority.SessionID], action.DeferID)
 	m.totalBytes += action.SizeBytes
 	m.mu.Unlock()
 
 	m.mu.Lock()
 	if live := m.holds[action.DeferID]; live != nil && live.state == StateHeld {
-		live.timer = time.AfterFunc(m.cfg.Timeout, func() {
+		live.timer = time.AfterFunc(delay, func() {
 			_ = m.Resolve(action.DeferID, "block", SourceTimeout)
 		})
 	}

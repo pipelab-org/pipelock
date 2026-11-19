@@ -1746,3 +1746,53 @@ func TestResolveApprovalResultReportsAppliedDecision(t *testing.T) {
 		})
 	}
 }
+
+func TestJournalFreeHoldConfirmationAndCascade(t *testing.T) {
+	m := NewManager(Config{Enabled: true, Timeout: time.Minute})
+	t.Cleanup(func() { m.ResolveAll(config.ActionBlock, SourceCancel) })
+	fault := errors.New("confirmation failed")
+	resolved := make(chan Resolution, 2)
+	hold := HeldAction{
+		DeferID: "parent", ActionID: "parent", Target: "example",
+		Authority: AuthoritySnapshot{SessionID: "session"},
+		RulePolicy: config.DeferResolutionPolicy{
+			StepUpOn: config.DeferStepUpOn{ApprovalRequestsHuman: true},
+		},
+		Resolve: func(res Resolution) { resolved <- res },
+		ConfirmHold: func(held HeldAction) error {
+			if held.CascadeDepth != 1 || held.ParentDeferID != "" || held.Linkage != LinkageSessionPendingAncestor ||
+				!held.Deadline.After(time.Now()) {
+				t.Fatalf("unexpected hold before confirmation: %+v", held)
+			}
+			return fault
+		},
+	}
+	if err := m.Hold(hold); !errors.Is(err, fault) || m.HeldCount() != 0 {
+		t.Fatalf("failed confirmation published a hold: %v", err)
+	}
+	hold.ConfirmHold = func(HeldAction) error { return nil }
+	if err := m.Hold(hold); err != nil {
+		t.Fatal(err)
+	}
+	hold.DeferID, hold.ActionID = "child", "child"
+	hold.ConfirmHold = func(held HeldAction) error {
+		if held.CascadeDepth != 2 || held.ParentDeferID != "parent" || held.Linkage != LinkageSessionPendingAncestor {
+			t.Fatalf("unexpected child before confirmation: %+v", held)
+		}
+		return nil
+	}
+	if err := m.Hold(hold); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ResolveApproval("parent", config.ActionAsk); err != nil {
+		t.Fatal(err)
+	}
+	child, parent := <-resolved, <-resolved
+	if child.DeferID != "child" || child.FinalDecision != config.ActionBlock || child.ResolutionSource != SourceCascade ||
+		parent.DeferID != "parent" || parent.FinalDecision != config.ActionAsk {
+		t.Fatalf("unexpected cascade resolution: child=%+v parent=%+v", child, parent)
+	}
+	if m.HeldCount() != 0 || m.JournalPath() != "" {
+		t.Fatal("journal-free settlement left state behind")
+	}
+}

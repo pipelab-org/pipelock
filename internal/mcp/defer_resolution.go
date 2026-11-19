@@ -95,6 +95,7 @@ func emitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 // Prepare, AfterJournal and Resolve run in sequence on the resolving
 // goroutine, so the struct needs no lock.
 type deferredReceiptSettlement struct {
+	v3Hold   *mcpV3Receipt
 	done     bool
 	err      error
 	decision string
@@ -116,7 +117,7 @@ func (s *deferredReceiptSettlement) probeAllow(opts MCPProxyOpts, res deferred.R
 // receiptWritable reports whether a required receipt has a usable emitter.
 // Receipts that are not required never close a release.
 func receiptWritable(opts MCPProxyOpts) bool {
-	if !opts.requireReceipts() {
+	if opts.ReceiptV3 != nil || !opts.requireReceipts() {
 		return true
 	}
 	v1, v2 := opts.receiptEmitter(), opts.v2ReceiptEmitter()
@@ -146,7 +147,11 @@ func (s *deferredReceiptSettlement) ensure(opts MCPProxyOpts, logW io.Writer, re
 }
 
 func (s *deferredReceiptSettlement) emit(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
-	s.err = emitDeferredResolutionReceipt(opts, logW, res)
+	if opts.ReceiptV3 != nil {
+		s.err = s.settleV3Hold(opts, res)
+	} else {
+		s.err = emitDeferredResolutionReceipt(opts, logW, res)
+	}
 	s.done, s.decision, s.source = true, res.FinalDecision, res.ResolutionSource
 	return s.err
 }
