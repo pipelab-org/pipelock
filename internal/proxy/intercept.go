@@ -2596,15 +2596,6 @@ func newInterceptHandler(
 
 			flusher, _ := serverWriter.(http.Flusher)
 			streamErr := DispatchSSEScan(r.Context(), resp.Body, httpstream.Writer{Writer: w}, flusher, ic.Scanner, sseOpts)
-			if isNativeCapacityStop(streamErr) {
-				if ic.Config.FlightRecorder.RequireReceipts {
-					emitOutcome(sseAllowReceipt, config.ActionAllow, resp.StatusCode, -1, nativeCapacityStopReason)
-				} else {
-					_ = interceptEmitReceipt(ic, nativeStreamCloseReceipt(sseAllowReceipt))
-				}
-				_ = httpstream.Abort(r.Context(), streamErr)
-				return
-			}
 			if errors.Is(streamErr, mcp.ErrReceiptRequired) {
 				if ic.Proxy != nil {
 					ic.Proxy.recordRequiredReceiptBlock(streamErr, TransportConnect)
@@ -2612,6 +2603,15 @@ func newInterceptHandler(
 				ic.Logger.LogError(actx, streamErr)
 				ic.Metrics.RecordTLSResponseBlocked(receiptEmissionFailedLayer)
 				emitOutcome(sseAllowReceipt, config.ActionBlock, resp.StatusCode, -1, receiptEmissionFailedLayer)
+				_ = httpstream.Abort(r.Context(), streamErr)
+				return
+			}
+			if isNativeCapacityStop(streamErr) {
+				if ic.Config.FlightRecorder.RequireReceipts {
+					emitOutcome(sseAllowReceipt, config.ActionAllow, resp.StatusCode, -1, nativeCapacityStopReason)
+				} else {
+					_ = interceptEmitReceipt(ic, nativeStreamCloseReceipt(sseAllowReceipt))
+				}
 				_ = httpstream.Abort(r.Context(), streamErr)
 				return
 			}

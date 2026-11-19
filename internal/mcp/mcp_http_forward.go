@@ -19,7 +19,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
-	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
@@ -144,6 +143,12 @@ func RunHTTPProxy(
 	ctx, cancel, sessionExit := newSessionBoundContext(ctx, startupParentWatch, clientIn, safeLogW, opts.sessionExitForTest)
 	defer cancel()
 	defer opts.closeNativeInputOnStop(clientIn)()
+	ctx, cancelCapacity := context.WithCancelCause(ctx)
+	defer cancelCapacity(nil)
+	defer opts.nativeCapacity().OnStopAfter(opts.shutdownGrace(), func() {
+		cancelCapacity(ael.ErrCapacity)
+		interruptNativeOutput(clientOut)
+	})()
 
 	// Set transport for capture records if not already set by caller.
 	if opts.Transport == "" {
@@ -263,15 +268,13 @@ func RunHTTPProxy(
 
 	clientReader := transport.NewStdioReader(clientIn)
 
-	var wg sync.WaitGroup
+	var wg, heldNative sync.WaitGroup
 	var getStreamOnce sync.Once
 	var lastScanErr error
 	var admission receipt.EmitOpts
 	finishWarnings := func() {}
-	stopCapacity := func() {}
 	settleAdmission := func() {
 		finishWarnings()
-		stopCapacity()
 		admission.ReleaseNativeAdmission()
 	}
 	defer settleAdmission()
@@ -279,7 +282,6 @@ func RunHTTPProxy(
 	for {
 		settleAdmission()
 		finishWarnings = func() {}
-		stopCapacity = func() {}
 		admission = receipt.EmitOpts{}
 		msg, err := readMCPInputMessage(ctx, clientIn, clientReader)
 		if err != nil {
@@ -401,6 +403,14 @@ func RunHTTPProxy(
 			// deferred cleanup safe after this early denial cleanup.
 			var finishDeniedRelease func()
 			heldOpts, finishHeldAdmission, holdErr := fwdOpts.splitDeferredAdmission()
+			if holdErr == nil && heldOpts.nativeAdmission.NativeLease != nil {
+				heldNative.Add(1)
+				release := finishHeldAdmission
+				finishHeldAdmission = func() {
+					defer heldNative.Done()
+					release()
+				}
+			}
 			heldAction := deferred.HeldAction{
 				DeferID:       deferredReq.DeferID,
 				ActionID:      deferredReq.DeferID,
@@ -556,8 +566,7 @@ func RunHTTPProxy(
 								return
 							}
 						}
-						releaseCtx, stopRelease := httpstream.WithCapacityGrace(heldOpts.warnContext(), nil, heldOpts.nativeAdmission.NativeLease, heldOpts.shutdownGrace())
-						defer stopRelease()
+						releaseCtx := heldOpts.warnContext()
 						releaseOpts := heldOpts
 						releaseOpts.WarnContext = releaseCtx
 						respReader, sendErr := httpClient.SendMessageWithOptions(releaseCtx, deferredReq.ForwardMessage, transport.HTTPMessageOptions{Headers: releaseHeaders})
@@ -775,8 +784,6 @@ func RunHTTPProxy(
 			})
 		}
 		// POST to upstream.
-		var requestCtx context.Context
-		requestCtx, stopCapacity = httpstream.WithCapacityGrace(ctx, nil, admission.NativeLease, fwdOpts.shutdownGrace())
 		var taskRefusal string
 		respReader, err := func() (transport.MessageReader, error) {
 			upstreamMu.Lock()
@@ -785,7 +792,7 @@ func RunHTTPProxy(
 			if taskRefusal != "" {
 				return nil, nil
 			}
-			return httpClient.SendMessageWithOptions(requestCtx, decision.ForwardMessage, transport.HTTPMessageOptions{Headers: requestHeaders})
+			return httpClient.SendMessageWithOptions(ctx, decision.ForwardMessage, transport.HTTPMessageOptions{Headers: requestHeaders})
 		}()
 		if taskRefusal != "" {
 			unlockInventory()
@@ -813,8 +820,8 @@ func RunHTTPProxy(
 		emitPendingMCPInputReceipt(decision.pendingReceipt)
 		if err != nil {
 			unlockInventory()
-			if errors.Is(context.Cause(requestCtx), ael.ErrCapacity) {
-				emitTrackedStreamError(requestCtx, safeLogW, tracker, frame.ID, fwdOpts, ael.ErrCapacity)
+			if errors.Is(context.Cause(ctx), ael.ErrCapacity) {
+				emitTrackedStreamError(ctx, safeLogW, tracker, frame.ID, fwdOpts, ael.ErrCapacity)
 				break
 			}
 			// SendMessage returns context cancellation/deadline errors as-is
@@ -844,9 +851,13 @@ func RunHTTPProxy(
 
 		// Scan and forward response. Apply the optional per-read response
 		// timeout (no-op when disabled) so a hung HTTP upstream fails closed.
-		foundInjection, scanErr := scanMCPHTTPResponse(requestCtx, respReader, safeClientOut, safeLogW, tracker, fwdOpts)
-		if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(context.Cause(requestCtx), ael.ErrCapacity) {
-			emitTrackedStreamError(requestCtx, safeLogW, tracker, frame.ID, fwdOpts, ael.ErrCapacity)
+		if transport.IsStreamingResponse(respReader) {
+			fwdOpts.nativeSSE = true
+			fwdOpts.WarnContext = ctx
+		}
+		foundInjection, scanErr := ForwardScanned(fwdOpts.withResponseTimeout(respReader), safeClientOut, safeLogW, tracker, fwdOpts)
+		if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(context.Cause(ctx), ael.ErrCapacity) {
+			emitTrackedStreamError(ctx, safeLogW, tracker, frame.ID, fwdOpts, ael.ErrCapacity)
 			lastScanErr = ael.ErrCapacity
 			unlockInventory()
 			break
@@ -891,10 +902,12 @@ func RunHTTPProxy(
 		}
 	}
 
-	// Stop the GET stream and any held-call release before terminating the
-	// session. DeleteSession clears the negotiated version, so a release sent
-	// after it would leave without its modern request metadata; releases send
-	// on ctx, and DeleteSession uses its own context.
+	// Capacity stops intake immediately. Let admitted background work settle
+	// before deleting the upstream session, with I/O interrupted at the cutoff.
+	if opts.nativeCapacityStopError() != nil {
+		heldNative.Wait()
+		wg.Wait()
+	}
 	cancel()
 	if httpClient.SessionID() != "" {
 		httpClient.DeleteSession(safeLogW)

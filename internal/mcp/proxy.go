@@ -115,6 +115,9 @@ func emitPendingIncompleteOutcomes(logW io.Writer, tracker *RequestTracker, opts
 	if tracker == nil {
 		return
 	}
+	if reason == "upstream_closed" && opts.nativeCapacityStopError() != nil {
+		reason = nativeCapacityReason
+	}
 	for _, pending := range tracker.DrainPendingOutcomes() {
 		emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, pending.Outcome.Receipt, "incomplete", -1, reason, opts.requireReceipts())
 		pending.Outcome.releaseNativeLease()
@@ -165,7 +168,7 @@ func isRequest(msg []byte) bool {
 // When ks is non-nil, the kill switch is checked on each message so activation
 // mid-stream terminates already-open sessions immediately.
 // Returns true if any response security finding was detected.
-func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) (bool, error) {
+func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) (foundInjection bool, scanErr error) {
 	opts = opts.snapshotScanPolicy()
 	if opts.ServerIdentityFn != nil {
 		writer = &serverIdentityMessageWriter{writer: writer, opts: opts}
@@ -210,28 +213,42 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			session.EscalationLabel(rec.EscalationLevel()))
 	}
 
-	foundInjection := false
 	// lineNum counts non-empty messages, not raw lines. StdioReader skips
 	// empty lines internally, so this is a message index. ScanStream (scan.go)
 	// preserves raw line counting for user-facing diagnostics.
 	lineNum := 0
 	streamAdmission := opts.nativeAdmission
 	var eventAdmission receipt.EmitOpts
-	var leasedResponse TrackedRequestOutcome
+	var trackedOutcome TrackedRequestOutcome
+	emitTrackedOutcome := func(status, reason string, outbound []byte) {
+		if trackedOutcome.Receipt.ActionID == "" {
+			return
+		}
+		bytesTransferred := int64(-1)
+		if outbound != nil {
+			bytesTransferred = int64(len(outbound))
+		}
+		emitMCPOutcomeReceipt(receiptEmitter, v2ReceiptEmitter, opts.ReceiptGroup, logW, trackedOutcome.Receipt, status, bytesTransferred, reason, opts.requireReceipts())
+	}
 	finishWarnings := func() {}
 	baseWarnContext := opts.warnContext()
 	defer func() {
+		// Once correlation consumes a request, the session drain no longer
+		// owns it. A delivery failure must close its intent before release.
+		if scanErr != nil {
+			emitTrackedOutcome("incomplete", "downstream_write_failed", nil)
+		}
 		finishWarnings()
 		eventAdmission.ReleaseNativeAdmission()
-		leasedResponse.releaseNativeLease()
+		trackedOutcome.releaseNativeLease()
 	}()
 
 	for {
 		finishWarnings()
 		eventAdmission.ReleaseNativeAdmission()
-		leasedResponse.releaseNativeLease()
+		trackedOutcome.releaseNativeLease()
 		eventAdmission = receipt.EmitOpts{}
-		leasedResponse = TrackedRequestOutcome{}
+		trackedOutcome = TrackedRequestOutcome{}
 		opts.WarnContext = baseWarnContext
 		opts.nativeAdmission = streamAdmission
 		line, err := reader.ReadMessage()
@@ -423,8 +440,6 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// arrives before ForwardScannedInput tracks the outbound request ID
 		// (concurrent goroutines). The window is not exploitable: before any
 		// client request, no valid request ID exists to hijack.
-		var trackedOutcome TrackedRequestOutcome
-		var hasTrackedOutcome bool
 		var trackedMethod string
 		if tracker != nil && tracker.Seeded() && isResponse(line) {
 			rpcID := frame.ID
@@ -447,7 +462,6 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				if valid {
 					trackedMethod = trackedOutcome.Method
 					if trackedOutcome.ownsNativeLease {
-						leasedResponse = trackedOutcome
 						opts.nativeAdmission = trackedOutcome.Receipt
 					}
 				}
@@ -465,15 +479,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					}
 					continue
 				}
-				hasTrackedOutcome = trackedOutcome.Receipt.ActionID != ""
 			}
-		}
-
-		emitTrackedOutcome := func(status, reason string, outbound []byte) {
-			if !hasTrackedOutcome {
-				return
-			}
-			emitMCPOutcomeReceipt(receiptEmitter, v2ReceiptEmitter, opts.ReceiptGroup, logW, trackedOutcome.Receipt, status, int64(len(outbound)), reason, opts.requireReceipts())
 		}
 
 		blockScanError := func(scanError string) error {

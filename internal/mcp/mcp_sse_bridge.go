@@ -247,7 +247,7 @@ func scanGETStream(ctx context.Context, client *transport.HTTPClient, writer tra
 	opts.WarnContext = warnContext
 	defer stopWarnings()
 	_, scanErr = scanMCPHTTPResponse(streamCtx, reader, writer, logW, tracker, opts)
-	if errors.Is(scanErr, ael.ErrCapacity) {
+	if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(context.Cause(streamCtx), ael.ErrCapacity) {
 		recordListenerStreamError(ctx, logW, opts, mcpStreamReceipt(opts, http.MethodGet), true, ael.ErrCapacity)
 		return ael.ErrCapacity, nil
 	}

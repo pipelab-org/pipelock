@@ -20,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
@@ -222,5 +223,41 @@ func TestDispatchSSEScanDistinguishesCapacityFromScanFailure(t *testing.T) {
 				t.Fatalf("dispatch error=%v, want %v", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestSSECapacityPreservesRequiredReceiptFailure(t *testing.T) {
+	const finding = "fixture SSE finding"
+	p, _, _ := newNativeCapacityProxy(t, nativeRequestRecords+4, func(cfg *config.Config) {
+		cfg.ResponseScanning.Enabled = true
+		cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: finding, Regex: finding}}
+	})
+	cfg := config.Defaults()
+	cfg.FlightRecorder.RequireReceipts = true
+	ctx, cancel := context.WithCancelCause(t.Context())
+	defer cancel(nil)
+	emitErr := errors.New("fixture receipt failure")
+	confirm := sseFindingReceiptConfirmer(cfg, receipt.EmitOpts{}, func(*config.Config, receipt.EmitOpts) error {
+		cancel(ael.ErrCapacity)
+		return emitErr
+	})
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(
+		`data: {"choices":[{"delta":{"content":"fixture SSE finding"}}]}` + "\n\n",
+	))}
+	completed := make(chan error, 1)
+	body := HijackResponseForSSE(ctx, resp, p.ScannerPtr().Load(), SSEDispatchOptions{
+		GenericSSE: &config.GenericSSEScanning{Enabled: true, Action: config.ActionWarn},
+		Generic:    mcp.GenericSSEScanOptions{ConfirmFinding: confirm},
+	}, func(err error) { completed <- err })
+	defer func() { _ = body.Close() }()
+	delivered, err := io.ReadAll(body)
+	if len(delivered) != 0 {
+		t.Fatalf("downstream received unconfirmed event %q", delivered)
+	}
+	if outcome := <-completed; !errors.Is(outcome, mcp.ErrReceiptRequired) || !errors.Is(outcome, emitErr) {
+		t.Errorf("stream outcome = %v, want required receipt failure", outcome)
+	}
+	if !errors.Is(err, mcp.ErrReceiptRequired) {
+		t.Errorf("downstream error = %v, want required receipt failure", err)
 	}
 }

@@ -681,3 +681,263 @@ func TestHTTPListenerCapacitySettlesIntentBeforeUpstreamHeaders(t *testing.T) {
 	}
 	verifyMCPNativeClose(t, e, dir)
 }
+
+type observedNativeOutput struct {
+	*io.PipeWriter
+	writes chan string
+}
+
+func (w observedNativeOutput) Write(p []byte) (int, error) {
+	w.writes <- string(p)
+	return w.PipeWriter.Write(p)
+}
+
+func TestHTTPBridgeNativeCapacityCutsOffBlockedOutput(t *testing.T) {
+	const event = `{"jsonrpc":"2.0","method":"notifications/message","params":{"data":"subscription event"}}`
+	for _, mode := range []string{"post", "deferred", "get"} {
+		t.Run(mode, func(t *testing.T) {
+			e, dir := newNativeMCPEmitter(t, 3*nativeMCPRequestRecords+4)
+			opts := nativeDeferredOptions(t, e)
+			opts.Transport = deferred.SurfaceMCPHTTPUpstream
+			request := cleanToolsCallRequest
+			if mode == "deferred" {
+				request = heldNativeCall
+			}
+
+			received := make(chan string, 1)
+			getCanceled := make(chan struct{})
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if mode == "get" {
+					switch r.Method {
+					case http.MethodPost:
+						w.Header().Set("Mcp-Session-Id", "fixture-session")
+					case http.MethodGet:
+						w.Header().Set("Content-Type", "text/event-stream")
+						if _, err := io.WriteString(w, "data: "+event+"\n\n"); err != nil {
+							t.Error(err)
+							return
+						}
+						if err := http.NewResponseController(w).Flush(); err != nil {
+							t.Error(err)
+							return
+						}
+						<-r.Context().Done()
+						close(getCanceled)
+						return
+					case http.MethodDelete:
+						w.WriteHeader(http.StatusNoContent)
+						return
+					}
+				}
+				if r.Method != http.MethodPost {
+					t.Errorf("unexpected upstream method %s", r.Method)
+					return
+				}
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				received <- string(body)
+				w.Header().Set("Content-Type", "application/json")
+				if _, err := io.WriteString(w, heldNativeReply); err != nil {
+					t.Error(err)
+				}
+			}))
+			defer upstream.Close()
+
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(2*time.Second))
+			defer cancel()
+			input, client := io.Pipe()
+			defer func() { _ = client.Close() }()
+			clientRead, clientWrite := io.Pipe()
+			defer func() { _ = clientRead.Close() }()
+			writes := make(chan string, 4)
+			done := make(chan error, 1)
+			go func() {
+				done <- RunHTTPProxy(ctx, input, observedNativeOutput{clientWrite, writes}, io.Discard, upstream.URL, nil, opts)
+			}()
+			if _, err := io.WriteString(client, request+"\n"); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "deferred" {
+				resolveNativeDeferredCall(t, opts.DeferManager)
+			}
+			select {
+			case body := <-received:
+				if body != request {
+					t.Fatalf("upstream body = %q, want %q", body, request)
+				}
+			case <-ctx.Done():
+				t.Fatal("call did not reach upstream")
+			}
+			wantBlocked := heldNativeReply
+			if mode == "get" {
+				select {
+				case <-writes:
+				case <-ctx.Done():
+					t.Fatal("POST reply did not reach the downstream pipe")
+				}
+				reader := transport.NewStdioReader(clientRead)
+				if reply, err := reader.ReadMessage(); err != nil || string(reply) != heldNativeReply {
+					t.Fatalf("POST reply = %s, %v", reply, err)
+				}
+				wantBlocked = event
+			}
+			select {
+			case reply := <-writes:
+				if strings.TrimSpace(reply) != wantBlocked {
+					t.Fatalf("attempted reply = %q", reply)
+				}
+			case <-ctx.Done():
+				t.Fatal("reply did not reach the downstream pipe")
+			}
+
+			stoppedAt := time.Now()
+			if _, err := e.ReserveNativeRecords(5 * nativeMCPRequestRecords); !errors.Is(err, ael.ErrCapacity) {
+				t.Fatalf("capacity stop = %v, want %v", err, ael.ErrCapacity)
+			}
+			select {
+			case err := <-done:
+				if !errors.Is(err, ael.ErrCapacity) || time.Since(stoppedAt) < opts.ListenerShutdownTimeout {
+					t.Fatalf("bridge exit = %v after %v", err, time.Since(stoppedAt))
+				}
+			case <-ctx.Done():
+				t.Fatal("HTTP bridge remained blocked writing to the downstream pipe")
+			}
+			if _, err := clientRead.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+				t.Fatalf("downstream after cutoff = %v, want EOF", err)
+			}
+			if mode == "get" {
+				select {
+				case <-getCanceled:
+				case <-ctx.Done():
+					t.Fatal("cutoff did not cancel the upstream GET")
+				}
+			}
+			verifyMCPNativeClose(t, e, dir)
+			if mode == "post" {
+				assertNativeMCPOutcome(t, e, dir, "status=incomplete bytes=unknown reason=downstream_write_failed")
+			}
+		})
+	}
+}
+
+func TestStdioNativeCapacityRecordsUndeliveredOutcome(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("shell subprocess test requires unix")
+	}
+	const received = `{"jsonrpc":"2.0","method":"notifications/message","params":{"data":"request received"}}`
+	const child = `
+IFS= read -r request || exit 2
+case "$request" in *'"id":1'*) ;; *) exit 3;; esac
+printf '%s\n' "$1"
+`
+	for _, mode := range []string{"subprocess", "sandboxed"} {
+		for _, state := range []string{"pending", "blocked"} {
+			t.Run(mode+"/"+state, func(t *testing.T) {
+				e, dir := newNativeMCPEmitter(t, 2*nativeMCPRequestRecords+4)
+				ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(2*time.Second))
+				defer cancel()
+				input, client := io.Pipe()
+				defer func() { _ = client.Close() }()
+				clientRead, clientWrite := io.Pipe()
+				defer func() { _ = clientRead.Close() }()
+				writes := make(chan string, 4)
+				output := observedNativeOutput{clientWrite, writes}
+				opts := MCPProxyOpts{
+					Scanner: testInputScanner(t), ReceiptEmitter: e, RequireReceipts: true,
+					ListenerShutdownTimeout: 50 * time.Millisecond,
+				}
+				done := make(chan error, 1)
+				script := child
+				if state == "blocked" {
+					script += `printf '%s
+' "$2"` + "\n"
+				}
+				script += "exec sleep 30\n"
+				go func() {
+					args := []string{"sh", "-c", script, "sh", received, heldNativeReply}
+					if mode == "sandboxed" {
+						cmd := exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // fixed test command
+						done <- RunProxyWithSandbox(ctx, cmd, input, output, io.Discard, opts)
+						return
+					}
+					done <- RunProxy(ctx, input, output, io.Discard, args, opts)
+				}()
+				if _, err := io.WriteString(client, cleanToolsCallRequest+"\n"); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case <-writes:
+				case <-ctx.Done():
+					t.Fatal("child did not acknowledge the request")
+				}
+				clientMessages := transport.NewStdioReader(clientRead)
+				if got, err := clientMessages.ReadMessage(); err != nil || string(got) != received {
+					t.Fatalf("child acknowledgment = %s, %v", got, err)
+				}
+				if state == "blocked" {
+					select {
+					case got := <-writes:
+						if strings.TrimSpace(got) != heldNativeReply {
+							t.Fatalf("attempted reply = %q", got)
+						}
+					case <-ctx.Done():
+						t.Fatal("reply did not reach the downstream pipe")
+					}
+				}
+				if _, err := e.ReserveNativeRecords(3 * nativeMCPRequestRecords); !errors.Is(err, ael.ErrCapacity) {
+					t.Fatalf("capacity stop = %v, want %v", err, ael.ErrCapacity)
+				}
+				select {
+				case err := <-done:
+					if !errors.Is(err, ael.ErrCapacity) {
+						t.Fatalf("proxy exit = %v, want %v", err, ael.ErrCapacity)
+					}
+				case <-ctx.Done():
+					t.Fatal("proxy did not stop at capacity cutoff")
+				}
+				if _, err := clientMessages.ReadMessage(); !errors.Is(err, io.EOF) {
+					t.Fatalf("downstream after cutoff = %v, want EOF", err)
+				}
+				verifyMCPNativeClose(t, e, dir)
+				want := "status=incomplete bytes=unknown reason=" + nativeCapacityReason
+				if state == "blocked" {
+					want = "status=incomplete bytes=unknown reason=downstream_write_failed"
+				}
+				assertNativeMCPOutcome(t, e, dir, want)
+			})
+		}
+	}
+}
+
+func assertNativeMCPOutcome(t *testing.T, e *receipt.Emitter, dir, want string) {
+	t.Helper()
+	entries, err := recorder.QuerySession(dir, e.Session(), &recorder.QueryFilter{Type: "action_receipt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var intentID string
+	var outcomes []receipt.ActionRecord
+	for _, entry := range entries.Entries {
+		signed, err := receipt.Unmarshal(entry.RawDetail)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record := signed.ActionRecord
+		if record.DecisionPhase == receipt.DecisionPhaseIntent {
+			intentID = record.ActionID
+		}
+		if record.DecisionPhase == receipt.DecisionPhaseOutcome {
+			outcomes = append(outcomes, record)
+		}
+	}
+	if intentID == "" || len(outcomes) != 1 || outcomes[0].ActionID != intentID || !strings.Contains(outcomes[0].Pattern, want) {
+		var patterns []string
+		for _, outcome := range outcomes {
+			patterns = append(patterns, outcome.Pattern)
+		}
+		t.Fatalf("tools/call terminal outcomes = %q, want one paired outcome containing %q", patterns, want)
+	}
+}

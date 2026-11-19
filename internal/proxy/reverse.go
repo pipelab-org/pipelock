@@ -3217,16 +3217,16 @@ responseScanning:
 			if err == nil {
 				return
 			}
+			if errors.Is(err, mcp.ErrReceiptRequired) {
+				rp.recordRequiredReceiptBlock(err, TransportReverse)
+				recordReverseOutcome(resp.StatusCode, -1, receiptEmissionFailedLayer)
+				return
+			}
 			if isNativeCapacityStop(err) {
 				recordReverseOutcome(resp.StatusCode, -1, nativeCapacityStopReason)
 				if !cfg.FlightRecorder.RequireReceipts {
 					_ = rp.emitReceipt(nativeStreamCloseReceipt(receipt.EmitOpts{Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL, RequestID: requestID, Agent: agent}).InheritAdmission(sseOpts.nativeAdmission).NativeTerminal())
 				}
-				return
-			}
-			if errors.Is(err, mcp.ErrReceiptRequired) {
-				rp.recordRequiredReceiptBlock(err, TransportReverse)
-				recordReverseOutcome(resp.StatusCode, -1, receiptEmissionFailedLayer)
 				return
 			}
 			// Findings and incomplete scans keep their evidence below, even

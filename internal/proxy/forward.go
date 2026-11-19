@@ -2898,19 +2898,19 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(resp.StatusCode)
 		flusher, _ := w.(http.Flusher)
 		if err := DispatchSSEScan(r.Context(), resp.Body, httpstream.Writer{Writer: w}, flusher, sc, sseOpts); err != nil {
+			if errors.Is(err, mcp.ErrReceiptRequired) {
+				p.recordRequiredReceiptBlock(err, TransportForward)
+				outcomeStatus = strconv.Itoa(resp.StatusCode)
+				outcomeReason = receiptEmissionFailedLayer
+				_ = httpstream.Abort(r.Context(), err)
+				return
+			}
 			if isNativeCapacityStop(err) {
 				outcomeStatus = strconv.Itoa(resp.StatusCode)
 				outcomeReason = nativeCapacityStopReason
 				if !cfg.FlightRecorder.RequireReceipts {
 					emitForwardReceipt(nativeStreamCloseReceipt(forwardAllowReceipt))
 				}
-				_ = httpstream.Abort(r.Context(), err)
-				return
-			}
-			if errors.Is(err, mcp.ErrReceiptRequired) {
-				p.recordRequiredReceiptBlock(err, TransportForward)
-				outcomeStatus = strconv.Itoa(resp.StatusCode)
-				outcomeReason = receiptEmissionFailedLayer
 				_ = httpstream.Abort(r.Context(), err)
 				return
 			}
