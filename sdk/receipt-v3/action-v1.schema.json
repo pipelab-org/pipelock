@@ -422,10 +422,19 @@
       "additionalProperties": false,
       "minProperties": 1,
       "properties": {
+        "cascade_depth": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
         "correction": {
           "type": "boolean"
         },
         "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "linkage": {
           "minLength": 1,
           "type": "string"
         },

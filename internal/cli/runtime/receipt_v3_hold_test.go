@@ -35,14 +35,26 @@ func TestV3HoldCarriesLegacyRecoveryAttribution(t *testing.T) {
 		},
 		Deadline: time.Now().Add(time.Minute), Resolve: func(deferred.Resolution) {},
 	}
+	parent := held
+	parent.DeferID, parent.ActionID = "parent-approval", "parent-action"
+	if err := manager.Hold(parent); err != nil {
+		t.Fatal(err)
+	}
 	if err := manager.Hold(held); err != nil {
 		t.Fatal(err)
 	}
 	pending, err := deferred.PendingJournal(manager.JournalPath())
-	if err != nil || len(pending) != 1 {
+	if err != nil || len(pending) != 2 {
 		t.Fatalf("legacy journal hold unavailable: %v (%v)", pending, err)
 	}
-	held = pending[0]
+	for _, item := range pending {
+		if item.DeferID == held.DeferID {
+			held = item
+		}
+	}
+	if held.CascadeDepth != 2 || held.ParentDeferID != parent.DeferID || held.Linkage != deferred.LinkageSessionPendingAncestor {
+		t.Fatalf("journal did not preserve cascade attribution: %+v", held)
+	}
 	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
 	legacyReceipts := filepath.Join(legacyDir, "receipts")
 	rec, err := recorder.New(recorder.Config{Dir: legacyReceipts, Enabled: true}, nil, key)
@@ -58,16 +70,12 @@ func TestV3HoldCarriesLegacyRecoveryAttribution(t *testing.T) {
 		t.Fatal(err)
 	}
 	legacy := readRuntimeActionRecords(t, legacyReceipts)
-	if len(legacy) != 1 {
-		t.Fatalf("wanted one legacy recovery receipt, got %d", len(legacy))
+	if len(legacy) != 2 || legacy[1].DeferID != held.DeferID {
+		t.Fatalf("wanted parent and child legacy recovery receipts, got %+v", legacy)
 	}
 
-	policy := deferred.ReceiptPolicyStringFor(deferred.ReceiptPolicyOptions{
-		Bounds: held.Policy,
-		Cascade: &deferred.ReceiptCascade{
-			ParentDeferID: held.ParentDeferID, CascadeDepth: held.CascadeDepth, Linkage: held.Linkage,
-		},
-	})
+	policy := deferred.ReceiptPolicyString(held.Policy, config.DeferResolutionPolicy{})
+	depth := int64(held.CascadeDepth)
 	opts := v3.StreamWriterOptions{
 		Dir: streamDir, SigningKey: key, PolicyHash: v3.Digest(nil),
 		Identity: v3.Writer{Instance: "example", Product: "Pipelock", Version: "3"},
@@ -85,7 +93,7 @@ func TestV3HoldCarriesLegacyRecoveryAttribution(t *testing.T) {
 		ActionID: held.ActionID, ActionType: "read", Actor: held.Authority.Actor, Principal: held.Authority.Principal,
 		Caller: v3.Caller{Authn: "none"}, Data: v3.Data{SideEffectClass: "external_read", Reversibility: "full"},
 		EffectBoundary: "approval_prompt", EffectRelation: "before", Phase: "hold", Verdict: "defer",
-		Hold:    &v3.Hold{ID: held.DeferID, Policy: policy, Parent: held.ParentDeferID},
+		Hold:    &v3.Hold{ID: held.DeferID, Policy: policy, Parent: held.ParentDeferID, CascadeDepth: &depth, Linkage: held.Linkage},
 		Session: &v3.Session{ID: held.Authority.SessionID, OriginalID: held.Authority.SessionIDOriginal},
 		Target:  held.Target, Method: held.Method, Transport: held.Surface, Pattern: held.Reason,
 	}
@@ -104,10 +112,22 @@ func TestV3HoldCarriesLegacyRecoveryAttribution(t *testing.T) {
 		t.Fatal(err)
 	}
 	recovered := findV3RecoveryResolution(t, streamDir)
-	old := legacy[0]
+	old := legacy[1]
+	var legacyPolicy deferred.ReceiptPolicy
+	if err := json.Unmarshal([]byte(old.ResolutionPolicy), &legacyPolicy); err != nil {
+		t.Fatal(err)
+	}
+	cascade := legacyPolicy.Cascade
+	legacyPolicy.Cascade = nil
+	legacyBounds, err := json.Marshal(legacyPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if recovered.Hold == nil || recovered.Session == nil ||
 		recovered.Hold.ID != old.DeferID || recovered.Hold.ResolutionSource != old.ResolutionSource ||
-		recovered.Hold.ResolutionPolicy != old.ResolutionPolicy || recovered.Verdict != old.Verdict ||
+		recovered.Hold.ResolutionPolicy != string(legacyBounds) || recovered.Verdict != old.Verdict ||
+		cascade == nil || recovered.Hold.CascadeDepth == nil || *recovered.Hold.CascadeDepth != int64(cascade.CascadeDepth) ||
+		recovered.Hold.Parent != cascade.ParentDeferID || recovered.Hold.Linkage != cascade.Linkage ||
 		recovered.Session.ID != old.SessionID || recovered.Session.OriginalID != old.SessionIDOriginal ||
 		recovered.Target != old.Target || recovered.Transport != old.Transport || recovered.Pattern != old.Pattern ||
 		recovered.ActionID != old.ParentActionID || recovered.Policy != snapshot.ActionPolicy() ||

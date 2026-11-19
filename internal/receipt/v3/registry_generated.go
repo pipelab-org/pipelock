@@ -265,8 +265,10 @@ var wireFields = map[string]map[string]fieldSpec{
 		"fsync_errors_gated": {"uint", true},
 	},
 	"Hold": {
+		"cascade_depth":     {"positive", false},
 		"correction":        {"bool", false},
 		"id":                {"string", true},
+		"linkage":           {"string", false},
 		"parent":            {"string", false},
 		"policy":            {"string", false},
 		"resolution_policy": {"string", false},
@@ -569,8 +571,10 @@ type Heartbeat struct {
 }
 
 type Hold struct {
+	CascadeDepth     *int64 `json:"cascade_depth,omitempty"`
 	Correction       *bool  `json:"correction,omitempty"`
 	ID               string `json:"id"`
+	Linkage          string `json:"linkage,omitempty"`
 	Parent           string `json:"parent,omitempty"`
 	Policy           string `json:"policy,omitempty"`
 	ResolutionPolicy string `json:"resolution_policy,omitempty"`

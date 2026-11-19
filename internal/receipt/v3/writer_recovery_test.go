@@ -17,7 +17,11 @@ import (
 func writerTestHold(id string) Action {
 	hold := writerTestIntent(id)
 	hold.Attempt = nil
-	hold.Hold = &Hold{ID: id + "-approval", Parent: "prior-approval", Policy: "operator"}
+	depth := int64(2)
+	hold.Hold = &Hold{
+		ID: id + "-approval", Parent: "prior-approval", Policy: "operator",
+		CascadeDepth: &depth, Linkage: "session_pending_ancestor",
+	}
 	hold.Phase, hold.EffectBoundary, hold.Verdict = phaseHold, approvalBoundary, "defer"
 	hold.Session = &Session{ID: "example-work", TaskLabel: "read"}
 	hold.Caller = Caller{Authn: "mcp_door_verified", Resource: "api.vendor.example", Issuer: "issuer.vendor.example", Subject: "person", ClientID: "client"}
