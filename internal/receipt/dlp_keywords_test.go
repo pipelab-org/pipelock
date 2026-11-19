@@ -35,7 +35,7 @@ func TestDLPKeywordsReceiptRedactionObligation(t *testing.T) {
 	// The label is in the path and disappears when a URL is reduced to authority.
 	// The already-detected hostname value must stay redacted after that reduction.
 	tmpl.ActionRecord.Target = "https://3333333333333333.vendor.example/account"
-	next, cs, err := em.scanActionContent(tmpl)
+	next, cs, err := em.scanActionContent(t.Context(), tmpl)
 	if err != nil || cs == nil {
 		t.Fatalf("receipt scan: %v", err)
 	}

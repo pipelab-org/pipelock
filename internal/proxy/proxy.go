@@ -1733,7 +1733,9 @@ func (p *Proxy) emitRequiredReceipt(opts receipt.EmitOpts) error {
 		return err
 	}
 	if err := p.emitRequiredReceiptWithEmitter(opts, e); err != nil {
-		p.recordRequiredReceiptBlock(err, opts.Transport)
+		if !receipt.IsContentScanCanceled(err) {
+			p.recordRequiredReceiptBlock(err, opts.Transport)
+		}
 		return err
 	}
 	return nil
@@ -1751,6 +1753,9 @@ func (p *Proxy) emitRequiredReceiptWithEmitter(opts receipt.EmitOpts, e *receipt
 		err = e.EmitDurable(opts)
 	}
 	if err != nil {
+		if receipt.IsContentScanCanceled(err) {
+			return err
+		}
 		p.logReceiptChannelBroken(opts, err)
 		if group := p.receiptGroupPtr.Load(); group != nil {
 			selected, selectErr := group.shards.SelectedEmitter(opts)
@@ -1762,6 +1767,7 @@ func (p *Proxy) emitRequiredReceiptWithEmitter(opts receipt.EmitOpts, e *receipt
 		// proxy_decision never outlives its action_receipt sibling.
 		return err
 	}
+	opts.ContentScanContext = nil
 	// Dual-emit the v2 proxy_decision receipt (expand phase; v1 stays live).
 	if err := p.emitRequiredV2Receipt(opts); err != nil {
 		markerErr := p.emitReceiptFailureMarker(e, opts, "proxydecision receipt emission failed", config.ActionBlock)

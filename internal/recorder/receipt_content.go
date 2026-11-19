@@ -53,9 +53,6 @@ func (r *Recorder) ScanReceiptContent(ctx context.Context, p *receiptcontent.Pro
 		return receiptcontent.Report{}, &ContentScan{recorder: r, kind: p.Kind(), off: true}, nil
 	}
 	if slots := r.contentScanSlots; slots != nil {
-		if ctx == nil {
-			ctx = context.Background()
-		}
 		// Receipt projections can spend very different amounts of CPU on
 		// fragment views. Admit only as many active projections per recorder
 		// as the process has CPUs, so a burst of short scans cannot keep a
@@ -65,10 +62,9 @@ func (r *Recorder) ScanReceiptContent(ctx context.Context, p *receiptcontent.Pro
 		case slots <- struct{}{}:
 			defer func() { <-slots }()
 		case <-ctx.Done():
-			return receiptcontent.Report{}, nil, scanner.ErrTextDLPIncomplete
 		}
-		if ctx.Err() != nil {
-			return receiptcontent.Report{}, nil, scanner.ErrTextDLPIncomplete
+		if err := ctx.Err(); err != nil {
+			return receiptcontent.Report{}, nil, errors.Join(scanner.ErrTextDLPIncomplete, err)
 		}
 		// Different fragments can contain the same encoded segments. Reuse
 		// their exact decoder results within this projection. Every candidate
@@ -82,6 +78,9 @@ func (r *Recorder) ScanReceiptContent(ctx context.Context, p *receiptcontent.Pro
 		return receiptcontent.Report{}, nil, err
 	}
 	rep, err := receiptcontent.Scan(ctx, det, proj)
+	if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, scanner.ErrTextDLPIncomplete) {
+		err = errors.Join(err, ctxErr)
+	}
 	if err != nil || !rep.Clean() {
 		return rep, nil, err
 	}

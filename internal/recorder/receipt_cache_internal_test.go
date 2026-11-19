@@ -128,7 +128,7 @@ func TestReceiptContentBoundsConcurrentInspection(t *testing.T) {
 		}
 		cancel()
 		result := <-extra
-		if result.content != nil || !errors.Is(result.err, scanner.ErrTextDLPIncomplete) {
+		if result.content != nil || !errors.Is(result.err, scanner.ErrTextDLPIncomplete) || !errors.Is(result.err, context.Canceled) {
 			t.Errorf("canceled projection returned (%v, %v)", result.content, result.err)
 		}
 		close(release)
@@ -139,16 +139,27 @@ func TestReceiptContentBoundsConcurrentInspection(t *testing.T) {
 			}
 		}
 
-		// A context that is already done when capacity is free either loses
-		// the admission select or is admitted and then refused by the
-		// post-admission check. The select chooses at random, so repeat it
-		// until both branches have run with overwhelming probability.
+		// Free capacity must not allow a canceled caller to start inspection.
 		done, cancelDone := context.WithCancel(t.Context())
 		cancelDone()
-		for range 64 {
-			if _, content, err := rec.ScanReceiptContent(done, recorderSessionProducer, []byte(`{"session_id":"ordinary receipt"}`)); content != nil || !errors.Is(err, scanner.ErrTextDLPIncomplete) {
-				t.Errorf("projection canceled with free capacity returned (%v, %v)", content, err)
-			}
+		if _, content, err := rec.ScanReceiptContent(done, recorderSessionProducer, []byte(`{"session_id":"ordinary receipt"}`)); content != nil || !errors.Is(err, context.Canceled) {
+			t.Errorf("projection canceled with free capacity returned (%v, %v)", content, err)
+		}
+
+		// An active detector can also report incomplete inspection on cancellation.
+		scanning := make(chan struct{})
+		rec.contentDetector = func(ctx context.Context, _ string) scanner.TextDLPResult {
+			close(scanning)
+			<-ctx.Done()
+			return scanner.TextDLPResult{Incomplete: true}
+		}
+		activeCtx, cancelActive := context.WithCancel(t.Context())
+		go scan(activeCtx, extra)
+		<-scanning
+		cancelActive()
+		result = <-extra
+		if result.content != nil || !errors.Is(result.err, scanner.ErrTextDLPIncomplete) || !errors.Is(result.err, context.Canceled) {
+			t.Errorf("projection canceled during inspection returned (%v, %v)", result.content, result.err)
 		}
 		// A projection error after admission still returns its slot.
 		if _, content, err := rec.ScanReceiptContent(t.Context(), recorderSessionProducer, []byte(`not json`)); content != nil || err == nil {
