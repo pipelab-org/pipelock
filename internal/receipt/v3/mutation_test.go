@@ -228,3 +228,33 @@ func readMutationRecipe(t *testing.T, dir string) mutationRecipe {
 	}
 	return recipe
 }
+
+func TestPinMutationChangesEffectiveTip(t *testing.T) {
+	dir := filepath.Join(corpusRoot, "g04-wrong-write-error-pin")
+	recipe := readMutationRecipe(t, dir)
+	keys, err := DecodeKeys(recipe.Keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := make([]string, 0, len(recipe.Inputs))
+	for _, path := range recipe.Inputs {
+		paths = append(paths, filepath.Join(dir, path))
+	}
+	opts := Options{Keys: keys, AllowPrefix: true}
+	baseline, err := VerifyPaths(t.Context(), paths, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutant, err := verifyPaths(t.Context(), paths, opts, codePinMismatch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasFinding(baseline, codePinMismatch) || hasFinding(mutant, codePinMismatch) || !hasFinding(mutant, codeUnconfirmed) {
+		t.Fatalf("pin findings: baseline %+v, mutant %+v", baseline.Findings, mutant.Findings)
+	}
+	before, after := baseline.Histories[0].Streams[0], mutant.Histories[0].Streams[0]
+	if before.End != "closed" || before.Tip == nil || before.Tip.Seq != 1 ||
+		after.End != "superseded_write_error" || after.Tip == nil || after.Tip.Seq != 0 || after.Records != 1 {
+		t.Fatalf("effective tip: baseline %+v, mutant %+v", before, after)
+	}
+}
