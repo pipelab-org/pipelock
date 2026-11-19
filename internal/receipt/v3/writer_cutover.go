@@ -68,6 +68,9 @@ func (w *StreamWriter) buildCutoverInventory(ctx context.Context, keys []ed25519
 	}
 	inventory := Inventory{Chains: make([]InventoryChain, 0, len(old)), Journal: journal, V: 1}
 	for _, chain := range old {
+		if chain.forked {
+			return Inventory{}, errors.New("receipt cutover refused a forked legacy chain")
+		}
 		inventory.Chains = append(inventory.Chains, chain.InventoryChain)
 	}
 	slices.SortFunc(inventory.Chains, compareLegacy)

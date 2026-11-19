@@ -35,6 +35,7 @@ type legacyBatch struct {
 	action   []legacy.Receipt
 	evidence []contract.EvidenceReceipt
 	recorder bool
+	session  string
 }
 
 func legacyCandidate(name string) bool {
@@ -50,6 +51,7 @@ func isGroupArtifact(name string) bool {
 func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPresentation, error) {
 	presented := map[legacyIdentity]legacyPresentation{}
 	if len(paths) == 0 {
+		v.checkLegacySelection(presented)
 		return presented, v.verifyLegacyEndpoint(presented)
 	}
 	keys := make([]string, 0, len(v.opts.Keys))
@@ -59,8 +61,9 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 	sessions := map[string]string{}
 	groupDirs := map[string]bool{}
 	positions := map[legacyIdentity]map[int64]string{}
+	reports := map[string]legacy.BaseReport{}
 	verifyBatch := func(batch legacyBatch) {
-		v.legacyActions(batch, keys, presented, positions)
+		v.legacyActions(batch, keys, reports, presented, positions)
 		v.legacyEvidence(batch, keys, presented, positions)
 	}
 	for _, path := range paths {
@@ -125,7 +128,6 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 		groupDirs[dir] = summary.Groups != 0 || err != nil
 	}
 	ordinarySessions := map[string][]string{}
-	bases := map[string]string{}
 	for _, session := range sortedKeys(sessions) {
 		dir := sessions[session]
 		if groupDirs[dir] {
@@ -147,13 +149,15 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 			}
 		}
 		if base, run := legacy.RunSessionBase(session); run {
-			bases[base] = dir
+			if _, checked := reports[base]; !checked {
+				reports[base] = v.verifyLegacyContinuity(dir, base, keys, groupDirs[dir])
+			}
 		}
 		location, locationErr := recorder.ResolveEvidenceLocation(dir, "")
 		if locationErr != nil {
 			return nil, fmt.Errorf("resolve legacy input: %w", locationErr)
 		}
-		batch := legacyBatch{recorder: true}
+		batch := legacyBatch{recorder: true, session: session}
 		err := recorder.WithSessionHistorySnapshot(location, session, func() error {
 			var readErr error
 			batch.action, batch.evidence, readErr = legacy.ReadSessionChains(location, session)
@@ -168,10 +172,7 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 			v.result.IgnoredFiles++
 		}
 	}
-	for _, base := range sortedKeys(bases) {
-		dir := bases[base]
-		v.verifyLegacyContinuity(dir, base, keys, groupDirs[dir])
-	}
+	v.checkLegacySelection(presented)
 	if err := v.verifyLegacyEndpoint(presented); err != nil {
 		return nil, err
 	}
@@ -182,12 +183,18 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 	return presented, nil
 }
 
-func (v *verification) verifyLegacyContinuity(dir, base string, keys []string, grouped bool) {
+func (v *verification) verifyLegacyContinuity(dir, base string, keys []string, grouped bool) legacy.BaseReport {
+	var endorsements []legacy.RotationEndorsement
+	for _, endorsement := range v.opts.LegacySelection.Endorsements {
+		if candidate, ok := legacy.RunSessionBase(endorsement.SessionID); ok && candidate == base {
+			endorsements = append(endorsements, endorsement)
+		}
+	}
 	report, err := legacy.VerifyBase(dir, base, legacy.BaseVerifyOptions{
-		TrustedKeys: keys, ExcludeReceiptGroupSessions: grouped,
+		TrustedKeys: keys, Endorsements: endorsements, ExcludeReceiptGroupSessions: grouped,
 	})
 	if err == nil && report.Healthy() {
-		return
+		return report
 	}
 	label := "RESTART CONTINUITY FAILED"
 	switch {
@@ -200,6 +207,40 @@ func (v *verification) verifyLegacyContinuity(dir, base string, keys []string, g
 	v.result.Legacy = append(v.result.Legacy, LegacyResult{
 		Chain: base, Format: legacyAction, Class: legacyFailure, Verdict: label,
 	})
+	return legacy.BaseReport{}
+}
+
+func (v *verification) checkLegacySelection(presented map[legacyIdentity]legacyPresentation) {
+	selection := v.opts.LegacySelection
+	if selection.Group != "" {
+		_, found := presented[legacyIdentity{legacyGroup, selection.Group}]
+		v.accept("expect-legacy-group", selection.Group, found)
+	}
+	if selection.Session != "" {
+		found := false
+		for _, row := range presented {
+			found = found || row.session == selection.Session
+		}
+		v.accept("expect-legacy-session", selection.Session, found)
+	}
+	if selection.Bindings != nil {
+		found := false
+		for _, row := range presented {
+			found = found || row.Format == legacyEvidence && (selection.Session == "" || row.session == selection.Session)
+		}
+		if !found {
+			v.accept("expect-legacy-v2", "evidence_v2", false)
+		}
+	}
+	for _, endorsement := range selection.Endorsements {
+		found := false
+		for _, row := range presented {
+			found = found || row.session == endorsement.SessionID && row.Format == legacyAction
+		}
+		if !found {
+			v.accept("rotation-endorsement", endorsement.SessionID, false)
+		}
+	}
 }
 
 func (v *verification) verifyLegacyEndpoint(presented map[legacyIdentity]legacyPresentation) error {
@@ -208,8 +249,10 @@ func (v *verification) verifyLegacyEndpoint(presented map[legacyIdentity]legacyP
 		return nil
 	}
 	var target legacyIdentity
-	for key := range presented {
-		if key.format == legacyGroup {
+	for key, item := range presented {
+		selection := v.opts.LegacySelection
+		if key.format == legacyGroup || selection.Session != "" && item.session != selection.Session ||
+			selection.Bindings != nil && key.format != legacyEvidence {
 			continue
 		}
 		if target.format != "" {
@@ -385,7 +428,7 @@ func (b *legacyBatch) addEvidence(line []byte) error {
 	return nil
 }
 
-func (v *verification) legacyActions(batch legacyBatch, keys []string, presented map[legacyIdentity]legacyPresentation, positions map[legacyIdentity]map[int64]string) {
+func (v *verification) legacyActions(batch legacyBatch, keys []string, reports map[string]legacy.BaseReport, presented map[legacyIdentity]legacyPresentation, positions map[legacyIdentity]map[int64]string) {
 	records := batch.action
 	for len(records) != 0 {
 		first := records[0].ActionRecord
@@ -394,19 +437,21 @@ func (v *verification) legacyActions(batch legacyBatch, keys []string, presented
 			n++
 		}
 		chain := records[:n]
-		walker := legacy.NewChainWalker(keys)
+		walker := v.legacyActionWalker(batch.session, keys, reports)
 		id := first.RunNonce
 		if id == "" {
 			id, _ = first.Hash()
 			id = legacyHash(id)
 		}
 		key := legacyIdentity{legacyAction, id}
-		for _, item := range chain {
+		for pos, item := range chain {
 			if v.skip != codeLegacyInvalid {
 				walker.Add(item)
 			}
 			hash, _ := item.ActionRecord.Hash()
-			saveLegacyPosition(positions, key, item.ActionRecord.ChainSeq, hash)
+			// A verified key transition restarts chain_seq at zero.
+			// Detect competing records by position in the whole chain.
+			saveLegacyPosition(positions, key, uint64(pos), hash)
 			v.rememberLegacyKey(item.SignerKey)
 		}
 		result := walker.Result()
@@ -418,11 +463,23 @@ func (v *verification) legacyActions(batch legacyBatch, keys []string, presented
 		hash, _ := last.Hash()
 		item := legacyPresentation{
 			InventoryChain: InventoryChain{Chain: key.chain, Format: key.format, Record: legacyHash(hash)},
-			verdict:        verdict, cliHead: result.RootHash,
+			verdict:        verdict, cliHead: result.RootHash, session: batch.session,
 		}
 		v.saveLegacy(presented, positions, item, last.ChainSeq, v.skip == codeLegacyInvalid || result.Valid)
 		records = records[n:]
 	}
+}
+
+func (v *verification) legacyActionWalker(session string, keys []string, reports map[string]legacy.BaseReport) legacy.ChainAccumulator {
+	if session == "" || len(v.opts.LegacySelection.Endorsements) == 0 {
+		return legacy.NewChainWalker(keys)
+	}
+	base, _ := legacy.RunSessionBase(session)
+	scoped, own := legacy.ScopedChainTrust(reports[base], session, keys, v.opts.LegacySelection.Endorsements)
+	if len(own) != 0 {
+		return legacy.NewEndorsedChainWalker(session, own, scoped)
+	}
+	return legacy.NewChainWalker(scoped)
 }
 
 func (v *verification) legacyEvidence(batch legacyBatch, keys []string, presented map[legacyIdentity]legacyPresentation, positions map[legacyIdentity]map[int64]string) {
@@ -435,7 +492,12 @@ func (v *verification) legacyEvidence(batch legacyBatch, keys []string, presente
 		chain := records[:n]
 		first, _ := contract.ReceiptHash(chain[0])
 		key := legacyIdentity{legacyEvidence, legacyHash(first)}
-		walker := legacy.NewEvidenceChainWalker(keys, contract.ChainVerifyOptions{})
+		var verifyOptions contract.ChainVerifyOptions
+		selection := v.opts.LegacySelection
+		if selection.Bindings != nil && (selection.Session == "" || selection.Session == batch.session) {
+			verifyOptions = *selection.Bindings
+		}
+		walker := legacy.NewEvidenceChainWalker(keys, verifyOptions)
 		for _, item := range chain {
 			walker.Add(item)
 			hash, _ := contract.ReceiptHash(item)
@@ -447,7 +509,7 @@ func (v *verification) legacyEvidence(batch legacyBatch, keys []string, presente
 		result := walker.Result()
 		item := legacyPresentation{
 			InventoryChain: InventoryChain{Chain: key.chain, Format: key.format, Record: legacyHash(hash)},
-			verdict:        prefixVerdict, cliHead: result.RootHash,
+			verdict:        prefixVerdict, cliHead: result.RootHash, session: batch.session,
 		}
 		v.saveLegacy(presented, positions, item, last.ChainSeq, result.Valid)
 		records = records[n:]

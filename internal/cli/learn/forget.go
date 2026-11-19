@@ -117,11 +117,16 @@ func runForget(cmd *cobra.Command, flags forgetFlags) error {
 	if err != nil {
 		return err
 	}
-	tombstonePath, err := resolveTombstonePath(flags.tombstoneDir, clean, priorHash)
+	receiptOut, err := resolveReceiptOut(flags.receiptOut, dest, "redaction-receipts.jsonl")
 	if err != nil {
 		return err
 	}
-	receiptOut, err := resolveReceiptOut(flags.receiptOut, dest, "redaction-receipts.jsonl")
+	lock, err := lockLifecycleReceiptOutput(receiptOut)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Close() }()
+	tombstonePath, err := resolveTombstonePath(flags.tombstoneDir, clean, priorHash)
 	if err != nil {
 		return err
 	}

@@ -56,6 +56,7 @@ type legacyPresentation struct {
 	InventoryChain
 	verdict string
 	cliHead string
+	session string
 	forked  bool
 }
 

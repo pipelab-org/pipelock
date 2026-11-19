@@ -140,6 +140,11 @@ func runRatify(cmd *cobra.Command, flags ratifyFlags) error {
 	if err != nil {
 		return err
 	}
+	lock, err := lockLifecycleReceiptOutput(receiptOut)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Close() }()
 	outputs := map[string]string{
 		"--out":         dest,
 		"--receipt-out": receiptOut,
