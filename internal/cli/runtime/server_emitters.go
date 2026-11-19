@@ -94,12 +94,21 @@ func acquireRunSession(rec *recorder.Recorder) (string, error) {
 	return session, nil
 }
 
+const nativePredecessorRestartHint = "preserve the evidence directory and set flight_recorder.dir to a new empty directory before restarting"
+
+func withNativePredecessorRestartHint(err error) error {
+	if err == nil || !errors.Is(err, ael.ErrStreamTooLarge) {
+		return err
+	}
+	return fmt.Errorf("%s: %w", nativePredecessorRestartHint, err)
+}
+
 func verifyPredecessorAEL(rec *recorder.Recorder, options verification.Options) error {
 	if rec.IsNop() {
 		return nil
 	}
 	if err := receipt.VerifyPredecessorAEL(rec.Dir(), recorder.DefaultSessionBase, options); err != nil {
-		return fmt.Errorf("preserve the evidence directory and set flight_recorder.dir to a new empty directory before restarting: %w", err)
+		return fmt.Errorf("%s: %w", nativePredecessorRestartHint, err)
 	}
 	return nil
 }

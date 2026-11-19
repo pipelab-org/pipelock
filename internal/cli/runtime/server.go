@@ -659,7 +659,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			}, cfg.FlightRecorder.ReceiptChainCount(), cfg.FlightRecorder.SigningKeyPath, false, s.failRequiredReceiptGroup)
 			if groupErr != nil {
 				s.cleanup()
-				return nil, fmt.Errorf("opening receipt shard group: %w", groupErr)
+				return nil, fmt.Errorf("opening receipt shard group: %w", withNativePredecessorRestartHint(groupErr))
 			}
 			s.receiptShardSet = shards
 			s.receiptEmitter = shards.ProcessEmitter()

@@ -93,6 +93,50 @@ func TestSingleReceiptRestartRefusesOverLimitNativePredecessor(t *testing.T) {
 	}
 }
 
+func TestReceiptGroupRestartNamesDirectoryForOverLimitPredecessor(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "evidence")
+	keyPath := filepath.Join(root, "receipt.key")
+	_, key, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := signing.SavePrivateKey(key, keyPath); err != nil {
+		t.Fatal(err)
+	}
+	opts := ServerOpts{
+		ConfigFile: writeServerTestConfig(t, fmt.Sprintf("mode: balanced\nflight_recorder:\n  enabled: true\n  sign_checkpoints: true\n  receipt_chains: 2\n  require_receipts: true\n  dir: %q\n  signing_key_path: %q\n", dir, keyPath)),
+		Stdout:     io.Discard, Stderr: io.Discard,
+	}
+	first, err := NewServer(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.sealTranscriptRoot(); err != nil {
+		first.cleanup()
+		t.Fatal(err)
+	}
+	first.cleanup()
+	paths, err := filepath.Glob(filepath.Join(dir, "ael", "*", "recorders", "*.jsonl"))
+	if err != nil || len(paths) != 2 {
+		t.Fatalf("native streams = %v, err = %v", paths, err)
+	}
+	if err := os.Truncate(paths[0], (256<<20)+1); err != nil {
+		t.Fatal(err)
+	}
+	refused, err := NewServer(opts)
+	if refused != nil {
+		refused.cleanup()
+		t.Fatal("opened a receipt group over an oversized predecessor stream")
+	}
+	if !errors.Is(err, ael.ErrStreamTooLarge) || !strings.Contains(err.Error(), "set flight_recorder.dir to a new empty directory") {
+		t.Fatalf("group startup refusal = %v", err)
+	}
+	if _, _, err := runMCPProxyCommand(t, opts.ConfigFile); !errors.Is(err, ael.ErrStreamTooLarge) || !strings.Contains(err.Error(), "set flight_recorder.dir to a new empty directory") {
+		t.Fatalf("standalone MCP group startup refusal = %v", err)
+	}
+}
+
 func TestReceiptHeartbeatCapacityLeavesEmitterSealable(t *testing.T) {
 	const ceiling = 1300
 	capacity := ael.NewCapacity(ceiling)

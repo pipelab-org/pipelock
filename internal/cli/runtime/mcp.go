@@ -1332,7 +1332,7 @@ Key-free evidence capture:
 					var groupErr error
 					receiptGroup, groupErr = buildMCPReceiptGroup(template, cfg.FlightRecorder.ReceiptChainCount())
 					if groupErr != nil {
-						return groupErr
+						return withNativePredecessorRestartHint(groupErr)
 					}
 					opening, _ := receiptGroup.Shards.Opening()
 					receiptEmitter = receiptGroup.Shards.ProcessEmitter()
