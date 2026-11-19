@@ -247,6 +247,69 @@ func TestEmitter_EmitSessionOpenRestartLinksPriorTail(t *testing.T) {
 	}
 }
 
+func TestChainLinkPublishesOneClaimForCleanOrTornTail(t *testing.T) {
+	t.Parallel()
+	t.Run("clean", func(t *testing.T) {
+		dir := t.TempDir()
+		_, key := generateTestKey(t)
+		predecessor := startRun(t, dir, key)
+		predecessor.openAndEmit(t, 1)
+		predecessor.close(t)
+		successor := startRun(t, dir, key)
+		successor.openAndEmit(t, 1)
+		successor.close(t)
+
+		name := ChainLinkFileName(predecessor.session)
+		link := successor.e.ChainLink()
+		if link == nil || link.PredecessorSession != predecessor.session || link.SuccessorSession != successor.session ||
+			!slices.Equal(linkFiles(t, dir), []string{name}) {
+			t.Fatalf("expected one chain link, got %+v, files %v", link, linkFiles(t, dir))
+		}
+		t.Log("published one signed chain link")
+	})
+	t.Run("torn", func(t *testing.T) {
+		dir, fixture, key := recoveryFixture(t)
+		name := ChainLinkFileName(fixture.PredecessorSession)
+		path := filepath.Join(dir, name)
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		// Archived evidence omits the run's lifetime lock file.
+		lock := recorder.RunWriterLockPrefix + fixture.PredecessorSession + recorder.RunWriterLockSuffix
+		if err := os.WriteFile(filepath.Join(dir, lock), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var observed *RecoverySeal
+		var notice bytes.Buffer
+		req := linkRequest{
+			dir: dir, base: recorder.DefaultSessionBase, self: fixture.SuccessorSession,
+			privKey: key, now: time.Now().UTC(), notice: &notice,
+			onRecovery: func(seal *RecoverySeal) { observed = seal },
+		}
+		link, err := publishPredecessorLink(req)
+		if err != nil || link != nil || observed == nil || !slices.Equal(linkFiles(t, dir), []string{name}) {
+			t.Fatalf("expected one recovery seal, got link=%+v seal=%+v error=%v files=%v notices=%q", link, observed, err, linkFiles(t, dir), notice.String())
+		}
+		if err := VerifyRecoveryBinding(dir, *observed, []string{fixture.SuccessorSignerKey}); err != nil {
+			t.Fatal(err)
+		}
+		original, err := os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		observed = nil
+		link, err = publishPredecessorLink(req)
+		if err != nil || link != nil || observed != nil {
+			t.Fatalf("existing claim reconsidered: link=%+v seal=%+v error=%v", link, observed, err)
+		}
+		after, err := os.ReadFile(filepath.Clean(path))
+		if err != nil || !bytes.Equal(after, original) || !slices.Equal(linkFiles(t, dir), []string{name}) {
+			t.Fatalf("existing claim changed: error=%v files=%v", err, linkFiles(t, dir))
+		}
+		t.Log("published one verified recovery seal; retry preserved its bytes")
+	})
+}
+
 func TestChainLink_FirstRunStartsUnlinked(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

@@ -46,14 +46,23 @@ func TestKillSwitchBatchReceiptsAreCapped(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := &allReceipts{}
-			emitter, _, _, _ := newReceiptTestHarnessWithObserver(t, got.observe)
-			var logW bytes.Buffer
-			resp := refuseKillSwitchRequest(MCPProxyOpts{ReceiptEmitter: emitter, Transport: transportMCPStdio}, &logW, ParseMCPFrame(killSwitchBatchOfCalls(tc.members)), d)
-
-			if n := len(got.snapshot()); n != tc.wantReceipt {
-				t.Fatalf("receipts = %d, want %d", n, tc.wantReceipt)
+			emitter, dir := newNativeMCPEmitter(t, nativeMCPRequestRecords)
+			opts := MCPProxyOpts{ReceiptEmitter: emitter, Transport: transportMCPStdio}
+			admission, err := opts.admitNativeRequest()
+			if err != nil {
+				t.Fatal(err)
 			}
+			defer admission.ReleaseNativeAdmission()
+			opts.nativeAdmission = admission
+			var logW bytes.Buffer
+			resp := refuseKillSwitchRequest(opts, &logW, ParseMCPFrame(killSwitchBatchOfCalls(tc.members)), d)
+			admission.ReleaseNativeAdmission()
+
+			n := verifyMCPNativeClose(t, emitter, dir)
+			if n != tc.wantReceipt {
+				t.Fatalf("kill-switch batch: wrote %d native records, want %d", n, tc.wantReceipt)
+			}
+			assertMCPNativeRecordBudget(t, "kill-switch batch", n, maxKillSwitchBatchReceipts)
 			var errs []struct {
 				ID    int `json:"id"`
 				Error struct {

@@ -13,11 +13,13 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -75,6 +77,16 @@ func RunWSProxy(
 		}
 	})
 	defer stopInputClose()
+	streamAdmission, err := opts.admitNativeRequest()
+	if err != nil {
+		return err
+	}
+	defer streamAdmission.ReleaseNativeAdmission()
+	stopCapacityClose := streamAdmission.NativeLease.OnStopAfter(opts.shutdownGrace(), func() {
+		cancel()
+		interruptNativeOutput(clientOut)
+	})
+	defer stopCapacityClose()
 
 	// Per-invocation adaptive enforcement recorder.
 	var rec session.Recorder
@@ -137,6 +149,7 @@ func RunWSProxy(
 	wsOpts.TaintExternalSource = true
 	wsOpts.WarnContext = innerCtx
 	wsOpts.sessionExit = sessionExit
+	wsOpts.nativeStdio = streamAdmission.NativeLease != nil
 
 	clientReader := transport.NewStdioReader(clientIn)
 
@@ -150,6 +163,7 @@ func RunWSProxy(
 			_ = wsClient.Close()
 		}
 		wg.Wait()
+		stopping := streamAdmission.NativeLease.Stopping()
 		pendingOutcomes := tracker.DrainPendingOutcomes()
 		for _, pending := range pendingOutcomes {
 			reason, status := httpstream.Cancelled, "cancelled"
@@ -159,10 +173,20 @@ func RunWSProxy(
 					reason, status = "policy_blocked", "blocked"
 				}
 			}
+			if stopping {
+				reason, status = nativeCapacityReason, "cancelled"
+			}
 			emitMCPOutcomeReceipt(wsOpts.receiptEmitter(), wsOpts.v2ReceiptEmitter(), wsOpts.ReceiptGroup, safeLogW, pending.Outcome.Receipt, status, -1, reason, wsOpts.requireReceipts())
+			pending.Outcome.releaseNativeLease()
+		}
+		terminalOpts := wsOpts
+		terminalOpts.nativeAdmission = streamAdmission
+		if stopping && wsClient != nil {
+			emitMCPStandaloneStreamReceipt(terminalOpts, safeLogW, mcpStreamReceipt(terminalOpts, "WS"), "closed", nativeCapacityReason)
+			return
 		}
 		if len(pendingOutcomes) == 0 && upstreamEnded && ctx.Err() == nil && errors.Is(lastScanErr, transport.ErrIncompleteResponse) {
-			emitMCPStandaloneStreamReceipt(wsOpts, safeLogW, mcpStreamReceipt(wsOpts, "WS"), "incomplete", httpstream.Incomplete)
+			emitMCPStandaloneStreamReceipt(terminalOpts, safeLogW, mcpStreamReceipt(terminalOpts, "WS"), "incomplete", httpstream.Incomplete)
 		}
 	}()
 
@@ -177,7 +201,7 @@ func RunWSProxy(
 		}
 		go func(client *transport.WSClient) {
 			select {
-			case <-ctx.Done():
+			case <-innerCtx.Done():
 				_ = client.Close()
 			case <-done:
 			}
@@ -211,7 +235,17 @@ func RunWSProxy(
 
 	// Stdin -> upstream loop (runs on main goroutine).
 	var stdinErr error
+	var admission receipt.EmitOpts
+	finishWarnings := func() {}
+	settleMessage := func() {
+		finishWarnings()
+		admission.ReleaseNativeAdmission()
+	}
+	defer settleMessage()
 	for {
+		settleMessage()
+		admission = receipt.EmitOpts{}
+		finishWarnings = func() {}
 		msg, readErr := readMCPInputMessage(innerCtx, clientIn, clientReader)
 		if readErr != nil {
 			if innerCtx.Err() == nil && !errors.Is(readErr, io.EOF) &&
@@ -232,6 +266,9 @@ func RunWSProxy(
 				_ = wsClient.Close()
 			}
 			wg.Wait()
+			if streamAdmission.NativeLease.Stopping() {
+				return ael.ErrCapacity
+			}
 			if stdinErr != nil {
 				return stdinErr
 			}
@@ -245,11 +282,27 @@ func RunWSProxy(
 		default:
 		}
 
+		var admissionErr error
+		admission, admissionErr = streamAdmission.ReserveNativeChild(nativeMCPRequestRecords)
+		if admissionErr == nil {
+			admission, admissionErr = admission.ReserveNativeTerminal()
+		}
+		if admissionErr != nil {
+			writeNativeAdmissionDenial(wsOpts, safeLogW, transport.NewStdioWriter(safeClientOut), frame.ID, admissionErr)
+			if errors.Is(admissionErr, ael.ErrCapacity) {
+				continue
+			}
+			return admissionErr
+		}
+		inputOpts := wsOpts
+		inputOpts.nativeAdmission = admission
+		inputOpts.WarnContext, finishWarnings = inputOpts.nativeWarningContext(innerCtx, admission)
+
 		// Kill switch: deny all messages when active.
 		if opts.KillSwitch != nil {
 			if d := opts.KillSwitch.IsActiveMCP(msg); d.Active {
 				denialAudit := mcpKillMcpInputDenialAudit()
-				batchResp := refuseKillSwitchRequest(wsOpts, safeLogW, frame, d)
+				batchResp := refuseKillSwitchRequest(inputOpts, safeLogW, frame, d)
 				if batchResp != nil {
 					if wErr := writeMCPInputDenial(wsOpts, denialAudit, safeClientOut, batchResp); wErr != nil {
 						_, _ = fmt.Fprintf(safeLogW, "pipelock: stdout write error: %v\n", wErr)
@@ -270,7 +323,6 @@ func RunWSProxy(
 		}
 
 		// Input scanning: DLP, injection, policy, chain detection.
-		inputOpts := wsOpts
 		if taintCfg := inputOpts.TaintCfg; inputOpts.TaintCfgFn != nil || (taintCfg != nil && taintCfg.Enabled) {
 			inputOpts.deferBestEffortTaskReceipt = true
 		}
@@ -301,19 +353,8 @@ func RunWSProxy(
 			break
 		}
 
-		// Track request ID before forwarding for confused deputy protection.
-		// Only track requests (have "method"), not client responses to
-		// server-initiated calls, to prevent tracker pollution.
-		if isTrackableRequest(msg, frame.ID) {
-			if decision.Outcome.Receipt.ActionID != "" {
-				tracker.TrackOutcome(frame.ID, decision.Outcome)
-			} else {
-				tracker.TrackRequest(frame.ID, frame.Method)
-			}
-		}
-
 		if refusal := mcpTaskReleaseRefusal(wsOpts, decision.taskFrame, decision.taskTaint, false); refusal != "" {
-			outcome := mcpLocalRefusedOutcome(tracker, frame.ID, decision)
+			outcome := mcpLocalRefusedOutcome(nil, frame.ID, decision)
 			block := inputMCPDenial(wsOpts, mcpTaintDenialAudit(), &BlockedRequest{
 				ID: frame.ID, IsNotification: isRPCNotification(frame.ID),
 				ErrorCode: -32002, ErrorMessage: "pipelock: " + refusal,
@@ -329,6 +370,20 @@ func RunWSProxy(
 			continue
 		}
 
+		// Track request ID before forwarding for confused deputy protection.
+		// Only track requests (have "method"), not client responses to
+		// server-initiated calls, to prevent tracker pollution.
+		if isTrackableRequest(msg, frame.ID) {
+			outcome := decision.Outcome
+			outcome.Receipt = outcome.Receipt.InheritAdmission(admission)
+			outcome.Method = frame.Method
+			if err := trackNativeOutcome(tracker, frame.ID, outcome); err != nil {
+				emitMCPBlockedOutcomeReceipt(wsOpts.receiptEmitter(), wsOpts.v2ReceiptEmitter(), wsOpts.ReceiptGroup, safeLogW, outcome.Receipt, -1, "request_tracking_failed", wsOpts.requireReceipts())
+				writeNativeAdmissionDenial(inputOpts, safeLogW, transport.NewStdioWriter(safeClientOut), frame.ID, err)
+				continue
+			}
+		}
+
 		// Forward to upstream.
 		writeErr := wsClient.WriteMessage(decision.ForwardMessage)
 		emitPendingMCPInputReceipt(decision.pendingReceipt)
@@ -337,6 +392,12 @@ func RunWSProxy(
 			break
 		}
 		commitMCPToolCall(baselineMetricsRecorder(wsOpts, rec), mcpFrameBaselineIdentity(frame))
+	}
+
+	// Keep the upstream open for replies already admitted when stdin ends
+	// during a capacity stop. The capacity cutoff bounds the wait.
+	if streamAdmission.NativeLease.Stopping() && tracker.HasPending() {
+		<-innerCtx.Done()
 	}
 
 	// Close the WS connection to unblock ForwardScanned's ReadMessage. The
@@ -349,6 +410,9 @@ func RunWSProxy(
 	}
 	wg.Wait()
 
+	if streamAdmission.NativeLease.Stopping() {
+		return ael.ErrCapacity
+	}
 	if stdinErr != nil {
 		return stdinErr
 	}

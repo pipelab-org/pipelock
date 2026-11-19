@@ -122,7 +122,9 @@ func runV2ProcessOpts(t *testing.T, dir string, key v2CorpusKeys, opts v2Process
 		}
 	}
 	if graceful {
-		(&Server{receiptShardSet: shards}).sealTranscriptRoot()
+		if err := (&Server{receiptShardSet: shards}).sealTranscriptRoot(); err != nil {
+			t.Fatalf("seal transcript root: %v", err)
+		}
 	}
 	if err := rec.Close(); err != nil {
 		t.Fatal(err)

@@ -4,8 +4,12 @@
 package receipt
 
 import (
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -125,6 +129,14 @@ func TestActionRecord_Validate(t *testing.T) {
 			name:    "missing_action_id",
 			modify:  func(ar *ActionRecord) { ar.ActionID = "" },
 			wantErr: "action_id is required",
+		},
+		{
+			name:   "action_id_at_limit",
+			modify: func(ar *ActionRecord) { ar.ActionID = strings.Repeat("é", 18) },
+		},
+		{
+			name:   "historical_long_action_id",
+			modify: func(ar *ActionRecord) { ar.ActionID = strings.Repeat("é", 18) + "a" },
 		},
 		{
 			name:    "invalid_action_type",
@@ -348,4 +360,26 @@ func searchSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestVerifyHistoricalActionID(t *testing.T) {
+	pub, key := generateTestKey(t)
+	action := validActionRecord()
+	action.ActionID = strings.Repeat("é", 18) + "a"
+	data, err := action.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(data)
+	fixture := Receipt{
+		Version: ReceiptVersion, ActionRecord: action,
+		Signature: signaturePrefix + hex.EncodeToString(ed25519.Sign(key, digest[:])),
+		SignerKey: hex.EncodeToString(pub),
+	}
+	if err := VerifyWithKey(fixture, fixture.SignerKey); err != nil {
+		t.Fatalf("verify historical v1 receipt: %v", err)
+	}
+	if err := VerifyInternalConsistencyOnly(fixture); err != nil {
+		t.Fatalf("verify historical v1 receipt consistency: %v", err)
+	}
 }

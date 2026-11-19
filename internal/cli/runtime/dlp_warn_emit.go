@@ -36,11 +36,9 @@ func emitDLPWarn(
 		logger.LogError(lctx, fmt.Errorf("build DLP warn audit context: %w", lctxErr))
 	}
 
-	if receiptEmitter != nil {
-		if err := receiptEmitter.Emit(dlpWarnReceiptOpts(wc, patternName, severity, transport)); err != nil {
-			logger.LogError(lctx, fmt.Errorf("emit DLP warn receipt: %w", err))
-		}
-	}
+	receipt.EmitDLPWarning(ctx, receiptEmitter, dlpWarnReceiptOpts(wc, patternName, severity, transport), func(err error) {
+		logger.LogError(lctx, fmt.Errorf("emit DLP warn receipt: %w", err))
+	})
 
 	logger.LogDLPWarn(lctx, patternName, severity, transport)
 }

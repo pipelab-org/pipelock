@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 )
@@ -173,7 +174,10 @@ func startGETStream(
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream resuming: kill switch cleared\n")
 			}
 
-			reader, err := httpClient.OpenGETStream(ctx)
+			scanErr, err := scanGETStream(ctx, httpClient, safeClientOut, safeLogW, opts, tracker)
+			if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(err, ael.ErrCapacity) {
+				return
+			}
 			if err != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream: %v\n", err)
 				// Permanent error - server does not support GET streams.
@@ -196,15 +200,8 @@ func startGETStream(
 			// Reset backoff on successful connection.
 			backoff = time.Second
 
-			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, tracker, opts)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream scan error: %v\n", scanErr)
-				if errors.Is(scanErr, transport.ErrIncompleteResponse) && ctx.Err() == nil {
-					// A subscription has no pending JSON-RPC request identity.
-					// Record its interrupted transport separately from outcomes
-					// for complete messages already delivered on the stream.
-					emitMCPStandaloneStreamReceipt(opts, safeLogW, mcpStreamReceipt(opts, http.MethodGet), "200", httpstream.Incomplete)
-				}
 				logMCPIncompleteResponse(safeLogW, opts, http.MethodGet, scanErr)
 			}
 
@@ -229,4 +226,35 @@ func (w *listenerStateMessageWriter) writeDeniedMessage(msg []byte) error {
 		return context.Canceled
 	}
 	return err
+}
+
+// scanGETStream returns stream and setup errors separately so reconnect keeps
+// its existing backoff and terminal-error handling.
+func scanGETStream(ctx context.Context, client *transport.HTTPClient, writer transport.MessageWriter, logW io.Writer, opts MCPProxyOpts, tracker *RequestTracker) (scanErr, setupErr error) {
+	admission, err := opts.admitNativeRequest()
+	if err != nil {
+		return nil, err
+	}
+	defer admission.ReleaseNativeAdmission()
+	streamCtx, stop := httpstream.WithCapacityGrace(ctx, nil, admission.NativeLease, opts.shutdownGrace())
+	defer stop()
+	reader, err := client.OpenGETStream(streamCtx)
+	if err != nil {
+		return nil, err
+	}
+	opts.nativeAdmission = admission
+	warnContext, stopWarnings := opts.nativeWarningContext(streamCtx, admission)
+	opts.WarnContext = warnContext
+	defer stopWarnings()
+	_, scanErr = scanMCPHTTPResponse(streamCtx, reader, writer, logW, tracker, opts)
+	if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(context.Cause(streamCtx), ael.ErrCapacity) {
+		recordListenerStreamError(ctx, logW, opts, mcpStreamReceipt(opts, http.MethodGet), true, ael.ErrCapacity)
+		return ael.ErrCapacity, nil
+	}
+	if errors.Is(scanErr, transport.ErrIncompleteResponse) && ctx.Err() == nil {
+		// A subscription has no pending request identity. Sign its own
+		// terminal diagnostic while its stream reservation is active.
+		emitMCPStandaloneStreamReceipt(opts, logW, mcpStreamReceipt(opts, http.MethodGet), "200", httpstream.Incomplete)
+	}
+	return scanErr, nil
 }

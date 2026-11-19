@@ -1529,7 +1529,7 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 		for _, view := range fieldTail.Views(frame) {
 			dlpResult := sc.ScanTextForDLP(ctx, view.Joined)
 			if dlpResult.Incomplete {
-				return fmt.Errorf("%w: cross-event dlp scan incomplete: %s", ErrSSEStreamScanError, context.Cause(ctx).Error())
+				return fmt.Errorf("%w: cross-event dlp scan incomplete: %w", ErrSSEStreamScanError, context.Cause(ctx))
 			}
 			if !dlpResult.Clean {
 				if scanner.HasInspectionLimit(dlpResult.Matches) {

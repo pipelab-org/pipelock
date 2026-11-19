@@ -79,7 +79,9 @@ func TestBuildServerReceiptShardGroupPublishesBoundStartup(t *testing.T) {
 			t.Fatalf("shard %d evidence: %v, %v", shard.ShardIndex, paths, err)
 		}
 	}
-	(&Server{receiptShardSet: shards}).sealTranscriptRoot()
+	if err := (&Server{receiptShardSet: shards}).sealTranscriptRoot(); err != nil {
+		t.Fatalf("seal transcript root: %v", err)
+	}
 	for _, shard := range opening.Shards {
 		paths, _ := filepath.Glob(filepath.Join(dir, "evidence-"+shard.SessionID+"-*.jsonl"))
 		entries, err := recorder.ReadEntries(paths[0])
@@ -116,7 +118,9 @@ func TestBuildServerReceiptShardGroupPublishesBoundStartup(t *testing.T) {
 	if successorOpen.PreviousGroupID != opening.GroupID {
 		t.Fatalf("restart lost predecessor binding: %+v", successorOpen)
 	}
-	(&Server{receiptShardSet: successor}).sealTranscriptRoot()
+	if err := (&Server{receiptShardSet: successor}).sealTranscriptRoot(); err != nil {
+		t.Fatalf("seal transcript root: %v", err)
+	}
 	if err := restarted.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +172,9 @@ func TestReceiptGroupKeyFileRotationClosesBeforeRestart(t *testing.T) {
 	if ctx.Err() == nil || !s.receiptRotationRequested.Load() || !strings.Contains(log.String(), "receipt_chains=2") {
 		t.Fatalf("rotation did not cancel with named reason: ctx=%v log=%q", ctx.Err(), log.String())
 	}
-	s.sealTranscriptRoot()
+	if err := s.sealTranscriptRoot(); err != nil {
+		t.Fatalf("seal transcript root: %v", err)
+	}
 	if err := rec.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +196,9 @@ func TestReceiptGroupKeyFileRotationClosesBeforeRestart(t *testing.T) {
 	if newOpen.PreviousGroupID != oldOpen.GroupID || newOpen.SignerKey == oldOpen.SignerKey {
 		t.Fatalf("successor did not bind old group under new key: old=%+v new=%+v", oldOpen, newOpen)
 	}
-	(&Server{receiptShardSet: successor}).sealTranscriptRoot()
+	if err := (&Server{receiptShardSet: successor}).sealTranscriptRoot(); err != nil {
+		t.Fatalf("seal transcript root: %v", err)
+	}
 	if err := restarted.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +249,9 @@ func TestReceiptGroupRotationCloseFailureLeavesIncomplete(t *testing.T) {
 		t.Fatalf("close-failure rotation did not request process exit: err=%v ctx=%v", err, ctx.Err())
 	}
 	shards.Emitters()[0].MarkUnhealthy(errors.New("injected shard close failure"))
-	s.sealTranscriptRoot()
+	if err := s.sealTranscriptRoot(); err == nil {
+		t.Fatal("seal over an unhealthy shard returned nil, want the close failure")
+	}
 	if err := rec.Close(); err != nil {
 		t.Fatal(err)
 	}

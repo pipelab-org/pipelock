@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
+
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/destination"
 	guardfs "github.com/luckyPipewrench/pipelock/internal/guard"
@@ -893,4 +895,55 @@ func TestGuardPreflightWarnsWithoutReferErratum(t *testing.T) {
 			t.Fatalf("erratum warning changed readiness: baseline=%+v result=%+v", baseline, result)
 		}
 	}
+}
+
+func TestGuardHeartbeatCapacityStopsChildAndSealsEvidence(t *testing.T) {
+	pub, key, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, tempDir := t.TempDir(), t.TempDir()
+	cfg := config.Defaults()
+	cfg.FlightRecorder.Enabled = true
+	cfg.FlightRecorder.RequireReceipts = true
+	cfg.FlightRecorder.Completeness.HeartbeatInterval = "25ms"
+	cfg.FlightRecorder.Dir = filepath.Join(t.TempDir(), "evidence")
+	cfg.FlightRecorder.SigningKeyPath = filepath.Join(t.TempDir(), "receipt.key")
+	if err := signing.SavePrivateKey(key, cfg.FlightRecorder.SigningKeyPath); err != nil {
+		t.Fatal(err)
+	}
+
+	const binary = "/usr/bin/true"
+	cmd := []string{binary}
+	var log bytes.Buffer
+	var childCanceled bool
+	parent, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
+	defer cancel()
+	err = launchGuard(GuardLaunchOptions{
+		Context: parent, Config: cfg, Workspace: workspace, Command: cmd,
+		Stderr: &log,
+		// Leave room for startup evidence and the reserved close. Heartbeats fill the rest.
+		nativeAELCapacityLimit: 1950,
+	}, func(launch sandbox.StandaloneLaunchConfig) error {
+		proof := guardfs.NewExecutionProof(
+			guardfs.EnforcementRecord{State: guardfs.EnforcementEnforced, Mechanism: "landlock", Coverage: guardfs.CoverageFull},
+			guardfs.ExecControlOptions{PolicyHash: launch.GuardPolicyHash, Workspace: workspace, TempDir: tempDir, Binary: binary},
+			cmd,
+		)
+		data, err := json.Marshal(proof)
+		if err != nil {
+			return err
+		}
+		if err := launch.GuardAppliedPreExec(tempDir, data); err != nil {
+			return err
+		}
+		<-launch.Ctx.Done()
+		childCanceled = parent.Err() == nil
+		return launch.Ctx.Err()
+	})
+	if !childCanceled || !errors.Is(err, ael.ErrCapacity) {
+		t.Fatalf("child canceled by capacity=%t, result=%v, log=%s", childCanceled, err, &log)
+	}
+	assertDrainEvidence(t, cfg.FlightRecorder.Dir, false, false)
+	assertNativeRuntimeClose(t, cfg.FlightRecorder.Dir, fmt.Sprintf("%x", pub))
 }

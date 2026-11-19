@@ -570,8 +570,7 @@ func (opts mcpToolReceiptOpts) receiptOptions() receipt.EmitOpts {
 		SessionID:         opts.SessionID,
 		SessionIDOriginal: opts.SessionIDOriginal,
 	}
-	emitOpts.ShardIndex = opts.Shard.ShardIndex
-	emitOpts.ShardSelected = opts.Shard.ShardSelected
+	emitOpts = emitOpts.InheritAdmission(opts.Shard)
 	if opts.ContractGate != nil {
 		emitOpts = mcpWithContractReceipt(emitOpts, *opts.ContractGate)
 	}

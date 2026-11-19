@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
@@ -34,6 +35,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/verification"
 )
 
 // GuardLaunchOptions is the fully resolved operator request.
@@ -44,6 +46,8 @@ type GuardLaunchOptions struct {
 	Workspace string
 	Command   []string
 	Stderr    io.Writer
+
+	nativeAELCapacityLimit int64
 }
 
 // GuardPreflight validates the runtime contract and probes every required
@@ -100,6 +104,10 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 	if len(opts.Command) == 0 {
 		return errors.New("guard command is empty")
 	}
+	if opts.Stderr == nil {
+		opts.Stderr = io.Discard
+	}
+	opts.Stderr = &stderrSyncWriter{w: opts.Stderr}
 	opts.Config = opts.Config.Clone()
 	if err := opts.Config.ResolveRuntimeCredentials(); err != nil {
 		return err
@@ -166,7 +174,7 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 
 	guardMetrics := metrics.New()
 	baseCtx := ctxOrBackground(opts.Context)
-	evidence, err := newGuardEvidence(baseCtx, runtimeCfg, sc, guardMetrics, opts.Stderr)
+	evidence, err := newGuardEvidence(baseCtx, runtimeCfg, sc, guardMetrics, opts.Stderr, ael.NewCapacity(opts.nativeAELCapacityLimit))
 	if err != nil {
 		return err
 	}
@@ -180,6 +188,13 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 		evidence.requiredFailure.CompareAndSwap(nil, &err)
 		cancel()
 	}
+	capacity := evidence.emitter.NativeCapacity()
+	var capacityWG sync.WaitGroup
+	watchNativeCapacity(ctx, &capacityWG, capacity, cancel, opts.Stderr)
+	defer func() {
+		cancel()
+		capacityWG.Wait()
+	}()
 	guardReady := make(chan struct{})
 	var guardReadyOnce sync.Once
 
@@ -248,7 +263,12 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 	if failure := evidence.requiredFailure.Load(); failure != nil {
 		return fmt.Errorf("flight_recorder.require_receipts is enabled but Guard receipt emission failed: %w", *failure)
 	}
-	return launchErr
+	select {
+	case <-capacity.Stopped():
+		return ael.ErrCapacity
+	default:
+		return launchErr
+	}
 }
 
 func resolveGuardExecutable(command []string, workspace string) (string, error) {
@@ -360,7 +380,7 @@ func (e *guardEvidence) activateReceipts(proof guardfs.ExecutionProof) error {
 	return nil
 }
 
-func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, m *metrics.Metrics, stderr io.Writer) (*guardEvidence, error) {
+func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, m *metrics.Metrics, stderr io.Writer, nativeCapacity ...*ael.Capacity) (*guardEvidence, error) {
 	evidence := &guardEvidence{
 		stop: func() {}, ctx: ctx, heartbeat: cfg.FlightRecorder.HeartbeatIntervalDuration(),
 		stderr: stderr, require: cfg.FlightRecorder.RequireReceipts,
@@ -405,6 +425,12 @@ func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scann
 	evidence.recorder = rec
 	var runSession string
 	if cfg.FlightRecorder.ReceiptChainCount() == 1 {
+		if len(privateKey) != 0 {
+			if err := verifyPredecessorAEL(rec, verification.Options{Context: ctx}); err != nil {
+				evidence.close()
+				return nil, err
+			}
+		}
 		runSession, err = acquireRunSession(rec)
 		if err != nil {
 			evidence.close()
@@ -426,6 +452,10 @@ func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scann
 		evidence.close()
 		return nil, fmt.Errorf("loading Guard posture binding: %w", err)
 	}
+	var capacity *ael.Capacity
+	if len(nativeCapacity) > 0 {
+		capacity = nativeCapacity[0]
+	}
 	if cfg.FlightRecorder.ReceiptChainCount() > 1 {
 		shards, groupOpts, groupErr := buildServerReceiptShardGroup(receipt.EmitterConfig{
 			Recorder: rec, PrivKey: privateKey, ConfigHash: cfg.CanonicalPolicyHash(),
@@ -434,10 +464,11 @@ func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scann
 			PostureBinding:      postureResult.Binding,
 			PostureAvailability: string(postureResult.Availability),
 			HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
+			NativeCapacity:      capacity,
 		}, cfg.FlightRecorder.ReceiptChainCount(), cfg.FlightRecorder.SigningKeyPath, true)
 		if groupErr != nil {
 			evidence.close()
-			return nil, fmt.Errorf("opening Guard receipt shard group: %w", groupErr)
+			return nil, fmt.Errorf("opening Guard receipt shard group: %w", withNativePredecessorRestartHint(groupErr))
 		}
 		evidence.shards = shards
 		evidence.emitter = shards.ProcessEmitter()
@@ -450,6 +481,7 @@ func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scann
 		Principal: "local", Actor: "pipelock", Metrics: m, PostureBinding: postureResult.Binding,
 		PostureAvailability: string(postureResult.Availability),
 		HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
+		NativeCapacity:      capacity,
 		Session:             runSession,
 	})
 	if initErr := emitter.InitError(); errors.Is(initErr, receipt.ErrRetainedContent) {

@@ -291,6 +291,9 @@ func TestEmitter_EmitSessionOpenIsDurableAndGatesOnFsync(t *testing.T) {
 	if !errors.Is(err, recorder.ErrDurability) {
 		t.Fatalf("EmitSessionOpen error = %v, want ErrDurability (session_open must be emitted durably)", err)
 	}
+	if err := e.HealthError(); !errors.Is(err, syncErr) {
+		t.Fatalf("emitter health = %v, want %v", err, syncErr)
+	}
 	if e.DurabilityBlocks() != 1 {
 		t.Fatalf("DurabilityBlocks = %d, want 1 after gated session_open", e.DurabilityBlocks())
 	}
@@ -306,8 +309,8 @@ func TestEmitter_EmitSessionOpenIsDurableAndGatesOnFsync(t *testing.T) {
 	// The open's bytes reached disk (fsync failed, not the write), but the
 	// stream stays failed: nothing further, a heartbeat included, is written
 	// over an unconfirmed prefix.
-	if err := e.EmitHeartbeat(); !errors.Is(err, recorder.ErrDurabilityInherited) {
-		t.Fatalf("EmitHeartbeat after gated open = %v, want ErrDurabilityInherited", err)
+	if err := e.EmitHeartbeat(); !errors.Is(err, syncErr) {
+		t.Fatalf("EmitHeartbeat after gated open = %v, want %v", err, syncErr)
 	}
 	closeAfterInjectedSyncFailure(t, rec)
 	receipts := readAllReceiptsFromDir(t, dir, pub)

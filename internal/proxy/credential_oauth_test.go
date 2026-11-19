@@ -79,7 +79,7 @@ func TestAnthropicOAuthBodyCarrier(t *testing.T) {
 			buf, result := scanRequestBody(t.Context(), BodyScanRequest{
 				Body: strings.NewReader(tc.body), Method: method, ContentType: media, MaxBytes: cfg.RequestBodyScanning.MaxBodyBytes,
 				Scanner: sc, Target: dest, AudienceSurface: tc.surface, Action: config.ActionBlock,
-				OnCredentialAudienceAllow: func(a scanner.CredentialAudienceAllow) error { allows = append(allows, a); return nil },
+				OnCredentialAudienceAllows: func(a []scanner.CredentialAudienceAllow) error { allows = append(allows, a...); return nil },
 			})
 			if result.Clean != tc.allow {
 				t.Fatalf("clean=%t want=%t result=%+v", result.Clean, tc.allow, result)
@@ -133,7 +133,7 @@ func TestAnthropicOAuthBodyRedactionAndReceipt(t *testing.T) {
 			Body: strings.NewReader(body), Method: http.MethodPost, ContentType: "application/json",
 			MaxBytes: cfg.RequestBodyScanning.MaxBodyBytes, Scanner: sc,
 			Target: "https://platform.claude.com/v1/oauth/token", Action: config.ActionBlock,
-			OnCredentialAudienceAllow: func(scanner.CredentialAudienceAllow) error { return receiptErr },
+			OnCredentialAudienceAllows: func([]scanner.CredentialAudienceAllow) error { return receiptErr },
 		}
 		if redaction {
 			req.RedactMatcher = redact.NewDefaultMatcher()
@@ -167,7 +167,7 @@ func TestAnthropicOAuthBodyReceiptWarnings(t *testing.T) {
 				Body: strings.NewReader(body), Method: http.MethodPost, ContentType: "application/json",
 				MaxBytes: cfg.RequestBodyScanning.MaxBodyBytes, Scanner: sc,
 				Target: "https://platform.claude.com/v1/oauth/token", Action: config.ActionBlock,
-				OnCredentialAudienceAllow: func(scanner.CredentialAudienceAllow) error {
+				OnCredentialAudienceAllows: func([]scanner.CredentialAudienceAllow) error {
 					calls++
 					return receiptErr
 				},
