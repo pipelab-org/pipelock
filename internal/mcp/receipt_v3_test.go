@@ -6,6 +6,7 @@ package mcp
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -595,5 +596,116 @@ func TestMCPV3GeneratedReplyAndRefusal(t *testing.T) {
 	if err != nil || result.Verdict != "VALID" || result.Counts.Decisions == nil ||
 		!slices.Contains(*result.Counts.Decisions, v3.StateCount{State: "blocked", Count: 2}) || !hasMCPV3State(result, "completed") {
 		t.Fatalf("refusal or reply absent: %+v (%v)", result, err)
+	}
+}
+
+func TestMCPV3ListenerCallerIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name, doorMode, token string
+		status                int
+		verified              bool
+	}{
+		{"jwt", config.MCPDoorJWT, "a", http.StatusOK, true},
+		{"introspection", config.MCPDoorIntrospection, "a", http.StatusOK, true},
+		{"failed", config.MCPDoorJWT, "wrong-key", http.StatusUnauthorized, false},
+		{"absent", config.MCPDoorJWT, "", http.StatusUnauthorized, false},
+		{"configured-principal", "", "", http.StatusOK, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, writer, verify := newMCPV3Stream(t, "listener")
+			upstream, calls := principalStateUpstream(t)
+			opts := principalStateOpts(t, "")
+			opts.Transport, opts.ReceiptV3, opts.RequireReceipts = "mcp_http_listener", writer, true
+			token := tc.token
+			if tc.doorMode != "" {
+				fixture := newDoorFixture(t, tc.doorMode)
+				opts.ListenerDoor = fixture.verifier
+				if token != "" {
+					token = fixture.token(token)
+				}
+			} else {
+				opts.ListenerPrincipalResolver = func(*http.Request) (ListenerPrincipal, error) {
+					return ListenerPrincipal{Provider: "configured", Subject: "configured-subject", Epoch: 1}, nil
+				}
+			}
+			base, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+			resp := doorRPC(t, base, http.MethodPost, token, principalControlToolCall(1, "read_file", "{}"), func(r *http.Request) {
+				r.Header.Set("X-Subject", "forged-subject")
+				r.Header.Set("X-Client-ID", "forged-client")
+				if token == "" {
+					r.Header.Del("Authorization")
+				}
+			})
+			body, readErr := io.ReadAll(resp.Body)
+			if err := errors.Join(readErr, resp.Body.Close()); err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != tc.status {
+				t.Fatalf("got HTTP %d, want %d: %s", resp.StatusCode, tc.status, body)
+			}
+			wantCaller := v3.Caller{Authn: "none"}
+			if tc.verified {
+				wantCaller = v3.Caller{Authn: "mcp_door_verified", Resource: doorTestResource, Issuer: doorTestIssuer, Subject: "a", ClientID: "cloud"}
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, verify)
+			if err != nil || result.Verdict != "VALID" {
+				t.Fatalf("invalid receipt stream: %+v (%v)", result, err)
+			}
+			actions := readMCPV3Actions(t, dir)
+			sent, delivered, refused := false, false, false
+			for _, action := range actions {
+				if action.Caller != wantCaller {
+					t.Fatalf("caller = %+v, want %+v", action.Caller, wantCaller)
+				}
+				sent = sent || action.EffectBoundary == mcpV3Upstream && action.OutcomeClass == "completed"
+				delivered = delivered || action.EffectBoundary == mcpV3Delivery && action.OutcomeClass == "completed"
+				refused = refused || action.EffectBoundary == mcpV3Upstream && action.Verdict == config.ActionBlock
+			}
+			if tc.status == http.StatusOK {
+				if !sent || !delivered || refused || calls.Load() != 1 {
+					t.Fatalf("expected signed send and delivery, got %d upstream calls and %+v", calls.Load(), actions)
+				}
+			} else if !refused || sent || delivered || calls.Load() != 0 {
+				t.Fatalf("expected only a refusal, got %d upstream calls and %+v", calls.Load(), actions)
+			}
+		})
+	}
+}
+
+func readMCPV3Actions(t *testing.T, dir string) []v3.Action {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(dir, "*.receipt-v3.jsonl"))
+	if err != nil || len(paths) != 1 {
+		t.Fatalf("want one receipt file, got %v (%v)", paths, err)
+	}
+	f, err := os.Open(filepath.Clean(paths[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	dec := json.NewDecoder(f)
+	var actions []v3.Action
+	for {
+		var envelope struct {
+			Payload struct {
+				Kind string    `json:"kind"`
+				Body v3.Action `json:"body"`
+			} `json:"payload"`
+		}
+		if err := dec.Decode(&envelope); errors.Is(err, io.EOF) {
+			return actions
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if envelope.Payload.Kind == "action" {
+			actions = append(actions, envelope.Payload.Body)
+		}
 	}
 }

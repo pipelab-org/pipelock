@@ -478,6 +478,11 @@ func RunHTTPListenerProxy(
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: listener authentication unavailable\n")
 			denialAudit = mcpListenerAdmissionDenialAudit()
 			if opts.ListenerDoor != nil {
+				if baseOpts.ReceiptV3 != nil {
+					baseOpts.recordV3MCPRefusal(safeLogW, receipt.EmitOpts{
+						Transport: baseOpts.Transport, Target: "mcp://listener", Layer: "mcp_door", Method: r.Method,
+					}, mcpV3Upstream, "authentication_failed")
+				}
 				opts.ListenerDoor.WriteFailure(w, tokenErr)
 			} else {
 				http.Error(w, "listener authentication unavailable", http.StatusServiceUnavailable)
@@ -589,6 +594,7 @@ func RunHTTPListenerProxy(
 		// without restarting the long-lived listener.
 		adaptiveCfg := opts.adaptiveCfg()
 		requestBaseOpts := baseOpts.snapshotScanPolicy()
+		// Only successful door verification supplies signed caller evidence.
 		requestBaseOpts.receiptCaller = listenerPrincipal.verifiedDoor
 		reqScanner := requestBaseOpts.scanner()
 		if reqScanner == nil {

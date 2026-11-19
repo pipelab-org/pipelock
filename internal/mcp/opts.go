@@ -55,9 +55,11 @@ type DoWAttribution struct {
 // has accepted it. Provider separates trust domains; Epoch invalidates prior
 // state after verifier-policy or subject revocation changes.
 type ListenerPrincipal struct {
-	Provider     string
-	Subject      string
-	Epoch        uint64
+	Provider string
+	Subject  string
+	Epoch    uint64
+
+	// verifiedDoor belongs to this request and is set only by the door verifier.
 	verifiedDoor *door.Identity
 }
 
