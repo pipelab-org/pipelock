@@ -144,6 +144,9 @@ func TestRepairReceiptGroupTransitionResumesVerifiedHistory(t *testing.T) {
 			if _, err := RepairReceiptGroupTransition(r.Dir(), open.GroupID, key, nil, verification.Options{}); err != nil {
 				t.Fatal(err)
 			}
+			if _, err := RepairReceiptGroupTransition(r.Dir(), open.GroupID, key, nil, verification.Options{}); err == nil || err.Error() != "receipt group transition already exists" {
+				t.Fatalf("repeat repair error = %v, want existing transition refusal", err)
+			}
 			trusted := []string{open.SignerKey}
 			if result := VerifyReceiptGroup(r.Dir(), open.GroupID, trusted); result.Verdict != GroupIncomplete {
 				t.Fatalf("repaired group verdict = %s, error=%s; want incomplete", result.Verdict, result.Error)
@@ -162,5 +165,109 @@ func TestRepairReceiptGroupTransitionResumesVerifiedHistory(t *testing.T) {
 			}
 			startupTestClose(t, next, r, true)
 		})
+	}
+}
+
+func TestRepairReceiptGroupTransitionRefusesEarlierGroup(t *testing.T) {
+	prepared, r, _, previous := startupPreparedWindow(t, true)
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err := RepairReceiptGroupTransition(r.Dir(), previous.GroupID, prepared.signer, nil, verification.Options{})
+	const want = "transition repair requires the terminal receipt group"
+	if err == nil || err.Error() != want {
+		t.Fatalf("repair error = %v, want %q", err, want)
+	}
+}
+
+func TestRepairReceiptGroupTransitionRefusesMissingPredecessor(t *testing.T) {
+	prepared, r, _, previous := startupPreparedWindow(t, true)
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	name, err := ReceiptGroupFileName(previous.GroupID, "open")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(r.Dir(), name)); err != nil {
+		t.Fatal(err)
+	}
+	open, _ := prepared.Opening()
+	_, err = RepairReceiptGroupTransition(r.Dir(), open.GroupID, prepared.signer, nil, verification.Options{})
+	if err == nil || err.Error() != "receipt group history has more than one terminal group" {
+		t.Fatalf("repair error = %v, want missing predecessor", err)
+	}
+}
+
+func TestPublishedGroupWalkOptionsKeepsProofErrors(t *testing.T) {
+	proofErr := errors.New("proof read failed")
+	for _, tc := range []struct {
+		err  error
+		want error
+	}{
+		{err: context.Canceled},
+		{err: context.DeadlineExceeded},
+		{err: proofErr, want: proofErr},
+	} {
+		t.Run(tc.err.Error(), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			var progress verification.Progress
+			ceremony := startupGroupVerification{
+				published: true,
+				options: verification.Options{Context: ctx, Progress: func(got verification.Progress) error {
+					progress = got
+					return tc.err
+				}},
+			}
+			expected := verification.Progress{Kind: "records", Records: 1}
+			if err := ceremony.walkOptions().Report(expected); !errors.Is(err, tc.want) || progress != expected {
+				t.Fatalf("progress = %+v, error = %v, want %+v, %v", progress, err, expected, tc.want)
+			}
+		})
+	}
+}
+
+func TestRepairReceiptGroupTransitionRejectsInvalidInputs(t *testing.T) {
+	dir := t.TempDir()
+	_, key := generateTestKey(t)
+	const validID = "0123456789abcdef0123456789abcdef"
+	for _, tc := range []struct {
+		name    string
+		groupID string
+		key     []byte
+		want    string
+	}{
+		{name: "signing key", groupID: validID, want: "receipt group requires a signing key"},
+		{name: "group ID", groupID: "invalid", key: key, want: "invalid receipt group ID"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := RepairReceiptGroupTransition(dir, tc.groupID, tc.key, nil, verification.Options{}); err == nil || err.Error() != tc.want {
+				t.Fatalf("repair error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	if _, err := RepairReceiptGroupTransition(dir, validID, key, nil, verification.Options{}); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing opening error = %v, want %v", err, os.ErrNotExist)
+	}
+}
+
+func TestRepairReceiptGroupTransitionRefusesInvalidPredecessorClose(t *testing.T) {
+	prepared, r, _, previous := startupPreparedWindow(t, true)
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	name, err := ReceiptGroupFileName(previous.GroupID, "close")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(r.Dir(), name), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	open, _ := prepared.Opening()
+	_, err = RepairReceiptGroupTransition(r.Dir(), open.GroupID, prepared.signer, nil, verification.Options{})
+	const want = "receipt group predecessor is not complete: invalid receipt group close: receipt group artifact is not canonical published JSON"
+	if err == nil || err.Error() != want {
+		t.Fatalf("repair error = %v, want %q", err, want)
 	}
 }

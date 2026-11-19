@@ -642,3 +642,19 @@ func TestStandaloneReceiptDiscriminatorParity(t *testing.T) {
 		})
 	}
 }
+
+func TestStandaloneV1RefusesV2Expectations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	if err := os.WriteFile(path, []byte(`{"version":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cmd := newReceiptCmd()
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{path, "--expect-signer-id", "signer"})
+	const want = "EvidenceReceipt expectation flags require record_type=evidence_receipt_v2"
+	if err := cmd.Execute(); err == nil || err.Error() != want {
+		t.Fatalf("receipt command error = %v, want %q", err, want)
+	}
+}

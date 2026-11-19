@@ -532,38 +532,48 @@ func TestMCPWebSocketOutcomeKeepsAdmissionShard(t *testing.T) {
 }
 
 func TestRequiredBridgeGETAdmitsBeforeOpen(t *testing.T) {
-	opts, rec, dir, _ := newMCPTransportReceiptGroup(t)
-	opts.Scanner = testScannerForHTTP(t)
-	opts.Transport = "mcp_http_upstream"
-	var opened atomic.Bool
-	var early error
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.NotFound(w, r)
-			return
-		}
-		if !bridgeGETAdmissionRecorded(t, dir) {
-			early = errors.New("upstream GET opened before its durable transport admission")
-		}
-		opened.Store(true)
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		<-r.Context().Done()
-	}))
-	defer srv.Close()
-	opts.AuthorityDestination = srv.URL
-	ctx, cancel := context.WithCancel(t.Context())
-	var wg sync.WaitGroup
-	var stderr lockedHTTPBuffer
-	startGETStream(ctx, transport.NewHTTPClient(srv.URL, nil), &syncWriter{w: io.Discard}, &syncWriter{w: &stderr}, opts, NewRequestTracker(), &wg)
-	testwait.For(t, 3*time.Second, opened.Load, "required GET opened")
-	cancel()
-	wg.Wait()
-	if err := rec.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if early != nil {
-		t.Fatal(early)
+	for _, tc := range []struct {
+		name   string
+		status int
+		reason string
+	}{
+		{name: "completed", status: http.StatusOK, reason: "stream_completed"},
+		{name: "unsupported", status: http.StatusMethodNotAllowed, reason: "upstream_error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, rec, dir, _ := newMCPTransportReceiptGroup(t)
+			opts.Scanner = testScannerForHTTP(t)
+			opts.Transport = "mcp_http_upstream"
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.NotFound(w, r)
+					return
+				}
+				if !bridgeGETReceiptRecorded(t, dir, `"layer":"mcp_transport_admission"`, `"verdict":"forward"`) {
+					t.Error("upstream GET opened before its transport admission was recorded")
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(tc.status)
+			}))
+			defer srv.Close()
+			opts.AuthorityDestination = srv.URL
+			ctx, cancel := context.WithCancel(t.Context())
+			var wg sync.WaitGroup
+			t.Cleanup(func() {
+				cancel()
+				wg.Wait()
+			})
+			var stderr lockedHTTPBuffer
+			startGETStream(ctx, transport.NewHTTPClient(srv.URL, nil), &syncWriter{w: io.Discard}, &syncWriter{w: &stderr}, opts, NewRequestTracker(), &wg)
+			testwait.For(t, 3*time.Second, func() bool {
+				return bridgeGETReceiptRecorded(t, dir, `"layer":"`+mcpOutcomeLayer+`"`, "reason="+tc.reason)
+			}, "required GET result recorded")
+			cancel()
+			wg.Wait()
+			if err := rec.Close(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
@@ -598,22 +608,24 @@ func TestRequiredBridgeGETStaysClosedWhenAdmissionFails(t *testing.T) {
 	}
 }
 
-func bridgeGETAdmissionRecorded(t *testing.T, dir string) bool {
+func bridgeGETReceiptRecorded(t *testing.T, dir, layer, detail string) bool {
 	t.Helper()
 	paths, err := filepath.Glob(filepath.Join(dir, "evidence-*.jsonl"))
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
+		return false
 	}
 	for _, path := range paths {
 		entries, err := recorder.ReadEntries(path)
 		if err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return false
 		}
 		for _, entry := range entries {
 			if entry.Type == "action_receipt" &&
-				bytes.Contains(entry.RawDetail, []byte(`"layer":"mcp_transport_admission"`)) &&
+				bytes.Contains(entry.RawDetail, []byte(layer)) &&
 				bytes.Contains(entry.RawDetail, []byte(`"method":"GET"`)) &&
-				bytes.Contains(entry.RawDetail, []byte(`"verdict":"forward"`)) {
+				bytes.Contains(entry.RawDetail, []byte(detail)) {
 				return true
 			}
 		}
