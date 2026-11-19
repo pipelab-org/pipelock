@@ -3279,6 +3279,9 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			if r.proxy != nil {
 				recordBodyRedactionMetrics(r.proxy.metrics, TransportWS, r.metricAgent, bodyResult.RedactionReport)
 			}
+			if isNativeCapacityStop(bodyResult.CredentialAudienceReceiptErr) {
+				return
+			}
 			if r.handleClientMessageBodyResult(log, buf, bodyResult) {
 				blocked = true
 				return
@@ -3789,6 +3792,9 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		payload := make([]byte, hdr.Length)
 		if hdr.Length > 0 {
 			if _, err := io.ReadFull(r.upstreamConn, payload); err != nil {
+				if r.receiptShard.NativeLease.Stopping() {
+					return
+				}
 				if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 					r.upstreamCancelled = true
 					return
