@@ -57,7 +57,7 @@ func (w *StreamWriter) WriteAction(ctx context.Context, action Action, policy Po
 		w.queueActionRepair(action, true)
 		// The request context may no longer wait. Retain the repair if a
 		// second I/O error prevents this append from being confirmed.
-		return errors.Join(err, w.replayActionRepairs(context.WithoutCancel(ctx)))
+		return errors.Join(err, w.replayActionRepairs(context.WithoutCancel(ctx), false))
 	}
 	return nil
 }
@@ -130,12 +130,16 @@ func blockingHoldResolution(action Action, source, relation string, correction b
 
 // A repair remains queued until its own confirmation. In particular, a
 // second failed successor must carry the original observation forward.
-func (w *StreamWriter) replayActionRepairs(ctx context.Context) error {
+// Startup retries a failed append before admitting traffic.
+func (w *StreamWriter) replayActionRepairs(ctx context.Context, retryWriteErrors bool) error {
 	for len(w.repairs) != 0 {
 		if err := w.ensureAppendSpace(ctx); err != nil {
 			return err
 		}
 		if err := w.commit(ctx, kindAction, w.repairs[0]); err != nil {
+			if retryWriteErrors && w.previous != nil && w.previous.Ended == endedWriteError {
+				continue
+			}
 			return fmt.Errorf("replay receipt action after durability interruption: %w", err)
 		}
 		w.repairs[0] = Action{}

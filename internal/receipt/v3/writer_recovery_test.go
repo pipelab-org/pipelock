@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -97,6 +98,76 @@ func TestStreamWriterRecoversHoldsFromVerifiedHistory(t *testing.T) {
 		if got := writerTestCount(t, result, state); got != want {
 			t.Errorf("%s = %d, want %d", state, got, want)
 		}
+	}
+}
+
+func TestStreamWriterRetriesRecoveryAfterWriteError(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		failSuccessor bool
+	}{
+		{name: "successor confirms repair"},
+		{name: "successor publication fails", failSuccessor: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := writerTestOptions(t.TempDir())
+			opts.Heartbeat = 0
+			w, err := openStreamWriter(t.Context(), opts, localWriterStorage())
+			if err != nil {
+				t.Fatal(err)
+			}
+			hold := writerTestHold("pending")
+			policy := CapturePolicy(Digest([]byte("request config")))
+			writeErr := w.WriteAction(t.Context(), hold, policy)
+			if err := errors.Join(writeErr, abandonWriterReplay(w)); err != nil {
+				t.Fatal(err)
+			}
+
+			// Re-flush the predecessor, publish the startup stream, then
+			// fail the recovery append before it writes any bytes.
+			fault := writerReplayFault{step: writerReplayStep{FaultAt: 7}}
+			storage := fault.storage(opts.Dir)
+			link := storage.link
+			storage.link = func(oldPath, newPath string) error {
+				if tc.failSuccessor && len(fault.calls) > fault.step.FaultAt {
+					return errWriterReplay
+				}
+				return link(oldPath, newPath)
+			}
+			recovered, err := openStreamWriter(t.Context(), opts, storage)
+			t.Cleanup(func() { _ = abandonWriterReplay(recovered) })
+			if tc.failSuccessor {
+				if recovered != nil || !errors.Is(err, errWriterReplay) ||
+					!strings.Contains(err.Error(), "publish receipt stream opening") {
+					t.Fatalf("expected startup refusal after successor publication failure, got %v", err)
+				}
+				// A failed startup must release the lock for another start.
+				next := requireWriter(t, opts, localWriterStorage())
+				if got := readRecoveryActions(t, opts.Dir, next.active.id); len(got) != 1 {
+					t.Fatalf("pending hold was lost: %+v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			hold.Policy = policy.ActionPolicy()
+			want := []Action{blockingHoldResolution(hold, "restart_recovery", "unknown", false)}
+			if got := readRecoveryActions(t, opts.Dir, recovered.active.id); !reflect.DeepEqual(got, want) {
+				t.Fatalf("recoveries = %+v, want %+v", got, want)
+			}
+			result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+			streams := result.Histories[0].Streams
+			if len(streams) != 3 {
+				t.Fatalf("expected three streams, got %+v", streams)
+			}
+			for _, stream := range streams {
+				if stream.End == "superseded_write_error" && stream.Tip != nil && stream.Tip.Seq == 0 {
+					return
+				}
+			}
+			t.Fatalf("missing write-error pin at the failed stream opening: %+v", streams)
+		})
 	}
 }
 

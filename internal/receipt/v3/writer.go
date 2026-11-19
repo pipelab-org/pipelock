@@ -157,11 +157,11 @@ func openStreamWriter(ctx context.Context, opts StreamWriterOptions, storage wri
 	if err := w.publishOpen(ctx); err != nil {
 		return nil, err
 	}
-	if err := w.replayActionRepairs(ctx); err != nil {
+	if repairErr := w.replayActionRepairs(ctx, true); repairErr != nil {
 		if w.active.file != nil {
-			err = errors.Join(err, w.active.file.Close())
+			repairErr = errors.Join(repairErr, w.active.file.Close())
 		}
-		return nil, fmt.Errorf("settle pending receipt holds before admitting traffic: %w", err)
+		return nil, fmt.Errorf("settle pending receipt holds before admitting traffic: %w", repairErr)
 	}
 	if opts.Heartbeat > 0 {
 		w.startHeartbeats(opts.Heartbeat, opts.OnHeartbeatError)
@@ -455,11 +455,11 @@ func (w *StreamWriter) tryContinueAfterWriteError(ctx context.Context, writeErr 
 	if err := w.ensureStream(ctx); err != nil {
 		return errors.Join(writeErr, err)
 	}
-	return errors.Join(writeErr, w.replayActionRepairs(ctx))
+	return errors.Join(writeErr, w.replayActionRepairs(ctx, false))
 }
 
 func (w *StreamWriter) prepareAppend(ctx context.Context) error {
-	if err := w.replayActionRepairs(ctx); err != nil {
+	if err := w.replayActionRepairs(ctx, false); err != nil {
 		return err
 	}
 	return w.ensureAppendSpace(ctx)
@@ -537,7 +537,7 @@ func (w *StreamWriter) Close(ctx context.Context, operational *Recorder) error {
 	if w.closed {
 		return w.closeErr
 	}
-	w.closeErr = w.replayActionRepairs(ctx)
+	w.closeErr = w.replayActionRepairs(ctx, false)
 	w.closed = true
 	if w.active.file != nil && w.closeErr == nil {
 		w.closeErr = w.writeClose(ctx, closeShutdown, operational)
