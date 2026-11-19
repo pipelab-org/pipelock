@@ -1911,10 +1911,12 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				return
 			}
 			completed := returned && !forwardWriter.hijacked && !forwardWriter.writeFailed && r.Context().Err() == nil
-			if completed && cfg.FlightRecorder.RequireReceipts {
-				completed = flushResponseBeforeOutcome(w, r, cfg) == nil
+			var flushErr error
+			if completed {
+				flushErr = flushResponseBeforeOutcome(w, r, cfg)
 			}
-			rp.owner.recordTransportOutcome(r.Context(), reverseAllowReceipt, entry, completed)
+			rp.owner.recordTransportOutcome(r.Context(), reverseAllowReceipt, entry, completed && flushErr == nil)
+			_ = httpstream.Abort(r.Context(), flushErr)
 		}()
 		rp.proxy.ServeHTTP(forwardWriter, r)
 		returned = true

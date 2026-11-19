@@ -590,3 +590,56 @@ func TestV3ResponsePolicyAdmissions(t *testing.T) {
 		t.Fatal("closed writer admitted a response decision")
 	}
 }
+
+type v3DeliveryFlushFailure struct {
+	*httptest.ResponseRecorder
+	flushes int
+}
+
+func (w *v3DeliveryFlushFailure) FlushError() error {
+	w.flushes++
+	return io.ErrClosedPipe
+}
+
+func TestV3OptionalDeliveryFlushFailure(t *testing.T) {
+	for _, surface := range []string{TransportReverse, "intercept"} {
+		t.Run(surface, func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, surface, false, nil)
+			upstream := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				const body = "example"
+				return &http.Response{
+					StatusCode: http.StatusOK, ContentLength: int64(len(body)),
+					Header: http.Header{headerContentType: []string{"text/plain"}},
+					Body:   io.NopCloser(strings.NewReader(body)), Request: req,
+				}, nil
+			})
+			w := &v3DeliveryFlushFailure{ResponseRecorder: httptest.NewRecorder()}
+			target := &url.URL{Scheme: "https", Host: "upstream.vendor.example"}
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target.String(), nil)
+			switch surface {
+			case TransportReverse:
+				reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
+				reverse.SetOwnerProxy(p)
+				reverse.proxy.Transport.(*reverseSigningRoundTripper).base = upstream
+				reverse.ServeHTTP(w, r)
+			case "intercept":
+				ic := &InterceptContext{
+					Proxy: p, Config: p.ConfigPtr().Load(), Scanner: p.ScannerPtr().Load(),
+					Logger: audit.NewNop(), Metrics: metrics.New(),
+					TargetHost: target.Hostname(), TargetPort: "443",
+				}
+				newInterceptHandler(ic, upstream).ServeHTTP(w, r)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || result.Integrity != "ok" || result.Counts.EffectsCompleted == nil ||
+				*result.Counts.EffectsCompleted != 1 || result.Counts.EffectsUnknown == nil ||
+				*result.Counts.EffectsUnknown != 1 || w.flushes != 1 || w.Code != http.StatusOK {
+				t.Fatalf("failed delivery flush was not reflected in receipts: flushes=%d status=%d counts=%+v err=%v",
+					w.flushes, w.Code, result.Counts, err)
+			}
+		})
+	}
+}
