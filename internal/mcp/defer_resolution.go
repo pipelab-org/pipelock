@@ -14,6 +14,16 @@ import (
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
+func deferredAdmissionError(manager *deferred.Manager, requireReceipts bool) error {
+	if manager == nil || !manager.Enabled() {
+		return errors.New("defer is disabled")
+	}
+	if requireReceipts && manager.JournalPath() == "" {
+		return errors.New("a deferred action journal is required with required receipts")
+	}
+	return nil
+}
+
 func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
 	final := res.FinalDecision
 	if final == "" {
@@ -105,7 +115,7 @@ type deferredReceiptSettlement struct {
 // no receipt emitter is configured, or one is already marked unhealthy. It
 // writes nothing. A write that fails later is caught by commitAllow.
 func (s *deferredReceiptSettlement) probeAllow(opts MCPProxyOpts, res deferred.Resolution) deferred.Resolution {
-	if res.FinalDecision == config.ActionAllow && !receiptWritable(opts) {
+	if res.FinalDecision == config.ActionAllow && !receiptWritable(opts, receipt.EmitOpts{ShardIndex: res.ShardIndex, ShardSelected: res.ShardSelected}) {
 		res.FinalDecision = config.ActionBlock
 		res.ResolutionSource = deferred.SourceCancel
 		res.Reason = deferred.ReasonReceiptNotWritten
@@ -113,19 +123,22 @@ func (s *deferredReceiptSettlement) probeAllow(opts MCPProxyOpts, res deferred.R
 	return res
 }
 
-// receiptWritable reports whether a required receipt has a usable emitter.
-// Receipts that are not required never close a release.
-func receiptWritable(opts MCPProxyOpts) bool {
+// receiptWritable checks every configured family on the hold's assigned shard.
+func receiptWritable(opts MCPProxyOpts, shard receipt.EmitOpts) bool {
 	if !opts.requireReceipts() {
 		return true
 	}
 	v1, v2 := opts.receiptEmitter(), opts.v2ReceiptEmitter()
-	v1OK := v1 != nil && v1.InitError() == nil && v1.HealthError() == nil
-	v2OK := v2 != nil && v2.HealthError() == nil
-	if v2 != nil && !v2OK {
-		return false
+	if opts.ReceiptGroup != nil {
+		var err error
+		v1, v2, err = opts.ReceiptGroup.selectedEmitters(shard)
+		if err != nil {
+			return false
+		}
 	}
-	return v1OK || v2OK
+	return (v1 != nil || v2 != nil) &&
+		(v1 == nil || v1.InitError() == nil && v1.HealthError() == nil) &&
+		(v2 == nil || v2.HealthError() == nil)
 }
 
 // commitAllow writes the release resolution receipt from Manager.AfterJournal:

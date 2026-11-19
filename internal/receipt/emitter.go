@@ -922,7 +922,7 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		return fmt.Errorf("receipt emitter unhealthy: %w", healthErr)
 	}
 
-	if e.rootEmitted {
+	if e.rootEmitted || e.closeEmitted && opts.DecisionPhase == DecisionPhaseOutcome {
 		e.recordFailure(FailReasonSealed)
 		return ErrChainSealed
 	}

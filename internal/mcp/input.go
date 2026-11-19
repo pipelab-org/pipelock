@@ -313,14 +313,6 @@ func ForwardScannedInput(
 		close(blockedCh)
 	}()
 	var forwardMu sync.Mutex
-	forwardMessage := func(msg []byte, taskReleaseReason func() string) (string, error) {
-		forwardMu.Lock()
-		defer forwardMu.Unlock()
-		if reason := taskReleaseReason(); reason != "" {
-			return reason, nil
-		}
-		return "", writer.WriteMessage(msg)
-	}
 
 	// Helper: record an adaptive signal and handle escalation side-effects.
 	// Eliminates repeated nil/enabled guards at every call site.
@@ -678,7 +670,7 @@ func ForwardScannedInput(
 		actionID := ""
 		receiptTarget := toolCallName
 		receiptBearingMethod := verdict.Method == methodToolsCall ||
-			(opts.requireReceipts() && isRequiredReceiptMetadataMethod(verdict.Method))
+			isPairedMCPMethod(verdict.Method) || (opts.requireReceipts() && isRequiredReceiptHandshakeNotification(verdict.Method, verdict.ID))
 		if receiptTarget == "" && IsA2AMethod(verdict.Method) {
 			receiptTarget = verdict.Method
 			receiptBearingMethod = true
@@ -709,10 +701,8 @@ func ForwardScannedInput(
 		// requests also choose once when their first receipt is emitted.
 		var receiptShard receipt.EmitOpts
 
+		var outcome TrackedRequestOutcome
 		emitToolReceipt := func(receiptVerdict string, contractGate ...mcpContractGateOutput) error {
-			if verdict.Method != methodToolsCall && receiptVerdict == config.ActionAllow && !opts.requireReceipts() {
-				return nil
-			}
 			// Delegate to the shared helper so stdio and HTTP/WS emit
 			// tool receipts through the same EmitMCPDecision entry.
 			layer, pattern, severity := pickAttribution(eval)
@@ -756,15 +746,21 @@ func ForwardScannedInput(
 				receiptOpts.ContractGate = &contractGate[0]
 			}
 			if receiptVerdict == config.ActionBlock && forwardReceiptVerdict != "" && actionID != "" {
-				if requireReceipts && forwardReceiptVerdict == config.ActionAllow {
-					intent := opts.withReceiptPolicyHash(receiptOpts.receiptOptions())
-					emitMCPBlockedOutcomeReceipt(receiptEmitter, opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, intent, -1, pattern, requireReceipts)
+				if outcome.handle != nil {
+					refusal := outcome
+					refusal.Receipt.Layer = layer
+					refusal.Receipt.TaintDecision = receiptOpts.Decision.Result.Decision.String()
+					refusal.Receipt.TaintDecisionReason = receiptOpts.Decision.Result.Reason
+					refusal.Receipt.Severity = severity
+					refusal.settle(logW, opts, mcpOutcomeStatusBlocked, -1, pattern)
 					return nil
 				}
-				// The earlier verdict was single-phase. Give its release
-				// refusal a distinct action ID so it isn't an unmatched outcome.
 				receiptOpts.ParentActionID = actionID
 				receiptOpts.ActionID = receipt.NewActionID()
+			}
+			if receiptVerdict == config.ActionAllow && isPairedMCPMethod(verdict.Method) {
+				outcome.Method = verdict.Method
+				receiptOpts.Outcome = &outcome
 			}
 			return emitMCPToolReceipt(receiptOpts)
 		}
@@ -811,13 +807,25 @@ func ForwardScannedInput(
 			return mcpTaskReleaseRefusal(opts, frame, taintDecision, false)
 		}
 		writeReleasedMessage := func(msg []byte) (bool, error) {
-			refusal, err := forwardMessage(msg, taskReleaseReason)
-			if refusal != "" {
-				if isTrackableRequest(msg, verdict.ID) {
-					_, _ = consumeTrackedRequestOutcome(tracker, verdict.ID)
+			var registration *requestRegistration
+			refusal, err := func() (string, error) {
+				forwardMu.Lock()
+				defer forwardMu.Unlock()
+				if reason := taskReleaseReason(); reason != "" {
+					return reason, nil
 				}
+				if isTrackableRequest(msg, verdict.ID) {
+					outcome.Method = verdict.Method
+					registration = tracker.trackOutcome(verdict.ID, outcome)
+				}
+				return "", writer.WriteMessage(msg)
+			}()
+			if refusal != "" {
 				refuseTaskRelease(refusal)
 				return false, nil
+			}
+			if err != nil {
+				tracker.removeOwnedOutcome(verdict.ID, registration)
 			}
 			return true, err
 		}
@@ -1154,6 +1162,8 @@ func ForwardScannedInput(
 				receiptVerdict = config.ActionForward
 			}
 			if err := emitToolReceipt(receiptVerdict, contractGate); err != nil {
+				outcome.Receipt.Layer = "receipt_emission"
+				outcome.settle(logW, opts, mcpOutcomeStatusBlocked, -1, "receipt_emission_failed")
 				denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
 				sendMCPDenial(opts, denialAudit, BlockedRequest{
 					ID:             verdict.ID,
@@ -1166,40 +1176,15 @@ func ForwardScannedInput(
 				continue
 			}
 			forwardReceiptVerdict = receiptVerdict
-			// Track request ID immediately before forwarding so response-side
-			// can validate without leaving stale state when a required
-			// receipt fails before the request is written.
-			if isTrackableRequest(fwdLine, verdict.ID) && opts.requireReceipts() && actionID != "" {
-				outcomeReceipt := opts.withReceiptPolicyHash(receipt.EmitOpts{
-					ActionID:            actionID,
-					Verdict:             config.ActionAllow,
-					Transport:           opts.Transport,
-					Target:              receiptTarget,
-					MCPMethod:           verdict.Method,
-					ToolName:            toolCallName,
-					SessionTaintLevel:   taintDecision.Risk.Level.String(),
-					SessionContaminated: taintDecision.Risk.Contaminated,
-					RecentTaintSources:  taintDecision.Risk.Sources,
-					SessionTaskID:       taintDecision.Task.CurrentTaskID,
-					SessionTaskLabel:    taintDecision.Task.CurrentTaskLabel,
-					AuthorityKind:       taintDecision.Authority.String(),
-					TaintDecision:       taintDecision.Result.Decision.String(),
-					TaintDecisionReason: taintDecision.Result.Reason,
-					TaskOverrideApplied: taintDecision.TaskOverrideApplied,
-					PolicyHash:          policyHash,
-				})
-				outcomeReceipt = mcpWithContractReceipt(outcomeReceipt, contractGate)
-				outcomeReceipt.ShardIndex = receiptShard.ShardIndex
-				outcomeReceipt.ShardSelected = receiptShard.ShardSelected
-				tracker.TrackOutcome(verdict.ID, TrackedRequestOutcome{Receipt: outcomeReceipt, Method: verdict.Method})
-			} else if isTrackableRequest(fwdLine, verdict.ID) {
-				tracker.TrackRequest(verdict.ID, verdict.Method)
-			}
 			if released, err := writeReleasedMessage(fwdLine); err != nil {
+				outcome.settle(logW, opts, "error", -1, "upstream_write_failed")
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
 			} else if !released {
 				continue
+			}
+			if isRPCNotification(verdict.ID) {
+				outcome.settle(logW, opts, "forwarded", -1, "notification_forwarded")
 			}
 			commitMCPToolCall(baselineMetricsRecorder(opts, rec), baselineIdentity)
 			if !hadAdaptiveFinding {
@@ -1513,16 +1498,16 @@ func ForwardScannedInput(
 				effectiveAction = config.ActionBlock
 				break
 			}
-			if manager == nil || !manager.Enabled() {
+			if err := deferredAdmissionError(manager, opts.requireReceipts()); err != nil {
 				denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPDefer, mcpDeferDisabledReason, audit.BlockClassConfigMismatch)
-				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [defer manager disabled]\n",
-					lineNum, method, reasonStr)
+				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [%v]\n",
+					lineNum, method, reasonStr, err)
 				sendMCPDenial(opts, denialAudit, BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isNotification,
 					LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (defer disabled)", lineNum),
 					ErrorCode:      -32002,
-					ErrorMessage:   "pipelock: defer is disabled",
+					ErrorMessage:   "pipelock: " + err.Error(),
 				}, blockedCh)
 				effectiveAction = config.ActionBlock
 				break
@@ -1904,9 +1889,6 @@ func ForwardScannedInput(
 			receiptEmitted = true
 			forwardReceiptVerdict = receipt.NormalizeVerdict(effectiveAction)
 			// Forward anyway (warn mode).
-			if isTrackableRequest(fwdLine, verdict.ID) {
-				tracker.TrackRequest(verdict.ID, verdict.Method)
-			}
 			if released, err := writeReleasedMessage(fwdLine); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return

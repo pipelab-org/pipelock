@@ -550,7 +550,7 @@ func TestForwardScanned_MCPRequireReceiptsOutcomeEmitFailureDoesNotFailResponse(
 	}
 }
 
-func TestForwardScannedInput_A2AAllowWithoutRequireReceiptsDoesNotEmit(t *testing.T) {
+func TestForwardScannedInput_A2AAllowRecordsBestEffortIntent(t *testing.T) {
 	forwarded, blocked, dir := runStdioA2AAllow(t, false, false)
 	if blocked != nil {
 		t.Fatalf("clean A2A request should forward without require_receipts, got block: %+v", blocked)
@@ -558,10 +558,9 @@ func TestForwardScannedInput_A2AAllowWithoutRequireReceiptsDoesNotEmit(t *testin
 	if !forwarded {
 		t.Fatal("expected clean A2A request to be forwarded")
 	}
-	for _, entry := range readReceiptEntriesHTTP(t, dir) {
-		if entry.Type == actionReceiptEntryType {
-			t.Fatal("expected no action receipt for clean A2A allow without require_receipts")
-		}
+	records := readActionReceipts(t, dir)
+	if len(records) != 1 || records[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
+		t.Fatalf("clean A2A call wrote %d records, want one intent before forwarding", len(records))
 	}
 }
 

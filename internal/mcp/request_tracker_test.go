@@ -361,3 +361,29 @@ func itoa(n int) string {
 	}
 	return string(buf[pos:])
 }
+
+func TestRequestTrackerOutcomeOwnership(t *testing.T) {
+	id := json.RawMessage("1")
+	quoted := json.RawMessage(`"1"`)
+	first := TrackedRequestOutcome{Receipt: receipt.EmitOpts{ActionID: "first"}, handle: &mcpOutcomeHandle{}}
+	second := TrackedRequestOutcome{Receipt: receipt.EmitOpts{ActionID: "second"}, handle: &mcpOutcomeHandle{}}
+	tracker := NewRequestTracker()
+	owner := tracker.trackOutcome(id, first)
+	other := tracker.trackOutcome(quoted, second)
+	tracker.removeOwnedOutcome(id, other)
+	if got, ok := tracker.Consume(id); !ok || got.handle != first.handle {
+		t.Fatal("another request removed the current registration")
+	}
+	tracker.TrackOutcome(id, first)
+	if duplicate := tracker.trackOutcome(id, second); duplicate != nil {
+		t.Fatal("duplicate request ID acquired ownership")
+	}
+	if got, ok := tracker.Consume(id); !ok || got.handle != nil || got.Receipt.ActionID != "" {
+		t.Fatal("an ambiguous response acquired an outcome")
+	}
+	tracker.TrackOutcome(id, second)
+	tracker.removeOwnedOutcome(id, owner)
+	if got, ok := tracker.Consume(id); !ok || got.handle != nil {
+		t.Fatal("reuse after ambiguity acquired an outcome or lost correlation")
+	}
+}

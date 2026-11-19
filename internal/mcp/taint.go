@@ -473,6 +473,7 @@ func taintApprovalReason(decision taintDecision) string {
 }
 
 type mcpToolReceiptOpts struct {
+	Outcome *TrackedRequestOutcome
 	// ProxyOpts carries the scanner and policy snapshot that made this decision.
 	ProxyOpts        MCPProxyOpts
 	Shard            receipt.EmitOpts
@@ -522,6 +523,7 @@ func emitMCPToolReceipt(opts mcpToolReceiptOpts) error {
 		RequireReceipt: opts.RequireReceipt || (opts.ProxyOpts.ReceiptGroup != nil && opts.RequireReceipts),
 		RequiredMode:   opts.RequireReceipts,
 		Durable:        opts.Durable,
+		outcome:        opts.Outcome,
 	}); err != nil {
 		logReceiptEmitFailure(opts.Log, err, opts.RequireReceipts, opts.Verdict)
 		// RequireReceipt escalates v1 or v2 decision-receipt failures to a

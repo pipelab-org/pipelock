@@ -105,7 +105,7 @@ func emitPendingTimeoutResponses(writer transport.MessageWriter, logW io.Writer,
 		if wErr := writer.WriteMessage(resp); wErr != nil {
 			_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", wErr)
 		}
-		emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, pending.Outcome.Receipt, "error", int64(len(resp)), "response_timeout", opts.requireReceipts())
+		pending.Outcome.settle(logW, opts, "error", int64(len(resp)), "response_timeout")
 	}
 }
 
@@ -114,7 +114,7 @@ func emitPendingIncompleteOutcomes(logW io.Writer, tracker *RequestTracker, opts
 		return
 	}
 	for _, pending := range tracker.DrainPendingOutcomes() {
-		emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, pending.Outcome.Receipt, "incomplete", -1, reason, opts.requireReceipts())
+		pending.Outcome.settle(logW, opts, "incomplete", -1, reason)
 	}
 }
 
@@ -190,7 +190,6 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	obs := opts.captureObserver()
 	mediaPolicy := opts.mediaPolicy()
 	receiptEmitter := opts.receiptEmitter()
-	v2ReceiptEmitter := opts.v2ReceiptEmitter()
 	provenanceCfg := opts.provenanceCfg()
 	respScanOpts := opts.responseScanOptions()
 	resetFile := opts.AdaptiveResetFile
@@ -411,7 +410,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if !hasTrackedOutcome {
 				return
 			}
-			emitMCPOutcomeReceipt(receiptEmitter, v2ReceiptEmitter, opts.ReceiptGroup, logW, trackedOutcome.Receipt, status, int64(len(outbound)), reason, opts.requireReceipts())
+			trackedOutcome.settle(logW, opts, status, int64(len(outbound)), reason)
 		}
 
 		blockScanError := func(scanError string) error {
@@ -1299,7 +1298,7 @@ func emitRejectedResponseOutcome(raw, outbound []byte, logW io.Writer, tracker *
 	if opts.warnContext().Err() != nil {
 		reason = "response_scan_error"
 	}
-	emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, outcome.Receipt, "error", int64(len(outbound)), reason, opts.requireReceipts())
+	outcome.settle(logW, opts, "error", int64(len(outbound)), reason)
 }
 
 func toolScanHasDrift(result tools.ToolScanResult) bool {

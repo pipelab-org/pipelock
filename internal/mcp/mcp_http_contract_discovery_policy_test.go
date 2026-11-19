@@ -127,6 +127,7 @@ func TestHTTPListener_BestEffortAllowBeforeUpstreamResponse(t *testing.T) {
 	h := newMCPDecisionReceiptHarness(t)
 	opts := MCPProxyOpts{InputCfg: newHTTPInputCfg(config.ActionBlock), Scanner: promptWordingScanner(t, config.ActionBlock)}
 	opts.ReceiptEmitter, opts.V2ReceiptEmitter, opts.PolicyHash = h.v1, h.v2, mcpTestPolicyHash
+	opts.TaintCfg = &config.Defaults().Taint
 	type observation struct {
 		seq uint64
 		err error
@@ -158,14 +159,15 @@ func TestHTTPListener_BestEffortAllowBeforeUpstreamResponse(t *testing.T) {
 		t.Fatal("upstream did not receive the request")
 	}
 	_ = mcpV2Receipts(t, h)
-	var allows int
+	var paired []receipt.ActionRecord
 	for _, r := range readActionReceipts(t, h.dir) {
 		if r.ActionRecord.Target == "echo" && r.ActionRecord.Verdict == config.ActionAllow {
-			allows++
+			paired = append(paired, r.ActionRecord)
 		}
 	}
-	if allows != 1 {
-		t.Fatalf("got %d allow receipts for one call", allows)
+	if len(paired) != 2 || paired[0].DecisionPhase != receipt.DecisionPhaseIntent ||
+		paired[1].DecisionPhase != receipt.DecisionPhaseOutcome || paired[0].ActionID != paired[1].ActionID {
+		t.Fatalf("one call should produce one intent and its outcome, got %d records", len(paired))
 	}
 }
 

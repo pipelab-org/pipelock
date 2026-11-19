@@ -452,8 +452,9 @@ func TestWSTaskPermissionRechecksAfterHandshake(t *testing.T) {
 			}
 			records := observed.snapshot()
 			if !tc.expire {
-				if len(records) != 1 || records[0].Verdict != config.ActionAllow || records[0].DecisionPhase != "" {
-					t.Fatalf("receipts=%+v, want a single allow for the delivered frame", records)
+				if len(records) != 2 || records[0].DecisionPhase != receipt.DecisionPhaseIntent ||
+					records[1].DecisionPhase != receipt.DecisionPhaseOutcome || records[0].ActionID != records[1].ActionID {
+					t.Fatalf("receipts=%+v, want one intent and its outcome for the delivered frame", records)
 				}
 				return
 			}
@@ -472,8 +473,16 @@ func TestWSTaskPermissionRechecksAfterHandshake(t *testing.T) {
 
 func TestStdioTaskPermissionRechecksAfterReceipt(t *testing.T) {
 	t.Parallel()
-	for _, action := range []string{config.ActionAllow, config.ActionWarn} {
-		t.Run(action, func(t *testing.T) {
+	for _, tc := range []struct {
+		name, action string
+		required     bool
+	}{
+		{"allow_required", config.ActionAllow, true},
+		{"allow_optional", config.ActionAllow, false},
+		{"warn_required", config.ActionWarn, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			action := tc.action
 			cfg := config.Defaults()
 			rec := &httpTaskPermissionRecorder{}
 			rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingDLP}))
@@ -487,7 +496,7 @@ func TestStdioTaskPermissionRechecksAfterReceipt(t *testing.T) {
 			opts := MCPProxyOpts{
 				Scanner: testScannerForHTTP(t), TaintCfg: &cfg.Taint, Rec: rec, ReceiptEmitter: emitter,
 				ServerBinding: "test-server", taskSubject: "verified-worker", Transport: deferred.SurfaceMCPStdio,
-				InputCfg: newHTTPInputCfg(config.ActionWarn), RequireReceipts: true,
+				InputCfg: newHTTPInputCfg(config.ActionWarn), RequireReceipts: tc.required,
 			}
 			msg := []byte(deferKillTestCall)
 			rec.BindTaskSubject(opts.taskSubject)
@@ -509,6 +518,10 @@ func TestStdioTaskPermissionRechecksAfterReceipt(t *testing.T) {
 			if len(records) != 2 || records[1].Verdict != config.ActionBlock || records[1].TaintDecision != config.ActionBlock ||
 				records[1].TaintDecisionReason != session.TaskApprovalStale {
 				t.Fatalf("receipts=%+v, want the final receipt to record a stale-task block", records)
+			}
+			if action == config.ActionAllow && (records[0].DecisionPhase != receipt.DecisionPhaseIntent ||
+				records[1].DecisionPhase != receipt.DecisionPhaseOutcome || records[0].ActionID != records[1].ActionID) {
+				t.Fatalf("allow and refused release have phases %q and %q with matching ID %v", records[0].DecisionPhase, records[1].DecisionPhase, records[0].ActionID == records[1].ActionID)
 			}
 		})
 	}

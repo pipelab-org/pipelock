@@ -56,7 +56,7 @@ func emitTrackedStreamError(ctx context.Context, logW io.Writer, tracker *Reques
 	if standalone {
 		emitMCPStandaloneStreamReceipt(opts, logW, outcome.Receipt, status, reason)
 	} else {
-		emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, outcome.Receipt, status, -1, reason, opts.requireReceipts())
+		outcome.settle(logW, opts, status, -1, reason)
 	}
 }
 

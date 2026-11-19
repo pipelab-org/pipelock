@@ -159,7 +159,7 @@ func RunWSProxy(
 					reason, status = "policy_blocked", "blocked"
 				}
 			}
-			emitMCPOutcomeReceipt(wsOpts.receiptEmitter(), wsOpts.v2ReceiptEmitter(), wsOpts.ReceiptGroup, safeLogW, pending.Outcome.Receipt, status, -1, reason, wsOpts.requireReceipts())
+			pending.Outcome.settle(safeLogW, wsOpts, status, -1, reason)
 		}
 		if len(pendingOutcomes) == 0 && upstreamEnded && ctx.Err() == nil && errors.Is(lastScanErr, transport.ErrIncompleteResponse) {
 			emitMCPStandaloneStreamReceipt(wsOpts, safeLogW, mcpStreamReceipt(wsOpts, "WS"), "incomplete", httpstream.Incomplete)
@@ -271,9 +271,6 @@ func RunWSProxy(
 
 		// Input scanning: DLP, injection, policy, chain detection.
 		inputOpts := wsOpts
-		if taintCfg := inputOpts.TaintCfg; inputOpts.TaintCfgFn != nil || (taintCfg != nil && taintCfg.Enabled) {
-			inputOpts.deferBestEffortTaskReceipt = true
-		}
 		decision := scanHTTPInputDecision(msg, safeLogW, sessionKey, sessionKey, inputOpts)
 		if decision.Synthetic != nil {
 			if err := deliverMCPSynthetic(decision.Synthetic, safeClientOut); err != nil {
@@ -293,7 +290,7 @@ func RunWSProxy(
 		// until the first message has passed every existing gate plus the grant
 		// check in scanHTTPInputDecision.
 		if err := startUpstream(); err != nil {
-			emitPendingMCPInputReceipt(decision.pendingReceipt)
+			decision.Outcome.settle(safeLogW, wsOpts, "error", -1, "upstream_handshake_failed")
 			if sessionExit.inProgress() && errors.Is(err, context.Canceled) {
 				break
 			}
@@ -301,19 +298,8 @@ func RunWSProxy(
 			break
 		}
 
-		// Track request ID before forwarding for confused deputy protection.
-		// Only track requests (have "method"), not client responses to
-		// server-initiated calls, to prevent tracker pollution.
-		if isTrackableRequest(msg, frame.ID) {
-			if decision.Outcome.Receipt.ActionID != "" {
-				tracker.TrackOutcome(frame.ID, decision.Outcome)
-			} else {
-				tracker.TrackRequest(frame.ID, frame.Method)
-			}
-		}
-
 		if refusal := mcpTaskReleaseRefusal(wsOpts, decision.taskFrame, decision.taskTaint, false); refusal != "" {
-			outcome := mcpLocalRefusedOutcome(tracker, frame.ID, decision)
+			outcome := decision.Outcome
 			block := inputMCPDenial(wsOpts, mcpTaintDenialAudit(), &BlockedRequest{
 				ID: frame.ID, IsNotification: isRPCNotification(frame.ID),
 				ErrorCode: -32002, ErrorMessage: "pipelock: " + refusal,
@@ -325,16 +311,30 @@ func RunWSProxy(
 			intent.Layer = mcpReceiptLayerTaint
 			intent.TaintDecision = config.ActionBlock
 			intent.TaintDecisionReason = decision.taskTaint.recordTaskReleaseRefusal(refusal)
-			emitMCPBlockedOutcomeReceipt(wsOpts.receiptEmitter(), wsOpts.v2ReceiptEmitter(), wsOpts.ReceiptGroup, safeLogW, intent, -1, intent.TaintDecisionReason, wsOpts.requireReceipts())
+			outcome.Receipt = intent
+			outcome.settle(safeLogW, wsOpts, mcpOutcomeStatusBlocked, -1, intent.TaintDecisionReason)
 			continue
+		}
+
+		// Track request ID before forwarding for confused deputy protection.
+		// Only track requests (have "method"), not client responses to
+		// server-initiated calls, to prevent tracker pollution.
+		var registration *requestRegistration
+		if isTrackableRequest(msg, frame.ID) {
+			decision.Outcome.Method = frame.Method
+			registration = tracker.trackOutcome(frame.ID, decision.Outcome)
 		}
 
 		// Forward to upstream.
 		writeErr := wsClient.WriteMessage(decision.ForwardMessage)
-		emitPendingMCPInputReceipt(decision.pendingReceipt)
 		if writeErr != nil {
+			tracker.removeOwnedOutcome(frame.ID, registration)
+			decision.Outcome.settle(safeLogW, wsOpts, "error", -1, "upstream_write_failed")
 			stdinErr = fmt.Errorf("upstream write: %w", writeErr)
 			break
+		}
+		if isRPCNotification(frame.ID) {
+			decision.Outcome.settle(safeLogW, wsOpts, "forwarded", -1, "notification_forwarded")
 		}
 		commitMCPToolCall(baselineMetricsRecorder(wsOpts, rec), mcpFrameBaselineIdentity(frame))
 	}

@@ -144,8 +144,6 @@ type MCPProxyOpts struct {
 	responseDenial func(*mcpTerminalDecision)
 	// Modern HTTP lists enforce structural contracts independently of drift trust.
 	validateToolHeaders bool
-	// The HTTP bridge can record an intent and outcome if its send-time task check refuses.
-	deferBestEffortTaskReceipt bool
 	// Internal discovery inspects definitions without claiming client delivery.
 	toolContractDiscovery bool
 	// JSON listener scanning writes to a buffer. Defer inventory admission until
@@ -729,12 +727,18 @@ func (o MCPProxyOpts) warnContext() context.Context {
 }
 
 // snapshotScanPolicy pins the scanner and its receipt policy to the same
-// reload revision. Copies retain the snapshot through input, response and
+// reload revision, including the configured writers. Copies retain the snapshot through input, response and
 // asynchronous receipt emission; other live resolvers keep their own semantics.
 func (o MCPProxyOpts) snapshotScanPolicy() MCPProxyOpts {
 	if o.ReloadMu != nil {
 		o.ReloadMu.RLock()
 		defer o.ReloadMu.RUnlock()
+		o.ReceiptEmitter = o.receiptEmitter()
+		o.V2ReceiptEmitter = o.v2ReceiptEmitter()
+		o.RequireReceipts = o.requireReceipts()
+		o.ReceiptEmitterFn = nil
+		o.V2ReceiptEmitterFn = nil
+		o.RequireReceiptsFn = nil
 	}
 	o.Scanner = o.scanner()
 	o.PolicyHash = o.receiptPolicyHash()

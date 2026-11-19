@@ -92,7 +92,7 @@ func waitForResponseNumber(t *testing.T, ch <-chan int, want int) {
 
 // wsRespondServer creates a test WS server that reads one client message,
 // sends the given response, then signals via responseSent before closing.
-func wsRespondServer(t *testing.T, response []byte, responseSent chan<- struct{}) *httptest.Server {
+func wsRespondServer(t *testing.T, response []byte, responseSent chan<- struct{}, afterRead ...func()) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// A probe is not a WebSocket handshake from the client under test.
@@ -109,6 +109,9 @@ func wsRespondServer(t *testing.T, response []byte, responseSent chan<- struct{}
 
 		if _, err := gobwasutil.ReadClientMessage(conn, nil); err != nil {
 			return
+		}
+		for _, observe := range afterRead {
+			observe()
 		}
 		_ = gobwasutil.WriteServerMessage(conn, ws.OpText, response)
 		if responseSent != nil {
