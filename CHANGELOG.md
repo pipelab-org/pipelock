@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Both Go verifiers require regular files for standalone receipts and enforce the same 8 MiB limit, exact-number bounds and receipt format checks.
+- Contract promotion and rollback sync both lifecycle receipts before replacing the active manifest. Provision the contract store and any custom receipt directory before activation.
+- Receipt group startup finishes writing the transition if shutdown is requested after publication of the opening. Use `pipelock evidence repair-group-transition` to complete an interrupted transition when the successor's signed shard openings are available.
 - Required MCP holds use the durable journal in `flight_recorder.dir`, which is already required at configuration load. Approval checks every configured receipt family on the assigned chain.
 - Best-effort MCP recording attempts an intent before sending clean calls and pairs outcomes with intents that were recorded. Required MCP listener refusals also close the original intent when listener state is missing.
 - Failed writes of approved MCP stdio calls record a corrective receipt. MCP listener outcomes distinguish upstream redirects, server errors, unexpected statuses, and compressed responses that could not be scanned.

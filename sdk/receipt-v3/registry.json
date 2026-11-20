@@ -1530,9 +1530,9 @@
   "emit_exclusions": {
     "internal/cli/diag/demo.go/(*demoReceipts).emit/ActionRecord/8786bd353b701134": "This tool generates example or test evidence outside the launch profile.",
     "internal/cli/learn/activate.go/runPromote/SignReceipt/c4640ee60948bbac": "Contract lifecycle and shadow evidence retain their existing format.",
-    "internal/cli/learn/activate.go/runPromote/SignReceipt/18192664d28c2560": "Contract lifecycle and shadow evidence retain their existing format.",
     "internal/cli/learn/activate.go/runRollback/SignReceipt/1f8410bd4c89d919": "Contract lifecycle and shadow evidence retain their existing format.",
-    "internal/cli/learn/activate.go/runRollback/SignReceipt/91ee899f8ebd59ad": "Contract lifecycle and shadow evidence retain their existing format.",
+    "internal/cli/learn/activate.go/runPromote/SignReceipt/bdcf7454c1e1f175": "Contract lifecycle receipts use the activation receipt format outside the v3 action profile.",
+    "internal/cli/learn/activate.go/runRollback/SignReceipt/b9bcfd2174bc9e47": "Contract lifecycle receipts use the activation receipt format outside the v3 action profile.",
     "internal/cli/learn/forget.go/runForget/SignReceipt/67c1774802611c48": "Contract lifecycle and shadow evidence retain their existing format.",
     "internal/cli/learn/ratify.go/runRatify/SignReceipt/010f0e7c4587f6f1": "Contract lifecycle and shadow evidence retain their existing format.",
     "internal/cli/learn/shadow.go/emitShadowReceipts/EmitBatch/55e3fc77b2cfb44c": "Contract lifecycle and shadow evidence retain their existing format.",

@@ -32,6 +32,8 @@ use the cross-implementation conformance suite.
 JSON object. Pin the signer with `--key` to check the signature against a trusted
 public key. The value is a hex key or a path to a public-key file.
 
+Both Go commands accept regular standalone receipt files up to 8 MiB. Save input from a pipe or process substitution to a regular file before verifying it. The verifiers refuse ambiguous format fields and JSON numbers outside the interoperable exact range.
+
 ```bash
 pipelock verify-receipt receipt.json --key 70b991eb77816fc4ef0ae6a54d8a4119ddc5a16c9711c332c39e743079f6c63e
 ```
@@ -352,6 +354,20 @@ Set `flight_recorder.receipt_chains` to 2–32 to enable signed receipt groups. 
 With `flight_recorder.receipt_chains > 1`, one process writes several independent run sessions. A signed group opening lists their exact session IDs and signer. Each shard has its own signed `session_open`, action and evidence receipts, `session_close`, transcript root, and final checkpoint. The signed group close names every final shard head. A restarted process writes a new group and a signed transition to its predecessor.
 
 Before a restarted proxy listens, it verifies a closed terminal group's shards against their signed opening and close, including the recorder hash chain, checkpoint signatures, ActionReceipt v1 and EvidenceReceipt v2 chains, transcript roots and native AEL heads. Required transitions also verify their predecessor heads. An unclosed terminal group or transition predecessor requires a verified complete prefix and proof that its writer is gone, with a recovery seal for a torn tail. Other sessions in the directory retain whole-v1-chain verification against the pinned keys. Native AEL inventory verifies signed run ownership and each run's present complete records, requiring a signed native close when the recorder run is complete. Historical inventory-only sessions don't gain checkpoint-signature or v2-chain verification from this startup check.
+
+If startup reports a missing transition, stop the recorder and repair the
+terminal group with the private key that signed its opening.
+
+```bash
+pipelock evidence repair-group-transition --dir <evidence-dir> --group <group-id> --key-file <opening-key>
+```
+
+Add `--prior-signer <hex-key>` for each earlier signer after a rotation. Repair
+verifies the predecessor and the successor's signed shard openings before
+publishing the missing transition. It requires all successor shard openings and
+their native AEL files. If the interruption left one missing or unreadable,
+preserve the directory for investigation. The repaired group still reports
+`GROUP_INCOMPLETE` if it lacks a signed close.
 
 Startup shares proofs within that restart and verifies independent shards in parallel, bounded by the shard membership and Go's `GOMAXPROCS`. Restart time still grows with the amount of recorded history, including history before an empty successor. While verification reads bytes or authenticates records, `pipelock run` reports progress to systemd through `EXTEND_TIMEOUT_USEC`, using the 90-second startup budget that `contain install` writes as `TimeoutStartSec`. The first extension is sent as soon as work is observed. Further extensions are spaced at least 45 seconds (half the budget) apart and sent only while progress was observed. A failure to send an extension is logged once and disables further extensions, after which systemd enforces its own start timeout. A verifier that stops progressing for 90 seconds permanently loses extension eligibility. Pipelock sends `READY=1` only after verification and listener binding. Without a systemd notification socket, startup performs the same verification without sending progress notifications.
 

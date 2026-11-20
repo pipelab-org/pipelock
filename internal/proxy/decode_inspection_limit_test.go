@@ -4,8 +4,10 @@
 package proxy
 
 import (
+	"bytes"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -174,5 +176,35 @@ func TestDecodeInspectionLimitWebSocketDirection(t *testing.T) {
 	received, blocked := r.enforceUpstreamTextPayload(t.Context(), audit.NewNop(), []byte(deepEntityChain()), false)
 	if blocked || string(received) != deepEntityChain() {
 		t.Fatalf("inbound WebSocket refused at a decode bound: blocked=%v", blocked)
+	}
+}
+
+func TestRequestBodyMixedInspectionKeepsUploadHint(t *testing.T) {
+	zipped := uploadArchive(t, map[string][]byte{"unknown.bin": {0xff, 0xfe, 'x'}})
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("note", deepEntityChain()); err != nil {
+		t.Fatal(err)
+	}
+	part, err := writer.CreateFormFile("file", "a.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = part.Write(zipped); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, surface := range []string{"forward", "intercept", "reverse"} {
+		t.Run(surface, func(t *testing.T) {
+			status, hits, _, detail, header := exerciseUpload(t, surface, uploadPolicy{config.ActionBlock, false}, writer.FormDataContentType(), body.Bytes())
+			hint := header.Get("X-Pipelock-Hint")
+			if status != http.StatusForbidden || hits != 0 || header.Get(blockreason.HeaderReason) != string(blockreason.ParseError) ||
+				!strings.Contains(detail, "request body scan failed:") ||
+				!strings.Contains(hint, "exceeds what Pipelock can fully inspect") || !strings.Contains(hint, "could not be fully read") {
+				t.Fatalf("status=%d hits=%d reason=%q detail=%q hint=%q", status, hits, header.Get(blockreason.HeaderReason), detail, hint)
+			}
+		})
 	}
 }

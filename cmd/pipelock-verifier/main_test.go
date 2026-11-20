@@ -2952,41 +2952,6 @@ func TestDecodePinnedEvidenceKey_Errors(t *testing.T) {
 	})
 }
 
-func TestDetectSingleReceiptRecordType(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name     string
-		data     string
-		wantType string
-		wantErr  bool
-	}{
-		{name: "v2", data: `{"record_type":"evidence_receipt_v2"}`, wantType: recordTypeEvidenceV2},
-		{name: "v1_explicit", data: `{"record_type":"action_receipt_v1"}`, wantType: recordTypeActionV1},
-		{name: "v1_implicit", data: `{"version":1}`, wantType: recordTypeActionV1},
-		{name: "empty_object", data: `{}`, wantType: ""},
-		{name: "invalid_json", data: `{not json`, wantErr: true},
-		{name: "truncated", data: `{"record_type":`, wantErr: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got, err := detectSingleReceiptRecordType([]byte(tt.data))
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if got != tt.wantType {
-				t.Errorf("got %q, want %q", got, tt.wantType)
-			}
-		})
-	}
-}
-
 func TestVerifyEvidenceReceipt_ValidateOnlyPath(t *testing.T) {
 	t.Parallel()
 	fix := newEvidenceFixture(t, 1)

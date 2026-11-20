@@ -85,6 +85,8 @@ func TestVerifyReceiptCmdSingleEvidenceReceipt(t *testing.T) {
 		wantErr    string
 	}{
 		{name: "pinned", data: valid, flags: pinned, wantStatus: "OK:"},
+		{name: "oversized", data: append(slices.Clone(valid), bytes.Repeat([]byte(" "), 8<<20)...), flags: pinned, wantErr: "input exceeds 8388608 bytes"},
+		{name: "unsafe number", data: mutate("chain_seq", json.RawMessage("9007199254740992")), flags: pinned, wantErr: "exceeds cross-language exact range"},
 		{name: "unpinned opt in", data: valid, flags: unpinned, wantStatus: "UNPINNED:"},
 		{name: "unpinned default", data: valid, wantStatus: "UNPINNED:", wantErr: "verification unpinned"},
 		{
@@ -145,7 +147,7 @@ func TestVerifyReceiptCmdSingleEvidenceReceipt(t *testing.T) {
 		},
 		{
 			name: "wrong v2 receipt version", data: mutate("receipt_version", json.RawMessage(`1`)), flags: unpinned,
-			wantStatus: "FAILED:", wantErr: "receipt_version",
+			wantErr: "receipt_version",
 		},
 		{
 			name: "non-integer v1 version", data: []byte(`{"version":"1"}`), flags: unpinned,

@@ -4,6 +4,7 @@
 package receipt
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
@@ -79,6 +80,25 @@ func newStartupGroupVerification(dir string, trusted []string, options verificat
 	}, nil
 }
 
+// Once the opening is durable, finish the transition even if shutdown
+// was requested. A proof or storage error can still prevent publication.
+func (c *startupGroupVerification) walkOptions() verification.Options {
+	if !c.published {
+		return c.options
+	}
+	progress := c.options.Progress
+	if progress == nil {
+		return verification.Options{}
+	}
+	return verification.Options{Progress: func(p verification.Progress) error {
+		err := progress(p)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil
+		}
+		return err
+	}}
+}
+
 func (c *startupGroupVerification) checkIdentity() error {
 	for name, want := range c.newSeals {
 		raw, err := readClaimBytes(filepath.Join(c.dir, name))
@@ -90,7 +110,7 @@ func (c *startupGroupVerification) checkIdentity() error {
 			return fmt.Errorf("%w: recovery seal changed before successor transition", recorder.ErrEvidenceChanged)
 		}
 	}
-	if err := c.options.Check(); err != nil {
+	if err := c.walkOptions().Check(); err != nil {
 		return err
 	}
 	root, aelRoot, err := receiptGroupDirectoryIdentity(c.dir)
@@ -186,7 +206,7 @@ func (c *startupGroupVerification) prepareShards(open ReceiptGroupOpen, hash str
 		if c.proofs[shard.SessionID] != nil {
 			continue
 		}
-		s := newStartupSessionVerification(c.dir, open, shard.SessionID, c.trusted, c.options)
+		s := newStartupSessionVerification(c.dir, open, shard.SessionID, c.trusted, c.walkOptions())
 		p := &startupShardProof{session: s, prefixMode: prefix, openHash: hash}
 		c.proofs[shard.SessionID] = p
 		if prefix {
@@ -229,7 +249,7 @@ func verifyGroupShardHeadUsing(dir string, open ReceiptGroupOpen, hash string, i
 	if c == nil {
 		return VerifyGroupShardHead(dir, open, hash, index)
 	}
-	if err := c.options.Check(); err != nil {
+	if err := c.walkOptions().Check(); err != nil {
 		return ReceiptGroupShardHead{}, err
 	}
 	p := c.shard(open, hash, index, false)
@@ -240,7 +260,7 @@ func verifyGroupShardPrefixUsing(dir string, open ReceiptGroupOpen, hash string,
 	if c == nil {
 		return verifyGroupShardPrefix(dir, open, hash, index)
 	}
-	if err := c.options.Check(); err != nil {
+	if err := c.walkOptions().Check(); err != nil {
 		return groupPrefixHead{}, err
 	}
 	p := c.shard(open, hash, index, true)
@@ -293,11 +313,11 @@ func (c *startupGroupVerification) indexSession(open ReceiptGroupOpen, incomplet
 		current = open.GroupID
 	}
 	return indexAELClaimsForSessionWithWalk(c.dir, session, current, open.PreviousGroupID, c.trusted, add, nil, nil, func(visit func(recorder.Entry) error) error {
-		return recorder.WalkSessionHistoryWithOptions(c.dir, session, c.options, func(e recorder.Entry) error {
+		return recorder.WalkSessionHistoryWithOptions(c.dir, session, c.walkOptions(), func(e recorder.Entry) error {
 			if err := visit(e); err != nil {
 				return err
 			}
-			return c.options.Report(verification.Progress{Kind: "recorder_record", Session: session, Records: 1})
+			return c.walkOptions().Report(verification.Progress{Kind: "recorder_record", Session: session, Records: 1})
 		})
 	})
 }
@@ -308,7 +328,7 @@ func (c *startupGroupVerification) verifyAEL(run, signer string, completed bool)
 			return p.session.verifyAEL(run, signer, completed)
 		}
 	}
-	return ael.VerifyRunWithOptions(c.dir, run, signer, completed, c.options)
+	return ael.VerifyRunWithOptions(c.dir, run, signer, completed, c.walkOptions())
 }
 
 // Before publication, inventory covers the whole directory except generated
@@ -554,7 +574,7 @@ func (c *startupGroupVerification) successorOpening(session string) (*Receipt, e
 	if !found {
 		return nil, errors.New("recovery successor is outside signed membership")
 	}
-	s := newStartupSessionVerification(c.dir, c.successor.open, session, c.trusted, c.options)
+	s := newStartupSessionVerification(c.dir, c.successor.open, session, c.trusted, c.walkOptions())
 	s.prefix = true
 	v, err := newRecoveryPrefixVerifier(session, c.trusted, false)
 	if err != nil {
@@ -648,7 +668,7 @@ func readBoundedGroupFileUsing(dir, name string, c *startupGroupVerification) ([
 	if c == nil {
 		return readBoundedGroupFile(dir, name)
 	}
-	if err := c.options.Check(); err != nil {
+	if err := c.walkOptions().Check(); err != nil {
 		return nil, err
 	}
 	if raw, ok := c.manifests[name]; ok {

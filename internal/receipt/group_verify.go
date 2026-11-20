@@ -423,6 +423,10 @@ func receiptGroupDirectoryIdentity(dir string) (os.FileInfo, os.FileInfo, error)
 	return root, ael, nil
 }
 
+func missingGroupTransitionError(groupID string, err error) error {
+	return fmt.Errorf("receipt group transition missing for %s; stop the recorder and run pipelock evidence repair-group-transition --dir <evidence-dir> --group %s --key-file <opening-key>: %w", groupID, groupID, err)
+}
+
 func verifyReceiptGroupTransitionWithContext(dir string, successor ReceiptGroupOpen, newHash string, trusted []string, ceremony *startupGroupVerification) (retErr error) {
 	if ceremony != nil {
 		if err := ceremony.check(); err != nil {
@@ -466,8 +470,11 @@ func verifyReceiptGroupTransitionWithContext(dir string, successor ReceiptGroupO
 	}
 	transitionName, _ := ReceiptGroupFileName(successor.GroupID, "transition")
 	transitionBytes, err := readBoundedGroupFileUsing(dir, transitionName, ceremony)
+	if errors.Is(err, os.ErrNotExist) {
+		return missingGroupTransitionError(successor.GroupID, err)
+	}
 	if err != nil {
-		return fmt.Errorf("receipt group transition missing: %w", err)
+		return fmt.Errorf("read receipt group transition: %w", err)
 	}
 	transition, err := UnmarshalReceiptGroupTransition(transitionBytes, successor, predecessor, newHash, oldHash, oldCloseHash, trusted)
 	if err != nil {
