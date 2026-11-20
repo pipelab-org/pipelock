@@ -322,3 +322,33 @@ func TestStartupRefusesTransitionPublicationConflicts(t *testing.T) {
 		})
 	}
 }
+
+func TestVerifyReceiptGroupDistinguishesMissingAndInvalidTransition(t *testing.T) {
+	prepared, r, _, _ := startupPreparedWindow(t, true)
+	if err := prepared.Activate(testConfigHash); err != nil {
+		t.Fatal(err)
+	}
+	startupTestClose(t, prepared, r, true)
+	open, _ := prepared.Opening()
+	name, err := ReceiptGroupFileName(open.GroupID, "transition")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(r.Dir(), name)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	trusted := []string{open.SignerKey}
+	got := VerifyReceiptGroup(r.Dir(), open.GroupID, trusted)
+	if got.Verdict == GroupValid || !strings.Contains(got.Error, "pipelock evidence repair-group-transition") {
+		t.Fatalf("missing transition verdict = %+v, want repair instructions", got)
+	}
+	if err := os.Mkdir(path, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	got = VerifyReceiptGroup(r.Dir(), open.GroupID, trusted)
+	if got.Verdict == GroupValid || !strings.HasPrefix(got.Error, "read receipt group transition: ") ||
+		strings.Contains(got.Error, "repair-group-transition") {
+		t.Fatalf("invalid transition verdict = %+v, want read error without repair instructions", got)
+	}
+}

@@ -120,14 +120,14 @@ activation principals.`,
 }
 
 func addLifecycleFlags(cmd *cobra.Command, flags *lifecycleFlags) {
-	cmd.Flags().StringVar(&flags.storeDir, "contract-store", "", "active contract store directory (required, absolute)")
+	cmd.Flags().StringVar(&flags.storeDir, "contract-store", "", "existing active contract store directory (required, absolute)")
 	cmd.Flags().StringVar(&flags.rosterPath, "roster", "", "signed key roster path (required)")
 	cmd.Flags().StringVar(&flags.rosterRootFingerprint, "roster-root-fingerprint", "", "pinned roster-root fingerprint (required)")
 	cmd.Flags().StringVar(&flags.keystore, "keystore", "", "keystore directory for activation and receipt signing")
 	cmd.Flags().StringVar(&flags.activationKey, "activation-key", "", "keystore key id for the primary activation signature (required)")
 	cmd.Flags().StringVar(&flags.dualControlFrom, "dual-control-from", "", "keystore key id for the second activation signature")
 	cmd.Flags().StringVar(&flags.receiptKey, "receipt-key-agent", flags.receiptKey, "keystore agent name for committed lifecycle receipts")
-	cmd.Flags().StringVar(&flags.receiptOut, "receipt-out", "", "signed lifecycle receipt JSONL path; defaults under --contract-store")
+	cmd.Flags().StringVar(&flags.receiptOut, "receipt-out", "", "signed lifecycle receipt JSONL path in an existing directory (defaults under --contract-store)")
 	cmd.Flags().StringVar(&flags.environmentID, "environment-id", "", "manifest environment id; inherited from current active manifest when omitted")
 	cmd.Flags().StringVar(&flags.tenant, "tenant", "", "manifest tenant; inherited from current active manifest when all environment flags are omitted; empty means unscoped")
 	cmd.Flags().StringVar(&flags.deploymentID, "deployment-id", "", "manifest deployment id; inherited from current active manifest when all environment flags are omitted; empty means unscoped")
@@ -305,7 +305,7 @@ func runRollback(cmd *cobra.Command, flags lifecycleFlags) error {
 }
 
 func resolveLifecycle(flags lifecycleFlags) (lifecycleContext, error) {
-	storeDir, err := checkedWriteDir(flags.storeDir)
+	storeDir, err := existingLifecycleStore(flags.storeDir)
 	if err != nil {
 		return lifecycleContext{}, err
 	}
@@ -578,46 +578,59 @@ func lifecycleReceiptContext(eventID string, now time.Time, activeManifestHash, 
 	}
 }
 
-// Sync the receipt directory ancestry even on a retry: a previous attempt
-// may have created directories and stopped before their entries reached disk.
-func prepareLifecycleReceiptPath(path string, syncDir func(string) error) (string, error) {
+func existingLifecycleStore(path string) (string, error) {
 	clean := filepath.Clean(path)
 	if !filepath.IsAbs(clean) {
-		return checkedWritePath(path)
+		return "", fmt.Errorf("--contract-store must be an absolute path: %q", path)
+	}
+	info, err := os.Lstat(clean)
+	if err != nil {
+		return "", fmt.Errorf("--contract-store must name an existing directory %q: %w", clean, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("--contract-store must be a directory with no symlink at its final component: %q", clean)
+	}
+	return clean, nil
+}
+
+func existingLifecycleReceiptPath(path string) (string, error) {
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		return "", fmt.Errorf("--receipt-out must be an absolute path: %q", path)
 	}
 	dir := filepath.Dir(clean)
-	existing, err := lifecycleReceiptExistingAncestor(dir)
+	info, err := os.Stat(dir)
+	if err != nil {
+		return "", fmt.Errorf("--receipt-out parent %q must already exist: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("--receipt-out parent %q must be a directory", dir)
+	}
+	return resolveOut(clean, clean)
+}
+
+// Require a provisioned receipt directory. Sync its readable ancestors too,
+// while permitting search-only ancestry above the receipt directory.
+func prepareLifecycleReceiptPath(path string, syncDir func(string) error) (string, error) {
+	clean, err := existingLifecycleReceiptPath(path)
 	if err != nil {
 		return "", err
 	}
-	resolvedExisting, err := filepath.EvalSymlinks(existing)
-	if err != nil {
-		return "", fmt.Errorf("resolve existing lifecycle receipt directory: %w", err)
-	}
-	clean, err = checkedWritePath(clean)
-	if err != nil {
-		return "", err
-	}
+	dir := filepath.Dir(clean)
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		return "", fmt.Errorf("resolve lifecycle receipt directory: %w", err)
 	}
 	synced := make(map[string]bool)
-	for _, chain := range []struct{ base, existing string }{{dir, existing}, {resolved, resolvedExisting}} {
-		required := true
-		for current := chain.base; ; current = filepath.Dir(current) {
+	for _, base := range []string{dir, resolved} {
+		for current := base; ; current = filepath.Dir(current) {
 			if !synced[current] {
 				err := syncDir(current)
 				if err == nil {
 					synced[current] = true
-				} else if required || !errors.Is(err, os.ErrPermission) {
+				} else if current == base || !errors.Is(err, os.ErrPermission) {
 					return "", fmt.Errorf("sync lifecycle receipt directory %s: %w", current, err)
 				}
-			}
-			if current == chain.existing {
-				// Higher ancestors already held every entry on this path.
-				// Keep syncing readable ones in case an earlier try stopped.
-				required = false
 			}
 			if filepath.Dir(current) == current {
 				break
@@ -625,20 +638,6 @@ func prepareLifecycleReceiptPath(path string, syncDir func(string) error) (strin
 		}
 	}
 	return clean, nil
-}
-
-func lifecycleReceiptExistingAncestor(dir string) (string, error) {
-	for {
-		_, err := os.Stat(dir)
-		if err == nil {
-			return dir, nil
-		}
-		parent := filepath.Dir(dir)
-		if !errors.Is(err, os.ErrNotExist) || parent == dir {
-			return "", fmt.Errorf("stat lifecycle receipt directory %s: %w", dir, err)
-		}
-		dir = parent
-	}
 }
 
 type lifecycleReceiptSync struct {
@@ -657,7 +656,7 @@ func appendLifecycleReceiptsWithSync(path string, syncReceipt lifecycleReceiptSy
 	if syncReceipt.dir == nil {
 		syncReceipt.dir = directorysync.Sync
 	}
-	clean, err := checkedWritePath(path)
+	clean, err := existingLifecycleReceiptPath(path)
 	if err != nil {
 		return err
 	}

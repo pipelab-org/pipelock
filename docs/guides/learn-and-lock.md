@@ -82,6 +82,8 @@ Run `pipelock learn promote --help` for the full flag list and the rollback / au
 
 The CLI validates the candidate and syncs signed `contract_promote_intent` and `contract_promote_committed` receipts before publishing the active manifest. Publication uses a compare-and-swap on `prior_manifest_hash` and a monotonic generation counter. An accepted validation receipt can survive an interruption before publication. Check the active manifest to see which generation took effect.
 
+Provision the contract store before running `learn promote` or `learn rollback`. If you set `--receipt-out`, use an existing parent directory. Your deployment must make these directory entries durable before activation if the CLI lacks permission to sync their ancestors.
+
 If an interrupted write leaves an incomplete final record in `activation-receipts.jsonl`, preserve that file and retry the operation with `--receipt-out` pointing to a new file. Keep both logs with the activation history. The interrupted operation stops before publishing its new manifest.
 
 ## Storage layout

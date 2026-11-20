@@ -152,6 +152,9 @@ func TestLifecycleReceiptPathRetrySyncsExistingAncestors(t *testing.T) {
 	root := t.TempDir()
 	first := filepath.Join(root, "first")
 	path := filepath.Join(first, "second", "lifecycle.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatal(err)
+	}
 	syncErr := errors.New("interrupted directory sync")
 	if _, err := prepareLifecycleReceiptPath(path, func(string) error { return syncErr }); !errors.Is(err, syncErr) {
 		t.Fatalf("initial prepare error = %v, want %v", err, syncErr)
@@ -171,36 +174,96 @@ func TestLifecycleReceiptPathRetrySyncsExistingAncestors(t *testing.T) {
 }
 
 func TestLifecycleReceiptPathWithSearchOnlyAncestor(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("directory modes do not restrict root")
+	}
 	parent := filepath.Join(t.TempDir(), "search-only")
 	existing := filepath.Join(parent, "receipts")
 	if err := os.MkdirAll(existing, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	syncDir := func(dir string) error {
-		if dir == parent {
-			return os.ErrPermission
+	if err := unix.Chmod(parent, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := unix.Chmod(parent, 0o750); err != nil {
+			t.Error(err)
 		}
-		return directorysync.Sync(dir)
+	})
+	if err := directorysync.Sync(parent); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("ancestor sync = %v, want permission denied", err)
 	}
 	path := filepath.Join(existing, "activation.jsonl")
-	if got, err := prepareLifecycleReceiptPath(path, syncDir); err != nil || got != path {
-		t.Fatalf("prepare below an existing search-only ancestor = %q, %v", got, err)
+	if got, err := prepareLifecycleReceiptPath(path, directorysync.Sync); err != nil || got != path {
+		t.Fatalf("prepare below a search-only ancestor = %q, %v", got, err)
 	}
-	path = filepath.Join(parent, "new-receipts", "activation.jsonl")
-	if _, err := prepareLifecycleReceiptPath(path, syncDir); !errors.Is(err, os.ErrPermission) {
-		t.Fatalf("prepare with an unsynced new directory entry = %v, want access denied", err)
+	if err := unix.Chmod(existing, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := unix.Chmod(existing, 0o750); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := prepareLifecycleReceiptPath(path, directorysync.Sync); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("prepare with an unreadable receipt directory = %v, want permission denied", err)
 	}
 }
 
-func TestLifecycleReceiptPathCreatesNestedDirectories(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "first", "second", "lifecycle.jsonl")
-	clean, err := prepareLifecycleReceiptPath(path, directorysync.Sync)
-	if err != nil || clean != path {
-		t.Fatalf("receipt path = %q, error = %v", clean, err)
+func TestLifecycleReceiptPathRequiresProvisionedDirectory(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "new-receipts")
+	path := filepath.Join(dir, "activation.jsonl")
+	syncDir := func(got string) error {
+		if got == parent {
+			return os.ErrPermission
+		}
+		return nil
 	}
-	info, err := os.Stat(filepath.Dir(path))
-	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o750 {
-		t.Fatalf("receipt directory mode = %v, error = %v", info, err)
+	for attempt := 1; attempt <= 2; attempt++ {
+		if _, err := prepareLifecycleReceiptPath(path, syncDir); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("prepare attempt %d = %v, want missing directory", attempt, err)
+		}
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("receipt directory after preflight attempts: %v, want absence", err)
+	}
+	if err := os.WriteFile(dir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepareLifecycleReceiptPath(path, syncDir); err == nil || !strings.Contains(err.Error(), "must be a directory") {
+		t.Fatalf("prepare with a regular file as parent = %v", err)
+	}
+}
+
+func TestLifecycleReceiptAppendDoesNotRecreateRemovedDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "receipts")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "activation.jsonl")
+	if _, err := prepareLifecycleReceiptPath(path, directorysync.Sync); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendLifecycleReceipts(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("append after the directory disappeared = %v, want missing directory", err)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("receipt directory after failed append: %v, want absence", err)
+	}
+}
+
+func TestLifecycleRequiresProvisionedContractStore(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "missing-store")
+	_, err := resolveLifecycle(lifecycleFlags{storeDir: dir})
+	if !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), "--contract-store") {
+		t.Errorf("resolve with missing contract store = %v", err)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("contract store after failed setup: %v, want absence", err)
 	}
 }
 

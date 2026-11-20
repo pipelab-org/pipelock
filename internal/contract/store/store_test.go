@@ -1417,3 +1417,21 @@ func TestWriteActiveRecordedJoinsValidationAndRecordingErrors(t *testing.T) {
 		t.Fatalf("active manifest after failed recording: %v", err)
 	}
 }
+
+func TestWriteActiveRecordedDoesNotCreateMissingStore(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "missing-store")
+	st := New(dir)
+	called := false
+	if _, err := st.WriteActiveRecorded(nil, Options{}, func(error) error {
+		called = true
+		return nil
+	}); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("recorded write to missing store = %v, want missing directory", err)
+	}
+	if called {
+		t.Error("recorded write called the callback without a store")
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("contract store after failed write: %v, want absence", err)
+	}
+}

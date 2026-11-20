@@ -108,6 +108,13 @@ type JournalEntry struct {
 	SignerKeyIDs      []string  `json:"signer_key_ids,omitempty"`
 }
 
+func (s Store) withLock(fn func() error) error {
+	if err := os.MkdirAll(s.root, dirPerm); err != nil {
+		return fmt.Errorf("create contract store root: %w", err)
+	}
+	return s.withExistingLock(fn)
+}
+
 // Reload validates active.json and returns the accepted state. If validation
 // fails, the caller keeps its previous in-memory state.
 func (s Store) Reload(opts Options) (State, error) {
@@ -270,7 +277,8 @@ func (s Store) WriteActive(raw []byte, opts Options) (string, error) {
 // WriteActiveRecorded records the result of locked validation before publishing
 // active.json. If recording fails, the prior manifest stays active. A successful
 // validation record confirms the candidate passed validation even if publishing
-// the file subsequently fails.
+// the file subsequently fails. When a recorder is provided, the store directory
+// must already exist so recording and publication cannot recreate it.
 func (s Store) WriteActiveRecorded(raw []byte, opts Options, recordValidation func(error) error) (string, error) {
 	recordResult := func(validationErr error) error {
 		if recordValidation != nil {
@@ -280,8 +288,12 @@ func (s Store) WriteActiveRecorded(raw []byte, opts Options, recordValidation fu
 		}
 		return validationErr
 	}
+	lock := s.withExistingLock
+	if recordValidation == nil {
+		lock = s.withLock
+	}
 	var manifestHash string
-	err := s.withLock(func() error {
+	err := lock(func() error {
 		lockedOpts := opts
 		current, err := s.currentActiveLocked(opts)
 		if err != nil && !errors.Is(err, ErrNoActiveManifest) {
@@ -296,8 +308,10 @@ func (s Store) WriteActiveRecorded(raw []byte, opts Options, recordValidation fu
 			return err
 		}
 		manifestHash = state.ManifestHash
-		if err := mkdirAll(s.root, dirPerm); err != nil {
-			return fmt.Errorf("create contract store root: %w", err)
+		if recordValidation == nil {
+			if err := mkdirAll(s.root, dirPerm); err != nil {
+				return fmt.Errorf("create contract store root: %w", err)
+			}
 		}
 		if err := atomicWrite(s.activePath(), append(bytes.TrimSpace(raw), '\n'), filePerm); err != nil {
 			return fmt.Errorf("write active manifest: %w", err)
