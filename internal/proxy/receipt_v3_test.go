@@ -833,12 +833,19 @@ func TestV3WebSocketFailedClientUpgradeSettlesUpstream(t *testing.T) {
 	if err != nil || result.Integrity != "ok" || result.Counts.Decisions == nil {
 		t.Fatalf("verify WebSocket receipts: %+v (%v)", result, err)
 	}
-	for _, count := range *result.Counts.Decisions {
-		if count.State == "not_released" && count.Count == 1 {
-			return
+	records := readV3TestActions(t, dir)
+	for _, intent := range records {
+		if intent.Phase != "intent" || intent.EffectBoundary != boundaryUpstreamSend || intent.Attempt == nil {
+			continue
+		}
+		for _, outcome := range records {
+			if outcome.ActionID == intent.ActionID && outcome.EffectBoundary == intent.EffectBoundary &&
+				outcome.Attempt != nil && *outcome.Attempt == *intent.Attempt && outcome.OutcomeClass == "not_released" {
+				return
+			}
 		}
 	}
-	t.Fatalf("upstream intent was not settled as withheld: %v", *result.Counts.Decisions)
+	t.Fatalf("upstream intent was not settled as withheld: %+v", records)
 }
 
 func TestV3ReverseEnvelopeMatchesSendReceipt(t *testing.T) {
@@ -1079,26 +1086,123 @@ func TestV3SSEFindingRecordsObservedWrite(t *testing.T) {
 }
 
 func TestV3ReverseDeliveryWithTrailersStaysUncertain(t *testing.T) {
-	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportReverse, true, nil)
-	target := &url.URL{Scheme: "https", Host: "upstream.vendor.example"}
-	reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
-	reverse.SetOwnerProxy(p)
-	reverse.proxy.Transport.(*reverseSigningRoundTripper).base = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	for _, tc := range []struct {
+		name         string
+		major, minor int
+	}{
+		{"HTTP/1.1", 1, 1},
+		{"HTTP/2", 2, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, TransportReverse, true, nil)
+			target := &url.URL{Scheme: "https", Host: "upstream.vendor.example"}
+			reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
+			reverse.SetOwnerProxy(p)
+			reverse.proxy.Transport.(*reverseSigningRoundTripper).base = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK, ContentLength: -1,
+					Header: http.Header{headerContentType: []string{"text/plain"}},
+					Body:   io.NopCloser(strings.NewReader("example")), Request: req,
+					Trailer: http.Header{"X-Example": []string{"trailer"}},
+				}, nil
+			})
+			w := httptest.NewRecorder()
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target.String(), nil)
+			req.ProtoMajor, req.ProtoMinor = tc.major, tc.minor
+			reverse.ServeHTTP(w, req)
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || result.Integrity != "ok" || result.Counts.EffectsCompleted == nil || *result.Counts.EffectsCompleted != 1 ||
+				result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 1 || w.Code != http.StatusOK || w.Body.String() != "example" {
+				t.Fatalf("chunked reply = %d %q, counts = %+v, error = %v", w.Code, w.Body.String(), result.Counts, err)
+			}
+		})
+	}
+}
+
+func TestV3ForwardFiniteSSEDoesNotClaimCompleteFraming(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportForward, true, nil)
+	const stream = "data: example\n\n"
+	p.client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK, ContentLength: -1,
-			Header: http.Header{headerContentType: []string{"text/plain"}},
-			Body:   io.NopCloser(strings.NewReader("example")), Request: req,
-			Trailer: http.Header{"X-Example": []string{"trailer"}},
+			Header: http.Header{headerContentType: []string{"text/event-stream"}},
+			Body:   io.NopCloser(strings.NewReader(stream)), Request: req,
 		}, nil
 	})
 	w := httptest.NewRecorder()
-	reverse.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, target.String(), nil))
+	p.handleForwardHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://upstream.vendor.example", nil))
+	if w.Code != http.StatusOK || w.Body.String() != stream {
+		t.Fatalf("stream response = %d %q", w.Code, w.Body.String())
+	}
 	if err := writer.Close(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
 	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
-	if err != nil || result.Integrity != "ok" || result.Counts.EffectsCompleted == nil || *result.Counts.EffectsCompleted != 1 ||
-		result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 1 || w.Code != http.StatusOK || w.Body.String() != "example" {
-		t.Fatalf("chunked reply = %d %q, counts = %+v, error = %v", w.Code, w.Body.String(), result.Counts, err)
+	if err != nil || result.Verdict != "VALID" {
+		t.Fatalf("verify stream receipts: %+v (%v)", result, err)
 	}
+	for _, action := range readV3TestActions(t, dir) {
+		if action.EffectBoundary == boundaryDownstreamDelivery && action.Phase == "outcome" {
+			if action.OutcomeClass != "attempt_unknown" {
+				t.Fatalf("SSE outcome claims unobserved framing: %+v", action)
+			}
+			return
+		}
+	}
+	t.Fatal("missing downstream SSE outcome")
+}
+
+func TestV3ReverseOptionalDeliverySettlesPolicyWithoutTransportReceipt(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportReverse, false, nil)
+	enabled := true
+	p.CurrentConfig().MediaPolicy.Enabled = &enabled
+	p.CurrentConfig().MediaPolicy.StripImageMetadata = &enabled
+	target := &url.URL{Scheme: "https", Host: "upstream.vendor.example"}
+	reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
+	reverse.SetOwnerProxy(p)
+	source := buildValidJPEG([]byte("Exif\x00\x00metadata-marker"))
+	reverse.proxy.Transport.(*reverseSigningRoundTripper).base = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		state, _ := req.Context().Value(ctxKeyReverseResponseReceipt).(*reverseResponseReceiptState)
+		if state == nil || state.confirmDelivery == nil {
+			t.Fatal("missing reverse response receipt state")
+		}
+		decision := mediaRewriteReceipt(receipt.EmitOpts{
+			Transport: TransportReverse, Method: req.Method, Target: target.String(),
+		})
+		if err := p.confirmV3ResponseDecision(p.CurrentConfig(), decision, &state.decisions); err != nil {
+			t.Fatal(err)
+		}
+		// The confirmation wrapper permits delivery without a receipt in
+		// optional mode when its write failed without withholding the effect.
+		state.confirmDelivery = func() (*v3TransportReceipt, error) { return nil, nil }
+		return &http.Response{
+			StatusCode: http.StatusOK, ContentLength: int64(len(source)),
+			Header: http.Header{headerContentType: []string{"image/jpeg"}},
+			Body:   io.NopCloser(bytes.NewReader(source)), Request: req,
+		}, nil
+	})
+	w := httptest.NewRecorder()
+	reverse.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, target.String(), nil))
+	if w.Code != http.StatusOK || w.Body.Len() == 0 || bytes.Equal(w.Body.Bytes(), source) {
+		t.Fatalf("optional reverse response did not deliver stripped media: %d, %d bytes", w.Code, w.Body.Len())
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Verdict != "VALID" {
+		t.Fatalf("verify response receipts: %+v (%v)", result, err)
+	}
+	for _, action := range readV3TestActions(t, dir) {
+		if action.Layer == "media_policy" && action.Phase == "outcome" {
+			if action.OutcomeClass != "completed" {
+				t.Fatalf("delivered media has %q outcome", action.OutcomeClass)
+			}
+			return
+		}
+	}
+	t.Fatal("delivered media policy decision has no outcome")
 }

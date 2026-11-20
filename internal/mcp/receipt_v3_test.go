@@ -4,11 +4,13 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -67,14 +69,33 @@ func exerciseMCPV3Upstream(t *testing.T, surface string, live bool) {
 		}
 	}
 	var hits atomic.Int32
-	atEntry := make(chan error, 2)
+	type upstreamObservation struct {
+		intent string
+		err    error
+	}
+	atEntry := make(chan upstreamObservation, 2)
 	observe := func(ctx context.Context) {
 		hits.Add(1)
+		var observation upstreamObservation
+		defer func() { atEntry <- observation }()
 		result, err := v3.VerifyPaths(ctx, []string{dir}, verify)
-		if err == nil && !hasMCPV3State(result, "outcome_unknown") {
-			err = errors.New("the sender reached the peer before its signed intent")
+		if err != nil {
+			observation.err = err
+			return
 		}
-		atEntry <- err
+		actions, err := loadMCPV3Actions(dir)
+		if err != nil {
+			observation.err = err
+			return
+		}
+		for _, action := range actions {
+			if action.Phase == "intent" && action.EffectBoundary == mcpV3Upstream {
+				observation.intent = action.ActionID
+			}
+		}
+		if observation.intent == "" || !hasMCPV3State(result, "outcome_unknown") {
+			observation.err = errors.New("the sender reached the peer before its signed upstream intent")
+		}
 	}
 	opts := MCPProxyOpts{Scanner: testScannerForHTTP(t), Transport: transportMCPStdio, RequireReceipts: true, ReceiptV3: writer}
 	switch surface {
@@ -158,16 +179,23 @@ func exerciseMCPV3Upstream(t *testing.T, surface string, live bool) {
 	if hits.Load() != 1 {
 		t.Fatalf("peer received %d sends, want exactly one", hits.Load())
 	}
+	var intent string
 	select {
-	case err := <-atEntry:
-		if err != nil {
-			t.Fatal(err)
+	case observation := <-atEntry:
+		if observation.err != nil {
+			t.Fatal(observation.err)
 		}
+		intent = observation.intent
 	default:
 		t.Fatal("peer did not inspect the intent")
 	}
 	if err := writer.Close(t.Context(), nil); err != nil {
 		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(readMCPV3Actions(t, dir), func(action v3.Action) bool {
+		return action.ActionID == intent && action.EffectBoundary == mcpV3Upstream && action.OutcomeClass == "completed"
+	}) {
+		t.Fatalf("signed upstream intent %q did not complete", intent)
 	}
 	result, err := v3.VerifyPaths(t.Context(), []string{dir}, verify)
 	wantCompleted := int64(1)
@@ -194,21 +222,30 @@ func hasMCPV3State(result v3.Result, want string) bool {
 
 func newMCPV3Stream(t *testing.T, surface string) (string, *v3.StreamWriter, v3.Options) {
 	t.Helper()
+	return newMCPV3StreamWithStorage(t, surface, nil)
+}
+
+func newMCPV3StreamWithStorage(t *testing.T, surface string, createTemp func(string, string) (v3.StreamFile, error)) (string, *v3.StreamWriter, v3.Options) {
+	t.Helper()
 	dir := t.TempDir()
-	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
-	writer, err := v3.OpenStreamWriter(t.Context(), v3.StreamWriterOptions{
-		Dir: dir, SigningKey: key, PolicyHash: v3.Digest(nil),
+	opts := mcpV3TestWriterOptions(dir, surface, createTemp)
+	writer, err := v3.OpenStreamWriter(t.Context(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.Close(context.Background(), nil) })
+	return dir, writer, v3.Options{Keys: []ed25519.PublicKey{opts.SigningKey.Public().(ed25519.PublicKey)}, Directory: true, AllowPrefix: true}
+}
+
+func mcpV3TestWriterOptions(dir, surface string, createTemp func(string, string) (v3.StreamFile, error)) v3.StreamWriterOptions {
+	return v3.StreamWriterOptions{
+		Dir: dir, SigningKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), PolicyHash: v3.Digest(nil), CreateTempFile: createTemp,
 		Identity: v3.Writer{Instance: "example", Product: "Pipelock", Version: "3"},
 		Coverage: v3.Coverage{
 			ReceiptsRequired: true, Surfaces: []string{surface},
 			RedactionRuleset: v3.Ruleset{ID: "example", Version: "1", Hash: v3.Digest(nil)},
 		},
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = writer.Close(context.Background(), nil) })
-	return dir, writer, v3.Options{Keys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Directory: true, AllowPrefix: true}
 }
 
 func TestMCPV3ConfirmsDirectResponseDelivery(t *testing.T) {
@@ -317,6 +354,7 @@ func TestMCPV3RedirectDispatchOutcome(t *testing.T) {
 			{name: "completed", outcome: "completed", wantStarted: true},
 			{name: "handler failure", outcome: "attempt_unknown", wantStarted: true},
 			{name: "missing executable", outcome: "not_released"},
+			{name: "refused delivery", outcome: "completed", wantStarted: true},
 			{name: "closed writer"},
 		} {
 			t.Run(surface+"/"+tc.name, func(t *testing.T) {
@@ -345,6 +383,16 @@ func TestMCPV3RedirectDispatchOutcome(t *testing.T) {
 						}},
 					}),
 				}
+				var delivered bool
+				peer := v3TestPeer(func([]byte) error {
+					actionList := readMCPV3Actions(t, dir)
+					delivered = slices.ContainsFunc(actionList, func(a v3.Action) bool {
+						return a.Phase == "intent" && a.EffectBoundary == mcpV3Delivery && a.ParentActionID != ""
+					})
+					return nil
+				})
+				refuseDelivery := tc.name == "refused delivery"
+				var deliver func() error
 				if surface == transportMCPStdio {
 					blocked := make(chan BlockedRequest, 2)
 					ForwardScannedInput(transport.NewStdioReader(strings.NewReader(cleanToolsCallRequest)),
@@ -352,8 +400,30 @@ func TestMCPV3RedirectDispatchOutcome(t *testing.T) {
 							t.Error("redirect forwarded the original request")
 							return nil
 						}), io.Discard, config.ActionBlock, config.ActionBlock, blocked, nil, nil, opts)
+					if br, ok := <-blocked; ok && br.SyntheticResponse != nil {
+						deliver = func() error { return deliverMCPInputResult(opts, br, peer) }
+					}
 				} else {
-					scanHTTPInputDecision([]byte(cleanToolsCallRequest), io.Discard, "session", "session", opts)
+					decision := scanHTTPInputDecision([]byte(cleanToolsCallRequest), io.Discard, "session", "session", opts)
+					if decision.Synthetic != nil {
+						deliver = func() error { return deliverMCPSynthetic(decision.Synthetic, peer) }
+					}
+				}
+				if refuseDelivery {
+					if err := writer.Close(t.Context(), nil); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if tc.outcome == "completed" {
+					if deliver == nil {
+						t.Fatal("missing synthetic redirect reply")
+					}
+					if err := deliver(); errors.Is(err, ErrReceiptRequired) != refuseDelivery || err != nil && !refuseDelivery {
+						t.Fatalf("redirect delivery = %v, refusal expected = %t", err, refuseDelivery)
+					}
+					if delivered == refuseDelivery {
+						t.Fatalf("redirect reached client with signed intent = %t, refusal expected = %t", delivered, refuseDelivery)
+					}
 				}
 				_, statErr := os.Stat(marker)
 				if got := statErr == nil; got != tc.wantStarted {
@@ -393,8 +463,17 @@ func assertMCPV3RedirectOutcome(t *testing.T, dir, outcome string) {
 }
 
 func TestMCPV3DeferredSendUsesHoldAndIntent(t *testing.T) {
-	for _, surface := range []string{deferred.SurfaceMCPStdio, deferred.SurfaceMCPHTTPUpstream} {
-		t.Run(surface, func(t *testing.T) {
+	for _, tc := range []struct {
+		name, surface string
+		failSend      bool
+	}{
+		{"stdio", deferred.SurfaceMCPStdio, false},
+		{"bridge", deferred.SurfaceMCPHTTPUpstream, false},
+		{"stdio failed send", deferred.SurfaceMCPStdio, true},
+		{"bridge failed send", deferred.SurfaceMCPHTTPUpstream, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			surface := tc.surface
 			dir, writer, verify := newMCPV3Stream(t, surface)
 			manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Minute})
 			policy := deferApprovalPolicy(config.DeferResolverProfile{})
@@ -419,7 +498,13 @@ func TestMCPV3DeferredSendUsesHoldAndIntent(t *testing.T) {
 				go func() {
 					ForwardScannedInput(
 						transport.NewStdioReader(input),
-						v3TestPeer(func([]byte) error { checkRelease(ctx); return nil }),
+						v3TestPeer(func([]byte) error {
+							checkRelease(ctx)
+							if tc.failSend {
+								return io.ErrClosedPipe
+							}
+							return nil
+						}),
 						io.Discard, config.ActionWarn, config.ActionBlock, make(chan BlockedRequest, 4), nil, NewRequestTracker(), opts,
 					)
 					done <- nil
@@ -431,6 +516,10 @@ func TestMCPV3DeferredSendUsesHoldAndIntent(t *testing.T) {
 						return
 					}
 					checkRelease(r.Context())
+					if tc.failSend {
+						w.WriteHeader(http.StatusBadGateway)
+						return
+					}
 					w.Header().Set("Content-Type", "application/json")
 					_, _ = io.WriteString(w, cleanToolsCallResponse)
 				}))
@@ -451,8 +540,12 @@ func TestMCPV3DeferredSendUsesHoldAndIntent(t *testing.T) {
 			default:
 			}
 			held := manager.Snapshot()[0]
-			if decision, err := manager.ResolveApprovalResult(held.DeferID, config.ActionAllow, deferred.SourceOperator); err != nil || decision != config.ActionAllow {
-				t.Fatalf("resolve held request: %s (%v)", decision, err)
+			wantDecision := config.ActionAllow
+			if tc.failSend {
+				wantDecision = config.ActionBlock
+			}
+			if decision, err := manager.ResolveApprovalResult(held.DeferID, config.ActionAllow, deferred.SourceOperator); err != nil || decision != wantDecision {
+				t.Fatalf("resolve held request: %s (%v), want %s", decision, err, wantDecision)
 			}
 			select {
 			case err := <-reached:
@@ -472,6 +565,26 @@ func TestMCPV3DeferredSendUsesHoldAndIntent(t *testing.T) {
 				t.Fatal(err)
 			}
 			result, err = v3.VerifyPaths(ctx, []string{dir}, verify)
+			if tc.failSend {
+				if err != nil || result.Verdict != "VALID" {
+					t.Fatalf("invalid history after send failure: %+v (%v)", result, err)
+				}
+				actions := readMCPV3Actions(t, dir)
+				if !slices.ContainsFunc(actions, func(a v3.Action) bool {
+					return a.ActionID == held.ActionID && a.EffectBoundary == mcpV3Upstream &&
+						a.OutcomeClass == "attempt_unknown"
+				}) {
+					t.Fatalf("missing failed send outcome: %+v", actions)
+				}
+				reopened, err := v3.OpenStreamWriter(ctx, mcpV3TestWriterOptions(dir, surface, nil))
+				if err != nil {
+					t.Fatalf("reopen after failed deferred send: %v", err)
+				}
+				if err := reopened.Close(ctx, nil); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
 			wantCompleted := int64(1)
 			if surface == deferred.SurfaceMCPHTTPUpstream {
 				wantCompleted = 2
@@ -484,10 +597,30 @@ func TestMCPV3DeferredSendUsesHoldAndIntent(t *testing.T) {
 	}
 }
 
+type mcpV3SyncFault struct {
+	v3.StreamFile
+	fail *atomic.Bool
+}
+
+func (f mcpV3SyncFault) Sync() error {
+	if f.fail.Swap(false) {
+		return io.ErrUnexpectedEOF
+	}
+	return f.StreamFile.Sync()
+}
+
 func TestMCPV3ConfirmsGETSubscriptionBeforeContact(t *testing.T) {
-	for _, stage := range []string{"healthy", "closed"} {
+	for _, stage := range []string{"healthy", "closed", "recovered"} {
 		t.Run(stage, func(t *testing.T) {
-			dir, writer, verifyOpts := newMCPV3Stream(t, deferred.SurfaceMCPHTTPUpstream)
+			var fail atomic.Bool
+			dir, writer, verifyOpts := newMCPV3StreamWithStorage(t, deferred.SurfaceMCPHTTPUpstream, func(dir, pattern string) (v3.StreamFile, error) {
+				file, err := os.CreateTemp(dir, pattern)
+				if err != nil {
+					return nil, err
+				}
+				return mcpV3SyncFault{StreamFile: file, fail: &fail}, nil
+			})
+			fail.Store(stage == "recovered")
 			if stage == "closed" {
 				if err := writer.Close(t.Context(), nil); err != nil {
 					t.Fatal(err)
@@ -684,20 +817,26 @@ func TestMCPV3ListenerCallerIdentity(t *testing.T) {
 
 func readMCPV3Actions(t *testing.T, dir string) []v3.Action {
 	t.Helper()
-	paths, err := filepath.Glob(filepath.Join(dir, "*.receipt-v3.jsonl"))
-	if err != nil || len(paths) != 1 {
-		t.Fatalf("want one receipt file, got %v (%v)", paths, err)
-	}
-	f, err := os.Open(filepath.Clean(paths[0]))
+	actions, err := loadMCPV3Actions(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		if err := f.Close(); err != nil {
-			t.Error(err)
-		}
-	}()
-	dec := json.NewDecoder(f)
+	return actions
+}
+
+func loadMCPV3Actions(dir string) ([]v3.Action, error) {
+	paths, err := filepath.Glob(filepath.Join(dir, "*.receipt-v3.jsonl"))
+	if err != nil {
+		return nil, fmt.Errorf("list receipt files: %w", err)
+	}
+	if len(paths) != 1 {
+		return nil, fmt.Errorf("want one receipt file, got %v", paths)
+	}
+	data, err := os.ReadFile(filepath.Clean(paths[0]))
+	if err != nil {
+		return nil, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
 	var actions []v3.Action
 	for {
 		var envelope struct {
@@ -707,9 +846,9 @@ func readMCPV3Actions(t *testing.T, dir string) []v3.Action {
 			} `json:"payload"`
 		}
 		if err := dec.Decode(&envelope); errors.Is(err, io.EOF) {
-			return actions
+			return actions, nil
 		} else if err != nil {
-			t.Fatal(err)
+			return nil, err
 		}
 		if envelope.Payload.Kind == "action" {
 			actions = append(actions, envelope.Payload.Body)
@@ -908,8 +1047,9 @@ func TestMCPV3HoldResolutionBoundsWriterWait(t *testing.T) {
 	var stall atomic.Bool
 	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
 	policy := v3.Digest(nil)
+	dir := t.TempDir()
 	writer, err := v3.OpenStreamWriter(t.Context(), v3.StreamWriterOptions{
-		Dir: t.TempDir(), SigningKey: key, PolicyHash: policy,
+		Dir: dir, SigningKey: key, PolicyHash: policy,
 		Identity: v3.Writer{Instance: "example", Product: "Pipelock", Version: "3"},
 		Coverage: v3.Coverage{
 			ReceiptsRequired: true, Surfaces: []string{"stdio"},
@@ -967,6 +1107,13 @@ func TestMCPV3HoldResolutionBoundsWriterWait(t *testing.T) {
 	if err := <-heartbeat; err != nil {
 		t.Fatal(err)
 	}
+	testwait.For(t, time.Second, func() bool {
+		actions, err := loadMCPV3Actions(dir)
+		return err == nil && slices.ContainsFunc(actions, func(a v3.Action) bool {
+			return a.ActionID == holdID && a.Phase == "resolution" && a.Verdict == config.ActionBlock &&
+				a.Hold != nil && a.Hold.ResolutionSource == deferred.SourceOperator
+		})
+	}, "replayed terminal resolution")
 }
 
 func TestMCPV3MediaDecisionsFollowResponseDelivery(t *testing.T) {
@@ -985,8 +1132,27 @@ func TestMCPV3MediaDecisionsFollowResponseDelivery(t *testing.T) {
 	if _, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(line)), transport.NewStdioWriter(&out), io.Discard, tracker, opts); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), `"mimeType":"image/jpeg"`) || strings.Contains(out.String(), encoded) {
-		t.Fatalf("expected a delivered image with metadata removed: %s", out.String())
+	var reply struct {
+		Result struct {
+			Content []struct {
+				MimeType string
+				Data     string
+			}
+		}
+	}
+	if err := json.Unmarshal([]byte(out.String()), &reply); err != nil {
+		t.Fatal(err)
+	}
+	if len(reply.Result.Content) != 1 || reply.Result.Content[0].MimeType != "image/jpeg" {
+		t.Fatalf("expected one delivered JPEG: %s", out.String())
+	}
+	decoded, err := base64.StdEncoding.DecodeString(reply.Result.Content[0].Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMCPJPEGMetadataStripped(t, decoded, jpeg, []byte("metadata-marker"), "JPEG retained its metadata")
+	if bytes.Contains(decoded, []byte{0xFF, 0xE1}) {
+		t.Fatal("JPEG retained its APP1 segment")
 	}
 	if err := writer.Close(t.Context(), nil); err != nil {
 		t.Fatal(err)
@@ -1009,5 +1175,46 @@ func TestMCPV3MediaDecisionsFollowResponseDelivery(t *testing.T) {
 		result.Counts.EffectsCompleted == nil || *result.Counts.EffectsCompleted != 2 ||
 		result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 0 {
 		t.Fatalf("media rewrite and response were not both settled: %+v (%v)", result, err)
+	}
+}
+
+func TestMCPV3EarlyInputRefusalIsSigned(t *testing.T) {
+	for _, tc := range []struct {
+		name, input string
+		redaction   MCPRedactionConfig
+	}{
+		{
+			name: "before redaction",
+			input: makeRequest(1, "tools/call", map[string]any{
+				"name": "echo", "arguments": map[string]string{"prompt": "use " + mcpRedactionSecret()},
+			}),
+			redaction: MCPRedactionConfig{Matcher: testRedactionMatcher()},
+		},
+		{name: "redaction unavailable", input: cleanToolsCallRequest, redaction: MCPRedactionConfig{Required: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, writer, _ := newMCPV3Stream(t, transportMCPStdio)
+			opts := MCPProxyOpts{
+				Scanner: testInputScanner(t), Transport: transportMCPStdio,
+				RequireReceipts: true, ReceiptV3: writer,
+				RedactionCfgFn: func() MCPRedactionConfig { return tc.redaction },
+			}
+			blocked := make(chan BlockedRequest, 1)
+			var upstream bytes.Buffer
+			ForwardScannedInput(
+				transport.NewStdioReader(strings.NewReader(tc.input)), transport.NewStdioWriter(&upstream),
+				io.Discard, config.ActionBlock, config.ActionBlock, blocked, nil, nil, opts,
+			)
+			if _, ok := <-blocked; !ok || upstream.Len() != 0 {
+				t.Fatal("input refusal reached upstream or produced no client error")
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			actions := readMCPV3Actions(t, dir)
+			if len(actions) != 1 || actions[0].Phase != "decision" || actions[0].Verdict != config.ActionBlock {
+				t.Fatalf("input refusal was not signed: %+v", actions)
+			}
+		})
 	}
 }

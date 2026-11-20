@@ -211,6 +211,7 @@ func (v InputVerdict) IsEntropyOnly() bool {
 // generating an error response (used for redirect success results).
 type BlockedRequest struct {
 	terminal          *mcpTerminalDecision
+	syntheticDelivery mcpSyntheticDelivery
 	ID                json.RawMessage
 	IsNotification    bool // Notifications have no ID - don't send error response.
 	LogMessage        string
@@ -494,7 +495,7 @@ func ForwardScannedInput(
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked (%s)\n", lineNum, joinInputVerdictReasons(originalVerdict))
 				denialAudit = mcpInputBlockAudit(originalVerdict)
 				recordAdaptiveSignal(session.SignalBlock)
-				if pendingActionID != "" && (receiptEmitter != nil || opts.ReceiptGroup != nil) {
+				if pendingActionID != "" && (receiptEmitter != nil || opts.ReceiptGroup != nil || opts.ReceiptV3 != nil) {
 					layer, pattern, severity := contentScanAttribution(originalVerdict)
 					if _, emitErr := opts.emitReceiptDecision(MCPDecision{
 						Receipt: opts.withReceiptPolicyHash(receipt.EmitOpts{
@@ -539,7 +540,7 @@ func ForwardScannedInput(
 			}
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: %s\n", lineNum, reason)
 			recordAdaptiveSignal(session.SignalBlock)
-			if pendingActionID != "" && (receiptEmitter != nil || opts.ReceiptGroup != nil) {
+			if pendingActionID != "" && (receiptEmitter != nil || opts.ReceiptGroup != nil || opts.ReceiptV3 != nil) {
 				layer, pattern, severity := redactionBlockAttribution(redactErr)
 				if _, emitErr := opts.emitReceiptDecision(MCPDecision{
 					Receipt: opts.withReceiptPolicyHash(receipt.EmitOpts{
@@ -1529,6 +1530,9 @@ func ForwardScannedInput(
 						notification: isNotification,
 						logMessage:   fmt.Sprintf("pipelock: input line %d: redirected", lineNum),
 						response:     result.Response,
+						deliver: opts.redirectResponseDelivery(logW, receipt.EmitOpts{
+							ActionID: actionID, Transport: opts.Transport, Target: toolName, MCPMethod: method, PolicyHash: policyHash,
+						}),
 					}, blockedCh)
 				}
 			} else {

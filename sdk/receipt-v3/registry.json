@@ -86,11 +86,11 @@
       "fields": "`phase` is resolution. `hold` carries the original defer id as `hold.id` and records `hold.resolution_policy` and `hold.resolution_source`. The original hold carries `hold.policy` and any `hold.parent`. Set `hold.correction:true` when a later block replaces an allow. `session` is the authority session id and original id, omitted when empty. `taint` records authority user-broad, decision allow, and reason `defer_resolution`. An `ask` resolution requires the retained `approval_api` channel and `observed:true`. Omit `ask` for other resolution verdicts. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
       "when": "`config.ActionDefer` and `holdErr != nil`"
     },
-    "internal/mcp/input.go/ForwardScannedInput/emitReceiptDecision/d35c3bd7e89ba0dc": {
+    "internal/mcp/input.go/ForwardScannedInput/emitReceiptDecision/60d312b172effc97": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise.",
       "when": "`redactionCfg.Matcher != nil`. Records `ActionBlock`"
     },
-    "internal/mcp/input.go/ForwardScannedInput/emitReceiptDecision/dfce370971da9c96": {
+    "internal/mcp/input.go/ForwardScannedInput/emitReceiptDecision/e68daf30b50f835b": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise.",
       "when": "`redactErr != nil`. Records `ActionBlock`"
     },
@@ -198,13 +198,9 @@
       "fields": "Use `hold.id` and `hold.policy` from the held decision, and include `hold.parent` for a child hold. Keep the decision's authority and session. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
       "when": "Before the manager publishes a hold"
     },
-    "internal/mcp/receipt_v3.go/(*deferredReceiptSettlement).confirmV3Release/WriteAction/e3c327797c156c54": {
+    "internal/mcp/receipt_v3.go/(*deferredReceiptSettlement).confirmV3Release/WriteAction/2fcceee3e284746f": {
       "fields": "Action ID, caller, session, taint, contract, redaction, and policy from the confirmed hold. An intent identifies the pending upstream send. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. Retain the caller from the original hold.",
       "when": "Before the upstream send of an approved hold"
-    },
-    "internal/mcp/receipt_v3.go/(*deferredReceiptSettlement).settleV3Hold/WriteAction/9ab605f19e032595": {
-      "fields": "Use the original `hold.id` and omit `hold.parent` on the resolution. Set `hold.resolution_policy` from the original hold policy and `hold.resolution_source` from the manager. Set `hold.correction:true` when a later block replaces an allow. A step-up resolution records `approval_api` with `observed:true`. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. Retain the caller from the original hold.",
-      "when": "When the manager selects a resolution"
     },
     "internal/mcp/stream.go/emitTrackedStreamError/recordMCPStreamDiagnostic/f1c5b96499a459ba": {
       "fields": "Records a distinct block decision for the undelivered remainder. Keeps the signed caller and request policy when present, with no attempt or settlement of an earlier delivery. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
@@ -454,7 +450,7 @@
       "fields": "Use the confirmed intent's action ID, boundary, and policy. The outcome is `not_released` with relation `not_attempted`. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
       "when": "Forward HTTP task admission is stale after receipt confirmation and before the upstream send."
     },
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/recordTransportOutcome/b1a7c8c814faf75d": {
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/recordTransportOutcome/b75b36dbd804f6b0": {
       "fields": "Retains the admitted request's policy and uses the downstream action and observed delivery. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
       "when": "After the client write or an interrupted response."
     },
@@ -1595,7 +1591,7 @@
       "when": "When the live contract rejects an upstream call or its evaluation fails."
     },
     "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/confirmV3StreamAdmission/4f42bfe59869968b": {
-      "fields": "Uses the subscription target, request method and policy of the upstream connection. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
+      "fields": "Uses the subscription target, request method and policy of the upstream connection. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. For MCP HTTP listener requests with successful door verification, write `caller.authn: mcp_door_verified` and copy `resource`, `issuer`, `subject`, and `client_id` from the verified identity. Otherwise write `caller.authn: none`.",
       "when": "The MCP listener confirms a GET subscription or DELETE dispatch before contacting its upstream."
     },
     "internal/mcp/pipeline_decision.go/emitMCPStreamDiagnostic/recordMCPStreamDiagnostic/e4022f5562ccec1f": {
@@ -1613,6 +1609,18 @@
     "internal/mcp/stream.go/recordListenerStreamError/recordMCPStreamDiagnostic/f1c5b96499a459ba": {
       "fields": "Records a distinct block decision for the undelivered remainder. Keeps the signed caller and request policy when present, with no attempt or settlement of an earlier delivery. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. For MCP HTTP listener requests with successful door verification, write `caller.authn: mcp_door_verified` and copy `resource`, `issuer`, `subject`, and `client_id` from the verified identity. Otherwise write `caller.authn: none`.",
       "when": "When a terminal error stops delivery on the stream."
+    },
+    "internal/mcp/denial.go/(MCPProxyOpts).redirectResponseDelivery/writeMCPGeneratedResponse/90d2cca174b0140f": {
+      "fields": "The redirect action is the parent of the delivery. Uses the captured request policy and, for authenticated listener requests, the verified door caller. The delivery outcome reflects the client write.",
+      "when": "Before writing a scanned redirect reply to the client, excluding notifications."
+    },
+    "internal/mcp/receipt_v3.go/(*deferredReceiptSettlement).settleV3Hold/WriteAction/f7bb08913ed1fdea": {
+      "fields": "Use the original `hold.id` and omit `hold.parent` on the resolution. Set `hold.resolution_policy` from the original hold policy and `hold.resolution_source` from the manager. Set `hold.correction:true` when a later block replaces an allow. A step-up resolution records `approval_api` with `observed:true`. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. Retain the caller from the original hold.",
+      "when": "When a held MCP call is approved for release, before a separate upstream send intent can be confirmed."
+    },
+    "internal/mcp/receipt_v3.go/(*deferredReceiptSettlement).settleV3Hold/WriteTerminalResolution/dedd25319a12af13": {
+      "fields": "Use the original `hold.id` and omit `hold.parent` on the resolution. Set `hold.resolution_policy` from the original hold policy and `hold.resolution_source` from the manager. Set `hold.correction:true` when a later block replaces an allow. A step-up resolution records `approval_api` with `observed:true`. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. Retain the caller from the original hold.",
+      "when": "When a held MCP call is blocked or stepped up. If admission to the writer times out before append, the unchanged decision is queued for replay."
     }
   },
   "emit_exclusions": {
@@ -1731,10 +1739,8 @@
     "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/1a471e0c67f0b76a": "Selects the tool scan attribution for the final v3 response delivery. Legacy receipts still record this scan at the original call.",
     "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/3ecb8051958f5763": "Selects the tool scan attribution for the final v3 response delivery. Legacy receipts still record this scan at the original call.",
     "internal/mcp/proxy.go/emitMCPToolScanReceipt/emitReceiptDecision/4f1de884da94f647": "Carries the effect boundary and decision context selected by its caller.",
-    "internal/mcp/receipt_v3.go/(*mcpV3Receipt).finish/WriteAction/13ca059c7a57bf47": "Writes the observed outcome with the confirmed intent identity, boundary and policy.",
     "internal/mcp/receipt_v3.go/(MCPProxyOpts).confirmV3ResponseDelivery/emitReceiptDecision/dd6148df2ad77a17": "Confirms the captured decision before the direct client write.",
     "internal/mcp/receipt_v3.go/(MCPProxyOpts).confirmV3StreamAdmission/emitReceiptDecision/bfa1a2dfc4138815": "Encodes the caller's upstream connection admission.",
-    "internal/mcp/receipt_v3.go/(MCPProxyOpts).recordV3MCPRefusal/WriteAction/c9bcc17b54b850d3": "Writes the decision for the refusing gate and preserves the parent request correlation.",
     "internal/mcp/receipt_v3.go/(MCPProxyOpts).writeMCPGeneratedResponse/confirmV3ResponseDelivery/e2eb9a63cd46f31e": "Confirms the generated reply at the caller’s downstream delivery boundary.",
     "internal/mcp/receipt_v3.go/(MCPProxyOpts).writeV3Decision/WriteAction/867af9a2c5718dbe": "Writes the action and policy snapshot supplied by the effect producer.",
     "internal/mcp/response_receipt.go/confirmMCPResponseEffect/emitReceiptDecision/c8be3b97e9550267": "Carries the effect boundary and decision context selected by its caller.",
@@ -1888,14 +1894,17 @@
     "internal/mcp/pipeline_decision.go/EmitMCPGroupDecision/emitMCPDecision/94871cc3af6b7843": "Passes the supplied decision and its attribution to the paired writers selected for its shard.",
     "internal/mcp/pipeline_decision.go/emitMCPStandaloneStreamReceipt/emitMCPStreamDiagnostic/c0c92be862f1b1c1": "Passes stream diagnostics to the single-phase warning writer for grouped recorders.",
     "internal/mcp/pipeline_decision.go/emitMCPStreamDiagnostic/emitReceiptDecision/320350b79591571a": "Passes the caller's stream diagnostic to the selected writer as a single-phase warning.",
-    "internal/mcp/defer_resolution.go/(*deferredReceiptSettlement).commitRelease/commitAllow/550000104dbbe7b4": "Forwards the v3 hold resolution to the selected writer.",
+    "internal/mcp/defer_resolution.go/(*deferredReceiptSettlement).commitRelease/commitAllow/7f9d2512f459ef93": "Forwards the v3 hold resolution to the selected writer.",
     "internal/mcp/receipt_v3.go/(MCPProxyOpts).writeMCPGeneratedResponse/writeV3Response/942fc0e895604fe7": "Settles the confirmed generated reply at the caller’s downstream delivery boundary.",
-    "internal/mcp/taint.go/emitMCPToolReceipt/emitAdmittedReceiptDecision/066a407faef60df0": "Passes the caller's tool decision and its original shard admission to the shared writer."
+    "internal/mcp/taint.go/emitMCPToolReceipt/emitAdmittedReceiptDecision/066a407faef60df0": "Passes the caller's tool decision and its original shard admission to the shared writer.",
+    "internal/mcp/receipt_v3.go/(*mcpV3Receipt).finish/finalizeV3MCPReceipt/8366cc1f3985ddcd": "Writes the observed outcome with the confirmed intent identity, boundary and policy.",
+    "internal/mcp/receipt_v3.go/(MCPProxyOpts).finalizeV3MCPReceipt/WriteAction/66f70dfcd6b3d23e": "Writes the supplied terminal refusal or observed outcome with its original boundary, action correlation and policy.",
+    "internal/mcp/receipt_v3.go/(MCPProxyOpts).recordV3MCPRefusal/finalizeV3MCPReceipt/e38a9516709dda5e": "Writes the decision for the refusing gate and preserves the parent request correlation."
   },
   "emit_sites": {
     "internal/mcp/input.go/ForwardScannedInput/emitHoldFailureResolution/c5e45125cddef802": "approval_prompt",
-    "internal/mcp/input.go/ForwardScannedInput/emitReceiptDecision/d35c3bd7e89ba0dc": "none",
-    "internal/mcp/input.go/ForwardScannedInput/emitReceiptDecision/dfce370971da9c96": "none",
+    "internal/mcp/input.go/ForwardScannedInput/emitReceiptDecision/60d312b172effc97": "none",
+    "internal/mcp/input.go/ForwardScannedInput/emitReceiptDecision/e68daf30b50f835b": "none",
     "internal/mcp/input.go/ForwardScannedInput/ensure/3dd11dc2f968cdbf": "approval_prompt",
     "internal/mcp/input.go/ForwardScannedInput/finishRedirect/be5cabc8c4aae55e": "redirect_dispatch",
     "internal/mcp/killswitch_deferred.go/emitKillSwitchBatchReceipts/emitKillSwitchDenialReceipt/01a6be367223b176": "none",
@@ -1922,8 +1931,7 @@
     "internal/mcp/proxy_ws.go/RunWSProxy/confirmV3StreamAdmission/8d6f2a2198244a6c": "upstream_send",
     "internal/mcp/proxy_ws.go/RunWSProxy/recordMCPStreamDiagnostic/12872fdcaa3a5188": "downstream_delivery",
     "internal/mcp/receipt_v3.go/(*deferredReceiptSettlement).confirmV3Hold/WriteAction/9ab605f19e032595": "approval_prompt",
-    "internal/mcp/receipt_v3.go/(*deferredReceiptSettlement).confirmV3Release/WriteAction/e3c327797c156c54": "upstream_send",
-    "internal/mcp/receipt_v3.go/(*deferredReceiptSettlement).settleV3Hold/WriteAction/9ab605f19e032595": "approval_prompt",
+    "internal/mcp/receipt_v3.go/(*deferredReceiptSettlement).confirmV3Release/WriteAction/2fcceee3e284746f": "upstream_send",
     "internal/mcp/stream.go/emitTrackedStreamError/recordMCPStreamDiagnostic/f1c5b96499a459ba": "downstream_delivery",
     "internal/proxy/bodyscan.go/(*Proxy).evalHeaderDLP/recordCredentialAudienceAllows/332ef9d1515f4ed6": "upstream_send",
     "internal/proxy/forward.go/(*Proxy).handleConnect/confirmTransportReceipt/0110b0107dca1bc5": "tunnel_open",
@@ -1986,7 +1994,7 @@
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/recordCredentialAudienceAllows/2b71ccd7d6d36168": "upstream_send",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/recordCredentialAudienceAllows/bd68e94133d1dbf8": "upstream_send",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/recordTransportNotReleased/36de672aca5f3dcd": "upstream_send",
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/recordTransportOutcome/b1a7c8c814faf75d": "downstream_delivery",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/recordTransportOutcome/b75b36dbd804f6b0": "downstream_delivery",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/recordTransportOutcome/42d9ca4e7df6c60f": "upstream_send",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/sseFindingReceiptCallbacks/8e8585498e19f070": "downstream_delivery",
     "internal/proxy/intercept.go/interceptEmitOutcomeReceipt/emitReceiptFailureMarker/8a2f204c09932d4b": "none",
@@ -2275,7 +2283,10 @@
     "internal/mcp/pipeline_decision.go/emitMCPStreamDiagnostic/recordMCPStreamDiagnostic/e4022f5562ccec1f": "downstream_delivery",
     "internal/mcp/proxy.go/ForwardScanned/writeV3Response/40224ae2de18f5b3": "downstream_delivery",
     "internal/mcp/proxy.go/ForwardScanned/writeV3Response/627bc0504386a290": "downstream_delivery",
-    "internal/mcp/stream.go/recordListenerStreamError/recordMCPStreamDiagnostic/f1c5b96499a459ba": "downstream_delivery"
+    "internal/mcp/stream.go/recordListenerStreamError/recordMCPStreamDiagnostic/f1c5b96499a459ba": "downstream_delivery",
+    "internal/mcp/denial.go/(MCPProxyOpts).redirectResponseDelivery/writeMCPGeneratedResponse/90d2cca174b0140f": "downstream_delivery",
+    "internal/mcp/receipt_v3.go/(*deferredReceiptSettlement).settleV3Hold/WriteAction/f7bb08913ed1fdea": "approval_prompt",
+    "internal/mcp/receipt_v3.go/(*deferredReceiptSettlement).settleV3Hold/WriteTerminalResolution/dedd25319a12af13": "approval_prompt"
   },
   "enums": {
     "action_policy_source": [

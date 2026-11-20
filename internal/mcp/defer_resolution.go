@@ -113,12 +113,13 @@ func emitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 // Prepare, AfterJournal and Resolve run in sequence on the resolving
 // goroutine, so the struct needs no lock.
 type deferredReceiptSettlement struct {
-	v3Hold   *mcpV3Receipt
-	release  TrackedRequestOutcome
-	done     bool
-	err      error
-	decision string
-	source   string
+	v3Hold            *mcpV3Receipt
+	v3AttemptRecorded bool
+	release           TrackedRequestOutcome
+	done              bool
+	err               error
+	decision          string
+	source            string
 }
 
 // probeAllow closes an allow whose required receipt cannot possibly be written:
@@ -169,7 +170,9 @@ func (s *deferredReceiptSettlement) ensure(opts MCPProxyOpts, logW io.Writer, re
 }
 
 func (s *deferredReceiptSettlement) emit(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
-	if res.FinalDecision == config.ActionBlock && errors.Is(s.err, v3.ErrHoldBlockRecorded) {
+	if res.FinalDecision == config.ActionBlock && (s.v3AttemptRecorded || errors.Is(s.err, v3.ErrHoldBlockRecorded)) {
+		// After an intent, the outcome describes a failed or withheld send.
+		// The hold's approval remains the decision that authorized the attempt.
 		return nil
 	}
 	if opts.ReceiptV3 != nil {
@@ -186,7 +189,11 @@ func (s *deferredReceiptSettlement) emit(opts MCPProxyOpts, logW io.Writer, res 
 // the journal cannot commit, the manager calls back with the corrective block.
 func (s *deferredReceiptSettlement) commitRelease(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
 	if opts.ReceiptV3 != nil {
-		return s.commitAllow(opts, logW, res)
+		if err := s.commitAllow(opts, logW, res); err != nil {
+			return err
+		}
+		s.release.Method = res.Method
+		return nil
 	}
 	if res.FinalDecision != config.ActionAllow {
 		_, outcomeErr := s.release.settleResult(logW, opts, mcpOutcomeStatusBlocked, -1, res.Reason)

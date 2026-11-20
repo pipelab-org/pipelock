@@ -2583,6 +2583,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var downstreamReceipt *v3TransportReceipt
 	var responseReceipts v3ResponseReceipts
+	downstreamLength := int64(-1)
+	var downstreamAllowed bool
 	if cfg.FlightRecorder.RequireReceipts || p.receiptV3 != nil {
 		var err error
 		if p.receiptV3 != nil {
@@ -2645,9 +2647,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
 			outcomeReason = "license_revoked"
 		}
-		delivered := aborted == nil && flushErr == nil && outcomeReasonClaimsDelivery(outcomeReason, config.ActionAllow)
-		p.recordTransportOutcome(r.Context(), forwardAllowReceipt, downstreamReceipt, delivered)
-		responseReceipts.finish(p, r.Context(), downstreamReceipt != nil || delivered, delivered)
+		status, _ := strconv.Atoi(outcomeStatus)
+		completed := aborted == nil && flushErr == nil && outcomeReasonClaimsDelivery(outcomeReason, config.ActionAllow) &&
+			responseFramingCompleteForReceipt(r, status, downstreamLength, outcomeBytes)
+		p.recordTransportOutcome(r.Context(), forwardAllowReceipt, downstreamReceipt, completed)
+		responseReceipts.finish(p, r.Context(), downstreamAllowed, completed)
 		p.emitOutcomeReceiptWithPattern(cfg, outcomeReceipt, receiptOutcomePattern(outcomeStatus, outcomeBytes, outcomeReason))
 		if aborted != nil {
 			panic(aborted)
@@ -2662,7 +2666,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	confirmResponseDelivery := func() bool {
 		var deliver bool
 		downstreamReceipt, deliver = p.confirmHTTPResponseDelivery(w, r.Context(), cfg, forwardAllowReceipt)
-		if !deliver {
+		if deliver {
+			downstreamAllowed = true
+			downstreamLength = responseContentLengthForReceipt(w.Header())
+		} else {
 			outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, receiptEmissionFailedLayer
 		}
 		return deliver
@@ -3796,7 +3803,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// stripping or redaction). Explicit framing lets the client finish the
 		// body before the deferred outcome write. Preserve framing for no-body
 		// responses, upstream trailers, and budget-truncated delivery.
-		if cfg.FlightRecorder.RequireReceipts && r.Method != http.MethodHead && resp.StatusCode >= http.StatusOK &&
+		if (cfg.FlightRecorder.RequireReceipts || p.receiptV3 != nil) && r.Method != http.MethodHead && resp.StatusCode >= http.StatusOK &&
 			resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotModified &&
 			!responseHasTrailers(resp) &&
 			!bufferedBudgetTruncated && (budgetRemaining < 0 || int64(len(respBody)) <= budgetRemaining) {

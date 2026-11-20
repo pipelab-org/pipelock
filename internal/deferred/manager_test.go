@@ -4,6 +4,7 @@
 package deferred
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1889,4 +1890,66 @@ func TestHoldConfirmationLeavesOtherSessionsAvailable(t *testing.T) {
 		t.Fatalf("failed confirmation retained its ID or capacity: %v", err)
 	}
 	m.ResolveAll(config.ActionBlock, SourceCancel)
+}
+
+func TestApprovalAfterConfirmationCannotReleaseExpiredHold(t *testing.T) {
+	m := NewManager(Config{Enabled: true, Timeout: time.Minute})
+	resolved := make(chan Resolution, 2)
+	parent := HeldAction{
+		DeferID: "parent", ActionID: "parent", Authority: AuthoritySnapshot{SessionID: "session"},
+		Resolve: func(res Resolution) { resolved <- res },
+	}
+	if err := m.Hold(parent); err != nil {
+		t.Fatal(err)
+	}
+	stalled, release := make(chan struct{}), make(chan struct{})
+	finish := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(finish)
+	child := parent
+	child.DeferID, child.ActionID = "child", "child"
+	child.ConfirmHold = func(HeldAction) error {
+		close(stalled)
+		<-release
+		return nil
+	}
+	held := make(chan error, 1)
+	go func() { held <- m.Hold(child) }()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	select {
+	case <-stalled:
+	case <-ctx.Done():
+		t.Fatal("child confirmation did not start")
+	}
+	m.mu.Lock()
+	m.holds[parent.DeferID].timer.Stop()
+	m.holds[parent.DeferID].Deadline = time.Now().Add(-time.Second)
+	m.mu.Unlock()
+	approved := make(chan error, 1)
+	go func() { approved <- m.ResolveApproval(parent.DeferID, config.ActionAllow) }()
+	finish()
+	for _, result := range []<-chan error{held, approved} {
+		select {
+		case err := <-result:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-ctx.Done():
+			t.Fatal("hold or approval did not return")
+		}
+	}
+	for range 2 {
+		select {
+		case res := <-resolved:
+			source := SourceCascade
+			if res.DeferID == parent.DeferID {
+				source = SourceTimeout
+			}
+			if res.FinalDecision != config.ActionBlock || res.ResolutionSource != source {
+				t.Fatalf("expired hold resolution = %+v, want block from %s", res, source)
+			}
+		case <-ctx.Done():
+			t.Fatal("parent or child did not settle")
+		}
+	}
 }

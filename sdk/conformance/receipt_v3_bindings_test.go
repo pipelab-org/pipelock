@@ -38,7 +38,7 @@ var receiptEmissionCalls = strings.Fields(
 		"emitV2Receipt emitV2 emitRequiredV2 emitGroupV2Receipt emitDLPWarn EmitDLPWarning " +
 		"EmitSessionOpen EmitSessionClose EmitHeartbeat EmitTranscriptRoot prepareNativeAEL " +
 		"BuildProxyDecisionReceipt BuildProxyDecisionWithSpansReceipt BuildSecretEgressDecisionReceipt " +
-		"SignReceipt EmitBatch RecordPrescanned buildReceipt confirmTransportReceipt recordTransportOutcome recordTransportNotReleased writePayload finishRedirect confirmV3ResponseDelivery confirmV3StreamAdmission emitMCPUpstreamRefusal recordMCPStreamDiagnostic recordV3MCPRefusal recordV3TransportRefusal writeMCPGeneratedResponse writeV3Response WriteAction WriteAdmissionBatch")
+		"SignReceipt EmitBatch RecordPrescanned buildReceipt confirmTransportReceipt recordTransportOutcome recordTransportNotReleased writePayload finishRedirect confirmV3ResponseDelivery confirmV3StreamAdmission emitMCPUpstreamRefusal recordMCPStreamDiagnostic recordV3MCPRefusal recordV3TransportRefusal writeMCPGeneratedResponse writeV3Response finalizeV3MCPReceipt WriteAction WriteAdmissionBatch WriteTerminalResolution")
 
 type receiptProducerAttribution struct {
 	Fields string `json:"fields"`
@@ -106,7 +106,7 @@ func TestReceiptV3EmitterBindings(t *testing.T) {
 					writers.sites[site.key] = receiptWriterSite{pkg: pkg, node: site.node, disabled: site.disabled}
 				}
 				if strings.HasPrefix(relative, "internal/proxy/websocket") {
-					checkWebSocketReceiptBoundary(t, site.key, boundary, site.node)
+					checkWebSocketReceiptBoundary(t, site.key, boundary, site.node, file)
 				}
 			}
 		}
@@ -429,7 +429,7 @@ func TestReceiptV3EmitterBindingChanges(t *testing.T) {
 	}
 }
 
-func checkWebSocketReceiptBoundary(t *testing.T, site, boundary string, node ast.Node) {
+func checkWebSocketReceiptBoundary(t *testing.T, site, boundary string, node ast.Node, file *ast.File) {
 	t.Helper()
 	call, ok := node.(*ast.CallExpr)
 	if !ok {
@@ -459,9 +459,37 @@ func checkWebSocketReceiptBoundary(t *testing.T, site, boundary string, node ast
 		t.Errorf("no v3 boundary argument at %s", site)
 		return
 	}
-	actual, ok := call.Args[index].(*ast.Ident)
+	if !selectsWebSocketReceiptBoundary(call.Args[index], want, file) {
+		t.Errorf("v3 boundary argument at %s must select the package constant for %s", site, boundary)
+	}
+}
+
+func selectsWebSocketReceiptBoundary(expr ast.Expr, want string, file *ast.File) bool {
+	actual, ok := expr.(*ast.Ident)
 	if !ok || want == "" || actual.Name != want {
-		t.Errorf("v3 boundary argument at %s must select %s", site, boundary)
+		return false
+	}
+	// A package constant declared in a different file has no local object.
+	return actual.Obj == nil || actual.Obj.Kind == ast.Con && file.Scope.Lookup(want) == actual.Obj
+}
+
+func TestReceiptV3WebSocketBoundaryRejectsShadowing(t *testing.T) {
+	const boundary = "boundaryDownstreamDelivery"
+	for _, shadow := range []bool{false, true} {
+		source := "package proxy\nconst " + boundary + " = 1\nfunc send() {\n"
+		if shadow {
+			source += boundary + " := 2\n"
+		}
+		source += "r.writePayload(payload, " + boundary + ")\n}\n"
+		file, err := parser.ParseFile(token.NewFileSet(), "websocket.go", source, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		function := file.Decls[1].(*ast.FuncDecl)
+		call := function.Body.List[len(function.Body.List)-1].(*ast.ExprStmt).X.(*ast.CallExpr)
+		if matches := selectsWebSocketReceiptBoundary(call.Args[1], boundary, file); matches == shadow {
+			t.Fatalf("boundary matches package constant = %t with shadow = %t", matches, shadow)
+		}
 	}
 }
 

@@ -5,10 +5,12 @@ package mcp
 
 import (
 	"errors"
+	"io"
 	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
 type mcpDenialAudit struct {
@@ -145,17 +147,40 @@ type mcpSyntheticResult struct {
 	response     []byte
 	notification bool
 	logMessage   string
+	deliver      mcpSyntheticDelivery
 }
+
+type mcpSyntheticDelivery func(transport.MessageWriter, []byte) error
+
+func (o MCPProxyOpts) redirectResponseDelivery(logW io.Writer, parent receipt.EmitOpts) mcpSyntheticDelivery {
+	if o.ReceiptV3 == nil {
+		return nil
+	}
+	parent = o.withReceiptPolicyHash(parent)
+	return func(writer transport.MessageWriter, response []byte) error {
+		return o.writeMCPGeneratedResponse(logW, writer, parent, response, "redirect_response")
+	}
+}
+
+type mcpSyntheticWriter func([]byte) error
+
+func (w mcpSyntheticWriter) WriteMessage(data []byte) error { return w(data) }
 
 // The legacy channel is a wire handoff only. Success has a separate typed
 // disposition before entering it and never acquires a terminal denial.
 func sendMCPSynthetic(result mcpSyntheticResult, out chan<- BlockedRequest) {
-	out <- BlockedRequest{SyntheticResponse: result.response, IsNotification: result.notification, LogMessage: result.logMessage}
+	out <- BlockedRequest{
+		SyntheticResponse: result.response, IsNotification: result.notification,
+		LogMessage: result.logMessage, syntheticDelivery: result.deliver,
+	}
 }
 
 func deliverMCPSynthetic(result *mcpSyntheticResult, writer transport.MessageWriter) error {
 	if result.notification {
 		return nil
+	}
+	if result.deliver != nil {
+		return result.deliver(writer, result.response)
 	}
 	return writer.WriteMessage(result.response)
 }
@@ -177,10 +202,9 @@ func deliverMCPInputResult(opts MCPProxyOpts, br BlockedRequest, writer transpor
 		reply = blockRequestResponse(br)
 	}
 	if br.terminal == nil && br.SyntheticResponse != nil {
-		if br.IsNotification {
-			return nil
-		}
-		return writer.WriteMessage(reply)
+		return deliverMCPSynthetic(&mcpSyntheticResult{
+			response: reply, notification: br.IsNotification, deliver: br.syntheticDelivery,
+		}, writer)
 	}
 	terminal := br.terminal
 	if terminal == nil {

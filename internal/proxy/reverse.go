@@ -1941,7 +1941,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		returned := false
 		defer func() {
 			entry := responseReceiptState.delivery
-			if entry == nil {
+			if !responseReceiptState.deliveryAllowed || entry == nil && len(responseReceiptState.decisions) == 0 {
 				responseReceiptState.decisions.finish(rp.owner, r.Context(), false, false)
 				return
 			}
@@ -1949,7 +1949,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			var flushErr error
 			if completed {
 				flushErr = flushResponseBeforeOutcome(w, r, cfg)
-				completed = flushErr == nil && forwardWriter.responseFramingComplete(r)
+				completed = flushErr == nil && responseFramingCompleteForReceipt(r, forwardWriter.status, forwardWriter.contentLength, forwardWriter.written)
 			}
 			rp.owner.recordTransportOutcome(r.Context(), reverseAllowReceipt, entry, completed)
 			responseReceiptState.decisions.finish(rp.owner, r.Context(), true, completed)
@@ -1993,13 +1993,7 @@ func (w *reverseInformationalGuardWriter) Write(p []byte) (int, error) {
 func (w *reverseInformationalGuardWriter) WriteHeader(code int) {
 	if code >= http.StatusOK && w.status == 0 {
 		w.status = code
-		w.contentLength = -1
-		h := w.Header()
-		if h.Get("Trailer") == "" && h.Get("Transfer-Encoding") == "" {
-			if length, err := strconv.ParseInt(h.Get("Content-Length"), 10, 64); err == nil && length >= 0 {
-				w.contentLength = length
-			}
-		}
+		w.contentLength = responseContentLengthForReceipt(w.Header())
 	}
 	if code >= http.StatusContinue && code < http.StatusOK && code != http.StatusSwitchingProtocols {
 		h := w.Header()
@@ -2016,15 +2010,33 @@ func (w *reverseInformationalGuardWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
-// A checked flush can observe all body bytes of a known-length HTTP/1.1
-// response. net/http writes the final chunk and trailers after the handler
-// returns when the response uses chunked framing.
-func (w *reverseInformationalGuardWriter) responseFramingComplete(r *http.Request) bool {
-	if r.ProtoMajor != 1 || r.ProtoMinor == 0 || r.Method == http.MethodHead ||
-		w.status == http.StatusNoContent || w.status == http.StatusNotModified {
+// A checked flush can observe all body bytes of a known-length HTTP/1.x
+// response. net/http finishes chunked and HTTP/2 framing after the handler
+// returns.
+func responseFramingCompleteForReceipt(r *http.Request, status int, contentLength, written int64) bool {
+	if r.ProtoMajor != 1 || status < http.StatusOK {
+		return false
+	}
+	if r.Method == http.MethodHead || status == http.StatusNoContent || status == http.StatusNotModified {
 		return true
 	}
-	return w.status != 0 && w.contentLength >= 0 && w.written == w.contentLength
+	return contentLength >= 0 && written == contentLength
+}
+
+func responseContentLengthForReceipt(h http.Header) int64 {
+	if h.Get("Trailer") != "" || h.Get("Transfer-Encoding") != "" {
+		return -1
+	}
+	for name := range h {
+		if strings.HasPrefix(name, http.TrailerPrefix) {
+			return -1
+		}
+	}
+	length, err := strconv.ParseInt(h.Get("Content-Length"), 10, 64)
+	if err != nil || length < 0 {
+		return -1
+	}
+	return length
 }
 
 // Unwrap lets http.ResponseController reach the real writer for flush and
@@ -2553,6 +2565,7 @@ type reverseResponseReceiptState struct {
 	responseBlocked        bool
 	confirmDelivery        func() (*v3TransportReceipt, error)
 	delivery               *v3TransportReceipt
+	deliveryAllowed        bool
 	decisions              v3ResponseReceipts
 	deliveryErr            error
 }
@@ -2580,6 +2593,7 @@ func (rp *ReverseProxyHandler) modifyResponseWithReceipt(resp *http.Response) er
 	}
 	entry, err := state.confirmDelivery()
 	state.delivery = entry
+	state.deliveryAllowed = err == nil
 	return err
 }
 

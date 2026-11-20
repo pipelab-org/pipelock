@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
@@ -84,6 +85,10 @@ type StreamWriter struct {
 	closeErr   error
 	durability Durability
 	repairs    []Action
+
+	terminalMu      sync.Mutex
+	terminalPending []Action
+	terminalClosed  bool
 }
 
 // OpenStreamWriter verifies and re-flushes any predecessor before publishing
@@ -399,12 +404,15 @@ func (w *StreamWriter) release() {
 	<-w.gate
 }
 
+// ErrWriterUnavailable means writes cannot resume on this writer.
+var ErrWriterUnavailable = errors.New("receipt writer is unavailable")
+
 func (w *StreamWriter) ensureStream(ctx context.Context) error {
 	if w.closed {
-		return errors.New("receipt writer is closed")
+		return fmt.Errorf("%w: closed", ErrWriterUnavailable)
 	}
 	if w.fatal != nil {
-		return fmt.Errorf("receipt writer needs a verified restart: %w", w.fatal)
+		return fmt.Errorf("%w: needs a verified restart: %w", ErrWriterUnavailable, w.fatal)
 	}
 	if w.active.file == nil {
 		return w.publishOpen(ctx)
@@ -567,6 +575,7 @@ func (w *StreamWriter) Close(ctx context.Context, operational *Recorder) error {
 	if w.closed {
 		return w.closeErr
 	}
+	w.collectTerminalResolutions(true)
 	w.closeErr = w.replayActionRepairs(ctx, false)
 	w.closed = true
 	if w.active.file != nil && w.closeErr == nil {

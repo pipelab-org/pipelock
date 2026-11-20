@@ -22,6 +22,7 @@ const (
 	verdictAllow         = "allow"
 	verdictBlock         = "block"
 	approvalBoundary     = "approval_prompt"
+	relationBefore       = "before"
 	relationAfter        = "after"
 	relationNotAttempted = "not_attempted"
 	outcomeNotReleased   = "not_released"
@@ -42,12 +43,82 @@ func (w *StreamWriter) WriteAction(ctx context.Context, action Action, policy Po
 	if w == nil {
 		return errors.New("receipt writer is unavailable")
 	}
-	action.Policy = policy.ActionPolicy()
 	if err := w.acquire(ctx); err != nil {
 		return err
 	}
 	defer w.release()
+	action.Policy = policy.ActionPolicy()
+	return w.writeAction(ctx, action)
+}
 
+// WriteTerminalResolution retains a hold's non-releasing resolution if the
+// deadline expires while waiting for the writer. The caller still receives
+// the admission error. Only a known pre-append failure enters this queue.
+func (w *StreamWriter) WriteTerminalResolution(ctx context.Context, action Action, policy PolicySnapshot, maxPending int) error {
+	if w == nil {
+		return ErrWriterUnavailable
+	}
+	action.Policy = policy.ActionPolicy()
+	if action.Phase != phaseResolution || releases(action.Verdict) ||
+		!actionShape(action, w.open.Coverage.ReceiptsRequired) {
+		return errors.New("receipt action is not a terminal hold resolution")
+	}
+	if err := w.acquire(ctx); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return errors.Join(err, w.queueTerminalResolution(action, maxPending))
+		}
+		return err
+	}
+	defer w.release()
+	return w.writeAction(ctx, action)
+}
+
+func (w *StreamWriter) queueTerminalResolution(action Action, maxPending int) error {
+	w.terminalMu.Lock()
+	defer w.terminalMu.Unlock()
+	if w.terminalClosed {
+		return ErrWriterUnavailable
+	}
+	if len(w.terminalPending) >= maxPending {
+		return errors.New("terminal receipt resolution queue is full")
+	}
+	startWorker := len(w.terminalPending) == 0
+	w.terminalPending = append(w.terminalPending, action)
+	if startWorker {
+		go w.flushTerminalResolutions()
+	}
+	return nil
+}
+
+func (w *StreamWriter) flushTerminalResolutions() {
+	w.gate <- struct{}{}
+	defer w.release()
+	if !w.collectTerminalResolutions(false) {
+		return
+	}
+	// Uses the same repair and successor rules as a failed synchronous flush.
+	if err := w.settleActionRepairs(context.Background()); err != nil {
+		w.collectTerminalResolutions(true)
+	}
+}
+
+// collectTerminalResolutions runs under the writer gate. Close collects
+// accepted work even when it acquires the gate before the worker.
+func (w *StreamWriter) collectTerminalResolutions(closing bool) bool {
+	w.terminalMu.Lock()
+	defer w.terminalMu.Unlock()
+	if closing {
+		w.terminalClosed = true
+	}
+	if len(w.terminalPending) == 0 {
+		return false
+	}
+	w.repairs = append(w.repairs, w.terminalPending...)
+	w.terminalPending = nil
+	return true
+}
+
+func (w *StreamWriter) writeAction(ctx context.Context, action Action) error {
 	if !actionShape(action, w.open.Coverage.ReceiptsRequired) {
 		return errors.New("receipt action does not match its effect phase")
 	}
@@ -93,7 +164,7 @@ func (w *StreamWriter) WriteAdmissionBatch(ctx context.Context, actions []Action
 	seen := make(map[string]struct{}, len(actions))
 	for _, action := range actions {
 		if (action.Phase != phaseIntent && action.Phase != phaseDecision) ||
-			!releases(action.Verdict) || !actionShape(action, w.open.Coverage.ReceiptsRequired) {
+			action.EffectRelation != relationBefore || !releases(action.Verdict) || !actionShape(action, w.open.Coverage.ReceiptsRequired) {
 			return errors.New("receipt batch requires admission actions")
 		}
 		if _, duplicate := seen[action.ActionID]; duplicate {

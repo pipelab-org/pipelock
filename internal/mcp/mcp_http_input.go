@@ -133,7 +133,10 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	baselineIdentity := mcpFrameBaselineIdentity(frame)
 	defer func() {
 		if result.Blocked != nil && result.Blocked.SyntheticResponse != nil {
-			result.Synthetic = &mcpSyntheticResult{response: result.Blocked.SyntheticResponse, notification: result.Blocked.IsNotification, logMessage: result.Blocked.LogMessage}
+			result.Synthetic = &mcpSyntheticResult{
+				response: result.Blocked.SyntheticResponse, notification: result.Blocked.IsNotification,
+				logMessage: result.Blocked.LogMessage, deliver: result.Blocked.syntheticDelivery,
+			}
 			result.Blocked = nil
 		}
 		if result.Blocked != nil {
@@ -1210,6 +1213,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				br = &BlockedRequest{
 					ID: verdict.ID, IsNotification: isNotification,
 					LogMessage: "redirected", SyntheticResponse: redirectResult.Response,
+					syntheticDelivery: opts.redirectResponseDelivery(logW, receipt.EmitOpts{
+						ActionID: actionID, Transport: opts.Transport, Target: toolName, MCPMethod: mcpMethod,
+					}),
 				}
 			}
 		} else {

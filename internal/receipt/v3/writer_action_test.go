@@ -17,6 +17,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
@@ -331,6 +334,10 @@ func TestStreamWriterCancelsWaitBehindFlush(t *testing.T) {
 		return resp.Body.Close()
 	}
 	entered, resume := make(chan struct{}), make(chan struct{})
+	releaseFlush := sync.OnceFunc(func() { close(resume) })
+	t.Cleanup(releaseFlush)
+	deadline, stop := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
+	defer stop()
 	w.active.file = syncCallbackFile{
 		StreamFile: w.active.file,
 		syncCallback: sync.OnceFunc(func() {
@@ -342,7 +349,13 @@ func TestStreamWriterCancelsWaitBehindFlush(t *testing.T) {
 	go func() {
 		first <- admitAndSend(t.Context(), "first")
 	}()
-	<-entered
+	select {
+	case <-entered:
+	case err := <-first:
+		t.Fatalf("first send finished without waiting for the flush: %v", err)
+	case <-deadline.Done():
+		t.Fatal("first intent did not reach the flush")
+	}
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -351,16 +364,29 @@ func TestStreamWriterCancelsWaitBehindFlush(t *testing.T) {
 	go func() {
 		second <- admitAndSend(ctxWithWait, "second")
 	}()
-	<-ctxWithWait.waiting
-	cancel()
-	err := <-second
-	beforeConfirmation := len(effects)
-	close(resume)
-	if err := <-first; err != nil {
-		t.Fatal(err)
+	select {
+	case <-ctxWithWait.waiting:
+	case <-deadline.Done():
+		t.Fatal("second intent did not wait for writer admission")
 	}
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled waiter: %v", err)
+	cancel()
+	select {
+	case err := <-second:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled waiter: %v", err)
+		}
+	case <-deadline.Done():
+		t.Fatal("second intent did not return after cancellation")
+	}
+	beforeConfirmation := len(effects)
+	releaseFlush()
+	select {
+	case err := <-first:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-deadline.Done():
+		t.Fatal("first send did not return after the flush")
 	}
 	if beforeConfirmation != 0 || len(effects) != 1 {
 		t.Fatalf("endpoint observed %d calls before confirmation and %d in total", beforeConfirmation, len(effects))
@@ -539,5 +565,23 @@ func TestStreamWriterReportsDurableCancelledHoldCorrection(t *testing.T) {
 	result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
 	if result.Integrity != "ok" || writerTestCount(t, result, "blocked") != 1 {
 		t.Fatalf("cancelled hold did not verify with one block: %+v", result)
+	}
+}
+
+func TestStreamWriterAdmissionBatchRejectsOptionalPostEffectDecision(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	opts.Coverage.ReceiptsRequired = false
+	w := requireWriter(t, opts, localWriterStorage())
+	action := writerTestIntent("already-attempted")
+	action.Attempt = nil
+	action.Phase = phaseDecision
+	for _, relation := range []string{relationAfter, "unknown"} {
+		action.EffectRelation = relation
+		if err := w.WriteAdmissionBatch(t.Context(), []Action{action}, PolicySnapshot{}); err == nil {
+			t.Fatalf("admission accepted an action with relation %q", relation)
+		}
+		if err := w.WriteAction(t.Context(), action, PolicySnapshot{}); err != nil {
+			t.Fatalf("ordinary write rejected relation %q: %v", relation, err)
+		}
 	}
 }

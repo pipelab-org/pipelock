@@ -129,7 +129,7 @@ func (index *receiptWriterIndex) reachesWriter(site receiptWriterSite) bool {
 
 func callWritesReceiptV3(call *ast.CallExpr) bool {
 	target, ok := call.Fun.(*ast.SelectorExpr)
-	return ok && (target.Sel.Name == "WriteAction" || target.Sel.Name == "WriteAdmissionBatch") && isReceiptV3Selector(target.X)
+	return ok && (target.Sel.Name == "WriteAction" || target.Sel.Name == "WriteAdmissionBatch" || target.Sel.Name == "WriteTerminalResolution") && isReceiptV3Selector(target.X)
 }
 
 func isReceiptV3Selector(expr ast.Expr) bool {

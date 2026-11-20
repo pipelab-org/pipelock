@@ -169,7 +169,17 @@ func (s *deferredReceiptSettlement) settleV3Hold(o MCPProxyOpts, res deferred.Re
 	// configured resolution timeout to bound admission to the writer.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(o.warnContext()), timeout)
 	defer cancel()
-	if err := o.ReceiptV3.WriteAction(ctx, action, entry.policy); err != nil {
+	var err error
+	if action.Verdict == config.ActionAllow {
+		err = o.ReceiptV3.WriteAction(ctx, action, entry.policy)
+	} else {
+		maxPending := res.Policy.MaxPending
+		if maxPending <= 0 {
+			maxPending = deferred.DefaultMaxPending
+		}
+		err = o.ReceiptV3.WriteTerminalResolution(ctx, action, entry.policy, maxPending)
+	}
+	if err != nil {
 		return fmt.Errorf("%w: %w", ErrReceiptRequired, err)
 	}
 	return nil
@@ -187,7 +197,9 @@ func (s *deferredReceiptSettlement) confirmV3Release(o MCPProxyOpts) (*mcpV3Rece
 	entry.action.Hold, entry.action.Ask = nil, nil
 	entry.action.Phase, entry.action.Attempt, entry.action.Verdict = "intent", &attempt, config.ActionAllow
 	entry.action.EffectBoundary, entry.action.EffectRelation = mcpV3Upstream, "before"
-	if err := o.ReceiptV3.WriteAction(o.warnContext(), entry.action, entry.policy); err != nil {
+	err := o.ReceiptV3.WriteAction(o.warnContext(), entry.action, entry.policy)
+	s.v3AttemptRecorded = err == nil || errors.Is(err, v3.ErrEffectNotReleased)
+	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrReceiptRequired, err)
 	}
 	return &entry, nil
@@ -244,9 +256,7 @@ func (o MCPProxyOpts) recordV3MCPRefusal(logW io.Writer, intent receipt.EmitOpts
 	refusal.Verdict = config.ActionBlock
 	entry := o.prepareV3Receipt(o.withReceiptPolicyHash(refusal))
 	entry.action.Phase, entry.action.EffectBoundary, entry.action.EffectRelation = "decision", boundary, "not_attempted"
-	if err := o.ReceiptV3.WriteAction(context.WithoutCancel(o.warnContext()), entry.action, entry.policy); err != nil {
-		logReceiptEmitFailure(logW, err, o.requireReceipts(), refusal.Verdict)
-	}
+	o.finalizeV3MCPReceipt(logW, entry.action, entry.policy)
 }
 
 func (o MCPProxyOpts) writeMCPGeneratedResponse(logW io.Writer, writer transport.MessageWriter, parent receipt.EmitOpts, response []byte, reason string) error {
@@ -314,7 +324,16 @@ func (r *mcpV3Receipt) finish(o MCPProxyOpts, logW io.Writer, attempted bool, se
 	default:
 		action.EffectRelation, action.OutcomeClass = "after", "completed"
 	}
-	if err := o.ReceiptV3.WriteAction(context.WithoutCancel(o.warnContext()), action, r.policy); err != nil {
+	o.finalizeV3MCPReceipt(logW, action, r.policy)
+}
+
+func (o MCPProxyOpts) finalizeV3MCPReceipt(logW io.Writer, action v3.Action, policy v3.PolicySnapshot) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(o.warnContext()), o.shutdownGrace())
+	defer cancel()
+	if err := o.ReceiptV3.WriteAction(ctx, action, policy); err != nil {
 		logReceiptEmitFailure(logW, err, o.requireReceipts(), action.Verdict)
+		if logW != nil && (!o.requireReceipts() || action.Phase != "decision" || action.Verdict != config.ActionBlock) {
+			_, _ = fmt.Fprintf(logW, "pipelock: warning event=receipt_finalization_failed audit_gap=true: %v\n", err)
+		}
 	}
 }

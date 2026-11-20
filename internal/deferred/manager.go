@@ -407,8 +407,9 @@ func (m *Manager) Hold(action HeldAction) error {
 
 		// The private reservation prevents overcommit while receipt I/O runs
 		// without blocking operations for other sessions.
+		confirmation := action
 		m.mu.Unlock()
-		err := confirm(action)
+		err := confirm(confirmation)
 		m.mu.Lock()
 		action.confirming = nil
 		m.confirmingCount--
@@ -505,6 +506,8 @@ func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string,
 	}
 	if held.cascadeBlocked {
 		finalDecision, source = config.ActionBlock, SourceCascade
+	} else if !time.Now().Before(held.Deadline) {
+		finalDecision, source = config.ActionBlock, SourceTimeout
 	}
 	held.state = StateResolving
 	m.removeHoldLocked(held)

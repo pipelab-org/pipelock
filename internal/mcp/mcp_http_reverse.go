@@ -2030,8 +2030,25 @@ func RunHTTPListenerProxy(
 			w.Header().Set("Content-Type", "application/json")
 			if decision.Synthetic.notification {
 				w.WriteHeader(http.StatusAccepted)
-			} else {
-				_, _ = w.Write(decision.Synthetic.response)
+				return
+			}
+			wrote := false
+			err := deliverMCPSynthetic(decision.Synthetic, mcpSyntheticWriter(func(reply []byte) error {
+				wrote = true
+				if decision.Synthetic.deliver == nil {
+					_, err := w.Write(reply)
+					return err
+				}
+				w.Header().Set("Content-Length", strconv.Itoa(len(reply)))
+				if _, err := (httpstream.Writer{Writer: w}).Write(reply); err != nil {
+					return err
+				}
+				return http.NewResponseController(w).Flush()
+			}))
+			if err != nil && !wrote {
+				writeMCPHTTPInputResult(scanOpts, BlockedRequest{
+					ID: frame.ID, ErrorCode: -32007, ErrorMessage: requiredReceiptFailureMessage(err),
+				}, w)
 			}
 			return
 		}
