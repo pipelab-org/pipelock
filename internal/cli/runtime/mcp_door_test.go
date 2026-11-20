@@ -273,6 +273,7 @@ func TestMCPDoorGuideRecipe(t *testing.T) {
 		"Add to access token",
 		"Add to token introspection",
 		"**Included Client Audience** to `" + introspectionClient + "`",
+		"as a **Default** client scope",
 	} {
 		if !strings.Contains(introSection, phrase) {
 			t.Fatalf("Keycloak section missing %q", phrase)
