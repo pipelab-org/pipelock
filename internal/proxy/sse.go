@@ -89,6 +89,29 @@ func sseFindingReceiptConfirmer(cfg *config.Config, opts receipt.EmitOpts, emit 
 	}
 }
 
+// sseFindingReceiptCallbacks settles each v3 finding after its event write.
+// A reverse-proxy pipe observes the scanner's handoff only; that result is
+// uncertain until the separate downstream transport receipt settles.
+func sseFindingReceiptCallbacks(
+	ctx context.Context,
+	cfg *config.Config,
+	opts receipt.EmitOpts,
+	p *Proxy,
+	emit func(*config.Config, receipt.EmitOpts) error,
+	clientWrite bool,
+) (func(error) error, func(error)) {
+	if cfg == nil || !cfg.FlightRecorder.RequireReceipts || p == nil || p.receiptV3 == nil {
+		return sseFindingReceiptConfirmer(cfg, opts, emit), nil
+	}
+	var deliveries v3ResponseReceipts
+	confirm := sseFindingReceiptConfirmer(cfg, opts, func(cfg *config.Config, decision receipt.EmitOpts) error {
+		return p.confirmV3ResponseDecision(cfg, decision, &deliveries)
+	})
+	return confirm, func(err error) {
+		deliveries.finish(p, ctx, true, clientWrite && err == nil)
+	}
+}
+
 // DispatchSSEScan picks the appropriate streaming scanner and runs it.
 // Returns nil on clean EOF, a wrapped ErrA2AStreamFinding or
 // ErrSSEStreamFinding on detection, a wrapped ErrSSEStreamScanError on an

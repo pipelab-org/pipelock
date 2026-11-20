@@ -6,6 +6,7 @@ package mcp
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -962,5 +963,48 @@ func TestMCPV3HoldResolutionBoundsWriterWait(t *testing.T) {
 	release()
 	if err := <-heartbeat; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMCPV3MediaDecisionsFollowResponseDelivery(t *testing.T) {
+	dir, writer, verify := newMCPV3Stream(t, transportMCPStdio)
+	sc, cfg := newMCPScannerWithMediaPolicy(t)
+	jpeg := buildMCPValidJPEG([]byte("Exif\x00\x00metadata-marker"))
+	encoded := base64.StdEncoding.EncodeToString(jpeg)
+	line := `{"jsonrpc":"2.0","id":42,"result":{"content":[{"type":"image","mimeType":"image/jpeg","data":"` + encoded + `"}]}}` + "\n"
+	tracker := NewRequestTracker()
+	tracker.Track(json.RawMessage("42"))
+	var out strings.Builder
+	opts := MCPProxyOpts{
+		Scanner: sc, MediaPolicy: &cfg.MediaPolicy, RequireReceipts: true, ReceiptV3: writer,
+		Transport: transportMCPStdio, v3DirectResponseDelivery: true,
+	}
+	if _, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(line)), transport.NewStdioWriter(&out), io.Discard, tracker, opts); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"mimeType":"image/jpeg"`) || strings.Contains(out.String(), encoded) {
+		t.Fatalf("expected a delivered image with metadata removed: %s", out.String())
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	var mediaIntent string
+	var mediaCompleted bool
+	for _, action := range readMCPV3Actions(t, dir) {
+		if action.Layer != "media_policy" {
+			continue
+		}
+		if action.Phase == "intent" {
+			mediaIntent = action.ActionID
+		}
+		if mediaIntent != "" && action.ActionID == mediaIntent && action.OutcomeClass == "completed" {
+			mediaCompleted = true
+		}
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, verify)
+	if err != nil || result.Verdict != "VALID" || !mediaCompleted ||
+		result.Counts.EffectsCompleted == nil || *result.Counts.EffectsCompleted != 2 ||
+		result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 0 {
+		t.Fatalf("media rewrite and response were not both settled: %+v (%v)", result, err)
 	}
 }

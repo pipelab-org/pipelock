@@ -28,10 +28,10 @@ func TestOptionalResponseDecisionPolicyHash(t *testing.T) {
 				}
 				var err error
 				if surface == "proxy" {
-					err = f.p.confirmResponseDecision(cfg, opts)
+					err = f.p.confirmResponseDecision(cfg, opts, nil)
 				} else {
 					rp := &ReverseProxyHandler{cfgPtr: &f.p.cfgPtr, logger: f.p.logger, metrics: f.p.metrics, receiptEmitterPtr: &f.p.receiptEmitterPtr, v2EmitterPtr: &f.p.v2EmitterPtr, owner: f.p}
-					err = rp.confirmResponseDecision(cfg, opts)
+					err = rp.confirmResponseDecision(cfg, opts, nil)
 				}
 				if err != nil {
 					t.Fatal(err)
@@ -55,7 +55,7 @@ func TestInterceptResponseConfirmationWithoutProxy(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FlightRecorder.RequireReceipts = true
 	w := httptest.NewRecorder()
-	if !interceptConfirmResponseOrBlock(&InterceptContext{Config: cfg}, w, receipt.EmitOpts{}) || w.Code != http.StatusForbidden || w.Header().Get("X-Pipelock-Block-Reason") != "receipt_emission_failed" {
+	if !interceptConfirmResponseOrBlock(&InterceptContext{Config: cfg}, w, receipt.EmitOpts{}, nil) || w.Code != http.StatusForbidden || w.Header().Get("X-Pipelock-Block-Reason") != "receipt_emission_failed" {
 		t.Fatalf("missing proxy did not fail closed: status=%d headers=%v", w.Code, w.Header())
 	}
 }

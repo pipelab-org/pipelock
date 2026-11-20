@@ -1941,6 +1941,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		defer func() {
 			entry := responseReceiptState.delivery
 			if entry == nil {
+				responseReceiptState.decisions.finish(rp.owner, r.Context(), false, false)
 				return
 			}
 			completed := returned && !forwardWriter.hijacked && !forwardWriter.writeFailed && r.Context().Err() == nil
@@ -1950,6 +1951,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				completed = flushErr == nil
 			}
 			rp.owner.recordTransportOutcome(r.Context(), reverseAllowReceipt, entry, completed)
+			responseReceiptState.decisions.finish(rp.owner, r.Context(), true, completed)
 			_ = httpstream.Abort(r.Context(), flushErr)
 		}()
 		rp.proxy.ServeHTTP(forwardWriter, r)
@@ -2531,6 +2533,7 @@ type reverseResponseReceiptState struct {
 	responseBlocked        bool
 	confirmDelivery        func() (*v3TransportReceipt, error)
 	delivery               *v3TransportReceipt
+	decisions              v3ResponseReceipts
 	deliveryErr            error
 }
 
@@ -2738,8 +2741,12 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		recordReverseObservedOutcome(http.StatusForbidden, int64(bodyBytes), shieldUninspectableLayer, bodyBytesExact)
 		return true
 	}
+	var responseReceipts *v3ResponseReceipts
+	if responseReceiptState != nil {
+		responseReceipts = &responseReceiptState.decisions
+	}
 	confirmReverseDecision := func(opts receipt.EmitOpts) bool {
-		if err := rp.confirmResponseDecision(cfg, withReceiptShard(opts, receiptShardFromContext(resp.Request.Context()))); err != nil {
+		if err := rp.confirmResponseDecision(cfg, withReceiptShard(opts, receiptShardFromContext(resp.Request.Context())), responseReceipts); err != nil {
 			rp.recordRequiredReceiptBlock(err, TransportReverse)
 			replaceWithBlockReason(resp, receiptEmissionBlockReason, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer))
 			recordReverseOutcome(http.StatusForbidden, 0, receiptEmissionFailedLayer)
@@ -3096,7 +3103,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			}
 			if verdict.Relabeled != "" || (verdict.StripResult != nil && verdict.StripResult.Changed()) {
 				if cfg.FlightRecorder.RequireReceipts {
-					if err := rp.confirmResponseDecision(cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: requestActionID, Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL, RequestID: requestID, Agent: agent}, receiptShardFromContext(resp.Request.Context())))); err != nil {
+					if err := rp.confirmResponseDecision(cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: requestActionID, Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL, RequestID: requestID, Agent: agent}, receiptShardFromContext(resp.Request.Context()))), responseReceipts); err != nil {
 						rp.recordRequiredReceiptBlock(err, TransportReverse)
 						replaceWithBlockReason(resp, receiptEmissionBlockReason, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer))
 						recordReverseOutcome(http.StatusForbidden, 0, receiptEmissionFailedLayer)
@@ -3308,6 +3315,7 @@ responseScanning:
 		}
 		actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
 		sseLayer := LayerSSEStream
+		confirmFinding, finishFinding := sseFindingReceiptCallbacks(resp.Request.Context(), cfg, withReceiptShard(receipt.EmitOpts{ParentActionID: requestActionID, Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL, RequestID: requestID, Agent: agent}, receiptShardFromContext(resp.Request.Context())), rp.owner, rp.emitAllowPathReceipt, false)
 		sseOpts := SSEDispatchOptions{
 			nativeAdmission: receiptShardFromContext(resp.Request.Context()),
 			IsA2A:           false,
@@ -3317,7 +3325,8 @@ responseScanning:
 				Target:             resp.Request.URL.String(),
 				Suppress:           cfg.Suppress,
 				ResponseScanExempt: revRespExempt,
-				ConfirmFinding:     sseFindingReceiptConfirmer(cfg, withReceiptShard(receipt.EmitOpts{ParentActionID: requestActionID, Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL, RequestID: requestID, Agent: agent}, receiptShardFromContext(resp.Request.Context())), rp.emitAllowPathReceipt),
+				ConfirmFinding:     confirmFinding,
+				OnFindingDelivery:  finishFinding,
 				OnObservedCoreResponse: func(observed scanner.ObservedCoreMatch) {
 					recordObservedCoreResponseMatches(rp.metrics, rp.logger, actx, []scanner.ObservedCoreMatch{observed}, TransportReverse)
 				},
@@ -3923,12 +3932,12 @@ responseScanning:
 	}
 
 	if cfg.FlightRecorder.RequireReceipts {
-		err := rp.emitAllowPathReceipt(cfg, withReceiptShard(receipt.EmitOpts{
+		err := rp.confirmResponseDecision(cfg, withReceiptShard(receipt.EmitOpts{
 			ActionID: receipt.NewActionID(), ParentActionID: requestActionID, Verdict: action,
 			Layer: responseScanLayer, Pattern: strings.Join(patternNames, ", "),
 			Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL,
 			RequestID: requestID, Agent: agent,
-		}, receiptShardFromContext(resp.Request.Context())))
+		}, receiptShardFromContext(resp.Request.Context())), responseReceipts)
 		if err != nil {
 			rp.recordRequiredReceiptBlock(err, TransportReverse)
 			replaceWithBlockReason(resp, receiptEmissionBlockReason, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer))

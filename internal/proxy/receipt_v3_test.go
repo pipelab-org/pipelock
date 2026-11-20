@@ -33,6 +33,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
@@ -41,9 +42,16 @@ import (
 
 func TestV3HTTPTransportIntentPrecedesUpstreamSend(t *testing.T) {
 	for _, transport := range []string{"fetch", "forward", "reverse"} {
-		for _, stage := range []string{"healthy", "before_send", "before_delivery", "advisory"} {
+		for _, stage := range []string{"healthy", "media", "before_send", "before_delivery", "advisory"} {
 			t.Run(transport+"/"+stage, func(t *testing.T) {
 				p, writer, dir, keys := newTestV3HTTPProxy(t, transport, stage != "advisory", nil)
+				expectedEffects := int64(2)
+				if stage == "media" {
+					expectedEffects++
+					enabled := true
+					p.CurrentConfig().MediaPolicy.Enabled = &enabled
+					p.CurrentConfig().MediaPolicy.StripImageMetadata = &enabled
+				}
 				if stage == "before_send" {
 					if err := writer.Close(t.Context(), nil); err != nil {
 						t.Fatal(err)
@@ -63,6 +71,11 @@ func TestV3HTTPTransportIntentPrecedesUpstreamSend(t *testing.T) {
 							t.Error(err)
 						}
 					}
+					if stage == "media" {
+						w.Header().Set("Content-Type", "image/jpeg")
+						_, _ = w.Write(buildValidJPEG([]byte("Exif\x00\x00metadata-marker")))
+						return
+					}
 					_, _ = w.Write([]byte("example"))
 				}))
 				t.Cleanup(upstream.Close)
@@ -71,7 +84,7 @@ func TestV3HTTPTransportIntentPrecedesUpstreamSend(t *testing.T) {
 					result, verifyErr := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
 					deliveredWithIntent = verifyErr == nil && result.Integrity == "ok" &&
 						result.Counts.EffectsCompleted != nil && result.Counts.EffectsUnknown != nil &&
-						*result.Counts.EffectsUnknown >= 1 && *result.Counts.EffectsCompleted+*result.Counts.EffectsUnknown == 2
+						*result.Counts.EffectsUnknown >= 1 && *result.Counts.EffectsCompleted+*result.Counts.EffectsUnknown == expectedEffects
 				}
 				response := &v3ResponseRecorder{ResponseRecorder: httptest.NewRecorder(), onHeader: onDelivery}
 				switch transport {
@@ -121,8 +134,9 @@ func TestV3HTTPTransportIntentPrecedesUpstreamSend(t *testing.T) {
 				}
 				result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
 				if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil ||
-					*result.Counts.EffectsCompleted != 2 {
-					t.Fatalf("two HTTP outcomes required: %+v (%v)", result, err)
+					*result.Counts.EffectsCompleted != expectedEffects ||
+					result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 0 {
+					t.Fatalf("expected %d completed HTTP effects: %+v (%v)", expectedEffects, result, err)
 				}
 				entries, err := os.ReadDir(dir)
 				if err != nil {
@@ -588,26 +602,32 @@ func TestV3ExceptionAllowanceReceipts(t *testing.T) {
 func TestV3ResponsePolicyAdmissions(t *testing.T) {
 	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportForward, true, nil)
 	cfg := p.CurrentConfig()
+	var deliveries v3ResponseReceipts
 	opts := receipt.EmitOpts{
 		ActionID: receipt.NewActionID(), Target: "https://api.vendor.example", Transport: TransportForward,
 		Method: http.MethodGet, Verdict: config.ActionStrip, Layer: "media_policy", Pattern: "image media rewritten",
 	}
-	if err := p.confirmResponseDecision(cfg, opts); err != nil {
+	if err := p.confirmResponseDecision(cfg, opts, &deliveries); err != nil {
 		t.Fatal(err)
 	}
 	opts.ActionID = receipt.NewActionID()
 	opts.Verdict, opts.Layer, opts.Pattern = config.ActionWarn, LayerSSEStream, "stream finding"
-	if err := p.emitAllowPathReceipt(cfg, opts); err != nil {
+	if err := p.confirmResponseDecision(cfg, opts, &deliveries); err != nil {
 		t.Fatal(err)
 	}
 	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
 	if err != nil || result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 2 {
 		t.Fatalf("policy admissions unavailable before delivery: %+v (%v)", result, err)
 	}
+	deliveries.finish(p, t.Context(), true, true)
+	result, err = v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Counts.EffectsCompleted == nil || *result.Counts.EffectsCompleted != 2 {
+		t.Fatalf("observed deliveries were not settled: %+v (%v)", result, err)
+	}
 	if err := writer.Close(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.confirmResponseDecision(cfg, opts); err == nil {
+	if err := p.confirmResponseDecision(cfg, opts, &deliveries); err == nil {
 		t.Fatal("closed writer admitted a response decision")
 	}
 }
@@ -1002,6 +1022,54 @@ func TestV3FetchConfirmsEachRedirectSend(t *testing.T) {
 			if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil ||
 				*result.Counts.EffectsCompleted != 3 {
 				t.Fatalf("expected two completed sends and one delivery: %+v (%v)", result, err)
+			}
+		})
+	}
+}
+
+func TestV3SSEFindingRecordsObservedWrite(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		direct    bool
+		failFlush bool
+		outcome   string
+	}{
+		{"observed", true, false, "completed"},
+		{"flush failed", true, true, "attempt_unknown"},
+		{"pipe handoff", false, false, "attempt_unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const finding = "fixture SSE finding"
+			p, writer, dir, _ := newTestV3HTTPProxy(t, TransportForward, true, nil)
+			cfg := p.CurrentConfig().Clone()
+			cfg.ResponseScanning.Enabled = true
+			cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: finding, Regex: finding}}
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			confirm, finish := sseFindingReceiptCallbacks(t.Context(), cfg, receipt.EmitOpts{
+				Transport: TransportForward, Method: http.MethodGet, Target: "https://upstream.vendor.example",
+			}, p, p.emitAllowPathReceipt, tc.direct)
+			response := httptest.NewRecorder()
+			var flusher http.Flusher = response
+			if tc.failFlush {
+				flusher = &v3DeliveryFlushFailure{ResponseRecorder: response}
+			}
+			err := DispatchSSEScan(t.Context(), strings.NewReader(
+				`data: {"choices":[{"delta":{"content":"fixture SSE finding"}}]}`+"\n\n",
+			), response, flusher, sc, SSEDispatchOptions{
+				GenericSSE: &config.GenericSSEScanning{Enabled: true, Action: config.ActionWarn},
+				Generic:    mcp.GenericSSEScanOptions{ConfirmFinding: confirm, OnFindingDelivery: finish},
+			})
+			if errors.Is(err, io.ErrClosedPipe) != tc.failFlush || (err != nil && !tc.failFlush) {
+				t.Fatalf("scan error = %v", err)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			records := readV3TestActions(t, dir)
+			if len(records) != 2 || records[0].Layer != LayerSSEStream || records[0].Phase != "intent" ||
+				records[1].ActionID != records[0].ActionID || records[1].OutcomeClass != tc.outcome {
+				t.Fatalf("expected one settled SSE finding, got %+v", records)
 			}
 		})
 	}

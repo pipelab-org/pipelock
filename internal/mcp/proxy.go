@@ -235,6 +235,13 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 		emitMCPOutcomeReceipt(receiptEmitter, v2ReceiptEmitter, opts.ReceiptGroup, logW, trackedOutcome.Receipt, status, bytesTransferred, reason, opts.requireReceipts())
 	}
+	var responseDeliveries []mcpV3Receipt
+	finishWithheldDeliveries := func() {
+		for i := range responseDeliveries {
+			responseDeliveries[i].finish(opts, logW, false, nil)
+		}
+		responseDeliveries = responseDeliveries[:0]
+	}
 	finishWarnings := func() {}
 	baseWarnContext := opts.warnContext()
 	defer func() {
@@ -243,12 +250,14 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		if scanErr != nil {
 			emitTrackedOutcome("incomplete", "downstream_write_failed", nil)
 		}
+		finishWithheldDeliveries()
 		finishWarnings()
 		eventAdmission.ReleaseNativeAdmission()
 		trackedOutcome.releaseNativeLease()
 	}()
 
 	for {
+		finishWithheldDeliveries()
 		finishWarnings()
 		eventAdmission.ReleaseNativeAdmission()
 		trackedOutcome.releaseNativeLease()
@@ -572,7 +581,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 
 		if mediaResult.Changed {
-			if emitErr := confirmMCPResponseEffect(logW, opts, trackedOutcome.Receipt, receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionStrip, Layer: "media_policy", Pattern: "image media rewritten", Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(frame.ID)}); emitErr != nil {
+			if emitErr := confirmMCPResponseEffect(logW, opts, trackedOutcome.Receipt, receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionStrip, Layer: "media_policy", Pattern: "image media rewritten", Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(frame.ID)}, &responseDeliveries); emitErr != nil {
 				denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_response", mcpReceiptEmissionReason)
 				resp := blockResponseReason(frame.ID, "receipt emission failed")
 				if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
@@ -926,7 +935,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 						selected = opts.ReceiptGroup.Shards.Admit(selected)
 					}
 					if candidate.SignatureVerified {
-						baselineReceiptErr = confirmMCPResponseEffect(logW, opts, selected, receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Layer: "a2a_card_signature", Pattern: "verified key_id=" + candidate.SignatureKeyID, Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(frame.ID)})
+						baselineReceiptErr = confirmMCPResponseEffect(logW, opts, selected, receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Layer: "a2a_card_signature", Pattern: "verified key_id=" + candidate.SignatureKeyID, Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(frame.ID)}, &responseDeliveries)
 						if baselineReceiptErr != nil {
 							return baselineReceiptErr
 						}
@@ -934,7 +943,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					if !candidate.FirstSeen && !candidate.DriftAdopted {
 						return nil
 					}
-					baselineReceiptErr = confirmMCPResponseEffect(logW, opts, selected, receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Layer: "a2a_card_drift", Pattern: "Agent Card baseline accepted", Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(frame.ID)})
+					baselineReceiptErr = confirmMCPResponseEffect(logW, opts, selected, receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Layer: "a2a_card_drift", Pattern: "Agent Card baseline accepted", Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(frame.ID)}, &responseDeliveries)
 					return baselineReceiptErr
 				}
 			}
@@ -1020,7 +1029,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					return foundInjection, err
 				}
 			}
-			if err := delivery.writeV3Response(opts, logW, writer, line); err != nil {
+			if err := delivery.writeV3Response(opts, logW, writer, line, responseDeliveries...); err != nil {
 				releaseToolInventory()
 				return foundInjection, fmt.Errorf("writing line: %w", err)
 			}
@@ -1253,7 +1262,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		if effectiveAction == config.ActionBlock {
 			writeErr = writeMCPResponseDisposition(opts, denialAudit, writer, outbound, true)
 		} else {
-			writeErr = delivery.writeV3Response(opts, logW, writer, outbound)
+			writeErr = delivery.writeV3Response(opts, logW, writer, outbound, responseDeliveries...)
 		}
 		if writeErr != nil {
 			releaseToolInventory()

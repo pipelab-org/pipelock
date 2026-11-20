@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
@@ -14,9 +15,9 @@ import (
 // confirmResponseDecision confirms a later decision on an admitted response.
 // Optional mode retains best-effort recording; required mode confirms every
 // configured family before the caller changes state or delivers bytes.
-func (p *Proxy) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpts) error {
+func (p *Proxy) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpts, deliveries *v3ResponseReceipts) error {
 	if p != nil && p.receiptV3 != nil {
-		return p.confirmV3ResponseDecision(cfg, opts)
+		return p.confirmV3ResponseDecision(cfg, opts, deliveries)
 	}
 	if cfg != nil {
 		opts = withReceiptConfig(opts, cfg)
@@ -30,9 +31,9 @@ func (p *Proxy) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpt
 	return nil
 }
 
-func (rp *ReverseProxyHandler) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpts) error {
+func (rp *ReverseProxyHandler) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpts, deliveries *v3ResponseReceipts) error {
 	if rp.owner != nil && rp.owner.receiptV3 != nil {
-		return rp.owner.confirmV3ResponseDecision(cfg, opts)
+		return rp.owner.confirmV3ResponseDecision(cfg, opts, deliveries)
 	}
 	if cfg != nil {
 		opts = withReceiptConfig(opts, cfg)
@@ -44,11 +45,32 @@ func (rp *ReverseProxyHandler) confirmResponseDecision(cfg *config.Config, opts 
 	return nil
 }
 
-func (p *Proxy) confirmV3ResponseDecision(cfg *config.Config, opts receipt.EmitOpts) error {
+// v3ResponseReceipts holds the decisions made before a single HTTP response
+// write. The handler settles each decision from that write's actual result.
+type v3ResponseReceipts []*v3TransportReceipt
+
+func (r *v3ResponseReceipts) finish(p *Proxy, ctx context.Context, attempted, completed bool) {
+	for _, entry := range *r {
+		if attempted {
+			p.recordTransportOutcome(ctx, receipt.EmitOpts{Transport: entry.action.Transport}, entry, completed)
+		} else {
+			p.recordTransportNotReleased(ctx, receipt.EmitOpts{Transport: entry.action.Transport}, entry)
+		}
+	}
+	*r = nil
+}
+
+func (p *Proxy) confirmV3ResponseDecision(cfg *config.Config, opts receipt.EmitOpts, deliveries *v3ResponseReceipts) error {
+	if deliveries == nil {
+		return errors.New("response receipt delivery settlement is unavailable")
+	}
 	opts.Verdict = receipt.NormalizeVerdict(opts.Verdict)
-	_, err := p.confirmTransportReceipt(context.Background(), cfg, opts, boundaryDownstreamDelivery)
+	entry, err := p.confirmTransportReceipt(context.Background(), cfg, opts, boundaryDownstreamDelivery)
 	if receiptWriteWithholdsEffect(cfg, err) {
 		return err
+	}
+	if entry != nil {
+		*deliveries = append(*deliveries, entry)
 	}
 	return nil
 }

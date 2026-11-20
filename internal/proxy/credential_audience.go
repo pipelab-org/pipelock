@@ -148,9 +148,6 @@ func (p *Proxy) emitAllowPathReceipt(cfg *config.Config, opts receipt.EmitOpts) 
 	if p == nil {
 		return errCredentialAudienceReceiptEmitterUnavailable
 	}
-	if p.receiptV3 != nil {
-		return p.confirmV3ResponseDecision(cfg, opts)
-	}
 	// The request snapshot names the policy that decided this allow; the live
 	// pointer is only a fallback for callers without one.
 	if cfg == nil {
@@ -259,9 +256,6 @@ func (rp *ReverseProxyHandler) emitCredentialAudienceReceipt(cfg *config.Config,
 func (rp *ReverseProxyHandler) emitAllowPathReceipt(cfg *config.Config, opts receipt.EmitOpts) error {
 	if rp == nil {
 		return errCredentialAudienceReceiptEmitterUnavailable
-	}
-	if rp.owner != nil && rp.owner.receiptV3 != nil {
-		return rp.owner.confirmV3ResponseDecision(cfg, opts)
 	}
 	if cfg == nil && rp.cfgPtr != nil {
 		cfg = rp.cfgPtr.Load()

@@ -4322,6 +4322,7 @@ type shieldResponseContext struct {
 	actx                                           audit.LogContext
 	clientIP, requestID, transport, parentActionID string
 	shard                                          receipt.EmitOpts
+	receipts                                       *v3ResponseReceipts
 }
 
 // applyShieldResponse runs Browser Shield rewriting on a response body when
@@ -4403,7 +4404,7 @@ func (p *Proxy) applyShieldResponse(body []byte, contentType string, respHeaders
 			return append(head, body[shieldMaxBytes:]...), summary, false, nil
 		case config.ShieldOversizeWarn:
 			reason := shieldOversizeBlockReason(hostname, len(body), shieldMaxBytes)
-			if err := p.confirmResponseDecision(cfg, withReceiptShard(receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: response.parentActionID, Verdict: config.ActionAllow, Layer: "shield_oversize", Pattern: reason, Shield: partialShieldSummary(nil, body, contentType, len(body), 0), Transport: transport, Method: actx.Method(), Target: shieldReceiptTarget(firstNonEmptyString(actx.URL(), actx.Target(), hostname)), RequestID: requestID, Agent: actx.Agent()}, response.shard)); err != nil {
+			if err := p.confirmResponseDecision(cfg, withReceiptShard(receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: response.parentActionID, Verdict: config.ActionAllow, Layer: "shield_oversize", Pattern: reason, Shield: partialShieldSummary(nil, body, contentType, len(body), 0), Transport: transport, Method: actx.Method(), Target: shieldReceiptTarget(firstNonEmptyString(actx.URL(), actx.Target(), hostname)), RequestID: requestID, Agent: actx.Agent()}, response.shard), response.receipts); err != nil {
 				return nil, nil, false, p.shieldReceiptBlock(err, transport)
 			}
 			p.logger.LogAnomaly(actx, "shield_oversize", fmt.Sprintf("response body %d bytes exceeds shield ceiling %d", len(body), shieldMaxBytes), 0)
@@ -4735,7 +4736,7 @@ func (p *Proxy) confirmShieldIntervention(summary *receipt.ShieldSummary, cfg *c
 		Target:         target,
 		RequestID:      requestID,
 		Agent:          actx.Agent(),
-	}, response.shard))
+	}, response.shard), response.receipts)
 	if err != nil {
 		return p.shieldReceiptBlock(err, transport)
 	}
@@ -6714,6 +6715,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// -1 signs bytes=unknown on paths that end before the body is read.
 	capturedBytes := int64(-1)
 	var downstreamReceipt *v3TransportReceipt
+	var responseReceipts v3ResponseReceipts
 	defer func() {
 		aborted := recover()
 		// A policy denial describes withheld upstream content, even if its
@@ -6742,8 +6744,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		// written to the client is a separate key so receipt consumers that
 		// read bytes= see the same unit before and after this field existed.
 		pattern := receiptOutcomePattern(outcomeStatus, capturedBytes, outcomeReason) + " delivered_bytes=" + strconv.FormatInt(delivery.bytes, 10)
-		p.recordTransportOutcome(r.Context(), fetchAllowReceipt, downstreamReceipt,
-			aborted == nil && delivery.err == nil && outcomeReason == "complete")
+		delivered := aborted == nil && delivery.err == nil && outcomeReason == "complete"
+		p.recordTransportOutcome(r.Context(), fetchAllowReceipt, downstreamReceipt, delivered)
+		responseReceipts.finish(p, r.Context(), downstreamReceipt != nil || delivered, delivered)
 		p.emitOutcomeReceiptWithPattern(cfg, opts, pattern)
 		if aborted != nil {
 			panic(aborted)
@@ -7005,7 +7008,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	var shieldSummary *receipt.ShieldSummary
 	svgShielded := false
 	if shieldBlocked == nil {
-		body, shieldSummary, svgShielded, shieldBlocked = p.applyShieldResponse(body, contentType, resp.Header, cfg, shieldResponseContext{scanOriginal: scanOriginal, hostname: shieldHost, actx: actx, clientIP: clientIP, requestID: requestID, transport: TransportFetch, parentActionID: actionID, shard: selectedReceiptShard})
+		body, shieldSummary, svgShielded, shieldBlocked = p.applyShieldResponse(body, contentType, resp.Header, cfg, shieldResponseContext{scanOriginal: scanOriginal, hostname: shieldHost, actx: actx, clientIP: clientIP, requestID: requestID, transport: TransportFetch, parentActionID: actionID, shard: selectedReceiptShard, receipts: &responseReceipts})
 	}
 	if shieldBlocked != nil {
 		reason := shieldBlocked.reason
@@ -7073,7 +7076,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	if mediaVerdict.Relabeled != "" || (mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed()) {
 		if cfg.FlightRecorder.RequireReceipts {
-			if err := p.confirmResponseDecision(cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: TransportFetch, Method: http.MethodGet, Target: displayURL, RequestID: requestID, Agent: agent}, selectedReceiptShard))); err != nil {
+			if err := p.confirmResponseDecision(cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: TransportFetch, Method: http.MethodGet, Target: displayURL, RequestID: requestID, Agent: agent}, selectedReceiptShard)), &responseReceipts); err != nil {
 				p.recordRequiredReceiptBlock(err, TransportFetch)
 				writeBlockedJSON(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: receiptEmissionBlockReason})
 				outcomeStatus, outcomeReason = strconv.Itoa(http.StatusForbidden), receiptEmissionFailedLayer
@@ -7228,6 +7231,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		_, responseLevel = adaptiveBlockState(fetchRec, adaptiveScopeForHost(finalHost))
 		blocked, newContent, found, scanFailureLayer := p.filterAndActOnResponseScan(responseScanContext{
 			requestContext: r.Context(),
+			receipts:       &responseReceipts,
 			shard:          selectedReceiptShard,
 			writer:         w,
 			result:         scanResult,
@@ -7381,6 +7385,7 @@ func recordObservedCoreResponseMatches(m *metrics.Metrics, log *audit.Logger, ac
 // zero values are valid runtime state.
 type responseScanContext struct {
 	shard          receipt.EmitOpts
+	receipts       *v3ResponseReceipts
 	requestContext context.Context
 	writer         http.ResponseWriter
 	result         scanner.ResponseScanResult
@@ -7637,12 +7642,12 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 		log.LogResponseScan(newHTTPAuditContext(reqCtx, log, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), action, len(result.Matches), patternNames, bundleRules)
 	}
 	if cfg.FlightRecorder.RequireReceipts {
-		err := p.emitAllowPathReceipt(cfg, withReceiptShard(receipt.EmitOpts{
+		err := p.confirmResponseDecision(cfg, withReceiptShard(receipt.EmitOpts{
 			ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: action,
 			Layer: responseScanLayer, Pattern: strings.Join(patternNames, ", "),
 			Transport: TransportFetch, Method: http.MethodGet, Target: displayURL,
 			RequestID: requestID, Agent: agent,
-		}, firstReceiptShard(in.shard, receiptShardFromContext(reqCtx))))
+		}, firstReceiptShard(in.shard, receiptShardFromContext(reqCtx))), in.receipts)
 		if err != nil {
 			p.recordRequiredReceiptBlock(err, TransportFetch)
 			writeBlockedJSON(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), http.StatusForbidden,

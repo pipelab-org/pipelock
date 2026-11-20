@@ -272,21 +272,28 @@ func (o MCPProxyOpts) writeMCPGeneratedResponse(logW io.Writer, writer transport
 	return delivery.writeV3Response(o, logW, writer, response)
 }
 
-func (r *mcpV3Receipt) writeV3Response(o MCPProxyOpts, logW io.Writer, writer transport.MessageWriter, content []byte) error {
-	if r.action.Attempt != nil {
+func (r *mcpV3Receipt) writeV3Response(o MCPProxyOpts, logW io.Writer, writer transport.MessageWriter, content []byte, related ...mcpV3Receipt) error {
+	if r.action.Attempt != nil || len(related) != 0 {
 		if err := o.warnContext().Err(); err != nil {
 			r.finish(o, logW, false, nil)
 			return err
 		}
 	}
 	err := writeMCPResponseDisposition(o, mcpDenialAudit{}, writer, content, false)
+	r.finishV3ResponseWrite(o, logW, err)
+	for i := range related {
+		related[i].finishV3ResponseWrite(o, logW, err)
+	}
+	return err
+}
+
+func (r *mcpV3Receipt) finishV3ResponseWrite(o MCPProxyOpts, logW io.Writer, err error) {
 	if r.action.Attempt != nil && o.finishV3ResponseDelivery != nil {
 		o.finishV3ResponseDelivery(*r, err)
 		r.action.Attempt = nil
 	} else {
 		r.finish(o, logW, true, err)
 	}
-	return err
 }
 
 func (r *mcpV3Receipt) finishRedirect(o MCPProxyOpts, logW io.Writer, result RedirectResult) {
