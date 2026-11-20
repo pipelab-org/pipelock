@@ -610,6 +610,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	if memo != nil && ctx != nil && len(content) >= outboundMatchMinView {
 		if work, ok := ctx.Value(outboundMatchWorkKey{}).(*outboundMatchWork); ok {
 			memo.outboundMatch = work.matcher(ctx)
+			memo.outboundErr = ctx.Err
 		}
 	}
 	original := content
@@ -730,7 +731,14 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 
 	// Core response patterns run first whenever the global wording policy
 	// enables detection, regardless of response_scanning.enabled.
-	if coreSet := s.scanCoreResponseWithOptions(content, filterSuppressed, options.forceEncodedDecode, memo, options.skipEncodedDecode); len(coreSet.matches) > 0 {
+	coreSet := s.scanCoreResponseWithOptions(content, filterSuppressed, options.forceEncodedDecode, memo, options.skipEncodedDecode)
+	if err := memo.outboundError(); err != nil {
+		return ResponseScanResult{
+			Clean:     false,
+			ScanError: err.Error(),
+		}
+	}
+	if len(coreSet.matches) > 0 {
 		result := ResponseScanResult{
 			Clean:   false,
 			Matches: coreSet.matches,
@@ -770,7 +778,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	// stripped): config patterns with literal inter-word spaces ("you are now")
 	// have no other surviving defense because the opt-space pass only relaxes
 	// trailing \s+, not literal spaces inside the alternation.
-	if len(matches) == 0 {
+	if len(matches) == 0 && memo.outboundError() == nil {
 		spaced := normalize.ForMatchingSpaced(preStripContent)
 		if spaced != content {
 			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(spaced, memo.match(s.responsePreFilter, s.responsePatterns, spaced)), ViewInvisibleSpaced))
@@ -782,7 +790,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 
 	// Tertiary: leetspeak normalization. Pre-filter runs on the LEETED
 	// content, catching keywords that emerge after digit-to-letter conversion.
-	if len(matches) == 0 {
+	if len(matches) == 0 && memo.outboundError() == nil {
 		leeted := normalize.Leetspeak(content)
 		if leeted != content {
 			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(leeted, memo.match(s.responsePreFilter, s.responsePatterns, leeted)), ViewLeetspeak))
@@ -793,7 +801,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	// combined attack where ZW chars split keywords AND replace word separators:
 	// "i\u200bgnore\u200ball\u200bprevious" -> strip ZW -> "ignoreallprevious"
 	// Standard \s+ patterns fail on zero whitespace; \s* variants match.
-	if len(matches) == 0 && len(s.responseOptSpacePatterns) > 0 {
+	if len(matches) == 0 && len(s.responseOptSpacePatterns) > 0 && memo.outboundError() == nil {
 		matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(content, memo.match(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, content)), ViewForMatching))
 	}
 
@@ -801,7 +809,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	// one character (e.g., ø→o) replaces multiple different vowels, producing
 	// near-miss words like "instroctions" that don't match "instructions".
 	// Folding all vowels to 'a' in both content and patterns makes them match.
-	if len(matches) == 0 && len(s.responseVowelFoldPatterns) > 0 {
+	if len(matches) == 0 && len(s.responseVowelFoldPatterns) > 0 && memo.outboundError() == nil {
 		folded := normalize.FoldVowels(content)
 		if folded != content {
 			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(folded, memo.match(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded)), ViewVowelFold))
@@ -816,7 +824,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	if normalize.ContainsTags(preStripContent) {
 		decodeContent = preStripContent
 	}
-	if len(matches) == 0 && !options.skipEncodedDecode && (options.forceEncodedDecode || hasEncodedRun(content) || hasTextEncoding(content) || hasQuotedPrintable(preStripContent) || normalize.ContainsTags(preStripContent)) {
+	if len(matches) == 0 && memo.outboundError() == nil && !options.skipEncodedDecode && (options.forceEncodedDecode || hasEncodedRun(content) || hasTextEncoding(content) || hasQuotedPrintable(preStripContent) || normalize.ContainsTags(preStripContent)) {
 		decodedSet := s.matchDecodedResponseWithSuppressMode(decodeContent, filterSuppressed, !options.forceEncodedDecode)
 		matches = filterSuppressed(decodedSet.matches)
 		if len(matches) == 0 && preStripContent != content && hasQuotedPrintable(preStripContent) {

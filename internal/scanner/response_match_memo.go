@@ -18,11 +18,19 @@ import (
 // object is read or written again. A Scanner never retains or shares the memo.
 type responseMatchMemo struct {
 	outboundMatch func(*compiledPattern, string) []ResponseMatch
+	outboundErr   func() error
 	views         map[string]map[responseNegativeKey]struct{}
 	filterViews   map[string]*responsePreFilterView
 	derivedBytes  int
 	bytes         int
 	entries       int
+}
+
+func (m *responseMatchMemo) outboundError() error {
+	if m == nil || m.outboundErr == nil {
+		return nil
+	}
+	return m.outboundErr()
 }
 
 type responseNegativeKey struct {
@@ -64,6 +72,9 @@ func responseNegativePatternKey(p *compiledPattern) (responseNegativeKey, bool) 
 }
 
 func (m *responseMatchMemo) match(pf *responsePreFilter, patterns []*compiledPattern, content string) []ResponseMatch {
+	if m.outboundError() != nil {
+		return nil
+	}
 	if m == nil || len(content) < responseMemoMinBytes || len(content) > responseMemoMaxBytes {
 		return matchPatternsPreFiltered(pf, patterns, content)
 	}
@@ -116,6 +127,9 @@ func (m *responseMatchMemo) match(pf *responsePreFilter, patterns []*compiledPat
 		view = &responsePreFilterView{literals: literals, outboundMatch: m.outboundMatch}
 	}
 	result := matchPatternsPreFilteredWithMemo(remainingFilter, remaining, content, view)
+	if m.outboundError() != nil {
+		return nil
+	}
 	if len(result) != 0 {
 		return result
 	}

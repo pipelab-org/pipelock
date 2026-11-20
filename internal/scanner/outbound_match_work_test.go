@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"regexp/syntax"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -58,6 +59,19 @@ func TestOutboundMatchWorkWholeView(t *testing.T) {
 	}
 }
 
+type atomicCancelAfterContext struct {
+	context.Context
+	calls       atomic.Int64
+	cancelAfter int64
+}
+
+func (c *atomicCancelAfterContext) Err() error {
+	if c.calls.Add(1) >= c.cancelAfter {
+		return context.Canceled
+	}
+	return nil
+}
+
 func TestOutboundMatchWorkCancellation(t *testing.T) {
 	work := &outboundMatchWork{}
 	proof := work.regex(regexp.MustCompile(`alpha.*omega`))
@@ -72,6 +86,84 @@ func TestOutboundMatchWorkCancellation(t *testing.T) {
 	cancel()
 	if proof.provesEmpty(ctx, text) {
 		t.Fatal("canceled check was reported as complete")
+	}
+	var nilCtx context.Context
+	if got := WithOutboundInjectionWork(nilCtx); got == nil {
+		t.Fatal("nil context produced nil work context")
+	}
+}
+
+func TestOutboundMatchWorkUnicodeLineCancellationAndNoFallback(t *testing.T) {
+	// Every rune after the leading ASCII byte starts on an odd byte offset, so
+	// offset&4095 == 0 would never fire again across the entire multi-kilobyte line.
+	oddUnicodeLine := "a" + strings.Repeat("é", 4*responseBodyContextCheckBytes) + "\n"
+	re := regexp.MustCompile(`vendor_marker_begin.*vendor_marker_end`)
+	work := &outboundMatchWork{}
+	proof := work.regex(re)
+	if proof == nil {
+		t.Fatal("missing proof")
+	}
+	// Check 1 is line entry; checks 2..4 must occur at ~4 KiB strides inside the
+	// odd-offset Unicode line, aborting before the line finishes or caches.
+	midLineCtx := &atomicCancelAfterContext{Context: t.Context(), cancelAfter: 4}
+	if proof.provesEmpty(midLineCtx, oddUnicodeLine) {
+		t.Fatal("canceled unicode line was proved empty")
+	}
+	if calls := midLineCtx.calls.Load(); calls != 4 {
+		t.Fatalf("inner unicode line did not stop at the stride check: calls=%d", calls)
+	}
+	if len(proof.lineSteps) != 0 {
+		t.Fatalf("aborted line was retained in lineSteps: %d", len(proof.lineSteps))
+	}
+
+	// Canceled contexts must not fall back to matchResponsePattern, either when
+	// already canceled or when cancellation fires mid-provesEmpty.
+	matching := oddUnicodeLine + "vendor_marker_begin tail vendor_marker_end\n"
+	pat := &compiledPattern{name: "Marker", re: re, responseMemoRegexp: re}
+	canceledCtx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if got := work.matcher(canceledCtx)(pat, matching); len(got) != 0 {
+		t.Fatalf("already-canceled matcher ran fallback regex: %+v", got)
+	}
+	midMatcherCtx := &atomicCancelAfterContext{Context: t.Context(), cancelAfter: 5}
+	if got := work.matcher(midMatcherCtx)(pat, matching); len(got) != 0 {
+		t.Fatalf("mid-proof canceled matcher ran fallback regex: %+v", got)
+	}
+	if midMatcherCtx.calls.Load() < 5 {
+		t.Fatalf("mid-proof test did not trigger cancellation: calls=%d", midMatcherCtx.calls.Load())
+	}
+
+	// End-to-end outbound scans must fail closed when cancellation occurs mid-scan,
+	// including when optional response scanning is disabled or wording is warn-only.
+	for _, tc := range []struct {
+		name            string
+		responseEnabled bool
+		mode            string
+	}{
+		{"block", true, config.ActionBlock},
+		{"core-only", false, config.ActionBlock},
+		{"warn", true, config.ActionWarn},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.DLP.ScanEnv = false
+			cfg.ResponseScanning.Enabled = tc.responseEnabled
+			cfg.ResponseScanning.Action = config.ActionBlock
+			cfg.PromptInjectionDetection = &config.PromptInjectionDetection{Action: tc.mode}
+			sc := MustNew(cfg)
+			t.Cleanup(sc.Close)
+			// Trigger core pattern pre-filter with a harmless keyword line, then
+			// cancel mid-provesEmpty on the long odd-offset unicode line.
+			body := "ignore " + oddUnicodeLine + "ordinary tail\n"
+			// Allow entry check (1) to pass so cancellation occurs inside matching.
+			runCtx := WithOutboundInjectionWork(&atomicCancelAfterContext{Context: t.Context(), cancelAfter: 2})
+			res := sc.ScanResponseOutbound(runCtx, body)
+			if res.Clean || !res.Failed() {
+				t.Fatalf("mid-scan cancellation did not fail closed: clean=%v failed=%v err=%q matches=%d warned=%d",
+					res.Clean, res.Failed(), res.ScanError, len(res.Matches), len(res.WarnedMatches))
+			}
+		})
 	}
 }
 

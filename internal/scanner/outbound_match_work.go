@@ -17,6 +17,9 @@ import (
 // injection scans of a single body. Callers should discard the context after
 // scanning the body. Positive matches and policy decisions are never reused.
 func WithOutboundInjectionWork(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return context.WithValue(ctx, outboundMatchWorkKey{}, &outboundMatchWork{})
 }
 
@@ -31,9 +34,16 @@ type outboundMatchWork struct {
 
 func (w *outboundMatchWork) matcher(ctx context.Context) func(*compiledPattern, string) []ResponseMatch {
 	return func(pattern *compiledPattern, text string) []ResponseMatch {
-		if len(text) >= outboundMatchMinView && strings.Contains(text, "\n") && pattern.responseMemoRegexp == pattern.re &&
-			!hasExternalTransferCompanions(pattern) && ctx.Err() == nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		if len(text) >= outboundMatchMinView && strings.Contains(text, "\n") &&
+			pattern.responseMemoRegexp != nil && pattern.responseMemoRegexp == pattern.re &&
+			!hasExternalTransferCompanions(pattern) {
 			if proof := w.regex(pattern.re); proof != nil && proof.provesEmpty(ctx, text) {
+				return nil
+			}
+			if ctx.Err() != nil {
 				return nil
 			}
 		}
@@ -295,9 +305,13 @@ func (p *outboundRegexp) provesEmpty(ctx context.Context, text string) bool {
 			state.frontier = slices.Clone(cached.frontier)
 			continue
 		}
+		nextCheck := responseBodyContextCheckBytes
 		for offset, next := range line {
-			if offset&4095 == 0 && ctx.Err() != nil {
-				return false
+			if offset >= nextCheck {
+				if ctx.Err() != nil {
+					return false
+				}
+				nextCheck = offset + responseBodyContextCheckBytes
 			}
 			state = p.advance(state, next)
 			if state.possible {
