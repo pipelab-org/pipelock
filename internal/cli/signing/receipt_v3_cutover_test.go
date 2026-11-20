@@ -94,7 +94,14 @@ func TestVerifyReceiptCmd_V3WithSeparateOperationalRecorder(t *testing.T) {
 		}
 		// Retain the literal parent segment so the command receives the
 		// same path that the operator supplied.
-		check(t, link+string(os.PathSeparator)+".."+string(os.PathSeparator)+filepath.Base(dir))
+		path := link + string(os.PathSeparator) + ".." + string(os.PathSeparator) + filepath.Base(dir)
+		cmd := VerifyReceiptCmd()
+		cmd.SetArgs([]string{"--chain", path, "--key", hex.EncodeToString(key.Public().(ed25519.PublicKey))})
+		cmd.SetOut(new(bytes.Buffer))
+		cmd.SetErr(new(bytes.Buffer))
+		if err := cmd.ExecuteContext(t.Context()); err == nil || !strings.Contains(err.Error(), "refuse symlink in evidence root path") {
+			t.Fatalf("ambiguous evidence path: got %v, want refusal", err)
+		}
 	})
 }
 
