@@ -26,6 +26,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
@@ -831,6 +832,66 @@ func TestMCPV3ReceiptFailureStopsInteractiveChild(t *testing.T) {
 					t.Error("proxy did not stop after test cancellation")
 				}
 				t.Fatal("proxy did not stop the interactive child after receipt confirmation failed")
+			}
+		})
+	}
+}
+
+func TestMCPV3ToolListHasOnlySettledDelivery(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		action string
+		ack    bool
+	}{
+		{"warn", config.ActionWarn, false},
+		{"acknowledged", config.ActionBlock, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, writer, verify := newMCPV3Stream(t, transportMCPStdio)
+			var acks []config.MCPAcknowledgedFinding
+			if tc.ack {
+				acks = []config.MCPAcknowledgedFinding{proxyAckEntry(t)}
+			}
+			opts := MCPProxyOpts{
+				Scanner: testScannerWithAction(t, config.ActionWarn),
+				ToolCfg: &tools.ToolScanConfig{
+					Action: tc.action, CredentialAcks: tools.NewCredentialAckSet(acks, proxyAckKey),
+					Now: func() time.Time { return time.Date(2026, 10, 8, 15, 30, 0, 0, time.UTC) },
+				},
+				Transport: transportMCPStdio, ServerName: proxyAckServer, ServerBinding: proxyAckBinding,
+				RequireReceipts: true, ReceiptV3: writer, v3DirectResponseDelivery: true,
+			}
+			line := `{"jsonrpc":"2.0","id":1,"result":{"tools":[` + proxyAckTool + `]}}` + "\n"
+			var out strings.Builder
+			_, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(line)), transport.NewStdioWriter(&out), io.Discard, nil, opts)
+			if err != nil || !strings.Contains(out.String(), `"store_secret"`) {
+				t.Fatalf("inventory delivery failed: %q (%v)", out.String(), err)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			res, err := v3.VerifyPaths(t.Context(), []string{dir}, verify)
+			if err != nil || res.Verdict != "VALID" || res.Counts.Decisions == nil {
+				t.Fatalf("corpus verification failed: %s, findings %v (%v)", res.Verdict, res.Findings, err)
+			}
+			for _, count := range *res.Counts.Decisions {
+				if count.State == "outcome_unknown" {
+					t.Errorf("verified delivery left %d unresolved intent(s)", count.Count)
+				}
+			}
+			actions := readMCPV3Actions(t, dir)
+			wantVerdict := config.ActionWarn
+			if tc.ack {
+				wantVerdict = config.ActionAllow
+			}
+			if len(actions) != 2 || actions[0].Layer != "mcp_tool_scan" ||
+				actions[0].Verdict != wantVerdict || actions[0].Pattern == "" ||
+				actions[0].Phase != "intent" || actions[1].ActionID != actions[0].ActionID ||
+				actions[1].Phase != "outcome" || actions[1].OutcomeClass != "completed" {
+				t.Errorf("expected the tool scan intent and its completed outcome, got %+v", actions)
+			}
+			if res.Counts.EffectsCompleted == nil || *res.Counts.EffectsCompleted != 1 {
+				t.Errorf("expected exactly one completed delivery, decisions=%v", *res.Counts.Decisions)
 			}
 		})
 	}

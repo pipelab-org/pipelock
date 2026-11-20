@@ -215,20 +215,12 @@
       "when": "`opts.requireReceipts()` and `candidate.SignatureVerified`. Records `ActionAllow`"
     },
     "internal/mcp/proxy.go/ForwardScanned/confirmV3ResponseDelivery/baad693561cf6631": {
-      "fields": "Uses the captured response policy, and parent action identity when tracked. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. For MCP HTTP listener requests with successful door verification, write `caller.authn: mcp_door_verified` and copy `resource`, `issuer`, `subject`, and `client_id` from the verified identity. Otherwise write `caller.authn: none`.",
-      "when": "Before a clean scanned response is staged for or written to the client."
+      "fields": "Uses the captured response policy, and parent action identity when tracked. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. For MCP HTTP listener requests with successful door verification, write `caller.authn: mcp_door_verified` and copy `resource`, `issuer`, `subject`, and `client_id` from the verified identity. Otherwise write `caller.authn: none`. For a warned or acknowledged tools/list with no additional response finding, the intent carries the tool scan verdict, layer, and pattern.",
+      "when": "After the response checks permit delivery, before staging or writing the response."
     },
-    "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/253b9290091141be": {
-      "fields": "`phase` and `effect_relation` come from the tools/list delivery decision. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `taint` and `session` are omitted. `checker.surface` is `mcp_tool_description`, `selection` is `configured`, and `mode` is that surface's decision-time mode. `config_hash` is `sha256:` plus the decision-time injection-policy digest. `disposition` is `passed` for `benign`, `flagged` for `finding`, `error` for `incomplete`, and `not_run` for `off` or `not_assessed`. Omit `checker` when the assessment status is `partial` or the policy digest was not retained. `normalization` is included only when that scan built a text-normalization view, and omitted otherwise. For MCP HTTP listener requests with successful door verification, write `caller.authn: mcp_door_verified` and copy `resource`, `issuer`, `subject`, and `client_id` from the verified identity. Otherwise write `caller.authn: none`.",
-      "when": "`toolCfg != nil` and `toolAcknowledged \u0026\u0026 toolResult.Clean`"
-    },
-    "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/63383da7c00a973a": {
-      "fields": "`phase` and `effect_relation` come from the tools/list delivery decision. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `taint` and `session` are omitted. `checker.surface` is `mcp_tool_description`, `selection` is `configured`, and `mode` is that surface's decision-time mode. `config_hash` is `sha256:` plus the decision-time injection-policy digest. `disposition` is `passed` for `benign`, `flagged` for `finding`, `error` for `incomplete`, and `not_run` for `off` or `not_assessed`. Omit `checker` when the assessment status is `partial` or the policy digest was not retained. `normalization` is included only when that scan built a text-normalization view, and omitted otherwise. For MCP HTTP listener requests with successful door verification, write `caller.authn: mcp_door_verified` and copy `resource`, `issuer`, `subject`, and `client_id` from the verified identity. Otherwise write `caller.authn: none`.",
+    "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/13489df701bb0f93": {
+      "fields": "Writes a block decision with no delivery attempt. Carries the request identity, tool scan finding, and the request policy and caller when available.",
       "when": "`toolResult.IsToolsList \u0026\u0026 !toolResult.Clean` and `toolAction == config.ActionBlock`"
-    },
-    "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/c25708a43e53f0d1": {
-      "fields": "`phase` and `effect_relation` come from the tools/list delivery decision. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `taint` and `session` are omitted. `checker.surface` is `mcp_tool_description`, `selection` is `configured`, and `mode` is that surface's decision-time mode. `config_hash` is `sha256:` plus the decision-time injection-policy digest. `disposition` is `passed` for `benign`, `flagged` for `finding`, `error` for `incomplete`, and `not_run` for `off` or `not_assessed`. Omit `checker` when the assessment status is `partial` or the policy digest was not retained. `normalization` is included only when that scan built a text-normalization view, and omitted otherwise. For MCP HTTP listener requests with successful door verification, write `caller.authn: mcp_door_verified` and copy `resource`, `issuer`, `subject`, and `client_id` from the verified identity. Otherwise write `caller.authn: none`.",
-      "when": "`toolCfg != nil` and `toolResult.IsToolsList \u0026\u0026 !toolResult.Clean`"
     },
     "internal/mcp/proxy.go/ForwardScanned/emitReceiptDecision/4eab870c16b495b4": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not. For MCP HTTP listener requests with successful door verification, write `caller.authn: mcp_door_verified` and copy `resource`, `issuer`, `subject`, and `client_id` from the verified identity. Otherwise write `caller.authn: none`.",
@@ -248,7 +240,7 @@
     },
     "internal/mcp/proxy.go/ForwardScanned/writeV3Response/ffb86512bd95f55c": {
       "fields": "Uses the intent attribution. The outcome class and relation describe the observed write or pre-write cancellation. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. Retain the caller from the confirmed intent.",
-      "when": "After confirming a clean response. A buffered listener defers the outcome until the HTTP write and flush. An SSE listener settles after its event write and flush."
+      "when": "After confirming delivery of a clean response or a warned or acknowledged tools/list. A buffered listener defers the outcome until the HTTP write and flush. An SSE listener settles after its event write and flush."
     },
     "internal/mcp/proxy.go/emitPendingTimeoutResponses/writeMCPGeneratedResponse/062d325eaba74bd6": {
       "fields": "Uses a fresh delivery identity with the original request as parent. Confirms required receipts before the write and records its result. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
@@ -1564,7 +1556,9 @@
     "internal/mcp/pipeline_decision.go/emitMCPStandaloneStreamReceipt/recordMCPStreamDiagnostic/e4022f5562ccec1f": "Forwards the terminal diagnostic and retained request metadata to the v3 downstream refusal writer.",
     "internal/mcp/pipeline_decision.go/emitMCPV2Decision/Emit/57bb4d29217b7fea": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
     "internal/mcp/pipeline_decision.go/emitMCPV2Decision/EmitDurable/1926001d71cf12c7": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
-    "internal/mcp/proxy.go/emitMCPToolScanReceipt/emitReceiptDecision/a00fb127e3611bf4": "Carries the effect boundary and decision context selected by its caller.",
+    "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/1a471e0c67f0b76a": "Selects the tool scan attribution for the final v3 response delivery. Legacy receipts still record this scan at the original call.",
+    "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/3ecb8051958f5763": "Selects the tool scan attribution for the final v3 response delivery. Legacy receipts still record this scan at the original call.",
+    "internal/mcp/proxy.go/emitMCPToolScanReceipt/emitReceiptDecision/4f1de884da94f647": "Carries the effect boundary and decision context selected by its caller.",
     "internal/mcp/receipt_v3.go/(*mcpV3Receipt).finish/WriteAction/13ca059c7a57bf47": "Writes the observed outcome with the confirmed intent identity, boundary and policy.",
     "internal/mcp/receipt_v3.go/(MCPProxyOpts).confirmV3ResponseDelivery/emitReceiptDecision/dd6148df2ad77a17": "Confirms the captured decision before the direct client write.",
     "internal/mcp/receipt_v3.go/(MCPProxyOpts).confirmV3StreamAdmission/emitReceiptDecision/bfa1a2dfc4138815": "Encodes the caller's upstream connection admission.",
@@ -1749,9 +1743,7 @@
     "internal/mcp/proxy.go/ForwardScanned/confirmMCPResponseEffect/42a32a294c9efefb": "downstream_delivery",
     "internal/mcp/proxy.go/ForwardScanned/confirmMCPResponseEffect/fd70af366c26a517": "downstream_delivery",
     "internal/mcp/proxy.go/ForwardScanned/confirmV3ResponseDelivery/baad693561cf6631": "downstream_delivery",
-    "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/253b9290091141be": "downstream_delivery",
-    "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/63383da7c00a973a": "downstream_delivery",
-    "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/c25708a43e53f0d1": "downstream_delivery",
+    "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/13489df701bb0f93": "downstream_delivery",
     "internal/mcp/proxy.go/ForwardScanned/emitReceiptDecision/4eab870c16b495b4": "upstream_send",
     "internal/mcp/proxy.go/ForwardScanned/emitReceiptDecision/a80db3024bf9806a": "downstream_delivery",
     "internal/mcp/proxy.go/ForwardScanned/emitReceiptDecision/d682a6909d8e4643": "none",

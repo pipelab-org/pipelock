@@ -591,6 +591,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// identifies a message as tools/list, skip the general scan entirely.
 		isToolsList := false
 		var toolResult tools.ToolScanResult
+		var toolScanDelivery receipt.EmitOpts
 		toolInventoryResolved := false
 		resolveToolInventory := func(decision string) {
 			if decision == "" {
@@ -793,7 +794,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 
 				if toolAction == config.ActionBlock {
-					_ = emitMCPToolScanReceipt(logW, opts, toolResult, config.ActionBlock, trackedOutcome.Receipt)
+					_ = emitMCPToolScanReceipt(logW, opts, toolResult, config.ActionBlock, trackedOutcome.Receipt, nil)
 					blockReason := "tool poisoning detected in tools/list"
 					if toolResult.ResourceLimit != "" {
 						blockReason = "tools/list cannot be safely inspected: " + toolResult.ResourceLimit
@@ -835,7 +836,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					emitTrackedOutcome("error", "tool_poisoning", resp)
 					continue
 				}
-				if emitErr := emitMCPToolScanReceipt(logW, opts, toolResult, config.ActionWarn, trackedOutcome.Receipt); emitErr != nil && opts.requireReceipts() {
+				if emitErr := emitMCPToolScanReceipt(logW, opts, toolResult, config.ActionWarn, trackedOutcome.Receipt, &toolScanDelivery); emitErr != nil && opts.requireReceipts() {
 					denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_response", mcpReceiptEmissionReason)
 					resp := blockResponseReason(toolResult.RPCID, "receipt emission failed")
 					if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
@@ -865,7 +866,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				// a clean event. Later gates (general response scanning,
 				// inventory reservation) can still refuse delivery, and record
 				// that themselves.
-				if emitErr := emitMCPToolScanReceipt(logW, opts, toolResult, config.ActionAllow, trackedOutcome.Receipt); emitErr != nil && opts.requireReceipts() {
+				if emitErr := emitMCPToolScanReceipt(logW, opts, toolResult, config.ActionAllow, trackedOutcome.Receipt, &toolScanDelivery); emitErr != nil && opts.requireReceipts() {
 					denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_response", mcpReceiptEmissionReason)
 					captureToolScan(config.ActionBlock)
 					resolveToolInventory(config.ActionBlock)
@@ -1011,6 +1012,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Layer: "mcp_response_scan",
 					Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(frame.ID),
 				})
+				if toolScanDelivery.ActionID != "" {
+					receiptOpts = toolScanDelivery
+				}
 				if err := opts.confirmV3ResponseDelivery(logW, receiptOpts, &delivery); err != nil {
 					releaseToolInventory()
 					return foundInjection, err
@@ -1421,6 +1425,7 @@ func emitMCPToolScanReceipt(
 	result tools.ToolScanResult,
 	verdict string,
 	selected receipt.EmitOpts,
+	delivery *receipt.EmitOpts,
 ) error {
 	serverName := strings.TrimSpace(opts.ServerName)
 	if serverName == "" {
@@ -1451,19 +1456,25 @@ func emitMCPToolScanReceipt(
 			}
 		}
 	}
+	decision := opts.withReceiptPolicyHash(withMCPResponseShard(selected, receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   verdict,
+		Transport: opts.Transport,
+		Target:    "mcp://" + serverName + "/tools/list",
+		RequestID: requestID,
+		MCPMethod: "tools/list",
+		Layer:     "mcp_tool_scan",
+		Pattern:   pattern,
+		Severity:  config.SeverityHigh,
+	}))
+	if opts.ReceiptV3 != nil && delivery != nil {
+		// Carry the scan attribution to the one delivery intent that can
+		// be settled after the write. Later gates can still refuse the list.
+		*delivery = decision
+		return nil
+	}
 	_, err := opts.emitReceiptDecision(MCPDecision{
-		Receipt: opts.withReceiptPolicyHash(withMCPResponseShard(selected, receipt.EmitOpts{
-			ActionID:  receipt.NewActionID(),
-			Verdict:   verdict,
-			Transport: opts.Transport,
-			Target:    "mcp://" + serverName + "/tools/list",
-			RequestID: requestID,
-			MCPMethod: "tools/list",
-			Layer:     "mcp_tool_scan",
-			Pattern:   pattern,
-			Severity:  config.SeverityHigh,
-		})),
-		v3Boundary: mcpV3Delivery, RequireReceipt: opts.requireReceipts() && verdict != config.ActionBlock,
+		Receipt: decision, v3Boundary: mcpV3Delivery, RequireReceipt: opts.requireReceipts() && verdict != config.ActionBlock,
 	})
 	if err != nil {
 		logReceiptEmitFailure(logW, err, opts.requireReceipts(), verdict)
