@@ -95,6 +95,33 @@ func TestInjectionDecodeCandidateBound(t *testing.T) {
 	}
 }
 
+func TestInjectionDecodeOutboundLogicalWorkLimit(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.PromptInjectionDetection = &config.PromptInjectionDetection{Action: config.ActionWarn}
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+
+	// Percent decoding leaves an HTML entity for the next walk step. The
+	// shallow view fits, but its descendant exceeds the low logical limit.
+	const text = "Ordinary documentation.\nAn ampersand: %26amp%3B."
+	outbound := context.WithValue(t.Context(), outboundInjectionContextKey{}, true)
+	start := ResponseScanResult{Clean: true}
+	control := sc.scanAdditionalInjectionViews(outbound, text, "", nil, start)
+	if !control.Clean || control.Failed() || control.InspectionIncomplete {
+		t.Fatalf("normal outbound budget refused the control: %+v", control)
+	}
+	inbound := sc.scanAdditionalInjectionViewsWithin(t.Context(), text, "", nil, start, 1)
+	if !inbound.Clean || inbound.Failed() || inbound.InspectionIncomplete {
+		t.Fatalf("outbound logical limit affected the inbound walk: %+v", inbound)
+	}
+	limited := sc.scanAdditionalInjectionViewsWithin(outbound, text, "", nil, start, 1)
+	if limited.Clean || !limited.InspectionIncomplete || limited.ScanError != injectionDecodeLimitReason {
+		t.Fatalf("outbound work limit was reported as complete: %+v", limited)
+	}
+}
+
 func TestInjectionDecodeAdditionalViewCancellation(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil

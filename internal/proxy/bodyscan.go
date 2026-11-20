@@ -1252,9 +1252,9 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		}
 		action = config.StrongestAction(action, result.EntropyAction)
 	}
-	injectionCtx := ctx
+	injectionCtx := scanner.WithOutboundInjectionWork(ctx)
 	if !websocketCarrier {
-		injectionCtx = scanner.WithInjectionSurface(ctx, config.InjectionSurfaceHTTPRequestBody)
+		injectionCtx = scanner.WithInjectionSurface(injectionCtx, config.InjectionSurfaceHTTPRequestBody)
 	}
 	for _, text := range texts {
 		injectionResult := req.Scanner.ScanResponseOutbound(injectionCtx, text)
