@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
@@ -379,6 +380,20 @@ func (c *HTTPClient) SendMessageWithOptions(ctx context.Context, msg []byte, opt
 	return reader, nil
 }
 
+// IsStreamingResponse reports whether an HTTP response reader carries SSE.
+func IsStreamingResponse(reader MessageReader) bool {
+	switch r := reader.(type) {
+	case *closingSSEReader:
+		return true
+	case *sessionResponseReader:
+		return IsStreamingResponse(r.reader)
+	case *initializeResponseReader:
+		return IsStreamingResponse(r.reader)
+	default:
+		return false
+	}
+}
+
 // sessionResponseReader defers header-state admission until a framed message
 // passes the caller's key guard. Invalid bytes still reach the response scanner.
 type sessionResponseReader struct {
@@ -694,17 +709,16 @@ func (r *SingleMessageReader) Close() error {
 type closingSSEReader struct {
 	sse    *SSEReader
 	body   io.ReadCloser
-	closed bool
+	closed atomic.Bool
 }
 
 func (r *closingSSEReader) ReadMessage() ([]byte, error) {
-	if r.closed {
+	if r.closed.Load() {
 		return nil, io.EOF
 	}
 	msg, err := r.sse.ReadMessage()
 	if err != nil {
-		r.closed = true
-		r.body.Close() //nolint:errcheck,gosec // best-effort cleanup on stream end
+		_ = r.Close()
 		return nil, err
 	}
 	return msg, nil
@@ -714,6 +728,9 @@ func (r *closingSSEReader) ReadMessage() ([]byte, error) {
 // slow or hung SSE upstream (e.g. an MCP response timeout). Safe to call more
 // than once; a redundant close is ignored.
 func (r *closingSSEReader) Close() error {
+	if !r.closed.CompareAndSwap(false, true) {
+		return nil
+	}
 	return r.body.Close()
 }
 

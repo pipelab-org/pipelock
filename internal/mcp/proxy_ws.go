@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -76,6 +77,16 @@ func RunWSProxy(
 		}
 	})
 	defer stopInputClose()
+	streamAdmission, err := opts.admitNativeRequest()
+	if err != nil {
+		return err
+	}
+	defer streamAdmission.ReleaseNativeAdmission()
+	stopCapacityClose := streamAdmission.NativeLease.OnStopAfter(opts.shutdownGrace(), func() {
+		cancel()
+		interruptNativeOutput(clientOut)
+	})
+	defer stopCapacityClose()
 
 	// Per-invocation adaptive enforcement recorder.
 	var rec session.Recorder
@@ -138,12 +149,14 @@ func RunWSProxy(
 	wsOpts.TaintExternalSource = true
 	wsOpts.WarnContext = innerCtx
 	wsOpts.sessionExit = sessionExit
+	wsOpts.nativeStdio = streamAdmission.NativeLease != nil
+	wsOpts.nativeAdmission = streamAdmission
 
 	clientReader := transport.NewStdioReader(clientIn)
 
 	var wg sync.WaitGroup
 	var lastScanErr error
-	var admission receipt.EmitOpts
+	var transportAdmission receipt.EmitOpts
 	var upstreamEnded bool // read only after the response goroutine is joined
 	var upstreamBlocked bool
 	var upstreamWriteFailed bool
@@ -153,6 +166,7 @@ func RunWSProxy(
 			_ = wsClient.Close()
 		}
 		wg.Wait()
+		stopping := streamAdmission.NativeLease.Stopping()
 		pendingOutcomes := tracker.DrainPendingOutcomes()
 		for _, pending := range pendingOutcomes {
 			reason, status := httpstream.Cancelled, "cancelled"
@@ -162,11 +176,17 @@ func RunWSProxy(
 					reason, status = "policy_blocked", "blocked"
 				}
 			}
+			if stopping {
+				reason, status = nativeCapacityReason, "cancelled"
+			}
 			pending.Outcome.settle(safeLogW, wsOpts, status, -1, reason)
+			pending.Outcome.releaseNativeLease()
 		}
-		if admission.ActionID != "" && wsClient != nil {
+		if transportAdmission.ActionID != "" && wsClient != nil {
 			status, reason := "cancelled", httpstream.Cancelled
-			if upstreamWriteFailed {
+			if stopping {
+				status, reason = "closed", nativeCapacityReason
+			} else if upstreamWriteFailed {
 				status, reason = "error", mcpUpstreamWriteFailed
 			} else if upstreamEnded && ctx.Err() == nil {
 				switch {
@@ -178,7 +198,9 @@ func RunWSProxy(
 					status, reason = "completed", "stream_completed"
 				}
 			}
-			recordTransportAdmissionResult(safeLogW, wsOpts, admission, status, reason)
+			recordTransportAdmissionResult(safeLogW, wsOpts, transportAdmission, status, reason)
+		} else if stopping && wsClient != nil {
+			emitMCPStandaloneStreamReceipt(wsOpts, safeLogW, mcpStreamReceipt(wsOpts, "WS"), "closed", nativeCapacityReason)
 		} else if len(pendingOutcomes) == 0 && upstreamEnded && ctx.Err() == nil && errors.Is(lastScanErr, transport.ErrIncompleteResponse) {
 			emitMCPStandaloneStreamReceipt(wsOpts, safeLogW, mcpStreamReceipt(wsOpts, "WS"), "incomplete", httpstream.Incomplete)
 		}
@@ -189,19 +211,19 @@ func RunWSProxy(
 			return nil
 		}
 		var err error
-		admission, err = admitDurableTransport(wsOpts, "WS", upstreamURL)
+		transportAdmission, err = admitDurableTransport(wsOpts, "WS", upstreamURL)
 		if err != nil {
 			logReceiptEmitFailure(safeLogW, err, true, config.ActionForward)
 			return fmt.Errorf("recording upstream WebSocket admission: %w", err)
 		}
 		wsClient, err = transport.NewWSClientWithDialer(innerCtx, upstreamURL, opts.DialContext)
 		if err != nil {
-			warnTransportAdmission(safeLogW, wsOpts, admission, "upstream_handshake_failed")
+			warnTransportAdmission(safeLogW, wsOpts, transportAdmission, "upstream_handshake_failed")
 			return fmt.Errorf("connecting to upstream: %w", err)
 		}
 		go func(client *transport.WSClient) {
 			select {
-			case <-ctx.Done():
+			case <-innerCtx.Done():
 				_ = client.Close()
 			case <-done:
 			}
@@ -258,7 +280,17 @@ func RunWSProxy(
 
 	// Stdin -> upstream loop (runs on main goroutine).
 	var stdinErr error
+	var admission receipt.EmitOpts
+	finishWarnings := func() {}
+	settleMessage := func() {
+		finishWarnings()
+		admission.ReleaseNativeAdmission()
+	}
+	defer settleMessage()
 	for {
+		settleMessage()
+		admission = receipt.EmitOpts{}
+		finishWarnings = func() {}
 		msg, readErr := readMCPInputMessage(innerCtx, clientIn, clientReader)
 		if readErr != nil {
 			if innerCtx.Err() == nil && !errors.Is(readErr, io.EOF) &&
@@ -279,6 +311,9 @@ func RunWSProxy(
 				_ = wsClient.Close()
 			}
 			wg.Wait()
+			if streamAdmission.NativeLease.Stopping() {
+				return ael.ErrCapacity
+			}
 			if stdinErr != nil {
 				return stdinErr
 			}
@@ -292,11 +327,27 @@ func RunWSProxy(
 		default:
 		}
 
+		var admissionErr error
+		admission, admissionErr = streamAdmission.ReserveNativeChild(nativeMCPRequestRecords)
+		if admissionErr == nil {
+			admission, admissionErr = admission.ReserveNativeTerminal()
+		}
+		if admissionErr != nil {
+			writeNativeAdmissionDenial(wsOpts, safeLogW, transport.NewStdioWriter(safeClientOut), frame.ID, admissionErr)
+			if errors.Is(admissionErr, ael.ErrCapacity) {
+				continue
+			}
+			return admissionErr
+		}
+		inputOpts := wsOpts
+		inputOpts.nativeAdmission = admission
+		inputOpts.WarnContext, finishWarnings = inputOpts.nativeWarningContext(innerCtx, admission)
+
 		// Kill switch: deny all messages when active.
 		if opts.KillSwitch != nil {
 			if d := opts.KillSwitch.IsActiveMCP(msg); d.Active {
 				denialAudit := mcpKillMcpInputDenialAudit()
-				batchResp := refuseKillSwitchRequest(wsOpts, safeLogW, frame, d)
+				batchResp := refuseKillSwitchRequest(inputOpts, safeLogW, frame, d)
 				if batchResp != nil {
 					if wErr := writeMCPInputDenial(wsOpts, denialAudit, safeClientOut, batchResp); wErr != nil {
 						_, _ = fmt.Fprintf(safeLogW, "pipelock: stdout write error: %v\n", wErr)
@@ -317,7 +368,6 @@ func RunWSProxy(
 		}
 
 		// Input scanning: DLP, injection, policy, chain detection.
-		inputOpts := wsOpts
 		decision := scanHTTPInputDecision(msg, safeLogW, sessionKey, sessionKey, inputOpts)
 		if decision.Synthetic != nil {
 			if err := deliverMCPSynthetic(decision.Synthetic, safeClientOut); err != nil {
@@ -357,7 +407,13 @@ func RunWSProxy(
 		var registration *requestRegistration
 		if isTrackableRequest(msg, frame.ID) {
 			var refusal string
-			registration, refusal = registerWSTaskOutcome(safeLogW, wsOpts, tracker, frame, decision)
+			var trackingErr error
+			registration, refusal, trackingErr = registerWSTaskOutcome(safeLogW, inputOpts, tracker, frame, decision)
+			if trackingErr != nil {
+				decision.Outcome.settle(safeLogW, inputOpts, mcpOutcomeStatusBlocked, -1, "request_tracking_failed")
+				writeNativeAdmissionDenial(inputOpts, safeLogW, transport.NewStdioWriter(safeClientOut), frame.ID, trackingErr)
+				continue
+			}
 			if refusal != "" {
 				refuseTaskRelease(frame, decision, refusal)
 				continue
@@ -380,6 +436,12 @@ func RunWSProxy(
 		commitMCPToolCall(baselineMetricsRecorder(wsOpts, rec), mcpFrameBaselineIdentity(frame))
 	}
 
+	// Keep the upstream open for replies already admitted when stdin ends
+	// during a capacity stop. The capacity cutoff bounds the wait.
+	if streamAdmission.NativeLease.Stopping() && tracker.HasPending() {
+		<-innerCtx.Done()
+	}
+
 	// Close the WS connection to unblock ForwardScanned's ReadMessage. The
 	// blocked read returns net.ErrClosed ("use of closed network connection"),
 	// which ForwardScanned treats as a clean stream end via
@@ -390,6 +452,9 @@ func RunWSProxy(
 	}
 	wg.Wait()
 
+	if streamAdmission.NativeLease.Stopping() {
+		return ael.ErrCapacity
+	}
 	if stdinErr != nil {
 		return stdinErr
 	}
@@ -418,13 +483,17 @@ func a2aCardURLForWSUpstream(raw string) string {
 
 // Registering can settle an evicted outcome and invoke receipt observers.
 // Check the current task permission after those observers have returned.
-func registerWSTaskOutcome(logW io.Writer, opts MCPProxyOpts, tracker *RequestTracker, frame MCPFrame, decision httpInputDecision) (*requestRegistration, string) {
+func registerWSTaskOutcome(logW io.Writer, opts MCPProxyOpts, tracker *RequestTracker, frame MCPFrame, decision httpInputDecision) (*requestRegistration, string, error) {
 	outcome := decision.Outcome
 	outcome.Method = frame.Method
-	registration := trackMCPOutcome(logW, opts, tracker, frame.ID, outcome)
+	outcome.Receipt = outcome.Receipt.InheritAdmission(opts.nativeAdmission)
+	registration, err := trackMCPAdmittedOutcome(logW, opts, tracker, frame.ID, outcome)
+	if err != nil {
+		return nil, "", err
+	}
 	refusal := mcpTaskReleaseRefusal(opts, decision.taskFrame, decision.taskTaint, false)
 	if refusal != "" {
 		tracker.removeOwnedOutcome(frame.ID, registration)
 	}
-	return registration, refusal
+	return registration, refusal, nil
 }

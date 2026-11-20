@@ -67,7 +67,7 @@ func (o TrackedRequestOutcome) settleResult(logW io.Writer, opts MCPProxyOpts, s
 		err := h.emit(logW, *h.fallback, false)
 		return err == nil, err
 	}
-	r := mcpOutcomeReceiptOpts(o.Receipt, status, size, reason)
+	r := mcpOutcomeReceiptOpts(o.Receipt.NativeTerminal(), status, size, reason)
 	r.Verdict = config.ActionAllow
 	if status == mcpOutcomeStatusBlocked {
 		r.Verdict = config.ActionBlock
@@ -140,7 +140,7 @@ func admitDurableTransport(opts MCPProxyOpts, method, target string) (receipt.Em
 		Target:    target,
 		Layer:     mcpTransportAdmissionLayer,
 	})
-	if group := opts.ReceiptGroup; group != nil && group.Shards != nil {
+	if group := opts.ReceiptGroup; group != nil && group.Shards != nil && !admission.ShardSelected {
 		admission = group.Shards.Admit(admission)
 	}
 	if _, err := opts.emitReceiptDecision(MCPDecision{Receipt: admission, RequireReceipt: true}); err != nil {
@@ -159,7 +159,7 @@ func recordTransportAdmissionResult(logW io.Writer, opts MCPProxyOpts, admission
 	if admission.ActionID == "" {
 		return
 	}
-	result := mcpOutcomeReceiptOpts(admission, status, -1, reason)
+	result := mcpOutcomeReceiptOpts(admission.NativeTerminal(), status, -1, reason)
 	// Transport admissions are single-phase. Keep the result on the same
 	// action without opening an intent pair.
 	result.DecisionPhase = ""

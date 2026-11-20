@@ -49,7 +49,14 @@ type TrackedRequestOutcome struct {
 	handle  *mcpOutcomeHandle
 	// Method is the JSON-RPC method of the matching request, used by
 	// response-side A2A routing (Agent Card vs field-aware body scan).
-	Method string
+	Method          string
+	ownsNativeLease bool
+}
+
+func (o TrackedRequestOutcome) releaseNativeLease() {
+	if o.ownsNativeLease {
+		o.Receipt.NativeLease.Release()
+	}
 }
 
 type requestRegistration struct{ _ byte }
@@ -148,6 +155,9 @@ func (t *RequestTracker) registerOutcome(id json.RawMessage, outcome TrackedRequ
 		}
 	}
 	if prior, exists := t.pending[key]; exists {
+		if prior.outcome.ownsNativeLease || outcome.ownsNativeLease {
+			return nil, nil
+		}
 		// A response to a duplicate outstanding ID has no unique owner.
 		if prior.outcome.handle != nil || outcome.handle != nil {
 			t.markAmbiguous(key)
@@ -160,9 +170,17 @@ func (t *RequestTracker) registerOutcome(id json.RawMessage, outcome TrackedRequ
 		return nil, unowned
 	}
 
+	_, ambiguous := t.ambiguousIDs[key]
+	if outcome.ownsNativeLease && (ambiguous || t.ambiguityLimitReached) {
+		return nil, nil
+	}
+
 	// Evict oldest if at capacity.
 	if len(t.pending) >= maxTrackedRequests {
 		oldest := t.order[0]
+		if t.pending[oldest].outcome.ownsNativeLease {
+			return nil, nil
+		}
 		if t.pending[oldest].outcome.handle != nil {
 			t.markAmbiguous(oldest)
 			retire(t.pending[oldest].outcome, "request_tracker_capacity")
@@ -232,10 +250,26 @@ func (t *RequestTracker) removeOwnedOutcome(id json.RawMessage, registration *re
 	}
 	key := canonicalID(id)
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	if req, ok := t.pending[key]; ok && req.registration == registration {
+	req, ok := t.pending[key]
+	if ok && req.registration == registration {
 		t.remove(key)
+	} else {
+		ok = false
 	}
+	t.mu.Unlock()
+	if ok {
+		req.outcome.releaseNativeLease()
+	}
+}
+
+// nativeAdmission finds the held response lease without consuming the request.
+func (t *RequestTracker) nativeAdmission(id json.RawMessage) receipt.EmitOpts {
+	if t == nil {
+		return receipt.EmitOpts{}
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.pending[canonicalID(id)].outcome.Receipt
 }
 
 // Consume checks whether id was previously tracked and returns the associated

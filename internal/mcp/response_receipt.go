@@ -25,9 +25,8 @@ func confirmMCPResponseEffect(logW io.Writer, opts MCPProxyOpts, selected receip
 
 func withMCPResponseShard(selected, decision receipt.EmitOpts) receipt.EmitOpts {
 	decision.ParentActionID = selected.ActionID
-	if selected.ShardSelected {
-		decision.ShardSelected = true
-		decision.ShardIndex = selected.ShardIndex
+	if decision.NativeLease == nil {
+		decision = decision.InheritAdmission(selected)
 	}
 	return decision
 }

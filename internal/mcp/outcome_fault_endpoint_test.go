@@ -84,13 +84,10 @@ func TestMCPSettlementStdioEndpoint(t *testing.T) {
 		_, _ = readSettlementStdio(t, dir, reader)
 		return
 	case settlementDuplicate:
-		second, err := readSettlementStdio(t, dir, reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := recordSettlementSend(dir, settlementToolName(second)); err != nil {
-			t.Fatal(err)
-		}
+		testwait.For(t, settlementBound, func() bool {
+			_, err := os.Stat(filepath.Join(dir, settlementStop))
+			return err == nil
+		}, "duplicate refusal observed downstream")
 	}
 	reply := settlementReply
 	if fault == settlementScanError {
@@ -162,7 +159,7 @@ func (p *settlementProbe) runStdio(t *testing.T, ctx context.Context, cancel con
 	t.Helper()
 	input, feed := io.Pipe()
 	t.Cleanup(func() { _ = feed.Close() })
-	out := settlementOutput{p: p, written: make(chan struct{}, 2)}
+	out := settlementOutput{p: p, written: make(chan struct{}, 2), refused: make(chan struct{}, 1)}
 	var logs syncBuffer
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -309,6 +306,18 @@ func (p *settlementProbe) runStdio(t *testing.T, ctx context.Context, cancel con
 	if p.cell.fault == settlementDuplicate {
 		p.awaitSend(t, ctx)
 		writeInput(strings.Replace(deferKillTestCall, settlementTool, settlementOtherTool, 1))
+		select {
+		case <-out.refused:
+		case <-ctx.Done():
+			t.Fatal("duplicate request was not refused before the original reply")
+		}
+		if p.cell.transport == settlementStdio {
+			if err := os.WriteFile(filepath.Join(p.dir, settlementStop), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			p.stopWaiting()
+		}
 		p.fault.Add(1)
 	}
 	if p.holdResponse() {

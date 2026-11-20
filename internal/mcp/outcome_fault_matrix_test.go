@@ -227,22 +227,23 @@ func TestMCPOutcomeFaultMatrix(t *testing.T) {
 var errSettlementFault = errors.New("injected I/O failure")
 
 const (
-	settlementTool          = "send_tool"
-	settlementOtherTool     = "send_other"
-	settlementReply         = `{"jsonrpc":"2.0","id":1,"result":{}}`
-	settlementHandshake     = `{"jsonrpc":"2.0","method":"notifications/initialized"}`
-	settlementNotify        = `{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"ready"}}`
-	settlementBound         = 15 * time.Second
-	settlementReady         = "ready"
-	settlementStop          = "stop"
-	settlementFaultMarker   = "fault-injected"
-	settlementObservations  = "observations"
-	settlementResponses     = "responses"
-	settlementWireLog       = "wire"
-	settlementSynced        = "synced-actions"
-	settlementUpgrade       = "WS"
-	settlementSession       = "test-session"
-	settlementSessionHeader = "Mcp-Session-Id"
+	settlementTool             = "send_tool"
+	settlementOtherTool        = "send_other"
+	settlementReply            = `{"jsonrpc":"2.0","id":1,"result":{}}`
+	settlementHandshake        = `{"jsonrpc":"2.0","method":"notifications/initialized"}`
+	settlementNotify           = `{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"ready"}}`
+	settlementBound            = 15 * time.Second
+	settlementReady            = "ready"
+	settlementStop             = "stop"
+	settlementDuplicateRefused = "could not reserve a pending receipt outcome for this request ID"
+	settlementFaultMarker      = "fault-injected"
+	settlementObservations     = "observations"
+	settlementResponses        = "responses"
+	settlementWireLog          = "wire"
+	settlementSynced           = "synced-actions"
+	settlementUpgrade          = "WS"
+	settlementSession          = "test-session"
+	settlementSessionHeader    = "Mcp-Session-Id"
 )
 
 type settlementProbe struct {
@@ -468,9 +469,16 @@ func (c settlementConn) Write(b []byte) (int, error) {
 type settlementOutput struct {
 	p       *settlementProbe
 	written chan struct{}
+	refused chan struct{}
 }
 
 func (o settlementOutput) Write(b []byte) (int, error) {
+	if bytes.Contains(b, []byte(settlementDuplicateRefused)) {
+		select {
+		case o.refused <- struct{}{}:
+		default:
+		}
+	}
 	select {
 	case o.written <- struct{}{}:
 	default:
@@ -729,12 +737,11 @@ func (p *settlementProbe) wsUpstream(t *testing.T) string {
 			p.fault.Add(1)
 			return
 		case settlementDuplicate:
-			second, _, readErr := wsio.ReadClientData(conn)
-			if readErr != nil {
+			select {
+			case <-p.release:
+			case <-r.Context().Done():
 				return
 			}
-			p.observeWire(t, settlementWireRPC(settlementUpgrade, second, p.syncedActions(t)))
-			p.observeSend(t, settlementToolName(second))
 		}
 		if p.holdResponse() {
 			_ = conn.SetReadDeadline(time.Now().Add(settlementBound))
@@ -986,7 +993,9 @@ func (p *settlementProbe) assertReceipts(t *testing.T, signer string) {
 			wantSends = 0
 		}
 	case settlementDuplicate:
-		wantSends = 2
+		if p.cell.listener() {
+			wantSends = 2
+		}
 	}
 	if len(sends) != wantSends {
 		t.Errorf("upstream sends = %v, want %d", sends, wantSends)
@@ -1212,7 +1221,7 @@ func assertSettlementV2(t *testing.T, records []settlementReceipt, outcomes []se
 	t.Helper()
 	claimed := make([]bool, len(outcomes))
 	for _, outcome := range records {
-		if outcome.action.Layer != mcpOutcomeLayer || !strings.HasPrefix(outcome.action.Pattern, "status=") {
+		if (outcome.action.Layer != mcpOutcomeLayer && outcome.action.DecisionPhase != receipt.DecisionPhaseOutcome) || !strings.HasPrefix(outcome.action.Pattern, "status=") {
 			continue
 		}
 		match := -1

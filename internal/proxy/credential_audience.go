@@ -196,13 +196,9 @@ func (p *Proxy) recordCredentialAudienceAllows(cfg *config.Config, ctx audit.Log
 	if len(selected) > 0 {
 		shard = selected[0]
 	}
-	var firstErr error
-	for _, allow := range uniqueCredentialAudienceAllows(allows) {
-		if err := p.recordCredentialAudienceAllow(cfg, ctx, allow, transport, method, target, requestID, agent, shard); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
+	return confirmCredentialAudienceAllows(shard, uniqueCredentialAudienceAllows(allows), func(allow scanner.CredentialAudienceAllow, reserved receipt.EmitOpts) error {
+		return p.recordCredentialAudienceAllow(cfg, ctx, allow, transport, method, target, requestID, agent, reserved)
+	})
 }
 
 func (rp *ReverseProxyHandler) recordCredentialAudienceAllow(cfg *config.Config, ctx audit.LogContext, allow scanner.CredentialAudienceAllow, method, target, requestID, agent string, selected ...receipt.EmitOpts) error {
@@ -372,9 +368,25 @@ func (rp *ReverseProxyHandler) recordCredentialAudienceAllows(cfg *config.Config
 	if len(selected) > 0 {
 		shard = selected[0]
 	}
+	return confirmCredentialAudienceAllows(shard, uniqueCredentialAudienceAllows(allows), func(allow scanner.CredentialAudienceAllow, reserved receipt.EmitOpts) error {
+		return rp.recordCredentialAudienceAllow(cfg, ctx, allow, method, target, requestID, agent, reserved)
+	})
+}
+
+// Reserve all decisions for this scan before writing its first allow. The
+// request's intent and terminal slots remain available even if admission fails.
+func confirmCredentialAudienceAllows(admission receipt.EmitOpts, allows []scanner.CredentialAudienceAllow, emit func(scanner.CredentialAudienceAllow, receipt.EmitOpts) error) error {
+	if len(allows) == 0 {
+		return nil
+	}
+	reserved, err := admission.ReserveNativeChild(len(allows))
+	if err != nil {
+		return err
+	}
+	defer reserved.ReleaseNativeAdmission()
 	var firstErr error
-	for _, allow := range uniqueCredentialAudienceAllows(allows) {
-		if err := rp.recordCredentialAudienceAllow(cfg, ctx, allow, method, target, requestID, agent, shard); err != nil && firstErr == nil {
+	for _, allow := range allows {
+		if err := emit(allow, reserved); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

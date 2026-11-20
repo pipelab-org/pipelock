@@ -11,14 +11,20 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
+const nativeCapacityReason = "native_ael_capacity"
+
 func recordListenerStreamError(ctx context.Context, logW io.Writer, opts MCPProxyOpts, outcome TrackedRequestOutcome, standalone bool, err error) {
 	reason := httpstream.Reason(ctx, err)
+	if errors.Is(err, ael.ErrCapacity) {
+		reason = nativeCapacityReason
+	}
 	if reason == httpstream.Incomplete {
 		_, _ = fmt.Fprintf(logW, "pipelock: response stream %s: %v\n", reason, err)
 		if opts.AuditLogger != nil {
@@ -51,11 +57,20 @@ func logMCPIncompleteResponse(logW io.Writer, opts MCPProxyOpts, method string, 
 
 func emitTrackedStreamError(ctx context.Context, logW io.Writer, tracker *RequestTracker, id json.RawMessage, opts MCPProxyOpts, err error) {
 	outcome, pending := consumeTrackedRequestOutcome(tracker, id)
+	defer outcome.releaseNativeLease()
+	// A consumed unary reply already owns its terminal outcome. A stream
+	// can have separate evidence for its lifetime after the reply settles.
+	if !pending && !opts.nativeSSE && !isRPCNotification(id) && errors.Is(err, ael.ErrCapacity) {
+		return
+	}
 	standalone := !pending || outcome.Receipt.ActionID == ""
 	if standalone {
 		outcome.Receipt = mcpStreamReceipt(opts, http.MethodPost)
 	}
 	reason, status := httpstream.Reason(ctx, err), "incomplete"
+	if errors.Is(err, ael.ErrCapacity) {
+		reason = nativeCapacityReason
+	}
 	if reason == httpstream.Cancelled {
 		status = "cancelled"
 	}
@@ -75,4 +90,22 @@ func mcpStreamReceipt(opts MCPProxyOpts, method string) receipt.EmitOpts {
 		return opts.ReceiptGroup.Shards.Admit(intent)
 	}
 	return intent
+}
+
+func refuseListenerStreamCapacity(w http.ResponseWriter, r *http.Request, stream *sseMessageWriter) {
+	if !stream.Wrote() {
+		http.Error(w, ael.ErrCapacity.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	_ = httpstream.Abort(r.Context(), ael.ErrCapacity)
+}
+
+// scanMCPHTTPResponse keeps the stream terminal reservation separate from
+// the individual event reservations used by ForwardScanned.
+func scanMCPHTTPResponse(ctx context.Context, reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) (bool, error) {
+	if transport.IsStreamingResponse(reader) {
+		opts.nativeSSE = true
+		opts.WarnContext = ctx
+	}
+	return ForwardScanned(opts.withResponseTimeout(reader), writer, logW, tracker, opts)
 }

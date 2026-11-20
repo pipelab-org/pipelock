@@ -514,7 +514,10 @@ func TestWSTaskPermissionRechecksAfterOutcomeRegistration(t *testing.T) {
 		tracker.Track(json.RawMessage(strconv.Itoa(id)))
 	}
 
-	registration, refusal := registerWSTaskOutcome(io.Discard, opts, tracker, frame, decision)
+	registration, refusal, trackErr := registerWSTaskOutcome(io.Discard, opts, tracker, frame, decision)
+	if trackErr != nil {
+		t.Fatal(trackErr)
+	}
 	if registration == nil || !rec.rotated.Load() {
 		t.Fatal("registration did not finish evicting the oldest outcome")
 	}

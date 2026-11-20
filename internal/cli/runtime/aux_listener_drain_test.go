@@ -309,6 +309,14 @@ func TestServer_AuxiliaryUnreadConnectionsSeal(t *testing.T) {
 	for _, listener := range []string{"reverse proxy", "MCP", "scan API"} {
 		t.Run(listener, func(t *testing.T) {
 			dir, cfgPath := drainReceiptConfig(t, 1)
+			var reverseUpstream string
+			if listener == "reverse proxy" {
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusNoContent)
+				}))
+				t.Cleanup(upstream.Close)
+				reverseUpstream = upstream.URL
+			}
 			s, log := newTestServerForStart(t, func(o *ServerOpts) {
 				o.ConfigFile = cfgPath
 				o.Listen = serverTestEphemeralListen
@@ -319,13 +327,9 @@ func TestServer_AuxiliaryUnreadConnectionsSeal(t *testing.T) {
 					o.MCPUpstream = serverTestUpstreamURL
 				}
 				if listener == "reverse proxy" {
-					upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-						w.WriteHeader(http.StatusNoContent)
-					}))
-					t.Cleanup(upstream.Close)
 					o.ReverseProxy = true
 					o.ReverseListen = serverTestEphemeralListen
-					o.ReverseUpstream = upstream.URL
+					o.ReverseUpstream = reverseUpstream
 				}
 			})
 			prefix := "pipelock: reverse proxy listening on "

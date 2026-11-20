@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	decide "github.com/luckyPipewrench/pipelock/internal/decide"
@@ -106,6 +107,7 @@ func emitPendingTimeoutResponses(writer transport.MessageWriter, logW io.Writer,
 			_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", wErr)
 		}
 		pending.Outcome.settle(logW, opts, "error", int64(len(resp)), "response_timeout")
+		pending.Outcome.releaseNativeLease()
 	}
 }
 
@@ -113,8 +115,12 @@ func emitPendingIncompleteOutcomes(logW io.Writer, tracker *RequestTracker, opts
 	if tracker == nil {
 		return
 	}
+	if reason == "upstream_closed" && opts.nativeCapacityStopError() != nil {
+		reason = nativeCapacityReason
+	}
 	for _, pending := range tracker.DrainPendingOutcomes() {
 		pending.Outcome.settle(logW, opts, "incomplete", -1, reason)
+		pending.Outcome.releaseNativeLease()
 	}
 }
 
@@ -162,7 +168,7 @@ func isRequest(msg []byte) bool {
 // When ks is non-nil, the kill switch is checked on each message so activation
 // mid-stream terminates already-open sessions immediately.
 // Returns true if any response security finding was detected.
-func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) (bool, error) {
+func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) (foundInjection bool, scanErr error) {
 	opts = opts.snapshotScanPolicy()
 	if opts.ServerIdentityFn != nil {
 		writer = &serverIdentityMessageWriter{writer: writer, opts: opts}
@@ -206,23 +212,46 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			session.EscalationLabel(rec.EscalationLevel()))
 	}
 
-	foundInjection := false
 	// lineNum counts non-empty messages, not raw lines. StdioReader skips
 	// empty lines internally, so this is a message index. ScanStream (scan.go)
 	// preserves raw line counting for user-facing diagnostics.
 	lineNum := 0
+	streamAdmission := opts.nativeAdmission
+	var eventAdmission receipt.EmitOpts
+	var trackedOutcome TrackedRequestOutcome
 	var claimedOutcome TrackedRequestOutcome
 	settleUndelivered := func() {
-		if claimedOutcome.handle != nil {
-			claimedOutcome.settle(logW, opts, "incomplete", -1, "response_not_delivered")
+		if claimedOutcome.Receipt.ActionID != "" {
+			reason := "response_not_delivered"
+			if claimedOutcome.ownsNativeLease && scanErr != nil {
+				reason = "downstream_write_failed"
+			}
+			claimedOutcome.settle(logW, opts, "incomplete", -1, reason)
 			claimedOutcome = TrackedRequestOutcome{}
 		}
 	}
-	defer settleUndelivered()
+	finishWarnings := func() {}
+	baseWarnContext := opts.warnContext()
+	defer func() {
+		settleUndelivered()
+		finishWarnings()
+		eventAdmission.ReleaseNativeAdmission()
+		trackedOutcome.releaseNativeLease()
+	}()
 
 	for {
 		settleUndelivered()
+		finishWarnings()
+		eventAdmission.ReleaseNativeAdmission()
+		trackedOutcome.releaseNativeLease()
+		eventAdmission = receipt.EmitOpts{}
+		trackedOutcome = TrackedRequestOutcome{}
+		opts.WarnContext = baseWarnContext
+		opts.nativeAdmission = streamAdmission
 		line, err := reader.ReadMessage()
+		if opts.nativeSSE && err != nil && errors.Is(context.Cause(baseWarnContext), ael.ErrCapacity) {
+			return foundInjection, ael.ErrCapacity
+		}
 		if err != nil {
 			// A clean stream end is io.EOF; a proxy-initiated connection
 			// teardown surfaces net.ErrClosed ("use of closed network
@@ -247,6 +276,25 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 			return foundInjection, fmt.Errorf("reading input: %w", err)
 		}
+		// Parse the inbound frame once per message; every gate below reads
+		// ID / Method / tool fields from this frame instead of re-parsing.
+		frame := ParseMCPFrame(line)
+		if opts.nativeSSE {
+			var admission receipt.EmitOpts
+			if frame.Method == "" && isResponse(line) {
+				admission = tracker.nativeAdmission(frame.ID)
+			}
+			if admission.NativeLease == nil {
+				var admissionErr error
+				eventAdmission, admissionErr = streamAdmission.ReserveNativeChild(nativeMCPEventRecords)
+				if admissionErr != nil {
+					return foundInjection, admissionErr
+				}
+				admission = eventAdmission
+			}
+			opts.nativeAdmission = admission
+			opts.WarnContext, finishWarnings = opts.nativeWarningContext(baseWarnContext, admission)
+		}
 		lineNum++
 		var denialAudit mcpDenialAudit
 		if err := opts.checkServerIdentity(); err != nil {
@@ -254,9 +302,25 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			return foundInjection, &mcpFinalizedDenialError{err: err}
 		}
 
-		// Parse the inbound frame once per message; every gate below reads
-		// ID / Method / tool fields from this frame instead of re-parsing.
-		frame := ParseMCPFrame(line)
+		if opts.nativeStdio {
+			var selected receipt.EmitOpts
+			if frame.Method == "" && isResponse(line) {
+				selected = tracker.nativeAdmission(frame.ID)
+			}
+			if selected.NativeLease == nil {
+				var admissionErr error
+				eventAdmission, admissionErr = opts.admitNativeRequest()
+				if admissionErr != nil {
+					if errors.Is(admissionErr, ael.ErrCapacity) {
+						continue // Only already-admitted responses can finish.
+					}
+					return foundInjection, admissionErr
+				}
+				selected = eventAdmission
+			}
+			opts.nativeAdmission = selected
+			opts.WarnContext, finishWarnings = opts.nativeWarningContext(baseWarnContext, selected)
+		}
 		// Key rejection must precede tracker consumption, adaptive recovery,
 		// tool drift promotion, inventory reservations and taint observations.
 		if frame.KeyValidationErr != nil {
@@ -373,8 +437,6 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// arrives before ForwardScannedInput tracks the outbound request ID
 		// (concurrent goroutines). The window is not exploitable: before any
 		// client request, no valid request ID exists to hijack.
-		var trackedOutcome TrackedRequestOutcome
-		var hasTrackedOutcome bool
 		var trackedMethod string
 		if tracker != nil && tracker.Seeded() && isResponse(line) {
 			rpcID := frame.ID
@@ -396,6 +458,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				trackedOutcome, valid = tracker.Consume(rpcID)
 				if valid {
 					trackedMethod = trackedOutcome.Method
+					if trackedOutcome.ownsNativeLease {
+						opts.nativeAdmission = trackedOutcome.Receipt
+					}
 				}
 				if !valid {
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: confused deputy: unsolicited response ID %s\n",
@@ -411,7 +476,6 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					}
 					continue
 				}
-				hasTrackedOutcome = trackedOutcome.Receipt.ActionID != ""
 				if !opts.listenerOwnsResponseOutcome {
 					claimedOutcome = trackedOutcome
 				}
@@ -419,7 +483,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 
 		emitTrackedOutcome := func(status, reason string, outbound []byte) {
-			if !hasTrackedOutcome {
+			if trackedOutcome.Receipt.ActionID == "" {
 				return
 			}
 			if opts.bufferedResponseOutcome != nil {
@@ -861,6 +925,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if opts.requireReceipts() {
 				a2aOpts.ConfirmCardAcceptance = func(candidate AgentCardScanResult) error {
 					selected := trackedOutcome.Receipt
+					if eventAdmission.NativeLease != nil {
+						selected = selected.InheritAdmission(eventAdmission)
+					}
 					if !selected.ShardSelected && opts.ReceiptGroup != nil && opts.ReceiptGroup.Shards != nil {
 						selected = opts.ReceiptGroup.Shards.Admit(selected)
 					}
@@ -1130,8 +1197,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					Pattern:   "mcp_response_scan receipt emission failed",
 					Severity:  config.SeverityHigh,
 				})
-				replacementOpts.ShardIndex = originalReceiptOpts.ShardIndex
-				replacementOpts.ShardSelected = originalReceiptOpts.ShardSelected
+				replacementOpts = replacementOpts.InheritAdmission(originalReceiptOpts)
 				if originalReceiptPersisted {
 					replacementOpts.ParentActionID = originalActionID
 				}
@@ -2051,6 +2117,17 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	sessionExit := &sessionExitState{}
 	sessionCtx, sessionStop := context.WithCancel(ctx)
 	defer sessionStop()
+	defer opts.closeNativeInputOnStop(clientIn)()
+	defer opts.nativeCapacity().OnStopAfter(opts.shutdownGrace(), func() {
+		interruptNativeOutput(clientOut)
+		_ = serverIn.Close()
+		processExit.terminate(func() {
+			terminateProcessGroup(childPgid)
+			_ = killDirectChild()
+		}, killDirectChild)
+		_ = serverOut.Close()
+		_ = serverErr.Close()
+	})()
 	// The parent PID is captured at function entry to narrow the startup
 	// window, but a launcher that dies before that first syscall remains an
 	// inherent PPID-watch limitation. A harness-owned owner pipe or cgroup is
@@ -2221,6 +2298,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	fwdOpts := opts
 	fwdOpts.Rec = rec
 	fwdOpts.WarnContext = ctx
+	fwdOpts.nativeStdio = true
 	// Session teardown closes serverOut to release a descendant holding the
 	// pipe. ForwardScanned must see that ownership marker so os.ErrClosed is a
 	// clean shutdown instead of an upstream scanner error.
@@ -2340,6 +2418,9 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "upstream_closed")
 	}
 
+	if err := opts.nativeCapacityStopError(); err != nil {
+		return err
+	}
 	if scanErr != nil {
 		return fmt.Errorf("scanning: %w", scanErr)
 	}

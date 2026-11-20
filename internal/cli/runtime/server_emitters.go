@@ -5,8 +5,12 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"sync"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
@@ -14,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/verification"
 )
 
 // buildServerReceiptShardGroup is the startup construction path below the
@@ -89,6 +94,22 @@ func acquireRunSession(rec *recorder.Recorder) (string, error) {
 	return session, nil
 }
 
+const nativePredecessorRestartHint = "preserve the evidence directory and set flight_recorder.dir to a new empty directory before restarting"
+
+func withNativePredecessorRestartHint(err error) error {
+	if err == nil || !errors.Is(err, ael.ErrStreamTooLarge) {
+		return err
+	}
+	return fmt.Errorf("%s: %w", nativePredecessorRestartHint, err)
+}
+
+func verifyPredecessorAEL(rec *recorder.Recorder, options verification.Options) error {
+	if rec.IsNop() {
+		return nil
+	}
+	return withNativePredecessorRestartHint(receipt.VerifyPredecessorAEL(rec.Dir(), recorder.DefaultSessionBase, options))
+}
+
 // recorderSessionOf returns the session rec is bound to, falling back to the
 // legacy base for a recorder that has not been bound.
 func recorderSessionOf(rec *recorder.Recorder) string {
@@ -148,27 +169,57 @@ func (s *Server) liveReceiptEmitterReady() bool {
 // logged, never fatal: receipts are evidence, not enforcement. This closes ONLY
 // the clean-exit case - a SIGKILL still truncates the tail with no root, which
 // needs an external/periodic anchor (separate, deferred work).
-func (s *Server) sealTranscriptRoot() {
+func (s *Server) sealTranscriptRoot() error {
+	var sealErr error
 	if s.receiptShardSet != nil {
 		for _, shard := range s.receiptShardSet.Emitters() {
-			if err := emitSessionCloseAndTranscriptRoot(shard, shard.Session()); err != nil && s.logger != nil {
-				s.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", "transcript_root"), err)
-			}
+			sealErr = errors.Join(sealErr, emitSessionCloseAndTranscriptRoot(shard, shard.Session()))
 		}
-		if _, err := s.receiptShardSet.PublishClose(); err != nil && s.logger != nil {
-			s.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", "receipt_group_close"), err)
+		if sealErr == nil {
+			_, sealErr = s.receiptShardSet.PublishClose()
 		}
+	} else if e := s.liveReceiptEmitter(); e != nil {
+		sealErr = emitSessionCloseAndTranscriptRoot(e, e.Session())
+	}
+	if sealErr != nil && s.logger != nil {
+		s.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", "transcript_root"), sealErr)
+	}
+	return sealErr
+}
+
+// Capacity closes admission immediately. Wait for stream terminal records and
+// ordinary outcomes before cancelling listener contexts and sealing the run.
+func watchNativeCapacity(ctx context.Context, wg *sync.WaitGroup, capacity *ael.Capacity, cancel context.CancelFunc, logW io.Writer) {
+	if capacity == nil {
 		return
 	}
-	e := s.liveReceiptEmitter()
-	if e == nil {
-		return
-	}
-	if err := emitSessionCloseAndTranscriptRoot(e, e.Session()); err != nil {
-		if s.logger != nil {
-			s.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", "transcript_root"), err)
+	wg.Go(func() {
+		select {
+		case <-capacity.Stopped():
+		case <-ctx.Done():
+			return
 		}
+		if logW != nil {
+			_, _ = fmt.Fprintf(logW, "pipelock: %v; draining admitted work and closing receipts\n", ael.ErrCapacity)
+		}
+		select {
+		case <-capacity.Drained():
+			cancel()
+		case <-ctx.Done():
+		}
+	})
+}
+
+func (s *Server) receiptRestartError(capacity *ael.Capacity) error {
+	select {
+	case <-capacity.Stopped():
+		return ael.ErrCapacity
+	default:
 	}
+	if s.receiptRotationRequested.Load() {
+		return errReceiptGroupKeyRotation
+	}
+	return nil
 }
 
 func (s *Server) liveV2ReceiptEmitter() *proxydecision.Emitter {

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
@@ -174,24 +175,11 @@ func startGETStream(
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream resuming: kill switch cleared\n")
 			}
 
-			admission, admitErr := admitDurableTransport(opts, http.MethodGet, opts.AuthorityDestination)
-			if admitErr != nil {
-				logReceiptEmitFailure(safeLogW, admitErr, true, config.ActionForward)
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(backoff):
-				}
-				backoff *= 2
-				if backoff > maxBackoff {
-					backoff = maxBackoff
-				}
-				continue
+			scanErr, err := scanGETStream(ctx, httpClient, safeClientOut, safeLogW, opts, tracker)
+			if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(err, ael.ErrCapacity) {
+				return
 			}
-
-			reader, err := httpClient.OpenGETStream(ctx)
 			if err != nil {
-				warnTransportAdmission(safeLogW, opts, admission, "upstream_error")
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream: %v\n", err)
 				// Permanent error - server does not support GET streams.
 				if errors.Is(err, transport.ErrStreamNotSupported) {
@@ -213,19 +201,6 @@ func startGETStream(
 			// Reset backoff on successful connection.
 			backoff = time.Second
 
-			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, tracker, opts)
-			if admission.ActionID != "" {
-				switch {
-				case scanErr == nil:
-					recordTransportAdmissionResult(safeLogW, opts, admission, "completed", "stream_completed")
-				case httpstream.Reason(ctx, scanErr) == httpstream.Cancelled:
-					recordTransportAdmissionResult(safeLogW, opts, admission, "cancelled", httpstream.Cancelled)
-				default:
-					warnTransportAdmission(safeLogW, opts, admission, httpstream.Incomplete)
-				}
-			} else if errors.Is(scanErr, transport.ErrIncompleteResponse) && ctx.Err() == nil {
-				emitMCPStandaloneStreamReceipt(opts, safeLogW, mcpStreamReceipt(opts, http.MethodGet), "200", httpstream.Incomplete)
-			}
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream scan error: %v\n", scanErr)
 				logMCPIncompleteResponse(safeLogW, opts, http.MethodGet, scanErr)
@@ -252,4 +227,60 @@ func (w *listenerStateMessageWriter) writeDeniedMessage(msg []byte) error {
 		return context.Canceled
 	}
 	return err
+}
+
+// scanGETStream returns stream and setup errors separately so reconnect keeps
+// its existing backoff and terminal-error handling.
+func scanGETStream(ctx context.Context, client *transport.HTTPClient, writer transport.MessageWriter, logW io.Writer, opts MCPProxyOpts, tracker *RequestTracker) (scanErr, setupErr error) {
+	admission, err := opts.admitNativeRequest()
+	if err != nil {
+		return nil, err
+	}
+	defer admission.ReleaseNativeAdmission()
+	streamCtx, stop := httpstream.WithCapacityGrace(ctx, nil, admission.NativeLease, opts.shutdownGrace())
+	defer stop()
+	opts.nativeAdmission = admission
+	transportAdmission, err := admitDurableTransport(opts, http.MethodGet, opts.AuthorityDestination)
+	if err != nil {
+		logReceiptEmitFailure(logW, err, true, config.ActionForward)
+		return nil, err
+	}
+	reader, err := client.OpenGETStream(streamCtx)
+	if err != nil {
+		reason := "upstream_error"
+		if errors.Is(context.Cause(streamCtx), ael.ErrCapacity) {
+			reason = nativeCapacityReason
+			err = ael.ErrCapacity
+		}
+		warnTransportAdmission(logW, opts, transportAdmission, reason)
+		return nil, err
+	}
+	warnContext, stopWarnings := opts.nativeWarningContext(streamCtx, admission)
+	opts.WarnContext = warnContext
+	defer stopWarnings()
+	_, scanErr = scanMCPHTTPResponse(streamCtx, reader, writer, logW, tracker, opts)
+	if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(context.Cause(streamCtx), ael.ErrCapacity) {
+		if transportAdmission.ActionID != "" {
+			recordTransportAdmissionResult(logW, opts, transportAdmission, "cancelled", nativeCapacityReason)
+		} else {
+			recordListenerStreamError(ctx, logW, opts, TrackedRequestOutcome{Receipt: mcpStreamReceipt(opts, http.MethodGet)}, true, ael.ErrCapacity)
+		}
+		return ael.ErrCapacity, nil
+	}
+
+	if transportAdmission.ActionID != "" {
+		switch {
+		case scanErr == nil && streamCtx.Err() == nil:
+			recordTransportAdmissionResult(logW, opts, transportAdmission, "completed", "stream_completed")
+		case httpstream.Reason(streamCtx, scanErr) == httpstream.Cancelled:
+			recordTransportAdmissionResult(logW, opts, transportAdmission, "cancelled", httpstream.Cancelled)
+		default:
+			warnTransportAdmission(logW, opts, transportAdmission, httpstream.Incomplete)
+		}
+	} else if errors.Is(scanErr, transport.ErrIncompleteResponse) && ctx.Err() == nil {
+		// A subscription has no pending request identity. Sign its own
+		// terminal diagnostic while its stream reservation is active.
+		emitMCPStandaloneStreamReceipt(opts, logW, mcpStreamReceipt(opts, http.MethodGet), "200", httpstream.Incomplete)
+	}
+	return scanErr, nil
 }

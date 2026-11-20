@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
@@ -240,6 +241,11 @@ func emitMCPDecision(
 		// RequireReceipt gate below upgrades errors to fail-closed before
 		// envelope mutation.
 	}
+	// Native admission failures precede the v1 write. A compatibility
+	// receipt must not advance after the native writer refuses the decision.
+	if errors.Is(err, ael.ErrCapacity) || errors.Is(err, ael.ErrInvalidLease) || errors.Is(err, ael.ErrRecordTooLarge) {
+		return outbound, fmt.Errorf("%w: %w", ErrReceiptRequired, err)
+	}
 	if d.Receipt.ActionID != "" && v2Emitter != nil {
 		if v2Err := emitMCPV2Decision(v2Emitter, d.Receipt, receiptRequired, syncReceipt); v2Err != nil {
 			if err == nil || syncReceipt {
@@ -378,7 +384,7 @@ func emitMCPOutcome(
 	if (receiptEmitter == nil && group == nil) || opts.ActionID == "" {
 		return
 	}
-	opts = mcpOutcomeReceiptOpts(opts, status, bytesTransferred, reason)
+	opts = mcpOutcomeReceiptOpts(opts.NativeTerminal(), status, bytesTransferred, reason)
 	// A blocked outcome closes an intent that required recording wrote
 	// durably, so it is synced too: losing it would leave that allow intent
 	// unmatched for a call that was refused.
@@ -417,7 +423,7 @@ func mcpOutcomeReceiptOpts(opts receipt.EmitOpts, status string, bytesTransferre
 // A stream can fail without an admitted request. Grouped recorders use a
 // single-phase warning for this diagnostic. Keep the legacy single-chain shape.
 func emitMCPStandaloneStreamReceipt(proxyOpts MCPProxyOpts, logW io.Writer, opts receipt.EmitOpts, status, reason string) {
-	opts = proxyOpts.withReceiptPolicyHash(opts)
+	opts = proxyOpts.withReceiptPolicyHash(opts).NativeTerminal()
 	if proxyOpts.ReceiptGroup == nil {
 		emitMCPOutcomeReceipt(proxyOpts.receiptEmitter(), proxyOpts.v2ReceiptEmitter(), nil, logW, opts, status, -1, reason, proxyOpts.requireReceipts())
 		return

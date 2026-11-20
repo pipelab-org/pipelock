@@ -101,6 +101,31 @@ func (p *Proxy) recordIssuerCookieAllow(cfg *config.Config, ctx audit.LogContext
 	return nil
 }
 
+// Reserve the exact pattern count before confirming any returned cookie.
+func (ic *InterceptContext) recordIssuerCookieAllows(ctx audit.LogContext, r *http.Request, target string, allows []issuerCookieAllowance) error {
+	var count int
+	for _, allow := range allows {
+		count += len(allow.Patterns)
+	}
+	if count == 0 {
+		return nil
+	}
+	reserved, err := ic.receiptShard.ReserveNativeChild(count)
+	if err != nil {
+		return err
+	}
+	defer reserved.ReleaseNativeAdmission()
+	var firstErr error
+	for _, allow := range allows {
+		for _, pattern := range allow.Patterns {
+			if err := ic.Proxy.recordIssuerCookieAllow(ic.Config, ctx, pattern, allow.Name, target, ic.RequestID, ic.Agent, r.Method, reserved); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
+}
+
 // Limits come from the cookie specifications, not from observed traffic.
 // RFC 6265 section 6.1 asks user agents to support cookies of at least 4096
 // bytes (name, value and attributes together) and at least 3000 cookies in

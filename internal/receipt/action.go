@@ -17,6 +17,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
+const fallbackActionID = "00000000-0000-7000-8000-000000000000"
+
+const maxActionIDBytes = len(fallbackActionID)
+
 const (
 	DecisionPhaseIntent     = "intent"
 	DecisionPhaseOutcome    = "outcome"
@@ -34,7 +38,7 @@ func NewActionID() string {
 	if id := receiptcontent.NewGeneratedID().String(); id != "" {
 		return id
 	}
-	return "00000000-0000-7000-8000-000000000000"
+	return fallbackActionID
 }
 
 // ActionType classifies what kind of operation a mediated action represents.

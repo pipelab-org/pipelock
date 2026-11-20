@@ -134,6 +134,9 @@ func (o MCPProxyOpts) minSubjectTrust() config.DoWSubjectTrust {
 // Required: Scanner (dereferenced unconditionally in all scan paths).
 // Optional (nil-safe): all other fields - functions check before use.
 type MCPProxyOpts struct {
+	nativeAdmission receipt.EmitOpts
+	nativeSSE       bool
+	nativeStdio     bool
 	// ListenerShutdownTimeout bounds graceful HTTP listener shutdown. Zero uses
 	// the existing five-second grace period.
 	ListenerShutdownTimeout time.Duration
@@ -971,6 +974,9 @@ func (o MCPProxyOpts) receiptPolicyHash() string {
 }
 
 func (o MCPProxyOpts) withReceiptPolicyHash(opts receipt.EmitOpts) receipt.EmitOpts {
+	if opts.NativeLease == nil {
+		opts = opts.InheritAdmission(o.nativeAdmission)
+	}
 	o = o.snapshotScanPolicy()
 	if opts.PolicyHash == "" {
 		opts.PolicyHash = o.receiptPolicyHash()

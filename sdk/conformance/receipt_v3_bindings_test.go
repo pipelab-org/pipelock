@@ -27,16 +27,16 @@ var receiptEmissionCalls = strings.Fields(
 		"emitRecordedReceipt emitRequiredReceipt emitRequestPolicyReceipt confirmResponseDecision confirmResponseOrBlock " +
 		"interceptConfirmResponseOrBlock interceptEmitReceiptOrBlock interceptEmitRequiredReceipt interceptEmitOutcomeReceipt " +
 		"emitOutcomeReceipt emitObservedOutcomeReceipt emitOutcomeReceiptWithPattern " +
-		"recordIssuerQueryAllow recordIssuerCookieAllow recordCredentialAudienceAllow recordCredentialAudienceAllows " +
+		"recordIssuerQueryAllow recordIssuerCookieAllow recordIssuerCookieAllows recordCredentialAudienceAllow recordCredentialAudienceAllows " +
 		"emitDeferredReceipt emitAllowPathReceipt emitReceiptFailureMarker recordReceiptEmitterUnavailable " +
-		"emitReceipt emitMCPReceiptDecision emitMCPOutcome emitMCPToolScanReceipt " +
+		"emitReceipt emitFrameReceipt emitMCPReceiptDecision emitMCPOutcome emitMCPToolScanReceipt " +
 		"emitForwardDenial emitHoldFailureResolution emitKillSwitchDenialReceipt confirmShieldIntervention " +
 		"commitAllow ensure blockCrossMessageIncomplete closeUpstreamCrossMessage sseFindingReceiptConfirmer emitV1 " +
 		"emitCredentialAudienceReceipt emitCredentialAudienceReceiptWithFallback emitRequiredV2Receipt emitReceiptFailureMarkerWithLogger " +
 		"emitReceiptDecisionWithControl EmitMCPDecision EmitMCPGroupDecision emitMCPDecision emitMCPV2Decision emitMCPBlockedOutcomeReceipt " +
 		"emitReceiptWithEmitter emitRequiredReceiptWithEmitter interceptEmitReceipt " +
-		"emitV2Receipt emitV2 emitRequiredV2 emitGroupV2Receipt emitDLPWarn " +
-		"EmitSessionOpen EmitSessionClose EmitHeartbeat EmitTranscriptRoot " +
+		"emitV2Receipt emitV2 emitRequiredV2 emitGroupV2Receipt emitDLPWarn EmitDLPWarning " +
+		"EmitSessionOpen EmitSessionClose EmitHeartbeat EmitTranscriptRoot prepareNativeAEL " +
 		"BuildProxyDecisionReceipt BuildProxyDecisionWithSpansReceipt BuildSecretEgressDecisionReceipt " +
 		"SignReceipt EmitBatch RecordPrescanned buildReceipt")
 

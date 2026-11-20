@@ -27,6 +27,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/cli/runtimeconfig"
@@ -59,6 +60,7 @@ import (
 	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/verification"
 )
 
 // reservedTransportHeaders are header names operators must not override via
@@ -1273,6 +1275,11 @@ Key-free evidence capture:
 				defer func() { _ = rec.Close() }()
 				var runSession string
 				if cfg.FlightRecorder.ReceiptChainCount() == 1 {
+					if len(recPrivKey) != 0 {
+						if err := verifyPredecessorAEL(rec, verification.Options{Context: cmd.Context()}); err != nil {
+							return err
+						}
+					}
 					var sessErr error
 					runSession, sessErr = acquireRunSession(rec)
 					if sessErr != nil {
@@ -1325,7 +1332,7 @@ Key-free evidence capture:
 					var groupErr error
 					receiptGroup, groupErr = buildMCPReceiptGroup(template, cfg.FlightRecorder.ReceiptChainCount())
 					if groupErr != nil {
-						return groupErr
+						return withNativePredecessorRestartHint(groupErr)
 					}
 					opening, _ := receiptGroup.Shards.Opening()
 					receiptEmitter = receiptGroup.Shards.ProcessEmitter()
@@ -1385,6 +1392,13 @@ Key-free evidence capture:
 			}
 			heartbeatCtx, heartbeatCancel := context.WithCancel(cmd.Context())
 			defer heartbeatCancel()
+			capacity := receiptEmitter.NativeCapacity()
+			var capacityWG sync.WaitGroup
+			watchNativeCapacity(heartbeatCtx, &capacityWG, capacity, heartbeatCancel, cmd.ErrOrStderr())
+			defer func() {
+				heartbeatCancel()
+				capacityWG.Wait()
+			}()
 			var mcpLn net.Listener
 			if hasListen {
 				mcpLn, err = (&net.ListenConfig{}).Listen(heartbeatCtx, "tcp", listenAddr)
@@ -1460,6 +1474,11 @@ Key-free evidence capture:
 				)
 			}
 			defer func() {
+				select {
+				case <-capacity.Stopped():
+					runErr = errors.Join(runErr, ael.ErrCapacity)
+				default:
+				}
 				stopReceiptLifecycle(runErr)
 				if failure := requiredHeartbeatErr(); failure != nil {
 					runErr = errors.Join(runErr, failure)
