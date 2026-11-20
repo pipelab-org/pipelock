@@ -573,11 +573,11 @@ func bodyInspectionLimitDetail(result BodyScanResult, cause bodyBlockCause) (str
 	}) {
 		return "", false
 	}
-	detail := appendUnreadUpload(scanner.RequestBodyInspectionLimitPrefix+strings.Join(dlpMatchNames(result.DLPMatches), ", "), result.FileInspectionIncomplete)
+	detail := scanner.RequestBodyInspectionLimitPrefix + strings.Join(dlpMatchNames(result.DLPMatches), ", ")
 	if result.ScanError != "" {
-		return "request body scan failed: " + result.ScanError + "; " + detail, false
+		detail += "; request body scan failed: " + result.ScanError
 	}
-	return detail, true
+	return appendUnreadUpload(detail, result.FileInspectionIncomplete), result.ScanError == ""
 }
 
 // oauthRemainderHasCredential runs the ordinary body DLP views over the body
