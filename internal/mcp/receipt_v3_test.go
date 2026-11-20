@@ -346,7 +346,8 @@ func TestMCPV3RedirectDispatchOutcome(t *testing.T) {
 	if runtime.GOOS == osWindows {
 		t.Skip("redirect executable requires a Unix shell")
 	}
-	for _, surface := range []string{transportMCPStdio, transportMCPHTTP} {
+	const listener = "mcp_http_listener"
+	for _, surface := range []string{transportMCPStdio, transportMCPHTTP, listener} {
 		for _, tc := range []struct {
 			name, outcome string
 			wantStarted   bool
@@ -357,6 +358,9 @@ func TestMCPV3RedirectDispatchOutcome(t *testing.T) {
 			{name: "refused delivery", outcome: "completed", wantStarted: true},
 			{name: "closed writer"},
 		} {
+			if surface == listener && tc.name != "completed" {
+				continue
+			}
 			t.Run(surface+"/"+tc.name, func(t *testing.T) {
 				dir, writer, verify := newMCPV3Stream(t, surface)
 				marker := filepath.Join(t.TempDir(), "executed")
@@ -403,6 +407,36 @@ func TestMCPV3RedirectDispatchOutcome(t *testing.T) {
 					if br, ok := <-blocked; ok && br.SyntheticResponse != nil {
 						deliver = func() error { return deliverMCPInputResult(opts, br, peer) }
 					}
+				} else if surface == listener {
+					upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						t.Error("redirect contacted the MCP upstream")
+						w.WriteHeader(http.StatusBadGateway)
+					}))
+					t.Cleanup(upstream.Close)
+					base, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+					req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, base, strings.NewReader(cleanToolsCallRequest))
+					if err != nil {
+						t.Fatal(err)
+					}
+					req.Header.Set("Content-Type", "application/json")
+					req.Header.Set("Accept", "application/json, text/event-stream")
+					resp, err := http.DefaultClient.Do(req)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer func() { _ = resp.Body.Close() }()
+					reply, err := io.ReadAll(resp.Body)
+					if err != nil || resp.StatusCode != http.StatusOK || resp.ContentLength != int64(len(reply)) ||
+						!bytes.Contains(reply, []byte("ordinary reply")) {
+						t.Fatalf("listener redirect = %d, Content-Length = %d, reply = %s (%v)",
+							resp.StatusCode, resp.ContentLength, reply, err)
+					}
+					testwait.For(t, time.Second, func() bool {
+						actions, err := loadMCPV3Actions(dir)
+						return err == nil && slices.ContainsFunc(actions, func(a v3.Action) bool {
+							return a.EffectBoundary == mcpV3Delivery && a.OutcomeClass == "completed" && a.ParentActionID != ""
+						})
+					}, "listener redirect delivery outcome")
 				} else {
 					decision := scanHTTPInputDecision([]byte(cleanToolsCallRequest), io.Discard, "session", "session", opts)
 					if decision.Synthetic != nil {
@@ -414,7 +448,7 @@ func TestMCPV3RedirectDispatchOutcome(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if tc.outcome == "completed" {
+				if tc.outcome == "completed" && surface != listener {
 					if deliver == nil {
 						t.Fatal("missing synthetic redirect reply")
 					}

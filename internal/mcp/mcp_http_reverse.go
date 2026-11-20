@@ -2039,11 +2039,14 @@ func RunHTTPListenerProxy(
 					_, err := w.Write(reply)
 					return err
 				}
-				w.Header().Set("Content-Length", strconv.Itoa(len(reply)))
-				if _, err := (httpstream.Writer{Writer: w}).Write(reply); err != nil {
+				n, err := w.writeBuffered(reply)
+				if err != nil {
 					return err
 				}
-				return http.NewResponseController(w).Flush()
+				if n != len(reply) {
+					return io.ErrShortWrite
+				}
+				return http.NewResponseController(w.ResponseWriter).Flush()
 			}))
 			if err != nil && !wrote {
 				writeMCPHTTPInputResult(scanOpts, BlockedRequest{
