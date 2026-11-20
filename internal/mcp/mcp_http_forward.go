@@ -71,6 +71,7 @@ func emitTrackedIncompleteOutcome(logW io.Writer, tracker *RequestTracker, id js
 	if !ok {
 		return
 	}
+	defer outcome.releaseNativeLease()
 	outcome.settle(logW, opts, "incomplete", -1, reason)
 }
 
