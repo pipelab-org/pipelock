@@ -40,6 +40,7 @@ func TestHTTPListener_UpstreamRefusalClosesIntent(t *testing.T) {
 			if resp.StatusCode != tt.wantStatus {
 				t.Fatalf("status=%d body=%s, want %d", resp.StatusCode, body, tt.wantStatus)
 			}
+			h.waitForListenerOutcome(t)
 			if err := h.rec.Close(); err != nil {
 				t.Fatal(err)
 			}

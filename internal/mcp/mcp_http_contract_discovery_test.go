@@ -564,6 +564,7 @@ func TestHTTPListener_ContractDiscoveryRefusalClosesIntent(t *testing.T) {
 			if status, body := f.call(t, tc.mirror, "first"); status != tc.want {
 				t.Fatalf("status=%d body=%s", status, body)
 			}
+			h.waitForListenerOutcome(t)
 			if err := h.rec.Close(); err != nil {
 				t.Fatal(err)
 			}

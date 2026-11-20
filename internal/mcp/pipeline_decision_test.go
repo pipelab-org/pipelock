@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
@@ -20,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const mcpTestPolicyHash = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -77,6 +79,35 @@ func newMCPDecisionReceiptHarness(t *testing.T) *mcpDecisionReceiptHarness {
 		pub: pub,
 		kid: signer.KeyID(),
 	}
+}
+
+// waitForListenerOutcome lets the handler finish recording after delivery has
+// made the full HTTP body readable. These fixtures have one tracked exchange
+// and write its v1 outcome before the corresponding v2 decision.
+func (h *mcpDecisionReceiptHarness) waitForListenerOutcome(t *testing.T) {
+	t.Helper()
+	path := filepath.Join(h.dir, "evidence-proxy-0.jsonl")
+	testwait.For(t, 5*time.Second, func() bool {
+		entries, err := recorder.ReadEntries(path)
+		if err != nil {
+			return false
+		}
+		var outcome bool
+		for _, entry := range entries {
+			switch entry.Type {
+			case actionReceiptEntryType:
+				signed, err := receipt.Unmarshal(entry.RawDetail)
+				if err == nil && signed.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome {
+					outcome = true
+				}
+			case "evidence_receipt":
+				if outcome && entry.EventKind == string(contractreceipt.PayloadProxyDecision) {
+					return true
+				}
+			}
+		}
+		return false
+	}, "listener v1 outcome and v2 decision")
 }
 
 func mcpV2Receipts(t *testing.T, h *mcpDecisionReceiptHarness) []contractreceipt.EvidenceReceipt {
