@@ -310,3 +310,46 @@ func TestStreamWriterIgnoresUninterpretedActionInFailedTail(t *testing.T) {
 		t.Fatalf("confirmed hold did not recover: %+v", got)
 	}
 }
+
+func TestStreamWriterReplaysFailedTerminalHoldResolution(t *testing.T) {
+	for _, verdict := range []string{"ask", verdictBlock} {
+		t.Run(verdict, func(t *testing.T) {
+			opts := writerTestOptions(t.TempDir())
+			w := requireWriter(t, opts, localWriterStorage())
+			policy := CapturePolicy(Digest([]byte("resolution policy")))
+			held := writerTestHold("held")
+			if err := w.WriteAction(t.Context(), held, policy); err != nil {
+				t.Fatal(err)
+			}
+			resolution := blockingHoldResolution(held, "operator", relationAfter, false)
+			resolution.Verdict = verdict
+			if verdict == "ask" {
+				resolution.Ask = &Ask{Channel: "approval_api", Observed: true}
+			}
+			w.active.file = errorWriterFile{StreamFile: w.active.file, syncErr: errWriterReplay}
+			if err := w.WriteAction(t.Context(), resolution, policy); !errors.Is(err, errWriterReplay) {
+				t.Fatalf("terminal append = %v, want injected sync error", err)
+			}
+			successor := w.active.id
+			if err := w.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			resolution.Policy = policy.ActionPolicy()
+			if got := readRecoveryActions(t, opts.Dir, successor); !reflect.DeepEqual(got, []Action{resolution}) {
+				t.Fatalf("successor actions = %+v, want original resolution %+v", got, resolution)
+			}
+
+			reopened := requireWriter(t, opts, localWriterStorage())
+			if got := readRecoveryActions(t, opts.Dir, reopened.active.id); len(got) != 0 {
+				t.Fatalf("restart replaced an already settled hold: %+v", got)
+			}
+			if err := reopened.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+			if result.Integrity != "ok" {
+				t.Fatalf("repaired history does not verify: %+v", result)
+			}
+		})
+	}
+}

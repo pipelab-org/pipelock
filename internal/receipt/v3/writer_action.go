@@ -187,6 +187,10 @@ func (w *StreamWriter) queueActionRepair(action Action, confirmed bool) bool {
 		}
 	case phaseResolution:
 		if action.Verdict != verdictAllow {
+			// The manager already applied this terminal decision.
+			if !confirmed {
+				w.repairs = append(w.repairs, action)
+			}
 			return false
 		}
 		source := "durability_failure"
