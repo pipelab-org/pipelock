@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Both Go verifiers require regular files for standalone receipts and enforce the same 8 MiB limit, exact-number bounds and receipt format checks.
+- Contract promotion and rollback sync both lifecycle receipts before replacing the active manifest. Provision the contract store and any custom receipt directory before activation.
+- Receipt group startup finishes writing the transition if shutdown is requested after publication of the opening. Use `pipelock evidence repair-group-transition` to complete an interrupted transition when the successor's signed shard openings are available.
 - Stop admitting work when any native evidence stream cannot reserve space within the 256 MiB ceiling. Admitted work settles, open streams close with signed terminal evidence, and the process seals the run and exits 1 for supervised restart. Oversized predecessor streams are reported distinctly.
 - Sign up to 16 individual DLP advisory warnings per unit of work and summarize additional warnings by pattern in one signed receipt. The audit log retains every warning.
 - Reserve signed receipt space for every credential-audience or issuer-cookie allow before forwarding. A request that cannot reserve all its allow receipts is refused during the capacity stop.

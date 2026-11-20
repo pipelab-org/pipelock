@@ -1542,6 +1542,45 @@ func TestForwardProxy_RequireReceiptsV2FailureBlocksBeforeEgress(t *testing.T) {
 	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="forward"} 1`)
 }
 
+func TestForwardProxy_RequiredCorrectiveReceiptFailureRefusesEgress(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+		cfg.ResponseScanning.Enabled = false
+	})
+	t.Cleanup(cleanup)
+	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	var syncs atomic.Int32
+	rph.rec.SetSyncForTest(func(*os.File) error {
+		if syncs.Add(1) == 2 {
+			return io.ErrClosedPipe
+		}
+		return nil
+	})
+	p.receiptEmitterPtr.Store(rph.emitter)
+	p.v2EmitterPtr.Store(proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder:  failingProxyV2Recorder{},
+		Signer:    proxydecision.NewKeyedSigner(rph.priv),
+		Principal: "local",
+		Actor:     "pipelock",
+	}))
+
+	resp := doGet(t, forwardHTTPClient(t, proxyAddr), upstream.URL)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden || hits.Load() != 0 || syncs.Load() != 2 {
+		t.Fatalf("status=%d upstream hits=%d sync attempts=%d, want 403, 0, 2", resp.StatusCode, hits.Load(), syncs.Load())
+	}
+	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="sync"} 1`)
+	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
+	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="durability",transport="forward"} 1`)
+}
+
 func TestForwardProxy_RequireReceiptsUnavailableEmitterBlocksAndRecordsMetrics(t *testing.T) {
 	var hits atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

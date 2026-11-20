@@ -21,10 +21,7 @@ var (
 	procUnlockFileEx = kernel32Proc.NewProc("UnlockFileEx")
 )
 
-func (s Store) withLock(fn func() error) error {
-	if err := os.MkdirAll(s.root, dirPerm); err != nil {
-		return fmt.Errorf("create contract store root: %w", err)
-	}
+func (s Store) withExistingLock(fn func() error) error {
 	lockPath := filepath.Join(s.root, ".lock")
 	pathp, err := syscall.UTF16PtrFromString(lockPath)
 	if err != nil {
