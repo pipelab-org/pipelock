@@ -312,6 +312,9 @@ func ForwardScannedInput(
 	defer func() {
 		stopKillWatch()
 		resolverRuntime.Cancel()
+		if opts.closeStdioInput != nil {
+			opts.closeStdioInput()
+		}
 		if manager := opts.deferManager(); manager != nil {
 			manager.ResolveAll(config.ActionBlock, deferred.SourceCancel)
 		}
@@ -1731,9 +1734,10 @@ func ForwardScannedInput(
 						if err := writer.WriteMessage(heldLine); err != nil {
 							tracker.removeOwnedOutcome(heldID, registration)
 							releaseOutcome.settle(logW, heldOpts, "error", -1, mcpUpstreamWriteFailed)
-							res.FinalDecision = config.ActionBlock
-							res.ResolutionSource = deferred.SourceCancel
-							res.Reason = mcpUpstreamWriteFailed
+							res = refuse(mcpUpstreamWriteFailed)
+							if finishDeniedRelease != nil {
+								finishDeniedRelease()
+							}
 							// Settlement logs any receipt write failure.
 							_ = receiptSettle.ensure(heldOpts, logW, res)
 							if !heldNotification {

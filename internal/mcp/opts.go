@@ -497,6 +497,9 @@ type MCPProxyOpts struct {
 	// one proxy invocation. It is wired by proxy entry points, not config.
 	DeferResolverRuntime *DeferResolverRuntime
 
+	// closeStdioInput interrupts an upstream subprocess write during EOF.
+	closeStdioInput func()
+
 	// Learn-lock contract enforcement for MCP transports. HTTP listener and
 	// stdio-to-HTTP modes gate the configured upstream URL; every transport
 	// gates tools/call messages with runtime.EvaluateMCP. ContractLoaderPtr

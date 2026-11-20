@@ -550,7 +550,7 @@ func (m *Manager) journalRelease(held *HeldAction, res Resolution) Resolution {
 		}
 	}
 	if err := m.appendJournal(journalEntryFromHeld(*held, StateResolvedAllow, res.ResolutionSource)); err != nil {
-		return m.blockRelease(held, res, ReasonReleaseNotJournaled)
+		return m.blockLateRelease(held, res, ReasonReleaseNotJournaled)
 	}
 	return res
 }
@@ -972,7 +972,10 @@ func PendingJournal(path string) ([]HeldAction, error) {
 			return nil, fmt.Errorf("defer journal integrity: release_pending on state %q for defer_id %q", entry.State, entry.DeferID)
 		}
 		if entry.RefusalPending {
-			if entry.State != StateAdmissionRejected || entry.ReleasePending || terminal[entry.DeferID] != StateResolvedAllow {
+			// A failed allow sync can leave either the durable pending
+			// row or a complete terminal allow on disk.
+			allow := terminal[entry.DeferID] == StateResolvedAllow || pending[entry.DeferID].ReleasePending
+			if entry.State != StateAdmissionRejected || entry.ReleasePending || !allow {
 				return nil, fmt.Errorf("defer journal integrity: refusal_pending without a prior allow for defer_id %q", entry.DeferID)
 			}
 			delete(terminal, entry.DeferID)

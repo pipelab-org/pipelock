@@ -2245,13 +2245,14 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	inputOpts := opts
 	inputOpts.Rec = rec
 	inputOpts.WarnContext = ctx
+	inputOpts.closeStdioInput = sync.OnceFunc(func() { _ = serverIn.Close() })
 	inputOpts.sessionExit = sessionExit
 
 	// Forward client input to server stdin (with optional input scanning).
 	inputDone := make(chan struct{})
 	go func() {
 		defer close(inputDone)
-		defer serverIn.Close() //nolint:errcheck // best-effort close on stdin forward
+		defer inputOpts.closeStdioInput()
 		inputCfg := opts.inputCfg()
 		if inputCfg != nil && inputCfg.Enabled {
 			clientReader := transport.NewStdioReader(clientIn)
