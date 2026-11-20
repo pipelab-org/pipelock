@@ -4,6 +4,7 @@
 package deferred
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2011,4 +2012,79 @@ func TestConfirmedHoldKeepsCapacityWhileSettling(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+func TestWaitingHoldReservesCapacityAndReleasesOnCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name                      string
+		global, perSession, bytes int
+	}{
+		{"global", 2, 3, 3},
+		{"session", 3, 2, 3},
+		{"bytes", 3, 3, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m := NewManager(Config{
+					Enabled: true, Timeout: time.Minute, MaxPending: tc.global,
+					MaxPendingPerSession: tc.perSession, MaxPendingBytes: tc.bytes,
+				})
+				makeHold := func(id string) HeldAction {
+					return HeldAction{
+						DeferID: id, SizeBytes: 1, Authority: AuthoritySnapshot{SessionID: "session"},
+						Resolve: func(Resolution) {},
+					}
+				}
+				release := make(chan struct{})
+				defer close(release)
+				first := makeHold("first")
+				first.ConfirmHold = func(HeldAction) error {
+					<-release
+					return nil
+				}
+				firstDone := make(chan error, 1)
+				go func() { firstDone <- m.Hold(first) }()
+				synctest.Wait()
+
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				second := makeHold("second")
+				second.ConfirmHold = func(HeldAction) error {
+					t.Error("canceled hold was signed")
+					return nil
+				}
+				secondDone := make(chan error, 1)
+				go func() { secondDone <- m.HoldContext(ctx, second) }()
+				synctest.Wait()
+
+				thirdDone := make(chan error, 1)
+				go func() { thirdDone <- m.Hold(makeHold("third")) }()
+				synctest.Wait()
+				select {
+				case err := <-thirdDone:
+					if !errors.Is(err, ErrCapacity) {
+						t.Fatalf("over-capacity hold returned %v, want ErrCapacity", err)
+					}
+				default:
+					t.Fatal("over-capacity hold blocked behind confirmation")
+				}
+				cancel()
+				synctest.Wait()
+				select {
+				case err := <-secondDone:
+					if !errors.Is(err, context.Canceled) {
+						t.Fatalf("waiting hold returned %v, want cancellation", err)
+					}
+				default:
+					t.Fatal("canceled hold blocked behind confirmation")
+				}
+				m.mu.Lock()
+				waiting, bytes := len(m.waitingHolds), m.totalBytes
+				m.mu.Unlock()
+				if waiting != 0 || bytes != 1 {
+					t.Fatalf("canceled hold retained capacity: waiting=%d bytes=%d", waiting, bytes)
+				}
+			})
+		})
+	}
 }

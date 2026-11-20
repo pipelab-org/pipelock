@@ -5,6 +5,7 @@ package deferred
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -228,6 +229,8 @@ type Manager struct {
 	// A confirming hold already owns capacity. A named session has at most
 	// one confirmation, so a sibling cannot sign before its pending parent.
 	confirmingSessions map[string]chan struct{}
+	waitingHolds       map[string]struct{}
+	waitingBySession   map[string]int
 	confirmingCount    int
 	settlingReceipts   int // confirmed holds whose settlement callbacks are still running
 	// fileSync replaces File.Sync for journal writes in tests; nil uses it.
@@ -294,6 +297,8 @@ func NewManager(cfg Config) *Manager {
 		sessionHolds:       make(map[string][]string),
 		pendingJournal:     make(map[string]journalEntry),
 		confirmingSessions: make(map[string]chan struct{}),
+		waitingHolds:       make(map[string]struct{}),
+		waitingBySession:   make(map[string]int),
 	}
 }
 
@@ -330,6 +335,12 @@ func (m *Manager) JournalPath() string {
 // Hold stores an action and starts its hard timeout. Capacity rejects the new
 // action; existing held actions are never evicted open.
 func (m *Manager) Hold(action HeldAction) error {
+	return m.HoldContext(context.Background(), action)
+}
+
+// HoldContext reserves capacity while waiting for an earlier hold's receipt.
+// Cancellation releases that reservation without publishing a hold.
+func (m *Manager) HoldContext(ctx context.Context, action HeldAction) error {
 	if !m.Enabled() {
 		return ErrDisabled
 	}
@@ -353,23 +364,26 @@ func (m *Manager) Hold(action HeldAction) error {
 
 	sessionID := action.Authority.SessionID
 	m.mu.Lock()
-	for pending := m.confirmingSessions[sessionID]; pending != nil; pending = m.confirmingSessions[sessionID] {
-		m.mu.Unlock()
-		<-pending
-		m.mu.Lock()
-	}
-	if _, exists := m.holds[action.DeferID]; exists {
+	_, held := m.holds[action.DeferID]
+	_, waiting := m.waitingHolds[action.DeferID]
+	if held || waiting {
 		m.mu.Unlock()
 		m.journalRejectedHold(action, SourceDuplicateDeferID)
 		return fmt.Errorf("defer hold %q already exists", action.DeferID)
 	}
-	if len(m.holds)+m.settlingReceipts >= m.cfg.MaxPending ||
-		len(m.sessionHolds[action.Authority.SessionID]) >= m.cfg.MaxPendingPerSession ||
+	if len(m.holds)+len(m.waitingHolds)+m.settlingReceipts >= m.cfg.MaxPending ||
+		len(m.sessionHolds[sessionID])+m.waitingBySession[sessionID] >= m.cfg.MaxPendingPerSession ||
 		action.SizeBytes > m.cfg.MaxPendingBytes ||
 		m.totalBytes > m.cfg.MaxPendingBytes-action.SizeBytes {
 		m.mu.Unlock()
 		m.journalRejectedHold(action, SourceCapacity)
 		return ErrCapacity
+	}
+	if m.confirmingSessions[sessionID] != nil {
+		if err := m.waitForHoldConfirmationLocked(ctx, action); err != nil {
+			m.mu.Unlock()
+			return err
+		}
 	}
 	action.Linkage = LinkageSessionPendingAncestor
 	action.CascadeDepth = 1
@@ -396,7 +410,7 @@ func (m *Manager) Hold(action HeldAction) error {
 		m.journalRejectedHold(action, SourceCascadeLimit)
 		return limitErr
 	}
-	delay := m.cfg.Timeout
+	delay := time.Until(action.Deadline)
 	if confirm := action.ConfirmHold; confirm != nil {
 		action.ConfirmHold = nil
 		pending := make(chan struct{})
@@ -435,6 +449,37 @@ func (m *Manager) Hold(action HeldAction) error {
 		_ = m.Resolve(action.DeferID, config.ActionBlock, SourceTimeout)
 	})
 	m.mu.Unlock()
+	return nil
+}
+
+// The caller holds m.mu on entry and return. Keep ancestry private until the
+// previous confirmation finishes, but count this call throughout its wait.
+func (m *Manager) waitForHoldConfirmationLocked(ctx context.Context, action HeldAction) error {
+	ctx, cancel := context.WithDeadline(ctx, action.Deadline)
+	defer cancel()
+	sessionID := action.Authority.SessionID
+	m.waitingHolds[action.DeferID] = struct{}{}
+	m.waitingBySession[sessionID]++
+	m.totalBytes += action.SizeBytes
+	defer func() {
+		delete(m.waitingHolds, action.DeferID)
+		m.waitingBySession[sessionID]--
+		if m.waitingBySession[sessionID] == 0 {
+			delete(m.waitingBySession, sessionID)
+		}
+		m.totalBytes -= action.SizeBytes
+	}()
+	for pending := m.confirmingSessions[sessionID]; pending != nil; pending = m.confirmingSessions[sessionID] {
+		m.mu.Unlock()
+		select {
+		case <-pending:
+		case <-ctx.Done():
+		}
+		m.mu.Lock()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

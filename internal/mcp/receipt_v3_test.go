@@ -267,13 +267,19 @@ func TestMCPV3ConfirmsDirectResponseDelivery(t *testing.T) {
 				RequireReceipts: true, ReceiptV3: writer, v3DirectResponseDelivery: true,
 			}
 			hits := 0
+			var deliveryID string
 			peer := v3TestPeer(func(msg []byte) error {
 				hits++
 				if string(msg) != cleanToolsCallResponse {
 					t.Errorf("client received %q", msg)
 				}
 				result, err := v3.VerifyPaths(t.Context(), []string{dir}, verify)
-				if err != nil || !hasMCPV3State(result, "outcome_unknown") {
+				for _, action := range readMCPV3Actions(t, dir) {
+					if action.Phase == "intent" && action.EffectBoundary == mcpV3Delivery {
+						deliveryID = action.ActionID
+					}
+				}
+				if err != nil || result.Integrity != "ok" || deliveryID == "" || !hasMCPV3State(result, "outcome_unknown") {
 					t.Errorf("client write reached before a verified delivery intent: %+v (%v)", result, err)
 				}
 				return nil
@@ -295,7 +301,11 @@ func TestMCPV3ConfirmsDirectResponseDelivery(t *testing.T) {
 				t.Fatal(err)
 			}
 			result, err := v3.VerifyPaths(t.Context(), []string{dir}, verify)
-			if err != nil || result.Verdict != "VALID" || !hasMCPV3State(result, "completed") {
+			completed := slices.ContainsFunc(readMCPV3Actions(t, dir), func(action v3.Action) bool {
+				return action.ActionID == deliveryID && action.EffectBoundary == mcpV3Delivery &&
+					action.Phase == "outcome" && action.OutcomeClass == "completed"
+			})
+			if err != nil || result.Verdict != "VALID" || !completed {
 				t.Fatalf("delivery outcome missing: %+v (%v)", result, err)
 			}
 		})
@@ -403,7 +413,9 @@ func TestMCPV3RedirectDispatchOutcome(t *testing.T) {
 					}),
 				}
 				var delivered bool
+				peerCalls := 0
 				peer := v3TestPeer(func([]byte) error {
+					peerCalls++
 					actionList := readMCPV3Actions(t, dir)
 					delivered = slices.ContainsFunc(actionList, func(a v3.Action) bool {
 						return a.Phase == "intent" && a.EffectBoundary == mcpV3Delivery && a.ParentActionID != ""
@@ -476,8 +488,8 @@ func TestMCPV3RedirectDispatchOutcome(t *testing.T) {
 					if err := deliver(); errors.Is(err, ErrReceiptRequired) != refuseDelivery || err != nil && !refuseDelivery {
 						t.Fatalf("redirect delivery = %v, refusal expected = %t", err, refuseDelivery)
 					}
-					if delivered == refuseDelivery {
-						t.Fatalf("redirect reached client with signed intent = %t, refusal expected = %t", delivered, refuseDelivery)
+					if refuseDelivery && peerCalls != 0 || !refuseDelivery && (peerCalls != 1 || !delivered) {
+						t.Fatalf("redirect client writes = %d, prior signed intent = %t, refusal expected = %t", peerCalls, delivered, refuseDelivery)
 					}
 				}
 				_, statErr := os.Stat(marker)
@@ -1190,7 +1202,26 @@ func TestMCPV3MediaDecisionsFollowResponseDelivery(t *testing.T) {
 		Scanner: sc, MediaPolicy: &cfg.MediaPolicy, RequireReceipts: true, ReceiptV3: writer,
 		Transport: transportMCPStdio, v3DirectResponseDelivery: true,
 	}
-	if _, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(line)), transport.NewStdioWriter(&out), io.Discard, tracker, opts); err != nil {
+	var mediaIntent string
+	peer := v3TestPeer(func(msg []byte) error {
+		for _, action := range readMCPV3Actions(t, dir) {
+			if action.Layer != "media_policy" || action.EffectBoundary != mcpV3Delivery {
+				continue
+			}
+			switch action.Phase {
+			case "intent":
+				mediaIntent = action.ActionID
+			case "outcome":
+				t.Error("media outcome was recorded before the client write")
+			}
+		}
+		if mediaIntent == "" {
+			t.Error("client write reached before the media intent")
+		}
+		_, err := out.Write(msg)
+		return err
+	})
+	if _, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(line)), peer, io.Discard, tracker, opts); err != nil {
 		t.Fatal(err)
 	}
 	var reply struct {
@@ -1218,19 +1249,10 @@ func TestMCPV3MediaDecisionsFollowResponseDelivery(t *testing.T) {
 	if err := writer.Close(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
-	var mediaIntent string
-	var mediaCompleted bool
-	for _, action := range readMCPV3Actions(t, dir) {
-		if action.Layer != "media_policy" {
-			continue
-		}
-		if action.Phase == "intent" {
-			mediaIntent = action.ActionID
-		}
-		if mediaIntent != "" && action.ActionID == mediaIntent && action.OutcomeClass == "completed" {
-			mediaCompleted = true
-		}
-	}
+	mediaCompleted := mediaIntent != "" && slices.ContainsFunc(readMCPV3Actions(t, dir), func(action v3.Action) bool {
+		return action.ActionID == mediaIntent && action.Layer == "media_policy" && action.EffectBoundary == mcpV3Delivery &&
+			action.Phase == "outcome" && action.OutcomeClass == "completed"
+	})
 	result, err := v3.VerifyPaths(t.Context(), []string{dir}, verify)
 	if err != nil || result.Verdict != "VALID" || !mediaCompleted ||
 		result.Counts.EffectsCompleted == nil || *result.Counts.EffectsCompleted != 2 ||
@@ -1254,7 +1276,7 @@ func TestMCPV3EarlyInputRefusalIsSigned(t *testing.T) {
 		{name: "redaction unavailable", input: cleanToolsCallRequest, redaction: MCPRedactionConfig{Required: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			dir, writer, _ := newMCPV3Stream(t, transportMCPStdio)
+			dir, writer, verify := newMCPV3Stream(t, transportMCPStdio)
 			opts := MCPProxyOpts{
 				Scanner: testInputScanner(t), Transport: transportMCPStdio,
 				RequireReceipts: true, ReceiptV3: writer,
@@ -1271,6 +1293,10 @@ func TestMCPV3EarlyInputRefusalIsSigned(t *testing.T) {
 			}
 			if err := writer.Close(t.Context(), nil); err != nil {
 				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, verify)
+			if err != nil || result.Verdict != "VALID" {
+				t.Fatalf("refusal stream did not verify: %+v (%v)", result, err)
 			}
 			actions := readMCPV3Actions(t, dir)
 			if len(actions) != 1 || actions[0].Phase != "decision" || actions[0].Verdict != config.ActionBlock {

@@ -200,7 +200,7 @@ func TestMCPV3RestartSettlesUnsealedHold(t *testing.T) {
 		cfg.FlightRecorder.Dir = dir
 		cfg.FlightRecorder.Redact = false
 		cfg.FlightRecorder.RequireReceipts = true
-		writer, err := openRuntimeReceiptV3(t.Context(), cfg, key, nil, posturebinding.Result{}, []string{deferred.SurfaceMCPStdio})
+		writer, err := openRuntimeReceiptV3(t.Context(), cfg, key, nil, posturebinding.Result{}, runtimeReceiptStreamOptions{surfaces: []string{deferred.SurfaceMCPStdio}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -278,5 +278,45 @@ func TestMCPV3RestartSettlesUnsealedHold(t *testing.T) {
 	}
 	if info, err := os.Stat(journal); err != nil || !info.IsDir() {
 		t.Fatalf("restart changed the legacy journal sentinel: %v, %v", info, err)
+	}
+}
+
+func TestMCPV3WebSocketCoverageUsesParsedScheme(t *testing.T) {
+	dir := t.TempDir()
+	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	keyPath := filepath.Join(t.TempDir(), "signer.key")
+	if err := signing.SavePrivateKey(key, keyPath); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	body := fmt.Sprintf("flight_recorder:\n  enabled: true\n  dir: %q\n  signing_key_path: %q\n  require_receipts: true\n  redact: false\n  receipt_format: v3\n", dir, keyPath)
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := mcpProxyCmd()
+	cmd.SetArgs([]string{"--config", cfgPath, "--upstream", "WSS://" + unavailableTCPAddr(t) + "/mcp"})
+	cmd.SetIn(strings.NewReader(""))
+	cmd.SetOut(io.Discard)
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+	if err := cmd.ExecuteContext(t.Context()); err == nil || !strings.Contains(stderr.String(), "proxying WS upstream") {
+		t.Fatalf("expected WebSocket dial failure after setup: %v, %s", err, &stderr)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{
+		Directory: true, Keys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)},
+	})
+	if err != nil || result.Verdict != "VALID" {
+		t.Fatalf("WebSocket receipt stream = %s, %v", result.Verdict, err)
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "*.receipt-v3.jsonl"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("receipt stream files = %v, %v", files, err)
+	}
+	data, err := os.ReadFile(filepath.Clean(files[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"surfaces":["mcp_ws"]`)) {
+		t.Fatal("signed stream did not advertise WebSocket coverage")
 	}
 }

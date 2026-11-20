@@ -660,7 +660,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 
 		if useReceiptV3 {
 			writer, openErr := openRuntimeReceiptV3(context.Background(), cfg, recPrivKey, rec, postureResult,
-				serverReceiptSurfaces(cfg, hasMCPListen))
+				runtimeReceiptStreamOptions{surfaces: serverReceiptSurfaces(cfg, hasMCPListen)})
 			if openErr != nil {
 				s.cleanup()
 				return nil, fmt.Errorf("open v3 receipt writer: %w", openErr)

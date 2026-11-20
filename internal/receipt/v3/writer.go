@@ -586,7 +586,7 @@ func (w *StreamWriter) Close(ctx context.Context, operational *Recorder) error {
 		return w.closeErr
 	}
 	w.collectTerminalResolutions(true)
-	w.closeErr = w.replayActionRepairs(ctx, true)
+	w.closeErr = w.replayActionRepairs(context.WithoutCancel(ctx), true)
 	w.closed = true
 	if w.active.file != nil && w.closeErr == nil {
 		w.closeErr = w.writeClose(ctx, closeShutdown, operational)

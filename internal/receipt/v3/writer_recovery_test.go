@@ -318,6 +318,7 @@ func TestStreamWriterReplaysFailedTerminalHoldResolution(t *testing.T) {
 	for _, verdict := range []string{"ask", verdictBlock} {
 		t.Run(verdict, func(t *testing.T) {
 			opts := writerTestOptions(t.TempDir())
+			opts.Heartbeat = 0
 			w := requireWriter(t, opts, localWriterStorage())
 			policy := CapturePolicy(Digest([]byte("resolution policy")))
 			held := writerTestHold("held")
@@ -485,5 +486,69 @@ func TestStreamWriterTerminalQueueRetainsAcceptedWorkAtCapacity(t *testing.T) {
 	first.Policy = policy.ActionPolicy()
 	if actions := readRecoveryActions(t, opts.Dir, stream); !reflect.DeepEqual(actions, []Action{held, first}) {
 		t.Fatalf("actions = %+v, want the hold and its accepted resolution", actions)
+	}
+}
+
+func TestStreamWriterRetainsTerminalResolutionWhenEarlierReplayFails(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	opts.Heartbeat = 0
+	w := requireWriter(t, opts, localWriterStorage())
+	policy := CapturePolicy(opts.PolicyHash)
+	var resolutions []Action
+	for _, id := range []string{"first", "second"} {
+		held := writerTestHold(id)
+		if err := w.WriteAction(t.Context(), held, policy); err != nil {
+			t.Fatal(err)
+		}
+		resolution := blockingHoldResolution(held, "operator", relationAfter, false)
+		resolution.Verdict = "ask"
+		resolution.Ask = &Ask{Channel: "approval_api", Observed: true}
+		resolution.Policy = policy.ActionPolicy()
+		resolutions = append(resolutions, resolution)
+	}
+	// The newer resolution acquires the gate before the earlier queue worker.
+	w.terminalPending = []Action{resolutions[0]}
+	w.active.file = errorWriterFile{StreamFile: w.active.file, syncErr: errWriterReplay}
+	if err := w.WriteTerminalResolution(t.Context(), resolutions[1], policy, 2); !errors.Is(err, errWriterReplay) {
+		t.Fatalf("terminal resolution error = %v, want older replay failure", err)
+	}
+	if err := w.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRecoveryActions(t, opts.Dir, w.active.id); !reflect.DeepEqual(got, resolutions) {
+		t.Fatalf("successor actions = %+v, want both original resolutions in order", got)
+	}
+	result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if result.Integrity != "ok" || len(result.Histories[0].Streams) != 2 {
+		t.Fatalf("successor history did not verify: %+v", result)
+	}
+}
+
+func TestStreamWriterCanceledCloseRetainsQueuedTerminalResolution(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	opts.Heartbeat = 0
+	w := requireWriter(t, opts, localWriterStorage())
+	policy := CapturePolicy(opts.PolicyHash)
+	held := writerTestHold("held")
+	if err := w.WriteAction(t.Context(), held, policy); err != nil {
+		t.Fatal(err)
+	}
+	resolution := blockingHoldResolution(held, "operator", relationAfter, false)
+	resolution.Verdict = "ask"
+	resolution.Ask = &Ask{Channel: "approval_api", Observed: true}
+	resolution.Policy = policy.ActionPolicy()
+	w.terminalPending = []Action{resolution}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := w.Close(ctx, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("close = %v, want cancellation from shutdown record", err)
+	}
+	held.Policy = policy.ActionPolicy()
+	if got := readRecoveryActions(t, opts.Dir, w.active.id); !reflect.DeepEqual(got, []Action{held, resolution}) {
+		t.Fatalf("shutdown actions = %+v, want the hold and original resolution", got)
+	}
+	restarted := requireWriter(t, opts, localWriterStorage())
+	if got := readRecoveryActions(t, opts.Dir, restarted.active.id); len(got) != 0 {
+		t.Fatalf("restart replaced a settled resolution: %+v", got)
 	}
 }

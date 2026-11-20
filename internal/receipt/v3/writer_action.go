@@ -48,13 +48,19 @@ func (w *StreamWriter) WriteAction(ctx context.Context, action Action, policy Po
 	}
 	defer w.release()
 	action.Policy = policy.ActionPolicy()
-	_, err := w.writeAction(ctx, action)
+	if !actionShape(action, w.open.Coverage.ReceiptsRequired) {
+		return errors.New("receipt action does not match its effect phase")
+	}
+	if err := w.prepareAppend(ctx); err != nil {
+		return err
+	}
+	_, err := w.appendAction(ctx, action)
 	return err
 }
 
-// WriteTerminalResolution retains a hold's non-releasing resolution if the
-// deadline expires before persistence starts. The caller still receives the
-// deadline error. Persistence failures use the normal writer repair path.
+// WriteTerminalResolution retains a hold's non-releasing resolution when its
+// deadline expires or earlier repairs prevent the append from starting. Once
+// persistence starts, the append itself owns repair.
 func (w *StreamWriter) WriteTerminalResolution(ctx context.Context, action Action, policy PolicySnapshot, maxPending int) error {
 	if w == nil {
 		return ErrWriterUnavailable
@@ -64,12 +70,17 @@ func (w *StreamWriter) WriteTerminalResolution(ctx context.Context, action Actio
 		!actionShape(action, w.open.Coverage.ReceiptsRequired) {
 		return errors.New("receipt action is not a terminal hold resolution")
 	}
-	var persistStarted bool
-	err := w.acquire(ctx)
-	if err == nil {
-		defer w.release()
-		persistStarted, err = w.writeAction(ctx, action)
+	if err := w.acquire(ctx); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return errors.Join(err, w.queueTerminalResolution(action, maxPending))
+		}
+		return err
 	}
+	defer w.release()
+	if err := w.prepareAppend(ctx); err != nil {
+		return errors.Join(err, w.queueTerminalResolution(action, maxPending))
+	}
+	persistStarted, err := w.appendAction(ctx, action)
 	if !persistStarted && errors.Is(err, context.DeadlineExceeded) {
 		return errors.Join(err, w.queueTerminalResolution(action, maxPending))
 	}
@@ -118,13 +129,7 @@ func (w *StreamWriter) collectTerminalResolutions(closing bool) {
 	w.terminalPending = nil
 }
 
-func (w *StreamWriter) writeAction(ctx context.Context, action Action) (persistStarted bool, err error) {
-	if !actionShape(action, w.open.Coverage.ReceiptsRequired) {
-		return false, errors.New("receipt action does not match its effect phase")
-	}
-	if err := w.prepareAppend(ctx); err != nil {
-		return false, err
-	}
+func (w *StreamWriter) appendAction(ctx context.Context, action Action) (persistStarted bool, err error) {
 	persistStarted, err = w.appendRecord(ctx, kindAction, action)
 	if err != nil {
 		if persistStarted {

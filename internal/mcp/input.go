@@ -1838,7 +1838,7 @@ func ForwardScannedInput(
 				},
 			}
 			if holdErr == nil {
-				holdErr = manager.Hold(heldAction)
+				holdErr = manager.HoldContext(stdioInputCtx, heldAction)
 			}
 			if holdErr == nil && heldOpts.nativeAdmission.NativeLease.Stopping() {
 				_ = manager.Resolve(actionID, config.ActionBlock, deferred.SourceCancel)

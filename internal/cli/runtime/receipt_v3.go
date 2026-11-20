@@ -56,7 +56,12 @@ func refuseUnwiredReceiptV3(cfg config.FlightRecorder) error {
 
 const receiptOperationalDirectory = "operational"
 
-func openRuntimeReceiptV3(ctx context.Context, cfg *config.Config, key ed25519.PrivateKey, rec *recorder.Recorder, posture posturebinding.Result, surfaces []string) (*v3.StreamWriter, error) {
+type runtimeReceiptStreamOptions struct {
+	surfaces         []string
+	onHeartbeatError func(error)
+}
+
+func openRuntimeReceiptV3(ctx context.Context, cfg *config.Config, key ed25519.PrivateKey, rec *recorder.Recorder, posture posturebinding.Result, opts runtimeReceiptStreamOptions) (*v3.StreamWriter, error) {
 	fr := cfg.FlightRecorder
 	keys := make([]ed25519.PublicKey, 0, len(fr.ReceiptGroupPriorSignerKeys))
 	for _, encoded := range fr.ReceiptGroupPriorSignerKeys {
@@ -83,9 +88,10 @@ func openRuntimeReceiptV3(ctx context.Context, cfg *config.Config, key ed25519.P
 		Identity:   v3.Writer{Instance: receipt.NewActionID(), Product: "Pipelock", Version: cliutil.Version},
 		PolicyHash: "sha256:" + strings.TrimPrefix(cfg.CanonicalPolicyHash(), "sha256:"),
 		Posture:    binding, RecorderSession: rec.SessionID(), Detector: rec.ReceiptDetector(),
-		Heartbeat: time.Duration(fr.HeartbeatIntervalSecondsForReceipt()) * time.Second,
+		Heartbeat:        time.Duration(fr.HeartbeatIntervalSecondsForReceipt()) * time.Second,
+		OnHeartbeatError: opts.onHeartbeatError,
 		Coverage: v3.Coverage{
-			ReceiptsRequired: fr.RequireReceipts, ContentScan: fr.Redact, Surfaces: surfaces,
+			ReceiptsRequired: fr.RequireReceipts, ContentScan: fr.Redact, Surfaces: opts.surfaces,
 			RedactionRuleset: v3.Ruleset{ID: rules.RedactionRulesetID, Version: rules.RedactionRulesetVersion, Hash: rules.RedactionRulesetHash},
 		},
 	})

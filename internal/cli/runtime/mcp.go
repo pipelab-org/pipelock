@@ -1258,6 +1258,33 @@ Key-free evidence capture:
 			if err != nil {
 				return err
 			}
+			heartbeatCtx, heartbeatCancel := context.WithCancel(cmd.Context())
+			defer heartbeatCancel()
+			var heartbeatErrMu sync.Mutex
+			var heartbeatErr error
+			var groupFailureErr error
+			setRequiredHeartbeatErr := func(err error) {
+				if err == nil {
+					return
+				}
+				heartbeatErrMu.Lock()
+				if heartbeatErr == nil {
+					heartbeatErr = err
+				}
+				heartbeatErrMu.Unlock()
+				heartbeatCancel()
+			}
+			requiredHeartbeatErr := func() error {
+				heartbeatErrMu.Lock()
+				defer heartbeatErrMu.Unlock()
+				if groupFailureErr != nil {
+					return fmt.Errorf("flight_recorder.require_receipts is enabled but receipt group emission failed: %w", groupFailureErr)
+				}
+				if heartbeatErr == nil {
+					return nil
+				}
+				return fmt.Errorf("flight_recorder.require_receipts is enabled but receipt heartbeat emission failed: %w", heartbeatErr)
+			}
 			var receiptWriter *v3.StreamWriter
 			var receiptEmitter *receipt.Emitter
 			var v2ReceiptEmitter *proxydecision.Emitter
@@ -1357,7 +1384,7 @@ Key-free evidence capture:
 					switch {
 					case hasListen:
 						surface = deferred.SurfaceMCPHTTPListener
-					case strings.HasPrefix(upstreamURL, "ws:") || strings.HasPrefix(upstreamURL, "wss:"):
+					case isWSUpstream:
 						surface = deferred.SurfaceMCPWS
 					case hasUpstream:
 						surface = deferred.SurfaceMCPHTTPUpstream
@@ -1369,7 +1396,11 @@ Key-free evidence capture:
 							surfaces = append(surfaces, "intercept")
 						}
 					}
-					receiptWriter, err = openRuntimeReceiptV3(cmd.Context(), cfg, recPrivKey, rec, postureResult, surfaces)
+					streamOpts := runtimeReceiptStreamOptions{surfaces: surfaces}
+					if cfg.FlightRecorder.RequireReceipts {
+						streamOpts.onHeartbeatError = setRequiredHeartbeatErr
+					}
+					receiptWriter, err = openRuntimeReceiptV3(heartbeatCtx, cfg, recPrivKey, rec, postureResult, streamOpts)
 					if err != nil {
 						return fmt.Errorf("open v3 receipt writer: %w", err)
 					}
@@ -1441,8 +1472,6 @@ Key-free evidence capture:
 			if cfg.FlightRecorder.RequireReceipts && receiptWriter == nil && !receiptEmitterReady(receiptEmitter) {
 				return fmt.Errorf("flight_recorder.require_receipts is enabled but no healthy signed receipt emitter is active: set flight_recorder.enabled, flight_recorder.dir, and flight_recorder.signing_key_path (run 'pipelock init'), fix any receipt-chain resume error, or disable require_receipts")
 			}
-			heartbeatCtx, heartbeatCancel := context.WithCancel(cmd.Context())
-			defer heartbeatCancel()
 			capacity := receiptEmitter.NativeCapacity()
 			var capacityWG sync.WaitGroup
 			watchNativeCapacity(heartbeatCtx, &capacityWG, capacity, heartbeatCancel, cmd.ErrOrStderr())
@@ -1470,31 +1499,6 @@ Key-free evidence capture:
 				return metricsErr
 			}
 			defer stopMetrics()
-			var heartbeatErrMu sync.Mutex
-			var heartbeatErr error
-			var groupFailureErr error
-			setRequiredHeartbeatErr := func(err error) {
-				if err == nil {
-					return
-				}
-				heartbeatErrMu.Lock()
-				if heartbeatErr == nil {
-					heartbeatErr = err
-				}
-				heartbeatErrMu.Unlock()
-				heartbeatCancel()
-			}
-			requiredHeartbeatErr := func() error {
-				heartbeatErrMu.Lock()
-				defer heartbeatErrMu.Unlock()
-				if groupFailureErr != nil {
-					return fmt.Errorf("flight_recorder.require_receipts is enabled but receipt group emission failed: %w", groupFailureErr)
-				}
-				if heartbeatErr == nil {
-					return nil
-				}
-				return fmt.Errorf("flight_recorder.require_receipts is enabled but receipt heartbeat emission failed: %w", heartbeatErr)
-			}
 			if receiptGroup != nil {
 				receiptGroup.OnRequiredFailure = func(err error) {
 					heartbeatErrMu.Lock()

@@ -733,7 +733,7 @@ func RunHTTPProxy(
 				},
 			}
 			if holdErr == nil {
-				holdErr = manager.Hold(heldAction)
+				holdErr = manager.HoldContext(ctx, heldAction)
 			}
 			if holdErr == nil && heldOpts.nativeAdmission.NativeLease.Stopping() {
 				_ = manager.Resolve(deferredReq.DeferID, config.ActionBlock, deferred.SourceCancel)

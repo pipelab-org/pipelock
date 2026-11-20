@@ -477,27 +477,34 @@ func TestRunProxy_NoInputScanStillTracksRequestIDs(t *testing.T) {
 		t.Skip("subprocess test requires Unix")
 	}
 
-	cleanResp := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"hello"}]}}`
-	sc := testScannerWithAction(t, config.ActionWarn)
-	stdin := strings.NewReader(jsonToolsCallEcho + "\n")
-	var stdout syncBuffer
-	var stderr syncBuffer
+	const cleanResp = `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"hello"}]}}`
+	for _, tc := range []struct {
+		name, response string
+		forward        bool
+	}{
+		{name: "matched", response: cleanResp, forward: true},
+		{name: "unmatched", response: strings.Replace(cleanResp, `"id":1`, `"id":2`, 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := testScannerWithAction(t, config.ActionWarn)
+			stdin := strings.NewReader(jsonToolsCallEcho + "\n")
+			var stdout, stderr syncBuffer
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// No input scanning, no policy, no chain - but request tracking is still active.
-	err := RunProxy(ctx, stdin, &stdout, &stderr,
-		[]string{"sh", "-c", `IFS= read -r request || exit 1; printf "%s\n" "$1"`, "sh", cleanResp},
-		MCPProxyOpts{Scanner: sc},
-	)
-	if err != nil {
-		t.Fatalf("RunProxy: %v; stderr: %s", err, stderr.String())
-	}
-
-	output := stdout.String()
-	if !strings.Contains(output, "hello") {
-		t.Errorf("expected clean response forwarded, got: %s", output)
+			err := RunProxy(t.Context(), stdin, &stdout, &stderr,
+				[]string{"sh", "-c", `IFS= read -r request || exit 1; printf "%s\n" "$1"`, "sh", tc.response},
+				MCPProxyOpts{Scanner: sc},
+			)
+			if err != nil {
+				t.Fatalf("RunProxy: %v; stderr: %s", err, stderr.String())
+			}
+			output := stdout.String()
+			if strings.Contains(output, "hello") != tc.forward {
+				t.Fatalf("forward = %t, client received %s", tc.forward, output)
+			}
+			if !tc.forward && !strings.Contains(output, "unsolicited response ID") {
+				t.Fatalf("client did not receive a correlation refusal: %s", output)
+			}
+		})
 	}
 }
 
