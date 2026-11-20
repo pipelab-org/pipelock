@@ -5,6 +5,7 @@ package v3
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
@@ -12,7 +13,9 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func writerTestHold(id string) Action {
@@ -352,4 +355,45 @@ func TestStreamWriterReplaysFailedTerminalHoldResolution(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStreamWriterTerminalDeadlineAfterAdmission(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	w := requireWriter(t, opts, localWriterStorage())
+	policy := CapturePolicy(Digest([]byte("resolution policy")))
+	held := writerTestHold("held")
+	if err := w.WriteAction(t.Context(), held, policy); err != nil {
+		t.Fatal(err)
+	}
+	resolution := blockingHoldResolution(held, "operator", relationAfter, false)
+	resolution.Verdict = "ask"
+	resolution.Ask = &Ask{Channel: "approval_api", Observed: true}
+
+	stream := w.active.id
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	var entered, admitted atomic.Bool
+	now := w.now
+	w.now = func() time.Time {
+		if !entered.Swap(true) {
+			admitted.Store(ctx.Err() == nil)
+			<-ctx.Done()
+		}
+		return now()
+	}
+	if err := w.WriteTerminalResolution(ctx, resolution, policy, 1); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("resolution = %v, want deadline exceeded", err)
+	}
+	if !admitted.Load() {
+		t.Fatal("deadline expired before the writer entered the append")
+	}
+	if err := w.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	held.Policy = policy.ActionPolicy()
+	resolution.Policy = policy.ActionPolicy()
+	if got := readRecoveryActions(t, opts.Dir, stream); !reflect.DeepEqual(got, []Action{held, resolution}) {
+		t.Fatalf("actions = %+v, want the hold and exactly one unchanged resolution", got)
+	}
+	verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
 }

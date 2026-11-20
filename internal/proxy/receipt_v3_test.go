@@ -1118,6 +1118,25 @@ func TestV3ReverseDeliveryWithTrailersStaysUncertain(t *testing.T) {
 				result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 1 || w.Code != http.StatusOK || w.Body.String() != "example" {
 				t.Fatalf("chunked reply = %d %q, counts = %+v, error = %v", w.Code, w.Body.String(), result.Counts, err)
 			}
+			actions := readV3TestActions(t, dir)
+			for boundary, want := range map[string]string{
+				boundaryUpstreamSend:       "completed",
+				boundaryDownstreamDelivery: "attempt_unknown",
+			} {
+				index := slices.IndexFunc(actions, func(a v3.Action) bool {
+					return a.Phase == "intent" && a.EffectBoundary == boundary && a.Attempt != nil
+				})
+				if index < 0 {
+					t.Fatalf("missing %s intent: %+v", boundary, actions)
+				}
+				intent := actions[index]
+				if !slices.ContainsFunc(actions, func(a v3.Action) bool {
+					return a.Phase == "outcome" && a.ActionID == intent.ActionID && a.EffectBoundary == boundary &&
+						a.Attempt != nil && *a.Attempt == *intent.Attempt && a.OutcomeClass == want
+				}) {
+					t.Fatalf("%s intent did not settle as %s: %+v", boundary, want, actions)
+				}
+			}
 		})
 	}
 }

@@ -48,12 +48,13 @@ func (w *StreamWriter) WriteAction(ctx context.Context, action Action, policy Po
 	}
 	defer w.release()
 	action.Policy = policy.ActionPolicy()
-	return w.writeAction(ctx, action)
+	_, err := w.writeAction(ctx, action)
+	return err
 }
 
 // WriteTerminalResolution retains a hold's non-releasing resolution if the
-// deadline expires while waiting for the writer. The caller still receives
-// the admission error. Only a known pre-append failure enters this queue.
+// deadline expires before persistence starts. The caller still receives the
+// deadline error. Persistence failures use the normal writer repair path.
 func (w *StreamWriter) WriteTerminalResolution(ctx context.Context, action Action, policy PolicySnapshot, maxPending int) error {
 	if w == nil {
 		return ErrWriterUnavailable
@@ -63,14 +64,16 @@ func (w *StreamWriter) WriteTerminalResolution(ctx context.Context, action Actio
 		!actionShape(action, w.open.Coverage.ReceiptsRequired) {
 		return errors.New("receipt action is not a terminal hold resolution")
 	}
-	if err := w.acquire(ctx); err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return errors.Join(err, w.queueTerminalResolution(action, maxPending))
-		}
-		return err
+	var persistStarted bool
+	err := w.acquire(ctx)
+	if err == nil {
+		defer w.release()
+		persistStarted, err = w.writeAction(ctx, action)
 	}
-	defer w.release()
-	return w.writeAction(ctx, action)
+	if !persistStarted && errors.Is(err, context.DeadlineExceeded) {
+		return errors.Join(err, w.queueTerminalResolution(action, maxPending))
+	}
+	return err
 }
 
 func (w *StreamWriter) queueTerminalResolution(action Action, maxPending int) error {
@@ -118,26 +121,27 @@ func (w *StreamWriter) collectTerminalResolutions(closing bool) bool {
 	return true
 }
 
-func (w *StreamWriter) writeAction(ctx context.Context, action Action) error {
+func (w *StreamWriter) writeAction(ctx context.Context, action Action) (persistStarted bool, err error) {
 	if !actionShape(action, w.open.Coverage.ReceiptsRequired) {
-		return errors.New("receipt action does not match its effect phase")
+		return false, errors.New("receipt action does not match its effect phase")
 	}
 	if err := w.prepareAppend(ctx); err != nil {
-		return err
+		return false, err
 	}
-	if err := w.commit(ctx, kindAction, action); err != nil {
-		if w.previous != nil && w.previous.Ended == endedWriteError {
+	persistStarted, err = w.appendRecord(ctx, kindAction, action)
+	if err != nil {
+		if persistStarted {
 			withheld := w.queueActionRepair(action, false)
 			err = w.tryContinueAfterWriteError(ctx, err)
-			return w.withheldAction(err, action, withheld)
+			return true, w.withheldAction(err, action, withheld)
 		}
-		return err
+		return false, err
 	}
 	if err := ctx.Err(); err != nil && actionGatesEffect(action) {
 		withheld := w.queueActionRepair(action, true)
-		return w.withheldAction(errors.Join(err, w.settleActionRepairs(ctx)), action, withheld)
+		return true, w.withheldAction(errors.Join(err, w.settleActionRepairs(ctx)), action, withheld)
 	}
-	return nil
+	return true, nil
 }
 
 func (w *StreamWriter) withheldAction(err error, action Action, withheld bool) error {

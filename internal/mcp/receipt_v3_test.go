@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
@@ -1248,6 +1249,71 @@ func TestMCPV3EarlyInputRefusalIsSigned(t *testing.T) {
 			actions := readMCPV3Actions(t, dir)
 			if len(actions) != 1 || actions[0].Phase != "decision" || actions[0].Verdict != config.ActionBlock {
 				t.Fatalf("input refusal was not signed: %+v", actions)
+			}
+		})
+	}
+}
+
+func TestMCPV3ListenerOptionalRefusalsHaveRecordedReceipt(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, header, value, layer string
+	}{
+		{"forwarded header", http.MethodGet, "Authorization", "Bearer " + mcpSyntheticAWSAccessKey(), mcpReceiptLayerInput},
+		{"A2A header", http.MethodPost, "A2A-Extensions", "ftp://extension.vendor.example/tool", mcpReceiptLayerA2A},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writerOpts := mcpV3TestWriterOptions(dir, "mcp_http_listener", nil)
+			writerOpts.Coverage.ReceiptsRequired = false
+			writer, err := v3.OpenStreamWriter(t.Context(), writerOpts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = writer.Close(context.Background(), nil) })
+			var contacts atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				contacts.Add(1)
+				w.WriteHeader(http.StatusBadGateway)
+			}))
+			t.Cleanup(upstream.Close)
+			base, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+				Scanner: testScannerForHTTP(t), ReceiptV3: writer,
+				A2ACfg: &config.A2AScanning{Enabled: true, Action: config.ActionBlock},
+			})
+			var body io.Reader
+			if tc.method == http.MethodPost {
+				body = strings.NewReader(cleanToolsCallRequest)
+			}
+			req, err := http.NewRequestWithContext(t.Context(), tc.method, base, body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set(tc.header, tc.value)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			reply, err := io.ReadAll(resp.Body)
+			id := resp.Header.Get(blockreason.HeaderRecordedReceipt)
+			if err != nil || id == "" || !bytes.Contains(reply, []byte("blocked")) || contacts.Load() != 0 {
+				t.Fatalf("refusal = %d %s, recorded receipt = %q, upstream contacts = %d (%v)",
+					resp.StatusCode, reply, id, contacts.Load(), err)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			keys := []ed25519.PublicKey{writerOpts.SigningKey.Public().(ed25519.PublicKey)}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || result.Verdict != "VALID" {
+				t.Fatalf("verify listener refusal: %+v (%v)", result, err)
+			}
+			if !slices.ContainsFunc(readMCPV3Actions(t, dir), func(a v3.Action) bool {
+				return a.ActionID == id && a.Layer == tc.layer && a.Phase == "decision" && a.Verdict == config.ActionBlock
+			}) {
+				t.Fatalf("header %q did not identify the signed %s refusal", id, tc.layer)
 			}
 		})
 	}

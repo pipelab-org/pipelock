@@ -4,7 +4,6 @@
 package deferred
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -1893,63 +1893,83 @@ func TestHoldConfirmationLeavesOtherSessionsAvailable(t *testing.T) {
 }
 
 func TestApprovalAfterConfirmationCannotReleaseExpiredHold(t *testing.T) {
-	m := NewManager(Config{Enabled: true, Timeout: time.Minute})
-	resolved := make(chan Resolution, 2)
-	parent := HeldAction{
-		DeferID: "parent", ActionID: "parent", Authority: AuthoritySnapshot{SessionID: "session"},
-		Resolve: func(res Resolution) { resolved <- res },
-	}
-	if err := m.Hold(parent); err != nil {
-		t.Fatal(err)
-	}
-	stalled, release := make(chan struct{}), make(chan struct{})
-	finish := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(finish)
-	child := parent
-	child.DeferID, child.ActionID = "child", "child"
-	child.ConfirmHold = func(HeldAction) error {
-		close(stalled)
-		<-release
-		return nil
-	}
-	held := make(chan error, 1)
-	go func() { held <- m.Hold(child) }()
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	select {
-	case <-stalled:
-	case <-ctx.Done():
-		t.Fatal("child confirmation did not start")
-	}
-	m.mu.Lock()
-	m.holds[parent.DeferID].timer.Stop()
-	m.holds[parent.DeferID].Deadline = time.Now().Add(-time.Second)
-	m.mu.Unlock()
-	approved := make(chan error, 1)
-	go func() { approved <- m.ResolveApproval(parent.DeferID, config.ActionAllow) }()
-	finish()
-	for _, result := range []<-chan error{held, approved} {
-		select {
-		case err := <-result:
-			if err != nil {
-				t.Fatal(err)
-			}
-		case <-ctx.Done():
-			t.Fatal("hold or approval did not return")
-		}
-	}
-	for range 2 {
-		select {
-		case res := <-resolved:
-			source := SourceCascade
-			if res.DeferID == parent.DeferID {
-				source = SourceTimeout
-			}
-			if res.FinalDecision != config.ActionBlock || res.ResolutionSource != source {
-				t.Fatalf("expired hold resolution = %+v, want block from %s", res, source)
-			}
-		case <-ctx.Done():
-			t.Fatal("parent or child did not settle")
-		}
+	for _, tc := range []struct {
+		name    string
+		expired bool
+	}{
+		{"unexpired", false},
+		{"expired", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m := NewManager(Config{Enabled: true, Timeout: time.Minute})
+				resolved := make(chan Resolution, 2)
+				parent := HeldAction{
+					DeferID: "parent", ActionID: "parent", Authority: AuthoritySnapshot{SessionID: "session"},
+					RulePolicy: config.DeferResolutionPolicy{AllowOn: config.DeferAllowOn{Approval: true}},
+					Resolve:    func(res Resolution) { resolved <- res },
+				}
+				if err := m.Hold(parent); err != nil {
+					t.Fatal(err)
+				}
+				stalled, release := make(chan struct{}), make(chan struct{})
+				finish := sync.OnceFunc(func() { close(release) })
+				defer finish()
+				child := parent
+				child.DeferID, child.ActionID = "child", "child"
+				child.ConfirmHold = func(HeldAction) error {
+					close(stalled)
+					<-release
+					return nil
+				}
+				held := make(chan error, 1)
+				go func() { held <- m.Hold(child) }()
+				<-stalled
+				approved := make(chan error, 1)
+				go func() { approved <- m.ResolveApproval(parent.DeferID, config.ActionAllow) }()
+				synctest.Wait()
+				select {
+				case err := <-approved:
+					t.Fatalf("approval returned before confirmation completed: %v", err)
+				default:
+				}
+				if tc.expired {
+					m.mu.Lock()
+					m.holds[parent.DeferID].timer.Stop()
+					m.holds[parent.DeferID].Deadline = time.Now().Add(-time.Second)
+					m.mu.Unlock()
+				}
+				finish()
+				if err := <-held; err != nil {
+					t.Fatal(err)
+				}
+				if err := <-approved; err != nil {
+					t.Fatal(err)
+				}
+				if !tc.expired {
+					if res := <-resolved; res.DeferID != parent.DeferID || res.FinalDecision != config.ActionAllow {
+						t.Fatalf("unexpired approval did not release the parent: %+v", res)
+					}
+					if err := m.Resolve(child.DeferID, config.ActionBlock, SourceCancel); err != nil {
+						t.Fatal(err)
+					}
+					return
+				}
+				for range 2 {
+					select {
+					case res := <-resolved:
+						source := SourceCascade
+						if res.DeferID == parent.DeferID {
+							source = SourceTimeout
+						}
+						if res.FinalDecision != config.ActionBlock || res.ResolutionSource != source {
+							t.Fatalf("expired hold resolution = %+v, want block from %s", res, source)
+						}
+					default:
+						t.Fatal("parent or child did not settle")
+					}
+				}
+			})
+		})
 	}
 }

@@ -134,7 +134,7 @@
       "fields": "The outcome carries the original action ID, decision policy, caller and effect boundary. The observed subprocess result determines the outcome class and relation. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. Copy the caller from the confirmed intent. For MCP HTTP listener requests with successful door verification, write `caller.authn: mcp_door_verified` and copy `resource`, `issuer`, `subject`, and `client_id` from the verified identity. Otherwise write `caller.authn: none`.",
       "when": "After the confirmed redirect dispatch returns or is canceled before it starts."
     },
-    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/83b5e9ce36219075": {
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/27862704203274fa": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not. For MCP HTTP listener requests with successful door verification, write `caller.authn: mcp_door_verified` and copy `resource`, `issuer`, `subject`, and `client_id` from the verified identity. Otherwise write `caller.authn: none`.",
       "when": "`reqA2ACfg != nil && reqA2ACfg.Enabled` and `!headerResult.Clean`. Records `ActionBlock`"
     },
@@ -1414,7 +1414,7 @@
       "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
       "when": "Recording the HTTP input receipt fails before the admitted request can be sent."
     },
-    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/b420d04ad14b2e7f": {
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/f1f8b9b2e4190845": {
       "fields": "Use the intent action ID and its outcome fields when an intent exists. Otherwise set `phase` and `effect_relation` from the standalone refusal. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `contract` when the decision sets the contract gate result. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
       "when": "The HTTP listener refuses a request without a tracked outcome handle. Close an existing intent or record a standalone refusal."
     },
@@ -1620,7 +1620,7 @@
     },
     "internal/mcp/receipt_v3.go/(*deferredReceiptSettlement).settleV3Hold/WriteTerminalResolution/dedd25319a12af13": {
       "fields": "Use the original `hold.id` and omit `hold.parent` on the resolution. Set `hold.resolution_policy` from the original hold policy and `hold.resolution_source` from the manager. Set `hold.correction:true` when a later block replaces an allow. A step-up resolution records `approval_api` with `observed:true`. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. Retain the caller from the original hold.",
-      "when": "When a held MCP call is blocked or stepped up. If admission to the writer times out before append, the unchanged decision is queued for replay."
+      "when": "When a held MCP call is blocked or stepped up. If the deadline expires before persistence starts, the unchanged decision is queued for replay."
     }
   },
   "emit_exclusions": {
@@ -1915,7 +1915,7 @@
     "internal/mcp/mcp_http_input.go/scanHTTPInputDecision/emitMCPToolReceipt/42c6c48aa853e1cb": "redirect_dispatch",
     "internal/mcp/mcp_http_input.go/scanHTTPInputDecision/emitMCPToolReceipt/79e1de4ba57ef07d": "upstream_send",
     "internal/mcp/mcp_http_input.go/scanHTTPInputDecision/finishRedirect/2a1b3d9b5f854e09": "redirect_dispatch",
-    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/83b5e9ce36219075": "none",
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/27862704203274fa": "none",
     "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/recordV3MCPRefusal/12bce73b162bce9b": "upstream_send",
     "internal/mcp/mcp_sse_bridge.go/scanGETStream/confirmV3StreamAdmission/86c8e3d4beed3f3d": "upstream_send",
     "internal/mcp/proxy.go/ForwardScanned/confirmMCPResponseEffect/df26263bd1ba3ed6": "downstream_delivery",
@@ -2235,7 +2235,7 @@
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/6101ac2c91281dff": "upstream_send",
     "internal/mcp/mcp_http_forward.go/emitBridgeHeaderContractRefusal/settle/9dd5b4a3b8cdfb73": "upstream_send",
     "internal/mcp/mcp_http_input.go/scanHTTPInputDecision/settle/6bf5f67e53bebcbb": "upstream_send",
-    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/b420d04ad14b2e7f": "upstream_send",
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/f1f8b9b2e4190845": "upstream_send",
     "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/settle/aacccbedc8926a3a": "upstream_send",
     "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/settle/b66eccc27290a009": "upstream_send",
     "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/settle/0f47b009c2366607": "upstream_send",

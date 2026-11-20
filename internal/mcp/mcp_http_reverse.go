@@ -809,11 +809,12 @@ func RunHTTPListenerProxy(
 			receiptEmitted := false
 			emitter := requestBaseOpts.receiptEmitter()
 			v2Emitter := requestBaseOpts.v2ReceiptEmitter()
+			recording := requestBaseOpts.ReceiptV3 != nil || emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil
 			if dec.intent.handle != nil {
 				if dec.intent.handle.settled.CompareAndSwap(false, true) {
 					receiptEmitted = dec.intent.handle.emit(safeLogW, receiptOpts, true) == nil
 				}
-			} else if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil || requestBaseOpts.requireReceipts() {
+			} else if recording || requestBaseOpts.requireReceipts() {
 				if _, emitErr := requestBaseOpts.emitReceiptDecision(MCPDecision{
 					Receipt:        receiptOpts,
 					RequireReceipt: requestBaseOpts.requireReceipts(),
@@ -822,8 +823,8 @@ func RunHTTPListenerProxy(
 					Durable: requestBaseOpts.requireReceipts() && dec.intent.Receipt.ActionID != "",
 				}); emitErr != nil {
 					logReceiptEmitFailure(safeLogW, emitErr, requestBaseOpts.requireReceipts(), config.ActionBlock)
-				} else if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil {
-					receiptEmitted = true
+				} else {
+					receiptEmitted = recording
 				}
 			}
 
@@ -1946,7 +1947,8 @@ func RunHTTPListenerProxy(
 				v2Emitter := requestBaseOpts.v2ReceiptEmitter()
 				actionID := receipt.NewActionID()
 				receiptEmitted := false
-				if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil || requestBaseOpts.requireReceipts() {
+				recording := requestBaseOpts.ReceiptV3 != nil || emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil
+				if recording || requestBaseOpts.requireReceipts() {
 					if _, emitErr := requestBaseOpts.emitReceiptDecision(MCPDecision{
 						Receipt: requestBaseOpts.withReceiptPolicyHash(receipt.EmitOpts{
 							ActionID:  actionID,
@@ -1964,8 +1966,8 @@ func RunHTTPListenerProxy(
 						RequireReceipt: requestBaseOpts.requireReceipts(),
 					}); emitErr != nil {
 						logReceiptEmitFailure(safeLogW, emitErr, requestBaseOpts.requireReceipts(), config.ActionBlock)
-					} else if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil {
-						receiptEmitted = true
+					} else {
+						receiptEmitted = recording
 					}
 				}
 				if receiptEmitted {

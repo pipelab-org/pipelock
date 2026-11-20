@@ -433,21 +433,28 @@ func (w *StreamWriter) retire(ended string) {
 // flushes succeed. An encoding, scan, or cancellation error writes nothing
 // and leaves the stream usable.
 func (w *StreamWriter) commit(ctx context.Context, kind string, body any) error {
+	_, err := w.appendRecord(ctx, kind, body)
+	return err
+}
+
+// appendRecord reports whether persistence started, even when its result is
+// uncertain. Errors during preparation or encoding leave the record unwritten.
+func (w *StreamWriter) appendRecord(ctx context.Context, kind string, body any) (persistStarted bool, err error) {
 	seq := w.active.confirmed.Seq + 1
 	line, record, err := w.encode(ctx, w.common(kind, w.active.id, w.active.confirmed.Record, seq), body)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return false, err
 	}
 	if err := w.persist(kind, line, seq); err != nil {
 		w.durability.FsyncErrorsGated++
 		w.retire(endedWriteError)
-		return err
+		return true, err
 	}
 	w.active.confirmed = Position{Record: record, Seq: seq}
-	return nil
+	return true, nil
 }
 
 func (w *StreamWriter) persist(kind string, line []byte, seq int64) error {
