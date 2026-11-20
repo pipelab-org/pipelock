@@ -279,6 +279,9 @@ func assertMCPListenerPOSTOutcomes(t *testing.T, receipts []receipt.Receipt, end
 		if a.DecisionPhase != receipt.DecisionPhaseOutcome {
 			continue
 		}
+		if a.Layer != mcpOutcomeLayer {
+			t.Fatalf("request outcome %s uses layer %q", a.ActionID, a.Layer)
+		}
 		if _, exists := outcomes[a.ActionID]; exists {
 			t.Fatalf("duplicate outcome for action %s", a.ActionID)
 		}

@@ -178,7 +178,11 @@ func assertTerminalJournalSequence(t *testing.T, m *deferred.Manager, deferID st
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			t.Fatalf("parse journal line %q: %v", line, err)
 		}
-		if entry.DeferID == deferID && entry.State != deferred.StateHeld {
+		if entry.DeferID != deferID {
+			continue
+		}
+		switch entry.State {
+		case deferred.StateResolvedAllow, deferred.StateResolvedBlock, deferred.StateResolvedStepUp:
 			terminal = append(terminal, entry.State+"/"+entry.Source)
 		}
 	}

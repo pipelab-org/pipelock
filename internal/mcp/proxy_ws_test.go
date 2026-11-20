@@ -384,6 +384,9 @@ func TestRunWSProxy_TransportReceiptUsesResponseDisposition(t *testing.T) {
 			sc := scanner.MustNew(cfg)
 			t.Cleanup(sc.Close)
 			emitter, rec, dir, _ := newReceiptTestHarness(t)
+			replacement, replacementRec, replacementDir, _ := newReceiptTestHarness(t)
+			var current atomic.Pointer[receipt.Emitter]
+			current.Store(emitter)
 
 			pr, pw := io.Pipe()
 			defer func() { _ = pr.Close(); _ = pw.Close() }()
@@ -393,7 +396,11 @@ func TestRunWSProxy_TransportReceiptUsesResponseDisposition(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
 			defer cancel()
 			err := RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), MCPProxyOpts{
-				Scanner: sc, ReceiptEmitter: emitter, RequireReceipts: true,
+				Scanner: sc, ReceiptEmitterFn: current.Load, RequireReceipts: true,
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					current.Store(replacement)
+					return (&net.Dialer{}).DialContext(ctx, network, addr)
+				},
 			})
 			if err != nil {
 				t.Fatalf("RunWSProxy: %v", err)
@@ -402,6 +409,9 @@ func TestRunWSProxy_TransportReceiptUsesResponseDisposition(t *testing.T) {
 				t.Fatalf("client response = %q, want %q", stdout.String(), tc.response)
 			}
 			if err := rec.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := replacementRec.Close(); err != nil {
 				t.Fatal(err)
 			}
 			var admission receipt.ActionRecord
@@ -413,6 +423,11 @@ func TestRunWSProxy_TransportReceiptUsesResponseDisposition(t *testing.T) {
 					admission = r
 				case admission.ActionID != "" && r.ActionID == admission.ActionID:
 					results = append(results, r)
+				}
+			}
+			for _, signed := range readActionReceipts(t, replacementDir) {
+				if signed.ActionRecord.ActionID == admission.ActionID {
+					t.Fatalf("transport evidence switched writers: %+v", signed.ActionRecord)
 				}
 			}
 			if len(results) != 1 {

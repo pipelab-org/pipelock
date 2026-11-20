@@ -440,6 +440,44 @@ func TestManagerReleaseCorrectiveReceiptFailureRemainsPending(t *testing.T) {
 	}
 }
 
+func TestManagerLateRefusalLeavesFailedCorrectionPending(t *testing.T) {
+	h := newReleaseHarness(t, func(res Resolution) error {
+		if res.FinalDecision == config.ActionBlock {
+			return errors.New("corrective receipt failed")
+		}
+		return nil
+	})
+	parent := h.m.holds["held"]
+	parent.Resolve = nil
+	var child Resolution
+	if err := h.m.Hold(HeldAction{
+		DeferID: "child", Authority: parent.Authority,
+		Resolve: func(res Resolution) { child = res },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	parent.ResolveWithReleaseRefusal = func(_ Resolution, refuse func(string) Resolution) {
+		h.got = refuse("release permission changed")
+		// Try the approval while the parent's denial callback is still active.
+		decision, err := h.m.resolveApplied("child", config.ActionAllow, SourceApproval)
+		if err != nil || decision != config.ActionBlock {
+			t.Errorf("descendant approval applied %q, error %v", decision, err)
+		}
+	}
+	decision, err := h.m.resolveApplied("held", config.ActionAllow, SourceApproval)
+	if err != nil || decision != config.ActionBlock || h.got.Reason != "release permission changed" ||
+		child.ResolutionSource != SourceCascade {
+		t.Fatalf("parent=%+v decision=%s child=%+v error=%v", h.got, decision, child, err)
+	}
+	pending, err := PendingJournal(h.journal)
+	if err != nil || len(pending) != 1 || pending[0].DeferID != "held" {
+		t.Errorf("replay after corrective failure = %+v, error %v", pending, err)
+	}
+	if legacy, err := v360PendingJournal(h.journal); err != nil || len(legacy) != 0 {
+		t.Errorf("legacy replay after corrective failure = %+v, error %v", legacy, err)
+	}
+}
+
 // TestManagerJournalDirectorySyncRetries checks the journal's directory is
 // synced until a sync succeeds. A first write whose data sync or directory sync
 // fails leaves the file in place, so later writes must still sync the

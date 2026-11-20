@@ -1065,6 +1065,9 @@ func (p *settlementProbe) assertSettlePairs(t *testing.T, signer string, sends, 
 			}
 			switch a.DecisionPhase {
 			case receipt.DecisionPhaseIntent:
+				if _, exists := intents[a.ActionID]; exists {
+					t.Fatalf("duplicate intent %s", a.ActionID)
+				}
 				intents[a.ActionID] = loc
 			case receipt.DecisionPhaseOutcome:
 				terminals[a.ActionID] = append(terminals[a.ActionID], loc)
@@ -1119,8 +1122,9 @@ func (p *settlementProbe) assertSettlePairs(t *testing.T, signer string, sends, 
 			t.Errorf("P1: %s %s has %d terminal settlements", intent.action.Target, intent.action.DecisionPhase, len(terminal))
 		}
 		for _, got := range terminal {
-			if got.shard != intent.shard || got.action.Target != intent.action.Target {
-				t.Errorf("P4: %s on shard %s settled %s on shard %s", got.action.Target, got.shard, intent.action.Target, intent.shard)
+			if got.shard != intent.shard || got.sequence <= intent.sequence || got.action.Target != intent.action.Target {
+				t.Errorf("P4: outcome %s on shard %s at %d does not follow intent %s on shard %s at %d",
+					got.action.Target, got.shard, got.sequence, intent.action.Target, intent.shard, intent.sequence)
 			}
 			tool := strings.TrimPrefix(intent.action.Target, "tool:")
 			status, _, _ := strings.Cut(got.action.Pattern, " ")
@@ -1172,6 +1176,24 @@ func (p *settlementProbe) assertSettlePairs(t *testing.T, signer string, sends, 
 			}
 			if !needsCorrection && p.cell.fault == settlementSuccess && len(corrected) != 0 {
 				t.Errorf("P1: successful release for %s recorded a correction", approval.action.Target)
+			}
+		}
+	}
+	if p.cell.required && p.cell.listenerMethod() == http.MethodDelete && p.cell.fault == settlementSuccess {
+		for _, admission := range records {
+			if admission.action.Layer != mcpTransportAdmissionLayer || admission.action.Method != http.MethodDelete {
+				continue
+			}
+			results := 0
+			for _, result := range records {
+				if result.action.ActionID == admission.action.ActionID && result.action.Layer == mcpOutcomeLayer &&
+					result.action.DecisionPhase == "" && result.action.Pattern == "status=completed bytes=unknown reason=session_deleted" &&
+					result.shard == admission.shard && result.sequence > admission.sequence {
+					results++
+				}
+			}
+			if results != 1 {
+				t.Errorf("DELETE admission has %d matching completion receipts, want 1", results)
 			}
 		}
 	}

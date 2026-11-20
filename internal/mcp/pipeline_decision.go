@@ -431,15 +431,20 @@ func mcpOutcomeReceiptOpts(opts receipt.EmitOpts, status string, bytesTransferre
 // A stream can fail without an admitted request. Grouped recorders use a
 // single-phase warning for this diagnostic. Keep the legacy single-chain shape.
 func emitMCPStandaloneStreamReceipt(proxyOpts MCPProxyOpts, logW io.Writer, opts receipt.EmitOpts, status, reason string) {
-	opts = proxyOpts.withReceiptPolicyHash(opts).NativeTerminal()
 	if proxyOpts.ReceiptGroup == nil {
-		emitMCPOutcomeReceipt(proxyOpts.receiptEmitter(), proxyOpts.v2ReceiptEmitter(), nil, logW, opts, status, -1, reason, proxyOpts.requireReceipts())
+		emitMCPOutcomeReceipt(proxyOpts.receiptEmitter(), proxyOpts.v2ReceiptEmitter(), nil, logW, proxyOpts.withReceiptPolicyHash(opts), status, -1, reason, proxyOpts.requireReceipts())
 		return
 	}
+	emitMCPStreamDiagnostic(proxyOpts, logW, opts, status, reason)
+}
+
+// emitMCPStreamDiagnostic records a stream-lifetime warning without opening
+// or settling a request intent.
+func emitMCPStreamDiagnostic(proxyOpts MCPProxyOpts, logW io.Writer, opts receipt.EmitOpts, status, reason string) {
 	if opts.ActionID == "" {
 		return
 	}
-	opts = mcpOutcomeReceiptOpts(opts, status, -1, reason)
+	opts = mcpOutcomeReceiptOpts(proxyOpts.withReceiptPolicyHash(opts).NativeTerminal(), status, -1, reason)
 	opts.DecisionPhase = ""
 	opts.Verdict = config.ActionWarn
 	opts.Layer = mcpOutcomeLayer

@@ -183,10 +183,11 @@ type HeldAction struct {
 	// entry, so that block's receipt is written first. Prepare's
 	// finish func is still pending, so the release claim and sink lock cover
 	// this call.
-	AfterJournal func(Resolution) error
-	timer        *time.Timer
-	state        string
-	createdAt    time.Time
+	AfterJournal   func(Resolution) error
+	timer          *time.Timer
+	cascadeBlocked bool // protected by Manager.mu
+	state          string
+	createdAt      time.Time
 }
 
 // Resolution is delivered exactly once for a held action.
@@ -360,6 +361,7 @@ func (m *Manager) Hold(action HeldAction) error {
 			parent := m.holds[ids[len(ids)-1]]
 			action.ParentDeferID = parent.DeferID
 			action.CascadeDepth = parent.CascadeDepth + 1
+			action.cascadeBlocked = parent.cascadeBlocked
 		}
 	}
 	if action.CascadeDepth > m.cfg.MaxCascadeDepth {
@@ -443,6 +445,9 @@ func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string,
 		m.mu.Unlock()
 		return "", ErrNotFound
 	}
+	if held.cascadeBlocked {
+		finalDecision, source = config.ActionBlock, SourceCascade
+	}
 	held.state = StateResolving
 	delete(m.holds, deferID)
 	m.removeSessionHoldLocked(held.Authority.SessionID, deferID)
@@ -497,19 +502,18 @@ func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string,
 		_ = m.appendJournal(journalEntryFromHeld(*held, resolvedState(res.FinalDecision), res.ResolutionSource))
 	}
 	if res.FinalDecision != config.ActionAllow && res.ResolutionSource != SourceCascade {
-		m.cascadeBlockDescendants([]string{held.DeferID})
+		m.resolveCascadeBlocked(m.markCascadeBlocked([]string{held.DeferID}))
 	}
 	if held.ResolveWithReleaseRefusal != nil {
-		allowed := res.FinalDecision == config.ActionAllow
+		var descendants []string
 		held.ResolveWithReleaseRefusal(res, func(reason string) Resolution {
 			if res.FinalDecision == config.ActionAllow {
-				res = m.blockRelease(held, res, reason)
+				descendants = m.markCascadeBlocked([]string{held.DeferID})
+				res = m.blockLateRelease(held, res, reason)
 			}
 			return res
 		})
-		if allowed && res.FinalDecision == config.ActionBlock {
-			m.cascadeBlockDescendants([]string{held.DeferID})
-		}
+		m.resolveCascadeBlocked(descendants)
 	} else {
 		held.Resolve(res)
 	}
@@ -549,6 +553,18 @@ func (m *Manager) journalRelease(held *HeldAction, res Resolution) Resolution {
 		return m.blockRelease(held, res, ReasonReleaseNotJournaled)
 	}
 	return res
+}
+
+// blockLateRelease reopens a committed allow for recovery before attempting the
+// corrective receipt. The payload is never replayed.
+func (m *Manager) blockLateRelease(held *HeldAction, res Resolution, reason string) Resolution {
+	pending := journalEntryFromHeld(*held, StateAdmissionRejected, SourceCancel)
+	pending.RefusalPending = true
+	if err := m.appendJournal(pending); err != nil {
+		m.warnf("pipelock: warning event=deferred_journal_write_failed audit_gap=true source=%s defer_id=%s: %v\n",
+			SourceCancel, held.DeferID, err)
+	}
+	return m.blockRelease(held, res, reason)
 }
 
 func (m *Manager) blockRelease(held *HeldAction, res Resolution, reason string) Resolution {
@@ -761,27 +777,35 @@ func (m *Manager) removeSessionHoldLocked(sessionID, deferID string) {
 	m.sessionHolds[sessionID] = ids
 }
 
-func (m *Manager) cascadeBlockDescendants(parentIDs []string) {
-	frontier := append([]string(nil), parentIDs...)
+// markCascadeBlocked denies every still-held descendant before any of
+// their callbacks run. A concurrent resolver sees the same forced block.
+func (m *Manager) markCascadeBlocked(frontier []string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var descendants []string
 	for len(frontier) > 0 {
-		m.mu.Lock()
-		children := make([]string, 0)
+		var children []string
 		for id, held := range m.holds {
-			for _, parentID := range frontier {
-				if held.ParentDeferID == parentID {
+			for _, parent := range frontier {
+				if held.ParentDeferID == parent {
+					held.cascadeBlocked = true
 					children = append(children, id)
 					break
 				}
 			}
 		}
-		m.mu.Unlock()
-		if len(children) == 0 {
-			return
-		}
-		for _, id := range children {
+		descendants = append(descendants, children...)
+		frontier = children
+	}
+	return descendants
+}
+
+func (m *Manager) resolveCascadeBlocked(descendants []string) {
+	for len(descendants) != 0 {
+		for _, id := range descendants {
 			_ = m.Resolve(id, config.ActionBlock, SourceCascade)
 		}
-		frontier = children
+		descendants = m.markCascadeBlocked(descendants)
 	}
 }
 
@@ -807,7 +831,10 @@ type journalEntry struct {
 	// of its own so that a binary that predates it, whose journal reader
 	// rejects unknown states, still reads the hold as pending and recovers it
 	// to block. Only deferred_held entries may carry it.
-	ReleasePending bool                         `json:"release_pending,omitempty"`
+	ReleasePending bool `json:"release_pending,omitempty"`
+	// RefusalPending uses the audit marker state so older readers can
+	// still read the journal without resuming a committed release.
+	RefusalPending bool                         `json:"refusal_pending,omitempty"`
 	Source         string                       `json:"source,omitempty"`
 	Target         string                       `json:"target,omitempty"`
 	Surface        string                       `json:"surface,omitempty"`
@@ -933,7 +960,7 @@ func PendingJournal(path string) ([]HeldAction, error) {
 	}
 	defer func() { _ = f.Close() }()
 	pending := map[string]journalEntry{}
-	terminal := map[string]struct{}{}
+	terminal := map[string]string{}
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -943,6 +970,14 @@ func PendingJournal(path string) ([]HeldAction, error) {
 		}
 		if entry.ReleasePending && entry.State != StateHeld {
 			return nil, fmt.Errorf("defer journal integrity: release_pending on state %q for defer_id %q", entry.State, entry.DeferID)
+		}
+		if entry.RefusalPending {
+			if entry.State != StateAdmissionRejected || entry.ReleasePending || terminal[entry.DeferID] != StateResolvedAllow {
+				return nil, fmt.Errorf("defer journal integrity: refusal_pending without a prior allow for defer_id %q", entry.DeferID)
+			}
+			delete(terminal, entry.DeferID)
+			pending[entry.DeferID] = entry
+			continue
 		}
 		switch entry.State {
 		case StateHeld:
@@ -958,7 +993,7 @@ func PendingJournal(path string) ([]HeldAction, error) {
 			pending[entry.DeferID] = entry
 		case StateResolvedAllow, StateResolvedBlock, StateResolvedStepUp:
 			delete(pending, entry.DeferID)
-			terminal[entry.DeferID] = struct{}{}
+			terminal[entry.DeferID] = entry.State
 		case StateAdmissionRejected:
 			// Audit-only marker for an action that was never held. It must not
 			// touch hold lifecycle: for a duplicate defer_id it shares a live

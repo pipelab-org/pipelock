@@ -157,6 +157,7 @@ func RunWSProxy(
 	var wg sync.WaitGroup
 	var lastScanErr error
 	var transportAdmission receipt.EmitOpts
+	var transportReceiptOpts MCPProxyOpts
 	var upstreamEnded bool // read only after the response goroutine is joined
 	var upstreamClosedCleanly bool
 	var upstreamBlocked bool
@@ -200,12 +201,12 @@ func RunWSProxy(
 					status, reason = "completed", "stream_completed"
 				}
 			}
-			recordTransportAdmissionResult(safeLogW, wsOpts, transportAdmission, status, reason)
+			recordTransportAdmissionResult(safeLogW, transportReceiptOpts, transportAdmission, status, reason)
 		} else if stopping && wsClient != nil {
 			emitMCPStandaloneStreamReceipt(wsOpts, safeLogW, mcpStreamReceipt(wsOpts, "WS"), "closed", nativeCapacityReason)
 		} else if len(pendingOutcomes) == 0 && upstreamEnded && ctx.Err() == nil &&
 			(errors.Is(lastScanErr, transport.ErrIncompleteResponse) || lastScanErr == nil && !upstreamClosedCleanly && !upstreamBlocked) {
-			emitMCPStandaloneStreamReceipt(wsOpts, safeLogW, mcpStreamReceipt(wsOpts, "WS"), "incomplete", httpstream.Incomplete)
+			emitMCPStreamDiagnostic(wsOpts, safeLogW, mcpStreamReceipt(wsOpts, "WS"), "incomplete", httpstream.Incomplete)
 		}
 	}()
 
@@ -214,14 +215,15 @@ func RunWSProxy(
 			return nil
 		}
 		var err error
-		transportAdmission, err = admitDurableTransport(wsOpts, "WS", upstreamURL)
+		transportReceiptOpts = wsOpts.snapshotScanPolicy().pinReceiptWriters()
+		transportAdmission, err = admitDurableTransport(transportReceiptOpts, "WS", upstreamURL)
 		if err != nil {
 			logReceiptEmitFailure(safeLogW, err, true, config.ActionForward)
 			return fmt.Errorf("recording upstream WebSocket admission: %w", err)
 		}
 		wsClient, err = transport.NewWSClientWithDialer(innerCtx, upstreamURL, opts.DialContext)
 		if err != nil {
-			warnTransportAdmission(safeLogW, wsOpts, transportAdmission, "upstream_handshake_failed")
+			warnTransportAdmission(safeLogW, transportReceiptOpts, transportAdmission, "upstream_handshake_failed")
 			return fmt.Errorf("connecting to upstream: %w", err)
 		}
 		go func(client *transport.WSClient) {

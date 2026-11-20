@@ -308,6 +308,7 @@ func ForwardScannedInput(
 		defer close(capacityDeferralsDone)
 		watchCapacityDeferrals(killWatchCtx, opts)
 	}()
+	var heldCallbacks sync.WaitGroup
 	defer func() {
 		stopKillWatch()
 		resolverRuntime.Cancel()
@@ -316,6 +317,8 @@ func ForwardScannedInput(
 		}
 		resolverRuntime.Wait()
 		<-capacityDeferralsDone
+		// External approvals can own holds already removed from the manager.
+		heldCallbacks.Wait()
 		close(blockedCh)
 	}()
 	var forwardMu sync.Mutex
@@ -1597,7 +1600,12 @@ func ForwardScannedInput(
 			// deferred cleanup safe after this early denial cleanup.
 			var finishDeniedRelease func()
 			var taskRefusal string
-			heldOpts, finishHeldAdmission, holdErr := opts.splitDeferredAdmission()
+			heldOpts, releaseHeldAdmission, holdErr := opts.splitDeferredAdmission()
+			heldCallbacks.Add(1)
+			finishHeldAdmission := func() {
+				releaseHeldAdmission()
+				heldCallbacks.Done()
+			}
 			heldAction := deferred.HeldAction{
 				DeferID:       actionID,
 				ActionID:      actionID,

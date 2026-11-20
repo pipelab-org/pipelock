@@ -240,7 +240,8 @@ func scanGETStream(ctx context.Context, client *transport.HTTPClient, writer tra
 	streamCtx, stop := httpstream.WithCapacityGrace(ctx, nil, admission.NativeLease, opts.shutdownGrace())
 	defer stop()
 	opts.nativeAdmission = admission
-	transportAdmission, err := admitDurableTransport(opts, http.MethodGet, opts.AuthorityDestination)
+	transportReceiptOpts := opts.snapshotScanPolicy().pinReceiptWriters()
+	transportAdmission, err := admitDurableTransport(transportReceiptOpts, http.MethodGet, opts.AuthorityDestination)
 	if err != nil {
 		logReceiptEmitFailure(logW, err, true, config.ActionForward)
 		return nil, err
@@ -249,12 +250,12 @@ func scanGETStream(ctx context.Context, client *transport.HTTPClient, writer tra
 	if err != nil {
 		switch {
 		case errors.Is(context.Cause(streamCtx), ael.ErrCapacity):
-			warnTransportAdmission(logW, opts, transportAdmission, nativeCapacityReason)
+			warnTransportAdmission(logW, transportReceiptOpts, transportAdmission, nativeCapacityReason)
 			err = ael.ErrCapacity
 		case httpstream.Reason(streamCtx, err) == httpstream.Cancelled:
-			recordTransportAdmissionResult(logW, opts, transportAdmission, "cancelled", httpstream.Cancelled)
+			recordTransportAdmissionResult(logW, transportReceiptOpts, transportAdmission, "cancelled", httpstream.Cancelled)
 		default:
-			warnTransportAdmission(logW, opts, transportAdmission, "upstream_error")
+			warnTransportAdmission(logW, transportReceiptOpts, transportAdmission, "upstream_error")
 		}
 		return nil, err
 	}
@@ -264,7 +265,7 @@ func scanGETStream(ctx context.Context, client *transport.HTTPClient, writer tra
 	_, scanErr = scanMCPHTTPResponse(streamCtx, reader, writer, logW, tracker, opts)
 	if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(context.Cause(streamCtx), ael.ErrCapacity) {
 		if transportAdmission.ActionID != "" {
-			recordTransportAdmissionResult(logW, opts, transportAdmission, "cancelled", nativeCapacityReason)
+			recordTransportAdmissionResult(logW, transportReceiptOpts, transportAdmission, "cancelled", nativeCapacityReason)
 		} else {
 			recordListenerStreamError(ctx, logW, opts, TrackedRequestOutcome{Receipt: mcpStreamReceipt(opts, http.MethodGet)}, true, ael.ErrCapacity)
 		}
@@ -274,11 +275,11 @@ func scanGETStream(ctx context.Context, client *transport.HTTPClient, writer tra
 	if transportAdmission.ActionID != "" {
 		switch {
 		case scanErr == nil && streamCtx.Err() == nil:
-			recordTransportAdmissionResult(logW, opts, transportAdmission, "completed", "stream_completed")
+			recordTransportAdmissionResult(logW, transportReceiptOpts, transportAdmission, "completed", "stream_completed")
 		case httpstream.Reason(streamCtx, scanErr) == httpstream.Cancelled:
-			recordTransportAdmissionResult(logW, opts, transportAdmission, "cancelled", httpstream.Cancelled)
+			recordTransportAdmissionResult(logW, transportReceiptOpts, transportAdmission, "cancelled", httpstream.Cancelled)
 		default:
-			warnTransportAdmission(logW, opts, transportAdmission, httpstream.Incomplete)
+			warnTransportAdmission(logW, transportReceiptOpts, transportAdmission, httpstream.Incomplete)
 		}
 	} else if errors.Is(scanErr, transport.ErrIncompleteResponse) && ctx.Err() == nil {
 		// A subscription has no pending request identity. Sign its own

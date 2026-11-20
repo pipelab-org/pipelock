@@ -255,9 +255,6 @@ func TestRequiredDeferredCallWithoutJournal(t *testing.T) {
 			t.Cleanup(func() {
 				_ = send.Close()
 				cancel()
-				if err := <-done; err != nil {
-					t.Logf("proxy exited during cleanup: %v", err)
-				}
 			})
 			var calls func() int32
 			if surface == deferred.SurfaceMCPStdio {
@@ -268,6 +265,7 @@ func TestRequiredDeferredCallWithoutJournal(t *testing.T) {
 					return 1
 				}
 				go func() {
+					defer func() { _ = input.Close() }()
 					ForwardScannedInput(transport.NewStdioReader(input), transport.NewStdioWriter(&upstream), &logBuf,
 						config.ActionWarn, config.ActionBlock, blocked, nil, nil, opts)
 					done <- nil
@@ -275,8 +273,23 @@ func TestRequiredDeferredCallWithoutJournal(t *testing.T) {
 			} else {
 				srv, count := countingUpstream(t)
 				calls = count.Load
-				go func() { done <- RunHTTPProxy(ctx, input, &output, &logBuf, srv.URL, nil, opts) }()
+				go func() {
+					defer func() { _ = input.Close() }()
+					done <- RunHTTPProxy(ctx, input, &output, &logBuf, srv.URL, nil, opts)
+				}()
 			}
+			t.Cleanup(func() {
+				_ = send.Close()
+				cancel()
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Errorf("proxy exited during cleanup: %v", err)
+					}
+				case <-time.After(testwait.Deadline(5 * time.Second)):
+					t.Error("proxy did not stop")
+				}
+			})
 			if _, err := io.WriteString(send, deferKillTestCall); err != nil {
 				t.Fatal(err)
 			}

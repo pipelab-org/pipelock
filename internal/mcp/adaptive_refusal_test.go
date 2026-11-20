@@ -234,7 +234,7 @@ func TestAdaptiveUniformRefusalMCPListenerStreamFraming(t *testing.T) {
 				if _, err := listener.writeBuffered(message); err != nil {
 					t.Fatal(err)
 				}
-				if got := response.Header().Get("Content-Length"); got != fmt.Sprint(response.Body.Len()) {
+				if got := response.Result().Header.Get("Content-Length"); got != fmt.Sprint(response.Body.Len()) {
 					t.Fatalf("Content-Length=%q for %d refusal bytes", got, response.Body.Len())
 				}
 			} else if err := writeMCPDenial(opts, descriptor, stream, message); err != nil {

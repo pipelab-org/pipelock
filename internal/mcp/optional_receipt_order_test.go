@@ -388,7 +388,7 @@ func TestOptionalWebSocketIntentPrecedesFrameResponse(t *testing.T) {
 		t.Fatalf("WebSocket request did not produce an intent/outcome pair: %d records", len(records))
 	}
 	diagnostic := records[2].ActionRecord
-	if diagnostic.ActionID == records[0].ActionRecord.ActionID ||
+	if diagnostic.ActionID == records[0].ActionRecord.ActionID || diagnostic.DecisionPhase != "" ||
 		diagnostic.Pattern != "status=incomplete bytes=unknown reason=incomplete" {
 		t.Fatalf("optional transport diagnostic: %+v", diagnostic)
 	}
