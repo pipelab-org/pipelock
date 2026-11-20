@@ -30,6 +30,10 @@ func (s *Scanner) ScanResponseOutbound(ctx context.Context, content string) Resp
 
 const injectionDecodeLimitReason = "injection inspection incomplete: decoding limit reached"
 
+// Shared lines reduce retained bytes, not the amount of logical text passed
+// through decoders and matchers. Bound those deeper views independently.
+const outboundInjectionDecodeWorkBytes = 4 * maxDecodeTotalBytes
+
 // injectionHTMLTextLabel marks the one HTML extraction on a decode lineage.
 const injectionHTMLTextLabel = "html_text"
 
@@ -48,13 +52,18 @@ type injectionDecodeView struct {
 // extraction of that transform, is admitted when the view itself fits.
 // Deeper copies share the retained-byte budget. Nesting uses the injection
 // depth cap.
-func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, target string, suppress []config.SuppressEntry, result ResponseScanResult) (out ResponseScanResult) {
+func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, target string, suppress []config.SuppressEntry, result ResponseScanResult) ResponseScanResult {
+	return s.scanAdditionalInjectionViewsWithin(ctx, content, target, suppress, result, outboundInjectionDecodeWorkBytes)
+}
+
+func (s *Scanner) scanAdditionalInjectionViewsWithin(ctx context.Context, content, target string, suppress []config.SuppressEntry, result ResponseScanResult, outboundWorkLimit int) (out ResponseScanResult) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	queue := []injectionDecodeView{{text: content}}
-	seen := map[string]bool{content: true}
+	outbound, _ := ctx.Value(outboundInjectionContextKey{}).(bool)
+	queue := newInjectionDecodeQueue(content, outbound)
 	used := 0
+	expanded := 0
 	incomplete := false
 	defer func() {
 		// A cancellation or other scan error already decides the result; a
@@ -65,7 +74,6 @@ func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, tar
 		// A content finding already decides the verdict. The limit is partial
 		// evidence beside it, matching text DLP and reassembly: inbound warns,
 		// and outbound keeps the block instead of replacing it with a scan error.
-		outbound, _ := ctx.Value(outboundInjectionContextKey{}).(bool)
 		if len(out.Matches)+len(out.WarnedMatches) > 0 {
 			if !outbound {
 				s.EmitTextDLPWarnMatches(ctx, []TextDLPMatch{partialEncodedContentMatch()})
@@ -80,13 +88,13 @@ func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, tar
 			s.EmitTextDLPWarnMatches(ctx, []TextDLPMatch{partialEncodedContentMatch()})
 		}
 	}()
-	for head := 0; head < len(queue); head++ {
+	for head := 0; head < len(queue.views); head++ {
 		if err := ctx.Err(); err != nil {
 			result.Clean = false
 			result.ScanError = err.Error()
 			return result
 		}
-		parent := queue[head]
+		parent := queue.views[head].decodeView()
 		if len(parent.text) > maxDecodeTotalBytes {
 			// The caller already scanned this text. A larger plain payload is
 			// not a decoding limit; only a transform we will not open is.
@@ -101,7 +109,8 @@ func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, tar
 		complete = complete && legacyComplete
 		incomplete = incomplete || !complete
 		for _, view := range views {
-			if view.text == "" || seen[view.text] {
+			digest, duplicate := queue.lookup(view.text)
+			if duplicate {
 				continue
 			}
 			// One transform of the scanned input, and HTML extraction of that
@@ -110,8 +119,8 @@ func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, tar
 			// still inside the response cap, including after entity decoding.
 			htmlOfDecoded := view.label == injectionHTMLTextLabel && parent.depth == 1 && !strings.Contains(parent.applied, injectionHTMLTextLabel)
 			charge := parent.depth > 0 && !htmlOfDecoded
-			overBudget := len(view.text) > maxDecodeTotalBytes || (charge && len(view.text) > maxDecodeTotalBytes-used)
-			if parent.depth >= responseDecodeMaxDepth || len(queue) >= maxDecodeCandidates || overBudget {
+			if parent.depth >= responseDecodeMaxDepth || len(queue.views) >= maxDecodeCandidates || len(view.text) > maxDecodeTotalBytes ||
+				(outbound && charge && len(view.text) > outboundWorkLimit-expanded) {
 				// A leftover shorter than an encoded segment cannot hold a phrase.
 				// The same floor is minSegmentDecodeLen.
 				if view.label == "" && len(view.text) < minSegmentDecodeLen {
@@ -120,9 +129,14 @@ func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, tar
 				incomplete = true
 				continue
 			}
-			seen[view.text] = true
+			remaining := maxDecodeTotalBytes
 			if charge {
-				used += len(view.text)
+				remaining -= used
+			}
+			stored, cost := queue.prepare(view.text, remaining, !charge)
+			if cost > remaining {
+				incomplete = incomplete || view.label != "" || len(view.text) >= minSegmentDecodeLen
+				continue
 			}
 			view.depth = parent.depth + 1
 			if view.label == "" {
@@ -134,7 +148,11 @@ func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, tar
 				view.applied = spanViewLabel(view.label, parent.applied)
 				view.label = spanViewLabel(view.label, parent.label)
 			}
-			queue = append(queue, view)
+			queue.add(stored, view, digest)
+			if charge {
+				used += cost
+				expanded += len(view.text)
+			}
 			if view.label == "" {
 				continue
 			}

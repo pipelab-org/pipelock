@@ -41,7 +41,7 @@ func newAssembledPlan(p *reassemblyPlan) (*assembledPlan, error) {
 	for _, template := range assembledSyntaxCache.plan.shapes {
 		shape := *template
 		pattern := p.patterns[shape.id]
-		if shape.validateRule {
+		if shape.validateRule || pattern.cardPrefixRetry {
 			validation := *pattern
 			validation.keywords = nil
 			validation.keywordContext = nil
