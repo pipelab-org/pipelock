@@ -1294,8 +1294,8 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy` from the retained decision snapshot when available, `redaction` from an applied rewrite when its summary is carried. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
       "when": "Records `ActionBlock`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).blockIdentityReload/emitReceipt/bb0ba773dccad4d3": {
-      "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy` from the retained decision snapshot when available. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
+    "internal/proxy/websocket.go/(*wsRelay).blockIdentityReload/emitReceipt/3aa808c3e3a3d797": {
+      "fields": "`phase` and `effect_relation` record that no release is attempted, `policy` from the retained decision snapshot when available. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
       "when": "Records `ActionBlock`"
     },
     "internal/proxy/websocket.go/(*wsRelay).blockOnCredentialAudienceReceiptFailure/emitReceipt/a8986fcfdc81c121": {
@@ -2008,7 +2008,7 @@
     "internal/proxy/websocket.go/(*Proxy).handleWebSocket/recordTransportOutcome/d774e3fb512bc7a4": "downstream_delivery",
     "internal/proxy/websocket.go/(*wsRelay).applyFrameRequestPolicy/emitRequestPolicyReceipt/1c1c7766827c8d95": "upstream_send",
     "internal/proxy/websocket.go/(*wsRelay).blockCrossMessageRedaction/emitReceipt/36dbe2e922743d17": "upstream_send",
-    "internal/proxy/websocket.go/(*wsRelay).blockIdentityReload/emitReceipt/bb0ba773dccad4d3": "upstream_send",
+    "internal/proxy/websocket.go/(*wsRelay).blockIdentityReload/emitReceipt/3aa808c3e3a3d797": "none",
     "internal/proxy/websocket.go/(*wsRelay).blockOnCredentialAudienceReceiptFailure/emitReceipt/a8986fcfdc81c121": "upstream_send",
     "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/blockCrossMessageIncomplete/4ca886ad103ed8b4": "upstream_send",
     "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/emitReceipt/18d60d7aebd2e0e7": "upstream_send",

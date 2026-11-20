@@ -252,7 +252,11 @@ func (p *Proxy) recordV3ExceptionAllows(cfg *config.Config, opts []receipt.EmitO
 	for _, emit := range opts {
 		tx := prepareV3TransportReceipt(cfg, emit)
 		action := tx.action
-		action.EffectBoundary, action.EffectRelation, action.Phase = boundaryUpstreamSend, "before", "decision"
+		boundary := boundaryUpstreamSend
+		if emit.Transport == TransportConnect {
+			boundary = boundaryTunnelOpen
+		}
+		action.EffectBoundary, action.EffectRelation, action.Phase = boundary, "before", "decision"
 		if required {
 			attempt := int64(1)
 			action.Phase, action.Attempt = "intent", &attempt

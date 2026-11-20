@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -17,9 +18,11 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -282,18 +285,17 @@ func TestV3ConnectIntentPrecedesTunnelDial(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = target.Close() })
 	beforeEffect := make(chan bool, 1)
+	p.dialer = &net.Dialer{Control: func(_, _ string, _ syscall.RawConn) error {
+		result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+		beforeEffect <- err == nil && result.Integrity == "ok" && result.Counts.EffectsUnknown != nil &&
+			*result.Counts.EffectsUnknown == 1
+		return nil
+	}}
 	go func() {
 		conn, err := target.Accept()
-		if err != nil {
-			beforeEffect <- false
-			return
+		if err == nil {
+			_ = conn.Close()
 		}
-		defer func() { _ = conn.Close() }()
-		result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
-		// The client may already have received 200 when the independently
-		// scheduled accept handler runs. Either state proves the intent.
-		beforeEffect <- err == nil && result.Integrity == "ok" && result.Counts.Decisions != nil &&
-			len(*result.Counts.Decisions) == 1
 	}()
 	done := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -682,6 +684,111 @@ func TestV3TransportPolicyAttribution(t *testing.T) {
 			entry := prepareV3TransportReceipt(cfg, receipt.EmitOpts{PolicyHash: tt.provided})
 			if got := entry.policy.ActionPolicy().Hash; got != tt.want {
 				t.Fatalf("receipt policy hash = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestV3WebSocketIdentityReloadRefusalIsConnectionWide(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportWS, true, nil)
+	stale := p.CurrentConfig().Clone()
+	stale.DefaultAgentIdentity = "older-default"
+	client, clientPeer := net.Pipe()
+	upstream, upstreamPeer := net.Pipe()
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = upstream.Close()
+	})
+	_ = clientPeer.Close()
+	_ = upstreamPeer.Close()
+	r := &wsRelay{
+		proxy: p, cfg: stale, clientConn: client, upstreamConn: upstream,
+		targetURL: "wss://api.vendor.example",
+	}
+	for range 2 {
+		if !r.blockIdentityReload() {
+			t.Fatal("connection with stale identity was not refused")
+		}
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Verdict != "VALID" {
+		t.Fatalf("invalid receipts: %+v (%v)", result, err)
+	}
+	actions := readV3TestActions(t, dir)
+	if len(actions) != 1 {
+		t.Fatalf("signed connection refusals = %d, want 1", len(actions))
+	}
+	if got := actions[0]; got.Verdict != config.ActionBlock || got.EffectBoundary != boundaryNoEffect || got.EffectRelation != "not_attempted" {
+		t.Fatalf("connection refusal recorded %s / %s / %s", got.Verdict, got.EffectBoundary, got.EffectRelation)
+	}
+}
+
+func readV3TestActions(t *testing.T, dir string) []v3.Action {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(dir, "*.receipt-v3.jsonl"))
+	if err != nil || len(paths) != 1 {
+		t.Fatalf("expected one signed stream: %v (%v)", paths, err)
+	}
+	data, err := os.ReadFile(filepath.Clean(paths[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actions []v3.Action
+	for _, line := range bytes.SplitAfter(data, []byte{'\n'}) {
+		if len(line) == 0 {
+			continue
+		}
+		envelope, code := v3.ExportDSSE(line)
+		if code != "" {
+			t.Fatal(code)
+		}
+		var decoded struct{ Payload []byte }
+		if err := json.Unmarshal(envelope, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		var payload struct {
+			Kind string
+			Body v3.Action
+		}
+		if err := json.Unmarshal(decoded.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Kind == "action" {
+			actions = append(actions, payload.Body)
+		}
+	}
+	return actions
+}
+
+func TestV3CredentialAllowancePreservesTransportBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		transport, method, boundary string
+	}{
+		{TransportConnect, http.MethodConnect, boundaryTunnelOpen},
+		{TransportForward, http.MethodGet, boundaryUpstreamSend},
+	} {
+		t.Run(tc.transport, func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, tc.transport, true, nil)
+			opts := receipt.EmitOpts{
+				ActionID: receipt.NewActionID(), Transport: tc.transport, Method: tc.method,
+				Verdict: config.ActionAllow, Target: "https://api.vendor.example",
+			}
+			if err := p.emitCredentialAudienceReceipt(p.CurrentConfig(), opts); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			checked, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || checked.Verdict != "VALID" {
+				t.Fatalf("invalid transport evidence: %+v (%v)", checked, err)
+			}
+			actions := readV3TestActions(t, dir)
+			if len(actions) != 1 || actions[0].EffectBoundary != tc.boundary || actions[0].Phase != "intent" {
+				t.Fatalf("signed actions = %+v, want one %s intent", actions, tc.boundary)
 			}
 		})
 	}
