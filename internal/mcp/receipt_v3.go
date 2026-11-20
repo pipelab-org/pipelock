@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
@@ -160,7 +161,15 @@ func (s *deferredReceiptSettlement) settleV3Hold(o MCPProxyOpts, res deferred.Re
 		}
 	}
 	action.Hold = &hold
-	if err := o.ReceiptV3.WriteAction(context.WithoutCancel(o.warnContext()), action, entry.policy); err != nil {
+	timeout := res.Policy.Timeout
+	if timeout <= 0 {
+		timeout = deferred.DefaultTimeoutSeconds * time.Second
+	}
+	// A cancelled call still needs a resolution receipt. Use the hold's
+	// configured resolution timeout to bound admission to the writer.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(o.warnContext()), timeout)
+	defer cancel()
+	if err := o.ReceiptV3.WriteAction(ctx, action, entry.policy); err != nil {
 		return fmt.Errorf("%w: %w", ErrReceiptRequired, err)
 	}
 	return nil

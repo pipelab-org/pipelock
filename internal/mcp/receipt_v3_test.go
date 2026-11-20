@@ -896,3 +896,71 @@ func TestMCPV3ToolListHasOnlySettledDelivery(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPV3HoldResolutionBoundsWriterWait(t *testing.T) {
+	entered := make(chan struct{})
+	unblock := make(chan struct{})
+	release := sync.OnceFunc(func() { close(unblock) })
+	var stall atomic.Bool
+	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	policy := v3.Digest(nil)
+	writer, err := v3.OpenStreamWriter(t.Context(), v3.StreamWriterOptions{
+		Dir: t.TempDir(), SigningKey: key, PolicyHash: policy,
+		Identity: v3.Writer{Instance: "example", Product: "Pipelock", Version: "3"},
+		Coverage: v3.Coverage{
+			ReceiptsRequired: true, Surfaces: []string{"stdio"},
+			RedactionRuleset: v3.Ruleset{ID: "example", Version: "1", Hash: policy},
+		},
+		Clock: func() time.Time {
+			if stall.Swap(false) {
+				close(entered)
+				<-unblock
+			}
+			return time.Now()
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		release()
+		_ = writer.Close(context.Background(), nil)
+	})
+	opts := MCPProxyOpts{RequireReceipts: true, ReceiptV3: writer, Transport: transportMCPStdio}
+	const holdID = "held-action"
+	var settlement deferredReceiptSettlement
+	hold := settlement.confirmV3Hold(opts, receipt.EmitOpts{
+		ActionID: holdID, Target: "tool:lookup", MCPMethod: "tools/call", Transport: transportMCPStdio,
+	})
+	policyBounds := deferred.NewManager(deferred.Config{Enabled: true, Timeout: 25 * time.Millisecond}).Policy()
+	if err := hold(deferred.HeldAction{DeferID: holdID, Deadline: time.Now().Add(time.Second), Policy: policyBounds}); err != nil {
+		t.Fatal(err)
+	}
+	stall.Store(true)
+	heartbeat := make(chan error, 1)
+	go func() { heartbeat <- writer.WriteHeartbeat(t.Context()) }()
+	select {
+	case <-entered:
+	case <-time.After(testwait.Deadline(time.Second)):
+		t.Fatal("heartbeat did not acquire the writer")
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		result <- settlement.settleV3Hold(opts, deferred.Resolution{
+			DeferID: holdID, FinalDecision: config.ActionBlock, ResolutionSource: deferred.SourceOperator, Policy: policyBounds,
+		})
+	}()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrReceiptRequired) {
+			t.Fatalf("blocked resolution write: %v", err)
+		}
+	case <-time.After(testwait.Deadline(time.Second)):
+		t.Fatal("hold resolution waited indefinitely for the receipt writer")
+	}
+	release()
+	if err := <-heartbeat; err != nil {
+		t.Fatal(err)
+	}
+}

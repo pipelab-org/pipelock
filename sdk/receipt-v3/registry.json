@@ -274,7 +274,7 @@
       "fields": "Action ID, caller, session, taint, contract, redaction, and policy from the confirmed hold. An intent identifies the pending upstream send. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. Retain the caller from the original hold.",
       "when": "Before the upstream send of an approved hold"
     },
-    "internal/mcp/receipt_v3.go/(*deferredReceiptSettlement).settleV3Hold/WriteAction/0844d0e7ce298573": {
+    "internal/mcp/receipt_v3.go/(*deferredReceiptSettlement).settleV3Hold/WriteAction/9ab605f19e032595": {
       "fields": "Use the original `hold.id` and omit `hold.parent` on the resolution. Set `hold.resolution_policy` from the original hold policy and `hold.resolution_source` from the manager. Set `hold.correction:true` when a later block replaces an allow. A step-up resolution records `approval_api` with `observed:true`. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. Retain the caller from the original hold.",
       "when": "When the manager selects a resolution"
     },
@@ -1757,7 +1757,7 @@
     "internal/mcp/proxy_ws.go/RunWSProxy/recordMCPStreamDiagnostic/12872fdcaa3a5188": "downstream_delivery",
     "internal/mcp/receipt_v3.go/(*deferredReceiptSettlement).confirmV3Hold/WriteAction/9ab605f19e032595": "approval_prompt",
     "internal/mcp/receipt_v3.go/(*deferredReceiptSettlement).confirmV3Release/WriteAction/e3c327797c156c54": "upstream_send",
-    "internal/mcp/receipt_v3.go/(*deferredReceiptSettlement).settleV3Hold/WriteAction/0844d0e7ce298573": "approval_prompt",
+    "internal/mcp/receipt_v3.go/(*deferredReceiptSettlement).settleV3Hold/WriteAction/9ab605f19e032595": "approval_prompt",
     "internal/mcp/stream.go/emitTrackedStreamError/recordMCPStreamDiagnostic/f1c5b96499a459ba": "downstream_delivery",
     "internal/mcp/stream.go/recordListenerStreamError/recordMCPStreamDiagnostic/09bb58d7cb88719a": "downstream_delivery",
     "internal/proxy/bodyscan.go/(*Proxy).evalHeaderDLP/recordCredentialAudienceAllows/332ef9d1515f4ed6": "upstream_send",
