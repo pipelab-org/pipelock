@@ -52,7 +52,11 @@ type injectionDecodeView struct {
 // extraction of that transform, is admitted when the view itself fits.
 // Deeper copies share the retained-byte budget. Nesting uses the injection
 // depth cap.
-func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, target string, suppress []config.SuppressEntry, result ResponseScanResult) (out ResponseScanResult) {
+func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, target string, suppress []config.SuppressEntry, result ResponseScanResult) ResponseScanResult {
+	return s.scanAdditionalInjectionViewsWithin(ctx, content, target, suppress, result, outboundInjectionDecodeWorkBytes)
+}
+
+func (s *Scanner) scanAdditionalInjectionViewsWithin(ctx context.Context, content, target string, suppress []config.SuppressEntry, result ResponseScanResult, outboundWorkLimit int) (out ResponseScanResult) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -116,7 +120,7 @@ func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, tar
 			htmlOfDecoded := view.label == injectionHTMLTextLabel && parent.depth == 1 && !strings.Contains(parent.applied, injectionHTMLTextLabel)
 			charge := parent.depth > 0 && !htmlOfDecoded
 			if parent.depth >= responseDecodeMaxDepth || len(queue.views) >= maxDecodeCandidates || len(view.text) > maxDecodeTotalBytes ||
-				(outbound && charge && len(view.text) > outboundInjectionDecodeWorkBytes-expanded) {
+				(outbound && charge && len(view.text) > outboundWorkLimit-expanded) {
 				// A leftover shorter than an encoded segment cannot hold a phrase.
 				// The same floor is minSegmentDecodeLen.
 				if view.label == "" && len(view.text) < minSegmentDecodeLen {
