@@ -268,10 +268,12 @@ const (
 
 	// PEP 425 names the Python implementations and defines version and ABI tags.
 	// PyPA packaging/tags.py defines the CPython ABI flags, abi3t, PyPy ABI,
-	// and GraalPy forms. Unknown implementation and ABI names keep their score.
+	// and GraalPy forms. GraalPy SOABI normalizes to graalpy_<pyver>_native,
+	// or graalpy<graalver>_<pyver>_native when it leads with a GraalPy version.
+	// Unknown implementation and ABI names keep their score.
 	// https://github.com/pypa/packaging/blob/main/src/packaging/tags.py
 	wheelPythonTag = `(?:py|cp|ip|pp|jy|graalpy)[0-9]+(?:_[0-9]+)*`
-	wheelABITag    = `none|abi3t?|cp[0-9]+t?d?m?u?|pypy[0-9]+_pp[0-9]+|graalpy_[0-9]+_native`
+	wheelABITag    = `none|abi3t?|cp[0-9]+t?d?m?u?|pypy[0-9]+_pp[0-9]+|graalpy(?:[0-9]+)?_[0-9]+_native`
 
 	// PEP 600 defines the legacy manylinux aliases and the numeric libc
 	// version slots. PEP 656 uses the same shape for musllinux. Architectures
@@ -288,7 +290,11 @@ const (
 		// https://packaging.python.org/en/latest/specifications/platform-compatibility-tags/
 		`|macosx_[0-9]+_[0-9]+_(?:arm64|i386|ppc|ppc64|x86_64|universal2?|intel|fat|fat3|fat64)` +
 		`|android_[1-9][0-9]*_(?:armeabi_v7a|arm64_v8a|x86|x86_64)` +
-		`|ios_[1-9][0-9]*_[0-9]+_(?:arm64_iphoneos|arm64_iphonesimulator|x86_64_iphonesimulator)`
+		`|ios_[1-9][0-9]*_[0-9]+_(?:arm64_iphoneos|arm64_iphonesimulator|x86_64_iphonesimulator)` +
+		// packaging's Emscripten platform tag is
+		// pyemscripten_<PYEMSCRIPTEN_PLATFORM_VERSION>_wasm32. The sampled
+		// versions are underscore-separated numbers, as in pyemscripten_2026_0_wasm32.
+		`|pyemscripten_[0-9]+(?:_[0-9]+)*_wasm32`
 )
 
 // PEP 425 allows a dot-separated set in each tag field without a count limit.
@@ -353,10 +359,10 @@ func (s *Scanner) pathEntropySkipping(path string, skip func(segment string) boo
 			continue
 		}
 		if i == len(segments)-1 {
-			if stem, wheel := wheelFilenameEntropySubject(segment); wheel {
-				if stem != "" {
-					entropy, blocked = s.pathSubjectEntropy(stem)
-				}
+			// A .whl suffix whose tags do not match stays on the whole-filename
+			// score, then the same release and package discounts as any other name.
+			if stem, wheel := wheelFilenameEntropySubject(segment); wheel && stem != "" {
+				entropy, blocked = s.pathSubjectEntropy(stem)
 			} else {
 				if i > 0 {
 					subject := releaseFilenameEntropySubject(segments[i-1], segment)

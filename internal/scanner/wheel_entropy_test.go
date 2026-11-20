@@ -27,6 +27,8 @@ func TestWheelFilenameEntropyScan(t *testing.T) {
 		{"grpcio tools", "grpcio_tools-1.68.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"},
 		{"PySide6 Essentials", "PySide6_Essentials-6.8.0.2-cp39-abi3-manylinux_2_28_x86_64.whl"},
 		{"metadata sidecar", cryptographyWheel + ".metadata"},
+		{"GraalPy", "pydantic_core-2.38.0-graalpy311-graalpy242_311_native-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"},
+		{"Emscripten", "pydantic_core-2.47.0-cp314-cp314-pyemscripten_2026_0_wasm32.whl"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if entropy, blocked := s.pathSegmentEntropy(tc.filename); !blocked {
@@ -54,6 +56,13 @@ func TestWheelFilenameEntropySubject(t *testing.T) {
 		{"PyPy", exampleStem + "-pp310-pypy310_pp73-manylinux_2_28_x86_64.whl", exampleStem, true},
 		{"Android", exampleStem + "-cp313-cp313-android_27_arm64_v8a.whl", exampleStem, true},
 		{"iOS", exampleStem + "-cp313-cp313-ios_13_0_arm64_iphonesimulator.whl", exampleStem, true},
+		{"GraalPy ABI with runtime version", exampleStem + "-graalpy311-graalpy242_311_native-manylinux_2_17_x86_64.whl", exampleStem, true},
+		{"GraalPy ABI without runtime version", exampleStem + "-graalpy38-graalpy_38_native-macosx_11_0_arm64.whl", exampleStem, true},
+		{"Emscripten", exampleStem + "-cp314-cp314-pyemscripten_2026_0_wasm32.whl", exampleStem, true},
+		{"canonical prerelease", "example-1.0rc1-py3-none-any.whl", "example-1.0rc1", true},
+		{"dotted prerelease", "example-1.0.rc1-py3-none-any.whl", "", true},
+		{"uppercase local version", "example-1.0+ABC-py3-none-any.whl", "", true},
+		{"underscore beta", "widget-0.7.10_beta.1-cp36-abi3-win_amd64.whl", "", true},
 		{"empty tag in set", "example-1.0-py2..py3-none-any.whl", "", true},
 		{"bad legacy architecture", "example-1.0-cp312-abi3-manylinux1_aarch64.whl", "", true},
 		{"bad version", "example-release-py3-none-any.whl", "", true},
@@ -101,6 +110,48 @@ func TestWheelFilenameEntropyDenials(t *testing.T) {
 				t.Fatalf("allowed = %v, scanner = %q, reason = %q; want path entropy block", result.Allowed, result.Scanner, result.Reason)
 			}
 		})
+	}
+}
+
+func TestWheelSuffixKeepsReleaseDiscount(t *testing.T) {
+	s := newProtocolEntropyScanner(t)
+	filename := "Example-Code-" + releaseEntropyTestVersion + "-x86_64.whl"
+	stem, wheel := wheelFilenameEntropySubject(filename)
+	if stem != "" || !wheel {
+		t.Fatalf("non-grammar wheel = stem %q, suffix %v", stem, wheel)
+	}
+	if _, blocked := s.pathSegmentEntropy(filename); !blocked {
+		t.Fatal("fixture must trip the whole-segment gate")
+	}
+	discounted := releaseFilenameEntropySubject("v"+releaseEntropyTestVersion, filename)
+	if _, blocked := s.pathSegmentEntropy(discounted); blocked {
+		t.Fatal("removing the repeated release version must pass")
+	}
+	for _, name := range []string{filename, filename + ".metadata"} {
+		t.Run(name[len(name)-12:], func(t *testing.T) {
+			path := "/download/v" + releaseEntropyTestVersion + "/" + name
+			if _, blocked := s.pathEntropy(path); blocked {
+				t.Fatal("repeated release version must still be discounted")
+			}
+			raw := "https://assets.vendor.example" + path
+			if got := s.Scan(t.Context(), raw); !got.Allowed {
+				t.Fatalf("outer denied: %s", got.Reason)
+			}
+		})
+	}
+	// A recognized wheel still scores its stem when a release directory repeats
+	// a version. The stem below is over the threshold on its own.
+	const (
+		name    = "HPMJSVDRXFNLOQEUBGW"
+		version = "1.0+tuvwxyz0123456789ab"
+	)
+	stem = name + "-" + version
+	matched := stem + cpythonWheelTags
+	if _, blocked := s.pathSubjectEntropy(stem); !blocked {
+		t.Fatal("stem fixture must block")
+	}
+	if _, blocked := s.pathEntropy("/v1.2.3/" + matched); !blocked {
+		t.Fatal("high-entropy wheel stem must stay blocked under a release directory")
 	}
 }
 
