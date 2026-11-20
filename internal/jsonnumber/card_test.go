@@ -57,6 +57,25 @@ func TestCardRunsOverLimit(t *testing.T) {
 	}
 }
 
+func TestHasShippedCardCandidate(t *testing.T) {
+	valid := "4111" + "1111" + "1111" + "1111"
+	for _, tc := range []struct {
+		text string
+		want bool
+	}{
+		{valid, true},
+		{"8" + valid + "9", true},
+		{"4111-1111 1111-1111", true},
+		{valid + "-7", true},
+		{valid[:15] + "2", false},
+		{"4111  1111 1111 1111", false},
+	} {
+		if got := HasShippedCardCandidate(tc.text, ValidCardNumber); got != tc.want {
+			t.Errorf("HasShippedCardCandidate(%q) = %t, want %t", tc.text, got, tc.want)
+		}
+	}
+}
+
 func TestValidCardIssuerShortInput(t *testing.T) {
 	// The exported helper must reject short input instead of reading the
 	// issuer prefix out of bounds; a 4 or 5 prefix is otherwise accepted.

@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"regexp/syntax"
 	"unicode/utf8"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 )
 
 // Each byte lane counts consecutive compatible raw symbols for one phase.
@@ -216,14 +218,19 @@ func (s *assembledShape) grammarNear(text string, position assembledPosition, ca
 		return entry.result
 	}
 	var result bool
-	if s.validate != nil {
+	switch {
+	case s.validate != nil && s.validate.cardPrefixRetry:
+		// An accepted ordinary or glued card span passes the same checksum.
+		// Keep the original grammar screen after validation so the necessary
+		// condition cannot admit a lane the original screen rejected.
+		result = jsonnumber.HasShippedCardCandidate(string(data), s.validate.validate) &&
+			(s.local.Match(data) || s.gluedNear(string(data)))
+	case s.validate != nil:
 		_, _, result = s.validate.firstAcceptedSpan(string(data), nil)
-	} else {
-		result = s.local.Match(data)
+		result = result || s.gluedNear(string(data))
+	default:
+		result = s.local.Match(data) || s.gluedNear(string(data))
 	}
-	// The glued-candidate screen reads only the decoded window, so it is part
-	// of the cached admission result.
-	result = result || s.gluedNear(string(data))
 	entry.previous, entry.scratch = data, entry.previous[:0]
 	entry.valid, entry.result = true, result
 	return result
