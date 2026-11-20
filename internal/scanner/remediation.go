@@ -157,13 +157,13 @@ func findingBeforeUnread(reason string) (findingAndUnread, bool) {
 		// The pattern names end where the unread-upload clause begins. A
 		// fixed JSON inspection limit is not lifted by suppression.
 		names, _, _ := strings.Cut(strings.TrimPrefix(reason, secretAndUnreadPrefix+" "), "; ")
-		if jsonInspectionLimitInNames(names) {
-			return inspectionLimitBeforeUnread(), true
-		}
-		if decodeInspectionLimitInNames(names) {
-			return decodeLimitBeforeUnread(), true
+		if finding, ok := inspectionLimitUnreadFinding(names); ok {
+			return finding, true
 		}
 		return findingAndUnread{secretAgentReason, "The reason names a secret finding and then an unread upload. A path-scoped top-level `suppress:` entry applies to a non-core secret.", false}, true
+	case strings.HasPrefix(reason, RequestBodyInspectionLimitPrefix):
+		names, _, _ := strings.Cut(strings.TrimPrefix(reason, RequestBodyInspectionLimitPrefix), "; ")
+		return inspectionLimitUnreadFinding(names)
 	case strings.HasPrefix(reason, injectionAndUnreadPrefix):
 		return findingAndUnread{promptInjectionAgentReason, "The reason names a prompt-injection finding and then an unread upload. " + bodyPromptInjectionOperatorKnob, false}, true
 	case strings.HasPrefix(reason, addressAndUnreadPrefix):
@@ -742,21 +742,45 @@ func jsonInspectionLimitInNames(names string) bool {
 // whose DLP findings are all inspection limits.
 const RequestBodyInspectionLimitPrefix = "request body inspection limit reached: "
 
+// inspectionLimitUnreadFinding keeps the source-reviewed name priority:
+// a JSON inspection limit outranks a decoder limit in the same name list.
+func inspectionLimitUnreadFinding(names string) (findingAndUnread, bool) {
+	if jsonInspectionLimitInNames(names) {
+		return inspectionLimitBeforeUnread(), true
+	}
+	if decodeInspectionLimitInNames(names) {
+		return decodeLimitBeforeUnread(), true
+	}
+	return findingAndUnread{}, false
+}
+
+// requestBodyInspectionLimitGuidance is the same priority for a limit-only
+// reason that does not also name an unread upload.
+func requestBodyInspectionLimitGuidance(names string) (RemediationGuidance, bool) {
+	switch {
+	case jsonInspectionLimitInNames(names):
+		return jsonInspectionLimitGuidance(), true
+	case decodeInspectionLimitInNames(names):
+		return decodeInspectionLimitGuidance(), true
+	default:
+		return RemediationGuidance{}, false
+	}
+}
+
 func GuidanceForResult(label, reason string) (RemediationGuidance, bool) {
 	// Generic events retain only the emitted reason. Strip client-chosen query
 	// keys before recognizing the closed set of inspection-refusal formats.
 	// A reason that also names an unread upload is routed by
 	// findingBeforeUnread, whatever order its pattern names take.
 	stripped := stripNestedURLReasonPrefix(reason)
-	switch label {
-	case ScannerBodyDLP, ScannerDLP, ScannerContext:
-		if detail, ok := strings.CutPrefix(stripped, RequestBodyInspectionLimitPrefix); ok {
-			names, _, _ := strings.Cut(detail, "; ")
-			switch {
-			case decodeInspectionLimitInNames(names):
-				return decodeInspectionLimitGuidance(), true
-			case jsonInspectionLimitInNames(names):
-				return jsonInspectionLimitGuidance(), true
+	if _, combined := findingBeforeUnread(stripped); !combined {
+		switch label {
+		case ScannerBodyDLP, ScannerDLP, ScannerContext:
+			if detail, ok := strings.CutPrefix(stripped, RequestBodyInspectionLimitPrefix); ok {
+				names, _, _ := strings.Cut(detail, "; ")
+				if guidance, ok := requestBodyInspectionLimitGuidance(names); ok {
+					return guidance, true
+				}
 			}
 		}
 	}
