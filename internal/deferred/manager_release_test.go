@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -134,13 +135,13 @@ func TestManagerReleaseFailures(t *testing.T) {
 			name:       "terminal allow entry fails",
 			failWrites: []int{3},
 			wantCalled: 2, wantFinal: config.ActionBlock, wantReason: ReasonReleaseNotJournaled,
-			wantStates: []string{StateHeld, StateHeld + "+release_pending", StateResolvedBlock},
+			wantStates: []string{StateHeld, StateHeld + "+release_pending", StateAdmissionRejected, StateResolvedBlock},
 		},
 		{
 			name:       "terminal allow and corrective block both fail",
-			failWrites: []int{3, 4},
+			failWrites: []int{3, 5},
 			wantCalled: 2, wantFinal: config.ActionBlock, wantReason: ReasonReleaseNotJournaled,
-			wantStates:  []string{StateHeld, StateHeld + "+release_pending"},
+			wantStates:  []string{StateHeld, StateHeld + "+release_pending", StateAdmissionRejected},
 			wantPending: 1, wantWarning: true,
 		},
 	} {
@@ -437,6 +438,76 @@ func TestManagerReleaseCorrectiveReceiptFailureRemainsPending(t *testing.T) {
 	}
 	if !strings.Contains(h.warn.String(), "audit_gap=true") {
 		t.Fatalf("missing audit gap warning: %s", h.warn.String())
+	}
+}
+
+func TestManagerFailedTerminalSyncLeavesCorrectionPending(t *testing.T) {
+	h := newReleaseHarness(t, func(res Resolution) error {
+		if res.FinalDecision == config.ActionBlock {
+			return errors.New("corrective receipt failed")
+		}
+		return nil
+	})
+	syncs := 0
+	h.m.fileSync = func(f *os.File) error {
+		if err := f.Sync(); err != nil {
+			return err
+		}
+		syncs++
+		if syncs == 2 {
+			return errors.New("terminal allow sync failed")
+		}
+		return nil
+	}
+	if err := h.m.Resolve("held", config.ActionAllow, SourceApproval); err != nil {
+		t.Fatal(err)
+	}
+	if h.got.FinalDecision != config.ActionBlock || h.got.Reason != ReasonReleaseNotJournaled {
+		t.Fatalf("resolution = %+v", h.got)
+	}
+	if states := journalStates(t, h.journal); !slices.Contains(states, StateResolvedAllow) {
+		t.Fatalf("terminal sync fixture failed to leave the allow on disk: %v", states)
+	}
+	if pending, err := PendingJournal(h.journal); err != nil || len(pending) != 1 || pending[0].DeferID != "held" {
+		t.Fatalf("recovery after terminal sync error = %+v, error=%v", pending, err)
+	}
+}
+
+func TestManagerLateRefusalLeavesFailedCorrectionPending(t *testing.T) {
+	h := newReleaseHarness(t, func(res Resolution) error {
+		if res.FinalDecision == config.ActionBlock {
+			return errors.New("corrective receipt failed")
+		}
+		return nil
+	})
+	parent := h.m.holds["held"]
+	parent.Resolve = nil
+	var child Resolution
+	if err := h.m.Hold(HeldAction{
+		DeferID: "child", Authority: parent.Authority,
+		Resolve: func(res Resolution) { child = res },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	parent.ResolveWithReleaseRefusal = func(_ Resolution, refuse func(string) Resolution) {
+		h.got = refuse("release permission changed")
+		// Try the approval while the parent's denial callback is still active.
+		decision, err := h.m.resolveApplied("child", config.ActionAllow, SourceApproval)
+		if err != nil || decision != config.ActionBlock {
+			t.Errorf("descendant approval applied %q, error %v", decision, err)
+		}
+	}
+	decision, err := h.m.resolveApplied("held", config.ActionAllow, SourceApproval)
+	if err != nil || decision != config.ActionBlock || h.got.Reason != "release permission changed" ||
+		child.ResolutionSource != SourceCascade {
+		t.Fatalf("parent=%+v decision=%s child=%+v error=%v", h.got, decision, child, err)
+	}
+	pending, err := PendingJournal(h.journal)
+	if err != nil || len(pending) != 1 || pending[0].DeferID != "held" {
+		t.Errorf("replay after corrective failure = %+v, error %v", pending, err)
+	}
+	if legacy, err := v360PendingJournal(h.journal); err != nil || len(legacy) != 0 {
+		t.Errorf("legacy replay after corrective failure = %+v, error %v", legacy, err)
 	}
 }
 

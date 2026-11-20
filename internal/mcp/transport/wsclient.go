@@ -24,10 +24,11 @@ import (
 // to an upstream MCP server. MCP is JSON-RPC over text frames only; binary frames
 // are rejected (fail-closed). Fragment reassembly uses the shared wsutil package.
 type WSClient struct {
-	conn     net.Conn
-	r        io.Reader // reader for frames (may differ from conn when Dial returns a buffered reader)
-	isServer bool      // true = unmasked writes (server side), false = masked writes (client side)
-	frag     plwsutil.FragmentState
+	conn              net.Conn
+	r                 io.Reader // reader for frames (may differ from conn when Dial returns a buffered reader)
+	isServer          bool      // true = unmasked writes (server side), false = masked writes (client side)
+	frag              plwsutil.FragmentState
+	peerClosedCleanly bool
 
 	// writeMu serializes writes. Reads are expected from a single goroutine.
 	writeMu   sync.Mutex
@@ -162,6 +163,14 @@ func (c *WSClient) ReadMessage() ([]byte, error) {
 				if c.frag.Active {
 					return nil, fmt.Errorf("%w: close interrupted fragmented message", ErrIncompleteResponse)
 				}
+				state := ws.StateClientSide
+				if c.isServer {
+					state = ws.StateServerSide
+				}
+				code, reason := ws.ParseCloseFrameData(payload)
+				normalClose := code == ws.StatusNormalClosure || code == ws.StatusGoingAway
+				c.peerClosedCleanly = ws.CheckHeader(hdr, state) == nil &&
+					(len(payload) == 0 || normalClose && ws.CheckCloseFrameData(code, reason) == nil)
 				return nil, io.EOF
 			case ws.OpPing:
 				c.writeMu.Lock()
@@ -206,6 +215,12 @@ func (c *WSClient) ReadMessage() ([]byte, error) {
 		copy(result, msg)
 		return result, nil
 	}
+}
+
+// PeerClosedCleanly distinguishes a close frame from transport EOF. Call it
+// from the reading goroutine after ReadMessage returns.
+func (c *WSClient) PeerClosedCleanly() bool {
+	return c.peerClosedCleanly
 }
 
 // WriteMessage sends a complete JSON-RPC message as a single text frame.

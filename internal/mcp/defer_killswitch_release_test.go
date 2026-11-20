@@ -178,13 +178,94 @@ func assertTerminalJournalSequence(t *testing.T, m *deferred.Manager, deferID st
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			t.Fatalf("parse journal line %q: %v", line, err)
 		}
-		if entry.DeferID == deferID && entry.State != deferred.StateHeld {
+		if entry.DeferID != deferID {
+			continue
+		}
+		switch entry.State {
+		case deferred.StateResolvedAllow, deferred.StateResolvedBlock, deferred.StateResolvedStepUp:
 			terminal = append(terminal, entry.State+"/"+entry.Source)
 		}
 	}
 	if strings.Join(terminal, " ") != strings.Join(want, " ") {
 		t.Fatalf("journal terminal entries = %v, want exactly %v", terminal, want)
 	}
+}
+
+type blockedDeferredWrite struct {
+	started chan struct{}
+	closed  chan struct{}
+}
+
+func (w blockedDeferredWrite) WriteMessage([]byte) error {
+	close(w.started)
+	<-w.closed
+	return io.ErrClosedPipe
+}
+
+func TestDeferredStdioEOFInterruptsClaimedWrite(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
+	defer cancel()
+	input, feed := io.Pipe()
+	defer func() { _ = feed.Close() }()
+	writer := blockedDeferredWrite{started: make(chan struct{}), closed: make(chan struct{})}
+	closeUpstream := sync.OnceFunc(func() { close(writer.closed) })
+	defer closeUpstream()
+	manager := newDeferKillManager(t)
+	policy := deferApprovalPolicy(config.DeferResolverProfile{})
+	policy.Rules[0].ResolutionPolicy.ResolverProfile = ""
+	emitter, _, _, _ := newReceiptTestHarness(t)
+	opts := MCPProxyOpts{
+		Scanner: testInputScanner(t), DeferManager: manager, PolicyCfg: policy, ReceiptEmitter: emitter,
+		Transport: deferred.SurfaceMCPStdio, WarnContext: ctx, closeStdioInput: closeUpstream,
+	}
+	blocked := make(chan BlockedRequest, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() { _ = input.Close() }()
+		ForwardScannedInput(transport.NewStdioReader(input), writer, io.Discard,
+			config.ActionWarn, config.ActionBlock, blocked, nil, NewRequestTracker(), opts)
+	}()
+	if _, err := io.WriteString(feed, deferKillTestCall); err != nil {
+		t.Fatal(err)
+	}
+	testwait.ForContext(t, ctx, func() bool { return manager.HeldCount() == 1 }, "deferred stdio action")
+	hold := manager.Snapshot()[0]
+	applied := make(chan string, 1)
+	go func() {
+		decision, err := manager.ResolveApprovalResult(hold.DeferID, config.ActionAllow, deferred.SourceApproval)
+		if err != nil {
+			t.Errorf("approve held action: %v", err)
+		}
+		applied <- decision
+	}()
+	select {
+	case <-writer.started:
+	case <-ctx.Done():
+		t.Fatal("approval did not reach upstream write")
+	}
+	if err := feed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("stdin EOF did not interrupt the claimed write")
+	}
+	select {
+	case decision := <-applied:
+		if decision != config.ActionBlock {
+			t.Errorf("approval applied %q after the upstream write failed", decision)
+		}
+	case <-ctx.Done():
+		t.Fatal("approval callback did not finish")
+	}
+	denial, ok := <-blocked
+	if !ok || denial.ErrorCode != -32603 {
+		t.Fatalf("expected upstream write error before channel closed, got %+v", denial)
+	}
+	assertTerminalJournalSequence(t, manager, hold.DeferID,
+		deferred.StateResolvedAllow+"/"+deferred.SourceApproval, deferred.StateResolvedBlock+"/"+deferred.SourceCancel)
 }
 
 func TestDeferredStdioReleaseKillSwitchOrdering(t *testing.T) {

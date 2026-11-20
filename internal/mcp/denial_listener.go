@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 )
@@ -68,6 +69,19 @@ func (w *mcpListenerDenialWriter) decision(reply []byte) *mcpDenial {
 }
 
 func (w *mcpListenerDenialWriter) WriteHeader(status int) {
+	w.writeHeader(status, nil)
+}
+
+// writeBuffered fixes the response framing before flushing delivery evidence.
+func (w *mcpListenerDenialWriter) writeBuffered(body []byte) (int, error) {
+	if !w.wroteHeader {
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.writeHeader(http.StatusOK, body)
+	}
+	return w.Write(body)
+}
+
+func (w *mcpListenerDenialWriter) writeHeader(status int, buffered []byte) {
 	if w.wroteHeader {
 		return
 	}
@@ -97,6 +111,13 @@ func (w *mcpListenerDenialWriter) WriteHeader(status int) {
 			info.SetHeaders(w.Header())
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Cache-Control", "no-store")
+			if buffered != nil {
+				size := 0
+				if !w.notification {
+					size = len(blockSessionDenyResponse(ParseMCPFrame(buffered).ID, w.uniformMessage))
+				}
+				w.Header().Set("Content-Length", strconv.Itoa(size))
+			}
 			if w.notification {
 				// Door mode answers a refused notification with 403 like any
 				// other tool-policy denial; elsewhere notifications get 202.

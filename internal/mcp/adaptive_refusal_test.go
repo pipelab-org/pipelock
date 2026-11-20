@@ -207,7 +207,7 @@ func TestAdaptiveUniformRefusalMCPListenerWithheldUnboundSession(t *testing.T) {
 }
 
 func TestAdaptiveUniformRefusalMCPListenerStreamFraming(t *testing.T) {
-	for _, state := range []string{"pending", "started", "below", "disabled", "kill"} {
+	for _, state := range []string{"pending", "buffered", "started", "below", "disabled", "kill"} {
 		t.Run(state, func(t *testing.T) {
 			cfg := adaptiveCfgEnabled()
 			cfg.Enabled = state != "disabled"
@@ -230,11 +230,18 @@ func TestAdaptiveUniformRefusalMCPListenerStreamFraming(t *testing.T) {
 				descriptor = mcpKillMcpResponseDenialAudit()
 				message = killswitch.ErrorResponse(json.RawMessage(`9`), "operator pause")
 			}
-			if err := writeMCPDenial(opts, descriptor, stream, message); err != nil {
+			if state == "buffered" {
+				if _, err := listener.writeBuffered(message); err != nil {
+					t.Fatal(err)
+				}
+				if got := response.Result().Header.Get("Content-Length"); got != fmt.Sprint(response.Body.Len()) {
+					t.Fatalf("Content-Length=%q for %d refusal bytes", got, response.Body.Len())
+				}
+			} else if err := writeMCPDenial(opts, descriptor, stream, message); err != nil {
 				t.Fatal(err)
 			}
 			body := response.Body.Bytes()
-			if state == "pending" {
+			if state == "pending" || state == "buffered" {
 				if response.Code != http.StatusForbidden || response.Header().Get(blockreason.HeaderReason) != string(blockreason.EscalationLevel) || response.Header().Get("Content-Type") != "application/json" {
 					t.Fatalf("pending refusal: %d %v %s", response.Code, response.Header(), body)
 				}
@@ -259,7 +266,7 @@ func TestAdaptiveUniformRefusalMCPListenerStreamFraming(t *testing.T) {
 				t.Fatalf("invalid refusal %s: %v", body, err)
 			}
 			switch state {
-			case "pending", "started":
+			case "pending", "buffered", "started":
 				if reply.Error.Code != -32001 || !strings.Contains(reply.Error.Message, `category="session_deny"`) || len(reply.Error.Data) != 0 {
 					t.Fatalf("adaptive error changed: %s", body)
 				}

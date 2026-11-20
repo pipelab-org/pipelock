@@ -6,6 +6,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -367,6 +368,18 @@ func TestDeferredHTTPReleaseChecksTaskPermissionWithoutAuthorityVerifier(t *test
 	}
 }
 
+func assertDeliveredTaskReceiptPair(t *testing.T, records []receipt.ActionRecord) {
+	t.Helper()
+	// The intent records permission at admission. The outcome records the
+	// upstream result after the send-time task check allowed delivery.
+	if len(records) != 2 || records[0].DecisionPhase != receipt.DecisionPhaseIntent ||
+		records[1].DecisionPhase != receipt.DecisionPhaseOutcome || records[0].ActionID != records[1].ActionID ||
+		records[0].Verdict != config.ActionAllow || records[1].Verdict != config.ActionAllow ||
+		!strings.HasPrefix(records[1].Pattern, "status=result ") || !strings.HasSuffix(records[1].Pattern, " reason=complete") {
+		t.Fatalf("receipts = %+v, want the allow intent and its completed result", records)
+	}
+}
+
 func TestHTTPTaskPermissionRechecksAtSend(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -405,10 +418,7 @@ func TestHTTPTaskPermissionRechecksAtSend(t *testing.T) {
 				t.Fatalf("upstream requests = %d, want %d. Response = %s, want %q", got, tc.wantCalls, output.String(), tc.wantReply)
 			}
 			if !tc.rotate {
-				records := observed.snapshot()
-				if len(records) != 1 || records[0].Verdict != config.ActionAllow || records[0].DecisionPhase != "" {
-					t.Errorf("receipts = %+v, want a single-phase allow after a successful task recheck", records)
-				}
+				assertDeliveredTaskReceiptPair(t, observed.snapshot())
 			}
 		})
 	}
@@ -452,9 +462,7 @@ func TestWSTaskPermissionRechecksAfterHandshake(t *testing.T) {
 			}
 			records := observed.snapshot()
 			if !tc.expire {
-				if len(records) != 1 || records[0].Verdict != config.ActionAllow || records[0].DecisionPhase != "" {
-					t.Fatalf("receipts=%+v, want a single allow for the delivered frame", records)
-				}
+				assertDeliveredTaskReceiptPair(t, records)
 				return
 			}
 			if !strings.Contains(response, `"code":-32002`) {
@@ -470,10 +478,66 @@ func TestWSTaskPermissionRechecksAfterHandshake(t *testing.T) {
 	}
 }
 
+func TestWSTaskPermissionRechecksAfterOutcomeRegistration(t *testing.T) {
+	cfg := config.Defaults()
+	rec := &httpTaskPermissionRecorder{subject: "test-subject"}
+	rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingDLP}))
+	emitter, _, _, _ := newReceiptTestHarnessWithObserver(t, func(r *receipt.Receipt) {
+		if strings.HasSuffix(r.ActionRecord.Pattern, "reason=request_tracker_capacity") {
+			rec.rotated.Store(true)
+		}
+	})
+	opts := MCPProxyOpts{Rec: rec, TaintCfg: &cfg.Taint, ReceiptEmitter: emitter, Transport: "mcp_ws", taskSubject: rec.subject}
+	frame := ParseMCPFrame([]byte(deferKillTestCall))
+	rec.action = mcpTaskAction(opts, frame)
+	decision := httpInputDecision{
+		taskFrame: frame,
+		taskTaint: taintDecision{Task: rec.TaskSnapshot(), taskAction: rec.action},
+	}
+	if refusal := mcpTaskReleaseRefusal(opts, frame, decision.taskTaint, false); refusal != "" {
+		t.Fatalf("task permission refused before registration: %s", refusal)
+	}
+
+	var oldest TrackedRequestOutcome
+	if _, err := opts.emitAdmittedReceiptDecision(MCPDecision{
+		Receipt: receipt.EmitOpts{
+			ActionID: "pending-before-release", Verdict: config.ActionAllow, Transport: opts.Transport,
+			Target: "tool:lookup", PolicyHash: mcpTestPolicyHash, MCPMethod: methodToolsCall,
+		},
+		outcome: &oldest,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tracker := NewRequestTracker()
+	tracker.TrackOutcome(json.RawMessage("999"), oldest)
+	for id := 1000; id < 999+maxTrackedRequests; id++ {
+		tracker.Track(json.RawMessage(strconv.Itoa(id)))
+	}
+
+	registration, refusal, trackErr := registerWSTaskOutcome(io.Discard, opts, tracker, frame, decision)
+	if trackErr != nil {
+		t.Fatal(trackErr)
+	}
+	if registration == nil || !rec.rotated.Load() {
+		t.Fatal("registration did not finish evicting the oldest outcome")
+	}
+	if !strings.Contains(refusal, session.TaskApprovalStale) || tracker.Validate(frame.ID) {
+		t.Fatalf("refusal = %q, registration still tracked = %t", refusal, tracker.Validate(frame.ID))
+	}
+}
+
 func TestStdioTaskPermissionRechecksAfterReceipt(t *testing.T) {
 	t.Parallel()
-	for _, action := range []string{config.ActionAllow, config.ActionWarn} {
-		t.Run(action, func(t *testing.T) {
+	for _, tc := range []struct {
+		name, action string
+		required     bool
+	}{
+		{"allow_required", config.ActionAllow, true},
+		{"allow_optional", config.ActionAllow, false},
+		{"warn_required", config.ActionWarn, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			action := tc.action
 			cfg := config.Defaults()
 			rec := &httpTaskPermissionRecorder{}
 			rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingDLP}))
@@ -487,7 +551,7 @@ func TestStdioTaskPermissionRechecksAfterReceipt(t *testing.T) {
 			opts := MCPProxyOpts{
 				Scanner: testScannerForHTTP(t), TaintCfg: &cfg.Taint, Rec: rec, ReceiptEmitter: emitter,
 				ServerBinding: "test-server", taskSubject: "verified-worker", Transport: deferred.SurfaceMCPStdio,
-				InputCfg: newHTTPInputCfg(config.ActionWarn), RequireReceipts: true,
+				InputCfg: newHTTPInputCfg(config.ActionWarn), RequireReceipts: tc.required,
 			}
 			msg := []byte(deferKillTestCall)
 			rec.BindTaskSubject(opts.taskSubject)
@@ -510,7 +574,57 @@ func TestStdioTaskPermissionRechecksAfterReceipt(t *testing.T) {
 				records[1].TaintDecisionReason != session.TaskApprovalStale {
 				t.Fatalf("receipts=%+v, want the final receipt to record a stale-task block", records)
 			}
+			if action == config.ActionAllow && (records[0].DecisionPhase != receipt.DecisionPhaseIntent ||
+				records[1].DecisionPhase != receipt.DecisionPhaseOutcome || records[0].ActionID != records[1].ActionID) {
+				t.Fatalf("allow and refused release have phases %q and %q with matching ID %v", records[0].DecisionPhase, records[1].DecisionPhase, records[0].ActionID == records[1].ActionID)
+			}
 		})
+	}
+}
+
+func TestStdioTaskPermissionRechecksAfterTrackerEvictionReceipt(t *testing.T) {
+	cfg := config.Defaults()
+	rec := &httpTaskPermissionRecorder{}
+	rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingDLP}))
+	const evicted = "evicted"
+	emitter, _, _, _ := newReceiptTestHarnessWithObserver(t, func(r *receipt.Receipt) {
+		if r.ActionRecord.ActionID == evicted && r.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome {
+			rec.rotated.Store(true)
+		}
+	})
+	opts := MCPProxyOpts{
+		Scanner: testScannerForHTTP(t), TaintCfg: &cfg.Taint, Rec: rec, ReceiptEmitter: emitter,
+		ServerBinding: "test-server", taskSubject: "verified-worker", Transport: deferred.SurfaceMCPStdio,
+		InputCfg: newHTTPInputCfg(config.ActionWarn), RequireReceipts: true,
+	}
+	msg := []byte(deferKillTestCall)
+	rec.BindTaskSubject(opts.taskSubject)
+	rec.action = mcpTaskAction(opts, ParseMCPFrame(msg))
+	tracker := NewRequestTracker()
+	var prior TrackedRequestOutcome
+	if _, err := opts.emitReceiptDecision(MCPDecision{
+		Receipt: receipt.EmitOpts{
+			ActionID: evicted, Verdict: config.ActionAllow, Transport: opts.Transport,
+			PolicyHash: mcpTestPolicyHash, MCPMethod: methodToolsCall, Target: "tool:evicted",
+		},
+		RequireReceipt: true, RequiredMode: true, outcome: &prior,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tracker.TrackOutcome(json.RawMessage(`"evicted"`), prior)
+	for i := range maxTrackedRequests - 1 {
+		tracker.Track(json.RawMessage(strconv.Itoa(i + 2)))
+	}
+	var upstream, logs bytes.Buffer
+	blocked := make(chan BlockedRequest, 1)
+	ForwardScannedInput(transport.NewStdioReader(strings.NewReader(string(msg)+"\n")),
+		transport.NewStdioWriter(&upstream), &logs, config.ActionWarn, config.ActionBlock, blocked, nil, tracker, opts)
+	denial, refused := <-blocked
+	if !rec.rotated.Load() || upstream.Len() != 0 || !refused || !strings.Contains(denial.ErrorMessage, session.TaskApprovalStale) {
+		t.Fatalf("rotated=%t upstream=%q refusal=%q logs=%q", rec.rotated.Load(), upstream.String(), denial.ErrorMessage, logs.String())
+	}
+	if _, ok := tracker.Consume(ParseMCPFrame(msg).ID); ok {
+		t.Error("refused call left a tracker registration")
 	}
 }
 
@@ -616,10 +730,10 @@ func TestReverseTaskPermissionRechecksAfterHeaderDiscovery(t *testing.T) {
 					status, f.lists.Load(), f.calls.Load(), tc.wantCalls, tc.wantReply, reply)
 			}
 			if tc.wantCalls == 1 {
-				records := observed.snapshot()
-				if len(records) != 1 || records[0].Verdict != config.ActionAllow || records[0].DecisionPhase != "" {
-					t.Fatalf("receipts = %+v, want one single-phase allow for the delivered call", records)
-				}
+				testwait.For(t, time.Second, func() bool {
+					return len(observed.snapshot()) >= 2
+				}, "signed task outcome after HTTP delivery")
+				assertDeliveredTaskReceiptPair(t, observed.snapshot())
 			}
 			if tc.wantCalls == 0 {
 				// The refusal receipt must record the release-time taint
@@ -1092,5 +1206,118 @@ func TestTaskPermissionMixedCaseNamesAcrossMCPTransports(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestDeferredStdioRechecksTaskAfterOutcomeEviction(t *testing.T) {
+	manager := newDeferKillManager(t)
+	rules := deferApprovalPolicy(config.DeferResolverProfile{})
+	rules.Rules[0].ResolutionPolicy.ResolverProfile = ""
+	cfg := config.Defaults()
+	risk := &listenerDiagnosisRecorder{}
+	seenEviction := false
+	emitter, disk, dir, _ := newReceiptTestHarnessWithObserver(t, func(r *receipt.Receipt) {
+		if strings.Contains(r.ActionRecord.Pattern, "reason=request_tracker_capacity") {
+			seenEviction = true
+			risk.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingDLP}))
+		}
+	})
+	opts := MCPProxyOpts{
+		Scanner: testInputScanner(t), PolicyCfg: rules, DeferManager: manager, ReceiptEmitter: emitter,
+		Transport: deferred.SurfaceMCPStdio, Rec: risk, TaintCfg: &cfg.Taint,
+	}
+	var oldest TrackedRequestOutcome
+	if _, err := opts.emitAdmittedReceiptDecision(MCPDecision{
+		Receipt: receipt.EmitOpts{
+			ActionID: "pending-before-hold", Verdict: config.ActionAllow, Transport: opts.Transport,
+			Target: "tool:lookup", PolicyHash: mcpTestPolicyHash, MCPMethod: methodToolsCall,
+		},
+		outcome: &oldest,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if oldest.handle == nil {
+		t.Fatal("pending intent has no outcome handle")
+	}
+	tracker := NewRequestTracker()
+	tracker.TrackOutcome(json.RawMessage("999"), oldest)
+	for id := 1000; id < 999+maxTrackedRequests; id++ {
+		tracker.Track(json.RawMessage(strconv.Itoa(id)))
+	}
+
+	input, feed := io.Pipe()
+	var upstream syncBuffer
+	blocked := make(chan BlockedRequest, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ForwardScannedInput(transport.NewStdioReader(input), transport.NewStdioWriter(&upstream), io.Discard,
+			config.ActionWarn, config.ActionBlock, blocked, nil, tracker, opts)
+	}()
+	t.Cleanup(func() {
+		if err := feed.Close(); err != nil {
+			t.Error(err)
+		}
+		<-done
+	})
+	if _, err := io.WriteString(feed, deferKillTestCall); err != nil {
+		t.Fatal(err)
+	}
+	testwait.For(t, 5*time.Second, func() bool { return len(manager.Snapshot()) == 1 }, "deferred stdio action")
+	hold := manager.Snapshot()[0]
+	applied, err := manager.ResolveApprovalResult(hold.DeferID, config.ActionAllow, deferred.SourceApproval)
+	if err != nil || applied != config.ActionBlock {
+		t.Fatalf("applied decision = %q, error = %v; want late refusal", applied, err)
+	}
+	assertTerminalJournalSequence(t, manager, hold.DeferID,
+		deferred.StateResolvedAllow+"/"+deferred.SourceApproval, deferred.StateResolvedBlock+"/"+deferred.SourceCancel)
+	if !seenEviction {
+		t.Fatal("tracker did not evict the oldest outcome")
+	}
+	if got := upstream.String(); got != "" {
+		t.Fatalf("deferred action was sent after task refusal: %q", got)
+	}
+	select {
+	case denial := <-blocked:
+		if denial.ErrorCode != -32002 || !strings.Contains(denial.ErrorMessage, session.TaskPermissionRequired) {
+			t.Errorf("deferred refusal = %+v", denial)
+		}
+	default:
+		t.Error("deferred task refusal produced no client response")
+	}
+	if err := disk.Close(); err != nil {
+		t.Fatal(err)
+	}
+	receipts := readActionReceipts(t, dir)
+	var releaseID string
+	for _, r := range receipts {
+		a := r.ActionRecord
+		if a.ParentActionID == hold.ActionID && a.DecisionPhase == receipt.DecisionPhaseIntent {
+			if releaseID != "" {
+				t.Fatal("multiple release intents")
+			}
+			releaseID = a.ActionID
+		}
+	}
+	if releaseID == "" {
+		t.Fatal("missing release intent")
+	}
+	var correction, terminal int
+	for _, r := range receipts {
+		a := r.ActionRecord
+		if a.ParentActionID != hold.ActionID || a.Verdict != config.ActionBlock {
+			continue
+		}
+		switch a.DecisionPhase {
+		case receipt.DecisionPhaseResolution:
+			correction++
+		case receipt.DecisionPhaseOutcome:
+			if a.ActionID == releaseID {
+				terminal++
+			}
+		}
+	}
+	if correction != 1 || terminal != 1 {
+		t.Fatalf("after task refusal: %d corrections and %d release outcomes, want one each", correction, terminal)
 	}
 }

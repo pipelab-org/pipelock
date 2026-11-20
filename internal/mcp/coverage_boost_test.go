@@ -64,7 +64,7 @@ func TestRunProxy_WithToolAndBinding(t *testing.T) {
 	}
 
 	err := RunProxy(ctx, stdin, &stdout, &stderr,
-		[]string{"sh", "-c", fmt.Sprintf("echo '%s'", toolsListResp)},
+		[]string{"sh", "-c", `IFS= read -r request || exit 1; printf "%s\n" "$1"`, "sh", toolsListResp},
 		MCPProxyOpts{
 			Scanner: sc,
 			ToolCfg: toolCfg,

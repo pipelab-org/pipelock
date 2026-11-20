@@ -538,7 +538,12 @@ func requireAcknowledgedAudit(t *testing.T, obs *toolScanCaptureRecorder, rec in
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
-	receipts := readActionReceipts(t, dir)
+	var receipts []receipt.Receipt
+	for _, signed := range readActionReceipts(t, dir) {
+		if signed.ActionRecord.DecisionPhase == "" {
+			receipts = append(receipts, signed)
+		}
+	}
 	if len(receipts) != 1 {
 		t.Fatalf("receipt count = %d, want 1", len(receipts))
 	}
@@ -560,7 +565,7 @@ func TestWebSocketAcknowledgmentAuditAndRefusal(t *testing.T) {
 		"other binding under warn":     {tools.ServerBindingDigest("upstream", "https://elsewhere.example/mcp"), config.ActionWarn, false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			srv := wsRespondServer(t, []byte(strings.TrimSpace(ackLine())), nil)
+			srv := wsRespondServerWithClose(t, []byte(strings.TrimSpace(ackLine())), nil, true)
 			defer srv.Close()
 			emitter, rec, dir, pubHex := newReceiptTestHarness(t)
 			obs := &toolScanCaptureRecorder{}

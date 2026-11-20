@@ -19,6 +19,7 @@ import (
 	"github.com/gobwas/ws"
 	gobwasutil "github.com/gobwas/ws/wsutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
@@ -448,6 +449,66 @@ func TestHTTPResponseKeyRejectionDefersProtocolNegotiation(t *testing.T) {
 			}
 			if got := <-seen; got != want {
 				t.Fatalf("next request protocol=%q want=%q", got, want)
+			}
+		})
+	}
+}
+
+func TestPairedResponseRefusalSettles(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw, reason string
+		kill              bool
+	}{
+		{"malformed keys", `{"jsonrpc":"2.0","id":1,"result":{},"result":{}}`, "response_key_validation", false},
+		{"ambiguous id", `{"jsonrpc":"2.0","id":1,"id":2,"result":{}}`, "", false},
+		{"kill switch", `{"jsonrpc":"2.0","id":1,"result":{}}`, "kill_switch", true},
+		{"server request", `{"jsonrpc":"2.0","id":1,"method":"ping"}`, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emitter, rec, dir, key := newReceiptTestHarness(t)
+			intent := receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: "mcp_stdio", Target: "tool:lookup", MCPMethod: methodToolsCall}
+			var outcome TrackedRequestOutcome
+			if _, err := EmitMCPDecision(emitter, nil, nil, MCPDecision{
+				Receipt: intent, RequireReceipt: true, RequiredMode: true, outcome: &outcome,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			tracker := NewRequestTracker()
+			tracker.TrackOutcome(json.RawMessage("1"), outcome)
+			opts := buildTestOpts(testInputScanner(t))
+			opts.ReceiptEmitter = emitter
+			opts.RequireReceipts = true
+			if tc.kill {
+				opts.KillSwitch = killswitch.New(config.Defaults())
+				opts.KillSwitch.SetAPI(true)
+			}
+			var out bytes.Buffer
+			if _, err := ForwardScanned(responseStateReader(t, "stdio", tc.raw), transport.NewStdioWriter(&out), io.Discard, tracker, opts); err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(out.Bytes(), []byte(`"error"`)) {
+				t.Fatalf("denied reply did not produce a client error: %s", out.String())
+			}
+			if err := rec.Close(); err != nil {
+				t.Fatal(err)
+			}
+			records := readActionReceipts(t, dir)
+			if tc.reason == "" {
+				if !tracker.HasPending() || len(records) != 1 {
+					t.Fatalf("unattributable reply affected the request: pending=%t receipts=%d", tracker.HasPending(), len(records))
+				}
+				return
+			}
+			if tracker.HasPending() || len(records) != 2 {
+				t.Fatalf("denial left its request open: pending=%t receipts=%d", tracker.HasPending(), len(records))
+			}
+			terminal := records[1]
+			if err := receipt.VerifyWithKey(terminal, key); err != nil {
+				t.Fatal(err)
+			}
+			if a := terminal.ActionRecord; a.ActionID != intent.ActionID ||
+				a.DecisionPhase != receipt.DecisionPhaseOutcome || !strings.Contains(a.Pattern, "reason="+tc.reason) {
+				t.Fatalf("denial did not sign the request outcome: %+v", a)
 			}
 		})
 	}
