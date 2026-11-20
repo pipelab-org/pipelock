@@ -565,6 +565,21 @@ func blockingBodyFinding(result BodyScanResult, hostname string, cfg *config.Con
 	return bodyBlockCauseUnknown
 }
 
+// bodyInspectionLimitDetail reports the DLP limit and whether it was the sole scan failure.
+func bodyInspectionLimitDetail(result BodyScanResult, cause bodyBlockCause) (string, bool) {
+	if cause != bodyBlockCauseDLP || result.RedactionBlockReason != "" ||
+		len(result.DLPMatches) == 0 || slices.ContainsFunc(result.DLPMatches, func(m scanner.TextDLPMatch) bool {
+		return !m.IsInspectionLimit()
+	}) {
+		return "", false
+	}
+	detail := appendUnreadUpload(scanner.RequestBodyInspectionLimitPrefix+strings.Join(dlpMatchNames(result.DLPMatches), ", "), result.FileInspectionIncomplete)
+	if result.ScanError != "" {
+		return "request body scan failed: " + result.ScanError + "; " + detail, false
+	}
+	return detail, true
+}
+
 // oauthRemainderHasCredential runs the ordinary body DLP views over the body
 // with the one designated OAuth credential blanked. Any other Anthropic key
 // those views can see, including one split across a value and the next key,

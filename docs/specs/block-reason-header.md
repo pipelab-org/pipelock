@@ -74,6 +74,7 @@ Reason codes are lowercase snake_case. The v1 set is derived from existing pipel
 | Code | When | Severity | Retry |
 |---|---|---|---|
 | `dlp_match` | Outbound payload matched a DLP pattern (secret, credential, PII). | `critical` | `none` |
+| `request_body_inspection_limit` | Request-body DLP could not finish inspecting encoded content or structured numeric data within its bound. The request was refused. Reduce the amount of content or encoding in the request before retrying. | `warn` | `none` |
 | `body_entropy` | Body, WebSocket frame, or A2A payload matched the opaque-content detector: entropy exceeded the configured ceiling or a long all-hex value was observed. | `warn` | `policy` |
 | `prompt_injection` | Inbound response, or an outbound request body (layer `body_prompt_injection`), matched an injection pattern. | `critical` | `none` |
 | `redaction_failure` | Outbound redaction stage encountered an unrecoverable parse error and fail-closed. | `critical` | `transient` |

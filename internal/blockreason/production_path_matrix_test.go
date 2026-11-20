@@ -156,6 +156,8 @@ func constNameForReason(r blockreason.Reason) string {
 		return "ResponseIncomplete"
 	case blockreason.DLPMatch:
 		return "DLPMatch"
+	case blockreason.RequestBodyInspectionLimit:
+		return "RequestBodyInspectionLimit"
 	case blockreason.PromptInjection:
 		return "PromptInjection"
 	case blockreason.RedactionFailure:

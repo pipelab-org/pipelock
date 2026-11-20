@@ -86,10 +86,11 @@ const (
 	ResponseIncomplete Reason = "response_incomplete"
 
 	// Content / payload layer.
-	DLPMatch         Reason = "dlp_match"
-	PromptInjection  Reason = "prompt_injection"
-	RedactionFailure Reason = "redaction_failure"
-	MediaPolicy      Reason = "media_policy"
+	DLPMatch                   Reason = "dlp_match"
+	RequestBodyInspectionLimit Reason = "request_body_inspection_limit"
+	PromptInjection            Reason = "prompt_injection"
+	RedactionFailure           Reason = "redaction_failure"
+	MediaPolicy                Reason = "media_policy"
 
 	// MCP / tool layer.
 	ToolPolicyDeny   Reason = "tool_policy_deny"
@@ -166,6 +167,7 @@ var validReasons = map[Reason]struct{}{
 	ResponseSize:               {},
 	ResponseIncomplete:         {},
 	DLPMatch:                   {},
+	RequestBodyInspectionLimit: {},
 	PromptInjection:            {},
 	RedactionFailure:           {},
 	MediaPolicy:                {},
@@ -647,6 +649,7 @@ func SeverityFor(reason Reason) Severity {
 		DataBudget,
 		ResponseSize,
 		ResponseIncomplete,
+		RequestBodyInspectionLimit,
 		MediaPolicy,
 		ParseError,
 		Timeout,
