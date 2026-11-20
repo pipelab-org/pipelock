@@ -398,7 +398,8 @@ func TestMCPV3RedirectDispatchOutcome(t *testing.T) {
 				})
 				refuseDelivery := tc.name == "refused delivery"
 				var deliver func() error
-				if surface == transportMCPStdio {
+				switch surface {
+				case transportMCPStdio:
 					blocked := make(chan BlockedRequest, 2)
 					ForwardScannedInput(transport.NewStdioReader(strings.NewReader(cleanToolsCallRequest)),
 						v3TestPeer(func([]byte) error {
@@ -408,7 +409,7 @@ func TestMCPV3RedirectDispatchOutcome(t *testing.T) {
 					if br, ok := <-blocked; ok && br.SyntheticResponse != nil {
 						deliver = func() error { return deliverMCPInputResult(opts, br, peer) }
 					}
-				} else if surface == listener {
+				case listener:
 					upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 						t.Error("redirect contacted the MCP upstream")
 						w.WriteHeader(http.StatusBadGateway)
@@ -438,7 +439,7 @@ func TestMCPV3RedirectDispatchOutcome(t *testing.T) {
 							return a.EffectBoundary == mcpV3Delivery && a.OutcomeClass == "completed" && a.ParentActionID != ""
 						})
 					}, "listener redirect delivery outcome")
-				} else {
+				default:
 					decision := scanHTTPInputDecision([]byte(cleanToolsCallRequest), io.Discard, "session", "session", opts)
 					if decision.Synthetic != nil {
 						deliver = func() error { return deliverMCPSynthetic(decision.Synthetic, peer) }
