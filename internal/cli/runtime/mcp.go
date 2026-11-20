@@ -947,12 +947,13 @@ Key-free evidence capture:
 			}
 
 			// Validate upstream URL scheme.
-			var isWSUpstream bool
+			var isWSUpstream, upstreamHasUserinfo bool
 			if hasUpstream {
 				u, err := url.Parse(upstreamURL)
 				if err != nil || u.Host == "" {
 					return fmt.Errorf("invalid upstream URL %q: must include a scheme and host", RedactEndpoint(upstreamURL))
 				}
+				upstreamHasUserinfo = u.User != nil
 				switch u.Scheme {
 				case schemeHTTP, schemeHTTPS:
 					// HTTP transport.
@@ -973,6 +974,15 @@ Key-free evidence capture:
 				}
 				if listenerAuthTokenFile != "" || listenerAllowUnauthenticated {
 					return errors.New("mcp_door cannot be combined with listener auth token or unauthenticated flags")
+				}
+				for _, name := range []string{"Authorization", "Proxy-Authorization"} {
+					if len(upstreamHeaders.Values(name)) > 0 {
+						return fmt.Errorf("mcp_door cannot be combined with static upstream %s (remove it from --header, --header-file, or --header-carrier)", name)
+					}
+				}
+				// net/http turns upstream URL userinfo into Basic Authorization.
+				if upstreamHasUserinfo {
+					return errors.New("mcp_door cannot be combined with static upstream Authorization from URL credentials (remove user information from --upstream)")
 				}
 			} else if err := validateMCPListenerBoundary(listenAddr, listenerAuthToken, listenerAllowUnauthenticated); err != nil {
 				return err
