@@ -458,6 +458,24 @@ func TestURLCoreFloorUnparsedRefusesIncompleteDecode(t *testing.T) {
 	}
 }
 
+func TestRequestBodyInspectionLimitGuidance(t *testing.T) {
+	t.Parallel()
+	for _, layer := range []string{ScannerBodyDLP, ScannerDLP, ScannerContext} {
+		for _, tc := range []struct {
+			finding string
+			want    RemediationGuidance
+		}{
+			{UninspectableEncodedContentPattern, decodeInspectionLimitGuidance()},
+			{UninspectableJSONNumberPattern, jsonInspectionLimitGuidance()},
+		} {
+			reason := RequestBodyInspectionLimitPrefix + tc.finding
+			if got, ok := GuidanceForResult(layer, reason); !ok || got != tc.want {
+				t.Errorf("layer %q reason %q guidance = %+v, %v", layer, reason, got, ok)
+			}
+		}
+	}
+}
+
 func TestDecodeFragmentLimitGuidance(t *testing.T) {
 	t.Parallel()
 	want := decodeInspectionLimitGuidance()

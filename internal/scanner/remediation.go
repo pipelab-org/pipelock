@@ -738,12 +738,28 @@ func jsonInspectionLimitInNames(names string) bool {
 	return false
 }
 
+// RequestBodyInspectionLimitPrefix identifies a generated HTTP body refusal
+// whose DLP findings are all inspection limits.
+const RequestBodyInspectionLimitPrefix = "request body inspection limit reached: "
+
 func GuidanceForResult(label, reason string) (RemediationGuidance, bool) {
 	// Generic events retain only the emitted reason. Strip client-chosen query
 	// keys before recognizing the closed set of inspection-refusal formats.
 	// A reason that also names an unread upload is routed by
 	// findingBeforeUnread, whatever order its pattern names take.
 	stripped := stripNestedURLReasonPrefix(reason)
+	switch label {
+	case ScannerBodyDLP, ScannerDLP, ScannerContext:
+		if detail, ok := strings.CutPrefix(stripped, RequestBodyInspectionLimitPrefix); ok {
+			names, _, _ := strings.Cut(detail, "; ")
+			switch {
+			case decodeInspectionLimitInNames(names):
+				return decodeInspectionLimitGuidance(), true
+			case jsonInspectionLimitInNames(names):
+				return jsonInspectionLimitGuidance(), true
+			}
+		}
+	}
 	switch stripped {
 	case urlInspectionLimitReason:
 		return decodeInspectionLimitGuidance(), true
