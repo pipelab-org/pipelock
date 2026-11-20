@@ -730,6 +730,35 @@ func fakeExplainEventGitHubToken() string {
 	return "ghp_" + strings.Repeat("A", 36)
 }
 
+func TestExplainEventInspectionLimitUnreadUpload(t *testing.T) {
+	sanitizer, err := newExplainEventSanitizer(config.Defaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	unread := "; upload unread, " + scanner.IncompleteFileGovernedSuffix
+	encoded := scanner.UninspectableEncodedContentPattern
+	previous := "request body contains secret: " + encoded + unread
+	current := scanner.RequestBodyInspectionLimitPrefix + encoded + unread
+	for _, patterns := range [][]any{nil, {encoded}} {
+		var hints []string
+		for _, reason := range []string{previous, current} {
+			raw := map[string]any{
+				"event": "body_dlp", "scanner": scanner.ScannerBodyDLP, "reason": reason,
+			}
+			if patterns != nil {
+				raw["patterns"] = patterns
+			}
+			report := buildExplainEventReport(raw, "req-test", "request_id", sanitizer)
+			hints = append(hints, report.RemediationHint)
+		}
+		if hints[0] == "" || hints[0] != hints[1] ||
+			!strings.Contains(hints[0], "decoder inspection limit") ||
+			!strings.Contains(hints[0], "could not be fully read") {
+			t.Fatalf("patterns=%v hints=%q", patterns, hints)
+		}
+	}
+}
+
 func TestJSONInspectionExplainHint(t *testing.T) {
 	cfg := config.Defaults()
 	sanitizer, err := newExplainEventSanitizer(cfg)

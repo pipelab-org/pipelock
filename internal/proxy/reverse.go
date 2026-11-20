@@ -2288,6 +2288,10 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	if reason == "" {
 		reason = "request body contains secret patterns"
 	}
+	limitDetail, limitOnly := bodyInspectionLimitDetail(result, blockCause)
+	if limitDetail != "" {
+		reason = limitDetail
+	}
 	receiptPattern := reason
 	reason = result.withAudienceExplanation(reason)
 	clientIP, _ := r.Context().Value(ctxKeyClientIP).(string)
@@ -2345,6 +2349,9 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		layer = failureLayer
 		bodyBlockReason = blockreason.ParseError
 		signalScanner = failureLayer
+	}
+	if limitOnly {
+		bodyBlockReason = blockreason.RequestBodyInspectionLimit
 	}
 	if promptInjectionHardBlock || dlpHardBlock || isFailClosedBodyResult(result, bodyBytes) {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
