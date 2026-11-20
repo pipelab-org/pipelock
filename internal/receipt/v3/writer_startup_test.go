@@ -4,6 +4,8 @@
 package v3
 
 import (
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,5 +66,72 @@ func TestDirectoryHasV3(t *testing.T) {
 	}
 	if has, err := DirectoryHasV3(dir); !has || err != nil {
 		t.Fatalf("DirectoryHasV3(damaged evidence) = %t, %v, want true, nil", has, err)
+	}
+}
+
+func TestStreamWriterStartupPublicationFailureLeavesDirectoryReusable(t *testing.T) {
+	injected := errors.New("opening record storage failure")
+	for _, tc := range []struct {
+		name      string
+		want      error
+		configure func(*StreamWriterOptions)
+	}{
+		{
+			name: "lineage randomness", want: io.ErrUnexpectedEOF,
+			configure: func(opts *StreamWriterOptions) { opts.Random = strings.NewReader("short") },
+		},
+		{
+			name: "stream randomness", want: io.EOF,
+			configure: func(opts *StreamWriterOptions) { opts.Random = strings.NewReader(strings.Repeat("a", 16)) },
+		},
+		{
+			name: "temporary file creation", want: injected,
+			configure: func(opts *StreamWriterOptions) {
+				opts.CreateTempFile = func(string, string) (StreamFile, error) { return nil, injected }
+			},
+		},
+		{
+			name: "opening record write", want: injected,
+			configure: func(opts *StreamWriterOptions) {
+				opts.CreateTempFile = faultOpeningRecord(injected, nil)
+			},
+		},
+		{
+			name: "opening record sync", want: injected,
+			configure: func(opts *StreamWriterOptions) {
+				opts.CreateTempFile = faultOpeningRecord(nil, injected)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			opts := writerTestOptions(dir)
+			tc.configure(&opts)
+			writer, err := OpenStreamWriter(t.Context(), opts)
+			if writer != nil {
+				_ = writer.Close(t.Context(), nil)
+			}
+			if writer != nil || !errors.Is(err, tc.want) {
+				t.Fatalf("startup = %t, %v, want %v", writer != nil, err, tc.want)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("failed startup left evidence artifacts: %v, %v", entries, err)
+			}
+			restarted := requireWriter(t, writerTestOptions(dir), localWriterStorage())
+			if err := restarted.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func faultOpeningRecord(writeErr, syncErr error) func(string, string) (StreamFile, error) {
+	return func(dir, pattern string) (StreamFile, error) {
+		file, err := os.CreateTemp(dir, pattern)
+		if err != nil {
+			return nil, err
+		}
+		return errorWriterFile{StreamFile: file, writeErr: writeErr, syncErr: syncErr}, nil
 	}
 }

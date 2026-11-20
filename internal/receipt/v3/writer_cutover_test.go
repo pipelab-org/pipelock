@@ -67,6 +67,61 @@ func TestStreamWriterCutoverCommitsAtFirstStream(t *testing.T) {
 	if inventoryPin == "" || hasV3Entry(entries) {
 		t.Fatalf("expected inventory without a v3 stream: %v", entries)
 	}
+	inventoryPath := filepath.Join(dir, InventoryFilename(inventoryPin))
+	body, err := os.ReadFile(filepath.Clean(inventoryPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stalePath := filepath.Join(dir, InventoryFilename(Digest([]byte("stale inventory"))))
+	if err := os.WriteFile(stalePath, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	barrierErr := errors.New("cutover inventory barrier failed")
+	for _, stage := range []string{"remove stale inventory", "flush inventory file", "flush inventory directory"} {
+		t.Run(stage, func(t *testing.T) {
+			storage := localWriterStorage()
+			switch stage {
+			case "remove stale inventory":
+				remove := storage.remove
+				storage.remove = func(path string) error {
+					if path == stalePath {
+						return barrierErr
+					}
+					return remove(path)
+				}
+			case "flush inventory file":
+				storage.syncFile = func(string) error { return barrierErr }
+			case "flush inventory directory":
+				syncDir := storage.syncDir
+				storage.syncDir = func(path string) error {
+					if path == dir {
+						return barrierErr
+					}
+					return syncDir(path)
+				}
+			}
+			requireCutoverRefusal(t, opts, storage, barrierErr, "")
+		})
+	}
+
+	if err := os.WriteFile(inventoryPath, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	requireCutoverRefusal(t, opts, localWriterStorage(), nil, "existing receipt cutover inventory failed verification")
+	if err := os.Remove(inventoryPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(inventoryPath, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	requireCutoverRefusal(t, opts, localWriterStorage(), nil, "evidence path is not a regular file")
+	if err := os.Remove(inventoryPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(inventoryPath, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	restarted := requireWriter(t, opts, localWriterStorage())
 	if got := restarted.open.LegacyCutover; got.Chains != 1 || got.Inventory != inventoryPin {
 		t.Fatalf("cutover used the wrong inventory: %+v", got)
@@ -238,6 +293,55 @@ func TestStreamWriterRefusesFailedJournalRepairBarriers(t *testing.T) {
 			got, err := os.ReadFile(filepath.Clean(path))
 			if err != nil || string(got) != want {
 				t.Fatalf("journal after failed cutover: %q (%v), want %q", got, err, want)
+			}
+		})
+	}
+}
+
+func requireCutoverRefusal(t *testing.T, opts StreamWriterOptions, storage writerStorage, cause error, diagnostic string) {
+	t.Helper()
+	writer, err := openStreamWriter(t.Context(), opts, storage)
+	if err == nil {
+		_ = writer.Close(t.Context(), nil)
+		t.Fatal("cutover succeeded after inventory failure")
+	}
+	if cause != nil && !errors.Is(err, cause) || !strings.Contains(err.Error(), diagnostic) {
+		t.Fatalf("cutover error = %v, want %v %q", err, cause, diagnostic)
+	}
+	if committed, inspectErr := DirectoryHasV3(opts.Dir); committed || inspectErr != nil {
+		t.Fatalf("refused cutover left v3 evidence: %t, %v", committed, inspectErr)
+	}
+}
+
+func TestStreamWriterRefusesUnverifiedLegacyCutover(t *testing.T) {
+	const name = "activation-receipts.jsonl"
+	for _, tc := range []struct {
+		name, file, contents, diagnostic string
+	}{
+		{"malformed legacy receipt", name, "{\n", "receipt cutover refused"},
+		{"unreadable legacy journal", legacyJournalName, "", "open legacy defer journal"},
+		{"damaged committed v3 evidence", "damaged" + layoutFileSuffix, "{\n", "verify receipt history before restart"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, tc.file)
+			if tc.file == legacyJournalName {
+				if err := os.Mkdir(path, 0o750); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(path, []byte(tc.contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			writer, err := OpenStreamWriter(t.Context(), writerTestOptions(dir))
+			if writer != nil {
+				_ = writer.Close(t.Context(), nil)
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.diagnostic) {
+				t.Fatalf("startup error = %v, want %q", err, tc.diagnostic)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil || len(entries) != 1 || entries[0].Name() != tc.file {
+				t.Fatalf("refused startup changed the inventory: %v, %v", entries, err)
 			}
 		})
 	}

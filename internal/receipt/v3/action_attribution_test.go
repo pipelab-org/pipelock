@@ -8,9 +8,11 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 func TestSetAttributionRedaction(t *testing.T) {
@@ -92,5 +94,35 @@ func TestStreamWriterSignsShieldAttribution(t *testing.T) {
 	}
 	if !reflect.DeepEqual(actions[0].Shield, &want) {
 		t.Fatalf("signed Browser Shield summary = %+v, want %+v", actions[0].Shield, want)
+	}
+}
+
+func TestSetAttributionOmitsURLLessTaintSources(t *testing.T) {
+	stamp := time.Date(2026, 1, 1, 12, 30, 0, 123, time.FixedZone("example", 3600))
+	opts := receipt.EmitOpts{
+		SessionID: "example-session", SessionTaintLevel: "external_untrusted",
+		AuthorityKind: "policy", TaintDecision: "warn",
+		TaintDecisionReason: "review requested", TaskOverrideApplied: true,
+		RecentTaintSources: []session.TaintSourceRef{
+			{Kind: "mcp_response", Level: session.TaintExternalUntrusted, Timestamp: stamp},
+			{Kind: "fetch", URL: "https://api.vendor.example/private?item=example", Level: session.TaintExternalUntrusted, Timestamp: stamp},
+		},
+	}
+	var action Action
+	action.SetAttribution(opts)
+	wantSession := &Session{
+		ID: "example-session", TaintLevel: "external_untrusted", Contaminated: new(false),
+		TaintSources: []TaintSource{{
+			Kind: "fetch", Level: int64(session.TaintExternalUntrusted),
+			Timestamp: "2026-01-01T11:30:00.000000123Z", URL: "https://api.vendor.example",
+		}},
+	}
+	wantTaint := &Taint{AuthorityKind: "policy", Decision: "warn", Reason: "review requested", TaskOverrideApplied: new(true)}
+	if !reflect.DeepEqual(action.Session, wantSession) || !reflect.DeepEqual(action.Taint, wantTaint) {
+		t.Fatalf("session = %+v, taint = %+v, want %+v and %+v", action.Session, action.Taint, wantSession, wantTaint)
+	}
+	action.SetAttribution(receipt.EmitOpts{RecentTaintSources: opts.RecentTaintSources[:1]})
+	if action.Session != nil || action.Taint != nil {
+		t.Fatalf("URL-less source created attribution: %+v", action)
 	}
 }

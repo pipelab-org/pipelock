@@ -449,3 +449,41 @@ func TestStreamWriterShutdownRetriesQueuedTerminalResolution(t *testing.T) {
 	}
 	verifyWritten(t, opts.Dir, keys)
 }
+
+func TestStreamWriterTerminalQueueRetainsAcceptedWorkAtCapacity(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	opts.Heartbeat = 0
+	w := requireWriter(t, opts, localWriterStorage())
+	policy := CapturePolicy(opts.PolicyHash)
+	held := writerTestHold("first")
+	if err := w.WriteAction(t.Context(), held, policy); err != nil {
+		t.Fatal(err)
+	}
+	first := blockingHoldResolution(held, "operator", relationAfter, false)
+	second := blockingHoldResolution(writerTestHold("second"), "operator", relationAfter, false)
+
+	ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+	defer cancel()
+	w.gate <- struct{}{}
+	stream := w.active.id
+	firstErr := w.WriteTerminalResolution(ctx, first, policy, 1)
+	secondErr := w.WriteTerminalResolution(ctx, second, policy, 1)
+	w.release()
+	if !errors.Is(firstErr, context.DeadlineExceeded) {
+		t.Fatalf("first resolution did not report its deadline: %v", firstErr)
+	}
+	if !errors.Is(secondErr, context.DeadlineExceeded) || !strings.Contains(secondErr.Error(), "queue is full") {
+		t.Fatalf("second resolution must report queue capacity and its deadline: %v", secondErr)
+	}
+	if err := w.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteTerminalResolution(ctx, second, policy, 1); !errors.Is(err, ErrWriterUnavailable) {
+		t.Fatalf("closed writer accepted terminal work: %v", err)
+	}
+	held.Policy = policy.ActionPolicy()
+	first.Policy = policy.ActionPolicy()
+	if actions := readRecoveryActions(t, opts.Dir, stream); !reflect.DeepEqual(actions, []Action{held, first}) {
+		t.Fatalf("actions = %+v, want the hold and its accepted resolution", actions)
+	}
+}

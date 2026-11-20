@@ -289,3 +289,66 @@ func TestStreamWriterScheduledHeartbeat(t *testing.T) {
 		t.Fatalf("heartbeat was not confirmed: beat=%d seq=%d", w.active.beat, w.active.confirmed.Seq)
 	}
 }
+
+func TestStreamWriterRestartRequiresPredecessorFlush(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	opts.Heartbeat = 0
+	first := requireWriter(t, opts, localWriterStorage())
+	if err := first.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	predecessor := filepath.Join(opts.Dir, writerFilename(first.active.id, 0))
+	stale := filepath.Join(opts.Dir, writerTempPrefix+"interrupted")
+	if err := os.WriteFile(stale, []byte("partial record"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fault := errors.New("restart storage barrier failed")
+	for _, stage := range []string{"cleanup", "file flush", "directory flush"} {
+		t.Run(stage, func(t *testing.T) {
+			storage := localWriterStorage()
+			switch stage {
+			case "cleanup":
+				storage.remove = func(path string) error {
+					if path == stale {
+						return fault
+					}
+					return os.Remove(path)
+				}
+			case "file flush":
+				storage.syncFile = func(path string) error {
+					if path != predecessor {
+						t.Errorf("flushed %s, want verified predecessor %s", path, predecessor)
+					}
+					return fault
+				}
+			case "directory flush":
+				syncDir := storage.syncDir
+				storage.syncDir = func(path string) error {
+					if path == opts.Dir {
+						return fault
+					}
+					return syncDir(path)
+				}
+			}
+			writer, err := openStreamWriter(t.Context(), opts, storage)
+			if err == nil {
+				_ = writer.Close(t.Context(), nil)
+			}
+			if !errors.Is(err, fault) {
+				t.Fatalf("restart error = %v, want %v", err, fault)
+			}
+			result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+			if result.Verdict != "VALID" || len(result.Histories[0].Streams) != 1 {
+				t.Fatalf("failed restart changed the verified history: %+v", result)
+			}
+		})
+	}
+	restarted := requireWriter(t, opts, localWriterStorage())
+	if err := restarted.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if result.Verdict != "VALID" || len(result.Histories[0].Streams) != 2 {
+		t.Fatalf("restart after retry did not extend the history: %+v", result)
+	}
+}
