@@ -12,10 +12,7 @@ import (
 	"syscall"
 )
 
-func (s Store) withLock(fn func() error) error {
-	if err := os.MkdirAll(s.root, dirPerm); err != nil {
-		return fmt.Errorf("create contract store root: %w", err)
-	}
+func (s Store) withExistingLock(fn func() error) error {
 	f, err := os.OpenFile(filepath.Join(s.root, ".lock"), os.O_CREATE|os.O_RDWR, filePerm)
 	if err != nil {
 		return fmt.Errorf("open contract store lock: %w", err)

@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract/activation"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	contractstore "github.com/luckyPipewrench/pipelock/internal/contract/store"
+	"github.com/luckyPipewrench/pipelock/internal/directorysync"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -52,6 +53,7 @@ type lifecycleFlags struct {
 	rollbackTarget        string
 	intentID              string
 	authorizationID       string
+	receiptSync           lifecycleReceiptSync
 }
 
 type lifecycleContext struct {
@@ -73,11 +75,11 @@ func promoteCmd() *cobra.Command {
 		Short: "Promote a contract into the active manifest with signed lifecycle receipts",
 		Long: `Promote a compiled contract hash into the active manifest store.
 
-The command writes a signed contract_promote_intent receipt, performs the
-signed active-manifest swap, then writes a signed contract_promote_committed
-receipt. In --production mode the roster must contain at least three active
-activation authorities and the manifest must carry two distinct activation
-principals.`,
+The command validates the candidate and syncs signed contract_promote_intent
+and contract_promote_committed receipts before publishing the active manifest.
+Check the active manifest to see which generation took effect. In --production
+mode the roster must contain at least three active activation authorities and
+the manifest must carry two distinct activation principals.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runPromote(cmd, flags)
@@ -99,11 +101,12 @@ func rollbackCmd() *cobra.Command {
 		Short: "Rollback to an accepted manifest with signed lifecycle receipts",
 		Long: `Rollback to a previously accepted manifest.
 
-The command writes a signed contract_rollback_authorized receipt, performs a
-new monotonic active-manifest swap that reuses the target manifest selectors,
-then writes a signed contract_rollback_committed receipt. In --production mode
-the roster must contain at least three active activation authorities and the
-manifest must carry two distinct activation principals.`,
+The command validates a new generation with the target manifest's selectors
+and syncs signed contract_rollback_authorized and contract_rollback_committed
+receipts before publishing it. Check the active manifest to see which
+generation took effect. In --production mode the roster must contain at least
+three active activation authorities and the manifest must carry two distinct
+activation principals.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runRollback(cmd, flags)
@@ -117,14 +120,14 @@ manifest must carry two distinct activation principals.`,
 }
 
 func addLifecycleFlags(cmd *cobra.Command, flags *lifecycleFlags) {
-	cmd.Flags().StringVar(&flags.storeDir, "contract-store", "", "active contract store directory (required, absolute)")
+	cmd.Flags().StringVar(&flags.storeDir, "contract-store", "", "existing active contract store directory (required, absolute)")
 	cmd.Flags().StringVar(&flags.rosterPath, "roster", "", "signed key roster path (required)")
 	cmd.Flags().StringVar(&flags.rosterRootFingerprint, "roster-root-fingerprint", "", "pinned roster-root fingerprint (required)")
 	cmd.Flags().StringVar(&flags.keystore, "keystore", "", "keystore directory for activation and receipt signing")
 	cmd.Flags().StringVar(&flags.activationKey, "activation-key", "", "keystore key id for the primary activation signature (required)")
 	cmd.Flags().StringVar(&flags.dualControlFrom, "dual-control-from", "", "keystore key id for the second activation signature")
 	cmd.Flags().StringVar(&flags.receiptKey, "receipt-key-agent", flags.receiptKey, "keystore agent name for committed lifecycle receipts")
-	cmd.Flags().StringVar(&flags.receiptOut, "receipt-out", "", "signed lifecycle receipt JSONL path; defaults under --contract-store")
+	cmd.Flags().StringVar(&flags.receiptOut, "receipt-out", "", "signed lifecycle receipt JSONL path in an existing directory (defaults under --contract-store)")
 	cmd.Flags().StringVar(&flags.environmentID, "environment-id", "", "manifest environment id; inherited from current active manifest when omitted")
 	cmd.Flags().StringVar(&flags.tenant, "tenant", "", "manifest tenant; inherited from current active manifest when all environment flags are omitted; empty means unscoped")
 	cmd.Flags().StringVar(&flags.deploymentID, "deployment-id", "", "manifest deployment id; inherited from current active manifest when all environment flags are omitted; empty means unscoped")
@@ -186,31 +189,23 @@ func runPromote(cmd *cobra.Command, flags lifecycleFlags) error {
 	if err != nil {
 		return err
 	}
-	if err := appendLifecycleReceipts(lc.receiptOut, intentReceipt); err != nil {
+	const committedKind = contractreceipt.PayloadContractPromoteCommitted
+	record := func(validationErr error) error {
+		outcome, reason := lifecycleValidationOutcome(validationErr)
+		committedReceipt, err := activation.SignReceipt(
+			committedKind,
+			activation.PromoteCommittedPayload(targetHash, priorHash, intentID, outcome, reason),
+			lifecycleReceiptContext(intentID+"-committed", lc.now, targetHash, flags.contractHash, selector.SelectorID, generation, "learn", "learn promote"),
+			lc.receiptKey,
+			signing.PurposeReceiptSigning,
+		)
+		if err != nil {
+			return err
+		}
+		return appendLifecycleReceiptsWithSync(lc.receiptOut, flags.receiptSync, intentReceipt, committedReceipt)
+	}
+	if err := writeAndAcceptManifest(lc.store, envelope, lc.opts, priorHash, generation-1, record); err != nil {
 		return err
-	}
-	swapErr := writeAndAcceptManifest(lc.store, envelope, lc.opts, priorHash, generation-1)
-	outcome := lifecycleOutcomeAccepted
-	rejectReason := ""
-	if swapErr != nil {
-		outcome = lifecycleOutcomeRejected
-		rejectReason = swapErr.Error()
-	}
-	committedReceipt, err := activation.SignReceipt(
-		contractreceipt.PayloadContractPromoteCommitted,
-		activation.PromoteCommittedPayload(targetHash, priorHash, intentID, outcome, rejectReason),
-		lifecycleReceiptContext(intentID+"-committed", lc.now, targetHash, flags.contractHash, selector.SelectorID, generation, "learn", "learn promote"),
-		lc.receiptKey,
-		signing.PurposeReceiptSigning,
-	)
-	if err != nil {
-		return err
-	}
-	if err := appendLifecycleReceipts(lc.receiptOut, committedReceipt); err != nil {
-		return err
-	}
-	if swapErr != nil {
-		return swapErr
 	}
 	emitAuditEvent(cmd, auditEvent{
 		Event:           "learn_promote",
@@ -276,35 +271,27 @@ func runRollback(cmd *cobra.Command, flags lifecycleFlags) error {
 	if err != nil {
 		return err
 	}
-	if err := appendLifecycleReceipts(lc.receiptOut, authReceipt); err != nil {
+	const committedKind = contractreceipt.PayloadContractRollbackCommitted
+	record := func(validationErr error) error {
+		outcome, reason := lifecycleValidationOutcome(validationErr)
+		commitPayload, err := activation.RollbackCommittedPayload(target.ManifestHash, current.ManifestHash, authID, outcome, reason)
+		if err != nil {
+			return err
+		}
+		commitReceipt, err := activation.SignReceipt(
+			committedKind,
+			commitPayload,
+			lifecycleReceiptContext(authID+"-committed", lc.now, rollbackManifestHash, "", "", generation, "learn", "learn rollback"),
+			lc.receiptKey,
+			signing.PurposeReceiptSigning,
+		)
+		if err != nil {
+			return err
+		}
+		return appendLifecycleReceiptsWithSync(lc.receiptOut, flags.receiptSync, authReceipt, commitReceipt)
+	}
+	if err := writeAndAcceptManifest(lc.store, envelope, lc.opts, current.ManifestHash, current.Envelope.Body.Generation, record); err != nil {
 		return err
-	}
-	swapErr := writeAndAcceptManifest(lc.store, envelope, lc.opts, current.ManifestHash, current.Envelope.Body.Generation)
-	outcome := lifecycleOutcomeAccepted
-	rejectReason := ""
-	if swapErr != nil {
-		outcome = lifecycleOutcomeRejected
-		rejectReason = swapErr.Error()
-	}
-	commitPayload, err := activation.RollbackCommittedPayload(target.ManifestHash, current.ManifestHash, authID, outcome, rejectReason)
-	if err != nil {
-		return err
-	}
-	commitReceipt, err := activation.SignReceipt(
-		contractreceipt.PayloadContractRollbackCommitted,
-		commitPayload,
-		lifecycleReceiptContext(authID+"-committed", lc.now, rollbackManifestHash, "", "", generation, "learn", "learn rollback"),
-		lc.receiptKey,
-		signing.PurposeReceiptSigning,
-	)
-	if err != nil {
-		return err
-	}
-	if err := appendLifecycleReceipts(lc.receiptOut, commitReceipt); err != nil {
-		return err
-	}
-	if swapErr != nil {
-		return swapErr
 	}
 	emitAuditEvent(cmd, auditEvent{
 		Event:           "learn_rollback",
@@ -318,7 +305,7 @@ func runRollback(cmd *cobra.Command, flags lifecycleFlags) error {
 }
 
 func resolveLifecycle(flags lifecycleFlags) (lifecycleContext, error) {
-	storeDir, err := checkedWriteDir(flags.storeDir)
+	storeDir, err := existingLifecycleStore(flags.storeDir)
 	if err != nil {
 		return lifecycleContext{}, err
 	}
@@ -369,7 +356,7 @@ func resolveLifecycle(flags lifecycleFlags) (lifecycleContext, error) {
 	if receiptOut == "" {
 		receiptOut = filepath.Join(storeDir, defaultLifecycleReceiptOut)
 	}
-	receiptOut, err = checkedWritePath(receiptOut)
+	receiptOut, err = prepareLifecycleReceiptPath(receiptOut, directorysync.Sync)
 	if err != nil {
 		return lifecycleContext{}, err
 	}
@@ -381,7 +368,10 @@ func resolveLifecycle(flags lifecycleFlags) (lifecycleContext, error) {
 		protected["the dual-control signing key"] = dual.keyID
 	}
 	outputs := map[string]string{"--receipt-out": receiptOut}
-	if err := cliutil.RefuseOutputAliases(cliutil.ExistingFileLabels("--roster", []string{flags.rosterPath}), outputs); err != nil {
+	protectedFiles := cliutil.ExistingFileLabels("--roster", []string{flags.rosterPath})
+	protectedFiles["the active manifest"] = filepath.Join(storeDir, "active.json")
+	protectedFiles["the activation journal"] = filepath.Join(storeDir, ".activation_journal.jsonl")
+	if err := cliutil.RefuseOutputAliases(protectedFiles, outputs); err != nil {
 		return lifecycleContext{}, err
 	}
 	if err := refuseOutputsOverKeystoreKeys(flags.keystore, protected, outputs); err != nil {
@@ -537,7 +527,14 @@ func signManifestEnvelope(body contract.ActiveManifest, lc lifecycleContext) (co
 	return contract.ActiveManifestEnvelope{Body: body, Signatures: signatures}, nil
 }
 
-func writeAndAcceptManifest(st contractstore.Store, envelope contract.ActiveManifestEnvelope, opts contractstore.Options, previousHash string, previousGeneration uint64) error {
+func lifecycleValidationOutcome(err error) (outcome, reason string) {
+	if err != nil {
+		return lifecycleOutcomeRejected, err.Error()
+	}
+	return lifecycleOutcomeAccepted, ""
+}
+
+func writeAndAcceptManifest(st contractstore.Store, envelope contract.ActiveManifestEnvelope, opts contractstore.Options, previousHash string, previousGeneration uint64, recordValidation func(error) error) error {
 	raw, err := json.Marshal(envelope)
 	if err != nil {
 		return fmt.Errorf("marshal active manifest: %w", err)
@@ -545,7 +542,7 @@ func writeAndAcceptManifest(st contractstore.Store, envelope contract.ActiveMani
 	writeOpts := opts
 	writeOpts.PreviousHash = previousHash
 	writeOpts.PreviousGeneration = previousGeneration
-	if _, err := st.WriteActive(raw, writeOpts); err != nil {
+	if _, err := st.WriteActiveRecorded(raw, writeOpts, recordValidation); err != nil {
 		return err
 	}
 	if _, err := st.Reload(writeOpts); err != nil {
@@ -581,24 +578,132 @@ func lifecycleReceiptContext(eventID string, now time.Time, activeManifestHash, 
 	}
 }
 
+func existingLifecycleStore(path string) (string, error) {
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		return "", fmt.Errorf("--contract-store must be an absolute path: %q", path)
+	}
+	info, err := os.Lstat(clean)
+	if err != nil {
+		return "", fmt.Errorf("--contract-store must name an existing directory %q: %w", clean, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("--contract-store must be a directory with no symlink at its final component: %q", clean)
+	}
+	return clean, nil
+}
+
+func existingLifecycleReceiptPath(path string) (string, error) {
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		return "", fmt.Errorf("--receipt-out must be an absolute path: %q", path)
+	}
+	dir := filepath.Dir(clean)
+	info, err := os.Stat(dir)
+	if err != nil {
+		return "", fmt.Errorf("--receipt-out parent %q must already exist: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("--receipt-out parent %q must be a directory", dir)
+	}
+	return resolveOut(clean, clean)
+}
+
+// Require a provisioned receipt directory. Sync its readable ancestors too,
+// while permitting search-only ancestry above the receipt directory.
+func prepareLifecycleReceiptPath(path string, syncDir func(string) error) (string, error) {
+	clean, err := existingLifecycleReceiptPath(path)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Dir(clean)
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolve lifecycle receipt directory: %w", err)
+	}
+	synced := make(map[string]bool)
+	for _, base := range []string{dir, resolved} {
+		for current := base; ; current = filepath.Dir(current) {
+			if !synced[current] {
+				err := syncDir(current)
+				if err == nil {
+					synced[current] = true
+				} else if current == base || !errors.Is(err, os.ErrPermission) {
+					return "", fmt.Errorf("sync lifecycle receipt directory %s: %w", current, err)
+				}
+			}
+			if filepath.Dir(current) == current {
+				break
+			}
+		}
+	}
+	return clean, nil
+}
+
+type lifecycleReceiptSync struct {
+	file func(*os.File) error
+	dir  func(string) error
+}
+
 func appendLifecycleReceipts(path string, receipts ...contractreceipt.EvidenceReceipt) error {
-	clean, err := checkedWritePath(path)
+	return appendLifecycleReceiptsWithSync(path, lifecycleReceiptSync{}, receipts...)
+}
+
+func appendLifecycleReceiptsWithSync(path string, syncReceipt lifecycleReceiptSync, receipts ...contractreceipt.EvidenceReceipt) error {
+	if syncReceipt.file == nil {
+		syncReceipt.file = (*os.File).Sync
+	}
+	if syncReceipt.dir == nil {
+		syncReceipt.dir = directorysync.Sync
+	}
+	clean, err := existingLifecycleReceiptPath(path)
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(filepath.Clean(clean), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(filepath.Clean(clean), os.O_CREATE|os.O_APPEND|os.O_RDWR, 0o600)
 	if err != nil {
 		return fmt.Errorf("open lifecycle receipts: %w", err)
+	}
+	// Validation and recording share the store lock. An interrupted encode
+	// can leave the next receipt joined to the previous partial line.
+	if err := checkLifecycleReceiptTail(f); err != nil {
+		_ = f.Close()
+		return err
 	}
 	enc := json.NewEncoder(f)
 	for _, receipt := range receipts {
 		if err := enc.Encode(receipt); err != nil {
 			_ = f.Close()
-			return fmt.Errorf("write lifecycle receipt: %w", err)
+			return fmt.Errorf("write lifecycle receipt to %q: %w", clean, err)
 		}
+	}
+	if err := syncReceipt.file(f); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("sync lifecycle receipts: %w", err)
 	}
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("close lifecycle receipts: %w", err)
+	}
+	if err := syncReceipt.dir(filepath.Dir(clean)); err != nil {
+		return fmt.Errorf("sync lifecycle receipt directory: %w", err)
+	}
+	return nil
+}
+
+func checkLifecycleReceiptTail(f *os.File) error {
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat lifecycle receipts: %w", err)
+	}
+	if info.Size() == 0 {
+		return nil
+	}
+	var last [1]byte
+	if _, err := f.ReadAt(last[:], info.Size()-1); err != nil {
+		return fmt.Errorf("read lifecycle receipt tail: %w", err)
+	}
+	if last[0] != '\n' {
+		return fmt.Errorf("lifecycle receipt file %q has an incomplete final JSONL record (preserve it and retry with --receipt-out pointing to a new file)", f.Name())
 	}
 	return nil
 }

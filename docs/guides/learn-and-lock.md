@@ -80,7 +80,11 @@ pipelock learn promote \
 
 Run `pipelock learn promote --help` for the full flag list and the rollback / authorisation flow.
 
-Promotion is a two-phase commit. The CLI emits a signed `contract_promote_intent` receipt, swaps the active manifest atomically (compare-and-swap on `prior_manifest_hash`, monotonic generation counter), validates the new manifest, and emits a signed `contract_promote_committed` receipt. Failure at any point keeps the previous manifest active.
+The CLI validates the candidate and syncs signed `contract_promote_intent` and `contract_promote_committed` receipts before publishing the active manifest. Publication uses a compare-and-swap on `prior_manifest_hash` and a monotonic generation counter. An accepted validation receipt can survive an interruption before publication. Check the active manifest to see which generation took effect.
+
+Provision the contract store before running `learn promote` or `learn rollback`. If you set `--receipt-out`, use an existing parent directory. Your deployment must make these directory entries durable before activation if the CLI lacks permission to sync their ancestors.
+
+If an interrupted write leaves an incomplete final record in `activation-receipts.jsonl`, preserve that file and retry the operation with `--receipt-out` pointing to a new file. Keep both logs with the activation history. The interrupted operation stops before publishing its new manifest.
 
 ## Storage layout
 
@@ -264,6 +268,11 @@ Two ergonomic notes the help text alone does not surface:
 - **`learn promote` reads from the contract store's `history/` directory.** `learn ratify` writes the ratified contract YAML to `--out`, but does not stage it inside the store. Before invoking `learn promote --contract <hash>`, copy the ratified file to `<contract-store>/history/sha256-<hash>.yaml`. A future v2.4.x ergonomic improvement will auto-stage it.
 - **Promote requires the activation key in the keystore AND the receipt-signing key in the roster.** `--activation-key <key-id>` looks up the key by ID in `--keystore`, signs the manifest, and signs the lifecycle receipts under the keystore's receipt-signing agent (`--receipt-key-agent`, defaults to `receipt-signing`). The runtime then verifies those receipts against the roster. If the receipt-signing key is not named in the roster, the receipts the operator just produced will not validate on load.
 
+Promote and rollback sync both lifecycle receipts before replacing the active
+manifest. After an interrupted command, use the active manifest to check which
+generation took effect. An accepted validation receipt can survive a crash
+before the manifest is published.
+
 ### Promoting in a Kubernetes deployment
 
 Pipelock's published image is `FROM scratch`: no shell, no `tar`, no `cp`, no `ls`. `kubectl exec`, `kubectl cp`, and `kubectl debug --target=<pipelock-container>` therefore cannot ship the active manifest into the pipelock pod's `pipelock-active-manifest` PVC directly. The operator pattern is a short-lived shuttle pod that mounts the same PVC:
@@ -341,7 +350,7 @@ Every contract decision (allow OR block) emits an EvidenceReceipt v2 envelope wi
 
 **Active-manifest reload:**
 
-Pipelock watches the active-manifest store directory (fsnotify, 100ms debounce, with a 2 second cap under sustained writes) for every process that enforces a contract, so a manifest promoted while `pipelock run` or `pipelock mcp proxy` is running applies live without a restart. The watcher swaps the loader's active set in place; every gated transport reads the current set on each decision. When a `pipelock run` config reload builds a new contract loader, its watcher replaces the previous loader's watcher and the old one is stopped. The watcher reads the store once when it arms, so a promotion committed between loader construction and watcher start isn't missed. Loading is fail-closed on startup (an unreadable manifest stops the process rather than running with no contract). After startup a rejected or unreadable promotion (bad signature, generation downgrade, wrong environment, corrupt or unreadable `active.json`) is logged and the loader keeps the last accepted manifest, so enforcement never falls back to no contract. A watcher that can't start, or that stops later because the store directory was removed, is logged and the loader keeps serving its last accepted manifest. A missed promote (crash between `promote-intent` and `promote-committed`) is recovered on the next reload of a loader that already holds a manifest, by walking the accepted-history chain. A fresh start reads and validates `active.json` directly and doesn't run that walk. Changing `learn_lock` settings is still restart-only.
+Pipelock watches the active-manifest store directory (fsnotify, 100ms debounce, with a 2 second cap under sustained writes) for every process that enforces a contract, so a manifest promoted while `pipelock run` or `pipelock mcp proxy` is running applies live without a restart. The watcher swaps the loader's active set in place; every gated transport reads the current set on each decision. When a `pipelock run` config reload builds a new contract loader, its watcher replaces the previous loader's watcher and the old one is stopped. The watcher reads the store once when it arms, so a promotion committed between loader construction and watcher start isn't missed. Loading is fail-closed on startup (an unreadable manifest stops the process rather than running with no contract). After startup a rejected or unreadable promotion (bad signature, generation downgrade, wrong environment, corrupt or unreadable `active.json`) is logged and the loader keeps the last accepted manifest, so enforcement never falls back to no contract. A watcher that can't start, or that stops later because the store directory was removed, is logged and the loader keeps serving its last accepted manifest. A loader that missed a published generation walks the accepted-history chain on its next reload. A fresh start reads and validates `active.json` directly and doesn't run that walk. Changing `learn_lock` settings is still restart-only.
 
 ## Anti-patterns
 
