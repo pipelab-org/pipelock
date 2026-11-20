@@ -141,6 +141,8 @@ Path entropy and subdomain entropy are the most common false positive sources. A
 
 Debian `.deb`/`.udeb`, RPM and Alpine `.apk` filenames that follow their published naming grammar are scored with the version as a separate subject, so most package downloads need no exclusion; see [release downloads](guides/release-downloads.md#package-pool-filenames).
 
+Python `.whl` and `.whl.metadata` filenames with recognized compatibility tags are scored on the distribution name, version, and optional build tag together. See [package-pool filenames](guides/release-downloads.md#package-pool-filenames).
+
 For a path-entropy false positive, start with `path_entropy_exclusions` for the exact host and a stable publisher-specific path prefix. The entry defaults to HTTPS. A cleartext HTTP download needs an explicit `scheme: http`; that setting does not encrypt the request path, which remains visible on the network. Use separate entries only when both schemes are needed.
 
 <!-- path-entropy-exclusions-example:start -->

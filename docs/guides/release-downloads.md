@@ -12,6 +12,8 @@ For a final filename that matches a supported Debian `.deb`/`.udeb`, RPM `.rpm`,
 
 This split applies only when the whole final segment blocks and the repeated-SemVer discount hasn't allowed it. It uses the decoded path for both HTTP and HTTPS. Nonmatching filenames, earlier path segments, and query values retain their checks. The package grammar doesn't establish publisher trust or artifact integrity.
 
+For final Python `.whl` and `.whl.metadata` filenames with recognized compatibility tags, Pipelock scores the distribution name, version, and optional build tag together. A wheel filename with unfamiliar or malformed tags keeps its whole-filename score.
+
 ## Path exclusions
 
 For recurring software downloads that still trigger path entropy, an operator-reviewed publisher-specific prefix in `fetch_proxy.monitoring.path_entropy_exclusions` can cover successive releases without another filename entry. Every request under that prefix loses path-entropy checking, including names not published by that source. Review whether an agent can send chosen data there and read it back before adding the exclusion; a familiar publisher name alone is not sufficient. An exact artifact prefix remains appropriate for an incident limited to one download.
