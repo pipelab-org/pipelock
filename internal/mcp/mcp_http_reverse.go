@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"bufio"
 	"bytes"
 	"cmp"
 	"context"
@@ -2354,7 +2355,8 @@ func RunHTTPListenerProxy(
 			// upstream-error envelope.
 			if scanErr != nil && !streamWriter.Wrote() {
 				terminalStatus, terminalReason = "error", "upstream_sse_validation_failed"
-				if errors.Is(scanErr, transport.ErrIncompleteResponse) {
+				// The SSE reader also wraps scanner line-limit errors as incomplete.
+				if errors.Is(scanErr, transport.ErrIncompleteResponse) && !errors.Is(scanErr, bufio.ErrTooLong) {
 					terminalStatus, terminalReason = "incomplete", httpstream.Incomplete
 				}
 				w.Header().Set("Cache-Control", "no-store")
