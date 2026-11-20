@@ -628,6 +628,7 @@ func (m *Manager) Snapshot() []HeldAction {
 		cp := *held
 		cp.timer = nil
 		cp.Resolve = nil
+		cp.ResolveWithReleaseRefusal = nil
 		cp.Payload = append([]byte(nil), held.Payload...)
 		out = append(out, cp)
 	}
@@ -758,6 +759,7 @@ func (m *Manager) snapshotOne(deferID string) (HeldAction, error) {
 	cp := *held
 	cp.timer = nil
 	cp.Resolve = nil
+	cp.ResolveWithReleaseRefusal = nil
 	cp.Payload = append([]byte(nil), held.Payload...)
 	return cp, nil
 }

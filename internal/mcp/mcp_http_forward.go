@@ -80,6 +80,17 @@ func settleBridgeCapacityOutcome(ctx context.Context, logW io.Writer, tracker *R
 	emitTrackedStreamError(ctx, logW, tracker, id, opts, ael.ErrCapacity)
 }
 
+func settleBridgeNotificationScanError(ctx context.Context, logW io.Writer, opts MCPProxyOpts, outcome TrackedRequestOutcome, err error) {
+	status, reason := "incomplete", "scan_error"
+	if errors.Is(err, transport.ErrIncompleteResponse) || ctx.Err() != nil {
+		reason = httpstream.Reason(ctx, err)
+		if reason == httpstream.Cancelled {
+			status = "cancelled"
+		}
+	}
+	outcome.settle(logW, opts, status, -1, reason)
+}
+
 func consumeTrackedRequestOutcome(tracker *RequestTracker, id json.RawMessage) (TrackedRequestOutcome, bool) {
 	if tracker == nil {
 		return TrackedRequestOutcome{}, true
@@ -520,7 +531,7 @@ func RunHTTPProxy(
 				AfterJournal: func(res deferred.Resolution) error {
 					return receiptSettle.commitRelease(heldOpts, safeLogW, res)
 				},
-				Resolve: func(res deferred.Resolution) {
+				ResolveWithReleaseRefusal: func(res deferred.Resolution, refuse func(string) deferred.Resolution) {
 					defer finishHeldAdmission()
 					denialOpts := heldOpts
 					denialOpts.denialTerminal = &terminalSlot
@@ -558,10 +569,7 @@ func RunHTTPProxy(
 							var trackErr error
 							registration, trackErr = trackMCPAdmittedOutcome(safeLogW, heldOpts, tracker, deferredReq.ID, releaseOutcome)
 							if trackErr != nil {
-								res.FinalDecision = config.ActionBlock
-								res.ResolutionSource = deferred.SourceCancel
-								res.Reason = "request_tracking_failed"
-								_ = receiptSettle.commitRelease(heldOpts, safeLogW, res)
+								refuse("request_tracking_failed")
 								if finishDeniedRelease != nil {
 									finishDeniedRelease()
 								}
@@ -574,17 +582,15 @@ func RunHTTPProxy(
 							if awaitingReply {
 								return
 							}
-							outcome := releaseOutcome
 							if pending, ok := tracker.takeOwnedOutcome(deferredReq.ID, registration); ok {
-								outcome = pending
+								pending.settle(safeLogW, heldOpts, "incomplete", -1, "upstream_no_response")
 							}
-							outcome.settle(safeLogW, heldOpts, "incomplete", -1, "upstream_no_response")
 						}()
 						if reason := mcpTaskReleaseRefusal(heldOpts, deferredReq.authorityFrame, deferredReq.taskTaint, false); reason != "" {
-							res.FinalDecision = config.ActionBlock
-							res.ResolutionSource = deferred.SourceCancel
-							res.Reason = reason
-							_ = receiptSettle.commitRelease(heldOpts, safeLogW, res)
+							if pending, ok := tracker.takeOwnedOutcome(deferredReq.ID, registration); ok {
+								receiptSettle.release = pending
+							}
+							refuse(reason)
 							if finishDeniedRelease != nil {
 								finishDeniedRelease()
 							}
@@ -605,19 +611,18 @@ func RunHTTPProxy(
 								settleBridgeCapacityOutcome(releaseCtx, safeLogW, tracker, deferredReq.ID, releaseOpts, releaseOutcome)
 								return
 							}
+							if pending, ok := tracker.takeOwnedOutcome(deferredReq.ID, registration); ok {
+								releaseOutcome = pending
+							}
 							releaseOutcome.settle(safeLogW, heldOpts, "error", -1, mcpUpstreamWriteFailed)
-							res.FinalDecision = config.ActionBlock
-							res.ResolutionSource = deferred.SourceCancel
-							res.Reason = mcpUpstreamWriteFailed
-							// Settlement logs any receipt write failure.
-							_ = receiptSettle.ensure(heldOpts, safeLogW, res)
+							refuse(mcpUpstreamWriteFailed)
+							if finishDeniedRelease != nil {
+								finishDeniedRelease()
+							}
 							if !deferredReq.IsNotification {
 								_ = safeClientOut.WriteMessage(upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP request failed")))
 							}
 							return
-						}
-						if deferredReq.IsNotification {
-							releaseOutcome.settle(safeLogW, heldOpts, "forwarded", -1, "notification_forwarded")
 						}
 						if transport.IsStreamingResponse(respReader) {
 							releaseOpts.nativeSSE = true
@@ -628,6 +633,9 @@ func RunHTTPProxy(
 						if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(context.Cause(releaseCtx), ael.ErrCapacity) {
 							settleBridgeCapacityOutcome(releaseCtx, safeLogW, tracker, deferredReq.ID, releaseOpts, releaseOutcome)
 						} else if errors.Is(scanErr, transport.ErrResponseTimeout) {
+							if deferredReq.IsNotification {
+								releaseOutcome.settle(safeLogW, releaseOpts, "error", -1, "response_timeout")
+							}
 							emitRequestScopedTimeout(
 								respReader,
 								safeClientOut,
@@ -641,11 +649,11 @@ func RunHTTPProxy(
 							_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 							// Only an unanswered request gets a terminal error. A stream
 							// can fail after its response already consumed the ID.
-							if outcome, pending := consumeTrackedRequestOutcome(tracker, deferredReq.ID); pending {
+							if deferredReq.IsNotification {
+								settleBridgeNotificationScanError(releaseCtx, safeLogW, releaseOpts, releaseOutcome, scanErr)
+							} else if outcome, pending := tracker.takeOwnedOutcome(deferredReq.ID, registration); pending {
 								errResp := upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP response failed"))
-								if !deferredReq.IsNotification {
-									_ = safeClientOut.WriteMessage(errResp)
-								}
+								_ = safeClientOut.WriteMessage(errResp)
 								status, reason, size := "error", "scan_error", int64(len(errResp))
 								streamReason := httpstream.Reason(releaseCtx, scanErr)
 								switch {
@@ -656,13 +664,18 @@ func RunHTTPProxy(
 								}
 								outcome.settle(safeLogW, releaseOpts, status, size, reason)
 							}
-						} else if !foundInjection {
-							awaitingReply = registration != nil && acknowledged
-							baselineIdentity := deferredReq.BaselineIdentity
-							if baselineIdentity == "" {
-								baselineIdentity = mcpFrameBaselineIdentity(ParseMCPFrame(deferredReq.ForwardMessage))
+						} else {
+							if deferredReq.IsNotification {
+								releaseOutcome.settle(safeLogW, releaseOpts, "forwarded", -1, "notification_forwarded")
 							}
-							commitMCPToolCall(baselineMetricsRecorder(fwdOpts, rec), baselineIdentity)
+							if !foundInjection {
+								awaitingReply = registration != nil && acknowledged
+								baselineIdentity := deferredReq.BaselineIdentity
+								if baselineIdentity == "" {
+									baselineIdentity = mcpFrameBaselineIdentity(ParseMCPFrame(deferredReq.ForwardMessage))
+								}
+								commitMCPToolCall(baselineMetricsRecorder(fwdOpts, rec), baselineIdentity)
+							}
 						}
 					default:
 						if finishDeniedRelease != nil {
@@ -938,14 +951,7 @@ func RunHTTPProxy(
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			logMCPIncompleteResponse(safeLogW, fwdOpts, frame.Method, scanErr)
 			if isRPCNotification(frame.ID) {
-				status, reason := "incomplete", "scan_error"
-				if errors.Is(scanErr, transport.ErrIncompleteResponse) || ctx.Err() != nil {
-					reason = httpstream.Reason(ctx, scanErr)
-					if reason == httpstream.Cancelled {
-						status = "cancelled"
-					}
-				}
-				decision.Outcome.settle(safeLogW, fwdOpts, status, -1, reason)
+				settleBridgeNotificationScanError(ctx, safeLogW, fwdOpts, decision.Outcome, scanErr)
 			} else if errors.Is(scanErr, transport.ErrIncompleteResponse) || ctx.Err() != nil {
 				emitTrackedStreamError(ctx, safeLogW, tracker, frame.ID, fwdOpts, scanErr)
 			} else {

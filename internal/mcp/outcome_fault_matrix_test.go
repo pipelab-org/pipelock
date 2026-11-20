@@ -202,6 +202,11 @@ func TestMCPOutcomeFaultMatrix(t *testing.T) {
 			}
 		}
 	}
+	t.Run("deferred_notification", func(t *testing.T) {
+		runSettlementCell(t, settlementCell{
+			transport: settlementBridgeJSON, fault: settlementScanError, required: true, deferred: true, notification: true,
+		})
+	})
 	t.Run("notification", func(t *testing.T) {
 		for transportID := settlementStdio; transportID <= settlementListenerJSON; transportID++ {
 			for _, required := range []bool{false, true} {
@@ -1128,6 +1133,9 @@ func (p *settlementProbe) assertSettlePairs(t *testing.T, signer string, sends, 
 			}
 			tool := strings.TrimPrefix(intent.action.Target, "tool:")
 			status, _, _ := strings.Cut(got.action.Pattern, " ")
+			if p.cell.transport == settlementListenerSSE && p.cell.fault == settlementReadSSE && status != "status=incomplete" {
+				t.Errorf("truncated first SSE event recorded %s, want incomplete", got.action.Pattern)
+			}
 			if p.cell.pairedNotification() {
 				want := "status=incomplete"
 				if p.cell.fault == settlementTimeout {

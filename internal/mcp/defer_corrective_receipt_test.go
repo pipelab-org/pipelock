@@ -51,7 +51,9 @@ func TestDeferredReleaseCorrectiveReceiptPrecedesTerminalJournal(t *testing.T) {
 			if writes == 3 {
 				return io.ErrClosedPipe
 			}
-			if writes == 4 && (!settlement.done || settlement.decision != config.ActionBlock) {
+			// The fourth write is the recovery marker. The terminal
+			// block must still follow the corrective receipt.
+			if writes == 5 && (!settlement.done || settlement.decision != config.ActionBlock) {
 				t.Fatal("terminal block attempted before corrective receipt")
 			}
 			return write()
@@ -73,6 +75,9 @@ func TestDeferredReleaseCorrectiveReceiptPrecedesTerminalJournal(t *testing.T) {
 	}
 	if err := manager.Resolve("held", config.ActionAllow, deferred.SourceOperator); err != nil {
 		t.Fatal(err)
+	}
+	if writes != 5 {
+		t.Fatalf("journal writes = %d, want 5 including the recovery marker", writes)
 	}
 	finishHeld()
 	admission.ReleaseNativeAdmission()
@@ -300,9 +305,13 @@ func TestDeferredHTTPReleaseRecordsUpstreamSendFailure(t *testing.T) {
 	}
 	testwait.For(t, 5*time.Second, func() bool { return len(manager.Snapshot()) == 1 }, "deferred HTTP hold")
 	hold := manager.Snapshot()[0]
-	if err := manager.Resolve(hold.DeferID, config.ActionAllow, deferred.SourceApproval); err != nil {
-		t.Fatal(err)
+	applied, err := manager.ResolveApprovalResult(hold.DeferID, config.ActionAllow, deferred.SourceApproval)
+	if err != nil || applied != config.ActionBlock {
+		t.Fatalf("applied decision = %q, err = %v, want block after upstream failure", applied, err)
 	}
+	assertTerminalJournalSequence(t, manager, hold.DeferID,
+		deferred.StateResolvedAllow+"/"+deferred.SourceApproval,
+		deferred.StateResolvedBlock+"/"+deferred.SourceCancel)
 	select {
 	case <-attempted:
 	default:
