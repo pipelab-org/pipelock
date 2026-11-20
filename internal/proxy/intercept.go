@@ -1599,7 +1599,7 @@ func newInterceptHandler(
 					}
 				}
 
-				limitDetail := bodyInspectionLimitDetail(result, blockCause)
+				limitDetail, limitOnly := bodyInspectionLimitDetail(result, blockCause)
 				if limitDetail != "" {
 					reason = limitDetail
 				}
@@ -1674,7 +1674,7 @@ func newInterceptHandler(
 						Agent:     ic.Agent,
 					}))
 					setBodyResultHint(w, scannerLabel, reason)
-					writeBlockedError(w, requestBodyBlockInfo(scannerLabel, limitDetail != "").WithRequestID(ic.RequestID),
+					writeBlockedError(w, requestBodyBlockInfo(scannerLabel, limitOnly).WithRequestID(ic.RequestID),
 						"blocked: "+reason, http.StatusForbidden)
 					return
 				}

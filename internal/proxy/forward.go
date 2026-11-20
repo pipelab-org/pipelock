@@ -1828,7 +1828,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					reason = bodyEntropyReason(bodyResult)
 				}
 			}
-			limitDetail := bodyInspectionLimitDetail(bodyResult, blockCause)
+			limitDetail, limitOnly := bodyInspectionLimitDetail(bodyResult, blockCause)
 			if limitDetail != "" {
 				reason = limitDetail
 			}
@@ -1905,7 +1905,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				p.metrics.RecordBlocked(r.URL.Hostname(), scannerLabel, time.Since(start), agentLabel)
 				setBodyResultHint(w, scannerLabel, reason)
 				writeBlockedError(w,
-					requestBodyBlockInfo(scannerLabel, limitDetail != "").WithRequestID(requestID),
+					requestBodyBlockInfo(scannerLabel, limitOnly).WithRequestID(requestID),
 					"blocked: "+reason, http.StatusForbidden)
 				return
 			}
