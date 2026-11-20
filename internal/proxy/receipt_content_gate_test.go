@@ -29,22 +29,6 @@ type sourceHistoryContent struct {
 	overBudget          bool
 }
 
-// The pair-only search cannot assemble these fixtures across three fields.
-// Each pair with the configured principal is shorter than a matching window.
-// The v1 projection also omits standard HTTP methods.
-func TestReceiptContentPairOnlyKnownLimitsWithFullSourceHistory(t *testing.T) {
-	for _, version := range []string{"v1", "v2"} {
-		for _, middle := range []string{"local", http.MethodGet} {
-			t.Run(version+"/"+middle, func(t *testing.T) {
-				fixture := sourceHistoryContent{sourceHistoryLeft[:10], middle, sourceHistoryRight[:10], false}
-				if err := emitReceiptWithFullSourceHistory(t, version, fixture); err != nil {
-					t.Fatalf("pair-only scan refused the receipt: %v", err)
-				}
-			})
-		}
-	}
-}
-
 func TestReceiptContentRejectsPairMatchWithFullSourceHistory(t *testing.T) {
 	for _, version := range []string{"v1", "v2"} {
 		t.Run(version, func(t *testing.T) {

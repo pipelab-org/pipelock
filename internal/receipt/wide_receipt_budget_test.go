@@ -16,8 +16,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
-// The receipt content gate must accept ordinary browser-shield receipts with
-// recent taint sources, even when the projection exceeds the query fragment cap.
+// TestOrdinaryWideReceiptIsNotBudgetRefused is the round-2 reproduction for
+// the fragment part cap. A session's recent taint list and a browser-shield
+// summary are ordinary receipt content. With redaction on, the content
+// boundary must record them. A part cap copied from query-string search must
+// not turn that width into a standing receipt refusal.
 func TestOrdinaryWideReceiptIsNotBudgetRefused(t *testing.T) {
 	f := newBoundaryFixture(t)
 	sources := make([]session.TaintSourceRef, 0, 4)
@@ -56,7 +59,7 @@ func TestOrdinaryWideReceiptIsNotBudgetRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	if n := len(proj.Atoms()); n <= scanner.SubsequenceMaxParts {
-		t.Fatalf("fixture has %d atoms, want more than the query fragment cap of %d", n, scanner.SubsequenceMaxParts)
+		t.Fatalf("fixture has %d atoms, want more than %d so the part cap used to refuse it", n, scanner.SubsequenceMaxParts)
 	}
 	if err := f.em.Emit(opts); err != nil {
 		t.Fatalf("ordinary wide receipt refused: %v", err)
@@ -66,7 +69,10 @@ func TestOrdinaryWideReceiptIsNotBudgetRefused(t *testing.T) {
 	}
 }
 
-// The content gate still checks fragment pairs in ordinary wide receipts.
+// TestWideReceiptStillCatchesASplitCanary is the detection half of the width
+// fix. A token broken across two taint URLs, with the source's other fields
+// between them, has to refuse the receipt. Recording it would mean the wider
+// search stopped looking.
 func TestWideReceiptStillCatchesASplitCanary(t *testing.T) {
 	f := newBoundaryFixture(t)
 	sources := make([]session.TaintSourceRef, 0, 4)

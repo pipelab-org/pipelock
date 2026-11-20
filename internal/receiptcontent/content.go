@@ -110,9 +110,10 @@ type Schema struct {
 	Fields map[string]Class
 	Enums  map[string][]string
 	// FixedValues names exact producer constants or retained operator values.
-	// They remain in every content view. Fragment reassembly pairs a fixed
-	// value with one client fragment. A changed value stays a client
-	// candidate. Only declared leaves may be listed here.
+	// They remain in every content view. In fragment reassembly they may stand
+	// as one bridge piece between client fragments, but they never combine
+	// with each other and do not widen the client search. A changed value
+	// stays a client candidate. Only declared leaves may be listed here.
 	FixedValues map[string][]string
 	// Outer derives the recorder mirror fields from the exact detail bytes.
 	// It must read only Content and Enum values; generated values in a mirror

@@ -97,7 +97,7 @@ type mcpListenerBlockDecision struct {
 	// for this call. The refusal is then recorded as that intent's blocked
 	// outcome under the same action ID, so the chain ties the block to the call
 	// instead of holding an allow intent next to an unrelated block.
-	intent TrackedRequestOutcome
+	intent receipt.EmitOpts
 	// outcomeReason is the reason recorded in that blocked outcome; empty uses
 	// pattern. Free-text detail belongs in the receipt's other fields.
 	outcomeReason string
@@ -784,9 +784,9 @@ func RunHTTPListenerProxy(
 				Transport: requestBaseOpts.Transport,
 				Target:    dec.target,
 			})
-			if dec.intent.Receipt.ActionID != "" {
-				actionID = dec.intent.Receipt.ActionID
-				receiptOpts = mcpOutcomeReceiptOpts(dec.intent.Receipt, mcpOutcomeStatusBlocked, -1, firstNonEmpty(dec.outcomeReason, dec.pattern))
+			if dec.intent.ActionID != "" {
+				actionID = dec.intent.ActionID
+				receiptOpts = mcpOutcomeReceiptOpts(dec.intent, mcpOutcomeStatusBlocked, -1, firstNonEmpty(dec.outcomeReason, dec.pattern))
 				receiptOpts.Verdict = config.ActionBlock
 				receiptOpts.Layer = dec.layer
 			}
@@ -796,17 +796,13 @@ func RunHTTPListenerProxy(
 			receiptEmitted := false
 			emitter := requestBaseOpts.receiptEmitter()
 			v2Emitter := requestBaseOpts.v2ReceiptEmitter()
-			if dec.intent.handle != nil {
-				if dec.intent.handle.settled.CompareAndSwap(false, true) {
-					receiptEmitted = dec.intent.handle.emit(safeLogW, receiptOpts, true) == nil
-				}
-			} else if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil || requestBaseOpts.requireReceipts() {
+			if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil || requestBaseOpts.requireReceipts() {
 				if _, emitErr := requestBaseOpts.emitReceiptDecision(MCPDecision{
 					Receipt:        receiptOpts,
 					RequireReceipt: requestBaseOpts.requireReceipts(),
 					// A blocked outcome closes an intent written durably under
 					// required recording; sync it the same way.
-					Durable: requestBaseOpts.requireReceipts() && dec.intent.Receipt.ActionID != "",
+					Durable: requestBaseOpts.requireReceipts() && dec.intent.ActionID != "",
 				}); emitErr != nil {
 					logReceiptEmitFailure(safeLogW, emitErr, requestBaseOpts.requireReceipts(), config.ActionBlock)
 				} else if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil {
@@ -840,7 +836,7 @@ func RunHTTPListenerProxy(
 			_, _ = w.Write(upstreamErrorResponse(nil, sessionCapacityErr))
 			return
 		}
-		rejectMissingListenerState := func(id json.RawMessage, intent TrackedRequestOutcome) {
+		rejectMissingListenerState := func(id json.RawMessage, intent receipt.EmitOpts) {
 			emitListenerBlockDecision(mcpListenerBlockDecision{
 				reason:          blockreason.SessionBinding,
 				headerSeverity:  blockreason.SeverityCritical,
@@ -938,7 +934,7 @@ func RunHTTPListenerProxy(
 		// is zero for GET and DELETE, which have none.
 		// intent is read only on refusal so a held best-effort receipt becomes an
 		// intent only for a call that is actually refused.
-		blockedByUpstreamContract := func(rpcID json.RawMessage, gateOpts MCPProxyOpts, intent func() TrackedRequestOutcome) bool {
+		blockedByUpstreamContract := func(rpcID json.RawMessage, gateOpts MCPProxyOpts, intent func() receipt.EmitOpts) bool {
 			if gate, gateErr := evaluateMCPUpstreamGateForMethod(r.Context(), upstreamURL, r.Method, gateOpts); gateErr != nil {
 				denialAudit = mcpListenerContractEvalDenialAudit()
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream evaluation failed: %v\n", gateErr)
@@ -1015,13 +1011,15 @@ func RunHTTPListenerProxy(
 		// that means "no GET stream", or read a JSON-RPC error. Anything the
 		// scanner flags or cannot read gets the sanitized 502 instead. It
 		// returns false for any other status so the caller carries on.
-		relayUpstreamClientError := func(upResp *http.Response, rpcID json.RawMessage, reqRec session.Recorder, auditSessionKey string, intent TrackedRequestOutcome) bool {
+		relayUpstreamClientError := func(upResp *http.Response, rpcID json.RawMessage, reqRec session.Recorder, auditSessionKey string, intent receipt.EmitOpts) bool {
 			if !transport.IsClientError(upResp.StatusCode) {
 				return false
 			}
 			outcomeReason := "upstream_http_client_error"
 			defer func() {
-				intent.settle(safeLogW, requestBaseOpts, "error", -1, outcomeReason)
+				if intent.ActionID != "" {
+					emitMCPOutcomeReceipt(requestBaseOpts.receiptEmitter(), requestBaseOpts.v2ReceiptEmitter(), requestBaseOpts.ReceiptGroup, safeLogW, intent, "error", -1, outcomeReason, requestBaseOpts.requireReceipts())
+				}
 			}()
 			withhold := func(reason string, callerDetail ...string) {
 				w.setResponseDenial(reason)
@@ -1187,9 +1185,16 @@ func RunHTTPListenerProxy(
 			}
 		}
 
-		admitLegacyMethod := func() (receipt.EmitOpts, bool) {
-			admission, err := admitDurableTransport(requestBaseOpts, r.Method, upstreamURL)
-			if err != nil {
+		admitLegacyMethod := func() bool {
+			if !requestBaseOpts.requireReceipts() {
+				return true
+			}
+			admission := requestBaseOpts.withReceiptPolicyHash(receipt.EmitOpts{
+				ActionID: receipt.NewActionID(), Verdict: config.ActionForward,
+				Transport: requestBaseOpts.Transport, Method: r.Method, Target: upstreamURL,
+				Layer: "mcp_transport_admission",
+			})
+			if _, err := requestBaseOpts.emitReceiptDecision(MCPDecision{Receipt: admission, RequireReceipt: true}); err != nil {
 				logReceiptEmitFailure(safeLogW, err, true, config.ActionForward)
 				denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
 				emitListenerBlockDecision(mcpListenerBlockDecision{
@@ -1201,12 +1206,10 @@ func RunHTTPListenerProxy(
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("receipt emission failed")))
-				return receipt.EmitOpts{}, false
+				return false
 			}
-			if admission.ActionID != "" {
-				blockreason.SetRecordedReceipt(w.Header(), admission.ActionID)
-			}
-			return admission, true
+			blockreason.SetRecordedReceipt(w.Header(), admission.ActionID)
+			return true
 		}
 
 		if r.Method == http.MethodGet {
@@ -1256,7 +1259,7 @@ func RunHTTPListenerProxy(
 				return
 			}
 			if !stateBound && (requireStateToken || (principalControls && listenerPrincipal.key == "")) {
-				rejectMissingListenerState(nil, TrackedRequestOutcome{})
+				rejectMissingListenerState(nil, receipt.EmitOpts{})
 				return
 			}
 			bindStateRequestContext()
@@ -1276,15 +1279,12 @@ func RunHTTPListenerProxy(
 			forwardListenerUpstreamHeaders(upReq, r, true)
 			responseencoding.RequestIdentity(upReq.Header)
 
-			// Opening a GET subscription is a transport action. Its durable
-			// admission does not create a paired tool-call outcome.
-			admission, admitted := admitLegacyMethod()
-			if !admitted {
-				return
-			}
+			// A GET opens the legacy server-to-client event stream. It carries no
+			// tool call, so it is not a mediated action and gets no admission
+			// receipt; every message delivered on the stream is scanned and its
+			// decision is confirmed before delivery.
 			upResp, err := upstreamStreamClient.Do(upReq)
 			if err != nil {
-				warnTransportAdmission(safeLogW, requestBaseOpts, admission, "upstream_error")
 				if handleMetadataDialError(err, nil) {
 					return
 				}
@@ -1303,16 +1303,10 @@ func RunHTTPListenerProxy(
 			upResp.Body = newIdleTimeoutReader(upResp.Body, upstreamIdleReadTimeout)
 			defer func() { _ = upResp.Body.Close() }()
 
-			if relayUpstreamClientError(upResp, nil, clientState.recorder, listenerStateAuditKey(), TrackedRequestOutcome{}) {
-				warnTransportAdmission(safeLogW, requestBaseOpts, admission, "upstream_http_client_error")
+			if relayUpstreamClientError(upResp, nil, clientState.recorder, listenerStateAuditKey(), receipt.EmitOpts{}) {
 				return
 			}
 			if upResp.StatusCode >= 400 {
-				reason := "upstream_http_unexpected_status"
-				if upResp.StatusCode >= 500 && upResp.StatusCode < 600 {
-					reason = "upstream_http_server_error"
-				}
-				warnTransportAdmission(safeLogW, requestBaseOpts, admission, reason)
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
@@ -1320,11 +1314,6 @@ func RunHTTPListenerProxy(
 				return
 			}
 			if upResp.StatusCode != http.StatusOK {
-				reason := "upstream_http_unexpected_status"
-				if upResp.StatusCode >= 300 && upResp.StatusCode < 400 {
-					reason = "upstream_http_redirect"
-				}
-				warnTransportAdmission(safeLogW, requestBaseOpts, admission, reason)
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream GET returned HTTP %d\n", upResp.StatusCode)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
@@ -1342,7 +1331,6 @@ func RunHTTPListenerProxy(
 				if denialAudit.kind == "" {
 					denialAudit = mcpListenerInspectionDenialAudit()
 				}
-				warnTransportAdmission(safeLogW, requestBaseOpts, admission, "upstream_http_compressed_response")
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("compressed response cannot be scanned")))
 				return
@@ -1350,7 +1338,6 @@ func RunHTTPListenerProxy(
 			if !transport.HasSingleSSEContentType(upResp.Header) {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream GET returned non-SSE Content-Type %q\n", upResp.Header.Get("Content-Type"))
 				w.Header().Set("Content-Type", "application/json")
-				warnTransportAdmission(safeLogW, requestBaseOpts, admission, "upstream_sse_validation_failed")
 				w.WriteHeader(http.StatusBadGateway)
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
 				return
@@ -1389,25 +1376,12 @@ func RunHTTPListenerProxy(
 			reqOpts.nativeSSE = true
 			foundInjection, scanErr := ForwardScanned(transport.NewSSEReader(upResp.Body), stateWriter, safeLogW, NewStrictRequestTracker(), reqOpts)
 			if errors.Is(scanErr, ael.ErrCapacity) {
-				if admission.ActionID != "" {
-					recordTransportAdmissionResult(safeLogW, reqOpts, admission, "cancelled", nativeCapacityReason)
-				} else {
-					recordListenerStreamError(r.Context(), safeLogW, reqOpts, TrackedRequestOutcome{Receipt: mcpStreamReceipt(reqOpts, r.Method)}, true, scanErr)
-				}
+				recordListenerStreamError(r.Context(), safeLogW, reqOpts, mcpStreamReceipt(reqOpts, r.Method), true, scanErr)
 				refuseListenerStreamCapacity(w, r, streamWriter)
 				return
 			}
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
-				streamReceipt := admission
-				if streamReceipt.ActionID == "" && streamWriter.Wrote() {
-					streamReceipt = mcpStreamReceipt(reqOpts, r.Method)
-				}
-				if streamReceipt.ActionID != "" {
-					recordListenerStreamError(r.Context(), safeLogW, reqOpts, TrackedRequestOutcome{Receipt: streamReceipt}, true, scanErr)
-				}
-			} else if admission.ActionID != "" {
-				recordTransportAdmissionResult(safeLogW, reqOpts, admission, "completed", "stream_completed")
 			}
 			if scanErr != nil && !streamWriter.Wrote() {
 				w.Header().Set("Cache-Control", "no-store")
@@ -1420,6 +1394,7 @@ func RunHTTPListenerProxy(
 				return
 			}
 			if scanErr != nil {
+				recordListenerStreamError(r.Context(), safeLogW, reqOpts, mcpStreamReceipt(reqOpts, r.Method), true, scanErr)
 				_ = httpstream.Abort(r.Context(), scanErr)
 				return
 			}
@@ -1462,7 +1437,7 @@ func RunHTTPListenerProxy(
 				return
 			}
 			if !stateBound && (requireStateToken || (principalControls && listenerPrincipal.key == "")) {
-				rejectMissingListenerState(nil, TrackedRequestOutcome{})
+				rejectMissingListenerState(nil, receipt.EmitOpts{})
 				return
 			}
 			bindStateRequestContext()
@@ -1481,13 +1456,11 @@ func RunHTTPListenerProxy(
 			forwardListenerUpstreamHeaders(upReq, r, false)
 			responseencoding.RequestIdentity(upReq.Header)
 
-			admission, admitted := admitLegacyMethod()
-			if !admitted {
+			if !admitLegacyMethod() {
 				return
 			}
 			upResp, err := upstreamClient.Do(upReq)
 			if err != nil {
-				warnTransportAdmission(safeLogW, requestBaseOpts, admission, "upstream_error")
 				if handleMetadataDialError(err, nil) {
 					return
 				}
@@ -1511,20 +1484,12 @@ func RunHTTPListenerProxy(
 			// A refused DELETE (405 when the server does not let clients end
 			// sessions, 404 for an unknown one) is relayed, and the session
 			// state below is kept because nothing was terminated.
-			if relayUpstreamClientError(upResp, nil, clientState.recorder, listenerStateAuditKey(), TrackedRequestOutcome{}) {
-				warnTransportAdmission(safeLogW, requestBaseOpts, admission, "upstream_http_client_error")
+			if relayUpstreamClientError(upResp, nil, clientState.recorder, listenerStateAuditKey(), receipt.EmitOpts{}) {
 				return
 			}
 			if !validMCPSessionDeleteStatus(upResp.StatusCode) {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream DELETE returned unsupported HTTP %d\n", upResp.StatusCode)
 				w.Header().Set("Content-Type", "application/json")
-				reason := "upstream_http_unexpected_status"
-				if upResp.StatusCode >= 500 && upResp.StatusCode < 600 {
-					reason = "upstream_http_server_error"
-				} else if upResp.StatusCode >= 300 && upResp.StatusCode < 400 {
-					reason = "upstream_http_redirect"
-				}
-				warnTransportAdmission(safeLogW, requestBaseOpts, admission, reason)
 				w.WriteHeader(http.StatusBadGateway)
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
 				return
@@ -1986,16 +1951,28 @@ func RunHTTPListenerProxy(
 		if listenerPrincipal.actor != "" {
 			scanOpts.AuthorityActor = listenerPrincipal.actor
 		}
+		// Contract and task checks can refuse after admission on this listener.
+		scanOpts.deferBestEffortTaskReceipt = true
 		decision := scanHTTPInputDecision(body, safeLogW, chainSessionKey, auditSessionKey, scanOpts)
-		refusalIntent := func() TrackedRequestOutcome { return decision.Outcome }
-		terminalStatus, terminalReason := "incomplete", "listener_request_ended"
-		terminalSize := int64(-1)
-		defer func() {
-			if terminalStatus == "error" {
-				warnTransportAdmission(safeLogW, scanOpts, decision.admission, terminalReason)
+		// A best-effort allow waits for the send-time task check. A refusal
+		// writes it as an intent and closes it as blocked; every other exit
+		// writes the held allow.
+		pendingReceipt := decision.pendingReceipt
+		emitPendingReceipt := func() {
+			if pendingReceipt != nil {
+				emitPendingMCPInputReceipt(pendingReceipt)
+				pendingReceipt = nil
 			}
-			decision.Outcome.settle(safeLogW, scanOpts, terminalStatus, terminalSize, terminalReason)
-		}()
+		}
+		defer emitPendingReceipt()
+		refusalIntent := func() receipt.EmitOpts {
+			if pendingReceipt == nil {
+				return decision.Outcome.Receipt
+			}
+			intent := pendingRefusalIntent(pendingReceipt)
+			pendingReceipt = nil
+			return intent
+		}
 		if decision.Synthetic != nil {
 			w.Header().Set("Content-Type", "application/json")
 			if decision.Synthetic.notification {
@@ -2013,7 +1990,11 @@ func RunHTTPListenerProxy(
 		}
 
 		if !stateBound && (requireStateToken || (principalControls && listenerPrincipal.key == "")) && listenerMethodRequiresPrincipal(frame.Method) {
-			rejectMissingListenerState(frame.ID, refusalIntent())
+			var intent receipt.EmitOpts
+			if pendingReceipt != nil {
+				intent = refusalIntent()
+			}
+			rejectMissingListenerState(frame.ID, intent)
 			return
 		}
 
@@ -2028,9 +2009,10 @@ func RunHTTPListenerProxy(
 			// The input scan admitted this call. A refusal here must close its
 			// intent as blocked, or the chain shows a bare allow.
 			closeContractIntent := func(reason string) {
-				intent := refusalIntent()
-				intent.Receipt.Layer = mcpReceiptLayerHeaderContract
-				intent.settle(safeLogW, scanOpts, mcpOutcomeStatusBlocked, -1, reason)
+				if intent := refusalIntent(); intent.ActionID != "" {
+					intent.Layer = mcpReceiptLayerHeaderContract
+					emitMCPBlockedOutcomeReceipt(requestBaseOpts.receiptEmitter(), requestBaseOpts.v2ReceiptEmitter(), requestBaseOpts.ReceiptGroup, safeLogW, intent, -1, reason, requestBaseOpts.requireReceipts())
+				}
 			}
 			if headerBaseline != nil && frame.RoutingNameErr == nil && frame.RoutingName != "" {
 				var contractErr error
@@ -2082,7 +2064,6 @@ func RunHTTPListenerProxy(
 		// Build upstream request with passthrough headers.
 		upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(decision.ForwardMessage))
 		if err != nil {
-			terminalStatus, terminalReason = "error", "upstream_request_build_failed"
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
 			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
@@ -2108,19 +2089,26 @@ func RunHTTPListenerProxy(
 			})
 			reason := decision.taskTaint.recordTaskReleaseRefusal(refusal)
 			refusalReceipt := refusalIntent()
-			refusalReceipt.Receipt.Layer = mcpReceiptLayerTaint
-			refusalReceipt.Receipt.TaintDecision = config.ActionBlock
-			refusalReceipt.Receipt.TaintDecisionReason = reason
-			refusalReceipt.settle(safeLogW, scanOpts, mcpOutcomeStatusBlocked, -1, reason)
+			refusalReceipt.Layer = mcpReceiptLayerTaint
+			refusalReceipt.TaintDecision = config.ActionBlock
+			refusalReceipt.TaintDecisionReason = reason
+			emitMCPBlockedOutcomeReceipt(scanOpts.receiptEmitter(), scanOpts.v2ReceiptEmitter(), scanOpts.ReceiptGroup, safeLogW, refusalReceipt, -1, reason, scanOpts.requireReceipts())
 			scanOpts.ListenerDoor = opts.ListenerDoor
 			writeMCPHTTPInputResult(scanOpts, *blocked, w)
 			return
 		}
+		// Without taint enforcement, preserve the admission record before
+		// sending so evidence does not depend on upstream response headers.
+		if taintCfg := scanOpts.taintCfg(); taintCfg == nil || !taintCfg.Enabled {
+			emitPendingReceipt()
+		}
 		upResp, err := upstreamClient.Do(upReq)
+		// Keep receipt I/O out of the task-check-to-send interval when taint is enabled.
+		emitPendingReceipt()
 		if err != nil {
-			terminalStatus, terminalReason = "error", "upstream_error"
-			if errors.Is(context.Cause(upReq.Context()), ael.ErrCapacity) {
-				terminalReason = nativeCapacityReason
+			if errors.Is(context.Cause(upReq.Context()), ael.ErrCapacity) && decision.Outcome.Receipt.ActionID != "" {
+				intent := decision.Outcome.Receipt.InheritAdmission(admission)
+				emitMCPOutcomeReceipt(scanOpts.receiptEmitter(), scanOpts.v2ReceiptEmitter(), scanOpts.ReceiptGroup, safeLogW, intent, "502", -1, nativeCapacityReason, scanOpts.requireReceipts())
 			}
 			if handleMetadataDialError(err, frame.ID) {
 				return
@@ -2140,8 +2128,7 @@ func RunHTTPListenerProxy(
 		upResp.Body = newIdleTimeoutReader(upResp.Body, upstreamIdleReadTimeout)
 		defer func() { _ = upResp.Body.Close() }()
 		if clientState.revoked.Load() {
-			terminalReason = "listener_state_revoked"
-			rejectMissingListenerState(frame.ID, TrackedRequestOutcome{})
+			rejectMissingListenerState(frame.ID, receipt.EmitOpts{})
 			return
 		}
 
@@ -2151,15 +2138,11 @@ func RunHTTPListenerProxy(
 		// A request is owed an answer, so only the legacy 202 acknowledges
 		// one; any other empty 2xx falls through to the sanitized 502.
 		if transport.AcceptedWithoutBody(upResp) && (upResp.StatusCode == http.StatusAccepted || !transport.ExpectsReply(decision.ForwardMessage)) {
-			terminalReason = "upstream_accepted_without_response"
-			if isRPCNotification(frame.ID) {
-				terminalStatus, terminalReason = "forwarded", "notification_forwarded"
-			}
 			if !clientState.commitIfActive(func() {
 				commitMCPToolCall(baselineRec, mcpFrameBaselineIdentity(frame))
 				w.WriteHeader(http.StatusAccepted)
 			}) {
-				rejectMissingListenerState(frame.ID, TrackedRequestOutcome{})
+				rejectMissingListenerState(frame.ID, receipt.EmitOpts{})
 			}
 			return
 		}
@@ -2169,7 +2152,6 @@ func RunHTTPListenerProxy(
 		// to follow redirects; forwarding a 3xx body would let an upstream
 		// smuggle arbitrary response content around the normal status contract.
 		if upResp.StatusCode >= 300 && upResp.StatusCode < 400 {
-			terminalStatus, terminalReason = "error", "upstream_http_redirect"
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream POST returned HTTP %d redirect\n", upResp.StatusCode)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
@@ -2178,15 +2160,13 @@ func RunHTTPListenerProxy(
 		}
 
 		// A 4xx is relayed once scanned; see relayUpstreamClientError.
-		if relayUpstreamClientError(upResp, frame.ID, reqRec, auditSessionKey, decision.Outcome) {
-			terminalStatus, terminalReason = "error", "upstream_http_client_error"
+		if relayUpstreamClientError(upResp, frame.ID, reqRec, auditSessionKey, decision.Outcome.Receipt) {
 			return
 		}
 
 		// Upstream failure (5xx): sanitize before forwarding (don't leak body
 		// content that could contain injection payloads).
-		if upResp.StatusCode >= 500 && upResp.StatusCode < 600 {
-			terminalStatus, terminalReason = "error", "upstream_http_server_error"
+		if upResp.StatusCode >= 400 {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
@@ -2194,7 +2174,6 @@ func RunHTTPListenerProxy(
 			return
 		}
 		if upResp.StatusCode != http.StatusOK {
-			terminalStatus, terminalReason = "error", "upstream_http_unexpected_status"
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream POST returned unexpected HTTP %d\n", upResp.StatusCode)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
@@ -2229,7 +2208,6 @@ func RunHTTPListenerProxy(
 				compressedErr = responseencoding.DecodeResponse(upResp)
 			}
 			if compressedErr != nil {
-				terminalStatus, terminalReason = "error", "upstream_http_compressed_response"
 				contentEncoding := strings.Join(upResp.Header.Values("Content-Encoding"), ",")
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: blocking compressed upstream response (Content-Encoding=%q)\n", contentEncoding)
 				info := blockreason.MustNew(blockreason.CompressedResponse, blockreason.SeverityWarn, blockreason.RetryPolicy)
@@ -2272,7 +2250,6 @@ func RunHTTPListenerProxy(
 		responseTracker.TrackOutcome(frame.ID, outcome)
 		upstreamIsSSE := transport.HasSingleSSEContentType(upResp.Header)
 		if setupState && upstreamIsSSE {
-			terminalStatus, terminalReason = "error", "upstream_sse_session_setup"
 			w.Header().Set("Content-Type", "application/json")
 			denialAudit = mcpListenerInspectionDenialAudit()
 			w.WriteHeader(http.StatusBadGateway)
@@ -2290,7 +2267,6 @@ func RunHTTPListenerProxy(
 		reqOpts := requestBaseOpts
 		reqOpts.A2ACardAuthFingerprint = CardCacheKeyFromRequest("", upReq.Header.Get("Authorization")).authFingerprint
 		reqOpts.responseDenial = w.responseDenial
-		reqOpts.listenerOwnsResponseOutcome = true
 		reqOpts.Rec = reqRec
 		reqOpts.BaselineRec = baselineRec
 		reqOpts.AdaptiveCfg = adaptiveCfg
@@ -2332,10 +2308,11 @@ func RunHTTPListenerProxy(
 			reqOpts.nativeSSE = true
 			foundInjection, scanErr := ForwardScanned(streamReader, revocableWriter, safeLogW, responseTracker, reqOpts)
 			if errors.Is(scanErr, ael.ErrCapacity) {
-				streamOutcome := decision.Outcome
-				standalone := streamOutcome.Receipt.ActionID == "" || streamOutcome.handle != nil && streamOutcome.handle.settled.Load()
+				streamOutcome := decision.Outcome.Receipt
+				_, pending := responseTracker.Consume(frame.ID)
+				standalone := !pending || streamOutcome.ActionID == ""
 				if standalone {
-					streamOutcome = TrackedRequestOutcome{Receipt: mcpStreamReceipt(reqOpts, r.Method)}
+					streamOutcome = mcpStreamReceipt(reqOpts, r.Method)
 				}
 				recordListenerStreamError(r.Context(), safeLogW, reqOpts, streamOutcome, standalone, scanErr)
 				refuseListenerStreamCapacity(w, r, streamWriter)
@@ -2352,7 +2329,6 @@ func RunHTTPListenerProxy(
 			// content-type set above with the standard application/json
 			// upstream-error envelope.
 			if scanErr != nil && !streamWriter.Wrote() {
-				terminalStatus, terminalReason = "error", "upstream_sse_validation_failed"
 				w.Header().Set("Cache-Control", "no-store")
 				w.Header().Set("Content-Type", "application/json")
 				if !revocableWriter.denied && !mcpDenialWasFinalized(scanErr) {
@@ -2363,12 +2339,11 @@ func RunHTTPListenerProxy(
 				return
 			}
 			if scanErr != nil {
-				streamOutcome := decision.Outcome
-				// Correlation can consume the ID before a write fails. Use the
-				// receipt handle to tell whether the intent still needs settling.
-				standalone := streamOutcome.handle == nil || streamOutcome.handle.settled.Load()
+				streamOutcome := decision.Outcome.Receipt
+				_, pending := responseTracker.Consume(frame.ID)
+				standalone := !pending || streamOutcome.ActionID == ""
 				if standalone {
-					streamOutcome = TrackedRequestOutcome{Receipt: mcpStreamReceipt(reqOpts, r.Method)}
+					streamOutcome = mcpStreamReceipt(reqOpts, r.Method)
 				}
 				recordListenerStreamError(r.Context(), safeLogW, reqOpts, streamOutcome, standalone, scanErr)
 				_ = httpstream.Abort(r.Context(), scanErr)
@@ -2385,11 +2360,6 @@ func RunHTTPListenerProxy(
 			return
 		}
 		var responseTerminal mcpDeferredTerminal
-		var responseStatus, responseReason string
-		var responseSize int64
-		reqOpts.bufferedResponseOutcome = func(status, reason string, size int64) {
-			responseStatus, responseReason, responseSize = status, reason, size
-		}
 		reqOpts.denialTerminal = &responseTerminal
 		w.opts.denialTerminal = &responseTerminal
 		var inventoryCommits []func()
@@ -2421,26 +2391,14 @@ func RunHTTPListenerProxy(
 						commit()
 					}
 				}
-				if responseStatus != "" {
-					terminalReason = "response_not_delivered"
-				}
 				n, err := w.Write(output)
-				if err != nil || n != len(output) {
-					return
-				}
-				if responseStatus != "" || !commitBeforeWrite {
-					// Flush the buffered body before settling. HTTP finishes
-					// the response framing when the handler returns.
-					if err := http.NewResponseController(w.ResponseWriter).Flush(); err != nil {
-						return
-					}
-				}
-				if responseStatus != "" {
-					terminalStatus, terminalReason, terminalSize = responseStatus, responseReason, responseSize
-				}
-				if !commitBeforeWrite {
-					for _, commit := range inventoryCommits {
-						commit()
+				if err == nil && n == len(output) && !commitBeforeWrite {
+					// net/http buffers small writes. Flush before treating delivery as
+					// successful, so a failed socket write cannot seed client-seen state.
+					if flushErr := http.NewResponseController(w.ResponseWriter).Flush(); flushErr == nil {
+						for _, commit := range inventoryCommits {
+							commit()
+						}
 					}
 				}
 			})
@@ -2453,7 +2411,6 @@ func RunHTTPListenerProxy(
 			}
 		}
 		if scanErr != nil {
-			terminalStatus, terminalReason = "error", "upstream_response_validation_failed"
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			w.Header().Set("Content-Type", "application/json")
 			if denialAudit.kind == "" && !mcpDenialWasFinalized(scanErr) {
@@ -2468,7 +2425,7 @@ func RunHTTPListenerProxy(
 			if !clientState.commitIfActive(func() {
 				writeOutput(output)
 			}) {
-				rejectMissingListenerState(frame.ID, TrackedRequestOutcome{})
+				rejectMissingListenerState(frame.ID, receipt.EmitOpts{})
 			}
 			return
 		}
@@ -2494,7 +2451,7 @@ func RunHTTPListenerProxy(
 			return
 		}
 		if !clientState.commitIfActive(commitResponse) {
-			rejectMissingListenerState(frame.ID, TrackedRequestOutcome{})
+			rejectMissingListenerState(frame.ID, receipt.EmitOpts{})
 		}
 	})
 
@@ -3385,4 +3342,4 @@ func listenerLoopbackHostAllowed(authority string, addr net.Addr) bool {
 }
 
 // noListenerIntent marks a listener refusal with no admitted call to close.
-func noListenerIntent() TrackedRequestOutcome { return TrackedRequestOutcome{} }
+func noListenerIntent() receipt.EmitOpts { return receipt.EmitOpts{} }

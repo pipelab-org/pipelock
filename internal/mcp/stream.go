@@ -20,7 +20,7 @@ import (
 
 const nativeCapacityReason = "native_ael_capacity"
 
-func recordListenerStreamError(ctx context.Context, logW io.Writer, opts MCPProxyOpts, outcome TrackedRequestOutcome, standalone bool, err error) {
+func recordListenerStreamError(ctx context.Context, logW io.Writer, opts MCPProxyOpts, intent receipt.EmitOpts, standalone bool, err error) {
 	reason := httpstream.Reason(ctx, err)
 	if errors.Is(err, ael.ErrCapacity) {
 		reason = nativeCapacityReason
@@ -28,21 +28,15 @@ func recordListenerStreamError(ctx context.Context, logW io.Writer, opts MCPProx
 	if reason == httpstream.Incomplete {
 		_, _ = fmt.Fprintf(logW, "pipelock: response stream %s: %v\n", reason, err)
 		if opts.AuditLogger != nil {
-			opts.AuditLogger.LogError(audit.NewMethodLogContext(outcome.Receipt.Method), fmt.Errorf("response stream %s: %w", reason, err))
+			opts.AuditLogger.LogError(audit.NewMethodLogContext(intent.Method), fmt.Errorf("response stream %s: %w", reason, err))
 		}
 	}
-	outcome.Receipt = opts.withReceiptPolicyHash(outcome.Receipt)
+	intent = opts.withReceiptPolicyHash(intent)
 	if standalone {
-		if outcome.Receipt.Layer == mcpTransportAdmissionLayer {
-			warnTransportAdmission(logW, opts, outcome.Receipt, reason)
-			return
-		}
-		emitMCPStandaloneStreamReceipt(opts, logW, outcome.Receipt, "200", reason)
-		return
+		emitMCPStandaloneStreamReceipt(opts, logW, intent, "200", reason)
+	} else {
+		emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, intent, "200", -1, reason, opts.requireReceipts())
 	}
-	// The listener request-end path settles this same handle. A direct outcome
-	// write would leave two terminal receipts for one intent.
-	outcome.settle(logW, opts, "200", -1, reason)
 }
 
 func logMCPIncompleteResponse(logW io.Writer, opts MCPProxyOpts, method string, err error) {
@@ -77,7 +71,7 @@ func emitTrackedStreamError(ctx context.Context, logW io.Writer, tracker *Reques
 	if standalone {
 		emitMCPStandaloneStreamReceipt(opts, logW, outcome.Receipt, status, reason)
 	} else {
-		outcome.settle(logW, opts, status, -1, reason)
+		emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, outcome.Receipt, status, -1, reason, opts.requireReceipts())
 	}
 }
 

@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -38,7 +37,6 @@ func nativeDeferredOptions(t *testing.T, e *receipt.Emitter) MCPProxyOpts {
 	t.Cleanup(sc.Close)
 	manager := deferred.NewManager(deferred.Config{
 		Enabled: true, Timeout: time.Minute, MaxPending: 2, MaxPendingPerSession: 2, MaxPendingBytes: 4096,
-		JournalPath: filepath.Join(t.TempDir(), "journal.jsonl"),
 	})
 	return MCPProxyOpts{
 		Scanner: sc, ReceiptEmitter: e, RequireReceipts: true, DeferManager: manager,

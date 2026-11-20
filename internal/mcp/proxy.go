@@ -106,7 +106,7 @@ func emitPendingTimeoutResponses(writer transport.MessageWriter, logW io.Writer,
 		if wErr := writer.WriteMessage(resp); wErr != nil {
 			_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", wErr)
 		}
-		pending.Outcome.settle(logW, opts, "error", int64(len(resp)), "response_timeout")
+		emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, pending.Outcome.Receipt, "error", int64(len(resp)), "response_timeout", opts.requireReceipts())
 		pending.Outcome.releaseNativeLease()
 	}
 }
@@ -119,7 +119,7 @@ func emitPendingIncompleteOutcomes(logW io.Writer, tracker *RequestTracker, opts
 		reason = nativeCapacityReason
 	}
 	for _, pending := range tracker.DrainPendingOutcomes() {
-		pending.Outcome.settle(logW, opts, "incomplete", -1, reason)
+		emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, pending.Outcome.Receipt, "incomplete", -1, reason, opts.requireReceipts())
 		pending.Outcome.releaseNativeLease()
 	}
 }
@@ -196,6 +196,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	obs := opts.captureObserver()
 	mediaPolicy := opts.mediaPolicy()
 	receiptEmitter := opts.receiptEmitter()
+	v2ReceiptEmitter := opts.v2ReceiptEmitter()
 	provenanceCfg := opts.provenanceCfg()
 	respScanOpts := opts.responseScanOptions()
 	resetFile := opts.AdaptiveResetFile
@@ -219,28 +220,30 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	streamAdmission := opts.nativeAdmission
 	var eventAdmission receipt.EmitOpts
 	var trackedOutcome TrackedRequestOutcome
-	var claimedOutcome TrackedRequestOutcome
-	settleUndelivered := func() {
-		if claimedOutcome.Receipt.ActionID != "" {
-			reason := "response_not_delivered"
-			if claimedOutcome.ownsNativeLease && scanErr != nil {
-				reason = "downstream_write_failed"
-			}
-			claimedOutcome.settle(logW, opts, "incomplete", -1, reason)
-			claimedOutcome = TrackedRequestOutcome{}
+	emitTrackedOutcome := func(status, reason string, outbound []byte) {
+		if trackedOutcome.Receipt.ActionID == "" {
+			return
 		}
+		bytesTransferred := int64(-1)
+		if outbound != nil {
+			bytesTransferred = int64(len(outbound))
+		}
+		emitMCPOutcomeReceipt(receiptEmitter, v2ReceiptEmitter, opts.ReceiptGroup, logW, trackedOutcome.Receipt, status, bytesTransferred, reason, opts.requireReceipts())
 	}
 	finishWarnings := func() {}
 	baseWarnContext := opts.warnContext()
 	defer func() {
-		settleUndelivered()
+		// Once correlation consumes a request, the session drain no longer
+		// owns it. A delivery failure must close its intent before release.
+		if scanErr != nil {
+			emitTrackedOutcome("incomplete", "downstream_write_failed", nil)
+		}
 		finishWarnings()
 		eventAdmission.ReleaseNativeAdmission()
 		trackedOutcome.releaseNativeLease()
 	}()
 
 	for {
-		settleUndelivered()
 		finishWarnings()
 		eventAdmission.ReleaseNativeAdmission()
 		trackedOutcome.releaseNativeLease()
@@ -476,22 +479,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					}
 					continue
 				}
-				if !opts.listenerOwnsResponseOutcome {
-					claimedOutcome = trackedOutcome
-				}
 			}
-		}
-
-		emitTrackedOutcome := func(status, reason string, outbound []byte) {
-			if trackedOutcome.Receipt.ActionID == "" {
-				return
-			}
-			if opts.bufferedResponseOutcome != nil {
-				opts.bufferedResponseOutcome(status, reason, int64(len(outbound)))
-			} else {
-				trackedOutcome.settle(logW, opts, status, int64(len(outbound)), reason)
-			}
-			claimedOutcome = TrackedRequestOutcome{}
 		}
 
 		blockScanError := func(scanError string) error {
@@ -1381,7 +1369,7 @@ func emitRejectedResponseOutcome(raw, outbound []byte, logW io.Writer, tracker *
 	if opts.warnContext().Err() != nil {
 		reason = "response_scan_error"
 	}
-	outcome.settle(logW, opts, "error", int64(len(outbound)), reason)
+	emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, outcome.Receipt, "error", int64(len(outbound)), reason, opts.requireReceipts())
 }
 
 func toolScanHasDrift(result tools.ToolScanResult) bool {

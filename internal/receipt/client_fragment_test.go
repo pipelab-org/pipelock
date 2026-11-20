@@ -55,13 +55,11 @@ func TestActionReceiptFragmentCandidates(t *testing.T) {
 	}
 	var candidates []string
 	for _, a := range p.Atoms() {
-		if a.Field == "action_record.method" {
-			t.Fatal("standard method must stay out of the content projection")
-		}
 		if !a.Fixed {
 			candidates = append(candidates, a.Field)
 		}
 	}
+	// A standard method is an enum value, not a candidate.
 	if len(candidates) != 2 {
 		t.Fatalf("candidates = %v, want policy_hash override and target", candidates)
 	}

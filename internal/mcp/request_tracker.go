@@ -36,17 +36,12 @@ type RequestTracker struct {
 	// by HTTP response channels with an exact request set (including an empty
 	// set), while ordinary stdio/WS trackers retain JSON-RPC parse-error parity.
 	strict bool
-	// A late response to one of these IDs could belong to a different
-	// admitted call. Keep method correlation, but decline receipt attribution.
-	ambiguousIDs          map[string]struct{}
-	ambiguityLimitReached bool
 }
 
 // TrackedRequestOutcome carries the receipt metadata needed to emit a
 // post-response outcome for a previously admitted MCP request.
 type TrackedRequestOutcome struct {
 	Receipt receipt.EmitOpts
-	handle  *mcpOutcomeHandle
 	// Method is the JSON-RPC method of the matching request, used by
 	// response-side A2A routing (Agent Card vs field-aware body scan).
 	Method          string
@@ -59,10 +54,7 @@ func (o TrackedRequestOutcome) releaseNativeLease() {
 	}
 }
 
-type requestRegistration struct{ _ byte }
-
 type trackedRequest struct {
-	registration            *requestRegistration
 	outcome                 TrackedRequestOutcome
 	rejectionOutcomeClaimed bool
 }
@@ -122,95 +114,36 @@ func (t *RequestTracker) TrackRequest(id json.RawMessage, method string) {
 // receipt metadata. Nil/null IDs are ignored (notifications don't expect
 // responses). If the pending set exceeds maxTrackedRequests, the oldest entry
 // is evicted.
-func (t *RequestTracker) TrackOutcome(id json.RawMessage, outcome TrackedRequestOutcome) {
-	t.trackOutcome(id, outcome)
-}
-
-func (t *RequestTracker) trackOutcome(id json.RawMessage, outcome TrackedRequestOutcome) *requestRegistration {
-	registration, _ := t.registerOutcome(id, outcome)
-	return registration
-}
-
-type unattributedOutcome struct {
-	outcome TrackedRequestOutcome
-	reason  string
-}
-
-func (t *RequestTracker) registerOutcome(id json.RawMessage, outcome TrackedRequestOutcome) (*requestRegistration, []unattributedOutcome) {
+func (t *RequestTracker) TrackOutcome(id json.RawMessage, outcome TrackedRequestOutcome) bool {
 	if t == nil {
-		return nil, nil
+		return false
 	}
 	key := canonicalID(id)
 	if key == "" {
-		return nil, nil
+		return false
 	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	var unowned []unattributedOutcome
-	retire := func(o TrackedRequestOutcome, reason string) {
-		if o.handle != nil {
-			unowned = append(unowned, unattributedOutcome{outcome: o, reason: reason})
-		}
-	}
-	if prior, exists := t.pending[key]; exists {
-		if prior.outcome.ownsNativeLease || outcome.ownsNativeLease {
-			return nil, nil
-		}
-		// A response to a duplicate outstanding ID has no unique owner.
-		if prior.outcome.handle != nil || outcome.handle != nil {
-			t.markAmbiguous(key)
-			retire(prior.outcome, "ambiguous_request_id")
-			retire(outcome, "ambiguous_request_id")
-			prior.outcome.Receipt = receipt.EmitOpts{}
-			prior.outcome.handle = nil
-			t.pending[key] = prior
-		}
-		return nil, unowned
-	}
-
-	_, ambiguous := t.ambiguousIDs[key]
-	if outcome.ownsNativeLease && (ambiguous || t.ambiguityLimitReached) {
-		return nil, nil
+	if _, exists := t.pending[key]; exists {
+		return false // already tracked
 	}
 
 	// Evict oldest if at capacity.
 	if len(t.pending) >= maxTrackedRequests {
 		oldest := t.order[0]
 		if t.pending[oldest].outcome.ownsNativeLease {
-			return nil, nil
-		}
-		if t.pending[oldest].outcome.handle != nil {
-			t.markAmbiguous(oldest)
-			retire(t.pending[oldest].outcome, "request_tracker_capacity")
+			return false
 		}
 		delete(t.pending, oldest)
 		t.order = t.order[1:]
 	}
 
-	if _, ambiguous := t.ambiguousIDs[key]; ambiguous || t.ambiguityLimitReached {
-		retire(outcome, "ambiguous_request_id")
-		outcome.Receipt = receipt.EmitOpts{}
-		outcome.handle = nil
-	}
-	registration := new(requestRegistration)
-	t.pending[key] = trackedRequest{registration: registration, outcome: outcome}
+	t.pending[key] = trackedRequest{outcome: outcome}
 	t.order = append(t.order, key)
 	t.seeded = true
-	return registration, unowned
-}
-
-// markAmbiguous requires t.mu and bounds the ambiguity history.
-func (t *RequestTracker) markAmbiguous(key string) {
-	if len(t.ambiguousIDs) == maxTrackedRequests {
-		t.ambiguityLimitReached = true
-		return
-	}
-	if t.ambiguousIDs == nil {
-		t.ambiguousIDs = make(map[string]struct{})
-	}
-	t.ambiguousIDs[key] = struct{}{}
+	return true
 }
 
 // Validate checks whether id was previously tracked, consuming it on
@@ -235,31 +168,12 @@ func (t *RequestTracker) claimRejectedOutcome(id json.RawMessage) (TrackedReques
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	request, ok := t.pending[key]
-	if !ok || request.rejectionOutcomeClaimed || request.outcome.handle != nil || request.outcome.Receipt.ActionID == "" {
+	if !ok || request.rejectionOutcomeClaimed || request.outcome.Receipt.ActionID == "" {
 		return TrackedRequestOutcome{}, false
 	}
 	request.rejectionOutcomeClaimed = true
 	t.pending[key] = request
 	return request.outcome, true
-}
-
-// removeOwnedOutcome clears only the registration created for this intent.
-func (t *RequestTracker) removeOwnedOutcome(id json.RawMessage, registration *requestRegistration) {
-	if t == nil || registration == nil {
-		return
-	}
-	key := canonicalID(id)
-	t.mu.Lock()
-	req, ok := t.pending[key]
-	if ok && req.registration == registration {
-		t.remove(key)
-	} else {
-		ok = false
-	}
-	t.mu.Unlock()
-	if ok {
-		req.outcome.releaseNativeLease()
-	}
 }
 
 // nativeAdmission finds the held response lease without consuming the request.
@@ -291,19 +205,16 @@ func (t *RequestTracker) Consume(id json.RawMessage) (TrackedRequestOutcome, boo
 	if !ok {
 		return TrackedRequestOutcome{}, false
 	}
-	t.remove(key)
-	return request.outcome, true
-}
-
-// remove requires the tracker's lock.
-func (t *RequestTracker) remove(key string) {
 	delete(t.pending, key)
+	// Remove from order slice. Linear scan is acceptable because n
+	// is bounded by maxTrackedRequests (10,000) and MCP message rates are low.
 	for i, k := range t.order {
 		if k == key {
 			t.order = append(t.order[:i], t.order[i+1:]...)
 			break
 		}
 	}
+	return request.outcome, true
 }
 
 // Seeded reports whether at least one request ID has been tracked.

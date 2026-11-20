@@ -14,23 +14,6 @@ import (
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
-func deferredAdmissionError(manager *deferred.Manager, requireReceipts bool) error {
-	if manager == nil || !manager.Enabled() {
-		return deferred.ErrDisabled
-	}
-	if requireReceipts && manager.JournalPath() == "" {
-		return errors.New("a deferred action journal is required with required receipts (configure flight_recorder.dir)")
-	}
-	return nil
-}
-
-func deferredAdmissionMessage(err error) string {
-	if errors.Is(err, deferred.ErrDisabled) {
-		return "pipelock: defer is disabled"
-	}
-	return "pipelock: " + err.Error()
-}
-
 func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
 	final := res.FinalDecision
 	if final == "" {
@@ -112,7 +95,6 @@ func emitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 // Prepare, AfterJournal and Resolve run in sequence on the resolving
 // goroutine, so the struct needs no lock.
 type deferredReceiptSettlement struct {
-	release  TrackedRequestOutcome
 	done     bool
 	err      error
 	decision string
@@ -123,7 +105,7 @@ type deferredReceiptSettlement struct {
 // no receipt emitter is configured, or one is already marked unhealthy. It
 // writes nothing. A write that fails later is caught by commitAllow.
 func (s *deferredReceiptSettlement) probeAllow(opts MCPProxyOpts, res deferred.Resolution) deferred.Resolution {
-	if res.FinalDecision == config.ActionAllow && !receiptWritable(opts, receipt.EmitOpts{ShardIndex: res.ShardIndex, ShardSelected: res.ShardSelected}) {
+	if res.FinalDecision == config.ActionAllow && !receiptWritable(opts) {
 		res.FinalDecision = config.ActionBlock
 		res.ResolutionSource = deferred.SourceCancel
 		res.Reason = deferred.ReasonReceiptNotWritten
@@ -131,22 +113,19 @@ func (s *deferredReceiptSettlement) probeAllow(opts MCPProxyOpts, res deferred.R
 	return res
 }
 
-// receiptWritable checks every configured family on the hold's assigned shard.
-func receiptWritable(opts MCPProxyOpts, shard receipt.EmitOpts) bool {
+// receiptWritable reports whether a required receipt has a usable emitter.
+// Receipts that are not required never close a release.
+func receiptWritable(opts MCPProxyOpts) bool {
 	if !opts.requireReceipts() {
 		return true
 	}
 	v1, v2 := opts.receiptEmitter(), opts.v2ReceiptEmitter()
-	if opts.ReceiptGroup != nil {
-		var err error
-		v1, v2, err = opts.ReceiptGroup.selectedEmitters(shard)
-		if err != nil {
-			return false
-		}
+	v1OK := v1 != nil && v1.InitError() == nil && v1.HealthError() == nil
+	v2OK := v2 != nil && v2.HealthError() == nil
+	if v2 != nil && !v2OK {
+		return false
 	}
-	return (v1 != nil || v2 != nil) &&
-		(v1 == nil || v1.InitError() == nil && v1.HealthError() == nil) &&
-		(v2 == nil || v2.HealthError() == nil)
+	return v1OK || v2OK
 }
 
 // commitAllow writes the release resolution receipt from Manager.AfterJournal:
@@ -170,29 +149,6 @@ func (s *deferredReceiptSettlement) emit(opts MCPProxyOpts, logW io.Writer, res 
 	s.err = emitDeferredResolutionReceipt(opts, logW, res)
 	s.done, s.decision, s.source = true, res.FinalDecision, res.ResolutionSource
 	return s.err
-}
-
-// commitRelease records the allow resolution and the request intent while
-// the journal still marks the release pending. If either append fails or
-// the journal cannot commit, the manager calls back with the corrective block.
-func (s *deferredReceiptSettlement) commitRelease(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
-	if res.FinalDecision != config.ActionAllow {
-		_, outcomeErr := s.release.settleResult(logW, opts, mcpOutcomeStatusBlocked, -1, res.Reason)
-		return errors.Join(outcomeErr, s.commitAllow(opts, logW, res))
-	}
-	if err := s.commitAllow(opts, logW, res); err != nil {
-		return err
-	}
-	s.release.Method = res.Method
-	return emitMCPToolReceipt(mcpToolReceiptOpts{
-		ProxyOpts: opts, Log: logW, Outcome: &s.release,
-		Shard:    receipt.EmitOpts{ShardIndex: res.ShardIndex, ShardSelected: res.ShardSelected},
-		ActionID: receipt.NewActionID(), ParentActionID: res.ParentActionID,
-		MCPMethod: res.Method, ToolName: res.Target, Transport: opts.Transport,
-		Verdict: config.ActionAllow, Layer: mcpReceiptLayerPolicy,
-		RequireReceipts: opts.requireReceipts(), RequireReceipt: true,
-		SessionID: res.Authority.SessionID, SessionIDOriginal: res.Authority.SessionIDOriginal,
-	})
 }
 
 // holdFailureResolution carries the surface-specific fields for a failed

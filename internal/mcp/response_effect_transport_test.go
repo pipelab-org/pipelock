@@ -25,16 +25,12 @@ import (
 )
 
 func TestMCPRequiredResponseNetworkTransports(t *testing.T) {
-	const websocket = "websocket"
-	for _, surface := range []string{"http bridge JSON", "http bridge SSE", "http listener JSON", "http listener SSE", websocket} {
+	for _, surface := range []string{"http bridge JSON", "http bridge SSE", "http listener JSON", "http listener SSE", "websocket"} {
 		for _, shape := range []string{"media", "card", "response warn", "a2a warn", "tool warn"} {
 			for _, failure := range []bool{false, true} {
 				t.Run(surface+"/"+shape+"/"+map[bool]string{false: "healthy", true: "v2 outage"}[failure], func(t *testing.T) {
 					opts, _, _, _ := newMCPTransportReceiptGroup(t)
-					if surface != websocket {
-						// The WebSocket upgrade already takes the first shard.
-						_ = opts.ReceiptGroup.Shards.Admit(receipt.EmitOpts{})
-					}
+					_ = opts.ReceiptGroup.Shards.Admit(receipt.EmitOpts{})
 					sc, cfg := newMCPScannerWithMediaPolicy(t)
 					if shape == "response warn" || shape == "a2a warn" {
 						cfg.ResponseScanning.Enabled = true
@@ -83,7 +79,7 @@ func TestMCPRequiredResponseNetworkTransports(t *testing.T) {
 						}
 					}
 					upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-						if surface == websocket {
+						if surface == "websocket" {
 							conn, _, _, err := ws.UpgradeHTTP(r, w)
 							if err != nil {
 								t.Errorf("upgrade: %v", err)
@@ -138,7 +134,7 @@ func TestMCPRequiredResponseNetworkTransports(t *testing.T) {
 						defer cancel()
 						done := make(chan error, 1)
 						go func() {
-							if surface == websocket {
+							if surface == "websocket" {
 								done <- RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(upstream), opts)
 							} else {
 								done <- RunHTTPProxy(ctx, stdin, &stdout, &stderr, upstream.URL, nil, opts)

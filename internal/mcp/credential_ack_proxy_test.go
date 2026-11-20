@@ -538,12 +538,7 @@ func requireAcknowledgedAudit(t *testing.T, obs *toolScanCaptureRecorder, rec in
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
-	var receipts []receipt.Receipt
-	for _, signed := range readActionReceipts(t, dir) {
-		if signed.ActionRecord.DecisionPhase == "" {
-			receipts = append(receipts, signed)
-		}
-	}
+	receipts := readActionReceipts(t, dir)
 	if len(receipts) != 1 {
 		t.Fatalf("receipt count = %d, want 1", len(receipts))
 	}

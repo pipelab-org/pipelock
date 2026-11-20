@@ -22,10 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Both Go verifiers enforce the same 8 MiB standalone receipt limit, exact-number bounds and receipt format checks.
 - Contract promotion and rollback sync both lifecycle receipts before replacing the active manifest.
-- Required MCP holds use the durable journal in `flight_recorder.dir`, which is already required at configuration load. Approval checks every configured receipt family on the assigned chain.
-- Best-effort MCP recording writes an intent before sending clean calls and pairs their outcomes with the same action ID. Required MCP listener refusals also close the original intent when listener state is missing.
-- Failed writes of approved MCP stdio calls record a corrective receipt. MCP listener outcomes distinguish upstream redirects, server errors, unexpected statuses, and compressed responses that could not be scanned.
-- Standard HTTP methods participate in receipt fragment scanning as fixed values. They preserve the existing joined-value scan.
 - Receipt group startup finishes writing the transition if shutdown is requested after publication of the opening. Use `pipelock evidence repair-group-transition` to complete an interrupted transition when the successor's signed shard openings are available.
 - Stop admitting work when any native evidence stream cannot reserve space within the 256 MiB ceiling. Admitted work settles, open streams close with signed terminal evidence, and the process seals the run and exits 1 for supervised restart. Oversized predecessor streams are reported distinctly.
 - Sign up to 16 individual DLP advisory warnings per unit of work and summarize additional warnings by pattern in one signed receipt. The audit log retains every warning.

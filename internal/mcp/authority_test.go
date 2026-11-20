@@ -277,23 +277,13 @@ func TestScanHTTPInputDecisionAuthorityGate(t *testing.T) {
 	}
 
 	missing := []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
-	denied := scanHTTPInputDecision(missing, &bytes.Buffer{}, "session", "audit", opts)
-	if denied.Blocked == nil {
+	if got := scanHTTPInputDecision(missing, &bytes.Buffer{}, "session", "audit", opts); got.Blocked == nil {
 		t.Fatal("missing grant forwarded with verifier enabled")
-	}
-	if denied.Outcome.Receipt.ActionID != "" {
-		t.Fatal("authority denial opened an intent")
 	}
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
-	records := readActionReceipts(t, dir)
-	if len(records) != 2 || records[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent ||
-		records[0].ActionRecord.Verdict != config.ActionAllow ||
-		records[0].ActionRecord.ActionID != decision.Outcome.Receipt.ActionID {
-		t.Fatalf("want the earlier allowed request's intent and one authority denial, got %+v", records)
-	}
-	assertSingleAuthorityBlockReceipt(t, records[1:])
+	assertSingleAuthorityBlockReceipt(t, readActionReceipts(t, dir))
 }
 
 func TestForwardScannedInputAuthorityDenialMakesNoWrite(t *testing.T) {
@@ -385,11 +375,7 @@ func assertSingleAuthorityBlockReceipt(t *testing.T, receipts []receipt.Receipt)
 	if len(receipts) != 1 {
 		t.Fatalf("receipt count = %d, want exactly one authority denial", len(receipts))
 	}
-	record := receipts[0].ActionRecord
-	if record.DecisionPhase != "" {
-		t.Fatalf("authority denial phase = %q, want a single decision", record.DecisionPhase)
-	}
-	assertAuthorityBlockReceiptRecord(t, record)
+	assertAuthorityBlockReceiptRecord(t, receipts[0].ActionRecord)
 }
 
 func assertAuthorityBlockReceiptRecord(t *testing.T, record receipt.ActionRecord) {

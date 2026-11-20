@@ -97,8 +97,9 @@ func scanWith(t *testing.T, p *receiptcontent.Producer, sc *scanner.Scanner, det
 }
 
 // TestActionReceiptFragmentTrades pins each detection trade the v1 schema
-// makes for speed. Compare both schemas to preserve the splits each finds
-// and the known limits of the pair-only search.
+// makes for speed. Every "lost" plant is caught by the legacy schema and
+// missed by the live one; undoing the trade makes the live schema catch it
+// and fails the test. Every "kept" plant is caught by both.
 func TestActionReceiptFragmentTrades(t *testing.T) {
 	minted := receiptcontent.NewRequestID()
 	if minted == "" {
@@ -118,43 +119,44 @@ func TestActionReceiptFragmentTrades(t *testing.T) {
 	// any 16-byte slice, so no piece and no accidental neighbor pair in the
 	// joined values reaches 16 bytes of a plant.
 	for _, tc := range []struct {
-		name        string
-		edit        func(ar map[string]any)
-		legacyClean bool
-		liveClean   bool
+		name string
+		edit func(ar map[string]any)
+		lost bool
 	}{
 		{"pattern split with a field it does not neighbor", func(ar map[string]any) {
 			ar["pattern"], ar["request_id"] = patternSecret[8:], patternSecret[:8]
-		}, false, true},
+		}, true},
 		{"secret wholly inside the pattern", func(ar map[string]any) {
 			ar["pattern"] = "status=200 reason=" + patternSecret
-		}, false, false},
+		}, false},
 		{"pattern split with its projection neighbor", func(ar map[string]any) {
 			ar["layer"], ar["pattern"] = patternSecret[:8], patternSecret[8:]
-		}, false, false},
+		}, false},
 		{"minted request ID completing a split", func(ar map[string]any) {
 			ar["actor"], ar["request_id"] = idSecret, minted
-		}, false, true},
-		// Both schemas need a third field to reach a matching window.
-		{"known limit with anonymous and the principal", func(ar map[string]any) {
+		}, true},
+		{"anonymous and the principal in one candidate", func(ar map[string]any) {
 			ar["request_id"] = "Ub3Xk7RaQ2"
-		}, true, true},
+		}, true},
 		{"anonymous as the one bridge", func(ar map[string]any) {
 			ar["layer"], ar["request_id"] = "Mz4Lc8Vb", "Gt5Nw8Qe"
-		}, false, false},
-		{"known limit with the layer name and the principal", func(ar map[string]any) {
+		}, false},
+		{"layer name and the principal in one candidate", func(ar map[string]any) {
 			ar["request_id"] = "Ej9Fp4WyN"
-		}, true, true},
+		}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			detail := v1Detail(t, tc.edit)
 			legacy := scanWith(t, legacyActionReceiptProducer, sc, detail)
 			got := scanWith(t, live, sc, detail)
-			if legacy.Clean() != tc.legacyClean {
-				t.Fatalf("legacy scan = %+v, want clean=%t", legacy, tc.legacyClean)
+			if legacy.Clean() {
+				t.Fatalf("legacy schema missed the plant: the test is not exercising a trade")
 			}
-			if got.Clean() != tc.liveClean {
-				t.Fatalf("live scan = %+v, want clean=%t", got, tc.liveClean)
+			if tc.lost && !got.Clean() {
+				t.Fatalf("live schema still catches the traded split in %s view; the trade is not in effect", got.Findings[0].View)
+			}
+			if !tc.lost && got.Clean() {
+				t.Fatal("live schema lost a plant the trade must keep")
 			}
 		})
 	}

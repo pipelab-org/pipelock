@@ -23,7 +23,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
-	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -385,41 +384,5 @@ func TestMCPDenialListenerRevokedStateWithholdLabel(t *testing.T) {
 	}
 	if got := mcpListenerWithholdAudit("reply cannot be read for scanning").kind; got != "listener_inspection" {
 		t.Fatalf("unreadable reply kind=%s want listener_inspection", got)
-	}
-}
-
-func TestRequiredReceiptListenerMissingStateClosesIntent(t *testing.T) {
-	upstream, calls := countingUpstream(t)
-	h := newMCPDecisionReceiptHarness(t)
-	required := true
-	base, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
-		Scanner: testScannerForHTTP(t), ReceiptEmitter: h.v1, V2ReceiptEmitter: h.v2,
-		RequireReceipts: true, PolicyHash: mcpTestPolicyHash,
-		ListenerStateTokenRequiredFn: func() *bool { return &required },
-	})
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, base, strings.NewReader(deferKillTestCall))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden || calls.Load() != 0 {
-		t.Fatalf("status=%d upstream calls=%d, want 403 and no egress", resp.StatusCode, calls.Load())
-	}
-	records := readActionReceipts(t, h.dir)
-	if len(records) != 2 {
-		t.Fatalf("records = %d, want an intent and its outcome", len(records))
-	}
-	intent, outcome := records[0].ActionRecord, records[1].ActionRecord
-	if intent.DecisionPhase != receipt.DecisionPhaseIntent || intent.Verdict != config.ActionAllow ||
-		outcome.DecisionPhase != receipt.DecisionPhaseOutcome || outcome.Verdict != config.ActionBlock ||
-		outcome.ActionID != intent.ActionID || outcome.Layer != "mcp_listener_session" ||
-		!strings.Contains(outcome.Pattern, "reason=listener_session_token_required") {
-		t.Fatalf("missing listener state failed to settle intent: %q / %q", intent.DecisionPhase, outcome.DecisionPhase)
 	}
 }

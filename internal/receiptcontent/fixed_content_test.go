@@ -5,7 +5,6 @@ package receiptcontent
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"strings"
 	"testing"
@@ -52,10 +51,12 @@ func TestFixedValuesBridgeButNeverCombine(t *testing.T) {
 			requireView(t, rep, err, tc.view)
 		})
 	}
-	// A fixed value pairs with one client fragment in either order.
+	// A fixed value is one bridge piece between client fragments, in any order.
 	for _, tc := range []struct{ name, text string }{
 		{"fixed then client", "operatorleft"},
 		{"client then fixed", "leftoperator"},
+		{"fixed between clients, reversed", "rightoperatorleft"},
+		{"fixed after clients", "rightleftoperator"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			det := func(_ context.Context, text string) scanner.TextDLPResult {
@@ -63,9 +64,8 @@ func TestFixedValuesBridgeButNeverCombine(t *testing.T) {
 			}
 			rep, err := Scan(t.Context(), det, p)
 			requireView(t, rep, err, ViewFragments)
-			paths := rep.Findings[0].Paths
-			if len(paths) != 2 || paths[0] == "" || paths[1] == "" {
-				t.Fatalf("finding must name both participating paths: %+v", rep.Findings[0])
+			if rep.Findings[0].Paths[0] == "" || len(rep.Findings[0].Paths) < 2 {
+				t.Fatalf("finding must name every participating path: %+v", rep.Findings[0])
 			}
 		})
 	}
@@ -173,9 +173,9 @@ func TestFixedValuesSpendOnlyBridgedWork(t *testing.T) {
 	count := func(ctx context.Context, text string) scanner.TextDLPResult { calls++; return det(ctx, text) }
 	rep, err := Scan(t.Context(), count, p)
 	// 20 atoms alone, the structured view and the joined values, the client
-	// pair in both orders, and each of 18 fixed values paired with each of
-	// the 2 client atoms in both orders.
-	if want := 20 + 2 + 2 + 2*18*2; err != nil || !rep.Clean() || calls != want {
+	// pair in both orders, and each of 18 fixed values as one bridge piece
+	// among 2 client atoms: 2*18*2 pairs and 1*18*6 triples.
+	if want := 20 + 2 + 2 + 2*18*2 + 18*6; err != nil || !rep.Clean() || calls != want {
 		t.Fatalf("2 client atoms among 20: calls %d, want %d, report %+v, err %v", calls, want, rep, err)
 	}
 }
@@ -185,17 +185,24 @@ func TestBridgedSearchStaysInsideTheWorkBound(t *testing.T) {
 	fields := map[string]Class{"f": Content, "f[]": Content}
 	base := &Producer{schema: &Schema{Kind: "test.fixed_bridge_budget", Fields: fields}}
 	clean := func(_ context.Context, _ string) scanner.TextDLPResult { return scanner.TextDLPResult{Clean: true} }
-	t.Run("pairs fit even when three-part combinations would not", func(t *testing.T) {
+	t.Run("search narrows to the widest size that fits", func(t *testing.T) {
 		values := []string{"a0", "a1", "a2", long}
 		p, err := base.WithFixedValues(map[string][]string{"f[]": {long}}).Project(mustJSON(t, map[string]any{"f": values}))
 		if err != nil {
 			t.Fatal(err)
 		}
+		var longest int
 		det := func(_ context.Context, text string) scanner.TextDLPResult {
-			return scanner.TextDLPResult{Clean: text != long+"a0"}
+			longest = max(longest, len(text))
+			return clean(nil, text)
 		}
 		rep, err := Scan(t.Context(), det, p)
-		requireView(t, rep, err, ViewFragments)
+		if err != nil || !rep.Clean() {
+			t.Fatalf("report %+v, err %v", rep, err)
+		}
+		if longest < len(long) {
+			t.Fatalf("bridged pairs were not searched: longest text %d", longest)
+		}
 	})
 	t.Run("pairs that cannot fit refuse the receipt", func(t *testing.T) {
 		values := make([]string, 0, 21)
@@ -215,51 +222,26 @@ func TestBridgedSearchStaysInsideTheWorkBound(t *testing.T) {
 	})
 }
 
-// The pair-only fragment search leaves larger combinations with a fixed value
-// to the other scan views. These fixtures fall outside those views.
-func TestFixedBridgePairOnlyKnownLimits(t *testing.T) {
-	det := testDetector(t)
-	base := &Producer{schema: &Schema{
-		Kind: "test.fixed_pair_limits", Fields: map[string]Class{"a": Content, "b": Content, "c": Content, "d": Content},
-	}}
-	encoded := base64.StdEncoding.EncodeToString([]byte(canaryFixture))
-	token := githubFixture()
-	for _, tc := range []struct {
-		name, match, fixed string
-		fields             []string
-		detect             Detector
-	}{
-		{"fixed value between two client fields", "rightoperatorleft", "b", []string{"left", "operator", "right"}, nil},
-		{"fixed value after two client fields", "rightleftoperator", "b", []string{"left", "operator", "right"}, nil},
-		{"four fields in reverse order", "ddccbbaa", "c", []string{"aa", "bb", "cc", "dd"}, nil},
-		{"four fields out of projection order", "aaccbbdd", "c", []string{"aa", "bb", "cc", "dd"}, nil},
-		{"partial canary window", canaryFixture[2:18], "b", []string{canaryFixture[12:18], canaryFixture[7:12], canaryFixture[2:7]}, det},
-		{"base64 carrier", encoded, "b", []string{encoded[18:], encoded[9:18], encoded[:9]}, det},
-		{"GitHub token across three fields", token, "b", []string{token[26:], token[13:26], token[:13]}, det},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			detect := tc.detect
-			if detect == nil {
-				detect = func(_ context.Context, text string) scanner.TextDLPResult {
-					return scanner.TextDLPResult{Clean: text != tc.match}
-				}
-			}
-			if res := detect(t.Context(), tc.match); res.Err() != nil || res.Clean {
-				t.Fatal("complete fixture must match")
-			}
-			fields := make(map[string]string, len(tc.fields))
-			for i, value := range tc.fields {
-				fields[string(rune('a'+i))] = value
-			}
-			p, err := base.WithFixedValues(map[string][]string{tc.fixed: {fields[tc.fixed]}}).Project(mustJSON(t, fields))
-			if err != nil {
-				t.Fatal(err)
-			}
-			rep, err := Scan(t.Context(), detect, p)
-			if err != nil || !rep.Clean() {
-				t.Fatalf("pair-only scan of the split fixture: report %+v, error %v", rep, err)
-			}
-		})
+func TestBridgedFourPartOrderFollowsProjectionOrder(t *testing.T) {
+	// Fields sort a < b < c < d: forward is a,b,c,d and reverse d,c,b,a.
+	base := &Producer{schema: &Schema{Kind: "test.fixed_bridge_order", Fields: map[string]Class{"a": Content, "b": Content, "c": Content, "d": Content}}}
+	p, err := base.WithFixedValues(map[string][]string{"c": {"cc"}}).Project([]byte(`{"a":"aa","b":"bb","c":"cc","d":"dd"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"ddccbbaa"} { // forward is the joined-values view
+		det := func(_ context.Context, got string) scanner.TextDLPResult {
+			return scanner.TextDLPResult{Clean: got != text}
+		}
+		rep, err := Scan(t.Context(), det, p)
+		requireView(t, rep, err, ViewFragments)
+	}
+	det := func(_ context.Context, got string) scanner.TextDLPResult {
+		return scanner.TextDLPResult{Clean: got != "aaccbbdd"}
+	}
+	rep, err := Scan(t.Context(), det, p)
+	if err != nil || !rep.Clean() {
+		t.Fatalf("a 4-part order other than forward or reverse is outside the bound: %+v %v", rep, err)
 	}
 }
 
@@ -278,7 +260,7 @@ func TestEqualCandidateTextsAreScannedOnce(t *testing.T) {
 		t.Fatalf("fragments = %+v, %v", f, err)
 	}
 	// Three equal client atoms make 6 ordered pairs and 6 ordered triples that
-	// build 2 distinct texts. The fixed value pairs with each occurrence.
+	// build 2 distinct texts; each bridged combination likewise builds one.
 	for text, n := range calls {
 		if n != 1 {
 			t.Errorf("%q scanned %d times", text, n)

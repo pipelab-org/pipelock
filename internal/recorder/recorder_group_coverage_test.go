@@ -79,33 +79,3 @@ func TestRecorderGroupDurableSyncFailureDoesNotReportSuccess(t *testing.T) {
 		t.Fatalf("failed group sync reported success: %v", err)
 	}
 }
-
-func TestRecorderPreAdvanceGuardRefusesWithoutConsumingPosition(t *testing.T) {
-	r, _, _ := newGroupRecorder(t)
-	refused := errors.New("receipt append refused")
-	entry := Entry{SessionID: "proxy", Type: "test", Summary: "guarded receipt"}
-	admissions := 0
-	r.SetReceiptAppendGuardForTest(func(got Entry) error {
-		admissions++
-		if got.SessionID != entry.SessionID || got.Summary != entry.Summary || got.Hash == "" {
-			t.Errorf("guard received unprepared entry %+v", got)
-		}
-		return refused
-	})
-	advanced := 0
-	advance := func() { advanced++ }
-	if err := r.RecordDurableWithReceiptScanPreAdvance(entry, nil, advance); !errors.Is(err, refused) {
-		t.Fatalf("guarded write = %v, want %v", err, refused)
-	}
-	if admissions != 1 || advanced != 0 || r.seq != 0 {
-		t.Fatalf("after refusal admissions=%d advances=%d sequence=%d", admissions, advanced, r.seq)
-	}
-
-	r.SetReceiptAppendGuardForTest(nil)
-	if err := r.RecordDurableWithReceiptScanPreAdvance(entry, nil, advance); err != nil {
-		t.Fatal(err)
-	}
-	if admissions != 1 || advanced != 1 || r.seq != 1 {
-		t.Fatalf("after retry admissions=%d advances=%d sequence=%d", admissions, advanced, r.seq)
-	}
-}

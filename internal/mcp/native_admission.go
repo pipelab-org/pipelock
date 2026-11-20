@@ -56,28 +56,22 @@ func (o MCPProxyOpts) nativeWarningContext(ctx context.Context, admission receip
 }
 
 func trackNativeOutcome(tracker *RequestTracker, id json.RawMessage, outcome TrackedRequestOutcome) error {
-	_, err := trackMCPAdmittedOutcome(io.Discard, MCPProxyOpts{}, tracker, id, outcome)
-	return err
-}
-
-// Transfer the response budget to the same registration that owns the intent.
-func trackMCPAdmittedOutcome(logW io.Writer, opts MCPProxyOpts, tracker *RequestTracker, id json.RawMessage, outcome TrackedRequestOutcome) (*requestRegistration, error) {
 	if outcome.Receipt.NativeLease == nil {
-		return trackMCPOutcome(logW, opts, tracker, id, outcome), nil
+		tracker.TrackOutcome(id, outcome)
+		return nil
 	}
 	lease, err := outcome.Receipt.NativeLease.Split(nativeMCPPendingRecords)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	outcome.Receipt.NativeLease = lease
 	outcome.Receipt.NativeTerminalLease = nil
 	outcome.ownsNativeLease = true
-	registration := trackMCPOutcome(logW, opts, tracker, id, outcome)
-	if registration == nil {
+	if !tracker.TrackOutcome(id, outcome) {
 		lease.Release()
-		return nil, errors.New("could not reserve a pending receipt outcome for this request ID")
+		return errors.New("could not reserve a pending receipt outcome for this request ID")
 	}
-	return registration, nil
+	return nil
 }
 
 func nativeAdmissionDenial(id json.RawMessage, err error) BlockedRequest {
