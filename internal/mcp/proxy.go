@@ -106,8 +106,7 @@ func emitPendingTimeoutResponses(writer transport.MessageWriter, logW io.Writer,
 		if wErr := writer.WriteMessage(resp); wErr != nil {
 			_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", wErr)
 		}
-		emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, pending.Outcome.Receipt, "error", int64(len(resp)), "response_timeout", opts.requireReceipts())
-		pending.Outcome.releaseNativeLease()
+		pending.Outcome.settle(logW, opts, "error", int64(len(resp)), "response_timeout")
 	}
 }
 
@@ -119,8 +118,7 @@ func emitPendingIncompleteOutcomes(logW io.Writer, tracker *RequestTracker, opts
 		reason = nativeCapacityReason
 	}
 	for _, pending := range tracker.DrainPendingOutcomes() {
-		emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, pending.Outcome.Receipt, "incomplete", -1, reason, opts.requireReceipts())
-		pending.Outcome.releaseNativeLease()
+		pending.Outcome.settle(logW, opts, "incomplete", -1, reason)
 	}
 }
 
@@ -196,7 +194,6 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	obs := opts.captureObserver()
 	mediaPolicy := opts.mediaPolicy()
 	receiptEmitter := opts.receiptEmitter()
-	v2ReceiptEmitter := opts.v2ReceiptEmitter()
 	provenanceCfg := opts.provenanceCfg()
 	respScanOpts := opts.responseScanOptions()
 	resetFile := opts.AdaptiveResetFile
@@ -220,35 +217,34 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	streamAdmission := opts.nativeAdmission
 	var eventAdmission receipt.EmitOpts
 	var trackedOutcome TrackedRequestOutcome
-	emitTrackedOutcome := func(status, reason string, outbound []byte) {
-		if trackedOutcome.Receipt.ActionID == "" {
-			return
-		}
-		bytesTransferred := int64(-1)
-		if outbound != nil {
-			bytesTransferred = int64(len(outbound))
-		}
-		emitMCPOutcomeReceipt(receiptEmitter, v2ReceiptEmitter, opts.ReceiptGroup, logW, trackedOutcome.Receipt, status, bytesTransferred, reason, opts.requireReceipts())
-	}
+	responsePending := false
+	var outcomeStatus, outcomeReason string
+	var outcomeSize int64
 	finishWarnings := func() {}
 	baseWarnContext := opts.warnContext()
-	defer func() {
-		// Once correlation consumes a request, the session drain no longer
-		// owns it. A delivery failure must close its intent before release.
-		if scanErr != nil {
-			emitTrackedOutcome("incomplete", "downstream_write_failed", nil)
+	finishMessage := func() {
+		// A warning summary still needs the response's reservation.
+		finishWarnings()
+		finishWarnings = func() {}
+		if responsePending {
+			if outcomeStatus == "" {
+				outcomeStatus, outcomeReason, outcomeSize = "incomplete", "response_not_delivered", -1
+				if trackedOutcome.ownsNativeLease && scanErr != nil {
+					outcomeReason = "downstream_write_failed"
+				}
+			}
+			trackedOutcome.settle(logW, opts, outcomeStatus, outcomeSize, outcomeReason)
 		}
-		finishWarnings()
 		eventAdmission.ReleaseNativeAdmission()
-		trackedOutcome.releaseNativeLease()
-	}()
-
-	for {
-		finishWarnings()
-		eventAdmission.ReleaseNativeAdmission()
-		trackedOutcome.releaseNativeLease()
 		eventAdmission = receipt.EmitOpts{}
 		trackedOutcome = TrackedRequestOutcome{}
+		responsePending = false
+		outcomeStatus = ""
+	}
+	defer finishMessage()
+
+	for {
+		finishMessage()
 		opts.WarnContext = baseWarnContext
 		opts.nativeAdmission = streamAdmission
 		line, err := reader.ReadMessage()
@@ -360,6 +356,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				if wErr := writeMCPDenial(opts, denialAudit, writer, resp); wErr != nil {
 					return foundInjection, fmt.Errorf("writing kill switch response: %w", wErr)
 				}
+				settleMCPResponseDenial(frame.Raw, resp, logW, tracker, opts, "kill_switch")
 				continue
 			}
 		}
@@ -418,6 +415,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if wErr := writeMCPDenial(opts, denialAudit, writer, resp); wErr != nil {
 				return foundInjection, fmt.Errorf("writing session deny: %w", wErr)
 			}
+			settleMCPResponseDenial(frame.Raw, resp, logW, tracker, opts, "session_deny")
 			continue
 		}
 
@@ -479,7 +477,19 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					}
 					continue
 				}
+				responsePending = !opts.listenerOwnsResponseOutcome
 			}
+		}
+
+		emitTrackedOutcome := func(status, reason string, outbound []byte) {
+			if trackedOutcome.Receipt.ActionID == "" && !trackedOutcome.ownsNativeLease {
+				return
+			}
+			if opts.bufferedResponseOutcome != nil || opts.listenerOwnsResponseOutcome {
+				trackedOutcome.recordResponseOutcome(logW, opts, status, int64(len(outbound)), reason)
+				return
+			}
+			outcomeStatus, outcomeReason, outcomeSize = status, reason, int64(len(outbound))
 		}
 
 		blockScanError := func(scanError string) error {
@@ -1343,25 +1353,37 @@ func rejectResponseKeys(frame MCPFrame, lineNum int, sc *scanner.Scanner, writer
 	return true, resp, nil
 }
 
-// emitRejectedResponseOutcome preserves receipt evidence using only metadata
-// from an admitted request. Ambiguous IDs cannot attribute an outcome, and the
-// rejected response never consumes the outstanding request or admits its state.
-// A tracker reservation bounds rejection receipts to one per pending request.
-func emitRejectedResponseOutcome(raw, outbound []byte, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) {
+// attributableMCPResponseID accepts only unambiguous reply IDs. Neither
+// a server request nor a reply with duplicate or aliased IDs owns a receipt.
+func attributableMCPResponseID(raw []byte) json.RawMessage {
 	if !isResponse(raw) {
-		return
+		return nil
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
-		return
+		return nil
 	}
 	if _, duplicate := jsonscan.TopLevelDuplicateKeys(raw)["id"]; duplicate || jsonscan.HasKeyAlias(fields, "id") {
-		return
+		return nil
 	}
 	if _, request := fields["method"]; request || jsonscan.HasKeyAlias(fields, "method") {
+		return nil
+	}
+	return fields["id"]
+}
+
+func settleMCPResponseDenial(raw, outbound []byte, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts, reason string) {
+	id := attributableMCPResponseID(raw)
+	if isRPCNotification(id) {
 		return
 	}
-	outcome, ok := tracker.claimRejectedOutcome(fields["id"])
+	if outcome, ok := tracker.Consume(id); ok {
+		outcome.recordResponseOutcome(logW, opts, mcpOutcomeStatusBlocked, int64(len(outbound)), reason)
+	}
+}
+
+func emitRejectedResponseOutcome(raw, outbound []byte, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) {
+	outcome, ok := tracker.claimRejectedOutcome(attributableMCPResponseID(raw))
 	if !ok {
 		return
 	}
@@ -1369,7 +1391,7 @@ func emitRejectedResponseOutcome(raw, outbound []byte, logW io.Writer, tracker *
 	if opts.warnContext().Err() != nil {
 		reason = "response_scan_error"
 	}
-	emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, outcome.Receipt, "error", int64(len(outbound)), reason, opts.requireReceipts())
+	outcome.recordResponseOutcome(logW, opts, "error", int64(len(outbound)), reason)
 }
 
 func toolScanHasDrift(result tools.ToolScanResult) bool {

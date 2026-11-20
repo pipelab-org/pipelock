@@ -86,21 +86,17 @@
       "fields": "`phase` is resolution. `hold` carries the original defer id as `hold.id` and records `hold.resolution_policy` and `hold.resolution_source`. The original hold carries `hold.policy` and any `hold.parent`. Set `hold.correction:true` when a later block replaces an allow. `session` is the authority session id and original id, omitted when empty. `taint` records authority user-broad, decision allow, and reason `defer_resolution`. An `ask` resolution requires the retained `approval_api` channel and `observed:true`. Omit `ask` for other resolution verdicts. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
       "when": "When `recoverDeferredActions` selects this receipt call"
     },
-    "internal/mcp/input.go/ForwardScannedInput/commitAllow/c60f53fe35e63b26": {
-      "fields": "`phase` is resolution. `hold` carries the original defer id as `hold.id` and records `hold.resolution_policy` and `hold.resolution_source`. The original hold carries `hold.policy` and any `hold.parent`. Set `hold.correction:true` when a later block replaces an allow. `session` is the authority session id and original id, omitted when empty. `taint` records authority user-broad, decision allow, and reason `defer_resolution`. An `ask` resolution requires the retained `approval_api` channel and `observed:true`. Omit `ask` for other resolution verdicts. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
-      "when": "`config.ActionDefer`"
+    "internal/mcp/defer_resolution.go/(*deferredReceiptSettlement).commitRelease/settleResult/fe65a6480ec69bdd": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Omit `checker` and `normalization`.",
+      "when": "The release closes to a block after the release intent was recorded."
+    },
+    "internal/mcp/defer_resolution.go/(*deferredReceiptSettlement).commitRelease/emitMCPToolReceipt/9527a1f960a23f9e": {
+      "fields": "Set `phase` and `effect_relation` from the send decision. Use the new release intent action ID and carry the supplied parent action ID and authority session when present. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
+      "when": "The release journal is pending and the allow resolution receipt was written. Record the released request intent before sending."
     },
     "internal/mcp/input.go/ForwardScannedInput/emitHoldFailureResolution/c5e45125cddef802": {
       "fields": "`phase` is resolution. `hold` carries the original defer id as `hold.id` and records `hold.resolution_policy` and `hold.resolution_source`. The original hold carries `hold.policy` and any `hold.parent`. Set `hold.correction:true` when a later block replaces an allow. `session` is the authority session id and original id, omitted when empty. `taint` records authority user-broad, decision allow, and reason `defer_resolution`. An `ask` resolution requires the retained `approval_api` channel and `observed:true`. Omit `ask` for other resolution verdicts. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
       "when": "`config.ActionDefer` and `holdErr != nil`"
-    },
-    "internal/mcp/input.go/ForwardScannedInput/emitMCPBlockedOutcomeReceipt/75ad19577efbc924": {
-      "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise.",
-      "when": "`receiptVerdict == config.ActionBlock && forwardReceiptVerdict != \"\" && actionID != \"\"` and `requireReceipts && forwardReceiptVerdict == config.ActionAllow`"
-    },
-    "internal/mcp/input.go/ForwardScannedInput/emitMCPToolReceipt/4f0b1c9b1ae04131": {
-      "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not, `contract` is included when this call sets the contract gate result, and omitted otherwise, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise.",
-      "when": "When `ForwardScannedInput` selects this receipt call"
     },
     "internal/mcp/input.go/ForwardScannedInput/emitReceiptDecision/d35c3bd7e89ba0dc": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise.",
@@ -110,13 +106,25 @@
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise.",
       "when": "`redactErr != nil`. Records `ActionBlock`"
     },
-    "internal/mcp/input.go/ForwardScannedInput/ensure/3dd11dc2f968cdbf": {
-      "fields": "`phase` is resolution. `hold` carries the original defer id as `hold.id` and records `hold.resolution_policy` and `hold.resolution_source`. The original hold carries `hold.policy` and any `hold.parent`. Set `hold.correction:true` when a later block replaces an allow. `session` is the authority session id and original id, omitted when empty. `taint` records authority user-broad, decision allow, and reason `defer_resolution`. An `ask` resolution requires the retained `approval_api` channel and `observed:true`. Omit `ask` for other resolution verdicts. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
-      "when": "`config.ActionDefer`"
+    "internal/mcp/input.go/ForwardScannedInput/emitMCPToolReceipt/256763ef8d42b2fc": {
+      "fields": "Set `phase` and `effect_relation` from the send decision. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `contract` when the decision sets the contract gate result. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "The stdio input decision emits a tool receipt. A block with a recorded outcome handle settles that handle instead."
     },
-    "internal/mcp/input.go/ForwardScannedInput/emitMCPBlockedOutcomeReceipt/bffb1f37f85b7001": {
-      "fields": "Carry the original action ID, attempt, and intended effect. Set `phase=outcome`, `effect_relation=not_attempted`, and `outcome_class=not_released`. Use `policy.source=request_snapshot` and the retained decision-time digest when available. Otherwise use `policy.source=unavailable` and omit `policy.hash`. Set `caller.authn=none`. Copy `session`, `taint`, and `contract` from the intent when present. Include `redaction` only when the intent carries an applied rewrite summary.",
-      "when": "The stdio bridge has an intent and refuses to track the reply before sending the call."
+    "internal/mcp/input.go/ForwardScannedInput/settle/ebcc6adb666adb88": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "The stdio input decision blocks a request with a recorded outcome handle."
+    },
+    "internal/mcp/input.go/ForwardScannedInput/settle/f05c94d6f607fb47": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "The stdio send decision loses required receipt evidence before forwarding."
+    },
+    "internal/mcp/input.go/ForwardScannedInput/settle/414f5151797c61d1": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "The upstream stdio write returns an error."
+    },
+    "internal/mcp/input.go/ForwardScannedInput/settle/f2fadad8e5d505e3": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "The upstream stdio write succeeds for a notification."
     },
     "internal/mcp/killswitch_deferred.go/emitKillSwitchBatchReceipts/emitKillSwitchDenialReceipt/01a6be367223b176": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
@@ -126,57 +134,49 @@
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
       "when": "`!frame.IsBatch`"
     },
-    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/commitAllow/04a766dcfddf7df4": {
-      "fields": "`phase` is resolution. `hold` carries the original defer id as `hold.id` and records `hold.resolution_policy` and `hold.resolution_source`. The original hold carries `hold.policy` and any `hold.parent`. Set `hold.correction:true` when a later block replaces an allow. `session` is the authority session id and original id, omitted when empty. `taint` records authority user-broad, decision allow, and reason `defer_resolution`. An `ask` resolution requires the retained `approval_api` channel and `observed:true`. Omit `ask` for other resolution verdicts. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
-      "when": "`decision.Deferred != nil`"
-    },
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/emitHoldFailureResolution/77407362a6f72b1b": {
       "fields": "`phase` is resolution. `hold` carries the original defer id as `hold.id` and records `hold.resolution_policy` and `hold.resolution_source`. The original hold carries `hold.policy` and any `hold.parent`. Set `hold.correction:true` when a later block replaces an allow. `session` is the authority session id and original id, omitted when empty. `taint` records authority user-broad, decision allow, and reason `defer_resolution`. An `ask` resolution requires the retained `approval_api` channel and `observed:true`. Omit `ask` for other resolution verdicts. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
       "when": "`decision.Deferred != nil` and `holdErr != nil`"
     },
-    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/emitMCPBlockedOutcomeReceipt/64e91ab01b94e720": {
-      "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
-      "when": "`taskRefusal != \"\"`"
+    "internal/mcp/mcp_http_forward.go/emitRequestScopedTimeout/settle/ed81253e86e038df": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "An HTTP bridge request times out with a tracked intent."
     },
-    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/emitMCPOutcomeReceipt/1196e113f6fca85e": {
-      "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
-      "when": "A released HTTP call fails response scanning outside the capacity or timeout paths and its pending intent remains available."
+    "internal/mcp/mcp_http_forward.go/emitContractRefusedOutcome/settle/af4210660451f1b8": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `contract` when the decision sets the contract gate result. Omit `checker` and `normalization`.",
+      "when": "The upstream contract refuses a request with a tracked intent."
     },
-    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/emitMCPOutcomeReceipt/0393bd2f6e24aae1": {
-      "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
-      "when": "`isRPCNotification(frame.ID)` and `decision.Outcome.Receipt.ActionID != \"\"`"
+    "internal/mcp/mcp_http_forward.go/emitTrackedIncompleteOutcome/settle/0116ba1dd28e2162": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "The HTTP bridge marks a tracked response incomplete."
     },
-    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/ensure/c9d0d78ab05e3cd5": {
-      "fields": "`phase` is resolution. `hold` carries the original defer id as `hold.id` and records `hold.resolution_policy` and `hold.resolution_source`. The original hold carries `hold.policy` and any `hold.parent`. Set `hold.correction:true` when a later block replaces an allow. `session` is the authority session id and original id, omitted when empty. `taint` records authority user-broad, decision allow, and reason `defer_resolution`. An `ask` resolution requires the retained `approval_api` channel and `observed:true`. Omit `ask` for other resolution verdicts. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
-      "when": "`decision.Deferred != nil`"
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/6b1d024fc6436016": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "The HTTP bridge request ends while waiting to refresh its inventory."
     },
-    "internal/mcp/mcp_http_forward.go/emitBridgeHeaderContractRefusal/emitMCPBlockedOutcomeReceipt/99731b995b2376be": {
-      "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not, `contract` is included when this call sets the contract gate result, and omitted otherwise.",
-      "when": "When `emitBridgeHeaderContractRefusal` selects this receipt call"
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/45edfc3166c19e6d": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "The task authority recheck refuses the request at the HTTP send boundary."
     },
-    "internal/mcp/mcp_http_forward.go/emitContractRefusedOutcome/emitMCPBlockedOutcomeReceipt/9be40bd85a29cf4f": {
-      "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not, `contract` is included when this call sets the contract gate result, and omitted otherwise.",
-      "when": "When `emitContractRefusedOutcome` selects this receipt call"
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/68d28be70c0958e2": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "Sending an HTTP notification fails with an intent present."
     },
-    "internal/mcp/mcp_http_forward.go/emitPendingMCPInputReceipt/emitMCPToolReceipt/7a7207f40344dc56": {
-      "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
-      "when": "`pending != nil`"
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/ecbedeb66dac528d": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "Reading an HTTP notification response times out."
     },
-    "internal/mcp/mcp_http_forward.go/emitRequestScopedTimeout/emitMCPOutcomeReceipt/fdf3c22df5bd9ce5": {
-      "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
-      "when": "`len(id) != 0` and `ok`"
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/b86e4f2fd07ce99e": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "Reading or scanning an HTTP notification response fails."
     },
-    "internal/mcp/mcp_http_forward.go/emitTrackedIncompleteOutcome/emitMCPOutcomeReceipt/b8db4664df7d1ebd": {
-      "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
-      "when": "When `emitTrackedIncompleteOutcome` selects this receipt call"
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/6101ac2c91281dff": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "The HTTP notification finishes without a scan error."
     },
-    "internal/mcp/mcp_http_forward.go/emitTrackedTerminalOutcome/emitMCPOutcomeReceipt/790ff0fae6dff57d": {
-      "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
-      "when": "When `emitTrackedTerminalOutcome` selects this receipt call"
-    },
-    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/emitMCPBlockedOutcomeReceipt/e16698f2010ee11e": {
-      "fields": "Carry the original action ID, attempt, and intended effect. Set `phase=outcome`, `effect_relation=not_attempted`, and `outcome_class=not_released`. Use `policy.source=request_snapshot` and the retained decision-time digest when available. Otherwise use `policy.source=unavailable` and omit `policy.hash`. Set `caller.authn=none`. Copy `session`, `taint`, and `contract` from the intent when present. Include `redaction` only when the intent carries an applied rewrite summary.",
-      "when": "The HTTP bridge has an intent and refuses to track the reply before sending the call."
+    "internal/mcp/mcp_http_forward.go/emitBridgeHeaderContractRefusal/settle/9dd5b4a3b8cdfb73": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `contract` when the decision sets the contract gate result. Omit `checker` and `normalization`.",
+      "when": "The bridge header contract refuses a request with a tracked intent."
     },
     "internal/mcp/mcp_http_input.go/scanHTTPInputDecision/emitMCPToolReceipt/e439f7d1f5545aed": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not, `contract` is included when this call sets the contract gate result, and omitted otherwise, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise.",
@@ -186,37 +186,45 @@
       "fields": "`phase` and `effect_relation` from the decision that gates redirect dispatch, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise.",
       "when": "`config.ActionRedirect` and `requireReceipts`. Records `ActionRedirect`"
     },
-    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitMCPBlockedOutcomeReceipt/9eb23ec5c51a5abf": {
-      "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not, `contract` is included when this call sets the contract gate result, and omitted otherwise.",
-      "when": "`requestBaseOpts.validateToolHeaders && frame.Method == methodToolsCall` and `intent.ActionID != \"\"`"
-    },
-    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitMCPBlockedOutcomeReceipt/79f43728496236ad": {
-      "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not, `contract` is included when this call sets the contract gate result, and omitted otherwise.",
-      "when": "`refusal != \"\"`"
-    },
-    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitMCPOutcomeReceipt/86dd426af887593f": {
-      "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
-      "when": "`intent.ActionID != \"\"`"
-    },
-    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/91d27360553e9da9": {
-      "fields": "`phase` and `effect_relation` from the decision that gates redirect dispatch, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
-      "when": "When `RunHTTPListenerProxy` selects this receipt call"
-    },
-    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/31a0494871fd2f2e": {
-      "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
-      "when": "When `RunHTTPListenerProxy` selects this receipt call"
+    "internal/mcp/mcp_http_input.go/scanHTTPInputDecision/settle/cdacee5d3858833f": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "Recording the HTTP input receipt fails before the admitted request can be sent."
     },
     "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/83b5e9ce36219075": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
       "when": "`reqA2ACfg != nil && reqA2ACfg.Enabled` and `!headerResult.Clean`. Records `ActionBlock`"
     },
-    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitMCPOutcomeReceipt/3e9fcdf4a9b28b79": {
-      "fields": "Carry the original action ID, attempt, and intended effect. Set `phase=outcome`. Use `effect_relation=unknown` and `outcome_class=attempt_unknown` because the cutoff alone cannot establish whether the upstream received the request. Use `policy.source=request_snapshot` and the retained decision-time digest when available. Otherwise use `policy.source=unavailable` and omit `policy.hash`. Set `caller.authn=none`. Copy `session`, `taint`, and `contract` from the intent when present. Include `redaction` only when the intent carries an applied rewrite summary.",
-      "when": "An admitted MCP HTTP request has an intent and its upstream exchange ends at the capacity cutoff before response headers."
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/b420d04ad14b2e7f": {
+      "fields": "Use the intent action ID and its outcome fields when an intent exists. Otherwise set `phase` and `effect_relation` from the standalone refusal. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `contract` when the decision sets the contract gate result. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "The HTTP listener refuses a request without a tracked outcome handle. Close an existing intent or record a standalone refusal."
     },
-    "internal/mcp/mcp_sse_bridge.go/scanGETStream/emitMCPStandaloneStreamReceipt/1cc7fc87f0b002a5": {
-      "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
-      "when": "`scanErr != nil` and `errors.Is(scanErr, transport.ErrIncompleteResponse) && ctx.Err() == nil`"
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/settle/aacccbedc8926a3a": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "The HTTP listener handles an upstream client error with a tracked intent."
+    },
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/settle/b66eccc27290a009": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "The HTTP listener request ends with its intent still pending."
+    },
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/settle/0f47b009c2366607": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `contract` when the decision sets the contract gate result. Omit `checker` and `normalization`.",
+      "when": "The listener tool-header gate refuses a request with a tracked intent."
+    },
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/settle/372a756eb6e09189": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "The listener task authority recheck refuses the request at the send boundary."
+    },
+    "internal/mcp/outcome.go/admitDurableTransport/emitReceiptDecision/d0795603b2d98f19": {
+      "fields": "Set `phase` and `effect_relation` from the single-phase transport admission. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
+      "when": "Required recording admits a stream open or a client-issued session DELETE before the upstream operation."
+    },
+    "internal/mcp/outcome.go/recordTransportAdmissionResult/emitReceiptDecision/d8703e9682a44e42": {
+      "fields": "Set `phase` and `effect_relation` from the single-phase result. Use the admission action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
+      "when": "An admitted MCP transport reports completion, cancellation or failure."
+    },
+    "internal/mcp/outcome.go/trackMCPOutcome/settle/0c363f159765438e": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "Registering a request leaves a pending intent without a correlation owner."
     },
     "internal/mcp/proxy.go/ForwardScanned/confirmMCPResponseEffect/42a32a294c9efefb": {
       "fields": "`phase` and `effect_relation` come from the response delivery decision. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`. `taint`, `session`, `contract`, `redaction`, `shield`, `checker`, and `normalization` are omitted. The response shard and parent action id are copied from the tracked intent.",
@@ -229,10 +237,6 @@
     "internal/mcp/proxy.go/ForwardScanned/confirmMCPResponseEffect/4213a5279419a95c": {
       "fields": "`phase` and `effect_relation` come from the response delivery decision. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`. `taint`, `session`, `contract`, `redaction`, `shield`, `checker`, and `normalization` are omitted. The response shard and parent action id are copied from the tracked intent.",
       "when": "otherwise after `isToolsList && !toolCfg.HeaderContractsOnly` and `opts.requireReceipts()`. Records `ActionAllow`"
-    },
-    "internal/mcp/proxy.go/ForwardScanned/emitMCPOutcomeReceipt/e873bcf33ff3f676": {
-      "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
-      "when": "When a consumed response with an admitted intent is delivered or its downstream write fails"
     },
     "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/63383da7c00a973a": {
       "fields": "`phase` and `effect_relation` come from the tools/list delivery decision. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`. `taint` and `session` are omitted. `checker.surface` is `mcp_tool_description`, `selection` is `configured`, and `mode` is that surface's decision-time mode. `config_hash` is `sha256:` plus the decision-time injection-policy digest. `disposition` is `passed` for `benign`, `flagged` for `finding`, `error` for `incomplete`, and `not_run` for `off` or `not_assessed`. Omit `checker` when the assessment status is `partial` or the policy digest was not retained. `normalization` is included only when that scan built a text-normalization view, and omitted otherwise.",
@@ -258,49 +262,133 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
       "when": "`emitErr != nil` and `opts.requireReceipts()`"
     },
-    "internal/mcp/proxy.go/emitPendingIncompleteOutcomes/emitMCPOutcomeReceipt/e69b537cd64dfa6a": {
-      "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
-      "when": "When `emitPendingIncompleteOutcomes` selects this receipt call"
+    "internal/mcp/proxy.go/emitPendingTimeoutResponses/settle/925ea4e043fccf20": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "An expired MCP request has a tracked outcome when its timeout is reported."
     },
-    "internal/mcp/proxy.go/emitPendingTimeoutResponses/emitMCPOutcomeReceipt/1f137fea0d36a2bc": {
-      "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
-      "when": "When `emitPendingTimeoutResponses` selects this receipt call"
+    "internal/mcp/proxy.go/emitPendingIncompleteOutcomes/settle/2be7d15c848dc9b1": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "The MCP reader drains a pending intent whose response is incomplete."
     },
-    "internal/mcp/proxy.go/emitRejectedResponseOutcome/emitMCPOutcomeReceipt/9db87f32903c0f9d": {
-      "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
-      "when": "When `emitRejectedResponseOutcome` selects this receipt call"
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/1072ca5eb0af9429": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "WebSocket shutdown leaves a tracked request pending."
     },
-    "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPBlockedOutcomeReceipt/4548f871a0c35cc6": {
-      "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
-      "when": "`refusal != \"\"`"
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/7364bbf9dcdf8185": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "The upstream WebSocket handshake fails with an admitted request pending."
     },
-    "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPOutcomeReceipt/1448b91bc1bae339": {
-      "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
-      "when": "When `RunWSProxy` selects this receipt call"
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/879584910ff6a2d6": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "A WebSocket task authority recheck refuses the request before or after request tracker registration."
     },
-    "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPStandaloneStreamReceipt/df71f37e7280dbef": {
-      "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
-      "when": "The WebSocket response ends incomplete outside the native capacity stop path."
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/af3c00839de40c1e": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "The upstream WebSocket frame write fails."
     },
-    "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPBlockedOutcomeReceipt/989b6b7868ecf703": {
-      "fields": "Carry the original action ID, attempt, and intended effect. Set `phase=outcome`, `effect_relation=not_attempted`, and `outcome_class=not_released`. Use `policy.source=request_snapshot` and the retained decision-time digest when available. Otherwise use `policy.source=unavailable` and omit `policy.hash`. Set `caller.authn=none`. Copy `session`, `taint`, and `contract` from the intent when present. Include `redaction` only when the intent carries an applied rewrite summary.",
-      "when": "The WebSocket bridge has an intent and refuses to track the reply before sending the call."
-    },
-    "internal/mcp/stream.go/emitTrackedStreamError/emitMCPOutcomeReceipt/2fac3fe61ed80bbb": {
-      "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
-      "when": "otherwise after `standalone`"
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/2d200dd7420bfdb6": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "The upstream WebSocket frame write succeeds for a notification."
     },
     "internal/mcp/stream.go/emitTrackedStreamError/emitMCPStandaloneStreamReceipt/e1cd46399f2c6ca5": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
       "when": "`standalone`"
     },
-    "internal/mcp/stream.go/recordListenerStreamError/emitMCPOutcomeReceipt/5e7118369a42b35f": {
-      "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
-      "when": "otherwise after `standalone`"
+    "internal/mcp/stream.go/recordListenerStreamError/emitMCPStandaloneStreamReceipt/05856a303fae6b29": {
+      "fields": "Set `phase` and `effect_relation` from the standalone stream warning. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
+      "when": "The HTTP listener observes a stream error on a standalone stream without a linked transport admission."
     },
-    "internal/mcp/stream.go/recordListenerStreamError/emitMCPStandaloneStreamReceipt/fc9c63195e02761e": {
+    "internal/mcp/stream.go/recordListenerStreamError/settle/a6908fd6528dac0f": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "The HTTP listener observes a stream error for a tracked request."
+    },
+    "internal/mcp/stream.go/emitTrackedStreamError/settle/738a7d7a473c7a47": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "The HTTP bridge observes a stream error for a tracked request."
+    },
+    "internal/mcp/input.go/ForwardScannedInput/ensure/3dd11dc2f968cdbf": {
+      "fields": "`phase` is resolution. `hold` carries the original defer id as `hold.id` and records `hold.resolution_policy` and `hold.resolution_source`. The original hold carries `hold.policy` and any `hold.parent`. Set `hold.correction:true` when a later block replaces an allow. `session` is the authority session id and original id, omitted when empty. `taint` records authority user-broad, decision allow, and reason `defer_resolution`. An `ask` resolution requires the retained `approval_api` channel and `observed:true`. Omit `ask` for other resolution verdicts. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
+      "when": "`config.ActionDefer`"
+    },
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/ensure/c9d0d78ab05e3cd5": {
+      "fields": "`phase` is resolution. `hold` carries the original defer id as `hold.id` and records `hold.resolution_policy` and `hold.resolution_source`. The original hold carries `hold.policy` and any `hold.parent`. Set `hold.correction:true` when a later block replaces an allow. `session` is the authority session id and original id, omitted when empty. `taint` records authority user-broad, decision allow, and reason `defer_resolution`. An `ask` resolution requires the retained `approval_api` channel and `observed:true`. Omit `ask` for other resolution verdicts. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
+      "when": "`decision.Deferred != nil`"
+    },
+    "internal/mcp/input.go/ForwardScannedInput/commitRelease/51f17a425eeb5965": {
+      "fields": "Set `phase` to `resolution` and carry the original hold action ID and `hold.id`. Record `hold.resolution_policy` and `hold.resolution_source`. Set `hold.correction:true` when a block replaces an allow. Copy the authority `session` when present. Set `taint` to user-broad authority, allow, and `defer_resolution`. Omit `ask` for these allow and block resolutions. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
+      "when": "The stdio bridge cannot reserve outcome tracking for an approved release and records its corrective block before sending nothing upstream."
+    },
+    "internal/mcp/input.go/ForwardScannedInput/commitRelease/ac5a92a77795e6c8": {
+      "fields": "Set `phase` to `resolution` and carry the original hold action ID and `hold.id`. Record `hold.resolution_policy` and `hold.resolution_source`. Set `hold.correction:true` when a block replaces an allow. Copy the authority `session` when present. Set `taint` to user-broad authority, allow, and `defer_resolution`. Omit `ask` for these allow and block resolutions. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
+      "when": "The stdio deferred release journal calls back with the allow or its corrective block."
+    },
+    "internal/mcp/input.go/ForwardScannedInput/commitRelease/ff0f875a24003429": {
+      "fields": "Set `phase` to `resolution` and carry the original hold action ID and `hold.id`. Record `hold.resolution_policy` and `hold.resolution_source`. Set `hold.correction:true` when a block replaces an allow. Copy the authority `session` when present. Set `taint` to user-broad authority, allow, and `defer_resolution`. Omit `ask` for these allow and block resolutions. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
+      "when": "Outcome registration changes the task permission before a deferred release can write upstream."
+    },
+    "internal/mcp/input.go/ForwardScannedInput/ensure/663bec4b98b32dad": {
+      "fields": "Set `phase` to `resolution` and carry the original hold action ID and `hold.id`. Record `hold.resolution_policy` and `hold.resolution_source`. Set `hold.correction:true` for the block replacing the release allow. Copy the authority `session` when present. Set `taint` to user-broad authority, allow, and `defer_resolution`. Omit `ask` for these allow and block resolutions. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
+      "when": "Writing a released stdio request fails and the final resolution is corrected to a cancellation block."
+    },
+    "internal/mcp/input.go/ForwardScannedInput/settle/8f85b96720eff599": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Omit `checker` and `normalization`.",
+      "when": "The upstream stdio write fails for a released request."
+    },
+    "internal/mcp/input.go/ForwardScannedInput/settle/a6db5cf144a74d21": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Omit `checker` and `normalization`.",
+      "when": "The upstream stdio write succeeds for a released notification."
+    },
+    "internal/mcp/input.go/ForwardScannedInput/settle/db70b24ca0483e23": {
+      "fields": "Carry the original action ID, attempt, and intended effect. Set `phase=outcome`, `effect_relation=not_attempted`, and `outcome_class=not_released`. Use `policy.source=request_snapshot` and the retained decision-time digest when available. Otherwise use `policy.source=unavailable` and omit `policy.hash`. Set `caller.authn=none`. Copy `session`, `taint`, and `contract` from the intent when present. Include `redaction` only when the intent carries an applied rewrite summary.",
+      "when": "The stdio bridge has an intent and refuses to track the reply before sending the call."
+    },
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/commitRelease/30fa9652fd3fb536": {
+      "fields": "Set `phase` to `resolution` and carry the original hold action ID and `hold.id`. Record `hold.resolution_policy` and `hold.resolution_source`. Set `hold.correction:true` when a block replaces an allow. Copy the authority `session` when present. Set `taint` to user-broad authority, allow, and `defer_resolution`. Omit `ask` for these allow and block resolutions. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
+      "when": "The HTTP bridge cannot reserve outcome tracking for an approved release and records its corrective block before sending nothing upstream."
+    },
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/commitRelease/92acbe1bf6202319": {
+      "fields": "Set `phase` to `resolution` and carry the original hold action ID and `hold.id`. Record `hold.resolution_policy` and `hold.resolution_source`. Set `hold.correction:true` when a block replaces an allow. Copy the authority `session` when present. Set `taint` to user-broad authority, allow, and `defer_resolution`. Omit `ask` for these allow and block resolutions. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
+      "when": "The HTTP bridge deferred release journal calls back with the allow or its corrective block."
+    },
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/ensure/b9b88eb17409db53": {
+      "fields": "Set `phase` to `resolution` and carry the original hold action ID and `hold.id`. Record `hold.resolution_policy` and `hold.resolution_source`. Set `hold.correction:true` for the block replacing the release allow. Copy the authority `session` when present. Set `taint` to user-broad authority, allow, and `defer_resolution`. Omit `ask` for these allow and block resolutions. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
+      "when": "Sending a released HTTP request fails and the final resolution is corrected to a cancellation block."
+    },
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/2facc82527628101": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Omit `checker` and `normalization`.",
+      "when": "Sending the released HTTP request fails."
+    },
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/99583da5f2adbe61": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Omit `checker` and `normalization`.",
+      "when": "Sending the released HTTP notification succeeds."
+    },
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/c1b836108ebca0e9": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Omit `checker` and `normalization`.",
+      "when": "The released HTTP request has a tracked intent when its response scan fails."
+    },
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/dae23fb36ee7bdf5": {
+      "fields": "Carry the original action ID, attempt, and intended effect. Set `phase=outcome`, `effect_relation=not_attempted`, and `outcome_class=not_released`. Use `policy.source=request_snapshot` and the retained decision-time digest when available. Otherwise use `policy.source=unavailable` and omit `policy.hash`. Set `caller.authn=none`. Copy `session`, `taint`, and `contract` from the intent when present. Include `redaction` only when the intent carries an applied rewrite summary.",
+      "when": "The HTTP bridge has an intent and refuses to track the reply before sending the call."
+    },
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/933b618316d63f0a": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Omit `checker` and `normalization`.",
+      "when": "A released call ends with its outcome still pending. Keep the registration when a bodyless acknowledgement can receive a later reply."
+    },
+    "internal/mcp/mcp_sse_bridge.go/scanGETStream/emitMCPStandaloneStreamReceipt/ead196751c76bb5e": {
+      "fields": "Set `phase` and `effect_relation` from the standalone stream warning. Set `policy.source` to `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
+      "when": "The bridge GET stream ends incomplete without a recorded admission and the context is still active."
+    },
+    "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPStandaloneStreamReceipt/82cc46bff8b16839": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
-      "when": "`standalone`"
+      "when": "The WebSocket closes at native capacity without a recorded transport admission."
+    },
+    "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPStandaloneStreamReceipt/b2c26f94f7564dba": {
+      "fields": "Set `phase` and `effect_relation` from the standalone stream warning. Set `policy.source` to `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
+      "when": "The upstream WebSocket ends incomplete with no pending request outcomes or recorded admission and the context is still active."
+    },
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/aba745d02595454e": {
+      "fields": "Carry the original action ID, attempt, and intended effect. Set `phase=outcome`, `effect_relation=not_attempted`, and `outcome_class=not_released`. Use `policy.source=request_snapshot` and the retained decision-time digest when available. Otherwise use `policy.source=unavailable` and omit `policy.hash`. Set `caller.authn=none`. Copy `session`, `taint`, and `contract` from the intent when present. Include `redaction` only when the intent carries an applied rewrite summary.",
+      "when": "The WebSocket bridge has an intent and refuses to track the reply before sending the call."
     },
     "internal/proxy/bodyscan.go/(*Proxy).evalHeaderDLP/recordCredentialAudienceAllows/332ef9d1515f4ed6": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
@@ -1409,6 +1497,34 @@
     "internal/proxy/websocket_cross_message.go/(*wsRelay).enforceUpstreamCrossMessageViews/closeUpstreamCrossMessage/5f3bfe7ffa4d3491": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `checker` and `normalization` are omitted.",
       "when": "When `enforceUpstreamCrossMessageViews` selects this receipt call"
+    },
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/commitRelease/d165233c09035c03": {
+      "fields": "Set `phase` to `resolution` and carry the original hold action ID and `hold.id`. Record `hold.resolution_policy` and `hold.resolution_source`. Set `hold.correction:true` when a block replaces an allow. Copy the authority `session` when present. Set `taint` to user-broad authority, allow, and `defer_resolution`. Omit `ask` for these allow and block resolutions. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
+      "when": "The HTTP bridge rechecks task permission after registering an approved release and records a corrective block if permission has changed."
+    },
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/291a4d46608a9051": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "Sending an HTTP request with an ID fails. A pending registration supplies the original admission."
+    },
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/5d5ae7c43b3e1261": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "A response body ends without a correlated reply. A bodyless acknowledgement can still receive a later reply."
+    },
+    "internal/mcp/mcp_http_forward.go/settleBridgeCapacityOutcome/settle/5fbf87f5fad6dca4": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "Native capacity stops the HTTP bridge while an admitted notification is pending."
+    },
+    "internal/mcp/outcome.go/(TrackedRequestOutcome).recordResponseOutcome/settle/91dfa1ed8c8c7c4c": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "A response produces a delivery or denial outcome that is recorded immediately. A buffered listener result is recorded by the listener after delivery."
+    },
+    "internal/mcp/pipeline_decision.go/emitMCPDecision/EmitDurable/ffce9ae165a7527b": {
+      "fields": "Set `phase` and `effect_relation` from the single-phase result. Use the admission action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
+      "when": "The v1 transport admission was recorded but required v2 confirmation failed. The same v1 writer records that the transport did not open."
+    },
+    "internal/mcp/proxy.go/ForwardScanned/settle/2999892428bde960": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "A claimed response settles after message processing, including an incomplete response that could not be delivered."
     }
   },
   "emit_exclusions": {
@@ -1429,7 +1545,6 @@
     "internal/contract/activation/activation.go/SignReceipt/EvidenceReceipt/173683f58bae2b78": "Contract lifecycle and shadow evidence retain their existing format.",
     "internal/contract/shadow/emitter.go/(*Emitter).EmitBatch/EvidenceReceipt/6fa596039dcf8349": "Contract lifecycle and shadow evidence retain their existing format.",
     "internal/mcp/pipeline_decision.go/emitMCPEnvelopeDecision/EmitMCPDecision/cae74696673187dc": "Envelope-only emission supplies no receipt writer.",
-    "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPStandaloneStreamReceipt/f526b8a8a3b39735": "Records a capacity-stop terminal diagnostic for the MCP WebSocket without a matching action intent.",
     "internal/playground/liverun.go/(*LiveRun).AssembleAndVerify/EmitSessionClose/ede7c6d69595561b": "Replay capture and playground artifacts retain their existing format.",
     "internal/playground/liverun.go/StartLiveRun/EmitSessionOpen/c5be03925512e69f": "Replay capture and playground artifacts retain their existing format.",
     "internal/proxy/forward.go/(*Proxy).handleConnect/emitReceipt/4f0d9ae01f90f103": "Records a capacity-stop terminal diagnostic for the CONNECT tunnel without a matching action intent.",
@@ -1474,27 +1589,35 @@
     "internal/mcp/defer_resolution.go/(*deferredReceiptSettlement).emit/emitDeferredResolutionReceipt/68bce8e19ea04f21": "Carries the effect boundary and decision context selected by its caller.",
     "internal/mcp/defer_resolution.go/emitDeferredResolutionReceipt/EmitDeferredResolutionReceipt/20c2d4cfaddde967": "Carries the effect boundary and decision context selected by its caller.",
     "internal/mcp/defer_resolution.go/emitHoldFailureResolution/emitDeferredResolutionReceipt/5240a32ea1a34822": "Carries the effect boundary and decision context selected by its caller.",
+    "internal/mcp/defer_resolution.go/(*deferredReceiptSettlement).commitRelease/commitAllow/23dff9e4a234b3ea": "Passes the closing resolution selected by the release journal to the shared resolution writer.",
+    "internal/mcp/defer_resolution.go/(*deferredReceiptSettlement).commitRelease/commitAllow/f6e25b0252bf7d3c": "Passes the allow resolution selected by the release journal to the shared resolution writer.",
     "internal/mcp/killswitch_deferred.go/emitKillSwitchDenialReceipt/emitReceiptDecision/b0512ca533ae2d6b": "Carries the effect boundary and decision context selected by its caller.",
     "internal/mcp/opts.go/(MCPProxyOpts).emitAdmittedReceiptDecision/emitMCPReceiptDecision/750c6ef16f0eaf42": "Carries the effect boundary and decision context selected by its caller.",
     "internal/mcp/opts.go/(MCPProxyOpts).emitMCPReceiptDecision/EmitMCPDecision/dcc5cca90f6b0589": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
     "internal/mcp/opts.go/(MCPProxyOpts).emitMCPReceiptDecision/EmitMCPGroupDecision/d0a40ceb9150e45a": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
     "internal/mcp/opts.go/(MCPProxyOpts).emitReceiptDecision/emitMCPReceiptDecision/b95eaca33c752136": "Carries the effect boundary and decision context selected by its caller.",
+    "internal/mcp/outcome.go/(TrackedRequestOutcome).settle/settleResult/4331ecca10652210": "Passes the caller's observed status, size and reason to the tracked outcome settlement.",
+    "internal/mcp/outcome.go/(TrackedRequestOutcome).settleResult/emitMCPBlockedOutcomeReceipt/2717074d9f4f981a": "Passes the caller's blocked outcome and original intent to the writer when there is no tracked writer handle.",
+    "internal/mcp/outcome.go/(TrackedRequestOutcome).settleResult/emitMCPOutcomeReceipt/81511a9960797d1d": "Passes the caller's observed outcome and original intent to the writer when there is no tracked writer handle.",
+    "internal/mcp/outcome.go/(*mcpOutcomeHandle).emit/emitMCPV2Decision/9dba973033f3cb80": "Mirrors the supplied outcome on the paired v2 writer for required recording or a block.",
+    "internal/mcp/outcome.go/(*mcpOutcomeHandle).emit/write/069d9efbeb80ce13": "Writes the terminal outcome through the v1 emitter that wrote the intent.",
+    "internal/mcp/outcome.go/(*mcpOutcomeHandle).emit/write/f0ee796ccb56fd6c": "Retries the same v1 outcome only when the chain did not advance.",
     "internal/mcp/pipeline_decision.go/EmitMCPDecision/emitMCPDecision/3c6653a3623644ad": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
-    "internal/mcp/pipeline_decision.go/EmitMCPGroupDecision/emitMCPDecision/771bc6b010af3f2a": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
     "internal/mcp/pipeline_decision.go/emitMCPBlockedOutcomeReceipt/emitMCPOutcome/bcd428d19034bea3": "Carries the effect boundary and decision context selected by its caller.",
-    "internal/mcp/pipeline_decision.go/emitMCPDecision/Emit/ce5c5b39ecdc51a7": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
-    "internal/mcp/pipeline_decision.go/emitMCPDecision/EmitDurable/afc6513b4947a49d": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
+    "internal/mcp/pipeline_decision.go/emitMCPDecision/Emit/64fa2342334dade6": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
+    "internal/mcp/pipeline_decision.go/emitMCPDecision/EmitDurable/757f33093bccbf83": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
     "internal/mcp/pipeline_decision.go/emitMCPDecision/emitMCPV2Decision/38e23fe6c3a08d0c": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
     "internal/mcp/pipeline_decision.go/emitMCPOutcome/EmitMCPDecision/eb775056b5d86901": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
     "internal/mcp/pipeline_decision.go/emitMCPOutcome/EmitMCPGroupDecision/197779fd7df2721c": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
     "internal/mcp/pipeline_decision.go/emitMCPOutcomeReceipt/emitMCPOutcome/f95c6d8417d748e4": "Carries the effect boundary and decision context selected by its caller.",
-    "internal/mcp/pipeline_decision.go/emitMCPStandaloneStreamReceipt/EmitMCPGroupDecision/7cca43178c0d96ac": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
     "internal/mcp/pipeline_decision.go/emitMCPStandaloneStreamReceipt/emitMCPOutcomeReceipt/330ae7fe5863844f": "Carries the effect boundary and decision context selected by its caller.",
     "internal/mcp/pipeline_decision.go/emitMCPV2Decision/Emit/57bb4d29217b7fea": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
     "internal/mcp/pipeline_decision.go/emitMCPV2Decision/EmitDurable/1926001d71cf12c7": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
+    "internal/mcp/pipeline_decision.go/EmitMCPGroupDecision/emitMCPDecision/94871cc3af6b7843": "Passes the supplied decision and its attribution to the paired writers selected for its shard.",
+    "internal/mcp/pipeline_decision.go/emitMCPStandaloneStreamReceipt/emitReceiptDecision/320350b79591571a": "Passes the caller's stream diagnostic to the selected writer as a single-phase warning.",
     "internal/mcp/proxy.go/emitMCPToolScanReceipt/emitReceiptDecision/dc946fe88cb490bd": "Carries the effect boundary and decision context selected by its caller.",
     "internal/mcp/response_receipt.go/confirmMCPResponseEffect/emitReceiptDecision/9f3251d32c5350e6": "Carries the effect boundary and decision context selected by its caller.",
-    "internal/mcp/taint.go/emitMCPToolReceipt/emitAdmittedReceiptDecision/95740dc830c12e8c": "Carries the effect boundary and decision context selected by its caller.",
+    "internal/mcp/taint.go/emitMCPToolReceipt/emitAdmittedReceiptDecision/2e5b75e1010d4e11": "Passes the caller's tool decision and its original shard admission to the shared writer.",
     "internal/proxy/credential_audience.go/(*Proxy).emitAllowPathReceipt/emitCredentialAudienceReceiptWithFallback/588d17e86a5ec874": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/credential_audience.go/(*ReverseProxyHandler).emitAllowPathReceipt/emitCredentialAudienceReceiptWithFallback/7280f382135d4cf3": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/credential_audience.go/(*ReverseProxyHandler).emitAllowPathReceipt/emitGroupV2Receipt/d0bec78a1985948f": "Carries the effect boundary and decision context selected by its caller.",
@@ -1605,60 +1728,82 @@
   },
   "emit_sites": {
     "internal/cli/runtime/mcp.go/recoverDeferredActions/EmitDeferredResolutionReceipt/1085a3de444e8017": "approval_prompt",
-    "internal/mcp/input.go/ForwardScannedInput/commitAllow/c60f53fe35e63b26": "approval_prompt",
+    "internal/mcp/defer_resolution.go/(*deferredReceiptSettlement).commitRelease/settleResult/fe65a6480ec69bdd": "upstream_send",
+    "internal/mcp/defer_resolution.go/(*deferredReceiptSettlement).commitRelease/emitMCPToolReceipt/9527a1f960a23f9e": "upstream_send",
     "internal/mcp/input.go/ForwardScannedInput/emitHoldFailureResolution/c5e45125cddef802": "approval_prompt",
-    "internal/mcp/input.go/ForwardScannedInput/emitMCPBlockedOutcomeReceipt/75ad19577efbc924": "upstream_send",
-    "internal/mcp/input.go/ForwardScannedInput/emitMCPToolReceipt/4f0b1c9b1ae04131": "upstream_send",
     "internal/mcp/input.go/ForwardScannedInput/emitReceiptDecision/d35c3bd7e89ba0dc": "none",
     "internal/mcp/input.go/ForwardScannedInput/emitReceiptDecision/dfce370971da9c96": "none",
-    "internal/mcp/input.go/ForwardScannedInput/ensure/3dd11dc2f968cdbf": "approval_prompt",
-    "internal/mcp/input.go/ForwardScannedInput/emitMCPBlockedOutcomeReceipt/bffb1f37f85b7001": "upstream_send",
+    "internal/mcp/input.go/ForwardScannedInput/emitMCPToolReceipt/256763ef8d42b2fc": "upstream_send",
+    "internal/mcp/input.go/ForwardScannedInput/settle/ebcc6adb666adb88": "upstream_send",
+    "internal/mcp/input.go/ForwardScannedInput/settle/f05c94d6f607fb47": "upstream_send",
+    "internal/mcp/input.go/ForwardScannedInput/settle/414f5151797c61d1": "upstream_send",
+    "internal/mcp/input.go/ForwardScannedInput/settle/f2fadad8e5d505e3": "upstream_send",
     "internal/mcp/killswitch_deferred.go/emitKillSwitchBatchReceipts/emitKillSwitchDenialReceipt/01a6be367223b176": "none",
     "internal/mcp/killswitch_deferred.go/refuseKillSwitchRequest/emitKillSwitchDenialReceipt/dc5db2692450fad5": "none",
-    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/commitAllow/04a766dcfddf7df4": "approval_prompt",
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/emitHoldFailureResolution/77407362a6f72b1b": "approval_prompt",
-    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/emitMCPBlockedOutcomeReceipt/64e91ab01b94e720": "upstream_send",
-    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/emitMCPOutcomeReceipt/1196e113f6fca85e": "upstream_send",
-    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/emitMCPOutcomeReceipt/0393bd2f6e24aae1": "upstream_send",
-    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/ensure/c9d0d78ab05e3cd5": "approval_prompt",
-    "internal/mcp/mcp_http_forward.go/emitBridgeHeaderContractRefusal/emitMCPBlockedOutcomeReceipt/99731b995b2376be": "upstream_send",
-    "internal/mcp/mcp_http_forward.go/emitContractRefusedOutcome/emitMCPBlockedOutcomeReceipt/9be40bd85a29cf4f": "upstream_send",
-    "internal/mcp/mcp_http_forward.go/emitPendingMCPInputReceipt/emitMCPToolReceipt/7a7207f40344dc56": "upstream_send",
-    "internal/mcp/mcp_http_forward.go/emitRequestScopedTimeout/emitMCPOutcomeReceipt/fdf3c22df5bd9ce5": "upstream_send",
-    "internal/mcp/mcp_http_forward.go/emitTrackedIncompleteOutcome/emitMCPOutcomeReceipt/b8db4664df7d1ebd": "upstream_send",
-    "internal/mcp/mcp_http_forward.go/emitTrackedTerminalOutcome/emitMCPOutcomeReceipt/790ff0fae6dff57d": "upstream_send",
-    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/emitMCPBlockedOutcomeReceipt/e16698f2010ee11e": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/emitRequestScopedTimeout/settle/ed81253e86e038df": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/emitContractRefusedOutcome/settle/af4210660451f1b8": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/emitTrackedIncompleteOutcome/settle/0116ba1dd28e2162": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/6b1d024fc6436016": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/45edfc3166c19e6d": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/68d28be70c0958e2": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/ecbedeb66dac528d": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/b86e4f2fd07ce99e": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/6101ac2c91281dff": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/emitBridgeHeaderContractRefusal/settle/9dd5b4a3b8cdfb73": "upstream_send",
     "internal/mcp/mcp_http_input.go/scanHTTPInputDecision/emitMCPToolReceipt/e439f7d1f5545aed": "upstream_send",
     "internal/mcp/mcp_http_input.go/scanHTTPInputDecision/emitMCPToolReceipt/f44eabec3facd474": "redirect_dispatch",
-    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitMCPBlockedOutcomeReceipt/9eb23ec5c51a5abf": "upstream_send",
-    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitMCPBlockedOutcomeReceipt/79f43728496236ad": "upstream_send",
-    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitMCPOutcomeReceipt/86dd426af887593f": "upstream_send",
-    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/91d27360553e9da9": "redirect_dispatch",
-    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/31a0494871fd2f2e": "upstream_send",
+    "internal/mcp/mcp_http_input.go/scanHTTPInputDecision/settle/cdacee5d3858833f": "upstream_send",
     "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/83b5e9ce36219075": "none",
-    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitMCPOutcomeReceipt/3e9fcdf4a9b28b79": "upstream_send",
-    "internal/mcp/mcp_sse_bridge.go/scanGETStream/emitMCPStandaloneStreamReceipt/1cc7fc87f0b002a5": "downstream_delivery",
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/b420d04ad14b2e7f": "upstream_send",
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/settle/aacccbedc8926a3a": "upstream_send",
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/settle/b66eccc27290a009": "upstream_send",
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/settle/0f47b009c2366607": "upstream_send",
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/settle/372a756eb6e09189": "upstream_send",
+    "internal/mcp/outcome.go/admitDurableTransport/emitReceiptDecision/d0795603b2d98f19": "upstream_send",
+    "internal/mcp/outcome.go/recordTransportAdmissionResult/emitReceiptDecision/d8703e9682a44e42": "upstream_send",
+    "internal/mcp/outcome.go/trackMCPOutcome/settle/0c363f159765438e": "upstream_send",
     "internal/mcp/proxy.go/ForwardScanned/confirmMCPResponseEffect/42a32a294c9efefb": "downstream_delivery",
     "internal/mcp/proxy.go/ForwardScanned/confirmMCPResponseEffect/fd70af366c26a517": "downstream_delivery",
     "internal/mcp/proxy.go/ForwardScanned/confirmMCPResponseEffect/4213a5279419a95c": "downstream_delivery",
-    "internal/mcp/proxy.go/ForwardScanned/emitMCPOutcomeReceipt/e873bcf33ff3f676": "upstream_send",
     "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/63383da7c00a973a": "downstream_delivery",
     "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/c25708a43e53f0d1": "downstream_delivery",
     "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/253b9290091141be": "downstream_delivery",
     "internal/mcp/proxy.go/ForwardScanned/emitReceiptDecision/d682a6909d8e4643": "none",
     "internal/mcp/proxy.go/ForwardScanned/emitReceiptDecision/7de616e0dcc5f6d1": "upstream_send",
     "internal/mcp/proxy.go/ForwardScanned/emitReceiptDecision/4eab870c16b495b4": "upstream_send",
-    "internal/mcp/proxy.go/emitPendingIncompleteOutcomes/emitMCPOutcomeReceipt/e69b537cd64dfa6a": "upstream_send",
-    "internal/mcp/proxy.go/emitPendingTimeoutResponses/emitMCPOutcomeReceipt/1f137fea0d36a2bc": "upstream_send",
-    "internal/mcp/proxy.go/emitRejectedResponseOutcome/emitMCPOutcomeReceipt/9db87f32903c0f9d": "downstream_delivery",
-    "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPBlockedOutcomeReceipt/4548f871a0c35cc6": "upstream_send",
-    "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPOutcomeReceipt/1448b91bc1bae339": "downstream_delivery",
-    "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPStandaloneStreamReceipt/df71f37e7280dbef": "downstream_delivery",
-    "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPBlockedOutcomeReceipt/989b6b7868ecf703": "upstream_send",
-    "internal/mcp/stream.go/emitTrackedStreamError/emitMCPOutcomeReceipt/2fac3fe61ed80bbb": "downstream_delivery",
+    "internal/mcp/proxy.go/emitPendingTimeoutResponses/settle/925ea4e043fccf20": "upstream_send",
+    "internal/mcp/proxy.go/emitPendingIncompleteOutcomes/settle/2be7d15c848dc9b1": "upstream_send",
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/1072ca5eb0af9429": "downstream_delivery",
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/7364bbf9dcdf8185": "upstream_send",
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/879584910ff6a2d6": "upstream_send",
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/af3c00839de40c1e": "upstream_send",
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/2d200dd7420bfdb6": "upstream_send",
     "internal/mcp/stream.go/emitTrackedStreamError/emitMCPStandaloneStreamReceipt/e1cd46399f2c6ca5": "downstream_delivery",
-    "internal/mcp/stream.go/recordListenerStreamError/emitMCPOutcomeReceipt/5e7118369a42b35f": "downstream_delivery",
-    "internal/mcp/stream.go/recordListenerStreamError/emitMCPStandaloneStreamReceipt/fc9c63195e02761e": "downstream_delivery",
+    "internal/mcp/stream.go/recordListenerStreamError/emitMCPStandaloneStreamReceipt/05856a303fae6b29": "downstream_delivery",
+    "internal/mcp/stream.go/recordListenerStreamError/settle/a6908fd6528dac0f": "downstream_delivery",
+    "internal/mcp/stream.go/emitTrackedStreamError/settle/738a7d7a473c7a47": "downstream_delivery",
+    "internal/mcp/input.go/ForwardScannedInput/ensure/3dd11dc2f968cdbf": "approval_prompt",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/ensure/c9d0d78ab05e3cd5": "approval_prompt",
+    "internal/mcp/input.go/ForwardScannedInput/commitRelease/51f17a425eeb5965": "upstream_send",
+    "internal/mcp/input.go/ForwardScannedInput/commitRelease/ac5a92a77795e6c8": "approval_prompt",
+    "internal/mcp/input.go/ForwardScannedInput/commitRelease/ff0f875a24003429": "upstream_send",
+    "internal/mcp/input.go/ForwardScannedInput/ensure/663bec4b98b32dad": "approval_prompt",
+    "internal/mcp/input.go/ForwardScannedInput/settle/8f85b96720eff599": "upstream_send",
+    "internal/mcp/input.go/ForwardScannedInput/settle/a6db5cf144a74d21": "upstream_send",
+    "internal/mcp/input.go/ForwardScannedInput/settle/db70b24ca0483e23": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/commitRelease/30fa9652fd3fb536": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/commitRelease/92acbe1bf6202319": "approval_prompt",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/ensure/b9b88eb17409db53": "approval_prompt",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/2facc82527628101": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/99583da5f2adbe61": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/c1b836108ebca0e9": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/dae23fb36ee7bdf5": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/933b618316d63f0a": "upstream_send",
+    "internal/mcp/mcp_sse_bridge.go/scanGETStream/emitMCPStandaloneStreamReceipt/ead196751c76bb5e": "downstream_delivery",
+    "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPStandaloneStreamReceipt/82cc46bff8b16839": "downstream_delivery",
+    "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPStandaloneStreamReceipt/b2c26f94f7564dba": "downstream_delivery",
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/aba745d02595454e": "upstream_send",
     "internal/proxy/bodyscan.go/(*Proxy).evalHeaderDLP/recordCredentialAudienceAllows/332ef9d1515f4ed6": "upstream_send",
     "internal/proxy/forward.go/(*Proxy).handleConnect/emitForwardDenial/2c491386d87dec0b": "none",
     "internal/proxy/forward.go/(*Proxy).handleConnect/emitOutcomeReceipt/6f92002975cb6035": "tunnel_open",
@@ -1935,7 +2080,14 @@
     "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/emitFrameReceipt/343533c121f3dcf8": "downstream_delivery",
     "internal/proxy/websocket_cross_message.go/(*upstreamCrossMessage).enforce/blockCrossMessageIncomplete/cc64c6738926b17f": "downstream_delivery",
     "internal/proxy/websocket_cross_message.go/(*wsRelay).enforceUpstreamCrossMessageViews/closeUpstreamCrossMessage/9a5f93d7fe956bf2": "downstream_delivery",
-    "internal/proxy/websocket_cross_message.go/(*wsRelay).enforceUpstreamCrossMessageViews/closeUpstreamCrossMessage/5f3bfe7ffa4d3491": "downstream_delivery"
+    "internal/proxy/websocket_cross_message.go/(*wsRelay).enforceUpstreamCrossMessageViews/closeUpstreamCrossMessage/5f3bfe7ffa4d3491": "downstream_delivery",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/commitRelease/d165233c09035c03": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/291a4d46608a9051": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/5d5ae7c43b3e1261": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/settleBridgeCapacityOutcome/settle/5fbf87f5fad6dca4": "upstream_send",
+    "internal/mcp/outcome.go/(TrackedRequestOutcome).recordResponseOutcome/settle/91dfa1ed8c8c7c4c": "downstream_delivery",
+    "internal/mcp/pipeline_decision.go/emitMCPDecision/EmitDurable/ffce9ae165a7527b": "upstream_send",
+    "internal/mcp/proxy.go/ForwardScanned/settle/2999892428bde960": "upstream_send"
   },
   "enums": {
     "action_policy_source": [

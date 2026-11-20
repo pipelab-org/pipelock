@@ -776,7 +776,6 @@ func TestTrackedRequestCleanupSurvivesDownstreamFailure(t *testing.T) {
 
 	t.Run("missing terminal outcome", func(t *testing.T) {
 		tracker := NewRequestTracker()
-		emitTrackedTerminalOutcome(io.Discard, tracker, []byte(`9`), []byte(`{}`), "upstream_error", MCPProxyOpts{})
 		emitTrackedIncompleteOutcome(io.Discard, tracker, []byte(`9`), "scan_error", MCPProxyOpts{})
 	})
 

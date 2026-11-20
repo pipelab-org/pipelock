@@ -87,7 +87,7 @@ func TestMCPListenerStreamIntegrity(t *testing.T) {
 					t.Skip("GET subscriptions carry notifications rather than client request results")
 				}
 				payload := "data: " + jsonProgressNotification50 + "\n\n"
-				if ending == "completed_rpc_then_break" {
+				if method == http.MethodPost && (ending == "complete" || ending == "completed_rpc_then_break") {
 					payload += "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}}\n\n"
 				}
 				release := make(chan struct{})
@@ -215,42 +215,26 @@ func TestMCPListenerStreamIntegrity(t *testing.T) {
 				if err := h.rec.Close(); err != nil {
 					t.Fatal(err)
 				}
-				var receipts []receipt.Receipt
-				if method == http.MethodGet && ending == "complete" {
-					_, err := os.Stat(filepath.Join(h.dir, "evidence-proxy-0.jsonl"))
-					if !errors.Is(err, os.ErrNotExist) {
-						t.Fatalf("completed GET subscription created receipt evidence: %v", err)
-					}
-				} else {
-					receipts = readActionReceipts(t, h.dir)
-				}
+				receipts := readActionReceipts(t, h.dir)
 				wantReason := httpstream.Incomplete
 				if ending == "cancel" || ending == "handler_cancel" {
 					wantReason = httpstream.Cancelled
 				}
-				found := false
-				outcomeIDs := make(map[string]bool)
-				for _, rec := range receipts {
-					if method == http.MethodGet {
-						if rec.ActionRecord.Layer != "outcome" {
-							t.Fatalf("GET subscription emitted a new decision receipt: %+v", rec.ActionRecord)
-						}
-						if ending == "complete" {
-							t.Fatalf("completed GET subscription emitted a new outcome receipt: %+v", rec.ActionRecord)
-						}
+				if method == http.MethodGet {
+					if len(receipts) != 2 {
+						t.Fatalf("GET receipt count = %d, want admission and terminal", len(receipts))
 					}
-					if rec.ActionRecord.Layer == "outcome" {
-						if outcomeIDs[rec.ActionRecord.ActionID] {
-							t.Fatalf("duplicate outcome for action %s", rec.ActionRecord.ActionID)
-						}
-						outcomeIDs[rec.ActionRecord.ActionID] = true
+					verdict, pattern := config.ActionWarn, "status=error bytes=unknown reason="+wantReason
+					if ending == "complete" {
+						verdict, pattern = config.ActionForward, completedMCPStreamPattern
 					}
-					if rec.ActionRecord.Layer == "outcome" && strings.Contains(rec.ActionRecord.Pattern, "reason="+wantReason) {
-						found = true
-					}
-				}
-				if ending != "complete" && !found {
-					t.Fatalf("missing %s outcome: %+v", wantReason, receipts)
+					assertMCPTransportReceiptPair(t, receipts[0].ActionRecord, receipts[1].ActionRecord,
+						receipt.ActionRecord{
+							Method: http.MethodGet, Transport: "mcp_http_listener", Target: upstream.URL,
+							Verdict: verdict, Pattern: pattern,
+						})
+				} else {
+					assertMCPListenerPOSTOutcomes(t, receipts, ending, wantReason)
 				}
 				logger.Close()
 				logBytes, err := os.ReadFile(filepath.Clean(auditPath))
@@ -263,5 +247,48 @@ func TestMCPListenerStreamIntegrity(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func assertMCPListenerPOSTOutcomes(t *testing.T, receipts []receipt.Receipt, ending, wantReason string) {
+	t.Helper()
+	var intentID string
+	for _, rec := range receipts {
+		if rec.ActionRecord.DecisionPhase == receipt.DecisionPhaseIntent {
+			if intentID != "" {
+				t.Fatal("multiple request intents")
+			}
+			intentID = rec.ActionRecord.ActionID
+		}
+	}
+	var streamDiagnostics int
+	outcomes := make(map[string]string)
+	for _, rec := range receipts {
+		a := rec.ActionRecord
+		// The legacy single-chain stream diagnostic carries an outcome phase
+		// and the HTTP method, while request outcomes carry the intent ID.
+		if ending == "completed_rpc_then_break" && a.ActionID != intentID &&
+			a.Method == http.MethodPost && a.Layer == mcpOutcomeLayer &&
+			strings.HasSuffix(a.Pattern, "reason="+wantReason) {
+			streamDiagnostics++
+			continue
+		}
+		if a.DecisionPhase != receipt.DecisionPhaseOutcome {
+			continue
+		}
+		if _, exists := outcomes[a.ActionID]; exists {
+			t.Fatalf("duplicate outcome for action %s", a.ActionID)
+		}
+		outcomes[a.ActionID] = a.Pattern
+	}
+	if ending == "completed_rpc_then_break" && streamDiagnostics != 1 {
+		t.Fatalf("stream diagnostic count = %d, want 1", streamDiagnostics)
+	}
+	if ending == "complete" || ending == "completed_rpc_then_break" {
+		if len(outcomes) != 1 || !strings.HasPrefix(outcomes[intentID], "status=result ") {
+			t.Fatalf("completed POST intent %q must have one result outcome, got %v", intentID, outcomes)
+		}
+	} else if len(outcomes) != 1 || !strings.HasSuffix(outcomes[intentID], "reason="+wantReason) {
+		t.Fatalf("interrupted POST intent %q must have one matching %s outcome, got %v", intentID, wantReason, outcomes)
 	}
 }

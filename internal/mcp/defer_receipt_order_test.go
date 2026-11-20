@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -166,6 +167,7 @@ func TestReceiptWritableProbe(t *testing.T) {
 	emitter, _, _, _ := newReceiptTestHarnessWithObserver(t, nil)
 	unhealthy, _, _, _ := newReceiptTestHarnessWithObserver(t, nil)
 	unhealthy.MarkUnhealthy(io.ErrClosedPipe)
+	v2 := newMCPDecisionReceiptHarness(t).v2
 
 	tests := []struct {
 		name string
@@ -173,6 +175,9 @@ func TestReceiptWritableProbe(t *testing.T) {
 		want bool
 	}{
 		{"required, healthy emitter", MCPProxyOpts{ReceiptEmitter: emitter, RequireReceipts: true}, true},
+		{"required, both healthy", MCPProxyOpts{ReceiptEmitter: emitter, V2ReceiptEmitter: v2, RequireReceipts: true}, true},
+		{"required, v1 unhealthy and v2 healthy", MCPProxyOpts{ReceiptEmitter: unhealthy, V2ReceiptEmitter: v2, RequireReceipts: true}, false},
+		{"required, only v2 configured", MCPProxyOpts{V2ReceiptEmitter: v2, RequireReceipts: true}, true},
 		{"required, no emitter", MCPProxyOpts{RequireReceipts: true}, false},
 		{"required, unhealthy emitter", MCPProxyOpts{ReceiptEmitter: unhealthy, RequireReceipts: true}, false},
 		{"not required, no emitter", MCPProxyOpts{}, true},
@@ -180,7 +185,7 @@ func TestReceiptWritableProbe(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := receiptWritable(tt.opts); got != tt.want {
+			if got := receiptWritable(tt.opts, receipt.EmitOpts{}); got != tt.want {
 				t.Fatalf("receiptWritable = %v, want %v", got, tt.want)
 			}
 			res := (&deferredReceiptSettlement{}).probeAllow(tt.opts, deferred.Resolution{FinalDecision: config.ActionAllow, ResolutionSource: deferred.SourceOperator})
@@ -193,6 +198,70 @@ func TestReceiptWritableProbe(t *testing.T) {
 			}
 			if !tt.want && (res.ResolutionSource != deferred.SourceCancel || res.Reason != deferred.ReasonReceiptNotWritten) {
 				t.Fatalf("closed allow = %s/%q, want cancel/%q", res.ResolutionSource, res.Reason, deferred.ReasonReceiptNotWritten)
+			}
+		})
+	}
+}
+
+func TestRequiredDeferredCallWithoutJournal(t *testing.T) {
+	for _, surface := range []string{deferred.SurfaceMCPStdio, deferred.SurfaceMCPHTTPUpstream} {
+		t.Run(surface, func(t *testing.T) {
+			manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Minute})
+			t.Cleanup(func() { manager.ResolveAll(config.ActionBlock, deferred.SourceCancel) })
+			h := newMCPDecisionReceiptHarness(t)
+			policy := deferApprovalPolicy(config.DeferResolverProfile{})
+			policy.Rules[0].ResolutionPolicy.ResolverProfile = ""
+			opts := MCPProxyOpts{
+				Scanner: testInputScanner(t), PolicyCfg: policy, DeferManager: manager,
+				ReceiptEmitter: h.v1, V2ReceiptEmitter: h.v2, RequireReceipts: true,
+				PolicyHash: mcpTestPolicyHash, Transport: surface,
+			}
+			input, send := io.Pipe()
+			var output, upstream, logBuf syncBuffer
+			blocked := make(chan BlockedRequest, 4)
+			done := make(chan error, 1)
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(func() {
+				_ = send.Close()
+				cancel()
+				if err := <-done; err != nil {
+					t.Logf("proxy exited during cleanup: %v", err)
+				}
+			})
+			var calls func() int32
+			if surface == deferred.SurfaceMCPStdio {
+				calls = func() int32 {
+					if upstream.String() == "" {
+						return 0
+					}
+					return 1
+				}
+				go func() {
+					ForwardScannedInput(transport.NewStdioReader(input), transport.NewStdioWriter(&upstream), &logBuf,
+						config.ActionWarn, config.ActionBlock, blocked, nil, nil, opts)
+					done <- nil
+				}()
+			} else {
+				srv, count := countingUpstream(t)
+				calls = count.Load
+				go func() { done <- RunHTTPProxy(ctx, input, &output, &logBuf, srv.URL, nil, opts) }()
+			}
+			if _, err := io.WriteString(send, deferKillTestCall); err != nil {
+				t.Fatal(err)
+			}
+			testwait.For(t, 5*time.Second, func() bool {
+				return len(blocked) > 0 || output.String() != "" || len(manager.Snapshot()) > 0
+			}, "deferred admission decision")
+			if held := len(manager.Snapshot()); held != 0 {
+				t.Fatalf("held calls = %d with no durable journal", held)
+			}
+			denial := output.String()
+			if surface == deferred.SurfaceMCPStdio {
+				denial = (<-blocked).ErrorMessage
+			}
+			if !strings.Contains(denial, "deferred action journal is required") ||
+				!strings.Contains(denial, "flight_recorder.dir") || calls() != 0 {
+				t.Fatalf("denial = %q, upstream calls = %d", denial, calls())
 			}
 		})
 	}

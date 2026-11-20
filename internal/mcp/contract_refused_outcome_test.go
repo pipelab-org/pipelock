@@ -165,7 +165,7 @@ func TestRunHTTPProxyLiveLock_PerMessageUpstreamDenialRecordsBlockedOutcome(t *t
 			wantReason:    mcpContractEvaluationFailedReason,
 		},
 	} {
-		for _, mode := range []string{"best_effort", "required"} {
+		for _, mode := range []string{"best_effort", "best_effort_without_taint", "required"} {
 			t.Run(tc.name+"/"+mode, func(t *testing.T) {
 				var upstreamHits atomic.Int32
 				upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -177,7 +177,9 @@ func TestRunHTTPProxyLiveLock_PerMessageUpstreamDenialRecordsBlockedOutcome(t *t
 				var stdout, stderr strings.Builder
 				opts := contractRefusedOpts(t, h, tc.withHTTPRules)
 				opts.RequireReceipts = mode == "required"
-				opts.TaintCfg = &config.Defaults().Taint
+				if mode != "best_effort_without_taint" {
+					opts.TaintCfg = &config.Defaults().Taint
+				}
 				err := RunHTTPProxy(context.Background(), strings.NewReader(tc.message+"\n"), &stdout, &stderr, upstream.URL, nil, opts)
 				if err != nil {
 					t.Fatalf("RunHTTPProxy: %v", err)

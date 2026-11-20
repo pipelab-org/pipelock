@@ -657,6 +657,13 @@ func (r *initializeResponseReader) Close() error {
 	return r.reader.Close()
 }
 
+// IsHTTPAcknowledgement reports whether the POST was accepted without a
+// response body. A later GET event can carry the reply for a legacy request.
+func IsHTTPAcknowledgement(reader MessageReader) bool {
+	_, ok := reader.(*emptyReader)
+	return ok
+}
+
 // emptyReader returns io.EOF on every ReadMessage call.
 // Used for 202 Accepted responses where the server has no payload.
 type emptyReader struct{}

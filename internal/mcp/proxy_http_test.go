@@ -1310,7 +1310,11 @@ func TestScanHTTPInputDecision_RequiredMetadataDeferIdentity(t *testing.T) {
 			sc := scanner.MustNew(cfg)
 			t.Cleanup(sc.Close)
 			emitter, rec, dir := newTestReceiptEmitter(t)
-			manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Second, MaxPending: 4, MaxPendingPerSession: 4, MaxPendingBytes: 1024})
+			manager := deferred.NewManager(deferred.Config{
+				Enabled: true, Timeout: time.Second, MaxPending: 4,
+				MaxPendingPerSession: 4, MaxPendingBytes: 1024,
+				JournalPath: filepath.Join(t.TempDir(), "deferred-actions.jsonl"),
+			})
 			id := `,"id":1`
 			if method == methodNotificationsInitialized {
 				id = ""
@@ -7953,6 +7957,9 @@ func TestHTTPListener_RequireReceiptsRecordsInitializeOutcome(t *testing.T) {
 		body, _ := io.ReadAll(response.Body)
 		t.Fatalf("status = %d, want %d: %s", response.StatusCode, http.StatusOK, body)
 	}
+	if _, err := io.Copy(io.Discard, response.Body); err != nil {
+		t.Fatalf("read initialize response: %v", err)
+	}
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
@@ -8134,6 +8141,7 @@ func TestScanHTTPInputDecision_GroupedDeferFailureKeepsBestEffortProcess(t *test
 			opts.DeferManager = deferred.NewManager(deferred.Config{
 				Enabled: true, Timeout: time.Second, MaxPending: 4,
 				MaxPendingPerSession: 4, MaxPendingBytes: 1024,
+				JournalPath: filepath.Join(t.TempDir(), "deferred-actions.jsonl"),
 			})
 			_ = opts.ReceiptGroup.Shards.Admit(receipt.EmitOpts{})
 			opts.ReceiptGroup.Shards.Emitters()[1].MarkUnhealthy(errors.New("writer failed"))

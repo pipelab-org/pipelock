@@ -276,3 +276,33 @@ func TestNativeOutcomeTrackerRefusesBeforeEvictingAnAdmission(t *testing.T) {
 		t.Fatal("refused tracked outcome held native capacity open")
 	}
 }
+
+func TestEmitTrackedIncompleteOutcomeReleasesNativeReservation(t *testing.T) {
+	e, _ := newNativeMCPEmitter(t, 2*nativeMCPPendingRecords)
+	parent, err := e.AdmitNative(receipt.EmitOpts{ActionID: "incomplete-scan"}, nativeMCPPendingRecords+4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, err = parent.ReserveNativeTerminal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker := NewRequestTracker()
+	id := json.RawMessage(`7`)
+	if err := trackNativeOutcome(tracker, id, TrackedRequestOutcome{Receipt: parent, Method: methodToolsCall}); err != nil {
+		t.Fatal(err)
+	}
+	emitTrackedIncompleteOutcome(io.Discard, tracker, id, "scan_error", MCPProxyOpts{})
+	if _, stillTracked := tracker.Consume(id); stillTracked {
+		t.Fatal("incomplete outcome remained tracked")
+	}
+	parent.ReleaseNativeAdmission()
+	if _, err := e.ReserveNativeRecords(2 * nativeMCPRequestRecords); !errors.Is(err, ael.ErrCapacity) {
+		t.Fatalf("stop = %v, want %v", err, ael.ErrCapacity)
+	}
+	select {
+	case <-e.NativeCapacity().Drained():
+	default:
+		t.Fatal("incomplete outcome left the native reservation held")
+	}
+}

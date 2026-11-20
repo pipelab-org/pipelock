@@ -11,16 +11,19 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gobwas/ws"
+	wsio "github.com/gobwas/ws/wsutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
@@ -135,9 +138,78 @@ func assertMCPTransportReceiptShard(t *testing.T, dir string, shards []receipt.R
 				t.Fatalf("shard %d action %s: v1=%d v2=%d, want paired decision and outcome", i, actionID, v1, v2)
 			}
 		} else if v1 != 0 || v2 != 0 {
-			t.Fatalf("other shard %d: v1=%d v2=%d, want no action receipts", i, v1, v2)
+			t.Fatalf("other shard %d: v1=%d v2=%d, want no receipts", i, v1, v2)
 		}
 	}
+}
+
+func TestListenerStreamErrorSettlesOpenIntentOnce(t *testing.T) {
+	opts, rec, dir, _ := newMCPTransportReceiptGroup(t)
+	_ = opts.ReceiptGroup.Shards.Admit(receipt.EmitOpts{})
+	var outcome TrackedRequestOutcome
+	intent := opts.ReceiptGroup.Shards.Admit(receipt.EmitOpts{
+		ActionID: "listener-stream-end", Verdict: config.ActionAllow,
+		Transport: opts.Transport, Target: "initialize", Method: "initialize",
+		PolicyHash: mcpTestPolicyHash,
+	})
+	if _, err := opts.emitReceiptDecision(MCPDecision{
+		Receipt: intent, outcome: &outcome, RequireReceipt: true, RequiredMode: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if outcome.handle == nil || outcome.Receipt.ActionID != intent.ActionID {
+		t.Fatal("confirmed intent did not grant one settlement handle")
+	}
+	var log bytes.Buffer
+	// A stream that fails after bytes were written records one outcome. The
+	// listener's request-end settlement must not append a second one.
+	recordListenerStreamError(context.Background(), &log, opts, outcome, false, transport.ErrIncompleteResponse)
+	outcome.settle(&log, opts, "incomplete", -1, "listener_request_ended")
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var outcomes int
+	var patterns []string
+	for _, rcpt := range readDirActionReceipts(t, dir) {
+		if rcpt.ActionRecord.ActionID != intent.ActionID || rcpt.ActionRecord.DecisionPhase != receipt.DecisionPhaseOutcome {
+			continue
+		}
+		outcomes++
+		patterns = append(patterns, rcpt.ActionRecord.Pattern)
+	}
+	if outcomes != 1 || len(patterns) != 1 || patterns[0] != "status=200 bytes=unknown reason=incomplete" {
+		t.Fatalf("outcome receipts = %d (%q), want the stream failure alone", outcomes, patterns)
+	}
+}
+
+func readDirActionReceipts(t *testing.T, dir string) []receipt.Receipt {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(dir, "evidence-*.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipts []receipt.Receipt
+	for _, path := range paths {
+		entries, err := recorder.ReadEntries(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if entry.Type != actionReceiptEntryType {
+				continue
+			}
+			detailJSON, err := json.Marshal(entry.Detail)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rcpt, err := receipt.Unmarshal(detailJSON)
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipts = append(receipts, rcpt)
+		}
+	}
+	return receipts
 }
 
 func TestMCPStreamOutcomesKeepAdmissionShard(t *testing.T) {
@@ -160,7 +232,7 @@ func TestMCPStreamOutcomesKeepAdmissionShard(t *testing.T) {
 			var log bytes.Buffer
 			switch path {
 			case "listener":
-				recordListenerStreamError(context.Background(), &log, opts, intent, false, transport.ErrIncompleteResponse)
+				recordListenerStreamError(context.Background(), &log, opts, TrackedRequestOutcome{Receipt: intent}, false, transport.ErrIncompleteResponse)
 			case "tracked_upstream":
 				tracker := NewRequestTracker()
 				tracker.TrackOutcome(json.RawMessage(`1`), TrackedRequestOutcome{Receipt: intent})
@@ -220,7 +292,7 @@ func TestMCPStreamRequiredOutcomeFailureClasses(t *testing.T) {
 			opts.ReceiptGroup.OnRequiredFailure = func(error) { stops++ }
 			tc.breakShard(opts.ReceiptGroup, rec)
 			var log bytes.Buffer
-			recordListenerStreamError(context.Background(), &log, opts, intent, false, io.ErrUnexpectedEOF)
+			recordListenerStreamError(context.Background(), &log, opts, TrackedRequestOutcome{Receipt: intent}, false, io.ErrUnexpectedEOF)
 			if !bytes.Contains(log.Bytes(), []byte("receipt")) {
 				t.Fatalf("required outcome failure was not logged: %q", log.String())
 			}
@@ -251,7 +323,7 @@ func TestMCPBestEffortStreamOutcomeFailureKeepsGroupRunning(t *testing.T) {
 					ActionID: "stream-best-effort", Verdict: config.ActionAllow,
 					Transport: opts.Transport, Target: "initialize", PolicyHash: mcpTestPolicyHash,
 				})
-				recordListenerStreamError(context.Background(), &log, opts, intent, false, io.ErrUnexpectedEOF)
+				recordListenerStreamError(context.Background(), &log, opts, TrackedRequestOutcome{Receipt: intent}, false, io.ErrUnexpectedEOF)
 			case "outcome":
 				intent := opts.ReceiptGroup.Shards.Admit(receipt.EmitOpts{
 					ActionID: "outcome-best-effort", Verdict: config.ActionAllow,
@@ -418,48 +490,338 @@ func TestMCPStandaloneStreamRequiredFailureClasses(t *testing.T) {
 }
 
 func TestMCPWebSocketOutcomeKeepsAdmissionShard(t *testing.T) {
+	t.Run("peer close", func(t *testing.T) { testWebSocketAdmissionResult(t, true) })
+	t.Run("transport EOF", func(t *testing.T) { testWebSocketAdmissionResult(t, false) })
+}
+
+func testWebSocketAdmissionResult(t *testing.T, peerClose bool) {
+	t.Helper()
 	responseSent := make(chan struct{})
-	srv := wsRespondServer(t, []byte(`{"jsonrpc":"2.0","id":1,"result":{}}`), responseSent)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, _, err := ws.UpgradeHTTP(r, w)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		if _, _, err := wsio.ReadClientData(conn); err != nil {
+			t.Errorf("read initialize: %v", err)
+			return
+		}
+		if err := wsio.WriteServerMessage(conn, ws.OpText, []byte(`{"jsonrpc":"2.0","id":1,"result":{}}`)); err != nil {
+			t.Errorf("write initialize result: %v", err)
+			return
+		}
+		if peerClose {
+			if err := wsio.WriteServerMessage(conn, ws.OpClose, ws.NewCloseFrameBody(ws.StatusNormalClosure, "")); err != nil {
+				t.Errorf("send close frame: %v", err)
+			}
+		}
+		close(responseSent)
+	}))
 	defer srv.Close()
 	opts, rec, dir, shards := newMCPTransportReceiptGroup(t)
 	opts.Scanner = testScannerForWS(t)
-	_ = opts.ReceiptGroup.Shards.Admit(receipt.EmitOpts{})
 	stdin, input := io.Pipe()
+	defer func() { _ = input.Close() }()
 	var stdout, stderr lockedHTTPBuffer
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), opts) }()
-	_, _ = io.WriteString(input, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`+"\n")
+	go func() {
+		defer func() { _ = stdin.Close() }()
+		done <- RunWSProxy(ctx, struct{ io.Reader }{stdin}, &stdout, &stderr, wsURL(srv), opts)
+	}()
+	written := make(chan error, 1)
+	go func() {
+		_, err := io.WriteString(input, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`+"\n")
+		written <- err
+	}()
+	select {
+	case err := <-written:
+		if err != nil {
+			select {
+			case proxyErr := <-done:
+				t.Fatalf("initialize write: %v (RunWSProxy: %v)", err, proxyErr)
+			case <-ctx.Done():
+				t.Fatalf("initialize write: %v (timed out waiting for RunWSProxy)", err)
+			}
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out writing initialize request")
+	}
 	waitForResponse(t, responseSent)
 	testwait.For(t, time.Second, func() bool { return stdout.contains(`"id":1`) }, "WebSocket response forwarded")
-	_ = input.Close()
-	if err := <-done; err != nil {
-		t.Fatal(err)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunWSProxy: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for RunWSProxy")
 	}
 	if err := rec.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// This is the first real admission after the dummy selection above.
-	var actionID string
+	// The upgrade and initialize both inherit the open stream's shard.
+	records := make(map[string][]receipt.ActionRecord)
+	v2Counts := make(map[string]int)
 	for _, entry := range readReceiptEntriesHTTP(t, dir) {
-		if entry.Type != "action_receipt" || !bytes.Contains(entry.RawDetail, []byte(`"decision_phase":"intent"`)) {
-			continue
+		switch entry.Type {
+		case "evidence_receipt":
+			v2Counts[entry.SessionID]++
+		case actionReceiptEntryType:
+			signed, err := receipt.Unmarshal(entry.RawDetail)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if signed.ActionRecord.SessionControl == nil {
+				records[entry.SessionID] = append(records[entry.SessionID], signed.ActionRecord)
+			}
 		}
-		var detail struct {
-			ActionRecord struct {
-				ActionID string `json:"action_id"`
-			} `json:"action_record"`
-		}
-		if err := json.Unmarshal(entry.RawDetail, &detail); err != nil {
-			t.Fatal(err)
-		}
-		actionID = detail.ActionRecord.ActionID
 	}
-	if actionID == "" {
-		t.Fatal("missing WebSocket intent")
+	selected := shards[0].SessionID
+	actions := records[selected]
+	if len(records) != 1 || len(actions) != 4 {
+		t.Fatalf("want upgrade and initialize pairs on the stream shard, got %v", records)
 	}
-	assertMCPTransportReceiptShard(t, dir, shards, actionID)
+	verdict, pattern := config.ActionForward, completedMCPStreamPattern
+	if !peerClose {
+		verdict, pattern = config.ActionWarn, "status=incomplete bytes=unknown reason=incomplete"
+	}
+	assertMCPTransportReceiptPair(t, actions[0], actions[3], receipt.ActionRecord{
+		Method: settlementUpgrade, Transport: "mcp_ws", Target: wsURL(srv),
+		Verdict: verdict, Pattern: pattern,
+	})
+	assertMCPWebSocketInitializePair(t, actions[1], actions[2], actions[0].ActionID)
+	if len(v2Counts) != 1 || v2Counts[selected] != 4 {
+		t.Fatalf("v2 receipt counts = %v, want two pairs on the stream shard", v2Counts)
+	}
+}
+
+const completedMCPStreamPattern = "status=completed bytes=unknown reason=stream_completed"
+
+func assertMCPTransportReceiptPair(t *testing.T, admission, terminal receipt.ActionRecord, want receipt.ActionRecord) {
+	t.Helper()
+	if admission.ActionID == "" || admission.Layer != mcpTransportAdmissionLayer || admission.DecisionPhase != "" ||
+		admission.Method != want.Method || admission.Transport != want.Transport || admission.Target != want.Target || admission.Verdict != config.ActionForward {
+		t.Fatalf("transport admission = %+v", admission)
+	}
+	if terminal.ActionID != admission.ActionID || terminal.Layer != mcpOutcomeLayer || terminal.DecisionPhase != "" ||
+		terminal.Method != want.Method || terminal.Transport != want.Transport || terminal.Target != want.Target ||
+		terminal.Verdict != want.Verdict || terminal.Pattern != want.Pattern {
+		t.Fatalf("transport terminal = %+v, want %s with pattern %q for %s", terminal, want.Verdict, want.Pattern, admission.ActionID)
+	}
+}
+
+func TestTransportResultRetriesRefusedV1Append(t *testing.T) {
+	opts, rec, dir, shards := newMCPTransportReceiptGroup(t)
+	opts.Transport = "mcp_ws"
+	_ = opts.ReceiptGroup.Shards.Admit(receipt.EmitOpts{})
+	const target = "wss://api.vendor.example/mcp"
+	admission, err := admitDurableTransport(opts, settlementUpgrade, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempts := 0
+	rec.SetReceiptAppendGuardForTest(func(entry recorder.Entry) error {
+		if entry.Type == actionReceiptEntryType {
+			attempts++
+			if attempts == 1 {
+				return errors.New("injected transport result append refusal")
+			}
+		}
+		return nil
+	})
+	recordTransportAdmissionResult(io.Discard, opts, admission, "completed", "stream_completed")
+	if attempts != 2 {
+		t.Fatalf("v1 terminal append attempts = %d, want 2", attempts)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertMCPTransportReceiptShard(t, dir, shards, admission.ActionID)
+}
+
+type bridgeGETReceiptObserver struct {
+	admissions chan settlementReceipt
+	outcomes   chan struct{}
+}
+
+func (o bridgeGETReceiptObserver) ObserveRecorderEntry(e recorder.Entry) {
+	if e.Type != actionReceiptEntryType {
+		return
+	}
+	detail, err := json.Marshal(e.Detail)
+	if err != nil {
+		return
+	}
+	signed, err := receipt.Unmarshal(detail)
+	if err != nil || signed.ActionRecord.Method != http.MethodGet {
+		return
+	}
+	switch signed.ActionRecord.Layer {
+	case mcpTransportAdmissionLayer:
+		select {
+		case o.admissions <- settlementReceipt{action: signed.ActionRecord, shard: e.SessionID, sequence: e.Sequence}:
+		default:
+		}
+	case mcpOutcomeLayer:
+		select {
+		case o.outcomes <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func TestRequiredBridgeGETAdmitsBeforeOpen(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		reason string
+	}{
+		{name: "completed", status: http.StatusOK, reason: "stream_completed"},
+		{name: "unsupported", status: http.StatusMethodNotAllowed, reason: "upstream_error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, rec, dir, _ := newMCPTransportReceiptGroup(t)
+			opts.Scanner = testScannerForHTTP(t)
+			opts.Transport = "mcp_http_upstream"
+			observed := make(chan settlementReceipt, 1)
+			recorded := bridgeGETReceiptObserver{
+				admissions: make(chan settlementReceipt, 1),
+				outcomes:   make(chan struct{}, 1),
+			}
+			rec.SetObserver(recorded)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.NotFound(w, r)
+					return
+				}
+				select {
+				case admission := <-recorded.admissions:
+					if admission.action.Verdict != config.ActionForward || admission.action.ActionID == "" {
+						t.Errorf("upstream GET opened with invalid forward admission: %+v", admission)
+					}
+					select {
+					case observed <- admission:
+					default:
+						t.Error("unexpected additional upstream GET")
+					}
+				default:
+					t.Error("upstream GET opened before the admission was recorded")
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(tc.status)
+			}))
+			defer srv.Close()
+			opts.AuthorityDestination = srv.URL
+			ctx, cancel := context.WithCancel(t.Context())
+			var wg sync.WaitGroup
+			t.Cleanup(func() {
+				cancel()
+				wg.Wait()
+			})
+			var stderr lockedHTTPBuffer
+			startGETStream(ctx, transport.NewHTTPClient(srv.URL, nil), &syncWriter{w: io.Discard}, &syncWriter{w: &stderr}, opts, NewRequestTracker(), &wg)
+			var admission settlementReceipt
+			select {
+			case admission = <-observed:
+			case <-time.After(testwait.Deadline(3 * time.Second)):
+				t.Fatal("handler did not observe a GET admission")
+			}
+			select {
+			case <-recorded.outcomes:
+			case <-time.After(testwait.Deadline(3 * time.Second)):
+				t.Fatal("required GET result was not recorded")
+			}
+			cancel()
+			wg.Wait()
+			if err := rec.Close(); err != nil {
+				t.Fatal(err)
+			}
+			admissions := bridgeGETReceipts(t, dir, mcpTransportAdmissionLayer)
+			if len(admissions) != 1 || admissions[0].action.ActionID != admission.action.ActionID ||
+				admissions[0].shard != admission.shard || admissions[0].sequence != admission.sequence {
+				t.Fatalf("signed GET admissions = %+v, want only %+v", admissions, admission)
+			}
+			outcomes := bridgeGETReceipts(t, dir, mcpOutcomeLayer)
+			if len(outcomes) != 1 {
+				t.Fatalf("GET outcome count = %d, want 1", len(outcomes))
+			}
+			outcome := outcomes[0]
+			if outcome.action.ActionID != admission.action.ActionID || outcome.shard != admission.shard ||
+				outcome.sequence <= admission.sequence || !strings.HasSuffix(outcome.action.Pattern, "reason="+tc.reason) {
+				t.Fatalf("GET outcome %+v does not settle admission %+v with reason %s", outcome, admission, tc.reason)
+			}
+		})
+	}
+}
+
+func TestRequiredBridgeGETStaysClosedWhenAdmissionFails(t *testing.T) {
+	var gets atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			gets.Add(1)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	opts, rec, _, _ := newMCPTransportReceiptGroup(t)
+	opts.Scanner = testScannerForHTTP(t)
+	opts.Transport = "mcp_http_upstream"
+	opts.AuthorityDestination = srv.URL
+	rec.SetReceiptAppendGuardForTest(func(recorder.Entry) error {
+		return errors.New("injected admission failure")
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var wg sync.WaitGroup
+	var stderr lockedHTTPBuffer
+	startGETStream(ctx, transport.NewHTTPClient(srv.URL, nil), &syncWriter{w: io.Discard}, &syncWriter{w: &stderr}, opts, NewRequestTracker(), &wg)
+	testwait.For(t, 3*time.Second, func() bool {
+		return strings.Count(stderr.String(), "receipt emission failed") >= 2
+	}, "admission refusal and retry")
+	cancel()
+	wg.Wait()
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if gets.Load() != 0 {
+		t.Fatalf("upstream GETs = %d, want 0 when the transport admission cannot be recorded", gets.Load())
+	}
+}
+
+func bridgeGETReceipts(t *testing.T, dir, layer string) []settlementReceipt {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(dir, "evidence-*.jsonl"))
+	if err != nil {
+		t.Error(err)
+		return nil
+	}
+	var receipts []settlementReceipt
+	for _, path := range paths {
+		entries, err := recorder.ReadEntries(path)
+		if err != nil {
+			t.Error(err)
+			return nil
+		}
+		for _, entry := range entries {
+			if entry.Type != actionReceiptEntryType {
+				continue
+			}
+			signed, err := receipt.Unmarshal(entry.RawDetail)
+			if err != nil {
+				t.Error(err)
+				return nil
+			}
+			a := signed.ActionRecord
+			if a.Layer == layer && a.Method == http.MethodGet {
+				receipts = append(receipts, settlementReceipt{action: a, shard: entry.SessionID, sequence: entry.Sequence})
+			}
+		}
+	}
+	return receipts
 }
 
 func TestMCPGETSSEIncompleteOutcomeUsesSelectedShard(t *testing.T) {
@@ -485,7 +847,7 @@ func TestMCPGETSSEIncompleteOutcomeUsesSelectedShard(t *testing.T) {
 	if err := rec.Close(); err != nil {
 		t.Fatal(err)
 	}
-	assertMCPStandaloneDiagnosticShard(t, dir, shards, 1)
+	assertMCPStandaloneDiagnosticShard(t, dir, shards, 1, 2)
 }
 
 func TestMCPWebSocketStandaloneFailureUsesSelectedShard(t *testing.T) {
@@ -515,10 +877,10 @@ func TestMCPWebSocketStandaloneFailureUsesSelectedShard(t *testing.T) {
 	if err := rec.Close(); err != nil {
 		t.Fatal(err)
 	}
-	assertMCPStandaloneDiagnosticShard(t, dir, shards, 1)
+	assertMCPStandaloneDiagnosticShard(t, dir, shards, 1, 2)
 }
 
-func assertMCPStandaloneDiagnosticShard(t *testing.T, dir string, shards []receipt.ReceiptGroupShard, selected int) {
+func assertMCPStandaloneDiagnosticShard(t *testing.T, dir string, shards []receipt.ReceiptGroupShard, selected, wantV2 int) {
 	t.Helper()
 	for i, shard := range shards {
 		paths, err := filepath.Glob(filepath.Join(dir, "evidence-"+shard.SessionID+"-*.jsonl"))
@@ -529,7 +891,7 @@ func assertMCPStandaloneDiagnosticShard(t *testing.T, dir string, shards []recei
 		if err != nil {
 			t.Fatal(err)
 		}
-		var diagnostic, v2 int
+		var diagnostic, admission, v2 int
 		for _, entry := range entries {
 			if entry.Type == "action_receipt" && bytes.Contains(entry.RawDetail, []byte("reason=incomplete")) {
 				if bytes.Contains(entry.RawDetail, []byte(`"decision_phase":`)) || !bytes.Contains(entry.RawDetail, []byte(`"verdict":"warn"`)) {
@@ -537,15 +899,238 @@ func assertMCPStandaloneDiagnosticShard(t *testing.T, dir string, shards []recei
 				}
 				diagnostic++
 			}
+			if entry.Type == "action_receipt" && bytes.Contains(entry.RawDetail, []byte(`"layer":"mcp_transport_admission"`)) {
+				admission++
+			}
 			if entry.Type == "evidence_receipt" {
 				v2++
 			}
 		}
-		if i == selected && (diagnostic != 1 || v2 != 1) {
-			t.Fatalf("selected shard %d: diagnostic=%d v2=%d, want paired 1/1", i, diagnostic, v2)
+		if i == selected && (diagnostic != 1 || v2 != wantV2 || (wantV2 > 1 && admission != 1) || (wantV2 == 1 && admission != 0)) {
+			t.Fatalf("selected shard %d: diagnostic=%d admission=%d v2=%d, want 1 and v2=%d", i, diagnostic, admission, v2, wantV2)
 		}
-		if i != selected && (diagnostic != 0 || v2 != 0) {
-			t.Fatalf("other shard %d: diagnostic=%d v2=%d, want 0/0", i, diagnostic, v2)
+		if i != selected && (diagnostic != 0 || v2 != 0 || admission != 0) {
+			t.Fatalf("other shard %d: diagnostic=%d admission=%d v2=%d, want 0/0/0", i, diagnostic, admission, v2)
 		}
 	}
+}
+
+func TestListenerRefusalFallbackKeepsBlockedReceipt(t *testing.T) {
+	opts, rec, dir, _ := newMCPTransportReceiptGroup(t)
+	opts.Scanner = testScannerForHTTP(t)
+	opts.InputCfg = newHTTPInputCfg(config.ActionBlock)
+	required := true
+	opts.listenerStateTokenRequired = &required
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("listener forwarded request without its session token")
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer upstream.Close()
+
+	var outcomes atomic.Int32
+	rec.SetReceiptAppendGuardForTest(func(entry recorder.Entry) error {
+		if entry.Type != actionReceiptEntryType {
+			return nil
+		}
+		raw, ok := entry.Detail.(json.RawMessage)
+		if !ok {
+			return nil
+		}
+		signed, err := receipt.Unmarshal(raw)
+		if err != nil {
+			return err
+		}
+		if signed.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome && outcomes.Add(1) <= 2 {
+			return errors.New("injected listener outcome append refusal")
+		}
+		return nil
+	})
+	url, logs := startListenerProxyWithOpts(t, upstream.URL, opts)
+	if status, _, body := postWireContractRequest(t, url, deferKillTestCall, nil); status != http.StatusForbidden {
+		t.Fatalf("listener status = %d, want forbidden: %s; logs: %s", status, body, logs.String())
+	}
+	testwait.For(t, time.Second, func() bool { return outcomes.Load() >= 3 }, "listener fallback append")
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var records []receipt.ActionRecord
+	for _, signed := range readDirActionReceipts(t, dir) {
+		if signed.ActionRecord.DecisionPhase != "" {
+			records = append(records, signed.ActionRecord)
+		}
+	}
+	if len(records) != 2 {
+		t.Fatalf("receipt count = %d, want intent and blocked outcome", len(records))
+	}
+	intent, outcome := records[0], records[1]
+	const pattern = "status=blocked bytes=unknown reason=listener_session_token_required"
+	if intent.DecisionPhase != receipt.DecisionPhaseIntent || outcome.DecisionPhase != receipt.DecisionPhaseOutcome ||
+		outcome.ActionID != intent.ActionID || outcome.Verdict != config.ActionBlock ||
+		outcome.Layer != "mcp_listener_session" || outcome.Pattern != pattern {
+		t.Fatalf("listener fallback outcome = %s %s %q, want blocked session refusal for intent %s",
+			outcome.Verdict, outcome.Layer, outcome.Pattern, intent.ActionID)
+	}
+}
+
+func TestBlockedOutcomeClaimAfterFailedAppend(t *testing.T) {
+	for _, afterAdvance := range []bool{false, true} {
+		name := "before advance"
+		if afterAdvance {
+			name = "after advance"
+		}
+		t.Run(name, func(t *testing.T) {
+			opts, rec, _, _ := newMCPTransportReceiptGroup(t)
+			intent := opts.ReceiptGroup.Shards.Admit(receipt.EmitOpts{
+				ActionID: "blocked-action", Verdict: config.ActionAllow, Method: methodToolsCall,
+				Transport: opts.Transport, Target: "tool:lookup", PolicyHash: mcpTestPolicyHash,
+			})
+			var outcome TrackedRequestOutcome
+			if _, err := opts.emitAdmittedReceiptDecision(MCPDecision{
+				Receipt: intent, RequireReceipt: true, RequiredMode: true, outcome: &outcome,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if outcome.handle == nil {
+				t.Fatal("required intent has no outcome handle")
+			}
+			if !outcome.handle.settled.CompareAndSwap(false, true) {
+				t.Fatal("outcome already claimed")
+			}
+			failure := errors.New("blocked receipt write failed")
+			if afterAdvance {
+				rec.SetSyncForTest(func(*os.File) error { return failure })
+			} else {
+				rec.SetReceiptAppendGuardForTest(func(recorder.Entry) error { return failure })
+			}
+			blocked := mcpOutcomeReceiptOpts(outcome.Receipt, mcpOutcomeStatusBlocked, -1, "inspection refused")
+			blocked.Verdict = config.ActionBlock
+			blocked.Layer = "inspection"
+			err := outcome.handle.emit(io.Discard, blocked, true)
+			want := receipt.ErrReceiptNotAppended
+			if afterAdvance {
+				want = receipt.ErrReceiptPostAdvance
+			}
+			if !errors.Is(err, want) {
+				t.Fatalf("blocked append error = %v, want %v", err, want)
+			}
+			rec.SetReceiptAppendGuardForTest(nil)
+			settled, err := outcome.settleResult(io.Discard, opts, mcpOutcomeStatusBlocked, -1, "inspection refused")
+			if settled == afterAdvance || err != nil {
+				t.Fatalf("settlement = %t, %v, want %t, nil", settled, err, !afterAdvance)
+			}
+		})
+	}
+}
+
+func TestRequiredOutcomeV2FailureKeepsV1Claim(t *testing.T) {
+	opts, rec, dir, _ := newMCPTransportReceiptGroup(t)
+	_ = opts.ReceiptGroup.Shards.Admit(receipt.EmitOpts{})
+	intent := opts.ReceiptGroup.Shards.Admit(receipt.EmitOpts{
+		ActionID: "v2-outcome-refused", Verdict: config.ActionAllow, Method: methodToolsCall,
+		Transport: opts.Transport, Target: "tool:lookup", PolicyHash: mcpTestPolicyHash,
+	})
+	var groupFailure error
+	opts.ReceiptGroup.OnRequiredFailure = func(err error) { groupFailure = err }
+	var outcome TrackedRequestOutcome
+	if _, err := opts.emitAdmittedReceiptDecision(MCPDecision{
+		Receipt: intent, RequireReceipt: true, RequiredMode: true, outcome: &outcome,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := opts.ReceiptGroup.V2[intent.ShardIndex].Retire(); err != nil {
+		t.Fatal(err)
+	}
+	var log bytes.Buffer
+	settled, err := outcome.settleResult(&log, opts, "error", -1, "upstream_error")
+	if settled || !errors.Is(err, errMCPV2ReceiptEmit) || !errors.Is(groupFailure, errMCPV2ReceiptEmit) {
+		t.Fatalf("first settlement = %t, %v, group failure = %v", settled, err, groupFailure)
+	}
+	if settled, err := outcome.settleResult(&log, opts, "error", -1, "upstream_error"); settled || err != nil {
+		t.Fatalf("retry after v1 append = %t, %v", settled, err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	open, _ := opts.ReceiptGroup.Shards.Opening()
+	shard := open.Shards[intent.ShardIndex]
+	paths, err := filepath.Glob(filepath.Join(dir, "evidence-"+shard.SessionID+"-*.jsonl"))
+	if err != nil || len(paths) != 1 {
+		t.Fatalf("shard evidence files = %v, error = %v", paths, err)
+	}
+	entries, err := recorder.ReadEntries(paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v1Outcomes, v2 int
+	for _, entry := range entries {
+		if entry.Type == actionReceiptEntryType && bytes.Contains(entry.RawDetail, []byte(intent.ActionID)) &&
+			bytes.Contains(entry.RawDetail, []byte(`"decision_phase":"outcome"`)) {
+			v1Outcomes++
+		}
+		if entry.Type == "evidence_receipt" {
+			v2++
+		}
+	}
+	if v1Outcomes != 1 || v2 != 1 {
+		t.Fatalf("selected shard contains %d v1 outcomes and %d v2 receipts, want one of each", v1Outcomes, v2)
+	}
+}
+
+func TestRequiredTransportResultReportsAppendRefusal(t *testing.T) {
+	opts, rec, _, _ := newMCPTransportReceiptGroup(t)
+	admission, err := admitDurableTransport(opts, http.MethodGet, opts.AuthorityDestination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("transport result append refused")
+	rec.SetReceiptAppendGuardForTest(func(recorder.Entry) error { return injected })
+	var log bytes.Buffer
+	recordTransportAdmissionResult(&log, opts, admission, "completed", "stream_completed")
+	if !strings.Contains(log.String(), injected.Error()) {
+		t.Fatalf("required transport result log = %q, want %q", log.String(), injected)
+	}
+}
+
+func TestRequiredWebSocketPartialAdmissionRecordsRefusal(t *testing.T) {
+	opts, rec, dir, shards := newMCPTransportReceiptGroup(t)
+	opts.Scanner = testScannerForWS(t)
+	if _, _, err := opts.ReceiptGroup.V2[0].Retire(); err != nil {
+		t.Fatal(err)
+	}
+	var dialled bool
+	opts.DialContext = func(context.Context, string, string) (net.Conn, error) {
+		dialled = true
+		return nil, errors.New("unexpected upstream dial")
+	}
+	target := "ws://localhost:8080"
+	err := RunWSProxy(t.Context(), strings.NewReader(""), io.Discard, io.Discard, target, opts)
+	if !errors.Is(err, ErrReceiptRequired) || dialled {
+		t.Fatalf("admission error=%v, dialled=%t", err, dialled)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var signed []receipt.ActionRecord
+	for _, entry := range readReceiptEntriesHTTP(t, dir) {
+		if entry.Type != actionReceiptEntryType {
+			continue
+		}
+		r, err := receipt.Unmarshal(entry.RawDetail)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.ActionRecord.Method == settlementUpgrade {
+			if entry.SessionID != shards[0].SessionID {
+				t.Fatalf("WebSocket admission used a different shard: %s", entry.SessionID)
+			}
+			signed = append(signed, r.ActionRecord)
+		}
+	}
+	if len(signed) != 2 {
+		t.Fatalf("WebSocket admission and refusal records = %d, want 2", len(signed))
+	}
+	assertMCPTransportReceiptPair(t, signed[0], signed[1], receipt.ActionRecord{
+		Method: settlementUpgrade, Transport: "mcp_ws", Target: target,
+		Verdict: config.ActionWarn, Pattern: "status=error bytes=unknown reason=admission_receipt_failed",
+	})
 }
