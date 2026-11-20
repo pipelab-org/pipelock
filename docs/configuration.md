@@ -2034,6 +2034,8 @@ Limits worth knowing:
 
 `mcp_door` authenticates callers of `pipelock mcp proxy --listen ADDR --upstream URL --config FILE` with an access token issued by an external authorization server. It supports RFC 7662 introspection and RS256 JWT access tokens following RFC 9068. Pipelock doesn't issue tokens or implement client registration. This setting applies to the HTTP MCP listener, including POST, GET streaming/reconnect and DELETE requests. The liveness endpoint and protected-resource metadata remain public. `pipelock run` refuses an enabled door; use the command above.
 
+See the [MCP door setup guide](guides/mcp-door-recipe.md) for a complete config and a Keycloak introspection example.
+
 The default is disabled. Omitted, null, blank and explicit false `enabled` values leave existing listener authentication behavior in place. An enabled door requires an expected issuer, an audience equal to its public HTTPS resource URL, and verifier credentials or pinned public keys. It refuses to start if the profile or verifier material is incomplete. It can bind a non-loopback listener without `--listener-auth-token-file` or `--listener-allow-unauthenticated`. Combining door mode with either flag is an error; failed OAuth authentication never falls back to static-bearer or anonymous access.
 
 JWT configuration:
@@ -2087,7 +2089,7 @@ Enrollment admits exact verified `subject`/`client_id` pairs. An empty enrollmen
 | Ambiguous/malformed Authorization, Proxy-Authorization, form-token presentation, or an `access_token` query parameter | 400 with `invalid_request` |
 | Verifier timeout, invalid response, failed verifier authentication, unavailable keys or credential file | 503 |
 
-Every admission failure returns before an MCP upstream connection is opened. The door bearer is consumed locally and removed from upstream headers. The issuer must mint tokens for this door; don't assume that the same token authorizes a different backend resource. Existing operator-pinned upstream headers remain a separate credential mechanism.
+Every admission failure returns before an MCP upstream connection is opened. Pipelock consumes the door bearer locally and removes it from upstream headers. The issuer must mint tokens for this door's audience. Startup refuses static upstream `Authorization` and `Proxy-Authorization` set through `--header`, `--header-file`, or `--header-carrier`, and credentials in the `--upstream` URL. Remove those settings before enabling the door.
 
 Pipelock serves RFC 9728 protected-resource metadata locally at `/.well-known/oauth-protected-resource` followed by the resource path. For `https://resource.example/mcp`, the challenge points to `https://resource.example/.well-known/oauth-protected-resource/mcp`. Route that public URL to this listener. The metadata names only the configured resource, issuer and header bearer method.
 
