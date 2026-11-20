@@ -458,6 +458,57 @@ func TestURLCoreFloorUnparsedRefusesIncompleteDecode(t *testing.T) {
 	}
 }
 
+func TestRequestBodyInspectionLimitGuidance(t *testing.T) {
+	t.Parallel()
+	for _, layer := range []string{ScannerBodyDLP, ScannerDLP, ScannerContext} {
+		for _, tc := range []struct {
+			finding string
+			want    RemediationGuidance
+		}{
+			{UninspectableEncodedContentPattern, decodeInspectionLimitGuidance()},
+			{UninspectableJSONNumberPattern, jsonInspectionLimitGuidance()},
+		} {
+			reason := RequestBodyInspectionLimitPrefix + tc.finding
+			if got, ok := GuidanceForResult(layer, reason); !ok || got != tc.want {
+				t.Errorf("layer %q reason %q guidance = %+v, %v", layer, reason, got, ok)
+			}
+		}
+	}
+}
+
+func TestRequestBodyInspectionLimitUnreadUploadGuidance(t *testing.T) {
+	t.Parallel()
+	unread := "; upload unread, " + IncompleteFileGovernedSuffix
+	encoded := UninspectableEncodedContentPattern
+	jsonNumber := UninspectableJSONNumberPattern
+	previous := secretAndUnreadPrefix + " " + encoded + unread
+	current := RequestBodyInspectionLimitPrefix + encoded + unread
+	want := decodeLimitBeforeUnread().guidance()
+	for _, layer := range []string{ScannerBodyDLP, ScannerDLP, ScannerContext} {
+		for _, reason := range []string{previous, current} {
+			got, ok := GuidanceForResult(layer, reason)
+			fromPatterns, okPatterns := GuidanceForResultWithPatterns(layer, reason, []string{encoded})
+			if !ok || !okPatterns || got != want || fromPatterns != want {
+				t.Fatalf("layer %q reason %q text=%+v %v patterns=%+v %v", layer, reason, got, ok, fromPatterns, okPatterns)
+			}
+		}
+	}
+	// A JSON limit named with a decoder limit keeps the text priority. A
+	// structured pattern list keeps its own order.
+	both := jsonNumber + ", " + encoded
+	bothReason := RequestBodyInspectionLimitPrefix + both + unread
+	if got, ok := GuidanceForResult(ScannerBodyDLP, bothReason); !ok || got != inspectionLimitBeforeUnread().guidance() {
+		t.Fatalf("text priority = %+v, %v", got, ok)
+	}
+	if got, ok := GuidanceForResultWithPatterns(ScannerBodyDLP, bothReason, []string{encoded, jsonNumber}); !ok || got != want {
+		t.Fatalf("structured pattern order = %+v, %v", got, ok)
+	}
+	bareBoth := RequestBodyInspectionLimitPrefix + both
+	if got, ok := GuidanceForResult(ScannerBodyDLP, bareBoth); !ok || got != jsonInspectionLimitGuidance() || strings.Contains(got.OperatorKnob, "could not be fully read") {
+		t.Fatalf("bare limit guidance = %+v, %v", got, ok)
+	}
+}
+
 func TestDecodeFragmentLimitGuidance(t *testing.T) {
 	t.Parallel()
 	want := decodeInspectionLimitGuidance()

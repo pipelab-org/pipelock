@@ -17,6 +17,24 @@ import (
 // as the expected value across multiple table cases here.
 const dlpLayerLabel = "dlp"
 
+func TestRequestBodyInspectionLimitHintKeepsUnreadUpload(t *testing.T) {
+	unread := "; upload unread, " + scanner.IncompleteFileGovernedSuffix
+	encoded := scanner.UninspectableEncodedContentPattern
+	previous := "request body contains secret: " + encoded + unread
+	current := scanner.RequestBodyInspectionLimitPrefix + encoded + unread
+	var hints []string
+	for _, reason := range []string{previous, current} {
+		w := httptest.NewRecorder()
+		setBodyResultHint(w, scanner.ScannerBodyDLP, reason)
+		hints = append(hints, w.Header().Get("X-Pipelock-Hint"))
+	}
+	if hints[0] == "" || hints[0] != hints[1] ||
+		!strings.Contains(hints[0], "encoded content exceeds") ||
+		!strings.Contains(hints[0], "upload could not be fully read") {
+		t.Fatalf("hints=%q", hints)
+	}
+}
+
 func TestBodySizeResultHint(t *testing.T) {
 	for _, reason := range []string{
 		"request body exceeds max_body_bytes (1024)",

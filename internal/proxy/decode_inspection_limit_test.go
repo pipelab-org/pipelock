@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -54,7 +55,7 @@ func TestDecodeInspectionLimitForwardAndFetch(t *testing.T) {
 	}
 	gapQuery = append(gapQuery, "p1="+split[18:])
 
-	do := func(t *testing.T, method, target, body string) int {
+	do := func(t *testing.T, method, target, body, mediaType string) (int, string, string) {
 		t.Helper()
 		var req *http.Request
 		var err error
@@ -62,7 +63,7 @@ func TestDecodeInspectionLimitForwardAndFetch(t *testing.T) {
 			req, err = http.NewRequestWithContext(t.Context(), method, target, nil)
 		} else {
 			req, err = http.NewRequestWithContext(t.Context(), method, target, strings.NewReader(body))
-			req.Header.Set("Content-Type", "text/plain")
+			req.Header.Set("Content-Type", mediaType)
 		}
 		if err != nil {
 			t.Fatalf("request: %v", err)
@@ -71,25 +72,38 @@ func TestDecodeInspectionLimitForwardAndFetch(t *testing.T) {
 		if err != nil {
 			t.Fatalf("do: %v", err)
 		}
+		detail, err := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		return resp.StatusCode
+		if err != nil {
+			t.Fatalf("read response: %v", err)
+		}
+		return resp.StatusCode, resp.Header.Get(blockreason.HeaderReason), string(detail)
 	}
 
 	for _, tc := range []struct {
-		name, method, target, body string
-		want                       int
+		name, method, target, body, mediaType string
+		want                                  int
+		reason                                blockreason.Reason
 	}{
-		{"forward query rounds", http.MethodGet, upstream.URL + "/p?k=" + deepPercent, "", http.StatusForbidden},
-		{"forward path rounds", http.MethodGet, upstream.URL + "/" + deepPercent, "", http.StatusForbidden},
-		{"forward split past twenty values", http.MethodGet, upstream.URL + "/p?" + strings.Join(gapQuery, "&"), "", http.StatusForbidden},
-		{"forward body entity chain", http.MethodPost, upstream.URL + "/upload", deepEntityChain(), http.StatusForbidden},
-		{"forward body control", http.MethodPost, upstream.URL + "/upload", "Tom &amp;amp; Jerry", http.StatusOK},
-		{"forward query control", http.MethodGet, upstream.URL + "/p?q=a%2520b", "", http.StatusOK},
+		{"forward query rounds", http.MethodGet, upstream.URL + "/p?k=" + deepPercent, "", "text/plain", http.StatusForbidden, ""},
+		{"forward path rounds", http.MethodGet, upstream.URL + "/" + deepPercent, "", "text/plain", http.StatusForbidden, ""},
+		{"forward split past twenty values", http.MethodGet, upstream.URL + "/p?" + strings.Join(gapQuery, "&"), "", "text/plain", http.StatusForbidden, ""},
+		{"forward body entity chain", http.MethodPost, upstream.URL + "/upload", deepEntityChain(), "text/plain", http.StatusForbidden, blockreason.ParseError},
+		{"forward body JSON number limit", http.MethodPost, upstream.URL + "/upload", `[1e10001]`, "application/json", http.StatusForbidden, blockreason.RequestBodyInspectionLimit},
+		{"forward body control", http.MethodPost, upstream.URL + "/upload", "Tom &amp;amp; Jerry", "text/plain", http.StatusOK, ""},
+		{"forward query control", http.MethodGet, upstream.URL + "/p?q=a%2520b", "", "text/plain", http.StatusOK, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := hits.Load()
-			if got := do(t, tc.method, tc.target, tc.body); got != tc.want {
+			got, reason, detail := do(t, tc.method, tc.target, tc.body, tc.mediaType)
+			if got != tc.want {
 				t.Fatalf("status %d, want %d", got, tc.want)
+			}
+			if tc.reason != "" && (reason != string(tc.reason) || !strings.Contains(detail, "request body inspection limit reached")) {
+				t.Fatalf("unexpected request body refusal: reason %q, detail %q", reason, detail)
+			}
+			if tc.reason == blockreason.ParseError && !strings.Contains(detail, "request body scan failed:") {
+				t.Fatalf("request body refusal omitted scan failure: %q", detail)
 			}
 			if delivered := hits.Load() != before; delivered != (tc.want == http.StatusOK) {
 				t.Fatalf("upstream delivered=%v", delivered)
@@ -117,6 +131,32 @@ func TestDecodeInspectionLimitForwardAndFetch(t *testing.T) {
 			t.Fatalf("fetch refusal does not name the inspection limit: %s", body)
 		}
 	})
+}
+
+func TestRequestBodyInspectionLimitReason(t *testing.T) {
+	for _, surface := range []struct {
+		name    string
+		observe func(*testing.T, []byte, string, func(*testing.T, []byte) []byte) codedObservation
+	}{
+		{"intercept", observeInterceptUpload},
+		{"reverse", observeReverseUpload},
+	} {
+		for _, tc := range []struct {
+			name, body string
+			reason     blockreason.Reason
+		}{
+			{"limits in DLP and injection scans", deepEntityChain(), blockreason.ParseError},
+			{"credential", fakeAPIKey(), blockreason.DLPMatch},
+			{"credential and unfinished scan", fakeAPIKey() + "\n" + deepEntityChain(), blockreason.ParseError},
+		} {
+			t.Run(surface.name+"/"+tc.name, func(t *testing.T) {
+				got := surface.observe(t, []byte(tc.body), "", nil)
+				if got.status != http.StatusForbidden || got.hits != 0 || got.reason != string(tc.reason) {
+					t.Fatalf("status=%d hits=%d reason=%q, want 403 with no delivery and %q", got.status, got.hits, got.reason, tc.reason)
+				}
+			})
+		}
+	}
 }
 
 func TestDecodeInspectionLimitWebSocketDirection(t *testing.T) {

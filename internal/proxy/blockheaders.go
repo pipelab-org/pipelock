@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -94,6 +95,13 @@ func blockInfo(scannerLabel string) blockreason.Info {
 	return out
 }
 
+func requestBodyBlockInfo(layer string, inspectionLimited bool) blockreason.Info {
+	if inspectionLimited {
+		return blockInfoFor(blockreason.RequestBodyInspectionLimit, layer)
+	}
+	return blockInfo(layer)
+}
+
 func blockInfoForResult(result scanner.Result) blockreason.Info {
 	return blockInfoFor(reasonFromResult(result), result.Scanner)
 }
@@ -149,6 +157,12 @@ func setBodyBlockHint(w http.ResponseWriter, scannerLabel string) {
 // An unread-body hold shares the parser layer with URL parse failures, so the
 // agent sentence has to come from the reason or the agent is told the URL failed.
 func setBodyResultHint(w http.ResponseWriter, scannerLabel, reason string) {
+	if strings.HasPrefix(reason, scanner.RequestBodyInspectionLimitPrefix) {
+		if guidance, ok := scanner.GuidanceForResult(scannerLabel, reason); ok {
+			w.Header().Set("X-Pipelock-Hint", guidance.AgentReason)
+			return
+		}
+	}
 	if hint, ok := scanner.FindingAndUnreadAgentReason(reason); ok {
 		w.Header().Set("X-Pipelock-Hint", hint)
 		return
