@@ -512,6 +512,9 @@ func TestMCPV3ConfirmsGETSubscriptionBeforeContact(t *testing.T) {
 			startGETStream(ctx, transport.NewHTTPClient(srv.URL, nil), &syncWriter{w: io.Discard},
 				&syncWriter{w: io.Discard}, opts, NewRequestTracker(), &wg)
 			wg.Wait()
+			if err := ctx.Err(); err != nil {
+				t.Fatalf("GET subscription did not stop before cancellation: %v", err)
+			}
 			if stage == "closed" {
 				if contacts.Load() != 0 {
 					t.Fatal("upstream received a subscription with no confirmed receipt")

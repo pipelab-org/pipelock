@@ -129,11 +129,13 @@ func (sw *sseMessageWriter) Wrote() bool {
 	return sw.wrote
 }
 
+var errGETSubscriptionReceipt = errors.New("GET subscription receipt admission failed")
+
 // startGETStream maintains a background GET SSE connection for server-initiated
 // messages. Called after the initialize handshake establishes a session ID.
 // Reconnects with exponential backoff (1s base, 30s cap) on stream end or
-// transient errors. Exits permanently only on transport.ErrStreamNotSupported (HTTP 405)
-// or context cancellation.
+// transient errors. Stops on context cancellation, exhausted capacity, an
+// unsupported GET stream (HTTP 405), or a refused v3 subscription admission.
 // opts carries Scanner, Approver, ToolCfg, KillSwitch, Rec, AdaptiveCfg, and
 // Metrics through to ForwardScanned for adaptive enforcement.
 func startGETStream(
@@ -176,7 +178,7 @@ func startGETStream(
 			}
 
 			scanErr, err := scanGETStream(ctx, httpClient, safeClientOut, safeLogW, opts, tracker)
-			if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(err, ael.ErrCapacity) || errors.Is(err, ErrReceiptRequired) {
+			if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(err, ael.ErrCapacity) || errors.Is(err, errGETSubscriptionReceipt) {
 				return
 			}
 			if err != nil {
@@ -242,7 +244,7 @@ func scanGETStream(ctx context.Context, client *transport.HTTPClient, writer tra
 	opts.nativeAdmission = admission
 	subscription, receiptErr := opts.confirmV3StreamAdmission(logW, http.MethodGet)
 	if receiptErr != nil {
-		return nil, receiptErr
+		return nil, fmt.Errorf("%w: %w", errGETSubscriptionReceipt, receiptErr)
 	}
 	transportReceiptOpts := opts.snapshotScanPolicy().pinReceiptWriters()
 	transportAdmission, err := admitDurableTransport(transportReceiptOpts, http.MethodGet, opts.AuthorityDestination)
