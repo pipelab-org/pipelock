@@ -13,7 +13,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 )
@@ -357,8 +357,20 @@ func TestStreamWriterReplaysFailedTerminalHoldResolution(t *testing.T) {
 	}
 }
 
+// testAppendDeadline lets the append clock fire a deadline without depending
+// on wall-clock scheduling between the test and writer admission.
+type testAppendDeadline struct{ context.Context }
+
+func (c testAppendDeadline) Err() error {
+	if c.Context.Err() != nil {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
 func TestStreamWriterTerminalDeadlineAfterAdmission(t *testing.T) {
 	opts := writerTestOptions(t.TempDir())
+	opts.Heartbeat = 0
 	w := requireWriter(t, opts, localWriterStorage())
 	policy := CapturePolicy(Digest([]byte("resolution policy")))
 	held := writerTestHold("held")
@@ -370,22 +382,16 @@ func TestStreamWriterTerminalDeadlineAfterAdmission(t *testing.T) {
 	resolution.Ask = &Ask{Channel: "approval_api", Observed: true}
 
 	stream := w.active.id
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	var entered, admitted atomic.Bool
 	now := w.now
+	expire := sync.OnceFunc(cancel)
 	w.now = func() time.Time {
-		if !entered.Swap(true) {
-			admitted.Store(ctx.Err() == nil)
-			<-ctx.Done()
-		}
+		expire()
 		return now()
 	}
-	if err := w.WriteTerminalResolution(ctx, resolution, policy, 1); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("resolution = %v, want deadline exceeded", err)
-	}
-	if !admitted.Load() {
-		t.Fatal("deadline expired before the writer entered the append")
+	if err := w.WriteTerminalResolution(testAppendDeadline{ctx}, resolution, policy, 1); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("resolution = %v, want deadline exceeded from the append hook", err)
 	}
 	if err := w.Close(t.Context(), nil); err != nil {
 		t.Fatal(err)
@@ -395,5 +401,51 @@ func TestStreamWriterTerminalDeadlineAfterAdmission(t *testing.T) {
 	if got := readRecoveryActions(t, opts.Dir, stream); !reflect.DeepEqual(got, []Action{held, resolution}) {
 		t.Fatalf("actions = %+v, want the hold and exactly one unchanged resolution", got)
 	}
-	verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey)); result.Verdict != "VALID" {
+		t.Fatalf("shutdown did not close the history: %+v", result)
+	}
+}
+
+func TestStreamWriterShutdownRetriesQueuedTerminalResolution(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	opts.Heartbeat = 0
+	w := requireWriter(t, opts, localWriterStorage())
+	policy := CapturePolicy(Digest([]byte("resolution policy")))
+	held := writerTestHold("held")
+	if err := w.WriteAction(t.Context(), held, policy); err != nil {
+		t.Fatal(err)
+	}
+	resolution := blockingHoldResolution(held, "operator", relationAfter, false)
+	resolution.Verdict = "ask"
+	resolution.Ask = &Ask{Channel: "approval_api", Observed: true}
+	resolution.Policy = policy.ActionPolicy()
+
+	// Model a queued record whose worker has not yet taken the gate.
+	w.terminalPending = []Action{resolution}
+	w.active.file = errorWriterFile{StreamFile: w.active.file, syncErr: errWriterReplay}
+	if err := w.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRecoveryActions(t, opts.Dir, w.active.id); !reflect.DeepEqual(got, []Action{resolution}) {
+		t.Fatalf("shutdown successor actions = %+v, want one unchanged ask", got)
+	}
+	keys := opts.SigningKey.Public().(ed25519.PublicKey)
+	result := verifyWritten(t, opts.Dir, keys)
+	sealed := false
+	for _, stream := range result.Histories[0].Streams {
+		if stream.Stream == w.active.id {
+			sealed = stream.End == endedClosed
+		}
+	}
+	if !sealed {
+		t.Fatalf("shutdown did not seal the recovered stream %q", w.active.id)
+	}
+	reopened := requireWriter(t, opts, localWriterStorage())
+	if got := readRecoveryActions(t, opts.Dir, reopened.active.id); len(got) != 0 {
+		t.Fatalf("restart emitted a second resolution: %+v", got)
+	}
+	if err := reopened.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	verifyWritten(t, opts.Dir, keys)
 }

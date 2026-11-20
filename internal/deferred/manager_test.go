@@ -1955,21 +1955,60 @@ func TestApprovalAfterConfirmationCannotReleaseExpiredHold(t *testing.T) {
 					}
 					return
 				}
+				expected := map[string]string{parent.DeferID: SourceTimeout, child.DeferID: SourceCascade}
 				for range 2 {
 					select {
 					case res := <-resolved:
-						source := SourceCascade
-						if res.DeferID == parent.DeferID {
-							source = SourceTimeout
+						source, ok := expected[res.DeferID]
+						if !ok || res.FinalDecision != config.ActionBlock || res.ResolutionSource != source {
+							t.Fatalf("unexpected hold resolution %+v; still waiting for %v", res, expected)
 						}
-						if res.FinalDecision != config.ActionBlock || res.ResolutionSource != source {
-							t.Fatalf("expired hold resolution = %+v, want block from %s", res, source)
-						}
+						delete(expected, res.DeferID)
 					default:
-						t.Fatal("parent or child did not settle")
+						t.Fatalf("missing resolutions: %v", expected)
 					}
 				}
 			})
 		})
 	}
+}
+
+func TestConfirmedHoldKeepsCapacityWhileSettling(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		manager := NewManager(Config{Enabled: true, Timeout: time.Minute, MaxPending: 1})
+		started, release := make(chan struct{}), make(chan struct{})
+		finish := sync.OnceFunc(func() { close(release) })
+		defer finish()
+		hold := HeldAction{
+			DeferID: "first", ActionID: "first",
+			ConfirmHold: func(HeldAction) error { return nil },
+			Resolve: func(Resolution) {
+				close(started)
+				<-release
+			},
+		}
+		if err := manager.Hold(hold); err != nil {
+			t.Fatal(err)
+		}
+		resolved := make(chan error, 1)
+		go func() { resolved <- manager.Resolve(hold.DeferID, config.ActionBlock, SourceOperator) }()
+		<-started
+		next := HeldAction{
+			DeferID: "next", ActionID: "next",
+			ConfirmHold: func(HeldAction) error { return nil }, Resolve: func(Resolution) {},
+		}
+		if err := manager.Hold(next); !errors.Is(err, ErrCapacity) {
+			t.Fatalf("second hold entered while the first was settling: %v", err)
+		}
+		finish()
+		if err := <-resolved; err != nil {
+			t.Fatal(err)
+		}
+		if err := manager.Hold(next); err != nil {
+			t.Fatalf("capacity was not released after settlement: %v", err)
+		}
+		if err := manager.Resolve(next.DeferID, config.ActionBlock, SourceCancel); err != nil {
+			t.Fatal(err)
+		}
+	})
 }

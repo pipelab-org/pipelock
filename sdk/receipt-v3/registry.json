@@ -2235,7 +2235,7 @@
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/6101ac2c91281dff": "upstream_send",
     "internal/mcp/mcp_http_forward.go/emitBridgeHeaderContractRefusal/settle/9dd5b4a3b8cdfb73": "upstream_send",
     "internal/mcp/mcp_http_input.go/scanHTTPInputDecision/settle/6bf5f67e53bebcbb": "upstream_send",
-    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/f1f8b9b2e4190845": "upstream_send",
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/f1f8b9b2e4190845": "none",
     "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/settle/aacccbedc8926a3a": "upstream_send",
     "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/settle/b66eccc27290a009": "upstream_send",
     "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/settle/0f47b009c2366607": "upstream_send",

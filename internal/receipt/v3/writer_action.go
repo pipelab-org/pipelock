@@ -96,9 +96,10 @@ func (w *StreamWriter) queueTerminalResolution(action Action, maxPending int) er
 func (w *StreamWriter) flushTerminalResolutions() {
 	w.gate <- struct{}{}
 	defer w.release()
-	if !w.collectTerminalResolutions(false) {
+	if w.closed || w.fatal != nil {
 		return
 	}
+	w.collectTerminalResolutions(false)
 	// Uses the same repair and successor rules as a failed synchronous flush.
 	if err := w.settleActionRepairs(context.Background()); err != nil {
 		w.collectTerminalResolutions(true)
@@ -107,18 +108,14 @@ func (w *StreamWriter) flushTerminalResolutions() {
 
 // collectTerminalResolutions runs under the writer gate. Close collects
 // accepted work even when it acquires the gate before the worker.
-func (w *StreamWriter) collectTerminalResolutions(closing bool) bool {
+func (w *StreamWriter) collectTerminalResolutions(closing bool) {
 	w.terminalMu.Lock()
 	defer w.terminalMu.Unlock()
 	if closing {
 		w.terminalClosed = true
 	}
-	if len(w.terminalPending) == 0 {
-		return false
-	}
 	w.repairs = append(w.repairs, w.terminalPending...)
 	w.terminalPending = nil
-	return true
 }
 
 func (w *StreamWriter) writeAction(ctx context.Context, action Action) (persistStarted bool, err error) {

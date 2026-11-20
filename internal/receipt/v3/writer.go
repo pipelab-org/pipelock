@@ -504,6 +504,9 @@ func (w *StreamWriter) settleActionRepairs(ctx context.Context) error {
 }
 
 func (w *StreamWriter) prepareAppend(ctx context.Context) error {
+	// Drain queued terminals before signing another hold that can use the
+	// manager capacity already released by a queued resolution.
+	w.collectTerminalResolutions(false)
 	if err := w.replayActionRepairs(ctx, false); err != nil {
 		return err
 	}
@@ -583,7 +586,7 @@ func (w *StreamWriter) Close(ctx context.Context, operational *Recorder) error {
 		return w.closeErr
 	}
 	w.collectTerminalResolutions(true)
-	w.closeErr = w.replayActionRepairs(ctx, false)
+	w.closeErr = w.replayActionRepairs(ctx, true)
 	w.closed = true
 	if w.active.file != nil && w.closeErr == nil {
 		w.closeErr = w.writeClose(ctx, closeShutdown, operational)

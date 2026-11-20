@@ -488,10 +488,12 @@ func TestRunProxy_NoInputScanStillTracksRequestIDs(t *testing.T) {
 
 	// No input scanning, no policy, no chain - but request tracking is still active.
 	err := RunProxy(ctx, stdin, &stdout, &stderr,
-		[]string{"sh", "-c", fmt.Sprintf("echo '%s'", cleanResp)},
+		[]string{"sh", "-c", `IFS= read -r request || exit 1; printf "%s\n" "$1"`, "sh", cleanResp},
 		MCPProxyOpts{Scanner: sc},
 	)
-	_ = err
+	if err != nil {
+		t.Fatalf("RunProxy: %v; stderr: %s", err, stderr.String())
+	}
 
 	output := stdout.String()
 	if !strings.Contains(output, "hello") {

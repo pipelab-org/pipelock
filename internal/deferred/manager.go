@@ -188,11 +188,12 @@ type HeldAction struct {
 	// entry, so that block's receipt is written first. Prepare's
 	// finish func is still pending, so the release claim and sink lock cover
 	// this call.
-	AfterJournal   func(Resolution) error
-	timer          *time.Timer
-	cascadeBlocked bool // protected by Manager.mu
-	state          string
-	createdAt      time.Time
+	AfterJournal     func(Resolution) error
+	receiptConfirmed bool
+	timer            *time.Timer
+	cascadeBlocked   bool // protected by Manager.mu
+	state            string
+	createdAt        time.Time
 }
 
 // Resolution is delivered exactly once for a held action.
@@ -228,6 +229,7 @@ type Manager struct {
 	// one confirmation, so a sibling cannot sign before its pending parent.
 	confirmingSessions map[string]chan struct{}
 	confirmingCount    int
+	settlingReceipts   int // confirmed holds whose settlement callbacks are still running
 	// fileSync replaces File.Sync for journal writes in tests; nil uses it.
 	fileSync func(*os.File) error
 	// dirSync replaces directorysync.Sync in tests; nil uses it.
@@ -361,7 +363,7 @@ func (m *Manager) Hold(action HeldAction) error {
 		m.journalRejectedHold(action, SourceDuplicateDeferID)
 		return fmt.Errorf("defer hold %q already exists", action.DeferID)
 	}
-	if len(m.holds) >= m.cfg.MaxPending ||
+	if len(m.holds)+m.settlingReceipts >= m.cfg.MaxPending ||
 		len(m.sessionHolds[action.Authority.SessionID]) >= m.cfg.MaxPendingPerSession ||
 		action.SizeBytes > m.cfg.MaxPendingBytes ||
 		m.totalBytes > m.cfg.MaxPendingBytes-action.SizeBytes {
@@ -420,6 +422,7 @@ func (m *Manager) Hold(action HeldAction) error {
 			m.mu.Unlock()
 			return fmt.Errorf("confirm defer hold: %w", err)
 		}
+		action.receiptConfirmed = true
 		delay = time.Until(action.Deadline)
 	} else {
 		if err := m.appendJournal(journalEntryFromHeld(action, StateHeld, "")); err != nil {
@@ -511,6 +514,14 @@ func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string,
 	}
 	held.state = StateResolving
 	m.removeHoldLocked(held)
+	if held.receiptConfirmed {
+		m.settlingReceipts++
+		defer func() {
+			m.mu.Lock()
+			m.settlingReceipts--
+			m.mu.Unlock()
+		}()
+	}
 	if held.timer != nil {
 		held.timer.Stop()
 	}

@@ -2036,24 +2036,30 @@ func RunHTTPListenerProxy(
 			}
 			wrote := false
 			err := deliverMCPSynthetic(decision.Synthetic, mcpSyntheticWriter(func(reply []byte) error {
-				wrote = true
-				if decision.Synthetic.deliver == nil {
-					_, err := w.Write(reply)
-					return err
-				}
-				n, err := w.writeBuffered(reply)
-				if err != nil {
-					return err
-				}
-				if n != len(reply) {
-					return io.ErrShortWrite
-				}
-				return http.NewResponseController(w.ResponseWriter).Flush()
+				var writeErr error
+				withListenerWriteDeadline(w, func() {
+					wrote = true
+					if decision.Synthetic.deliver == nil {
+						_, writeErr = w.Write(reply)
+						return
+					}
+					var n int
+					n, writeErr = w.writeBuffered(reply)
+					if writeErr == nil && n != len(reply) {
+						writeErr = io.ErrShortWrite
+					}
+					if writeErr == nil {
+						writeErr = http.NewResponseController(w.ResponseWriter).Flush()
+					}
+				})
+				return writeErr
 			}))
 			if err != nil && !wrote {
-				writeMCPHTTPInputResult(scanOpts, BlockedRequest{
-					ID: frame.ID, ErrorCode: -32007, ErrorMessage: requiredReceiptFailureMessage(err),
-				}, w)
+				withListenerWriteDeadline(w, func() {
+					writeMCPHTTPInputResult(scanOpts, BlockedRequest{
+						ID: frame.ID, ErrorCode: -32007, ErrorMessage: requiredReceiptFailureMessage(err),
+					}, w)
+				})
 			}
 			return
 		}
@@ -2490,7 +2496,7 @@ func RunHTTPListenerProxy(
 			}
 		}()
 		writeOutput := func(output []byte) {
-			withListenerWriteDeadline(w, listenerDownstreamWriteTimeout, func() {
+			withListenerWriteDeadline(w, func() {
 				w.Header().Set("Content-Type", "application/json")
 				if len(output) == 0 {
 					w.WriteHeader(http.StatusAccepted)
@@ -2610,9 +2616,9 @@ func RunHTTPListenerProxy(
 	return nil
 }
 
-func withListenerWriteDeadline(w http.ResponseWriter, timeout time.Duration, write func()) {
+func withListenerWriteDeadline(w http.ResponseWriter, write func()) {
 	controller := http.NewResponseController(w)
-	if err := controller.SetWriteDeadline(time.Now().Add(timeout)); err == nil {
+	if err := controller.SetWriteDeadline(time.Now().Add(listenerDownstreamWriteTimeout)); err == nil {
 		defer func() { _ = controller.SetWriteDeadline(time.Time{}) }()
 	}
 	write()

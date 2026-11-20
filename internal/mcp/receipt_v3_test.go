@@ -359,11 +359,25 @@ func TestMCPV3RedirectDispatchOutcome(t *testing.T) {
 			{name: "refused delivery", outcome: "completed", wantStarted: true},
 			{name: "closed writer"},
 		} {
-			if surface == listener && tc.name != "completed" {
-				continue
-			}
 			t.Run(surface+"/"+tc.name, func(t *testing.T) {
-				dir, writer, verify := newMCPV3Stream(t, surface)
+				refuseDelivery := tc.name == "refused delivery"
+				var syncCountdown atomic.Int32
+				var createTemp func(string, string) (v3.StreamFile, error)
+				if surface == listener && refuseDelivery {
+					createTemp = func(dir, pattern string) (v3.StreamFile, error) {
+						file, err := os.CreateTemp(dir, pattern)
+						if err != nil {
+							return nil, err
+						}
+						return mcpV3SyncFault{StreamFile: file, countdown: &syncCountdown}, nil
+					}
+				}
+				dir, writer, verify := newMCPV3StreamWithStorage(t, surface, createTemp)
+				if createTemp != nil {
+					// The dispatch intent and outcome are synced before
+					// the listener confirms downstream delivery.
+					syncCountdown.Store(3)
+				}
 				marker := filepath.Join(t.TempDir(), "executed")
 				command := "printf executed > \"$1\"; printf 'ordinary reply'"
 				if tc.name == "handler failure" {
@@ -396,7 +410,6 @@ func TestMCPV3RedirectDispatchOutcome(t *testing.T) {
 					})
 					return nil
 				})
-				refuseDelivery := tc.name == "refused delivery"
 				var deliver func() error
 				switch surface {
 				case transportMCPStdio:
@@ -428,24 +441,30 @@ func TestMCPV3RedirectDispatchOutcome(t *testing.T) {
 					}
 					defer func() { _ = resp.Body.Close() }()
 					reply, err := io.ReadAll(resp.Body)
-					if err != nil || resp.StatusCode != http.StatusOK || resp.ContentLength != int64(len(reply)) ||
-						!bytes.Contains(reply, []byte("ordinary reply")) {
-						t.Fatalf("listener redirect = %d, Content-Length = %d, reply = %s (%v)",
-							resp.StatusCode, resp.ContentLength, reply, err)
+					if err != nil || resp.StatusCode != http.StatusOK {
+						t.Fatalf("listener redirect = %d %s (%v)", resp.StatusCode, reply, err)
 					}
-					testwait.For(t, time.Second, func() bool {
-						actions, err := loadMCPV3Actions(dir)
-						return err == nil && slices.ContainsFunc(actions, func(a v3.Action) bool {
-							return a.EffectBoundary == mcpV3Delivery && a.OutcomeClass == "completed" && a.ParentActionID != ""
-						})
-					}, "listener redirect delivery outcome")
+					if tc.name == "completed" {
+						if resp.ContentLength != int64(len(reply)) || !bytes.Contains(reply, []byte("ordinary reply")) {
+							t.Fatalf("listener redirect Content-Length = %d, reply = %s", resp.ContentLength, reply)
+						}
+						testwait.For(t, time.Second, func() bool {
+							actions, err := loadMCPV3Actions(dir)
+							return err == nil && slices.ContainsFunc(actions, func(a v3.Action) bool {
+								return a.EffectBoundary == mcpV3Delivery && a.OutcomeClass == "completed" && a.ParentActionID != ""
+							})
+						}, "listener redirect delivery outcome")
+					} else if bytes.Contains(reply, []byte("ordinary reply")) || !bytes.Contains(reply, []byte(`"error"`)) ||
+						refuseDelivery && !bytes.Contains(reply, []byte(`"code":-32007`)) {
+						t.Fatalf("listener returned an unexpected failed redirect response: %s", reply)
+					}
 				default:
 					decision := scanHTTPInputDecision([]byte(cleanToolsCallRequest), io.Discard, "session", "session", opts)
 					if decision.Synthetic != nil {
 						deliver = func() error { return deliverMCPSynthetic(decision.Synthetic, peer) }
 					}
 				}
-				if refuseDelivery {
+				if refuseDelivery && surface != listener {
 					if err := writer.Close(t.Context(), nil); err != nil {
 						t.Fatal(err)
 					}
@@ -469,7 +488,10 @@ func TestMCPV3RedirectDispatchOutcome(t *testing.T) {
 					t.Fatal(err)
 				}
 				result, err := v3.VerifyPaths(t.Context(), []string{dir}, verify)
-				if err != nil || result.Verdict != "VALID" {
+				// A simulated failed flush leaves an honest unconfirmed
+				// tail. Its successor must still verify with the dispatch.
+				if err != nil || result.Integrity != "ok" || result.ExitCode != 0 ||
+					createTemp == nil && result.Verdict != "VALID" {
 					t.Fatalf("redirect evidence failed verification: %+v (%v)", result, err)
 				}
 				if tc.outcome != "" {
@@ -483,16 +505,18 @@ func TestMCPV3RedirectDispatchOutcome(t *testing.T) {
 func assertMCPV3RedirectOutcome(t *testing.T, dir, outcome string) {
 	t.Helper()
 	paths, err := filepath.Glob(filepath.Join(dir, "*.receipt-v3.jsonl"))
-	if err != nil || len(paths) != 1 {
-		t.Fatalf("want one receipt file, got %v (%v)", paths, err)
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("want receipt files, got %v (%v)", paths, err)
 	}
-	data, err := os.ReadFile(filepath.Clean(paths[0]))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, record := range strings.Split(string(data), "\n") {
-		if strings.Contains(record, `"effect_boundary":"redirect_dispatch"`) && strings.Contains(record, `"outcome_class":"`+outcome+`"`) {
-			return
+	for _, path := range paths {
+		data, err := os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, record := range strings.Split(string(data), "\n") {
+			if strings.Contains(record, `"effect_boundary":"redirect_dispatch"`) && strings.Contains(record, `"outcome_class":"`+outcome+`"`) {
+				return
+			}
 		}
 	}
 	t.Fatalf("no redirect dispatch outcome %q", outcome)
@@ -635,11 +659,12 @@ func TestMCPV3DeferredSendUsesHoldAndIntent(t *testing.T) {
 
 type mcpV3SyncFault struct {
 	v3.StreamFile
-	fail *atomic.Bool
+	fail      *atomic.Bool
+	countdown *atomic.Int32
 }
 
 func (f mcpV3SyncFault) Sync() error {
-	if f.fail.Swap(false) {
+	if f.fail != nil && f.fail.Swap(false) || f.countdown != nil && f.countdown.Add(-1) == 0 {
 		return io.ErrUnexpectedEOF
 	}
 	return f.StreamFile.Sync()
