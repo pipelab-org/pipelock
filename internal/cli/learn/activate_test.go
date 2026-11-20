@@ -638,10 +638,9 @@ func TestAppendLifecycleReceiptsRefusesIncompleteTail(t *testing.T) {
 	if err := os.WriteFile(path, before, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	const wantError = "lifecycle receipt file has an incomplete final JSONL record"
 	err := appendLifecycleReceipts(path, contractreceipt.EvidenceReceipt{})
-	if err == nil || err.Error() != wantError {
-		t.Fatalf("append = %v, want %q", err, wantError)
+	if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "retry with --receipt-out") {
+		t.Fatalf("append = %v, want the incomplete file path and recovery option", err)
 	}
 	after, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {

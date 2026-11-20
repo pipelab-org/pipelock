@@ -75,11 +75,11 @@ func promoteCmd() *cobra.Command {
 		Short: "Promote a contract into the active manifest with signed lifecycle receipts",
 		Long: `Promote a compiled contract hash into the active manifest store.
 
-The command writes a signed contract_promote_intent receipt, performs the
-signed active-manifest swap, then writes a signed contract_promote_committed
-receipt. In --production mode the roster must contain at least three active
-activation authorities and the manifest must carry two distinct activation
-principals.`,
+The command validates the candidate and syncs signed contract_promote_intent
+and contract_promote_committed receipts before publishing the active manifest.
+Check the active manifest to see which generation took effect. In --production
+mode the roster must contain at least three active activation authorities and
+the manifest must carry two distinct activation principals.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runPromote(cmd, flags)
@@ -101,11 +101,12 @@ func rollbackCmd() *cobra.Command {
 		Short: "Rollback to an accepted manifest with signed lifecycle receipts",
 		Long: `Rollback to a previously accepted manifest.
 
-The command writes a signed contract_rollback_authorized receipt, performs a
-new monotonic active-manifest swap that reuses the target manifest selectors,
-then writes a signed contract_rollback_committed receipt. In --production mode
-the roster must contain at least three active activation authorities and the
-manifest must carry two distinct activation principals.`,
+The command validates a new generation with the target manifest's selectors
+and syncs signed contract_rollback_authorized and contract_rollback_committed
+receipts before publishing it. Check the active manifest to see which
+generation took effect. In --production mode the roster must contain at least
+three active activation authorities and the manifest must carry two distinct
+activation principals.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runRollback(cmd, flags)
@@ -580,25 +581,64 @@ func lifecycleReceiptContext(eventID string, now time.Time, activeManifestHash, 
 // Sync the receipt directory ancestry even on a retry: a previous attempt
 // may have created directories and stopped before their entries reached disk.
 func prepareLifecycleReceiptPath(path string, syncDir func(string) error) (string, error) {
-	clean, err := checkedWritePath(path)
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		return checkedWritePath(path)
+	}
+	dir := filepath.Dir(clean)
+	existing, err := lifecycleReceiptExistingAncestor(dir)
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Dir(clean)
+	resolvedExisting, err := filepath.EvalSymlinks(existing)
+	if err != nil {
+		return "", fmt.Errorf("resolve existing lifecycle receipt directory: %w", err)
+	}
+	clean, err = checkedWritePath(clean)
+	if err != nil {
+		return "", err
+	}
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		return "", fmt.Errorf("resolve lifecycle receipt directory: %w", err)
 	}
 	synced := make(map[string]bool)
-	for _, base := range []string{dir, resolved} {
-		for current := base; !synced[current]; current = filepath.Dir(current) {
-			if err := syncDir(current); err != nil {
-				return "", fmt.Errorf("sync lifecycle receipt directory %s: %w", current, err)
+	for _, chain := range []struct{ base, existing string }{{dir, existing}, {resolved, resolvedExisting}} {
+		required := true
+		for current := chain.base; ; current = filepath.Dir(current) {
+			if !synced[current] {
+				err := syncDir(current)
+				if err == nil {
+					synced[current] = true
+				} else if required || !errors.Is(err, os.ErrPermission) {
+					return "", fmt.Errorf("sync lifecycle receipt directory %s: %w", current, err)
+				}
 			}
-			synced[current] = true
+			if current == chain.existing {
+				// Higher ancestors already held every entry on this path.
+				// Keep syncing readable ones in case an earlier try stopped.
+				required = false
+			}
+			if filepath.Dir(current) == current {
+				break
+			}
 		}
 	}
 	return clean, nil
+}
+
+func lifecycleReceiptExistingAncestor(dir string) (string, error) {
+	for {
+		_, err := os.Stat(dir)
+		if err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if !errors.Is(err, os.ErrNotExist) || parent == dir {
+			return "", fmt.Errorf("stat lifecycle receipt directory %s: %w", dir, err)
+		}
+		dir = parent
+	}
 }
 
 type lifecycleReceiptSync struct {
@@ -635,7 +675,7 @@ func appendLifecycleReceiptsWithSync(path string, syncReceipt lifecycleReceiptSy
 	for _, receipt := range receipts {
 		if err := enc.Encode(receipt); err != nil {
 			_ = f.Close()
-			return fmt.Errorf("write lifecycle receipt: %w", err)
+			return fmt.Errorf("write lifecycle receipt to %q: %w", clean, err)
 		}
 	}
 	if err := syncReceipt.file(f); err != nil {
@@ -664,7 +704,7 @@ func checkLifecycleReceiptTail(f *os.File) error {
 		return fmt.Errorf("read lifecycle receipt tail: %w", err)
 	}
 	if last[0] != '\n' {
-		return errors.New("lifecycle receipt file has an incomplete final JSONL record")
+		return fmt.Errorf("lifecycle receipt file %q has an incomplete final JSONL record (preserve it and retry with --receipt-out pointing to a new file)", f.Name())
 	}
 	return nil
 }

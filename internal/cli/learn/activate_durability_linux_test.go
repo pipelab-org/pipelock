@@ -91,9 +91,9 @@ func TestLifecycleReceiptInterruptedAppendLeavesManifestUnchanged(t *testing.T) 
 		if err := unix.Setrlimit(unix.RLIMIT_FSIZE, &originalLimit); err != nil {
 			t.Fatal(err)
 		}
-		const wantRetryError = "lifecycle receipt file has an incomplete final JSONL record"
-		if err := run(lifecycleTestCmd(nil, nil), flags); err == nil || err.Error() != wantRetryError {
-			t.Fatalf("retry on incomplete receipt file = %v, want %q", err, wantRetryError)
+		if err := run(lifecycleTestCmd(nil, nil), flags); err == nil || !strings.Contains(err.Error(), receiptPath) ||
+			!strings.Contains(err.Error(), "retry with --receipt-out") {
+			t.Fatalf("retry on incomplete receipt file = %v, want the path and recovery option", err)
 		}
 		unchanged, err := os.ReadFile(filepath.Clean(receiptPath))
 		if err != nil || !bytes.Equal(unchanged, raw) {
@@ -167,6 +167,28 @@ func TestLifecycleReceiptPathRetrySyncsExistingAncestors(t *testing.T) {
 		if !synced[ancestor] {
 			t.Errorf("retry skipped directory sync for %s", ancestor)
 		}
+	}
+}
+
+func TestLifecycleReceiptPathWithSearchOnlyAncestor(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "search-only")
+	existing := filepath.Join(parent, "receipts")
+	if err := os.MkdirAll(existing, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	syncDir := func(dir string) error {
+		if dir == parent {
+			return os.ErrPermission
+		}
+		return directorysync.Sync(dir)
+	}
+	path := filepath.Join(existing, "activation.jsonl")
+	if got, err := prepareLifecycleReceiptPath(path, syncDir); err != nil || got != path {
+		t.Fatalf("prepare below an existing search-only ancestor = %q, %v", got, err)
+	}
+	path = filepath.Join(parent, "new-receipts", "activation.jsonl")
+	if _, err := prepareLifecycleReceiptPath(path, syncDir); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("prepare with an unsynced new directory entry = %v, want access denied", err)
 	}
 }
 

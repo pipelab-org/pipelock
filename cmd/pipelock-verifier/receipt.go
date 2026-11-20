@@ -31,7 +31,8 @@ func newReceiptCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "receipt PATH",
 		Short: "Verify a single Pipelock receipt",
-		Long: `Verifies a single Pipelock receipt written as JSON.
+		Long: `Verifies a single Pipelock receipt in a regular JSON file up to 8 MiB.
+Save piped input to a regular file before verification.
 
 Legacy ActionReceipt v1 files require --key for trusted provenance. Pass
 --allow-unpinned for loud structural-only verification against the embedded

@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Both Go verifiers enforce the same 8 MiB standalone receipt limit, exact-number bounds and receipt format checks.
+- Both Go verifiers require regular files for standalone receipts and enforce the same 8 MiB limit, exact-number bounds and receipt format checks.
 - Contract promotion and rollback sync both lifecycle receipts before replacing the active manifest.
 - Receipt group startup finishes writing the transition if shutdown is requested after publication of the opening. Use `pipelock evidence repair-group-transition` to complete an interrupted transition when the successor's signed shard openings are available.
 - Stop admitting work when any native evidence stream cannot reserve space within the 256 MiB ceiling. Admitted work settles, open streams close with signed terminal evidence, and the process seals the run and exits 1 for supervised restart. Oversized predecessor streams are reported distinctly.

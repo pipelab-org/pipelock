@@ -32,8 +32,7 @@ use the cross-implementation conformance suite.
 JSON object. Pin the signer with `--key` to check the signature against a trusted
 public key. The value is a hex key or a path to a public-key file.
 
-Both Go commands accept standalone receipt files up to 8 MiB. They refuse
-ambiguous format fields and JSON numbers outside the interoperable exact range.
+Both Go commands accept regular standalone receipt files up to 8 MiB. Save input from a pipe or process substitution to a regular file before verifying it. The verifiers refuse ambiguous format fields and JSON numbers outside the interoperable exact range.
 
 ```bash
 pipelock verify-receipt receipt.json --key 70b991eb77816fc4ef0ae6a54d8a4119ddc5a16c9711c332c39e743079f6c63e

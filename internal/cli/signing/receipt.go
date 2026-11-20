@@ -70,7 +70,8 @@ func VerifyReceiptCmd() *cobra.Command {
 For v3, pass the stream files or --chain DIR. The command emits the canonical
 verification result. With --format v3, one file may use a different name.
 
-For a single receipt JSON file: verifies the signature and prints details.
+For a single receipt, give a regular JSON file up to 8 MiB. Save piped input
+to a regular file before verification.
 For a flight recorder JSONL file: extracts all receipts and verifies the
 receipt hash chain (prev_hash linkage, seq continuity, signatures). Pass
 --whole-recorder to also verify every recorder entry present, its taxonomy,
