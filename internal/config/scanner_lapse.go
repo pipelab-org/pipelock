@@ -123,7 +123,7 @@ func (c *Config) partitionScannerExceptions(now time.Time) {
 	m := &c.FetchProxy.Monitoring
 	hadPaths := len(m.PathEntropyExclusions) > 0
 	m.PathEntropyExclusions = partitionScannerExceptions(m.PathEntropyExclusions, "fetch_proxy.monitoring.path_entropy_exclusions", func(e PathEntropyExclusion) (string, string) {
-		return e.Expires, e.Scheme + "://" + e.Host + e.PathPrefix
+		return e.Expires, e.RouteScope()
 	}, now, &warnings)
 	// A nonempty operator list includes shipped routes. Lapsing its final
 	// entry must retain those routes, while an explicit [] remains an opt-out

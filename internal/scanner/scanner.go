@@ -157,6 +157,9 @@ type Result struct {
 	DNSErrorKind    DNSErrorKind `json:"-"`                 // internal: DNS resolver failure subtype (set only when Class == ClassInfrastructureError on the DNS path)
 	SSRFResolvedIPs []string     `json:"-"`                 // internal: DNS answers observed by the SSRF scan on an allowed URL, for dial-time rebind detection
 	WarnMatches     []WarnMatch  `json:"warn_matches,omitempty"`
+	// GoogleEditorIDScope names the path-entropy exclusion applied to a single
+	// ID segment. It never includes the request's ID.
+	GoogleEditorIDScope string `json:"-"`
 	// CredentialAudienceAllows records compiled provider-key matches allowed at
 	// their declared audience. It contains no credential material and is used by
 	// proxy audit, metrics, and receipt consumers.
@@ -377,7 +380,7 @@ type Scanner struct {
 	queryExclusions             []string // domains excluded from query parameter entropy checks (S3 pre-signed URLs, etc.)
 	queryParamExclusions        map[queryEntropyParamExclusionKey]string
 	oauthAuthorizationEndpoints []config.OAuthAuthorizationEndpoint
-	pathEntropyExclusions       []pathEntropyExclusion // host+path-prefix exemptions for the PATH entropy gate only
+	pathEntropyExclusions       []pathEntropyExclusion // scoped exemptions for the PATH entropy gate only
 	scanNestedURLs              bool                   // fetch_proxy.monitoring.scan_nested_urls; nil/true = enabled
 	nestedURLResolveBudget      time.Duration          // shared deadline for all nested lookups in one request
 	// pathEntropyExempt suppresses the path-entropy gate on paths the operator
@@ -659,7 +662,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		queryExclusions:             cfg.FetchProxy.Monitoring.QueryEntropyExclusions,
 		queryParamExclusions:        buildQueryEntropyParamExclusions(cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions),
 		oauthAuthorizationEndpoints: oauthEndpoints,
-		pathEntropyExclusions:       buildPathEntropyExclusions(effectivePathEntropyExclusions(cfg.FetchProxy.Monitoring.PathEntropyExclusions)),
+		pathEntropyExclusions:       buildPathEntropyExclusions(config.EffectivePathEntropyExclusions(cfg.FetchProxy.Monitoring.PathEntropyExclusions)),
 		scanNestedURLs:              cfg.FetchProxy.Monitoring.ScanNestedURLsEnabled(),
 		nestedURLResolveBudget:      defaultNestedURLResolveBudget,
 		pathEntropyExempt:           buildPathEntropyExempt(cfg),
@@ -1503,7 +1506,11 @@ func (s *Scanner) scanWithRateRecording(ctx context.Context, rawURL string, opti
 func (s *Scanner) scan(ctx context.Context, rawURL string, options scanOptions, minted **RateReservation) (result Result) {
 	decisions := URLDecisions{valid: true}
 	decisions.checks[urlContext] = DecisionAllowed
-	defer func() { result.Decisions = decisions }()
+	var googleEditorIDScope string
+	defer func() {
+		result.Decisions = decisions
+		result.GoogleEditorIDScope = googleEditorIDScope
+	}()
 	now := s.currentTime()
 	decisions.checks[urlLength] = DecisionAllowed
 	if s.maxURLLength > 0 && len(rawURL) > s.maxURLLength {
@@ -1689,6 +1696,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, options scanOptions, 
 		ctx = context.WithValue(ctx, oauthAuthorizationAllowanceKey{}, allowance)
 	}
 	result = s.checkEntropyWithContextAt(ctx, scanURL, now)
+	googleEditorIDScope = result.GoogleEditorIDScope
 	decisions.record(urlEntropy, result)
 	if !result.Allowed {
 		return result
@@ -6015,7 +6023,11 @@ func (s *Scanner) checkEntropyWithContext(ctx context.Context, parsed *url.URL) 
 
 func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL, now time.Time) (result Result) {
 	relieved := false
-	defer func() { result.relief = relieved }()
+	var googleEditorIDScope string
+	defer func() {
+		result.relief = relieved
+		result.GoogleEditorIDScope = googleEditorIDScope
+	}()
 	if s.entropyThreshold <= 0 {
 		return Result{Allowed: true}
 	}
@@ -6034,14 +6046,19 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 	// operator inspects by rule, and it false-positives on legitimate
 	// high-entropy REST resource ids. This is path-only: it never affects
 	// query entropy (below), subdomain entropy, DLP, or SSRF.
-	routeExemptPath := s.pathEntropyExempt.PathEntropyExempt(hostname, parsed.Path) ||
-		s.isPathEntropyExcludedAt(parsed, now)
+	routeExemptPath := s.pathEntropyExempt.PathEntropyExempt(hostname, parsed.Path)
+
+	var path string
+	skipPath := excludedPath || routeExemptPath
+	if !skipPath {
+		path, googleEditorIDScope, skipPath = s.pathEntropyPolicyAt(parsed, now)
+	}
 
 	// Check path segments (skipped for excluded domains).
-	if !excludedPath && !routeExemptPath {
+	if !skipPath {
 		// Only entropy is relieved for a path the same origin issued: the rest
 		// of the pipeline already ran or still runs on this URL.
-		entropy, blocked := s.pathEntropy(parsed.Path)
+		entropy, blocked := s.pathEntropy(path)
 		if blocked && issuerPathAllowed(ctx, parsed.EscapedPath()) {
 			blocked = false
 			relieved = true
@@ -6049,7 +6066,7 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 		if blocked {
 			// Rescore without the segments the origin issued as object IDs;
 			// any other high-entropy segment still blocks.
-			entropy, blocked = s.pathEntropySkipping(parsed.Path, func(segment string) bool {
+			entropy, blocked = s.pathEntropySkipping(path, func(segment string) bool {
 				allowed := issuerSegmentAllowed(ctx, segment)
 				relieved = relieved || allowed
 				return allowed
@@ -6163,26 +6180,14 @@ type queryEntropyParamExclusionKey struct {
 	param  string
 }
 
-// pathEntropyExclusion is a compiled path-entropy exemption. Kept as a slice
-// rather than a map because the path is matched as a PREFIX, not by equality,
-// and these lists are short enough that a linear scan is cheaper than any
-// index that could answer a prefix question.
+// pathEntropyExclusion is a compiled path-entropy exemption. A short list
+// permits prefix and ID-slot matches in a single pass.
 type pathEntropyExclusion struct {
-	scheme     string
-	host       string
-	pathPrefix string
-	expires    string
-}
-
-// effectivePathEntropyExclusions adds the shipped vendor routes to an
-// operator's list. An operator list used to replace the shipped set, so
-// adding one route silently dropped every vendor route. An explicitly empty
-// list still removes them all, which is the documented opt-out.
-func effectivePathEntropyExclusions(entries []config.PathEntropyExclusion) []config.PathEntropyExclusion {
-	if len(entries) == 0 {
-		return entries
-	}
-	return append(append([]config.PathEntropyExclusion(nil), entries...), config.ShippedPathEntropyExclusions()...)
+	scheme        string
+	host          string
+	pathPrefix    string
+	expires       string
+	googleIDScope string
 }
 
 func buildPathEntropyExclusions(entries []config.PathEntropyExclusion) []pathEntropyExclusion {
@@ -6240,12 +6245,20 @@ func buildPathEntropyExclusions(entries []config.PathEntropyExclusion) []pathEnt
 		if scheme != config.QueryEntropyParamDefaultScheme && scheme != "http" {
 			continue
 		}
-		out = append(out, pathEntropyExclusion{
+		ex := pathEntropyExclusion{
 			scheme:     scheme,
 			host:       host,
 			pathPrefix: prefix,
 			expires:    strings.TrimSpace(entry.Expires),
-		})
+		}
+		if entry.GoogleEditorID {
+			if !config.IsGoogleEditorIDRoute(scheme, host, prefix) {
+				continue
+			}
+			entry.Scheme, entry.Host, entry.PathPrefix = scheme, host, prefix
+			ex.googleIDScope = entry.RouteScope()
+		}
+		out = append(out, ex)
 	}
 	if len(out) == 0 {
 		return nil
@@ -6253,26 +6266,22 @@ func buildPathEntropyExclusions(entries []config.PathEntropyExclusion) []pathEnt
 	return out
 }
 
-// isPathEntropyExcluded reports whether this exact scheme, host and path prefix
-// is exempt from the PATH entropy gate. It deliberately answers nothing about
-// subdomain entropy, query entropy, DLP or SSRF, which continue to run.
-//
-// The comparison uses EscapedPath rather than Path, and that choice is the
-// difference between a narrow exemption and a bypass. url.Parse DECODES
-// percent-escapes into Path, so `/document%2Fd/<blob>` arrives as the decoded
-// `/document/d/<blob>` and matches an exemption written for `/document/d/`,
-// even though the origin server sees a single `document/d` segment and a
-// route the operator never exempted. Matching the escaped spelling keeps the
-// exemption pinned to the literal route in the config. Validation refuses an
-// encoded separator in a prefix, so a configured prefix and an escaped path
-// are compared in the same alphabet.
 func (s *Scanner) isPathEntropyExcluded(parsed *url.URL) bool {
-	return s.isPathEntropyExcludedAt(parsed, s.currentTime())
+	_, scope, skipAll := s.pathEntropyPolicyAt(parsed, s.currentTime())
+	return skipAll || scope != ""
 }
 
-func (s *Scanner) isPathEntropyExcludedAt(parsed *url.URL, now time.Time) bool {
-	if len(s.pathEntropyExclusions) == 0 || parsed == nil {
-		return false
+// pathEntropyPolicyAt returns the decoded path to score and the ID exclusion
+// used, or skips the whole path for a matching literal prefix rule.
+// Match against EscapedPath so an encoded separator cannot turn adjacent route
+// tokens into the literal route that an operator or a shipped rule selected.
+func (s *Scanner) pathEntropyPolicyAt(parsed *url.URL, now time.Time) (scoredPath, scope string, skipAll bool) {
+	if parsed == nil {
+		return "", "", false
+	}
+	scoredPath = parsed.Path
+	if len(s.pathEntropyExclusions) == 0 {
+		return scoredPath, "", false
 	}
 	scheme := strings.ToLower(parsed.Scheme)
 	host := parsed.Hostname()
@@ -6284,11 +6293,60 @@ func (s *Scanner) isPathEntropyExcludedAt(parsed *url.URL, now time.Time) bool {
 		if !MatchDomain(host, ex.host) {
 			continue
 		}
-		if strings.HasPrefix(path, ex.pathPrefix) {
-			return true
+		if ex.googleIDScope == "" {
+			if strings.HasPrefix(path, ex.pathPrefix) {
+				return scoredPath, "", true
+			}
+			continue
+		}
+		if scope == "" && isDefaultEndpointPort(parsed, scheme) {
+			if start, end, ok := googleEditorIDBounds(path, ex.pathPrefix); ok {
+				// Keep every slash and leave the actual URL untouched. A second
+				// occurrence of the same ID still reaches the scorer.
+				scoredPath = parsed.Path[:start] + parsed.Path[end:]
+				scope = ex.googleIDScope
+			}
 		}
 	}
-	return false
+	return scoredPath, scope, false
+}
+
+// googleEditorIDBounds matches the route in the escaped path and returns
+// byte offsets into the decoded path. All bytes before the ID are literal ASCII.
+func googleEditorIDBounds(path, prefix string) (start, end int, ok bool) {
+	product, route, _ := strings.Cut(prefix[1:], "/")
+	tail, ok := strings.CutPrefix(path, prefix[:len(product)+2])
+	if !ok {
+		return 0, 0, false
+	}
+	if account, found := strings.CutPrefix(tail, "u/"); found {
+		index, rest, separated := strings.Cut(account, "/")
+		if !separated || index == "" {
+			return 0, 0, false
+		}
+		for i := range len(index) {
+			if !isASCIIDigit(index[i]) {
+				return 0, 0, false
+			}
+		}
+		tail = rest
+	}
+	tail, ok = strings.CutPrefix(tail, route)
+	if !ok {
+		return 0, 0, false
+	}
+	// Docs, Sheets and Slides also put a published ID after /d/e/. Forms
+	// already requires /d/e/ in its configured prefix. Drive has no /e/ form.
+	if route == "d/" && product != "file" {
+		tail = strings.TrimPrefix(tail, "e/")
+	}
+	escapedID, _, _ := strings.Cut(tail, "/")
+	id, err := url.PathUnescape(escapedID)
+	if err != nil || id == "" || strings.ContainsAny(iterativePercentDecode(id), "/\\") {
+		return 0, 0, false
+	}
+	start = len(path) - len(tail)
+	return start, start + len(id), true
 }
 
 func buildQueryEntropyParamExclusions(entries []config.QueryEntropyParamExclusion) map[queryEntropyParamExclusionKey]string {

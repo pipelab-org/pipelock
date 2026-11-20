@@ -992,11 +992,7 @@ func contentEntropyReloadConsumed(c *Config) bool {
 // reason on reload does not read as a policy downgrade, which matches how the
 // canonical policy hash treats the same fields.
 func pathEntropyExclusionTuple(entry PathEntropyExclusion) string {
-	return pathEntropyExclusionIdentity(entry) + scannerExceptionExpiryIdentity(entry.Expires)
-}
-
-func pathEntropyExclusionIdentity(entry PathEntropyExclusion) string {
-	return entry.Scheme + "://" + entry.Host + entry.PathPrefix
+	return entry.RouteScope() + scannerExceptionExpiryIdentity(entry.Expires)
 }
 
 func scannerExceptionExpiryWidened(previous, updated string) bool {
@@ -1006,12 +1002,17 @@ func scannerExceptionExpiryWidened(previous, updated string) bool {
 func pathEntropyExclusionsAdded(old, updated []PathEntropyExclusion) []string {
 	oldSet := make(map[string]string, len(old))
 	for _, entry := range canonicalPathEntropyExclusions(old) {
-		oldSet[pathEntropyExclusionIdentity(entry)] = entry.Expires
+		oldSet[entry.RouteScope()] = entry.Expires
 	}
 	var added []string
 	for _, entry := range canonicalPathEntropyExclusions(updated) {
+		// A nonempty list already includes the shipped ID slots. Declaring
+		// one explicitly cannot add or extend that exclusion.
+		if entry.GoogleEditorID && len(old) > 0 {
+			continue
+		}
 		tuple := pathEntropyExclusionTuple(entry)
-		if previous, ok := oldSet[pathEntropyExclusionIdentity(entry)]; !ok || scannerExceptionExpiryWidened(previous, entry.Expires) {
+		if previous, ok := oldSet[entry.RouteScope()]; !ok || scannerExceptionExpiryWidened(previous, entry.Expires) {
 			added = append(added, tuple)
 		}
 	}
@@ -1022,12 +1023,15 @@ func pathEntropyExclusionsAdded(old, updated []PathEntropyExclusion) []string {
 func pathEntropyExclusionsRemoved(old, updated []PathEntropyExclusion) []string {
 	newSet := make(map[string]struct{}, len(updated))
 	for _, entry := range canonicalPathEntropyExclusions(updated) {
-		newSet[pathEntropyExclusionIdentity(entry)] = struct{}{}
+		newSet[entry.RouteScope()] = struct{}{}
 	}
 	var removed []string
 	for _, entry := range canonicalPathEntropyExclusions(old) {
+		if entry.GoogleEditorID && len(updated) > 0 {
+			continue
+		}
 		tuple := pathEntropyExclusionTuple(entry)
-		if _, ok := newSet[pathEntropyExclusionIdentity(entry)]; !ok {
+		if _, ok := newSet[entry.RouteScope()]; !ok {
 			removed = append(removed, tuple)
 		}
 	}
