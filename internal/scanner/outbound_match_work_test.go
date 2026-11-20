@@ -59,6 +59,35 @@ func TestOutboundMatchWorkWholeView(t *testing.T) {
 	}
 }
 
+func TestOutboundMatchWorkFallbackWhenProgramCannotFit(t *testing.T) {
+	const marker = "vendor marker"
+	for _, tc := range []struct {
+		name, expression, matched string
+		used                      int
+	}{
+		{"full cache", marker, marker, outboundMatchBytes},
+		{"insufficient program space", marker, marker, outboundMatchBytes - 1024},
+		{"program over instruction limit", strings.Repeat("x", outboundMaxProgram), strings.Repeat("x", outboundMaxProgram), 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			re := regexp.MustCompile(tc.expression)
+			pattern := &compiledPattern{name: "Fixture Marker", re: re, responseMemoRegexp: re}
+			work := &outboundMatchWork{used: tc.used}
+			text := strings.Repeat("ordinary status update.\n", 1000) + tc.matched
+			want := matchResponsePattern(pattern, text)
+			if len(want) != 1 {
+				t.Fatal("ordinary matcher did not detect the control")
+			}
+			if got := work.matcher(t.Context())(pattern, text); !reflect.DeepEqual(got, want) {
+				t.Fatalf("cache refusal changed the match: got %+v, want %+v", got, want)
+			}
+			if work.used != tc.used || len(work.programs) != 0 {
+				t.Fatal("refused program was retained")
+			}
+		})
+	}
+}
+
 type atomicCancelAfterContext struct {
 	context.Context
 	calls       atomic.Int64

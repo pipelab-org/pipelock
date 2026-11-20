@@ -49,6 +49,31 @@ func TestInjectionDecodeQueueSharedLines(t *testing.T) {
 	}
 }
 
+func TestInjectionDecodeQueueTrailingNewlineAndLineBudget(t *testing.T) {
+	text := strings.Repeat(strings.Repeat("common text ", 20)+"\n", 32)
+	q := newInjectionDecodeQueue("root", true)
+	budget := injectionPackedCost + 32*injectionLineRefCost + 1
+	stored, cost := q.prepare(text, budget, false)
+	if stored.lines != nil || cost != len(text) || len(q.lines) != 0 {
+		t.Fatal("view admitted without room for the new line")
+	}
+	digest, duplicate := q.lookup(text)
+	if duplicate {
+		t.Fatal("new view was already queued")
+	}
+	stored, cost = q.prepare(text, len(text), true)
+	if stored.lines == nil || cost >= len(text) {
+		t.Fatal("repeated line was not packed")
+	}
+	q.add(stored, injectionDecodeView{text: text}, digest)
+	if got := q.views[1].decodeView().text; got != text {
+		t.Fatal("packed view lost its trailing newline")
+	}
+	if q.views[1].equalText(text + "\n") {
+		t.Fatal("different-size view compared equal")
+	}
+}
+
 func TestInjectionDecodeQueueFlatViews(t *testing.T) {
 	largeLine := strings.Repeat("single line ", 4096)
 	for _, share := range []bool{false, true} {
