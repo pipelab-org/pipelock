@@ -607,6 +607,11 @@ func (s *Scanner) scanResponseMatches(ctx context.Context, content, suppressTarg
 }
 
 func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry, options responseScanOptions, memo *responseMatchMemo) (out ResponseScanResult) {
+	if memo != nil && ctx != nil && len(content) >= outboundMatchMinView {
+		if work, ok := ctx.Value(outboundMatchWorkKey{}).(*outboundMatchWork); ok {
+			memo.outboundMatch = work.matcher(ctx)
+		}
+	}
 	original := content
 	content = exciseVerifiedImageDataURLs(content)
 	assessed := !IsBlankInjectionView(content)
@@ -1173,9 +1178,13 @@ func matchPatternsPreFilteredWithMemo(pf *responsePreFilter, patterns []*compile
 	// Large bodies spend most of their time in independent regexp engines.
 	// Keep each pattern's result in its original slot so match order, pass
 	// precedence, and suppression behavior are identical to the serial path.
+	match := matchResponsePattern
+	if view != nil && view.outboundMatch != nil {
+		match = view.outboundMatch
+	}
 	workers := min(runtime.GOMAXPROCS(0), len(indices))
 	if workers < 2 || len(content) < 4096 {
-		return matchPatternsSequential(indices, patterns, content)
+		return matchPatternsInOrder(indices, patterns, content, match)
 	}
 	results := make([][]ResponseMatch, len(indices))
 	var next atomic.Int64
@@ -1186,7 +1195,7 @@ func matchPatternsPreFilteredWithMemo(pf *responsePreFilter, patterns []*compile
 				return
 			}
 			if idx := indices[slot]; idx >= 0 && idx < len(patterns) {
-				results[slot] = matchResponsePattern(patterns[idx], content)
+				results[slot] = match(patterns[idx], content)
 			}
 		}
 	}
@@ -1219,10 +1228,14 @@ func matchPatternsPreFilteredWithMemo(pf *responsePreFilter, patterns []*compile
 }
 
 func matchPatternsSequential(indices []int, patterns []*compiledPattern, content string) []ResponseMatch {
+	return matchPatternsInOrder(indices, patterns, content, matchResponsePattern)
+}
+
+func matchPatternsInOrder(indices []int, patterns []*compiledPattern, content string, match func(*compiledPattern, string) []ResponseMatch) []ResponseMatch {
 	var matches []ResponseMatch
 	for _, idx := range indices {
 		if idx >= 0 && idx < len(patterns) {
-			matches = append(matches, matchResponsePattern(patterns[idx], content)...)
+			matches = append(matches, match(patterns[idx], content)...)
 		}
 	}
 	return matches

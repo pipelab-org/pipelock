@@ -33,6 +33,7 @@ type responsePreFilter struct {
 // A view is owned by one sequential response scan and keyed by exact input
 // bytes in its memo. It shares the gate's derived text across pattern groups.
 type responsePreFilterView struct {
+	outboundMatch    func(*compiledPattern, string) []ResponseMatch
 	folded, distance string
 	literals         responseLiteralMemo
 	ready            bool

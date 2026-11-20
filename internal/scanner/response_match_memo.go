@@ -17,11 +17,12 @@ import (
 // Calls are sequential; the underlying matcher joins its workers before this
 // object is read or written again. A Scanner never retains or shares the memo.
 type responseMatchMemo struct {
-	views        map[string]map[responseNegativeKey]struct{}
-	filterViews  map[string]*responsePreFilterView
-	derivedBytes int
-	bytes        int
-	entries      int
+	outboundMatch func(*compiledPattern, string) []ResponseMatch
+	views         map[string]map[responseNegativeKey]struct{}
+	filterViews   map[string]*responsePreFilterView
+	derivedBytes  int
+	bytes         int
+	entries       int
 }
 
 type responseNegativeKey struct {
@@ -112,7 +113,7 @@ func (m *responseMatchMemo) match(pf *responsePreFilter, patterns []*compiledPat
 		if view != nil {
 			literals = view.literals
 		}
-		view = &responsePreFilterView{literals: literals}
+		view = &responsePreFilterView{literals: literals, outboundMatch: m.outboundMatch}
 	}
 	result := matchPatternsPreFilteredWithMemo(remainingFilter, remaining, content, view)
 	if len(result) != 0 {

@@ -65,7 +65,7 @@ func TestHasShippedCardCandidate(t *testing.T) {
 	}{
 		{valid, true},
 		{"8" + valid + "9", true},
-		{"4111-1111 1111-1111", true},
+		{"4111-1111" + " 1111-1111", true},
 		{valid + "-7", true},
 		{valid[:15] + "2", false},
 		{"4111  1111 1111 1111", false},
