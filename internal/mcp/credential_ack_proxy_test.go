@@ -565,7 +565,7 @@ func TestWebSocketAcknowledgmentAuditAndRefusal(t *testing.T) {
 		"other binding under warn":     {tools.ServerBindingDigest("upstream", "https://elsewhere.example/mcp"), config.ActionWarn, false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			srv := wsRespondServer(t, []byte(strings.TrimSpace(ackLine())), nil)
+			srv := wsRespondServerWithClose(t, []byte(strings.TrimSpace(ackLine())), nil, true)
 			defer srv.Close()
 			emitter, rec, dir, pubHex := newReceiptTestHarness(t)
 			obs := &toolScanCaptureRecorder{}
