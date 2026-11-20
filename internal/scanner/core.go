@@ -394,12 +394,18 @@ func (s *Scanner) scanCoreResponseWithOptions(content string, suppress coreRespo
 	if matches := filterCoreResponsePass(content, "", memo.match(s.core.responsePreFilter, s.core.responsePatterns, content), ViewForMatching, suppress); len(matches) > 0 {
 		return responseMatchSet{matches: matches, content: content}
 	}
+	if memo.outboundError() != nil {
+		return responseMatchSet{}
+	}
 
 	// Secondary: replace invisible chars with spaces.
 	spaced := normalize.ForMatchingSpaced(original)
 	if spaced != content {
 		if matches := filterCoreResponsePass(spaced, "", memo.match(s.core.responsePreFilter, s.core.responsePatterns, spaced), ViewInvisibleSpaced, suppress); len(matches) > 0 {
 			return responseMatchSet{matches: matches, content: spaced}
+		}
+		if memo.outboundError() != nil {
+			return responseMatchSet{}
 		}
 	}
 
@@ -409,12 +415,18 @@ func (s *Scanner) scanCoreResponseWithOptions(content string, suppress coreRespo
 		if matches := filterCoreResponsePass(leeted, content, memo.match(s.core.responsePreFilter, s.core.responsePatterns, leeted), ViewLeetspeak, suppress); len(matches) > 0 {
 			return responseMatchSet{matches: matches, content: leeted}
 		}
+		if memo.outboundError() != nil {
+			return responseMatchSet{}
+		}
 	}
 
 	// Quaternary: optional-whitespace matching.
 	if len(s.core.responseOptSpacePatterns) > 0 {
 		if matches := filterCoreResponsePass(content, "", memo.match(s.core.responseOptSpacePreFilter, s.core.responseOptSpacePatterns, content), ViewForMatching, suppress); len(matches) > 0 {
 			return responseMatchSet{matches: matches, content: content}
+		}
+		if memo.outboundError() != nil {
+			return responseMatchSet{}
 		}
 	}
 
@@ -424,6 +436,9 @@ func (s *Scanner) scanCoreResponseWithOptions(content string, suppress coreRespo
 		if folded != content {
 			if matches := filterCoreResponsePass(folded, content, memo.match(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded), ViewVowelFold, suppress); len(matches) > 0 {
 				return responseMatchSet{matches: matches, content: folded}
+			}
+			if memo.outboundError() != nil {
+				return responseMatchSet{}
 			}
 		}
 	}

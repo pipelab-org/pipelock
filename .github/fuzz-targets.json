@@ -50,6 +50,10 @@
     },
     {
       "package": "./internal/scanner",
+      "target": "FuzzOutboundMatchWorkParity"
+    },
+    {
+      "package": "./internal/scanner",
       "target": "FuzzResponseMatchMemoParity"
     },
     {

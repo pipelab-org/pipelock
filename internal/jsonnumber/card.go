@@ -156,6 +156,34 @@ const (
 	cardRunMaxDigits = 19
 )
 
+// HasShippedCardCandidate tests a necessary condition for a match of the
+// shipped card grammar. Every validated span starts with four ASCII digits,
+// can have one optional separator per remaining digit, and has 15–19 digits.
+// Visit overlapping starts and ignore word boundaries so a short window
+// cannot conceal a match due to artificial edges or regexp match ordering.
+// The caller still uses the full grammar to confirm any candidate.
+func HasShippedCardCandidate(text string, validate func(string) bool) bool {
+	for start := 0; start+cardRunMinDigits <= len(text); start++ {
+		if !allDigits(text[start : start+4]) {
+			continue
+		}
+		end := start + 4
+		for digits := 5; digits <= cardRunMaxDigits && end < len(text); digits++ {
+			if text[end] == ' ' || text[end] == '-' {
+				end++
+			}
+			if end == len(text) || text[end] < '0' || text[end] > '9' {
+				break
+			}
+			end++
+			if digits >= cardRunMinDigits && validate(text[start:end]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ValidCardNumber applies the card issuer ranges and Luhn checksum used by
 // the scanner's luhn validator. The JSON run pass and redactor share it.
 func ValidCardNumber(s string) bool {

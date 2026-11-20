@@ -24,7 +24,7 @@ func TestReassemblyFiniteValidatedAdmission(t *testing.T) {
 	}
 	sc := MustNew(cfg)
 	t.Cleanup(sc.Close)
-	for _, plain := range []string{strings.Repeat("5", 512), strings.Repeat("GB00"+strings.Repeat("A", 18)+"!", 32)} {
+	for _, plain := range []string{strings.Repeat("5", 512), strings.Repeat("!"+"4111"+"1111"+"1111"+"1112", 32), strings.Repeat("GB00"+strings.Repeat("A", 18)+"!", 32)} {
 		body := reassemblyBang(base64.StdEncoding.EncodeToString([]byte(plain)))
 		budget := &assembledBudget{used: maxDecodeTotalBytes}
 		result := assembledLayer(sc.reassemblyPlan, body, budget, 0)
@@ -35,6 +35,7 @@ func TestReassemblyFiniteValidatedAdmission(t *testing.T) {
 	for _, plain := range []string{
 		"5HueCGU8rMjx" + "EXxiPuD5BDku4MkFqe" + "Zyd4dZ1jvhTVqvbTLvyTJ",
 		"GB82" + "WEST12345698765432",
+		"4111" + "1111" + "1111" + "1111" + "-7",
 	} {
 		body := reassemblyBang(base64.StdEncoding.EncodeToString([]byte(strings.Repeat("x", 128) + "!" + plain + "!" + strings.Repeat("x", 128))))
 		result := assembledLayer(sc.reassemblyPlan, body, &assembledBudget{}, 0)
