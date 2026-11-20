@@ -2089,7 +2089,7 @@ Enrollment admits exact verified `subject`/`client_id` pairs. An empty enrollmen
 | Ambiguous/malformed Authorization, Proxy-Authorization, form-token presentation, or an `access_token` query parameter | 400 with `invalid_request` |
 | Verifier timeout, invalid response, failed verifier authentication, unavailable keys or credential file | 503 |
 
-Every admission failure returns before an MCP upstream connection is opened. Pipelock consumes the door bearer locally and removes it from upstream headers. The issuer must mint tokens for this door's audience. Startup refuses static upstream `Authorization` and `Proxy-Authorization` set through `--header`, `--header-file`, or `--header-carrier`, and credentials in the `--upstream` URL. Remove those settings before enabling the door.
+Every admission failure returns before an MCP upstream connection is opened. Pipelock consumes the door bearer locally and removes it from upstream headers. The issuer must mint tokens for this door's audience. Startup refuses static upstream `Authorization` and `Proxy-Authorization` set through `--header`, `--header-file`, or `--header-carrier`, and a username or password in the `--upstream` URL. Remove those settings before enabling the door.
 
 Pipelock serves RFC 9728 protected-resource metadata locally at `/.well-known/oauth-protected-resource` followed by the resource path. For `https://resource.example/mcp`, the challenge points to `https://resource.example/.well-known/oauth-protected-resource/mcp`. Route that public URL to this listener. The metadata names only the configured resource, issuer and header bearer method.
 

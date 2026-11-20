@@ -24,9 +24,11 @@ mcp_door:
 
 ## Introspection with Keycloak
 
-Use this option with a Keycloak realm whose access tokens don't match the JWT profile above. Add an Audience protocol mapper to a client scope assigned to the caller's client. Set **Included Custom Audience** to `https://mcp.vendor.example/mcp`. Turn on **Add to token introspection** if the mapper exposes that setting.
+Use this option with a Keycloak realm whose access tokens don't match the JWT profile above. Keycloak allows introspection only when the confidential client's client ID is in the access token's `aud` claim. Pipelock also requires the public MCP URL in the introspection response's `aud`.
 
-Use a confidential client for Pipelock to call the realm's introspection endpoint. Save its secret to `/etc/pipelock/introspection-client.secret`, with owner-only permissions (`0600` on Unix), readable by the account running Pipelock. For an enrolled caller's access token, check that the endpoint returns `active: true`, the expected audience in `aud`, a future `exp`, and the enrolled `sub` and `client_id`. The enrollment's client ID is the **caller's** client ID. The top-level `client_id` under `mcp_door` identifies the confidential client that Pipelock uses for introspection.
+Add two Audience protocol mappers to a client scope assigned to the caller's client. On the first mapper, leave **Included Client Audience** empty and set **Included Custom Audience** to `https://mcp.vendor.example/mcp`. Keycloak uses a custom audience only when the client audience is empty, so the second mapper is separate. Set **Included Client Audience** to `mcp-introspector` and leave **Included Custom Audience** empty. On both mappers, leave **Add to access token** and **Add to token introspection** on.
+
+Use a confidential client named `mcp-introspector` for Pipelock to call the realm's introspection endpoint. Save its secret to `/etc/pipelock/introspection-client.secret`, with owner-only permissions (`0600` on Unix), readable by the account running Pipelock. For an enrolled caller's access token, check that the endpoint returns `active: true`, both audience values in `aud`, a future `exp`, and the enrolled `sub` and `client_id`. The enrollment's client ID is the **caller's** client ID. The top-level `client_id` under `mcp_door` identifies the confidential client that Pipelock uses for introspection.
 
 Save this version as `door.yaml` if you're using introspection.
 
@@ -51,7 +53,7 @@ mcp_door:
 pipelock mcp proxy --listen localhost:8889 --upstream https://app.example.com/mcp --config door.yaml
 ```
 
-Point your MCP client at the public MCP URL and send its access token in `Authorization: Bearer <access-token>`. Pipelock removes the door token before sending the request upstream. Startup refuses static upstream `Authorization` and `Proxy-Authorization` from `--header`, `--header-file`, or `--header-carrier`. Startup also refuses credentials in the `--upstream` URL. Remove those settings when you enable the door.
+Point your MCP client at the public MCP URL and send its access token in `Authorization: Bearer <access-token>`. Pipelock removes the door token before sending the request upstream. Startup refuses static upstream `Authorization` and `Proxy-Authorization` from `--header`, `--header-file`, or `--header-carrier`. Startup also refuses a username or password in the `--upstream` URL. Remove those settings when you enable the door.
 
 | Response | Meaning |
 | --- | --- |

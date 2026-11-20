@@ -212,17 +212,84 @@ func TestMCPDoorDisabledPermitsStaticUpstreamAuth(t *testing.T) {
 	}
 }
 
+func mcpDoorGuideSection(t *testing.T, guide, heading string) string {
+	t.Helper()
+	_, section, ok := strings.Cut(guide, "\n## "+heading+"\n")
+	if !ok {
+		t.Fatalf("guide is missing the %s section", heading)
+	}
+	if next := strings.Index(section, "\n## "); next >= 0 {
+		section = section[:next]
+	}
+	return section
+}
+
+func mcpDoorGuideYAML(t *testing.T, section string) string {
+	t.Helper()
+	_, yamlBlock, opened := strings.Cut(section, "\n```yaml\n")
+	raw, _, closed := strings.Cut(yamlBlock, "\n```\n")
+	if !opened || !closed || strings.TrimSpace(raw) == "" {
+		t.Fatal("guide section is missing a yaml example")
+	}
+	return raw
+}
+
 func TestMCPDoorGuideRecipe(t *testing.T) {
 	guide, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "guides", "mcp-door-recipe.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, section, heading := strings.Cut(string(guide), "\n## JWT verification\n")
-	_, yamlBlock, opened := strings.Cut(section, "\n```yaml\n")
-	raw, _, closed := strings.Cut(yamlBlock, "\n```\n")
+	configuration, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "configuration.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const upstreamUserinfoRefusal = "a username or password in the `--upstream` URL"
+	for _, doc := range []struct{ name, body string }{
+		{"guide", string(guide)},
+		{"configuration", string(configuration)},
+	} {
+		if !strings.Contains(doc.body, "static upstream `Authorization` and `Proxy-Authorization`") ||
+			!strings.Contains(doc.body, "--header-file") || !strings.Contains(doc.body, "--header-carrier") ||
+			!strings.Contains(doc.body, upstreamUserinfoRefusal) {
+			t.Fatalf("%s dropped the static upstream credential refusal", doc.name)
+		}
+	}
+
+	jwtSection := mcpDoorGuideSection(t, string(guide), "JWT verification")
+	raw := mcpDoorGuideYAML(t, jwtSection)
 	const jwksPlaceholder = "/etc/pipelock/issuer-public.jwks.json"
-	if !heading || !opened || !closed || !strings.Contains(raw, jwksPlaceholder) {
+	if !strings.Contains(raw, jwksPlaceholder) {
 		t.Fatal("JWT door.yaml example missing from the guide")
+	}
+	introSection := mcpDoorGuideSection(t, string(guide), "Introspection with Keycloak")
+	introRaw := mcpDoorGuideYAML(t, introSection)
+	const introspectionClient = "mcp-introspector"
+	for _, phrase := range []string{
+		"confidential client's client ID is in the access token's `aud` claim",
+		"public MCP URL in the introspection response's `aud`",
+		"Included Client Audience",
+		"Included Custom Audience",
+		"custom audience only when the client audience is empty",
+		"Add to access token",
+		"Add to token introspection",
+		"**Included Client Audience** to `" + introspectionClient + "`",
+	} {
+		if !strings.Contains(introSection, phrase) {
+			t.Fatalf("Keycloak section missing %q", phrase)
+		}
+	}
+	if strings.Contains(introSection, "Allow token introspection without audience check") {
+		t.Fatal("Keycloak section points at the compatibility bypass")
+	}
+	introCfg, err := config.Load(writeDoorConfig(t, introRaw+"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	intro := introCfg.MCPDoor
+	if !intro.Enabled || intro.Mode != config.MCPDoorIntrospection || intro.ClientID != introspectionClient ||
+		len(intro.Enrollments) != 1 || intro.Enrollments[0].ClientID == introspectionClient ||
+		intro.IntrospectionURL != intro.Issuer+"/protocol/openid-connect/token/introspect" {
+		t.Fatalf("introspection example = %+v", intro)
 	}
 
 	signer, keyPath := runtimeDoorIssuer(t)
@@ -234,6 +301,9 @@ func TestMCPDoorGuideRecipe(t *testing.T) {
 	profile := cfg.MCPDoor
 	if !profile.Enabled || profile.Mode != config.MCPDoorJWT || len(profile.Enrollments) != 1 {
 		t.Fatal("the guide's JWT example must enable the door and enroll one caller")
+	}
+	if profile.Issuer != intro.Issuer || profile.Audience != intro.Audience {
+		t.Fatalf("guide examples diverged: jwt issuer %s audience %s, introspection issuer %s audience %s", profile.Issuer, profile.Audience, intro.Issuer, intro.Audience)
 	}
 	resource, err := url.Parse(profile.Audience)
 	if err != nil {
