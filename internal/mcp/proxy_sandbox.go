@@ -270,6 +270,7 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	inputOpts := opts
 	inputOpts.Rec = rec
 	inputOpts.WarnContext = sessionCtx
+	inputOpts.closeStdioInput = sync.OnceFunc(func() { _ = serverIn.Close() })
 	inputOpts.sessionExit = sessionExit
 	inputOpts.stdioInputScanDisabled = inputCfg == nil || !inputCfg.Enabled
 
@@ -277,7 +278,7 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		defer func() { _ = serverIn.Close() }()
+		defer inputOpts.closeStdioInput()
 		clientReader := transport.NewStdioReader(clientIn)
 		serverWriter := transport.NewStdioWriter(serverIn)
 		ForwardScannedInput(clientReader, serverWriter, safeLogW,

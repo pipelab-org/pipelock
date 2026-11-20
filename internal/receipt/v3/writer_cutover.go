@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -146,8 +147,11 @@ func (w *StreamWriter) cutoverJournal() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if journal.Torn {
-		prefix := io.NewSectionReader(file, 0, journal.KeepBytes)
+	if journal.Torn || journal.NeedsDelimiter {
+		var prefix io.Reader = io.NewSectionReader(file, 0, journal.KeepBytes)
+		if journal.NeedsDelimiter {
+			prefix = io.MultiReader(prefix, strings.NewReader("\n"))
+		}
 		if err := w.repairJournal(path, prefix); err != nil {
 			return "", err
 		}

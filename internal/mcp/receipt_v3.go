@@ -96,7 +96,7 @@ func (o MCPProxyOpts) writeV3Decision(d MCPDecision) error {
 		return fmt.Errorf("MCP receipt phase unavailable for verdict %q: %w", action.Verdict, ErrReceiptRequired)
 	}
 	err := o.ReceiptV3.WriteAction(o.warnContext(), action, entry.policy)
-	if err != nil && d.RequireReceipt {
+	if err != nil && (d.RequireReceipt || errors.Is(err, v3.ErrEffectNotReleased)) {
 		return fmt.Errorf("%w: %w", ErrReceiptRequired, err)
 	}
 	if err == nil && d.v3Confirmed != nil && action.Attempt != nil {
@@ -208,7 +208,7 @@ func (o MCPProxyOpts) confirmV3StreamAdmission(logW io.Writer, method string) (m
 	})
 	if err != nil {
 		logReceiptEmitFailure(logW, err, required, decision.Verdict)
-		if required {
+		if required || errors.Is(err, v3.ErrEffectNotReleased) {
 			return entry, err
 		}
 	}
@@ -224,7 +224,7 @@ func (o MCPProxyOpts) confirmV3ResponseDelivery(logW io.Writer, opts receipt.Emi
 	})
 	if err != nil {
 		logReceiptEmitFailure(logW, err, required, opts.Verdict)
-		if required {
+		if required || errors.Is(err, v3.ErrEffectNotReleased) {
 			return err
 		}
 	}
@@ -237,14 +237,6 @@ func v3MCPChild(parent receipt.EmitOpts, layer, reason string) receipt.EmitOpts 
 	parent.ParentActionID, parent.ActionID = parent.ActionID, receipt.NewActionID()
 	parent.Layer, parent.Pattern = layer, reason
 	return parent
-}
-
-func emitMCPUpstreamRefusal(opts MCPProxyOpts, logW io.Writer, intent receipt.EmitOpts, bytesTransferred int64, reason string) {
-	if opts.ReceiptV3 != nil {
-		opts.recordV3MCPRefusal(logW, intent, mcpV3Upstream, reason)
-		return
-	}
-	emitMCPBlockedOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, intent, bytesTransferred, reason, opts.requireReceipts())
 }
 
 func (o MCPProxyOpts) recordV3MCPRefusal(logW io.Writer, intent receipt.EmitOpts, boundary, reason string) {
@@ -269,11 +261,11 @@ func (o MCPProxyOpts) writeMCPGeneratedResponse(logW io.Writer, writer transport
 	if err := o.confirmV3ResponseDelivery(logW, decision, &delivery); err != nil {
 		return err
 	}
-	return delivery.writeV3Response(o, logW, writer, response)
+	return delivery.writeV3Response(o, logW, writer, response, nil)
 }
 
-func (r *mcpV3Receipt) writeV3Response(o MCPProxyOpts, logW io.Writer, writer transport.MessageWriter, content []byte, related ...mcpV3Receipt) error {
-	if r.action.Attempt != nil || len(related) != 0 {
+func (r *mcpV3Receipt) writeV3Response(o MCPProxyOpts, logW io.Writer, writer transport.MessageWriter, content []byte, related *[]mcpV3Receipt) error {
+	if r.action.Attempt != nil || related != nil && len(*related) != 0 {
 		if err := o.warnContext().Err(); err != nil {
 			r.finish(o, logW, false, nil)
 			return err
@@ -281,8 +273,11 @@ func (r *mcpV3Receipt) writeV3Response(o MCPProxyOpts, logW io.Writer, writer tr
 	}
 	err := writeMCPResponseDisposition(o, mcpDenialAudit{}, writer, content, false)
 	r.finishV3ResponseWrite(o, logW, err)
-	for i := range related {
-		related[i].finishV3ResponseWrite(o, logW, err)
+	if related != nil {
+		for i := range *related {
+			(*related)[i].finishV3ResponseWrite(o, logW, err)
+		}
+		*related = (*related)[:0]
 	}
 	return err
 }

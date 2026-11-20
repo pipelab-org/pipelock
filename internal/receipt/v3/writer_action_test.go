@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -447,5 +448,96 @@ func TestStreamWriterAdmissionBatchReservesExactCount(t *testing.T) {
 	result := verifyWritten(t, opts.Dir, public)
 	if writerTestCount(t, result, "outcome_unknown") != 2 || writerTestCount(t, result, "not_released") != 2 {
 		t.Fatalf("batch refusal did not settle both unconfirmed allowances: %+v", result)
+	}
+}
+
+func TestStreamWriterAdmissionBatchRefusals(t *testing.T) {
+	policy := CapturePolicy(Digest(nil))
+	first, second := writerTestIntent("first"), writerTestIntent("second")
+	for _, fault := range []string{"cancelled", "duplicate", "wrong phase", "segment limit", "failed flush", "cancelled flush", "closed"} {
+		t.Run(fault, func(t *testing.T) {
+			opts := writerTestOptions(t.TempDir())
+			w := requireWriter(t, opts, localWriterStorage())
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			actions := []Action{first, second}
+			var want string
+			switch fault {
+			case "cancelled":
+				cancel()
+				want = "context canceled"
+			case "duplicate":
+				actions[1] = first
+				want = "repeats an action ID"
+			case "wrong phase":
+				actions[1].Phase = phaseOutcome
+				want = "requires admission actions"
+			case "segment limit":
+				w.fileBytes = maxLineBytes
+				want = "exceeds the segment limit"
+			case "failed flush":
+				w.active.file = errorWriterFile{StreamFile: w.active.file, syncErr: errWriterReplay}
+			case "cancelled flush":
+				w.active.file = syncCallbackFile{StreamFile: w.active.file, syncCallback: sync.OnceFunc(cancel)}
+			case "closed":
+				if err := w.Close(ctx, nil); err != nil {
+					t.Fatal(err)
+				}
+				want = "closed"
+			}
+			err := w.WriteAdmissionBatch(ctx, actions, policy)
+			w.fileBytes = writerFileBytes
+			if want != "" {
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("batch error = %v, want %q", err, want)
+				}
+				return
+			}
+			if !errors.Is(err, ErrEffectNotReleased) {
+				t.Fatalf("batch error = %v, want withheld effect", err)
+			}
+			if err := w.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+			if got := writerTestCount(t, result, outcomeNotReleased); got != 2 {
+				t.Fatalf("withheld outcomes = %d, want 2", got)
+			}
+		})
+	}
+	var w *StreamWriter
+	if err := w.WriteAdmissionBatch(t.Context(), nil, policy); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteAdmissionBatch(t.Context(), []Action{first}, policy); err == nil {
+		t.Fatal("nil writer accepted a nonempty batch")
+	}
+}
+
+func TestStreamWriterReportsDurableCancelledHoldCorrection(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	w := requireWriter(t, opts, localWriterStorage())
+	policy := CapturePolicy(Digest(nil))
+	hold := writerTestHold("cancelled-hold")
+	hold.Hold.Parent = ""
+	if err := w.WriteAction(t.Context(), hold, policy); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	w.active.file = syncCallbackFile{StreamFile: w.active.file, syncCallback: sync.OnceFunc(cancel)}
+	decision := hold
+	decision.Phase, decision.EffectRelation, decision.Verdict = phaseResolution, relationAfter, verdictAllow
+	decision.Hold = &Hold{ID: hold.Hold.ID, ResolutionPolicy: hold.Hold.Policy, ResolutionSource: "approval"}
+	err := w.WriteAction(ctx, decision, policy)
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, ErrHoldBlockRecorded) {
+		t.Fatalf("resolution = %v, want cancelled with durable correction", err)
+	}
+	if err := w.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if result.Integrity != "ok" || writerTestCount(t, result, "blocked") != 1 {
+		t.Fatalf("cancelled hold did not verify with one block: %+v", result)
 	}
 }

@@ -502,7 +502,7 @@ func TestMCPV3ConfirmsGETSubscriptionBeforeContact(t *testing.T) {
 				w.WriteHeader(http.StatusMethodNotAllowed)
 			}))
 			t.Cleanup(srv.Close)
-			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(10*time.Second))
 			defer cancel()
 			opts := MCPProxyOpts{
 				ReceiptV3: writer, RequireReceipts: true,
@@ -543,7 +543,7 @@ func TestMCPV3ConfirmsWebSocketBeforeHandshake(t *testing.T) {
 				w.WriteHeader(http.StatusMethodNotAllowed)
 			}))
 			t.Cleanup(srv.Close)
-			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(10*time.Second))
 			defer cancel()
 			opts := MCPProxyOpts{ReceiptV3: writer, RequireReceipts: true}
 			err := RunWSProxy(ctx, strings.NewReader(""), io.Discard, io.Discard,
@@ -721,7 +721,7 @@ func TestMCPV3StreamTerminalDiagnostic(t *testing.T) {
 		wantParent   bool
 	}{
 		{"listener", httpstream.Incomplete, func(t *testing.T, opts MCPProxyOpts, parent receipt.EmitOpts) {
-			recordListenerStreamError(t.Context(), io.Discard, opts, parent, false, io.ErrUnexpectedEOF)
+			recordListenerStreamError(t.Context(), io.Discard, opts, TrackedRequestOutcome{Receipt: parent}, false, io.ErrUnexpectedEOF)
 		}, true},
 		{"bridge", httpstream.Cancelled, func(t *testing.T, opts MCPProxyOpts, parent receipt.EmitOpts) {
 			ctx, cancel := context.WithCancel(t.Context())
@@ -752,7 +752,7 @@ func TestMCPV3StreamTerminalDiagnostic(t *testing.T) {
 			if err := opts.confirmV3ResponseDelivery(io.Discard, parent, &delivery); err != nil {
 				t.Fatal(err)
 			}
-			if err := delivery.writeV3Response(opts, io.Discard, v3TestPeer(func([]byte) error { return nil }), []byte(cleanToolsCallResponse)); err != nil {
+			if err := delivery.writeV3Response(opts, io.Discard, v3TestPeer(func([]byte) error { return nil }), []byte(cleanToolsCallResponse), nil); err != nil {
 				t.Fatal(err)
 			}
 			tc.run(t, opts, parent)

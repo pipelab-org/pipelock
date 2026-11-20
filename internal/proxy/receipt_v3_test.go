@@ -643,7 +643,7 @@ func (w *v3DeliveryFlushFailure) FlushError() error {
 }
 
 func TestV3OptionalDeliveryFlushFailure(t *testing.T) {
-	for _, surface := range []string{TransportFetch, TransportReverse, "intercept"} {
+	for _, surface := range []string{TransportFetch, TransportForward, TransportReverse, "intercept"} {
 		t.Run(surface, func(t *testing.T) {
 			p, writer, dir, keys := newTestV3HTTPProxy(t, surface, false, nil)
 			upstream := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
@@ -662,6 +662,9 @@ func TestV3OptionalDeliveryFlushFailure(t *testing.T) {
 				p.client.Transport = upstream
 				p.handleFetch(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet,
 					"/fetch?url="+url.QueryEscape(target.String()), nil))
+			case TransportForward:
+				p.client.Transport = upstream
+				p.handleForwardHTTP(w, r)
 			case TransportReverse:
 				reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
 				reverse.SetOwnerProxy(p)
@@ -1072,5 +1075,30 @@ func TestV3SSEFindingRecordsObservedWrite(t *testing.T) {
 				t.Fatalf("expected one settled SSE finding, got %+v", records)
 			}
 		})
+	}
+}
+
+func TestV3ReverseDeliveryWithTrailersStaysUncertain(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportReverse, true, nil)
+	target := &url.URL{Scheme: "https", Host: "upstream.vendor.example"}
+	reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
+	reverse.SetOwnerProxy(p)
+	reverse.proxy.Transport.(*reverseSigningRoundTripper).base = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK, ContentLength: -1,
+			Header: http.Header{headerContentType: []string{"text/plain"}},
+			Body:   io.NopCloser(strings.NewReader("example")), Request: req,
+			Trailer: http.Header{"X-Example": []string{"trailer"}},
+		}, nil
+	})
+	w := httptest.NewRecorder()
+	reverse.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, target.String(), nil))
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Integrity != "ok" || result.Counts.EffectsCompleted == nil || *result.Counts.EffectsCompleted != 1 ||
+		result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 1 || w.Code != http.StatusOK || w.Body.String() != "example" {
+		t.Fatalf("chunked reply = %d %q, counts = %+v, error = %v", w.Code, w.Body.String(), result.Counts, err)
 	}
 }

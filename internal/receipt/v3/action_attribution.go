@@ -29,6 +29,9 @@ func sessionAttribution(opts receipt.EmitOpts) *Session {
 		value.Contaminated = &opts.SessionContaminated
 	}
 	for _, src := range opts.RecentTaintSources {
+		if src.URL == "" {
+			continue
+		}
 		value.TaintSources = append(value.TaintSources, TaintSource{
 			Kind: src.Kind, Level: int64(src.Level), Timestamp: src.Timestamp.UTC().Format(time.RFC3339Nano),
 			URL: receipt.SanitizeSignedTarget(src.URL, nil), ReceiptID: src.ReceiptID, MatchReason: src.MatchReason,

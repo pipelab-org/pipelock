@@ -177,11 +177,12 @@ type Recorder struct {
 	mu      sync.Mutex
 	groupMu sync.Mutex
 	// recordLockHook is a test seam for proving Record entered the ownership lock.
-	recordLockHook   func()
-	groupSessions    map[string]*SessionState
-	activeGroupState *SessionState
-	groupClosing     bool
-	groupWrites      sync.WaitGroup
+	recordLockHook            func()
+	receiptAppendGuardForTest func(Entry) error
+	groupSessions             map[string]*SessionState
+	activeGroupState          *SessionState
+	groupClosing              bool
+	groupWrites               sync.WaitGroup
 	// legacyTickets counts single-session durable tickets not yet finished.
 	legacyTickets   sync.WaitGroup
 	groupOrder      []string
@@ -441,6 +442,14 @@ func (r *Recorder) SetSyncForTest(syncFn func(*os.File) error) {
 		return
 	}
 	r.fileSync = syncFn
+}
+
+// SetReceiptAppendGuardForTest injects a failure before a signed receipt
+// consumes a chain position. The guard runs under the recorder lock.
+func (r *Recorder) SetReceiptAppendGuardForTest(guard func(Entry) error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.receiptAppendGuardForTest = guard
 }
 
 // FsyncErrorsGated returns the cumulative count of failed durable sync batches.
@@ -853,6 +862,11 @@ func (r *Recorder) prepareAndWriteEntryWithScanAndAdvanceLocked(e Entry, notify 
 
 	e.Hash = ComputeHash(e)
 	if advance != nil {
+		if r.receiptAppendGuardForTest != nil {
+			if err := r.receiptAppendGuardForTest(e); err != nil {
+				return Entry{}, err
+			}
+		}
 		// Match writeEntryBounded's exact json.Marshal payload before the
 		// signed receipt chain consumes its next position. The callback does
 		// not change e, so the subsequent write serializes the same entry.

@@ -1352,7 +1352,14 @@ Key-free evidence capture:
 					case hasUpstream:
 						surface = deferred.SurfaceMCPHTTPUpstream
 					}
-					receiptWriter, err = openRuntimeReceiptV3(cmd.Context(), cfg, recPrivKey, rec, postureResult, []string{surface})
+					surfaces := []string{surface}
+					if runtime.GOOS == "linux" && surface == deferred.SurfaceMCPStdio && (sandboxIntent || cfg.Sandbox.Enabled) {
+						surfaces = append(surfaces, "connect", "forward")
+						if cfg.TLSInterception.Enabled {
+							surfaces = append(surfaces, "intercept")
+						}
+					}
+					receiptWriter, err = openRuntimeReceiptV3(cmd.Context(), cfg, recPrivKey, rec, postureResult, surfaces)
 					if err != nil {
 						return fmt.Errorf("open v3 receipt writer: %w", err)
 					}
@@ -1948,6 +1955,7 @@ Key-free evidence capture:
 					ReceiptEmitter:   receiptEmitter,
 					V2ReceiptEmitter: v2ReceiptEmitter,
 					ReceiptGroup:     receiptGroup,
+					ReceiptV3:        receiptWriter,
 					EnvelopeEmitter:  envEmitter,
 					Stderr:           cmd.ErrOrStderr(),
 					LaunchConfig:     &launchCfg,

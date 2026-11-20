@@ -1934,7 +1934,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			responseReceiptState.deliveryErr = err
 			if err == nil {
 				write()
-				rp.owner.recordTransportOutcome(r.Context(), reverseAllowReceipt, entry, true)
+				// WriteHeader does not report the result of the informational write.
+				rp.owner.recordTransportOutcome(r.Context(), reverseAllowReceipt, entry, false)
 			}
 		}
 		returned := false
@@ -1948,7 +1949,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			var flushErr error
 			if completed {
 				flushErr = flushResponseBeforeOutcome(w, r, cfg)
-				completed = flushErr == nil
+				completed = flushErr == nil && forwardWriter.responseFramingComplete(r)
 			}
 			rp.owner.recordTransportOutcome(r.Context(), reverseAllowReceipt, entry, completed)
 			responseReceiptState.decisions.finish(rp.owner, r.Context(), true, completed)
@@ -1972,6 +1973,7 @@ type reverseInformationalGuardWriter struct {
 	beforeInformational func(func())
 	writeFailed         bool
 	status              int
+	contentLength       int64
 	written             int64
 	hijacked            bool
 }
@@ -1989,8 +1991,15 @@ func (w *reverseInformationalGuardWriter) Write(p []byte) (int, error) {
 }
 
 func (w *reverseInformationalGuardWriter) WriteHeader(code int) {
-	if code >= http.StatusOK {
+	if code >= http.StatusOK && w.status == 0 {
 		w.status = code
+		w.contentLength = -1
+		h := w.Header()
+		if h.Get("Trailer") == "" && h.Get("Transfer-Encoding") == "" {
+			if length, err := strconv.ParseInt(h.Get("Content-Length"), 10, 64); err == nil && length >= 0 {
+				w.contentLength = length
+			}
+		}
 	}
 	if code >= http.StatusContinue && code < http.StatusOK && code != http.StatusSwitchingProtocols {
 		h := w.Header()
@@ -2005,6 +2014,17 @@ func (w *reverseInformationalGuardWriter) WriteHeader(code int) {
 		}
 	}
 	w.ResponseWriter.WriteHeader(code)
+}
+
+// A checked flush can observe all body bytes of a known-length HTTP/1.1
+// response. net/http writes the final chunk and trailers after the handler
+// returns when the response uses chunked framing.
+func (w *reverseInformationalGuardWriter) responseFramingComplete(r *http.Request) bool {
+	if r.ProtoMajor != 1 || r.ProtoMinor == 0 || r.Method == http.MethodHead ||
+		w.status == http.StatusNoContent || w.status == http.StatusNotModified {
+		return true
+	}
+	return w.status != 0 && w.contentLength >= 0 && w.written == w.contentLength
 }
 
 // Unwrap lets http.ResponseController reach the real writer for flush and

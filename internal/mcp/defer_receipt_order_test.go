@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -166,6 +167,15 @@ func TestReceiptWritableProbe(t *testing.T) {
 	emitter, _, _, _ := newReceiptTestHarnessWithObserver(t, nil)
 	unhealthy, _, _, _ := newReceiptTestHarnessWithObserver(t, nil)
 	unhealthy.MarkUnhealthy(io.ErrClosedPipe)
+	v2 := newMCPDecisionReceiptHarness(t).v2
+	groupOpts, _, _, _ := newMCPTransportReceiptGroup(t)
+	first := receipt.EmitOpts{ShardSelected: true, ShardIndex: 0}
+	second := receipt.EmitOpts{ShardSelected: true, ShardIndex: 1}
+	firstEmitter, _, err := groupOpts.ReceiptGroup.selectedEmitters(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstEmitter.MarkUnhealthy(io.ErrClosedPipe)
 
 	tests := []struct {
 		name string
@@ -173,6 +183,9 @@ func TestReceiptWritableProbe(t *testing.T) {
 		want bool
 	}{
 		{"required, healthy emitter", MCPProxyOpts{ReceiptEmitter: emitter, RequireReceipts: true}, true},
+		{"required, both healthy", MCPProxyOpts{ReceiptEmitter: emitter, V2ReceiptEmitter: v2, RequireReceipts: true}, true},
+		{"required, v1 unhealthy and v2 healthy", MCPProxyOpts{ReceiptEmitter: unhealthy, V2ReceiptEmitter: v2, RequireReceipts: true}, false},
+		{"required, only v2 configured", MCPProxyOpts{V2ReceiptEmitter: v2, RequireReceipts: true}, true},
 		{"required, no emitter", MCPProxyOpts{RequireReceipts: true}, false},
 		{"required, unhealthy emitter", MCPProxyOpts{ReceiptEmitter: unhealthy, RequireReceipts: true}, false},
 		{"not required, no emitter", MCPProxyOpts{}, true},
@@ -180,7 +193,7 @@ func TestReceiptWritableProbe(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := receiptWritable(tt.opts); got != tt.want {
+			if got := receiptWritable(tt.opts, receipt.EmitOpts{}); got != tt.want {
 				t.Fatalf("receiptWritable = %v, want %v", got, tt.want)
 			}
 			res := (&deferredReceiptSettlement{}).probeAllow(tt.opts, deferred.Resolution{FinalDecision: config.ActionAllow, ResolutionSource: deferred.SourceOperator})
@@ -193,6 +206,106 @@ func TestReceiptWritableProbe(t *testing.T) {
 			}
 			if !tt.want && (res.ResolutionSource != deferred.SourceCancel || res.Reason != deferred.ReasonReceiptNotWritten) {
 				t.Fatalf("closed allow = %s/%q, want cancel/%q", res.ResolutionSource, res.Reason, deferred.ReasonReceiptNotWritten)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name  string
+		shard receipt.EmitOpts
+		want  string
+	}{
+		{"selected unhealthy", first, config.ActionBlock},
+		{"selected healthy with unrelated unhealthy", second, config.ActionAllow},
+		{"unselected", receipt.EmitOpts{}, config.ActionBlock},
+		{"invalid shard", receipt.EmitOpts{ShardSelected: true, ShardIndex: 2}, config.ActionBlock},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := (&deferredReceiptSettlement{}).probeAllow(groupOpts, deferred.Resolution{
+				FinalDecision: config.ActionAllow, ResolutionSource: deferred.SourceOperator,
+				ShardSelected: tc.shard.ShardSelected, ShardIndex: tc.shard.ShardIndex,
+			})
+			if res.FinalDecision != tc.want {
+				t.Fatalf("probeAllow decision = %q, want %q", res.FinalDecision, tc.want)
+			}
+			if tc.want == config.ActionBlock && (res.ResolutionSource != deferred.SourceCancel || res.Reason != deferred.ReasonReceiptNotWritten) {
+				t.Fatalf("expected the receipt failure to close the approval: %+v", res)
+			}
+		})
+	}
+}
+
+func TestRequiredDeferredCallWithoutJournal(t *testing.T) {
+	for _, surface := range []string{deferred.SurfaceMCPStdio, deferred.SurfaceMCPHTTPUpstream} {
+		t.Run(surface, func(t *testing.T) {
+			manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Minute})
+			t.Cleanup(func() { manager.ResolveAll(config.ActionBlock, deferred.SourceCancel) })
+			h := newMCPDecisionReceiptHarness(t)
+			policy := deferApprovalPolicy(config.DeferResolverProfile{})
+			policy.Rules[0].ResolutionPolicy.ResolverProfile = ""
+			opts := MCPProxyOpts{
+				Scanner: testInputScanner(t), PolicyCfg: policy, DeferManager: manager,
+				ReceiptEmitter: h.v1, V2ReceiptEmitter: h.v2, RequireReceipts: true,
+				PolicyHash: mcpTestPolicyHash, Transport: surface,
+			}
+			input, send := io.Pipe()
+			var output, upstream, logBuf syncBuffer
+			blocked := make(chan BlockedRequest, 4)
+			done := make(chan error, 1)
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(func() {
+				_ = send.Close()
+				cancel()
+			})
+			var calls func() int32
+			if surface == deferred.SurfaceMCPStdio {
+				calls = func() int32 {
+					if upstream.String() == "" {
+						return 0
+					}
+					return 1
+				}
+				go func() {
+					defer func() { _ = input.Close() }()
+					ForwardScannedInput(transport.NewStdioReader(input), transport.NewStdioWriter(&upstream), &logBuf,
+						config.ActionWarn, config.ActionBlock, blocked, nil, nil, opts)
+					done <- nil
+				}()
+			} else {
+				srv, count := countingUpstream(t)
+				calls = count.Load
+				go func() {
+					defer func() { _ = input.Close() }()
+					done <- RunHTTPProxy(ctx, input, &output, &logBuf, srv.URL, nil, opts)
+				}()
+			}
+			t.Cleanup(func() {
+				_ = send.Close()
+				cancel()
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Errorf("proxy exited during cleanup: %v", err)
+					}
+				case <-time.After(testwait.Deadline(5 * time.Second)):
+					t.Error("proxy did not stop")
+				}
+			})
+			if _, err := io.WriteString(send, deferKillTestCall); err != nil {
+				t.Fatal(err)
+			}
+			testwait.For(t, 5*time.Second, func() bool {
+				return len(blocked) > 0 || output.String() != "" || len(manager.Snapshot()) > 0
+			}, "deferred admission decision")
+			if held := len(manager.Snapshot()); held != 0 {
+				t.Fatalf("held calls = %d with no durable journal", held)
+			}
+			denial := output.String()
+			if surface == deferred.SurfaceMCPStdio {
+				denial = (<-blocked).ErrorMessage
+			}
+			if !strings.Contains(denial, "deferred action journal is required") ||
+				!strings.Contains(denial, "flight_recorder.dir") || calls() != 0 {
+				t.Fatalf("denial = %q, upstream calls = %d", denial, calls())
 			}
 		})
 	}

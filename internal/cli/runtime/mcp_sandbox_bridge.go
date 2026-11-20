@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -39,6 +40,7 @@ type mcpSandboxBridgeStartOptions struct {
 	ReceiptEmitter   *receipt.Emitter
 	V2ReceiptEmitter *proxydecision.Emitter
 	ReceiptGroup     *mcp.MCPReceiptGroup
+	ReceiptV3        *v3.StreamWriter
 	EnvelopeEmitter  *envelope.Emitter
 }
 
@@ -56,6 +58,7 @@ type mcpSandboxBridgeSetupOptions struct {
 	ReceiptEmitter   *receipt.Emitter
 	V2ReceiptEmitter *proxydecision.Emitter
 	ReceiptGroup     *mcp.MCPReceiptGroup
+	ReceiptV3        *v3.StreamWriter
 	EnvelopeEmitter  *envelope.Emitter
 	Stderr           io.Writer
 	LaunchConfig     *sandbox.LaunchConfig
@@ -95,6 +98,7 @@ func setupMCPSandboxBridge(opts mcpSandboxBridgeSetupOptions) (func(), error) {
 		ReceiptEmitter:   opts.ReceiptEmitter,
 		V2ReceiptEmitter: opts.V2ReceiptEmitter,
 		ReceiptGroup:     opts.ReceiptGroup,
+		ReceiptV3:        opts.ReceiptV3,
 		EnvelopeEmitter:  opts.EnvelopeEmitter,
 	})
 	if err != nil {
@@ -151,6 +155,7 @@ func startMCPSandboxBridge(opts mcpSandboxBridgeStartOptions) (*mcpSandboxBridge
 		proxy.WithReceiptEmitter(opts.ReceiptEmitter),
 		proxy.WithV2ReceiptEmitter(opts.V2ReceiptEmitter),
 		proxy.WithEnvelopeEmitter(opts.EnvelopeEmitter),
+		proxy.WithReceiptV3(opts.ReceiptV3),
 	}
 	if opts.ReceiptGroup != nil {
 		groupOption, groupErr := proxy.WithReceiptShardSet(opts.ReceiptGroup.Shards, opts.ReceiptGroup.V2, onRequiredFailure)

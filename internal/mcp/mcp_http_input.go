@@ -31,9 +31,9 @@ type httpInputDecision struct {
 	Deferred       *DeferredRequest
 	ForwardMessage []byte
 	Outcome        TrackedRequestOutcome
+	admission      receipt.EmitOpts
 	taskFrame      MCPFrame
 	taskTaint      taintDecision
-	pendingReceipt *mcpToolReceiptOpts
 	v3Upstream     mcpV3Receipt
 }
 
@@ -166,7 +166,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		emitActionID := actionID
 		emitTarget := toolName
 		emitVerdict := receiptVerdict
-		if requireReceipts && result.Blocked == nil && isRequiredReceiptMetadataMethod(mcpMethod) {
+		if result.Blocked == nil && (requireReceipts && isRequiredReceiptMetadataMethod(mcpMethod) || mcpMethod == "initialize" || mcpMethod == "tools/list") {
 			// initialize and tools/list are ordinary mediated handshake actions.
 			// They do not carry a tool name or an envelope, but strict evidence
 			// still needs an action identity before the HTTP bridge forwards them.
@@ -192,7 +192,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 					// surfaces. tools/call already carries its own actionID, so that
 					// path never reaches this branch.
 					emitActionID = receipt.NewActionID()
-				case requireReceipts && result.Blocked == nil:
+				case result.Blocked == nil:
 					// A clean A2A allow otherwise leaves both actionID and receiptVerdict
 					// empty, so emitMCPToolReceipt drops the emission (ActionID == "") and
 					// the request forwards with no receipt. Under require_receipts that is
@@ -246,19 +246,19 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			receiptOpts.ParentActionID = actionID
 			receiptOpts.ActionID = receipt.NewActionID()
 		}
-		if opts.ReceiptV3 == nil && opts.deferBestEffortTaskReceipt && !requireReceipts && result.Blocked == nil && result.Deferred == nil &&
-			emitActionID != "" && (emitVerdict == config.ActionAllow || emitVerdict == config.ActionWarn) {
-			// The bridge selects either a single receipt or an intent and
-			// outcome once the final task check has run.
-			result.pendingReceipt = &receiptOpts
-			return
+		if opts.ReceiptV3 == nil && result.Blocked == nil && result.Deferred == nil && emitVerdict == config.ActionAllow && isPairedMCPMethod(mcpMethod) {
+			result.Outcome.Method = mcpMethod
+			receiptOpts.Outcome = &result.Outcome
 		}
 		if opts.ReceiptV3 != nil && result.Deferred != nil {
 			result.Deferred.v3Receipt = receiptOpts.receiptOptions()
 			return
 		}
 		receiptOpts.v3Confirmed = &result.v3Upstream
-		if err := emitMCPToolReceipt(receiptOpts); err != nil && requiredReceipt && result.Blocked == nil {
+		if err := emitMCPToolReceipt(receiptOpts); err != nil && result.Blocked == nil {
+			result.Outcome.Receipt.Layer = "receipt_emission"
+			result.Outcome.settle(logW, opts, mcpOutcomeStatusBlocked, -1, "receipt_emission_failed")
+			result.Outcome = TrackedRequestOutcome{}
 			denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
 			result.Deferred = nil
 			result.Blocked = &BlockedRequest{
@@ -271,42 +271,12 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			}
 			return
 		}
+		if emitVerdict == config.ActionForward && result.Blocked == nil {
+			result.admission = receiptOpts.receiptOptions()
+		}
 		if result.Deferred != nil {
 			result.Deferred.ShardIndex = receiptShard.ShardIndex
 			result.Deferred.ShardSelected = receiptShard.ShardSelected
-		}
-		// Only a required allow is written as an intent. A best-effort allow is a
-		// single-phase decision, and an outcome naming it reads as a broken chain
-		// ("outcome without matching intent") to the completeness verifier.
-		if opts.ReceiptV3 == nil && requiredReceipt && result.Blocked == nil && receipt.NormalizeVerdict(emitVerdict) == config.ActionAllow {
-			outcomeReceipt := opts.withReceiptPolicyHash(receipt.EmitOpts{
-				ActionID:            emitActionID,
-				Verdict:             emitVerdict,
-				Layer:               receiptLayer,
-				Pattern:             receiptPattern,
-				Severity:            receiptSeverity,
-				RedactionProfile:    redactionCfg.Profile,
-				RedactionReport:     redactionReport,
-				Transport:           opts.Transport,
-				Target:              emitTarget,
-				MCPMethod:           mcpMethod,
-				ToolName:            emitTarget,
-				SessionTaintLevel:   taintEval.Risk.Level.String(),
-				SessionContaminated: taintEval.Risk.Contaminated,
-				RecentTaintSources:  taintEval.Risk.Sources,
-				SessionTaskID:       taintEval.Task.CurrentTaskID,
-				SessionTaskLabel:    taintEval.Task.CurrentTaskLabel,
-				AuthorityKind:       taintEval.Authority.String(),
-				TaintDecision:       taintEval.Result.Decision.String(),
-				TaintDecisionReason: taintEval.Result.Reason,
-				TaskOverrideApplied: taintEval.TaskOverrideApplied,
-				PolicyHash:          opts.receiptPolicyHash(),
-			})
-			if receiptContractGate != nil {
-				outcomeReceipt = mcpWithContractReceipt(outcomeReceipt, *receiptContractGate)
-			}
-			outcomeReceipt = outcomeReceipt.InheritAdmission(receiptShard)
-			result.Outcome = TrackedRequestOutcome{Receipt: outcomeReceipt, Method: mcpMethod}
 		}
 	}()
 	// Registered after the receipt finalizer so it runs first. A failed
@@ -1128,7 +1098,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			policyRuleName = policyVerdict.Rules[0]
 		}
 		var v3Redirect mcpV3Receipt
-		if requireReceipts {
+		if opts.ReceiptV3 != nil || requireReceipts {
 			if opts.ReceiptGroup != nil && opts.ReceiptGroup.Shards != nil {
 				receiptShard = opts.ReceiptGroup.Shards.Admit(receiptShard)
 			}
@@ -1139,7 +1109,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				ToolName: toolName, Verdict: config.ActionRedirect,
 				Layer: receiptLayer, Pattern: receiptPattern, Severity: receiptSeverity,
 				Decision: taintEval, Report: redactionReport, RedactionProfile: redactionCfg.Profile,
-				RequireReceipt: true, RequireReceipts: true, v3Confirmed: &v3Redirect,
+				RequireReceipt: requireReceipts, RequireReceipts: requireReceipts, v3Confirmed: &v3Redirect,
 			}); err != nil {
 				denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
 				receiptVerdict = config.ActionBlock
@@ -1287,9 +1257,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			}
 			return result
 		}
-		if manager == nil || !manager.Enabled() {
+		if err := deferredAdmissionError(manager, opts.ReceiptV3 == nil && requireReceipts); err != nil {
 			denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPDefer, mcpDeferDisabledReason, audit.BlockClassConfigMismatch)
-			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [defer manager disabled]\n", joinStrings(reasons))
+			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [%v]\n", joinStrings(reasons), err)
 			recordAdaptiveSignal(session.SignalBlock)
 			receiptVerdict = config.ActionBlock
 			result.Blocked = &BlockedRequest{
@@ -1297,7 +1267,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				IsNotification: isNotification,
 				LogMessage:     "blocked (defer disabled)",
 				ErrorCode:      -32002,
-				ErrorMessage:   "pipelock: defer is disabled",
+				ErrorMessage:   deferredAdmissionMessage(err),
 			}
 			return result
 		}

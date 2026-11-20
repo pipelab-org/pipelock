@@ -307,9 +307,7 @@ func TestA2ABodyBlock_PreRedaction_EmitsReceipt(t *testing.T) {
 	}
 }
 
-// Regression: a clean/allowed A2A request must NOT emit a receipt (block-parity
-// only — we do not add allow receipts for A2A in this change).
-func TestA2ACleanRequest_EmitsNoReceipt(t *testing.T) {
+func TestA2ACleanRequest_RecordsBestEffortIntent(t *testing.T) {
 	sc := testScannerForHTTP(t)
 	h := newMCPDecisionReceiptHarness(t)
 
@@ -331,12 +329,10 @@ func TestA2ACleanRequest_EmitsNoReceipt(t *testing.T) {
 		t.Fatalf("expected clean A2A request to pass, got blocked: %+v", decision.Blocked)
 	}
 
-	// A clean request emits nothing, so the recorder never creates an evidence
-	// file. readReceiptEntriesHTTP scans the dir and tolerates its absence.
-	for _, e := range readReceiptEntriesHTTP(t, h.dir) {
-		if e.Type == actionReceiptEntryType {
-			t.Fatal("expected no action receipt for clean A2A request, found one")
-		}
+	records := readActionReceipts(t, h.dir)
+	if len(records) != 1 || records[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent ||
+		records[0].ActionRecord.ActionID != decision.Outcome.Receipt.ActionID {
+		t.Fatalf("clean A2A admission created %d records without the expected intent", len(records))
 	}
 }
 

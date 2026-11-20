@@ -18,16 +18,25 @@ const maxJournalLineBytes = 1 << 20
 
 type journalReplay struct {
 	pending  map[string]journalEntry
-	terminal map[string]struct{}
+	terminal map[string]string
 }
 
 func newJournalReplay() journalReplay {
-	return journalReplay{pending: map[string]journalEntry{}, terminal: map[string]struct{}{}}
+	return journalReplay{pending: map[string]journalEntry{}, terminal: map[string]string{}}
 }
 
 func (r journalReplay) apply(entry journalEntry) error {
 	if entry.ReleasePending && entry.State != StateHeld {
 		return fmt.Errorf("defer journal integrity: release_pending on state %q for defer_id %q", entry.State, entry.DeferID)
+	}
+	if entry.RefusalPending {
+		allow := r.terminal[entry.DeferID] == StateResolvedAllow || r.pending[entry.DeferID].ReleasePending
+		if entry.State != StateAdmissionRejected || entry.ReleasePending || !allow {
+			return fmt.Errorf("defer journal integrity: refusal_pending without a prior allow for defer_id %q", entry.DeferID)
+		}
+		delete(r.terminal, entry.DeferID)
+		r.pending[entry.DeferID] = entry
+		return nil
 	}
 	switch entry.State {
 	case StateHeld:
@@ -43,7 +52,7 @@ func (r journalReplay) apply(entry journalEntry) error {
 		r.pending[entry.DeferID] = entry
 	case StateResolvedAllow, StateResolvedBlock, StateResolvedStepUp:
 		delete(r.pending, entry.DeferID)
-		r.terminal[entry.DeferID] = struct{}{}
+		r.terminal[entry.DeferID] = entry.State
 	case StateAdmissionRejected:
 		// Audit-only marker for an action that was never held. It must not
 		// touch hold lifecycle: for a duplicate defer_id it shares a live
@@ -58,10 +67,11 @@ func (r journalReplay) apply(entry journalEntry) error {
 // JournalCutover describes the exact legacy journal bytes retained by a
 // receipt cutover. A torn suffix can be replaced with the retained prefix.
 type JournalCutover struct {
-	Digest    string
-	KeepBytes int64
-	Torn      bool
-	Pending   int
+	Digest         string
+	KeepBytes      int64
+	Torn           bool
+	NeedsDelimiter bool
+	Pending        int
 }
 
 // InspectJournalCutover validates all complete entries and distinguishes a
@@ -90,6 +100,10 @@ func InspectJournalCutover(source io.Reader) (JournalCutover, error) {
 				}
 				_, _ = hash.Write(line)
 				result.KeepBytes += int64(len(line))
+				if last {
+					result.NeedsDelimiter = true
+					_, _ = hash.Write([]byte{'\n'})
+				}
 			}
 		}
 		if last {

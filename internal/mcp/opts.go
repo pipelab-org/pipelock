@@ -149,10 +149,12 @@ type MCPProxyOpts struct {
 	// The listener carries the finalized response denial to its HTTP adapter
 	// before delivery commits headers or adds SSE framing.
 	responseDenial func(*mcpTerminalDecision)
+	// The HTTP listener keeps the outcome handle through its response adapter.
+	listenerOwnsResponseOutcome bool
+	// A buffered listener response cannot settle on the buffer write.
+	bufferedResponseOutcome func(status, reason string, size int64)
 	// Modern HTTP lists enforce structural contracts independently of drift trust.
 	validateToolHeaders bool
-	// The HTTP bridge can record an intent and outcome if its send-time task check refuses.
-	deferBestEffortTaskReceipt bool
 	// Internal discovery inspects definitions without claiming client delivery.
 	toolContractDiscovery bool
 	// JSON listener scanning writes to a buffer. Defer inventory admission until
@@ -505,6 +507,9 @@ type MCPProxyOpts struct {
 	// one proxy invocation. It is wired by proxy entry points, not config.
 	DeferResolverRuntime *DeferResolverRuntime
 
+	// closeStdioInput interrupts an upstream subprocess write during EOF.
+	closeStdioInput func()
+
 	// Learn-lock contract enforcement for MCP transports. HTTP listener and
 	// stdio-to-HTTP modes gate the configured upstream URL; every transport
 	// gates tools/call messages with runtime.EvaluateMCP. ContractLoaderPtr
@@ -741,13 +746,25 @@ func (o MCPProxyOpts) warnContext() context.Context {
 	return scanner.WithDLPWarnContext(ctx, wc)
 }
 
+// pinReceiptWriters keeps a transport result on the writers that admitted it.
+func (o MCPProxyOpts) pinReceiptWriters() MCPProxyOpts {
+	o.ReceiptEmitter = o.receiptEmitter()
+	o.V2ReceiptEmitter = o.v2ReceiptEmitter()
+	o.RequireReceipts = o.requireReceipts()
+	o.ReceiptEmitterFn = nil
+	o.V2ReceiptEmitterFn = nil
+	o.RequireReceiptsFn = nil
+	return o
+}
+
 // snapshotScanPolicy pins the scanner and its receipt policy to the same
-// reload revision. Copies retain the snapshot through input, response and
+// reload revision, including the configured writers. Copies retain the snapshot through input, response and
 // asynchronous receipt emission; other live resolvers keep their own semantics.
 func (o MCPProxyOpts) snapshotScanPolicy() MCPProxyOpts {
 	if o.ReloadMu != nil {
 		o.ReloadMu.RLock()
 		defer o.ReloadMu.RUnlock()
+		o = o.pinReceiptWriters()
 	}
 	o.Scanner = o.scanner()
 	o.PolicyHash = o.receiptPolicyHash()

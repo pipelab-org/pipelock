@@ -72,7 +72,7 @@ func TestStreamWriterCutoverCommitsAtFirstStream(t *testing.T) {
 		t.Fatalf("cutover used the wrong inventory: %+v", got)
 	}
 	inventory, code, err := readInventory(filepath.Join(dir, InventoryFilename(inventoryPin)), *restarted.open.LegacyCutover, "")
-	if err != nil || code != "" || inventory.Journal != Digest(journal) {
+	if err != nil || code != "" || inventory.Journal != Digest(append(journal, '\n')) {
 		t.Fatalf("unexpected cutover inventory: %+v, %s, %v", inventory, code, err)
 	}
 	if err := restarted.Close(t.Context(), nil); err != nil {
@@ -93,7 +93,7 @@ func TestStreamWriterCutoverCommitsAtFirstStream(t *testing.T) {
 	}
 }
 
-func TestStreamWriterRepairsOnlyTornJournal(t *testing.T) {
+func TestStreamWriterRepairsInterruptedJournal(t *testing.T) {
 	const held = "{\"defer_id\":\"example\",\"state\":\"deferred_held\"}\n"
 	const damaged = "{\"defer_id\":"
 	const invalid = `{"defer_id":"example","state":123}`
@@ -104,6 +104,7 @@ func TestStreamWriterRepairsOnlyTornJournal(t *testing.T) {
 		err  string
 	}{
 		{name: "pending with torn tail", data: held + damaged, want: held, err: "unresolved legacy holds"},
+		{name: "pending without delimiter", data: strings.TrimSuffix(held, "\n"), want: held, err: "unresolved legacy holds"},
 		{name: "malformed complete entry", data: held + damaged + "\n", want: held + damaged + "\n", err: "parse defer journal"},
 		{name: "complete invalid entry without newline", data: invalid, want: invalid, err: "parse defer journal"},
 	} {
@@ -173,5 +174,71 @@ func TestStreamWriterInventoriesMoreThan1024LegacyChains(t *testing.T) {
 	result := verifyWritten(t, dir, opts.SigningKey.Public().(ed25519.PublicKey))
 	if len(result.Legacy) != 1025 {
 		t.Fatalf("verified %d legacy chains, want 1025", len(result.Legacy))
+	}
+}
+
+func TestInspectStartupChecksStoppedEvidenceWithPinnedKeys(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	w := requireWriter(t, opts, localWriterStorage())
+	keys := []ed25519.PublicKey{opts.SigningKey.Public().(ed25519.PublicKey)}
+	if _, err := InspectStartup(t.Context(), opts.Dir, nil); err == nil {
+		t.Fatal("inspection accepted unpinned evidence")
+	}
+	if _, err := InspectStartup(t.Context(), opts.Dir, keys); err == nil {
+		t.Fatal("inspection accepted an active writer")
+	}
+	if err := w.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := InspectStartup(t.Context(), opts.Dir, keys)
+	if err != nil || result.Verdict != "VALID" {
+		t.Fatalf("stopped evidence: verdict=%s error=%v", result.Verdict, err)
+	}
+}
+
+func TestStreamWriterRefusesFailedJournalRepairBarriers(t *testing.T) {
+	const held = "{\"defer_id\":\"example\",\"state\":\"deferred_held\"}"
+	failure := errors.New("journal repair storage failure")
+	for _, stage := range []string{"create", "copy", "sync", "rename", "directory sync"} {
+		t.Run(stage, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, legacyJournalName)
+			if err := os.WriteFile(path, []byte(held), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			storage := localWriterStorage()
+			create := storage.createTemp
+			switch stage {
+			case "create":
+				storage.createTemp = func(string, string) (StreamFile, error) { return nil, failure }
+			case "copy", "sync":
+				storage.createTemp = func(dir, pattern string) (StreamFile, error) {
+					file, err := create(dir, pattern)
+					if err != nil {
+						return nil, err
+					}
+					if stage == "copy" {
+						return errorWriterFile{StreamFile: file, writeErr: failure}, nil
+					}
+					return errorWriterFile{StreamFile: file, syncErr: failure}, nil
+				}
+			case "rename":
+				storage.rename = func(string, string) error { return failure }
+			case "directory sync":
+				storage.syncDir = func(string) error { return failure }
+			}
+			w := &StreamWriter{dir: dir, storage: storage}
+			if _, err := w.cutoverJournal(); !errors.Is(err, failure) {
+				t.Fatalf("cutover error = %v, want injected failure", err)
+			}
+			want := held
+			if stage == "directory sync" {
+				want += "\n"
+			}
+			got, err := os.ReadFile(filepath.Clean(path))
+			if err != nil || string(got) != want {
+				t.Fatalf("journal after failed cutover: %q (%v), want %q", got, err, want)
+			}
+		})
 	}
 }

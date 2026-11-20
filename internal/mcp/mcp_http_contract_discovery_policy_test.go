@@ -127,6 +127,7 @@ func TestHTTPListener_BestEffortAllowBeforeUpstreamResponse(t *testing.T) {
 	h := newMCPDecisionReceiptHarness(t)
 	opts := MCPProxyOpts{InputCfg: newHTTPInputCfg(config.ActionBlock), Scanner: promptWordingScanner(t, config.ActionBlock)}
 	opts.ReceiptEmitter, opts.V2ReceiptEmitter, opts.PolicyHash = h.v1, h.v2, mcpTestPolicyHash
+	opts.TaintCfg = &config.Defaults().Taint
 	type observation struct {
 		seq uint64
 		err error
@@ -145,9 +146,12 @@ func TestHTTPListener_BestEffortAllowBeforeUpstreamResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, _, body := postWireContractRequest(t, url, currentWireBody(2, methodToolsCall, `"name":"echo","arguments":{}`), currentWireHeaders(methodToolsCall, "echo"))
-	if status != http.StatusOK {
+	status, header, body := postWireContractRequest(t, url, currentWireBody(2, methodToolsCall, `"name":"echo","arguments":{}`), currentWireHeaders(methodToolsCall, "echo"))
+	if status != http.StatusOK || body != `{"jsonrpc":"2.0","id":2,"result":{"content":[]}}` {
 		t.Fatalf("status=%d body=%s", status, body)
+	}
+	if got := header.Get("Content-Length"); got != fmt.Sprint(len(body)) {
+		t.Fatalf("Content-Length=%q for %d delivered bytes", got, len(body))
 	}
 	select {
 	case got := <-observed:
@@ -157,15 +161,20 @@ func TestHTTPListener_BestEffortAllowBeforeUpstreamResponse(t *testing.T) {
 	default:
 		t.Fatal("upstream did not receive the request")
 	}
+	testwait.For(t, time.Second, func() bool {
+		tail, err := h.v1.ConfirmedTailObservation()
+		return err == nil && tail.ChainSeq >= before.ChainSeq+2
+	}, "listener records the signed response outcome after delivery")
 	_ = mcpV2Receipts(t, h)
-	var allows int
+	var paired []receipt.ActionRecord
 	for _, r := range readActionReceipts(t, h.dir) {
 		if r.ActionRecord.Target == "echo" && r.ActionRecord.Verdict == config.ActionAllow {
-			allows++
+			paired = append(paired, r.ActionRecord)
 		}
 	}
-	if allows != 1 {
-		t.Fatalf("got %d allow receipts for one call", allows)
+	if len(paired) != 2 || paired[0].DecisionPhase != receipt.DecisionPhaseIntent ||
+		paired[1].DecisionPhase != receipt.DecisionPhaseOutcome || paired[0].ActionID != paired[1].ActionID {
+		t.Fatalf("one call should produce one intent and its outcome, got %d records", len(paired))
 	}
 }
 

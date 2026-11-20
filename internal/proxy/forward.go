@@ -931,6 +931,10 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		_, writeErr := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 		tunnelOpened = writeErr == nil
 	}
+	if !tunnelOpened {
+		outcomeReason = "downstream_write_failed"
+		return
+	}
 
 	// SNI verification: read ClientHello via Peek, check SNI matches CONNECT
 	// target. Peek() leaves bytes in the buffer for the relay to forward.
@@ -2629,7 +2633,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		aborted := recover()
 		var flushErr error
-		if cfg.FlightRecorder.RequireReceipts && aborted == nil {
+		if aborted == nil && (cfg.FlightRecorder.RequireReceipts || downstreamReceipt != nil || len(responseReceipts) != 0) {
 			flushErr = flushResponseBeforeOutcome(w, r, cfg)
 			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason, config.ActionAllow) {
 				outcomeReason, outcomeBytes = flushFailureReason(outcomeReason), -1

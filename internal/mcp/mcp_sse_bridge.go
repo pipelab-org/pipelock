@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/ael"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 )
@@ -238,25 +239,54 @@ func scanGETStream(ctx context.Context, client *transport.HTTPClient, writer tra
 	defer admission.ReleaseNativeAdmission()
 	streamCtx, stop := httpstream.WithCapacityGrace(ctx, nil, admission.NativeLease, opts.shutdownGrace())
 	defer stop()
+	opts.nativeAdmission = admission
 	subscription, receiptErr := opts.confirmV3StreamAdmission(logW, http.MethodGet)
 	if receiptErr != nil {
 		return nil, receiptErr
 	}
+	transportReceiptOpts := opts.snapshotScanPolicy().pinReceiptWriters()
+	transportAdmission, err := admitDurableTransport(transportReceiptOpts, http.MethodGet, opts.AuthorityDestination)
+	if err != nil {
+		logReceiptEmitFailure(logW, err, true, config.ActionForward)
+		return nil, err
+	}
 	reader, err := client.OpenGETStream(streamCtx)
 	subscription.finish(opts, logW, true, err)
 	if err != nil {
+		switch {
+		case errors.Is(context.Cause(streamCtx), ael.ErrCapacity):
+			warnTransportAdmission(logW, transportReceiptOpts, transportAdmission, nativeCapacityReason)
+			err = ael.ErrCapacity
+		case httpstream.Reason(streamCtx, err) == httpstream.Cancelled:
+			recordTransportAdmissionResult(logW, transportReceiptOpts, transportAdmission, "cancelled", httpstream.Cancelled)
+		default:
+			warnTransportAdmission(logW, transportReceiptOpts, transportAdmission, "upstream_error")
+		}
 		return nil, err
 	}
-	opts.nativeAdmission = admission
 	warnContext, stopWarnings := opts.nativeWarningContext(streamCtx, admission)
 	opts.WarnContext = warnContext
 	defer stopWarnings()
 	_, scanErr = scanMCPHTTPResponse(streamCtx, reader, writer, logW, tracker, opts)
 	if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(context.Cause(streamCtx), ael.ErrCapacity) {
-		recordListenerStreamError(ctx, logW, opts, mcpStreamReceipt(opts, http.MethodGet), true, ael.ErrCapacity)
+		if transportAdmission.ActionID != "" {
+			recordTransportAdmissionResult(logW, transportReceiptOpts, transportAdmission, "cancelled", nativeCapacityReason)
+		} else {
+			recordListenerStreamError(ctx, logW, opts, TrackedRequestOutcome{Receipt: mcpStreamReceipt(opts, http.MethodGet)}, true, ael.ErrCapacity)
+		}
 		return ael.ErrCapacity, nil
 	}
-	if errors.Is(scanErr, transport.ErrIncompleteResponse) && ctx.Err() == nil {
+
+	if transportAdmission.ActionID != "" {
+		switch {
+		case scanErr == nil && streamCtx.Err() == nil:
+			recordTransportAdmissionResult(logW, transportReceiptOpts, transportAdmission, "completed", "stream_completed")
+		case httpstream.Reason(streamCtx, scanErr) == httpstream.Cancelled:
+			recordTransportAdmissionResult(logW, transportReceiptOpts, transportAdmission, "cancelled", httpstream.Cancelled)
+		default:
+			warnTransportAdmission(logW, transportReceiptOpts, transportAdmission, httpstream.Incomplete)
+		}
+	} else if errors.Is(scanErr, transport.ErrIncompleteResponse) && ctx.Err() == nil {
 		// A subscription has no pending request identity. Sign its own
 		// terminal diagnostic while its stream reservation is active.
 		emitMCPStandaloneStreamReceipt(opts, logW, mcpStreamReceipt(opts, http.MethodGet), "200", httpstream.Incomplete)

@@ -257,7 +257,7 @@ func TestEmitHoldFailureResolutionReportsConfirmationFailure(t *testing.T) {
 	}
 	var log bytes.Buffer
 	msg, err := emitHoldFailureResolution(opts, &log, holdErr, holdFailureResolution{DeferID: action.ActionID})
-	if msg != "pipelock: defer receipt confirmation failed" || err != holdErr {
+	if msg != "pipelock: defer receipt confirmation failed" || !errors.Is(err, holdErr) {
 		t.Fatalf("hold denial = %q, error = %v, want receipt confirmation failure %v", msg, err, holdErr)
 	}
 }

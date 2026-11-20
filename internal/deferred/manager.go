@@ -165,7 +165,11 @@ type HeldAction struct {
 	// must not wait for another admission or resolution of the same session.
 	ConfirmHold func(HeldAction) error
 	Resolve     func(Resolution)
-	BeforeAllow func() (release func(), ok bool)
+	// ResolveWithReleaseRefusal is the synchronous Resolve variant for a
+	// release path that can still refuse immediately before sending. It may
+	// call refuse during the callback to close a journaled allow to block.
+	ResolveWithReleaseRefusal func(res Resolution, refuse func(reason string) Resolution)
+	BeforeAllow               func() (release func(), ok bool)
 	// Prepare, when set, runs after BeforeAllow and before the terminal
 	// journal entry. It may downgrade the resolution (for example when a
 	// release-boundary check cancels an allow) so the journal records the
@@ -184,10 +188,11 @@ type HeldAction struct {
 	// entry, so that block's receipt is written first. Prepare's
 	// finish func is still pending, so the release claim and sink lock cover
 	// this call.
-	AfterJournal func(Resolution) error
-	timer        *time.Timer
-	state        string
-	createdAt    time.Time
+	AfterJournal   func(Resolution) error
+	timer          *time.Timer
+	cascadeBlocked bool // protected by Manager.mu
+	state          string
+	createdAt      time.Time
 }
 
 // Resolution is delivered exactly once for a held action.
@@ -329,7 +334,7 @@ func (m *Manager) Hold(action HeldAction) error {
 	if action.DeferID == "" {
 		return fmt.Errorf("defer_id is required")
 	}
-	if action.Resolve == nil {
+	if action.Resolve == nil && action.ResolveWithReleaseRefusal == nil {
 		return fmt.Errorf("resolve callback is required")
 	}
 	if action.ConfirmHold != nil && m.cfg.JournalPath != "" {
@@ -376,6 +381,7 @@ func (m *Manager) Hold(action HeldAction) error {
 			parent := m.holds[ids[len(ids)-1]]
 			action.ParentDeferID = parent.DeferID
 			action.CascadeDepth = parent.CascadeDepth + 1
+			action.cascadeBlocked = parent.cascadeBlocked
 		}
 	}
 	if action.CascadeDepth > m.cfg.MaxCascadeDepth {
@@ -497,6 +503,9 @@ func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string,
 		m.mu.Unlock()
 		return "", ErrNotFound
 	}
+	if held.cascadeBlocked {
+		finalDecision, source = config.ActionBlock, SourceCascade
+	}
 	held.state = StateResolving
 	m.removeHoldLocked(held)
 	if held.timer != nil {
@@ -549,9 +558,21 @@ func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string,
 		_ = m.appendJournal(journalEntryFromHeld(*held, resolvedState(res.FinalDecision), res.ResolutionSource))
 	}
 	if res.FinalDecision != config.ActionAllow && res.ResolutionSource != SourceCascade {
-		m.cascadeBlockDescendants([]string{held.DeferID})
+		m.resolveCascadeBlocked(m.markCascadeBlocked([]string{held.DeferID}))
 	}
-	held.Resolve(res)
+	if held.ResolveWithReleaseRefusal != nil {
+		var descendants []string
+		held.ResolveWithReleaseRefusal(res, func(reason string) Resolution {
+			if res.FinalDecision == config.ActionAllow {
+				descendants = m.markCascadeBlocked([]string{held.DeferID})
+				res = m.blockLateRelease(held, res, reason)
+			}
+			return res
+		})
+		m.resolveCascadeBlocked(descendants)
+	} else {
+		held.Resolve(res)
+	}
 	return res.FinalDecision, nil
 }
 
@@ -576,37 +597,47 @@ func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string,
 // failing therefore surfaces at the next start, when recovery cannot write its
 // receipts, instead of as a hold closed with missing or contradicting evidence.
 func (m *Manager) journalRelease(held *HeldAction, res Resolution) Resolution {
-	closeAllow := func(reason string) {
-		res.FinalDecision = config.ActionBlock
-		res.ResolutionSource = SourceCancel
-		res.Reason = reason
-		// Resolve writes the final receipt, but only after the journal. Write
-		// it here first so the terminal entry never precedes its receipt;
-		// Resolve then reuses it.
-		if held.AfterJournal != nil {
-			if err := held.AfterJournal(res); err != nil {
-				m.warnf("pipelock: warning event=deferred_resolution_receipt_failed audit_gap=true source=%s defer_id=%s: %v\n",
-					res.ResolutionSource, held.DeferID, err)
-				return
-			}
-		}
-		if err := m.appendJournal(journalEntryFromHeld(*held, StateResolvedBlock, res.ResolutionSource)); err != nil {
-			m.warnf("pipelock: warning event=deferred_journal_write_failed audit_gap=true source=%s defer_id=%s: %v\n",
-				res.ResolutionSource, held.DeferID, err)
-		}
-	}
 	if err := m.appendJournal(releasePendingEntry(*held, res.ResolutionSource)); err != nil {
-		closeAllow(res.Reason)
-		return res
+		return m.blockRelease(held, res, res.Reason)
 	}
 	if held.AfterJournal != nil {
 		if err := held.AfterJournal(res); err != nil {
-			closeAllow(ReasonReceiptNotWritten)
-			return res
+			return m.blockRelease(held, res, ReasonReceiptNotWritten)
 		}
 	}
 	if err := m.appendJournal(journalEntryFromHeld(*held, StateResolvedAllow, res.ResolutionSource)); err != nil {
-		closeAllow(ReasonReleaseNotJournaled)
+		return m.blockLateRelease(held, res, ReasonReleaseNotJournaled)
+	}
+	return res
+}
+
+// blockLateRelease reopens a committed allow for recovery before attempting the
+// corrective receipt. The payload is never replayed.
+func (m *Manager) blockLateRelease(held *HeldAction, res Resolution, reason string) Resolution {
+	pending := journalEntryFromHeld(*held, StateAdmissionRejected, SourceCancel)
+	pending.RefusalPending = true
+	if err := m.appendJournal(pending); err != nil {
+		m.warnf("pipelock: warning event=deferred_journal_write_failed audit_gap=true source=%s defer_id=%s: %v\n",
+			SourceCancel, held.DeferID, err)
+	}
+	return m.blockRelease(held, res, reason)
+}
+
+func (m *Manager) blockRelease(held *HeldAction, res Resolution, reason string) Resolution {
+	res.FinalDecision = config.ActionBlock
+	res.ResolutionSource = SourceCancel
+	res.Reason = reason
+	// Persist the corrective receipt before the terminal journal entry.
+	if held.AfterJournal != nil {
+		if err := held.AfterJournal(res); err != nil {
+			m.warnf("pipelock: warning event=deferred_resolution_receipt_failed audit_gap=true source=%s defer_id=%s: %v\n",
+				res.ResolutionSource, held.DeferID, err)
+			return res
+		}
+	}
+	if err := m.appendJournal(journalEntryFromHeld(*held, StateResolvedBlock, res.ResolutionSource)); err != nil {
+		m.warnf("pipelock: warning event=deferred_journal_write_failed audit_gap=true source=%s defer_id=%s: %v\n",
+			res.ResolutionSource, held.DeferID, err)
 	}
 	return res
 }
@@ -656,6 +687,7 @@ func (m *Manager) Snapshot() []HeldAction {
 		cp := *held
 		cp.timer = nil
 		cp.Resolve = nil
+		cp.ResolveWithReleaseRefusal = nil
 		cp.Payload = append([]byte(nil), held.Payload...)
 		out = append(out, cp)
 	}
@@ -804,6 +836,7 @@ func (m *Manager) snapshotOne(deferID string) (HeldAction, error) {
 	cp := *held
 	cp.timer = nil
 	cp.Resolve = nil
+	cp.ResolveWithReleaseRefusal = nil
 	cp.Payload = append([]byte(nil), held.Payload...)
 	return cp, nil
 }
@@ -823,27 +856,35 @@ func (m *Manager) removeSessionHoldLocked(sessionID, deferID string) {
 	m.sessionHolds[sessionID] = ids
 }
 
-func (m *Manager) cascadeBlockDescendants(parentIDs []string) {
-	frontier := append([]string(nil), parentIDs...)
+// markCascadeBlocked denies every still-held descendant before any of
+// their callbacks run. A concurrent resolver sees the same forced block.
+func (m *Manager) markCascadeBlocked(frontier []string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var descendants []string
 	for len(frontier) > 0 {
-		m.mu.Lock()
-		children := make([]string, 0)
+		var children []string
 		for id, held := range m.holds {
-			for _, parentID := range frontier {
-				if held.ParentDeferID == parentID {
+			for _, parent := range frontier {
+				if held.ParentDeferID == parent {
+					held.cascadeBlocked = true
 					children = append(children, id)
 					break
 				}
 			}
 		}
-		m.mu.Unlock()
-		if len(children) == 0 {
-			return
-		}
-		for _, id := range children {
+		descendants = append(descendants, children...)
+		frontier = children
+	}
+	return descendants
+}
+
+func (m *Manager) resolveCascadeBlocked(descendants []string) {
+	for len(descendants) != 0 {
+		for _, id := range descendants {
 			_ = m.Resolve(id, config.ActionBlock, SourceCascade)
 		}
-		frontier = children
+		descendants = m.markCascadeBlocked(descendants)
 	}
 }
 
@@ -869,7 +910,10 @@ type journalEntry struct {
 	// of its own so that a binary that predates it, whose journal reader
 	// rejects unknown states, still reads the hold as pending and recovers it
 	// to block. Only deferred_held entries may carry it.
-	ReleasePending bool                         `json:"release_pending,omitempty"`
+	ReleasePending bool `json:"release_pending,omitempty"`
+	// RefusalPending uses the audit marker state so older readers can
+	// still read the journal without resuming a committed release.
+	RefusalPending bool                         `json:"refusal_pending,omitempty"`
 	Source         string                       `json:"source,omitempty"`
 	Target         string                       `json:"target,omitempty"`
 	Surface        string                       `json:"surface,omitempty"`

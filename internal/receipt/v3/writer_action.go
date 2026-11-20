@@ -31,6 +31,10 @@ const (
 // released. The caller must not release it.
 var ErrEffectNotReleased = errors.New("receipt recorded that the effect was not released")
 
+// ErrHoldBlockRecorded reports that a failed allow is already closed by a
+// durable blocking resolution. The caller must still withhold the release.
+var ErrHoldBlockRecorded = errors.New("receipt recorded the blocking hold resolution")
+
 // WriteAction appends one phase under its decision-time policy. A successful
 // return is the receipt barrier for an intent or a hold. Callers still own
 // the effect and report its observation as a separate phase.
@@ -54,15 +58,22 @@ func (w *StreamWriter) WriteAction(ctx context.Context, action Action, policy Po
 		if w.previous != nil && w.previous.Ended == endedWriteError {
 			withheld := w.queueActionRepair(action, false)
 			err = w.tryContinueAfterWriteError(ctx, err)
-			return withheldEffect(err, withheld)
+			return w.withheldAction(err, action, withheld)
 		}
 		return err
 	}
 	if err := ctx.Err(); err != nil && actionGatesEffect(action) {
 		withheld := w.queueActionRepair(action, true)
-		return withheldEffect(errors.Join(err, w.settleActionRepairs(ctx)), withheld)
+		return w.withheldAction(errors.Join(err, w.settleActionRepairs(ctx)), action, withheld)
 	}
 	return nil
+}
+
+func (w *StreamWriter) withheldAction(err error, action Action, withheld bool) error {
+	if withheld && action.Phase == phaseResolution && len(w.repairs) == 0 {
+		err = errors.Join(ErrHoldBlockRecorded, err)
+	}
+	return withheldEffect(err, withheld)
 }
 
 // WriteAdmissionBatch reserves consecutive positions for the actions and

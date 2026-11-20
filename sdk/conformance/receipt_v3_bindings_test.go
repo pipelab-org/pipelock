@@ -21,7 +21,7 @@ import (
 )
 
 var receiptEmissionCalls = strings.Fields(
-	"emitReceiptDecision emitAdmittedReceiptDecision emitMCPStandaloneStreamReceipt emitMCPOutcomeReceipt emitMCPToolReceipt " +
+	"emitReceiptDecision emitAdmittedReceiptDecision emitMCPStandaloneStreamReceipt emitMCPStreamDiagnostic emitMCPOutcomeReceipt emitMCPToolReceipt " +
 		"EmitDeferredResolutionReceipt emitDeferredResolutionReceipt emitMCPDeferredKillSwitchReceipt confirmMCPResponseEffect " +
 		"confirmHTTPResponseDelivery emitForwardReceipt emitFetchReceipt emitReverseReceipt emitStreamReceipt emitTunnelReceipt emitWSReceipt " +
 		"emitRecordedReceipt emitRecordedEffectRefusal emitRecordedUpstreamRefusal emitRequiredReceipt emitRequestPolicyReceipt confirmResponseDecision confirmV3ResponseDecision confirmResponseOrBlock " +
@@ -195,6 +195,19 @@ func receiptEmissionSites(fset *token.FileSet, path string, file *ast.File) ([]r
 				return false
 			}
 			callee := receiptEmissionName(node, file)
+			if callee == "" && strings.HasPrefix(path, "internal/mcp/") {
+				if call, ok := node.(*ast.CallExpr); ok {
+					switch name := calledName(call); name {
+					case "commitRelease", "settle", "settleResult":
+						callee = name
+					case "write":
+						if target, ok := ast.Unparen(call.Fun).(*ast.Ident); ok &&
+							target.Name == name && path == "internal/mcp/outcome.go" && owner == "(*mcpOutcomeHandle).emit" {
+							callee = name
+						}
+					}
+				}
+			}
 			if callee == "" {
 				return true
 			}

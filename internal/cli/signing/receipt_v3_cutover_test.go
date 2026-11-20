@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -69,14 +70,32 @@ func TestVerifyReceiptCmd_V3WithSeparateOperationalRecorder(t *testing.T) {
 	if err := writer.Close(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
-	cmd := VerifyReceiptCmd()
-	cmd.SetArgs([]string{"--chain", dir, "--key", hex.EncodeToString(key.Public().(ed25519.PublicKey))})
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&out)
-	if err := cmd.ExecuteContext(t.Context()); err != nil || !strings.Contains(out.String(), "\"verdict\":\"VALID\"") {
-		t.Fatalf("verification missed the v3 evidence root: %v\n%s", err, out.String())
+	check := func(t *testing.T, path string) {
+		t.Helper()
+		cmd := VerifyReceiptCmd()
+		cmd.SetArgs([]string{"--chain", path, "--key", hex.EncodeToString(key.Public().(ed25519.PublicKey))})
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		if err := cmd.ExecuteContext(t.Context()); err != nil || !strings.Contains(out.String(), "\"verdict\":\"VALID\"") {
+			t.Fatalf("verification missed the v3 evidence root: %v\n%s", err, out.String())
+		}
 	}
+	check(t, dir)
+	t.Run("traverse parent after symlink", func(t *testing.T) {
+		alias := t.TempDir()
+		leaf := filepath.Join(filepath.Dir(dir), "empty")
+		if err := os.Mkdir(leaf, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(alias, "link")
+		if err := os.Symlink(leaf, link); err != nil {
+			t.Skipf("cannot create a directory symlink: %v", err)
+		}
+		// Retain the literal parent segment so the command receives the
+		// same path that the operator supplied.
+		check(t, link+string(os.PathSeparator)+".."+string(os.PathSeparator)+filepath.Base(dir))
+	})
 }
 
 func writeOperationalRecord(t *testing.T, dir string, key ed25519.PrivateKey) {

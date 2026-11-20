@@ -20,7 +20,7 @@ import (
 
 const nativeCapacityReason = "native_ael_capacity"
 
-func recordListenerStreamError(ctx context.Context, logW io.Writer, opts MCPProxyOpts, intent receipt.EmitOpts, standalone bool, err error) {
+func recordListenerStreamError(ctx context.Context, logW io.Writer, opts MCPProxyOpts, outcome TrackedRequestOutcome, standalone bool, err error) {
 	reason := httpstream.Reason(ctx, err)
 	if errors.Is(err, ael.ErrCapacity) {
 		reason = nativeCapacityReason
@@ -28,19 +28,36 @@ func recordListenerStreamError(ctx context.Context, logW io.Writer, opts MCPProx
 	if reason == httpstream.Incomplete {
 		_, _ = fmt.Fprintf(logW, "pipelock: response stream %s: %v\n", reason, err)
 		if opts.AuditLogger != nil {
-			opts.AuditLogger.LogError(audit.NewMethodLogContext(intent.Method), fmt.Errorf("response stream %s: %w", reason, err))
+			opts.AuditLogger.LogError(audit.NewMethodLogContext(outcome.Receipt.Method), fmt.Errorf("response stream %s: %w", reason, err))
 		}
 	}
 	if opts.ReceiptV3 != nil {
-		recordMCPStreamDiagnostic(opts, logW, intent, standalone, reason)
+		recordMCPStreamDiagnostic(opts, logW, outcome.Receipt, standalone, reason)
 		return
 	}
-	intent = opts.withReceiptPolicyHash(intent)
+	outcome.Receipt = opts.withReceiptPolicyHash(outcome.Receipt)
 	if standalone {
-		emitMCPStandaloneStreamReceipt(opts, logW, intent, "200", reason)
-	} else {
-		emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, intent, "200", -1, reason, opts.requireReceipts())
+		if outcome.Receipt.Layer == mcpTransportAdmissionLayer {
+			if reason == httpstream.Cancelled {
+				recordTransportAdmissionResult(logW, opts, outcome.Receipt, "cancelled", reason)
+			} else {
+				warnTransportAdmission(logW, opts, outcome.Receipt, reason)
+			}
+			return
+		}
+		emitMCPStandaloneStreamReceipt(opts, logW, outcome.Receipt, "200", reason)
+		return
 	}
+	// The listener request-end path settles this same handle. A direct outcome
+	// write would leave two terminal receipts for one intent.
+	status := "incomplete"
+	switch reason {
+	case nativeCapacityReason:
+		status = "200"
+	case httpstream.Cancelled:
+		status = "cancelled"
+	}
+	outcome.settle(logW, opts, status, -1, reason)
 }
 
 func logMCPIncompleteResponse(logW io.Writer, opts MCPProxyOpts, method string, err error) {
@@ -55,7 +72,6 @@ func logMCPIncompleteResponse(logW io.Writer, opts MCPProxyOpts, method string, 
 
 func emitTrackedStreamError(ctx context.Context, logW io.Writer, tracker *RequestTracker, id json.RawMessage, opts MCPProxyOpts, err error) {
 	outcome, pending := consumeTrackedRequestOutcome(tracker, id)
-	defer outcome.releaseNativeLease()
 	// A consumed unary reply already owns its terminal outcome. A stream
 	// can have separate evidence for its lifetime after the reply settles.
 	if !pending && !opts.nativeSSE && !isRPCNotification(id) && errors.Is(err, ael.ErrCapacity) {
@@ -77,9 +93,10 @@ func emitTrackedStreamError(ctx context.Context, logW io.Writer, tracker *Reques
 		status = "cancelled"
 	}
 	if standalone {
+		defer outcome.releaseNativeLease()
 		emitMCPStandaloneStreamReceipt(opts, logW, outcome.Receipt, status, reason)
 	} else {
-		emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, outcome.Receipt, status, -1, reason, opts.requireReceipts())
+		outcome.settle(logW, opts, status, -1, reason)
 	}
 }
 

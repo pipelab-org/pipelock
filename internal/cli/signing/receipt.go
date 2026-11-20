@@ -142,11 +142,16 @@ Examples:
 			if chainDir != "" {
 				var v3Root bool
 				if locationID == "" {
+					resolved, resolveErr := filepath.EvalSymlinks(chainDir)
+					if resolveErr != nil {
+						return configError(fmt.Errorf("resolve receipt directory: %w", resolveErr))
+					}
 					var absErr error
-					targetDir, absErr = filepath.Abs(chainDir)
+					targetDir, absErr = filepath.Abs(resolved)
 					if absErr != nil {
 						return configError(fmt.Errorf("resolve receipt directory: %w", absErr))
 					}
+					chainDir = targetDir
 					if root, openErr := recorder.OpenEvidenceDirectory(targetDir); openErr == nil {
 						v3Root, _ = v3.DirectoryHasV3(targetDir)
 						_ = root.Close()

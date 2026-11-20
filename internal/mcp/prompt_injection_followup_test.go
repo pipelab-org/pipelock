@@ -62,6 +62,9 @@ func TestPromptInjectionToolOutcomeReceiptsEveryTransport(t *testing.T) {
 				if strings.Contains(got, `"error"`) {
 					t.Fatalf("clean tool call refused: %s", got)
 				}
+				if strings.HasPrefix(surface, "http listener") {
+					h.waitForListenerOutcome(t)
+				}
 				if err := h.rec.Close(); err != nil {
 					t.Fatal(err)
 				}

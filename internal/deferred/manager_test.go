@@ -404,6 +404,8 @@ func TestManagerHoldValidationAndSnapshotCopies(t *testing.T) {
 	if err := m.Hold(missingResolve); err == nil || !strings.Contains(err.Error(), "resolve callback is required") {
 		t.Fatalf("missing resolve Hold error = %v", err)
 	}
+	resolved := false
+	base.ResolveWithReleaseRefusal = func(Resolution, func(string) Resolution) { resolved = true }
 	if err := m.Hold(base); err != nil {
 		t.Fatalf("Hold valid returned error: %v", err)
 	}
@@ -417,6 +419,12 @@ func TestManagerHoldValidationAndSnapshotCopies(t *testing.T) {
 	if held.SizeBytes != 0 {
 		t.Fatalf("negative SizeBytes normalized to %d, want 0", held.SizeBytes)
 	}
+	if held.Resolve != nil || held.ResolveWithReleaseRefusal != nil {
+		t.Fatal("Held returned a live resolution callback")
+	}
+	if snapshot := m.Snapshot(); len(snapshot) != 1 || snapshot[0].Resolve != nil || snapshot[0].ResolveWithReleaseRefusal != nil {
+		t.Fatal("Snapshot did not return a hold with its resolution callbacks cleared")
+	}
 	held.Payload[0] = 'X'
 	again, ok := m.Held("d1")
 	if !ok || string(again.Payload) != "payload" {
@@ -427,6 +435,9 @@ func TestManagerHoldValidationAndSnapshotCopies(t *testing.T) {
 	}
 	if err := m.Resolve("d1", "", ""); err != nil {
 		t.Fatalf("Resolve default returned error: %v", err)
+	}
+	if !resolved {
+		t.Fatal("manager did not invoke the stored resolution callback")
 	}
 	if _, ok := m.Held("d1"); ok {
 		t.Fatal("Held returned true after resolve")
