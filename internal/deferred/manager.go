@@ -159,8 +159,10 @@ type HeldAction struct {
 	Deadline      time.Time
 	Payload       []byte
 	ArgDigest     string
+	confirming    chan struct{}
 	// ConfirmHold persists the computed hold before publication in journal-free
-	// mode. It runs under the manager lock and must not call back into it.
+	// mode. The reservation stays private during confirmation. The callback
+	// must not wait for another admission or resolution of the same session.
 	ConfirmHold func(HeldAction) error
 	Resolve     func(Resolution)
 	BeforeAllow func() (release func(), ok bool)
@@ -216,6 +218,11 @@ type Manager struct {
 	sessionHolds   map[string][]string
 	totalBytes     int
 	pendingJournal map[string]journalEntry
+
+	// A confirming hold already owns capacity. A named session has at most
+	// one confirmation, so a sibling cannot sign before its pending parent.
+	confirmingSessions map[string]chan struct{}
+	confirmingCount    int
 	// fileSync replaces File.Sync for journal writes in tests; nil uses it.
 	fileSync func(*os.File) error
 	// dirSync replaces directorysync.Sync in tests; nil uses it.
@@ -274,11 +281,12 @@ func NewManager(cfg Config) *Manager {
 		cfg.MaxCascadeDepth = DefaultMaxCascadeDepth
 	}
 	return &Manager{
-		cfg:            cfg,
-		warningf:       cfg.Warningf,
-		holds:          make(map[string]*HeldAction),
-		sessionHolds:   make(map[string][]string),
-		pendingJournal: make(map[string]journalEntry),
+		cfg:                cfg,
+		warningf:           cfg.Warningf,
+		holds:              make(map[string]*HeldAction),
+		sessionHolds:       make(map[string][]string),
+		pendingJournal:     make(map[string]journalEntry),
+		confirmingSessions: make(map[string]chan struct{}),
 	}
 }
 
@@ -336,7 +344,13 @@ func (m *Manager) Hold(action HeldAction) error {
 	action.createdAt = now
 	action.state = StateHeld
 
+	sessionID := action.Authority.SessionID
 	m.mu.Lock()
+	for pending := m.confirmingSessions[sessionID]; pending != nil; pending = m.confirmingSessions[sessionID] {
+		m.mu.Unlock()
+		<-pending
+		m.mu.Lock()
+	}
 	if _, exists := m.holds[action.DeferID]; exists {
 		m.mu.Unlock()
 		m.journalRejectedHold(action, SourceDuplicateDeferID)
@@ -374,28 +388,57 @@ func (m *Manager) Hold(action HeldAction) error {
 		m.journalRejectedHold(action, SourceCascadeLimit)
 		return limitErr
 	}
-	// Confirm before publishing the hold. The lock keeps any related
-	// admission or resolution from preceding its record.
 	delay := m.cfg.Timeout
 	if confirm := action.ConfirmHold; confirm != nil {
 		action.ConfirmHold = nil
-		if err := confirm(action); err != nil {
+		pending := make(chan struct{})
+		action.confirming = pending
+		m.reserveHoldLocked(&action)
+		m.confirmingCount++
+		if sessionID != "" {
+			m.confirmingSessions[sessionID] = pending
+		}
+
+		// The private reservation prevents overcommit while receipt I/O runs
+		// without blocking operations for other sessions.
+		m.mu.Unlock()
+		err := confirm(action)
+		m.mu.Lock()
+		action.confirming = nil
+		m.confirmingCount--
+		delete(m.confirmingSessions, sessionID)
+		close(pending)
+		if err != nil {
+			m.removeHoldLocked(&action)
 			m.mu.Unlock()
 			return fmt.Errorf("confirm defer hold: %w", err)
 		}
 		delay = time.Until(action.Deadline)
-	} else if err := m.appendJournal(journalEntryFromHeld(action, StateHeld, "")); err != nil {
-		m.mu.Unlock()
-		return fmt.Errorf("journal defer hold: %w", err)
+	} else {
+		if err := m.appendJournal(journalEntryFromHeld(action, StateHeld, "")); err != nil {
+			m.mu.Unlock()
+			return fmt.Errorf("journal defer hold: %w", err)
+		}
+		m.reserveHoldLocked(&action)
 	}
-	m.holds[action.DeferID] = &action
-	m.sessionHolds[action.Authority.SessionID] = append(m.sessionHolds[action.Authority.SessionID], action.DeferID)
-	m.totalBytes += action.SizeBytes
 	action.timer = time.AfterFunc(delay, func() {
 		_ = m.Resolve(action.DeferID, config.ActionBlock, SourceTimeout)
 	})
 	m.mu.Unlock()
 	return nil
+}
+
+func (m *Manager) reserveHoldLocked(held *HeldAction) {
+	m.holds[held.DeferID] = held
+	sessionID := held.Authority.SessionID
+	m.sessionHolds[sessionID] = append(m.sessionHolds[sessionID], held.DeferID)
+	m.totalBytes += held.SizeBytes
+}
+
+func (m *Manager) removeHoldLocked(held *HeldAction) {
+	delete(m.holds, held.DeferID)
+	m.removeSessionHoldLocked(held.Authority.SessionID, held.DeferID)
+	m.totalBytes -= held.SizeBytes
 }
 
 func (m *Manager) journalRejectedHold(action HeldAction, source string) {
@@ -438,14 +481,24 @@ func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string,
 
 	m.mu.Lock()
 	held := m.holds[deferID]
-	if held == nil || held.state != StateHeld {
+	for held != nil && m.holds[deferID] == held {
+		pending := held.confirming
+		if pending == nil {
+			pending = m.confirmingSessions[held.Authority.SessionID]
+		}
+		if pending == nil {
+			break
+		}
+		m.mu.Unlock()
+		<-pending
+		m.mu.Lock()
+	}
+	if held == nil || m.holds[deferID] != held || held.state != StateHeld {
 		m.mu.Unlock()
 		return "", ErrNotFound
 	}
 	held.state = StateResolving
-	delete(m.holds, deferID)
-	m.removeSessionHoldLocked(held.Authority.SessionID, deferID)
-	m.totalBytes -= held.SizeBytes
+	m.removeHoldLocked(held)
 	if held.timer != nil {
 		held.timer.Stop()
 	}
@@ -595,8 +648,11 @@ func (m *Manager) Snapshot() []HeldAction {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]HeldAction, 0, len(m.holds))
+	out := make([]HeldAction, 0, len(m.holds)-m.confirmingCount)
 	for _, held := range m.holds {
+		if held.confirming != nil {
+			continue
+		}
 		cp := *held
 		cp.timer = nil
 		cp.Resolve = nil
@@ -613,7 +669,7 @@ func (m *Manager) HeldCount() int {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return len(m.holds)
+	return len(m.holds) - m.confirmingCount
 }
 
 func (m *Manager) Held(deferID string) (HeldAction, bool) {
@@ -628,6 +684,7 @@ func (m *Manager) ResolveToolInventory(sessionID, finalDecision string) {
 	if m == nil {
 		return
 	}
+	m.waitForConfirmations(&sessionID)
 	for _, held := range m.Snapshot() {
 		if held.Authority.SessionID == sessionID && held.RulePolicy.AllowOn.ToolInventoryBaseline {
 			_ = m.Resolve(held.DeferID, finalDecision, SourceToolInventory)
@@ -696,6 +753,7 @@ func (m *Manager) ResolvePolicyReload(evaluate ReloadEvaluator) {
 	if m == nil || evaluate == nil {
 		return
 	}
+	m.waitForConfirmations(nil)
 	for _, held := range m.Snapshot() {
 		decision, err := evaluate(held)
 		if err != nil {
@@ -717,6 +775,22 @@ func (m *Manager) ResolvePolicyReload(evaluate ReloadEvaluator) {
 	}
 }
 
+// Bulk events include holds already being confirmed when the event starts.
+// Only wait on the requested session for inventory events; nil means all.
+func (m *Manager) waitForConfirmations(sessionID *string) {
+	m.mu.Lock()
+	pending := make([]chan struct{}, 0, m.confirmingCount)
+	for _, held := range m.holds {
+		if held.confirming != nil && (sessionID == nil || held.Authority.SessionID == *sessionID) {
+			pending = append(pending, held.confirming)
+		}
+	}
+	m.mu.Unlock()
+	for _, done := range pending {
+		<-done
+	}
+}
+
 func (m *Manager) snapshotOne(deferID string) (HeldAction, error) {
 	if m == nil {
 		return HeldAction{}, ErrDisabled
@@ -724,7 +798,7 @@ func (m *Manager) snapshotOne(deferID string) (HeldAction, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	held := m.holds[deferID]
-	if held == nil || held.state != StateHeld {
+	if held == nil || held.confirming != nil || held.state != StateHeld {
 		return HeldAction{}, ErrNotFound
 	}
 	cp := *held

@@ -1812,3 +1812,70 @@ func TestJournalFreeHoldConfirmationAndCascade(t *testing.T) {
 		t.Fatal("journal-free settlement left state behind")
 	}
 }
+
+func TestHoldConfirmationLeavesOtherSessionsAvailable(t *testing.T) {
+	m := NewManager(Config{Enabled: true, Timeout: time.Minute, MaxPending: 2, MaxPendingBytes: 2})
+	started := make(chan struct{})
+	finish := make(chan struct{})
+	var release sync.Once
+	finishConfirmation := func() { release.Do(func() { close(finish) }) }
+	t.Cleanup(finishConfirmation)
+	fault := errors.New("confirmation failed")
+	mustHold := func(id, session string) HeldAction {
+		return HeldAction{
+			DeferID: id, ActionID: id, Target: "example", SizeBytes: 1,
+			Authority: AuthoritySnapshot{SessionID: session},
+			Resolve:   func(Resolution) {},
+		}
+	}
+	if err := m.Hold(mustHold("other", "other-session")); err != nil {
+		t.Fatal(err)
+	}
+	confirming := mustHold("pending", "pending-session")
+	confirming.ConfirmHold = func(HeldAction) error {
+		close(started)
+		<-finish
+		return fault
+	}
+	holdResult := make(chan error, 1)
+	go func() { holdResult <- m.Hold(confirming) }()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("hold confirmation did not start")
+	}
+
+	probe := make(chan error, 1)
+	go func() {
+		if count := m.HeldCount(); count != 1 {
+			probe <- fmt.Errorf("visible holds = %d, want only the other session", count)
+			return
+		}
+		if snapshot := m.Snapshot(); len(snapshot) != 1 || snapshot[0].DeferID != "other" {
+			probe <- fmt.Errorf("snapshot exposes a hold before receipt confirmation")
+			return
+		}
+		if err := m.Hold(mustHold("extra", "extra-session")); !errors.Is(err, ErrCapacity) {
+			probe <- fmt.Errorf("confirmation did not reserve capacity: %w", err)
+			return
+		}
+		probe <- m.Resolve("other", config.ActionBlock, SourceOperator)
+	}()
+	select {
+	case err := <-probe:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a pending receipt confirmation blocked an unrelated session")
+	}
+
+	finishConfirmation()
+	if err := <-holdResult; !errors.Is(err, fault) {
+		t.Fatalf("failed confirmation = %v, want %v", err, fault)
+	}
+	if err := m.Hold(mustHold("pending", "pending-session")); err != nil {
+		t.Fatalf("failed confirmation retained its ID or capacity: %v", err)
+	}
+	m.ResolveAll(config.ActionBlock, SourceCancel)
+}
