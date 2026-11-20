@@ -361,6 +361,10 @@ func RunHTTPListenerProxy(
 
 	loopbackListener := listenerIsLoopback(ln)
 	mux := http.NewServeMux()
+	oauthChallenge, err := registerListenerOAuthMetadata(mux, opts)
+	if err != nil {
+		return err
+	}
 
 	mux.HandleFunc("/health", func(rawWriter http.ResponseWriter, r *http.Request) {
 		var denialAudit mcpDenialAudit
@@ -1253,6 +1257,9 @@ func RunHTTPListenerProxy(
 			upResp.Body = newIdleTimeoutReader(upResp.Body, upstreamIdleReadTimeout)
 			defer func() { _ = upResp.Body.Close() }()
 
+			if writeListenerOAuthChallenge(w, upResp.StatusCode, oauthChallenge) {
+				return
+			}
 			if relayUpstreamClientError(upResp, nil, clientState.recorder, listenerStateAuditKey(), receipt.EmitOpts{}) {
 				return
 			}
@@ -1422,6 +1429,9 @@ func RunHTTPListenerProxy(
 			// headers and then stalls cannot pin this goroutine and both connections.
 			upResp.Body = newIdleTimeoutReader(upResp.Body, upstreamIdleReadTimeout)
 			defer func() { _ = upResp.Body.Close() }()
+			if writeListenerOAuthChallenge(w, upResp.StatusCode, oauthChallenge) {
+				return
+			}
 			if upResp.StatusCode >= 500 {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
 			}
@@ -2049,6 +2059,10 @@ func RunHTTPListenerProxy(
 			return
 		}
 
+		// An operator-pinned OAuth challenge replaces the upstream 401.
+		if writeListenerOAuthChallenge(w, upResp.StatusCode, oauthChallenge) {
+			return
+		}
 		// A 4xx is relayed once scanned; see relayUpstreamClientError.
 		if relayUpstreamClientError(upResp, frame.ID, reqRec, auditSessionKey, decision.Outcome.Receipt) {
 			return
@@ -2667,7 +2681,7 @@ func setListenerCORSHeaders(headers http.Header, origin string) {
 	headers.Set("Access-Control-Allow-Origin", origin)
 	headers.Set("Access-Control-Allow-Methods", strings.Join([]string{http.MethodPost, http.MethodGet, http.MethodDelete}, ", "))
 	headers.Set("Access-Control-Allow-Headers", listenerCORSAllowedHeaders)
-	headers.Set("Access-Control-Expose-Headers", strings.Join([]string{"Mcp-Session-Id", "Pipelock-Session-Token", "X-Pipelock-Receipt", blockreason.HeaderReason, blockreason.HeaderVersion, blockreason.HeaderSeverity, blockreason.HeaderRetry, blockreason.HeaderLayer}, ", "))
+	headers.Set("Access-Control-Expose-Headers", strings.Join([]string{"Mcp-Session-Id", "Pipelock-Session-Token", "X-Pipelock-Receipt", "WWW-Authenticate", blockreason.HeaderReason, blockreason.HeaderVersion, blockreason.HeaderSeverity, blockreason.HeaderRetry, blockreason.HeaderLayer}, ", "))
 	headers.Add("Vary", "Origin")
 	headers.Add("Vary", "Access-Control-Request-Method")
 	headers.Add("Vary", "Access-Control-Request-Headers")
@@ -2685,6 +2699,10 @@ func listenerCORSPreflightAllowed(r *http.Request) bool {
 	default:
 		return false
 	}
+	return listenerCORSRequestHeadersAllowed(r)
+}
+
+func listenerCORSRequestHeadersAllowed(r *http.Request) bool {
 	allowed := map[string]struct{}{}
 	for name := range strings.SplitSeq(listenerCORSAllowedHeaders, ",") {
 		allowed[strings.ToLower(strings.TrimSpace(name))] = struct{}{}

@@ -133,6 +133,9 @@ func (o MCPProxyOpts) minSubjectTrust() config.DoWSubjectTrust {
 // Required: Scanner (dereferenced unconditionally in all scan paths).
 // Optional (nil-safe): all other fields - functions check before use.
 type MCPProxyOpts struct {
+	// OAuthResourceURL and OAuthAuthorizationServer enable operator-pinned discovery.
+	OAuthResourceURL         string
+	OAuthAuthorizationServer string
 	// ListenerShutdownTimeout bounds graceful HTTP listener shutdown. Zero uses
 	// the existing five-second grace period.
 	ListenerShutdownTimeout time.Duration

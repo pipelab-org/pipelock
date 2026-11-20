@@ -774,6 +774,7 @@ func mcpProxyCmdWithListenerTimeout(newAuditLogger mcpAuditLoggerFactory, listen
 	var captureOutput string
 	var captureEscrowKey string
 	var listenerAuthTokenFile string
+	var oauthResourceURL, oauthAuthorizationServer string
 	var listenerAllowedOrigins []string
 	var listenerAllowUnauthenticated bool
 
@@ -847,6 +848,14 @@ Key-free evidence capture:
 			hasSubprocess := dashIdx >= 0 && dashIdx < len(args)
 			hasUpstream := upstreamURL != ""
 			hasListen := listenAddr != ""
+			if oauthResourceURL != "" || oauthAuthorizationServer != "" {
+				if !hasListen {
+					return errors.New("MCP OAuth flags require --listen")
+				}
+				if oauthResourceURL == "" || oauthAuthorizationServer == "" {
+					return errors.New("--oauth-resource-url and --oauth-authorization-server must be provided together")
+				}
+			}
 			if serverName != "" {
 				if err := config.ValidateMCPServerName(serverName, "--server-name"); err != nil {
 					return err
@@ -1568,6 +1577,8 @@ Key-free evidence capture:
 						return adaptiveCfg
 					})
 					listenerOpts := mcp.MCPProxyOpts{
+						OAuthResourceURL:             oauthResourceURL,
+						OAuthAuthorizationServer:     oauthAuthorizationServer,
 						ListenerBearerToken:          listenerAuthToken,
 						ListenerAllowedOrigins:       listenerAllowedOrigins,
 						ListenerAllowUnauthenticated: listenerAllowUnauthenticated,
@@ -2115,6 +2126,8 @@ Key-free evidence capture:
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path")
 	cmd.Flags().StringVar(&upstreamURL, "upstream", "", "upstream MCP server URL (Streamable HTTP transport)")
 	cmd.Flags().StringVar(&listenAddr, "listen", "", "listen address for HTTP reverse proxy mode (e.g. 0.0.0.0:8889)")
+	cmd.Flags().StringVar(&oauthResourceURL, "oauth-resource-url", "", "public URL of this MCP listener for OAuth discovery")
+	cmd.Flags().StringVar(&oauthAuthorizationServer, "oauth-authorization-server", "", "trusted HTTPS OAuth issuer for this upstream")
 	cmd.Flags().StringVar(&listenerAuthTokenFile, "listener-auth-token-file", "", "secure file containing the HTTP listener bearer token")
 	cmd.Flags().StringArrayVar(&listenerAllowedOrigins, "listener-allowed-origin", nil, "browser Origin allowed to call the HTTP listener (repeatable, exact serialized origin)")
 	cmd.Flags().BoolVar(&listenerAllowUnauthenticated, "listener-allow-unauthenticated", false, "explicitly allow a non-loopback listener without authentication (network-policy-isolated deployments only)")
