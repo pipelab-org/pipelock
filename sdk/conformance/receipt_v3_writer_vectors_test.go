@@ -5,6 +5,7 @@ package conformance_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"net/http"
 	"os"
@@ -74,6 +75,11 @@ func v3WriterRecipes(t *testing.T) []v3Recipe {
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = w.Close(ctx, nil)
+		})
 		switch tc.group {
 		case 5:
 			if err := w.WriteHeartbeat(t.Context()); err != nil {

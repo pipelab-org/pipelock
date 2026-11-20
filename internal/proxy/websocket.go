@@ -3975,7 +3975,13 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			continue
 		}
 		if err != nil {
-			r.upstreamCancelled = !blocked
+			if blocked {
+				payload := blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(r.requestID).CloseFramePayload()
+				r.writeClientClose(ws.StatusPolicyViolation, payload)
+				r.writeUpstreamClose(ws.StatusPolicyViolation, payload)
+			} else {
+				r.upstreamCancelled = true
+			}
 			return
 		}
 		bytesTransferred += int64(len(msg))

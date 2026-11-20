@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -100,6 +101,12 @@ func TestV3HTTPTransportIntentPrecedesUpstreamSend(t *testing.T) {
 						response.Header().Get(blockreason.HeaderReason) != string(blockreason.ReceiptEmissionFailed) ||
 						strings.Contains(response.Body.String(), "example") {
 						t.Fatalf("unconfirmed response was delivered: hits=%d code=%d body=%s", hits.Load(), response.Code, response.Body)
+					}
+					if transport == TransportReverse {
+						var denial ReverseProxyBlockResponse
+						if err := json.Unmarshal(response.Body.Bytes(), &denial); err != nil || denial.Direction != scanDirectionResponse {
+							t.Fatalf("reverse receipt denial direction = %q, error = %v", denial.Direction, err)
+						}
 					}
 					return
 				}
@@ -253,7 +260,11 @@ func newTestV3HTTPProxy(t *testing.T, surface string, required bool, createTemp 
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = writer.Close(t.Context(), nil) })
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = writer.Close(ctx, nil)
+	})
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	p, err := New(cfg, audit.NewNop(), sc, metrics.New(), func(p *Proxy) { p.receiptV3 = writer })
@@ -422,6 +433,13 @@ func TestV3WebSocketPayloadWaitsForReceipt(t *testing.T) {
 				}
 			} else if err == nil {
 				t.Fatalf("client received a refused payload: %q", got)
+			}
+			if point == "downstream" {
+				var closed wsutil.ClosedError
+				if !errors.As(err, &closed) || closed.Code != ws.StatusPolicyViolation ||
+					!strings.Contains(closed.Reason, string(blockreason.ReceiptEmissionFailed)) {
+					t.Fatalf("receipt failure closed WebSocket with %v, want typed policy close", err)
+				}
 			}
 			if err := conn.Close(); err != nil {
 				t.Fatal(err)

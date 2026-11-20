@@ -1762,7 +1762,7 @@ func TestJournalFreeHoldConfirmationAndCascade(t *testing.T) {
 		ConfirmHold: func(held HeldAction) error {
 			if held.CascadeDepth != 1 || held.ParentDeferID != "" || held.Linkage != LinkageSessionPendingAncestor ||
 				!held.Deadline.After(time.Now()) {
-				t.Fatalf("unexpected hold before confirmation: %+v", held)
+				return fmt.Errorf("unexpected hold before confirmation: %+v", held)
 			}
 			return fault
 		},
@@ -1775,19 +1775,35 @@ func TestJournalFreeHoldConfirmationAndCascade(t *testing.T) {
 		t.Fatal(err)
 	}
 	hold.DeferID, hold.ActionID = "child", "child"
+	var confirmedChild *HeldAction
 	hold.ConfirmHold = func(held HeldAction) error {
-		if held.CascadeDepth != 2 || held.ParentDeferID != "parent" || held.Linkage != LinkageSessionPendingAncestor {
-			t.Fatalf("unexpected child before confirmation: %+v", held)
-		}
+		confirmedChild = &held
 		return nil
 	}
 	if err := m.Hold(hold); err != nil {
 		t.Fatal(err)
 	}
+	if confirmedChild == nil {
+		t.Fatal("child hold was published without confirmation")
+	}
+	if confirmedChild.CascadeDepth != 2 || confirmedChild.ParentDeferID != "parent" ||
+		confirmedChild.Linkage != LinkageSessionPendingAncestor {
+		t.Fatalf("unexpected child before confirmation: %+v", confirmedChild)
+	}
 	if err := m.ResolveApproval("parent", config.ActionAsk); err != nil {
 		t.Fatal(err)
 	}
-	child, parent := <-resolved, <-resolved
+	var child, parent Resolution
+	select {
+	case child = <-resolved:
+	default:
+		t.Fatal("missing child settlement")
+	}
+	select {
+	case parent = <-resolved:
+	default:
+		t.Fatal("missing parent settlement")
+	}
 	if child.DeferID != "child" || child.FinalDecision != config.ActionBlock || child.ResolutionSource != SourceCascade ||
 		parent.DeferID != "parent" || parent.FinalDecision != config.ActionAsk {
 		t.Fatalf("unexpected cascade resolution: child=%+v parent=%+v", child, parent)

@@ -34,6 +34,7 @@ func TestReceiptWriterCrashChild(t *testing.T) {
 		return
 	}
 	opts := writerTestOptions(os.Getenv(crashDirKey))
+	opts.Heartbeat = 0
 	storage := localWriterStorage()
 	if mode == crashBeforeName {
 		realSync := storage.syncDir
@@ -50,6 +51,9 @@ func TestReceiptWriterCrashChild(t *testing.T) {
 	}
 	if mode == crashBeforeName {
 		t.Fatal("directory flush checkpoint was skipped")
+	}
+	if w.stopHeartbeat != nil {
+		t.Fatal("heartbeat can consume the crash checkpoint fault")
 	}
 
 	syncFault := errors.New("injected flush failure")

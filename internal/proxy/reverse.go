@@ -3949,9 +3949,9 @@ func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Reque
 	}
 	actx := newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
 	if errors.Is(err, errReverseDeliveryReceipt) {
-		writeReverseProxyBlock(w, http.StatusForbidden,
+		writeReverseProxyBlockDirection(w, http.StatusForbidden,
 			blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID),
-			receiptEmissionBlockReason)
+			receiptEmissionBlockReason, scanDirectionResponse)
 		return
 	}
 	if blockedErr, ok := blockedRequestErrorFrom(err); ok {
@@ -4018,13 +4018,17 @@ func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Reque
 // Sets the X-Pipelock-Block-Reason header set from info BEFORE WriteHeader so
 // agents can react intelligently. Every caller MUST supply a non-zero info.
 func writeReverseProxyBlock(w http.ResponseWriter, status int, info blockreason.Info, reason string) int64 {
+	return writeReverseProxyBlockDirection(w, status, info, reason, scanDirectionRequest)
+}
+
+func writeReverseProxyBlockDirection(w http.ResponseWriter, status int, info blockreason.Info, reason, direction string) int64 {
 	info.SetHeaders(w.Header())
 	w.Header().Set("Content-Type", "application/json")
 	resp := ReverseProxyBlockResponse{
 		Error:       "blocked by pipelock",
 		Blocked:     true,
 		BlockReason: reason,
-		Direction:   scanDirectionRequest,
+		Direction:   direction,
 	}
 	body, _ := json.Marshal(resp)
 	body = append(body, '\n')

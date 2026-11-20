@@ -391,14 +391,9 @@ func (m *Manager) Hold(action HeldAction) error {
 	m.holds[action.DeferID] = &action
 	m.sessionHolds[action.Authority.SessionID] = append(m.sessionHolds[action.Authority.SessionID], action.DeferID)
 	m.totalBytes += action.SizeBytes
-	m.mu.Unlock()
-
-	m.mu.Lock()
-	if live := m.holds[action.DeferID]; live != nil && live.state == StateHeld {
-		live.timer = time.AfterFunc(delay, func() {
-			_ = m.Resolve(action.DeferID, "block", SourceTimeout)
-		})
-	}
+	action.timer = time.AfterFunc(delay, func() {
+		_ = m.Resolve(action.DeferID, config.ActionBlock, SourceTimeout)
+	})
 	m.mu.Unlock()
 	return nil
 }

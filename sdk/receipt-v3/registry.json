@@ -275,7 +275,7 @@
       "when": "When a terminal error stops delivery on the stream."
     },
     "internal/mcp/receipt_v3.go/(*deferredReceiptSettlement).confirmV3Hold/WriteAction/9ab605f19e032595": {
-      "fields": "Use the pending action's `hold.id`, `hold.policy`, `hold.cascade_depth`, `hold.linkage`, and any `hold.parent`, and the authority and session from the held decision. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
+      "fields": "Use `hold.id` and `hold.policy` from the held decision, and include `hold.parent` for a child hold. Keep the decision's authority and session. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
       "when": "Before the manager publishes a hold"
     },
     "internal/mcp/receipt_v3.go/(*deferredReceiptSettlement).confirmV3Release/WriteAction/e3c327797c156c54": {
@@ -283,7 +283,7 @@
       "when": "Before the upstream send of an approved hold"
     },
     "internal/mcp/receipt_v3.go/(*deferredReceiptSettlement).settleV3Hold/WriteAction/0844d0e7ce298573": {
-      "fields": "Use the original `hold.id`, `hold.cascade_depth`, `hold.linkage`, and `hold.parent` when present. Set `hold.resolution_policy` from the original hold policy and `hold.resolution_source` from the manager. Set `hold.correction:true` when a later block replaces an allow. A step-up resolution records `approval_api` with `observed:true`. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. Retain the caller from the original hold.",
+      "fields": "Use the original `hold.id` and omit `hold.parent` on the resolution. Set `hold.resolution_policy` from the original hold policy and `hold.resolution_source` from the manager. Set `hold.correction:true` when a later block replaces an allow. A step-up resolution records `approval_api` with `observed:true`. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. Retain the caller from the original hold.",
       "when": "When the manager selects a resolution"
     },
     "internal/mcp/stream.go/emitTrackedStreamError/recordMCPStreamDiagnostic/f1c5b96499a459ba": {
@@ -300,7 +300,7 @@
     },
     "internal/proxy/forward.go/(*Proxy).handleConnect/confirmTransportReceipt/0110b0107dca1bc5": {
       "fields": "Captures the effect boundary and decision-time `policy`. Carries available `session`, `taint`, `contract` and `redaction`. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
-      "when": "A v3 writer is bound at the transport. A confirmation failure blocks the effect when receipts are required."
+      "when": "A v3 writer is bound at the transport. A confirmation failure blocks the effect when receipts are required. In optional mode, ErrEffectNotReleased blocks release because the writer recorded not_released."
     },
     "internal/proxy/forward.go/(*Proxy).handleConnect/emitForwardDenial/2c491386d87dec0b": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
@@ -360,7 +360,7 @@
     },
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmTransportReceipt/bd43125ad2794bec": {
       "fields": "Captures the effect boundary and decision-time `policy`. Carries available `session`, `taint`, `contract` and `redaction`. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
-      "when": "A v3 writer is bound at the transport. A confirmation failure blocks the effect when receipts are required."
+      "when": "A v3 writer is bound at the transport. A confirmation failure blocks the effect when receipts are required. In optional mode, ErrEffectNotReleased blocks release because the writer recorded not_released."
     },
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitAllowPathReceipt/19e7d358614a456b": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `shield` is included when the response summary is in scope, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
@@ -864,7 +864,7 @@
     },
     "internal/proxy/proxy.go/(*Proxy).handleFetch/confirmTransportReceipt/dccc0265ba6e114c": {
       "fields": "Captures the effect boundary and decision-time `policy`. Carries available `session`, `taint`, `contract` and `redaction`. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
-      "when": "A v3 writer is bound at the transport. A confirmation failure blocks the effect when receipts are required."
+      "when": "A v3 writer is bound at the transport. A confirmation failure blocks the effect when receipts are required. In optional mode, ErrEffectNotReleased blocks release because the writer recorded not_released."
     },
     "internal/proxy/proxy.go/(*Proxy).handleFetch/emitFetchReceipt/024461aad7118e3e": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
@@ -1256,11 +1256,11 @@
     },
     "internal/proxy/websocket.go/(*Proxy).handleWebSocket/confirmTransportReceipt/02644a028754b91a": {
       "fields": "Captures the effect boundary and decision-time `policy`. Carries available `session`, `taint`, `contract` and `redaction`. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
-      "when": "A v3 writer is bound at the transport. A confirmation failure blocks the effect when receipts are required."
+      "when": "A v3 writer is bound at the transport. A confirmation failure blocks the effect when receipts are required. In optional mode, ErrEffectNotReleased blocks release because the writer recorded not_released."
     },
     "internal/proxy/websocket.go/(*Proxy).handleWebSocket/confirmTransportReceipt/7f1f58c12cea8507": {
       "fields": "Captures the effect boundary and decision-time `policy`. Carries available `session`, `taint`, `contract` and `redaction`. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
-      "when": "A v3 writer is bound at the transport. A confirmation failure blocks the effect when receipts are required."
+      "when": "A v3 writer is bound at the transport. A confirmation failure blocks the effect when receipts are required. In optional mode, ErrEffectNotReleased blocks release because the writer recorded not_released."
     },
     "internal/proxy/websocket.go/(*Proxy).handleWebSocket/emitOutcomeReceipt/c9562714aa65176b": {
       "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `contract` is included when this call sets the contract gate result, and omitted otherwise.",
