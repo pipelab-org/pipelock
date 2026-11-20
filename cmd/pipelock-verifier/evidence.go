@@ -6,7 +6,6 @@ package main
 import (
 	"crypto/ed25519"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -103,23 +102,6 @@ func decodePinnedEvidenceKey(keyHex string) (ed25519.PublicKey, error) {
 		return nil, fmt.Errorf("pinned key length=%d, want %d", len(raw), ed25519.PublicKeySize)
 	}
 	return ed25519.PublicKey(raw), nil
-}
-
-func detectSingleReceiptRecordType(data []byte) (string, error) {
-	var probe struct {
-		RecordType string `json:"record_type"`
-		Version    int    `json:"version"`
-	}
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return "", fmt.Errorf("parse receipt JSON: %w", err)
-	}
-	if probe.RecordType != "" {
-		return probe.RecordType, nil
-	}
-	if probe.Version == 1 {
-		return recordTypeActionV1, nil
-	}
-	return "", nil
 }
 
 func decodeEvidenceReceipt(data []byte) (contractreceipt.EvidenceReceipt, error) {

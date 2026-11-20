@@ -108,6 +108,13 @@ type JournalEntry struct {
 	SignerKeyIDs      []string  `json:"signer_key_ids,omitempty"`
 }
 
+func (s Store) withLock(fn func() error) error {
+	if err := os.MkdirAll(s.root, dirPerm); err != nil {
+		return fmt.Errorf("create contract store root: %w", err)
+	}
+	return s.withExistingLock(fn)
+}
+
 // Reload validates active.json and returns the accepted state. If validation
 // fails, the caller keeps its previous in-memory state.
 func (s Store) Reload(opts Options) (State, error) {
@@ -264,24 +271,47 @@ func (s Store) accepted(hash string, opts Options, checkTombstones bool) (State,
 // WriteActive validates and atomically writes active.json. The advisory lock
 // serializes local same-host writers so the prior-manifest check is not stale.
 func (s Store) WriteActive(raw []byte, opts Options) (string, error) {
+	return s.WriteActiveRecorded(raw, opts, nil)
+}
+
+// WriteActiveRecorded records the result of locked validation before publishing
+// active.json. If recording fails, the prior manifest stays active. A successful
+// validation record confirms the candidate passed validation even if publishing
+// the file subsequently fails. When a recorder is provided, the store directory
+// must already exist so recording and publication cannot recreate it.
+func (s Store) WriteActiveRecorded(raw []byte, opts Options, recordValidation func(error) error) (string, error) {
+	recordResult := func(validationErr error) error {
+		if recordValidation != nil {
+			if err := recordValidation(validationErr); err != nil {
+				return errors.Join(validationErr, err)
+			}
+		}
+		return validationErr
+	}
+	lock := s.withExistingLock
+	if recordValidation == nil {
+		lock = s.withLock
+	}
 	var manifestHash string
-	err := s.withLock(func() error {
+	err := lock(func() error {
 		lockedOpts := opts
 		current, err := s.currentActiveLocked(opts)
 		if err != nil && !errors.Is(err, ErrNoActiveManifest) {
-			return err
+			return recordResult(err)
 		}
 		if err == nil {
 			lockedOpts.PreviousHash = current.ManifestHash
 			lockedOpts.PreviousGeneration = current.Envelope.Body.Generation
 		}
-		state, err := s.ValidateEnvelope(raw, lockedOpts)
-		if err != nil {
+		state, validationErr := s.ValidateEnvelope(raw, lockedOpts)
+		if err := recordResult(validationErr); err != nil {
 			return err
 		}
 		manifestHash = state.ManifestHash
-		if err := mkdirAll(s.root, dirPerm); err != nil {
-			return fmt.Errorf("create contract store root: %w", err)
+		if recordValidation == nil {
+			if err := mkdirAll(s.root, dirPerm); err != nil {
+				return fmt.Errorf("create contract store root: %w", err)
+			}
 		}
 		if err := atomicWrite(s.activePath(), append(bytes.TrimSpace(raw), '\n'), filePerm); err != nil {
 			return fmt.Errorf("write active manifest: %w", err)

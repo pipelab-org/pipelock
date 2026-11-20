@@ -35,6 +35,9 @@ type ReceiptGroupResult struct {
 	CloseManifestSHA string              `json:"close_manifest_sha256,omitempty"`
 	ShardCount       int                 `json:"shard_count"`
 	Error            string              `json:"error,omitempty"`
+	// cause is the error behind Error. Startup refusal wraps it so a
+	// sentinel survives the public string.
+	cause error
 	// readIncomplete marks GROUP_INCOMPLETE that came from evidence that
 	// could not be read or changed during verification, as opposed to a
 	// group that crashed before its close. Only the latter can be a
@@ -45,10 +48,20 @@ type ReceiptGroupResult struct {
 // setReadError keeps unavailable evidence distinct from a stable invalid group.
 func (r *ReceiptGroupResult) setReadError(err error) {
 	r.Error = err.Error()
+	r.cause = err
 	if recorder.IsEvidenceUnavailable(err) {
 		r.Verdict = GroupIncomplete
 		r.readIncomplete = true
 	}
+}
+
+// predecessorError is the refusal a successor startup returns. The stored
+// cause keeps wrapped sentinels; a public string is all that remains otherwise.
+func (r ReceiptGroupResult) predecessorError() error {
+	if r.cause != nil {
+		return r.cause
+	}
+	return errors.New(r.Error)
 }
 
 // VerifyReceiptGroup checks the exact published manifests and every claimed
@@ -103,6 +116,7 @@ func verifyReceiptGroupWithContext(dir, groupID string, trusted []string, index 
 		if checkErr != nil || after != before || identityErr != nil || !os.SameFile(rootInfo, endRoot) || !os.SameFile(aelInfo, endAEL) {
 			result.Verdict = GroupIncomplete
 			result.readIncomplete = true
+			result.cause = nil
 			result.Error = "receipt group evidence changed during verification; no verdict reached; stop the writer and verify again or verify an atomic snapshot"
 		}
 	}()
@@ -409,6 +423,10 @@ func receiptGroupDirectoryIdentity(dir string) (os.FileInfo, os.FileInfo, error)
 	return root, ael, nil
 }
 
+func missingGroupTransitionError(groupID string, err error) error {
+	return fmt.Errorf("receipt group transition missing for %s; stop the recorder and run pipelock evidence repair-group-transition --dir <evidence-dir> --group %s --key-file <opening-key>: %w", groupID, groupID, err)
+}
+
 func verifyReceiptGroupTransitionWithContext(dir string, successor ReceiptGroupOpen, newHash string, trusted []string, ceremony *startupGroupVerification) (retErr error) {
 	if ceremony != nil {
 		if err := ceremony.check(); err != nil {
@@ -452,8 +470,11 @@ func verifyReceiptGroupTransitionWithContext(dir string, successor ReceiptGroupO
 	}
 	transitionName, _ := ReceiptGroupFileName(successor.GroupID, "transition")
 	transitionBytes, err := readBoundedGroupFileUsing(dir, transitionName, ceremony)
+	if errors.Is(err, os.ErrNotExist) {
+		return missingGroupTransitionError(successor.GroupID, err)
+	}
 	if err != nil {
-		return fmt.Errorf("receipt group transition missing: %w", err)
+		return fmt.Errorf("read receipt group transition: %w", err)
 	}
 	transition, err := UnmarshalReceiptGroupTransition(transitionBytes, successor, predecessor, newHash, oldHash, oldCloseHash, trusted)
 	if err != nil {

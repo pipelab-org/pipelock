@@ -13,6 +13,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -42,6 +43,7 @@ func emitRequestScopedTimeout(
 	if len(id) != 0 {
 		outcome, ok := consumeTrackedRequestOutcome(tracker, id)
 		if ok {
+			defer outcome.releaseNativeLease()
 			resp := timeoutErrorResponse(id)
 			if wErr := opts.writeMCPGeneratedResponse(logW, writer, outcome.Receipt, resp, "response_timeout"); wErr != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", wErr)
@@ -72,6 +74,7 @@ func emitTrackedTerminalOutcome(logW io.Writer, tracker *RequestTracker, id json
 	if !ok {
 		return
 	}
+	defer outcome.releaseNativeLease()
 	emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, outcome.Receipt, mcpResponseStatus(resp), int64(len(resp)), reason, opts.requireReceipts())
 }
 
@@ -79,6 +82,7 @@ func emitTrackedTerminalOutcome(logW io.Writer, tracker *RequestTracker, id json
 // upstream contract refused. Notifications are never tracked, so their caller
 // passes the outcome from the input decision directly.
 func emitContractRefusedOutcome(logW io.Writer, outcome TrackedRequestOutcome, gate mcpContractGateOutput, reason string, bytesTransferred int64, opts MCPProxyOpts) {
+	defer outcome.releaseNativeLease()
 	receiptOpts := mcpWithContractReceipt(outcome.Receipt, gate)
 	receiptOpts.Layer = mcpContractReceiptLayer
 	emitMCPUpstreamRefusal(opts, logW, receiptOpts, bytesTransferred, reason)
@@ -89,6 +93,7 @@ func emitTrackedIncompleteOutcome(logW io.Writer, tracker *RequestTracker, id js
 	if !ok {
 		return
 	}
+	defer outcome.releaseNativeLease()
 	emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, outcome.Receipt, "incomplete", -1, reason, opts.requireReceipts())
 }
 
@@ -152,6 +157,13 @@ func RunHTTPProxy(
 	safeLogW := &syncWriter{w: logW}
 	ctx, cancel, sessionExit := newSessionBoundContext(ctx, startupParentWatch, clientIn, safeLogW, opts.sessionExitForTest)
 	defer cancel()
+	defer opts.closeNativeInputOnStop(clientIn)()
+	ctx, cancelCapacity := context.WithCancelCause(ctx)
+	defer cancelCapacity(nil)
+	defer opts.nativeCapacity().OnStopAfter(opts.shutdownGrace(), func() {
+		cancelCapacity(ael.ErrCapacity)
+		interruptNativeOutput(clientOut)
+	})()
 
 	// Set transport for capture records if not already set by caller.
 	if opts.Transport == "" {
@@ -252,6 +264,11 @@ func RunHTTPProxy(
 	fwdOpts.DeferResolverRuntime = resolverRuntime
 	killWatchCtx, stopKillWatch := context.WithCancel(ctx)
 	go watchDeferredKillSwitch(killWatchCtx, fwdOpts.KillSwitch, fwdOpts.deferManager())
+	capacityDeferralsDone := make(chan struct{})
+	go func() {
+		defer close(capacityDeferralsDone)
+		watchCapacityDeferrals(killWatchCtx, fwdOpts)
+	}()
 	defer func() {
 		stopKillWatch()
 		resolverRuntime.Cancel()
@@ -259,6 +276,7 @@ func RunHTTPProxy(
 			manager.ResolveAll(config.ActionBlock, deferred.SourceCancel)
 		}
 		resolverRuntime.Wait()
+		<-capacityDeferralsDone
 	}()
 
 	bridgeHeaders := &mcpBridgeHeaders{client: httpClient, state: contractState, opts: fwdOpts, log: safeLogW}
@@ -266,11 +284,21 @@ func RunHTTPProxy(
 
 	clientReader := transport.NewStdioReader(clientIn)
 
-	var wg sync.WaitGroup
+	var wg, heldNative sync.WaitGroup
 	var getStreamOnce sync.Once
 	var lastScanErr error
+	var admission receipt.EmitOpts
+	finishWarnings := func() {}
+	settleAdmission := func() {
+		finishWarnings()
+		admission.ReleaseNativeAdmission()
+	}
+	defer settleAdmission()
 
 	for {
+		settleAdmission()
+		finishWarnings = func() {}
+		admission = receipt.EmitOpts{}
 		msg, err := readMCPInputMessage(ctx, clientIn, clientReader)
 		if err != nil {
 			if errors.Is(err, io.EOF) || (sessionExit.inProgress() && (isSessionExitCloseErr(err) || errors.Is(err, context.Canceled))) {
@@ -289,6 +317,15 @@ func RunHTTPProxy(
 		// instead of re-parsing.
 		fwdOpts := fwdOpts // Each deferred closure retains this message's policy snapshot.
 		frame := ParseMCPFrame(msg)
+		var admissionErr error
+		admission, admissionErr = fwdOpts.admitNativeRequest()
+		if admissionErr != nil {
+			writeNativeAdmissionDenial(fwdOpts, safeLogW, safeClientOut, frame.ID, admissionErr)
+			lastScanErr = admissionErr
+			break
+		}
+		fwdOpts.nativeAdmission = admission
+		fwdOpts.WarnContext, finishWarnings = fwdOpts.nativeWarningContext(fwdOpts.warnContext(), admission)
 		if taintCfg := fwdOpts.TaintCfg; fwdOpts.TaintCfgFn != nil || (taintCfg != nil && taintCfg.Enabled) {
 			fwdOpts.deferBestEffortTaskReceipt = true
 		}
@@ -381,7 +418,16 @@ func RunHTTPProxy(
 			// block unrelated upstream work. OnceFunc also makes the manager's
 			// deferred cleanup safe after this early denial cleanup.
 			var finishDeniedRelease func()
-			holdErr := manager.Hold(deferred.HeldAction{
+			heldOpts, finishHeldAdmission, holdErr := fwdOpts.splitDeferredAdmission()
+			if holdErr == nil && heldOpts.nativeAdmission.NativeLease != nil {
+				heldNative.Add(1)
+				release := finishHeldAdmission
+				finishHeldAdmission = func() {
+					defer heldNative.Done()
+					release()
+				}
+			}
+			heldAction := deferred.HeldAction{
 				DeferID:       deferredReq.DeferID,
 				ActionID:      deferredReq.DeferID,
 				ShardIndex:    deferredReq.ShardIndex,
@@ -400,7 +446,7 @@ func RunHTTPProxy(
 				},
 				ConfirmHold: receiptSettle.confirmV3Hold(fwdOpts, deferredReq.v3Receipt),
 				BeforeAllow: func() (func(), bool) {
-					return deferredReleasePrecheck(fwdOpts, deferredGeneration)
+					return deferredReleasePrecheck(heldOpts, deferredGeneration)
 				},
 				// Prepare settles the final decision before the manager
 				// journals it, so the journal and the receipt agree. On an
@@ -474,7 +520,7 @@ func RunHTTPProxy(
 					// first so no wait for another send sits between the
 					// kill-switch claim and SendMessage; see
 					// claimDeferredRelease for the ordering argument.
-					prepared, finish := lockAndClaimDeferredRelease(&upstreamMu, fwdOpts, deferredGeneration, res)
+					prepared, finish := lockAndClaimDeferredRelease(&upstreamMu, heldOpts, deferredGeneration, res)
 					if prepared.FinalDecision == config.ActionAllow {
 						if reason := mcpTaskReleaseRefusal(fwdOpts, deferredReq.authorityFrame, deferredReq.taskTaint, false); reason != "" {
 							prepared.FinalDecision = config.ActionBlock
@@ -487,24 +533,25 @@ func RunHTTPProxy(
 						finish = sync.OnceFunc(finish)
 						finishDeniedRelease = finish
 					}
-					prepared = receiptSettle.probeAllow(fwdOpts, prepared)
+					prepared = receiptSettle.probeAllow(heldOpts, prepared)
 					return prepared, finish
 				},
 				// The release receipt is written while the journal shows the
 				// release as pending: the allow first, then a corrective block
 				// if the journal cannot record the allow as final.
 				AfterJournal: func(res deferred.Resolution) error {
-					return receiptSettle.commitAllow(fwdOpts, safeLogW, res)
+					return receiptSettle.commitAllow(heldOpts, safeLogW, res)
 				},
 				Resolve: func(res deferred.Resolution) {
-					denialOpts := fwdOpts
+					defer finishHeldAdmission()
+					denialOpts := heldOpts
 					denialOpts.denialTerminal = &terminalSlot
 					denialAudit := mcpDeferredDenialAudit(res)
 					if gateBlock != nil {
 						denialAudit = gateAudit
 					}
 					authorityDenied := res.ResolutionSource == deferred.SourceAuthority
-					if emitErr := receiptSettle.ensure(fwdOpts, safeLogW, res); emitErr != nil {
+					if emitErr := receiptSettle.ensure(heldOpts, safeLogW, res); emitErr != nil {
 						if finishDeniedRelease != nil {
 							finishDeniedRelease()
 						}
@@ -539,20 +586,39 @@ func RunHTTPProxy(
 						}
 						// upstreamMu is held by Prepare's release claim.
 						if isRequest(deferredReq.ForwardMessage) {
-							tracker.TrackRequest(deferredReq.ID, deferredReq.Method)
+							outcome := TrackedRequestOutcome{Receipt: heldOpts.nativeAdmission, Method: deferredReq.Method}
+							if err := trackNativeOutcome(tracker, deferredReq.ID, outcome); err != nil {
+								if finishDeniedRelease != nil {
+									finishDeniedRelease()
+								}
+								writeNativeAdmissionDenial(heldOpts, safeLogW, safeClientOut, deferredReq.ID, err)
+								return
+							}
 						}
-						respReader, sendErr := httpClient.SendMessageWithOptions(ctx, deferredReq.ForwardMessage, transport.HTTPMessageOptions{Headers: releaseHeaders})
+						releaseCtx := heldOpts.warnContext()
+						releaseOpts := heldOpts
+						releaseOpts.WarnContext = releaseCtx
+						respReader, sendErr := httpClient.SendMessageWithOptions(releaseCtx, deferredReq.ForwardMessage, transport.HTTPMessageOptions{Headers: releaseHeaders})
 						release.finish(fwdOpts, safeLogW, true, sendErr)
 						if sendErr != nil {
+							if errors.Is(context.Cause(releaseCtx), ael.ErrCapacity) {
+								emitTrackedStreamError(releaseCtx, safeLogW, tracker, deferredReq.ID, releaseOpts, ael.ErrCapacity)
+								return
+							}
 							errResp := upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP request failed"))
 							if !deferredReq.IsNotification {
-								writeTrackedTerminalResponse(safeLogW, safeClientOut, tracker, deferredReq.ID, errResp, fwdOpts)
+								writeTrackedTerminalResponse(safeLogW, safeClientOut, tracker, deferredReq.ID, errResp, releaseOpts)
 							}
 							return
 						}
-						respReader = fwdOpts.withResponseTimeout(respReader)
-						foundInjection, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, tracker, fwdOpts)
-						if errors.Is(scanErr, transport.ErrResponseTimeout) {
+						if transport.IsStreamingResponse(respReader) {
+							releaseOpts.nativeSSE = true
+						}
+						respReader = releaseOpts.withResponseTimeout(respReader)
+						foundInjection, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, tracker, releaseOpts)
+						if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(context.Cause(releaseCtx), ael.ErrCapacity) {
+							emitTrackedStreamError(releaseCtx, safeLogW, tracker, deferredReq.ID, releaseOpts, ael.ErrCapacity)
+						} else if errors.Is(scanErr, transport.ErrResponseTimeout) {
 							emitRequestScopedTimeout(
 								respReader,
 								safeClientOut,
@@ -560,13 +626,14 @@ func RunHTTPProxy(
 								tracker,
 								deferredReq.ID,
 								"pipelock: upstream response timeout on deferred request; failed request closed",
-								fwdOpts,
+								releaseOpts,
 							)
 						} else if scanErr != nil {
 							_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 							// Only an unanswered request gets a terminal error. A stream
 							// can fail after its response already consumed the ID.
 							if outcome, pending := consumeTrackedRequestOutcome(tracker, deferredReq.ID); pending {
+								defer outcome.releaseNativeLease()
 								errResp := upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP response failed"))
 								if !deferredReq.IsNotification {
 									if err := fwdOpts.writeMCPGeneratedResponse(safeLogW, safeClientOut, outcome.Receipt, errResp, "scan_error"); err != nil {
@@ -614,8 +681,15 @@ func RunHTTPProxy(
 						}
 					}
 				},
-			})
+			}
+			if holdErr == nil {
+				holdErr = manager.Hold(heldAction)
+			}
+			if holdErr == nil && heldOpts.nativeAdmission.NativeLease.Stopping() {
+				_ = manager.Resolve(deferredReq.DeferID, config.ActionBlock, deferred.SourceCancel)
+			}
 			if holdErr != nil {
+				finishHeldAdmission()
 				errorMessage, emitErr := emitHoldFailureResolution(fwdOpts, safeLogW, holdErr, holdFailureResolution{
 					DeferID:       deferredReq.DeferID,
 					ShardIndex:    deferredReq.ShardIndex,
@@ -650,13 +724,14 @@ func RunHTTPProxy(
 		// Track request ID before sending to upstream for confused deputy protection.
 		// Only track requests (have "method"), not client responses to
 		// server-initiated calls, to prevent tracker pollution.
-		if isRequest(msg) {
-			if decision.Outcome.Receipt.ActionID != "" {
-				outcome := decision.Outcome
-				outcome.Method = frame.Method
-				tracker.TrackOutcome(frame.ID, outcome)
-			} else {
-				tracker.TrackRequest(frame.ID, frame.Method)
+		if isTrackableRequest(msg, frame.ID) {
+			outcome := decision.Outcome
+			outcome.Receipt = outcome.Receipt.InheritAdmission(admission)
+			outcome.Method = frame.Method
+			if err := trackNativeOutcome(tracker, frame.ID, outcome); err != nil {
+				emitMCPBlockedOutcomeReceipt(fwdOpts.receiptEmitter(), fwdOpts.v2ReceiptEmitter(), fwdOpts.ReceiptGroup, safeLogW, outcome.Receipt, -1, "request_tracking_failed", fwdOpts.requireReceipts())
+				writeNativeAdmissionDenial(fwdOpts, safeLogW, safeClientOut, frame.ID, err)
+				continue
 			}
 		}
 
@@ -774,12 +849,17 @@ func RunHTTPProxy(
 			outcome.Receipt.TaintDecision = config.ActionBlock
 			outcome.Receipt.TaintDecisionReason = reason
 			emitMCPUpstreamRefusal(fwdOpts, safeLogW, outcome.Receipt, int64(len(errResp)), reason)
+			outcome.releaseNativeLease()
 			continue
 		}
 		// Keep receipt I/O out of the task-check-to-send interval.
 		emitPendingMCPInputReceipt(decision.pendingReceipt)
 		if err != nil {
 			unlockInventory()
+			if errors.Is(context.Cause(ctx), ael.ErrCapacity) {
+				emitTrackedStreamError(ctx, safeLogW, tracker, frame.ID, fwdOpts, ael.ErrCapacity)
+				break
+			}
 			// SendMessage returns context cancellation/deadline errors as-is
 			// and sanitizes upstream request failures/status errors so raw
 			// upstream bytes cannot cross this logging boundary.
@@ -804,8 +884,17 @@ func RunHTTPProxy(
 
 		// Scan and forward response. Apply the optional per-read response
 		// timeout (no-op when disabled) so a hung HTTP upstream fails closed.
-		respReader = fwdOpts.withResponseTimeout(respReader)
-		foundInjection, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, tracker, fwdOpts)
+		if transport.IsStreamingResponse(respReader) {
+			fwdOpts.nativeSSE = true
+			fwdOpts.WarnContext = ctx
+		}
+		foundInjection, scanErr := ForwardScanned(fwdOpts.withResponseTimeout(respReader), safeClientOut, safeLogW, tracker, fwdOpts)
+		if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(context.Cause(ctx), ael.ErrCapacity) {
+			emitTrackedStreamError(ctx, safeLogW, tracker, frame.ID, fwdOpts, ael.ErrCapacity)
+			lastScanErr = ael.ErrCapacity
+			unlockInventory()
+			break
+		}
 		if errors.Is(scanErr, transport.ErrResponseTimeout) {
 			emitRequestScopedTimeout(
 				respReader,
@@ -846,10 +935,12 @@ func RunHTTPProxy(
 		}
 	}
 
-	// Stop the GET stream and any held-call release before terminating the
-	// session. DeleteSession clears the negotiated version, so a release sent
-	// after it would leave without its modern request metadata; releases send
-	// on ctx, and DeleteSession uses its own context.
+	// Capacity stops intake immediately. Let admitted background work settle
+	// before deleting the upstream session, with I/O interrupted at the cutoff.
+	if opts.nativeCapacityStopError() != nil {
+		heldNative.Wait()
+		wg.Wait()
+	}
 	cancel()
 	if httpClient.SessionID() != "" {
 		httpClient.DeleteSession(safeLogW)
@@ -857,6 +948,9 @@ func RunHTTPProxy(
 	wg.Wait()
 	emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "upstream_closed")
 
+	if err := opts.nativeCapacityStopError(); err != nil {
+		return err
+	}
 	return lastScanErr
 }
 
@@ -871,6 +965,8 @@ func mcpLocalRefusedOutcome(tracker *RequestTracker, id json.RawMessage, decisio
 		}
 	}
 	if pending := decision.pendingReceipt; pending != nil {
+		outcome.releaseNativeLease()
+		outcome.ownsNativeLease = false
 		outcome.Receipt = pendingRefusalIntent(pending)
 	}
 	return outcome
@@ -891,6 +987,7 @@ func emitPendingMCPInputReceipt(pending *mcpToolReceiptOpts) {
 }
 
 func emitBridgeHeaderContractRefusal(logW io.Writer, outcome TrackedRequestOutcome, reason string, opts MCPProxyOpts) {
+	defer outcome.releaseNativeLease()
 	intent := outcome.Receipt
 	intent.Layer = mcpReceiptLayerHeaderContract
 	emitMCPUpstreamRefusal(opts, logW, intent, -1, reason)

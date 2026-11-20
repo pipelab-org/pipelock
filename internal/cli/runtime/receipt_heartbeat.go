@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
@@ -41,6 +42,9 @@ func startReceiptHeartbeat(
 		if err := e.EmitHeartbeat(); err != nil && !errors.Is(err, receipt.ErrChainSealed) {
 			if logW != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: receipt heartbeat emit failed: %v\n", err)
+			}
+			if errors.Is(err, ael.ErrCapacity) {
+				return false
 			}
 			if requireReceipts {
 				e.MarkUnhealthy(err)

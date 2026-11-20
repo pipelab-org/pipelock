@@ -26,6 +26,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/authlimit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
@@ -596,6 +597,20 @@ func RunHTTPListenerProxy(
 		requestBaseOpts := baseOpts.snapshotScanPolicy()
 		// Only successful door verification supplies signed caller evidence.
 		requestBaseOpts.receiptCaller = listenerPrincipal.verifiedDoor
+		admission, admissionErr := requestBaseOpts.admitNativeRequest()
+		if admissionErr != nil {
+			denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
+			http.Error(w, admissionErr.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		requestBaseOpts.nativeAdmission = admission
+		defer admission.ReleaseNativeAdmission()
+		requestCtx, stopCapacity := httpstream.WithCapacityGrace(r.Context(), w, admission.NativeLease, opts.shutdownGrace())
+		defer stopCapacity()
+		admissionCtx, finishWarnings := requestBaseOpts.nativeWarningContext(requestCtx, admission)
+		defer finishWarnings()
+		r = r.WithContext(admissionCtx)
+		requestBaseOpts.WarnContext = admissionCtx
 		reqScanner := requestBaseOpts.scanner()
 		if reqScanner == nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scanner unavailable\n")
@@ -1373,6 +1388,7 @@ func RunHTTPListenerProxy(
 				streamWriter.flusher = flusher
 			}
 			stateWriter := &listenerStateMessageWriter{state: clientState, writer: streamWriter, opts: reqOpts}
+			reqOpts.nativeSSE = true
 			if reqOpts.ReceiptV3 != nil {
 				streamWriter.responseWriter = w.ResponseWriter
 				reqOpts.finishV3ResponseDelivery = func(entry mcpV3Receipt, writeErr error) {
@@ -1380,6 +1396,11 @@ func RunHTTPListenerProxy(
 				}
 			}
 			foundInjection, scanErr := ForwardScanned(transport.NewSSEReader(upResp.Body), stateWriter, safeLogW, NewStrictRequestTracker(), reqOpts)
+			if errors.Is(scanErr, ael.ErrCapacity) {
+				recordListenerStreamError(r.Context(), safeLogW, reqOpts, mcpStreamReceipt(reqOpts, r.Method), true, scanErr)
+				refuseListenerStreamCapacity(w, r, streamWriter)
+				return
+			}
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			}
@@ -2117,6 +2138,10 @@ func RunHTTPListenerProxy(
 		// Keep receipt I/O out of the task-check-to-send interval when taint is enabled.
 		emitPendingReceipt()
 		if err != nil {
+			if errors.Is(context.Cause(upReq.Context()), ael.ErrCapacity) && decision.Outcome.Receipt.ActionID != "" {
+				intent := decision.Outcome.Receipt.InheritAdmission(admission)
+				emitMCPOutcomeReceipt(scanOpts.receiptEmitter(), scanOpts.v2ReceiptEmitter(), scanOpts.ReceiptGroup, safeLogW, intent, "502", -1, nativeCapacityReason, scanOpts.requireReceipts())
+			}
 			if handleMetadataDialError(err, frame.ID) {
 				return
 			}
@@ -2251,6 +2276,9 @@ func RunHTTPListenerProxy(
 		if outcome.Method == "" {
 			outcome.Method = frame.Method
 		}
+		// The response can settle against the request admission even if its
+		// SSE envelope arrives after capacity stopped admitting new events.
+		outcome.Receipt = outcome.Receipt.InheritAdmission(admission)
 		responseTracker.TrackOutcome(frame.ID, outcome)
 		upstreamIsSSE := transport.HasSingleSSEContentType(upResp.Header)
 		if setupState && upstreamIsSSE {
@@ -2314,7 +2342,19 @@ func RunHTTPListenerProxy(
 				}
 			}
 			streamReader := &requestDoneReader{MessageReader: reader, tracker: responseTracker, release: releaseContract}
+			reqOpts.nativeSSE = true
 			foundInjection, scanErr := ForwardScanned(streamReader, revocableWriter, safeLogW, responseTracker, reqOpts)
+			if errors.Is(scanErr, ael.ErrCapacity) {
+				streamOutcome := decision.Outcome.Receipt
+				_, pending := responseTracker.Consume(frame.ID)
+				standalone := !pending || streamOutcome.ActionID == ""
+				if standalone {
+					streamOutcome = mcpStreamReceipt(reqOpts, r.Method)
+				}
+				recordListenerStreamError(r.Context(), safeLogW, reqOpts, streamOutcome, standalone, scanErr)
+				refuseListenerStreamCapacity(w, r, streamWriter)
+				return
+			}
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			}
@@ -2489,12 +2529,8 @@ func RunHTTPListenerProxy(
 	}
 
 	_, _ = fmt.Fprintf(safeLogW, "pipelock: MCP reverse proxy listening on %s\n", ln.Addr())
-	timeout := opts.ListenerShutdownTimeout
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
 	serveErr := httpstream.ServeUntilShutdown(ctx, func() error { return srv.Serve(ln) }, func() error { //nolint:gosec // G118: fresh context preserves the shutdown grace period after cancellation
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), timeout)
+		shutdownCtx, shutdownCancel := httpstream.DrainContext(opts.shutdownGrace(), opts.nativeCapacity().Stopped())
 		defer shutdownCancel()
 		return httpstream.DrainServer(shutdownCtx, httpstream.GatedServer{Server: srv, Gate: gate})
 	})

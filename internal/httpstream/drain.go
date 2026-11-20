@@ -10,6 +10,9 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 )
 
 // Gate counts handlers and their asynchronous receipt-producing work. Its zero
@@ -229,10 +232,78 @@ func (g *Gate) StopHijacks() {
 	}
 }
 
+// WithCapacityGrace lets an admitted HTTP request settle after capacity stop.
+// At the cutoff, cancel upstream I/O and expire socket reads and writes.
+func WithCapacityGrace(ctx context.Context, w http.ResponseWriter, lease *ael.Lease, grace time.Duration) (context.Context, func()) {
+	if lease == nil {
+		return ctx, func() {}
+	}
+	return withCapacityGrace(ctx, w, grace, lease.OnStopAfter)
+}
+
+// WithCapacityStop bounds listener work that does not hold a native lease.
+func WithCapacityStop(ctx context.Context, w http.ResponseWriter, capacity *ael.Capacity, grace time.Duration) (context.Context, func()) {
+	if capacity == nil {
+		return ctx, func() {}
+	}
+	return withCapacityGrace(ctx, w, grace, capacity.OnStopAfter)
+}
+
+func withCapacityGrace(ctx context.Context, w http.ResponseWriter, grace time.Duration, onStopAfter func(time.Duration, func()) func()) (context.Context, func()) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	stop := onStopAfter(grace, func() {
+		cancel(ael.ErrCapacity)
+		if w != nil {
+			controller := http.NewResponseController(w)
+			deadline := time.Now()
+			_ = controller.SetReadDeadline(deadline)
+			_ = controller.SetWriteDeadline(deadline)
+		}
+	})
+	return ctx, func() {
+		stop()
+		cancel(nil)
+	}
+}
+
 // GatedServer pairs a server with the gate wrapping its outermost handler.
 type GatedServer struct {
 	Server *http.Server
 	Gate   *Gate
+}
+
+// DrainContext times out ordinary shutdown. A native evidence capacity stop
+// disarms the timeout so streams can close and the gate can join deferred
+// evidence work before the recorder seals.
+func DrainContext(timeout time.Duration, capacityStopped <-chan struct{}) (context.Context, context.CancelFunc) {
+	if capacityStopped == nil {
+		return context.WithTimeout(context.Background(), timeout)
+	}
+	select {
+	case <-capacityStopped:
+		return context.WithCancel(context.Background())
+	default:
+	}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	timer := time.AfterFunc(timeout, func() {
+		select {
+		case <-capacityStopped:
+		default:
+			cancel(context.DeadlineExceeded)
+		}
+	})
+	return drainTimeoutContext{ctx}, func() {
+		timer.Stop()
+		cancel(context.Canceled)
+	}
+}
+
+// The timeout is conditional, so Deadline cannot promise a time. Preserve
+// context.DeadlineExceeded for callers that distinguish timeouts from cancellation.
+type drainTimeoutContext struct{ context.Context }
+
+func (ctx drainTimeoutContext) Err() error {
+	return context.Cause(ctx.Context)
 }
 
 // DrainServer joins handlers and registered child work within ctx. net/http

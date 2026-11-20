@@ -111,7 +111,7 @@ func TestGitHubGitLabAudience_HeaderCarriers(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var allows []scanner.CredentialAudienceAllow
 			result := scanRequestHeadersForTargetWithAudience(t.Context(), http.Header{tc.header: []string{tc.value}}, cfg, sc, tc.target, nil,
-				func(a scanner.CredentialAudienceAllow) error { allows = append(allows, a); return nil })
+				func(a []scanner.CredentialAudienceAllow) error { allows = append(allows, a...); return nil })
 			clean := result == nil || result.Clean
 			if clean != tc.clean {
 				t.Fatalf("clean=%t want %t result=%+v allows=%+v", clean, tc.clean, result, allows)
@@ -187,7 +187,7 @@ func TestCredentialAudience_AllowImpliesClean(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var allows []scanner.CredentialAudienceAllow
 			result := scanRequestHeadersForTargetWithAudience(t.Context(), tc.headers, cfg, sc, tc.target, nil,
-				func(a scanner.CredentialAudienceAllow) error { allows = append(allows, a); return nil })
+				func(a []scanner.CredentialAudienceAllow) error { allows = append(allows, a...); return nil })
 			clean := result == nil || result.Clean
 			if clean != tc.clean {
 				t.Fatalf("clean=%t want %t result=%+v allows=%+v", clean, tc.clean, result, allows)
@@ -207,7 +207,7 @@ func TestCredentialAudience_AllowImpliesClean(t *testing.T) {
 	_, body := scanRequestBody(context.Background(), BodyScanRequest{
 		Body: strings.NewReader(`{"a":"` + slack + `","b":"` + aws + `"}`), ContentType: "application/json",
 		MaxBytes: cfg.RequestBodyScanning.MaxBodyBytes, Scanner: sc, Target: "https://slack.com/api/auth.test", AudienceSurface: "body",
-		OnCredentialAudienceAllow: func(a scanner.CredentialAudienceAllow) error { bodyAllows = append(bodyAllows, a); return nil },
+		OnCredentialAudienceAllows: func(a []scanner.CredentialAudienceAllow) error { bodyAllows = append(bodyAllows, a...); return nil },
 	})
 	if body.Clean || len(bodyAllows) != 0 {
 		t.Fatalf("body with allowed and unrelated secret: clean=%t allows=%+v", body.Clean, bodyAllows)
@@ -221,8 +221,11 @@ func TestCredentialAudience_AllowImpliesClean(t *testing.T) {
 	redactedBuf, redacted := scanRequestBody(context.Background(), BodyScanRequest{
 		Body: strings.NewReader(`{"token":"` + slack + `"}`), ContentType: "application/json",
 		MaxBytes: cfg.RequestBodyScanning.MaxBodyBytes, Scanner: sc, Target: "https://slack.com/api/auth.test", AudienceSurface: "body",
-		RedactMatcher:             redact.NewDefaultMatcher(),
-		OnCredentialAudienceAllow: func(a scanner.CredentialAudienceAllow) error { redactedAllows = append(redactedAllows, a); return nil },
+		RedactMatcher: redact.NewDefaultMatcher(),
+		OnCredentialAudienceAllows: func(a []scanner.CredentialAudienceAllow) error {
+			redactedAllows = append(redactedAllows, a...)
+			return nil
+		},
 	})
 	if strings.Contains(string(redactedBuf), slack) || redacted.RedactionReport == nil || !redacted.RedactionReport.Applied {
 		t.Fatalf("control: redaction did not rewrite the credential: body=%q report=%+v", redactedBuf, redacted.RedactionReport)
@@ -271,7 +274,7 @@ func TestGitHubAudience_JoinedHeadersKeepSplitSecrets(t *testing.T) {
 	t.Cleanup(coreSC.Close)
 	var coreAllows []scanner.CredentialAudienceAllow
 	coreResult := scanRequestHeadersForTargetWithAudience(t.Context(), http.Header{"Authorization": []string{"Bearer " + gh}}, coreOnly, coreSC, target, nil,
-		func(a scanner.CredentialAudienceAllow) error { coreAllows = append(coreAllows, a); return nil })
+		func(a []scanner.CredentialAudienceAllow) error { coreAllows = append(coreAllows, a...); return nil })
 	if coreResult != nil && !coreResult.Clean {
 		t.Fatalf("core-only GitHub token reblocked by joined scan: %+v", coreResult.DLPMatches)
 	}
@@ -396,7 +399,7 @@ func TestGitHubGitLabAudience_GitTransportRule(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var allows []scanner.CredentialAudienceAllow
 			result := scanRequestHeadersForTargetWithAudience(t.Context(), http.Header{"Authorization": []string{tc.value}}, cfg, sc, tc.target, nil,
-				func(a scanner.CredentialAudienceAllow) error { allows = append(allows, a); return nil })
+				func(a []scanner.CredentialAudienceAllow) error { allows = append(allows, a...); return nil })
 			clean := result == nil || result.Clean
 			if clean != tc.clean {
 				t.Fatalf("clean=%t want %t result=%+v allows=%+v", clean, tc.clean, result, allows)

@@ -27,16 +27,16 @@ var receiptEmissionCalls = strings.Fields(
 		"emitRecordedReceipt emitRecordedEffectRefusal emitRecordedUpstreamRefusal emitRequiredReceipt emitRequestPolicyReceipt confirmResponseDecision confirmV3ResponseDecision confirmResponseOrBlock " +
 		"interceptConfirmResponseOrBlock interceptEmitReceiptOrBlock interceptEmitRequiredReceipt interceptEmitOutcomeReceipt " +
 		"emitOutcomeReceipt emitObservedOutcomeReceipt emitOutcomeReceiptWithPattern " +
-		"recordIssuerQueryAllow recordIssuerCookieAllow recordCredentialAudienceAllow recordCredentialAudienceAllows recordV3IssuerCookieAllows recordV3CredentialAudienceAllows recordV3ExceptionAllows " +
+		"recordIssuerQueryAllow recordIssuerCookieAllow recordIssuerCookieAllows recordCredentialAudienceAllow recordCredentialAudienceAllows recordV3IssuerCookieAllows recordV3CredentialAudienceAllows recordV3ExceptionAllows " +
 		"emitDeferredReceipt emitAllowPathReceipt emitReceiptFailureMarker recordReceiptEmitterUnavailable " +
-		"emitReceipt emitMCPReceiptDecision emitMCPOutcome emitMCPToolScanReceipt " +
+		"emitReceipt emitFrameReceipt emitMCPReceiptDecision emitMCPOutcome emitMCPToolScanReceipt " +
 		"emitForwardDenial emitHoldFailureResolution emitKillSwitchDenialReceipt confirmShieldIntervention " +
 		"commitAllow ensure blockCrossMessageIncomplete closeUpstreamCrossMessage sseFindingReceiptConfirmer emitV1 " +
 		"emitCredentialAudienceReceipt emitCredentialAudienceReceiptWithFallback emitRequiredV2Receipt emitReceiptFailureMarkerWithLogger " +
 		"emitReceiptDecisionWithControl EmitMCPDecision EmitMCPGroupDecision emitMCPDecision emitMCPV2Decision emitMCPBlockedOutcomeReceipt " +
 		"emitReceiptWithEmitter emitRequiredReceiptWithEmitter interceptEmitReceipt " +
-		"emitV2Receipt emitV2 emitRequiredV2 emitGroupV2Receipt emitDLPWarn " +
-		"EmitSessionOpen EmitSessionClose EmitHeartbeat EmitTranscriptRoot " +
+		"emitV2Receipt emitV2 emitRequiredV2 emitGroupV2Receipt emitDLPWarn EmitDLPWarning " +
+		"EmitSessionOpen EmitSessionClose EmitHeartbeat EmitTranscriptRoot prepareNativeAEL " +
 		"BuildProxyDecisionReceipt BuildProxyDecisionWithSpansReceipt BuildSecretEgressDecisionReceipt " +
 		"SignReceipt EmitBatch RecordPrescanned buildReceipt confirmTransportReceipt recordTransportOutcome recordTransportNotReleased writePayload finishRedirect confirmV3ResponseDelivery confirmV3StreamAdmission emitMCPUpstreamRefusal recordMCPStreamDiagnostic recordV3MCPRefusal recordV3TransportRefusal writeMCPGeneratedResponse writeV3Response WriteAction WriteAdmissionBatch")
 
@@ -434,7 +434,7 @@ func checkWebSocketReceiptBoundary(t *testing.T, site, boundary string, node ast
 	switch selector.Sel.Name {
 	case "writePayload":
 		index = 1
-	case "emitReceipt":
+	case "emitReceipt", "emitFrameReceipt":
 	default:
 		return
 	}

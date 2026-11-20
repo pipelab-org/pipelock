@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/verification"
@@ -135,6 +136,10 @@ func loadClosedGroupPredecessorWithOptions(dir, groupID string, trusted []string
 		return nil, err
 	}
 	if open.PreviousGroupID != "" {
+		transitionName, _ := ReceiptGroupFileName(groupID, "transition")
+		if _, err := os.Lstat(filepath.Join(dir, transitionName)); errors.Is(err, os.ErrNotExist) {
+			return nil, missingGroupTransitionError(groupID, err)
+		}
 		priorName, _ := ReceiptGroupFileName(open.PreviousGroupID, "open")
 		priorRaw, err := readBoundedGroupFile(dir, priorName)
 		if err != nil {
@@ -160,13 +165,13 @@ func loadClosedGroupPredecessorWithOptions(dir, groupID string, trusted []string
 		return nil, fmt.Errorf("receipt group startup verification canceled: %w", checkErr)
 	}
 	if verified.Verdict != GroupValid && verified.Verdict != GroupIncomplete {
-		return nil, fmt.Errorf("receipt group predecessor is not complete: %s", verified.Error)
+		return nil, fmt.Errorf("receipt group predecessor is not complete: %w", verified.predecessorError())
 	}
 	// A predecessor that could not be read, or changed while it was read, has
 	// not been shown to be a crashed group. Stop before publishing anything so
 	// a transient read failure never becomes durable successor state.
 	if verified.readIncomplete {
-		return nil, fmt.Errorf("receipt group predecessor could not be verified; fix access to the evidence directory and restart: %s", verified.Error)
+		return nil, fmt.Errorf("receipt group predecessor could not be verified; fix access to the evidence directory and restart: %w", verified.predecessorError())
 	}
 	// An incomplete successor may have crashed after its shard opens but before
 	// publishing its incoming transition. It cannot become a predecessor until
@@ -210,6 +215,11 @@ func openReceiptShardSet(template EmitterConfig, base string, count, processInde
 	}
 	if count < 2 || count > 32 || processIndex < 0 || processIndex >= count {
 		return nil, errors.New("receipt group requires 2 to 32 shards and a valid process index")
+	}
+	// One coordinator per run. A nil value would otherwise become a private
+	// ceiling inside each shard, and filling one stream would leave the others open.
+	if template.NativeCapacity == nil {
+		template.NativeCapacity = ael.NewCapacity(0)
 	}
 	if err := evidencename.ValidateOperatorSessionID(base); err != nil {
 		return nil, fmt.Errorf("receipt group base session: %w", err)
@@ -420,25 +430,33 @@ func (s *ReceiptShardSet) publishTransition() error {
 		s.ready.Store(true)
 		return nil
 	}
+	if _, err := s.writeTransition(s.recorder.Dir()); err != nil {
+		return err
+	}
+	s.ready.Store(true)
+	return nil
+}
+
+func (s *ReceiptShardSet) writeTransition(dir string) (string, error) {
 	previous := s.previous
 	if previous.ceremony != nil {
 		previous.ceremony.successor = s
 		if err := previous.ceremony.refreshIncomplete(previous); err != nil {
-			return err
+			return "", err
 		}
 		if err := previous.ceremony.check(); err != nil {
-			return err
+			return "", err
 		}
 	}
 	if previous.incomplete {
 		for i, shard := range previous.open.Shards {
-			head, err := verifyGroupShardPrefixUsing(s.recorder.Dir(), previous.open, previous.openHash, i, previous.ceremony)
+			head, err := verifyGroupShardPrefixUsing(dir, previous.open, previous.openHash, i, previous.ceremony)
 			if err != nil {
-				return fmt.Errorf("verify predecessor shard %d: %w", i, err)
+				return "", fmt.Errorf("verify predecessor shard %d: %w", i, err)
 			}
 			claim := ReceiptGroupPredecessor{ShardIndex: i, SessionID: shard.SessionID, FinalChainSeq: head.seq, FinalChainHash: head.hash}
 			if head.torn {
-				request := linkRequest{dir: s.recorder.Dir(), self: s.open.Shards[i%len(s.open.Shards)].SessionID, privKey: s.signer, now: time.Now().UTC(), signerKeys: []string{previous.open.SignerKey, s.open.SignerKey}}
+				request := linkRequest{dir: dir, self: s.open.Shards[i%len(s.open.Shards)].SessionID, privKey: s.signer, now: time.Now().UTC(), signerKeys: []string{previous.open.SignerKey, s.open.SignerKey}}
 				var seal *RecoverySeal
 				var err error
 				if previous.ceremony == nil {
@@ -447,14 +465,14 @@ func (s *ReceiptShardSet) publishTransition() error {
 					seal, err = previous.ceremony.publishRecovery(request, shard.SessionID)
 				}
 				if err != nil {
-					return fmt.Errorf("seal predecessor shard %d: %w", i, err)
+					return "", fmt.Errorf("seal predecessor shard %d: %w", i, err)
 				}
-				if err := verifyRecoveryBindingUsing(s.recorder.Dir(), *seal, []string{previous.open.SignerKey, s.open.SignerKey}, previous.ceremony); err != nil {
-					return fmt.Errorf("verify predecessor seal %d: %w", i, err)
+				if err := verifyRecoveryBindingUsing(dir, *seal, []string{previous.open.SignerKey, s.open.SignerKey}, previous.ceremony); err != nil {
+					return "", fmt.Errorf("verify predecessor seal %d: %w", i, err)
 				}
-				raw, err := readClaimBytes(filepath.Join(s.recorder.Dir(), ChainLinkFileName(shard.SessionID)))
+				raw, err := readClaimBytes(filepath.Join(dir, ChainLinkFileName(shard.SessionID)))
 				if err != nil {
-					return err
+					return "", err
 				}
 				digest := sha256.Sum256(raw)
 				claim.RecoverySealSHA256 = hex.EncodeToString(digest[:])
@@ -464,7 +482,7 @@ func (s *ReceiptShardSet) publishTransition() error {
 	}
 	if previous.ceremony != nil {
 		if err := previous.ceremony.check(); err != nil {
-			return err
+			return "", err
 		}
 	}
 	transition, err := SignReceiptGroupTransition(ReceiptGroupTransition{
@@ -474,17 +492,19 @@ func (s *ReceiptShardSet) publishTransition() error {
 		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}, s.open, previous.open, s.openHash, previous.openHash, previous.closeHash, s.signer)
 	if err != nil {
-		return fmt.Errorf("sign receipt group transition: %w", err)
+		return "", fmt.Errorf("sign receipt group transition: %w", err)
+	}
+	openName, _ := ReceiptGroupFileName(s.open.GroupID, "open")
+	if _, hash, err := readTopologicalGroupOpen(dir, openName, []string{s.open.SignerKey}); err != nil || hash != s.openHash {
+		return "", fmt.Errorf("%w: successor opening changed before transition", recorder.ErrEvidenceChanged)
 	}
 	name, _ := ReceiptGroupFileName(s.open.GroupID, "transition")
-	if _, err := PublishReceiptGroupArtifact(s.recorder.Dir(), name, transition); err != nil {
-		return fmt.Errorf("publish receipt group transition: %w", err)
+	hash, err := PublishReceiptGroupArtifact(dir, name, transition)
+	if err != nil {
+		return "", fmt.Errorf("publish receipt group transition: %w", err)
 	}
-	if previous.ceremony != nil {
-		previous.ceremony = nil
-	}
-	s.ready.Store(true)
-	return nil
+	previous.ceremony = nil
+	return hash, nil
 }
 
 // Opening returns a copy of the signed membership and its published digest.
@@ -605,6 +625,16 @@ func (s *ReceiptShardSet) Admit(opts EmitOpts) EmitOpts {
 	opts.ShardIndex = s.open.Shards[(s.next.Add(1)-1)%uint64(len(s.emitters))].ShardIndex
 	opts.ShardSelected = true
 	return opts
+}
+
+// AdmitNative selects a shard and reserves space before admitting a unit.
+func (s *ReceiptShardSet) AdmitNative(opts EmitOpts, records int) (EmitOpts, error) {
+	opts = s.Admit(opts)
+	e, err := s.selectedEmitter(opts)
+	if err != nil {
+		return opts, err
+	}
+	return e.AdmitNative(opts, records)
 }
 
 func (s *ReceiptShardSet) selectedEmitter(opts EmitOpts) (*Emitter, error) {

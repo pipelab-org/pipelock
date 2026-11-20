@@ -105,7 +105,9 @@ func TestStartupVerificationNotifyBackpressure(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			first.sealTranscriptRoot()
+			if err := first.sealTranscriptRoot(); err != nil {
+				t.Fatalf("seal transcript root: %v", err)
+			}
 			first.cleanup()
 			socket := filepath.Join(shortSocketDir(t), "notify.sock")
 			listener, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: socket, Net: "unixgram"})

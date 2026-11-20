@@ -7,8 +7,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
@@ -61,6 +65,34 @@ func (g *receiptGroupRuntime) failRequired(err error) {
 	}
 }
 
+// A request holds its decision, intent, outcome and supporting receipts on
+// one shard for its entire lifetime.
+const nativeRequestRecords = 79 + receipt.DLPWarningSlots
+
+const (
+	nativeCapacityStopReason = "native_ael_capacity"
+	nativeStreamCloseLayer   = "session_close"
+)
+
+func (p *Proxy) nativeRequestContext(ctx context.Context, w http.ResponseWriter, admission receipt.EmitOpts) (context.Context, func()) {
+	return httpstream.WithCapacityGrace(ctx, w, admission.NativeLease, p.shutdownGraceOrDefault())
+}
+
+func isNativeCapacityStop(err error) bool {
+	return errors.Is(err, ael.ErrCapacity)
+}
+
+// Best-effort streams have no paired intent. Sign a single-phase terminal
+// decision instead of claiming an outcome for a nonexistent intent.
+func nativeStreamCloseReceipt(opts receipt.EmitOpts) receipt.EmitOpts {
+	opts.ActionID = receipt.NewActionID()
+	opts.DecisionPhase = ""
+	opts.Verdict = config.ActionWarn
+	opts.Layer = nativeStreamCloseLayer
+	opts.Pattern = nativeCapacityStopReason
+	return opts
+}
+
 func (p *Proxy) admitReceiptShard() receipt.EmitOpts {
 	if group := p.receiptGroupPtr.Load(); group != nil {
 		return group.shards.Admit(receipt.EmitOpts{})
@@ -68,12 +100,44 @@ func (p *Proxy) admitReceiptShard() receipt.EmitOpts {
 	return receipt.EmitOpts{}
 }
 
-func withReceiptShard(opts, selected receipt.EmitOpts) receipt.EmitOpts {
-	if selected.ShardSelected {
-		opts.ShardIndex = selected.ShardIndex
-		opts.ShardSelected = true
+func (p *Proxy) reserveReceiptAdmission() (receipt.EmitOpts, error) {
+	p.reloadMu.RLock()
+	defer p.reloadMu.RUnlock()
+	admission := p.admitReceiptShard()
+	var err error
+	if group := p.receiptGroupPtr.Load(); group != nil {
+		admission, err = group.shards.AdmitNative(admission, nativeRequestRecords)
+	} else {
+		admission, err = p.receiptEmitterPtr.Load().AdmitNative(admission, nativeRequestRecords)
 	}
-	return opts
+	if err != nil {
+		return receipt.EmitOpts{}, err
+	}
+	return admission.ReserveNativeTerminal()
+}
+
+func (p *Proxy) receiptWarningContext(ctx context.Context, admission receipt.EmitOpts) (context.Context, func()) {
+	e := p.receiptEmitterPtr.Load()
+	if group := p.receiptGroupPtr.Load(); group != nil && admission.NativeLease != nil {
+		e, _ = group.shards.SelectedEmitter(admission)
+	}
+	return receipt.WithDLPWarningBudget(ctx, e, admission)
+}
+
+func refuseReceiptAdmission(w http.ResponseWriter, err error) {
+	writeHTTPError(w, err.Error(), http.StatusServiceUnavailable)
+}
+
+func refuseReceiptCapacity(w http.ResponseWriter, err error) bool {
+	if !isNativeCapacityStop(err) {
+		return false
+	}
+	refuseReceiptAdmission(w, ael.ErrCapacity)
+	return true
+}
+
+func withReceiptShard(opts, selected receipt.EmitOpts) receipt.EmitOpts {
+	return opts.InheritAdmission(selected)
 }
 
 func receiptShardFromContext(ctx context.Context) receipt.EmitOpts {

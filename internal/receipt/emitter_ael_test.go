@@ -14,7 +14,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 func TestEmitterNativeAELLifecycle(t *testing.T) {
@@ -64,6 +66,41 @@ func TestEmitterNativeAELLifecycle(t *testing.T) {
 	}
 }
 
+func TestNativeWarningBudgetReportsWriterFailure(t *testing.T) {
+	_, priv := generateTestKey(t)
+	rec := newTestRecorder(t, t.TempDir(), priv)
+	t.Cleanup(func() { _ = rec.Close() })
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: testConfigHash})
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatal(err)
+	}
+	admission, err := e.AdmitNative(EmitOpts{}, DLPWarningSlots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admission.ReleaseNativeAdmission()
+	ctx, finish := WithDLPWarningBudget(t.Context(), e, admission)
+	writeErr := errors.New("evidence write unavailable")
+	e.MarkUnhealthy(writeErr)
+	var reports []error
+	report := func(err error) { reports = append(reports, err) }
+	warn := EmitOpts{ActionID: NewActionID(), Verdict: config.ActionWarn, Layer: "dlp", Pattern: "fixture"}
+	EmitDLPWarning(t.Context(), e, warn, report)
+	for range DLPWarningSlots {
+		EmitDLPWarning(ctx, e, warn, report)
+	}
+	finish()
+	finish()
+	if len(reports) != 1+DLPWarningSlots {
+		t.Fatalf("reported %d write failures, want %d", len(reports), 1+DLPWarningSlots)
+	}
+	for _, err := range reports {
+		if !errors.Is(err, writeErr) {
+			t.Fatalf("write failure = %v, want %v", err, writeErr)
+		}
+	}
+}
+
 func TestEmitterCloseNativeAELForRotation(t *testing.T) {
 	t.Parallel()
 	var nilEmitter *Emitter
@@ -77,8 +114,8 @@ func TestEmitterCloseNativeAELForRotation(t *testing.T) {
 	if err := bareEmitter.AbortNativeAEL(); err != nil {
 		t.Fatalf("bare AbortNativeAEL: %v", err)
 	}
-	if err := bareEmitter.emitNativeAEL(ActionRecord{}, nil, false); err != nil {
-		t.Fatalf("emitNativeAEL without native emitter: %v", err)
+	if record, err := bareEmitter.prepareNativeAEL(ActionRecord{}, nil, nil); record != nil || err != nil {
+		t.Fatalf("prepareNativeAEL without native emitter: record=%v error=%v", record, err)
 	}
 
 	dir := t.TempDir()
@@ -327,5 +364,139 @@ func TestEmitterNativeAELInitializationFailureQuarantinesAfterReceiptPersistence
 				}
 			}
 		})
+	}
+}
+
+func TestNativeEmitterRefusesOversizedActionID(t *testing.T) {
+	_, key := generateTestKey(t)
+	rec := newTestRecorder(t, t.TempDir(), key)
+	t.Cleanup(func() {
+		if err := rec.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: key})
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := e.HealthSnapshot()
+	opts := EmitOpts{ActionID: strings.Repeat("x", maxActionIDBytes+1), Target: "fixture", Transport: "fetch", Verdict: config.ActionAllow}
+	if err := e.EmitDurable(opts); !errors.Is(err, ael.ErrRecordTooLarge) {
+		t.Fatalf("emit disposition = %v, want %v", err, ael.ErrRecordTooLarge)
+	}
+	after, _ := e.HealthSnapshot()
+	if before.ChainSeq != after.ChainSeq {
+		t.Fatalf("refused receipt advanced sequence from %d to %d", before.ChainSeq, after.ChainSeq)
+	}
+}
+
+func TestNativeWarningBudgetKeepsAdmittingEmitter(t *testing.T) {
+	_, key := generateTestKey(t)
+	admittingRecorder := newTestRecorder(t, t.TempDir(), key)
+	replacementRecorder := newTestRecorder(t, t.TempDir(), key)
+	for _, rec := range []*recorder.Recorder{admittingRecorder, replacementRecorder} {
+		t.Cleanup(func() {
+			if err := rec.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	admitting := NewEmitter(EmitterConfig{Recorder: admittingRecorder, PrivKey: key})
+	replacement := NewEmitter(EmitterConfig{Recorder: replacementRecorder, PrivKey: key})
+	for _, e := range []*Emitter{admitting, replacement} {
+		if err := e.EmitSessionOpen(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	selected, err := admitting.AdmitNative(EmitOpts{}, DLPWarningSlots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer selected.ReleaseNativeAdmission()
+	ctx, finish := WithDLPWarningBudget(t.Context(), replacement, selected)
+	before, _ := admitting.HealthSnapshot()
+	otherBefore, _ := replacement.HealthSnapshot()
+	var failures []error
+	for range DLPWarningSlots + 1 {
+		EmitDLPWarning(ctx, replacement, EmitOpts{
+			ActionID: NewActionID(), Verdict: config.ActionWarn, Layer: "dlp", Pattern: "fixture",
+			Target: "https://api.vendor.example/", Transport: "fetch",
+		}, func(err error) { failures = append(failures, err) })
+	}
+	finish()
+	if len(failures) != 0 {
+		t.Fatalf("admitted warning write failed: %v", failures[0])
+	}
+	after, _ := admitting.HealthSnapshot()
+	otherAfter, _ := replacement.HealthSnapshot()
+	if got := after.ChainSeq - before.ChainSeq; got != DLPWarningSlots {
+		t.Fatalf("admitting emitter wrote %d warnings, want %d", got, DLPWarningSlots)
+	}
+	if otherAfter.ChainSeq != otherBefore.ChainSeq {
+		t.Fatal("replacement recorded an outstanding warning")
+	}
+}
+
+func TestNativeAdmissionRefusalsSettleReservations(t *testing.T) {
+	var absent *Emitter
+	if lease, err := absent.ReserveNativeRecords(1); lease != nil || err != nil || absent.NativeCapacity() != nil {
+		t.Fatalf("absent emitter admission = %v, %v", lease, err)
+	}
+	_, key := generateTestKey(t)
+	rec := newTestRecorder(t, t.TempDir(), key)
+	t.Cleanup(func() {
+		if err := rec.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	capacity := ael.NewCapacity(8192)
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: key, NativeCapacity: capacity})
+	if opts, err := e.AdmitNative(EmitOpts{}, 1); err != nil || opts.NativeLease != nil {
+		t.Fatalf("admission before open = %v, %v", opts.NativeLease, err)
+	}
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatal(err)
+	}
+	short, err := e.AdmitNative(EmitOpts{}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts, err := short.ReserveNativeTerminal(); opts.NativeLease != nil || !errors.Is(err, ael.ErrInvalidLease) {
+		t.Fatalf("terminal without room = %v, %v", opts.NativeLease, err)
+	}
+
+	admitted, err := e.AdmitNative(EmitOpts{ShardSelected: true, ShardIndex: 2}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admitted.ReleaseNativeAdmission()
+	admitted, err = admitted.ReserveNativeTerminal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admitted.ReleaseNativeAdmission()
+	copied := (EmitOpts{Target: "fixture"}).InheritAdmission(admitted)
+	if !copied.ShardSelected || copied.ShardIndex != 2 || copied.NativeLease != admitted.NativeLease ||
+		copied.NativeTerminalLease != admitted.NativeTerminalLease || copied.Target != "fixture" {
+		t.Fatal("inherited route lost its selected shard or reservation")
+	}
+	if denied, err := e.AdmitNative(EmitOpts{}, 100); denied.NativeLease != nil || !errors.Is(err, ael.ErrCapacity) {
+		t.Fatalf("over-capacity request = %v, %v", denied.NativeLease, err)
+	}
+	if denied, err := e.AdmitNative(EmitOpts{}, 1); denied.NativeLease != nil || !errors.Is(err, ael.ErrCapacity) {
+		t.Fatalf("request after stop = %v, %v", denied.NativeLease, err)
+	}
+	if denied, err := copied.ReserveNativeChild(1); denied.NativeLease != nil ||
+		denied.NativeTerminalLease != nil || !errors.Is(err, ael.ErrCapacity) {
+		t.Fatalf("child after stop = %v, %v, %v", denied.NativeLease, denied.NativeTerminalLease, err)
+	}
+	admitted.ReleaseNativeAdmission()
+	select {
+	case <-capacity.Drained():
+	default:
+		t.Fatal("refused leases held the stopped coordinator open")
+	}
+	if err := e.EmitSessionClose("fixture complete"); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -169,7 +169,9 @@ func TestServer_SealTranscriptRoot_NoRecorderIsNoOp(t *testing.T) {
 		t.Fatalf("expected nil live emitter with no recorder dir, got %v", e)
 	}
 	// Must not panic.
-	s.sealTranscriptRoot()
+	if err := s.sealTranscriptRoot(); err != nil {
+		t.Fatalf("seal transcript root: %v", err)
+	}
 }
 
 // TestServer_SealTranscriptRoot_SecondSealLogsError covers the error branch of
@@ -215,8 +217,12 @@ func TestServer_SealTranscriptRoot_SecondSealLogsError(t *testing.T) {
 		t.Fatalf("seed Emit: %v", err)
 	}
 
-	s.sealTranscriptRoot() // first seal succeeds
-	s.sealTranscriptRoot() // second seal: ErrRootAlreadyEmitted -> logged, not fatal
+	if err := s.sealTranscriptRoot(); err != nil {
+		t.Fatalf("seal transcript root: %v", err)
+	}
+	if err := s.sealTranscriptRoot(); err == nil {
+		t.Fatal("second seal returned nil, want the already-sealed error")
+	}
 
 	if !evidenceDirContains(t, recorderDir, "transcript_root") {
 		t.Fatal("first seal did not write a transcript_root")

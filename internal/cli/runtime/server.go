@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/cli/runtimeconfig"
@@ -82,8 +83,10 @@ type ServerOpts struct {
 	// harnesses. It is unexported so CLI/operator input cannot enable it.
 	allowEphemeralListenersForTesting bool
 
-	// listenerShutdownTimeout overrides auxiliary receipt-listener grace periods in tests.
+	// listenerShutdownTimeout overrides receipt-listener grace periods in tests.
 	listenerShutdownTimeout time.Duration
+
+	nativeAELCapacityLimit int64
 
 	// expireForTesting overrides the retention pass. Unexported and threaded
 	// through opts rather than a package-level variable so parallel tests do
@@ -630,6 +633,12 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		s.recorder = rec
 		var runSession string
 		if cfg.FlightRecorder.ReceiptChainCount() == 1 {
+			if len(recPrivKey) != 0 {
+				if err := verifyPredecessorAEL(rec, startupVerification); err != nil {
+					s.cleanup()
+					return nil, err
+				}
+			}
 			var sessErr error
 			runSession, sessErr = acquireRunSession(rec)
 			if sessErr != nil {
@@ -666,6 +675,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			}
 			shards, groupOpts, groupErr := buildServerReceiptShardGroup(receipt.EmitterConfig{
 				StartupVerification: startupVerification,
+				NativeCapacity:      ael.NewCapacity(opts.nativeAELCapacityLimit),
 				Recorder:            rec, PrivKey: recPrivKey, ConfigHash: cfg.Hash(),
 				Principal: "local", Actor: "pipelock", Metrics: m,
 				PriorSignerKeys:     cfg.FlightRecorder.ReceiptGroupPriorSignerKeys,
@@ -675,7 +685,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			}, cfg.FlightRecorder.ReceiptChainCount(), cfg.FlightRecorder.SigningKeyPath, false, s.failRequiredReceiptGroup)
 			if groupErr != nil {
 				s.cleanup()
-				return nil, fmt.Errorf("opening receipt shard group: %w", groupErr)
+				return nil, fmt.Errorf("opening receipt shard group: %w", withNativePredecessorRestartHint(groupErr))
 			}
 			s.receiptShardSet = shards
 			s.receiptEmitter = shards.ProcessEmitter()
@@ -694,6 +704,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			// effective policy should produce identical envelope ph
 			// regardless of YAML formatting.
 			s.receiptEmitter = receipt.NewEmitter(receipt.EmitterConfig{
+				NativeCapacity:      ael.NewCapacity(opts.nativeAELCapacityLimit),
 				Recorder:            rec,
 				PrivKey:             recPrivKey,
 				ConfigHash:          cfg.Hash(),
@@ -797,6 +808,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		_, _ = fmt.Fprintf(opts.Stderr, "  Envelope: enabled (mediation envelopes injected)\n")
 	}
 
+	proxyOpts = append(proxyOpts, proxy.WithShutdownGrace(opts.listenerShutdownTimeout))
 	p, pErr := proxy.New(cfg, logger, sc, m, proxyOpts...)
 	if pErr != nil {
 		s.cleanup()

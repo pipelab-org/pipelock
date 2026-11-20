@@ -347,30 +347,19 @@ type linkRequest struct {
 	onRecovery func(*RecoverySeal)
 }
 
-// publishPredecessorLink finds the most recent chain of base whose writer is
-// gone and that has no link file yet, signs a link to its exact tail, and
-// publishes it as that predecessor's link file. It never blocks and visits
-// each candidate at most once. (nil, nil) means start unlinked, which is
-// correct when nothing is claimable. A lost publish race (EEXIST) moves on to
-// the next candidate; any other publish failure stops and is returned, so the
-// caller starts unlinked and says why. notice receives one line per candidate
-// skipped for a reason an operator should see (a corrupt tail).
-//
-// The link file IS the claim: there is no separate marker, and the file that
-// wins the name is the signed statement verification reads.
-func publishPredecessorLink(req linkRequest, report ...func(error)) (*ChainLink, error) {
-	dir, base, self := req.dir, req.base, req.self
+type predecessorCandidate struct {
+	session string
+	files   []string
+	latest  string
+	modTime time.Time
+}
+
+func priorChainCandidates(dir, base, self string) ([]predecessorCandidate, error) {
 	ix, err := indexRecorderFiles(dir)
 	if err != nil {
 		return nil, fmt.Errorf("listing prior chains: %w", err)
 	}
-	type candidate struct {
-		session string
-		files   []string
-		latest  string
-		modTime time.Time
-	}
-	candidates := make([]candidate, 0, len(ix))
+	candidates := make([]predecessorCandidate, 0, len(ix))
 	for _, s := range ix.sessions() {
 		if s == self || !isBaseChain(s, base) {
 			continue
@@ -384,7 +373,7 @@ func publishPredecessorLink(req linkRequest, report ...func(error)) (*ChainLink,
 		if statErr != nil {
 			continue
 		}
-		candidates = append(candidates, candidate{session: s, files: files, latest: latest, modTime: info.ModTime()})
+		candidates = append(candidates, predecessorCandidate{session: s, files: files, latest: latest, modTime: info.ModTime()})
 	}
 	// Prefer the most recent chain: it is the one a restart most plausibly
 	// continues. Break ties on the session name for a total order.
@@ -395,17 +384,43 @@ func publishPredecessorLink(req linkRequest, report ...func(error)) (*ChainLink,
 		return candidates[i].session > candidates[j].session
 	})
 
+	return candidates, nil
+}
+
+func (c predecessorCandidate) available(dir string) bool {
+	if _, err := os.Lstat(filepath.Join(dir, ChainLinkFileName(c.session))); err == nil {
+		return false
+	}
+	if strings.Contains(c.session, ".run.") {
+		gone, err := recorder.EvidenceRunWriterGone(dir, c.session)
+		return err == nil && gone
+	}
+	gone, err := recorder.EvidenceWriterGone(c.latest)
+	return err == nil && gone
+}
+
+// publishPredecessorLink finds the most recent chain of base whose writer is
+// gone and that has no link file yet, signs a link to its exact tail, and
+// publishes it as that predecessor's link file. It never blocks and visits
+// each candidate at most once. (nil, nil) means start unlinked, which is
+// correct when nothing is claimable. A lost publish race (EEXIST) moves on to
+// the next candidate; any other publish failure stops and is returned, so the
+// caller starts unlinked and says why. notice receives one line per candidate
+// skipped for a reason an operator should see (a corrupt tail).
+//
+// The link file IS the claim: there is no separate marker, and the file that
+// wins the name is the signed statement verification reads.
+func publishPredecessorLink(req linkRequest, report ...func(error)) (*ChainLink, error) {
+	dir, self := req.dir, req.self
+	candidates, err := priorChainCandidates(dir, req.base, req.self)
+	if err != nil {
+		return nil, err
+	}
+
 	for _, c := range candidates {
 		name := ChainLinkFileName(c.session)
-		if _, statErr := os.Lstat(filepath.Join(dir, name)); statErr == nil {
-			continue // already continued by another run
-		}
-		gone, probeErr := recorder.EvidenceRunWriterGone(dir, c.session)
-		if !strings.Contains(c.session, ".run.") {
-			gone, probeErr = recorder.EvidenceWriterGone(c.latest)
-		}
-		if probeErr != nil || !gone {
-			continue // a live writer, or its absence cannot be proven
+		if !c.available(dir) {
+			continue
 		}
 		pred, ok := claimableTail(c.files, c.session, req.notice, report...)
 		if !ok {

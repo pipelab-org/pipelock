@@ -39,13 +39,16 @@ func TestCredentialAudienceHosts_BodyAndHeaderCarriers(t *testing.T) {
 			body := `{"credential":"` + tc.credential + `"}`
 			var bodyAllows []scanner.CredentialAudienceAllow
 			_, bodyResult := scanRequestBody(context.Background(), BodyScanRequest{
-				Body:                      strings.NewReader(body),
-				ContentType:               "application/json",
-				MaxBytes:                  cfg.RequestBodyScanning.MaxBodyBytes,
-				Scanner:                   sc,
-				Target:                    tc.target,
-				AudienceSurface:           "body",
-				OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) error { bodyAllows = append(bodyAllows, allow); return nil },
+				Body:            strings.NewReader(body),
+				ContentType:     "application/json",
+				MaxBytes:        cfg.RequestBodyScanning.MaxBodyBytes,
+				Scanner:         sc,
+				Target:          tc.target,
+				AudienceSurface: "body",
+				OnCredentialAudienceAllows: func(allow []scanner.CredentialAudienceAllow) error {
+					bodyAllows = append(bodyAllows, allow...)
+					return nil
+				},
 			})
 			if bodyResult.Clean || len(bodyAllows) != 0 {
 				t.Fatalf("body audience result=%+v allows=%+v", bodyResult, bodyAllows)
@@ -59,8 +62,8 @@ func TestCredentialAudienceHosts_BodyAndHeaderCarriers(t *testing.T) {
 				headers.Set("Authorization", "Bot "+tc.credential)
 			}
 			var headerAllows []scanner.CredentialAudienceAllow
-			headerResult := scanRequestHeadersForTargetWithAudience(context.Background(), headers, cfg, sc, tc.target, nil, func(allow scanner.CredentialAudienceAllow) error {
-				headerAllows = append(headerAllows, allow)
+			headerResult := scanRequestHeadersForTargetWithAudience(context.Background(), headers, cfg, sc, tc.target, nil, func(allow []scanner.CredentialAudienceAllow) error {
+				headerAllows = append(headerAllows, allow...)
 				return nil
 			})
 			if headerResult != nil && !headerResult.Clean {
@@ -166,7 +169,7 @@ func TestGoogleOAuthAudience_AuthorizationOnly(t *testing.T) {
 			}
 			headers := http.Header{tc.header: []string{value}}
 			var allows []scanner.CredentialAudienceAllow
-			result := scanRequestHeadersForTargetWithAudience(t.Context(), headers, cfg, sc, target, nil, func(allow scanner.CredentialAudienceAllow) error { allows = append(allows, allow); return nil })
+			result := scanRequestHeadersForTargetWithAudience(t.Context(), headers, cfg, sc, target, nil, func(allow []scanner.CredentialAudienceAllow) error { allows = append(allows, allow...); return nil })
 			clean := result == nil || result.Clean
 			if clean != tc.clean || (len(allows) == 1) != tc.clean {
 				t.Fatalf("header %q clean=%t allows=%#v result=%#v", tc.header, clean, allows, result)
@@ -1180,10 +1183,10 @@ func TestWSRelayRecordCredentialAudienceAllow_FailedEmitDoesNotDedupe(t *testing
 	relay := &wsRelay{proxy: p, cfg: cfg, targetURL: "wss://api.openai.com/v1", requestID: "ws-dedupe", agent: "agent-1"}
 	allow := scanner.CredentialAudienceAllow{PatternName: "OpenAI API Key", Surface: "websocket_frame", Destination: "api.openai.com"}
 
-	if err := relay.recordCredentialAudienceAllow(allow); err == nil {
+	if err := relay.recordCredentialAudienceAllows([]scanner.CredentialAudienceAllow{allow}); err == nil {
 		t.Fatal("first record with a closed recorder under require_receipts returned nil, want error")
 	}
-	if err := relay.recordCredentialAudienceAllow(allow); err == nil {
+	if err := relay.recordCredentialAudienceAllows([]scanner.CredentialAudienceAllow{allow}); err == nil {
 		t.Fatal("duplicate after a failed emit returned nil (false confirmation), want error")
 	}
 }
@@ -1204,7 +1207,7 @@ func TestWSRelayRecordCredentialAudienceAllow_ConfirmedEmitDedupes(t *testing.T)
 	relay := &wsRelay{proxy: p, cfg: cfg, targetURL: "wss://api.openai.com/v1", requestID: "ws-dedupe-ok", agent: "agent-1"}
 	allow := scanner.CredentialAudienceAllow{PatternName: "OpenAI API Key", Surface: "websocket_frame", Destination: "api.openai.com"}
 	for i := range 2 {
-		if err := relay.recordCredentialAudienceAllow(allow); err != nil {
+		if err := relay.recordCredentialAudienceAllows([]scanner.CredentialAudienceAllow{allow}); err != nil {
 			t.Fatalf("call %d: %v", i, err)
 		}
 	}

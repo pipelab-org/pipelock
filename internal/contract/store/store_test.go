@@ -1394,3 +1394,44 @@ func stringsOf(s string, n int) string {
 	}
 	return b.String()
 }
+
+func TestWriteActiveRecordedJoinsValidationAndRecordingErrors(t *testing.T) {
+	st := New(t.TempDir())
+	cHash := putTestContract(t, st)
+	signer := newTestSigner(t, "act-1", "alice")
+	env := signedManifest(t, cHash, 1, "sha256:actual", testEnv(), signer)
+	opts := testOptions(testRoster(signer), "sha256:other", 0, 1)
+	recordingErr := errors.New("validation receipt unavailable")
+	calls := 0
+	hash, err := st.WriteActiveRecorded(mustJSON(t, env), opts, func(validationErr error) error {
+		calls++
+		if !errors.Is(validationErr, ErrPriorManifest) {
+			t.Fatalf("recorded validation error = %v, want %v", validationErr, ErrPriorManifest)
+		}
+		return recordingErr
+	})
+	if hash != "" || !errors.Is(err, ErrPriorManifest) || !errors.Is(err, recordingErr) || calls != 1 {
+		t.Fatalf("recorded write = %q, %v, %d callbacks", hash, err, calls)
+	}
+	if _, err := os.Stat(st.activePath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("active manifest after failed recording: %v", err)
+	}
+}
+
+func TestWriteActiveRecordedDoesNotCreateMissingStore(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "missing-store")
+	st := New(dir)
+	called := false
+	if _, err := st.WriteActiveRecorded(nil, Options{}, func(error) error {
+		called = true
+		return nil
+	}); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("recorded write to missing store = %v, want missing directory", err)
+	}
+	if called {
+		t.Error("recorded write called the callback without a store")
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("contract store after failed write: %v, want absence", err)
+	}
+}

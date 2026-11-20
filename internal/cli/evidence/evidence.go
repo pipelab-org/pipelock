@@ -45,6 +45,7 @@ func Cmd() *cobra.Command {
 	cmd.AddCommand(verifyLegacyEpochInventoryCmd())
 	cmd.AddCommand(doctorCmd())
 	cmd.AddCommand(receiptRecoveryCmd())
+	cmd.AddCommand(repairGroupTransitionCmd())
 	cmd.AddCommand(verifyCertCmd())
 	return cmd
 }

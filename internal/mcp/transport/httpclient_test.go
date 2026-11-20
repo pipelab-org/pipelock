@@ -262,6 +262,25 @@ func TestHTTPClient_SSEResponse(t *testing.T) {
 	}
 }
 
+func TestIsStreamingResponseKeepsReaderWrappers(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		reader MessageReader
+		stream bool
+	}{
+		{"plain", NewStdioReader(strings.NewReader("")), false},
+		{"sse", &closingSSEReader{}, true},
+		{"session", &sessionResponseReader{reader: &closingSSEReader{}}, true},
+		{"initialize", &initializeResponseReader{reader: &sessionResponseReader{reader: &closingSSEReader{}}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsStreamingResponse(tc.reader); got != tc.stream {
+				t.Fatalf("streaming = %t, want %t", got, tc.stream)
+			}
+		})
+	}
+}
+
 func TestHTTPClient_SendMessage_MalformedResponseSanitizesRequestError(t *testing.T) {
 	const injected = "INJECTED-FORGED-LOG"
 	url, errCh := startRawHTTPResponseServer(t, "HTTP/1.1 200 OK\r\n"+injected+"\r\nContent-Length: 0\r\n\r\n")

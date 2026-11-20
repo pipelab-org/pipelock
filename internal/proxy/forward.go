@@ -136,7 +136,15 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
 	// Pre-generate a single ActionID for correlation between envelope and receipt.
 	actionID := receipt.NewActionID()
-	selectedReceiptShard := p.admitReceiptShard()
+	selectedReceiptShard, admissionErr := p.reserveReceiptAdmission()
+	if admissionErr != nil {
+		refuseReceiptAdmission(w, admissionErr)
+		return
+	}
+	defer selectedReceiptShard.ReleaseNativeAdmission()
+	warnCtx, finishWarnings := p.receiptWarningContext(r.Context(), selectedReceiptShard)
+	defer finishWarnings()
+	r = r.WithContext(warnCtx)
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyReceiptShard, selectedReceiptShard))
 	emitConnectReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptShard(opts, selectedReceiptShard)
@@ -309,6 +317,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := p.recordCredentialAudienceAllows(cfg, targetCtx, result.CredentialAudienceAllows, TransportConnect, http.MethodConnect, syntheticURL, requestID, agent, selectedReceiptShard); err != nil {
+		if refuseReceiptCapacity(w, err) {
+			return
+		}
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 		p.logger.LogBlocked(targetCtx, blockedErr.layer, blockedErr.detail)
 		p.metrics.RecordBlocked(host, blockedErr.layer, time.Since(start), agentLabel)
@@ -372,6 +383,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if connectHeaderReceiptErr != nil {
+		if refuseReceiptCapacity(w, connectHeaderReceiptErr) {
+			return
+		}
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(connectHeaderReceiptErr)
 		p.logger.LogBlocked(headerCtx, blockedErr.layer, blockedErr.detail)
 		p.metrics.RecordBlocked(host, blockedErr.layer, time.Since(start), agentLabel)
@@ -799,10 +813,17 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 				outcomeReason, outcomeBytes = flushFailureReason(outcomeReason), -1
 			}
 		}
+		if clientHijacked && selectedReceiptShard.NativeLease.Stopping() {
+			outcomeReason = nativeCapacityStopReason
+		}
 		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
 			outcomeReason = "license_revoked"
 		}
-		p.emitOutcomeReceipt(cfg, allowReceipt, outcomeStatus, outcomeBytes, outcomeReason)
+		if outcomeReason == nativeCapacityStopReason && !cfg.FlightRecorder.RequireReceipts {
+			_ = p.emitReceipt(nativeStreamCloseReceipt(allowReceipt).NativeTerminal())
+		} else {
+			p.emitOutcomeReceipt(cfg, allowReceipt, outcomeStatus, outcomeBytes, outcomeReason)
+		}
 		p.recordTransportOutcome(r.Context(), allowReceipt, tunnelReceipt, tunnelOpened)
 		if aborted != nil {
 			panic(aborted)
@@ -1018,6 +1039,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			EnvelopeEmitterSet: true,
 			Recorder:           interceptRec,
 			KillSwitch:         p.ks,
+			tunnelAdmission:    selectedReceiptShard,
 		}); err != nil {
 			p.logger.LogError(targetCtx, err)
 			outcomeReason = "intercept_error"
@@ -1030,6 +1052,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Register airlock cancel for raw CONNECT tunnels. When the session
 	// escalates to hard/drain, closing both ends terminates the relay.
+	stopCapacityClose := selectedReceiptShard.NativeLease.OnStop(func() {
+		_ = clientConn.Close()
+		_ = targetConn.Close()
+	})
+	defer stopCapacityClose()
 	var airlockCancelled atomic.Bool
 	for _, connectAirlockSess := range connectAirlockSessions {
 		connectAirlockSess.AirlockForScope(adaptiveScopeForHost(host)).RegisterCancel(func() {
@@ -1103,7 +1130,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Pre-generate a single ActionID for correlation between envelope and receipt.
 	actionID := receipt.NewActionID()
-	selectedReceiptShard := p.admitReceiptShard()
+	selectedReceiptShard, admissionErr := p.reserveReceiptAdmission()
+	if admissionErr != nil {
+		refuseReceiptAdmission(w, admissionErr)
+		return
+	}
+	defer selectedReceiptShard.ReleaseNativeAdmission()
+	requestCtx, stopNativeRequest := p.nativeRequestContext(r.Context(), w, selectedReceiptShard)
+	defer stopNativeRequest()
+	warnCtx, finishWarnings := p.receiptWarningContext(requestCtx, selectedReceiptShard)
+	defer finishWarnings()
+	r = r.WithContext(warnCtx)
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyReceiptShard, selectedReceiptShard))
 
 	// Resolve per-agent config and scanner from a single registry snapshot.
@@ -1136,6 +1173,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			return
+		}
+		if opts.Layer == nativeStreamCloseLayer {
+			opts = opts.NativeTerminal()
 		}
 		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
 			if opts.Verdict == config.ActionBlock {
@@ -1246,6 +1286,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	result := sc.Scan(fwdScanCtx, targetURL)
 	p.metrics.RecordURLDecisions(TransportForward, result.Decisions)
 	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportForward, r.Method, targetURL, requestID, agent, selectedReceiptShard); err != nil {
+		if refuseReceiptCapacity(w, err) {
+			return
+		}
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 		p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 		p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
@@ -1712,8 +1755,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				p.metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
 			},
-			OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) error {
-				return p.recordCredentialAudienceAllow(cfg, actx, allow, TransportForward, r.Method, targetURL, requestID, agent, selectedReceiptShard)
+			OnCredentialAudienceAllows: func(allows []scanner.CredentialAudienceAllow) error {
+				return p.recordCredentialAudienceAllows(cfg, actx, allows, TransportForward, r.Method, targetURL, requestID, agent, selectedReceiptShard)
 			},
 		}
 		applyContentEntropyConfig(&bodyReq, cfg)
@@ -1730,6 +1773,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		inspected := inspectedBodyBytes(buf, bodyResult)
 		if bodyResult.CredentialAudienceReceiptErr != nil {
+			if refuseReceiptCapacity(w, bodyResult.CredentialAudienceReceiptErr) {
+				return
+			}
 			blockedErr := newCredentialAudienceReceiptBlockedRequest(bodyResult.CredentialAudienceReceiptErr)
 			p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
@@ -1818,6 +1864,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					reason = bodyEntropyReason(bodyResult)
 				}
 			}
+			limitDetail, limitOnly := bodyInspectionLimitDetail(bodyResult, blockCause)
+			if limitDetail != "" {
+				reason = limitDetail
+			}
 			receiptPattern := reason
 			reason = bodyResult.withAudienceExplanation(reason)
 			promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(bodyResult, r.URL.Hostname(), cfg)
@@ -1891,7 +1941,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				p.metrics.RecordBlocked(r.URL.Hostname(), scannerLabel, time.Since(start), agentLabel)
 				setBodyResultHint(w, scannerLabel, reason)
 				writeBlockedError(w,
-					blockInfo(scannerLabel).WithRequestID(requestID),
+					requestBodyBlockInfo(scannerLabel, limitOnly).WithRequestID(requestID),
 					"blocked: "+reason, http.StatusForbidden)
 				return
 			}
@@ -2006,6 +2056,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if forwardHeaderReceiptErr != nil {
+		if refuseReceiptCapacity(w, forwardHeaderReceiptErr) {
+			return
+		}
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(forwardHeaderReceiptErr)
 		p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 		p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
@@ -2560,6 +2613,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	outcomeReason := "incomplete"
 	outcomeReceipt := forwardAllowReceipt
 	outcomeReceipt.Verdict = config.ActionAllow
+	finishDownloadError := func(err error) string {
+		if isNativeCapacityStop(context.Cause(r.Context())) {
+			if !cfg.FlightRecorder.RequireReceipts {
+				emitForwardReceipt(nativeStreamCloseReceipt(forwardAllowReceipt))
+			}
+			return nativeCapacityStopReason
+		}
+		return recordStreamError(r.Context(), p.logger, actx, err)
+	}
 	// A scanned SSE stream records "complete" on success. Its failed final
 	// flush keeps the SSE cancellation reason a mid-stream departure records.
 	sseDelivered := false
@@ -2614,6 +2676,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	resp, err := p.client.Do(outReq)
 	p.recordTransportOutcome(r.Context(), forwardAllowReceipt, upstreamReceipt, resp != nil)
 	if err != nil {
+		if refuseReceiptCapacity(w, err) {
+			outcomeStatus = strconv.Itoa(http.StatusServiceUnavailable)
+			outcomeReason = nativeCapacityStopReason
+			return
+		}
 		var ssrfErr *ssrfDialBlockError
 		if errors.As(err, &ssrfErr) {
 			p.logger.LogBlocked(actx, scanner.ScannerSSRF, ssrfErr.logDetail())
@@ -2810,9 +2877,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportForward)
 		}
 		sseOpts := SSEDispatchOptions{
-			IsA2A:      isA2A,
-			A2A:        &cfg.A2AScanning,
-			GenericSSE: &cfg.ResponseScanning.SSEStreaming,
+			nativeAdmission: selectedReceiptShard,
+			IsA2A:           isA2A,
+			A2A:             &cfg.A2AScanning,
+			GenericSSE:      &cfg.ResponseScanning.SSEStreaming,
 			Generic: mcp.GenericSSEScanOptions{
 				Target:             targetURL,
 				Suppress:           cfg.Suppress,
@@ -2897,6 +2965,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				p.recordRequiredReceiptBlock(err, TransportForward)
 				outcomeStatus = strconv.Itoa(resp.StatusCode)
 				outcomeReason = receiptEmissionFailedLayer
+				_ = httpstream.Abort(r.Context(), err)
+				return
+			}
+			if isNativeCapacityStop(err) {
+				outcomeStatus = strconv.Itoa(resp.StatusCode)
+				outcomeReason = nativeCapacityStopReason
+				if !cfg.FlightRecorder.RequireReceipts {
+					emitForwardReceipt(nativeStreamCloseReceipt(forwardAllowReceipt))
+				}
 				_ = httpstream.Abort(r.Context(), err)
 				return
 			}
@@ -3041,7 +3118,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		outcomeBytes = written
 		recordResponseScanExemptOverCapUnscanned(p.metrics, p.logger, actx, fwdRespHost, TransportForward, written, configMaxBytes)
 		if copyErr != nil {
-			outcomeReason = recordStreamError(r.Context(), p.logger, actx, copyErr)
+			outcomeReason = finishDownloadError(copyErr)
 			sc.RecordRequest(strings.ToLower(r.URL.Hostname()), int(written))
 			_ = resolved.Budget.RecordBytes(written)
 			emitForwardAllowReceipt()
@@ -3217,7 +3294,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						outcomeStatus = strconv.Itoa(resp.StatusCode)
 						outcomeBytes = written
 						if copyErr != nil {
-							outcomeReason = recordStreamError(r.Context(), p.logger, actx, copyErr)
+							outcomeReason = finishDownloadError(copyErr)
 							sc.RecordRequest(strings.ToLower(r.URL.Hostname()), int(written))
 							_ = resolved.Budget.RecordBytes(written)
 							_ = httpstream.Abort(r.Context(), copyErr)
@@ -3786,7 +3863,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	outcomeStatus = strconv.Itoa(resp.StatusCode)
 	outcomeBytes = written
 	if copyErr != nil {
-		outcomeReason = recordStreamError(r.Context(), p.logger, actx, copyErr)
+		outcomeReason = finishDownloadError(copyErr)
 		emitForwardAllowReceipt()
 		_ = httpstream.Abort(r.Context(), copyErr)
 		return
