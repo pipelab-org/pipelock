@@ -225,8 +225,11 @@ func TestMCPListenerStreamIntegrity(t *testing.T) {
 						t.Fatalf("GET receipt count = %d, want admission and terminal", len(receipts))
 					}
 					verdict, pattern := config.ActionWarn, "status=error bytes=unknown reason="+wantReason
-					if ending == "complete" {
+					switch {
+					case ending == "complete":
 						verdict, pattern = config.ActionForward, completedMCPStreamPattern
+					case wantReason == httpstream.Cancelled:
+						pattern = "status=cancelled bytes=unknown reason=" + wantReason
 					}
 					assertMCPTransportReceiptPair(t, receipts[0].ActionRecord, receipts[1].ActionRecord,
 						receipt.ActionRecord{
@@ -288,7 +291,14 @@ func assertMCPListenerPOSTOutcomes(t *testing.T, receipts []receipt.Receipt, end
 		if len(outcomes) != 1 || !strings.HasPrefix(outcomes[intentID], "status=result ") {
 			t.Fatalf("completed POST intent %q must have one result outcome, got %v", intentID, outcomes)
 		}
-	} else if len(outcomes) != 1 || !strings.HasSuffix(outcomes[intentID], "reason="+wantReason) {
-		t.Fatalf("interrupted POST intent %q must have one matching %s outcome, got %v", intentID, wantReason, outcomes)
+	} else {
+		status := "incomplete"
+		if wantReason == httpstream.Cancelled {
+			status = "cancelled"
+		}
+		want := "status=" + status + " bytes=unknown reason=" + wantReason
+		if len(outcomes) != 1 || outcomes[intentID] != want {
+			t.Fatalf("interrupted POST intent %q must have one outcome %q, got %v", intentID, want, outcomes)
+		}
 	}
 }

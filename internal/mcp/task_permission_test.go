@@ -730,6 +730,9 @@ func TestReverseTaskPermissionRechecksAfterHeaderDiscovery(t *testing.T) {
 					status, f.lists.Load(), f.calls.Load(), tc.wantCalls, tc.wantReply, reply)
 			}
 			if tc.wantCalls == 1 {
+				testwait.For(t, time.Second, func() bool {
+					return len(observed.snapshot()) >= 2
+				}, "signed task outcome after HTTP delivery")
 				assertDeliveredTaskReceiptPair(t, observed.snapshot())
 			}
 			if tc.wantCalls == 0 {
@@ -1262,9 +1265,12 @@ func TestDeferredStdioRechecksTaskAfterOutcomeEviction(t *testing.T) {
 	}
 	testwait.For(t, 5*time.Second, func() bool { return len(manager.Snapshot()) == 1 }, "deferred stdio action")
 	hold := manager.Snapshot()[0]
-	if err := manager.Resolve(hold.DeferID, config.ActionAllow, deferred.SourceApproval); err != nil {
-		t.Fatal(err)
+	applied, err := manager.ResolveApprovalResult(hold.DeferID, config.ActionAllow, deferred.SourceApproval)
+	if err != nil || applied != config.ActionBlock {
+		t.Fatalf("applied decision = %q, error = %v; want late refusal", applied, err)
 	}
+	assertTerminalJournalSequence(t, manager, hold.DeferID,
+		deferred.StateResolvedAllow+"/"+deferred.SourceApproval, deferred.StateResolvedBlock+"/"+deferred.SourceCancel)
 	if !seenEviction {
 		t.Fatal("tracker did not evict the oldest outcome")
 	}

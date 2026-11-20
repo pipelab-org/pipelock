@@ -658,7 +658,7 @@ func (r *initializeResponseReader) Close() error {
 }
 
 // IsHTTPAcknowledgement reports whether the POST was accepted without a
-// response body. A later GET event can carry the reply for a legacy request.
+// response body. The acknowledgement does not contain a JSON-RPC reply.
 func IsHTTPAcknowledgement(reader MessageReader) bool {
 	_, ok := reader.(*emptyReader)
 	return ok

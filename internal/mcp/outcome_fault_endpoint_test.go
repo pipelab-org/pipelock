@@ -483,9 +483,33 @@ func (p *settlementProbe) runListener(t *testing.T, ctx context.Context, cancel 
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("Accept", "application/json, text/event-stream")
 		response, err := client.Do(request)
-		if err == nil {
-			defer func() { _ = response.Body.Close() }()
+		if err != nil {
+			if p.cell.fault == settlementSuccess {
+				t.Errorf("healthy listener request: %v", err)
+			}
+			return
+		}
+		defer func() { _ = response.Body.Close() }()
+		if p.cell.fault != settlementSuccess {
 			_, _ = io.Copy(io.Discard, response.Body)
+			return
+		}
+		reply, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Errorf("read healthy listener response: %v", err)
+			return
+		}
+		status, marker := http.StatusOK, settlementReply
+		switch {
+		case request.Method == http.MethodGet:
+			marker = settlementNotify
+		case request.Method == http.MethodDelete:
+			status, marker = http.StatusNoContent, ""
+		case p.cell.notification:
+			status, marker = http.StatusAccepted, ""
+		}
+		if response.StatusCode != status || (marker == "" && len(reply) != 0) || !strings.Contains(string(reply), marker) {
+			t.Errorf("healthy %s response = %d %q, want status %d and payload %q", request.Method, response.StatusCode, reply, status, marker)
 		}
 	}
 

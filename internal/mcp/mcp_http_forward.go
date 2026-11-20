@@ -646,7 +646,15 @@ func RunHTTPProxy(
 								if !deferredReq.IsNotification {
 									_ = safeClientOut.WriteMessage(errResp)
 								}
-								outcome.settle(safeLogW, fwdOpts, "error", int64(len(errResp)), "scan_error")
+								status, reason, size := "error", "scan_error", int64(len(errResp))
+								streamReason := httpstream.Reason(releaseCtx, scanErr)
+								switch {
+								case streamReason == httpstream.Cancelled:
+									status, reason, size = "cancelled", streamReason, -1
+								case errors.Is(scanErr, transport.ErrIncompleteResponse):
+									status, reason, size = "incomplete", streamReason, -1
+								}
+								outcome.settle(safeLogW, releaseOpts, status, size, reason)
 							}
 						} else if !foundInjection {
 							awaitingReply = registration != nil && acknowledged

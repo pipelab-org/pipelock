@@ -409,7 +409,7 @@ func (p *settlementProbe) observeOpenFailure(t *testing.T) {
 	}
 	p.observeWire(t, settlementWire{
 		Kind: method, Method: method, Target: p.upstream,
-		Synced: p.syncedActions(t), Failed: true, Unsent: true,
+		Synced: p.syncedActions(t), Failed: true,
 	})
 }
 
@@ -849,12 +849,12 @@ func (p *settlementProbe) appendGuard(e recorder.Entry) error {
 	switch p.cell.fault {
 	case settlementIntentAppend:
 		intent := a.DecisionPhase == receipt.DecisionPhaseIntent ||
-			p.cell.listenerMethod() != http.MethodPost && a.Layer == "mcp_transport_admission"
+			p.cell.listenerMethod() != http.MethodPost && a.Layer == mcpTransportAdmissionLayer
 		if intent && p.fault.CompareAndSwap(0, 1) {
 			return errSettlementFault
 		}
 	case settlementUpgradeAppend:
-		if a.Layer == "mcp_transport_admission" && a.Method == settlementUpgrade && p.fault.CompareAndSwap(0, 1) {
+		if a.Layer == mcpTransportAdmissionLayer && a.Method == settlementUpgrade && p.fault.CompareAndSwap(0, 1) {
 			return errSettlementFault
 		}
 	case settlementOutcomeAppend:
@@ -1060,7 +1060,7 @@ func (p *settlementProbe) assertSettlePairs(t *testing.T, signer string, sends, 
 			a := r.ActionRecord
 			loc := settlementReceipt{action: a, shard: entry.SessionID, sequence: entry.Sequence}
 			records = append(records, loc)
-			if a.Layer == "mcp_transport_admission" && a.Method == p.cell.listenerMethod() {
+			if a.Layer == mcpTransportAdmissionLayer && a.Method == p.cell.listenerMethod() {
 				legacyAdmissions++
 			}
 			switch a.DecisionPhase {
@@ -1259,11 +1259,21 @@ func (op settlementWire) matches(a receipt.ActionRecord) bool {
 		(a.RequestID == "" || a.RequestID == op.RequestID)
 }
 
-func (op settlementWire) consumeDurableAdmission(admissions map[string]settlementReceipt, used map[string]bool) bool {
+func (op settlementWire) consumeDurableAdmission(admissions map[string]settlementReceipt, used map[string]bool, deferredRelease bool) bool {
 	for _, id := range op.Synced {
 		a := admissions[id].action
 		if !op.matches(a) {
 			continue
+		}
+		if deferredRelease && op.Method == methodToolsCall {
+			if a.DecisionPhase != receipt.DecisionPhaseIntent || a.ParentActionID == "" ||
+				!slices.ContainsFunc(op.Synced, func(id string) bool {
+					approval := admissions[id].action
+					return approval.DecisionPhase == receipt.DecisionPhaseResolution &&
+						approval.Verdict == config.ActionAllow && approval.ParentActionID == a.ParentActionID
+				}) {
+				continue
+			}
 		}
 		// The allow resolution and release intent authorize the same send.
 		key := a.ActionID
@@ -1324,7 +1334,7 @@ func (p *settlementProbe) assertWireReceipts(t *testing.T, records []settlementR
 		case "proxy-owned tools/list discovery":
 			continue
 		}
-		if p.cell.required && !op.Unsent && !op.consumeDurableAdmission(admissions, used) {
+		if p.cell.required && !op.Unsent && !op.consumeDurableAdmission(admissions, used, p.cell.deferred) {
 			t.Errorf("P5: upstream observed %s without a preceding durable record", op)
 		}
 		// Successful observations also consume any matching admission so a

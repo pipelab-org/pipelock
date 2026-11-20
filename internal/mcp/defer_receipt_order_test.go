@@ -168,6 +168,14 @@ func TestReceiptWritableProbe(t *testing.T) {
 	unhealthy, _, _, _ := newReceiptTestHarnessWithObserver(t, nil)
 	unhealthy.MarkUnhealthy(io.ErrClosedPipe)
 	v2 := newMCPDecisionReceiptHarness(t).v2
+	groupOpts, _, _, _ := newMCPTransportReceiptGroup(t)
+	first := receipt.EmitOpts{ShardSelected: true, ShardIndex: 0}
+	second := receipt.EmitOpts{ShardSelected: true, ShardIndex: 1}
+	firstEmitter, _, err := groupOpts.ReceiptGroup.selectedEmitters(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstEmitter.MarkUnhealthy(io.ErrClosedPipe)
 
 	tests := []struct {
 		name string
@@ -198,6 +206,29 @@ func TestReceiptWritableProbe(t *testing.T) {
 			}
 			if !tt.want && (res.ResolutionSource != deferred.SourceCancel || res.Reason != deferred.ReasonReceiptNotWritten) {
 				t.Fatalf("closed allow = %s/%q, want cancel/%q", res.ResolutionSource, res.Reason, deferred.ReasonReceiptNotWritten)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name  string
+		shard receipt.EmitOpts
+		want  string
+	}{
+		{"selected unhealthy", first, config.ActionBlock},
+		{"selected healthy with unrelated unhealthy", second, config.ActionAllow},
+		{"unselected", receipt.EmitOpts{}, config.ActionBlock},
+		{"invalid shard", receipt.EmitOpts{ShardSelected: true, ShardIndex: 2}, config.ActionBlock},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := (&deferredReceiptSettlement{}).probeAllow(groupOpts, deferred.Resolution{
+				FinalDecision: config.ActionAllow, ResolutionSource: deferred.SourceOperator,
+				ShardSelected: tc.shard.ShardSelected, ShardIndex: tc.shard.ShardIndex,
+			})
+			if res.FinalDecision != tc.want {
+				t.Fatalf("probeAllow decision = %q, want %q", res.FinalDecision, tc.want)
+			}
+			if tc.want == config.ActionBlock && (res.ResolutionSource != deferred.SourceCancel || res.Reason != deferred.ReasonReceiptNotWritten) {
+				t.Fatalf("expected the receipt failure to close the approval: %+v", res)
 			}
 		})
 	}

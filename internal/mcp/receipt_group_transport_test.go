@@ -177,7 +177,7 @@ func TestListenerStreamErrorSettlesOpenIntentOnce(t *testing.T) {
 		outcomes++
 		patterns = append(patterns, rcpt.ActionRecord.Pattern)
 	}
-	if outcomes != 1 || len(patterns) != 1 || patterns[0] != "status=200 bytes=unknown reason=incomplete" {
+	if outcomes != 1 || len(patterns) != 1 || patterns[0] != "status=incomplete bytes=unknown reason=incomplete" {
 		t.Fatalf("outcome receipts = %d (%q), want the stream failure alone", outcomes, patterns)
 	}
 }
@@ -645,7 +645,6 @@ func TestTransportResultRetriesRefusedV1Append(t *testing.T) {
 
 type bridgeGETReceiptObserver struct {
 	admissions chan settlementReceipt
-	outcomes   chan struct{}
 }
 
 func (o bridgeGETReceiptObserver) ObserveRecorderEntry(e recorder.Entry) {
@@ -666,11 +665,6 @@ func (o bridgeGETReceiptObserver) ObserveRecorderEntry(e recorder.Entry) {
 		case o.admissions <- settlementReceipt{action: signed.ActionRecord, shard: e.SessionID, sequence: e.Sequence}:
 		default:
 		}
-	case mcpOutcomeLayer:
-		select {
-		case o.outcomes <- struct{}{}:
-		default:
-		}
 	}
 }
 
@@ -679,9 +673,11 @@ func TestRequiredBridgeGETAdmitsBeforeOpen(t *testing.T) {
 		name   string
 		status int
 		reason string
+		cancel bool
 	}{
 		{name: "completed", status: http.StatusOK, reason: "stream_completed"},
 		{name: "unsupported", status: http.StatusMethodNotAllowed, reason: "upstream_error"},
+		{name: "cancelled before headers", cancel: true, reason: "stream_cancelled"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			opts, rec, dir, _ := newMCPTransportReceiptGroup(t)
@@ -690,9 +686,26 @@ func TestRequiredBridgeGETAdmitsBeforeOpen(t *testing.T) {
 			observed := make(chan settlementReceipt, 1)
 			recorded := bridgeGETReceiptObserver{
 				admissions: make(chan settlementReceipt, 1),
-				outcomes:   make(chan struct{}, 1),
 			}
 			rec.SetObserver(recorded)
+			var syncedV2 sync.Map
+			rec.SetSyncForTest(func(f *os.File) error {
+				entries, err := recorder.ReadEntries(f.Name())
+				if err != nil {
+					return err
+				}
+				if err := f.Sync(); err != nil {
+					return err
+				}
+				for _, entry := range entries {
+					if entry.Type == "evidence_receipt" {
+						syncedV2.Store(entry.SessionID, true)
+					}
+				}
+				return nil
+			})
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(3*time.Second))
+			defer cancel()
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet {
 					http.NotFound(w, r)
@@ -703,6 +716,9 @@ func TestRequiredBridgeGETAdmitsBeforeOpen(t *testing.T) {
 					if admission.action.Verdict != config.ActionForward || admission.action.ActionID == "" {
 						t.Errorf("upstream GET opened with invalid forward admission: %+v", admission)
 					}
+					if _, ok := syncedV2.Load(admission.shard); !ok {
+						t.Error("upstream GET opened before its v2 admission synced")
+					}
 					select {
 					case observed <- admission:
 					default:
@@ -711,32 +727,34 @@ func TestRequiredBridgeGETAdmitsBeforeOpen(t *testing.T) {
 				default:
 					t.Error("upstream GET opened before the admission was recorded")
 				}
+				if tc.cancel {
+					cancel()
+					<-r.Context().Done()
+					return
+				}
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.WriteHeader(tc.status)
 			}))
 			defer srv.Close()
 			opts.AuthorityDestination = srv.URL
-			ctx, cancel := context.WithCancel(t.Context())
-			var wg sync.WaitGroup
-			t.Cleanup(func() {
-				cancel()
-				wg.Wait()
-			})
-			var stderr lockedHTTPBuffer
-			startGETStream(ctx, transport.NewHTTPClient(srv.URL, nil), &syncWriter{w: io.Discard}, &syncWriter{w: &stderr}, opts, NewRequestTracker(), &wg)
+			scanErr, setupErr := scanGETStream(ctx, transport.NewHTTPClient(srv.URL, nil),
+				&syncWriter{w: io.Discard}, io.Discard, opts, NewRequestTracker())
+			var wantSetup error
+			switch {
+			case tc.cancel:
+				wantSetup = context.Canceled
+			case tc.status == http.StatusMethodNotAllowed:
+				wantSetup = transport.ErrStreamNotSupported
+			}
+			if scanErr != nil || !errors.Is(setupErr, wantSetup) {
+				t.Fatalf("scan error = %v, setup error = %v; want setup error %v", scanErr, setupErr, wantSetup)
+			}
 			var admission settlementReceipt
 			select {
 			case admission = <-observed:
-			case <-time.After(testwait.Deadline(3 * time.Second)):
+			default:
 				t.Fatal("handler did not observe a GET admission")
 			}
-			select {
-			case <-recorded.outcomes:
-			case <-time.After(testwait.Deadline(3 * time.Second)):
-				t.Fatal("required GET result was not recorded")
-			}
-			cancel()
-			wg.Wait()
 			if err := rec.Close(); err != nil {
 				t.Fatal(err)
 			}
@@ -750,6 +768,9 @@ func TestRequiredBridgeGETAdmitsBeforeOpen(t *testing.T) {
 				t.Fatalf("GET outcome count = %d, want 1", len(outcomes))
 			}
 			outcome := outcomes[0]
+			if tc.cancel && outcome.action.Pattern != "status=cancelled bytes=unknown reason=stream_cancelled" {
+				t.Fatalf("cancelled GET outcome: %q", outcome.action.Pattern)
+			}
 			if outcome.action.ActionID != admission.action.ActionID || outcome.shard != admission.shard ||
 				outcome.sequence <= admission.sequence || !strings.HasSuffix(outcome.action.Pattern, "reason="+tc.reason) {
 				t.Fatalf("GET outcome %+v does not settle admission %+v with reason %s", outcome, admission, tc.reason)
@@ -892,14 +913,25 @@ func assertMCPStandaloneDiagnosticShard(t *testing.T, dir string, shards []recei
 			t.Fatal(err)
 		}
 		var diagnostic, admission, v2 int
+		var diagnosticID, admissionID string
 		for _, entry := range entries {
 			if entry.Type == "action_receipt" && bytes.Contains(entry.RawDetail, []byte("reason=incomplete")) {
 				if bytes.Contains(entry.RawDetail, []byte(`"decision_phase":`)) || !bytes.Contains(entry.RawDetail, []byte(`"verdict":"warn"`)) {
 					t.Fatal("standalone stream diagnostic claimed a decision phase or success verdict")
 				}
+				signed, err := receipt.Unmarshal(entry.RawDetail)
+				if err != nil {
+					t.Fatal(err)
+				}
+				diagnosticID = signed.ActionRecord.ActionID
 				diagnostic++
 			}
-			if entry.Type == "action_receipt" && bytes.Contains(entry.RawDetail, []byte(`"layer":"mcp_transport_admission"`)) {
+			if entry.Type == actionReceiptEntryType && bytes.Contains(entry.RawDetail, []byte(`"layer":"`+mcpTransportAdmissionLayer+`"`)) {
+				signed, err := receipt.Unmarshal(entry.RawDetail)
+				if err != nil {
+					t.Fatal(err)
+				}
+				admissionID = signed.ActionRecord.ActionID
 				admission++
 			}
 			if entry.Type == "evidence_receipt" {
@@ -908,6 +940,9 @@ func assertMCPStandaloneDiagnosticShard(t *testing.T, dir string, shards []recei
 		}
 		if i == selected && (diagnostic != 1 || v2 != wantV2 || (wantV2 > 1 && admission != 1) || (wantV2 == 1 && admission != 0)) {
 			t.Fatalf("selected shard %d: diagnostic=%d admission=%d v2=%d, want 1 and v2=%d", i, diagnostic, admission, v2, wantV2)
+		}
+		if i == selected && wantV2 > 1 && (diagnosticID == "" || diagnosticID != admissionID) {
+			t.Fatalf("diagnostic %q does not settle admission %q", diagnosticID, admissionID)
 		}
 		if i != selected && (diagnostic != 0 || v2 != 0 || admission != 0) {
 			t.Fatalf("other shard %d: diagnostic=%d admission=%d v2=%d, want 0/0/0", i, diagnostic, admission, v2)

@@ -146,9 +146,12 @@ func TestHTTPListener_BestEffortAllowBeforeUpstreamResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, _, body := postWireContractRequest(t, url, currentWireBody(2, methodToolsCall, `"name":"echo","arguments":{}`), currentWireHeaders(methodToolsCall, "echo"))
-	if status != http.StatusOK {
+	status, header, body := postWireContractRequest(t, url, currentWireBody(2, methodToolsCall, `"name":"echo","arguments":{}`), currentWireHeaders(methodToolsCall, "echo"))
+	if status != http.StatusOK || body != `{"jsonrpc":"2.0","id":2,"result":{"content":[]}}` {
 		t.Fatalf("status=%d body=%s", status, body)
+	}
+	if got := header.Get("Content-Length"); got != fmt.Sprint(len(body)) {
+		t.Fatalf("Content-Length=%q for %d delivered bytes", got, len(body))
 	}
 	select {
 	case got := <-observed:
@@ -158,6 +161,10 @@ func TestHTTPListener_BestEffortAllowBeforeUpstreamResponse(t *testing.T) {
 	default:
 		t.Fatal("upstream did not receive the request")
 	}
+	testwait.For(t, time.Second, func() bool {
+		tail, err := h.v1.ConfirmedTailObservation()
+		return err == nil && tail.ChainSeq >= before.ChainSeq+2
+	}, "listener records the signed response outcome after delivery")
 	_ = mcpV2Receipts(t, h)
 	var paired []receipt.ActionRecord
 	for _, r := range readActionReceipts(t, h.dir) {

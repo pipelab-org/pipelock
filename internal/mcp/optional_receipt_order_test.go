@@ -345,9 +345,24 @@ func TestOptionalWebSocketIntentPrecedesFrameResponse(t *testing.T) {
 	dial, beforeWrite := observeSignedIntentAtWrite(t, dir, signer, func(b []byte) bool { return len(b) != 0 && b[0] == 0x81 })
 	opts := MCPProxyOpts{Scanner: testScannerForWS(t), ReceiptEmitter: emitter, TaintCfg: &config.Defaults().Taint, DialContext: dial}
 	done := make(chan error, 1)
-	go func() { done <- RunWSProxy(ctx, input, &out, io.Discard, wsURL(upstream), opts) }()
-	if _, err := io.WriteString(send, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`+"\n"); err != nil {
-		t.Fatal(err)
+	go func() {
+		defer func() { _ = input.Close() }()
+		done <- RunWSProxy(ctx, input, &out, io.Discard, wsURL(upstream), opts)
+	}()
+	written := make(chan error, 1)
+	go func() {
+		_, err := io.WriteString(send, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`+"\n")
+		written <- err
+	}()
+	select {
+	case err := <-written:
+		if err != nil {
+			t.Fatalf("write initialize: %v", err)
+		}
+	case err := <-done:
+		t.Fatalf("proxy exited before initialize: %v", err)
+	case <-ctx.Done():
+		t.Fatalf("write initialize: %v", ctx.Err())
 	}
 	select {
 	case got := <-observed:
@@ -359,14 +374,23 @@ func TestOptionalWebSocketIntentPrecedesFrameResponse(t *testing.T) {
 		t.Fatal(ctx.Err())
 	}
 	testwait.For(t, time.Second, func() bool { return strings.Contains(out.String(), "result") }, "client response")
-	_ = send.Close()
-	if err := <-done; err != nil {
-		t.Fatal(err)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("wait for upstream EOF: %v", ctx.Err())
 	}
 	records := readActionReceipts(t, dir)
-	if len(records) != 2 || records[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent ||
+	if len(records) != 3 || records[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent ||
 		records[1].ActionRecord.DecisionPhase != receipt.DecisionPhaseOutcome || records[0].ActionRecord.ActionID != records[1].ActionRecord.ActionID {
 		t.Fatalf("WebSocket request did not produce an intent/outcome pair: %d records", len(records))
+	}
+	diagnostic := records[2].ActionRecord
+	if diagnostic.ActionID == records[0].ActionRecord.ActionID ||
+		diagnostic.Pattern != "status=incomplete bytes=unknown reason=incomplete" {
+		t.Fatalf("optional transport diagnostic: %+v", diagnostic)
 	}
 	if err := receipt.VerifyWithKey(records[0], signer); err != nil {
 		t.Fatal(err)

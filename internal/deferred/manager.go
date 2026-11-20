@@ -160,7 +160,11 @@ type HeldAction struct {
 	Payload       []byte
 	ArgDigest     string
 	Resolve       func(Resolution)
-	BeforeAllow   func() (release func(), ok bool)
+	// ResolveWithReleaseRefusal is the synchronous Resolve variant for a
+	// release path that can still refuse immediately before sending. It may
+	// call refuse during the callback to close a journaled allow to block.
+	ResolveWithReleaseRefusal func(res Resolution, refuse func(reason string) Resolution)
+	BeforeAllow               func() (release func(), ok bool)
 	// Prepare, when set, runs after BeforeAllow and before the terminal
 	// journal entry. It may downgrade the resolution (for example when a
 	// release-boundary check cancels an allow) so the journal records the
@@ -318,7 +322,7 @@ func (m *Manager) Hold(action HeldAction) error {
 	if action.DeferID == "" {
 		return fmt.Errorf("defer_id is required")
 	}
-	if action.Resolve == nil {
+	if action.Resolve == nil && action.ResolveWithReleaseRefusal == nil {
 		return fmt.Errorf("resolve callback is required")
 	}
 	if action.SizeBytes < 0 {
@@ -495,7 +499,20 @@ func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string,
 	if res.FinalDecision != config.ActionAllow && res.ResolutionSource != SourceCascade {
 		m.cascadeBlockDescendants([]string{held.DeferID})
 	}
-	held.Resolve(res)
+	if held.ResolveWithReleaseRefusal != nil {
+		allowed := res.FinalDecision == config.ActionAllow
+		held.ResolveWithReleaseRefusal(res, func(reason string) Resolution {
+			if res.FinalDecision == config.ActionAllow {
+				res = m.blockRelease(held, res, reason)
+			}
+			return res
+		})
+		if allowed && res.FinalDecision == config.ActionBlock {
+			m.cascadeBlockDescendants([]string{held.DeferID})
+		}
+	} else {
+		held.Resolve(res)
+	}
 	return res.FinalDecision, nil
 }
 
@@ -520,37 +537,35 @@ func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string,
 // failing therefore surfaces at the next start, when recovery cannot write its
 // receipts, instead of as a hold closed with missing or contradicting evidence.
 func (m *Manager) journalRelease(held *HeldAction, res Resolution) Resolution {
-	closeAllow := func(reason string) {
-		res.FinalDecision = config.ActionBlock
-		res.ResolutionSource = SourceCancel
-		res.Reason = reason
-		// Resolve writes the final receipt, but only after the journal. Write
-		// it here first so the terminal entry never precedes its receipt;
-		// Resolve then reuses it.
-		if held.AfterJournal != nil {
-			if err := held.AfterJournal(res); err != nil {
-				m.warnf("pipelock: warning event=deferred_resolution_receipt_failed audit_gap=true source=%s defer_id=%s: %v\n",
-					res.ResolutionSource, held.DeferID, err)
-				return
-			}
-		}
-		if err := m.appendJournal(journalEntryFromHeld(*held, StateResolvedBlock, res.ResolutionSource)); err != nil {
-			m.warnf("pipelock: warning event=deferred_journal_write_failed audit_gap=true source=%s defer_id=%s: %v\n",
-				res.ResolutionSource, held.DeferID, err)
-		}
-	}
 	if err := m.appendJournal(releasePendingEntry(*held, res.ResolutionSource)); err != nil {
-		closeAllow(res.Reason)
-		return res
+		return m.blockRelease(held, res, res.Reason)
 	}
 	if held.AfterJournal != nil {
 		if err := held.AfterJournal(res); err != nil {
-			closeAllow(ReasonReceiptNotWritten)
-			return res
+			return m.blockRelease(held, res, ReasonReceiptNotWritten)
 		}
 	}
 	if err := m.appendJournal(journalEntryFromHeld(*held, StateResolvedAllow, res.ResolutionSource)); err != nil {
-		closeAllow(ReasonReleaseNotJournaled)
+		return m.blockRelease(held, res, ReasonReleaseNotJournaled)
+	}
+	return res
+}
+
+func (m *Manager) blockRelease(held *HeldAction, res Resolution, reason string) Resolution {
+	res.FinalDecision = config.ActionBlock
+	res.ResolutionSource = SourceCancel
+	res.Reason = reason
+	// Persist the corrective receipt before the terminal journal entry.
+	if held.AfterJournal != nil {
+		if err := held.AfterJournal(res); err != nil {
+			m.warnf("pipelock: warning event=deferred_resolution_receipt_failed audit_gap=true source=%s defer_id=%s: %v\n",
+				res.ResolutionSource, held.DeferID, err)
+			return res
+		}
+	}
+	if err := m.appendJournal(journalEntryFromHeld(*held, StateResolvedBlock, res.ResolutionSource)); err != nil {
+		m.warnf("pipelock: warning event=deferred_journal_write_failed audit_gap=true source=%s defer_id=%s: %v\n",
+			res.ResolutionSource, held.DeferID, err)
 	}
 	return res
 }

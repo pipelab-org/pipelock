@@ -1662,7 +1662,7 @@ func ForwardScannedInput(
 				AfterJournal: func(res deferred.Resolution) error {
 					return receiptSettle.commitRelease(heldOpts, logW, res)
 				},
-				Resolve: func(res deferred.Resolution) {
+				ResolveWithReleaseRefusal: func(res deferred.Resolution, refuse func(string) deferred.Resolution) {
 					defer finishHeldAdmission()
 					denialOpts := heldOpts
 					denialOpts.denialTerminal = &terminalSlot
@@ -1696,10 +1696,7 @@ func ForwardScannedInput(
 							var trackErr error
 							registration, trackErr = trackMCPAdmittedOutcome(logW, heldOpts, tracker, heldID, releaseOutcome)
 							if trackErr != nil {
-								res.FinalDecision = config.ActionBlock
-								res.ResolutionSource = deferred.SourceCancel
-								res.Reason = "request_tracking_failed"
-								_ = receiptSettle.commitRelease(heldOpts, logW, res)
+								refuse("request_tracking_failed")
 								if finishDeniedRelease != nil {
 									finishDeniedRelease()
 								}
@@ -1709,10 +1706,7 @@ func ForwardScannedInput(
 						}
 						if reason := mcpTaskReleaseRefusal(heldOpts, heldAuthorityFrame, taintDecision, false); reason != "" {
 							tracker.removeOwnedOutcome(heldID, registration)
-							res.FinalDecision = config.ActionBlock
-							res.ResolutionSource = deferred.SourceCancel
-							res.Reason = reason
-							_ = receiptSettle.commitRelease(heldOpts, logW, res)
+							res = refuse(reason)
 							if finishDeniedRelease != nil {
 								finishDeniedRelease()
 							}

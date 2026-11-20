@@ -34,7 +34,11 @@ func recordListenerStreamError(ctx context.Context, logW io.Writer, opts MCPProx
 	outcome.Receipt = opts.withReceiptPolicyHash(outcome.Receipt)
 	if standalone {
 		if outcome.Receipt.Layer == mcpTransportAdmissionLayer {
-			warnTransportAdmission(logW, opts, outcome.Receipt, reason)
+			if reason == httpstream.Cancelled {
+				recordTransportAdmissionResult(logW, opts, outcome.Receipt, "cancelled", reason)
+			} else {
+				warnTransportAdmission(logW, opts, outcome.Receipt, reason)
+			}
 			return
 		}
 		emitMCPStandaloneStreamReceipt(opts, logW, outcome.Receipt, "200", reason)
@@ -42,7 +46,14 @@ func recordListenerStreamError(ctx context.Context, logW io.Writer, opts MCPProx
 	}
 	// The listener request-end path settles this same handle. A direct outcome
 	// write would leave two terminal receipts for one intent.
-	outcome.settle(logW, opts, "200", -1, reason)
+	status := "incomplete"
+	switch reason {
+	case nativeCapacityReason:
+		status = "200"
+	case httpstream.Cancelled:
+		status = "cancelled"
+	}
+	outcome.settle(logW, opts, status, -1, reason)
 }
 
 func logMCPIncompleteResponse(logW io.Writer, opts MCPProxyOpts, method string, err error) {

@@ -247,12 +247,15 @@ func scanGETStream(ctx context.Context, client *transport.HTTPClient, writer tra
 	}
 	reader, err := client.OpenGETStream(streamCtx)
 	if err != nil {
-		reason := "upstream_error"
-		if errors.Is(context.Cause(streamCtx), ael.ErrCapacity) {
-			reason = nativeCapacityReason
+		switch {
+		case errors.Is(context.Cause(streamCtx), ael.ErrCapacity):
+			warnTransportAdmission(logW, opts, transportAdmission, nativeCapacityReason)
 			err = ael.ErrCapacity
+		case httpstream.Reason(streamCtx, err) == httpstream.Cancelled:
+			recordTransportAdmissionResult(logW, opts, transportAdmission, "cancelled", httpstream.Cancelled)
+		default:
+			warnTransportAdmission(logW, opts, transportAdmission, "upstream_error")
 		}
-		warnTransportAdmission(logW, opts, transportAdmission, reason)
 		return nil, err
 	}
 	warnContext, stopWarnings := opts.nativeWarningContext(streamCtx, admission)

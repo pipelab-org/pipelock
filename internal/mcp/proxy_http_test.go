@@ -7923,7 +7923,8 @@ func TestScanHTTPInputDecision_RequireReceiptsBlocksResourceReadWithoutIdentity(
 }
 
 func TestHTTPListener_RequireReceiptsRecordsInitializeOutcome(t *testing.T) {
-	emitter, rec, dir, _ := newReceiptTestHarness(t)
+	observed := &allReceipts{}
+	emitter, rec, dir, _ := newReceiptTestHarnessWithObserver(t, observed.observe)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() { _ = r.Body.Close() }()
 		var request struct {
@@ -7960,6 +7961,9 @@ func TestHTTPListener_RequireReceiptsRecordsInitializeOutcome(t *testing.T) {
 	if _, err := io.Copy(io.Discard, response.Body); err != nil {
 		t.Fatalf("read initialize response: %v", err)
 	}
+	testwait.For(t, time.Second, func() bool {
+		return len(observed.snapshot()) >= 2
+	}, "signed initialize outcome after HTTP delivery")
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}

@@ -2425,13 +2425,13 @@ func RunHTTPListenerProxy(
 				if responseStatus != "" {
 					terminalReason = "response_not_delivered"
 				}
-				n, err := w.Write(output)
+				n, err := w.writeBuffered(output)
 				if err != nil || n != len(output) {
 					return
 				}
 				if responseStatus != "" || !commitBeforeWrite {
-					// Flush the buffered body before settling. HTTP finishes
-					// the response framing when the handler returns.
+					// The known-length body needs no terminal chunk after
+					// this checked flush.
 					if err := http.NewResponseController(w.ResponseWriter).Flush(); err != nil {
 						return
 					}
@@ -2455,6 +2455,9 @@ func RunHTTPListenerProxy(
 		}
 		if scanErr != nil {
 			terminalStatus, terminalReason = "error", "upstream_response_validation_failed"
+			if errors.Is(scanErr, transport.ErrIncompleteResponse) {
+				terminalStatus, terminalReason = "incomplete", httpstream.Incomplete
+			}
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			w.Header().Set("Content-Type", "application/json")
 			if denialAudit.kind == "" && !mcpDenialWasFinalized(scanErr) {

@@ -203,7 +203,8 @@ func RunWSProxy(
 			recordTransportAdmissionResult(safeLogW, wsOpts, transportAdmission, status, reason)
 		} else if stopping && wsClient != nil {
 			emitMCPStandaloneStreamReceipt(wsOpts, safeLogW, mcpStreamReceipt(wsOpts, "WS"), "closed", nativeCapacityReason)
-		} else if len(pendingOutcomes) == 0 && upstreamEnded && ctx.Err() == nil && errors.Is(lastScanErr, transport.ErrIncompleteResponse) {
+		} else if len(pendingOutcomes) == 0 && upstreamEnded && ctx.Err() == nil &&
+			(errors.Is(lastScanErr, transport.ErrIncompleteResponse) || lastScanErr == nil && !upstreamClosedCleanly && !upstreamBlocked) {
 			emitMCPStandaloneStreamReceipt(wsOpts, safeLogW, mcpStreamReceipt(wsOpts, "WS"), "incomplete", httpstream.Incomplete)
 		}
 	}()

@@ -858,7 +858,7 @@ func TestHTTPListenerRecordsRejectedUpstreamResponseOutcome(t *testing.T) {
 		{"unscannable_encoding", http.StatusOK, http.StatusForbidden, http.Header{"Content-Encoding": {"gzip"}}, "upstream_http_compressed_response", ""},
 		{"invalid_sse", http.StatusOK, http.StatusBadGateway, http.Header{"Content-Type": {"text/event-stream"}}, "upstream_sse_validation_failed", "upstream SSE response failed validation"},
 		{"session_setup_sse", http.StatusOK, http.StatusBadGateway, http.Header{"Content-Type": {"text/event-stream"}}, "upstream_sse_session_setup", "MCP session setup response must be application/json"},
-		{"truncated_json", http.StatusOK, http.StatusBadGateway, http.Header{"Content-Type": {"application/json"}, "Content-Length": {"128"}}, "upstream_response_validation_failed", "upstream response failed validation"},
+		{"truncated_json", http.StatusOK, http.StatusBadGateway, http.Header{"Content-Type": {"application/json"}, "Content-Length": {"128"}}, "incomplete", "upstream response failed validation"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newMCPDecisionReceiptHarness(t)
@@ -890,7 +890,11 @@ func TestHTTPListenerRecordsRejectedUpstreamResponseOutcome(t *testing.T) {
 				t.Fatal(err)
 			}
 			records := readActionReceipts(t, h.dir)
-			want := "status=error bytes=unknown reason=" + tc.reason
+			status := "error"
+			if tc.name == "truncated_json" {
+				status = "incomplete"
+			}
+			want := "status=" + status + " bytes=unknown reason=" + tc.reason
 			if len(records) != 2 ||
 				records[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent ||
 				records[1].ActionRecord.DecisionPhase != receipt.DecisionPhaseOutcome ||
@@ -989,34 +993,40 @@ func TestHTTPListenerRecordsGetUpstreamSendFailure(t *testing.T) {
 
 func TestHTTPListenerRecordsGetUpstreamStatusFailure(t *testing.T) {
 	cases := []struct {
-		name   string
-		reply  upstreamStatusReply
-		reason string
+		name         string
+		reply        upstreamStatusReply
+		reason       string
+		clientStatus int
 	}{
 		{
-			name:   "server_error",
-			reply:  upstreamStatusReply{status: http.StatusInternalServerError, header: http.Header{"Content-Type": {"text/event-stream"}}},
-			reason: "upstream_http_server_error",
+			name:         "server_error",
+			reply:        upstreamStatusReply{status: http.StatusInternalServerError, header: http.Header{"Content-Type": {"text/event-stream"}}},
+			reason:       "upstream_http_server_error",
+			clientStatus: http.StatusBadGateway,
 		},
 		{
-			name:   "redirect",
-			reply:  upstreamStatusReply{status: http.StatusFound, header: http.Header{"Location": {"https://mcp.vendor.example/events"}}},
-			reason: "upstream_http_redirect",
+			name:         "redirect",
+			reply:        upstreamStatusReply{status: http.StatusFound, header: http.Header{"Location": {"https://mcp.vendor.example/events"}}},
+			reason:       "upstream_http_redirect",
+			clientStatus: http.StatusBadGateway,
 		},
 		{
-			name:   "compressed",
-			reply:  upstreamStatusReply{status: http.StatusOK, header: http.Header{"Content-Type": {"text/event-stream"}}, body: []byte("data: {}\n\n"), gzipped: true},
-			reason: "upstream_http_compressed_response",
+			name:         "compressed",
+			reply:        upstreamStatusReply{status: http.StatusOK, header: http.Header{"Content-Type": {"text/event-stream"}}, body: []byte("data: {}\n\n"), gzipped: true},
+			reason:       "upstream_http_compressed_response",
+			clientStatus: http.StatusForbidden,
 		},
 		{
-			name:   "not_sse",
-			reply:  upstreamStatusReply{status: http.StatusOK, header: http.Header{"Content-Type": {"application/json"}}, body: []byte(`{"jsonrpc":"2.0","method":"notifications/message"}`)},
-			reason: "upstream_sse_validation_failed",
+			name:         "not_sse",
+			reply:        upstreamStatusReply{status: http.StatusOK, header: http.Header{"Content-Type": {"application/json"}}, body: []byte(`{"jsonrpc":"2.0","method":"notifications/message"}`)},
+			reason:       "upstream_sse_validation_failed",
+			clientStatus: http.StatusBadGateway,
 		},
 		{
-			name:   "client_error",
-			reply:  upstreamStatusReply{status: http.StatusMethodNotAllowed, header: http.Header{"Content-Type": {"application/json"}}, body: []byte(`{"jsonrpc":"2.0","error":{"code":-32601,"message":"method not found"}}`)},
-			reason: "upstream_http_client_error",
+			name:         "client_error",
+			reply:        upstreamStatusReply{status: http.StatusMethodNotAllowed, header: http.Header{"Content-Type": {"application/json"}}, body: []byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32601,"message":"method not found"}}`)},
+			reason:       "upstream_http_client_error",
+			clientStatus: http.StatusMethodNotAllowed,
 		},
 	}
 	for _, tc := range cases {
@@ -1028,8 +1038,8 @@ func TestHTTPListenerRecordsGetUpstreamStatusFailure(t *testing.T) {
 				PolicyHash: mcpTestPolicyHash, RequireReceipts: true,
 			})
 			resp, body := doListenerRequest(t, http.MethodGet, baseURL+"/", "", http.Header{"Accept": {"text/event-stream"}})
-			if resp.StatusCode == http.StatusOK {
-				t.Fatalf("client response = %d %s, want a refusal", resp.StatusCode, body)
+			if resp.StatusCode != tc.clientStatus {
+				t.Fatalf("client response = %d %s, want %d", resp.StatusCode, body, tc.clientStatus)
 			}
 			if err := h.rec.Close(); err != nil {
 				t.Fatal(err)
@@ -1106,7 +1116,7 @@ func TestHTTPListenerSettlesIntentWhenSSEWriteFails(t *testing.T) {
 		records[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent ||
 		records[1].ActionRecord.DecisionPhase != receipt.DecisionPhaseOutcome ||
 		records[0].ActionRecord.ActionID != records[1].ActionRecord.ActionID ||
-		!strings.HasPrefix(records[1].ActionRecord.Pattern, "status=200 bytes=unknown reason=") {
+		records[1].ActionRecord.Pattern != "status=cancelled bytes=unknown reason=stream_cancelled" {
 		for _, r := range records {
 			t.Logf("phase=%q pattern=%q", r.ActionRecord.DecisionPhase, r.ActionRecord.Pattern)
 		}
