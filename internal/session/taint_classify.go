@@ -589,7 +589,7 @@ func extractMCPActionTargets(raw string) (mcpActionTargets, bool) {
 				}
 				return
 			}
-			if looksLikePath(tv) && (inheritedRole == mcpArgumentTarget || isStandaloneArgumentValue(tv)) {
+			if (looksLikePath(tv) || looksLikeSecretPath(tv)) && (inheritedRole == mcpArgumentTarget || isStandaloneArgumentValue(tv)) {
 				targets.refs = append(targets.refs, tv)
 				targets.paths = append(targets.paths, tv)
 			}
@@ -1016,7 +1016,7 @@ func looksLikePath(value string) bool {
 
 func looksLikeSecretPath(value string) bool {
 	lower := strings.ToLower(toSlash(value))
-	return strings.Contains(lower, "/.env") ||
+	if strings.Contains(lower, "/.env") ||
 		strings.Contains(lower, "/secrets") ||
 		strings.Contains(lower, "/.ssh/") ||
 		strings.Contains(lower, "/.aws/") ||
@@ -1024,7 +1024,36 @@ func looksLikeSecretPath(value string) bool {
 		strings.Contains(lower, "/id_ed25519") ||
 		strings.Contains(lower, "/kubeconfig") ||
 		strings.Contains(lower, "/etc/shadow") ||
-		strings.Contains(lower, "/etc/passwd")
+		strings.Contains(lower, "/etc/passwd") ||
+		containsAny(lower, "/.netrc", "/.npmrc", "/.pypirc", "/.git-credentials", "/.kube/config", "/.docker/config.json") {
+		return true
+	}
+
+	// Arguments also contain free text: only extend matching for single path
+	// tokens, so prose mentioning a relative credential file stays unchanged.
+	lower = strings.TrimSpace(lower)
+	if strings.ContainsFunc(lower, unicode.IsSpace) {
+		return false
+	}
+	segments := strings.Split(lower, "/")
+	for i, segment := range segments {
+		switch segment {
+		case ".env", "secrets", ".ssh", ".aws", "kubeconfig", ".netrc", ".npmrc", ".pypirc", ".git-credentials":
+			return true
+		}
+		if strings.HasPrefix(segment, ".env.") || strings.HasPrefix(segment, "id_rsa") || strings.HasPrefix(segment, "id_ed25519") {
+			return true
+		}
+		if i+1 < len(segments) {
+			next := segments[i+1]
+			if (segment == ".kube" && next == "config") ||
+				(segment == ".docker" && next == "config.json") ||
+				(segment == "etc" && (next == "shadow" || next == "passwd")) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func isMutatingShellCommand(command string) bool {

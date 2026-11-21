@@ -4,6 +4,7 @@
 package session_test
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 
@@ -268,5 +269,112 @@ func assertFindingsObservation(t *testing.T, surface string, got, boolean sessio
 	got.FindingKinds = nil
 	if !reflect.DeepEqual(got, boolean) {
 		t.Fatalf("%s observation = %+v, want boolean classification %+v", surface, got, boolean)
+	}
+}
+
+func TestClassifyMCPToolCallWithOptions_CredentialPaths(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		path   string
+		secret bool
+	}{
+		{"bare env", ".env", true},
+		{"dot relative env", "./.env", true},
+		{"env variant", ".env.local", true},
+		{"relative aws", ".aws/credentials", true},
+		{"bare rsa", "id_rsa", true},
+		{"relative ssh config", ".ssh/config", true},
+		{"bare ssh directory", ".ssh", true},
+		{"relative ssh key", ".ssh/id_ed25519", true},
+		{"bare ed25519", "id_ed25519", true},
+		{"rsa variant", "id_rsa.pub", true},
+		{"ed25519 variant", "id_ed25519.pub", true},
+		{"relative kube config", ".kube/config", true},
+		{"relative docker config", ".docker/config.json", true},
+		{"bare netrc", ".netrc", true},
+		{"bare npmrc", ".npmrc", true},
+		{"bare pypirc", ".pypirc", true},
+		{"git credentials", ".git-credentials", true},
+		{"absolute netrc with space", "/home/my user/.netrc", true},
+		{"bare secrets directory", "secrets", true},
+		{"bare kubeconfig", "kubeconfig", true},
+		{"relative shadow", "etc/shadow", true},
+		{"relative passwd", "etc/passwd", true},
+		{"windows aws", `C:\Users\u\.aws\credentials`, true},
+		{"home npmrc", "~/.npmrc", true},
+		{"surrounding spaces", " id_rsa ", true},
+		{"parent traversal", "x/../.env", true},
+		{"absolute netrc", "/home/u/.netrc", true},
+		{"absolute pypirc", "/home/u/.pypirc", true},
+		{"absolute git credentials", "/home/u/.git-credentials", true},
+		{"absolute kube config", "/home/u/.kube/config", true},
+		{"absolute docker config", "/home/u/.docker/config.json", true},
+		{"uppercase credential", ".NETRC", true},
+		{"readme", "README.md", false},
+		{"source file", "src/env.go", false},
+		{"environment yaml", "environment.yaml", false},
+		// Preserve the existing /secrets substring match, including longer names.
+		{"secrets management retains legacy substring match", "docs/secrets-management.md", true},
+		{"free text env", "rotate the .env file please", false},
+		{"free text relative credential", "rotate .netrc please", false},
+		{"free text absolute env retains legacy match", "rotate /home/u/.env please", true},
+		{"kube source", "kube/config.go", false},
+		{"kube other file", ".kube/config.go", false},
+		{"docker other file", ".docker/config", false},
+		{"etc other file", "etc/hosts", false},
+		{"bare kube directory", ".kube", false},
+		{"url", "https://example.com/docs", false},
+		{"tab separated prose", "rotate\t.netrc", false},
+		{"unicode space prose", "rotate\u00a0.netrc", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			args, err := json.Marshal(map[string]string{"path": tt.path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := session.ClassifyMCPToolCallWithOptions("read_file", string(args), nil, nil, session.ClassificationOptions{})
+			if secret := got.Class == session.ActionClassSecret; secret != tt.secret {
+				t.Fatalf("class = %v for %q, want secret = %v", got.Class, tt.path, tt.secret)
+			}
+			if tt.secret && got.Sensitivity != session.SensitivityProtected {
+				t.Fatalf("sensitivity = %v, want protected", got.Sensitivity)
+			}
+		})
+	}
+}
+
+func TestPolicyMatrixEvaluate_CredentialPathReads(t *testing.T) {
+	t.Parallel()
+	const hostileReason = "sensitive_action_after_hostile_external_exposure"
+	tests := []struct {
+		name   string
+		path   string
+		taint  session.TaintLevel
+		want   session.PolicyDecision
+		reason string
+	}{
+		{"relative after hostile exposure", ".env", session.TaintExternalHostile, session.PolicyBlock, hostileReason},
+		{"absolute after hostile exposure", "/home/u/proj/.env", session.TaintExternalHostile, session.PolicyBlock, hostileReason},
+		{"relative without exposure", ".env", session.TaintTrusted, session.PolicyAllow, "trusted_or_allowlisted_context"},
+		{"absolute without exposure", "/home/u/proj/.env", session.TaintTrusted, session.PolicyAllow, "trusted_or_allowlisted_context"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			args, err := json.Marshal(map[string]string{"path": tt.path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			classified := session.ClassifyMCPToolCallWithOptions("read_file", string(args), nil, nil, session.ClassificationOptions{})
+			pm := session.PolicyMatrix{Profile: "balanced"}
+			got := pm.Evaluate(tt.taint, classified.Class, classified.Sensitivity, session.AuthorityUnknown)
+			if got.Decision != tt.want || got.Reason != tt.reason {
+				t.Fatalf("decision = %v, reason = %q; want %v, %q", got.Decision, got.Reason, tt.want, tt.reason)
+			}
+		})
 	}
 }
