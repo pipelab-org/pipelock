@@ -1281,7 +1281,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	var reverseBodyBytes []byte
 	var reverseInspected []byte
 	reverseDecoded := false
-	if r.Body != nil && r.ContentLength != 0 && cfg.RequestBodyScanning.Enabled {
+	if r.Body != nil && (r.ContentLength != 0 || len(r.Trailer) > 0) && cfg.RequestBodyScanning.Enabled {
 		maxBytes := reverseRequestScanMaxBytes(cfg)
 		if r.ContentLength > int64(maxBytes) {
 			reason := fmt.Sprintf("request body Content-Length %d exceeds max_body_bytes (%d)", r.ContentLength, maxBytes)
