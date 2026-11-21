@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"reflect"
 	"sync"
 	"time"
 
@@ -26,9 +27,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 type mcpSandboxBridgeStartOptions struct {
+	Rec              session.Recorder
 	Context          context.Context
 	Cancel           context.CancelFunc
 	Config           *config.Config
@@ -45,6 +48,7 @@ type mcpSandboxBridgeStartOptions struct {
 type startMCPSandboxBridgeFunc func(mcpSandboxBridgeStartOptions) (*mcpSandboxBridge, error)
 
 type mcpSandboxBridgeSetupOptions struct {
+	Rec              session.Recorder
 	Context          context.Context
 	Cancel           context.CancelFunc
 	GOOS             string
@@ -67,6 +71,7 @@ type mcpSandboxBridge struct {
 	socketPath string
 	listener   net.Listener
 	scanner    *scanner.Scanner
+	proxy      *proxy.Proxy
 	acceptDone chan struct{}
 	connWg     sync.WaitGroup
 	closeOnce  sync.Once
@@ -85,6 +90,7 @@ func setupMCPSandboxBridge(opts mcpSandboxBridgeSetupOptions) (func(), error) {
 	}
 
 	bridge, err := opts.StartBridge(mcpSandboxBridgeStartOptions{
+		Rec:              opts.Rec,
 		Context:          opts.Context,
 		Cancel:           opts.Cancel,
 		Config:           opts.Config,
@@ -107,6 +113,13 @@ func setupMCPSandboxBridge(opts mcpSandboxBridgeSetupOptions) (func(), error) {
 }
 
 func startMCPSandboxBridge(opts mcpSandboxBridgeStartOptions) (*mcpSandboxBridge, error) {
+	if opts.Config.Taint.Enabled {
+		_, riskOK := opts.Rec.(session.RiskState)
+		_, taskOK := opts.Rec.(session.TaskPermissionState)
+		if !riskOK || !taskOK || reflect.ValueOf(opts.Rec).Kind() == reflect.Pointer && reflect.ValueOf(opts.Rec).IsNil() {
+			return nil, fmt.Errorf("MCP sandbox bridge: taint requires a shared session risk recorder")
+		}
+	}
 	onRequiredFailure, err := bridgeRequiredReceiptFailure(opts.ReceiptGroup, opts.Config.FlightRecorder.RequireReceipts, opts.Cancel)
 	if err != nil {
 		return nil, err
@@ -147,6 +160,7 @@ func startMCPSandboxBridge(opts mcpSandboxBridgeStartOptions) (*mcpSandboxBridge
 	wirePromptInjectionAudit(bridge.scanner, opts.AuditLogger)
 
 	proxyOptions := []proxy.Option{
+		proxy.WithTaintRecorder(opts.Rec),
 		proxy.WithKillSwitch(opts.KillSwitch),
 		proxy.WithReceiptEmitter(opts.ReceiptEmitter),
 		proxy.WithV2ReceiptEmitter(opts.V2ReceiptEmitter),
@@ -164,6 +178,11 @@ func startMCPSandboxBridge(opts mcpSandboxBridgeStartOptions) (*mcpSandboxBridge
 	if err != nil {
 		bridge.Close()
 		return nil, fmt.Errorf("MCP sandbox bridge proxy init: %w", err)
+	}
+	bridge.proxy = p
+	if err := p.LoadCertCache(egressCfg); err != nil {
+		bridge.Close()
+		return nil, fmt.Errorf("MCP sandbox bridge TLS interception: %w", err)
 	}
 	if opts.MetricsBoundAddr != "" {
 		p.UpdateMetricsDialTargetFromBoundAddr(opts.MetricsBoundAddr)
@@ -237,7 +256,9 @@ func (b *mcpSandboxBridge) Close() {
 			<-b.acceptDone
 		}
 		b.connWg.Wait()
-		if b.scanner != nil {
+		if b.proxy != nil {
+			b.proxy.Close()
+		} else if b.scanner != nil {
 			b.scanner.Close()
 		}
 		if b.dir != "" {

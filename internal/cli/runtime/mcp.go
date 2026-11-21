@@ -1216,7 +1216,7 @@ Key-free evidence capture:
 				cee = mcp.NewCEEDeps(cfg.CrossRequestDetection, mcpMetrics)
 			}
 
-			// The session store remains optional.
+			// Taint history needs a store even when behavioral profiling is off.
 			var store session.Store
 			var operatorSessions atomic.Pointer[proxy.SessionManager]
 			var baselineChecker session.BaselineChecker
@@ -1224,7 +1224,7 @@ Key-free evidence capture:
 			if cfg.AdaptiveEnforcement.Enabled {
 				adaptiveCfg = &cfg.AdaptiveEnforcement
 			}
-			if cfg.SessionProfiling.Enabled {
+			if cfg.SessionProfiling.Enabled || cfg.Taint.Enabled {
 				// Reuse the registry created above rather than replacing it: the
 				// denial-of-wallet and transport counters are already wired to
 				// that instance, and a second registry here would drop them.
@@ -1904,7 +1904,19 @@ Key-free evidence capture:
 					reportBestEffortAdmission(cmd.ErrOrStderr())
 				}
 
+				// Acquire the invocation before starting its egress bridge. Both
+				// transports retain this exact state until the child and bridge stop.
+				var sandboxRec session.Recorder
+				if store != nil {
+					key := session.NextInvocationKey("mcp-stdio")
+					sandboxRec = store.GetOrCreate(key)
+					if sandboxRec == nil {
+						return session.ErrCapacity
+					}
+					defer store.Delete(key)
+				}
 				closeBridge, bridgeErr := setupMCPSandboxBridge(mcpSandboxBridgeSetupOptions{
+					Rec:              sandboxRec,
 					Context:          ctx,
 					Cancel:           cancel,
 					GOOS:             runtime.GOOS,
@@ -1933,6 +1945,7 @@ Key-free evidence capture:
 				sandboxLaunch.Cmd.Stderr = cmd.ErrOrStderr()
 
 				proxyOpts := mcp.MCPProxyOpts{
+					Rec:             sandboxRec,
 					TaskOperatorAPI: taskOperatorAPI,
 					Scanner:         sc, Approver: approver, AuditMode: !cfg.EnforceEnabled(),
 					AuditLogger: auditLogger,

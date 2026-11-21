@@ -642,6 +642,7 @@ type Proxy struct {
 	scannerPtr           atomic.Pointer[scanner.Scanner]
 	editionPtr           atomic.Pointer[editionSnapshot]
 	sessionMgrPtr        atomic.Pointer[SessionManager]         // nil when profiling disabled
+	taintRecorder        session.Recorder                       // optional invocation-owned state shared with an MCP sandbox
 	certCachePtr         atomic.Pointer[certgen.CertCache]      // nil when TLS interception disabled
 	entropyTrackerPtr    atomic.Pointer[scanner.EntropyTracker] // nil when entropy budget disabled
 	fragmentBufferPtr    atomic.Pointer[scanner.FragmentBuffer] // nil when fragment reassembly disabled
@@ -5798,8 +5799,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// each enforcement point (not the snapshot in sr.Level) so mid-request CEE
 	// or response-scan escalations are reflected immediately. Also used to call
 	// RecordClean at the end when no finding was detected.
-	var fetchRec session.Recorder
-	if sm := p.sessionMgrPtr.Load(); sm != nil {
+	fetchRec := p.taintRecorder
+	if sm := p.sessionMgrPtr.Load(); fetchRec == nil && sm != nil {
 		sess := sm.GetOrCreate(responseTaintSessionKey(cfg, agent, clientIP, id.Auth))
 		if sess == nil {
 			log.LogBlocked(actx, sessionCapacityLayer, session.ErrCapacity.Error())

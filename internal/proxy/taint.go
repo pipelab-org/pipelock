@@ -25,6 +25,13 @@ const (
 	taintScopeTask   = "task"
 )
 
+// WithTaintRecorder binds forward, fetch, and intercepted HTTP traffic to one
+// invocation-owned recorder. The caller owns its lifetime and must not share
+// this proxy between independent invocations.
+func WithTaintRecorder(rec session.Recorder) Option {
+	return func(p *Proxy) { p.taintRecorder = rec }
+}
+
 type taintDecision struct {
 	Risk                session.SessionRisk
 	Task                session.TaskContext

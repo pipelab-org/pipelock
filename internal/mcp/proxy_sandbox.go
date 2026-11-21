@@ -93,8 +93,8 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 			writeCleanupReport(logW, cleanup, true)
 		}
 	}
-	var rec session.Recorder
-	if opts.Store != nil {
+	rec := opts.Rec
+	if rec == nil && opts.Store != nil {
 		invocationKey := session.NextInvocationKey("mcp-stdio")
 		rec = opts.Store.GetOrCreate(invocationKey)
 		if rec == nil {
@@ -102,6 +102,10 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 			return session.ErrCapacity
 		}
 		defer opts.Store.Delete(invocationKey)
+	}
+	if rec != nil {
+		opts.taskSubject = session.NextInvocationKey("mcp-stdio")
+		session.BindTaskSubject(rec, opts.taskSubject)
 	}
 	defer recordMCPBaselineSample(opts, rec)
 

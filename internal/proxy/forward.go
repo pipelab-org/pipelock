@@ -1353,8 +1353,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 
 	forwardSessionKey := responseTaintSessionKey(cfg, agent, clientIP, id.Auth)
-	var forwardRec session.Recorder
-	if sm := p.sessionMgrPtr.Load(); sm != nil {
+	forwardRec := p.taintRecorder
+	if sm := p.sessionMgrPtr.Load(); forwardRec == nil && sm != nil {
 		sess := sm.GetOrCreate(forwardSessionKey)
 		if sess == nil {
 			denyForwardCapacity()
