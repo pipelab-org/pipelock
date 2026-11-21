@@ -5,6 +5,8 @@ package v3
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -363,5 +365,150 @@ func TestLegacyEndpointRejectsMismatchedOrUnverifiedHead(t *testing.T) {
 				t.Fatalf("mismatched endpoint did not invalidate the chain: %+v", chains[target])
 			}
 		})
+	}
+}
+
+func TestLegacyEvidenceBindingsScope(t *testing.T) {
+	raw, err := os.ReadFile(corpusRoot + "/../secret-egress-v1/valid-transformed-intent.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := contract.ParseEvidenceReceipt(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, selected string
+		invalid        bool
+	}{
+		{"binding applies to selected session", "example", true},
+		{"binding leaves other sessions alone", "other", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := verification{opts: Options{LegacySelection: LegacySelection{
+				Session: tc.selected, Bindings: &contract.ChainVerifyOptions{ExpectContractHash: Digest(nil)},
+			}}, used: map[string]bool{}}
+			batch := legacyBatch{session: "example", recorder: true, evidence: []contract.EvidenceReceipt{signed}}
+			presented := map[legacyIdentity]legacyPresentation{}
+			v.legacyEvidence(batch, nil, nil, presented, map[legacyIdentity]map[int64]string{})
+			if len(presented) != 1 || hasFinding(v.result, codeLegacyInvalid) != tc.invalid {
+				t.Fatalf("presentation = %+v, findings = %+v", presented, v.result.Findings)
+			}
+			for _, item := range presented {
+				if (item.verdict == legacyInvalid) != tc.invalid {
+					t.Fatalf("verdict = %q, want invalid = %t", item.verdict, tc.invalid)
+				}
+			}
+		})
+	}
+}
+
+func TestMixedDirectoryEndorsedRotation(t *testing.T) {
+	dir := t.TempDir()
+	session, err := recorder.NewRunSessionID("proxy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, rootPrivate, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, successorPrivate, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorKey := hex.EncodeToString(root)
+	for _, private := range []ed25519.PrivateKey{rootPrivate, successorPrivate} {
+		rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000}, nil, private)
+		if err != nil {
+			t.Fatal(err)
+		}
+		emitter := legacy.NewEmitter(legacy.EmitterConfig{
+			Recorder: rec, PrivKey: private, Principal: "example", Actor: "example",
+			Session: session, PriorSignerKeys: []string{priorKey},
+		})
+		emitErr := emitter.EmitSessionOpen()
+		if err := errors.Join(emitter.InitError(), emitErr, rec.Close()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chain, err := legacy.ExtractReceiptsFromSessionDir(dir, session)
+	if err != nil || len(chain) != 2 || chain[1].ActionRecord.KeyTransition == nil || chain[1].ActionRecord.ChainSeq != 0 {
+		t.Fatalf("rotated chain must have two records and a sequence-zero transition, got %d records: %v", len(chain), err)
+	}
+	prior, successor := chain[0].ActionRecord, chain[1].ActionRecord
+	priorHash, err := legacy.ReceiptHash(chain[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	successorHash, err := successor.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	endorsement, err := legacy.SignRotationEndorsement(legacy.RotationEndorsement{
+		SessionID: session, PriorFinalSeq: prior.ChainSeq, PriorTailHash: priorHash,
+		NewSignerKey: chain[1].SignerKey, RotatedAt: "2026-01-01T00:00:00Z",
+	}, rootPrivate)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	inventory, err := canonicalJSON(Inventory{V: 1, Chains: []InventoryChain{{
+		Chain: prior.RunNonce, Format: legacyAction, Record: legacyHash(successorHash),
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := Digest(inventory)
+	if err := os.WriteFile(filepath.Join(dir, InventoryFilename(digest)), inventory, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stream := signedStream(t, 1, nil, &Cutover{Inventory: digest, Chains: 1})
+	stream.close()
+	stream.write(dir)
+	opts := Options{
+		Directory: true, Keys: []ed25519.PublicKey{root, stream.public()}, AllowPrefix: true,
+		LegacySelection: LegacySelection{Session: session, Endorsements: []legacy.RotationEndorsement{endorsement}},
+	}
+	result, err := VerifyPaths(t.Context(), []string{dir}, opts)
+	wantAccepted := []Acceptance{{Kind: "allow-prefix", Value: "true"}, {Kind: "expect-legacy-session", Value: session}}
+	if err != nil || result.ExitCode != 0 || result.Verdict != prefixVerdict ||
+		!reflect.DeepEqual(result.Accepted, wantAccepted) || len(result.Legacy) != 1 ||
+		result.Legacy[0].Class != legacyPass || result.Legacy[0].Chain != prior.RunNonce ||
+		!hasFinding(result, codeLegacyEndUnproven) {
+		t.Fatalf("endorsed rotation: %+v, %v", result, err)
+	}
+	opts.LegacySelection.Endorsements = nil
+	result, err = VerifyPaths(t.Context(), []string{dir}, opts)
+	if err != nil || result.ExitCode == 0 || result.Verdict == prefixVerdict || !hasFinding(result, codeLegacyInvalid) {
+		t.Fatalf("unendorsed rotation: %+v, %v", result, err)
+	}
+	// A second recorder session inherits the root trust without inheriting
+	// the endorsement for this session.
+	v := verification{opts: Options{LegacySelection: LegacySelection{Endorsements: []legacy.RotationEndorsement{endorsement}}}}
+	walker := v.legacyActionWalker("other", []string{hex.EncodeToString(root)}, nil)
+	walker.Add(chain[0])
+	if got := walker.Result(); !got.Valid {
+		t.Fatalf("independent session did not retain its pinned root: %+v", got)
+	}
+
+	// In an unwrapped batch a fresh genesis splits the chain, while a
+	// sequence-zero key transition stays with the preceding receipts.
+	otherRaw, err := os.ReadFile(corpusRoot + "/../frozen/v1/action-receipt-v1-single.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := legacy.Unmarshal(otherRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := legacyBatch{action: append(chain, other)}
+	v = verification{used: map[string]bool{}}
+	presented := map[legacyIdentity]legacyPresentation{}
+	v.legacyActions(batch, []string{chain[0].SignerKey, chain[1].SignerKey, other.SignerKey}, nil,
+		presented, map[legacyIdentity]map[int64]string{})
+	if len(presented) != 2 || hasFinding(v.result, codeLegacyInvalid) ||
+		presented[legacyIdentity{legacyAction, prior.RunNonce}].Record != legacyHash(successorHash) {
+		t.Fatalf("bare batch did not preserve both verified chains: %+v, %+v", presented, v.result.Findings)
 	}
 }
