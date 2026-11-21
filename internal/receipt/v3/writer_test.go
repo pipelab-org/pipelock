@@ -576,3 +576,49 @@ func TestStreamWriterRestartFlushesTipInOverlappingSegments(t *testing.T) {
 		t.Fatalf("restart with unflushed tip = %v", err)
 	}
 }
+
+func TestStreamWriterHeartbeatRecoveryDeadline(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	opts.Heartbeat = 0
+	opts.Coverage.ContentScan = true
+	watchdog, stop := context.WithTimeout(t.Context(), 8*time.Second)
+	defer stop()
+	blockScan := false
+	opts.Detector = func(ctx context.Context, _ string) scanner.TextDLPResult {
+		if blockScan {
+			select {
+			case <-ctx.Done():
+			case <-watchdog.Done():
+			}
+		}
+		return scanner.TextDLPResult{Clean: true}
+	}
+	w := requireWriter(t, opts, localWriterStorage())
+
+	// Cancel during encoding, after acquiring the gate but before persisting.
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	clock := w.now
+	w.now = func() time.Time {
+		cancel()
+		return clock()
+	}
+	before := w.active.confirmed
+	err := w.WriteHeartbeat(ctx)
+	w.now = clock
+	if !errors.Is(err, context.Canceled) || w.active.confirmed != before || w.previous != nil {
+		t.Fatalf("cancelled heartbeat changed the confirmed stream: %v", err)
+	}
+
+	w.active.file = syncCallbackFile{
+		StreamFile:   errorWriterFile{StreamFile: w.active.file, syncErr: errWriterReplay},
+		syncCallback: func() { blockScan = true },
+	}
+	err = w.WriteHeartbeat(t.Context())
+	if !errors.Is(err, errWriterReplay) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("heartbeat error = %v, want flush error and recovery deadline", err)
+	}
+	if err := w.WriteHeartbeat(t.Context()); !errors.Is(err, ErrWriterUnavailable) {
+		t.Fatalf("heartbeat error = %v, want verified restart required", err)
+	}
+}

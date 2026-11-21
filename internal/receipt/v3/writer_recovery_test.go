@@ -391,8 +391,8 @@ func TestStreamWriterRecoversHoldAtWireLineLimit(t *testing.T) {
 				t.Fatal(err)
 			}
 			result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
-			if writerTestCount(t, result, "blocked") != 1 {
-				t.Fatalf("large hold did not settle: %+v", result.Counts.Decisions)
+			if result.Verdict != "VALID" || writerTestCount(t, result, "blocked") != 1 {
+				t.Fatalf("large hold recovery = %s, decisions %+v", result.Verdict, result.Counts.Decisions)
 			}
 		})
 	}
