@@ -164,6 +164,8 @@ type Server struct {
 	emitter                *emit.Emitter
 	emitSinks              []emit.Sink
 	scanner                *scanner.Scanner
+	detectorStartupConfig  *config.Config
+	detectorLocalConfig    *config.Config // latest operator-loaded config; Conductor transitions leave it
 	scannerConstructor     func(*config.Config) (*scanner.Scanner, error)
 	metrics                *metrics.Metrics
 	killswitch             *killswitch.Controller
@@ -482,6 +484,8 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		return nil, fmt.Errorf("create scanner: %w", err)
 	}
 	s.scanner = sc
+	s.detectorStartupConfig = cfg.Clone()
+	s.detectorLocalConfig = s.detectorStartupConfig
 	// License gate for the follower-side Conductor runtime. When
 	// conductor.enabled is true the operator has explicitly opted into
 	// central governance (remote kill, audit ingest, policy distribution);
