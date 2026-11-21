@@ -1499,6 +1499,99 @@ func TestValidate_DLPPatternActionWarnOnBuiltin(t *testing.T) {
 	}
 }
 
+func TestLoad_DLPPatternCanonicalBuiltinActionWarn(t *testing.T) {
+	for _, p := range Defaults().DLP.Patterns {
+		if p.Validator != ValidatorLuhn {
+			continue
+		}
+		for _, tc := range []struct {
+			name   string
+			regex  string
+			reject bool
+		}{
+			{p.Name, p.Regex, true},
+			{"renamed canonical detector", p.Regex, true},
+			{p.Name, `value=[0-9]{16}`, false},
+		} {
+			t.Run(tc.name+" "+tc.regex, func(t *testing.T) {
+				body := fmt.Sprintf("dlp:\n  patterns:\n    - name: %q\n      regex: %q\n      severity: medium\n      validator: luhn\n      action: warn\n", tc.name, tc.regex)
+				_, err := LoadBytes([]byte(body))
+				if tc.reject {
+					if err == nil || !strings.Contains(err.Error(), "built-in default") {
+						t.Fatalf("expected canonical detector to reject warn, got %v", err)
+					}
+				} else if err != nil {
+					t.Fatalf("custom detector with the same name must remain valid: %v", err)
+				}
+			})
+		}
+		return
+	}
+	t.Fatal("no built-in card detector")
+}
+
+func TestValidateReload_DLPPatternActionAndHostExemptions(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		oldAction, newAction   string
+		oldDomains, newDomains []string
+		want                   string
+	}{
+		{name: "downgrade action", newAction: ActionWarn, want: "action changed to warn"},
+		{name: "tighten action", oldAction: ActionWarn},
+		{name: "new exemption", newDomains: []string{"vendor.example"}, want: "exemptions expanded"},
+		{name: "broader wildcard", oldDomains: []string{"vendor.example"}, newDomains: []string{"*.vendor.example"}, want: "exemptions expanded"},
+		{name: "narrower wildcard", oldDomains: []string{"*.vendor.example"}, newDomains: []string{"api.vendor.example"}},
+		{name: "equivalent domain spelling", oldDomains: []string{"Vendor.Example."}, newDomains: []string{"vendor.example"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pattern := DLPPattern{Name: testPatternName, Regex: `sample-[0-9]+`, Action: tc.oldAction, ExemptDomains: tc.oldDomains}
+			old := &Config{DLP: DLP{Patterns: []DLPPattern{pattern}}}
+			pattern.Action, pattern.ExemptDomains = tc.newAction, tc.newDomains
+			updated := &Config{DLP: DLP{Patterns: []DLPPattern{pattern}}}
+			for _, warning := range ValidateReload(old, updated) {
+				if warning.Field != fieldDLPPatterns && warning.Field != fieldDLPPatterns+".exempt_domains" {
+					continue
+				}
+				if tc.want != "" && warning.Disposition == "" && strings.Contains(warning.Message, tc.want) {
+					return
+				}
+				t.Fatalf("unexpected DLP warning: %+v", warning)
+			}
+			if tc.want != "" {
+				t.Fatalf("expected DLP downgrade warning containing %q", tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateReload_DLPPatternEffectiveExemptions(t *testing.T) {
+	const host = "gitlab.vendor.example"
+	base := Defaults()
+	pattern := loadedPattern(t, base, "GitLab CI Job Token")
+	pattern.ExemptDomains = []string{host}
+	inactive := DLP{Patterns: []DLPPattern{pattern}, GitLabHosts: []string{host}}
+	active := DLP{Patterns: []DLPPattern{pattern}}
+	control := loadedPattern(t, base, "GitLab CI Job Token")
+	noExemption := DLP{Patterns: []DLPPattern{control}, GitLabHosts: []string{host}}
+	for _, tc := range []struct {
+		name      string
+		old, next DLP
+		want      bool
+	}{
+		{"new exemption within effective audience", noExemption, inactive, false},
+		{"audience removal activates exemption", inactive, active, true},
+		{"audience addition masks exemption", active, inactive, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changes := expandedDLPExemptions(tc.old, tc.next)
+			if (len(changes) != 0) != tc.want {
+				t.Fatalf("effective coverage warnings = %v, want warning %t", changes, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoad_DLPPatternActionWarnFromYAML(t *testing.T) {
 	dir := t.TempDir()
 	cfgContent := `

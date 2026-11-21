@@ -7,6 +7,17 @@ import (
 	"testing"
 )
 
+func TestLogBlockedDetailMatchView(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+	const view = "dlp_normalized:query_subsequence"
+	logger.LogBlockedDetail(NewMethodLogContext("GET"), ScannerDLP, "DLP match: Credit Card Number (medium)", BlockDetail{MatchView: view})
+	event, ok := sink.lastEvent()
+	if !ok || event.Fields["match_view"] != view {
+		t.Fatalf("missing match view in operator event: %+v", event)
+	}
+}
+
 func TestLogBlockedDetailIssuerIDEvidence(t *testing.T) {
 	for _, reason := range []string{"", "history_unread_body"} {
 		t.Run(reason, func(t *testing.T) {

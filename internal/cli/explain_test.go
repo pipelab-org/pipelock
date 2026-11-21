@@ -98,6 +98,19 @@ func TestExplainCmd_CleanURLAllowed(t *testing.T) {
 	}
 }
 
+func TestExplainCmd_URLDLPMatchView(t *testing.T) {
+	const target = "https://vendor.example/orders?id=40000000000&page=review&number=00000006"
+	report, err := decodeExplainJSON(t, target)
+	if err == nil || report.Allowed || report.TargetView != explainViewURLQuery ||
+		report.MatchView != "dlp_normalized:query_subsequence" {
+		t.Fatalf("unexpected explanation: %+v, err = %v", report, err)
+	}
+	output, err := runExplainCmd(t, target)
+	if err == nil || !strings.Contains(output, "dlp_normalized:query_subsequence") {
+		t.Fatalf("missing match view in human explanation: %s, err = %v", output, err)
+	}
+}
+
 func TestExplainCmd_CredentialAudienceVerdicts(t *testing.T) {
 	// Google documents the key query on this Maps route. OpenAI's compiled
 	// audience is Bearer on api.openai.com, so the same shape in a query is a

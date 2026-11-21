@@ -322,7 +322,7 @@ type RemediationGuidance struct {
 var remediationGuidance = map[string]RemediationGuidance{
 	ScannerDLP: {
 		OperatorKnob: "For a noisy custom pattern, prefer a format checksum in `dlp.patterns[].validator`, or require nearby labels with `dlp.patterns[].keywords` and `keyword_window` (Unicode scalar values on either side); keywords miss deliberately unlabeled values and cannot narrow built-in or core patterns. " +
-			"Add the destination host to that pattern's `dlp.patterns[].exempt_domains`. " +
+			"Add the destination host to the pattern's `dlp.patterns[].exempt_domains` only if each URL on that host may skip this pattern. To configure it for a built-in pattern, supply the full pattern definition; an entry with only the name and host list is invalid. " +
 			"URL DLP does NOT consult the top-level `suppress:` list (that is body-DLP and response-scanning only) — a `suppress:` entry here is inert. " +
 			"If the value is a long token in the query string, you may ALSO need `fetch_proxy.monitoring.query_entropy_param_exclusions` for an exact endpoint+parameter, or `fetch_proxy.monitoring.query_entropy_exclusions` as the broader host-wide fallback (a separate gate).",
 		OperatorBroader: "`tls_interception.passthrough_domains` exempts the host in one line but blinds Pipelock to ALL inner TLS (method, path, body, response) for that host — only acceptable for can't-scan-by-construction hosts, never as the fix for a single-pattern false positive.",

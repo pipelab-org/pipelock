@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"regexp"
 	"slices"
 	"time"
 
@@ -155,17 +154,8 @@ func ValidateAgents(cfg *config.Config) error {
 		// Validate DLP patterns in agent profile.
 		if profile.DLP != nil {
 			for _, p := range profile.DLP.Patterns {
-				if err := p.ValidateKeywords(); err != nil {
+				if err := p.Validate(); err != nil {
 					return fmt.Errorf("agent %q: %w", name, err)
-				}
-				if p.Name == "" {
-					return fmt.Errorf("agent %q: DLP pattern missing name", name)
-				}
-				if p.Regex == "" {
-					return fmt.Errorf("agent %q: DLP pattern %q missing regex", name, p.Name)
-				}
-				if _, err := regexp.Compile(p.Regex); err != nil {
-					return fmt.Errorf("agent %q: DLP pattern %q has invalid regex: %w", name, p.Name, err)
 				}
 			}
 		}
@@ -530,8 +520,8 @@ func MergeAgentProfile(base *config.Config, profile *config.AgentProfile) (*conf
 // ValidateMergedAgent validates a merged agent config.
 func ValidateMergedAgent(name string, cfg *config.Config) error {
 	for _, p := range cfg.DLP.Patterns {
-		if err := p.ValidateKeywords(); err != nil {
-			return fmt.Errorf("agent %q: %w", name, err)
+		if err := p.Validate(); err != nil {
+			return fmt.Errorf("agent %q scanner: %w", name, err)
 		}
 	}
 	// Validate trusted_domains inherited or overridden by the agent profile.

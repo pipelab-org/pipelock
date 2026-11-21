@@ -70,6 +70,7 @@ type explainReport struct {
 	Scanner       string              `json:"scanner,omitempty"`
 	Layer         string              `json:"layer,omitempty"`
 	TargetView    string              `json:"target_view,omitempty"`
+	MatchView     string              `json:"match_view,omitempty"`
 	Host          string              `json:"host,omitempty"`
 	PatternName   string              `json:"pattern_name,omitempty"`
 	Reason        string              `json:"reason,omitempty"`
@@ -460,6 +461,9 @@ func buildExplainReport(cmd *cobra.Command, cfg *config.Config, cfgLabel, rawURL
 	report.Score = result.Score
 	report.Host = explainHost(rawURL)
 	report.TargetView = explainTargetView(result, rawURL)
+	if result.Scanner == scanner.ScannerDLP || result.Scanner == scanner.ScannerCoreDLP {
+		report.MatchView = result.MatchView()
+	}
 	for _, w := range result.WarnMatches {
 		report.WarnMatches = append(report.WarnMatches, explainWarnMatch{
 			PatternName: w.PatternName,
@@ -802,19 +806,26 @@ func explainTargetView(result scanner.Result, rawURL string) string {
 
 func explainTargetViewFromSpans(spans []scanner.MatchSpan) string {
 	for _, span := range spans {
-		label := span.ViewLabel
-		switch {
-		case strings.Contains(label, "query"):
-			return explainViewURLQuery
-		case strings.Contains(label, "subdomain"):
-			return explainViewHost
-		case strings.Contains(label, "path"):
-			return explainViewPath
-		case strings.Contains(label, "url"):
-			return explainViewURL
+		if view := explainTargetViewFromMatch(span.ViewLabel); view != "" {
+			return view
 		}
 	}
 	return ""
+}
+
+func explainTargetViewFromMatch(label string) string {
+	switch {
+	case strings.Contains(label, "query"):
+		return explainViewURLQuery
+	case strings.Contains(label, "subdomain"):
+		return explainViewHost
+	case strings.Contains(label, "path"):
+		return explainViewPath
+	case strings.Contains(label, "url"):
+		return explainViewURL
+	default:
+		return ""
+	}
 }
 
 func explainURLComponentView(rawURL string) string {
@@ -944,6 +955,9 @@ func printExplainReport(w io.Writer, report explainReport, opts explainPrintOpti
 	printExplainField(w, "Layer", report.Layer, false, opts)
 	if report.TargetView != "" {
 		printExplainField(w, "Target", report.TargetView, true, opts)
+	}
+	if report.MatchView != "" {
+		printExplainField(w, "Match view", report.MatchView, false, opts)
 	}
 	if report.PatternName != "" {
 		printExplainField(w, "Pattern", report.PatternName, false, opts)
