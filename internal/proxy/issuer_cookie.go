@@ -174,13 +174,16 @@ type issuerCookieRuntime struct {
 	cfg   *config.Config
 	store *issuerBoundCookieStore
 	query *issuerQueryStore
+	// Changed identity settings invalidate older tunnels without dropping
+	// shared evidence needed by newly admitted requests.
+	identityGeneration uint64
 }
 
 // sameEvidenceGeneration reports whether two runtimes hold one evidence
 // window: the same cookie store and the same query store, with issuer
-// evidence enabled under both policies and the same default identity
-// settings, since those decide which session an unbound caller's evidence is
-// keyed to. A reload that leaves the
+// evidence enabled under both policies and no intervening change to default
+// identity settings, since those decide which session an unbound caller's
+// evidence is keyed to. A reload that leaves the
 // prerequisites on carries both stores forward, so a tunnel opened before it
 // keeps its relief. A reload that disables a prerequisite installs a fresh
 // cookie store and a next-generation query store, so every older snapshot,
@@ -194,8 +197,7 @@ func (r *issuerCookieRuntime) sameEvidenceGeneration(other *issuerCookieRuntime)
 	}
 	return r.store != nil && r.store == other.store && r.query != nil && r.query == other.query &&
 		issuerCookieEnabled(r.cfg) && issuerCookieEnabled(other.cfg) &&
-		r.cfg.DefaultAgentIdentity == other.cfg.DefaultAgentIdentity &&
-		r.cfg.BindDefaultAgentIdentity == other.cfg.BindDefaultAgentIdentity
+		r.identityGeneration == other.identityGeneration
 }
 
 // currentIssuerRuntime returns the live issuer runtime when this request's
@@ -206,19 +208,22 @@ func (ic *InterceptContext) currentIssuerRuntime() *issuerCookieRuntime {
 		return nil
 	}
 	runtime := ic.Proxy.issuerCookieRuntime.Load()
-	if runtime == nil || !issuerCookieEnabled(runtime.cfg) {
-		return nil
-	}
-	if ic.IssuerRuntime != nil {
-		if !ic.IssuerRuntime.sameEvidenceGeneration(runtime) {
-			return nil
-		}
-		return runtime
-	}
-	if runtime.cfg != ic.Config {
+	if !ic.matchesIssuerRuntime(runtime) {
 		return nil
 	}
 	return runtime
+}
+
+// matchesIssuerRuntime checks a caller's snapshot against one observation of
+// the live runtime, including when a diagnostic also needs that same runtime.
+func (ic *InterceptContext) matchesIssuerRuntime(runtime *issuerCookieRuntime) bool {
+	if runtime == nil || !issuerCookieEnabled(runtime.cfg) {
+		return false
+	}
+	if ic.IssuerRuntime != nil {
+		return ic.IssuerRuntime.sameEvidenceGeneration(runtime)
+	}
+	return runtime.cfg == ic.Config
 }
 
 // issuerCookieEnabled reports whether a policy can produce issuance evidence.

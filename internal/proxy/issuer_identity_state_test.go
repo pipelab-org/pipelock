@@ -45,6 +45,17 @@ func TestIssuerIDIdentityReload(t *testing.T) {
 	key := sessionKeyFor(cfg, "owner", "192.0.2.1", envelope.ActorAuthBound)
 	peer := sessionKeyFor(cfg, "peer", "192.0.2.1", envelope.ActorAuthBound)
 	original := p.issuerCookieRuntime.Load().query
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodConnect, "api.vendor.example:443", http.NoBody)
+	_, _, _, _, resolved, release := p.resolveAgentRuntimeFromRequest(req)
+	defer release()
+	pinned, _ := resolved.Context().Value(ctxKeyConnectIssuerRuntime).(*issuerCookieRuntime)
+	if pinned == nil || pinned.query != original {
+		t.Fatal("CONNECT did not snapshot issuer evidence with its policy")
+	}
+	originalTunnel := &InterceptContext{
+		Proxy: p, Config: cfg, Agent: "peer", ClientIP: "192.0.2.1",
+		ActorAuth: envelope.ActorAuthBound, IssuerRuntime: pinned,
+	}
 	original.recordSent(key, origin, nil, nil, true, time.Now())
 	original.recordSent(peer, origin, nil, nil, true, time.Now())
 	original.mintServerID(key, origin, serverIDListed, time.Now())
@@ -90,6 +101,9 @@ func TestIssuerIDIdentityReload(t *testing.T) {
 			}
 		}
 		cfg = next
+	}
+	if originalTunnel.issuerServerIDStore() != nil {
+		t.Fatal("restoring identity settings reopened evidence access for an old tunnel")
 	}
 	off := cfg.Clone()
 	off.RequestBodyScanning.ScanHeaders = false

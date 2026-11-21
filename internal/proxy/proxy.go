@@ -80,6 +80,7 @@ const (
 	ctxKeyAgentConfig  // per-agent resolved config for redirect scanning
 	ctxKeyAgentScanner // per-agent resolved scanner for redirect scanning
 	ctxKeyAgentContractLoader
+	ctxKeyConnectIssuerRuntime
 	ctxKeyCorrelation // vetted emit.correlation_header tag (audit.CorrelationID)
 
 	// ctxKeyReverseEnvelopeOpts stores the envelope.BuildOpts that the
@@ -2885,7 +2886,17 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	default:
 		queryStore = oldIssuer.query.nextGeneration()
 	}
-	p.issuerCookieRuntime.Store(&issuerCookieRuntime{cfg: cfg, store: issuerStore, query: queryStore})
+	var identityGeneration uint64
+	if oldIssuer != nil {
+		identityGeneration = oldIssuer.identityGeneration
+		if cfg.DefaultAgentIdentity != oldIssuer.cfg.DefaultAgentIdentity ||
+			cfg.BindDefaultAgentIdentity != oldIssuer.cfg.BindDefaultAgentIdentity {
+			identityGeneration++
+		}
+	}
+	p.issuerCookieRuntime.Store(&issuerCookieRuntime{
+		cfg: cfg, store: issuerStore, query: queryStore, identityGeneration: identityGeneration,
+	})
 	p.refreshMetricsDialTarget(cfg.MetricsListen)
 	p.disableCEE(&cfg.CrossRequestDetection)
 	if p.wd != nil {
@@ -3439,6 +3450,9 @@ func (p *Proxy) resolveAgentRuntimeFromRequest(r *http.Request) (*edition.Resolv
 	defer p.reloadMu.RUnlock()
 	resolved, id := p.resolveAgentFromRequest(r)
 	ctx, release := agentLicenseContext(r.Context(), resolved)
+	if r.Method == http.MethodConnect {
+		ctx = context.WithValue(ctx, ctxKeyConnectIssuerRuntime, p.issuerCookieRuntime.Load())
+	}
 	return resolved, id, p.envelopeEmitterPtr.Load(), p.contractLoaderPtr.Load(), r.WithContext(ctx), release
 }
 
