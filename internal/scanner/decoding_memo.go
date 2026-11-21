@@ -263,6 +263,7 @@ type sharedDecodes struct {
 	lowered       map[string]int
 	loweredValues []dlpLoweredBytes
 	loweredBytes  int
+	work          *sharedDLPWork // set only on non-pooled stores used by tests
 }
 
 type sharedDecodesKey struct{}
@@ -347,6 +348,10 @@ func (s *sharedDecodes) decodeDetailedAfter(key decodingMemoKey, prior *decodedR
 		decoded, complete, resumed = prior.views, prior.complete, prior.resumed
 	} else {
 		decoded, complete = decodeEncodingsForScan(key.text, key.includeURL, key.minPrefix, decodeBudgetMode{inbound: key.inbound, reportWorkLimits: key.reportWorkLimits, knownCredit: key.knownCredit, knownResumed: &resumed}, nil)
+		if s.work != nil {
+			s.work.decodeBytes.Add(uint64(len(key.text)))
+			s.work.decodedViews.Add(uint64(len(decoded)))
+		}
 	}
 	s.mu.Lock()
 	s.store.retainDecode(key, decoded, complete)
@@ -397,6 +402,9 @@ func (s *sharedDecodes) matchDecoded(key decodedMatchKey, memo *decodingMemo) []
 	var lowered dlpLoweredBytes
 	if !key.cardOnly {
 		lowered = s.loweredFor(normalized)
+	}
+	if s.work != nil {
+		s.work.matchBytes.Add(uint64(len(normalized)))
 	}
 	matches := key.match(normalized, &lowered, memo)
 	if memo.terminalCanceled() {
@@ -459,6 +467,9 @@ func (s *sharedDecodes) normalize(text string) string {
 	s.mu.Unlock()
 	if ok {
 		return normalized
+	}
+	if s.work != nil {
+		s.work.normalizeBytes.Add(uint64(len(text)))
 	}
 	normalized = normalize.ForDLP(text)
 	s.mu.Lock()
