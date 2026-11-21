@@ -20,7 +20,7 @@ func smallOptions(t *testing.T, binary string) options {
 	retainOnFailure(t, out)
 	return options{
 		binary: binary, out: out, rules: rulesEmpty, requests: 40, warmup: 10, concurrency: 4,
-		chains: 1, seed: 1, window: 50 * time.Millisecond, readyTimeout: 10 * time.Second, shutdownTimeout: 20 * time.Second,
+		chains: 1, seed: 1, window: 50 * time.Millisecond, readyTimeout: 10 * time.Second, requestTimeout: 30 * time.Second, shutdownTimeout: 20 * time.Second,
 	}
 }
 
@@ -54,6 +54,9 @@ func TestShutdownFailureStillWritesResult(t *testing.T) {
 		t.Fatalf("runMode: %v", err)
 	}
 	got := readResult(t, filepath.Join(opt.out, modeOff))
+	if got.Inputs.RequestTimeoutSeconds != opt.requestTimeout.Seconds() {
+		t.Fatalf("recorded request timeout = %v, want %v", got.Inputs.RequestTimeoutSeconds, opt.requestTimeout.Seconds())
+	}
 	if got.Inputs.ReadyTimeoutSeconds != opt.readyTimeout.Seconds() {
 		t.Fatalf("recorded readiness timeout = %v, want %v", got.Inputs.ReadyTimeoutSeconds, opt.readyTimeout.Seconds())
 	}
