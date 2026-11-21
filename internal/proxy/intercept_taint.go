@@ -4,6 +4,8 @@
 package proxy
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -13,6 +15,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
+
+const interceptTaintPolicyLayer = "taint_policy"
 
 func initInterceptTaint(ic *InterceptContext, r *http.Request) {
 	ic.taintConfig = ic.Config
@@ -30,7 +34,7 @@ func initInterceptTaint(ic *InterceptContext, r *http.Request) {
 			ic.taintConfig = cfg
 		}
 	}
-	if ic.ActorAuth == envelope.ActorAuthBound {
+	if ic.ActorAuth == envelope.ActorAuthBound && (ic.Proxy == nil || ic.Proxy.taintRecorder == nil) {
 		ic.taintTask.subject = "forward:" + ic.Agent
 		session.BindTaskSubject(ic.taintRecorder, ic.taintTask.subject)
 	}
@@ -62,11 +66,41 @@ func interceptReceiptConfig(ic *InterceptContext) *config.Config {
 
 // admitInterceptTaint evaluates the effective outbound request after scanning
 // and internal-header removal, before signatures, receipts, or upstream writes.
-func admitInterceptTaint(ic *InterceptContext, w http.ResponseWriter, r *http.Request, actx audit.LogContext, actionID string, body []byte) bool {
-	ic.taintTask.action = forwardRequestTaskAction(r, body)
+func admitInterceptTaint(ic *InterceptContext, w http.ResponseWriter, r *http.Request, actx audit.LogContext, actionID string, body *[]byte, wrapReceipt func(receipt.EmitOpts) receipt.EmitOpts) bool {
 	decision := evaluateHTTPTaskTaint(ic.taintConfig, ic.taintRecorder, r.Method, r.URL, &ic.taintTask)
 	if ic.taint.Result.Reason == session.TaskPermissionRequired && ic.taint.Task.CurrentTaskID != decision.Task.CurrentTaskID {
 		decision.Result = session.PolicyDecisionResult{Decision: session.PolicyBlock, Reason: session.TaskApprovalStale}
+	}
+	if decision.Result.Reason == session.TaskPermissionRequired {
+		var bodyBytes []byte
+		if body != nil {
+			bodyBytes = *body
+		}
+		if bodyBytes == nil && r.Body != nil && r.Body != http.NoBody && ic.taintConfig != nil && ic.taintConfig.RequestBodyScanning.MaxBodyBytes > 0 {
+			maxBytes := ic.taintConfig.RequestBodyScanning.MaxBodyBytes
+			// Even with request-body scanning disabled, an exact permission must
+			// account for every byte. Reuse the configured request body bound.
+			buffered, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBytes)+1))
+			_ = r.Body.Close()
+			if err == nil && len(buffered) <= maxBytes {
+				bodyBytes = buffered
+				if body != nil {
+					*body = buffered
+				}
+				r.Body = io.NopCloser(bytes.NewReader(buffered))
+				r.ContentLength = int64(len(buffered))
+				bodyCopy := buffered
+				r.GetBody = func() (io.ReadCloser, error) {
+					return io.NopCloser(bytes.NewReader(bodyCopy)), nil
+				}
+			}
+		}
+		ic.taintTask.action = forwardRequestTaskAction(r, bodyBytes)
+		matched := evaluateHTTPTaskTaint(ic.taintConfig, ic.taintRecorder, r.Method, r.URL, &ic.taintTask)
+		if matched.Task.CurrentTaskID != decision.Task.CurrentTaskID {
+			matched.Result = session.PolicyDecisionResult{Decision: session.PolicyBlock, Reason: session.TaskApprovalStale}
+		}
+		decision = matched
 	}
 	ic.taint = decision
 	if decision.Result.Decision == session.PolicyAllow {
@@ -102,18 +136,26 @@ func admitInterceptTaint(ic *InterceptContext, w http.ResponseWriter, r *http.Re
 			}
 		}
 	}
-	refuseInterceptTaint(ic, w, r, actx, actionID, reason)
+	refuseInterceptTaint(ic, w, r, actx, actionID, reason, wrapReceipt)
 	return false
 }
 
-func refuseInterceptTaint(ic *InterceptContext, w http.ResponseWriter, r *http.Request, actx audit.LogContext, actionID, reason string) {
-	ic.Logger.LogBlocked(actx, "taint_policy", reason)
-	ic.Metrics.RecordTLSRequestBlocked("taint_policy")
-	_ = interceptEmitReceipt(ic, receipt.EmitOpts{
-		ActionID: actionID, Verdict: config.ActionBlock, Layer: "taint_policy", Pattern: reason,
+func writeInterceptTaintRefusal(ic *InterceptContext, w http.ResponseWriter, actx audit.LogContext, reason string) {
+	ic.Logger.LogBlocked(actx, interceptTaintPolicyLayer, reason)
+	ic.Metrics.RecordTLSRequestBlocked(interceptTaintPolicyLayer)
+	writeBlockedError(w, blockInfoFor(blockreason.AuthorityMismatch, interceptTaintPolicyLayer).WithRequestID(ic.RequestID), "blocked: "+reason, http.StatusForbidden)
+}
+
+func refuseInterceptTaint(ic *InterceptContext, w http.ResponseWriter, r *http.Request, actx audit.LogContext, actionID, reason string, wrapReceipt func(receipt.EmitOpts) receipt.EmitOpts) {
+	opts := receipt.EmitOpts{
+		ActionID: actionID, Verdict: config.ActionBlock, Layer: interceptTaintPolicyLayer, Pattern: reason,
 		Transport: "intercept", Method: r.Method, Target: r.URL.String(), RequestID: ic.RequestID, Agent: ic.Agent,
-	})
-	writeBlockedError(w, blockInfoFor(blockreason.AuthorityMismatch, "taint_policy").WithRequestID(ic.RequestID), "blocked: "+reason, http.StatusForbidden)
+	}
+	if wrapReceipt != nil {
+		opts = wrapReceipt(opts)
+	}
+	_ = interceptEmitReceipt(ic, opts)
+	writeInterceptTaintRefusal(ic, w, actx, reason)
 }
 
 func interceptTaskAdmissionCurrent(ic *InterceptContext) bool {

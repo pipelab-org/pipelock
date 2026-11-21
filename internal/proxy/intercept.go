@@ -1385,7 +1385,7 @@ func newInterceptHandler(
 					"blocked: "+reason, http.StatusForbidden)
 				return
 			}
-			if observation := decide.ObserveCrossAgentContamination(ic.Recorder, &ic.Config.Taint, session.CrossAgentBoundaryA2ARequest); observation.ShouldEscalate {
+			if observation := decide.ObserveCrossAgentContamination(ic.taintRecorder, &interceptReceiptConfig(ic).Taint, session.CrossAgentBoundaryA2ARequest); observation.ShouldEscalate {
 				interceptRecordSignal(ic, observation.AdaptiveSignal(false))
 			}
 			a2aBodyResult := mcp.ScanA2ARequestBody(r.Context(), inspected, ic.Scanner, &ic.Config.A2AScanning, a2aContentEntropyOptions(r.URL.Hostname(), ic.Config))
@@ -1522,7 +1522,7 @@ func newInterceptHandler(
 			// source (evidence) and hostile escalation are captured even when the
 			// request is blocked for another reason (e.g. a secret in the body).
 			if isA2A && bodyBytes != nil {
-				if observation := decide.ObserveCrossAgentContamination(ic.Recorder, &ic.Config.Taint, session.CrossAgentBoundaryA2ARequest); observation.ShouldEscalate {
+				if observation := decide.ObserveCrossAgentContamination(ic.taintRecorder, &interceptReceiptConfig(ic).Taint, session.CrossAgentBoundaryA2ARequest); observation.ShouldEscalate {
 					interceptRecordSignal(ic, observation.AdaptiveSignal(false))
 				}
 			}
@@ -2247,7 +2247,7 @@ func newInterceptHandler(
 		removeHopByHopHeaders(r.Header)
 		stripInternalIdentity(r)
 		applyFullResponsePolicy(r.Header, nil)
-		if !admitInterceptTaint(ic, w, r, actx, actionID, interceptBodyBytes) {
+		if !admitInterceptTaint(ic, w, r, actx, actionID, &interceptBodyBytes, withInterceptRedaction) {
 			return
 		}
 
@@ -2351,6 +2351,11 @@ func newInterceptHandler(
 			}
 			emitOutcome(opts, config.ActionAllow, status, transferred, recordStreamError(r.Context(), ic.Logger, actx, err))
 		}
+		if !interceptTaskAdmissionCurrent(ic) {
+			ic.taint.Result = session.PolicyDecisionResult{Decision: session.PolicyBlock, Reason: session.TaskApprovalStale}
+			refuseInterceptTaint(ic, w, r, actx, actionID, session.TaskApprovalStale, withInterceptRedaction)
+			return
+		}
 		requiredIntentEmitted := false
 		if ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
 			if interceptEmitReceiptOrBlock(ic, w, actx, allowReceipt) {
@@ -2366,9 +2371,9 @@ func newInterceptHandler(
 
 		// Record what this request sends before it leaves, so no response
 		// can mint a value the session itself supplied.
-		if !interceptTaskAdmissionCurrent(ic) {
+		if requiredIntentEmitted && !interceptTaskAdmissionCurrent(ic) {
 			ic.taint.Result = session.PolicyDecisionResult{Decision: session.PolicyBlock, Reason: session.TaskApprovalStale}
-			refuseInterceptTaint(ic, w, r, actx, actionID, session.TaskApprovalStale)
+			writeInterceptTaintRefusal(ic, w, actx, session.TaskApprovalStale)
 			emitBlockedPostRoundTripOutcome(http.StatusForbidden, session.TaskApprovalStale)
 			return
 		}
@@ -2476,8 +2481,9 @@ func newInterceptHandler(
 		}
 		var responseFindingKinds []session.HostileFindingKind
 		responseTaintType := responseTaintContentType(resp.Header)
+		responseTaintURL := r.URL.String()
 		defer func() {
-			observeHTTPResponseFindings(ic.taintRecorder, ic.taintConfig, targetURL, responseTaintType, "forward_response", responseFindingKinds)
+			observeHTTPResponseFindings(ic.taintRecorder, ic.taintConfig, responseTaintURL, responseTaintType, "forward_response", responseFindingKinds)
 		}()
 		stripUpstreamPipelockNamespace(resp)
 		if !applyFullResponsePolicy(nil, resp) {

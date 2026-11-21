@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net"
@@ -18,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -95,7 +97,7 @@ func TestInterceptTaintTaskRotation(t *testing.T) {
 	rec.BeginNewTask("rotated task")
 	observeHTTPResponseFindings(rec, p.CurrentConfig(), target, "text/plain", "forward_response", []session.HostileFindingKind{session.FindingDLP})
 	w := httptest.NewRecorder()
-	if admitInterceptTaint(ic, w, r, audit.NewRequestLogContext("test"), "test-action", nil) || w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), session.TaskApprovalStale) {
+	if admitInterceptTaint(ic, w, r, audit.NewRequestLogContext("test"), "test-action", nil, nil) || w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), session.TaskApprovalStale) {
 		t.Fatalf("rotated admission status=%d body=%s", w.Code, w.Body)
 	}
 	ic.taint.Result.Reason = session.TaskPermissionGranted
@@ -326,5 +328,148 @@ func TestInterceptTaintTerminalApproval(t *testing.T) {
 				t.Fatalf("approved POST status=%d body=%s", response.Code, response.Body)
 			}
 		})
+	}
+}
+
+func TestInterceptTaintBodyBufferingWhenBodyScanningDisabled(t *testing.T) {
+	const payload = `{"action":"publish","item":"report"}`
+	for _, tc := range []struct {
+		name         string
+		body         string
+		maxBodyBytes int
+		grant        bool
+		terminal     bool
+		wantStatus   int
+		wantSubstr   string
+	}{
+		{name: "exact_grant", body: payload, maxBodyBytes: 1024, grant: true, wantStatus: http.StatusOK},
+		{name: "terminal_approval", body: payload, maxBodyBytes: 1024, terminal: true, wantStatus: http.StatusOK},
+		{name: "oversized_refused", body: strings.Repeat("a", 64), maxBodyBytes: 16, terminal: true, wantStatus: http.StatusForbidden, wantSubstr: "task_action_unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, handler, _, target, ic := newTaintInterceptFixture(t, func(cfg *config.Config) {
+				cfg.RequestBodyScanning.Enabled = false
+				cfg.RequestBodyScanning.MaxBodyBytes = tc.maxBodyBytes
+			})
+			ic.Agent, ic.ActorAuth = "bound-worker", envelope.ActorAuthBound
+			rec := p.sessionMgrPtr.Load().GetOrCreate(responseTaintSessionKey(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth))
+			observeHTTPResponseFindings(rec, ic.Config, target, "text/plain", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+			rec.BindTaskSubject("forward:" + ic.Agent)
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, bytes.NewReader([]byte(tc.body)))
+			req.Header.Set("Content-Type", "application/json")
+			if tc.grant {
+				actionReq := req.Clone(t.Context())
+				responseencoding.RequestIdentity(actionReq.Header)
+				applyFullResponsePolicy(actionReq.Header, nil)
+				permission := session.TaskPermission{
+					Action:    forwardRequestTaskAction(actionReq, []byte(tc.body)),
+					ExpiresAt: time.Now().Add(time.Hour),
+				}
+				if err := rec.installTaskPermission(rec.TaskSnapshot().CurrentTaskID, permission); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.terminal {
+				rPipe, wPipe := io.Pipe()
+				t.Cleanup(func() { _ = rPipe.Close(); _ = wPipe.Close() })
+				output := taskPromptWriter(func(prompt []byte) (int, error) {
+					if _, text, found := strings.Cut(string(prompt), "enter y "); found {
+						challenge, _, _ := strings.Cut(text, ".")
+						_, err := io.WriteString(wPipe, "y "+challenge+"\n")
+						return len(prompt), err
+					}
+					return len(prompt), nil
+				})
+				p.approver = hitl.New(1, hitl.WithTerminal(true), hitl.WithInput(rPipe), hitl.WithOutput(output))
+				t.Cleanup(p.approver.Close)
+			}
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+			if w.Code != tc.wantStatus {
+				t.Fatalf("status=%d want=%d body=%s", w.Code, tc.wantStatus, w.Body.String())
+			}
+			if tc.wantSubstr != "" && !strings.Contains(w.Body.String(), tc.wantSubstr) {
+				t.Fatalf("body=%q missing %q", w.Body.String(), tc.wantSubstr)
+			}
+		})
+	}
+}
+
+func TestInterceptTaintMixedPlaintextAndHTTPSParity(t *testing.T) {
+	for _, direction := range []string{"plaintext_to_https", "https_to_plaintext"} {
+		t.Run(direction, func(t *testing.T) {
+			p, interceptHandler, _, httpsTarget, _ := newTaintInterceptFixture(t, func(cfg *config.Config) {
+				cfg.ForwardProxy.Enabled = true
+				cfg.DNS.HostOverrides = map[string][]string{interceptTaintHost: {"127.0.0.1"}}
+				cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8"}
+			})
+			plainUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/plain")
+				_, _ = io.WriteString(w, "external plain content")
+			}))
+			t.Cleanup(plainUpstream.Close)
+			plainURL, err := url.Parse(plainUpstream.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plainURL.Host = net.JoinHostPort(interceptTaintHost, plainURL.Port())
+			plainTarget := plainURL.String()
+			p.client = &http.Client{Transport: forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": {"text/plain"}},
+					Body:       io.NopCloser(strings.NewReader("external plain content")),
+					Request:    r,
+				}, nil
+			})}
+
+			doPlain := func(method string) *httptest.ResponseRecorder {
+				req := httptest.NewRequestWithContext(t.Context(), method, plainTarget, nil)
+				req.RemoteAddr = net.JoinHostPort(testLoopbackIP, "43210")
+				w := httptest.NewRecorder()
+				p.handleForwardHTTP(w, req)
+				return w
+			}
+
+			if direction == "plaintext_to_https" {
+				if w := doPlain(http.MethodGet); w.Code != http.StatusOK {
+					t.Fatalf("plaintext GET status=%d body=%s", w.Code, w.Body.String())
+				}
+				if w := interceptTaintRequest(t, interceptHandler, http.MethodPost, httpsTarget); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "external_publish_after_untrusted_external_exposure") {
+					t.Fatalf("intercept POST after plaintext GET status=%d body=%s", w.Code, w.Body.String())
+				}
+				return
+			}
+			if w := interceptTaintRequest(t, interceptHandler, http.MethodGet, httpsTarget); w.Code != http.StatusOK {
+				t.Fatalf("intercept GET status=%d body=%s", w.Code, w.Body.String())
+			}
+			if w := doPlain(http.MethodPost); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "external_publish_after_untrusted_external_exposure") {
+				t.Fatalf("plaintext POST after intercept GET status=%d body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestInterceptTaintReceiptsVerifyChain(t *testing.T) {
+	p, handler, _, target, _ := newTaintInterceptFixture(t, nil)
+	receipts := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	receipts.emitSessionOpen(t)
+	p.receiptEmitterPtr.Store(receipts.emitter)
+
+	if w := interceptTaintRequest(t, handler, http.MethodGet, target); w.Code != http.StatusOK {
+		t.Fatalf("GET status=%d body=%s", w.Code, w.Body.String())
+	}
+	if w := interceptTaintRequest(t, handler, http.MethodPost, target); w.Code != http.StatusForbidden {
+		t.Fatalf("POST status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	chain := receipts.findReceipts(t)
+	if len(chain) < 2 {
+		t.Fatalf("receipt count=%d, want >= 2", len(chain))
+	}
+	res := receipt.VerifyChain(chain, receipts.pubHex)
+	if !res.Valid {
+		t.Fatalf("receipt.VerifyChain failed: %s (broken at seq %d)", res.Error, res.BrokenAtSeq)
 	}
 }
