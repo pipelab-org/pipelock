@@ -134,17 +134,21 @@ func (w *adaptiveRefusalWriter) WriteHeader(status int) {
 		w.ResponseWriter.WriteHeader(status)
 		return
 	}
+	if !w.refuse() {
+		w.ResponseWriter.WriteHeader(status)
+	}
+}
+
+func (w *adaptiveRefusalWriter) refuse() bool {
 	info, message, blocked := decide.AdaptiveRefusal(w.level(), w.cfg)
 	if !blocked {
-		w.ResponseWriter.WriteHeader(status)
-		return
+		return false
 	}
+	w.wroteHeader = true
 	w.refused = true
 	// Remove detector hints, correlation/receipt identifiers and any upstream
 	// metadata. Their presence must not reveal which refusal path was taken.
-	for key := range w.Header() {
-		w.Header().Del(key)
-	}
+	clear(w.Header())
 	info.SetHeaders(w.Header())
 	switch w.transport {
 	case TransportFetch:
@@ -154,6 +158,7 @@ func (w *adaptiveRefusalWriter) WriteHeader(status int) {
 	default:
 		writeHTTPError(w.ResponseWriter, message, http.StatusForbidden)
 	}
+	return true
 }
 
 // keepsOwnRefusal reports a refusal that block_all must not project. The kill

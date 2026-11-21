@@ -336,6 +336,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// audit context built from r.Context() below reports the real grade.
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
 	emitWebSocketReceipt := func(opts receipt.EmitOpts) {
+		p.refuseEffect(r.Context(), cfg, opts, boundaryUpstreamSend)
 		opts = withReceiptShard(opts, selectedReceiptShard)
 		if opts.Layer == nativeStreamCloseLayer {
 			opts = opts.NativeTerminal()
@@ -970,6 +971,13 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	upgradeClient := func() bool {
+		delivery := deliveryEffectOptions(admissionReceipt)
+		token, err := p.admitEffect(r.Context(), cfg, delivery, boundaryDownstreamDelivery)
+		if err != nil {
+			writeReceiptEffectRefusal(w, requestID)
+			return false
+		}
+		defer p.settleEffect(r.Context(), delivery, token)
 		// Upgrade writes directly to the hijacked connection, so its explicit
 		// reply headers must carry the confirmed receipt ID. Copy no other fields.
 		replyHeaders := make(http.Header)
@@ -989,10 +997,11 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			safeClose(clientConn, "ws.clientConn", log)
 			return false
 		}
+		p.confirmObservedEffect(r.Context(), delivery, token, true)
 		clientConn = p.withAdaptiveClose(clientConn, refusalOpts)
 		return true
 	}
-	if !cfg.FlightRecorder.RequireReceipts && !negotiateProtocol {
+	if !cfg.FlightRecorder.RequireReceipts && !p.receiptEffects.enabled && !negotiateProtocol {
 		if !upgradeClient() {
 			return
 		}
@@ -1219,13 +1228,20 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 
-	if cfg.FlightRecorder.RequireReceipts {
+	upstreamEffect, effectErr := p.admitEffect(r.Context(), cfg, admissionReceipt, boundaryUpstreamSend)
+	if effectErr != nil {
+		writeReceiptEffectRefusal(w, admissionReceipt.RequestID)
+		return
+	}
+	defer func() { p.settleEffect(r.Context(), admissionReceipt, upstreamEffect) }()
+	if cfg.FlightRecorder.RequireReceipts || p.receiptEffects.enabled {
 		// Upgrade the client connection only after the required intent receipt is
 		// durable. A 101 response is client egress; under require_receipts it must
 		// not be written before fsync succeeds. With a subprotocol offer the
 		// upgrade waits further, until the upstream has made its selection.
 		if !negotiateProtocol {
 			if !upgradeClient() {
+				_ = upstreamEffect.Refuse(r.Context())
 				return
 			}
 			defer safeClose(clientConn, "ws.clientConn", log)
@@ -1242,6 +1258,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// admission checks above cannot taint even that caller's evidence.
 	p.taintIssuerSessionForStream(cfg, agent, clientIP, id.Auth, parsed)
 	upstreamConn, upstreamProtocol, dialErr := p.wsDialUpstream(r.Context(), targetURL, fwdHeaders, cfg)
+	p.confirmObservedEffect(r.Context(), admissionReceipt, upstreamEffect, upstreamConn != nil && dialErr == nil)
 	if dialErr != nil {
 		var ssrfErr *ssrfDialBlockError
 		if errors.As(dialErr, &ssrfErr) {
@@ -3147,7 +3164,9 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				return
 			}
 			// Ping/Pong: forward to upstream (proxy is CLIENT to upstream).
-			err = wsutil.WriteClientMessage(r.upstreamConn, hdr.OpCode, payload)
+			err = r.writeReceiptFrame(ctx, boundaryUpstreamSend, func() error {
+				return wsutil.WriteClientMessage(r.upstreamConn, hdr.OpCode, payload)
+			})
 			if err != nil {
 				return
 			}
@@ -3389,7 +3408,9 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		if frag.Opcode != 0 {
 			opCode = frag.Opcode
 		}
-		err = wsutil.WriteClientMessage(r.upstreamConn, opCode, msg)
+		err = r.writeReceiptFrame(ctx, boundaryUpstreamSend, func() error {
+			return wsutil.WriteClientMessage(r.upstreamConn, opCode, msg)
+		})
 		if err != nil {
 			return
 		}
@@ -3873,7 +3894,9 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				continue
 			}
 			// Forward Ping/Pong to client (proxy is SERVER to client, no masking).
-			err = wsutil.WriteServerMessage(r.clientConn, hdr.OpCode, payload)
+			err = r.writeReceiptFrame(ctx, boundaryDownstreamDelivery, func() error {
+				return wsutil.WriteServerMessage(r.clientConn, hdr.OpCode, payload)
+			})
 			if err != nil {
 				// The client went away; the upstream did not break off.
 				r.upstreamCancelled = true
@@ -4027,7 +4050,9 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			continue
 		}
 		// Forward complete message to client (proxy is SERVER, no masking).
-		err = wsutil.WriteServerMessage(r.clientConn, opCode, msg)
+		err = r.writeReceiptFrame(ctx, boundaryDownstreamDelivery, func() error {
+			return wsutil.WriteServerMessage(r.clientConn, opCode, msg)
+		})
 		if err != nil {
 			r.upstreamCancelled = true
 			return

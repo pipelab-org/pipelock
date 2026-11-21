@@ -819,6 +819,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	dialCtx, dialCancel := context.WithTimeout(r.Context(), maxDuration)
 	defer dialCancel()
 
+	tunnelEffect, effectErr := p.admitEffect(r.Context(), cfg, allowReceipt, boundaryTunnelOpen)
+	if effectErr != nil {
+		writeReceiptEffectRefusal(w, allowReceipt.RequestID)
+		return
+	}
+	defer func() { p.settleEffect(r.Context(), allowReceipt, tunnelEffect) }()
 	var targetConn net.Conn
 	var err error
 	if shouldIntercept {
@@ -828,6 +834,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		_, err = p.resolveAndValidateDialTarget(dialCtx, target)
 	} else {
 		targetConn, err = p.ssrfSafeDialContext(dialCtx, "tcp", target)
+		p.confirmObservedEffect(r.Context(), allowReceipt, tunnelEffect, targetConn != nil && err == nil)
 	}
 	if err != nil {
 		var ssrfErr *ssrfDialBlockError
@@ -864,9 +871,17 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	deliveryReceipt := deliveryEffectOptions(allowReceipt)
+	deliveryEffect, effectErr := p.admitEffect(r.Context(), cfg, deliveryReceipt, boundaryDownstreamDelivery)
+	if effectErr != nil {
+		writeReceiptEffectRefusal(w, requestID)
+		return
+	}
+	defer p.settleEffect(r.Context(), deliveryReceipt, deliveryEffect)
 	// Hijack the client connection
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
+		_ = deliveryEffect.Refuse(r.Context())
 		p.logger.LogError(targetCtx,
 			fmt.Errorf("response writer does not support hijacking"))
 		writeHTTPError(w, "hijack not supported", http.StatusInternalServerError)
@@ -877,6 +892,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	clientConn, buf, err := hijacker.Hijack()
 	if err != nil {
+		_ = deliveryEffect.Refuse(r.Context())
 		p.logger.LogError(targetCtx, err)
 		outcomeStatus = strconv.Itoa(http.StatusInternalServerError)
 		outcomeReason = "hijack_failed"
@@ -902,9 +918,18 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// normal header serialization, so carry the already-validated recorded
 	// receipt explicitly when required-receipt admission completed.
 	if recordedReceipt := w.Header().Get(blockreason.HeaderRecordedReceipt); recordedReceipt != "" {
-		_, _ = fmt.Fprintf(clientConn, "HTTP/1.1 200 Connection Established\r\n%s: %s\r\n\r\n", blockreason.HeaderRecordedReceipt, recordedReceipt)
+		_, err = fmt.Fprintf(clientConn, "HTTP/1.1 200 Connection Established\r\n%s: %s\r\n\r\n", blockreason.HeaderRecordedReceipt, recordedReceipt)
 	} else {
-		_, _ = clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+		_, err = io.WriteString(clientConn, "HTTP/1.1 200 Connection Established\r\n\r\n")
+	}
+
+	if p.receiptEffects.enabled && err != nil {
+		p.logger.LogError(targetCtx, err)
+		return
+	}
+	p.confirmObservedEffect(r.Context(), deliveryReceipt, deliveryEffect, err == nil)
+	if shouldIntercept {
+		p.confirmObservedEffect(r.Context(), allowReceipt, tunnelEffect, err == nil)
 	}
 
 	// SNI verification: read ClientHello via Peek, check SNI matches CONNECT
@@ -1136,7 +1161,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Carry the provenance grade from the moment identity resolves, so every
 	// audit context built from r.Context() below reports the real grade.
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
+	refusalBoundary := boundaryUpstreamSend
 	emitForwardReceipt := func(opts receipt.EmitOpts) {
+		p.refuseEffect(r.Context(), cfg, opts, refusalBoundary)
 		opts = withReceiptShard(opts, selectedReceiptShard)
 		opts = withReceiptConfig(opts, cfg)
 		if opts.Layer == nativeStreamCloseLayer {
@@ -2653,7 +2680,14 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		writeTaskDenialResponse(session.TaskApprovalStale, staleTaskDetail)
 		return
 	}
+	upstreamEffect, effectErr := p.admitEffect(r.Context(), cfg, forwardAllowReceipt, boundaryUpstreamSend)
+	if effectErr != nil {
+		writeReceiptEffectRefusal(w, forwardAllowReceipt.RequestID)
+		return
+	}
+	defer func() { p.settleEffect(r.Context(), forwardAllowReceipt, upstreamEffect) }()
 	resp, err := p.client.Do(outReq)
+	p.confirmObservedEffect(r.Context(), forwardAllowReceipt, upstreamEffect, resp != nil)
 	if err != nil {
 		if refuseReceiptCapacity(w, err) {
 			outcomeStatus = strconv.Itoa(http.StatusServiceUnavailable)
@@ -2739,6 +2773,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		outcomeReason = "fetch_failed"
 		return
 	}
+	refusalBoundary = boundaryDownstreamDelivery
+	w, finishReceiptDelivery := p.startReceiptDelivery(w, r, cfg, forwardAllowReceipt)
+	defer finishReceiptDelivery()
 	defer func() { safeClose(resp.Body, "resp.Body", p.logger) }()
 	stripUpstreamPipelockNamespace(resp)
 	if !applyFullResponsePolicy(nil, resp) {

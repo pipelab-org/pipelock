@@ -35,7 +35,6 @@ type EffectToken struct {
 	action Action
 	policy PolicySnapshot
 	once   sync.Once
-	err    error
 }
 
 // Admit writes the intent before the caller may attempt the effect. The action
@@ -107,6 +106,7 @@ func (t *EffectToken) settle(ctx context.Context, outcome, relation, verdict str
 	if t == nil {
 		return nil
 	}
+	var err error
 	t.once.Do(func() {
 		action := t.action
 		action.Phase = phaseOutcome
@@ -115,7 +115,7 @@ func (t *EffectToken) settle(ctx context.Context, outcome, relation, verdict str
 		if verdict != "" {
 			action.Verdict = verdict
 		}
-		t.err = t.gate.write(context.WithoutCancel(ctx), action, t.policy)
+		err = t.gate.write(context.WithoutCancel(ctx), action, t.policy)
 	})
-	return t.err
+	return err
 }

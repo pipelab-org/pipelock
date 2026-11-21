@@ -225,6 +225,7 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
 	if ic.Config != nil {
 		opts = withReceiptConfig(opts, ic.Config)
 	}
+	ic.Proxy.refuseEffect(receiptEffectContext(opts), ic.Config, opts, boundaryUpstreamSend)
 	opts = withReceiptShard(opts, ic.receiptShard)
 	if opts.Layer == nativeStreamCloseLayer {
 		opts = opts.NativeTerminal()
@@ -2439,6 +2440,12 @@ func newInterceptHandler(
 		if seconds := ic.Config.FetchProxy.TimeoutSeconds; seconds > 0 {
 			interceptUpstream = &upstreamBodyStallTransport{base: upstream, stall: time.Duration(seconds) * time.Second}
 		}
+		upstreamEffect, effectErr := ic.Proxy.admitEffect(r.Context(), ic.Config, allowReceipt, boundaryUpstreamSend)
+		if effectErr != nil {
+			writeReceiptEffectRefusal(w, allowReceipt.RequestID)
+			return
+		}
+		defer func() { ic.Proxy.settleEffect(r.Context(), allowReceipt, upstreamEffect) }()
 		resp, err := interceptUpstream.RoundTrip(r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{
 			GotConn: func(httptrace.GotConnInfo) {
 				connAt.CompareAndSwap(0, int64(time.Since(base))+1)
@@ -2452,6 +2459,7 @@ func newInterceptHandler(
 				}
 			},
 		})))
+		ic.Proxy.confirmObservedEffect(r.Context(), allowReceipt, upstreamEffect, resp != nil || reachedUpstream.Load())
 		// The transport reports the write on its own goroutine and can
 		// return a response before that callback runs. A response is proof
 		// the request was sent; the wait then starts at connection ready.
@@ -2490,6 +2498,8 @@ func newInterceptHandler(
 			emitBlockedPostRoundTripOutcome(http.StatusBadGateway, "upstream_error")
 			return
 		}
+		w, finishReceiptDelivery := ic.Proxy.startReceiptDelivery(w, r, ic.Config, allowReceipt)
+		defer finishReceiptDelivery()
 		defer resp.Body.Close() //nolint:errcheck // response body
 
 		// Redirect evidence depends on delivered headers, not body completion.

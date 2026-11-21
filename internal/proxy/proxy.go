@@ -1352,11 +1352,17 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			}
 			// Fetch follows this hop internally. Record its actual destination
 			// and outgoing headers before dispatch, just like the initial send.
+			if state, ok := req.Context().Value(fetchReceiptEffectKey{}).(*fetchReceiptEffect); ok {
+				state.redirect(req, currentCfg, gate)
+			}
 			p.recordIssuerForwardSent(currentCfg, agentName, clientIP, envelope.ActorAuth(agentAuthFromContext(req.Context())), req, nil)
 			return nil
 		},
 	}
 
+	if p.receiptEffects.enabled {
+		p.client.Transport = fetchReceiptTransport{base: p.client.Transport}
+	}
 	p.tlsTransport = newTLSInterceptTransport(p.ssrfSafeDialContext, m.RecordTLSHandshake, nil)
 
 	return p, nil
@@ -1665,6 +1671,7 @@ func (p *Proxy) recordDecision(verdict, layer, pattern, transport, requestID str
 // allocated-but-unrecorded id would be false evidence, so block writers use
 // this and fail toward silence.
 func (p *Proxy) emitRecordedReceipt(opts receipt.EmitOpts) bool {
+	p.refuseEffect(receiptEffectContext(opts), p.cfgPtr.Load(), opts, boundaryForProxyDecision(opts.Transport))
 	if cfg := p.cfgPtr.Load(); cfg != nil {
 		opts = withReceiptConfig(opts, cfg)
 	}
@@ -1809,6 +1816,10 @@ func receiptOutcomePattern(status string, bytesTransferred int64, reason string)
 // flushResponseBeforeOutcome releases buffered response bytes before synchronous
 // outcome recording. The caller records any delivery failure before aborting.
 func flushResponseBeforeOutcome(w http.ResponseWriter, r *http.Request, cfg *config.Config) error {
+	return flushOutcomeResponse(w, r, cfg, false)
+}
+
+func flushOutcomeResponse(w http.ResponseWriter, r *http.Request, cfg *config.Config, requireFlush bool) error {
 	controller := http.NewResponseController(w)
 	server, _ := r.Context().Value(http.ServerContextKey).(*http.Server)
 	// A positive server WriteTimeout already bounds this write. Leave its
@@ -1828,10 +1839,10 @@ func flushResponseBeforeOutcome(w http.ResponseWriter, r *http.Request, cfg *con
 		}
 	}
 	err := controller.Flush()
-	if errors.Is(err, http.ErrNotSupported) {
+	if !requireFlush && errors.Is(err, http.ErrNotSupported) {
 		err = nil
 	}
-	if bounded && err == nil {
+	if bounded && (err == nil || errors.Is(err, http.ErrNotSupported)) {
 		// Successful callers may continue writing (or reuse the connection).
 		// These servers had no write deadline before this flush.
 		if resetErr := controller.SetWriteDeadline(time.Time{}); resetErr != nil && !errors.Is(resetErr, http.ErrNotSupported) {
@@ -5611,7 +5622,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// resolved. Every audit context below derives from r.Context(), so setting
 	// it only at fetch time would report "unknown" for each event on the way.
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
+	refusalBoundary := boundaryUpstreamSend
 	emitFetchReceipt := func(opts receipt.EmitOpts) {
+		p.refuseEffect(r.Context(), cfg, opts, refusalBoundary)
 		opts = withReceiptShard(opts, selectedReceiptShard)
 		opts = withReceiptConfig(opts, cfg)
 		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
@@ -6720,7 +6733,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	responseencoding.RequestIdentity(req.Header)
+	req, fetchReceipt := p.startFetchReceiptEffects(req, cfg, fetchAllowReceipt)
 	resp, err := p.client.Do(req) //nolint:gosec // G704: URL validated by scanner pipeline before reaching here
+	deliveredFrom := fetchAllowReceipt
+	if fetchReceipt != nil {
+		deliveredFrom = fetchReceipt.opts
+	}
 	if err != nil {
 		if refuseReceiptCapacity(w, err) {
 			outcomeStatus = strconv.Itoa(http.StatusServiceUnavailable)
@@ -6823,6 +6841,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		outcomeReason = "fetch_failed"
 		return
 	}
+	refusalBoundary = boundaryDownstreamDelivery
 	defer func() { safeClose(resp.Body, "resp.Body", p.logger) }()
 
 	// Decode supported single-layer encodings before the existing decoded-body
@@ -7267,6 +7286,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	shieldRewrite := shieldRewriteHeaderValue(shieldSummary)
 	setShieldRewriteHeader(w.Header(), shieldSummary)
+	w, finishReceiptDelivery := p.startReceiptDelivery(w, r, cfg, deliveredFrom)
+	defer finishReceiptDelivery()
 	writeErr := encodeJSON(w, http.StatusOK, FetchResponse{
 		URL:           displayURL,
 		Agent:         agent,

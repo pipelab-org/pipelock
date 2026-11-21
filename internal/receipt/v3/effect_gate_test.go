@@ -106,3 +106,16 @@ func TestEffectGateCancellationAfterIntent(t *testing.T) {
 		t.Fatalf("writes = %+v, want one not_released outcome", writes)
 	}
 }
+
+func TestEffectGateCancellationBeforeIntent(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	gate := EffectGate{write: func(context.Context, Action, PolicySnapshot) error {
+		t.Fatal("cancelled request wrote an intent")
+		return nil
+	}}
+	token, err := gate.Admit(ctx, Action{Verdict: verdictAllow}, PolicySnapshot{})
+	if token != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("admit returned token=%v error=%v", token != nil, err)
+	}
+}

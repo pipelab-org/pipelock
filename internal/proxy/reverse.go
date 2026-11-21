@@ -351,6 +351,9 @@ func (rp *ReverseProxyHandler) SetRequestPolicyPrepareFn(fn func(*http.Request, 
 // recorded, so a block response carries X-Pipelock-Receipt only when the
 // evidence exists.
 func (rp *ReverseProxyHandler) emitRecordedReceipt(opts receipt.EmitOpts) bool {
+	if rp.owner != nil && rp.owner.receiptEffects.enabled {
+		rp.owner.refuseEffect(receiptEffectContext(opts), rp.cfgPtr.Load(), opts, boundaryUpstreamSend)
+	}
 	e := rp.receiptEmitter()
 	return e != nil && rp.emitReceiptWithEmitter(opts, e) == nil
 }
@@ -1874,11 +1877,22 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// Forward to upstream. Response scanning happens in modifyResponse.
 	// Envelope signing happens in the signing RoundTripper wrapping
 	// rp.proxy.Transport so @target-uri reflects the post-Director URL.
+	w, finishReceiptDelivery := rp.owner.startReceiptDelivery(w, r, cfg, reverseAllowReceipt)
+	defer finishReceiptDelivery()
+	if delivery, ok := w.(*v3DeliveryWriter); ok {
+		ctx, cancel := context.WithCancelCause(r.Context())
+		delivery.cancel = cancel
+		r = r.WithContext(ctx)
+		defer cancel(nil)
+	}
 	forwardWriter = &reverseInformationalGuardWriter{
 		ResponseWriter: w,
 		onWriteError: func(status int, written int64, err error) {
 			outcomeTracker.Record(status, written, httpstream.Reason(r.Context(), err))
 		},
+	}
+	if rp.owner != nil && rp.owner.receiptEffects.enabled {
+		r = r.WithContext(context.WithValue(r.Context(), reverseReceiptEffectKey{}, reverseReceiptEffect{owner: rp.owner, cfg: cfg, options: reverseAllowReceipt}))
 	}
 	rp.proxy.ServeHTTP(forwardWriter, r)
 }
@@ -2103,7 +2117,7 @@ func (t *reverseSigningRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 		// No emitter was live at admission time - signing was off
 		// for this request. Forward unsigned.
 		t.recordIssuerSend(req)
-		return t.base.RoundTrip(req)
+		return roundTripReceiptEffect(t.base, req)
 	}
 	opts, ok := req.Context().Value(ctxKeyReverseEnvelopeOpts).(envelope.BuildOpts)
 	if !ok {
@@ -2117,7 +2131,7 @@ func (t *reverseSigningRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 		return nil, newEnvelopeBlockedRequest(err)
 	}
 	t.recordIssuerSend(req)
-	return t.base.RoundTrip(req)
+	return roundTripReceiptEffect(t.base, req)
 }
 
 // scanRequest reads and scans the request body for DLP patterns.
@@ -3875,6 +3889,14 @@ func setBufferedReverseResponseBody(resp *http.Response, body []byte, cfg *confi
 // The concrete error is logged server-side but not exposed to the client
 // to avoid leaking internal topology (dial addresses, TLS state, DNS).
 func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
+	if guard, ok := w.(*reverseInformationalGuardWriter); ok {
+		if delivery, ok := guard.ResponseWriter.(*v3DeliveryWriter); ok {
+			if delivery.denied != nil || delivery.hijacked {
+				return
+			}
+			guard.ResponseWriter = delivery.ResponseWriter
+		}
+	}
 	clientIP, _ := r.Context().Value(ctxKeyClientIP).(string)
 	requestID, _ := r.Context().Value(ctxKeyRequestID).(string)
 	outcomeTracker := reverseOutcomeFromContext(r.Context())
@@ -3886,8 +3908,12 @@ func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Reque
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, blockedErr.layer)
 		rp.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+		reason := blockreason.EnvelopeVerifyFailed
+		if blockedErr.layer == receiptEmissionFailedLayer {
+			reason = blockreason.ReceiptEmissionFailed
+		}
 		written := writeReverseProxyBlock(w, http.StatusForbidden,
-			blockInfoFor(blockreason.EnvelopeVerifyFailed, blockedErr.layer).WithRequestID(requestID),
+			blockInfoFor(reason, blockedErr.layer).WithRequestID(requestID),
 			blockedErr.reason)
 		recordErrorOutcome(http.StatusForbidden, written, blockedErr.layer)
 		return
