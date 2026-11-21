@@ -30,6 +30,7 @@ func (e *delegationEnv) withRecordedAudit(t *testing.T) (*auditLogBuffer, *recei
 	t.Cleanup(p.Close)
 	e.p, e.logger = p, logger
 	rph := newReceiptProxyHelperWithMetrics(t, e.m)
+	t.Cleanup(func() { _ = rph.rec.Close() })
 	e.p.receiptEmitterPtr.Store(rph.emitter)
 	return logs, rph
 }
@@ -37,6 +38,10 @@ func (e *delegationEnv) withRecordedAudit(t *testing.T) (*auditLogBuffer, *recei
 // TestInterceptJoinedViewAllowIsRecordedAsDLP drives the production intercept
 // handler and checks the audit event and receipt each allowance writes.
 func TestInterceptJoinedViewAllowIsRecordedAsDLP(t *testing.T) {
+	const joinedLayer = "dlp_issuer_joined_view_allow"
+	const joinedKind = "issued_joined_view"
+	const entropyLayer = "entropy_issuer_query_allow"
+
 	t.Run("joined DLP view allow writes its own event and receipt", func(t *testing.T) {
 		first, second := joinedCardHalves()
 		query := "wo=" + first + "&site=" + second
@@ -56,8 +61,11 @@ func TestInterceptJoinedViewAllowIsRecordedAsDLP(t *testing.T) {
 		if strings.Contains(logs.String(), first+second) {
 			t.Fatal("audit log carried the joined value")
 		}
-		r := rph.requireReceipt(t, issuerJoinedViewReceiptKey)
-		if !strings.Contains(string(r.Ext), `"`+issuerJoinedViewReceiptKey+`":"`+string(issuerQueryJoinedView)+`"`) {
+		r := rph.requireReceipt(t, joinedLayer)
+		if r.ActionRecord.Verdict != config.ActionAllow {
+			t.Fatalf("receipt verdict = %q, want allow", r.ActionRecord.Verdict)
+		}
+		if !strings.Contains(string(r.Ext), `"`+joinedLayer+`":"`+joinedKind+`"`) {
 			t.Fatalf("receipt extension = %s", r.Ext)
 		}
 		if strings.Contains(r.ActionRecord.Target, "?") {
@@ -79,10 +87,17 @@ func TestInterceptJoinedViewAllowIsRecordedAsDLP(t *testing.T) {
 		if !strings.Contains(logs.String(), `"event":"entropy_issuer_query_allow"`) {
 			t.Fatalf("no entropy issuer allow event in %s", logs.String())
 		}
+		var entropyReceipt bool
 		for _, r := range rph.findReceipts(t) {
-			if r.ActionRecord.Layer == issuerJoinedViewReceiptKey || strings.Contains(string(r.Ext), string(issuerQueryJoinedView)) {
+			if r.ActionRecord.Layer == joinedLayer || strings.Contains(string(r.Ext), joinedKind) {
 				t.Fatalf("entropy-only allow produced a joined view receipt: layer=%s ext=%s", r.ActionRecord.Layer, r.Ext)
 			}
+			if r.ActionRecord.Layer == entropyLayer && r.ActionRecord.Verdict == config.ActionAllow {
+				entropyReceipt = true
+			}
+		}
+		if !entropyReceipt {
+			t.Fatal("no entropy issuer allow receipt")
 		}
 	})
 }
