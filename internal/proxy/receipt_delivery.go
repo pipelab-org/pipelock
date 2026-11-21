@@ -93,6 +93,10 @@ func (w *v3DeliveryWriter) WriteHeader(status int) {
 			w.deny(err)
 			return
 		}
+		if w.adaptiveRefused() {
+			w.proxy.refuseAdmittedEffect(w.request.Context(), opts, token)
+			return
+		}
 		w.ResponseWriter.WriteHeader(status)
 		w.proxy.settleEffect(w.request.Context(), opts, token)
 		return
@@ -102,6 +106,10 @@ func (w *v3DeliveryWriter) WriteHeader(status int) {
 		token, err := w.admit(w.options)
 		if err != nil {
 			w.deny(err)
+			return
+		}
+		if w.adaptiveRefused() {
+			w.proxy.refuseAdmittedEffect(w.request.Context(), w.options, token)
 			return
 		}
 		w.token = token
@@ -172,6 +180,10 @@ func (w *v3DeliveryWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		w.deny(err)
 		return nil, nil, err
 	}
+	if w.adaptiveRefused() {
+		w.proxy.refuseAdmittedEffect(w.request.Context(), w.options, token)
+		return nil, nil, w.denied
+	}
 	conn, buf, err := http.NewResponseController(w.ResponseWriter).Hijack()
 	if err != nil && conn == nil {
 		if refuseErr := token.Refuse(w.request.Context()); refuseErr != nil {
@@ -198,5 +210,11 @@ func (w *v3DeliveryWriter) finish() {
 	})
 	if err != nil {
 		w.proxy.logReceiptEmissionFailure(w.options, err)
+	}
+}
+
+func setReceiptDeliveryShield(w http.ResponseWriter, summary *receipt.ShieldSummary) {
+	if delivery, ok := w.(*v3DeliveryWriter); ok {
+		delivery.options.Shield = summary
 	}
 }

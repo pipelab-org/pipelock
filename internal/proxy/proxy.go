@@ -1139,7 +1139,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			if issuedRelief && result.Allowed {
 				shard := receiptShardFromContext(req.Context())
 				shard.Transport = redirectTransport
-				if err := p.recordIssuerQueryAllow(currentCfg, redirectAuditCtx, redirectURL, requestID, agentName, req.Method, issuerQueryIssuedRedirect, shard); err != nil {
+				if err := p.recordIssuerQueryAllow(currentCfg, redirectAuditCtx, redirectURL, requestID, agentName, req.Method, issuerQueryIssuedRedirect, withReceiptCredentialContext(shard, req.Context())); err != nil {
 					if isNativeCapacityStop(err) {
 						return err
 					}
@@ -1148,7 +1148,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 					return blockedErr
 				}
 			}
-			if err := p.recordCredentialAudienceAllows(currentCfg, redirectAuditCtx, result.CredentialAudienceAllows, redirectTransport, req.Method, redirectURL, requestID, agentName, receiptShardFromContext(req.Context())); err != nil {
+			if err := p.recordCredentialAudienceAllows(currentCfg, redirectAuditCtx, result.CredentialAudienceAllows, redirectTransport, req.Method, redirectURL, requestID, agentName, withReceiptCredentialContext(receiptShardFromContext(req.Context()), req.Context())); err != nil {
 				if isNativeCapacityStop(err) {
 					return err
 				}
@@ -5584,6 +5584,7 @@ func serveUntilShutdown(ctx context.Context, serve func() error, shutdown func()
 
 // handleFetch processes URL fetch requests.
 func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
+	r = p.withReceiptEvidence(r)
 	start := time.Now()
 
 	clientIP, requestID := requestMeta(r)
@@ -5752,7 +5753,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(scanCtx)
 	result := sc.Scan(scanCtx, targetURL)
 	p.metrics.RecordURLDecisions(TransportFetch, result.Decisions)
-	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportFetch, http.MethodGet, targetURL, requestID, agent, selectedReceiptShard); err != nil {
+	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportFetch, http.MethodGet, targetURL, requestID, agent, withReceiptCredentialContext(selectedReceiptShard, r.Context())); err != nil {
 		if refuseReceiptCapacity(w, err) {
 			return
 		}
@@ -7051,7 +7052,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	if mediaVerdict.Relabeled != "" || (mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed()) {
 		if cfg.FlightRecorder.RequireReceipts {
-			if err := p.confirmResponseDecision(cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: TransportFetch, Method: http.MethodGet, Target: displayURL, RequestID: requestID, Agent: agent}, selectedReceiptShard))); err != nil {
+			if err := p.confirmResponseDecision(cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: TransportFetch, Method: http.MethodGet, Target: displayURL, RequestID: requestID, Agent: agent}, selectedReceiptShard)), r.Context()); err != nil {
 				p.recordRequiredReceiptBlock(err, TransportFetch)
 				writeBlockedJSON(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: receiptEmissionBlockReason})
 				outcomeStatus, outcomeReason = strconv.Itoa(http.StatusForbidden), receiptEmissionFailedLayer
@@ -7286,6 +7287,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	shieldRewrite := shieldRewriteHeaderValue(shieldSummary)
 	setShieldRewriteHeader(w.Header(), shieldSummary)
+	deliveredFrom.Shield = shieldSummary
 	w, finishReceiptDelivery := p.startReceiptDelivery(w, r, cfg, deliveredFrom)
 	defer finishReceiptDelivery()
 	writeErr := encodeJSON(w, http.StatusOK, FetchResponse{

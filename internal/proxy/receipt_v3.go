@@ -7,12 +7,14 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const (
@@ -42,7 +44,14 @@ func (p *Proxy) admitEffect(ctx context.Context, cfg *config.Config, opts receip
 		return nil, nil
 	}
 	action, policy := prepareV3TransportReceipt(cfg, opts, boundary)
-	token, err := p.receiptEffects.gate.Admit(ctx, action, policy)
+	actions := receiptActionBatch(ctx, cfg, opts, boundary)
+	var token *proxyEffectToken
+	var err error
+	if len(actions) == 0 {
+		token, err = p.receiptEffects.gate.Admit(ctx, action, policy)
+	} else {
+		token, err = p.receiptEffects.gate.AdmitBatch(ctx, append([]v3.Action{action}, actions...), policy)
+	}
 	if err != nil {
 		p.logReceiptEmissionFailure(opts, err)
 	}
@@ -111,9 +120,10 @@ func (p *Proxy) settleEffect(ctx context.Context, opts receipt.EmitOpts, token *
 type reverseReceiptEffectKey struct{}
 
 type reverseReceiptEffect struct {
-	owner   *Proxy
-	cfg     *config.Config
-	options receipt.EmitOpts
+	owner    *Proxy
+	cfg      *config.Config
+	options  receipt.EmitOpts
+	delivery *v3DeliveryWriter
 }
 
 func roundTripReceiptEffect(base http.RoundTripper, req *http.Request) (*http.Response, error) {
@@ -212,4 +222,123 @@ func (r *wsRelay) writeReceiptFrame(ctx context.Context, boundary string, write 
 	err = write()
 	r.proxy.confirmObservedEffect(ctx, opts, token, err == nil)
 	return err
+}
+
+type proxyEffectEvidenceKey struct{}
+
+type proxyEffectEvidence struct {
+	mu       sync.Mutex
+	allows   []scanner.CredentialAudienceAllow
+	upstream []receipt.EmitOpts
+	response []receipt.EmitOpts
+}
+
+func (p *Proxy) withReceiptEvidence(r *http.Request) *http.Request {
+	if p == nil || !p.receiptEffects.enabled {
+		return r
+	}
+	return r.WithContext(withReceiptEvidenceContext(r.Context()))
+}
+
+func withReceiptEvidenceContext(ctx context.Context) context.Context {
+	return context.WithValue(ctx, proxyEffectEvidenceKey{}, &proxyEffectEvidence{})
+}
+
+func withReceiptCredentialContext(opts receipt.EmitOpts, ctx context.Context) receipt.EmitOpts {
+	if _, ok := ctx.Value(proxyEffectEvidenceKey{}).(*proxyEffectEvidence); ok {
+		opts.ContentScanContext = ctx
+	}
+	return opts
+}
+
+func collectReceiptCredentialEvidence(ctx context.Context, allows []scanner.CredentialAudienceAllow) {
+	if evidence, ok := ctx.Value(proxyEffectEvidenceKey{}).(*proxyEffectEvidence); ok && len(allows) != 0 {
+		evidence.mu.Lock()
+		evidence.allows = append(evidence.allows, allows...)
+		evidence.mu.Unlock()
+	}
+}
+
+func receiptActionBatch(ctx context.Context, cfg *config.Config, opts receipt.EmitOpts, boundary string) []v3.Action {
+	evidence, ok := ctx.Value(proxyEffectEvidenceKey{}).(*proxyEffectEvidence)
+	if !ok {
+		return nil
+	}
+	if boundary == boundaryDownstreamDelivery {
+		return receiptResponseBatch(evidence, cfg, opts)
+	}
+	allows, supporting := evidence.takeUpstream()
+	for _, allow := range uniqueCredentialAudienceAllows(allows) {
+		decision := opts
+		decision.Verdict, decision.Layer = config.ActionAllow, credentialAudienceReceiptExtensionKey
+		decision.Pattern = allow.PatternName
+		supporting = append(supporting, decision)
+	}
+	return receiptSupportingActions(cfg, opts, boundary, supporting)
+}
+
+func resetReceiptCredentialEvidence(ctx context.Context) {
+	if evidence, ok := ctx.Value(proxyEffectEvidenceKey{}).(*proxyEffectEvidence); ok {
+		evidence.takeUpstream()
+	}
+}
+
+func (e *proxyEffectEvidence) takeUpstream() ([]scanner.CredentialAudienceAllow, []receipt.EmitOpts) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	allows, upstream := e.allows, e.upstream
+	e.allows, e.upstream = nil, nil
+	return allows, upstream
+}
+
+func (p *Proxy) refuseAdmittedEffect(ctx context.Context, opts receipt.EmitOpts, token *proxyEffectToken) {
+	if err := token.Refuse(ctx); err != nil {
+		p.logReceiptEmissionFailure(opts, err)
+	}
+}
+
+func collectReceiptResponseEvidence(opts receipt.EmitOpts, request []context.Context) {
+	if len(request) == 0 {
+		return
+	}
+	switch opts.Verdict {
+	case config.ActionAllow, config.ActionWarn, config.ActionStrip, config.ActionForward, config.ActionRedirect:
+	default:
+		return
+	}
+	if evidence, ok := request[0].Value(proxyEffectEvidenceKey{}).(*proxyEffectEvidence); ok {
+		evidence.mu.Lock()
+		evidence.response = append(evidence.response, opts)
+		evidence.mu.Unlock()
+	}
+}
+
+func receiptResponseBatch(evidence *proxyEffectEvidence, cfg *config.Config, opts receipt.EmitOpts) []v3.Action {
+	evidence.mu.Lock()
+	supporting := evidence.response
+	evidence.response = nil
+	evidence.mu.Unlock()
+	return receiptSupportingActions(cfg, opts, boundaryDownstreamDelivery, supporting)
+}
+
+func collectReceiptUpstreamEvidence(ctx context.Context, opts receipt.EmitOpts) {
+	if evidence, ok := ctx.Value(proxyEffectEvidenceKey{}).(*proxyEffectEvidence); ok {
+		evidence.mu.Lock()
+		evidence.upstream = append(evidence.upstream, opts)
+		evidence.mu.Unlock()
+	}
+}
+
+func receiptSupportingActions(cfg *config.Config, opts receipt.EmitOpts, boundary string, supporting []receipt.EmitOpts) []v3.Action {
+	actions := make([]v3.Action, 0, len(supporting))
+	for _, decision := range supporting {
+		decision.ActionID, decision.ParentActionID = receipt.NewActionID(), opts.ActionID
+		decision.Transport, decision.Method = opts.Transport, opts.Method
+		if decision.Target == "" {
+			decision.Target = opts.Target
+		}
+		action, _ := prepareV3TransportReceipt(cfg, decision, boundary)
+		actions = append(actions, action)
+	}
+	return actions
 }
