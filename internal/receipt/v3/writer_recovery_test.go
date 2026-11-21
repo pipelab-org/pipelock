@@ -132,6 +132,12 @@ func TestStreamWriterRecoversHoldsFromVerifiedHistory(t *testing.T) {
 		blockingHoldResolution(allowed, "restart_recovery", relationAfter, true),
 		blockingHoldResolution(pending, "restart_recovery", "unknown", false),
 	}
+	if len(got) != 2 || got[0].EffectRelation != "after" || got[0].Hold == nil ||
+		got[0].Hold.Correction == nil || !*got[0].Hold.Correction ||
+		got[1].EffectRelation != "unknown" || got[1].Hold == nil ||
+		got[1].Hold.Correction != nil {
+		t.Fatalf("unexpected recovery relations: %+v", got)
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("recoveries = %+v, want %+v", got, want)
 	}
@@ -342,29 +348,53 @@ func TestStreamWriterRecoversFailedTerminalResolutionOnRestart(t *testing.T) {
 }
 
 func TestStreamWriterRecoversHoldAtWireLineLimit(t *testing.T) {
-	opts := writerTestOptions(t.TempDir())
-	w := requireWriter(t, opts, localWriterStorage())
-	held := writerTestHold("large-hold")
-	held.Policy = PolicySnapshot{}.ActionPolicy()
-	common := w.common(kindAction, w.active.id, w.active.confirmed.Record, 1)
-	line, _, err := w.encode(t.Context(), common, held)
-	if err != nil {
-		t.Fatal(err)
-	}
-	held.Session.TaskLabel += strings.Repeat("x", maxLineBytes-len(line))
-	if err := w.WriteAction(t.Context(), held, PolicySnapshot{}); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Close(t.Context(), nil); err != nil {
-		t.Fatal(err)
-	}
-	restarted := requireWriter(t, opts, localWriterStorage())
-	if err := restarted.Close(t.Context(), nil); err != nil {
-		t.Fatal(err)
-	}
-	result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
-	if writerTestCount(t, result, "blocked") != 1 {
-		t.Fatalf("large hold did not settle: %+v", result.Counts.Decisions)
+	for _, tc := range []struct {
+		name  string
+		field func(*Action) *string
+	}{
+		{"contract rule", func(a *Action) *string {
+			a.Contract = &Contract{}
+			return &a.Contract.RuleID
+		}},
+		{"session task label", func(a *Action) *string {
+			a.Session = &Session{}
+			return &a.Session.TaskLabel
+		}},
+		{"rulebook ID", func(a *Action) *string { return &a.RulebookID }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := writerTestOptions(t.TempDir())
+			w := requireWriter(t, opts, localWriterStorage())
+			held := writerTestHold("large-hold")
+			held.Session = nil
+			held.Policy = PolicySnapshot{}.ActionPolicy()
+			field := tc.field(&held)
+			*field = "x"
+			common := w.common(kindAction, w.active.id, w.active.confirmed.Record, 1)
+			line, _, err := w.encode(t.Context(), common, held)
+			if err != nil {
+				t.Fatal(err)
+			}
+			*field += strings.Repeat("x", maxLineBytes-len(line))
+			if err := w.WriteAction(t.Context(), held, PolicySnapshot{}); err != nil {
+				t.Fatal(err)
+			}
+			if err := w.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			restarted := requireWriter(t, opts, localWriterStorage())
+			repairs := readRecoveryActions(t, opts.Dir, restarted.active.id)
+			if len(repairs) != 1 || repairs[0].Session != nil || repairs[0].Contract != nil || repairs[0].RulebookID != "" {
+				t.Fatal("repair retained optional hold attribution")
+			}
+			if err := restarted.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+			if writerTestCount(t, result, "blocked") != 1 {
+				t.Fatalf("large hold did not settle: %+v", result.Counts.Decisions)
+			}
+		})
 	}
 }
 

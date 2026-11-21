@@ -198,6 +198,7 @@ func (w *StreamWriter) queueActionRepair(action Action, confirmed bool) bool {
 	}
 	switch action.Phase {
 	case phaseIntent:
+		action = minimalRepairAction(action)
 		action.Phase = phaseOutcome
 		action.Verdict = verdictBlock
 		action.EffectRelation = relationNotAttempted
@@ -206,11 +207,10 @@ func (w *StreamWriter) queueActionRepair(action Action, confirmed bool) bool {
 		if confirmed {
 			action = blockingHoldResolution(action, "request_cancelled", relationNotAttempted, false)
 		} else {
+			action = minimalRepairAction(action)
 			action.Phase = phaseDecision
 			action.Verdict = verdictBlock
 			action.EffectRelation = relationNotAttempted
-			action.Hold = nil
-			action.Ask = nil
 		}
 	case phaseResolution:
 		if action.Verdict != verdictAllow {
@@ -225,13 +225,32 @@ func (w *StreamWriter) queueActionRepair(action Action, confirmed bool) bool {
 		if confirmed {
 			return false
 		}
-		w.repairs = append(w.repairs, action)
+		w.repairs = append(w.repairs, minimalRepairAction(action))
 		return false
 	default:
 		return false
 	}
 	w.repairs = append(w.repairs, action)
 	return true
+}
+
+// Keep required wire members and identities used by lifecycle appraisal.
+func minimalRepairAction(action Action) Action {
+	repair := Action{
+		ActionID: action.ActionID, ActionType: action.ActionType,
+		Actor: action.Actor, Principal: action.Principal,
+		Caller:         Caller{Authn: "none"},
+		Data:           Data{Reversibility: action.Data.Reversibility, SideEffectClass: action.Data.SideEffectClass},
+		EffectBoundary: action.EffectBoundary, EffectRelation: action.EffectRelation,
+		Target: action.Target, Transport: action.Transport,
+		Attempt: action.Attempt, OutcomeClass: action.OutcomeClass,
+		Phase: action.Phase, Verdict: action.Verdict, Policy: action.Policy,
+		RequestID: action.RequestID,
+	}
+	if action.Attempt != nil {
+		repair.Method = action.Method
+	}
+	return repair
 }
 
 func blockingHoldResolution(action Action, source, relation string, correction bool) Action {
@@ -246,11 +265,11 @@ func blockingHoldResolution(action Action, source, relation string, correction b
 	if correction {
 		hold.Correction = &correction
 	}
+	action = minimalRepairAction(action)
 	action.Phase = phaseResolution
 	action.Verdict = verdictBlock
 	action.EffectBoundary = approvalBoundary
 	action.EffectRelation = relation
-	action.Ask = nil
 	action.Hold = hold
 	return action
 }
@@ -266,12 +285,6 @@ func (w *StreamWriter) replayActionRepairs(ctx context.Context, retryWriteErrors
 		}
 		action := w.repairs[0]
 		err := w.commit(ctx, kindAction, action)
-		if errors.Is(err, errWriterLineLimit) && action.Session != nil && action.Session.TaskLabel != "" {
-			session := *action.Session
-			session.TaskLabel = ""
-			action.Session = &session
-			err = w.commit(ctx, kindAction, action)
-		}
 		if err != nil {
 			if retryWriteErrors && !retried && w.previous != nil && w.previous.Ended == endedWriteError {
 				retried = true
