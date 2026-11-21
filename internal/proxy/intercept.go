@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -971,9 +972,13 @@ func newInterceptHandler(
 		// A host label is relieved only for a URL a delegated source issued, so
 		// a blocked subdomain finding enters the rescan only with that evidence.
 		issuedHostFinding := entropyFinding(urlResult) && urlResult.Scanner == scanner.ScannerSubdomainEntropy
+		// A DLP finding enters the rescan only when the request carries a
+		// query: the one relief it can receive is for views that join query
+		// values the destination itself issued.
+		joinedDLPFinding := !urlResult.Allowed && urlResult.Scanner == scanner.ScannerDLP && r.URL.RawQuery != ""
 		if (!urlResult.Allowed && urlResult.Scanner == scanner.ScannerEntropy &&
 			(strings.HasPrefix(urlResult.Reason, "high entropy query param ") ||
-				strings.HasPrefix(urlResult.Reason, "high entropy path segment "))) || issuedHostFinding {
+				strings.HasPrefix(urlResult.Reason, "high entropy path segment "))) || issuedHostFinding || joinedDLPFinding {
 			store, idStore := ic.issuerQueryStore(), ic.issuerServerIDStore()
 			session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 			// Evidence that the delegated source issued exactly this URL. It is
@@ -1083,7 +1088,54 @@ func newInterceptHandler(
 					allowed = true
 					return true
 				})
+				joinedUsed := false
+				allowCtx = scanner.WithIssuerJoinedViewAllowance(allowCtx, func(escapedPath string, query url.Values) (bool, bool) {
+					if store == nil || escapedPath != r.URL.EscapedPath() {
+						return false, false
+					}
+					// Every value, each served by this exact origin and path
+					// to this session. A value on another host's evidence, an
+					// OAuth hand-off, or a Referer echo does not qualify.
+					count := 0
+					for key, values := range query {
+						for _, value := range values {
+							kind, ok := store.match(session, r.URL, key, value)
+							if !ok || kind != issuerQueryObserved {
+								return false, false
+							}
+							count++
+						}
+					}
+					if count < 2 {
+						return false, false
+					}
+					joinedUsed = true
+					allowed = true
+					return true, store.pathIssued(session, r.URL)
+				})
+				valueUsed := false
+				allowCtx = scanner.WithIssuerValueAllowance(allowCtx, func(_, matched string) bool {
+					if issuedValueMatch(r.URL, matched, func(key, value string) bool {
+						if store != nil {
+							if kind, ok := store.match(session, r.URL, key, value); ok && kind == issuerQueryObserved {
+								return true
+							}
+						}
+						return idStore.serverIDIssued(session, r.URL, value)
+					}) {
+						valueUsed = true
+						allowed = true
+						return true
+					}
+					return false
+				})
 				rescanned := ic.Scanner.ScanWithReservation(allowCtx, targetURL, ic.RateReservation)
+				if joinedUsed && allowKind == issuerQueryObserved {
+					allowKind = issuerQueryJoinedView
+				}
+				if valueUsed && allowKind == issuerQueryObserved {
+					allowKind = issuerQueryIssuedValue
+				}
 				if resourceUsed && allowKind == issuerQueryObserved {
 					allowKind = issuerQueryResourcePath
 				}

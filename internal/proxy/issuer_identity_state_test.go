@@ -62,8 +62,12 @@ func TestIssuerIDIdentityReload(t *testing.T) {
 		if !p.Reload(next, scanner.MustNew(next)) {
 			t.Fatal("enabled reload failed")
 		}
-		if old.issuerServerIDStore() != nil {
-			t.Fatal("stale tunnel retained evidence access")
+		identityChanged := old.IssuerRuntime.cfg.DefaultAgentIdentity != next.DefaultAgentIdentity ||
+			old.IssuerRuntime.cfg.BindDefaultAgentIdentity != next.BindDefaultAgentIdentity
+		if got := old.issuerServerIDStore(); identityChanged && got != nil {
+			t.Fatal("stale tunnel retained evidence access after an identity change")
+		} else if !identityChanged && got != original {
+			t.Fatal("a reload that kept identity and evidence revoked an open tunnel")
 		}
 		live := p.issuerCookieRuntime.Load().query
 		if live != original {

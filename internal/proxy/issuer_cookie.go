@@ -176,6 +176,51 @@ type issuerCookieRuntime struct {
 	query *issuerQueryStore
 }
 
+// sameEvidenceGeneration reports whether two runtimes hold one evidence
+// window: the same cookie store and the same query store, with issuer
+// evidence enabled under both policies and the same default identity
+// settings, since those decide which session an unbound caller's evidence is
+// keyed to. A reload that leaves the
+// prerequisites on carries both stores forward, so a tunnel opened before it
+// keeps its relief. A reload that disables a prerequisite installs a fresh
+// cookie store and a next-generation query store, so every older snapshot,
+// including one from before a later re-enable, stops matching.
+func (r *issuerCookieRuntime) sameEvidenceGeneration(other *issuerCookieRuntime) bool {
+	if r == nil || other == nil {
+		return false
+	}
+	if r == other {
+		return true
+	}
+	return r.store != nil && r.store == other.store && r.query != nil && r.query == other.query &&
+		issuerCookieEnabled(r.cfg) && issuerCookieEnabled(other.cfg) &&
+		r.cfg.DefaultAgentIdentity == other.cfg.DefaultAgentIdentity &&
+		r.cfg.BindDefaultAgentIdentity == other.cfg.BindDefaultAgentIdentity
+}
+
+// currentIssuerRuntime returns the live issuer runtime when this request's
+// snapshot still belongs to its evidence generation, and nil otherwise. The
+// live runtime's policy is authoritative for enablement.
+func (ic *InterceptContext) currentIssuerRuntime() *issuerCookieRuntime {
+	if ic == nil || ic.Proxy == nil {
+		return nil
+	}
+	runtime := ic.Proxy.issuerCookieRuntime.Load()
+	if runtime == nil || !issuerCookieEnabled(runtime.cfg) {
+		return nil
+	}
+	if ic.IssuerRuntime != nil {
+		if !ic.IssuerRuntime.sameEvidenceGeneration(runtime) {
+			return nil
+		}
+		return runtime
+	}
+	if runtime.cfg != ic.Config {
+		return nil
+	}
+	return runtime
+}
+
 // issuerCookieEnabled reports whether a policy can produce issuance evidence.
 // Only intercepted HTTPS responses are observed, so the allowance exists
 // only where TLS interception and header DLP are both active.
@@ -198,9 +243,8 @@ func (ic *InterceptContext) issuerCookieStore() *issuerBoundCookieStore {
 	if ic == nil || ic.Proxy == nil || !issuerCookieEnabled(ic.Config) || !ic.stateTrusted() {
 		return nil
 	}
-	runtime := ic.Proxy.issuerCookieRuntime.Load()
-	if runtime == nil || (ic.IssuerRuntime != nil && ic.IssuerRuntime != runtime) ||
-		(ic.IssuerRuntime == nil && runtime.cfg != ic.Config) {
+	runtime := ic.currentIssuerRuntime()
+	if runtime == nil {
 		return nil
 	}
 	return runtime.store

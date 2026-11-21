@@ -40,7 +40,18 @@ type decodingMemo struct {
 	// decode accounting for their direction, but their verdicts depend on
 	// whether a rescan finished cleanly, so a work-budget stop there is not
 	// reported as a partial-inspection warning. Text scans report it.
-	urlAccounting                bool
+	urlAccounting bool
+	// issuedQueryJoin and issuedPathSeam are set only by a URL scan whose
+	// context carries an issuer joined-view allowance that vouched for every
+	// query value (and, for the seam, the whole path) of this exact request.
+	// They suppress only the views built by JOINING separate components,
+	// never the per-component views. See WithIssuerJoinedViewAllowance.
+	issuedQueryJoin bool
+	issuedPathSeam  bool
+	// issuedValue, when set by a URL scan's issuer value allowance, reports
+	// whether one configured pattern match is a value the destination origin
+	// itself served. See WithIssuerValueAllowance.
+	issuedValue                  IssuerValueAllowance
 	reassemblyReplayPayloads     map[assembledPayloadKey][]*assembledPayload
 	reassemblyReplayPayloadCount int
 	reassemblyRecipeCache        *assembledRecipeCache
