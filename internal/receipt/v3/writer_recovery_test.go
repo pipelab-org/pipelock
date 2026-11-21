@@ -431,6 +431,7 @@ func TestStreamWriterStartupReportsHighestUnsupportedActionVersion(t *testing.T)
 func TestDeferredResolutionWriteFailureRecoversPendingHold(t *testing.T) {
 	opts := writerTestOptions(t.TempDir())
 	writer := requireWriter(t, opts, localWriterStorage())
+	gate := NewEffectGate(writer)
 	manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Minute})
 	action := writerTestHold("pending")
 	action.Hold.Parent = ""
@@ -440,12 +441,12 @@ func TestDeferredResolutionWriteFailureRecoversPendingHold(t *testing.T) {
 		DeferID:  action.Hold.ID,
 		ActionID: action.ActionID,
 		ConfirmHold: func(ctx context.Context, _ deferred.HeldAction) error {
-			return writer.WriteAction(ctx, action, policy)
+			return gate.RecordApproval(ctx, action, policy)
 		},
 		ConfirmResolution: func(ctx context.Context, resolution deferred.Resolution) error {
 			terminal := blockingHoldResolution(action, resolution.ResolutionSource, relationAfter, false)
 			terminal.Verdict = resolution.FinalDecision
-			return writer.WriteAction(ctx, terminal, policy)
+			return gate.RecordApproval(ctx, terminal, policy)
 		},
 		Resolve: func(resolution deferred.Resolution) { delivered = resolution },
 	}); err != nil {
