@@ -4008,6 +4008,17 @@ func writeReverseProxyBlock(w http.ResponseWriter, status int, info blockreason.
 	return int64(written)
 }
 
+func writeReverseProxyResponseReceiptRefusal(w http.ResponseWriter, requestID string) {
+	info := blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID)
+	info.SetHeaders(w.Header())
+	w.Header().Set("Content-Type", "application/json")
+	body, _ := json.Marshal(ReverseProxyBlockResponse{
+		Error: "response blocked by pipelock", Blocked: true,
+		BlockReason: receiptEmissionBlockReason, Direction: scanDirectionResponse,
+	})
+	_, _ = writeSyntheticResponse(w, http.StatusForbidden, body)
+}
+
 // replaceWithBlockResponse replaces the upstream response with a 403 JSON
 // block body. Used for block, ask (fail-closed), and strip-failed paths.
 // Scrubs ALL upstream headers to prevent leaking Set-Cookie, Content-Encoding,

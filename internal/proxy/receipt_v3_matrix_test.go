@@ -33,6 +33,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
+	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -597,7 +599,10 @@ func TestV3HTTPDeliveryObservations(t *testing.T) {
 					t.Fatalf("verification: %+v (%v)", result, err)
 				}
 				actions := readV3TransportActions(t, dir)
-				if len(actions) != 6 || actions[4].ActionID != actions[2].ActionID || actions[4].OutcomeClass != tc.want ||
+				if len(actions) != 6 || actions[0].EffectBoundary != boundaryUpstreamSend ||
+					actions[1].EffectBoundary != boundaryUpstreamSend || actions[1].ActionID != actions[0].ActionID ||
+					actions[1].OutcomeClass != "completed" || actions[4].EffectBoundary != boundaryDownstreamDelivery ||
+					actions[4].ActionID != actions[2].ActionID || actions[4].OutcomeClass != tc.want ||
 					actions[5].ActionID != actions[3].ActionID || actions[5].OutcomeClass != tc.want ||
 					actions[2].Shield == nil || actions[2].Shield.TotalRewrites == nil || *actions[2].Shield.TotalRewrites != 1 {
 					t.Fatalf("want one delivery outcome %q, got %+v", tc.want, actions)
@@ -634,7 +639,14 @@ func TestV3FetchRedirectEvidence(t *testing.T) {
 				_, _ = io.WriteString(w, "example")
 			}))
 			t.Cleanup(server.Close)
-			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+server.URL+"/start", nil)
+			const host = "127.0.0.1"
+			const origin = "http://" + host
+			p.dialer = v3ObserverDialer{addr: server.Listener.Addr().String()}
+			p.ContractLoaderPtr().Store(testContractLoader(t, contractruntime.ModeLive,
+				contractruntimetest.HTTPEnforceRule("initial-hop", host, "/start", http.MethodGet),
+				contractruntimetest.HTTPEnforceRule("redirect-hop", host, "/final", http.MethodGet),
+			))
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+origin+"/start&agent=agent-a", nil)
 			observer := httptest.NewRecorder()
 			p.handleFetch(observer, req)
 			if observer.Code != http.StatusOK || hits.Load() != 2 {
@@ -644,13 +656,23 @@ func TestV3FetchRedirectEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
-			if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil || *result.Counts.EffectsCompleted != 3 {
+			if err != nil || result.Verdict != "VALID" {
 				t.Fatalf("verification: %+v (%v)", result, err)
 			}
 			actions := readV3TransportActions(t, dir)
 			if len(actions) != 6 || actions[2].ParentActionID != actions[0].ActionID ||
-				actions[4].ParentActionID != actions[2].ActionID || actions[2].Target != receipt.SanitizeSignedTarget(server.URL+"/final", nil) {
+				actions[4].ParentActionID != actions[2].ActionID ||
+				actions[0].Contract == nil || actions[0].Contract.RuleID != "initial-hop" ||
+				actions[2].Contract == nil || actions[2].Contract.RuleID != "redirect-hop" || actions[2].Target != receipt.SanitizeSignedTarget(origin+"/final", nil) {
 				t.Fatalf("wrong redirect or delivery attribution: %+v", actions)
+			}
+			for i, boundary := range []string{boundaryUpstreamSend, boundaryUpstreamSend, boundaryDownstreamDelivery} {
+				intent, outcome := actions[2*i], actions[2*i+1]
+				if intent.Phase != "intent" || outcome.Phase != "outcome" ||
+					intent.EffectBoundary != boundary || outcome.EffectBoundary != boundary ||
+					intent.ActionID != outcome.ActionID || outcome.OutcomeClass != "completed" {
+					t.Fatalf("unexpected receipt pair for effect %d: %+v / %+v", i, intent, outcome)
+				}
 			}
 		})
 	}
@@ -759,6 +781,89 @@ func TestV3ReverseEarlyHints(t *testing.T) {
 				actions[2].OutcomeClass != "attempt_unknown" || actions[4].ActionID == actions[1].ActionID {
 				t.Fatalf("missing separate early hints outcome: %+v", actions)
 			}
+		})
+	}
+}
+
+func TestV3ReverseEarlyHintsReceiptRefusal(t *testing.T) {
+	for _, required := range []bool{false, true} {
+		t.Run(fmt.Sprintf("required=%t", required), func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, TransportReverse, required, v3AppendFault(3, false))
+			cancelled := make(chan bool, 1)
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Link", "</style.css>; rel=preload; as=style")
+				w.WriteHeader(http.StatusEarlyHints)
+				select {
+				case <-r.Context().Done():
+					cancelled <- true
+				case <-time.After(3 * time.Second):
+					cancelled <- false
+				}
+				panic(http.ErrAbortHandler)
+			}))
+			t.Cleanup(backend.Close)
+			target, err := url.Parse(backend.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
+			reverse.SetOwnerProxy(p)
+			done := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer close(done)
+				reverse.ServeHTTP(w, r)
+			}))
+			t.Cleanup(server.Close)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			hints := 0
+			ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+				Got1xxResponse: func(_ int, _ textproto.MIMEHeader) error {
+					hints++
+					return nil
+				},
+			})
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := server.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			var body ReverseProxyBlockResponse
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != http.StatusForbidden || hints != 0 ||
+				resp.Header.Get(blockreason.HeaderReason) != string(blockreason.ReceiptEmissionFailed) ||
+				body.Direction != scanDirectionResponse || body.BlockReason != receiptEmissionBlockReason {
+				t.Fatalf("status=%d hints=%d body=%+v", resp.StatusCode, hints, body)
+			}
+			select {
+			case stopped := <-cancelled:
+				if !stopped {
+					t.Fatal("upstream did not observe cancellation")
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			waitForV3Transport(t, done)
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || result.Integrity != "ok" || result.Completeness != "end_unproven" {
+				t.Fatalf("verification: %+v (%v)", result, err)
+			}
+			paths, err := filepath.Glob(filepath.Join(dir, "*.receipt-v3.jsonl"))
+			if err != nil || len(paths) != 2 {
+				t.Fatalf("expected two streams after writer recovery: %v (%v)", paths, err)
+			}
+			actions := append(readV3TransportFile(t, paths[0]), readV3TransportFile(t, paths[1])...)
+			assertV3BoundaryPair(t, actions, boundaryUpstreamSend, "", "attempt_unknown")
+			assertV3BoundaryPair(t, actions, boundaryDownstreamDelivery, "", "not_released")
 		})
 	}
 }

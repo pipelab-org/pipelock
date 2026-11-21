@@ -58,7 +58,11 @@ func (w *v3DeliveryWriter) admit(opts receipt.EmitOpts) (*proxyEffectToken, erro
 func (w *v3DeliveryWriter) deny(err error) {
 	w.denied = err
 	clear(w.Header())
-	writeReceiptEffectRefusal(w.ResponseWriter, w.options.RequestID)
+	if w.options.Transport == TransportReverse {
+		writeReverseProxyResponseReceiptRefusal(w.ResponseWriter, w.options.RequestID)
+	} else {
+		writeReceiptEffectRefusal(w.ResponseWriter, w.options.RequestID)
+	}
 	if w.cancel != nil {
 		w.cancel(err)
 	}
