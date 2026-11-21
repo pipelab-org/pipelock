@@ -37,15 +37,25 @@ func DiscoverEvidenceLocations(root string) ([]EvidenceLocation, error) {
 	return discoverEvidenceLocations(root, nil, nil)
 }
 
-// discoverEvidenceLocations anchors traversal to an opened root. The optional
-// hooks let tests replace the pathname around the final root open.
-func discoverEvidenceLocations(root string, beforeRootOpen, afterRootOpen func()) ([]EvidenceLocation, error) {
+// ResolveEvidenceRoot checks the operator's walked path before returning
+// its absolute, normalized path. Open the result with the secure read helpers.
+func ResolveEvidenceRoot(root string) (string, error) {
 	if err := refuseSymlinkInWalkedRootPath(root); err != nil {
-		return nil, err
+		return "", err
 	}
 	cleanRoot, err := absEvidenceRoot(root)
 	if err != nil {
-		return nil, fmt.Errorf("resolve evidence root: %w", err)
+		return "", fmt.Errorf("resolve evidence root: %w", err)
+	}
+	return cleanRoot, nil
+}
+
+// discoverEvidenceLocations anchors traversal to an opened root. The optional
+// hooks let tests replace the pathname around the final root open.
+func discoverEvidenceLocations(root string, beforeRootOpen, afterRootOpen func()) ([]EvidenceLocation, error) {
+	cleanRoot, err := ResolveEvidenceRoot(root)
+	if err != nil {
+		return nil, err
 	}
 	initialInfo, err := validateEvidenceRootComponents(cleanRoot)
 	if err != nil {

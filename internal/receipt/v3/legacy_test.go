@@ -9,11 +9,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	contract "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	legacy "github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
@@ -225,7 +227,7 @@ func TestLegacyEndpointSelection(t *testing.T) {
 	seq := uint64(2)
 	first := legacyIdentity{legacyAction, "first"}
 	second := legacyIdentity{legacyEvidence, "second"}
-	item := legacyPresentation{InventoryChain: InventoryChain{Seq: 2}, cliHead: "verified-root", verdict: prefixVerdict}
+	item := legacyPresentation{InventoryChain: InventoryChain{Seq: 5}, cliHead: "verified-root", cliSeq: seq, verdict: prefixVerdict}
 	for _, tc := range []struct {
 		name                string
 		keys                []legacyIdentity
@@ -259,5 +261,77 @@ func TestLegacyContinuityReadFailure(t *testing.T) {
 	if !hasFinding(v.result, codeLegacyInvalid) || len(v.result.Legacy) != 1 ||
 		v.result.Legacy[0].Verdict != "RESTART CONTINUITY INCOMPLETE" || v.result.Legacy[0].Class != legacyFailure {
 		t.Fatalf("continuity diagnostic: %+v", v.result)
+	}
+}
+
+func TestLegacySelectionWithMixedChains(t *testing.T) {
+	const session = "selected-session"
+	const group = "selected-group"
+	const head = "verified-root"
+	chains := map[legacyIdentity]legacyPresentation{
+		{legacyGroup, group}:         {},
+		{legacyAction, "other"}:      {session: "other-session", InventoryChain: InventoryChain{Format: legacyAction}, cliHead: "other-root"},
+		{legacyEvidence, "selected"}: {session: session, InventoryChain: InventoryChain{Format: legacyEvidence}, cliHead: head, cliSeq: 2},
+	}
+	v := verification{opts: Options{
+		LegacySelection: LegacySelection{Session: session, Group: group, Bindings: &contract.ChainVerifyOptions{}},
+		LegacyEnd:       &LegacyEnd{Head: head, Sequence: new(uint64(2))},
+	}}
+	v.checkLegacySelection(chains)
+	if err := v.verifyLegacyEndpoint(chains); err != nil {
+		t.Fatal(err)
+	}
+	want := []Acceptance{
+		{Kind: "expect-legacy-group", Value: group},
+		{Kind: "expect-legacy-session", Value: session},
+		{Kind: "expect-legacy-head", Value: head},
+		{Kind: "expect-legacy-seq", Value: "2"},
+	}
+	if !reflect.DeepEqual(v.result.Accepted, want) || len(v.result.Findings) != 0 {
+		t.Fatalf("mixed selection accepted = %+v, findings = %+v", v.result.Accepted, v.result.Findings)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		selection LegacySelection
+	}{
+		{name: "session missing", selection: LegacySelection{Session: "missing"}},
+		{name: "group missing", selection: LegacySelection{Group: "missing"}},
+		{name: "bindings cannot select v1", selection: LegacySelection{Session: "other-session", Bindings: &contract.ChainVerifyOptions{}}},
+		{name: "endorsement cannot select v2", selection: LegacySelection{Endorsements: []legacy.RotationEndorsement{{SessionID: session}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := verification{opts: Options{LegacySelection: tc.selection}}
+			v.checkLegacySelection(chains)
+			if !hasFinding(v.result, codeExpectationNotMet) {
+				t.Fatalf("selection accepted an unmet requirement: %+v", v.result)
+			}
+		})
+	}
+}
+
+func TestLegacyEndpointRejectsMismatchedOrUnverifiedHead(t *testing.T) {
+	target := legacyIdentity{legacyAction, "selected"}
+	for _, tc := range []struct {
+		name     string
+		item     legacyPresentation
+		mismatch bool
+	}{
+		{name: "different endpoint", item: legacyPresentation{verdict: prefixVerdict, cliHead: "different-root"}, mismatch: true},
+		{name: "invalid chain", item: legacyPresentation{verdict: legacyInvalid, cliHead: "expected-root"}},
+		{name: "forked chain", item: legacyPresentation{forked: true, cliHead: "expected-root"}},
+		{name: "no verified history", item: legacyPresentation{InventoryChain: InventoryChain{Seq: -1}, cliHead: "expected-root"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := verification{opts: Options{LegacyEnd: &LegacyEnd{Head: "expected-root"}}}
+			chains := map[legacyIdentity]legacyPresentation{target: tc.item}
+			if err := v.verifyLegacyEndpoint(chains); err != nil || len(v.result.Accepted) != 0 ||
+				hasFinding(v.result, codeExpectationNotMet) != tc.mismatch {
+				t.Fatalf("endpoint verification = %+v, %v", v.result, err)
+			}
+			if tc.mismatch && chains[target].verdict != legacyInvalid {
+				t.Fatalf("mismatched endpoint did not invalidate the chain: %+v", chains[target])
+			}
+		})
 	}
 }

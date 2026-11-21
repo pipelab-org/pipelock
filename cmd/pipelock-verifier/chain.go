@@ -21,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/evidence/completeness"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	actionreceipt "github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	receiptv3 "github.com/luckyPipewrench/pipelock/internal/receipt/v3/command"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -134,13 +135,23 @@ end_proof, scope, and signer trust.`,
 						return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 					}
 				}
+				legacy := v3.LegacySelection{Group: opts.groupID}
+				if opts.sessionExplicit {
+					legacy.Session = opts.sessionID
+				}
+				if opts.expectSignerKeyID != "" || opts.expectContractHash != "" || opts.expectManifestHash != "" || opts.expectPayloadKind != "" {
+					bindings, err := opts.chainVerifyOptions("")
+					if err != nil {
+						return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+					}
+					bindings.ExpectHeadHash = ""
+					legacy.Bindings = &bindings
+				}
 				return v3Flags.Run(cmd, receiptv3.Input{
 					Paths: paths, Directory: dir, Keys: keys, Head: opts.expectHeadHash,
 					Seq: seq, SeqSet: cmd.Flags().Changed("expect-seq"),
 					AllowPrefix: opts.allowPrefix, AllowUnpinned: opts.allowUnpinned, GenericLegacyLabels: true,
-					LegacyOptions: opts.groupID != "" || opts.sessionExplicit || len(opts.endorsementPaths) != 0 ||
-						opts.expectSignerKeyID != "" || opts.expectContractHash != "" || opts.expectManifestHash != "" ||
-						opts.expectPayloadKind != "",
+					LegacySelection: legacy, EndorsementPaths: opts.endorsementPaths,
 				})
 			}
 			if err := exactOneArg(cmd, args); err != nil {
