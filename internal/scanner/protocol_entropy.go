@@ -192,7 +192,10 @@ func assetEntropySubject(segment string) string {
 // pathSegmentEntropy measures one path segment. It reports the entropy and
 // whether it exceeded the gate.
 func (s *Scanner) pathSegmentEntropy(segment string) (float64, bool) {
-	subject := assetEntropySubject(segment)
+	return s.pathSubjectEntropy(assetEntropySubject(segment))
+}
+
+func (s *Scanner) pathSubjectEntropy(subject string) (float64, bool) {
 	if len(subject) < s.entropyMinLen {
 		return 0, false
 	}
@@ -251,6 +254,73 @@ var packageFilenameREs = []*regexp.Regexp{
 	regexp.MustCompile(`^([a-z0-9][a-z0-9-]*)-([0-9]+(?:\.[0-9]+)*[a-z]?(?:_(?:alpha|beta|pre|rc|cvs|svn|git|hg|p)[0-9]*)*-r[0-9]+)\.apk$`),
 }
 
+const (
+	// PEP 427 and PEP 491 define the wheel filename and digit-led build tag.
+	// The PyPA binary distribution spec applies PEP 503 name normalization
+	// with underscores in place of hyphens, and accepts older dots and capitals.
+	wheelDistribution = `[A-Za-z0-9]+(?:[._][A-Za-z0-9]+)*`
+	wheelBuild        = `[0-9][A-Za-z0-9._]*`
+	// PEP 440 Appendix B canonical version, plus the normalized local label.
+	wheelNumber  = `(?:0|[1-9][0-9]*)`
+	wheelVersion = `(?:[1-9][0-9]*!)?` + wheelNumber + `(?:\.` + wheelNumber + `)*` +
+		`(?:(?:a|b|rc)` + wheelNumber + `)?(?:\.post` + wheelNumber + `)?(?:\.dev` + wheelNumber + `)?` +
+		`(?:\+[a-z0-9]+(?:\.[a-z0-9]+)*)?`
+
+	// PEP 425 names the Python implementations and defines version and ABI tags.
+	// PyPA packaging/tags.py defines the CPython ABI flags, abi3t, PyPy ABI,
+	// and GraalPy forms. GraalPy SOABI normalizes to graalpy_<pyver>_native,
+	// or graalpy<graalver>_<pyver>_native when it leads with a GraalPy version.
+	// Unknown implementation and ABI names keep their score.
+	// https://github.com/pypa/packaging/blob/main/src/packaging/tags.py
+	wheelPythonTag = `(?:py|cp|ip|pp|jy|graalpy)[0-9]+(?:_[0-9]+)*`
+	wheelABITag    = `none|abi3t?|cp[0-9]+t?d?m?u?|pypy[0-9]+_pp[0-9]+|graalpy(?:[0-9]+)?_[0-9]+_native`
+
+	// PEP 600 defines the legacy manylinux aliases and the numeric libc
+	// version slots. PEP 656 uses the same shape for musllinux. Architectures
+	// below come from PEP 425, PEP 600, and the PyPA manylinux image list.
+	// https://github.com/pypa/manylinux#readme
+	wheelX86Arch     = `(?:i686|x86_64)`
+	wheelLegacyArch  = `(?:i686|x86_64|aarch64|armv7l|ppc64|ppc64le|s390x)`
+	wheelLinuxArch   = `(?:i386|i686|x86_64|aarch64|armv7l|ppc64|ppc64le|s390x|riscv64)`
+	wheelPlatformTag = `any|win32|win_amd64|win_arm64|linux_` + wheelLinuxArch +
+		`|(?:manylinux|musllinux)_[0-9]+_[0-9]+_` + wheelLinuxArch +
+		`|manylinux(?:1|2010)_` + wheelX86Arch + `|manylinux2014_` + wheelLegacyArch +
+		// PyPA Platform Compatibility Tags specifies the macOS, Android and
+		// iOS tag families. CPython sysconfig publishes the Windows forms.
+		// https://packaging.python.org/en/latest/specifications/platform-compatibility-tags/
+		`|macosx_[0-9]+_[0-9]+_(?:arm64|i386|ppc|ppc64|x86_64|universal2?|intel|fat|fat3|fat64)` +
+		`|android_[1-9][0-9]*_(?:armeabi_v7a|arm64_v8a|x86|x86_64)` +
+		`|ios_[1-9][0-9]*_[0-9]+_(?:arm64_iphoneos|arm64_iphonesimulator|x86_64_iphonesimulator)` +
+		// packaging's Emscripten platform tag is
+		// pyemscripten_<PYEMSCRIPTEN_PLATFORM_VERSION>_wasm32. The sampled
+		// versions are underscore-separated numbers, as in pyemscripten_2026_0_wasm32.
+		`|pyemscripten_[0-9]+(?:_[0-9]+)*_wasm32`
+)
+
+// PEP 425 allows a dot-separated set in each tag field without a count limit.
+func wheelTagSet(tag string) string {
+	return `(?:` + tag + `)(?:\.(?:` + tag + `))*`
+}
+
+var wheelFilenameRE = regexp.MustCompile(`^(` + wheelDistribution + `-` + wheelVersion + `(?:-` + wheelBuild + `)?)-` +
+	wheelTagSet(wheelPythonTag) + `-` + wheelTagSet(wheelABITag) + `-` + wheelTagSet(wheelPlatformTag) + `$`)
+
+// wheelFilenameEntropySubject identifies a wheel or PEP 658 metadata suffix.
+// It returns a stem only when the complete basename matches the wheel grammar.
+// Compatibility tags are publisher-controlled, and a complete stem can still
+// pass the existing minimum-length or entropy check.
+func wheelFilenameEntropySubject(segment string) (stem string, wheel bool) {
+	filename, wheel := strings.CutSuffix(strings.TrimSuffix(segment, ".metadata"), ".whl")
+	if !wheel {
+		return "", false
+	}
+	match := wheelFilenameRE.FindStringSubmatchIndex(filename)
+	if match == nil {
+		return "", true
+	}
+	return filename[match[2]:match[3]], true
+}
+
 // packageFilenameEntropySubjects splits a recognized filename into its version
 // and the remaining bytes, preserving both surrounding separators. Each subject
 // is scored exactly as its own path segment would be, including the
@@ -268,7 +338,8 @@ func packageFilenameEntropySubjects(segment string) (remainder, version string, 
 
 // pathEntropy scores every segment. Only the final filename may discount a
 // repeated release version from its immediate predecessor, or split a package
-// version into a separately scored subject. Earlier segments are scored in full.
+// version into a separately scored subject, or score a wheel stem. Earlier
+// segments are scored in full.
 // The original score is checked first: splitting or deleting text can raise
 // Shannon entropy and must never introduce a new block.
 func (s *Scanner) pathEntropy(path string) (float64, bool) {
@@ -288,18 +359,24 @@ func (s *Scanner) pathEntropySkipping(path string, skip func(segment string) boo
 			continue
 		}
 		if i == len(segments)-1 {
-			if i > 0 {
-				subject := releaseFilenameEntropySubject(segments[i-1], segment)
-				if subject != segment {
-					entropy, blocked = s.pathSegmentEntropy(subject)
+			// A .whl suffix whose tags do not match stays on the whole-filename
+			// score, then the same release and package discounts as any other name.
+			if stem, wheel := wheelFilenameEntropySubject(segment); wheel && stem != "" {
+				entropy, blocked = s.pathSubjectEntropy(stem)
+			} else {
+				if i > 0 {
+					subject := releaseFilenameEntropySubject(segments[i-1], segment)
+					if subject != segment {
+						entropy, blocked = s.pathSegmentEntropy(subject)
+					}
 				}
-			}
-			if blocked {
-				if remainder, version, ok := packageFilenameEntropySubjects(segment); ok {
-					entropy, blocked = s.pathSegmentEntropy(remainder)
-					if versionEntropy, versionBlocked := s.pathSegmentEntropy(version); versionBlocked {
-						entropy = math.Max(entropy, versionEntropy)
-						blocked = true
+				if blocked {
+					if remainder, version, ok := packageFilenameEntropySubjects(segment); ok {
+						entropy, blocked = s.pathSegmentEntropy(remainder)
+						if versionEntropy, versionBlocked := s.pathSegmentEntropy(version); versionBlocked {
+							entropy = math.Max(entropy, versionEntropy)
+							blocked = true
+						}
 					}
 				}
 			}
