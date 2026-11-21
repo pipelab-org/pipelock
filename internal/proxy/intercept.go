@@ -1089,29 +1089,17 @@ func newInterceptHandler(
 					return true
 				})
 				joinedUsed := false
-				allowCtx = scanner.WithIssuerJoinedViewAllowance(allowCtx, func(escapedPath string, query url.Values) (bool, bool) {
-					if store == nil || escapedPath != r.URL.EscapedPath() {
-						return false, false
-					}
-					// Every value, each served by this exact origin and path
-					// to this session. A value on another host's evidence, an
-					// OAuth hand-off, or a Referer echo does not qualify.
-					count := 0
-					for key, values := range query {
-						for _, value := range values {
-							kind, ok := store.match(session, r.URL, key, value)
-							if !ok || kind != issuerQueryObserved {
-								return false, false
-							}
-							count++
-						}
-					}
-					if count < 2 {
+				allowCtx = scanner.WithIssuerJoinedViewAllowance(allowCtx, func(escapedPath string, _ url.Values) (bool, bool) {
+					// Only the exact URL this origin served to this session:
+					// scheme, host, port, path and raw query byte for byte.
+					// Values it served in separate links cannot be recombined,
+					// reordered, duplicated or extended into a new query.
+					if store == nil || escapedPath != r.URL.EscapedPath() || !store.urlIssued(session, r.URL) {
 						return false, false
 					}
 					joinedUsed = true
 					allowed = true
-					return true, store.pathIssued(session, r.URL)
+					return true, true
 				})
 				valueUsed := false
 				allowCtx = scanner.WithIssuerValueAllowance(allowCtx, func(_, matched string) bool {

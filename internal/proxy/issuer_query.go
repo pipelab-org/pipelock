@@ -137,6 +137,11 @@ type issuerQueryStore struct {
 	// own origin linked to. They live apart from values so a page that links
 	// to hundreds of assets cannot push a paging token out of its list.
 	paths map[string][][32]byte
+	// urls holds keyed digests of whole URLs a response served from its own
+	// origin: scheme, host, port, escaped path and the exact raw query. Only an
+	// exact match relieves the DLP views that join query values, so values the
+	// origin served in separate links cannot be recombined by the agent.
+	urls map[string][][32]byte
 	// resources holds keyed digests of exact resource paths on another origin
 	// that a root HTML or CSS response declared (issuer_resource.go).
 	// derivedPaths holds same-origin paths named by a response that was itself
@@ -186,6 +191,7 @@ func newIssuerQueryGeneration(ledger *issuerIDLedger) *issuerQueryStore {
 		sessions:       make(map[string][]issuerQueryEntry),
 		redirects:      make(map[string][][32]byte),
 		paths:          make(map[string][][32]byte),
+		urls:           make(map[string][][32]byte),
 		resources:      make(map[string][][32]byte),
 		derivedPaths:   make(map[string][][32]byte),
 		documents:      make(map[string][][32]byte),
@@ -286,6 +292,7 @@ func (s *issuerQueryStore) admitSessionLocked(session string) {
 	delete(s.sessions, oldest)
 	delete(s.redirects, oldest)
 	delete(s.paths, oldest)
+	delete(s.urls, oldest)
 	delete(s.resources, oldest)
 	delete(s.derivedPaths, oldest)
 	delete(s.documents, oldest)
@@ -351,6 +358,71 @@ func (s *issuerQueryStore) match(session string, target *url.URL, name, value st
 		}
 	}
 	return "", false
+}
+
+// urlDigest binds one whole URL to the origin that served it: scheme,
+// canonical host, effective port, escaped path and the raw query exactly as
+// written. Reordering, re-encoding, adding or duplicating a pair changes it.
+func (s *issuerQueryStore) urlDigest(target *url.URL) ([32]byte, bool) {
+	host, port, ok := issuerCookieOrigin(target)
+	if !ok || target.RawQuery == "" {
+		return [32]byte{}, false
+	}
+	path := issuerQueryPath(target)
+	if len(path)+len(target.RawQuery) > issuerCookieMaxPairBytes {
+		return [32]byte{}, false
+	}
+	return s.digestFields("issued_url", strings.ToLower(target.Scheme), host, port, path, target.RawQuery), true
+}
+
+// rememberURL records that target's origin served exactly target.
+func (s *issuerQueryStore) rememberURL(session string, target *url.URL, now time.Time) {
+	if s == nil || s.disabled || session == "" {
+		return
+	}
+	digest, ok := s.urlDigest(target)
+	if !ok {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.admitSessionLocked(session)
+	issued := s.urls[session]
+	for _, existing := range issued {
+		if hmac.Equal(existing[:], digest[:]) {
+			s.used[session] = now
+			return
+		}
+	}
+	if len(issued) >= issuerCookieMaxEntries {
+		issued = issued[1:]
+	}
+	s.urls[session] = append(issued, digest)
+	s.used[session] = now
+}
+
+// urlIssued reports whether the session was served exactly target by
+// target's own origin.
+func (s *issuerQueryStore) urlIssued(session string, target *url.URL) bool {
+	if s == nil || s.disabled || session == "" {
+		return false
+	}
+	digest, ok := s.urlDigest(target)
+	if !ok {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.retired {
+		return false
+	}
+	for _, existing := range s.urls[session] {
+		if hmac.Equal(existing[:], digest[:]) {
+			s.used[session] = time.Now()
+			return true
+		}
+	}
+	return false
 }
 
 // pathDigest binds one escaped URL path to the scheme, host and port that
@@ -677,6 +749,8 @@ func recordDeliveredIssuerQueryProof(ic *InterceptContext, response *http.Respon
 	// paths cannot exhaust the one that records query values (a paging token
 	// that follows them).
 	pathRemaining := issuerCookieMaxSetCookies
+	// Whole-URL evidence has its own budget for the same reason.
+	urlRemaining := issuerCookieMaxSetCookies
 	idRemaining := issuerServerIDMaxPerResponse
 	// resourceRemaining bounds the resources on another origin that one
 	// response may declare. It is a budget of its own for the same reason as the
@@ -744,6 +818,12 @@ func recordDeliveredIssuerQueryProof(ic *InterceptContext, response *http.Respon
 		// could otherwise authorize constructed URLs that lose this provenance.
 		if proof.derived {
 			return
+		}
+		// The whole served URL, for the joined DLP views. Only a same-origin
+		// link qualifies: a cross-host OAuth hop issues named values, not a URL.
+		if allowed == nil && candidate.RawQuery != "" && urlRemaining > 0 {
+			store.rememberURL(session, candidate, time.Now())
+			urlRemaining--
 		}
 		for name, values := range candidate.Query() {
 			if allowed != nil && !allowed[name] {

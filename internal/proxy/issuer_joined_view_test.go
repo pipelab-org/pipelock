@@ -23,10 +23,15 @@ func joinedDetailURL(host, query string) string {
 	return "https://" + host + joinedDetailPath + "?" + query
 }
 
-// servePage makes the source origin answer with an HTML document linking href.
-func (e *delegationEnv) servePage(href string) {
+// servePage makes the source origin answer with an HTML document linking
+// every href.
+func (e *delegationEnv) servePage(hrefs ...string) {
 	e.issue(http.StatusOK)
-	body := `<!doctype html><html><body><a href="` + strings.ReplaceAll(href, "&", "&amp;") + `">open</a></body></html>`
+	var links strings.Builder
+	for _, href := range hrefs {
+		links.WriteString(`<a href="` + strings.ReplaceAll(href, "&", "&amp;") + `">open</a>`)
+	}
+	body := `<!doctype html><html><body>` + links.String() + `</body></html>`
 	e.sourcePayload.Store(&struct{ contentType, body string }{"text/html; charset=utf-8", body})
 }
 
@@ -82,6 +87,36 @@ func TestInterceptIssuedJoinedViewDLP(t *testing.T) {
 		e.servePage(joinedDetailPath + "?" + query)
 		e.visit()
 		if got := e.do("agent-one", http.MethodGet, issued+"&x=1"); got != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", got)
+		}
+	})
+
+	// A hostile origin can serve each chunk of a secret in its own link. The
+	// agent recombining those individually issued values into one query is
+	// exactly the split exfiltration the joined views exist to catch.
+	t.Run("recombined chunks from separate served links still block", func(t *testing.T) {
+		e := newSameOriginEnv(t, nil)
+		e.servePage(joinedDetailPath+"?wo="+first+"&page=1", joinedDetailPath+"?site="+second+"&page=2")
+		e.visit()
+		if got := e.do("agent-one", http.MethodGet, issued); got != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", got)
+		}
+	})
+
+	t.Run("reordered pairs of a served link still block", func(t *testing.T) {
+		e := newSameOriginEnv(t, nil)
+		e.servePage(joinedDetailPath + "?site=" + second + "&wo=" + first)
+		e.visit()
+		if got := e.do("agent-one", http.MethodGet, issued); got != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", got)
+		}
+	})
+
+	t.Run("a duplicated key on a served link still blocks", func(t *testing.T) {
+		e := newSameOriginEnv(t, nil)
+		e.servePage(joinedDetailPath + "?" + query)
+		e.visit()
+		if got := e.do("agent-one", http.MethodGet, issued+"&wo="+first); got != http.StatusForbidden {
 			t.Fatalf("status = %d, want 403", got)
 		}
 	})
