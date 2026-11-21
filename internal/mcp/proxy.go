@@ -48,8 +48,9 @@ var ErrSubprocessExit = errors.New("subprocess exited")
 // syncWriter wraps an io.Writer with a mutex to make concurrent writes safe.
 // Used in RunProxy where multiple goroutines write to clientOut and logW.
 type syncWriter struct {
-	mu sync.Mutex
-	w  io.Writer
+	mu                 sync.Mutex
+	w                  io.Writer
+	requireFullMessage bool
 }
 
 // Compile-time assertion: syncWriter implements transport.MessageWriter.
@@ -73,8 +74,10 @@ func (sw *syncWriter) WriteMessage(msg []byte) error {
 	buf := make([]byte, len(msg)+1)
 	copy(buf, msg)
 	buf[len(msg)] = '\n'
-	if _, err := sw.w.Write(buf); err != nil {
+	if n, err := sw.w.Write(buf); err != nil {
 		return fmt.Errorf("writing message: %w", err)
+	} else if sw.requireFullMessage && n != len(buf) {
+		return io.ErrShortWrite
 	}
 	return nil
 }
@@ -226,6 +229,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// A warning summary still needs the response's reservation.
 		finishWarnings()
 		finishWarnings = func() {}
+		if reply, ok := writer.(*mcpV3ReplyWriter); ok {
+			logMCPV3Error(logW, reply.writeDeniedMessage(nil))
+		}
 		if responsePending {
 			if outcomeStatus == "" {
 				outcomeStatus, outcomeReason, outcomeSize = "incomplete", "response_not_delivered", -1
@@ -243,8 +249,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	}
 	defer finishMessage()
 
+	baseWriter := writer
 	for {
 		finishMessage()
+		writer = baseWriter
 		opts.WarnContext = baseWarnContext
 		opts.nativeAdmission = streamAdmission
 		line, err := reader.ReadMessage()
@@ -278,6 +286,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// Parse the inbound frame once per message; every gate below reads
 		// ID / Method / tool fields from this frame instead of re-parsing.
 		frame := ParseMCPFrame(line)
+		writer = opts.v3ResponseWriter(baseWarnContext, logW, baseWriter, line, frame.ID)
 		if opts.nativeSSE {
 			var admission receipt.EmitOpts
 			if frame.Method == "" && isResponse(line) {
@@ -1940,7 +1949,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// Wrap shared writers in mutex adapters. Multiple goroutines write to
 	// clientOut (blocked request drainer + response scanner) and logW
 	// (input scanner + response scanner + child stderr).
-	safeClientOut := &syncWriter{w: clientOut}
+	safeClientOut := &syncWriter{w: clientOut, requireFullMessage: opts.receiptEffects.enabled}
 	safeLogW := &syncWriter{w: logW}
 
 	// Restrict child process environment to safe variables only.
@@ -2240,6 +2249,8 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// response ID validation is active regardless of which input scanning
 	// features are enabled.
 	tracker := NewRequestTracker()
+	opts = opts.withV3Session()
+	defer opts.settleV3Session(ctx, safeLogW)
 
 	// Build per-invocation opts with session-specific recorder and tool baseline.
 	inputOpts := opts
@@ -2295,7 +2306,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: blocked notification (no response sent): %s\n", blocked.LogMessage)
 				continue
 			}
-			if wErr := deliverMCPInputResult(opts, blocked, safeClientOut); wErr != nil {
+			if wErr := deliverMCPInputResult(opts, blocked, opts.localV3ReplyWriter(safeClientOut)); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send block response: %v\n", wErr)
 			}
 		}
@@ -2405,7 +2416,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		case <-drainCtx.Done():
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: timed out waiting for MCP input drain after upstream response timeout\n")
 		}
-		emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker, fwdOpts)
+		emitPendingTimeoutResponses(fwdOpts.localV3ReplyWriter(safeClientOut), safeLogW, tracker, fwdOpts)
 	} else if sessionExit.inProgress() {
 		// An arbitrary io.Reader cannot be interrupted by closing the client
 		// side. Once session teardown has killed the server, do not let one

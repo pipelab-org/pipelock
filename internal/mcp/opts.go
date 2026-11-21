@@ -135,6 +135,7 @@ func (o MCPProxyOpts) minSubjectTrust() config.DoWSubjectTrust {
 // Optional (nil-safe): all other fields - functions check before use.
 type MCPProxyOpts struct {
 	receiptEffects  mcpReceiptEffects
+	v3Session       *mcpV3Session
 	nativeAdmission receipt.EmitOpts
 	nativeSSE       bool
 	nativeStdio     bool

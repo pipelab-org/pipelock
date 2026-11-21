@@ -160,6 +160,9 @@ func (s *deferredReceiptSettlement) commitAllow(opts MCPProxyOpts, logW io.Write
 // other final resolution (a block, or an allow the journal or the receipt write then closed) gets its
 // own receipt so the chain describes what actually happened.
 func (s *deferredReceiptSettlement) ensure(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
+	if opts.v3OnlyHold() {
+		return nil
+	}
 	if s.done && s.decision == res.FinalDecision && s.source == res.ResolutionSource {
 		return s.err
 	}

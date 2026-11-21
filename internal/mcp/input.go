@@ -762,7 +762,7 @@ func ForwardScannedInput(
 				Decision:          taintDecision,
 				Report:            redactionReport,
 				RequireReceipts:   requireReceipts,
-				RequireReceipt:    (requireReceipts && receiptVerdict != config.ActionBlock) || receiptVerdict == config.ActionDefer,
+				RequireReceipt:    (requireReceipts && receiptVerdict != config.ActionBlock) || (receiptVerdict == config.ActionDefer && !opts.v3OnlyHold()),
 				DecisionPhase:     receiptDecisionPhase,
 				DeferID:           receiptDeferID,
 				ResolutionPolicy:  receiptResolutionPolicy,
@@ -845,11 +845,21 @@ func ForwardScannedInput(
 			return mcpTaskReleaseRefusal(opts, frame, taintDecision, false)
 		}
 		writeReleasedMessage := func(msg []byte) (bool, error) {
+			ctx := opts.warnContext()
+			effect, admitErr := opts.startV3Send(ctx, frame, actionID)
+			if admitErr != nil {
+				logMCPV3Error(logW, admitErr)
+				return false, nil
+			}
+			attempted := false
 			var registration *requestRegistration
 			var trackingErr error
 			refusal, err := func() (string, error) {
 				forwardMu.Lock()
 				defer forwardMu.Unlock()
+				if effect != nil && ctx.Err() != nil {
+					return "", ctx.Err()
+				}
 				if reason := taskReleaseReason(); reason != "" {
 					return reason, nil
 				}
@@ -865,8 +875,17 @@ func ForwardScannedInput(
 						return reason, nil
 					}
 				}
+				if bindErr := opts.bindV3Send(effect); bindErr != nil {
+					tracker.removeOwnedOutcome(verdict.ID, registration)
+					trackingErr = bindErr
+					return "", nil
+				}
+				attempted = true
 				return "", writer.WriteMessage(msg)
 			}()
+			if err != nil || !attempted || isRPCNotification(frame.ID) {
+				opts.finishV3Send(ctx, logW, effect, attempted)
+			}
 			if trackingErr != nil {
 				outcome.settle(logW, opts, mcpOutcomeStatusBlocked, -1, "request_tracking_failed")
 				sendMCPDenial(opts, nativeAdmissionAudit(), nativeAdmissionDenial(verdict.ID, trackingErr), blockedCh)
@@ -1551,7 +1570,7 @@ func ForwardScannedInput(
 				effectiveAction = config.ActionBlock
 				break
 			}
-			if err := deferredAdmissionError(manager, opts.requireReceipts()); err != nil {
+			if err := deferredAdmissionError(manager, opts.requireReceipts() && !opts.v3OnlyHold()); err != nil {
 				denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPDefer, mcpDeferDisabledReason, audit.BlockClassConfigMismatch)
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [%v]\n",
 					lineNum, method, reasonStr, err)
@@ -1652,6 +1671,9 @@ func ForwardScannedInput(
 					// first so no wait for another write sits between the
 					// kill-switch claim and this write; see
 					// claimDeferredRelease for the ordering argument.
+					if heldOpts.v3Session != nil {
+						return res, nil
+					}
 					prepared, finish := lockAndClaimDeferredRelease(&forwardMu, heldOpts, deferredGeneration, res)
 					if prepared.FinalDecision == config.ActionAllow {
 						if reason := mcpTaskReleaseRefusal(heldOpts, heldAuthorityFrame, taintDecision, false); reason != "" {
@@ -1698,6 +1720,24 @@ func ForwardScannedInput(
 						}
 						return
 					}
+
+					var effect *mcpV3Exchange
+					if res.FinalDecision == config.ActionAllow && heldOpts.v3Session != nil {
+						var reason string
+						effect, finishDeniedRelease, reason = heldOpts.claimV3DeferredSend(heldOpts.warnContext(), logW, heldAuthorityFrame, res, &forwardMu, deferredGeneration)
+						if reason != "" {
+							res = refuse(reason)
+						}
+					}
+					attempted := false
+					defer func() {
+						if heldOpts.v3Session != nil && finishDeniedRelease != nil {
+							finishDeniedRelease()
+						}
+						if !attempted || heldNotification {
+							heldOpts.finishV3Send(heldOpts.warnContext(), logW, effect, attempted)
+						}
+					}()
 					switch res.FinalDecision {
 					case config.ActionAllow:
 						releaseOutcome := receiptSettle.release
@@ -1730,8 +1770,18 @@ func ForwardScannedInput(
 							}
 							return
 						}
-						// forwardMu is held by Prepare's release claim.
+						// The release claim holds forwardMu through the write.
+						if err := heldOpts.bindV3Send(effect); err != nil {
+							tracker.removeOwnedOutcome(heldID, registration)
+							refuse("request_tracking_failed")
+							return
+						}
+						attempted = true
 						if err := writer.WriteMessage(heldLine); err != nil {
+							if effect != nil {
+								finishDeniedRelease()
+								heldOpts.finishV3Send(heldOpts.warnContext(), logW, effect, true)
+							}
 							tracker.removeOwnedOutcome(heldID, registration)
 							releaseOutcome.settle(logW, heldOpts, "error", -1, mcpUpstreamWriteFailed)
 							res = refuse(mcpUpstreamWriteFailed)
@@ -1791,7 +1841,12 @@ func ForwardScannedInput(
 				},
 			}
 			if holdErr == nil {
-				holdErr = manager.Hold(heldAction)
+				if heldOpts.v3Session != nil {
+					heldOpts.confirmV3Hold(&heldAction, heldAuthorityFrame)
+					holdErr = manager.HoldContext(heldOpts.warnContext(), heldAction)
+				} else {
+					holdErr = manager.Hold(heldAction)
+				}
 			}
 			if holdErr == nil && heldOpts.nativeAdmission.NativeLease.Stopping() {
 				_ = manager.Resolve(actionID, config.ActionBlock, deferred.SourceCancel)

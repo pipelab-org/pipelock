@@ -248,6 +248,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			result.Outcome.Method = mcpMethod
 			receiptOpts.Outcome = &result.Outcome
 		}
+		if opts.v3OnlyHold() && emitVerdict == config.ActionDefer {
+			return
+		}
 		if err := emitMCPToolReceipt(receiptOpts); err != nil && requiredReceipt && result.Blocked == nil {
 			result.Outcome.Receipt.Layer = "receipt_emission"
 			result.Outcome.settle(logW, opts, mcpOutcomeStatusBlocked, -1, "receipt_emission_failed")
@@ -1243,7 +1246,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			}
 			return result
 		}
-		if err := deferredAdmissionError(manager, requireReceipts); err != nil {
+		if err := deferredAdmissionError(manager, requireReceipts && !opts.v3OnlyHold()); err != nil {
 			denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPDefer, mcpDeferDisabledReason, audit.BlockClassConfigMismatch)
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [%v]\n", joinStrings(reasons), err)
 			recordAdaptiveSignal(session.SignalBlock)

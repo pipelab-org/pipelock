@@ -147,7 +147,7 @@ func RunHTTPProxy(
 	// hide a parent death. This cannot close the earlier launcher-to-first-
 	// syscall race; that needs a harness-owned lifetime primitive.
 	startupParentWatch := parentWatchOpts{startPPID: os.Getppid()}
-	safeClientOut := &syncWriter{w: clientOut}
+	wireClientOut := &syncWriter{w: clientOut, requireFullMessage: opts.receiptEffects.enabled}
 	safeLogW := &syncWriter{w: logW}
 	ctx, cancel, sessionExit := newSessionBoundContext(ctx, startupParentWatch, clientIn, safeLogW, opts.sessionExitForTest)
 	defer cancel()
@@ -206,6 +206,9 @@ func RunHTTPProxy(
 	httpClient := transport.NewHTTPClientWithDialer(upstreamURL, extraHeaders, opts.DialContext)
 	httpClient.ResponseKeyValidator = jsonrpc.ValidateMessageKeys
 	var upstreamMu sync.Mutex
+	opts = opts.withV3Session()
+	safeClientOut := opts.localV3ReplyWriter(wireClientOut)
+	defer opts.settleV3Session(ctx, safeLogW)
 
 	// Tool scanning baseline for this session. Clone the caller's ToolCfg
 	// with a fresh per-session baseline so drift detection is scoped to
@@ -262,6 +265,7 @@ func RunHTTPProxy(
 		defer close(capacityDeferralsDone)
 		watchCapacityDeferrals(killWatchCtx, fwdOpts)
 	}()
+	var heldNative sync.WaitGroup
 	defer func() {
 		stopKillWatch()
 		resolverRuntime.Cancel()
@@ -270,6 +274,9 @@ func RunHTTPProxy(
 		}
 		resolverRuntime.Wait()
 		<-capacityDeferralsDone
+		if fwdOpts.v3Session != nil {
+			heldNative.Wait()
+		}
 	}()
 
 	bridgeHeaders := &mcpBridgeHeaders{client: httpClient, state: contractState, opts: fwdOpts, log: safeLogW}
@@ -277,7 +284,7 @@ func RunHTTPProxy(
 
 	clientReader := transport.NewStdioReader(clientIn)
 
-	var wg, heldNative sync.WaitGroup
+	var wg sync.WaitGroup
 	var getStreamOnce sync.Once
 	var lastScanErr error
 	var admission receipt.EmitOpts
@@ -409,7 +416,7 @@ func RunHTTPProxy(
 			// deferred cleanup safe after this early denial cleanup.
 			var finishDeniedRelease func()
 			heldOpts, finishHeldAdmission, holdErr := fwdOpts.splitDeferredAdmission()
-			if holdErr == nil && heldOpts.nativeAdmission.NativeLease != nil {
+			if holdErr == nil && (heldOpts.nativeAdmission.NativeLease != nil || heldOpts.v3Session != nil) {
 				heldNative.Add(1)
 				release := finishHeldAdmission
 				finishHeldAdmission = func() {
@@ -509,6 +516,9 @@ func RunHTTPProxy(
 					// first so no wait for another send sits between the
 					// kill-switch claim and SendMessage; see
 					// claimDeferredRelease for the ordering argument.
+					if heldOpts.v3Session != nil {
+						return res, nil
+					}
 					prepared, finish := lockAndClaimDeferredRelease(&upstreamMu, heldOpts, deferredGeneration, res)
 					if prepared.FinalDecision == config.ActionAllow {
 						if reason := mcpTaskReleaseRefusal(fwdOpts, deferredReq.authorityFrame, deferredReq.taskTaint, false); reason != "" {
@@ -559,6 +569,24 @@ func RunHTTPProxy(
 						}
 						return
 					}
+
+					var effect *mcpV3Exchange
+					if res.FinalDecision == config.ActionAllow && heldOpts.v3Session != nil {
+						var reason string
+						effect, finishDeniedRelease, reason = heldOpts.claimV3DeferredSend(heldOpts.warnContext(), safeLogW, deferredReq.authorityFrame, res, &upstreamMu, deferredGeneration)
+						if reason != "" {
+							res = refuse(reason)
+						}
+					}
+					attempted := false
+					defer func() {
+						if heldOpts.v3Session != nil && finishDeniedRelease != nil {
+							finishDeniedRelease()
+						}
+						if !attempted || deferredReq.IsNotification {
+							heldOpts.finishV3Send(heldOpts.warnContext(), safeLogW, effect, attempted)
+						}
+					}()
 					switch res.FinalDecision {
 					case config.ActionAllow:
 						// upstreamMu is held by Prepare's release claim.
@@ -605,7 +633,17 @@ func RunHTTPProxy(
 						}
 						releaseCtx := heldOpts.warnContext()
 						releaseOpts := heldOpts
+						if err := heldOpts.bindV3Send(effect); err != nil {
+							tracker.removeOwnedOutcome(deferredReq.ID, registration)
+							refuse("request_tracking_failed")
+							return
+						}
+						attempted = true
 						respReader, sendErr := httpClient.SendMessageWithOptions(releaseCtx, deferredReq.ForwardMessage, transport.HTTPMessageOptions{Headers: releaseHeaders})
+						if effect != nil {
+							finishDeniedRelease()
+							defer heldOpts.finishV3Send(releaseCtx, safeLogW, effect, true)
+						}
 						if sendErr != nil {
 							if errors.Is(context.Cause(releaseCtx), ael.ErrCapacity) {
 								settleBridgeCapacityOutcome(releaseCtx, safeLogW, tracker, deferredReq.ID, releaseOpts, releaseOutcome)
@@ -629,7 +667,7 @@ func RunHTTPProxy(
 						}
 						acknowledged := transport.IsHTTPAcknowledgement(respReader)
 						respReader = releaseOpts.withResponseTimeout(respReader)
-						foundInjection, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, tracker, releaseOpts)
+						foundInjection, scanErr := ForwardScanned(respReader, wireClientOut, safeLogW, tracker, releaseOpts)
 						if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(context.Cause(releaseCtx), ael.ErrCapacity) {
 							settleBridgeCapacityOutcome(releaseCtx, safeLogW, tracker, deferredReq.ID, releaseOpts, releaseOutcome)
 						} else if errors.Is(scanErr, transport.ErrResponseTimeout) {
@@ -711,7 +749,12 @@ func RunHTTPProxy(
 				},
 			}
 			if holdErr == nil {
-				holdErr = manager.Hold(heldAction)
+				if heldOpts.v3Session != nil {
+					heldOpts.confirmV3Hold(&heldAction, deferredReq.authorityFrame)
+					holdErr = manager.HoldContext(heldOpts.warnContext(), heldAction)
+				} else {
+					holdErr = manager.Hold(heldAction)
+				}
 			}
 			if holdErr == nil && heldOpts.nativeAdmission.NativeLease.Stopping() {
 				_ = manager.Resolve(deferredReq.DeferID, config.ActionBlock, deferred.SourceCancel)
@@ -805,9 +848,15 @@ func RunHTTPProxy(
 			continue
 		}
 
+		effect, admitErr := fwdOpts.startV3Send(ctx, frame, decision.Outcome.Receipt.ActionID)
+		if admitErr != nil {
+			logMCPV3Error(safeLogW, admitErr)
+			continue
+		}
 		unlockInventory := func() {}
 		if frame.Method == "tools/list" {
 			if lockErr := contractState.contractMu.Lock(ctx); lockErr != nil {
+				fwdOpts.finishV3Send(ctx, safeLogW, effect, false)
 				// Only cancellation fails this wait. Close the request's
 				// tracked outcome and leave through the shared shutdown path,
 				// which settles other pending outcomes and ends the session.
@@ -827,6 +876,7 @@ func RunHTTPProxy(
 				}
 			})
 		}
+		attempted := false
 		var registration *requestRegistration
 		// POST to upstream.
 		var taskRefusal string
@@ -834,6 +884,9 @@ func RunHTTPProxy(
 		respReader, err := func() (transport.MessageReader, error) {
 			upstreamMu.Lock()
 			defer upstreamMu.Unlock()
+			if effect != nil && ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			taskRefusal = mcpTaskReleaseRefusal(fwdOpts, decision.taskFrame, decision.taskTaint, false)
 			if taskRefusal != "" {
 				return nil, nil
@@ -851,8 +904,17 @@ func RunHTTPProxy(
 					return nil, nil
 				}
 			}
+			if bindErr := fwdOpts.bindV3Send(effect); bindErr != nil {
+				tracker.removeOwnedOutcome(frame.ID, registration)
+				trackingErr = bindErr
+				return nil, nil
+			}
+			attempted = true
 			return httpClient.SendMessageWithOptions(ctx, decision.ForwardMessage, transport.HTTPMessageOptions{Headers: requestHeaders})
 		}()
+		if err != nil || !attempted {
+			fwdOpts.finishV3Send(ctx, safeLogW, effect, attempted)
+		}
 		if trackingErr != nil {
 			unlockInventory()
 			decision.Outcome.settle(safeLogW, fwdOpts, mcpOutcomeStatusBlocked, -1, "request_tracking_failed")
@@ -923,7 +985,10 @@ func RunHTTPProxy(
 			fwdOpts.nativeSSE = true
 			fwdOpts.WarnContext = ctx
 		}
-		foundInjection, scanErr := ForwardScanned(fwdOpts.withResponseTimeout(respReader), safeClientOut, safeLogW, tracker, fwdOpts)
+		foundInjection, scanErr := ForwardScanned(fwdOpts.withResponseTimeout(respReader), wireClientOut, safeLogW, tracker, fwdOpts)
+		if !acknowledged || isRPCNotification(frame.ID) {
+			fwdOpts.finishV3Send(ctx, safeLogW, effect, true)
+		}
 		if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(context.Cause(ctx), ael.ErrCapacity) {
 			settleBridgeCapacityOutcome(ctx, safeLogW, tracker, frame.ID, fwdOpts, decision.Outcome)
 			lastScanErr = ael.ErrCapacity
@@ -980,7 +1045,9 @@ func RunHTTPProxy(
 		// the Once and permanently prevent the GET stream.
 		if httpClient.SessionID() != "" {
 			getStreamOnce.Do(func() {
-				startGETStream(ctx, httpClient, safeClientOut, safeLogW, fwdOpts, getResponseTracker, &wg)
+				getOpts := fwdOpts
+				getOpts.v3Session = nil
+				startGETStream(ctx, httpClient, wireClientOut, safeLogW, getOpts, getResponseTracker, &wg)
 			})
 		}
 	}
