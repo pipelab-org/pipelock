@@ -44,11 +44,12 @@ type v3AppendFaultFile struct {
 	*os.File
 	writes, syncs int
 	failWrite     bool
+	failAt        int
 }
 
 func (f *v3AppendFaultFile) Write(data []byte) (int, error) {
 	f.writes++
-	if f.failWrite && f.writes == 2 {
+	if f.failWrite && f.writes == f.failAt {
 		return 0, errors.New("append failed")
 	}
 	return f.File.Write(data)
@@ -56,7 +57,7 @@ func (f *v3AppendFaultFile) Write(data []byte) (int, error) {
 
 func (f *v3AppendFaultFile) Sync() error {
 	f.syncs++
-	if !f.failWrite && f.syncs == 2 {
+	if !f.failWrite && f.syncs == f.failAt {
 		return errors.New("flush failed")
 	}
 	return f.File.Sync()
@@ -65,6 +66,10 @@ func (f *v3AppendFaultFile) Sync() error {
 // The opening record succeeds. One append to that file fails, and the writer
 // can publish a successor using the normal filesystem.
 func v3FirstAppendFault(failWrite bool) func(string, string) (v3.StreamFile, error) {
+	return v3AppendFault(2, failWrite)
+}
+
+func v3AppendFault(failAt int, failWrite bool) func(string, string) (v3.StreamFile, error) {
 	first := true
 	return func(dir, pattern string) (v3.StreamFile, error) {
 		file, err := os.CreateTemp(dir, pattern)
@@ -72,7 +77,7 @@ func v3FirstAppendFault(failWrite bool) func(string, string) (v3.StreamFile, err
 			return file, err
 		}
 		first = false
-		return &v3AppendFaultFile{File: file, failWrite: failWrite}, nil
+		return &v3AppendFaultFile{File: file, failWrite: failWrite, failAt: failAt}, nil
 	}
 }
 
@@ -465,7 +470,12 @@ func readV3TransportActions(t *testing.T, dir string) []v3.Action {
 	if err != nil || len(paths) != 1 {
 		t.Fatalf("expected one signed stream: %v (%v)", paths, err)
 	}
-	data, err := os.ReadFile(filepath.Clean(paths[0]))
+	return readV3TransportFile(t, paths[0])
+}
+
+func readV3TransportFile(t *testing.T, path string) []v3.Action {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -595,6 +605,14 @@ func TestV3HTTPDeliveryObservations(t *testing.T) {
 			})
 		}
 	}
+}
+
+type v3ObserverDialer struct {
+	addr string
+}
+
+func (d v3ObserverDialer) DialContext(ctx context.Context, network, _ string) (net.Conn, error) {
+	return (&net.Dialer{}).DialContext(ctx, network, d.addr)
 }
 
 func TestV3FetchRedirectEvidence(t *testing.T) {
@@ -823,6 +841,9 @@ func runV3MatrixUpstreamError(t *testing.T) {
 				switch surface {
 				case TransportConnect:
 					boundary = boundaryTunnelOpen
+				case TransportWS:
+					// An HTTP rejection confirms the handshake reached the peer.
+					class = "completed"
 				case transportInterceptReceipt:
 					// The request-write trace is proof of sending even if
 					// the upstream closes before sending response headers.

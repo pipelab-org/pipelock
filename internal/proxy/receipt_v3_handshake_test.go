@@ -5,6 +5,9 @@ package proxy
 
 import (
 	"bufio"
+	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -12,14 +15,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gobwas/ws"
+	"github.com/gobwas/ws/wsutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 )
@@ -105,10 +111,15 @@ func TestV3RawHandshakeFailure(t *testing.T) {
 
 func assertHandshakeOutcome(t *testing.T, dir, boundary, outcome string) {
 	t.Helper()
-	var actionID string
+	assertV3BoundaryPair(t, readV3TransportActions(t, dir), boundary, "", outcome)
+}
+
+func assertV3BoundaryPair(t *testing.T, actions []v3.Action, boundary, layer, outcome string) {
+	t.Helper()
+	var actionID, outcomeID string
 	intents, outcomes := 0, 0
-	for _, action := range readV3TransportActions(t, dir) {
-		if action.EffectBoundary != boundary {
+	for _, action := range actions {
+		if action.EffectBoundary != boundary || (layer != "" && action.Layer != layer) {
 			continue
 		}
 		if action.Phase == "intent" {
@@ -116,13 +127,14 @@ func assertHandshakeOutcome(t *testing.T, dir, boundary, outcome string) {
 			intents++
 		}
 		if action.Phase == "outcome" {
-			if action.ActionID != actionID || action.OutcomeClass != outcome {
+			if action.OutcomeClass != outcome {
 				t.Fatalf("unexpected outcome at %s: %+v", boundary, action)
 			}
+			outcomeID = action.ActionID
 			outcomes++
 		}
 	}
-	if intents != 1 || outcomes != 1 {
+	if intents != 1 || outcomes != 1 || actionID != outcomeID {
 		t.Fatalf("%s has %d intents and %d outcomes, want one each", boundary, intents, outcomes)
 	}
 }
@@ -197,6 +209,177 @@ func TestV3ReverseUpgradeRefusal(t *testing.T) {
 						t.Fatalf("synthetic gateway error was associated with an upgrade: %+v", action)
 					}
 				}
+			})
+		}
+	}
+}
+
+func TestV3WebSocketCredentialEffects(t *testing.T) {
+	for _, required := range []bool{false, true} {
+		for _, tc := range []struct {
+			name          string
+			carrier       string
+			preDial       bool
+			reject        bool
+			withholdFrame bool
+		}{
+			{name: "header", carrier: "header"},
+			{name: "header pre-dial", carrier: "header", preDial: true},
+			{name: "header upstream rejection", carrier: "header", reject: true},
+			{name: "url", carrier: "url"},
+			{name: "url pre-dial", carrier: "url", preDial: true},
+			{name: "frame", carrier: "frame"},
+			{name: "frame withheld", carrier: "frame", withholdFrame: true},
+		} {
+			t.Run(fmt.Sprintf("required=%t/%s", required, tc.name), func(t *testing.T) {
+				const host = "127.0.0.1"
+				var faults func(string, string) (v3.StreamFile, error)
+				if tc.withholdFrame {
+					// Opening record, handshake send intent, client upgrade
+					// intent/outcome, handshake send outcome, frame batch.
+					faults = v3AppendFault(6, false)
+				}
+				p, writer, dir, keys := newTestV3HTTPProxy(t, TransportWS, required, faults, func(cfg *config.Config) {
+					cfg.DLP.Patterns = append(cfg.DLP.Patterns, audienceReceiptTestPattern(host))
+					cfg.RequestBodyScanning.Enabled = true
+				})
+				upstreamSeen := make(chan string, 1)
+				var hits atomic.Int64
+				upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					hits.Add(1)
+					switch tc.carrier {
+					case "header":
+						upstreamSeen <- r.Header.Get("Authorization")
+					case "url":
+						upstreamSeen <- r.URL.Path
+					}
+					if tc.reject {
+						w.WriteHeader(http.StatusUnauthorized)
+						return
+					}
+					conn, _, _, err := ws.UpgradeHTTP(r, w)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					defer func() { _ = conn.Close() }()
+					if tc.carrier == "frame" {
+						_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+						msg, err := wsutil.ReadClientText(conn)
+						if err != nil {
+							if tc.withholdFrame {
+								upstreamSeen <- ""
+							} else {
+								t.Error(err)
+							}
+							return
+						}
+						upstreamSeen <- string(msg)
+						if err := wsutil.WriteServerMessage(conn, ws.OpText, []byte("ack")); err != nil {
+							t.Error(err)
+						}
+					}
+				}))
+				t.Cleanup(upstream.Close)
+				p.dialer = v3ObserverDialer{addr: upstream.Listener.Addr().String()}
+				roots := x509.NewCertPool()
+				roots.AddCert(upstream.Certificate())
+				p.wsTLSConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
+				target := "wss://" + host + "/socket"
+				want := audienceReceiptTestCredential
+				header := make(http.Header)
+				switch tc.carrier {
+				case "header":
+					want = "Bearer " + want
+					header.Set("Authorization", want)
+				case "url":
+					want = "/" + want
+					target = "wss://" + host + want
+				}
+				requestPath := "/ws?url=" + url.QueryEscape(target)
+				outcome := "completed"
+				if tc.preDial {
+					outcome = "not_released"
+					req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, requestPath, nil)
+					req.Header = header
+					req.Header.Set("Upgrade", "websocket")
+					req.Header.Set("Connection", "Upgrade")
+					req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+					req.Header.Set("Sec-WebSocket-Version", "13")
+					observer := httptest.NewRecorder()
+					p.handleWebSocket(observer, req)
+					if observer.Code == http.StatusSwitchingProtocols || hits.Load() != 0 {
+						t.Fatalf("pre-dial refusal status=%d upstream hits=%d", observer.Code, hits.Load())
+					}
+				} else {
+					ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+					defer cancel()
+					done := make(chan struct{})
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						defer close(done)
+						p.handleWebSocket(w, r)
+					}))
+					t.Cleanup(server.Close)
+					dialer := ws.Dialer{Header: ws.HandshakeHeaderHTTP(header)}
+					conn, reader, _, err := dialer.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+requestPath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer func() { _ = conn.Close() }()
+					var downstream io.ReadWriter = conn
+					if reader != nil {
+						defer ws.PutReader(reader)
+						downstream = struct {
+							io.Reader
+							io.Writer
+						}{reader, conn}
+					}
+					if tc.carrier == "frame" {
+						_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+						if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(want)); err != nil {
+							t.Fatal(err)
+						}
+						msg, err := wsutil.ReadServerText(downstream)
+						if tc.withholdFrame {
+							if err == nil {
+								t.Fatal("downstream received a frame after withholding")
+							}
+							want, outcome = "", "not_released"
+						} else if err != nil || string(msg) != "ack" {
+							t.Fatalf("downstream ack=%q error=%v", msg, err)
+						}
+					}
+					select {
+					case seen := <-upstreamSeen:
+						if seen != want {
+							t.Fatal("upstream carrier did not contain the fixture credential")
+						}
+					case <-ctx.Done():
+						t.Fatal(ctx.Err())
+					}
+					_ = conn.Close()
+					waitForV3Transport(t, done)
+				}
+				if err := writer.Close(t.Context(), nil); err != nil {
+					t.Fatal(err)
+				}
+				result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+				if tc.withholdFrame {
+					if err != nil || result.Integrity != "ok" || result.Completeness != "end_unproven" {
+						t.Fatalf("verification: %+v (%v)", result, err)
+					}
+					paths, err := filepath.Glob(filepath.Join(dir, "*.receipt-v3.jsonl"))
+					if err != nil || len(paths) != 2 {
+						t.Fatalf("expected two streams after writer recovery: %v (%v)", paths, err)
+					}
+					actions := append(readV3TransportFile(t, paths[0]), readV3TransportFile(t, paths[1])...)
+					assertV3BoundaryPair(t, actions, boundaryUpstreamSend, credentialAudienceReceiptExtensionKey, outcome)
+					return
+				}
+				if err != nil || result.Verdict != "VALID" {
+					t.Fatalf("verification: %+v (%v)", result, err)
+				}
+				assertV3BoundaryPair(t, readV3TransportActions(t, dir), boundaryUpstreamSend, credentialAudienceReceiptExtensionKey, outcome)
 			})
 		}
 	}

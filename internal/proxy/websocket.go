@@ -1242,7 +1242,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		// upgrade waits further, until the upstream has made its selection.
 		if !negotiateProtocol {
 			if !upgradeClient() {
-				_ = upstreamEffect.Refuse(r.Context())
+				p.refuseAdmittedEffect(r.Context(), admissionReceipt, upstreamEffect)
 				return
 			}
 			defer safeClose(clientConn, "ws.clientConn", log)
@@ -1259,7 +1259,8 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// admission checks above cannot taint even that caller's evidence.
 	p.taintIssuerSessionForStream(cfg, agent, clientIP, id.Auth, parsed)
 	upstreamConn, upstreamProtocol, dialErr := p.wsDialUpstream(r.Context(), targetURL, fwdHeaders, cfg)
-	p.confirmObservedEffect(r.Context(), admissionReceipt, upstreamEffect, upstreamConn != nil && dialErr == nil)
+	var upstreamStatus ws.StatusError
+	p.confirmObservedEffect(r.Context(), admissionReceipt, upstreamEffect, upstreamConn != nil || errors.As(dialErr, &upstreamStatus))
 	if dialErr != nil {
 		var ssrfErr *ssrfDialBlockError
 		if errors.As(dialErr, &ssrfErr) {
@@ -1708,6 +1709,7 @@ func (p *Proxy) wsDialUpstream(ctx context.Context, targetURL string, fwdHeaders
 	headers.Del(headerNameWSProtocol)
 	dialer := ws.Dialer{
 		NetDial:    p.ssrfSafeDialContext,
+		TLSConfig:  p.wsTLSConfig,
 		Header:     ws.HandshakeHeaderHTTP(headers),
 		Protocols:  protocols,
 		Timeout:    30 * time.Second,
@@ -2954,7 +2956,7 @@ func (r *wsRelay) blockIdentityReload() bool {
 
 // clientToUpstream reads frames from client, DLP-scans text, writes to upstream.
 func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFunc, idleTimeout time.Duration) (bytesTransferred, textFrames, binaryFrames int64, blocked bool) {
-	if r.proxy.receiptEffects.enabled {
+	if r.proxy != nil && r.proxy.receiptEffects.enabled {
 		ctx = withReceiptEvidenceContext(ctx)
 	}
 	defer func() {
@@ -3661,7 +3663,7 @@ func (r *wsRelay) observeUpstreamResponseFindings(kinds []session.HostileFinding
 
 // upstreamToClient reads frames from upstream, injection-scans text, writes to client.
 func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFunc, idleTimeout time.Duration) (bytesTransferred, textFrames, binaryFrames int64, blocked bool) {
-	if r.proxy.receiptEffects.enabled {
+	if r.proxy != nil && r.proxy.receiptEffects.enabled {
 		ctx = withReceiptEvidenceContext(ctx)
 	}
 	defer func() {

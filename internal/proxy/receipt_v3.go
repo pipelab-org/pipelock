@@ -206,7 +206,7 @@ func boundaryForProxyDecision(transport string) string {
 }
 
 func (r *wsRelay) writeReceiptFrame(ctx context.Context, boundary string, write func() error) error {
-	if !r.proxy.receiptEffects.enabled {
+	if r.proxy == nil || !r.proxy.receiptEffects.enabled {
 		return write()
 	}
 	opts := receipt.EmitOpts{

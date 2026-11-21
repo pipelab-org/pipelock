@@ -660,6 +660,7 @@ type Proxy struct {
 	ksAPI                *killswitch.APIHandler
 	sessionAPI           *SessionAPIHandler
 	dialer               contextDialer
+	wsTLSConfig          *tls.Config
 	client               *http.Client
 	tlsTransport         *http.Transport // shared Transport for TLS interception upstream connections
 	server               *http.Server
