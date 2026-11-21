@@ -13,8 +13,8 @@ func TestMCPTaintDiagnostics_ConfigAndReload(t *testing.T) {
 	for _, tc := range []struct {
 		name, body, recorder string
 	}{
-		{"omitted", "", "invocation-scoped recorder even with session_profiling.enabled=false"},
-		{"null", "taint: {enabled: null}\nsession_profiling: {enabled: null}\nmcp_session_binding: {listener_require_state_token: null}\n", "invocation-scoped recorder even with session_profiling.enabled=false"},
+		{"omitted", "", "the pipelock run HTTP proxy and its MCP listener share a session store"},
+		{"null", "taint: {enabled: null}\nsession_profiling: {enabled: null}\nmcp_session_binding: {listener_require_state_token: null}\n", "the pipelock run HTTP proxy and its MCP listener share a session store"},
 		{"false", "taint: {enabled: false}\nsession_profiling: {enabled: false}\nmcp_session_binding: {listener_require_state_token: false}\n", "taint is disabled"},
 		{"true", "taint: {enabled: true}\nsession_profiling: {enabled: true}\nmcp_session_binding: {listener_require_state_token: true}\n", "invocation-scoped recorder"},
 	} {
@@ -47,6 +47,9 @@ func TestMCPTaintDiagnostics_ConfigAndReload(t *testing.T) {
 					"taint.mcp_listener": {"authenticated principal", "legacy", "2026-07-28", "request-local only", "NOT active", "verified caller identity", "shared listener bearer"},
 					"taint.mcp_origin":   {"origin is undeclared", "internal_generated", "no corresponding CLI flag", "taint.trusted_mcp_servers", "source classification applies to wording-only findings too"},
 					"taint.mcp_recovery": {"inline terminal approval is unavailable", "runtime trust grants are rejected for all", "taint.trust_overrides", "record no origin URL", "pipelock run applies it on reload", "reads taint config only at startup"},
+				}
+				if cfg.Taint.Enabled {
+					want["taint.mcp_recorder"] = append(want["taint.mcp_recorder"], "Anomaly detection, adaptive enforcement, airlock, behavioral baselines, and the session admin API still require session profiling")
 				}
 				if cfg.MCPSessionBinding.ListenerRequireStateToken != nil && *cfg.MCPSessionBinding.ListenerRequireStateToken {
 					want["taint.mcp_listener"] = append(want["taint.mcp_listener"], "listener_require_state_token requires verified caller identity")

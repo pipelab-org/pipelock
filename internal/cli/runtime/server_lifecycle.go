@@ -1039,11 +1039,9 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 			return err
 		}
 
-		// Share the proxy's session manager with the MCP listener so
-		// both use the same store and the sessions gauge is not
-		// double-counted. p.SessionStore() reads from the atomic
-		// pointer, so it returns the live store even after hot-reloads.
-		mcpStore := s.proxy.SessionStore() // nil when session profiling is disabled
+		// The listener shares the proxy's startup session store and capacity.
+		// The store is present when taint or session profiling is enabled.
+		mcpStore := s.proxy.SessionStore()
 		mcpDoWWiring := s.currentMCPDoWRuntime().Wiring()
 
 		// Pass a function that reads the adaptive config from the live

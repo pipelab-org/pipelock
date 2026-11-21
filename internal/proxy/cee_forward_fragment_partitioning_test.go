@@ -25,6 +25,7 @@ func TestForwardCEEFragmentReassemblyPartitionsJSONBodyFields(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.Taint.Enabled = false
 		cfg.CrossRequestDetection.Enabled = true
 		cfg.CrossRequestDetection.Action = config.ActionBlock
 		cfg.CrossRequestDetection.EntropyBudget.Enabled = false

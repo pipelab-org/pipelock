@@ -3199,6 +3199,7 @@ func TestForwardHTTPGitPushRedirectAllowlist(t *testing.T) {
 			defer backend.Close()
 
 			proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+				cfg.Taint.Enabled = false
 				cfg.GitProtection.Enabled = true
 				cfg.GitProtection.AllowedPushRepos = []string{"git.vendor.example/acme/private"}
 			})

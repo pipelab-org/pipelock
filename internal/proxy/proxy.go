@@ -642,7 +642,7 @@ type Proxy struct {
 	issuerCookieRuntime  atomic.Pointer[issuerCookieRuntime]
 	scannerPtr           atomic.Pointer[scanner.Scanner]
 	editionPtr           atomic.Pointer[editionSnapshot]
-	sessionMgrPtr        atomic.Pointer[SessionManager]         // nil when profiling disabled
+	sessionMgrPtr        atomic.Pointer[SessionManager]         // nil when taint and profiling are both disabled
 	taintRecorder        session.Recorder                       // optional invocation-owned state shared with an MCP sandbox
 	certCachePtr         atomic.Pointer[certgen.CertCache]      // nil when TLS interception disabled
 	entropyTrackerPtr    atomic.Pointer[scanner.EntropyTracker] // nil when entropy budget disabled
@@ -958,17 +958,11 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	}
 	p.editionPtr.Store(&editionSnapshot{ed})
 
-	if cfg.SessionProfiling.Enabled {
-		var adaptiveCfg *config.AdaptiveEnforcement
-		if cfg.AdaptiveEnforcement.Enabled {
-			adaptiveCfg = &cfg.AdaptiveEnforcement
-		}
-		smOpts := SessionManagerOptions{Logger: logger}
-		if cfg.Airlock.Enabled {
-			smOpts.AirlockCfg = &cfg.Airlock
-		}
+	if sessionManagerEnabled(cfg) {
+		adaptiveCfg, airlockCfg := sessionProfilingConfigs(cfg)
+		smOpts := SessionManagerOptions{Logger: logger, AirlockCfg: airlockCfg}
 		sm := NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, m, smOpts)
-		if cfg.BehavioralBaseline.Enabled {
+		if cfg.SessionProfiling.Enabled && cfg.BehavioralBaseline.Enabled {
 			// Fail closed: a configured-enabled behavioral baseline that cannot
 			// initialize must not be silently swallowed (that leaves enforcement
 			// off while the operator believes deviations are blocked).
@@ -2648,51 +2642,39 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		return false
 	}
 
-	var adaptiveCfg *config.AdaptiveEnforcement
-	if cfg.AdaptiveEnforcement.Enabled {
-		adaptiveCfg = &cfg.AdaptiveEnforcement
-	}
-	var airlockCfg *config.Airlock
-	if cfg.Airlock.Enabled {
-		airlockCfg = &cfg.Airlock
-	}
-	var stagedSessionMgr *SessionManager
-	var reconfigureBaseline *SessionManager
+	adaptiveCfg, airlockCfg := sessionProfilingConfigs(cfg)
+	currentSessionMgr := p.sessionMgrPtr.Load()
+	needsSessionMgr := sessionManagerEnabled(cfg)
+	nextSessionMgr := currentSessionMgr
 	var applyBaseline func()
-	if oldCfg != nil {
-		wasSessionProfilingEnabled := oldCfg.SessionProfiling.Enabled
-		isSessionProfilingEnabled := cfg.SessionProfiling.Enabled
-		switch {
-		case !wasSessionProfilingEnabled && isSessionProfilingEnabled:
+	if needsSessionMgr {
+		if nextSessionMgr == nil {
 			smOpts := SessionManagerOptions{Logger: p.logger, AirlockCfg: airlockCfg}
-			stagedSessionMgr = NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, p.metrics, smOpts)
-			if cfg.BehavioralBaseline.Enabled {
-				if err := stagedSessionMgr.EnableBaseline(&cfg.BehavioralBaseline); err != nil {
-					p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
-						fmt.Errorf("baseline reload failed, keeping old config: %w", err))
-					stagedSessionMgr.Close()
-					sc.Close()
-					if newEd != nil {
-						newEd.Close()
-					}
-					return false
+			staged := NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, p.metrics, smOpts)
+			defer func() {
+				if p.sessionMgrPtr.Load() != staged {
+					staged.Close()
 				}
-				stagedSessionMgr.WarnUnproducibleBaselineProfiles(baselineConfiguredIdentityNames(cfg))
+			}()
+			nextSessionMgr = staged
+		}
+		var baselineCfg *config.BehavioralBaseline
+		if cfg.SessionProfiling.Enabled {
+			baselineCfg = &cfg.BehavioralBaseline
+		}
+		apply, err := nextSessionMgr.PrepareBaselineReconfigure(baselineCfg)
+		if err != nil {
+			p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
+				fmt.Errorf("baseline reload failed, keeping old config: %w", err))
+			sc.Close()
+			if newEd != nil {
+				newEd.Close()
 			}
-		case wasSessionProfilingEnabled && isSessionProfilingEnabled:
-			reconfigureBaseline = p.sessionMgrPtr.Load()
-			if reconfigureBaseline != nil {
-				var err error
-				applyBaseline, err = reconfigureBaseline.PrepareBaselineReconfigure(&cfg.BehavioralBaseline)
-				if err != nil {
-					p.logger.LogError(audit.NewMethodLogContext("RELOAD"), fmt.Errorf("baseline reload failed, keeping old config: %w", err))
-					sc.Close()
-					if newEd != nil {
-						newEd.Close()
-					}
-					return false
-				}
-			}
+			return false
+		}
+		applyBaseline = func() {
+			apply()
+			nextSessionMgr.WarnUnproducibleBaselineProfiles(baselineConfiguredIdentityNames(cfg))
 		}
 	}
 	// Staging above may load keys and build evidence components. Keep that I/O
@@ -2769,7 +2751,6 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	// completed validation and I/O before either receipt was written.
 	if applyBaseline != nil {
 		applyBaseline()
-		reconfigureBaseline.WarnUnproducibleBaselineProfiles(baselineConfiguredIdentityNames(cfg))
 	}
 
 	// Publish both emitters now that staging has fully succeeded. The
@@ -2814,6 +2795,16 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	// Components being disabled stay live until after config publication below,
 	// so an old config can never observe a nil tracker and bypass its policy.
 	p.prepareCEE(&cfg.CrossRequestDetection)
+
+	// Publish required session state before the config that enables it.
+	// Reuse live state so reloads keep taint history and update store limits.
+	if needsSessionMgr {
+		if currentSessionMgr == nil {
+			p.sessionMgrPtr.Store(nextSessionMgr)
+		} else {
+			currentSessionMgr.UpdateConfig(&cfg.SessionProfiling, adaptiveCfg, airlockCfg)
+		}
+	}
 
 	// When redaction is being disabled, publish the config before clearing the
 	// legacy matcher mirror. Enabling keeps the opposite order: runtime first,
@@ -2927,21 +2918,10 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		prevEdSnap.Close()
 	}
 
-	// Toggle session manager lifecycle on config change.
-	wasEnabled := oldCfg.SessionProfiling.Enabled
-	isEnabled := cfg.SessionProfiling.Enabled
-	if !wasEnabled && isEnabled {
-		p.sessionMgrPtr.Store(stagedSessionMgr)
-	} else if wasEnabled && !isEnabled {
-		if old := p.sessionMgrPtr.Swap(nil); old != nil {
-			old.Close()
-		}
-	} else if wasEnabled && isEnabled {
-		// Config values changed while profiling stays enabled - update in place
-		// so TTL/capacity thresholds take effect without losing session state.
-		if sm := p.sessionMgrPtr.Load(); sm != nil {
-			sm.UpdateConfig(&cfg.SessionProfiling, adaptiveCfg, airlockCfg)
-		}
+	// Retire the manager after publishing the config that disables both consumers.
+	if !needsSessionMgr && currentSessionMgr != nil {
+		p.sessionMgrPtr.Store(nil)
+		currentSessionMgr.Close()
 	}
 
 	p.updateCEEStats()
@@ -3402,8 +3382,26 @@ func (p *Proxy) scannerProbe(ctx context.Context) error {
 	}
 }
 
+func sessionManagerEnabled(cfg *config.Config) bool {
+	return cfg.Taint.Enabled || cfg.SessionProfiling.Enabled
+}
+
+func sessionProfilingConfigs(cfg *config.Config) (*config.AdaptiveEnforcement, *config.Airlock) {
+	var adaptiveCfg *config.AdaptiveEnforcement
+	var airlockCfg *config.Airlock
+	if cfg.SessionProfiling.Enabled {
+		if cfg.AdaptiveEnforcement.Enabled {
+			adaptiveCfg = &cfg.AdaptiveEnforcement
+		}
+		if cfg.Airlock.Enabled {
+			airlockCfg = &cfg.Airlock
+		}
+	}
+	return adaptiveCfg, airlockCfg
+}
+
 // SessionStore returns the proxy's session store for sharing with MCP transports.
-// Returns nil when session profiling is disabled.
+// Returns nil when both taint and session profiling are disabled.
 func (p *Proxy) SessionStore() session.Store {
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		return sm.AsStore()
@@ -3414,6 +3412,9 @@ func (p *Proxy) SessionStore() session.Store {
 // SessionBaselineChecker returns the proxy's behavioral-baseline checker for
 // sharing with MCP transports. Returns nil when session profiling is disabled.
 func (p *Proxy) SessionBaselineChecker() session.BaselineChecker {
+	if cfg := p.cfgPtr.Load(); cfg == nil || !cfg.SessionProfiling.Enabled {
+		return nil
+	}
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		return sm
 	}
@@ -7741,7 +7742,7 @@ func (p *Proxy) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if p.wd != nil {
 		var sessionEnabled, killSwitchEnabled bool
 		if cfg != nil {
-			sessionEnabled = cfg.SessionProfiling.Enabled
+			sessionEnabled = sessionManagerEnabled(cfg)
 			killSwitchEnabled = cfg.KillSwitch.Enabled
 		}
 		snap := p.wd.Snapshot(r.Context(), health.SnapshotInput{
