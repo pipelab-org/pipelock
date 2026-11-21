@@ -857,7 +857,7 @@ func newInterceptHandler(
 		if interceptSess, ok := ic.Recorder.(*SessionState); ok && interceptSess != nil {
 			tier := airlockTierForScope(interceptSess, adaptiveScopeForHost(ic.TargetHost))
 			if tier != config.AirlockTierNone {
-				allowed, reason := ClassifyAction(tier, r.Method, TransportConnect, true)
+				allowed, reason := ClassifyRequestAction(tier, r, TransportConnect, true)
 				if !allowed {
 					ic.Logger.LogAirlockDeny(interceptSess.key, tier, TransportConnect, r.Method, ic.ClientIP, ic.RequestID)
 					ic.Metrics.RecordAirlockDenial(tier, TransportConnect, r.Method)

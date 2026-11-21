@@ -1384,7 +1384,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			tier := airlockTierForScope(forwardSess, adaptiveScopeForHost(r.URL.Hostname()))
-			allowed, reason := ClassifyAction(tier, r.Method, TransportForward, false)
+			allowed, reason := ClassifyRequestAction(tier, r, TransportForward, false)
 			if !allowed {
 				p.logger.LogAirlockDeny(forwardSess.key, tier, TransportForward, r.Method, clientIP, requestID)
 				p.metrics.RecordAirlockDenial(tier, TransportForward, r.Method)

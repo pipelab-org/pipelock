@@ -1374,7 +1374,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			rp.owner.airlockSessionForIdentity(cfg, agent, clientIP, resolvedIdentity.Auth))
 		for _, airlockSess := range retainedAirlockSessions {
 			tier := airlockTierForScope(airlockSess, adaptiveScopeForHost(rp.upstream.Hostname()))
-			if allowed, reason := ClassifyAction(tier, r.Method, TransportReverse, false); !allowed {
+			if allowed, reason := ClassifyRequestAction(tier, r, TransportReverse, false); !allowed {
 				rp.logger.LogAirlockDeny(airlockSess.key, tier, TransportReverse, r.Method, clientIP, requestID)
 				rp.metrics.RecordAirlockDenial(tier, TransportReverse, r.Method)
 				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
@@ -2547,14 +2547,11 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	var responseFindingKinds []session.HostileFindingKind
 	var responseTaintRec session.Recorder
 	// sseHandlesResponseTaint is set true only on the SSE scanning path, which
-	// scans asynchronously in its onComplete goroutine AFTER this function (and
-	// this defer) returns. That path records its own taint observation once the
-	// finding is known, so the defer below skips it to avoid firing with a
-	// premature clean promptHit and to avoid double-counting. Every non-SSE exit
+	// scans asynchronously after this function (and this defer) returns. That
+	// path records its own observations per event through a shared observer,
+	// so the defer below skips it to avoid double-counting. Every non-SSE exit
 	// (buffered scan, oversize, shield, read-error, compressed) completes before
-	// the defer, so responseFindingKinds is already final for those. This mirrors the
-	// forward proxy, whose SSE scan runs synchronously so its single deferred
-	// observation already reflects the final promptHit.
+	// the defer, so responseFindingKinds is already final for those.
 	sseHandlesResponseTaint := false
 	responseTaintType := responseTaintContentType(resp.Header)
 	if rp.owner != nil {
@@ -3168,14 +3165,12 @@ responseScanning:
 			recordReverseOutcome(resp.StatusCode, resp.ContentLength, "sse_stream_unscanned")
 			return nil
 		}
-		// This scanning SSE path owns the response-taint observation: it scans
-		// asynchronously in onComplete below, so the modifyResponse-level defer
-		// must not record early with a clean promptHit. sseResponseFindingKinds is
+		// This scanning SSE path owns the response-taint observation, so the
+		// modifyResponse-level defer stands down. sseResponseFindingKinds is
 		// populated by OnFinding (warn mode, forwarded inline) and by an
-		// IsSSEStreamFinding onComplete error (block mode), matching the forward
-		// proxy which sets responseFindingKinds on both. When there is no session
-		// recorder (nil owner or session manager), the defer already records
-		// nothing, so leave it in charge.
+		// IsSSEStreamFinding onComplete error (block mode). When there is no
+		// session recorder (nil owner or session manager), the defer already
+		// records nothing, so leave it in charge.
 		var sseResponseFindingKinds []session.HostileFindingKind
 		// The stream releases events while the scan runs, so exposure must be
 		// recorded as it happens, as on the forward and intercept SSE paths:

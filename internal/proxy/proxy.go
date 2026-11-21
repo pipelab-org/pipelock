@@ -1256,7 +1256,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			}
 			if redirectSess := redirectAirlockSess; redirectSess != nil {
 				tier := airlockTierForScope(redirectSess, adaptiveScopeForHost(req.URL.Hostname()))
-				if allowed, reason := ClassifyAction(tier, req.Method, redirectTransport, false); !allowed {
+				if allowed, reason := ClassifyRequestAction(tier, req, redirectTransport, false); !allowed {
 					logger.LogAirlockDeny(redirectSess.key, tier, redirectTransport, req.Method, clientIP, requestID)
 					p.metrics.RecordAirlockDenial(tier, redirectTransport, req.Method)
 					return newRedirectBlockedRequest("airlock", reason+"; "+airlockBlockDetail(adaptiveAudit{logger, clientIP, requestID}, redirectSess, currentCfg, adaptiveScopeForHost(req.URL.Hostname()), tier))
