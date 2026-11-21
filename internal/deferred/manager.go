@@ -424,7 +424,7 @@ func (m *Manager) HoldContext(ctx context.Context, action HeldAction) error {
 		m.journalRejectedHold(action, SourceCascadeLimit)
 		return limitErr
 	}
-	delay := time.Until(action.Deadline)
+	delay := m.cfg.Timeout
 	if confirm := action.ConfirmHold; confirm != nil {
 		action.ConfirmHold = nil
 		pending := make(chan struct{})
@@ -960,6 +960,7 @@ func (m *Manager) snapshotOne(deferID string) (HeldAction, error) {
 	}
 	cp := *held
 	cp.timer = nil
+	cp.ConfirmResolution = nil
 	cp.Resolve = nil
 	cp.ResolveWithReleaseRefusal = nil
 	cp.Payload = append([]byte(nil), held.Payload...)

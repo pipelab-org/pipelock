@@ -5,6 +5,7 @@ package v3
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
 )
 
 func writerTestHold(id string) Action {
@@ -420,5 +425,55 @@ func TestStreamWriterStartupReportsHighestUnsupportedActionVersion(t *testing.T)
 				t.Fatalf("wanted highest unsupported version, got %v", err)
 			}
 		})
+	})
+}
+
+func TestDeferredResolutionWriteFailureRecoversPendingHold(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	writer := requireWriter(t, opts, localWriterStorage())
+	manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Minute})
+	action := writerTestHold("pending")
+	action.Hold.Parent = ""
+	policy := CapturePolicy(Digest([]byte("hold policy")))
+	var delivered deferred.Resolution
+	if err := manager.HoldContext(t.Context(), deferred.HeldAction{
+		DeferID:  action.Hold.ID,
+		ActionID: action.ActionID,
+		ConfirmHold: func(ctx context.Context, _ deferred.HeldAction) error {
+			return writer.WriteAction(ctx, action, policy)
+		},
+		ConfirmResolution: func(ctx context.Context, resolution deferred.Resolution) error {
+			terminal := blockingHoldResolution(action, resolution.ResolutionSource, relationAfter, false)
+			terminal.Verdict = resolution.FinalDecision
+			return writer.WriteAction(ctx, terminal, policy)
+		},
+		Resolve: func(resolution deferred.Resolution) { delivered = resolution },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := manager.ResolveContext(ctx, action.Hold.ID, config.ActionAllow, deferred.SourceApproval); !errors.Is(err, context.Canceled) {
+		t.Fatalf("terminal write error = %v, want canceled", err)
+	}
+	if delivered.FinalDecision != config.ActionBlock {
+		t.Fatalf("resolution delivered to transport = %+v, want block", delivered)
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	recovery := requireWriter(t, opts, localWriterStorage())
+	recovered := readRecoveryActions(t, opts.Dir, recovery.active.id)
+	if len(recovered) != 1 || recovered[0].ActionID != action.ActionID ||
+		recovered[0].Phase != phaseResolution || recovered[0].Verdict != verdictBlock ||
+		recovered[0].Hold == nil || recovered[0].Hold.ID != action.Hold.ID || recovered[0].Hold.ResolutionSource != "restart_recovery" {
+		t.Fatalf("unexpected recovery receipts: %+v", recovered)
+	}
+	if err := recovery.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if result.Verdict != "VALID" || writerTestCount(t, result, "blocked") != 1 {
+		t.Fatalf("unexpected recovered history: %+v", result)
 	}
 }
