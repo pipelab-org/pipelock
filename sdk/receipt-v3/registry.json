@@ -902,9 +902,9 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
       "when": "The intercepted request checks headers against the issuer-cookie store before sending."
     },
-    "internal/proxy/intercept.go/newInterceptHandler/recordIssuerQueryAllow/a459f5e769bfb0ad": {
+    "internal/proxy/issuer_query.go/(*InterceptContext).recordIssuerQueryAllows/recordIssuerQueryAllow/b442f4dc34e00618": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
-      "when": "`allowed` and `rescanned.Allowed`"
+      "when": "The intercept rescan allowed the request (`rescanned.Allowed`); one receipt per relief kind it used, the joined DLP view and the issuer entropy allowance"
     },
     "internal/proxy/intercept.go/newInterceptHandler/sseFindingReceiptConfirmer/623a116a47293fdd": {
       "fields": "`phase` and `effect_relation` from the warning before delivery of the inspected SSE event, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
@@ -1645,7 +1645,7 @@
     "internal/proxy/intercept.go/newInterceptHandler/emitAllowPathReceipt/6439e88e4af85c46": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/issuer_cookie.go/(*Proxy).recordIssuerCookieAllow/emitCredentialAudienceReceipt/e4c3b4190c55ad66": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/issuer_cookie.go/(*InterceptContext).recordIssuerCookieAllows/recordIssuerCookieAllow/ef9f2932beec3654": "Carries each issuer-cookie decision within the reservation selected for the intercepted request. The caller binds the upstream send.",
-    "internal/proxy/issuer_query.go/(*Proxy).recordIssuerQueryAllow/emitCredentialAudienceReceipt/5cffb258dcfe9858": "Carries the effect boundary and decision context selected by its caller.",
+    "internal/proxy/issuer_query.go/(*Proxy).recordIssuerQueryAllow/emitCredentialAudienceReceipt/2a0c29e1e624a360": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/proxy.go/(*Proxy).confirmShieldIntervention/confirmResponseDecision/ae552d6bad6f7f94": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/proxy.go/(*Proxy).emitOutcomeReceipt/emitOutcomeReceiptWithPattern/795131a348c5e7b2": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/proxy.go/(*Proxy).emitOutcomeReceiptWithPattern/Emit/66480075b4bc1aaf": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
@@ -1921,7 +1921,7 @@
     "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllows/2717586565533306": "upstream_send",
     "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllows/a464d8183f9c84ea": "upstream_send",
     "internal/proxy/intercept.go/newInterceptHandler/recordIssuerCookieAllows/bf0273741aa75c01": "upstream_send",
-    "internal/proxy/intercept.go/newInterceptHandler/recordIssuerQueryAllow/a459f5e769bfb0ad": "upstream_send",
+    "internal/proxy/issuer_query.go/(*InterceptContext).recordIssuerQueryAllows/recordIssuerQueryAllow/b442f4dc34e00618": "upstream_send",
     "internal/proxy/intercept.go/newInterceptHandler/sseFindingReceiptConfirmer/623a116a47293fdd": "downstream_delivery",
     "internal/proxy/proxy.go/New/emitRequestPolicyReceipt/ac55326aa747e25e": "upstream_send",
     "internal/proxy/proxy.go/New/recordCredentialAudienceAllows/85e81c2a0ae39d08": "upstream_send",

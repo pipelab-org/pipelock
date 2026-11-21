@@ -22,6 +22,8 @@ import (
 	"strings"
 
 	_ "modernc.org/sqlite"
+
+	contract "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 )
 
 type Head struct {
@@ -40,12 +42,21 @@ type LegacyEnd struct {
 	Sequence *uint64
 }
 
+// LegacySelection binds legacy verifier controls in a mixed directory. All
+// presented chains still contribute to cutover membership verification.
+type LegacySelection struct {
+	Session  string
+	Group    string
+	Bindings *contract.ChainVerifyOptions
+}
+
 // Options contains caller-supplied evidence requirements.
 type Options struct {
 	Keys                  []ed25519.PublicKey
 	ExpectHeads           []Head
 	ExpectSequences       []Sequence
 	LegacyEnd             *LegacyEnd
+	LegacySelection       LegacySelection
 	GenericLegacyLabels   bool
 	ExpectLineage         string
 	AcceptDiscontinuities []string
@@ -58,6 +69,14 @@ type Options struct {
 }
 
 func (opts Options) validate() error {
+	legacy := opts.LegacySelection
+	if !opts.Directory && (legacy.Session != "" || legacy.Group != "" || legacy.Bindings != nil) {
+		return errors.New("legacy options require mixed directory scope")
+	}
+	if legacy.Group != "" && (legacy.Session != "" || len(opts.Keys) == 0 || opts.AllowUnpinned ||
+		legacy.Bindings != nil || opts.LegacyEnd != nil) {
+		return errors.New("--group requires pinned keys and no other legacy selection")
+	}
 	if opts.LegacyEnd != nil && (!opts.Directory || opts.LegacyEnd.Head == "" && opts.LegacyEnd.Sequence == nil) {
 		return errors.New("legacy endpoint expectations require mixed directory scope and an expected head or sequence")
 	}

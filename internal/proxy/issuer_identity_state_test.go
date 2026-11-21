@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -38,6 +39,31 @@ func TestIssuerIDHistorySurvivesQueryEviction(t *testing.T) {
 	}
 }
 
+func TestIssuerEvidenceBindingReload(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	p, cfg := newSentIssuerProxy(t)
+	bound := cfg.Clone()
+	bound.Agents = map[string]config.AgentProfile{"browser": {SourceCIDRs: []string{"192.0.2.0/24"}}}
+	if !p.Reload(bound, scanner.MustNew(bound)) {
+		t.Fatal("reload with a CIDR binding failed")
+	}
+	ic := &InterceptContext{
+		Proxy: p, Config: bound, Agent: "browser", ClientIP: "192.0.2.1",
+		ActorAuth: envelope.ActorAuthBound, IssuerRuntime: p.issuerCookieRuntime.Load(),
+	}
+	if ic.issuerQueryStore() == nil {
+		t.Fatal("bound context could not access the live issuer store")
+	}
+	for _, next := range []*config.Config{cfg.Clone(), bound.Clone()} {
+		if !p.Reload(next, scanner.MustNew(next)) {
+			t.Fatal("binding reload failed")
+		}
+		if ic.issuerQueryStore() != nil {
+			t.Fatal("old context retained issuer authority across a binding change")
+		}
+	}
+}
+
 func TestIssuerIDIdentityReload(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	p, cfg := newSentIssuerProxy(t)
@@ -45,6 +71,17 @@ func TestIssuerIDIdentityReload(t *testing.T) {
 	key := sessionKeyFor(cfg, "owner", "192.0.2.1", envelope.ActorAuthBound)
 	peer := sessionKeyFor(cfg, "peer", "192.0.2.1", envelope.ActorAuthBound)
 	original := p.issuerCookieRuntime.Load().query
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodConnect, "api.vendor.example:443", http.NoBody)
+	_, _, _, _, resolved, release := p.resolveAgentRuntimeFromRequest(req)
+	defer release()
+	pinned, _ := resolved.Context().Value(ctxKeyConnectIssuerRuntime).(*issuerCookieRuntime)
+	if pinned == nil || pinned.query != original {
+		t.Fatal("CONNECT did not snapshot issuer evidence with its policy")
+	}
+	originalTunnel := &InterceptContext{
+		Proxy: p, Config: cfg, Agent: "peer", ClientIP: "192.0.2.1",
+		ActorAuth: envelope.ActorAuthBound, IssuerRuntime: pinned,
+	}
 	original.recordSent(key, origin, nil, nil, true, time.Now())
 	original.recordSent(peer, origin, nil, nil, true, time.Now())
 	original.mintServerID(key, origin, serverIDListed, time.Now())
@@ -62,8 +99,12 @@ func TestIssuerIDIdentityReload(t *testing.T) {
 		if !p.Reload(next, scanner.MustNew(next)) {
 			t.Fatal("enabled reload failed")
 		}
-		if old.issuerServerIDStore() != nil {
-			t.Fatal("stale tunnel retained evidence access")
+		identityChanged := old.IssuerRuntime.cfg.DefaultAgentIdentity != next.DefaultAgentIdentity ||
+			old.IssuerRuntime.cfg.BindDefaultAgentIdentity != next.BindDefaultAgentIdentity
+		if got := old.issuerServerIDStore(); identityChanged && got != nil {
+			t.Fatal("stale tunnel retained evidence access after an identity change")
+		} else if !identityChanged && got != original {
+			t.Fatal("a reload that kept identity and evidence revoked an open tunnel")
 		}
 		live := p.issuerCookieRuntime.Load().query
 		if live != original {
@@ -86,6 +127,9 @@ func TestIssuerIDIdentityReload(t *testing.T) {
 			}
 		}
 		cfg = next
+	}
+	if originalTunnel.issuerServerIDStore() != nil {
+		t.Fatal("restoring identity settings reopened evidence access for an old tunnel")
 	}
 	off := cfg.Clone()
 	off.RequestBodyScanning.ScanHeaders = false

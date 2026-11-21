@@ -987,6 +987,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			}
 			interceptRec = sess
 		}
+		issuerRuntime, _ := r.Context().Value(ctxKeyConnectIssuerRuntime).(*issuerCookieRuntime)
 		if err := interceptTunnel(interceptCtx, interceptConn, &InterceptContext{
 			TargetHost:         host,
 			TargetPort:         port,
@@ -1002,7 +1003,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			Profile:            id.Profile,
 			ActorAuth:          id.Auth,
 			Correlation:        correlation,
-			IssuerRuntime:      p.issuerCookieRuntime.Load(),
+			IssuerRuntime:      issuerRuntime,
 			UpstreamRT:         p.tlsTransport,
 			SafeDial:           p.ssrfSafeDialContext,
 			EntropyTracker:     p.entropyTrackerPtr.Load(),

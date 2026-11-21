@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -174,6 +175,77 @@ type issuerCookieRuntime struct {
 	cfg   *config.Config
 	store *issuerBoundCookieStore
 	query *issuerQueryStore
+	// Changed identity settings invalidate older tunnels without dropping
+	// shared evidence needed by newly admitted requests.
+	identityGeneration uint64
+}
+
+// sameEvidenceGeneration reports whether two runtimes hold one evidence
+// window: the same cookie store and the same query store, with issuer
+// evidence enabled under both policies and no intervening change to
+// identity settings, which decide who can use each session's evidence.
+// A reload that leaves the
+// prerequisites on carries both stores forward, so a tunnel opened before it
+// keeps its relief. A reload that disables a prerequisite installs a fresh
+// cookie store and a next-generation query store, so every older snapshot,
+// including one from before a later re-enable, stops matching.
+func (r *issuerCookieRuntime) sameEvidenceGeneration(other *issuerCookieRuntime) bool {
+	if r == nil || other == nil {
+		return false
+	}
+	if r == other {
+		return true
+	}
+	return r.store != nil && r.store == other.store && r.query != nil && r.query == other.query &&
+		issuerCookieEnabled(r.cfg) && issuerCookieEnabled(other.cfg) &&
+		r.identityGeneration == other.identityGeneration
+}
+
+// issuerIdentitySettingsChanged covers the configured sources of trusted
+// identity that a CONNECT session snapshots. Profile policy changes leave
+// its binding in place.
+func issuerIdentitySettingsChanged(before, after *config.Config) bool {
+	if before.DefaultAgentIdentity != after.DefaultAgentIdentity || before.BindDefaultAgentIdentity != after.BindDefaultAgentIdentity {
+		return true
+	}
+	for name, previous := range before.Agents {
+		next := after.Agents[name]
+		if !slices.Equal(previous.SourceCIDRs, next.SourceCIDRs) || !slices.Equal(previous.Listeners, next.Listeners) {
+			return true
+		}
+	}
+	for name, next := range after.Agents {
+		if _, exists := before.Agents[name]; !exists && (len(next.SourceCIDRs) > 0 || len(next.Listeners) > 0) {
+			return true
+		}
+	}
+	return false
+}
+
+// currentIssuerRuntime returns the live issuer runtime when this request's
+// snapshot still belongs to its evidence generation, and nil otherwise. The
+// live runtime's policy is authoritative for enablement.
+func (ic *InterceptContext) currentIssuerRuntime() *issuerCookieRuntime {
+	if ic == nil || ic.Proxy == nil {
+		return nil
+	}
+	runtime := ic.Proxy.issuerCookieRuntime.Load()
+	if !ic.matchesIssuerRuntime(runtime) {
+		return nil
+	}
+	return runtime
+}
+
+// matchesIssuerRuntime checks a caller's snapshot against one observation of
+// the live runtime, including when a diagnostic also needs that same runtime.
+func (ic *InterceptContext) matchesIssuerRuntime(runtime *issuerCookieRuntime) bool {
+	if runtime == nil || !issuerCookieEnabled(runtime.cfg) {
+		return false
+	}
+	if ic.IssuerRuntime != nil {
+		return ic.IssuerRuntime.sameEvidenceGeneration(runtime)
+	}
+	return runtime.cfg == ic.Config
 }
 
 // issuerCookieEnabled reports whether a policy can produce issuance evidence.
@@ -198,9 +270,8 @@ func (ic *InterceptContext) issuerCookieStore() *issuerBoundCookieStore {
 	if ic == nil || ic.Proxy == nil || !issuerCookieEnabled(ic.Config) || !ic.stateTrusted() {
 		return nil
 	}
-	runtime := ic.Proxy.issuerCookieRuntime.Load()
-	if runtime == nil || (ic.IssuerRuntime != nil && ic.IssuerRuntime != runtime) ||
-		(ic.IssuerRuntime == nil && runtime.cfg != ic.Config) {
+	runtime := ic.currentIssuerRuntime()
+	if runtime == nil {
 		return nil
 	}
 	return runtime.store

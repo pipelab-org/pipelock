@@ -281,11 +281,15 @@ func TestIssuerSentStaleTunnel(t *testing.T) {
 		ActorAuth:     envelope.ActorAuthBound,
 		IssuerRuntime: pinned,
 	}
-	// An enabled reload keeps the query store and publishes a new runtime
-	// pointer. Tunnels admitted before the reload keep the old pointer.
+	// An enabled reload that keeps the evidence window leaves an open tunnel
+	// current. A new evidence generation makes it stale.
 	p.issuerCookieRuntime.Store(&issuerCookieRuntime{cfg: cfg, store: pinned.store, query: pinned.query})
+	if ic.issuerQueryStore() != pinned.query {
+		t.Fatal("a carried-forward evidence window revoked the open tunnel")
+	}
+	p.issuerCookieRuntime.Store(&issuerCookieRuntime{cfg: cfg, store: pinned.store, query: pinned.query.nextGeneration()})
 	if ic.issuerQueryStore() != nil {
-		t.Fatal("positive control: pinned runtime still matches")
+		t.Fatal("positive control: pinned runtime still matches a new generation")
 	}
 	origin, err := url.Parse("https://api.vendor.example/v1/filters")
 	if err != nil {

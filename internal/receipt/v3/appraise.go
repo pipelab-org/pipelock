@@ -13,19 +13,41 @@ import (
 )
 
 type decisionIndex struct {
-	ctx       context.Context
-	tx        *sql.Tx
-	ids       map[string]bool
-	pieces    map[string]pieceEntry
-	disk      bool
-	skipLimit bool
-	maxIDs    int
-	full      bool
+	ctx                                                         context.Context
+	tx                                                          *sql.Tx
+	ids                                                         map[string]bool
+	pieces                                                      map[string]pieceEntry
+	disk                                                        bool
+	skipLimit                                                   bool
+	maxIDs                                                      int
+	full                                                        bool
+	rememberID, readOpaque, readPiece, writePiece, readBadShape *sql.Stmt
 }
 
 type pieceEntry struct {
 	Decision decisionPiece
 	Failed   bool
+}
+
+func (d *decisionIndex) prepare() error {
+	for _, statement := range []struct {
+		target **sql.Stmt
+		query  string
+	}{
+		{&d.rememberID, "INSERT INTO decision_ids VALUES (?,?) ON CONFLICT (id) DO UPDATE SET opaque = opaque OR excluded.opaque"},
+		{&d.readOpaque, "SELECT opaque FROM decision_ids WHERE id=?"},
+		{&d.readPiece, "SELECT state FROM decision_pieces WHERE id=?"},
+		{&d.writePiece, "INSERT OR REPLACE INTO decision_pieces VALUES (?,?)"},
+		{&d.readBadShape, "SELECT EXISTS (SELECT 1 FROM bad_shapes WHERE segment=? AND id=?)"},
+	} {
+		stmt, err := d.tx.PrepareContext(d.ctx, statement.query)
+		if err != nil {
+			return fmt.Errorf("prepare decision index: %w", err)
+		}
+		// The transaction closes its prepared statements on rollback.
+		*statement.target = stmt
+	}
+	return nil
 }
 
 func (d *decisionIndex) reset() error {
@@ -43,8 +65,7 @@ func (d *decisionIndex) reset() error {
 
 func (d *decisionIndex) remember(id string, opaque bool) error {
 	if d.disk {
-		const query = "INSERT INTO decision_ids VALUES (?,?) ON CONFLICT (id) DO UPDATE SET opaque = opaque OR excluded.opaque"
-		if _, err := d.tx.ExecContext(d.ctx, query, id, opaque); err != nil {
+		if _, err := d.rememberID.ExecContext(context.Background(), id, opaque); err != nil {
 			return fmt.Errorf("index decision identifier: %w", err)
 		}
 		return nil
@@ -64,7 +85,7 @@ func (d *decisionIndex) opaque(id string) (bool, error) {
 		return d.ids[id], nil
 	}
 	var opaque bool
-	if err := d.tx.QueryRowContext(d.ctx, "SELECT opaque FROM decision_ids WHERE id=?", id).Scan(&opaque); err != nil {
+	if err := d.readOpaque.QueryRowContext(context.Background(), id).Scan(&opaque); err != nil {
 		return false, fmt.Errorf("look up decision identifier: %w", err)
 	}
 	return opaque, nil
@@ -86,7 +107,7 @@ func (d *decisionIndex) get(id string) (pieceEntry, error) {
 		return d.pieces[id], nil
 	}
 	var data []byte
-	if err := d.tx.QueryRowContext(d.ctx, "SELECT state FROM decision_pieces WHERE id=?", id).Scan(&data); err != nil {
+	if err := d.readPiece.QueryRowContext(context.Background(), id).Scan(&data); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return pieceEntry{}, nil
 		}
@@ -112,7 +133,7 @@ func (d *decisionIndex) put(id string, entry pieceEntry) error {
 	if err != nil {
 		return fmt.Errorf("encode connected decision state: %w", err)
 	}
-	if _, err := d.tx.ExecContext(d.ctx, "INSERT OR REPLACE INTO decision_pieces VALUES (?,?)", id, data); err != nil {
+	if _, err := d.writePiece.ExecContext(context.Background(), id, data); err != nil {
 		return fmt.Errorf("store connected decision state: %w", err)
 	}
 	return nil
@@ -149,8 +170,7 @@ func (d *decisionIndex) eachPiece(apply func(pieceEntry)) error {
 
 func (d *decisionIndex) badShape(segment int, id string) (bool, error) {
 	var bad bool
-	const query = "SELECT EXISTS (SELECT 1 FROM bad_shapes WHERE segment=? AND id=?)"
-	if err := d.tx.QueryRowContext(d.ctx, query, segment, id).Scan(&bad); err != nil {
+	if err := d.readBadShape.QueryRowContext(context.Background(), segment, id).Scan(&bad); err != nil {
 		return false, fmt.Errorf("look up decision shape: %w", err)
 	}
 	return bad, nil
@@ -175,7 +195,9 @@ type appraisal struct {
 }
 
 func (v *verification) appraiseDecisions() error {
-	tx, err := v.store.BeginTx(v.ctx, nil)
+	// Streams and bulk operations remain cancellable. The transaction and its
+	// bounded index lookups don't each need a cancellation goroutine.
+	tx, err := v.store.BeginTx(context.Background(), nil)
 	if err != nil {
 		return fmt.Errorf("start decision appraisal: %w", err)
 	}
@@ -183,6 +205,9 @@ func (v *verification) appraiseDecisions() error {
 	a := appraisal{
 		index:     decisionIndex{ctx: v.ctx, tx: tx, disk: v.opts.DiskIndex, maxIDs: maxDecisions, skipLimit: v.skip == codeDecisionIndexFull},
 		decisions: map[string]int64{}, uninterpreted: map[string]int64{}, fullHistory: true,
+	}
+	if err := a.index.prepare(); err != nil {
+		return err
 	}
 	for _, lineage := range sortedKeys(v.histories) {
 		members := v.histories[lineage]
@@ -195,7 +220,7 @@ func (v *verification) appraiseDecisions() error {
 		}
 	}
 	v.result.Counts = a.counts()
-	return nil
+	return v.ctx.Err()
 }
 
 func (v *verification) appraiseHistory(a *appraisal, pieces []segment, first *verifiedStream) error {

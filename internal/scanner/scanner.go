@@ -1662,6 +1662,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, options scanOptions, 
 	// DLP + entropy on hostname BEFORE DNS resolution.
 	// Prevents secret exfiltration via DNS queries for domains like
 	// "sk-ant-xxxx.evil.com" where the subdomain encodes a secret.
+	decodes.issuedQueryJoin, decodes.issuedPathSeam = issuerJoinedViewsIssued(ctx, parsed)
 	dlpResult, dlpWarns := s.checkDLPWithDecodesAt(scanURL, &decodes, now)
 	dlpWarns = deduplicateWarnMatches(dlpWarns)
 	dlpResult.WarnMatches = dlpWarns
@@ -2628,7 +2629,12 @@ type dlpTarget struct {
 //
 //pipelock:provenance-transform ordered_query_concat
 func appendQueryConcatTargets(targets []dlpTarget, path, rawQuery string, decodes *decodingMemo) []dlpTarget {
-	targets = appendPathQueryConcatTargets(targets, path, rawQuery, decodes)
+	if decodes == nil || !decodes.issuedPathSeam {
+		targets = appendPathQueryConcatTargets(targets, path, rawQuery, decodes)
+	}
+	if decodes != nil && decodes.issuedQueryJoin {
+		return targets
+	}
 	if rawQuery == "" || !strings.Contains(rawQuery, "&") {
 		return targets
 	}
@@ -3978,11 +3984,13 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 	// to catch secrets split across params with junk values interleaved.
 	// E.g., "?a=sk-&x=junk&b=ant-&y=junk&c=api03-&z=junk&d=AAAA..." -
 	// combination (0,2,4,6) reconstructs "sk-ant-api03-AAAA...".
-	subResult, subWarns := s.querySubsequenceDLP(parsed.RawQuery, parsed.Hostname(), parsed.String(), &queryLessMemo, decodes)
-	warnMatches = append(warnMatches, subWarns...)
-	credentialAudienceAllows = append(credentialAudienceAllows, subResult.CredentialAudienceAllows...)
-	if !subResult.Allowed {
-		return subResult, warnMatches
+	if decodes == nil || !decodes.issuedQueryJoin {
+		subResult, subWarns := s.querySubsequenceDLP(parsed.RawQuery, parsed.Hostname(), parsed.String(), &queryLessMemo, decodes)
+		warnMatches = append(warnMatches, subWarns...)
+		credentialAudienceAllows = append(credentialAudienceAllows, subResult.CredentialAudienceAllows...)
+		if !subResult.Allowed {
+			return subResult, warnMatches
+		}
 	}
 
 	// Seed phrase detection on seed-safe candidates only.
@@ -5959,6 +5967,49 @@ func issuerQueryAllowed(ctx context.Context, key, value string) bool {
 // The caller must verify the issuing origin and identity before supplying it.
 func WithIssuerQueryAllowance(ctx context.Context, allows func(key, value string) bool) context.Context {
 	return context.WithValue(ctx, issuerQueryAllowanceContextKey{}, allows)
+}
+
+type issuerJoinedViewAllowanceContextKey struct{}
+
+// IssuerJoinedViewAllowance reports, for one request, whether every query
+// value and the whole escaped path were issued to this session by the
+// destination origin itself. query receives the scanner's own decoded parse,
+// so the caller judges exactly the values the joined views would combine.
+type IssuerJoinedViewAllowance func(escapedPath string, query url.Values) (queryIssued, pathIssued bool)
+
+// WithIssuerJoinedViewAllowance scopes issuer evidence to the URL DLP views
+// that JOIN separate components: the ordered query-value concatenation, its
+// decoded and noise-stripped variants, the bounded query subsequence search,
+// and (only when the path is issued as well) the path-to-query seam.
+//
+// A value an origin served, returned to that same origin, tells it nothing it
+// did not already know. When every value being joined is such a value, a
+// pattern that matches only their concatenation (two adjacent numeric record
+// IDs passing a Luhn check, say) is an artifact of the join, not a secret
+// leaving. Each value is still scanned on its own by every pattern, and the
+// core floor, canaries, env and file leak detection, path and hostname views
+// are untouched. One value without evidence keeps every joined view, so a
+// secret split across an issued value and an agent-chosen one still matches.
+func WithIssuerJoinedViewAllowance(ctx context.Context, allows IssuerJoinedViewAllowance) context.Context {
+	return context.WithValue(ctx, issuerJoinedViewAllowanceContextKey{}, allows)
+}
+
+// issuerJoinedViewsIssued evaluates the request's joined-view allowance. The
+// query must parse cleanly and carry at least two values: anything the
+// standard parser drops or rejects (a ';' separator, a malformed escape) gets
+// no relief, because the joined views would then combine values the evidence
+// never saw. The seam needs both the path and every query value issued.
+func issuerJoinedViewsIssued(ctx context.Context, parsed *url.URL) (queryIssued, seamIssued bool) {
+	allows, ok := ctx.Value(issuerJoinedViewAllowanceContextKey{}).(IssuerJoinedViewAllowance)
+	if !ok || allows == nil || parsed == nil || parsed.RawQuery == "" {
+		return false, false
+	}
+	query, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil || len(query) == 0 {
+		return false, false
+	}
+	queryIssued, pathIssued := allows(parsed.EscapedPath(), query)
+	return queryIssued, queryIssued && pathIssued
 }
 
 type issuerPathAllowanceContextKey struct{}

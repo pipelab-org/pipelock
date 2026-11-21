@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -971,9 +972,13 @@ func newInterceptHandler(
 		// A host label is relieved only for a URL a delegated source issued, so
 		// a blocked subdomain finding enters the rescan only with that evidence.
 		issuedHostFinding := entropyFinding(urlResult) && urlResult.Scanner == scanner.ScannerSubdomainEntropy
+		// A DLP finding enters the rescan only when the request carries a
+		// query: the one relief it can receive is for views that join query
+		// values the destination itself issued.
+		joinedDLPFinding := !urlResult.Allowed && urlResult.Scanner == scanner.ScannerDLP && r.URL.RawQuery != ""
 		if (!urlResult.Allowed && urlResult.Scanner == scanner.ScannerEntropy &&
 			(strings.HasPrefix(urlResult.Reason, "high entropy query param ") ||
-				strings.HasPrefix(urlResult.Reason, "high entropy path segment "))) || issuedHostFinding {
+				strings.HasPrefix(urlResult.Reason, "high entropy path segment "))) || issuedHostFinding || joinedDLPFinding {
 			store, idStore := ic.issuerQueryStore(), ic.issuerServerIDStore()
 			session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 			// Evidence that the delegated source issued exactly this URL. It is
@@ -1083,6 +1088,19 @@ func newInterceptHandler(
 					allowed = true
 					return true
 				})
+				joinedUsed := false
+				if joinedDLPFinding {
+					allowCtx = scanner.WithIssuerJoinedViewAllowance(allowCtx, func(escapedPath string, _ url.Values) (bool, bool) {
+						// The current generation must still vouch for the exact URL.
+						// The delegated redirect check above can wait for delivery
+						// while identity policy changes or the store is replaced.
+						if escapedPath != r.URL.EscapedPath() || !ic.issuerQueryStore().urlIssued(session, r.URL) {
+							return false, false
+						}
+						joinedUsed = true
+						return true, true
+					})
+				}
 				rescanned := ic.Scanner.ScanWithReservation(allowCtx, targetURL, ic.RateReservation)
 				if resourceUsed && allowKind == issuerQueryObserved {
 					allowKind = issuerQueryResourcePath
@@ -1090,12 +1108,20 @@ func newInterceptHandler(
 				if issuedUsed {
 					allowKind = issuerQueryIssuedRedirect
 				}
-				if allowed {
+				if allowed || joinedUsed {
 					urlResult = rescanned
 					if rescanned.Allowed {
-						// Under require_receipts the allow must be durably recorded
-						// before forwarding; nothing has been written to w yet.
-						if err := ic.Proxy.recordIssuerQueryAllow(ic.Config, actx, targetURL, ic.RequestID, ic.Agent, r.Method, allowKind, ic.receiptShard); err != nil {
+						var kinds []issuerQueryKind
+						if joinedUsed {
+							kinds = append(kinds, issuerQueryJoinedView)
+						}
+						if allowed {
+							kinds = append(kinds, allowKind)
+						}
+						if err := ic.recordIssuerQueryAllows(actx, r, targetURL, kinds); err != nil {
+							if refuseReceiptCapacity(w, err) {
+								return
+							}
 							blockedErr := newIssuerAllowReceiptBlockedRequest(err)
 							ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 							writeBlockedError(w,
