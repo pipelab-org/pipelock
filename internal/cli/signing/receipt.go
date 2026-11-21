@@ -140,22 +140,11 @@ Examples:
 			}
 			targetDir := chainDir
 			if chainDir != "" {
-				var v3Root bool
-				if locationID == "" {
-					if resolved, err := recorder.ResolveEvidenceRoot(chainDir); err == nil {
-						if root, openErr := recorder.OpenEvidenceDirectory(resolved); openErr == nil {
-							v3Root, _ = v3.ClaimsInput(resolved, true)
-							_ = root.Close()
-							targetDir = resolved
-						}
-					}
+				resolved, err := receiptv3.ResolveDirectory(chainDir, locationID)
+				if err != nil {
+					resolved = ""
 				}
-				if !v3Root {
-					targetDir = ""
-					if location, err := recorder.ResolveEvidenceLocation(chainDir, locationID); err == nil {
-						targetDir = location.Dir
-					}
-				}
+				targetDir = resolved
 			}
 			claimed, detectErr := v3Flags.Detect(args, targetDir, expectSeq)
 			if detectErr != nil {

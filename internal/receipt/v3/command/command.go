@@ -16,6 +16,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 // Flags are the v3 options shared by the two executables.
@@ -173,4 +174,27 @@ func (f Flags) Run(cmd *cobra.Command, in Input) error {
 
 func usage(err error) error {
 	return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+}
+
+// ResolveDirectory returns the directory a --dir style input verifies. A root
+// that holds v3 receipts is verified as a whole, so its streams, cutover
+// inventory and legacy chains stay in scope even when a subdirectory also holds
+// recorder evidence. Otherwise the recorder location rules choose the directory.
+func ResolveDirectory(dir, locationID string) (string, error) {
+	if locationID == "" {
+		if root, err := recorder.ResolveEvidenceRoot(dir); err == nil {
+			if handle, openErr := recorder.OpenEvidenceDirectory(root); openErr == nil {
+				claimed, _ := v3.ClaimsInput(root, true)
+				_ = handle.Close()
+				if claimed {
+					return root, nil
+				}
+			}
+		}
+	}
+	location, err := recorder.ResolveEvidenceLocation(dir, locationID)
+	if err != nil {
+		return "", err
+	}
+	return location.Dir, nil
 }
