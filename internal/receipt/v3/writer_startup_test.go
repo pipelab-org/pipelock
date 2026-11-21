@@ -136,3 +136,30 @@ func faultOpeningRecord(writeErr, syncErr error) func(string, string) (StreamFil
 		return errorWriterFile{StreamFile: file, writeErr: writeErr, syncErr: syncErr}, nil
 	}
 }
+
+func TestDirectoryHasV3RejectsFilePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "evidence")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	present, err := DirectoryHasV3(path)
+	if present || err == nil || !strings.Contains(err.Error(), "read receipt evidence directory") {
+		t.Fatalf("DirectoryHasV3(file) = %v, %v", present, err)
+	}
+}
+
+func TestStreamWriterRefusesFileAsEvidenceDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "evidence")
+	const existing = "existing evidence"
+	if err := os.WriteFile(path, []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w, err := OpenStreamWriter(t.Context(), writerTestOptions(path))
+	if w != nil || err == nil || !strings.Contains(err.Error(), "receipt evidence path is not a directory") {
+		t.Fatalf("open with a file as evidence directory: writer=%v error=%v", w, err)
+	}
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil || string(data) != existing {
+		t.Fatalf("file changed during refused startup: %q, %v", data, err)
+	}
+}

@@ -54,3 +54,13 @@ func TestEvidenceWriterLockRefusesSwitchedDirectory(t *testing.T) {
 		t.Fatalf("legacy write into a v3 directory: err=%v called=%v", err, called)
 	}
 }
+
+func TestCheckLegacyEvidenceFormatRejectsFilePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "evidence")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkLegacyEvidenceFormat(path); err == nil || !strings.Contains(err.Error(), "checking legacy evidence directory format") {
+		t.Fatalf("legacy evidence file path: %v", err)
+	}
+}

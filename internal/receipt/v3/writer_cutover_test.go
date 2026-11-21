@@ -371,3 +371,50 @@ func TestStreamWriterRefusesUnflushedCompleteJournal(t *testing.T) {
 	}
 	requireCutoverRefusal(t, opts, storage, failure, "flush legacy defer journal")
 }
+
+func TestStreamWriterRequiresExistingInventoryReflush(t *testing.T) {
+	for _, directory := range []bool{false, true} {
+		name := "inventory file"
+		if directory {
+			name = "inventory directory"
+		}
+		t.Run(name, func(t *testing.T) {
+			opts := writerTestOptions(t.TempDir())
+			body, err := canonicalJSON(Inventory{V: 1, Chains: []InventoryChain{}, Journal: Digest(nil)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			journal := filepath.Join(opts.Dir, legacyJournalName)
+			path := filepath.Join(opts.Dir, InventoryFilename(Digest(body)))
+			for filename, content := range map[string][]byte{journal: nil, path: body} {
+				if err := os.WriteFile(filename, content, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			storage := localWriterStorage()
+			fault := errors.New("inventory flush failed")
+			if directory {
+				syncDir := storage.syncDir
+				storage.syncDir = func(name string) error {
+					if name == opts.Dir {
+						return fault
+					}
+					return syncDir(name)
+				}
+			} else {
+				syncFile := storage.syncFile
+				storage.syncFile = func(name string) error {
+					if name == path {
+						return fault
+					}
+					return syncFile(name)
+				}
+			}
+			requireCutoverRefusal(t, opts, storage, fault, "re-flush cutover inventory")
+			got, err := os.ReadFile(filepath.Clean(path))
+			if err != nil || !bytes.Equal(got, body) {
+				t.Fatalf("existing inventory changed: %q, %v", got, err)
+			}
+		})
+	}
+}
