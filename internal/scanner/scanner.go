@@ -177,6 +177,15 @@ func (r Result) Spans() []MatchSpan {
 	return copySpans(r.spans)
 }
 
+// MatchView returns the scanner-generated label of the first retained span.
+// It carries neither the coordinates nor the matched bytes.
+func (r Result) MatchView() string {
+	if len(r.spans) == 0 {
+		return ""
+	}
+	return r.spans[0].ViewLabel
+}
+
 // IsProtective reports whether this result represents protective enforcement
 // (e.g., rate limiting) rather than a threat detection.
 func (r Result) IsProtective() bool {

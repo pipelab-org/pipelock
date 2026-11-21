@@ -33,6 +33,52 @@ func TestValidateAgents_ValidConfig(t *testing.T) {
 	}
 }
 
+func TestAgentDLPPatternValidation(t *testing.T) {
+	var canonical config.DLPPattern
+	for _, p := range config.Defaults().DLP.Patterns {
+		if p.Validator == config.ValidatorLuhn {
+			canonical = p
+			break
+		}
+	}
+	if canonical.Name == "" {
+		t.Fatal("no built-in card detector")
+	}
+	canonical.Compiled = false // Model a YAML pattern, which has no runtime compiled marker.
+	canonical.Action = config.ActionWarn
+	for _, tc := range []struct {
+		name    string
+		pattern config.DLPPattern
+		want    string
+	}{
+		{"canonical", canonical, "built-in default"},
+		{"core exemption", config.DLPPattern{Name: "AWS Access ID", Regex: "sample", ExemptDomains: []string{"vendor.example"}}, "core safety-floor"},
+		{"malformed exemption", config.DLPPattern{Name: "custom", Regex: "sample", ExemptDomains: []string{"*"}}, "bare wildcard"},
+		{"custom warn", config.DLPPattern{Name: "custom", Regex: "sample", Action: config.ActionWarn}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := testConfig()
+			profile := config.AgentProfile{DLP: &config.AgentDLP{Patterns: []config.DLPPattern{tc.pattern}}}
+			base.Agents = map[string]config.AgentProfile{"_default": profile}
+			assert := func(err error) {
+				t.Helper()
+				if tc.want == "" && err == nil {
+					return
+				}
+				if tc.want == "" || err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("validation error = %v, want %q", err, tc.want)
+				}
+			}
+			assert(ValidateAgents(base))
+			merged, err := MergeAgentProfile(base, &profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assert(ValidateMergedAgent("_default", merged))
+		})
+	}
+}
+
 func TestValidateAgents_NoAgents(t *testing.T) {
 	cfg := testConfig()
 	cfg.Agents = nil

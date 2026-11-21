@@ -19,6 +19,9 @@ import (
 // the pre-existing LogBlocked behavior).
 func auditDetailFromResult(r scanner.Result) audit.BlockDetail {
 	d := audit.BlockDetail{DNSErrorKind: string(r.DNSErrorKind)}
+	if r.Scanner == scanner.ScannerDLP || r.Scanner == scanner.ScannerCoreDLP {
+		d.MatchView = r.MatchView()
+	}
 	switch r.Class {
 	case scanner.ClassProtective:
 		d.Class = audit.BlockClassProtective

@@ -61,6 +61,7 @@ type explainEventReport struct {
 	Method          string   `json:"method,omitempty"`
 	Target          string   `json:"target,omitempty"`
 	TargetView      string   `json:"target_view,omitempty"`
+	MatchView       string   `json:"match_view,omitempty"`
 	Scanner         string   `json:"scanner,omitempty"`
 	Layer           string   `json:"layer,omitempty"`
 	PatternName     string   `json:"pattern_name,omitempty"`
@@ -291,6 +292,7 @@ func buildExplainEventReport(raw map[string]any, id, matchedField string, saniti
 		Method:          sanitizer.field(eventFieldString(raw, "method")),
 		Target:          sanitizer.eventTarget(target, scannerName),
 		TargetView:      explainEventTargetView(scannerName, reason, target, raw),
+		MatchView:       sanitizer.field(eventFieldString(raw, "match_view")),
 		Scanner:         sanitizer.field(scannerName),
 		Layer:           sanitizer.field(scannerName),
 		PatternName:     sanitizer.field(explainEventPatternName(raw)),
@@ -422,6 +424,9 @@ func explainEventTargetView(scannerName, reason, target string, raw map[string]a
 		return "resource"
 	case eventFieldString(raw, "session") != "":
 		return "session"
+	}
+	if view := explainTargetViewFromMatch(eventFieldString(raw, "match_view")); view != "" {
+		return view
 	}
 	if strings.Contains(target, "://") {
 		return explainTargetView(scanner.Result{Scanner: scannerName, Reason: reason}, target)
@@ -655,6 +660,9 @@ func printExplainEventReport(w io.Writer, report explainEventReport) {
 	}
 	if report.TargetView != "" {
 		_, _ = fmt.Fprintf(w, "View:    %s\n", terminalDisplay(report.TargetView))
+	}
+	if report.MatchView != "" {
+		_, _ = fmt.Fprintf(w, "Match view: %s\n", terminalDisplay(report.MatchView))
 	}
 	if report.Scanner != "" {
 		_, _ = fmt.Fprintf(w, "Scanner: %s\n", terminalDisplay(report.Scanner))

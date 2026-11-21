@@ -3170,6 +3170,38 @@ func TestFilterAllowedRuleBundleCoverageWarningsKeepsLocalDLPWeakening(t *testin
 	}
 }
 
+func TestFilterAllowedRuleBundleCoverageWarningsKeepsDLPExemptionExpansion(t *testing.T) {
+	const host = "gitlab.vendor.example"
+	old := config.Defaults()
+	old.Mode = config.ModeStrict
+	old.Rules.AllowDegraded = true
+	old.DLP.GitLabHosts = []string{host}
+	pattern, ok := dlpByName(old.DLP.Patterns, "GitLab CI Job Token")
+	if !ok || len(pattern.CredentialAudienceHosts) == 0 {
+		t.Fatal("missing enforced detector with a declared audience")
+	}
+	pattern.ExemptDomains = []string{host}
+	old.DLP.Patterns = []config.DLPPattern{
+		pattern,
+		{Name: "bundle-example", Regex: "sample-value-[0-9]+", Bundle: "community-dlp"},
+	}
+	updated := old.Clone()
+	updated.DLP.Patterns = updated.DLP.Patterns[:1]
+	filtered := filterAllowedRuleBundleCoverageWarnings(old, updated, config.ValidateReload(old, updated))
+	if reason := reloadDowngradeRejectReason(old, updated, filtered); reason != "" {
+		t.Fatalf("bundle loss alone rejected unexpectedly: %q, warnings = %+v", reason, filtered)
+	}
+
+	updated.DLP.GitLabHosts = nil
+	filtered = filterAllowedRuleBundleCoverageWarnings(old, updated, config.ValidateReload(old, updated))
+	if len(filtered) != 1 || filtered[0].Field != "dlp.patterns.exempt_domains" {
+		t.Fatalf("expected only the operator exemption warning, got %+v", filtered)
+	}
+	if reason := reloadDowngradeRejectReason(old, updated, filtered); reason == "" {
+		t.Fatal("strict reload accepted an expanded exemption")
+	}
+}
+
 func TestFilterAllowedRuleBundleCoverageWarningsKeepsLocalResponseWeakening(t *testing.T) {
 	oldCfg := config.Defaults()
 	newCfg := oldCfg.Clone()

@@ -1625,50 +1625,11 @@ func (c *Config) validateDLPPatternConfig(warnings *[]Warning) error {
 
 	// Validate DLP patterns compile as valid regexes
 	for i, p := range c.DLP.Patterns {
-		if err := p.ValidateKeywords(); err != nil {
+		if err := p.Validate(); err != nil {
 			return err
 		}
 		if len(p.Keywords) > 0 && warnings != nil {
 			*warnings = append(*warnings, Warning{Field: fmt.Sprintf("dlp.patterns[%d].keywords", i), Message: dlpKeywordAdvisory})
-		}
-		if p.Name == "" {
-			return fmt.Errorf("DLP pattern missing name")
-		}
-		if p.Regex == "" {
-			return fmt.Errorf("DLP pattern %q missing regex", p.Name)
-		}
-		if _, err := regexp.Compile(p.Regex); err != nil {
-			return fmt.Errorf("DLP pattern %q has invalid regex: %w", p.Name, err)
-		}
-		if p.Action != "" {
-			if p.Action != ActionWarn {
-				return fmt.Errorf("DLP pattern %q has unsupported action %q; only %q is allowed as a per-pattern action", p.Name, p.Action, ActionWarn)
-			}
-			// Gate on the pattern's OWN compiled audience, not on the name. A
-			// user pattern that reuses a built-in name with a custom regex is
-			// not the built-in: normalize clears its audience, so it never
-			// earns an audience allow and has no reason to be refused a warn
-			// action. Rejecting by name alone refuses a legitimate config.
-			if p.Compiled || len(p.CredentialAudienceHosts) > 0 {
-				return fmt.Errorf("DLP pattern %q is a built-in default and cannot be set to warn mode; built-in patterns always enforce", p.Name)
-			}
-		}
-		if p.Validator != "" {
-			valid := p.Validator == ValidatorLuhn || p.Validator == ValidatorMod97 || p.Validator == ValidatorABA || p.Validator == ValidatorWIF || p.Validator == ValidatorDEA || p.Validator == ValidatorNPI
-			if !valid {
-				return fmt.Errorf("DLP pattern %q has unknown validator %q (valid: %s, %s, %s, %s, %s, %s)",
-					p.Name, p.Validator, ValidatorLuhn, ValidatorMod97, ValidatorABA, ValidatorWIF, ValidatorDEA, ValidatorNPI)
-			}
-		}
-		if err := ValidateTrustedDomains(p.ExemptDomains, fmt.Sprintf("DLP pattern %q exempt_domains", p.Name)); err != nil {
-			return err
-		}
-		// The immutable floor ignores exemptions, so a pattern that reuses a
-		// core name with exempt_domains would document an allowance the scanner
-		// never grants. Refuse it at load and reload instead of shipping a knob
-		// that silently does nothing for that credential class.
-		if len(p.ExemptDomains) > 0 && IsCoreDLPPatternName(p.Name) {
-			return fmt.Errorf("DLP pattern %q is a core safety-floor pattern and cannot set exempt_domains; core credential destinations are controlled only by immutable compiled policy", p.Name)
 		}
 		// Gate on the pattern's OWN compiled audience, matching the warn-action
 		// branch above. exempt_domains never costs a pattern its audience: an
@@ -1729,6 +1690,56 @@ func (c *Config) validateDLPPatternConfig(warnings *[]Warning) error {
 
 	if err := validateCanaryTokens(c); err != nil {
 		return fmt.Errorf("canary_tokens: %w", err)
+	}
+	return nil
+}
+
+// Validate applies the shared DLP pattern constraints to global and agent
+// rules. ExemptDomains is normalized in place.
+func (p DLPPattern) Validate() error {
+	if err := p.ValidateKeywords(); err != nil {
+		return err
+	}
+	if p.Name == "" {
+		return fmt.Errorf("DLP pattern missing name")
+	}
+	if p.Regex == "" {
+		return fmt.Errorf("DLP pattern %q missing regex", p.Name)
+	}
+	if _, err := regexp.Compile(p.Regex); err != nil {
+		return fmt.Errorf("DLP pattern %q has invalid regex: %w", p.Name, err)
+	}
+	if p.Action != "" {
+		if p.Action != ActionWarn {
+			return fmt.Errorf("DLP pattern %q has unsupported action %q; only %q is allowed as a per-pattern action", p.Name, p.Action, ActionWarn)
+		}
+		// YAML cannot carry Compiled. Preserve explicit provider overrides
+		// that replace the same-name detector and lose its audience.
+		provider, knownProvider := builtInAudiencePattern(p.Name)
+		providerOverride := knownProvider && p.Bundle == "" && p.Regex == provider.Regex && p.Validator == provider.Validator
+		if p.Compiled || len(p.CredentialAudienceHosts) > 0 || (!providerOverride && p.canonicalBuiltInDetector()) {
+			return fmt.Errorf("DLP pattern %q is a built-in default and cannot be set to warn mode; built-in patterns always enforce", p.Name)
+		}
+		if IsCoreDLPPatternName(p.Name) {
+			return fmt.Errorf("DLP pattern %q is a core safety-floor pattern and cannot be set to warn mode", p.Name)
+		}
+	}
+	if p.Validator != "" {
+		valid := p.Validator == ValidatorLuhn || p.Validator == ValidatorMod97 || p.Validator == ValidatorABA || p.Validator == ValidatorWIF || p.Validator == ValidatorDEA || p.Validator == ValidatorNPI
+		if !valid {
+			return fmt.Errorf("DLP pattern %q has unknown validator %q (valid: %s, %s, %s, %s, %s, %s)",
+				p.Name, p.Validator, ValidatorLuhn, ValidatorMod97, ValidatorABA, ValidatorWIF, ValidatorDEA, ValidatorNPI)
+		}
+	}
+	if err := ValidateTrustedDomains(p.ExemptDomains, fmt.Sprintf("DLP pattern %q exempt_domains", p.Name)); err != nil {
+		return err
+	}
+	// The immutable floor ignores exemptions, so a pattern that reuses a
+	// core name with exempt_domains would document an allowance the scanner
+	// never grants. Refuse it at load and reload instead of shipping a knob
+	// that silently does nothing for that credential class.
+	if len(p.ExemptDomains) > 0 && IsCoreDLPPatternName(p.Name) {
+		return fmt.Errorf("DLP pattern %q is a core safety-floor pattern and cannot set exempt_domains; core credential destinations are controlled only by immutable compiled policy", p.Name)
 	}
 	return nil
 }
@@ -4354,6 +4365,8 @@ func credentialAudienceDomainSubset(candidates, audience []string) bool {
 // domain, so it is contained only when its base is the allowed base or a
 // dot-bounded subdomain of it.
 func credentialAudienceDomainContains(allowed, candidate string) bool {
+	allowed = NormalizeHostPattern(allowed)
+	candidate = NormalizeHostPattern(candidate)
 	if !strings.HasPrefix(allowed, "*.") {
 		return allowed == candidate
 	}
