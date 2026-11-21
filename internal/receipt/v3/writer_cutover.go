@@ -16,13 +16,14 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 const legacyJournalName = "deferred-actions.jsonl"
 
 func (w *StreamWriter) prepareCutover(ctx context.Context, keys []ed25519.PublicKey, entries []os.DirEntry) error {
-	inventory, err := w.buildCutoverInventory(ctx, keys)
+	inventory, err := w.buildCutoverInventory(ctx, keys, entries)
 	if err != nil {
 		return err
 	}
@@ -46,7 +47,7 @@ func (w *StreamWriter) prepareCutover(ctx context.Context, keys []ed25519.Public
 	return nil
 }
 
-func (w *StreamWriter) buildCutoverInventory(ctx context.Context, keys []ed25519.PublicKey) (Inventory, error) {
+func (w *StreamWriter) buildCutoverInventory(ctx context.Context, keys []ed25519.PublicKey, entries []os.DirEntry) (Inventory, error) {
 	journal, err := w.cutoverJournal()
 	if err != nil {
 		return Inventory{}, err
@@ -80,6 +81,20 @@ func (w *StreamWriter) buildCutoverInventory(ctx context.Context, keys []ed25519
 			return Inventory{}, errors.New("receipt cutover could not identify every legacy chain")
 		}
 		inventory.Chains = append(inventory.Chains, chain.InventoryChain)
+	}
+	// Legacy continuity and group verification read chain links separately.
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, receipt.ChainLinkFilePrefix) && strings.HasSuffix(name, receipt.ChainLinkFileSuffix) &&
+			len(name) > len(receipt.ChainLinkFilePrefix)+len(receipt.ChainLinkFileSuffix) {
+			paths = append(paths, filepath.Join(w.dir, name))
+		}
+	}
+	// Flush legacy artifacts before a durable inventory can refer to them.
+	for _, path := range paths {
+		if err := w.storage.syncFile(path); err != nil {
+			return Inventory{}, fmt.Errorf("flush legacy receipt artifact: %w", err)
+		}
 	}
 	slices.SortFunc(inventory.Chains, compareLegacy)
 	return inventory, nil

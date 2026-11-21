@@ -42,6 +42,26 @@ func TestStreamWriterCutoverCommitsAtFirstStream(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	failure := errors.New("legacy receipt sync failed")
+	refusingStorage := localWriterStorage()
+	syncFile := refusingStorage.syncFile
+	refusingStorage.syncFile = func(path string) error {
+		if path == old {
+			return failure
+		}
+		return syncFile(path)
+	}
+	requireCutoverRefusal(t, opts, refusingStorage, failure, "flush legacy receipt artifact")
+	beforeSwitch, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range beforeSwitch {
+		if _, ok := inventoryID(entry.Name()); ok {
+			t.Fatal("unflushed legacy receipt was pinned by an inventory")
+		}
+	}
+
 	storage := localWriterStorage()
 	link := storage.link
 	stopBeforeSwitch := errors.New("failed first stream link")
@@ -90,7 +110,13 @@ func TestStreamWriterCutoverCommitsAtFirstStream(t *testing.T) {
 					return remove(path)
 				}
 			case "flush inventory file":
-				storage.syncFile = func(string) error { return barrierErr }
+				syncFile := storage.syncFile
+				storage.syncFile = func(path string) error {
+					if path == inventoryPath {
+						return barrierErr
+					}
+					return syncFile(path)
+				}
 			case "flush inventory directory":
 				syncDir := storage.syncDir
 				storage.syncDir = func(path string) error {
@@ -417,4 +443,59 @@ func TestStreamWriterRequiresExistingInventoryReflush(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStreamWriterRefusesUnflushedLegacyChainLink(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	fixture := filepath.Join("..", "..", "..", "sdk", "conformance", "testdata", "parity", "rotated")
+	source, err := os.OpenRoot(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = source.Close() }()
+	var keys []string
+	for _, name := range []string{"signer-key.hex", "rotated-signer-key.hex"} {
+		key, err := source.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, strings.TrimSpace(string(key)))
+	}
+	opts.PriorSignerKeys, err = DecodeKeys(keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var link string
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, legacy.ChainLinkFilePrefix) {
+			link = filepath.Join(opts.Dir, name)
+		} else if !legacyCandidate(name) {
+			continue
+		}
+		body, err := source.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(opts.Dir, name), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if link == "" {
+		t.Fatal("rotated fixture is missing its chain link")
+	}
+	failure := errors.New("legacy link sync failed")
+	storage := localWriterStorage()
+	syncFile := storage.syncFile
+	storage.syncFile = func(path string) error {
+		if path == link {
+			return failure
+		}
+		return syncFile(path)
+	}
+	requireCutoverRefusal(t, opts, storage, failure, "flush legacy receipt artifact")
 }
