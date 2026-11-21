@@ -247,18 +247,72 @@ const (
 		`|\b(?:read|get|fetch|retrieve|cat|copy|extract|open|include)\b(?:[^.!?]|\.\S){0,80}(?:\.ssh[/\\]|\.aws[/\\]credentials|\.env\b|\.npmrc\b|\.pypirc\b|\.netrc\b|\bid_rsa\b|\bid_ed25519\b|\bkubeconfig\b|/etc/passwd\b|/etc/shadow\b)(?:[^.!?]|\.\S){0,160}(?:\b(?:send|forward|transmit|share|email|exfiltrat\w*|leak)\b(?:[^.!?]|\.\S){0,60}?(?:(?:back\s+)?to\s+(?:me|us)\b|with\s+(?:me|us)\b|in\s+(?:your|the)\s+(?:reply|response|message|answer|chat|request)|(?:to|into|onto|via|using|through)\s+https?://|to\s+\S+@\S+|\b(?:it|them|contents?|file|data|key|keys?|values?|secrets?)\b)|\b(?:paste|return|report|dump|print|output|display|show|upload|post|submit)\b(?:[^.!?]|\.\S){0,60}?(?:\b(?:it|them|contents?|file|data|key|keys?|values?|secrets?)\b|(?:to|into|onto|via|using|through)\s+https?://|to\s+\S+@\S+)|\bcurl\b(?:[^.!?]|\.\S){0,80}?(?:\b(?:it|them|contents?|file|data|key|keys?|values?|secrets?)\b(?:[^.!?]|\.\S){0,40}?\bto\s+\S+\.\S+|https?://|\S+\.\S+)|\|\s*(?:openssl\s+base64|base64|xxd)\b|\bin\s+(?:your|the)\s+(?:reply|response|message|answer|chat|request)\b))` // #nosec G101 -- detection regex: contains credential path names to MATCH path-exfiltration instructions, not a hardcoded credential
 )
 
-const defaultGoogleDocsPathPrefix = "/document/d/"
+const (
+	defaultGoogleDocsHost       = "docs.google.com"
+	defaultGoogleDocsPathPrefix = "/document/d/"
+)
 
 const (
 	defaultCloudflareChallengeHost       = "challenges.cloudflare.com"
 	defaultCloudflareChallengePathPrefix = "/cdn-cgi/challenge-platform/"
 )
 
+// Google documents the editor and file-view URL slots in its developer guides:
+// https://developers.google.com/workspace/docs/api/concepts/document
+// https://developers.google.com/workspace/sheets/api/guides/concepts
+// https://developers.google.com/workspace/slides/api/guides/overview
+// https://developers.google.com/workspace/forms/api/guides
+// https://developers.google.com/workspace/drive/picker/guides/web-component
+//
+// Publish to web generates a separate link with /d/e/ for the published ID:
+// https://support.google.com/docs/answer/183965
+// Google Drive documents that file IDs are opaque:
+// https://developers.google.com/workspace/drive/api/guides/about-files
+func googleEditorPathEntropyExclusions() []PathEntropyExclusion {
+	return []PathEntropyExclusion{
+		{Host: defaultGoogleDocsHost, PathPrefix: defaultGoogleDocsPathPrefix, GoogleEditorID: true, Reason: "Google Docs document ID"},
+		{Host: defaultGoogleDocsHost, PathPrefix: "/spreadsheets/d/", GoogleEditorID: true, Reason: "Google Sheets spreadsheet ID"},
+		{Host: defaultGoogleDocsHost, PathPrefix: "/presentation/d/", GoogleEditorID: true, Reason: "Google Slides presentation ID"},
+		{Host: defaultGoogleDocsHost, PathPrefix: "/forms/d/e/", GoogleEditorID: true, Reason: "Google Forms published response ID"},
+		{Host: "drive.google.com", PathPrefix: "/file/d/", GoogleEditorID: true, Reason: "Google Drive file ID"},
+	}
+}
+
+// IsGoogleEditorIDRoute reports whether a normalized scheme, host and prefix
+// identify a route with the built-in Google editor ID slot.
+func IsGoogleEditorIDRoute(scheme, host, prefix string) bool {
+	if scheme != QueryEntropyParamDefaultScheme {
+		return false
+	}
+	for _, route := range googleEditorPathEntropyExclusions() {
+		if host == route.Host && prefix == route.PathPrefix {
+			return true
+		}
+	}
+	return false
+}
+
 // ShippedPathEntropyExclusions returns the vendor routes Pipelock maintains.
-// The scanner applies them alongside an operator's own list; only an
-// explicitly empty list opts out of them.
+// The scanner applies them alongside an operator's own list. An explicitly
+// empty list opts out.
 func ShippedPathEntropyExclusions() []PathEntropyExclusion {
-	return append([]PathEntropyExclusion(nil), Defaults().FetchProxy.Monitoring.PathEntropyExclusions...)
+	// Cloudflare's challenge host. Turnstile and the managed
+	// challenge load from challenges.cloudflare.com, and their
+	// requests sit under the reserved /cdn-cgi/ path with
+	// per-challenge tokens in path segments. Blocking them stops
+	// the challenge completing, so any Cloudflare-fronted site
+	// loops on its bot check. The host is Cloudflare's own, so
+	// the exemption reaches no third-party origin.
+	return append(googleEditorPathEntropyExclusions(), PathEntropyExclusion{Host: defaultCloudflareChallengeHost, PathPrefix: defaultCloudflareChallengePathPrefix, Reason: "Cloudflare challenge route; per-challenge tokens in the path"})
+}
+
+// EffectivePathEntropyExclusions includes shipped routes alongside a nonempty
+// list. Empty lists leave the routes disabled.
+func EffectivePathEntropyExclusions(entries []PathEntropyExclusion) []PathEntropyExclusion {
+	if len(entries) == 0 {
+		return entries
+	}
+	return append(append([]PathEntropyExclusion(nil), entries...), ShippedPathEntropyExclusions()...)
 }
 
 // shippedChallengeProviderHosts are bot-verification services a browser must
@@ -319,41 +373,7 @@ func Defaults() *Config {
 					"pypi.org",
 					"objects.githubusercontent.com",
 				},
-				// Document-sharing routes whose path carries an opaque vendor
-				// file identifier by construction. Without these, an operator
-				// sent an ordinary Google Doc, Sheet, Slide, Form or Drive link
-				// is blocked on a fresh install, and the remedy an operator
-				// reaches for first is disabling path entropy entirely - which
-				// is the only control that catches an unrecognizable payload in
-				// a URL path.
-				//
-				// What these encode is the vendor's ROUTE SHAPE, never the
-				// identifier format. The route prefix is directly observable
-				// and stable; Google's Drive API guide calls the file ID opaque
-				// and publishes no charset or length, so keying on the ID would
-				// be the invented value this mechanism exists to avoid.
-				//
-				// Scope, and why this is not a host exemption: each entry binds
-				// ONE host to ONE literal path prefix and suppresses ONLY the
-				// path-entropy gate. Subdomain entropy, query entropy, DLP,
-				// the core credential floor and SSRF all still run on the same
-				// request. docs.google.com/<anything-else> stays checked, and a
-				// lookalike host matches nothing here.
-				PathEntropyExclusions: []PathEntropyExclusion{
-					{Host: "docs.google.com", PathPrefix: defaultGoogleDocsPathPrefix, Reason: "Google Docs document route; opaque vendor file id"},
-					{Host: "docs.google.com", PathPrefix: "/spreadsheets/d/", Reason: "Google Sheets route; opaque vendor file id"},
-					{Host: "docs.google.com", PathPrefix: "/presentation/d/", Reason: "Google Slides route; opaque vendor file id"},
-					{Host: "docs.google.com", PathPrefix: "/forms/d/e/", Reason: "Google Forms published-response route; opaque vendor form id"},
-					{Host: "drive.google.com", PathPrefix: "/file/d/", Reason: "Google Drive file route; opaque vendor file id"},
-					// Cloudflare's challenge host. Turnstile and the managed
-					// challenge load from challenges.cloudflare.com, and their
-					// requests sit under the reserved /cdn-cgi/ path with
-					// per-challenge tokens in path segments. Blocking them stops
-					// the challenge completing, so any Cloudflare-fronted site
-					// loops on its bot check. The host is Cloudflare's own, so
-					// the exemption reaches no third-party origin.
-					{Host: defaultCloudflareChallengeHost, PathPrefix: defaultCloudflareChallengePathPrefix, Reason: "Cloudflare challenge route; per-challenge tokens in the path"},
-				},
+				PathEntropyExclusions: ShippedPathEntropyExclusions(),
 			},
 		},
 		ForwardProxy: ForwardProxy{

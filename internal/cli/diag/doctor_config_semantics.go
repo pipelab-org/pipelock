@@ -748,7 +748,7 @@ func analyzeDoctorPathEntropyExclusions(cfg *config.Config) []ConfigSemanticFind
 
 	var findings []ConfigSemanticFinding
 	for _, entry := range entries {
-		tuple := pathEntropyAdvisoryTuple(entry)
+		tuple := entry.RouteScope()
 		// A shipped default is not an exemption the operator chose, so the
 		// LIFECYCLE advisories below (own it, give it a reason, set and renew an
 		// expiry) name actions they cannot take on a route Pipelock maintains.
@@ -901,12 +901,4 @@ func pathEntropyCoveredByHostWide(entry config.PathEntropyExclusion, hostWide []
 		}
 	}
 	return false
-}
-
-func pathEntropyAdvisoryTuple(entry config.PathEntropyExclusion) string {
-	scheme := entry.Scheme
-	if scheme == "" {
-		scheme = config.QueryEntropyParamDefaultScheme
-	}
-	return fmt.Sprintf("%s://%s%s", scheme, entry.Host, entry.PathPrefix)
 }

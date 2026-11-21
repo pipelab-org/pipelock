@@ -113,3 +113,17 @@ func TestPathEntropyExclusionsHashIgnoresGovernanceMetadata(t *testing.T) {
 		t.Fatalf("editing governance metadata moved the policy hash; an operator correcting a comment would look like a policy change")
 	}
 }
+
+func TestGoogleEditorIDScopeChangesPolicyHash(t *testing.T) {
+	t.Parallel()
+	slot := ShippedPathEntropyExclusions()[0]
+	prefix := slot
+	prefix.GoogleEditorID = false
+	if hashWithPathExclusions(t, slot) == hashWithPathExclusions(t, prefix) {
+		t.Fatal("the Google ID slot and an unrestricted prefix must hash differently")
+	}
+	operator := PathEntropyExclusion{Host: "assets.vendor.example", PathPrefix: "/files/"}
+	if hashWithPathExclusions(t, operator) != hashWithPathExclusions(t, slot, operator) {
+		t.Fatal("declaring an inherited ID slot changed the effective policy hash")
+	}
+}

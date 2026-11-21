@@ -93,8 +93,8 @@ func TestVendorRouteDefaultsReachAYAMLBackedConfig(t *testing.T) {
 			len(got), len(want), got)
 	}
 	for i := range want {
-		if got[i].Host != want[i].Host || got[i].PathPrefix != want[i].PathPrefix {
-			t.Fatalf("inherited route %d = %s%s, want %s%s", i, got[i].Host, got[i].PathPrefix, want[i].Host, want[i].PathPrefix)
+		if got[i].Host != want[i].Host || got[i].PathPrefix != want[i].PathPrefix || got[i].GoogleEditorID != want[i].GoogleEditorID {
+			t.Fatalf("inherited route %d = %+v, want %+v", i, got[i], want[i])
 		}
 	}
 
