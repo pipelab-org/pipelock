@@ -2837,6 +2837,16 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		p.cfgPtr.Store(cfg)
 		p.contractLoaderPtr.Store(contractLoader)
 	}
+	// Admission enforces a stored airlock tier without reading the airlock
+	// flag. Release only after the config that turns airlock off is visible,
+	// so a request cannot be allowed while published policy still quarantines.
+	// Keeping the manager for taint used to leave hard and drain in force,
+	// with no timer recovery and an idle-expiry exemption, until restart.
+	if sessionManagerEnabled(cfg) {
+		if mgr := p.sessionMgrPtr.Load(); mgr != nil {
+			mgr.releaseUnenforcedAirlock()
+		}
+	}
 	// Move the active-manifest watcher onto the loader just published and
 	// stop the replaced loader's watcher.
 	p.syncContractWatcher()

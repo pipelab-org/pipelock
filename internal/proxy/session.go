@@ -2156,6 +2156,12 @@ func (sm *SessionManager) RecordIPDomain(clientIP, domain string, cfg *config.Se
 // capacity, threshold, and cleanup interval changes take effect on the
 // next operation. Pass nil for adaptiveCfg to clear adaptive enforcement
 // (e.g., when it is disabled via hot reload).
+//
+// A nil or disabled airlock pointer does not release stored tiers here.
+// Admission enforces the tier without reading the airlock flag, so clearing
+// tiers before the proxy publishes the config that turns airlock off would
+// allow traffic the still-published policy quarantines. Reload calls
+// releaseUnenforcedAirlock after that publication.
 func (sm *SessionManager) UpdateConfig(cfg *config.SessionProfiling, adaptiveCfg *config.AdaptiveEnforcement, airlockCfg *config.Airlock) {
 	sm.cfgPtr.Store(cfg)
 	sm.adaptiveCfgPtr.Store(adaptiveCfg)
@@ -2179,6 +2185,89 @@ func (sm *SessionManager) UpdateConfig(cfg *config.SessionProfiling, adaptiveCfg
 		}
 	}
 	sm.mu.RUnlock()
+}
+
+// releaseUnenforcedAirlock drops every stored quarantine lane when airlock
+// has no recovering consumer. Timer recovery does not run while the airlock
+// pointer is nil or disabled, and idle expiry skips a quarantined session,
+// so a tier left behind denies traffic and holds its capacity slot until
+// process restart. Adaptive scores and escalation levels stay: disabling
+// adaptive stops denial and block_all, and re-enabling resumes recovery from
+// the stored clock. Taint and task state stay as well.
+func (sm *SessionManager) releaseUnenforcedAirlock() {
+	if sm == nil {
+		return
+	}
+	airlockCfg := sm.airlockCfgPtr.Load()
+	if airlockCfg != nil && airlockCfg.Enabled {
+		return
+	}
+
+	type releasedAirlock struct {
+		sess  *SessionState
+		lanes []scopedAirlockTransition
+	}
+	var released []releasedAirlock
+	sm.mu.RLock()
+	for _, sess := range sm.sessions {
+		lanes := sess.releaseAirlockLanes(airlockTriggerConfigDisabled, airlockSourceConfig)
+		if len(lanes) > 0 {
+			released = append(released, releasedAirlock{sess: sess, lanes: lanes})
+		}
+	}
+	sm.mu.RUnlock()
+
+	for _, rel := range released {
+		for _, lane := range rel.lanes {
+			target := lane.scope
+			if target == "" {
+				target = "session"
+			}
+			rel.sess.RecordEvent(SessionEvent{
+				Kind:     "airlock_deescalate",
+				Type:     airlockTriggerConfigDisabled,
+				Target:   target,
+				Detail:   lane.from + "->" + lane.to,
+				Severity: "info",
+			})
+			if sm.metrics != nil {
+				sm.metrics.RecordAirlockTransition(lane.from, lane.to, airlockTriggerConfigDisabled)
+			}
+			if sm.logger != nil {
+				sm.logger.LogAirlockDeescalate(rel.sess.key, lane.from, lane.to, "", "")
+			}
+		}
+	}
+}
+
+// releaseAirlockLanes force-sets every live quarantine lane to none. Cancel
+// callbacks are dropped, not fired: the consumer that would recover the
+// session is already gone, and tearing down a tunnel the operator just
+// allowed is the wrong direction. Caller holds sm.mu; this takes s.mu.
+func (s *SessionState) releaseAirlockLanes(trigger, source string) []scopedAirlockTransition {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []scopedAirlockTransition
+	if changed, from, to := releaseAirlockLane(&s.airlock, trigger, source); changed {
+		out = append(out, scopedAirlockTransition{from: from, to: to})
+	}
+	for scope, st := range s.scopes {
+		if changed, from, to := releaseAirlockLane(&st.airlock, trigger, source); changed {
+			out = append(out, scopedAirlockTransition{scope: scope, from: from, to: to})
+		}
+	}
+	return out
+}
+
+func releaseAirlockLane(a *AirlockState, trigger, source string) (bool, string, string) {
+	if tier := a.Tier(); tier == "" || tier == config.AirlockTierNone {
+		return false, tier, tier
+	}
+	changed, from, to := a.ForceSetTierWithProvenance(config.AirlockTierNone, trigger, source)
+	if !changed || from == "" || from == config.AirlockTierNone {
+		return false, from, to
+	}
+	return true, from, to
 }
 
 func (s *SessionState) recomputeScopedBlockAll(adaptiveCfg *config.AdaptiveEnforcement) {
