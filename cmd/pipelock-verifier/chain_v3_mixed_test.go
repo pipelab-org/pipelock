@@ -88,3 +88,24 @@ func TestChainLegacySelectionScopesBindingsToSession(t *testing.T) {
 		})
 	}
 }
+
+func TestChainMixedDirectoryRefusesRotationEndorsement(t *testing.T) {
+	const opener = "11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl"
+	data, err := os.ReadFile(filepath.Join("..", "..", "sdk", "conformance", "testdata", "v3", "g01-valid-line", opener))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, opener), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	endorsement := filepath.Join(t.TempDir(), "endorsement.json")
+	if err := os.WriteFile(endorsement, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const key = "0000000000000000000000000000000000000000000000000000000000000000"
+	stdout, stderr, code := runRoot(t, "chain", "--dir", "--key", key, "--rotation-endorsement", endorsement, dir)
+	if code == 0 || stdout != "" || !strings.Contains(stderr, "apply only to legacy evidence") {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+}

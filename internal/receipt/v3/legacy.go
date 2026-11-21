@@ -61,10 +61,10 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 	sessions := map[string]string{}
 	groupDirs := map[string]bool{}
 	positions := map[legacyIdentity]map[int64]string{}
-	reports := map[string]legacy.BaseReport{}
+	bases := map[string]string{}
 	verifyBatch := func(batch legacyBatch) {
-		v.legacyActions(batch, keys, reports, presented, positions)
-		v.legacyEvidence(batch, keys, reports, presented, positions)
+		v.legacyActions(batch, keys, presented, positions)
+		v.legacyEvidence(batch, keys, presented, positions)
 	}
 	for _, path := range paths {
 		name := filepath.Base(path)
@@ -149,9 +149,7 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 			}
 		}
 		if base, run := legacy.RunSessionBase(session); run {
-			if _, checked := reports[base]; !checked {
-				reports[base] = v.verifyLegacyContinuity(dir, base, keys, groupDirs[dir])
-			}
+			bases[base] = dir
 		}
 		// The session came from top-level input discovery. Its recorder
 		// history lives there even if another recorder has a subdirectory.
@@ -175,6 +173,10 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 			v.result.IgnoredFiles++
 		}
 	}
+	for _, base := range sortedKeys(bases) {
+		dir := bases[base]
+		v.verifyLegacyContinuity(dir, base, keys, groupDirs[dir])
+	}
 	v.checkLegacySelection(presented)
 	if err := v.verifyLegacyEndpoint(presented); err != nil {
 		return nil, err
@@ -186,16 +188,12 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 	return presented, nil
 }
 
-func (v *verification) verifyLegacyContinuity(dir, base string, keys []string, grouped bool) legacy.BaseReport {
-	endorsements := endorsementsForBase(base, v.opts.LegacySelection.Endorsements)
+func (v *verification) verifyLegacyContinuity(dir, base string, keys []string, grouped bool) {
 	report, err := legacy.VerifyBase(dir, base, legacy.BaseVerifyOptions{
-		TrustedKeys: keys, Endorsements: endorsements, ExcludeReceiptGroupSessions: grouped,
+		TrustedKeys: keys, ExcludeReceiptGroupSessions: grouped,
 	})
 	if err == nil && report.Healthy() {
-		if len(endorsements) == 0 {
-			return legacy.BaseReport{}
-		}
-		return report
+		return
 	}
 	label := "RESTART CONTINUITY FAILED"
 	switch {
@@ -208,21 +206,6 @@ func (v *verification) verifyLegacyContinuity(dir, base string, keys []string, g
 	v.result.Legacy = append(v.result.Legacy, LegacyResult{
 		Chain: base, Format: legacyAction, Class: legacyFailure, Verdict: label,
 	})
-	return legacy.BaseReport{}
-}
-
-// endorsementsForBase selects the endorsements a base continuity check needs:
-// a rotation in the shared base session is endorsed under the base name
-// itself, and a per-run rotation under its run session.
-func endorsementsForBase(base string, all []legacy.RotationEndorsement) []legacy.RotationEndorsement {
-	var selected []legacy.RotationEndorsement
-	for _, endorsement := range all {
-		candidate, run := legacy.RunSessionBase(endorsement.SessionID)
-		if endorsement.SessionID == base || run && candidate == base {
-			selected = append(selected, endorsement)
-		}
-	}
-	return selected
 }
 
 func (v *verification) checkLegacySelection(presented map[legacyIdentity]legacyPresentation) {
@@ -245,15 +228,6 @@ func (v *verification) checkLegacySelection(presented map[legacyIdentity]legacyP
 		}
 		if !found {
 			v.accept("expect-legacy-v2", "evidence_v2", false)
-		}
-	}
-	for _, endorsement := range selection.Endorsements {
-		found := false
-		for _, row := range presented {
-			found = found || row.session == endorsement.SessionID && row.Format == legacyAction
-		}
-		if !found {
-			v.accept("rotation-endorsement", endorsement.SessionID, false)
 		}
 	}
 }
@@ -452,7 +426,7 @@ func (b *legacyBatch) addEvidence(line []byte) error {
 	return nil
 }
 
-func (v *verification) legacyActions(batch legacyBatch, keys []string, reports map[string]legacy.BaseReport, presented map[legacyIdentity]legacyPresentation, positions map[legacyIdentity]map[int64]string) {
+func (v *verification) legacyActions(batch legacyBatch, keys []string, presented map[legacyIdentity]legacyPresentation, positions map[legacyIdentity]map[int64]string) {
 	records := batch.action
 	for len(records) != 0 {
 		first := records[0].ActionRecord
@@ -465,7 +439,7 @@ func (v *verification) legacyActions(batch legacyBatch, keys []string, reports m
 			n++
 		}
 		chain := records[:n]
-		walker := v.legacyActionWalker(batch.session, keys, reports)
+		walker := legacy.NewChainWalker(keys)
 		id := first.RunNonce
 		if id == "" {
 			id, _ = first.Hash()
@@ -498,21 +472,7 @@ func (v *verification) legacyActions(batch legacyBatch, keys []string, reports m
 	}
 }
 
-func (v *verification) legacyActionWalker(session string, keys []string, reports map[string]legacy.BaseReport) legacy.ChainAccumulator {
-	if session == "" || len(v.opts.LegacySelection.Endorsements) == 0 {
-		return legacy.NewChainWalker(keys)
-	}
-	base, _ := legacy.RunSessionBase(session)
-	scoped, own := legacy.ScopedChainTrust(reports[base], session, keys, v.opts.LegacySelection.Endorsements)
-	if len(own) != 0 {
-		return legacy.NewEndorsedChainWalker(session, own, scoped)
-	}
-	return legacy.NewChainWalker(scoped)
-}
-
-func (v *verification) legacyEvidence(batch legacyBatch, keys []string, reports map[string]legacy.BaseReport, presented map[legacyIdentity]legacyPresentation, positions map[legacyIdentity]map[int64]string) {
-	base, _ := legacy.RunSessionBase(batch.session)
-	scoped, _ := legacy.ScopedChainTrust(reports[base], batch.session, keys, v.opts.LegacySelection.Endorsements)
+func (v *verification) legacyEvidence(batch legacyBatch, keys []string, presented map[legacyIdentity]legacyPresentation, positions map[legacyIdentity]map[int64]string) {
 	records := batch.evidence
 	for len(records) != 0 {
 		n := 1
@@ -527,7 +487,7 @@ func (v *verification) legacyEvidence(batch legacyBatch, keys []string, reports 
 		if selection.Bindings != nil && (selection.Session == "" || selection.Session == batch.session) {
 			verifyOptions = *selection.Bindings
 		}
-		walker := legacy.NewEvidenceChainWalker(scoped, verifyOptions)
+		walker := legacy.NewEvidenceChainWalker(keys, verifyOptions)
 		for _, item := range chain {
 			walker.Add(item)
 			hash, _ := contract.ReceiptHash(item)

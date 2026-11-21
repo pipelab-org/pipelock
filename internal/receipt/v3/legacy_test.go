@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -331,7 +330,6 @@ func TestLegacySelectionWithMixedChains(t *testing.T) {
 		{name: "session missing", selection: LegacySelection{Session: "missing"}},
 		{name: "group missing", selection: LegacySelection{Group: "missing"}},
 		{name: "bindings cannot select v1", selection: LegacySelection{Session: "other-session", Bindings: &contract.ChainVerifyOptions{}}},
-		{name: "endorsement cannot select v2", selection: LegacySelection{Endorsements: []legacy.RotationEndorsement{{SessionID: session}}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := verification{opts: Options{LegacySelection: tc.selection}}
@@ -391,7 +389,7 @@ func TestLegacyEvidenceBindingsScope(t *testing.T) {
 			}}, used: map[string]bool{}}
 			batch := legacyBatch{session: "example", recorder: true, evidence: []contract.EvidenceReceipt{signed}}
 			presented := map[legacyIdentity]legacyPresentation{}
-			v.legacyEvidence(batch, nil, nil, presented, map[legacyIdentity]map[int64]string{})
+			v.legacyEvidence(batch, nil, presented, map[legacyIdentity]map[int64]string{})
 			if len(presented) != 1 || hasFinding(v.result, codeLegacyInvalid) != tc.invalid {
 				t.Fatalf("presentation = %+v, findings = %+v", presented, v.result.Findings)
 			}
@@ -438,22 +436,10 @@ func TestMixedDirectoryEndorsedRotation(t *testing.T) {
 		t.Fatalf("rotated chain must have two records and a sequence-zero transition, got %d records: %v", len(chain), err)
 	}
 	prior, successor := chain[0].ActionRecord, chain[1].ActionRecord
-	priorHash, err := legacy.ReceiptHash(chain[0])
-	if err != nil {
-		t.Fatal(err)
-	}
 	successorHash, err := successor.Hash()
 	if err != nil {
 		t.Fatal(err)
 	}
-	endorsement, err := legacy.SignRotationEndorsement(legacy.RotationEndorsement{
-		SessionID: session, PriorFinalSeq: prior.ChainSeq, PriorTailHash: priorHash,
-		NewSignerKey: chain[1].SignerKey, RotatedAt: "2026-01-01T00:00:00Z",
-	}, rootPrivate)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	inventory, err := canonicalJSON(Inventory{V: 1, Chains: []InventoryChain{{
 		Chain: prior.RunNonce, Format: legacyAction, Record: legacyHash(successorHash),
 	}}})
@@ -467,37 +453,29 @@ func TestMixedDirectoryEndorsedRotation(t *testing.T) {
 	stream := signedStream(t, 1, nil, &Cutover{Inventory: digest, Chains: 1})
 	stream.close()
 	stream.write(dir)
+	// Pinning only the prior key cannot trust the successor's key transition.
 	opts := Options{
 		Directory: true, Keys: []ed25519.PublicKey{root, stream.public()}, AllowPrefix: true,
-		LegacySelection: LegacySelection{Session: session, Endorsements: []legacy.RotationEndorsement{endorsement}},
+		LegacySelection: LegacySelection{Session: session},
 	}
 	result, err := VerifyPaths(t.Context(), []string{dir}, opts)
+	if err != nil || result.ExitCode == 0 || result.Verdict == prefixVerdict || !hasFinding(result, codeLegacyInvalid) {
+		t.Fatalf("rotation without the successor key pinned: %+v, %v", result, err)
+	}
+	// Pinning both keys verifies the rotated chain, and the cutover row matches
+	// the whole chain even though the transition restarted chain_seq at zero.
+	successorKey, err := hex.DecodeString(chain[1].SignerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts.Keys = append(opts.Keys, ed25519.PublicKey(successorKey))
+	result, err = VerifyPaths(t.Context(), []string{dir}, opts)
 	wantAccepted := []Acceptance{{Kind: "allow-prefix", Value: "true"}, {Kind: "expect-legacy-session", Value: session}}
 	if err != nil || result.ExitCode != 0 || result.Verdict != prefixVerdict ||
 		!reflect.DeepEqual(result.Accepted, wantAccepted) || len(result.Legacy) != 1 ||
 		result.Legacy[0].Class != legacyPass || result.Legacy[0].Chain != prior.RunNonce ||
 		!hasFinding(result, codeLegacyEndUnproven) {
-		t.Fatalf("endorsed rotation: %+v, %v", result, err)
-	}
-	opts.LegacySelection.Endorsements = nil
-	result, err = VerifyPaths(t.Context(), []string{dir}, opts)
-	if err != nil || result.ExitCode == 0 || result.Verdict == prefixVerdict || !hasFinding(result, codeLegacyInvalid) {
-		t.Fatalf("unendorsed rotation: %+v, %v", result, err)
-	}
-	// A second recorder session inherits the root trust without inheriting
-	// the endorsement for this session.
-	v := verification{opts: Options{LegacySelection: LegacySelection{Endorsements: []legacy.RotationEndorsement{endorsement}}}}
-	walker := v.legacyActionWalker("other", []string{hex.EncodeToString(root)}, nil)
-	walker.Add(chain[0])
-	if got := walker.Result(); !got.Valid {
-		t.Fatalf("independent session did not retain its pinned root: %+v", got)
-	}
-	// The endorsement must not authorize the successor key for another session.
-	walker = v.legacyActionWalker("other", []string{hex.EncodeToString(root)}, nil)
-	walker.Add(chain[0])
-	walker.Add(chain[1])
-	if got := walker.Result(); got.Valid {
-		t.Fatalf("another session accepted a key transition endorsed only for %s: %+v", session, got)
+		t.Fatalf("rotation with both keys pinned: %+v, %v", result, err)
 	}
 
 	// In an unwrapped batch a fresh genesis splits the chain, while a
@@ -511,33 +489,13 @@ func TestMixedDirectoryEndorsedRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	batch := legacyBatch{action: append(chain, other)}
-	v = verification{used: map[string]bool{}}
+	v := verification{used: map[string]bool{}}
 	presented := map[legacyIdentity]legacyPresentation{}
-	v.legacyActions(batch, []string{chain[0].SignerKey, chain[1].SignerKey, other.SignerKey}, nil,
+	v.legacyActions(batch, []string{chain[0].SignerKey, chain[1].SignerKey, other.SignerKey},
 		presented, map[legacyIdentity]map[int64]string{})
 	if len(presented) != 2 || hasFinding(v.result, codeLegacyInvalid) ||
 		presented[legacyIdentity{legacyAction, prior.RunNonce}].Record != legacyHash(successorHash) {
 		t.Fatalf("bare batch did not preserve both verified chains: %+v, %+v", presented, v.result.Findings)
-	}
-}
-
-func TestEndorsementsForBase(t *testing.T) {
-	run, err := recorder.NewRunSessionID("proxy")
-	if err != nil {
-		t.Fatal(err)
-	}
-	otherRun, err := recorder.NewRunSessionID("other")
-	if err != nil {
-		t.Fatal(err)
-	}
-	all := []legacy.RotationEndorsement{{SessionID: "proxy"}, {SessionID: run}, {SessionID: "other"}, {SessionID: otherRun}}
-	got := endorsementsForBase("proxy", all)
-	var sessions []string
-	for _, endorsement := range got {
-		sessions = append(sessions, endorsement.SessionID)
-	}
-	if want := []string{"proxy", run}; !slices.Equal(sessions, want) {
-		t.Fatalf("endorsements for base proxy = %v, want %v", sessions, want)
 	}
 }
 

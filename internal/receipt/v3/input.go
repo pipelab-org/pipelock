@@ -24,7 +24,6 @@ import (
 	_ "modernc.org/sqlite"
 
 	contract "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
-	legacy "github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
 type Head struct {
@@ -46,10 +45,9 @@ type LegacyEnd struct {
 // LegacySelection binds legacy verifier controls in a mixed directory. All
 // presented chains still contribute to cutover membership verification.
 type LegacySelection struct {
-	Session      string
-	Group        string
-	Endorsements []legacy.RotationEndorsement
-	Bindings     *contract.ChainVerifyOptions
+	Session  string
+	Group    string
+	Bindings *contract.ChainVerifyOptions
 }
 
 // Options contains caller-supplied evidence requirements.
@@ -72,15 +70,12 @@ type Options struct {
 
 func (opts Options) validate() error {
 	legacy := opts.LegacySelection
-	if !opts.Directory && (legacy.Session != "" || legacy.Group != "" || len(legacy.Endorsements) != 0 || legacy.Bindings != nil) {
+	if !opts.Directory && (legacy.Session != "" || legacy.Group != "" || legacy.Bindings != nil) {
 		return errors.New("legacy options require mixed directory scope")
 	}
 	if legacy.Group != "" && (legacy.Session != "" || len(opts.Keys) == 0 || opts.AllowUnpinned ||
-		len(legacy.Endorsements) != 0 || legacy.Bindings != nil || opts.LegacyEnd != nil) {
+		legacy.Bindings != nil || opts.LegacyEnd != nil) {
 		return errors.New("--group requires pinned keys and no other legacy selection")
-	}
-	if len(legacy.Endorsements) != 0 && len(opts.Keys) == 0 {
-		return errors.New("--rotation-endorsement requires a pinned root key")
 	}
 	if opts.LegacyEnd != nil && (!opts.Directory || opts.LegacyEnd.Head == "" && opts.LegacyEnd.Sequence == nil) {
 		return errors.New("legacy endpoint expectations require mixed directory scope and an expected head or sequence")

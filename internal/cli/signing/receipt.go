@@ -164,8 +164,8 @@ Examples:
 					Seq: expectSeq, SeqSet: cmd.Flags().Changed("expect-seq"),
 					AllowPrefix: allowPrefix, AllowUnpinned: allowUnpinned,
 					LegacyOptions: wholeRecorder || requireSeal || allowUnanchoredSeal || fleetReport ||
-						cleanReport != "" || posturePath != "" || postureKey != "" || showRaw || hexdump,
-					LegacySelection: legacy, EndorsementPaths: endorsementPaths,
+						cleanReport != "" || posturePath != "" || postureKey != "" || showRaw || hexdump || len(endorsementPaths) > 0,
+					LegacySelection: legacy,
 				})
 			}
 			if len(args) > 1 {

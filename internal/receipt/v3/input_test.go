@@ -17,7 +17,6 @@ import (
 	"testing/iotest"
 
 	contract "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
-	legacy "github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
 func TestCallerPins(t *testing.T) {
@@ -410,7 +409,6 @@ func TestBoundedLineDrainCancellation(t *testing.T) {
 
 func TestValidateLegacyOptions(t *testing.T) {
 	keys := []ed25519.PublicKey{make(ed25519.PublicKey, ed25519.PublicKeySize)}
-	endorsements := []legacy.RotationEndorsement{{SessionID: "example"}}
 	bindings := &contract.ChainVerifyOptions{}
 	const scopeError = "legacy options require mixed directory scope"
 	const groupError = "--group requires pinned keys and no other legacy selection"
@@ -421,15 +419,12 @@ func TestValidateLegacyOptions(t *testing.T) {
 	}{
 		{"file with session", Options{LegacySelection: LegacySelection{Session: "example"}}, scopeError},
 		{"file with group", Options{LegacySelection: LegacySelection{Group: "example"}}, scopeError},
-		{"file with endorsement", Options{LegacySelection: LegacySelection{Endorsements: endorsements}}, scopeError},
 		{"file with bindings", Options{LegacySelection: LegacySelection{Bindings: bindings}}, scopeError},
 		{"group without keys", Options{Directory: true, LegacySelection: LegacySelection{Group: "example"}}, groupError},
 		{"group with session", Options{Directory: true, Keys: keys, LegacySelection: LegacySelection{Group: "example", Session: "example"}}, groupError},
 		{"group with unpinned allowed", Options{Directory: true, Keys: keys, AllowUnpinned: true, LegacySelection: LegacySelection{Group: "example"}}, groupError},
-		{"group with endorsement", Options{Directory: true, Keys: keys, LegacySelection: LegacySelection{Group: "example", Endorsements: endorsements}}, groupError},
 		{"group with bindings", Options{Directory: true, Keys: keys, LegacySelection: LegacySelection{Group: "example", Bindings: bindings}}, groupError},
 		{"group with endpoint", Options{Directory: true, Keys: keys, LegacyEnd: &LegacyEnd{Head: Digest(nil)}, LegacySelection: LegacySelection{Group: "example"}}, groupError},
-		{"endorsement without keys", Options{Directory: true, LegacySelection: LegacySelection{Endorsements: endorsements}}, "--rotation-endorsement requires a pinned root key"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := tc.opts.validate(); err == nil || err.Error() != tc.want {

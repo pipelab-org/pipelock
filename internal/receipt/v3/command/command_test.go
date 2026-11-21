@@ -5,11 +5,8 @@ package command
 
 import (
 	"bytes"
-	"crypto/ed25519"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,8 +14,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/luckyPipewrench/pipelock/internal/cliutil"
-	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 )
 
@@ -144,53 +139,5 @@ func TestRunReportsVerifierOutcome(t *testing.T) {
 	}
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil || result.ExitCode != 0 {
 		t.Fatalf("result %+v, error %v", result, err)
-	}
-}
-
-func TestRunLoadsRotationEndorsement(t *testing.T) {
-	dir := t.TempDir()
-	root, private, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	successor, _, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	endorsement, err := receipt.SignRotationEndorsement(receipt.RotationEndorsement{
-		SessionID: "example", PriorTailHash: strings.Repeat("a", 64),
-		NewSignerKey: hex.EncodeToString(successor), RotatedAt: "2026-01-01T00:00:00Z",
-	}, private)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := json.Marshal(endorsement)
-	if err != nil {
-		t.Fatal(err)
-	}
-	valid := filepath.Join(dir, "endorsement.json")
-	if err := os.WriteFile(valid, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct {
-		name, path, want string
-	}{
-		{"missing file", filepath.Join(dir, "missing.json"), "load --rotation-endorsement"},
-		{"loaded file requires pin", valid, "--rotation-endorsement requires a pinned root key"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var out bytes.Buffer
-			cmd := &cobra.Command{}
-			cmd.SetOut(&out)
-			cmd.SetContext(t.Context())
-			in := Input{Directory: dir, EndorsementPaths: []string{tc.path}}
-			if tc.path != valid {
-				in.Keys = []string{hex.EncodeToString(root)}
-			}
-			if err := (Flags{}).Run(cmd, in); err == nil || cliutil.ExitCodeOf(err) != cliutil.ExitConfig ||
-				!strings.Contains(err.Error(), tc.want) || out.Len() != 0 {
-				t.Fatalf("error %v, output %q, want config error containing %q", err, out.String(), tc.want)
-			}
-		})
 	}
 }

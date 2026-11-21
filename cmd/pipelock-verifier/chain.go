@@ -163,7 +163,7 @@ end_proof, scope, and signer trust.`,
 					Paths: paths, Directory: dir, Keys: keys, Head: opts.expectHeadHash,
 					Seq: seq, SeqSet: cmd.Flags().Changed("expect-seq"),
 					AllowPrefix: opts.allowPrefix, AllowUnpinned: opts.allowUnpinned, GenericLegacyLabels: true,
-					LegacySelection: legacy, EndorsementPaths: opts.endorsementPaths,
+					LegacyOptions: len(opts.endorsementPaths) != 0, LegacySelection: legacy,
 				})
 			}
 			if err := exactOneArg(cmd, args); err != nil {
