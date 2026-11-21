@@ -19,6 +19,7 @@ import (
 )
 
 const (
+	mcpV3RedirectRefusal          = "pipelock: policy redirect is not available while v3 receipts are enabled"
 	mcpUpstreamSendBoundary       = "upstream_send"
 	mcpDownstreamDeliveryBoundary = "downstream_delivery"
 )

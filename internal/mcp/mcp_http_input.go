@@ -1040,6 +1040,15 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 		return result
 	case config.ActionRedirect:
+		if opts.receiptEffects.enabled {
+			denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPRedirect, mcpV3RedirectRefusal, audit.BlockClassProtective)
+			receiptVerdict = config.ActionBlock
+			result.Blocked = &BlockedRequest{
+				ID: verdict.ID, IsNotification: isNotification,
+				LogMessage: mcpV3RedirectRefusal, ErrorCode: -32002, ErrorMessage: mcpV3RedirectRefusal,
+			}
+			return result
+		}
 		if reason := mcpTaskReleaseRefusal(opts, frame, taintEval, true); reason != "" {
 			refusalReason := taintEval.recordTaskReleaseRefusal(reason)
 			receiptLayer, receiptPattern, receiptSeverity = mcpReceiptLayerTaint, refusalReason, taintReceiptSeverity(taintEval)

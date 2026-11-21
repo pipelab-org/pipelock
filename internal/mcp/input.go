@@ -210,6 +210,7 @@ func (v InputVerdict) IsEntropyOnly() bool {
 // When SyntheticResponse is non-nil, the consumer sends it as-is instead of
 // generating an error response (used for redirect success results).
 type BlockedRequest struct {
+	v3RefusalSigned   bool
 	terminal          *mcpTerminalDecision
 	ID                json.RawMessage
 	IsNotification    bool // Notifications have no ID - don't send error response.
@@ -1386,6 +1387,15 @@ func ForwardScannedInput(
 				ErrorData:      mcpBlockReasonData(blockReason),
 			}, blockedCh)
 		case config.ActionRedirect:
+			if opts.receiptEffects.enabled {
+				denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPRedirect, mcpV3RedirectRefusal, audit.BlockClassProtective)
+				sendMCPDenial(opts, denialAudit, BlockedRequest{
+					ID: verdict.ID, IsNotification: isNotification,
+					LogMessage: mcpV3RedirectRefusal, ErrorCode: -32002, ErrorMessage: mcpV3RedirectRefusal,
+					v3RefusalSigned: opts.refuseV3Reply(opts.warnContext(), receipt.EmitOpts{ActionID: receipt.NewActionID(), Method: method, Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(verdict.ID)}) == nil,
+				}, blockedCh)
+				break
+			}
 			if !checkTaskRelease(true) {
 				continue
 			}

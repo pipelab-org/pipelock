@@ -29,6 +29,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
@@ -1105,4 +1106,68 @@ func TestMCPV3SSEGETReconnectsAfterIntentFailure(t *testing.T) {
 	cancel()
 	_ = client.Close()
 	wg.Wait()
+}
+
+func TestMCPV3PolicyRedirectRefusal(t *testing.T) {
+	for _, surface := range []string{transportMCPStdio, deferred.SurfaceMCPHTTPListener} {
+		for _, mode := range []string{"required", "optional"} {
+			t.Run(surface+"/"+mode, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
+				defer cancel()
+				writerOpts := mcpMatrixWriterOptions(t, v3MCPMatrixRow{required: mode == "required"}, surface, cancel, nil)
+				writer, err := v3.OpenStreamWriter(ctx, writerOpts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = writer.Close(t.Context(), nil) }()
+				marker := filepath.Join(t.TempDir(), "executed")
+				opts := MCPProxyOpts{
+					Scanner: testInputScanner(t), Transport: surface,
+					PolicyCfg: policy.New(config.MCPToolPolicy{
+						Enabled: true, Action: config.ActionWarn,
+						RedirectProfiles: map[string]config.RedirectProfile{
+							"audited": {Exec: []string{"sh", "-c", `printf executed > "$1"; printf 'safe result'`, "handler", marker}, PreserveArgv: true, Reason: "audited operation"},
+						},
+						Rules: []config.ToolPolicyRule{{Name: "redirect", ToolPattern: "^echo$", Action: config.ActionRedirect, RedirectProfile: "audited"}},
+					}),
+				}.WithV3ReceiptWriter(writer)
+				var client bytes.Buffer
+				in := strings.NewReader(cleanToolsCallRequest + "\n")
+				if surface == transportMCPStdio {
+					err = RunProxy(ctx, in, &client, io.Discard, []string{"sh", "-c", "cat >/dev/null"}, opts)
+				} else {
+					upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+						t.Error("redirect request reached upstream")
+					}))
+					defer upstream.Close()
+					err = runMCPMatrixListener(t, ctx, in, &client, upstream.URL, opts)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("redirect handler ran or marker check failed: %v", err)
+				}
+				if !strings.Contains(client.String(), `"code":-32002`) ||
+					!strings.Contains(client.String(), "policy redirect is not available while v3 receipts are enabled") {
+					t.Errorf("client refusal missing: %s", client.String())
+				}
+				if err := writer.Close(ctx, nil); err != nil {
+					t.Fatal(err)
+				}
+				key := writerOpts.SigningKey.Public().(ed25519.PublicKey)
+				verified, err := v3.VerifyPaths(ctx, []string{writerOpts.Dir}, v3.Options{Directory: true, Keys: []ed25519.PublicKey{key}})
+				if err != nil || verified.Integrity != "ok" {
+					t.Fatalf("verify: %+v (%v)", verified, err)
+				}
+				actions, err := readMCPMatrixActions(writerOpts.Dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(actions) != 1 || actions[0].EffectBoundary != mcpDownstreamDeliveryBoundary || actions[0].Verdict != config.ActionBlock {
+					t.Fatalf("expected one signed refusal, got %+v", actions)
+				}
+			})
+		}
+	}
 }
