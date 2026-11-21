@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestReadyTimeoutFlag(t *testing.T) {
@@ -49,6 +50,51 @@ func TestReadyTimeoutFlag(t *testing.T) {
 				t.Fatalf("readiness timeout = %s, error = %v; want %s", opt.readyTimeout, err, tt.want)
 			}
 		})
+	}
+}
+
+func TestRequestTimeoutFlag(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		value string
+		want  time.Duration
+	}{
+		{name: "default", want: 30 * time.Second},
+		{name: "longer", value: "5m", want: 5 * time.Minute},
+		{name: "smallest", value: "1ns", want: time.Nanosecond},
+		{name: "zero", value: "0s"},
+		{name: "negative", value: "-1s"},
+		{name: "malformed", value: "later"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			args := []string{"--binary", os.Args[0], "--out", t.TempDir()}
+			if tt.value != "" {
+				args = append(args, "--request-timeout", tt.value)
+			}
+			opt, _, _, err := parseFlags(args)
+			if tt.want == 0 {
+				if err == nil {
+					t.Fatal("accepted invalid request timeout")
+				}
+				return
+			}
+			if err != nil || opt.requestTimeout != tt.want {
+				t.Fatalf("request timeout = %s, error = %v; want %s", opt.requestTimeout, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestClipRule(t *testing.T) {
+	if got := clipRule("response scan failed: context canceled"); got != "response scan failed: context canceled" {
+		t.Fatalf("plain rule changed: %q", got)
+	}
+	if got := clipRule("match " + fakeToken); strings.Contains(got, fakeToken) || !strings.Contains(got, "[redacted-value]") {
+		t.Fatalf("fake credential not redacted: %q", got)
+	}
+	long := strings.Repeat("x", maxRuleText-1) + "\u00e9" + strings.Repeat("y", 50)
+	if got := clipRule(long); len(got) > maxRuleText || !utf8.ValidString(got) {
+		t.Fatalf("clipped rule is %d bytes, valid UTF-8 %v", len(got), utf8.ValidString(got))
 	}
 }
 
