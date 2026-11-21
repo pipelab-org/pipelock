@@ -168,6 +168,7 @@ type mcpMatrixObserver struct {
 	intent            bool
 	dir               string
 	checkOutcomeOrder bool
+	wrote             chan<- struct{}
 }
 
 func (o *mcpMatrixObserver) Write(p []byte) (int, error) {
@@ -183,7 +184,14 @@ func (o *mcpMatrixObserver) Write(p []byte) (int, error) {
 			return 0, errors.New("delivery outcome recorded before client write")
 		}
 	}
-	return o.output.Write(p)
+	n, err := o.output.Write(p)
+	if o.wrote != nil {
+		select {
+		case o.wrote <- struct{}{}:
+		default:
+		}
+	}
+	return n, err
 }
 
 func TestMCPV3ReceiptParityMatrix(t *testing.T) {
@@ -365,7 +373,9 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 			}
 		})
 	}
-	client := &mcpMatrixObserver{dir: writerOpts.Dir}
+	localReply := slices.Contains([]string{"deferred deny", "deferred timeout", "kill-switch during hold", "deferred HTTP failure"}, row.scenario)
+	clientWrite := make(chan struct{}, 1)
+	client := &mcpMatrixObserver{dir: writerOpts.Dir, wrote: clientWrite}
 	seen := filepath.Join(t.TempDir(), "upstream")
 	priorIntent := seen + ".intent"
 	run := func(in io.Reader) error {
@@ -456,14 +466,22 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 			if err := recovered.Close(t.Context(), nil); err != nil {
 				t.Fatal(err)
 			}
+			cancel()
 		}
 		if row.scenario != "restart recovery of a pending hold" {
 			testwait.For(t, time.Second, func() bool { return opts.DeferManager.HeldCount() == 0 }, "resolved hold")
 		}
+		if localReply {
+			select {
+			case <-clientWrite:
+			case <-ctx.Done():
+				t.Fatal("local reply did not reach client")
+			}
+		}
 		_ = wr.Close()
 		select {
 		case <-done: // Transport shutdown can report the deliberate upstream close.
-		case <-ctx.Done():
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 			t.Fatal("stdio transport did not finish")
 		}
 	} else {
@@ -535,6 +553,9 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 			t.Fatalf("reply = %q with preceding intent %t; receipts: %+v", client.output.String(), client.intent, actions)
 		}
 		assertMCPCompletedExchange(t, actions)
+	} else if localReply {
+		assertLocalMCPErrors(t, client.output.String(), "1")
+		assertLocalMCPDeliveries(t, actions, wantSend, "1")
 	} else if client.output.Len() != 0 {
 		t.Fatalf("unexpected reply: %s", client.output.String())
 	}
@@ -586,10 +607,12 @@ func assertMCPMatrixTerminal(t *testing.T, scenario string, actions []v3.Action)
 	case "tool-scan block":
 		expected = []string{"downstream_delivery/decision/block", "upstream_send/outcome/completed"}
 	case "deferred HTTP failure":
-		expected = []string{"approval_prompt/resolution/allow", "upstream_send/outcome/attempt_unknown"}
+		expected = []string{"approval_prompt/resolution/allow", "downstream_delivery/outcome/completed", "upstream_send/outcome/attempt_unknown"}
 	case "deferred approve":
 		expected = []string{"approval_prompt/resolution/allow", "downstream_delivery/outcome/completed", "upstream_send/outcome/completed"}
-	case "deferred deny", "deferred timeout", "kill-switch during hold", "restart recovery of a pending hold":
+	case "deferred deny", "deferred timeout", "kill-switch during hold":
+		expected = []string{"approval_prompt/resolution/block", "downstream_delivery/outcome/completed"}
+	case "restart recovery of a pending hold":
 		expected = []string{"approval_prompt/resolution/block"}
 	}
 	var actual []string

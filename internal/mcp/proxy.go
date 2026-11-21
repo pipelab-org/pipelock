@@ -106,7 +106,7 @@ func emitPendingTimeoutResponses(writer transport.MessageWriter, logW io.Writer,
 	}
 	for _, pending := range tracker.DrainPendingOutcomes() {
 		resp := timeoutErrorResponse(pending.ID)
-		if wErr := writer.WriteMessage(resp); wErr != nil {
+		if wErr := opts.localV3ReplyWriter(writer, logW, opts.pendingV3Send(pending.ID)).WriteMessage(resp); wErr != nil {
 			_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", wErr)
 		}
 		pending.Outcome.settle(logW, opts, "error", int64(len(resp)), "response_timeout")
@@ -2306,10 +2306,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: blocked notification (no response sent): %s\n", blocked.LogMessage)
 				continue
 			}
-			writer := opts.localV3ReplyWriter(safeClientOut)
-			if blocked.v3RefusalSigned {
-				writer = safeClientOut
-			}
+			writer := inputOpts.localV3ReplyWriter(safeClientOut, safeLogW, nil)
 			if wErr := deliverMCPInputResult(opts, blocked, writer); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send block response: %v\n", wErr)
 			}
@@ -2423,7 +2420,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		case <-drainCtx.Done():
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: timed out waiting for MCP input drain after upstream response timeout\n")
 		}
-		emitPendingTimeoutResponses(fwdOpts.localV3ReplyWriter(safeClientOut), safeLogW, tracker, fwdOpts)
+		emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker, fwdOpts)
 	} else if sessionExit.inProgress() || replyAdmissionFailed {
 		// An arbitrary io.Reader cannot be interrupted by closing the client
 		// side. Once session teardown has killed the server, do not let one

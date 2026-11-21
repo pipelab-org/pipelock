@@ -207,7 +207,8 @@ func RunHTTPProxy(
 	httpClient.ResponseKeyValidator = jsonrpc.ValidateMessageKeys
 	var upstreamMu sync.Mutex
 	opts = opts.withV3Session()
-	safeClientOut := opts.localV3ReplyWriter(wireClientOut)
+	opts.WarnContext = ctx
+	safeClientOut := opts.localV3ReplyWriter(wireClientOut, safeLogW, nil)
 	defer opts.settleV3Session(ctx, safeLogW)
 
 	// Tool scanning baseline for this session. Clone the caller's ToolCfg
@@ -658,7 +659,7 @@ func RunHTTPProxy(
 								finishDeniedRelease()
 							}
 							if !deferredReq.IsNotification {
-								_ = safeClientOut.WriteMessage(upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP request failed")))
+								_ = heldOpts.localV3ReplyWriter(wireClientOut, safeLogW, effect).WriteMessage(upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP request failed")))
 							}
 							return
 						}
@@ -676,7 +677,7 @@ func RunHTTPProxy(
 							}
 							emitRequestScopedTimeout(
 								respReader,
-								safeClientOut,
+								releaseOpts.localV3ReplyWriter(wireClientOut, safeLogW, effect),
 								safeLogW,
 								tracker,
 								deferredReq.ID,
@@ -691,7 +692,7 @@ func RunHTTPProxy(
 								settleBridgeNotificationScanError(releaseCtx, safeLogW, releaseOpts, releaseOutcome, scanErr)
 							} else if outcome, pending := tracker.takeOwnedOutcome(deferredReq.ID, registration); pending {
 								errResp := upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP response failed"))
-								_ = safeClientOut.WriteMessage(errResp)
+								_ = releaseOpts.localV3ReplyWriter(wireClientOut, safeLogW, effect).WriteMessage(errResp)
 								status, reason, size := "error", "scan_error", int64(len(errResp))
 								streamReason := httpstream.Reason(releaseCtx, scanErr)
 								switch {
@@ -967,7 +968,7 @@ func RunHTTPProxy(
 			// which could contain prompt injection payloads.
 			rpcID := frame.ID
 			errResp := upstreamErrorResponse(rpcID, fmt.Errorf("upstream HTTP request failed"))
-			if wErr := safeClientOut.WriteMessage(errResp); wErr != nil {
+			if wErr := fwdOpts.localV3ReplyWriter(wireClientOut, safeLogW, effect).WriteMessage(errResp); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send error response: %v\n", wErr)
 			}
 			outcome := decision.Outcome
@@ -996,9 +997,10 @@ func RunHTTPProxy(
 			break
 		}
 		if errors.Is(scanErr, transport.ErrResponseTimeout) {
+			unlockInventory()
 			emitRequestScopedTimeout(
 				respReader,
-				safeClientOut,
+				fwdOpts.localV3ReplyWriter(wireClientOut, safeLogW, effect),
 				safeLogW,
 				tracker,
 				frame.ID,
@@ -1009,7 +1011,6 @@ func RunHTTPProxy(
 				decision.Outcome.settle(safeLogW, fwdOpts, "error", -1, "response_timeout")
 			}
 			lastScanErr = scanErr
-			unlockInventory()
 			continue
 		}
 		if scanErr != nil {

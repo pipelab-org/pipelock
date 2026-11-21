@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -213,16 +214,41 @@ func (o MCPProxyOpts) v3ResponseWriter(ctx context.Context, log io.Writer, write
 	return &mcpV3ReplyWriter{base: writer, opts: o, log: log, request: x.request}
 }
 
-// Unpaired local errors have no upstream action to link to.
+// Unpaired upstream responses have no authorized client delivery.
 type mcpV3WithheldWriter struct{}
 
 func (mcpV3WithheldWriter) WriteMessage([]byte) error { return nil }
 
-func (o MCPProxyOpts) localV3ReplyWriter(writer transport.MessageWriter) transport.MessageWriter {
-	if o.v3Session != nil {
-		return mcpV3WithheldWriter{}
+func (o MCPProxyOpts) pendingV3Send(id json.RawMessage) *mcpV3Exchange {
+	if o.v3Session == nil {
+		return nil
 	}
-	return writer
+	o.v3Session.mu.Lock()
+	defer o.v3Session.mu.Unlock()
+	return o.v3Session.pending[canonicalID(id)]
+}
+
+func (o MCPProxyOpts) localV3ReplyWriter(writer transport.MessageWriter, log io.Writer, x *mcpV3Exchange) transport.MessageWriter {
+	if o.v3Session == nil {
+		return writer
+	}
+	return &mcpV3LocalWriter{base: writer, opts: o, log: log, send: x}
+}
+
+type mcpV3LocalWriter struct {
+	base transport.MessageWriter
+	opts MCPProxyOpts
+	log  io.Writer
+	send *mcpV3Exchange
+}
+
+func (w *mcpV3LocalWriter) WriteMessage(msg []byte) error {
+	request := receipt.EmitOpts{RequestID: canonicalID(ParseMCPFrame(msg).ID), Transport: w.opts.Transport}
+	if w.send != nil {
+		request = w.send.request
+	}
+	reply := mcpV3ReplyWriter{base: w.base, opts: w.opts, log: w.log, request: request}
+	return writeMCPForwardedMessage(&reply, msg)
 }
 
 type mcpV3ReplyWriter struct {
