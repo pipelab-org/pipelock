@@ -20,6 +20,20 @@ func hasDetectorRestartField(out proxy.ReloadOutcome) bool {
 	return slices.Contains(out.RestartRequiredFields, reloadReceiptDetectorField)
 }
 
+// requireNoDetectorDrift fails on a refused reload, whose outcome would
+// otherwise carry stale restart fields and pass for the wrong reason.
+func requireNoDetectorDrift(t *testing.T, out proxy.ReloadOutcome, what string) {
+	t.Helper()
+	switch out.Verdict {
+	case proxy.ReloadAccepted, proxy.ReloadUnchanged, proxy.ReloadRestartRequired:
+	default:
+		t.Fatalf("%s: reload not applied: %+v", what, out)
+	}
+	if hasDetectorRestartField(out) {
+		t.Fatalf("%s reported detector drift: %+v", what, out)
+	}
+}
+
 // The receipt scanner is built from the local config before any cached bundle
 // is recovered, and every restart rebuilds it the same way. Restart drift is
 // therefore local file against local startup config; bundle values never count.
@@ -52,9 +66,7 @@ func TestConductorDetectorInputsAreNotRestartDrift(t *testing.T) {
 	}
 	// An operator reload of the unchanged local file after a bundle apply has
 	// no local drift to report.
-	if out := s.ReloadFile(); hasDetectorRestartField(out) {
-		t.Fatalf("no-op local reload after bundle apply reported detector drift: %+v", out)
-	}
+	requireNoDetectorDrift(t, s.ReloadFile(), "no-op local reload after bundle apply")
 
 	s.cleanup()
 	restartOut := &syncBuffer{}
@@ -81,7 +93,5 @@ func TestConductorDetectorInputsAreNotRestartDrift(t *testing.T) {
 	}
 	// Restoring the startup local file clears it.
 	writeReloadCandidate(t, restarted, string(localBody))
-	if out := restarted.ReloadFile(); hasDetectorRestartField(out) {
-		t.Fatalf("startup local file reported as detector drift: %+v", out)
-	}
+	requireNoDetectorDrift(t, restarted.ReloadFile(), "startup local file")
 }

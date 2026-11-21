@@ -60,7 +60,7 @@ func (s *Server) trackStartupDetectorInputs(oldCfg, newCfg *config.Config) {
 			continue
 		}
 		if conductorOwned {
-			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: conductor policy changed %s; receipt content check and capture redaction keep the local config's values, and restarting does not apply the policy's\n", field)
+			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: conductor policy changed %s; receipt content check and capture redaction keep the local config's startup values, and restarting does not apply the policy's\n", field)
 			continue
 		}
 		if s.recorder != nil {
