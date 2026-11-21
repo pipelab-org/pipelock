@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"reflect"
 	"strings"
 	"time"
 
@@ -25,11 +26,27 @@ const (
 	taintScopeTask   = "task"
 )
 
-// WithTaintRecorder binds forward, fetch, and intercepted HTTP traffic to one
-// invocation-owned recorder. The caller owns its lifetime and must not share
-// this proxy between independent invocations.
+// WithTaintRecorder binds forward, fetch, intercepted HTTP, and WebSocket
+// traffic to one invocation-owned recorder. The caller owns its lifetime and
+// must not share this proxy between independent invocations.
 func WithTaintRecorder(rec session.Recorder) Option {
+	if isNilSessionRecorder(rec) {
+		rec = nil
+	}
 	return func(p *Proxy) { p.taintRecorder = rec }
+}
+
+func isNilSessionRecorder(rec session.Recorder) bool {
+	if rec == nil {
+		return true
+	}
+	v := reflect.ValueOf(rec)
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface:
+		return v.IsNil()
+	default:
+		return false
+	}
 }
 
 type taintDecision struct {

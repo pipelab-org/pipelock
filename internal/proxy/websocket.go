@@ -1002,8 +1002,8 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Obtain a live session recorder for the relay. This provides live
 	// escalation level lookups instead of a stale snapshot, so that
 	// escalation changes during long-lived WS connections take effect.
-	var wsRec session.Recorder
-	if sm := p.sessionMgrPtr.Load(); sm != nil {
+	wsRec := p.taintRecorder
+	if sm := p.sessionMgrPtr.Load(); wsRec == nil && sm != nil {
 		sessionKey := responseTaintSessionKey(cfg, agent, clientIP, id.Auth)
 		sess := sm.GetOrCreate(sessionKey)
 		if sess == nil {
@@ -3591,14 +3591,24 @@ func (r *wsRelay) observeUpstreamResponseFindings(kinds []session.HostileFinding
 	if r.cfg == nil || !r.cfg.Taint.Enabled {
 		return true
 	}
-	sm := r.proxy.sessionMgrPtr.Load()
-	if sm == nil || r.taintSessionKey == "" {
-		return true
-	}
-	rec := sm.GetOrCreate(r.taintSessionKey)
-	if rec == nil {
-		r.denySessionCapacity(audit.DirectionServerToClient)
-		return false
+	var rec *SessionState
+	if r.proxy != nil && r.proxy.taintRecorder != nil {
+		shared, ok := r.proxy.taintRecorder.(*SessionState)
+		if !ok || shared == nil {
+			observeHTTPResponseFindings(r.proxy.taintRecorder, r.cfg, r.targetURL, "application/websocket", "websocket_response", kinds)
+			return true
+		}
+		rec = shared
+	} else {
+		sm := r.proxy.sessionMgrPtr.Load()
+		if sm == nil || r.taintSessionKey == "" {
+			return true
+		}
+		rec = sm.GetOrCreate(r.taintSessionKey)
+		if rec == nil {
+			r.denySessionCapacity(audit.DirectionServerToClient)
+			return false
+		}
 	}
 	risk, taskID := rec.responseRiskSnapshot()
 	for _, source := range risk.Sources {

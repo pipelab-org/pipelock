@@ -737,6 +737,9 @@ func newInterceptHandler(
 
 		// Pre-generate a single ActionID for correlation between envelope and receipt.
 		actionID := receipt.NewActionID()
+		if ic.Recorder == nil && ic.Proxy != nil && ic.Proxy.taintRecorder != nil {
+			ic.Recorder = ic.Proxy.taintRecorder
+		}
 		if ic.Recorder == nil {
 			sm := ic.SessionMgr
 			if ic.Proxy != nil {

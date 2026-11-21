@@ -974,8 +974,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 		// Obtain a live session recorder for the tunnel. This provides live
 		// escalation level lookups instead of a stale snapshot from sr.Level.
-		var interceptRec session.Recorder
-		if sm := p.sessionMgrPtr.Load(); sm != nil {
+		interceptRec := p.taintRecorder
+		if sm := p.sessionMgrPtr.Load(); interceptRec == nil && sm != nil {
 			sess := sm.GetOrCreate(responseTaintSessionKey(cfg, agent, clientIP, id.Auth))
 			if sess == nil {
 				denyInterceptCapacity()
@@ -1363,7 +1363,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		forwardRec = sess
 	}
 	var forwardTask forwardTaskAction
-	if id.Auth == envelope.ActorAuthBound {
+	if id.Auth == envelope.ActorAuthBound && p.taintRecorder == nil {
 		forwardTask.subject = "forward:" + agent
 		session.BindTaskSubject(forwardRec, forwardTask.subject)
 	}

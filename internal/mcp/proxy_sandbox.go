@@ -94,8 +94,9 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 		}
 	}
 	rec := opts.Rec
+	invocationKey := ""
 	if rec == nil && opts.Store != nil {
-		invocationKey := session.NextInvocationKey("mcp-stdio")
+		invocationKey = session.NextInvocationKey("mcp-stdio")
 		rec = opts.Store.GetOrCreate(invocationKey)
 		if rec == nil {
 			dropMCPDenial(opts, mcpStartupDenialAudit(mcpListenerCapacityDenialAudit()), "startup")
@@ -104,7 +105,13 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 		defer opts.Store.Delete(invocationKey)
 	}
 	if rec != nil {
-		opts.taskSubject = session.NextInvocationKey("mcp-stdio")
+		if opts.taskSubject == "" {
+			if invocationKey != "" {
+				opts.taskSubject = invocationKey
+			} else {
+				opts.taskSubject = session.NextInvocationKey("mcp-stdio")
+			}
+		}
 		session.BindTaskSubject(rec, opts.taskSubject)
 	}
 	defer recordMCPBaselineSample(opts, rec)

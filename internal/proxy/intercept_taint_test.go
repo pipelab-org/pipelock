@@ -473,3 +473,33 @@ func TestInterceptTaintReceiptsVerifyChain(t *testing.T) {
 		t.Fatalf("receipt.VerifyChain failed: %s (broken at seq %d)", res.Error, res.BrokenAtSeq)
 	}
 }
+
+func TestWithTaintRecorderTypedNilSafe(t *testing.T) {
+	p, handler, ordinaryRec, target, _ := newTaintInterceptFixture(t, nil)
+	WithTaintRecorder((*SessionState)(nil))(p)
+	if p.taintRecorder != nil {
+		t.Fatalf("typed-nil recorder was not normalized to nil: %#v", p.taintRecorder)
+	}
+	if w := interceptTaintRequest(t, handler, http.MethodGet, target); w.Code != http.StatusOK {
+		t.Fatalf("GET status=%d body=%s", w.Code, w.Body)
+	}
+	if ordinaryRec.RiskSnapshot().Level != session.TaintExternalUntrusted {
+		t.Fatalf("ordinary recorder risk=%+v, want external_untrusted", ordinaryRec.RiskSnapshot())
+	}
+}
+
+func TestWebSocketRelayUsesSharedTaintRecorder(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.SessionProfiling.Enabled = false
+	cfg.Taint.Enabled = true
+	p := &Proxy{}
+	shared := &SessionState{}
+	WithTaintRecorder(shared)(p)
+	relay := &wsRelay{proxy: p, cfg: cfg, targetURL: "ws://" + interceptTaintHost + "/events"}
+	if !relay.observeUpstreamResponseFindings([]session.HostileFindingKind{session.FindingDLP}) {
+		t.Fatal("observeUpstreamResponseFindings unexpectedly refused")
+	}
+	if got := shared.RiskSnapshot(); got.Level != session.TaintExternalHostile || !got.Contaminated {
+		t.Fatalf("shared websocket taint=%+v, want hostile", got)
+	}
+}

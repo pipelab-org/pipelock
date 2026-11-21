@@ -112,11 +112,24 @@ func setupMCPSandboxBridge(opts mcpSandboxBridgeSetupOptions) (func(), error) {
 	return bridge.Close, nil
 }
 
+func isNilBridgeRecorder(rec session.Recorder) bool {
+	if rec == nil {
+		return true
+	}
+	v := reflect.ValueOf(rec)
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface:
+		return v.IsNil()
+	default:
+		return false
+	}
+}
+
 func startMCPSandboxBridge(opts mcpSandboxBridgeStartOptions) (*mcpSandboxBridge, error) {
 	if opts.Config.Taint.Enabled {
 		_, riskOK := opts.Rec.(session.RiskState)
 		_, taskOK := opts.Rec.(session.TaskPermissionState)
-		if !riskOK || !taskOK || reflect.ValueOf(opts.Rec).Kind() == reflect.Pointer && reflect.ValueOf(opts.Rec).IsNil() {
+		if !riskOK || !taskOK || isNilBridgeRecorder(opts.Rec) {
 			return nil, fmt.Errorf("MCP sandbox bridge: taint requires a shared session risk recorder")
 		}
 	}

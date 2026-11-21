@@ -379,3 +379,116 @@ func TestMCPSandboxBridgeTaintConcurrentResponseAndPublish(t *testing.T) {
 	})
 	wg.Wait()
 }
+
+func TestMCPSandboxBridgeTaintBoundIdentityPreservesMCPTaskSubject(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ready")
+	}))
+	t.Cleanup(upstream.Close)
+
+	cfg := config.Defaults()
+	cfg.Internal = nil // local fixtures only; host overrides prevent external DNS
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8"}
+	cfg.TrustedDomains = []string{sandboxTaintHost}
+	cfg.DNS.HostOverrides = map[string][]string{sandboxTaintHost: {"127.0.0.1"}}
+	cfg.SessionProfiling.Enabled = true
+	cfg.DefaultAgentIdentity = "bound-worker"
+	cfg.BindDefaultAgentIdentity = true
+	cfg.KillSwitch.APIToken = "test-operator-token-for-sandbox-bridge"
+	cfg.ResponseScanning.Action = config.ActionWarn
+
+	ca, key, _, err := certgen.GenerateCA("Sandbox bridge bound test", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.TLSInterception.Enabled = true
+	cfg.TLSInterception.CACertPath = filepath.Join(t.TempDir(), "ca.pem")
+	cfg.TLSInterception.CAKeyPath = filepath.Join(t.TempDir(), "key.pem")
+	if err := certgen.SaveCA(cfg.TLSInterception.CACertPath, cfg.TLSInterception.CAKeyPath, ca, key); err != nil {
+		t.Fatal(err)
+	}
+
+	sm := proxy.NewSessionManager(&cfg.SessionProfiling, nil, nil)
+	t.Cleanup(sm.Close)
+	const mcpSubject = "mcp-stdio-shared"
+	rec := sm.GetOrCreate(mcpSubject)
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	bridge, err := startMCPSandboxBridge(mcpSandboxBridgeStartOptions{
+		Context: ctx, Cancel: cancel, Config: cfg, Rec: rec, AuditLogger: audit.NewNop(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(bridge.Close)
+
+	pool := x509.NewCertPool()
+	pool.AddCert(ca)
+	rt := &http.Transport{
+		Proxy: http.ProxyURL(&url.URL{Scheme: "http", Host: "bridge"}),
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", bridge.SocketPath())
+		},
+		TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+	}
+	t.Cleanup(rt.CloseIdleConnections)
+	client := &http.Client{Transport: rt, Timeout: 5 * time.Second}
+
+	sandboxMCPHostileResponse(t, cfg, rec)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, sandboxTaintTarget(t, upstream.URL), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusForbidden || !strings.Contains(string(body), "task_approval_unavailable") {
+		t.Fatalf("POST status=%d body=%s", resp.StatusCode, body)
+	}
+	// The bridge must neither emit an inert forward task-grant hint nor hijack
+	// the shared recorder's MCP taskSubject before RunProxyWithSandbox binds it.
+	if strings.Contains(string(body), "/api/v1/sessions/{key}/task") {
+		t.Fatalf("bridge refusal advertised inert task grant route: %s", body)
+	}
+	rec.BindTaskSubject(mcpSubject)
+	var smPtr atomic.Pointer[proxy.SessionManager]
+	smPtr.Store(sm)
+	api := proxy.NewSessionAPIHandler(proxy.SessionAPIOptions{
+		SessionMgrPtr: &smPtr,
+		APIToken:      cfg.KillSwitch.APIToken,
+		Logger:        audit.NewNop(),
+	})
+	grantAction := session.TaskAction{
+		Method:      "tools/call",
+		Destination: "fixture",
+		Tool:        "write_file",
+		Digest:      strings.Repeat("a", 64),
+	}
+	grantPayload, err := json.Marshal(map[string]any{
+		"task_id": rec.TaskSnapshot().CurrentTaskID,
+		"permission": map[string]any{
+			"action":     grantAction,
+			"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantReq := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions/"+mcpSubject+"/task", bytes.NewReader(grantPayload))
+	grantReq.Header.Set("Authorization", "Bearer "+cfg.KillSwitch.APIToken)
+	grantW := httptest.NewRecorder()
+	api.HandleTask(grantW, grantReq)
+	if grantW.Code != http.StatusNoContent {
+		t.Fatalf("task grant status=%d body=%s", grantW.Code, grantW.Body.String())
+	}
+	if _, _, matched := rec.TaskPolicySnapshot(mcpSubject, grantAction); !matched {
+		t.Fatal("MCP task subject was hijacked before MCP binding; operator grant did not match")
+	}
+}
