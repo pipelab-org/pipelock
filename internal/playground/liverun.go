@@ -205,6 +205,8 @@ func proxyBindAddrFor(port int) (string, error) {
 
 func liveRunProxyConfig(opts LiveRunOpts) (*config.Config, error) {
 	cfg := config.Defaults()
+	// Disable taint to preserve the published replay surface and keep the demo focused on its scenario.
+	cfg.Taint.Enabled = false
 	cfg.ForwardProxy.Enabled = true
 
 	// DNS host overrides: .test hosts -> loopback
