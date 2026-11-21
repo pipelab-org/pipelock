@@ -21,6 +21,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gobwas/ws"
+	gobwasutil "github.com/gobwas/ws/wsutil"
+
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
@@ -53,7 +56,7 @@ func runV3MCPMatrix(t *testing.T, run func(*testing.T, v3MCPMatrixRow)) {
 		for _, mode := range modes {
 			for _, scenario := range scenarios {
 				t.Run(path+"/"+mode.name+"/"+scenario, func(t *testing.T) {
-					if i == 2 || i == 4 {
+					if i == 2 {
 						t.Skip("pending-in-a-later-step")
 					}
 					run(t, v3MCPMatrixRow{path: path, required: mode.required, scenario: scenario})
@@ -68,7 +71,7 @@ type mcpMatrixFile struct {
 	writeCount, syncCount int
 	scenario              string
 	cancel                context.CancelFunc
-	beforeIntent          func()
+	beforeIntent          func(int)
 }
 
 func (f *mcpMatrixFile) Write(p []byte) (int, error) {
@@ -81,10 +84,10 @@ func (f *mcpMatrixFile) Write(p []byte) (int, error) {
 
 func (f *mcpMatrixFile) Sync() error {
 	f.syncCount++
+	if f.beforeIntent != nil {
+		f.beforeIntent(f.syncCount)
+	}
 	if f.syncCount == 2 {
-		if f.beforeIntent != nil {
-			f.beforeIntent()
-		}
 		if f.scenario == "intent sync fail" {
 			return errors.New("fixture sync failure")
 		}
@@ -112,7 +115,11 @@ func mcpMatrixWriterOptions(t *testing.T, row v3MCPMatrixRow, surface string, ca
 				return f, err
 			}
 			first = false
-			return &mcpMatrixFile{File: f, scenario: row.scenario, cancel: cancel, beforeIntent: beforeIntent}, nil
+			return &mcpMatrixFile{File: f, scenario: row.scenario, cancel: cancel, beforeIntent: func(syncCount int) {
+				if syncCount == 2 && beforeIntent != nil {
+					beforeIntent()
+				}
+			}}, nil
 		},
 	}
 }
@@ -188,8 +195,11 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 	defer cancel()
 	stdio := row.path == "stdio subprocess"
 	surface := "mcp_http_upstream"
-	if stdio {
+	switch row.path {
+	case "stdio subprocess":
 		surface = transportMCPStdio
+	case "WebSocket upstream":
+		surface = deferred.SurfaceMCPWS
 	}
 	writerOpts := mcpMatrixWriterOptions(t, row, surface, cancel, nil)
 	writer, err := v3.OpenStreamWriter(t.Context(), writerOpts)
@@ -202,6 +212,9 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 	reply := heldNativeReply
 	request := jsonToolsCallEcho
 	hold := strings.HasPrefix(row.scenario, "deferred ") || row.scenario == "kill-switch during hold" || row.scenario == "restart recovery of a pending hold"
+	if hold && row.path == "WebSocket upstream" {
+		t.Skip("N/A: ordered WebSocket messages lack a bounded hold queue preserving frame order")
+	}
 	if hold {
 		legacyFixture := nativeDeferredOptions(t, nil)
 		opts.Scanner = legacyFixture.Scanner
@@ -244,6 +257,13 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 			}
 			return RunProxy(ctx, in, client, io.Discard, cmd, opts)
 		}
+		if row.path == "WebSocket upstream" {
+			return runMCPMatrixWS(t, ctx, in, client, opts, mcpMatrixWSPeer{
+				reply: reply, seen: seen, priorIntent: priorIntent, dir: writerOpts.Dir,
+				truncated: row.scenario == "upstream closes mid-response",
+			})
+		}
+
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
@@ -626,5 +646,142 @@ func exerciseMCPV3GET(t *testing.T, row v3MCPMatrixRow) {
 	}
 	if !slices.Equal(actual, expected) {
 		t.Fatalf("GET outcomes: %v, want %v", actual, expected)
+	}
+}
+
+type mcpMatrixWSPeer struct {
+	reply, seen, priorIntent, dir string
+	truncated                     bool
+}
+
+func runMCPMatrixWS(t *testing.T, ctx context.Context, in io.Reader, out io.Writer, opts MCPProxyOpts, peer mcpMatrixWSPeer) error {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, _, err := ws.UpgradeHTTP(r, w)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		messages, err := gobwasutil.ReadClientMessage(conn, nil)
+		if err != nil || len(messages) != 1 || messages[0].OpCode != ws.OpText {
+			return
+		}
+		actions, err := readMCPMatrixActions(peer.dir)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if slices.ContainsFunc(actions, func(a v3.Action) bool {
+			return a.EffectBoundary == mcpUpstreamSendBoundary && a.Phase == "intent"
+		}) {
+			if err := os.WriteFile(peer.priorIntent, []byte("yes"), 0o600); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+		if err := os.WriteFile(peer.seen, messages[0].Payload, 0o600); err != nil {
+			t.Error(err)
+			return
+		}
+		if peer.truncated {
+			if err := ws.WriteHeader(conn, ws.Header{Fin: true, OpCode: ws.OpText, Length: int64(len(peer.reply)) + 1}); err != nil {
+				t.Error(err)
+				return
+			}
+			_, _ = io.WriteString(conn, peer.reply)
+			return
+		}
+		_ = gobwasutil.WriteServerMessage(conn, ws.OpText, []byte(peer.reply))
+		_ = gobwasutil.WriteServerMessage(conn, ws.OpClose, ws.NewCloseFrameBody(ws.StatusNormalClosure, ""))
+	}))
+	defer srv.Close()
+	rd, wr := io.Pipe()
+	defer func() { _ = wr.Close() }()
+	defer func() { _ = rd.Close() }()
+	go func() { _, _ = io.Copy(wr, in) }()
+	return RunWSProxy(ctx, rd, out, io.Discard, wsURL(srv), opts)
+}
+
+func TestMCPV3IntentPrecedesWebSocketWriteLock(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
+	defer cancel()
+	intent := make(chan struct{})
+	pong := make(chan struct{})
+	row := v3MCPMatrixRow{required: true}
+	writerOpts := mcpMatrixWriterOptions(t, row, deferred.SurfaceMCPWS, cancel, nil)
+	create := writerOpts.CreateTempFile
+	writerOpts.CreateTempFile = func(dir, pattern string) (v3.StreamFile, error) {
+		f, err := create(dir, pattern)
+		if err == nil {
+			if file, ok := f.(*mcpMatrixFile); ok {
+				file.beforeIntent = func(count int) {
+					// Header and the first exchange take five syncs.
+					if count == 6 {
+						close(intent)
+						select {
+						case <-pong:
+						case <-ctx.Done():
+						}
+					}
+				}
+			}
+		}
+		return f, err
+	}
+	writer, err := v3.OpenStreamWriter(ctx, writerOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.Close(context.Background(), nil) })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, _, err := ws.UpgradeHTTP(r, w)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		deadline, _ := ctx.Deadline()
+		_ = conn.SetDeadline(deadline)
+		if _, err := gobwasutil.ReadClientMessage(conn, nil); err != nil {
+			return
+		}
+		_ = gobwasutil.WriteServerMessage(conn, ws.OpText, []byte(heldNativeReply))
+		select {
+		case <-intent:
+		case <-ctx.Done():
+			return
+		}
+		if err := gobwasutil.WriteServerMessage(conn, ws.OpPing, nil); err != nil {
+			return
+		}
+		frame, err := ws.ReadFrame(conn)
+		if err == nil && frame.Header.OpCode == ws.OpPong {
+			close(pong)
+		}
+	}))
+	defer srv.Close()
+	in, input := io.Pipe()
+	defer func() { _ = input.Close() }()
+	var out lockedHTTPBuffer
+	done := make(chan error, 1)
+	opts := MCPProxyOpts{Scanner: testScannerForWS(t)}.WithV3ReceiptWriter(writer)
+	go func() { done <- RunWSProxy(ctx, in, &out, io.Discard, wsURL(srv), opts) }()
+	_, _ = io.WriteString(input, jsonToolsCallEcho+"\n")
+	testwait.For(t, time.Second, func() bool { return out.contains(heldNativeReply) }, "first WebSocket reply")
+	_, _ = io.WriteString(input, strings.Replace(jsonToolsCallEcho, "\"id\":1", "\"id\":2", 1)+"\n")
+	select {
+	case <-pong:
+	case <-ctx.Done():
+		t.Error("WebSocket could not write a pong while the receipt sync was pending")
+	}
+	_ = input.Close()
+	select {
+	case err := <-done:
+		if err != nil && ctx.Err() == nil {
+			t.Error(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("WebSocket proxy did not stop")
 	}
 }

@@ -141,7 +141,7 @@ func RunWSProxy(
 	// Override transport-specific fields: the per-invocation recorder,
 	// the fwdToolCfg with its private baseline, "mcp_ws" transport, and
 	// the always-external-source flag for response-side taint classification.
-	wsOpts := opts
+	wsOpts := opts.withV3Session()
 	wsOpts.Rec = rec
 	wsOpts.ToolCfg = fwdToolCfg
 	wsOpts.ToolCfgFn = nil
@@ -168,6 +168,7 @@ func RunWSProxy(
 			_ = wsClient.Close()
 		}
 		wg.Wait()
+		wsOpts.settleV3Session(innerCtx, safeLogW)
 		stopping := streamAdmission.NativeLease.Stopping()
 		pendingOutcomes := tracker.DrainPendingOutcomes()
 		for _, pending := range pendingOutcomes {
@@ -258,13 +259,18 @@ func RunWSProxy(
 		}(wsClient)
 		return nil
 	}
-	if opts.AuthorityVerifier == nil {
+	if opts.AuthorityVerifier == nil && !wsOpts.receiptEffects.enabled {
 		if err := startUpstream(); err != nil {
 			if sessionExit.inProgress() && errors.Is(err, context.Canceled) {
 				return nil
 			}
 			return err
 		}
+	}
+
+	settleHandshakeFailure := func(decision httpInputDecision) {
+		warnTransportAdmission(safeLogW, wsOpts, decision.admission, "upstream_handshake_failed")
+		decision.Outcome.settle(safeLogW, wsOpts, "error", -1, "upstream_handshake_failed")
 	}
 
 	refuseTaskRelease := func(frame MCPFrame, decision httpInputDecision, refusal string) {
@@ -389,17 +395,15 @@ func RunWSProxy(
 			continue
 		}
 
-		// With authority enabled, delay the upstream TCP/WebSocket handshake
-		// until the first message has passed every existing gate plus the grant
-		// check in scanHTTPInputDecision.
-		if err := startUpstream(); err != nil {
-			warnTransportAdmission(safeLogW, wsOpts, decision.admission, "upstream_handshake_failed")
-			decision.Outcome.settle(safeLogW, wsOpts, "error", -1, "upstream_handshake_failed")
-			if sessionExit.inProgress() && errors.Is(err, context.Canceled) {
+		if !wsOpts.receiptEffects.enabled {
+			if err := startUpstream(); err != nil {
+				settleHandshakeFailure(decision)
+				if sessionExit.inProgress() && errors.Is(err, context.Canceled) {
+					break
+				}
+				stdinErr = err
 				break
 			}
-			stdinErr = err
-			break
 		}
 
 		if refusal := mcpTaskReleaseRefusal(wsOpts, decision.taskFrame, decision.taskTaint, false); refusal != "" {
@@ -426,15 +430,50 @@ func RunWSProxy(
 			}
 		}
 
+		effect, err := inputOpts.startV3Send(innerCtx, frame, decision.Outcome.Receipt.ActionID)
+		if err != nil {
+			tracker.removeOwnedOutcome(frame.ID, registration)
+			decision.Outcome.settle(safeLogW, inputOpts, mcpOutcomeStatusBlocked, -1, "receipt_admission_failed")
+			logMCPV3Error(safeLogW, err)
+			return err
+		}
+		if innerCtx.Err() != nil {
+			inputOpts.finishV3Send(innerCtx, safeLogW, effect, false)
+			break
+		}
+
+		// With authority enabled, delay the upstream TCP/WebSocket handshake
+		// until the first message has passed every existing gate plus the grant
+		// check in scanHTTPInputDecision.
+		if err := startUpstream(); err != nil {
+			inputOpts.finishV3Send(innerCtx, safeLogW, effect, false)
+			settleHandshakeFailure(decision)
+			if sessionExit.inProgress() && errors.Is(err, context.Canceled) {
+				break
+			}
+			stdinErr = err
+			break
+		}
+
+		if err := inputOpts.bindV3Send(effect); err != nil || innerCtx.Err() != nil {
+			inputOpts.finishV3Send(innerCtx, safeLogW, effect, false)
+			tracker.removeOwnedOutcome(frame.ID, registration)
+			continue
+		}
+
 		// Forward to upstream.
 		writeErr := wsClient.WriteMessage(decision.ForwardMessage)
 		if writeErr != nil {
+			inputOpts.finishV3Send(innerCtx, safeLogW, effect, true)
 			upstreamWriteFailed = ctx.Err() == nil
 			tracker.removeOwnedOutcome(frame.ID, registration)
 			warnTransportAdmission(safeLogW, wsOpts, decision.admission, mcpUpstreamWriteFailed)
 			decision.Outcome.settle(safeLogW, wsOpts, "error", -1, mcpUpstreamWriteFailed)
 			stdinErr = fmt.Errorf("upstream write: %w", writeErr)
 			break
+		}
+		if effect != nil && effect.request.RequestID == "" {
+			logMCPV3Error(safeLogW, confirmMCPV3Effect(innerCtx, effect.token, true))
 		}
 		if isRPCNotification(frame.ID) {
 			decision.Outcome.settle(safeLogW, wsOpts, "forwarded", -1, "notification_forwarded")
