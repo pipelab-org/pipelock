@@ -540,3 +540,27 @@ func TestEndorsementsForBase(t *testing.T) {
 		t.Fatalf("endorsements for base proxy = %v, want %v", sessions, want)
 	}
 }
+
+func TestLegacyPresentationContainsEarlierAction(t *testing.T) {
+	item := legacyPresentation{
+		InventoryChain:  InventoryChain{Record: "sha256:tail"},
+		actionPositions: map[int64]string{0: "first", 1: "middle", 2: "tail"},
+	}
+	for _, tc := range []struct {
+		name, digest string
+		forked, want bool
+	}{
+		{"earlier record", "sha256:middle", false, true},
+		{"current tail", "sha256:tail", false, false},
+		{"unknown record", "sha256:other", false, false},
+		{"forked chain", "sha256:middle", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := item
+			p.forked = tc.forked
+			if got := p.containsEarlierAction(tc.digest); got != tc.want {
+				t.Fatalf("containsEarlierAction(%q) = %v, want %v", tc.digest, got, tc.want)
+			}
+		})
+	}
+}
