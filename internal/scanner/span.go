@@ -187,7 +187,7 @@ func (p *compiledPattern) firstBoundaryOrGluedSpan(text string) (int, int, bool)
 }
 
 func (p *compiledPattern) firstBoundedBodySpan(text string) (int, int, bool) {
-	for _, loc := range p.re.FindAllStringIndex(text, -1) {
+	for _, loc := range p.regexpWindows.findAll(p.re, text) {
 		bodyLoc := p.withoutLeftBoundary.FindStringIndex(text[loc[0]:loc[1]])
 		if bodyLoc == nil {
 			continue
@@ -397,7 +397,7 @@ func (p *compiledPattern) invalidLeadingCandidates(source string) []string {
 // a later reconstructed key and mask it from enforcement.
 func (p *compiledPattern) providerCandidateSpans(text string) [][2]int {
 	if p.providerPrefixRE == nil {
-		locs := p.withoutLeftBoundary.FindAllStringIndex(text, -1)
+		locs := p.bodyRegexpWindows.findAll(p.withoutLeftBoundary, text)
 		spans := make([][2]int, len(locs))
 		for i, loc := range locs {
 			spans[i] = [2]int{loc[0], loc[1]}
@@ -411,7 +411,7 @@ func (p *compiledPattern) providerCandidateSpans(text string) [][2]int {
 // provider-key match without rerunning the regex over the remaining text. All
 // three canonical bodies share the existing 20-character opaque-suffix minimum.
 func (p *compiledPattern) canonicalProviderCandidateSpans(text string) [][2]int {
-	outer := p.withoutLeftBoundary.FindAllStringIndex(text, -1)
+	outer := p.bodyRegexpWindows.findAll(p.withoutLeftBoundary, text)
 	spans := make([][2]int, 0, len(outer))
 	for _, loc := range outer {
 		spans = append(spans, [2]int{loc[0], loc[1]})
@@ -480,7 +480,7 @@ func (p *compiledPattern) candidateHasLeftBoundary(source string, candidateLoc [
 // enumerated at every start rather than at the regex's non-overlapping hits.
 func (p *compiledPattern) firstAcceptedSpan(text string, joined func(int, int) bool) (int, int, bool) {
 	if !p.wifOverlapRetry {
-		return p.firstAcceptedLocations(text, p.re.FindAllStringIndex(text, -1), joined)
+		return p.firstAcceptedLocations(text, p.regexpWindows.findAll(p.re, text), joined)
 	}
 	return firstWIFCandidate(text, func(start, end int) bool {
 		return p.accepts(text, start, end) && (joined == nil || joined(start, end))

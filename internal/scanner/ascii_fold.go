@@ -176,5 +176,6 @@ func (p *compiledPattern) matchSpanInPreparedView(text, source string, input *as
 	if !p.admitsView(text) {
 		return 0, 0, false
 	}
-	return p.firstAcceptedLocations(text, p.asciiFoldedRE.FindAllStringIndex(input.get(text), -1), nil)
+	locations := p.regexpWindows.findAllInView(p.re, p.asciiFoldedRE, text, input.get(text))
+	return p.firstAcceptedLocations(text, locations, nil)
 }

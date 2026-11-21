@@ -487,6 +487,7 @@ type compiledPattern struct {
 	name                             string
 	re                               *regexp.Regexp
 	withoutLeftBoundary              *regexp.Regexp
+	regexpWindows, bodyRegexpWindows *regexpWindowPlan
 	providerKeyPrefix                string
 	providerPrefixRE                 *regexp.Regexp
 	// relaxSingleGluedBoundary joins candidateHasLeftBoundary. A miss is still
@@ -775,6 +776,8 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		cp.requiresEquals = requirements.requiresEquals
 		cp.minASCIIDigits = requirements.minASCIIDigits
 		cp.shapeGate = requirements.shape
+		cp.regexpWindows = requirements.windows
+		cp.bodyRegexpWindows = requirements.bodyWindows
 		if p.Validator != "" {
 			fn, ok := DLPValidators[p.Validator]
 			if !ok {

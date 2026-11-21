@@ -221,6 +221,7 @@ func initCoreScanner(cfg *config.Config) *compiledCoreScanner {
 			requiresEquals:                      requirements.requiresEquals,
 			minASCIIDigits:                      requirements.minASCIIDigits,
 			shapeGate:                           requirements.shape,
+			regexpWindows:                       requirements.windows,
 			severity:                            p.severity,
 			credentialAudienceHosts:             config.AppendDeclaredCredentialAudienceHosts(p.name, hosts, github, gitlab),
 			credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
