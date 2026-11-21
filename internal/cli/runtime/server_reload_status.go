@@ -27,20 +27,40 @@ const (
 	reloadCaptureDetectorField = "capture.redaction"
 )
 
-// reportStartupDetectorNotices prints drift that this reload both introduced
-// relative to the previous live config and left in place relative to the
-// scanner bound at startup. Receipt content checks and capture redaction keep
-// that scanner until restart.
-func (s *Server) reportStartupDetectorNotices(oldCfg, newCfg *config.Config) {
-	if s.detectorStartupConfig == nil || !s.detectorStartupConfig.FlightRecorder.Redact || oldCfg == nil || newCfg == nil {
+// trackStartupDetectorInputs runs after a candidate is published. Receipt
+// content checks and capture redaction keep the scanner built from the local
+// config at startup, and a restart rebuilds it from the local config again,
+// before any cached Conductor policy is recovered. Bundle values therefore
+// never reach those scanners. An operator reload moves the local baseline; a
+// Conductor transition (apply, recovery or compensation) does not.
+func (s *Server) trackStartupDetectorInputs(oldCfg, newCfg *config.Config) {
+	if s.detectorStartupConfig == nil || oldCfg == nil || newCfg == nil {
 		return
 	}
-	drifted := make(map[string]struct{})
-	for _, field := range config.DetectorInputChanges(s.detectorStartupConfig, newCfg) {
-		drifted[field] = struct{}{}
+	conductorOwned := s.reloadDurablePending
+	if !conductorOwned {
+		s.detectorLocalConfig = newCfg
+	}
+	if !s.detectorStartupConfig.FlightRecorder.Redact || (s.recorder == nil && s.captureWriter == nil) {
+		return
+	}
+	// A local change is noted while it differs from startup. A Conductor
+	// change is noted while it differs from the local config, so restoring
+	// local values after a failed apply stays silent.
+	reference := s.detectorStartupConfig
+	if conductorOwned {
+		reference = s.detectorLocalConfig
+	}
+	differs := make(map[string]struct{})
+	for _, field := range config.DetectorInputChanges(reference, newCfg) {
+		differs[field] = struct{}{}
 	}
 	for _, field := range config.DetectorInputChanges(oldCfg, newCfg) {
-		if _, stillDrifted := drifted[field]; !stillDrifted {
+		if _, ok := differs[field]; !ok {
+			continue
+		}
+		if conductorOwned {
+			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: conductor policy changed %s; receipt content check and capture redaction keep the local config's values, and restarting does not apply the policy's\n", field)
 			continue
 		}
 		if s.recorder != nil {
@@ -59,17 +79,20 @@ func (s *Server) sentryRestartFields(fields []string, cfg *config.Config) []stri
 	return fields
 }
 
-// detectorRestartFields reports local detector drift that a restart rebuilds.
-// Conductor bundles are applied after the startup scanner is built, so their
-// inputs are folded into the baseline instead (see adoptRecoveredDetectorBaseline).
-func (s *Server) detectorRestartFields(fields []string, cfg *config.Config) []string {
-	if cfg != nil && s.detectorStartupConfig != nil && len(config.DetectorInputChanges(s.detectorStartupConfig, cfg)) != 0 {
-		if s.recorder != nil && s.detectorStartupConfig.FlightRecorder.Redact {
-			fields = append(fields, reloadReceiptDetectorField)
-		}
-		if s.captureWriter != nil && s.detectorStartupConfig.FlightRecorder.Redact {
-			fields = append(fields, reloadCaptureDetectorField)
-		}
+// detectorRestartFields reports local detector drift that a restart rebuilds:
+// the latest operator-loaded config against the one the retained scanners were
+// built from. Conductor bundle values are excluded because neither the running
+// scanners nor a restarted daemon receive them.
+func (s *Server) detectorRestartFields(fields []string) []string {
+	start, local := s.detectorStartupConfig, s.detectorLocalConfig
+	if start == nil || local == nil || !start.FlightRecorder.Redact || len(config.DetectorInputChanges(start, local)) == 0 {
+		return fields
+	}
+	if s.recorder != nil {
+		fields = append(fields, reloadReceiptDetectorField)
+	}
+	if s.captureWriter != nil {
+		fields = append(fields, reloadCaptureDetectorField)
 	}
 	return fields
 }
@@ -203,7 +226,7 @@ func (s *Server) finishReloadLocked(attempt *reloadAttempt, err error) {
 		// those omitted fields is ownership resolution, not restart drift.
 		attempt.restart = nil
 	}
-	attempt.restart = s.detectorRestartFields(s.sentryRestartFields(attempt.restart, live), live)
+	attempt.restart = s.detectorRestartFields(s.sentryRestartFields(attempt.restart, live))
 	out.RestartRequiredFields = append([]string{}, attempt.restart...)
 	out.PendingRestart = len(attempt.restart) != 0
 	if out.PendingRestart {
@@ -264,22 +287,4 @@ func (s *Server) notifyReloadStatusLocked() {
 	if s.startupNotifiedAlready() {
 		sdNotifyOrLog(s.opts.Stderr, "STATUS="+s.reloadSystemdStatusLocked())
 	}
-}
-
-// adoptRecoveredDetectorBaseline runs after cached Conductor policy recovery.
-// The receipt content check and capture redaction were built from the local
-// config before recovery, and every restart rebuilds them the same way, so
-// detector inputs added by a bundle never reach them. Say so once, without
-// promising that a restart applies them, and measure later local drift from
-// the recovered policy.
-func (s *Server) adoptRecoveredDetectorBaseline(live *config.Config) {
-	if s.detectorStartupConfig == nil || live == nil {
-		return
-	}
-	if s.detectorStartupConfig.FlightRecorder.Redact && (s.recorder != nil || s.captureWriter != nil) {
-		for _, field := range config.DetectorInputChanges(s.detectorStartupConfig, live) {
-			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: conductor policy changed %s; receipt content check and capture redaction keep the local config's values, and restarting does not apply the policy's\n", field)
-		}
-	}
-	s.detectorStartupConfig = live.Clone()
 }

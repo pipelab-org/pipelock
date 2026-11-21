@@ -765,7 +765,7 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 	// Notices describe the published config. A candidate rejected above must
 	// not say the startup detectors drifted, and a reload that restores their
 	// startup inputs must not say a restart is still required.
-	s.reportStartupDetectorNotices(oldCfg, newCfg)
+	s.trackStartupDetectorInputs(oldCfg, newCfg)
 	// The candidate is live now, so this is true when it is said.
 	if loopbackServicesChanged {
 		_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: containment.loopback_services changed — this reload updates policy only; "+
