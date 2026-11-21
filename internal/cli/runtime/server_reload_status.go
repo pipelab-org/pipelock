@@ -56,6 +56,13 @@ func (s *Server) sentryRestartFields(fields []string, cfg *config.Config) []stri
 	if s.sentry.ScrubberNeedsRestart(cfg) {
 		fields = append(fields, reloadSentryScrubberField)
 	}
+	return fields
+}
+
+// detectorRestartFields reports local detector drift that a restart rebuilds.
+// Conductor bundles are applied after the startup scanner is built, so their
+// inputs are folded into the baseline instead (see adoptRecoveredDetectorBaseline).
+func (s *Server) detectorRestartFields(fields []string, cfg *config.Config) []string {
 	if cfg != nil && s.detectorStartupConfig != nil && len(config.DetectorInputChanges(s.detectorStartupConfig, cfg)) != 0 {
 		if s.recorder != nil && s.detectorStartupConfig.FlightRecorder.Redact {
 			fields = append(fields, reloadReceiptDetectorField)
@@ -196,7 +203,7 @@ func (s *Server) finishReloadLocked(attempt *reloadAttempt, err error) {
 		// those omitted fields is ownership resolution, not restart drift.
 		attempt.restart = nil
 	}
-	attempt.restart = s.sentryRestartFields(attempt.restart, live)
+	attempt.restart = s.detectorRestartFields(s.sentryRestartFields(attempt.restart, live), live)
 	out.RestartRequiredFields = append([]string{}, attempt.restart...)
 	out.PendingRestart = len(attempt.restart) != 0
 	if out.PendingRestart {
@@ -257,4 +264,22 @@ func (s *Server) notifyReloadStatusLocked() {
 	if s.startupNotifiedAlready() {
 		sdNotifyOrLog(s.opts.Stderr, "STATUS="+s.reloadSystemdStatusLocked())
 	}
+}
+
+// adoptRecoveredDetectorBaseline runs after cached Conductor policy recovery.
+// The receipt content check and capture redaction were built from the local
+// config before recovery, and every restart rebuilds them the same way, so
+// detector inputs added by a bundle never reach them. Say so once, without
+// promising that a restart applies them, and measure later local drift from
+// the recovered policy.
+func (s *Server) adoptRecoveredDetectorBaseline(live *config.Config) {
+	if s.detectorStartupConfig == nil || live == nil {
+		return
+	}
+	if s.detectorStartupConfig.FlightRecorder.Redact && (s.recorder != nil || s.captureWriter != nil) {
+		for _, field := range config.DetectorInputChanges(s.detectorStartupConfig, live) {
+			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: conductor policy changed %s; receipt content check and capture redaction keep the local config's values, and restarting does not apply the policy's\n", field)
+		}
+	}
+	s.detectorStartupConfig = live.Clone()
 }

@@ -1555,6 +1555,11 @@ func DetectorInputChanges(old, updated *Config) []string {
 	if old.DLP.SecretsFile != updated.DLP.SecretsFile {
 		fields = append(fields, "dlp.secrets_file")
 	}
+	if knownSecretsLoaded(old) || knownSecretsLoaded(updated) {
+		if effectiveMinSecretLength(old.DLP.MinEnvSecretLength) != effectiveMinSecretLength(updated.DLP.MinEnvSecretLength) {
+			fields = append(fields, "dlp.min_env_secret_length")
+		}
+	}
 	if !slices.Equal(canaryDetectorView(old.CanaryTokens), canaryDetectorView(updated.CanaryTokens)) {
 		fields = append(fields, "canary_tokens")
 	}
@@ -1593,6 +1598,20 @@ func seedDetectorEqual(a, b SeedPhraseDetection) bool {
 	}
 	return seedDetectorOn(a.VerifyChecksum) == seedDetectorOn(b.VerifyChecksum) &&
 		seedDetectorMinWords(a.MinWords) == seedDetectorMinWords(b.MinWords)
+}
+
+// knownSecretsLoaded reports whether the scanner builds env or file secret
+// sets, the only inputs the minimum secret length filters.
+func knownSecretsLoaded(c *Config) bool {
+	return c.DLP.ScanEnv || c.DLP.SecretsFile != ""
+}
+
+// effectiveMinSecretLength matches the scanner: zero or negative means 16.
+func effectiveMinSecretLength(n int) int {
+	if n <= 0 {
+		return 16
+	}
+	return n
 }
 
 func seedDetectorOn(v *bool) bool { return v == nil || *v }

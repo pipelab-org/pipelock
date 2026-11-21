@@ -1083,8 +1083,10 @@ func (s *Server) finishConductorReloadLocked(before proxy.ReloadOutcome, publish
 	out := &s.reloadOutcome
 	out.Trigger = "conductor"
 	// Enforcement-only bundles do not reconcile follower-local restart drift.
+	// Local detector drift carries over unchanged: a bundle neither clears it
+	// nor adds drift that a restart could apply.
 	fields := slices.DeleteFunc(append([]string{}, before.RestartRequiredFields...), func(field string) bool {
-		return field == reloadSentryScrubberField || field == reloadReceiptDetectorField || field == reloadCaptureDetectorField
+		return field == reloadSentryScrubberField
 	})
 	out.RestartRequiredFields = s.sentryRestartFields(fields, s.liveConfig())
 	out.PendingRestart = len(out.RestartRequiredFields) != 0
@@ -1111,6 +1113,11 @@ func (s *Server) finishConductorReloadLocked(before proxy.ReloadOutcome, publish
 		} else if out.PendingRestart {
 			out.Verdict = proxy.ReloadRestartRequired
 			out.Reason = "Conductor policy committed; follower-local fields still require restart or their documented reconciliation"
+		} else if out.Verdict == proxy.ReloadRestartRequired {
+			// The inner reload measured drift this boundary has since
+			// recomputed away; nothing is pending, so restart is not required.
+			out.Verdict = proxy.ReloadAccepted
+			out.Reason = ""
 		}
 		s.logger.LogConfigReload("success", "Conductor policy established at durable boundary", out.CandidateSourceHash)
 		s.recordReloadSuccess(out.CandidateSourceHash)

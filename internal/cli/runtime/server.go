@@ -809,6 +809,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		s.cleanup()
 		return nil, fmt.Errorf("recovering active conductor policy bundle: %w", err)
 	}
+	s.adoptRecoveredDetectorBaseline(s.liveConfig())
 	// Bundle resolution and cached-policy recovery can add DLP inputs after
 	// Sentry's first initialization. Bind the startup client to the final
 	// policy before serving, so restarting actually reconciles scrubber drift.

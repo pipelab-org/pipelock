@@ -123,3 +123,33 @@ func TestSecretsFileReloadMessage(t *testing.T) {
 	}
 	t.Fatal("missing secrets_file reload message")
 }
+
+func TestDetectorInputChangesMinSecretLength(t *testing.T) {
+	cases := []struct {
+		name      string
+		scanEnv   bool
+		file      string
+		old, next int
+		want      bool
+	}{
+		{"env loaded", true, "", 16, 8, true},
+		{"file loaded", false, "secrets.txt", 16, 24, true},
+		{"nothing loaded", false, "", 16, 8, false},
+		{"zero means default", true, "", 0, 16, false},
+		{"negative means default", true, "", -1, 16, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			old := Defaults()
+			old.DLP.ScanEnv = tc.scanEnv
+			old.DLP.SecretsFile = tc.file
+			old.DLP.MinEnvSecretLength = tc.old
+			next := old.Clone()
+			next.DLP.MinEnvSecretLength = tc.next
+			got := slices.Contains(DetectorInputChanges(old, next), "dlp.min_env_secret_length")
+			if got != tc.want {
+				t.Fatalf("min_env_secret_length reported = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
