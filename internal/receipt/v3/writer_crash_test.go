@@ -33,7 +33,11 @@ func TestReceiptWriterCrashChild(t *testing.T) {
 	if mode == "" {
 		return
 	}
-	opts := writerTestOptions(os.Getenv(crashDirKey))
+	dir, err := filepath.Abs(os.Getenv(crashDirKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := writerTestOptions(dir)
 	opts.Heartbeat = 0
 	storage := localWriterStorage()
 	if mode == crashBeforeName {
@@ -142,12 +146,34 @@ func TestStreamWriterCrashAndPowerLoss(t *testing.T) {
 			if got := hits.Load(); got != tc.hits {
 				t.Fatalf("upstream observed %d effects, want %d", got, tc.hits)
 			}
+			var opening string
+			if tc.mode == crashBeforeName {
+				files, err := os.ReadDir(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, file := range files {
+					if segment, ok := identify(file.Name()); ok && segment.start == 0 {
+						if opening != "" {
+							t.Fatal("crash left more than one opening record")
+						}
+						opening = segment.stream
+					}
+				}
+				if opening == "" {
+					t.Fatal("crash did not reach the published opening record")
+				}
+			}
 			if tc.storage == lose {
 				simulateWriterPowerLoss(t, dir, tc.mode)
 			}
 			opts := writerTestOptions(dir)
-			for range 2 {
+			var firstRestart string
+			for restart := range 2 {
 				w := requireWriter(t, opts, localWriterStorage())
+				if restart == 0 {
+					firstRestart = w.active.id
+				}
 				if w.active.confirmed.Seq != 0 {
 					t.Fatal("restart fabricated an outcome")
 				}
@@ -156,6 +182,21 @@ func TestStreamWriterCrashAndPowerLoss(t *testing.T) {
 				}
 			}
 			result := verifyWritten(t, dir, opts.SigningKey.Public().(ed25519.PublicKey))
+			if opening != "" {
+				var wantPrevious string
+				if tc.storage == keep {
+					wantPrevious = opening
+				}
+				var first StreamResult
+				for _, stream := range result.Histories[0].Streams {
+					if stream.Stream == firstRestart {
+						first = stream
+					}
+				}
+				if first.Stream == "" || first.Stream == opening || first.Previous != wantPrevious {
+					t.Fatalf("first restart = %+v, want a new stream with predecessor %q", first, wantPrevious)
+				}
+			}
 			if tc.state != "" {
 				if writerTestCount(t, result, tc.state) != 1 {
 					t.Fatalf("decision did not verify as %q: %+v", tc.state, result)

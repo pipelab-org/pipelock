@@ -99,6 +99,7 @@ type wsRelay struct {
 	redactionLog     *redact.Report
 	rec              session.Recorder // live escalation level for UpgradeAction; nil when profiling disabled
 	taintSessionKey  string           // rotation-safe key re-resolved for every response observation
+	receiptCloseOnce sync.Once        // sends one pair of receipt-failure Close frames
 	terminalOnce     sync.Once        // ensures only one terminal receipt (kill_switch/session_deny) is emitted across concurrent relay goroutines
 	audienceMu       sync.Mutex
 	audienceAllows   map[string]struct{} // reset for each client frame to suppress body/direct duplicate telemetry
@@ -4093,13 +4094,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			continue
 		}
 		if err != nil {
-			if blocked {
-				payload := blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(r.requestID).CloseFramePayload()
-				r.writeClientClose(ws.StatusPolicyViolation, payload)
-				r.writeUpstreamClose(ws.StatusPolicyViolation, payload)
-			} else {
-				r.upstreamCancelled = true
-			}
+			r.upstreamCancelled = !blocked
 			return
 		}
 		bytesTransferred += int64(len(msg))

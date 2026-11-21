@@ -201,7 +201,15 @@ func (r *wsRelay) writePayload(ctx context.Context, boundary string, opcode ws.O
 	opts.Target, opts.RequestID, opts.Agent = r.targetURL, r.requestID, r.agent
 	intent, err := r.proxy.confirmTransportReceipt(ctx, r.cfg, opts, boundary)
 	if receiptWriteWithholdsEffect(r.cfg, err) {
-		return ctx.Err() == nil, err
+		if ctx.Err() != nil {
+			return false, err
+		}
+		r.receiptCloseOnce.Do(func() {
+			reason := blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(r.requestID).CloseFramePayload()
+			r.writeClientClose(ws.StatusPolicyViolation, reason)
+			r.writeUpstreamClose(ws.StatusPolicyViolation, reason)
+		})
+		return true, err
 	}
 	if err = ctx.Err(); err == nil && boundary == boundaryDownstreamDelivery && r.clientClosing.Load() {
 		err = errWSClientClosing
@@ -253,7 +261,7 @@ func (p *Proxy) recordV3ExceptionAllows(cfg *config.Config, opts []receipt.EmitO
 		tx := prepareV3TransportReceipt(cfg, emit)
 		action := tx.action
 		boundary := boundaryUpstreamSend
-		if emit.Transport == TransportConnect {
+		if emit.Transport == TransportConnect && emit.Method == http.MethodConnect {
 			boundary = boundaryTunnelOpen
 		}
 		action.EffectBoundary, action.EffectRelation, action.Phase = boundary, "before", "decision"

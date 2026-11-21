@@ -377,7 +377,7 @@ func TestV3WebSocketIntentPrecedesUpstreamHandshake(t *testing.T) {
 }
 
 func TestV3WebSocketPayloadWaitsForReceipt(t *testing.T) {
-	for _, point := range []string{"open", "upstream", "downstream", "denied"} {
+	for _, point := range []string{"open", "upstream", "upstream ping", "downstream", "downstream ping", "denied"} {
 		t.Run(point, func(t *testing.T) {
 			p, writer, dir, keys := newTestV3HTTPProxy(t, "websocket", true, nil)
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -391,7 +391,7 @@ func TestV3WebSocketPayloadWaitsForReceipt(t *testing.T) {
 				}
 				defer func() { _ = conn.Close() }()
 				message, _, readErr := wsutil.ReadClientData(conn)
-				if point == "upstream" || point == "denied" {
+				if strings.HasPrefix(point, "upstream") || point == "denied" {
 					if readErr == nil {
 						backendResult <- fmt.Errorf("upstream received a refused payload")
 					} else {
@@ -403,13 +403,17 @@ func TestV3WebSocketPayloadWaitsForReceipt(t *testing.T) {
 					backendResult <- readErr
 					return
 				}
-				if point == "downstream" {
+				if strings.HasPrefix(point, "downstream") {
 					if err := writer.Close(ctx, nil); err != nil {
 						backendResult <- err
 						return
 					}
 				}
-				backendResult <- wsutil.WriteServerMessage(conn, ws.OpText, message)
+				opcode := ws.OpText
+				if point == "downstream ping" {
+					opcode = ws.OpPing
+				}
+				backendResult <- wsutil.WriteServerMessage(conn, opcode, message)
 			}))
 			t.Cleanup(backend.Close)
 			done := make(chan struct{})
@@ -429,15 +433,18 @@ func TestV3WebSocketPayloadWaitsForReceipt(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if point == "upstream" {
+			if strings.HasPrefix(point, "upstream") {
 				if err := writer.Close(ctx, nil); err != nil {
 					t.Fatal(err)
 				}
 			}
 			const message = "ordinary message"
 			opcode := ws.OpText
-			if point == "denied" {
+			switch point {
+			case "denied":
 				opcode = ws.OpBinary
+			case "upstream ping":
+				opcode = ws.OpPing
 			}
 			if err := wsutil.WriteClientMessage(conn, opcode, []byte(message)); err != nil {
 				t.Fatal(err)
@@ -450,7 +457,7 @@ func TestV3WebSocketPayloadWaitsForReceipt(t *testing.T) {
 			} else if err == nil {
 				t.Fatalf("client received a refused payload: %q", got)
 			}
-			if point == "downstream" {
+			if point != "open" && point != "denied" {
 				var closed wsutil.ClosedError
 				if !errors.As(err, &closed) || closed.Code != ws.StatusPolicyViolation ||
 					!strings.Contains(closed.Reason, string(blockreason.ReceiptEmissionFailed)) {
@@ -473,7 +480,7 @@ func TestV3WebSocketPayloadWaitsForReceipt(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
-			if point == "upstream" || point == "downstream" {
+			if point != "open" && point != "denied" {
 				return
 			}
 			if err := writer.Close(ctx, nil); err != nil {
@@ -575,12 +582,17 @@ func TestV3InterceptIntentPrecedesRoundTrip(t *testing.T) {
 func TestV3ExceptionAllowanceReceipts(t *testing.T) {
 	p, writer, dir, keys := newTestV3HTTPProxy(t, "intercept", true, nil)
 	cfg := p.CurrentConfig()
-	decision := receipt.EmitOpts{Method: http.MethodGet, Target: "https://api.vendor.example", Transport: "intercept"}
+	decision := receipt.EmitOpts{Method: http.MethodGet, Target: "https://api.vendor.example", Transport: TransportConnect}
 	first := scanner.CredentialAudienceAllow{PatternName: "first", Surface: "header", Destination: "api.vendor.example"}
 	second := first
 	second.PatternName = "second"
 	ctx := audit.NewRequestLogContext("request")
 	if err := p.recordV3CredentialAudienceAllows(cfg, ctx, []scanner.CredentialAudienceAllow{first, second, first}, decision); err != nil {
+		t.Fatal(err)
+	}
+	tunnel := decision
+	tunnel.Method = http.MethodConnect
+	if err := p.recordV3CredentialAudienceAllows(cfg, ctx, []scanner.CredentialAudienceAllow{first}, tunnel); err != nil {
 		t.Fatal(err)
 	}
 	cookies := []issuerCookieAllowance{{Name: "example", Patterns: []string{"first", "second"}}}
@@ -591,8 +603,17 @@ func TestV3ExceptionAllowanceReceipts(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
-	if err != nil || result.Verdict != "VALID" || result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 4 {
+	if err != nil || result.Verdict != "VALID" || result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 5 {
 		t.Fatalf("expected one admission per distinct allowance: %+v (%v)", result, err)
+	}
+	for _, action := range readV3TestActions(t, dir) {
+		want := boundaryUpstreamSend
+		if action.Method == http.MethodConnect {
+			want = boundaryTunnelOpen
+		}
+		if action.EffectBoundary != want {
+			t.Fatalf("%s allowance boundary = %q, want %q", action.Method, action.EffectBoundary, want)
+		}
 	}
 	if err := p.recordV3IssuerCookieAllows(cfg, ctx, cookies, decision); err == nil {
 		t.Fatal("required allowances accepted a closed writer")

@@ -126,3 +126,26 @@ func TestSetAttributionOmitsURLLessTaintSources(t *testing.T) {
 		t.Fatalf("URL-less source created attribution: %+v", action)
 	}
 }
+
+func TestSetAttributionPreservesContractSourceSnapshot(t *testing.T) {
+	sources := []string{"header"}
+	var action Action
+	action.SetAttribution(receipt.EmitOpts{ContractPolicySources: sources})
+	sources[0] = "body"
+	if action.Contract == nil || !slices.Equal(action.Contract.PolicySources, []string{"header"}) {
+		t.Fatalf("contract attribution changed with the caller's slice: %+v", action.Contract)
+	}
+}
+
+func TestStreamWriterOmitsEmptyShieldAttribution(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	w := requireWriter(t, opts, localWriterStorage())
+	action := writerTestIntent("empty-shield")
+	action.SetAttribution(receipt.EmitOpts{Shield: &receipt.ShieldSummary{}})
+	if err := w.WriteAction(t.Context(), action, PolicySnapshot{}); err != nil {
+		t.Fatalf("empty summary prevented receipt admission: %v", err)
+	}
+	if got := readRecoveryActions(t, opts.Dir, w.active.id); len(got) != 1 || got[0].Shield != nil {
+		t.Fatalf("signed action retained an empty Shield object: %+v", got)
+	}
+}

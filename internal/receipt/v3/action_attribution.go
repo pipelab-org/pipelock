@@ -64,7 +64,7 @@ func contractAttribution(opts receipt.EmitOpts) *Contract {
 		Hash: opts.ContractHash, ManifestHash: opts.ActiveManifestHash,
 		SelectorID: opts.ContractSelectorID, RuleID: opts.ContractRuleID,
 		WinningSource: opts.ContractWinningSource, LiveVerdict: opts.ContractLiveVerdict,
-		PolicySources: opts.ContractPolicySources,
+		PolicySources: slices.Clone(opts.ContractPolicySources),
 	}
 	switch generation := opts.ContractGeneration; {
 	case generation > maxInteger:
@@ -118,6 +118,9 @@ func shieldAttribution(summary *receipt.ShieldSummary) *Shield {
 	}
 	if summary.Partial {
 		shield.Partial = new(true)
+	}
+	if *shield == (Shield{}) {
+		return nil
 	}
 	return shield
 }

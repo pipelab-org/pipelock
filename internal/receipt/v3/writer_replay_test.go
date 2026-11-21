@@ -205,6 +205,10 @@ func TestStreamWriterReplayRejectsInputAsOutput(t *testing.T) {
 
 func runWriterReplay(t *testing.T, base string, steps []writerReplayStep) []writerReplayObservation {
 	t.Helper()
+	base, err := filepath.Abs(base)
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir, err := os.MkdirTemp(base, "case-")
 	if err != nil {
 		t.Fatal(err)
