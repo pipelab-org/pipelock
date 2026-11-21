@@ -228,6 +228,7 @@ func TestReceiptV3Corpus(t *testing.T) {
 			v3RunRecipe(t, recipe)
 		})
 	}
+	v3RunWriterRecipes(t)
 }
 
 func v3RunRecipe(t *testing.T, recipe v3Recipe) {
