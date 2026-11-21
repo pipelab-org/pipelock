@@ -14,6 +14,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 )
 
@@ -97,6 +98,8 @@ type Input struct {
 	AllowPrefix         bool
 	AllowUnpinned       bool
 	LegacyOptions       bool
+	LegacySelection     v3.LegacySelection
+	EndorsementPaths    []string
 	GenericLegacyLabels bool
 }
 
@@ -114,6 +117,14 @@ func (f Flags) Run(cmd *cobra.Command, in Input) error {
 		ExpectLineage: f.Lineage, AcceptDiscontinuities: f.Discontinuity,
 		AllowPartialHistories: f.Partial, Directory: in.Directory != "",
 		ExplicitV3: f.Format == "v3", DiskIndex: f.DiskIndex, GenericLegacyLabels: in.GenericLegacyLabels,
+	}
+	opts.LegacySelection = in.LegacySelection
+	for _, path := range in.EndorsementPaths {
+		endorsement, err := receipt.LoadRotationEndorsementFile(path)
+		if err != nil {
+			return usage(fmt.Errorf("load --rotation-endorsement: %w", err))
+		}
+		opts.LegacySelection.Endorsements = append(opts.LegacySelection.Endorsements, endorsement)
 	}
 	if in.Head != "" {
 		head, err := v3.ParseHead(in.Head)

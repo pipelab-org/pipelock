@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 
@@ -134,6 +135,9 @@ func (p *Proxy) recordCredentialAudienceAllow(cfg *config.Config, ctx audit.LogC
 // the signed receipt itself (not just the advisory extension) could not be
 // recorded; callers under require_receipts treat that as fail-closed.
 func (p *Proxy) emitCredentialAudienceReceipt(cfg *config.Config, opts receipt.EmitOpts) error {
+	if p != nil && p.receiptV3 != nil {
+		return p.recordV3ExceptionAllows(context.Background(), cfg, []receipt.EmitOpts{opts})
+	}
 	return p.emitAllowPathReceipt(cfg, opts)
 }
 
@@ -191,13 +195,12 @@ func (p *Proxy) emitAllowPathReceipt(cfg *config.Config, opts receipt.EmitOpts) 
 // confirmation failure. It still attempts every allow so the audit log and
 // metrics stay complete even though the request is blocked once any one
 // confirmation fails.
-func (p *Proxy) recordCredentialAudienceAllows(cfg *config.Config, ctx audit.LogContext, allows []scanner.CredentialAudienceAllow, transport, method, target, requestID, agent string, selected ...receipt.EmitOpts) error {
-	var shard receipt.EmitOpts
-	if len(selected) > 0 {
-		shard = selected[0]
+func (p *Proxy) recordCredentialAudienceAllows(reqCtx context.Context, cfg *config.Config, ctx audit.LogContext, allows []scanner.CredentialAudienceAllow, opts receipt.EmitOpts) error {
+	if p != nil && p.receiptV3 != nil {
+		return p.recordV3CredentialAudienceAllows(reqCtx, cfg, ctx, allows, opts)
 	}
-	return confirmCredentialAudienceAllows(shard, uniqueCredentialAudienceAllows(allows), func(allow scanner.CredentialAudienceAllow, reserved receipt.EmitOpts) error {
-		return p.recordCredentialAudienceAllow(cfg, ctx, allow, transport, method, target, requestID, agent, reserved)
+	return confirmCredentialAudienceAllows(opts, uniqueCredentialAudienceAllows(allows), func(allow scanner.CredentialAudienceAllow, reserved receipt.EmitOpts) error {
+		return p.recordCredentialAudienceAllow(cfg, ctx, allow, opts.Transport, opts.Method, opts.Target, opts.RequestID, opts.Agent, reserved)
 	})
 }
 
@@ -239,6 +242,9 @@ func (rp *ReverseProxyHandler) recordCredentialAudienceAllow(cfg *config.Config,
 }
 
 func (rp *ReverseProxyHandler) emitCredentialAudienceReceipt(cfg *config.Config, opts receipt.EmitOpts) error {
+	if rp != nil && rp.owner != nil && rp.owner.receiptV3 != nil {
+		return rp.owner.recordV3ExceptionAllows(context.Background(), cfg, []receipt.EmitOpts{opts})
+	}
 	return rp.emitAllowPathReceipt(cfg, opts)
 }
 
@@ -363,13 +369,13 @@ func logCredentialAudienceReceiptExtensionDropped(logger *audit.Logger, opts rec
 // recordCredentialAudienceAllows records every distinct allow for the reverse
 // proxy and, when flight_recorder.require_receipts is on, returns the first
 // receipt confirmation failure. See (*Proxy).recordCredentialAudienceAllows.
-func (rp *ReverseProxyHandler) recordCredentialAudienceAllows(cfg *config.Config, ctx audit.LogContext, allows []scanner.CredentialAudienceAllow, method, target, requestID, agent string, selected ...receipt.EmitOpts) error {
-	var shard receipt.EmitOpts
-	if len(selected) > 0 {
-		shard = selected[0]
+func (rp *ReverseProxyHandler) recordCredentialAudienceAllows(reqCtx context.Context, cfg *config.Config, ctx audit.LogContext, allows []scanner.CredentialAudienceAllow, opts receipt.EmitOpts) error {
+	if rp != nil && rp.owner != nil && rp.owner.receiptV3 != nil {
+		opts.Transport = TransportReverse
+		return rp.owner.recordV3CredentialAudienceAllows(reqCtx, cfg, ctx, allows, opts)
 	}
-	return confirmCredentialAudienceAllows(shard, uniqueCredentialAudienceAllows(allows), func(allow scanner.CredentialAudienceAllow, reserved receipt.EmitOpts) error {
-		return rp.recordCredentialAudienceAllow(cfg, ctx, allow, method, target, requestID, agent, reserved)
+	return confirmCredentialAudienceAllows(opts, uniqueCredentialAudienceAllows(allows), func(allow scanner.CredentialAudienceAllow, reserved receipt.EmitOpts) error {
+		return rp.recordCredentialAudienceAllow(cfg, ctx, allow, opts.Method, opts.Target, opts.RequestID, opts.Agent, reserved)
 	})
 }
 
@@ -391,4 +397,17 @@ func confirmCredentialAudienceAllows(admission receipt.EmitOpts, allows []scanne
 		}
 	}
 	return firstErr
+}
+
+func (p *Proxy) recordV3CredentialAudienceAllows(reqCtx context.Context, cfg *config.Config, ctx audit.LogContext, allows []scanner.CredentialAudienceAllow, base receipt.EmitOpts) error {
+	unique := uniqueCredentialAudienceAllows(allows)
+	opts := make([]receipt.EmitOpts, 0, len(unique))
+	for _, allow := range unique {
+		recordCredentialAudienceAllow(p.logger, p.metrics, ctx, allow)
+		entry := base
+		entry.ActionID, entry.Verdict = receipt.NewActionID(), config.ActionAllow
+		entry.Layer, entry.Pattern = credentialAudienceReceiptExtensionKey, allow.PatternName
+		opts = append(opts, entry)
+	}
+	return p.recordV3ExceptionAllows(reqCtx, cfg, opts)
 }

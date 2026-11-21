@@ -82,6 +82,8 @@ type GenericSSEScanOptions struct {
 	// ConfirmFinding runs before an event with warned findings is forwarded.
 	// A failure terminates the stream before writing that event.
 	ConfirmFinding func(error) error
+	// OnFindingDelivery observes the write and flush of a confirmed warning.
+	OnFindingDelivery func(error)
 	// OnDroppedDLP receives DLP matches removed by a scoped suppression. It is
 	// observational only and must not alter stream control flow.
 	OnDroppedDLP func(scanner.TextDLPMatch, string)
@@ -553,7 +555,13 @@ func ScanGenericSSEStreamWithOptions(
 				return fmt.Errorf("sse finding confirmation: %w", err)
 			}
 		}
-		if werr := writeSSEEvent(w, event, reader.LastEventID(), reader.LastEventType(), reader.LastRetry()); werr != nil {
+		werr := writeSSEEvent(w, event, reader.LastEventID(), reader.LastEventType(), reader.LastRetry())
+		if warnedFinding != nil && opts.OnFindingDelivery != nil {
+			werr = finishSSEFindingWrite(flusher, opts.OnFindingDelivery, werr)
+		} else if werr == nil && flusher != nil {
+			flusher.Flush()
+		}
+		if werr != nil {
 			// Downstream consumer went away (e.g. the io.Pipe in the
 			// reverse-proxy hijack was closed by the client). Returning
 			// here breaks the loop and lets the goroutine close the
@@ -561,10 +569,19 @@ func ScanGenericSSEStreamWithOptions(
 			// reading more events into a sink that no longer exists.
 			return fmt.Errorf("sse stream write: %w", werr)
 		}
-		if flusher != nil {
+	}
+}
+
+func finishSSEFindingWrite(flusher http.Flusher, finish func(error), writeErr error) error {
+	if writeErr == nil && flusher != nil {
+		if checked, ok := flusher.(interface{ FlushError() error }); ok {
+			writeErr = checked.FlushError()
+		} else {
 			flusher.Flush()
 		}
 	}
+	finish(writeErr)
+	return writeErr
 }
 
 // dropSelfMatchingSSEInjectionTail keeps text after findings already reported

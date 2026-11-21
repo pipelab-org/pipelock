@@ -26,6 +26,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
@@ -817,6 +818,51 @@ func TestRunHTTPListenerProxyLiveLock_PerRequestUpstreamDenialReturnsStructuredE
 	}
 	if upstreamHits.Load() != 0 {
 		t.Fatalf("upstream hits = %d, want 0", upstreamHits.Load())
+	}
+}
+
+func TestMCPV3ListenerSettlesLateUpstreamRefusal(t *testing.T) {
+	dir, writer, verify := newMCPV3Stream(t, "listener")
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		upstreamHits.Add(1)
+	}))
+	t.Cleanup(upstream.Close)
+	var loaderCalls atomic.Int32
+	rule := contractruntimetest.HTTPEnforceRule("r-other", "api.vendor.example", "/", http.MethodPost)
+	deniedLoader := mcpLiveLockLoader(t, contractruntime.ModeLive, rule)
+	opts := MCPProxyOpts{
+		Scanner: testScannerForHTTP(t), RequireReceipts: true, ReceiptV3: writer,
+		ContractLoaderFn: func() *contractruntime.Loader {
+			if loaderCalls.Add(1) == 1 {
+				return nil
+			}
+			return deniedLoader
+		},
+		ContractAgent: mcpLiveLockAgent, ContractServer: mcpLiveLockServer,
+	}
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, baseURL,
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if err != nil || resp.StatusCode != http.StatusForbidden || upstreamHits.Load() != 0 {
+		t.Fatalf("refusal status %d, upstream sends %d (%v)", resp.StatusCode, upstreamHits.Load(), err)
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, verify)
+	if err != nil || result.Verdict != "VALID" || !hasMCPV3State(result, "not_released") || !hasMCPV3State(result, "blocked") {
+		t.Fatalf("upstream refusal did not settle the intent: %+v (%v)", result, err)
 	}
 }
 

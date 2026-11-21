@@ -30,6 +30,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
 	"github.com/luckyPipewrench/pipelock/internal/posture"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	receiptv3 "github.com/luckyPipewrench/pipelock/internal/receipt/v3/command"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	sigutil "github.com/luckyPipewrench/pipelock/internal/signing"
@@ -139,9 +140,21 @@ Examples:
 			}
 			targetDir := chainDir
 			if chainDir != "" {
-				targetDir = ""
-				if location, err := recorder.ResolveEvidenceLocation(chainDir, locationID); err == nil {
-					targetDir = location.Dir
+				var v3Root bool
+				if locationID == "" {
+					if resolved, err := recorder.ResolveEvidenceRoot(chainDir); err == nil {
+						if root, openErr := recorder.OpenEvidenceDirectory(resolved); openErr == nil {
+							v3Root, _ = v3.DirectoryHasV3(resolved)
+							_ = root.Close()
+							targetDir = resolved
+						}
+					}
+				}
+				if !v3Root {
+					targetDir = ""
+					if location, err := recorder.ResolveEvidenceLocation(chainDir, locationID); err == nil {
+						targetDir = location.Dir
+					}
 				}
 			}
 			claimed, detectErr := v3Flags.Detect(args, targetDir, expectSeq)
@@ -153,13 +166,17 @@ Examples:
 				if err != nil {
 					return configError(fmt.Errorf("loading public key: %w", err))
 				}
+				legacy := v3.LegacySelection{Group: groupID}
+				if cmd.Flags().Changed("session") {
+					legacy.Session = sessionID
+				}
 				return v3Flags.Run(cmd, receiptv3.Input{
 					Paths: args, Directory: targetDir, Keys: keys, Head: expectHead,
 					Seq: expectSeq, SeqSet: cmd.Flags().Changed("expect-seq"),
 					AllowPrefix: allowPrefix, AllowUnpinned: allowUnpinned,
 					LegacyOptions: wholeRecorder || requireSeal || allowUnanchoredSeal || fleetReport ||
-						groupID != "" || cmd.Flags().Changed("session") || cleanReport != "" || posturePath != "" ||
-						postureKey != "" || showRaw || hexdump || len(endorsementPaths) > 0,
+						cleanReport != "" || posturePath != "" || postureKey != "" || showRaw || hexdump,
+					LegacySelection: legacy, EndorsementPaths: endorsementPaths,
 				})
 			}
 			if len(args) > 1 {

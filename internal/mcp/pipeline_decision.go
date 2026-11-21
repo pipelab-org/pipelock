@@ -35,6 +35,9 @@ var errMCPV2ReceiptEmit = errors.New("mcp v2 proxydecision receipt emit failed")
 // would force this file to evolve every time the receipt schema gains
 // a field; wrapping keeps MCPDecision as pure routing.
 type MCPDecision struct {
+	v3Boundary  string
+	v3Confirmed *mcpV3Receipt
+
 	// Receipt is handed straight to receipt.Emitter.Emit when the decision should
 	// produce a receipt. A zero-value Receipt (in particular, empty ActionID) is
 	// the skip signal unless RequireReceipt is set, in which case the decision
@@ -431,6 +434,11 @@ func mcpOutcomeReceiptOpts(opts receipt.EmitOpts, status string, bytesTransferre
 // A stream can fail without an admitted request. Grouped recorders use a
 // single-phase warning for this diagnostic. Keep the legacy single-chain shape.
 func emitMCPStandaloneStreamReceipt(proxyOpts MCPProxyOpts, logW io.Writer, opts receipt.EmitOpts, status, reason string) {
+	if proxyOpts.ReceiptV3 != nil {
+		recordMCPStreamDiagnostic(proxyOpts, logW, opts, true, reason)
+		return
+	}
+	opts = proxyOpts.withReceiptPolicyHash(opts).NativeTerminal()
 	if proxyOpts.ReceiptGroup == nil {
 		emitMCPOutcomeReceipt(proxyOpts.receiptEmitter(), proxyOpts.v2ReceiptEmitter(), nil, logW, proxyOpts.withReceiptPolicyHash(opts), status, -1, reason, proxyOpts.requireReceipts())
 		return
@@ -441,6 +449,10 @@ func emitMCPStandaloneStreamReceipt(proxyOpts MCPProxyOpts, logW io.Writer, opts
 // emitMCPStreamDiagnostic records a stream-lifetime warning without opening
 // or settling a request intent.
 func emitMCPStreamDiagnostic(proxyOpts MCPProxyOpts, logW io.Writer, opts receipt.EmitOpts, status, reason string) {
+	if proxyOpts.ReceiptV3 != nil {
+		recordMCPStreamDiagnostic(proxyOpts, logW, opts, true, reason)
+		return
+	}
 	if opts.ActionID == "" {
 		return
 	}

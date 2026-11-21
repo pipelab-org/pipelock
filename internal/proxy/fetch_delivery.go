@@ -9,28 +9,50 @@ import (
 	"net/http"
 )
 
-// fetchDeliveryWriter observes the JSON representation accepted by the writer.
-// Upstream capture sizes remain in the request budget and audit log. Neither
-// count proves that the remote client consumed or persisted those bytes.
-type fetchDeliveryWriter struct {
-	http.ResponseWriter
-	bytes int64
-	err   error
+// httpDeliveryObservation records the final headers and body writes observed
+// at the response writer. A write or flush cannot prove client consumption.
+type httpDeliveryObservation struct {
+	status        int
+	contentLength int64
+	bytes         int64
+	err           error
 }
 
-func (w *fetchDeliveryWriter) Write(b []byte) (int, error) {
-	n, err := w.ResponseWriter.Write(b)
-	w.bytes += int64(n)
-	if n < len(b) && err == nil {
+func (o *httpDeliveryObservation) start(h http.Header, status int) {
+	if o.status == 0 && (status >= http.StatusOK || status == http.StatusSwitchingProtocols) {
+		o.status = status
+		o.contentLength = responseContentLengthForReceipt(h)
+	}
+}
+
+func (o *httpDeliveryObservation) write(w http.ResponseWriter, body []byte) (int, error) {
+	o.start(w.Header(), http.StatusOK)
+	n, err := w.Write(body)
+	o.bytes += int64(n)
+	if n < len(body) && err == nil {
 		err = io.ErrShortWrite
 	}
 	if err != nil {
-		w.err = err
+		o.err = err
 	}
 	return n, err
 }
 
-func (w *fetchDeliveryWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+type httpDeliveryWriter struct {
+	http.ResponseWriter
+	httpDeliveryObservation
+}
+
+func (w *httpDeliveryWriter) WriteHeader(status int) {
+	w.start(w.Header(), status)
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *httpDeliveryWriter) Write(body []byte) (int, error) {
+	return w.write(w.ResponseWriter, body)
+}
+
+func (w *httpDeliveryWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // encodeJSON returns an encoding or delivery error. It commits headers only
 // after encoding the complete synthetic body, including the trailing newline.

@@ -28,6 +28,8 @@ type verification struct {
 	contested map[string][]stagedRecord
 	histories map[string][]*verifiedStream
 	skip      string
+
+	actionVersionNeeded int64
 }
 
 type verifiedStream struct {
@@ -82,6 +84,10 @@ func VerifyPaths(ctx context.Context, paths []string, opts Options) (Result, err
 }
 
 func verifyPaths(ctx context.Context, paths []string, opts Options, skip string) (Result, error) {
+	return verifyPathsInspect(ctx, paths, opts, skip, nil)
+}
+
+func verifyPathsInspect(ctx context.Context, paths []string, opts Options, skip string, inspect func(*verification) error) (Result, error) {
 	if err := opts.validate(); err != nil {
 		return Result{}, err
 	}
@@ -138,6 +144,11 @@ func verifyPaths(ctx context.Context, paths []string, opts Options, skip string)
 		v.addCode(codeNoEvidence, "")
 	}
 	v.result.finish(opts)
+	if inspect != nil {
+		if err := inspect(&v); err != nil {
+			return Result{}, err
+		}
+	}
 	return v.result, nil
 }
 

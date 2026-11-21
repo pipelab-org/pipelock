@@ -145,10 +145,19 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	warnCtx, finishWarnings := p.receiptWarningContext(r.Context(), selectedReceiptShard)
 	defer finishWarnings()
 	r = r.WithContext(warnCtx)
-	r = r.WithContext(context.WithValue(r.Context(), ctxKeyReceiptShard, selectedReceiptShard))
+	r = p.withV3Exceptions(r.WithContext(context.WithValue(r.Context(), ctxKeyReceiptShard, selectedReceiptShard)))
+	defer p.finishV3Exceptions(r.Context(), false)
 	emitConnectReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptShard(opts, selectedReceiptShard)
 		opts = withReceiptConfig(opts, cfg)
+		if p.receiptV3 != nil {
+			if opts.Verdict == config.ActionBlock {
+				if err := p.recordV3TransportRefusal(r.Context(), cfg, opts, boundaryTunnelOpen); err == nil {
+					blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
+				}
+			}
+			return
+		}
 		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
 		}
@@ -298,7 +307,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if issuedHostRelief && result.Allowed {
 		issuedShard := selectedReceiptShard
 		issuedShard.Transport = TransportConnect
-		if err := p.recordIssuerQueryAllow(cfg, targetCtx, syntheticURL, requestID, agent, r.Method, issuerQueryIssuedRedirect, issuedShard); err != nil {
+		if err := p.recordIssuerQueryAllow(r.Context(), cfg, targetCtx, issuerQueryIssuedRedirect, withReceiptShard(receipt.EmitOpts{Transport: issuedShard.Transport, Method: r.Method, Target: syntheticURL, RequestID: requestID, Agent: agent}, issuedShard)); err != nil {
 			blockedErr := newIssuerAllowReceiptBlockedRequest(err)
 			p.logger.LogBlocked(targetCtx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordBlocked(host, blockedErr.layer, time.Since(start), agentLabel)
@@ -308,7 +317,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := p.recordCredentialAudienceAllows(cfg, targetCtx, result.CredentialAudienceAllows, TransportConnect, http.MethodConnect, syntheticURL, requestID, agent, selectedReceiptShard); err != nil {
+	if err := p.recordCredentialAudienceAllows(r.Context(), cfg, targetCtx, result.CredentialAudienceAllows, withReceiptShard(receipt.EmitOpts{Transport: TransportConnect, Method: http.MethodConnect, Target: syntheticURL, RequestID: requestID, Agent: agent}, selectedReceiptShard)); err != nil {
 		if refuseReceiptCapacity(w, err) {
 			return
 		}
@@ -765,8 +774,15 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if connectGate.HasContractContext() {
 		allowReceipt = withContractReceipt(connectGate, allowReceipt)
 	}
-	if cfg.FlightRecorder.RequireReceipts {
-		if err := p.emitRequiredReceipt(withReceiptConfig(allowReceipt, cfg)); err != nil {
+	var tunnelReceipt *v3TransportReceipt
+	if cfg.FlightRecorder.RequireReceipts || p.receiptV3 != nil {
+		var err error
+		if p.receiptV3 != nil {
+			tunnelReceipt, err = p.confirmTransportReceipt(r.Context(), cfg, allowReceipt, boundaryTunnelOpen)
+		} else {
+			err = p.emitRequiredReceipt(withReceiptConfig(allowReceipt, cfg))
+		}
+		if receiptWriteWithholdsEffect(cfg, err) {
 			blockedErr := newReceiptEmissionBlockedRequest(err)
 			p.logger.LogBlocked(targetCtx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordTunnelBlocked(agentLabel)
@@ -775,7 +791,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 				"CONNECT blocked: "+blockedErr.reason, http.StatusForbidden)
 			return
 		}
-		blockreason.SetRecordedReceipt(w.Header(), allowReceipt.ActionID)
+		if cfg.FlightRecorder.RequireReceipts {
+			blockreason.SetRecordedReceipt(w.Header(), allowReceipt.ActionID)
+		}
 	}
 	if !shouldIntercept {
 		// This tunnel can send bytes we cannot record, even when a later
@@ -786,6 +804,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	outcomeBytes := int64(-1)
 	outcomeReason := "incomplete"
 	clientHijacked := false
+	tunnelOpened := false
 	defer func() {
 		aborted := recover()
 		var flushErr error
@@ -806,6 +825,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		} else {
 			p.emitOutcomeReceipt(cfg, allowReceipt, outcomeStatus, outcomeBytes, outcomeReason)
 		}
+		p.recordTransportOutcome(r.Context(), allowReceipt, tunnelReceipt, tunnelOpened)
 		if aborted != nil {
 			panic(aborted)
 		}
@@ -827,6 +847,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// preconnects need no speculative upstream TCP connection.
 		_, err = p.resolveAndValidateDialTarget(dialCtx, target)
 	} else {
+		startV3Exceptions(r.Context())
 		targetConn, err = p.ssrfSafeDialContext(dialCtx, "tcp", target)
 	}
 	if err != nil {
@@ -834,8 +855,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &ssrfErr) {
 			p.logger.LogBlocked(targetCtx, scanner.ScannerSSRF, ssrfErr.logDetail())
 			p.metrics.RecordTunnelBlocked(agentLabel)
-			if p.emitRecordedReceipt(withReceiptShard(receipt.EmitOpts{
-				ActionID:  actionID,
+			refusalID := actionID
+			if p.receiptV3 != nil {
+				refusalID = receipt.NewActionID()
+			}
+			if p.emitRecordedEffectRefusal(r.Context(), withReceiptShard(receipt.EmitOpts{
+				ActionID:  refusalID,
 				Verdict:   config.ActionBlock,
 				Layer:     scanner.ScannerSSRF,
 				Pattern:   string(ssrfErr.reason),
@@ -844,8 +869,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 				Target:    connectReceiptTarget,
 				RequestID: requestID,
 				Agent:     agent,
-			}, selectedReceiptShard)) {
-				blockreason.SetRecordedReceipt(w.Header(), actionID)
+			}, selectedReceiptShard), boundaryTunnelOpen) {
+				blockreason.SetRecordedReceipt(w.Header(), refusalID)
 			}
 			writeBlockedError(w, ssrfErr.blockInfo().WithRequestID(requestID), "CONNECT blocked: "+ssrfErr.detail, http.StatusForbidden)
 			outcomeStatus = strconv.Itoa(http.StatusForbidden)
@@ -901,10 +926,18 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Send 200 Connection Established. A hijacked connection bypasses net/http's
 	// normal header serialization, so carry the already-validated recorded
 	// receipt explicitly when required-receipt admission completed.
+	startV3Exceptions(r.Context())
 	if recordedReceipt := w.Header().Get(blockreason.HeaderRecordedReceipt); recordedReceipt != "" {
-		_, _ = fmt.Fprintf(clientConn, "HTTP/1.1 200 Connection Established\r\n%s: %s\r\n\r\n", blockreason.HeaderRecordedReceipt, recordedReceipt)
+		_, writeErr := fmt.Fprintf(clientConn, "HTTP/1.1 200 Connection Established\r\n%s: %s\r\n\r\n", blockreason.HeaderRecordedReceipt, recordedReceipt)
+		tunnelOpened = writeErr == nil
 	} else {
-		_, _ = clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+		_, writeErr := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+		tunnelOpened = writeErr == nil
+	}
+	p.finishV3Exceptions(r.Context(), tunnelOpened)
+	if !tunnelOpened {
+		outcomeReason = "downstream_write_failed"
+		return
 	}
 
 	// SNI verification: read ClientHello via Peek, check SNI matches CONNECT
@@ -1116,7 +1149,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	warnCtx, finishWarnings := p.receiptWarningContext(requestCtx, selectedReceiptShard)
 	defer finishWarnings()
 	r = r.WithContext(warnCtx)
-	r = r.WithContext(context.WithValue(r.Context(), ctxKeyReceiptShard, selectedReceiptShard))
+	r = p.withV3Exceptions(r.WithContext(context.WithValue(r.Context(), ctxKeyReceiptShard, selectedReceiptShard)))
+	defer p.finishV3Exceptions(r.Context(), false)
 
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()
@@ -1135,9 +1169,20 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Carry the provenance grade from the moment identity resolves, so every
 	// audit context built from r.Context() below reports the real grade.
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
+	var upstreamReceipt *v3TransportReceipt
+	refusalBoundary := boundaryUpstreamSend
 	emitForwardReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptShard(opts, selectedReceiptShard)
 		opts = withReceiptConfig(opts, cfg)
+		if p.receiptV3 != nil {
+			if opts.Verdict == config.ActionBlock {
+				opts = linkTransportRefusal(opts, upstreamReceipt)
+				if err := p.recordV3TransportRefusal(r.Context(), cfg, opts, refusalBoundary); err == nil {
+					blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
+				}
+			}
+			return
+		}
 		if opts.Layer == nativeStreamCloseLayer {
 			opts = opts.NativeTerminal()
 		}
@@ -1249,7 +1294,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(fwdScanCtx)
 	result := sc.Scan(fwdScanCtx, targetURL)
 	p.metrics.RecordURLDecisions(TransportForward, result.Decisions)
-	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportForward, r.Method, targetURL, requestID, agent, selectedReceiptShard); err != nil {
+	if err := p.recordCredentialAudienceAllows(r.Context(), cfg, actx, result.CredentialAudienceAllows, withReceiptShard(receipt.EmitOpts{Transport: TransportForward, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}, selectedReceiptShard)); err != nil {
 		if refuseReceiptCapacity(w, err) {
 			return
 		}
@@ -1720,7 +1765,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				p.metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
 			},
 			OnCredentialAudienceAllows: func(allows []scanner.CredentialAudienceAllow) error {
-				return p.recordCredentialAudienceAllows(cfg, actx, allows, TransportForward, r.Method, targetURL, requestID, agent, selectedReceiptShard)
+				return p.recordCredentialAudienceAllows(r.Context(), cfg, actx, allows, withReceiptShard(receipt.EmitOpts{Transport: TransportForward, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}, selectedReceiptShard))
 			},
 		}
 		applyContentEntropyConfig(&bodyReq, cfg)
@@ -2013,7 +2058,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Request header DLP scanning.
 	// hadFinding is true even in audit/warn mode so near-miss signals are recorded.
 	forwardHeaderBlocked, forwardHeaderHadFinding, forwardHeaderReason, forwardHeaderReceiptErr := p.evalHeaderDLP(r.Context(), headerDLPParams{
-		headers: r.Header, cfg: cfg, sc: sc, logger: p.logger, actx: actx,
+		forwardsHeaders: true,
+		headers:         r.Header, cfg: cfg, sc: sc, logger: p.logger, actx: actx,
 		hostname: r.URL.Hostname(), target: targetURL, metricAgent: agentLabel, start: start,
 	})
 	if refuseTextDLPScanErrorForContext(r.Context(), w, p.logger, actx, requestID, forwardHeaderReceiptErr) {
@@ -2541,10 +2587,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if forwardGate.HasContractContext() {
 		forwardAllowReceipt = withContractReceipt(forwardGate, forwardAllowReceipt)
 	}
-	if cfg.FlightRecorder.RequireReceipts {
-		intent := withReceiptConfig(forwardAllowReceipt, cfg)
-		intent.ContentScanContext = r.Context()
-		if err := p.emitRequiredReceipt(intent); err != nil {
+	var responseReceipts httpResponseReceipts
+	if cfg.FlightRecorder.RequireReceipts || p.receiptV3 != nil {
+		var err error
+		if p.receiptV3 != nil {
+			upstreamReceipt, err = p.confirmTransportReceipt(r.Context(), cfg, forwardAllowReceipt, boundaryUpstreamSend)
+		} else {
+			intent := withReceiptConfig(forwardAllowReceipt, cfg)
+			intent.ContentScanContext = r.Context()
+			err = p.emitRequiredReceipt(intent)
+		}
+		if receiptWriteWithholdsEffect(cfg, err) {
 			// A client that went away gets the ordinary cancellation answer.
 			// A cancellation Pipelock made itself, such as a revoked license,
 			// stays a block below so the caller never sees an empty success.
@@ -2561,7 +2614,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				"blocked: "+blockedErr.reason, http.StatusForbidden)
 			return
 		}
-		blockreason.SetRecordedReceipt(w.Header(), forwardAllowReceipt.ActionID)
+		if cfg.FlightRecorder.RequireReceipts {
+			blockreason.SetRecordedReceipt(w.Header(), forwardAllowReceipt.ActionID)
+		}
 	}
 	outcomeStatus := "unknown"
 	outcomeBytes := int64(-1)
@@ -2580,11 +2635,18 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// A scanned SSE stream records "complete" on success. Its failed final
 	// flush keeps the SSE cancellation reason a mid-stream departure records.
 	sseDelivered := false
+	var delivery httpDeliveryWriter
+	sseFlusher, _ := w.(http.Flusher)
+	if p.receiptV3 != nil {
+		delivery.ResponseWriter = w
+		w = &delivery
+	}
 	defer func() {
 		aborted := recover()
+		var flushed bool
 		var flushErr error
-		if cfg.FlightRecorder.RequireReceipts && aborted == nil {
-			flushErr = flushResponseBeforeOutcome(w, r, cfg)
+		if aborted == nil {
+			flushed, flushErr = responseReceipts.flush(w, r, cfg, p.receiptV3 == nil || delivery.status != 0, cfg.FlightRecorder.RequireReceipts)
 			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason, config.ActionAllow) {
 				outcomeReason, outcomeBytes = flushFailureReason(outcomeReason), -1
 				if sseDelivered {
@@ -2595,6 +2657,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
 			outcomeReason = "license_revoked"
 		}
+		responseReceipts.finish(p, r, delivery.ResponseWriter, delivery.httpDeliveryObservation, flushed && outcomeReasonClaimsDelivery(outcomeReason, config.ActionAllow))
 		p.emitOutcomeReceiptWithPattern(cfg, outcomeReceipt, receiptOutcomePattern(outcomeStatus, outcomeBytes, outcomeReason))
 		if aborted != nil {
 			panic(aborted)
@@ -2606,12 +2669,18 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			emitForwardReceipt(forwardAllowReceipt)
 		}
 	}
+	confirmResponseDelivery := func() bool {
+		if responseReceipts.confirm(p, w, r, cfg, forwardAllowReceipt) {
+			return true
+		}
+		outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, receiptEmissionFailedLayer
+		return false
+	}
 	responseBudgetTruncated := false
 
-	// Required receipt scanning and durability can outlast task admission.
-	// Without required receipts nothing waits between the check above and
-	// the send, so only the required path needs to look again.
-	if cfg.FlightRecorder.RequireReceipts && !taskAdmissionCurrent() {
+	// Receipt scanning or a durable write can outlast task admission.
+	if (cfg.FlightRecorder.RequireReceipts || p.receiptV3 != nil) && !taskAdmissionCurrent() {
+		p.recordTransportNotReleased(r.Context(), forwardAllowReceipt, upstreamReceipt)
 		outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, session.TaskApprovalStale
 		outcomeReceipt.Verdict = config.ActionBlock
 		outcomeReceipt.TaintDecision = session.PolicyBlock.String()
@@ -2619,7 +2688,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		writeTaskDenialResponse(session.TaskApprovalStale, staleTaskDetail)
 		return
 	}
+	startV3Exceptions(r.Context())
 	resp, err := p.client.Do(outReq)
+	p.finishV3Exceptions(r.Context(), resp != nil)
+	p.recordTransportOutcome(r.Context(), forwardAllowReceipt, upstreamReceipt, resp != nil)
 	if err != nil {
 		if refuseReceiptCapacity(w, err) {
 			outcomeStatus = strconv.Itoa(http.StatusServiceUnavailable)
@@ -2705,6 +2777,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		outcomeReason = "fetch_failed"
 		return
 	}
+	refusalBoundary = boundaryDownstreamDelivery
 	defer safeClose(resp.Body, "resp.Body", p.logger)
 	stripUpstreamPipelockNamespace(resp)
 	if !applyFullResponsePolicy(nil, resp) {
@@ -2766,7 +2839,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	} else if artifact != nil {
 		fwdAuthenticatedArtifact = true
 		p.logger.LogAnomaly(actx, "authenticated_artifact", "official signed artifact verified before response release", 0)
-		if err := p.confirmResponseDecision(cfg, withReceiptShard(withForwardRedaction(receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: config.ActionAllow, Layer: "authenticated_artifact", Pattern: "official signed artifact verified before response release", Transport: "forward", Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}), selectedReceiptShard)); err != nil {
+		if err := p.confirmResponseDecision(cfg, withReceiptShard(withForwardRedaction(receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: config.ActionAllow, Layer: "authenticated_artifact", Pattern: "official signed artifact verified before response release", Transport: "forward", Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}), selectedReceiptShard), &responseReceipts.decisions); err != nil {
 			p.recordRequiredReceiptBlock(err, TransportForward)
 			writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), receiptEmissionBlockReason, http.StatusForbidden)
 			outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, receiptEmissionFailedLayer
@@ -2820,6 +2893,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			p.logger.LogResponseScanExempt(actx, fwdRespHost)
 			p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportForward)
 		}
+		confirmFinding, finishFinding := sseFindingReceiptCallbacks(r.Context(), cfg, withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: TransportForward, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}, selectedReceiptShard), p, p.emitAllowPathReceipt, true)
 		sseOpts := SSEDispatchOptions{
 			nativeAdmission: selectedReceiptShard,
 			IsA2A:           isA2A,
@@ -2829,7 +2903,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				Target:             targetURL,
 				Suppress:           cfg.Suppress,
 				ResponseScanExempt: fwdRespExempt,
-				ConfirmFinding:     sseFindingReceiptConfirmer(cfg, withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: TransportForward, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}, selectedReceiptShard), p.emitAllowPathReceipt),
+				ConfirmFinding:     confirmFinding,
+				OnFindingDelivery:  finishFinding,
 				OnObservedCoreResponse: func(observed scanner.ObservedCoreMatch) {
 					recordObservedCoreResponseMatches(p.metrics, p.logger, actx, []scanner.ObservedCoreMatch{observed}, TransportForward)
 				},
@@ -2899,9 +2974,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		copyResponseHeaders(w.Header(), resp.Header)
+		if !confirmResponseDelivery() {
+			return
+		}
 		w.WriteHeader(resp.StatusCode)
-		flusher, _ := w.(http.Flusher)
-		if err := DispatchSSEScan(r.Context(), resp.Body, httpstream.Writer{Writer: w}, flusher, sc, sseOpts); err != nil {
+		if err := DispatchSSEScan(r.Context(), resp.Body, httpstream.Writer{Writer: w}, sseFlusher, sc, sseOpts); err != nil {
 			if errors.Is(err, mcp.ErrReceiptRequired) {
 				p.recordRequiredReceiptBlock(err, TransportForward)
 				outcomeStatus = strconv.Itoa(resp.StatusCode)
@@ -3050,6 +3127,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		p.logger.LogResponseScanExemptFullTrust(actx, fwdRespHost)
 		p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportForward)
 		copyResponseHeaders(w.Header(), resp.Header)
+		if !confirmResponseDelivery() {
+			return
+		}
 		w.WriteHeader(resp.StatusCode)
 		written, copyErr := httpstream.Copy(w, resp.Body)
 		outcomeStatus = strconv.Itoa(resp.StatusCode)
@@ -3217,13 +3297,16 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 							TaintDecisionReason: forwardTaint.Result.Reason,
 							TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 						})
-						if err := p.confirmResponseDecision(cfg, withReceiptShard(passthroughReceipt, selectedReceiptShard)); err != nil {
+						if err := p.confirmResponseDecision(cfg, withReceiptShard(passthroughReceipt, selectedReceiptShard), &responseReceipts.decisions); err != nil {
 							p.recordRequiredReceiptBlock(err, TransportForward)
 							writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), receiptEmissionBlockReason, http.StatusForbidden)
 							outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, receiptEmissionFailedLayer
 							return
 						}
 						copyResponseHeaders(w.Header(), resp.Header)
+						if !confirmResponseDelivery() {
+							return
+						}
 						w.WriteHeader(resp.StatusCode)
 						written, copyErr := httpstream.Copy(w, io.MultiReader(bytes.NewReader(respBody), resp.Body))
 						outcomeStatus = strconv.Itoa(resp.StatusCode)
@@ -3335,7 +3418,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		var svgShielded bool
 		shieldBlocked = p.blockShieldPartialResponse(resp, respBody, fwdRespHost, cfg, actx)
 		if shieldBlocked == nil {
-			respBody, shieldSummary, svgShielded, shieldBlocked = p.applyShieldResponse(respBody, responseContentType(resp.Header), resp.Header, cfg, shieldResponseContext{admittedScanLimit: admittedScanLimit, scanOriginal: scanOriginal, hostname: fwdRespHost, actx: actx, clientIP: clientIP, requestID: requestID, transport: TransportForward, parentActionID: actionID, shard: selectedReceiptShard})
+			respBody, shieldSummary, svgShielded, shieldBlocked = p.applyShieldResponse(respBody, responseContentType(resp.Header), resp.Header, cfg, shieldResponseContext{admittedScanLimit: admittedScanLimit, scanOriginal: scanOriginal, hostname: fwdRespHost, actx: actx, clientIP: clientIP, requestID: requestID, transport: TransportForward, parentActionID: actionID, shard: selectedReceiptShard, receipts: &responseReceipts.decisions})
 		}
 		if shieldBlocked != nil {
 			p.metrics.RecordBlocked(fwdRespHost, shieldBlocked.info.Layer, time.Since(start), agentLabel)
@@ -3381,7 +3464,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if mediaVerdict.Relabeled != "" || (mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed()) {
 			if cfg.FlightRecorder.RequireReceipts {
-				if err := p.confirmResponseDecision(cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: TransportForward, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}, selectedReceiptShard))); err != nil {
+				if err := p.confirmResponseDecision(cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: TransportForward, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}, selectedReceiptShard)), &responseReceipts.decisions); err != nil {
 					p.recordRequiredReceiptBlock(err, TransportForward)
 					writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), receiptEmissionBlockReason, http.StatusForbidden)
 					outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, receiptEmissionFailedLayer
@@ -3419,7 +3502,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						if !candidate.FirstSeen && !candidate.DriftAdopted {
 							return nil
 						}
-						cardReceiptErr = p.confirmResponseDecision(cfg, withReceiptShard(receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: config.ActionAllow, Layer: scannerLabelA2ACardDrift, Pattern: "Agent Card baseline accepted", Transport: TransportForward, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}, selectedReceiptShard))
+						cardReceiptErr = p.confirmResponseDecision(cfg, withReceiptShard(receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: config.ActionAllow, Layer: scannerLabelA2ACardDrift, Pattern: "Agent Card baseline accepted", Transport: TransportForward, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}, selectedReceiptShard), &responseReceipts.decisions)
 						return cardReceiptErr
 					}
 				}
@@ -3463,7 +3546,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					}), selectedReceiptShard)
 					if a2aResponseDecisionBlocks(cfg, a2aResult, false) {
 						emitForwardReceipt(signatureReceipt)
-					} else if err := p.confirmResponseDecision(cfg, signatureReceipt); err != nil {
+					} else if err := p.confirmResponseDecision(cfg, signatureReceipt, &responseReceipts.decisions); err != nil {
 						p.recordRequiredReceiptBlock(err, TransportForward)
 						writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), receiptEmissionBlockReason, http.StatusForbidden)
 						outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, receiptEmissionFailedLayer
@@ -3535,7 +3618,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				if cfg.FlightRecorder.RequireReceipts {
-					if err := p.confirmResponseDecision(cfg, withReceiptShard(receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: a2aAction, Layer: "a2a_response", Pattern: a2aReason, Transport: TransportForward, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}, selectedReceiptShard)); err != nil {
+					if err := p.confirmResponseDecision(cfg, withReceiptShard(receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: a2aAction, Layer: "a2a_response", Pattern: a2aReason, Transport: TransportForward, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}, selectedReceiptShard), &responseReceipts.decisions); err != nil {
 						p.recordRequiredReceiptBlock(err, TransportForward)
 						writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), receiptEmissionBlockReason, http.StatusForbidden)
 						outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, receiptEmissionFailedLayer
@@ -3557,7 +3640,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			if structured != nil {
 				p.logger.LogAnomaly(actx, structuredResponseLayer, structuredResponseEvidence, 0)
 				evidence := withReceiptShard(receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: config.ActionWarn, Layer: structuredResponseLayer, Pattern: structuredResponseEvidence, Transport: TransportForward, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}, selectedReceiptShard)
-				if err := p.confirmResponseDecision(cfg, evidence); err != nil {
+				if err := p.confirmResponseDecision(cfg, evidence, &responseReceipts.decisions); err != nil {
 					p.recordRequiredReceiptBlock(err, TransportForward)
 					writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), receiptEmissionBlockReason, http.StatusForbidden)
 					outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, receiptEmissionFailedLayer
@@ -3702,11 +3785,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					p.logger.LogResponseScan(actx, action, len(scanResult.Matches), patternNames, bundleRules)
 				}
 				if cfg.FlightRecorder.RequireReceipts {
-					err := p.emitAllowPathReceipt(cfg, withReceiptShard(receipt.EmitOpts{
+					err := p.confirmResponseDecision(cfg, withReceiptShard(receipt.EmitOpts{
 						ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: action,
 						Layer: responseScanLayer, Pattern: reason, Transport: TransportForward,
 						Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent,
-					}, selectedReceiptShard))
+					}, selectedReceiptShard), &responseReceipts.decisions)
 					if err != nil {
 						p.recordRequiredReceiptBlock(err, TransportForward)
 						writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), receiptEmissionBlockReason, http.StatusForbidden)
@@ -3723,15 +3806,18 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// stripping or redaction). Explicit framing lets the client finish the
 		// body before the deferred outcome write. Preserve framing for no-body
 		// responses, upstream trailers, and budget-truncated delivery.
-		if cfg.FlightRecorder.RequireReceipts && r.Method != http.MethodHead && resp.StatusCode >= http.StatusOK &&
+		if (cfg.FlightRecorder.RequireReceipts || p.receiptV3 != nil) && r.Method != http.MethodHead && resp.StatusCode >= http.StatusOK &&
 			resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotModified &&
 			!responseHasTrailers(resp) &&
 			!bufferedBudgetTruncated && (budgetRemaining < 0 || int64(len(respBody)) <= budgetRemaining) {
 			w.Header().Del("Transfer-Encoding")
 			w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
 		}
+		if !confirmResponseDelivery() {
+			return
+		}
 		w.WriteHeader(resp.StatusCode)
-		n, _ := w.Write(respBody)
+		n, writeErr := w.Write(respBody)
 		written := int64(n)
 
 		sc.RecordRequest(strings.ToLower(r.URL.Hostname()), int(written))
@@ -3752,6 +3838,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		outcomeReason = "complete"
 		if responseBudgetTruncated {
 			outcomeReason = "budget_truncated"
+		}
+		if p.receiptV3 != nil && (writeErr != nil || n != len(respBody)) {
+			outcomeReason = "delivery_error"
 		}
 		// Neutral URL results earn no clean credit from a benign response.
 		if structured == nil && forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact && !result.IsAdaptiveNeutral() && !redirectExempt.Load() && !policyObserved.Load() {
@@ -3778,6 +3867,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// max_response_mb should remain a silent streaming cap on this no-scan path
 	// is a separate backward-compat decision, intentionally left unchanged.)
 	copyResponseHeaders(w.Header(), resp.Header)
+	if !confirmResponseDelivery() {
+		return
+	}
 	w.WriteHeader(resp.StatusCode)
 	written, copyErr := httpstream.Copy(w, io.LimitReader(resp.Body, maxBytes))
 

@@ -162,7 +162,7 @@ func (w *deliveryLimitedWriter) Write(b []byte) (int, error) {
 
 func TestFetchDeliveryWriter(t *testing.T) {
 	rec := httptest.NewRecorder()
-	w := &fetchDeliveryWriter{ResponseWriter: rec}
+	w := &httpDeliveryWriter{ResponseWriter: rec}
 	w.WriteHeader(http.StatusAccepted)
 	n, err := w.Write([]byte("body"))
 	if err != nil || n != 4 || w.bytes != 4 || rec.Code != http.StatusAccepted || w.Unwrap() != rec {

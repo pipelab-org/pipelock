@@ -11,6 +11,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -112,11 +113,13 @@ func emitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 // Prepare, AfterJournal and Resolve run in sequence on the resolving
 // goroutine, so the struct needs no lock.
 type deferredReceiptSettlement struct {
-	release  TrackedRequestOutcome
-	done     bool
-	err      error
-	decision string
-	source   string
+	v3Hold            *mcpV3Receipt
+	v3AttemptRecorded bool
+	release           TrackedRequestOutcome
+	done              bool
+	err               error
+	decision          string
+	source            string
 }
 
 // probeAllow closes an allow whose required receipt cannot possibly be written:
@@ -133,7 +136,7 @@ func (s *deferredReceiptSettlement) probeAllow(opts MCPProxyOpts, res deferred.R
 
 // receiptWritable checks every configured family on the hold's assigned shard.
 func receiptWritable(opts MCPProxyOpts, shard receipt.EmitOpts) bool {
-	if !opts.requireReceipts() {
+	if opts.ReceiptV3 != nil || !opts.requireReceipts() {
 		return true
 	}
 	v1, v2 := opts.receiptEmitter(), opts.v2ReceiptEmitter()
@@ -167,7 +170,16 @@ func (s *deferredReceiptSettlement) ensure(opts MCPProxyOpts, logW io.Writer, re
 }
 
 func (s *deferredReceiptSettlement) emit(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
-	s.err = emitDeferredResolutionReceipt(opts, logW, res)
+	if res.FinalDecision == config.ActionBlock && (s.v3AttemptRecorded || errors.Is(s.err, v3.ErrHoldBlockRecorded)) {
+		// After an intent, the outcome describes a failed or withheld send.
+		// The hold's approval remains the decision that authorized the attempt.
+		return nil
+	}
+	if opts.ReceiptV3 != nil {
+		s.err = s.settleV3Hold(opts, res)
+	} else {
+		s.err = emitDeferredResolutionReceipt(opts, logW, res)
+	}
 	s.done, s.decision, s.source = true, res.FinalDecision, res.ResolutionSource
 	return s.err
 }
@@ -176,6 +188,13 @@ func (s *deferredReceiptSettlement) emit(opts MCPProxyOpts, logW io.Writer, res 
 // the journal still marks the release pending. If either append fails or
 // the journal cannot commit, the manager calls back with the corrective block.
 func (s *deferredReceiptSettlement) commitRelease(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
+	if opts.ReceiptV3 != nil {
+		if err := s.commitAllow(opts, logW, res); err != nil {
+			return err
+		}
+		s.release.Method = res.Method
+		return nil
+	}
 	if res.FinalDecision != config.ActionAllow {
 		_, outcomeErr := s.release.settleResult(logW, opts, mcpOutcomeStatusBlocked, -1, res.Reason)
 		return errors.Join(outcomeErr, s.commitAllow(opts, logW, res))
@@ -208,11 +227,14 @@ type holdFailureResolution struct {
 	Reason        string
 }
 
-// emitHoldFailureResolution classifies a failed Hold (capacity vs cascade
-// limit), emits the blocking resolution receipt, and returns the client-facing
-// error message plus any receipt gap. Shared by the stdio and HTTP-forward
-// defer paths.
+// emitHoldFailureResolution returns the client-facing denial and any receipt
+// error. Capacity and cascade denials also record the rejected admission.
 func emitHoldFailureResolution(opts MCPProxyOpts, logW io.Writer, holdErr error, hf holdFailureResolution) (string, error) {
+	if opts.ReceiptV3 != nil && errors.Is(holdErr, ErrReceiptRequired) {
+		// Confirmation failed before publishing the hold. Preserve the
+		// original error for the receipt-gap audit at the caller.
+		return "pipelock: defer receipt confirmation failed", holdErr
+	}
 	source := deferred.HoldFailureSource(holdErr)
 	cascadeDepth := 0
 	parentDeferID := ""
@@ -239,10 +261,16 @@ func emitHoldFailureResolution(opts MCPProxyOpts, logW io.Writer, holdErr error,
 		Method:           hf.Method,
 		Reason:           hf.Reason,
 	})
-	if source == deferred.SourceCascadeLimit {
+	switch source {
+	case deferred.SourceCascadeLimit:
 		return "pipelock: defer cascade depth exceeded", emitErr
+	case deferred.SourceTimeout:
+		return "pipelock: defer confirmation timed out", emitErr
+	case deferred.SourceCancel:
+		return "pipelock: defer confirmation canceled", emitErr
+	default:
+		return "pipelock: defer capacity exceeded", emitErr
 	}
-	return "pipelock: defer capacity exceeded", emitErr
 }
 
 const (

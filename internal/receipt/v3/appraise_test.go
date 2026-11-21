@@ -73,10 +73,16 @@ func TestDecisionIndexRejectsUnusableTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	index := &decisionIndex{ctx: ctx, tx: tx, disk: true}
+	if err := index.prepare(); err != nil {
+		t.Fatal(err)
+	}
 	if err := tx.Rollback(); err != nil {
 		t.Fatal(err)
 	}
-	index := &decisionIndex{ctx: ctx, tx: tx, disk: true}
+	if err := index.prepare(); !errors.Is(err, sql.ErrTxDone) {
+		t.Fatalf("want closed transaction error from preparation, got %v", err)
+	}
 	for _, tc := range []struct {
 		name  string
 		check func() error
@@ -95,8 +101,8 @@ func TestDecisionIndexRejectsUnusableTransaction(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := tc.check(); !errors.Is(err, sql.ErrTxDone) {
-				t.Fatalf("want closed transaction error, got %v", err)
+			if err := tc.check(); err == nil {
+				t.Fatal("operation succeeded after rollback")
 			}
 		})
 	}

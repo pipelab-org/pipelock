@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 )
 
@@ -32,6 +33,7 @@ type mcpSandboxBridgeStartOptions struct {
 	ReceiptEmitter   *receipt.Emitter
 	V2ReceiptEmitter *proxydecision.Emitter
 	ReceiptGroup     *mcp.MCPReceiptGroup
+	ReceiptV3        *v3.StreamWriter
 	EnvelopeEmitter  *envelope.Emitter
 }
 
@@ -49,6 +51,7 @@ type mcpSandboxBridgeSetupOptions struct {
 	ReceiptEmitter   *receipt.Emitter
 	V2ReceiptEmitter *proxydecision.Emitter
 	ReceiptGroup     *mcp.MCPReceiptGroup
+	ReceiptV3        *v3.StreamWriter
 	EnvelopeEmitter  *envelope.Emitter
 	Stderr           io.Writer
 	LaunchConfig     *sandbox.LaunchConfig

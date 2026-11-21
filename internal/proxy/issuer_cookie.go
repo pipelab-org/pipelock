@@ -101,8 +101,44 @@ func (p *Proxy) recordIssuerCookieAllow(cfg *config.Config, ctx audit.LogContext
 	return nil
 }
 
+func (p *Proxy) recordV3IssuerCookieAllows(reqCtx context.Context, cfg *config.Config, ctx audit.LogContext, allowances []issuerCookieAllowance, base receipt.EmitOpts) error {
+	count := 0
+	for _, allowance := range allowances {
+		count += len(allowance.Patterns)
+	}
+	if count == 0 {
+		return nil
+	}
+	parsed, err := url.Parse(base.Target)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
+		if cfg.FlightRecorder.RequireReceipts {
+			return errIssuerAllowTargetInvalid
+		}
+		return nil
+	}
+	destination := strings.ToLower(parsed.Hostname())
+	opts := make([]receipt.EmitOpts, 0, count)
+	for _, allowance := range allowances {
+		for _, pattern := range allowance.Patterns {
+			if p.logger != nil {
+				p.logger.LogDLPIssuerCookieAllow(ctx, pattern, allowance.Name, destination)
+			}
+			entry := base
+			entry.ActionID, entry.Verdict = receipt.NewActionID(), config.ActionAllow
+			entry.Layer, entry.Pattern = issuerCookieReceiptExtensionKey, pattern
+			opts = append(opts, entry)
+		}
+	}
+	return p.recordV3ExceptionAllows(reqCtx, cfg, opts)
+}
+
 // Reserve the exact pattern count before confirming any returned cookie.
 func (ic *InterceptContext) recordIssuerCookieAllows(ctx audit.LogContext, r *http.Request, target string, allows []issuerCookieAllowance) error {
+	if ic.Proxy.receiptV3 != nil {
+		return ic.Proxy.recordV3IssuerCookieAllows(r.Context(), ic.Config, ctx, allows, receipt.EmitOpts{
+			Transport: "intercept", Method: r.Method, Target: target, RequestID: ic.RequestID, Agent: ic.Agent,
+		})
+	}
 	var count int
 	for _, allow := range allows {
 		count += len(allow.Patterns)

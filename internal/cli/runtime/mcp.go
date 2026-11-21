@@ -51,6 +51,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
@@ -330,6 +331,10 @@ func mcpReceiptParityOpts(
 }
 
 func buildDeferManager(cfg *config.Config, warningWriter io.Writer) *deferred.Manager {
+	return buildDeferManagerWithJournal(cfg, warningWriter, deferJournalPath(cfg))
+}
+
+func buildDeferManagerWithJournal(cfg *config.Config, warningWriter io.Writer, journalPath string) *deferred.Manager {
 	if cfg == nil || !cfg.Defer.Enabled {
 		return nil
 	}
@@ -346,7 +351,7 @@ func buildDeferManager(cfg *config.Config, warningWriter io.Writer) *deferred.Ma
 		MaxPendingPerSession: cfg.Defer.MaxPendingPerSession,
 		MaxPendingBytes:      cfg.Defer.MaxPendingBytes,
 		MaxCascadeDepth:      cfg.Defer.MaxCascadeDepth,
-		JournalPath:          deferJournalPath(cfg),
+		JournalPath:          journalPath,
 		JournalWriteGuard: func(write func() error) error {
 			return recorder.WithEvidenceWriterCeremonyLock(cfg.FlightRecorder.Dir, write)
 		},
@@ -1249,6 +1254,38 @@ Key-free evidence capture:
 			// named agents are configured.
 			dowWiring := buildMCPDoWWiring(cfg, dowAgentName)
 
+			useReceiptV3, err := receiptV3Selected(cfg.FlightRecorder)
+			if err != nil {
+				return err
+			}
+			heartbeatCtx, heartbeatCancel := context.WithCancel(cmd.Context())
+			defer heartbeatCancel()
+			var heartbeatErrMu sync.Mutex
+			var heartbeatErr error
+			var groupFailureErr error
+			setRequiredHeartbeatErr := func(err error) {
+				if err == nil {
+					return
+				}
+				heartbeatErrMu.Lock()
+				if heartbeatErr == nil {
+					heartbeatErr = err
+				}
+				heartbeatErrMu.Unlock()
+				heartbeatCancel()
+			}
+			requiredHeartbeatErr := func() error {
+				heartbeatErrMu.Lock()
+				defer heartbeatErrMu.Unlock()
+				if groupFailureErr != nil {
+					return fmt.Errorf("flight_recorder.require_receipts is enabled but receipt group emission failed: %w", groupFailureErr)
+				}
+				if heartbeatErr == nil {
+					return nil
+				}
+				return fmt.Errorf("flight_recorder.require_receipts is enabled but receipt heartbeat emission failed: %w", heartbeatErr)
+			}
+			var receiptWriter *v3.StreamWriter
 			var receiptEmitter *receipt.Emitter
 			var v2ReceiptEmitter *proxydecision.Emitter
 			var receiptGroup *mcp.MCPReceiptGroup
@@ -1264,6 +1301,10 @@ Key-free evidence capture:
 					FileMode:           cfg.FlightRecorder.FileMode,
 					RawEscrow:          cfg.FlightRecorder.RawEscrow,
 					EscrowPublicKey:    cfg.FlightRecorder.EscrowPublicKey,
+				}
+
+				if useReceiptV3 {
+					recCfg.Dir = filepath.Join(recCfg.Dir, receiptOperationalDirectory)
 				}
 
 				var recPrivKey ed25519.PrivateKey
@@ -1338,7 +1379,38 @@ Key-free evidence capture:
 				}
 				cmd.PrintErrf("  Recorder: %s (flight recorder enabled)\n", cfg.FlightRecorder.Dir)
 				printFlightRecorderEvidenceWarning(cmd.ErrOrStderr(), cfg.FlightRecorder.Dir, cfg.FlightRecorder.RetentionDays)
-				if cfg.FlightRecorder.ReceiptChainCount() > 1 {
+				if useReceiptV3 {
+					surface := deferred.SurfaceMCPStdio
+					switch {
+					case hasListen:
+						surface = deferred.SurfaceMCPHTTPListener
+					case isWSUpstream:
+						surface = deferred.SurfaceMCPWS
+					case hasUpstream:
+						surface = deferred.SurfaceMCPHTTPUpstream
+					}
+					surfaces := []string{surface}
+					if runtime.GOOS == "linux" && surface == deferred.SurfaceMCPStdio && (sandboxIntent || cfg.Sandbox.Enabled) {
+						surfaces = append(surfaces, "connect", "forward")
+						if cfg.TLSInterception.Enabled {
+							surfaces = append(surfaces, "intercept")
+						}
+					}
+					streamOpts := runtimeReceiptStreamOptions{surfaces: surfaces}
+					if cfg.FlightRecorder.RequireReceipts {
+						streamOpts.onHeartbeatError = setRequiredHeartbeatErr
+					}
+					receiptWriter, err = openRuntimeReceiptV3(heartbeatCtx, cfg, recPrivKey, rec, postureResult, streamOpts)
+					if err != nil {
+						return fmt.Errorf("open v3 receipt writer: %w", err)
+					}
+					defer func() {
+						if closeErr := receiptWriter.Close(context.WithoutCancel(cmd.Context()), nil); closeErr != nil {
+							runErr = errors.Join(runErr, fmt.Errorf("close v3 receipt writer: %w", closeErr))
+						}
+					}()
+					cmd.PrintErrln("  Receipts: v3 stream opened")
+				} else if cfg.FlightRecorder.ReceiptChainCount() > 1 {
 					var groupErr error
 					receiptGroup, groupErr = buildMCPReceiptGroup(template, cfg.FlightRecorder.ReceiptChainCount())
 					if groupErr != nil {
@@ -1397,11 +1469,9 @@ Key-free evidence capture:
 			// receipt_emission_failed - a silent, total block. Refuse to start
 			// so the misconfiguration surfaces here, not as an all-blocked
 			// proxy at runtime.
-			if cfg.FlightRecorder.RequireReceipts && !receiptEmitterReady(receiptEmitter) {
+			if cfg.FlightRecorder.RequireReceipts && receiptWriter == nil && !receiptEmitterReady(receiptEmitter) {
 				return fmt.Errorf("flight_recorder.require_receipts is enabled but no healthy signed receipt emitter is active: set flight_recorder.enabled, flight_recorder.dir, and flight_recorder.signing_key_path (run 'pipelock init'), fix any receipt-chain resume error, or disable require_receipts")
 			}
-			heartbeatCtx, heartbeatCancel := context.WithCancel(cmd.Context())
-			defer heartbeatCancel()
 			capacity := receiptEmitter.NativeCapacity()
 			var capacityWG sync.WaitGroup
 			watchNativeCapacity(heartbeatCtx, &capacityWG, capacity, heartbeatCancel, cmd.ErrOrStderr())
@@ -1429,31 +1499,6 @@ Key-free evidence capture:
 				return metricsErr
 			}
 			defer stopMetrics()
-			var heartbeatErrMu sync.Mutex
-			var heartbeatErr error
-			var groupFailureErr error
-			setRequiredHeartbeatErr := func(err error) {
-				if err == nil {
-					return
-				}
-				heartbeatErrMu.Lock()
-				if heartbeatErr == nil {
-					heartbeatErr = err
-				}
-				heartbeatErrMu.Unlock()
-				heartbeatCancel()
-			}
-			requiredHeartbeatErr := func() error {
-				heartbeatErrMu.Lock()
-				defer heartbeatErrMu.Unlock()
-				if groupFailureErr != nil {
-					return fmt.Errorf("flight_recorder.require_receipts is enabled but receipt group emission failed: %w", groupFailureErr)
-				}
-				if heartbeatErr == nil {
-					return nil
-				}
-				return fmt.Errorf("flight_recorder.require_receipts is enabled but receipt heartbeat emission failed: %w", heartbeatErr)
-			}
 			if receiptGroup != nil {
 				receiptGroup.OnRequiredFailure = func(err error) {
 					heartbeatErrMu.Lock()
@@ -1566,13 +1611,24 @@ Key-free evidence capture:
 				policyAction = policyCfg.Action
 			}
 			a2aCardBaseline := mcp.NewCardBaseline(1000)
-			deferManager := buildDeferManager(cfg, cmd.ErrOrStderr())
-			if err := recoverDeferredActions(deferManager, deferJournalPath(cfg), mcp.MCPProxyOpts{
-				Scanner: sc, ReceiptEmitter: receiptEmitter, V2ReceiptEmitter: v2ReceiptEmitter,
-				ReceiptGroup: receiptGroup, PolicyHash: captureConfigHash,
-				AuditMode: !cfg.EnforceEnabled(),
-			}, cmd.ErrOrStderr()); err != nil {
-				return err
+			journalPath := deferJournalPath(cfg)
+			if receiptWriter != nil {
+				journalPath = ""
+			}
+			deferManager := buildDeferManagerWithJournal(cfg, cmd.ErrOrStderr(), journalPath)
+			if receiptWriter == nil {
+				if err := recoverDeferredActions(deferManager, journalPath, mcp.MCPProxyOpts{
+					Scanner: sc, ReceiptEmitter: receiptEmitter, V2ReceiptEmitter: v2ReceiptEmitter,
+					ReceiptGroup: receiptGroup, PolicyHash: captureConfigHash,
+					AuditMode: !cfg.EnforceEnabled(),
+				}, cmd.ErrOrStderr()); err != nil {
+					return err
+				}
+			}
+			receiptOptions := func(opts mcp.MCPProxyOpts) mcp.MCPProxyOpts {
+				opts = mcpReceiptParityOpts(opts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
+				opts.ReceiptGroup, opts.ReceiptV3 = receiptGroup, receiptWriter
+				return opts
 			}
 			stopOperatorAPI, err := startMCPOperatorAPI(heartbeatCtx, cfg, deferManager, auditLogger, cmd.ErrOrStderr(), &operatorSessions)
 			if err != nil {
@@ -1666,8 +1722,7 @@ Key-free evidence capture:
 					listenerOpts.ServerIdentityHeadersFn = listenerIdentityHeadersFn(launchIdentity, launchTransport, func() mcp.ServerIdentity {
 						return mcp.ServerIdentity{Name: launchIdentity.Name, PolicyName: launchIdentity.ArmingName, Binding: serverBinding, BindingMode: launchIdentity.BindingMode, Revision: launchIdentity.Revision}
 					})
-					listenerOpts = mcpReceiptParityOpts(listenerOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
-					listenerOpts.ReceiptGroup = receiptGroup
+					listenerOpts = receiptOptions(listenerOpts)
 					respAction, respTrust, respServer := mcpResponseLogFields(listenerOpts)
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: MCP reverse proxy %s -> %s (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s)\n",
 						listenAddr, RedactEndpoint(upstreamURL), respAction, respTrust, respServer, inputAction, toolAction, policyAction)
@@ -1721,8 +1776,7 @@ Key-free evidence capture:
 					applyMCPA2AOpts(&wsOpts, cfg, a2aCardBaseline, upstreamURL)
 					applyMCPResponseSuppressOpts(&wsOpts, cfg, launchIdentity)
 					wsOpts.ServerBinding = serverBinding
-					wsOpts = mcpReceiptParityOpts(wsOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
-					wsOpts.ReceiptGroup = receiptGroup
+					wsOpts = receiptOptions(wsOpts)
 					respAction, respTrust, respServer := mcpResponseLogFields(wsOpts)
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying WS upstream %s (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s)\n",
 						RedactEndpoint(upstreamURL), respAction, respTrust, respServer, inputAction, toolAction, policyAction)
@@ -1774,8 +1828,7 @@ Key-free evidence capture:
 				applyMCPA2AOpts(&httpOpts, cfg, a2aCardBaseline, upstreamURL)
 				applyMCPResponseSuppressOpts(&httpOpts, cfg, launchIdentity)
 				httpOpts.ServerBinding = serverBinding
-				httpOpts = mcpReceiptParityOpts(httpOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
-				httpOpts.ReceiptGroup = receiptGroup
+				httpOpts = receiptOptions(httpOpts)
 				respAction, respTrust, respServer := mcpResponseLogFields(httpOpts)
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying upstream %s (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s)\n",
 					RedactEndpoint(upstreamURL), respAction, respTrust, respServer, inputAction, toolAction, policyAction)
@@ -1916,6 +1969,7 @@ Key-free evidence capture:
 					ReceiptEmitter:   receiptEmitter,
 					V2ReceiptEmitter: v2ReceiptEmitter,
 					ReceiptGroup:     receiptGroup,
+					ReceiptV3:        receiptWriter,
 					EnvelopeEmitter:  envEmitter,
 					Stderr:           cmd.ErrOrStderr(),
 					LaunchConfig:     &launchCfg,
@@ -1963,8 +2017,7 @@ Key-free evidence capture:
 				applyMCPA2AOpts(&proxyOpts, cfg, a2aCardBaseline, "")
 				applyMCPResponseSuppressOpts(&proxyOpts, cfg, launchIdentity)
 				proxyOpts.ServerBinding = serverBinding
-				proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
-				proxyOpts.ReceiptGroup = receiptGroup
+				proxyOpts = receiptOptions(proxyOpts)
 				respAction, respTrust, respServer := mcpResponseLogFields(proxyOpts)
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
 					"pipelock: proxying MCP server %v [SANDBOXED] (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s, workspace=%s)\n",
@@ -2116,8 +2169,7 @@ Key-free evidence capture:
 			applyMCPA2AOpts(&proxyOpts, cfg, a2aCardBaseline, "")
 			applyMCPResponseSuppressOpts(&proxyOpts, cfg, launchIdentity)
 			proxyOpts.ServerBinding = serverBinding
-			proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
-			proxyOpts.ReceiptGroup = receiptGroup
+			proxyOpts = receiptOptions(proxyOpts)
 			// The unsandboxed path has no UID/GID map setup. Harden before
 			// RunProxy can start its wrapped command.
 			if err := mcp.HardenProxyProcess(); err != nil {

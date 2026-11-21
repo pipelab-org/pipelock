@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -257,7 +258,7 @@ func TestRecordIssuerAllow_EarlyReturnsFollowRequireReceipts(t *testing.T) {
 	}
 	query := func(target string) recorder {
 		return func(p *Proxy, cfg *config.Config) error {
-			return p.recordIssuerQueryAllow(cfg, audit.LogContext{}, target, "req", "agent-one", http.MethodGet, issuerQueryObserved)
+			return p.recordIssuerQueryAllow(t.Context(), cfg, audit.LogContext{}, issuerQueryObserved, receipt.EmitOpts{Method: http.MethodGet, Target: target, RequestID: "req", Agent: "agent-one"})
 		}
 	}
 	cases := []struct {

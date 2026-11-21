@@ -4,6 +4,7 @@
 package deferred
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -1754,6 +1756,382 @@ func TestResolveApprovalResultReportsAppliedDecision(t *testing.T) {
 			if got.ResolutionSource != tt.wantSource {
 				t.Fatalf("resolution source = %q, want %q", got.ResolutionSource, tt.wantSource)
 			}
+		})
+	}
+}
+
+func TestJournalFreeHoldConfirmationAndCascade(t *testing.T) {
+	m := NewManager(Config{Enabled: true, Timeout: time.Minute})
+	t.Cleanup(func() { m.ResolveAll(config.ActionBlock, SourceCancel) })
+	fault := errors.New("confirmation failed")
+	resolved := make(chan Resolution, 2)
+	hold := HeldAction{
+		DeferID: "parent", ActionID: "parent", Target: "example",
+		Authority: AuthoritySnapshot{SessionID: "session"},
+		RulePolicy: config.DeferResolutionPolicy{
+			StepUpOn: config.DeferStepUpOn{ApprovalRequestsHuman: true},
+		},
+		Resolve: func(res Resolution) { resolved <- res },
+		ConfirmHold: func(held HeldAction) error {
+			if held.CascadeDepth != 1 || held.ParentDeferID != "" || held.Linkage != LinkageSessionPendingAncestor ||
+				!held.Deadline.After(time.Now()) {
+				return fmt.Errorf("unexpected hold before confirmation: %+v", held)
+			}
+			return fault
+		},
+	}
+	if err := m.Hold(hold); !errors.Is(err, fault) || m.HeldCount() != 0 {
+		t.Fatalf("failed confirmation published a hold: %v", err)
+	}
+	hold.ConfirmHold = func(HeldAction) error { return nil }
+	if err := m.Hold(hold); err != nil {
+		t.Fatal(err)
+	}
+	hold.DeferID, hold.ActionID = "child", "child"
+	var confirmedChild *HeldAction
+	hold.ConfirmHold = func(held HeldAction) error {
+		confirmedChild = &held
+		return nil
+	}
+	if err := m.Hold(hold); err != nil {
+		t.Fatal(err)
+	}
+	if confirmedChild == nil {
+		t.Fatal("child hold was published without confirmation")
+	}
+	if confirmedChild.CascadeDepth != 2 || confirmedChild.ParentDeferID != "parent" ||
+		confirmedChild.Linkage != LinkageSessionPendingAncestor {
+		t.Fatalf("unexpected child before confirmation: %+v", confirmedChild)
+	}
+	if err := m.ResolveApproval("parent", config.ActionAsk); err != nil {
+		t.Fatal(err)
+	}
+	var child, parent Resolution
+	select {
+	case child = <-resolved:
+	default:
+		t.Fatal("missing child settlement")
+	}
+	select {
+	case parent = <-resolved:
+	default:
+		t.Fatal("missing parent settlement")
+	}
+	if child.DeferID != "child" || child.FinalDecision != config.ActionBlock || child.ResolutionSource != SourceCascade ||
+		parent.DeferID != "parent" || parent.FinalDecision != config.ActionAsk {
+		t.Fatalf("unexpected cascade resolution: child=%+v parent=%+v", child, parent)
+	}
+	if m.HeldCount() != 0 || m.JournalPath() != "" {
+		t.Fatal("journal-free settlement left state behind")
+	}
+}
+
+func TestHoldConfirmationLeavesOtherSessionsAvailable(t *testing.T) {
+	m := NewManager(Config{Enabled: true, Timeout: time.Minute, MaxPending: 2, MaxPendingBytes: 2})
+	started := make(chan struct{})
+	finish := make(chan struct{})
+	var release sync.Once
+	finishConfirmation := func() { release.Do(func() { close(finish) }) }
+	t.Cleanup(finishConfirmation)
+	fault := errors.New("confirmation failed")
+	mustHold := func(id, session string) HeldAction {
+		return HeldAction{
+			DeferID: id, ActionID: id, Target: "example", SizeBytes: 1,
+			Authority: AuthoritySnapshot{SessionID: session},
+			Resolve:   func(Resolution) {},
+		}
+	}
+	if err := m.Hold(mustHold("other", "other-session")); err != nil {
+		t.Fatal(err)
+	}
+	confirming := mustHold("pending", "pending-session")
+	confirming.ConfirmHold = func(HeldAction) error {
+		close(started)
+		<-finish
+		return fault
+	}
+	holdResult := make(chan error, 1)
+	go func() { holdResult <- m.Hold(confirming) }()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("hold confirmation did not start")
+	}
+
+	probe := make(chan error, 1)
+	go func() {
+		if count := m.HeldCount(); count != 1 {
+			probe <- fmt.Errorf("visible holds = %d, want only the other session", count)
+			return
+		}
+		if snapshot := m.Snapshot(); len(snapshot) != 1 || snapshot[0].DeferID != "other" {
+			probe <- fmt.Errorf("snapshot exposes a hold before receipt confirmation")
+			return
+		}
+		if err := m.Hold(mustHold("extra", "extra-session")); !errors.Is(err, ErrCapacity) {
+			probe <- fmt.Errorf("confirmation did not reserve capacity: %w", err)
+			return
+		}
+		probe <- m.Resolve("other", config.ActionBlock, SourceOperator)
+	}()
+	select {
+	case err := <-probe:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a pending receipt confirmation blocked an unrelated session")
+	}
+
+	finishConfirmation()
+	if err := <-holdResult; !errors.Is(err, fault) {
+		t.Fatalf("failed confirmation = %v, want %v", err, fault)
+	}
+	if err := m.Hold(mustHold("pending", "pending-session")); err != nil {
+		t.Fatalf("failed confirmation retained its ID or capacity: %v", err)
+	}
+	m.ResolveAll(config.ActionBlock, SourceCancel)
+}
+
+func TestApprovalAfterConfirmationCannotReleaseExpiredHold(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		expired bool
+	}{
+		{"unexpired", false},
+		{"expired", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m := NewManager(Config{Enabled: true, Timeout: time.Minute})
+				resolved := make(chan Resolution, 2)
+				parent := HeldAction{
+					DeferID: "parent", ActionID: "parent", Authority: AuthoritySnapshot{SessionID: "session"},
+					RulePolicy: config.DeferResolutionPolicy{AllowOn: config.DeferAllowOn{Approval: true}},
+					Resolve:    func(res Resolution) { resolved <- res },
+				}
+				if err := m.Hold(parent); err != nil {
+					t.Fatal(err)
+				}
+				stalled, release := make(chan struct{}), make(chan struct{})
+				finish := sync.OnceFunc(func() { close(release) })
+				defer finish()
+				child := parent
+				child.DeferID, child.ActionID = "child", "child"
+				child.ConfirmHold = func(HeldAction) error {
+					close(stalled)
+					<-release
+					return nil
+				}
+				held := make(chan error, 1)
+				go func() { held <- m.Hold(child) }()
+				<-stalled
+				approved := make(chan error, 1)
+				go func() { approved <- m.ResolveApproval(parent.DeferID, config.ActionAllow) }()
+				synctest.Wait()
+				select {
+				case err := <-approved:
+					t.Fatalf("approval returned before confirmation completed: %v", err)
+				default:
+				}
+				if tc.expired {
+					m.mu.Lock()
+					m.holds[parent.DeferID].timer.Stop()
+					m.holds[parent.DeferID].Deadline = time.Now().Add(-time.Second)
+					m.mu.Unlock()
+				}
+				finish()
+				if err := <-held; err != nil {
+					t.Fatal(err)
+				}
+				if err := <-approved; err != nil {
+					t.Fatal(err)
+				}
+				if !tc.expired {
+					if res := <-resolved; res.DeferID != parent.DeferID || res.FinalDecision != config.ActionAllow {
+						t.Fatalf("unexpired approval did not release the parent: %+v", res)
+					}
+					if err := m.Resolve(child.DeferID, config.ActionBlock, SourceCancel); err != nil {
+						t.Fatal(err)
+					}
+					return
+				}
+				expected := map[string]string{parent.DeferID: SourceTimeout, child.DeferID: SourceCascade}
+				for range 2 {
+					select {
+					case res := <-resolved:
+						source, ok := expected[res.DeferID]
+						if !ok || res.FinalDecision != config.ActionBlock || res.ResolutionSource != source {
+							t.Fatalf("unexpected hold resolution %+v; still waiting for %v", res, expected)
+						}
+						delete(expected, res.DeferID)
+					default:
+						t.Fatalf("missing resolutions: %v", expected)
+					}
+				}
+			})
+		})
+	}
+}
+
+func TestPublishedHoldExpiresDuringSiblingConfirmation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := NewManager(Config{Enabled: true, Timeout: time.Second})
+		resolved := make(chan Resolution, 2)
+		parent := HeldAction{
+			DeferID: "parent", ActionID: "parent", Authority: AuthoritySnapshot{SessionID: "session"},
+			Resolve: func(res Resolution) { resolved <- res },
+		}
+		if err := m.Hold(parent); err != nil {
+			t.Fatal(err)
+		}
+		started, release := make(chan struct{}), make(chan struct{})
+		finish := sync.OnceFunc(func() { close(release) })
+		defer finish()
+		child := parent
+		child.DeferID, child.ActionID = "child", "child"
+		child.ConfirmHold = func(HeldAction) error {
+			close(started)
+			<-release
+			return nil
+		}
+		held := make(chan error, 1)
+		go func() { held <- m.Hold(child) }()
+		<-started
+		select {
+		case res := <-resolved:
+			if res.DeferID != parent.DeferID || res.FinalDecision != config.ActionBlock || res.ResolutionSource != SourceTimeout {
+				t.Fatalf("expired parent resolution = %+v", res)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("sibling confirmation blocked the published hold's timeout")
+		}
+		finish()
+		if err := <-held; err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case res := <-resolved:
+			if res.DeferID != child.DeferID || res.FinalDecision != config.ActionBlock || res.ResolutionSource != SourceCascade {
+				t.Fatalf("child resolution = %+v", res)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("confirmed descendant did not settle")
+		}
+	})
+}
+
+func TestConfirmedHoldKeepsCapacityWhileSettling(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		manager := NewManager(Config{Enabled: true, Timeout: time.Minute, MaxPending: 1})
+		started, release := make(chan struct{}), make(chan struct{})
+		finish := sync.OnceFunc(func() { close(release) })
+		defer finish()
+		hold := HeldAction{
+			DeferID: "first", ActionID: "first",
+			ConfirmHold: func(HeldAction) error { return nil },
+			Resolve: func(Resolution) {
+				close(started)
+				<-release
+			},
+		}
+		if err := manager.Hold(hold); err != nil {
+			t.Fatal(err)
+		}
+		resolved := make(chan error, 1)
+		go func() { resolved <- manager.Resolve(hold.DeferID, config.ActionBlock, SourceOperator) }()
+		<-started
+		next := HeldAction{
+			DeferID: "next", ActionID: "next",
+			ConfirmHold: func(HeldAction) error { return nil }, Resolve: func(Resolution) {},
+		}
+		if err := manager.Hold(next); !errors.Is(err, ErrCapacity) {
+			t.Fatalf("second hold entered while the first was settling: %v", err)
+		}
+		finish()
+		if err := <-resolved; err != nil {
+			t.Fatal(err)
+		}
+		if err := manager.Hold(next); err != nil {
+			t.Fatalf("capacity was not released after settlement: %v", err)
+		}
+		if err := manager.Resolve(next.DeferID, config.ActionBlock, SourceCancel); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestWaitingHoldReservesCapacityAndReleasesOnCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name                      string
+		global, perSession, bytes int
+	}{
+		{"global", 2, 3, 3},
+		{"session", 3, 2, 3},
+		{"bytes", 3, 3, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m := NewManager(Config{
+					Enabled: true, Timeout: time.Minute, MaxPending: tc.global,
+					MaxPendingPerSession: tc.perSession, MaxPendingBytes: tc.bytes,
+				})
+				makeHold := func(id string) HeldAction {
+					return HeldAction{
+						DeferID: id, SizeBytes: 1, Authority: AuthoritySnapshot{SessionID: "session"},
+						Resolve: func(Resolution) {},
+					}
+				}
+				release := make(chan struct{})
+				defer close(release)
+				first := makeHold("first")
+				first.ConfirmHold = func(HeldAction) error {
+					<-release
+					return nil
+				}
+				firstDone := make(chan error, 1)
+				go func() { firstDone <- m.Hold(first) }()
+				synctest.Wait()
+
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				second := makeHold("second")
+				second.ConfirmHold = func(HeldAction) error {
+					t.Error("canceled hold was signed")
+					return nil
+				}
+				secondDone := make(chan error, 1)
+				go func() { secondDone <- m.HoldContext(ctx, second) }()
+				synctest.Wait()
+
+				thirdDone := make(chan error, 1)
+				go func() { thirdDone <- m.Hold(makeHold("third")) }()
+				synctest.Wait()
+				select {
+				case err := <-thirdDone:
+					if !errors.Is(err, ErrCapacity) {
+						t.Fatalf("over-capacity hold returned %v, want ErrCapacity", err)
+					}
+				default:
+					t.Fatal("over-capacity hold blocked behind confirmation")
+				}
+				cancel()
+				synctest.Wait()
+				select {
+				case err := <-secondDone:
+					if !errors.Is(err, context.Canceled) {
+						t.Fatalf("waiting hold returned %v, want cancellation", err)
+					}
+				default:
+					t.Fatal("canceled hold blocked behind confirmation")
+				}
+				m.mu.Lock()
+				waiting, bytes := len(m.waitingHolds), m.totalBytes
+				m.mu.Unlock()
+				if waiting != 0 || bytes != 1 {
+					t.Fatalf("canceled hold retained capacity: waiting=%d bytes=%d", waiting, bytes)
+				}
+			})
 		})
 	}
 }

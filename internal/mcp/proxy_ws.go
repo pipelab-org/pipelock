@@ -148,6 +148,7 @@ func RunWSProxy(
 	wsOpts.Transport = "mcp_ws"
 	wsOpts.TaintExternalSource = true
 	wsOpts.WarnContext = innerCtx
+	wsOpts.v3DirectResponseDelivery = true
 	wsOpts.sessionExit = sessionExit
 	wsOpts.nativeStdio = streamAdmission.NativeLease != nil
 	wsOpts.nativeAdmission = streamAdmission
@@ -180,6 +181,11 @@ func RunWSProxy(
 			}
 			if stopping {
 				reason, status = nativeCapacityReason, "cancelled"
+			}
+			if wsOpts.ReceiptV3 != nil {
+				recordMCPStreamDiagnostic(wsOpts, safeLogW, pending.Outcome.Receipt, pending.Outcome.Receipt.ActionID == "", reason)
+				pending.Outcome.releaseNativeLease()
+				continue
 			}
 			pending.Outcome.settle(safeLogW, wsOpts, status, -1, reason)
 		}
@@ -214,6 +220,10 @@ func RunWSProxy(
 		if wsClient != nil {
 			return nil
 		}
+		handshake, receiptErr := wsOpts.confirmV3StreamAdmission(safeLogW, "WS")
+		if receiptErr != nil {
+			return receiptErr
+		}
 		var err error
 		transportReceiptOpts = wsOpts.snapshotScanPolicy().pinReceiptWriters()
 		transportAdmission, err = admitDurableTransport(transportReceiptOpts, "WS", upstreamURL)
@@ -222,6 +232,7 @@ func RunWSProxy(
 			return fmt.Errorf("recording upstream WebSocket admission: %w", err)
 		}
 		wsClient, err = transport.NewWSClientWithDialer(innerCtx, upstreamURL, opts.DialContext)
+		handshake.finish(wsOpts, safeLogW, true, err)
 		if err != nil {
 			warnTransportAdmission(safeLogW, transportReceiptOpts, transportAdmission, "upstream_handshake_failed")
 			return fmt.Errorf("connecting to upstream: %w", err)
@@ -393,6 +404,7 @@ func RunWSProxy(
 		// until the first message has passed every existing gate plus the grant
 		// check in scanHTTPInputDecision.
 		if err := startUpstream(); err != nil {
+			decision.v3Upstream.finish(wsOpts, safeLogW, false, nil)
 			warnTransportAdmission(safeLogW, wsOpts, decision.admission, "upstream_handshake_failed")
 			decision.Outcome.settle(safeLogW, wsOpts, "error", -1, "upstream_handshake_failed")
 			if sessionExit.inProgress() && errors.Is(err, context.Canceled) {
@@ -403,6 +415,7 @@ func RunWSProxy(
 		}
 
 		if refusal := mcpTaskReleaseRefusal(wsOpts, decision.taskFrame, decision.taskTaint, false); refusal != "" {
+			decision.v3Upstream.finish(wsOpts, safeLogW, false, nil)
 			refuseTaskRelease(frame, decision, refusal)
 			continue
 		}
@@ -416,11 +429,13 @@ func RunWSProxy(
 			var trackingErr error
 			registration, refusal, trackingErr = registerWSTaskOutcome(safeLogW, inputOpts, tracker, frame, decision)
 			if trackingErr != nil {
+				decision.v3Upstream.finish(wsOpts, safeLogW, false, nil)
 				decision.Outcome.settle(safeLogW, inputOpts, mcpOutcomeStatusBlocked, -1, "request_tracking_failed")
 				writeNativeAdmissionDenial(inputOpts, safeLogW, transport.NewStdioWriter(safeClientOut), frame.ID, trackingErr)
 				continue
 			}
 			if refusal != "" {
+				decision.v3Upstream.finish(wsOpts, safeLogW, false, nil)
 				refuseTaskRelease(frame, decision, refusal)
 				continue
 			}
@@ -428,6 +443,7 @@ func RunWSProxy(
 
 		// Forward to upstream.
 		writeErr := wsClient.WriteMessage(decision.ForwardMessage)
+		decision.v3Upstream.finish(wsOpts, safeLogW, true, writeErr)
 		if writeErr != nil {
 			upstreamWriteFailed = ctx.Err() == nil
 			tracker.removeOwnedOutcome(frame.ID, registration)

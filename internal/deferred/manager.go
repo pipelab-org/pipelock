@@ -5,6 +5,7 @@ package deferred
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -159,7 +160,12 @@ type HeldAction struct {
 	Deadline      time.Time
 	Payload       []byte
 	ArgDigest     string
-	Resolve       func(Resolution)
+	confirming    chan struct{}
+	// ConfirmHold persists the computed hold before publication in journal-free
+	// mode. The reservation stays private during confirmation. The callback
+	// must not wait for another admission or resolution of the same session.
+	ConfirmHold func(HeldAction) error
+	Resolve     func(Resolution)
 	// ResolveWithReleaseRefusal is the synchronous Resolve variant for a
 	// release path that can still refuse immediately before sending. It may
 	// call refuse during the callback to close a journaled allow to block.
@@ -183,11 +189,12 @@ type HeldAction struct {
 	// entry, so that block's receipt is written first. Prepare's
 	// finish func is still pending, so the release claim and sink lock cover
 	// this call.
-	AfterJournal   func(Resolution) error
-	timer          *time.Timer
-	cascadeBlocked bool // protected by Manager.mu
-	state          string
-	createdAt      time.Time
+	AfterJournal     func(Resolution) error
+	receiptConfirmed bool
+	timer            *time.Timer
+	cascadeBlocked   bool // protected by Manager.mu
+	state            string
+	createdAt        time.Time
 }
 
 // Resolution is delivered exactly once for a held action.
@@ -218,6 +225,14 @@ type Manager struct {
 	sessionHolds   map[string][]string
 	totalBytes     int
 	pendingJournal map[string]journalEntry
+
+	// A confirming hold already owns capacity. A named session has at most
+	// one confirmation, so a sibling cannot sign before its pending parent.
+	confirmingSessions map[string]chan struct{}
+	waitingHolds       map[string]struct{}
+	waitingBySession   map[string]int
+	confirmingCount    int
+	settlingReceipts   int // confirmed holds whose settlement callbacks are still running
 	// fileSync replaces File.Sync for journal writes in tests; nil uses it.
 	fileSync func(*os.File) error
 	// dirSync replaces directorysync.Sync in tests; nil uses it.
@@ -252,10 +267,16 @@ func (e *CascadeLimitError) Unwrap() error {
 }
 
 func HoldFailureSource(err error) string {
-	if errors.Is(err, ErrCascadeLimit) {
+	switch {
+	case errors.Is(err, ErrCascadeLimit):
 		return SourceCascadeLimit
+	case errors.Is(err, context.DeadlineExceeded):
+		return SourceTimeout
+	case errors.Is(err, context.Canceled):
+		return SourceCancel
+	default:
+		return SourceCapacity
 	}
-	return SourceCapacity
 }
 
 // NewManager constructs a bounded held-action manager.
@@ -276,11 +297,14 @@ func NewManager(cfg Config) *Manager {
 		cfg.MaxCascadeDepth = DefaultMaxCascadeDepth
 	}
 	return &Manager{
-		cfg:            cfg,
-		warningf:       cfg.Warningf,
-		holds:          make(map[string]*HeldAction),
-		sessionHolds:   make(map[string][]string),
-		pendingJournal: make(map[string]journalEntry),
+		cfg:                cfg,
+		warningf:           cfg.Warningf,
+		holds:              make(map[string]*HeldAction),
+		sessionHolds:       make(map[string][]string),
+		pendingJournal:     make(map[string]journalEntry),
+		confirmingSessions: make(map[string]chan struct{}),
+		waitingHolds:       make(map[string]struct{}),
+		waitingBySession:   make(map[string]int),
 	}
 }
 
@@ -317,6 +341,12 @@ func (m *Manager) JournalPath() string {
 // Hold stores an action and starts its hard timeout. Capacity rejects the new
 // action; existing held actions are never evicted open.
 func (m *Manager) Hold(action HeldAction) error {
+	return m.HoldContext(context.Background(), action)
+}
+
+// HoldContext reserves capacity while waiting for an earlier hold's receipt.
+// Cancellation releases that reservation without publishing a hold.
+func (m *Manager) HoldContext(ctx context.Context, action HeldAction) error {
 	if !m.Enabled() {
 		return ErrDisabled
 	}
@@ -325,6 +355,9 @@ func (m *Manager) Hold(action HeldAction) error {
 	}
 	if action.Resolve == nil && action.ResolveWithReleaseRefusal == nil {
 		return fmt.Errorf("resolve callback is required")
+	}
+	if action.ConfirmHold != nil && m.cfg.JournalPath != "" {
+		return errors.New("hold confirmation requires journal-free operation")
 	}
 	if action.SizeBytes < 0 {
 		action.SizeBytes = 0
@@ -335,19 +368,28 @@ func (m *Manager) Hold(action HeldAction) error {
 	action.createdAt = now
 	action.state = StateHeld
 
+	sessionID := action.Authority.SessionID
 	m.mu.Lock()
-	if _, exists := m.holds[action.DeferID]; exists {
+	_, held := m.holds[action.DeferID]
+	_, waiting := m.waitingHolds[action.DeferID]
+	if held || waiting {
 		m.mu.Unlock()
 		m.journalRejectedHold(action, SourceDuplicateDeferID)
 		return fmt.Errorf("defer hold %q already exists", action.DeferID)
 	}
-	if len(m.holds) >= m.cfg.MaxPending ||
-		len(m.sessionHolds[action.Authority.SessionID]) >= m.cfg.MaxPendingPerSession ||
+	if len(m.holds)+len(m.waitingHolds)+m.settlingReceipts >= m.cfg.MaxPending ||
+		len(m.sessionHolds[sessionID])+m.waitingBySession[sessionID] >= m.cfg.MaxPendingPerSession ||
 		action.SizeBytes > m.cfg.MaxPendingBytes ||
 		m.totalBytes > m.cfg.MaxPendingBytes-action.SizeBytes {
 		m.mu.Unlock()
 		m.journalRejectedHold(action, SourceCapacity)
 		return ErrCapacity
+	}
+	if m.confirmingSessions[sessionID] != nil {
+		if err := m.waitForHoldConfirmationLocked(ctx, action); err != nil {
+			m.mu.Unlock()
+			return err
+		}
 	}
 	action.Linkage = LinkageSessionPendingAncestor
 	action.CascadeDepth = 1
@@ -374,31 +416,93 @@ func (m *Manager) Hold(action HeldAction) error {
 		m.journalRejectedHold(action, SourceCascadeLimit)
 		return limitErr
 	}
-	journalAction := action
-	stored := action
-	held := &stored
-	// Commit the StateHeld journal entry BEFORE publishing the hold, while still
-	// holding m.mu. A concurrent admission rejection for a related id blocks on
-	// m.mu until this returns, so it cannot append its StateAdmissionRejected
-	// entry ahead of this hold's StateHeld and causally invert the audit trail.
-	// On journal failure nothing is published, so no rollback is needed.
-	if err := m.appendJournal(journalEntryFromHeld(journalAction, StateHeld, "")); err != nil {
-		m.mu.Unlock()
-		return fmt.Errorf("journal defer hold: %w", err)
-	}
-	m.holds[action.DeferID] = held
-	m.sessionHolds[action.Authority.SessionID] = append(m.sessionHolds[action.Authority.SessionID], action.DeferID)
-	m.totalBytes += action.SizeBytes
-	m.mu.Unlock()
+	delay := time.Until(action.Deadline)
+	if confirm := action.ConfirmHold; confirm != nil {
+		action.ConfirmHold = nil
+		pending := make(chan struct{})
+		action.confirming = pending
+		m.reserveHoldLocked(&action)
+		m.confirmingCount++
+		if sessionID != "" {
+			m.confirmingSessions[sessionID] = pending
+		}
 
-	m.mu.Lock()
-	if live := m.holds[action.DeferID]; live != nil && live.state == StateHeld {
-		live.timer = time.AfterFunc(m.cfg.Timeout, func() {
-			_ = m.Resolve(action.DeferID, "block", SourceTimeout)
-		})
+		// The private reservation prevents overcommit while receipt I/O runs
+		// without blocking operations for other sessions.
+		confirmation := action
+		m.mu.Unlock()
+		err := confirm(confirmation)
+		m.mu.Lock()
+		action.confirming = nil
+		m.confirmingCount--
+		delete(m.confirmingSessions, sessionID)
+		close(pending)
+		if err != nil {
+			m.removeHoldLocked(&action)
+			m.mu.Unlock()
+			return fmt.Errorf("confirm defer hold: %w", err)
+		}
+		action.receiptConfirmed = true
+		delay = time.Until(action.Deadline)
+		if action.cascadeBlocked {
+			delay = 0
+		}
+	} else {
+		if err := m.appendJournal(journalEntryFromHeld(action, StateHeld, "")); err != nil {
+			m.mu.Unlock()
+			return fmt.Errorf("journal defer hold: %w", err)
+		}
+		m.reserveHoldLocked(&action)
 	}
+	action.timer = time.AfterFunc(delay, func() {
+		_ = m.Resolve(action.DeferID, config.ActionBlock, SourceTimeout)
+	})
 	m.mu.Unlock()
 	return nil
+}
+
+// The caller holds m.mu on entry and return. Keep ancestry private until the
+// previous confirmation finishes, but count this call throughout its wait.
+func (m *Manager) waitForHoldConfirmationLocked(ctx context.Context, action HeldAction) error {
+	ctx, cancel := context.WithDeadline(ctx, action.Deadline)
+	defer cancel()
+	sessionID := action.Authority.SessionID
+	m.waitingHolds[action.DeferID] = struct{}{}
+	m.waitingBySession[sessionID]++
+	m.totalBytes += action.SizeBytes
+	defer func() {
+		delete(m.waitingHolds, action.DeferID)
+		m.waitingBySession[sessionID]--
+		if m.waitingBySession[sessionID] == 0 {
+			delete(m.waitingBySession, sessionID)
+		}
+		m.totalBytes -= action.SizeBytes
+	}()
+	for pending := m.confirmingSessions[sessionID]; pending != nil; pending = m.confirmingSessions[sessionID] {
+		m.mu.Unlock()
+		select {
+		case <-pending:
+		case <-ctx.Done():
+		}
+		m.mu.Lock()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *Manager) reserveHoldLocked(held *HeldAction) {
+	m.holds[held.DeferID] = held
+	sessionID := held.Authority.SessionID
+	m.sessionHolds[sessionID] = append(m.sessionHolds[sessionID], held.DeferID)
+	m.totalBytes += held.SizeBytes
+}
+
+func (m *Manager) removeHoldLocked(held *HeldAction) {
+	delete(m.holds, held.DeferID)
+	m.removeSessionHoldLocked(held.Authority.SessionID, held.DeferID)
+	m.totalBytes -= held.SizeBytes
 }
 
 func (m *Manager) journalRejectedHold(action HeldAction, source string) {
@@ -441,17 +545,50 @@ func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string,
 
 	m.mu.Lock()
 	held := m.holds[deferID]
-	if held == nil || held.state != StateHeld {
+	for held != nil && m.holds[deferID] == held {
+		pending := held.confirming
+		if pending != nil {
+			// This hold must be published before it can be resolved.
+			m.mu.Unlock()
+			<-pending
+			m.mu.Lock()
+			continue
+		}
+		if finalDecision != config.ActionAllow || held.cascadeBlocked || !time.Now().Before(held.Deadline) {
+			break
+		}
+		pending = m.confirmingSessions[held.Authority.SessionID]
+		if pending == nil {
+			break
+		}
+		deadline := time.NewTimer(time.Until(held.Deadline))
+		m.mu.Unlock()
+		select {
+		case <-pending:
+		case <-deadline.C:
+		}
+		deadline.Stop()
+		m.mu.Lock()
+	}
+	if held == nil || m.holds[deferID] != held || held.state != StateHeld {
 		m.mu.Unlock()
 		return "", ErrNotFound
 	}
 	if held.cascadeBlocked {
 		finalDecision, source = config.ActionBlock, SourceCascade
+	} else if !time.Now().Before(held.Deadline) {
+		finalDecision, source = config.ActionBlock, SourceTimeout
 	}
 	held.state = StateResolving
-	delete(m.holds, deferID)
-	m.removeSessionHoldLocked(held.Authority.SessionID, deferID)
-	m.totalBytes -= held.SizeBytes
+	m.removeHoldLocked(held)
+	if held.receiptConfirmed {
+		m.settlingReceipts++
+		defer func() {
+			m.mu.Lock()
+			m.settlingReceipts--
+			m.mu.Unlock()
+		}()
+	}
 	if held.timer != nil {
 		held.timer.Stop()
 	}
@@ -623,8 +760,11 @@ func (m *Manager) Snapshot() []HeldAction {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]HeldAction, 0, len(m.holds))
+	out := make([]HeldAction, 0, len(m.holds)-m.confirmingCount)
 	for _, held := range m.holds {
+		if held.confirming != nil {
+			continue
+		}
 		cp := *held
 		cp.timer = nil
 		cp.Resolve = nil
@@ -642,7 +782,7 @@ func (m *Manager) HeldCount() int {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return len(m.holds)
+	return len(m.holds) - m.confirmingCount
 }
 
 func (m *Manager) Held(deferID string) (HeldAction, bool) {
@@ -657,6 +797,7 @@ func (m *Manager) ResolveToolInventory(sessionID, finalDecision string) {
 	if m == nil {
 		return
 	}
+	m.waitForConfirmations(&sessionID)
 	for _, held := range m.Snapshot() {
 		if held.Authority.SessionID == sessionID && held.RulePolicy.AllowOn.ToolInventoryBaseline {
 			_ = m.Resolve(held.DeferID, finalDecision, SourceToolInventory)
@@ -725,6 +866,7 @@ func (m *Manager) ResolvePolicyReload(evaluate ReloadEvaluator) {
 	if m == nil || evaluate == nil {
 		return
 	}
+	m.waitForConfirmations(nil)
 	for _, held := range m.Snapshot() {
 		decision, err := evaluate(held)
 		if err != nil {
@@ -746,6 +888,22 @@ func (m *Manager) ResolvePolicyReload(evaluate ReloadEvaluator) {
 	}
 }
 
+// Bulk events include holds already being confirmed when the event starts.
+// Only wait on the requested session for inventory events; nil means all.
+func (m *Manager) waitForConfirmations(sessionID *string) {
+	m.mu.Lock()
+	pending := make([]chan struct{}, 0, m.confirmingCount)
+	for _, held := range m.holds {
+		if held.confirming != nil && (sessionID == nil || held.Authority.SessionID == *sessionID) {
+			pending = append(pending, held.confirming)
+		}
+	}
+	m.mu.Unlock()
+	for _, done := range pending {
+		<-done
+	}
+}
+
 func (m *Manager) snapshotOne(deferID string) (HeldAction, error) {
 	if m == nil {
 		return HeldAction{}, ErrDisabled
@@ -753,7 +911,7 @@ func (m *Manager) snapshotOne(deferID string) (HeldAction, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	held := m.holds[deferID]
-	if held == nil || held.state != StateHeld {
+	if held == nil || held.confirming != nil || held.state != StateHeld {
 		return HeldAction{}, ErrNotFound
 	}
 	cp := *held
@@ -780,7 +938,8 @@ func (m *Manager) removeSessionHoldLocked(sessionID, deferID string) {
 }
 
 // markCascadeBlocked denies every still-held descendant before any of
-// their callbacks run. A concurrent resolver sees the same forced block.
+// their callbacks run. It returns the published descendants. A reserved
+// descendant settles immediately if its own confirmation succeeds.
 func (m *Manager) markCascadeBlocked(frontier []string) []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -791,12 +950,14 @@ func (m *Manager) markCascadeBlocked(frontier []string) []string {
 			for _, parent := range frontier {
 				if held.ParentDeferID == parent {
 					held.cascadeBlocked = true
+					if held.confirming == nil {
+						descendants = append(descendants, id)
+					}
 					children = append(children, id)
 					break
 				}
 			}
 		}
-		descendants = append(descendants, children...)
 		frontier = children
 	}
 	return descendants
@@ -961,58 +1122,23 @@ func PendingJournal(path string) ([]HeldAction, error) {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	pending := map[string]journalEntry{}
-	terminal := map[string]string{}
+	replay := newJournalReplay()
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxJournalLineBytes)
 	for scanner.Scan() {
 		var entry journalEntry
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
 			return nil, fmt.Errorf("parse defer journal: %w", err)
 		}
-		if entry.ReleasePending && entry.State != StateHeld {
-			return nil, fmt.Errorf("defer journal integrity: release_pending on state %q for defer_id %q", entry.State, entry.DeferID)
-		}
-		if entry.RefusalPending {
-			// A failed allow sync can leave either the durable pending
-			// row or a complete terminal allow on disk.
-			allow := terminal[entry.DeferID] == StateResolvedAllow || pending[entry.DeferID].ReleasePending
-			if entry.State != StateAdmissionRejected || entry.ReleasePending || !allow {
-				return nil, fmt.Errorf("defer journal integrity: refusal_pending without a prior allow for defer_id %q", entry.DeferID)
-			}
-			delete(terminal, entry.DeferID)
-			pending[entry.DeferID] = entry
-			continue
-		}
-		switch entry.State {
-		case StateHeld:
-			if _, seen := terminal[entry.DeferID]; seen {
-				return nil, fmt.Errorf("defer journal integrity: held entry after terminal state for defer_id %q", entry.DeferID)
-			}
-			if _, seen := pending[entry.DeferID]; entry.ReleasePending && !seen {
-				return nil, fmt.Errorf("defer journal integrity: release_pending without a prior hold for defer_id %q", entry.DeferID)
-			}
-			// A release-pending entry stays pending: its allow never reached
-			// the journal as final, so the call was not sent and recovery
-			// closes it to block.
-			pending[entry.DeferID] = entry
-		case StateResolvedAllow, StateResolvedBlock, StateResolvedStepUp:
-			delete(pending, entry.DeferID)
-			terminal[entry.DeferID] = entry.State
-		case StateAdmissionRejected:
-			// Audit-only marker for an action that was never held. It must not
-			// touch hold lifecycle: for a duplicate defer_id it shares a live
-			// hold's id, so resolving/terminalizing it here would drop that
-			// live hold from recovery.
-		default:
-			return nil, fmt.Errorf("defer journal integrity: unknown state %q for defer_id %q", entry.State, entry.DeferID)
+		if err := replay.apply(entry); err != nil {
+			return nil, err
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("scan defer journal: %w", err)
 	}
-	out := make([]HeldAction, 0, len(pending))
-	for _, entry := range pending {
+	out := make([]HeldAction, 0, len(replay.pending))
+	for _, entry := range replay.pending {
 		out = append(out, HeldAction{
 			DeferID:       entry.DeferID,
 			ActionID:      entry.ActionID,

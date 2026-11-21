@@ -95,6 +95,10 @@ func v3NestedBodyRecipes(t *testing.T) []v3Recipe {
 		{"caller-verified-missing-client", "caller", func(o v3Common) { delete(o, "client_id") }},
 		{"caller-verified-missing-resource", "caller", func(o v3Common) { delete(o, "resource") }},
 		{"caller-verified-missing-subject", "caller", func(o v3Common) { delete(o, "subject") }},
+		{"caller-verified-partial-identity", "caller", func(o v3Common) {
+			delete(o, "client_id")
+			delete(o, "resource")
+		}},
 		{"caller-none-with-issuer", "caller", func(o v3Common) {
 			o["authn"] = "none"
 			delete(o, "subject")

@@ -1,0 +1,1801 @@
+// Copyright 2026 Pipelab
+// SPDX-License-Identifier: Apache-2.0
+
+package proxy
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httptrace"
+	"net/textproto"
+	"net/url"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync/atomic"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/gobwas/ws"
+	"github.com/gobwas/ws/wsutil"
+
+	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
+	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
+)
+
+func TestV3HTTPTransportIntentPrecedesUpstreamSend(t *testing.T) {
+	for _, transport := range []string{"fetch", "forward", "reverse"} {
+		for _, stage := range []string{"healthy", "media", "before_send", "before_delivery", "advisory"} {
+			t.Run(transport+"/"+stage, func(t *testing.T) {
+				p, writer, dir, keys := newTestV3HTTPProxy(t, transport, stage != "advisory", nil)
+				expectedEffects := int64(2)
+				if stage == "media" {
+					expectedEffects++
+					enabled := true
+					p.CurrentConfig().MediaPolicy.Enabled = &enabled
+					p.CurrentConfig().MediaPolicy.StripImageMetadata = &enabled
+				}
+				if stage == "before_send" {
+					if err := writer.Close(t.Context(), nil); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var hits atomic.Int64
+				var before atomic.Bool
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					hits.Add(1)
+					result, verifyErr := v3.VerifyPaths(r.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+					if verifyErr == nil && result.Integrity == "ok" && result.Counts.EffectsUnknown != nil &&
+						*result.Counts.EffectsUnknown == 1 {
+						before.Store(true)
+					}
+					if stage == "before_delivery" {
+						if err := writer.Close(r.Context(), nil); err != nil {
+							t.Error(err)
+						}
+					}
+					if stage == "media" {
+						w.Header().Set("Content-Type", "image/jpeg")
+						_, _ = w.Write(buildValidJPEG([]byte("Exif\x00\x00metadata-marker")))
+						return
+					}
+					_, _ = w.Write([]byte("example"))
+				}))
+				t.Cleanup(upstream.Close)
+				var deliveredWithIntent bool
+				onDelivery := func() {
+					result, verifyErr := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+					deliveredWithIntent = verifyErr == nil && result.Integrity == "ok" &&
+						result.Counts.EffectsCompleted != nil && result.Counts.EffectsUnknown != nil &&
+						*result.Counts.EffectsUnknown >= 1 && *result.Counts.EffectsCompleted+*result.Counts.EffectsUnknown == expectedEffects
+				}
+				response := &v3ResponseRecorder{ResponseRecorder: httptest.NewRecorder(), onHeader: onDelivery}
+				switch transport {
+				case "fetch":
+					req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL, nil)
+					p.handleFetch(response, req)
+				case "forward":
+					req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL, nil)
+					p.handleForwardHTTP(response, req)
+				case "reverse":
+					target, err := url.Parse(upstream.URL)
+					if err != nil {
+						t.Fatal(err)
+					}
+					reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
+					reverse.SetOwnerProxy(p)
+					reverse.ServeHTTP(response, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+				}
+				if stage == "before_send" {
+					if hits.Load() != 0 || response.Code != http.StatusForbidden ||
+						response.Header().Get(blockreason.HeaderReason) != string(blockreason.ReceiptEmissionFailed) {
+						t.Fatalf("failed receipt reached upstream or wrong response: hits=%d code=%d body=%s", hits.Load(), response.Code, response.Body)
+					}
+					assertMetricsContain(t, p.metrics, fmt.Sprintf(`pipelock_required_receipt_blocks_total{reason="emit_error",transport=%q} 1`, transport))
+					assertMetricsNotContain(t, p.metrics, fmt.Sprintf(`pipelock_optional_receipt_withholds_total{transport=%q} 1`, transport))
+					return
+				}
+				if stage == "before_delivery" {
+					if hits.Load() != 1 || response.Code != http.StatusForbidden ||
+						response.Header().Get(blockreason.HeaderReason) != string(blockreason.ReceiptEmissionFailed) ||
+						strings.Contains(response.Body.String(), "example") {
+						t.Fatalf("unconfirmed response was delivered: hits=%d code=%d body=%s", hits.Load(), response.Code, response.Body)
+					}
+					if transport == TransportReverse {
+						var denial ReverseProxyBlockResponse
+						if err := json.Unmarshal(response.Body.Bytes(), &denial); err != nil || denial.Direction != scanDirectionResponse {
+							t.Fatalf("reverse receipt denial direction = %q, error = %v", denial.Direction, err)
+						}
+					}
+					return
+				}
+				if hits.Load() != 1 || !before.Load() || !deliveredWithIntent || response.Code != http.StatusOK {
+					t.Fatalf("effect lacked its earlier intent: hits=%d upstream=%t downstream=%t code=%d body=%s", hits.Load(), before.Load(), deliveredWithIntent, response.Code, response.Body)
+				}
+				if err := writer.Close(t.Context(), nil); err != nil {
+					t.Fatal(err)
+				}
+				result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+				if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil ||
+					*result.Counts.EffectsCompleted != expectedEffects ||
+					result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 0 {
+					t.Fatalf("expected %d completed HTTP effects: %+v (%v)", expectedEffects, result, err)
+				}
+				entries, err := os.ReadDir(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(entries) != 1 || !strings.HasSuffix(entries[0].Name(), ".receipt-v3.jsonl") {
+					t.Fatalf("unexpected receipt files under v3: %v", entries)
+				}
+			})
+		}
+	}
+}
+
+type v3ResponseRecorder struct {
+	*httptest.ResponseRecorder
+	onHeader func()
+}
+
+func (w *v3ResponseRecorder) WriteHeader(code int) {
+	if code == http.StatusOK {
+		w.onHeader()
+	}
+	w.ResponseRecorder.WriteHeader(code)
+}
+
+func TestV3OptionalFlushFailureDoesNotRelease(t *testing.T) {
+	for _, transport := range []string{"fetch", "forward", "reverse"} {
+		t.Run(transport, func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, transport, false, v3FirstAppendSyncFault())
+			var hits atomic.Int64
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				hits.Add(1)
+				_, _ = w.Write([]byte("example"))
+			}))
+			t.Cleanup(upstream.Close)
+			response := httptest.NewRecorder()
+			switch transport {
+			case "fetch":
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL, nil)
+				p.handleFetch(response, req)
+			case "forward":
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL, nil)
+				p.handleForwardHTTP(response, req)
+			case "reverse":
+				target, err := url.Parse(upstream.URL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
+				reverse.SetOwnerProxy(p)
+				reverse.ServeHTTP(response, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+			}
+			if hits.Load() != 0 || response.Code != http.StatusForbidden ||
+				response.Header().Get(blockreason.HeaderReason) != string(blockreason.ReceiptEmissionFailed) {
+				t.Fatalf("optional flush failure released the effect: hits=%d code=%d reason=%s body=%s",
+					hits.Load(), response.Code, response.Header().Get(blockreason.HeaderReason), response.Body.String())
+			}
+			assertMetricsContain(t, p.metrics, fmt.Sprintf(`pipelock_optional_receipt_withholds_total{transport=%q} 1`, transport))
+			assertMetricsNotContain(t, p.metrics, fmt.Sprintf(`pipelock_required_receipt_blocks_total{reason="emit_error",transport=%q} 1`, transport))
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var notReleased int64
+			if result.Counts.Decisions != nil {
+				for _, count := range *result.Counts.Decisions {
+					if count.State == "not_released" {
+						notReleased = count.Count
+					}
+				}
+			}
+			completed := int64(0)
+			if result.Counts.EffectsCompleted != nil {
+				completed = *result.Counts.EffectsCompleted
+			}
+			if notReleased != 1 || completed != 0 {
+				t.Fatalf("history after withheld effect: not_released=%d completed=%d verdict=%s findings=%v",
+					notReleased, completed, result.Verdict, result.Findings)
+			}
+		})
+	}
+}
+
+type v3SyncFaultFile struct {
+	*os.File
+	syncs int
+}
+
+func (f *v3SyncFaultFile) Sync() error {
+	f.syncs++
+	if f.syncs == 2 {
+		return errors.New("flush failed")
+	}
+	return f.File.Sync()
+}
+
+// The opening file flush succeeds. The first append to that file fails to
+// flush, and the writer can publish a successor using the normal filesystem.
+func v3FirstAppendSyncFault() func(string, string) (v3.StreamFile, error) {
+	first := true
+	return func(dir, pattern string) (v3.StreamFile, error) {
+		file, err := os.CreateTemp(dir, pattern)
+		if err != nil || !first {
+			return file, err
+		}
+		first = false
+		return &v3SyncFaultFile{File: file}, nil
+	}
+}
+
+func newTestV3HTTPProxy(t *testing.T, surface string, required bool, createTemp func(string, string) (v3.StreamFile, error), configure ...func(*v3.StreamWriterOptions)) (*Proxy, *v3.StreamWriter, string, []ed25519.PublicKey) {
+	t.Helper()
+	dir := t.TempDir()
+	keySeed := sha256.Sum256([]byte("receipt transport fixture"))
+	key := ed25519.NewKeyFromSeed(keySeed[:])
+	keys := []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}
+	cfg := testScannerConfig()
+	cfg.Internal = nil
+	cfg.ForwardProxy.Enabled = true
+	cfg.ForwardProxy.MaxTunnelSeconds = 10
+	cfg.ForwardProxy.IdleTimeoutSeconds = 2
+	cfg.WebSocketProxy.Enabled = true
+	cfg.WebSocketProxy.MaxConnectionSeconds = 10
+	cfg.WebSocketProxy.IdleTimeoutSeconds = 2
+	cfg.ResponseScanning.Enabled = false
+	cfg.FlightRecorder.RequireReceipts = required
+	writerOpts := v3.StreamWriterOptions{
+		Dir: dir, SigningKey: key, PolicyHash: v3.Digest(nil), CreateTempFile: createTemp,
+		Identity: v3.Writer{Instance: "example", Product: "Pipelock", Version: "3"},
+		Coverage: v3.Coverage{
+			ReceiptsRequired: required, Surfaces: []string{surface},
+			RedactionRuleset: v3.Ruleset{ID: "example", Version: "1", Hash: v3.Digest(nil)},
+		},
+	}
+	for _, apply := range configure {
+		apply(&writerOpts)
+	}
+	writer, err := v3.OpenStreamWriter(t.Context(), writerOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = writer.Close(ctx, nil)
+	})
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New(), func(p *Proxy) { p.receiptV3 = writer })
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p, writer, dir, keys
+}
+
+func TestV3ConnectIntentPrecedesTunnelDial(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, "connect", true, nil)
+	target, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = target.Close() })
+	beforeEffect := make(chan bool, 1)
+	p.dialer = &net.Dialer{Control: func(_, _ string, _ syscall.RawConn) error {
+		result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+		beforeEffect <- err == nil && result.Integrity == "ok" && result.Counts.EffectsUnknown != nil &&
+			*result.Counts.EffectsUnknown == 1
+		return nil
+	}}
+	go func() {
+		conn, err := target.Accept()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}()
+	done := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(done)
+		p.handleConnect(w, r)
+	}))
+	t.Cleanup(server.Close)
+	conn := dialProxy(t, strings.TrimPrefix(server.URL, "http://"))
+	addr := target.Addr().String()
+	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", addr, addr); err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT status=%d, want 200", response.StatusCode)
+	}
+	assertTransportReceiptOrder(t, beforeEffect, done)
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil ||
+		*result.Counts.EffectsCompleted != 1 {
+		t.Fatalf("CONNECT completion missing: %+v (%v)", result, err)
+	}
+}
+
+func TestV3WebSocketIntentPrecedesUpstreamHandshake(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, "websocket", true, nil)
+	beforeEffect := make(chan bool, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		result, verifyErr := v3.VerifyPaths(r.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+		beforeEffect <- verifyErr == nil && result.Integrity == "ok" && result.Counts.EffectsUnknown != nil &&
+			*result.Counts.EffectsUnknown == 1
+		conn, _, _, err := ws.UpgradeHTTP(r, w)
+		if err == nil {
+			_ = conn.Close()
+		}
+	}))
+	t.Cleanup(backend.Close)
+	done := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(done)
+		p.handleWebSocket(w, r)
+	}))
+	t.Cleanup(server.Close)
+	response := requestWSHandshake(t, strings.TrimPrefix(server.URL, "http://"), strings.TrimPrefix(backend.URL, "http://"), nil)
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("WebSocket status=%d, want 101", response.StatusCode)
+	}
+	assertTransportReceiptOrder(t, beforeEffect, done)
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil ||
+		*result.Counts.EffectsCompleted != 2 {
+		t.Fatalf("WebSocket upstream and downstream handshake receipts missing: %+v (%v)", result, err)
+	}
+}
+
+func TestV3WebSocketFrameCredentialAllowanceFollowsWrite(t *testing.T) {
+	for _, want := range []string{"completed", "attempt_unknown", "not_released"} {
+		t.Run(want, func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, TransportWS, true, nil)
+			socket, peer := net.Pipe()
+			t.Cleanup(func() { _ = socket.Close(); _ = peer.Close() })
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			if deadline, ok := ctx.Deadline(); ok {
+				if err := socket.SetDeadline(deadline); err != nil {
+					t.Fatal(err)
+				}
+				if err := peer.SetDeadline(deadline); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx = p.v3ExceptionContext(ctx)
+			relay := &wsRelay{
+				proxy: p, cfg: p.CurrentConfig(), targetURL: "wss://upstream.vendor.example",
+				requestID: "request", upstreamConn: socket,
+			}
+			allows := []scanner.CredentialAudienceAllow{{PatternName: "test", Surface: "websocket_frame", Destination: "upstream.vendor.example"}}
+			for range 2 {
+				if err := relay.recordCredentialAudienceAllows(ctx, allows); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if actions := readV3TestActions(t, dir); len(actions) != 1 || actions[0].Phase != "intent" {
+				t.Fatalf("expected one confirmed exception before any write: %+v", actions)
+			}
+			switch want {
+			case "completed":
+				read := make(chan error, 1)
+				go func() { _, err := ws.ReadFrame(peer); read <- err }()
+				if _, err := relay.writePayload(ctx, boundaryUpstreamSend, ws.OpText, []byte("example"), receipt.EmitOpts{}); err != nil {
+					t.Fatal(err)
+				}
+				if err := <-read; err != nil {
+					t.Fatal(err)
+				}
+			case "attempt_unknown":
+				_ = peer.Close()
+				if _, err := relay.writePayload(ctx, boundaryUpstreamSend, ws.OpText, []byte("example"), receipt.EmitOpts{}); err == nil {
+					t.Fatal("closed peer accepted WebSocket message")
+				}
+			}
+			p.finishV3Exceptions(ctx, false)
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || result.Verdict != "VALID" {
+				t.Fatalf("invalid history: %+v (%v)", result, err)
+			}
+			if !slices.ContainsFunc(readV3TestActions(t, dir), func(a v3.Action) bool {
+				return a.Layer == credentialAudienceReceiptExtensionKey && a.OutcomeClass == want
+			}) {
+				t.Fatalf("missing credential exception outcome %q", want)
+			}
+		})
+	}
+}
+
+func TestV3WebSocketPayloadWaitsForReceipt(t *testing.T) {
+	for _, point := range []string{"open", "upstream", "upstream ping", "downstream", "downstream ping", "denied"} {
+		t.Run(point, func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, "websocket", true, nil)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			backendResult := make(chan error, 1)
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, _, _, err := ws.UpgradeHTTP(r, w)
+				if err != nil {
+					backendResult <- err
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				if point == "upstream ping" {
+					backendResult <- checkV3WebSocketPolicyClose(conn)
+					return
+				}
+				message, _, readErr := wsutil.ReadClientData(conn)
+				if strings.HasPrefix(point, "upstream") || point == "denied" {
+					if readErr == nil {
+						backendResult <- fmt.Errorf("upstream received a refused payload")
+					} else {
+						backendResult <- nil
+					}
+					return
+				}
+				if readErr != nil {
+					backendResult <- readErr
+					return
+				}
+				if strings.HasPrefix(point, "downstream") {
+					if err := writer.Close(ctx, nil); err != nil {
+						backendResult <- err
+						return
+					}
+				}
+				opcode := ws.OpText
+				if point == "downstream ping" {
+					opcode = ws.OpPing
+				}
+				backendResult <- wsutil.WriteServerMessage(conn, opcode, message)
+			}))
+			t.Cleanup(backend.Close)
+			done := make(chan struct{})
+			proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer close(done)
+				p.handleWebSocket(w, r)
+			}))
+			t.Cleanup(proxy.Close)
+			target := "ws://" + strings.TrimPrefix(backend.URL, "http://")
+			conn, err := wsTestDial(ctx, ws.Dialer{}, "ws://"+strings.TrimPrefix(proxy.URL, "http://")+"/ws?url="+url.QueryEscape(target))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = conn.Close() }()
+			if deadline, ok := ctx.Deadline(); ok {
+				if err := conn.SetDeadline(deadline); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if strings.HasPrefix(point, "upstream") {
+				if err := writer.Close(ctx, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			const message = "ordinary message"
+			opcode := ws.OpText
+			switch point {
+			case "denied":
+				opcode = ws.OpBinary
+			case "upstream ping":
+				opcode = ws.OpPing
+			}
+			if err := wsutil.WriteClientMessage(conn, opcode, []byte(message)); err != nil {
+				t.Fatal(err)
+			}
+			var got []byte
+			if point == "downstream ping" {
+				if err := checkV3WebSocketPolicyClose(conn); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				got, _, err = wsutil.ReadServerData(conn)
+			}
+			if point == "open" {
+				if err != nil || string(got) != message {
+					t.Fatalf("client received %q (%v)", got, err)
+				}
+			} else if point != "downstream ping" && err == nil {
+				t.Fatalf("client received a refused payload: %q", got)
+			}
+			if point != "open" && point != "denied" && point != "downstream ping" {
+				var closed wsutil.ClosedError
+				if !errors.As(err, &closed) || closed.Code != ws.StatusPolicyViolation ||
+					!strings.Contains(closed.Reason, string(blockreason.ReceiptEmissionFailed)) {
+					t.Fatalf("receipt failure closed WebSocket with %v, want typed policy close", err)
+				}
+			}
+			if err := conn.Close(); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-backendResult:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			select {
+			case <-done:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			if point != "open" && point != "denied" {
+				return
+			}
+			if err := writer.Close(ctx, nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(ctx, []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil {
+				t.Fatalf("WebSocket history failed verification: %+v (%v)", result, err)
+			}
+			if point == "denied" {
+				if *result.Counts.EffectsCompleted != 2 || result.Counts.Decisions == nil ||
+					!slices.ContainsFunc(*result.Counts.Decisions, func(count v3.StateCount) bool {
+						return count.State == "blocked" && count.Count == 1
+					}) {
+					t.Fatalf("WebSocket policy refusal receipt missing: %+v", result)
+				}
+				return
+			}
+			if *result.Counts.EffectsCompleted != 4 {
+				t.Fatalf("WebSocket handshake and payload receipts missing: %+v", result)
+			}
+		})
+	}
+}
+
+func assertTransportReceiptOrder(t *testing.T, observed <-chan bool, done <-chan struct{}) {
+	t.Helper()
+	timer := time.NewTimer(6 * time.Second)
+	defer timer.Stop()
+	select {
+	case confirmed := <-observed:
+		if !confirmed {
+			t.Fatal("effect reached the endpoint without a verified earlier receipt")
+		}
+	case <-timer.C:
+		t.Fatal("upstream did not observe the effect")
+	}
+	select {
+	case <-done:
+	case <-timer.C:
+		t.Fatal("transport did not end")
+	}
+}
+
+func checkV3WebSocketPolicyClose(conn net.Conn) error {
+	frame, err := ws.ReadFrame(conn)
+	if err != nil {
+		return err
+	}
+	if frame.Header.OpCode != ws.OpClose {
+		return fmt.Errorf("received websocket opcode %v before policy close", frame.Header.OpCode)
+	}
+	if frame.Header.Masked {
+		ws.Cipher(frame.Payload, frame.Header.Mask, 0)
+	}
+	code, reason := ws.ParseCloseFrameData(frame.Payload)
+	if code != ws.StatusPolicyViolation || !strings.Contains(reason, string(blockreason.ReceiptEmissionFailed)) {
+		return fmt.Errorf("websocket close = %v %q, want receipt policy close", code, reason)
+	}
+	return nil
+}
+
+func TestV3InterceptIntentPrecedesRoundTrip(t *testing.T) {
+	for _, closed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("closed=%t", closed), func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, "intercept", true, nil)
+			if closed {
+				if err := writer.Close(t.Context(), nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+			cfg.FlightRecorder.RequireReceipts = true
+			atEntry := make(chan bool, 1)
+			rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				result, err := v3.VerifyPaths(req.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+				atEntry <- err == nil && result.Integrity == "ok" && result.Counts.EffectsUnknown != nil && *result.Counts.EffectsUnknown == 1
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{headerContentType: []string{"text/plain"}},
+					Body:       io.NopCloser(strings.NewReader("example")),
+				}, nil
+			})
+			target := net.JoinHostPort(testLoopbackIP, "443")
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+target+"/example", nil)
+			resp := interceptWithRT(t, cache, pool, cfg, sc, logger, m, rt,
+				&InterceptContext{Proxy: p, TargetHost: testLoopbackIP, TargetPort: "443"}, req)
+			defer func() { _ = resp.Body.Close() }()
+			if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+				t.Fatal(err)
+			}
+			if closed {
+				if resp.StatusCode != http.StatusForbidden || len(atEntry) != 0 {
+					t.Fatalf("unconfirmed receipt reached the upstream transport, status=%d", resp.StatusCode)
+				}
+				return
+			}
+			select {
+			case confirmed := <-atEntry:
+				if !confirmed || resp.StatusCode != http.StatusOK {
+					t.Fatalf("upstream saw no confirmed intent, status=%d", resp.StatusCode)
+				}
+			default:
+				t.Fatalf("upstream was not reached, status=%d", resp.StatusCode)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil || *result.Counts.EffectsCompleted != 2 {
+				t.Fatalf("two intercepted HTTP outcomes required: %+v (%v)", result, err)
+			}
+		})
+	}
+}
+
+func TestV3ExceptionAllowanceReceipts(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, "intercept", true, nil)
+	cfg := p.CurrentConfig()
+	decision := receipt.EmitOpts{Method: http.MethodGet, Target: "https://api.vendor.example", Transport: TransportConnect}
+	first := scanner.CredentialAudienceAllow{PatternName: "first", Surface: "header", Destination: "api.vendor.example"}
+	second := first
+	second.PatternName = "second"
+	auditCtx := audit.NewRequestLogContext("request")
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, decision.Target, nil)
+	ctx := p.withV3Exceptions(request).Context()
+	tunnelCtx := p.withV3Exceptions(request).Context()
+	if err := p.recordV3CredentialAudienceAllows(ctx, cfg, auditCtx, []scanner.CredentialAudienceAllow{first, second, first}, decision); err != nil {
+		t.Fatal(err)
+	}
+	tunnel := decision
+	tunnel.Method = http.MethodConnect
+	if err := p.recordV3CredentialAudienceAllows(tunnelCtx, cfg, auditCtx, []scanner.CredentialAudienceAllow{first}, tunnel); err != nil {
+		t.Fatal(err)
+	}
+	cookies := []issuerCookieAllowance{{Name: "example", Patterns: []string{"first", "second"}}}
+	if err := p.recordV3IssuerCookieAllows(ctx, cfg, auditCtx, cookies, decision); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Integrity != "ok" || result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 5 {
+		t.Fatalf("expected one pending admission per distinct allowance: %+v (%v)", result, err)
+	}
+
+	startV3Exceptions(ctx)
+	p.finishV3Exceptions(ctx, true)
+	p.finishV3Exceptions(ctx, false)
+	p.finishV3Exceptions(tunnelCtx, false)
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err = v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Verdict != "VALID" || result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 0 {
+		t.Fatalf("exception intents remained pending: %+v (%v)", result, err)
+	}
+	var outcomes int
+	for _, action := range readV3TestActions(t, dir) {
+		boundary, outcome := boundaryUpstreamSend, "completed"
+		if action.Method == http.MethodConnect {
+			boundary, outcome = boundaryTunnelOpen, "not_released"
+		}
+		if action.EffectBoundary != boundary {
+			t.Fatalf("%s allowance boundary = %q, want %q", action.Method, action.EffectBoundary, boundary)
+		}
+		if action.Phase == "outcome" {
+			outcomes++
+			if action.OutcomeClass != outcome {
+				t.Fatalf("%s allowance outcome = %q, want %q", action.Method, action.OutcomeClass, outcome)
+			}
+		}
+	}
+	if outcomes != 5 {
+		t.Fatalf("got %d outcomes, want 5", outcomes)
+	}
+	if err := p.recordV3IssuerCookieAllows(ctx, cfg, auditCtx, cookies, decision); err == nil {
+		t.Fatal("required allowances accepted a closed writer")
+	}
+}
+
+func TestV3FetchDoesNotRecordInboundCredentialAsSent(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportFetch, true, nil)
+	cfg := p.CurrentConfig()
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.ScanHeaders = true
+	audience := credentialAudienceCarrierCases()[0]
+	var sent bool
+	p.client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		sent = true
+		if r.Header.Get("Authorization") != "" {
+			t.Error("fetch forwarded an inbound authorization header")
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header), Request: r}, nil
+	})
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+url.QueryEscape(audience.target), nil)
+	r.Header.Set("Authorization", "Bearer "+audience.credential)
+	w := httptest.NewRecorder()
+	p.handleFetch(w, r)
+	if !sent || w.Code != http.StatusOK {
+		t.Fatalf("fetch sent=%t, status=%d", sent, w.Code)
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Verdict != "VALID" {
+		t.Fatalf("invalid history: %+v (%v)", result, err)
+	}
+	if slices.ContainsFunc(readV3TestActions(t, dir), func(a v3.Action) bool {
+		return a.Layer == credentialAudienceReceiptExtensionKey
+	}) {
+		t.Fatal("credential present only in inbound headers was recorded as sent")
+	}
+}
+
+func TestV3ForwardCredentialExceptionFollowsSend(t *testing.T) {
+	for _, tc := range []struct {
+		name, want    string
+		calls, status int
+	}{
+		{"response", "completed", 1, http.StatusOK},
+		{"transport_error", "attempt_unknown", 1, http.StatusBadGateway},
+		{"admission_refused", "not_released", 0, http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var exceptionPrepared, admissionRefused bool
+			p, writer, dir, keys := newTestV3HTTPProxy(t, TransportForward, true, nil, func(opts *v3.StreamWriterOptions) {
+				if tc.calls != 0 {
+					return
+				}
+				opts.Coverage.ContentScan = true
+				opts.Detector = func(_ context.Context, text string) scanner.TextDLPResult {
+					if strings.HasPrefix(text, "{") {
+						if strings.Contains(text, credentialAudienceReceiptExtensionKey) {
+							exceptionPrepared = true
+						} else if exceptionPrepared && !admissionRefused {
+							admissionRefused = true
+							return scanner.TextDLPResult{Incomplete: true}
+						}
+					}
+					return scanner.TextDLPResult{Clean: true}
+				}
+			})
+			calls := 0
+			p.client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				calls++
+				actions := readV3TestActions(t, dir)
+				if !slices.ContainsFunc(actions, func(action v3.Action) bool {
+					return action.Layer == credentialAudienceReceiptExtensionKey &&
+						action.Phase == "intent" && action.EffectBoundary == boundaryUpstreamSend
+				}) {
+					t.Error("upstream send started without the credential exception intent")
+				}
+				if tc.name == "transport_error" {
+					return nil, io.ErrUnexpectedEOF
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody, Request: req,
+				}, nil
+			})
+			audience := credentialAudienceCarrierCases()[0]
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, audience.target, nil)
+			req.Header.Set("Authorization", "Bearer "+audience.credential)
+			w := httptest.NewRecorder()
+			p.handleForwardHTTP(w, req)
+			if calls != tc.calls || w.Code != tc.status {
+				t.Fatalf("upstream calls=%d status=%d, want %d and %d", calls, w.Code, tc.calls, tc.status)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || result.Verdict != "VALID" {
+				t.Fatalf("verify receipt history: %+v (%v)", result, err)
+			}
+			var intent, outcome v3.Action
+			for _, action := range readV3TestActions(t, dir) {
+				if action.Layer != credentialAudienceReceiptExtensionKey {
+					continue
+				}
+				switch action.Phase {
+				case "intent":
+					intent = action
+				case "outcome":
+					outcome = action
+				}
+			}
+			if intent.ActionID == "" || intent.ActionID != outcome.ActionID || outcome.OutcomeClass != tc.want {
+				t.Fatalf("exception intent=%q outcome=%q/%q, want linked %q", intent.ActionID, outcome.ActionID, outcome.OutcomeClass, tc.want)
+			}
+		})
+	}
+}
+
+func TestV3ResponsePolicyAdmissions(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportForward, true, nil)
+	cfg := p.CurrentConfig()
+	var deliveries v3EffectReceipts
+	opts := receipt.EmitOpts{
+		ActionID: receipt.NewActionID(), Target: "https://api.vendor.example", Transport: TransportForward,
+		Method: http.MethodGet, Verdict: config.ActionStrip, Layer: "media_policy", Pattern: "image media rewritten",
+	}
+	if err := p.confirmResponseDecision(cfg, opts, &deliveries); err != nil {
+		t.Fatal(err)
+	}
+	opts.ActionID = receipt.NewActionID()
+	opts.Verdict, opts.Layer, opts.Pattern = config.ActionWarn, LayerSSEStream, "stream finding"
+	if err := p.confirmResponseDecision(cfg, opts, &deliveries); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 2 {
+		t.Fatalf("policy admissions unavailable before delivery: %+v (%v)", result, err)
+	}
+	deliveries.finish(p, t.Context(), true, true)
+	result, err = v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Counts.EffectsCompleted == nil || *result.Counts.EffectsCompleted != 2 {
+		t.Fatalf("observed deliveries were not settled: %+v (%v)", result, err)
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.confirmResponseDecision(cfg, opts, &deliveries); err == nil {
+		t.Fatal("closed writer admitted a response decision")
+	}
+}
+
+type v3DeliveryFlushFailure struct {
+	*httptest.ResponseRecorder
+	flushes int
+}
+
+func (w *v3DeliveryFlushFailure) FlushError() error {
+	w.flushes++
+	return io.ErrClosedPipe
+}
+
+func TestV3OptionalDeliveryFlushFailure(t *testing.T) {
+	for _, surface := range []string{TransportFetch, TransportForward, TransportReverse, "intercept"} {
+		t.Run(surface, func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, surface, false, nil)
+			upstream := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				const body = "example"
+				return &http.Response{
+					StatusCode: http.StatusOK, ContentLength: int64(len(body)),
+					Header: http.Header{headerContentType: []string{"text/plain"}},
+					Body:   io.NopCloser(strings.NewReader(body)), Request: req,
+				}, nil
+			})
+			w := &v3DeliveryFlushFailure{ResponseRecorder: httptest.NewRecorder()}
+			target := &url.URL{Scheme: "https", Host: "upstream.vendor.example"}
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target.String(), nil)
+			switch surface {
+			case TransportFetch:
+				p.client.Transport = upstream
+				p.handleFetch(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+					"/fetch?url="+url.QueryEscape(target.String()), nil))
+			case TransportForward:
+				p.client.Transport = upstream
+				p.handleForwardHTTP(w, r)
+			case TransportReverse:
+				reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
+				reverse.SetOwnerProxy(p)
+				reverse.proxy.Transport.(*reverseSigningRoundTripper).base = upstream
+				reverse.ServeHTTP(w, r)
+			case "intercept":
+				ic := &InterceptContext{
+					Proxy: p, Config: p.ConfigPtr().Load(), Scanner: p.ScannerPtr().Load(),
+					Logger: audit.NewNop(), Metrics: metrics.New(),
+					TargetHost: target.Hostname(), TargetPort: "443",
+				}
+				newInterceptHandler(ic, upstream).ServeHTTP(w, r)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || result.Integrity != "ok" || result.Counts.EffectsCompleted == nil ||
+				*result.Counts.EffectsCompleted != 1 || result.Counts.EffectsUnknown == nil ||
+				*result.Counts.EffectsUnknown != 1 || w.flushes != 1 || w.Code != http.StatusOK {
+				t.Fatalf("failed delivery flush was not reflected in receipts: flushes=%d status=%d counts=%+v err=%v",
+					w.flushes, w.Code, result.Counts, err)
+			}
+		})
+	}
+}
+
+func TestV3TransportPolicyAttribution(t *testing.T) {
+	cfg := testScannerConfig()
+	snapshot := v3.Digest([]byte("decision policy"))
+	for _, tt := range []struct {
+		name     string
+		provided string
+		want     string
+	}{
+		{name: "producer snapshot", provided: snapshot, want: snapshot},
+		{name: "request snapshot", want: "sha256:" + cfg.CanonicalPolicyHash()},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			entry := prepareV3TransportReceipt(cfg, receipt.EmitOpts{PolicyHash: tt.provided})
+			if got := entry.policy.ActionPolicy().Hash; got != tt.want {
+				t.Fatalf("receipt policy hash = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestV3WebSocketIdentityReloadRefusalIsConnectionWide(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportWS, true, nil)
+	stale := p.CurrentConfig().Clone()
+	stale.DefaultAgentIdentity = "older-default"
+	client, clientPeer := net.Pipe()
+	upstream, upstreamPeer := net.Pipe()
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = upstream.Close()
+	})
+	_ = clientPeer.Close()
+	_ = upstreamPeer.Close()
+	r := &wsRelay{
+		proxy: p, cfg: stale, clientConn: client, upstreamConn: upstream,
+		targetURL: "wss://api.vendor.example",
+	}
+	for range 2 {
+		if !r.blockIdentityReload() {
+			t.Fatal("connection with stale identity was not refused")
+		}
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Verdict != "VALID" {
+		t.Fatalf("invalid receipts: %+v (%v)", result, err)
+	}
+	actions := readV3TestActions(t, dir)
+	if len(actions) != 1 {
+		t.Fatalf("signed connection refusals = %d, want 1", len(actions))
+	}
+	if got := actions[0]; got.Verdict != config.ActionBlock || got.EffectBoundary != boundaryNoEffect || got.EffectRelation != "not_attempted" {
+		t.Fatalf("connection refusal recorded %s / %s / %s", got.Verdict, got.EffectBoundary, got.EffectRelation)
+	}
+}
+
+func readV3TestActions(t *testing.T, dir string) []v3.Action {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(dir, "*.receipt-v3.jsonl"))
+	if err != nil || len(paths) != 1 {
+		t.Fatalf("expected one signed stream: %v (%v)", paths, err)
+	}
+	data, err := os.ReadFile(filepath.Clean(paths[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actions []v3.Action
+	for _, line := range bytes.SplitAfter(data, []byte{'\n'}) {
+		if len(line) == 0 {
+			continue
+		}
+		envelope, code := v3.ExportDSSE(line)
+		if code != "" {
+			t.Fatal(code)
+		}
+		var decoded struct{ Payload []byte }
+		if err := json.Unmarshal(envelope, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		var payload struct {
+			Kind string
+			Body v3.Action
+		}
+		if err := json.Unmarshal(decoded.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Kind == "action" {
+			actions = append(actions, payload.Body)
+		}
+	}
+	return actions
+}
+
+func TestV3CredentialAllowancePreservesTransportBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		transport, method, boundary string
+	}{
+		{TransportConnect, http.MethodConnect, boundaryTunnelOpen},
+		{TransportForward, http.MethodGet, boundaryUpstreamSend},
+	} {
+		t.Run(tc.transport, func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, tc.transport, true, nil)
+			opts := receipt.EmitOpts{
+				ActionID: receipt.NewActionID(), Transport: tc.transport, Method: tc.method,
+				Verdict: config.ActionAllow, Target: "https://api.vendor.example",
+			}
+			if err := p.emitCredentialAudienceReceipt(p.CurrentConfig(), opts); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			checked, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || checked.Verdict != "VALID" {
+				t.Fatalf("invalid transport evidence: %+v (%v)", checked, err)
+			}
+			actions := readV3TestActions(t, dir)
+			if len(actions) != 1 || actions[0].EffectBoundary != tc.boundary || actions[0].Phase != "intent" {
+				t.Fatalf("signed actions = %+v, want one %s intent", actions, tc.boundary)
+			}
+		})
+	}
+}
+
+func TestV3WebSocketFailedClientUpgradeSettlesUpstream(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, "websocket", true, nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/ws?url=ws://127.0.0.1:80/", nil)
+	r.Header.Set("Upgrade", "websocket")
+	r.Header.Set("Connection", "Upgrade")
+	r.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	r.Header.Set("Sec-WebSocket-Version", "13")
+	// The recorder has no hijacker, so the valid upgrade fails before dialing.
+	p.handleWebSocket(httptest.NewRecorder(), r)
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Integrity != "ok" || result.Counts.Decisions == nil {
+		t.Fatalf("verify WebSocket receipts: %+v (%v)", result, err)
+	}
+	records := readV3TestActions(t, dir)
+	for _, intent := range records {
+		if intent.Phase != "intent" || intent.EffectBoundary != boundaryUpstreamSend || intent.Attempt == nil {
+			continue
+		}
+		for _, outcome := range records {
+			if outcome.ActionID == intent.ActionID && outcome.EffectBoundary == intent.EffectBoundary &&
+				outcome.Attempt != nil && *outcome.Attempt == *intent.Attempt && outcome.OutcomeClass == "not_released" {
+				return
+			}
+		}
+	}
+	t.Fatalf("upstream intent was not settled as withheld: %+v", records)
+}
+
+func TestV3ReverseEnvelopeMatchesSendReceipt(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportReverse, true, nil)
+	target := &url.URL{Scheme: "https", Host: "upstream.vendor.example"}
+	reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
+	reverse.SetOwnerProxy(p)
+	var emitter atomic.Pointer[envelope.Emitter]
+	emitter.Store(envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: testEnvelopeConfigHash}))
+	reverse.SetEnvelopeEmitter(&emitter)
+	var mediationHeader string
+	reverse.proxy.Transport.(*reverseSigningRoundTripper).base = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		mediationHeader = r.Header.Get(envelope.HeaderName)
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody, Request: r,
+		}, nil
+	})
+	w := httptest.NewRecorder()
+	reverse.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("response status = %d, want 200", w.Code)
+	}
+	mediation, err := envelope.Parse(mediationHeader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptID := w.Header().Get(blockreason.HeaderRecordedReceipt)
+	if receiptID == "" || mediation.ReceiptID != receiptID {
+		t.Fatalf("upstream envelope action = %q, confirmed send receipt = %q", mediation.ReceiptID, receiptID)
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil || *result.Counts.EffectsCompleted != 2 {
+		t.Fatalf("reverse send and delivery did not verify: %+v (%v)", result, err)
+	}
+}
+
+func TestV3ReverseInformationalReceiptFailureCancelsUpstream(t *testing.T) {
+	p, writer, _, _ := newTestV3HTTPProxy(t, TransportReverse, true, nil)
+	target := &url.URL{Scheme: "https", Host: "upstream.vendor.example"}
+	reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
+	reverse.SetOwnerProxy(p)
+	var upstreamCanceled bool
+	reverse.proxy.Transport.(*reverseSigningRoundTripper).base = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if err := writer.Close(r.Context(), nil); err != nil {
+			return nil, err
+		}
+		if err := httptrace.ContextClientTrace(r.Context()).Got1xxResponse(http.StatusEarlyHints, textproto.MIMEHeader{}); err != nil {
+			return nil, err
+		}
+		upstreamCanceled = errors.Is(context.Cause(r.Context()), errReverseDeliveryReceipt)
+		return nil, io.ErrUnexpectedEOF
+	})
+	w := httptest.NewRecorder()
+	reverse.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+	if !upstreamCanceled || w.Code != http.StatusForbidden ||
+		!strings.Contains(w.Body.String(), `"direction":"response"`) {
+		t.Fatalf("upstream canceled=%t, status=%d, headers=%v", upstreamCanceled, w.Code, w.Header())
+	}
+}
+
+func TestV3ReverseSSERefusalLeavesHeaderStateUntouched(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportReverse, false, nil)
+	cfg := p.ConfigPtr().Load().Clone()
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.SSEStreaming.Enabled = true
+	cfg.ResponseScanning.SSEStreaming.Action = config.ActionBlock
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	target := &url.URL{Scheme: "https", Host: "upstream.vendor.example"}
+	reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
+	reverse.SetOwnerProxy(p)
+
+	state := &reverseResponseReceiptState{header: make(http.Header)}
+	ctx := context.WithValue(t.Context(), ctxKeyReverseResponseReceipt, state)
+	ctx = context.WithValue(ctx, ctxKeyReverseEnvelopeCfg, cfg)
+	ctx = context.WithValue(ctx, ctxKeyReverseScanner, sc)
+	resp := &http.Response{
+		Request:    httptest.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil),
+		StatusCode: http.StatusOK,
+		Header:     http.Header{headerContentType: []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader("data: \xff\n\n")),
+	}
+	if err := reverse.modifyResponse(resp); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if _, err := io.Copy(io.Discard, resp.Body); !IsSSEStreamFinding(err) {
+		t.Fatalf("stream did not stop on invalid UTF-8: %v", err)
+	}
+	if state.recordedBlockReceiptID != "" {
+		t.Fatal("stream callback modified synchronous refusal header state")
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Verdict != "VALID" || result.Counts.Decisions == nil ||
+		!slices.ContainsFunc(*result.Counts.Decisions, func(count v3.StateCount) bool { return count.State == "blocked" && count.Count == 1 }) {
+		t.Fatalf("stream refusal was not signed: %+v (%v)", result, err)
+	}
+}
+
+func TestV3TransportRecordsURLScanRefusal(t *testing.T) {
+	for _, surface := range []string{TransportFetch, TransportForward, TransportConnect, "websocket", "intercept"} {
+		t.Run(surface, func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, surface, true, nil)
+			const denied = "denied.vendor.example"
+			cfg := p.ConfigPtr().Load().Clone()
+			cfg.FetchProxy.Monitoring.Blocklist = append(cfg.FetchProxy.Monitoring.Blocklist, denied)
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			if !p.Reload(cfg, sc) {
+				t.Fatal("test scanner reload failed")
+			}
+			p.client.Transport = roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				t.Error("blocked request reached the upstream transport")
+				return nil, io.ErrClosedPipe
+			})
+			w := httptest.NewRecorder()
+
+			switch surface {
+			case TransportFetch:
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://"+denied, nil)
+				p.handleFetch(w, r)
+			case TransportForward:
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+denied, nil)
+				p.handleForwardHTTP(w, r)
+			case TransportConnect:
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodConnect, denied+":443", nil)
+				p.handleConnect(w, r)
+			case "websocket":
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/ws?url=ws://"+denied, nil)
+				p.handleWebSocket(w, r)
+			case "intercept":
+				ic := &InterceptContext{
+					Proxy: p, Config: cfg, Scanner: sc, Logger: audit.NewNop(), Metrics: metrics.New(),
+					TargetHost: denied, TargetPort: "443",
+				}
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+denied, nil)
+				newInterceptHandler(ic, p.client.Transport).ServeHTTP(w, r)
+			}
+			if w.Code != http.StatusForbidden || (surface != "intercept" && w.Header().Get(blockreason.HeaderRecordedReceipt) == "") {
+				t.Fatalf("denial status=%d receipt=%q", w.Code, w.Header().Get(blockreason.HeaderRecordedReceipt))
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || result.Verdict != "VALID" || result.Counts.Decisions == nil ||
+				!slices.ContainsFunc(*result.Counts.Decisions, func(count v3.StateCount) bool { return count.State == "blocked" && count.Count == 1 }) {
+				t.Fatalf("refusal was not signed: %+v (%v)", result, err)
+			}
+		})
+	}
+}
+
+func TestV3FetchConfirmsEachRedirectSend(t *testing.T) {
+	for _, closeBeforeRedirect := range []bool{false, true} {
+		t.Run(fmt.Sprintf("writer_closed=%t", closeBeforeRedirect), func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, TransportFetch, true, nil)
+			p.contractLoaderPtr.Store(testContractLoader(t, contractruntime.ModeLive,
+				contractruntimetest.HTTPEnforceRule("r-start", "upstream.vendor.example", "/start", http.MethodGet),
+				contractruntimetest.HTTPEnforceRule("r-next", "upstream.vendor.example", "/next", http.MethodGet),
+			))
+			hits := 0
+			p.client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				hits++
+				resp := &http.Response{Request: req, Header: make(http.Header), Body: http.NoBody}
+				switch req.URL.Path {
+				case "/start":
+					resp.StatusCode = http.StatusFound
+					resp.Header.Set("Location", "/next")
+					if closeBeforeRedirect {
+						if err := writer.Close(t.Context(), nil); err != nil {
+							t.Error(err)
+						}
+					}
+				case "/next":
+					resp.StatusCode = http.StatusOK
+					resp.Header.Set(headerContentType, "text/plain")
+					resp.Body = io.NopCloser(strings.NewReader("example"))
+					result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+					if err != nil || result.Counts.EffectsCompleted == nil || *result.Counts.EffectsCompleted != 1 ||
+						result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 1 {
+						t.Errorf("redirect reached upstream without a new intent after the first result")
+					}
+				default:
+					t.Errorf("unexpected path %q", req.URL.Path)
+				}
+				return resp, nil
+			})
+			w := serveFetchLiveLock(t, p, "https://upstream.vendor.example/start")
+			if closeBeforeRedirect {
+				if hits != 1 || w.Code != http.StatusForbidden {
+					t.Fatalf("failed redirect confirmation: sends = %d, status = %d", hits, w.Code)
+				}
+				return
+			}
+			if hits != 2 || w.Code != http.StatusOK {
+				t.Fatalf("confirmed redirect: sends = %d, status = %d", hits, w.Code)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil ||
+				*result.Counts.EffectsCompleted != 3 {
+				t.Fatalf("expected two completed sends and one delivery: %+v (%v)", result, err)
+			}
+			actions := readV3TestActions(t, dir)
+			hop := slices.IndexFunc(actions, func(a v3.Action) bool {
+				return a.Phase == "intent" && a.EffectBoundary == boundaryUpstreamSend &&
+					a.Contract != nil && a.Contract.RuleID == "r-next"
+			})
+			if hop < 0 || !slices.ContainsFunc(actions, func(a v3.Action) bool {
+				return a.Phase == "intent" && a.EffectBoundary == boundaryDownstreamDelivery &&
+					a.ParentActionID == actions[hop].ActionID
+			}) {
+				t.Fatalf("fetch delivery was not linked to its final send: %+v", actions)
+			}
+		})
+	}
+}
+
+func TestV3SSEFindingRecordsObservedWrite(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		direct    bool
+		failFlush bool
+		outcome   string
+	}{
+		{"observed", true, false, "completed"},
+		{"flush failed", true, true, "attempt_unknown"},
+		{"pipe handoff", false, false, "attempt_unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const finding = "fixture SSE finding"
+			p, writer, dir, _ := newTestV3HTTPProxy(t, TransportForward, true, nil)
+			cfg := p.CurrentConfig().Clone()
+			cfg.ResponseScanning.Enabled = true
+			cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: finding, Regex: finding}}
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			confirm, finish := sseFindingReceiptCallbacks(t.Context(), cfg, receipt.EmitOpts{
+				Transport: TransportForward, Method: http.MethodGet, Target: "https://upstream.vendor.example",
+			}, p, p.emitAllowPathReceipt, tc.direct)
+			response := httptest.NewRecorder()
+			var flusher http.Flusher = response
+			if tc.failFlush {
+				flusher = &v3DeliveryFlushFailure{ResponseRecorder: response}
+			}
+			err := DispatchSSEScan(t.Context(), strings.NewReader(
+				`data: {"choices":[{"delta":{"content":"fixture SSE finding"}}]}`+"\n\n",
+			), response, flusher, sc, SSEDispatchOptions{
+				GenericSSE: &config.GenericSSEScanning{Enabled: true, Action: config.ActionWarn},
+				Generic:    mcp.GenericSSEScanOptions{ConfirmFinding: confirm, OnFindingDelivery: finish},
+			})
+			if errors.Is(err, io.ErrClosedPipe) != tc.failFlush || (err != nil && !tc.failFlush) {
+				t.Fatalf("scan error = %v", err)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			records := readV3TestActions(t, dir)
+			if len(records) != 2 || records[0].Layer != LayerSSEStream || records[0].Phase != "intent" ||
+				records[1].ActionID != records[0].ActionID || records[1].OutcomeClass != tc.outcome {
+				t.Fatalf("expected one settled SSE finding, got %+v", records)
+			}
+		})
+	}
+}
+
+func TestV3ReverseDeliveryWithTrailersStaysUncertain(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		major, minor int
+	}{
+		{"HTTP/1.1", 1, 1},
+		{"HTTP/2", 2, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, TransportReverse, true, nil)
+			target := &url.URL{Scheme: "https", Host: "upstream.vendor.example"}
+			reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
+			reverse.SetOwnerProxy(p)
+			reverse.proxy.Transport.(*reverseSigningRoundTripper).base = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK, ContentLength: -1,
+					Header: http.Header{headerContentType: []string{"text/plain"}},
+					Body:   io.NopCloser(strings.NewReader("example")), Request: req,
+					Trailer: http.Header{"X-Example": []string{"trailer"}},
+				}, nil
+			})
+			w := httptest.NewRecorder()
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target.String(), nil)
+			req.ProtoMajor, req.ProtoMinor = tc.major, tc.minor
+			reverse.ServeHTTP(w, req)
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || result.Integrity != "ok" || result.Counts.EffectsCompleted == nil || *result.Counts.EffectsCompleted != 1 ||
+				result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 1 || w.Code != http.StatusOK || w.Body.String() != "example" {
+				t.Fatalf("chunked reply = %d %q, counts = %+v, error = %v", w.Code, w.Body.String(), result.Counts, err)
+			}
+			actions := readV3TestActions(t, dir)
+			for boundary, want := range map[string]string{
+				boundaryUpstreamSend:       "completed",
+				boundaryDownstreamDelivery: "attempt_unknown",
+			} {
+				index := slices.IndexFunc(actions, func(a v3.Action) bool {
+					return a.Phase == "intent" && a.EffectBoundary == boundary && a.Attempt != nil
+				})
+				if index < 0 {
+					t.Fatalf("missing %s intent: %+v", boundary, actions)
+				}
+				intent := actions[index]
+				if !slices.ContainsFunc(actions, func(a v3.Action) bool {
+					return a.Phase == "outcome" && a.ActionID == intent.ActionID && a.EffectBoundary == boundary &&
+						a.Attempt != nil && *a.Attempt == *intent.Attempt && a.OutcomeClass == want
+				}) {
+					t.Fatalf("%s intent did not settle as %s: %+v", boundary, want, actions)
+				}
+			}
+		})
+	}
+}
+
+func TestV3ForwardFiniteSSEDoesNotClaimCompleteFraming(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportForward, true, nil)
+	const stream = "data: example\n\n"
+	p.client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK, ContentLength: -1,
+			Header: http.Header{headerContentType: []string{"text/event-stream"}},
+			Body:   io.NopCloser(strings.NewReader(stream)), Request: req,
+		}, nil
+	})
+	w := httptest.NewRecorder()
+	p.handleForwardHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://upstream.vendor.example", nil))
+	if w.Code != http.StatusOK || w.Body.String() != stream {
+		t.Fatalf("stream response = %d %q", w.Code, w.Body.String())
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Verdict != "VALID" {
+		t.Fatalf("verify stream receipts: %+v (%v)", result, err)
+	}
+	for _, action := range readV3TestActions(t, dir) {
+		if action.EffectBoundary == boundaryDownstreamDelivery && action.Phase == "outcome" {
+			if action.OutcomeClass != "attempt_unknown" {
+				t.Fatalf("SSE outcome claims unobserved framing: %+v", action)
+			}
+			return
+		}
+	}
+	t.Fatal("missing downstream SSE outcome")
+}
+
+func TestV3ReverseOptionalDeliverySettlesPolicyWithoutTransportReceipt(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportReverse, false, nil)
+	enabled := true
+	p.CurrentConfig().MediaPolicy.Enabled = &enabled
+	p.CurrentConfig().MediaPolicy.StripImageMetadata = &enabled
+	target := &url.URL{Scheme: "https", Host: "upstream.vendor.example"}
+	reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
+	reverse.SetOwnerProxy(p)
+	source := buildValidJPEG([]byte("Exif\x00\x00metadata-marker"))
+	reverse.proxy.Transport.(*reverseSigningRoundTripper).base = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		state, _ := req.Context().Value(ctxKeyReverseResponseReceipt).(*reverseResponseReceiptState)
+		if state == nil || state.confirmDelivery == nil {
+			t.Fatal("missing reverse response receipt state")
+		}
+		decision := mediaRewriteReceipt(receipt.EmitOpts{
+			Transport: TransportReverse, Method: req.Method, Target: target.String(),
+		})
+		if err := p.confirmV3ResponseDecision(p.CurrentConfig(), decision, &state.decisions); err != nil {
+			t.Fatal(err)
+		}
+		// The confirmation wrapper permits delivery without a receipt in
+		// optional mode when its write failed without withholding the effect.
+		state.confirmDelivery = func() (*v3TransportReceipt, error) { return nil, nil }
+		return &http.Response{
+			StatusCode: http.StatusOK, ContentLength: int64(len(source)),
+			Header: http.Header{headerContentType: []string{"image/jpeg"}},
+			Body:   io.NopCloser(bytes.NewReader(source)), Request: req,
+		}, nil
+	})
+	w := httptest.NewRecorder()
+	reverse.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, target.String(), nil))
+	if w.Code != http.StatusOK || w.Body.Len() == 0 || bytes.Equal(w.Body.Bytes(), source) {
+		t.Fatalf("optional reverse response did not deliver stripped media: %d, %d bytes", w.Code, w.Body.Len())
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Verdict != "VALID" {
+		t.Fatalf("verify response receipts: %+v (%v)", result, err)
+	}
+	for _, action := range readV3TestActions(t, dir) {
+		if action.Layer == "media_policy" && action.Phase == "outcome" {
+			if action.OutcomeClass != "completed" {
+				t.Fatalf("delivered media has %q outcome", action.OutcomeClass)
+			}
+			return
+		}
+	}
+	t.Fatal("delivered media policy decision has no outcome")
+}
+
+func TestV3OptionalPolicyDeliveryWithoutPrimary(t *testing.T) {
+	for _, surface := range []string{TransportFetch, "intercept"} {
+		for _, fault := range []string{"flush", "partial_write", "http2", "none"} {
+			t.Run(surface+"/"+fault, func(t *testing.T) {
+				checkOptionalV3PolicyDelivery(t, surface, fault)
+			})
+		}
+	}
+}
+
+type v3PolicyDeliveryWriter struct {
+	*httptest.ResponseRecorder
+	fault   string
+	flushes int
+}
+
+func (w *v3PolicyDeliveryWriter) Write(body []byte) (int, error) {
+	if w.fault == "partial_write" {
+		n, _ := w.ResponseRecorder.Write(body[:len(body)/2])
+		return n, io.ErrClosedPipe
+	}
+	return w.ResponseRecorder.Write(body)
+}
+
+func (w *v3PolicyDeliveryWriter) FlushError() error {
+	w.flushes++
+	if w.fault == "flush" {
+		return io.ErrClosedPipe
+	}
+	w.Flush()
+	return nil
+}
+
+func checkOptionalV3PolicyDelivery(t *testing.T, surface, fault string) {
+	t.Helper()
+	var scannedPolicy, rejectedDelivery bool
+	configure := func(opts *v3.StreamWriterOptions) {
+		opts.Coverage.ContentScan = true
+		opts.Detector = func(_ context.Context, text string) scanner.TextDLPResult {
+			if strings.HasPrefix(text, "{") {
+				switch {
+				case strings.Contains(text, `"layer":"shield_oversize"`):
+					scannedPolicy = true
+				case scannedPolicy && !rejectedDelivery:
+					// The next action is the primary downstream intent.
+					rejectedDelivery = true
+					return scanner.TextDLPResult{Incomplete: true}
+				}
+			}
+			return scanner.TextDLPResult{Clean: true}
+		}
+	}
+	p, writer, dir, keys := newTestV3HTTPProxy(t, surface, false, nil, configure)
+	cfg := p.CurrentConfig()
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.MaxShieldBytes = 128
+	cfg.BrowserShield.OversizeAction = config.ShieldOversizeWarn
+	source := "<!doctype html><p>" + strings.Repeat("ordinary response ", 16) + "</p>"
+	upstream := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK, ContentLength: int64(len(source)),
+			Header: http.Header{headerContentType: []string{"text/html"}},
+			Body:   io.NopCloser(strings.NewReader(source)), Request: req,
+		}, nil
+	})
+	w := &v3PolicyDeliveryWriter{ResponseRecorder: httptest.NewRecorder(), fault: fault}
+	target := "https://upstream.vendor.example"
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
+	if surface == TransportFetch {
+		req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+url.QueryEscape(target), nil)
+	}
+	if fault == "http2" {
+		req.Proto, req.ProtoMajor, req.ProtoMinor = "HTTP/2.0", 2, 0
+	}
+	if surface == TransportFetch {
+		p.client.Transport = upstream
+		p.handleFetch(w, req)
+	} else {
+		ic := &InterceptContext{
+			Proxy: p, Config: cfg, Scanner: p.ScannerPtr().Load(),
+			Logger: audit.NewNop(), Metrics: metrics.New(),
+			TargetHost: "upstream.vendor.example", TargetPort: "443",
+		}
+		newInterceptHandler(ic, upstream).ServeHTTP(w, req)
+	}
+	if !rejectedDelivery || w.Code != http.StatusOK || w.Body.Len() == 0 {
+		t.Fatalf("expected the warned response after the optional refusal: rejected=%t status=%d bytes=%d", rejectedDelivery, w.Code, w.Body.Len())
+	}
+	if fault == "partial_write" && w.Body.Len() >= int(responseContentLengthForReceipt(w.Result().Header)) {
+		t.Fatalf("test writer accepted the entire body: %d bytes", w.Body.Len())
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Integrity != "ok" {
+		t.Fatalf("verify response receipts: %+v (%v)", result, err)
+	}
+	var policyOutcome string
+	for _, action := range readV3TestActions(t, dir) {
+		if action.EffectBoundary != boundaryDownstreamDelivery {
+			continue
+		}
+		if action.Layer != "shield_oversize" {
+			t.Fatalf("unexpected primary delivery receipt: %+v", action)
+		}
+		if action.Phase == "outcome" {
+			policyOutcome = action.OutcomeClass
+		}
+	}
+	want := "attempt_unknown"
+	if fault == "none" {
+		want = "completed"
+	}
+	if w.flushes != 1 || policyOutcome != want {
+		t.Fatalf("flushes=%d shield outcome=%q, want one flush and %s", w.flushes, policyOutcome, want)
+	}
+}
+
+func TestV3InterceptUnstartedRedirectFailureDoesNotFlush(t *testing.T) {
+	for _, required := range []bool{true, false} {
+		t.Run(fmt.Sprintf("required=%t", required), func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, "intercept", required, nil)
+			cfg := p.CurrentConfig()
+			cfg.RequestBodyScanning.IssuerBoundSessionCookies = true
+			cfg.TLSInterception.Enabled = true
+			cfg.FetchProxy.Monitoring.IssuedRedirectDelegations = []config.IssuedRedirectDelegation{{
+				Name: "release-redirect",
+				Source: config.RequestPolicyRoute{
+					Hosts:        []string{"upstream.vendor.example"},
+					Methods:      []string{http.MethodGet},
+					PathPrefixes: []string{"/start"},
+				},
+				TargetOrigins: []string{"https://delegated.vendor.example"},
+				Reason:        "test delegation",
+				Owner:         "test",
+				Expires:       delegationFixture().Expires,
+			}}
+			ic := &InterceptContext{
+				Proxy: p, Config: cfg, Scanner: p.ScannerPtr().Load(),
+				Logger: audit.NewNop(), Metrics: metrics.New(),
+				ClientIP: "127.0.0.1", Agent: "test-agent", ActorAuth: envelope.ActorAuthBound,
+				TargetHost: "upstream.vendor.example", TargetPort: "443",
+			}
+			sessionKey := sessionKeyFor(cfg, ic.Agent, ic.ClientIP, ic.ActorAuth)
+			store := ic.issuerQueryStore()
+			if store == nil {
+				t.Fatal("test setup did not initialize issuer evidence")
+			}
+			store.mu.Lock()
+			store.deliveries = map[string]*issuedRedirectDeliverySet{
+				sessionKey: {entries: issuerCookieMaxEntries, pending: make(map[*issuedRedirectDelivery]struct{}), changed: make(chan struct{})},
+			}
+			store.mu.Unlock()
+
+			upstream := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode:    http.StatusFound,
+					ContentLength: 0,
+					Header: http.Header{
+						"Location":   []string{"https://delegated.vendor.example/next"},
+						"Set-Cookie": []string{"session=example"},
+					},
+					Body:    http.NoBody,
+					Request: req,
+				}, nil
+			})
+			var wroteHeader bool
+			w := &issuedRedirectFlushWriter{
+				ResponseRecorder: httptest.NewRecorder(),
+				afterWriteHeader: func() { wroteHeader = true },
+			}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://upstream.vendor.example/start", nil)
+			newInterceptHandler(ic, upstream).ServeHTTP(w, req)
+
+			if w.calls != 0 || wroteHeader || w.Flushed || w.Header().Get("Location") != "" || w.Header().Get("Set-Cookie") != "" {
+				t.Fatalf("unstarted redirect failure left a response: flushes=%d wroteHeader=%t flushed=%t", w.calls, wroteHeader, w.Flushed)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || result.Verdict != "VALID" {
+				t.Fatalf("verify receipts: %+v (%v)", result, err)
+			}
+			var found bool
+			for _, action := range readV3TestActions(t, dir) {
+				if action.EffectBoundary == boundaryDownstreamDelivery && action.Phase == "outcome" {
+					found = true
+					if action.OutcomeClass != "not_released" || action.EffectRelation != "not_attempted" {
+						t.Fatalf("downstream outcome = %s/%s, want not_released/not_attempted", action.OutcomeClass, action.EffectRelation)
+					}
+				}
+			}
+			if !found {
+				t.Fatal("missing downstream_delivery outcome")
+			}
+		})
+	}
+}
+
+func TestV3AdaptiveRefusalWithholdsUpstreamResponse(t *testing.T) {
+	for _, surface := range []string{TransportForward, "intercept", TransportReverse} {
+		t.Run(surface, func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, surface, true, nil)
+			cfg := p.CurrentConfig()
+			blockAll := true
+			cfg.AdaptiveEnforcement.Enabled = true
+			cfg.AdaptiveEnforcement.EscalationThreshold = 1.0
+			cfg.AdaptiveEnforcement.LevelDurationSeconds = 300
+			cfg.AdaptiveEnforcement.Levels.Critical.BlockAll = &blockAll
+			sm := NewSessionManager(&cfg.SessionProfiling, &cfg.AdaptiveEnforcement, p.metrics)
+			t.Cleanup(sm.Close)
+			p.sessionMgrPtr.Store(sm)
+
+			targetURL := "https://upstream.vendor.example/missing"
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, targetURL, nil)
+			req.RemoteAddr = "127.0.0.1:12345"
+			clientIP, _ := requestMeta(req)
+			sessKey := sessionKeyFor(cfg, agentAnonymous, clientIP, "")
+			sess := sm.GetOrCreate(sessKey)
+			escalate := func() {
+				sess.mu.Lock()
+				sess.escalationLevel = 3
+				sess.globalSignalsAuthoritative = true
+				sess.mu.Unlock()
+			}
+			body := "upstream not found"
+			upstream := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				escalate()
+				return &http.Response{
+					StatusCode:    http.StatusNotFound,
+					ContentLength: int64(len(body)),
+					Header:        http.Header{headerContentType: []string{"text/plain"}, "Content-Length": []string{fmt.Sprintf("%d", len(body))}},
+					Body:          io.NopCloser(strings.NewReader(body)),
+					Request:       r,
+				}, nil
+			})
+			w := &v3PolicyDeliveryWriter{ResponseRecorder: httptest.NewRecorder(), fault: "partial_write"}
+			switch surface {
+			case TransportForward:
+				p.client.Transport = upstream
+				p.handleForwardHTTP(w, req)
+			case "intercept":
+				ic := &InterceptContext{
+					Proxy: p, Config: cfg, Scanner: p.ScannerPtr().Load(),
+					Logger: audit.NewNop(), Metrics: metrics.New(),
+					Recorder: sess, ClientIP: clientIP, Agent: agentAnonymous,
+					TargetHost: "upstream.vendor.example", TargetPort: "443",
+				}
+				newInterceptHandler(ic, upstream).ServeHTTP(w, req)
+			case TransportReverse:
+				target, _ := url.Parse("https://upstream.vendor.example")
+				reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
+				reverse.SetOwnerProxy(p)
+				reverse.proxy.Transport.(*reverseSigningRoundTripper).base = upstream
+				reverse.ServeHTTP(w, req)
+			}
+			if w.Code != http.StatusForbidden || w.Body.Len() == 0 || strings.Contains(w.Body.String(), body) {
+				t.Fatalf("expected a partial adaptive refusal, got status=%d size=%d", w.Code, w.Body.Len())
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || result.Verdict != "VALID" {
+				t.Fatalf("verify receipts: %+v (%v)", result, err)
+			}
+			var outcome string
+			for _, action := range readV3TestActions(t, dir) {
+				if action.EffectBoundary == boundaryDownstreamDelivery && action.Phase == "outcome" {
+					outcome = action.OutcomeClass
+				}
+			}
+			if outcome != "not_released" {
+				t.Fatalf("%s upstream response outcome = %q, want not_released", surface, outcome)
+			}
+		})
+	}
+}

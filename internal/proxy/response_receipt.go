@@ -4,6 +4,10 @@
 package proxy
 
 import (
+	"context"
+	"errors"
+	"net/http"
+
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -12,7 +16,10 @@ import (
 // confirmResponseDecision confirms a later decision on an admitted response.
 // Optional mode retains best-effort recording; required mode confirms every
 // configured family before the caller changes state or delivers bytes.
-func (p *Proxy) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpts) error {
+func (p *Proxy) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpts, deliveries *v3EffectReceipts) error {
+	if p != nil && p.receiptV3 != nil {
+		return p.confirmV3ResponseDecision(cfg, opts, deliveries)
+	}
 	if cfg != nil {
 		opts = withReceiptConfig(opts, cfg)
 	}
@@ -25,7 +32,10 @@ func (p *Proxy) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpt
 	return nil
 }
 
-func (rp *ReverseProxyHandler) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpts) error {
+func (rp *ReverseProxyHandler) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpts, deliveries *v3EffectReceipts) error {
+	if rp.owner != nil && rp.owner.receiptV3 != nil {
+		return rp.owner.confirmV3ResponseDecision(cfg, opts, deliveries)
+	}
 	if cfg != nil {
 		opts = withReceiptConfig(opts, cfg)
 	}
@@ -34,6 +44,71 @@ func (rp *ReverseProxyHandler) confirmResponseDecision(cfg *config.Config, opts 
 	}
 	_ = rp.emitReceipt(opts)
 	return nil
+}
+
+// v3EffectReceipts holds the decisions that share one transport effect.
+type v3EffectReceipts []*v3TransportReceipt
+
+func (r *v3EffectReceipts) finish(p *Proxy, ctx context.Context, attempted, completed bool) {
+	for _, entry := range *r {
+		if attempted {
+			p.recordTransportOutcome(ctx, receipt.EmitOpts{Transport: entry.action.Transport}, entry, completed)
+		} else {
+			p.recordTransportNotReleased(ctx, receipt.EmitOpts{Transport: entry.action.Transport}, entry)
+		}
+	}
+	*r = nil
+}
+
+func (p *Proxy) confirmV3ResponseDecision(cfg *config.Config, opts receipt.EmitOpts, deliveries *v3EffectReceipts) error {
+	if deliveries == nil {
+		return errors.New("response receipt delivery settlement is unavailable")
+	}
+	opts.Verdict = receipt.NormalizeVerdict(opts.Verdict)
+	entry, err := p.confirmTransportReceipt(context.Background(), cfg, opts, boundaryDownstreamDelivery)
+	if receiptWriteWithholdsEffect(cfg, err) {
+		return err
+	}
+	if entry != nil {
+		*deliveries = append(*deliveries, entry)
+	}
+	return nil
+}
+
+// httpResponseReceipts owns the intents affected by one final response.
+// Admission can succeed without a primary receipt in optional mode.
+type httpResponseReceipts struct {
+	primary   *v3TransportReceipt
+	decisions v3EffectReceipts
+	allowed   bool
+}
+
+func (s *httpResponseReceipts) confirm(p *Proxy, w http.ResponseWriter, req *http.Request, cfg *config.Config, opts receipt.EmitOpts) bool {
+	s.primary, s.allowed = p.confirmHTTPResponseDelivery(w, req.Context(), cfg, opts)
+	return s.allowed
+}
+
+func (s *httpResponseReceipts) flush(w http.ResponseWriter, req *http.Request, cfg *config.Config, started, legacy bool) (bool, error) {
+	// A flush can implicitly commit staged headers. Wait for an explicit
+	// final response write, even when a receipt was confirmed.
+	if started && (legacy || s.allowed && (s.primary != nil || len(s.decisions) != 0)) {
+		return flushResponseForReceipt(w, req, cfg)
+	}
+	return false, nil
+}
+
+func (s *httpResponseReceipts) finish(p *Proxy, req *http.Request, w http.ResponseWriter, observed httpDeliveryObservation, complete bool) {
+	// The intent covers the admitted response. An adaptive refusal can send
+	// a different response while withholding the admitted headers and body.
+	projection, _ := w.(*adaptiveRefusalWriter)
+	attempted := s.allowed && observed.status != 0 && (projection == nil || !projection.refused)
+	completed := attempted && complete && observed.err == nil &&
+		responseFramingCompleteForReceipt(req, observed.status, observed.contentLength, observed.bytes)
+	if s.primary != nil {
+		s.decisions = append(s.decisions, s.primary)
+		s.primary = nil
+	}
+	s.decisions.finish(p, req.Context(), attempted, completed)
 }
 
 func mediaRewriteReceipt(opts receipt.EmitOpts) receipt.EmitOpts {

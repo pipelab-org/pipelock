@@ -160,6 +160,7 @@ type Metrics struct {
 	// Signed action-receipt emission (receipt.go).
 	receiptEmitFailures      *prometheus.CounterVec
 	requiredReceiptBlockings *prometheus.CounterVec
+	optionalReceiptWithholds *prometheus.CounterVec
 	receiptEmitFailureCounts map[string]int64
 	requiredReceiptBlocks    map[string]int64
 

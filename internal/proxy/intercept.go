@@ -121,6 +121,8 @@ type InterceptContext struct {
 	// receiptShard is selected once for each decrypted inner HTTP request.
 	receiptShard    receipt.EmitOpts
 	tunnelAdmission receipt.EmitOpts
+	receiptUpstream *v3TransportReceipt
+	receiptResponse bool
 	EnvelopeEmitter *envelope.Emitter
 	// EnvelopeEmitterSet distinguishes an explicit nil admission snapshot
 	// from tests that omitted the snapshot entirely.
@@ -218,6 +220,14 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
 		opts = withReceiptConfig(opts, ic.Config)
 	}
 	opts = withReceiptShard(opts, ic.receiptShard)
+	if ic.Proxy.receiptV3 != nil && opts.Verdict == config.ActionBlock {
+		boundary := boundaryUpstreamSend
+		if ic.receiptResponse {
+			boundary = boundaryDownstreamDelivery
+		}
+		opts = linkTransportRefusal(opts, ic.receiptUpstream)
+		return ic.Proxy.recordV3TransportRefusal(context.Background(), ic.Config, opts, boundary)
+	}
 	if opts.Layer == nativeStreamCloseLayer {
 		opts = opts.NativeTerminal()
 	}
@@ -250,11 +260,11 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
 
 // interceptConfirmResponseOrBlock preserves the selected tunnel shard and
 // distinguishes recorder outages from response policy findings.
-func interceptConfirmResponseOrBlock(ic *InterceptContext, w http.ResponseWriter, opts receipt.EmitOpts) bool {
+func interceptConfirmResponseOrBlock(ic *InterceptContext, w http.ResponseWriter, opts receipt.EmitOpts, deliveries *v3EffectReceipts) bool {
 	if ic.Config == nil || !ic.Config.FlightRecorder.RequireReceipts {
 		return false
 	}
-	err := ic.Proxy.confirmResponseDecision(ic.Config, withReceiptShard(opts, ic.receiptShard))
+	err := ic.Proxy.confirmResponseDecision(ic.Config, withReceiptShard(opts, ic.receiptShard), deliveries)
 	if err == nil {
 		return false
 	}
@@ -279,14 +289,18 @@ func interceptEmitReceiptOrBlock(ic *InterceptContext, w http.ResponseWriter, ac
 			}
 			m.RecordRequiredReceiptBlock(requiredReceiptBlockMetricReason(err), opts.Transport)
 		}
-		blockedErr := newReceiptEmissionBlockedRequest(err)
-		ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
-		writeBlockedError(w,
-			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(opts.RequestID),
-			receiptEmissionBlockReason, http.StatusForbidden)
+		writeInterceptReceiptDenial(w, ic.Logger, actx, opts.RequestID, err)
 		return true
 	}
 	return false
+}
+
+func writeInterceptReceiptDenial(w http.ResponseWriter, logger *audit.Logger, actx audit.LogContext, requestID string, err error) {
+	blockedErr := newReceiptEmissionBlockedRequest(err)
+	logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+	writeBlockedError(w,
+		blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(requestID),
+		receiptEmissionBlockReason, http.StatusForbidden)
 }
 
 func interceptEmitRequiredReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
@@ -678,7 +692,8 @@ func newInterceptHandler(
 			defer stopNativeRequest()
 			warnCtx, finishWarnings := ic.Proxy.receiptWarningContext(requestCtx, ic.receiptShard)
 			defer finishWarnings()
-			r = r.WithContext(context.WithValue(warnCtx, ctxKeyReceiptShard, ic.receiptShard))
+			r = ic.Proxy.withV3Exceptions(r.WithContext(context.WithValue(warnCtx, ctxKeyReceiptShard, ic.receiptShard)))
+			defer ic.Proxy.finishV3Exceptions(r.Context(), false)
 		}
 		if !ic.Proxy.stateIdentityConfigCurrent(ic.Config, ic.ActorAuth) {
 			ic.Logger.LogBlocked(newHTTPAuditContext(r.Context(), ic.Logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent}), "identity_reload", stateIdentityReloadReason)
@@ -703,7 +718,7 @@ func newInterceptHandler(
 		// The wrapper adds no optional interfaces; code that needs one asks
 		// the server's own writer, so no capability is advertised falsely.
 		serverWriter := w
-		timing := &interceptTimingWriter{ResponseWriter: w}
+		timing := &interceptTimingWriter{httpDeliveryWriter{ResponseWriter: w}}
 		w = timing
 		var upstreamWait time.Duration
 		var requestBodyElapsed *time.Duration
@@ -1079,7 +1094,7 @@ func newInterceptHandler(
 					if rescanned.Allowed {
 						// Under require_receipts the allow must be durably recorded
 						// before forwarding; nothing has been written to w yet.
-						if err := ic.Proxy.recordIssuerQueryAllow(ic.Config, actx, targetURL, ic.RequestID, ic.Agent, r.Method, allowKind, ic.receiptShard); err != nil {
+						if err := ic.Proxy.recordIssuerQueryAllow(r.Context(), ic.Config, actx, allowKind, withReceiptShard(receipt.EmitOpts{Transport: ic.receiptShard.Transport, Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}, ic.receiptShard)); err != nil {
 							blockedErr := newIssuerAllowReceiptBlockedRequest(err)
 							ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 							writeBlockedError(w,
@@ -1098,7 +1113,7 @@ func newInterceptHandler(
 		// buffered response is delivered below.
 		issuerProof.derived = issuerProof.derived || ic.resourceDerived(r.URL)
 		if ic.Proxy != nil {
-			if err := ic.Proxy.recordCredentialAudienceAllows(ic.Config, actx, urlResult.CredentialAudienceAllows, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent, ic.receiptShard); err != nil {
+			if err := ic.Proxy.recordCredentialAudienceAllows(r.Context(), ic.Config, actx, urlResult.CredentialAudienceAllows, withReceiptShard(receipt.EmitOpts{Transport: TransportConnect, Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}, ic.receiptShard)); err != nil {
 				if refuseReceiptCapacity(w, err) {
 					return
 				}
@@ -1467,7 +1482,7 @@ func newInterceptHandler(
 				},
 				OnCredentialAudienceAllows: func(allows []scanner.CredentialAudienceAllow) error {
 					if ic.Proxy != nil {
-						return ic.Proxy.recordCredentialAudienceAllows(ic.Config, actx, allows, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent, ic.receiptShard)
+						return ic.Proxy.recordCredentialAudienceAllows(r.Context(), ic.Config, actx, allows, withReceiptShard(receipt.EmitOpts{Transport: TransportConnect, Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}, ic.receiptShard))
 					}
 					for _, allow := range allows {
 						recordCredentialAudienceAllow(ic.Logger, ic.Metrics, actx, allow)
@@ -1820,7 +1835,7 @@ func newInterceptHandler(
 				ic.Metrics.RecordDLPDroppedMatch(match.PatternName, "header", reason)
 			}, func(allows []scanner.CredentialAudienceAllow) error {
 				if ic.Proxy != nil {
-					return ic.Proxy.recordCredentialAudienceAllows(ic.Config, actx, allows, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent, ic.receiptShard)
+					return ic.Proxy.recordCredentialAudienceAllows(r.Context(), ic.Config, actx, allows, withReceiptShard(receipt.EmitOpts{Transport: TransportConnect, Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}, ic.receiptShard))
 				}
 				for _, allow := range allows {
 					recordCredentialAudienceAllow(ic.Logger, ic.Metrics, actx, allow)
@@ -2309,17 +2324,23 @@ func newInterceptHandler(
 			RequestID: ic.RequestID,
 			Agent:     ic.Agent,
 		})
+		var upstreamReceipt *v3TransportReceipt
 		// Outcomes run on the inner HTTP writer, before any stream abort.
-		// Release buffered bytes before synchronous required receipt storage.
+		var responseReceipts httpResponseReceipts
+		defer func() {
+			responseReceipts.finish(ic.Proxy, r, serverWriter, timing.httpDeliveryObservation, false)
+		}()
+		// Release buffered bytes before synchronous delivery outcome recording.
 		emitOutcome := func(opts receipt.EmitOpts, verdict string, status int, transferred int64, reason string) {
-			var flushErr error
-			if ic.Config.FlightRecorder.RequireReceipts {
-				flushErr = flushResponseBeforeOutcome(w, r, ic.Config)
-				if flushErr != nil && outcomeReasonClaimsDelivery(reason, verdict) {
-					reason, transferred = flushFailureReason(reason), -1
-				}
+			writeSucceeded := outcomeReasonClaimsDelivery(reason, verdict)
+			flushed, flushErr := responseReceipts.flush(w, r, ic.Config, timing.status != 0, ic.Config.FlightRecorder.RequireReceipts)
+			if flushErr != nil && writeSucceeded {
+				reason, transferred = flushFailureReason(reason), -1
 			}
-			interceptEmitOutcomeReceipt(ic, opts, verdict, status, transferred, reason)
+			responseReceipts.finish(ic.Proxy, r, serverWriter, timing.httpDeliveryObservation, flushed && writeSucceeded)
+			if upstreamReceipt == nil {
+				interceptEmitOutcomeReceipt(ic, opts, verdict, status, transferred, reason)
+			}
 			_ = httpstream.Abort(r.Context(), flushErr)
 		}
 		finishDownloadError := func(opts receipt.EmitOpts, status int, transferred int64, err error) {
@@ -2334,11 +2355,19 @@ func newInterceptHandler(
 			emitOutcome(opts, config.ActionAllow, status, transferred, recordStreamError(r.Context(), ic.Logger, actx, err))
 		}
 		requiredIntentEmitted := false
-		if ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
-			if interceptEmitReceiptOrBlock(ic, w, actx, allowReceipt) {
+		required := ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts
+		if required || (ic.Proxy != nil && ic.Proxy.receiptV3 != nil) {
+			if ic.Proxy != nil && ic.Proxy.receiptV3 != nil {
+				var err error
+				upstreamReceipt, err = ic.Proxy.confirmTransportReceipt(r.Context(), ic.Config, allowReceipt, boundaryUpstreamSend)
+				if receiptWriteWithholdsEffect(ic.Config, err) {
+					writeInterceptReceiptDenial(w, ic.Logger, actx, allowReceipt.RequestID, err)
+					return
+				}
+			} else if interceptEmitReceiptOrBlock(ic, w, actx, allowReceipt) {
 				return
 			}
-			requiredIntentEmitted = true
+			requiredIntentEmitted = required
 		}
 		emitBlockedPostRoundTripOutcome := func(status int, reason string) {
 			if requiredIntentEmitted {
@@ -2375,6 +2404,7 @@ func newInterceptHandler(
 		if seconds := ic.Config.FetchProxy.TimeoutSeconds; seconds > 0 {
 			interceptUpstream = &upstreamBodyStallTransport{base: upstream, stall: time.Duration(seconds) * time.Second}
 		}
+		startV3Exceptions(r.Context())
 		resp, err := interceptUpstream.RoundTrip(r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{
 			GotConn: func(httptrace.GotConnInfo) {
 				connAt.CompareAndSwap(0, int64(time.Since(base))+1)
@@ -2388,6 +2418,12 @@ func newInterceptHandler(
 				}
 			},
 		})))
+		ic.Proxy.finishV3Exceptions(r.Context(), resp != nil)
+		ic.receiptResponse = resp != nil
+		ic.receiptUpstream = upstreamReceipt
+		if upstreamReceipt != nil {
+			ic.Proxy.recordTransportOutcome(r.Context(), allowReceipt, upstreamReceipt, resp != nil)
+		}
 		// The transport reports the write on its own goroutine and can
 		// return a response before that callback runs. A response is proof
 		// the request was sent; the wait then starts at connection ready.
@@ -2433,6 +2469,10 @@ func newInterceptHandler(
 		var resourceDelivery resourceDeliveryNotification
 		defer resourceDelivery.complete()
 		flushIssuedRedirect := func() bool {
+			if !responseReceipts.confirm(ic.Proxy, w, r, ic.Config, allowReceipt) {
+				emitOutcome(allowReceipt, config.ActionBlock, http.StatusForbidden, 0, receiptEmissionFailedLayer)
+				return true
+			}
 			// A declared resource cannot turn an operator's root-route
 			// delegation into onward authority for another origin.
 			if issuerProof.derived {
@@ -2443,6 +2483,9 @@ func newInterceptHandler(
 				return false
 			}
 			if err := ic.flushIssuedRedirectHeaders(w, resp); err != nil {
+				if timing.status == 0 {
+					clear(w.Header())
+				}
 				reason := recordStreamError(r.Context(), ic.Logger, actx, err)
 				emitOutcome(allowReceipt, config.ActionAllow, resp.StatusCode, 0, reason)
 				_ = httpstream.Abort(r.Context(), err)
@@ -2478,7 +2521,7 @@ func newInterceptHandler(
 			interceptAuthenticatedArtifact = true
 			ic.Logger.LogAnomaly(actx, "authenticated_artifact", "official signed artifact verified before response release", 0)
 			artifactReceipt := withInterceptRedaction(receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: config.ActionAllow, Layer: "authenticated_artifact", Pattern: "official signed artifact verified before response release", Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent})
-			if interceptConfirmResponseOrBlock(ic, w, artifactReceipt) {
+			if interceptConfirmResponseOrBlock(ic, w, artifactReceipt, &responseReceipts.decisions) {
 				emitBlockedPostRoundTripOutcome(http.StatusForbidden, receiptEmissionFailedLayer)
 				return
 			}
@@ -2513,6 +2556,12 @@ func newInterceptHandler(
 				ic.Logger.LogResponseScanExempt(actx, r.URL.Hostname())
 				ic.Metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportConnect)
 			}
+			confirmFinding, finishFinding := sseFindingReceiptCallbacks(r.Context(), ic.Config, withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}, ic.receiptShard), ic.Proxy, func(cfg *config.Config, opts receipt.EmitOpts) error {
+				if ic.Proxy == nil {
+					return errReceiptEmitterUnavailable
+				}
+				return ic.Proxy.emitAllowPathReceipt(cfg, opts)
+			}, true)
 			sseOpts := SSEDispatchOptions{
 				nativeAdmission: ic.receiptShard,
 				IsA2A:           isA2A,
@@ -2522,12 +2571,8 @@ func newInterceptHandler(
 					Target:             targetURL,
 					Suppress:           ic.Config.Suppress,
 					ResponseScanExempt: interceptRespExempt,
-					ConfirmFinding: sseFindingReceiptConfirmer(ic.Config, withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}, ic.receiptShard), func(cfg *config.Config, opts receipt.EmitOpts) error {
-						if ic.Proxy == nil {
-							return errReceiptEmitterUnavailable
-						}
-						return ic.Proxy.emitAllowPathReceipt(cfg, opts)
-					}),
+					ConfirmFinding:     confirmFinding,
+					OnFindingDelivery:  finishFinding,
 					OnObservedCoreResponse: func(observed scanner.ObservedCoreMatch) {
 						recordObservedCoreResponseMatches(ic.Metrics, ic.Logger, actx, []scanner.ObservedCoreMatch{observed}, TransportConnect)
 					},
@@ -2851,7 +2896,7 @@ func newInterceptHandler(
 						RequestID:      ic.RequestID,
 						Agent:          ic.Agent,
 					})
-					if interceptConfirmResponseOrBlock(ic, w, passthroughReceipt) {
+					if interceptConfirmResponseOrBlock(ic, w, passthroughReceipt, &responseReceipts.decisions) {
 						emitBlockedPostRoundTripOutcome(http.StatusForbidden, receiptEmissionFailedLayer)
 						return
 					}
@@ -2970,7 +3015,7 @@ func newInterceptHandler(
 			var shieldSummary *receipt.ShieldSummary
 			shieldBlocked = ic.Proxy.blockShieldPartialResponse(resp, respBody, ic.TargetHost, ic.Config, actx)
 			if shieldBlocked == nil {
-				respBody, shieldSummary, svgShielded, shieldBlocked = ic.Proxy.applyShieldResponse(respBody, responseContentType(resp.Header), resp.Header, ic.Config, shieldResponseContext{admittedScanLimit: admittedScanLimit, scanOriginal: scanOriginal, hostname: ic.TargetHost, actx: actx, clientIP: ic.ClientIP, requestID: ic.RequestID, transport: TransportConnect, parentActionID: actionID, shard: ic.receiptShard})
+				respBody, shieldSummary, svgShielded, shieldBlocked = ic.Proxy.applyShieldResponse(respBody, responseContentType(resp.Header), resp.Header, ic.Config, shieldResponseContext{admittedScanLimit: admittedScanLimit, scanOriginal: scanOriginal, hostname: ic.TargetHost, actx: actx, clientIP: ic.ClientIP, requestID: ic.RequestID, transport: TransportConnect, parentActionID: actionID, shard: ic.receiptShard, receipts: &responseReceipts.decisions})
 			}
 			if shieldBlocked != nil {
 				ic.Metrics.RecordTLSResponseBlocked(shieldBlocked.info.Layer)
@@ -3031,7 +3076,7 @@ func newInterceptHandler(
 			return
 		}
 		if mediaVerdict.Relabeled != "" || (mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed()) {
-			if interceptConfirmResponseOrBlock(ic, w, mediaRewriteReceipt(receipt.EmitOpts{ParentActionID: actionID, Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent})) {
+			if interceptConfirmResponseOrBlock(ic, w, mediaRewriteReceipt(receipt.EmitOpts{ParentActionID: actionID, Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}), &responseReceipts.decisions) {
 				emitBlockedPostRoundTripOutcome(http.StatusForbidden, receiptEmissionFailedLayer)
 				return
 			}
@@ -3070,7 +3115,7 @@ func newInterceptHandler(
 						if !candidate.FirstSeen && !candidate.DriftAdopted {
 							return nil
 						}
-						cardReceiptFailed = interceptConfirmResponseOrBlock(ic, w, receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: config.ActionAllow, Layer: scannerLabelA2ACardDrift, Pattern: "Agent Card baseline accepted", Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent})
+						cardReceiptFailed = interceptConfirmResponseOrBlock(ic, w, receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: config.ActionAllow, Layer: scannerLabelA2ACardDrift, Pattern: "Agent Card baseline accepted", Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}, &responseReceipts.decisions)
 						if cardReceiptFailed {
 							return mcp.ErrReceiptRequired
 						}
@@ -3113,7 +3158,7 @@ func newInterceptHandler(
 						RequestID:      ic.RequestID,
 						Agent:          ic.Agent,
 					})
-					if !a2aResponseDecisionBlocks(ic.Config, a2aRespResult, true) && interceptConfirmResponseOrBlock(ic, w, signatureReceipt) {
+					if !a2aResponseDecisionBlocks(ic.Config, a2aRespResult, true) && interceptConfirmResponseOrBlock(ic, w, signatureReceipt, &responseReceipts.decisions) {
 						emitBlockedPostRoundTripOutcome(http.StatusForbidden, receiptEmissionFailedLayer)
 						return
 					}
@@ -3184,7 +3229,7 @@ func newInterceptHandler(
 					emitBlockedPostRoundTripOutcome(http.StatusForbidden, scannerLabelA2A)
 					return
 				}
-				if interceptConfirmResponseOrBlock(ic, w, receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: action, Layer: scannerLabelA2A, Pattern: reason, Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}) {
+				if interceptConfirmResponseOrBlock(ic, w, receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: action, Layer: scannerLabelA2A, Pattern: reason, Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}, &responseReceipts.decisions) {
 					emitBlockedPostRoundTripOutcome(http.StatusForbidden, receiptEmissionFailedLayer)
 					return
 				}
@@ -3209,7 +3254,7 @@ func newInterceptHandler(
 			if structured != nil {
 				ic.Logger.LogAnomaly(actx, structuredResponseLayer, structuredResponseEvidence, 0)
 				evidence := withInterceptRedaction(receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: config.ActionWarn, Layer: structuredResponseLayer, Pattern: structuredResponseEvidence, Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent})
-				if interceptConfirmResponseOrBlock(ic, w, evidence) {
+				if interceptConfirmResponseOrBlock(ic, w, evidence, &responseReceipts.decisions) {
 					emitBlockedPostRoundTripOutcome(http.StatusForbidden, receiptEmissionFailedLayer)
 					return
 				}
@@ -3358,11 +3403,11 @@ func newInterceptHandler(
 					if ic.Proxy == nil {
 						receiptErr = errReceiptEmitterUnavailable
 					} else {
-						receiptErr = ic.Proxy.emitAllowPathReceipt(ic.Config, withReceiptShard(receipt.EmitOpts{
+						receiptErr = ic.Proxy.confirmResponseDecision(ic.Config, withReceiptShard(receipt.EmitOpts{
 							ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: action,
 							Layer: responseScanLayer, Pattern: reason, Transport: "intercept",
 							Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent,
-						}, ic.receiptShard))
+						}, ic.receiptShard), &responseReceipts.decisions)
 					}
 					if receiptErr != nil {
 						if ic.Proxy != nil {
@@ -3412,7 +3457,8 @@ func newInterceptHandler(
 		// framing lets the client finish before outcome storage completes.
 		// Preserve upstream trailer framing. Intercept does not truncate
 		// buffered bodies to a byte budget.
-		if ic.Config.FlightRecorder.RequireReceipts && r.Method != http.MethodHead && resp.StatusCode >= http.StatusOK &&
+		if (ic.Config.FlightRecorder.RequireReceipts || ic.Proxy != nil && ic.Proxy.receiptV3 != nil) &&
+			r.Method != http.MethodHead && resp.StatusCode >= http.StatusOK &&
 			resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotModified &&
 			!responseHasTrailers(resp) {
 			w.Header().Del("Transfer-Encoding")
@@ -3544,32 +3590,7 @@ func withActorAuth(parent context.Context, auth envelope.ActorAuth) context.Cont
 // interceptTimingWriter records the status and body bytes an intercepted
 // request returned to the client, for the per-request timing line.
 type interceptTimingWriter struct {
-	http.ResponseWriter
-	status int
-	bytes  int64
-}
-
-func (t *interceptTimingWriter) WriteHeader(code int) {
-	// 1xx responses are interim and a final status follows, except 101,
-	// which ends the HTTP exchange.
-	if t.status == 0 && (code >= http.StatusOK || code == http.StatusSwitchingProtocols) {
-		t.status = code
-	}
-	t.ResponseWriter.WriteHeader(code)
-}
-
-func (t *interceptTimingWriter) Write(b []byte) (int, error) {
-	if t.status == 0 {
-		t.status = http.StatusOK
-	}
-	n, err := t.ResponseWriter.Write(b)
-	t.bytes += int64(n)
-	return n, err
-}
-
-// Unwrap lets http.ResponseController reach the underlying writer.
-func (t *interceptTimingWriter) Unwrap() http.ResponseWriter {
-	return t.ResponseWriter
+	httpDeliveryWriter
 }
 
 // finalStatus is the status the client received. A handler that returns

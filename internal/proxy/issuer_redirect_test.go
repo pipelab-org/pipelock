@@ -729,7 +729,7 @@ func TestIssuedRedirectHeaderFlush(t *testing.T) {
 			if mode == "adaptive failed flush" {
 				writer = &adaptiveRefusalWriter{ResponseWriter: w, cfg: &e.cfg.AdaptiveEnforcement, level: func() int { return 0 }}
 			}
-			err := ic.flushIssuedRedirectHeaders(&interceptTimingWriter{ResponseWriter: writer}, response)
+			err := ic.flushIssuedRedirectHeaders(&interceptTimingWriter{httpDeliveryWriter{ResponseWriter: writer}}, response)
 			if mode == "failed flush" || mode == "adaptive failed flush" {
 				if !errors.Is(err, io.ErrClosedPipe) {
 					t.Fatalf("flush error = %v", err)

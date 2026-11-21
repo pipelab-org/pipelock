@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -37,6 +38,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -170,6 +172,7 @@ type Server struct {
 	ksAPI                  *killswitch.APIHandler
 	proxy                  *proxy.Proxy
 	receiptEmitter         *receipt.Emitter
+	receiptWriter          *v3.StreamWriter
 	receiptShardSet        *receipt.ReceiptShardSet
 	receiptGroupFailure    atomic.Pointer[error]
 	envelopeEmitter        *envelope.Emitter
@@ -295,6 +298,14 @@ func (s *stderrSyncWriter) Write(p []byte) (int, error) {
 	return s.w.Write(p)
 }
 
+func (opts ServerOpts) applyReverseProxyOverride(cfg *config.Config) {
+	if opts.ReverseProxy {
+		cfg.ReverseProxy.Enabled = true
+		cfg.ReverseProxy.Listen = opts.ReverseListen
+		cfg.ReverseProxy.Upstream = opts.ReverseUpstream
+	}
+}
+
 // NewServer validates opts, loads config, applies CLI overrides, and builds
 // every runtime component. No ports are bound; that is Start's job. On any
 // construction failure NewServer closes whatever was partially built and
@@ -374,11 +385,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	if opts.ListenChanged {
 		cfg.FetchProxy.Listen = opts.Listen
 	}
-	if opts.ReverseProxy {
-		cfg.ReverseProxy.Enabled = true
-		cfg.ReverseProxy.Listen = opts.ReverseListen
-		cfg.ReverseProxy.Upstream = opts.ReverseUpstream
-	}
+	opts.applyReverseProxyOverride(cfg)
 
 	cfg.ApplyDefaults()
 	warnings, err := cfg.ValidateWithWarnings()
@@ -583,6 +590,11 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	// separate code path (capture.Writer above). This path wires the
 	// YAML-config-driven recorder into the proxy so enforcement decisions
 	// are hash-chained to disk.
+	useReceiptV3, err := receiptV3Selected(cfg.FlightRecorder)
+	if err != nil {
+		s.cleanup()
+		return nil, err
+	}
 	var recPrivKey ed25519.PrivateKey
 	if cfg.FlightRecorder.Enabled && cfg.FlightRecorder.Dir != "" {
 		recCfg := recorder.Config{
@@ -597,6 +609,10 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			RawEscrow:          cfg.FlightRecorder.RawEscrow,
 			EscrowPublicKey:    cfg.FlightRecorder.EscrowPublicKey,
 			Metrics:            m,
+		}
+
+		if useReceiptV3 {
+			recCfg.Dir = filepath.Join(recCfg.Dir, receiptOperationalDirectory)
 		}
 
 		if cfg.FlightRecorder.SigningKeyPath != "" {
@@ -642,7 +658,21 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			return nil, fmt.Errorf("loading posture binding: %w", bindErr)
 		}
 
-		if cfg.FlightRecorder.ReceiptChainCount() > 1 {
+		if useReceiptV3 {
+			openCtx := startupVerification.Context
+			if openCtx == nil {
+				openCtx = context.Background()
+			}
+			writer, openErr := openRuntimeReceiptV3(openCtx, cfg, recPrivKey, rec, postureResult,
+				runtimeReceiptStreamOptions{surfaces: serverReceiptSurfaces(cfg, hasMCPListen)})
+			if openErr != nil {
+				s.cleanup()
+				return nil, fmt.Errorf("open v3 receipt writer: %w", openErr)
+			}
+			s.receiptWriter = writer
+			proxyOpts = append(proxyOpts, proxy.WithReceiptV3(writer), proxy.WithSession(runSession))
+			_, _ = fmt.Fprintln(opts.Stderr, "  Receipts: v3 stream opened")
+		} else if cfg.FlightRecorder.ReceiptChainCount() > 1 {
 			if len(recPrivKey) == 0 {
 				s.cleanup()
 				return nil, errors.New("multiple receipt chains require a signing key")
@@ -759,7 +789,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	// instead of as an all-403 outage at runtime. (Restart-only recorder
 	// fields are preserved across reload, so a live emitter built here stays
 	// live; this check intentionally lives at build time, not in Validate.)
-	if cfg.FlightRecorder.RequireReceipts && !receiptEmitterReady(s.receiptEmitter) {
+	if cfg.FlightRecorder.RequireReceipts && s.receiptWriter == nil && !receiptEmitterReady(s.receiptEmitter) {
 		s.cleanup()
 		return nil, fmt.Errorf("flight_recorder.require_receipts is enabled but no healthy signed receipt emitter is active: set flight_recorder.enabled, flight_recorder.dir, and flight_recorder.signing_key_path (run 'pipelock init'), fix any receipt-chain resume error, or disable require_receipts")
 	}

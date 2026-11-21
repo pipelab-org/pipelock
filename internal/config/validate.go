@@ -5427,6 +5427,18 @@ func (c *Config) validateSandbox() error {
 
 func (c *Config) validateFlightRecorder(warnings *[]Warning) error {
 	c.FlightRecorder.PostureSignerPublicKey = nil
+	switch c.FlightRecorder.ReceiptFormat {
+	case "", ReceiptFormatLegacy:
+	case ReceiptFormatV3:
+		if c.FlightRecorder.ReceiptChainCount() > 1 {
+			return errors.New("flight_recorder.receipt_format v3 requires at most one flight_recorder.receipt_chains chain")
+		}
+		if !c.FlightRecorder.Enabled || c.FlightRecorder.Dir == "" || c.FlightRecorder.SigningKeyPath == "" {
+			return errors.New("flight_recorder.receipt_format v3 requires flight_recorder.enabled, dir, and signing_key_path")
+		}
+	default:
+		return errors.New("flight_recorder.receipt_format must be omitted, legacy, or v3")
+	}
 	if len(c.FlightRecorder.ReceiptGroupPriorSignerKeys) > 32 {
 		return errors.New("flight_recorder.receipt_group_prior_signer_keys supports at most 32 keys")
 	}

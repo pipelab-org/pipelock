@@ -38,6 +38,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 	"github.com/luckyPipewrench/pipelock/internal/media"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -3225,16 +3226,17 @@ func headerDLPMatchSource(headers map[string]struct{}) string {
 // count within convention now that a bounded metric-label agent is threaded
 // through the header DLP path.
 type headerDLPParams struct {
-	headers      http.Header
-	cfg          *config.Config
-	sc           *scanner.Scanner
-	logger       *audit.Logger
-	actx         audit.LogContext
-	hostname     string
-	target       string
-	metricAgent  string
-	start        time.Time
-	reasonPrefix string
+	forwardsHeaders bool
+	headers         http.Header
+	cfg             *config.Config
+	sc              *scanner.Scanner
+	logger          *audit.Logger
+	actx            audit.LogContext
+	hostname        string
+	target          string
+	metricAgent     string
+	start           time.Time
+	reasonPrefix    string
 }
 
 // evalHeaderDLP's last return value is an incomplete inspection or a
@@ -3255,7 +3257,13 @@ func (p *Proxy) evalHeaderDLP(ctx context.Context, e headerDLPParams) (blocked b
 		}
 		p.metrics.RecordDLPDroppedMatch(match.PatternName, "header", reason)
 	}, func(allows []scanner.CredentialAudienceAllow) error {
-		return p.recordCredentialAudienceAllows(e.cfg, e.actx, allows, TransportForward, e.actx.Method(), e.target, e.actx.RequestID(), e.actx.Agent(), receiptShardFromContext(ctx))
+		if p.receiptV3 != nil && !e.forwardsHeaders {
+			for _, allow := range uniqueCredentialAudienceAllows(allows) {
+				recordCredentialAudienceAllow(p.logger, p.metrics, e.actx, allow)
+			}
+			return nil
+		}
+		return p.recordCredentialAudienceAllows(ctx, e.cfg, e.actx, allows, withReceiptShard(receipt.EmitOpts{Transport: TransportForward, Method: e.actx.Method(), Target: e.target, RequestID: e.actx.RequestID(), Agent: e.actx.Agent()}, receiptShardFromContext(ctx)))
 	})
 	if headerResult == nil {
 		return false, false, "", nil

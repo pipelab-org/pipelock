@@ -34,6 +34,7 @@ type httpInputDecision struct {
 	admission      receipt.EmitOpts
 	taskFrame      MCPFrame
 	taskTaint      taintDecision
+	v3Upstream     mcpV3Receipt
 }
 
 const redirectResultRedirected = "redirected"
@@ -41,6 +42,7 @@ const redirectResultRedirected = "redirected"
 // DeferredRequest is a scanned action that must not reach the target until the
 // held-action manager resolves it.
 type DeferredRequest struct {
+	v3Receipt           receipt.EmitOpts
 	ID                  json.RawMessage
 	IsNotification      bool
 	DeferID             string
@@ -131,7 +133,10 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	baselineIdentity := mcpFrameBaselineIdentity(frame)
 	defer func() {
 		if result.Blocked != nil && result.Blocked.SyntheticResponse != nil {
-			result.Synthetic = &mcpSyntheticResult{response: result.Blocked.SyntheticResponse, notification: result.Blocked.IsNotification, logMessage: result.Blocked.LogMessage}
+			result.Synthetic = &mcpSyntheticResult{
+				response: result.Blocked.SyntheticResponse, notification: result.Blocked.IsNotification,
+				logMessage: result.Blocked.LogMessage, deliver: result.Blocked.syntheticDelivery,
+			}
 			result.Blocked = nil
 		}
 		if result.Blocked != nil {
@@ -244,11 +249,17 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			receiptOpts.ParentActionID = actionID
 			receiptOpts.ActionID = receipt.NewActionID()
 		}
-		if result.Blocked == nil && result.Deferred == nil && emitVerdict == config.ActionAllow && isPairedMCPMethod(mcpMethod) {
+		if result.Blocked == nil && result.Deferred == nil && emitVerdict == config.ActionAllow &&
+			(opts.ReceiptV3 != nil || isPairedMCPMethod(mcpMethod)) {
 			result.Outcome.Method = mcpMethod
 			receiptOpts.Outcome = &result.Outcome
 		}
-		if err := emitMCPToolReceipt(receiptOpts); err != nil && requiredReceipt && result.Blocked == nil {
+		if opts.ReceiptV3 != nil && result.Deferred != nil {
+			result.Deferred.v3Receipt = receiptOpts.receiptOptions()
+			return
+		}
+		receiptOpts.v3Confirmed = &result.v3Upstream
+		if err := emitMCPToolReceipt(receiptOpts); err != nil && result.Blocked == nil {
 			result.Outcome.Receipt.Layer = "receipt_emission"
 			result.Outcome.settle(logW, opts, mcpOutcomeStatusBlocked, -1, "receipt_emission_failed")
 			result.Outcome = TrackedRequestOutcome{}
@@ -1090,7 +1101,8 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		if len(policyVerdict.Rules) > 0 {
 			policyRuleName = policyVerdict.Rules[0]
 		}
-		if requireReceipts {
+		var v3Redirect mcpV3Receipt
+		if opts.ReceiptV3 != nil || requireReceipts {
 			if opts.ReceiptGroup != nil && opts.ReceiptGroup.Shards != nil {
 				receiptShard = opts.ReceiptGroup.Shards.Admit(receiptShard)
 			}
@@ -1101,7 +1113,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				ToolName: toolName, Verdict: config.ActionRedirect,
 				Layer: receiptLayer, Pattern: receiptPattern, Severity: receiptSeverity,
 				Decision: taintEval, Report: redactionReport, RedactionProfile: redactionCfg.Profile,
-				RequireReceipt: true, RequireReceipts: true,
+				RequireReceipt: requireReceipts, RequireReceipts: requireReceipts, v3Confirmed: &v3Redirect,
 			}); err != nil {
 				denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
 				receiptVerdict = config.ActionBlock
@@ -1115,7 +1127,13 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			}
 			redirectReceiptEmitted = true
 		}
-		redirectResult := executeRedirect(profile, policyVerdict.RedirectProfile, verdict.ID, toolArgs, policyRuleName, redirectRT)
+		var redirectResult RedirectResult
+		if v3Redirect.action.Attempt != nil && inputScanCtx.Err() != nil {
+			redirectResult.Error = inputScanCtx.Err().Error()
+		} else {
+			redirectResult = executeRedirect(profile, policyVerdict.RedirectProfile, verdict.ID, toolArgs, policyRuleName, redirectRT)
+		}
+		v3Redirect.finishRedirect(opts, logW, redirectResult)
 		// Determine final outcome before audit logging so the event
 		// reflects the actual result delivered to the client.
 		var br *BlockedRequest
@@ -1196,6 +1214,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				br = &BlockedRequest{
 					ID: verdict.ID, IsNotification: isNotification,
 					LogMessage: "redirected", SyntheticResponse: redirectResult.Response,
+					syntheticDelivery: opts.redirectResponseDelivery(logW, receipt.EmitOpts{
+						ActionID: actionID, Transport: opts.Transport, Target: toolName, MCPMethod: mcpMethod,
+					}),
 				}
 			}
 		} else {
@@ -1243,7 +1264,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			}
 			return result
 		}
-		if err := deferredAdmissionError(manager, requireReceipts); err != nil {
+		if err := deferredAdmissionError(manager, opts.ReceiptV3 == nil && requireReceipts); err != nil {
 			denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPDefer, mcpDeferDisabledReason, audit.BlockClassConfigMismatch)
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [%v]\n", joinStrings(reasons), err)
 			recordAdaptiveSignal(session.SignalBlock)

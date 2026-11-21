@@ -211,7 +211,11 @@ func RunHTTPListenerProxy(
 				return ListenerPrincipal{}, err
 			}
 			provider, subject := identity.Partition()
-			return ListenerPrincipal{Provider: provider, Subject: subject, Epoch: 1}, nil
+			principal := ListenerPrincipal{Provider: provider, Subject: subject, Epoch: 1}
+			if opts.ReceiptV3 != nil {
+				principal.verifiedDoor = &identity
+			}
+			return principal, nil
 		}
 	}
 	opts.UpstreamHeaders = canonicalizeListenerUpstreamHeaders(opts.UpstreamHeaders)
@@ -302,6 +306,7 @@ func RunHTTPListenerProxy(
 		RedirectRT:                opts.redirectRT(),
 		RedirectRTFn:              opts.RedirectRTFn,
 		Transport:                 "mcp_http_listener",
+		ReceiptV3:                 opts.ReceiptV3,
 		ReceiptEmitter:            opts.receiptEmitter(),
 		ReceiptEmitterFn:          opts.ReceiptEmitterFn,
 		RequireReceipts:           opts.requireReceipts(),
@@ -475,6 +480,11 @@ func RunHTTPListenerProxy(
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: listener authentication unavailable\n")
 			denialAudit = mcpListenerAdmissionDenialAudit()
 			if opts.ListenerDoor != nil {
+				if baseOpts.ReceiptV3 != nil {
+					baseOpts.recordV3MCPRefusal(safeLogW, receipt.EmitOpts{
+						Transport: baseOpts.Transport, Target: "mcp://listener", Layer: "mcp_door", Method: r.Method,
+					}, mcpV3Upstream, "authentication_failed")
+				}
 				opts.ListenerDoor.WriteFailure(w, tokenErr)
 			} else {
 				http.Error(w, "listener authentication unavailable", http.StatusServiceUnavailable)
@@ -586,6 +596,8 @@ func RunHTTPListenerProxy(
 		// without restarting the long-lived listener.
 		adaptiveCfg := opts.adaptiveCfg()
 		requestBaseOpts := baseOpts.snapshotScanPolicy()
+		// Only successful door verification supplies signed caller evidence.
+		requestBaseOpts.receiptCaller = listenerPrincipal.verifiedDoor
 		admission, admissionErr := requestBaseOpts.admitNativeRequest()
 		if admissionErr != nil {
 			denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
@@ -786,10 +798,14 @@ func RunHTTPListenerProxy(
 				Target:    dec.target,
 			})
 			if dec.intent.Receipt.ActionID != "" {
-				actionID = dec.intent.Receipt.ActionID
-				receiptOpts = mcpOutcomeReceiptOpts(dec.intent.Receipt, mcpOutcomeStatusBlocked, -1, firstNonEmpty(dec.outcomeReason, dec.pattern))
-				receiptOpts.Verdict = config.ActionBlock
-				receiptOpts.Layer = dec.layer
+				if requestBaseOpts.ReceiptV3 != nil {
+					receiptOpts.ParentActionID = dec.intent.Receipt.ActionID
+				} else {
+					actionID = dec.intent.Receipt.ActionID
+					receiptOpts = mcpOutcomeReceiptOpts(dec.intent.Receipt, mcpOutcomeStatusBlocked, -1, firstNonEmpty(dec.outcomeReason, dec.pattern))
+					receiptOpts.Verdict = config.ActionBlock
+					receiptOpts.Layer = dec.layer
+				}
 			}
 			if dec.mutateReceipt != nil {
 				receiptOpts = dec.mutateReceipt(receiptOpts)
@@ -797,11 +813,12 @@ func RunHTTPListenerProxy(
 			receiptEmitted := false
 			emitter := requestBaseOpts.receiptEmitter()
 			v2Emitter := requestBaseOpts.v2ReceiptEmitter()
+			recording := requestBaseOpts.ReceiptV3 != nil || emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil
 			if dec.intent.handle != nil {
 				if dec.intent.handle.settled.CompareAndSwap(false, true) {
 					receiptEmitted = dec.intent.handle.emit(safeLogW, receiptOpts, true) == nil
 				}
-			} else if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil || requestBaseOpts.requireReceipts() {
+			} else if recording || requestBaseOpts.requireReceipts() {
 				if _, emitErr := requestBaseOpts.emitReceiptDecision(MCPDecision{
 					Receipt:        receiptOpts,
 					RequireReceipt: requestBaseOpts.requireReceipts(),
@@ -810,8 +827,8 @@ func RunHTTPListenerProxy(
 					Durable: requestBaseOpts.requireReceipts() && dec.intent.Receipt.ActionID != "",
 				}); emitErr != nil {
 					logReceiptEmitFailure(safeLogW, emitErr, requestBaseOpts.requireReceipts(), config.ActionBlock)
-				} else if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil {
-					receiptEmitted = true
+				} else {
+					receiptEmitted = recording
 				}
 			}
 
@@ -1188,8 +1205,12 @@ func RunHTTPListenerProxy(
 			}
 		}
 
-		admitLegacyMethod := func() (receipt.EmitOpts, bool) {
+		admitListenerMethod := func() (receipt.EmitOpts, mcpV3Receipt, bool) {
+			var confirmation mcpV3Receipt
 			admission, err := admitDurableTransport(requestBaseOpts, r.Method, upstreamURL)
+			if err == nil && requestBaseOpts.ReceiptV3 != nil {
+				confirmation, err = requestBaseOpts.confirmV3StreamAdmission(safeLogW, r.Method)
+			}
 			if err != nil {
 				logReceiptEmitFailure(safeLogW, err, true, config.ActionForward)
 				denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
@@ -1202,12 +1223,12 @@ func RunHTTPListenerProxy(
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("receipt emission failed")))
-				return receipt.EmitOpts{}, false
+				return receipt.EmitOpts{}, mcpV3Receipt{}, false
 			}
 			if admission.ActionID != "" {
 				blockreason.SetRecordedReceipt(w.Header(), admission.ActionID)
 			}
-			return admission, true
+			return admission, confirmation, true
 		}
 
 		if r.Method == http.MethodGet {
@@ -1279,11 +1300,12 @@ func RunHTTPListenerProxy(
 
 			// Opening a GET subscription is a transport action. Its durable
 			// admission does not create a paired tool-call outcome.
-			admission, admitted := admitLegacyMethod()
+			admission, confirmation, admitted := admitListenerMethod()
 			if !admitted {
 				return
 			}
 			upResp, err := upstreamStreamClient.Do(upReq)
+			confirmation.finish(requestBaseOpts, safeLogW, true, err)
 			if err != nil {
 				warnTransportAdmission(safeLogW, requestBaseOpts, admission, "upstream_error")
 				if handleMetadataDialError(err, nil) {
@@ -1388,6 +1410,12 @@ func RunHTTPListenerProxy(
 			}
 			stateWriter := &listenerStateMessageWriter{state: clientState, writer: streamWriter, opts: reqOpts}
 			reqOpts.nativeSSE = true
+			if reqOpts.ReceiptV3 != nil {
+				streamWriter.responseWriter = w.ResponseWriter
+				reqOpts.finishV3ResponseDelivery = func(entry mcpV3Receipt, writeErr error) {
+					entry.finish(reqOpts, safeLogW, !stateWriter.denied && !w.uniform, writeErr)
+				}
+			}
 			foundInjection, scanErr := ForwardScanned(transport.NewSSEReader(upResp.Body), stateWriter, safeLogW, NewStrictRequestTracker(), reqOpts)
 			if errors.Is(scanErr, ael.ErrCapacity) {
 				if admission.ActionID != "" {
@@ -1411,6 +1439,9 @@ func RunHTTPListenerProxy(
 				recordTransportAdmissionResult(safeLogW, reqOpts, admission, "completed", "stream_completed")
 			}
 			if scanErr != nil && !streamWriter.Wrote() {
+				if reqOpts.ReceiptV3 != nil {
+					recordListenerStreamError(r.Context(), safeLogW, reqOpts, TrackedRequestOutcome{Receipt: mcpStreamReceipt(reqOpts, r.Method)}, true, scanErr)
+				}
 				w.Header().Set("Cache-Control", "no-store")
 				w.Header().Set("Content-Type", "application/json")
 				if !stateWriter.denied && !mcpDenialWasFinalized(scanErr) {
@@ -1482,11 +1513,12 @@ func RunHTTPListenerProxy(
 			forwardListenerUpstreamHeaders(upReq, r, false)
 			responseencoding.RequestIdentity(upReq.Header)
 
-			admission, admitted := admitLegacyMethod()
+			admission, confirmation, admitted := admitListenerMethod()
 			if !admitted {
 				return
 			}
 			upResp, err := upstreamClient.Do(upReq)
+			confirmation.finish(requestBaseOpts, safeLogW, true, err)
 			if err != nil {
 				warnTransportAdmission(safeLogW, requestBaseOpts, admission, "upstream_error")
 				if handleMetadataDialError(err, nil) {
@@ -1919,7 +1951,8 @@ func RunHTTPListenerProxy(
 				v2Emitter := requestBaseOpts.v2ReceiptEmitter()
 				actionID := receipt.NewActionID()
 				receiptEmitted := false
-				if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil || requestBaseOpts.requireReceipts() {
+				recording := requestBaseOpts.ReceiptV3 != nil || emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil
+				if recording || requestBaseOpts.requireReceipts() {
 					if _, emitErr := requestBaseOpts.emitReceiptDecision(MCPDecision{
 						Receipt: requestBaseOpts.withReceiptPolicyHash(receipt.EmitOpts{
 							ActionID:  actionID,
@@ -1937,8 +1970,8 @@ func RunHTTPListenerProxy(
 						RequireReceipt: requestBaseOpts.requireReceipts(),
 					}); emitErr != nil {
 						logReceiptEmitFailure(safeLogW, emitErr, requestBaseOpts.requireReceipts(), config.ActionBlock)
-					} else if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil {
-						receiptEmitted = true
+					} else {
+						receiptEmitted = recording
 					}
 				}
 				if receiptEmitted {
@@ -1998,12 +2031,39 @@ func RunHTTPListenerProxy(
 			}
 			decision.Outcome.settle(safeLogW, scanOpts, terminalStatus, terminalSize, terminalReason)
 		}()
+		defer decision.v3Upstream.finish(scanOpts, safeLogW, false, nil)
 		if decision.Synthetic != nil {
 			w.Header().Set("Content-Type", "application/json")
 			if decision.Synthetic.notification {
 				w.WriteHeader(http.StatusAccepted)
-			} else {
-				_, _ = w.Write(decision.Synthetic.response)
+				return
+			}
+			wrote := false
+			err := deliverMCPSynthetic(decision.Synthetic, mcpSyntheticWriter(func(reply []byte) error {
+				var writeErr error
+				withListenerWriteDeadline(w, func() {
+					wrote = true
+					if decision.Synthetic.deliver == nil {
+						_, writeErr = w.Write(reply)
+						return
+					}
+					var n int
+					n, writeErr = w.writeBuffered(reply)
+					if writeErr == nil && n != len(reply) {
+						writeErr = io.ErrShortWrite
+					}
+					if writeErr == nil {
+						writeErr = http.NewResponseController(w.ResponseWriter).Flush()
+					}
+				})
+				return writeErr
+			}))
+			if err != nil && !wrote {
+				withListenerWriteDeadline(w, func() {
+					writeMCPHTTPInputResult(scanOpts, BlockedRequest{
+						ID: frame.ID, ErrorCode: -32007, ErrorMessage: requiredReceiptFailureMessage(err),
+					}, w)
+				})
 			}
 			return
 		}
@@ -2104,6 +2164,7 @@ func RunHTTPListenerProxy(
 		// Tool-header discovery can wait after admission. Recheck the task at
 		// the send boundary using the same effective call that admission checked.
 		if refusal := mcpTaskReleaseRefusal(scanOpts, decision.taskFrame, decision.taskTaint, false); refusal != "" {
+			decision.v3Upstream.finish(scanOpts, safeLogW, false, nil)
 			blocked := inputMCPDenial(scanOpts, mcpTaintDenialAudit(), &BlockedRequest{
 				ID: frame.ID, IsNotification: isRPCNotification(frame.ID),
 				ErrorCode: -32002, ErrorMessage: "pipelock: " + refusal,
@@ -2119,6 +2180,7 @@ func RunHTTPListenerProxy(
 			return
 		}
 		upResp, err := upstreamClient.Do(upReq)
+		decision.v3Upstream.finish(scanOpts, safeLogW, true, err)
 		if err != nil {
 			terminalStatus, terminalReason = "error", "upstream_error"
 			if errors.Is(context.Cause(upReq.Context()), ael.ErrCapacity) {
@@ -2330,6 +2392,11 @@ func RunHTTPListenerProxy(
 				releaseContract()
 			}
 			revocableWriter := &listenerStateMessageWriter{state: clientState, writer: streamWriter, opts: reqOpts}
+			if reqOpts.ReceiptV3 != nil {
+				reqOpts.finishV3ResponseDelivery = func(entry mcpV3Receipt, writeErr error) {
+					entry.finish(reqOpts, safeLogW, !revocableWriter.denied && !w.uniform, writeErr)
+				}
+			}
 			streamReader := &requestDoneReader{MessageReader: reader, tracker: responseTracker, release: releaseContract}
 			reqOpts.nativeSSE = true
 			foundInjection, scanErr := ForwardScanned(streamReader, revocableWriter, safeLogW, responseTracker, reqOpts)
@@ -2355,6 +2422,9 @@ func RunHTTPListenerProxy(
 			// upstream-error envelope.
 			if scanErr != nil && !streamWriter.Wrote() {
 				terminalStatus, terminalReason = "error", "upstream_sse_validation_failed"
+				if reqOpts.ReceiptV3 != nil {
+					recordListenerStreamError(r.Context(), safeLogW, reqOpts, decision.Outcome, false, scanErr)
+				}
 				// The SSE reader also wraps scanner line-limit errors as incomplete.
 				if errors.Is(scanErr, transport.ErrIncompleteResponse) && !errors.Is(scanErr, bufio.ErrTooLong) {
 					terminalStatus, terminalReason = "incomplete", httpstream.Incomplete
@@ -2400,6 +2470,23 @@ func RunHTTPListenerProxy(
 		w.opts.denialTerminal = &responseTerminal
 		var inventoryCommits []func()
 		var inventoryReleases []func()
+		var responseDeliveries []mcpV3Receipt
+		var deliveryAttempted bool
+		var deliveryErr error
+		if reqOpts.ReceiptV3 != nil {
+			reqOpts.finishV3ResponseDelivery = func(entry mcpV3Receipt, bufferErr error) {
+				if bufferErr != nil {
+					entry.finish(reqOpts, safeLogW, false, nil)
+					return
+				}
+				responseDeliveries = append(responseDeliveries, entry)
+			}
+			defer func() {
+				for i := range responseDeliveries {
+					responseDeliveries[i].finish(reqOpts, safeLogW, deliveryAttempted, deliveryErr)
+				}
+			}()
+		}
 		reqOpts.toolInventoryDelivery = func(commit, release func()) {
 			inventoryCommits = append(inventoryCommits, commit)
 			inventoryReleases = append(inventoryReleases, release)
@@ -2416,10 +2503,13 @@ func RunHTTPListenerProxy(
 			}
 		}()
 		writeOutput := func(output []byte) {
-			withListenerWriteDeadline(w, listenerDownstreamWriteTimeout, func() {
+			withListenerWriteDeadline(w, func() {
 				w.Header().Set("Content-Type", "application/json")
 				if len(output) == 0 {
 					w.WriteHeader(http.StatusAccepted)
+					return
+				}
+				if len(responseDeliveries) > 0 && r.Context().Err() != nil {
 					return
 				}
 				if commitBeforeWrite {
@@ -2431,13 +2521,18 @@ func RunHTTPListenerProxy(
 					terminalReason = "response_not_delivered"
 				}
 				n, err := w.writeBuffered(output)
-				if err != nil || n != len(output) {
+				if err == nil && n != len(output) {
+					err = io.ErrShortWrite
+				}
+				deliveryAttempted, deliveryErr = !w.uniform, err
+				if err != nil {
 					return
 				}
-				if responseStatus != "" || !commitBeforeWrite {
+				if responseStatus != "" || !commitBeforeWrite || len(responseDeliveries) > 0 {
 					// The known-length body needs no terminal chunk after
 					// this checked flush.
-					if err := http.NewResponseController(w.ResponseWriter).Flush(); err != nil {
+					if err = http.NewResponseController(w.ResponseWriter).Flush(); err != nil {
+						deliveryErr = err
 						return
 					}
 				}
@@ -2449,6 +2544,7 @@ func RunHTTPListenerProxy(
 						commit()
 					}
 				}
+				deliveryAttempted, deliveryErr = !w.uniform, err
 			})
 		}
 		foundInjection, scanErr := ForwardScanned(reader, bufWriter, safeLogW, responseTracker, reqOpts)
@@ -2527,9 +2623,9 @@ func RunHTTPListenerProxy(
 	return nil
 }
 
-func withListenerWriteDeadline(w http.ResponseWriter, timeout time.Duration, write func()) {
+func withListenerWriteDeadline(w http.ResponseWriter, write func()) {
 	controller := http.NewResponseController(w)
-	if err := controller.SetWriteDeadline(time.Now().Add(timeout)); err == nil {
+	if err := controller.SetWriteDeadline(time.Now().Add(listenerDownstreamWriteTimeout)); err == nil {
 		defer func() { _ = controller.SetWriteDeadline(time.Time{}) }()
 	}
 	write()
@@ -2829,8 +2925,10 @@ func listenerPrincipalForRequest(r *http.Request, opts MCPProxyOpts, states *mcp
 			return mcpListenerPrincipal{}, fmt.Errorf("listener principal provider and subject must both be set")
 		}
 		if principal.Provider != "" {
-			return states.principal("verified-principal-v1:"+principal.Provider,
+			resolved, err := states.principal("verified-principal-v1:"+principal.Provider,
 				principal.Subject, principal.Epoch)
+			resolved.verifiedDoor = principal.verifiedDoor
+			return resolved, err
 		}
 	}
 	return mcpListenerPrincipal{}, nil

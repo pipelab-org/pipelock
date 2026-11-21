@@ -928,7 +928,7 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 
 	// MCP tool calls have different classification paths
 	if opts.MCPMethod != "" {
-		sideEffect = sideEffectFromMCPAction(actionType)
+		sideEffect = SideEffectFromMCPAction(actionType)
 		reversibility = ReversibilityUnknown
 	}
 	// PolicyHash precedence: a non-empty per-emission opts.PolicyHash is the
@@ -1628,8 +1628,8 @@ func (e *Emitter) actorLabel(opts EmitOpts) string {
 	return e.actor
 }
 
-// sideEffectFromMCPAction maps action types to side-effect classes for MCP.
-func sideEffectFromMCPAction(at ActionType) SideEffectClass {
+// SideEffectFromMCPAction maps action types to side-effect classes for MCP.
+func SideEffectFromMCPAction(at ActionType) SideEffectClass {
 	switch at {
 	case ActionRead:
 		return SideEffectExternalRead

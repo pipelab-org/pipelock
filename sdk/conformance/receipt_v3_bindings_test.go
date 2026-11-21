@@ -23,22 +23,22 @@ import (
 var receiptEmissionCalls = strings.Fields(
 	"emitReceiptDecision emitAdmittedReceiptDecision emitMCPStandaloneStreamReceipt emitMCPStreamDiagnostic emitMCPOutcomeReceipt emitMCPToolReceipt " +
 		"EmitDeferredResolutionReceipt emitDeferredResolutionReceipt emitMCPDeferredKillSwitchReceipt confirmMCPResponseEffect " +
-		"emitForwardReceipt emitFetchReceipt emitReverseReceipt emitTunnelReceipt emitWSReceipt " +
-		"emitRecordedReceipt emitRequiredReceipt emitRequestPolicyReceipt confirmResponseDecision confirmResponseOrBlock " +
+		"confirmHTTPResponseDelivery emitForwardReceipt emitFetchReceipt emitReverseReceipt emitStreamReceipt emitTunnelReceipt emitWSReceipt " +
+		"emitRecordedReceipt emitRecordedEffectRefusal emitRecordedUpstreamRefusal emitRequiredReceipt emitRequestPolicyReceipt confirmResponseDecision confirmV3ResponseDecision confirmResponseOrBlock " +
 		"interceptConfirmResponseOrBlock interceptEmitReceiptOrBlock interceptEmitRequiredReceipt interceptEmitOutcomeReceipt " +
 		"emitOutcomeReceipt emitObservedOutcomeReceipt emitOutcomeReceiptWithPattern " +
-		"recordIssuerQueryAllow recordIssuerCookieAllow recordIssuerCookieAllows recordCredentialAudienceAllow recordCredentialAudienceAllows " +
+		"recordIssuerQueryAllow recordIssuerCookieAllow recordIssuerCookieAllows recordCredentialAudienceAllow recordCredentialAudienceAllows recordV3IssuerCookieAllows recordV3CredentialAudienceAllows recordV3ExceptionAllows " +
 		"emitDeferredReceipt emitAllowPathReceipt emitReceiptFailureMarker recordReceiptEmitterUnavailable " +
 		"emitReceipt emitFrameReceipt emitMCPReceiptDecision emitMCPOutcome emitMCPToolScanReceipt " +
 		"emitForwardDenial emitHoldFailureResolution emitKillSwitchDenialReceipt confirmShieldIntervention " +
-		"commitAllow ensure blockCrossMessageIncomplete closeUpstreamCrossMessage sseFindingReceiptConfirmer emitV1 " +
+		"commitAllow ensure blockCrossMessageIncomplete closeUpstreamCrossMessage sseFindingReceiptConfirmer sseFindingReceiptCallbacks emitV1 " +
 		"emitCredentialAudienceReceipt emitCredentialAudienceReceiptWithFallback emitRequiredV2Receipt emitReceiptFailureMarkerWithLogger " +
 		"emitReceiptDecisionWithControl EmitMCPDecision EmitMCPGroupDecision emitMCPDecision emitMCPV2Decision emitMCPBlockedOutcomeReceipt " +
 		"emitReceiptWithEmitter emitRequiredReceiptWithEmitter interceptEmitReceipt " +
 		"emitV2Receipt emitV2 emitRequiredV2 emitGroupV2Receipt emitDLPWarn EmitDLPWarning " +
 		"EmitSessionOpen EmitSessionClose EmitHeartbeat EmitTranscriptRoot prepareNativeAEL " +
 		"BuildProxyDecisionReceipt BuildProxyDecisionWithSpansReceipt BuildSecretEgressDecisionReceipt " +
-		"SignReceipt EmitBatch RecordPrescanned buildReceipt")
+		"SignReceipt EmitBatch RecordPrescanned buildReceipt confirmTransportReceipt recordTransportOutcome recordTransportNotReleased writePayload finishRedirect confirmV3ResponseDelivery confirmV3StreamAdmission emitMCPUpstreamRefusal recordMCPStreamDiagnostic recordV3MCPRefusal recordV3TransportRefusal writeMCPGeneratedResponse writeV3Response finalizeV3MCPReceipt WriteAction WriteAdmissionBatch WriteTerminalResolution")
 
 type receiptProducerAttribution struct {
 	Fields string `json:"fields"`
@@ -56,6 +56,8 @@ type receiptBindingRegistry struct {
 type receiptEmissionSite struct {
 	key      string
 	position token.Position
+	node     ast.Node
+	disabled bool
 }
 
 const regenerateReceiptV3 = "Run python3 sdk/conformance/generate_receipt_v3.py to regenerate the spec and schemas."
@@ -72,6 +74,7 @@ func TestReceiptV3EmitterBindings(t *testing.T) {
 	}
 
 	var discovered []receiptEmissionSite
+	writers := newReceiptWriterIndex()
 	fset := token.NewFileSet()
 	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -86,7 +89,7 @@ func TestReceiptV3EmitterBindings(t *testing.T) {
 		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		file, err := parser.ParseFile(fset, path, nil, 0)
 		if err != nil {
 			return fmt.Errorf("parse emission sites in %s: %w", path, err)
 		}
@@ -95,11 +98,28 @@ func TestReceiptV3EmitterBindings(t *testing.T) {
 		if err != nil {
 			return err
 		}
+		pkg := filepath.Dir(path)
+		writers.addFile(pkg, file)
+		for _, site := range sites {
+			if boundary, bound := registry.EmitSites[site.key]; bound {
+				if boundary != "none" {
+					writers.sites[site.key] = receiptWriterSite{pkg: pkg, node: site.node, disabled: site.disabled}
+				}
+				if strings.HasPrefix(relative, "internal/proxy/websocket") {
+					checkWebSocketReceiptBoundary(t, site.key, boundary, site.node, file)
+				}
+			}
+		}
 		discovered = append(discovered, sites...)
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, site := range discovered {
+		if binding, ok := writers.sites[site.key]; ok && !writers.reachesWriter(binding) {
+			t.Errorf("no v3 writer path for %s", site.key)
+		}
 	}
 	for _, issue := range receiptBindingIssues(registry, discovered) {
 		t.Error(issue)
@@ -203,7 +223,7 @@ func receiptEmissionSites(fset *token.FileSet, path string, file *ast.File) ([]r
 			if count := counts[key]; count > 1 {
 				key = fmt.Sprintf("%s-%d", key, count)
 			}
-			sites = append(sites, receiptEmissionSite{key: key, position: position})
+			sites = append(sites, receiptEmissionSite{key: key, position: position, node: node, disabled: receiptSiteDisabled(node, parents)})
 			return true
 		})
 		if fingerprintErr != nil {
@@ -406,6 +426,70 @@ func TestReceiptV3EmitterBindingChanges(t *testing.T) {
 				t.Logf("binding %s still matches after moving from line %d to line %d", key, original[0].position.Line, sites[0].position.Line)
 			}
 		})
+	}
+}
+
+func checkWebSocketReceiptBoundary(t *testing.T, site, boundary string, node ast.Node, file *ast.File) {
+	t.Helper()
+	call, ok := node.(*ast.CallExpr)
+	if !ok {
+		return
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return
+	}
+	receiver, ok := selector.X.(*ast.Ident)
+	if !ok || receiver.Name != "r" {
+		return
+	}
+	index := 0
+	switch selector.Sel.Name {
+	case "writePayload":
+		index = 1
+	case "emitReceipt", "emitFrameReceipt":
+	default:
+		return
+	}
+	want := map[string]string{
+		"none": "boundaryNoEffect", "upstream_send": "boundaryUpstreamSend",
+		"downstream_delivery": "boundaryDownstreamDelivery",
+	}[boundary]
+	if len(call.Args) <= index {
+		t.Errorf("no v3 boundary argument at %s", site)
+		return
+	}
+	if !selectsWebSocketReceiptBoundary(call.Args[index], want, file) {
+		t.Errorf("v3 boundary argument at %s must select the package constant for %s", site, boundary)
+	}
+}
+
+func selectsWebSocketReceiptBoundary(expr ast.Expr, want string, file *ast.File) bool {
+	actual, ok := expr.(*ast.Ident)
+	if !ok || want == "" || actual.Name != want {
+		return false
+	}
+	// A package constant declared in a different file has no local object.
+	return actual.Obj == nil || actual.Obj.Kind == ast.Con && file.Scope.Lookup(want) == actual.Obj
+}
+
+func TestReceiptV3WebSocketBoundaryRejectsShadowing(t *testing.T) {
+	const boundary = "boundaryDownstreamDelivery"
+	for _, shadow := range []bool{false, true} {
+		source := "package proxy\nconst " + boundary + " = 1\nfunc send() {\n"
+		if shadow {
+			source += boundary + " := 2\n"
+		}
+		source += "r.writePayload(payload, " + boundary + ")\n}\n"
+		file, err := parser.ParseFile(token.NewFileSet(), "websocket.go", source, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		function := file.Decls[1].(*ast.FuncDecl)
+		call := function.Body.List[len(function.Body.List)-1].(*ast.ExprStmt).X.(*ast.CallExpr)
+		if matches := selectsWebSocketReceiptBoundary(call.Args[1], boundary, file); matches == shadow {
+			t.Fatalf("boundary matches package constant = %t with shadow = %t", matches, shadow)
+		}
 	}
 }
 

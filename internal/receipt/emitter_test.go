@@ -1212,9 +1212,9 @@ func TestSideEffectFromMCPAction(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := sideEffectFromMCPAction(tc.actionType)
+			got := SideEffectFromMCPAction(tc.actionType)
 			if got != tc.want {
-				t.Errorf("sideEffectFromMCPAction(%q) = %q, want %q",
+				t.Errorf("SideEffectFromMCPAction(%q) = %q, want %q",
 					tc.actionType, got, tc.want)
 			}
 		})

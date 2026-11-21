@@ -30,6 +30,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -57,6 +58,9 @@ type ListenerPrincipal struct {
 	Provider string
 	Subject  string
 	Epoch    uint64
+
+	// verifiedDoor belongs to this request and is set only by the door verifier.
+	verifiedDoor *door.Identity
 }
 
 // ListenerPrincipalResolver authenticates an HTTP listener request and returns
@@ -156,6 +160,10 @@ type MCPProxyOpts struct {
 	// JSON listener scanning writes to a buffer. Defer inventory admission until
 	// the real downstream write succeeds; streaming transports commit directly.
 	toolInventoryDelivery func(commit, release func())
+	// The response writer delivers directly to the client rather than staging bytes.
+	v3DirectResponseDelivery bool
+	// Listener adapters settle the confirmed intent at the client write.
+	finishV3ResponseDelivery func(mcpV3Receipt, error)
 	// A bridge queues held-action decisions until its inventory lock is released.
 	// A release can itself acquire a header contract; resolving under the writer
 	// hold would deadlock. Private discovery never invokes this callback.
@@ -476,6 +484,8 @@ type MCPProxyOpts struct {
 
 	// ReceiptEmitter emits signed action receipts for MCP decisions.
 	// Nil-safe (no-op when nil).
+	ReceiptV3         *v3.StreamWriter
+	receiptCaller     *door.Identity
 	ReceiptEmitter    *receipt.Emitter
 	ReceiptEmitterFn  func() *receipt.Emitter
 	RequireReceipts   bool
@@ -957,6 +967,9 @@ func (o MCPProxyOpts) emitAdmittedReceiptDecision(d MCPDecision) ([]byte, error)
 
 func (o MCPProxyOpts) emitMCPReceiptDecision(d MCPDecision, admit bool) ([]byte, error) {
 	d.Receipt = o.withReceiptPolicyHash(d.Receipt)
+	if o.ReceiptV3 != nil {
+		return d.InboundMsg, o.writeV3Decision(d)
+	}
 	if o.ReceiptGroup != nil {
 		if admit && o.ReceiptGroup.Shards != nil && d.Receipt.ActionID != "" && !d.Receipt.ShardSelected {
 			d.Receipt = o.ReceiptGroup.Shards.Admit(d.Receipt)

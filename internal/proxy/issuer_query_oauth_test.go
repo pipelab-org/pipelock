@@ -20,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -413,7 +414,7 @@ func TestIssuerQueryAllowReceiptKind(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(p.Close)
-			_ = p.recordIssuerQueryAllow(nil, audit.LogContext{}, "https://app.vendor.example/cb?code=x", "req", "agent-one", http.MethodGet, tc.kind)
+			_ = p.recordIssuerQueryAllow(t.Context(), nil, audit.LogContext{}, tc.kind, receipt.EmitOpts{Method: http.MethodGet, Target: "https://app.vendor.example/cb?code=x", RequestID: "req", Agent: "agent-one"})
 			got := rph.requireReceipt(t, issuerQueryReceiptExtensionKey)
 			if !strings.Contains(string(got.Ext), `"`+tc.want+`"`) {
 				t.Fatalf("extension = %s, want %s", got.Ext, tc.want)

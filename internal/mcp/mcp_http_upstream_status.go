@@ -248,7 +248,7 @@ func (e upstreamClientError) writeIfActive(w http.ResponseWriter, state *mcpList
 			detail = mcpAdaptiveBlockMessage(opts.Rec, opts.adaptiveCfg(), "mcp_response_scan", nil)
 			return
 		}
-		withListenerWriteDeadline(w, listenerDownstreamWriteTimeout, func() { e.write(w) })
+		withListenerWriteDeadline(w, func() { e.write(w) })
 	}) {
 		return false, "listener state revoked", ""
 	}

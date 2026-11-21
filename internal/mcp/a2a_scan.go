@@ -1566,11 +1566,14 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 		// Forward inspected event. Preserve id, event, and retry fields from the
 		// SSE reader so downstream consumers can correlate events, handle
 		// typed dispatching, and respect reconnection timing.
-		if werr := writeSSEEvent(w, event, reader.LastEventID(), reader.LastEventType(), reader.LastRetry()); werr != nil {
-			return fmt.Errorf("a2a stream write: %w", werr)
-		}
-		if flusher != nil {
+		werr := writeSSEEvent(w, event, reader.LastEventID(), reader.LastEventType(), reader.LastRetry())
+		if warnedFinding != nil && opts.Warning.OnFindingDelivery != nil {
+			werr = finishSSEFindingWrite(flusher, opts.Warning.OnFindingDelivery, werr)
+		} else if werr == nil && flusher != nil {
 			flusher.Flush()
+		}
+		if werr != nil {
+			return fmt.Errorf("a2a stream write: %w", werr)
 		}
 	}
 }

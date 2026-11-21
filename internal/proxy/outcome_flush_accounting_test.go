@@ -259,7 +259,7 @@ func TestReverseBufferedOutcomeFraming(t *testing.T) {
 			if !success {
 				inner.conn, inner.buffer, inner.hijackErr = nil, nil, io.ErrClosedPipe
 			}
-			guard := &reverseInformationalGuardWriter{ResponseWriter: inner}
+			guard := &reverseInformationalGuardWriter{httpDeliveryWriter: httpDeliveryWriter{ResponseWriter: inner}}
 			if err := http.NewResponseController(guard).Flush(); !errors.Is(err, io.ErrClosedPipe) {
 				t.Fatalf("guard hid flush failure: %v", err)
 			}

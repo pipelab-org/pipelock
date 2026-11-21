@@ -23,6 +23,7 @@ import (
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	contractstore "github.com/luckyPipewrench/pipelock/internal/contract/store"
 	"github.com/luckyPipewrench/pipelock/internal/directorysync"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -140,6 +141,11 @@ func addLifecycleFlags(cmd *cobra.Command, flags *lifecycleFlags) {
 }
 
 func runPromote(cmd *cobra.Command, flags lifecycleFlags) error {
+	lock, err := lockLifecycleReceiptOutput(lifecycleReceiptPath(flags))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Close() }()
 	lc, err := resolveLifecycle(flags)
 	if err != nil {
 		return err
@@ -219,6 +225,11 @@ func runPromote(cmd *cobra.Command, flags lifecycleFlags) error {
 }
 
 func runRollback(cmd *cobra.Command, flags lifecycleFlags) error {
+	lock, err := lockLifecycleReceiptOutput(lifecycleReceiptPath(flags))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Close() }()
 	lc, err := resolveLifecycle(flags)
 	if err != nil {
 		return err
@@ -304,6 +315,29 @@ func runRollback(cmd *cobra.Command, flags lifecycleFlags) error {
 	return nil
 }
 
+func lifecycleReceiptPath(flags lifecycleFlags) string {
+	if flags.receiptOut != "" {
+		return flags.receiptOut
+	}
+	return filepath.Join(flags.storeDir, defaultLifecycleReceiptOut)
+}
+
+func lockLifecycleReceiptOutput(path string) (*recorder.EvidenceCeremonyLock, error) {
+	path, err := existingLifecycleReceiptPath(path)
+	if err != nil {
+		return nil, err
+	}
+	dir, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return nil, fmt.Errorf("resolve lifecycle receipt output directory: %w", err)
+	}
+	lock, err := recorder.AcquireLegacyEvidenceWriterLock(dir)
+	if err != nil {
+		return nil, fmt.Errorf("lock lifecycle receipt output directory: %w", err)
+	}
+	return lock, nil
+}
+
 func resolveLifecycle(flags lifecycleFlags) (lifecycleContext, error) {
 	storeDir, err := existingLifecycleStore(flags.storeDir)
 	if err != nil {
@@ -352,11 +386,7 @@ func resolveLifecycle(flags lifecycleFlags) (lifecycleContext, error) {
 	if err := roster.AuthorizeSignerForPayload(string(contractreceipt.PayloadContractPromoteCommitted), receiptKey.KeyID(), now); err != nil {
 		return lifecycleContext{}, fmt.Errorf("learn lifecycle: receipt signer %q: %w", receiptKey.KeyID(), err)
 	}
-	receiptOut := flags.receiptOut
-	if receiptOut == "" {
-		receiptOut = filepath.Join(storeDir, defaultLifecycleReceiptOut)
-	}
-	receiptOut, err = prepareLifecycleReceiptPath(receiptOut, directorysync.Sync)
+	receiptOut, err := prepareLifecycleReceiptPath(lifecycleReceiptPath(flags), directorysync.Sync)
 	if err != nil {
 		return lifecycleContext{}, err
 	}

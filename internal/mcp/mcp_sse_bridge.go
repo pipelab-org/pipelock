@@ -17,6 +17,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 )
 
 // sseMessageWriter writes each scanned JSON-RPC message as one SSE event.
@@ -132,8 +133,8 @@ func (sw *sseMessageWriter) Wrote() bool {
 // startGETStream maintains a background GET SSE connection for server-initiated
 // messages. Called after the initialize handshake establishes a session ID.
 // Reconnects with exponential backoff (1s base, 30s cap) on stream end or
-// transient errors. Exits permanently only on transport.ErrStreamNotSupported (HTTP 405)
-// or context cancellation.
+// transient errors. Stops on context cancellation, exhausted capacity, an
+// unsupported GET stream (HTTP 405), or a v3 writer that cannot resume.
 // opts carries Scanner, Approver, ToolCfg, KillSwitch, Rec, AdaptiveCfg, and
 // Metrics through to ForwardScanned for adaptive enforcement.
 func startGETStream(
@@ -176,7 +177,7 @@ func startGETStream(
 			}
 
 			scanErr, err := scanGETStream(ctx, httpClient, safeClientOut, safeLogW, opts, tracker)
-			if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(err, ael.ErrCapacity) {
+			if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(err, ael.ErrCapacity) || errors.Is(err, v3.ErrWriterUnavailable) {
 				return
 			}
 			if err != nil {
@@ -240,6 +241,10 @@ func scanGETStream(ctx context.Context, client *transport.HTTPClient, writer tra
 	streamCtx, stop := httpstream.WithCapacityGrace(ctx, nil, admission.NativeLease, opts.shutdownGrace())
 	defer stop()
 	opts.nativeAdmission = admission
+	subscription, receiptErr := opts.confirmV3StreamAdmission(logW, http.MethodGet)
+	if receiptErr != nil {
+		return nil, receiptErr
+	}
 	transportReceiptOpts := opts.snapshotScanPolicy().pinReceiptWriters()
 	transportAdmission, err := admitDurableTransport(transportReceiptOpts, http.MethodGet, opts.AuthorityDestination)
 	if err != nil {
@@ -247,6 +252,7 @@ func scanGETStream(ctx context.Context, client *transport.HTTPClient, writer tra
 		return nil, err
 	}
 	reader, err := client.OpenGETStream(streamCtx)
+	subscription.finish(opts, logW, true, err)
 	if err != nil {
 		switch {
 		case errors.Is(context.Cause(streamCtx), ael.ErrCapacity):

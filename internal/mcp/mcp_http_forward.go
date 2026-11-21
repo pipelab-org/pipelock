@@ -45,7 +45,7 @@ func emitRequestScopedTimeout(
 		outcome, ok := consumeTrackedRequestOutcome(tracker, id)
 		if ok {
 			resp := timeoutErrorResponse(id)
-			if wErr := writer.WriteMessage(resp); wErr != nil {
+			if wErr := opts.writeMCPGeneratedResponse(logW, writer, outcome.Receipt, resp, "response_timeout"); wErr != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", wErr)
 			}
 			outcome.settle(logW, opts, "error", int64(len(resp)), "response_timeout")
@@ -60,6 +60,11 @@ func emitRequestScopedTimeout(
 func emitContractRefusedOutcome(logW io.Writer, outcome TrackedRequestOutcome, gate mcpContractGateOutput, reason string, bytesTransferred int64, opts MCPProxyOpts) {
 	receiptOpts := mcpWithContractReceipt(outcome.Receipt, gate)
 	receiptOpts.Layer = mcpContractReceiptLayer
+	if opts.ReceiptV3 != nil {
+		opts.recordV3MCPRefusal(logW, receiptOpts, mcpV3Upstream, reason)
+		outcome.releaseNativeLease()
+		return
+	}
 	outcome.Receipt = receiptOpts
 	outcome.settle(logW, opts, mcpOutcomeStatusBlocked, bytesTransferred, reason)
 }
@@ -245,6 +250,7 @@ func RunHTTPProxy(
 
 	// Session-scoped opts: override Rec and ToolCfg from the caller's opts.
 	fwdOpts := opts
+	fwdOpts.v3DirectResponseDelivery = true
 	fwdOpts.Rec = rec
 	fwdOpts.ToolCfg = fwdToolCfg
 	fwdOpts.ToolCfgFn = nil
@@ -434,6 +440,7 @@ func RunHTTPProxy(
 					SessionID:         deferredReq.SessionID,
 					SessionIDOriginal: deferredReq.SessionIDOriginal,
 				},
+				ConfirmHold: receiptSettle.confirmV3Hold(fwdOpts, deferredReq.v3Receipt),
 				BeforeAllow: func() (func(), bool) {
 					return deferredReleasePrecheck(heldOpts, deferredGeneration)
 				},
@@ -561,6 +568,20 @@ func RunHTTPProxy(
 					}
 					switch res.FinalDecision {
 					case config.ActionAllow:
+						release, err := receiptSettle.confirmV3Release(heldOpts)
+						if err != nil {
+							refuse(deferred.ReasonReceiptNotWritten)
+							if finishDeniedRelease != nil {
+								finishDeniedRelease()
+							}
+							if !deferredReq.IsNotification {
+								_ = writeMCPInputDenial(denialOpts, mcpReceiptMcpInputDenialAudit(), safeClientOut, blockRequestResponse(BlockedRequest{
+									ID: deferredReq.ID, ErrorCode: -32007, ErrorMessage: requiredReceiptFailureMessage(err),
+								}))
+							}
+							return
+						}
+						defer release.finish(heldOpts, safeLogW, false, nil)
 						// upstreamMu is held by Prepare's release claim.
 						releaseOutcome := receiptSettle.release
 						var registration *requestRegistration
@@ -606,6 +627,7 @@ func RunHTTPProxy(
 						releaseCtx := heldOpts.warnContext()
 						releaseOpts := heldOpts
 						respReader, sendErr := httpClient.SendMessageWithOptions(releaseCtx, deferredReq.ForwardMessage, transport.HTTPMessageOptions{Headers: releaseHeaders})
+						release.finish(heldOpts, safeLogW, true, sendErr)
 						if sendErr != nil {
 							if errors.Is(context.Cause(releaseCtx), ael.ErrCapacity) {
 								settleBridgeCapacityOutcome(releaseCtx, safeLogW, tracker, deferredReq.ID, releaseOpts, releaseOutcome)
@@ -620,7 +642,7 @@ func RunHTTPProxy(
 								finishDeniedRelease()
 							}
 							if !deferredReq.IsNotification {
-								_ = safeClientOut.WriteMessage(upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP request failed")))
+								_ = heldOpts.writeMCPGeneratedResponse(safeLogW, safeClientOut, releaseOutcome.Receipt, upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP request failed")), "upstream_write_failed")
 							}
 							return
 						}
@@ -653,7 +675,7 @@ func RunHTTPProxy(
 								settleBridgeNotificationScanError(releaseCtx, safeLogW, releaseOpts, releaseOutcome, scanErr)
 							} else if outcome, pending := tracker.takeOwnedOutcome(deferredReq.ID, registration); pending {
 								errResp := upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP response failed"))
-								_ = safeClientOut.WriteMessage(errResp)
+								_ = releaseOpts.writeMCPGeneratedResponse(safeLogW, safeClientOut, outcome.Receipt, errResp, "scan_error")
 								status, reason, size := "error", "scan_error", int64(len(errResp))
 								streamReason := httpstream.Reason(releaseCtx, scanErr)
 								switch {
@@ -711,7 +733,7 @@ func RunHTTPProxy(
 				},
 			}
 			if holdErr == nil {
-				holdErr = manager.Hold(heldAction)
+				holdErr = manager.HoldContext(ctx, heldAction)
 			}
 			if holdErr == nil && heldOpts.nativeAdmission.NativeLease.Stopping() {
 				_ = manager.Resolve(deferredReq.DeferID, config.ActionBlock, deferred.SourceCancel)
@@ -750,6 +772,7 @@ func RunHTTPProxy(
 		}
 
 		if gate, gateErr := evaluateMCPUpstreamGate(ctx, upstreamURL, opts); gateErr != nil {
+			decision.v3Upstream.finish(fwdOpts, safeLogW, false, nil)
 			outcome := decision.Outcome
 			denialAudit = mcpListenerContractEvalDenialAudit()
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream evaluation failed: %v\n", gateErr)
@@ -767,6 +790,7 @@ func RunHTTPProxy(
 			emitContractRefusedOutcome(safeLogW, outcome, mcpContractGateOutput{}, mcpContractEvaluationFailedReason, int64(len(errResp)), fwdOpts)
 			continue
 		} else if gate.Verdict == config.ActionBlock {
+			decision.v3Upstream.finish(fwdOpts, safeLogW, false, nil)
 			outcome := decision.Outcome
 			denialAudit = mcpUpstreamGateDenialAudit(gate)
 			if gate.WinningSource == contractruntime.WinningSourceScanner {
@@ -789,6 +813,7 @@ func RunHTTPProxy(
 
 		requestHeaders, headerErr := bridgeHeaders.prepare(ctx, decision.ForwardMessage)
 		if headerErr != nil {
+			decision.v3Upstream.finish(fwdOpts, safeLogW, false, nil)
 			outcome := decision.Outcome
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: header contract refused: %q\n", headerErr.Error())
 			denialAudit, message, reason := bridgeHeaderRefusal(headerErr)
@@ -808,6 +833,7 @@ func RunHTTPProxy(
 		unlockInventory := func() {}
 		if frame.Method == "tools/list" {
 			if lockErr := contractState.contractMu.Lock(ctx); lockErr != nil {
+				decision.v3Upstream.finish(fwdOpts, safeLogW, false, nil)
 				// Only cancellation fails this wait. Close the request's
 				// tracked outcome and leave through the shared shutdown path,
 				// which settles other pending outcomes and ends the session.
@@ -853,6 +879,7 @@ func RunHTTPProxy(
 			}
 			return httpClient.SendMessageWithOptions(ctx, decision.ForwardMessage, transport.HTTPMessageOptions{Headers: requestHeaders})
 		}()
+		decision.v3Upstream.finish(fwdOpts, safeLogW, taskRefusal == "" && trackingErr == nil, err)
 		if trackingErr != nil {
 			unlockInventory()
 			decision.Outcome.settle(safeLogW, fwdOpts, mcpOutcomeStatusBlocked, -1, "request_tracking_failed")
@@ -905,7 +932,7 @@ func RunHTTPProxy(
 			// which could contain prompt injection payloads.
 			rpcID := frame.ID
 			errResp := upstreamErrorResponse(rpcID, fmt.Errorf("upstream HTTP request failed"))
-			if wErr := safeClientOut.WriteMessage(errResp); wErr != nil {
+			if wErr := fwdOpts.writeMCPGeneratedResponse(safeLogW, safeClientOut, decision.Outcome.Receipt, errResp, "upstream_error"); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send error response: %v\n", wErr)
 			}
 			outcome := decision.Outcome
@@ -1007,6 +1034,11 @@ func RunHTTPProxy(
 func emitBridgeHeaderContractRefusal(logW io.Writer, outcome TrackedRequestOutcome, reason string, opts MCPProxyOpts) {
 	intent := outcome.Receipt
 	intent.Layer = mcpReceiptLayerHeaderContract
+	if opts.ReceiptV3 != nil {
+		opts.recordV3MCPRefusal(logW, intent, mcpV3Upstream, reason)
+		outcome.releaseNativeLease()
+		return
+	}
 	outcome.Receipt = intent
 	outcome.settle(logW, opts, mcpOutcomeStatusBlocked, -1, reason)
 }

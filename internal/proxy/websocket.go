@@ -21,7 +21,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/gobwas/ws"
-	"github.com/gobwas/ws/wsutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -100,6 +99,7 @@ type wsRelay struct {
 	redactionLog     *redact.Report
 	rec              session.Recorder // live escalation level for UpgradeAction; nil when profiling disabled
 	taintSessionKey  string           // rotation-safe key re-resolved for every response observation
+	receiptCloseOnce sync.Once        // sends one pair of receipt-failure Close frames
 	terminalOnce     sync.Once        // ensures only one terminal receipt (kill_switch/session_deny) is emitted across concurrent relay goroutines
 	audienceMu       sync.Mutex
 	audienceAllows   map[string]struct{} // reset for each client frame to suppress body/direct duplicate telemetry
@@ -152,12 +152,23 @@ func (r *wsRelay) escalationLevel() int {
 // A frame can emit supporting scan, policy and delivery decisions.
 const nativeWSMessageRecords = 15 + receipt.DLPWarningSlots
 
-func (r *wsRelay) emitFrameReceipt(admission, opts receipt.EmitOpts) error {
-	return r.proxy.emitReceipt(withReceiptConfig(withReceiptShard(opts, firstReceiptShard(admission, r.receiptShard)), r.cfg))
+func (r *wsRelay) emitReceipt(boundary string, opts receipt.EmitOpts) error {
+	return r.emitFrameReceipt(boundary, receipt.EmitOpts{}, opts)
 }
 
-func (r *wsRelay) emitReceipt(opts receipt.EmitOpts) error {
-	return r.proxy.emitReceipt(withReceiptConfig(withReceiptShard(opts, r.receiptShard), r.cfg))
+func (r *wsRelay) emitFrameReceipt(boundary string, admission, opts receipt.EmitOpts) error {
+	if r.proxy.receiptV3 != nil {
+		opts.ParentActionID = r.requestActionID
+		entry := prepareV3TransportReceipt(r.cfg, opts)
+		entry.action.Phase = "decision"
+		entry.action.EffectBoundary, entry.action.EffectRelation = boundary, "not_attempted"
+		err := r.proxy.receiptV3.WriteAction(r.auditProvenanceCtx(), entry.action, entry.policy)
+		if err != nil {
+			r.proxy.logReceiptEmissionFailure(opts, err)
+		}
+		return err
+	}
+	return r.proxy.emitReceipt(withReceiptConfig(withReceiptShard(opts, firstReceiptShard(admission, r.receiptShard)), r.cfg))
 }
 
 func (r *wsRelay) resetCredentialAudienceAllows() {
@@ -172,13 +183,31 @@ func (r *wsRelay) resetDroppedDLP() {
 	r.droppedDLPMu.Unlock()
 }
 
-func (r *wsRelay) recordCredentialAudienceAllows(allows []scanner.CredentialAudienceAllow) error {
+func (r *wsRelay) recordCredentialAudienceAllows(ctx context.Context, allows []scanner.CredentialAudienceAllow) error {
 	if r.proxy == nil || len(allows) == 0 {
 		return nil
 	}
 	allows = uniqueCredentialAudienceAllows(allows)
 	keyFor := func(allow scanner.CredentialAudienceAllow) string {
 		return allow.PatternName + "\x00" + allow.Surface + "\x00" + allow.Destination
+	}
+	actx := newHTTPAuditContext(r.auditProvenanceCtx(), r.proxy.logger, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
+	if exceptions, _ := ctx.Value(v3ExceptionsKey{}).(*v3Exceptions); exceptions != nil {
+		if exceptions.audience == nil {
+			exceptions.audience = make(map[string]struct{})
+		}
+		pending := allows[:0]
+		for _, allow := range allows {
+			key := keyFor(allow)
+			if _, exists := exceptions.audience[key]; !exists {
+				pending = append(pending, allow)
+				exceptions.audience[key] = struct{}{}
+			}
+		}
+		return r.proxy.recordV3CredentialAudienceAllows(ctx, r.cfg, actx, pending, receipt.EmitOpts{
+			Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
+			ParentActionID: r.requestActionID,
+		})
 	}
 	r.audienceMu.Lock()
 	defer r.audienceMu.Unlock()
@@ -188,7 +217,6 @@ func (r *wsRelay) recordCredentialAudienceAllows(allows []scanner.CredentialAudi
 			pending = append(pending, allow)
 		}
 	}
-	actx := newHTTPAuditContext(r.auditProvenanceCtx(), r.proxy.logger, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
 	admission := firstReceiptShard(r.clientFrameAdmission, r.receiptShard)
 	return confirmCredentialAudienceAllows(admission, pending, func(allow scanner.CredentialAudienceAllow, reserved receipt.EmitOpts) error {
 		if err := r.proxy.recordCredentialAudienceAllow(r.cfg, actx, allow, TransportWS, "WS", r.targetURL, r.requestID, r.agent, reserved); err != nil {
@@ -217,7 +245,7 @@ func (r *wsRelay) blockOnCredentialAudienceReceiptFailure(log *audit.Logger, err
 	blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 	log.LogBlocked(newHTTPAuditContext(r.auditProvenanceCtx(), log, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent}), blockedErr.layer, blockedErr.detail)
 	r.proxy.metrics.RecordWSScanHit(blockedErr.layer)
-	_ = r.emitFrameReceipt(r.clientFrameAdmission, receipt.EmitOpts{
+	_ = r.emitFrameReceipt(boundaryUpstreamSend, r.clientFrameAdmission, receipt.EmitOpts{
 		ActionID:  receipt.NewActionID(),
 		Verdict:   config.ActionBlock,
 		Layer:     blockedErr.layer,
@@ -334,13 +362,24 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	w = p.withAdaptiveRefusal(w, refusalOpts)
 	// Carry the provenance grade from the moment identity resolves, so every
 	// audit context built from r.Context() below reports the real grade.
-	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
+	r = p.withV3Exceptions(r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth))))
+	defer p.finishV3Exceptions(r.Context(), false)
+	var upstreamReceipt *v3TransportReceipt
 	emitWebSocketReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptShard(opts, selectedReceiptShard)
 		if opts.Layer == nativeStreamCloseLayer {
 			opts = opts.NativeTerminal()
 		}
 		opts = withReceiptConfig(opts, cfg)
+		if p.receiptV3 != nil {
+			if opts.Verdict == config.ActionBlock {
+				opts = linkTransportRefusal(opts, upstreamReceipt)
+				if err := p.recordV3TransportRefusal(r.Context(), cfg, opts, boundaryUpstreamSend); err == nil {
+					blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
+				}
+			}
+			return
+		}
 		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
 		}
@@ -442,7 +481,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(wsScanCtx)
 	result := sc.ScanWebSocket(wsScanCtx, targetURL)
 	p.metrics.RecordURLDecisions(TransportWS, result.Decisions)
-	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportWS, "WS", targetURL, requestID, agent, selectedReceiptShard); err != nil {
+	if err := p.recordCredentialAudienceAllows(r.Context(), cfg, actx, result.CredentialAudienceAllows, withReceiptShard(receipt.EmitOpts{Transport: TransportWS, Method: "WS", Target: targetURL, RequestID: requestID, Agent: agent}, selectedReceiptShard)); err != nil {
 		if refuseReceiptCapacity(w, err) {
 			return
 		}
@@ -992,7 +1031,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		clientConn = p.withAdaptiveClose(clientConn, refusalOpts)
 		return true
 	}
-	if !cfg.FlightRecorder.RequireReceipts && !negotiateProtocol {
+	if p.receiptV3 == nil && !cfg.FlightRecorder.RequireReceipts && !negotiateProtocol {
 		if !upgradeClient() {
 			return
 		}
@@ -1182,8 +1221,14 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if cfg.FlightRecorder.RequireReceipts {
-		if err := p.emitRequiredReceipt(withReceiptConfig(admissionReceipt, cfg)); err != nil {
+	if cfg.FlightRecorder.RequireReceipts || p.receiptV3 != nil {
+		var err error
+		if p.receiptV3 != nil {
+			upstreamReceipt, err = p.confirmTransportReceipt(r.Context(), cfg, admissionReceipt, boundaryUpstreamSend)
+		} else {
+			err = p.emitRequiredReceipt(withReceiptConfig(admissionReceipt, cfg))
+		}
+		if receiptWriteWithholdsEffect(cfg, err) {
 			blockedErr := newReceiptEmissionBlockedRequest(err)
 			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordWSBlocked()
@@ -1192,9 +1237,29 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				"WebSocket blocked: "+blockedErr.reason, http.StatusForbidden)
 			return
 		}
-		blockreason.SetRecordedReceipt(w.Header(), admissionReceipt.ActionID)
+		if cfg.FlightRecorder.RequireReceipts {
+			blockreason.SetRecordedReceipt(w.Header(), admissionReceipt.ActionID)
+		}
 	}
 
+	confirmClientUpgrade := func() bool {
+		if p.receiptV3 == nil {
+			return upgradeClient()
+		}
+		delivery := admissionReceipt
+		delivery.ActionID = receipt.NewActionID()
+		delivery.ParentActionID = admissionReceipt.ActionID
+		entry, err := p.confirmTransportReceipt(r.Context(), cfg, delivery, boundaryDownstreamDelivery)
+		if receiptWriteWithholdsEffect(cfg, err) {
+			blocked := newReceiptEmissionBlockedRequest(err)
+			writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, blocked.layer).WithRequestID(requestID),
+				"WebSocket blocked: "+blocked.reason, http.StatusForbidden)
+			return false
+		}
+		upgraded := upgradeClient()
+		p.recordTransportOutcome(r.Context(), delivery, entry, upgraded)
+		return upgraded
+	}
 	outcomeStatus := "unknown"
 	outcomeBytes := int64(-1)
 	outcomeReason := "incomplete"
@@ -1219,13 +1284,20 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 
-	if cfg.FlightRecorder.RequireReceipts {
+	upstreamAttempted := false
+	defer func() {
+		if !upstreamAttempted && upstreamReceipt != nil {
+			p.recordTransportNotReleased(r.Context(), admissionReceipt, upstreamReceipt)
+		}
+	}()
+
+	if cfg.FlightRecorder.RequireReceipts || p.receiptV3 != nil {
 		// Upgrade the client connection only after the required intent receipt is
 		// durable. A 101 response is client egress; under require_receipts it must
 		// not be written before fsync succeeds. With a subprotocol offer the
 		// upgrade waits further, until the upstream has made its selection.
 		if !negotiateProtocol {
-			if !upgradeClient() {
+			if !confirmClientUpgrade() {
 				return
 			}
 			defer safeClose(clientConn, "ws.clientConn", log)
@@ -1241,7 +1313,11 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// trusted caller before sending the handshake. Requests refused by the
 	// admission checks above cannot taint even that caller's evidence.
 	p.taintIssuerSessionForStream(cfg, agent, clientIP, id.Auth, parsed)
+	upstreamAttempted = true
+	startV3Exceptions(r.Context())
 	upstreamConn, upstreamProtocol, dialErr := p.wsDialUpstream(r.Context(), targetURL, fwdHeaders, cfg)
+	p.finishV3Exceptions(r.Context(), dialErr == nil && upstreamConn != nil)
+	p.recordTransportOutcome(r.Context(), admissionReceipt, upstreamReceipt, dialErr == nil && upstreamConn != nil)
 	if dialErr != nil {
 		var ssrfErr *ssrfDialBlockError
 		if errors.As(dialErr, &ssrfErr) {
@@ -1285,7 +1361,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	defer safeClose(upstreamConn, "ws.upstreamConn", log)
 	if negotiateProtocol {
 		selectedProtocol = upstreamProtocol
-		if !upgradeClient() {
+		if !confirmClientUpgrade() {
 			return
 		}
 		defer safeClose(clientConn, "ws.clientConn", log)
@@ -1348,7 +1424,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		log.LogResponseScanExempt(actx, relay.hostname)
 	}
 
-	stats := relay.run(r.Context())
+	// The two relay directions own their writes independently of the
+	// completed handshake and its receipt accumulator.
+	relayCtx := context.WithValue(r.Context(), v3ExceptionsKey{}, (*v3Exceptions)(nil))
+	stats := relay.run(relayCtx)
 	capacityStopped := selectedReceiptShard.NativeLease.Stopping()
 	licenseRevoked := errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked)
 	if licenseRevoked {
@@ -1412,7 +1491,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if wsGate.HasContractContext() {
 		closeReceipt = withContractReceipt(wsGate, closeReceipt)
 	}
-	if !cfg.FlightRecorder.RequireReceipts || stats.blocked || relay.redactionLog != nil {
+	if p.receiptV3 == nil && (!cfg.FlightRecorder.RequireReceipts || stats.blocked || relay.redactionLog != nil) {
 		emitWebSocketReceipt(closeReceipt)
 	}
 
@@ -1498,7 +1577,7 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 		if len(allMatches) > 0 || ctx.Err() != nil || scanIncomplete {
 			return
 		}
-		receiptErr = p.recordCredentialAudienceAllows(cfg, actx, audienceAllows, TransportWS, "WS", targetURL, actx.RequestID(), actx.Agent(), receiptShardFromContext(ctx))
+		receiptErr = p.recordCredentialAudienceAllows(ctx, cfg, actx, audienceAllows, withReceiptShard(receipt.EmitOpts{Transport: TransportWS, Method: "WS", Target: targetURL, RequestID: actx.RequestID(), Agent: actx.Agent()}, receiptShardFromContext(ctx)))
 	}()
 scanHeaders:
 	for _, key := range []string{
@@ -1974,7 +2053,7 @@ func (r *wsRelay) scanClientMessageBodyWithSurface(ctx context.Context, msg []by
 			r.recordClientFrameDroppedDLP(match, reason)
 		},
 		OnCredentialAudienceAllows: func(allows []scanner.CredentialAudienceAllow) error {
-			return r.recordCredentialAudienceAllows(allows)
+			return r.recordCredentialAudienceAllows(ctx, allows)
 		},
 	}
 	applyWebSocketContentEntropyConfig(&bodyReq, r.cfg)
@@ -2060,7 +2139,7 @@ func (r *wsRelay) enforceClientCEE(ctx context.Context, log *audit.Logger, msg [
 			Agent: r.agent, AgentAuth: string(r.actorAuth),
 		})
 		r.proxy.metrics.RecordWSScanHit("cross_request")
-		_ = r.emitFrameReceipt(r.clientFrameAdmission, receipt.EmitOpts{
+		_ = r.emitFrameReceipt(boundaryUpstreamSend, r.clientFrameAdmission, receipt.EmitOpts{
 			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: "cross_request",
 			PolicyHash: ceeAdmission.PolicyHash, Pattern: ceeReceiptPattern(ceeRes), Transport: TransportWS,
 			Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
@@ -2079,7 +2158,7 @@ func (r *wsRelay) enforceClientCEE(ctx context.Context, log *audit.Logger, msg [
 		_, level := adaptiveBlockState(ceeRec, adaptiveScopeForHost(r.hostname))
 		recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: r.clientIP, RequestID: r.requestID})
 		r.terminalOnce.Do(func() {
-			_ = r.emitFrameReceipt(r.clientFrameAdmission, receipt.EmitOpts{
+			_ = r.emitFrameReceipt(boundaryUpstreamSend, r.clientFrameAdmission, receipt.EmitOpts{
 				ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: adaptiveSessionDeny,
 				Pattern: "session escalation", Transport: TransportWS, Method: "WS", Target: r.targetURL,
 				RequestID: r.requestID, Agent: r.agent, PolicyHash: ceeAdmission.PolicyHash,
@@ -2174,7 +2253,7 @@ func (r *wsRelay) handleClientTextResult(ctx context.Context, log *audit.Logger,
 		surface = "websocket_frame"
 	}
 	filteredMatches, audienceAllows := r.scanner.FilterTextDLPMatchesForDestination(dlpResult.Matches, r.targetURL, surface)
-	if err := r.recordCredentialAudienceAllows(audienceAllows); err != nil {
+	if err := r.recordCredentialAudienceAllows(ctx, audienceAllows); err != nil {
 		return true, r.blockOnCredentialAudienceReceiptFailure(log, err)
 	}
 	if opts.crossMessage && r.blockCrossMessageRedaction(log, filteredMatches) {
@@ -2233,7 +2312,7 @@ func (r *wsRelay) decideClientCrossMessageTextViews(ctx context.Context, log *au
 		r.scanner.EmitTextDLPWarnMatches(ctx, crossWarns)
 	}
 	crossDLP, audienceAllows := r.scanner.FilterTextDLPMatchesForDestination(crossDLP, r.targetURL, "websocket_frame")
-	if err := r.recordCredentialAudienceAllows(audienceAllows); err != nil {
+	if err := r.recordCredentialAudienceAllows(ctx, audienceAllows); err != nil {
 		return true, r.blockOnCredentialAudienceReceiptFailure(log, err)
 	}
 
@@ -2270,7 +2349,7 @@ func (r *wsRelay) blockCrossMessageRedaction(log *audit.Logger, matches []scanne
 			Agent: r.agent, AgentAuth: string(r.actorAuth),
 		})
 		r.proxy.metrics.RecordWSScanHit(scannerLabelRedaction)
-		_ = r.emitFrameReceipt(r.clientFrameAdmission, receipt.EmitOpts{
+		_ = r.emitFrameReceipt(boundaryUpstreamSend, r.clientFrameAdmission, receipt.EmitOpts{
 			ActionID:         receipt.NewActionID(),
 			Verdict:          config.ActionBlock,
 			Layer:            scannerLabelRedaction,
@@ -2385,7 +2464,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 				Agent: r.agent, AgentAuth: string(r.actorAuth),
 			})
 			r.proxy.metrics.RecordWSScanHit(audit.ScannerDLP)
-			_ = r.emitFrameReceipt(r.clientFrameAdmission, receipt.EmitOpts{
+			_ = r.emitFrameReceipt(boundaryUpstreamSend, r.clientFrameAdmission, receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     audit.ScannerDLP,
@@ -2419,7 +2498,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 				Agent: r.agent, AgentAuth: string(r.actorAuth),
 			})
 			r.proxy.metrics.RecordWSScanHit(audit.ScannerDLP)
-			_ = r.emitFrameReceipt(r.clientFrameAdmission, receipt.EmitOpts{
+			_ = r.emitFrameReceipt(boundaryUpstreamSend, r.clientFrameAdmission, receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     audit.ScannerDLP,
@@ -2487,7 +2566,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 				Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
 				Agent: r.agent, AgentAuth: string(r.actorAuth),
 			})
-			_ = r.emitFrameReceipt(r.clientFrameAdmission, receipt.EmitOpts{
+			_ = r.emitFrameReceipt(boundaryUpstreamSend, r.clientFrameAdmission, receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     "address_protection",
@@ -2514,7 +2593,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 				Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
 				Agent: r.agent, AgentAuth: string(r.actorAuth),
 			})
-			_ = r.emitFrameReceipt(r.clientFrameAdmission, receipt.EmitOpts{
+			_ = r.emitFrameReceipt(boundaryUpstreamSend, r.clientFrameAdmission, receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     "address_protection",
@@ -2756,7 +2835,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			Agent: r.agent, AgentAuth: string(r.actorAuth),
 		})
 		r.proxy.metrics.RecordWSScanHit(scannerLabel)
-		_ = r.emitFrameReceipt(r.clientFrameAdmission, receipt.EmitOpts{
+		_ = r.emitFrameReceipt(boundaryUpstreamSend, r.clientFrameAdmission, receipt.EmitOpts{
 			ActionID:         receipt.NewActionID(),
 			Verdict:          config.ActionBlock,
 			Layer:            receiptLayer,
@@ -2837,7 +2916,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			Agent: r.agent, AgentAuth: string(r.actorAuth),
 		})
 		r.proxy.metrics.RecordWSScanHit(scannerLabel)
-		_ = r.emitFrameReceipt(r.clientFrameAdmission, receipt.EmitOpts{
+		_ = r.emitFrameReceipt(boundaryUpstreamSend, r.clientFrameAdmission, receipt.EmitOpts{
 			ActionID:         receipt.NewActionID(),
 			Verdict:          config.ActionBlock,
 			Layer:            receiptLayer,
@@ -2922,7 +3001,7 @@ func (r *wsRelay) blockIdentityReload() bool {
 	}
 	r.terminalOnce.Do(func() {
 		r.proxy.logger.LogWSBlocked(audit.WSBlockedEvent{Target: r.targetURL, Scanner: "identity_reload", Reason: stateIdentityReloadReason, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent, AgentAuth: string(r.actorAuth)})
-		_ = r.emitReceipt(receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: "identity_reload", Pattern: stateIdentityReloadReason, Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent})
+		_ = r.emitReceipt(boundaryNoEffect, receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: "identity_reload", Pattern: stateIdentityReloadReason, Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent})
 		r.writeClientClose(ws.StatusPolicyViolation,
 			blockInfoFor(blockreason.AuthorityMismatch, "identity_reload").WithRequestID(r.requestID).CloseFramePayload())
 		r.writeUpstreamClose(ws.StatusPolicyViolation, stateIdentityReloadReason)
@@ -2958,10 +3037,12 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 	baseCtx := ctx
 	finishWarnings := func() {}
 	defer func() {
+		r.proxy.finishV3Exceptions(ctx, false)
 		finishWarnings()
 		r.clientFrameAdmission.NativeLease.Release()
 	}()
 	for {
+		r.proxy.finishV3Exceptions(ctx, false)
 		finishWarnings()
 		ctx = baseCtx
 		r.clientFrameAdmission.NativeLease.Release()
@@ -2990,7 +3071,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		// Kill switch: terminate WebSocket relay when activated mid-stream.
 		if r.proxy.ks != nil && r.proxy.ks.IsActive() {
 			r.terminalOnce.Do(func() {
-				_ = r.emitReceipt(receipt.EmitOpts{
+				_ = r.emitReceipt(boundaryUpstreamSend, receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
 					Verdict:   config.ActionBlock,
 					Layer:     "kill_switch",
@@ -3024,7 +3105,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			sessionKey := sessionKeyFor(r.cfg, r.agent, r.clientIP, r.actorAuth)
 			recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: r.clientIP, RequestID: r.requestID})
 			r.terminalOnce.Do(func() {
-				_ = r.emitReceipt(receipt.EmitOpts{
+				_ = r.emitReceipt(boundaryUpstreamSend, receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
 					Verdict:   config.ActionBlock,
 					Layer:     adaptiveSessionDeny,
@@ -3113,7 +3194,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				return
 			}
 			r.clientFrameAdmission = messageAdmission
-			ctx, finishWarnings = r.proxy.receiptWarningContext(baseCtx, messageAdmission)
+			ctx, finishWarnings = r.proxy.receiptWarningContext(r.proxy.v3ExceptionContext(baseCtx), messageAdmission)
 		}
 		if r.blockIdentityReload() {
 			blocked = true
@@ -3147,7 +3228,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				return
 			}
 			// Ping/Pong: forward to upstream (proxy is CLIENT to upstream).
-			err = wsutil.WriteClientMessage(r.upstreamConn, hdr.OpCode, payload)
+			blocked, err = r.writePayload(ctx, boundaryUpstreamSend, hdr.OpCode, payload, receipt.EmitOpts{})
 			if err != nil {
 				return
 			}
@@ -3165,7 +3246,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 					Agent: r.agent, AgentAuth: string(r.actorAuth),
 				})
 				r.proxy.metrics.RecordWSScanHit("ws_protocol")
-				_ = r.emitFrameReceipt(r.clientFrameAdmission, receipt.EmitOpts{
+				_ = r.emitFrameReceipt(boundaryUpstreamSend, r.clientFrameAdmission, receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
 					Verdict:   config.ActionBlock,
 					Layer:     "ws_protocol",
@@ -3192,7 +3273,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				Agent: r.agent, AgentAuth: string(r.actorAuth),
 			})
 			r.proxy.metrics.RecordWSScanHit(scannerLabelRedaction)
-			_ = r.emitFrameReceipt(r.clientFrameAdmission, receipt.EmitOpts{
+			_ = r.emitFrameReceipt(boundaryUpstreamSend, r.clientFrameAdmission, receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     scannerLabelRedaction,
@@ -3218,7 +3299,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				Reason: closeReason, ClientIP: r.clientIP, RequestID: r.requestID,
 				Agent: r.agent, AgentAuth: string(r.actorAuth),
 			})
-			_ = r.emitFrameReceipt(r.clientFrameAdmission, receipt.EmitOpts{
+			_ = r.emitFrameReceipt(boundaryUpstreamSend, r.clientFrameAdmission, receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     "ws_protocol",
@@ -3266,6 +3347,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			}
 		}
 
+		var sendReceipt receipt.EmitOpts
 		if r.cfg.RequestBodyScanning.Enabled && r.scanText {
 			surface := "websocket_binary"
 			if isTextMessage {
@@ -3287,6 +3369,8 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				return
 			}
 			msg = buf
+			sendReceipt.RedactionProfile = r.cfg.Redaction.DefaultProfile
+			sendReceipt.RedactionReport = bodyResult.RedactionReport
 		}
 
 		if isTextMessage && r.scanText {
@@ -3389,7 +3473,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		if frag.Opcode != 0 {
 			opCode = frag.Opcode
 		}
-		err = wsutil.WriteClientMessage(r.upstreamConn, opCode, msg)
+		blocked, err = r.writePayload(ctx, boundaryUpstreamSend, opCode, msg, sendReceipt)
 		if err != nil {
 			return
 		}
@@ -3401,6 +3485,11 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 // enforceUpstreamTextPayload applies response injection policy to any textual
 // WebSocket payload, including Ping and Pong application data.
 func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Logger, msg []byte, allowTransform bool) ([]byte, bool) {
+	var delivery receipt.EmitOpts
+	return r.inspectUpstreamTextPayload(ctx, log, msg, allowTransform, &delivery)
+}
+
+func (r *wsRelay) inspectUpstreamTextPayload(ctx context.Context, log *audit.Logger, msg []byte, allowTransform bool, delivery *receipt.EmitOpts) ([]byte, bool) {
 	if len(msg) == 0 {
 		return msg, false
 	}
@@ -3444,7 +3533,7 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 	if scanResult.Failed() {
 		reason := "response scan failed: " + scanResult.ScanError
 		log.LogError(newHTTPAuditContext(r.auditProvenanceCtx(), log, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent}), fmt.Errorf("%s", reason))
-		_ = r.emitFrameReceipt(r.upstreamFrameAdmission, receipt.EmitOpts{
+		_ = r.emitFrameReceipt(boundaryDownstreamDelivery, r.upstreamFrameAdmission, receipt.EmitOpts{
 			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: "response_scan_error", Pattern: reason,
 			Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
 		})
@@ -3484,7 +3573,7 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 			Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
 			Agent: r.agent, AgentAuth: string(r.actorAuth),
 		})
-		_ = r.emitFrameReceipt(r.upstreamFrameAdmission, receipt.EmitOpts{
+		_ = r.emitFrameReceipt(boundaryDownstreamDelivery, r.upstreamFrameAdmission, receipt.EmitOpts{
 			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: responseScanLayer, Pattern: reason,
 			Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
 		})
@@ -3508,7 +3597,7 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 				Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
 				Agent: r.agent, AgentAuth: string(r.actorAuth),
 			})
-			_ = r.emitFrameReceipt(r.upstreamFrameAdmission, receipt.EmitOpts{
+			_ = r.emitFrameReceipt(boundaryDownstreamDelivery, r.upstreamFrameAdmission, receipt.EmitOpts{
 				ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: responseScanLayer, Pattern: reason,
 				Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
 			})
@@ -3528,7 +3617,7 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 			Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
 			Agent: r.agent, AgentAuth: string(r.actorAuth),
 		})
-		_ = r.emitFrameReceipt(r.upstreamFrameAdmission, receipt.EmitOpts{
+		_ = r.emitFrameReceipt(boundaryDownstreamDelivery, r.upstreamFrameAdmission, receipt.EmitOpts{
 			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: responseScanLayer, Pattern: reason,
 			Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
 		})
@@ -3542,7 +3631,9 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 	// A warning or successful strip permits this response to leave an already
 	// established socket. Its handshake receipt cannot confirm this later
 	// decision, and a clean-stream summary does not describe the finding.
-	if r.cfg.FlightRecorder.RequireReceipts {
+	if r.proxy.receiptV3 != nil {
+		delivery.Verdict, delivery.Layer, delivery.Pattern = wsAction, responseScanLayer, strings.Join(patternNames, ", ")
+	} else if r.cfg.FlightRecorder.RequireReceipts {
 		err := r.proxy.emitAllowPathReceipt(r.cfg, withReceiptShard(receipt.EmitOpts{
 			ActionID: receipt.NewActionID(), ParentActionID: r.requestActionID, Verdict: wsAction, Layer: responseScanLayer,
 			Pattern: strings.Join(patternNames, ", "), Transport: TransportWS,
@@ -3567,7 +3658,7 @@ func (r *wsRelay) denySessionCapacity(direction string) {
 			Reason: session.ErrCapacity.Error(), ClientIP: r.clientIP, RequestID: r.requestID,
 			Agent: r.agent, AgentAuth: string(r.actorAuth),
 		})
-		_ = r.emitReceipt(receipt.EmitOpts{
+		_ = r.emitReceipt(boundaryNoEffect, receipt.EmitOpts{
 			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock,
 			Layer: sessionCapacityLayer, Pattern: session.ErrCapacity.Error(),
 			Transport: TransportWS, Method: http.MethodGet, Target: r.targetURL,
@@ -3671,7 +3762,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		// Kill switch: terminate WebSocket relay when activated mid-stream.
 		if r.proxy.ks != nil && r.proxy.ks.IsActive() {
 			r.terminalOnce.Do(func() {
-				_ = r.emitReceipt(receipt.EmitOpts{
+				_ = r.emitReceipt(boundaryDownstreamDelivery, receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
 					Verdict:   config.ActionBlock,
 					Layer:     "kill_switch",
@@ -3704,7 +3795,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			sessionKey := sessionKeyFor(r.cfg, r.agent, r.clientIP, r.actorAuth)
 			recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: r.clientIP, RequestID: r.requestID})
 			r.terminalOnce.Do(func() {
-				_ = r.emitReceipt(receipt.EmitOpts{
+				_ = r.emitReceipt(boundaryDownstreamDelivery, receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
 					Verdict:   config.ActionBlock,
 					Layer:     adaptiveSessionDeny,
@@ -3850,7 +3941,8 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				r.writeClientClose(ws.StatusNormalClosure, "upstream closed")
 				return
 			}
-			payload, responseBlocked := r.enforceUpstreamTextPayload(ctx, log, payload, false)
+			var delivery receipt.EmitOpts
+			payload, responseBlocked := r.inspectUpstreamTextPayload(ctx, log, payload, false, &delivery)
 			if responseBlocked {
 				blocked = true
 				return
@@ -3863,10 +3955,12 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				continue
 			}
 			// Forward Ping/Pong to client (proxy is SERVER to client, no masking).
-			err = wsutil.WriteServerMessage(r.clientConn, hdr.OpCode, payload)
+			blocked, err = r.writePayload(ctx, boundaryDownstreamDelivery, hdr.OpCode, payload, delivery)
+			if errors.Is(err, errWSClientClosing) {
+				continue
+			}
 			if err != nil {
-				// The client went away; the upstream did not break off.
-				r.upstreamCancelled = true
+				r.upstreamCancelled = !blocked
 				return
 			}
 			bytesTransferred += int64(len(payload))
@@ -3883,7 +3977,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 					Agent: r.agent, AgentAuth: string(r.actorAuth),
 				})
 				r.proxy.metrics.RecordWSScanHit("ws_protocol")
-				_ = r.emitFrameReceipt(r.upstreamFrameAdmission, receipt.EmitOpts{
+				_ = r.emitFrameReceipt(boundaryDownstreamDelivery, r.upstreamFrameAdmission, receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
 					Verdict:   config.ActionBlock,
 					Layer:     "ws_protocol",
@@ -3910,7 +4004,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				Reason: closeReason, ClientIP: r.clientIP, RequestID: r.requestID,
 				Agent: r.agent, AgentAuth: string(r.actorAuth),
 			})
-			_ = r.emitFrameReceipt(r.upstreamFrameAdmission, receipt.EmitOpts{
+			_ = r.emitFrameReceipt(boundaryDownstreamDelivery, r.upstreamFrameAdmission, receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     "ws_protocol",
@@ -3940,6 +4034,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		}
 
 		// Complete message. Count and scan.
+		var delivery receipt.EmitOpts
 		if opCode == ws.OpBinary {
 			if !r.observeUpstreamResponseFindings(nil) {
 				return bytesTransferred, textFrames, binaryFrames, true
@@ -3954,7 +4049,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 					Agent: r.agent, AgentAuth: string(r.actorAuth),
 				})
 				r.proxy.metrics.RecordWSScanHit("media_policy")
-				_ = r.emitFrameReceipt(r.upstreamFrameAdmission, receipt.EmitOpts{
+				_ = r.emitFrameReceipt(boundaryDownstreamDelivery, r.upstreamFrameAdmission, receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
 					Verdict:   config.ActionBlock,
 					Layer:     "media_policy",
@@ -3972,8 +4067,10 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				return
 			}
 			if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
-				if r.cfg.FlightRecorder.RequireReceipts {
-					if err := r.proxy.confirmResponseDecision(r.cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: r.requestActionID, Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent}, firstReceiptShard(r.upstreamFrameAdmission, r.receiptShard)))); err != nil {
+				if r.proxy.receiptV3 != nil {
+					delivery = mediaRewriteReceipt(delivery)
+				} else if r.cfg.FlightRecorder.RequireReceipts {
+					if err := r.proxy.confirmResponseDecision(r.cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: r.requestActionID, Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent}, firstReceiptShard(r.upstreamFrameAdmission, r.receiptShard))), nil); err != nil {
 						r.proxy.recordRequiredReceiptBlock(err, TransportWS)
 						payload := blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(r.requestID).CloseFramePayload()
 						r.writeClientClose(ws.StatusPolicyViolation, payload)
@@ -3998,7 +4095,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			}
 
 			var responseBlocked bool
-			msg, responseBlocked = r.enforceUpstreamTextPayload(ctx, log, msg, true)
+			msg, responseBlocked = r.inspectUpstreamTextPayload(ctx, log, msg, true, &delivery)
 			if responseBlocked {
 				blocked = true
 				return
@@ -4017,9 +4114,12 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			continue
 		}
 		// Forward complete message to client (proxy is SERVER, no masking).
-		err = wsutil.WriteServerMessage(r.clientConn, opCode, msg)
+		blocked, err = r.writePayload(ctx, boundaryDownstreamDelivery, opCode, msg, delivery)
+		if errors.Is(err, errWSClientClosing) {
+			continue
+		}
 		if err != nil {
-			r.upstreamCancelled = true
+			r.upstreamCancelled = !blocked
 			return
 		}
 		bytesTransferred += int64(len(msg))
