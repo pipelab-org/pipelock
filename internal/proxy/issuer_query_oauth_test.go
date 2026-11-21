@@ -399,6 +399,8 @@ func TestIssuerQueryAllowReceiptKind(t *testing.T) {
 		{issuerQueryOAuthRedirect, string(issuerQueryOAuthRedirect)},
 		{issuerQueryPageOrigin, string(issuerQueryPageOrigin)},
 		{issuerQueryServerID, string(issuerQueryServerID)},
+		{issuerQueryJoinedView, "issued_joined_view"},
+		{issuerQueryIssuedValue, "issued_value"},
 		{"", string(issuerQueryObserved)},
 		{"unrecognized_rule", string(issuerQueryObserved)},
 	} {

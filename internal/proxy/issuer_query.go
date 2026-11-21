@@ -1109,7 +1109,10 @@ func (p *Proxy) recordIssuerQueryAllow(cfg *config.Config, ctx audit.LogContext,
 	if p.logger != nil {
 		p.logger.LogIssuerQueryAllow(ctx, strings.ToLower(parsed.Hostname()))
 	}
-	if kind != issuerQueryIssuedRedirect && kind != issuerQueryOAuthRedirect && kind != issuerQueryPageOrigin && kind != issuerQueryServerID && kind != issuerQueryResourcePath {
+	switch kind {
+	case issuerQueryObserved, issuerQueryIssuedRedirect, issuerQueryOAuthRedirect, issuerQueryPageOrigin,
+		issuerQueryServerID, issuerQueryResourcePath, issuerQueryJoinedView, issuerQueryIssuedValue:
+	default:
 		kind = issuerQueryObserved
 	}
 	safeTarget := parsed.Scheme + "://" + parsed.Host + parsed.EscapedPath()
