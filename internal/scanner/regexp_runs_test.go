@@ -68,6 +68,8 @@ func TestRegexpWindowWholeInputFallback(t *testing.T) {
 		hasPlan                bool
 	}{
 		{"empty match", `(?:marker)?`, strings.Repeat("!marker#", 140), false},
+		{"text start", `\A[0-9]{6}`, "123456" + strings.Repeat("!123456", 140), false},
+		{"all branches start at text start", `^marker[0-9]{2}|\Asample[0-9]{2}`, "sample12" + strings.Repeat("!marker42", 140), false},
 		{"wild class without anchor", `[a-z]{4}[0-9]{4}`, strings.Repeat("test0123 ", 140), false},
 		{"universal core", `(?s)marker.*result`, "marker" + strings.Repeat("line\n", 250) + "result", false},
 		{"dense growth", `marker(?:\s+[ab]){1,125}`, strings.Repeat("marker a ", 400), true},
@@ -111,19 +113,7 @@ func TestRegexpWindowScannerParity(t *testing.T) {
 	windowed, reference := MustNew(cfg), MustNew(cfg)
 	t.Cleanup(windowed.Close)
 	t.Cleanup(reference.Close)
-	disable := func(patterns []*compiledPattern) []*compiledPattern {
-		out := make([]*compiledPattern, len(patterns))
-		for i, p := range patterns {
-			cp := *p
-			cp.regexpWindows, cp.bodyRegexpWindows = nil, nil
-			out[i] = &cp
-		}
-		return out
-	}
-	reference.dlpPatterns = disable(reference.dlpPatterns)
-	core := *reference.core
-	core.dlpPatterns = disable(core.dlpPatterns)
-	reference.core = &core
+	disableTestRegexpWindows(reference)
 
 	padding := strings.Repeat("Build status: all unit jobs passed.\n", 48)
 	const marker = "BUILD_MARKER_73190482"
@@ -149,6 +139,22 @@ func TestRegexpWindowScannerParity(t *testing.T) {
 			}
 		})
 	}
+}
+
+func disableTestRegexpWindows(reference *Scanner) {
+	disable := func(patterns []*compiledPattern) []*compiledPattern {
+		out := make([]*compiledPattern, len(patterns))
+		for i, p := range patterns {
+			cp := *p
+			cp.regexpWindows, cp.bodyRegexpWindows = nil, nil
+			out[i] = &cp
+		}
+		return out
+	}
+	reference.dlpPatterns = disable(reference.dlpPatterns)
+	core := *reference.core
+	core.dlpPatterns = disable(core.dlpPatterns)
+	reference.core = &core
 }
 
 func FuzzRegexpWindowFindAllParity(f *testing.F) {

@@ -93,6 +93,32 @@ func TestMatchingViewRegexpParity(t *testing.T) {
 	}
 }
 
+func TestMatchingViewHitBudget(t *testing.T) {
+	const marker = "marker"
+	program := newMatchingLiterals([]string{marker, "catalog sample"})
+	source := strings.Repeat(marker+"~", matchingMaxHits) + "mar ker"
+	parent := newMatchingView(source, program)
+	for _, tc := range []struct {
+		name, text string
+		complete   bool
+	}{
+		{"overlapping rescan", marker + "!" + source[len(marker)+1:], true},
+		{"new seam hit", strings.ReplaceAll(source, " ", ""), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			child := parent.deriveText(tc.text)
+			if child == nil {
+				t.Fatal("fixture needs a proved child")
+			}
+			got, complete := child.positions(marker)
+			want, fullComplete := newMatchingView(tc.text, program).positions(marker)
+			if complete != tc.complete || complete != fullComplete || !slices.Equal(got, want) {
+				t.Fatalf("child complete=%t with %d hits, full index complete=%t with %d hits", complete, len(got), fullComplete, len(want))
+			}
+		})
+	}
+}
+
 func TestMatchingViewDLPParity(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
@@ -101,31 +127,44 @@ func TestMatchingViewDLPParity(t *testing.T) {
 		config.DLPPattern{Name: "Catalog marker", Regex: `\bmarker[0-9]{2}\b`, Severity: config.SeverityHigh},
 		config.DLPPattern{Name: "Catalog sample", Regex: `\bsample[0-9]{2}\b`, Severity: config.SeverityHigh, Action: config.ActionWarn},
 	)
-	sc, reference := MustNew(cfg), MustNew(cfg)
+	sc, reference, full := MustNew(cfg), MustNew(cfg), MustNew(cfg)
 	t.Cleanup(sc.Close)
 	t.Cleanup(reference.Close)
+	t.Cleanup(full.Close)
 	reference.dlpMatchingLiterals = nil
+	full.dlpMatchingLiterals = nil
+	disableTestRegexpWindows(full)
 	if sc.dlpMatchingLiterals == nil {
 		t.Fatal("fixture has no compiled literal program")
 	}
 	padding := strings.Repeat("~", regexpWindowMinText)
 	for _, tc := range []struct {
-		name, input string
+		name, input, pattern string
 	}{
-		{"raw and joined", "sample42~mar ker12"},
-		{"same labels through transforms", "marker42~sample%31%32~sam ple15"},
-		{"normalization and Unicode spaces", "ＭＡＲ\u2003ＫＥＲ14~sample13"},
-		{"same bytes from separate positions", "sam\u2003ple41~sam ple41"},
+		{"raw and joined", "sample42~mar ker12", "Catalog sample"},
+		{"same labels through transforms", "marker42~sample%31%32~sam ple15", "Catalog marker"},
+		{"normalization and Unicode spaces", "ＭＡＲ\u2003ＫＥＲ14~sample13", "Catalog sample"},
+		{"same bytes from separate positions", "sam\u2003ple41~sam ple41", "Catalog sample"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			text := padding + tc.input + padding
 			for _, inbound := range []bool{false, true} {
-				scan, baseline := sc.ScanTextForDLPQuiet, reference.ScanTextForDLPQuiet
+				scan, baseline, whole := sc.ScanTextForDLPQuiet, reference.ScanTextForDLPQuiet, full.ScanTextForDLPQuiet
 				if inbound {
-					scan, baseline = sc.ScanTextForDLPInbound, reference.ScanTextForDLPInbound
+					scan, baseline, whole = sc.ScanTextForDLPInbound, reference.ScanTextForDLPInbound, full.ScanTextForDLPInbound
 				}
-				if got, want := scan(t.Context(), text), baseline(t.Context(), text); !reflect.DeepEqual(got, want) {
-					t.Fatalf("inbound=%v: findings, ordering or spans differ: got %+v, want %+v", inbound, got, want)
+				got := scan(t.Context(), text)
+				for _, want := range []TextDLPResult{baseline(t.Context(), text), whole(t.Context(), text)} {
+					if !reflect.DeepEqual(got, want) {
+						t.Fatalf("inbound=%v: findings, ordering or spans differ: got %+v, want %+v", inbound, got, want)
+					}
+				}
+				found := func(match TextDLPMatch) bool {
+					span := match.Span()
+					return match.PatternName == tc.pattern && span.ByteStart >= 0 && span.ByteEnd-span.ByteStart == len("marker42")
+				}
+				if !slices.ContainsFunc(got.Matches, found) && !slices.ContainsFunc(got.InformationalMatches, found) {
+					t.Fatalf("inbound=%v: missing %q with an eight-byte span: %+v", inbound, tc.pattern, got)
 				}
 			}
 		})

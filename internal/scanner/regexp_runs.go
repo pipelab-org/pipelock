@@ -33,6 +33,10 @@ type regexpWindowPlan struct {
 }
 
 func newRegexpWindowPlan(re *regexp.Regexp, tree *syntax.Regexp) *regexpWindowPlan {
+	if regexpStartsAtTextBeginning(tree) {
+		// The regexp engine already rules out every nonzero start.
+		return nil
+	}
 	minimum := shapeMinLen(tree)
 	if minimum == 0 {
 		// FindAll's empty-match suppression depends on the preceding match.
@@ -116,6 +120,24 @@ type regexpWindowLeaf struct {
 // Each repetition of a whitespace-only class consumes at most one non-core
 // block. A small finite repetition of another class can spend one wild byte
 // and one block per rune. Everything else contributes to the core alphabet.
+func regexpStartsAtTextBeginning(tree *syntax.Regexp) bool {
+	switch tree.Op {
+	case syntax.OpBeginText:
+		return true
+	case syntax.OpCapture, syntax.OpConcat:
+		return regexpStartsAtTextBeginning(tree.Sub[0])
+	case syntax.OpAlternate:
+		for _, sub := range tree.Sub {
+			if !regexpStartsAtTextBeginning(sub) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
 func collectRegexpWindowLeaves(tree *syntax.Regexp, repeats int, leaves *[]regexpWindowLeaf) bool {
 	switch tree.Op {
 	case syntax.OpNoMatch, syntax.OpEmptyMatch, syntax.OpBeginLine, syntax.OpEndLine,

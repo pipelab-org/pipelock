@@ -4549,6 +4549,7 @@
    "TestMatchingViewDecodedResponseParity": 0.3,
    "TestMatchingViewDecoderClassParity": 0.0,
    "TestMatchingViewEncodedRunAlphabet": 0.0,
+   "TestMatchingViewHitBudget": 0.0,
    "TestMatchingViewRegexpParity": 0.0,
    "TestMatchingViewResponseParity": 0.4,
    "TestMatchingViewReuseWindowAndTransformIdentity": 0.0,

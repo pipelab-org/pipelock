@@ -205,6 +205,11 @@ func (v *matchingView) index() {
 			}
 		}
 	}
+	addChanged := func(id, at int) bool {
+		// Hits in an unchanged run have already been counted above.
+		_, unchanged := v.sourcePosition(regexpWindowRange{start: at, end: at + v.program.lengths[id]})
+		return unchanged || add(id, at)
+	}
 	padding := v.program.longest - 1
 	start, end := 0, 0
 	budget := len(v.text)
@@ -213,14 +218,14 @@ func (v *matchingView) index() {
 		right := min(len(v.text), edit.viewEnd+padding)
 		if left > end {
 			budget -= end - start
-			if budget <= 0 || !v.program.walk(v.text, start, end, add) {
+			if budget <= 0 || !v.program.walk(v.text, start, end, addChanged) {
 				return
 			}
 			start = left
 		}
 		end = max(end, right)
 	}
-	if end-start >= budget || !v.program.walk(v.text, start, end, add) {
+	if end-start >= budget || !v.program.walk(v.text, start, end, addChanged) {
 		return
 	}
 	for id, positions := range hits {
