@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -31,7 +32,7 @@ func v3WriterRecipes(t *testing.T) []v3Recipe {
 		{group: 7, name: "writer-completed-action"},
 		{group: 9, name: "writer-switch-legacy"},
 		{group: 9, name: "writer-switch-journal"},
-		{group: 9, name: "writer-switch-endorsed-rotation", rotated: true},
+		{group: 9, name: "writer-switch-rotated-legacy", rotated: true},
 	} {
 		dir := t.TempDir()
 		key := v3Key("first")
@@ -166,7 +167,6 @@ func v3PrepareRotatedLegacy(t *testing.T, opts *v3.StreamWriterOptions, recipe *
 	const fixture = "testdata/parity/rotated"
 	const rootKey = "signer-key.hex"
 	const nextKey = "rotated-signer-key.hex"
-	const endorsementName = "rotation-endorsement.json"
 	root, err := os.OpenRoot(fixture)
 	if err != nil {
 		t.Fatal(err)
@@ -179,7 +179,7 @@ func v3PrepareRotatedLegacy(t *testing.T, opts *v3.StreamWriterOptions, recipe *
 	var pins []string
 	for _, entry := range entries {
 		name := entry.Name()
-		if name == "expect.json" {
+		if name == "expect.json" || name == "rotation-endorsement.json" {
 			continue
 		}
 		data, err := root.ReadFile(name)
@@ -189,20 +189,19 @@ func v3PrepareRotatedLegacy(t *testing.T, opts *v3.StreamWriterOptions, recipe *
 		if name == rootKey || name == nextKey {
 			key := strings.TrimSpace(string(data))
 			pins = append(pins, key)
-			if name == rootKey {
-				recipe.request.Keys = []string{key, hex.EncodeToString(v3Public(opts.SigningKey))}
-			}
 			continue
 		}
 		if err := os.WriteFile(filepath.Join(opts.Dir, name), data, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
+	// Mixed directories verify legacy chains with pinned keys only, so the
+	// verifier pins both legacy signers alongside the v3 writer key.
+	recipe.request.Keys = append(slices.Clone(pins), hex.EncodeToString(v3Public(opts.SigningKey)))
 	opts.PriorSignerKeys, err = v3.DecodeKeys(pins)
 	if err != nil {
 		t.Fatal(err)
 	}
 	recipe.verdict, recipe.code = "VALID PREFIX, END UNPROVEN", "LEGACY_END_UNPROVEN"
-	recipe.request.Endorsements = []string{endorsementName}
 	recipe.request.AllowPrefix = true
 }
