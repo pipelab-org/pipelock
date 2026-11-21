@@ -60,6 +60,10 @@ func TestReceiptWriterCrashChild(t *testing.T) {
 		t.Fatal("heartbeat can consume the crash checkpoint fault")
 	}
 
+	var intentFlushed bool
+	if mode == crashBeforeEffect {
+		w.active.file = observedCrashSync{StreamFile: w.active.file, flushed: &intentFlushed}
+	}
 	syncFault := errors.New("injected flush failure")
 	if mode == crashBeforeRepair {
 		w.active.file = errorWriterFile{StreamFile: w.active.file, syncErr: syncFault}
@@ -78,6 +82,9 @@ func TestReceiptWriterCrashChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	if mode == crashBeforeEffect {
+		if !intentFlushed {
+			t.Fatal("intent returned before the file was flushed")
+		}
 		os.Exit(crashProcessExit)
 	}
 	if mode != crashControl {
@@ -112,6 +119,19 @@ func TestReceiptWriterCrashChild(t *testing.T) {
 	if err := w.Close(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
+}
+
+type observedCrashSync struct {
+	StreamFile
+	flushed *bool
+}
+
+func (f observedCrashSync) Sync() error {
+	if err := f.StreamFile.Sync(); err != nil {
+		return err
+	}
+	*f.flushed = true
+	return nil
 }
 
 func TestStreamWriterCrashAndPowerLoss(t *testing.T) {
