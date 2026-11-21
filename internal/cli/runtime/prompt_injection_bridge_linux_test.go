@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
@@ -61,6 +62,7 @@ func TestPromptInjectionDetectionSandboxBridgeWarnAudit(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			t.Cleanup(cancel)
 			bridge, err := startMCPSandboxBridge(mcpSandboxBridgeStartOptions{
+				Rec:         &proxy.SessionState{},
 				Context:     ctx,
 				Cancel:      cancel,
 				Config:      cfg,

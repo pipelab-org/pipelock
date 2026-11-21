@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,6 +26,38 @@ const (
 	taintScopeSource = "source"
 	taintScopeTask   = "task"
 )
+
+// WithTaintRecorder binds forward, fetch, intercepted HTTP, and WebSocket
+// traffic to one invocation-owned recorder. The caller owns its lifetime and
+// must not share this proxy between independent invocations.
+func WithTaintRecorder(rec session.Recorder) Option {
+	if isNilSessionRecorder(rec) {
+		rec = nil
+	}
+	return func(p *Proxy) { p.taintRecorder = rec }
+}
+
+// sharedTaskSubject reads the subject an invocation already bound to a shared
+// recorder. It never binds one: that subject belongs to the invocation owner.
+func sharedTaskSubject(rec session.Recorder) string {
+	if state, ok := rec.(interface{ TaskSubject() string }); ok {
+		return state.TaskSubject()
+	}
+	return ""
+}
+
+func isNilSessionRecorder(rec session.Recorder) bool {
+	if rec == nil {
+		return true
+	}
+	v := reflect.ValueOf(rec)
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface:
+		return v.IsNil()
+	default:
+		return false
+	}
+}
 
 type taintDecision struct {
 	Risk                session.SessionRisk
@@ -73,6 +107,34 @@ func observeHTTPResponseFindings(rec session.Recorder, cfg *config.Config, rawUR
 	observation.Source.Kind = kind
 	observation.MaxSources = cfg.Taint.RecentSources
 	rs.ObserveRisk(observation)
+}
+
+// A response's source exposure is recorded in the session recorder when the
+// response is received, before any response byte is delivered to the client, on
+// every path; finding kinds from a buffered scan are recorded before the scanned
+// body is delivered; streaming findings are recorded before the affected event
+// is released. Exposure remains recorded if a later check blocks delivery.
+//
+// httpResponseFindingObserver shares duplicate suppression across these calls
+// and the final observation, so EOF and repeated findings do not fill the bounded
+// source history with duplicates.
+// Calls belong to the response's handler goroutine.
+func httpResponseFindingObserver(rec session.Recorder, cfg *config.Config, rawURL, contentType, kind string) func([]session.HostileFindingKind) {
+	var observed bool
+	var observedTask string
+	var previous []session.HostileFindingKind
+	return func(kinds []session.HostileFindingKind) {
+		merged := session.MergeFindingKinds(previous, kinds)
+		var currentTask string
+		if state, ok := rec.(session.TaskContextProvider); ok {
+			currentTask = state.TaskSnapshot().CurrentTaskID
+		}
+		if observed && currentTask == observedTask && slices.Equal(previous, merged) {
+			return
+		}
+		observeHTTPResponseFindings(rec, cfg, rawURL, contentType, kind, merged)
+		observed, previous, observedTask = true, merged, currentTask
+	}
 }
 
 func evaluateHTTPTaint(cfg *config.Config, rec session.Recorder, method string, parsedURL *url.URL) taintDecision {

@@ -642,6 +642,7 @@ type Proxy struct {
 	scannerPtr           atomic.Pointer[scanner.Scanner]
 	editionPtr           atomic.Pointer[editionSnapshot]
 	sessionMgrPtr        atomic.Pointer[SessionManager]         // nil when profiling disabled
+	taintRecorder        session.Recorder                       // optional invocation-owned state shared with an MCP sandbox
 	certCachePtr         atomic.Pointer[certgen.CertCache]      // nil when TLS interception disabled
 	entropyTrackerPtr    atomic.Pointer[scanner.EntropyTracker] // nil when entropy budget disabled
 	fragmentBufferPtr    atomic.Pointer[scanner.FragmentBuffer] // nil when fragment reassembly disabled
@@ -5798,8 +5799,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// each enforcement point (not the snapshot in sr.Level) so mid-request CEE
 	// or response-scan escalations are reflected immediately. Also used to call
 	// RecordClean at the end when no finding was detected.
-	var fetchRec session.Recorder
-	if sm := p.sessionMgrPtr.Load(); sm != nil {
+	fetchRec := p.taintRecorder
+	if sm := p.sessionMgrPtr.Load(); fetchRec == nil && sm != nil {
 		sess := sm.GetOrCreate(responseTaintSessionKey(cfg, agent, clientIP, id.Auth))
 		if sess == nil {
 			log.LogBlocked(actx, sessionCapacityLayer, session.ErrCapacity.Error())
@@ -6808,7 +6809,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		outcomeReason = "fetch_failed"
 		return
 	}
-	defer safeClose(resp.Body, "resp.Body", p.logger)
+	defer func() { safeClose(resp.Body, "resp.Body", p.logger) }()
 
 	// Decode supported single-layer encodings before the existing decoded-body
 	// size limit and scanners. Unsupported, stacked, and malformed encodings
@@ -6842,9 +6843,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	var responseFindingKinds []session.HostileFindingKind
 	responseTaintType := responseTaintContentType(resp.Header)
-	defer func() {
-		observeHTTPResponseFindings(fetchRec, cfg, resp.Request.URL.String(), responseTaintType, "fetch_response", responseFindingKinds)
-	}()
+	observeResponseFindings := httpResponseFindingObserver(fetchRec, cfg, resp.Request.URL.String(), responseTaintType, "fetch_response")
+	observeResponseFindings(nil)
+	defer func() { observeResponseFindings(responseFindingKinds) }()
 
 	// Limit response body size: use the tighter of max_response_mb and the
 	// remaining per-agent byte budget, so oversized responses are blocked
@@ -7069,6 +7070,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// concatenated fragments), so strip cannot function here.
 	if hiddenInjectionFound && !surface.readabilityOK {
 		responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, responseScanFindingKinds(*hiddenScanResult))
+		observeResponseFindings(responseFindingKinds)
 		// Preserve scoring and named audit/receipt evidence when readability
 		// cannot produce a deliverable representation. Discard strip output:
 		// hidden-fragment offsets do not address the full HTML.
@@ -7133,6 +7135,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		recordObservedCoreResponseMatches(p.metrics, log, actx, scanResult.ObservedCoreMatches, TransportFetch)
 		if !scanResult.Clean && !scanResult.Failed() {
 			responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, responseScanFindingKinds(scanResult))
+			observeResponseFindings(responseFindingKinds)
 		}
 
 		// Capture observer: record response scan verdict for policy replay.

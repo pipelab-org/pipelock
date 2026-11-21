@@ -242,7 +242,7 @@ type MCPProxyOpts struct {
 
 	// Session and adaptive enforcement
 	Store         session.Store
-	Rec           session.Recorder // set by RunProxy after Store.GetOrCreate
+	Rec           session.Recorder // invocation state; may be supplied by the sandbox runtime
 	BaselineRec   session.ToolCallBaselineRecorder
 	Baseline      session.BaselineChecker
 	BaselineFn    func() session.BaselineChecker

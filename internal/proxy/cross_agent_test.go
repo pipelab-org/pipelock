@@ -165,6 +165,7 @@ func TestCrossAgentContaminationPreservesSourceTrustOverride(t *testing.T) {
 func TestInterceptHandler_CrossAgentA2ABodyRecordsEvidenceAndSignal(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.Taint.Policy = config.ModePermissive
 	cfg.A2AScanning.Enabled = true
 	cfg.A2AScanning.Action = config.ActionWarn
 	cfg.RequestBodyScanning.Enabled = true
