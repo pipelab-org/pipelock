@@ -152,14 +152,16 @@ type fetchV3RedirectKey struct{}
 // fetchV3RedirectReceipts tracks the one outstanding upstream send for a
 // fetch. net/http calls CheckRedirect serially between sends.
 type fetchV3RedirectReceipts struct {
-	receipt *v3TransportReceipt
-	opts    receipt.EmitOpts
-	rootID  string
+	receipt      *v3TransportReceipt
+	opts         receipt.EmitOpts
+	rootID       string
+	exceptionCtx context.Context
 }
 
 func (f *fetchV3RedirectReceipts) finish(p *Proxy, ctx context.Context, completed bool) {
 	p.recordTransportOutcome(ctx, f.opts, f.receipt, completed)
 	f.receipt = nil
+	p.finishV3Exceptions(f.exceptionCtx, completed)
 }
 
 func (f *fetchV3RedirectReceipts) confirm(p *Proxy, req *http.Request, cfg *config.Config) error {
@@ -174,7 +176,7 @@ func (f *fetchV3RedirectReceipts) confirm(p *Proxy, req *http.Request, cfg *conf
 		blocked.target = hop.Target
 		return blocked
 	}
-	f.opts, f.receipt = hop, entry
+	f.opts, f.receipt, f.exceptionCtx = hop, entry, req.Context()
 	return nil
 }
 
@@ -250,7 +252,35 @@ func deliveryReceiptOpts(send receipt.EmitOpts) receipt.EmitOpts {
 	return opts
 }
 
-func (p *Proxy) recordV3ExceptionAllows(cfg *config.Config, opts []receipt.EmitOpts) error {
+type v3ExceptionsKey struct{}
+
+// v3Exceptions belongs to one outbound request or CONNECT tunnel. A redirect
+// gets its own set so the previous response cannot settle the next hop.
+type v3Exceptions struct {
+	receipts  v3EffectReceipts
+	attempted bool
+}
+
+func (p *Proxy) withV3Exceptions(req *http.Request) *http.Request {
+	if p == nil || p.receiptV3 == nil {
+		return req
+	}
+	return req.WithContext(context.WithValue(req.Context(), v3ExceptionsKey{}, &v3Exceptions{}))
+}
+
+func startV3Exceptions(ctx context.Context) {
+	if exceptions, _ := ctx.Value(v3ExceptionsKey{}).(*v3Exceptions); exceptions != nil {
+		exceptions.attempted = true
+	}
+}
+
+func (p *Proxy) finishV3Exceptions(ctx context.Context, completed bool) {
+	if exceptions, _ := ctx.Value(v3ExceptionsKey{}).(*v3Exceptions); exceptions != nil {
+		exceptions.receipts.finish(p, ctx, exceptions.attempted, completed)
+	}
+}
+
+func (p *Proxy) recordV3ExceptionAllows(ctx context.Context, cfg *config.Config, opts []receipt.EmitOpts) error {
 	if len(opts) == 0 {
 		return nil
 	}
@@ -272,10 +302,16 @@ func (p *Proxy) recordV3ExceptionAllows(cfg *config.Config, opts []receipt.EmitO
 		actions = append(actions, action)
 		policy = tx.policy
 	}
-	if err := p.receiptV3.WriteAdmissionBatch(context.Background(), actions, policy); err != nil {
+	if err := p.receiptV3.WriteAdmissionBatch(ctx, actions, policy); err != nil {
 		p.logReceiptEmissionFailure(opts[0], err)
-		if required {
+		if receiptWriteWithholdsEffect(cfg, err) {
 			return err
+		}
+		return nil
+	}
+	if exceptions, _ := ctx.Value(v3ExceptionsKey{}).(*v3Exceptions); required && exceptions != nil {
+		for _, action := range actions {
+			exceptions.receipts = append(exceptions.receipts, &v3TransportReceipt{action: action, policy: policy})
 		}
 	}
 	return nil

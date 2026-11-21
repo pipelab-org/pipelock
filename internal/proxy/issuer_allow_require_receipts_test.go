@@ -257,7 +257,7 @@ func TestRecordIssuerAllow_EarlyReturnsFollowRequireReceipts(t *testing.T) {
 	}
 	query := func(target string) recorder {
 		return func(p *Proxy, cfg *config.Config) error {
-			return p.recordIssuerQueryAllow(cfg, audit.LogContext{}, target, "req", "agent-one", http.MethodGet, issuerQueryObserved)
+			return p.recordIssuerQueryAllow(t.Context(), cfg, audit.LogContext{}, target, "req", "agent-one", http.MethodGet, issuerQueryObserved)
 		}
 	}
 	cases := []struct {

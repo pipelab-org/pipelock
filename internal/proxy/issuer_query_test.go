@@ -458,9 +458,9 @@ func TestIssuerQueryStaleRuntimeAndNestedDocument(t *testing.T) {
 			}
 		})
 	}
-	_ = p.recordIssuerQueryAllow(nil, audit.LogContext{}, "%zz", "", "", http.MethodGet, issuerQueryObserved)
+	_ = p.recordIssuerQueryAllow(t.Context(), nil, audit.LogContext{}, "%zz", "", "", http.MethodGet, issuerQueryObserved)
 	var nilProxy *Proxy
-	_ = nilProxy.recordIssuerQueryAllow(nil, audit.LogContext{}, "https://api.vendor.example/page", "", "", http.MethodGet, issuerQueryObserved)
+	_ = nilProxy.recordIssuerQueryAllow(t.Context(), nil, audit.LogContext{}, "https://api.vendor.example/page", "", "", http.MethodGet, issuerQueryObserved)
 
 	// Only the first bounded set of links can grant an allowance.
 	links := make([]string, issuerCookieMaxSetCookies+1)

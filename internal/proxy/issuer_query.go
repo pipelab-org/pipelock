@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -968,7 +969,7 @@ func sameOriginBase(responseURL *url.URL, href string) (*url.URL, bool) {
 // config snapshot; under require_receipts every path that cannot durably
 // record the allow returns an error the caller must treat as fail-closed.
 // With require_receipts off it always returns nil (best-effort).
-func (p *Proxy) recordIssuerQueryAllow(cfg *config.Config, ctx audit.LogContext, target, requestID, agent, method string, kind issuerQueryKind, selected ...receipt.EmitOpts) error {
+func (p *Proxy) recordIssuerQueryAllow(reqCtx context.Context, cfg *config.Config, ctx audit.LogContext, target, requestID, agent, method string, kind issuerQueryKind, selected ...receipt.EmitOpts) error {
 	requireReceipts := cfg != nil && cfg.FlightRecorder.RequireReceipts
 	fail := func(err error) error {
 		if requireReceipts {
@@ -1001,14 +1002,17 @@ func (p *Proxy) recordIssuerQueryAllow(cfg *config.Config, ctx audit.LogContext,
 	if kind == issuerQueryIssuedRedirect && shard.Transport != "" {
 		transport = shard.Transport
 	}
-	emitErr := p.emitCredentialAudienceReceipt(cfg, withReceiptShard(receipt.EmitOpts{
+	opts := withReceiptShard(receipt.EmitOpts{
 		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
 		Layer: issuerQueryReceiptExtensionKey, Pattern: issuerQueryReceiptExtensionKey,
 		Transport: transport, Method: method, Target: safeTarget,
 		RequestID: requestID, Agent: agent, Extension: extension,
-	}, shard))
-	if emitErr != nil {
-		return fail(emitErr)
+	}, shard)
+	if p.receiptV3 != nil {
+		return p.recordV3ExceptionAllows(reqCtx, cfg, []receipt.EmitOpts{opts})
+	}
+	if err := p.emitCredentialAudienceReceipt(cfg, opts); err != nil {
+		return fail(err)
 	}
 	return nil
 }

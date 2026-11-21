@@ -103,7 +103,7 @@ func sseFindingReceiptCallbacks(
 	if cfg == nil || !cfg.FlightRecorder.RequireReceipts || p == nil || p.receiptV3 == nil {
 		return sseFindingReceiptConfirmer(cfg, opts, emit), nil
 	}
-	var deliveries v3ResponseReceipts
+	var deliveries v3EffectReceipts
 	confirm := sseFindingReceiptConfirmer(cfg, opts, func(cfg *config.Config, decision receipt.EmitOpts) error {
 		return p.confirmV3ResponseDecision(cfg, decision, &deliveries)
 	})

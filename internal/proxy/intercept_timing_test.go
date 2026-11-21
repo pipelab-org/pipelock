@@ -234,7 +234,7 @@ func TestInterceptTiming_UpstreamWaitFollowsRequestWrite(t *testing.T) {
 
 func TestInterceptTimingWriter_Status(t *testing.T) {
 	rec := httptest.NewRecorder()
-	w := &interceptTimingWriter{ResponseWriter: rec}
+	w := &interceptTimingWriter{httpDeliveryWriter{ResponseWriter: rec}}
 	if got := w.finalStatus(false); got != http.StatusOK {
 		t.Fatalf("no write, client present: status %d, want implicit 200", got)
 	}
@@ -249,7 +249,7 @@ func TestInterceptTimingWriter_Status(t *testing.T) {
 }
 
 func TestInterceptTimingWriter_CommittedStatuses(t *testing.T) {
-	w := &interceptTimingWriter{ResponseWriter: httptest.NewRecorder()}
+	w := &interceptTimingWriter{httpDeliveryWriter{ResponseWriter: httptest.NewRecorder()}}
 	w.WriteHeader(http.StatusSwitchingProtocols)
 	if got := w.finalStatus(false); got != http.StatusSwitchingProtocols {
 		t.Fatalf("101 recorded as %d", got)
@@ -314,7 +314,7 @@ func TestInterceptTiming_RetryKeepsFirstWrite(t *testing.T) {
 }
 
 func TestInterceptTimingWriter_AddsNoOptionalInterfaces(t *testing.T) {
-	var w http.ResponseWriter = &interceptTimingWriter{ResponseWriter: httptest.NewRecorder()}
+	var w http.ResponseWriter = &interceptTimingWriter{httpDeliveryWriter{ResponseWriter: httptest.NewRecorder()}}
 	if _, ok := w.(http.Flusher); ok {
 		t.Fatal("wrapper advertises http.Flusher")
 	}

@@ -6,6 +6,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"net/http"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
@@ -15,7 +16,7 @@ import (
 // confirmResponseDecision confirms a later decision on an admitted response.
 // Optional mode retains best-effort recording; required mode confirms every
 // configured family before the caller changes state or delivers bytes.
-func (p *Proxy) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpts, deliveries *v3ResponseReceipts) error {
+func (p *Proxy) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpts, deliveries *v3EffectReceipts) error {
 	if p != nil && p.receiptV3 != nil {
 		return p.confirmV3ResponseDecision(cfg, opts, deliveries)
 	}
@@ -31,7 +32,7 @@ func (p *Proxy) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpt
 	return nil
 }
 
-func (rp *ReverseProxyHandler) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpts, deliveries *v3ResponseReceipts) error {
+func (rp *ReverseProxyHandler) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpts, deliveries *v3EffectReceipts) error {
 	if rp.owner != nil && rp.owner.receiptV3 != nil {
 		return rp.owner.confirmV3ResponseDecision(cfg, opts, deliveries)
 	}
@@ -45,11 +46,10 @@ func (rp *ReverseProxyHandler) confirmResponseDecision(cfg *config.Config, opts 
 	return nil
 }
 
-// v3ResponseReceipts holds the decisions made before a single HTTP response
-// write. The handler settles each decision from that write's actual result.
-type v3ResponseReceipts []*v3TransportReceipt
+// v3EffectReceipts holds the decisions that share one transport effect.
+type v3EffectReceipts []*v3TransportReceipt
 
-func (r *v3ResponseReceipts) finish(p *Proxy, ctx context.Context, attempted, completed bool) {
+func (r *v3EffectReceipts) finish(p *Proxy, ctx context.Context, attempted, completed bool) {
 	for _, entry := range *r {
 		if attempted {
 			p.recordTransportOutcome(ctx, receipt.EmitOpts{Transport: entry.action.Transport}, entry, completed)
@@ -60,7 +60,7 @@ func (r *v3ResponseReceipts) finish(p *Proxy, ctx context.Context, attempted, co
 	*r = nil
 }
 
-func (p *Proxy) confirmV3ResponseDecision(cfg *config.Config, opts receipt.EmitOpts, deliveries *v3ResponseReceipts) error {
+func (p *Proxy) confirmV3ResponseDecision(cfg *config.Config, opts receipt.EmitOpts, deliveries *v3EffectReceipts) error {
 	if deliveries == nil {
 		return errors.New("response receipt delivery settlement is unavailable")
 	}
@@ -73,6 +73,37 @@ func (p *Proxy) confirmV3ResponseDecision(cfg *config.Config, opts receipt.EmitO
 		*deliveries = append(*deliveries, entry)
 	}
 	return nil
+}
+
+// httpResponseReceipts owns the intents affected by one final response.
+// Admission can succeed without a primary receipt in optional mode.
+type httpResponseReceipts struct {
+	primary   *v3TransportReceipt
+	decisions v3EffectReceipts
+	allowed   bool
+}
+
+func (s *httpResponseReceipts) confirm(p *Proxy, w http.ResponseWriter, req *http.Request, cfg *config.Config, opts receipt.EmitOpts) bool {
+	s.primary, s.allowed = p.confirmHTTPResponseDelivery(w, req.Context(), cfg, opts)
+	return s.allowed
+}
+
+func (s *httpResponseReceipts) flush(w http.ResponseWriter, req *http.Request, cfg *config.Config, legacy bool) (bool, error) {
+	if legacy || s.allowed && (s.primary != nil || len(s.decisions) != 0) {
+		return flushResponseForReceipt(w, req, cfg)
+	}
+	return false, nil
+}
+
+func (s *httpResponseReceipts) finish(p *Proxy, req *http.Request, observed httpDeliveryObservation, complete bool) {
+	attempted := s.allowed && observed.status != 0
+	completed := attempted && complete && observed.err == nil &&
+		responseFramingCompleteForReceipt(req, observed.status, observed.contentLength, observed.bytes)
+	if s.primary != nil {
+		s.decisions = append(s.decisions, s.primary)
+		s.primary = nil
+	}
+	s.decisions.finish(p, req.Context(), attempted, completed)
 }
 
 func mediaRewriteReceipt(opts receipt.EmitOpts) receipt.EmitOpts {

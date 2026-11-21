@@ -413,7 +413,7 @@ func TestIssuerQueryAllowReceiptKind(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(p.Close)
-			_ = p.recordIssuerQueryAllow(nil, audit.LogContext{}, "https://app.vendor.example/cb?code=x", "req", "agent-one", http.MethodGet, tc.kind)
+			_ = p.recordIssuerQueryAllow(t.Context(), nil, audit.LogContext{}, "https://app.vendor.example/cb?code=x", "req", "agent-one", http.MethodGet, tc.kind)
 			got := rph.requireReceipt(t, issuerQueryReceiptExtensionKey)
 			if !strings.Contains(string(got.Ext), `"`+tc.want+`"`) {
 				t.Fatalf("extension = %s, want %s", got.Ext, tc.want)

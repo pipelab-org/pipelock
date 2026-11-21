@@ -490,7 +490,7 @@ func TestRecordCredentialAudienceAllows_DeduplicatesBeforeEmitting(t *testing.T)
 		Surface:     "body",
 		Destination: "api.anthropic.com",
 	}
-	if err := p.recordCredentialAudienceAllows(cfg, audit.LogContext{},
+	if err := p.recordCredentialAudienceAllows(t.Context(), cfg, audit.LogContext{},
 		[]scanner.CredentialAudienceAllow{allow, allow, other, allow},
 		TransportFetch, http.MethodPost, "https://api.openai.com/v1/responses", "dedup", "agent-1"); err != nil {
 		t.Fatalf("recordCredentialAudienceAllows: %v", err)
@@ -603,7 +603,7 @@ func TestReverseProxy_RecordCredentialAudienceAllows_Deduplicates(t *testing.T) 
 		Surface:     "header",
 		Destination: "api.anthropic.com",
 	}
-	if err := rp.recordCredentialAudienceAllows(config.Defaults(), audit.LogContext{},
+	if err := rp.recordCredentialAudienceAllows(t.Context(), config.Defaults(), audit.LogContext{},
 		[]scanner.CredentialAudienceAllow{allow, allow, allow},
 		http.MethodPost, "https://api.anthropic.com/v1/messages", "reverse-dedup", "agent-1"); err != nil {
 		t.Fatalf("recordCredentialAudienceAllows: %v", err)
@@ -1341,7 +1341,7 @@ func TestAllowReceipts_RequireReceiptsNeedsDurableSync(t *testing.T) {
 			p.receiptEmitterPtr.Store(rph.emitter)
 
 			audienceErr := p.recordCredentialAudienceAllow(cfg, audit.LogContext{}, allow, TransportFetch, http.MethodPost, "https://api.openai.com/v1/responses", "durable", "agent-1")
-			queryErr := p.recordIssuerQueryAllow(cfg, audit.LogContext{}, "https://issuer.vendor.example/callback", "durable-q", "agent-1", http.MethodGet, issuerQueryOAuthRedirect)
+			queryErr := p.recordIssuerQueryAllow(t.Context(), cfg, audit.LogContext{}, "https://issuer.vendor.example/callback", "durable-q", "agent-1", http.MethodGet, issuerQueryOAuthRedirect)
 			for name, err := range map[string]error{"credential audience": audienceErr, "issuer query": queryErr} {
 				if (err != nil) != tc.wantErr {
 					t.Fatalf("%s: err = %v, wantErr %v", name, err, tc.wantErr)

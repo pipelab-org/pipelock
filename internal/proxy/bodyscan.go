@@ -3255,7 +3255,7 @@ func (p *Proxy) evalHeaderDLP(ctx context.Context, e headerDLPParams) (blocked b
 		}
 		p.metrics.RecordDLPDroppedMatch(match.PatternName, "header", reason)
 	}, func(allows []scanner.CredentialAudienceAllow) error {
-		return p.recordCredentialAudienceAllows(e.cfg, e.actx, allows, TransportForward, e.actx.Method(), e.target, e.actx.RequestID(), e.actx.Agent(), receiptShardFromContext(ctx))
+		return p.recordCredentialAudienceAllows(ctx, e.cfg, e.actx, allows, TransportForward, e.actx.Method(), e.target, e.actx.RequestID(), e.actx.Agent(), receiptShardFromContext(ctx))
 	})
 	if headerResult == nil {
 		return false, false, "", nil

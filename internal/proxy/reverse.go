@@ -825,7 +825,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	}
 	defer finishWarnings()
 	r = r.WithContext(warnCtx)
-	r = r.WithContext(context.WithValue(r.Context(), ctxKeyReceiptShard, selectedReceiptShard))
+	r = rp.owner.withV3Exceptions(r.WithContext(context.WithValue(r.Context(), ctxKeyReceiptShard, selectedReceiptShard)))
+	defer rp.owner.finishV3Exceptions(r.Context(), false)
 	snap, releaseScanner, scOK := rp.snapshotAndAcquire()
 	defer releaseScanner()
 	cfg := snap.cfg
@@ -1064,7 +1065,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	if cfg.ReverseProxy.Profile == config.ReverseProxyProfileSubmit {
 		urlResult := sc.Scan(r.Context(), targetURL)
 		rp.metrics.RecordURLDecisions(TransportReverse, urlResult.Decisions)
-		if err := rp.recordCredentialAudienceAllows(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), urlResult.CredentialAudienceAllows, r.Method, targetURL, requestID, agent, receiptShardFromContext(r.Context())); err != nil {
+		if err := rp.recordCredentialAudienceAllows(r.Context(), cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), urlResult.CredentialAudienceAllows, r.Method, targetURL, requestID, agent, receiptShardFromContext(r.Context())); err != nil {
 			if refuseReceiptCapacity(w, err) {
 				return
 			}
@@ -1113,7 +1114,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}
 		filteredMatches, audienceAllows := sc.FilterTextDLPMatchesForDestination(pathDLP.Matches, targetURL, "url")
 		pathDLP.Matches = filteredMatches
-		if err := rp.recordCredentialAudienceAllows(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), audienceAllows, r.Method, targetURL, requestID, agent, receiptShardFromContext(r.Context())); err != nil {
+		if err := rp.recordCredentialAudienceAllows(r.Context(), cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), audienceAllows, r.Method, targetURL, requestID, agent, receiptShardFromContext(r.Context())); err != nil {
 			if refuseReceiptCapacity(w, err) {
 				return
 			}
@@ -1227,7 +1228,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			}
 			rp.metrics.RecordDLPDroppedMatch(match.PatternName, "header", reason)
 		}, func(allows []scanner.CredentialAudienceAllow) error {
-			return rp.recordCredentialAudienceAllows(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}), allows, r.Method, targetURL, requestID, agent, receiptShardFromContext(r.Context()))
+			return rp.recordCredentialAudienceAllows(r.Context(), cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}), allows, r.Method, targetURL, requestID, agent, receiptShardFromContext(r.Context()))
 		})
 		if headerResult != nil && headerResult.ScanError != "" && !bodyResultHasFinding(*headerResult) && refuseRequestScanError(scanner.ErrTextDLPIncomplete, false) {
 			return
@@ -1853,6 +1854,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	if v3Upstream != nil {
 		ctx = context.WithValue(ctx, reverseV3SendKey{}, v3Upstream)
 		defer func() {
+			rp.owner.finishV3Exceptions(ctx, v3Upstream.completed)
 			if v3Upstream.attempted {
 				rp.owner.recordTransportOutcome(ctx, reverseAllowReceipt, v3Upstream.entry, v3Upstream.completed)
 			} else {
@@ -1912,7 +1914,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// Envelope signing happens in the signing RoundTripper wrapping
 	// rp.proxy.Transport so @target-uri reflects the post-Director URL.
 	forwardWriter = &reverseInformationalGuardWriter{
-		ResponseWriter: w,
+		httpDeliveryWriter: httpDeliveryWriter{ResponseWriter: w},
 		onWriteError: func(status int, written int64, err error) {
 			outcomeTracker.Record(status, written, httpstream.Reason(r.Context(), err))
 		},
@@ -1940,19 +1942,12 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}
 		returned := false
 		defer func() {
-			entry := responseReceiptState.delivery
-			if !responseReceiptState.deliveryAllowed || entry == nil && len(responseReceiptState.decisions) == 0 {
-				responseReceiptState.decisions.finish(rp.owner, r.Context(), false, false)
-				return
-			}
-			completed := returned && !forwardWriter.hijacked && !forwardWriter.writeFailed && r.Context().Err() == nil
+			var flushed bool
 			var flushErr error
-			if completed {
-				flushErr = flushResponseBeforeOutcome(w, r, cfg)
-				completed = flushErr == nil && responseFramingCompleteForReceipt(r, forwardWriter.status, forwardWriter.contentLength, forwardWriter.written)
+			if returned && !forwardWriter.hijacked && forwardWriter.err == nil && r.Context().Err() == nil {
+				flushed, flushErr = responseReceiptState.flush(w, r, cfg, false)
 			}
-			rp.owner.recordTransportOutcome(r.Context(), reverseAllowReceipt, entry, completed)
-			responseReceiptState.decisions.finish(rp.owner, r.Context(), true, completed)
+			responseReceiptState.finish(rp.owner, r, forwardWriter.httpDeliveryObservation, flushed)
 			_ = httpstream.Abort(r.Context(), flushErr)
 		}()
 		rp.proxy.ServeHTTP(forwardWriter, r)
@@ -1968,33 +1963,21 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 // sends them before modifyResponse runs, so the final-response strip cannot see
 // them and a forged X-Pipelock-Block-Reason would reach the client first.
 type reverseInformationalGuardWriter struct {
-	http.ResponseWriter
+	httpDeliveryWriter
 	onWriteError        func(int, int64, error)
 	beforeInformational func(func())
-	writeFailed         bool
-	status              int
-	contentLength       int64
-	written             int64
 	hijacked            bool
 }
 
 func (w *reverseInformationalGuardWriter) Write(p []byte) (int, error) {
-	n, err := (httpstream.Writer{Writer: w.ResponseWriter}).Write(p)
-	w.written += int64(n)
-	if err != nil {
-		w.writeFailed = true
-		if w.onWriteError != nil {
-			w.onWriteError(w.status, w.written, err)
-		}
+	n, err := (httpstream.Writer{Writer: &w.httpDeliveryWriter}).Write(p)
+	if err != nil && w.onWriteError != nil {
+		w.onWriteError(w.status, w.bytes, err)
 	}
 	return n, err
 }
 
 func (w *reverseInformationalGuardWriter) WriteHeader(code int) {
-	if code >= http.StatusOK && w.status == 0 {
-		w.status = code
-		w.contentLength = responseContentLengthForReceipt(w.Header())
-	}
 	if code >= http.StatusContinue && code < http.StatusOK && code != http.StatusSwitchingProtocols {
 		h := w.Header()
 		for name := range h {
@@ -2007,7 +1990,7 @@ func (w *reverseInformationalGuardWriter) WriteHeader(code int) {
 			return
 		}
 	}
-	w.ResponseWriter.WriteHeader(code)
+	w.httpDeliveryWriter.WriteHeader(code)
 }
 
 // A checked flush can observe all body bytes of a known-length HTTP/1.x
@@ -2039,15 +2022,12 @@ func responseContentLengthForReceipt(h http.Header) int64 {
 	return length
 }
 
-// Unwrap lets http.ResponseController reach the real writer for flush and
-// hijack, which the reverse proxy needs for streaming and upgrades.
-func (w *reverseInformationalGuardWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
-
 // Hijack delegates the upgrade and records when HTTP response flushing no longer applies.
 func (w *reverseInformationalGuardWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	conn, rw, err := http.NewResponseController(w.ResponseWriter).Hijack()
 	if err == nil {
 		w.hijacked = true
+		w.start(w.Header(), http.StatusSwitchingProtocols)
 	}
 	return conn, rw, err
 }
@@ -2239,6 +2219,7 @@ func (t *reverseSigningRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 		}
 	}
 	t.recordIssuerSend(req)
+	startV3Exceptions(req.Context())
 	if send, _ := req.Context().Value(reverseV3SendKey{}).(*reverseV3Send); send != nil {
 		send.attempted = true
 		response, err := t.base.RoundTrip(req)
@@ -2302,7 +2283,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 			rp.metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
 		},
 		OnCredentialAudienceAllows: func(allows []scanner.CredentialAudienceAllow) error {
-			return rp.recordCredentialAudienceAllows(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: receiptInput.Target, ClientIP: reverseClientIP(r), RequestID: receiptInput.RequestID, Agent: receiptInput.Agent}), allows, r.Method, receiptInput.Target, receiptInput.RequestID, receiptInput.Agent, receiptShardFromContext(r.Context()))
+			return rp.recordCredentialAudienceAllows(r.Context(), cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: receiptInput.Target, ClientIP: reverseClientIP(r), RequestID: receiptInput.RequestID, Agent: receiptInput.Agent}), allows, r.Method, receiptInput.Target, receiptInput.RequestID, receiptInput.Agent, receiptShardFromContext(r.Context()))
 		},
 	}
 	applyContentEntropyConfig(&bodyReq, cfg)
@@ -2564,10 +2545,8 @@ type reverseResponseReceiptState struct {
 	recordedBlockReceiptID string
 	responseBlocked        bool
 	confirmDelivery        func() (*v3TransportReceipt, error)
-	delivery               *v3TransportReceipt
-	deliveryAllowed        bool
-	decisions              v3ResponseReceipts
-	deliveryErr            error
+	httpResponseReceipts
+	deliveryErr error
 }
 
 func reverseResponseReceiptStateFrom(resp *http.Response) *reverseResponseReceiptState {
@@ -2592,8 +2571,8 @@ func (rp *ReverseProxyHandler) modifyResponseWithReceipt(resp *http.Response) er
 		return nil
 	}
 	entry, err := state.confirmDelivery()
-	state.delivery = entry
-	state.deliveryAllowed = err == nil
+	state.primary = entry
+	state.allowed = err == nil
 	return err
 }
 
@@ -2775,7 +2754,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		recordReverseObservedOutcome(http.StatusForbidden, int64(bodyBytes), shieldUninspectableLayer, bodyBytesExact)
 		return true
 	}
-	var responseReceipts *v3ResponseReceipts
+	var responseReceipts *v3EffectReceipts
 	if responseReceiptState != nil {
 		responseReceipts = &responseReceiptState.decisions
 	}

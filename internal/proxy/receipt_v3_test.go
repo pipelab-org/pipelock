@@ -590,44 +590,145 @@ func TestV3ExceptionAllowanceReceipts(t *testing.T) {
 	first := scanner.CredentialAudienceAllow{PatternName: "first", Surface: "header", Destination: "api.vendor.example"}
 	second := first
 	second.PatternName = "second"
-	ctx := audit.NewRequestLogContext("request")
-	if err := p.recordV3CredentialAudienceAllows(cfg, ctx, []scanner.CredentialAudienceAllow{first, second, first}, decision); err != nil {
+	auditCtx := audit.NewRequestLogContext("request")
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, decision.Target, nil)
+	ctx := p.withV3Exceptions(request).Context()
+	tunnelCtx := p.withV3Exceptions(request).Context()
+	if err := p.recordV3CredentialAudienceAllows(ctx, cfg, auditCtx, []scanner.CredentialAudienceAllow{first, second, first}, decision); err != nil {
 		t.Fatal(err)
 	}
 	tunnel := decision
 	tunnel.Method = http.MethodConnect
-	if err := p.recordV3CredentialAudienceAllows(cfg, ctx, []scanner.CredentialAudienceAllow{first}, tunnel); err != nil {
+	if err := p.recordV3CredentialAudienceAllows(tunnelCtx, cfg, auditCtx, []scanner.CredentialAudienceAllow{first}, tunnel); err != nil {
 		t.Fatal(err)
 	}
 	cookies := []issuerCookieAllowance{{Name: "example", Patterns: []string{"first", "second"}}}
-	if err := p.recordV3IssuerCookieAllows(cfg, ctx, cookies, decision); err != nil {
-		t.Fatal(err)
-	}
-	if err := writer.Close(t.Context(), nil); err != nil {
+	if err := p.recordV3IssuerCookieAllows(ctx, cfg, auditCtx, cookies, decision); err != nil {
 		t.Fatal(err)
 	}
 	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
-	if err != nil || result.Verdict != "VALID" || result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 5 {
-		t.Fatalf("expected one admission per distinct allowance: %+v (%v)", result, err)
+	if err != nil || result.Integrity != "ok" || result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 5 {
+		t.Fatalf("expected one pending admission per distinct allowance: %+v (%v)", result, err)
 	}
+
+	startV3Exceptions(ctx)
+	p.finishV3Exceptions(ctx, true)
+	p.finishV3Exceptions(ctx, false)
+	p.finishV3Exceptions(tunnelCtx, false)
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err = v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Verdict != "VALID" || result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 0 {
+		t.Fatalf("exception intents remained pending: %+v (%v)", result, err)
+	}
+	var outcomes int
 	for _, action := range readV3TestActions(t, dir) {
-		want := boundaryUpstreamSend
+		boundary, outcome := boundaryUpstreamSend, "completed"
 		if action.Method == http.MethodConnect {
-			want = boundaryTunnelOpen
+			boundary, outcome = boundaryTunnelOpen, "not_released"
 		}
-		if action.EffectBoundary != want {
-			t.Fatalf("%s allowance boundary = %q, want %q", action.Method, action.EffectBoundary, want)
+		if action.EffectBoundary != boundary {
+			t.Fatalf("%s allowance boundary = %q, want %q", action.Method, action.EffectBoundary, boundary)
+		}
+		if action.Phase == "outcome" {
+			outcomes++
+			if action.OutcomeClass != outcome {
+				t.Fatalf("%s allowance outcome = %q, want %q", action.Method, action.OutcomeClass, outcome)
+			}
 		}
 	}
-	if err := p.recordV3IssuerCookieAllows(cfg, ctx, cookies, decision); err == nil {
+	if outcomes != 5 {
+		t.Fatalf("got %d outcomes, want 5", outcomes)
+	}
+	if err := p.recordV3IssuerCookieAllows(ctx, cfg, auditCtx, cookies, decision); err == nil {
 		t.Fatal("required allowances accepted a closed writer")
+	}
+}
+
+func TestV3ForwardCredentialExceptionFollowsSend(t *testing.T) {
+	for _, tc := range []struct {
+		name, want    string
+		calls, status int
+	}{
+		{"response", "completed", 1, http.StatusOK},
+		{"transport_error", "attempt_unknown", 1, http.StatusBadGateway},
+		{"admission_refused", "not_released", 0, http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var exceptionPrepared, admissionRefused bool
+			p, writer, dir, keys := newTestV3HTTPProxy(t, TransportForward, true, nil, func(opts *v3.StreamWriterOptions) {
+				if tc.calls != 0 {
+					return
+				}
+				opts.Coverage.ContentScan = true
+				opts.Detector = func(_ context.Context, text string) scanner.TextDLPResult {
+					if strings.HasPrefix(text, "{") {
+						if strings.Contains(text, credentialAudienceReceiptExtensionKey) {
+							exceptionPrepared = true
+						} else if exceptionPrepared && !admissionRefused {
+							admissionRefused = true
+							return scanner.TextDLPResult{Incomplete: true}
+						}
+					}
+					return scanner.TextDLPResult{Clean: true}
+				}
+			})
+			calls := 0
+			p.client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				calls++
+				actions := readV3TestActions(t, dir)
+				if !slices.ContainsFunc(actions, func(action v3.Action) bool {
+					return action.Layer == credentialAudienceReceiptExtensionKey &&
+						action.Phase == "intent" && action.EffectBoundary == boundaryUpstreamSend
+				}) {
+					t.Error("upstream send started without the credential exception intent")
+				}
+				if tc.name == "transport_error" {
+					return nil, io.ErrUnexpectedEOF
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody, Request: req,
+				}, nil
+			})
+			audience := credentialAudienceCarrierCases()[0]
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, audience.target, nil)
+			req.Header.Set("Authorization", "Bearer "+audience.credential)
+			w := httptest.NewRecorder()
+			p.handleForwardHTTP(w, req)
+			if calls != tc.calls || w.Code != tc.status {
+				t.Fatalf("upstream calls=%d status=%d, want %d and %d", calls, w.Code, tc.calls, tc.status)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || result.Verdict != "VALID" {
+				t.Fatalf("verify receipt history: %+v (%v)", result, err)
+			}
+			var intent, outcome v3.Action
+			for _, action := range readV3TestActions(t, dir) {
+				if action.Layer != credentialAudienceReceiptExtensionKey {
+					continue
+				}
+				switch action.Phase {
+				case "intent":
+					intent = action
+				case "outcome":
+					outcome = action
+				}
+			}
+			if intent.ActionID == "" || intent.ActionID != outcome.ActionID || outcome.OutcomeClass != tc.want {
+				t.Fatalf("exception intent=%q outcome=%q/%q, want linked %q", intent.ActionID, outcome.ActionID, outcome.OutcomeClass, tc.want)
+			}
+		})
 	}
 }
 
 func TestV3ResponsePolicyAdmissions(t *testing.T) {
 	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportForward, true, nil)
 	cfg := p.CurrentConfig()
-	var deliveries v3ResponseReceipts
+	var deliveries v3EffectReceipts
 	opts := receipt.EmitOpts{
 		ActionID: receipt.NewActionID(), Target: "https://api.vendor.example", Transport: TransportForward,
 		Method: http.MethodGet, Verdict: config.ActionStrip, Layer: "media_policy", Pattern: "image media rewritten",
@@ -1251,7 +1352,41 @@ func TestV3ReverseOptionalDeliverySettlesPolicyWithoutTransportReceipt(t *testin
 	t.Fatal("delivered media policy decision has no outcome")
 }
 
-func TestV3InterceptOptionalPolicyDeliveryChecksFlushWithoutTransportReceipt(t *testing.T) {
+func TestV3OptionalPolicyDeliveryWithoutPrimary(t *testing.T) {
+	for _, surface := range []string{TransportFetch, "intercept"} {
+		for _, fault := range []string{"flush", "partial_write", "http2", "none"} {
+			t.Run(surface+"/"+fault, func(t *testing.T) {
+				checkOptionalV3PolicyDelivery(t, surface, fault)
+			})
+		}
+	}
+}
+
+type v3PolicyDeliveryWriter struct {
+	*httptest.ResponseRecorder
+	fault   string
+	flushes int
+}
+
+func (w *v3PolicyDeliveryWriter) Write(body []byte) (int, error) {
+	if w.fault == "partial_write" {
+		n, _ := w.ResponseRecorder.Write(body[:len(body)/2])
+		return n, io.ErrClosedPipe
+	}
+	return w.ResponseRecorder.Write(body)
+}
+
+func (w *v3PolicyDeliveryWriter) FlushError() error {
+	w.flushes++
+	if w.fault == "flush" {
+		return io.ErrClosedPipe
+	}
+	w.Flush()
+	return nil
+}
+
+func checkOptionalV3PolicyDelivery(t *testing.T, surface, fault string) {
+	t.Helper()
 	var scannedPolicy, rejectedDelivery bool
 	configure := func(opts *v3.StreamWriterOptions) {
 		opts.Coverage.ContentScan = true
@@ -1269,7 +1404,7 @@ func TestV3InterceptOptionalPolicyDeliveryChecksFlushWithoutTransportReceipt(t *
 			return scanner.TextDLPResult{Clean: true}
 		}
 	}
-	p, writer, dir, keys := newTestV3HTTPProxy(t, "intercept", false, nil, configure)
+	p, writer, dir, keys := newTestV3HTTPProxy(t, surface, false, nil, configure)
 	cfg := p.CurrentConfig()
 	cfg.BrowserShield.Enabled = true
 	cfg.BrowserShield.MaxShieldBytes = 128
@@ -1282,16 +1417,31 @@ func TestV3InterceptOptionalPolicyDeliveryChecksFlushWithoutTransportReceipt(t *
 			Body:   io.NopCloser(strings.NewReader(source)), Request: req,
 		}, nil
 	})
-	ic := &InterceptContext{
-		Proxy: p, Config: cfg, Scanner: p.ScannerPtr().Load(),
-		Logger: audit.NewNop(), Metrics: metrics.New(),
-		TargetHost: "upstream.vendor.example", TargetPort: "443",
+	w := &v3PolicyDeliveryWriter{ResponseRecorder: httptest.NewRecorder(), fault: fault}
+	target := "https://upstream.vendor.example"
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
+	if surface == TransportFetch {
+		req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+url.QueryEscape(target), nil)
 	}
-	w := &v3DeliveryFlushFailure{ResponseRecorder: httptest.NewRecorder()}
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://upstream.vendor.example", nil)
-	newInterceptHandler(ic, upstream).ServeHTTP(w, req)
-	if !rejectedDelivery || w.Code != http.StatusOK || w.Body.String() != source {
+	if fault == "http2" {
+		req.Proto, req.ProtoMajor, req.ProtoMinor = "HTTP/2.0", 2, 0
+	}
+	if surface == TransportFetch {
+		p.client.Transport = upstream
+		p.handleFetch(w, req)
+	} else {
+		ic := &InterceptContext{
+			Proxy: p, Config: cfg, Scanner: p.ScannerPtr().Load(),
+			Logger: audit.NewNop(), Metrics: metrics.New(),
+			TargetHost: "upstream.vendor.example", TargetPort: "443",
+		}
+		newInterceptHandler(ic, upstream).ServeHTTP(w, req)
+	}
+	if !rejectedDelivery || w.Code != http.StatusOK || w.Body.Len() == 0 {
 		t.Fatalf("expected the warned response after the optional refusal: rejected=%t status=%d bytes=%d", rejectedDelivery, w.Code, w.Body.Len())
+	}
+	if fault == "partial_write" && w.Body.Len() >= int(responseContentLengthForReceipt(w.Result().Header)) {
+		t.Fatalf("test writer accepted the entire body: %d bytes", w.Body.Len())
 	}
 	if err := writer.Close(t.Context(), nil); err != nil {
 		t.Fatal(err)
@@ -1312,7 +1462,11 @@ func TestV3InterceptOptionalPolicyDeliveryChecksFlushWithoutTransportReceipt(t *
 			policyOutcome = action.OutcomeClass
 		}
 	}
-	if w.flushes != 1 || policyOutcome != "attempt_unknown" {
-		t.Fatalf("flushes=%d shield outcome=%q, want one failed flush and unknown delivery", w.flushes, policyOutcome)
+	want := "attempt_unknown"
+	if fault == "none" {
+		want = "completed"
+	}
+	if w.flushes != 1 || policyOutcome != want {
+		t.Fatalf("flushes=%d shield outcome=%q, want one flush and %s", w.flushes, policyOutcome, want)
 	}
 }

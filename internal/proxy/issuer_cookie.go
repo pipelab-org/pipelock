@@ -101,7 +101,7 @@ func (p *Proxy) recordIssuerCookieAllow(cfg *config.Config, ctx audit.LogContext
 	return nil
 }
 
-func (p *Proxy) recordV3IssuerCookieAllows(cfg *config.Config, ctx audit.LogContext, allowances []issuerCookieAllowance, base receipt.EmitOpts) error {
+func (p *Proxy) recordV3IssuerCookieAllows(reqCtx context.Context, cfg *config.Config, ctx audit.LogContext, allowances []issuerCookieAllowance, base receipt.EmitOpts) error {
 	count := 0
 	for _, allowance := range allowances {
 		count += len(allowance.Patterns)
@@ -129,13 +129,13 @@ func (p *Proxy) recordV3IssuerCookieAllows(cfg *config.Config, ctx audit.LogCont
 			opts = append(opts, entry)
 		}
 	}
-	return p.recordV3ExceptionAllows(cfg, opts)
+	return p.recordV3ExceptionAllows(reqCtx, cfg, opts)
 }
 
 // Reserve the exact pattern count before confirming any returned cookie.
 func (ic *InterceptContext) recordIssuerCookieAllows(ctx audit.LogContext, r *http.Request, target string, allows []issuerCookieAllowance) error {
 	if ic.Proxy.receiptV3 != nil {
-		return ic.Proxy.recordV3IssuerCookieAllows(ic.Config, ctx, allows, receipt.EmitOpts{
+		return ic.Proxy.recordV3IssuerCookieAllows(r.Context(), ic.Config, ctx, allows, receipt.EmitOpts{
 			Transport: "intercept", Method: r.Method, Target: target, RequestID: ic.RequestID, Agent: ic.Agent,
 		})
 	}

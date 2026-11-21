@@ -463,7 +463,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(wsScanCtx)
 	result := sc.ScanWebSocket(wsScanCtx, targetURL)
 	p.metrics.RecordURLDecisions(TransportWS, result.Decisions)
-	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportWS, "WS", targetURL, requestID, agent, selectedReceiptShard); err != nil {
+	if err := p.recordCredentialAudienceAllows(r.Context(), cfg, actx, result.CredentialAudienceAllows, TransportWS, "WS", targetURL, requestID, agent, selectedReceiptShard); err != nil {
 		if refuseReceiptCapacity(w, err) {
 			return
 		}
@@ -1554,7 +1554,7 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 		if len(allMatches) > 0 || ctx.Err() != nil || scanIncomplete {
 			return
 		}
-		receiptErr = p.recordCredentialAudienceAllows(cfg, actx, audienceAllows, TransportWS, "WS", targetURL, actx.RequestID(), actx.Agent(), receiptShardFromContext(ctx))
+		receiptErr = p.recordCredentialAudienceAllows(ctx, cfg, actx, audienceAllows, TransportWS, "WS", targetURL, actx.RequestID(), actx.Agent(), receiptShardFromContext(ctx))
 	}()
 scanHeaders:
 	for _, key := range []string{
