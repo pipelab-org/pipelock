@@ -51,6 +51,10 @@ func decoderClasses(text string) decoderClass {
 	return enough
 }
 
+func isBase64DataByte(b byte) bool {
+	return decoderAlphabetClasses[b]&decoderBase64 != 0
+}
+
 // base64DecodeScratchLen covers every decode attempted by decodeEncodingsModeInto.
 // The unmodified and mixed-alphabet inputs cannot decode beyond a byte outside
 // the union of the RFC 4648 section 4/5 alphabets (CR/LF are ignored by Go's
@@ -60,7 +64,7 @@ func decoderClasses(text string) decoderClass {
 func base64DecodeScratchLen(text string) int {
 	for i := 0; i < len(text); i++ {
 		c := text[i]
-		if encodedTokenBytes[encodedTokenBase64Std][c] || c == '-' || c == '_' || c == '\r' || c == '\n' {
+		if isBase64DataByte(c) || c == '=' || c == '\r' || c == '\n' {
 			continue
 		}
 		return base64.RawStdEncoding.DecodedLen(min(len(text), max(maxReassembledTokenLen, i+4)))

@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"encoding/base64"
 	"reflect"
 	"regexp"
 	"slices"
@@ -297,4 +298,56 @@ func FuzzMatchingViewDeltaParity(f *testing.F) {
 			t.Fatalf("got %v, want %v", got, want)
 		}
 	})
+}
+
+func TestMatchingViewDecodedResponseParity(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Patterns = append(cfg.ResponseScanning.Patterns,
+		config.ResponseScanPattern{Name: "Catalog record", Regex: `(?i)catalog record[0-9]{2}`},
+		config.ResponseScanPattern{Name: "Catalog label", Regex: `(?i)catalog lab.l[0-9]{2}`},
+	)
+	sc, reference := MustNew(cfg), MustNew(cfg)
+	t.Cleanup(sc.Close)
+	t.Cleanup(reference.Close)
+	reference.responseMatchingLiterals = nil
+	padding := strings.Repeat("~", responseMemoMinBytes)
+	for _, tc := range []struct {
+		name, text  string
+		wantMatches int
+	}{
+		{"configured matches in rule order", "catalog label12~catalog record13", 2},
+		{"spaced decoded view", "catalog\u200brecord12", 1},
+		{"clean decoded view", "plain index contents", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			view := padding + tc.text + padding
+			got := sc.matchDecodedNormalized(view, ViewBase64Decoded, nil)
+			want := reference.matchDecodedNormalized(view, ViewBase64Decoded, nil)
+			if len(got.matches) != tc.wantMatches || !reflect.DeepEqual(got, want) {
+				t.Fatalf("decoded view differs: got %v, reference %v", got.matches, want.matches)
+			}
+			encoded := base64.StdEncoding.EncodeToString([]byte(view))
+			full := sc.ScanResponse(t.Context(), encoded)
+			baseline := reference.ScanResponse(t.Context(), encoded)
+			if full.Clean != (tc.wantMatches == 0) || !reflect.DeepEqual(full, baseline) {
+				t.Fatalf("mapped response differs: got clean=%t %v, reference clean=%t %v", full.Clean, full.Matches, baseline.Clean, baseline.Matches)
+			}
+		})
+	}
+}
+
+func TestMatchingViewEncodedRunAlphabet(t *testing.T) {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/-_"
+	for value := range 256 {
+		data := strings.ContainsRune(alphabet, rune(value))
+		input := strings.Repeat(string([]byte{byte(value)}), minEncodedRunLen)
+		if got := hasEncodedRun(input); got != (data || value == '=') {
+			t.Fatalf("prefilter alphabet at byte %d = %t", value, got)
+		}
+		if runs := extractEncodedRunSpans(input, minEncodedRunLen); (len(runs) == 1) != data {
+			t.Fatalf("segment alphabet at byte %d yielded %d runs", value, len(runs))
+		}
+	}
 }

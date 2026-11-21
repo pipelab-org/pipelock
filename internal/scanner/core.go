@@ -479,35 +479,11 @@ func (s *Scanner) matchDecodedCoreResponseRecursiveMode(content string, depth in
 }
 
 func (s *Scanner) matchDecodedCoreNormalized(decoded, decodedViewLabel string, suppress coreResponseSuppressor) responseMatchSet {
-	normalized := normalize.ForMatching(decoded)
-	if matches := filterCoreResponsePass(normalized, "", matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, normalized), decodedViewLabel, suppress); len(matches) > 0 {
-		return responseMatchSet{matches: matches, content: normalized}
-	}
-	spaced := normalize.ForMatchingSpaced(decoded)
-	if spaced != normalized {
-		if matches := filterCoreResponsePass(spaced, "", matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, spaced), spanViewLabel("invisible_spaced", decodedViewLabel), suppress); len(matches) > 0 {
-			return responseMatchSet{matches: matches, content: spaced}
-		}
-	}
-	if leeted := normalize.Leetspeak(normalized); leeted != normalized {
-		if matches := filterCoreResponsePass(leeted, "", matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, leeted), spanViewLabel("leetspeak", decodedViewLabel), suppress); len(matches) > 0 {
-			return responseMatchSet{matches: matches, content: leeted}
-		}
-	}
-	if len(s.core.responseOptSpacePatterns) > 0 {
-		if matches := filterCoreResponsePass(normalized, "", matchPatternsPreFiltered(s.core.responseOptSpacePreFilter, s.core.responseOptSpacePatterns, normalized), decodedViewLabel, suppress); len(matches) > 0 {
-			return responseMatchSet{matches: matches, content: normalized}
-		}
-	}
-	if len(s.core.responseVowelFoldPatterns) > 0 {
-		folded := normalize.FoldVowels(normalized)
-		if folded != normalized {
-			if matches := filterCoreResponsePass(folded, normalized, matchPatternsPreFiltered(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded), vowelFoldViewLabel(decodedViewLabel), suppress); len(matches) > 0 {
-				return responseMatchSet{matches: matches, content: folded}
-			}
-		}
-	}
-	return responseMatchSet{}
+	return s.matchDecodedResponseViews(decoded, decodedViewLabel, suppress, responseMatchingPasses{
+		primary:       responseMatchingPass{s.core.responsePreFilter, s.core.responsePatterns},
+		optionalSpace: responseMatchingPass{s.core.responseOptSpacePreFilter, s.core.responseOptSpacePatterns},
+		vowelFold:     responseMatchingPass{s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns},
+	})
 }
 
 // scanCoreDLP runs core DLP patterns against text. Returns matches found by

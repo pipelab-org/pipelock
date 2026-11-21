@@ -38,19 +38,6 @@ var reassemblyCodecs = func() [5]reassemblyCodec {
 	return a
 }()
 
-// RFC 4648's alphabet union is derived from the same value tables used by
-// decoding. A byte outside it contributes to none of the projections.
-var reassemblyAlphabet = func() (members [256]bool) {
-	for _, codec := range reassemblyCodecs {
-		for value, decoded := range codec.values {
-			if decoded >= 0 {
-				members[value] = true
-			}
-		}
-	}
-	return members
-}()
-
 type reassemblyNeedle struct{ pattern, length, delta, kind int }
 
 func reassemblyRequired(tree *syntax.Regexp) []string {

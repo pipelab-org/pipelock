@@ -182,9 +182,7 @@ func hasEncodedRun(content string) bool {
 	run := 0
 	for i := 0; i < len(content); i++ {
 		c := content[i]
-		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-			(c >= '0' && c <= '9') || c == '+' || c == '/' ||
-			c == '-' || c == '_' || c == '=' {
+		if isBase64DataByte(c) || c == '=' {
 			run++
 			if run >= minEncodedRunLen {
 				return true
