@@ -1127,10 +1127,16 @@ func matchesSecretSegments(candidate string, hasPathSyntax, targetKey bool) bool
 }
 
 func normalizeSecretSegment(segment string) string {
+	// An NTFS stream suffix (name:stream:type, including the default
+	// name::$DATA) still names the same file, so match on the file name.
+	if before, _, ok := strings.Cut(segment, ":"); ok {
+		segment = before
+	}
 	if segment == "." || segment == ".." {
 		return segment
 	}
-	return strings.TrimRight(segment, ".")
+	// Windows drops trailing periods and spaces from path components.
+	return strings.TrimRight(segment, ". ")
 }
 
 func isMutatingShellCommand(command string) bool {
