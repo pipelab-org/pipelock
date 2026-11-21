@@ -2778,6 +2778,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	responseTaintType := responseTaintContentType(resp.Header)
 	responseTaintURL := resp.Request.URL.String()
 	observeResponseFindings := httpResponseFindingObserver(forwardRec, cfg, responseTaintURL, responseTaintType, "forward_response")
+	observeResponseFindings(nil)
 	defer func() { observeResponseFindings(responseFindingKinds) }()
 
 	// Size limit: tighter of max_response_mb and remaining byte budget.
@@ -3494,6 +3495,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			if !a2aResult.Clean {
 				responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, mcp.A2ATaintFindingKinds(a2aResult))
+				observeResponseFindings(responseFindingKinds)
 				hasFinding = true
 				a2aAction := a2aResult.Action
 				if a2aAction == "" {
@@ -3573,6 +3575,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			recordObservedCoreResponseMatches(p.metrics, p.logger, actx, scanResult.ObservedCoreMatches, TransportForward)
 			if !scanResult.Clean && !scanResult.Failed() {
 				responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, responseScanFindingKinds(scanResult))
+				observeResponseFindings(responseFindingKinds)
 			}
 
 			// Capture observer: record forward response scan verdict for

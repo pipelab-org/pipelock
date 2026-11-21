@@ -100,9 +100,15 @@ func observeHTTPResponseFindings(rec session.Recorder, cfg *config.Config, rawUR
 	rs.ObserveRisk(observation)
 }
 
-// httpResponseFindingObserver records exposure at stream start and new finding
-// kinds before release. The final observation shares this state so EOF and
-// repeated findings do not fill the bounded source history with duplicates.
+// A response's source exposure is recorded in the session recorder when the
+// response is received, before any response byte is delivered to the client, on
+// every path; finding kinds from a buffered scan are recorded before the scanned
+// body is delivered; streaming findings are recorded before the affected event
+// is released. Exposure remains recorded if a later check blocks delivery.
+//
+// httpResponseFindingObserver shares duplicate suppression across these calls
+// and the final observation, so EOF and repeated findings do not fill the bounded
+// source history with duplicates.
 // Calls belong to the response's handler goroutine.
 func httpResponseFindingObserver(rec session.Recorder, cfg *config.Config, rawURL, contentType, kind string) func([]session.HostileFindingKind) {
 	var observed bool

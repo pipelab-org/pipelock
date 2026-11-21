@@ -2486,6 +2486,7 @@ func newInterceptHandler(
 		responseTaintType := responseTaintContentType(resp.Header)
 		responseTaintURL := r.URL.String()
 		observeResponseFindings := httpResponseFindingObserver(ic.taintRecorder, ic.taintConfig, responseTaintURL, responseTaintType, "forward_response")
+		observeResponseFindings(nil)
 		defer func() { observeResponseFindings(responseFindingKinds) }()
 		stripUpstreamPipelockNamespace(resp)
 		if !applyFullResponsePolicy(nil, resp) {
@@ -3168,6 +3169,7 @@ func newInterceptHandler(
 				a2aRespResult = mcp.ScanA2AResponseBody(r.Context(), respBody, ic.Scanner, &ic.Config.A2AScanning)
 			}
 			responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, mcp.A2ATaintFindingKinds(a2aRespResult))
+			observeResponseFindings(responseFindingKinds)
 			if a2aRespResult.ScanError != "" {
 				reason := "response scan failed: " + a2aRespResult.ScanError
 				ic.Logger.LogError(actx, fmt.Errorf("%s", reason))
@@ -3249,6 +3251,7 @@ func newInterceptHandler(
 			scanResult := scanStructuredResponse(r.Context(), ic.Scanner, ic.Config, respBody, r.URL.String(), structured)
 			scanResult = retainStructuredShieldScan(preShieldScan, scanResult, respBody, structured)
 			responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, responseScanFindingKinds(scanResult))
+			observeResponseFindings(responseFindingKinds)
 			responseWarned = len(scanResult.WarnedMatches) != 0
 			recoveryAssessment = scanResult.RecoveryAssessment()
 			if structured != nil {
