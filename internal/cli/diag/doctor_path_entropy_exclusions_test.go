@@ -119,3 +119,20 @@ func TestDoctorPathEntropyExclusions_ReportsStaleAndInertEntries(t *testing.T) {
 		})
 	}
 }
+
+func TestDoctorPathEntropyExclusionsNamesGoogleEditorIDSlot(t *testing.T) {
+	t.Parallel()
+	route := config.ShippedPathEntropyExclusions()[0]
+	got := pathEntropyFindings(t, func(c *config.Config) {
+		c.FetchProxy.Monitoring.PathEntropyExclusions = config.ShippedPathEntropyExclusions()
+		c.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{route.Host}
+	})
+	for _, finding := range got {
+		if finding.Kind == ConfigSemanticKindMisdirected &&
+			strings.Contains(finding.Detail, route.PathPrefix+" (Google editor ID segment only)") &&
+			strings.Contains(finding.Next, "subdomain_entropy_exclusions") {
+			return
+		}
+	}
+	t.Fatalf("missing the scoped Google ID advisory in %+v", got)
+}

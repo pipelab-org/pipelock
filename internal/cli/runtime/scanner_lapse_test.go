@@ -13,6 +13,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 func TestServerScannerExceptionRejectedReloadAudited(t *testing.T) {
@@ -180,6 +181,66 @@ func TestServerScannerExceptionRejectsBeforeMutation(t *testing.T) {
 			}
 			if candidate.FetchProxy.Listen != ":9999" {
 				t.Fatal("rejected reload mutated caller")
+			}
+		})
+	}
+}
+
+func TestServerReloadGoogleEditorIDScope(t *testing.T) {
+	const initial = "mode: balanced\ninternal: []\n"
+	const entries = "fetch_proxy:\n  monitoring:\n    path_entropy_exclusions:"
+	const field = "\n        google_editor_id: "
+	route := config.ShippedPathEntropyExclusions()[0]
+	explicit := initial + entries + "\n      - host: " + route.Host + "\n        path_prefix: " + route.PathPrefix
+	past := time.Now().UTC().AddDate(0, 0, -1).Format(time.DateOnly)
+	s, _, err := newLapseTestServer(t, initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const id = "pTyGJMuHbEL31IeL2HPcHyGcFRl1SPnXNYvMIHa_2o76"
+	editorURL := "https://" + route.Host + route.PathPrefix + id
+	for _, tt := range []struct {
+		name, yaml               string
+		editor, trailing, lapsed bool
+	}{
+		{name: "startup", editor: true},
+		{name: "unchanged startup config", yaml: initial, editor: true},
+		{name: "legacy prefix", yaml: explicit + field + "false\n", editor: true, trailing: true},
+		{name: "unchanged legacy prefix", yaml: explicit + field + "false\n", editor: true, trailing: true},
+		{name: "explicit ID slot", yaml: explicit + field + "true\n", editor: true},
+		{name: "operator prefix expires", yaml: explicit + "\n        expires: " + past + "\n", editor: true, lapsed: true},
+		{name: "disable shipped routes", yaml: initial + entries + " []\n"},
+		{name: "restore shipped routes", yaml: initial, editor: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.yaml != "" {
+				cfg, err := loadServerTestConfig(t, tt.yaml)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := s.Reload(cfg); err != nil {
+					t.Fatal(err)
+				}
+			}
+			live := s.proxy.ScannerPtr().Load()
+			if live == nil {
+				t.Fatal("proxy has no scanner")
+			}
+			for _, test := range []struct {
+				target string
+				allow  bool
+			}{
+				{editorURL + "/edit", tt.editor},
+				{editorURL + "/" + id, tt.trailing},
+			} {
+				got := live.ScanPreflight(t.Context(), test.target)
+				if got.Allowed != test.allow || !test.allow && got.Scanner != scanner.ScannerEntropy {
+					t.Fatalf("live scan allowed=%t, want %t (scanner=%s, reason=%q)", got.Allowed, test.allow, got.Scanner, got.Reason)
+				}
+			}
+			if warnings := s.proxy.CurrentConfig().LapsedScannerExceptionWarnings(); (len(warnings) > 0) != tt.lapsed {
+				t.Fatalf("unexpected lapse warnings: %+v", warnings)
 			}
 		})
 	}
