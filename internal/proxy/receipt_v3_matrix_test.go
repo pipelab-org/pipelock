@@ -914,6 +914,51 @@ func TestV3CredentialEffectBatch(t *testing.T) {
 	}
 }
 
+func TestV3InterceptIssuerQueryBatch(t *testing.T) {
+	const targetHost = "elsewhere.vendor.example"
+	e := newDelegationEnv(t, func(c *config.Config) {
+		c.FetchProxy.Monitoring.IssuedRedirectDelegations[0].TargetOrigins = []string{"https://" + targetHost}
+		c.FlightRecorder.RequireReceipts = true
+	})
+	_, writer, dir, keys := newTestV3HTTPProxy(t, transportInterceptReceipt, true, nil)
+	WithV3ReceiptWriter(writer)(e.p)
+	rph := newReceiptProxyHelperWithMetrics(t, e.m)
+	e.p.receiptEmitterPtr.Store(rph.emitter)
+	exerciseJoinedViewAndDelegatedEntropy(t, e, targetHost)
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Verdict != "VALID" {
+		t.Fatalf("verification: %+v (%v)", result, err)
+	}
+
+	actions := readV3TransportActions(t, dir)
+	for i, send := range actions {
+		if send.Phase != "intent" || send.EffectBoundary != boundaryUpstreamSend ||
+			i+1 >= len(actions) || actions[i+1].ParentActionID != send.ActionID {
+			continue
+		}
+		if i+6 > len(actions) {
+			t.Fatal("intercept send batch is incomplete")
+		}
+		for offset, pattern := range []string{issuerJoinedViewReceiptKey, issuerQueryReceiptExtensionKey} {
+			support := actions[i+1+offset]
+			if support.Phase != "intent" || support.Pattern != pattern || support.ParentActionID != send.ActionID {
+				t.Fatalf("issuer allowance did not support the intercept send: %+v", support)
+			}
+		}
+		for offset, intent := range actions[i : i+3] {
+			outcome := actions[i+3+offset]
+			if outcome.ActionID != intent.ActionID || outcome.OutcomeClass != "completed" {
+				t.Fatalf("intercept send batch did not settle: %+v", outcome)
+			}
+		}
+		return
+	}
+	t.Fatal("intercept send lacked supporting issuer allowances")
+}
+
 func runV3MatrixUpstreamError(t *testing.T) {
 	for _, surface := range []string{TransportFetch, TransportForward, TransportConnect, transportInterceptReceipt, TransportReverse, TransportWS} {
 		for _, required := range []bool{false, true} {
@@ -1317,6 +1362,74 @@ func TestV3FetchInboundCredentialIsNotSendEvidence(t *testing.T) {
 					t.Fatalf("inbound-only credential was represented as a send: %+v", action)
 				}
 			}
+		})
+	}
+}
+
+type v3DeliveryFaultObserver struct {
+	*httptest.ResponseRecorder
+	conn net.Conn
+}
+
+func (*v3DeliveryFaultObserver) Write([]byte) (int, error) { return 0, nil }
+func (*v3DeliveryFaultObserver) FlushError() error         { return io.ErrClosedPipe }
+
+func (w *v3DeliveryFaultObserver) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.conn, nil, nil
+}
+
+func TestV3DeliveryWriterTransportOutcomes(t *testing.T) {
+	for _, tc := range []struct {
+		name, outcome string
+		method        string
+		exercise      func(*testing.T, *v3DeliveryWriter)
+	}{
+		{"short write", "attempt_unknown", http.MethodGet, func(t *testing.T, w *v3DeliveryWriter) {
+			if _, err := w.Write([]byte("example")); !errors.Is(err, io.ErrShortWrite) {
+				t.Fatalf("short write error = %v", err)
+			}
+		}},
+		{"flush error", "attempt_unknown", http.MethodGet, func(t *testing.T, w *v3DeliveryWriter) {
+			w.Flush()
+			if !errors.Is(w.writeErr, io.ErrClosedPipe) {
+				t.Fatalf("flush error = %v", w.writeErr)
+			}
+		}},
+		{"hijack", "attempt_unknown", http.MethodGet, func(t *testing.T, w *v3DeliveryWriter) {
+			conn, _, err := w.Hijack()
+			if err != nil || conn == nil {
+				t.Fatalf("hijack returned %v, %v", conn, err)
+			}
+			if _, _, err := w.Hijack(); !errors.Is(err, http.ErrNotSupported) {
+				t.Fatalf("second hijack error = %v", err)
+			}
+		}},
+		{"head", "attempt_unknown", http.MethodHead, func(_ *testing.T, w *v3DeliveryWriter) {
+			w.WriteHeader(http.StatusOK)
+		}},
+		{"trailer prefix", "attempt_unknown", http.MethodGet, func(_ *testing.T, w *v3DeliveryWriter) {
+			w.Header().Set(http.TrailerPrefix+"Example", "value")
+			w.WriteHeader(http.StatusOK)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, writer, dir, _ := newTestV3HTTPProxy(t, TransportForward, true, nil)
+			req := httptest.NewRequestWithContext(t.Context(), tc.method, "http://api.vendor.example", http.NoBody)
+			opts := receipt.EmitOpts{Verdict: config.ActionAllow, Transport: TransportForward, Method: req.Method, Target: req.URL.String()}
+			conn, peer := net.Pipe()
+			t.Cleanup(func() { _ = conn.Close(); _ = peer.Close() })
+			observer := &v3DeliveryFaultObserver{ResponseRecorder: httptest.NewRecorder(), conn: conn}
+			w, finish := p.startReceiptDelivery(observer, req, p.CurrentConfig(), opts)
+			delivery := w.(*v3DeliveryWriter)
+			if delivery.Unwrap() != observer {
+				t.Fatal("receipt writer did not preserve its underlying writer")
+			}
+			tc.exercise(t, delivery)
+			finish()
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			assertHandshakeOutcome(t, dir, boundaryDownstreamDelivery, tc.outcome)
 		})
 	}
 }

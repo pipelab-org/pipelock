@@ -5,6 +5,7 @@ package v3
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"testing"
 )
@@ -117,5 +118,49 @@ func TestEffectGateCancellationBeforeIntent(t *testing.T) {
 	token, err := gate.Admit(ctx, Action{Verdict: verdictAllow}, PolicySnapshot{})
 	if token != nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("admit returned token=%v error=%v", token != nil, err)
+	}
+}
+
+func TestEffectGateWriterBatchAndRefusal(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	primary := writerTestIntent("primary")
+	support := writerTestIntent("support")
+	support.ParentActionID = primary.ActionID
+	actions := []Action{primary, support}
+	policy := PolicySnapshot{}
+	disabled := NewEffectGate(nil)
+	if token, err := disabled.AdmitBatch(t.Context(), actions, policy); token != nil || err != nil {
+		t.Fatalf("disabled admission: token=%v error=%v", token, err)
+	}
+	if err := disabled.Refuse(ctx, primary, policy); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := writerTestOptions(t.TempDir())
+	writer := requireWriter(t, opts, localWriterStorage())
+	gate := NewEffectGate(writer)
+	if token, err := gate.AdmitBatch(t.Context(), nil, policy); token != nil || err != nil {
+		t.Fatalf("empty batch: token=%v error=%v", token, err)
+	}
+	if err := gate.Refuse(ctx, writerTestIntent("refused"), policy); err != nil {
+		t.Fatal(err)
+	}
+	token, err := gate.AdmitBatch(t.Context(), actions, policy)
+	if err != nil || token == nil {
+		t.Fatalf("batch admission: token=%v error=%v", token, err)
+	}
+	if err := token.ConfirmDelivery(t.Context(), func() (bool, error) { return true, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil || *result.Counts.EffectsCompleted != 2 {
+		t.Fatalf("expected two completed actions in valid history: %+v", result)
+	}
+	if count := writerTestCount(t, result, "blocked"); count != 1 {
+		t.Fatalf("blocked decisions = %d, want 1", count)
 	}
 }
