@@ -62,6 +62,35 @@ func testDecisionIndexFinding(t *testing.T) {
 	requireMutation(t, codeDecisionIndexFull, baseline, verification.result)
 }
 
+func TestDecisionIndexUsesPreparedLookup(t *testing.T) {
+	ctx := t.Context()
+	store, err := newStore(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.close()
+	tx, err := store.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	index := decisionIndex{ctx: ctx, tx: tx, disk: true}
+	if err := index.prepare(); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := index.remember("example", true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := index.rememberID.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.remember("example", true); err == nil {
+		t.Fatal("remember succeeded after closing its prepared statement")
+	}
+}
+
 func TestDecisionIndexRejectsUnusableTransaction(t *testing.T) {
 	ctx := t.Context()
 	store, err := newStore(ctx)
