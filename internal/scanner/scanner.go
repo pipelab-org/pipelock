@@ -4332,7 +4332,7 @@ func joinQuerySubsequence(values []string, indices []int, separate bool) string 
 	for _, idx := range indices {
 		length += len(values[idx])
 	}
-	if separate {
+	if separate && len(indices) > 1 {
 		length += len(indices) - 1
 	}
 	var joined strings.Builder

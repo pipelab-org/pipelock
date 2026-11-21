@@ -403,15 +403,11 @@ func (w *regexpWindowPlan) rangesWithPositions(text string, view *matchingView) 
 }
 
 func (w *regexpWindowPlan) findAll(re *regexp.Regexp, text string) [][]int {
-	return w.findAllInView(re, re, text, text)
+	return w.findAllWithPositions(re, re, text, text, nil)
 }
 
 // The alternate matcher is admitted only by the ASCII-folded path, which
 // already proves that its matches and byte offsets agree with the source RE.
-func (w *regexpWindowPlan) findAllInView(source, matcher *regexp.Regexp, text, view string) [][]int {
-	return w.findAllWithPositions(source, matcher, text, view, nil)
-}
-
 func (w *regexpWindowPlan) findAllWithPositions(source, matcher *regexp.Regexp, text, view string, positions *matchingView) [][]int {
 	if w == nil || w.re != source || len(text) < regexpWindowMinText {
 		return matcher.FindAllStringIndex(view, -1)
