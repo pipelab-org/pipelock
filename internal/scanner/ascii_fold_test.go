@@ -154,7 +154,7 @@ func TestASCIIFoldedPreparedViewKeepsOriginalValidators(t *testing.T) {
 	p.prepareASCIIFoldedRegexp()
 	text := "markabcd then MaRkAbCd"
 	var input asciiFoldedInput
-	start, end, ok := p.matchSpanInPreparedView(text, text, &input, nil)
+	start, end, ok := p.matchPositionedSpanInPreparedView(text, text, &input, nil, nil)
 	if !ok || text[start:end] != "MaRkAbCd" {
 		t.Fatalf("original validator bytes lost: start=%d end=%d ok=%v", start, end, ok)
 	}
@@ -162,14 +162,14 @@ func TestASCIIFoldedPreparedViewKeepsOriginalValidators(t *testing.T) {
 		t.Fatal("prepared matching did not use the folded input")
 	}
 	got := input.text
-	p.matchSpanInPreparedView(text, text, &input, nil)
+	p.matchPositionedSpanInPreparedView(text, text, &input, nil, nil)
 	if got != input.text {
 		t.Fatal("one loop changed its borrowed view")
 	}
 	p.re = regexp.MustCompile(`then`)
 	p.validate = nil
 	var fallback asciiFoldedInput
-	start, end, ok = p.matchSpanInPreparedView(text, text, &fallback, nil)
+	start, end, ok = p.matchPositionedSpanInPreparedView(text, text, &fallback, nil, nil)
 	if !ok || text[start:end] != "then" || fallback.ready {
 		t.Fatal("replaced expression reused a stale compiled alternative")
 	}
@@ -218,10 +218,10 @@ func TestASCIIFoldedPreparedViewKeepsAdmission(t *testing.T) {
 	p := &compiledPattern{re: regexp.MustCompile(`(?i)mark=foo`), requiresEquals: true}
 	p.prepareASCIIFoldedRegexp()
 	var input asciiFoldedInput
-	if _, _, ok := p.matchSpanInPreparedView("MARK FOO", "MARK FOO", &input, nil); ok || input.ready {
+	if _, _, ok := p.matchPositionedSpanInPreparedView("MARK FOO", "MARK FOO", &input, nil, nil); ok || input.ready {
 		t.Fatal("necessary admission was bypassed")
 	}
-	if _, _, ok := p.matchSpanInPreparedView("absent=bar", "absent=bar", &input, nil); ok || !input.ready {
+	if _, _, ok := p.matchPositionedSpanInPreparedView("absent=bar", "absent=bar", &input, nil, nil); ok || !input.ready {
 		t.Fatal("finding-free prepared matching did not inspect the borrowed view")
 	}
 }
