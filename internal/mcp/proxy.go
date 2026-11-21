@@ -2332,14 +2332,17 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	}
 	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, tracker, fwdOpts)
 	timedOut := errors.Is(scanErr, transport.ErrResponseTimeout)
+	replyAdmissionFailed := errors.Is(scanErr, errMCPV3ReplyAdmission)
 
-	// On an upstream response timeout the child is still alive (it accepted a
-	// request and never replied). Stop request intake before emitting pending
-	// timeout responses below, then terminate the child so cmd.Wait() returns
-	// instead of blocking forever on the hung process. The pgid teardown after
-	// Wait() then reaps any descendants.
-	if timedOut && cmd.Process != nil {
-		_, _ = fmt.Fprintf(safeLogW, "pipelock: terminating MCP subprocess after upstream response timeout\n")
+	// The child may still be waiting for input when forwarding stops after a
+	// response timeout or a reply receipt failure. Close input and terminate
+	// the child before waiting. The post-Wait teardown reaps descendants.
+	if (timedOut || replyAdmissionFailed) && cmd.Process != nil {
+		reason := "upstream response timeout"
+		if replyAdmissionFailed {
+			reason = "reply receipt admission failure"
+		}
+		_, _ = fmt.Fprintf(safeLogW, "pipelock: terminating MCP subprocess after %s\n", reason)
 		if c, ok := clientIn.(io.Closer); ok {
 			_ = c.Close()
 		}
@@ -2417,7 +2420,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: timed out waiting for MCP input drain after upstream response timeout\n")
 		}
 		emitPendingTimeoutResponses(fwdOpts.localV3ReplyWriter(safeClientOut), safeLogW, tracker, fwdOpts)
-	} else if sessionExit.inProgress() {
+	} else if sessionExit.inProgress() || replyAdmissionFailed {
 		// An arbitrary io.Reader cannot be interrupted by closing the client
 		// side. Once session teardown has killed the server, do not let one
 		// such reader keep the proxy alive indefinitely.
@@ -2430,7 +2433,11 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		// Name the actual cause. Reusing "upstream_closed" here would attribute
 		// a session teardown to the server having closed the connection, so the
 		// receipt would record the wrong reason for an aborted request.
-		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "session_exit")
+		reason := "session_exit"
+		if replyAdmissionFailed {
+			reason = "receipt_admission_failed"
+		}
+		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, reason)
 	} else {
 		// Wait for stdin goroutine to finish (server exit closes pipe, unblocking scanner).
 		<-inputDone

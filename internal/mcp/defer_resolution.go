@@ -14,6 +14,17 @@ import (
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
+func deferredResolutionLayer(source string) string {
+	switch source {
+	case deferred.SourceAuthority:
+		return mcpReceiptLayerAuthority
+	case deferred.SourceKillSwitch:
+		return mcpReceiptLayerKillSwitch
+	default:
+		return mcpReceiptLayerPolicy
+	}
+}
+
 func deferredAdmissionError(manager *deferred.Manager, requireReceipts bool) error {
 	if manager == nil || !manager.Enabled() {
 		return deferred.ErrDisabled
@@ -56,13 +67,6 @@ func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 	// Unconditional so capacity denials (no cascade context) still record the
 	// policy bounds; Cascade stays nil and marshals away via omitempty.
 	resolutionPolicy := deferred.ReceiptPolicyStringFor(deferred.ReceiptPolicyOptions{Bounds: res.Policy, Cascade: cascade})
-	layer := mcpReceiptLayerPolicy
-	switch res.ResolutionSource {
-	case deferred.SourceAuthority:
-		layer = mcpReceiptLayerAuthority
-	case deferred.SourceKillSwitch:
-		layer = mcpReceiptLayerKillSwitch
-	}
 	shard := receipt.EmitOpts{ShardIndex: res.ShardIndex, ShardSelected: res.ShardSelected}
 	return emitMCPToolReceipt(mcpToolReceiptOpts{
 		ProxyOpts:       opts,
@@ -74,7 +78,7 @@ func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 		MCPMethod:       res.Method,
 		ToolName:        res.Target,
 		Verdict:         final,
-		Layer:           layer,
+		Layer:           deferredResolutionLayer(res.ResolutionSource),
 		Pattern:         res.Reason,
 		Severity:        config.SeverityHigh,
 		Decision:        taintDecision{Authority: session.AuthorityUserBroad, Result: session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: "defer_resolution"}},

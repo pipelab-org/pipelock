@@ -229,6 +229,8 @@ type mcpV3ReplyWriter struct {
 	finished bool
 }
 
+var errMCPV3ReplyAdmission = errors.New("MCP reply receipt admission")
+
 func (w *mcpV3ReplyWriter) WriteMessage(msg []byte) error {
 	if w.finished {
 		return nil
@@ -238,7 +240,7 @@ func (w *mcpV3ReplyWriter) WriteMessage(msg []byte) error {
 	evidence := mcpV3ReplyEvidence(w.request)
 	token, err := w.opts.admitV3Effect(ctx, evidence, mcpDownstreamDeliveryBoundary)
 	if err != nil {
-		return fmt.Errorf("MCP reply receipt admission: %w", err)
+		return fmt.Errorf("%w: %w", errMCPV3ReplyAdmission, err)
 	}
 	if err := ctx.Err(); err != nil {
 		logMCPV3Error(w.log, token.Refuse(ctx))
@@ -285,6 +287,8 @@ func (o MCPProxyOpts) confirmV3Hold(held *deferred.HeldAction, frame MCPFrame) {
 	}
 	held.ConfirmResolution = func(ctx context.Context, res deferred.Resolution) error {
 		resolution := act
+		resolution.Layer = deferredResolutionLayer(res.ResolutionSource)
+		resolution.Pattern = res.Reason
 		resolution.Phase, resolution.Verdict, resolution.EffectRelation = "resolution", res.FinalDecision, "after"
 		if res.FinalDecision == config.ActionStepUp {
 			resolution.Verdict = config.ActionAsk

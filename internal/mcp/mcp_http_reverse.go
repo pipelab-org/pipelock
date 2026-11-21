@@ -2082,7 +2082,9 @@ func RunHTTPListenerProxy(
 			if decision.Synthetic.notification {
 				w.WriteHeader(http.StatusAccepted)
 			} else {
-				_, _ = w.Write(decision.Synthetic.response)
+				withListenerWriteDeadline(w, listenerDownstreamWriteTimeout, func() {
+					_, _ = w.Write(decision.Synthetic.response)
+				})
 			}
 			return
 		}

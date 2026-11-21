@@ -6,10 +6,12 @@ package deferred
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestManagerConfirmationReservesCapacity(t *testing.T) {
@@ -126,4 +128,108 @@ func TestManagerResolutionConfirmationFailsClosed(t *testing.T) {
 		t.Fatalf("hold capacity leaked: %v", err)
 	}
 	manager.ResolveAll(config.ActionBlock, SourceCancel)
+}
+
+type resolutionWaitContext struct {
+	context.Context
+	waiting chan struct{}
+	once    sync.Once
+}
+
+func (ctx *resolutionWaitContext) Done() <-chan struct{} {
+	ctx.once.Do(func() { close(ctx.waiting) })
+	return ctx.Context.Done()
+}
+
+func TestManagerConfirmedHoldDeadlineAfterSiblingWait(t *testing.T) {
+	base, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
+	defer cancel()
+	manager := NewManager(Config{Enabled: true, Timeout: time.Minute})
+	entered, release := make(chan struct{}), make(chan struct{})
+	resolved := make(chan Resolution, 3)
+	parent := HeldAction{
+		DeferID: "parent", Authority: AuthoritySnapshot{SessionID: "session"},
+		ConfirmHold:       func(context.Context, HeldAction) error { return nil },
+		ConfirmResolution: func(context.Context, Resolution) error { return nil },
+		Resolve:           func(res Resolution) { resolved <- res },
+	}
+	if err := manager.HoldContext(base, parent); err != nil {
+		t.Fatal(err)
+	}
+	child := parent
+	child.DeferID = "child"
+	child.ConfirmHold = func(ctx context.Context, _ HeldAction) error {
+		close(entered)
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	childDone := make(chan error, 1)
+	go func() { childDone <- manager.HoldContext(base, child) }()
+	select {
+	case <-entered:
+	case <-base.Done():
+		t.Fatal("child never began confirmation")
+	}
+	ctx := &resolutionWaitContext{Context: base, waiting: make(chan struct{})}
+	parentDone := make(chan error, 1)
+	go func() { parentDone <- manager.ResolveContext(ctx, parent.DeferID, config.ActionAllow, SourceApproval) }()
+	select {
+	case <-ctx.waiting:
+	case <-base.Done():
+		t.Fatal("approval never waited for the sibling")
+	}
+	manager.mu.Lock()
+	manager.holds[parent.DeferID].Deadline = time.Now().Add(-time.Second)
+	manager.mu.Unlock()
+	close(release)
+	if err := <-childDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-parentDone; err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{parent.DeferID: SourceTimeout, child.DeferID: SourceCascade}
+	for range 2 {
+		select {
+		case res := <-resolved:
+			if source, ok := want[res.DeferID]; !ok || res.FinalDecision != config.ActionBlock || res.ResolutionSource != source {
+				t.Fatalf("unexpected resolution %+v; outstanding %v", res, want)
+			}
+			delete(want, res.DeferID)
+		case <-base.Done():
+			t.Fatalf("missing resolutions: %v", want)
+		}
+	}
+	select {
+	case res := <-resolved:
+		t.Fatalf("duplicate resolution: %+v", res)
+	default:
+	}
+}
+
+func TestManagerExpiredConfirmedHoldPreservesExplicitBlock(t *testing.T) {
+	manager := NewManager(Config{Enabled: true, Timeout: time.Minute})
+	result := make(chan Resolution, 1)
+	action := HeldAction{
+		DeferID:           "expired",
+		ConfirmHold:       func(context.Context, HeldAction) error { return nil },
+		ConfirmResolution: func(context.Context, Resolution) error { return nil },
+		Resolve:           func(res Resolution) { result <- res },
+	}
+	if err := manager.HoldContext(t.Context(), action); err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	manager.holds[action.DeferID].Deadline = time.Now().Add(-time.Second)
+	manager.mu.Unlock()
+	if err := manager.ResolveContext(t.Context(), action.DeferID, config.ActionBlock, SourceKillSwitch); err != nil {
+		t.Fatal(err)
+	}
+	if res := <-result; res.FinalDecision != config.ActionBlock || res.ResolutionSource != SourceKillSwitch {
+		t.Fatalf("resolution = %+v", res)
+	}
 }

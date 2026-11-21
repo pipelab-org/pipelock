@@ -73,7 +73,8 @@ type mcpMatrixFile struct {
 
 func (f *mcpMatrixFile) Write(p []byte) (int, error) {
 	f.writeCount++
-	if f.writeCount == 2 && f.scenario == "intent write fail" {
+	if (f.writeCount == 2 && f.scenario == "intent write fail") ||
+		(f.writeCount == 4 && f.scenario == "reply intent write fail") {
 		return 0, errors.New("fixture append failure")
 	}
 	return f.File.Write(p)
@@ -83,6 +84,9 @@ func (f *mcpMatrixFile) Sync() error {
 	f.syncCount++
 	if f.beforeSync != nil {
 		f.beforeSync(f.syncCount)
+	}
+	if f.syncCount == 4 && f.scenario == "reply intent sync fail" {
+		return errors.New("fixture reply sync failure")
 	}
 	if f.syncCount == 2 {
 		if f.scenario == "intent sync fail" {
@@ -176,6 +180,48 @@ func (o *mcpMatrixObserver) Write(p []byte) (int, error) {
 
 func TestMCPV3ReceiptParityMatrix(t *testing.T) {
 	runV3MCPMatrix(t, exerciseMCPV3Row)
+}
+
+func TestMCPV3StdioReplyAdmissionFailureStopsInteractiveChild(t *testing.T) {
+	for _, scenario := range []string{"reply intent write fail", "reply intent sync fail"} {
+		t.Run(scenario, func(t *testing.T) { checkMCPV3StdioReplyAdmissionFailure(t, scenario) })
+	}
+}
+
+func checkMCPV3StdioReplyAdmissionFailure(t *testing.T, scenario string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
+	defer cancel()
+	row := v3MCPMatrixRow{required: true, scenario: scenario}
+	writerOpts := mcpMatrixWriterOptions(t, row, transportMCPStdio, cancel, nil)
+	writer, err := v3.OpenStreamWriter(ctx, writerOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.Close(context.Background(), nil) })
+
+	in, client := io.Pipe()
+	defer in.Close()
+	defer client.Close()
+	output := &mcpMatrixObserver{dir: writerOpts.Dir}
+	opts := MCPProxyOpts{Scanner: testScannerWithAction(t, config.ActionBlock), Transport: transportMCPStdio}.WithV3ReceiptWriter(writer)
+	cmd := []string{"sh", "-c", `IFS= read -r line || exit 1; printf '%s\n' "$1"; IFS= read -r line`, "fixture", heldNativeReply}
+	done := make(chan error, 1)
+	go func() { done <- RunProxy(ctx, in, output, io.Discard, cmd, opts) }()
+	if _, err := io.WriteString(client, jsonToolsCallEcho+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, errMCPV3ReplyAdmission) || ctx.Err() != nil {
+			t.Fatalf("interactive proxy returned %v (context %v)", err, ctx.Err())
+		}
+	case <-ctx.Done():
+		t.Fatal("interactive proxy did not return after reply admission failed")
+	}
+	if output.output.Len() != 0 {
+		t.Fatalf("unadmitted reply reached client: %q", output.output.String())
+	}
 }
 
 func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
@@ -492,6 +538,12 @@ func assertMCPMatrixTerminal(t *testing.T, scenario string, actions []v3.Action)
 	for _, a := range actions {
 		if a.EffectBoundary == mcpDownstreamDeliveryBoundary && (a.ParentActionID != sendID || a.ActionID == sendID) {
 			t.Fatalf("incorrect reply parent: %+v", a)
+		}
+		if scenario == "kill-switch during hold" && a.EffectBoundary == "approval_prompt" && a.Phase == "resolution" {
+			if a.Hold == nil || a.Hold.ResolutionSource != deferred.SourceKillSwitch ||
+				a.Layer != mcpReceiptLayerKillSwitch || a.Pattern != deferredKillSwitchReason {
+				t.Fatalf("wrong kill-switch resolution attribution: %+v", a)
+			}
 		}
 		if a.EffectBoundary == "approval_prompt" && a.ActionID != holdID {
 			t.Fatalf("resolution does not match hold: %+v", a)
