@@ -745,6 +745,12 @@ func (r *closingSSEReader) Close() error {
 // Returns a MessageReader yielding SSE events. Returns an error if the server
 // responds with 405 (doesn't support GET stream) or other error status.
 func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
+	return c.OpenObservedGETStream(ctx, nil)
+}
+
+// OpenObservedGETStream calls observed after receiving HTTP response headers
+// and before validating the stream. No client mutex is held during the call.
+func (c *HTTPClient) OpenObservedGETStream(ctx context.Context, observed func()) (MessageReader, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating GET request: %w", err)
@@ -772,12 +778,19 @@ func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
 	}
 	c.sessionMu.Unlock()
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	resp, err := c.client.Do(req)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
 		return nil, ErrUpstreamRequestFailed
+	}
+
+	if observed != nil {
+		observed()
 	}
 
 	if resp.StatusCode == http.StatusMethodNotAllowed {

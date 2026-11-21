@@ -246,7 +246,22 @@ func scanGETStream(ctx context.Context, client *transport.HTTPClient, writer tra
 		logReceiptEmitFailure(logW, err, true, config.ActionForward)
 		return nil, err
 	}
-	reader, err := client.OpenGETStream(streamCtx)
+	effect, err := transportReceiptOpts.startV3Send(streamCtx, MCPFrame{Method: http.MethodGet}, transportAdmission.ActionID)
+	if err != nil {
+		return nil, err
+	}
+	var observed func()
+	if effect != nil {
+		if err := streamCtx.Err(); err != nil {
+			logMCPV3Error(logW, effect.token.Refuse(streamCtx))
+			return nil, err
+		}
+		defer func() { logMCPV3Error(logW, effect.token.SettleOnExit(streamCtx)) }()
+		observed = func() {
+			logMCPV3Error(logW, confirmMCPV3Effect(streamCtx, effect.token, true))
+		}
+	}
+	reader, err := client.OpenObservedGETStream(streamCtx, observed)
 	if err != nil {
 		switch {
 		case errors.Is(context.Cause(streamCtx), ael.ErrCapacity):
@@ -261,7 +276,14 @@ func scanGETStream(ctx context.Context, client *transport.HTTPClient, writer tra
 	}
 	warnContext, stopWarnings := opts.nativeWarningContext(streamCtx, admission)
 	opts.WarnContext = warnContext
+	// Subscription events are independent of pending POST replies.
+	opts.v3Session = nil
 	defer stopWarnings()
+	if effect != nil {
+		delivery := &mcpV3StreamDelivery{base: writer, opts: opts, log: logW, evidence: mcpV3ReplyEvidence(effect.request)}
+		defer delivery.finish()
+		writer = delivery
+	}
 	_, scanErr = scanMCPHTTPResponse(streamCtx, reader, writer, logW, tracker, opts)
 	if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(context.Cause(streamCtx), ael.ErrCapacity) {
 		if transportAdmission.ActionID != "" {

@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
@@ -52,7 +53,7 @@ func runV3MCPMatrix(t *testing.T, run func(*testing.T, v3MCPMatrixRow)) {
 		for _, mode := range modes {
 			for _, scenario := range scenarios {
 				t.Run(path+"/"+mode.name+"/"+scenario, func(t *testing.T) {
-					if i >= 2 {
+					if i == 2 || i == 4 {
 						t.Skip("pending-in-a-later-step")
 					}
 					run(t, v3MCPMatrixRow{path: path, required: mode.required, scenario: scenario})
@@ -179,6 +180,10 @@ func TestMCPV3ReceiptParityMatrix(t *testing.T) {
 
 func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 	t.Helper()
+	if row.path == "SSE bridge GET" {
+		exerciseMCPV3GET(t, row)
+		return
+	}
 	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
 	defer cancel()
 	stdio := row.path == "stdio subprocess"
@@ -523,5 +528,103 @@ func TestMCPV3DeferredIntentPrecedesStdioSendLock(t *testing.T) {
 	opts.finishV3Send(t.Context(), io.Discard, effect, false)
 	if reason != "" || !checked {
 		t.Fatalf("receipt sync ran under the send lock or did not run: %s", reason)
+	}
+}
+
+func exerciseMCPV3GET(t *testing.T, row v3MCPMatrixRow) {
+	t.Helper()
+	switch row.scenario {
+	case "tool-scan block":
+		t.Skip("N/A: GET subscriptions reject response IDs and cannot deliver tools/list results")
+	case "media/redaction rewrite":
+		t.Skip("N/A: GET subscription requests have no MCP arguments to rewrite")
+	case "deferred approve", "deferred deny", "deferred timeout", "kill-switch during hold", "restart recovery of a pending hold":
+		t.Skip("N/A: GET subscriptions carry no client tool call to hold or resolve")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
+	defer cancel()
+	const surface = "mcp_http_upstream"
+	writerOpts := mcpMatrixWriterOptions(t, row, surface, cancel, nil)
+	writer, err := v3.OpenStreamWriter(ctx, writerOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.Close(context.Background(), nil) })
+	opts := MCPProxyOpts{Scanner: testScannerWithAction(t, config.ActionBlock), Transport: surface}.WithV3ReceiptWriter(writer)
+	seen := make(chan bool, 1)
+	const notification = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		actions, err := readMCPMatrixActions(writerOpts.Dir)
+		if err != nil {
+			t.Error(err)
+		}
+		seen <- slices.ContainsFunc(actions, func(a v3.Action) bool {
+			return a.EffectBoundary == mcpUpstreamSendBoundary && a.Phase == "intent"
+		})
+		if row.scenario == "upstream error" {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if row.scenario == "upstream closes mid-response" {
+			w.Header().Set("Content-Length", "4096")
+			_, _ = io.WriteString(w, "data: "+notification)
+			return
+		}
+		_, _ = io.WriteString(w, "data: "+notification+"\n\n")
+	}))
+	defer srv.Close()
+	if row.scenario == "client cancel before effect" {
+		cancel()
+	}
+	out := &mcpMatrixObserver{dir: writerOpts.Dir}
+	scanErr, setupErr := scanGETStream(ctx, transport.NewHTTPClient(srv.URL, nil), &syncWriter{w: out}, io.Discard, opts, nil)
+	wantSend := row.scenario == "ok" || row.scenario == "upstream error" || row.scenario == "upstream closes mid-response"
+	select {
+	case priorIntent := <-seen:
+		if !wantSend || !priorIntent {
+			t.Fatalf("unexpected GET request or missing prior intent: %t", priorIntent)
+		}
+	default:
+		if wantSend {
+			t.Fatalf("GET never reached upstream: %v", setupErr)
+		}
+	}
+	if row.scenario == "ok" {
+		if scanErr != nil || setupErr != nil || !out.intent || strings.TrimSpace(out.output.String()) != notification {
+			t.Fatalf("GET reply %q, prior intent %t, errors %v / %v", out.output.String(), out.intent, scanErr, setupErr)
+		}
+	} else if out.output.Len() != 0 {
+		t.Fatalf("unexpected GET reply %q", out.output.String())
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	actions, err := readMCPMatrixActions(writerOpts.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actual, expected []string
+	switch {
+	case row.scenario == "ok":
+		expected = []string{"upstream_send/completed", "downstream_delivery/attempt_unknown"}
+	case wantSend:
+		expected = []string{"upstream_send/completed"}
+	case row.scenario != "client cancel before effect":
+		expected = []string{"upstream_send/not_released"}
+	}
+	var sendID string
+	for _, action := range actions {
+		if action.EffectBoundary == mcpUpstreamSendBoundary {
+			sendID = action.ActionID
+		} else if action.ParentActionID == "" || action.ParentActionID != sendID {
+			t.Fatalf("GET delivery has incorrect parent: %+v", action)
+		}
+		if action.Phase == "outcome" {
+			actual = append(actual, action.EffectBoundary+"/"+action.OutcomeClass)
+		}
+	}
+	if !slices.Equal(actual, expected) {
+		t.Fatalf("GET outcomes: %v, want %v", actual, expected)
 	}
 }

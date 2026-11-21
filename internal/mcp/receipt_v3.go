@@ -111,7 +111,7 @@ func (o MCPProxyOpts) withV3Session() MCPProxyOpts {
 }
 
 func (o MCPProxyOpts) startV3Send(ctx context.Context, frame MCPFrame, actionID string) (*mcpV3Exchange, error) {
-	if o.v3Session == nil {
+	if !o.receiptEffects.enabled {
 		return nil, nil
 	}
 	if actionID == "" {
@@ -304,4 +304,41 @@ func (o MCPProxyOpts) claimV3DeferredSend(ctx context.Context, log io.Writer, fr
 	}
 	o.finishV3Send(ctx, log, effect, false)
 	return nil, nil, firstNonEmpty(prepared.Reason, "request cancelled")
+}
+
+// mcpV3StreamDelivery admits the first event before acquiring the underlying
+// writer's lock. The final framing is unproven even after successful events.
+type mcpV3StreamDelivery struct {
+	base     transport.MessageWriter
+	opts     MCPProxyOpts
+	log      io.Writer
+	evidence receipt.EmitOpts
+	token    *v3.EffectToken
+	started  bool
+}
+
+func (w *mcpV3StreamDelivery) WriteMessage(msg []byte) error {
+	ctx := w.opts.warnContext()
+	if !w.started {
+		token, err := w.opts.admitV3Effect(ctx, w.evidence, mcpDownstreamDeliveryBoundary)
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			logMCPV3Error(w.log, token.Refuse(ctx))
+			return err
+		}
+		w.token, w.started = token, true
+	}
+	return w.base.WriteMessage(msg)
+}
+
+func (w *mcpV3StreamDelivery) writeDeniedMessage([]byte) error {
+	evidence := w.evidence
+	evidence.ActionID = receipt.NewActionID()
+	return w.opts.refuseV3Effect(w.opts.warnContext(), evidence, mcpDownstreamDeliveryBoundary)
+}
+
+func (w *mcpV3StreamDelivery) finish() {
+	logMCPV3Error(w.log, w.token.SettleOnExit(w.opts.warnContext()))
 }
