@@ -1488,7 +1488,7 @@ func TestV3InterceptUnstartedRedirectFailureDoesNotFlush(t *testing.T) {
 				TargetOrigins: []string{"https://delegated.vendor.example"},
 				Reason:        "test delegation",
 				Owner:         "test",
-				Expires:       "2099-12-31",
+				Expires:       delegationFixture().Expires,
 			}}
 			ic := &InterceptContext{
 				Proxy: p, Config: cfg, Scanner: p.ScannerPtr().Load(),
