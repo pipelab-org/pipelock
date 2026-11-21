@@ -1366,6 +1366,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if id.Auth == envelope.ActorAuthBound && p.taintRecorder == nil {
 		forwardTask.subject = "forward:" + agent
 		session.BindTaskSubject(forwardRec, forwardTask.subject)
+	} else if p.taintRecorder != nil {
+		forwardTask.subject = sharedTaskSubject(p.taintRecorder)
 	}
 	forwardTaint := evaluateHTTPTaskTaint(cfg, forwardRec, r.Method, r.URL, &forwardTask)
 	forwardRequiresReauth := false
@@ -2467,6 +2469,18 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					writeTaskDenial(blockReason, "session exposure changed before this request was sent")
 					return
 				}
+				// Exposure may change again while the operator decides. Only a
+				// result no stricter than the approved ask may proceed.
+				if after := evaluateHTTPTaskTaint(cfg, forwardRec, outReq.Method, outReq.URL, &forwardTask); after.Result.Decision == session.PolicyBlock ||
+					after.Result.Reason == session.TaskPermissionRequired || after.Task.CurrentTaskID != taskTaint.Task.CurrentTaskID {
+					reason := after.Result.Reason
+					if after.Result.Decision != session.PolicyBlock {
+						reason = session.TaskApprovalStale
+					}
+					writeTaskDenial(reason, "session exposure changed while approval was pending")
+					return
+				}
+				forwardTaint.Authority = session.AuthorityOperatorOverride
 			}
 		}
 	}

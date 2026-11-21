@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -360,5 +361,59 @@ func TestForwardTaintPreSendEnforcesNewExposure(t *testing.T) {
 	}
 	if got := postCalls.Load(); got != 0 {
 		t.Errorf("upstream POST calls=%d, want zero", got)
+	}
+}
+
+func TestForwardTaintLateApprovalRechecksExposure(t *testing.T) {
+	for _, escalate := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unchanged", true: "hostile_during_prompt"}[escalate], func(t *testing.T) {
+			p, _, _, target, _ := newTaintInterceptFixture(t, func(cfg *config.Config) {
+				cfg.Taint.Enabled = true
+				cfg.ForwardProxy.Enabled = true
+				cfg.RequestBodyScanning.Enabled = true
+				cfg.DNS.HostOverrides = map[string][]string{interceptTaintHost: {"93.184.216.34"}}
+			})
+			rec := &SessionState{}
+			WithTaintRecorder(rec)(p)
+			var postCalls atomic.Int32
+			p.client = &http.Client{Transport: forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
+				postCalls.Add(1)
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("published")), Request: r}, nil
+			})}
+			pr, pw := io.Pipe()
+			t.Cleanup(func() { _ = pr.Close(); _ = pw.Close() })
+			var once sync.Once
+			output := taskPromptWriter(func(prompt []byte) (int, error) {
+				if !strings.Contains(string(prompt), "Allow (y)") {
+					return len(prompt), nil
+				}
+				if escalate {
+					once.Do(func() {
+						observeHTTPResponseFindings(rec, p.CurrentConfig(), "http://other.example/x", "text/plain", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+					})
+				}
+				_, err := io.WriteString(pw, "y\n")
+				return len(prompt), err
+			})
+			p.approver = hitl.New(1, hitl.WithTerminal(true), hitl.WithInput(pr), hitl.WithOutput(output))
+			t.Cleanup(p.approver.Close)
+			target = strings.Replace(target, "https://", "http://", 1)
+			body := &exposingBody{r: strings.NewReader("payload=1"), expose: func() {
+				observeHTTPResponseFindings(rec, p.CurrentConfig(), "http://untrusted.example/page", "text/html", "forward_response", nil)
+			}}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, body)
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			resp := httptest.NewRecorder()
+			p.handleForwardHTTP(resp, req)
+			if !escalate {
+				if resp.Code != http.StatusOK || postCalls.Load() != 1 {
+					t.Fatalf("approved late ask status=%d calls=%d body=%s", resp.Code, postCalls.Load(), resp.Body.String())
+				}
+				return
+			}
+			if resp.Code != http.StatusForbidden || !strings.Contains(resp.Body.String(), session.TaskApprovalStale) || postCalls.Load() != 0 {
+				t.Fatalf("late ask after hostile change status=%d calls=%d body=%s, want forbidden %s", resp.Code, postCalls.Load(), resp.Body.String(), session.TaskApprovalStale)
+			}
+		})
 	}
 }

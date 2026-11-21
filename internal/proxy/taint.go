@@ -37,6 +37,15 @@ func WithTaintRecorder(rec session.Recorder) Option {
 	return func(p *Proxy) { p.taintRecorder = rec }
 }
 
+// sharedTaskSubject reads the subject an invocation already bound to a shared
+// recorder. It never binds one: that subject belongs to the invocation owner.
+func sharedTaskSubject(rec session.Recorder) string {
+	if state, ok := rec.(interface{ TaskSubject() string }); ok {
+		return state.TaskSubject()
+	}
+	return ""
+}
+
 func isNilSessionRecorder(rec session.Recorder) bool {
 	if rec == nil {
 		return true

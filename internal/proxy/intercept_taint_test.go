@@ -12,7 +12,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -592,5 +594,87 @@ func TestInterceptTaintConfigCache(t *testing.T) {
 	nextAdmission := admission.Clone()
 	if got := cache.get(nextAdmission, next); got == cache.get(admission, next) {
 		t.Fatal("admission config pair not refreshed")
+	}
+}
+
+// subjectCapturingState records the subject and action admission checks use.
+type subjectCapturingState struct {
+	*SessionState
+	mu       sync.Mutex
+	subjects []string
+	action   session.TaskAction
+}
+
+func (s *subjectCapturingState) TaskPolicySnapshot(subject string, action session.TaskAction) (session.SessionRisk, session.TaskContext, bool) {
+	s.mu.Lock()
+	s.subjects = append(s.subjects, subject)
+	if action.Valid() {
+		s.action = action
+	}
+	s.mu.Unlock()
+	return s.SessionState.TaskPolicySnapshot(subject, action)
+}
+
+func TestInterceptTaintSharedRecorderUsesInvocationSubject(t *testing.T) {
+	p, handler, _, target, _ := newTaintInterceptFixture(t, nil)
+	shared := &subjectCapturingState{SessionState: &SessionState{}}
+	const mcpSubject = "mcp-stdio-shared-grant"
+	shared.BindTaskSubject(mcpSubject)
+	WithTaintRecorder(shared)(p)
+	observeHTTPResponseFindings(shared, p.CurrentConfig(), target, "text/plain", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+
+	if w := interceptTaintRequest(t, handler, http.MethodPost, target); w.Code != http.StatusForbidden {
+		t.Fatalf("POST without grant status=%d body=%s, want forbidden", w.Code, w.Body.String())
+	}
+	shared.mu.Lock()
+	subjects, action := append([]string(nil), shared.subjects...), shared.action
+	shared.mu.Unlock()
+	if !slices.Contains(subjects, mcpSubject) {
+		t.Fatalf("admission subjects=%v, want invocation subject %q", subjects, mcpSubject)
+	}
+	if shared.TaskSubject() != mcpSubject {
+		t.Fatalf("shared task subject rebound to %q", shared.TaskSubject())
+	}
+	if err := shared.installTaskPermission(shared.TaskSnapshot().CurrentTaskID, session.TaskPermission{Action: action, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatalf("installTaskPermission: %v", err)
+	}
+	if w := interceptTaintRequest(t, handler, http.MethodPost, target); w.Code != http.StatusOK {
+		t.Fatalf("POST with exact invocation grant status=%d body=%s, want 200", w.Code, w.Body.String())
+	}
+}
+
+func TestInterceptTaintApprovalWaitRechecksExposure(t *testing.T) {
+	for _, escalate := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unchanged", true: "hostile_during_prompt"}[escalate], func(t *testing.T) {
+			p, handler, rec, target, _ := newTaintInterceptFixture(t, nil)
+			observeHTTPResponseFindings(rec, p.CurrentConfig(), target, "text/plain", "forward_response", nil)
+			r, w := io.Pipe()
+			t.Cleanup(func() { _ = r.Close(); _ = w.Close() })
+			var once sync.Once
+			output := taskPromptWriter(func(prompt []byte) (int, error) {
+				if !strings.Contains(string(prompt), "Allow (y)") {
+					return len(prompt), nil
+				}
+				if escalate {
+					once.Do(func() {
+						observeHTTPResponseFindings(rec, p.CurrentConfig(), "https://other.example/x", "text/plain", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+					})
+				}
+				_, err := io.WriteString(w, "y\n")
+				return len(prompt), err
+			})
+			p.approver = hitl.New(1, hitl.WithTerminal(true), hitl.WithInput(r), hitl.WithOutput(output))
+			t.Cleanup(p.approver.Close)
+			response := interceptTaintRequest(t, handler, http.MethodPost, target)
+			if !escalate {
+				if response.Code != http.StatusOK {
+					t.Fatalf("approved POST status=%d body=%s, want 200", response.Code, response.Body)
+				}
+				return
+			}
+			if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), session.TaskApprovalStale) {
+				t.Fatalf("POST after exposure changed during approval status=%d body=%s, want forbidden %s", response.Code, response.Body, session.TaskApprovalStale)
+			}
+		})
 	}
 }

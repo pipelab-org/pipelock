@@ -39,6 +39,8 @@ func initInterceptTaint(ic *InterceptContext, r *http.Request) {
 	if ic.ActorAuth == envelope.ActorAuthBound && (ic.Proxy == nil || ic.Proxy.taintRecorder == nil) {
 		ic.taintTask.subject = "forward:" + ic.Agent
 		session.BindTaskSubject(ic.taintRecorder, ic.taintTask.subject)
+	} else if ic.Proxy != nil && ic.Proxy.taintRecorder != nil {
+		ic.taintTask.subject = sharedTaskSubject(ic.Proxy.taintRecorder)
 	}
 	ic.taint = evaluateHTTPTaskTaint(ic.taintConfig, ic.taintRecorder, r.Method, r.URL, &ic.taintTask)
 }
@@ -153,8 +155,19 @@ func admitInterceptTaint(ic *InterceptContext, w http.ResponseWriter, body *[]by
 			var approved bool
 			approved, reason = p.resolveTaintAsk(ic.Agent, r.URL.String(), r.Method, reason)
 			if approved {
-				ic.taint.Authority = session.AuthorityOperatorOverride
-				return true
+				// Exposure may change while the operator decides. Only a result
+				// no stricter than the approved ask may proceed.
+				after := evaluateHTTPTaskTaint(ic.taintConfig, ic.taintRecorder, r.Method, r.URL, &ic.taintTask)
+				switch {
+				case after.Result.Decision == session.PolicyBlock:
+					reason = after.Result.Reason
+				case after.Result.Reason == session.TaskPermissionRequired || after.Task.CurrentTaskID != decision.Task.CurrentTaskID:
+					reason = session.TaskApprovalStale
+				default:
+					ic.taint.Authority = session.AuthorityOperatorOverride
+					return true
+				}
+				ic.taint.Result = session.PolicyDecisionResult{Decision: session.PolicyBlock, Reason: reason}
 			}
 		}
 	}
