@@ -2647,13 +2647,21 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// the send, so only the required path needs to look again.
 	if cfg.FlightRecorder.RequireReceipts {
 		reason, detail := session.TaskApprovalStale, staleTaskDetail
+		after := forwardTaint
 		if taskAdmissionCurrent() {
-			reason = forwardPreSendTaintRecheck(cfg, forwardRec, outReq, &forwardTask, forwardTaint, forwardRequiresReauth)
+			after, reason = forwardPreSendTaintRecheck(cfg, forwardRec, outReq, forwardBodyBytes, &forwardTask, forwardTaint, forwardRequiresReauth)
 			detail = "session exposure changed while the required receipt was recorded"
 		}
 		if reason != "" {
 			outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, reason
 			outcomeReceipt.Verdict = config.ActionBlock
+			// Record the live state that caused the refusal, not the
+			// admission-time state the allow receipt carried.
+			outcomeReceipt.SessionTaintLevel = after.Risk.Level.String()
+			outcomeReceipt.SessionContaminated = after.Risk.Contaminated
+			outcomeReceipt.RecentTaintSources = after.Risk.Sources
+			outcomeReceipt.SessionTaskID = after.Task.CurrentTaskID
+			outcomeReceipt.SessionTaskLabel = after.Task.CurrentTaskLabel
 			outcomeReceipt.TaintDecision = session.PolicyBlock.String()
 			outcomeReceipt.TaintDecisionReason = reason
 			writeTaskDenialResponse(reason, detail)

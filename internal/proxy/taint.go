@@ -381,20 +381,36 @@ func wildcardMatch(value, pattern string) bool {
 }
 
 // forwardPreSendTaintRecheck re-evaluates taint for a forward request whose
-// admission was decided before a required receipt wait. It returns a refusal
-// reason when the live result is stricter than the admitted one: a block, a
-// new ask on a request admitted without approval, a task-permission
-// requirement the admission did not satisfy, or a task change for an
+// admission was decided before a required receipt wait. It returns the live
+// decision and a refusal reason when that decision is stricter than the
+// admitted one: a block; a new ask on a request admitted without approval; a
+// task-permission requirement no current exact grant satisfies (a one-time
+// approval of this exact action still covers it); or a task change for an
 // admission bound to its task. Approval cannot be requested at this point.
-func forwardPreSendTaintRecheck(cfg *config.Config, rec session.Recorder, outReq *http.Request, task *forwardTaskAction, admitted taintDecision, reauthorized bool) string {
+func forwardPreSendTaintRecheck(cfg *config.Config, rec session.Recorder, outReq *http.Request, body []byte, task *forwardTaskAction, admitted taintDecision, reauthorized bool) (taintDecision, string) {
 	after := evaluateHTTPTaskTaint(cfg, rec, outReq.Method, outReq.URL, requestHasBody(outReq), task)
-	granted := admitted.Result.Reason == session.TaskPermissionGranted || admitted.Result.Reason == session.TaskApprovalGranted
+	if after.Result.Reason == session.TaskPermissionRequired && !task.action.Valid() {
+		// Exposure arrived after admission, so the exact action was never
+		// bound. Bind it now so an existing exact grant can still match; an
+		// unbuffered body yields no action and stays refused.
+		task.action = forwardRequestTaskAction(outReq, body)
+		after = evaluateHTTPTaskTaint(cfg, rec, outReq.Method, outReq.URL, requestHasBody(outReq), task)
+	}
+	return after, taskTaintRecheckReason(admitted, after, reauthorized)
+}
+
+// taskTaintRecheckReason compares a live taint decision with the admitted one
+// and returns a refusal reason when the live result is stricter.
+func taskTaintRecheckReason(admitted, after taintDecision, reauthorized bool) string {
+	taskBound := reauthorized || admitted.Result.Reason == session.TaskPermissionGranted || admitted.Result.Reason == session.TaskApprovalGranted
 	switch {
 	case after.Result.Decision == session.PolicyBlock:
 		return after.Result.Reason
-	case (reauthorized || granted) && after.Task.CurrentTaskID != admitted.Task.CurrentTaskID:
+	case taskBound && after.Task.CurrentTaskID != admitted.Task.CurrentTaskID:
 		return session.TaskApprovalStale
-	case after.Result.Reason == session.TaskPermissionRequired && !granted:
+	case after.Result.Reason == session.TaskPermissionRequired && admitted.Result.Reason != session.TaskApprovalGranted:
+		// A stored grant must still match now; an earlier broad approval or
+		// an expired grant does not cover a new permission requirement.
 		return session.TaskApprovalStale
 	case after.Result.Decision == session.PolicyAsk && admitted.Result.Decision == session.PolicyAllow && !reauthorized:
 		return after.Result.Reason

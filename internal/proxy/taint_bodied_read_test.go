@@ -441,6 +441,92 @@ func TestForwardTaintRechecksExposureAfterRequiredReceipt(t *testing.T) {
 			if intents != 1 || w.Code != wantStatus || upstreamCalls.Load() != wantCalls {
 				t.Fatalf("intents=%d status=%d calls=%d body=%s, want status %d calls %d", intents, w.Code, upstreamCalls.Load(), w.Body, wantStatus, wantCalls)
 			}
+			if tc.expose {
+				// The signed refusal records the exposure that caused it,
+				// not the clean admission-time state.
+				var outcome *receipt.ActionRecord
+				for _, rcpt := range receipts.findReceipts(t) {
+					if rcpt.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome {
+						ar := rcpt.ActionRecord
+						outcome = &ar
+					}
+				}
+				if outcome == nil || outcome.SessionTaintLevel != session.TaintExternalHostile.String() || outcome.TaintDecision != session.PolicyBlock.String() {
+					t.Fatalf("refusal outcome does not record the live hostile state: %+v", outcome)
+				}
+			}
+		})
+	}
+}
+
+func TestTaskTaintRecheckReason(t *testing.T) {
+	required := taintDecision{Result: session.PolicyDecisionResult{Decision: session.PolicyAsk, Reason: session.TaskPermissionRequired}}
+	granted := taintDecision{Result: session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: session.TaskPermissionGranted}}
+	approved := taintDecision{Result: session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: session.TaskApprovalGranted}}
+	allowed := taintDecision{Result: session.PolicyDecisionResult{Decision: session.PolicyAllow}}
+	for _, tc := range []struct {
+		name         string
+		admitted     taintDecision
+		after        taintDecision
+		reauthorized bool
+		want         string
+	}{
+		{name: "expired_stored_grant", admitted: granted, after: required, want: session.TaskApprovalStale},
+		{name: "expired_grant_after_broad_approval", admitted: granted, after: required, reauthorized: true, want: session.TaskApprovalStale},
+		{name: "one_time_exact_approval_still_covers", admitted: approved, after: required, reauthorized: true, want: ""},
+		{name: "new_requirement_after_clean_admission", admitted: allowed, after: required, want: session.TaskApprovalStale},
+		{name: "grant_still_matches", admitted: granted, after: granted, want: ""},
+		{name: "task_changed_after_approval", admitted: taintDecision{Result: approved.Result, Task: session.TaskContext{CurrentTaskID: "t1"}}, after: taintDecision{Result: allowed.Result, Task: session.TaskContext{CurrentTaskID: "t2"}}, reauthorized: true, want: session.TaskApprovalStale},
+		{name: "new_ask_after_clean_admission", admitted: allowed, after: taintDecision{Result: session.PolicyDecisionResult{Decision: session.PolicyAsk, Reason: "external_publish_after_untrusted_external_exposure"}}, want: "external_publish_after_untrusted_external_exposure"},
+		{name: "fresh_allow_survives_rotation", admitted: taintDecision{Result: allowed.Result, Task: session.TaskContext{CurrentTaskID: "t1"}}, after: taintDecision{Result: allowed.Result, Task: session.TaskContext{CurrentTaskID: "t2"}}, want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := taskTaintRecheckReason(tc.admitted, tc.after, tc.reauthorized); got != tc.want {
+				t.Fatalf("reason=%q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Exposure that arrives after a clean admission leaves the exact action
+// unbound; the recheck binds it so a grant installed in advance still
+// matches, and an unbuffered body stays refused.
+func TestForwardPreSendTaintRecheckMatchesExistingGrant(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Taint.Enabled = true
+	target := "http://upload.example/items"
+	newReq := func() *http.Request {
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, strings.NewReader("payload=1"))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		return r
+	}
+	body := []byte("payload=1")
+	for _, tc := range []struct {
+		name       string
+		grant      bool
+		body       []byte
+		wantReason string
+	}{
+		{name: "existing_grant_matches", grant: true, body: body, wantReason: ""},
+		{name: "no_grant_refused", body: body, wantReason: session.TaskApprovalStale},
+		{name: "unbuffered_body_refused", grant: true, body: nil, wantReason: session.TaskApprovalStale},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &SessionState{}
+			rec.BeginNewTask("task")
+			rec.BindTaskSubject("invocation")
+			if tc.grant {
+				if err := rec.installTaskPermission(rec.TaskSnapshot().CurrentTaskID, session.TaskPermission{Action: forwardRequestTaskAction(newReq(), body), ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			admitted := evaluateHTTPTaskTaint(cfg, rec, http.MethodPost, newReq().URL, true, &forwardTaskAction{subject: "invocation"})
+			observeHTTPResponseFindings(rec, cfg, "http://untrusted.example/page", "text/html", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+			task := forwardTaskAction{subject: "invocation"}
+			_, reason := forwardPreSendTaintRecheck(cfg, rec, newReq(), tc.body, &task, admitted, false)
+			if reason != tc.wantReason {
+				t.Fatalf("reason=%q want %q", reason, tc.wantReason)
+			}
 		})
 	}
 }

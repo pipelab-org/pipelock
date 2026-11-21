@@ -208,21 +208,11 @@ func interceptTaskAdmissionCurrent(ic *InterceptContext) bool {
 func recheckInterceptTaint(ic *InterceptContext, r *http.Request) string {
 	after := evaluateHTTPTaskTaint(ic.taintConfig, ic.taintRecorder, r.Method, r.URL, requestHasBody(r), &ic.taintTask)
 	// Only admissions bound to a task (an approved ask or an exact grant) go
-	// stale on rotation. A fresh allow stands on the new task's own state,
-	// matching the plaintext forward path.
-	taskBound := ic.taintRequiresReauth || ic.taint.Result.Reason == session.TaskPermissionGranted || ic.taint.Result.Reason == session.TaskApprovalGranted
-	reason := ""
-	switch {
-	case after.Result.Decision == session.PolicyBlock:
-		reason = after.Result.Reason
-	case !interceptTaskAdmissionCurrent(ic) || (taskBound && after.Task.CurrentTaskID != ic.taint.Task.CurrentTaskID):
+	// stale on rotation; a fresh allow stands on the new task's own state. A
+	// stored grant must still match now, as on the forward path.
+	reason := taskTaintRecheckReason(ic.taint, after, ic.taintRequiresReauth)
+	if after.Result.Decision != session.PolicyBlock && !interceptTaskAdmissionCurrent(ic) {
 		reason = session.TaskApprovalStale
-	case after.Result.Reason == session.TaskPermissionRequired:
-		if ic.taint.Result.Reason != session.TaskPermissionGranted && ic.taint.Result.Reason != session.TaskApprovalGranted {
-			reason = session.TaskApprovalStale
-		}
-	case after.Result.Decision == session.PolicyAsk && ic.taint.Result.Decision == session.PolicyAllow && !ic.taintRequiresReauth:
-		reason = after.Result.Reason
 	}
 	if reason != "" {
 		ic.taint = after
