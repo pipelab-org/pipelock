@@ -207,11 +207,15 @@ func interceptTaskAdmissionCurrent(ic *InterceptContext) bool {
 // intent storage. Approval cannot be requested here: retry through admission.
 func recheckInterceptTaint(ic *InterceptContext, r *http.Request) string {
 	after := evaluateHTTPTaskTaint(ic.taintConfig, ic.taintRecorder, r.Method, r.URL, &ic.taintTask)
+	// Only admissions bound to a task (an approved ask or an exact grant) go
+	// stale on rotation. A fresh allow stands on the new task's own state,
+	// matching the plaintext forward path.
+	taskBound := ic.taintRequiresReauth || ic.taint.Result.Reason == session.TaskPermissionGranted || ic.taint.Result.Reason == session.TaskApprovalGranted
 	reason := ""
 	switch {
 	case after.Result.Decision == session.PolicyBlock:
 		reason = after.Result.Reason
-	case !interceptTaskAdmissionCurrent(ic) || after.Task.CurrentTaskID != ic.taint.Task.CurrentTaskID:
+	case !interceptTaskAdmissionCurrent(ic) || (taskBound && after.Task.CurrentTaskID != ic.taint.Task.CurrentTaskID):
 		reason = session.TaskApprovalStale
 	case after.Result.Reason == session.TaskPermissionRequired:
 		if ic.taint.Result.Reason != session.TaskPermissionGranted && ic.taint.Result.Reason != session.TaskApprovalGranted {

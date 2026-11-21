@@ -125,3 +125,22 @@ func TestAcquireSandboxRecorderLifecycle(t *testing.T) {
 		})
 	}
 }
+
+type boundSubjectRecorder struct {
+	mockRecorder
+	subject string
+}
+
+func (r *boundSubjectRecorder) TaskSubject() string { return r.subject }
+
+func TestAcquireSandboxRecorderAdoptsBoundSubject(t *testing.T) {
+	rec := &boundSubjectRecorder{subject: "caller-bound"}
+	acquired, release, err := AcquireSandboxRecorder(MCPProxyOpts{Rec: rec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if acquired.taskSubject != "caller-bound" {
+		t.Fatalf("task subject=%q, want the recorder's bound subject", acquired.taskSubject)
+	}
+}

@@ -2791,7 +2791,7 @@ See "Published agent services" in `contain-cli.md` for install, verification, an
 
 The activation sources below apply to `pipelock run`, including its integrated MCP listener. Standalone `pipelock mcp proxy` uses configuration and sentinel-file activation. It omits the kill-switch API, SIGUSR1 toggle, Conductor activation sources, and the other session administration routes described below.
 
-With `taint.enabled: true` or `session_profiling.enabled: true`, `kill_switch.api_listen`, and an API token, standalone MCP serves authenticated session listing at `GET /api/v1/sessions` and task rotation and grants at `POST /api/v1/sessions/{key}/task`. These routes work with deferred policy disabled. With `defer.enabled` and the same listener and token, supported MCP modes also serve `/api/v1/deferred`. See [deferred actions](#defer-action) for supported transports. All active sources on a shared kill-switch controller still deny MCP traffic.
+With `session_profiling.enabled: true`, `kill_switch.api_listen`, and an API token, standalone MCP serves authenticated session listing at `GET /api/v1/sessions` and task rotation and grants at `POST /api/v1/sessions/{key}/task`. These routes work with deferred policy disabled. With `defer.enabled` and the same listener and token, supported MCP modes also serve `/api/v1/deferred`. See [deferred actions](#defer-action) for supported transports. All active sources on a shared kill-switch controller still deny MCP traffic.
 
 Emergency deny-all with seven independent activation sources: `enabled`,
 `sentinel_file`, API, `SIGUSR1`, Conductor remote kill, Conductor

@@ -38,6 +38,10 @@ func AcquireSandboxRecorder(opts MCPProxyOpts) (MCPProxyOpts, func(), error) {
 		}
 	}
 	if opts.Rec != nil {
+		if bound, ok := opts.Rec.(interface{ TaskSubject() string }); ok && opts.taskSubject == "" {
+			// A caller-bound recorder keeps its subject, so its exact grants still match.
+			opts.taskSubject = bound.TaskSubject()
+		}
 		if opts.taskSubject == "" {
 			opts.taskSubject = session.NextInvocationKey("mcp-stdio")
 		}

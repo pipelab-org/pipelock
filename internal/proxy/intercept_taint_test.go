@@ -688,11 +688,17 @@ func TestInterceptTaintPreSendRechecksRequiredIntent(t *testing.T) {
 		approved bool
 		granted  bool
 		rotate   bool
+		method   string
 	}{
 		{name: "unchanged"},
 		{name: "approved_unchanged", approved: true},
 		{name: "granted_unchanged", granted: true},
-		{name: "task_rotated_during_intent", rotate: true},
+		// A fresh allow stands on the new task; only task-bound admissions go stale.
+		{name: "allowed_post_task_rotated_during_intent", rotate: true},
+		{name: "allowed_get_task_rotated_during_intent", rotate: true, method: http.MethodGet},
+		{name: "allowed_head_task_rotated_during_intent", rotate: true, method: http.MethodHead},
+		{name: "approved_task_rotated_during_intent", approved: true, rotate: true},
+		{name: "granted_task_rotated_during_intent", granted: true, rotate: true},
 		{name: "untrusted_during_intent", expose: true},
 		{name: "hostile_during_intent", expose: true, hostile: true},
 	} {
@@ -752,9 +758,14 @@ func TestInterceptTaintPreSendRechecksRequiredIntent(t *testing.T) {
 				upstreamCalls++
 				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("reference material")), Request: r}, nil
 			}))
-			w := interceptTaintRequest(t, handler, http.MethodPost, target)
+			method := tc.method
+			if method == "" {
+				method = http.MethodPost
+			}
+			refused := tc.expose || (tc.rotate && (tc.approved || tc.granted))
+			w := interceptTaintRequest(t, handler, method, target)
 			wantStatus, wantCalls := http.StatusOK, 1
-			if tc.expose || tc.rotate {
+			if refused {
 				wantStatus, wantCalls = http.StatusForbidden, 0
 			}
 			wantPrompts := 0
@@ -772,7 +783,7 @@ func TestInterceptTaintPreSendRechecksRequiredIntent(t *testing.T) {
 			if intent.DecisionPhase != receipt.DecisionPhaseIntent || outcome.DecisionPhase != receipt.DecisionPhaseOutcome || intent.ActionID != outcome.ActionID {
 				t.Fatalf("unpaired receipts: intent=%+v outcome=%+v", intent, outcome)
 			}
-			if tc.expose || tc.rotate {
+			if refused {
 				if outcome.Verdict != config.ActionBlock || outcome.TaintDecision != config.ActionBlock || outcome.TaintDecisionReason == "" {
 					t.Fatalf("missing taint refusal outcome: %+v", outcome)
 				}
