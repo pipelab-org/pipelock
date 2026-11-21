@@ -39,14 +39,15 @@ type result struct {
 }
 
 type inputsReport struct {
-	ReadyTimeoutSeconds float64        `json:"ready_timeout_seconds"`
-	Harness             harnessReport  `json:"harness"`
-	Binary              binaryReport   `json:"binary"`
-	Config              configReport   `json:"config"`
-	Env                 envReport      `json:"env"`
-	Rules               rulesReport    `json:"rules"`
-	Workload            workloadReport `json:"workload"`
-	Host                hostReport     `json:"host"`
+	ReadyTimeoutSeconds   float64        `json:"ready_timeout_seconds"`
+	RequestTimeoutSeconds float64        `json:"request_timeout_seconds"`
+	Harness               harnessReport  `json:"harness"`
+	Binary                binaryReport   `json:"binary"`
+	Config                configReport   `json:"config"`
+	Env                   envReport      `json:"env"`
+	Rules                 rulesReport    `json:"rules"`
+	Workload              workloadReport `json:"workload"`
+	Host                  hostReport     `json:"host"`
 }
 
 type workloadReport struct {

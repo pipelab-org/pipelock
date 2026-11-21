@@ -70,7 +70,7 @@ func TestDestinationReceiptAssociations(t *testing.T) {
 				return
 			}
 			if mutation == "non_scanner" {
-				if err == nil || !strings.Contains(err.Error(), "differs from the planned decision") {
+				if err == nil || !strings.Contains(err.Error(), "differs from the planned decision: verdict ") || !strings.Contains(err.Error(), ", rule ") {
 					t.Fatalf("non-scanner provenance: %v", err)
 				}
 				return

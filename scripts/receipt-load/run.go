@@ -31,7 +31,6 @@ import (
 )
 
 const (
-	clientTimeout  = 30 * time.Second
 	maxVersionText = 512
 )
 
@@ -48,6 +47,7 @@ type options struct {
 	seed            uint64
 	window          time.Duration
 	readyTimeout    time.Duration
+	requestTimeout  time.Duration
 	shutdownTimeout time.Duration
 	verifyTimeout   time.Duration
 	restartAfter    int
@@ -78,6 +78,7 @@ func runMode(ctx context.Context, opt options, mode string) (*result, error) {
 		Integrity:   integrityReport{Verdict: verdictFail, Reasons: []string{"integrity was not evaluated"}},
 	}
 	res.Inputs.ReadyTimeoutSeconds = opt.readyTimeout.Seconds()
+	res.Inputs.RequestTimeoutSeconds = opt.requestTimeout.Seconds()
 	res.Inputs.Workload = workloadReport{
 		Seed: plan.seed, Tag: plan.tag(), KeyParam: workloadKeyParam,
 		Destinations: destinationMode(opt.destinations), BlockEvery: blockEvery, BlockOffset: plan.blockOffset, WindowSeconds: opt.window.Seconds(),
@@ -213,7 +214,7 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 		MaxConnsPerHost: opt.concurrency * 2, IdleConnTimeout: time.Minute,
 	}
 	defer transport.CloseIdleConnections()
-	params := loadParams{client: &http.Client{Transport: transport, Timeout: clientTimeout}, plan: plan, sinkAddr: sink.addr(), concurrency: opt.concurrency}
+	params := loadParams{client: &http.Client{Transport: transport, Timeout: opt.requestTimeout}, plan: plan, sinkAddr: sink.addr(), concurrency: opt.concurrency}
 
 	// Warmup shares the proxy process and its connections with the measured
 	// phase; only the measured phase feeds the performance numbers.
