@@ -6,6 +6,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -97,7 +99,7 @@ func TestInterceptTaintTaskRotation(t *testing.T) {
 	rec.BeginNewTask("rotated task")
 	observeHTTPResponseFindings(rec, p.CurrentConfig(), target, "text/plain", "forward_response", []session.HostileFindingKind{session.FindingDLP})
 	w := httptest.NewRecorder()
-	if admitInterceptTaint(ic, w, r, audit.NewRequestLogContext("test"), "test-action", nil, nil) || w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), session.TaskApprovalStale) {
+	if admitInterceptTaint(ic, w, nil, interceptTaintAdmissionOptions{request: r, logContext: audit.NewRequestLogContext("test"), actionID: "test-action"}) || w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), session.TaskApprovalStale) {
 		t.Fatalf("rotated admission status=%d body=%s", w.Code, w.Body)
 	}
 	ic.taint.Result.Reason = session.TaskPermissionGranted
@@ -530,5 +532,40 @@ func TestInterceptTaintSharedRecorderDoesNotHijackTaskSubject(t *testing.T) {
 	}
 	if _, _, matched := shared.TaskPolicySnapshot(mcpSubject, action); !matched {
 		t.Fatal("shared recorder taskSubject was hijacked before MCP binding")
+	}
+}
+
+func TestInterceptTaintTaskBodyReadError(t *testing.T) {
+	for _, terminal := range []bool{false, true} {
+		t.Run(map[bool]string{false: "no_approver", true: "terminal_approver"}[terminal], func(t *testing.T) {
+			p, _, rec, target, ic := newTaintInterceptFixture(t, func(cfg *config.Config) {
+				cfg.RequestBodyScanning.Enabled = false
+				cfg.RequestBodyScanning.MaxBodyBytes = 1024
+			})
+			observeHTTPResponseFindings(rec, p.CurrentConfig(), target, "text/plain", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+			var prompted bool
+			if terminal {
+				p.approver = hitl.New(1, hitl.WithTerminal(true), hitl.WithInput(strings.NewReader("y\n")), hitl.WithOutput(taskPromptWriter(func(prompt []byte) (int, error) {
+					prompted = true
+					return len(prompt), nil
+				})))
+				t.Cleanup(p.approver.Close)
+			}
+			var upstreamCalls int
+			handler := newInterceptHandler(ic, forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
+				upstreamCalls++
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody, Request: r}, nil
+			}))
+			body := io.MultiReader(strings.NewReader("partial request"), iotest.ErrReader(errors.New("fixture body read failed")))
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, body)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, req)
+			if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "task_action_unavailable") {
+				t.Fatalf("partial body status=%d body=%s", response.Code, response.Body.String())
+			}
+			if upstreamCalls != 0 || prompted {
+				t.Fatalf("incomplete action reached upstream=%d prompted=%t", upstreamCalls, prompted)
+			}
+		})
 	}
 }

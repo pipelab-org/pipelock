@@ -2250,7 +2250,7 @@ func newInterceptHandler(
 		removeHopByHopHeaders(r.Header)
 		stripInternalIdentity(r)
 		applyFullResponsePolicy(r.Header, nil)
-		if !admitInterceptTaint(ic, w, r, actx, actionID, &interceptBodyBytes, withInterceptRedaction) {
+		if !admitInterceptTaint(ic, w, &interceptBodyBytes, interceptTaintAdmissionOptions{request: r, logContext: actx, actionID: actionID, wrapReceipt: withInterceptRedaction}) {
 			return
 		}
 
@@ -2356,7 +2356,7 @@ func newInterceptHandler(
 		}
 		if !interceptTaskAdmissionCurrent(ic) {
 			ic.taint.Result = session.PolicyDecisionResult{Decision: session.PolicyBlock, Reason: session.TaskApprovalStale}
-			refuseInterceptTaint(ic, w, r, actx, actionID, session.TaskApprovalStale, withInterceptRedaction)
+			refuseInterceptTaint(ic, w, session.TaskApprovalStale, interceptTaintAdmissionOptions{request: r, logContext: actx, actionID: actionID, wrapReceipt: withInterceptRedaction})
 			return
 		}
 		requiredIntentEmitted := false
@@ -2485,9 +2485,8 @@ func newInterceptHandler(
 		var responseFindingKinds []session.HostileFindingKind
 		responseTaintType := responseTaintContentType(resp.Header)
 		responseTaintURL := r.URL.String()
-		defer func() {
-			observeHTTPResponseFindings(ic.taintRecorder, ic.taintConfig, responseTaintURL, responseTaintType, "forward_response", responseFindingKinds)
-		}()
+		observeResponseFindings := httpResponseFindingObserver(ic.taintRecorder, ic.taintConfig, responseTaintURL, responseTaintType, "forward_response")
+		defer func() { observeResponseFindings(responseFindingKinds) }()
 		stripUpstreamPipelockNamespace(resp)
 		if !applyFullResponsePolicy(nil, resp) {
 			reason := fullResponseRefusal(resp)
@@ -2571,6 +2570,7 @@ func newInterceptHandler(
 					},
 					OnFinding: func(err error) {
 						responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, observedSSEFindingKinds(err))
+						observeResponseFindings(responseFindingKinds)
 						ic.Logger.LogAnomaly(actx, LayerSSEStream, err.Error(), 0)
 					},
 					OnDroppedDLP: func(match scanner.TextDLPMatch, reason string) {
@@ -2626,6 +2626,8 @@ func newInterceptHandler(
 				return
 			}
 
+			observeResponseFindings(nil)
+
 			// Copy response headers to client before streaming.
 			for k, vv := range resp.Header {
 				for _, v := range vv {
@@ -2640,6 +2642,7 @@ func newInterceptHandler(
 			flusher, _ := serverWriter.(http.Flusher)
 			streamErr := DispatchSSEScan(r.Context(), resp.Body, httpstream.Writer{Writer: w}, flusher, ic.Scanner, sseOpts)
 			responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, sseTaintFindingKinds(streamErr))
+			observeResponseFindings(responseFindingKinds)
 			if errors.Is(streamErr, mcp.ErrReceiptRequired) {
 				if ic.Proxy != nil {
 					ic.Proxy.recordRequiredReceiptBlock(streamErr, TransportConnect)

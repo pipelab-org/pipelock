@@ -2705,7 +2705,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		outcomeReason = "fetch_failed"
 		return
 	}
-	defer safeClose(resp.Body, "resp.Body", p.logger)
+	defer func() { safeClose(resp.Body, "resp.Body", p.logger) }()
 	stripUpstreamPipelockNamespace(resp)
 	if !applyFullResponsePolicy(nil, resp) {
 		reason := fullResponseRefusal(resp)
@@ -2776,9 +2776,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var responseFindingKinds []session.HostileFindingKind
 	responseTaintType := responseTaintContentType(resp.Header)
-	defer func() {
-		observeHTTPResponseFindings(forwardRec, cfg, resp.Request.URL.String(), responseTaintType, "forward_response", responseFindingKinds)
-	}()
+	responseTaintURL := resp.Request.URL.String()
+	observeResponseFindings := httpResponseFindingObserver(forwardRec, cfg, responseTaintURL, responseTaintType, "forward_response")
+	defer func() { observeResponseFindings(responseFindingKinds) }()
 
 	// Size limit: tighter of max_response_mb and remaining byte budget.
 	// configMaxBytes and budgetLimited are kept distinct so the buffered scan
@@ -2843,6 +2843,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					// hasFinding here a flood of warn-only findings would
 					// dilute the session escalation signal.
 					responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, observedSSEFindingKinds(err))
+					observeResponseFindings(responseFindingKinds)
 					hasFinding = true
 					p.logger.LogAnomaly(actx, LayerSSEStream, err.Error(), 0)
 				},
@@ -2898,10 +2899,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			outcomeReason = "compressed_sse"
 			return
 		}
+		observeResponseFindings(nil)
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		flusher, _ := w.(http.Flusher)
 		if err := DispatchSSEScan(r.Context(), resp.Body, httpstream.Writer{Writer: w}, flusher, sc, sseOpts); err != nil {
+			responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, sseTaintFindingKinds(err))
+			observeResponseFindings(responseFindingKinds)
 			if errors.Is(err, mcp.ErrReceiptRequired) {
 				p.recordRequiredReceiptBlock(err, TransportForward)
 				outcomeStatus = strconv.Itoa(resp.StatusCode)
@@ -2928,7 +2932,6 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if IsSSEStreamFinding(err) {
-				responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, sseTaintFindingKinds(err))
 				// Same adaptive-decay protection as the OnFinding path
 				// above. A2A warn-mode findings reach this branch (the
 				// A2A scanner returns ErrA2AStreamFinding on detection),

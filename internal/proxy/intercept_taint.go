@@ -64,9 +64,17 @@ func interceptReceiptConfig(ic *InterceptContext) *config.Config {
 	return ic.Config
 }
 
+type interceptTaintAdmissionOptions struct {
+	request     *http.Request
+	logContext  audit.LogContext
+	actionID    string
+	wrapReceipt func(receipt.EmitOpts) receipt.EmitOpts
+}
+
 // admitInterceptTaint evaluates the effective outbound request after scanning
 // and internal-header removal, before signatures, receipts, or upstream writes.
-func admitInterceptTaint(ic *InterceptContext, w http.ResponseWriter, r *http.Request, actx audit.LogContext, actionID string, body *[]byte, wrapReceipt func(receipt.EmitOpts) receipt.EmitOpts) bool {
+func admitInterceptTaint(ic *InterceptContext, w http.ResponseWriter, body *[]byte, opts interceptTaintAdmissionOptions) bool {
+	r, actx := opts.request, opts.logContext
 	decision := evaluateHTTPTaskTaint(ic.taintConfig, ic.taintRecorder, r.Method, r.URL, &ic.taintTask)
 	if ic.taint.Result.Reason == session.TaskPermissionRequired && ic.taint.Task.CurrentTaskID != decision.Task.CurrentTaskID {
 		decision.Result = session.PolicyDecisionResult{Decision: session.PolicyBlock, Reason: session.TaskApprovalStale}
@@ -136,7 +144,7 @@ func admitInterceptTaint(ic *InterceptContext, w http.ResponseWriter, r *http.Re
 			}
 		}
 	}
-	refuseInterceptTaint(ic, w, r, actx, actionID, reason, wrapReceipt)
+	refuseInterceptTaint(ic, w, reason, opts)
 	return false
 }
 
@@ -146,16 +154,17 @@ func writeInterceptTaintRefusal(ic *InterceptContext, w http.ResponseWriter, act
 	writeBlockedError(w, blockInfoFor(blockreason.AuthorityMismatch, interceptTaintPolicyLayer).WithRequestID(ic.RequestID), "blocked: "+reason, http.StatusForbidden)
 }
 
-func refuseInterceptTaint(ic *InterceptContext, w http.ResponseWriter, r *http.Request, actx audit.LogContext, actionID, reason string, wrapReceipt func(receipt.EmitOpts) receipt.EmitOpts) {
+func refuseInterceptTaint(ic *InterceptContext, w http.ResponseWriter, reason string, admission interceptTaintAdmissionOptions) {
+	r := admission.request
 	opts := receipt.EmitOpts{
-		ActionID: actionID, Verdict: config.ActionBlock, Layer: interceptTaintPolicyLayer, Pattern: reason,
+		ActionID: admission.actionID, Verdict: config.ActionBlock, Layer: interceptTaintPolicyLayer, Pattern: reason,
 		Transport: "intercept", Method: r.Method, Target: r.URL.String(), RequestID: ic.RequestID, Agent: ic.Agent,
 	}
-	if wrapReceipt != nil {
-		opts = wrapReceipt(opts)
+	if admission.wrapReceipt != nil {
+		opts = admission.wrapReceipt(opts)
 	}
 	_ = interceptEmitReceipt(ic, opts)
-	writeInterceptTaintRefusal(ic, w, actx, reason)
+	writeInterceptTaintRefusal(ic, w, admission.logContext, reason)
 }
 
 func interceptTaskAdmissionCurrent(ic *InterceptContext) bool {

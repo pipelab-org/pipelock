@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"path"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -97,6 +98,28 @@ func observeHTTPResponseFindings(rec session.Recorder, cfg *config.Config, rawUR
 	observation.Source.Kind = kind
 	observation.MaxSources = cfg.Taint.RecentSources
 	rs.ObserveRisk(observation)
+}
+
+// httpResponseFindingObserver records exposure at stream start and new finding
+// kinds before release. The final observation shares this state so EOF and
+// repeated findings do not fill the bounded source history with duplicates.
+// Calls belong to the response's handler goroutine.
+func httpResponseFindingObserver(rec session.Recorder, cfg *config.Config, rawURL, contentType, kind string) func([]session.HostileFindingKind) {
+	var observed bool
+	var observedTask string
+	var previous []session.HostileFindingKind
+	return func(kinds []session.HostileFindingKind) {
+		merged := session.MergeFindingKinds(previous, kinds)
+		var currentTask string
+		if state, ok := rec.(session.TaskContextProvider); ok {
+			currentTask = state.TaskSnapshot().CurrentTaskID
+		}
+		if observed && currentTask == observedTask && slices.Equal(previous, merged) {
+			return
+		}
+		observeHTTPResponseFindings(rec, cfg, rawURL, contentType, kind, merged)
+		observed, previous, observedTask = true, merged, currentTask
+	}
 }
 
 func evaluateHTTPTaint(cfg *config.Config, rec session.Recorder, method string, parsedURL *url.URL) taintDecision {
