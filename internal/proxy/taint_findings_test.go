@@ -113,8 +113,7 @@ func TestResponseFindingKindsHTTPProducers(t *testing.T) {
 					got = session.MergeFindingKinds(got, snap.FindingKinds)
 				}
 				var want []session.HostileFindingKind
-				// Intercept scans content but has no response-taint observation.
-				if injected && surface != "connect" {
+				if injected {
 					want = []session.HostileFindingKind{session.FindingWording}
 				}
 				if !slices.Equal(got, want) {

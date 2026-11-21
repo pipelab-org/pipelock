@@ -20,10 +20,13 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 type mcpSandboxBridgeStartOptions struct {
+	Rec              session.Recorder
 	Context          context.Context
+	Cancel           context.CancelFunc
 	Config           *config.Config
 	KillSwitch       *killswitch.Controller
 	AuditLogger      *audit.Logger
@@ -38,6 +41,7 @@ type mcpSandboxBridgeStartOptions struct {
 type startMCPSandboxBridgeFunc func(mcpSandboxBridgeStartOptions) (*mcpSandboxBridge, error)
 
 type mcpSandboxBridgeSetupOptions struct {
+	Rec              session.Recorder
 	Context          context.Context
 	Cancel           context.CancelFunc
 	GOOS             string
