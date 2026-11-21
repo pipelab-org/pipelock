@@ -282,7 +282,7 @@ func (o MCPProxyOpts) confirmV3Hold(held *deferred.HeldAction, frame MCPFrame) {
 	const approvalBoundary = "approval_prompt"
 	evidence := receipt.EmitOpts{
 		ActionID: held.ActionID, RequestID: canonicalID(frame.ID), Method: held.Method,
-		Transport: o.Transport, Target: held.Target, PolicyHash: o.receiptPolicyHash(),
+		Transport: o.Transport, Target: firstNonEmpty(held.Target, held.Method), PolicyHash: o.receiptPolicyHash(),
 	}
 	act, policy := o.v3EffectAction(evidence, approvalBoundary)
 	held.ConfirmHold = func(ctx context.Context, h deferred.HeldAction) error {

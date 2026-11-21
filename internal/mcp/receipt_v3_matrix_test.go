@@ -190,6 +190,14 @@ func TestMCPV3ReceiptParityMatrix(t *testing.T) {
 	runV3MCPMatrix(t, exerciseMCPV3Row)
 }
 
+func TestMCPV3ReleasedA2ARoutesWithTrackedMethod(t *testing.T) {
+	exerciseMCPV3Row(t, v3MCPMatrixRow{path: "stdio-to-HTTP upstream", required: true, scenario: "deferred A2A"})
+}
+
+func TestMCPV3HTTPTransportFailureAfterApprovedHold(t *testing.T) {
+	exerciseMCPV3Row(t, v3MCPMatrixRow{path: "stdio-to-HTTP upstream", required: true, scenario: "deferred HTTP failure"})
+}
+
 func TestMCPV3StdioReplyAdmissionFailureStopsInteractiveChild(t *testing.T) {
 	for _, scenario := range []string{"reply intent write fail", "reply intent sync fail"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -316,6 +324,18 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 		request = heldNativeCall
 	}
 
+	if row.scenario == "deferred A2A" {
+		request = `{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"parts":[{"kind":"text","text":"hello"}]}}}`
+		opts.InputCfg = nil
+		opts.PolicyCfg = policy.New(config.MCPToolPolicy{
+			Enabled: true, Action: config.ActionWarn,
+			Rules: []config.ToolPolicyRule{{
+				Name: "hold-message", ToolPattern: "^SendMessage$", ArgPattern: "hello", Action: config.ActionDefer,
+				ResolutionPolicy: &config.DeferResolutionPolicy{AllowOn: config.DeferAllowOn{PolicyPermits: true}},
+			}},
+		})
+	}
+
 	switch row.scenario {
 	case "client cancel before effect":
 		cancel()
@@ -336,6 +356,14 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 		request = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"prompt":"use ` + mcpRedactionSecret() + ` to deploy"}}}`
 	case "upstream closes mid-response":
 		reply = `{"jsonrpc":"2.0","id":1,"result":`
+	}
+	var bridgeLog syncBuffer
+	if row.scenario == "deferred A2A" {
+		t.Cleanup(func() {
+			if t.Failed() {
+				t.Log(bridgeLog.String())
+			}
+		})
 	}
 	client := &mcpMatrixObserver{dir: writerOpts.Dir}
 	seen := filepath.Join(t.TempDir(), "upstream")
@@ -377,6 +405,9 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 				t.Error(err)
 				return
 			}
+			if row.scenario == "deferred HTTP failure" {
+				panic(http.ErrAbortHandler)
+			}
 			w.Header().Set("Content-Type", "application/json")
 			if row.scenario == "upstream closes mid-response" {
 				w.Header().Set("Content-Length", "4096")
@@ -387,7 +418,7 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 		if row.path == "HTTP listener" {
 			return runMCPMatrixListener(t, ctx, in, client, srv.URL, opts)
 		}
-		return RunHTTPProxy(ctx, in, client, io.Discard, srv.URL, nil, opts)
+		return RunHTTPProxy(ctx, in, client, &bridgeLog, srv.URL, nil, opts)
 	}
 	if hold {
 		rd, wr := io.Pipe()
@@ -400,7 +431,7 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 		testwait.For(t, time.Second, func() bool { return opts.DeferManager.HeldCount() == 1 }, "confirmed hold")
 		held := opts.DeferManager.Snapshot()[0]
 		switch row.scenario {
-		case "deferred approve":
+		case "deferred approve", "deferred A2A", "deferred HTTP failure":
 			if err := opts.DeferManager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceApproval); err != nil {
 				t.Fatal(err)
 			}
@@ -444,6 +475,15 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 	if err := writer.Close(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
+	if row.scenario == "deferred HTTP failure" {
+		reopened, err := v3.OpenStreamWriter(t.Context(), writerOpts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := reopened.Close(t.Context(), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
 	key := writerOpts.SigningKey.Public().(ed25519.PublicKey)
 	result, err := v3.VerifyPaths(t.Context(), []string{writerOpts.Dir}, v3.Options{Directory: true, Keys: []ed25519.PublicKey{key}})
 	if err != nil || result.Integrity != "ok" {
@@ -458,7 +498,7 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 		t.Fatal(readErr)
 	}
-	wantSend := !hold || row.scenario == "deferred approve"
+	wantSend := !hold || slices.Contains([]string{"deferred approve", "deferred A2A", "deferred HTTP failure"}, row.scenario)
 	switch row.scenario {
 	case "intent write fail", "intent sync fail", "client cancel before effect", "cancel after intent":
 		wantSend = false
@@ -478,8 +518,18 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 			t.Fatalf("upstream observed request before its intent: %v", err)
 		}
 	}
+	if row.scenario == "deferred A2A" {
+		if frame := ParseMCPFrame(upstream); frame.Method != "SendMessage" {
+			t.Fatalf("released request method = %q, want SendMessage", frame.Method)
+		}
+		for _, action := range actions {
+			if action.Method != "SendMessage" {
+				t.Fatalf("released exchange lost tracked method: %+v", action)
+			}
+		}
+	}
 	listenerWarnRefusal := row.path == "HTTP listener" && row.scenario == "tool-scan warn"
-	wantReply := wantSend && row.scenario != "upstream closes mid-response" && row.scenario != "tool-scan block" && !listenerWarnRefusal
+	wantReply := wantSend && row.scenario != "deferred HTTP failure" && row.scenario != "upstream closes mid-response" && row.scenario != "tool-scan block" && !listenerWarnRefusal
 	if wantReply {
 		if !client.intent || strings.TrimSpace(client.output.String()) != reply {
 			t.Fatalf("reply = %q with preceding intent %t; receipts: %+v", client.output.String(), client.intent, actions)
@@ -499,6 +549,9 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 		wantVerdict = "VALID PREFIX, END UNPROVEN"
 		wantFindings = []string{"END_UNPROVEN", "UNCONFIRMED"}
 	}
+	if row.scenario == "deferred HTTP failure" && (result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 1) {
+		t.Fatalf("expected one unknown send after reopening: %+v", result)
+	}
 	var findings []string
 	for _, finding := range result.Findings {
 		findings = append(findings, finding.Code)
@@ -508,6 +561,9 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 		t.Fatalf("verification = %s %v, want %s %v", result.Verdict, findings, wantVerdict, wantFindings)
 	}
 	scenario := row.scenario
+	if scenario == "deferred A2A" {
+		scenario = "deferred approve"
+	}
 	if (row.path == "HTTP listener" && scenario == "tool-scan block") || listenerWarnRefusal {
 		scenario = "listener preadmitted tool-scan block"
 	}
@@ -529,6 +585,8 @@ func assertMCPMatrixTerminal(t *testing.T, scenario string, actions []v3.Action)
 		expected = []string{"downstream_delivery/outcome/not_released", "upstream_send/outcome/completed"}
 	case "tool-scan block":
 		expected = []string{"downstream_delivery/decision/block", "upstream_send/outcome/completed"}
+	case "deferred HTTP failure":
+		expected = []string{"approval_prompt/resolution/allow", "upstream_send/outcome/attempt_unknown"}
 	case "deferred approve":
 		expected = []string{"approval_prompt/resolution/allow", "downstream_delivery/outcome/completed", "upstream_send/outcome/completed"}
 	case "deferred deny", "deferred timeout", "kill-switch during hold", "restart recovery of a pending hold":
@@ -572,7 +630,7 @@ func assertMCPMatrixTerminal(t *testing.T, scenario string, actions []v3.Action)
 			t.Fatalf("resolution does not match hold: %+v", a)
 		}
 	}
-	if scenario == "deferred approve" && (holdID == "" || holdID != sendID) {
+	if (scenario == "deferred approve" || scenario == "deferred HTTP failure") && (holdID == "" || holdID != sendID) {
 		t.Fatalf("approved send %q did not reuse hold %q", sendID, holdID)
 	}
 	slices.Sort(actual)
@@ -582,6 +640,11 @@ func assertMCPMatrixTerminal(t *testing.T, scenario string, actions []v3.Action)
 }
 
 func assertMCPCompletedExchange(t *testing.T, actions []v3.Action) {
+	t.Helper()
+	assertMCPExchangeSettled(t, actions, "completed")
+}
+
+func assertMCPExchangeSettled(t *testing.T, actions []v3.Action, downstreamOutcome string) {
 	t.Helper()
 	intents := map[string]v3.Action{}
 	terminals := map[string]int{}
@@ -603,7 +666,11 @@ func assertMCPCompletedExchange(t *testing.T, actions []v3.Action) {
 				t.Fatalf("unlinked reply: %+v", a)
 			}
 		case "outcome":
-			if intent, exists := intents[a.ActionID]; !exists || a.EffectBoundary != intent.EffectBoundary || a.OutcomeClass != "completed" {
+			wantOutcome := "completed"
+			if a.EffectBoundary == mcpDownstreamDeliveryBoundary {
+				wantOutcome = downstreamOutcome
+			}
+			if intent, exists := intents[a.ActionID]; !exists || a.EffectBoundary != intent.EffectBoundary || a.OutcomeClass != wantOutcome {
 				t.Fatalf("unexpected terminal action: %+v", a)
 			}
 			terminals[a.ActionID]++
@@ -1170,4 +1237,85 @@ func TestMCPV3PolicyRedirectRefusal(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestMCPV3SSEToolsListAcknowledgment(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message\ndata: "+strings.TrimSpace(ackLine())+"\n\n")
+	}))
+	defer upstream.Close()
+	for _, transportName := range []string{"upstream", "listener"} {
+		t.Run(transportName, func(t *testing.T) {
+			surface := deferred.SurfaceMCPHTTPUpstream
+			if transportName == "listener" {
+				surface = deferred.SurfaceMCPHTTPListener
+			}
+			opts := ackOpts(t, proxyAckEntry(t))
+			opts.ServerBinding = proxyAckBinding
+			writer, writerOpts := openMCPV3RegressionWriter(t, surface)
+			got, _ := driveA2AHTTPDepth(t, upstream.URL, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, opts.WithV3ReceiptWriter(writer), transportName)
+			if !bytes.Contains(got, []byte(`"store_secret"`)) {
+				t.Fatalf("acknowledged inventory not delivered: %s", got)
+			}
+			downstreamOutcome := "completed"
+			if transportName == "listener" {
+				// The listener does not observe final HTTP framing for SSE.
+				downstreamOutcome = "attempt_unknown"
+			}
+			assertMCPExchangeSettled(t, verifiedMCPV3RegressionActions(t, writer, writerOpts), downstreamOutcome)
+		})
+	}
+}
+
+func TestMCPV3ListenerEarlyInputRefusal(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("blocked request reached upstream")
+	}))
+	defer upstream.Close()
+	writer, writerOpts := openMCPV3RegressionWriter(t, deferred.SurfaceMCPHTTPListener)
+	opts := MCPProxyOpts{
+		Scanner: testInputScanner(t),
+		PolicyCfg: policy.New(config.MCPToolPolicy{
+			Enabled: true, Action: config.ActionWarn,
+			Rules: []config.ToolPolicyRule{{Name: "block-echo", ToolPattern: "^echo$", Action: config.ActionBlock}},
+		}),
+	}.WithV3ReceiptWriter(writer)
+	got, _ := driveA2AHTTPDepth(t, upstream.URL, cleanToolsCallRequest, opts, "listener")
+	if !bytes.Contains(got, []byte(`"code":-32002`)) {
+		t.Fatalf("client refusal missing: %s", got)
+	}
+	actions := verifiedMCPV3RegressionActions(t, writer, writerOpts)
+	if len(actions) != 1 || actions[0].EffectBoundary != mcpDownstreamDeliveryBoundary ||
+		actions[0].Phase != "decision" || actions[0].Verdict != config.ActionBlock {
+		t.Fatalf("expected one signed refusal and no upstream intent: %+v", actions)
+	}
+}
+
+func openMCPV3RegressionWriter(t *testing.T, surface string) (*v3.StreamWriter, v3.StreamWriterOptions) {
+	t.Helper()
+	opts := mcpMatrixWriterOptions(t, v3MCPMatrixRow{required: true}, surface, nil, nil)
+	writer, err := v3.OpenStreamWriter(t.Context(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.Close(context.Background(), nil) })
+	return writer, opts
+}
+
+func verifiedMCPV3RegressionActions(t *testing.T, writer *v3.StreamWriter, opts v3.StreamWriterOptions) []v3.Action {
+	t.Helper()
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	key := opts.SigningKey.Public().(ed25519.PublicKey)
+	result, err := v3.VerifyPaths(t.Context(), []string{opts.Dir}, v3.Options{Directory: true, Keys: []ed25519.PublicKey{key}})
+	if err != nil || result.Integrity != "ok" || result.Verdict != "VALID" {
+		t.Fatalf("verify: %+v (%v)", result, err)
+	}
+	actions, err := readMCPMatrixActions(opts.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return actions
 }
