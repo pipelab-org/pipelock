@@ -278,7 +278,7 @@
       "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
       "when": "WebSocket shutdown leaves a tracked request pending."
     },
-    "internal/mcp/proxy_ws.go/RunWSProxy/settle/7364bbf9dcdf8185": {
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/20526ab239090f0b": {
       "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
       "when": "The upstream WebSocket handshake fails with an admitted request pending."
     },
@@ -374,7 +374,11 @@
       "fields": "Set `phase` and `effect_relation` from the standalone stream warning. Set `policy.source` to `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
       "when": "The upstream WebSocket ends incomplete or disconnects without a close frame while the client context is active, with no pending request outcomes or recorded transport admission."
     },
-    "internal/mcp/proxy_ws.go/RunWSProxy/settle/aba745d02595454e": {
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/fae9be32812c5069": {
+      "fields": "Carry the original action ID, attempt, and intended effect. Set `phase=outcome`, `effect_relation=not_attempted`, and `outcome_class=not_released`. Use `policy.source=request_snapshot` and the retained decision-time digest when available. Otherwise use `policy.source=unavailable` and omit `policy.hash`. Set `caller.authn=none`. Copy `session`, `taint`, and `contract` from the intent when present. Include `redaction` only when the intent carries an applied rewrite summary.",
+      "when": "The WebSocket bridge has an intent and receipt admission fails before sending the call."
+    },
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/55fc70ad52a3d8c3": {
       "fields": "Carry the original action ID, attempt, and intended effect. Set `phase=outcome`, `effect_relation=not_attempted`, and `outcome_class=not_released`. Use `policy.source=request_snapshot` and the retained decision-time digest when available. Otherwise use `policy.source=unavailable` and omit `policy.hash`. Set `caller.authn=none`. Copy `session`, `taint`, and `contract` from the intent when present. Include `redaction` only when the intent carries an applied rewrite summary.",
       "when": "The WebSocket bridge has an intent and refuses to track the reply before sending the call."
     },
@@ -1766,7 +1770,7 @@
     "internal/mcp/proxy.go/emitPendingTimeoutResponses/settle/925ea4e043fccf20": "upstream_send",
     "internal/mcp/proxy.go/emitPendingIncompleteOutcomes/settle/2be7d15c848dc9b1": "upstream_send",
     "internal/mcp/proxy_ws.go/RunWSProxy/settle/1072ca5eb0af9429": "downstream_delivery",
-    "internal/mcp/proxy_ws.go/RunWSProxy/settle/7364bbf9dcdf8185": "upstream_send",
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/20526ab239090f0b": "upstream_send",
     "internal/mcp/proxy_ws.go/RunWSProxy/settle/879584910ff6a2d6": "upstream_send",
     "internal/mcp/proxy_ws.go/RunWSProxy/settle/af3c00839de40c1e": "upstream_send",
     "internal/mcp/proxy_ws.go/RunWSProxy/settle/2d200dd7420bfdb6": "upstream_send",
@@ -1790,7 +1794,8 @@
     "internal/mcp/mcp_sse_bridge.go/scanGETStream/emitMCPStandaloneStreamReceipt/ead196751c76bb5e": "downstream_delivery",
     "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPStandaloneStreamReceipt/82cc46bff8b16839": "downstream_delivery",
     "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPStreamDiagnostic/873ad7b12fb44159": "downstream_delivery",
-    "internal/mcp/proxy_ws.go/RunWSProxy/settle/aba745d02595454e": "upstream_send",
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/fae9be32812c5069": "upstream_send",
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/55fc70ad52a3d8c3": "upstream_send",
     "internal/proxy/bodyscan.go/(*Proxy).evalHeaderDLP/recordCredentialAudienceAllows/9c82ca7412ec77dc": "upstream_send",
     "internal/proxy/forward.go/(*Proxy).handleConnect/emitForwardDenial/2c491386d87dec0b": "none",
     "internal/proxy/forward.go/(*Proxy).handleConnect/emitOutcomeReceipt/6f92002975cb6035": "tunnel_open",
