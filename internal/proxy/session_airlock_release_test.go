@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -159,6 +160,9 @@ func TestSessionManager_DisabledAirlockStructReleasesTiers(t *testing.T) {
 	if got := airlockTierForScope(sess, scope); got != config.AirlockTierNone {
 		t.Fatalf("disabled airlock tier = %q, want none", got)
 	}
+	if changed, _, _ := sess.EscalateAirlock(config.AirlockTierDrain, airlockTriggerOnCritical); changed {
+		t.Fatal("disabled airlock struct accepted an escalation")
+	}
 	if sess.ThreatScore() != score {
 		t.Fatalf("threat score = %g, want %g", sess.ThreatScore(), score)
 	}
@@ -171,6 +175,48 @@ func TestSessionManager_DisabledAirlockStructReleasesTiers(t *testing.T) {
 	sm.releaseUnenforcedAirlock()
 	if got := airlockTierForScope(kept, scope); got != config.AirlockTierDrain {
 		t.Fatalf("enabled airlock tier = %q, want drain", got)
+	}
+}
+
+func TestProxy_AirlockEscalationAfterReload(t *testing.T) {
+	scope := adaptiveScopeForHost("api.vendor.example")
+	for _, tc := range []struct {
+		name       string
+		enabled    bool
+		wantTier   string
+		wantStatus int
+		wantTrips  int32
+	}{
+		{"airlock disabled", false, config.AirlockTierNone, http.StatusOK, 1},
+		{"airlock enabled", true, config.AirlockTierDrain, http.StatusForbidden, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, sess := quarantinedAirlockProxy(t, scope, adaptiveScopeForHost("other.vendor.example"))
+			captured := p.CurrentConfig().Clone()
+			captured.Airlock.Triggers.OnCritical = config.AirlockTierDrain
+
+			next := p.CurrentConfig().Clone()
+			next.Airlock.Enabled = tc.enabled
+			if tc.enabled {
+				next.Airlock.Triggers.OnCritical = config.AirlockTierDrain
+				sess.ForceSetAirlockTierAllScopes(config.AirlockTierNone, airlockTriggerManual, airlockSourceAdminAPI)
+			}
+			if !p.Reload(next, mustScanner(t, next)) {
+				t.Fatal("reload rejected")
+			}
+
+			triggerScopedAirlockOnEscalation(sess, scope, session.EscalationLabel(3), &captured.Airlock, decide.EscalationParams{})
+			if got := airlockTierForScope(sess, scope); got != tc.wantTier {
+				t.Errorf("HTTP escalation tier = %q, want %q", got, tc.wantTier)
+			}
+			session.EscalateAirlock(sess, captured.Airlock.Triggers.OnCritical, airlockTriggerOnCritical)
+			if got := sess.AirlockTier(); got != tc.wantTier {
+				t.Errorf("MCP escalation tier = %q, want %q", got, tc.wantTier)
+			}
+			if code, body, trips := forwardAirlockProbe(t, p); code != tc.wantStatus || trips != tc.wantTrips {
+				t.Errorf("GET status=%d trips=%d body=%q, want status=%d trips=%d", code, trips, body, tc.wantStatus, tc.wantTrips)
+			}
+		})
 	}
 }
 

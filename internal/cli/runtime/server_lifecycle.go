@@ -1039,8 +1039,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 			return err
 		}
 
-		// The listener shares the proxy's startup session store and capacity.
-		// The store is present when taint or session profiling is enabled.
+		// The listener follows the proxy's live session store and shares its capacity.
 		mcpStore := s.proxy.SessionStore()
 		mcpDoWWiring := s.currentMCPDoWRuntime().Wiring()
 

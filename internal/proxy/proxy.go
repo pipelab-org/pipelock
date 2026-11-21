@@ -2517,7 +2517,7 @@ func (p *Proxy) PrepareRequestPolicyBody(r *http.Request, in *requestPolicyInput
 
 // Reload atomically swaps the config and scanner for hot-reload support.
 // The old scanner is closed to release its rate limiter goroutine.
-// Session manager lifecycle is toggled when session_profiling.enabled changes.
+// Session state stays live while taint or session profiling is enabled.
 // The returned bool reports whether the staged runtime was fully published;
 // false means the previous runtime stayed live.
 //
@@ -2804,6 +2804,8 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		} else {
 			currentSessionMgr.UpdateConfig(&cfg.SessionProfiling, adaptiveCfg, airlockCfg)
 		}
+	} else if currentSessionMgr != nil {
+		currentSessionMgr.airlockCfgPtr.Store(nil)
 	}
 
 	// When redaction is being disabled, publish the config before clearing the
@@ -2842,10 +2844,8 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	// so a request cannot be allowed while published policy still quarantines.
 	// Keeping the manager for taint used to leave hard and drain in force,
 	// with no timer recovery and an idle-expiry exemption, until restart.
-	if sessionManagerEnabled(cfg) {
-		if mgr := p.sessionMgrPtr.Load(); mgr != nil {
-			mgr.releaseUnenforcedAirlock()
-		}
+	if mgr := p.sessionMgrPtr.Load(); mgr != nil {
+		mgr.releaseUnenforcedAirlock()
 	}
 	// Move the active-manifest watcher onto the loader just published and
 	// stop the replaced loader's watcher.
@@ -3410,13 +3410,9 @@ func sessionProfilingConfigs(cfg *config.Config) (*config.AdaptiveEnforcement, *
 	return adaptiveCfg, airlockCfg
 }
 
-// SessionStore returns the proxy's session store for sharing with MCP transports.
-// Returns nil when both taint and session profiling are disabled.
+// SessionStore returns a live store handle for long-lived MCP transports.
 func (p *Proxy) SessionStore() session.Store {
-	if sm := p.sessionMgrPtr.Load(); sm != nil {
-		return sm.AsStore()
-	}
-	return nil
+	return storeAdapter{live: &p.sessionMgrPtr}
 }
 
 // SessionBaselineChecker returns the proxy's behavioral-baseline checker for
@@ -4104,7 +4100,7 @@ func triggerScopedAirlockOnEscalation(sess *SessionState, scope, escalatedTo str
 		return
 	}
 
-	if changed, from, to := sess.AirlockForScope(scope).SetTierWithProvenance(targetTier, trigger, airlockSourceTriggers); changed {
+	if changed, from, to := sess.escalateAirlockForScope(scope, targetTier, trigger); changed {
 		sess.RecordEvent(SessionEvent{
 			Kind:     "airlock_enter",
 			Target:   scope,

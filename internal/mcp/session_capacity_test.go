@@ -38,6 +38,63 @@ func (s *capacityTestStore) GetOrCreate(key string) session.Recorder {
 }
 func (s *capacityTestStore) Delete(key string) { s.deletedKey = key }
 
+type rotatingListenerTestStore struct {
+	session.Store
+}
+
+func (s *rotatingListenerTestStore) CurrentStore() session.Store { return s.Store }
+
+func TestListenerRecorderFollowsStoreReplacement(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		startupStore bool
+		checkOff     bool
+	}{
+		{name: "enable after startup", checkOff: true},
+		{name: "observe retirement", startupStore: true, checkOff: true},
+		{name: "resume after retirement", startupStore: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var startupRecorder session.Recorder
+			store := &rotatingListenerTestStore{}
+			if tc.startupStore {
+				startupRecorder = &mockRecorder{}
+				store.Store = &capacityTestStore{rec: startupRecorder}
+			}
+			states := newMCPListenerClientStates(store)
+			state := states.stateForLegacySession("listener-client")
+			if state == nil {
+				t.Fatal("listener client was not admitted")
+			}
+			t.Cleanup(state.revoke)
+			if rec, err := states.recorderForRequest(state); err != nil || rec != startupRecorder {
+				t.Fatalf("startup recorder = (%T, %v), want (%T, nil)", rec, err, startupRecorder)
+			}
+
+			store.Store = nil
+			if tc.checkOff {
+				if rec, err := states.recorderForRequest(state); err != nil || rec != nil {
+					t.Fatalf("inactive recorder = (%T, %v), want (nil, nil)", rec, err)
+				}
+			}
+
+			replacement := &capacityTestStore{}
+			store.Store = replacement
+			if rec, err := states.recorderForRequest(state); !errors.Is(err, session.ErrCapacity) || rec != nil {
+				t.Fatalf("at capacity = (%T, %v), want (nil, ErrCapacity)", rec, err)
+			}
+			replacement.rec = &mockRecorder{}
+			if rec, err := states.recorderForRequest(state); err != nil || rec != replacement.rec {
+				t.Fatalf("replacement recorder = (%p, %v), want (%p, nil)", rec, err, replacement.rec)
+			}
+			states.forgetLegacySession("listener-client")
+			if replacement.deletedKey != state.key {
+				t.Fatal("listener cleanup missed the replacement store")
+			}
+		})
+	}
+}
+
 func TestSessionCapacityRefusesMCPInvocationsAudit(t *testing.T) {
 	for _, transport := range []string{"stdio", "sandbox", "http", "websocket"} {
 		for _, admit := range []bool{false, true} {

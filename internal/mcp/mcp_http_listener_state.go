@@ -43,7 +43,7 @@ type mcpListenerClientState struct {
 	principalSet string
 	principal    bool
 	baseline     *tools.ToolBaseline
-	recorder     session.Recorder
+	recorder     session.Recorder // guarded by the registry lock
 	lastAccessed uint64
 	lastActive   time.Time
 	inFlight     atomic.Int64
@@ -87,6 +87,7 @@ type mcpListenerClientStates struct {
 	clients                 map[string]*mcpListenerClientState
 	clock                   uint64
 	store                   session.Store
+	activeStore             session.Store // last observed live store snapshot
 	upstreamToolBaseline    *tools.ToolBaseline
 	resetAuthority          *ResetAuthority
 	resetAuthorityConfig    string
@@ -159,6 +160,54 @@ func newMCPListenerClientStates(store session.Store) *mcpListenerClientStates {
 	}
 	_, states.principalSecretErr = rand.Read(states.principalSecret[:])
 	return states
+}
+
+// A live store returns a comparable snapshot for one manager generation.
+type listenerStoreSource interface {
+	CurrentStore() session.Store
+}
+
+func listenerStoreSnapshot(store session.Store) session.Store {
+	if source, ok := store.(listenerStoreSource); ok {
+		return source.CurrentStore()
+	}
+	return store
+}
+
+// currentStoreLocked drops cached recorders when the active manager changes.
+// The listener keeps its client identities and protocol state, and binds the
+// next request for each client to a recorder in the current manager.
+func (s *mcpListenerClientStates) currentStoreLocked() session.Store {
+	current := listenerStoreSnapshot(s.store)
+	if _, live := s.store.(listenerStoreSource); live && current != s.activeStore {
+		for _, state := range s.clients {
+			state.recorder = nil
+		}
+		s.activeStore = current
+	}
+	return current
+}
+
+func (s *mcpListenerClientStates) bindRecorderLocked(state *mcpListenerClientState) bool {
+	store := s.currentStoreLocked()
+	if store == nil {
+		return true
+	}
+	if state.recorder == nil {
+		state.recorder = store.GetOrCreate(state.key)
+	}
+	return state.recorder != nil
+}
+
+// recorderForRequest pins a recorder for this request. An in-flight request
+// keeps the recorder it was admitted with even if a reload replaces the store.
+func (s *mcpListenerClientStates) recorderForRequest(state *mcpListenerClientState) (session.Recorder, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.clients[state.key] != state || state.revoked.Load() || !s.bindRecorderLocked(state) {
+		return nil, session.ErrCapacity
+	}
+	return state.recorder, nil
 }
 
 // mcpListenerAuthorityActor keeps resolver-controlled identity components
@@ -317,14 +366,11 @@ func (s *mcpListenerClientStates) stateForPrincipal(principal mcpListenerPrincip
 	state := newMCPListenerClientState("", principal.key)
 	state.principalSet = principal.exclusiveSet
 	state.principal = true
-	if s.store != nil {
-		state.recorder = s.store.GetOrCreate(state.key)
-		if state.recorder == nil {
-			s.mu.Unlock()
-			s.revokeRemoved(removed)
-			state.revoke()
-			return nil, false
-		}
+	if !s.bindRecorderLocked(state) {
+		s.mu.Unlock()
+		s.revokeRemoved(removed)
+		state.revoke()
+		return nil, false
 	}
 	s.touchLocked(state)
 	s.clients[state.key] = state
@@ -365,23 +411,21 @@ func (s *mcpListenerClientStates) stateForLegacySessionWithCapacity(sessionID st
 			}
 		}
 		if len(s.clients) >= maxMCPListenerClients {
+			hasStore := s.currentStoreLocked() != nil
 			s.mu.Unlock()
 			s.revokeRemoved(removed)
-			if s.store != nil {
+			if hasStore {
 				return nil, errMCPListenerRegistryCapacity
 			}
 			return newMCPListenerTransientState(), nil
 		}
 	}
 	state := newMCPListenerClientState("", key)
-	if s.store != nil {
-		state.recorder = s.store.GetOrCreate(key)
-		if state.recorder == nil {
-			s.mu.Unlock()
-			s.revokeRemoved(removed)
-			state.revoke()
-			return nil, session.ErrCapacity
-		}
+	if !s.bindRecorderLocked(state) {
+		s.mu.Unlock()
+		s.revokeRemoved(removed)
+		state.revoke()
+		return nil, session.ErrCapacity
 	}
 	s.touchLocked(state)
 	s.clients[key] = state
@@ -410,12 +454,12 @@ func newMCPListenerTransientState() *mcpListenerClientState {
 // an untrusted client header.
 func (s *mcpListenerClientStates) newUnboundState() *mcpListenerClientState {
 	state := newMCPListenerTransientState()
-	if s.store != nil {
-		state.recorder = s.store.GetOrCreate(state.key)
-		if state.recorder == nil {
-			state.revoke()
-			return nil
-		}
+	s.mu.Lock()
+	admitted := s.bindRecorderLocked(state)
+	s.mu.Unlock()
+	if !admitted {
+		state.revoke()
+		return nil
 	}
 	return state
 }
@@ -429,8 +473,14 @@ func (s *mcpListenerClientStates) discardUnboundState(state *mcpListenerClientSt
 		return
 	}
 	state.revoke()
-	if s.store != nil {
-		s.store.Delete(state.key)
+	s.deleteRecorder(state.key)
+}
+
+func (s *mcpListenerClientStates) deleteRecorder(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if store := s.currentStoreLocked(); store != nil && s.clients[key] == nil {
+		store.Delete(key)
 	}
 }
 
@@ -529,13 +579,10 @@ func (s *mcpListenerClientStates) admitSetup(state *mcpListenerClientState) bool
 			return false
 		}
 	}
-	if s.store != nil {
-		state.recorder = s.store.GetOrCreate(state.key)
-		if state.recorder == nil {
-			s.mu.Unlock()
-			s.revokeRemoved(removed)
-			return false
-		}
+	if !s.bindRecorderLocked(state) {
+		s.mu.Unlock()
+		s.revokeRemoved(removed)
+		return false
 	}
 	s.touchLocked(state)
 	s.clients[state.key] = state
@@ -783,8 +830,8 @@ func (s *mcpListenerClientStates) purgeExpiredLegacyLocked() []*mcpListenerClien
 // when no store is configured. Store-backed pressure eviction is completed here
 // under the registry and commit locks, so revokeRemoved must not delete it again.
 func (s *mcpListenerClientStates) removeOldestLegacyLocked() *mcpListenerClientState {
-	if s.store != nil {
-		s.evictUnprotectedLegacyLocked()
+	if store := s.currentStoreLocked(); store != nil {
+		s.evictUnprotectedLegacyLocked(store)
 		return nil
 	}
 	var oldestKey string
@@ -812,8 +859,8 @@ func (s *mcpListenerClientStates) removeOldestLegacyLocked() *mcpListenerClientS
 // between that deletion and revocation. Request lookup holds s.mu but does not
 // reserve an in-flight request. A POST is counted only when requestContext runs
 // after its body is read, so lookup alone does not exclude pressure eviction.
-func (s *mcpListenerClientStates) evictUnprotectedLegacyLocked() {
-	evictor, ok := s.store.(session.CapacityEvictor)
+func (s *mcpListenerClientStates) evictUnprotectedLegacyLocked(store session.Store) {
+	evictor, ok := store.(session.CapacityEvictor)
 	if !ok {
 		return
 	}
@@ -858,9 +905,7 @@ func (s *mcpListenerClientStates) revokeRemoved(states []*mcpListenerClientState
 		}
 		state.revokeWithContentionSignal(contentionSignal)
 		contentionSignal = nil
-		if s.store != nil {
-			s.store.Delete(state.key)
-		}
+		s.deleteRecorder(state.key)
 	}
 }
 

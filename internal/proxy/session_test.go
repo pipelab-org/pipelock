@@ -1123,12 +1123,79 @@ func TestProxy_Reload_TaintSessionStore(t *testing.T) {
 	}
 }
 
+func TestProxy_SessionStoreFollowsReload(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		taintAtStartup bool
+	}{
+		{"replace startup store", true},
+		{"enable after startup", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Taint.Enabled = tc.taintAtStartup
+			p := newTestProxyWithConfig(t, cfg)
+			listenerStore := p.SessionStore()
+			startup := p.sessionMgrPtr.Load()
+			if tc.taintAtStartup {
+				observeHTTPResponseTaint(startup.GetOrCreate(testClient), cfg, taintSessionSource, "text/plain", "http_response", false)
+				off := cfg.Clone()
+				off.Taint.Enabled = false
+				if !p.Reload(off, scanner.MustNew(off)) {
+					t.Fatal("reload with both features off was rejected")
+				}
+			}
+
+			on := cfg.Clone()
+			on.Taint.Enabled = true
+			if !p.Reload(on, scanner.MustNew(on)) {
+				t.Fatal("taint enable reload was rejected")
+			}
+			active := p.sessionMgrPtr.Load()
+			if active == nil || active == startup {
+				t.Fatal("expected a new manager after reload")
+			}
+			httpRecorder := active.GetOrCreate(testClient)
+			observeHTTPResponseTaint(httpRecorder, on, taintSessionSource, "text/plain", "http_response", false)
+
+			if listenerStore == nil {
+				t.Fatal("the store captured at startup is unavailable after reload")
+			}
+			if got := listenerStore.GetOrCreate(testClient); got != httpRecorder {
+				t.Fatal("the store captured at startup cannot see the live HTTP recorder")
+			}
+			if got := httpRecorder.RiskSnapshot().Level; got != session.TaintExternalUntrusted {
+				t.Fatalf("HTTP response risk = %s, want external_untrusted", got)
+			}
+
+			const cleanKey = "clean-listener-client"
+			clean := listenerStore.GetOrCreate(cleanKey)
+			evictor := listenerStore.(session.CapacityEvictor)
+			if clean == nil || !evictor.EvictIfUnprotected(cleanKey, clean) || active.SessionByKey(cleanKey) != nil {
+				t.Fatal("listener eviction did not remove the clean recorder from the active manager")
+			}
+			if evictor.EvictIfUnprotected(testClient, httpRecorder) {
+				t.Fatal("listener eviction removed a recorder with retained exposure")
+			}
+			listenerStore.Delete(testClient)
+			if active.SessionByKey(testClient) != nil {
+				t.Fatal("listener deletion did not remove the recorder from the active manager")
+			}
+		})
+	}
+}
+
 func TestProxy_SessionStore_Disabled(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Taint.Enabled = false
 	p := newTestProxyWithConfig(t, cfg)
-	if got := p.SessionStore(); got != nil {
-		t.Errorf("expected nil SessionStore when taint and profiling are disabled, got %T", got)
+	store := p.SessionStore()
+	if got := store.GetOrCreate(testClient); got != nil {
+		t.Errorf("inactive store admitted a recorder: %T", got)
+	}
+	store.Delete(testClient)
+	if !store.(session.CapacityEvictor).EvictIfUnprotected(testClient, nil) {
+		t.Error("inactive store refused eviction of a client without a recorder")
 	}
 }
 
