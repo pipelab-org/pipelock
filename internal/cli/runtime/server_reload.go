@@ -663,16 +663,6 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 			}
 		}
 		warnings := config.ValidateReload(oldCfg, newCfg)
-		if s.detectorStartupConfig != nil && s.detectorStartupConfig.FlightRecorder.Redact {
-			for _, field := range config.DetectorInputChanges(oldCfg, newCfg) {
-				if s.recorder != nil {
-					_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: %s changed; receipt content check uses startup values until restart\n", field)
-				}
-				if s.captureWriter != nil {
-					_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: %s changed; capture redaction uses startup values until restart\n", field)
-				}
-			}
-		}
 		if newCfg.Rules.AllowDegraded && len(cleanDrops) > 0 {
 			warnings = filterAllowedRuleBundleCoverageWarnings(oldCfg, newCfg, warnings)
 		}
@@ -772,6 +762,10 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 		s.containmentMetricsDenied.Store(false)
 	}
 	s.reportLapsedContainmentGrants(newCfg, "reload")
+	// Notices describe the published config. A candidate rejected above must
+	// not say the startup detectors drifted, and a reload that restores their
+	// startup inputs must not say a restart is still required.
+	s.reportStartupDetectorNotices(oldCfg, newCfg)
 	// The candidate is live now, so this is true when it is said.
 	if loopbackServicesChanged {
 		_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: containment.loopback_services changed — this reload updates policy only; "+

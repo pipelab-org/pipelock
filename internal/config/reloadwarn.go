@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 // ReloadWarning describes a potential security downgrade from a config reload.
@@ -1536,7 +1538,13 @@ func boolPtrEqual(a, b *bool) bool {
 // DetectorInputChanges lists the reloadable fields that a scanner built at
 // startup keeps until restart. Callers report them as restart notices, not as
 // reload warnings, so strict mode does not refuse an otherwise valid reload.
+// The comparison follows the text detector: destination exemptions are
+// ignored, canary env bindings and disabled token lists are ignored, and
+// canary values are compared after the same normalization the matcher uses.
 func DetectorInputChanges(old, updated *Config) []string {
+	if old == nil || updated == nil {
+		return nil
+	}
 	var fields []string
 	if !reflect.DeepEqual(detectorPatterns(old.DLP.Patterns), detectorPatterns(updated.DLP.Patterns)) {
 		fields = append(fields, "dlp.patterns")
@@ -1547,10 +1555,53 @@ func DetectorInputChanges(old, updated *Config) []string {
 	if old.DLP.SecretsFile != updated.DLP.SecretsFile {
 		fields = append(fields, "dlp.secrets_file")
 	}
-	if !reflect.DeepEqual(old.CanaryTokens, updated.CanaryTokens) {
+	if !slices.Equal(canaryDetectorView(old.CanaryTokens), canaryDetectorView(updated.CanaryTokens)) {
 		fields = append(fields, "canary_tokens")
 	}
+	if !seedDetectorEqual(old.SeedPhraseDetection, updated.SeedPhraseDetection) {
+		fields = append(fields, "seed_phrase_detection")
+	}
 	return fields
+}
+
+// canaryDetectorView is the ordered name and normalized value list the text
+// detector compiles. Disabled canaries and values that normalize away compile
+// to nothing. Env bindings are not match input.
+func canaryDetectorView(cfg CanaryTokens) []string {
+	if !cfg.Enabled {
+		return nil
+	}
+	var out []string
+	for _, token := range cfg.Tokens {
+		value := strings.ToLower(normalize.ForDLP(token.Value))
+		if value == "" {
+			continue
+		}
+		out = append(out, token.Name+"\x00"+value)
+	}
+	return out
+}
+
+// seedDetectorEqual matches scanner seed setup: a nil flag is enabled, and
+// min-words and checksum settings do not change a disabled detector.
+func seedDetectorEqual(a, b SeedPhraseDetection) bool {
+	if seedDetectorOn(a.Enabled) != seedDetectorOn(b.Enabled) {
+		return false
+	}
+	if !seedDetectorOn(a.Enabled) {
+		return true
+	}
+	return seedDetectorOn(a.VerifyChecksum) == seedDetectorOn(b.VerifyChecksum) &&
+		seedDetectorMinWords(a.MinWords) == seedDetectorMinWords(b.MinWords)
+}
+
+func seedDetectorOn(v *bool) bool { return v == nil || *v }
+
+func seedDetectorMinWords(n int) int {
+	if n == 0 {
+		return 12
+	}
+	return n
 }
 
 // detectorPatterns drops exempt_domains, which only apply to requests with a

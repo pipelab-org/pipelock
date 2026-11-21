@@ -27,6 +27,31 @@ const (
 	reloadCaptureDetectorField = "capture.redaction"
 )
 
+// reportStartupDetectorNotices prints drift that this reload both introduced
+// relative to the previous live config and left in place relative to the
+// scanner bound at startup. Receipt content checks and capture redaction keep
+// that scanner until restart.
+func (s *Server) reportStartupDetectorNotices(oldCfg, newCfg *config.Config) {
+	if s.detectorStartupConfig == nil || !s.detectorStartupConfig.FlightRecorder.Redact || oldCfg == nil || newCfg == nil {
+		return
+	}
+	drifted := make(map[string]struct{})
+	for _, field := range config.DetectorInputChanges(s.detectorStartupConfig, newCfg) {
+		drifted[field] = struct{}{}
+	}
+	for _, field := range config.DetectorInputChanges(oldCfg, newCfg) {
+		if _, stillDrifted := drifted[field]; !stillDrifted {
+			continue
+		}
+		if s.recorder != nil {
+			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: %s changed; receipt content check uses startup values until restart\n", field)
+		}
+		if s.captureWriter != nil {
+			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: %s changed; capture redaction uses startup values until restart\n", field)
+		}
+	}
+}
+
 func (s *Server) sentryRestartFields(fields []string, cfg *config.Config) []string {
 	if s.sentry.ScrubberNeedsRestart(cfg) {
 		fields = append(fields, reloadSentryScrubberField)

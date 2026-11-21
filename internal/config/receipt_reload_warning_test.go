@@ -21,7 +21,14 @@ func TestDetectorInputChanges(t *testing.T) {
 		}, []string{"dlp.patterns"}},
 		{"dlp.scan_env", func(c *Config) { c.DLP.ScanEnv = !c.DLP.ScanEnv }, []string{"dlp.scan_env"}},
 		{"dlp.secrets_file", func(c *Config) { c.DLP.SecretsFile = "new-file" }, []string{"dlp.secrets_file"}},
-		{"canary_tokens", func(c *Config) { c.CanaryTokens.Enabled = !c.CanaryTokens.Enabled }, []string{"canary_tokens"}},
+		{"canary_tokens", func(c *Config) {
+			c.CanaryTokens.Enabled = true
+			c.CanaryTokens.Tokens = []CanaryToken{{Name: "sample", Value: "sample-canary-value"}}
+		}, []string{"canary_tokens"}},
+		{"seed_phrase_detection", func(c *Config) {
+			disabled := false
+			c.SeedPhraseDetection.Enabled = &disabled
+		}, []string{"seed_phrase_detection"}},
 		{"unrelated", func(c *Config) { c.KillSwitch.APIToken = "other-token" }, nil},
 	}
 	for _, tc := range cases {
@@ -33,6 +40,43 @@ func TestDetectorInputChanges(t *testing.T) {
 				t.Fatalf("DetectorInputChanges = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestDetectorInputChangesCanaryAndSeedNormalization(t *testing.T) {
+	old := Defaults()
+	old.CanaryTokens.Enabled = true
+	old.CanaryTokens.Tokens = []CanaryToken{{Name: "sample", Value: "Sample-Canary-Value", EnvVar: "SAMPLE_CANARY"}}
+	next := Defaults()
+	next.CanaryTokens.Enabled = true
+	next.CanaryTokens.Tokens = []CanaryToken{{Name: "sample", Value: "sample-canary-value", EnvVar: "OTHER_CANARY"}}
+	if got := DetectorInputChanges(old, next); len(got) != 0 {
+		t.Fatalf("case and env binding reported as detector input: %v", got)
+	}
+	disabled := Defaults()
+	disabled.CanaryTokens.Enabled = false
+	disabled.CanaryTokens.Tokens = []CanaryToken{{Name: "sample", Value: "sample-canary-value"}}
+	edited := Defaults()
+	edited.CanaryTokens.Enabled = false
+	edited.CanaryTokens.Tokens = []CanaryToken{{Name: "sample", Value: "another-canary-value"}}
+	if got := DetectorInputChanges(disabled, edited); len(got) != 0 {
+		t.Fatalf("disabled token edit reported: %v", got)
+	}
+
+	seedOff := Defaults()
+	off := false
+	seedOff.SeedPhraseDetection.Enabled = &off
+	seedOff.SeedPhraseDetection.MinWords = 24
+	sameOff := seedOff.Clone()
+	sameOff.SeedPhraseDetection.MinWords = 12
+	if got := DetectorInputChanges(seedOff, sameOff); len(got) != 0 {
+		t.Fatalf("disabled seed min_words reported: %v", got)
+	}
+	on := true
+	enabled := seedOff.Clone()
+	enabled.SeedPhraseDetection.Enabled = &on
+	if got := DetectorInputChanges(seedOff, enabled); !slices.Equal(got, []string{"seed_phrase_detection"}) {
+		t.Fatalf("enabling seed detection = %v", got)
 	}
 }
 
