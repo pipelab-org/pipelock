@@ -178,10 +178,15 @@ def go_source():
 
 
 def table(columns, rows):
+    # GFM splits cells on every unescaped pipe, including inside code spans,
+    # so a condition such as `a || b` must have its pipes escaped.
+    def cell(value):
+        return value.replace("|", "\\|")
+
     return [
         "| " + " | ".join(columns) + " |",
         "| " + " | ".join("---" for _ in columns) + " |",
-        *("| " + " | ".join(row) + " |" for row in rows),
+        *("| " + " | ".join(cell(v) for v in row) + " |" for row in rows),
         "",
     ]
 

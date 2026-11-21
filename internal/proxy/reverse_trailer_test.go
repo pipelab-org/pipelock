@@ -25,8 +25,17 @@ import (
 	"golang.org/x/net/http2/hpack"
 )
 
-func sendRawHTTP2Request(t *testing.T, srv *httptest.Server, method, path string, headers, trailers [][2]string, endOnHeaders bool) (int, string) {
+// rawHTTP2Request describes one request written frame by frame.
+type rawHTTP2Request struct {
+	method, path      string
+	headers, trailers [][2]string
+	// endOnHeaders sets END_STREAM on the HEADERS frame.
+	endOnHeaders bool
+}
+
+func sendRawHTTP2Request(t *testing.T, srv *httptest.Server, req rawHTTP2Request) (int, string) {
 	t.Helper()
+	method, path, headers, trailers, endOnHeaders := req.method, req.path, req.headers, req.trailers, req.endOnHeaders
 	tlsCfg := srv.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
 	tlsCfg.NextProtos = []string{"h2"}
 	addr := srv.Listener.Addr().String()
@@ -242,7 +251,7 @@ func TestReverseProxyZeroLengthHTTP2TrailersFailClosed(t *testing.T) {
 			srv.StartTLS()
 			t.Cleanup(srv.Close)
 
-			status, body := sendRawHTTP2Request(t, srv, tc.method, "/test", tc.headers, tc.trailers, tc.endOnHeaders)
+			status, body := sendRawHTTP2Request(t, srv, rawHTTP2Request{method: tc.method, path: "/test", headers: tc.headers, trailers: tc.trailers, endOnHeaders: tc.endOnHeaders})
 			if status != tc.wantStatus {
 				t.Fatalf("status=%d want %d (body=%q upstreamHits=%d upstreamTrailerKeys=%v)", status, tc.wantStatus, body, upstreamHits.Load(), seenTrailerKeys.Load())
 			}
