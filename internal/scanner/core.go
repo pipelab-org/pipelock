@@ -221,6 +221,7 @@ func initCoreScanner(cfg *config.Config) *compiledCoreScanner {
 			requiresEquals:                      requirements.requiresEquals,
 			minASCIIDigits:                      requirements.minASCIIDigits,
 			shapeGate:                           requirements.shape,
+			regexpWindows:                       requirements.windows,
 			severity:                            p.severity,
 			credentialAudienceHosts:             config.AppendDeclaredCredentialAudienceHosts(p.name, hosts, github, gitlab),
 			credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
@@ -391,7 +392,7 @@ func (s *Scanner) scanCoreResponseWithOptions(content string, suppress coreRespo
 	// short-circuits the scan and hides a later normalized/base64 finding.
 
 	// Primary pass.
-	if matches := filterCoreResponsePass(content, "", memo.match(s.core.responsePreFilter, s.core.responsePatterns, content), ViewForMatching, suppress); len(matches) > 0 {
+	if matches := filterCoreResponsePass(content, "", memo.matchTransformed(s.core.responsePreFilter, s.core.responsePatterns, content, s.responseMatchingLiterals, matchingPrimary), ViewForMatching, suppress); len(matches) > 0 {
 		return responseMatchSet{matches: matches, content: content}
 	}
 	if memo.outboundError() != nil {
@@ -401,7 +402,7 @@ func (s *Scanner) scanCoreResponseWithOptions(content string, suppress coreRespo
 	// Secondary: replace invisible chars with spaces.
 	spaced := normalize.ForMatchingSpaced(original)
 	if spaced != content {
-		if matches := filterCoreResponsePass(spaced, "", memo.match(s.core.responsePreFilter, s.core.responsePatterns, spaced), ViewInvisibleSpaced, suppress); len(matches) > 0 {
+		if matches := filterCoreResponsePass(spaced, "", memo.matchTransformed(s.core.responsePreFilter, s.core.responsePatterns, spaced, s.responseMatchingLiterals, matchingSpaced), ViewInvisibleSpaced, suppress); len(matches) > 0 {
 			return responseMatchSet{matches: matches, content: spaced}
 		}
 		if memo.outboundError() != nil {
@@ -412,7 +413,7 @@ func (s *Scanner) scanCoreResponseWithOptions(content string, suppress coreRespo
 	// Tertiary: leetspeak normalization.
 	leeted := normalize.Leetspeak(content)
 	if leeted != content {
-		if matches := filterCoreResponsePass(leeted, content, memo.match(s.core.responsePreFilter, s.core.responsePatterns, leeted), ViewLeetspeak, suppress); len(matches) > 0 {
+		if matches := filterCoreResponsePass(leeted, content, memo.matchTransformed(s.core.responsePreFilter, s.core.responsePatterns, leeted, s.responseMatchingLiterals, matchingLeet), ViewLeetspeak, suppress); len(matches) > 0 {
 			return responseMatchSet{matches: matches, content: leeted}
 		}
 		if memo.outboundError() != nil {
@@ -422,7 +423,7 @@ func (s *Scanner) scanCoreResponseWithOptions(content string, suppress coreRespo
 
 	// Quaternary: optional-whitespace matching.
 	if len(s.core.responseOptSpacePatterns) > 0 {
-		if matches := filterCoreResponsePass(content, "", memo.match(s.core.responseOptSpacePreFilter, s.core.responseOptSpacePatterns, content), ViewForMatching, suppress); len(matches) > 0 {
+		if matches := filterCoreResponsePass(content, "", memo.matchTransformed(s.core.responseOptSpacePreFilter, s.core.responseOptSpacePatterns, content, s.responseMatchingLiterals, matchingPrimary), ViewForMatching, suppress); len(matches) > 0 {
 			return responseMatchSet{matches: matches, content: content}
 		}
 		if memo.outboundError() != nil {
@@ -434,7 +435,7 @@ func (s *Scanner) scanCoreResponseWithOptions(content string, suppress coreRespo
 	if len(s.core.responseVowelFoldPatterns) > 0 {
 		folded := normalize.FoldVowels(content)
 		if folded != content {
-			if matches := filterCoreResponsePass(folded, content, memo.match(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded), ViewVowelFold, suppress); len(matches) > 0 {
+			if matches := filterCoreResponsePass(folded, content, memo.matchTransformed(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded, s.responseMatchingLiterals, matchingVowel), ViewVowelFold, suppress); len(matches) > 0 {
 				return responseMatchSet{matches: matches, content: folded}
 			}
 			if memo.outboundError() != nil {
@@ -478,35 +479,11 @@ func (s *Scanner) matchDecodedCoreResponseRecursiveMode(content string, depth in
 }
 
 func (s *Scanner) matchDecodedCoreNormalized(decoded, decodedViewLabel string, suppress coreResponseSuppressor) responseMatchSet {
-	normalized := normalize.ForMatching(decoded)
-	if matches := filterCoreResponsePass(normalized, "", matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, normalized), decodedViewLabel, suppress); len(matches) > 0 {
-		return responseMatchSet{matches: matches, content: normalized}
-	}
-	spaced := normalize.ForMatchingSpaced(decoded)
-	if spaced != normalized {
-		if matches := filterCoreResponsePass(spaced, "", matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, spaced), spanViewLabel("invisible_spaced", decodedViewLabel), suppress); len(matches) > 0 {
-			return responseMatchSet{matches: matches, content: spaced}
-		}
-	}
-	if leeted := normalize.Leetspeak(normalized); leeted != normalized {
-		if matches := filterCoreResponsePass(leeted, "", matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, leeted), spanViewLabel("leetspeak", decodedViewLabel), suppress); len(matches) > 0 {
-			return responseMatchSet{matches: matches, content: leeted}
-		}
-	}
-	if len(s.core.responseOptSpacePatterns) > 0 {
-		if matches := filterCoreResponsePass(normalized, "", matchPatternsPreFiltered(s.core.responseOptSpacePreFilter, s.core.responseOptSpacePatterns, normalized), decodedViewLabel, suppress); len(matches) > 0 {
-			return responseMatchSet{matches: matches, content: normalized}
-		}
-	}
-	if len(s.core.responseVowelFoldPatterns) > 0 {
-		folded := normalize.FoldVowels(normalized)
-		if folded != normalized {
-			if matches := filterCoreResponsePass(folded, normalized, matchPatternsPreFiltered(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded), vowelFoldViewLabel(decodedViewLabel), suppress); len(matches) > 0 {
-				return responseMatchSet{matches: matches, content: folded}
-			}
-		}
-	}
-	return responseMatchSet{}
+	return s.matchDecodedResponseViews(decoded, decodedViewLabel, suppress, responseMatchingPasses{
+		primary:       responseMatchingPass{s.core.responsePreFilter, s.core.responsePatterns},
+		optionalSpace: responseMatchingPass{s.core.responseOptSpacePreFilter, s.core.responseOptSpacePatterns},
+		vowelFold:     responseMatchingPass{s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns},
+	})
 }
 
 // scanCoreDLP runs core DLP patterns against text. Returns matches found by
@@ -516,6 +493,10 @@ func (s *Scanner) scanCoreDLP(text string) []TextDLPMatch {
 }
 
 func (s *Scanner) scanCoreDLPWithDecodes(text string, decodes *decodingMemo) []TextDLPMatch {
+	return s.scanCoreDLPWithPositions(text, decodes, nil)
+}
+
+func (s *Scanner) scanCoreDLPWithPositions(text string, decodes *decodingMemo, positions *matchingView) []TextDLPMatch {
 	if s.core == nil || len(s.core.dlpPatterns) == 0 || decodes.stopRequested() {
 		return nil
 	}
@@ -523,12 +504,12 @@ func (s *Scanner) scanCoreDLPWithDecodes(text string, decodes *decodingMemo) []T
 	cleaned := decodes.normalize(text)
 	var matches []TextDLPMatch
 
-	for _, idx := range s.core.dlpPreFilter.patternsToCheck(cleaned) {
+	for _, idx := range s.core.dlpPreFilter.patternsToCheckInView(cleaned, positions) {
 		if decodes.stopRequested() {
 			return matches
 		}
 		p := s.core.dlpPatterns[idx]
-		if start, end, ok := p.matchSpanInView(cleaned, cleaned); ok {
+		if start, end, ok := p.matchSpanInPositionedView(cleaned, cleaned, positions); ok {
 			matches = append(matches, TextDLPMatch{
 				PatternName:                         p.name,
 				Severity:                            p.severity,
@@ -546,13 +527,13 @@ func (s *Scanner) scanCoreDLPWithDecodes(text string, decodes *decodingMemo) []T
 	// URL-decoded variant.
 	if !decodes.stopRequested() {
 		if decoded := IterativeDecode(cleaned); decoded != cleaned {
-			matches = append(matches, s.matchCoreDLPPatterns(decoded, "url", decodes)...)
+			matches = append(matches, s.matchCoreDLPDerivedPatterns(decoded, "url", decodes, positions, matchingURL)...)
 		}
 	}
 
 	if !decodes.stopRequested() {
 		if decoded := decodes.decodeHTML(cleaned); decoded != cleaned {
-			matches = append(matches, s.matchCoreDLPPatterns(decoded, encodingHTML, decodes)...)
+			matches = append(matches, s.matchCoreDLPDerivedPatterns(decoded, encodingHTML, decodes, positions, matchingHTML)...)
 		}
 	}
 
@@ -560,15 +541,15 @@ func (s *Scanner) scanCoreDLPWithDecodes(text string, decodes *decodingMemo) []T
 	if !decodes.stopRequested() && strings.Contains(cleaned, ".") {
 		dotless := removeHostnameDots(cleaned)
 		if dotless != cleaned {
-			matches = append(matches, s.matchCoreDLPPatterns(dotless, "subdomain", decodes)...)
+			matches = append(matches, s.matchCoreDLPDerivedPatterns(dotless, "subdomain", decodes, positions, matchingSubdomain)...)
 		}
 	}
 
 	// Whitespace-collapse catches key material split with ordinary spaces,
 	// tabs, or newlines before it reaches the configurable pattern layer.
 	if !decodes.stopRequested() {
-		if compacted, offsets := decodes.compactWhitespace(cleaned); compacted != cleaned {
-			matches = append(matches, s.matchCoreDLPWhitespaceView(compacted, cleaned, offsets, decodes)...)
+		if compacted, offsets, joined := decodes.compactWhitespaceWithView(cleaned, positions); compacted != cleaned {
+			matches = append(matches, s.matchCoreDLPPositionedJoin(compacted, cleaned, offsets, decodes, joined)...)
 		}
 	}
 
@@ -591,19 +572,16 @@ func (s *Scanner) scanCoreDLPWithDecodes(text string, decodes *decodingMemo) []T
 		}
 	}
 	if len(matches) == 0 && !decodes.stopRequested() {
-		matches = append(matches, s.decodeCoreDLPTextSegmentsWithDecodes(cleaned, decodes)...)
+		matches = append(matches, s.decodeCoreDLPPositionedSegments(cleaned, decodes, positions)...)
 	}
 
 	return deduplicateMatches(matches)
 }
 
-// matchCoreDLPPatterns runs core DLP regex patterns against text with encoding tag.
-func (s *Scanner) matchCoreDLPPatterns(text, encoding string, decodes *decodingMemo) []TextDLPMatch {
-	return s.matchCoreDLPPatternsNormalized(normalize.ForDLP(text), encoding, decodes)
-}
-
-func (s *Scanner) matchCoreDLPPatternsNormalized(text, encoding string, decodes *decodingMemo) []TextDLPMatch {
-	var lowered dlpLoweredBytes
+// Match normalized bytes in their current transform before applying policy.
+func (s *Scanner) matchCoreDLPDerivedPatterns(text, encoding string, decodes *decodingMemo, parent *matchingView, kind matchingTransform) []TextDLPMatch {
+	text = normalize.ForDLP(text)
+	lowered := dlpLoweredBytes{positions: parent.transformed(kind, text)}
 	lowered.add(text)
 	return s.matchCoreDLPPatternsLowered(text, encoding, &lowered, decodes)
 }
@@ -622,7 +600,7 @@ func (s *Scanner) matchCoreDLPPatternsLowered(text, encoding string, lowered *dl
 			return matches
 		}
 		p := s.core.dlpPatterns[idx]
-		if start, end, ok := p.matchSpanInPreparedView(text, text, foldedInput, decodes); ok {
+		if start, end, ok := p.matchPositionedSpanInPreparedView(text, text, foldedInput, decodes, lowered.positions); ok {
 			matches = append(matches, TextDLPMatch{
 				PatternName:                         p.name,
 				Severity:                            p.severity,
@@ -645,13 +623,17 @@ func (s *Scanner) matchCoreDLPPatternsLowered(text, encoding string, lowered *dl
 // view. compacted is already normalized and is not normalized again, because
 // offsets index these exact bytes.
 func (s *Scanner) matchCoreDLPWhitespaceView(compacted, source string, offsets []int, decodes *decodingMemo) []TextDLPMatch {
+	return s.matchCoreDLPPositionedJoin(compacted, source, offsets, decodes, nil)
+}
+
+func (s *Scanner) matchCoreDLPPositionedJoin(compacted, source string, offsets []int, decodes *decodingMemo, view *matchingView) []TextDLPMatch {
 	var matches []TextDLPMatch
-	for _, idx := range s.core.dlpPreFilter.patternsToCheck(compacted) {
+	for _, idx := range s.core.dlpPreFilter.patternsToCheckInView(compacted, view) {
 		if decodes.stopRequested() {
 			return matches
 		}
 		p := s.core.dlpPatterns[idx]
-		if start, end, ok := p.matchSpanInJoinedView(compacted, source, offsets); ok {
+		if start, end, ok := p.matchSpanInPositionedJoin(compacted, source, offsets, view); ok {
 			matches = append(matches, TextDLPMatch{
 				PatternName:                         p.name,
 				Severity:                            p.severity,
@@ -695,10 +677,14 @@ func (s *Scanner) decodeAndMatchCoreRun(text string, decodes *decodingMemo) ([]T
 }
 
 func (s *Scanner) decodeCoreDLPTextSegmentsWithDecodes(text string, decodes *decodingMemo) []TextDLPMatch {
+	return s.decodeCoreDLPPositionedSegments(text, decodes, nil)
+}
+
+func (s *Scanner) decodeCoreDLPPositionedSegments(text string, decodes *decodingMemo, positions *matchingView) []TextDLPMatch {
 	source := decodes.reassemblySegmentSource(text)
 	defer source.release()
 	var matches []TextDLPMatch
-	walkTextDLPSegments(text, func(seg string, start int) bool {
+	positions.walkSegments(text, func(seg string, start int) bool {
 		if decodes.stopRequested() {
 			return false
 		}
@@ -1020,11 +1006,7 @@ func (s *Scanner) checkCoreDLPCombinations(values []string, n, size int, decodes
 		indices[i] = i
 	}
 	for {
-		var concat strings.Builder
-		for _, idx := range indices {
-			concat.WriteString(values[idx])
-		}
-		combined := concat.String()
+		combined := joinQuerySubsequence(values, indices, false)
 		views := []dlpTarget{{combined, dlpViewLabel("query_subsequence"), ""}}
 		// Concatenation can create a percent escape across value boundaries.
 		// The original components' convergence says nothing about that view.
@@ -1050,17 +1032,8 @@ func (s *Scanner) checkCoreDLPCombinations(values []string, n, size int, decodes
 				}
 			}
 		}
-		// Advance to next combination in lexicographic order.
-		i := size - 1
-		for i >= 0 && indices[i] == n-size+i {
-			i--
-		}
-		if i < 0 {
+		if !nextCombination(indices, n) {
 			break
-		}
-		indices[i]++
-		for j := i + 1; j < size; j++ {
-			indices[j] = indices[j-1] + 1
 		}
 	}
 	return Result{Allowed: true}

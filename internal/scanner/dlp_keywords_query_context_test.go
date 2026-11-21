@@ -32,3 +32,24 @@ func TestDLPKeywordsQueryKeyContext(t *testing.T) {
 		}
 	}
 }
+
+func TestJoinQuerySubsequenceSourceBoundaries(t *testing.T) {
+	values := []string{"first", "unused", "last"}
+	for _, tc := range []struct {
+		name     string
+		indices  []int
+		separate bool
+		want     string
+	}{
+		{name: "match", indices: []int{2, 0}, want: "lastfirst"},
+		{name: "source", indices: []int{2, 0}, separate: true, want: "last\x00first"},
+		{name: "empty source", separate: true},
+		{name: "one field", indices: []int{0}, separate: true, want: "first"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := joinQuerySubsequence(values, tc.indices, tc.separate); got != tc.want {
+				t.Fatalf("join = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

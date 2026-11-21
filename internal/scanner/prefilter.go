@@ -433,6 +433,7 @@ func (pf *dlpPreFilter) candidates(text string) []int {
 type dlpLoweredBytes struct {
 	// Borrowed only by paired, local matchers; shared summary values keep nil.
 	preparedASCII *asciiFoldedInput
+	positions     *matchingView
 	present       [4]uint64
 	pairs         bytePairFilter
 }
@@ -507,6 +508,36 @@ func (pf *dlpPreFilter) candidatesWith(text string, lowered *dlpLoweredBytes) []
 // evaluated against the given text: prefix-matched candidates plus alwaysRun.
 // Returns nil only when both candidates and alwaysRun are empty.
 // Indices are returned in ascending order for deterministic match reporting.
+// positionedCandidates shares ASCII-lowered literal presence with the
+// regexp plans. Unicode lowercasing has different semantics; keep its
+// existing byte-pair filter and exact search.
+func (pf *dlpPreFilter) positionedCandidates(view *matchingView) ([]int, bool) {
+	if view == nil || !view.isASCII() {
+		return nil, false
+	}
+	var hits []int
+	for _, prefix := range pf.prefixes {
+		positions, complete := view.positions(prefix.text)
+		if !complete {
+			return nil, false
+		}
+		if len(positions) != 0 {
+			hits = append(hits, prefix.indices...)
+		}
+	}
+	return pf.mergeAlwaysRun(hits), true
+}
+
+func (pf *dlpPreFilter) patternsToCheckInView(text string, view *matchingView) []int {
+	if !pf.admitsLength(text) {
+		return nil
+	}
+	if hits, ok := pf.positionedCandidates(view); ok {
+		return hits
+	}
+	return pf.mergeAlwaysRun(pf.candidates(text))
+}
+
 func (pf *dlpPreFilter) patternsToCheck(text string) []int {
 	if !pf.admitsLength(text) {
 		return nil
@@ -519,6 +550,11 @@ func (pf *dlpPreFilter) patternsToCheck(text string) []int {
 func (pf *dlpPreFilter) patternsToCheckWith(text string, lowered *dlpLoweredBytes) []int {
 	if !pf.admitsLength(text) {
 		return nil
+	}
+	if lowered != nil {
+		if hits, ok := pf.positionedCandidates(lowered.positions); ok {
+			return hits
+		}
 	}
 	if len(pf.prefixes) == 0 {
 		return pf.mergeAlwaysRun(nil)

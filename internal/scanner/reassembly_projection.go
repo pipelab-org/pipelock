@@ -31,7 +31,7 @@ func assembledFingerprint(text string) (out [5]assembledProjection) {
 	}
 	for at := range len(text) {
 		b := text[at]
-		if !reassemblyAlphabet[b] {
+		if decoderAlphabetClasses[b] == 0 {
 			continue
 		}
 		for i := range reassemblyCodecs {

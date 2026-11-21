@@ -24,6 +24,7 @@ type responseMatchMemo struct {
 	derivedBytes  int
 	bytes         int
 	entries       int
+	matchingRoot  *matchingView
 }
 
 func (m *responseMatchMemo) outboundError() error {
@@ -71,7 +72,31 @@ func responseNegativePatternKey(p *compiledPattern) (responseNegativeKey, bool) 
 	return responseNegativeKey{regex: p.re.String(), companions: hasExternalTransferCompanions(p), literals: literals.String()}, true
 }
 
+func (m *responseMatchMemo) matchingView(kind matchingTransform, text string, program *matchingLiterals) *matchingView {
+	if m == nil || program == nil {
+		return nil
+	}
+	if kind != matchingPrimary {
+		return m.matchingRoot.transformed(kind, text)
+	}
+	if m.matchingRoot == nil {
+		m.matchingRoot = newMatchingView(text, program)
+	}
+	if root := m.matchingRoot; root != nil && root.text == text && root.program == program {
+		return root
+	}
+	return nil
+}
+
+func (m *responseMatchMemo) matchTransformed(pf *responsePreFilter, patterns []*compiledPattern, content string, program *matchingLiterals, kind matchingTransform) []ResponseMatch {
+	return m.matchPositioned(pf, patterns, content, m.matchingView(kind, content, program))
+}
+
 func (m *responseMatchMemo) match(pf *responsePreFilter, patterns []*compiledPattern, content string) []ResponseMatch {
+	return m.matchPositioned(pf, patterns, content, nil)
+}
+
+func (m *responseMatchMemo) matchPositioned(pf *responsePreFilter, patterns []*compiledPattern, content string, positions *matchingView) []ResponseMatch {
 	if m.outboundError() != nil {
 		return nil
 	}
@@ -85,7 +110,7 @@ func (m *responseMatchMemo) match(pf *responsePreFilter, patterns []*compiledPat
 	if len(known) > 0 {
 		remaining = make([]*compiledPattern, 0, len(patterns))
 		if pf != nil {
-			remainingFilter = &responsePreFilter{}
+			remainingFilter = &responsePreFilter{windows: pf.windows}
 		}
 		for i, p := range patterns {
 			key, eligible := responseNegativePatternKey(p)
@@ -126,7 +151,9 @@ func (m *responseMatchMemo) match(pf *responsePreFilter, patterns []*compiledPat
 		}
 		view = &responsePreFilterView{literals: literals, outboundMatch: m.outboundMatch}
 	}
+	view.positions = positions
 	result := matchPatternsPreFilteredWithMemo(remainingFilter, remaining, content, view)
+	view.positions = nil
 	if m.outboundError() != nil {
 		return nil
 	}

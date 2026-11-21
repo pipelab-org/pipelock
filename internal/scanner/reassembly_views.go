@@ -197,7 +197,7 @@ func assembledEnoughSymbols(text string, minimum int) bool {
 		return true
 	}
 	for i := range len(text) {
-		if reassemblyAlphabet[text[i]] {
+		if decoderAlphabetClasses[text[i]] != 0 {
 			minimum--
 			if minimum == 0 {
 				return true

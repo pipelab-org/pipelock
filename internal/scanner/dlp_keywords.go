@@ -1063,8 +1063,12 @@ func (m *decodingMemo) registerKeywordTransform(source, view, encoding string) {
 }
 
 func (p *compiledPattern) matchSpanWithDecodes(view, source string, memo *decodingMemo) (start, end int, matched bool) {
+	return p.matchPositionedSpanWithDecodes(view, source, memo, nil)
+}
+
+func (p *compiledPattern) matchPositionedSpanWithDecodes(view, source string, memo *decodingMemo, positions *matchingView) (start, end int, matched bool) {
 	if p.keywords == nil {
-		return p.matchSpanInView(view, source)
+		return p.matchSpanInPositionedView(view, source, positions)
 	}
 	pattern := *p
 	logical := config.DLPKeywordContext(source)
@@ -1078,7 +1082,7 @@ func (p *compiledPattern) matchSpanWithDecodes(view, source string, memo *decodi
 		context.sourceUnavailable = len(context.alternatives) == 0 && memo.keywordBudget != nil && memo.keywordBudget.incomplete && !strings.Contains(memo.keywordUnit, logical) && !strings.ContainsRune(source, 0)
 	}
 	pattern.keywordContext = &context
-	return pattern.matchSpanInView(view, source)
+	return pattern.matchSpanInPositionedView(view, source, positions)
 }
 
 func (s *keywordDecodeSources) bindParents(text string, parents []*keywordDecodeSource) {

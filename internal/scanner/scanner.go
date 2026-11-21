@@ -337,6 +337,7 @@ type Scanner struct {
 	reassemblyPlan            *reassemblyPlan
 	canaryTokens              []compiledCanaryToken
 	dlpPreFilter              *dlpPreFilter
+	dlpMatchingLiterals       *matchingLiterals
 	dlpCardPatternIndices     []int
 	entropyThreshold          float64
 	subdomainEntropyThreshold float64
@@ -366,6 +367,7 @@ type Scanner struct {
 	// the same reason. A secret missing from it is encoded per scan.
 	knownSecretEncodings       map[string]*knownSecretEncodings
 	minEnvSecretLen            int // minimum env var length for leak detection
+	responseMatchingLiterals   *matchingLiterals
 	responsePatterns           []*compiledPattern
 	responseOptSpacePatterns   []*compiledPattern // \s+ → \s* variants for ZW-stripped pass
 	responseVowelFoldPatterns  []*compiledPattern // vowel-folded variants for confusable vowel attacks
@@ -487,6 +489,7 @@ type compiledPattern struct {
 	name                             string
 	re                               *regexp.Regexp
 	withoutLeftBoundary              *regexp.Regexp
+	regexpWindows, bodyRegexpWindows *regexpWindowPlan
 	providerKeyPrefix                string
 	providerPrefixRE                 *regexp.Regexp
 	// relaxSingleGluedBoundary joins candidateHasLeftBoundary. A miss is still
@@ -775,6 +778,8 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		cp.requiresEquals = requirements.requiresEquals
 		cp.minASCIIDigits = requirements.minASCIIDigits
 		cp.shapeGate = requirements.shape
+		cp.regexpWindows = requirements.windows
+		cp.bodyRegexpWindows = requirements.bodyWindows
 		if p.Validator != "" {
 			fn, ok := DLPValidators[p.Validator]
 			if !ok {
@@ -819,6 +824,20 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 
 	// Build prefix pre-filter for fast DLP short-circuiting on clean input.
 	s.dlpPreFilter = newDLPPreFilter(s.dlpPatterns)
+	var windowLiterals []string
+	for _, group := range [][]*compiledPattern{s.core.dlpPatterns, s.dlpPatterns} {
+		for _, p := range group {
+			if p.regexpWindows != nil && p.withoutLeftBoundary == nil && !p.wifOverlapRetry {
+				windowLiterals = append(windowLiterals, p.regexpWindows.anchors...)
+			}
+		}
+	}
+	for _, pf := range []*dlpPreFilter{s.dlpPreFilter, s.core.dlpPreFilter} {
+		for _, prefix := range pf.prefixes {
+			windowLiterals = append(windowLiterals, prefix.text)
+		}
+	}
+	s.dlpMatchingLiterals = newMatchingLiterals(windowLiterals)
 	for id, pattern := range s.dlpPatterns {
 		if pattern.genericCard {
 			s.dlpCardPatternIndices = append(s.dlpCardPatternIndices, id)
@@ -1013,6 +1032,11 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 	if len(s.responseVowelFoldPatterns) > 0 {
 		s.responseVowelFoldPreFilter = reusableResponsePreFilter(s.responseVowelFoldPatterns, responseSyntaxVowelFold)
 	}
+
+	s.responseMatchingLiterals = responseMatchingProgram(
+		s.core.responsePreFilter, s.core.responseOptSpacePreFilter, s.core.responseVowelFoldPreFilter,
+		s.responsePreFilter, s.responseOptSpacePreFilter, s.responseVowelFoldPreFilter,
+	)
 
 	// Build address protection checker if enabled.
 	if cfg.AddressProtection.Enabled {
@@ -3068,6 +3092,10 @@ func decodeEncodingsMode(s string, minPrefix int) []decodedResult {
 
 // decodeEncodingsModeInto appends decodeEncodingsMode's views to out.
 func decodeEncodingsModeInto(out []decodedResult, s string, minPrefix int) []decodedResult {
+	return decodeEncodingsByClass(out, s, minPrefix, decoderClasses(s))
+}
+
+func decodeEncodingsByClass(out []decodedResult, s string, minPrefix int, classes decoderClass) []decodedResult {
 	if decoded := normalize.DecodeTags(s); decoded != s && decoded != "" {
 		out = append(out, decodedResult{text: decoded, encoding: encodingUnicodeTags})
 	}
@@ -3076,6 +3104,33 @@ func decodeEncodingsModeInto(out []decodedResult, s string, minPrefix int) []dec
 		// Retain soft line breaks when tags separate a textual carrier.
 		out = appendTextEncodingViews(out, normalize.StripZeroWidth(s))
 	}
+	if classes&decoderHex != 0 {
+		out = appendHexDecodes(out, s, minPrefix)
+	}
+	if classes&decoderBase64 != 0 {
+		out = appendBase64Decodes(out, s, minPrefix)
+	}
+	// Preserve the base32 modes and variant order. The class screen only
+	// proves when neither alphabet has enough input for one decoded byte.
+	if classes&decoderBase32 != 0 {
+		if minPrefix != 0 {
+			out = appendKnownBase32Views(out, s, minPrefix)
+		} else {
+			if base32FoldedDecodePossible(s) {
+				out = appendBase32DecodesMode(out, normalize.ASCIIUpper(s), 0)
+			}
+			if normalized := normalizeFoldedBase32Token(s); normalized != "" {
+				out = appendBase32DecodesMode(out, normalized, 0)
+			}
+		}
+	}
+	if decoded := normalize.DecodeJSONUnicodeEscapes(s); decoded != s && decoded != "" {
+		out = append(out, decodedResult{text: decoded, encoding: encodingJSONUnicode})
+	}
+	return out
+}
+
+func appendHexDecodes(out []decodedResult, s string, minPrefix int) []decodedResult {
 	var decodedHex []byte
 	var hexErr error
 	if minPrefix == 0 && !hexDecodes(s) {
@@ -3098,6 +3153,10 @@ func decodeEncodingsModeInto(out []decodedResult, s string, minPrefix int) []dec
 			}
 		}
 	}
+	return out
+}
+
+func appendBase64Decodes(out []decodedResult, s string, minPrefix int) []decodedResult {
 	// Raw variants stop at the first byte outside both RFC 4648 alphabets;
 	// separator-stripped variants already have a bounded carrier length.
 	// Size scratch for those outputs rather than an unrelated suffix of s.
@@ -3143,28 +3202,6 @@ func decodeEncodingsModeInto(out []decodedResult, s string, minPrefix int) []dec
 	// Keep the existing standard/URL-safe views and append the mixed view;
 	// a new carrier must not replace an older liberal normalization result.
 	out = appendMixedBase64Views(out, s, base64Buffer, minPrefix)
-	// RFC 4648 base32 and base32hex are case-insensitive. Folding to ASCII
-	// uppercase before decode accepts lower and mixed case without treating
-	// that fold as a separate base32 alphabet. Canonical recipe replay keeps
-	// the fold as its own operation so older profiles stay case-sensitive.
-	if minPrefix == 0 {
-		// Without prefix recovery the folded copy is needed only when a whole
-		// decode can succeed. Both helpers read the fold without building it.
-		if base32FoldedDecodePossible(s) {
-			out = appendBase32DecodesMode(out, normalize.ASCIIUpper(s), 0)
-		}
-		if normalized := normalizeFoldedBase32Token(s); normalized != "" {
-			out = appendBase32DecodesMode(out, normalized, 0)
-		}
-		if decoded := normalize.DecodeJSONUnicodeEscapes(s); decoded != s && decoded != "" {
-			out = append(out, decodedResult{text: decoded, encoding: encodingJSONUnicode})
-		}
-		return out
-	}
-	out = appendKnownBase32Views(out, s, minPrefix)
-	if decoded := normalize.DecodeJSONUnicodeEscapes(s); decoded != s && decoded != "" {
-		out = append(out, decodedResult{text: decoded, encoding: encodingJSONUnicode})
-	}
 	return out
 }
 
@@ -4288,6 +4325,27 @@ func querySubsequenceValues(rawQuery string) []string {
 	return values
 }
 
+// joinQuerySubsequence builds the matching view or the source spelling with
+// field boundaries preserved for joined-prose and keyword context checks.
+func joinQuerySubsequence(values []string, indices []int, separate bool) string {
+	var length int
+	for _, idx := range indices {
+		length += len(values[idx])
+	}
+	if separate && len(indices) > 1 {
+		length += len(indices) - 1
+	}
+	var joined strings.Builder
+	joined.Grow(length)
+	for i, idx := range indices {
+		if separate && i > 0 {
+			joined.WriteByte(0)
+		}
+		joined.WriteString(values[idx])
+	}
+	return joined.String()
+}
+
 // checkDLPCombinations generates all ordered combinations of the given size
 // from the values slice and checks each concatenation against DLP patterns.
 func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, target string, memo *queryLessDLPMemo, decodes *decodingMemo) (result Result, warnMatches []WarnMatch) {
@@ -4301,26 +4359,18 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, t
 	}
 
 	for {
-		var b strings.Builder
-		var proseSource strings.Builder
-		for i, idx := range indices {
-			b.WriteString(values[idx])
-			if i > 0 {
-				proseSource.WriteByte(0)
-			}
-			proseSource.WriteString(values[idx])
-		}
-		concat := b.String()
-		source := proseSource.String()
-
-		candidates := []dlpTarget{
-			{concat, dlpViewLabel("query_subsequence"), source},
-		}
+		concat := joinQuerySubsequence(values, indices, false)
+		candidates := []dlpTarget{{concat, dlpViewLabel("query_subsequence"), ""}}
 		for _, d := range decodeEncodingsRecursiveWithDecodes(concat, decodes) {
-			candidates = append(candidates, dlpTarget{d.text, dlpViewLabel(d.encoding), source})
+			candidates = append(candidates, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 		}
 
+		var source string
 		if decodes != nil && decodes.keywordURL != nil {
+			source = joinQuerySubsequence(values, indices, true)
+			for i := range candidates {
+				candidates[i].proseSource = source
+			}
 			decodes.keywordURL.targets = append(decodes.keywordURL.targets, candidates...)
 		}
 
@@ -4328,8 +4378,11 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, t
 			cleaned := normalize.ForDLP(candidate.text)
 
 			for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
+				if source == "" {
+					source = joinQuerySubsequence(values, indices, true)
+				}
 				p := s.dlpPatterns[idx]
-				if start, end, ok := p.matchSpanWithDecodes(cleaned, candidate.proseSource, decodes); ok {
+				if start, end, ok := p.matchSpanWithDecodes(cleaned, source, decodes); ok {
 					// The reassembled candidate is a token the URL-wide check never
 					// saw, so it must itself be a grant for this host.
 					surface := s.urlDLPAudienceSurfaceForTarget(p, target, memo)
