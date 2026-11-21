@@ -46,12 +46,8 @@ type decodingMemo struct {
 	// query value (and, for the seam, the whole path) of this exact request.
 	// They suppress only the views built by JOINING separate components,
 	// never the per-component views. See WithIssuerJoinedViewAllowance.
-	issuedQueryJoin bool
-	issuedPathSeam  bool
-	// issuedValue, when set by a URL scan's issuer value allowance, reports
-	// whether one configured pattern match is a value the destination origin
-	// itself served. See WithIssuerValueAllowance.
-	issuedValue                  IssuerValueAllowance
+	issuedQueryJoin              bool
+	issuedPathSeam               bool
 	reassemblyReplayPayloads     map[assembledPayloadKey][]*assembledPayload
 	reassemblyReplayPayloadCount int
 	reassemblyRecipeCache        *assembledRecipeCache

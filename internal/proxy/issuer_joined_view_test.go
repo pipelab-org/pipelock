@@ -139,13 +139,12 @@ func TestInterceptIssuedJoinedViewDLP(t *testing.T) {
 		}
 	})
 
-	// A whole card the page itself served would be returned to the site that
-	// issued it and is relieved by the issued-value rule. One the page did not
-	// serve, beside a served value, keeps its per-value block.
-	t.Run("a whole card in a value the page did not serve still blocks", func(t *testing.T) {
+	// The exact served URL relieves only the joined views; a whole card
+	// inside one value is still matched by the per-value views.
+	t.Run("a whole card in one issued value still blocks", func(t *testing.T) {
 		e := newSameOriginEnv(t, nil)
 		single := "wo=" + first + second + "&site=1"
-		e.servePage(joinedDetailPath + "?wo=" + strings.Repeat("7", 8) + "&site=1")
+		e.servePage(joinedDetailPath + "?" + single)
 		e.visit()
 		if got := e.do("agent-one", http.MethodGet, joinedDetailURL(delegationSourceHost, single)); got != http.StatusForbidden {
 			t.Fatalf("status = %d, want 403", got)

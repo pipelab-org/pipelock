@@ -1663,9 +1663,6 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, options scanOptions, 
 	// Prevents secret exfiltration via DNS queries for domains like
 	// "sk-ant-xxxx.evil.com" where the subdomain encodes a secret.
 	decodes.issuedQueryJoin, decodes.issuedPathSeam = issuerJoinedViewsIssued(ctx, parsed)
-	if allows, ok := ctx.Value(issuerValueAllowanceContextKey{}).(IssuerValueAllowance); ok {
-		decodes.issuedValue = allows
-	}
 	dlpResult, dlpWarns := s.checkDLPWithDecodesAt(scanURL, &decodes, now)
 	dlpWarns = deduplicateWarnMatches(dlpWarns)
 	dlpResult.WarnMatches = dlpWarns
@@ -3951,10 +3948,6 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 					credentialAudienceAllows = append(credentialAudienceAllows, allow)
 					continue
 				}
-				if allow, allowed := issuedValueAllow(p, cleaned[start:end], parsed.Hostname(), decodes); allowed {
-					credentialAudienceAllows = append(credentialAudienceAllows, allow)
-					continue
-				}
 				mismatch, audienceMismatch := s.credentialAudienceMismatch(p, parsed.String(), "url")
 				// Skip pattern if the destination domain is explicitly exempted.
 				// A pattern carrying a core floor name never honors an exemption,
@@ -4344,10 +4337,6 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, t
 						surface = "url"
 					}
 					if allow, allowed := s.credentialAudienceAllowsAt(p, target, surface, s.queryScanTime(memo)); allowed {
-						credentialAudienceAllows = append(credentialAudienceAllows, allow)
-						continue
-					}
-					if allow, allowed := issuedValueAllow(p, cleaned[start:end], hostname, decodes); allowed {
 						credentialAudienceAllows = append(credentialAudienceAllows, allow)
 						continue
 					}
@@ -6021,43 +6010,6 @@ func issuerJoinedViewsIssued(ctx context.Context, parsed *url.URL) (queryIssued,
 	}
 	queryIssued, pathIssued := allows(parsed.EscapedPath(), query)
 	return queryIssued, queryIssued && pathIssued
-}
-
-type issuerValueAllowanceContextKey struct{}
-
-// IssuedValueSurface is the CredentialAudienceAllow surface recorded when a
-// configured URL DLP match is relieved because the destination origin itself
-// served the matched value.
-const IssuedValueSurface = "url_issued_value"
-
-// IssuerValueAllowance reports whether matched, the exact text one configured
-// DLP pattern matched in this request's URL, is a value the destination origin
-// served to this session. The caller must refuse a match it cannot attribute
-// to served values alone.
-type IssuerValueAllowance func(patternName, matched string) bool
-
-// WithIssuerValueAllowance scopes issuer evidence to configured URL DLP
-// pattern matches. A credential a site ships in its own pages, such as a
-// public browser API key its scripts send back to it, tells that site nothing
-// new. Each relieved match is reported as a CredentialAudienceAllow with
-// surface IssuedValueSurface, so it reaches the same audit and receipt path
-// as a provider audience grant.
-//
-// Only the configured pattern loops consult it. The core DLP floor and any
-// pattern carrying a core floor name, environment and secrets-file leak
-// detection, canary tokens, entropy and every non-DLP check are unaffected.
-func WithIssuerValueAllowance(ctx context.Context, allows IssuerValueAllowance) context.Context {
-	return context.WithValue(ctx, issuerValueAllowanceContextKey{}, allows)
-}
-
-func issuedValueAllow(p *compiledPattern, matched, host string, decodes *decodingMemo) (CredentialAudienceAllow, bool) {
-	if p == nil || p.core || decodes == nil || decodes.issuedValue == nil || matched == "" {
-		return CredentialAudienceAllow{}, false
-	}
-	if !decodes.issuedValue(p.name, matched) {
-		return CredentialAudienceAllow{}, false
-	}
-	return CredentialAudienceAllow{PatternName: p.name, Surface: IssuedValueSurface, Destination: strings.ToLower(host)}, true
 }
 
 type issuerPathAllowanceContextKey struct{}

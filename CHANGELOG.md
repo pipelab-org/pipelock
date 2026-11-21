@@ -21,7 +21,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Intercepted tunnels opened before a config reload kept their issuer evidence only until the next reload, even when the reload left issuer evidence on and carried its stores forward. Long-lived browser tunnels then lost every issuer allowance until they reconnected, and diagnostics reported `stale_runtime`. A tunnel now stays current while it shares the live evidence window; disabling a prerequisite or changing the default identity settings still ends it.
-- Browsing through TLS interception no longer blocks a URL DLP match, such as a site's own public browser API key, when the matched text sits only inside query values that site served to the same session. The core DLP floor, canary tokens, and environment and secrets-file leak detection still block, and each allowance is recorded as a credential audience allow.
 - Browsing through TLS interception no longer blocks a link the site itself served when only the concatenation of its query values matches a DLP pattern, such as two adjacent numeric record IDs that join into a Luhn-valid card number. Only the exact served URL qualifies; values from separate links, reordered, duplicated or added pairs keep every joined view, and each value is still scanned on its own. See [issuer evidence](docs/configuration.md).
 
 - Both Go verifiers require regular files for standalone receipts and enforce the same 8 MiB limit, exact-number bounds and receipt format checks.

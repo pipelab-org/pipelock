@@ -30,6 +30,10 @@ import (
 
 const issuerQueryReceiptExtensionKey = "entropy_issuer_query_allow"
 
+// issuerJoinedViewReceiptKey labels a DLP joined-view allowance, which is not
+// a query entropy decision.
+const issuerJoinedViewReceiptKey = "dlp_issuer_joined_view_allow"
+
 // issuerQueryKind records how a value came to be issued, so the receipt for an
 // allowance says which rule admitted it.
 type issuerQueryKind string
@@ -40,51 +44,10 @@ const (
 	// issuerQueryOAuthRedirect: an OAuth authorization server redirected to a
 	// redirect_uri on another host that the same session had declared to it.
 	issuerQueryOAuthRedirect issuerQueryKind = "declared_oauth_redirect"
-	// issuerQueryJoinedView: every query value of the request was served by
-	// its own origin, so DLP views that only join those values were skipped.
+	// issuerQueryJoinedView: the request's exact URL was served by its own
+	// origin, so DLP views that only join its query values were skipped.
 	issuerQueryJoinedView issuerQueryKind = "issued_joined_view"
-	// issuerQueryIssuedValue: a configured DLP match lay wholly inside query
-	// values the destination origin itself served to this session.
-	issuerQueryIssuedValue issuerQueryKind = "issued_value"
 )
-
-// issuedValueMatch reports whether matched, text a configured DLP pattern
-// found in target, is attributable only to query values the destination
-// served. Every occurrence must sit inside a value issued reports true for:
-// the text must not appear in the host or path, it must appear in at least one
-// query value, and no value that contains it may lack evidence. A match built
-// across values, decoded from an encoding, or altered by normalization is a
-// substring of no single value and gets nothing. A substring of an issued
-// value qualifies, because the whole value came from that origin.
-func issuedValueMatch(target *url.URL, matched string, issued func(key, value string) bool) bool {
-	if target == nil || matched == "" || issued == nil {
-		return false
-	}
-	if strings.Contains(target.Host, matched) || strings.Contains(target.Path, matched) ||
-		strings.Contains(target.EscapedPath(), matched) {
-		return false
-	}
-	query, err := url.ParseQuery(target.RawQuery)
-	if err != nil {
-		return false
-	}
-	found := false
-	for key, values := range query {
-		if strings.Contains(key, matched) {
-			return false
-		}
-		for _, value := range values {
-			if !strings.Contains(value, matched) {
-				continue
-			}
-			if !issued(key, value) {
-				return false
-			}
-			found = true
-		}
-	}
-	return found
-}
 
 // issuerQueryMaxRedirects bounds the OAuth redirect_uri declarations kept per
 // session. A session runs few authorization flows at once; evicting an old
@@ -1106,17 +1069,25 @@ func (p *Proxy) recordIssuerQueryAllow(cfg *config.Config, ctx audit.LogContext,
 	if err != nil {
 		return fail(fmt.Errorf("issuer query allow target: %w", err))
 	}
+	layer := issuerQueryReceiptExtensionKey
+	if kind == issuerQueryJoinedView {
+		layer = issuerJoinedViewReceiptKey
+	}
 	if p.logger != nil {
-		p.logger.LogIssuerQueryAllow(ctx, strings.ToLower(parsed.Hostname()))
+		if kind == issuerQueryJoinedView {
+			p.logger.LogDLPIssuerJoinedViewAllow(ctx, strings.ToLower(parsed.Hostname()))
+		} else {
+			p.logger.LogIssuerQueryAllow(ctx, strings.ToLower(parsed.Hostname()))
+		}
 	}
 	switch kind {
 	case issuerQueryObserved, issuerQueryIssuedRedirect, issuerQueryOAuthRedirect, issuerQueryPageOrigin,
-		issuerQueryServerID, issuerQueryResourcePath, issuerQueryJoinedView, issuerQueryIssuedValue:
+		issuerQueryServerID, issuerQueryResourcePath, issuerQueryJoinedView:
 	default:
 		kind = issuerQueryObserved
 	}
 	safeTarget := parsed.Scheme + "://" + parsed.Host + parsed.EscapedPath()
-	extension := []byte(`{"entropy_issuer_query_allow":"` + string(kind) + `"}`)
+	extension := []byte(`{"` + layer + `":"` + string(kind) + `"}`)
 	var shard receipt.EmitOpts
 	if len(selected) > 0 {
 		shard = selected[0]
@@ -1129,7 +1100,7 @@ func (p *Proxy) recordIssuerQueryAllow(cfg *config.Config, ctx audit.LogContext,
 	}
 	emitErr := p.emitCredentialAudienceReceipt(cfg, withReceiptShard(receipt.EmitOpts{
 		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
-		Layer: issuerQueryReceiptExtensionKey, Pattern: issuerQueryReceiptExtensionKey,
+		Layer: layer, Pattern: layer,
 		Transport: transport, Method: method, Target: safeTarget,
 		RequestID: requestID, Agent: agent, Extension: extension,
 	}, shard))

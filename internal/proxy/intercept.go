@@ -1101,28 +1101,11 @@ func newInterceptHandler(
 					allowed = true
 					return true, true
 				})
-				valueUsed := false
-				allowCtx = scanner.WithIssuerValueAllowance(allowCtx, func(_, matched string) bool {
-					if issuedValueMatch(r.URL, matched, func(key, value string) bool {
-						if store != nil {
-							if kind, ok := store.match(session, r.URL, key, value); ok && kind == issuerQueryObserved {
-								return true
-							}
-						}
-						return idStore.serverIDIssued(session, r.URL, value)
-					}) {
-						valueUsed = true
-						allowed = true
-						return true
-					}
-					return false
-				})
 				rescanned := ic.Scanner.ScanWithReservation(allowCtx, targetURL, ic.RateReservation)
-				if joinedUsed && allowKind == issuerQueryObserved {
+				// The joined-view kind names the decision only when that relief
+				// turned this request's DLP block into an allow.
+				if joinedUsed && joinedDLPFinding && rescanned.Allowed && allowKind == issuerQueryObserved {
 					allowKind = issuerQueryJoinedView
-				}
-				if valueUsed && allowKind == issuerQueryObserved {
-					allowKind = issuerQueryIssuedValue
 				}
 				if resourceUsed && allowKind == issuerQueryObserved {
 					allowKind = issuerQueryResourcePath
