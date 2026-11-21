@@ -17,6 +17,7 @@ const (
 	EventDLPCredentialAudienceAllow EventType = eventcatalog.EventDLPCredentialAudienceAllow // #nosec G101 -- audit event identifier, not credential material
 	EventDLPIssuerCookieAllow       EventType = eventcatalog.EventDLPIssuerCookieAllow       // #nosec G101 -- audit event identifier, not credential material
 	EventIssuerQueryAllow           EventType = eventcatalog.EventIssuerQueryAllow
+	EventDLPIssuerJoinedViewAllow   EventType = eventcatalog.EventDLPIssuerJoinedViewAllow
 )
 
 // LogDLPWarn emits an audit event for a DLP pattern match in warn mode.
@@ -41,6 +42,25 @@ func (l *Logger) LogIssuerQueryAllow(ctx LogContext, destination string) {
 	e.msg("query value allowed for observed issuer")
 	if l.emitter != nil {
 		l.emitEvent(string(EventIssuerQueryAllow), e.fields)
+	}
+}
+
+// LogDLPIssuerJoinedViewAllow records that URL DLP skipped the views joining
+// query values because the request's exact URL was served by its destination
+// origin. It names no pattern or value: the views were skipped, not matched.
+func (l *Logger) LogDLPIssuerJoinedViewAllow(ctx LogContext, destination string) {
+	e := newLogEntry(l.zl.Info(), EventDLPIssuerJoinedViewAllow).
+		str("surface", "url_query_joined").
+		str("destination", destination).
+		str("mitre_technique", TechniqueForScanner(scannerpkg.ScannerDLP)).
+		str("method", ctx.Method()).
+		optStr("client_ip", ctx.ClientIP()).
+		optStr("request_id", ctx.RequestID()).
+		correlationField(ctx.Correlation()).
+		agentField(ctx.Agent(), ctx.AgentAuth())
+	e.msg("joined query DLP views skipped for exact issued URL")
+	if l.emitter != nil {
+		l.emitEvent(string(EventDLPIssuerJoinedViewAllow), e.fields)
 	}
 }
 

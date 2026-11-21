@@ -54,8 +54,7 @@ func (ic *InterceptContext) issuerIDBlockReason(target *url.URL) string {
 	if runtime == nil || runtime.query == nil {
 		return "store_unavailable"
 	}
-	if (ic.IssuerRuntime != nil && ic.IssuerRuntime != runtime) ||
-		(ic.IssuerRuntime == nil && runtime.cfg != ic.Config) {
+	if !ic.matchesIssuerRuntime(runtime) {
 		return "stale_runtime"
 	}
 	store := runtime.query
