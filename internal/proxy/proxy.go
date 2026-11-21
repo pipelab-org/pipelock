@@ -638,6 +638,7 @@ type contextDialer interface {
 
 // Proxy is the Pipelock fetch proxy server.
 type Proxy struct {
+	receiptEffects       proxyReceiptEffects
 	cfgPtr               atomic.Pointer[config.Config]
 	issuerCookieRuntime  atomic.Pointer[issuerCookieRuntime]
 	scannerPtr           atomic.Pointer[scanner.Scanner]
