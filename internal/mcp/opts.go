@@ -134,6 +134,7 @@ func (o MCPProxyOpts) minSubjectTrust() config.DoWSubjectTrust {
 // Required: Scanner (dereferenced unconditionally in all scan paths).
 // Optional (nil-safe): all other fields - functions check before use.
 type MCPProxyOpts struct {
+	receiptEffects  mcpReceiptEffects
 	nativeAdmission receipt.EmitOpts
 	nativeSSE       bool
 	nativeStdio     bool
