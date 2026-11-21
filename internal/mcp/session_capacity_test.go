@@ -6,6 +6,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -313,5 +314,28 @@ func TestSessionCapacityRefusalKeepsRemediation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// With no session store and a registry full of principal states, an
+// anonymous legacy client gets the explicit unregistered fallback, which must
+// bind without a recorder instead of being refused as an unknown state.
+func TestListenerTransientFallbackBindsWithoutStore(t *testing.T) {
+	states := newMCPListenerClientStates(nil)
+	states.mu.Lock()
+	for i := range maxMCPListenerClients {
+		key := fmt.Sprintf("principal-%d", i)
+		state := newMCPListenerClientState("", key)
+		state.principal = true
+		states.clients[key] = state
+	}
+	states.mu.Unlock()
+	state, err := states.stateForLegacySessionWithCapacity("anonymous-legacy-client")
+	if err != nil || state == nil || !state.transient {
+		t.Fatalf("fallback = (%v, %v), want an unregistered transient state", state, err)
+	}
+	t.Cleanup(state.revoke)
+	if rec, err := states.recorderForRequest(state); err != nil || rec != nil {
+		t.Fatalf("transient recorder = (%T, %v), want (nil, nil)", rec, err)
 	}
 }

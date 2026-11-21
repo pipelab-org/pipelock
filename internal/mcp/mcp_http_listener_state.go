@@ -42,6 +42,9 @@ type mcpListenerClientState struct {
 	key          string
 	principalSet string
 	principal    bool
+	// transient marks a request-local fallback that is never registered,
+	// used when the registry is full and no session store is active.
+	transient    bool
 	baseline     *tools.ToolBaseline
 	recorder     session.Recorder // guarded by the registry lock
 	lastAccessed uint64
@@ -202,6 +205,11 @@ func (s *mcpListenerClientStates) bindRecorderLocked(state *mcpListenerClientSta
 // recorderForRequest pins a recorder for this request. An in-flight request
 // keeps the recorder it was admitted with even if a reload replaces the store.
 func (s *mcpListenerClientStates) recorderForRequest(state *mcpListenerClientState) (session.Recorder, error) {
+	if state.transient {
+		// The registry handed out an unregistered fallback because it was
+		// full with no session store active; it carries no recorder.
+		return nil, nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.clients[state.key] != state || state.revoked.Load() || !s.bindRecorderLocked(state) {
@@ -443,7 +451,9 @@ func (s *mcpListenerClientStates) newSetupState() (*mcpListenerClientState, erro
 }
 
 func newMCPListenerTransientState() *mcpListenerClientState {
-	return newMCPListenerClientState("", session.NextInvocationKey("mcp-http-listener-transient"))
+	state := newMCPListenerClientState("", session.NextInvocationKey("mcp-http-listener-transient"))
+	state.transient = true
+	return state
 }
 
 // newUnboundState returns a request-local state container for a client that
