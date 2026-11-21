@@ -7,10 +7,12 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -570,6 +572,108 @@ func TestMergeIntoConfig_SignedStandardBundleReplacesCompiledFallback(t *testing
 	}
 	if respHits != 1 {
 		t.Fatalf("New Instructions occurs %d times in merged response patterns, want exactly 1 (compiled duplicate leaked)", respHits)
+	}
+}
+
+func TestMergeIntoConfig_StandardDLPNameWarning(t *testing.T) {
+	const (
+		absentName       = "Anthropic API Key"
+		lowName          = "Discord Bot Token"
+		disabledName     = "OpenAI API Key"
+		experimentalName = "Slack App Token"
+		disabledID       = "dlp-disabled"
+	)
+
+	// Non-parallel: mutates keyring globals.
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setupKeyring(t, pub)
+
+	var complete []Rule
+	for _, p := range config.DefaultDLPPatterns() {
+		if !compiledStandardDLPNames[p.Name] {
+			continue
+		}
+		r := testDLPRule(fmt.Sprintf("dlp-standard-%d", len(complete)), confidenceHigh, StatusStable)
+		r.Name = p.Name
+		complete = append(complete, r)
+	}
+	partial := slices.DeleteFunc(slices.Clone(complete), func(r Rule) bool { return r.Name == absentName })
+	for i := range partial {
+		switch partial[i].Name {
+		case lowName:
+			partial[i].Confidence = confidenceLow
+		case disabledName:
+			partial[i].ID = disabledID
+		case experimentalName:
+			partial[i].Status = StatusExperimental
+		}
+	}
+
+	for _, tc := range []struct {
+		name            string
+		rules           []Rule
+		disabled        []string
+		withoutDefaults bool
+		invalid         bool
+		wantSource      StandardSource
+		wantWarning     string
+	}{
+		{
+			name:        "partial replacement with local override",
+			rules:       partial,
+			disabled:    []string{NamespacedID(StandardBundleName, disabledID)},
+			wantSource:  StandardSourceBundle,
+			wantWarning: `bundle "pipelock-standard" selected as the standard DLP source has no active rules for these compiled standard names: Anthropic API Key, Discord Bot Token, OpenAI API Key, Slack App Token`,
+		},
+		{name: "complete replacement", rules: complete, wantSource: StandardSourceBundle},
+		{name: "no bundle", wantSource: StandardSourceCompiled},
+		{name: "all DLP rules filtered", rules: partial, disabled: []string{NamespacedID(StandardBundleName, "*")}, wantSource: StandardSourceCompiled},
+		{name: "defaults disabled", rules: partial, withoutDefaults: true, wantSource: StandardSourceNone},
+		{name: "invalid bundle", rules: partial, invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Rules.RulesDir = t.TempDir()
+			cfg.Rules.MinConfidence = confidenceMedium
+			cfg.Rules.Disabled = tc.disabled
+			cfg.DLP.IncludeDefaults = ptrBool(!tc.withoutDefaults)
+			cfg.DLP.Patterns = []config.DLPPattern{{Name: absentName, Regex: `local-pattern-[0-9]+`, Severity: config.SeverityHigh}}
+			cfg.ApplyDefaults()
+
+			if tc.rules != nil {
+				bundleDir := filepath.Join(cfg.Rules.RulesDir, StandardBundleName)
+				if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+					t.Fatal(err)
+				}
+				writeSignedBundle(t, bundleDir, testBundle(StandardBundleName, tc.rules), pub, priv)
+				if tc.invalid {
+					if err := os.Remove(filepath.Join(bundleDir, "bundle.lock")); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+
+			result := MergeIntoConfig(cfg, testPipelockVersion)
+			if gotError := len(result.Errors) > 0; gotError != tc.invalid {
+				t.Fatalf("merge errors = %v, want error = %v", result.Errors, tc.invalid)
+			}
+			if result.StandardDLP != tc.wantSource {
+				t.Errorf("standard DLP source = %q, want %q", result.StandardDLP, tc.wantSource)
+			}
+			var wantWarnings []string
+			if tc.wantWarning != "" {
+				wantWarnings = []string{tc.wantWarning}
+			}
+			if !slices.Equal(result.Warnings, wantWarnings) {
+				t.Errorf("warnings = %q, want %q", result.Warnings, wantWarnings)
+			}
+			if p, ok := dlpPatternByName(cfg.DLP.Patterns, absentName); !ok || p.Compiled || p.Bundle != "" {
+				t.Errorf("local override = %+v, found = %v", p, ok)
+			}
+		})
 	}
 }
 

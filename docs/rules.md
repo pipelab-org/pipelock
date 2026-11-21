@@ -87,6 +87,8 @@ The immutable core scanner runs before any bundle and can't be replaced or disab
 
 Other bundle names add patterns without replacing the core or the selected standard source. Declaring `tier: standard` under another name doesn't grant replacement behavior.
 
+When `pipelock-standard` is selected as the standard DLP source, Pipelock warns about each compiled standard DLP name for which the bundle supplies no active rule. The warning lists those names in sorted order, including names whose bundle rules were filtered out by settings such as `rules.disabled`, `rules.min_confidence`, or `rules.include_experimental`. A local override can still supply a listed name.
+
 ## RequiredFeatures
 
 A bundle declares the engine features its rules need. Unknown features block the bundle at load time with a clear error:
