@@ -19,6 +19,7 @@ import (
 	"strings"
 	"testing"
 
+	actionreceipt "github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 )
 
@@ -49,6 +50,7 @@ type v3Request struct {
 	AllowUnpinned         bool         `json:"allow_unpinned,omitempty"`
 	Format                string       `json:"format,omitempty"`
 	Legacy                bool         `json:"legacy,omitempty"`
+	Endorsements          []string     `json:"endorsements,omitempty"`
 }
 
 type v3File struct {
@@ -223,6 +225,7 @@ func TestReceiptV3Corpus(t *testing.T) {
 	recipes = append(recipes, v3DecisionRecipes(t)...)
 	recipes = append(recipes, v3CutoverRecipes(t)...)
 	recipes = append(recipes, v3OperationalOnlyRecipe(t))
+	recipes = append(recipes, v3WriterRecipes(t)...)
 	for _, recipe := range recipes {
 		t.Run(fmt.Sprintf("g%02d-%s", recipe.group, recipe.name), func(t *testing.T) {
 			v3RunRecipe(t, recipe)
@@ -269,6 +272,13 @@ func v3RunRecipe(t *testing.T, recipe v3Recipe) {
 	opts := v3.Options{
 		Keys: keys, AcceptDiscontinuities: request.AcceptDiscontinuities, AllowPrefix: request.AllowPrefix, AllowUnpinned: request.AllowUnpinned,
 		ExplicitV3: request.Format == "v3", Directory: request.Directory, ExpectLineage: request.ExpectLineage,
+	}
+	for _, name := range request.Endorsements {
+		endorsement, err := actionreceipt.LoadRotationEndorsementFile(filepath.Join(capture, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		opts.LegacySelection.Endorsements = append(opts.LegacySelection.Endorsements, endorsement)
 	}
 	paths := make([]string, 0, len(recipe.files))
 	for _, file := range recipe.files {
