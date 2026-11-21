@@ -1006,11 +1006,7 @@ func (s *Scanner) checkCoreDLPCombinations(values []string, n, size int, decodes
 		indices[i] = i
 	}
 	for {
-		var concat strings.Builder
-		for _, idx := range indices {
-			concat.WriteString(values[idx])
-		}
-		combined := concat.String()
+		combined := joinQuerySubsequence(values, indices, false)
 		views := []dlpTarget{{combined, dlpViewLabel("query_subsequence"), ""}}
 		// Concatenation can create a percent escape across value boundaries.
 		// The original components' convergence says nothing about that view.
@@ -1036,17 +1032,8 @@ func (s *Scanner) checkCoreDLPCombinations(values []string, n, size int, decodes
 				}
 			}
 		}
-		// Advance to next combination in lexicographic order.
-		i := size - 1
-		for i >= 0 && indices[i] == n-size+i {
-			i--
-		}
-		if i < 0 {
+		if !nextCombination(indices, n) {
 			break
-		}
-		indices[i]++
-		for j := i + 1; j < size; j++ {
-			indices[j] = indices[j-1] + 1
 		}
 	}
 	return Result{Allowed: true}

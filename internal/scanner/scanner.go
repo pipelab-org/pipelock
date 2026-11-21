@@ -4325,6 +4325,27 @@ func querySubsequenceValues(rawQuery string) []string {
 	return values
 }
 
+// joinQuerySubsequence builds the matching view or the source spelling with
+// field boundaries preserved for joined-prose and keyword context checks.
+func joinQuerySubsequence(values []string, indices []int, separate bool) string {
+	var length int
+	for _, idx := range indices {
+		length += len(values[idx])
+	}
+	if separate {
+		length += len(indices) - 1
+	}
+	var joined strings.Builder
+	joined.Grow(length)
+	for i, idx := range indices {
+		if separate && i > 0 {
+			joined.WriteByte(0)
+		}
+		joined.WriteString(values[idx])
+	}
+	return joined.String()
+}
+
 // checkDLPCombinations generates all ordered combinations of the given size
 // from the values slice and checks each concatenation against DLP patterns.
 func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, target string, memo *queryLessDLPMemo, decodes *decodingMemo) (result Result, warnMatches []WarnMatch) {
@@ -4338,26 +4359,18 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, t
 	}
 
 	for {
-		var b strings.Builder
-		var proseSource strings.Builder
-		for i, idx := range indices {
-			b.WriteString(values[idx])
-			if i > 0 {
-				proseSource.WriteByte(0)
-			}
-			proseSource.WriteString(values[idx])
-		}
-		concat := b.String()
-		source := proseSource.String()
-
-		candidates := []dlpTarget{
-			{concat, dlpViewLabel("query_subsequence"), source},
-		}
+		concat := joinQuerySubsequence(values, indices, false)
+		candidates := []dlpTarget{{concat, dlpViewLabel("query_subsequence"), ""}}
 		for _, d := range decodeEncodingsRecursiveWithDecodes(concat, decodes) {
-			candidates = append(candidates, dlpTarget{d.text, dlpViewLabel(d.encoding), source})
+			candidates = append(candidates, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 		}
 
+		var source string
 		if decodes != nil && decodes.keywordURL != nil {
+			source = joinQuerySubsequence(values, indices, true)
+			for i := range candidates {
+				candidates[i].proseSource = source
+			}
 			decodes.keywordURL.targets = append(decodes.keywordURL.targets, candidates...)
 		}
 
@@ -4365,8 +4378,11 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, t
 			cleaned := normalize.ForDLP(candidate.text)
 
 			for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
+				if source == "" {
+					source = joinQuerySubsequence(values, indices, true)
+				}
 				p := s.dlpPatterns[idx]
-				if start, end, ok := p.matchSpanWithDecodes(cleaned, candidate.proseSource, decodes); ok {
+				if start, end, ok := p.matchSpanWithDecodes(cleaned, source, decodes); ok {
 					// The reassembled candidate is a token the URL-wide check never
 					// saw, so it must itself be a grant for this host.
 					surface := s.urlDLPAudienceSurfaceForTarget(p, target, memo)
