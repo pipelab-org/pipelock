@@ -163,6 +163,13 @@ func TestSessionManager_DisabledAirlockStructReleasesTiers(t *testing.T) {
 	if changed, _, _ := sess.EscalateAirlock(config.AirlockTierDrain, airlockTriggerOnCritical); changed {
 		t.Fatal("disabled airlock struct accepted an escalation")
 	}
+	found, changed, _, to := sm.ForceSetAirlockTier(sess.key, config.AirlockTierDrain)
+	if !found || changed || to == config.AirlockTierDrain {
+		t.Fatalf("assignment while disabled = found:%v changed:%v to:%q", found, changed, to)
+	}
+	if got := airlockTierForScope(sess, scope); got != config.AirlockTierNone {
+		t.Fatalf("assignment while disabled stored tier %q", got)
+	}
 	if sess.ThreatScore() != score {
 		t.Fatalf("threat score = %g, want %g", sess.ThreatScore(), score)
 	}
@@ -217,6 +224,53 @@ func TestProxy_AirlockEscalationAfterReload(t *testing.T) {
 				t.Errorf("GET status=%d trips=%d body=%q, want status=%d trips=%d", code, trips, body, tc.wantStatus, tc.wantTrips)
 			}
 		})
+	}
+}
+
+// Operator assignment is the same tier write as escalation. After airlock is
+// off, admission still enforces a stored tier and timer recovery does not run,
+// so a quarantine assignment must not land and a later enable must still accept one.
+func TestProxy_AirlockAssignmentAfterRelease(t *testing.T) {
+	scope := adaptiveScopeForHost("api.vendor.example")
+	other := adaptiveScopeForHost("other.vendor.example")
+	p, sess := quarantinedAirlockProxy(t, scope, other)
+	next := p.CurrentConfig().Clone()
+	next.SessionProfiling.Enabled = true
+	next.AdaptiveEnforcement.Enabled = true
+	next.Airlock.Enabled = false
+	next.Taint.Enabled = true
+	if !p.Reload(next, mustScanner(t, next)) {
+		t.Fatal("reload rejected")
+	}
+	assertAirlockReleased(t, sess, scope, other)
+
+	sm := p.sessionMgrPtr.Load()
+	found, changed, from, to := sm.ForceSetAirlockTier(sess.key, config.AirlockTierDrain)
+	if !found || changed || to == config.AirlockTierDrain {
+		t.Fatalf("assignment after release = found:%v changed:%v from:%q to:%q", found, changed, from, to)
+	}
+	assertAirlockReleased(t, sess, scope, other)
+	if code, body, trips := forwardAirlockProbe(t, p); code != http.StatusOK || trips != 1 || strings.Contains(body, "airlock") {
+		t.Fatalf("assignment after release denied traffic: status=%d trips=%d body=%q", code, trips, body)
+	}
+
+	next = p.CurrentConfig().Clone()
+	next.Airlock.Enabled = true
+	if !p.Reload(next, mustScanner(t, next)) {
+		t.Fatal("re-enable reload rejected")
+	}
+	if p.sessionMgrPtr.Load() != sm || sm.SessionByKey(sess.key) != sess {
+		t.Fatal("re-enable replaced the session store")
+	}
+	found, changed, _, to = sm.ForceSetAirlockTier(sess.key, config.AirlockTierDrain)
+	if !found || !changed || to != config.AirlockTierDrain {
+		t.Fatalf("assignment after re-enable = found:%v changed:%v to:%q", found, changed, to)
+	}
+	if got := airlockTierForScope(sess, scope); got != config.AirlockTierDrain {
+		t.Fatalf("destination tier after re-enable = %q, want drain", got)
+	}
+	if code, body, trips := forwardAirlockProbe(t, p); code != http.StatusForbidden || trips != 0 || !strings.Contains(body, "airlock") {
+		t.Fatalf("re-enabled assignment did not deny: status=%d trips=%d body=%q", code, trips, body)
 	}
 }
 

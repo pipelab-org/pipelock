@@ -1031,6 +1031,18 @@ func (h *SessionAPIHandler) HandleAirlock(w http.ResponseWriter, r *http.Request
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
+	if tier != tierNone {
+		if cfg := sm.AirlockConfig(); cfg == nil || !cfg.Enabled {
+			h.logSessionAdmin("airlock_disabled", clientIP, key, "airlock is not enabled", http.StatusConflict)
+			http.Error(w, "airlock is not enabled; set airlock.enabled before assigning a quarantine tier", http.StatusConflict)
+			return
+		}
+		if to != tier {
+			h.logSessionAdmin("airlock_not_assigned", clientIP, key, from+"->"+to, http.StatusConflict)
+			http.Error(w, "airlock tier was not assigned", http.StatusConflict)
+			return
+		}
+	}
 
 	h.logSessionAdmin("airlock_ok", clientIP, key, from+"->"+to, http.StatusOK)
 

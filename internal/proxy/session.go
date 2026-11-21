@@ -261,6 +261,13 @@ func (s *SessionState) escalateAirlockForScope(scope, tier, trigger string) (cha
 func (s *SessionState) ForceSetAirlockTierAllScopes(tier, trigger, source string) (changed bool, from, to string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !s.airlockAssignmentAllowedLocked(tier) {
+		current := s.airlock.Tier()
+		if current == "" {
+			current = config.AirlockTierNone
+		}
+		return false, current, current
+	}
 	changed, from, to = s.airlock.ForceSetTierWithProvenance(tier, trigger, source)
 	for _, st := range s.scopes {
 		scopeChanged, scopeFrom, _ := st.airlock.ForceSetTierWithProvenance(tier, trigger, source)
@@ -272,6 +279,20 @@ func (s *SessionState) ForceSetAirlockTierAllScopes(tier, trigger, source string
 		}
 	}
 	return changed, from, to
+}
+
+// airlockAssignmentAllowedLocked reports whether an operator assignment may
+// write tier. A release to none stays available when airlock is off so a
+// stored quarantine can still be cleared. Any other tier needs the live
+// airlock consumer: admission enforces a stored tier without reading the
+// flag, and timer recovery does not run while that consumer is absent.
+// Caller holds s.mu. A session with no manager pointer is not gated.
+func (s *SessionState) airlockAssignmentAllowedLocked(tier string) bool {
+	if tier == config.AirlockTierNone || s.airlockCfg == nil {
+		return true
+	}
+	cfg := s.airlockCfg.Load()
+	return cfg != nil && cfg.Enabled
 }
 
 // maxAdaptiveScopes bounds the per-session destination-scope cardinality.
