@@ -753,7 +753,7 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		} else if old.DLP.SecretsFile != "" {
 			warnings = append(warnings, ReloadWarning{
 				Field: "dlp.secrets_file",
-				Message: fmt.Sprintf("secrets_file changed from %q to %q — secrets will be reloaded",
+				Message: fmt.Sprintf("secrets_file changed from %q to %q — request scanner reloads secrets",
 					old.DLP.SecretsFile, updated.DLP.SecretsFile),
 			})
 		}
@@ -1531,6 +1531,37 @@ func boolPtrEqual(a, b *bool) bool {
 		return true
 	}
 	return *a == *b
+}
+
+// DetectorInputChanges lists the reloadable fields that a scanner built at
+// startup keeps until restart. Callers report them as restart notices, not as
+// reload warnings, so strict mode does not refuse an otherwise valid reload.
+func DetectorInputChanges(old, updated *Config) []string {
+	var fields []string
+	if !reflect.DeepEqual(detectorPatterns(old.DLP.Patterns), detectorPatterns(updated.DLP.Patterns)) {
+		fields = append(fields, "dlp.patterns")
+	}
+	if old.DLP.ScanEnv != updated.DLP.ScanEnv {
+		fields = append(fields, "dlp.scan_env")
+	}
+	if old.DLP.SecretsFile != updated.DLP.SecretsFile {
+		fields = append(fields, "dlp.secrets_file")
+	}
+	if !reflect.DeepEqual(old.CanaryTokens, updated.CanaryTokens) {
+		fields = append(fields, "canary_tokens")
+	}
+	return fields
+}
+
+// detectorPatterns drops exempt_domains, which only apply to requests with a
+// destination host and so never change what a text-only detector matches.
+func detectorPatterns(patterns []DLPPattern) []DLPPattern {
+	out := make([]DLPPattern, len(patterns))
+	for i, p := range patterns {
+		p.ExemptDomains = nil
+		out[i] = p
+	}
+	return out
 }
 
 // dlpPatternsChanged returns true if the DLP pattern set differs in ways that

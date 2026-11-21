@@ -1084,7 +1084,7 @@ func (s *Server) finishConductorReloadLocked(before proxy.ReloadOutcome, publish
 	out.Trigger = "conductor"
 	// Enforcement-only bundles do not reconcile follower-local restart drift.
 	fields := slices.DeleteFunc(append([]string{}, before.RestartRequiredFields...), func(field string) bool {
-		return field == reloadSentryScrubberField
+		return field == reloadSentryScrubberField || field == reloadReceiptDetectorField || field == reloadCaptureDetectorField
 	})
 	out.RestartRequiredFields = s.sentryRestartFields(fields, s.liveConfig())
 	out.PendingRestart = len(out.RestartRequiredFields) != 0

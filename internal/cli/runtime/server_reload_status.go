@@ -21,11 +21,23 @@ type reloadAttempt struct {
 	restart    []string
 }
 
-const reloadSentryScrubberField = "sentry.scrubber"
+const (
+	reloadSentryScrubberField  = "sentry.scrubber"
+	reloadReceiptDetectorField = "flight_recorder.content_check"
+	reloadCaptureDetectorField = "capture.redaction"
+)
 
 func (s *Server) sentryRestartFields(fields []string, cfg *config.Config) []string {
 	if s.sentry.ScrubberNeedsRestart(cfg) {
 		fields = append(fields, reloadSentryScrubberField)
+	}
+	if cfg != nil && s.detectorStartupConfig != nil && len(config.DetectorInputChanges(s.detectorStartupConfig, cfg)) != 0 {
+		if s.recorder != nil && s.detectorStartupConfig.FlightRecorder.Redact {
+			fields = append(fields, reloadReceiptDetectorField)
+		}
+		if s.captureWriter != nil && s.detectorStartupConfig.FlightRecorder.Redact {
+			fields = append(fields, reloadCaptureDetectorField)
+		}
 	}
 	return fields
 }
