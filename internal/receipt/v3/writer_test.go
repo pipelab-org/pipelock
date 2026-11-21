@@ -352,3 +352,81 @@ func TestStreamWriterRestartRequiresPredecessorFlush(t *testing.T) {
 		t.Fatalf("restart after retry did not extend the history: %+v", result)
 	}
 }
+
+func TestStreamWriterFailedRolloverPinsLastConfirmedRecord(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	opts.Heartbeat = 0
+	w := requireWriter(t, opts, localWriterStorage())
+	if err := w.WriteHeartbeat(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	predecessor, tip := w.active.id, w.active.confirmed
+	w.active.file = errorWriterFile{StreamFile: w.active.file, syncErr: errWriterReplay}
+	if err := w.Rollover(t.Context()); !errors.Is(err, errWriterReplay) {
+		t.Fatalf("rollover = %v, want failed close flush", err)
+	}
+	if err := w.WriteHeartbeat(t.Context()); err != nil {
+		t.Fatalf("successor heartbeat: %v", err)
+	}
+	if err := w.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	streams := result.Histories[0].Streams
+	var previous, successor StreamResult
+	for _, stream := range streams {
+		switch stream.Stream {
+		case predecessor:
+			previous = stream
+		case w.active.id:
+			successor = stream
+		}
+	}
+	if len(streams) != 2 || previous.Tip == nil || *previous.Tip != tip ||
+		previous.End != "superseded_write_error" || successor.Previous != predecessor || successor.End != endedClosed {
+		t.Fatalf("rollover retained the wrong history: %+v", streams)
+	}
+	if err := w.WriteHeartbeat(t.Context()); !errors.Is(err, ErrWriterUnavailable) {
+		t.Fatalf("closed stream accepted heartbeat: %v", err)
+	}
+	if err := w.Rollover(t.Context()); !errors.Is(err, ErrWriterUnavailable) {
+		t.Fatalf("closed stream accepted rollover: %v", err)
+	}
+}
+
+func TestStreamWriterReportsScheduledHeartbeatFlushFailure(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	opts.Heartbeat = 0
+	opts.Coverage.ContentScan = true
+	opts.Detector = func(context.Context, string) scanner.TextDLPResult {
+		return scanner.TextDLPResult{Clean: true}
+	}
+	w := requireWriter(t, opts, localWriterStorage())
+	w.active.file = errorWriterFile{StreamFile: w.active.file, syncErr: errWriterReplay}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ticks := make(chan time.Time, 1)
+	ticks <- time.Now()
+	reported := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.runHeartbeats(ctx, ticks, func(err error) { reported <- err })
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	select {
+	case err := <-reported:
+		if !errors.Is(err, errWriterReplay) {
+			t.Fatalf("heartbeat callback = %v, want failed flush", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("heartbeat failure was not reported")
+	}
+	if err := w.WriteHeartbeat(t.Context()); err != nil {
+		t.Fatalf("heartbeat did not recover on the successor: %v", err)
+	}
+}

@@ -585,3 +585,89 @@ func TestStreamWriterAdmissionBatchRejectsOptionalPostEffectDecision(t *testing.
 		}
 	}
 }
+
+func TestStreamWriterRejectsInvalidAdmissionsWithoutAppending(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	opts.Heartbeat = 0
+	w := requireWriter(t, opts, localWriterStorage())
+	intent := writerTestIntent("intent")
+	invalid := intent
+	invalid.Attempt = nil
+	var unavailable *StreamWriter
+	for _, tc := range []struct {
+		name string
+		run  func() error
+		want string
+	}{
+		{"missing action writer", func() error { return unavailable.WriteAction(t.Context(), intent, PolicySnapshot{}) }, "writer is unavailable"},
+		{"intent without attempt", func() error { return w.WriteAction(t.Context(), invalid, PolicySnapshot{}) }, "does not match its effect phase"},
+		{"missing terminal writer", func() error { return unavailable.WriteTerminalResolution(t.Context(), intent, PolicySnapshot{}, 1) }, "writer is unavailable"},
+		{"intent submitted for terminal settlement", func() error { return w.WriteTerminalResolution(t.Context(), intent, PolicySnapshot{}, 1) }, "is not a terminal hold resolution"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.run(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("write = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	if w.active.confirmed.Seq != 0 {
+		t.Fatalf("refusal changed the stream tip: %+v", w.active.confirmed)
+	}
+	if err := w.WriteAction(t.Context(), intent, PolicySnapshot{}); err != nil {
+		t.Fatalf("valid admission after refusal: %v", err)
+	}
+}
+
+func TestStreamWriterClosesInterruptedHoldAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cause error
+		phase string
+	}{
+		{"unconfirmed hold", errWriterReplay, phaseDecision},
+		{"canceled confirmed hold", context.Canceled, phaseResolution},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := writerTestOptions(t.TempDir())
+			opts.Heartbeat = 0
+			w := requireWriter(t, opts, localWriterStorage())
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if errors.Is(tc.cause, context.Canceled) {
+				w.active.file = syncCallbackFile{StreamFile: w.active.file, syncCallback: sync.OnceFunc(cancel)}
+			} else {
+				w.active.file = errorWriterFile{StreamFile: w.active.file, syncErr: tc.cause}
+			}
+
+			hold := writerTestHold("interrupted")
+			hold.Hold.Parent = ""
+			if err := w.WriteAction(ctx, hold, PolicySnapshot{}); !errors.Is(err, tc.cause) || !errors.Is(err, ErrEffectNotReleased) {
+				t.Fatalf("write hold = %v, want %v and effect withheld", err, tc.cause)
+			}
+			if err := w.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			actions := readRecoveryActions(t, opts.Dir, w.active.id)
+			if len(actions) == 0 {
+				t.Fatal("interrupted hold left no signed settlement")
+			}
+			settlement := actions[len(actions)-1]
+			if settlement.ActionID != hold.ActionID || settlement.Phase != tc.phase || settlement.Verdict != verdictBlock ||
+				settlement.EffectRelation != relationNotAttempted {
+				t.Fatalf("settlement = %+v, want %s block without an attempt", settlement, tc.phase)
+			}
+			if tc.phase == phaseResolution {
+				if len(actions) != 2 || actions[0].Phase != phaseHold || settlement.Hold == nil ||
+					settlement.Hold.ID != hold.Hold.ID || settlement.Hold.ResolutionSource != "request_cancelled" {
+					t.Fatalf("cancellation did not settle the confirmed hold: %+v", actions)
+				}
+			} else if len(actions) != 1 || settlement.Hold != nil {
+				t.Fatalf("failure retained an unconfirmed hold in the successor: %+v", actions)
+			}
+			result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+			if got := writerTestCount(t, result, "blocked"); got != 1 {
+				t.Fatalf("blocked decisions = %d, want 1", got)
+			}
+		})
+	}
+}

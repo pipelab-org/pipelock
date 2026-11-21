@@ -24,6 +24,7 @@ func TestStreamWriterRejectedOptionsLeaveDirectoryReusable(t *testing.T) {
 		{"inconsistent private key", func(o *StreamWriterOptions) { o.SigningKey[len(o.SigningKey)-1] ^= 1 }, "does not match its public key"},
 		{"scanner absent", func(o *StreamWriterOptions) { o.Coverage.ContentScan = true; o.Detector = nil }, "requires a detector"},
 		{"fractional heartbeat", func(o *StreamWriterOptions) { o.Heartbeat = time.Millisecond }, "nonnegative whole number of seconds"},
+		{"oversized opener", func(o *StreamWriterOptions) { o.Identity.Instance = strings.Repeat("a", maxLineBytes) }, "exceeds the wire line limit"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
