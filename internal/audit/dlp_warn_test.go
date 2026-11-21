@@ -395,3 +395,80 @@ func TestLogDLPCredentialAudienceAllow_RedactsCredentialBearingContext(t *testin
 		}
 	})
 }
+
+func TestLogDLPIssuerJoinedViewAllow_EmitsBoundedFields(t *testing.T) {
+	var buf bytes.Buffer
+	logger, err := New("json", "custom", "", true, true)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	logger.zl = logger.zl.Output(&buf)
+	ctx, err := NewHTTPLogContext("GET", "https://records.vendor.example/detail?wo=41111111&site=11111111", "192.0.2.7", "req-joined-view", "agent-one")
+	if err != nil {
+		t.Fatalf("NewHTTPLogContext: %v", err)
+	}
+	logger.LogDLPIssuerJoinedViewAllow(ctx, "records.vendor.example")
+
+	line := strings.TrimSpace(buf.String())
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		t.Fatalf("decode audit event: %v", err)
+	}
+	if entry["event"] != "dlp_issuer_joined_view_allow" || entry["surface"] != "url_query_joined" ||
+		entry["destination"] != "records.vendor.example" || entry["request_id"] != "req-joined-view" ||
+		entry["mitre_technique"] != TechniqueForScanner("dlp") || entry["mitre_technique"] == "" {
+		t.Fatalf("joined view allow audit fields = %#v", entry)
+	}
+	if _, named := entry["pattern"]; named {
+		t.Fatalf("joined view allow named a pattern: %#v", entry)
+	}
+	for _, leaked := range []string{"41111111", "11111111", "wo=", "site=", "entropy"} {
+		if strings.Contains(line, leaked) {
+			t.Fatalf("joined view allow event leaked %q: %s", leaked, line)
+		}
+	}
+}
+
+func TestLogDLPIssuerJoinedViewAllow_EmitterReceivesEvent(t *testing.T) {
+	var buf bytes.Buffer
+	logger, err := New("json", "custom", "", true, true)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	logger.zl = logger.zl.Output(&buf)
+	sink := &collectingSink{}
+	emitter := emit.NewEmitter("test-dlp-issuer-joined-view", sink)
+	logger.SetEmitter(emitter)
+	t.Cleanup(func() { _ = emitter.Close() })
+
+	ctx, err := NewHTTPLogContext("GET", "https://records.vendor.example/detail", "192.0.2.8", "req-joined-view-2", "agent-two")
+	if err != nil {
+		t.Fatalf("NewHTTPLogContext: %v", err)
+	}
+	logger.LogDLPIssuerJoinedViewAllow(ctx, "records.vendor.example")
+	_ = emitter.Close()
+
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if len(sink.events) != 1 {
+		t.Fatalf("emitter received %d events, want 1", len(sink.events))
+	}
+	ev := sink.events[0]
+	if ev.Type != string(EventDLPIssuerJoinedViewAllow) || ev.Fields["destination"] != "records.vendor.example" {
+		t.Fatalf("emitted event = %+v", ev)
+	}
+}
+
+func TestLogDLPIssuerJoinedViewAllow_NoEmitter(t *testing.T) {
+	var buf bytes.Buffer
+	logger, err := New("json", "custom", "", true, true)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	logger.zl = logger.zl.Output(&buf)
+	logger.LogDLPIssuerJoinedViewAllow(LogContext{}, "records.vendor.example")
+	if !strings.Contains(buf.String(), "dlp_issuer_joined_view_allow") {
+		t.Fatalf("event not written without an emitter: %q", buf.String())
+	}
+	NewNop().LogDLPIssuerJoinedViewAllow(LogContext{}, "records.vendor.example")
+}
