@@ -379,3 +379,25 @@ func wildcardMatch(value, pattern string) bool {
 	}
 	return true
 }
+
+// forwardPreSendTaintRecheck re-evaluates taint for a forward request whose
+// admission was decided before a required receipt wait. It returns a refusal
+// reason when the live result is stricter than the admitted one: a block, a
+// new ask on a request admitted without approval, a task-permission
+// requirement the admission did not satisfy, or a task change for an
+// admission bound to its task. Approval cannot be requested at this point.
+func forwardPreSendTaintRecheck(cfg *config.Config, rec session.Recorder, outReq *http.Request, task *forwardTaskAction, admitted taintDecision, reauthorized bool) string {
+	after := evaluateHTTPTaskTaint(cfg, rec, outReq.Method, outReq.URL, requestHasBody(outReq), task)
+	granted := admitted.Result.Reason == session.TaskPermissionGranted || admitted.Result.Reason == session.TaskApprovalGranted
+	switch {
+	case after.Result.Decision == session.PolicyBlock:
+		return after.Result.Reason
+	case (reauthorized || granted) && after.Task.CurrentTaskID != admitted.Task.CurrentTaskID:
+		return session.TaskApprovalStale
+	case after.Result.Reason == session.TaskPermissionRequired && !granted:
+		return session.TaskApprovalStale
+	case after.Result.Decision == session.PolicyAsk && admitted.Result.Decision == session.PolicyAllow && !reauthorized:
+		return after.Result.Reason
+	}
+	return ""
+}

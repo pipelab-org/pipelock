@@ -2645,13 +2645,20 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Required receipt scanning and durability can outlast task admission.
 	// Without required receipts nothing waits between the check above and
 	// the send, so only the required path needs to look again.
-	if cfg.FlightRecorder.RequireReceipts && !taskAdmissionCurrent() {
-		outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, session.TaskApprovalStale
-		outcomeReceipt.Verdict = config.ActionBlock
-		outcomeReceipt.TaintDecision = session.PolicyBlock.String()
-		outcomeReceipt.TaintDecisionReason = session.TaskApprovalStale
-		writeTaskDenialResponse(session.TaskApprovalStale, staleTaskDetail)
-		return
+	if cfg.FlightRecorder.RequireReceipts {
+		reason, detail := session.TaskApprovalStale, staleTaskDetail
+		if taskAdmissionCurrent() {
+			reason = forwardPreSendTaintRecheck(cfg, forwardRec, outReq, &forwardTask, forwardTaint, forwardRequiresReauth)
+			detail = "session exposure changed while the required receipt was recorded"
+		}
+		if reason != "" {
+			outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, reason
+			outcomeReceipt.Verdict = config.ActionBlock
+			outcomeReceipt.TaintDecision = session.PolicyBlock.String()
+			outcomeReceipt.TaintDecisionReason = reason
+			writeTaskDenialResponse(reason, detail)
+			return
+		}
 	}
 	resp, err := p.client.Do(outReq)
 	if err != nil {

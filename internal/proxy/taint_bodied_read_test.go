@@ -16,6 +16,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -381,6 +382,64 @@ func TestReverseTaintBodiedReadAndExtensionMethodsBlocked(t *testing.T) {
 			rp.ServeHTTP(rw, r)
 			if rw.Code != http.StatusForbidden || upstreamHits.Load() != before {
 				t.Fatalf("bodied reverse %s status=%d hits=%d (before=%d) body=%s", method, rw.Code, upstreamHits.Load(), before, rw.Body)
+			}
+		})
+	}
+}
+
+// Exposure recorded while a required intent receipt is written must be
+// enforced before the forward request is sent, for POST and bodied reads
+// alike. Intercept already re-checks after its receipt wait.
+func TestForwardTaintRechecksExposureAfterRequiredReceipt(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		method string
+		expose bool
+	}{
+		{name: "post_unchanged", method: http.MethodPost},
+		{name: "post_exposed_during_receipt", method: http.MethodPost, expose: true},
+		{name: "bodied_get_exposed_during_receipt", method: http.MethodGet, expose: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, _, _, target, _ := newTaintInterceptFixture(t, func(cfg *config.Config) {
+				cfg.ForwardProxy.Enabled = true
+				cfg.RequestBodyScanning.Enabled = true
+				cfg.FlightRecorder.RequireReceipts = true
+				cfg.DNS.HostOverrides = map[string][]string{interceptTaintHost: {"93.184.216.34"}}
+			})
+			rec := &SessionState{}
+			WithTaintRecorder(rec)(p)
+			receipts := newReceiptProxyHelperWithMetrics(t, p.metrics)
+			intents := 0
+			receipts.emitter = receipt.NewEmitter(receipt.EmitterConfig{
+				Recorder: receipts.rec, PrivKey: receipts.priv,
+				OnReceipt: func(rcpt *receipt.Receipt) {
+					if rcpt.ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
+						return
+					}
+					intents++
+					if tc.expose {
+						observeHTTPResponseFindings(rec, p.CurrentConfig(), "http://untrusted.example/page", "text/html", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+					}
+				},
+			})
+			p.receiptEmitterPtr.Store(receipts.emitter)
+			var upstreamCalls atomic.Int32
+			p.client = &http.Client{Transport: forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
+				upstreamCalls.Add(1)
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("ok")), Request: r}, nil
+			})}
+			target = strings.Replace(target, "https://", "http://", 1)
+			req := httptest.NewRequestWithContext(t.Context(), tc.method, target, strings.NewReader("payload=1"))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			w := httptest.NewRecorder()
+			p.handleForwardHTTP(w, req)
+			wantStatus, wantCalls := http.StatusOK, int32(1)
+			if tc.expose {
+				wantStatus, wantCalls = http.StatusForbidden, 0
+			}
+			if intents != 1 || w.Code != wantStatus || upstreamCalls.Load() != wantCalls {
+				t.Fatalf("intents=%d status=%d calls=%d body=%s, want status %d calls %d", intents, w.Code, upstreamCalls.Load(), w.Body, wantStatus, wantCalls)
 			}
 		})
 	}
