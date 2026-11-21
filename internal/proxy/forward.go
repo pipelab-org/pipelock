@@ -307,7 +307,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if issuedHostRelief && result.Allowed {
 		issuedShard := selectedReceiptShard
 		issuedShard.Transport = TransportConnect
-		if err := p.recordIssuerQueryAllow(r.Context(), cfg, targetCtx, syntheticURL, requestID, agent, r.Method, issuerQueryIssuedRedirect, issuedShard); err != nil {
+		if err := p.recordIssuerQueryAllow(r.Context(), cfg, targetCtx, issuerQueryIssuedRedirect, withReceiptShard(receipt.EmitOpts{Transport: issuedShard.Transport, Method: r.Method, Target: syntheticURL, RequestID: requestID, Agent: agent}, issuedShard)); err != nil {
 			blockedErr := newIssuerAllowReceiptBlockedRequest(err)
 			p.logger.LogBlocked(targetCtx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordBlocked(host, blockedErr.layer, time.Since(start), agentLabel)
@@ -317,7 +317,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := p.recordCredentialAudienceAllows(r.Context(), cfg, targetCtx, result.CredentialAudienceAllows, TransportConnect, http.MethodConnect, syntheticURL, requestID, agent, selectedReceiptShard); err != nil {
+	if err := p.recordCredentialAudienceAllows(r.Context(), cfg, targetCtx, result.CredentialAudienceAllows, withReceiptShard(receipt.EmitOpts{Transport: TransportConnect, Method: http.MethodConnect, Target: syntheticURL, RequestID: requestID, Agent: agent}, selectedReceiptShard)); err != nil {
 		if refuseReceiptCapacity(w, err) {
 			return
 		}
@@ -1294,7 +1294,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(fwdScanCtx)
 	result := sc.Scan(fwdScanCtx, targetURL)
 	p.metrics.RecordURLDecisions(TransportForward, result.Decisions)
-	if err := p.recordCredentialAudienceAllows(r.Context(), cfg, actx, result.CredentialAudienceAllows, TransportForward, r.Method, targetURL, requestID, agent, selectedReceiptShard); err != nil {
+	if err := p.recordCredentialAudienceAllows(r.Context(), cfg, actx, result.CredentialAudienceAllows, withReceiptShard(receipt.EmitOpts{Transport: TransportForward, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}, selectedReceiptShard)); err != nil {
 		if refuseReceiptCapacity(w, err) {
 			return
 		}
@@ -1765,7 +1765,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				p.metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
 			},
 			OnCredentialAudienceAllows: func(allows []scanner.CredentialAudienceAllow) error {
-				return p.recordCredentialAudienceAllows(r.Context(), cfg, actx, allows, TransportForward, r.Method, targetURL, requestID, agent, selectedReceiptShard)
+				return p.recordCredentialAudienceAllows(r.Context(), cfg, actx, allows, withReceiptShard(receipt.EmitOpts{Transport: TransportForward, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}, selectedReceiptShard))
 			},
 		}
 		applyContentEntropyConfig(&bodyReq, cfg)
@@ -2058,7 +2058,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Request header DLP scanning.
 	// hadFinding is true even in audit/warn mode so near-miss signals are recorded.
 	forwardHeaderBlocked, forwardHeaderHadFinding, forwardHeaderReason, forwardHeaderReceiptErr := p.evalHeaderDLP(r.Context(), headerDLPParams{
-		headers: r.Header, cfg: cfg, sc: sc, logger: p.logger, actx: actx,
+		forwardsHeaders: true,
+		headers:         r.Header, cfg: cfg, sc: sc, logger: p.logger, actx: actx,
 		hostname: r.URL.Hostname(), target: targetURL, metricAgent: agentLabel, start: start,
 	})
 	if refuseTextDLPScanErrorForContext(r.Context(), w, p.logger, actx, requestID, forwardHeaderReceiptErr) {

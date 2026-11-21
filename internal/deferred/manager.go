@@ -267,10 +267,16 @@ func (e *CascadeLimitError) Unwrap() error {
 }
 
 func HoldFailureSource(err error) string {
-	if errors.Is(err, ErrCascadeLimit) {
+	switch {
+	case errors.Is(err, ErrCascadeLimit):
 		return SourceCascadeLimit
+	case errors.Is(err, context.DeadlineExceeded):
+		return SourceTimeout
+	case errors.Is(err, context.Canceled):
+		return SourceCancel
+	default:
+		return SourceCapacity
 	}
-	return SourceCapacity
 }
 
 // NewManager constructs a bounded held-action manager.
@@ -438,6 +444,9 @@ func (m *Manager) HoldContext(ctx context.Context, action HeldAction) error {
 		}
 		action.receiptConfirmed = true
 		delay = time.Until(action.Deadline)
+		if action.cascadeBlocked {
+			delay = 0
+		}
 	} else {
 		if err := m.appendJournal(journalEntryFromHeld(action, StateHeld, "")); err != nil {
 			m.mu.Unlock()
@@ -538,14 +547,27 @@ func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string,
 	held := m.holds[deferID]
 	for held != nil && m.holds[deferID] == held {
 		pending := held.confirming
-		if pending == nil {
-			pending = m.confirmingSessions[held.Authority.SessionID]
+		if pending != nil {
+			// This hold must be published before it can be resolved.
+			m.mu.Unlock()
+			<-pending
+			m.mu.Lock()
+			continue
 		}
+		if finalDecision != config.ActionAllow || held.cascadeBlocked || !time.Now().Before(held.Deadline) {
+			break
+		}
+		pending = m.confirmingSessions[held.Authority.SessionID]
 		if pending == nil {
 			break
 		}
+		deadline := time.NewTimer(time.Until(held.Deadline))
 		m.mu.Unlock()
-		<-pending
+		select {
+		case <-pending:
+		case <-deadline.C:
+		}
+		deadline.Stop()
 		m.mu.Lock()
 	}
 	if held == nil || m.holds[deferID] != held || held.state != StateHeld {
@@ -916,7 +938,8 @@ func (m *Manager) removeSessionHoldLocked(sessionID, deferID string) {
 }
 
 // markCascadeBlocked denies every still-held descendant before any of
-// their callbacks run. A concurrent resolver sees the same forced block.
+// their callbacks run. It returns the published descendants. A reserved
+// descendant settles immediately if its own confirmation succeeds.
 func (m *Manager) markCascadeBlocked(frontier []string) []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -927,12 +950,14 @@ func (m *Manager) markCascadeBlocked(frontier []string) []string {
 			for _, parent := range frontier {
 				if held.ParentDeferID == parent {
 					held.cascadeBlocked = true
+					if held.confirming == nil {
+						descendants = append(descendants, id)
+					}
 					children = append(children, id)
 					break
 				}
 			}
 		}
-		descendants = append(descendants, children...)
 		frontier = children
 	}
 	return descendants

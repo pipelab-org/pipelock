@@ -29,7 +29,6 @@ func writerTestOptions(dir string) StreamWriterOptions {
 		},
 		Identity:   Writer{Instance: "instance\u2028and\u2029literal\\u2028", Product: "example", Version: "1"},
 		PolicyHash: Digest([]byte("example policy")),
-		Heartbeat:  time.Minute,
 	}
 }
 
@@ -281,8 +280,22 @@ func TestStreamWriterScheduledHeartbeat(t *testing.T) {
 		defer close(done)
 		w.runHeartbeats(ctx, ticks, nil)
 	}()
-	ticks <- time.Now()
-	<-flushed
+	deadline, stop := context.WithTimeout(t.Context(), 5*time.Second)
+	defer stop()
+	select {
+	case ticks <- time.Now():
+	case <-done:
+		t.Fatal("heartbeat loop stopped before receiving a tick")
+	case <-deadline.Done():
+		t.Fatal("heartbeat loop did not receive a tick")
+	}
+	select {
+	case <-flushed:
+	case <-done:
+		t.Fatal("heartbeat loop stopped before flushing")
+	case <-deadline.Done():
+		t.Fatal("heartbeat did not flush")
+	}
 	cancel()
 	<-done
 	if w.active.beat != 1 || w.active.confirmed.Seq != 1 {
@@ -391,6 +404,37 @@ func TestStreamWriterFailedRolloverPinsLastConfirmedRecord(t *testing.T) {
 	}
 	if err := w.Rollover(t.Context()); !errors.Is(err, ErrWriterUnavailable) {
 		t.Fatalf("closed stream accepted rollover: %v", err)
+	}
+}
+
+func TestStreamWriterHeartbeatCallbackCanClose(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	w := requireWriter(t, opts, localWriterStorage())
+	w.active.file = errorWriterFile{StreamFile: w.active.file, syncErr: errWriterReplay}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ticks := make(chan time.Time, 1)
+	ticks <- time.Now()
+	done := make(chan struct{})
+	w.stopHeartbeat = func() {
+		cancel()
+		<-done
+	}
+	reported := make(chan error, 1)
+	go func() {
+		defer close(done)
+		w.runHeartbeats(ctx, ticks, func(error) {
+			reported <- w.Close(t.Context(), nil)
+		})
+	}()
+	select {
+	case err := <-reported:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("heartbeat callback could not close the writer")
 	}
 }
 

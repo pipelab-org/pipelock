@@ -261,10 +261,16 @@ func emitHoldFailureResolution(opts MCPProxyOpts, logW io.Writer, holdErr error,
 		Method:           hf.Method,
 		Reason:           hf.Reason,
 	})
-	if source == deferred.SourceCascadeLimit {
+	switch source {
+	case deferred.SourceCascadeLimit:
 		return "pipelock: defer cascade depth exceeded", emitErr
+	case deferred.SourceTimeout:
+		return "pipelock: defer confirmation timed out", emitErr
+	case deferred.SourceCancel:
+		return "pipelock: defer confirmation canceled", emitErr
+	default:
+		return "pipelock: defer capacity exceeded", emitErr
 	}
-	return "pipelock: defer capacity exceeded", emitErr
 }
 
 const (

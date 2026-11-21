@@ -1974,6 +1974,53 @@ func TestApprovalAfterConfirmationCannotReleaseExpiredHold(t *testing.T) {
 	}
 }
 
+func TestPublishedHoldExpiresDuringSiblingConfirmation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := NewManager(Config{Enabled: true, Timeout: time.Second})
+		resolved := make(chan Resolution, 2)
+		parent := HeldAction{
+			DeferID: "parent", ActionID: "parent", Authority: AuthoritySnapshot{SessionID: "session"},
+			Resolve: func(res Resolution) { resolved <- res },
+		}
+		if err := m.Hold(parent); err != nil {
+			t.Fatal(err)
+		}
+		started, release := make(chan struct{}), make(chan struct{})
+		finish := sync.OnceFunc(func() { close(release) })
+		defer finish()
+		child := parent
+		child.DeferID, child.ActionID = "child", "child"
+		child.ConfirmHold = func(HeldAction) error {
+			close(started)
+			<-release
+			return nil
+		}
+		held := make(chan error, 1)
+		go func() { held <- m.Hold(child) }()
+		<-started
+		select {
+		case res := <-resolved:
+			if res.DeferID != parent.DeferID || res.FinalDecision != config.ActionBlock || res.ResolutionSource != SourceTimeout {
+				t.Fatalf("expired parent resolution = %+v", res)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("sibling confirmation blocked the published hold's timeout")
+		}
+		finish()
+		if err := <-held; err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case res := <-resolved:
+			if res.DeferID != child.DeferID || res.FinalDecision != config.ActionBlock || res.ResolutionSource != SourceCascade {
+				t.Fatalf("child resolution = %+v", res)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("confirmed descendant did not settle")
+		}
+	})
+}
+
 func TestConfirmedHoldKeepsCapacityWhileSettling(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		manager := NewManager(Config{Enabled: true, Timeout: time.Minute, MaxPending: 1})

@@ -491,8 +491,7 @@ func TestRecordCredentialAudienceAllows_DeduplicatesBeforeEmitting(t *testing.T)
 		Destination: "api.anthropic.com",
 	}
 	if err := p.recordCredentialAudienceAllows(t.Context(), cfg, audit.LogContext{},
-		[]scanner.CredentialAudienceAllow{allow, allow, other, allow},
-		TransportFetch, http.MethodPost, "https://api.openai.com/v1/responses", "dedup", "agent-1"); err != nil {
+		[]scanner.CredentialAudienceAllow{allow, allow, other, allow}, receipt.EmitOpts{Transport: TransportFetch, Method: http.MethodPost, Target: "https://api.openai.com/v1/responses", RequestID: "dedup", Agent: "agent-1"}); err != nil {
 		t.Fatalf("recordCredentialAudienceAllows: %v", err)
 	}
 
@@ -604,8 +603,7 @@ func TestReverseProxy_RecordCredentialAudienceAllows_Deduplicates(t *testing.T) 
 		Destination: "api.anthropic.com",
 	}
 	if err := rp.recordCredentialAudienceAllows(t.Context(), config.Defaults(), audit.LogContext{},
-		[]scanner.CredentialAudienceAllow{allow, allow, allow},
-		http.MethodPost, "https://api.anthropic.com/v1/messages", "reverse-dedup", "agent-1"); err != nil {
+		[]scanner.CredentialAudienceAllow{allow, allow, allow}, receipt.EmitOpts{Method: http.MethodPost, Target: "https://api.anthropic.com/v1/messages", RequestID: "reverse-dedup", Agent: "agent-1"}); err != nil {
 		t.Fatalf("recordCredentialAudienceAllows: %v", err)
 	}
 
@@ -1183,10 +1181,10 @@ func TestWSRelayRecordCredentialAudienceAllow_FailedEmitDoesNotDedupe(t *testing
 	relay := &wsRelay{proxy: p, cfg: cfg, targetURL: "wss://api.openai.com/v1", requestID: "ws-dedupe", agent: "agent-1"}
 	allow := scanner.CredentialAudienceAllow{PatternName: "OpenAI API Key", Surface: "websocket_frame", Destination: "api.openai.com"}
 
-	if err := relay.recordCredentialAudienceAllows([]scanner.CredentialAudienceAllow{allow}); err == nil {
+	if err := relay.recordCredentialAudienceAllows(t.Context(), []scanner.CredentialAudienceAllow{allow}); err == nil {
 		t.Fatal("first record with a closed recorder under require_receipts returned nil, want error")
 	}
-	if err := relay.recordCredentialAudienceAllows([]scanner.CredentialAudienceAllow{allow}); err == nil {
+	if err := relay.recordCredentialAudienceAllows(t.Context(), []scanner.CredentialAudienceAllow{allow}); err == nil {
 		t.Fatal("duplicate after a failed emit returned nil (false confirmation), want error")
 	}
 }
@@ -1207,7 +1205,7 @@ func TestWSRelayRecordCredentialAudienceAllow_ConfirmedEmitDedupes(t *testing.T)
 	relay := &wsRelay{proxy: p, cfg: cfg, targetURL: "wss://api.openai.com/v1", requestID: "ws-dedupe-ok", agent: "agent-1"}
 	allow := scanner.CredentialAudienceAllow{PatternName: "OpenAI API Key", Surface: "websocket_frame", Destination: "api.openai.com"}
 	for i := range 2 {
-		if err := relay.recordCredentialAudienceAllows([]scanner.CredentialAudienceAllow{allow}); err != nil {
+		if err := relay.recordCredentialAudienceAllows(t.Context(), []scanner.CredentialAudienceAllow{allow}); err != nil {
 			t.Fatalf("call %d: %v", i, err)
 		}
 	}
@@ -1341,7 +1339,7 @@ func TestAllowReceipts_RequireReceiptsNeedsDurableSync(t *testing.T) {
 			p.receiptEmitterPtr.Store(rph.emitter)
 
 			audienceErr := p.recordCredentialAudienceAllow(cfg, audit.LogContext{}, allow, TransportFetch, http.MethodPost, "https://api.openai.com/v1/responses", "durable", "agent-1")
-			queryErr := p.recordIssuerQueryAllow(t.Context(), cfg, audit.LogContext{}, "https://issuer.vendor.example/callback", "durable-q", "agent-1", http.MethodGet, issuerQueryOAuthRedirect)
+			queryErr := p.recordIssuerQueryAllow(t.Context(), cfg, audit.LogContext{}, issuerQueryOAuthRedirect, receipt.EmitOpts{Method: http.MethodGet, Target: "https://issuer.vendor.example/callback", RequestID: "durable-q", Agent: "agent-1"})
 			for name, err := range map[string]error{"credential audience": audienceErr, "issuer query": queryErr} {
 				if (err != nil) != tc.wantErr {
 					t.Fatalf("%s: err = %v, wantErr %v", name, err, tc.wantErr)

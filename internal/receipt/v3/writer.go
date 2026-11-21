@@ -35,15 +35,17 @@ const (
 // StreamWriterOptions captures the settings that describe a stream for its
 // whole lifetime. Prior keys are used only for startup verification.
 type StreamWriterOptions struct {
-	Dir              string
-	SigningKey       ed25519.PrivateKey
-	PriorSignerKeys  []ed25519.PublicKey
-	Coverage         Coverage
-	Identity         Writer
-	PolicyHash       string
-	Posture          *Posture
-	RecorderSession  string
-	Heartbeat        time.Duration
+	Dir             string
+	SigningKey      ed25519.PrivateKey
+	PriorSignerKeys []ed25519.PublicKey
+	Coverage        Coverage
+	Identity        Writer
+	PolicyHash      string
+	Posture         *Posture
+	RecorderSession string
+	Heartbeat       time.Duration
+	// OnHeartbeatError runs outside the heartbeat loop and may call Close.
+	// A callback already in progress coalesces further heartbeat failures.
 	OnHeartbeatError func(error)
 	Detector         receiptcontent.Detector
 	Clock            func() time.Time

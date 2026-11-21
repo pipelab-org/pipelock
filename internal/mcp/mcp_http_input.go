@@ -249,7 +249,8 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			receiptOpts.ParentActionID = actionID
 			receiptOpts.ActionID = receipt.NewActionID()
 		}
-		if opts.ReceiptV3 == nil && result.Blocked == nil && result.Deferred == nil && emitVerdict == config.ActionAllow && isPairedMCPMethod(mcpMethod) {
+		if result.Blocked == nil && result.Deferred == nil && emitVerdict == config.ActionAllow &&
+			(opts.ReceiptV3 != nil || isPairedMCPMethod(mcpMethod)) {
 			result.Outcome.Method = mcpMethod
 			receiptOpts.Outcome = &result.Outcome
 		}

@@ -45,8 +45,9 @@ type RequestTracker struct {
 // TrackedRequestOutcome carries the receipt metadata needed to emit a
 // post-response outcome for a previously admitted MCP request.
 type TrackedRequestOutcome struct {
-	Receipt receipt.EmitOpts
-	handle  *mcpOutcomeHandle
+	Receipt  receipt.EmitOpts
+	handle   *mcpOutcomeHandle
+	v3Parent bool
 	// Method is the JSON-RPC method of the matching request, used by
 	// response-side A2A routing (Agent Card vs field-aware body scan).
 	Method          string
@@ -159,7 +160,8 @@ func (t *RequestTracker) registerOutcome(id json.RawMessage, outcome TrackedRequ
 			return nil, nil
 		}
 		// A response to a duplicate outstanding ID has no unique owner.
-		if prior.outcome.handle != nil || outcome.handle != nil {
+		if prior.outcome.handle != nil || outcome.handle != nil ||
+			prior.outcome.v3Parent || outcome.v3Parent {
 			t.markAmbiguous(key)
 			retire(prior.outcome, "ambiguous_request_id")
 			retire(outcome, "ambiguous_request_id")

@@ -5,6 +5,7 @@ package v3
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -88,6 +89,24 @@ func (w *StreamWriter) WriteTerminalResolution(ctx context.Context, action Actio
 }
 
 func (w *StreamWriter) queueTerminalResolution(action Action, maxPending int) error {
+	// Keep an owned, schema-valid snapshot so a queued resolution cannot
+	// change under replay or prevent subsequent repairs from being written.
+	body, err := encodeWriterJSON(action)
+	if err != nil {
+		return err
+	}
+	parser := payloadParser{data: body}
+	values, parsed := parser.object(2)
+	if !parsed || parser.pos != len(body) {
+		return errors.New("receipt action body is outside the canonical wire layout")
+	}
+	if err := validateWriterBody(Common{Kind: kindAction, BodyV: wireKinds[kindAction].version}, values); err != nil {
+		return err
+	}
+	var snapshot Action
+	if err := json.Unmarshal(body, &snapshot); err != nil {
+		return err
+	}
 	w.terminalMu.Lock()
 	defer w.terminalMu.Unlock()
 	if w.terminalClosed {
@@ -97,7 +116,7 @@ func (w *StreamWriter) queueTerminalResolution(action Action, maxPending int) er
 		return errors.New("terminal receipt resolution queue is full")
 	}
 	startWorker := len(w.terminalPending) == 0
-	w.terminalPending = append(w.terminalPending, action)
+	w.terminalPending = append(w.terminalPending, snapshot)
 	if startWorker {
 		go w.flushTerminalResolutions()
 	}

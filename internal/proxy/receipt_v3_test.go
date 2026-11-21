@@ -16,6 +16,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
+	"net/textproto"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -32,6 +34,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
+	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -380,6 +384,69 @@ func TestV3WebSocketIntentPrecedesUpstreamHandshake(t *testing.T) {
 	}
 }
 
+func TestV3WebSocketFrameCredentialAllowanceFollowsWrite(t *testing.T) {
+	for _, want := range []string{"completed", "attempt_unknown", "not_released"} {
+		t.Run(want, func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, TransportWS, true, nil)
+			socket, peer := net.Pipe()
+			t.Cleanup(func() { _ = socket.Close(); _ = peer.Close() })
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			if deadline, ok := ctx.Deadline(); ok {
+				if err := socket.SetDeadline(deadline); err != nil {
+					t.Fatal(err)
+				}
+				if err := peer.SetDeadline(deadline); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx = p.v3ExceptionContext(ctx)
+			relay := &wsRelay{
+				proxy: p, cfg: p.CurrentConfig(), targetURL: "wss://upstream.vendor.example",
+				requestID: "request", upstreamConn: socket,
+			}
+			allows := []scanner.CredentialAudienceAllow{{PatternName: "test", Surface: "websocket_frame", Destination: "upstream.vendor.example"}}
+			for range 2 {
+				if err := relay.recordCredentialAudienceAllows(ctx, allows); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if actions := readV3TestActions(t, dir); len(actions) != 1 || actions[0].Phase != "intent" {
+				t.Fatalf("expected one confirmed exception before any write: %+v", actions)
+			}
+			switch want {
+			case "completed":
+				read := make(chan error, 1)
+				go func() { _, err := ws.ReadFrame(peer); read <- err }()
+				if _, err := relay.writePayload(ctx, boundaryUpstreamSend, ws.OpText, []byte("example"), receipt.EmitOpts{}); err != nil {
+					t.Fatal(err)
+				}
+				if err := <-read; err != nil {
+					t.Fatal(err)
+				}
+			case "attempt_unknown":
+				_ = peer.Close()
+				if _, err := relay.writePayload(ctx, boundaryUpstreamSend, ws.OpText, []byte("example"), receipt.EmitOpts{}); err == nil {
+					t.Fatal("closed peer accepted WebSocket message")
+				}
+			}
+			p.finishV3Exceptions(ctx, false)
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || result.Verdict != "VALID" {
+				t.Fatalf("invalid history: %+v (%v)", result, err)
+			}
+			if !slices.ContainsFunc(readV3TestActions(t, dir), func(a v3.Action) bool {
+				return a.Layer == credentialAudienceReceiptExtensionKey && a.OutcomeClass == want
+			}) {
+				t.Fatalf("missing credential exception outcome %q", want)
+			}
+		})
+	}
+}
+
 func TestV3WebSocketPayloadWaitsForReceipt(t *testing.T) {
 	for _, point := range []string{"open", "upstream", "upstream ping", "downstream", "downstream ping", "denied"} {
 		t.Run(point, func(t *testing.T) {
@@ -394,6 +461,10 @@ func TestV3WebSocketPayloadWaitsForReceipt(t *testing.T) {
 					return
 				}
 				defer func() { _ = conn.Close() }()
+				if point == "upstream ping" {
+					backendResult <- checkV3WebSocketPolicyClose(conn)
+					return
+				}
 				message, _, readErr := wsutil.ReadClientData(conn)
 				if strings.HasPrefix(point, "upstream") || point == "denied" {
 					if readErr == nil {
@@ -453,15 +524,22 @@ func TestV3WebSocketPayloadWaitsForReceipt(t *testing.T) {
 			if err := wsutil.WriteClientMessage(conn, opcode, []byte(message)); err != nil {
 				t.Fatal(err)
 			}
-			got, _, err := wsutil.ReadServerData(conn)
+			var got []byte
+			if point == "downstream ping" {
+				if err := checkV3WebSocketPolicyClose(conn); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				got, _, err = wsutil.ReadServerData(conn)
+			}
 			if point == "open" {
 				if err != nil || string(got) != message {
 					t.Fatalf("client received %q (%v)", got, err)
 				}
-			} else if err == nil {
+			} else if point != "downstream ping" && err == nil {
 				t.Fatalf("client received a refused payload: %q", got)
 			}
-			if point != "open" && point != "denied" {
+			if point != "open" && point != "denied" && point != "downstream ping" {
 				var closed wsutil.ClosedError
 				if !errors.As(err, &closed) || closed.Code != ws.StatusPolicyViolation ||
 					!strings.Contains(closed.Reason, string(blockreason.ReceiptEmissionFailed)) {
@@ -527,6 +605,24 @@ func assertTransportReceiptOrder(t *testing.T, observed <-chan bool, done <-chan
 	case <-timer.C:
 		t.Fatal("transport did not end")
 	}
+}
+
+func checkV3WebSocketPolicyClose(conn net.Conn) error {
+	frame, err := ws.ReadFrame(conn)
+	if err != nil {
+		return err
+	}
+	if frame.Header.OpCode != ws.OpClose {
+		return fmt.Errorf("received websocket opcode %v before policy close", frame.Header.OpCode)
+	}
+	if frame.Header.Masked {
+		ws.Cipher(frame.Payload, frame.Header.Mask, 0)
+	}
+	code, reason := ws.ParseCloseFrameData(frame.Payload)
+	if code != ws.StatusPolicyViolation || !strings.Contains(reason, string(blockreason.ReceiptEmissionFailed)) {
+		return fmt.Errorf("websocket close = %v %q, want receipt policy close", code, reason)
+	}
+	return nil
 }
 
 func TestV3InterceptIntentPrecedesRoundTrip(t *testing.T) {
@@ -643,6 +739,41 @@ func TestV3ExceptionAllowanceReceipts(t *testing.T) {
 	}
 	if err := p.recordV3IssuerCookieAllows(ctx, cfg, auditCtx, cookies, decision); err == nil {
 		t.Fatal("required allowances accepted a closed writer")
+	}
+}
+
+func TestV3FetchDoesNotRecordInboundCredentialAsSent(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportFetch, true, nil)
+	cfg := p.CurrentConfig()
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.ScanHeaders = true
+	audience := credentialAudienceCarrierCases()[0]
+	var sent bool
+	p.client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		sent = true
+		if r.Header.Get("Authorization") != "" {
+			t.Error("fetch forwarded an inbound authorization header")
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header), Request: r}, nil
+	})
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+url.QueryEscape(audience.target), nil)
+	r.Header.Set("Authorization", "Bearer "+audience.credential)
+	w := httptest.NewRecorder()
+	p.handleFetch(w, r)
+	if !sent || w.Code != http.StatusOK {
+		t.Fatalf("fetch sent=%t, status=%d", sent, w.Code)
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Verdict != "VALID" {
+		t.Fatalf("invalid history: %+v (%v)", result, err)
+	}
+	if slices.ContainsFunc(readV3TestActions(t, dir), func(a v3.Action) bool {
+		return a.Layer == credentialAudienceReceiptExtensionKey
+	}) {
+		t.Fatal("credential present only in inbound headers was recorded as sent")
 	}
 }
 
@@ -1011,6 +1142,30 @@ func TestV3ReverseEnvelopeMatchesSendReceipt(t *testing.T) {
 	}
 }
 
+func TestV3ReverseInformationalReceiptFailureCancelsUpstream(t *testing.T) {
+	p, writer, _, _ := newTestV3HTTPProxy(t, TransportReverse, true, nil)
+	target := &url.URL{Scheme: "https", Host: "upstream.vendor.example"}
+	reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
+	reverse.SetOwnerProxy(p)
+	var upstreamCanceled bool
+	reverse.proxy.Transport.(*reverseSigningRoundTripper).base = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if err := writer.Close(r.Context(), nil); err != nil {
+			return nil, err
+		}
+		if err := httptrace.ContextClientTrace(r.Context()).Got1xxResponse(http.StatusEarlyHints, textproto.MIMEHeader{}); err != nil {
+			return nil, err
+		}
+		upstreamCanceled = errors.Is(context.Cause(r.Context()), errReverseDeliveryReceipt)
+		return nil, io.ErrUnexpectedEOF
+	})
+	w := httptest.NewRecorder()
+	reverse.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+	if !upstreamCanceled || w.Code != http.StatusForbidden ||
+		!strings.Contains(w.Body.String(), `"direction":"response"`) {
+		t.Fatalf("upstream canceled=%t, status=%d, headers=%v", upstreamCanceled, w.Code, w.Header())
+	}
+}
+
 func TestV3ReverseSSERefusalLeavesHeaderStateUntouched(t *testing.T) {
 	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportReverse, false, nil)
 	cfg := p.ConfigPtr().Load().Clone()
@@ -1111,6 +1266,10 @@ func TestV3FetchConfirmsEachRedirectSend(t *testing.T) {
 	for _, closeBeforeRedirect := range []bool{false, true} {
 		t.Run(fmt.Sprintf("writer_closed=%t", closeBeforeRedirect), func(t *testing.T) {
 			p, writer, dir, keys := newTestV3HTTPProxy(t, TransportFetch, true, nil)
+			p.contractLoaderPtr.Store(testContractLoader(t, contractruntime.ModeLive,
+				contractruntimetest.HTTPEnforceRule("r-start", "upstream.vendor.example", "/start", http.MethodGet),
+				contractruntimetest.HTTPEnforceRule("r-next", "upstream.vendor.example", "/next", http.MethodGet),
+			))
 			hits := 0
 			p.client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 				hits++
@@ -1138,10 +1297,7 @@ func TestV3FetchConfirmsEachRedirectSend(t *testing.T) {
 				}
 				return resp, nil
 			})
-			w := httptest.NewRecorder()
-			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
-				"/fetch?url=https://upstream.vendor.example/start", nil)
-			p.handleFetch(w, r)
+			w := serveFetchLiveLock(t, p, "https://upstream.vendor.example/start")
 			if closeBeforeRedirect {
 				if hits != 1 || w.Code != http.StatusForbidden {
 					t.Fatalf("failed redirect confirmation: sends = %d, status = %d", hits, w.Code)
@@ -1158,6 +1314,17 @@ func TestV3FetchConfirmsEachRedirectSend(t *testing.T) {
 			if err != nil || result.Verdict != "VALID" || result.Counts.EffectsCompleted == nil ||
 				*result.Counts.EffectsCompleted != 3 {
 				t.Fatalf("expected two completed sends and one delivery: %+v (%v)", result, err)
+			}
+			actions := readV3TestActions(t, dir)
+			hop := slices.IndexFunc(actions, func(a v3.Action) bool {
+				return a.Phase == "intent" && a.EffectBoundary == boundaryUpstreamSend &&
+					a.Contract != nil && a.Contract.RuleID == "r-next"
+			})
+			if hop < 0 || !slices.ContainsFunc(actions, func(a v3.Action) bool {
+				return a.Phase == "intent" && a.EffectBoundary == boundaryDownstreamDelivery &&
+					a.ParentActionID == actions[hop].ActionID
+			}) {
+				t.Fatalf("fetch delivery was not linked to its final send: %+v", actions)
 			}
 		})
 	}

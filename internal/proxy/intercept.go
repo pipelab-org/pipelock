@@ -1094,7 +1094,7 @@ func newInterceptHandler(
 					if rescanned.Allowed {
 						// Under require_receipts the allow must be durably recorded
 						// before forwarding; nothing has been written to w yet.
-						if err := ic.Proxy.recordIssuerQueryAllow(r.Context(), ic.Config, actx, targetURL, ic.RequestID, ic.Agent, r.Method, allowKind, ic.receiptShard); err != nil {
+						if err := ic.Proxy.recordIssuerQueryAllow(r.Context(), ic.Config, actx, allowKind, withReceiptShard(receipt.EmitOpts{Transport: ic.receiptShard.Transport, Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}, ic.receiptShard)); err != nil {
 							blockedErr := newIssuerAllowReceiptBlockedRequest(err)
 							ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 							writeBlockedError(w,
@@ -1113,7 +1113,7 @@ func newInterceptHandler(
 		// buffered response is delivered below.
 		issuerProof.derived = issuerProof.derived || ic.resourceDerived(r.URL)
 		if ic.Proxy != nil {
-			if err := ic.Proxy.recordCredentialAudienceAllows(r.Context(), ic.Config, actx, urlResult.CredentialAudienceAllows, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent, ic.receiptShard); err != nil {
+			if err := ic.Proxy.recordCredentialAudienceAllows(r.Context(), ic.Config, actx, urlResult.CredentialAudienceAllows, withReceiptShard(receipt.EmitOpts{Transport: TransportConnect, Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}, ic.receiptShard)); err != nil {
 				if refuseReceiptCapacity(w, err) {
 					return
 				}
@@ -1482,7 +1482,7 @@ func newInterceptHandler(
 				},
 				OnCredentialAudienceAllows: func(allows []scanner.CredentialAudienceAllow) error {
 					if ic.Proxy != nil {
-						return ic.Proxy.recordCredentialAudienceAllows(r.Context(), ic.Config, actx, allows, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent, ic.receiptShard)
+						return ic.Proxy.recordCredentialAudienceAllows(r.Context(), ic.Config, actx, allows, withReceiptShard(receipt.EmitOpts{Transport: TransportConnect, Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}, ic.receiptShard))
 					}
 					for _, allow := range allows {
 						recordCredentialAudienceAllow(ic.Logger, ic.Metrics, actx, allow)
@@ -1835,7 +1835,7 @@ func newInterceptHandler(
 				ic.Metrics.RecordDLPDroppedMatch(match.PatternName, "header", reason)
 			}, func(allows []scanner.CredentialAudienceAllow) error {
 				if ic.Proxy != nil {
-					return ic.Proxy.recordCredentialAudienceAllows(r.Context(), ic.Config, actx, allows, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent, ic.receiptShard)
+					return ic.Proxy.recordCredentialAudienceAllows(r.Context(), ic.Config, actx, allows, withReceiptShard(receipt.EmitOpts{Transport: TransportConnect, Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}, ic.receiptShard))
 				}
 				for _, allow := range allows {
 					recordCredentialAudienceAllow(ic.Logger, ic.Metrics, actx, allow)

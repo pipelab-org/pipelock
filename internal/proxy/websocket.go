@@ -183,13 +183,31 @@ func (r *wsRelay) resetDroppedDLP() {
 	r.droppedDLPMu.Unlock()
 }
 
-func (r *wsRelay) recordCredentialAudienceAllows(allows []scanner.CredentialAudienceAllow) error {
+func (r *wsRelay) recordCredentialAudienceAllows(ctx context.Context, allows []scanner.CredentialAudienceAllow) error {
 	if r.proxy == nil || len(allows) == 0 {
 		return nil
 	}
 	allows = uniqueCredentialAudienceAllows(allows)
 	keyFor := func(allow scanner.CredentialAudienceAllow) string {
 		return allow.PatternName + "\x00" + allow.Surface + "\x00" + allow.Destination
+	}
+	actx := newHTTPAuditContext(r.auditProvenanceCtx(), r.proxy.logger, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
+	if exceptions, _ := ctx.Value(v3ExceptionsKey{}).(*v3Exceptions); exceptions != nil {
+		if exceptions.audience == nil {
+			exceptions.audience = make(map[string]struct{})
+		}
+		pending := allows[:0]
+		for _, allow := range allows {
+			key := keyFor(allow)
+			if _, exists := exceptions.audience[key]; !exists {
+				pending = append(pending, allow)
+				exceptions.audience[key] = struct{}{}
+			}
+		}
+		return r.proxy.recordV3CredentialAudienceAllows(ctx, r.cfg, actx, pending, receipt.EmitOpts{
+			Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
+			ParentActionID: r.requestActionID,
+		})
 	}
 	r.audienceMu.Lock()
 	defer r.audienceMu.Unlock()
@@ -199,7 +217,6 @@ func (r *wsRelay) recordCredentialAudienceAllows(allows []scanner.CredentialAudi
 			pending = append(pending, allow)
 		}
 	}
-	actx := newHTTPAuditContext(r.auditProvenanceCtx(), r.proxy.logger, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
 	admission := firstReceiptShard(r.clientFrameAdmission, r.receiptShard)
 	return confirmCredentialAudienceAllows(admission, pending, func(allow scanner.CredentialAudienceAllow, reserved receipt.EmitOpts) error {
 		if err := r.proxy.recordCredentialAudienceAllow(r.cfg, actx, allow, TransportWS, "WS", r.targetURL, r.requestID, r.agent, reserved); err != nil {
@@ -345,7 +362,8 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	w = p.withAdaptiveRefusal(w, refusalOpts)
 	// Carry the provenance grade from the moment identity resolves, so every
 	// audit context built from r.Context() below reports the real grade.
-	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
+	r = p.withV3Exceptions(r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth))))
+	defer p.finishV3Exceptions(r.Context(), false)
 	var upstreamReceipt *v3TransportReceipt
 	emitWebSocketReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptShard(opts, selectedReceiptShard)
@@ -463,7 +481,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(wsScanCtx)
 	result := sc.ScanWebSocket(wsScanCtx, targetURL)
 	p.metrics.RecordURLDecisions(TransportWS, result.Decisions)
-	if err := p.recordCredentialAudienceAllows(r.Context(), cfg, actx, result.CredentialAudienceAllows, TransportWS, "WS", targetURL, requestID, agent, selectedReceiptShard); err != nil {
+	if err := p.recordCredentialAudienceAllows(r.Context(), cfg, actx, result.CredentialAudienceAllows, withReceiptShard(receipt.EmitOpts{Transport: TransportWS, Method: "WS", Target: targetURL, RequestID: requestID, Agent: agent}, selectedReceiptShard)); err != nil {
 		if refuseReceiptCapacity(w, err) {
 			return
 		}
@@ -1296,7 +1314,9 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// admission checks above cannot taint even that caller's evidence.
 	p.taintIssuerSessionForStream(cfg, agent, clientIP, id.Auth, parsed)
 	upstreamAttempted = true
+	startV3Exceptions(r.Context())
 	upstreamConn, upstreamProtocol, dialErr := p.wsDialUpstream(r.Context(), targetURL, fwdHeaders, cfg)
+	p.finishV3Exceptions(r.Context(), dialErr == nil && upstreamConn != nil)
 	p.recordTransportOutcome(r.Context(), admissionReceipt, upstreamReceipt, dialErr == nil && upstreamConn != nil)
 	if dialErr != nil {
 		var ssrfErr *ssrfDialBlockError
@@ -1404,7 +1424,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		log.LogResponseScanExempt(actx, relay.hostname)
 	}
 
-	stats := relay.run(r.Context())
+	// The two relay directions own their writes independently of the
+	// completed handshake and its receipt accumulator.
+	relayCtx := context.WithValue(r.Context(), v3ExceptionsKey{}, (*v3Exceptions)(nil))
+	stats := relay.run(relayCtx)
 	capacityStopped := selectedReceiptShard.NativeLease.Stopping()
 	licenseRevoked := errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked)
 	if licenseRevoked {
@@ -1554,7 +1577,7 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 		if len(allMatches) > 0 || ctx.Err() != nil || scanIncomplete {
 			return
 		}
-		receiptErr = p.recordCredentialAudienceAllows(ctx, cfg, actx, audienceAllows, TransportWS, "WS", targetURL, actx.RequestID(), actx.Agent(), receiptShardFromContext(ctx))
+		receiptErr = p.recordCredentialAudienceAllows(ctx, cfg, actx, audienceAllows, withReceiptShard(receipt.EmitOpts{Transport: TransportWS, Method: "WS", Target: targetURL, RequestID: actx.RequestID(), Agent: actx.Agent()}, receiptShardFromContext(ctx)))
 	}()
 scanHeaders:
 	for _, key := range []string{
@@ -2030,7 +2053,7 @@ func (r *wsRelay) scanClientMessageBodyWithSurface(ctx context.Context, msg []by
 			r.recordClientFrameDroppedDLP(match, reason)
 		},
 		OnCredentialAudienceAllows: func(allows []scanner.CredentialAudienceAllow) error {
-			return r.recordCredentialAudienceAllows(allows)
+			return r.recordCredentialAudienceAllows(ctx, allows)
 		},
 	}
 	applyWebSocketContentEntropyConfig(&bodyReq, r.cfg)
@@ -2230,7 +2253,7 @@ func (r *wsRelay) handleClientTextResult(ctx context.Context, log *audit.Logger,
 		surface = "websocket_frame"
 	}
 	filteredMatches, audienceAllows := r.scanner.FilterTextDLPMatchesForDestination(dlpResult.Matches, r.targetURL, surface)
-	if err := r.recordCredentialAudienceAllows(audienceAllows); err != nil {
+	if err := r.recordCredentialAudienceAllows(ctx, audienceAllows); err != nil {
 		return true, r.blockOnCredentialAudienceReceiptFailure(log, err)
 	}
 	if opts.crossMessage && r.blockCrossMessageRedaction(log, filteredMatches) {
@@ -2289,7 +2312,7 @@ func (r *wsRelay) decideClientCrossMessageTextViews(ctx context.Context, log *au
 		r.scanner.EmitTextDLPWarnMatches(ctx, crossWarns)
 	}
 	crossDLP, audienceAllows := r.scanner.FilterTextDLPMatchesForDestination(crossDLP, r.targetURL, "websocket_frame")
-	if err := r.recordCredentialAudienceAllows(audienceAllows); err != nil {
+	if err := r.recordCredentialAudienceAllows(ctx, audienceAllows); err != nil {
 		return true, r.blockOnCredentialAudienceReceiptFailure(log, err)
 	}
 
@@ -3014,10 +3037,12 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 	baseCtx := ctx
 	finishWarnings := func() {}
 	defer func() {
+		r.proxy.finishV3Exceptions(ctx, false)
 		finishWarnings()
 		r.clientFrameAdmission.NativeLease.Release()
 	}()
 	for {
+		r.proxy.finishV3Exceptions(ctx, false)
 		finishWarnings()
 		ctx = baseCtx
 		r.clientFrameAdmission.NativeLease.Release()
@@ -3169,7 +3194,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				return
 			}
 			r.clientFrameAdmission = messageAdmission
-			ctx, finishWarnings = r.proxy.receiptWarningContext(baseCtx, messageAdmission)
+			ctx, finishWarnings = r.proxy.receiptWarningContext(r.proxy.v3ExceptionContext(baseCtx), messageAdmission)
 		}
 		if r.blockIdentityReload() {
 			blocked = true

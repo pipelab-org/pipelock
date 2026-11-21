@@ -74,9 +74,12 @@ func exerciseMCPV3Upstream(t *testing.T, surface string, live bool) {
 		intent string
 		err    error
 	}
-	atEntry := make(chan upstreamObservation, 2)
+	atEntry := make(chan upstreamObservation, 1)
+	tracker := NewRequestTracker()
 	observe := func(ctx context.Context) {
-		hits.Add(1)
+		if hits.Add(1) != 1 {
+			return
+		}
 		var observation upstreamObservation
 		defer func() { atEntry <- observation }()
 		result, err := v3.VerifyPaths(ctx, []string{dir}, verify)
@@ -104,8 +107,15 @@ func exerciseMCPV3Upstream(t *testing.T, surface string, live bool) {
 		blocked := make(chan BlockedRequest, 1)
 		ForwardScannedInput(
 			transport.NewStdioReader(strings.NewReader(cleanToolsCallRequest+"\n")),
-			v3TestPeer(func([]byte) error { observe(t.Context()); return nil }),
-			io.Discard, config.ActionWarn, config.ActionBlock, blocked, nil, NewRequestTracker(), opts,
+			v3TestPeer(func(message []byte) error {
+				observe(t.Context())
+				parent, ok := tracker.Consume(ParseMCPFrame(message).ID)
+				if !ok || parent.Receipt.ActionID == "" || parent.handle != nil {
+					t.Error("stdio tracking lost signed request metadata")
+				}
+				return nil
+			}),
+			io.Discard, config.ActionWarn, config.ActionBlock, blocked, nil, tracker, opts,
 		)
 		if refusal, denied := <-blocked; denied == live {
 			t.Fatalf("unexpected stdio denial state: denied=%t, refusal=%+v", denied, refusal)
@@ -559,7 +569,11 @@ func TestMCPV3DeferredSendUsesHoldAndIntent(t *testing.T) {
 			input, send := io.Pipe()
 			t.Cleanup(func() { _ = send.Close() })
 			done, reached := make(chan error, 1), make(chan error, 1)
+			var sendCount atomic.Int32
 			checkRelease := func(ctx context.Context) {
+				if sendCount.Add(1) != 1 {
+					return
+				}
 				result, err := v3.VerifyPaths(ctx, []string{dir}, verify)
 				if err == nil && (!hasMCPV3State(result, "outcome_unknown") || hasMCPV3State(result, "pending")) {
 					err = errors.New("held request reached upstream without a release intent")
@@ -633,6 +647,9 @@ func TestMCPV3DeferredSendUsesHoldAndIntent(t *testing.T) {
 			if err := <-done; err != nil {
 				t.Fatal(err)
 			}
+			if got := sendCount.Load(); got != 1 {
+				t.Fatalf("held request reached the peer %d times", got)
+			}
 			if err := writer.Close(ctx, nil); err != nil {
 				t.Fatal(err)
 			}
@@ -647,6 +664,12 @@ func TestMCPV3DeferredSendUsesHoldAndIntent(t *testing.T) {
 						a.OutcomeClass == "attempt_unknown"
 				}) {
 					t.Fatalf("missing failed send outcome: %+v", actions)
+				}
+				if surface == deferred.SurfaceMCPHTTPUpstream && !slices.ContainsFunc(actions, func(a v3.Action) bool {
+					return a.ParentActionID == held.ActionID && a.EffectBoundary == mcpV3Delivery &&
+						a.Pattern == "upstream_write_failed" && a.OutcomeClass == "completed"
+				}) {
+					t.Fatalf("generated error reply did not link to its held request: %+v", actions)
 				}
 				reopened, err := v3.OpenStreamWriter(ctx, mcpV3TestWriterOptions(dir, surface, nil))
 				if err != nil {

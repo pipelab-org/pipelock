@@ -1156,7 +1156,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			if issuedRelief && result.Allowed {
 				shard := receiptShardFromContext(req.Context())
 				shard.Transport = redirectTransport
-				if err := p.recordIssuerQueryAllow(req.Context(), currentCfg, redirectAuditCtx, redirectURL, requestID, agentName, req.Method, issuerQueryIssuedRedirect, shard); err != nil {
+				if err := p.recordIssuerQueryAllow(req.Context(), currentCfg, redirectAuditCtx, issuerQueryIssuedRedirect, withReceiptShard(receipt.EmitOpts{Transport: shard.Transport, Method: req.Method, Target: redirectURL, RequestID: requestID, Agent: agentName}, shard)); err != nil {
 					if isNativeCapacityStop(err) {
 						return err
 					}
@@ -1165,7 +1165,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 					return blockedErr
 				}
 			}
-			if err := p.recordCredentialAudienceAllows(req.Context(), currentCfg, redirectAuditCtx, result.CredentialAudienceAllows, redirectTransport, req.Method, redirectURL, requestID, agentName, receiptShardFromContext(req.Context())); err != nil {
+			if err := p.recordCredentialAudienceAllows(req.Context(), currentCfg, redirectAuditCtx, result.CredentialAudienceAllows, withReceiptShard(receipt.EmitOpts{Transport: redirectTransport, Method: req.Method, Target: redirectURL, RequestID: requestID, Agent: agentName}, receiptShardFromContext(req.Context()))); err != nil {
 				if isNativeCapacityStop(err) {
 					return err
 				}
@@ -1368,7 +1368,19 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				return err
 			}
 			if fetchReceipts != nil {
-				if err := fetchReceipts.confirm(p, req, currentCfg); err != nil {
+				hop := receipt.EmitOpts{
+					Verdict:             config.ActionAllow,
+					SessionTaintLevel:   redirectTaint.Risk.Level.String(),
+					SessionContaminated: redirectTaint.Risk.Contaminated,
+					RecentTaintSources:  redirectTaint.Risk.Sources,
+					SessionTaskID:       redirectTaint.Task.CurrentTaskID,
+					SessionTaskLabel:    redirectTaint.Task.CurrentTaskLabel,
+					AuthorityKind:       redirectTaint.Authority.String(),
+					TaintDecision:       redirectTaint.Result.Decision.String(),
+					TaintDecisionReason: redirectTaint.Result.Reason,
+					TaskOverrideApplied: redirectTaint.TaskOverrideApplied,
+				}
+				if err := fetchReceipts.confirm(p, req, currentCfg, withContractReceipt(gate, hop)); err != nil {
 					return err
 				}
 			}
@@ -5777,7 +5789,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(scanCtx)
 	result := sc.Scan(scanCtx, targetURL)
 	p.metrics.RecordURLDecisions(TransportFetch, result.Decisions)
-	if err := p.recordCredentialAudienceAllows(r.Context(), cfg, actx, result.CredentialAudienceAllows, TransportFetch, http.MethodGet, targetURL, requestID, agent, selectedReceiptShard); err != nil {
+	if err := p.recordCredentialAudienceAllows(r.Context(), cfg, actx, result.CredentialAudienceAllows, withReceiptShard(receipt.EmitOpts{Transport: TransportFetch, Method: http.MethodGet, Target: targetURL, RequestID: requestID, Agent: agent}, selectedReceiptShard)); err != nil {
 		if refuseReceiptCapacity(w, err) {
 			return
 		}
@@ -7315,6 +7327,15 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// records the actual bytes consumed for successful responses.
 	_ = resolved.Budget.RecordBytes(int64(len(body)))
 
+	deliveryParent := fetchAllowReceipt
+	if fetchReceipts != nil {
+		deliveryParent = fetchReceipts.opts
+	}
+	if !responseReceipts.confirm(p, w, r, cfg, deliveryParent) {
+		outcomeStatus, outcomeReason = strconv.Itoa(http.StatusForbidden), receiptEmissionFailedLayer
+		return
+	}
+
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration, agentLabel)
 	// fetchAllowReceipt was built (and, under require_receipts, already
@@ -7325,11 +7346,6 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		emitFetchReceipt(fetchAllowReceipt)
 	}
 	log.LogAllowed(actx, resp.StatusCode, len(body), duration)
-
-	if !responseReceipts.confirm(p, w, r, cfg, fetchAllowReceipt) {
-		outcomeStatus, outcomeReason = strconv.Itoa(http.StatusForbidden), receiptEmissionFailedLayer
-		return
-	}
 
 	shieldRewrite := shieldRewriteHeaderValue(shieldSummary)
 	setShieldRewriteHeader(w.Header(), shieldSummary)

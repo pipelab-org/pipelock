@@ -271,6 +271,12 @@ func TestMCPV3RestartSettlesUnsealedHold(t *testing.T) {
 	if err := cmd.ExecuteContext(ctx); err != nil {
 		t.Fatalf("restart: %v\n%s", err, &stderr)
 	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{
+		Directory: true, Keys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)},
+	})
+	if err != nil || result.Integrity != "ok" {
+		t.Fatalf("recovered receipt history: %+v (%v)", result, err)
+	}
 	action := findV3RecoveryResolution(t, dir)
 	if action.ActionID != "held-call" || action.Hold == nil || action.Hold.ID != holdID ||
 		action.Verdict != config.ActionBlock || action.Hold.ResolutionSource != deferred.SourceRestartRecovery {

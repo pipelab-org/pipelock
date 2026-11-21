@@ -58,7 +58,7 @@ func (o TrackedRequestOutcome) recordResponseOutcome(logW io.Writer, opts MCPPro
 // passes an outcome with a split reservation.
 func (o TrackedRequestOutcome) settleResult(logW io.Writer, opts MCPProxyOpts, status string, size int64, reason string) (bool, error) {
 	defer o.releaseNativeLease()
-	if o.Receipt.ActionID == "" {
+	if o.Receipt.ActionID == "" || opts.ReceiptV3 != nil {
 		return false, nil
 	}
 	h := o.handle

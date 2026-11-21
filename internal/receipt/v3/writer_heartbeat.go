@@ -25,15 +25,30 @@ func (w *StreamWriter) startHeartbeats(interval time.Duration, onError func(erro
 }
 
 func (w *StreamWriter) runHeartbeats(ctx context.Context, ticks <-chan time.Time, onError func(error)) {
+	var callbackDone <-chan struct{}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticks:
 			err := w.WriteHeartbeat(ctx)
-			if err != nil && onError != nil && !errors.Is(err, context.Canceled) {
-				onError(err)
+			if err == nil || onError == nil || errors.Is(err, context.Canceled) {
+				continue
 			}
+			if callbackDone != nil {
+				select {
+				case <-callbackDone:
+				default:
+					continue
+				}
+			}
+			// A callback may call Close, which joins this loop.
+			done := make(chan struct{})
+			callbackDone = done
+			go func() {
+				defer close(done)
+				onError(err)
+			}()
 		}
 	}
 }

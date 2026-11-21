@@ -659,7 +659,11 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		}
 
 		if useReceiptV3 {
-			writer, openErr := openRuntimeReceiptV3(context.Background(), cfg, recPrivKey, rec, postureResult,
+			openCtx := startupVerification.Context
+			if openCtx == nil {
+				openCtx = context.Background()
+			}
+			writer, openErr := openRuntimeReceiptV3(openCtx, cfg, recPrivKey, rec, postureResult,
 				runtimeReceiptStreamOptions{surfaces: serverReceiptSurfaces(cfg, hasMCPListen)})
 			if openErr != nil {
 				s.cleanup()

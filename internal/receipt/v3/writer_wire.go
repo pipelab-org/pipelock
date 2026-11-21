@@ -77,9 +77,8 @@ func (w *StreamWriter) encode(ctx context.Context, common Common, body any) ([]b
 	if _, valid := matchObject(values, "Common"); !valid {
 		return nil, "", errors.New("receipt common members are outside the wire schema")
 	}
-	record := Record{Common: common, values: values["body"].(map[string]any)}
-	if unknown, code := checkBody(record, ""); unknown || code != "" {
-		return nil, "", fmt.Errorf("receipt %s body is outside the writer schema (%s)", common.Kind, code)
+	if err := validateWriterBody(common, values["body"].(map[string]any)); err != nil {
+		return nil, "", err
 	}
 	if w.open.Coverage.ContentScan {
 		if err := scanWriterRecord(ctx, w.detector, common.Kind, detail); err != nil {
@@ -95,6 +94,13 @@ func (w *StreamWriter) encode(ctx context.Context, common Common, body any) ([]b
 	line = append(line, payload...)
 	line = append(line, layoutSuffix...)
 	return line, Digest(pae), nil
+}
+
+func validateWriterBody(common Common, values map[string]any) error {
+	if unknown, code := checkBody(Record{Common: common, values: values}, ""); unknown || code != "" {
+		return fmt.Errorf("receipt %s body is outside the writer schema (%s)", common.Kind, code)
+	}
+	return nil
 }
 
 var openProjection = receiptcontent.Register(receiptcontent.Schema{

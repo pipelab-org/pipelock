@@ -572,10 +572,10 @@ func TestStreamWriterAdmissionBatchRejectsOptionalPostEffectDecision(t *testing.
 	opts := writerTestOptions(t.TempDir())
 	opts.Coverage.ReceiptsRequired = false
 	w := requireWriter(t, opts, localWriterStorage())
-	action := writerTestIntent("already-attempted")
-	action.Attempt = nil
-	action.Phase = phaseDecision
 	for _, relation := range []string{relationAfter, "unknown"} {
+		action := writerTestIntent("already-attempted-" + relation)
+		action.Attempt = nil
+		action.Phase = phaseDecision
 		action.EffectRelation = relation
 		if err := w.WriteAdmissionBatch(t.Context(), []Action{action}, PolicySnapshot{}); err == nil {
 			t.Fatalf("admission accepted an action with relation %q", relation)
@@ -583,6 +583,13 @@ func TestStreamWriterAdmissionBatchRejectsOptionalPostEffectDecision(t *testing.
 		if err := w.WriteAction(t.Context(), action, PolicySnapshot{}); err != nil {
 			t.Fatalf("ordinary write rejected relation %q: %v", relation, err)
 		}
+	}
+	if err := w.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if result.Verdict != "VALID" {
+		t.Fatalf("ordinary post-effect decisions did not verify: %+v", result)
 	}
 }
 

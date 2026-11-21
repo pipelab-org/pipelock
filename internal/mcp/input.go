@@ -805,7 +805,7 @@ func ForwardScannedInput(
 			if receiptVerdict == config.ActionRedirect {
 				receiptOpts.v3Confirmed = &v3Redirect
 			}
-			if opts.ReceiptV3 == nil && receiptVerdict == config.ActionAllow && isPairedMCPMethod(verdict.Method) {
+			if receiptVerdict == config.ActionAllow && isPairedMCPMethod(verdict.Method) {
 				outcome.Method = verdict.Method
 				receiptOpts.Outcome = &outcome
 			}

@@ -969,7 +969,7 @@ func sameOriginBase(responseURL *url.URL, href string) (*url.URL, bool) {
 // config snapshot; under require_receipts every path that cannot durably
 // record the allow returns an error the caller must treat as fail-closed.
 // With require_receipts off it always returns nil (best-effort).
-func (p *Proxy) recordIssuerQueryAllow(reqCtx context.Context, cfg *config.Config, ctx audit.LogContext, target, requestID, agent, method string, kind issuerQueryKind, selected ...receipt.EmitOpts) error {
+func (p *Proxy) recordIssuerQueryAllow(reqCtx context.Context, cfg *config.Config, ctx audit.LogContext, kind issuerQueryKind, input receipt.EmitOpts) error {
 	requireReceipts := cfg != nil && cfg.FlightRecorder.RequireReceipts
 	fail := func(err error) error {
 		if requireReceipts {
@@ -980,7 +980,7 @@ func (p *Proxy) recordIssuerQueryAllow(reqCtx context.Context, cfg *config.Confi
 	if p == nil {
 		return fail(errCredentialAudienceReceiptEmitterUnavailable)
 	}
-	parsed, err := url.Parse(target)
+	parsed, err := url.Parse(input.Target)
 	if err != nil {
 		return fail(fmt.Errorf("issuer query allow target: %w", err))
 	}
@@ -992,22 +992,18 @@ func (p *Proxy) recordIssuerQueryAllow(reqCtx context.Context, cfg *config.Confi
 	}
 	safeTarget := parsed.Scheme + "://" + parsed.Host + parsed.EscapedPath()
 	extension := []byte(`{"entropy_issuer_query_allow":"` + string(kind) + `"}`)
-	var shard receipt.EmitOpts
-	if len(selected) > 0 {
-		shard = selected[0]
-	}
 	// Existing allowances are intercept-only. A delegated redirect also runs on
 	// fetch and at CONNECT, and its caller names the transport it ran on.
 	transport := "intercept"
-	if kind == issuerQueryIssuedRedirect && shard.Transport != "" {
-		transport = shard.Transport
+	if kind == issuerQueryIssuedRedirect && input.Transport != "" {
+		transport = input.Transport
 	}
 	opts := withReceiptShard(receipt.EmitOpts{
 		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
 		Layer: issuerQueryReceiptExtensionKey, Pattern: issuerQueryReceiptExtensionKey,
-		Transport: transport, Method: method, Target: safeTarget,
-		RequestID: requestID, Agent: agent, Extension: extension,
-	}, shard)
+		Transport: transport, Method: input.Method, Target: safeTarget,
+		RequestID: input.RequestID, Agent: input.Agent, Extension: extension,
+	}, input)
 	if p.receiptV3 != nil {
 		return p.recordV3ExceptionAllows(reqCtx, cfg, []receipt.EmitOpts{opts})
 	}

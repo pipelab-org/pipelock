@@ -99,8 +99,14 @@ func (o MCPProxyOpts) writeV3Decision(d MCPDecision) error {
 	if err != nil && (d.RequireReceipt || errors.Is(err, v3.ErrEffectNotReleased)) {
 		return fmt.Errorf("%w: %w", ErrReceiptRequired, err)
 	}
-	if err == nil && d.v3Confirmed != nil && action.Attempt != nil {
-		*d.v3Confirmed = mcpV3Receipt{action: action, policy: entry.policy}
+	if err == nil {
+		if d.v3Confirmed != nil && action.Attempt != nil {
+			*d.v3Confirmed = mcpV3Receipt{action: action, policy: entry.policy}
+		}
+		if d.outcome != nil && d.v3Boundary == mcpV3Upstream {
+			d.outcome.Receipt = d.Receipt
+			d.outcome.v3Parent = true
+		}
 	}
 	return err
 }
@@ -111,7 +117,8 @@ func (s *deferredReceiptSettlement) confirmV3Hold(o MCPProxyOpts, opts receipt.E
 	if o.ReceiptV3 == nil {
 		return nil
 	}
-	entry := o.prepareV3Receipt(o.withReceiptPolicyHash(opts))
+	opts = o.withReceiptPolicyHash(opts)
+	entry := o.prepareV3Receipt(opts)
 	return func(held deferred.HeldAction) error {
 		action := entry.action
 		action.Actor = firstNonEmpty(held.Authority.Actor, action.Actor)
@@ -136,6 +143,8 @@ func (s *deferredReceiptSettlement) confirmV3Hold(o MCPProxyOpts, opts receipt.E
 		}
 		entry.action = action
 		s.v3Hold = &entry
+		s.release.Receipt = opts
+		s.release.v3Parent = true
 		return nil
 	}
 }

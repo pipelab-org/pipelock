@@ -798,10 +798,14 @@ func RunHTTPListenerProxy(
 				Target:    dec.target,
 			})
 			if dec.intent.Receipt.ActionID != "" {
-				actionID = dec.intent.Receipt.ActionID
-				receiptOpts = mcpOutcomeReceiptOpts(dec.intent.Receipt, mcpOutcomeStatusBlocked, -1, firstNonEmpty(dec.outcomeReason, dec.pattern))
-				receiptOpts.Verdict = config.ActionBlock
-				receiptOpts.Layer = dec.layer
+				if requestBaseOpts.ReceiptV3 != nil {
+					receiptOpts.ParentActionID = dec.intent.Receipt.ActionID
+				} else {
+					actionID = dec.intent.Receipt.ActionID
+					receiptOpts = mcpOutcomeReceiptOpts(dec.intent.Receipt, mcpOutcomeStatusBlocked, -1, firstNonEmpty(dec.outcomeReason, dec.pattern))
+					receiptOpts.Verdict = config.ActionBlock
+					receiptOpts.Layer = dec.layer
+				}
 			}
 			if dec.mutateReceipt != nil {
 				receiptOpts = dec.mutateReceipt(receiptOpts)
@@ -2418,6 +2422,9 @@ func RunHTTPListenerProxy(
 			// upstream-error envelope.
 			if scanErr != nil && !streamWriter.Wrote() {
 				terminalStatus, terminalReason = "error", "upstream_sse_validation_failed"
+				if reqOpts.ReceiptV3 != nil {
+					recordListenerStreamError(r.Context(), safeLogW, reqOpts, decision.Outcome, false, scanErr)
+				}
 				// The SSE reader also wraps scanner line-limit errors as incomplete.
 				if errors.Is(scanErr, transport.ErrIncompleteResponse) && !errors.Is(scanErr, bufio.ErrTooLong) {
 					terminalStatus, terminalReason = "incomplete", httpstream.Incomplete

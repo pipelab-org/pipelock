@@ -164,11 +164,11 @@ func (f *fetchV3RedirectReceipts) finish(p *Proxy, ctx context.Context, complete
 	p.finishV3Exceptions(f.exceptionCtx, completed)
 }
 
-func (f *fetchV3RedirectReceipts) confirm(p *Proxy, req *http.Request, cfg *config.Config) error {
-	hop := f.opts
+func (f *fetchV3RedirectReceipts) confirm(p *Proxy, req *http.Request, cfg *config.Config, hop receipt.EmitOpts) error {
 	hop.ActionID = receipt.NewActionID()
 	hop.ParentActionID = f.rootID
-	hop.Method, hop.Target = req.Method, req.URL.String()
+	hop.Transport, hop.Method, hop.Target = TransportFetch, req.Method, req.URL.String()
+	hop.Agent, hop.RequestID = f.opts.Agent, f.opts.RequestID
 	hop.PolicyHash = cfg.CanonicalPolicyHash()
 	entry, err := p.confirmTransportReceipt(req.Context(), cfg, hop, boundaryUpstreamSend)
 	if receiptWriteWithholdsEffect(cfg, err) {
@@ -222,8 +222,10 @@ func (r *wsRelay) writePayload(ctx context.Context, boundary string, opcode ws.O
 		}
 		return false, err
 	}
+	startV3Exceptions(ctx)
 	err = write(conn, opcode, payload)
 	r.proxy.recordTransportOutcome(ctx, opts, intent, err == nil)
+	r.proxy.finishV3Exceptions(ctx, err == nil)
 	return false, err
 }
 
@@ -258,6 +260,7 @@ type v3ExceptionsKey struct{}
 // gets its own set so the previous response cannot settle the next hop.
 type v3Exceptions struct {
 	receipts  v3EffectReceipts
+	audience  map[string]struct{}
 	attempted bool
 }
 
@@ -265,7 +268,14 @@ func (p *Proxy) withV3Exceptions(req *http.Request) *http.Request {
 	if p == nil || p.receiptV3 == nil {
 		return req
 	}
-	return req.WithContext(context.WithValue(req.Context(), v3ExceptionsKey{}, &v3Exceptions{}))
+	return req.WithContext(p.v3ExceptionContext(req.Context()))
+}
+
+func (p *Proxy) v3ExceptionContext(ctx context.Context) context.Context {
+	if p.receiptV3 == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, v3ExceptionsKey{}, &v3Exceptions{})
 }
 
 func startV3Exceptions(ctx context.Context) {

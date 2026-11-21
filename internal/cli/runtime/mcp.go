@@ -1406,7 +1406,7 @@ Key-free evidence capture:
 					}
 					defer func() {
 						if closeErr := receiptWriter.Close(context.WithoutCancel(cmd.Context()), nil); closeErr != nil {
-							cmd.PrintErrf("  Receipts: closing v3 stream: %v\n", closeErr)
+							runErr = errors.Join(runErr, fmt.Errorf("close v3 receipt writer: %w", closeErr))
 						}
 					}()
 					cmd.PrintErrln("  Receipts: v3 stream opened")

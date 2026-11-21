@@ -467,10 +467,19 @@ func TestStreamWriterTerminalQueueRetainsAcceptedWorkAtCapacity(t *testing.T) {
 	defer cancel()
 	w.gate <- struct{}{}
 	stream := w.active.id
+	invalid := first
+	invalid.Caller.Authn = ""
+	invalidErr := w.WriteTerminalResolution(ctx, invalid, policy, 1)
 	firstErr := w.WriteTerminalResolution(ctx, first, policy, 1)
+	acceptedHold := *first.Hold
+	first.Hold.ResolutionSource = "timeout"
 	secondErr := w.WriteTerminalResolution(ctx, second, policy, 1)
 	w.release()
-	if !errors.Is(firstErr, context.DeadlineExceeded) {
+	first.Hold = &acceptedHold
+	if !errors.Is(invalidErr, context.DeadlineExceeded) || !strings.Contains(invalidErr.Error(), "writer schema") {
+		t.Fatalf("invalid resolution was not refused: %v", invalidErr)
+	}
+	if !errors.Is(firstErr, context.DeadlineExceeded) || strings.Contains(firstErr.Error(), "queue is full") {
 		t.Fatalf("first resolution did not report its deadline: %v", firstErr)
 	}
 	if !errors.Is(secondErr, context.DeadlineExceeded) || !strings.Contains(secondErr.Error(), "queue is full") {
