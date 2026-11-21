@@ -2335,15 +2335,16 @@ func newInterceptHandler(
 		}()
 		// Release buffered bytes before synchronous delivery outcome recording.
 		emitOutcome := func(opts receipt.EmitOpts, verdict string, status int, transferred int64, reason string) {
+			writeSucceeded := outcomeReasonClaimsDelivery(reason, verdict)
 			var flushErr error
-			if ic.Config.FlightRecorder.RequireReceipts || downstreamReceipt != nil {
+			if ic.Config.FlightRecorder.RequireReceipts || downstreamReceipt != nil || len(responseReceipts) != 0 {
 				flushErr = flushResponseBeforeOutcome(w, r, ic.Config)
-				if flushErr != nil && outcomeReasonClaimsDelivery(reason, verdict) {
+				if flushErr != nil && writeSucceeded {
 					reason, transferred = flushFailureReason(reason), -1
 				}
 			}
-			delivered := flushErr == nil && outcomeReasonClaimsDelivery(reason, verdict)
-			responseReceipts.finish(ic.Proxy, r.Context(), downstreamReceipt != nil || delivered, delivered)
+			delivered := flushErr == nil && writeSucceeded
+			responseReceipts.finish(ic.Proxy, r.Context(), downstreamReceipt != nil || writeSucceeded, delivered)
 			if downstreamReceipt != nil {
 				ic.Proxy.recordTransportOutcome(r.Context(), opts, downstreamReceipt, delivered)
 				downstreamReceipt = nil

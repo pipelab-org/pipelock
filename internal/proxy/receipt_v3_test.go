@@ -250,7 +250,7 @@ func v3FirstAppendSyncFault() func(string, string) (v3.StreamFile, error) {
 	}
 }
 
-func newTestV3HTTPProxy(t *testing.T, surface string, required bool, createTemp func(string, string) (v3.StreamFile, error)) (*Proxy, *v3.StreamWriter, string, []ed25519.PublicKey) {
+func newTestV3HTTPProxy(t *testing.T, surface string, required bool, createTemp func(string, string) (v3.StreamFile, error), configure ...func(*v3.StreamWriterOptions)) (*Proxy, *v3.StreamWriter, string, []ed25519.PublicKey) {
 	t.Helper()
 	dir := t.TempDir()
 	keySeed := sha256.Sum256([]byte("receipt transport fixture"))
@@ -266,14 +266,18 @@ func newTestV3HTTPProxy(t *testing.T, surface string, required bool, createTemp 
 	cfg.WebSocketProxy.IdleTimeoutSeconds = 2
 	cfg.ResponseScanning.Enabled = false
 	cfg.FlightRecorder.RequireReceipts = required
-	writer, err := v3.OpenStreamWriter(t.Context(), v3.StreamWriterOptions{
+	writerOpts := v3.StreamWriterOptions{
 		Dir: dir, SigningKey: key, PolicyHash: v3.Digest(nil), CreateTempFile: createTemp,
 		Identity: v3.Writer{Instance: "example", Product: "Pipelock", Version: "3"},
 		Coverage: v3.Coverage{
 			ReceiptsRequired: required, Surfaces: []string{surface},
 			RedactionRuleset: v3.Ruleset{ID: "example", Version: "1", Hash: v3.Digest(nil)},
 		},
-	})
+	}
+	for _, apply := range configure {
+		apply(&writerOpts)
+	}
+	writer, err := v3.OpenStreamWriter(t.Context(), writerOpts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1245,4 +1249,70 @@ func TestV3ReverseOptionalDeliverySettlesPolicyWithoutTransportReceipt(t *testin
 		}
 	}
 	t.Fatal("delivered media policy decision has no outcome")
+}
+
+func TestV3InterceptOptionalPolicyDeliveryChecksFlushWithoutTransportReceipt(t *testing.T) {
+	var scannedPolicy, rejectedDelivery bool
+	configure := func(opts *v3.StreamWriterOptions) {
+		opts.Coverage.ContentScan = true
+		opts.Detector = func(_ context.Context, text string) scanner.TextDLPResult {
+			if strings.HasPrefix(text, "{") {
+				switch {
+				case strings.Contains(text, `"layer":"shield_oversize"`):
+					scannedPolicy = true
+				case scannedPolicy && !rejectedDelivery:
+					// The next action is the primary downstream intent.
+					rejectedDelivery = true
+					return scanner.TextDLPResult{Incomplete: true}
+				}
+			}
+			return scanner.TextDLPResult{Clean: true}
+		}
+	}
+	p, writer, dir, keys := newTestV3HTTPProxy(t, "intercept", false, nil, configure)
+	cfg := p.CurrentConfig()
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.MaxShieldBytes = 128
+	cfg.BrowserShield.OversizeAction = config.ShieldOversizeWarn
+	source := "<!doctype html><p>" + strings.Repeat("ordinary response ", 16) + "</p>"
+	upstream := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK, ContentLength: int64(len(source)),
+			Header: http.Header{headerContentType: []string{"text/html"}},
+			Body:   io.NopCloser(strings.NewReader(source)), Request: req,
+		}, nil
+	})
+	ic := &InterceptContext{
+		Proxy: p, Config: cfg, Scanner: p.ScannerPtr().Load(),
+		Logger: audit.NewNop(), Metrics: metrics.New(),
+		TargetHost: "upstream.vendor.example", TargetPort: "443",
+	}
+	w := &v3DeliveryFlushFailure{ResponseRecorder: httptest.NewRecorder()}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://upstream.vendor.example", nil)
+	newInterceptHandler(ic, upstream).ServeHTTP(w, req)
+	if !rejectedDelivery || w.Code != http.StatusOK || w.Body.String() != source {
+		t.Fatalf("expected the warned response after the optional refusal: rejected=%t status=%d bytes=%d", rejectedDelivery, w.Code, w.Body.Len())
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Integrity != "ok" {
+		t.Fatalf("verify response receipts: %+v (%v)", result, err)
+	}
+	var policyOutcome string
+	for _, action := range readV3TestActions(t, dir) {
+		if action.EffectBoundary != boundaryDownstreamDelivery {
+			continue
+		}
+		if action.Layer != "shield_oversize" {
+			t.Fatalf("unexpected primary delivery receipt: %+v", action)
+		}
+		if action.Phase == "outcome" {
+			policyOutcome = action.OutcomeClass
+		}
+	}
+	if w.flushes != 1 || policyOutcome != "attempt_unknown" {
+		t.Fatalf("flushes=%d shield outcome=%q, want one failed flush and unknown delivery", w.flushes, policyOutcome)
+	}
 }
