@@ -88,15 +88,20 @@ func (s *httpResponseReceipts) confirm(p *Proxy, w http.ResponseWriter, req *htt
 	return s.allowed
 }
 
-func (s *httpResponseReceipts) flush(w http.ResponseWriter, req *http.Request, cfg *config.Config, legacy bool) (bool, error) {
-	if legacy || s.allowed && (s.primary != nil || len(s.decisions) != 0) {
+func (s *httpResponseReceipts) flush(w http.ResponseWriter, req *http.Request, cfg *config.Config, started, legacy bool) (bool, error) {
+	// A flush can implicitly commit staged headers. Wait for an explicit
+	// final response write, even when a receipt was confirmed.
+	if started && (legacy || s.allowed && (s.primary != nil || len(s.decisions) != 0)) {
 		return flushResponseForReceipt(w, req, cfg)
 	}
 	return false, nil
 }
 
-func (s *httpResponseReceipts) finish(p *Proxy, req *http.Request, observed httpDeliveryObservation, complete bool) {
-	attempted := s.allowed && observed.status != 0
+func (s *httpResponseReceipts) finish(p *Proxy, req *http.Request, w http.ResponseWriter, observed httpDeliveryObservation, complete bool) {
+	// The intent covers the admitted response. An adaptive refusal can send
+	// a different response while withholding the admitted headers and body.
+	projection, _ := w.(*adaptiveRefusalWriter)
+	attempted := s.allowed && observed.status != 0 && (projection == nil || !projection.refused)
 	completed := attempted && complete && observed.err == nil &&
 		responseFramingCompleteForReceipt(req, observed.status, observed.contentLength, observed.bytes)
 	if s.primary != nil {

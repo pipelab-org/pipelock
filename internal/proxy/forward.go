@@ -2645,7 +2645,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		var flushed bool
 		var flushErr error
 		if aborted == nil {
-			flushed, flushErr = responseReceipts.flush(w, r, cfg, cfg.FlightRecorder.RequireReceipts)
+			flushed, flushErr = responseReceipts.flush(w, r, cfg, p.receiptV3 == nil || delivery.status != 0, cfg.FlightRecorder.RequireReceipts)
 			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason, config.ActionAllow) {
 				outcomeReason, outcomeBytes = flushFailureReason(outcomeReason), -1
 				if sseDelivered {
@@ -2656,7 +2656,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
 			outcomeReason = "license_revoked"
 		}
-		responseReceipts.finish(p, r, delivery.httpDeliveryObservation, flushed && outcomeReasonClaimsDelivery(outcomeReason, config.ActionAllow))
+		responseReceipts.finish(p, r, delivery.ResponseWriter, delivery.httpDeliveryObservation, flushed && outcomeReasonClaimsDelivery(outcomeReason, config.ActionAllow))
 		p.emitOutcomeReceiptWithPattern(cfg, outcomeReceipt, receiptOutcomePattern(outcomeStatus, outcomeBytes, outcomeReason))
 		if aborted != nil {
 			panic(aborted)

@@ -6745,7 +6745,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		var flushed bool
 		var flushErr error
 		if aborted == nil {
-			flushed, flushErr = responseReceipts.flush(w, r, cfg, cfg.FlightRecorder.RequireReceipts || selectedReceiptShard.NativeLease != nil)
+			flushed, flushErr = responseReceipts.flush(w, r, cfg, delivery.status != 0, cfg.FlightRecorder.RequireReceipts || selectedReceiptShard.NativeLease != nil)
 			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason, verdict) {
 				delivery.err = flushErr
 			}
@@ -6760,7 +6760,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		// written to the client is a separate key so receipt consumers that
 		// read bytes= see the same unit before and after this field existed.
 		pattern := receiptOutcomePattern(outcomeStatus, capturedBytes, outcomeReason) + " delivered_bytes=" + strconv.FormatInt(delivery.bytes, 10)
-		responseReceipts.finish(p, r, delivery.httpDeliveryObservation, flushed && outcomeReason == "complete")
+		responseReceipts.finish(p, r, w, delivery.httpDeliveryObservation, flushed && outcomeReason == "complete")
 		p.emitOutcomeReceiptWithPattern(cfg, opts, pattern)
 		if aborted != nil {
 			panic(aborted)

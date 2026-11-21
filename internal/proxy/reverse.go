@@ -1945,9 +1945,9 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			var flushed bool
 			var flushErr error
 			if returned && !forwardWriter.hijacked && forwardWriter.err == nil && r.Context().Err() == nil {
-				flushed, flushErr = responseReceiptState.flush(w, r, cfg, false)
+				flushed, flushErr = responseReceiptState.flush(w, r, cfg, forwardWriter.status != 0, false)
 			}
-			responseReceiptState.finish(rp.owner, r, forwardWriter.httpDeliveryObservation, flushed)
+			responseReceiptState.finish(rp.owner, r, w, forwardWriter.httpDeliveryObservation, flushed)
 			_ = httpstream.Abort(r.Context(), flushErr)
 		}()
 		rp.proxy.ServeHTTP(forwardWriter, r)

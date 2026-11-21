@@ -2328,16 +2328,16 @@ func newInterceptHandler(
 		// Outcomes run on the inner HTTP writer, before any stream abort.
 		var responseReceipts httpResponseReceipts
 		defer func() {
-			responseReceipts.finish(ic.Proxy, r, timing.httpDeliveryObservation, false)
+			responseReceipts.finish(ic.Proxy, r, serverWriter, timing.httpDeliveryObservation, false)
 		}()
 		// Release buffered bytes before synchronous delivery outcome recording.
 		emitOutcome := func(opts receipt.EmitOpts, verdict string, status int, transferred int64, reason string) {
 			writeSucceeded := outcomeReasonClaimsDelivery(reason, verdict)
-			flushed, flushErr := responseReceipts.flush(w, r, ic.Config, ic.Config.FlightRecorder.RequireReceipts)
+			flushed, flushErr := responseReceipts.flush(w, r, ic.Config, timing.status != 0, ic.Config.FlightRecorder.RequireReceipts)
 			if flushErr != nil && writeSucceeded {
 				reason, transferred = flushFailureReason(reason), -1
 			}
-			responseReceipts.finish(ic.Proxy, r, timing.httpDeliveryObservation, flushed && writeSucceeded)
+			responseReceipts.finish(ic.Proxy, r, serverWriter, timing.httpDeliveryObservation, flushed && writeSucceeded)
 			if upstreamReceipt == nil {
 				interceptEmitOutcomeReceipt(ic, opts, verdict, status, transferred, reason)
 			}
@@ -2483,6 +2483,9 @@ func newInterceptHandler(
 				return false
 			}
 			if err := ic.flushIssuedRedirectHeaders(w, resp); err != nil {
+				if timing.status == 0 {
+					clear(w.Header())
+				}
 				reason := recordStreamError(r.Context(), ic.Logger, actx, err)
 				emitOutcome(allowReceipt, config.ActionAllow, resp.StatusCode, 0, reason)
 				_ = httpstream.Abort(r.Context(), err)

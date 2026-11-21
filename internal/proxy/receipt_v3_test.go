@@ -1470,3 +1470,165 @@ func checkOptionalV3PolicyDelivery(t *testing.T, surface, fault string) {
 		t.Fatalf("flushes=%d shield outcome=%q, want one flush and %s", w.flushes, policyOutcome, want)
 	}
 }
+
+func TestV3InterceptUnstartedRedirectFailureDoesNotFlush(t *testing.T) {
+	for _, required := range []bool{true, false} {
+		t.Run(fmt.Sprintf("required=%t", required), func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, "intercept", required, nil)
+			cfg := p.CurrentConfig()
+			cfg.RequestBodyScanning.IssuerBoundSessionCookies = true
+			cfg.TLSInterception.Enabled = true
+			cfg.FetchProxy.Monitoring.IssuedRedirectDelegations = []config.IssuedRedirectDelegation{{
+				Name: "release-redirect",
+				Source: config.RequestPolicyRoute{
+					Hosts:        []string{"upstream.vendor.example"},
+					Methods:      []string{http.MethodGet},
+					PathPrefixes: []string{"/start"},
+				},
+				TargetOrigins: []string{"https://delegated.vendor.example"},
+				Reason:        "test delegation",
+				Owner:         "test",
+				Expires:       "2099-12-31",
+			}}
+			ic := &InterceptContext{
+				Proxy: p, Config: cfg, Scanner: p.ScannerPtr().Load(),
+				Logger: audit.NewNop(), Metrics: metrics.New(),
+				ClientIP: "127.0.0.1", Agent: "test-agent", ActorAuth: envelope.ActorAuthBound,
+				TargetHost: "upstream.vendor.example", TargetPort: "443",
+			}
+			sessionKey := sessionKeyFor(cfg, ic.Agent, ic.ClientIP, ic.ActorAuth)
+			store := ic.issuerQueryStore()
+			if store == nil {
+				t.Fatal("test setup did not initialize issuer evidence")
+			}
+			store.mu.Lock()
+			store.deliveries = map[string]*issuedRedirectDeliverySet{
+				sessionKey: {entries: issuerCookieMaxEntries, pending: make(map[*issuedRedirectDelivery]struct{}), changed: make(chan struct{})},
+			}
+			store.mu.Unlock()
+
+			upstream := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode:    http.StatusFound,
+					ContentLength: 0,
+					Header: http.Header{
+						"Location":   []string{"https://delegated.vendor.example/next"},
+						"Set-Cookie": []string{"session=example"},
+					},
+					Body:    http.NoBody,
+					Request: req,
+				}, nil
+			})
+			var wroteHeader bool
+			w := &issuedRedirectFlushWriter{
+				ResponseRecorder: httptest.NewRecorder(),
+				afterWriteHeader: func() { wroteHeader = true },
+			}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://upstream.vendor.example/start", nil)
+			newInterceptHandler(ic, upstream).ServeHTTP(w, req)
+
+			if w.calls != 0 || wroteHeader || w.Flushed || w.Header().Get("Location") != "" || w.Header().Get("Set-Cookie") != "" {
+				t.Fatalf("unstarted redirect failure left a response: flushes=%d wroteHeader=%t flushed=%t", w.calls, wroteHeader, w.Flushed)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || result.Verdict != "VALID" {
+				t.Fatalf("verify receipts: %+v (%v)", result, err)
+			}
+			var found bool
+			for _, action := range readV3TestActions(t, dir) {
+				if action.EffectBoundary == boundaryDownstreamDelivery && action.Phase == "outcome" {
+					found = true
+					if action.OutcomeClass != "not_released" || action.EffectRelation != "not_attempted" {
+						t.Fatalf("downstream outcome = %s/%s, want not_released/not_attempted", action.OutcomeClass, action.EffectRelation)
+					}
+				}
+			}
+			if !found {
+				t.Fatal("missing downstream_delivery outcome")
+			}
+		})
+	}
+}
+
+func TestV3AdaptiveRefusalWithholdsUpstreamResponse(t *testing.T) {
+	for _, surface := range []string{TransportForward, "intercept", TransportReverse} {
+		t.Run(surface, func(t *testing.T) {
+			p, writer, dir, keys := newTestV3HTTPProxy(t, surface, true, nil)
+			cfg := p.CurrentConfig()
+			blockAll := true
+			cfg.AdaptiveEnforcement.Enabled = true
+			cfg.AdaptiveEnforcement.EscalationThreshold = 1.0
+			cfg.AdaptiveEnforcement.LevelDurationSeconds = 300
+			cfg.AdaptiveEnforcement.Levels.Critical.BlockAll = &blockAll
+			sm := NewSessionManager(&cfg.SessionProfiling, &cfg.AdaptiveEnforcement, p.metrics)
+			t.Cleanup(sm.Close)
+			p.sessionMgrPtr.Store(sm)
+
+			targetURL := "https://upstream.vendor.example/missing"
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, targetURL, nil)
+			req.RemoteAddr = "127.0.0.1:12345"
+			clientIP, _ := requestMeta(req)
+			sessKey := sessionKeyFor(cfg, agentAnonymous, clientIP, "")
+			sess := sm.GetOrCreate(sessKey)
+			escalate := func() {
+				sess.mu.Lock()
+				sess.escalationLevel = 3
+				sess.globalSignalsAuthoritative = true
+				sess.mu.Unlock()
+			}
+			body := "upstream not found"
+			upstream := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				escalate()
+				return &http.Response{
+					StatusCode:    http.StatusNotFound,
+					ContentLength: int64(len(body)),
+					Header:        http.Header{headerContentType: []string{"text/plain"}, "Content-Length": []string{fmt.Sprintf("%d", len(body))}},
+					Body:          io.NopCloser(strings.NewReader(body)),
+					Request:       r,
+				}, nil
+			})
+			w := &v3PolicyDeliveryWriter{ResponseRecorder: httptest.NewRecorder(), fault: "partial_write"}
+			switch surface {
+			case TransportForward:
+				p.client.Transport = upstream
+				p.handleForwardHTTP(w, req)
+			case "intercept":
+				ic := &InterceptContext{
+					Proxy: p, Config: cfg, Scanner: p.ScannerPtr().Load(),
+					Logger: audit.NewNop(), Metrics: metrics.New(),
+					Recorder: sess, ClientIP: clientIP, Agent: agentAnonymous,
+					TargetHost: "upstream.vendor.example", TargetPort: "443",
+				}
+				newInterceptHandler(ic, upstream).ServeHTTP(w, req)
+			case TransportReverse:
+				target, _ := url.Parse("https://upstream.vendor.example")
+				reverse := NewReverseProxy(target, p.ConfigPtr(), p.ScannerPtr(), audit.NewNop(), metrics.New(), nil, nil, nil)
+				reverse.SetOwnerProxy(p)
+				reverse.proxy.Transport.(*reverseSigningRoundTripper).base = upstream
+				reverse.ServeHTTP(w, req)
+			}
+			if w.Code != http.StatusForbidden || w.Body.Len() == 0 || strings.Contains(w.Body.String(), body) {
+				t.Fatalf("expected a partial adaptive refusal, got status=%d size=%d", w.Code, w.Body.Len())
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+			if err != nil || result.Verdict != "VALID" {
+				t.Fatalf("verify receipts: %+v (%v)", result, err)
+			}
+			var outcome string
+			for _, action := range readV3TestActions(t, dir) {
+				if action.EffectBoundary == boundaryDownstreamDelivery && action.Phase == "outcome" {
+					outcome = action.OutcomeClass
+				}
+			}
+			if outcome != "not_released" {
+				t.Fatalf("%s upstream response outcome = %q, want not_released", surface, outcome)
+			}
+		})
+	}
+}
