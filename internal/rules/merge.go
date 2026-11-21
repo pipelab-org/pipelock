@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
@@ -226,6 +228,11 @@ func MergeIntoConfig(cfg *config.Config, pipelockVersion string) *LoadResult {
 		cfg.DLP.Patterns = removeStandardTierDLP(cfg.DLP.Patterns)
 		cfg.DLP.Patterns = append(cfg.DLP.Patterns, standardDLP...)
 		result.StandardDLP = StandardSourceBundle
+		if missing := missingStandardDLPNames(standardDLP); len(missing) > 0 {
+			result.Warnings = append(result.Warnings, fmt.Sprintf(
+				"bundle %q selected as the standard DLP source has no active rules for these compiled standard names: %s",
+				StandardBundleName, strings.Join(missing, ", ")))
+		}
 	} else {
 		cfg.DLP.Patterns = restoreCompiledStandardDLP(cfg.DLP.Patterns)
 		result.StandardDLP = StandardSourceCompiled
@@ -321,6 +328,21 @@ func removeBundleDLP(patterns []config.DLPPattern) []config.DLPPattern {
 
 func removeBundleResponse(patterns []config.ResponseScanPattern) []config.ResponseScanPattern {
 	return removeBundlePatterns(patterns, func(p config.ResponseScanPattern) string { return p.Bundle })
+}
+
+func missingStandardDLPNames(standardDLP []config.DLPPattern) []string {
+	loadedNames := make(map[string]struct{}, len(standardDLP))
+	for _, p := range standardDLP {
+		loadedNames[p.Name] = struct{}{}
+	}
+	var missing []string
+	for name := range compiledStandardDLPNames {
+		if _, loaded := loadedNames[name]; !loaded {
+			missing = append(missing, name)
+		}
+	}
+	slices.Sort(missing)
+	return missing
 }
 
 func restoreCompiledStandardDLP(patterns []config.DLPPattern) []config.DLPPattern {
