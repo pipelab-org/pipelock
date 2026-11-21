@@ -335,6 +335,10 @@ func ClassifyAction(tier, method, transport string, isTLSIntercepted bool) (bool
 // read-only method carrying a body or trailers is classified as a write: the
 // hard tier must not let a bodied GET, HEAD, or OPTIONS move data upstream.
 func ClassifyRequestAction(tier string, r *http.Request, transport string, isTLSIntercepted bool) (bool, string) {
+	if r == nil {
+		// No request to classify: an empty method is a write in the hard tier.
+		return ClassifyAction(tier, "", transport, isTLSIntercepted)
+	}
 	method := r.Method
 	if readOnlyMethods[method] && requestHasBody(r) {
 		method = http.MethodPost

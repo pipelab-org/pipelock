@@ -45,6 +45,12 @@ func TestClassifyRequestActionBodiedReadIsWrite(t *testing.T) {
 	}
 }
 
+func TestClassifyRequestActionNilRequestFailsClosed(t *testing.T) {
+	if allowed, _ := ClassifyRequestAction(config.AirlockTierHard, nil, TransportForward, false); allowed {
+		t.Fatal("nil request admitted under hard tier")
+	}
+}
+
 // A hard-tier quarantine admits reads only; a GET that carries a body must
 // not reach the upstream through an intercepted tunnel.
 func TestInterceptAirlockHardTierRefusesBodiedGET(t *testing.T) {
