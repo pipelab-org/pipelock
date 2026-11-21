@@ -304,3 +304,54 @@ func TestHostPatternNormalizationCollapsesEveryTrailingDot(t *testing.T) {
 		}
 	}
 }
+
+func TestPathEntropyExclusionGoogleEditorIDYAML(t *testing.T) {
+	t.Parallel()
+	route := ShippedPathEntropyExclusions()[0]
+	const pathField = "google_editor_id"
+	for _, tt := range []struct {
+		name, scheme, host, prefix, field string
+		wantSlot, wantErr                 bool
+	}{
+		{name: "omitted"},
+		{name: "blank", field: pathField + ":"},
+		{name: "null", field: pathField + ": null"},
+		{name: "false", field: pathField + ": false"},
+		{name: "true", field: pathField + ": true", wantSlot: true},
+		{name: "other host", host: "docs.vendor.example", field: pathField + ": true", wantErr: true},
+		{name: "wrong route", prefix: "/document/", field: pathField + ": true", wantErr: true},
+		{name: "cleartext", scheme: "http", field: pathField + ": true", wantErr: true},
+		{name: "invalid value", field: pathField + ": invalid", wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			host, prefix, scheme := tt.host, tt.prefix, tt.scheme
+			if host == "" {
+				host = route.Host
+			}
+			if prefix == "" {
+				prefix = route.PathPrefix
+			}
+			if scheme == "" {
+				scheme = QueryEntropyParamDefaultScheme
+			}
+			yaml := "mode: balanced\nfetch_proxy:\n  monitoring:\n    path_entropy_exclusions:\n" +
+				"      - scheme: " + scheme + "\n        host: " + host + "\n        path_prefix: " + prefix + "\n        " + tt.field + "\n"
+			cfg, err := LoadBytes([]byte(yaml))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("invalid Google editor ID rule loaded")
+				}
+				if tt.name != "invalid value" && !strings.Contains(err.Error(), pathField) {
+					t.Fatalf("error does not identify %s: %v", pathField, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if entry := cfg.FetchProxy.Monitoring.PathEntropyExclusions[0]; entry.GoogleEditorID != tt.wantSlot {
+				t.Fatalf("google_editor_id = %t, want %t", entry.GoogleEditorID, tt.wantSlot)
+			}
+		})
+	}
+}

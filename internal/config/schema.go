@@ -1232,8 +1232,8 @@ type Monitoring struct {
 	// "*.example.com". An empty list (default) preserves the prior
 	// always-on query entropy behavior.
 	QueryEntropyExclusions []string `yaml:"query_entropy_exclusions"`
-	// PathEntropyExclusions scopes a path-entropy exemption to one host plus a
-	// literal path prefix, leaving subdomain entropy, query entropy, DLP and
+	// PathEntropyExclusions scopes a path-entropy exemption to a host and
+	// route, leaving subdomain entropy, query entropy, DLP and
 	// SSRF enforced for the same request. Prefer this over adding a host to
 	// SubdomainEntropyExclusions for a path false positive: that list governs
 	// BOTH the path and subdomain gates, so it gives up a second detection.
@@ -1294,7 +1294,7 @@ type QueryEntropyParamExclusion struct {
 }
 
 // PathEntropyExclusion is a narrow URL-path entropy exemption for one host and
-// one literal path prefix. It affects ONLY the path-entropy gate: subdomain
+// one route. It affects ONLY the path-entropy gate: subdomain
 // entropy, query entropy, DLP and SSRF all still run for the same request.
 //
 // It exists because the path gate had no STANDALONE scoped exemption. Two
@@ -1314,12 +1314,26 @@ type QueryEntropyParamExclusion struct {
 // that value back, can still use it to carry data; verify that is not possible
 // for a route before exempting it.
 type PathEntropyExclusion struct {
-	Scheme     string `yaml:"scheme,omitempty"` // https when unset; http matches cleartext only
-	Host       string `yaml:"host"`             // exact host, or *.example.com
-	PathPrefix string `yaml:"path_prefix"`      // literal prefix of the normalized path, e.g. /document/d/
-	Reason     string `yaml:"reason,omitempty"` // why this route is exempt, for the operator reading it later
-	Owner      string `yaml:"owner,omitempty"`
-	Expires    string `yaml:"expires,omitempty"`
+	Scheme         string `yaml:"scheme,omitempty"`                             // https when unset; http matches cleartext only
+	Host           string `yaml:"host"`                                         // exact host, or *.example.com
+	PathPrefix     string `yaml:"path_prefix"`                                  // literal prefix of the escaped path, e.g. /document/d/
+	GoogleEditorID bool   `yaml:"google_editor_id,omitempty" json:",omitempty"` // skip one ID segment on a shipped Google route
+	Reason         string `yaml:"reason,omitempty"`                             // why this route is exempt, for the operator reading it later
+	Owner          string `yaml:"owner,omitempty"`
+	Expires        string `yaml:"expires,omitempty"`
+}
+
+// RouteScope describes the exclusion without including a request's identifier.
+func (e PathEntropyExclusion) RouteScope() string {
+	scheme := e.Scheme
+	if scheme == "" {
+		scheme = QueryEntropyParamDefaultScheme
+	}
+	scope := scheme + "://" + e.Host + e.PathPrefix
+	if e.GoogleEditorID {
+		scope += " (Google editor ID segment only)"
+	}
+	return scope
 }
 
 // DLP configures data loss prevention scanning.

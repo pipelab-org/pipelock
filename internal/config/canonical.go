@@ -5,6 +5,7 @@ package config
 
 import (
 	"encoding/json"
+	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -339,7 +340,9 @@ func (c *Config) policySemanticView() canonicalPolicyView {
 	view.FetchProxy.Monitoring.QueryEntropyParamExclusions = canonicalQueryEntropyParamExclusions(view.FetchProxy.Monitoring.QueryEntropyParamExclusions)
 	view.FetchProxy.Monitoring.OAuthAuthorizationEndpoints = canonicalOAuthAuthorizationEndpoints(view.FetchProxy.Monitoring.OAuthAuthorizationEndpoints)
 	view.FetchProxy.Monitoring.IssuedRedirectDelegations = canonicalIssuedRedirectDelegations(view.FetchProxy.Monitoring.IssuedRedirectDelegations)
-	view.FetchProxy.Monitoring.PathEntropyExclusions = canonicalPathEntropyExclusions(view.FetchProxy.Monitoring.PathEntropyExclusions)
+	view.FetchProxy.Monitoring.PathEntropyExclusions = slices.Compact(canonicalPathEntropyExclusions(
+		EffectivePathEntropyExclusions(view.FetchProxy.Monitoring.PathEntropyExclusions),
+	))
 	view.FetchProxy.Monitoring.Blocklist = canonicalHostSet(view.FetchProxy.Monitoring.Blocklist)
 	view.FetchProxy.Monitoring.SubdomainEntropyExclusions = canonicalHostSet(view.FetchProxy.Monitoring.SubdomainEntropyExclusions)
 	view.FetchProxy.Monitoring.QueryEntropyExclusions = canonicalHostSet(view.FetchProxy.Monitoring.QueryEntropyExclusions)
@@ -538,8 +541,8 @@ func canonicalMCPResponseServers(entries []MCPResponseServerTrust) []MCPResponse
 }
 
 // canonicalPathEntropyExclusions keeps only the fields that change DETECTION
-// and drops the governance metadata. Scheme, host and path prefix decide
-// whether the path gate runs, so they belong in the policy hash a receipt
+// and drops the governance metadata. Scheme, host, path prefix and slot scope
+// decide what the path gate scores, so they belong in the policy hash a receipt
 // carries. Expiry ends enforcement and belongs in identity. Reason and owner are
 // governance metadata and do not change the effective policy.
 func canonicalPathEntropyExclusions(entries []PathEntropyExclusion) []PathEntropyExclusion {
@@ -553,10 +556,11 @@ func canonicalPathEntropyExclusions(entries []PathEntropyExclusion) []PathEntrop
 			scheme = QueryEntropyParamDefaultScheme
 		}
 		out[i] = PathEntropyExclusion{
-			Scheme:     strings.ToLower(scheme),
-			Host:       strings.TrimSuffix(strings.ToLower(entry.Host), "."),
-			PathPrefix: entry.PathPrefix,
-			Expires:    entry.Expires,
+			Scheme:         strings.ToLower(scheme),
+			Host:           strings.TrimSuffix(strings.ToLower(entry.Host), "."),
+			PathPrefix:     entry.PathPrefix,
+			GoogleEditorID: entry.GoogleEditorID,
+			Expires:        entry.Expires,
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -569,6 +573,9 @@ func canonicalPathEntropyExclusions(entries []PathEntropyExclusion) []PathEntrop
 		}
 		if a.PathPrefix != b.PathPrefix {
 			return a.PathPrefix < b.PathPrefix
+		}
+		if a.GoogleEditorID != b.GoogleEditorID {
+			return !a.GoogleEditorID
 		}
 		return a.Expires < b.Expires
 	})

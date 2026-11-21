@@ -195,6 +195,9 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 	if !parsed {
 		// Malformed arguments have no trustworthy key/value structure. Keep the
 		// legacy first-match behavior rather than guessing roles from raw text.
+		if legacyPath == "" && looksLikeSecretPathForRole(argsJSON, false) {
+			legacyPath = argsJSON
+		}
 		targets.refs = compactNonEmpty(legacyPath)
 		if !looksLikeURL(legacyPath) {
 			targets.paths = compactNonEmpty(legacyPath)
@@ -589,7 +592,8 @@ func extractMCPActionTargets(raw string) (mcpActionTargets, bool) {
 				}
 				return
 			}
-			if looksLikePath(tv) && (inheritedRole == mcpArgumentTarget || isStandaloneArgumentValue(tv)) {
+			isTarget := inheritedRole == mcpArgumentTarget
+			if (looksLikePath(tv) || looksLikeSecretPathForRole(tv, isTarget)) && (isTarget || isStandaloneArgumentValue(tv)) {
 				targets.refs = append(targets.refs, tv)
 				targets.paths = append(targets.paths, tv)
 			}
@@ -616,6 +620,7 @@ func mcpArgumentRoleForKey(key string) mcpArgumentRole {
 	for _, token := range tokens {
 		switch token {
 		case "path", "paths", "file", "files", "filename", "filenames", "filepath", "filepaths",
+			"dir", "dirs", "directory", "directories", "folder", "folders",
 			"target", "targets", "dest", "destination", "src", "source", "uri", "uris", "url", "urls":
 			return mcpArgumentTarget
 		}
@@ -708,15 +713,16 @@ func splitArgumentKey(key string) []string {
 }
 
 func isStandaloneArgumentValue(value string) bool {
-	if strings.TrimSpace(value) != value {
-		return false
-	}
 	if len(strings.Fields(value)) == 1 {
 		return true
 	}
+	if strings.TrimSpace(value) != value {
+		return false
+	}
 	if strings.HasPrefix(value, "/") || strings.HasPrefix(value, "./") ||
 		strings.HasPrefix(value, "../") || strings.HasPrefix(value, "~/") ||
-		strings.HasPrefix(value, `\\`) {
+		strings.HasPrefix(value, `\\`) ||
+		(len(value) >= 5 && strings.EqualFold(value[:5], "file:")) {
 		return true
 	}
 	return len(value) >= 3 && unicode.IsLetter(rune(value[0])) && value[1] == ':' && (value[2] == '/' || value[2] == '\\')
@@ -1015,6 +1021,22 @@ func looksLikePath(value string) bool {
 }
 
 func looksLikeSecretPath(value string) bool {
+	return looksLikeSecretPathForRole(value, true)
+}
+
+func looksLikeSecretPathForRole(value string, targetKey bool) bool {
+	if matchesLegacySecretSubstring(value) {
+		return true
+	}
+	for _, candidate := range secretPathCandidates(value) {
+		if matchesSecretCandidate(candidate, targetKey) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesLegacySecretSubstring(value string) bool {
 	lower := strings.ToLower(toSlash(value))
 	return strings.Contains(lower, "/.env") ||
 		strings.Contains(lower, "/secrets") ||
@@ -1024,7 +1046,97 @@ func looksLikeSecretPath(value string) bool {
 		strings.Contains(lower, "/id_ed25519") ||
 		strings.Contains(lower, "/kubeconfig") ||
 		strings.Contains(lower, "/etc/shadow") ||
-		strings.Contains(lower, "/etc/passwd")
+		strings.Contains(lower, "/etc/passwd") ||
+		containsAny(lower, "/.netrc", "/.npmrc", "/.pypirc", "/.git-credentials", "/.kube/config", "/.docker/config.json")
+}
+
+func secretPathCandidates(value string) []string {
+	trimmed := strings.TrimSpace(value)
+	if len(trimmed) >= 2 &&
+		((trimmed[0] == '"' && trimmed[len(trimmed)-1] == '"') ||
+			(trimmed[0] == '\'' && trimmed[len(trimmed)-1] == '\'')) {
+		trimmed = strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+	}
+	if before, _, hasNUL := strings.Cut(trimmed, "\x00"); hasNUL {
+		trimmed = strings.TrimSpace(before)
+	}
+	if trimmed == "" {
+		return nil
+	}
+	candidates := []string{trimmed}
+	if len(trimmed) >= 5 && strings.EqualFold(trimmed[:5], "file:") {
+		if parsed, err := url.Parse(trimmed); err == nil && parsed.Path != "" {
+			uriPath := parsed.Path
+			if before, _, hasNUL := strings.Cut(uriPath, "\x00"); hasNUL {
+				uriPath = before
+			}
+			uriPath = strings.TrimSpace(uriPath)
+			if uriPath != "" {
+				candidates = append(candidates, uriPath)
+			}
+		}
+	}
+	return candidates
+}
+
+func matchesSecretCandidate(candidate string, targetKey bool) bool {
+	lower := strings.ToLower(toSlash(candidate))
+	hasPathSyntax := strings.Contains(lower, "/")
+	if len(lower) >= 2 && lower[0] >= 'a' && lower[0] <= 'z' && lower[1] == ':' {
+		hasPathSyntax = true
+		lower = lower[2:]
+	}
+	if matchesSecretSegments(lower, hasPathSyntax, targetKey) {
+		return true
+	}
+	cleaned := path.Clean(lower)
+	return cleaned != lower && matchesSecretSegments(cleaned, hasPathSyntax, targetKey)
+}
+
+func matchesSecretSegments(candidate string, hasPathSyntax, targetKey bool) bool {
+	segments := strings.Split(candidate, "/")
+	for i, rawSeg := range segments {
+		seg := normalizeSecretSegment(rawSeg)
+		switch seg {
+		case ".env", ".ssh", ".aws", "kubeconfig", "kubeconfig.yaml", "kubeconfig.yml",
+			".netrc", ".npmrc", ".pypirc", ".git-credentials":
+			return true
+		case "secrets":
+			if targetKey || hasPathSyntax {
+				return true
+			}
+		}
+		if !strings.ContainsFunc(seg, unicode.IsSpace) &&
+			(strings.HasPrefix(seg, ".env.") ||
+				strings.HasPrefix(seg, ".env-") ||
+				strings.HasPrefix(seg, ".env_") ||
+				strings.HasPrefix(seg, "id_rsa") ||
+				strings.HasPrefix(seg, "id_ed25519")) {
+			return true
+		}
+		if i+1 < len(segments) {
+			next := normalizeSecretSegment(segments[i+1])
+			if (seg == ".kube" && next == "config") ||
+				(seg == ".docker" && next == "config.json") ||
+				(seg == "etc" && (next == "shadow" || next == "passwd")) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func normalizeSecretSegment(segment string) string {
+	// An NTFS stream suffix (name:stream:type, including the default
+	// name::$DATA) still names the same file, so match on the file name.
+	if before, _, ok := strings.Cut(segment, ":"); ok {
+		segment = before
+	}
+	if segment == "." || segment == ".." {
+		return segment
+	}
+	// Windows drops trailing periods and spaces from path components.
+	return strings.TrimRight(segment, ". ")
 }
 
 func isMutatingShellCommand(command string) bool {

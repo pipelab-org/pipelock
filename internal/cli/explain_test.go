@@ -1029,3 +1029,31 @@ response_scanning:
 		})
 	}
 }
+
+func TestExplainGoogleEditorIDScope(t *testing.T) {
+	const id = "pTyGJMuHbEL31IeL2HPcHyGcFRl1SPnXNYvMIHa_2o76"
+	const route = "https://docs.google.com/document/d/"
+	cfg := writeConfig(t, "mode: balanced\n")
+	for _, tt := range []struct {
+		name, suffix string
+		wantAllow    bool
+	}{
+		{"ordinary link", "/edit", true},
+		{"second ID", "/" + id, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			report, err := decodeExplainJSON(t, "--config", cfg, route+id+tt.suffix)
+			if report.Allowed != tt.wantAllow || (err == nil) != tt.wantAllow {
+				t.Fatalf("allowed=%v, error=%v, reason=%q", report.Allowed, err, report.Reason)
+			}
+			notes := strings.Join(report.Notes, "\n")
+			if !strings.Contains(notes, route+" (Google editor ID segment only)") || strings.Contains(notes, id) {
+				t.Fatalf("expected only the rule scope in notes, got %q", notes)
+			}
+			if !tt.wantAllow && (report.Remediation == nil ||
+				!strings.Contains(report.Remediation.Knob, "fetch_proxy.monitoring.path_entropy_exclusions")) {
+				t.Fatalf("missing path-entropy remediation: %+v", report.Remediation)
+			}
+		})
+	}
+}

@@ -2200,6 +2200,9 @@ func validatePathEntropyExclusions(entries []PathEntropyExclusion) error {
 		if err := validateEntropyPathPrefixShape(field, entry.PathPrefix, prefix); err != nil {
 			return err
 		}
+		if entry.GoogleEditorID && !IsGoogleEditorIDRoute(scheme, host, prefix) {
+			return fmt.Errorf("%s.google_editor_id requires a shipped HTTPS Google editor host and path_prefix", field)
+		}
 
 		expires := strings.TrimSpace(entry.Expires)
 		if expires != "" {
@@ -2208,7 +2211,7 @@ func validatePathEntropyExclusions(entries []PathEntropyExclusion) error {
 			}
 		}
 
-		key := scheme + "|" + host + "|" + prefix
+		key := fmt.Sprintf("%s|%s|%s|%t", scheme, host, prefix, entry.GoogleEditorID)
 		if _, dup := seen[key]; dup {
 			return fmt.Errorf("%s duplicates an earlier entry for %s%s", field, host, prefix)
 		}

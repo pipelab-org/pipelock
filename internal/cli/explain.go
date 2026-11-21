@@ -467,6 +467,9 @@ func buildExplainReport(cmd *cobra.Command, cfg *config.Config, cfgLabel, rawURL
 		})
 	}
 	report.PatternName = explainPatternName(result)
+	if result.GoogleEditorIDScope != "" {
+		report.Notes = append(report.Notes, "Applied path entropy exemption for "+result.GoogleEditorIDScope+". Other path segments and query values still undergo their configured checks.")
+	}
 	report.Notes = append(report.Notes, explainResponseScanExemptNotes(cfg, report.Host)...)
 
 	if result.Allowed {

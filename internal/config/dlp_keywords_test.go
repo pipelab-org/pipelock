@@ -232,12 +232,13 @@ func TestDLPKeywordsLegacyPolicyHashGolden(t *testing.T) {
 	// Slack refresh and workflow, and Vault recovery patterns, then when
 	// the Vault service body became base64url. Rebaselined for the default
 	// request-policy undecodable-encoding action in the canonical config.
+	// Bumped for the Google editor ID-only path-entropy scope.
 	// Balanced mode without default patterns remains independent of changes
 	// to the built-in corpus.
 	for _, tc := range []struct{ body, want string }{
-		{keywordConfigYAML(""), "882fc3ea1fa59aa15d2ecf7c801383ae365b2f0047165e2ea2675322cb54d6ca"},
-		{"mode: balanced\n", "5e866dd425c2dadc51723d6bff9bf759ce2b6e5eeea82bae039761fb6398457e"},
-		{"mode: balanced\ndlp:\n  include_defaults: false\n", "7c959a3133c38f84225d738e1c293918fafcf1ae1d4efc9ee31798a830f06911"},
+		{keywordConfigYAML(""), "d447496ad1cf0a572fd7075181865e8e5be5e57b4337f9479ea8e14088fba903"},
+		{"mode: balanced\n", "0dfc49be8a81f77239459195257cdfb54be593d707a0534d5c6f7f77bc936f28"},
+		{"mode: balanced\ndlp:\n  include_defaults: false\n", "095f172f1f69ad83995e813f9ae4b8702d14865658cbab092b02714bf5c45d6b"},
 	} {
 		cfg, err := LoadBytes([]byte(tc.body))
 		if err != nil {

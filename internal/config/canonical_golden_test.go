@@ -471,7 +471,8 @@ const (
 	// Re-bumped for request_policy.on_undecodable_encoding: a body in a
 	// coding the request-policy path does not decode is blocked by default,
 	// separate from on_parse_error. The field is present in Defaults().
-	goldenHashDefaults = "18223abfc4915506c11a3a654d76b8262c79a0b6fc18115b5486cc174b02ed2b"
+	// Bumped for the shipped Google route ID-only path-entropy scope.
+	goldenHashDefaults = "7f1b15b2f15febdafb18b83670b7282d36648d7bd9a6ddb0de213b985ebe543c"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -722,7 +723,7 @@ const (
 	// Re-bumped with goldenHashDefaults for the Vault service base64url body.
 	// Re-bumped for request_policy.on_undecodable_encoding. The rich fixture
 	// omits request_policy, so ApplyDefaults fills the new field.
-	goldenHashRichConfig = "c5cd076024e835e5233c5edc24434f66c3c1bbce37f713022a16dca294486848"
+	goldenHashRichConfig = "830e9051fe8abbbb2beb53f982a53918cae4cbdb97e5893c574ec3927c43f836"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1305,8 +1306,8 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 		// Gateway carrier, the publisher SDK Together host and the JWT sign-in
 		// bearer carrier, matching the default and rich-config goldens above.
 		// They inherit the RFC 9110 default URI limit of 8000 octets.
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "2e5cfd12fde5a1b67d801124b67d5271d1a0732e22296886f3390ed4b76e0ba6"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "8a843b58c296a2dc06c2bd8643dd068c5da2e514e72f187ccccc776573b55500"},
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "472016f083aa970df34d4b7a1c2b5fdf5c0a16d491c8f77b5175cee6961c47d4"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "e0099b3d55651c3659ef199d8746dbbe13a996add447c31c7c5068e67b1aba32"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
