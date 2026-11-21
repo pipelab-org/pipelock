@@ -6,6 +6,7 @@ package recorder
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,16 +53,6 @@ func (l *EvidenceCeremonyLock) Close() error {
 	return errors.Join(unlockErr, closeErr)
 }
 
-// AcquireLegacyEvidenceWriterLock holds the recorder's shared lock across a
-// legacy evidence mutation and refuses a directory committed to v3.
-func AcquireLegacyEvidenceWriterLock(dir string) (*EvidenceCeremonyLock, error) {
-	file, _, err := acquireEvidenceWriterCeremonyLock(dir)
-	if err != nil {
-		return nil, err
-	}
-	return &EvidenceCeremonyLock{file: file}, nil
-}
-
 func acquireEvidenceWriterCeremonyLock(dir string) (*os.File, os.FileInfo, error) {
 	if !supportsEvidenceCeremonyLock() {
 		return nil, nil, checkLegacyEvidenceFormat(dir)
@@ -80,8 +71,14 @@ func acquireEvidenceWriterCeremonyLock(dir string) (*os.File, os.FileInfo, error
 	return file, info, nil
 }
 
+// checkLegacyEvidenceFormat refuses a legacy write into a directory that a v3
+// writer has committed to. A directory that does not exist yet holds no v3
+// files; the caller's own open or create reports whether it can be used.
 func checkLegacyEvidenceFormat(dir string) error {
 	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("checking legacy evidence directory format: %w", err)
 	}
