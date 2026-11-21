@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -20,9 +22,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
-func v3WriterRecipes(t *testing.T) []v3Recipe {
+func v3RunWriterRecipes(t *testing.T) {
 	t.Helper()
-	var recipes []v3Recipe
 	for _, tc := range []struct {
 		group   int
 		name    string
@@ -34,78 +35,130 @@ func v3WriterRecipes(t *testing.T) []v3Recipe {
 		{group: 9, name: "writer-switch-journal"},
 		{group: 9, name: "writer-switch-rotated-legacy", rotated: true},
 	} {
-		dir := t.TempDir()
-		key := v3Key("first")
-		random := bytes.NewReader(bytes.Join([][]byte{
-			bytes.Repeat([]byte{0x11}, 16),
-			bytes.Repeat([]byte{0x22}, 16),
-			bytes.Repeat([]byte{0x33}, 16),
-		}, nil))
-		opts := v3.StreamWriterOptions{
-			Dir: dir, SigningKey: key, Random: random,
-			Clock:      func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
-			Identity:   v3.Writer{Instance: "example", Product: "Pipelock", Version: "3"},
-			PolicyHash: v3.Digest(nil),
-			Coverage: v3.Coverage{
-				ReceiptsRequired: true, Surfaces: []string{"fetch"},
-				RedactionRuleset: v3.Ruleset{Hash: v3.Digest(nil), ID: "example", Version: "1"},
-			},
-		}
-		req := v3Request{Directory: true}
-		recipe := v3Recipe{group: tc.group, name: tc.name, verdict: "VALID", request: req}
-		if tc.rotated {
-			v3PrepareRotatedLegacy(t, &opts, &recipe)
-		} else if tc.name == "writer-switch-journal" {
-			const journal = "{\"defer_id\":\"example\",\"state\":\"deferred_held\"}\n" +
-				"{\"defer_id\":\"example\",\"state\":\"resolved_block\"}\n"
-			if err := os.WriteFile(filepath.Join(dir, "deferred-actions.jsonl"), []byte(journal), 0o600); err != nil {
+		t.Run(fmt.Sprintf("g%02d-%s", tc.group, tc.name), func(t *testing.T) {
+			dir := t.TempDir()
+			lock, err := recorder.AcquireEvidenceCeremonyLock(dir)
+			if err != nil {
+				if !strings.Contains(err.Error(), "ceremony locking is unsupported") {
+					t.Fatal(err)
+				}
+				v3RunFrozenWriterRecipe(t, tc.group, tc.name)
+				return
+			}
+			if err := lock.Close(); err != nil {
 				t.Fatal(err)
 			}
-		} else if tc.group == 9 {
-			legacy, err := os.ReadFile("testdata/frozen/v1/action-receipt-v1-chain.jsonl")
+			key := v3Key("first")
+			random := bytes.NewReader(bytes.Join([][]byte{
+				bytes.Repeat([]byte{0x11}, 16),
+				bytes.Repeat([]byte{0x22}, 16),
+				bytes.Repeat([]byte{0x33}, 16),
+			}, nil))
+			opts := v3.StreamWriterOptions{
+				Dir: dir, SigningKey: key, Random: random,
+				Clock:      func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
+				Identity:   v3.Writer{Instance: "example", Product: "Pipelock", Version: "3"},
+				PolicyHash: v3.Digest(nil),
+				Coverage: v3.Coverage{
+					ReceiptsRequired: true, Surfaces: []string{"fetch"},
+					RedactionRuleset: v3.Ruleset{Hash: v3.Digest(nil), ID: "example", Version: "1"},
+				},
+			}
+			req := v3Request{Directory: true}
+			recipe := v3Recipe{group: tc.group, name: tc.name, verdict: "VALID", request: req}
+			if tc.rotated {
+				v3PrepareRotatedLegacy(t, &opts, &recipe)
+			} else if tc.name == "writer-switch-journal" {
+				const journal = "{\"defer_id\":\"example\",\"state\":\"deferred_held\"}\n" +
+					"{\"defer_id\":\"example\",\"state\":\"resolved_block\"}\n"
+				if err := os.WriteFile(filepath.Join(dir, "deferred-actions.jsonl"), []byte(journal), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else if tc.group == 9 {
+				legacy, err := os.ReadFile("testdata/frozen/v1/action-receipt-v1-chain.jsonl")
+				if err != nil {
+					t.Fatal(err)
+				}
+				const path = "evidence-conformance-session-0.jsonl"
+				if err := os.WriteFile(filepath.Join(dir, path), legacy, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				keys := v3LegacyWriterKeys(t, path, legacy)
+				opts.PriorSignerKeys, err = v3.DecodeKeys(keys)
+				if err != nil {
+					t.Fatal(err)
+				}
+				recipe.request.Keys = append(keys, hex.EncodeToString(v3Public(key)))
+				recipe.request.AllowPrefix = true
+				recipe.verdict, recipe.code = "VALID PREFIX, END UNPROVEN", "LEGACY_END_UNPROVEN"
+			}
+			w, err := v3.OpenStreamWriter(t.Context(), opts)
 			if err != nil {
 				t.Fatal(err)
 			}
-			const path = "evidence-conformance-session-0.jsonl"
-			if err := os.WriteFile(filepath.Join(dir, path), legacy, 0o600); err != nil {
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = w.Close(ctx, nil)
+			})
+			switch tc.group {
+			case 5:
+				if err := w.WriteHeartbeat(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if err := w.Rollover(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			case 7:
+				v3WriteCorpusAction(t, w)
+			}
+			if err := w.Close(t.Context(), nil); err != nil {
 				t.Fatal(err)
 			}
-			keys := v3LegacyWriterKeys(t, path, legacy)
-			opts.PriorSignerKeys, err = v3.DecodeKeys(keys)
-			if err != nil {
-				t.Fatal(err)
-			}
-			recipe.request.Keys = append(keys, hex.EncodeToString(v3Public(key)))
-			recipe.request.AllowPrefix = true
-			recipe.verdict, recipe.code = "VALID PREFIX, END UNPROVEN", "LEGACY_END_UNPROVEN"
-		}
-		w, err := v3.OpenStreamWriter(t.Context(), opts)
+			recipe.files = v3ReadWrittenCorpus(t, dir)
+			v3RunRecipe(t, recipe)
+		})
+	}
+}
+
+func v3RunFrozenWriterRecipe(t *testing.T, group int, name string) {
+	t.Helper()
+	if *updateReceiptV3 {
+		t.Skip("writer fixture regeneration requires receipt ceremony locking")
+	}
+	dir := filepath.Join(v3Corpus, filepath.Base(t.Name()))
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	raw, err := root.ReadFile("request.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request v3Request
+	if err := json.Unmarshal(raw, &request); err != nil {
+		t.Fatal(err)
+	}
+	var expected struct {
+		Verdict string
+	}
+	raw, err = root.ReadFile("expect.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &expected); err != nil {
+		t.Fatal(err)
+	}
+	recipe := v3Recipe{group: group, name: name, code: request.Finding, verdict: expected.Verdict, request: request}
+	for _, input := range request.Inputs {
+		raw, err := root.ReadFile(input)
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = w.Close(ctx, nil)
-		})
-		switch tc.group {
-		case 5:
-			if err := w.WriteHeartbeat(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-			if err := w.Rollover(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-		case 7:
-			v3WriteCorpusAction(t, w)
-		}
-		if err := w.Close(t.Context(), nil); err != nil {
-			t.Fatal(err)
-		}
-		recipe.files = v3ReadWrittenCorpus(t, dir)
-		recipes = append(recipes, recipe)
+		recipe.files = append(recipe.files, v3File{name: input, bytes: raw})
 	}
-	return recipes
+	v3RunRecipe(t, recipe)
 }
 
 func v3WriteCorpusAction(t *testing.T, writer *v3.StreamWriter) {
