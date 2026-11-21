@@ -126,6 +126,12 @@ type InterceptContext struct {
 	// from tests that omitted the snapshot entirely.
 	EnvelopeEmitterSet   bool
 	Recorder             session.Recorder
+	taintRecorder        session.Recorder
+	taintConfig          *config.Config
+	taintConfigCache     *interceptTaintConfigCache
+	taint                taintDecision
+	taintTask            forwardTaskAction
+	taintRequiresReauth  bool
 	KillSwitch           *killswitch.Controller
 	sizeExemptScanBudget *sizeExemptScanBudget
 }
@@ -205,6 +211,7 @@ func interceptRecordFinding(ic *InterceptContext, sig session.SignalType, scanne
 // Loads the emitter from ic.Proxy at call time so long-lived tunnels always use
 // the current emitter (including after key rotation on reload).
 func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
+	opts = withInterceptTaint(ic, opts)
 	if ic.Proxy == nil {
 		if ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
 			if ic.Logger != nil {
@@ -251,6 +258,7 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
 // interceptConfirmResponseOrBlock preserves the selected tunnel shard and
 // distinguishes recorder outages from response policy findings.
 func interceptConfirmResponseOrBlock(ic *InterceptContext, w http.ResponseWriter, opts receipt.EmitOpts) bool {
+	opts = withInterceptTaint(ic, opts)
 	if ic.Config == nil || !ic.Config.FlightRecorder.RequireReceipts {
 		return false
 	}
@@ -290,6 +298,7 @@ func interceptEmitReceiptOrBlock(ic *InterceptContext, w http.ResponseWriter, ac
 }
 
 func interceptEmitRequiredReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
+	opts = withInterceptTaint(ic, opts)
 	if ic.Proxy == nil {
 		if ic.Logger != nil {
 			ic.Logger.LogError(audit.NewRequestLogContext(opts.RequestID), receiptEmissionError(opts, errReceiptEmitterUnavailable))
@@ -335,6 +344,7 @@ func interceptEmitOutcomeReceipt(ic *InterceptContext, opts receipt.EmitOpts, ve
 	if ic == nil || ic.Config == nil || !ic.Config.FlightRecorder.RequireReceipts {
 		return
 	}
+	opts = withInterceptTaint(ic, opts)
 	opts.DecisionPhase = receipt.DecisionPhaseOutcome
 	opts.Verdict = verdict
 	opts.Layer = receiptOutcomeLayer
@@ -662,9 +672,11 @@ func newInterceptHandler(
 	target := net.JoinHostPort(ic.TargetHost, ic.TargetPort)
 	// Initialize the shared budget before taking request-local context copies.
 	_ = interceptSizeExemptScanBudget(ic)
+	taintCache := &interceptTaintConfigCache{}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestContext := *ic
 		ic := &requestContext
+		ic.taintConfigCache = taintCache
 		w = ic.Proxy.withAdaptiveRefusal(w, adaptiveRefusalOptions{config: ic.Config, agent: ic.Agent, clientIP: ic.ClientIP, auth: ic.ActorAuth, host: func() string { return ic.TargetHost }, transport: "intercept", level: func() int { return interceptEscalationLevel(ic) }})
 		if ic.Proxy != nil {
 			var admissionErr error
@@ -728,6 +740,9 @@ func newInterceptHandler(
 
 		// Pre-generate a single ActionID for correlation between envelope and receipt.
 		actionID := receipt.NewActionID()
+		if ic.Recorder == nil && ic.Proxy != nil && ic.Proxy.taintRecorder != nil {
+			ic.Recorder = ic.Proxy.taintRecorder
+		}
 		if ic.Recorder == nil {
 			sm := ic.SessionMgr
 			if ic.Proxy != nil {
@@ -858,6 +873,7 @@ func newInterceptHandler(
 		// Build shared audit context AFTER URL reconstruction so actx.URL
 		// contains the full intercepted URL, not just the origin-form path.
 		actx := newHTTPAuditContext(r.Context(), ic.Logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent})
+		initInterceptTaint(ic, r)
 
 		// Track whether any finding occurred (URL, body DLP, or response scan).
 		// RecordClean is only applied when the request was fully clean so that
@@ -872,7 +888,7 @@ func newInterceptHandler(
 			if interceptGate.HasContractContext() {
 				opts = withContractReceipt(interceptGate, opts)
 			}
-			return opts
+			return withInterceptTaint(ic, opts)
 		}
 
 		// Scan the full URL through the DLP pipeline. The CONNECT handler only
@@ -1375,7 +1391,7 @@ func newInterceptHandler(
 					"blocked: "+reason, http.StatusForbidden)
 				return
 			}
-			if observation := decide.ObserveCrossAgentContamination(ic.Recorder, &ic.Config.Taint, session.CrossAgentBoundaryA2ARequest); observation.ShouldEscalate {
+			if observation := decide.ObserveCrossAgentContamination(ic.taintRecorder, &ic.taintConfig.Taint, session.CrossAgentBoundaryA2ARequest); observation.ShouldEscalate {
 				interceptRecordSignal(ic, observation.AdaptiveSignal(false))
 			}
 			a2aBodyResult := mcp.ScanA2ARequestBody(r.Context(), inspected, ic.Scanner, &ic.Config.A2AScanning, a2aContentEntropyOptions(r.URL.Hostname(), ic.Config))
@@ -1512,7 +1528,7 @@ func newInterceptHandler(
 			// source (evidence) and hostile escalation are captured even when the
 			// request is blocked for another reason (e.g. a secret in the body).
 			if isA2A && bodyBytes != nil {
-				if observation := decide.ObserveCrossAgentContamination(ic.Recorder, &ic.Config.Taint, session.CrossAgentBoundaryA2ARequest); observation.ShouldEscalate {
+				if observation := decide.ObserveCrossAgentContamination(ic.taintRecorder, &ic.taintConfig.Taint, session.CrossAgentBoundaryA2ARequest); observation.ShouldEscalate {
 					interceptRecordSignal(ic, observation.AdaptiveSignal(false))
 				}
 			}
@@ -2237,6 +2253,9 @@ func newInterceptHandler(
 		removeHopByHopHeaders(r.Header)
 		stripInternalIdentity(r)
 		applyFullResponsePolicy(r.Header, nil)
+		if !admitInterceptTaint(ic, w, &interceptBodyBytes, interceptTaintAdmissionOptions{request: r, logContext: actx, actionID: actionID, wrapReceipt: withInterceptRedaction}) {
+			return
+		}
 
 		// Inject mediation envelope (and attach RFC 9421 signature when
 		// the envelope emitter has a signer) before forwarding on the
@@ -2253,13 +2272,18 @@ func newInterceptHandler(
 		if envEmitter != nil {
 			policyHash := envelope.PolicyHashFromHex(ic.Config.CanonicalPolicyHash())
 			if envErr := envEmitter.InjectAndSign(r, interceptBodyBytes, envelope.BuildOpts{
-				ActionID:   actionID,
-				Action:     string(receipt.ClassifyHTTP(r.Method)),
-				Verdict:    config.ActionAllow,
-				SideEffect: string(receipt.SideEffectFromMethod(r.Method)),
-				Actor:      ic.Agent,
-				ActorAuth:  ic.ActorAuth,
-				PolicyHash: policyHash,
+				ActionID:       actionID,
+				Action:         string(receipt.ClassifyHTTP(r.Method)),
+				Verdict:        config.ActionAllow,
+				SideEffect:     string(receipt.SideEffectFromMethod(r.Method)),
+				Actor:          ic.Agent,
+				ActorAuth:      ic.ActorAuth,
+				PolicyHash:     policyHash,
+				SessionTaint:   ic.taint.Risk.Level.String(),
+				TaskID:         ic.taint.Task.CurrentTaskID,
+				AuthorityKind:  ic.taint.Authority.String(),
+				AuthorityRef:   ic.taint.ActionRef,
+				RequiresReauth: ic.taintRequiresReauth,
 			}); envErr != nil {
 				blockedErr := newEnvelopeBlockedRequest(envErr)
 				ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
@@ -2333,6 +2357,11 @@ func newInterceptHandler(
 			}
 			emitOutcome(opts, config.ActionAllow, status, transferred, recordStreamError(r.Context(), ic.Logger, actx, err))
 		}
+		if !interceptTaskAdmissionCurrent(ic) {
+			ic.taint.Result = session.PolicyDecisionResult{Decision: session.PolicyBlock, Reason: session.TaskApprovalStale}
+			refuseInterceptTaint(ic, w, session.TaskApprovalStale, interceptTaintAdmissionOptions{request: r, logContext: actx, actionID: actionID, wrapReceipt: withInterceptRedaction})
+			return
+		}
 		requiredIntentEmitted := false
 		if ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
 			if interceptEmitReceiptOrBlock(ic, w, actx, allowReceipt) {
@@ -2346,6 +2375,15 @@ func newInterceptHandler(
 			}
 		}
 
+		if reason := recheckInterceptTaint(ic, r); reason != "" {
+			if requiredIntentEmitted {
+				writeInterceptTaintRefusal(ic, w, actx, reason)
+				emitBlockedPostRoundTripOutcome(http.StatusForbidden, reason)
+			} else {
+				refuseInterceptTaint(ic, w, reason, interceptTaintAdmissionOptions{request: r, logContext: actx, actionID: actionID, wrapReceipt: withInterceptRedaction})
+			}
+			return
+		}
 		// Record what this request sends before it leaves, so no response
 		// can mint a value the session itself supplied.
 		recordIssuerRequestSent(ic, r, interceptBodyBytes)
@@ -2450,6 +2488,12 @@ func newInterceptHandler(
 			}
 			return false
 		}
+		var responseFindingKinds []session.HostileFindingKind
+		responseTaintType := responseTaintContentType(resp.Header)
+		responseTaintURL := r.URL.String()
+		observeResponseFindings := httpResponseFindingObserver(ic.taintRecorder, ic.taintConfig, responseTaintURL, responseTaintType, "forward_response")
+		observeResponseFindings(nil)
+		defer func() { observeResponseFindings(responseFindingKinds) }()
 		stripUpstreamPipelockNamespace(resp)
 		if !applyFullResponsePolicy(nil, resp) {
 			reason := fullResponseRefusal(resp)
@@ -2522,16 +2566,18 @@ func newInterceptHandler(
 					Target:             targetURL,
 					Suppress:           ic.Config.Suppress,
 					ResponseScanExempt: interceptRespExempt,
-					ConfirmFinding: sseFindingReceiptConfirmer(ic.Config, withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}, ic.receiptShard), func(cfg *config.Config, opts receipt.EmitOpts) error {
+					ConfirmFinding: sseFindingReceiptConfirmer(ic.Config, withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}, ic.receiptShard), func(_ *config.Config, opts receipt.EmitOpts) error {
 						if ic.Proxy == nil {
 							return errReceiptEmitterUnavailable
 						}
-						return ic.Proxy.emitAllowPathReceipt(cfg, opts)
+						return ic.Proxy.emitAllowPathReceipt(ic.Config, withInterceptTaint(ic, opts))
 					}),
 					OnObservedCoreResponse: func(observed scanner.ObservedCoreMatch) {
 						recordObservedCoreResponseMatches(ic.Metrics, ic.Logger, actx, []scanner.ObservedCoreMatch{observed}, TransportConnect)
 					},
 					OnFinding: func(err error) {
+						responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, observedSSEFindingKinds(err))
+						observeResponseFindings(responseFindingKinds)
 						ic.Logger.LogAnomaly(actx, LayerSSEStream, err.Error(), 0)
 					},
 					OnDroppedDLP: func(match scanner.TextDLPMatch, reason string) {
@@ -2587,6 +2633,8 @@ func newInterceptHandler(
 				return
 			}
 
+			observeResponseFindings(nil)
+
 			// Copy response headers to client before streaming.
 			for k, vv := range resp.Header {
 				for _, v := range vv {
@@ -2600,6 +2648,8 @@ func newInterceptHandler(
 
 			flusher, _ := serverWriter.(http.Flusher)
 			streamErr := DispatchSSEScan(r.Context(), resp.Body, httpstream.Writer{Writer: w}, flusher, ic.Scanner, sseOpts)
+			responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, sseTaintFindingKinds(streamErr))
+			observeResponseFindings(responseFindingKinds)
 			if errors.Is(streamErr, mcp.ErrReceiptRequired) {
 				if ic.Proxy != nil {
 					ic.Proxy.recordRequiredReceiptBlock(streamErr, TransportConnect)
@@ -3124,6 +3174,8 @@ func newInterceptHandler(
 			} else {
 				a2aRespResult = mcp.ScanA2AResponseBody(r.Context(), respBody, ic.Scanner, &ic.Config.A2AScanning)
 			}
+			responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, mcp.A2ATaintFindingKinds(a2aRespResult))
+			observeResponseFindings(responseFindingKinds)
 			if a2aRespResult.ScanError != "" {
 				reason := "response scan failed: " + a2aRespResult.ScanError
 				ic.Logger.LogError(actx, fmt.Errorf("%s", reason))
@@ -3204,6 +3256,8 @@ func newInterceptHandler(
 		if ic.Scanner.ResponseScanningEnabled() && (!interceptAuthenticatedArtifact || structured != nil) {
 			scanResult := scanStructuredResponse(r.Context(), ic.Scanner, ic.Config, respBody, r.URL.String(), structured)
 			scanResult = retainStructuredShieldScan(preShieldScan, scanResult, respBody, structured)
+			responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, responseScanFindingKinds(scanResult))
+			observeResponseFindings(responseFindingKinds)
 			responseWarned = len(scanResult.WarnedMatches) != 0
 			recoveryAssessment = scanResult.RecoveryAssessment()
 			if structured != nil {
@@ -3358,11 +3412,11 @@ func newInterceptHandler(
 					if ic.Proxy == nil {
 						receiptErr = errReceiptEmitterUnavailable
 					} else {
-						receiptErr = ic.Proxy.emitAllowPathReceipt(ic.Config, withReceiptShard(receipt.EmitOpts{
+						receiptErr = ic.Proxy.emitAllowPathReceipt(ic.Config, withInterceptTaint(ic, withReceiptShard(receipt.EmitOpts{
 							ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: action,
 							Layer: responseScanLayer, Pattern: reason, Transport: "intercept",
 							Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent,
-						}, ic.receiptShard))
+						}, ic.receiptShard)))
 					}
 					if receiptErr != nil {
 						if ic.Proxy != nil {

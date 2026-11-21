@@ -974,8 +974,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 		// Obtain a live session recorder for the tunnel. This provides live
 		// escalation level lookups instead of a stale snapshot from sr.Level.
-		var interceptRec session.Recorder
-		if sm := p.sessionMgrPtr.Load(); sm != nil {
+		interceptRec := p.taintRecorder
+		if sm := p.sessionMgrPtr.Load(); interceptRec == nil && sm != nil {
 			sess := sm.GetOrCreate(responseTaintSessionKey(cfg, agent, clientIP, id.Auth))
 			if sess == nil {
 				denyInterceptCapacity()
@@ -1353,8 +1353,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 
 	forwardSessionKey := responseTaintSessionKey(cfg, agent, clientIP, id.Auth)
-	var forwardRec session.Recorder
-	if sm := p.sessionMgrPtr.Load(); sm != nil {
+	forwardRec := p.taintRecorder
+	if sm := p.sessionMgrPtr.Load(); forwardRec == nil && sm != nil {
 		sess := sm.GetOrCreate(forwardSessionKey)
 		if sess == nil {
 			denyForwardCapacity()
@@ -1363,9 +1363,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		forwardRec = sess
 	}
 	var forwardTask forwardTaskAction
-	if id.Auth == envelope.ActorAuthBound {
+	if id.Auth == envelope.ActorAuthBound && p.taintRecorder == nil {
 		forwardTask.subject = "forward:" + agent
 		session.BindTaskSubject(forwardRec, forwardTask.subject)
+	} else if p.taintRecorder != nil {
+		forwardTask.subject = sharedTaskSubject(p.taintRecorder)
 	}
 	forwardTaint := evaluateHTTPTaskTaint(cfg, forwardRec, r.Method, r.URL, &forwardTask)
 	forwardRequiresReauth := false
@@ -2450,6 +2452,37 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			writeTaskDenial(reason, detail)
 			return
 		}
+	default:
+		// The session can become more exposed while this request is being
+		// scanned (a concurrent response or shared MCP recorder). Enforce a
+		// stricter pre-send result instead of keeping the earlier decision.
+		switch taskTaint.Result.Decision {
+		case session.PolicyBlock:
+			forwardTaint = taskTaint
+			writeTaskDenial(taskTaint.Result.Reason, "session exposure changed before this request was sent")
+			return
+		case session.PolicyAsk:
+			if forwardTaint.Result.Decision != session.PolicyAsk {
+				forwardTaint = taskTaint
+				forwardRequiresReauth = true
+				if approved, blockReason := p.resolveTaintAsk(agent, targetURL, r.Method, taskTaint.Result.Reason); !approved {
+					writeTaskDenial(blockReason, "session exposure changed before this request was sent")
+					return
+				}
+				// Exposure may change again while the operator decides. Only a
+				// result no stricter than the approved ask may proceed.
+				if after := evaluateHTTPTaskTaint(cfg, forwardRec, outReq.Method, outReq.URL, &forwardTask); after.Result.Decision == session.PolicyBlock ||
+					after.Result.Reason == session.TaskPermissionRequired || after.Task.CurrentTaskID != taskTaint.Task.CurrentTaskID {
+					reason := after.Result.Reason
+					if after.Result.Decision != session.PolicyBlock {
+						reason = session.TaskApprovalStale
+					}
+					writeTaskDenial(reason, "session exposure changed while approval was pending")
+					return
+				}
+				forwardTaint.Authority = session.AuthorityOperatorOverride
+			}
+		}
 	}
 
 	// Inject mediation envelope (and attach RFC 9421 signature when the
@@ -2705,7 +2738,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		outcomeReason = "fetch_failed"
 		return
 	}
-	defer safeClose(resp.Body, "resp.Body", p.logger)
+	defer func() { safeClose(resp.Body, "resp.Body", p.logger) }()
 	stripUpstreamPipelockNamespace(resp)
 	if !applyFullResponsePolicy(nil, resp) {
 		reason := fullResponseRefusal(resp)
@@ -2776,9 +2809,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var responseFindingKinds []session.HostileFindingKind
 	responseTaintType := responseTaintContentType(resp.Header)
-	defer func() {
-		observeHTTPResponseFindings(forwardRec, cfg, resp.Request.URL.String(), responseTaintType, "forward_response", responseFindingKinds)
-	}()
+	responseTaintURL := resp.Request.URL.String()
+	observeResponseFindings := httpResponseFindingObserver(forwardRec, cfg, responseTaintURL, responseTaintType, "forward_response")
+	observeResponseFindings(nil)
+	defer func() { observeResponseFindings(responseFindingKinds) }()
 
 	// Size limit: tighter of max_response_mb and remaining byte budget.
 	// configMaxBytes and budgetLimited are kept distinct so the buffered scan
@@ -2843,6 +2877,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					// hasFinding here a flood of warn-only findings would
 					// dilute the session escalation signal.
 					responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, observedSSEFindingKinds(err))
+					observeResponseFindings(responseFindingKinds)
 					hasFinding = true
 					p.logger.LogAnomaly(actx, LayerSSEStream, err.Error(), 0)
 				},
@@ -2898,10 +2933,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			outcomeReason = "compressed_sse"
 			return
 		}
+		observeResponseFindings(nil)
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		flusher, _ := w.(http.Flusher)
 		if err := DispatchSSEScan(r.Context(), resp.Body, httpstream.Writer{Writer: w}, flusher, sc, sseOpts); err != nil {
+			responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, sseTaintFindingKinds(err))
+			observeResponseFindings(responseFindingKinds)
 			if errors.Is(err, mcp.ErrReceiptRequired) {
 				p.recordRequiredReceiptBlock(err, TransportForward)
 				outcomeStatus = strconv.Itoa(resp.StatusCode)
@@ -2928,7 +2966,6 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if IsSSEStreamFinding(err) {
-				responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, sseTaintFindingKinds(err))
 				// Same adaptive-decay protection as the OnFinding path
 				// above. A2A warn-mode findings reach this branch (the
 				// A2A scanner returns ErrA2AStreamFinding on detection),
@@ -3491,6 +3528,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			if !a2aResult.Clean {
 				responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, mcp.A2ATaintFindingKinds(a2aResult))
+				observeResponseFindings(responseFindingKinds)
 				hasFinding = true
 				a2aAction := a2aResult.Action
 				if a2aAction == "" {
@@ -3570,6 +3608,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			recordObservedCoreResponseMatches(p.metrics, p.logger, actx, scanResult.ObservedCoreMatches, TransportForward)
 			if !scanResult.Clean && !scanResult.Failed() {
 				responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, responseScanFindingKinds(scanResult))
+				observeResponseFindings(responseFindingKinds)
 			}
 
 			// Capture observer: record forward response scan verdict for

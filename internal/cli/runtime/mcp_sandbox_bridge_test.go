@@ -25,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
@@ -207,6 +208,7 @@ func TestStartMCPSandboxBridge_ForcesForwardProxyIntoScanner(t *testing.T) {
 	t.Cleanup(cancel)
 
 	bridge, err := startMCPSandboxBridge(mcpSandboxBridgeStartOptions{
+		Rec:         &proxy.SessionState{},
 		Context:     ctx,
 		Config:      cfg,
 		KillSwitch:  killswitch.New(cfg),
@@ -277,6 +279,7 @@ func TestStartMCPSandboxBridge_CONNECTThroughScanner(t *testing.T) {
 	cfg.ForwardProxy.Enabled = false
 
 	bridge, err := startMCPSandboxBridge(mcpSandboxBridgeStartOptions{
+		Rec:         &proxy.SessionState{},
 		Context:     ctx,
 		Config:      cfg,
 		KillSwitch:  killswitch.New(cfg),
@@ -351,6 +354,7 @@ func TestStartMCPSandboxBridge_ContextCancelClosesTunnel(t *testing.T) {
 	cfg.ForwardProxy.Enabled = false
 
 	bridge, err := startMCPSandboxBridge(mcpSandboxBridgeStartOptions{
+		Rec:         &proxy.SessionState{},
 		Context:     ctx,
 		Config:      cfg,
 		KillSwitch:  killswitch.New(cfg),
@@ -411,6 +415,7 @@ func TestStartMCPSandboxBridge_KillSwitchBlocks(t *testing.T) {
 	t.Cleanup(cancel)
 
 	bridge, err := startMCPSandboxBridge(mcpSandboxBridgeStartOptions{
+		Rec:         &proxy.SessionState{},
 		Context:     ctx,
 		Config:      cfg,
 		KillSwitch:  killswitch.New(cfg),
@@ -458,6 +463,7 @@ func TestMCPSandboxBridgeNeverServesMetrics(t *testing.T) {
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
 				bridge, err := startMCPSandboxBridge(mcpSandboxBridgeStartOptions{
+					Rec:     &proxy.SessionState{},
 					Context: ctx, Config: cfg, KillSwitch: killswitch.New(cfg), AuditLogger: audit.NewNop(),
 				})
 				if err != nil {
@@ -521,6 +527,7 @@ func TestMCPSandboxBridgeMetricsUsesBoundAddress(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	bridge, err := startMCPSandboxBridge(mcpSandboxBridgeStartOptions{
+		Rec:     &proxy.SessionState{},
 		Context: ctx, Config: cfg, KillSwitch: killswitch.New(cfg), AuditLogger: audit.NewNop(), MetricsBoundAddr: boundAddr,
 	})
 	if err != nil {

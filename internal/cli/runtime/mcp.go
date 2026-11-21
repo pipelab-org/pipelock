@@ -1216,7 +1216,7 @@ Key-free evidence capture:
 				cee = mcp.NewCEEDeps(cfg.CrossRequestDetection, mcpMetrics)
 			}
 
-			// The session store remains optional.
+			// Taint history needs a store even when behavioral profiling is off.
 			var store session.Store
 			var operatorSessions atomic.Pointer[proxy.SessionManager]
 			var baselineChecker session.BaselineChecker
@@ -1224,7 +1224,7 @@ Key-free evidence capture:
 			if cfg.AdaptiveEnforcement.Enabled {
 				adaptiveCfg = &cfg.AdaptiveEnforcement
 			}
-			if cfg.SessionProfiling.Enabled {
+			if cfg.SessionProfiling.Enabled || cfg.Taint.Enabled {
 				// Reuse the registry created above rather than replacing it: the
 				// denial-of-wallet and transport counters are already wired to
 				// that instance, and a second registry here would drop them.
@@ -1237,7 +1237,11 @@ Key-free evidence capture:
 				}
 				defer sm.Close()
 				store = sm.AsStore()
-				operatorSessions.Store(sm)
+				// The operator task API remains opt-in through profiling. A
+				// taint-only store must not bind a shared operator address.
+				if cfg.SessionProfiling.Enabled {
+					operatorSessions.Store(sm)
+				}
 				baselineChecker = sm
 			}
 			// Denial-of-wallet tracking: _default budget is free tier (always
@@ -1904,34 +1908,6 @@ Key-free evidence capture:
 					reportBestEffortAdmission(cmd.ErrOrStderr())
 				}
 
-				closeBridge, bridgeErr := setupMCPSandboxBridge(mcpSandboxBridgeSetupOptions{
-					Context:          ctx,
-					Cancel:           cancel,
-					GOOS:             runtime.GOOS,
-					Config:           cfg,
-					KillSwitch:       ks,
-					AuditLogger:      auditLogger,
-					Metrics:          mcpMetrics,
-					MetricsBoundAddr: metricsBoundAddr,
-					ReceiptEmitter:   receiptEmitter,
-					V2ReceiptEmitter: v2ReceiptEmitter,
-					ReceiptGroup:     receiptGroup,
-					EnvelopeEmitter:  envEmitter,
-					Stderr:           cmd.ErrOrStderr(),
-					LaunchConfig:     &launchCfg,
-					StartBridge:      startMCPSandboxBridge,
-				})
-				if bridgeErr != nil {
-					return bridgeErr
-				}
-				defer closeBridge()
-
-				sandboxLaunch, sErr := sandbox.PrepareSandboxLaunch(launchCfg)
-				if sErr != nil {
-					return fmt.Errorf("sandbox prepare: %w", sErr)
-				}
-				sandboxLaunch.Cmd.Stderr = cmd.ErrOrStderr()
-
 				proxyOpts := mcp.MCPProxyOpts{
 					TaskOperatorAPI: taskOperatorAPI,
 					Scanner:         sc, Approver: approver, AuditMode: !cfg.EnforceEnabled(),
@@ -1965,6 +1941,42 @@ Key-free evidence capture:
 				proxyOpts.ServerBinding = serverBinding
 				proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 				proxyOpts.ReceiptGroup = receiptGroup
+				// Acquire the invocation before starting its egress bridge. Both
+				// transports retain this exact state until the child and bridge stop.
+				proxyOpts, releaseRecorder, acquireErr := mcp.AcquireSandboxRecorder(proxyOpts)
+				if acquireErr != nil {
+					return acquireErr
+				}
+				defer releaseRecorder()
+				closeBridge, bridgeErr := setupMCPSandboxBridge(mcpSandboxBridgeSetupOptions{
+					Rec:              proxyOpts.Rec,
+					Context:          ctx,
+					Cancel:           cancel,
+					GOOS:             runtime.GOOS,
+					Config:           cfg,
+					KillSwitch:       ks,
+					AuditLogger:      auditLogger,
+					Metrics:          mcpMetrics,
+					MetricsBoundAddr: metricsBoundAddr,
+					ReceiptEmitter:   receiptEmitter,
+					V2ReceiptEmitter: v2ReceiptEmitter,
+					ReceiptGroup:     receiptGroup,
+					EnvelopeEmitter:  envEmitter,
+					Stderr:           cmd.ErrOrStderr(),
+					LaunchConfig:     &launchCfg,
+					StartBridge:      startMCPSandboxBridge,
+				})
+				if bridgeErr != nil {
+					return bridgeErr
+				}
+				defer closeBridge()
+
+				sandboxLaunch, sErr := sandbox.PrepareSandboxLaunch(launchCfg)
+				if sErr != nil {
+					return fmt.Errorf("sandbox prepare: %w", sErr)
+				}
+				sandboxLaunch.Cmd.Stderr = cmd.ErrOrStderr()
+
 				respAction, respTrust, respServer := mcpResponseLogFields(proxyOpts)
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
 					"pipelock: proxying MCP server %v [SANDBOXED] (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s, workspace=%s)\n",

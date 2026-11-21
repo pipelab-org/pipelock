@@ -1238,6 +1238,15 @@ func (s *SessionState) BindTaskSubject(subject string) {
 	}
 }
 
+// TaskSubject returns the bound task subject without changing it. Traffic that
+// shares an invocation's recorder uses it so exact grants for that invocation
+// can match, while a permission bound to another subject still cannot.
+func (s *SessionState) TaskSubject() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.taskSubject
+}
+
 func (s *SessionState) TaskPolicySnapshot(subject string, action session.TaskAction) (session.SessionRisk, session.TaskContext, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

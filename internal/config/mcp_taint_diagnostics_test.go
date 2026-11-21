@@ -13,8 +13,8 @@ func TestMCPTaintDiagnostics_ConfigAndReload(t *testing.T) {
 	for _, tc := range []struct {
 		name, body, recorder string
 	}{
-		{"omitted", "", "no session taint recorder"},
-		{"null", "taint: {enabled: null}\nsession_profiling: {enabled: null}\nmcp_session_binding: {listener_require_state_token: null}\n", "no session taint recorder"},
+		{"omitted", "", "invocation-scoped recorder even with session_profiling.enabled=false"},
+		{"null", "taint: {enabled: null}\nsession_profiling: {enabled: null}\nmcp_session_binding: {listener_require_state_token: null}\n", "invocation-scoped recorder even with session_profiling.enabled=false"},
 		{"false", "taint: {enabled: false}\nsession_profiling: {enabled: false}\nmcp_session_binding: {listener_require_state_token: false}\n", "taint is disabled"},
 		{"true", "taint: {enabled: true}\nsession_profiling: {enabled: true}\nmcp_session_binding: {listener_require_state_token: true}\n", "invocation-scoped recorder"},
 	} {

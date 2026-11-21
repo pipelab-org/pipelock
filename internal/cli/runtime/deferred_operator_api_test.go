@@ -43,6 +43,7 @@ func (s taskGrantTestStore) GetOrCreate(key string) session.Recorder {
 
 func TestMCPOperatorAPIInstallsLiveTaskPermissionWithoutDefer(t *testing.T) {
 	cfg := config.Defaults()
+	cfg.SessionProfiling.Enabled = true
 	cfg.KillSwitch.APIListen = "127.0.0.1:0"
 	cfg.KillSwitch.APIToken = "operator-test-token"
 	var sessions atomic.Pointer[proxy.SessionManager]
