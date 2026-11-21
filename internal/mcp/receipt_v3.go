@@ -31,7 +31,10 @@ type mcpReceiptEffects struct {
 // WithV3ReceiptWriter supplies the effect receipt stream for a proxy invocation.
 // The caller owns the stream lifecycle.
 func (o MCPProxyOpts) WithV3ReceiptWriter(writer *v3.StreamWriter) MCPProxyOpts {
-	o.receiptEffects = mcpReceiptEffects{gate: v3.NewEffectGate(writer), enabled: writer != nil}
+	o.receiptEffects = mcpReceiptEffects{
+		gate:    v3.NewEffectGate(writer).WithFinalizationTimeout(o.shutdownGrace()),
+		enabled: writer != nil,
+	}
 	return o
 }
 
@@ -246,7 +249,7 @@ func (w *mcpV3ReplyWriter) WriteMessage(msg []byte) error {
 		logMCPV3Error(w.log, token.Refuse(ctx))
 		return err
 	}
-	err = w.base.WriteMessage(msg)
+	err = writeMCPForwardedMessage(w.base, msg)
 	logMCPV3Error(w.log, confirmMCPV3Effect(ctx, token, err == nil))
 	return err
 }
@@ -260,7 +263,9 @@ func (w *mcpV3ReplyWriter) writeDeniedMessage([]byte) error {
 }
 
 func logMCPV3Error(log io.Writer, err error) {
-	if err != nil {
+	if errors.Is(err, context.DeadlineExceeded) {
+		_, _ = fmt.Fprintf(log, "pipelock: MCP v3 receipt: audit_gap=true: %v\n", err)
+	} else if err != nil {
 		_, _ = fmt.Fprintf(log, "pipelock: MCP v3 receipt: %v\n", err)
 	}
 }
@@ -411,7 +416,7 @@ func (w *mcpV3NetworkStreamWriter) WriteMessage(msg []byte) error {
 		return err
 	}
 	x.wrote = true
-	return w.base.WriteMessage(msg)
+	return writeMCPForwardedMessage(w.base, msg)
 }
 
 func (w *mcpV3NetworkStreamWriter) writeDeniedMessage([]byte) error {

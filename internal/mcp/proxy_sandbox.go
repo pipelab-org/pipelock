@@ -295,7 +295,8 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	}
 
 	// Build per-invocation opts with session-specific recorder.
-	inputOpts := opts
+	inputOpts := opts.withV3Session()
+	defer inputOpts.settleV3Session(sessionCtx, safeLogW)
 	inputOpts.Rec = rec
 	inputOpts.WarnContext = sessionCtx
 	inputOpts.closeStdioInput = sync.OnceFunc(func() { _ = serverIn.Close() })
@@ -319,7 +320,7 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	go func() {
 		defer wgBlocked.Done()
 		for blocked := range blockedCh {
-			if wErr := deliverMCPInputResult(inputOpts, blocked, safeClientOut); wErr != nil {
+			if wErr := deliverMCPInputResult(inputOpts, blocked, inputOpts.localV3ReplyWriter(safeClientOut)); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send block response: %v\n", wErr)
 			}
 		}
@@ -338,11 +339,16 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	}
 	timedOut := errors.Is(scanErr, transport.ErrResponseTimeout)
 
-	// On an upstream response timeout the sandboxed child is still alive; kill
-	// it before Wait() so Wait() returns instead of blocking forever, then fall
-	// through to the existing sandbox teardown below.
-	if timedOut && sandboxCmd.Process != nil {
-		_, _ = fmt.Fprintf(safeLogW, "pipelock: terminating sandboxed MCP subprocess after upstream response timeout\n")
+	replyAdmissionFailed := errors.Is(scanErr, errMCPV3ReplyAdmission)
+
+	// Forwarding can fail while the sandboxed child is waiting for input.
+	// Terminate the owned child before waiting for its exit.
+	if (timedOut || replyAdmissionFailed) && sandboxCmd.Process != nil {
+		reason := "upstream response timeout"
+		if replyAdmissionFailed {
+			reason = "reply receipt admission failure"
+		}
+		_, _ = fmt.Fprintf(safeLogW, "pipelock: terminating sandboxed MCP subprocess after %s\n", reason)
 		if c, ok := clientIn.(io.Closer); ok {
 			_ = c.Close()
 		}
@@ -394,7 +400,9 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	case <-drainCtx.Done():
 	}
 	if timedOut {
-		emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker, fwdOpts)
+		emitPendingTimeoutResponses(fwdOpts.localV3ReplyWriter(safeClientOut), safeLogW, tracker, fwdOpts)
+	} else if replyAdmissionFailed {
+		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "receipt_admission_failed")
 	} else {
 		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "upstream_closed")
 	}

@@ -164,7 +164,11 @@ func writeMCPResponseDisposition(opts MCPProxyOpts, descriptor mcpDenialAudit, w
 	if denied {
 		return writeMCPDenial(opts, descriptor, writer, reply)
 	}
-	return writer.WriteMessage(reply)
+	return writeMCPForwardedMessage(writer, reply)
+}
+
+func writeMCPForwardedMessage(writer transport.MessageWriter, msg []byte) error {
+	return writer.WriteMessage(msg)
 }
 
 // deliverMCPInputResult preserves the shared terminal identity across input

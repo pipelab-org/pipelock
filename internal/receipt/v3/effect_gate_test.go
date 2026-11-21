@@ -8,6 +8,9 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"testing"
+	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestEffectGateAdmission(t *testing.T) {
@@ -222,5 +225,51 @@ func TestEffectGateRecordApproval(t *testing.T) {
 	}
 	if err := (EffectGate{}).RecordApproval(ctx, Action{Phase: phaseHold}, PolicySnapshot{}); err != nil {
 		t.Fatalf("disabled gate returned %v", err)
+	}
+}
+
+func TestEffectGateFinalizationBudgetAfterTransportCancellation(t *testing.T) {
+	for _, refusal := range []bool{false, true} {
+		name := "settlement"
+		if refusal {
+			name = "refusal"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			writes := 0
+			gate := EffectGate{write: func(ctx context.Context, action Action, _ PolicySnapshot) error {
+				if action.Phase == phaseIntent {
+					return nil
+				}
+				writes++
+				if _, bounded := ctx.Deadline(); !bounded {
+					t.Fatal("terminal write has no admission deadline")
+				}
+				<-ctx.Done()
+				return ctx.Err()
+			}}.WithFinalizationTimeout(testwait.Deadline(20 * time.Millisecond))
+			if refusal {
+				cancel()
+				if err := gate.Refuse(ctx, Action{}, PolicySnapshot{}); !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("refusal returned %v, want finalization deadline", err)
+				}
+			} else {
+				token, err := gate.Admit(ctx, Action{}, PolicySnapshot{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				cancel()
+				if err := token.SettleOnExit(ctx); !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("settlement returned %v, want finalization deadline", err)
+				}
+				if err := token.SettleOnExit(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if writes != 1 {
+				t.Fatalf("terminal write count = %d, want 1", writes)
+			}
+		})
 	}
 }
