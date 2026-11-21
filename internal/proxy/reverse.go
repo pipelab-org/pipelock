@@ -1490,7 +1490,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			retainedAirlockSessions = retainAirlockSessions(retainedAirlockSessions, sess)
 		}
 		if parsedTarget, perr := url.Parse(targetURL); perr == nil {
-			reverseTaint := evaluateHTTPTaint(cfg, reverseTaintRec, r.Method, parsedTarget)
+			reverseTaint := evaluateHTTPTaint(cfg, reverseTaintRec, r.Method, parsedTarget, requestHasBody(r))
 			if reverseTaint.Result.Decision == session.PolicyAsk || reverseTaint.Result.Decision == session.PolicyBlock {
 				rp.logger.LogTaintDecision(
 					newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}),
@@ -3176,10 +3176,18 @@ responseScanning:
 		// proxy which sets responseFindingKinds on both. When there is no session
 		// recorder (nil owner or session manager), the defer already records
 		// nothing, so leave it in charge.
-		sseContentType := resp.Header.Get("Content-Type")
 		var sseResponseFindingKinds []session.HostileFindingKind
+		// The stream releases events while the scan runs, so exposure must be
+		// recorded as it happens, as on the forward and intercept SSE paths:
+		// the source when the stream starts, each finding before its event is
+		// released, and the final state once the scan completes. The observer
+		// suppresses duplicates. Its first call happens before the scanner
+		// goroutine starts; every later call runs in that goroutine.
+		observeSSEFindings := func([]session.HostileFindingKind) {}
 		if responseTaintRec != nil {
 			sseHandlesResponseTaint = true
+			observeSSEFindings = httpResponseFindingObserver(responseTaintRec, cfg, targetURL, responseTaintType, "reverse_response")
+			observeSSEFindings(nil)
 		}
 		actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
 		sseLayer := LayerSSEStream
@@ -3198,6 +3206,7 @@ responseScanning:
 				},
 				OnFinding: func(err error) {
 					sseResponseFindingKinds = session.MergeFindingKinds(sseResponseFindingKinds, observedSSEFindingKinds(err))
+					observeSSEFindings(sseResponseFindingKinds)
 					rp.logger.LogResponseScan(actx, config.ActionWarn, 0, []string{sseLayer + ": " + err.Error()}, nil)
 				},
 				OnDroppedDLP: func(match scanner.TextDLPMatch, reason string) {
@@ -3209,18 +3218,12 @@ responseScanning:
 			},
 		}
 		onComplete := func(err error) {
-			// Record the response-taint observation now the async scan is done and
-			// the final finding state is known. OnFinding (warn mode) and an
-			// IsSSEStreamFinding error (block mode) both mean the stream carried an
-			// injection, so it upgrades the session to hostile taint the same way a
-			// buffered injection response would. This runs on every completion path
-			// (clean EOF, finding, scan error, cancel); observeHTTPResponseFindings is
-			// inert when taint is disabled. Both operands are final at this point:
-			// DispatchSSEScan (and every OnFinding it fires) completes before
-			// onComplete, all in the one streaming goroutine.
-			if responseTaintRec != nil {
-				observeHTTPResponseFindings(responseTaintRec, cfg, targetURL, sseContentType, "reverse_response", session.MergeFindingKinds(sseResponseFindingKinds, sseTaintFindingKinds(err)))
-			}
+			// Record the final finding state once the scan is done. An
+			// IsSSEStreamFinding error (block mode) adds its kinds here; inline
+			// findings were already recorded by OnFinding. This runs on every
+			// completion path (clean EOF, finding, scan error, cancel) in the
+			// streaming goroutine, after DispatchSSEScan and every OnFinding.
+			observeSSEFindings(session.MergeFindingKinds(sseResponseFindingKinds, sseTaintFindingKinds(err)))
 			if err == nil {
 				return
 			}

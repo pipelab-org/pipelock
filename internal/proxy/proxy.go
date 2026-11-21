@@ -1214,7 +1214,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				// new destination as a separate action.
 				redirectTask = &forwardTaskAction{}
 			}
-			redirectTaint := evaluateHTTPTaskTaint(currentCfg, redirectRec, req.Method, req.URL, redirectTask)
+			redirectTaint := evaluateHTTPTaskTaint(currentCfg, redirectRec, req.Method, req.URL, requestHasBody(req), redirectTask)
 			if redirectTaint.Result.Reason == session.TaskPermissionRequired {
 				redirectTaint.Result.Decision = session.PolicyBlock
 			}
@@ -5816,7 +5816,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		}
 		fetchRec = sess
 	}
-	fetchTaint := evaluateHTTPTaint(cfg, fetchRec, http.MethodGet, parsed)
+	fetchTaint := evaluateHTTPTaint(cfg, fetchRec, http.MethodGet, parsed, false)
 
 	// Airlock check: drain tier blocks all traffic including fetch. Admission
 	// reads the same CEE-safe session the writer raised, and carries that key

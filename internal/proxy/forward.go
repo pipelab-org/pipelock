@@ -1369,7 +1369,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	} else if p.taintRecorder != nil {
 		forwardTask.subject = sharedTaskSubject(p.taintRecorder)
 	}
-	forwardTaint := evaluateHTTPTaskTaint(cfg, forwardRec, r.Method, r.URL, &forwardTask)
+	forwardTaint := evaluateHTTPTaskTaint(cfg, forwardRec, r.Method, r.URL, requestHasBody(r), &forwardTask)
 	forwardRequiresReauth := false
 
 	// Airlock action classification for forward proxy. Admission reads the same
@@ -2428,14 +2428,14 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		})))
 		writeTaskDenialResponse(reason, detail)
 	}
-	taskTaint := evaluateHTTPTaskTaint(cfg, forwardRec, outReq.Method, outReq.URL, &forwardTask)
+	taskTaint := evaluateHTTPTaskTaint(cfg, forwardRec, outReq.Method, outReq.URL, requestHasBody(outReq), &forwardTask)
 	if forwardTaint.Result.Reason == session.TaskPermissionRequired && forwardTaint.Task.CurrentTaskID != taskTaint.Task.CurrentTaskID {
 		writeTaskDenial(session.TaskApprovalStale, "the task changed before this action could be evaluated")
 		return
 	}
 	if taskTaint.Result.Reason == session.TaskPermissionRequired {
 		forwardTask.action = forwardRequestTaskAction(outReq, forwardBodyBytes)
-		matchedTask := evaluateHTTPTaskTaint(cfg, forwardRec, outReq.Method, outReq.URL, &forwardTask)
+		matchedTask := evaluateHTTPTaskTaint(cfg, forwardRec, outReq.Method, outReq.URL, requestHasBody(outReq), &forwardTask)
 		if matchedTask.Task.CurrentTaskID != taskTaint.Task.CurrentTaskID {
 			writeTaskDenial(session.TaskApprovalStale, "the task changed before this action could be evaluated")
 			return
@@ -2471,7 +2471,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				// Exposure may change again while the operator decides. Only a
 				// result no stricter than the approved ask may proceed.
-				if after := evaluateHTTPTaskTaint(cfg, forwardRec, outReq.Method, outReq.URL, &forwardTask); after.Result.Decision == session.PolicyBlock ||
+				if after := evaluateHTTPTaskTaint(cfg, forwardRec, outReq.Method, outReq.URL, requestHasBody(outReq), &forwardTask); after.Result.Decision == session.PolicyBlock ||
 					after.Result.Reason == session.TaskPermissionRequired || after.Task.CurrentTaskID != taskTaint.Task.CurrentTaskID {
 					reason := after.Result.Reason
 					if after.Result.Decision != session.PolicyBlock {

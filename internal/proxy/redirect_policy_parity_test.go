@@ -89,10 +89,10 @@ func TestCheckRedirect_TaintedProtectedActionBlocks(t *testing.T) {
 	// The recorder is snapshotted at admission, but its live state may change
 	// before a later redirect hop.
 	observeHTTPResponseTaint(rec, cfg, "https://untrusted.vendor.example/page", "text/html", "forward_response", false)
-	if decision := evaluateHTTPTaint(cfg, rec, originalReq.Method, originalReq.URL); decision.Result.Decision.String() != "allow" {
+	if decision := evaluateHTTPTaint(cfg, rec, originalReq.Method, originalReq.URL, requestHasBody(originalReq)); decision.Result.Decision.String() != "allow" {
 		t.Fatalf("precondition: action-scoped override did not admit original request: %+v", decision.Result)
 	}
-	if decision := evaluateHTTPTaint(cfg, rec, redirectReq.Method, redirectReq.URL); decision.Result.Decision.String() == "allow" {
+	if decision := evaluateHTTPTaint(cfg, rec, redirectReq.Method, redirectReq.URL, requestHasBody(redirectReq)); decision.Result.Decision.String() == "allow" {
 		t.Fatalf("precondition: taint policy unexpectedly allowed protected redirect: %+v", decision.Result)
 	}
 	err := p.client.CheckRedirect(redirectReq, []*http.Request{originalReq})
@@ -158,14 +158,14 @@ func TestCheckRedirect_TaintedProtectedActionExplicitApprovalAllows(t *testing.T
 	observeHTTPResponseTaint(rec, cfg, "https://untrusted.vendor.example/page", "text/html", "forward_response", false)
 	redirectReq, originalReq := redirectPolicyRequests(t, cfg, sc)
 	redirectReq = redirectReq.WithContext(context.WithValue(redirectReq.Context(), ctxKeyRedirectSessionRecorder, rec))
-	if decision := evaluateHTTPTaint(cfg, rec, originalReq.Method, originalReq.URL); decision.Result.Decision.String() != "allow" {
+	if decision := evaluateHTTPTaint(cfg, rec, originalReq.Method, originalReq.URL, requestHasBody(originalReq)); decision.Result.Decision.String() != "allow" {
 		t.Fatalf("precondition: action-scoped override did not admit original request: %+v", decision.Result)
 	}
 	// Pin the arm under test. Without this the test passes whenever the
 	// redirect decision is allow, which proves nothing about the approver:
 	// a matrix change that stopped gating this redirect would leave the
 	// test green while the HITL branch went unexercised.
-	if decision := evaluateHTTPTaint(cfg, rec, redirectReq.Method, redirectReq.URL); decision.Result.Decision.String() != "ask" {
+	if decision := evaluateHTTPTaint(cfg, rec, redirectReq.Method, redirectReq.URL, requestHasBody(redirectReq)); decision.Result.Decision.String() != "ask" {
 		t.Fatalf("precondition: redirect decision = %q, want ask", decision.Result.Decision.String())
 	}
 	if err := p.client.CheckRedirect(redirectReq, []*http.Request{originalReq}); !errors.Is(err, http.ErrUseLastResponse) {
@@ -199,10 +199,10 @@ func TestCheckRedirect_TaintedProtectedActionPolicyBlockIgnoresApprover(t *testi
 	observeHTTPResponseTaint(rec, cfg, "https://untrusted.vendor.example/page", "text/html", "forward_response", true)
 	redirectReq, originalReq := redirectPolicyRequests(t, cfg, sc)
 	redirectReq = redirectReq.WithContext(context.WithValue(redirectReq.Context(), ctxKeyRedirectSessionRecorder, rec))
-	if decision := evaluateHTTPTaint(cfg, rec, originalReq.Method, originalReq.URL); decision.Result.Decision.String() != "allow" {
+	if decision := evaluateHTTPTaint(cfg, rec, originalReq.Method, originalReq.URL, requestHasBody(originalReq)); decision.Result.Decision.String() != "allow" {
 		t.Fatalf("precondition: action-scoped override did not admit original request: %+v", decision.Result)
 	}
-	if decision := evaluateHTTPTaint(cfg, rec, redirectReq.Method, redirectReq.URL); decision.Result.Decision.String() != "block" {
+	if decision := evaluateHTTPTaint(cfg, rec, redirectReq.Method, redirectReq.URL, requestHasBody(redirectReq)); decision.Result.Decision.String() != "block" {
 		t.Fatalf("precondition: redirect decision = %q, want block", decision.Result.Decision.String())
 	}
 	err := p.client.CheckRedirect(redirectReq, []*http.Request{originalReq})

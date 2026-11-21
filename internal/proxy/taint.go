@@ -137,8 +137,21 @@ func httpResponseFindingObserver(rec session.Recorder, cfg *config.Config, rawUR
 	}
 }
 
-func evaluateHTTPTaint(cfg *config.Config, rec session.Recorder, method string, parsedURL *url.URL) taintDecision {
-	return evaluateHTTPTaskTaint(cfg, rec, method, parsedURL, nil)
+func evaluateHTTPTaint(cfg *config.Config, rec session.Recorder, method string, parsedURL *url.URL, body bool) taintDecision {
+	return evaluateHTTPTaskTaint(cfg, rec, method, parsedURL, body, nil)
+}
+
+// requestHasBody reports whether r carries, or may carry, a request body.
+// Unknown length (chunked or unset) counts as a body so the read-method
+// exception cannot be reached by omitting Content-Length.
+func requestHasBody(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if len(r.TransferEncoding) > 0 || r.ContentLength > 0 {
+		return true
+	}
+	return r.ContentLength < 0 && r.Body != nil && r.Body != http.NoBody
 }
 
 type forwardTaskAction struct {
@@ -146,7 +159,7 @@ type forwardTaskAction struct {
 	action  session.TaskAction
 }
 
-func evaluateHTTPTaskTaint(cfg *config.Config, rec session.Recorder, method string, parsedURL *url.URL, task *forwardTaskAction) taintDecision {
+func evaluateHTTPTaskTaint(cfg *config.Config, rec session.Recorder, method string, parsedURL *url.URL, body bool, task *forwardTaskAction) taintDecision {
 	decision := taintDecision{
 		ActionClass: session.ActionClassRead,
 		Sensitivity: session.SensitivityNormal,
@@ -161,7 +174,8 @@ func evaluateHTTPTaskTaint(cfg *config.Config, rec session.Recorder, method stri
 		decision.Risk = rs.RiskSnapshot()
 	}
 	classified := session.ClassifyHTTPActionWithOptions(method, parsedURL.Path, cfg.Taint.ProtectedPaths, cfg.Taint.ElevatedPaths, session.ClassificationOptions{
-		FailSafe: cfg.Taint.FailSafeClassification,
+		FailSafe:    cfg.Taint.FailSafeClassification,
+		RequestBody: body,
 	})
 	decision.ActionClass = classified.Class
 	decision.Sensitivity = classified.Sensitivity

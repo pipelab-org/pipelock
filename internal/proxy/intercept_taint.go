@@ -42,7 +42,7 @@ func initInterceptTaint(ic *InterceptContext, r *http.Request) {
 	} else if ic.Proxy != nil && ic.Proxy.taintRecorder != nil {
 		ic.taintTask.subject = sharedTaskSubject(ic.Proxy.taintRecorder)
 	}
-	ic.taint = evaluateHTTPTaskTaint(ic.taintConfig, ic.taintRecorder, r.Method, r.URL, &ic.taintTask)
+	ic.taint = evaluateHTTPTaskTaint(ic.taintConfig, ic.taintRecorder, r.Method, r.URL, requestHasBody(r), &ic.taintTask)
 }
 
 func withInterceptTaint(ic *InterceptContext, opts receipt.EmitOpts) receipt.EmitOpts {
@@ -91,7 +91,7 @@ type interceptTaintAdmissionOptions struct {
 // and internal-header removal, before signatures, receipts, or upstream writes.
 func admitInterceptTaint(ic *InterceptContext, w http.ResponseWriter, body *[]byte, opts interceptTaintAdmissionOptions) bool {
 	r, actx := opts.request, opts.logContext
-	decision := evaluateHTTPTaskTaint(ic.taintConfig, ic.taintRecorder, r.Method, r.URL, &ic.taintTask)
+	decision := evaluateHTTPTaskTaint(ic.taintConfig, ic.taintRecorder, r.Method, r.URL, requestHasBody(r), &ic.taintTask)
 	if ic.taint.Result.Reason == session.TaskPermissionRequired && ic.taint.Task.CurrentTaskID != decision.Task.CurrentTaskID {
 		decision.Result = session.PolicyDecisionResult{Decision: session.PolicyBlock, Reason: session.TaskApprovalStale}
 	}
@@ -120,7 +120,7 @@ func admitInterceptTaint(ic *InterceptContext, w http.ResponseWriter, body *[]by
 			}
 		}
 		ic.taintTask.action = forwardRequestTaskAction(r, bodyBytes)
-		matched := evaluateHTTPTaskTaint(ic.taintConfig, ic.taintRecorder, r.Method, r.URL, &ic.taintTask)
+		matched := evaluateHTTPTaskTaint(ic.taintConfig, ic.taintRecorder, r.Method, r.URL, requestHasBody(r), &ic.taintTask)
 		if matched.Task.CurrentTaskID != decision.Task.CurrentTaskID {
 			matched.Result = session.PolicyDecisionResult{Decision: session.PolicyBlock, Reason: session.TaskApprovalStale}
 		}
@@ -157,7 +157,7 @@ func admitInterceptTaint(ic *InterceptContext, w http.ResponseWriter, body *[]by
 			if approved {
 				// Exposure may change while the operator decides. Only a result
 				// no stricter than the approved ask may proceed.
-				after := evaluateHTTPTaskTaint(ic.taintConfig, ic.taintRecorder, r.Method, r.URL, &ic.taintTask)
+				after := evaluateHTTPTaskTaint(ic.taintConfig, ic.taintRecorder, r.Method, r.URL, requestHasBody(r), &ic.taintTask)
 				switch {
 				case after.Result.Decision == session.PolicyBlock:
 					reason = after.Result.Reason
@@ -206,7 +206,7 @@ func interceptTaskAdmissionCurrent(ic *InterceptContext) bool {
 // recheckInterceptTaint refuses stricter decisions after signing and durable
 // intent storage. Approval cannot be requested here: retry through admission.
 func recheckInterceptTaint(ic *InterceptContext, r *http.Request) string {
-	after := evaluateHTTPTaskTaint(ic.taintConfig, ic.taintRecorder, r.Method, r.URL, &ic.taintTask)
+	after := evaluateHTTPTaskTaint(ic.taintConfig, ic.taintRecorder, r.Method, r.URL, requestHasBody(r), &ic.taintTask)
 	// Only admissions bound to a task (an approved ask or an exact grant) go
 	// stale on rotation. A fresh allow stands on the new task's own state,
 	// matching the plaintext forward path.

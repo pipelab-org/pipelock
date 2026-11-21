@@ -149,7 +149,7 @@ func TestInterceptTaintPublishParity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := evaluateHTTPTaint(p.CurrentConfig(), rec, method, u)
+			want := evaluateHTTPTaint(p.CurrentConfig(), rec, method, u, false)
 			if want.Result.Decision != session.PolicyAsk {
 				t.Fatalf("plaintext decision=%+v, want ask", want.Result)
 			}

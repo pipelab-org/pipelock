@@ -188,6 +188,23 @@ func TestClassifyHTTPAction_QueryIsPublish(t *testing.T) {
 	}
 }
 
+func TestClassifyHTTPActionWithOptions_BodiedReadMethodIsPublish(t *testing.T) {
+	t.Parallel()
+
+	// Same rule as QUERY: a body under a read-shaped method moves data
+	// upstream, so it must not classify below POST. Bodyless reads stay reads.
+	for _, method := range []string{"GET", "HEAD", "OPTIONS", "TRACE", "get"} {
+		bodied := session.ClassifyHTTPActionWithOptions(method, "/search", nil, nil, session.ClassificationOptions{RequestBody: true})
+		if bodied.Class != session.ActionClassPublish || !bodied.Confident {
+			t.Fatalf("%s with body = %+v, want confident publish", method, bodied)
+		}
+		bodyless := session.ClassifyHTTPActionWithOptions(method, "/search", nil, nil, session.ClassificationOptions{})
+		if bodyless.Class != session.ActionClassRead {
+			t.Fatalf("%s without body = %+v, want read", method, bodyless)
+		}
+	}
+}
+
 func TestClassifyMCPToolCall_QueryMethodIsMutatingNetworkIntent(t *testing.T) {
 	t.Parallel()
 
