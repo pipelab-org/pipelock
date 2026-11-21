@@ -1237,7 +1237,11 @@ Key-free evidence capture:
 				}
 				defer sm.Close()
 				store = sm.AsStore()
-				operatorSessions.Store(sm)
+				// The operator task API remains opt-in through profiling. A
+				// taint-only store must not bind a shared operator address.
+				if cfg.SessionProfiling.Enabled {
+					operatorSessions.Store(sm)
+				}
 				baselineChecker = sm
 			}
 			// Denial-of-wallet tracking: _default budget is free tier (always
@@ -1904,48 +1908,7 @@ Key-free evidence capture:
 					reportBestEffortAdmission(cmd.ErrOrStderr())
 				}
 
-				// Acquire the invocation before starting its egress bridge. Both
-				// transports retain this exact state until the child and bridge stop.
-				var sandboxRec session.Recorder
-				if store != nil {
-					key := session.NextInvocationKey("mcp-stdio")
-					sandboxRec = store.GetOrCreate(key)
-					if sandboxRec == nil {
-						return session.ErrCapacity
-					}
-					defer store.Delete(key)
-				}
-				closeBridge, bridgeErr := setupMCPSandboxBridge(mcpSandboxBridgeSetupOptions{
-					Rec:              sandboxRec,
-					Context:          ctx,
-					Cancel:           cancel,
-					GOOS:             runtime.GOOS,
-					Config:           cfg,
-					KillSwitch:       ks,
-					AuditLogger:      auditLogger,
-					Metrics:          mcpMetrics,
-					MetricsBoundAddr: metricsBoundAddr,
-					ReceiptEmitter:   receiptEmitter,
-					V2ReceiptEmitter: v2ReceiptEmitter,
-					ReceiptGroup:     receiptGroup,
-					EnvelopeEmitter:  envEmitter,
-					Stderr:           cmd.ErrOrStderr(),
-					LaunchConfig:     &launchCfg,
-					StartBridge:      startMCPSandboxBridge,
-				})
-				if bridgeErr != nil {
-					return bridgeErr
-				}
-				defer closeBridge()
-
-				sandboxLaunch, sErr := sandbox.PrepareSandboxLaunch(launchCfg)
-				if sErr != nil {
-					return fmt.Errorf("sandbox prepare: %w", sErr)
-				}
-				sandboxLaunch.Cmd.Stderr = cmd.ErrOrStderr()
-
 				proxyOpts := mcp.MCPProxyOpts{
-					Rec:             sandboxRec,
 					TaskOperatorAPI: taskOperatorAPI,
 					Scanner:         sc, Approver: approver, AuditMode: !cfg.EnforceEnabled(),
 					AuditLogger: auditLogger,
@@ -1978,6 +1941,42 @@ Key-free evidence capture:
 				proxyOpts.ServerBinding = serverBinding
 				proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 				proxyOpts.ReceiptGroup = receiptGroup
+				// Acquire the invocation before starting its egress bridge. Both
+				// transports retain this exact state until the child and bridge stop.
+				proxyOpts, releaseRecorder, acquireErr := mcp.AcquireSandboxRecorder(proxyOpts)
+				if acquireErr != nil {
+					return acquireErr
+				}
+				defer releaseRecorder()
+				closeBridge, bridgeErr := setupMCPSandboxBridge(mcpSandboxBridgeSetupOptions{
+					Rec:              proxyOpts.Rec,
+					Context:          ctx,
+					Cancel:           cancel,
+					GOOS:             runtime.GOOS,
+					Config:           cfg,
+					KillSwitch:       ks,
+					AuditLogger:      auditLogger,
+					Metrics:          mcpMetrics,
+					MetricsBoundAddr: metricsBoundAddr,
+					ReceiptEmitter:   receiptEmitter,
+					V2ReceiptEmitter: v2ReceiptEmitter,
+					ReceiptGroup:     receiptGroup,
+					EnvelopeEmitter:  envEmitter,
+					Stderr:           cmd.ErrOrStderr(),
+					LaunchConfig:     &launchCfg,
+					StartBridge:      startMCPSandboxBridge,
+				})
+				if bridgeErr != nil {
+					return bridgeErr
+				}
+				defer closeBridge()
+
+				sandboxLaunch, sErr := sandbox.PrepareSandboxLaunch(launchCfg)
+				if sErr != nil {
+					return fmt.Errorf("sandbox prepare: %w", sErr)
+				}
+				sandboxLaunch.Cmd.Stderr = cmd.ErrOrStderr()
+
 				respAction, respTrust, respServer := mcpResponseLogFields(proxyOpts)
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
 					"pipelock: proxying MCP server %v [SANDBOXED] (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s, workspace=%s)\n",

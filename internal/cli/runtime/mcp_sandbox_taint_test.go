@@ -492,3 +492,36 @@ func TestMCPSandboxBridgeTaintBoundIdentityPreservesMCPTaskSubject(t *testing.T)
 		t.Fatal("MCP task subject was hijacked before MCP binding; operator grant did not match")
 	}
 }
+
+func TestMCPOperatorAPITaintOnlyDoesNotBind(t *testing.T) {
+	occupied, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = occupied.Close() }()
+	for _, profiling := range []bool{false, true} {
+		t.Run(fmt.Sprint(profiling), func(t *testing.T) {
+			var calls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[]}}`)
+			}))
+			defer upstream.Close()
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			body := fmt.Sprintf("defer: {enabled: false}\nsession_profiling: {enabled: %t}\nkill_switch: {api_listen: %q, api_token: operator-test-token}\n", profiling, occupied.Addr().String())
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			out, logs, err := runMCPProxyCommandWithInput(t, []string{"proxy", "--config", path, "--upstream", upstream.URL}, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_status","arguments":{}}}`+"\n")
+			if profiling {
+				if err == nil || !strings.Contains(err.Error(), "kill_switch.api_listen bind") || calls.Load() != 0 {
+					t.Fatalf("profiling API bind: err=%v calls=%d logs=%s", err, calls.Load(), logs)
+				}
+			} else if err != nil || calls.Load() != 1 || !strings.Contains(out, `"result"`) || strings.Contains(logs, "MCP operator API on") {
+				t.Fatalf("taint-only startup: err=%v calls=%d output=%s logs=%s", err, calls.Load(), out, logs)
+			}
+			t.Logf("profiling=%t upstream_calls=%d startup_error=%v", profiling, calls.Load(), err)
+		})
+	}
+}

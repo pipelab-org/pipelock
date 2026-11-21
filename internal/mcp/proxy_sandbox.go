@@ -20,6 +20,32 @@ import (
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
+// AcquireSandboxRecorder retains one invocation recorder for the sandbox and
+// its egress bridge, including the task subject. The caller must call release
+// after both transports stop. Capacity refusal emits the normal startup denial.
+func AcquireSandboxRecorder(opts MCPProxyOpts) (MCPProxyOpts, func(), error) {
+	release := func() {}
+	if opts.Rec == nil && opts.Store != nil {
+		key := session.NextInvocationKey("mcp-stdio")
+		opts.Rec = opts.Store.GetOrCreate(key)
+		if opts.Rec == nil {
+			dropMCPDenial(opts, mcpStartupDenialAudit(mcpListenerCapacityDenialAudit()), "startup")
+			return opts, release, session.ErrCapacity
+		}
+		release = func() { opts.Store.Delete(key) }
+		if opts.taskSubject == "" {
+			opts.taskSubject = key
+		}
+	}
+	if opts.Rec != nil {
+		if opts.taskSubject == "" {
+			opts.taskSubject = session.NextInvocationKey("mcp-stdio")
+		}
+		session.BindTaskSubject(opts.Rec, opts.taskSubject)
+	}
+	return opts, release, nil
+}
+
 // RunProxyWithSandbox runs an MCP proxy with a sandboxed child process.
 // It retains the legacy plain-command entry point for tests and callers that
 // do not have a UID/GID map phase. Mapped sandbox launches must use
@@ -93,27 +119,14 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 			writeCleanupReport(logW, cleanup, true)
 		}
 	}
+	var releaseRecorder func()
+	var acquireErr error
+	opts, releaseRecorder, acquireErr = AcquireSandboxRecorder(opts)
+	if acquireErr != nil {
+		return acquireErr
+	}
+	defer releaseRecorder()
 	rec := opts.Rec
-	invocationKey := ""
-	if rec == nil && opts.Store != nil {
-		invocationKey = session.NextInvocationKey("mcp-stdio")
-		rec = opts.Store.GetOrCreate(invocationKey)
-		if rec == nil {
-			dropMCPDenial(opts, mcpStartupDenialAudit(mcpListenerCapacityDenialAudit()), "startup")
-			return session.ErrCapacity
-		}
-		defer opts.Store.Delete(invocationKey)
-	}
-	if rec != nil {
-		if opts.taskSubject == "" {
-			if invocationKey != "" {
-				opts.taskSubject = invocationKey
-			} else {
-				opts.taskSubject = session.NextInvocationKey("mcp-stdio")
-			}
-		}
-		session.BindTaskSubject(rec, opts.taskSubject)
-	}
 	defer recordMCPBaselineSample(opts, rec)
 
 	safeClientOut := &syncWriter{w: clientOut}
