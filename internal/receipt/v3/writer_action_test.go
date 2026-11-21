@@ -252,6 +252,7 @@ func TestStreamWriterSettlesCancelledActionAfterWriteError(t *testing.T) {
 	defer cancel()
 	w.active.file = syncCallbackFile{StreamFile: w.active.file, syncCallback: cancel}
 	// The intent flush succeeds. The following refusal append writes no bytes.
+	initialStream := w.active.id
 	fault = writerReplayFault{step: writerReplayStep{FaultAt: 3}}
 	if err := w.WriteAction(ctx, writerTestIntent("cancelled"), PolicySnapshot{}); !errors.Is(err, context.Canceled) || !errors.Is(err, ErrEffectNotReleased) {
 		t.Fatalf("wanted cancellation after intent flush, got %v", err)
@@ -262,6 +263,15 @@ func TestStreamWriterSettlesCancelledActionAfterWriteError(t *testing.T) {
 	w = nil
 
 	result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	streams := result.Histories[0].Streams
+	if len(streams) != 2 {
+		t.Fatalf("expected a successor: %+v", streams)
+	}
+	for _, stream := range streams {
+		if stream.Stream == initialStream && (stream.End != "superseded_write_error" || stream.Tip == nil || stream.Tip.Seq != 1) {
+			t.Fatalf("failed stream did not pin the confirmed intent: %+v", stream)
+		}
+	}
 	if got := writerTestCount(t, result, outcomeNotReleased); got != 1 {
 		t.Fatalf("refused outcomes after losing writer state = %d, want 1", got)
 	}
@@ -674,5 +684,54 @@ func TestStreamWriterClosesInterruptedHoldAdmission(t *testing.T) {
 				t.Fatalf("blocked decisions = %d, want 1", got)
 			}
 		})
+	}
+}
+
+func TestStreamWriterRejectsResolutionWithoutMatchingHold(t *testing.T) {
+	w := requireWriter(t, writerTestOptions(t.TempDir()), localWriterStorage())
+	held := writerTestHold("request")
+	if err := w.WriteAction(t.Context(), held, PolicySnapshot{}); err != nil {
+		t.Fatal(err)
+	}
+	tip := w.active.confirmed
+	for _, tc := range []struct{ action, hold string }{
+		{"request", "other-hold"}, {"other-request", held.Hold.ID},
+	} {
+		resolution := blockingHoldResolution(held, "operator", relationAfter, false)
+		resolution.ActionID, resolution.Hold.ID = tc.action, tc.hold
+		if err := w.WriteAction(t.Context(), resolution, PolicySnapshot{}); err == nil || w.active.confirmed != tip {
+			t.Fatalf("invalid resolution advanced the stream: %v", err)
+		}
+	}
+}
+
+func TestStreamWriterOptionalBatchRejectsDecision(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	opts.Coverage.ReceiptsRequired = false
+	w := requireWriter(t, opts, localWriterStorage())
+	decision := writerTestIntent("decision")
+	decision.Phase, decision.Attempt = phaseDecision, nil
+	if err := w.WriteAdmissionBatch(t.Context(), []Action{decision}, PolicySnapshot{}); err == nil || w.active.confirmed.Seq != 0 {
+		t.Fatalf("optional batch accepted a decision: %v", err)
+	}
+}
+
+func TestStreamWriterDoesNotReportUnconfirmedRefusal(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	opts.Heartbeat = 0
+	fault := writerReplayFault{}
+	w := requireWriter(t, opts, fault.storage(opts.Dir))
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	w.active.file = syncCallbackFile{StreamFile: w.active.file, syncCallback: cancel}
+	// Confirm the intent, then fail the refusal write and its retry.
+	fault = writerReplayFault{step: writerReplayStep{FaultAt: 3, ExtraFaultAt: 8}}
+	err := w.WriteAction(ctx, writerTestIntent("cancelled"), PolicySnapshot{})
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, errWriterReplay) || errors.Is(err, ErrEffectNotReleased) {
+		t.Fatalf("unconfirmed refusal reported as durable: %v (calls %v)", err, fault.calls)
+	}
+	result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if writerTestCount(t, result, outcomeNotReleased) != 0 || writerTestCount(t, result, "outcome_unknown") != 1 {
+		t.Fatalf("unexpected decision states: %+v", result.Counts.Decisions)
 	}
 }

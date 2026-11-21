@@ -51,6 +51,12 @@ func (w *StreamWriter) WriteAction(ctx context.Context, action Action, policy Po
 	if !actionShape(action, w.open.Coverage.ReceiptsRequired) {
 		return errors.New("receipt action does not match its effect phase")
 	}
+	if action.Phase == phaseResolution {
+		hold, ok := w.holds[action.ActionID]
+		if !ok || hold != action.Hold.ID {
+			return errors.New("receipt resolution requires a matching active hold")
+		}
+	}
 	if err := w.prepareAppend(ctx); err != nil {
 		return err
 	}
@@ -68,6 +74,7 @@ func (w *StreamWriter) appendAction(ctx context.Context, action Action) (persist
 		}
 		return false, err
 	}
+	w.confirmAction(action)
 	if err := ctx.Err(); err != nil && actionGatesEffect(action) {
 		withheld := w.queueActionRepair(action, true)
 		return true, w.withheldAction(errors.Join(err, w.settleActionRepairs(ctx)), action, withheld)
@@ -76,13 +83,14 @@ func (w *StreamWriter) appendAction(ctx context.Context, action Action) (persist
 }
 
 func (w *StreamWriter) withheldAction(err error, action Action, withheld bool) error {
-	if withheld && action.Phase == phaseResolution && len(w.repairs) == 0 {
+	withheld = withheld && len(w.repairs) == 0
+	if withheld && action.Phase == phaseResolution {
 		err = errors.Join(ErrHoldBlockRecorded, err)
 	}
 	return withheldEffect(err, withheld)
 }
 
-// WriteAdmissionBatch reserves consecutive positions for the actions and
+// WriteAdmissionBatch reserves consecutive positions for the intents and
 // confirms all of them together before the caller can attempt the effect.
 func (w *StreamWriter) WriteAdmissionBatch(ctx context.Context, actions []Action, policy PolicySnapshot) error {
 	if len(actions) == 0 {
@@ -98,9 +106,8 @@ func (w *StreamWriter) WriteAdmissionBatch(ctx context.Context, actions []Action
 
 	seen := make(map[string]struct{}, len(actions))
 	for _, action := range actions {
-		if (action.Phase != phaseIntent && action.Phase != phaseDecision) ||
-			action.EffectRelation != relationBefore || !releases(action.Verdict) || !actionShape(action, w.open.Coverage.ReceiptsRequired) {
-			return errors.New("receipt batch requires admission actions")
+		if action.Phase != phaseIntent || !actionShape(action, w.open.Coverage.ReceiptsRequired) {
+			return errors.New("receipt batch requires releasing intents")
 		}
 		if _, duplicate := seen[action.ActionID]; duplicate {
 			return errors.New("receipt batch repeats an action ID")
@@ -137,25 +144,39 @@ func (w *StreamWriter) WriteAdmissionBatch(ctx context.Context, actions []Action
 	if err := w.persist(kindAction, batch, first); err != nil {
 		w.durability.FsyncErrorsGated++
 		w.retire(endedWriteError)
-		withheld := false
 		for _, action := range actions {
 			action.Policy = policy.ActionPolicy()
-			withheld = w.queueActionRepair(action, false) || withheld
+			w.queueActionRepair(action, false)
 		}
-		return withheldEffect(w.tryContinueAfterWriteError(ctx, err), withheld)
+		err = w.tryContinueAfterWriteError(ctx, err)
+		return withheldEffect(err, len(w.repairs) == 0)
 	}
 	w.active.confirmed = tip
+	for _, action := range actions {
+		w.confirmAction(action)
+	}
 	if err := ctx.Err(); err != nil {
-		withheld := false
 		for _, action := range actions {
-			if action.Phase == phaseIntent {
-				action.Policy = policy.ActionPolicy()
-				withheld = w.queueActionRepair(action, true) || withheld
-			}
+			action.Policy = policy.ActionPolicy()
+			w.queueActionRepair(action, true)
 		}
-		return withheldEffect(errors.Join(err, w.settleActionRepairs(ctx)), withheld)
+		repairErr := w.settleActionRepairs(ctx)
+		return withheldEffect(errors.Join(err, repairErr), repairErr == nil)
 	}
 	return nil
+}
+
+func (w *StreamWriter) confirmAction(action Action) {
+	switch action.Phase {
+	case phaseHold:
+		w.holds[action.ActionID] = action.Hold.ID
+	case phaseResolution:
+		if action.Verdict != verdictAllow {
+			delete(w.holds, action.ActionID)
+		}
+	case phaseIntent, phaseOutcome:
+		delete(w.holds, action.ActionID)
+	}
 }
 
 func withheldEffect(err error, withheld bool) error {
@@ -243,13 +264,22 @@ func (w *StreamWriter) replayActionRepairs(ctx context.Context, retryWriteErrors
 		if err := w.ensureAppendSpace(ctx); err != nil {
 			return err
 		}
-		if err := w.commit(ctx, kindAction, w.repairs[0]); err != nil {
+		action := w.repairs[0]
+		err := w.commit(ctx, kindAction, action)
+		if errors.Is(err, errWriterLineLimit) && action.Session != nil && action.Session.TaskLabel != "" {
+			session := *action.Session
+			session.TaskLabel = ""
+			action.Session = &session
+			err = w.commit(ctx, kindAction, action)
+		}
+		if err != nil {
 			if retryWriteErrors && !retried && w.previous != nil && w.previous.Ended == endedWriteError {
 				retried = true
 				continue
 			}
 			return fmt.Errorf("replay receipt action after durability interruption: %w", err)
 		}
+		w.confirmAction(action)
 		w.repairs[0] = Action{}
 		w.repairs = w.repairs[1:]
 		retried = false

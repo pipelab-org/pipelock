@@ -86,6 +86,7 @@ type StreamWriter struct {
 	closeErr   error
 	durability Durability
 	repairs    []Action
+	holds      map[string]string
 }
 
 // OpenStreamWriter verifies and re-flushes any predecessor before publishing
@@ -135,7 +136,7 @@ func openStreamWriter(ctx context.Context, opts StreamWriterOptions, storage wri
 	slices.Sort(coverage.Surfaces)
 	w := &StreamWriter{
 		dir: dir, key: key, signer: Digest(public), lock: lock, storage: storage,
-		gate: make(chan struct{}, 1), detector: opts.Detector,
+		gate: make(chan struct{}, 1), detector: opts.Detector, holds: make(map[string]string),
 		now: opts.Clock, random: opts.Random, fileBytes: writerFileBytes,
 		open: StreamOpen{
 			Coverage: coverage, Writer: opts.Identity, RecorderSession: opts.RecorderSession,
@@ -231,15 +232,22 @@ func (w *StreamWriter) prepareStart(ctx context.Context, keys []ed25519.PublicKe
 	if err != nil {
 		return fmt.Errorf("verify receipt history before restart: %w", err)
 	}
-	path, err := lastStreamFile(w.dir, entries, head.Stream)
-	if err != nil {
-		return err
-	}
 	if err := w.storage.cleanup(w.dir, entries); err != nil {
 		return err
 	}
-	if err := w.storage.syncFile(path); err != nil {
-		return fmt.Errorf("re-flush predecessor receipt file: %w", err)
+	// Overlapping verified segments may start later and end before the tip.
+	foundPredecessor := false
+	for _, entry := range entries {
+		file, _ := identify(entry.Name())
+		if file.stream == head.Stream {
+			foundPredecessor = true
+			if err := w.storage.syncFile(filepath.Join(w.dir, file.path)); err != nil {
+				return fmt.Errorf("re-flush predecessor receipt file: %w", err)
+			}
+		}
+	}
+	if !foundPredecessor {
+		return errors.New("cannot locate the verified predecessor receipt file")
 	}
 	if err := w.storage.syncDir(w.dir); err != nil {
 		return fmt.Errorf("re-flush predecessor receipt directory: %w", err)
@@ -325,17 +333,6 @@ func startupIncompleteFinding(finding Finding, neededActionVersion int64) error 
 	default:
 		return fmt.Errorf("%w: restore the complete evidence from a trusted copy and retry, or %s", base, newHistory)
 	}
-}
-
-func lastStreamFile(dir string, entries []os.DirEntry, stream string) (string, error) {
-	// os.ReadDir sorts names. Equal-width starting positions sort by sequence.
-	for i := len(entries) - 1; i >= 0; i-- {
-		file, _ := identify(entries[i].Name())
-		if file.stream == stream {
-			return filepath.Join(dir, file.path), nil
-		}
-	}
-	return "", errors.New("cannot locate the verified predecessor receipt file")
 }
 
 func (w *StreamWriter) newStreamID() (string, error) {

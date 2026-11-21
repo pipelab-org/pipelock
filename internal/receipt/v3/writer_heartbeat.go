@@ -32,7 +32,7 @@ func (w *StreamWriter) runHeartbeats(ctx context.Context, ticks <-chan time.Time
 			return
 		case <-ticks:
 			err := w.WriteHeartbeat(ctx)
-			if err == nil || onError == nil || errors.Is(err, context.Canceled) {
+			if err == nil || onError == nil || (ctx.Err() != nil && errors.Is(err, context.Canceled)) {
 				continue
 			}
 			if callbackDone != nil {

@@ -340,3 +340,55 @@ func TestStreamWriterRecoversFailedTerminalResolutionOnRestart(t *testing.T) {
 		t.Fatalf("recovery = %+v, want %+v", got, want)
 	}
 }
+
+func TestStreamWriterRecoversHoldAtWireLineLimit(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	w := requireWriter(t, opts, localWriterStorage())
+	held := writerTestHold("large-hold")
+	held.Policy = PolicySnapshot{}.ActionPolicy()
+	common := w.common(kindAction, w.active.id, w.active.confirmed.Record, 1)
+	line, _, err := w.encode(t.Context(), common, held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held.Session.TaskLabel += strings.Repeat("x", maxLineBytes-len(line))
+	if err := w.WriteAction(t.Context(), held, PolicySnapshot{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	restarted := requireWriter(t, opts, localWriterStorage())
+	if err := restarted.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if writerTestCount(t, result, "blocked") != 1 {
+		t.Fatalf("large hold did not settle: %+v", result.Counts.Decisions)
+	}
+}
+
+func TestStreamWriterStartupReportsHighestUnsupportedActionVersion(t *testing.T) {
+	for _, versions := range [][2]int64{{2, 3}, {3, 2}} {
+		t.Run(fmt.Sprint(versions), func(t *testing.T) {
+			dir := t.TempDir()
+			first := signedStream(t, 1, nil, &Cutover{Inventory: EmptyInventoryDigest()})
+			for i, version := range versions {
+				held := writerTestHold(fmt.Sprintf("hold-%d", i))
+				held.Policy = PolicySnapshot{}.ActionPolicy()
+				first.addVersion(kindAction, version, held)
+			}
+			first.close()
+			first.write(dir)
+			opts := writerTestOptions(dir)
+			opts.SigningKey = first.key
+			w, err := OpenStreamWriter(t.Context(), opts)
+			if err == nil {
+				_ = w.Close(t.Context(), nil)
+			}
+			if err == nil || !strings.Contains(err.Error(), "action body version 3 required") {
+				t.Fatalf("wanted highest unsupported version, got %v", err)
+			}
+		})
+	}
+}

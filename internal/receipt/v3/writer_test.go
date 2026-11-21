@@ -4,6 +4,7 @@
 package v3
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -304,6 +305,11 @@ func TestStreamWriterScheduledHeartbeat(t *testing.T) {
 }
 
 func TestStreamWriterRestartRequiresPredecessorFlush(t *testing.T) {
+	const (
+		stageCleanup        = "cleanup"
+		stageFileFlush      = "file flush"
+		stageDirectoryFlush = "directory flush"
+	)
 	opts := writerTestOptions(t.TempDir())
 	opts.Heartbeat = 0
 	first := requireWriter(t, opts, localWriterStorage())
@@ -316,25 +322,25 @@ func TestStreamWriterRestartRequiresPredecessorFlush(t *testing.T) {
 		t.Fatal(err)
 	}
 	fault := errors.New("restart storage barrier failed")
-	for _, stage := range []string{"cleanup", "file flush", "directory flush"} {
+	for _, stage := range []string{stageCleanup, stageFileFlush, stageDirectoryFlush} {
 		t.Run(stage, func(t *testing.T) {
 			storage := localWriterStorage()
 			switch stage {
-			case "cleanup":
+			case stageCleanup:
 				storage.remove = func(path string) error {
 					if path == stale {
 						return fault
 					}
 					return os.Remove(path)
 				}
-			case "file flush":
+			case stageFileFlush:
 				storage.syncFile = func(path string) error {
 					if path != predecessor {
 						t.Errorf("flushed %s, want verified predecessor %s", path, predecessor)
 					}
 					return fault
 				}
-			case "directory flush":
+			case stageDirectoryFlush:
 				syncDir := storage.syncDir
 				storage.syncDir = func(path string) error {
 					if path == opts.Dir {
@@ -432,9 +438,13 @@ func TestStreamWriterHeartbeatCallbackCanClose(t *testing.T) {
 	ticks := make(chan time.Time, 1)
 	ticks <- time.Now()
 	done := make(chan struct{})
+	abortJoin := make(chan struct{})
 	w.stopHeartbeat = func() {
 		cancel()
-		<-done
+		select {
+		case <-done:
+		case <-abortJoin:
+		}
 	}
 	reported := make(chan error, 1)
 	go func() {
@@ -449,6 +459,10 @@ func TestStreamWriterHeartbeatCallbackCanClose(t *testing.T) {
 			t.Fatal(err)
 		}
 	case <-time.After(5 * time.Second):
+		close(abortJoin)
+		if err := <-reported; err != nil {
+			t.Logf("writer close after interrupting the join: %v", err)
+		}
 		t.Fatal("heartbeat callback could not close the writer")
 	}
 }
@@ -461,7 +475,7 @@ func TestStreamWriterReportsScheduledHeartbeatFlushFailure(t *testing.T) {
 		return scanner.TextDLPResult{Clean: true}
 	}
 	w := requireWriter(t, opts, localWriterStorage())
-	w.active.file = errorWriterFile{StreamFile: w.active.file, syncErr: errWriterReplay}
+	w.active.file = errorWriterFile{StreamFile: w.active.file, syncErr: context.Canceled}
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -479,7 +493,7 @@ func TestStreamWriterReportsScheduledHeartbeatFlushFailure(t *testing.T) {
 	}()
 	select {
 	case err := <-reported:
-		if !errors.Is(err, errWriterReplay) {
+		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("heartbeat callback = %v, want failed flush", err)
 		}
 	case <-time.After(5 * time.Second):
@@ -487,5 +501,77 @@ func TestStreamWriterReportsScheduledHeartbeatFlushFailure(t *testing.T) {
 	}
 	if err := w.WriteHeartbeat(t.Context()); err != nil {
 		t.Fatalf("heartbeat did not recover on the successor: %v", err)
+	}
+}
+
+func TestStreamWriterRetryFlushesAncestor(t *testing.T) {
+	base := t.TempDir()
+	opts := writerTestOptions(filepath.Join(base, "branch", "evidence"))
+	storage := localWriterStorage()
+	syncDir := storage.syncDir
+	failure := errors.New("ancestor sync failed")
+	flushed := false
+	storage.syncDir = func(path string) error {
+		if path == base {
+			if !flushed {
+				flushed = true
+				return failure
+			}
+			flushed = false
+		}
+		return syncDir(path)
+	}
+	if _, err := openStreamWriter(t.Context(), opts, storage); !errors.Is(err, failure) {
+		t.Fatalf("first startup = %v, want ancestor failure", err)
+	}
+	// A visible leaf does not prove the ancestor's directory entry made
+	// it to stable storage.
+	if err := os.Mkdir(opts.Dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	link := storage.link
+	storage.link = func(oldPath, newPath string) error {
+		if flushed {
+			t.Fatal("retry published evidence without syncing the ancestor")
+		}
+		return link(oldPath, newPath)
+	}
+	requireWriter(t, opts, storage)
+}
+
+func TestStreamWriterRestartFlushesTipInOverlappingSegments(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	first := requireWriter(t, opts, localWriterStorage())
+	if err := first.WriteHeartbeat(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	original := filepath.Join(opts.Dir, writerFilename(first.active.id, 0))
+	data, err := os.ReadFile(filepath.Clean(original))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := bytes.SplitAfter(data, []byte("\n"))
+	overlap := filepath.Join(opts.Dir, writerFilename(first.active.id, 1))
+	if err := os.WriteFile(overlap, lines[1], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("tip file sync failed")
+	storage := localWriterStorage()
+	syncFile := storage.syncFile
+	storage.syncFile = func(path string) error {
+		if path == original {
+			return failure
+		}
+		return syncFile(path)
+	}
+	restarted, err := openStreamWriter(t.Context(), opts, storage)
+	if err == nil {
+		_ = restarted.Close(t.Context(), nil)
+	}
+	if !errors.Is(err, failure) {
+		t.Fatalf("restart with unflushed tip = %v", err)
 	}
 }

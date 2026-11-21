@@ -159,6 +159,11 @@ func (w *StreamWriter) cutoverJournal() (string, error) {
 	if journal.Pending != 0 {
 		return "", fmt.Errorf("receipt cutover requires settling %d unresolved legacy holds", journal.Pending)
 	}
+	if !journal.Torn && !journal.NeedsDelimiter {
+		if err := w.storage.syncFile(path); err != nil {
+			return "", fmt.Errorf("flush legacy defer journal: %w", err)
+		}
+	}
 	return journal.Digest, nil
 }
 

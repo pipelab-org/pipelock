@@ -55,7 +55,7 @@ func BenchmarkDurableActionWriter(b *testing.B) {
 				b.Fatal(err)
 			}
 		}
-		b.ReportMetric(float64(syncs.Load())/float64(b.N), "fsyncs/record")
+		b.ReportMetric(float64(syncs.Load())/float64(b.N), "file-syncs/record")
 		b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "records/s")
 	})
 	b.Run("default", func(b *testing.B) {
@@ -92,7 +92,7 @@ func BenchmarkDurableActionWriter(b *testing.B) {
 				b.Fatal(err)
 			}
 		}
-		b.ReportMetric(float64(syncs.Load())/float64(b.N), "fsyncs/record")
+		b.ReportMetric(float64(syncs.Load())/float64(b.N), "file-syncs/record")
 		b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "records/s")
 	})
 }

@@ -16,6 +16,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 )
 
+var errWriterLineLimit = errors.New("receipt record exceeds the wire line limit")
+
 const writerTimestampLayout = "2006-01-02T15:04:05.000Z"
 
 // Generated wire structs declare members in canonical order. MarshalJSON on
@@ -67,7 +69,7 @@ func (w *StreamWriter) encode(ctx context.Context, common Common, body any) ([]b
 		len(layoutSignaturePrefix) + base64.StdEncoding.EncodedLen(layoutSignatureBytes) +
 		len(layoutEntrySuffix) + len(layoutPayloadPrefix) + len(layoutSuffix)
 	if len(payload)+framing > maxLineBytes {
-		return nil, "", errors.New("receipt record exceeds the wire line limit")
+		return nil, "", errWriterLineLimit
 	}
 	parser := payloadParser{data: payload}
 	values, parsed := parser.object(1)

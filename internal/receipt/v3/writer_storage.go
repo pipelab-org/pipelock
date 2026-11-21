@@ -51,6 +51,11 @@ func localWriterStorage() writerStorage {
 // A failed parent flush must prevent startup even if the name is visible.
 func makeWriterDirectory(path string, syncDir func(string) error) error {
 	parent := filepath.Dir(path)
+	if parent != path {
+		if err := makeWriterDirectory(parent, syncDir); err != nil {
+			return err
+		}
+	}
 	info, err := os.Stat(path)
 	switch {
 	case err == nil:
@@ -60,9 +65,6 @@ func makeWriterDirectory(path string, syncDir func(string) error) error {
 	case !errors.Is(err, fs.ErrNotExist) || parent == path:
 		return err
 	default:
-		if err := makeWriterDirectory(parent, syncDir); err != nil {
-			return err
-		}
 		if err := os.Mkdir(path, 0o750); err != nil && !errors.Is(err, fs.ErrExist) {
 			return err
 		}

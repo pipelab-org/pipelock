@@ -114,9 +114,10 @@ func (f *writerReplayFault) storage(dir string) writerStorage {
 }
 
 // TestStreamWriterReplay accepts a JSON stream of operation arrays and writes
-// one observation array per input. FaultAt is the one-based storage call
-// within a step. ExtraFaultAt can fail a second storage call. Truncate and
-// remove select the bytes and names left by a crash.
+// one observation array per input. FaultAt and ExtraFaultAt are one-based
+// positions in Calls: writes, file syncs, links, renames, file re-flushes, and
+// evidence directory syncs. Temporary file creation and ancestor directory
+// syncs are uncounted. Truncate and remove select what survives a crash.
 func TestStreamWriterReplay(t *testing.T) {
 	input := os.Getenv("PIPELOCK_RECEIPT_REPLAY_INPUT")
 	if input == "" {

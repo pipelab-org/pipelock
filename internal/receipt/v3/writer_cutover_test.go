@@ -252,9 +252,16 @@ func TestInspectStartupChecksStoppedEvidenceWithPinnedKeys(t *testing.T) {
 }
 
 func TestStreamWriterRefusesFailedJournalRepairBarriers(t *testing.T) {
+	const (
+		stageCreate        = "create"
+		stageCopy          = "copy"
+		stageSync          = "sync"
+		stageRename        = "rename"
+		stageDirectorySync = "directory sync"
+	)
 	const held = "{\"defer_id\":\"example\",\"state\":\"deferred_held\"}"
 	failure := errors.New("journal repair storage failure")
-	for _, stage := range []string{"create", "copy", "sync", "rename", "directory sync"} {
+	for _, stage := range []string{stageCreate, stageCopy, stageSync, stageRename, stageDirectorySync} {
 		t.Run(stage, func(t *testing.T) {
 			dir := t.TempDir()
 			path := filepath.Join(dir, legacyJournalName)
@@ -264,22 +271,22 @@ func TestStreamWriterRefusesFailedJournalRepairBarriers(t *testing.T) {
 			storage := localWriterStorage()
 			create := storage.createTemp
 			switch stage {
-			case "create":
+			case stageCreate:
 				storage.createTemp = func(string, string) (StreamFile, error) { return nil, failure }
-			case "copy", "sync":
+			case stageCopy, stageSync:
 				storage.createTemp = func(dir, pattern string) (StreamFile, error) {
 					file, err := create(dir, pattern)
 					if err != nil {
 						return nil, err
 					}
-					if stage == "copy" {
+					if stage == stageCopy {
 						return errorWriterFile{StreamFile: file, writeErr: failure}, nil
 					}
 					return errorWriterFile{StreamFile: file, syncErr: failure}, nil
 				}
-			case "rename":
+			case stageRename:
 				storage.rename = func(string, string) error { return failure }
-			case "directory sync":
+			case stageDirectorySync:
 				storage.syncDir = func(string) error { return failure }
 			}
 			w := &StreamWriter{dir: dir, storage: storage}
@@ -287,7 +294,7 @@ func TestStreamWriterRefusesFailedJournalRepairBarriers(t *testing.T) {
 				t.Fatalf("cutover error = %v, want injected failure", err)
 			}
 			want := held
-			if stage == "directory sync" {
+			if stage == stageDirectorySync {
 				want += "\n"
 			}
 			got, err := os.ReadFile(filepath.Clean(path))
@@ -345,4 +352,22 @@ func TestStreamWriterRefusesUnverifiedLegacyCutover(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStreamWriterRefusesUnflushedCompleteJournal(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	path := filepath.Join(opts.Dir, legacyJournalName)
+	journal := "{\"defer_id\":\"example\",\"state\":\"resolved_block\"}\n"
+	if err := os.WriteFile(path, []byte(journal), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("journal sync failed")
+	storage := localWriterStorage()
+	storage.syncFile = func(got string) error {
+		if got != path {
+			t.Fatalf("synced %q, want %q", got, path)
+		}
+		return failure
+	}
+	requireCutoverRefusal(t, opts, storage, failure, "flush legacy defer journal")
 }
