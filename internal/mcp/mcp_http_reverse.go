@@ -2090,8 +2090,8 @@ func RunHTTPListenerProxy(
 		}
 
 		if blocked := decision.Blocked; blocked != nil {
-			if err := scanOpts.refuseV3Reply(r.Context(), receipt.EmitOpts{ActionID: receipt.NewActionID(), Method: frame.Method, Transport: scanOpts.Transport, Target: "mcp://response", RequestID: canonicalID(frame.ID)}); err != nil {
-				refuseReceipt(err)
+			if scanOpts.receiptEffects.enabled && !blocked.v3RefusalSigned {
+				refuseReceipt(errMCPV3ReplyAdmission)
 				return
 			}
 			scanOpts.ListenerDoor = opts.ListenerDoor

@@ -135,6 +135,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			result.Blocked = nil
 		}
 		if result.Blocked != nil {
+			result.Blocked.v3RefusalSigned = opts.receiptEffects.enabled && opts.refuseV3Reply(opts.warnContext(), receipt.EmitOpts{ActionID: receipt.NewActionID(), Method: frame.Method, Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(frame.ID)}) == nil
 			result.Blocked = inputMCPDenial(opts, denialAudit, result.Blocked)
 		}
 	}()
