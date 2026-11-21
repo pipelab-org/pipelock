@@ -5,7 +5,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -72,11 +71,11 @@ func (o MCPProxyOpts) admitV3Effect(ctx context.Context, evidence receipt.EmitOp
 	return o.receiptEffects.gate.Admit(ctx, action, policy)
 }
 
-func (o MCPProxyOpts) refuseV3Effect(ctx context.Context, evidence receipt.EmitOpts, boundary string) error {
+func (o MCPProxyOpts) refuseV3Reply(ctx context.Context, evidence receipt.EmitOpts) error {
 	if !o.receiptEffects.enabled {
 		return nil
 	}
-	action, policy := o.v3EffectAction(evidence, boundary)
+	action, policy := o.v3EffectAction(evidence, mcpDownstreamDeliveryBoundary)
 	return o.receiptEffects.gate.Refuse(ctx, action, policy)
 }
 
@@ -181,15 +180,24 @@ func (o MCPProxyOpts) settleV3Session(ctx context.Context, log io.Writer) {
 	}
 }
 
-func (o MCPProxyOpts) v3ResponseWriter(ctx context.Context, log io.Writer, writer transport.MessageWriter, line []byte, id json.RawMessage) transport.MessageWriter {
-	if o.v3Session == nil || isRequest(line) {
+func (o MCPProxyOpts) v3ResponseWriter(ctx context.Context, log io.Writer, writer transport.MessageWriter, line []byte, frame MCPFrame) transport.MessageWriter {
+	if o.v3Session == nil {
 		return writer
 	}
-	if !isResponse(line) || canonicalID(id) == "" {
+	if isRequest(line) {
+		if o.Transport != deferred.SurfaceMCPWS {
+			return writer
+		}
+		// Server-initiated messages have their own delivery effect, with no
+		// matching client request to use as a parent.
+		request := receipt.EmitOpts{RequestID: canonicalID(frame.ID), Method: frame.Method, Transport: o.Transport}
+		return &mcpV3ReplyWriter{base: writer, opts: o, log: log, request: request}
+	}
+	if !isResponse(line) || canonicalID(frame.ID) == "" {
 		return mcpV3WithheldWriter{}
 	}
 	s := o.v3Session
-	key := canonicalID(id)
+	key := canonicalID(frame.ID)
 	s.mu.Lock()
 	x := s.pending[key]
 	delete(s.pending, key)
@@ -246,7 +254,7 @@ func (w *mcpV3ReplyWriter) writeDeniedMessage([]byte) error {
 		return nil
 	}
 	w.finished = true
-	return w.opts.refuseV3Effect(w.opts.warnContext(), mcpV3ReplyEvidence(w.request), mcpDownstreamDeliveryBoundary)
+	return w.opts.refuseV3Reply(w.opts.warnContext(), mcpV3ReplyEvidence(w.request))
 }
 
 func logMCPV3Error(log io.Writer, err error) {
@@ -306,39 +314,108 @@ func (o MCPProxyOpts) claimV3DeferredSend(ctx context.Context, log io.Writer, fr
 	return nil, nil, firstNonEmpty(prepared.Reason, "request cancelled")
 }
 
-// mcpV3StreamDelivery admits the first event before acquiring the underlying
-// writer's lock. The final framing is unproven even after successful events.
-type mcpV3StreamDelivery struct {
-	base     transport.MessageWriter
-	opts     MCPProxyOpts
-	log      io.Writer
-	evidence receipt.EmitOpts
-	token    *v3.EffectToken
-	started  bool
+// mcpV3NetworkExchange keeps settlement outside the listener's state and
+// contract locks. A tools/list handler reserves both intents before taking
+// its contract lock, then settles after releasing it.
+type mcpV3NetworkExchange struct {
+	ctx                           context.Context
+	opts                          MCPProxyOpts
+	log                           io.Writer
+	send                          *mcpV3Exchange
+	reply                         *v3.EffectToken
+	replyEvidence                 receipt.EmitOpts
+	replyAdmitted                 bool
+	sent, observed, wrote, framed bool
 }
 
-func (w *mcpV3StreamDelivery) WriteMessage(msg []byte) error {
-	ctx := w.opts.warnContext()
-	if !w.started {
-		token, err := w.opts.admitV3Effect(ctx, w.evidence, mcpDownstreamDeliveryBoundary)
-		if err != nil {
-			return err
-		}
-		if err := ctx.Err(); err != nil {
-			logMCPV3Error(w.log, token.Refuse(ctx))
-			return err
-		}
-		w.token, w.started = token, true
+func (x *mcpV3NetworkExchange) admit(frame MCPFrame, actionID string) error {
+	var err error
+	x.send, err = x.opts.startV3Send(x.ctx, frame, actionID)
+	if x.send != nil {
+		x.replyEvidence = mcpV3ReplyEvidence(x.send.request)
 	}
+	return err
+}
+
+func (x *mcpV3NetworkExchange) admitList(frame MCPFrame, lock *contractLock) (admissionErr, lockErr error) {
+	if err := x.admit(frame, ""); err != nil {
+		return err, nil
+	}
+	if err := x.admitReply(); err != nil {
+		return err, nil
+	}
+	return nil, lock.Lock(x.ctx)
+}
+
+func (x *mcpV3NetworkExchange) refuseReply() {
+	if x.send != nil && !x.replyAdmitted {
+		logMCPV3Error(x.log, x.opts.refuseV3Reply(x.ctx, x.replyEvidence))
+	}
+}
+
+func (x *mcpV3NetworkExchange) admitReply() error {
+	if x.send == nil || x.replyAdmitted {
+		return nil
+	}
+	var err error
+	x.reply, err = x.opts.admitV3Effect(x.ctx, x.replyEvidence, mcpDownstreamDeliveryBoundary)
+	x.replyAdmitted = err == nil
+	return err
+}
+
+func (x *mcpV3NetworkExchange) observe() {
+	x.observed = true
+	if x.send != nil {
+		logMCPV3Error(x.log, confirmMCPV3Effect(x.ctx, x.send.token, true))
+	}
+}
+
+func (x *mcpV3NetworkExchange) finish() {
+	if x.send == nil {
+		return
+	}
+	if x.sent {
+		logMCPV3Error(x.log, confirmMCPV3Effect(x.ctx, x.send.token, x.observed))
+	} else {
+		logMCPV3Error(x.log, x.send.token.Refuse(x.ctx))
+	}
+	if x.wrote {
+		logMCPV3Error(x.log, confirmMCPV3Effect(x.ctx, x.reply, x.framed))
+	} else if x.replyAdmitted {
+		logMCPV3Error(x.log, x.reply.Refuse(x.ctx))
+	}
+}
+
+func (x *mcpV3NetworkExchange) streamWriter(base transport.MessageWriter) transport.MessageWriter {
+	if x.send == nil {
+		return base
+	}
+	return &mcpV3NetworkStreamWriter{exchange: x, base: base}
+}
+
+type mcpV3NetworkStreamWriter struct {
+	exchange *mcpV3NetworkExchange
+	base     transport.MessageWriter
+}
+
+func (w *mcpV3NetworkStreamWriter) WriteMessage(msg []byte) error {
+	x := w.exchange
+	if err := x.admitReply(); err != nil {
+		return err
+	}
+	if err := x.ctx.Err(); err != nil {
+		return err
+	}
+	x.wrote = true
 	return w.base.WriteMessage(msg)
 }
 
-func (w *mcpV3StreamDelivery) writeDeniedMessage([]byte) error {
-	evidence := w.evidence
+func (w *mcpV3NetworkStreamWriter) writeDeniedMessage([]byte) error {
+	x := w.exchange
+	if x.replyAdmitted && !x.wrote {
+		return nil // The reserved delivery settles as not released.
+	}
+	evidence := x.replyEvidence
 	evidence.ActionID = receipt.NewActionID()
-	return w.opts.refuseV3Effect(w.opts.warnContext(), evidence, mcpDownstreamDeliveryBoundary)
-}
-
-func (w *mcpV3StreamDelivery) finish() {
-	logMCPV3Error(w.log, w.token.SettleOnExit(w.opts.warnContext()))
+	return x.opts.refuseV3Reply(x.ctx, evidence)
 }

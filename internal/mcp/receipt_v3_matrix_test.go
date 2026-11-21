@@ -52,13 +52,10 @@ func runV3MCPMatrix(t *testing.T, run func(*testing.T, v3MCPMatrixRow)) {
 		"tool-scan block", "media/redaction rewrite", "deferred approve", "deferred deny",
 		"deferred timeout", "kill-switch during hold", "restart recovery of a pending hold",
 	}
-	for i, path := range paths {
+	for _, path := range paths {
 		for _, mode := range modes {
 			for _, scenario := range scenarios {
 				t.Run(path+"/"+mode.name+"/"+scenario, func(t *testing.T) {
-					if i == 2 {
-						t.Skip("pending-in-a-later-step")
-					}
 					run(t, v3MCPMatrixRow{path: path, required: mode.required, scenario: scenario})
 				})
 			}
@@ -71,7 +68,7 @@ type mcpMatrixFile struct {
 	writeCount, syncCount int
 	scenario              string
 	cancel                context.CancelFunc
-	beforeIntent          func(int)
+	beforeSync            func(int)
 }
 
 func (f *mcpMatrixFile) Write(p []byte) (int, error) {
@@ -84,8 +81,8 @@ func (f *mcpMatrixFile) Write(p []byte) (int, error) {
 
 func (f *mcpMatrixFile) Sync() error {
 	f.syncCount++
-	if f.beforeIntent != nil {
-		f.beforeIntent(f.syncCount)
+	if f.beforeSync != nil {
+		f.beforeSync(f.syncCount)
 	}
 	if f.syncCount == 2 {
 		if f.scenario == "intent sync fail" {
@@ -98,7 +95,7 @@ func (f *mcpMatrixFile) Sync() error {
 	return f.File.Sync()
 }
 
-func mcpMatrixWriterOptions(t *testing.T, row v3MCPMatrixRow, surface string, cancel context.CancelFunc, beforeIntent func()) v3.StreamWriterOptions {
+func mcpMatrixWriterOptions(t *testing.T, row v3MCPMatrixRow, surface string, cancel context.CancelFunc, beforeSync func(int)) v3.StreamWriterOptions {
 	t.Helper()
 	seed := sha256.Sum256([]byte("MCP parity fixture"))
 	first := true
@@ -115,11 +112,7 @@ func mcpMatrixWriterOptions(t *testing.T, row v3MCPMatrixRow, surface string, ca
 				return f, err
 			}
 			first = false
-			return &mcpMatrixFile{File: f, scenario: row.scenario, cancel: cancel, beforeIntent: func(syncCount int) {
-				if syncCount == 2 && beforeIntent != nil {
-					beforeIntent()
-				}
-			}}, nil
+			return &mcpMatrixFile{File: f, scenario: row.scenario, cancel: cancel, beforeSync: beforeSync}, nil
 		},
 	}
 }
@@ -200,8 +193,27 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 		surface = transportMCPStdio
 	case "WebSocket upstream":
 		surface = deferred.SurfaceMCPWS
+	case "HTTP listener":
+		surface = deferred.SurfaceMCPHTTPListener
 	}
-	writerOpts := mcpMatrixWriterOptions(t, row, surface, cancel, nil)
+	listenerRequest := make(chan context.Context, 1)
+	var beforeSync func(int)
+	if row.path == "HTTP listener" && row.scenario == "cancel after intent" {
+		beforeSync = func(count int) {
+			if count != 2 {
+				return
+			}
+			serverCtx := <-listenerRequest
+			cancel()
+			select {
+			case <-serverCtx.Done():
+			case <-time.After(testwait.Deadline(time.Second)):
+				t.Error("listener did not observe client cancellation")
+			}
+		}
+	}
+
+	writerOpts := mcpMatrixWriterOptions(t, row, surface, cancel, beforeSync)
 	writer, err := v3.OpenStreamWriter(t.Context(), writerOpts)
 	if err != nil {
 		t.Fatal(err)
@@ -209,9 +221,21 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 	t.Cleanup(func() { _ = writer.Close(context.Background(), nil) })
 	scanner := testScannerWithAction(t, config.ActionBlock)
 	opts := MCPProxyOpts{Scanner: scanner, Transport: surface}.WithV3ReceiptWriter(writer)
+	if beforeSync != nil {
+		opts.ListenerPrincipalResolver = func(r *http.Request) (ListenerPrincipal, error) {
+			if r.Method == http.MethodPost {
+				listenerRequest <- r.Context()
+			}
+			return ListenerPrincipal{}, nil
+		}
+	}
+
 	reply := heldNativeReply
 	request := jsonToolsCallEcho
 	hold := strings.HasPrefix(row.scenario, "deferred ") || row.scenario == "kill-switch during hold" || row.scenario == "restart recovery of a pending hold"
+	if hold && row.path == "HTTP listener" {
+		t.Skip("N/A: reverse HTTP has no portable way to resume a held response later")
+	}
 	if hold && row.path == "WebSocket upstream" {
 		t.Skip("N/A: ordered WebSocket messages lack a bounded hold queue preserving frame order")
 	}
@@ -292,6 +316,9 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 			_, _ = io.WriteString(w, reply)
 		}))
 		defer srv.Close()
+		if row.path == "HTTP listener" {
+			return runMCPMatrixListener(t, ctx, in, client, srv.URL, opts)
+		}
 		return RunHTTPProxy(ctx, in, client, io.Discard, srv.URL, nil, opts)
 	}
 	if hold {
@@ -411,7 +438,11 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 	if result.Verdict != wantVerdict || !slices.Equal(findings, wantFindings) {
 		t.Fatalf("verification = %s %v, want %s %v", result.Verdict, findings, wantVerdict, wantFindings)
 	}
-	assertMCPMatrixTerminal(t, row.scenario, actions)
+	scenario := row.scenario
+	if row.path == "HTTP listener" && scenario == "tool-scan block" {
+		scenario = "listener preadmitted tool-scan block"
+	}
+	assertMCPMatrixTerminal(t, scenario, actions)
 }
 
 func assertMCPMatrixTerminal(t *testing.T, scenario string, actions []v3.Action) {
@@ -425,6 +456,8 @@ func assertMCPMatrixTerminal(t *testing.T, scenario string, actions []v3.Action)
 	case "client cancel before effect":
 	case "upstream closes mid-response":
 		expected = []string{"upstream_send/outcome/attempt_unknown"}
+	case "listener preadmitted tool-scan block":
+		expected = []string{"downstream_delivery/outcome/not_released", "upstream_send/outcome/completed"}
 	case "tool-scan block":
 		expected = []string{"downstream_delivery/decision/block", "upstream_send/outcome/completed"}
 	case "deferred approve":
@@ -514,7 +547,10 @@ func assertMCPCompletedExchange(t *testing.T, actions []v3.Action) {
 func TestMCPV3DeferredIntentPrecedesStdioSendLock(t *testing.T) {
 	var mu sync.Mutex
 	checked := false
-	cfg := mcpMatrixWriterOptions(t, v3MCPMatrixRow{required: true}, transportMCPStdio, nil, func() {
+	cfg := mcpMatrixWriterOptions(t, v3MCPMatrixRow{required: true}, transportMCPStdio, nil, func(count int) {
+		if count != 2 {
+			return
+		}
 		acquired := make(chan struct{})
 		go func() {
 			mu.Lock()
@@ -706,29 +742,22 @@ func runMCPMatrixWS(t *testing.T, ctx context.Context, in io.Reader, out io.Writ
 func TestMCPV3IntentPrecedesWebSocketWriteLock(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
 	defer cancel()
+	firstSettled := make(chan struct{})
 	intent := make(chan struct{})
 	pong := make(chan struct{})
 	row := v3MCPMatrixRow{required: true}
-	writerOpts := mcpMatrixWriterOptions(t, row, deferred.SurfaceMCPWS, cancel, nil)
-	create := writerOpts.CreateTempFile
-	writerOpts.CreateTempFile = func(dir, pattern string) (v3.StreamFile, error) {
-		f, err := create(dir, pattern)
-		if err == nil {
-			if file, ok := f.(*mcpMatrixFile); ok {
-				file.beforeIntent = func(count int) {
-					// Header and the first exchange take five syncs.
-					if count == 6 {
-						close(intent)
-						select {
-						case <-pong:
-						case <-ctx.Done():
-						}
-					}
-				}
+	writerOpts := mcpMatrixWriterOptions(t, row, deferred.SurfaceMCPWS, cancel, func(count int) {
+		switch count {
+		case 5: // Header and the first exchange.
+			close(firstSettled)
+		case 6: // Second send intent.
+			close(intent)
+			select {
+			case <-pong:
+			case <-ctx.Done():
 			}
 		}
-		return f, err
-	}
+	})
 	writer, err := v3.OpenStreamWriter(ctx, writerOpts)
 	if err != nil {
 		t.Fatal(err)
@@ -768,7 +797,14 @@ func TestMCPV3IntentPrecedesWebSocketWriteLock(t *testing.T) {
 	opts := MCPProxyOpts{Scanner: testScannerForWS(t)}.WithV3ReceiptWriter(writer)
 	go func() { done <- RunWSProxy(ctx, in, &out, io.Discard, wsURL(srv), opts) }()
 	_, _ = io.WriteString(input, jsonToolsCallEcho+"\n")
-	testwait.For(t, time.Second, func() bool { return out.contains(heldNativeReply) }, "first WebSocket reply")
+	select {
+	case <-firstSettled:
+		if !out.contains(heldNativeReply) {
+			t.Fatal("first WebSocket reply was not delivered")
+		}
+	case <-ctx.Done():
+		t.Fatal("first WebSocket exchange did not settle")
+	}
 	_, _ = io.WriteString(input, strings.Replace(jsonToolsCallEcho, "\"id\":1", "\"id\":2", 1)+"\n")
 	select {
 	case <-pong:
@@ -778,10 +814,122 @@ func TestMCPV3IntentPrecedesWebSocketWriteLock(t *testing.T) {
 	_ = input.Close()
 	select {
 	case err := <-done:
-		if err != nil && ctx.Err() == nil {
+		if err != nil && !errors.Is(err, context.Canceled) && ctx.Err() == nil {
 			t.Error(err)
 		}
 	case <-ctx.Done():
 		t.Fatal("WebSocket proxy did not stop")
+	}
+}
+
+func runMCPMatrixListener(t *testing.T, ctx context.Context, in io.Reader, out io.Writer, upstream string, opts MCPProxyOpts) error {
+	t.Helper()
+	listener := newListenerProxyTestListener(t)
+	listenerCtx, stop := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- RunHTTPListenerProxy(listenerCtx, listener, upstream, io.Discard, opts)
+	}()
+	defer func() {
+		stop()
+		waitForListenerProxyStop(t, done)
+	}()
+	url := "http://" + listener.Addr().String()
+	waitForHTTPHealth(t, url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, in)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	_, err = io.Copy(out, resp.Body)
+	return err
+}
+
+func TestMCPV3IntentPrecedesHTTPListenerContractLock(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(3*time.Second))
+	defer cancel()
+	var contract contractLock
+	checked := 0
+	row := v3MCPMatrixRow{required: true}
+	opts := mcpMatrixWriterOptions(t, row, deferred.SurfaceMCPHTTPListener, cancel, func(count int) {
+		if count != 2 && count != 3 {
+			return
+		}
+		if err := contract.Lock(ctx); err != nil {
+			t.Error("receipt sync ran while the listener held the contract lock:", err)
+			return
+		}
+		checked++
+		contract.Unlock()
+	})
+	writer, err := v3.OpenStreamWriter(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.Close(context.Background(), nil) })
+	exchange := mcpV3NetworkExchange{
+		ctx: ctx, log: io.Discard,
+		opts: (MCPProxyOpts{Transport: deferred.SurfaceMCPHTTPListener}).WithV3ReceiptWriter(writer),
+	}
+	defer exchange.finish()
+	frame := ParseMCPFrame([]byte("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}"))
+	admissionErr, lockErr := exchange.admitList(frame, &contract)
+	if err := errors.Join(admissionErr, lockErr); err != nil {
+		t.Fatal(err)
+	}
+	defer contract.Unlock()
+	if checked != 2 {
+		t.Fatalf("checked %d receipt intent syncs, want two", checked)
+	}
+}
+
+func TestMCPV3HTTPListenerDiscoveryAdmitsEachPage(t *testing.T) {
+	for _, scenario := range []string{"ok", "intent write fail"} {
+		t.Run(scenario, func(t *testing.T) {
+			row := v3MCPMatrixRow{required: true, scenario: scenario}
+			writerOpts := mcpMatrixWriterOptions(t, row, deferred.SurfaceMCPHTTPListener, nil, nil)
+			writer, err := v3.OpenStreamWriter(t.Context(), writerOpts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = writer.Close(context.Background(), nil) })
+			opts := paramContractOpts(t).WithV3ReceiptWriter(writer)
+			fixture := newDiscoveryFixture(t, opts, func(w http.ResponseWriter, _ *http.Request, frame MCPFrame, page int) {
+				actions, err := readMCPMatrixActions(writerOpts.Dir)
+				if err != nil {
+					t.Error(err)
+				}
+				intents := make(map[string]bool)
+				for _, action := range actions {
+					if action.EffectBoundary == mcpUpstreamSendBoundary && action.Phase == "intent" && action.Method == frame.Method {
+						intents[action.ActionID] = true
+					}
+				}
+				if len(intents) != page {
+					t.Errorf("discovery page %d reached upstream after %d distinct intents", page, len(intents))
+				}
+				if page == 1 {
+					discoveryList(w, frame, "[]", "next")
+				} else {
+					discoveryList(w, frame, headerStateDefs(headerStateSchema, "Echo input"), "")
+				}
+			})
+			status, body := fixture.call(t, "body", "first")
+			wantStatus, wantPages, wantCalls := http.StatusOK, int32(2), int32(1)
+			if scenario == "intent write fail" {
+				wantStatus, wantPages, wantCalls = http.StatusServiceUnavailable, 0, 0
+			}
+			if status != wantStatus || fixture.lists.Load() != wantPages || fixture.calls.Load() != wantCalls {
+				t.Fatalf("status %d, %d discovery pages, %d calls, response %s", status, fixture.lists.Load(), fixture.calls.Load(), body)
+			}
+		})
 	}
 }

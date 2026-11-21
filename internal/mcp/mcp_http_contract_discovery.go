@@ -64,6 +64,20 @@ type mcpContractDiscoveryFlight struct {
 // leader's upstream credentials when callers of one principal send different
 // ones; that refusal lasts only for the overlap and a retry discovers again.
 func (state *mcpListenerClientState) acquireToolContract(ctx context.Context, name string, discover func() error) (func(), error) {
+	return state.acquireToolContractWithDiscovery(ctx, name, func() error {
+		if err := state.contractMu.Lock(ctx); err != nil {
+			return err
+		}
+		defer state.contractMu.Unlock()
+		// A client list or another discovery may have won the lock.
+		if state.baseline.HeaderContract(name).State != tools.HeaderContractUnknown {
+			return nil
+		}
+		return discover()
+	})
+}
+
+func (state *mcpListenerClientState) acquireToolContractWithDiscovery(ctx context.Context, name string, discover func() error) (func(), error) {
 	for {
 		state.discoveryMu.Lock()
 		flight := state.discovery
@@ -86,14 +100,7 @@ func (state *mcpListenerClientState) acquireToolContract(ctx context.Context, na
 		}
 		state.discoveryMu.Unlock()
 		if leader {
-			flight.err = state.contractMu.Lock(ctx)
-			if flight.err == nil {
-				// A client list or another discovery may have won the lock.
-				if state.baseline.HeaderContract(name).State == tools.HeaderContractUnknown {
-					flight.err = discover()
-				}
-				state.contractMu.Unlock()
-			}
+			flight.err = discover()
 			flight.leaderEnded = ctx.Err() != nil
 			state.discoveryMu.Lock()
 			state.discovery = nil
@@ -187,6 +194,14 @@ func discoverMCPToolContract(d mcpContractDiscoveryRequest) error {
 			found = found || def.Name == d.tool
 		}
 		if found {
+			if d.bridge == nil && d.opts.receiptEffects.enabled {
+				// Discovery owns the flight, but client lists can publish
+				// while a discovery page waits for its receipt or upstream.
+				if err := d.state.contractMu.Lock(ctx); err != nil {
+					return err
+				}
+				defer d.state.contractMu.Unlock()
+			}
 			// Do not replace an already-observed sibling's stronger state.
 			unknown := definitions[:0]
 			for _, def := range definitions {
@@ -277,12 +292,22 @@ func (d mcpContractDiscoveryRequest) page(ctx context.Context, cursor *string, r
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
 		responseencoding.RequestIdentity(req.Header)
+		effect := mcpV3NetworkExchange{ctx: ctx, opts: d.opts, log: d.log}
+		if err := effect.admit(ParseMCPFrame(body), ""); err != nil {
+			return nil, fmt.Errorf("admit discovery request: %w", err)
+		}
+		defer effect.finish()
+		if effect.send != nil && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		effect.sent = true
 		resp, err := d.client.Do(req)
 		if err != nil {
 			// The refusal is all the client sees; the cause stays for the log.
 			return nil, fmt.Errorf("%w: %w", discoveryRefusalError("upstream discovery request failed"), err)
 		}
 		defer func() { _ = resp.Body.Close() }()
+		effect.observe()
 		if resp.StatusCode != http.StatusOK {
 			return nil, discoveryRefusalError(fmt.Sprintf("upstream discovery returned HTTP %d", resp.StatusCode))
 		}

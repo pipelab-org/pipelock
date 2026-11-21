@@ -415,7 +415,8 @@ func RunWSProxy(
 		// Only track requests (have "method"), not client responses to
 		// server-initiated calls, to prevent tracker pollution.
 		var registration *requestRegistration
-		if isTrackableRequest(msg, frame.ID) {
+		awaitReply := isTrackableRequest(msg, frame.ID)
+		if awaitReply {
 			var refusal string
 			var trackingErr error
 			registration, refusal, trackingErr = registerWSTaskOutcome(safeLogW, inputOpts, tracker, frame, decision)
@@ -455,7 +456,11 @@ func RunWSProxy(
 			break
 		}
 
-		if err := inputOpts.bindV3Send(effect); err != nil || innerCtx.Err() != nil {
+		var bindErr error
+		if awaitReply {
+			bindErr = inputOpts.bindV3Send(effect)
+		}
+		if bindErr != nil || innerCtx.Err() != nil {
 			inputOpts.finishV3Send(innerCtx, safeLogW, effect, false)
 			tracker.removeOwnedOutcome(frame.ID, registration)
 			continue
@@ -472,7 +477,7 @@ func RunWSProxy(
 			stdinErr = fmt.Errorf("upstream write: %w", writeErr)
 			break
 		}
-		if effect != nil && effect.request.RequestID == "" {
+		if effect != nil && !awaitReply {
 			logMCPV3Error(safeLogW, confirmMCPV3Effect(innerCtx, effect.token, true))
 		}
 		if isRPCNotification(frame.ID) {

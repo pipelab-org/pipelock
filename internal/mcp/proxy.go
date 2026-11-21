@@ -286,7 +286,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// Parse the inbound frame once per message; every gate below reads
 		// ID / Method / tool fields from this frame instead of re-parsing.
 		frame := ParseMCPFrame(line)
-		writer = opts.v3ResponseWriter(baseWarnContext, logW, baseWriter, line, frame.ID)
+		writer = opts.v3ResponseWriter(baseWarnContext, logW, baseWriter, line, frame)
 		if opts.nativeSSE {
 			var admission receipt.EmitOpts
 			if frame.Method == "" && isResponse(line) {
