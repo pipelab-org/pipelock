@@ -6,6 +6,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"io"
 	"net"
@@ -675,6 +676,164 @@ func TestInterceptTaintApprovalWaitRechecksExposure(t *testing.T) {
 			if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), session.TaskApprovalStale) {
 				t.Fatalf("POST after exposure changed during approval status=%d body=%s, want forbidden %s", response.Code, response.Body, session.TaskApprovalStale)
 			}
+		})
+	}
+}
+
+func TestInterceptTaintPreSendRechecksRequiredIntent(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		expose   bool
+		hostile  bool
+		approved bool
+		granted  bool
+		rotate   bool
+	}{
+		{name: "unchanged"},
+		{name: "approved_unchanged", approved: true},
+		{name: "granted_unchanged", granted: true},
+		{name: "task_rotated_during_intent", rotate: true},
+		{name: "untrusted_during_intent", expose: true},
+		{name: "hostile_during_intent", expose: true, hostile: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, _, _, target, ic := newTaintInterceptFixture(t, func(cfg *config.Config) {
+				cfg.FlightRecorder.RequireReceipts = true
+			})
+			shared := &SessionState{}
+			shared.BeginNewTask("invocation")
+			shared.BindTaskSubject("invocation")
+			WithTaintRecorder(shared)(p)
+			if tc.approved || tc.granted {
+				var kinds []session.HostileFindingKind
+				if tc.granted {
+					kinds = []session.HostileFindingKind{session.FindingDLP}
+				}
+				observeHTTPResponseFindings(shared, ic.Config, target, "text/plain", "forward_response", kinds)
+			}
+			if tc.granted {
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, nil)
+				responseencoding.RequestIdentity(req.Header)
+				applyFullResponsePolicy(req.Header, nil)
+				if err := shared.installTaskPermission(shared.TaskSnapshot().CurrentTaskID, session.TaskPermission{Action: forwardRequestTaskAction(req, nil), ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			receipts := newReceiptProxyHelperWithMetrics(t, p.metrics)
+			intents, upstreamCalls, prompts := 0, 0, 0
+			receipts.emitter = receipt.NewEmitter(receipt.EmitterConfig{
+				Recorder: receipts.rec, PrivKey: receipts.priv,
+				OnReceipt: func(rcpt *receipt.Receipt) {
+					if rcpt.ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
+						return
+					}
+					intents++
+					if tc.rotate {
+						shared.BeginNewTask("next task")
+					}
+					if tc.expose {
+						var kinds []session.HostileFindingKind
+						if tc.hostile {
+							kinds = []session.HostileFindingKind{session.FindingDLP}
+						}
+						observeHTTPResponseFindings(shared, ic.Config, "https://other.example/reference", "text/plain", "forward_response", kinds)
+					}
+				},
+			})
+			p.receiptEmitterPtr.Store(receipts.emitter)
+			p.approver = hitl.New(1, hitl.WithTerminal(true), hitl.WithInput(strings.NewReader("y\n")), hitl.WithOutput(taskPromptWriter(func(b []byte) (int, error) {
+				if strings.Contains(string(b), "Allow (y)") {
+					prompts++
+				}
+				return len(b), nil
+			})))
+			t.Cleanup(p.approver.Close)
+			handler := newInterceptHandler(ic, roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				upstreamCalls++
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("reference material")), Request: r}, nil
+			}))
+			w := interceptTaintRequest(t, handler, http.MethodPost, target)
+			wantStatus, wantCalls := http.StatusOK, 1
+			if tc.expose || tc.rotate {
+				wantStatus, wantCalls = http.StatusForbidden, 0
+			}
+			wantPrompts := 0
+			if tc.approved {
+				wantPrompts = 1
+			}
+			if w.Code != wantStatus || upstreamCalls != wantCalls || intents != 1 || prompts != wantPrompts {
+				t.Fatalf("status=%d calls=%d intents=%d prompts=%d body=%s", w.Code, upstreamCalls, intents, prompts, w.Body)
+			}
+			chain := receipts.findReceipts(t)
+			if len(chain) != 2 {
+				t.Fatalf("receipts=%d, want paired intent/outcome", len(chain))
+			}
+			intent, outcome := chain[0].ActionRecord, chain[1].ActionRecord
+			if intent.DecisionPhase != receipt.DecisionPhaseIntent || outcome.DecisionPhase != receipt.DecisionPhaseOutcome || intent.ActionID != outcome.ActionID {
+				t.Fatalf("unpaired receipts: intent=%+v outcome=%+v", intent, outcome)
+			}
+			if tc.expose || tc.rotate {
+				if outcome.Verdict != config.ActionBlock || outcome.TaintDecision != config.ActionBlock || outcome.TaintDecisionReason == "" {
+					t.Fatalf("missing taint refusal outcome: %+v", outcome)
+				}
+				if tc.hostile && !strings.Contains(w.Body.String(), session.TaskApprovalStale) {
+					t.Fatalf("hostile refusal lacks stale approval: %s", w.Body)
+				}
+			}
+			t.Logf("status=%d upstream_calls=%d required_intents=%d paired_outcomes=1 prompts=%d", w.Code, upstreamCalls, intents, prompts)
+		})
+	}
+}
+
+func TestInterceptTaintPreSendRechecksEnvelopeSigning(t *testing.T) {
+	for _, expose := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unchanged", true: "hostile_during_signing"}[expose], func(t *testing.T) {
+			p, _, _, target, ic := newTaintInterceptFixture(t, func(cfg *config.Config) { cfg.RequestBodyScanning.Enabled = false })
+			shared := &SessionState{}
+			WithTaintRecorder(shared)(p)
+			receipts := newReceiptProxyHelperWithMetrics(t, p.metrics)
+			p.receiptEmitterPtr.Store(receipts.emitter)
+			hookCalls, upstreamCalls := 0, 0
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, nil)
+			nonceSource := &exposingBody{r: rand.Reader, expose: func() {
+				hookCalls++
+				if req.Header.Get("Pipelock-Mediation") == "" {
+					t.Error("nonce read before envelope injection")
+				}
+				if expose {
+					observeHTTPResponseFindings(shared, ic.Config, "https://other.example/reference", "text/plain", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+				}
+			}}
+			signer, err := envelope.NewSigner(envelope.SignerConfig{PrivKey: receipts.priv, KeyID: "signing-test", SignedComponents: []string{"@method", "@target-uri"}, RandReader: nonceSource})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ic.EnvelopeEmitter = envelope.NewEmitter(envelope.EmitterConfig{Signer: signer})
+			ic.EnvelopeEmitterSet = true
+			handler := newInterceptHandler(ic, roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				upstreamCalls++
+				if r.Header.Get("Signature") == "" {
+					t.Error("missing signature")
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("reference material")), Request: r}, nil
+			}))
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+			wantStatus, wantCalls := http.StatusOK, 1
+			if expose {
+				wantStatus, wantCalls = http.StatusForbidden, 0
+			}
+			if w.Code != wantStatus || upstreamCalls != wantCalls || hookCalls != 1 {
+				t.Fatalf("status=%d calls=%d signing_hooks=%d body=%s", w.Code, upstreamCalls, hookCalls, w.Body)
+			}
+			chain := receipts.findReceipts(t)
+			if len(chain) != 1 {
+				t.Fatalf("receipts=%d, want 1", len(chain))
+			}
+			if expose && (chain[0].ActionRecord.Verdict != config.ActionBlock || chain[0].ActionRecord.TaintDecisionReason != session.TaskApprovalStale) {
+				t.Fatalf("refusal=%+v", chain[0].ActionRecord)
+			}
+			t.Logf("status=%d upstream_calls=%d signing_hooks=%d", w.Code, upstreamCalls, hookCalls)
 		})
 	}
 }

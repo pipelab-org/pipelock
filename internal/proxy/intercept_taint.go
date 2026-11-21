@@ -202,3 +202,27 @@ func interceptTaskAdmissionCurrent(ic *InterceptContext) bool {
 		return true
 	}
 }
+
+// recheckInterceptTaint refuses stricter decisions after signing and durable
+// intent storage. Approval cannot be requested here: retry through admission.
+func recheckInterceptTaint(ic *InterceptContext, r *http.Request) string {
+	after := evaluateHTTPTaskTaint(ic.taintConfig, ic.taintRecorder, r.Method, r.URL, &ic.taintTask)
+	reason := ""
+	switch {
+	case after.Result.Decision == session.PolicyBlock:
+		reason = after.Result.Reason
+	case !interceptTaskAdmissionCurrent(ic) || after.Task.CurrentTaskID != ic.taint.Task.CurrentTaskID:
+		reason = session.TaskApprovalStale
+	case after.Result.Reason == session.TaskPermissionRequired:
+		if ic.taint.Result.Reason != session.TaskPermissionGranted && ic.taint.Result.Reason != session.TaskApprovalGranted {
+			reason = session.TaskApprovalStale
+		}
+	case after.Result.Decision == session.PolicyAsk && ic.taint.Result.Decision == session.PolicyAllow && !ic.taintRequiresReauth:
+		reason = after.Result.Reason
+	}
+	if reason != "" {
+		ic.taint = after
+		ic.taint.Result = session.PolicyDecisionResult{Decision: session.PolicyBlock, Reason: reason}
+	}
+	return reason
+}

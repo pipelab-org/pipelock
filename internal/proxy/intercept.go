@@ -2375,14 +2375,17 @@ func newInterceptHandler(
 			}
 		}
 
-		// Record what this request sends before it leaves, so no response
-		// can mint a value the session itself supplied.
-		if requiredIntentEmitted && !interceptTaskAdmissionCurrent(ic) {
-			ic.taint.Result = session.PolicyDecisionResult{Decision: session.PolicyBlock, Reason: session.TaskApprovalStale}
-			writeInterceptTaintRefusal(ic, w, actx, session.TaskApprovalStale)
-			emitBlockedPostRoundTripOutcome(http.StatusForbidden, session.TaskApprovalStale)
+		if reason := recheckInterceptTaint(ic, r); reason != "" {
+			if requiredIntentEmitted {
+				writeInterceptTaintRefusal(ic, w, actx, reason)
+				emitBlockedPostRoundTripOutcome(http.StatusForbidden, reason)
+			} else {
+				refuseInterceptTaint(ic, w, reason, interceptTaintAdmissionOptions{request: r, logContext: actx, actionID: actionID, wrapReceipt: withInterceptRedaction})
+			}
 			return
 		}
+		// Record what this request sends before it leaves, so no response
+		// can mint a value the session itself supplied.
 		recordIssuerRequestSent(ic, r, interceptBodyBytes)
 
 		// Forward to upstream.
