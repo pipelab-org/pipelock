@@ -107,7 +107,7 @@ func (w *StreamWriter) WriteAdmissionBatch(ctx context.Context, actions []Action
 	seen := make(map[string]struct{}, len(actions))
 	for _, action := range actions {
 		if action.Phase != phaseIntent || !actionShape(action, w.open.Coverage.ReceiptsRequired) {
-			return errors.New("receipt batch requires releasing intents")
+			return errors.New("receipt batch requires admission actions")
 		}
 		if _, duplicate := seen[action.ActionID]; duplicate {
 			return errors.New("receipt batch repeats an action ID")
