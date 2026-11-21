@@ -768,7 +768,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	// cascade) so an all-defensive early pass cannot mask an encoded
 	// solicitation that only a later pass catches. See scanCoreResponse.
 	var matches []ResponseMatch
-	matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(content, memo.match(s.responsePreFilter, s.responsePatterns, content)), ViewForMatching))
+	matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(content, memo.matchTransformed(s.responsePreFilter, s.responsePatterns, content, s.responseMatchingLiterals, matchingPrimary)), ViewForMatching))
 
 	// Secondary: replace invisible chars with spaces, then normalize. Catches
 	// word-boundary collapse where the attacker uses ZW instead of space:
@@ -781,7 +781,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	if len(matches) == 0 && memo.outboundError() == nil {
 		spaced := normalize.ForMatchingSpaced(preStripContent)
 		if spaced != content {
-			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(spaced, memo.match(s.responsePreFilter, s.responsePatterns, spaced)), ViewInvisibleSpaced))
+			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(spaced, memo.matchTransformed(s.responsePreFilter, s.responsePatterns, spaced, s.responseMatchingLiterals, matchingSpaced)), ViewInvisibleSpaced))
 			if len(matches) > 0 {
 				content = spaced // use spaced version for strip action
 			}
@@ -793,7 +793,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	if len(matches) == 0 && memo.outboundError() == nil {
 		leeted := normalize.Leetspeak(content)
 		if leeted != content {
-			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(leeted, memo.match(s.responsePreFilter, s.responsePatterns, leeted)), ViewLeetspeak))
+			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(leeted, memo.matchTransformed(s.responsePreFilter, s.responsePatterns, leeted, s.responseMatchingLiterals, matchingLeet)), ViewLeetspeak))
 		}
 	}
 
@@ -802,7 +802,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	// "i\u200bgnore\u200ball\u200bprevious" -> strip ZW -> "ignoreallprevious"
 	// Standard \s+ patterns fail on zero whitespace; \s* variants match.
 	if len(matches) == 0 && len(s.responseOptSpacePatterns) > 0 && memo.outboundError() == nil {
-		matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(content, memo.match(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, content)), ViewForMatching))
+		matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(content, memo.matchTransformed(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, content, s.responseMatchingLiterals, matchingPrimary)), ViewForMatching))
 	}
 
 	// Quinary: vowel-folded matching. Catches confusable-vowel attacks where
@@ -812,7 +812,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	if len(matches) == 0 && len(s.responseVowelFoldPatterns) > 0 && memo.outboundError() == nil {
 		folded := normalize.FoldVowels(content)
 		if folded != content {
-			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(folded, memo.match(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded)), ViewVowelFold))
+			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(folded, memo.matchTransformed(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded, s.responseMatchingLiterals, matchingVowel)), ViewVowelFold))
 		}
 	}
 
@@ -1187,8 +1187,24 @@ func matchPatternsPreFilteredWithMemo(pf *responsePreFilter, patterns []*compile
 	// Keep each pattern's result in its original slot so match order, pass
 	// precedence, and suppression behavior are identical to the serial path.
 	match := matchResponsePattern
-	if view != nil && view.outboundMatch != nil {
-		match = view.outboundMatch
+	if view != nil {
+		switch {
+		case view.outboundMatch != nil:
+			match = view.outboundMatch
+		case view.positions != nil && view.positions.ready && view.positions.hits != nil && len(pf.windows) != 0:
+			// The prefilter finished indexing before any worker starts.
+			// Each worker reads the same immutable literal coordinates.
+			match = func(p *compiledPattern, text string) []ResponseMatch {
+				plan := pf.windows[p.re]
+				if plan == nil || p.responseMemoRegexp != p.re || hasExternalTransferCompanions(p) {
+					return matchResponsePattern(p, text)
+				}
+				if !responsePatternCanMatch(p, text) {
+					return nil
+				}
+				return responseMatchesAt(p, text, plan.findAllWithPositions(p.re, p.re, text, text, view.positions))
+			}
+		}
 	}
 	workers := min(runtime.GOMAXPROCS(0), len(indices))
 	if workers < 2 || len(content) < 4096 {
@@ -1253,7 +1269,10 @@ func matchResponsePattern(p *compiledPattern, content string) []ResponseMatch {
 	if !responsePatternCanMatch(p, content) {
 		return nil
 	}
-	locs := responsePatternMatchLocations(p, content)
+	return responseMatchesAt(p, content, responsePatternMatchLocations(p, content))
+}
+
+func responseMatchesAt(p *compiledPattern, content string, locs [][]int) []ResponseMatch {
 	var matches []ResponseMatch
 	for _, loc := range locs {
 		matchText := content[loc[0]:loc[1]]
@@ -1621,10 +1640,7 @@ func visitEncodedRunSpans(content string, minLen int, yield func(encodedRunSpan)
 	start := -1
 	for i := 0; i < len(content); i++ {
 		c := content[i]
-		inAlphabet := (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-			(c >= '0' && c <= '9') || c == '+' || c == '/' ||
-			c == '-' || c == '_'
-		if inAlphabet {
+		if isBase64DataByte(c) {
 			if start < 0 {
 				start = i
 			}
@@ -1909,30 +1925,61 @@ func isPrintableResponseRune(r rune, size int) bool {
 // vowel-fold) against decoded content. Without this, encoded payloads carrying
 // vowel-substituted or zero-width-separated injection would bypass detection.
 func (s *Scanner) matchDecodedNormalized(decoded, decodedViewLabel string, suppress coreResponseSuppressor) responseMatchSet {
+	return s.matchDecodedResponseViews(decoded, decodedViewLabel, suppress, responseMatchingPasses{
+		primary:       responseMatchingPass{s.responsePreFilter, s.responsePatterns},
+		optionalSpace: responseMatchingPass{s.responseOptSpacePreFilter, s.responseOptSpacePatterns},
+		vowelFold:     responseMatchingPass{s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns},
+	})
+}
+
+type responseMatchingPass struct {
+	filter   *responsePreFilter
+	patterns []*compiledPattern
+}
+
+type responseMatchingPasses struct {
+	primary, optionalSpace, vowelFold responseMatchingPass
+}
+
+func (p responseMatchingPass) match(content string, positions *matchingView) []ResponseMatch {
+	if positions == nil {
+		return matchPatternsPreFiltered(p.filter, p.patterns, content)
+	}
+	view := responsePreFilterView{positions: positions}
+	return matchPatternsPreFilteredWithMemo(p.filter, p.patterns, content, &view)
+}
+
+// A decoded value starts a new coordinate space. Its side passes can share
+// search positions before the caller projects the findings to its carrier.
+func (s *Scanner) matchDecodedResponseViews(decoded, decodedViewLabel string, suppress coreResponseSuppressor, passes responseMatchingPasses) responseMatchSet {
 	normalized := normalize.ForMatching(decoded)
-	if matches := filterCoreResponsePass(normalized, "", matchPatternsPreFiltered(s.responsePreFilter, s.responsePatterns, normalized), decodedViewLabel, suppress); len(matches) > 0 {
+	var root *matchingView
+	if len(normalized) >= responseMemoMinBytes {
+		root = newMatchingView(normalized, s.responseMatchingLiterals)
+	}
+	if matches := filterCoreResponsePass(normalized, "", passes.primary.match(normalized, root), decodedViewLabel, suppress); len(matches) > 0 {
 		return responseMatchSet{matches: matches, content: normalized}
 	}
 	spaced := normalize.ForMatchingSpaced(decoded)
 	if spaced != normalized {
-		if matches := filterCoreResponsePass(spaced, "", matchPatternsPreFiltered(s.responsePreFilter, s.responsePatterns, spaced), spanViewLabel("invisible_spaced", decodedViewLabel), suppress); len(matches) > 0 {
+		if matches := filterCoreResponsePass(spaced, "", passes.primary.match(spaced, root.transformed(matchingSpaced, spaced)), spanViewLabel("invisible_spaced", decodedViewLabel), suppress); len(matches) > 0 {
 			return responseMatchSet{matches: matches, content: spaced}
 		}
 	}
 	if leeted := normalize.Leetspeak(normalized); leeted != normalized {
-		if matches := filterCoreResponsePass(leeted, "", matchPatternsPreFiltered(s.responsePreFilter, s.responsePatterns, leeted), spanViewLabel("leetspeak", decodedViewLabel), suppress); len(matches) > 0 {
+		if matches := filterCoreResponsePass(leeted, "", passes.primary.match(leeted, root.transformed(matchingLeet, leeted)), spanViewLabel("leetspeak", decodedViewLabel), suppress); len(matches) > 0 {
 			return responseMatchSet{matches: matches, content: leeted}
 		}
 	}
-	if len(s.responseOptSpacePatterns) > 0 {
-		if matches := filterCoreResponsePass(normalized, "", matchPatternsPreFiltered(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, normalized), decodedViewLabel, suppress); len(matches) > 0 {
+	if len(passes.optionalSpace.patterns) > 0 {
+		if matches := filterCoreResponsePass(normalized, "", passes.optionalSpace.match(normalized, root), decodedViewLabel, suppress); len(matches) > 0 {
 			return responseMatchSet{matches: matches, content: normalized}
 		}
 	}
-	if len(s.responseVowelFoldPatterns) > 0 {
+	if len(passes.vowelFold.patterns) > 0 {
 		folded := normalize.FoldVowels(normalized)
 		if folded != normalized {
-			if matches := filterCoreResponsePass(folded, normalized, matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded), vowelFoldViewLabel(decodedViewLabel), suppress); len(matches) > 0 {
+			if matches := filterCoreResponsePass(folded, normalized, passes.vowelFold.match(folded, root.transformed(matchingVowel, folded)), vowelFoldViewLabel(decodedViewLabel), suppress); len(matches) > 0 {
 				return responseMatchSet{matches: matches, content: folded}
 			}
 		}

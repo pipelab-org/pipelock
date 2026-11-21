@@ -34,6 +34,14 @@
     },
     {
       "package": "./internal/scanner",
+      "target": "FuzzMatchingViewDeltaParity"
+    },
+    {
+      "package": "./internal/scanner",
+      "target": "FuzzRegexpWindowFindAllParity"
+    },
+    {
+      "package": "./internal/scanner",
       "target": "FuzzRegexShapeGate"
     },
     {

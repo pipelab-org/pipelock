@@ -193,7 +193,7 @@ func assembledOuterAdmits(p *reassemblyPlan, text string, codec int) bool {
 				return true
 			}
 			// All five RFC alphabets are subsets of this exact byte union.
-			if reassemblyAlphabet[b] {
+			if decoderAlphabetClasses[b] != 0 {
 				counts[phase]++
 				if counts[phase] >= minimum {
 					return true

@@ -41,7 +41,10 @@ BENCH_PACKAGE = "./internal/scanner/"
 BENCH_FILE = Path("internal/scanner/text_dlp_throughput_bench_test.go")
 # Every shape must be measured on both sides; a skipped or failed shape is
 # not a pass.
-EXPECTED_SHAPES = ("prose/1MiB", "short/1MiB", "b64json/1MiB")
+EXPECTED_SHAPES = (
+    "prose/1MiB", "short/1MiB", "b64json/1MiB", "json_api/1MiB",
+    "log_lines/1MiB", "go_source/1MiB", "markdown/64KiB",
+)
 DEFAULT_ROUNDS = 6
 DEFAULT_BENCHTIME = "2s"
 DEFAULT_FAIL_PCT = 20.0

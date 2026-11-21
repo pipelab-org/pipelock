@@ -13,7 +13,8 @@ type compiledMatchRequirements struct {
 	minASCIIDigits uint8
 	// shape is nil when the grammar cannot be gated or when a second
 	// boundary-free grammar also runs against the same views.
-	shape *regexShapeGate
+	shape                *regexShapeGate
+	windows, bodyWindows *regexpWindowPlan
 }
 
 // analyzePatternMatchRequirements parses each effective compiled regex once
@@ -24,12 +25,13 @@ func analyzePatternMatchRequirements(re, withoutLeftBoundary *regexp.Regexp) com
 	if re == nil {
 		return compiledMatchRequirements{}
 	}
-	requirements := analyzeRegexpMatchRequirements(re.String())
+	requirements := analyzeCompiledRegexpMatchRequirements(re)
 	if withoutLeftBoundary != nil {
-		body := analyzeRegexpMatchRequirements(withoutLeftBoundary.String())
+		body := analyzeCompiledRegexpMatchRequirements(withoutLeftBoundary)
 		requirements.requiresEquals = requirements.requiresEquals && body.requiresEquals
 		requirements.minASCIIDigits = min(requirements.minASCIIDigits, body.minASCIIDigits)
 		requirements.shape = nil
+		requirements.bodyWindows = body.windows
 	}
 	if prefix, _ := re.LiteralPrefix(); prefix != "" {
 		// The regexp engine already skips to its literal prefix, which is
@@ -44,6 +46,21 @@ func analyzeRegexpMatchRequirements(expression string) compiledMatchRequirements
 	if err != nil {
 		return compiledMatchRequirements{}
 	}
+	return regexpTreeMatchRequirements(tree)
+}
+
+// This path is for immutable regexp.Compile expressions installed in Scanner.
+func analyzeCompiledRegexpMatchRequirements(re *regexp.Regexp) compiledMatchRequirements {
+	tree, err := syntax.Parse(re.String(), syntax.Perl)
+	if err != nil {
+		return compiledMatchRequirements{}
+	}
+	requirements := regexpTreeMatchRequirements(tree)
+	requirements.windows = newRegexpWindowPlan(re, tree)
+	return requirements
+}
+
+func regexpTreeMatchRequirements(tree *syntax.Regexp) compiledMatchRequirements {
 	return compiledMatchRequirements{
 		requiresEquals: regexpTreeRequiresEquals(tree),
 		minASCIIDigits: regexpTreeMinASCIIDigits(tree),

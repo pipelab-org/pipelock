@@ -167,14 +167,15 @@ func (v *asciiFoldedInput) get(source string) string {
 	return v.text
 }
 
-// matchSpanInPreparedView changes only the regexp's input and instructions.
+// matchPositionedSpanInPreparedView changes only the regexp's input and instructions.
 // Admission, validators, source context and returned spans use original bytes.
-func (p *compiledPattern) matchSpanInPreparedView(text, source string, input *asciiFoldedInput, memo *decodingMemo) (int, int, bool) {
+func (p *compiledPattern) matchPositionedSpanInPreparedView(text, source string, input *asciiFoldedInput, memo *decodingMemo, positions *matchingView) (int, int, bool) {
 	if p.asciiFoldedRE == nil || p.asciiFoldedSource != p.re || p.withoutLeftBoundary != nil || p.keywords != nil || p.wifOverlapRetry {
-		return p.matchSpanWithDecodes(text, source, memo)
+		return p.matchPositionedSpanWithDecodes(text, source, memo, positions)
 	}
 	if !p.admitsView(text) {
 		return 0, 0, false
 	}
-	return p.firstAcceptedLocations(text, p.asciiFoldedRE.FindAllStringIndex(input.get(text), -1), nil)
+	locations := p.regexpWindows.findAllWithPositions(p.re, p.asciiFoldedRE, text, input.get(text), positions)
+	return p.firstAcceptedLocations(text, locations, nil)
 }
