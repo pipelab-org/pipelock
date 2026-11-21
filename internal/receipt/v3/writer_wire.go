@@ -137,7 +137,7 @@ var openProjection = receiptcontent.Register(receiptcontent.Schema{
 		"writer.product":                     receiptcontent.Identity,
 		"writer.version":                     receiptcontent.Identity,
 	},
-	Enums: map[string][]string{"policy.source": {"writer_config"}},
+	Enums: map[string][]string{"policy.source": {writerConfigPolicySource}},
 })
 
 var closeProjection = receiptcontent.Register(receiptcontent.Schema{
@@ -151,7 +151,7 @@ var closeProjection = receiptcontent.Register(receiptcontent.Schema{
 		"recorder.transcript_root": receiptcontent.ComputedDigest,
 		"records":                  receiptcontent.Generated,
 	},
-	Enums: map[string][]string{"reason": {"rollover", "shutdown"}},
+	Enums: map[string][]string{"reason": {closeRollover, closeShutdown}},
 })
 
 var heartbeatProjection = receiptcontent.Register(receiptcontent.Schema{

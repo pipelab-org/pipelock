@@ -521,7 +521,11 @@ func TestStreamWriterAdmissionBatchRefusals(t *testing.T) {
 				}
 				want = "closed"
 			}
+			before := w.active.confirmed
 			err := w.WriteAdmissionBatch(ctx, actions, policy)
+			if fault == "segment limit" && w.active.confirmed != before {
+				t.Fatalf("oversized batch advanced confirmation: %v to %v", before, w.active.confirmed)
+			}
 			w.fileBytes = writerFileBytes
 			if want != "" {
 				if err == nil || !strings.Contains(err.Error(), want) {
@@ -733,5 +737,35 @@ func TestStreamWriterDoesNotReportUnconfirmedRefusal(t *testing.T) {
 	result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
 	if writerTestCount(t, result, outcomeNotReleased) != 0 || writerTestCount(t, result, "outcome_unknown") != 1 {
 		t.Fatalf("unexpected decision states: %+v", result.Counts.Decisions)
+	}
+}
+
+func TestStreamWriterStopsAfterDetachedRepairTimeout(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	opts.Coverage.ContentScan = true
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	watchdog, stop := context.WithTimeout(t.Context(), testwait.Deadline(8*time.Second))
+	defer stop()
+	opts.Detector = func(scanCtx context.Context, _ string) scanner.TextDLPResult {
+		if ctx.Err() != nil {
+			select {
+			case <-scanCtx.Done():
+			case <-watchdog.Done():
+			}
+		}
+		return scanner.TextDLPResult{Clean: true}
+	}
+	w := requireWriter(t, opts, localWriterStorage())
+	w.active.file = syncCallbackFile{StreamFile: w.active.file, syncCallback: sync.OnceFunc(cancel)}
+	err := w.WriteAction(ctx, writerTestIntent("repair-timeout"), PolicySnapshot{})
+	if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrEffectNotReleased) {
+		t.Fatalf("unconfirmed repair error = %v, want deadline without durable refusal", err)
+	}
+	if err := w.WriteHeartbeat(t.Context()); !errors.Is(err, ErrWriterUnavailable) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("heartbeat error = %v, want verified restart required", err)
+	}
+	if err := w.Close(t.Context(), nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("close error = %v, want repair deadline", err)
 	}
 }

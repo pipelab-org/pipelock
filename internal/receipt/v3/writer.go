@@ -24,11 +24,15 @@ import (
 )
 
 const (
-	endedClosed     = "closed"
-	endedUnsealed   = "unsealed"
-	endedWriteError = "write_error"
-	closeRollover   = "rollover"
-	closeShutdown   = "shutdown"
+	endedClosed              = "closed"
+	endedUnsealed            = "unsealed"
+	endedWriteError          = "write_error"
+	closeRollover            = "rollover"
+	closeShutdown            = "shutdown"
+	writerConfigPolicySource = "writer_config"
+
+	// Detached writes may outlive a request, but must release the writer gate.
+	writerRepairTimeout = 5 * time.Second
 )
 
 // StreamWriterOptions captures the settings that describe a stream for its
@@ -140,7 +144,7 @@ func openStreamWriter(ctx context.Context, opts StreamWriterOptions, storage wri
 		now: opts.Clock, random: opts.Random, fileBytes: writerFileBytes,
 		open: StreamOpen{
 			Coverage: coverage, Writer: opts.Identity, RecorderSession: opts.RecorderSession,
-			Policy:    StreamPolicy{Hash: opts.PolicyHash, Source: "writer_config"},
+			Policy:    StreamPolicy{Hash: opts.PolicyHash, Source: writerConfigPolicySource},
 			SignerKey: SignerKey{Alg: "ed25519", Public: base64.StdEncoding.EncodeToString(public)},
 		},
 	}
@@ -481,16 +485,23 @@ func (w *StreamWriter) tryContinueAfterWriteError(ctx context.Context, writeErr 
 	if w.previous == nil || w.previous.Ended != endedWriteError {
 		return writeErr
 	}
-	ctx = context.WithoutCancel(ctx)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writerRepairTimeout)
+	defer cancel()
 	if err := w.ensureStream(ctx); err != nil {
 		w.fatal = err
 		return errors.Join(writeErr, err)
 	}
-	return errors.Join(writeErr, w.settleActionRepairs(ctx))
+	return errors.Join(writeErr, w.replayRepairsOrStop(ctx))
 }
 
 func (w *StreamWriter) settleActionRepairs(ctx context.Context) error {
-	err := w.replayActionRepairs(context.WithoutCancel(ctx), true)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writerRepairTimeout)
+	defer cancel()
+	return w.replayRepairsOrStop(ctx)
+}
+
+func (w *StreamWriter) replayRepairsOrStop(ctx context.Context) error {
+	err := w.replayActionRepairs(ctx, true)
 	if err != nil {
 		w.fatal = err
 	}
@@ -576,9 +587,13 @@ func (w *StreamWriter) Close(ctx context.Context, operational *Recorder) error {
 	if w.closed {
 		return w.closeErr
 	}
-	w.closeErr = w.replayActionRepairs(context.WithoutCancel(ctx), true)
+	repairCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writerRepairTimeout)
+	defer cancel()
+	if w.fatal == nil {
+		w.closeErr = w.replayRepairsOrStop(repairCtx)
+	}
 	w.closed = true
-	if w.active.file != nil && w.closeErr == nil {
+	if w.active.file != nil && w.closeErr == nil && w.fatal == nil {
 		w.closeErr = w.writeClose(ctx, closeShutdown, operational)
 	}
 	if w.active.file != nil {
@@ -588,7 +603,7 @@ func (w *StreamWriter) Close(ctx context.Context, operational *Recorder) error {
 	if w.previous != nil && w.previous.Ended == endedWriteError && w.fatal == nil {
 		// A failed close is part of the unconfirmed tail, even if all its
 		// bytes landed. Publish a successor that identifies that tail.
-		w.closeErr = errors.Join(w.closeErr, w.publishOpen(context.WithoutCancel(ctx)))
+		w.fatal = w.publishOpen(repairCtx)
 		if w.active.file != nil {
 			w.closeErr = errors.Join(w.closeErr, w.active.file.Close())
 			w.active.file = nil

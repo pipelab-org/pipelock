@@ -298,7 +298,11 @@ func TestStreamWriterScheduledHeartbeat(t *testing.T) {
 		t.Fatal("heartbeat did not flush")
 	}
 	cancel()
-	<-done
+	select {
+	case <-done:
+	case <-deadline.Done():
+		t.Fatal("heartbeat loop did not stop")
+	}
 	if w.active.beat != 1 || w.active.confirmed.Seq != 1 {
 		t.Fatalf("heartbeat was not confirmed: beat=%d seq=%d", w.active.beat, w.active.confirmed.Seq)
 	}
@@ -460,9 +464,6 @@ func TestStreamWriterHeartbeatCallbackCanClose(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		close(abortJoin)
-		if err := <-reported; err != nil {
-			t.Logf("writer close after interrupting the join: %v", err)
-		}
 		t.Fatal("heartbeat callback could not close the writer")
 	}
 }
