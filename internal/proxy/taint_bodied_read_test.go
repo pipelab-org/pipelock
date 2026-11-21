@@ -5,15 +5,18 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -25,6 +28,8 @@ func TestRequestHasBody(t *testing.T) {
 	unknown.ContentLength = -1
 	unknownEmpty := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://x.example/", http.NoBody)
 	unknownEmpty.ContentLength = -1
+	zeroWithTrailer := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://x.example/", http.NoBody)
+	zeroWithTrailer.Trailer = http.Header{"X-Exfil": nil}
 	for _, tc := range []struct {
 		name string
 		r    *http.Request
@@ -37,6 +42,7 @@ func TestRequestHasBody(t *testing.T) {
 		{"chunked", chunked, true},
 		{"unknown_length_body", unknown, true},
 		{"unknown_length_no_body", unknownEmpty, false},
+		{"zero_length_with_trailer", zeroWithTrailer, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := requestHasBody(tc.r); got != tc.want {
@@ -121,5 +127,261 @@ func TestForwardTaintBodiedGETAsksLikePost(t *testing.T) {
 	}
 	if status := do(strings.NewReader("notes from the session")); status != http.StatusForbidden || hits.Load() != 1 {
 		t.Fatalf("bodied GET status=%d hits=%d, want forbidden without upstream", status, hits.Load())
+	}
+}
+
+func TestInterceptTaintBodiedExtensionMethodsAndTrailers(t *testing.T) {
+	t.Run("bodied_extension_methods", func(t *testing.T) {
+		for _, method := range []string{"SEARCH", "PROPFIND", "CUSTOM"} {
+			t.Run(method, func(t *testing.T) {
+				p, _, rec, target, ic := newTaintInterceptFixture(t, nil)
+				observeHTTPResponseTaint(rec, p.CurrentConfig(), target, "text/plain", "forward_response", false)
+				var upstreamCalls int
+				handler := newInterceptHandler(ic, roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					upstreamCalls++
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("ok")), Request: r}, nil
+				}))
+				req := httptest.NewRequestWithContext(t.Context(), method, target, strings.NewReader("exfiltrated payload"))
+				w := httptest.NewRecorder()
+				handler.ServeHTTP(w, req)
+				if w.Code != http.StatusForbidden || upstreamCalls != 0 {
+					t.Fatalf("bodied %s status=%d calls=%d body=%s, want forbidden without upstream", method, w.Code, upstreamCalls, w.Body)
+				}
+			})
+		}
+	})
+
+	t.Run("get_zero_length_with_trailer", func(t *testing.T) {
+		p, _, rec, target, ic := newTaintInterceptFixture(t, func(cfg *config.Config) {
+			cfg.RequestBodyScanning.Enabled = false
+		})
+		observeHTTPResponseTaint(rec, p.CurrentConfig(), target, "text/plain", "forward_response", false)
+		var upstreamCalls int
+		handler := newInterceptHandler(ic, roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			upstreamCalls++
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("ok")), Request: r}, nil
+		}))
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, http.NoBody)
+		req.Trailer = http.Header{"X-Exfil": {"secret"}}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden || upstreamCalls != 0 {
+			t.Fatalf("trailer GET status=%d calls=%d body=%s, want forbidden without upstream", w.Code, upstreamCalls, w.Body)
+		}
+	})
+
+	t.Run("get_unknown_length_empty_body_with_trailer_hostile", func(t *testing.T) {
+		p, _, rec, target, ic := newTaintInterceptFixture(t, func(cfg *config.Config) {
+			cfg.RequestBodyScanning.Enabled = false
+		})
+		observeHTTPResponseFindings(rec, p.CurrentConfig(), target, "text/plain", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+		var upstreamCalls int
+		handler := newInterceptHandler(ic, roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			upstreamCalls++
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("ok")), Request: r}, nil
+		}))
+		// Models an HTTP/2 GET with unknown length, 0 DATA bytes, and a trailing
+		// HEADERS frame: admitInterceptTaint drains 0 bytes and sets ContentLength=0
+		// while Trailer remains populated. Must fail closed instead of downgrading
+		// to ActionClassRead.
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, strings.NewReader(""))
+		req.ContentLength = -1
+		req.Trailer = http.Header{"X-Exfil": {"secret"}}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden || upstreamCalls != 0 {
+			t.Fatalf("hostile trailer GET status=%d calls=%d body=%s, want forbidden without upstream", w.Code, upstreamCalls, w.Body)
+		}
+	})
+}
+
+func TestInterceptTaintBodiedGETHostileExactPermission(t *testing.T) {
+	p, _, _, target, ic := newTaintInterceptFixture(t, nil)
+	shared := &SessionState{}
+	shared.BindTaskSubject("forward:agent-a")
+	WithTaintRecorder(shared)(p)
+	observeHTTPResponseFindings(shared, p.CurrentConfig(), target, "text/plain", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+	var upstreamCalls int
+	handler := newInterceptHandler(ic, roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamCalls++
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("ok")), Request: r}, nil
+	}))
+
+	// Without an exact permission, a bodied GET fails closed under hostile taint.
+	unapproved := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, strings.NewReader("approved notes"))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, unapproved)
+	if w.Code != http.StatusForbidden || upstreamCalls != 0 || !strings.Contains(w.Body.String(), "task_approval_unavailable") {
+		t.Fatalf("unapproved bodied GET status=%d calls=%d body=%s", w.Code, upstreamCalls, w.Body)
+	}
+
+	// Grant exact permission for this GET + body; the matching request succeeds.
+	approvedReq := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, strings.NewReader("approved notes"))
+	responseencoding.RequestIdentity(approvedReq.Header)
+	removeHopByHopHeaders(approvedReq.Header)
+	stripInternalIdentity(approvedReq)
+	applyFullResponsePolicy(approvedReq.Header, nil)
+	action := forwardRequestTaskAction(approvedReq, []byte("approved notes"))
+	if err := shared.installTaskPermission(shared.TaskSnapshot().CurrentTaskID, session.TaskPermission{
+		Action:    action,
+		ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("installTaskPermission: %v", err)
+	}
+	w2 := httptest.NewRecorder()
+	handler.ServeHTTP(w2, httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, strings.NewReader("approved notes")))
+	if w2.Code != http.StatusOK || upstreamCalls != 1 {
+		t.Fatalf("approved bodied GET status=%d calls=%d body=%s", w2.Code, upstreamCalls, w2.Body)
+	}
+
+	// Altering the body invalidates the digest and blocks again.
+	w3 := httptest.NewRecorder()
+	handler.ServeHTTP(w3, httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, strings.NewReader("different notes")))
+	if w3.Code != http.StatusForbidden || upstreamCalls != 1 {
+		t.Fatalf("modified bodied GET status=%d calls=%d body=%s", w3.Code, upstreamCalls, w3.Body)
+	}
+}
+
+func TestRequestHasBodyHTTP2RealServer(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		body          string
+		unknownLength bool
+		withTrailer   bool
+		want          bool
+	}{
+		{name: "bodyless_get", want: false},
+		{name: "zero_length_get", body: "", want: false},
+		{name: "sized_body_get", body: "payload", want: true},
+		{name: "unknown_length_data_get", body: "payload", unknownLength: true, want: true},
+		{name: "zero_length_trailer_get", withTrailer: true, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got atomic.Bool
+			var isHTTP2 atomic.Bool
+			srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				isHTTP2.Store(r.ProtoMajor == 2)
+				got.Store(requestHasBody(r))
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.WriteHeader(http.StatusOK)
+			}))
+			srv.EnableHTTP2 = true
+			srv.StartTLS()
+			defer srv.Close()
+
+			client := srv.Client()
+			client.Transport.(*http.Transport).ForceAttemptHTTP2 = true
+			var body io.Reader
+			if tc.body != "" {
+				if tc.unknownLength {
+					body = io.NopCloser(strings.NewReader(tc.body))
+				} else {
+					body = strings.NewReader(tc.body)
+				}
+			} else if tc.withTrailer {
+				body = io.NopCloser(strings.NewReader(""))
+			}
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/search", body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.unknownLength {
+				req.ContentLength = -1
+			}
+			if tc.withTrailer {
+				req.ContentLength = 0
+				req.Trailer = http.Header{"X-Exfil": nil}
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			_, _ = io.Copy(io.Discard, resp.Body)
+			if !isHTTP2.Load() {
+				t.Fatal("request did not negotiate HTTP/2")
+			}
+			if got.Load() != tc.want {
+				t.Fatalf("HTTP/2 requestHasBody=%v, want %v", got.Load(), tc.want)
+			}
+		})
+	}
+}
+
+func TestCheckRedirect_BodiedGET307BlockedWhenTainted(t *testing.T) {
+	p, cfg, sc := redirectPolicyTestProxy(t)
+	cfg.Taint.Enabled = true
+	cfg.Taint.Policy = config.ModeBalanced
+	rec := &SessionState{}
+	observeHTTPResponseTaint(rec, cfg, "https://untrusted.vendor.example/page", "text/html", "forward_response", false)
+
+	makeHop := func(body string) *http.Request {
+		var rdr io.Reader = http.NoBody
+		if body != "" {
+			rdr = strings.NewReader(body)
+		}
+		ctx := context.WithValue(t.Context(), ctxKeyClientIP, "127.0.0.1")
+		ctx = context.WithValue(ctx, ctxKeyRequestID, "req-redirect-bodied-get")
+		ctx = context.WithValue(ctx, ctxKeyAgent, agentAnonymous)
+		ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportForward)
+		ctx = context.WithValue(ctx, ctxKeyRedirectSessionRecorder, rec)
+		ctx = context.WithValue(ctx, ctxKeyAgentConfig, cfg)
+		ctx = context.WithValue(ctx, ctxKeyAgentScanner, sc)
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "https://target.vendor.example/hop", rdr)
+		if body != "" {
+			req.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(strings.NewReader(body)), nil
+			}
+		}
+		return req
+	}
+	orig := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://target.vendor.example/start", http.NoBody)
+
+	if err := p.client.CheckRedirect(makeHop(""), []*http.Request{orig}); !errors.Is(err, http.ErrUseLastResponse) {
+		t.Fatalf("bodyless 307 GET err = %v, want http.ErrUseLastResponse", err)
+	}
+	err := p.client.CheckRedirect(makeHop("redirected payload"), []*http.Request{orig})
+	blockedErr, ok := blockedRequestErrorFrom(err)
+	if !ok || blockedErr.layer != "taint_policy" {
+		t.Fatalf("bodied 307 GET redirect err = %v, want taint_policy block", err)
+	}
+}
+
+func TestReverseTaintBodiedReadAndExtensionMethodsBlocked(t *testing.T) {
+	cfg := reverseParityBaseConfig(t)
+	cfg.CrossRequestDetection.Enabled = false
+	cfg.SessionProfiling.Enabled = true
+	cfg.Taint.Enabled = true
+	cfg.Taint.Policy = config.ModeBalanced
+
+	var upstreamHits atomic.Int32
+	rp, p, _ := newReverseParityHarness(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	})
+	rec := p.SessionMgrPtr().Load().GetOrCreate(responseTaintSessionKey(cfg, "", "192.0.2.1", envelope.ActorAuthSelfDeclared))
+	observeHTTPResponseTaint(rec, cfg, "https://untrusted.vendor.example/page", "text/html", "forward_response", false)
+
+	// Bodyless GET proceeds.
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.vendor.example/items", http.NoBody)
+	req.RemoteAddr = "192.0.2.1:1234"
+	w := httptest.NewRecorder()
+	rp.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || upstreamHits.Load() != 1 {
+		t.Fatalf("bodyless reverse GET status=%d hits=%d", w.Code, upstreamHits.Load())
+	}
+
+	// Bodied GET and bodied extension method SEARCH are blocked by taint.
+	for _, method := range []string{http.MethodGet, "SEARCH"} {
+		t.Run("bodied_"+method, func(t *testing.T) {
+			before := upstreamHits.Load()
+			r := httptest.NewRequestWithContext(t.Context(), method, "http://api.vendor.example/items", strings.NewReader("payload"))
+			r.RemoteAddr = "192.0.2.1:1234"
+			rw := httptest.NewRecorder()
+			rp.ServeHTTP(rw, r)
+			if rw.Code != http.StatusForbidden || upstreamHits.Load() != before {
+				t.Fatalf("bodied reverse %s status=%d hits=%d (before=%d) body=%s", method, rw.Code, upstreamHits.Load(), before, rw.Body)
+			}
+		})
 	}
 }

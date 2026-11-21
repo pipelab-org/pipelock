@@ -183,6 +183,9 @@ func ClassifyHTTPActionWithOptions(method, targetPath string, protectedPatterns,
 		// agent cannot move a body to an upstream at lower taint risk than POST.
 		return ActionClassification{Class: ActionClassPublish, Sensitivity: pathClass.Sensitivity, Confident: pathClass.Confident}
 	default:
+		if opts.RequestBody {
+			return ActionClassification{Class: ActionClassPublish, Sensitivity: pathClass.Sensitivity, Confident: false}
+		}
 		return ActionClassification{Class: ActionClassNetwork, Sensitivity: pathClass.Sensitivity, Confident: false}
 	}
 }

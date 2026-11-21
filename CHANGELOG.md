@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Session taint treats a `GET`, `HEAD`, `OPTIONS`, or `TRACE` request that carries a body like `POST`. Before, a read-shaped method could move a request body upstream after untrusted or hostile exposure without the task permission or approval a `POST` needs. Bodyless reads are unchanged. Reverse proxy SSE now records exposure before each affected event reaches the client instead of when the stream ends.
+- Session taint treats any HTTP request that carries a body or trailers — including `GET`, `HEAD`, `OPTIONS`, `TRACE`, and extension methods — like `POST`. Before, a read-shaped or extension method could move a request body or trailers upstream after untrusted or hostile exposure without the task permission or approval a `POST` needs. Bodyless reads are unchanged. Reverse proxy SSE now records exposure before each affected event reaches the client instead of when the stream ends.
 - Both Go verifiers require regular files for standalone receipts and enforce the same 8 MiB limit, exact-number bounds and receipt format checks.
 - Contract promotion and rollback sync both lifecycle receipts before replacing the active manifest. Provision the contract store and any custom receipt directory before activation.
 - Receipt group startup finishes writing the transition if shutdown is requested after publication of the opening. Use `pipelock evidence repair-group-transition` to complete an interrupted transition when the successor's signed shard openings are available.

@@ -141,14 +141,14 @@ func evaluateHTTPTaint(cfg *config.Config, rec session.Recorder, method string, 
 	return evaluateHTTPTaskTaint(cfg, rec, method, parsedURL, body, nil)
 }
 
-// requestHasBody reports whether r carries, or may carry, a request body.
-// Unknown length (chunked or unset) counts as a body so the read-method
-// exception cannot be reached by omitting Content-Length.
+// requestHasBody reports whether r carries, or may carry, a request body or
+// request trailers. Unknown length (chunked or unset) counts as a body so the
+// read-method exception cannot be reached by omitting Content-Length.
 func requestHasBody(r *http.Request) bool {
 	if r == nil {
 		return false
 	}
-	if len(r.TransferEncoding) > 0 || r.ContentLength > 0 {
+	if len(r.TransferEncoding) > 0 || len(r.Trailer) > 0 || r.ContentLength > 0 {
 		return true
 	}
 	return r.ContentLength < 0 && r.Body != nil && r.Body != http.NoBody
