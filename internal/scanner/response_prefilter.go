@@ -24,6 +24,8 @@ type responsePreFilter struct {
 	proofs          []*responseSuffixProof
 	prefixes        []*responseSuffixProof
 	companionProofs [][]*responseSuffixProof
+	windows         map[*regexp.Regexp]*regexpWindowPlan
+	windowAnchors   []string
 
 	// alwaysRun holds indices of patterns with no extractable keyword gate.
 	// A separate negative proof can still exclude these patterns.
@@ -37,6 +39,7 @@ type responsePreFilterView struct {
 	folded, distance string
 	literals         responseLiteralMemo
 	ready            bool
+	positions        *matchingView
 }
 
 // newResponsePreFilter builds a pre-filter from response patterns.
@@ -59,6 +62,13 @@ func newResponsePreFilter(patterns []*compiledPattern) *responsePreFilter {
 				pf.gates[i] = responseLiteralGate(tree)
 				pf.proofs[i] = newResponseSuffixProof(p.re)
 				if p.responseMemoRegexp != nil && p.responseMemoRegexp == p.re {
+					if plan := newRegexpWindowPlan(p.re, tree); plan != nil && len(plan.anchors) != 0 {
+						if pf.windows == nil {
+							pf.windows = make(map[*regexp.Regexp]*regexpWindowPlan)
+						}
+						pf.windows[p.re] = plan
+						pf.windowAnchors = append(pf.windowAnchors, plan.anchors...)
+					}
 					pf.prefixes[i] = newResponsePrefixProof(p.re)
 				}
 			}
@@ -100,8 +110,18 @@ func (pf *responsePreFilter) patternsToCheckWithMemo(content string, cached *res
 	// Rebuilt per call on the stack: a pass over the text costs less than
 	// retaining two filters on every cached view.
 	var pairs responseGatePairs
-	pairs.raw.add(content)
-	pairs.fold.add(folded)
+	if view := cached.positions; view != nil && view.isASCII() {
+		// For ASCII text, simple-folded and raw text have identical byte
+		// coordinates. The gate verifies exact case in its selected text.
+		view.index()
+		if view.hits != nil {
+			pairs.positions = view
+		}
+	}
+	if pairs.positions == nil {
+		pairs.raw.add(content)
+		pairs.fold.add(folded)
+	}
 	var view *responseFoldView
 	var forward *responseFoldView
 	hits := make([]int, 0, len(pf.gates))
@@ -201,4 +221,38 @@ func externalTransferGate(re *regexp.Regexp) *responseGate {
 		branches = append(branches, gate)
 	}
 	return &responseGate{any: branches}
+}
+
+func responseMatchingProgram(filters ...*responsePreFilter) *matchingLiterals {
+	var literals []string
+	var collect func(*responseGate)
+	collect = func(g *responseGate) {
+		if g == nil {
+			return
+		}
+		if g.literal != "" {
+			literal := g.literal
+			if g.hasFold {
+				literal = g.folded
+			}
+			if isASCIIString(literal) {
+				literals = append(literals, literal)
+			}
+		}
+		for _, child := range g.all {
+			collect(child)
+		}
+		for _, child := range g.any {
+			collect(child)
+		}
+	}
+	for _, filter := range filters {
+		if filter != nil {
+			literals = append(literals, filter.windowAnchors...)
+			for _, gate := range filter.gates {
+				collect(gate)
+			}
+		}
+	}
+	return newMatchingLiterals(literals)
 }

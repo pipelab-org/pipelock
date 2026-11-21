@@ -337,6 +337,7 @@ type Scanner struct {
 	reassemblyPlan            *reassemblyPlan
 	canaryTokens              []compiledCanaryToken
 	dlpPreFilter              *dlpPreFilter
+	dlpMatchingLiterals       *matchingLiterals
 	dlpCardPatternIndices     []int
 	entropyThreshold          float64
 	subdomainEntropyThreshold float64
@@ -366,6 +367,7 @@ type Scanner struct {
 	// the same reason. A secret missing from it is encoded per scan.
 	knownSecretEncodings       map[string]*knownSecretEncodings
 	minEnvSecretLen            int // minimum env var length for leak detection
+	responseMatchingLiterals   *matchingLiterals
 	responsePatterns           []*compiledPattern
 	responseOptSpacePatterns   []*compiledPattern // \s+ → \s* variants for ZW-stripped pass
 	responseVowelFoldPatterns  []*compiledPattern // vowel-folded variants for confusable vowel attacks
@@ -822,6 +824,20 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 
 	// Build prefix pre-filter for fast DLP short-circuiting on clean input.
 	s.dlpPreFilter = newDLPPreFilter(s.dlpPatterns)
+	var windowLiterals []string
+	for _, group := range [][]*compiledPattern{s.core.dlpPatterns, s.dlpPatterns} {
+		for _, p := range group {
+			if p.regexpWindows != nil && p.withoutLeftBoundary == nil && !p.wifOverlapRetry {
+				windowLiterals = append(windowLiterals, p.regexpWindows.anchors...)
+			}
+		}
+	}
+	for _, pf := range []*dlpPreFilter{s.dlpPreFilter, s.core.dlpPreFilter} {
+		for _, prefix := range pf.prefixes {
+			windowLiterals = append(windowLiterals, prefix.text)
+		}
+	}
+	s.dlpMatchingLiterals = newMatchingLiterals(windowLiterals)
 	for id, pattern := range s.dlpPatterns {
 		if pattern.genericCard {
 			s.dlpCardPatternIndices = append(s.dlpCardPatternIndices, id)
@@ -1016,6 +1032,11 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 	if len(s.responseVowelFoldPatterns) > 0 {
 		s.responseVowelFoldPreFilter = reusableResponsePreFilter(s.responseVowelFoldPatterns, responseSyntaxVowelFold)
 	}
+
+	s.responseMatchingLiterals = responseMatchingProgram(
+		s.core.responsePreFilter, s.core.responseOptSpacePreFilter, s.core.responseVowelFoldPreFilter,
+		s.responsePreFilter, s.responseOptSpacePreFilter, s.responseVowelFoldPreFilter,
+	)
 
 	// Build address protection checker if enabled.
 	if cfg.AddressProtection.Enabled {
@@ -3071,6 +3092,10 @@ func decodeEncodingsMode(s string, minPrefix int) []decodedResult {
 
 // decodeEncodingsModeInto appends decodeEncodingsMode's views to out.
 func decodeEncodingsModeInto(out []decodedResult, s string, minPrefix int) []decodedResult {
+	return decodeEncodingsByClass(out, s, minPrefix, decoderClasses(s))
+}
+
+func decodeEncodingsByClass(out []decodedResult, s string, minPrefix int, classes decoderClass) []decodedResult {
 	if decoded := normalize.DecodeTags(s); decoded != s && decoded != "" {
 		out = append(out, decodedResult{text: decoded, encoding: encodingUnicodeTags})
 	}
@@ -3079,6 +3104,33 @@ func decodeEncodingsModeInto(out []decodedResult, s string, minPrefix int) []dec
 		// Retain soft line breaks when tags separate a textual carrier.
 		out = appendTextEncodingViews(out, normalize.StripZeroWidth(s))
 	}
+	if classes&decoderHex != 0 {
+		out = appendHexDecodes(out, s, minPrefix)
+	}
+	if classes&decoderBase64 != 0 {
+		out = appendBase64Decodes(out, s, minPrefix)
+	}
+	// Preserve the base32 modes and variant order. The class screen only
+	// proves when neither alphabet has enough input for one decoded byte.
+	if classes&decoderBase32 != 0 {
+		if minPrefix != 0 {
+			out = appendKnownBase32Views(out, s, minPrefix)
+		} else {
+			if base32FoldedDecodePossible(s) {
+				out = appendBase32DecodesMode(out, normalize.ASCIIUpper(s), 0)
+			}
+			if normalized := normalizeFoldedBase32Token(s); normalized != "" {
+				out = appendBase32DecodesMode(out, normalized, 0)
+			}
+		}
+	}
+	if decoded := normalize.DecodeJSONUnicodeEscapes(s); decoded != s && decoded != "" {
+		out = append(out, decodedResult{text: decoded, encoding: encodingJSONUnicode})
+	}
+	return out
+}
+
+func appendHexDecodes(out []decodedResult, s string, minPrefix int) []decodedResult {
 	var decodedHex []byte
 	var hexErr error
 	if minPrefix == 0 && !hexDecodes(s) {
@@ -3101,6 +3153,10 @@ func decodeEncodingsModeInto(out []decodedResult, s string, minPrefix int) []dec
 			}
 		}
 	}
+	return out
+}
+
+func appendBase64Decodes(out []decodedResult, s string, minPrefix int) []decodedResult {
 	// Raw variants stop at the first byte outside both RFC 4648 alphabets;
 	// separator-stripped variants already have a bounded carrier length.
 	// Size scratch for those outputs rather than an unrelated suffix of s.
@@ -3146,28 +3202,6 @@ func decodeEncodingsModeInto(out []decodedResult, s string, minPrefix int) []dec
 	// Keep the existing standard/URL-safe views and append the mixed view;
 	// a new carrier must not replace an older liberal normalization result.
 	out = appendMixedBase64Views(out, s, base64Buffer, minPrefix)
-	// RFC 4648 base32 and base32hex are case-insensitive. Folding to ASCII
-	// uppercase before decode accepts lower and mixed case without treating
-	// that fold as a separate base32 alphabet. Canonical recipe replay keeps
-	// the fold as its own operation so older profiles stay case-sensitive.
-	if minPrefix == 0 {
-		// Without prefix recovery the folded copy is needed only when a whole
-		// decode can succeed. Both helpers read the fold without building it.
-		if base32FoldedDecodePossible(s) {
-			out = appendBase32DecodesMode(out, normalize.ASCIIUpper(s), 0)
-		}
-		if normalized := normalizeFoldedBase32Token(s); normalized != "" {
-			out = appendBase32DecodesMode(out, normalized, 0)
-		}
-		if decoded := normalize.DecodeJSONUnicodeEscapes(s); decoded != s && decoded != "" {
-			out = append(out, decodedResult{text: decoded, encoding: encodingJSONUnicode})
-		}
-		return out
-	}
-	out = appendKnownBase32Views(out, s, minPrefix)
-	if decoded := normalize.DecodeJSONUnicodeEscapes(s); decoded != s && decoded != "" {
-		out = append(out, decodedResult{text: decoded, encoding: encodingJSONUnicode})
-	}
 	return out
 }
 

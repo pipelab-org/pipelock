@@ -116,17 +116,21 @@ func (p *compiledPattern) admitsView(text string) bool {
 // candidate is suppressed only when that same candidate genuinely existed
 // mid-word in source; otherwise the scanner manufactured the adjacency.
 func (p *compiledPattern) matchSpanInView(text, source string) (start, end int, ok bool) {
+	return p.matchSpanInPositionedView(text, source, nil)
+}
+
+func (p *compiledPattern) matchSpanInPositionedView(text, source string, view *matchingView) (start, end int, ok bool) {
 	if p.keywords != nil && p.keywordContext == nil {
 		pattern := *p
 		logical := config.DLPKeywordContext(source)
 		pattern.keywordContext = &keywordCandidateContext{logical: logical}
-		return pattern.matchSpanInView(text, source)
+		return pattern.matchSpanInPositionedView(text, source, view)
 	}
 	if !p.admitsView(text) {
 		return 0, 0, false
 	}
 	if p.withoutLeftBoundary == nil {
-		return p.firstAcceptedSpan(text, nil)
+		return p.firstAcceptedPositionedSpan(text, nil, view)
 	}
 	if source == text {
 		return p.firstBoundaryOrGluedSpan(text)
@@ -344,13 +348,17 @@ func (p *compiledPattern) exactlyOneGluedRune(source string, loc [2]int) (rune, 
 // joined-view validator must also pass it; a rejected candidate never hides a
 // later genuine one. Patterns without one behave exactly as in matchSpanInView.
 func (p *compiledPattern) matchSpanInJoinedView(text, source string, offsets []int) (start, end int, ok bool) {
+	return p.matchSpanInPositionedJoin(text, source, offsets, nil)
+}
+
+func (p *compiledPattern) matchSpanInPositionedJoin(text, source string, offsets []int, view *matchingView) (start, end int, ok bool) {
 	if p.keywords != nil && p.keywordContext == nil {
 		pattern := *p
 		pattern.keywordContext = &keywordCandidateContext{logical: source, offsets: offsets}
-		return pattern.matchSpanInJoinedView(text, source, offsets)
+		return pattern.matchSpanInPositionedJoin(text, source, offsets, view)
 	}
 	if p.validateJoined == nil || p.withoutLeftBoundary != nil {
-		return p.matchSpanInView(text, source)
+		return p.matchSpanInPositionedView(text, source, view)
 	}
 	if p.requiresEquals && strings.IndexByte(text, '=') < 0 {
 		return 0, 0, false
@@ -361,9 +369,9 @@ func (p *compiledPattern) matchSpanInJoinedView(text, source string, offsets []i
 	if !p.shapeGate.admits(text) {
 		return 0, 0, false
 	}
-	return p.firstAcceptedSpan(text, func(start, end int) bool {
+	return p.firstAcceptedPositionedSpan(text, func(start, end int) bool {
 		return p.validateJoined(text, start, end, source, offsets)
-	})
+	}, view)
 }
 
 func sameProviderCandidate(candidate, sourceCandidate string) bool {
@@ -479,8 +487,12 @@ func (p *compiledPattern) candidateHasLeftBoundary(source string, candidateLoc [
 // hit can hide a valid key that starts inside it; WIF candidates are therefore
 // enumerated at every start rather than at the regex's non-overlapping hits.
 func (p *compiledPattern) firstAcceptedSpan(text string, joined func(int, int) bool) (int, int, bool) {
+	return p.firstAcceptedPositionedSpan(text, joined, nil)
+}
+
+func (p *compiledPattern) firstAcceptedPositionedSpan(text string, joined func(int, int) bool, view *matchingView) (int, int, bool) {
 	if !p.wifOverlapRetry {
-		return p.firstAcceptedLocations(text, p.regexpWindows.findAll(p.re, text), joined)
+		return p.firstAcceptedLocations(text, p.regexpWindows.findAllWithPositions(p.re, p.re, text, text, view), joined)
 	}
 	return firstWIFCandidate(text, func(start, end int) bool {
 		return p.accepts(text, start, end) && (joined == nil || joined(start, end))

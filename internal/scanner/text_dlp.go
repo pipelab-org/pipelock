@@ -966,9 +966,10 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// refusal reads the memo after this function returns, and an audience
 	// allow can remove the credential that stopped the match.
 	var budgetViews []string
+	var positions *matchingView
 	if decodes != nil && !decodes.inbound {
 		defer func() {
-			noteTextSegmentDecodeBudget(budgetViews, decodes)
+			notePositionedTextSegmentDecodeBudget(budgetViews, decodes, positions)
 		}()
 	}
 	imageSource := text
@@ -996,6 +997,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	text = decodes.rememberGraphTransform(beforeRedaction, text, assembledPayloadRedactExamples)
 	decodes.reassemblyDerive(beforeRedaction, text)
 	cleaned := decodes.normalize(text)
+	positions = newMatchingView(cleaned, s.dlpMatchingLiterals)
 	if decodes != nil {
 		priorKeywordUnit, priorKeywordInput := decodes.keywordUnit, decodes.keywordInput
 		defer func() { decodes.keywordUnit, decodes.keywordInput = priorKeywordUnit, priorKeywordInput }()
@@ -1039,7 +1041,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// findings (env leaks, seed phrases, non-core patterns).
 	var coreMatches []TextDLPMatch
 	if opts.patterns != textDLPCardPatterns {
-		coreMatches = s.scanCoreDLPWithDecodes(text, decodes)
+		coreMatches = s.scanCoreDLPWithPositions(text, decodes, positions)
 	}
 
 	var userinfoMatches []TextDLPMatch
@@ -1232,7 +1234,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 
 	// Check raw text against DLP patterns (before URL decoding).
 	// This catches secrets that aren't URL-encoded.
-	for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
+	for _, idx := range s.dlpPreFilter.patternsToCheckInView(cleaned, positions) {
 		if decodes.stopRequested() {
 			break
 		}
@@ -1240,7 +1242,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 		if !opts.patterns.includes(p.genericCard) {
 			continue
 		}
-		if start, end, ok := p.matchSpanWithDecodes(cleaned, text, decodes); ok {
+		if start, end, ok := p.matchPositionedSpanWithDecodes(cleaned, text, decodes, positions); ok {
 			matches = append(matches, TextDLPMatch{
 				keywordGated:                        p.keywords != nil,
 				genericCard:                         p.genericCard,
@@ -1266,13 +1268,13 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	if !decodes.stopRequested() {
 		if decoded := IterativeDecode(cleaned); decoded != cleaned {
 			decodes.registerKeywordTransform(cleaned, decoded, encodingURL)
-			matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsWithDecodes(decoded, encodingURL, decoded, decodes))...)
+			matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsWithDecodes(decoded, encodingURL, decoded, decodes, positions, matchingURL))...)
 		}
 	}
 
 	if !decodes.stopRequested() && htmlDecoded != cleaned {
 		decodes.registerKeywordTransform(cleaned, htmlDecoded, encodingHTML)
-		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsWithDecodes(htmlDecoded, encodingHTML, htmlDecoded, decodes))...)
+		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsWithDecodes(htmlDecoded, encodingHTML, htmlDecoded, decodes, positions, matchingHTML))...)
 		matches = append(matches, s.decodeAndMatchWithDecodes(htmlDecoded, decodes, opts.patterns)...)
 	}
 
@@ -1289,7 +1291,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 				decodes.registerKeywordTransform(cleaned, dropped, encoding)
 				decoded := IterativeDecode(dropped)
 				decodes.registerKeywordTransform(dropped, decoded, encodingURL)
-				matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsWithDecodes(decoded, encodingURL, cleaned, decodes))...)
+				matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsWithDecodes(decoded, encodingURL, cleaned, decodes, nil, matchingURL))...)
 			}
 		}
 	}
@@ -1300,14 +1302,14 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	if !decodes.stopRequested() && strings.Contains(cleaned, ".") {
 		dotless := removeHostnameDots(cleaned)
 		if dotless != cleaned {
-			matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsWithDecodes(dotless, "subdomain", cleaned, decodes))...)
+			matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsWithDecodes(dotless, "subdomain", cleaned, decodes, positions, matchingSubdomain))...)
 		}
 	}
 
 	if !decodes.stopRequested() && len(segmentViews) > 1 {
-		compacted, offsets := decodes.compactWhitespace(cleaned)
+		compacted, offsets, joined := decodes.compactWhitespaceWithView(cleaned, positions)
 		decodes.registerKeywordTransform(cleaned, compacted, "projection")
-		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsInWhitespaceView(compacted, cleaned, offsets, decodes))...)
+		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsInWhitespaceView(compacted, cleaned, offsets, decodes, joined))...)
 	}
 
 	// Hostname exfiltration: extract URL hostnames from the text and run the
@@ -1353,11 +1355,15 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// this stop cannot hide a walk that reached its bound.
 	gate := newTextDLPDecodeGate(opts, matches)
 	if !decodes.stopRequested() {
-		for _, view := range segmentDecodeViews {
+		for i, view := range segmentDecodeViews {
 			if gate.done() {
 				break
 			}
-			matches = append(matches, s.decodeTextSegmentsWithDecodes(view.text, decodes, opts.patterns, gate)...)
+			var viewPositions *matchingView
+			if i == 0 {
+				viewPositions = positions
+			}
+			matches = append(matches, s.decodePositionedTextSegments(view.text, decodes, opts.patterns, gate, viewPositions)...)
 		}
 		if !gate.done() {
 			matches = append(matches, s.decodeSplitHexRunsWithDecodes(text, decodes, opts.patterns, gate)...)
@@ -1459,9 +1465,9 @@ func (s *Scanner) matchDLPPatternsLowered(text, encoding, proseSource string, lo
 	return s.matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource, lowered, patterns, nil)
 }
 
-func (s *Scanner) matchDLPPatternsWithDecodes(text, encoding, source string, decodes *decodingMemo) []TextDLPMatch {
+func (s *Scanner) matchDLPPatternsWithDecodes(text, encoding, source string, decodes *decodingMemo, parent *matchingView, kind matchingTransform) []TextDLPMatch {
 	text = normalize.ForDLP(text)
-	var lowered dlpLoweredBytes
+	lowered := dlpLoweredBytes{positions: parent.transformed(kind, text)}
 	lowered.add(text)
 	return s.matchDLPPatternsLoweredWithDecodes(text, encoding, source, &lowered, textDLPAllPatterns, decodes)
 }
@@ -1469,9 +1475,13 @@ func (s *Scanner) matchDLPPatternsWithDecodes(text, encoding, source string, dec
 func (s *Scanner) matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource string, lowered *dlpLoweredBytes, patterns textDLPPatternSet, decodes *decodingMemo) []TextDLPMatch {
 	var matches []TextDLPMatch
 	var localFoldedInput asciiFoldedInput
+	var positions *matchingView
 	foldedInput := &localFoldedInput
-	if lowered != nil && lowered.preparedASCII != nil {
-		foldedInput = lowered.preparedASCII
+	if lowered != nil {
+		positions = lowered.positions
+		if lowered.preparedASCII != nil {
+			foldedInput = lowered.preparedASCII
+		}
 	}
 	var shape dlpShapeSummary
 	var candidates []int
@@ -1493,7 +1503,7 @@ func (s *Scanner) matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource
 		if s.dlpPreFilter.shapeRejects(p.shapeGate, text, &shape) {
 			continue
 		}
-		if start, end, ok := p.matchSpanInPreparedView(text, proseSource, foldedInput, decodes); ok {
+		if start, end, ok := p.matchPositionedSpanInPreparedView(text, proseSource, foldedInput, decodes, positions); ok {
 			matches = append(matches, TextDLPMatch{
 				keywordGated:                        p.keywords != nil,
 				genericCard:                         p.genericCard,
@@ -1522,16 +1532,16 @@ func (s *Scanner) matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource
 // its spans for every pattern. The built-in Credential in URL grammar alone
 // rejects a match that compaction manufactured from a spaced line-start
 // assignment; this is intentionally not an operator-configurable behavior.
-func (s *Scanner) matchDLPPatternsInWhitespaceView(text, proseSource string, offsets []int, decodes *decodingMemo) []TextDLPMatch {
+func (s *Scanner) matchDLPPatternsInWhitespaceView(text, proseSource string, offsets []int, decodes *decodingMemo, view *matchingView) []TextDLPMatch {
 	// text is already compacted from normalize.ForDLP(proseSource). Do not
 	// transform it again: offsets index this exact emitted view.
 	var matches []TextDLPMatch
-	for _, idx := range s.dlpPreFilter.patternsToCheck(text) {
+	for _, idx := range s.dlpPreFilter.patternsToCheckInView(text, view) {
 		if decodes.stopRequested() {
 			return matches
 		}
 		p := s.dlpPatterns[idx]
-		if start, end, ok := p.matchSpanInJoinedView(text, proseSource, offsets); ok {
+		if start, end, ok := p.matchSpanInPositionedJoin(text, proseSource, offsets, view); ok {
 			if p.credentialURLWhitespaceGrammar && !credentialURLWhitespaceMatchAllowed(text, proseSource, offsets, start, end) {
 				continue
 			}
@@ -1605,6 +1615,10 @@ func compactTextDLPWhitespace(text string) string {
 }
 
 func compactTextDLPWhitespaceWithOffsets(text string) (string, []int) {
+	return compactTextDLPWhitespaceWithEdits(text, nil)
+}
+
+func compactTextDLPWhitespaceWithEdits(text string, edits *[]matchingEdit) (string, []int) {
 	if !strings.ContainsFunc(text, unicode.IsSpace) {
 		offsets := make([]int, len(text))
 		for i := 0; i < len(text); i++ {
@@ -1617,6 +1631,22 @@ func compactTextDLPWhitespaceWithOffsets(text string) (string, []int) {
 	out.Grow(len(text))
 	offsets := make([]int, 0, len(text))
 	for i, r := range text {
+		if edits != nil {
+			switch {
+			case r == utf8.RuneError && !strings.HasPrefix(text[i:], string(utf8.RuneError)):
+				// A malformed byte is replaced rather than copied.
+				*edits, edits = nil, nil
+			case unicode.IsSpace(r):
+				last := len(*edits) - 1
+				if last >= 0 && (*edits)[last].sourceEnd == i {
+					(*edits)[last].sourceEnd += utf8.RuneLen(r)
+				} else if len(*edits) == matchingMaxEdits {
+					*edits, edits = nil, nil
+				} else {
+					*edits = append(*edits, matchingEdit{i, i + utf8.RuneLen(r), out.Len(), out.Len()})
+				}
+			}
+		}
 		if unicode.IsSpace(r) {
 			continue
 		}
@@ -2048,15 +2078,23 @@ func (g *textDLPDecodeGate) close(found []TextDLPMatch) {
 // sticks on the memo and the caller refuses outbound text. Inbound scans keep
 // the partial-view policy and do not call it.
 func noteTextSegmentDecodeBudget(views []string, decodes *decodingMemo) {
+	notePositionedTextSegmentDecodeBudget(views, decodes, nil)
+}
+
+func notePositionedTextSegmentDecodeBudget(views []string, decodes *decodingMemo, positions *matchingView) {
 	if decodes == nil || decodes.inbound {
 		return
 	}
-	for _, text := range views {
+	for i, text := range views {
 		if decodes.stopRequested() {
 			return
 		}
 		source := decodes.reassemblySegmentSource(text)
-		walkTextDLPSegments(text, func(seg string, start int) bool {
+		var viewPositions *matchingView
+		if i == 0 {
+			viewPositions = positions
+		}
+		viewPositions.walkSegments(text, func(seg string, start int) bool {
 			if decodes.stopRequested() {
 				return false
 			}
@@ -2081,6 +2119,10 @@ func noteTextSegmentDecodeBudget(views []string, decodes *decodingMemo) {
 // embedded in URLs (e.g., "https://evil.com/<hex-encoded-key>/data") where
 // whole-string decode fails because the surrounding text isn't valid encoding.
 func (s *Scanner) decodeTextSegmentsWithDecodes(text string, decodes *decodingMemo, patterns textDLPPatternSet, gate *textDLPDecodeGate) []TextDLPMatch {
+	return s.decodePositionedTextSegments(text, decodes, patterns, gate, nil)
+}
+
+func (s *Scanner) decodePositionedTextSegments(text string, decodes *decodingMemo, patterns textDLPPatternSet, gate *textDLPDecodeGate, positions *matchingView) []TextDLPMatch {
 	if gate == nil {
 		gate = newTextDLPDecodeGate(textDLPOptions{patterns: patterns}, nil)
 	}
@@ -2090,7 +2132,7 @@ func (s *Scanner) decodeTextSegmentsWithDecodes(text string, decodes *decodingMe
 	source := decodes.reassemblySegmentSource(text)
 	defer source.release()
 	var matches []TextDLPMatch
-	walkTextDLPSegments(text, func(seg string, start int) bool {
+	positions.walkSegments(text, func(seg string, start int) bool {
 		if decodes.stopRequested() {
 			return false
 		}

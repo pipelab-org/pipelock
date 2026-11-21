@@ -330,9 +330,18 @@ type regexpWindowRange struct{ start, end int }
 // non-overlap decision can never be lost at a seam. The bounded plan is
 // discarded as a unit on fallback, before any regexp or validator runs.
 func (w *regexpWindowPlan) ranges(text string) ([]regexpWindowRange, bool) {
+	return w.rangesWithPositions(text, nil)
+}
+
+func (w *regexpWindowPlan) rangesWithPositions(text string, view *matchingView) ([]regexpWindowRange, bool) {
+	var positions [regexpWindowMaxAnchors + 2][]int
+	var indexed [regexpWindowMaxAnchors + 2]bool
 	var finders [regexpWindowMaxAnchors + 2]windowLiteralFinder
 	for i, anchor := range w.anchors {
-		finders[i] = newWindowLiteralFinder(anchor)
+		positions[i], indexed[i] = view.positions(anchor)
+		if !indexed[i] {
+			finders[i] = newWindowLiteralFinder(anchor)
+		}
 	}
 	var windows []regexpWindowRange
 	budget := len(text)
@@ -346,7 +355,16 @@ func (w *regexpWindowPlan) ranges(text string) ([]regexpWindowRange, bool) {
 		} else {
 			at = len(text)
 			for i := range w.anchors {
-				at = min(at, finders[i].next(text, from))
+				if !indexed[i] {
+					at = min(at, finders[i].next(text, from))
+					continue
+				}
+				for len(positions[i]) > 0 && positions[i][0] < from {
+					positions[i] = positions[i][1:]
+				}
+				if len(positions[i]) > 0 {
+					at = min(at, positions[i][0])
+				}
 			}
 		}
 		if at == len(text) {
@@ -391,20 +409,25 @@ func (w *regexpWindowPlan) findAll(re *regexp.Regexp, text string) [][]int {
 // The alternate matcher is admitted only by the ASCII-folded path, which
 // already proves that its matches and byte offsets agree with the source RE.
 func (w *regexpWindowPlan) findAllInView(source, matcher *regexp.Regexp, text, view string) [][]int {
+	return w.findAllWithPositions(source, matcher, text, view, nil)
+}
+
+func (w *regexpWindowPlan) findAllWithPositions(source, matcher *regexp.Regexp, text, view string, positions *matchingView) [][]int {
 	if w == nil || w.re != source || len(text) < regexpWindowMinText {
 		return matcher.FindAllStringIndex(view, -1)
 	}
-	windows, ok := w.ranges(text)
+	windows, ok := w.rangesWithPositions(text, positions)
 	if !ok {
 		return matcher.FindAllStringIndex(view, -1)
 	}
 	var out [][]int
 	for _, window := range windows {
-		for _, match := range matcher.FindAllStringIndex(view[window.start:window.end], -1) {
-			match[0] += window.start
-			match[1] += window.start
-			out = append(out, match)
+		if positions != nil {
+			out = append(out, positions.windowMatches(matcher, view, window)...)
+			continue
 		}
+		matches := matcher.FindAllStringIndex(view[window.start:window.end], -1)
+		out = append(out, shiftWindowMatches(matches, window.start)...)
 	}
 	return out
 }

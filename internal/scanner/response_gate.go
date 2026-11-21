@@ -29,6 +29,7 @@ type responseGate struct {
 // folded text. A nil *responseGatePairs searches every literal.
 type responseGatePairs struct {
 	raw, fold bytePairFilter
+	positions *matchingView
 }
 
 type responseLiteralKey struct {
@@ -67,6 +68,17 @@ func (g *responseGate) matchesWithPairs(content, folded, distanceText string, me
 		}
 		var found bool
 		switch {
+		case pairs != nil && pairs.positions != nil:
+			if positions, complete := pairs.positions.positions(literal); complete {
+				for _, at := range positions {
+					if text[at:at+len(literal)] == literal {
+						found = true
+						break
+					}
+				}
+			} else {
+				found = strings.Contains(text, literal)
+			}
 		case pairs != nil && g.hasFold && !pairs.fold.mayContain(g.pairs):
 		case pairs != nil && !g.hasFold && !pairs.raw.mayContain(g.pairs):
 		default:
