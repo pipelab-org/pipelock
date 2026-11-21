@@ -13,14 +13,19 @@ func responseScanFindingKinds(result scanner.ResponseScanResult) []session.Hosti
 	if result.Clean {
 		return nil
 	}
+	// A failed scan blocks delivery on every response path, so the agent never
+	// receives that body. Inspection failure is not exposure: recording it as
+	// hostile would mark the whole agent identity hostile for a response it
+	// never saw, which client cancellations and restarts trigger routinely.
+	// Findings a completed scan made before the failure are still recorded.
 	var kinds []session.HostileFindingKind
-	if result.Failed() {
-		kinds = append(kinds, session.FindingScanError)
-	}
 	if len(result.Matches) > 0 {
 		kinds = append(kinds, session.FindingWording)
 	}
 	if len(kinds) == 0 {
+		if result.Failed() {
+			return nil
+		}
 		kinds = append(kinds, session.FindingUnattributed)
 	}
 	return session.MergeFindingKinds(kinds)
