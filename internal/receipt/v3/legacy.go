@@ -187,12 +187,7 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 }
 
 func (v *verification) verifyLegacyContinuity(dir, base string, keys []string, grouped bool) legacy.BaseReport {
-	var endorsements []legacy.RotationEndorsement
-	for _, endorsement := range v.opts.LegacySelection.Endorsements {
-		if candidate, ok := legacy.RunSessionBase(endorsement.SessionID); ok && candidate == base {
-			endorsements = append(endorsements, endorsement)
-		}
-	}
+	endorsements := endorsementsForBase(base, v.opts.LegacySelection.Endorsements)
 	report, err := legacy.VerifyBase(dir, base, legacy.BaseVerifyOptions{
 		TrustedKeys: keys, Endorsements: endorsements, ExcludeReceiptGroupSessions: grouped,
 	})
@@ -214,6 +209,20 @@ func (v *verification) verifyLegacyContinuity(dir, base string, keys []string, g
 		Chain: base, Format: legacyAction, Class: legacyFailure, Verdict: label,
 	})
 	return legacy.BaseReport{}
+}
+
+// endorsementsForBase selects the endorsements a base continuity check needs:
+// a rotation in the shared base session is endorsed under the base name
+// itself, and a per-run rotation under its run session.
+func endorsementsForBase(base string, all []legacy.RotationEndorsement) []legacy.RotationEndorsement {
+	var selected []legacy.RotationEndorsement
+	for _, endorsement := range all {
+		candidate, run := legacy.RunSessionBase(endorsement.SessionID)
+		if endorsement.SessionID == base || run && candidate == base {
+			selected = append(selected, endorsement)
+		}
+	}
+	return selected
 }
 
 func (v *verification) checkLegacySelection(presented map[legacyIdentity]legacyPresentation) {

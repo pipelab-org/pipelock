@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -491,6 +492,13 @@ func TestMixedDirectoryEndorsedRotation(t *testing.T) {
 	if got := walker.Result(); !got.Valid {
 		t.Fatalf("independent session did not retain its pinned root: %+v", got)
 	}
+	// The endorsement must not authorize the successor key for another session.
+	walker = v.legacyActionWalker("other", []string{hex.EncodeToString(root)}, nil)
+	walker.Add(chain[0])
+	walker.Add(chain[1])
+	if got := walker.Result(); got.Valid {
+		t.Fatalf("another session accepted a key transition endorsed only for %s: %+v", session, got)
+	}
 
 	// In an unwrapped batch a fresh genesis splits the chain, while a
 	// sequence-zero key transition stays with the preceding receipts.
@@ -510,5 +518,25 @@ func TestMixedDirectoryEndorsedRotation(t *testing.T) {
 	if len(presented) != 2 || hasFinding(v.result, codeLegacyInvalid) ||
 		presented[legacyIdentity{legacyAction, prior.RunNonce}].Record != legacyHash(successorHash) {
 		t.Fatalf("bare batch did not preserve both verified chains: %+v, %+v", presented, v.result.Findings)
+	}
+}
+
+func TestEndorsementsForBase(t *testing.T) {
+	run, err := recorder.NewRunSessionID("proxy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherRun, err := recorder.NewRunSessionID("other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := []legacy.RotationEndorsement{{SessionID: "proxy"}, {SessionID: run}, {SessionID: "other"}, {SessionID: otherRun}}
+	got := endorsementsForBase("proxy", all)
+	var sessions []string
+	for _, endorsement := range got {
+		sessions = append(sessions, endorsement.SessionID)
+	}
+	if want := []string{"proxy", run}; !slices.Equal(sessions, want) {
+		t.Fatalf("endorsements for base proxy = %v, want %v", sessions, want)
 	}
 }
