@@ -177,6 +177,8 @@ be a disclaimer rather than a disclosure.
 
 `--json` emits a stable report shape: `url`, `config_file`, `mode`, `version`, `allowed`, `scanner`, `layer`, `target_view` (`url_query` / `host` / `path` / `scheme` / `url`), `host`, `pattern_name` (for DLP/blocklist), `reason`, `score`, `dns_dependent`, `notes`, `warn_matches`, and a `remediation` object with `knob`, `broader`, and `immutable`.
 
+For URL DLP, `match_view` is the scanner's view label when a match span is available. For example, `dlp_normalized:query_subsequence` means the match came from joining selected query values. The field also appears on new URL DLP audit blocks and in `pipelock explain event` when present in the audit record. It carries neither the matched text nor its offsets.
+
 ## See also
 
 - [`pipelock doctor`](doctor.md) — audits whether configured protections are actually enforceable.

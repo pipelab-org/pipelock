@@ -135,6 +135,9 @@ func parseFlags(args []string) (options, []string, string, error) {
 	seed := fs.Uint64("seed", 1, "workload seed; fixes request keys and which requests are blocked")
 	window := fs.Duration("window", 5*time.Second, "width of each per-window rate")
 	readyTimeout := fs.Duration("ready-timeout", 10*time.Second, "maximum time for the proxy to listen at initial launch and after restart")
+	// A request that outlives this deadline is abandoned by the client; under a
+	// saturated durable-receipt workload, queueing alone can exceed the default.
+	requestTimeout := fs.Duration("request-timeout", 30*time.Second, "maximum time one client request may take before the client abandons it")
 	shutdown := fs.Duration("shutdown-timeout", time.Minute, "how long the proxy gets to exit after SIGTERM before it is killed")
 	verifyTimeout := fs.Duration("verify-timeout", time.Minute, "maximum time allowed for external receipt verification")
 	lock := fs.String("lock-file", "", "advisory lock file held for the whole invocation, to serialize runs on one machine")
@@ -148,8 +151,8 @@ func parseFlags(args []string) (options, []string, string, error) {
 	if *restartAfter != 0 && (*restartAfter < 0 || *restartAfter >= *n) {
 		return options{}, nil, "", fmt.Errorf("--restart-after must be zero or positive and less than --requests")
 	}
-	if *out == "" || *n < 1 || *warmup < 0 || *n > maxInt-*warmup || *concurrency < 1 || *chains < 1 || *chains > 32 || *window <= 0 || *readyTimeout <= 0 || *shutdown <= 0 || *verifyTimeout <= 0 {
-		return options{}, nil, "", fmt.Errorf("--out, positive --requests, non-negative --warmup with a non-overflowing total, positive --concurrency, --chains from 1 to 32, and positive --window, --ready-timeout, --shutdown-timeout, and --verify-timeout are required")
+	if *out == "" || *n < 1 || *warmup < 0 || *n > maxInt-*warmup || *concurrency < 1 || *chains < 1 || *chains > 32 || *window <= 0 || *readyTimeout <= 0 || *requestTimeout <= 0 || *shutdown <= 0 || *verifyTimeout <= 0 {
+		return options{}, nil, "", fmt.Errorf("--out, positive --requests, non-negative --warmup with a non-overflowing total, positive --concurrency, --chains from 1 to 32, and positive --window, --ready-timeout, --request-timeout, --shutdown-timeout, and --verify-timeout are required")
 	}
 	absBinary, err := filepath.Abs(*binary)
 	if err != nil {
@@ -174,6 +177,6 @@ func parseFlags(args []string) (options, []string, string, error) {
 	}
 	return options{
 		destinations: *destinations, binary: absBinary, out: absOut, rules: *rules, requests: *n, warmup: *warmup, concurrency: *concurrency,
-		chains: *chains, seed: *seed, window: *window, readyTimeout: *readyTimeout, shutdownTimeout: *shutdown, verifyTimeout: *verifyTimeout, restartAfter: *restartAfter,
+		chains: *chains, seed: *seed, window: *window, readyTimeout: *readyTimeout, requestTimeout: *requestTimeout, shutdownTimeout: *shutdown, verifyTimeout: *verifyTimeout, restartAfter: *restartAfter,
 	}, list, *lock, nil
 }

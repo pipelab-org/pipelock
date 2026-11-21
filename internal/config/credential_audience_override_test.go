@@ -182,6 +182,17 @@ dlp:
 	}
 }
 
+func TestLoad_CoreDLPRefusesWarnMode(t *testing.T) {
+	for _, name := range []string{"GitHub Token", "GCP Service Account Key"} {
+		t.Run(name, func(t *testing.T) {
+			yaml := fmt.Sprintf("dlp:\n  patterns:\n    - name: %q\n      regex: sample-value\n      severity: critical\n      action: warn\n", name)
+			if _, err := LoadBytes([]byte(yaml)); err == nil || !strings.Contains(err.Error(), "core safety-floor") {
+				t.Fatalf("LoadBytes error = %v, want the core safety-floor refusal", err)
+			}
+		})
+	}
+}
+
 func TestAudienceDroppedWarningDoesNotOverridePolicy(t *testing.T) {
 	for _, extra := range []string{
 		"      action: warn\n",

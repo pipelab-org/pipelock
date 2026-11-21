@@ -383,6 +383,7 @@ func (s *recorderScanner) v2Receipt(env evidenceEnvelope) error {
 			ActionType    string `json:"action_type"`
 			Verdict       string `json:"verdict"`
 			WinningSource string `json:"winning_source"`
+			RuleID        string `json:"rule_id"`
 		} `json:"payload"`
 	}
 	if err := json.Unmarshal(env.Detail, &detail); err != nil {
@@ -422,7 +423,9 @@ func (s *recorderScanner) v2Receipt(env evidenceEnvelope) error {
 			wantVerdict = verdictBlock
 		}
 		if (detail.PayloadKind != contractreceipt.PayloadProxyDecision && detail.PayloadKind != contractreceipt.PayloadProxyDecisionWithSpans) || detail.Payload.Transport != workloadTransport || detail.Payload.ActionType != "http_request" || detail.Payload.Verdict != wantVerdict || !s.matchesReceiptTarget(detail.Payload.Target, slot) || (s.plan.destinations != nil && detail.Payload.WinningSource != "scanner") {
-			return errors.New("v2 workload receipt differs from the planned decision")
+			// Name what the proxy decided: a client that abandons a request
+			// mid-scan leaves a fail-closed block whose rule says so.
+			return fmt.Errorf("v2 workload receipt differs from the planned decision: verdict %q (want %q), rule %q", detail.Payload.Verdict, wantVerdict, clipRule(detail.Payload.RuleID))
 		}
 		o := s.obs.slot(slot)
 		if o.session != "" && o.session != env.Session {
@@ -554,4 +557,17 @@ func (s *recorderScanner) attributeAEL() error {
 		s.obs.sampleOrphan("ael activity for unknown action id: " + id)
 	}
 	return nil
+}
+
+// maxRuleText bounds a proxy rule name quoted in an error.
+const maxRuleText = 200
+
+// clipRule bounds a proxy-supplied rule name and strips the load workload's
+// fake credential, which a DLP rule may echo.
+func clipRule(rule string) string {
+	rule = strings.ToValidUTF8(strings.ReplaceAll(rule, fakeToken, "[redacted-value]"), "\uFFFD")
+	if len(rule) > maxRuleText {
+		rule = strings.ToValidUTF8(rule[:maxRuleText], "")
+	}
+	return rule
 }

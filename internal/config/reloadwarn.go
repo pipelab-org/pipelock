@@ -90,7 +90,15 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 	if removed := removedOrWeakenedDLPPatterns(old.DLP.Patterns, updated.DLP.Patterns); len(removed) > 0 {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "dlp.patterns",
-			Message: "DLP patterns removed or regex/validator changed on reload: " + strings.Join(removed, ", "),
+			Message: "DLP patterns removed or coverage reduced on reload: " + strings.Join(removed, ", "),
+		})
+	}
+	// Domain exemptions are operator policy. Keep them separate from the
+	// pattern inventory warning, which can be waived during bundle loss.
+	if expanded := expandedDLPExemptions(old.DLP, updated.DLP); len(expanded) > 0 {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "dlp.patterns.exempt_domains",
+			Message: "DLP exemptions expanded on reload: " + strings.Join(expanded, ", "),
 		})
 	}
 	warnings = append(warnings, agentDLPReloadWarnings(old, updated)...)
@@ -1846,18 +1854,70 @@ func removedOrWeakenedDLPPatterns(old, updated []DLPPattern) []string {
 	}
 	for _, p := range old {
 		next, ok := updatedByName[p.Name]
-		if ok && next.Regex == p.Regex && KeywordCoverageReduced(p, next) {
+		if !ok || next.Regex != p.Regex {
+			continue // already covered by removedOrWeakenedPatterns
+		}
+		if KeywordCoverageReduced(p, next) {
 			changed = append(changed, p.Name+" (keywords narrowed)")
 		}
 		// Adding or swapping a validator can filter previously detected
 		// candidates without changing the regex. Removing one restores
 		// shape-only detection, so it cannot reduce that pattern's coverage.
 		// Regex changes already have a warning from the shared diff above.
-		if ok && next.Regex == p.Regex && next.Validator != "" && next.Validator != p.Validator {
+		if next.Validator != "" && next.Validator != p.Validator {
 			changed = append(changed, p.Name+" (validator changed)")
+		}
+		if p.Action != ActionWarn && next.Action == ActionWarn {
+			changed = append(changed, p.Name+" (action changed to warn)")
 		}
 	}
 	return changed
+}
+
+func expandedDLPExemptions(old, updated DLP) []string {
+	oldByName := make(map[string]DLPPattern, len(old.Patterns))
+	for _, p := range old.Patterns {
+		oldByName[p.Name] = p
+	}
+	var expanded []string
+	for _, next := range updated.Patterns {
+		if previous, ok := oldByName[next.Name]; ok && urlDLPExemptionsExpanded(previous, next, old, updated) {
+			expanded = append(expanded, next.Name)
+		}
+	}
+	return expanded
+}
+
+// urlDLPExemptionsExpanded compares the scopes the matcher actually skips:
+// each exemption set minus that policy's effective credential audience.
+func urlDLPExemptionsExpanded(old, next DLPPattern, oldPolicy, newPolicy DLP) bool {
+	if len(next.ExemptDomains) == 0 || IsCoreDLPPatternName(next.Name) {
+		return false
+	}
+	before := AppendDeclaredCredentialAudienceHosts(old.Name, old.CredentialAudienceHosts, oldPolicy.GitHubEnterpriseHosts, oldPolicy.GitLabHosts)
+	after := AppendDeclaredCredentialAudienceHosts(next.Name, next.CredentialAudienceHosts, newPolicy.GitHubEnterpriseHosts, newPolicy.GitLabHosts)
+	// A new exemption outside both the old exempt list and the new
+	// audience expands the skipped scope.
+	if !credentialAudienceDomainSubset(next.ExemptDomains, slices.Concat(old.ExemptDomains, after)) {
+		return true
+	}
+	// A shrinking audience can activate part of a previously inert
+	// exemption, even when its configuration entry did not change.
+	for _, previousAudience := range before {
+		for _, exemption := range next.ExemptDomains {
+			var overlap string
+			switch {
+			case credentialAudienceDomainContains(previousAudience, exemption):
+				overlap = exemption
+			case credentialAudienceDomainContains(exemption, previousAudience):
+				overlap = previousAudience
+			}
+			if overlap != "" && !credentialAudienceDomainSubset([]string{overlap}, after) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func removedOrWeakenedResponsePatterns(old, updated []ResponseScanPattern) []string {
@@ -2025,6 +2085,9 @@ func agentDLPReloadWarnings(old, updated *Config) []ReloadWarning {
 		}
 		if changed := removedOrWeakenedDLPPatterns(before.DLP.Patterns, after.DLP.Patterns); len(changed) > 0 {
 			warnings = append(warnings, ReloadWarning{Field: field, Message: fmt.Sprintf("agent %q DLP patterns removed or coverage reduced on reload: %s", name, strings.Join(changed, ", "))})
+		}
+		if expanded := expandedDLPExemptions(before.DLP, after.DLP); len(expanded) > 0 {
+			warnings = append(warnings, ReloadWarning{Field: field + ".exempt_domains", Message: fmt.Sprintf("agent %q DLP exemptions expanded on reload: %s", name, strings.Join(expanded, ", "))})
 		}
 	}
 	return warnings
