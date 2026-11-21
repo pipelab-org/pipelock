@@ -326,6 +326,8 @@ type BlockDetail struct {
 	// IssuerIDEvidence is fixed proxy-owned diagnostic metadata for a denied
 	// intercepted URL. It contains no ID, matched value or client-supplied text.
 	IssuerIDEvidence string
+	// MatchView names the scanner's inspected view without any matched bytes.
+	MatchView string
 }
 
 // Class string constants kept in lockstep with internal/scanner ResultClass.
@@ -390,6 +392,7 @@ func (l *Logger) LogBlockedDetail(ctx LogContext, scanner, reason string, detail
 		str("reason", reason).
 		optStr("header", detail.Header).
 		optStr("issuer_id_evidence", detail.IssuerIDEvidence).
+		optStr("match_view", detail.MatchView).
 		agentField(ctx.agent, ctx.agentAuth).
 		optStr("subject_discriminator", l.subjectDiscriminator(ctx.dowSubjectKey)).
 		optStr("subject_trust", ctx.dowSubjectTrust).

@@ -56,6 +56,25 @@ func TestExplainEventCmd_LooksUpBlockedRequestID(t *testing.T) {
 	}
 }
 
+func TestExplainEventCmd_URLDLPMatchView(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "audit.log")
+	line := `{"event":"blocked","request_id":"req-1","url":"https://vendor.example","scanner":"dlp","reason":"DLP match: Credit Card Number (medium)","match_view":"dlp_normalized:query_subsequence"}` + "\n"
+	if err := os.WriteFile(logPath, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runExplainCmd(t, "event", "req-1", "--log", logPath, "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report explainEventReport
+	if err := json.Unmarshal([]byte(output), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.TargetView != explainViewURLQuery || report.MatchView != "dlp_normalized:query_subsequence" {
+		t.Fatalf("unexpected explanation for redacted URL: %+v", report)
+	}
+}
+
 func TestExplainEventCmd_JSONFallbackRemediation(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "audit.log")
@@ -236,6 +255,7 @@ func TestExplainEventCmd_JSONFallbackRemediationUsesSanitizer(t *testing.T) {
 	cfgPath := writeConfig(t, `
 mode: balanced
 dlp:
+  scan_env: false
   patterns:
     - name: Fallback Hint Redaction Guard
       regex: "Add the destination host"
