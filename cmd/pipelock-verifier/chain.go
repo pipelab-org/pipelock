@@ -21,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/evidence/completeness"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	actionreceipt "github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	receiptv3 "github.com/luckyPipewrench/pipelock/internal/receipt/v3/command"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -59,6 +60,26 @@ type chainOptions struct {
 	// sessionExplicit records that --session was given. Without it, a
 	// directory whose base has per-run chains is verified as a whole.
 	sessionExplicit bool
+}
+
+// legacySelection maps the legacy chain flags onto a mixed-directory v3
+// verification. Expectation bindings apply to one session, as they do for a
+// legacy directory, so they use the --session default when none was given.
+func (opts chainOptions) legacySelection() (v3.LegacySelection, error) {
+	legacy := v3.LegacySelection{Group: opts.groupID}
+	if opts.sessionExplicit {
+		legacy.Session = opts.sessionID
+	}
+	if opts.expectSignerKeyID != "" || opts.expectContractHash != "" || opts.expectManifestHash != "" || opts.expectPayloadKind != "" {
+		bindings, err := opts.chainVerifyOptions("")
+		if err != nil {
+			return v3.LegacySelection{}, err
+		}
+		bindings.ExpectHeadHash = ""
+		legacy.Bindings = &bindings
+		legacy.Session = opts.sessionID
+	}
+	return legacy, nil
 }
 
 func newChainCmd() *cobra.Command {
@@ -113,11 +134,11 @@ end_proof, scope, and signer trust.`,
 			var dir string
 			if opts.asDir {
 				dir, paths = args[0], nil
-				location, err := recorder.ResolveEvidenceLocation(dir, opts.locationID)
+				resolved, err := receiptv3.ResolveDirectory(dir, opts.locationID)
 				if err != nil {
 					return evidenceLocationError(fmt.Errorf("resolve evidence location: %w", err))
 				}
-				dir = location.Dir
+				dir = resolved
 			} else if opts.locationID != "" {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, errors.New("--location requires --dir"))
 			}
@@ -134,13 +155,15 @@ end_proof, scope, and signer trust.`,
 						return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 					}
 				}
+				legacy, err := opts.legacySelection()
+				if err != nil {
+					return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+				}
 				return v3Flags.Run(cmd, receiptv3.Input{
 					Paths: paths, Directory: dir, Keys: keys, Head: opts.expectHeadHash,
 					Seq: seq, SeqSet: cmd.Flags().Changed("expect-seq"),
 					AllowPrefix: opts.allowPrefix, AllowUnpinned: opts.allowUnpinned, GenericLegacyLabels: true,
-					LegacyOptions: opts.groupID != "" || opts.sessionExplicit || len(opts.endorsementPaths) != 0 ||
-						opts.expectSignerKeyID != "" || opts.expectContractHash != "" || opts.expectManifestHash != "" ||
-						opts.expectPayloadKind != "",
+					LegacyOptions: len(opts.endorsementPaths) != 0, LegacySelection: legacy,
 				})
 			}
 			if err := exactOneArg(cmd, args); err != nil {

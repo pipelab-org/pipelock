@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"io"
 	"os"
@@ -14,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"testing/iotest"
+
+	contract "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 )
 
 func TestCallerPins(t *testing.T) {
@@ -201,6 +204,23 @@ func TestVerifierRefusesScratchDatabaseFailures(t *testing.T) {
 	}
 }
 
+func TestAppraisalRefusesMissingDecisionIndex(t *testing.T) {
+	ctx := t.Context()
+	store, err := newStore(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.close()
+	if _, err := store.ExecContext(ctx, "DROP TABLE decision_ids"); err != nil {
+		t.Fatal(err)
+	}
+	v := verification{ctx: ctx, store: store}
+	if err := v.appraiseDecisions(); err == nil || !strings.Contains(err.Error(), "prepare decision index") ||
+		!strings.Contains(err.Error(), "no such table: decision_ids") {
+		t.Fatalf("decision appraisal error = %v, want missing index diagnostic", err)
+	}
+}
+
 func TestRecordStagingRefusesDisappearedEvidence(t *testing.T) {
 	ctx := t.Context()
 	store, err := newStore(ctx)
@@ -384,5 +404,32 @@ func TestBoundedLineDrainCancellation(t *testing.T) {
 	cancel()
 	if _, _, err := readBounded(ctx, reader); !errors.Is(err, context.Canceled) {
 		t.Fatalf("oversized line drain error = %v", err)
+	}
+}
+
+func TestValidateLegacyOptions(t *testing.T) {
+	keys := []ed25519.PublicKey{make(ed25519.PublicKey, ed25519.PublicKeySize)}
+	bindings := &contract.ChainVerifyOptions{}
+	const scopeError = "legacy options require mixed directory scope"
+	const groupError = "--group requires pinned keys and no other legacy selection"
+	for _, tc := range []struct {
+		name string
+		opts Options
+		want string
+	}{
+		{"file with session", Options{LegacySelection: LegacySelection{Session: "example"}}, scopeError},
+		{"file with group", Options{LegacySelection: LegacySelection{Group: "example"}}, scopeError},
+		{"file with bindings", Options{LegacySelection: LegacySelection{Bindings: bindings}}, scopeError},
+		{"group without keys", Options{Directory: true, LegacySelection: LegacySelection{Group: "example"}}, groupError},
+		{"group with session", Options{Directory: true, Keys: keys, LegacySelection: LegacySelection{Group: "example", Session: "example"}}, groupError},
+		{"group with unpinned allowed", Options{Directory: true, Keys: keys, AllowUnpinned: true, LegacySelection: LegacySelection{Group: "example"}}, groupError},
+		{"group with bindings", Options{Directory: true, Keys: keys, LegacySelection: LegacySelection{Group: "example", Bindings: bindings}}, groupError},
+		{"group with endpoint", Options{Directory: true, Keys: keys, LegacyEnd: &LegacyEnd{Head: Digest(nil)}, LegacySelection: LegacySelection{Group: "example"}}, groupError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.opts.validate(); err == nil || err.Error() != tc.want {
+				t.Fatalf("validate() = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }

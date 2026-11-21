@@ -5,15 +5,19 @@ package v3
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	contract "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	legacy "github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
@@ -225,7 +229,7 @@ func TestLegacyEndpointSelection(t *testing.T) {
 	seq := uint64(2)
 	first := legacyIdentity{legacyAction, "first"}
 	second := legacyIdentity{legacyEvidence, "second"}
-	item := legacyPresentation{InventoryChain: InventoryChain{Seq: 2}, cliHead: "verified-root", verdict: prefixVerdict}
+	item := legacyPresentation{InventoryChain: InventoryChain{Seq: 5}, cliHead: "verified-root", cliSeq: seq, verdict: prefixVerdict}
 	for _, tc := range []struct {
 		name                string
 		keys                []legacyIdentity
@@ -253,11 +257,268 @@ func TestLegacyEndpointSelection(t *testing.T) {
 	}
 }
 
+func TestLegacyEndpointPinsEvidenceChainOfSelectedSession(t *testing.T) {
+	const session = "selected-session"
+	chains := map[legacyIdentity]legacyPresentation{
+		{legacyAction, "action"}:     {session: session, InventoryChain: InventoryChain{Format: legacyAction}, cliHead: "action-root", cliSeq: 7, verdict: prefixVerdict},
+		{legacyEvidence, "evidence"}: {session: session, InventoryChain: InventoryChain{Format: legacyEvidence}, cliHead: "evidence-root", cliSeq: 2, verdict: prefixVerdict},
+	}
+	for _, tc := range []struct {
+		name, head string
+		seq        uint64
+		met        bool
+	}{
+		{"evidence endpoint", "evidence-root", 2, true},
+		{"action endpoint is not the pinned chain", "action-root", 7, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seq := tc.seq
+			v := verification{opts: Options{
+				LegacySelection: LegacySelection{Session: session},
+				LegacyEnd:       &LegacyEnd{Head: tc.head, Sequence: &seq},
+			}}
+			if err := v.verifyLegacyEndpoint(chains); err != nil {
+				t.Fatalf("selected session with both chains: %v", err)
+			}
+			if met := !hasFinding(v.result, codeExpectationNotMet); met != tc.met {
+				t.Fatalf("endpoint met = %v, want %v: %+v", met, tc.met, v.result)
+			}
+		})
+	}
+}
+
 func TestLegacyContinuityReadFailure(t *testing.T) {
 	v := verification{}
 	v.verifyLegacyContinuity(filepath.Join(t.TempDir(), "missing"), "example", nil, false)
 	if !hasFinding(v.result, codeLegacyInvalid) || len(v.result.Legacy) != 1 ||
 		v.result.Legacy[0].Verdict != "RESTART CONTINUITY INCOMPLETE" || v.result.Legacy[0].Class != legacyFailure {
 		t.Fatalf("continuity diagnostic: %+v", v.result)
+	}
+}
+
+func TestLegacySelectionWithMixedChains(t *testing.T) {
+	const session = "selected-session"
+	const group = "selected-group"
+	const head = "verified-root"
+	chains := map[legacyIdentity]legacyPresentation{
+		{legacyGroup, group}:         {},
+		{legacyAction, "other"}:      {session: "other-session", InventoryChain: InventoryChain{Format: legacyAction}, cliHead: "other-root"},
+		{legacyEvidence, "selected"}: {session: session, InventoryChain: InventoryChain{Format: legacyEvidence}, cliHead: head, cliSeq: 2},
+	}
+	v := verification{opts: Options{
+		LegacySelection: LegacySelection{Session: session, Group: group, Bindings: &contract.ChainVerifyOptions{}},
+		LegacyEnd:       &LegacyEnd{Head: head, Sequence: new(uint64(2))},
+	}}
+	v.checkLegacySelection(chains)
+	if err := v.verifyLegacyEndpoint(chains); err != nil {
+		t.Fatal(err)
+	}
+	want := []Acceptance{
+		{Kind: "expect-legacy-group", Value: group},
+		{Kind: "expect-legacy-session", Value: session},
+		{Kind: "expect-legacy-head", Value: head},
+		{Kind: "expect-legacy-seq", Value: "2"},
+	}
+	if !reflect.DeepEqual(v.result.Accepted, want) || len(v.result.Findings) != 0 {
+		t.Fatalf("mixed selection accepted = %+v, findings = %+v", v.result.Accepted, v.result.Findings)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		selection LegacySelection
+	}{
+		{name: "session missing", selection: LegacySelection{Session: "missing"}},
+		{name: "group missing", selection: LegacySelection{Group: "missing"}},
+		{name: "bindings cannot select v1", selection: LegacySelection{Session: "other-session", Bindings: &contract.ChainVerifyOptions{}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := verification{opts: Options{LegacySelection: tc.selection}}
+			v.checkLegacySelection(chains)
+			if !hasFinding(v.result, codeExpectationNotMet) {
+				t.Fatalf("selection accepted an unmet requirement: %+v", v.result)
+			}
+		})
+	}
+}
+
+func TestLegacyEndpointRejectsMismatchedOrUnverifiedHead(t *testing.T) {
+	target := legacyIdentity{legacyAction, "selected"}
+	for _, tc := range []struct {
+		name     string
+		item     legacyPresentation
+		mismatch bool
+	}{
+		{name: "different endpoint", item: legacyPresentation{verdict: prefixVerdict, cliHead: "different-root"}, mismatch: true},
+		{name: "invalid chain", item: legacyPresentation{verdict: legacyInvalid, cliHead: "expected-root"}},
+		{name: "forked chain", item: legacyPresentation{forked: true, cliHead: "expected-root"}},
+		{name: "no verified history", item: legacyPresentation{InventoryChain: InventoryChain{Seq: -1}, cliHead: "expected-root"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := verification{opts: Options{LegacyEnd: &LegacyEnd{Head: "expected-root"}}}
+			chains := map[legacyIdentity]legacyPresentation{target: tc.item}
+			if err := v.verifyLegacyEndpoint(chains); err != nil || len(v.result.Accepted) != 0 ||
+				hasFinding(v.result, codeExpectationNotMet) != tc.mismatch {
+				t.Fatalf("endpoint verification = %+v, %v", v.result, err)
+			}
+			if tc.mismatch && chains[target].verdict != legacyInvalid {
+				t.Fatalf("mismatched endpoint did not invalidate the chain: %+v", chains[target])
+			}
+		})
+	}
+}
+
+func TestLegacyEvidenceBindingsScope(t *testing.T) {
+	raw, err := os.ReadFile(corpusRoot + "/../secret-egress-v1/valid-transformed-intent.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := contract.ParseEvidenceReceipt(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, selected string
+		invalid        bool
+	}{
+		{"binding applies to selected session", "example", true},
+		{"binding leaves other sessions alone", "other", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := verification{opts: Options{LegacySelection: LegacySelection{
+				Session: tc.selected, Bindings: &contract.ChainVerifyOptions{ExpectContractHash: Digest(nil)},
+			}}, used: map[string]bool{}}
+			batch := legacyBatch{session: "example", recorder: true, evidence: []contract.EvidenceReceipt{signed}}
+			presented := map[legacyIdentity]legacyPresentation{}
+			v.legacyEvidence(batch, nil, presented, map[legacyIdentity]map[int64]string{})
+			if len(presented) != 1 || hasFinding(v.result, codeLegacyInvalid) != tc.invalid {
+				t.Fatalf("presentation = %+v, findings = %+v", presented, v.result.Findings)
+			}
+			for _, item := range presented {
+				if (item.verdict == legacyInvalid) != tc.invalid {
+					t.Fatalf("verdict = %q, want invalid = %t", item.verdict, tc.invalid)
+				}
+			}
+		})
+	}
+}
+
+func TestMixedDirectoryEndorsedRotation(t *testing.T) {
+	dir := t.TempDir()
+	session, err := recorder.NewRunSessionID("proxy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, rootPrivate, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, successorPrivate, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorKey := hex.EncodeToString(root)
+	for _, private := range []ed25519.PrivateKey{rootPrivate, successorPrivate} {
+		rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000}, nil, private)
+		if err != nil {
+			t.Fatal(err)
+		}
+		emitter := legacy.NewEmitter(legacy.EmitterConfig{
+			Recorder: rec, PrivKey: private, Principal: "example", Actor: "example",
+			Session: session, PriorSignerKeys: []string{priorKey},
+		})
+		emitErr := emitter.EmitSessionOpen()
+		if err := errors.Join(emitter.InitError(), emitErr, rec.Close()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chain, err := legacy.ExtractReceiptsFromSessionDir(dir, session)
+	if err != nil || len(chain) != 2 || chain[1].ActionRecord.KeyTransition == nil || chain[1].ActionRecord.ChainSeq != 0 {
+		t.Fatalf("rotated chain must have two records and a sequence-zero transition, got %d records: %v", len(chain), err)
+	}
+	prior, successor := chain[0].ActionRecord, chain[1].ActionRecord
+	successorHash, err := successor.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := canonicalJSON(Inventory{V: 1, Chains: []InventoryChain{{
+		Chain: prior.RunNonce, Format: legacyAction, Record: legacyHash(successorHash),
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := Digest(inventory)
+	if err := os.WriteFile(filepath.Join(dir, InventoryFilename(digest)), inventory, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stream := signedStream(t, 1, nil, &Cutover{Inventory: digest, Chains: 1})
+	stream.close()
+	stream.write(dir)
+	// Pinning only the prior key cannot trust the successor's key transition.
+	opts := Options{
+		Directory: true, Keys: []ed25519.PublicKey{root, stream.public()}, AllowPrefix: true,
+		LegacySelection: LegacySelection{Session: session},
+	}
+	result, err := VerifyPaths(t.Context(), []string{dir}, opts)
+	if err != nil || result.ExitCode == 0 || result.Verdict == prefixVerdict || !hasFinding(result, codeLegacyInvalid) {
+		t.Fatalf("rotation without the successor key pinned: %+v, %v", result, err)
+	}
+	// Pinning both keys verifies the rotated chain, and the cutover row matches
+	// the whole chain even though the transition restarted chain_seq at zero.
+	successorKey, err := hex.DecodeString(chain[1].SignerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts.Keys = append(opts.Keys, ed25519.PublicKey(successorKey))
+	result, err = VerifyPaths(t.Context(), []string{dir}, opts)
+	wantAccepted := []Acceptance{{Kind: "allow-prefix", Value: "true"}, {Kind: "expect-legacy-session", Value: session}}
+	if err != nil || result.ExitCode != 0 || result.Verdict != prefixVerdict ||
+		!reflect.DeepEqual(result.Accepted, wantAccepted) || len(result.Legacy) != 1 ||
+		result.Legacy[0].Class != legacyPass || result.Legacy[0].Chain != prior.RunNonce ||
+		!hasFinding(result, codeLegacyEndUnproven) {
+		t.Fatalf("rotation with both keys pinned: %+v, %v", result, err)
+	}
+
+	// In an unwrapped batch a fresh genesis splits the chain, while a
+	// sequence-zero key transition stays with the preceding receipts.
+	otherRaw, err := os.ReadFile(corpusRoot + "/../frozen/v1/action-receipt-v1-single.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := legacy.Unmarshal(otherRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := legacyBatch{action: append(chain, other)}
+	v := verification{used: map[string]bool{}}
+	presented := map[legacyIdentity]legacyPresentation{}
+	v.legacyActions(batch, []string{chain[0].SignerKey, chain[1].SignerKey, other.SignerKey},
+		presented, map[legacyIdentity]map[int64]string{})
+	if len(presented) != 2 || hasFinding(v.result, codeLegacyInvalid) ||
+		presented[legacyIdentity{legacyAction, prior.RunNonce}].Record != legacyHash(successorHash) {
+		t.Fatalf("bare batch did not preserve both verified chains: %+v, %+v", presented, v.result.Findings)
+	}
+}
+
+func TestLegacyPresentationContainsEarlierAction(t *testing.T) {
+	item := legacyPresentation{
+		InventoryChain:  InventoryChain{Record: "sha256:tail"},
+		actionPositions: map[int64]string{0: "first", 1: "middle", 2: "tail"},
+	}
+	for _, tc := range []struct {
+		name, digest string
+		forked, want bool
+	}{
+		{"earlier record", "sha256:middle", false, true},
+		{"current tail", "sha256:tail", false, false},
+		{"unknown record", "sha256:other", false, false},
+		{"forked chain", "sha256:middle", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := item
+			p.forked = tc.forked
+			if got := p.containsEarlierAction(tc.digest); got != tc.want {
+				t.Fatalf("containsEarlierAction(%q) = %v, want %v", tc.digest, got, tc.want)
+			}
+		})
 	}
 }
