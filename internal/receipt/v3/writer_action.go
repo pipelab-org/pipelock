@@ -36,10 +36,18 @@ var ErrEffectNotReleased = errors.New("receipt recorded that the effect was not 
 // durable blocking resolution. The caller must still withhold the release.
 var ErrHoldBlockRecorded = errors.New("receipt recorded the blocking hold resolution")
 
+// ErrActionVisible indicates the failed action is visible in the receipt
+// stream even though its durability could not be confirmed.
+var ErrActionVisible = errors.New("receipt action visible before durability failure")
+
 // WriteAction appends one phase under its decision-time policy. A successful
 // return is the receipt barrier for an intent or a hold. Callers still own
 // the effect and report its observation as a separate phase.
 func (w *StreamWriter) WriteAction(ctx context.Context, action Action, policy PolicySnapshot) error {
+	return w.writeAction(ctx, action, policy, false)
+}
+
+func (w *StreamWriter) writeAction(ctx context.Context, action Action, policy PolicySnapshot, bestEffort bool) error {
 	if w == nil {
 		return errors.New("receipt writer is unavailable")
 	}
@@ -60,6 +68,15 @@ func (w *StreamWriter) WriteAction(ctx context.Context, action Action, policy Po
 	if err := w.prepareAppend(ctx); err != nil {
 		return err
 	}
+	if bestEffort {
+		// A live optional denial may still be delivered after a failed append.
+		// Leave any unconfirmed intent as a gap instead of recording a refusal.
+		_, err := w.appendRecord(ctx, kindAction, action)
+		if err != nil {
+			return w.tryContinueAfterWriteError(ctx, err)
+		}
+		return nil
+	}
 	_, err := w.appendAction(ctx, action)
 	return err
 }
@@ -69,7 +86,11 @@ func (w *StreamWriter) appendAction(ctx context.Context, action Action) (persist
 	if err != nil {
 		if persistStarted {
 			withheld := w.queueActionRepair(action, false)
+			visible := errors.Is(err, errRecordVisible)
 			err = w.tryContinueAfterWriteError(ctx, err)
+			if visible {
+				err = errors.Join(ErrActionVisible, err)
+			}
 			return true, w.withheldAction(err, action, withheld)
 		}
 		return false, err

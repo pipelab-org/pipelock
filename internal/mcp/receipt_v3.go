@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
@@ -127,11 +128,10 @@ func (o MCPProxyOpts) startV3Send(ctx context.Context, frame MCPFrame, actionID 
 		Verdict: config.ActionAllow, PolicyHash: o.receiptPolicyHash(),
 	}
 	token, err := o.admitV3Effect(ctx, request, mcpUpstreamSendBoundary)
-	if err != nil {
+	if err != nil && !errors.Is(err, v3.ErrActionVisible) {
 		return nil, err
 	}
-
-	return &mcpV3Exchange{request: request, token: token}, nil
+	return &mcpV3Exchange{request: request, token: token}, err
 }
 
 // bindV3Send only mutates request correlation. It runs within the send claim,
@@ -228,18 +228,41 @@ func (o MCPProxyOpts) pendingV3Send(id json.RawMessage) *mcpV3Exchange {
 	return o.v3Session.pending[canonicalID(id)]
 }
 
+func mcpV3SendDenial(frame MCPFrame, send *mcpV3Exchange) BlockedRequest {
+	return BlockedRequest{
+		ID: frame.ID, IsNotification: frame.Method == "" || isRPCNotification(frame.ID),
+		LogMessage: "receipt emission failed", ErrorCode: -32007,
+		ErrorMessage: requiredReceiptFailureMessage(nil), ErrorData: mcpBlockReasonData(blockreason.ReceiptEmissionFailed),
+		v3ReplyParent: send, v3SendDenied: true,
+	}
+}
+
+func (o MCPProxyOpts) writeV3SendDenial(log io.Writer, writer transport.MessageWriter, frame MCPFrame, send *mcpV3Exchange) {
+	br := mcpV3SendDenial(frame, send)
+	inputMCPDenial(o, mcpReceiptMcpInputDenialAudit(), &br)
+	logMCPV3Error(log, deliverMCPInputResult(o, br, o.v3SendDenialWriter(writer, log, br)))
+}
+
+func (o MCPProxyOpts) v3SendDenialWriter(writer transport.MessageWriter, log io.Writer, br BlockedRequest) transport.MessageWriter {
+	if !o.receiptEffects.enabled || !br.v3SendDenied {
+		return o.localV3ReplyWriter(writer, log, nil)
+	}
+	return &mcpV3LocalWriter{base: writer, opts: o, log: log, send: br.v3ReplyParent, sendDenied: true}
+}
+
 func (o MCPProxyOpts) localV3ReplyWriter(writer transport.MessageWriter, log io.Writer, x *mcpV3Exchange) transport.MessageWriter {
-	if o.v3Session == nil {
+	if !o.receiptEffects.enabled {
 		return writer
 	}
 	return &mcpV3LocalWriter{base: writer, opts: o, log: log, send: x}
 }
 
 type mcpV3LocalWriter struct {
-	base transport.MessageWriter
-	opts MCPProxyOpts
-	log  io.Writer
-	send *mcpV3Exchange
+	base       transport.MessageWriter
+	opts       MCPProxyOpts
+	log        io.Writer
+	send       *mcpV3Exchange
+	sendDenied bool
 }
 
 func (w *mcpV3LocalWriter) WriteMessage(msg []byte) error {
@@ -247,16 +270,17 @@ func (w *mcpV3LocalWriter) WriteMessage(msg []byte) error {
 	if w.send != nil {
 		request = w.send.request
 	}
-	reply := mcpV3ReplyWriter{base: w.base, opts: w.opts, log: w.log, request: request}
+	reply := mcpV3ReplyWriter{base: w.base, opts: w.opts, log: w.log, request: request, sendDenied: w.sendDenied}
 	return writeMCPForwardedMessage(&reply, msg)
 }
 
 type mcpV3ReplyWriter struct {
-	base     transport.MessageWriter
-	opts     MCPProxyOpts
-	log      io.Writer
-	request  receipt.EmitOpts
-	finished bool
+	base       transport.MessageWriter
+	opts       MCPProxyOpts
+	log        io.Writer
+	request    receipt.EmitOpts
+	finished   bool
+	sendDenied bool
 }
 
 var errMCPV3ReplyAdmission = errors.New("MCP reply receipt admission")
@@ -268,7 +292,12 @@ func (w *mcpV3ReplyWriter) WriteMessage(msg []byte) error {
 	w.finished = true
 	ctx := w.opts.warnContext()
 	evidence := mcpV3ReplyEvidence(w.request)
-	token, err := w.opts.admitV3Effect(ctx, evidence, mcpDownstreamDeliveryBoundary)
+	action, policy := w.opts.v3EffectAction(evidence, mcpDownstreamDeliveryBoundary)
+	admit := w.opts.receiptEffects.gate.Admit
+	if w.sendDenied {
+		admit = w.opts.receiptEffects.gate.AdmitDenialDelivery
+	}
+	token, err := admit(ctx, action, policy)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errMCPV3ReplyAdmission, err)
 	}
@@ -333,21 +362,21 @@ func (o MCPProxyOpts) confirmV3Hold(held *deferred.HeldAction, frame MCPFrame) {
 	}
 }
 
-func (o MCPProxyOpts) claimV3DeferredSend(ctx context.Context, log io.Writer, frame MCPFrame, res deferred.Resolution, mu sync.Locker, generation uint64) (*mcpV3Exchange, func(), string) {
+func (o MCPProxyOpts) claimV3DeferredSend(ctx context.Context, log io.Writer, frame MCPFrame, res deferred.Resolution, mu sync.Locker, generation uint64) (*mcpV3Exchange, func(), string, error) {
 	effect, err := o.startV3Send(ctx, frame, res.ParentActionID)
 	if err != nil {
 		logMCPV3Error(log, err)
-		return nil, nil, "receipt admission failed"
+		return effect, nil, "receipt admission failed", err
 	}
 	prepared, finish := lockAndClaimDeferredRelease(mu, o, generation, res)
 	if finish != nil && prepared.FinalDecision == config.ActionAllow && ctx.Err() == nil {
-		return effect, sync.OnceFunc(finish), ""
+		return effect, sync.OnceFunc(finish), "", nil
 	}
 	if finish != nil {
 		finish()
 	}
 	o.finishV3Send(ctx, log, effect, false)
-	return nil, nil, firstNonEmpty(prepared.Reason, "request cancelled")
+	return nil, nil, firstNonEmpty(prepared.Reason, "request cancelled"), nil
 }
 
 // mcpV3NetworkExchange keeps settlement outside the listener's state and
@@ -357,7 +386,7 @@ type mcpV3NetworkExchange struct {
 	ctx                           context.Context
 	opts                          MCPProxyOpts
 	log                           io.Writer
-	send                          *mcpV3Exchange
+	send, refusedSend             *mcpV3Exchange
 	reply                         *v3.EffectToken
 	replyEvidence                 receipt.EmitOpts
 	replyAdmitted                 bool
@@ -367,6 +396,9 @@ type mcpV3NetworkExchange struct {
 func (x *mcpV3NetworkExchange) admit(frame MCPFrame, actionID string) error {
 	var err error
 	x.send, err = x.opts.startV3Send(x.ctx, frame, actionID)
+	if err != nil {
+		x.refusedSend, x.send = x.send, nil
+	}
 	if x.send != nil {
 		x.replyEvidence = mcpV3ReplyEvidence(x.send.request)
 	}

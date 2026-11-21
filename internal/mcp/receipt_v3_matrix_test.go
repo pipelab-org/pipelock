@@ -78,7 +78,8 @@ type mcpMatrixFile struct {
 func (f *mcpMatrixFile) Write(p []byte) (int, error) {
 	f.writeCount++
 	if (f.writeCount == 2 && f.scenario == "intent write fail") ||
-		(f.writeCount == 4 && f.scenario == "reply intent write fail") {
+		(f.writeCount == 4 && f.scenario == "reply intent write fail") ||
+		(f.writeCount == 3 && f.scenario == "local denial intent write fail") {
 		return 0, errors.New("fixture append failure")
 	}
 	return f.File.Write(p)
@@ -106,7 +107,7 @@ func (f *mcpMatrixFile) Sync() error {
 func mcpMatrixWriterOptions(t *testing.T, row v3MCPMatrixRow, surface string, cancel context.CancelFunc, beforeSync func(int)) v3.StreamWriterOptions {
 	t.Helper()
 	seed := sha256.Sum256([]byte("MCP parity fixture"))
-	first := true
+	fileNumber := 0
 	return v3.StreamWriterOptions{
 		Dir: t.TempDir(), SigningKey: ed25519.NewKeyFromSeed(seed[:]), PolicyHash: v3.Digest(nil),
 		Identity: v3.Writer{Instance: "example", Product: "Pipelock", Version: "3"},
@@ -116,11 +117,21 @@ func mcpMatrixWriterOptions(t *testing.T, row v3MCPMatrixRow, surface string, ca
 		},
 		CreateTempFile: func(dir, pattern string) (v3.StreamFile, error) {
 			f, err := os.CreateTemp(dir, pattern)
-			if err != nil || !first {
-				return f, err
+			if err != nil {
+				return nil, err
 			}
-			first = false
-			return &mcpMatrixFile{File: f, scenario: row.scenario, cancel: cancel, beforeSync: beforeSync}, nil
+			fileNumber++
+			if fileNumber == 1 {
+				scenario := row.scenario
+				if scenario == "send and local denial intent write fail" {
+					scenario = "intent write fail"
+				}
+				return &mcpMatrixFile{File: f, scenario: scenario, cancel: cancel, beforeSync: beforeSync}, nil
+			}
+			if fileNumber == 2 && row.scenario == "send and local denial intent write fail" {
+				return &mcpMatrixFile{File: f, scenario: "local denial intent write fail"}, nil
+			}
+			return f, nil
 		},
 	}
 }
@@ -374,6 +385,9 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 		})
 	}
 	localReply := slices.Contains([]string{"deferred deny", "deferred timeout", "kill-switch during hold", "deferred HTTP failure"}, row.scenario)
+	// A withheld request still gets a receipt-emission error rather than no reply.
+	admissionDenied := slices.Contains([]string{"intent write fail", "intent sync fail"}, row.scenario)
+	localReply = localReply || admissionDenied
 	clientWrite := make(chan struct{}, 1)
 	client := &mcpMatrixObserver{dir: writerOpts.Dir, wrote: clientWrite}
 	seen := filepath.Join(t.TempDir(), "upstream")
@@ -390,7 +404,7 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 		if row.path == "WebSocket upstream" {
 			return runMCPMatrixWS(t, ctx, in, client, opts, mcpMatrixWSPeer{
 				reply: reply, seen: seen, priorIntent: priorIntent, dir: writerOpts.Dir,
-				truncated: row.scenario == "upstream closes mid-response",
+				truncated: row.scenario == "upstream closes mid-response", withheld: admissionDenied,
 			})
 		}
 
@@ -555,7 +569,13 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 		assertMCPCompletedExchange(t, actions)
 	} else if localReply {
 		assertLocalMCPErrors(t, client.output.String(), "1")
-		assertLocalMCPDeliveries(t, actions, wantSend, "1")
+		if admissionDenied && strings.TrimSpace(client.output.String()) != `{"jsonrpc":"2.0","id":1,"error":{"code":-32007,"message":"pipelock: receipt emission failed","data":{"block_reason":"receipt_emission_failed"}}}` {
+			t.Fatalf("admission denial = %q", client.output.String())
+		}
+		if !client.intent {
+			t.Fatal("no delivery intent before local reply")
+		}
+		assertLocalMCPDeliveries(t, actions, "1")
 	} else if client.output.Len() != 0 {
 		t.Fatalf("unexpected reply: %s", client.output.String())
 	}
@@ -597,7 +617,9 @@ func assertMCPMatrixTerminal(t *testing.T, scenario string, actions []v3.Action)
 	switch scenario {
 	case "ok", "upstream error", "media/redaction rewrite", "tool-scan warn":
 		expected = []string{"downstream_delivery/outcome/completed", "upstream_send/outcome/completed"}
-	case "intent write fail", "intent sync fail", "cancel after intent":
+	case "intent write fail", "intent sync fail":
+		expected = []string{"downstream_delivery/outcome/completed", "upstream_send/outcome/not_released"}
+	case "cancel after intent":
 		expected = []string{"upstream_send/outcome/not_released"}
 	case "client cancel before effect":
 	case "upstream closes mid-response":
@@ -627,7 +649,9 @@ func assertMCPMatrixTerminal(t *testing.T, scenario string, actions []v3.Action)
 				holdID = a.ActionID
 			}
 		case mcpUpstreamSendBoundary:
-			sendID = a.ActionID
+			if a.Phase == "intent" {
+				sendID = a.ActionID
+			}
 		}
 		qualifier := a.OutcomeClass
 		switch a.Phase {
@@ -742,12 +766,12 @@ func TestMCPV3DeferredIntentPrecedesStdioSendLock(t *testing.T) {
 	opts := MCPProxyOpts{Transport: transportMCPStdio}.WithV3ReceiptWriter(writer).withV3Session()
 	frame := ParseMCPFrame([]byte(heldNativeCall))
 	res := deferred.Resolution{FinalDecision: config.ActionAllow, ParentActionID: "fixture-request"}
-	effect, finish, reason := opts.claimV3DeferredSend(t.Context(), io.Discard, frame, res, &mu, 0)
+	effect, finish, reason, err := opts.claimV3DeferredSend(t.Context(), io.Discard, frame, res, &mu, 0)
 	if finish != nil {
 		finish()
 	}
 	opts.finishV3Send(t.Context(), io.Discard, effect, false)
-	if reason != "" || !checked {
+	if err != nil || reason != "" || !checked {
 		t.Fatalf("receipt sync ran under the send lock or did not run: %s", reason)
 	}
 }
@@ -811,6 +835,9 @@ func exerciseMCPV3GET(t *testing.T, row v3MCPMatrixRow) {
 			t.Fatalf("GET never reached upstream: %v", setupErr)
 		}
 	}
+	if (row.scenario == "intent write fail" || row.scenario == "intent sync fail") && !errors.Is(setupErr, v3.ErrEffectNotReleased) {
+		t.Fatalf("GET admission failure did not surface as a setup error: %v", setupErr)
+	}
 	if row.scenario == "ok" {
 		if scanErr != nil || setupErr != nil || !out.intent || strings.TrimSpace(out.output.String()) != notification {
 			t.Fatalf("GET reply %q, prior intent %t, errors %v / %v", out.output.String(), out.intent, scanErr, setupErr)
@@ -852,7 +879,7 @@ func exerciseMCPV3GET(t *testing.T, row v3MCPMatrixRow) {
 
 type mcpMatrixWSPeer struct {
 	reply, seen, priorIntent, dir string
-	truncated                     bool
+	truncated, withheld           bool
 }
 
 func runMCPMatrixWS(t *testing.T, ctx context.Context, in io.Reader, out io.Writer, opts MCPProxyOpts, peer mcpMatrixWSPeer) error {
@@ -900,7 +927,12 @@ func runMCPMatrixWS(t *testing.T, ctx context.Context, in io.Reader, out io.Writ
 	rd, wr := io.Pipe()
 	defer func() { _ = wr.Close() }()
 	defer func() { _ = rd.Close() }()
-	go func() { _, _ = io.Copy(wr, in) }()
+	go func() {
+		_, _ = io.Copy(wr, in)
+		if peer.withheld {
+			_ = wr.Close()
+		}
+	}()
 	return RunWSProxy(ctx, rd, out, io.Discard, wsURL(srv), opts)
 }
 

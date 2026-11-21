@@ -320,7 +320,7 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	go func() {
 		defer wgBlocked.Done()
 		for blocked := range blockedCh {
-			if wErr := deliverMCPInputResult(inputOpts, blocked, inputOpts.localV3ReplyWriter(safeClientOut, safeLogW, nil)); wErr != nil {
+			if wErr := deliverMCPInputResult(inputOpts, blocked, inputOpts.v3SendDenialWriter(safeClientOut, safeLogW, blocked)); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send block response: %v\n", wErr)
 			}
 		}

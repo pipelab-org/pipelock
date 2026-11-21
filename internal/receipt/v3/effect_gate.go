@@ -18,6 +18,7 @@ import (
 // A nil token with no error means release may proceed without a recorded intent.
 type EffectGate struct {
 	write               func(context.Context, Action, PolicySnapshot) error
+	writeOptionalDenial func(context.Context, Action, PolicySnapshot) error
 	writeBatch          func(context.Context, []Action, PolicySnapshot) error
 	required            bool
 	finalizationTimeout time.Duration
@@ -31,6 +32,9 @@ func NewEffectGate(writer *StreamWriter) EffectGate {
 	return EffectGate{
 		write: writer.WriteAction, writeBatch: writer.WriteAdmissionBatch,
 		required: writer.open.Coverage.ReceiptsRequired,
+		writeOptionalDenial: func(ctx context.Context, action Action, policy PolicySnapshot) error {
+			return writer.writeAction(ctx, action, policy, true)
+		},
 	}
 }
 
@@ -64,6 +68,20 @@ type EffectToken struct {
 // attempt fields. Each independently released effect needs its own action ID.
 func (g EffectGate) Admit(ctx context.Context, action Action, policy PolicySnapshot) (*EffectToken, error) {
 	return g.admit(ctx, []Action{action}, policy)
+}
+
+// AdmitDenialDelivery uses best-effort recording for optional local denials.
+func (g EffectGate) AdmitDenialDelivery(ctx context.Context, action Action, policy PolicySnapshot) (*EffectToken, error) {
+	if !g.required && g.writeOptionalDenial != nil {
+		writeTerminal := g.write
+		g.write = g.writeOptionalDenial
+		token, err := g.Admit(ctx, action, policy)
+		if token != nil {
+			token.gate.write = writeTerminal
+		}
+		return token, err
+	}
+	return g.Admit(ctx, action, policy)
 }
 
 // AdmitBatch admits all actions as one effect. All share one confirmation and

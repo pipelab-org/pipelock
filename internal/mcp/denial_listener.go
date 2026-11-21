@@ -72,6 +72,15 @@ func (w *mcpListenerDenialWriter) WriteHeader(status int) {
 	w.writeHeader(status, nil)
 }
 
+// WriteMessage delivers one local JSON-RPC reply with final HTTP framing.
+func (w *mcpListenerDenialWriter) WriteMessage(msg []byte) error {
+	w.Header().Set("Content-Type", "application/json")
+	if _, err := w.writeBuffered(msg); err != nil {
+		return err
+	}
+	return http.NewResponseController(w.ResponseWriter).Flush()
+}
+
 // writeBuffered fixes the response framing before flushing delivery evidence.
 func (w *mcpListenerDenialWriter) writeBuffered(body []byte) (int, error) {
 	if !w.wroteHeader {

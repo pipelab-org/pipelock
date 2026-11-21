@@ -574,9 +574,14 @@ func RunHTTPProxy(
 					var effect *mcpV3Exchange
 					if res.FinalDecision == config.ActionAllow && heldOpts.v3Session != nil {
 						var reason string
-						effect, finishDeniedRelease, reason = heldOpts.claimV3DeferredSend(heldOpts.warnContext(), safeLogW, deferredReq.authorityFrame, res, &upstreamMu, deferredGeneration)
+						var admitErr error
+						effect, finishDeniedRelease, reason, admitErr = heldOpts.claimV3DeferredSend(heldOpts.warnContext(), safeLogW, deferredReq.authorityFrame, res, &upstreamMu, deferredGeneration)
 						if reason != "" {
 							res = refuse(reason)
+						}
+						if admitErr != nil {
+							denialOpts.writeV3SendDenial(safeLogW, wireClientOut, deferredReq.authorityFrame, effect)
+							return
 						}
 					}
 					attempted := false
@@ -852,6 +857,7 @@ func RunHTTPProxy(
 		effect, admitErr := fwdOpts.startV3Send(ctx, frame, decision.Outcome.Receipt.ActionID)
 		if admitErr != nil {
 			logMCPV3Error(safeLogW, admitErr)
+			fwdOpts.writeV3SendDenial(safeLogW, wireClientOut, frame, effect)
 			continue
 		}
 		unlockInventory := func() {}

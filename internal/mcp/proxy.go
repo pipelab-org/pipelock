@@ -2306,7 +2306,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: blocked notification (no response sent): %s\n", blocked.LogMessage)
 				continue
 			}
-			writer := inputOpts.localV3ReplyWriter(safeClientOut, safeLogW, nil)
+			writer := inputOpts.v3SendDenialWriter(safeClientOut, safeLogW, blocked)
 			if wErr := deliverMCPInputResult(opts, blocked, writer); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send block response: %v\n", wErr)
 			}

@@ -1029,6 +1029,15 @@ func RunHTTPListenerProxy(
 			clearReplySession()
 			http.Error(w, "pipelock: receipt admission failed", http.StatusServiceUnavailable)
 		}
+		refuseSend := func(frame MCPFrame, err error) {
+			logMCPV3Error(safeLogW, err)
+			clearReplySession()
+			effect.opts.WarnContext = effect.ctx
+			effect.opts.writeV3SendDenial(safeLogW, w, frame, effect.refusedSend)
+			if frame.Method != "" && isRPCNotification(frame.ID) {
+				w.WriteHeader(http.StatusAccepted)
+			}
+		}
 		admitReply := func() bool {
 			if err := effect.admitReply(); err != nil {
 				refuseReceipt(err)
@@ -1748,7 +1757,11 @@ func RunHTTPListenerProxy(
 			effect.ctx = r.Context()
 			admissionErr, lockErr := effect.admitList(frame, &clientState.contractMu)
 			if admissionErr != nil {
-				refuseReceipt(admissionErr)
+				if effect.send == nil {
+					refuseSend(frame, admissionErr)
+				} else {
+					refuseReceipt(admissionErr)
+				}
 				return
 			}
 			if lockErr != nil {
@@ -2211,7 +2224,7 @@ func RunHTTPListenerProxy(
 		if effect.send == nil {
 			effect.opts = scanOpts
 			if err := effect.admit(frame, decision.Outcome.Receipt.ActionID); err != nil {
-				refuseReceipt(err)
+				refuseSend(frame, err)
 				return
 			}
 		}

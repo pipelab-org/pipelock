@@ -73,7 +73,41 @@ func TestMCPV3LocalHTTPBlock(t *testing.T) {
 			if !client.intent {
 				t.Fatal("no delivery intent before client write")
 			}
-			assertLocalMCPDeliveries(t, actions, false, "1")
+			assertLocalMCPDeliveries(t, actions, "1")
+		})
+	}
+}
+
+func TestMCPV3LocalSendDenialDeliveryFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		required bool
+	}{
+		{"required", true}, {"optional", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := v3MCPMatrixRow{required: tc.required, scenario: "send and local denial intent write fail"}
+			opts, writer, client := localMCPReceiptFixture(t, row, "mcp_http_upstream")
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				t.Error("request reached upstream")
+				w.WriteHeader(http.StatusBadRequest)
+			}))
+			defer upstream.Close()
+			if err := RunHTTPProxy(t.Context(), strings.NewReader(jsonToolsCallEcho+"\n"), client, io.Discard, upstream.URL, nil, opts); err != nil {
+				t.Fatal(err)
+			}
+			if tc.required {
+				if client.output.Len() != 0 {
+					t.Fatalf("unrecorded denial reached client: %q", client.output.String())
+				}
+			} else {
+				assertLocalMCPErrors(t, client.output.String(), "1")
+			}
+			for _, action := range localMCPReceiptActions(t, writer, client.dir) {
+				if action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.OutcomeClass == "completed" {
+					t.Fatalf("unrecorded denial has a completed outcome: %+v", action)
+				}
+			}
 		})
 	}
 }
@@ -136,7 +170,7 @@ func TestMCPV3LocalTimeoutReplies(t *testing.T) {
 				if !client.intent {
 					t.Fatal("no delivery intent before client write")
 				}
-				assertLocalMCPDeliveries(t, localMCPReceiptActions(t, writer, client.dir), true, "1", "2")
+				assertLocalMCPDeliveries(t, localMCPReceiptActions(t, writer, client.dir), "1", "2")
 			})
 		}
 	}
@@ -206,17 +240,20 @@ func assertLocalMCPErrors(t *testing.T, output string, ids ...string) {
 	}
 }
 
-func assertLocalMCPDeliveries(t *testing.T, actions []v3.Action, parented bool, ids ...string) {
+func assertLocalMCPDeliveries(t *testing.T, actions []v3.Action, ids ...string) {
 	t.Helper()
 	sends := map[string]string{}
 	intents := map[string]v3.Action{}
 	outcomes := map[string]int{}
 	for _, a := range actions {
-		switch {
-		case a.EffectBoundary == mcpUpstreamSendBoundary && a.Phase == "intent":
+		if a.EffectBoundary == mcpUpstreamSendBoundary && a.Phase == "intent" {
 			sends[a.RequestID] = a.ActionID
+		}
+	}
+	for _, a := range actions {
+		switch {
 		case a.EffectBoundary == mcpDownstreamDeliveryBoundary && a.Phase == "intent":
-			if _, exists := intents[a.RequestID]; exists || a.ParentActionID != sends[a.RequestID] || (a.ParentActionID != "") != parented {
+			if _, exists := intents[a.RequestID]; exists || a.ParentActionID != sends[a.RequestID] {
 				t.Fatalf("duplicate or incorrectly linked intent: %+v", a)
 			}
 			intents[a.RequestID] = a

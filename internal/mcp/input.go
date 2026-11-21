@@ -211,6 +211,8 @@ func (v InputVerdict) IsEntropyOnly() bool {
 // generating an error response (used for redirect success results).
 type BlockedRequest struct {
 	v3RefusalSigned   bool
+	v3ReplyParent     *mcpV3Exchange
+	v3SendDenied      bool
 	terminal          *mcpTerminalDecision
 	ID                json.RawMessage
 	IsNotification    bool // Notifications have no ID - don't send error response.
@@ -850,6 +852,7 @@ func ForwardScannedInput(
 			effect, admitErr := opts.startV3Send(ctx, frame, actionID)
 			if admitErr != nil {
 				logMCPV3Error(logW, admitErr)
+				sendMCPDenial(opts, mcpReceiptMcpInputDenialAudit(), mcpV3SendDenial(frame, effect), blockedCh)
 				return false, nil
 			}
 			attempted := false
@@ -1734,9 +1737,14 @@ func ForwardScannedInput(
 					var effect *mcpV3Exchange
 					if res.FinalDecision == config.ActionAllow && heldOpts.v3Session != nil {
 						var reason string
-						effect, finishDeniedRelease, reason = heldOpts.claimV3DeferredSend(heldOpts.warnContext(), logW, heldAuthorityFrame, res, &forwardMu, deferredGeneration)
+						var admitErr error
+						effect, finishDeniedRelease, reason, admitErr = heldOpts.claimV3DeferredSend(heldOpts.warnContext(), logW, heldAuthorityFrame, res, &forwardMu, deferredGeneration)
 						if reason != "" {
 							res = refuse(reason)
+						}
+						if admitErr != nil {
+							sendMCPDenial(denialOpts, mcpReceiptMcpInputDenialAudit(), mcpV3SendDenial(heldAuthorityFrame, effect), blockedCh)
+							return
 						}
 					}
 					attempted := false
