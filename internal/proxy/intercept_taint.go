@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
@@ -29,9 +30,10 @@ func initInterceptTaint(ic *InterceptContext, r *http.Request) {
 		// request-scoped: load its live policy without replacing the recorder
 		// or forgetting exposure acquired before a reload.
 		if live := ic.Proxy.CurrentConfig(); live != nil && live != ic.Config {
-			cfg := ic.Config.Clone()
-			cfg.Taint = live.Taint
-			ic.taintConfig = cfg
+			if ic.taintConfigCache == nil {
+				ic.taintConfigCache = &interceptTaintConfigCache{}
+			}
+			ic.taintConfig = ic.taintConfigCache.get(ic.Config, live)
 		}
 	}
 	if ic.ActorAuth == envelope.ActorAuthBound && (ic.Proxy == nil || ic.Proxy.taintRecorder == nil) {
@@ -57,11 +59,23 @@ func withInterceptTaint(ic *InterceptContext, opts receipt.EmitOpts) receipt.Emi
 	return opts
 }
 
-func interceptReceiptConfig(ic *InterceptContext) *config.Config {
-	if ic.taintConfig != nil {
-		return ic.taintConfig
+// interceptTaintConfigCache retains only the latest immutable admission/live pair
+// for this tunnel. The hybrid is for taint evaluation and observation only;
+// receipts and envelopes continue to identify the admission snapshot.
+type interceptTaintConfigCache struct {
+	mu                         sync.Mutex
+	admission, live, effective *config.Config
+}
+
+func (c *interceptTaintConfigCache) get(admission, live *config.Config) *config.Config {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.admission != admission || c.live != live {
+		c.effective = admission.Clone()
+		c.effective.Taint = live.Taint
+		c.admission, c.live = admission, live
 	}
-	return ic.Config
+	return c.effective
 }
 
 type interceptTaintAdmissionOptions struct {

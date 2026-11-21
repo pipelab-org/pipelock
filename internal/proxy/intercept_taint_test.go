@@ -193,12 +193,13 @@ func TestInterceptTaintGETThenPublish(t *testing.T) {
 }
 
 func TestInterceptTaintReloadPreservesExposure(t *testing.T) {
-	p, handler, rec, target, _ := newTaintInterceptFixture(t, nil)
+	p, handler, rec, target, ic := newTaintInterceptFixture(t, nil)
 	observeHTTPResponseFindings(rec, p.CurrentConfig(), target, "text/plain", "forward_response", []session.HostileFindingKind{session.FindingDLP})
 	for _, policy := range []string{config.ModePermissive, config.ModeBalanced} {
 		t.Run(policy, func(t *testing.T) {
 			cfg := p.CurrentConfig().Clone()
 			cfg.Taint.Policy = policy
+			cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{Name: "Reload Probe", Regex: `reloadprobe-[0-9]{8}`, Severity: config.SeverityHigh})
 			cfg.Taint.AllowlistedDomains = []string{interceptTaintHost}
 			if !p.Reload(cfg, scanner.MustNew(cfg)) {
 				t.Fatal("reload rejected")
@@ -215,9 +216,13 @@ func TestInterceptTaintReloadPreservesExposure(t *testing.T) {
 			if got := rec.RiskSnapshot().Level; got != session.TaintExternalHostile {
 				t.Fatalf("reload cleared hostile exposure: %s", got)
 			}
-			for _, emitted := range receipts.findReceipts(t) {
-				if got := emitted.ActionRecord.PolicyHash; got != cfg.CanonicalPolicyHash() {
-					t.Fatalf("reload receipt policy hash=%s want current=%s", got, cfg.CanonicalPolicyHash())
+			emittedReceipts := receipts.findReceipts(t)
+			if len(emittedReceipts) == 0 {
+				t.Fatal("missing reload receipts")
+			}
+			for _, emitted := range emittedReceipts {
+				if got := emitted.ActionRecord.PolicyHash; got != ic.Config.CanonicalPolicyHash() {
+					t.Fatalf("reload receipt policy hash=%s want admission=%s", got, ic.Config.CanonicalPolicyHash())
 				}
 			}
 		})
@@ -567,5 +572,25 @@ func TestInterceptTaintTaskBodyReadError(t *testing.T) {
 				t.Fatalf("incomplete action reached upstream=%d prompted=%t", upstreamCalls, prompted)
 			}
 		})
+	}
+}
+
+func TestInterceptTaintConfigCache(t *testing.T) {
+	admission := config.Defaults()
+	live := admission.Clone()
+	live.Taint.Policy = config.ModePermissive
+	cache := &interceptTaintConfigCache{}
+	first := cache.get(admission, live)
+	if got := cache.get(admission, live); got != first {
+		t.Fatal("unchanged config pair cloned again")
+	}
+	next := live.Clone()
+	next.Taint.Policy = config.ModeBalanced
+	if got := cache.get(admission, next); got == first || got.Taint.Policy != next.Taint.Policy {
+		t.Fatal("live taint refresh not applied")
+	}
+	nextAdmission := admission.Clone()
+	if got := cache.get(nextAdmission, next); got == cache.get(admission, next) {
+		t.Fatal("admission config pair not refreshed")
 	}
 }

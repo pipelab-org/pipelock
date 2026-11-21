@@ -128,6 +128,7 @@ type InterceptContext struct {
 	Recorder             session.Recorder
 	taintRecorder        session.Recorder
 	taintConfig          *config.Config
+	taintConfigCache     *interceptTaintConfigCache
 	taint                taintDecision
 	taintTask            forwardTaskAction
 	taintRequiresReauth  bool
@@ -221,7 +222,7 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
 		return nil
 	}
 	if ic.Config != nil {
-		opts = withReceiptConfig(opts, interceptReceiptConfig(ic))
+		opts = withReceiptConfig(opts, ic.Config)
 	}
 	opts = withReceiptShard(opts, ic.receiptShard)
 	if opts.Layer == nativeStreamCloseLayer {
@@ -261,7 +262,7 @@ func interceptConfirmResponseOrBlock(ic *InterceptContext, w http.ResponseWriter
 	if ic.Config == nil || !ic.Config.FlightRecorder.RequireReceipts {
 		return false
 	}
-	err := ic.Proxy.confirmResponseDecision(interceptReceiptConfig(ic), withReceiptShard(opts, ic.receiptShard))
+	err := ic.Proxy.confirmResponseDecision(ic.Config, withReceiptShard(opts, ic.receiptShard))
 	if err == nil {
 		return false
 	}
@@ -305,7 +306,7 @@ func interceptEmitRequiredReceipt(ic *InterceptContext, opts receipt.EmitOpts) e
 		return errReceiptEmitterUnavailable
 	}
 	if ic.Config != nil {
-		opts = withReceiptConfig(opts, interceptReceiptConfig(ic))
+		opts = withReceiptConfig(opts, ic.Config)
 	}
 	opts = withReceiptShard(opts, ic.receiptShard)
 	if ic.Proxy.receiptGroupPtr.Load() != nil {
@@ -352,7 +353,7 @@ func interceptEmitOutcomeReceipt(ic *InterceptContext, opts receipt.EmitOpts, ve
 		return
 	}
 	if ic.Config != nil {
-		opts = withReceiptConfig(opts, interceptReceiptConfig(ic))
+		opts = withReceiptConfig(opts, ic.Config)
 	}
 	opts = withReceiptShard(opts, ic.receiptShard).NativeTerminal()
 	if group := ic.Proxy.receiptGroupPtr.Load(); group != nil {
@@ -671,9 +672,11 @@ func newInterceptHandler(
 	target := net.JoinHostPort(ic.TargetHost, ic.TargetPort)
 	// Initialize the shared budget before taking request-local context copies.
 	_ = interceptSizeExemptScanBudget(ic)
+	taintCache := &interceptTaintConfigCache{}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestContext := *ic
 		ic := &requestContext
+		ic.taintConfigCache = taintCache
 		w = ic.Proxy.withAdaptiveRefusal(w, adaptiveRefusalOptions{config: ic.Config, agent: ic.Agent, clientIP: ic.ClientIP, auth: ic.ActorAuth, host: func() string { return ic.TargetHost }, transport: "intercept", level: func() int { return interceptEscalationLevel(ic) }})
 		if ic.Proxy != nil {
 			var admissionErr error
@@ -1388,7 +1391,7 @@ func newInterceptHandler(
 					"blocked: "+reason, http.StatusForbidden)
 				return
 			}
-			if observation := decide.ObserveCrossAgentContamination(ic.taintRecorder, &interceptReceiptConfig(ic).Taint, session.CrossAgentBoundaryA2ARequest); observation.ShouldEscalate {
+			if observation := decide.ObserveCrossAgentContamination(ic.taintRecorder, &ic.taintConfig.Taint, session.CrossAgentBoundaryA2ARequest); observation.ShouldEscalate {
 				interceptRecordSignal(ic, observation.AdaptiveSignal(false))
 			}
 			a2aBodyResult := mcp.ScanA2ARequestBody(r.Context(), inspected, ic.Scanner, &ic.Config.A2AScanning, a2aContentEntropyOptions(r.URL.Hostname(), ic.Config))
@@ -1525,7 +1528,7 @@ func newInterceptHandler(
 			// source (evidence) and hostile escalation are captured even when the
 			// request is blocked for another reason (e.g. a secret in the body).
 			if isA2A && bodyBytes != nil {
-				if observation := decide.ObserveCrossAgentContamination(ic.taintRecorder, &interceptReceiptConfig(ic).Taint, session.CrossAgentBoundaryA2ARequest); observation.ShouldEscalate {
+				if observation := decide.ObserveCrossAgentContamination(ic.taintRecorder, &ic.taintConfig.Taint, session.CrossAgentBoundaryA2ARequest); observation.ShouldEscalate {
 					interceptRecordSignal(ic, observation.AdaptiveSignal(false))
 				}
 			}
@@ -2267,7 +2270,7 @@ func newInterceptHandler(
 			envEmitter = ic.Proxy.currentEnvelopeEmitter()
 		}
 		if envEmitter != nil {
-			policyHash := envelope.PolicyHashFromHex(interceptReceiptConfig(ic).CanonicalPolicyHash())
+			policyHash := envelope.PolicyHashFromHex(ic.Config.CanonicalPolicyHash())
 			if envErr := envEmitter.InjectAndSign(r, interceptBodyBytes, envelope.BuildOpts{
 				ActionID:       actionID,
 				Action:         string(receipt.ClassifyHTTP(r.Method)),
@@ -2560,11 +2563,11 @@ func newInterceptHandler(
 					Target:             targetURL,
 					Suppress:           ic.Config.Suppress,
 					ResponseScanExempt: interceptRespExempt,
-					ConfirmFinding: sseFindingReceiptConfirmer(interceptReceiptConfig(ic), withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}, ic.receiptShard), func(_ *config.Config, opts receipt.EmitOpts) error {
+					ConfirmFinding: sseFindingReceiptConfirmer(ic.Config, withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}, ic.receiptShard), func(_ *config.Config, opts receipt.EmitOpts) error {
 						if ic.Proxy == nil {
 							return errReceiptEmitterUnavailable
 						}
-						return ic.Proxy.emitAllowPathReceipt(interceptReceiptConfig(ic), withInterceptTaint(ic, opts))
+						return ic.Proxy.emitAllowPathReceipt(ic.Config, withInterceptTaint(ic, opts))
 					}),
 					OnObservedCoreResponse: func(observed scanner.ObservedCoreMatch) {
 						recordObservedCoreResponseMatches(ic.Metrics, ic.Logger, actx, []scanner.ObservedCoreMatch{observed}, TransportConnect)
@@ -3406,7 +3409,7 @@ func newInterceptHandler(
 					if ic.Proxy == nil {
 						receiptErr = errReceiptEmitterUnavailable
 					} else {
-						receiptErr = ic.Proxy.emitAllowPathReceipt(interceptReceiptConfig(ic), withInterceptTaint(ic, withReceiptShard(receipt.EmitOpts{
+						receiptErr = ic.Proxy.emitAllowPathReceipt(ic.Config, withInterceptTaint(ic, withReceiptShard(receipt.EmitOpts{
 							ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: action,
 							Layer: responseScanLayer, Pattern: reason, Transport: "intercept",
 							Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent,
