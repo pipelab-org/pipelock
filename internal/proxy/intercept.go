@@ -1089,36 +1089,39 @@ func newInterceptHandler(
 					return true
 				})
 				joinedUsed := false
-				allowCtx = scanner.WithIssuerJoinedViewAllowance(allowCtx, func(escapedPath string, _ url.Values) (bool, bool) {
-					// Only the exact URL this origin served to this session:
-					// scheme, host, port, path and raw query byte for byte.
-					// Values it served in separate links cannot be recombined,
-					// reordered, duplicated or extended into a new query.
-					if store == nil || escapedPath != r.URL.EscapedPath() || !store.urlIssued(session, r.URL) {
-						return false, false
-					}
-					joinedUsed = true
-					allowed = true
-					return true, true
-				})
-				rescanned := ic.Scanner.ScanWithReservation(allowCtx, targetURL, ic.RateReservation)
-				// The joined-view kind names the decision only when that relief
-				// turned this request's DLP block into an allow.
-				if joinedUsed && joinedDLPFinding && rescanned.Allowed && allowKind == issuerQueryObserved {
-					allowKind = issuerQueryJoinedView
+				if joinedDLPFinding {
+					allowCtx = scanner.WithIssuerJoinedViewAllowance(allowCtx, func(escapedPath string, _ url.Values) (bool, bool) {
+						// The current generation must still vouch for the exact URL.
+						// The delegated redirect check above can wait for delivery
+						// while identity policy changes or the store is replaced.
+						if escapedPath != r.URL.EscapedPath() || !ic.issuerQueryStore().urlIssued(session, r.URL) {
+							return false, false
+						}
+						joinedUsed = true
+						return true, true
+					})
 				}
+				rescanned := ic.Scanner.ScanWithReservation(allowCtx, targetURL, ic.RateReservation)
 				if resourceUsed && allowKind == issuerQueryObserved {
 					allowKind = issuerQueryResourcePath
 				}
 				if issuedUsed {
 					allowKind = issuerQueryIssuedRedirect
 				}
-				if allowed {
+				if allowed || joinedUsed {
 					urlResult = rescanned
 					if rescanned.Allowed {
-						// Under require_receipts the allow must be durably recorded
-						// before forwarding; nothing has been written to w yet.
-						if err := ic.Proxy.recordIssuerQueryAllow(ic.Config, actx, targetURL, ic.RequestID, ic.Agent, r.Method, allowKind, ic.receiptShard); err != nil {
+						var kinds []issuerQueryKind
+						if joinedUsed {
+							kinds = append(kinds, issuerQueryJoinedView)
+						}
+						if allowed {
+							kinds = append(kinds, allowKind)
+						}
+						if err := ic.recordIssuerQueryAllows(actx, r, targetURL, kinds); err != nil {
+							if refuseReceiptCapacity(w, err) {
+								return
+							}
 							blockedErr := newIssuerAllowReceiptBlockedRequest(err)
 							ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 							writeBlockedError(w,

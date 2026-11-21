@@ -327,7 +327,7 @@ func (s *issuerQueryStore) match(session string, target *url.URL, name, value st
 // canonical host, effective port, escaped path and the raw query exactly as
 // written. Reordering, re-encoding, adding or duplicating a pair changes it.
 func (s *issuerQueryStore) urlDigest(target *url.URL) ([32]byte, bool) {
-	host, port, ok := issuerCookieOrigin(target)
+	_, port, ok := issuerCookieOrigin(target)
 	if !ok || target.RawQuery == "" {
 		return [32]byte{}, false
 	}
@@ -335,7 +335,10 @@ func (s *issuerQueryStore) urlDigest(target *url.URL) ([32]byte, bool) {
 	if len(path)+len(target.RawQuery) > issuerCookieMaxPairBytes {
 		return [32]byte{}, false
 	}
-	return s.digestFields("issued_url", strings.ToLower(target.Scheme), host, port, path, target.RawQuery), true
+	// A trailing dot can name the same DNS destination, but is significant
+	// to the URL origin and to the intercepted HTTP authority.
+	host := strings.ToLower(target.Hostname())
+	return s.digestFields("issued_url", target.Scheme, host, port, path, target.RawQuery), true
 }
 
 // rememberURL records that target's origin served exactly target.
@@ -784,7 +787,8 @@ func recordDeliveredIssuerQueryProof(ic *InterceptContext, response *http.Respon
 		}
 		// The whole served URL, for the joined DLP views. Only a same-origin
 		// link qualifies: a cross-host OAuth hop issues named values, not a URL.
-		if allowed == nil && candidate.RawQuery != "" && urlRemaining > 0 {
+		if allowed == nil && candidate.RawQuery != "" && urlRemaining > 0 &&
+			strings.EqualFold(candidate.Hostname(), response.Request.URL.Hostname()) {
 			store.rememberURL(session, candidate, time.Now())
 			urlRemaining--
 		}
@@ -1054,6 +1058,26 @@ func sameOriginBase(responseURL *url.URL, href string) (*url.URL, bool) {
 // config snapshot; under require_receipts every path that cannot durably
 // record the allow returns an error the caller must treat as fail-closed.
 // With require_receipts off it always returns nil (best-effort).
+// A combined DLP and entropy decision needs capacity for both allowances
+// before recording either. A single allowance fits the request reservation.
+func (ic *InterceptContext) recordIssuerQueryAllows(ctx audit.LogContext, r *http.Request, target string, kinds []issuerQueryKind) error {
+	selected := ic.receiptShard
+	if len(kinds) > 1 {
+		var err error
+		selected, err = selected.ReserveNativeChild(len(kinds))
+		if err != nil {
+			return err
+		}
+		defer selected.ReleaseNativeAdmission()
+	}
+	for _, kind := range kinds {
+		if err := ic.Proxy.recordIssuerQueryAllow(ic.Config, ctx, target, ic.RequestID, ic.Agent, r.Method, kind, selected); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (p *Proxy) recordIssuerQueryAllow(cfg *config.Config, ctx audit.LogContext, target, requestID, agent, method string, kind issuerQueryKind, selected ...receipt.EmitOpts) error {
 	requireReceipts := cfg != nil && cfg.FlightRecorder.RequireReceipts
 	fail := func(err error) error {

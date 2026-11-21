@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -35,6 +36,31 @@ func TestIssuerIDHistorySurvivesQueryEviction(t *testing.T) {
 	s.mintServerID("owner", origin, agentBlob, now)
 	if s.serverIDIssued("owner", origin, agentBlob) {
 		t.Fatal("query eviction forgot sent history")
+	}
+}
+
+func TestIssuerEvidenceBindingReload(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	p, cfg := newSentIssuerProxy(t)
+	bound := cfg.Clone()
+	bound.Agents = map[string]config.AgentProfile{"browser": {SourceCIDRs: []string{"192.0.2.0/24"}}}
+	if !p.Reload(bound, scanner.MustNew(bound)) {
+		t.Fatal("reload with a CIDR binding failed")
+	}
+	ic := &InterceptContext{
+		Proxy: p, Config: bound, Agent: "browser", ClientIP: "192.0.2.1",
+		ActorAuth: envelope.ActorAuthBound, IssuerRuntime: p.issuerCookieRuntime.Load(),
+	}
+	if ic.issuerQueryStore() == nil {
+		t.Fatal("bound context could not access the live issuer store")
+	}
+	for _, next := range []*config.Config{cfg.Clone(), bound.Clone()} {
+		if !p.Reload(next, scanner.MustNew(next)) {
+			t.Fatal("binding reload failed")
+		}
+		if ic.issuerQueryStore() != nil {
+			t.Fatal("old context retained issuer authority across a binding change")
+		}
 	}
 }
 

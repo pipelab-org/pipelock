@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -181,9 +182,9 @@ type issuerCookieRuntime struct {
 
 // sameEvidenceGeneration reports whether two runtimes hold one evidence
 // window: the same cookie store and the same query store, with issuer
-// evidence enabled under both policies and no intervening change to default
-// identity settings, since those decide which session an unbound caller's
-// evidence is keyed to. A reload that leaves the
+// evidence enabled under both policies and no intervening change to
+// identity settings, which decide who can use each session's evidence.
+// A reload that leaves the
 // prerequisites on carries both stores forward, so a tunnel opened before it
 // keeps its relief. A reload that disables a prerequisite installs a fresh
 // cookie store and a next-generation query store, so every older snapshot,
@@ -198,6 +199,27 @@ func (r *issuerCookieRuntime) sameEvidenceGeneration(other *issuerCookieRuntime)
 	return r.store != nil && r.store == other.store && r.query != nil && r.query == other.query &&
 		issuerCookieEnabled(r.cfg) && issuerCookieEnabled(other.cfg) &&
 		r.identityGeneration == other.identityGeneration
+}
+
+// issuerIdentitySettingsChanged covers the configured sources of trusted
+// identity that a CONNECT session snapshots. Profile policy changes leave
+// its binding in place.
+func issuerIdentitySettingsChanged(before, after *config.Config) bool {
+	if before.DefaultAgentIdentity != after.DefaultAgentIdentity || before.BindDefaultAgentIdentity != after.BindDefaultAgentIdentity {
+		return true
+	}
+	for name, previous := range before.Agents {
+		next := after.Agents[name]
+		if !slices.Equal(previous.SourceCIDRs, next.SourceCIDRs) || !slices.Equal(previous.Listeners, next.Listeners) {
+			return true
+		}
+	}
+	for name, next := range after.Agents {
+		if _, exists := before.Agents[name]; !exists && (len(next.SourceCIDRs) > 0 || len(next.Listeners) > 0) {
+			return true
+		}
+	}
+	return false
 }
 
 // currentIssuerRuntime returns the live issuer runtime when this request's

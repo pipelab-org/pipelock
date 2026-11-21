@@ -2889,8 +2889,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	var identityGeneration uint64
 	if oldIssuer != nil {
 		identityGeneration = oldIssuer.identityGeneration
-		if cfg.DefaultAgentIdentity != oldIssuer.cfg.DefaultAgentIdentity ||
-			cfg.BindDefaultAgentIdentity != oldIssuer.cfg.BindDefaultAgentIdentity {
+		if issuerIdentitySettingsChanged(oldIssuer.cfg, cfg) {
 			identityGeneration++
 		}
 	}
