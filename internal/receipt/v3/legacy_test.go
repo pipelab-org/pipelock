@@ -255,6 +255,36 @@ func TestLegacyEndpointSelection(t *testing.T) {
 	}
 }
 
+func TestLegacyEndpointPinsEvidenceChainOfSelectedSession(t *testing.T) {
+	const session = "selected-session"
+	chains := map[legacyIdentity]legacyPresentation{
+		{legacyAction, "action"}:     {session: session, InventoryChain: InventoryChain{Format: legacyAction}, cliHead: "action-root", cliSeq: 7, verdict: prefixVerdict},
+		{legacyEvidence, "evidence"}: {session: session, InventoryChain: InventoryChain{Format: legacyEvidence}, cliHead: "evidence-root", cliSeq: 2, verdict: prefixVerdict},
+	}
+	for _, tc := range []struct {
+		name, head string
+		seq        uint64
+		met        bool
+	}{
+		{"evidence endpoint", "evidence-root", 2, true},
+		{"action endpoint is not the pinned chain", "action-root", 7, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seq := tc.seq
+			v := verification{opts: Options{
+				LegacySelection: LegacySelection{Session: session},
+				LegacyEnd:       &LegacyEnd{Head: tc.head, Sequence: &seq},
+			}}
+			if err := v.verifyLegacyEndpoint(chains); err != nil {
+				t.Fatalf("selected session with both chains: %v", err)
+			}
+			if met := !hasFinding(v.result, codeExpectationNotMet); met != tc.met {
+				t.Fatalf("endpoint met = %v, want %v: %+v", met, tc.met, v.result)
+			}
+		})
+	}
+}
+
 func TestLegacyContinuityReadFailure(t *testing.T) {
 	v := verification{}
 	v.verifyLegacyContinuity(filepath.Join(t.TempDir(), "missing"), "example", nil, false)

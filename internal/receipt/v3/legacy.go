@@ -254,11 +254,20 @@ func (v *verification) verifyLegacyEndpoint(presented map[legacyIdentity]legacyP
 	if end == nil {
 		return nil
 	}
+	selection := v.opts.LegacySelection
+	// A selected session can hold an action chain and an evidence chain written
+	// side by side. As for a legacy directory, the endpoint pins the evidence
+	// chain; the action chain is still verified, without an endpoint.
+	evidenceOnly := selection.Bindings != nil
+	if selection.Session != "" {
+		for key, item := range presented {
+			evidenceOnly = evidenceOnly || key.format == legacyEvidence && item.session == selection.Session
+		}
+	}
 	var target legacyIdentity
 	for key, item := range presented {
-		selection := v.opts.LegacySelection
 		if key.format == legacyGroup || selection.Session != "" && item.session != selection.Session ||
-			selection.Bindings != nil && key.format != legacyEvidence {
+			evidenceOnly && key.format != legacyEvidence {
 			continue
 		}
 		if target.format != "" {
