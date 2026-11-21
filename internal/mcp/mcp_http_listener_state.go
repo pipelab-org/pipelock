@@ -205,13 +205,18 @@ func (s *mcpListenerClientStates) bindRecorderLocked(state *mcpListenerClientSta
 // recorderForRequest pins a recorder for this request. An in-flight request
 // keeps the recorder it was admitted with even if a reload replaces the store.
 func (s *mcpListenerClientStates) recorderForRequest(state *mcpListenerClientState) (session.Recorder, error) {
-	if state.transient {
-		// The registry handed out an unregistered fallback because it was
-		// full with no session store active; it carries no recorder.
-		return nil, nil
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if state.transient {
+		// The registry handed out an unregistered fallback because it was
+		// full with no session store active; it carries no recorder. If a
+		// reload has since activated a store (taint or profiling on), refuse
+		// rather than run a taint-capable request with nowhere to record.
+		if s.currentStoreLocked() != nil {
+			return nil, session.ErrCapacity
+		}
+		return nil, nil
+	}
 	if s.clients[state.key] != state || state.revoked.Load() || !s.bindRecorderLocked(state) {
 		return nil, session.ErrCapacity
 	}

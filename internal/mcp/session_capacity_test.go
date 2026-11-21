@@ -338,4 +338,10 @@ func TestListenerTransientFallbackBindsWithoutStore(t *testing.T) {
 	if rec, err := states.recorderForRequest(state); err != nil || rec != nil {
 		t.Fatalf("transient recorder = (%T, %v), want (nil, nil)", rec, err)
 	}
+	// A reload that activates a store after the fallback was handed out must
+	// not let the request run with taint possible and no recorder.
+	states.store = &capacityTestStore{rec: &mockRecorder{}}
+	if rec, err := states.recorderForRequest(state); !errors.Is(err, session.ErrCapacity) || rec != nil {
+		t.Fatalf("transient after store activation = (%T, %v), want (nil, ErrCapacity)", rec, err)
+	}
 }
