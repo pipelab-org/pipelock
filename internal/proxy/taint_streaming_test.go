@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -311,5 +312,53 @@ func TestHTTPResponseTaintBeforeDelivery(t *testing.T) {
 				t.Fatalf("GET status=%d body=%s", w.Code, w.Body)
 			}
 		})
+	}
+}
+
+// exposingBody marks the shared recorder as exposed while the forward proxy
+// buffers the request body, i.e. after the first taint check and before send.
+type exposingBody struct {
+	r      io.Reader
+	expose func()
+	once   sync.Once
+}
+
+func (b *exposingBody) Read(p []byte) (int, error) {
+	b.once.Do(b.expose)
+	return b.r.Read(p)
+}
+
+func (b *exposingBody) Close() error { return nil }
+
+func TestForwardTaintPreSendEnforcesNewExposure(t *testing.T) {
+	p, _, _, target, _ := newTaintInterceptFixture(t, func(cfg *config.Config) {
+		cfg.Taint.Enabled = true
+		cfg.ForwardProxy.Enabled = true
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.DNS.HostOverrides = map[string][]string{interceptTaintHost: {"93.184.216.34"}}
+	})
+	rec := &SessionState{}
+	WithTaintRecorder(rec)(p)
+	var postCalls atomic.Int32
+	p.client = &http.Client{Transport: forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
+		postCalls.Add(1)
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("published")), Request: r}, nil
+	})}
+	target = strings.Replace(target, "https://", "http://", 1)
+	body := &exposingBody{r: strings.NewReader("payload=1"), expose: func() {
+		observeHTTPResponseFindings(rec, p.CurrentConfig(), "http://untrusted.example/page", "text/html", "forward_response", nil)
+	}}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp := httptest.NewRecorder()
+	p.handleForwardHTTP(resp, req)
+	if rec.RiskSnapshot().Level == session.TaintTrusted {
+		t.Fatal("test body did not expose the session before send")
+	}
+	if resp.Code != http.StatusForbidden {
+		t.Errorf("POST after mid-request exposure status=%d body=%s, want forbidden", resp.Code, resp.Body.String())
+	}
+	if got := postCalls.Load(); got != 0 {
+		t.Errorf("upstream POST calls=%d, want zero", got)
 	}
 }

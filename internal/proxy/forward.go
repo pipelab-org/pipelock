@@ -2450,6 +2450,25 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			writeTaskDenial(reason, detail)
 			return
 		}
+	default:
+		// The session can become more exposed while this request is being
+		// scanned (a concurrent response or shared MCP recorder). Enforce a
+		// stricter pre-send result instead of keeping the earlier decision.
+		switch taskTaint.Result.Decision {
+		case session.PolicyBlock:
+			forwardTaint = taskTaint
+			writeTaskDenial(taskTaint.Result.Reason, "session exposure changed before this request was sent")
+			return
+		case session.PolicyAsk:
+			if forwardTaint.Result.Decision != session.PolicyAsk {
+				forwardTaint = taskTaint
+				forwardRequiresReauth = true
+				if approved, blockReason := p.resolveTaintAsk(agent, targetURL, r.Method, taskTaint.Result.Reason); !approved {
+					writeTaskDenial(blockReason, "session exposure changed before this request was sent")
+					return
+				}
+			}
+		}
 	}
 
 	// Inject mediation envelope (and attach RFC 9421 signature when the
