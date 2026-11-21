@@ -124,6 +124,7 @@ type decodingMemo struct {
 	// The core floor and configured patterns both compact the same view.
 	compactSource, compactText string
 	compactOffsets             []int
+	compactView                *matchingView
 	compactReady               bool
 }
 
@@ -153,22 +154,38 @@ func (m *decodingMemo) releaseTextDecodingMemo() {
 // normalized (valid UTF-8) text that is exactly compactTextDLPWhitespace's
 // result. Callers only read the offsets.
 func (m *decodingMemo) compactWhitespace(text string) (string, []int) {
+	compacted, offsets, _ := m.compactWhitespaceWithView(text, nil)
+	return compacted, offsets
+}
+
+func (m *decodingMemo) compactWhitespaceWithView(text string, parent *matchingView) (string, []int, *matchingView) {
 	if m != nil && m.compactReady && m.compactSource == text {
 		m.reassemblyDerive(text, m.compactText)
-		return m.compactText, m.compactOffsets
+		view := m.compactView
+		if view != nil && view.parent != parent {
+			view = nil
+		}
+		return m.compactText, m.compactOffsets, view
 	}
 	compacted, offsets := text, []int(nil)
+	var edits []matchingEdit
 	if strings.ContainsFunc(text, unicode.IsSpace) {
-		compacted, offsets = compactTextDLPWhitespaceWithOffsets(text)
+		if parent == nil {
+			compacted, offsets = compactTextDLPWhitespaceWithOffsets(text)
+		} else {
+			compacted, offsets = compactTextDLPWhitespaceWithEdits(text, &edits)
+		}
 	}
+	view := parent.derive(compacted, edits)
 	if m != nil {
 		compacted = m.rememberGraphTransform(text, compacted, assembledPayloadWhitespace)
 		if m.replayPayload(text) == nil && m.replayPayload(compacted) == nil && m.reservePayloadBytes(cap(offsets)*int(reflect.TypeFor[int]().Size())) {
 			m.compactSource, m.compactText, m.compactOffsets, m.compactReady = m.canonicalPayload(text), compacted, offsets, true
+			m.compactView = view
 		}
 		m.reassemblyDerive(text, compacted)
 	}
-	return compacted, offsets
+	return compacted, offsets, view
 }
 
 // releaseDetectorCache ends the local pattern phase's whitespace retention.
@@ -183,6 +200,7 @@ func (m *decodingMemo) releaseDetectorCache() {
 	}
 	m.retainedBytes -= cap(m.compactOffsets) * int(reflect.TypeFor[int]().Size())
 	m.compactSource, m.compactText, m.compactOffsets, m.compactReady = "", "", nil, false
+	m.compactView = nil
 }
 
 // decodedMatchKey identifies one pattern-set match over a decoded candidate:
@@ -245,6 +263,7 @@ type sharedDecodes struct {
 	lowered       map[string]int
 	loweredValues []dlpLoweredBytes
 	loweredBytes  int
+	work          *sharedDLPWork // set only on non-pooled stores used by tests
 }
 
 type sharedDecodesKey struct{}
@@ -329,6 +348,10 @@ func (s *sharedDecodes) decodeDetailedAfter(key decodingMemoKey, prior *decodedR
 		decoded, complete, resumed = prior.views, prior.complete, prior.resumed
 	} else {
 		decoded, complete = decodeEncodingsForScan(key.text, key.includeURL, key.minPrefix, decodeBudgetMode{inbound: key.inbound, reportWorkLimits: key.reportWorkLimits, knownCredit: key.knownCredit, knownResumed: &resumed}, nil)
+		if s.work != nil {
+			s.work.decodeBytes.Add(uint64(len(key.text)))
+			s.work.decodedViews.Add(uint64(len(decoded)))
+		}
 	}
 	s.mu.Lock()
 	s.store.retainDecode(key, decoded, complete)
@@ -379,6 +402,9 @@ func (s *sharedDecodes) matchDecoded(key decodedMatchKey, memo *decodingMemo) []
 	var lowered dlpLoweredBytes
 	if !key.cardOnly {
 		lowered = s.loweredFor(normalized)
+	}
+	if s.work != nil {
+		s.work.matchBytes.Add(uint64(len(normalized)))
 	}
 	matches := key.match(normalized, &lowered, memo)
 	if memo.terminalCanceled() {
@@ -441,6 +467,9 @@ func (s *sharedDecodes) normalize(text string) string {
 	s.mu.Unlock()
 	if ok {
 		return normalized
+	}
+	if s.work != nil {
+		s.work.normalizeBytes.Add(uint64(len(text)))
 	}
 	normalized = normalize.ForDLP(text)
 	s.mu.Lock()

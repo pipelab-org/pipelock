@@ -11,6 +11,50 @@ import (
 	"unicode/utf8"
 )
 
+type decoderClass uint8
+
+const (
+	decoderHex decoderClass = 1 << iota
+	decoderBase64
+	decoderBase32
+	decoderAll = decoderHex | decoderBase64 | decoderBase32
+)
+
+var decoderAlphabetClasses = func() (classes [256]decoderClass) {
+	// The raw and liberal decoders use the same RFC 4648 alphabets as
+	// encoded reassembly. Padding and separators do not contribute data.
+	codecClasses := [5]decoderClass{decoderHex, decoderBase64, decoderBase64, decoderBase32, decoderBase32}
+	for id, codec := range reassemblyCodecs {
+		for b, value := range codec.values {
+			if value >= 0 {
+				classes[b] |= codecClasses[id]
+			}
+		}
+	}
+	return classes
+}()
+
+// decoderClasses identifies families that could yield a nonempty decode.
+// All binary variants need two data symbols to emit even one byte. Their
+// carrier transforms remove bytes, change ASCII case or translate equivalent
+// alphabet symbols. None creates a data symbol from outside its family.
+func decoderClasses(text string) decoderClass {
+	var seen, enough decoderClass
+	for i := range len(text) {
+		classes := decoderAlphabetClasses[text[i]]
+		enough |= seen & classes
+		if enough == decoderAll {
+			break
+		}
+		seen |= classes
+	}
+	return enough
+}
+
+func isBase64DataByte(b byte) bool {
+	return decoderAlphabetClasses[b]&decoderBase64 != 0
+}
+
 // base64DecodeScratchLen covers every decode attempted by decodeEncodingsModeInto.
 // The unmodified and mixed-alphabet inputs cannot decode beyond a byte outside
 // the union of the RFC 4648 section 4/5 alphabets (CR/LF are ignored by Go's
@@ -20,7 +64,7 @@ import (
 func base64DecodeScratchLen(text string) int {
 	for i := 0; i < len(text); i++ {
 		c := text[i]
-		if encodedTokenBytes[encodedTokenBase64Std][c] || c == '-' || c == '_' || c == '\r' || c == '\n' {
+		if isBase64DataByte(c) || c == '=' || c == '\r' || c == '\n' {
 			continue
 		}
 		return base64.RawStdEncoding.DecodedLen(min(len(text), max(maxReassembledTokenLen, i+4)))

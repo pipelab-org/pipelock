@@ -30,7 +30,7 @@ func TestAssembledSyntaxReuseKeepsScannerPolicy(t *testing.T) {
 		return p
 	}
 	first, second := makePlan(false), makePlan(true)
-	if &first.assembled.raw[0].nodes[0] != &second.assembled.raw[0].nodes[0] {
+	if &first.assembled.raw[0].next[0] != &second.assembled.raw[0].next[0] {
 		t.Fatal("identical syntax recompiled")
 	}
 	if len(first.assembled.shapes) == 0 || len(second.assembled.shapes) == 0 {

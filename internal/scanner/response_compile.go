@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"regexp"
 	"slices"
 	"sync"
 )
@@ -25,7 +26,7 @@ const (
 
 type responseSyntaxKey struct {
 	name, expression string
-	perl             bool
+	windowRE         *regexp.Regexp
 }
 
 var responseSyntaxCache [responseSyntaxGroups]struct {
@@ -37,7 +38,13 @@ var responseSyntaxCache [responseSyntaxGroups]struct {
 func reusableResponsePreFilter(patterns []*compiledPattern, group responseSyntaxGroup) *responsePreFilter {
 	key := make([]responseSyntaxKey, len(patterns))
 	for id, pattern := range patterns {
-		key[id] = responseSyntaxKey{pattern.name, pattern.re.String(), pattern.responseMemoRegexp != nil && pattern.responseMemoRegexp == pattern.re}
+		// Proven Perl patterns can carry window plans bound to the exact
+		// compiled regexp. Rebuild if an eviction replaced that regexp.
+		var windowRE *regexp.Regexp
+		if pattern.responseMemoRegexp == pattern.re {
+			windowRE = pattern.responseMemoRegexp
+		}
+		key[id] = responseSyntaxKey{pattern.name, pattern.re.String(), windowRE}
 	}
 	cache := &responseSyntaxCache[group]
 	cache.Lock()
@@ -53,6 +60,7 @@ func reusableResponsePreFilter(patterns []*compiledPattern, group responseSyntax
 	filter.proofs = slices.Clone(filter.proofs)
 	filter.prefixes = slices.Clone(filter.prefixes)
 	filter.alwaysRun = slices.Clone(filter.alwaysRun)
+	filter.windowAnchors = slices.Clone(filter.windowAnchors)
 	filter.companionProofs = slices.Clone(filter.companionProofs)
 	for id, proofs := range filter.companionProofs {
 		filter.companionProofs[id] = slices.Clone(proofs)

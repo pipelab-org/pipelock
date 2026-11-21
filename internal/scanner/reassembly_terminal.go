@@ -29,7 +29,7 @@ type assembledPlan struct {
 	admitted       []*regexp.Regexp
 	active         []bool
 	decoderAllowed []bool
-	raw            [5]reassemblyAC
+	raw            [5]literalAutomaton[reassemblyNeedle]
 	verify         []*regexp.Regexp
 	literalBytes   []int
 }
@@ -65,7 +65,7 @@ func compileAssembledPlan(p *reassemblyPlan) (*assembledPlan, error) {
 		a.nestedMinimum = (minimum*8 + 5) / 6
 	}
 	for codec := range a.raw {
-		a.raw[codec] = reassemblyAC{codec: codec, building: []reassemblyBuildNode{{}}}
+		a.raw[codec] = newLiteralAutomaton[reassemblyNeedle](1 << reassemblyCodecs[codec].width)
 	}
 
 	for id, pattern := range p.patterns {
@@ -158,13 +158,13 @@ func compileAssembledPlan(p *reassemblyPlan) (*assembledPlan, error) {
 					for pad := range 8 {
 						core, delta := reassemblyCore(v, codec, pad)
 						if len(core) > 0 {
-							a.raw[codec].add(core, reassemblyNeedle{pattern: id, delta: delta, kind: kindForLiteral(kind, literal)})
+							a.raw[codec].add(string(core), &reassemblyCodecs[codec].values, reassemblyNeedle{pattern: id, length: len(core), delta: delta, kind: kindForLiteral(kind, literal)})
 							continue
 						}
 						// A one-rune literal can have no complete interior RFC symbol.
 						// Enumerate the unknown edge bits, retaining the known literal bits.
 						for _, edge := range assembledEdges(v, codec, pad) {
-							a.raw[codec].add(edge, reassemblyNeedle{pattern: id, delta: pad*8/reassemblyCodecs[codec].width*reassemblyCodecs[codec].width - pad*8, kind: kindForLiteral(kind, literal)})
+							a.raw[codec].add(string(edge), &reassemblyCodecs[codec].values, reassemblyNeedle{pattern: id, length: len(edge), delta: pad*8/reassemblyCodecs[codec].width*reassemblyCodecs[codec].width - pad*8, kind: kindForLiteral(kind, literal)})
 						}
 					}
 				}
@@ -625,7 +625,7 @@ func assembledLayer(p *reassemblyPlan, text string, budget *assembledBudget, ski
 			}
 			symbols++
 			rawEnd = i + 1
-			state = a.nodes[state].next[v]
+			state = a.step(state, v)
 			for j := range groups {
 				group := &groups[j]
 				hits := group.step((symbols-1)&(c.quantum-1), int(v), &shapeStates[j])
@@ -643,7 +643,7 @@ func assembledLayer(p *reassemblyPlan, text string, budget *assembledBudget, ski
 				}
 			}
 			previous = v
-			for _, hit := range a.nodes[state].out {
+			for _, hit := range a.out[state] {
 				startSymbol := symbols - hit.length
 				for phase := range c.quantum {
 					if ((startSymbol-phase)*c.width-hit.delta)%8 == 0 {

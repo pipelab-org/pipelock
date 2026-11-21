@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -419,6 +420,17 @@ func BenchmarkMatchDomain(b *testing.B) {
 // match. This is the cost profile that matters for legitimate traffic when
 // the subsequence-combination search size is changed.
 func BenchmarkScan_ManyQueryParamsAllowed(b *testing.B) {
+	benchmarkManyQueryParams(b, func(i int) string { return fmt.Sprintf("value%d-token", i) })
+}
+
+func BenchmarkScan_ManyUUIDQueryParamsAllowed(b *testing.B) {
+	benchmarkManyQueryParams(b, func(i int) string {
+		return uuid.NewSHA1(uuid.NameSpaceURL, fmt.Appendf(nil, "field-%d", i)).String()
+	})
+}
+
+func benchmarkManyQueryParams(b *testing.B, value func(int) string) {
+	b.Helper()
 	s := MustNew(benchConfig())
 	b.Cleanup(s.Close)
 
@@ -427,11 +439,13 @@ func BenchmarkScan_ManyQueryParamsAllowed(b *testing.B) {
 		if i > 0 {
 			q.WriteByte('&')
 		}
-		fmt.Fprintf(&q, "field%d=value%d-token", i, i)
+		fmt.Fprintf(&q, "field%d=%s", i, value(i))
 	}
 	target := "https://example.com/api?" + q.String()
 	b.ResetTimer()
 	for b.Loop() {
-		s.Scan(context.Background(), target)
+		if result := s.Scan(context.Background(), target); !result.Allowed {
+			b.Fatalf("benchmark URL was refused: %s", result.Reason)
+		}
 	}
 }

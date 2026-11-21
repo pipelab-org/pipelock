@@ -14,7 +14,7 @@ func TestReassemblyAlphabetUnion(t *testing.T) {
 	// the union of standard and URL-safe base64, including ASCII case variants.
 	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/-_"
 	for value := range 256 {
-		if got, want := reassemblyAlphabet[value], strings.ContainsRune(alphabet, rune(value)); got != want {
+		if got, want := decoderAlphabetClasses[value] != 0, strings.ContainsRune(alphabet, rune(value)); got != want {
 			t.Fatalf("byte %02x: %v != %v", value, got, want)
 		}
 	}
