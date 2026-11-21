@@ -503,3 +503,32 @@ func TestWebSocketRelayUsesSharedTaintRecorder(t *testing.T) {
 		t.Fatalf("shared websocket taint=%+v, want hostile", got)
 	}
 }
+
+func TestInterceptTaintSharedRecorderDoesNotHijackTaskSubject(t *testing.T) {
+	p, handler, _, target, ic := newTaintInterceptFixture(t, func(cfg *config.Config) {
+		cfg.KillSwitch.APIToken = "test-operator-token-for-shared-recorder"
+	})
+	shared := &SessionState{}
+	WithTaintRecorder(shared)(p)
+	ic.Agent, ic.ActorAuth = "bound-worker", envelope.ActorAuthBound
+	observeHTTPResponseFindings(shared, p.CurrentConfig(), target, "text/plain", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+
+	w := interceptTaintRequest(t, handler, http.MethodPost, target)
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "task_approval_unavailable") {
+		t.Fatalf("POST status=%d body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "/api/v1/sessions/{key}/task") {
+		t.Fatalf("shared-recorder refusal advertised inert forward task grant route: %s", w.Body.String())
+	}
+	const mcpSubject = "mcp-stdio-shared"
+	shared.BindTaskSubject(mcpSubject)
+	action := session.TaskAction{Method: "tools/call", Destination: "fixture", Tool: "write_file", Digest: strings.Repeat("a", 64)}
+	if err := shared.installTaskPermission(shared.TaskSnapshot().CurrentTaskID, session.TaskPermission{
+		Action: action, ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("installTaskPermission: %v", err)
+	}
+	if _, _, matched := shared.TaskPolicySnapshot(mcpSubject, action); !matched {
+		t.Fatal("shared recorder taskSubject was hijacked before MCP binding")
+	}
+}
