@@ -478,3 +478,77 @@ func TestDeferredResolutionWriteFailureRecoversPendingHold(t *testing.T) {
 		t.Fatalf("unexpected recovered history: %+v", result)
 	}
 }
+
+func TestDeferredApprovalRecoveryAfterSendIntent(t *testing.T) {
+	for _, sent := range []bool{false, true} {
+		t.Run(fmt.Sprintf("send_intent=%t", sent), func(t *testing.T) {
+			ctx := t.Context()
+			opts := writerTestOptions(t.TempDir())
+			writer := requireWriter(t, opts, localWriterStorage())
+			gate := NewEffectGate(writer)
+			manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Minute})
+			hold := writerTestHold("approved")
+			hold.Hold.Parent = ""
+			policy := CapturePolicy(Digest([]byte("hold policy")))
+			var delivered deferred.Resolution
+			err := manager.HoldContext(ctx, deferred.HeldAction{
+				DeferID:  hold.Hold.ID,
+				ActionID: hold.ActionID,
+				ConfirmHold: func(ctx context.Context, _ deferred.HeldAction) error {
+					return gate.RecordApproval(ctx, hold, policy)
+				},
+				ConfirmResolution: func(ctx context.Context, resolution deferred.Resolution) error {
+					action := blockingHoldResolution(hold, resolution.ResolutionSource, relationAfter, false)
+					action.Verdict = resolution.FinalDecision
+					return gate.RecordApproval(ctx, action, policy)
+				},
+				Resolve: func(resolution deferred.Resolution) { delivered = resolution },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := manager.ResolveContext(ctx, hold.Hold.ID, config.ActionAllow, deferred.SourceApproval); err != nil {
+				t.Fatal(err)
+			}
+			if delivered.FinalDecision != config.ActionAllow {
+				t.Fatalf("transport resolution = %+v, want approval of %q", delivered, hold.ActionID)
+			}
+			if sent {
+				action := writerTestIntent(hold.ActionID)
+				action.EffectBoundary = "upstream_send"
+				token, err := gate.Admit(ctx, action, policy)
+				if err != nil || token == nil {
+					t.Fatalf("send admission = %v, %v", token, err)
+				}
+			}
+			if err := abandonWriterReplay(writer); err != nil {
+				t.Fatal(err)
+			}
+			recovery := requireWriter(t, opts, localWriterStorage())
+			got := readRecoveryActions(t, opts.Dir, recovery.active.id)
+			var want []Action
+			if !sent {
+				hold.Policy = policy.ActionPolicy()
+				want = []Action{blockingHoldResolution(hold, "restart_recovery", relationAfter, true)}
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("recovery actions = %+v, want %+v", got, want)
+			}
+			if err := recovery.Close(ctx, nil); err != nil {
+				t.Fatal(err)
+			}
+			result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+			if result.Integrity != "ok" || len(result.Findings) != 1 || result.Findings[0].Code != "END_UNPROVEN" {
+				t.Fatalf("unexpected verification after unsealed shutdown: %+v", result)
+			}
+			switch {
+			case sent:
+				if result.Integrity != "ok" || result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 1 {
+					t.Fatalf("expected one unresolved send intent: %+v", result)
+				}
+			case writerTestCount(t, result, "blocked") != 1:
+				t.Fatalf("expected a blocked unused approval: %+v", result)
+			}
+		})
+	}
+}
