@@ -28,6 +28,7 @@ const (
 	EventCrossRequestEntropyExceeded = "cross_request_entropy_exceeded"
 	EventDLPCredentialAudienceAllow  = "dlp_credential_audience_allow" // #nosec G101 -- audit event identifier, not credential material
 	EventDLPIssuerCookieAllow        = "dlp_issuer_cookie_allow"
+	EventDLPIssuerJoinedViewAllow    = "dlp_issuer_joined_view_allow"
 	EventDLPWarn                     = "dlp_warn"
 	EventDashboardAuthFailed         = "dashboard_auth_failed"
 	EventError                       = "error"
@@ -99,6 +100,7 @@ func Builtins() []Descriptor {
 		{EventCrossRequestEntropyExceeded, "", ""},
 		{EventDLPCredentialAudienceAllow, "", ""},
 		{EventDLPIssuerCookieAllow, "", ""},
+		{EventDLPIssuerJoinedViewAllow, "", ""},
 		{EventDLPWarn, "warn", "warn"},
 		{EventDashboardAuthFailed, "warn", "warn"},
 		{EventError, "warn", "warn"},
