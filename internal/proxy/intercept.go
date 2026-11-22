@@ -2401,7 +2401,7 @@ func newInterceptHandler(
 			}
 		}
 
-		if reason := recheckInterceptTaint(ic, r); reason != "" {
+		if reason := recheckInterceptTaint(ic, r, interceptBodyBytes); reason != "" {
 			if requiredIntentEmitted {
 				writeInterceptTaintRefusal(ic, w, actx, reason)
 				emitBlockedPostRoundTripOutcome(http.StatusForbidden, reason)

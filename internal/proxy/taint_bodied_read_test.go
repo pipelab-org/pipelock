@@ -530,3 +530,48 @@ func TestForwardPreSendTaintRecheckMatchesExistingGrant(t *testing.T) {
 		})
 	}
 }
+
+// The intercept recheck binds the exact action the same way when exposure
+// arrives after a clean admission, so a grant installed in advance still
+// matches and an unbuffered body stays refused.
+func TestRecheckInterceptTaintMatchesExistingGrant(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Taint.Enabled = true
+	target := "https://upload.example/items"
+	newReq := func() *http.Request {
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, strings.NewReader("payload=1"))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		return r
+	}
+	body := []byte("payload=1")
+	for _, tc := range []struct {
+		name       string
+		grant      bool
+		body       []byte
+		wantReason string
+	}{
+		{name: "existing_grant_matches", grant: true, body: body, wantReason: ""},
+		{name: "no_grant_refused", body: body, wantReason: session.TaskApprovalStale},
+		{name: "unbuffered_body_refused", grant: true, body: nil, wantReason: session.TaskApprovalStale},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &SessionState{}
+			rec.BeginNewTask("task")
+			rec.BindTaskSubject("invocation")
+			if tc.grant {
+				if err := rec.installTaskPermission(rec.TaskSnapshot().CurrentTaskID, session.TaskPermission{Action: forwardRequestTaskAction(newReq(), body), ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ic := &InterceptContext{taintConfig: cfg, taintRecorder: rec, taintTask: forwardTaskAction{subject: "invocation"}}
+			ic.taint = evaluateHTTPTaskTaint(cfg, rec, http.MethodPost, newReq().URL, true, &ic.taintTask)
+			if ic.taint.Result.Decision != session.PolicyAllow || ic.taintTask.action.Valid() {
+				t.Fatalf("admission=%+v action bound=%v, want a clean allow with no bound action", ic.taint.Result, ic.taintTask.action.Valid())
+			}
+			observeHTTPResponseFindings(rec, cfg, "http://untrusted.example/page", "text/html", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+			if reason := recheckInterceptTaint(ic, newReq(), tc.body); reason != tc.wantReason {
+				t.Fatalf("reason=%q want %q", reason, tc.wantReason)
+			}
+		})
+	}
+}

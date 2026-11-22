@@ -205,8 +205,15 @@ func interceptTaskAdmissionCurrent(ic *InterceptContext) bool {
 
 // recheckInterceptTaint refuses stricter decisions after signing and durable
 // intent storage. Approval cannot be requested here: retry through admission.
-func recheckInterceptTaint(ic *InterceptContext, r *http.Request) string {
+func recheckInterceptTaint(ic *InterceptContext, r *http.Request, body []byte) string {
 	after := evaluateHTTPTaskTaint(ic.taintConfig, ic.taintRecorder, r.Method, r.URL, requestHasBody(r), &ic.taintTask)
+	if after.Result.Reason == session.TaskPermissionRequired && !ic.taintTask.action.Valid() {
+		// Exposure arrived after a clean admission, so the exact action was
+		// never bound. Bind it now so an existing exact grant can still match;
+		// an unbuffered body yields no action and stays refused.
+		ic.taintTask.action = forwardRequestTaskAction(r, body)
+		after = evaluateHTTPTaskTaint(ic.taintConfig, ic.taintRecorder, r.Method, r.URL, requestHasBody(r), &ic.taintTask)
+	}
 	// Only admissions bound to a task (an approved ask or an exact grant) go
 	// stale on rotation; a fresh allow stands on the new task's own state. A
 	// stored grant must still match now, as on the forward path.
