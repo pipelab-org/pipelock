@@ -534,9 +534,10 @@ func jsonWholeNumberDigits(literal string) (string, bool) {
 		if abs == "" {
 			abs = "0"
 		}
-		if len(abs) > 6 {
-			// |exp| of a million or more: no zero padding a body can carry
-			// brings the value back to an 8-14 digit form.
+		if len(abs) > 18 {
+			// |exp| of 10^18 or more: no zero padding a request body can
+			// carry cancels it, and smaller exponents fit in an int. Within
+			// this bound the arithmetic below canonicalizes any padding.
 			return "", false
 		}
 		v, err := strconv.Atoi(abs)
