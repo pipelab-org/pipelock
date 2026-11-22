@@ -273,3 +273,52 @@ func TestEffectGateFinalizationBudgetAfterTransportCancellation(t *testing.T) {
 		})
 	}
 }
+
+func TestEffectGateDenialDeliveryDurability(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		required, fail bool
+	}{
+		{name: "optional success"},
+		{name: "optional write failure", fail: true},
+		{name: "required write failure", required: true, fail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := writerTestOptions(t.TempDir())
+			opts.Coverage.ReceiptsRequired = tc.required
+			fault := &writerReplayFault{}
+			writer := requireWriter(t, opts, fault.storage(opts.Dir))
+			gate := NewEffectGate(writer)
+			action := writerTestIntent("denial")
+			action.EffectBoundary = "downstream_delivery"
+			if tc.fail {
+				fault.additionalFaultAt = len(fault.calls) + 1
+			}
+			token, err := gate.AdmitDenialDelivery(t.Context(), action, PolicySnapshot{})
+			switch {
+			case tc.required:
+				if token != nil || !errors.Is(err, errWriterReplay) || !errors.Is(err, ErrEffectNotReleased) {
+					t.Fatalf("required denial admission: token=%v error=%v", token, err)
+				}
+			case tc.fail:
+				if token != nil || err != nil {
+					t.Fatalf("optional denial should still be deliverable: token=%v error=%v", token, err)
+				}
+			default:
+				if token == nil || err != nil {
+					t.Fatalf("optional denial admission: token=%v error=%v", token, err)
+				}
+				if err := token.ConfirmDelivery(t.Context(), func() (bool, error) { return true, nil }); err != nil {
+					t.Fatal(err)
+				}
+				if err := writer.Close(t.Context(), nil); err != nil {
+					t.Fatal(err)
+				}
+				result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+				if result.Counts.EffectsCompleted == nil || *result.Counts.EffectsCompleted != 1 {
+					t.Fatalf("denial settlement missing: %+v", result)
+				}
+			}
+		})
+	}
+}

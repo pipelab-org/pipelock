@@ -233,3 +233,129 @@ func TestManagerExpiredConfirmedHoldPreservesExplicitBlock(t *testing.T) {
 		t.Fatalf("resolution = %+v", res)
 	}
 }
+
+func TestManagerRejectsUnusableConfirmation(t *testing.T) {
+	writeErr := errors.New("hold write failed")
+	action := HeldAction{
+		DeferID:           "hold",
+		ConfirmHold:       func(context.Context, HeldAction) error { return writeErr },
+		ConfirmResolution: func(context.Context, Resolution) error { return nil },
+		Resolve:           func(Resolution) { t.Error("unconfirmed hold resolved") },
+	}
+	manager := NewManager(Config{Enabled: true, MaxPending: 1})
+	partial := action
+	partial.ConfirmResolution = nil
+	if err := manager.Hold(partial); err == nil {
+		t.Fatal("accepted a hold without resolution confirmation")
+	}
+	journal := NewManager(Config{Enabled: true, JournalPath: t.TempDir() + "/holds.jsonl"})
+	if err := journal.Hold(action); err == nil {
+		t.Fatal("accepted receipt confirmation with journal enabled")
+	}
+	if err := manager.Hold(action); !errors.Is(err, writeErr) || manager.HeldCount() != 0 {
+		t.Fatalf("failed write left a published hold: %v", err)
+	}
+	action.ConfirmHold = func(context.Context, HeldAction) error { return nil }
+	action.Resolve = func(Resolution) {}
+	if err := manager.Hold(action); err != nil {
+		t.Fatalf("failed write retained the reservation: %v", err)
+	}
+	manager.ResolveAll(config.ActionBlock, SourceCancel)
+}
+
+func TestManagerPendingConfirmationCancellation(t *testing.T) {
+	ctx, stop := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
+	defer stop()
+	manager := NewManager(Config{Enabled: true, Timeout: time.Minute})
+	parent := HeldAction{DeferID: "parent", Authority: AuthoritySnapshot{SessionID: "session"}, Resolve: func(Resolution) {}}
+	if err := manager.Hold(parent); err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	child := parent
+	child.DeferID = "child"
+	child.ConfirmHold = func(ctx context.Context, _ HeldAction) error {
+		close(entered)
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	child.ConfirmResolution = func(context.Context, Resolution) error { return nil }
+	held := make(chan error, 1)
+	go func() { held <- manager.HoldContext(ctx, child) }()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("child did not enter confirmation")
+	}
+	if snapshot := manager.Snapshot(); len(snapshot) != 1 || snapshot[0].DeferID != parent.DeferID {
+		t.Fatalf("pending child appeared in snapshot: %+v", snapshot)
+	}
+
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	sibling := parent
+	sibling.DeferID = "sibling"
+	sibling.SizeBytes = 8
+	if err := manager.HoldContext(cancelled, sibling); !errors.Is(err, context.Canceled) {
+		t.Fatalf("waiting sibling returned %v", err)
+	}
+	for _, id := range []string{parent.DeferID, child.DeferID} {
+		if err := manager.ResolveContext(cancelled, id, config.ActionAllow, SourceApproval); !errors.Is(err, context.Canceled) {
+			t.Fatalf("waiting resolution for %s returned %v", id, err)
+		}
+	}
+	if err := manager.Resolve(parent.DeferID, config.ActionBlock, SourceKillSwitch); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-held; err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Hold(sibling); err != nil {
+		t.Fatalf("cancelled reservation was retained: %v", err)
+	}
+	manager.ResolveAll(config.ActionBlock, SourceCancel)
+}
+
+func TestManagerLateRefusalOfConfirmedApproval(t *testing.T) {
+	manager := NewManager(Config{Enabled: true, Timeout: time.Minute})
+	var recorded []Resolution
+	var delivered Resolution
+	action := HeldAction{
+		DeferID:     "hold",
+		ConfirmHold: func(context.Context, HeldAction) error { return nil },
+		ConfirmResolution: func(_ context.Context, res Resolution) error {
+			recorded = append(recorded, res)
+			return nil
+		},
+		ResolveWithReleaseRefusal: func(_ Resolution, refuse func(string) Resolution) {
+			delivered = refuse("transport declined release")
+		},
+	}
+	if err := manager.Hold(action); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Resolve(action.DeferID, config.ActionAllow, SourceApproval); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorded) != 1 || recorded[0].FinalDecision != config.ActionAllow ||
+		delivered.FinalDecision != config.ActionBlock || delivered.ResolutionSource != SourceCancel ||
+		delivered.Reason != "transport declined release" {
+		t.Fatalf("recorded = %+v; delivered = %+v", recorded, delivered)
+	}
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{context.DeadlineExceeded, SourceTimeout},
+		{context.Canceled, SourceCancel},
+	} {
+		if got := HoldFailureSource(tc.err); got != tc.want {
+			t.Errorf("source for %v = %q, want %q", tc.err, got, tc.want)
+		}
+	}
+}

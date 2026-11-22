@@ -425,7 +425,7 @@ func TestStreamWriterStartupReportsHighestUnsupportedActionVersion(t *testing.T)
 				t.Fatalf("wanted highest unsupported version, got %v", err)
 			}
 		})
-	})
+	}
 }
 
 func TestDeferredResolutionWriteFailureRecoversPendingHold(t *testing.T) {
@@ -526,13 +526,15 @@ func TestDeferredApprovalRecoveryAfterSendIntent(t *testing.T) {
 			}
 			recovery := requireWriter(t, opts, localWriterStorage())
 			got := readRecoveryActions(t, opts.Dir, recovery.active.id)
-			var want []Action
-			if !sent {
-				hold.Policy = policy.ActionPolicy()
-				want = []Action{blockingHoldResolution(hold, "restart_recovery", relationAfter, true)}
-			}
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("recovery actions = %+v, want %+v", got, want)
+			if sent {
+				if len(got) != 0 {
+					t.Fatalf("unexpected hold repairs after send intent: %+v", got)
+				}
+			} else if len(got) != 1 || got[0].ActionID != hold.ActionID ||
+				got[0].Phase != phaseResolution || got[0].Verdict != verdictBlock ||
+				got[0].Hold == nil || got[0].Hold.ID != hold.Hold.ID ||
+				got[0].Hold.ResolutionSource != "restart_recovery" {
+				t.Fatalf("unexpected unused approval repair: %+v", got)
 			}
 			if err := recovery.Close(ctx, nil); err != nil {
 				t.Fatal(err)
