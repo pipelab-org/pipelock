@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -21,6 +22,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -173,7 +175,13 @@ func decodeMCPMatrixReceiptFiles(dir string, live bool) ([]v3.Action, error) {
 	if err != nil {
 		return nil, err
 	}
-	var actions []v3.Action
+	type record struct {
+		Stream string
+		Seq    int64
+		Body   v3.Action
+	}
+	var records []record
+	previous := make(map[string]string)
 	for _, path := range paths {
 		data, err := os.ReadFile(filepath.Clean(path))
 		if err != nil {
@@ -196,17 +204,50 @@ func decodeMCPMatrixReceiptFiles(dir string, live bool) ([]v3.Action, error) {
 			if err := json.Unmarshal(envelope, &decoded); err != nil {
 				return nil, err
 			}
-			var payload struct {
-				Kind string
-				Body v3.Action
-			}
+			var payload v3.Common
 			if err := json.Unmarshal(decoded.Payload, &payload); err != nil {
 				return nil, err
 			}
-			if payload.Kind == "action" {
-				actions = append(actions, payload.Body)
+			switch payload.Kind {
+			case "stream_open":
+				var opened v3.StreamOpen
+				if err := json.Unmarshal(payload.Body, &opened); err != nil {
+					return nil, err
+				}
+				if opened.Previous != nil {
+					previous[payload.Stream] = opened.Previous.Stream
+				}
+			case "action":
+				entry := record{Stream: payload.Stream, Seq: payload.Seq}
+				if err := json.Unmarshal(payload.Body, &entry.Body); err != nil {
+					return nil, err
+				}
+				records = append(records, entry)
 			}
 		}
+	}
+	// Recovery can continue in a new stream. Follow signed predecessor
+	// links before comparing sequence numbers within a stream.
+	depths := make(map[string]int)
+	for _, r := range records {
+		if _, ok := depths[r.Stream]; ok {
+			continue
+		}
+		depth := 0
+		for stream := previous[r.Stream]; stream != ""; stream = previous[stream] {
+			depth++
+			if depth > len(previous) {
+				return nil, errors.New("receipt stream predecessor cycle")
+			}
+		}
+		depths[r.Stream] = depth
+	}
+	slices.SortStableFunc(records, func(a, b record) int {
+		return cmp.Or(cmp.Compare(depths[a.Stream], depths[b.Stream]), cmp.Compare(a.Stream, b.Stream), cmp.Compare(a.Seq, b.Seq))
+	})
+	actions := make([]v3.Action, 0, len(records))
+	for _, r := range records {
+		actions = append(actions, r.Body)
 	}
 	return actions, nil
 }
@@ -512,8 +553,17 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 		if _, err := io.WriteString(wr, request+"\n"); err != nil {
 			t.Fatal(err)
 		}
-		testwait.For(t, time.Second, func() bool { return opts.DeferManager.HeldCount() == 1 }, "confirmed hold")
-		held := opts.DeferManager.Snapshot()[0]
+		var held deferred.HeldAction
+		if row.scenario != "deferred timeout" {
+			testwait.For(t, time.Second, func() bool {
+				snapshot := opts.DeferManager.Snapshot()
+				if len(snapshot) != 1 {
+					return false
+				}
+				held = snapshot[0]
+				return true
+			}, "confirmed hold")
+		}
 		switch row.scenario {
 		case "deferred approve", "deferred A2A", "deferred HTTP failure", "deferred send intent write fail", "deferred send claim refused":
 			if err := opts.DeferManager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceApproval); err != nil {
@@ -1126,13 +1176,49 @@ func TestMCPV3IntentPrecedesWebSocketWriteLock(t *testing.T) {
 	}
 }
 
+type mcpMatrixWriteListener struct {
+	net.Listener
+	beforeWrite func()
+}
+
+func (l mcpMatrixWriteListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return settlementConn{Conn: conn, fail: func() bool {
+		l.beforeWrite()
+		return false
+	}}, nil
+}
+
 func runMCPMatrixListener(t *testing.T, ctx context.Context, in io.Reader, out io.Writer, upstream string, opts MCPProxyOpts) error {
 	t.Helper()
 	listener := newListenerProxyTestListener(t)
+	observer, observe := out.(*mcpMatrixObserver)
+	var armed atomic.Bool
+	var once sync.Once
+	intentAtWrite := make(chan bool, 1)
+	var serverListener net.Listener = listener
+	if observe {
+		serverListener = mcpMatrixWriteListener{Listener: listener, beforeWrite: func() {
+			if armed.Load() {
+				once.Do(func() {
+					actions, err := decodeMCPMatrixReceiptFiles(observer.dir, true)
+					if err != nil {
+						t.Error(err)
+					}
+					intentAtWrite <- slices.ContainsFunc(actions, func(a v3.Action) bool {
+						return a.EffectBoundary == mcpDownstreamDeliveryBoundary && a.Phase == "intent"
+					})
+				})
+			}
+		}}
+	}
 	listenerCtx, stop := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() {
-		done <- RunHTTPListenerProxy(listenerCtx, listener, upstream, io.Discard, opts)
+		done <- RunHTTPListenerProxy(listenerCtx, serverListener, upstream, io.Discard, opts)
 	}()
 	defer func() {
 		stop()
@@ -1140,6 +1226,7 @@ func runMCPMatrixListener(t *testing.T, ctx context.Context, in io.Reader, out i
 	}()
 	url := "http://" + listener.Addr().String()
 	waitForHTTPHealth(t, url)
+	armed.Store(true)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, in)
 	if err != nil {
 		return err
@@ -1151,9 +1238,15 @@ func runMCPMatrixListener(t *testing.T, ctx context.Context, in io.Reader, out i
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
-	if observer, ok := out.(*mcpMatrixObserver); ok {
+	if observe {
 		observer.httpStatus = resp.StatusCode
 		observer.httpBody = body
+		observer.intent = <-intentAtWrite
+		if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusBadGateway {
+			_, writeErr := observer.output.Write(body)
+			err = errors.Join(err, writeErr)
+		}
+		return err
 	}
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusBadGateway {
 		_, writeErr := out.Write(body)
@@ -1365,6 +1458,8 @@ func TestMCPV3PolicyRedirectRefusal(t *testing.T) {
 						Rules: []config.ToolPolicyRule{{Name: "redirect", ToolPattern: "^echo$", Action: config.ActionRedirect, RedirectProfile: "audited"}},
 					}),
 				}.WithV3ReceiptWriter(writer)
+				capture := &toolPolicyCaptureObserver{}
+				opts.CaptureObs = capture
 				var client bytes.Buffer
 				in := strings.NewReader(cleanToolsCallRequest + "\n")
 				if surface == transportMCPStdio {
@@ -1378,6 +1473,13 @@ func TestMCPV3PolicyRedirectRefusal(t *testing.T) {
 				}
 				if err != nil {
 					t.Fatal(err)
+				}
+				if surface == transportMCPStdio {
+					records := capture.snapshot()
+					if len(records) != 1 || records[0].EffectiveAction != config.ActionBlock ||
+						len(records[0].RawFindings) != 1 || records[0].RawFindings[0].Action != config.ActionRedirect {
+						t.Fatalf("redirect refusal capture = %+v", records)
+					}
 				}
 				if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
 					t.Errorf("redirect handler ran or marker check failed: %v", err)
@@ -1560,7 +1662,7 @@ func TestMCPV3WebSocketSendWithoutReply(t *testing.T) {
 					if msg != tc.request {
 						t.Fatalf("unexpected notification: %q", msg)
 					}
-				default:
+				case <-time.After(testwait.Deadline(5 * time.Second)):
 					t.Fatal("notification did not reach upstream")
 				}
 			}
@@ -1576,7 +1678,6 @@ func TestMCPV3WebSocketSendWithoutReply(t *testing.T) {
 
 func TestMCPV3WebSocketWriteFailureSettlesUnknown(t *testing.T) {
 	opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPWS)
-	upgraded := make(chan struct{})
 	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, _, _, err := ws.UpgradeHTTP(r, w)
 		if err != nil {
@@ -1584,7 +1685,6 @@ func TestMCPV3WebSocketWriteFailureSettlesUnknown(t *testing.T) {
 			return
 		}
 		defer func() { _ = conn.Close() }()
-		close(upgraded)
 		_, _ = io.Copy(io.Discard, conn)
 	}))
 	defer peer.Close()
@@ -1594,13 +1694,13 @@ func TestMCPV3WebSocketWriteFailureSettlesUnknown(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
+		// The HTTP upgrade is sent in a single buffered write. Fail the
+		// first subsequent write, which carries the application frame.
+		handshakeWritten := false
 		return settlementConn{Conn: conn, fail: func() bool {
-			select {
-			case <-upgraded:
-				return true
-			default:
-				return false
-			}
+			fail := handshakeWritten
+			handshakeWritten = true
+			return fail
 		}}, nil
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))

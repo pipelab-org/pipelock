@@ -94,6 +94,9 @@ func writeNativeAdmissionDenial(o MCPProxyOpts, logW io.Writer, out transport.Me
 		dropMCPInputNotification(o, logW, nativeAdmissionAudit(), frame)
 		return
 	}
+	descriptor := nativeAdmissionAudit()
+	denial.v3Evidence = mcpInputDenialEvidence(o, frame, descriptor, receipt.EmitOpts{})
+	inputMCPDenial(o, descriptor, &denial)
 	if writeErr := deliverMCPInputResult(o, denial, out); writeErr != nil {
 		_, _ = fmt.Fprintf(logW, "pipelock: write capacity refusal: %v\n", writeErr)
 	}

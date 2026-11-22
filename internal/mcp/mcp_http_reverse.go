@@ -1046,7 +1046,13 @@ func RunHTTPListenerProxy(
 		if w.localReply != nil {
 			w.localReply.exchange = &effect
 		}
-		defer effect.finish()
+		var endDeletedSession func()
+		defer func() {
+			effect.finish()
+			if endDeletedSession != nil {
+				endDeletedSession()
+			}
+		}()
 		clearReplySession := func() {
 			w.Header().Del("Mcp-Session-Id")
 			w.Header().Del(listenerSessionTokenHeader)
@@ -1652,25 +1658,29 @@ func RunHTTPListenerProxy(
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
 				return
 			}
-			if opts.DoWForgetSession != nil {
-				opts.DoWForgetSession(r.Header.Get("Mcp-Session-Id"))
-			}
-			if principalBound {
-				// Current MCP DELETE terminates upstream transport resources. It
-				// does not revoke the authenticated principal or erase firewall
-				// history shared by that principal's later requests.
-			} else if requireStateToken {
-				listenerClients.forget(listenerSessionToken)
-			} else if listenerPrincipal.key == "" {
-				listenerClients.forgetLegacySession(r.Header.Get("Mcp-Session-Id"))
-			}
-			// An authenticated principal whose state was not admitted holds no
-			// partition of its own, so it must not erase a legacy partition
-			// selected by a client-supplied session header that belongs to
-			// someone else.
 			recordTransportAdmissionResult(safeLogW, requestBaseOpts, admission, "completed", "session_deleted")
 			if admitReply() {
-				writeEffectStatus(upResp.StatusCode)
+				withListenerWriteDeadline(w, func() { writeEffectStatus(upResp.StatusCode) })
+			}
+			// Let the DELETE finish delivering and settling its own reply before
+			// revoking the state that owns the request's context.
+			endDeletedSession = func() {
+				if opts.DoWForgetSession != nil {
+					opts.DoWForgetSession(r.Header.Get("Mcp-Session-Id"))
+				}
+				if principalBound {
+					// Current MCP DELETE terminates upstream transport resources. It
+					// does not revoke the authenticated principal or erase firewall
+					// history shared by that principal's later requests.
+				} else if requireStateToken {
+					listenerClients.forget(listenerSessionToken)
+				} else if listenerPrincipal.key == "" {
+					listenerClients.forgetLegacySession(r.Header.Get("Mcp-Session-Id"))
+				}
+				// An authenticated principal whose state was not admitted holds no
+				// partition of its own, so it must not erase a legacy partition
+				// selected by a client-supplied session header that belongs to
+				// someone else.
 			}
 			return
 		}
@@ -2357,7 +2367,7 @@ func RunHTTPListenerProxy(
 			}
 			if !clientState.commitIfActive(func() {
 				commitMCPToolCall(baselineRec, mcpFrameBaselineIdentity(frame))
-				writeEffectStatus(http.StatusAccepted)
+				withListenerWriteDeadline(w, func() { writeEffectStatus(http.StatusAccepted) })
 			}) {
 				rejectMissingListenerState(frame.ID, TrackedRequestOutcome{})
 			}

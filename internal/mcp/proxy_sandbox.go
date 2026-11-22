@@ -340,13 +340,16 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	timedOut := errors.Is(scanErr, transport.ErrResponseTimeout)
 
 	replyAdmissionFailed := errors.Is(scanErr, errMCPV3ReplyAdmission)
+	shortReplyWrite := errors.Is(scanErr, io.ErrShortWrite)
 
 	// Forwarding can fail while the sandboxed child is waiting for input.
 	// Terminate the owned child before waiting for its exit.
-	if (timedOut || replyAdmissionFailed) && sandboxCmd.Process != nil {
+	if (timedOut || replyAdmissionFailed || shortReplyWrite) && sandboxCmd.Process != nil {
 		reason := "upstream response timeout"
 		if replyAdmissionFailed {
 			reason = "reply receipt admission failure"
+		} else if shortReplyWrite {
+			reason = "short downstream frame write"
 		}
 		_, _ = fmt.Fprintf(safeLogW, "pipelock: terminating sandboxed MCP subprocess after %s\n", reason)
 		if c, ok := clientIn.(io.Closer); ok {

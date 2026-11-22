@@ -1412,11 +1412,13 @@ func ForwardScannedInput(
 			}, blockedCh)
 		case config.ActionRedirect:
 			if opts.receiptEffects.enabled {
+				effectiveAction = config.ActionBlock
 				denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPRedirect, mcpV3RedirectRefusal, audit.BlockClassProtective)
+				refusalErr := opts.refuseV3Reply(opts.warnContext(), receipt.EmitOpts{ActionID: receipt.NewActionID(), Method: method, Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(verdict.ID)})
 				sendInputDenial(opts, denialAudit, BlockedRequest{
 					ID: verdict.ID, IsNotification: isNotification,
 					LogMessage: mcpV3RedirectRefusal, ErrorCode: -32002, ErrorMessage: mcpV3RedirectRefusal,
-					v3RefusalSigned: opts.refuseV3Reply(opts.warnContext(), receipt.EmitOpts{ActionID: receipt.NewActionID(), Method: method, Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(verdict.ID)}) == nil,
+					v3RefusalSigned: refusalErr == nil, v3RefusalErr: refusalErr,
 				}, blockedCh)
 				break
 			}
@@ -1813,6 +1815,10 @@ func ForwardScannedInput(
 						if err := heldOpts.bindV3Send(effect); err != nil {
 							tracker.removeOwnedOutcome(heldID, registration)
 							refuse("request_tracking_failed")
+							if finishDeniedRelease != nil {
+								finishDeniedRelease()
+							}
+							sendInputDenial(denialOpts, nativeAdmissionAudit(), nativeAdmissionDenial(heldID, err), blockedCh)
 							return
 						}
 						attempted = true

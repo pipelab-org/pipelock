@@ -680,6 +680,10 @@ func RunHTTPProxy(
 						if err := heldOpts.bindV3Send(effect); err != nil {
 							tracker.removeOwnedOutcome(deferredReq.ID, registration)
 							refuse("request_tracking_failed")
+							if finishDeniedRelease != nil {
+								finishDeniedRelease()
+							}
+							writeNativeAdmissionDenial(denialOpts, safeLogW, safeClientOut, deferredReq.authorityFrame, err)
 							return
 						}
 						attempted = true
@@ -897,6 +901,7 @@ func RunHTTPProxy(
 
 		effect, admitErr := fwdOpts.startV3Send(ctx, frame, decision.v3Evidence)
 		if admitErr != nil {
+			decision.Outcome.settle(safeLogW, fwdOpts, "blocked", -1, "receipt_admission_failed")
 			logMCPV3Error(safeLogW, admitErr)
 			_ = fwdOpts.writeV3SendDenial(safeLogW, wireClientOut, frame, effect)
 			continue

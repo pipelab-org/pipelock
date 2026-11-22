@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -107,7 +108,14 @@ func TestMCPV3BlockedNotificationRefusal(t *testing.T) {
 			var err error
 			switch surface {
 			case deferred.SurfaceMCPStdio:
-				err = RunProxy(t.Context(), input, observer, io.Discard, []string{"sh", "-c", "cat >/dev/null"}, opts)
+				seen := filepath.Join(t.TempDir(), "stdin")
+				err = RunProxy(t.Context(), input, observer, io.Discard, []string{"sh", "-c", `cat > "$1"`, "peer", seen}, opts)
+				if err == nil {
+					body, readErr := os.ReadFile(filepath.Clean(seen))
+					if readErr != nil || len(body) != 0 {
+						t.Fatalf("blocked notification reached stdio peer: %q, read error: %v", body, readErr)
+					}
+				}
 			case deferred.SurfaceMCPWS:
 				err = RunWSProxy(t.Context(), input, observer, io.Discard, "ws"+strings.TrimPrefix(upstream.URL, "http"), opts)
 			default:
@@ -1814,4 +1822,283 @@ func TestMCPV3StdioShutdownBoundsBlockedDenialDrain(t *testing.T) {
 			return action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.OutcomeClass == "attempt_unknown"
 		})
 	}, "interrupted denial write did not settle")
+}
+
+func TestMCPV3NativeRequestRefusalAttribution(t *testing.T) {
+	opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPHTTPUpstream)
+	frame := ParseMCPFrame([]byte(jsonToolsCallEcho))
+	out := opts.localV3ReplyWriter(transport.NewStdioWriter(client), io.Discard, nil)
+	writeNativeAdmissionDenial(opts, io.Discard, out, frame, errors.New("capacity unavailable"))
+	assertLocalMCPErrors(t, client.output.String(), "1")
+	actions := localMCPReceiptActions(t, writer, client.dir)
+	if len(actions) != 3 || actions[0].Method != "tools/call" || actions[0].Target != "echo" ||
+		actions[0].Pattern != nativeAdmissionAudit().pattern {
+		t.Fatalf("capacity refusal attribution = %+v", actions)
+	}
+}
+
+func TestMCPV3HTTPBridgeSendRefusalSettlesLegacyAllow(t *testing.T) {
+	opts, _, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true, scenario: "intent write fail"}, deferred.SurfaceMCPHTTPUpstream)
+	emitter, _, dir, _ := newReceiptTestHarness(t)
+	opts.ReceiptEmitter = emitter
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("unadmitted request reached upstream")
+	}))
+	defer upstream.Close()
+	if err := RunHTTPProxy(t.Context(), strings.NewReader(jsonToolsCallEcho+"\n"), client, io.Discard, upstream.URL, nil, opts); err != nil {
+		t.Fatal(err)
+	}
+	var intent, outcome bool
+	for _, r := range readActionReceipts(t, dir) {
+		a := r.ActionRecord
+		intent = intent || a.DecisionPhase == receipt.DecisionPhaseIntent
+		outcome = outcome || a.DecisionPhase == receipt.DecisionPhaseOutcome && strings.Contains(a.Pattern, "reason=receipt_admission_failed")
+	}
+	if !intent || !outcome {
+		t.Fatalf("legacy allow intent=%t blocked outcome=%t", intent, outcome)
+	}
+}
+
+func TestMCPV3StdioShortReplyStopsChild(t *testing.T) {
+	t.Run("subprocess", func(t *testing.T) { checkMCPV3StdioShortReplyStopsChild(t, false) })
+	t.Run("sandbox wrapper", func(t *testing.T) { checkMCPV3StdioShortReplyStopsChild(t, true) })
+}
+
+func checkMCPV3StdioShortReplyStopsChild(t *testing.T, sandboxed bool) {
+	t.Helper()
+	opts, _, _ := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, transportMCPStdio)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	in, send := io.Pipe()
+	defer func() { _ = send.Close() }()
+	done := make(chan error, 1)
+	cmd := []string{"sh", "-c", `IFS= read -r call && printf '%s\n' "$1" && read -r next`, "peer", heldNativeReply}
+	go func() {
+		if sandboxed {
+			child := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+			done <- runProxyWithSandbox(ctx, child, child.Start, in, shortReplyWriter{}, io.Discard, opts)
+			return
+		}
+		done <- RunProxy(ctx, in, shortReplyWriter{}, io.Discard, cmd, opts)
+	}()
+	if _, err := io.WriteString(send, jsonToolsCallEcho+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, io.ErrShortWrite) {
+			t.Fatalf("proxy stopped with %v", err)
+		}
+	case <-time.After(testwait.Deadline(2 * time.Second)):
+		_ = send.Close()
+		cancel()
+		err := <-done
+		t.Fatalf("short response left the child waiting for input: %v", err)
+	}
+}
+
+func TestMCPV3ListenerLegacyDeleteDeliversStatus(t *testing.T) {
+	opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPHTTPListener)
+	opts.ChainMatcher = buildBlockChainMatcher()
+	forgot := make(chan error, 1)
+	opts.DoWForgetSession = func(string) {
+		actions, err := decodeMCPMatrixReceiptFiles(client.dir, true)
+		if err == nil && !slices.ContainsFunc(actions, func(action v3.Action) bool {
+			return action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.OutcomeClass == "completed"
+		}) {
+			err = errors.New("session cleanup ran before DELETE delivery settled")
+		}
+		forgot <- err
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Errorf("unexpected request method %s", r.Method)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	base, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, base, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Mcp-Session-Id", "example-session")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+	}
+	select {
+	case err := <-forgot:
+		if err != nil {
+			t.Error(err)
+		}
+	case <-time.After(testwait.Deadline(time.Second)):
+		t.Fatal("DELETE did not clean up the session")
+	}
+	actions := localMCPReceiptActions(t, writer, client.dir)
+	if len(actions) != 4 || actions[3].EffectBoundary != mcpDownstreamDeliveryBoundary || actions[3].OutcomeClass != "completed" {
+		t.Fatalf("DELETE receipt history = %+v", actions)
+	}
+}
+
+func TestMCPV3StdioRedirectRefusalRetainsWriteError(t *testing.T) {
+	opts, _, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true, scenario: "intent write fail"}, transportMCPStdio)
+	opts = opts.withV3Session()
+	opts.PolicyCfg = policy.New(config.MCPToolPolicy{
+		Enabled: true, Action: config.ActionWarn,
+		RedirectProfiles: map[string]config.RedirectProfile{
+			"fixture": {Exec: []string{"true"}, Reason: "audited operation"},
+		},
+		Rules: []config.ToolPolicyRule{{Name: "redirect", ToolPattern: "^echo$", Action: config.ActionRedirect, RedirectProfile: "fixture"}},
+	})
+	blocked := make(chan BlockedRequest, 1)
+	ForwardScannedInput(transport.NewStdioReader(strings.NewReader(cleanToolsCallRequest+"\n")),
+		deferredReleaseFailWriter{}, io.Discard, config.ActionWarn, config.ActionBlock, blocked, nil, NewRequestTracker(), opts)
+	select {
+	case refusal := <-blocked:
+		if refusal.v3RefusalErr == nil || refusal.v3RefusalSigned {
+			t.Fatalf("refusal lost the first write failure: %+v", refusal)
+		}
+		out := opts.localV3ReplyWriter(transport.NewStdioWriter(client), io.Discard, nil)
+		if err := deliverMCPInputResult(opts, refusal, out); !errors.Is(err, errMCPV3ReplyAdmission) || client.output.Len() != 0 {
+			t.Fatalf("failed refusal delivery: error=%v, output=%q", err, client.output.String())
+		}
+	default:
+		t.Fatal("missing redirect refusal")
+	}
+}
+
+func TestMCPV3DeferredStdioBindFailureDeliversTerminalDenial(t *testing.T) {
+	opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, transportMCPStdio)
+	opts = opts.withV3Session()
+	opts.DeferManager = deferred.NewManager(deferred.Config{Enabled: true})
+	opts.v3Session.pending["1"] = &mcpV3Exchange{}
+	policyCfg := deferApprovalPolicy(config.DeferResolverProfile{})
+	policyCfg.Rules[0].ResolutionPolicy.ResolverProfile = ""
+	opts.PolicyCfg = policyCfg
+	tracker := NewRequestTracker()
+	blocked := make(chan BlockedRequest, 1)
+	input, feed := io.Pipe()
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		_ = feed.Close()
+		select {
+		case <-done:
+		case <-time.After(testwait.Deadline(5 * time.Second)):
+			t.Error("stdio input loop did not stop")
+		}
+	})
+	var upstream bytes.Buffer
+	go func() {
+		defer close(done)
+		ForwardScannedInput(transport.NewStdioReader(input), transport.NewStdioWriter(&upstream), io.Discard,
+			config.ActionWarn, config.ActionBlock, blocked, nil, tracker, opts)
+	}()
+	if _, err := io.WriteString(feed, deferKillTestCall); err != nil {
+		t.Fatal(err)
+	}
+	testwait.For(t, time.Second, func() bool { return opts.DeferManager.HeldCount() == 1 }, "confirmed hold")
+	hold := opts.DeferManager.Snapshot()[0]
+	if err := opts.DeferManager.Resolve(hold.DeferID, config.ActionAllow, deferred.SourceApproval); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case denial := <-blocked:
+		if denial.ErrorCode != -32007 || canonicalID(denial.ID) != "1" {
+			t.Fatalf("wrong terminal denial: %+v", denial)
+		}
+	default:
+		t.Fatal("failed deferred bind did not produce a terminal denial")
+	}
+	if upstream.Len() != 0 || tracker.HasPending() {
+		t.Fatalf("failed bind forwarded %q, pending=%t", upstream.String(), tracker.HasPending())
+	}
+	for _, action := range localMCPReceiptActions(t, writer, client.dir) {
+		if action.ActionID == hold.ActionID && action.EffectBoundary == mcpUpstreamSendBoundary && action.OutcomeClass == "not_released" {
+			return
+		}
+	}
+	t.Fatal("missing not_released settlement after failed bind")
+}
+
+func TestMCPV3DeferredHTTPBindFailureDeliversTerminalDenial(t *testing.T) {
+	opts, _, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPHTTPUpstream)
+	fixture := nativeDeferredOptions(t, nil)
+	opts.Scanner, opts.InputCfg = fixture.Scanner, fixture.InputCfg
+	opts.DeferManager = deferred.NewManager(deferred.Config{Enabled: true})
+	parked := make(chan struct{})
+	releasePeer := make(chan struct{})
+	var first sync.Once
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		valid := false
+		first.Do(func() { valid = true })
+		if !valid {
+			t.Error("held request reached upstream after bind failure")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			t.Error(err)
+			return
+		}
+		close(parked)
+		select {
+		case <-releasePeer:
+		case <-r.Context().Done():
+		}
+	}))
+	defer upstream.Close()
+	defer close(releasePeer)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
+	defer cancel()
+	input, feed := io.Pipe()
+	defer func() { _ = feed.Close() }()
+	var output lockedHTTPBuffer
+	done := make(chan error, 1)
+	go func() { done <- RunHTTPProxy(ctx, input, &output, io.Discard, upstream.URL, nil, opts) }()
+	defer func() {
+		cancel()
+		_ = feed.Close()
+		select {
+		case err := <-done:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				t.Error(err)
+			}
+		case <-time.After(testwait.Deadline(time.Second)):
+			t.Error("HTTP bridge did not stop")
+		}
+	}()
+	if _, err := io.WriteString(feed, heldNativeCall+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	testwait.For(t, time.Second, func() bool { return opts.DeferManager.HeldCount() == 1 }, "confirmed hold")
+	hold := opts.DeferManager.Snapshot()[0]
+	if _, err := io.WriteString(feed, jsonToolsCallEcho+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-parked:
+	case <-ctx.Done():
+		t.Fatal("clean request did not reach upstream")
+	}
+	if err := opts.DeferManager.Resolve(hold.DeferID, config.ActionAllow, deferred.SourceApproval); err != nil {
+		t.Fatal(err)
+	}
+	if !output.contains("request ID already awaiting a v3 receipt outcome") {
+		t.Fatal("failed HTTP bind did not deliver a terminal denial")
+	}
+	actions, err := decodeMCPMatrixReceiptFiles(client.dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(actions, func(action v3.Action) bool {
+		return action.ActionID == hold.ActionID && action.EffectBoundary == mcpUpstreamSendBoundary && action.OutcomeClass == "not_released"
+	}) {
+		t.Fatal("missing not_released settlement after failed HTTP bind")
+	}
 }

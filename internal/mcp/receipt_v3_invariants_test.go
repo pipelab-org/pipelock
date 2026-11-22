@@ -27,9 +27,9 @@ func checkMCPReceiptHistory(actions []v3.Action, deliveries ...mcpReceiptDeliver
 		id     string
 		number int64
 	}
-	intents := make(map[attempt]v3.Action)
-	outcomes := make(map[attempt]v3.Action)
-	for _, action := range actions {
+	intents := make(map[attempt]int)
+	outcomes := make(map[attempt]int)
+	for index, action := range actions {
 		if action.Phase != "intent" && action.Phase != "outcome" {
 			continue
 		}
@@ -44,15 +44,16 @@ func checkMCPReceiptHistory(actions []v3.Action, deliveries ...mcpReceiptDeliver
 		if _, exists := phase[key]; exists {
 			return fmt.Errorf("action %s attempt %d has duplicate %s records", key.id, key.number, action.Phase)
 		}
-		phase[key] = action
+		phase[key] = index
 	}
 	for key := range intents {
 		if _, exists := outcomes[key]; !exists {
 			return fmt.Errorf("action %s attempt %d has no terminal outcome", key.id, key.number)
 		}
 	}
-	for key, outcome := range outcomes {
-		intent, exists := intents[key]
+	for key, outcomeIndex := range outcomes {
+		outcome := actions[outcomeIndex]
+		intentIndex, exists := intents[key]
 		if outcome.OutcomeClass == "not_released" {
 			if outcome.Verdict != "block" || outcome.EffectRelation != "not_attempted" {
 				return fmt.Errorf("action %s attempt %d has a malformed refusal", key.id, key.number)
@@ -64,6 +65,10 @@ func checkMCPReceiptHistory(actions []v3.Action, deliveries ...mcpReceiptDeliver
 		if !exists {
 			return fmt.Errorf("action %s attempt %d has an outcome without its intent", key.id, key.number)
 		}
+		if intentIndex >= outcomeIndex {
+			return fmt.Errorf("action %s attempt %d has an outcome before its intent", key.id, key.number)
+		}
+		intent := actions[intentIndex]
 		if intent.ActionType != outcome.ActionType || intent.Transport != outcome.Transport ||
 			intent.Method != outcome.Method || intent.Target != outcome.Target || intent.EffectBoundary != outcome.EffectBoundary {
 			return fmt.Errorf("action %s attempt %d has inconsistent effect fields", key.id, key.number)
@@ -129,6 +134,7 @@ func TestMCPReceiptHistoryInvariants(t *testing.T) {
 		{name: "duplicate block", actions: []v3.Action{block, block}, want: "2 block decisions"},
 		{name: "completed blocked delivery", actions: []v3.Action{block, intent, completed}, want: "1 block decisions"},
 		{name: "missing intent", actions: []v3.Action{completed}, want: "without its intent"},
+		{name: "outcome before intent", actions: []v3.Action{completed, intent}, want: "before its intent"},
 		{name: "recovery without intent", actions: []v3.Action{recovery}},
 		{name: "different bytes", actions: []v3.Action{intent, completed}, delivery: mcpReceiptDelivery{sent: []byte("sent")}, want: "different from what was sent"},
 		{name: "withheld payload", actions: []v3.Action{block, intent, completed}, delivery: mcpReceiptDelivery{withheldPayload: []byte("upstream"), received: []byte("denial\nupstream"), denialDelivered: true}, want: "withheld upstream payload"},

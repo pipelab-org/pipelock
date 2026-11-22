@@ -2352,14 +2352,17 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, tracker, fwdOpts)
 	timedOut := errors.Is(scanErr, transport.ErrResponseTimeout)
 	replyAdmissionFailed := errors.Is(scanErr, errMCPV3ReplyAdmission)
+	shortReplyWrite := errors.Is(scanErr, io.ErrShortWrite)
 
 	// The child may still be waiting for input when forwarding stops after a
-	// response timeout or a reply receipt failure. Close input and terminate
+	// response timeout, a reply receipt failure, or a short frame write. Close input and terminate
 	// the child before waiting. The post-Wait teardown reaps descendants.
-	if (timedOut || replyAdmissionFailed) && cmd.Process != nil {
+	if (timedOut || replyAdmissionFailed || shortReplyWrite) && cmd.Process != nil {
 		reason := "upstream response timeout"
 		if replyAdmissionFailed {
 			reason = "reply receipt admission failure"
+		} else if shortReplyWrite {
+			reason = "short downstream frame write"
 		}
 		_, _ = fmt.Fprintf(safeLogW, "pipelock: terminating MCP subprocess after %s\n", reason)
 		if c, ok := clientIn.(io.Closer); ok {
@@ -2431,7 +2434,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: timed out waiting for MCP input drain after upstream response timeout\n")
 		}
 		emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker, fwdOpts)
-	} else if sessionExit.inProgress() || replyAdmissionFailed {
+	} else if sessionExit.inProgress() || replyAdmissionFailed || shortReplyWrite {
 		// An arbitrary io.Reader cannot be interrupted by closing the client
 		// side. Once session teardown has killed the server, do not let one
 		// such reader keep the proxy alive indefinitely.
@@ -2447,6 +2450,8 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		reason := "session_exit"
 		if replyAdmissionFailed {
 			reason = "receipt_admission_failed"
+		} else if shortReplyWrite {
+			reason = "downstream_write_failed"
 		}
 		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, reason)
 	} else {
