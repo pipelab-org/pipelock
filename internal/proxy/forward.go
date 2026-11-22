@@ -2725,19 +2725,6 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	responseBudgetTruncated := false
 
-	// A reload while the body was read can revoke the replay evidence that
-	// relieved the URL. Refuse rather than send on revoked evidence.
-	if replayUsed && !replay.current() {
-		p.logger.LogBlocked(actx, issuerQueryReplayStaleLayer, "replay evidence revoked before send")
-		p.metrics.RecordBlocked(r.URL.Hostname(), issuerQueryReplayStaleLayer, time.Since(start), agentLabel)
-		outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, issuerQueryReplayStaleLayer
-		outcomeReceipt.Verdict = config.ActionBlock
-		writeBlockedError(w,
-			blockInfoFor(blockreason.QueryEntropy, issuerQueryReplayStaleLayer).WithRequestID(requestID),
-			"blocked: query replay evidence revoked before send", http.StatusForbidden)
-		return
-	}
-
 	upstreamEffect, effectErr := p.admitEffect(r.Context(), cfg, forwardAllowReceipt, boundaryUpstreamSend)
 	if effectErr != nil {
 		writeReceiptEffectRefusal(w, forwardAllowReceipt.RequestID)
@@ -2753,6 +2740,19 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		outcomeReceipt.TaintDecision = session.PolicyBlock.String()
 		outcomeReceipt.TaintDecisionReason = session.TaskApprovalStale
 		writeTaskDenialResponse(session.TaskApprovalStale, staleTaskDetail)
+		return
+	}
+	// A reload while the body was read or admission waited can revoke the
+	// replay evidence that relieved the URL. Refuse rather than send on it.
+	if replayUsed && !replay.current() {
+		p.refuseAdmittedEffect(r.Context(), forwardAllowReceipt, upstreamEffect)
+		p.logger.LogBlocked(actx, issuerQueryReplayStaleLayer, "replay evidence revoked before send")
+		p.metrics.RecordBlocked(r.URL.Hostname(), issuerQueryReplayStaleLayer, time.Since(start), agentLabel)
+		outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, issuerQueryReplayStaleLayer
+		outcomeReceipt.Verdict = config.ActionBlock
+		writeBlockedError(w,
+			blockInfoFor(blockreason.QueryEntropy, issuerQueryReplayStaleLayer).WithRequestID(requestID),
+			"blocked: query replay evidence revoked before send", http.StatusForbidden)
 		return
 	}
 	resp, err := replay.forwardClient(p.client).Do(outReq)

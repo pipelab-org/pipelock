@@ -2462,15 +2462,6 @@ func newInterceptHandler(
 		if seconds := ic.Config.FetchProxy.TimeoutSeconds; seconds > 0 {
 			interceptUpstream = &upstreamBodyStallTransport{base: upstream, stall: time.Duration(seconds) * time.Second}
 		}
-		// A reload while the body was read can revoke the replay evidence that
-		// relieved the URL. Refuse rather than send on revoked evidence.
-		if replayRelieved && !replay.current() {
-			ic.Logger.LogBlocked(actx, issuerQueryReplayStaleLayer, "replay evidence revoked before send")
-			writeBlockedError(w,
-				blockInfoFor(blockreason.QueryEntropy, issuerQueryReplayStaleLayer).WithRequestID(ic.RequestID),
-				"blocked: query replay evidence revoked before send", http.StatusForbidden)
-			return
-		}
 		upstreamEffect, effectErr := ic.Proxy.admitEffect(r.Context(), ic.Config, allowReceipt, boundaryUpstreamSend)
 		if effectErr != nil {
 			writeReceiptEffectRefusal(w, allowReceipt.RequestID)
@@ -2484,6 +2475,17 @@ func newInterceptHandler(
 				emitBlockedPostRoundTripOutcome(http.StatusForbidden, reason)
 				return
 			}
+		}
+		// A reload while the body was read or admission waited can revoke the
+		// replay evidence that relieved the URL. Refuse rather than send on it.
+		if replayRelieved && !replay.current() {
+			ic.Proxy.refuseAdmittedEffect(r.Context(), allowReceipt, upstreamEffect)
+			ic.Logger.LogBlocked(actx, issuerQueryReplayStaleLayer, "replay evidence revoked before send")
+			writeBlockedError(w,
+				blockInfoFor(blockreason.QueryEntropy, issuerQueryReplayStaleLayer).WithRequestID(ic.RequestID),
+				"blocked: query replay evidence revoked before send", http.StatusForbidden)
+			emitBlockedPostRoundTripOutcome(http.StatusForbidden, issuerQueryReplayStaleLayer)
+			return
 		}
 		resp, err := interceptUpstream.RoundTrip(r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{
 			GotConn: func(httptrace.GotConnInfo) {
