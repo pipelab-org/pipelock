@@ -244,6 +244,11 @@ func TestResponseOptimizerMatcherDifferential(t *testing.T) {
 		if rnd.Intn(4) != 0 {
 			parent = optimizerSanitize(patterns, parent)
 		}
+		// Replacing multibyte runes or sanitizing can shrink the parent below
+		// the memo floor. Pad it back so every iteration exercises the memo.
+		if short := responseMemoMinBytes - len(parent); short > 0 {
+			parent += strings.Repeat("~", short)
+		}
 		parentMemo := newResponseMatchMemo(len(parent))
 		parentMemo.buffers = &buffers
 		parentMemo.chainWindows = chainWindows
