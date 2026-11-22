@@ -42,6 +42,20 @@ func deferredAdmissionMessage(err error) string {
 	return "pipelock: " + err.Error()
 }
 
+func deferredResolutionPolicy(res deferred.Resolution) string {
+	var cascade *deferred.ReceiptCascade
+	if res.CascadeDepth > 0 || res.ParentDeferID != "" || res.Linkage != "" {
+		cascade = &deferred.ReceiptCascade{
+			ParentDeferID: res.ParentDeferID,
+			CascadeDepth:  res.CascadeDepth,
+			Linkage:       res.Linkage,
+		}
+	}
+	// Unconditional so capacity denials (no cascade context) still record the
+	// policy bounds; Cascade stays nil and marshals away via omitempty.
+	return deferred.ReceiptPolicyStringFor(deferred.ReceiptPolicyOptions{Bounds: res.Policy, Cascade: cascade})
+}
+
 func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
 	final := res.FinalDecision
 	if final == "" {
@@ -56,17 +70,6 @@ func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 	if final == config.ActionStepUp {
 		final = config.ActionAsk
 	}
-	var cascade *deferred.ReceiptCascade
-	if res.CascadeDepth > 0 || res.ParentDeferID != "" || res.Linkage != "" {
-		cascade = &deferred.ReceiptCascade{
-			ParentDeferID: res.ParentDeferID,
-			CascadeDepth:  res.CascadeDepth,
-			Linkage:       res.Linkage,
-		}
-	}
-	// Unconditional so capacity denials (no cascade context) still record the
-	// policy bounds; Cascade stays nil and marshals away via omitempty.
-	resolutionPolicy := deferred.ReceiptPolicyStringFor(deferred.ReceiptPolicyOptions{Bounds: res.Policy, Cascade: cascade})
 	shard := receipt.EmitOpts{ShardIndex: res.ShardIndex, ShardSelected: res.ShardSelected}
 	return emitMCPToolReceipt(mcpToolReceiptOpts{
 		ProxyOpts:       opts,
@@ -88,7 +91,7 @@ func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 		Durable:           true,
 		DecisionPhase:     receipt.DecisionPhaseResolution,
 		DeferID:           res.DeferID,
-		ResolutionPolicy:  resolutionPolicy,
+		ResolutionPolicy:  deferredResolutionPolicy(res),
 		ResolutionSource:  res.ResolutionSource,
 		SessionID:         res.Authority.SessionID,
 		SessionIDOriginal: res.Authority.SessionIDOriginal,

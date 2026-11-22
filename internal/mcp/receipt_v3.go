@@ -340,7 +340,7 @@ func (o MCPProxyOpts) confirmV3Hold(held *deferred.HeldAction, frame MCPFrame) {
 	held.ConfirmHold = func(ctx context.Context, h deferred.HeldAction) error {
 		hold := act
 		hold.Phase, hold.Verdict, hold.EffectRelation = "hold", config.ActionDefer, "before"
-		hold.Hold = &v3.Hold{ID: h.DeferID, Policy: deferred.ReceiptPolicyString(h.Policy, h.RulePolicy)}
+		hold.Hold = &v3.Hold{ID: h.DeferID, Parent: h.ParentDeferID, Policy: deferred.ReceiptPolicyString(h.Policy, h.RulePolicy)}
 		return o.receiptEffects.gate.RecordApproval(ctx, hold, policy)
 	}
 	held.ConfirmResolution = func(ctx context.Context, res deferred.Resolution) error {
@@ -357,7 +357,7 @@ func (o MCPProxyOpts) confirmV3Hold(held *deferred.HeldAction, frame MCPFrame) {
 		}
 		resolution.Hold = &v3.Hold{
 			ID: res.DeferID, ResolutionSource: res.ResolutionSource,
-			ResolutionPolicy: deferred.ReceiptPolicyStringFor(deferred.ReceiptPolicyOptions{Bounds: res.Policy}),
+			ResolutionPolicy: deferredResolutionPolicy(res),
 		}
 		return o.receiptEffects.gate.RecordApproval(ctx, resolution, policy)
 	}

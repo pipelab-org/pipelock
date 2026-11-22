@@ -174,6 +174,10 @@
       "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
       "when": "Reading or scanning an HTTP notification response fails."
     },
+    "internal/mcp/mcp_http_forward.go/(MCPProxyOpts).finishV3HTTPAcknowledgement/settle/21d11bcd7173835b": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "The HTTP bridge observes a 202 acknowledgement for a tracked POST."
+    },
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/6101ac2c91281dff": {
       "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
       "when": "The HTTP notification finishes without a scan error."
@@ -1573,7 +1577,7 @@
     "internal/contract/proxydecision/emitter.go/(*Emitter).emit/buildReceipt/ce97bd84bad0030c-2": "Constructs the v2 envelope using the selected decision and optional span evidence.",
     "internal/contract/receipt/content.go/(*Stamper).Record/RecordPrescanned/c9b7e73d9de20f2f": "Constructs or persists the signed v2 projection of the selected producer decision.",
     "internal/contract/runtime/receipt.go/buildEvidenceReceiptEnvelope/EvidenceReceipt/350f3da46c1f866b": "Constructs or persists the signed v2 projection of the selected producer decision.",
-    "internal/mcp/defer_resolution.go/EmitDeferredResolutionReceipt/emitMCPToolReceipt/e163d0052204e0b3": "Carries the effect boundary and decision context selected by its caller.",
+    "internal/mcp/defer_resolution.go/EmitDeferredResolutionReceipt/emitMCPToolReceipt/06c00bc8f3116375": "Carries the effect boundary and decision context selected by its caller.",
     "internal/mcp/defer_resolution.go/(*deferredReceiptSettlement).emit/emitDeferredResolutionReceipt/68bce8e19ea04f21": "Carries the effect boundary and decision context selected by its caller.",
     "internal/mcp/defer_resolution.go/emitDeferredResolutionReceipt/EmitDeferredResolutionReceipt/20c2d4cfaddde967": "Carries the effect boundary and decision context selected by its caller.",
     "internal/mcp/defer_resolution.go/emitHoldFailureResolution/emitDeferredResolutionReceipt/5240a32ea1a34822": "Carries the effect boundary and decision context selected by its caller.",
@@ -1744,6 +1748,7 @@
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/ecbedeb66dac528d": "upstream_send",
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/c00acddd4ea8cea4": "upstream_send",
     "internal/mcp/mcp_http_forward.go/settleBridgeNotificationScanError/settle/c273355d175e15c5": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/(MCPProxyOpts).finishV3HTTPAcknowledgement/settle/21d11bcd7173835b": "upstream_send",
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/6101ac2c91281dff": "upstream_send",
     "internal/mcp/mcp_http_forward.go/emitBridgeHeaderContractRefusal/settle/9dd5b4a3b8cdfb73": "upstream_send",
     "internal/mcp/mcp_http_input.go/scanHTTPInputDecision/emitMCPToolReceipt/e439f7d1f5545aed": "upstream_send",

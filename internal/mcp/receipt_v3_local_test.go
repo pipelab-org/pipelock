@@ -491,6 +491,47 @@ func TestMCPV3ListenerLegacyMethodReceipts(t *testing.T) {
 	}
 }
 
+func TestMCPV3NestedHoldRetainsLineage(t *testing.T) {
+	writer, writerOpts := openMCPV3RegressionWriter(t, transportMCPStdio)
+	proxy := MCPProxyOpts{Transport: transportMCPStdio}.WithV3ReceiptWriter(writer).withV3Session()
+	manager := deferred.NewManager(deferred.Config{Enabled: true})
+	parent := deferred.HeldAction{
+		DeferID: "parent", Authority: deferred.AuthoritySnapshot{SessionID: "session"},
+		Resolve: func(deferred.Resolution) {},
+	}
+	if err := manager.HoldContext(t.Context(), parent); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { manager.ResolveAll(config.ActionBlock, deferred.SourceCancel) })
+	child := parent
+	child.DeferID, child.ActionID, child.Method, child.Target = "child", "child-action", "tools/call", "echo"
+	var resolution deferred.Resolution
+	child.Resolve = func(result deferred.Resolution) { resolution = result }
+	proxy.confirmV3Hold(&child, MCPFrame{ID: []byte("1"), Method: child.Method})
+	if err := manager.HoldContext(t.Context(), child); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ResolveContext(t.Context(), child.DeferID, config.ActionBlock, deferred.SourceOperator); err != nil {
+		t.Fatal(err)
+	}
+	actions := verifiedMCPV3RegressionActions(t, writer, writerOpts)
+	if len(actions) != 2 {
+		t.Fatalf("got %d actions, want hold and resolution", len(actions))
+	}
+	if actions[0].Hold == nil || actions[0].Hold.Parent != parent.DeferID {
+		t.Errorf("hold lost parent: %+v", actions[0].Hold)
+	}
+	wantPolicy := deferred.ReceiptPolicyStringFor(deferred.ReceiptPolicyOptions{
+		Bounds: resolution.Policy,
+		Cascade: &deferred.ReceiptCascade{
+			ParentDeferID: parent.DeferID, CascadeDepth: 2, Linkage: deferred.LinkageSessionPendingAncestor,
+		},
+	})
+	if actions[1].Hold == nil || actions[1].Hold.ResolutionPolicy != wantPolicy {
+		t.Errorf("resolution lost cascade policy: %+v, want %q", actions[1].Hold, wantPolicy)
+	}
+}
+
 func TestMCPV3ApprovalStepUpRetainsChannel(t *testing.T) {
 	for _, source := range []string{deferred.SourceApproval, deferred.SourceOperator} {
 		t.Run(source, func(t *testing.T) {
