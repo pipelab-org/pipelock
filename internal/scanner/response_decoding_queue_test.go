@@ -12,7 +12,7 @@ func TestInjectionDecodeQueueSharedLines(t *testing.T) {
 	const prefix = "first view\r\n"
 	shared := strings.Repeat(strings.Repeat("common text ", 20)+"\r\n", 64)
 	first := prefix + shared + "end"
-	second := prefix + shared + "different end"
+	second := prefix + shared + "new"
 	q := newInjectionDecodeQueue("root", true)
 	digest, duplicate := q.lookup(first)
 	if duplicate {
@@ -30,7 +30,7 @@ func TestInjectionDecodeQueueSharedLines(t *testing.T) {
 		t.Fatal("packed duplicate found no exact entry")
 	}
 	secondDigest, _ := q.lookup(second)
-	q.packed[secondDigest] = []int{1}
+	q.packed[len(second)][secondDigest] = []int{1}
 	if _, duplicate := q.lookup(second); duplicate {
 		t.Fatal("a digest hit was accepted for different text")
 	}
@@ -94,6 +94,23 @@ func TestInjectionDecodeQueueFlatViews(t *testing.T) {
 			if _, duplicate := q.lookup(text); !duplicate {
 				t.Fatal("flat duplicate found no exact entry")
 			}
+		}
+	}
+}
+
+func TestInjectionDecodeQueueSparseEditLimit(t *testing.T) {
+	const padding = " a neutral sentence with enough shared text to align the next punctuation mark."
+	for _, count := range []int{matchingMaxEdits, matchingMaxEdits + 1} {
+		base := strings.Repeat("!"+padding, count)
+		child := strings.Repeat("?"+padding, count)
+		aligned := alignInjectionDecodeView(injectionDecodeView{text: base}, 0, child)
+		edits, _, ok := responseDeltaEdits(base, child)
+		if !ok || len(edits) != count {
+			t.Fatalf("expected an alignment with %d edits, got %d", count, len(edits))
+		}
+		stored, cost := aligned.prepare(child, len(child))
+		if packed := cost != 0 && stored.edits != nil; packed != (count == matchingMaxEdits) {
+			t.Fatalf("packing %d edits = %t, cost = %d", count, packed, cost)
 		}
 	}
 }

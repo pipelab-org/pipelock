@@ -41,7 +41,7 @@ func TestResponseLiteralChainParity(t *testing.T) {
 			text := padding + "\n" + fixture.text + padding
 			positions := newMatchingView(text, responseMatchingProgram(pf))
 			view := &responsePreFilterView{positions: positions}
-			ranges, applied := pf.chainRanges(text, view, patterns).patternWindows(p)
+			ranges, applied := pf.chainRanges(text, view, patterns, []int{0}, nil).patternWindows(p)
 			want := matchPatternsAgainst(patterns, text)
 			if !applied || (len(ranges) == 0) != fixture.empty || (len(want) == 0) != fixture.empty {
 				t.Fatalf("fixture did not exercise chain: applied=%t ranges=%d full matches=%d", applied, len(ranges), len(want))
@@ -135,7 +135,7 @@ func TestResponseLiteralChainCrossesWindowSeam(t *testing.T) {
 	text := strings.Repeat("~", responseMemoMinBytes-10) + "alpha--------bravo--------charlie" + strings.Repeat("~", responseMemoMinBytes)
 	positions := newMatchingView(text, responseMatchingProgram(filter))
 	view := &responsePreFilterView{positions: positions}
-	windows, applied := filter.chainRanges(text, view, patterns).patternWindows(p)
+	windows, applied := filter.chainRanges(text, view, patterns, []int{0}, nil).patternWindows(p)
 	if !applied || len(windows) != 1 || windows[0].start >= responseMemoMinBytes || windows[0].end <= responseMemoMinBytes {
 		t.Fatalf("expected one chain window straddling %d, got %v", responseMemoMinBytes, windows)
 	}
@@ -169,5 +169,39 @@ func TestResponseLiteralChainWindowMemoIdentity(t *testing.T) {
 	if !memo.contains(first.re, "ordinary") || memo.contains(other.re, "ordinary") ||
 		memo.contains(first.re, "Ordinary") || memo.contains(first.re, "ordinary!") {
 		t.Fatal("window miss must be keyed by exact regexp and text identity")
+	}
+}
+
+func TestResponseLiteralGateSkipsUnusedIndex(t *testing.T) {
+	pattern := memoTestPattern("Two markers", `alfa.{1,4}bravo`)
+	patterns := []*compiledPattern{pattern}
+	filter := newResponsePreFilter(patterns)
+	text := strings.Repeat("neutral;", responseMemoMinBytes)
+	view := &responsePreFilterView{positions: newMatchingView(text, responseMatchingProgram(filter))}
+	if view.positions == nil || filter.chains[pattern.re] == nil || filter.gates[0] == nil {
+		t.Fatal("fixture needs both a gate and a chain plan")
+	}
+	if got := matchPatternsPreFilteredWithMemo(filter, patterns, text, view); len(got) != 0 || view.positions.ready {
+		t.Fatalf("gate-rejected pattern returned %d matches or built its index: %t", len(got), view.positions.ready)
+	}
+}
+
+func TestResponseSparseDeltaSkipsWholeViewGate(t *testing.T) {
+	pattern := memoTestPattern("Two markers", `alfa.{1,4}bravo`)
+	patterns := []*compiledPattern{pattern}
+	filter := newResponsePreFilter(patterns)
+	padding := strings.Repeat("~", responseMemoMinBytes)
+	parent, child := padding+"neutral;", padding+"common;"
+	edits, _, ok := responseDeltaEdits(parent, child)
+	if !ok || len(edits) == 0 || pattern.re.MatchString(parent) {
+		t.Fatal("fixture requires a non-identical child and a negative parent")
+	}
+	key, _ := responseNegativePatternKey(pattern)
+	view := &responsePreFilterView{
+		positions: newMatchingView(child, responseMatchingProgram(filter)),
+		delta:     newResponseDeltaView(map[responseNegativeKey]struct{}{key: {}}, parent, edits),
+	}
+	if got := matchPatternsPreFilteredWithMemo(filter, patterns, child, view); len(got) != 0 || view.ready || view.positions.ready {
+		t.Fatalf("sparse negative used the whole view: matches=%d gate=%t index=%t", len(got), view.ready, view.positions.ready)
 	}
 }

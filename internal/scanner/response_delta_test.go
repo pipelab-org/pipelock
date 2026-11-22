@@ -291,7 +291,8 @@ func TestResponseNormalizedDeltaParity(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pad := strings.Repeat("quiet;", normalizedDeltaPadding) + " "
-			checkResponseNormalizedDelta(t, pad+tc.parent+" "+pad, pad+tc.child+" "+pad, tc.kind, regexp.MustCompile(tc.expression), true)
+			fixture := newResponseNormalizedDeltaFixture(regexp.MustCompile(tc.expression))
+			checkResponseNormalizedDelta(t, pad+tc.parent+" "+pad, pad+tc.child+" "+pad, tc.kind, fixture, true)
 		})
 	}
 }
@@ -318,36 +319,49 @@ func FuzzResponseNormalizedDeltaParity(f *testing.F) {
 		regexp.MustCompile(`\b(?:faxtara|fixture)\W+marker\b`),
 		regexp.MustCompile(`(?i)\bfixture\s+\S+@\S+`),
 	}
+	fixtures := make([]responseNormalizedDeltaFixture, len(patterns))
+	for i, re := range patterns {
+		fixtures[i] = newResponseNormalizedDeltaFixture(re)
+	}
+	pad := strings.Repeat("~", responseMemoMinBytes)
 	f.Fuzz(func(t *testing.T, source, replacement string, flags uint8) {
 		if len(source)+len(replacement) > 2048 {
 			t.Skip()
 		}
-		prefix := strings.Repeat("quiet;", normalizedDeltaPadding) + "\n"
-		suffix := "\n" + strings.Repeat(";quiet", normalizedDeltaPadding)
-		if flags&32 != 0 {
-			prefix = ""
-		}
-		if flags&64 != 0 {
-			suffix = ""
-		}
+		// Keep every generated input eligible for the memo. Vary where the
+		// editable bytes land, including at either edge.
+		at := int(flags>>5) * len(pad) / 7
+		prefix, suffix := pad[:at], pad[at:]
 		kind := matchingSpaced + matchingTransform(flags%3)
-		checkResponseNormalizedDelta(t, prefix+source+suffix, prefix+replacement+suffix, kind, patterns[int(flags)%len(patterns)], false)
+		checkResponseNormalizedDelta(t, prefix+source+suffix, prefix+replacement+suffix, kind, fixtures[int(flags)%len(fixtures)], false)
 	})
 }
 
-func checkResponseNormalizedDelta(t *testing.T, source, replacement string, kind matchingTransform, re *regexp.Regexp, requireDelta bool) {
+type responseNormalizedDeltaFixture struct {
+	patterns []*compiledPattern
+	filter   *responsePreFilter
+	program  *matchingLiterals
+}
+
+func newResponseNormalizedDeltaFixture(re *regexp.Regexp) responseNormalizedDeltaFixture {
+	patterns := []*compiledPattern{{name: "Fixture Marker", re: re, responseMemoRegexp: re}}
+	filter := newResponsePreFilter(patterns)
+	return responseNormalizedDeltaFixture{patterns, filter, responseMatchingProgram(filter)}
+}
+
+func checkResponseNormalizedDelta(t *testing.T, source, replacement string, kind matchingTransform, fixture responseNormalizedDeltaFixture, requireDelta bool) {
 	t.Helper()
-	pattern := &compiledPattern{name: "Fixture Marker", re: re, responseMemoRegexp: re}
+	pattern := fixture.patterns[0]
 	key, _ := responseNegativePatternKey(pattern)
 	parent := &responseDeltaParent{raw: source}
 	parentText := parent.matchingText(kind)
-	if re.MatchString(parentText) || len(replacement) < responseMemoMinBytes {
+	if pattern.re.MatchString(parentText) {
 		if requireDelta {
-			t.Fatal("fixture did not establish a clean, eligible parent")
+			t.Fatal("fixture did not establish a clean parent")
 		}
-		return
+	} else {
+		parent.proof[kind] = map[responseNegativeKey]struct{}{key: {}}
 	}
-	parent.proof[kind] = map[responseNegativeKey]struct{}{key: {}}
 	// The primary pass can prove other patterns empty independently of the
 	// negative for this pattern on the normalized variant under test.
 	parent.proof[matchingPrimary] = map[responseNegativeKey]struct{}{{regex: "unrelated fixture"}: {}}
@@ -368,11 +382,8 @@ func checkResponseNormalizedDelta(t *testing.T, source, replacement string, kind
 	if requireDelta && kind != matchingSpaced && !memo.deltaReady[kind] {
 		t.Fatal("fixture did not project the primary edit map")
 	}
-	patterns := []*compiledPattern{pattern}
-	pf := newResponsePreFilter(patterns)
-	program := responseMatchingProgram(pf)
-	memo.matchingView(matchingPrimary, primary, program)
-	got := memo.matchTransformed(pf, patterns, child, program, kind)
+	memo.matchingView(matchingPrimary, primary, fixture.program)
+	got := memo.matchTransformed(fixture.filter, fixture.patterns, child, fixture.program, kind)
 	want := matchResponsePattern(pattern, wantText)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("transform %d optimized = %+v, full = %+v", kind, got, want)

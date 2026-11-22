@@ -38,15 +38,15 @@ type responsePreFilter struct {
 // A view is owned by one sequential response scan and keyed by exact input
 // bytes in its memo. It shares the gate's derived text across pattern groups.
 type responsePreFilterView struct {
-	outboundMatch    func(*compiledPattern, string) []ResponseMatch
-	delta            *responseDeltaView
-	folded, distance string
-	literals         responseLiteralMemo
-	ready            bool
-	positions        *matchingView
-	buffers          *responseMatchingBuffers
-	maxWindowRun     int
-	windowRunReady   bool
+	outboundMatch  func(*compiledPattern, string) []ResponseMatch
+	delta          *responseDeltaView
+	folded         string
+	literals       responseLiteralMemo
+	ready          bool
+	positions      *matchingView
+	buffers        *responseMatchingBuffers
+	maxWindowRun   int
+	windowRunReady bool
 }
 
 // newResponsePreFilter builds a pre-filter from response patterns.
@@ -133,28 +133,29 @@ func (pf *responsePreFilter) patternsToCheckWithMemo(content string, cached *res
 		cached = &responsePreFilterView{}
 	}
 	var pairs responseGatePairs
-	legacyReady := false
+	gateReady := false
+	identical := cached.outboundMatch == nil && cached.delta != nil && len(cached.delta.edits) == 0
 	var view *responseFoldView
 	var forward *responseFoldView
 	hits := make([]int, 0, len(pf.gates))
 	for i, gate := range pf.gates {
+		if identical && cached.delta.isKnown(patterns[i]) {
+			continue
+		}
 		if chains != nil {
-			if windows, decided := chains.patternWindows(patterns[i]); decided {
-				if len(windows) == 0 {
-					continue
-				}
-				if responseChainWindowBytes(windows) <= len(content)/8 {
+			if windows, complete := chains.patternWindows(patterns[i]); complete {
+				if len(windows) != 0 {
 					hits = append(hits, i)
-					continue
 				}
+				continue
 			}
 		}
-		if !legacyReady {
+		if !gateReady {
 			pairs = cached.prepareLegacy(content)
-			legacyReady = true
+			gateReady = true
 		}
-		folded, distanceText, literals := cached.folded, cached.distance, cached.literals
-		if gate != nil && !gate.matchesWithPairs(content, folded, distanceText, literals, &pairs) {
+		folded, literals := cached.folded, cached.literals
+		if gate != nil && !gate.matchesWithPairs(content, folded, "", literals, &pairs) {
 			continue
 		}
 		if len(content) >= responseMemoMinBytes && len(content) <= responseMemoMaxBytes && i < len(pf.prefixes) && pf.prefixes[i] != nil {
@@ -202,7 +203,6 @@ func (pf *responsePreFilter) patternsToCheckWithMemo(content string, cached *res
 func (view *responsePreFilterView) prepareLegacy(content string) responseGatePairs {
 	if !view.ready {
 		view.folded = responseSimpleFold(content)
-		view.distance = responseDistanceText(view.folded)
 		view.ready = true
 	}
 	if view.literals == nil && len(content) >= responseMemoMinBytes && len(content) <= responseMemoMaxBytes {
@@ -212,16 +212,15 @@ func (view *responsePreFilterView) prepareLegacy(content string) responseGatePai
 	// retaining two filters on every cached view.
 	var pairs responseGatePairs
 	if positions := view.positions; positions != nil && positions.isASCII() {
-		// For ASCII text, simple-folded and raw text have identical byte
-		// coordinates. The gate verifies exact case in its selected text.
-		positions.index()
-		if positions.hits != nil {
-			pairs.positions = positions
-		}
+		pairs.positions = positions
 	}
-	if pairs.positions == nil {
+	// A missing pair rules out a literal without a substring search.
+	// Only build the index after repeated queries pass the pair filter.
+	if pairs.positions == nil || pairs.positions.hits == nil {
 		pairs.raw.add(content)
 		pairs.fold.add(view.folded)
+		pairs.pairsReady = true
+		pairs.densePairs = pairs.positions != nil && responseGatePairsDense(&pairs.fold)
 	}
 	return pairs
 }
@@ -286,11 +285,6 @@ func externalTransferGate(re *regexp.Regexp) *responseGate {
 
 func responseMatchingProgram(filters ...*responsePreFilter) *matchingLiterals {
 	var literals []string
-	for _, filter := range filters {
-		if filter != nil {
-			literals = append(literals, filter.chainLiterals...)
-		}
-	}
 	var collect func(*responseGate)
 	collect = func(g *responseGate) {
 		if g == nil {
@@ -318,6 +312,13 @@ func responseMatchingProgram(filters ...*responsePreFilter) *matchingLiterals {
 			for _, gate := range filter.gates {
 				collect(gate)
 			}
+		}
+	}
+	// Give gates and their fallback windows first use of the bounded
+	// index. A chain can fall back when a later anchor doesn't fit.
+	for _, filter := range filters {
+		if filter != nil {
+			literals = append(literals, filter.chainLiterals...)
 		}
 	}
 	program := newMatchingLiterals(literals)

@@ -3,7 +3,10 @@
 
 package scanner
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // injectionDecodeQueue retains exact views. Outbound scans can keep shared lines
 // instead of independent whole-text copies. Inbound scans can retain sparse
@@ -11,7 +14,7 @@ import "strings"
 type injectionDecodeQueue struct {
 	views  []storedInjectionView
 	flat   map[string]struct{}
-	packed map[[32]byte][]int
+	packed map[int]map[[32]byte][]int
 	lines  map[string]string
 	first  map[string]int
 }
@@ -25,8 +28,8 @@ type storedInjectionView struct {
 }
 
 type injectionDecodeEdit struct {
-	start, end  int
-	replacement string
+	sourceEnd, viewEnd int
+	replacement        string
 }
 
 func (q *injectionDecodeQueue) decodeView(index int) injectionDecodeView {
@@ -67,23 +70,28 @@ func (q *injectionDecodeQueue) walkViewText(index, start, end int, visit func(st
 	if stored.edits == nil {
 		return visit(stored.text[start:end])
 	}
+	first := sort.Search(len(stored.edits), func(i int) bool { return stored.edits[i].viewEnd > start })
 	at, source := 0, 0
-	for _, edit := range stored.edits {
-		unchanged := at + edit.start - source
+	if first > 0 {
+		prev := stored.edits[first-1]
+		at, source = prev.viewEnd, prev.sourceEnd
+	}
+	for _, edit := range stored.edits[first:] {
+		unchanged := edit.viewEnd - len(edit.replacement)
 		if unchanged > start && unchanged > at && !q.walkViewText(stored.parent, source+max(start-at, 0), source+min(end-at, unchanged-at), visit) {
 			return false
 		}
 		if unchanged >= end {
 			return true
 		}
-		next := unchanged + len(edit.replacement)
+		next := edit.viewEnd
 		if next > start && next > unchanged && !visit(edit.replacement[max(start-unchanged, 0):min(end-unchanged, len(edit.replacement))]) {
 			return false
 		}
 		if next >= end {
 			return true
 		}
-		at, source = next, edit.end
+		at, source = next, edit.sourceEnd
 	}
 	return q.walkViewText(stored.parent, source+max(start-at, 0), source+end-at, visit)
 }
@@ -100,7 +108,7 @@ func newInjectionDecodeQueue(root string, shareLines bool) injectionDecodeQueue 
 	q := injectionDecodeQueue{
 		views:  []storedInjectionView{{injectionDecodeView: injectionDecodeView{text: root}}},
 		flat:   map[string]struct{}{root: {}},
-		packed: make(map[[32]byte][]int),
+		packed: make(map[int]map[[32]byte][]int),
 	}
 	if shareLines {
 		q.lines = make(map[string]string)
@@ -114,11 +122,12 @@ func (q *injectionDecodeQueue) lookup(text string) (digest [32]byte, duplicate b
 	if _, exists := q.flat[text]; exists || text == "" {
 		return digest, true
 	}
-	if len(text) < injectionLineMinView {
+	packed := q.packed[len(text)]
+	if len(packed) == 0 {
 		return digest, false
 	}
 	digest = sum256String(text)
-	for _, index := range q.packed[digest] {
+	for _, index := range packed[digest] {
 		if q.equalText(index, text) {
 			return digest, true
 		}
@@ -199,7 +208,7 @@ type injectionDecodeAlignment struct {
 }
 
 func alignInjectionDecodeView(base injectionDecodeView, index int, text string) injectionDecodeAlignment {
-	edits, changed, ok := responseDeltaEdits(base.text, text)
+	edits, changed, ok := responseDeltaEditsWithin(base.text, text, matchingMaxEdits)
 	return injectionDecodeAlignment{base: base, index: index, edits: edits, changed: changed, ok: ok}
 }
 
@@ -232,7 +241,8 @@ func (q *injectionDecodeQueue) align(head int, parent, view injectionDecodeView)
 }
 
 // A packed child retains only its replacement bytes and edit records. Include
-// removed bytes in the charge and keep the flat path when packing costs more.
+// removed bytes in the charge. Only discount views within the matching index
+// edit limit, so densely edited views pay the full decode byte charge.
 func (a injectionDecodeAlignment) prepare(text string, remaining int) (storedInjectionView, int) {
 	cost := injectionPackedCost + a.cost()
 	if len(a.edits) == 0 || cost >= len(text) || cost > remaining {
@@ -241,7 +251,7 @@ func (a injectionDecodeAlignment) prepare(text string, remaining int) (storedInj
 	stored := storedInjectionView{parent: a.index, size: len(text), edits: make([]injectionDecodeEdit, 0, len(a.edits))}
 	for _, edit := range a.edits {
 		stored.edits = append(stored.edits, injectionDecodeEdit{
-			start: edit.sourceStart, end: edit.sourceEnd, replacement: strings.Clone(text[edit.viewStart:edit.viewEnd]),
+			sourceEnd: edit.sourceEnd, viewEnd: edit.viewEnd, replacement: strings.Clone(text[edit.viewStart:edit.viewEnd]),
 		})
 	}
 	return stored, cost
@@ -251,7 +261,15 @@ func (q *injectionDecodeQueue) add(stored storedInjectionView, view injectionDec
 	if stored.lines == nil && stored.edits == nil {
 		q.flat[view.text] = struct{}{}
 	} else {
-		q.packed[digest] = append(q.packed[digest], len(q.views))
+		if digest == ([32]byte{}) {
+			digest = sum256String(view.text)
+		}
+		packed := q.packed[stored.size]
+		if packed == nil {
+			packed = make(map[[32]byte][]int)
+			q.packed[stored.size] = packed
+		}
+		packed[digest] = append(packed[digest], len(q.views))
 		view.text = ""
 	}
 	stored.injectionDecodeView = view

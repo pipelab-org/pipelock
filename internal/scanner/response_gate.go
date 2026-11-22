@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"math/bits"
 	"regexp/syntax"
 	"sort"
 	"strings"
@@ -28,8 +29,38 @@ type responseGate struct {
 // responseGatePairs holds the pair filters of one prefilter call's raw and
 // folded text. A nil *responseGatePairs searches every literal.
 type responseGatePairs struct {
-	raw, fold bytePairFilter
-	positions *matchingView
+	raw, fold     bytePairFilter
+	positions     *matchingView
+	searches      int
+	distance      string
+	pairsReady    bool
+	densePairs    bool
+	distanceReady bool
+}
+
+// A few substring probes are cheaper than collecting every indexed literal
+// position. For a selective pair filter, wait for a machine word's worth
+// of surviving queries before building the index for the rest of the gate.
+func (p *responseGatePairs) usePositions(distinctPairs int) bool {
+	if p.positions == nil || p.positions.ready {
+		return p.positions != nil && p.positions.hits != nil
+	}
+	if distinctPairs < 2 {
+		return false
+	}
+	p.searches++
+	return p.densePairs || p.searches > bits.UintSize/8
+}
+
+// A populated byte-pair filter rarely rules out common identifier fragments.
+// Build the index on demand once the filter averages a machine word's byte
+// count of marked successors per bucket.
+func responseGatePairsDense(filter *bytePairFilter) bool {
+	count := 0
+	for _, bucket := range filter {
+		count += bits.OnesCount64(bucket)
+	}
+	return count >= len(filter)*(bits.UintSize/8)
 }
 
 type responseLiteralKey struct {
@@ -55,6 +86,13 @@ func (g *responseGate) matchesWithMemo(content, folded, distanceText string, mem
 
 func (g *responseGate) matchesWithPairs(content, folded, distanceText string, memo responseLiteralMemo, pairs *responseGatePairs) bool {
 	if g.near != nil {
+		if pairs != nil && distanceText == "" {
+			if !pairs.distanceReady {
+				pairs.distance = responseDistanceText(folded)
+				pairs.distanceReady = true
+			}
+			distanceText = pairs.distance
+		}
 		return g.near.matches(distanceText)
 	}
 	if g.literal != "" {
@@ -68,7 +106,9 @@ func (g *responseGate) matchesWithPairs(content, folded, distanceText string, me
 		}
 		var found bool
 		switch {
-		case pairs != nil && pairs.positions != nil:
+		case pairs != nil && pairs.pairsReady && g.hasFold && !pairs.fold.mayContain(g.pairs):
+		case pairs != nil && pairs.pairsReady && !g.hasFold && !pairs.raw.mayContain(g.pairs):
+		case pairs != nil && pairs.usePositions(len(g.pairs)):
 			if positions, complete := pairs.positions.positions(literal); complete {
 				for _, at := range positions {
 					if text[at:at+len(literal)] == literal {
@@ -79,8 +119,6 @@ func (g *responseGate) matchesWithPairs(content, folded, distanceText string, me
 			} else {
 				found = strings.Contains(text, literal)
 			}
-		case pairs != nil && g.hasFold && !pairs.fold.mayContain(g.pairs):
-		case pairs != nil && !g.hasFold && !pairs.raw.mayContain(g.pairs):
 		default:
 			found = strings.Contains(text, literal)
 		}
@@ -297,6 +335,9 @@ func isASCII(value string) bool {
 // Canonicalize each Unicode simple-fold orbit. Go's regexp (?i) uses these
 // orbits, including Kelvin sign and long s; ToLower alone is insufficient.
 func responseSimpleFold(value string) string {
+	if isASCII(value) {
+		return strings.ToUpper(value)
+	}
 	var out strings.Builder
 	out.Grow(len(value))
 	for _, r := range value {

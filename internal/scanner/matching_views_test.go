@@ -247,18 +247,27 @@ func TestMatchingViewResponseParity(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.ResponseScanning.Enabled = true
-	cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{
+	custom := []config.ResponseScanPattern{
 		{Name: "Case-sensitive catalog marker", Regex: `CATALOG marker[0-9]{2}`},
 		{Name: "Folded catalog mark", Regex: `(?i)catalog (?:mark[0-9]{2}|entry)`},
 	}
+	cfg.ResponseScanning.Patterns = append(cfg.ResponseScanning.Patterns, custom...)
 	sc, production, reference := MustNew(cfg), MustNew(cfg), MustNew(cfg)
 	t.Cleanup(sc.Close)
 	t.Cleanup(production.Close)
 	t.Cleanup(reference.Close)
 	responsePassReference(reference)
-	// The production index gives default literal chains priority. Isolate the
+	// The production index gives default patterns priority. Isolate the
 	// configured fixtures so their anchors are guaranteed space in the index.
-	sc.responseMatchingLiterals = responseMatchingProgram(sc.responsePreFilter)
+	var customPatterns []*compiledPattern
+	for _, compiled := range sc.responsePatterns {
+		for _, definition := range custom {
+			if compiled.name == definition.Name {
+				customPatterns = append(customPatterns, compiled)
+			}
+		}
+	}
+	sc.responseMatchingLiterals = responseMatchingProgram(newResponsePreFilter(customPatterns))
 	if sc.responseMatchingLiterals == nil {
 		t.Fatal("fixture has no compiled response literal program")
 	}

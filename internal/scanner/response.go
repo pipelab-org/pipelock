@@ -1191,10 +1191,20 @@ func matchPatternsPreFilteredWithMemo(pf *responsePreFilter, patterns []*compile
 	if view == nil {
 		view = &responsePreFilterView{}
 	}
-	chains := pf.chainRanges(content, view, patterns)
+	chains := pf.sparseDeltaRanges(content, view, patterns)
 	indices := pf.patternsToCheckWithMemo(content, view, patterns, chains)
 	if len(indices) == 0 {
 		return nil
+	}
+	chains = pf.chainRanges(content, view, patterns, indices, chains)
+	if len(chains) != 0 {
+		indices = slices.DeleteFunc(indices, func(i int) bool {
+			windows, complete := chains.patternWindows(patterns[i])
+			return complete && len(windows) == 0
+		})
+		if len(indices) == 0 {
+			return nil
+		}
 	}
 	// Large bodies spend most of their time in independent regexp engines.
 	// Keep each pattern's result in its original slot so match order, pass

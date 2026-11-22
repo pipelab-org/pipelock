@@ -189,6 +189,8 @@ func (v *matchingView) index() {
 	v.ready = true
 	hits := make([][]int, len(v.program.lengths))
 	if storage := v.responseBuffers; storage != nil {
+		// Position slices borrow the per-transform arena. The decode walk
+		// drops this memo's views before indexing another view into it.
 		if len(storage.positions) != len(hits) {
 			storage.positions = make([][]int, len(hits))
 		}

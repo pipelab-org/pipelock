@@ -162,11 +162,12 @@ func (s *Scanner) walkAdditionalInjectionViews(ctx context.Context, content, tar
 				remaining -= used
 			}
 			stored, cost := queue.prepare(view.text, remaining, !charge)
-			aligned := !outbound && view.label != "" && len(view.text) >= responseMemoMinBytes
+			sparse := charge && len(view.text) <= inboundSparseInjectionDecodeBytes-sparseExpanded
+			aligned := !outbound && view.label != "" && len(view.text) >= responseMemoMinBytes && (cost <= remaining || sparse)
 			var alignment injectionDecodeAlignment
 			if aligned {
 				alignment = queue.align(head, parent, view)
-				if charge && len(view.text) <= inboundSparseInjectionDecodeBytes-sparseExpanded {
+				if sparse {
 					if sparse, sparseCost := alignment.prepare(view.text, remaining); sparseCost != 0 {
 						stored, cost = sparse, sparseCost
 						sparseExpanded += len(view.text)
@@ -221,6 +222,7 @@ func (s *Scanner) walkAdditionalInjectionViews(ctx context.Context, content, tar
 				}
 			}
 			checked := s.scanResponseMatchesWithOptions(ctx, view.text, target, suppress, responseScanOptions{skipEncodedDecode: true}, memo)
+			memo.releaseMatchingViews()
 			if memo != nil && !outbound && checked.Clean && !checked.Failed() &&
 				len(checked.WarnedMatches)+len(checked.SuppressedMatches)+len(checked.ObservedCoreMatches) == 0 {
 				queue.views[len(queue.views)-1].proof = memo.deltaProof

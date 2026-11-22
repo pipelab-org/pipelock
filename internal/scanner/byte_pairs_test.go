@@ -74,7 +74,7 @@ func TestResponseGatePairsMatchPlainGates(t *testing.T) {
 		for _, content := range []string{normalize.ForMatching(raw), normalize.Leetspeak(normalize.ForMatching(raw))} {
 			folded := responseSimpleFold(content)
 			distance := responseDistanceText(folded)
-			var pairs responseGatePairs
+			pairs := responseGatePairs{pairsReady: true}
 			pairs.raw.add(content)
 			pairs.fold.add(folded)
 			for _, pf := range filters {

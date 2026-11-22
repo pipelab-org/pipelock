@@ -281,9 +281,6 @@ func (w *regexpWindowPlan) setLiteralAnchors(tree *syntax.Regexp, limit int) boo
 }
 
 func (pf *responsePreFilter) windowFallbackIndices(patterns []*compiledPattern, indices []int, chains responseChainRanges) []int {
-	if len(chains) == 0 {
-		return indices
-	}
 	var fallback []int
 	for _, i := range indices {
 		p := patterns[i]

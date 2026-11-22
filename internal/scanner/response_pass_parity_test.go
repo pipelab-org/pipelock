@@ -261,7 +261,7 @@ func TestResponsePassDerivedViewBounds(t *testing.T) {
 	patterns := []*compiledPattern{absent}
 	memo.match(newResponsePreFilter(patterns), patterns, content)
 	view := memo.filterViews[content]
-	if view == nil || view.ready || view.folded != "" || view.distance != "" {
+	if view == nil || view.ready || view.folded != "" {
 		t.Fatal("derived text exceeded the retention bound")
 	}
 	patterns = []*compiledPattern{positive}

@@ -539,8 +539,10 @@ type responseChainScratch struct {
 	folded        []byte
 }
 
-// The decode walk finishes matching a view before it admits another one.
-// Its scratch buffers may be reused by the next view of the same transform.
+// One responseMatchMemo borrows these buffers at a time. Its literal
+// positions, filtered hits and sorted stage hits can all alias the arenas.
+// The decode walk joins its workers and releases the views before lending
+// these buffers to the next memo; only the empty-pattern proofs survive.
 type responseMatchingBuffers struct {
 	chain responseChainScratch
 	views [matchingVowel + 1]responseViewBuffers
@@ -937,18 +939,63 @@ type responseChainKey struct {
 
 type responseChainRanges map[responseChainKey][]regexpWindowRange
 
-func (pf *responsePreFilter) chainRanges(content string, view *responsePreFilterView, patterns []*compiledPattern) responseChainRanges {
-	if view.positions == nil || view.outboundMatch != nil || len(pf.chains) == 0 && view.delta == nil {
+// An edit-local proof can resolve a pattern without scanning the whole view
+// to run a gate. Try it first only for sparse edits. Building a literal
+// index and planning full chains belongs after candidate selection.
+func (pf *responsePreFilter) sparseDeltaRanges(content string, view *responsePreFilterView, patterns []*compiledPattern) responseChainRanges {
+	delta := view.delta
+	if view.positions == nil || view.outboundMatch != nil || delta == nil || len(delta.edits) == 0 ||
+		len(delta.edits) > matchingMaxEdits || len(pf.deltaWidths) == 0 {
 		return nil
 	}
 	var ranges responseChainRanges
+	var scratch responseChainScratch
+	if view.buffers != nil {
+		scratch = view.buffers.chain
+		defer func() { view.buffers.chain = scratch }()
+	}
+	for _, pattern := range patterns {
+		if pattern.responseMemoRegexp != pattern.re || hasExternalTransferCompanions(pattern) ||
+			!delta.isKnown(pattern) || !responsePatternCanMatch(pattern, delta.parent) {
+			continue
+		}
+		if windows, complete := pf.deltaChainWindows(pattern.re, content, delta, &scratch); complete {
+			if ranges == nil {
+				ranges = make(responseChainRanges)
+			}
+			ranges[responseChainKey{pattern, pattern.re}] = windows
+		}
+	}
+	return ranges
+}
+
+func (pf *responsePreFilter) deltaChainWindows(re *regexp.Regexp, content string, delta *responseDeltaView, scratch *responseChainScratch) ([]regexpWindowRange, bool) {
+	width, bounded := pf.deltaWidths[re]
+	if !bounded {
+		return nil, false
+	}
+	windows, complete := delta.localRanges(content, width)
+	if !complete || responseChainWindowBytes(windows) > len(content)/8 {
+		return nil, false
+	}
+	return pf.chains[re].filterDeltaWindows(content, windows, scratch), true
+}
+
+func (pf *responsePreFilter) chainRanges(content string, view *responsePreFilterView, patterns []*compiledPattern, indices []int, ranges responseChainRanges) responseChainRanges {
+	if view.positions == nil || view.outboundMatch != nil || len(pf.chains) == 0 && view.delta == nil {
+		return nil
+	}
 	var localScratch responseChainScratch
 	scratch := &localScratch
 	if view.buffers != nil {
 		scratch = &view.buffers.chain
 	}
-	for _, pattern := range patterns {
+	for _, index := range indices {
+		pattern := patterns[index]
 		if pattern.responseMemoRegexp != pattern.re {
+			continue
+		}
+		if _, planned := ranges.patternWindows(pattern); planned {
 			continue
 		}
 		expressions := []*regexp.Regexp{pattern.re}
@@ -960,7 +1007,6 @@ func (pf *responsePreFilter) chainRanges(content string, view *responsePreFilter
 		if delta != nil && (!delta.isKnown(pattern) || !responsePatternCanMatch(pattern, delta.parent)) {
 			delta = nil
 		}
-		identical := delta != nil && len(delta.edits) == 0
 		// The parent verdict establishes no accepted companion findings.
 		// Rejected companion regex hits may still affect FindAll ordering.
 		if companions {
@@ -969,15 +1015,9 @@ func (pf *responsePreFilter) chainRanges(content string, view *responsePreFilter
 		for _, re := range expressions {
 			plan := pf.chains[re]
 			var windows []regexpWindowRange
-			complete := identical
-			if !complete && delta != nil {
-				if width, ok := pf.deltaWidths[re]; ok {
-					windows, complete = delta.localRanges(content, width)
-					complete = complete && responseChainWindowBytes(windows) <= len(content)/8
-					if complete {
-						windows = plan.filterDeltaWindows(content, windows, scratch)
-					}
-				}
+			complete := false
+			if delta != nil {
+				windows, complete = pf.deltaChainWindows(re, content, delta, scratch)
 			}
 			if !complete && plan != nil {
 				if plan.hasRuns {

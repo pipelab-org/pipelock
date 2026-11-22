@@ -23,6 +23,10 @@ const (
 // is checked for byte equality. A wrong resynchronization can only increase
 // the work or cause fallback; it cannot certify different bytes as equal.
 func responseDeltaEdits(parent, child string) ([]matchingEdit, int, bool) {
+	return responseDeltaEditsWithin(parent, child, responseDeltaMaxEdits)
+}
+
+func responseDeltaEditsWithin(parent, child string, maxEdits int) ([]matchingEdit, int, bool) {
 	if parent == child {
 		return nil, 0, true
 	}
@@ -40,7 +44,7 @@ func responseDeltaEdits(parent, child string) ([]matchingEdit, int, bool) {
 		if p == len(parent) && c == len(child) {
 			return edits, changed, true
 		}
-		if len(edits) == responseDeltaMaxEdits {
+		if len(edits) == maxEdits {
 			return nil, 0, false
 		}
 		dp, dc := responseDeltaResync(parent[p:], child[c:], &searchLeft)

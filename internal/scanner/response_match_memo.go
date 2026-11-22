@@ -43,6 +43,16 @@ func (m *responseMatchMemo) outboundError() error {
 	return m.outboundErr()
 }
 
+// releaseMatchingViews drops every view borrowing the walk's scratch buffers.
+// Only negative pattern proofs can outlive this call. Call it after the
+// matcher joins its workers and before the next memo can index into the buffers.
+func (m *responseMatchMemo) releaseMatchingViews() {
+	if m != nil && m.buffers != nil {
+		m.matchingRoot = nil
+		m.buffers = nil
+	}
+}
+
 type responseNormalizedView struct {
 	source, text string
 	ready        bool
@@ -266,11 +276,11 @@ func (m *responseMatchMemo) matchPositioned(pf *responsePreFilter, patterns []*c
 		m.filterViews = make(map[string]*responsePreFilterView)
 	}
 	if !retained {
-		size := len(view.folded) + len(view.distance)
+		size := len(view.folded)
 		if m.derivedBytes+size <= responseMemoMaxBytes {
 			m.derivedBytes += size
 		} else {
-			view.folded, view.distance, view.ready = "", "", false
+			view.folded, view.ready = "", false
 		}
 	}
 	m.filterViews[content] = view
