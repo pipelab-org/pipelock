@@ -6022,6 +6022,30 @@ func WithIssuerQueryAllowance(ctx context.Context, allows func(key, value string
 	return context.WithValue(ctx, issuerQueryAllowanceContextKey{}, allows)
 }
 
+type issuerQueryReplayAllowanceContextKey struct{}
+
+// WithIssuerQueryReplayAllowance supplies exact replay evidence for this scan.
+// Only ordinary query-value entropy consults it. The caller binds the evidence
+// to the session and origin that previously received the whole value.
+func WithIssuerQueryReplayAllowance(ctx context.Context, allows func(value string) bool) context.Context {
+	return context.WithValue(ctx, issuerQueryReplayAllowanceContextKey{}, allows)
+}
+
+// issuerQueryReplayRelieves applies replay relief to a whole-value score
+// only. A value carrying a nested URL keeps its per-component checks, so a
+// replayed URL cannot carry an opaque path, host, or key to another service.
+func issuerQueryReplayRelieves(ctx context.Context, value string) bool {
+	if _, nested := parseEntropyNestedURL(value); nested {
+		return false
+	}
+	return issuerQueryReplayAllowed(ctx, value)
+}
+
+func issuerQueryReplayAllowed(ctx context.Context, value string) bool {
+	allows, ok := ctx.Value(issuerQueryReplayAllowanceContextKey{}).(func(string) bool)
+	return ok && allows(value)
+}
+
 type issuerJoinedViewAllowanceContextKey struct{}
 
 // IssuerJoinedViewAllowance reports, for one request, whether every query
@@ -6236,7 +6260,8 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 			}
 			if finding, blocked := s.queryValueEntropy(v, 0); blocked {
 				if s.isQueryEntropyParamExcludedAt(parsed, key, now) || issuerQueryAllowed(ctx, key, v) ||
-					s.queryValueIsAudienceCredentialAt(parsed.String(), v, now) || s.releaseGrantSASQueryValueAllowedAt(parsed, key, now) || nativeOAuthQueryAllowed(ctx, key, v) {
+					s.queryValueIsAudienceCredentialAt(parsed.String(), v, now) || s.releaseGrantSASQueryValueAllowedAt(parsed, key, now) ||
+					nativeOAuthQueryAllowed(ctx, key, v) || issuerQueryReplayRelieves(ctx, v) {
 					relieved = true
 					continue
 				}

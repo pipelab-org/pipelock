@@ -30,12 +30,13 @@ import (
 
 const issuerQueryReceiptExtensionKey = "entropy_issuer_query_allow"
 
+const issuerQueryReplayReceiptKey = "entropy_issuer_query_replay_allow"
+
 // issuerJoinedViewReceiptKey labels a DLP joined-view allowance, which is not
 // a query entropy decision.
 const issuerJoinedViewReceiptKey = "dlp_issuer_joined_view_allow"
 
-// issuerQueryKind records how a value came to be issued, so the receipt for an
-// allowance says which rule admitted it.
+// issuerQueryKind identifies the evidence behind an allowance receipt.
 type issuerQueryKind string
 
 const (
@@ -47,6 +48,9 @@ const (
 	// issuerQueryJoinedView: the request's exact URL was served by its own
 	// origin, so DLP views that only join its query values were skipped.
 	issuerQueryJoinedView issuerQueryKind = "issued_joined_view"
+	// issuerQueryReplay: an earlier request carrying this exact raw query
+	// received a response from the same origin.
+	issuerQueryReplay issuerQueryKind = "exact_query_replay"
 )
 
 // issuerQueryMaxRedirects bounds the OAuth redirect_uri declarations kept per
@@ -1058,8 +1062,8 @@ func sameOriginBase(responseURL *url.URL, href string) (*url.URL, bool) {
 // config snapshot; under require_receipts every path that cannot durably
 // record the allow returns an error the caller must treat as fail-closed.
 // With require_receipts off it always returns nil (best-effort).
-// A combined DLP and entropy decision needs capacity for both allowances
-// before recording either. A single allowance fits the request reservation.
+// Reserve capacity for every relief kind used before recording any of
+// them. A single allowance fits the request reservation.
 func (ic *InterceptContext) recordIssuerQueryAllows(ctx audit.LogContext, r *http.Request, target string, kinds []issuerQueryKind) error {
 	selected := ic.receiptShard
 	if len(kinds) > 1 {
@@ -1096,19 +1100,26 @@ func (p *Proxy) recordIssuerQueryAllow(cfg *config.Config, ctx audit.LogContext,
 		return fail(fmt.Errorf("issuer query allow target: %w", err))
 	}
 	layer := issuerQueryReceiptExtensionKey
-	if kind == issuerQueryJoinedView {
+	switch kind {
+	case issuerQueryJoinedView:
 		layer = issuerJoinedViewReceiptKey
+	case issuerQueryReplay:
+		layer = issuerQueryReplayReceiptKey
 	}
 	if p.logger != nil {
-		if kind == issuerQueryJoinedView {
-			p.logger.LogDLPIssuerJoinedViewAllow(ctx, strings.ToLower(parsed.Hostname()))
-		} else {
-			p.logger.LogIssuerQueryAllow(ctx, strings.ToLower(parsed.Hostname()))
+		host := strings.ToLower(parsed.Hostname())
+		switch kind {
+		case issuerQueryJoinedView:
+			p.logger.LogDLPIssuerJoinedViewAllow(ctx, host)
+		case issuerQueryReplay:
+			p.logger.LogIssuerQueryReplayAllow(ctx, host)
+		default:
+			p.logger.LogIssuerQueryAllow(ctx, host)
 		}
 	}
 	switch kind {
 	case issuerQueryObserved, issuerQueryIssuedRedirect, issuerQueryOAuthRedirect, issuerQueryPageOrigin,
-		issuerQueryServerID, issuerQueryResourcePath, issuerQueryJoinedView:
+		issuerQueryServerID, issuerQueryResourcePath, issuerQueryJoinedView, issuerQueryReplay:
 	default:
 		kind = issuerQueryObserved
 	}
@@ -1118,11 +1129,13 @@ func (p *Proxy) recordIssuerQueryAllow(cfg *config.Config, ctx audit.LogContext,
 	if len(selected) > 0 {
 		shard = selected[0]
 	}
-	// Existing allowances are intercept-only. A delegated redirect also runs on
-	// fetch and at CONNECT, and its caller names the transport it ran on.
+	// Redirect and replay callers name their transport outside interception.
 	transport := "intercept"
 	if kind == issuerQueryIssuedRedirect && shard.Transport != "" {
 		transport = shard.Transport
+	}
+	if kind == issuerQueryReplay && shard.Transport == TransportForward {
+		transport = TransportForward
 	}
 	options := receipt.EmitOpts{
 		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,

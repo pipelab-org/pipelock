@@ -1044,7 +1044,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			}
 			interceptRec = sess
 		}
-		issuerRuntime, _ := r.Context().Value(ctxKeyConnectIssuerRuntime).(*issuerCookieRuntime)
+		issuerRuntime, _ := r.Context().Value(ctxKeyIssuerRuntime).(*issuerCookieRuntime)
 		if err := interceptTunnel(interceptCtx, interceptConn, &InterceptContext{
 			TargetHost:         host,
 			TargetPort:         port,
@@ -1308,8 +1308,27 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 	fwdScanCtx = scanner.WithOAuthAuthorizationMethod(fwdScanCtx, r.Method)
 	r = r.WithContext(fwdScanCtx)
-	result := sc.Scan(fwdScanCtx, targetURL)
+	snapshot, _ := r.Context().Value(ctxKeyIssuerRuntime).(*issuerCookieRuntime)
+	replay := p.issuerReplayScope(snapshot, cfg, agent, clientIP, id.Auth)
+	var replayUsed bool
+	result := sc.Scan(replay.scanContext(fwdScanCtx, r.URL, &replayUsed), targetURL)
 	p.metrics.RecordURLDecisions(TransportForward, result.Decisions)
+	if replayUsed && result.Allowed {
+		shard := selectedReceiptShard
+		shard.Transport = TransportForward
+		if err := p.recordIssuerQueryAllow(cfg, actx, targetURL, requestID, agent, r.Method, issuerQueryReplay, withReceiptCredentialContext(shard, r.Context())); err != nil {
+			if refuseReceiptCapacity(w, err) {
+				return
+			}
+			blockedErr := newIssuerAllowReceiptBlockedRequest(err)
+			p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+			p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
+			writeBlockedError(w,
+				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(requestID),
+				"blocked: "+blockedErr.reason, http.StatusForbidden)
+			return
+		}
+	}
 	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportForward, r.Method, targetURL, requestID, agent, withReceiptCredentialContext(selectedReceiptShard, r.Context())); err != nil {
 		if refuseReceiptCapacity(w, err) {
 			return
@@ -2422,6 +2441,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgentScanner, sc)
 	ctx = context.WithValue(ctx, ctxKeyAgentContractLoader, snapshotContractLoader)
 	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportForward)
+	if replay.runtime != nil {
+		ctx = context.WithValue(ctx, issuerQueryReplayScopeKey{}, replay)
+	}
 	redirectExempt := new(atomic.Bool)
 	ctx = context.WithValue(ctx, ctxKeyRedirectNoCleanCredit, redirectExempt)
 	ctx = context.WithValue(ctx, ctxKeyRequestPolicyObserved, policyObserved)
@@ -2761,7 +2783,20 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			applyTaintEvidence(&forwardAllowReceipt, forwardTaint)
 		}
 	}
-	resp, err := p.client.Do(outReq)
+	// A reload while the body was read or admission waited can revoke the
+	// replay evidence that relieved the URL. Refuse rather than send on it.
+	if replayUsed && !replay.current() {
+		p.refuseAdmittedEffect(r.Context(), forwardAllowReceipt, upstreamEffect)
+		p.logger.LogBlocked(actx, issuerQueryReplayStaleLayer, "replay evidence revoked before send")
+		p.metrics.RecordBlocked(r.URL.Hostname(), issuerQueryReplayStaleLayer, time.Since(start), agentLabel)
+		outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, issuerQueryReplayStaleLayer
+		outcomeReceipt.Verdict = config.ActionBlock
+		writeBlockedError(w,
+			blockInfoFor(blockreason.QueryEntropy, issuerQueryReplayStaleLayer).WithRequestID(requestID),
+			"blocked: query replay evidence revoked before send", http.StatusForbidden)
+		return
+	}
+	resp, err := replay.forwardClient(p.client).Do(outReq)
 	p.confirmObservedEffect(r.Context(), forwardAllowReceipt, upstreamEffect, resp != nil)
 	if resp != nil {
 		refusalBoundary = boundaryDownstreamDelivery
