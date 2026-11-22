@@ -21,7 +21,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- If a buffered response injection scan fails on an intercepted HTTPS or reverse-proxy request, Pipelock blocks the response without marking the session hostile for the scan error. This prevents a cancelled request from forcing task approval on later writes.
 - Both Go verifiers require regular files for standalone receipts and enforce the same 8 MiB limit, exact-number bounds and receipt format checks.
 - Contract promotion and rollback sync both lifecycle receipts before replacing the active manifest. Provision the contract store and any custom receipt directory before activation.
 - Receipt group startup finishes writing the transition if shutdown is requested after publication of the opening. Use `pipelock evidence repair-group-transition` to complete an interrupted transition when the successor's signed shard openings are available.
