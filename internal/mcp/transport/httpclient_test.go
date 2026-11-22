@@ -692,6 +692,12 @@ func TestHTTPClient_OpenGETStream_405(t *testing.T) {
 	if !strings.Contains(err.Error(), "405") {
 		t.Errorf("error should mention 405, got: %v", err)
 	}
+
+	observations := 0
+	reader, err := c.OpenObservedGETStream(t.Context(), func() { observations++ })
+	if reader != nil || !errors.Is(err, ErrStreamNotSupported) || observations != 1 {
+		t.Fatalf("observed 405: reader=%v error=%v observations=%d", reader, err, observations)
+	}
 }
 
 func TestHTTPClient_OpenGETStream_ErrorOmitsBody(t *testing.T) {
