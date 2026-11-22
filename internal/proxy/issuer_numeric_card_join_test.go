@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 )
@@ -192,12 +193,18 @@ func TestInterceptIssuerNumericCardJoin_RealShapePositiveAndReceipts(t *testing.
 		if got := e.do("agent-one", http.MethodGet, "https://"+numericJoinOriginHost+"/api/sites"); got != http.StatusOK {
 			t.Fatalf("JSON status = %d, want 200", got)
 		}
+		// Control: with the recorder open, the same navigation is relieved, so a
+		// later refusal can only come from the receipt path.
+		if status, reason := numericJoinDoWithReason(e, "agent-one", navURL); status != http.StatusOK {
+			t.Fatalf("control status = %d (reason %q), want 200", status, reason)
+		}
 		// Close recorder so receipt emission fails on the relieved navigation.
 		if err := rph.rec.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if got := e.do("agent-one", http.MethodGet, navURL); got != http.StatusForbidden {
-			t.Fatalf("require_receipts with closed recorder status = %d, want 403", got)
+		status, reason := numericJoinDoWithReason(e, "agent-one", navURL)
+		if status != http.StatusForbidden || reason != string(blockreason.ReceiptEmissionFailed) {
+			t.Fatalf("require_receipts with closed recorder = %d reason %q, want 403 %q", status, reason, blockreason.ReceiptEmissionFailed)
 		}
 	})
 }
@@ -804,4 +811,27 @@ func TestIssuerNumericCardJoin_DefaultsMatrix(t *testing.T) {
 			t.Fatalf("reload with change status = %d, want 403", got)
 		}
 	})
+}
+
+// numericJoinDoWithReason sends one intercepted request and returns its status
+// with the X-Pipelock-Block-Reason header, so a test can tell a receipt failure
+// from an ordinary DLP refusal.
+func numericJoinDoWithReason(e *delegationEnv, agent, rawURL string) (int, string) {
+	e.t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, rawURL, nil)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	resp := interceptAndRequestWithRecorder(e.t, interceptRequestOptions{
+		Upstream: e.upstream, TargetHost: u.Hostname(), TargetPort: "443", UpstreamRT: e.rt,
+		Cache: e.cache, Pool: e.pool, Config: e.cfg, Scanner: e.sc, Logger: e.logger, Metrics: e.m,
+		Request: req, Proxy: e.p, Agent: agent, ActorAuth: envelope.ActorAuthBound,
+	})
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	return resp.StatusCode, resp.Header.Get("X-Pipelock-Block-Reason")
 }
