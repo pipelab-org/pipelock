@@ -3784,12 +3784,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				default:
 					p.logger.LogResponseScan(actx, action, len(scanResult.Matches), patternNames, bundleRules)
 				}
-				{
-					err := p.confirmResponseDecision(cfg, withReceiptShard(receipt.EmitOpts{
-						ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: action,
-						Layer: responseScanLayer, Pattern: reason, Transport: TransportForward,
-						Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent,
-					}, selectedReceiptShard), r.Context())
+				decisionReceipt := withReceiptShard(receipt.EmitOpts{
+					ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: action,
+					Layer: responseScanLayer, Pattern: reason, Transport: TransportForward,
+					Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent,
+				}, selectedReceiptShard)
+				if !cfg.FlightRecorder.RequireReceipts {
+					collectReceiptResponseEvidence(decisionReceipt, []context.Context{r.Context()})
+				} else {
+					err := p.confirmResponseDecision(cfg, decisionReceipt, r.Context())
 					if err != nil {
 						p.recordRequiredReceiptBlock(err, TransportForward)
 						writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), receiptEmissionBlockReason, http.StatusForbidden)

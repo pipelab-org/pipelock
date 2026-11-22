@@ -3574,12 +3574,15 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 	// A warning or successful strip permits this response to leave an already
 	// established socket. Its handshake receipt cannot confirm this later
 	// decision, and a clean-stream summary does not describe the finding.
-	{
-		err := r.proxy.confirmResponseDecision(r.cfg, withReceiptShard(receipt.EmitOpts{
-			ActionID: receipt.NewActionID(), ParentActionID: r.requestActionID, Verdict: wsAction, Layer: responseScanLayer,
-			Pattern: strings.Join(patternNames, ", "), Transport: TransportWS,
-			Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
-		}, firstReceiptShard(r.upstreamFrameAdmission, r.receiptShard)), ctx)
+	decisionReceipt := withReceiptShard(receipt.EmitOpts{
+		ActionID: receipt.NewActionID(), ParentActionID: r.requestActionID, Verdict: wsAction, Layer: responseScanLayer,
+		Pattern: strings.Join(patternNames, ", "), Transport: TransportWS,
+		Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
+	}, firstReceiptShard(r.upstreamFrameAdmission, r.receiptShard))
+	if !r.cfg.FlightRecorder.RequireReceipts {
+		collectReceiptResponseEvidence(decisionReceipt, []context.Context{ctx})
+	} else {
+		err := r.proxy.confirmResponseDecision(r.cfg, decisionReceipt, ctx)
 		if err != nil {
 			r.proxy.recordRequiredReceiptBlock(err, TransportWS)
 			log.LogError(actx, fmt.Errorf("confirm WebSocket response receipt: %w", err))
