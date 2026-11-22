@@ -836,48 +836,78 @@ func (e *exposeOnRiskRead) RiskSnapshot() session.SessionRisk {
 // Exposure recorded after a clean admission but before the live task
 // decision makes that decision the first to require permission. With body
 // scanning off, the body must still be read so an existing exact grant
-// matches instead of refusing an unbound action.
+// matches instead of refusing an unbound action. A read that fails partway
+// or exceeds the binding bound leaves the action unbound and refused.
 func TestForwardTaintLiveRequirementBindsFullBody(t *testing.T) {
 	body := []byte("payload=1")
-	p, _, _, target, _ := newTaintInterceptFixture(t, func(cfg *config.Config) {
-		cfg.ForwardProxy.Enabled = true
-		cfg.RequestBodyScanning.Enabled = false
-		cfg.DNS.HostOverrides = map[string][]string{interceptTaintHost: {"93.184.216.34"}}
-	})
-	target = strings.Replace(target, "https://", "http://", 1)
-	base := &SessionState{}
-	base.BindTaskSubject("invocation")
-	twin := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, strings.NewReader(string(body)))
-	twin.Header.Set("Content-Type", "text/plain")
-	stripInternalIdentity(twin)
-	removeHopByHopHeaders(twin.Header)
-	applyFullResponsePolicy(twin.Header, nil)
-	responseencoding.RequestIdentity(twin.Header)
-	if err := base.installTaskPermission(base.TaskSnapshot().CurrentTaskID, session.TaskPermission{Action: forwardRequestTaskAction(twin, body), ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
-		t.Fatal(err)
-	}
-	rec := &exposeOnRiskRead{SessionState: base, nth: 2}
-	rec.expose = func() {
-		observeHTTPResponseFindings(base, p.CurrentConfig(), "http://untrusted.example/page", "text/html", "forward_response", []session.HostileFindingKind{session.FindingDLP})
-	}
-	WithTaintRecorder(rec)(p)
-	var upstreamCalls atomic.Int32
-	var upstreamBody atomic.Value
-	p.client = &http.Client{Transport: forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
-		upstreamCalls.Add(1)
-		got, _ := io.ReadAll(r.Body)
-		upstreamBody.Store(string(got))
-		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("ok")), Request: r}, nil
-	})}
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, strings.NewReader(string(body)))
-	req.Header.Set("Content-Type", "text/plain")
-	w := httptest.NewRecorder()
-	p.handleForwardHTTP(w, req)
-	if base.RiskSnapshot().Level != session.TaintExternalHostile {
-		t.Fatalf("exposure hook did not fire (risk reads=%d)", rec.reads.Load())
-	}
-	if w.Code != http.StatusOK || upstreamCalls.Load() != 1 || upstreamBody.Load() != string(body) {
-		t.Fatalf("status=%d calls=%d upstream body=%v body=%s, want the exact grant to admit the full body", w.Code, upstreamCalls.Load(), upstreamBody.Load(), w.Body)
+	for _, tc := range []struct {
+		name     string
+		reader   func() io.Reader
+		maxBytes int
+		// grant is the body the installed permission covers. The failure
+		// cases grant exactly the bytes a read that ignored the failure
+		// would bind, so only the read guard can refuse them.
+		grant  string
+		wantOK bool
+	}{
+		{name: "complete_body_matches_grant", reader: func() io.Reader { return strings.NewReader(string(body)) }, grant: string(body), wantOK: true},
+		{name: "read_error_after_partial_body", reader: func() io.Reader {
+			return io.MultiReader(strings.NewReader("payload"), iotest.ErrReader(errors.New("client went away")))
+		}, grant: "payload"},
+		{name: "body_over_binding_bound", reader: func() io.Reader { return strings.NewReader(string(body)) }, maxBytes: 4, grant: "paylo"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, _, _, target, _ := newTaintInterceptFixture(t, func(cfg *config.Config) {
+				cfg.ForwardProxy.Enabled = true
+				cfg.RequestBodyScanning.Enabled = false
+				if tc.maxBytes > 0 {
+					cfg.RequestBodyScanning.MaxBodyBytes = tc.maxBytes
+				}
+				cfg.DNS.HostOverrides = map[string][]string{interceptTaintHost: {"93.184.216.34"}}
+			})
+			target = strings.Replace(target, "https://", "http://", 1)
+			base := &SessionState{}
+			base.BindTaskSubject("invocation")
+			twin := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, strings.NewReader(tc.grant))
+			twin.Header.Set("Content-Type", "text/plain")
+			stripInternalIdentity(twin)
+			removeHopByHopHeaders(twin.Header)
+			applyFullResponsePolicy(twin.Header, nil)
+			responseencoding.RequestIdentity(twin.Header)
+			if err := base.installTaskPermission(base.TaskSnapshot().CurrentTaskID, session.TaskPermission{Action: forwardRequestTaskAction(twin, []byte(tc.grant)), ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+				t.Fatal(err)
+			}
+			rec := &exposeOnRiskRead{SessionState: base, nth: 2}
+			rec.expose = func() {
+				observeHTTPResponseFindings(base, p.CurrentConfig(), "http://untrusted.example/page", "text/html", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+			}
+			WithTaintRecorder(rec)(p)
+			var upstreamCalls atomic.Int32
+			var upstreamBody atomic.Value
+			p.client = &http.Client{Transport: forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
+				upstreamCalls.Add(1)
+				got, _ := io.ReadAll(r.Body)
+				upstreamBody.Store(string(got))
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("ok")), Request: r}, nil
+			})}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, tc.reader())
+			req.ContentLength = -1
+			req.Header.Set("Content-Type", "text/plain")
+			w := httptest.NewRecorder()
+			p.handleForwardHTTP(w, req)
+			if base.RiskSnapshot().Level != session.TaintExternalHostile {
+				t.Fatalf("exposure hook did not fire (risk reads=%d)", rec.reads.Load())
+			}
+			if !tc.wantOK {
+				if w.Code != http.StatusForbidden || upstreamCalls.Load() != 0 {
+					t.Fatalf("status=%d calls=%d body=%s, want an unbound action refused before upstream", w.Code, upstreamCalls.Load(), w.Body)
+				}
+				return
+			}
+			if w.Code != http.StatusOK || upstreamCalls.Load() != 1 || upstreamBody.Load() != string(body) {
+				t.Fatalf("status=%d calls=%d upstream body=%v body=%s, want the exact grant to admit the full body", w.Code, upstreamCalls.Load(), upstreamBody.Load(), w.Body)
+			}
+		})
 	}
 }
 
