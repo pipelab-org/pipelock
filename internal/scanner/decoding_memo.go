@@ -48,6 +48,8 @@ type decodingMemo struct {
 	// never the per-component views. See WithIssuerJoinedViewAllowance.
 	issuedQueryJoin              bool
 	issuedPathSeam               bool
+	issuedNumericCardJoin        IssuerNumericCardJoinAllowance
+	issuedNumericRawParts        []string
 	reassemblyReplayPayloads     map[assembledPayloadKey][]*assembledPayload
 	reassemblyReplayPayloadCount int
 	reassemblyRecipeCache        *assembledRecipeCache

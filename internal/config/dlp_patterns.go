@@ -566,7 +566,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Luhn + issuer check drops ~95% of random matches. mod-97 drops ~99%
 	// of random IBAN-format matches. ABA is not in defaults due to high FP
 	// rate; users can add it via config with validator: "aba".
-	{Name: "Credit Card Number", Regex: jsonnumber.ShippedCardPattern, Severity: SeverityMedium, Validator: ValidatorLuhn},
+	{Name: "Credit Card Number", Regex: jsonnumber.ShippedCardPattern, Severity: SeverityMedium, Validator: ValidatorLuhn, BuiltInCreditCard: true},
 	{Name: "IBAN", Regex: `\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b`, Severity: SeverityMedium, Validator: ValidatorMod97},
 }
 

@@ -400,6 +400,7 @@ func TestIssuerQueryAllowReceiptKind(t *testing.T) {
 		{issuerQueryPageOrigin, string(issuerQueryPageOrigin)},
 		{issuerQueryServerID, string(issuerQueryServerID)},
 		{issuerQueryJoinedView, "issued_joined_view"},
+		{issuerQueryNumericCardJoin, "issued_numeric_card_join"},
 		{"", string(issuerQueryObserved)},
 		{"unrecognized_rule", string(issuerQueryObserved)},
 	} {
@@ -415,11 +416,14 @@ func TestIssuerQueryAllowReceiptKind(t *testing.T) {
 			}
 			t.Cleanup(p.Close)
 			_ = p.recordIssuerQueryAllow(nil, audit.LogContext{}, "https://app.vendor.example/cb?code=x", "req", "agent-one", http.MethodGet, tc.kind)
-			// A joined-view allowance is a DLP decision and must not be
-			// labelled as a query entropy one.
+			// Joined-view and numeric card-join allowances are DLP decisions
+			// and must not be labelled as query entropy ones.
 			layer := issuerQueryReceiptExtensionKey
-			if tc.kind == issuerQueryJoinedView {
+			switch tc.kind {
+			case issuerQueryJoinedView:
 				layer = issuerJoinedViewReceiptKey
+			case issuerQueryNumericCardJoin:
+				layer = issuerNumericCardJoinReceiptKey
 			}
 			got := rph.requireReceipt(t, layer)
 			if !strings.Contains(string(got.Ext), `"`+layer+`":"`+tc.want+`"`) {

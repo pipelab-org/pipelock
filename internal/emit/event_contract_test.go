@@ -41,6 +41,7 @@ func TestBuiltinEventCompatibility(t *testing.T) {
 		{"dlp_credential_audience_allow", SeverityInfo, false, ""},
 		{"dlp_issuer_cookie_allow", SeverityInfo, false, ""},
 		{"dlp_issuer_joined_view_allow", SeverityInfo, false, ""},
+		{"dlp_issuer_numeric_card_join_allow", SeverityInfo, false, ""},
 		{"dlp_warn", SeverityWarn, true, "warn"},
 		{"dashboard_auth_failed", SeverityWarn, true, "warn"},
 		{"error", SeverityWarn, true, "warn"},

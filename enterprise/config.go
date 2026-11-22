@@ -423,6 +423,10 @@ func MergeAgentProfile(base *config.Config, profile *config.AgentProfile) (*conf
 	if profile == nil {
 		profile = &config.AgentProfile{}
 	}
+	// The YAML round-trip drops per-pattern runtime provenance such as Bundle
+	// and BuiltInCreditCard. Start from the base patterns themselves so each
+	// keeps the provenance the loader derived for it.
+	merged.DLP.Patterns = config.CloneDLPPatterns(base.DLP.Patterns)
 
 	if profile.Mode != "" {
 		merged.Mode = profile.Mode
@@ -444,6 +448,11 @@ func MergeAgentProfile(base *config.Config, profile *config.AgentProfile) (*conf
 	}
 	if profile.DLP != nil {
 		includeDefaults := profile.DLP.IncludeDefaults == nil || *profile.DLP.IncludeDefaults
+		// Profile patterns earn built-in card provenance only as exact shipped
+		// copies, and only when both the profile and the base keep defaults.
+		profilePatterns := config.CloneDLPPatterns(profile.DLP.Patterns)
+		profileDefaults := includeDefaults && (merged.DLP.IncludeDefaults == nil || *merged.DLP.IncludeDefaults)
+		config.RestoreBuiltInCreditCard(&profileDefaults, profilePatterns)
 		if includeDefaults {
 			// Build a set of agent pattern names for dedup.
 			agentNames := make(map[string]struct{}, len(profile.DLP.Patterns))
@@ -457,9 +466,9 @@ func MergeAgentProfile(base *config.Config, profile *config.AgentProfile) (*conf
 					filtered = append(filtered, p)
 				}
 			}
-			merged.DLP.Patterns = append(filtered, profile.DLP.Patterns...)
+			merged.DLP.Patterns = append(filtered, profilePatterns...)
 		} else {
-			merged.DLP.Patterns = profile.DLP.Patterns
+			merged.DLP.Patterns = profilePatterns
 		}
 	}
 	if profile.SessionProfiling != nil {
@@ -507,10 +516,11 @@ func MergeAgentProfile(base *config.Config, profile *config.AgentProfile) (*conf
 		}
 	}
 
-	// deepCopyConfig uses a YAML round-trip, which necessarily strips the
-	// yaml-excluded audience metadata even when this profile does not override
-	// DLP at all. Restore exact shipped pattern identities after every profile
-	// merge; custom same-name patterns remain ineligible.
+	// Profile patterns arrive without yaml-excluded audience metadata. Restore
+	// exact shipped pattern identities after every profile merge; custom
+	// same-name patterns remain ineligible. Built-in card provenance was set
+	// per origin above and is not re-derived here, so a bundle rule or a
+	// profile that opts out of defaults cannot gain it.
 	merged.DLP.Patterns = config.CloneDLPPatterns(merged.DLP.Patterns)
 	config.RestoreBuiltInCredentialAudienceHosts(merged.DLP.Patterns)
 

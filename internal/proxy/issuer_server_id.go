@@ -8,9 +8,13 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"hash"
+	"io"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -216,6 +220,7 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 		s.mu.Lock()
 		s.freezeIDCallerLocked(session)
 		s.mu.Unlock()
+		s.recordNumericSent(session, nil, nil, false)
 		return
 	}
 	// issuerCookieOrigin rejects userinfo so a user:pass@host URL cannot
@@ -232,18 +237,25 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 		return
 	}
 	var texts []string
-	texts = append(texts, target.EscapedPath(), target.Path)
-	if user := target.User; user != nil {
-		texts = appendFormLike(texts, user.Username())
-		if password, ok := user.Password(); ok {
-			texts = appendFormLike(texts, password)
+	appendForm := func(text string) {
+		var ok bool
+		texts, ok = appendFormLike(texts, text)
+		if !ok {
+			bodyKnown = false
 		}
 	}
-	texts = appendFormLike(texts, target.RawQuery)
+	texts = append(texts, target.EscapedPath(), target.Path)
+	if user := target.User; user != nil {
+		appendForm(user.Username())
+		if password, ok := user.Password(); ok {
+			appendForm(password)
+		}
+	}
+	appendForm(target.RawQuery)
 	for name, values := range header {
 		texts = append(texts, name)
 		for _, value := range values {
-			texts = appendFormLike(texts, value)
+			appendForm(value)
 		}
 	}
 	if len(body) > 0 {
@@ -262,11 +274,14 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 		if !plainKnown {
 			bodyKnown = false
 		} else if plain != nil {
-			texts = appendFormLike(texts, string(plain))
+			appendForm(string(plain))
 		} else {
-			texts = appendFormLike(texts, string(body))
+			appendForm(string(body))
 		}
 	}
+	// Feed the dedicated numeric sent-history ledger independently with its
+	// own lock and budgets so numeric traffic never freezes server_issued_id.
+	s.recordNumericSent(session, originTarget, texts, bodyKnown)
 
 	var digests [][32]byte
 	var inputTokens int
@@ -414,8 +429,9 @@ func unhex(c byte) byte {
 // appendFormLike adds text as written, leniently percent-decoded both with
 // and without "+" as a space, and each key and value of it read as
 // "&"/";"-separated form pairs, decoded the same way. Any of those forms may
-// be the one an origin stores and returns.
-func appendFormLike(texts []string, text string) []string {
+// be the one an origin stores and returns. Returns false when JSON token
+// decoding fails before EOF so callers mark sent history incomplete.
+func appendFormLike(texts []string, text string) ([]string, bool) {
 	staged := []string{text, lenientUnescape(text, false), lenientUnescape(text, true)}
 	for _, pair := range strings.FieldsFunc(text, func(r rune) bool { return r == '&' || r == ';' }) {
 		key, value, _ := strings.Cut(pair, "=")
@@ -426,43 +442,176 @@ func appendFormLike(texts []string, text string) []string {
 	// Identical copies (a body with no escapes) are one text. Walking each
 	// copy would count the same tokens against the per-request cap.
 	seen := make(map[string]struct{}, len(staged))
+	complete := true
 	for _, form := range staged {
 		if _, ok := seen[form]; ok {
 			continue
 		}
 		seen[form] = struct{}{}
 		texts = append(texts, form)
-		texts = appendJSONStringsIfValid(texts, form)
+		var ok bool
+		texts, ok = appendJSONStringsIfValid(texts, form)
+		if !ok {
+			complete = false
+		}
 	}
-	return texts
+	return texts, complete
 }
 
 // appendJSONStringsIfValid walks text when it is a JSON value. A form field,
 // query value or header often carries a JSON object whose strings are escaped;
 // the raw token scan cannot see through those escapes.
-func appendJSONStringsIfValid(texts []string, text string) []string {
-	if text == "" || !json.Valid([]byte(text)) {
-		return texts
+func appendJSONStringsIfValid(texts []string, text string) ([]string, bool) {
+	if text == "" {
+		return texts, true
 	}
 	return appendJSONStrings(texts, []byte(text))
 }
 
 // appendJSONStrings adds every string key and value of a JSON body, decoded,
 // so an escape sequence in the body cannot hide a token from the raw scan.
-func appendJSONStrings(texts []string, body []byte) []string {
-	if !json.Valid(body) {
-		return texts
-	}
+// Numbers are preserved as json.Number so values outside float64 range (which
+// json.Valid accepts) do not abort the walk before later strings; a whole
+// number is also added as its integer digits, so 4.1111111e7 records
+// 41111111. A body that is not one JSON value is read as a stream of values
+// (NDJSON or concatenated JSON). Returns false if a token decode fails before
+// EOF on text that may hide a token, so callers fail closed.
+func appendJSONStrings(texts []string, body []byte) ([]string, bool) {
 	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if json.Valid(body) {
+		return appendJSONStringsFromDecoder(texts, decoder)
+	}
+	staged, ok := appendJSONStringsFromDecoder(nil, decoder)
+	if ok {
+		return append(texts, staged...), true
+	}
+	// Keep what decoded before the failure. Text that is not JSON at all is
+	// covered by the raw token scan, except where a \u escape spells a digit
+	// or an exponent literal names a whole number the scan cannot read.
+	texts = append(texts, staged...)
+	texts = appendHiddenNumberLiterals(texts, body)
+	if bytes.Contains(body, []byte(`\u`)) {
+		return texts, false
+	}
+	return texts, true
+}
+
+func appendJSONStringsFromDecoder(texts []string, decoder *json.Decoder) ([]string, bool) {
 	for {
 		token, err := decoder.Token()
 		if err != nil {
-			return texts
+			if errors.Is(err, io.EOF) {
+				return texts, true
+			}
+			return texts, false
 		}
-		if s, ok := token.(string); ok {
-			texts = append(texts, s)
+		switch v := token.(type) {
+		case string:
+			texts = append(texts, v)
+		case json.Number:
+			// The raw token scan already reads a plain integer literal. Only a
+			// fraction or exponent spelling hides its digits, and only a value
+			// of issuer length can matter, so short numbers never spend the
+			// input-token budget.
+			if !strings.ContainsAny(string(v), ".eE") {
+				continue
+			}
+			if digits, ok := jsonWholeNumberDigits(string(v)); ok && len(digits) >= jsonWholeNumberMinDigits {
+				texts = append(texts, digits)
+			}
 		}
 	}
+}
+
+// jsonWholeNumberMinDigits is the shortest canonical value worth recording;
+// the numeric issuer range starts at 8 digits.
+const jsonWholeNumberMinDigits = 8
+
+// jsonWholeNumberMaxDigits bounds the integer digits a number literal may
+// expand to; a longer value cannot name an 8-14 digit token.
+const jsonWholeNumberMaxDigits = 64
+
+// jsonWholeNumberDigits returns the integer digits of a JSON number literal
+// that denotes a whole number, without sign or exponent, using string
+// arithmetic only. Fractional values and values longer than
+// jsonWholeNumberMaxDigits report false.
+func jsonWholeNumberDigits(literal string) (string, bool) {
+	mantissa := strings.TrimPrefix(literal, "-")
+	exp := 0
+	if i := strings.IndexAny(mantissa, "eE"); i >= 0 {
+		raw := strings.TrimPrefix(mantissa[i+1:], "+")
+		neg := strings.HasPrefix(raw, "-")
+		// Leading zeros do not change the exponent, so measure it without them.
+		abs := strings.TrimLeft(strings.TrimPrefix(raw, "-"), "0")
+		if abs == "" {
+			abs = "0"
+		}
+		if len(abs) > 18 {
+			// |exp| of 10^18 or more: no zero padding a request body can
+			// carry cancels it, and smaller exponents fit in an int. Within
+			// this bound the arithmetic below canonicalizes any padding.
+			return "", false
+		}
+		v, err := strconv.Atoi(abs)
+		if err != nil {
+			return "", false
+		}
+		if neg {
+			v = -v
+		}
+		exp, mantissa = v, mantissa[:i]
+	}
+	intPart, fracPart, _ := strings.Cut(mantissa, ".")
+	digits := intPart + fracPart
+	point := len(intPart) + exp
+	trimmed := strings.TrimLeft(digits, "0")
+	point -= len(digits) - len(trimmed)
+	digits = strings.TrimRight(trimmed, "0")
+	if digits == "" {
+		return "0", true
+	}
+	if point < len(digits) || point > jsonWholeNumberMaxDigits {
+		return "", false
+	}
+	return digits + strings.Repeat("0", point-len(digits)), true
+}
+
+// hiddenNumberLiteral matches a fraction or exponent spelling of a number
+// anywhere in text, regardless of what surrounds it.
+var hiddenNumberLiteral = regexp.MustCompile(`(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?`)
+
+// appendHiddenNumberLiterals adds the integer digits of every fraction or
+// exponent spelling in text that names a whole number of issuer length. The
+// raw digit scan cannot read such a value. Matching ignores token boundaries,
+// so a literal glued to letters is still recorded; recording only keeps a
+// value from minting, so a match inside a hex ID costs nothing.
+func appendHiddenNumberLiterals(texts []string, text []byte) []string {
+	seen := make(map[string]struct{})
+	// Walk matches one at a time so a body of many short digit runs never
+	// holds every match in memory at once.
+	for rest := text; ; {
+		loc := hiddenNumberLiteral.FindIndex(rest)
+		if loc == nil {
+			break
+		}
+		match := rest[loc[0]:loc[1]]
+		rest = rest[loc[1]:]
+		if !bytes.ContainsAny(match, ".eE") {
+			// A plain digit run is already read by the raw token scan.
+			continue
+		}
+		digits, ok := jsonWholeNumberDigits(string(match))
+		if !ok || len(digits) < jsonWholeNumberMinDigits {
+			continue
+		}
+		if _, dup := seen[digits]; dup {
+			continue
+		}
+		seen[digits] = struct{}{}
+		texts = append(texts, digits)
+	}
+	return texts
 }
 
 // mintServerID records value as an ID the origin in target issued, unless
@@ -733,12 +882,11 @@ func (p *Proxy) taintIssuerSessionForStream(cfg *config.Config, agent, clientIP 
 		return
 	}
 	store.mu.Lock()
-	defer store.mu.Unlock()
 	if issuerSentHost(target) == "" {
 		store.freezeIDCallerLocked(session)
-		return
-	}
-	if bucket := store.admitIDDestinationLocked(session, target); bucket != nil {
+	} else if bucket := store.admitIDDestinationLocked(session, target); bucket != nil {
 		store.freezeIDDestinationLocked(bucket, issuerHistoryStream)
 	}
+	store.mu.Unlock()
+	store.freezeNumericStream(session, target)
 }
