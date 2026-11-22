@@ -190,9 +190,6 @@ func (o MCPProxyOpts) v3ResponseWriter(ctx context.Context, log io.Writer, write
 		return writer
 	}
 	if isRequest(line) {
-		if o.Transport != deferred.SurfaceMCPWS {
-			return writer
-		}
 		// Server-initiated messages have their own delivery effect, with no
 		// matching client request to use as a parent.
 		request := receipt.EmitOpts{RequestID: canonicalID(frame.ID), Method: frame.Method, Transport: o.Transport}

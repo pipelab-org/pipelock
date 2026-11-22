@@ -316,31 +316,74 @@ func TestMCPV3DuplicateSendPreservesOriginalCorrelation(t *testing.T) {
 	}
 }
 
-func TestMCPV3ServerInitiatedWebSocketDelivery(t *testing.T) {
-	const surface = "mcp_ws"
-	line := []byte(`{"jsonrpc":"2.0","id":17,"method":"ping"}`)
-	opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, surface)
-	opts = opts.withV3Session()
-	frame := MCPFrame{ID: []byte("17"), Method: "ping"}
-	base := transport.NewStdioWriter(client)
-	stdioOpts := opts
-	stdioOpts.Transport = deferred.SurfaceMCPStdio
-	if stdioOpts.v3ResponseWriter(t.Context(), io.Discard, base, line, frame) != base {
-		t.Fatal("WebSocket delivery gate changed the stdio server-request writer")
+func TestMCPV3ServerInitiatedDelivery(t *testing.T) {
+	for _, surface := range []string{deferred.SurfaceMCPWS, deferred.SurfaceMCPStdio, deferred.SurfaceMCPHTTPUpstream} {
+		t.Run(surface, func(t *testing.T) {
+			for _, scenario := range []string{"healthy", "closed writer"} {
+				t.Run(scenario, func(t *testing.T) {
+					opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, surface)
+					opts = opts.withV3Session()
+					if scenario == "closed writer" {
+						if err := writer.Close(t.Context(), nil); err != nil {
+							t.Fatal(err)
+						}
+					}
+					base := transport.NewStdioWriter(client)
+					for _, line := range [][]byte{
+						[]byte(`{"jsonrpc":"2.0","id":17,"method":"ping"}`),
+						[]byte(`{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}`),
+					} {
+						err := opts.v3ResponseWriter(t.Context(), io.Discard, base, line, ParseMCPFrame(line)).WriteMessage(line)
+						if scenario == "closed writer" {
+							if !errors.Is(err, errMCPV3ReplyAdmission) || client.output.Len() != 0 {
+								t.Fatalf("delivery was not withheld: err=%v output=%q", err, client.output.String())
+							}
+							continue
+						}
+						if err != nil || !client.intent || !strings.Contains(client.output.String(), string(line)) {
+							t.Fatalf("message not admitted and delivered: err=%v output=%q", err, client.output.String())
+						}
+					}
+					if scenario == "closed writer" {
+						return
+					}
+					completed := 0
+					for _, action := range localMCPReceiptActions(t, writer, client.dir) {
+						if action.ParentActionID == "" && action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.OutcomeClass == "completed" {
+							completed++
+						}
+					}
+					if completed != 2 {
+						t.Fatalf("completed deliveries = %d, want 2", completed)
+					}
+				})
+			}
+		})
 	}
-	if err := opts.v3ResponseWriter(t.Context(), io.Discard, base, line, frame).WriteMessage(line); err != nil {
+}
+
+func TestMCPV3HTTPAcknowledgementReleasesRequestID(t *testing.T) {
+	opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPHTTPUpstream)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer upstream.Close()
+	input := strings.Repeat(jsonToolsCallEcho+"\n", 2)
+	if err := RunHTTPProxy(t.Context(), strings.NewReader(input), client, io.Discard, upstream.URL, nil, opts); err != nil {
 		t.Fatal(err)
 	}
-	if !client.intent || !strings.Contains(client.output.String(), string(line)) {
-		t.Fatalf("request was not admitted and delivered: %q", client.output.String())
+	if client.output.Len() != 0 {
+		t.Errorf("unexpected reply to acknowledged requests: %q", client.output.String())
 	}
+	completed := 0
 	for _, action := range localMCPReceiptActions(t, writer, client.dir) {
-		if action.RequestID == "17" && action.ParentActionID == "" &&
-			action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.OutcomeClass == "completed" {
-			return
+		if action.RequestID == "1" && action.EffectBoundary == mcpUpstreamSendBoundary && action.OutcomeClass == "completed" {
+			completed++
 		}
 	}
-	t.Fatal("missing unparented server request delivery receipt")
+	if completed != 2 {
+		t.Fatalf("completed sends = %d, want 2", completed)
+	}
 }
 
 func TestMCPV3NetworkReplyCancellationSettlesReservation(t *testing.T) {

@@ -128,6 +128,14 @@ func readMCPInputMessage(ctx context.Context, clientIn io.Reader, reader transpo
 	}
 }
 
+func (o MCPProxyOpts) finishV3HTTPAcknowledgement(ctx context.Context, logW io.Writer, effect *mcpV3Exchange, tracker *RequestTracker, id json.RawMessage, registration *requestRegistration) {
+	logMCPV3Error(logW, confirmMCPV3Effect(ctx, effect.token, true))
+	o.finishV3Send(ctx, logW, effect, true)
+	if pending, ok := tracker.takeOwnedOutcome(id, registration); ok {
+		pending.settle(logW, o, "forwarded", -1, "upstream_acknowledged")
+	}
+}
+
 // RunHTTPProxy bridges stdio (client) to an upstream HTTP MCP server with
 // bidirectional scanning. Reads JSON-RPC from clientIn, POSTs to upstreamURL,
 // scans responses via ForwardScanned, writes to clientOut.
@@ -672,6 +680,9 @@ func RunHTTPProxy(
 							releaseOpts.nativeSSE = true
 						}
 						acknowledged := transport.IsHTTPAcknowledgement(respReader)
+						if acknowledged && effect != nil {
+							releaseOpts.finishV3HTTPAcknowledgement(releaseCtx, safeLogW, effect, tracker, deferredReq.ID, registration)
+						}
 						respReader = releaseOpts.withResponseTimeout(respReader)
 						foundInjection, scanErr := ForwardScanned(respReader, wireClientOut, safeLogW, tracker, releaseOpts)
 						if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(context.Cause(releaseCtx), ael.ErrCapacity) {
@@ -713,7 +724,7 @@ func RunHTTPProxy(
 								releaseOutcome.settle(safeLogW, releaseOpts, "forwarded", -1, "notification_forwarded")
 							}
 							if !foundInjection {
-								awaitingReply = registration != nil && acknowledged
+								awaitingReply = registration != nil && acknowledged && effect == nil
 								baselineIdentity := deferredReq.BaselineIdentity
 								if baselineIdentity == "" {
 									baselineIdentity = mcpFrameBaselineIdentity(ParseMCPFrame(deferredReq.ForwardMessage))
@@ -988,6 +999,9 @@ func RunHTTPProxy(
 		// Scan and forward response. Apply the optional per-read response
 		// timeout (no-op when disabled) so a hung HTTP upstream fails closed.
 		acknowledged := transport.IsHTTPAcknowledgement(respReader)
+		if acknowledged && effect != nil {
+			fwdOpts.finishV3HTTPAcknowledgement(ctx, safeLogW, effect, tracker, frame.ID, registration)
+		}
 		if transport.IsStreamingResponse(respReader) {
 			fwdOpts.nativeSSE = true
 			fwdOpts.WarnContext = ctx
@@ -1052,8 +1066,7 @@ func RunHTTPProxy(
 		// the Once and permanently prevent the GET stream.
 		if httpClient.SessionID() != "" {
 			getStreamOnce.Do(func() {
-				getOpts := fwdOpts
-				getOpts.v3Session = nil
+				getOpts := fwdOpts.withV3Session()
 				startGETStream(ctx, httpClient, wireClientOut, safeLogW, getOpts, getResponseTracker, &wg)
 			})
 		}
