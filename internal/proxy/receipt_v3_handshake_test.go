@@ -163,11 +163,11 @@ func TestV3ReverseUpgradeRefusal(t *testing.T) {
 		for _, passThrough := range []bool{false, true} {
 			t.Run(fmt.Sprintf("required=%t/pass_through=%t", required, passThrough), func(t *testing.T) {
 				p, writer, dir, keys := newTestV3HTTPProxy(t, TransportReverse, required, nil)
-				var upgrades atomic.Int64
+				upgraded := make(chan error, 1)
 				backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					conn, _, _, err := ws.UpgradeHTTP(r, w)
+					upgraded <- err
 					if err == nil {
-						upgrades.Add(1)
 						_ = conn.Close()
 					}
 				}))
@@ -189,9 +189,16 @@ func TestV3ReverseUpgradeRefusal(t *testing.T) {
 				req.Header.Set("Sec-WebSocket-Version", "13")
 				observer := httptest.NewRecorder()
 				reverse.ServeHTTP(observer, req)
-				if observer.Code != http.StatusBadGateway || upgrades.Load() != 1 {
-					t.Fatalf("expected one upstream upgrade and a downstream gateway error, got %d/%d",
-						upgrades.Load(), observer.Code)
+				select {
+				case err := <-upgraded:
+					if err != nil {
+						t.Fatalf("upstream upgrade failed: %v", err)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("upstream upgrade did not return")
+				}
+				if observer.Code != http.StatusBadGateway {
+					t.Fatalf("downstream status = %d, want gateway error", observer.Code)
 				}
 				if err := writer.Close(t.Context(), nil); err != nil {
 					t.Fatal(err)

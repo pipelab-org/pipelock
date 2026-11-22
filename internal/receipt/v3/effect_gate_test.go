@@ -164,3 +164,33 @@ func TestEffectGateWriterBatchAndRefusal(t *testing.T) {
 		t.Fatalf("blocked decisions = %d, want 1", count)
 	}
 }
+
+func TestEffectGateContinuesAfterOutcomeWriteFailure(t *testing.T) {
+	writeErr := errors.New("outcome write failed")
+	var outcomes []string
+	gate := EffectGate{writeBatch: func(context.Context, []Action, PolicySnapshot) error { return nil }, write: func(_ context.Context, action Action, _ PolicySnapshot) error {
+		if action.Phase == phaseOutcome {
+			outcomes = append(outcomes, action.ActionID)
+			if action.ActionID == "effect" {
+				return writeErr
+			}
+		}
+		return nil
+	}}
+	token, err := gate.AdmitBatch(t.Context(), []Action{
+		{ActionID: "effect", Verdict: verdictAllow},
+		{ActionID: "support", Verdict: verdictAllow},
+	}, PolicySnapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := token.Refuse(t.Context()); !errors.Is(err, writeErr) {
+		t.Fatalf("outcome error = %v, want %v", err, writeErr)
+	}
+	if err := token.SettleOnExit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(outcomes) != 2 || outcomes[0] != "effect" || outcomes[1] != "support" {
+		t.Fatalf("outcome submissions = %v", outcomes)
+	}
+}
