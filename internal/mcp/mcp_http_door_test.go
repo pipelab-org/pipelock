@@ -353,7 +353,7 @@ func TestHTTPListener_DoorReceiptCaller(t *testing.T) {
 	if _, err := io.Copy(io.Discard, resp.Body); err != nil || resp.StatusCode != http.StatusOK {
 		t.Fatalf("response status = %d, read error = %v", resp.StatusCode, err)
 	}
-	waitForMCPV3Outcome(t, observer.dir, mcpDownstreamDeliveryBoundary)
+	waitForMCPV3DeliveryOutcome(t, observer.dir)
 	actions := localMCPReceiptActions(t, writer, observer.dir)
 	if len(actions) != 4 {
 		t.Fatalf("expected send and delivery receipts, got %d", len(actions))

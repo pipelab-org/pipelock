@@ -112,9 +112,23 @@ func (f *mcpMatrixFile) Sync() error {
 func mcpMatrixWriterOptions(t *testing.T, row v3MCPMatrixRow, surface string, cancel context.CancelFunc, beforeSync func(int)) v3.StreamWriterOptions {
 	t.Helper()
 	seed := sha256.Sum256([]byte("MCP parity fixture"))
+	dir := t.TempDir()
+	key := ed25519.NewKeyFromSeed(seed[:])
+	t.Cleanup(func() {
+		result, err := v3.VerifyPaths(context.Background(), []string{dir}, v3.Options{
+			Directory: true, Keys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)},
+		})
+		if err != nil || result.Integrity != "ok" ||
+			(result.Verdict != "VALID" && result.Verdict != "VALID PREFIX, END UNPROVEN") {
+			t.Errorf("verify final receipt history: %+v (%v)", result, err)
+		}
+		if _, err := readMCPMatrixActions(dir); err != nil {
+			t.Errorf("check final receipt history: %v", err)
+		}
+	})
 	fileNumber := 0
 	return v3.StreamWriterOptions{
-		Dir: t.TempDir(), SigningKey: ed25519.NewKeyFromSeed(seed[:]), PolicyHash: v3.Digest(nil),
+		Dir: dir, SigningKey: key, PolicyHash: v3.Digest(nil),
 		Identity: v3.Writer{Instance: "example", Product: "Pipelock", Version: "3"},
 		Coverage: v3.Coverage{
 			ReceiptsRequired: row.required, Surfaces: []string{surface},
@@ -1351,7 +1365,7 @@ func TestMCPV3PolicyRedirectRefusal(t *testing.T) {
 					!strings.Contains(client.String(), "policy redirect is not available while v3 receipts are enabled") {
 					t.Errorf("client refusal missing: %s", client.String())
 				}
-				waitForMCPV3Outcome(t, writerOpts.Dir, mcpDownstreamDeliveryBoundary)
+				waitForMCPV3DeliveryOutcome(t, writerOpts.Dir)
 				if err := writer.Close(ctx, nil); err != nil {
 					t.Fatal(err)
 				}
@@ -1425,7 +1439,7 @@ func exerciseMCPV3ListenerEarlyInputRefusal(t *testing.T, scenario string) {
 		}),
 	}.WithV3ReceiptWriter(writer)
 	got, _ := driveA2AHTTPDepth(t, upstream.URL, cleanToolsCallRequest, opts, "listener")
-	waitForMCPV3Outcome(t, writerOpts.Dir, mcpDownstreamDeliveryBoundary)
+	waitForMCPV3DeliveryOutcome(t, writerOpts.Dir)
 	if scenario == "intent write fail" {
 		if !bytes.Contains(got, []byte("receipt admission failed")) {
 			t.Fatalf("expected generic receipt admission error: %s", got)
