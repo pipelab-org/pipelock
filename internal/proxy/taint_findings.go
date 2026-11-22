@@ -13,11 +13,8 @@ func responseScanFindingKinds(result scanner.ResponseScanResult) []session.Hosti
 	if result.Clean {
 		return nil
 	}
-	// A failed scan blocks delivery on every response path, so the agent never
-	// receives that body. Inspection failure is not exposure: recording it as
-	// hostile would mark the whole agent identity hostile for a response it
-	// never saw, which client cancellations and restarts trigger routinely.
-	// Findings a completed scan made before the failure are still recorded.
+	// Buffered handlers refuse the response when inspection fails. Keep any
+	// wording matches from completed checks, including those retained by Shield.
 	var kinds []session.HostileFindingKind
 	if len(result.Matches) > 0 {
 		kinds = append(kinds, session.FindingWording)
