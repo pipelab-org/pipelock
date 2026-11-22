@@ -968,6 +968,9 @@ func newInterceptHandler(
 		r = r.WithContext(interceptScanCtx)
 		issuerProof := issuerDeliveryProof{}
 		replay := ic.issuerReplayScope()
+		// replayRelieved marks a URL allowed only through replay evidence; the
+		// evidence must still be current when the request is sent.
+		replayRelieved := false
 		urlResult := ic.Scanner.ScanWithReservation(interceptScanCtx, targetURL, ic.RateReservation)
 		// Count the selected scan once, as soon as the issuer rescan below has
 		// settled it. A streamed response keeps this handler open until the
@@ -1136,6 +1139,7 @@ func newInterceptHandler(
 						}
 						if replayUsed {
 							kinds = append(kinds, issuerQueryReplay)
+							replayRelieved = true
 						}
 						if err := ic.recordIssuerQueryAllows(actx, r, targetURL, kinds); err != nil {
 							if refuseReceiptCapacity(w, err) {
@@ -2457,6 +2461,15 @@ func newInterceptHandler(
 		interceptUpstream := upstream
 		if seconds := ic.Config.FetchProxy.TimeoutSeconds; seconds > 0 {
 			interceptUpstream = &upstreamBodyStallTransport{base: upstream, stall: time.Duration(seconds) * time.Second}
+		}
+		// A reload while the body was read can revoke the replay evidence that
+		// relieved the URL. Refuse rather than send on revoked evidence.
+		if replayRelieved && !replay.current() {
+			ic.Logger.LogBlocked(actx, issuerQueryReplayStaleLayer, "replay evidence revoked before send")
+			writeBlockedError(w,
+				blockInfoFor(blockreason.QueryEntropy, issuerQueryReplayStaleLayer).WithRequestID(ic.RequestID),
+				"blocked: query replay evidence revoked before send", http.StatusForbidden)
+			return
 		}
 		upstreamEffect, effectErr := ic.Proxy.admitEffect(r.Context(), ic.Config, allowReceipt, boundaryUpstreamSend)
 		if effectErr != nil {

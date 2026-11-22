@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
@@ -15,10 +16,12 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 	"gopkg.in/yaml.v3"
 )
 
@@ -360,5 +363,94 @@ func TestIssuerQueryReplaySetting(t *testing.T) {
 				t.Fatalf("replay status = %d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestInterceptIssuerQueryReplayRevokedBeforeSend pins that replay relief is
+// rechecked at dispatch. The URL is relieved, then a reload revokes the replay
+// evidence while the request body is still being read; the request must not
+// reach the upstream.
+func TestInterceptIssuerQueryReplayRevokedBeforeSend(t *testing.T) {
+	e := newSameOriginEnv(t, func(c *config.Config) {
+		c.RequestBodyScanning.Enabled = true
+		c.Taint.Policy = config.ModePermissive
+	})
+	e.issue(http.StatusNoContent)
+	logs, _ := e.withRecordedAudit(t)
+	origin := "https://" + delegationSourceHost
+	if got := e.do(replayFixtureAgent, http.MethodGet, origin+replaySeedPath+"?"+replayFixtureQuery); got != http.StatusNoContent {
+		t.Fatalf("seed status = %d, want 204", got)
+	}
+	hitsBefore := e.sourceHit.Load()
+
+	bodyReader, bodyWriter := io.Pipe()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, replayFixtureURL(origin, replayFixtureQuery), bodyReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.ContentLength = -1
+	status := make(chan int, 1)
+	cfg, sc, logger, p := e.cfg, e.sc, e.logger, e.p
+	go func() {
+		resp := interceptAndRequestWithRecorder(t, interceptRequestOptions{
+			Upstream: e.upstream, TargetHost: delegationSourceHost, TargetPort: "443", UpstreamRT: e.rt,
+			Cache: e.cache, Pool: e.pool, Config: cfg, Scanner: sc, Logger: logger, Metrics: e.m,
+			Request: req, Proxy: p, Agent: replayFixtureAgent, ActorAuth: envelope.ActorAuthBound,
+		})
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		status <- resp.StatusCode
+	}()
+	// The replay allow is recorded right after the URL rescan, before the
+	// body is read, so its audit event marks the window to reload in.
+	testwait.For(t, 10*time.Second, func() bool {
+		return strings.Contains(logs.String(), `"event":"`+issuerQueryReplayReceiptKey+`"`)
+	}, "replay relief was never recorded")
+	disabled := cfg.Clone()
+	disabled.RequestBodyScanning.IssuerBoundSessionCookies = false
+	e.reload(disabled)
+	_, _ = io.WriteString(bodyWriter, "note=ready")
+	_ = bodyWriter.Close()
+
+	if got := <-status; got != http.StatusForbidden {
+		t.Fatalf("revoked replay status = %d, want 403; audit: %s", got, logs.String())
+	}
+	if got := e.sourceHit.Load(); got != hitsBefore {
+		t.Fatalf("revoked replay reached the upstream (%d hits, want %d)", got, hitsBefore)
+	}
+	if !strings.Contains(logs.String(), issuerQueryReplayStaleLayer) {
+		t.Fatalf("stale replay refusal not logged; audit: %s", logs.String())
+	}
+}
+
+func TestCanonicalReplayPort(t *testing.T) {
+	for _, tc := range []struct{ raw, want string }{
+		{"https://h.vendor.example", "443"},
+		{"https://h.vendor.example:443", "443"},
+		{"https://h.vendor.example:0443", "443"},
+		{"http://h.vendor.example:080", "80"},
+		{"http://h.vendor.example:8080", "8080"},
+		{"http://h.vendor.example:0", ""},
+		{"http://h.vendor.example:65536", ""},
+		{"ftp://h.vendor.example", ""},
+	} {
+		u, err := url.Parse(tc.raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := canonicalReplayPort(u); got != tc.want {
+			t.Errorf("canonicalReplayPort(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+	scope := issuerQueryReplayScope{scheme: schemeHTTP, runtime: newSameOriginEnv(t, nil).p.issuerCookieRuntime.Load()}
+	a, _ := url.Parse("http://h.vendor.example:080/x")
+	b, _ := url.Parse("http://h.vendor.example/x")
+	da, okA := scope.digest(a, "v")
+	db, okB := scope.digest(b, "v")
+	if !okA || !okB || da != db {
+		t.Fatal("equivalent port spellings must produce the same replay digest")
+	}
+	if issuerReplayAuthorityMatches(&http.Request{Host: "h.vendor.example:080", URL: b}) != true {
+		t.Fatal("Host with a zero-padded default port must match the URL authority")
 	}
 }

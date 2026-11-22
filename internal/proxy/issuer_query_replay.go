@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -119,7 +120,7 @@ func (s issuerQueryReplayScope) digest(target *url.URL, value string) ([32]byte,
 	if value == "" || target == nil || target.Scheme != s.scheme || target.User != nil || target.Opaque != "" {
 		return [32]byte{}, false
 	}
-	host, port := strings.ToLower(target.Hostname()), effectiveURLPort(target)
+	host, port := strings.ToLower(target.Hostname()), canonicalReplayPort(target)
 	if host == "" || port == "" {
 		return [32]byte{}, false
 	}
@@ -133,7 +134,7 @@ func issuerReplayAuthorityMatches(r *http.Request) bool {
 		return true
 	}
 	wire := &url.URL{Scheme: r.URL.Scheme, Host: r.Host}
-	return strings.EqualFold(wire.Hostname(), r.URL.Hostname()) && effectiveURLPort(wire) == effectiveURLPort(r.URL)
+	return strings.EqualFold(wire.Hostname(), r.URL.Hostname()) && canonicalReplayPort(wire) != "" && canonicalReplayPort(wire) == canonicalReplayPort(r.URL)
 }
 
 func (s issuerQueryReplayScope) scanContext(ctx context.Context, target *url.URL, used *bool) context.Context {
@@ -189,4 +190,19 @@ func (s issuerQueryReplayScope) forwardClient(client *http.Client) *http.Client 
 	}
 	wrapped.Transport = issuerQueryReplayTransport{next: next, replay: s}
 	return &wrapped
+}
+
+// issuerQueryReplayStaleLayer labels a send refused because the replay
+// evidence that relieved its URL was revoked before dispatch.
+const issuerQueryReplayStaleLayer = "issuer_query_replay_stale"
+
+// canonicalReplayPort returns the effective port in decimal form, so "080"
+// and "80" name one origin. Invalid ports return "" and grant no evidence.
+func canonicalReplayPort(u *url.URL) string {
+	port := effectiveURLPort(u)
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return ""
+	}
+	return strconv.Itoa(n)
 }
