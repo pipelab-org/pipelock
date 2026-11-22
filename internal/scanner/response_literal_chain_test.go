@@ -205,3 +205,39 @@ func TestResponseSparseDeltaSkipsWholeViewGate(t *testing.T) {
 		t.Fatalf("sparse negative used the whole view: matches=%d gate=%t index=%t", len(got), view.ready, view.positions.ready)
 	}
 }
+
+// A pattern with more candidate windows than the chain budget must decline
+// the window plan rather than collect them all, and the full matcher it falls
+// back to must still return every match. The budget is lowered so a small,
+// sparse text reaches it before any other limit.
+func TestResponseLiteralChainCandidateBudget(t *testing.T) {
+	p := memoTestPattern("candidate budget", `alpha.{1,3}bravo`)
+	patterns := []*compiledPattern{p}
+	pf := newResponsePreFilter(patterns)
+	const pairs = 12
+	text := strings.Repeat("alpha-bravo"+strings.Repeat("~", responseMemoMinBytes), pairs)
+	plan := func() bool {
+		positions := newMatchingView(text, responseMatchingProgram(pf))
+		view := &responsePreFilterView{positions: positions}
+		_, applied := pf.chainRanges(text, view, patterns, []int{0}, nil).patternWindows(p)
+		return applied
+	}
+	if !plan() {
+		t.Fatal("sparse fixture did not use a window plan under the default budget")
+	}
+	saved := responseChainMaxCandidates
+	responseChainMaxCandidates = pairs / 2
+	t.Cleanup(func() { responseChainMaxCandidates = saved })
+	if plan() {
+		t.Fatal("chain planner kept a window plan past the candidate budget")
+	}
+	positions := newMatchingView(text, responseMatchingProgram(pf))
+	view := &responsePreFilterView{positions: positions}
+	want := matchPatternsAgainst(patterns, text)
+	if len(want) != pairs {
+		t.Fatalf("full matches = %d, want %d", len(want), pairs)
+	}
+	if got := matchPatternsPreFilteredWithMemo(pf, patterns, text, view); !reflect.DeepEqual(got, want) {
+		t.Fatalf("fallback matches differ: got %d, want %d", len(got), len(want))
+	}
+}

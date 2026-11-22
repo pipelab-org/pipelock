@@ -764,6 +764,11 @@ func (p *responseLiteralChain) ranges(view *matchingView, maxRun int, delta *res
 			start := candidates.prefix.start(view.text, hit.start, max(0, hit.start-prefix))
 			end := candidates.suffix.end(view.text, hit.end, min(len(view.text), hit.end+suffix))
 			if delta == nil || delta.responseChainTouchesEdit(start, end) {
+				// Stop before a many-branch pattern can collect an unbounded
+				// candidate list; the caller then runs the full matcher.
+				if len(windows) >= responseChainMaxCandidates {
+					return nil, false
+				}
 				windows = append(windows, regexpWindowRange{start, end})
 			}
 		}
@@ -778,6 +783,11 @@ func (d *responseDeltaView) responseChainTouchesEdit(start, end int) bool {
 	i := sort.Search(len(d.edits), func(i int) bool { return d.edits[i].viewEnd >= start-utf8.UTFMax })
 	return i < len(d.edits) && d.edits[i].viewStart <= end+utf8.UTFMax
 }
+
+// responseChainMaxCandidates bounds raw candidate windows per pattern and
+// view. Beyond it, windowing saves little over one full FindAll, so the
+// planner declines and the whole view is matched instead.
+var responseChainMaxCandidates = 1 << 14
 
 // Merge ranges before running FindAll. Each possible match has a full rune
 // of context on either side unless it is at the real edge of the input.

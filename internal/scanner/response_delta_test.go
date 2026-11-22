@@ -137,10 +137,10 @@ func TestResponseDeltaWalkParity(t *testing.T) {
 	for _, mode := range []string{config.ActionBlock, config.ActionWarn} {
 		cfg.PromptInjectionDetection = &config.PromptInjectionDetection{Action: mode}
 		sc, full := MustNew(cfg), MustNew(cfg)
-		// The whole-view reference: no prefilter, literal index, windows,
-		// chains or delta. disableTestResponseDelta would leave chain-level
-		// delta active on both sides, so it cannot prove delta parity.
-		responsePassReference(full)
+		// The pure reference: no prefilter, literal index, windows, chains,
+		// delta or negative-proof reuse, so normalized children are matched
+		// from scratch and cannot share a wrong projection with the scanner.
+		responsePassPureReference(full)
 		t.Cleanup(sc.Close)
 		t.Cleanup(full.Close)
 		for _, tt := range corpus {
@@ -218,17 +218,6 @@ func TestResponseDeltaQueueRoundTrip(t *testing.T) {
 	}
 }
 
-// disableTestResponseDelta removes delta width plans only. Chain windows still
-// consume the delta view and its identical-text shortcut, so a scanner treated
-// this way is not a delta-free reference; parity claims need responsePassReference.
-func disableTestResponseDelta(s *Scanner) {
-	for _, target := range responseTestFilters(s) {
-		filter := **target
-		filter.deltaWidths = nil
-		*target = &filter
-	}
-}
-
 func TestResponseDeltaSampleParity(t *testing.T) {
 	body := responsePassFixture(t)
 	cfg := config.Defaults()
@@ -236,7 +225,8 @@ func TestResponseDeltaSampleParity(t *testing.T) {
 	sc, full := MustNew(cfg), MustNew(cfg)
 	t.Cleanup(sc.Close)
 	t.Cleanup(full.Close)
-	disableTestResponseDelta(full)
+	// Independent of every optimization, not only the width planner.
+	responsePassPureReference(full)
 	got := sc.ScanResponseBodyWithSuppress(t.Context(), body, "", nil)
 	want := full.ScanResponseBodyWithSuppress(t.Context(), body, "", nil)
 	if !reflect.DeepEqual(got, want) {
