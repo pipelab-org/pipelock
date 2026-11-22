@@ -1158,6 +1158,9 @@ func connectPostCEEAdaptiveState(snapshot ceeEntropySnapshot, fallback session.R
 // request, and streams the raw response back to the client.
 func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	r = p.withReceiptEvidence(r)
+	// Registered first so it runs last; see responseExposureHolds.
+	exposureHolds := &responseExposureHolds{}
+	defer exposureHolds.finish()
 	start := time.Now()
 
 	clientIP, requestID := requestMeta(r)
@@ -1449,6 +1452,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	} else if p.taintRecorder != nil {
 		forwardTask.subject = sharedTaskSubject(p.taintRecorder)
 	}
+	// Settle an empty unknown-length HTTP/2 body before taint classifies it.
+	r = settleUnknownLengthBody(r, unknownLengthBodyWait)
 	forwardTaint := evaluateHTTPTaskTaint(cfg, forwardRec, r.Method, r.URL, requestHasBody(r), &forwardTask)
 	forwardRequiresReauth := false
 
@@ -2961,8 +2966,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	var responseFindingKinds []session.HostileFindingKind
 	responseTaintType := responseTaintContentType(resp.Header)
 	responseTaintURL := resp.Request.URL.String()
-	observeResponseFindings := httpResponseFindingObserver(forwardRec, cfg, responseTaintURL, responseTaintType, "forward_response")
+	observeResponseFindings, releaseResponseExposure := httpResponseFindingObserver(forwardRec, cfg, responseTaintURL, responseTaintType, "forward_response")
 	observeResponseFindings(nil)
+	exposureHolds.add(releaseResponseExposure)
 	defer func() { observeResponseFindings(responseFindingKinds) }()
 
 	// Size limit: tighter of max_response_mb and remaining byte budget.
@@ -3010,6 +3016,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			IsA2A:           isA2A,
 			A2A:             &cfg.A2AScanning,
 			GenericSSE:      &cfg.ResponseScanning.SSEStreaming,
+			// A task can rotate while the stream stays open. Re-record the
+			// stream for events delivered under the new task.
+			OnDelivery: func() { observeResponseFindings(nil) },
 			Generic: mcp.GenericSSEScanOptions{
 				Target:             targetURL,
 				Suppress:           cfg.Suppress,
