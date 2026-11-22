@@ -147,23 +147,31 @@ func TestPerRequestCompensatedLoss(t *testing.T) {
 				if json.Unmarshal([]byte(line), &env) != nil {
 					continue
 				}
-				if !strings.Contains(line, from) || (mode == modeRequired && env.Type != recordTypeEvidence) {
+				if mode == modeRequired && env.Type != recordTypeEvidence {
 					continue
 				}
 				var rec map[string]any
 				if err := json.Unmarshal([]byte(line), &rec); err != nil {
 					t.Fatal(err)
 				}
-				detail := rec["detail"].(map[string]any)
+				detail, _ := rec["detail"].(map[string]any)
+				// Match the receipt's own target: another request's receipt can
+				// name this destination elsewhere, e.g. in recent_taint_sources.
+				var target map[string]any
 				switch env.Type {
 				case recordTypeEvidence:
-					detail["event_id"] = fmt.Sprintf("fresh-v2-%d", i)
-					detail["payload"].(map[string]any)["target"] = to
+					target, _ = detail["payload"].(map[string]any)
 				case recordTypeAction:
-					ar := detail["action_record"].(map[string]any)
-					ar["target"], ar["action_id"] = to, freshID
-				default:
+					target, _ = detail["action_record"].(map[string]any)
+				}
+				if target == nil || target["target"] != from {
 					continue
+				}
+				target["target"] = to
+				if env.Type == recordTypeEvidence {
+					detail["event_id"] = fmt.Sprintf("fresh-v2-%d", i)
+				} else {
+					target["action_id"] = freshID
 				}
 				data, err := json.Marshal(rec)
 				if err != nil {
