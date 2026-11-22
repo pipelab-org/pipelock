@@ -343,3 +343,33 @@ func TestHuggingFaceDownloadAudience(t *testing.T) {
 		}
 	}
 }
+
+// A browser Maps loader sends the key beside several other values. The joined
+// query views put the key directly after another value's text; a match that is
+// still exactly the admitted key must not turn the request back into a block,
+// while a second key built from other values still must.
+func TestGoogleAPIKeyQueryJoinedViews(t *testing.T) {
+	s := MustNew(credentialAudienceEntropyConfig())
+	defer s.Close()
+	key := "AI" + "za" + "Sy9fK2qLmR7xWvT4bNcZ8pH3jD6gE1uYo0A"
+	other := "AI" + "za" + "SyQ7mZ9pL4vR2sK8hF6dA0nT5cW3xB1jG2e"
+	loader := "https://maps.googleapis.com/maps/api/js?libraries=core%2Cgeocoding%2Cmarker%2Cmaps%2Cplaces&key=" + key +
+		"&region=US&language=en-US&solution_channel=GMP_visgl_rgmlibrary_v1_default&callback=google.maps.__ib__"
+	for _, tc := range []struct {
+		name  string
+		url   string
+		allow bool
+	}{
+		{"browser loader", loader, true},
+		{"key between short values", "https://maps.googleapis.com/maps/api/js?v=weekly&key=" + key + "&libraries=places", true},
+		{"second key split across values", loader + "&a=" + other[:20] + "&b=" + other[20:], false},
+		{"second key split around the key", "https://maps.googleapis.com/maps/api/js?a=" + other[:20] + "&key=" + key + "&b=" + other[20:], false},
+		{"same key off the audience host", "https://api.vendor.example/maps/api/js?libraries=places&key=" + key + "&region=US", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := s.Scan(context.Background(), tc.url); got.Allowed != tc.allow {
+				t.Fatalf("allowed=%v want %v scanner=%s reason=%s", got.Allowed, tc.allow, got.Scanner, got.Reason)
+			}
+		})
+	}
+}
