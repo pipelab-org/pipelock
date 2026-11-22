@@ -135,7 +135,15 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			result.Blocked = nil
 		}
 		if result.Blocked != nil {
-			result.Blocked.v3RefusalSigned = opts.receiptEffects.enabled && opts.refuseV3Reply(opts.warnContext(), receipt.EmitOpts{ActionID: receipt.NewActionID(), Method: frame.Method, Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(frame.ID)}) == nil
+			if opts.receiptEffects.enabled {
+				result.Blocked.v3RefusalErr = opts.refuseV3Reply(opts.warnContext(), receipt.EmitOpts{
+					ActionID: receipt.NewActionID(), Method: frame.Method, Transport: opts.Transport,
+					Target: firstNonEmpty(frame.ToolCallName, frame.Method), RequestID: canonicalID(frame.ID),
+					Layer: receiptLayer, Pattern: receiptPattern, Severity: receiptSeverity,
+					PolicyHash: opts.receiptPolicyHash(),
+				})
+				result.Blocked.v3RefusalSigned = result.Blocked.v3RefusalErr == nil
+			}
 			result.Blocked = inputMCPDenial(opts, denialAudit, result.Blocked)
 		}
 	}()

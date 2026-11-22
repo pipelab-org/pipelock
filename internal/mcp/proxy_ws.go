@@ -41,7 +41,7 @@ func RunWSProxy(
 	// exits during either step, the watcher must retain the original parent
 	// rather than observe PID 1 and become inert.
 	startupParentWatch := parentWatchOpts{startPPID: os.Getppid()}
-	safeClientOut := &syncWriter{w: clientOut}
+	safeClientOut := newMCPClientWriter(clientOut, opts)
 	safeLogW := &syncWriter{w: logW}
 	ctx, stopSession, sessionExit := newSessionBoundContext(ctx, startupParentWatch, clientIn, safeLogW, opts.sessionExitForTest)
 	defer stopSession()
@@ -148,6 +148,7 @@ func RunWSProxy(
 	wsOpts.Transport = "mcp_ws"
 	wsOpts.TaintExternalSource = true
 	wsOpts.WarnContext = innerCtx
+	localClientOut := wsOpts.localV3ReplyWriter(safeClientOut, safeLogW, nil)
 	wsOpts.sessionExit = sessionExit
 	wsOpts.nativeStdio = streamAdmission.NativeLease != nil
 	wsOpts.nativeAdmission = streamAdmission
@@ -279,7 +280,7 @@ func RunWSProxy(
 			ID: frame.ID, IsNotification: isRPCNotification(frame.ID),
 			ErrorCode: -32002, ErrorMessage: "pipelock: " + refusal,
 		})
-		if wErr := deliverMCPInputResult(wsOpts, *block, safeClientOut); wErr != nil {
+		if wErr := deliverMCPInputResult(wsOpts, *block, localClientOut); wErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send task refusal: %v\n", wErr)
 		}
 		intent := outcome.Receipt
@@ -345,7 +346,7 @@ func RunWSProxy(
 			admission, admissionErr = admission.ReserveNativeTerminal()
 		}
 		if admissionErr != nil {
-			writeNativeAdmissionDenial(wsOpts, safeLogW, transport.NewStdioWriter(safeClientOut), frame.ID, admissionErr)
+			writeNativeAdmissionDenial(wsOpts, safeLogW, localClientOut, frame.ID, admissionErr)
 			if errors.Is(admissionErr, ael.ErrCapacity) {
 				continue
 			}
@@ -361,7 +362,7 @@ func RunWSProxy(
 				denialAudit := mcpKillMcpInputDenialAudit()
 				batchResp := refuseKillSwitchRequest(inputOpts, safeLogW, frame, d)
 				if batchResp != nil {
-					if wErr := writeMCPInputDenial(wsOpts, denialAudit, safeClientOut, batchResp); wErr != nil {
+					if wErr := writeMCPInputDenial(wsOpts, denialAudit, localClientOut, batchResp); wErr != nil {
 						_, _ = fmt.Fprintf(safeLogW, "pipelock: stdout write error: %v\n", wErr)
 					}
 					continue
@@ -372,7 +373,7 @@ func RunWSProxy(
 					continue
 				}
 				resp := killswitch.ErrorResponse(frame.ID, d.Message)
-				if wErr := writeMCPInputDenial(wsOpts, denialAudit, safeClientOut, resp); wErr != nil {
+				if wErr := writeMCPInputDenial(wsOpts, denialAudit, localClientOut, resp); wErr != nil {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: stdout write error: %v\n", wErr)
 				}
 				continue
@@ -382,14 +383,14 @@ func RunWSProxy(
 		// Input scanning: DLP, injection, policy, chain detection.
 		decision := scanHTTPInputDecision(msg, safeLogW, sessionKey, sessionKey, inputOpts)
 		if decision.Synthetic != nil {
-			if err := deliverMCPSynthetic(decision.Synthetic, safeClientOut); err != nil {
+			if err := deliverMCPSynthetic(decision.Synthetic, localClientOut); err != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: synthetic response write error: %v\n", err)
 			}
 			continue
 		}
 
 		if decision.Blocked != nil {
-			if wErr := deliverMCPInputResult(wsOpts, *decision.Blocked, safeClientOut); wErr != nil {
+			if wErr := deliverMCPInputResult(wsOpts, *decision.Blocked, localClientOut); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send input result: %v\n", wErr)
 			}
 			continue
@@ -422,7 +423,7 @@ func RunWSProxy(
 			registration, refusal, trackingErr = registerWSTaskOutcome(safeLogW, inputOpts, tracker, frame, decision)
 			if trackingErr != nil {
 				decision.Outcome.settle(safeLogW, inputOpts, mcpOutcomeStatusBlocked, -1, "request_tracking_failed")
-				writeNativeAdmissionDenial(inputOpts, safeLogW, transport.NewStdioWriter(safeClientOut), frame.ID, trackingErr)
+				writeNativeAdmissionDenial(inputOpts, safeLogW, localClientOut, frame.ID, trackingErr)
 				continue
 			}
 			if refusal != "" {

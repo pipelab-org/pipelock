@@ -174,9 +174,6 @@ func writeMCPForwardedMessage(writer transport.MessageWriter, msg []byte) error 
 // deliverMCPInputResult preserves the shared terminal identity across input
 // handoff and wire delivery. Successful synthetic redirects have no denial.
 func deliverMCPInputResult(opts MCPProxyOpts, br BlockedRequest, writer transport.MessageWriter) error {
-	if local, ok := writer.(*mcpV3LocalWriter); ok && br.v3RefusalSigned {
-		writer = local.base
-	}
 	var reply []byte
 	if br.SyntheticResponse != nil {
 		reply = br.SyntheticResponse
@@ -194,6 +191,9 @@ func deliverMCPInputResult(opts MCPProxyOpts, br BlockedRequest, writer transpor
 		terminal = newMCPDenial(opts, mcpDenialAudit{}, "input", nil).decision
 	}
 	return finishMCPDenial(&mcpDenial{decision: terminal, reply: reply}, mcpDeniedDelivery(func(reply []byte) error {
+		if local, ok := writer.(*mcpV3LocalWriter); ok {
+			return local.writeInputDenial(br, reply)
+		}
 		if br.IsNotification {
 			return nil
 		}

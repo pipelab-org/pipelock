@@ -45,6 +45,10 @@ import (
 // should log it but not report it to error tracking services.
 var ErrSubprocessExit = errors.New("subprocess exited")
 
+func newMCPClientWriter(out io.Writer, opts MCPProxyOpts) *syncWriter {
+	return &syncWriter{w: out, requireFullMessage: opts.receiptEffects.enabled}
+}
+
 // syncWriter wraps an io.Writer with a mutex to make concurrent writes safe.
 // Used in RunProxy where multiple goroutines write to clientOut and logW.
 type syncWriter struct {
@@ -1949,7 +1953,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// Wrap shared writers in mutex adapters. Multiple goroutines write to
 	// clientOut (blocked request drainer + response scanner) and logW
 	// (input scanner + response scanner + child stderr).
-	safeClientOut := &syncWriter{w: clientOut, requireFullMessage: opts.receiptEffects.enabled}
+	safeClientOut := newMCPClientWriter(clientOut, opts)
 	safeLogW := &syncWriter{w: logW}
 
 	// Restrict child process environment to safe variables only.
@@ -2304,7 +2308,6 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 				// Notifications have no ID - silently drop (no error response per JSON-RPC spec).
 				// Log the block for audit trail - silent drops with zero logging aid attacker reconnaissance.
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: blocked notification (no response sent): %s\n", blocked.LogMessage)
-				continue
 			}
 			writer := inputOpts.v3SendDenialWriter(safeClientOut, safeLogW, blocked)
 			if wErr := deliverMCPInputResult(opts, blocked, writer); wErr != nil {

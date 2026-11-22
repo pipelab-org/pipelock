@@ -7,6 +7,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +26,62 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
+
+func TestMCPV3WebSocketLocalRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		policy, fail, required bool
+	}{
+		{"kill switch", false, false, true},
+		{"policy refusal", true, false, true},
+		{"required writer failure", true, true, true},
+		{"optional writer failure", true, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := v3MCPMatrixRow{required: tc.required}
+			if tc.fail {
+				row.scenario = "intent write fail"
+			}
+			opts, writer, client := localMCPReceiptFixture(t, row, deferred.SurfaceMCPWS)
+			if tc.policy {
+				opts.PolicyCfg = policy.New(config.MCPToolPolicy{
+					Enabled: true, Action: config.ActionBlock,
+					Rules: []config.ToolPolicyRule{{Name: "deny-echo", ToolPattern: "^echo$", Action: config.ActionBlock}},
+				})
+			} else {
+				opts.KillSwitch = deferKillTestController()
+				opts.KillSwitch.SetAPI(true)
+			}
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				t.Error("blocked request reached upstream")
+				w.WriteHeader(http.StatusBadRequest)
+			}))
+			defer upstream.Close()
+			err := RunWSProxy(t.Context(), strings.NewReader(jsonToolsCallEcho+"\n"), client, io.Discard, "ws"+strings.TrimPrefix(upstream.URL, "http"), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.fail && tc.required {
+				if client.output.Len() != 0 {
+					t.Fatalf("unrecorded denial reached client: %q", client.output.String())
+				}
+			} else {
+				assertLocalMCPErrors(t, client.output.String(), "1")
+			}
+			actions := localMCPReceiptActions(t, writer, client.dir)
+			if tc.fail {
+				if len(actions) != 0 {
+					t.Fatalf("writer failure produced unexpected actions: %+v", actions)
+				}
+				return
+			}
+			if len(actions) != 3 || actions[0].Phase != "decision" || actions[0].Verdict != config.ActionBlock || !client.intent {
+				t.Fatalf("expected a signed refusal before admitted delivery: %+v", actions)
+			}
+			assertLocalMCPDeliveries(t, actions, "1")
+		})
+	}
+}
 
 func TestMCPV3LocalHTTPBlock(t *testing.T) {
 	for _, tc := range []struct {
@@ -133,10 +192,11 @@ func TestMCPV3LocalPresignedRefusal(t *testing.T) {
 	}
 	assertLocalMCPErrors(t, client.output.String(), "1")
 	actions := localMCPReceiptActions(t, writer, client.dir)
-	if len(actions) != 1 || actions[0].EffectBoundary != mcpDownstreamDeliveryBoundary ||
+	if len(actions) != 3 || actions[0].EffectBoundary != mcpDownstreamDeliveryBoundary ||
 		actions[0].Phase != "decision" || actions[0].Verdict != config.ActionBlock {
-		t.Fatalf("expected only the pre-signed refusal, got %+v", actions)
+		t.Fatalf("expected one pre-signed refusal followed by delivery, got %+v", actions)
 	}
+	assertLocalMCPDeliveries(t, actions, "1")
 }
 
 func TestMCPV3LocalTimeoutReplies(t *testing.T) {
@@ -890,6 +950,48 @@ func TestMCPV3ListenerDenialWriteErrorPreventsFlush(t *testing.T) {
 type shortReplyWriter struct{}
 
 func (shortReplyWriter) Write(p []byte) (int, error) { return len(p) - 1, nil }
+
+func TestMCPV3ClientWriterTransportParity(t *testing.T) {
+	for _, file := range []string{"proxy.go", "proxy_sandbox.go", "proxy_ws.go", "mcp_http_forward.go"} {
+		t.Run(file, func(t *testing.T) {
+			source, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			guarded := false
+			ast.Inspect(source, func(node ast.Node) bool {
+				switch n := node.(type) {
+				case *ast.CallExpr:
+					if name, ok := n.Fun.(*ast.Ident); ok && name.Name == "newMCPClientWriter" {
+						guarded = true
+					}
+				case *ast.CompositeLit:
+					if typ, ok := n.Type.(*ast.Ident); ok && typ.Name == "syncWriter" {
+						var client, full bool
+						for _, field := range n.Elts {
+							kv, ok := field.(*ast.KeyValueExpr)
+							if !ok {
+								continue
+							}
+							key, ok := kv.Key.(*ast.Ident)
+							if !ok {
+								continue
+							}
+							value, isIdent := kv.Value.(*ast.Ident)
+							client = client || key.Name == "w" && isIdent && value.Name == "clientOut"
+							full = full || key.Name == "requireFullMessage"
+						}
+						guarded = guarded || client && full
+					}
+				}
+				return true
+			})
+			if !guarded {
+				t.Fatal("transport omits checked client message framing")
+			}
+		})
+	}
+}
 
 func TestMCPV3StdioWriterRejectsPartialReply(t *testing.T) {
 	w := syncWriter{w: shortReplyWriter{}, requireFullMessage: true}

@@ -211,6 +211,7 @@ func (v InputVerdict) IsEntropyOnly() bool {
 // generating an error response (used for redirect success results).
 type BlockedRequest struct {
 	v3RefusalSigned   bool
+	v3RefusalErr      error
 	v3ReplyParent     *mcpV3Exchange
 	v3SendDenied      bool
 	terminal          *mcpTerminalDecision

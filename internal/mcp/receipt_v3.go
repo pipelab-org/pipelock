@@ -262,13 +262,36 @@ type mcpV3LocalWriter struct {
 	sendDenied bool
 }
 
-func (w *mcpV3LocalWriter) WriteMessage(msg []byte) error {
-	request := receipt.EmitOpts{RequestID: canonicalID(ParseMCPFrame(msg).ID), Transport: w.opts.Transport}
+func (w *mcpV3LocalWriter) replyWriter(id json.RawMessage) mcpV3ReplyWriter {
+	request := receipt.EmitOpts{RequestID: canonicalID(id), Transport: w.opts.Transport}
 	if w.send != nil {
 		request = w.send.request
 	}
-	reply := mcpV3ReplyWriter{base: w.base, opts: w.opts, log: w.log, request: request, sendDenied: w.sendDenied}
-	return writeMCPForwardedMessage(&reply, msg)
+	return mcpV3ReplyWriter{base: w.base, opts: w.opts, log: w.log, request: request, sendDenied: w.sendDenied}
+}
+
+func (w *mcpV3LocalWriter) WriteMessage(msg []byte) error {
+	reply := w.replyWriter(ParseMCPFrame(msg).ID)
+	return reply.WriteMessage(msg)
+}
+
+func (w *mcpV3LocalWriter) writeDeniedMessage(msg []byte) error {
+	reply := w.replyWriter(ParseMCPFrame(msg).ID)
+	return reply.writeDeniedMessage(msg)
+}
+
+func (w *mcpV3LocalWriter) writeInputDenial(br BlockedRequest, msg []byte) error {
+	reply := w.replyWriter(br.ID)
+	if br.IsNotification {
+		msg = nil
+	}
+	if w.sendDenied {
+		if msg == nil {
+			return nil
+		}
+		return reply.WriteMessage(msg)
+	}
+	return reply.deliverDenial(msg, br.v3RefusalSigned, br.v3RefusalErr)
 }
 
 type mcpV3ReplyWriter struct {
@@ -312,16 +335,28 @@ func (w *mcpV3ReplyWriter) WriteMessage(msg []byte) error {
 }
 
 func (w *mcpV3ReplyWriter) writeDeniedMessage(msg []byte) error {
+	return w.deliverDenial(msg, false, nil)
+}
+
+func (w *mcpV3ReplyWriter) deliverDenial(msg []byte, signed bool, refusalErr error) error {
 	if w.finished {
 		return nil
 	}
-	if err := w.opts.refuseV3Reply(w.opts.warnContext(), mcpV3ReplyEvidence(w.request)); err != nil {
+	if !signed && refusalErr == nil {
+		refusalErr = w.opts.refuseV3Reply(w.opts.warnContext(), mcpV3ReplyEvidence(w.request))
+	}
+	if refusalErr != nil {
 		w.finished = true
-		logMCPV3Error(w.log, err)
+		logMCPV3Error(w.log, refusalErr)
 		if w.opts.receiptEffects.gate.RequiresReceipts() {
-			return fmt.Errorf("%w: %w", errMCPV3ReplyAdmission, err)
+			return fmt.Errorf("%w: %w", errMCPV3ReplyAdmission, refusalErr)
 		}
-		return deliverMCPDeniedMessage(w.base, msg)
+		if msg != nil {
+			return deliverMCPDeniedMessage(w.base, msg)
+		}
+	}
+	if msg == nil {
+		return nil
 	}
 	w.sendDenied = true
 	return w.WriteMessage(msg)

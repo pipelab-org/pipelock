@@ -133,7 +133,7 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	rec := opts.Rec
 	defer recordMCPBaselineSample(opts, rec)
 
-	safeClientOut := &syncWriter{w: clientOut}
+	safeClientOut := newMCPClientWriter(clientOut, opts)
 	safeLogW := &syncWriter{w: logW}
 
 	serverIn, err := sandboxCmd.StdinPipe()

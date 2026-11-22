@@ -155,7 +155,7 @@ func RunHTTPProxy(
 	// hide a parent death. This cannot close the earlier launcher-to-first-
 	// syscall race; that needs a harness-owned lifetime primitive.
 	startupParentWatch := parentWatchOpts{startPPID: os.Getppid()}
-	wireClientOut := &syncWriter{w: clientOut, requireFullMessage: opts.receiptEffects.enabled}
+	wireClientOut := newMCPClientWriter(clientOut, opts)
 	safeLogW := &syncWriter{w: logW}
 	ctx, cancel, sessionExit := newSessionBoundContext(ctx, startupParentWatch, clientIn, safeLogW, opts.sessionExitForTest)
 	defer cancel()
