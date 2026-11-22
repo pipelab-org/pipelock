@@ -165,6 +165,10 @@ func readMCPMatrixActions(dir string, deliveries ...mcpReceiptDelivery) ([]v3.Ac
 }
 
 func decodeMCPMatrixActions(dir string) ([]v3.Action, error) {
+	return decodeMCPMatrixReceiptFiles(dir, false)
+}
+
+func decodeMCPMatrixReceiptFiles(dir string, live bool) ([]v3.Action, error) {
 	paths, err := filepath.Glob(filepath.Join(dir, "*.receipt-v3.jsonl"))
 	if err != nil {
 		return nil, err
@@ -174,6 +178,11 @@ func decodeMCPMatrixActions(dir string) ([]v3.Action, error) {
 		data, err := os.ReadFile(filepath.Clean(path))
 		if err != nil {
 			return nil, err
+		}
+		if live {
+			// The peer can read the next append while observing the wire.
+			// Only the closed-history check requires the complete file.
+			data = data[:bytes.LastIndexByte(data, '\n')+1]
 		}
 		for line := range bytes.SplitAfterSeq(data, []byte{'\n'}) {
 			if len(line) == 0 {
@@ -213,7 +222,7 @@ type mcpMatrixObserver struct {
 }
 
 func (o *mcpMatrixObserver) Write(p []byte) (int, error) {
-	actions, err := decodeMCPMatrixActions(o.dir)
+	actions, err := decodeMCPMatrixReceiptFiles(o.dir, true)
 	if err != nil {
 		return 0, err
 	}
@@ -1606,4 +1615,41 @@ func TestMCPV3WebSocketWriteFailureSettlesUnknown(t *testing.T) {
 		}
 	}
 	t.Fatal("missing unknown outcome for failed WebSocket write")
+}
+
+func TestMCPMatrixObserverReadsCompleteLiveReceiptPrefix(t *testing.T) {
+	opts, writer, observer := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, transportMCPStdio)
+	delivery := mcpV3ReplyWriter{
+		base:    transport.NewStdioWriter(io.Discard),
+		opts:    opts,
+		log:     io.Discard,
+		request: receipt.EmitOpts{RequestID: "1", Method: "tools/call", Transport: transportMCPStdio},
+	}
+	if err := delivery.WriteMessage([]byte(heldNativeReply)); err != nil {
+		t.Fatal(err)
+	}
+	_ = localMCPReceiptActions(t, writer, observer.dir)
+	files, err := filepath.Glob(filepath.Join(observer.dir, "*.receipt-v3.jsonl"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("receipt files = %v, %v", files, err)
+	}
+	prefix, err := os.ReadFile(filepath.Clean(files[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	observer.dir = t.TempDir()
+	snapshot := filepath.Join(observer.dir, filepath.Base(files[0]))
+	if err := os.WriteFile(snapshot, append(prefix, '{'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reply := []byte(heldNativeReply)
+	if _, err := observer.Write(reply); err != nil {
+		t.Fatalf("observe reply during receipt append: %v", err)
+	}
+	if !observer.intent || !bytes.Equal(observer.output.Bytes(), reply) {
+		t.Fatalf("wire observation = %q, delivery intent=%t", observer.output.Bytes(), observer.intent)
+	}
+	if _, err := readMCPMatrixActions(observer.dir); err == nil {
+		t.Fatal("finalized history accepted an unfinished record")
+	}
 }

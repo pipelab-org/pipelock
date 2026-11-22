@@ -72,9 +72,16 @@ func TestMCPV3WebSocketLocalRefusals(t *testing.T) {
 			}
 			actions := localMCPReceiptActions(t, writer, client.dir)
 			if tc.fail {
-				if len(actions) != 0 {
-					t.Fatalf("writer failure produced unexpected actions: %+v", actions)
+				if tc.required {
+					if len(actions) != 0 {
+						t.Fatalf("required writer failure produced unexpected actions: %+v", actions)
+					}
+					return
 				}
+				if len(actions) != 2 || !client.intent {
+					t.Fatalf("expected an admitted optional denial delivery: %+v", actions)
+				}
+				assertLocalMCPDeliveries(t, actions, "1")
 				return
 			}
 			if len(actions) != 3 || actions[0].Phase != "decision" || actions[0].Verdict != config.ActionBlock || !client.intent {
@@ -312,14 +319,15 @@ func TestMCPV3UnpairedReplyRemainsWithheld(t *testing.T) {
 			opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: mode.required}, transportMCPStdio)
 			line := []byte(`{"jsonrpc":"2.0","id":1,"result":{}}`)
 			_, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(string(line)+"\n")), transport.NewStdioWriter(client), io.Discard, NewStrictRequestTracker(), opts.withV3Session())
-			if err != nil || client.output.Len() != 0 {
+			if err != nil || bytes.Contains(client.output.Bytes(), line) {
 				t.Fatalf("unpaired response: output=%q error=%v", client.output.String(), err)
 			}
-			for _, a := range localMCPReceiptActions(t, writer, client.dir) {
-				if a.EffectBoundary == mcpDownstreamDeliveryBoundary && a.OutcomeClass == "completed" {
-					t.Fatalf("unpaired response recorded as delivered: %+v", a)
-				}
+			assertLocalMCPErrors(t, client.output.String(), "")
+			actions := localMCPReceiptActions(t, writer, client.dir)
+			if len(actions) != 3 || actions[0].Verdict != config.ActionBlock {
+				t.Fatalf("expected a block and local denial delivery: %+v", actions)
 			}
+			assertLocalMCPDeliveries(t, actions, "")
 		})
 	}
 }
@@ -1752,7 +1760,7 @@ func TestMCPV3StdioSendRefusalSettlesLegacyAllow(t *testing.T) {
 }
 
 func TestMCPV3StdioShutdownBoundsBlockedDenialDrain(t *testing.T) {
-	opts, _, _ := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, transportMCPStdio)
+	opts, _, observer := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, transportMCPStdio)
 	opts.PolicyCfg = policy.New(config.MCPToolPolicy{
 		Enabled: true, Action: config.ActionBlock,
 		Rules: []config.ToolPolicyRule{{Name: "deny-echo", ToolPattern: "^echo$", Action: config.ActionBlock}},
@@ -1800,4 +1808,10 @@ func TestMCPV3StdioShutdownBoundsBlockedDenialDrain(t *testing.T) {
 		err := <-done
 		t.Fatalf("proxy did not finish within its output drain grace: %v", err)
 	}
+	testwait.ForContext(t, ctx, func() bool {
+		actions, err := decodeMCPMatrixReceiptFiles(observer.dir, true)
+		return err == nil && slices.ContainsFunc(actions, func(action v3.Action) bool {
+			return action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.OutcomeClass == "attempt_unknown"
+		})
+	}, "interrupted denial write did not settle")
 }
