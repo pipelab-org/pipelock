@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,19 +18,25 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
-// countingListener accepts and holds connections, counting how many the
-// proxy dialed.
-func countingListener(t *testing.T) (net.Listener, *atomic.Int32) {
+// dialRecorder is a listener that holds every connection it accepts and
+// reports each accepted peer address, so a test can count the proxy's dials
+// without timing assumptions.
+type dialRecorder struct {
+	ln       net.Listener
+	accepted chan string
+}
+
+func newDialRecorder(t *testing.T) *dialRecorder {
 	t.Helper()
 	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = ln.Close() })
-	var accepted atomic.Int32
+	r := &dialRecorder{ln: ln, accepted: make(chan string, 16)}
 	var mu sync.Mutex
 	var held []net.Conn
 	t.Cleanup(func() {
+		_ = ln.Close()
 		mu.Lock()
 		defer mu.Unlock()
 		for _, conn := range held {
@@ -44,13 +49,38 @@ func countingListener(t *testing.T) (net.Listener, *atomic.Int32) {
 			if err != nil {
 				return
 			}
-			accepted.Add(1)
 			mu.Lock()
 			held = append(held, conn)
 			mu.Unlock()
+			r.accepted <- conn.RemoteAddr().String()
 		}
 	}()
-	return ln, &accepted
+	return r
+}
+
+// dialsBefore connects a sentinel and drains accepts until the sentinel
+// arrives. The listener accepts in arrival order, so every dial the proxy
+// made before this call is counted.
+func (r *dialRecorder) dialsBefore(t *testing.T) int {
+	t.Helper()
+	sentinel, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(t.Context(), "tcp4", r.ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial sentinel: %v", err)
+	}
+	t.Cleanup(func() { _ = sentinel.Close() })
+	want := sentinel.LocalAddr().String()
+	dials := 0
+	for {
+		select {
+		case addr := <-r.accepted:
+			if addr == want {
+				return dials
+			}
+			dials++
+		case <-t.Context().Done():
+			t.Fatal("sentinel was never accepted")
+		}
+	}
 }
 
 // connectResult is the CONNECT response status and headers; the body is
@@ -75,32 +105,45 @@ func connectThrough(t *testing.T, proxyAddr, authority string) connectResult {
 }
 
 func TestConnectPortsAdmission(t *testing.T) {
-	upstream, accepted := countingListener(t)
-	_, portStr, _ := net.SplitHostPort(upstream.Addr().String())
-	port, _ := strconv.Atoi(portStr)
 	for _, tc := range []struct {
 		name      string
-		ports     []int
+		list      string // "none", "self", "other" or "443"
 		enforce   bool
-		authority string
+		host      string // authority host; the port is the recorder's
+		zeroPad   bool
 		wantAllow bool
 	}{
-		{name: "empty_list_admits_any_port", enforce: true, authority: "127.0.0.1:" + portStr, wantAllow: true},
-		{name: "listed_port_admitted", ports: []int{port}, enforce: true, authority: "127.0.0.1:" + portStr, wantAllow: true},
-		{name: "unlisted_port_refused", ports: []int{port + 1}, enforce: true, authority: "127.0.0.1:" + portStr},
-		{name: "leading_zero_matches_numeric_port", ports: []int{port}, enforce: true, authority: "127.0.0.1:0" + portStr, wantAllow: true},
-		{name: "audit_mode_still_refuses", ports: []int{port + 1}, enforce: false, authority: "127.0.0.1:" + portStr},
-		{name: "ipv6_literal_refused", ports: []int{443}, enforce: true, authority: "[::1]:" + portStr},
+		{name: "empty_list_admits_any_port", list: "none", enforce: true, host: "127.0.0.1", wantAllow: true},
+		{name: "listed_port_admitted", list: "self", enforce: true, host: "127.0.0.1", wantAllow: true},
+		{name: "unlisted_port_refused", list: "other", enforce: true, host: "127.0.0.1"},
+		{name: "leading_zero_matches_numeric_port", list: "self", enforce: true, host: "127.0.0.1", zeroPad: true, wantAllow: true},
+		{name: "audit_mode_still_refuses", list: "other", enforce: false, host: "127.0.0.1"},
+		{name: "ipv6_literal_refused", list: "443", enforce: true, host: "[::1]"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			before := accepted.Load()
+			upstream := newDialRecorder(t)
+			_, portStr, _ := net.SplitHostPort(upstream.ln.Addr().String())
+			port, _ := strconv.Atoi(portStr)
+			var ports []int
+			switch tc.list {
+			case "self":
+				ports = []int{port}
+			case "other":
+				ports = []int{port + 1}
+			case "443":
+				ports = []int{443}
+			}
+			authority := tc.host + ":" + portStr
+			if tc.zeroPad {
+				authority = tc.host + ":0" + portStr
+			}
 			enforce := tc.enforce
 			proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
 				cfg.Enforce = &enforce
-				cfg.ForwardProxy.ConnectPorts = tc.ports
+				cfg.ForwardProxy.ConnectPorts = ports
 			})
 			t.Cleanup(cleanup)
-			resp := connectThrough(t, proxyAddr, tc.authority)
+			resp := connectThrough(t, proxyAddr, authority)
 			if tc.wantAllow {
 				if resp.StatusCode != http.StatusOK {
 					t.Fatalf("CONNECT status=%d reason=%q, want 200", resp.StatusCode, resp.Header.Get(blockreason.HeaderReason))
@@ -110,9 +153,7 @@ func TestConnectPortsAdmission(t *testing.T) {
 			if resp.StatusCode != http.StatusForbidden || resp.Header.Get(blockreason.HeaderReason) != string(blockreason.ConnectPortNotAllowed) {
 				t.Fatalf("CONNECT status=%d reason=%q, want 403 %s", resp.StatusCode, resp.Header.Get(blockreason.HeaderReason), blockreason.ConnectPortNotAllowed)
 			}
-			// The refusal is written before any dial, so a dial would already
-			// be counted by the time the response arrives.
-			if got := accepted.Load() - before; got != 0 {
+			if got := upstream.dialsBefore(t); got != 0 {
 				t.Fatalf("refused CONNECT still dialed the upstream %d time(s)", got)
 			}
 		})
