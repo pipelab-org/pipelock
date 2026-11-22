@@ -534,7 +534,7 @@ func (s *issuerQueryStore) mintNumericIDs(session string, target *url.URL, value
 	}
 	cache := s.numericIDs[session]
 	for _, cand := range candidates {
-		if rec, sent := bucket.sent[cand.sentDigest]; sent && !(rec.serverFirst && rec.serverFirstOrigin == originKey) {
+		if rec, sent := bucket.sent[cand.sentDigest]; sent && (!rec.serverFirst || rec.serverFirstOrigin != originKey) {
 			continue
 		}
 		if cache == nil {
