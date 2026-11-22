@@ -1104,6 +1104,7 @@ func newInterceptHandler(
 					return true
 				})
 				joinedUsed := false
+				numericCardJoinUsed := false
 				if joinedDLPFinding {
 					allowCtx = scanner.WithIssuerJoinedViewAllowance(allowCtx, func(escapedPath string, _ url.Values) (bool, bool) {
 						// The current generation must still vouch for the exact URL.
@@ -1114,6 +1115,15 @@ func newInterceptHandler(
 						}
 						joinedUsed = true
 						return true, true
+					})
+					allowCtx = scanner.WithIssuerNumericCardJoinAllowance(allowCtx, func(values []string) bool {
+						// Require TrustedForIdentity grade and the live evidence
+						// generation, matching issuerServerIDStore.
+						if !ic.issuerServerIDStore().numericIDsIssued(session, r.URL, values) {
+							return false
+						}
+						numericCardJoinUsed = true
+						return true
 					})
 				}
 				var replayUsed bool
@@ -1127,12 +1137,15 @@ func newInterceptHandler(
 				if issuedUsed {
 					allowKind = issuerQueryIssuedRedirect
 				}
-				if allowed || joinedUsed || replayUsed {
+				if allowed || joinedUsed || replayUsed || numericCardJoinUsed {
 					urlResult = rescanned
 					if rescanned.Allowed {
 						var kinds []issuerQueryKind
 						if joinedUsed {
 							kinds = append(kinds, issuerQueryJoinedView)
+						}
+						if numericCardJoinUsed {
+							kinds = append(kinds, issuerQueryNumericCardJoin)
 						}
 						if allowed {
 							kinds = append(kinds, allowKind)

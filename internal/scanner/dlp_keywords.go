@@ -1066,6 +1066,15 @@ func (p *compiledPattern) matchSpanWithDecodes(view, source string, memo *decodi
 	return p.matchPositionedSpanWithDecodes(view, source, memo, nil)
 }
 
+func (p *compiledPattern) matchSpanWithDecodesFiltered(view, source string, memo *decodingMemo, skipSpan func(start, end int) bool) (start, end int, matched bool) {
+	if skipSpan == nil {
+		return p.matchSpanWithDecodes(view, source, memo)
+	}
+	pattern := *p
+	pattern.skipSpan = skipSpan
+	return pattern.matchSpanWithDecodes(view, source, memo)
+}
+
 func (p *compiledPattern) matchPositionedSpanWithDecodes(view, source string, memo *decodingMemo, positions *matchingView) (start, end int, matched bool) {
 	if p.keywords == nil {
 		return p.matchSpanInPositionedView(view, source, positions)

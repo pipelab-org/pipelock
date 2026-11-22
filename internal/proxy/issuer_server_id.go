@@ -216,6 +216,7 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 		s.mu.Lock()
 		s.freezeIDCallerLocked(session)
 		s.mu.Unlock()
+		s.recordNumericSent(session, nil, nil, false)
 		return
 	}
 	// issuerCookieOrigin rejects userinfo so a user:pass@host URL cannot
@@ -267,6 +268,9 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 			texts = appendFormLike(texts, string(body))
 		}
 	}
+	// Feed the dedicated numeric sent-history ledger independently with its
+	// own lock and budgets so numeric traffic never freezes server_issued_id.
+	s.recordNumericSent(session, originTarget, texts, bodyKnown)
 
 	var digests [][32]byte
 	var inputTokens int
@@ -733,12 +737,11 @@ func (p *Proxy) taintIssuerSessionForStream(cfg *config.Config, agent, clientIP 
 		return
 	}
 	store.mu.Lock()
-	defer store.mu.Unlock()
 	if issuerSentHost(target) == "" {
 		store.freezeIDCallerLocked(session)
-		return
-	}
-	if bucket := store.admitIDDestinationLocked(session, target); bucket != nil {
+	} else if bucket := store.admitIDDestinationLocked(session, target); bucket != nil {
 		store.freezeIDDestinationLocked(bucket, issuerHistoryStream)
 	}
+	store.mu.Unlock()
+	store.freezeNumericStream(session, target)
 }

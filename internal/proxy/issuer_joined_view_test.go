@@ -17,10 +17,13 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 )
 
-// joinedCardHalves is a Luhn-valid test card split into two values that look
-// like adjacent record IDs. Neither value is a card on its own.
+// joinedCardHalves is a Luhn-valid 16-digit test card split into 6+10 digits.
+// Neither value is a card on its own, and the 6-digit half stays below the
+// 8-digit floor of server-first numeric card-join relief so every subtest below
+// exercises exact-URL joined-view relief boundaries without mixing the two
+// mechanisms.
 func joinedCardHalves() (string, string) {
-	return "4" + strings.Repeat("1", 7), strings.Repeat("1", 8)
+	return "4" + strings.Repeat("1", 5), strings.Repeat("1", 10)
 }
 
 const joinedDetailPath = "/records/detail"
@@ -99,13 +102,23 @@ func TestInterceptIssuedJoinedViewDLP(t *testing.T) {
 
 	// A hostile origin can serve each chunk of a secret in its own link. The
 	// agent recombining those individually issued values into one query is
-	// exactly the split exfiltration the joined views exist to catch.
+	// exactly the split exfiltration the joined views exist to catch. Two
+	// server-first 8-14 digit numeric IDs have their own narrower per-span
+	// relief tested in issuer_numeric_card_join_test.go; shorter chunks (6+10)
+	// and non-card credentials (such as a split IBAN) never qualify.
 	t.Run("recombined chunks from separate served links still block", func(t *testing.T) {
 		e := newSameOriginEnv(t, nil)
 		e.servePage(joinedDetailPath+"?wo="+first+"&page=1", joinedDetailPath+"?site="+second+"&page=2")
 		e.visit()
 		if got := e.do("agent-one", http.MethodGet, issued); got != http.StatusForbidden {
 			t.Fatalf("status = %d, want 403", got)
+		}
+		ibanA := "GB29" + "NWBK"
+		ibanB := "6016" + "1331" + "926819"
+		e.servePage(joinedDetailPath+"?acct="+ibanA+"&page=1", joinedDetailPath+"?ref="+ibanB+"&page=2")
+		e.visit()
+		if got := e.do("agent-one", http.MethodGet, joinedDetailURL(delegationSourceHost, "acct="+ibanA+"&ref="+ibanB)); got != http.StatusForbidden {
+			t.Fatalf("recombined IBAN status = %d, want 403", got)
 		}
 	})
 

@@ -472,3 +472,82 @@ func TestLogDLPIssuerJoinedViewAllow_NoEmitter(t *testing.T) {
 	}
 	NewNop().LogDLPIssuerJoinedViewAllow(LogContext{}, "records.vendor.example")
 }
+
+func TestLogDLPIssuerNumericCardJoinAllow_EmitsBoundedFields(t *testing.T) {
+	var buf bytes.Buffer
+	logger, err := New("json", "custom", "", true, true)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	logger.zl = logger.zl.Output(&buf)
+	halfA := "42000" + "123456"
+	halfB := "7890" + "1239"
+	ctx, err := NewHTTPLogContext("GET", "https://records.vendor.example/detail?wo="+halfA+"&site="+halfB, "192.0.2.9", "req-numeric-join", "agent-one")
+	if err != nil {
+		t.Fatalf("NewHTTPLogContext: %v", err)
+	}
+	logger.LogDLPIssuerNumericCardJoinAllow(ctx, "records.vendor.example")
+
+	line := strings.TrimSpace(buf.String())
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		t.Fatalf("decode audit event: %v", err)
+	}
+	if entry["event"] != "dlp_issuer_numeric_card_join_allow" || entry["surface"] != "url_query_joined" ||
+		entry["destination"] != "records.vendor.example" || entry["request_id"] != "req-numeric-join" ||
+		entry["mitre_technique"] != TechniqueForScanner("dlp") || entry["mitre_technique"] == "" {
+		t.Fatalf("numeric card join allow audit fields = %#v", entry)
+	}
+	if _, named := entry["pattern"]; named {
+		t.Fatalf("numeric card join allow named a pattern: %#v", entry)
+	}
+	for _, leaked := range []string{halfA, halfB, "wo=", "site=", "entropy"} {
+		if strings.Contains(line, leaked) {
+			t.Fatalf("numeric card join allow event leaked %q: %s", leaked, line)
+		}
+	}
+}
+
+func TestLogDLPIssuerNumericCardJoinAllow_EmitterReceivesEvent(t *testing.T) {
+	var buf bytes.Buffer
+	logger, err := New("json", "custom", "", true, true)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	logger.zl = logger.zl.Output(&buf)
+	sink := &collectingSink{}
+	emitter := emit.NewEmitter("test-dlp-issuer-numeric-card-join", sink)
+	logger.SetEmitter(emitter)
+	t.Cleanup(func() { _ = emitter.Close() })
+
+	ctx, err := NewHTTPLogContext("GET", "https://records.vendor.example/detail", "192.0.2.10", "req-numeric-join-2", "agent-two")
+	if err != nil {
+		t.Fatalf("NewHTTPLogContext: %v", err)
+	}
+	logger.LogDLPIssuerNumericCardJoinAllow(ctx, "records.vendor.example")
+	_ = emitter.Close()
+
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if len(sink.events) != 1 {
+		t.Fatalf("emitter received %d events, want 1", len(sink.events))
+	}
+	ev := sink.events[0]
+	if ev.Type != string(EventDLPIssuerNumericCardJoinAllow) || ev.Fields["destination"] != "records.vendor.example" {
+		t.Fatalf("emitted event = %+v", ev)
+	}
+}
+
+func TestLogDLPIssuerNumericCardJoinAllow_NoEmitter(t *testing.T) {
+	var buf bytes.Buffer
+	logger, err := New("json", "custom", "", true, true)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	logger.zl = logger.zl.Output(&buf)
+	logger.LogDLPIssuerNumericCardJoinAllow(LogContext{}, "records.vendor.example")
+	if !strings.Contains(buf.String(), "dlp_issuer_numeric_card_join_allow") {
+		t.Fatalf("event not written without an emitter: %q", buf.String())
+	}
+	NewNop().LogDLPIssuerNumericCardJoinAllow(LogContext{}, "records.vendor.example")
+}
