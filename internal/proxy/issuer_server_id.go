@@ -577,25 +577,31 @@ func jsonWholeNumberDigits(literal string) (string, bool) {
 	return digits + strings.Repeat("0", point-len(digits)), true
 }
 
-// jsonNumberLiteral matches a whole token spelled as a number with a
-// fraction or exponent, leniently allowing leading zeros.
-var jsonNumberLiteral = regexp.MustCompile(`^-?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$`)
+// hiddenNumberLiteral matches a fraction or exponent spelling of a number
+// anywhere in text, regardless of what surrounds it.
+var hiddenNumberLiteral = regexp.MustCompile(`(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?`)
 
-// appendHiddenNumberLiterals adds the integer digits of each token in text
-// that is a fraction or exponent spelling of a whole number of issuer length.
-// The raw digit scan cannot read such a value; hex IDs and UUIDs are not
-// whole number tokens and are left alone.
+// appendHiddenNumberLiterals adds the integer digits of every fraction or
+// exponent spelling in text that names a whole number of issuer length. The
+// raw digit scan cannot read such a value. Matching ignores token boundaries,
+// so a literal glued to letters is still recorded; recording only keeps a
+// value from minting, so a match inside a hex ID costs nothing.
 func appendHiddenNumberLiterals(texts []string, text []byte) []string {
-	tokens := strings.FieldsFunc(string(text), func(r rune) bool {
-		return (r < '0' || r > '9') && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && r != '.' && r != '+' && r != '-'
-	})
-	for _, token := range tokens {
-		if !strings.ContainsAny(token, ".eE") || !jsonNumberLiteral.MatchString(token) {
+	seen := make(map[string]struct{})
+	for _, match := range hiddenNumberLiteral.FindAll(text, -1) {
+		if !bytes.ContainsAny(match, ".eE") {
+			// A plain digit run is already read by the raw token scan.
 			continue
 		}
-		if digits, ok := jsonWholeNumberDigits(token); ok && len(digits) >= jsonWholeNumberMinDigits {
-			texts = append(texts, digits)
+		digits, ok := jsonWholeNumberDigits(string(match))
+		if !ok || len(digits) < jsonWholeNumberMinDigits {
+			continue
 		}
+		if _, dup := seen[digits]; dup {
+			continue
+		}
+		seen[digits] = struct{}{}
+		texts = append(texts, digits)
 	}
 	return texts
 }

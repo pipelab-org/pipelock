@@ -672,6 +672,9 @@ func TestIssuerNumericLedgerIsolationAndEdgeCases(t *testing.T) {
 			{"undecodable text with escaped digits", `note=[{"v":"` + escapedNum + `"`},
 			{"NDJSON exponent before a broken record", `{"v":` + exponent + `}` + "\n" + `{"broken":]`},
 			{"undecodable text with exponent literal", `v=` + exponent},
+			{"exponent literal glued to letters", `v=x` + exponent + `abc`},
+			{"leading-dot exponent literal", `v=.` + cardA1 + `e` + fmt.Sprint(len(cardA1))},
+			{"trailing-dot whole number", `v=` + cardA1 + `.e0`},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				store := newIssuerQueryStore()
@@ -708,6 +711,8 @@ func TestIssuerNumericLedgerIsolationAndEdgeCases(t *testing.T) {
 			{"0." + strings.Repeat("0", 60) + "41111111e68", "41111111", true},
 			{"41111111" + strings.Repeat("0", 60) + "e-60", "41111111", true},
 			{"0", "0", true},
+			{".41111111e8", "41111111", true},
+			{"41111111.", "41111111", true},
 			{"0.0e5", "0", true},
 			{"1e400", "", false},
 			{"1e-400", "", false},
