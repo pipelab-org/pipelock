@@ -81,6 +81,20 @@ func newWatchdogProxy(t *testing.T, probe health.Probe) (*Proxy, func()) {
 	return p, cleanup
 }
 
+func TestHealth_TaintStoreUnavailable(t *testing.T) {
+	p, cleanup := newWatchdogProxy(t, func(context.Context) error { return nil })
+	t.Cleanup(cleanup)
+	if status, body := callHealth(t, p); status != http.StatusOK || !body.Subsystems[health.SubsystemSession] {
+		t.Fatalf("healthy taint store: status=%d body=%+v", status, body)
+	}
+	if sm := p.sessionMgrPtr.Swap(nil); sm != nil {
+		sm.Close()
+	}
+	if status, body := callHealth(t, p); status != http.StatusServiceUnavailable || body.Subsystems[health.SubsystemSession] {
+		t.Fatalf("missing taint store: status=%d body=%+v", status, body)
+	}
+}
+
 // TestHealth_DefaultProbeReportsHealthy verifies the live scanner-probe path:
 // after construction the watchdog's first /health call has a stale scanner
 // heartbeat (no Scan happened yet under fast-test interval), the default probe

@@ -172,10 +172,9 @@ type SessionAPIHandler struct {
 	// reverse.go uses when no richer Edition is wired in.
 	resolveAgentIdentity func(*http.Request) edition.AgentIdentity
 
-	// stateConfig returns the live config whose default_agent_identity decides
-	// which bucket a header-carrying request's state is keyed to, so whoami
-	// reports the same session_key real traffic from this caller lands in. Nil
-	// (or a nil result) reports the unprojected key.
+	// stateConfig gates access to the daemon's session manager and lets whoami
+	// project identity onto the same session key used by proxied traffic.
+	// Standalone MCP gates the operator API at its entry point.
 	stateConfig func() *config.Config
 }
 
@@ -202,9 +201,10 @@ type SessionAPIOptions struct {
 	// same no-registry fallback reverse.go uses without a richer Edition.
 	ResolveAgentIdentity func(*http.Request) edition.AgentIdentity
 
-	// Config returns the live proxy config. Whoami uses it to apply the same
-	// default-identity state projection as proxied traffic. Nil reports the
-	// declared identity's own key.
+	// Config returns the live proxy config. Session routes use it to check
+	// whether profiling is enabled, and whoami uses it for identity
+	// projection. With no callback, the caller controls route availability
+	// through SessionMgrPtr.
 	Config func() *config.Config
 }
 
@@ -314,6 +314,12 @@ func (h *SessionAPIHandler) authenticate(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *SessionAPIHandler) loadManager(w http.ResponseWriter) *SessionManager {
+	if h.stateConfig != nil {
+		if cfg := h.stateConfig(); cfg == nil || !cfg.SessionProfiling.Enabled {
+			http.Error(w, "session profiling disabled", http.StatusServiceUnavailable)
+			return nil
+		}
+	}
 	sm := h.smPtr.Load()
 	if sm == nil {
 		http.Error(w, "session profiling disabled", http.StatusServiceUnavailable)
@@ -1024,6 +1030,18 @@ func (h *SessionAPIHandler) HandleAirlock(w http.ResponseWriter, r *http.Request
 		h.logSessionAdmin("airlock_not_found", clientIP, key, "session not found", http.StatusNotFound)
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
+	}
+	if tier != tierNone {
+		if cfg := sm.AirlockConfig(); cfg == nil || !cfg.Enabled {
+			h.logSessionAdmin("airlock_disabled", clientIP, key, "airlock is not enabled", http.StatusConflict)
+			http.Error(w, "airlock is not enabled; set airlock.enabled before assigning a quarantine tier", http.StatusConflict)
+			return
+		}
+		if to != tier {
+			h.logSessionAdmin("airlock_not_assigned", clientIP, key, from+"->"+to, http.StatusConflict)
+			http.Error(w, "airlock tier was not assigned", http.StatusConflict)
+			return
+		}
 	}
 
 	h.logSessionAdmin("airlock_ok", clientIP, key, from+"->"+to, http.StatusOK)

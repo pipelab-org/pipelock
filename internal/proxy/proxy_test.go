@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -3466,24 +3467,36 @@ func TestProxy_SessionProfiling_WarnMode(t *testing.T) {
 }
 
 func TestProxy_SessionProfiling_Disabled(t *testing.T) {
-	p, backend := setupTestProxy(t)
-	defer backend.Close()
-
-	// Default config has session profiling disabled, so sessionMgr is nil.
-	if p.sessionMgrPtr.Load() != nil {
-		t.Fatal("sessionMgr should be nil when profiling disabled")
+	p := newForwardBoundaryProxy(t, func(cfg *config.Config) {
+		cfg.SessionProfiling.AnomalyAction = config.ActionBlock
+	}, forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"text/plain"}},
+			Body:       io.NopCloser(strings.NewReader("Clean reference")),
+			Request:    r,
+		}, nil
+	}))
+	sm := p.sessionMgrPtr.Load()
+	if sm == nil {
+		t.Fatal("taint-only manager is unavailable")
 	}
-
-	// Normal requests should work fine.
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
-	w := httptest.NewRecorder()
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/fetch", p.handleFetch)
-	mux.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 with profiling disabled, got %d", w.Code)
+	for i := range p.CurrentConfig().SessionProfiling.DomainBurst {
+		target := fmt.Sprintf("http://source%d.example/reference", i)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
+		req.RemoteAddr = testRemoteAddr
+		w := httptest.NewRecorder()
+		p.handleForwardHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("read from %s: status = %d, want 200; body=%s", target, w.Code, w.Body.String())
+		}
+	}
+	sessions := sm.Snapshot()
+	if len(sessions) != 1 || !sessions[0].Contaminated {
+		t.Fatalf("expected one session with recorded exposure, got %+v", sessions)
+	}
+	if domains := sm.SessionByKey(sessions[0].Key).BaselineMetrics().Domains; domains != 0 {
+		t.Fatalf("recorded %d profiling domains with profiling disabled", domains)
 	}
 }
 
@@ -3763,8 +3776,9 @@ func TestProxy_Close_SessionManager(t *testing.T) {
 }
 
 func TestProxy_Reload_TogglesSessionManager(t *testing.T) {
-	// Start with profiling disabled.
+	// Exercise the profiling lifecycle with taint disabled.
 	cfg := config.Defaults()
+	cfg.Taint.Enabled = false
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.SessionProfiling.Enabled = false
@@ -3785,6 +3799,7 @@ func TestProxy_Reload_TogglesSessionManager(t *testing.T) {
 
 	// Reload with profiling enabled - should create session manager.
 	cfg2 := config.Defaults()
+	cfg2.Taint.Enabled = false
 	cfg2.Internal = nil
 	cfg2.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg2.SessionProfiling.Enabled = true
@@ -3803,6 +3818,7 @@ func TestProxy_Reload_TogglesSessionManager(t *testing.T) {
 
 	// Reload with profiling disabled - should close and nil session manager.
 	cfg3 := config.Defaults()
+	cfg3.Taint.Enabled = false
 	cfg3.Internal = nil
 	cfg3.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg3.SessionProfiling.Enabled = false
@@ -5555,53 +5571,55 @@ func TestFetchEndpoint_BlockAll_CleanTrafficBlocked(t *testing.T) {
 	}
 }
 
-// TestProxy_Reload_EnablesBaselineOnSessionCreate verifies that when session
-// profiling and behavioral baseline are both enabled via reload, the newly
-// created SessionManager has a non-nil baseline manager.
-func TestProxy_Reload_EnablesBaselineOnSessionCreate(t *testing.T) {
-	t.Parallel()
+func TestProxy_Reload_EnablesBaselineWithProfiling(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		taint bool
+	}{
+		{name: "new store"},
+		{name: "existing taint store", taint: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Taint.Enabled = test.taint
+			p := newTestProxyWithConfig(t, cfg)
+			original := p.sessionMgrPtr.Load()
+			if p.SessionBaselineChecker() != nil {
+				t.Fatal("baseline checker available with profiling disabled")
+			}
 
-	cfg := config.Defaults()
-	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	cfg.SessionProfiling.Enabled = false
+			enabled := cfg.Clone()
+			enabled.SessionProfiling.Enabled = true
+			enabled.BehavioralBaseline.Enabled = true
+			enabled.BehavioralBaseline.LearningWindow = 3
+			enabled.BehavioralBaseline.DeviationAction = config.ActionWarn
+			enabled.BehavioralBaseline.ProfileDir = t.TempDir()
+			enabled.BehavioralBaseline.SensitivitySigma = 2
+			enabled.BehavioralBaseline.SeasonalityMode = config.SeasonalityModeNone
+			if !p.Reload(enabled, scanner.MustNew(enabled)) {
+				t.Fatal("enable reload rejected")
+			}
+			sm := p.sessionMgrPtr.Load()
+			if sm == nil || sm.BaselineManager() == nil || p.SessionBaselineChecker() == nil {
+				t.Fatal("profiling reload did not enable the baseline")
+			}
+			if test.taint && sm != original {
+				t.Fatal("profiling reload replaced the taint store")
+			}
 
-	logger := audit.NewNop()
-	sc := scanner.MustNew(cfg)
-	m := metrics.New()
-	p, err := New(cfg, logger, sc, m)
-	if err != nil {
-		t.Fatalf("proxy.New: %v", err)
-	}
-	defer p.Close()
-
-	// Reload with both session profiling and baseline enabled.
-	cfg2 := config.Defaults()
-	cfg2.Internal = nil
-	cfg2.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	cfg2.SessionProfiling.Enabled = true
-	cfg2.SessionProfiling.AnomalyAction = config.ActionWarn
-	cfg2.SessionProfiling.DomainBurst = 5
-	cfg2.SessionProfiling.WindowMinutes = 5
-	cfg2.SessionProfiling.MaxSessions = 100
-	cfg2.SessionProfiling.SessionTTLMinutes = 30
-	cfg2.SessionProfiling.CleanupIntervalSeconds = 60
-	cfg2.BehavioralBaseline.Enabled = true
-	cfg2.BehavioralBaseline.LearningWindow = 3
-	cfg2.BehavioralBaseline.DeviationAction = config.ActionWarn
-	cfg2.BehavioralBaseline.ProfileDir = t.TempDir()
-	cfg2.BehavioralBaseline.SensitivitySigma = 2.0
-	cfg2.BehavioralBaseline.SeasonalityMode = config.SeasonalityModeNone
-
-	sc2 := scanner.MustNew(cfg2)
-	p.Reload(cfg2, sc2)
-
-	sm := p.sessionMgrPtr.Load()
-	if sm == nil {
-		t.Fatal("sessionMgr should be created on reload")
-	}
-	if sm.BaselineManager() == nil {
-		t.Error("BaselineManager should be non-nil when BehavioralBaseline is enabled on reload")
+			disabled := enabled.Clone()
+			disabled.SessionProfiling.Enabled = false
+			disabled.BehavioralBaseline.Enabled = false
+			if !p.Reload(disabled, scanner.MustNew(disabled)) {
+				t.Fatal("disable reload rejected")
+			}
+			if p.SessionBaselineChecker() != nil {
+				t.Fatal("baseline checker available after profiling was disabled")
+			}
+			if test.taint && (p.sessionMgrPtr.Load() != sm || sm.BaselineManager() != nil) {
+				t.Fatal("turning off profiling should disable baseline and keep the taint store")
+			}
+		})
 	}
 }
 

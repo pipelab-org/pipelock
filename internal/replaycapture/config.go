@@ -46,6 +46,8 @@ const operationPolicyRuleName = "block-destructive-graphql-mutation"
 // possible.
 func labConfig(s Scenario) (*config.Config, error) {
 	cfg := config.Defaults()
+	// Disable taint to preserve the published replay surface and keep each demo focused on its scenario.
+	cfg.Taint.Enabled = false
 
 	switch s.ID {
 	case "allowed-safe-read":

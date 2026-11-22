@@ -74,4 +74,4 @@ Default settings can produce warnings, so a valid default config does not necess
 - Use `--no-color` to disable colored terminal output.
 - Use `--json` for CI gates and dashboards. The JSON report includes per-check `configured`, `reachable`, `enforcing`, `detail`, and `next` fields.
 
-The taint checks are informational and do not add warnings or affect the exit status. With session profiling disabled, neither the HTTP proxy nor MCP has a session taint recorder; enable session profiling and restart to provide one. Config guidance cannot prove listener state admission or capacity. Other doctor warnings and failures still determine the exit status.
+The taint checks are informational and do not add warnings or affect the exit status. With taint enabled, the HTTP proxy and in-process MCP listener share a session store at startup even if session profiling is off. Standalone MCP also creates a store when taint is enabled. Config guidance cannot prove listener state admission or capacity. Other doctor warnings and failures still determine the exit status.

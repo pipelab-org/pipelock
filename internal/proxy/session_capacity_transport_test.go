@@ -22,30 +22,31 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 const capacityDeliveryWitness = "capacity delivery witness"
 
-func TestSessionCapacityRetainedManagerWithoutProfiling(t *testing.T) {
+func TestSessionCapacityTaintWithoutProfiling(t *testing.T) {
 	for _, transport := range []string{TransportForward, TransportFetch, TransportReverse} {
 		t.Run(transport, func(t *testing.T) {
-			cfg := airlockAdmissionConfig(t, config.AirlockTierNone)
-			cfg.SessionProfiling.Enabled = false
+			cfg := reverseParityBaseConfig(t)
+			cfg.Taint.Enabled = true
 			cfg.SessionProfiling.MaxSessions = 1
 			var calls atomic.Int32
 			rp, p, upstream := newReverseParityHarness(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
 				calls.Add(1)
 				_, _ = fmt.Fprint(w, capacityDeliveryWitness)
 			})
-			// Retained security state must still govern recorder acquisition
-			// when the request-profiling writer is inactive.
-			sm := NewSessionManager(&cfg.SessionProfiling, &cfg.AdaptiveEnforcement, p.metrics)
-			p.sessionMgrPtr.Store(sm)
-			quarantine := sm.GetOrCreate("other-quarantined-client")
-			_, _, _ = quarantine.AirlockForScope("").SetTier(config.AirlockTierDrain)
+			sm := p.sessionMgrPtr.Load()
+			if sm == nil {
+				t.Fatal("taint-only manager is unavailable")
+			}
+			protected := sm.GetOrCreate("other-client")
+			protected.ObserveRisk(session.RiskObservation{Source: session.TaintSourceRef{Level: session.TaintExternalUntrusted}})
 			for _, released := range []bool{false, true} {
 				if released {
-					_, _, _ = quarantine.ForceSetAirlockTierAllScopes(config.AirlockTierNone, airlockTriggerManual, airlockSourceAdminAPI)
+					protected.BeginNewTask("new task")
 				}
 				target := upstream.String() + "/control"
 				if transport == TransportFetch {
@@ -63,7 +64,8 @@ func TestSessionCapacityRetainedManagerWithoutProfiling(t *testing.T) {
 					rp.ServeHTTP(w, req)
 				}
 				if !released {
-					if w.Code != http.StatusServiceUnavailable || w.Header().Get(blockreason.HeaderLayer) != sessionCapacityLayer || calls.Load() != 0 || sm.Len() != 1 {
+					if w.Code != http.StatusServiceUnavailable || w.Header().Get(blockreason.HeaderLayer) != sessionCapacityLayer ||
+						!strings.Contains(w.Body.String(), session.ErrCapacity.Error()) || calls.Load() != 0 || sm.Len() != 1 {
 						t.Fatalf("retained capacity: status=%d upstream=%d sessions=%d body=%s", w.Code, calls.Load(), sm.Len(), w.Body.String())
 					}
 				} else if w.Code != http.StatusOK || calls.Load() != 1 || !strings.Contains(w.Body.String(), capacityDeliveryWitness) {

@@ -36,6 +36,12 @@ response_scanning:
 request_body_scanning:
   enabled: false
 
+# The stub vendor API is trusted, so its responses do not taint the session
+# and the request policy below decides each mutation.
+taint:
+  allowlisted_domains:
+    - "api.vendor.example"
+
 request_policy:
   enabled: true
   on_parse_error: block

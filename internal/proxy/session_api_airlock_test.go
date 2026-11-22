@@ -9,16 +9,23 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 const (
 	testAirlockEndpoint = "/api/v1/sessions/agent-a%7C10.0.0.1/airlock"
 )
 
+func enableSessionAPIAirlock(sm *SessionManager) {
+	sm.UpdateConfig(sm.cfgPtr.Load(), nil, &config.Airlock{Enabled: true})
+}
+
 func TestSessionAPI_HandleAirlock_SoftTier(t *testing.T) {
 	t.Parallel()
 	sm, cleanup := setupSessionAPITestManager(t)
 	defer cleanup()
+	enableSessionAPIAirlock(sm)
 
 	sm.GetOrCreate("agent-a|10.0.0.1")
 
@@ -78,6 +85,50 @@ func TestSessionAPI_HandleAirlock_NormalRelease(t *testing.T) {
 	}
 	if !resp.Changed {
 		t.Error("expected changed=true for soft->none transition")
+	}
+}
+
+func TestSessionAPI_HandleAirlock_DisabledRejectsQuarantine(t *testing.T) {
+	t.Parallel()
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	sess := sm.GetOrCreate("agent-a|10.0.0.1")
+	handler := newTestSessionAPIHandler(t, sm)
+
+	post := func(tier string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, testAirlockEndpoint, strings.NewReader(`{"tier":"`+tier+`"}`))
+		req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
+		w := httptest.NewRecorder()
+		handler.HandleAirlock(w, req)
+		return w
+	}
+
+	w := post("drain")
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "airlock.enabled") {
+		t.Fatalf("disabled assignment = %d %q, want 409 naming airlock.enabled", w.Code, w.Body.String())
+	}
+	if got := sess.Airlock().Tier(); got != "" && got != config.AirlockTierNone {
+		t.Fatalf("disabled assignment stored tier %q", got)
+	}
+
+	if changed, _, _ := sess.Airlock().ForceSetTier(config.AirlockTierSoft); !changed {
+		t.Fatal("precondition: direct soft tier was not set")
+	}
+	w = post("none")
+	if w.Code != http.StatusOK {
+		t.Fatalf("release while disabled = %d %q, want 200", w.Code, w.Body.String())
+	}
+	if got := sess.Airlock().Tier(); got != "" && got != config.AirlockTierNone {
+		t.Fatalf("release while disabled left tier %q", got)
+	}
+
+	w = post("drain")
+	if w.Code != http.StatusConflict {
+		t.Fatalf("second disabled assignment = %d %q, want 409", w.Code, w.Body.String())
+	}
+	if got := sess.Airlock().Tier(); got != "" && got != config.AirlockTierNone {
+		t.Fatalf("second disabled assignment stored tier %q", got)
 	}
 }
 
@@ -219,6 +270,7 @@ func TestSessionAPI_HandleAirlock_SameTierNoop(t *testing.T) {
 	t.Parallel()
 	sm, cleanup := setupSessionAPITestManager(t)
 	defer cleanup()
+	enableSessionAPIAirlock(sm)
 
 	sess := sm.GetOrCreate("agent-a|10.0.0.1")
 	sess.Airlock().ForceSetTier("hard")
@@ -251,6 +303,7 @@ func TestSessionAPI_HandleAirlock_SameTierNoop(t *testing.T) {
 func TestSessionAPI_HandleAirlock_RateLimited(t *testing.T) {
 	sm, cleanup := setupSessionAPITestManager(t)
 	defer cleanup()
+	enableSessionAPIAirlock(sm)
 
 	sm.GetOrCreate("agent-a|10.0.0.1")
 	handler := newTestSessionAPIHandler(t, sm)

@@ -1308,6 +1308,7 @@ func TestForwardA2AGzipRedirectReplaysOriginalBody(t *testing.T) {
 	t.Cleanup(backend.Close)
 
 	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.Taint.Enabled = false
 		cfg.A2AScanning.Enabled = true
 		cfg.A2AScanning.Action = config.ActionBlock
 		cfg.RequestBodyScanning.Enabled = false

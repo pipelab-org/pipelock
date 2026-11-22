@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -966,20 +967,235 @@ func TestSessionManager_EvictOldest_PreservesEscalatedGauge(t *testing.T) {
 	}
 }
 
-// TestSessionManager_SessionStore_Disabled verifies that SessionStore returns
-// nil when session profiling is disabled (no SessionManager created).
+const taintSessionSource = "http://api.vendor.example/reference"
+
+func TestProxy_DefaultTaintSessionStore(t *testing.T) {
+	cfg := config.Defaults()
+	p := newTestProxyWithConfig(t, cfg)
+	store := p.SessionStore()
+	if store == nil {
+		t.Fatal("default taint policy has no session store")
+	}
+	rec := store.GetOrCreate(testClient)
+	risk, ok := rec.(session.RiskState)
+	if !ok {
+		t.Fatal("default taint store did not admit a risk recorder")
+	}
+	observeHTTPResponseTaint(rec, cfg, taintSessionSource, "text/plain", "http_response", false)
+	if got := risk.RiskSnapshot().Level; got != session.TaintExternalUntrusted {
+		t.Fatalf("recorded source risk = %s, want external_untrusted", got)
+	}
+}
+
+func TestProxy_TaintStoreRefusesUnapprovedWrite(t *testing.T) {
+	var calls int
+	p := newForwardBoundaryProxy(t, nil, forwardBoundaryRoundTripper(func(*http.Request) (*http.Response, error) {
+		calls++
+		return nil, io.ErrUnexpectedEOF
+	}))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://api.vendor.example/publish", nil)
+	req.RemoteAddr = testRemoteAddr
+	_, id := p.resolveAgentFromRequest(req)
+	clientIP, _ := requestMeta(req)
+	cfg := p.CurrentConfig()
+	store := p.SessionStore()
+	if store == nil {
+		t.Fatal("taint store is unavailable")
+	}
+	rec := store.GetOrCreate(responseTaintSessionKey(cfg, id.Name, clientIP, id.Auth))
+	observeHTTPResponseTaint(rec, cfg, taintSessionSource, "text/plain", "http_response", false)
+
+	w := httptest.NewRecorder()
+	p.handleForwardHTTP(w, req)
+	body := w.Body.String()
+	if w.Code != http.StatusForbidden || calls != 0 ||
+		(!strings.Contains(body, "external_publish_after_untrusted_external_exposure") && !strings.Contains(body, "task_approval_unavailable")) {
+		t.Fatalf("publish status=%d upstream calls=%d body=%s", w.Code, calls, body)
+	}
+}
+
+func TestProxy_TaintStoreSkipsProfilingFeatures(t *testing.T) {
+	cfg := config.Defaults()
+	// The config loader rejects these features without profiling. Direct
+	// proxy callers still must not install them in the taint-only manager.
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.Airlock.Enabled = true
+	cfg.BehavioralBaseline.Enabled = true
+	cfg.BehavioralBaseline.ProfileDir = t.TempDir()
+	p := newTestProxyWithConfig(t, cfg)
+	sm := p.sessionMgrPtr.Load()
+	if sm == nil {
+		t.Fatal("taint-only manager is unavailable")
+	}
+	assertNoProfilingFeatures := func() {
+		t.Helper()
+		if sm.adaptiveCfgPtr.Load() != nil || sm.airlockCfgPtr.Load() != nil || sm.BaselineManager() != nil {
+			t.Fatal("taint-only manager installed profiling features")
+		}
+	}
+	assertNoProfilingFeatures()
+	next := cfg.Clone()
+	if !p.Reload(next, scanner.MustNew(next)) {
+		t.Fatal("reload rejected")
+	}
+	assertNoProfilingFeatures()
+}
+
+func TestProxy_Reload_TaintSessionStore(t *testing.T) {
+	cfg := config.Defaults()
+	p := newTestProxyWithConfig(t, cfg)
+	sm := p.sessionMgrPtr.Load()
+	if sm == nil {
+		t.Fatal("taint store is unavailable")
+	}
+	sess := sm.GetOrCreate(testClient)
+	observeHTTPResponseTaint(sess, cfg, taintSessionSource, "text/plain", "http_response", false)
+	destination, err := url.Parse("http://api.vendor.example/publish")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, phase := range []struct {
+		name      string
+		profiling bool
+		taint     bool
+	}{
+		{name: "unchanged", taint: true},
+		{name: "enable profiling", profiling: true, taint: true},
+		{name: "disable taint alone", profiling: true},
+		{name: "restore taint", profiling: true, taint: true},
+		{name: "disable profiling", taint: true},
+	} {
+		t.Run(phase.name, func(t *testing.T) {
+			next := p.CurrentConfig().Clone()
+			next.SessionProfiling.Enabled = phase.profiling
+			next.Taint.Enabled = phase.taint
+			next.SessionProfiling.MaxSessions = 1
+			next.SessionProfiling.SessionTTLMinutes++
+			next.SessionProfiling.CleanupIntervalSeconds++
+			if !p.Reload(next, scanner.MustNew(next)) {
+				t.Fatal("reload rejected")
+			}
+			got := p.sessionMgrPtr.Load()
+			if got != sm || got.SessionByKey(testClient) != sess {
+				t.Fatal("reload replaced the existing session manager or recorder")
+			}
+			if updated := got.cfgPtr.Load(); *updated != next.SessionProfiling {
+				t.Fatalf("session config = %+v, want %+v", *updated, next.SessionProfiling)
+			}
+			if got.GetOrCreate("new-client") != nil {
+				t.Fatal("reloaded capacity admitted a client despite retained taint")
+			}
+			if phase.taint {
+				decision := evaluateHTTPTaint(next, sess, http.MethodPost, destination)
+				if decision.Result.Reason != "external_publish_after_untrusted_external_exposure" {
+					t.Fatalf("retained publish policy = %+v", decision.Result)
+				}
+			}
+		})
+	}
+
+	off := p.CurrentConfig().Clone()
+	off.Taint.Enabled = false
+	if !p.Reload(off, scanner.MustNew(off)) {
+		t.Fatal("reload with both features off was rejected")
+	}
+	if p.sessionMgrPtr.Load() != nil {
+		t.Fatal("session manager retained with both features off")
+	}
+	select {
+	case <-sm.done:
+	default:
+		t.Fatal("retired session manager is still running")
+	}
+
+	on := off.Clone()
+	on.Taint.Enabled = true
+	if !p.Reload(on, scanner.MustNew(on)) {
+		t.Fatal("taint re-enable was rejected")
+	}
+	fresh := p.sessionMgrPtr.Load()
+	if fresh == nil || fresh == sm || fresh.Len() != 0 {
+		t.Fatal("taint re-enable did not start a fresh store")
+	}
+	decision := evaluateHTTPTaint(on, fresh.GetOrCreate(testClient), http.MethodPost, destination)
+	if decision.Result.Decision != session.PolicyAllow {
+		t.Fatalf("fresh publish policy = %+v, want allow", decision.Result)
+	}
+}
+
+func TestProxy_SessionStoreFollowsReload(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		taintAtStartup bool
+	}{
+		{"replace startup store", true},
+		{"enable after startup", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Taint.Enabled = tc.taintAtStartup
+			p := newTestProxyWithConfig(t, cfg)
+			listenerStore := p.SessionStore()
+			startup := p.sessionMgrPtr.Load()
+			if tc.taintAtStartup {
+				observeHTTPResponseTaint(startup.GetOrCreate(testClient), cfg, taintSessionSource, "text/plain", "http_response", false)
+				off := cfg.Clone()
+				off.Taint.Enabled = false
+				if !p.Reload(off, scanner.MustNew(off)) {
+					t.Fatal("reload with both features off was rejected")
+				}
+			}
+
+			on := cfg.Clone()
+			on.Taint.Enabled = true
+			if !p.Reload(on, scanner.MustNew(on)) {
+				t.Fatal("taint enable reload was rejected")
+			}
+			active := p.sessionMgrPtr.Load()
+			if active == nil || active == startup {
+				t.Fatal("expected a new manager after reload")
+			}
+			httpRecorder := active.GetOrCreate(testClient)
+			observeHTTPResponseTaint(httpRecorder, on, taintSessionSource, "text/plain", "http_response", false)
+
+			if listenerStore == nil {
+				t.Fatal("the store captured at startup is unavailable after reload")
+			}
+			if got := listenerStore.GetOrCreate(testClient); got != httpRecorder {
+				t.Fatal("the store captured at startup cannot see the live HTTP recorder")
+			}
+			if got := httpRecorder.RiskSnapshot().Level; got != session.TaintExternalUntrusted {
+				t.Fatalf("HTTP response risk = %s, want external_untrusted", got)
+			}
+
+			const cleanKey = "clean-listener-client"
+			clean := listenerStore.GetOrCreate(cleanKey)
+			evictor := listenerStore.(session.CapacityEvictor)
+			if clean == nil || !evictor.EvictIfUnprotected(cleanKey, clean) || active.SessionByKey(cleanKey) != nil {
+				t.Fatal("listener eviction did not remove the clean recorder from the active manager")
+			}
+			if evictor.EvictIfUnprotected(testClient, httpRecorder) {
+				t.Fatal("listener eviction removed a recorder with retained exposure")
+			}
+			listenerStore.Delete(testClient)
+			if active.SessionByKey(testClient) != nil {
+				t.Fatal("listener deletion did not remove the recorder from the active manager")
+			}
+		})
+	}
+}
+
 func TestProxy_SessionStore_Disabled(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	// SessionProfiling is disabled by default in config.Defaults().
-	p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
-	if err != nil {
-		t.Fatalf("proxy.New: %v", err)
+	cfg.Taint.Enabled = false
+	p := newTestProxyWithConfig(t, cfg)
+	store := p.SessionStore()
+	if got := store.GetOrCreate(testClient); got != nil {
+		t.Errorf("inactive store admitted a recorder: %T", got)
 	}
-	t.Cleanup(func() { p.Close() })
-	if got := p.SessionStore(); got != nil {
-		t.Errorf("expected nil SessionStore when profiling disabled, got %T", got)
+	store.Delete(testClient)
+	if !store.(session.CapacityEvictor).EvictIfUnprotected(testClient, nil) {
+		t.Error("inactive store refused eviction of a client without a recorder")
 	}
 }
 

@@ -696,34 +696,41 @@ func RunHTTPListenerProxy(
 		stateBound := false
 		principalBound := false
 		var sessionCapacityErr error
+		var clientRecorder session.Recorder
 		// The HTTP adapter projects refusals from the recorder that scores this
 		// request. Every state the request binds, unbound ones included, sets it.
-		bindRefusalRecorder := func(state *mcpListenerClientState) {
-			w.opts.Rec = state.recorder
+		bindRefusalRecorder := func(rec session.Recorder) {
+			clientRecorder = rec
+			w.opts.Rec = rec
 			w.opts.AdaptiveCfg = adaptiveCfg
 			w.opts.AdaptiveCfgFn = nil
 		}
-		setClientState := func(state *mcpListenerClientState) {
+		setClientState := func(state *mcpListenerClientState, recorder session.Recorder) {
 			clientState = state
 			clientStateKey = state.key
-			bindRefusalRecorder(state)
+			bindRefusalRecorder(recorder)
 			listenerToolCfgFn := func() *tools.ToolScanConfig {
 				return listenerClients.toolConfigAtDriftEpoch(clientState, opts.toolCfg(), upstreamDriftEpoch)
 			}
 			requestBaseOpts.ToolCfg = listenerToolCfgFn()
 			requestBaseOpts.ToolCfgFn = listenerToolCfgFn
 		}
+		bindClientState := func(state *mcpListenerClientState) {
+			var recorder session.Recorder
+			recorder, sessionCapacityErr = listenerClients.recorderForRequest(state)
+			setClientState(state, recorder)
+		}
 		// Bind this request to the shared drift baseline after any pending signed
 		// reset above and before the request reaches the upstream.
 		upstreamDriftEpoch = listenerClients.upstreamDriftEpoch()
-		setClientState(clientState)
+		setClientState(clientState, nil)
 		if statefulControls && listenerPrincipal.key != "" {
 			if state, ok := listenerClients.stateForPrincipal(listenerPrincipal); ok {
-				setClientState(state)
+				bindClientState(state)
 				stateBound = true
 				principalBound = true
 				requestBaseOpts.taskSubject = listenerPrincipal.key
-				session.BindTaskSubject(state.recorder, listenerPrincipal.key)
+				session.BindTaskSubject(clientRecorder, listenerPrincipal.key)
 			}
 		}
 		// The legacy session-header partition is only safe for a client that
@@ -732,8 +739,10 @@ func RunHTTPListenerProxy(
 		// keyed by client-controlled routing data; it goes to the unbound
 		// stateless path below instead.
 		if statefulControls && !requireStateToken && !stateBound && listenerPrincipal.key == "" {
-			if state, err := listenerClients.stateForLegacySessionWithCapacity(r.Header.Get("Mcp-Session-Id")); state != nil {
-				setClientState(state)
+			if legacyID := r.Header.Get("Mcp-Session-Id"); legacyID == "" {
+				stateBound = true // Keep the request-local state without allocating a store entry.
+			} else if state, err := listenerClients.stateForLegacySessionWithCapacity(legacyID); state != nil {
+				bindClientState(state)
 				stateBound = true
 			} else {
 				// A nil state always refuses, even if a future path omits the error.
@@ -742,7 +751,7 @@ func RunHTTPListenerProxy(
 		}
 		if requireStateToken && !stateBound && listenerPrincipal.key == "" && listenerSessionToken != "" {
 			if state, ok := listenerClients.stateForToken(listenerSessionToken); ok {
-				setClientState(state)
+				bindClientState(state)
 				stateBound = true
 			}
 		}
@@ -756,7 +765,7 @@ func RunHTTPListenerProxy(
 			if state := listenerClients.newUnboundState(); state != nil {
 				clientState = state
 				clientStateKey = state.key
-				bindRefusalRecorder(state)
+				bindRefusalRecorder(state.recorder)
 				defer listenerClients.discardUnboundState(state)
 			} else {
 				sessionCapacityErr = session.ErrCapacity
@@ -1088,7 +1097,7 @@ func RunHTTPListenerProxy(
 		}
 		blockedByAdaptiveLockdown := func() bool {
 			reqOpts := requestBaseOpts
-			reqOpts.Rec = clientState.recorder
+			reqOpts.Rec = clientRecorder
 			reqOpts.AdaptiveCfg = adaptiveCfg
 			reqOpts.AdaptiveCfgFn = nil
 			tryRecoverSession(reqOpts.Rec, adaptiveCfg, adaptiveRecoveryContext{sessionKey: listenerStateAuditKey(), logger: reqOpts.AuditLogger, metrics: opts.Metrics})
@@ -1121,7 +1130,7 @@ func RunHTTPListenerProxy(
 				target:          "mcp:listener-header:" + http.CanonicalHeaderKey(headerResult.header),
 				receiptSeverity: config.SeverityHigh,
 			})
-			recordListenerFinding(clientState.recorder, session.SignalBlock, listenerStateAuditKey(), mcpReceiptLayerInput, pattern)
+			recordListenerFinding(clientRecorder, session.SignalBlock, listenerStateAuditKey(), mcpReceiptLayerInput, pattern)
 			w.Header().Set("Content-Type", "application/json")
 			resp, _ := json.Marshal(rpcError{
 				JSONRPC: jsonrpc.Version,
@@ -1159,9 +1168,9 @@ func RunHTTPListenerProxy(
 				// (e.g., DNS timeout resolving an Extensions URL) are
 				// not evidence of agent misbehavior.
 			case headerResult.IsConfigMismatch():
-				recordListenerFinding(clientState.recorder, session.SignalNearMiss, listenerStateAuditKey(), "a2a", headerResult.Reason)
+				recordListenerFinding(clientRecorder, session.SignalNearMiss, listenerStateAuditKey(), "a2a", headerResult.Reason)
 			default:
-				recordListenerFinding(clientState.recorder, session.SignalBlock, listenerStateAuditKey(), "a2a", headerResult.Reason)
+				recordListenerFinding(clientRecorder, session.SignalBlock, listenerStateAuditKey(), "a2a", headerResult.Reason)
 			}
 			w.Header().Set("Content-Type", "application/json")
 			resp, _ := json.Marshal(rpcError{
@@ -1304,7 +1313,7 @@ func RunHTTPListenerProxy(
 			upResp.Body = newIdleTimeoutReader(upResp.Body, upstreamIdleReadTimeout)
 			defer func() { _ = upResp.Body.Close() }()
 
-			if relayUpstreamClientError(upResp, nil, clientState.recorder, listenerStateAuditKey(), TrackedRequestOutcome{}) {
+			if relayUpstreamClientError(upResp, nil, clientRecorder, listenerStateAuditKey(), TrackedRequestOutcome{}) {
 				warnTransportAdmission(safeLogW, requestBaseOpts, admission, "upstream_http_client_error")
 				return
 			}
@@ -1357,7 +1366,7 @@ func RunHTTPListenerProxy(
 				return
 			}
 
-			reqRec := clientState.recorder
+			reqRec := clientRecorder
 			baselineRec := newMCPRequestBaselineRecorder()
 			baselineRec.activityRecorder, _ = reqRec.(session.ToolCallActivityRecorder)
 			baselineOpts := requestBaseOpts
@@ -1512,7 +1521,7 @@ func RunHTTPListenerProxy(
 			// A refused DELETE (405 when the server does not let clients end
 			// sessions, 404 for an unknown one) is relayed, and the session
 			// state below is kept because nothing was terminated.
-			if relayUpstreamClientError(upResp, nil, clientState.recorder, listenerStateAuditKey(), TrackedRequestOutcome{}) {
+			if relayUpstreamClientError(upResp, nil, clientRecorder, listenerStateAuditKey(), TrackedRequestOutcome{}) {
 				warnTransportAdmission(safeLogW, requestBaseOpts, admission, "upstream_http_client_error")
 				return
 			}
@@ -1775,7 +1784,7 @@ func RunHTTPListenerProxy(
 					return false
 				}
 				requestBaseOpts = fullRequestBaseOpts
-				setClientState(state)
+				setClientState(state, nil)
 				setupState = true
 				stateBound = true
 				return true
@@ -1841,7 +1850,7 @@ func RunHTTPListenerProxy(
 		// and cannot select chain, adaptive, taint, or baseline state.
 		chainSessionKey := clientStateKey
 		auditSessionKey := listenerStateAuditKey()
-		reqRec := clientState.recorder
+		reqRec := clientRecorder
 		baselineRec := newMCPRequestBaselineRecorder()
 		baselineRec.activityRecorder, _ = reqRec.(session.ToolCallActivityRecorder)
 		baselineOpts := requestBaseOpts
@@ -2990,7 +2999,7 @@ func listenerHasSessionScopedControls(opts MCPProxyOpts) bool {
 	if opts.chainMatcher() != nil || opts.cee() != nil {
 		return true
 	}
-	if opts.Store == nil {
+	if listenerStoreSnapshot(opts.Store) == nil {
 		return false
 	}
 	if airlockCfg := opts.airlockCfg(); airlockCfg != nil && airlockCfg.Enabled {
