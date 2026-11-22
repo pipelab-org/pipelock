@@ -301,7 +301,6 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// Parse the inbound frame once per message; every gate below reads
 		// ID / Method / tool fields from this frame instead of re-parsing.
 		frame := ParseMCPFrame(line)
-		writer = opts.v3ResponseWriter(baseWarnContext, logW, baseWriter, line, frame)
 		if opts.nativeSSE {
 			var admission receipt.EmitOpts
 			if frame.Method == "" && isResponse(line) {
@@ -343,6 +342,11 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 			opts.nativeAdmission = selected
 			opts.WarnContext, finishWarnings = opts.nativeWarningContext(baseWarnContext, selected)
+		}
+		if opts.v3Session != nil {
+			writer = opts.localV3ReplyWriter(baseWriter, logW, nil)
+		} else if stream, ok := baseWriter.(*mcpV3NetworkStreamWriter); ok {
+			writer = stream.localReplyWriter()
 		}
 		// Key rejection must precede tracker consumption, adaptive recovery,
 		// tool drift promotion, inventory reservations and taint observations.
@@ -463,12 +467,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// (concurrent goroutines). The window is not exploitable: before any
 		// client request, no valid request ID exists to hijack.
 		var trackedMethod string
+		var correlated bool
 		if tracker != nil && tracker.Seeded() && isResponse(line) {
 			rpcID := frame.ID
-			correlationWriter := writer
-			if _, withheld := writer.(mcpV3WithheldWriter); withheld {
-				correlationWriter = opts.localV3ReplyWriter(baseWriter, logW, nil)
-			}
 			// Once a request has been tracked, every result/error envelope must
 			// carry an ID that can be consumed from the pending set. The unseeded
 			// check above retains the initialization-race exception for a server's
@@ -477,21 +478,20 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				_, _ = fmt.Fprintf(logW, "pipelock: line %d: confused deputy: response has no correlatable ID\n", lineNum)
 				denialAudit = mcpCorrelationResponseDenialAudit()
 				resp := blockResponseReason(nil, "response has no correlatable ID (confused deputy)")
-				if err := writeMCPDenial(opts, denialAudit, correlationWriter, resp); err != nil {
+				if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
 					return foundInjection, fmt.Errorf("writing confused deputy block: %w", err)
 				}
 				continue
 			}
 			if rpcID != nil {
-				var valid bool
-				trackedOutcome, valid = tracker.Consume(rpcID)
-				if valid {
+				trackedOutcome, correlated = tracker.Consume(rpcID)
+				if correlated {
 					trackedMethod = trackedOutcome.Method
 					if trackedOutcome.ownsNativeLease {
 						opts.nativeAdmission = trackedOutcome.Receipt
 					}
 				}
-				if !valid {
+				if !correlated {
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: confused deputy: unsolicited response ID %s\n",
 						lineNum, string(rpcID))
 					blockID := rpcID
@@ -500,12 +500,23 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					}
 					denialAudit = mcpCorrelationResponseDenialAudit()
 					resp := blockResponseReason(blockID, "unsolicited response ID (confused deputy)")
-					if err := writeMCPDenial(opts, denialAudit, correlationWriter, resp); err != nil {
+					if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
 						return foundInjection, fmt.Errorf("writing confused deputy block: %w", err)
 					}
 					continue
 				}
 				responsePending = !opts.listenerOwnsResponseOutcome
+			}
+		}
+
+		switch stream := baseWriter.(type) {
+		case *mcpV3NetworkStreamWriter:
+			writer = stream.messageWriter(line, frame, correlated)
+		default:
+			if opts.v3Session != nil && isResponse(line) && !correlated {
+				writer = mcpV3WithheldWriter{}
+			} else {
+				writer = opts.v3ResponseWriter(baseWarnContext, logW, baseWriter, line, frame)
 			}
 		}
 

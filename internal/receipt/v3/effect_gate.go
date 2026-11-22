@@ -129,23 +129,6 @@ func (g EffectGate) writeIntents(ctx context.Context, actions []Action, policy P
 	return g.writeBatch(ctx, actions, policy)
 }
 
-// RecordApproval records a hold or its resolution under the caller's
-// deadline. These records change the durable hold lifecycle even in optional
-// receipt mode, so every write error is returned, including writer recovery
-// results. Releasing an approved effect still requires Admit.
-func (g EffectGate) RecordApproval(ctx context.Context, action Action, policy PolicySnapshot) error {
-	if g.write == nil {
-		return nil
-	}
-	if action.Phase != phaseHold && action.Phase != phaseResolution {
-		return errors.New("receipt approval requires a hold or resolution")
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return g.write(ctx, action, policy)
-}
-
 // Refuse records a blocking decision for an effect that was never admitted.
 func (g EffectGate) Refuse(ctx context.Context, action Action, policy PolicySnapshot) error {
 	if g.write == nil {

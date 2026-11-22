@@ -5,7 +5,6 @@ package v3
 
 import (
 	"bytes"
-	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
@@ -14,10 +13,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/luckyPipewrench/pipelock/internal/config"
-	"github.com/luckyPipewrench/pipelock/internal/deferred"
 )
 
 func writerTestHold(id string) Action {
@@ -423,133 +418,6 @@ func TestStreamWriterStartupReportsHighestUnsupportedActionVersion(t *testing.T)
 			}
 			if err == nil || !strings.Contains(err.Error(), "action body version 3 required") {
 				t.Fatalf("wanted highest unsupported version, got %v", err)
-			}
-		})
-	}
-}
-
-func TestDeferredResolutionWriteFailureRecoversPendingHold(t *testing.T) {
-	opts := writerTestOptions(t.TempDir())
-	writer := requireWriter(t, opts, localWriterStorage())
-	gate := NewEffectGate(writer)
-	manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Minute})
-	action := writerTestHold("pending")
-	action.Hold.Parent = ""
-	policy := CapturePolicy(Digest([]byte("hold policy")))
-	var delivered deferred.Resolution
-	if err := manager.HoldContext(t.Context(), deferred.HeldAction{
-		DeferID:  action.Hold.ID,
-		ActionID: action.ActionID,
-		ConfirmHold: func(ctx context.Context, _ deferred.HeldAction) error {
-			return gate.RecordApproval(ctx, action, policy)
-		},
-		ConfirmResolution: func(ctx context.Context, resolution deferred.Resolution) error {
-			terminal := blockingHoldResolution(action, resolution.ResolutionSource, relationAfter, false)
-			terminal.Verdict = resolution.FinalDecision
-			return gate.RecordApproval(ctx, terminal, policy)
-		},
-		Resolve: func(resolution deferred.Resolution) { delivered = resolution },
-	}); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	if err := manager.ResolveContext(ctx, action.Hold.ID, config.ActionAllow, deferred.SourceApproval); !errors.Is(err, context.Canceled) {
-		t.Fatalf("terminal write error = %v, want canceled", err)
-	}
-	if delivered.FinalDecision != config.ActionBlock {
-		t.Fatalf("resolution delivered to transport = %+v, want block", delivered)
-	}
-	if err := writer.Close(t.Context(), nil); err != nil {
-		t.Fatal(err)
-	}
-	recovery := requireWriter(t, opts, localWriterStorage())
-	recovered := readRecoveryActions(t, opts.Dir, recovery.active.id)
-	if len(recovered) != 1 || recovered[0].ActionID != action.ActionID ||
-		recovered[0].Phase != phaseResolution || recovered[0].Verdict != verdictBlock ||
-		recovered[0].Hold == nil || recovered[0].Hold.ID != action.Hold.ID || recovered[0].Hold.ResolutionSource != "restart_recovery" {
-		t.Fatalf("unexpected recovery receipts: %+v", recovered)
-	}
-	if err := recovery.Close(t.Context(), nil); err != nil {
-		t.Fatal(err)
-	}
-	result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
-	if result.Verdict != "VALID" || writerTestCount(t, result, "blocked") != 1 {
-		t.Fatalf("unexpected recovered history: %+v", result)
-	}
-}
-
-func TestDeferredApprovalRecoveryAfterSendIntent(t *testing.T) {
-	for _, sent := range []bool{false, true} {
-		t.Run(fmt.Sprintf("send_intent=%t", sent), func(t *testing.T) {
-			ctx := t.Context()
-			opts := writerTestOptions(t.TempDir())
-			writer := requireWriter(t, opts, localWriterStorage())
-			gate := NewEffectGate(writer)
-			manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Minute})
-			hold := writerTestHold("approved")
-			hold.Hold.Parent = ""
-			policy := CapturePolicy(Digest([]byte("hold policy")))
-			var delivered deferred.Resolution
-			err := manager.HoldContext(ctx, deferred.HeldAction{
-				DeferID:  hold.Hold.ID,
-				ActionID: hold.ActionID,
-				ConfirmHold: func(ctx context.Context, _ deferred.HeldAction) error {
-					return gate.RecordApproval(ctx, hold, policy)
-				},
-				ConfirmResolution: func(ctx context.Context, resolution deferred.Resolution) error {
-					action := blockingHoldResolution(hold, resolution.ResolutionSource, relationAfter, false)
-					action.Verdict = resolution.FinalDecision
-					return gate.RecordApproval(ctx, action, policy)
-				},
-				Resolve: func(resolution deferred.Resolution) { delivered = resolution },
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := manager.ResolveContext(ctx, hold.Hold.ID, config.ActionAllow, deferred.SourceApproval); err != nil {
-				t.Fatal(err)
-			}
-			if delivered.FinalDecision != config.ActionAllow {
-				t.Fatalf("transport resolution = %+v, want approval of %q", delivered, hold.ActionID)
-			}
-			if sent {
-				action := writerTestIntent(hold.ActionID)
-				action.EffectBoundary = "upstream_send"
-				token, err := gate.Admit(ctx, action, policy)
-				if err != nil || token == nil {
-					t.Fatalf("send admission = %v, %v", token, err)
-				}
-			}
-			if err := abandonWriterReplay(writer); err != nil {
-				t.Fatal(err)
-			}
-			recovery := requireWriter(t, opts, localWriterStorage())
-			got := readRecoveryActions(t, opts.Dir, recovery.active.id)
-			if sent {
-				if len(got) != 0 {
-					t.Fatalf("unexpected hold repairs after send intent: %+v", got)
-				}
-			} else if len(got) != 1 || got[0].ActionID != hold.ActionID ||
-				got[0].Phase != phaseResolution || got[0].Verdict != verdictBlock ||
-				got[0].Hold == nil || got[0].Hold.ID != hold.Hold.ID ||
-				got[0].Hold.ResolutionSource != "restart_recovery" {
-				t.Fatalf("unexpected unused approval repair: %+v", got)
-			}
-			if err := recovery.Close(ctx, nil); err != nil {
-				t.Fatal(err)
-			}
-			result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
-			if result.Integrity != "ok" || len(result.Findings) != 1 || result.Findings[0].Code != "END_UNPROVEN" {
-				t.Fatalf("unexpected verification after unsealed shutdown: %+v", result)
-			}
-			switch {
-			case sent:
-				if result.Integrity != "ok" || result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 1 {
-					t.Fatalf("expected one unresolved send intent: %+v", result)
-				}
-			case writerTestCount(t, result, "blocked") != 1:
-				t.Fatalf("expected a blocked unused approval: %+v", result)
 			}
 		})
 	}

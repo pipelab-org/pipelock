@@ -1585,7 +1585,7 @@
     "internal/contract/proxydecision/emitter.go/(*Emitter).emit/buildReceipt/ce97bd84bad0030c-2": "Constructs the v2 envelope using the selected decision and optional span evidence.",
     "internal/contract/receipt/content.go/(*Stamper).Record/RecordPrescanned/c9b7e73d9de20f2f": "Constructs or persists the signed v2 projection of the selected producer decision.",
     "internal/contract/runtime/receipt.go/buildEvidenceReceiptEnvelope/EvidenceReceipt/350f3da46c1f866b": "Constructs or persists the signed v2 projection of the selected producer decision.",
-    "internal/mcp/defer_resolution.go/EmitDeferredResolutionReceipt/emitMCPToolReceipt/06c00bc8f3116375": "Carries the effect boundary and decision context selected by its caller.",
+    "internal/mcp/defer_resolution.go/EmitDeferredResolutionReceipt/emitMCPToolReceipt/3862a74580f14cbb": "Carries the effect boundary and decision context selected by its caller.",
     "internal/mcp/defer_resolution.go/(*deferredReceiptSettlement).emit/emitDeferredResolutionReceipt/68bce8e19ea04f21": "Carries the effect boundary and decision context selected by its caller.",
     "internal/mcp/defer_resolution.go/emitDeferredResolutionReceipt/EmitDeferredResolutionReceipt/20c2d4cfaddde967": "Carries the effect boundary and decision context selected by its caller.",
     "internal/mcp/defer_resolution.go/emitHoldFailureResolution/emitDeferredResolutionReceipt/5240a32ea1a34822": "Carries the effect boundary and decision context selected by its caller.",

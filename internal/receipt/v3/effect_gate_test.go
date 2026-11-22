@@ -198,36 +198,6 @@ func TestEffectGateContinuesAfterOutcomeWriteFailure(t *testing.T) {
 	}
 }
 
-func TestEffectGateRecordApproval(t *testing.T) {
-	ctx := t.Context()
-	writerErr := errors.Join(ErrEffectNotReleased, ErrHoldBlockRecorded)
-	var phases []string
-	gate := EffectGate{write: func(_ context.Context, action Action, _ PolicySnapshot) error {
-		phases = append(phases, action.Phase)
-		return writerErr
-	}}
-	for _, phase := range []string{phaseHold, phaseResolution} {
-		err := gate.RecordApproval(ctx, Action{Phase: phase}, PolicySnapshot{})
-		if !errors.Is(err, ErrEffectNotReleased) || !errors.Is(err, ErrHoldBlockRecorded) {
-			t.Fatalf("%s returned %v, want %v", phase, err, writerErr)
-		}
-	}
-	if err := gate.RecordApproval(ctx, Action{Phase: phaseIntent}, PolicySnapshot{}); err == nil {
-		t.Fatal("approval accepted an intent")
-	}
-	cancelled, cancel := context.WithCancel(ctx)
-	cancel()
-	if err := gate.RecordApproval(cancelled, Action{Phase: phaseResolution}, PolicySnapshot{}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled approval returned %v", err)
-	}
-	if len(phases) != 2 || phases[0] != phaseHold || phases[1] != phaseResolution {
-		t.Fatalf("unexpected phases written: %v", phases)
-	}
-	if err := (EffectGate{}).RecordApproval(ctx, Action{Phase: phaseHold}, PolicySnapshot{}); err != nil {
-		t.Fatalf("disabled gate returned %v", err)
-	}
-}
-
 func TestEffectGateFinalizationBudgetAfterTransportCancellation(t *testing.T) {
 	for _, refusal := range []bool{false, true} {
 		name := "settlement"

@@ -58,8 +58,7 @@ func runV3MCPMatrix(t *testing.T, run func(*testing.T, v3MCPMatrixRow)) {
 	scenarios := []string{
 		"ok", "intent write fail", "intent sync fail", "client cancel before effect",
 		"cancel after intent", "upstream error", "upstream closes mid-response",
-		"tool-scan block", "tool-scan warn", "response warn", "response strip", "media/redaction rewrite", "deferred approve", "deferred deny",
-		"deferred timeout", "kill-switch during hold", "restart recovery of a pending hold",
+		"tool-scan block", "tool-scan warn", "response warn", "response strip", "media/redaction rewrite",
 	}
 	for _, path := range paths {
 		for _, mode := range modes {
@@ -85,8 +84,11 @@ type mcpMatrixFile struct {
 
 func (f *mcpMatrixFile) Write(p []byte) (int, error) {
 	f.writeCount++
+	if f.scenario == "second SSE intent write fail" && bytes.Contains(p, []byte(secondSSEMethod)) && bytes.Contains(p, []byte(`"phase":"intent"`)) {
+		return 0, errors.New("second SSE intent fixture append failure")
+	}
 	if (f.writeCount == 2 && f.scenario == "intent write fail") ||
-		(f.writeCount == 4 && (f.scenario == "reply intent write fail" || f.scenario == "deferred send intent write fail")) ||
+		(f.writeCount == 4 && f.scenario == "reply intent write fail") ||
 		(f.writeCount == 3 && (f.scenario == "local denial intent write fail" || f.scenario == "preadmitted reply intent write fail")) {
 		return 0, errors.New("fixture append failure")
 	}
@@ -289,28 +291,6 @@ func TestMCPV3ReceiptParityMatrix(t *testing.T) {
 	runV3MCPMatrix(t, exerciseMCPV3Row)
 }
 
-func TestMCPV3RequiredStdioHoldWithoutLegacyWriter(t *testing.T) {
-	exerciseMCPV3Row(t, v3MCPMatrixRow{path: "stdio subprocess", required: true, scenario: "deferred approve", requireLegacyFlag: true})
-}
-
-func TestMCPV3ReleasedA2ARoutesWithTrackedMethod(t *testing.T) {
-	exerciseMCPV3Row(t, v3MCPMatrixRow{path: "stdio-to-HTTP upstream", required: true, scenario: "deferred A2A"})
-}
-
-func TestMCPV3DeferredSendAdmissionFailure(t *testing.T) {
-	for _, path := range []string{"stdio subprocess", "stdio-to-HTTP upstream"} {
-		for _, scenario := range []string{"deferred send intent write fail", "deferred send claim refused"} {
-			t.Run(path+"/"+scenario, func(t *testing.T) {
-				exerciseMCPV3Row(t, v3MCPMatrixRow{path: path, required: true, scenario: scenario})
-			})
-		}
-	}
-}
-
-func TestMCPV3HTTPTransportFailureAfterApprovedHold(t *testing.T) {
-	exerciseMCPV3Row(t, v3MCPMatrixRow{path: "stdio-to-HTTP upstream", required: true, scenario: "deferred HTTP failure"})
-}
-
 func TestMCPV3StdioReplyAdmissionFailureStopsInteractiveChild(t *testing.T) {
 	for _, scenario := range []string{"reply intent write fail", "reply intent sync fail"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -417,41 +397,6 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 
 	reply := heldNativeReply
 	request := jsonToolsCallEcho
-	hold := strings.HasPrefix(row.scenario, "deferred ") || row.scenario == "kill-switch during hold" || row.scenario == "restart recovery of a pending hold"
-	if hold && row.path == "HTTP listener" {
-		t.Skip("N/A: reverse HTTP has no portable way to resume a held response later")
-	}
-	if hold && row.path == "WebSocket upstream" {
-		t.Skip("N/A: ordered WebSocket messages lack a bounded hold queue preserving frame order")
-	}
-	if hold {
-		legacyFixture := nativeDeferredOptions(t, nil)
-		opts.Scanner = legacyFixture.Scanner
-		opts.InputCfg = legacyFixture.InputCfg
-		timeout := time.Minute
-		if row.scenario == "deferred timeout" {
-			timeout = testwait.Deadline(300 * time.Millisecond)
-		}
-		opts.DeferManager = deferred.NewManager(deferred.Config{Enabled: true, Timeout: timeout})
-		opts.KillSwitch = deferKillTestController()
-		if row.scenario == "deferred send claim refused" {
-			opts.beforeDeferredSinkClaim = func() { opts.KillSwitch.SetAPI(true) }
-		}
-		request = heldNativeCall
-	}
-
-	if row.scenario == "deferred A2A" {
-		request = `{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"parts":[{"kind":"text","text":"hello"}]}}}`
-		opts.InputCfg = nil
-		opts.PolicyCfg = policy.New(config.MCPToolPolicy{
-			Enabled: true, Action: config.ActionWarn,
-			Rules: []config.ToolPolicyRule{{
-				Name: "hold-message", ToolPattern: "^SendMessage$", ArgPattern: "hello", Action: config.ActionDefer,
-				ResolutionPolicy: &config.DeferResolutionPolicy{AllowOn: config.DeferAllowOn{PolicyPermits: true}},
-			}},
-		})
-	}
-
 	switch row.scenario {
 	case "client cancel before effect":
 		cancel()
@@ -477,18 +422,11 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 		reply = `{"jsonrpc":"2.0","id":1,"result":`
 	}
 	var bridgeLog syncBuffer
-	if row.scenario == "deferred A2A" {
-		t.Cleanup(func() {
-			if t.Failed() {
-				t.Log(bridgeLog.String())
-			}
-		})
-	}
-	localReply := slices.Contains([]string{"deferred deny", "deferred timeout", "kill-switch during hold", "deferred HTTP failure", "deferred send claim refused"}, row.scenario)
 	// A withheld request still gets a receipt-emission error rather than no reply.
-	admissionDenied := slices.Contains([]string{"intent write fail", "intent sync fail", "deferred send intent write fail"}, row.scenario)
+	admissionDenied := slices.Contains([]string{"intent write fail", "intent sync fail"}, row.scenario)
 	listenerInvalidReply := row.path == "HTTP listener" && row.scenario == "upstream closes mid-response"
-	localReply = localReply || admissionDenied || listenerInvalidReply
+	stdioInvalidReply := stdio && row.scenario == "upstream closes mid-response"
+	localReply := admissionDenied || listenerInvalidReply || stdioInvalidReply
 	clientWrite := make(chan struct{}, 1)
 	client := &mcpMatrixObserver{dir: writerOpts.Dir, wrote: clientWrite}
 	seen := filepath.Join(t.TempDir(), "upstream")
@@ -530,9 +468,6 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 				t.Error(err)
 				return
 			}
-			if row.scenario == "deferred HTTP failure" {
-				panic(http.ErrAbortHandler)
-			}
 			w.Header().Set("Content-Type", "application/json")
 			if row.scenario == "upstream closes mid-response" {
 				w.Header().Set("Content-Length", "4096")
@@ -545,87 +480,13 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 		}
 		return RunHTTPProxy(ctx, in, client, &bridgeLog, srv.URL, nil, opts)
 	}
-	if hold {
-		rd, wr := io.Pipe()
-		defer func() { _ = wr.Close() }()
-		done := make(chan struct{})
-		go func() { defer close(done); _ = run(rd) }()
-		if _, err := io.WriteString(wr, request+"\n"); err != nil {
-			t.Fatal(err)
-		}
-		var held deferred.HeldAction
-		if row.scenario != "deferred timeout" {
-			testwait.For(t, time.Second, func() bool {
-				snapshot := opts.DeferManager.Snapshot()
-				if len(snapshot) != 1 {
-					return false
-				}
-				held = snapshot[0]
-				return true
-			}, "confirmed hold")
-		}
-		switch row.scenario {
-		case "deferred approve", "deferred A2A", "deferred HTTP failure", "deferred send intent write fail", "deferred send claim refused":
-			if err := opts.DeferManager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceApproval); err != nil {
-				t.Fatal(err)
-			}
-		case "deferred deny":
-			if err := opts.DeferManager.Resolve(held.DeferID, config.ActionBlock, deferred.SourceApproval); err != nil {
-				t.Fatal(err)
-			}
-		case "kill-switch during hold":
-			opts.KillSwitch.SetAPI(true)
-			if err := opts.DeferManager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceApproval); err != nil && !errors.Is(err, deferred.ErrNotFound) {
-				t.Fatal(err)
-			}
-		case "restart recovery of a pending hold":
-			if err := writer.Close(t.Context(), nil); err != nil {
-				t.Fatal(err)
-			}
-			writerOpts.CreateTempFile = nil
-			recovered, err := v3.OpenStreamWriter(t.Context(), writerOpts)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := recovered.Close(t.Context(), nil); err != nil {
-				t.Fatal(err)
-			}
-			cancel()
-		}
-		if row.scenario != "restart recovery of a pending hold" {
-			testwait.For(t, time.Second, func() bool { return opts.DeferManager.HeldCount() == 0 }, "resolved hold")
-		}
-		if localReply {
-			select {
-			case <-clientWrite:
-			case <-ctx.Done():
-				t.Fatal("local reply did not reach client")
-			}
-		}
-		_ = wr.Close()
-		select {
-		case <-done: // Transport shutdown can report the deliberate upstream close.
-		case <-time.After(testwait.Deadline(5 * time.Second)):
-			t.Fatal("stdio transport did not finish")
-		}
-	} else {
-		err = run(strings.NewReader(request + "\n"))
-		if err != nil && row.scenario == "ok" {
-			t.Fatal(err)
-		}
+	err = run(strings.NewReader(request + "\n"))
+	if err != nil && row.scenario == "ok" {
+		t.Fatal(err)
 	}
 	transportErr := err
 	if err := writer.Close(t.Context(), nil); err != nil {
 		t.Fatal(err)
-	}
-	if row.scenario == "deferred HTTP failure" {
-		reopened, err := v3.OpenStreamWriter(t.Context(), writerOpts)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := reopened.Close(t.Context(), nil); err != nil {
-			t.Fatal(err)
-		}
 	}
 	key := writerOpts.SigningKey.Public().(ed25519.PublicKey)
 	result, err := v3.VerifyPaths(t.Context(), []string{writerOpts.Dir}, v3.Options{Directory: true, Keys: []ed25519.PublicKey{key}})
@@ -641,7 +502,7 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 		t.Fatal(readErr)
 	}
-	wantSend := !hold || slices.Contains([]string{"deferred approve", "deferred A2A", "deferred HTTP failure"}, row.scenario)
+	wantSend := true
 	switch row.scenario {
 	case "intent write fail", "intent sync fail", "client cancel before effect", "cancel after intent":
 		wantSend = false
@@ -658,17 +519,7 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 			t.Fatalf("upstream observed request before its intent: %v", err)
 		}
 	}
-	if row.scenario == "deferred A2A" {
-		if frame := ParseMCPFrame(upstream); frame.Method != "SendMessage" {
-			t.Fatalf("released request method = %q, want SendMessage", frame.Method)
-		}
-		for _, action := range actions {
-			if action.Method != "SendMessage" {
-				t.Fatalf("released exchange lost tracked method: %+v", action)
-			}
-		}
-	}
-	wantReply := wantSend && row.scenario != "deferred HTTP failure" && row.scenario != "upstream closes mid-response" && row.scenario != "tool-scan block"
+	wantReply := wantSend && row.scenario != "upstream closes mid-response" && row.scenario != "tool-scan block"
 	if wantReply {
 		output := strings.TrimSpace(client.output.String())
 		matches := output == reply
@@ -695,13 +546,9 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 		if !client.intent {
 			t.Fatal("no delivery intent before local reply")
 		}
-		deliveryActions := actions
-		if row.scenario == "deferred send claim refused" {
-			deliveryActions = slices.DeleteFunc(slices.Clone(actions), func(a v3.Action) bool {
-				return a.EffectBoundary == mcpUpstreamSendBoundary
-			})
+		if !stdioInvalidReply {
+			assertLocalMCPDeliveries(t, actions, "1")
 		}
-		assertLocalMCPDeliveries(t, deliveryActions, "1")
 	} else if client.output.Len() != 0 {
 		t.Fatalf("unexpected reply: %s", client.output.String())
 	}
@@ -728,15 +575,12 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 	wantVerdict := "VALID"
 	var wantFindings []string
 	switch row.scenario {
-	case "intent write fail", "deferred send intent write fail":
+	case "intent write fail":
 		wantVerdict = "VALID PREFIX, END UNPROVEN"
 		wantFindings = []string{"END_UNPROVEN"}
 	case "intent sync fail":
 		wantVerdict = "VALID PREFIX, END UNPROVEN"
 		wantFindings = []string{"END_UNPROVEN", "UNCONFIRMED"}
-	}
-	if row.scenario == "deferred HTTP failure" && (result.Counts.EffectsUnknown == nil || *result.Counts.EffectsUnknown != 1) {
-		t.Fatalf("expected one unknown send after reopening: %+v", result)
 	}
 	var findings []string
 	for _, finding := range result.Findings {
@@ -747,13 +591,12 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 		t.Fatalf("verification = %s %v, want %s %v", result.Verdict, findings, wantVerdict, wantFindings)
 	}
 	scenario := row.scenario
-	if scenario == "deferred A2A" {
-		scenario = "deferred approve"
-	}
 	if row.path == "HTTP listener" && scenario == "tool-scan block" {
 		scenario = "listener preadmitted tool-scan block"
 	} else if listenerInvalidReply {
 		scenario = "tool-scan block"
+	} else if stdioInvalidReply {
+		scenario = "stdio invalid reply"
 	}
 	assertMCPMatrixTerminal(t, scenario, actions)
 }
@@ -773,34 +616,18 @@ func assertMCPMatrixTerminal(t *testing.T, scenario string, actions []v3.Action)
 		expected = []string{"upstream_send/outcome/attempt_unknown"}
 	case "listener preadmitted tool-scan block":
 		expected = []string{"downstream_delivery/decision/block", "downstream_delivery/outcome/completed", "downstream_delivery/outcome/not_released", "upstream_send/outcome/completed"}
+	case "stdio invalid reply":
+		expected = []string{"downstream_delivery/decision/block", "downstream_delivery/outcome/completed", "upstream_send/outcome/attempt_unknown"}
 	case "tool-scan block":
 		expected = []string{"downstream_delivery/decision/block", "downstream_delivery/outcome/completed", "upstream_send/outcome/completed"}
-	case "deferred send intent write fail":
-		expected = []string{"approval_prompt/resolution/allow", "downstream_delivery/outcome/completed", "upstream_send/outcome/not_released"}
-	case "deferred send claim refused":
-		expected = []string{"approval_prompt/resolution/allow", "downstream_delivery/decision/block", "downstream_delivery/outcome/completed", "upstream_send/outcome/not_released"}
-	case "deferred HTTP failure":
-		expected = []string{"approval_prompt/resolution/allow", "downstream_delivery/outcome/completed", "upstream_send/outcome/attempt_unknown"}
-	case "deferred approve":
-		expected = []string{"approval_prompt/resolution/allow", "downstream_delivery/outcome/completed", "upstream_send/outcome/completed"}
-	case "deferred deny", "deferred timeout", "kill-switch during hold":
-		expected = []string{"approval_prompt/resolution/block", "downstream_delivery/decision/block", "downstream_delivery/outcome/completed"}
-	case "restart recovery of a pending hold":
-		expected = []string{"approval_prompt/resolution/block"}
 	}
 	var actual []string
-	var holdActionID, holdID, sendID string
+	var sendID string
 	for _, a := range actions {
-		repaired := a.Hold != nil && a.Hold.ResolutionSource == deferred.SourceRestartRecovery
-		if !repaired && a.RequestID != "1" {
+		if a.RequestID != "1" {
 			t.Fatalf("wrong signed request ID: %+v", a)
 		}
 		switch a.EffectBoundary {
-		case "approval_prompt":
-			if a.Phase == "hold" {
-				holdActionID = a.ActionID
-				holdID = a.Hold.ID
-			}
 		case mcpUpstreamSendBoundary:
 			if a.Phase == "intent" {
 				sendID = a.ActionID
@@ -816,26 +643,14 @@ func assertMCPMatrixTerminal(t *testing.T, scenario string, actions []v3.Action)
 		}
 		actual = append(actual, a.EffectBoundary+"/"+a.Phase+"/"+qualifier)
 	}
-	replyParent := sendID
-	if scenario == "deferred send claim refused" {
-		replyParent = ""
+	parentID := sendID
+	if scenario == "stdio invalid reply" {
+		parentID = ""
 	}
 	for _, a := range actions {
-		if a.EffectBoundary == mcpDownstreamDeliveryBoundary && (a.ParentActionID != replyParent || a.ActionID == sendID) {
+		if a.EffectBoundary == mcpDownstreamDeliveryBoundary && (a.ParentActionID != parentID || a.ActionID == sendID) {
 			t.Fatalf("incorrect reply parent: %+v", a)
 		}
-		if scenario == "kill-switch during hold" && a.EffectBoundary == "approval_prompt" && a.Phase == "resolution" {
-			if a.Hold == nil || a.Hold.ResolutionSource != deferred.SourceKillSwitch ||
-				a.Layer != mcpReceiptLayerKillSwitch || a.Pattern != deferredKillSwitchReason {
-				t.Fatalf("wrong kill-switch resolution attribution: %+v", a)
-			}
-		}
-		if a.EffectBoundary == "approval_prompt" && (a.ActionID != holdActionID || a.Hold == nil || a.Hold.ID != holdID) {
-			t.Fatalf("resolution does not match hold: %+v", a)
-		}
-	}
-	if (scenario == "deferred approve" || scenario == "deferred HTTP failure") && (holdActionID == "" || holdActionID != sendID) {
-		t.Fatalf("approved send %q did not reuse hold %q", sendID, holdActionID)
 	}
 	slices.Sort(actual)
 	if !slices.Equal(actual, expected) {
@@ -890,49 +705,6 @@ func assertMCPExchangeSettled(t *testing.T, actions []v3.Action, downstreamOutco
 	}
 }
 
-func TestMCPV3DeferredIntentPrecedesStdioSendLock(t *testing.T) {
-	var mu sync.Mutex
-	checked := false
-	cfg := mcpMatrixWriterOptions(t, v3MCPMatrixRow{required: true}, transportMCPStdio, nil, func(count int) {
-		if count != 2 {
-			return
-		}
-		acquired := make(chan struct{})
-		go func() {
-			mu.Lock()
-			defer mu.Unlock()
-			close(acquired)
-		}()
-		ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(time.Second))
-		defer cancel()
-		select {
-		case <-acquired:
-			checked = true
-		case <-ctx.Done():
-		}
-	})
-	writer, err := v3.OpenStreamWriter(t.Context(), cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := writer.Close(t.Context(), nil); err != nil {
-			t.Error(err)
-		}
-	}()
-	opts := MCPProxyOpts{Transport: transportMCPStdio}.WithV3ReceiptWriter(writer).withV3Session()
-	frame := ParseMCPFrame([]byte(heldNativeCall))
-	res := deferred.Resolution{FinalDecision: config.ActionAllow, ParentActionID: "fixture-request"}
-	effect, finish, reason, err := opts.claimV3DeferredSend(t.Context(), io.Discard, frame, res, &mu, 0)
-	if finish != nil {
-		finish()
-	}
-	opts.finishV3Send(t.Context(), io.Discard, effect, false)
-	if err != nil || reason != "" || !checked {
-		t.Fatalf("receipt sync ran under the send lock or did not run: %s", reason)
-	}
-}
-
 func exerciseMCPV3GET(t *testing.T, row v3MCPMatrixRow) {
 	t.Helper()
 	switch row.scenario {
@@ -940,8 +712,6 @@ func exerciseMCPV3GET(t *testing.T, row v3MCPMatrixRow) {
 		t.Skip("N/A: GET subscriptions reject response IDs and cannot deliver tools/list results")
 	case "media/redaction rewrite":
 		t.Skip("N/A: GET subscription requests have no MCP arguments to rewrite")
-	case "deferred approve", "deferred deny", "deferred timeout", "kill-switch during hold", "restart recovery of a pending hold":
-		t.Skip("N/A: GET subscriptions carry no client tool call to hold or resolve")
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
 	defer cancel()
@@ -1018,12 +788,9 @@ func exerciseMCPV3GET(t *testing.T, row v3MCPMatrixRow) {
 	case row.scenario != "client cancel before effect":
 		expected = []string{"upstream_send/not_released"}
 	}
-	var sendID string
 	for _, action := range actions {
-		if action.EffectBoundary == mcpUpstreamSendBoundary {
-			sendID = action.ActionID
-		} else if action.ParentActionID == "" || action.ParentActionID != sendID {
-			t.Fatalf("GET delivery has incorrect parent: %+v", action)
+		if action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.ParentActionID != "" {
+			t.Fatalf("GET delivery should be standalone: %+v", action)
 		}
 		if action.Phase == "outcome" {
 			actual = append(actual, action.EffectBoundary+"/"+action.OutcomeClass)

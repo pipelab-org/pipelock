@@ -286,11 +286,17 @@ func (d mcpContractDiscoveryRequest) page(ctx context.Context, cursor *string, r
 		headers.Set(listenerProtocolVersion, d.request.Header.Get(listenerProtocolVersion))
 		var err error
 		effect.sent = true
-		reader, err = d.bridge.SendMessageWithOptions(ctx, body, transport.HTTPMessageOptions{Headers: headers, ResponseByteBudget: remaining, PreserveSession: true})
+		reader, err = d.bridge.SendMessageWithOptions(ctx, body, transport.HTTPMessageOptions{
+			Headers: headers, ResponseByteBudget: remaining, PreserveSession: true,
+			ObserveRoundTrip: func(err error) {
+				if err == nil {
+					effect.observe()
+				}
+			},
+		})
 		if err != nil {
 			return nil, fmt.Errorf("upstream discovery request: %w", err)
 		}
-		effect.observe()
 		if closer, ok := reader.(io.Closer); ok {
 			defer func() { _ = closer.Close() }()
 		}
@@ -357,6 +363,7 @@ func (d mcpContractDiscoveryRequest) page(ctx context.Context, cursor *string, r
 	tracker.TrackRequest(json.RawMessage("1"), "tools/list")
 	opts := d.opts
 	opts.WarnContext = ctx
+	opts.v3Session = nil
 	opts.toolContractDiscovery = true
 	// Nothing in this inventory reaches the agent, so there is nothing for an
 	// operator to approve, and an approval wait would hold the principal's

@@ -5,7 +5,6 @@ package deferred
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -160,17 +159,7 @@ type HeldAction struct {
 	Deadline      time.Time
 	Payload       []byte
 	ArgDigest     string
-	confirming    chan struct{}
-	// ConfirmHold persists the computed hold before publication in journal-free
-	// mode. The reservation stays private during confirmation. The callback
-	// must not wait for another admission or resolution of the same session.
-	ConfirmHold func(context.Context, HeldAction) error
-	// ConfirmResolution persists the final receipt for a confirmed hold.
-	// On error the payload stays withheld and the pending receipt is
-	// reconciled by the receipt writer. The callback owns writer-specific
-	// recovery results and must not retry a resolution the writer closed.
-	ConfirmResolution func(context.Context, Resolution) error
-	Resolve           func(Resolution)
+	Resolve       func(Resolution)
 	// ResolveWithReleaseRefusal is the synchronous Resolve variant for a
 	// release path that can still refuse immediately before sending. It may
 	// call refuse during the callback to close a journaled allow to block.
@@ -194,12 +183,11 @@ type HeldAction struct {
 	// entry, so that block's receipt is written first. Prepare's
 	// finish func is still pending, so the release claim and sink lock cover
 	// this call.
-	AfterJournal     func(Resolution) error
-	receiptConfirmed bool
-	timer            *time.Timer
-	cascadeBlocked   bool // protected by Manager.mu
-	state            string
-	createdAt        time.Time
+	AfterJournal   func(Resolution) error
+	timer          *time.Timer
+	cascadeBlocked bool // protected by Manager.mu
+	state          string
+	createdAt      time.Time
 }
 
 // Resolution is delivered exactly once for a held action.
@@ -220,11 +208,6 @@ type Resolution struct {
 	Reason           string
 }
 
-type waitingHold struct {
-	sessionID string
-	done      chan struct{}
-}
-
 // Manager tracks per-action holds. It is safe for concurrent use.
 type Manager struct {
 	mu             sync.Mutex
@@ -235,15 +218,6 @@ type Manager struct {
 	sessionHolds   map[string][]string
 	totalBytes     int
 	pendingJournal map[string]journalEntry
-
-	// A confirming hold already owns capacity. A named session has at most
-	// one confirmation, so a sibling cannot sign before its pending parent.
-	confirmingSessions map[string]chan struct{}
-	waitingHolds       map[string]waitingHold
-	waitingBySession   map[string]int
-	confirmingCount    int
-	settlingReceipts   int // confirmed holds whose settlement callbacks are still running
-	settlingBySession  map[string]int
 	// fileSync replaces File.Sync for journal writes in tests; nil uses it.
 	fileSync func(*os.File) error
 	// dirSync replaces directorysync.Sync in tests; nil uses it.
@@ -278,16 +252,10 @@ func (e *CascadeLimitError) Unwrap() error {
 }
 
 func HoldFailureSource(err error) string {
-	switch {
-	case errors.Is(err, ErrCascadeLimit):
+	if errors.Is(err, ErrCascadeLimit) {
 		return SourceCascadeLimit
-	case errors.Is(err, context.DeadlineExceeded):
-		return SourceTimeout
-	case errors.Is(err, context.Canceled):
-		return SourceCancel
-	default:
-		return SourceCapacity
 	}
+	return SourceCapacity
 }
 
 // NewManager constructs a bounded held-action manager.
@@ -308,15 +276,11 @@ func NewManager(cfg Config) *Manager {
 		cfg.MaxCascadeDepth = DefaultMaxCascadeDepth
 	}
 	return &Manager{
-		cfg:                cfg,
-		warningf:           cfg.Warningf,
-		holds:              make(map[string]*HeldAction),
-		sessionHolds:       make(map[string][]string),
-		pendingJournal:     make(map[string]journalEntry),
-		confirmingSessions: make(map[string]chan struct{}),
-		waitingHolds:       make(map[string]waitingHold),
-		waitingBySession:   make(map[string]int),
-		settlingBySession:  make(map[string]int),
+		cfg:            cfg,
+		warningf:       cfg.Warningf,
+		holds:          make(map[string]*HeldAction),
+		sessionHolds:   make(map[string][]string),
+		pendingJournal: make(map[string]journalEntry),
 	}
 }
 
@@ -353,12 +317,6 @@ func (m *Manager) JournalPath() string {
 // Hold stores an action and starts its hard timeout. Capacity rejects the new
 // action; existing held actions are never evicted open.
 func (m *Manager) Hold(action HeldAction) error {
-	return m.HoldContext(context.Background(), action)
-}
-
-// HoldContext reserves capacity while waiting for an earlier hold's receipt.
-// Cancellation releases that reservation without publishing a hold.
-func (m *Manager) HoldContext(ctx context.Context, action HeldAction) error {
 	if !m.Enabled() {
 		return ErrDisabled
 	}
@@ -367,12 +325,6 @@ func (m *Manager) HoldContext(ctx context.Context, action HeldAction) error {
 	}
 	if action.Resolve == nil && action.ResolveWithReleaseRefusal == nil {
 		return fmt.Errorf("resolve callback is required")
-	}
-	if (action.ConfirmHold == nil) != (action.ConfirmResolution == nil) {
-		return errors.New("hold and resolution confirmation must be configured together")
-	}
-	if action.ConfirmHold != nil && m.cfg.JournalPath != "" {
-		return errors.New("hold confirmation requires journal-free operation")
 	}
 	if action.SizeBytes < 0 {
 		action.SizeBytes = 0
@@ -383,30 +335,19 @@ func (m *Manager) HoldContext(ctx context.Context, action HeldAction) error {
 	action.createdAt = now
 	action.state = StateHeld
 
-	sessionID := action.Authority.SessionID
 	m.mu.Lock()
-	_, held := m.holds[action.DeferID]
-	_, waiting := m.waitingHolds[action.DeferID]
-	if held || waiting {
+	if _, exists := m.holds[action.DeferID]; exists {
 		m.mu.Unlock()
 		m.journalRejectedHold(action, SourceDuplicateDeferID)
 		return fmt.Errorf("defer hold %q already exists", action.DeferID)
 	}
-	if len(m.holds)+len(m.waitingHolds)+m.settlingReceipts >= m.cfg.MaxPending ||
-		len(m.sessionHolds[sessionID])+m.waitingBySession[sessionID]+m.settlingBySession[sessionID] >= m.cfg.MaxPendingPerSession ||
+	if len(m.holds) >= m.cfg.MaxPending ||
+		len(m.sessionHolds[action.Authority.SessionID]) >= m.cfg.MaxPendingPerSession ||
 		action.SizeBytes > m.cfg.MaxPendingBytes ||
 		m.totalBytes > m.cfg.MaxPendingBytes-action.SizeBytes {
 		m.mu.Unlock()
 		m.journalRejectedHold(action, SourceCapacity)
 		return ErrCapacity
-	}
-	if m.confirmingSessions[sessionID] != nil {
-		done := make(chan struct{})
-		defer close(done)
-		if err := m.waitForHoldConfirmationLocked(ctx, action, done); err != nil {
-			m.mu.Unlock()
-			return err
-		}
 	}
 	action.Linkage = LinkageSessionPendingAncestor
 	action.CascadeDepth = 1
@@ -433,95 +374,31 @@ func (m *Manager) HoldContext(ctx context.Context, action HeldAction) error {
 		m.journalRejectedHold(action, SourceCascadeLimit)
 		return limitErr
 	}
-	delay := m.cfg.Timeout
-	if confirm := action.ConfirmHold; confirm != nil {
-		action.ConfirmHold = nil
-		pending := make(chan struct{})
-		action.confirming = pending
-		m.reserveHoldLocked(&action)
-		m.confirmingCount++
-		if sessionID != "" {
-			m.confirmingSessions[sessionID] = pending
-		}
-
-		// The private reservation prevents overcommit while receipt I/O runs
-		// without blocking operations for other sessions.
-		confirmation := action
+	journalAction := action
+	stored := action
+	held := &stored
+	// Commit the StateHeld journal entry BEFORE publishing the hold, while still
+	// holding m.mu. A concurrent admission rejection for a related id blocks on
+	// m.mu until this returns, so it cannot append its StateAdmissionRejected
+	// entry ahead of this hold's StateHeld and causally invert the audit trail.
+	// On journal failure nothing is published, so no rollback is needed.
+	if err := m.appendJournal(journalEntryFromHeld(journalAction, StateHeld, "")); err != nil {
 		m.mu.Unlock()
-		confirmCtx, cancel := context.WithDeadline(ctx, confirmation.Deadline)
-		err := confirm(confirmCtx, confirmation)
-		cancel()
-		m.mu.Lock()
-		action.confirming = nil
-		m.confirmingCount--
-		delete(m.confirmingSessions, sessionID)
-		close(pending)
-		if err != nil {
-			m.removeHoldLocked(&action)
-			m.mu.Unlock()
-			return fmt.Errorf("confirm defer hold: %w", err)
-		}
-		action.receiptConfirmed = true
-		delay = time.Until(action.Deadline)
-		if action.cascadeBlocked {
-			delay = 0
-		}
-	} else {
-		if err := m.appendJournal(journalEntryFromHeld(action, StateHeld, "")); err != nil {
-			m.mu.Unlock()
-			return fmt.Errorf("journal defer hold: %w", err)
-		}
-		m.reserveHoldLocked(&action)
+		return fmt.Errorf("journal defer hold: %w", err)
 	}
-	action.timer = time.AfterFunc(delay, func() {
-		_ = m.Resolve(action.DeferID, config.ActionBlock, SourceTimeout)
-	})
+	m.holds[action.DeferID] = held
+	m.sessionHolds[action.Authority.SessionID] = append(m.sessionHolds[action.Authority.SessionID], action.DeferID)
+	m.totalBytes += action.SizeBytes
+	m.mu.Unlock()
+
+	m.mu.Lock()
+	if live := m.holds[action.DeferID]; live != nil && live.state == StateHeld {
+		live.timer = time.AfterFunc(m.cfg.Timeout, func() {
+			_ = m.Resolve(action.DeferID, "block", SourceTimeout)
+		})
+	}
 	m.mu.Unlock()
 	return nil
-}
-
-// The caller holds m.mu on entry and return. Keep ancestry private until the
-// previous confirmation finishes, but count this call throughout its wait.
-func (m *Manager) waitForHoldConfirmationLocked(ctx context.Context, action HeldAction, done chan struct{}) error {
-	ctx, cancel := context.WithDeadline(ctx, action.Deadline)
-	defer cancel()
-	sessionID := action.Authority.SessionID
-	m.waitingHolds[action.DeferID] = waitingHold{sessionID: sessionID, done: done}
-	m.waitingBySession[sessionID]++
-	m.totalBytes += action.SizeBytes
-	defer func() {
-		delete(m.waitingHolds, action.DeferID)
-		m.waitingBySession[sessionID]--
-		if m.waitingBySession[sessionID] == 0 {
-			delete(m.waitingBySession, sessionID)
-		}
-		m.totalBytes -= action.SizeBytes
-	}()
-	for pending := m.confirmingSessions[sessionID]; pending != nil; pending = m.confirmingSessions[sessionID] {
-		m.mu.Unlock()
-		select {
-		case <-pending:
-		case <-ctx.Done():
-		}
-		m.mu.Lock()
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (m *Manager) reserveHoldLocked(held *HeldAction) {
-	m.holds[held.DeferID] = held
-	sessionID := held.Authority.SessionID
-	m.sessionHolds[sessionID] = append(m.sessionHolds[sessionID], held.DeferID)
-	m.totalBytes += held.SizeBytes
-}
-
-func (m *Manager) removeHoldLocked(held *HeldAction) {
-	delete(m.holds, held.DeferID)
-	m.removeSessionHoldLocked(held.Authority.SessionID, held.DeferID)
-	m.totalBytes -= held.SizeBytes
 }
 
 func (m *Manager) journalRejectedHold(action HeldAction, source string) {
@@ -552,16 +429,6 @@ func (m *Manager) Resolve(deferID, finalDecision, source string) error {
 // a journal failure can each close an allow, and callers that surface the
 // outcome to an operator must report that one, not the request.
 func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string, error) {
-	return m.resolveAppliedContext(context.Background(), deferID, finalDecision, source)
-}
-
-// ResolveContext resolves a hold with the caller's receipt confirmation budget.
-func (m *Manager) ResolveContext(ctx context.Context, deferID, finalDecision, source string) error {
-	_, err := m.resolveAppliedContext(ctx, deferID, finalDecision, source)
-	return err
-}
-
-func (m *Manager) resolveAppliedContext(ctx context.Context, deferID, finalDecision, source string) (string, error) {
 	if m == nil {
 		return "", ErrDisabled
 	}
@@ -574,71 +441,17 @@ func (m *Manager) resolveAppliedContext(ctx context.Context, deferID, finalDecis
 
 	m.mu.Lock()
 	held := m.holds[deferID]
-	for held != nil && m.holds[deferID] == held {
-		pending := held.confirming
-		if pending != nil {
-			// This hold must be published before it can be resolved.
-			m.mu.Unlock()
-			select {
-			case <-pending:
-			case <-ctx.Done():
-				return "", ctx.Err()
-			}
-			m.mu.Lock()
-			continue
-		}
-		if finalDecision != config.ActionAllow || held.cascadeBlocked || !time.Now().Before(held.Deadline) {
-			break
-		}
-		pending = m.confirmingSessions[held.Authority.SessionID]
-		if pending == nil {
-			break
-		}
-		deadline := time.NewTimer(time.Until(held.Deadline))
-		m.mu.Unlock()
-		select {
-		case <-pending:
-		case <-deadline.C:
-		case <-ctx.Done():
-		}
-		deadline.Stop()
-		m.mu.Lock()
-		if err := ctx.Err(); err != nil {
-			m.mu.Unlock()
-			return "", err
-		}
-	}
-	if held == nil || m.holds[deferID] != held || held.state != StateHeld {
+	if held == nil || held.state != StateHeld {
 		m.mu.Unlock()
 		return "", ErrNotFound
 	}
 	if held.cascadeBlocked {
 		finalDecision, source = config.ActionBlock, SourceCascade
-	} else if held.receiptConfirmed && finalDecision == config.ActionAllow && !time.Now().Before(held.Deadline) {
-		finalDecision, source = config.ActionBlock, SourceTimeout
-	}
-	var descendants []string
-	if finalDecision != config.ActionAllow && source != SourceCascade {
-		descendants = m.markCascadeBlockedLocked([]string{held.DeferID})
 	}
 	held.state = StateResolving
-	m.removeHoldLocked(held)
-	if held.receiptConfirmed {
-		sessionID := held.Authority.SessionID
-		m.settlingReceipts++
-		m.settlingBySession[sessionID]++
-		m.totalBytes += held.SizeBytes
-		defer func() {
-			m.mu.Lock()
-			m.settlingReceipts--
-			m.settlingBySession[sessionID]--
-			if m.settlingBySession[sessionID] == 0 {
-				delete(m.settlingBySession, sessionID)
-			}
-			m.totalBytes -= held.SizeBytes
-			m.mu.Unlock()
-		}()
-	}
+	delete(m.holds, deferID)
+	m.removeSessionHoldLocked(held.Authority.SessionID, deferID)
+	m.totalBytes -= held.SizeBytes
 	if held.timer != nil {
 		held.timer.Stop()
 	}
@@ -681,21 +494,7 @@ func (m *Manager) resolveAppliedContext(ctx context.Context, deferID, finalDecis
 		res = prepared
 	}
 
-	if res.FinalDecision != config.ActionAllow && res.ResolutionSource != SourceCascade && len(descendants) == 0 {
-		descendants = m.markCascadeBlocked([]string{held.DeferID})
-	}
-
-	var confirmationErr error
-	if held.ConfirmResolution != nil {
-		writeCtx, cancel := context.WithTimeout(ctx, held.Policy.Timeout)
-		confirmationErr = held.ConfirmResolution(writeCtx, res)
-		cancel()
-		if confirmationErr != nil && res.FinalDecision != config.ActionBlock {
-			res.FinalDecision = config.ActionBlock
-			res.ResolutionSource = SourceCancel
-			res.Reason = ReasonReceiptNotWritten
-		}
-	} else if res.FinalDecision == config.ActionAllow {
+	if res.FinalDecision == config.ActionAllow {
 		res = m.journalRelease(held, res)
 	} else if err := m.appendJournal(journalEntryFromHeld(*held, resolvedState(res.FinalDecision), res.ResolutionSource)); err != nil {
 		res.FinalDecision = config.ActionBlock
@@ -703,21 +502,14 @@ func (m *Manager) resolveAppliedContext(ctx context.Context, deferID, finalDecis
 		_ = m.appendJournal(journalEntryFromHeld(*held, resolvedState(res.FinalDecision), res.ResolutionSource))
 	}
 	if res.FinalDecision != config.ActionAllow && res.ResolutionSource != SourceCascade {
-		if descendants == nil {
-			descendants = m.markCascadeBlocked([]string{held.DeferID})
-		}
-		m.resolveCascadeBlocked(descendants)
+		m.resolveCascadeBlocked(m.markCascadeBlocked([]string{held.DeferID}))
 	}
 	if held.ResolveWithReleaseRefusal != nil {
 		var descendants []string
 		held.ResolveWithReleaseRefusal(res, func(reason string) Resolution {
 			if res.FinalDecision == config.ActionAllow {
 				descendants = m.markCascadeBlocked([]string{held.DeferID})
-				if held.ConfirmResolution != nil {
-					res.FinalDecision, res.ResolutionSource, res.Reason = config.ActionBlock, SourceCancel, reason
-				} else {
-					res = m.blockLateRelease(held, res, reason)
-				}
+				res = m.blockLateRelease(held, res, reason)
 			}
 			return res
 		})
@@ -725,7 +517,7 @@ func (m *Manager) resolveAppliedContext(ctx context.Context, deferID, finalDecis
 	} else {
 		held.Resolve(res)
 	}
-	return res.FinalDecision, confirmationErr
+	return res.FinalDecision, nil
 }
 
 // journalRelease records an allow in three durable steps so that no point in
@@ -800,19 +592,11 @@ func (m *Manager) ResolveAll(finalDecision, source string) {
 		return
 	}
 	m.mu.Lock()
-	ids := make([]string, 0, len(m.holds)+len(m.waitingHolds))
+	ids := make([]string, 0, len(m.holds))
 	for id := range m.holds {
 		ids = append(ids, id)
 	}
-	waiting := make([]chan struct{}, 0, len(m.waitingHolds))
-	for id, hold := range m.waitingHolds {
-		ids = append(ids, id)
-		waiting = append(waiting, hold.done)
-	}
 	m.mu.Unlock()
-	for _, done := range waiting {
-		<-done
-	}
 	for _, id := range ids {
 		_ = m.Resolve(id, finalDecision, source)
 	}
@@ -839,14 +623,10 @@ func (m *Manager) Snapshot() []HeldAction {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]HeldAction, 0, len(m.holds)-m.confirmingCount)
+	out := make([]HeldAction, 0, len(m.holds))
 	for _, held := range m.holds {
-		if held.confirming != nil {
-			continue
-		}
 		cp := *held
 		cp.timer = nil
-		cp.ConfirmResolution = nil
 		cp.Resolve = nil
 		cp.ResolveWithReleaseRefusal = nil
 		cp.Payload = append([]byte(nil), held.Payload...)
@@ -862,7 +642,7 @@ func (m *Manager) HeldCount() int {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return len(m.holds) - m.confirmingCount
+	return len(m.holds)
 }
 
 func (m *Manager) Held(deferID string) (HeldAction, bool) {
@@ -877,7 +657,6 @@ func (m *Manager) ResolveToolInventory(sessionID, finalDecision string) {
 	if m == nil {
 		return
 	}
-	m.waitForConfirmations(&sessionID)
 	for _, held := range m.Snapshot() {
 		if held.Authority.SessionID == sessionID && held.RulePolicy.AllowOn.ToolInventoryBaseline {
 			_ = m.Resolve(held.DeferID, finalDecision, SourceToolInventory)
@@ -946,7 +725,6 @@ func (m *Manager) ResolvePolicyReload(evaluate ReloadEvaluator) {
 	if m == nil || evaluate == nil {
 		return
 	}
-	m.waitForConfirmations(nil)
 	for _, held := range m.Snapshot() {
 		decision, err := evaluate(held)
 		if err != nil {
@@ -968,27 +746,6 @@ func (m *Manager) ResolvePolicyReload(evaluate ReloadEvaluator) {
 	}
 }
 
-// Bulk events include holds already waiting for or undergoing confirmation.
-// Only wait on the requested session for inventory events; nil means all.
-func (m *Manager) waitForConfirmations(sessionID *string) {
-	m.mu.Lock()
-	pending := make([]chan struct{}, 0, m.confirmingCount+len(m.waitingHolds))
-	for _, hold := range m.waitingHolds {
-		if sessionID == nil || hold.sessionID == *sessionID {
-			pending = append(pending, hold.done)
-		}
-	}
-	for _, held := range m.holds {
-		if held.confirming != nil && (sessionID == nil || held.Authority.SessionID == *sessionID) {
-			pending = append(pending, held.confirming)
-		}
-	}
-	m.mu.Unlock()
-	for _, done := range pending {
-		<-done
-	}
-}
-
 func (m *Manager) snapshotOne(deferID string) (HeldAction, error) {
 	if m == nil {
 		return HeldAction{}, ErrDisabled
@@ -996,12 +753,11 @@ func (m *Manager) snapshotOne(deferID string) (HeldAction, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	held := m.holds[deferID]
-	if held == nil || held.confirming != nil || held.state != StateHeld {
+	if held == nil || held.state != StateHeld {
 		return HeldAction{}, ErrNotFound
 	}
 	cp := *held
 	cp.timer = nil
-	cp.ConfirmResolution = nil
 	cp.Resolve = nil
 	cp.ResolveWithReleaseRefusal = nil
 	cp.Payload = append([]byte(nil), held.Payload...)
@@ -1024,15 +780,10 @@ func (m *Manager) removeSessionHoldLocked(sessionID, deferID string) {
 }
 
 // markCascadeBlocked denies every still-held descendant before any of
-// their callbacks run. It returns the published descendants. A reserved
-// descendant settles immediately if its own confirmation succeeds.
+// their callbacks run. A concurrent resolver sees the same forced block.
 func (m *Manager) markCascadeBlocked(frontier []string) []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.markCascadeBlockedLocked(frontier)
-}
-
-func (m *Manager) markCascadeBlockedLocked(frontier []string) []string {
 	var descendants []string
 	for len(frontier) > 0 {
 		var children []string
@@ -1040,14 +791,12 @@ func (m *Manager) markCascadeBlockedLocked(frontier []string) []string {
 			for _, parent := range frontier {
 				if held.ParentDeferID == parent {
 					held.cascadeBlocked = true
-					if held.confirming == nil {
-						descendants = append(descendants, id)
-					}
 					children = append(children, id)
 					break
 				}
 			}
 		}
+		descendants = append(descendants, children...)
 		frontier = children
 	}
 	return descendants

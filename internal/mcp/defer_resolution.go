@@ -14,17 +14,6 @@ import (
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
-func deferredResolutionLayer(source string) string {
-	switch source {
-	case deferred.SourceAuthority:
-		return mcpReceiptLayerAuthority
-	case deferred.SourceKillSwitch:
-		return mcpReceiptLayerKillSwitch
-	default:
-		return mcpReceiptLayerPolicy
-	}
-}
-
 func deferredAdmissionError(manager *deferred.Manager, requireReceipts bool) error {
 	if manager == nil || !manager.Enabled() {
 		return deferred.ErrDisabled
@@ -42,20 +31,6 @@ func deferredAdmissionMessage(err error) string {
 	return "pipelock: " + err.Error()
 }
 
-func deferredResolutionPolicy(res deferred.Resolution) string {
-	var cascade *deferred.ReceiptCascade
-	if res.CascadeDepth > 0 || res.ParentDeferID != "" || res.Linkage != "" {
-		cascade = &deferred.ReceiptCascade{
-			ParentDeferID: res.ParentDeferID,
-			CascadeDepth:  res.CascadeDepth,
-			Linkage:       res.Linkage,
-		}
-	}
-	// Unconditional so capacity denials (no cascade context) still record the
-	// policy bounds; Cascade stays nil and marshals away via omitempty.
-	return deferred.ReceiptPolicyStringFor(deferred.ReceiptPolicyOptions{Bounds: res.Policy, Cascade: cascade})
-}
-
 func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
 	final := res.FinalDecision
 	if final == "" {
@@ -70,6 +45,24 @@ func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 	if final == config.ActionStepUp {
 		final = config.ActionAsk
 	}
+	var cascade *deferred.ReceiptCascade
+	if res.CascadeDepth > 0 || res.ParentDeferID != "" || res.Linkage != "" {
+		cascade = &deferred.ReceiptCascade{
+			ParentDeferID: res.ParentDeferID,
+			CascadeDepth:  res.CascadeDepth,
+			Linkage:       res.Linkage,
+		}
+	}
+	// Unconditional so capacity denials (no cascade context) still record the
+	// policy bounds; Cascade stays nil and marshals away via omitempty.
+	resolutionPolicy := deferred.ReceiptPolicyStringFor(deferred.ReceiptPolicyOptions{Bounds: res.Policy, Cascade: cascade})
+	layer := mcpReceiptLayerPolicy
+	switch res.ResolutionSource {
+	case deferred.SourceAuthority:
+		layer = mcpReceiptLayerAuthority
+	case deferred.SourceKillSwitch:
+		layer = mcpReceiptLayerKillSwitch
+	}
 	shard := receipt.EmitOpts{ShardIndex: res.ShardIndex, ShardSelected: res.ShardSelected}
 	return emitMCPToolReceipt(mcpToolReceiptOpts{
 		ProxyOpts:       opts,
@@ -81,7 +74,7 @@ func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 		MCPMethod:       res.Method,
 		ToolName:        res.Target,
 		Verdict:         final,
-		Layer:           deferredResolutionLayer(res.ResolutionSource),
+		Layer:           layer,
 		Pattern:         res.Reason,
 		Severity:        config.SeverityHigh,
 		Decision:        taintDecision{Authority: session.AuthorityUserBroad, Result: session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: "defer_resolution"}},
@@ -91,7 +84,7 @@ func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 		Durable:           true,
 		DecisionPhase:     receipt.DecisionPhaseResolution,
 		DeferID:           res.DeferID,
-		ResolutionPolicy:  deferredResolutionPolicy(res),
+		ResolutionPolicy:  resolutionPolicy,
 		ResolutionSource:  res.ResolutionSource,
 		SessionID:         res.Authority.SessionID,
 		SessionIDOriginal: res.Authority.SessionIDOriginal,
@@ -167,9 +160,6 @@ func (s *deferredReceiptSettlement) commitAllow(opts MCPProxyOpts, logW io.Write
 // other final resolution (a block, or an allow the journal or the receipt write then closed) gets its
 // own receipt so the chain describes what actually happened.
 func (s *deferredReceiptSettlement) ensure(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
-	if opts.v3OnlyHold() {
-		return nil
-	}
 	if s.done && s.decision == res.FinalDecision && s.source == res.ResolutionSource {
 		return s.err
 	}

@@ -1540,9 +1540,7 @@ func RunHTTPListenerProxy(
 				_ = httpstream.Abort(r.Context(), scanErr)
 				return
 			}
-			if streamWriter.Wrote() {
-				effect.framed = effect.ctx.Err() == nil
-			} else if !foundInjection && admitReply() {
+			if !streamWriter.Wrote() && !foundInjection && admitReply() {
 				writeEffectStatus(http.StatusOK)
 			}
 			return
@@ -1780,7 +1778,8 @@ func RunHTTPListenerProxy(
 		// 2026-07-28 allocates HeaderMismatch (-32020) for this condition;
 		// refusing locally also keeps the failure legible instead of surfacing
 		// as a generic upstream error.
-		if !routingHeaderMatchesFrame(r.Header, frame) || !currentProtocolHeadersMatchFrame(r.Header, frame) {
+		clientReply := requestBaseOpts.receiptEffects.enabled && isResponse(body)
+		if !routingHeaderMatchesFrame(r.Header, frame) || (!clientReply && !currentProtocolHeadersMatchFrame(r.Header, frame)) {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: MCP routing header disagrees with request body\n")
 			w.Header().Set("Content-Type", "application/json")
 			denialAudit = mcpListenerProtocolDenialAudit()
@@ -1869,7 +1868,7 @@ func RunHTTPListenerProxy(
 		// also carry a reply to a server-initiated request.
 		if body[0] != '[' {
 			validate := validateRPCStructure
-			if requestBaseOpts.receiptEffects.enabled && isResponse(body) {
+			if clientReply {
 				validate = validateMCPClientReply
 			}
 			if reason := validate(body); reason != "" {
@@ -2599,9 +2598,7 @@ func RunHTTPListenerProxy(
 					commitMCPToolCall(baselineRec, mcpFrameBaselineIdentity(frame))
 				})
 			}
-			if streamWriter.Wrote() {
-				effect.framed = effect.ctx.Err() == nil
-			} else if admitReply() {
+			if !streamWriter.Wrote() && admitReply() {
 				writeEffectStatus(http.StatusAccepted)
 			}
 			return

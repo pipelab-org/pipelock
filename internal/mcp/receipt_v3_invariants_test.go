@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -20,6 +21,7 @@ type mcpReceiptDelivery struct {
 	withheldPayload []byte
 	withheld        bool
 	denialDelivered bool
+	messageCount    int
 }
 
 func checkMCPReceiptHistory(actions []v3.Action, deliveries ...mcpReceiptDelivery) error {
@@ -69,7 +71,12 @@ func checkMCPReceiptHistory(actions []v3.Action, deliveries ...mcpReceiptDeliver
 			return fmt.Errorf("action %s attempt %d has an outcome before its intent", key.id, key.number)
 		}
 		intent := actions[intentIndex]
-		if intent.ActionType != outcome.ActionType || intent.Transport != outcome.Transport ||
+		// Durable repair can reduce a not-released outcome to standalone
+		// evidence even when the failed append left its intent visible.
+		parentMatches := intent.ParentActionID == outcome.ParentActionID ||
+			(outcome.OutcomeClass == "not_released" && outcome.ParentActionID == "")
+		if !parentMatches || intent.ActionType != outcome.ActionType || intent.Transport != outcome.Transport ||
+			intent.RequestID != outcome.RequestID ||
 			intent.Method != outcome.Method || intent.Target != outcome.Target || intent.EffectBoundary != outcome.EffectBoundary {
 			return fmt.Errorf("action %s attempt %d has inconsistent effect fields", key.id, key.number)
 		}
@@ -99,7 +106,11 @@ func checkMCPReceiptDelivery(actions []v3.Action, delivery mcpReceiptDelivery) e
 			withheld = true
 		}
 	}
-	if blocks > 1 || withheld && completed != 0 && !delivery.denialDelivered {
+	maxCompleted := max(1, delivery.messageCount)
+	if withheld && !delivery.denialDelivered {
+		maxCompleted = 0
+	}
+	if blocks > 1 || completed > maxCompleted {
 		return fmt.Errorf("downstream delivery has %d block decisions and %d completions", blocks, completed)
 	}
 	if completed != 0 && delivery.sent != nil && !bytes.Equal(delivery.received, delivery.sent) {
@@ -110,6 +121,82 @@ func checkMCPReceiptDelivery(actions []v3.Action, delivery mcpReceiptDelivery) e
 	}
 	if withheld && delivery.status == http.StatusOK && len(delivery.received) == 0 {
 		return fmt.Errorf("withheld downstream delivery returned an empty HTTP 200")
+	}
+	return nil
+}
+
+// mcpWireObservation binds an actual write to the signed history visible
+// at the sink before writing. A stream can contain multiple messages with the
+// same RPC ID, so each match consumes a distinct signed attempt.
+type mcpWireObservation struct {
+	message                     []byte
+	before                      []v3.Action
+	boundary, parent, requestID string
+	outcome                     string
+}
+
+func checkMCPWireObservations(actions []v3.Action, boundary string, observations []mcpWireObservation) error {
+	if err := checkMCPReceiptHistory(actions); err != nil {
+		return err
+	}
+	type identity struct {
+		actionID, parent, requestID, boundary string
+		attempt                               int64
+	}
+	key := func(a v3.Action) identity {
+		return identity{a.ActionID, a.ParentActionID, a.RequestID, a.EffectBoundary, *a.Attempt}
+	}
+	outcomes := make(map[identity]string)
+	for _, a := range actions {
+		if a.Phase == "outcome" && a.EffectBoundary == boundary && a.OutcomeClass != "not_released" {
+			outcomes[key(a)] = a.OutcomeClass
+		}
+	}
+	for i, observed := range observations {
+		if observed.boundary != boundary || len(observed.message) == 0 {
+			return fmt.Errorf("wire message %d has invalid observation", i+1)
+		}
+		if observed.outcome == "completed" {
+			var frame struct {
+				ID    json.RawMessage
+				Error json.RawMessage
+			}
+			if err := json.Unmarshal(observed.message, &frame); err != nil || canonicalID(frame.ID) != observed.requestID {
+				return fmt.Errorf("wire message %d has wrong RPC envelope: %s", i+1, observed.message)
+			}
+			if len(frame.Error) > 0 {
+				var detail struct {
+					Code    *int
+					Message string
+				}
+				if err := json.Unmarshal(frame.Error, &detail); err != nil || detail.Code == nil || detail.Message == "" {
+					return fmt.Errorf("wire message %d has invalid RPC error: %s", i+1, frame.Error)
+				}
+			}
+		}
+		var matched identity
+		for _, a := range observed.before {
+			if a.Phase != "intent" || a.Attempt == nil || a.EffectBoundary != boundary ||
+				a.RequestID != observed.requestID || a.ParentActionID != observed.parent || outcomes[key(a)] != observed.outcome {
+				continue
+			}
+			if matched.actionID != "" {
+				return fmt.Errorf("wire message %d has multiple unmatched prior intents", i+1)
+			}
+			matched = key(a)
+		}
+		if matched.actionID == "" {
+			return fmt.Errorf("wire message %d has no matching prior intent and outcome", i+1)
+		}
+		for _, a := range observed.before {
+			if a.Phase == "outcome" && a.Attempt != nil && key(a) == matched {
+				return fmt.Errorf("wire message %d had an outcome before the write", i+1)
+			}
+		}
+		delete(outcomes, matched)
+	}
+	if len(outcomes) != 0 {
+		return fmt.Errorf("%s has %d outcomes with no wire observation", boundary, len(outcomes))
 	}
 	return nil
 }
@@ -150,6 +237,38 @@ func TestMCPReceiptHistoryInvariants(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("got %v, expected %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// Ensure a previous write cannot satisfy admission for a later same-ID reply.
+func TestMCPReceiptWireObservationInvariants(t *testing.T) {
+	attempt := int64(1)
+	intent := v3.Action{Phase: "intent", RequestID: "1", ActionID: "first", EffectBoundary: mcpDownstreamDeliveryBoundary, Attempt: &attempt}
+	outcome := intent
+	outcome.Phase, outcome.OutcomeClass = "outcome", "completed"
+	secondIntent, secondOutcome := intent, outcome
+	secondIntent.ActionID, secondOutcome.ActionID = "second", "second"
+	history := []v3.Action{intent, outcome, secondIntent, secondOutcome}
+	observed := mcpWireObservation{message: []byte(clientRPCReply), boundary: mcpDownstreamDeliveryBoundary, requestID: "1", outcome: "completed"}
+	first, second := observed, observed
+	first.before, second.before = history[:1], history[:3]
+	if err := checkMCPWireObservations(history, mcpDownstreamDeliveryBoundary, []mcpWireObservation{first, second}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, want string
+		writes     []mcpWireObservation
+	}{
+		{"extra completion", "no wire observation", []mcpWireObservation{first}},
+		{"missing second intent", "no matching prior intent", []mcpWireObservation{first, first}},
+		{"late observation", "outcome before the write", []mcpWireObservation{first, {message: second.message, boundary: second.boundary, requestID: second.requestID, outcome: second.outcome, before: history}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkMCPWireObservations(history, mcpDownstreamDeliveryBoundary, tc.writes)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("checker returned %v, want %q", err, tc.want)
 			}
 		})
 	}

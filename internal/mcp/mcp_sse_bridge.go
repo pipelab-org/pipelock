@@ -278,7 +278,6 @@ func scanGETStream(ctx context.Context, client *transport.HTTPClient, writer tra
 	defer stopWarnings()
 
 	_, scanErr = scanMCPHTTPResponse(streamCtx, reader, effect.streamWriter(writer), logW, tracker, opts)
-	effect.framed = scanErr == nil && streamCtx.Err() == nil
 	if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(context.Cause(streamCtx), ael.ErrCapacity) {
 		if transportAdmission.ActionID != "" {
 			recordTransportAdmissionResult(logW, transportReceiptOpts, transportAdmission, "cancelled", nativeCapacityReason)
