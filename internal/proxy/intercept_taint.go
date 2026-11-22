@@ -49,15 +49,7 @@ func withInterceptTaint(ic *InterceptContext, opts receipt.EmitOpts) receipt.Emi
 	if ic.taintConfig == nil {
 		return opts
 	}
-	opts.SessionTaintLevel = ic.taint.Risk.Level.String()
-	opts.SessionContaminated = ic.taint.Risk.Contaminated
-	opts.RecentTaintSources = ic.taint.Risk.Sources
-	opts.SessionTaskID = ic.taint.Task.CurrentTaskID
-	opts.SessionTaskLabel = ic.taint.Task.CurrentTaskLabel
-	opts.AuthorityKind = ic.taint.Authority.String()
-	opts.TaintDecision = ic.taint.Result.Decision.String()
-	opts.TaintDecisionReason = ic.taint.Result.Reason
-	opts.TaskOverrideApplied = ic.taint.TaskOverrideApplied
+	applyTaintEvidence(&opts, ic.taint)
 	return opts
 }
 
@@ -204,14 +196,15 @@ func interceptTaskAdmissionCurrent(ic *InterceptContext) bool {
 }
 
 // recheckInterceptTaint refuses stricter decisions after signing and durable
-// intent storage. Approval cannot be requested here: retry through admission.
+// intent storage, and otherwise records the decision the request is released
+// under. Approval cannot be requested here: retry through admission.
 func recheckInterceptTaint(ic *InterceptContext, r *http.Request, body []byte) string {
 	after := evaluateHTTPTaskTaint(ic.taintConfig, ic.taintRecorder, r.Method, r.URL, requestHasBody(r), &ic.taintTask)
 	if after.Result.Reason == session.TaskPermissionRequired && !ic.taintTask.action.Valid() {
 		// Exposure arrived after a clean admission, so the exact action was
 		// never bound. Bind it now so an existing exact grant can still match;
 		// an unbuffered body yields no action and stays refused.
-		ic.taintTask.action = ic.taintTask.lateRequestTaskAction(r, body)
+		ic.taintTask.action = ic.taintTask.lateRequestTaskAction(r, body, taskActionBodyLimit(ic.taintConfig))
 		after = evaluateHTTPTaskTaint(ic.taintConfig, ic.taintRecorder, r.Method, r.URL, requestHasBody(r), &ic.taintTask)
 	}
 	// Only admissions bound to a task (an approved ask or an exact grant) go
@@ -224,6 +217,11 @@ func recheckInterceptTaint(ic *InterceptContext, r *http.Request, body []byte) s
 	if reason != "" {
 		ic.taint = after
 		ic.taint.Result = session.PolicyDecisionResult{Decision: session.PolicyBlock, Reason: reason}
+		return reason
 	}
-	return reason
+	// Released: later receipts carry the live exposure and, when an exact
+	// grant matched after late exposure, that grant. A required intent
+	// receipt already written keeps the admission snapshot.
+	ic.taint = releaseTaintDecision(ic.taint, after)
+	return ""
 }

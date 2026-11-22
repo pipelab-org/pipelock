@@ -2650,7 +2650,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		admissionCurrent := taskAdmissionCurrent()
 		// Read the live decision either way so a refusal records the current
 		// task and exposure, not the admission-time state.
-		after, reason := forwardPreSendTaintRecheck(cfg, forwardRec, outReq, forwardBodyBytes, &forwardTask, forwardTaint, forwardRequiresReauth)
+		after, reason := forwardPreSendTaintRecheck(cfg, forwardRec, outReq, forwardBodyBytes, &forwardTask, taintAdmission{decision: forwardTaint, reauthorized: forwardRequiresReauth})
 		detail := "session exposure changed after the request was admitted"
 		if !admissionCurrent {
 			reason, detail = session.TaskApprovalStale, staleTaskDetail
@@ -2667,15 +2667,19 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			outcomeReceipt.Verdict = config.ActionBlock
 			// Record the live state that caused the refusal, not the
 			// admission-time state the allow receipt carried.
-			outcomeReceipt.SessionTaintLevel = after.Risk.Level.String()
-			outcomeReceipt.SessionContaminated = after.Risk.Contaminated
-			outcomeReceipt.RecentTaintSources = after.Risk.Sources
-			outcomeReceipt.SessionTaskID = after.Task.CurrentTaskID
-			outcomeReceipt.SessionTaskLabel = after.Task.CurrentTaskLabel
-			outcomeReceipt.TaintDecision = session.PolicyBlock.String()
-			outcomeReceipt.TaintDecisionReason = reason
+			refused := after
+			refused.Result = session.PolicyDecisionResult{Decision: session.PolicyBlock, Reason: reason}
+			applyTaintEvidence(&outcomeReceipt, refused)
 			writeTaskDenialResponse(reason, detail)
 			return
+		}
+		// The send is released. Its terminal evidence carries the live
+		// exposure and, when an exact grant matched after late exposure,
+		// that grant. A required intent receipt already written stays as is.
+		forwardTaint = releaseTaintDecision(forwardTaint, after)
+		applyTaintEvidence(&outcomeReceipt, forwardTaint)
+		if !cfg.FlightRecorder.RequireReceipts {
+			applyTaintEvidence(&forwardAllowReceipt, forwardTaint)
 		}
 	}
 	resp, err := p.client.Do(outReq)

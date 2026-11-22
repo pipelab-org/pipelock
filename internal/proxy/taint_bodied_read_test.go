@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -261,8 +263,11 @@ func TestRequestHasBodyHTTP2RealServer(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var got atomic.Bool
 			var isHTTP2 atomic.Bool
+			var declaredTrailer atomic.Bool
 			srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				isHTTP2.Store(r.ProtoMajor == 2)
+				_, declared := r.Trailer["X-Exfil"]
+				declaredTrailer.Store(declared)
 				got.Store(requestHasBody(r))
 				_, _ = io.Copy(io.Discard, r.Body)
 				w.WriteHeader(http.StatusOK)
@@ -305,6 +310,13 @@ func TestRequestHasBodyHTTP2RealServer(t *testing.T) {
 			}
 			if got.Load() != tc.want {
 				t.Fatalf("HTTP/2 requestHasBody=%v, want %v", got.Load(), tc.want)
+			}
+			// The client sends a zero-length trailer request with unknown
+			// length, so the result above alone could come from that branch.
+			// Confirm the server saw the declared trailer; the known-zero
+			// trailer branch is checked directly in TestRequestHasBody.
+			if declaredTrailer.Load() != tc.withTrailer {
+				t.Fatalf("server saw declared trailer=%v, want %v", declaredTrailer.Load(), tc.withTrailer)
 			}
 		})
 	}
@@ -383,6 +395,11 @@ func TestReverseTaintBodiedReadAndExtensionMethodsBlocked(t *testing.T) {
 			rp.ServeHTTP(rw, r)
 			if rw.Code != http.StatusForbidden || upstreamHits.Load() != before {
 				t.Fatalf("bodied reverse %s status=%d hits=%d (before=%d) body=%s", method, rw.Code, upstreamHits.Load(), before, rw.Body)
+			}
+			// The refusal must come from taint, not another request gate.
+			want := evaluateHTTPTaint(cfg, rec, method, r.URL, true).Result.Reason
+			if got := rw.Header().Get(blockreason.HeaderReason); got != string(blockreason.AuthorityMismatch) || want == "" || !strings.Contains(rw.Body.String(), want) {
+				t.Fatalf("bodied reverse %s block reason=%q body=%q, want taint refusal %q", method, got, rw.Body, want)
 			}
 		})
 	}
@@ -524,7 +541,7 @@ func TestForwardPreSendTaintRecheckMatchesExistingGrant(t *testing.T) {
 			admitted := evaluateHTTPTaskTaint(cfg, rec, http.MethodPost, newReq().URL, true, &forwardTaskAction{subject: "invocation"})
 			observeHTTPResponseFindings(rec, cfg, "http://untrusted.example/page", "text/html", "forward_response", []session.HostileFindingKind{session.FindingDLP})
 			task := forwardTaskAction{subject: "invocation"}
-			_, reason := forwardPreSendTaintRecheck(cfg, rec, newReq(), tc.body, &task, admitted, false)
+			_, reason := forwardPreSendTaintRecheck(cfg, rec, newReq(), tc.body, &task, taintAdmission{decision: admitted})
 			if reason != tc.wantReason {
 				t.Fatalf("reason=%q want %q", reason, tc.wantReason)
 			}
@@ -634,7 +651,10 @@ func TestForwardTaintRechecksExposureDuringEnvelopeSigning(t *testing.T) {
 
 // An exact grant is bound on the headers admission sees. Exposure that
 // arrives while the envelope is signed must still match that grant, not a
-// digest that includes the injected mediation headers.
+// digest that includes the injected mediation headers. With request body
+// scanning off, the body signing buffered is what the grant is matched on.
+// The receipts then record the grant and the live exposure, not the clean
+// admission.
 func TestTaintLateExactGrantSurvivesEnvelopeInjection(t *testing.T) {
 	grantFor := func(t *testing.T, rec *SessionState, method, target string, body []byte) {
 		t.Helper()
@@ -656,63 +676,121 @@ func TestTaintLateExactGrantSurvivesEnvelopeInjection(t *testing.T) {
 		}
 		return envelope.NewEmitter(envelope.EmitterConfig{Signer: signer})
 	}
+	// Every receipt written after the send must carry the grant that
+	// released it and the hostile exposure that made the grant decisive.
+	assertReleaseEvidence := func(t *testing.T, receipts *receiptProxyHelper) {
+		t.Helper()
+		found := receipts.findReceipts(t)
+		if len(found) == 0 {
+			t.Fatal("no receipts recorded")
+		}
+		last := found[len(found)-1].ActionRecord
+		if last.TaintDecisionReason != session.TaskPermissionGranted || last.SessionTaintLevel != session.TaintExternalHostile.String() {
+			t.Fatalf("terminal receipt taint reason=%q level=%q, want %q at %q", last.TaintDecisionReason, last.SessionTaintLevel, session.TaskPermissionGranted, session.TaintExternalHostile)
+		}
+	}
 	body := []byte("payload=1")
 
-	t.Run("forward", func(t *testing.T) {
-		p, _, _, target, _ := newTaintInterceptFixture(t, func(cfg *config.Config) {
-			cfg.ForwardProxy.Enabled = true
-			cfg.RequestBodyScanning.Enabled = true
-			cfg.DNS.HostOverrides = map[string][]string{interceptTaintHost: {"93.184.216.34"}}
-		})
-		rec := &SessionState{}
-		rec.BindTaskSubject("invocation")
-		WithTaintRecorder(rec)(p)
-		receipts := newReceiptProxyHelperWithMetrics(t, p.metrics)
-		target = strings.Replace(target, "https://", "http://", 1)
-		grantFor(t, rec, http.MethodPost, target, body)
-		exposed := false
-		p.envelopeEmitterPtr.Store(exposingSigner(t, receipts, func() {
-			exposed = true
-			observeHTTPResponseFindings(rec, p.CurrentConfig(), "http://untrusted.example/page", "text/html", "forward_response", []session.HostileFindingKind{session.FindingDLP})
-		}))
-		var upstreamCalls atomic.Int32
-		p.client = &http.Client{Transport: forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
-			upstreamCalls.Add(1)
-			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("ok")), Request: r}, nil
-		})}
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, strings.NewReader(string(body)))
-		req.Header.Set("Content-Type", "text/plain")
-		w := httptest.NewRecorder()
-		p.handleForwardHTTP(w, req)
-		if !exposed || w.Code != http.StatusOK || upstreamCalls.Load() != 1 {
-			t.Fatalf("exposed=%v status=%d calls=%d body=%s, want the exact grant to admit the request", exposed, w.Code, upstreamCalls.Load(), w.Body)
-		}
-	})
+	for _, scanning := range []bool{true, false} {
+		name := map[bool]string{true: "body_scanning_on", false: "body_scanning_off"}[scanning]
 
-	t.Run("intercept", func(t *testing.T) {
-		p, _, _, target, ic := newTaintInterceptFixture(t, nil)
-		rec := &SessionState{}
-		rec.BindTaskSubject("invocation")
-		WithTaintRecorder(rec)(p)
-		receipts := newReceiptProxyHelperWithMetrics(t, p.metrics)
-		grantFor(t, rec, http.MethodPost, target, body)
-		exposed := false
-		ic.EnvelopeEmitter = exposingSigner(t, receipts, func() {
-			exposed = true
-			observeHTTPResponseFindings(rec, ic.Config, "https://other.example/reference", "text/plain", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+		t.Run("forward/"+name, func(t *testing.T) {
+			p, _, _, target, _ := newTaintInterceptFixture(t, func(cfg *config.Config) {
+				cfg.ForwardProxy.Enabled = true
+				cfg.RequestBodyScanning.Enabled = scanning
+				cfg.DNS.HostOverrides = map[string][]string{interceptTaintHost: {"93.184.216.34"}}
+			})
+			rec := &SessionState{}
+			rec.BindTaskSubject("invocation")
+			WithTaintRecorder(rec)(p)
+			receipts := newReceiptProxyHelperWithMetrics(t, p.metrics)
+			p.receiptEmitterPtr.Store(receipts.emitter)
+			target = strings.Replace(target, "https://", "http://", 1)
+			grantFor(t, rec, http.MethodPost, target, body)
+			exposed := false
+			p.envelopeEmitterPtr.Store(exposingSigner(t, receipts, func() {
+				exposed = true
+				observeHTTPResponseFindings(rec, p.CurrentConfig(), "http://untrusted.example/page", "text/html", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+			}))
+			var upstreamCalls atomic.Int32
+			p.client = &http.Client{Transport: forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
+				upstreamCalls.Add(1)
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("ok")), Request: r}, nil
+			})}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, strings.NewReader(string(body)))
+			req.Header.Set("Content-Type", "text/plain")
+			w := httptest.NewRecorder()
+			p.handleForwardHTTP(w, req)
+			if !exposed || w.Code != http.StatusOK || upstreamCalls.Load() != 1 {
+				t.Fatalf("exposed=%v status=%d calls=%d body=%s, want the exact grant to admit the request", exposed, w.Code, upstreamCalls.Load(), w.Body)
+			}
+			assertReleaseEvidence(t, receipts)
 		})
-		ic.EnvelopeEmitterSet = true
-		var upstreamCalls int
-		handler := newInterceptHandler(ic, roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-			upstreamCalls++
-			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("ok")), Request: r}, nil
-		}))
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, strings.NewReader(string(body)))
-		req.Header.Set("Content-Type", "text/plain")
-		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, req)
-		if !exposed || w.Code != http.StatusOK || upstreamCalls != 1 {
-			t.Fatalf("exposed=%v status=%d calls=%d body=%s, want the exact grant to admit the request", exposed, w.Code, upstreamCalls, w.Body)
-		}
-	})
+
+		t.Run("intercept/"+name, func(t *testing.T) {
+			p, _, _, target, ic := newTaintInterceptFixture(t, func(cfg *config.Config) {
+				cfg.RequestBodyScanning.Enabled = scanning
+			})
+			rec := &SessionState{}
+			rec.BindTaskSubject("invocation")
+			WithTaintRecorder(rec)(p)
+			receipts := newReceiptProxyHelperWithMetrics(t, p.metrics)
+			p.receiptEmitterPtr.Store(receipts.emitter)
+			grantFor(t, rec, http.MethodPost, target, body)
+			exposed := false
+			ic.EnvelopeEmitter = exposingSigner(t, receipts, func() {
+				exposed = true
+				observeHTTPResponseFindings(rec, ic.Config, "https://other.example/reference", "text/plain", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+			})
+			ic.EnvelopeEmitterSet = true
+			var upstreamCalls int
+			handler := newInterceptHandler(ic, roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				upstreamCalls++
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("ok")), Request: r}, nil
+			}))
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, strings.NewReader(string(body)))
+			req.Header.Set("Content-Type", "text/plain")
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+			if !exposed || w.Code != http.StatusOK || upstreamCalls != 1 {
+				t.Fatalf("exposed=%v status=%d calls=%d body=%s, want the exact grant to admit the request", exposed, w.Code, upstreamCalls, w.Body)
+			}
+			assertReleaseEvidence(t, receipts)
+		})
+	}
+}
+
+// retainedRequestBody only returns a complete replay copy within the bound;
+// anything else leaves the body unbound so the binder keeps refusing it.
+func TestRetainedRequestBody(t *testing.T) {
+	withGetBody := func(body string, getBody func() (io.ReadCloser, error), contentLength int64) *http.Request {
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://x.example/", strings.NewReader(body))
+		r.GetBody = getBody
+		r.ContentLength = contentLength
+		return r
+	}
+	replay := func(s string) func() (io.ReadCloser, error) {
+		return func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader(s)), nil }
+	}
+	for _, tc := range []struct {
+		name  string
+		req   *http.Request
+		limit int
+		want  []byte
+	}{
+		{name: "complete_copy", req: withGetBody("payload", replay("payload"), 7), limit: 16, want: []byte("payload")},
+		{name: "unknown_length_copy", req: withGetBody("payload", replay("payload"), -1), limit: 16, want: []byte("payload")},
+		{name: "no_get_body", req: withGetBody("payload", nil, 7), limit: 16},
+		{name: "over_limit", req: withGetBody("payload", replay("payload"), 7), limit: 4},
+		{name: "get_body_error", req: withGetBody("payload", func() (io.ReadCloser, error) { return nil, errors.New("not replayable") }, 7), limit: 16},
+		{name: "length_mismatch", req: withGetBody("payload", replay("pay"), 7), limit: 16},
+		{name: "no_limit", req: withGetBody("payload", replay("payload"), 7), limit: 0},
+		{name: "no_body", req: httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://x.example/", http.NoBody), limit: 16},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := retainedRequestBody(tc.req, tc.limit); !bytes.Equal(got, tc.want) || (got == nil) != (tc.want == nil) {
+				t.Fatalf("retainedRequestBody=%q want %q", got, tc.want)
+			}
+		})
+	}
 }
