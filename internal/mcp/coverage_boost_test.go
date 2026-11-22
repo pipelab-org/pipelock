@@ -488,7 +488,7 @@ func TestRunProxy_NoInputScanStillTracksRequestIDs(t *testing.T) {
 
 	// No input scanning, no policy, no chain - but request tracking is still active.
 	err := RunProxy(ctx, stdin, &stdout, &stderr,
-		[]string{"sh", "-c", fmt.Sprintf("echo '%s'", cleanResp)},
+		[]string{"sh", "-c", fmt.Sprintf("read -r _; echo '%s'", cleanResp)},
 		MCPProxyOpts{Scanner: sc},
 	)
 	_ = err
