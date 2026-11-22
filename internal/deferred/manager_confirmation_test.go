@@ -75,6 +75,91 @@ func TestManagerConfirmationReservesCapacity(t *testing.T) {
 	}
 }
 
+func TestManagerSettlementReservesCapacity(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+	}{
+		{"session", Config{MaxPendingPerSession: 1}},
+		{"bytes", Config{MaxPendingBytes: 2}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				tc.cfg.Enabled = true
+				tc.cfg.Timeout = time.Minute
+				m := NewManager(tc.cfg)
+				entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+				resolver := func(Resolution) {}
+				next := HeldAction{DeferID: "next", Authority: AuthoritySnapshot{SessionID: "session"}, SizeBytes: 2, Resolve: resolver}
+				first := next
+				first.DeferID = "first"
+				first.ConfirmHold = func(context.Context, HeldAction) error { return nil }
+				first.ConfirmResolution = func(context.Context, Resolution) error { return nil }
+				first.Resolve = func(Resolution) {
+					close(entered)
+					<-release
+				}
+				if err := m.Hold(first); err != nil {
+					t.Fatal(err)
+				}
+				go func() {
+					defer close(done)
+					if err := m.Resolve(first.DeferID, config.ActionBlock, SourceApproval); err != nil {
+						t.Errorf("resolve: %v", err)
+					}
+				}()
+				<-entered
+				if err := m.Hold(next); !errors.Is(err, ErrCapacity) {
+					t.Errorf("hold during settlement = %v, want capacity error", err)
+				}
+				close(release)
+				<-done
+				next.DeferID = "after"
+				if err := m.Hold(next); err != nil {
+					t.Errorf("hold after settlement: %v", err)
+				}
+			})
+		})
+	}
+}
+
+func TestManagerBlockMarksDescendantsBeforeConfirmation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := NewManager(Config{Enabled: true, Timeout: time.Minute})
+		entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		parent := HeldAction{
+			DeferID:     "parent",
+			Authority:   AuthoritySnapshot{SessionID: "session"},
+			ConfirmHold: func(context.Context, HeldAction) error { return nil },
+			ConfirmResolution: func(context.Context, Resolution) error {
+				close(entered)
+				<-release
+				return nil
+			},
+			Resolve: func(Resolution) {},
+		}
+		if err := m.Hold(parent); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.Hold(HeldAction{DeferID: "child", Authority: parent.Authority, Resolve: func(Resolution) {}}); err != nil {
+			t.Fatal(err)
+		}
+		go func() {
+			defer close(done)
+			if err := m.Resolve(parent.DeferID, config.ActionBlock, SourceApproval); err != nil {
+				t.Errorf("resolve parent: %v", err)
+			}
+		}()
+		<-entered
+		child, err := m.snapshotOne("child")
+		if err != nil || !child.cascadeBlocked {
+			t.Errorf("child cascade state during confirmation = %t, %v", child.cascadeBlocked, err)
+		}
+		close(release)
+		<-done
+	})
+}
+
 func TestManagerResolutionConfirmationFailsClosed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()

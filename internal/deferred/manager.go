@@ -243,6 +243,7 @@ type Manager struct {
 	waitingBySession   map[string]int
 	confirmingCount    int
 	settlingReceipts   int // confirmed holds whose settlement callbacks are still running
+	settlingBySession  map[string]int
 	// fileSync replaces File.Sync for journal writes in tests; nil uses it.
 	fileSync func(*os.File) error
 	// dirSync replaces directorysync.Sync in tests; nil uses it.
@@ -315,6 +316,7 @@ func NewManager(cfg Config) *Manager {
 		confirmingSessions: make(map[string]chan struct{}),
 		waitingHolds:       make(map[string]waitingHold),
 		waitingBySession:   make(map[string]int),
+		settlingBySession:  make(map[string]int),
 	}
 }
 
@@ -391,7 +393,7 @@ func (m *Manager) HoldContext(ctx context.Context, action HeldAction) error {
 		return fmt.Errorf("defer hold %q already exists", action.DeferID)
 	}
 	if len(m.holds)+len(m.waitingHolds)+m.settlingReceipts >= m.cfg.MaxPending ||
-		len(m.sessionHolds[sessionID])+m.waitingBySession[sessionID] >= m.cfg.MaxPendingPerSession ||
+		len(m.sessionHolds[sessionID])+m.waitingBySession[sessionID]+m.settlingBySession[sessionID] >= m.cfg.MaxPendingPerSession ||
 		action.SizeBytes > m.cfg.MaxPendingBytes ||
 		m.totalBytes > m.cfg.MaxPendingBytes-action.SizeBytes {
 		m.mu.Unlock()
@@ -615,13 +617,25 @@ func (m *Manager) resolveAppliedContext(ctx context.Context, deferID, finalDecis
 	} else if held.receiptConfirmed && finalDecision == config.ActionAllow && !time.Now().Before(held.Deadline) {
 		finalDecision, source = config.ActionBlock, SourceTimeout
 	}
+	var descendants []string
+	if finalDecision != config.ActionAllow && source != SourceCascade {
+		descendants = m.markCascadeBlockedLocked([]string{held.DeferID})
+	}
 	held.state = StateResolving
 	m.removeHoldLocked(held)
 	if held.receiptConfirmed {
+		sessionID := held.Authority.SessionID
 		m.settlingReceipts++
+		m.settlingBySession[sessionID]++
+		m.totalBytes += held.SizeBytes
 		defer func() {
 			m.mu.Lock()
 			m.settlingReceipts--
+			m.settlingBySession[sessionID]--
+			if m.settlingBySession[sessionID] == 0 {
+				delete(m.settlingBySession, sessionID)
+			}
+			m.totalBytes -= held.SizeBytes
 			m.mu.Unlock()
 		}()
 	}
@@ -667,6 +681,10 @@ func (m *Manager) resolveAppliedContext(ctx context.Context, deferID, finalDecis
 		res = prepared
 	}
 
+	if res.FinalDecision != config.ActionAllow && res.ResolutionSource != SourceCascade && len(descendants) == 0 {
+		descendants = m.markCascadeBlocked([]string{held.DeferID})
+	}
+
 	var confirmationErr error
 	if held.ConfirmResolution != nil {
 		writeCtx, cancel := context.WithTimeout(ctx, held.Policy.Timeout)
@@ -685,7 +703,10 @@ func (m *Manager) resolveAppliedContext(ctx context.Context, deferID, finalDecis
 		_ = m.appendJournal(journalEntryFromHeld(*held, resolvedState(res.FinalDecision), res.ResolutionSource))
 	}
 	if res.FinalDecision != config.ActionAllow && res.ResolutionSource != SourceCascade {
-		m.resolveCascadeBlocked(m.markCascadeBlocked([]string{held.DeferID}))
+		if descendants == nil {
+			descendants = m.markCascadeBlocked([]string{held.DeferID})
+		}
+		m.resolveCascadeBlocked(descendants)
 	}
 	if held.ResolveWithReleaseRefusal != nil {
 		var descendants []string
@@ -1008,6 +1029,10 @@ func (m *Manager) removeSessionHoldLocked(sessionID, deferID string) {
 func (m *Manager) markCascadeBlocked(frontier []string) []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.markCascadeBlockedLocked(frontier)
+}
+
+func (m *Manager) markCascadeBlockedLocked(frontier []string) []string {
 	var descendants []string
 	for len(frontier) > 0 {
 		var children []string
