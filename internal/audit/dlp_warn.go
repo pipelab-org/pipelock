@@ -17,6 +17,7 @@ const (
 	EventDLPCredentialAudienceAllow EventType = eventcatalog.EventDLPCredentialAudienceAllow // #nosec G101 -- audit event identifier, not credential material
 	EventDLPIssuerCookieAllow       EventType = eventcatalog.EventDLPIssuerCookieAllow       // #nosec G101 -- audit event identifier, not credential material
 	EventIssuerQueryAllow           EventType = eventcatalog.EventIssuerQueryAllow
+	EventIssuerQueryReplayAllow     EventType = eventcatalog.EventIssuerQueryReplayAllow
 	EventDLPIssuerJoinedViewAllow   EventType = eventcatalog.EventDLPIssuerJoinedViewAllow
 )
 
@@ -29,7 +30,16 @@ func (l *Logger) LogDLPWarn(ctx LogContext, patternName, severity, transport str
 // LogIssuerQueryAllow records a query entropy allowance without recording
 // the returned value or the URL that carried it.
 func (l *Logger) LogIssuerQueryAllow(ctx LogContext, destination string) {
-	e := newLogEntry(l.zl.Info(), EventIssuerQueryAllow).
+	l.logQueryEntropyAllowance(ctx, destination, EventIssuerQueryAllow, "query value allowed for observed issuer")
+}
+
+// LogIssuerQueryReplayAllow records entropy relief for an exact query replay.
+func (l *Logger) LogIssuerQueryReplayAllow(ctx LogContext, destination string) {
+	l.logQueryEntropyAllowance(ctx, destination, EventIssuerQueryReplayAllow, "query value allowed for exact same-origin replay")
+}
+
+func (l *Logger) logQueryEntropyAllowance(ctx LogContext, destination string, event EventType, message string) {
+	e := newLogEntry(l.zl.Info(), event).
 		str("pattern", "query_value_entropy").
 		str("surface", "url_query").
 		str("destination", destination).
@@ -39,9 +49,9 @@ func (l *Logger) LogIssuerQueryAllow(ctx LogContext, destination string) {
 		optStr("request_id", ctx.RequestID()).
 		correlationField(ctx.Correlation()).
 		agentField(ctx.Agent(), ctx.AgentAuth())
-	e.msg("query value allowed for observed issuer")
+	e.msg(message)
 	if l.emitter != nil {
-		l.emitEvent(string(EventIssuerQueryAllow), e.fields)
+		l.emitEvent(string(event), e.fields)
 	}
 }
 

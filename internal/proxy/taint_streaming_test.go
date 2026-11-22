@@ -124,7 +124,7 @@ func testHTTPStreamingTaint(t *testing.T, intercept bool) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			decision := evaluateHTTPTaskTaint(p.CurrentConfig(), expected, http.MethodPost, parsed, &forwardTaskAction{})
+			decision := evaluateHTTPTaskTaint(p.CurrentConfig(), expected, http.MethodPost, parsed, false, &forwardTaskAction{})
 			wantReason := decision.Result.Reason
 			if wantReason == session.TaskPermissionRequired {
 				wantReason = "task_approval_unavailable"

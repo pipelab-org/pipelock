@@ -1086,7 +1086,7 @@ func TestProxy_Reload_TaintSessionStore(t *testing.T) {
 				t.Fatal("reloaded capacity admitted a client despite retained taint")
 			}
 			if phase.taint {
-				decision := evaluateHTTPTaint(next, sess, http.MethodPost, destination)
+				decision := evaluateHTTPTaint(next, sess, http.MethodPost, destination, true)
 				if decision.Result.Reason != "external_publish_after_untrusted_external_exposure" {
 					t.Fatalf("retained publish policy = %+v", decision.Result)
 				}
@@ -1117,7 +1117,7 @@ func TestProxy_Reload_TaintSessionStore(t *testing.T) {
 	if fresh == nil || fresh == sm || fresh.Len() != 0 {
 		t.Fatal("taint re-enable did not start a fresh store")
 	}
-	decision := evaluateHTTPTaint(on, fresh.GetOrCreate(testClient), http.MethodPost, destination)
+	decision := evaluateHTTPTaint(on, fresh.GetOrCreate(testClient), http.MethodPost, destination, true)
 	if decision.Result.Decision != session.PolicyAllow {
 		t.Fatalf("fresh publish policy = %+v, want allow", decision.Result)
 	}

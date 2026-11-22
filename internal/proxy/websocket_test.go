@@ -1914,7 +1914,7 @@ func TestWSProxyInjectionWarn_PreservesSourceTaintAcrossReload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse sensitive target: %v", err)
 	}
-	decision := evaluateHTTPTaint(p.CurrentConfig(), sess, http.MethodPost, target)
+	decision := evaluateHTTPTaint(p.CurrentConfig(), sess, http.MethodPost, target, false)
 	if decision.Result.Decision != session.PolicyAllow {
 		t.Fatalf("sensitive follow-up decision = %v, want allow", decision.Result.Decision)
 	}

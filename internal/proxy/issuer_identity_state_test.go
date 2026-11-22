@@ -74,7 +74,7 @@ func TestIssuerIDIdentityReload(t *testing.T) {
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodConnect, "api.vendor.example:443", http.NoBody)
 	_, _, _, _, resolved, release := p.resolveAgentRuntimeFromRequest(req)
 	defer release()
-	pinned, _ := resolved.Context().Value(ctxKeyConnectIssuerRuntime).(*issuerCookieRuntime)
+	pinned, _ := resolved.Context().Value(ctxKeyIssuerRuntime).(*issuerCookieRuntime)
 	if pinned == nil || pinned.query != original {
 		t.Fatal("CONNECT did not snapshot issuer evidence with its policy")
 	}

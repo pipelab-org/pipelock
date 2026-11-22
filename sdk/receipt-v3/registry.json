@@ -410,6 +410,10 @@
       "fields": "`phase` and `effect_relation` from the decision that gates dialing, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`issuedHostRelief && result.Allowed`"
     },
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/recordIssuerQueryAllow/a17e293745b6254e": {
+      "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
+      "when": "The initial forward HTTP URL scan allowed an exact query replay and the request has not been sent."
+    },
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/e9eb6cd967ee7c94": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise.",
       "when": "otherwise after `artifactErr != nil` and `artifact != nil`. Records `ActionAllow`"
@@ -904,7 +908,7 @@
     },
     "internal/proxy/issuer_query.go/(*InterceptContext).recordIssuerQueryAllows/recordIssuerQueryAllow/b442f4dc34e00618": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
-      "when": "The intercept rescan allowed the request (`rescanned.Allowed`); one receipt per relief kind it used, the joined DLP view and the issuer entropy allowance"
+      "when": "The intercept rescan allowed the request (`rescanned.Allowed`); one receipt per relief kind it used, joined DLP view, issuer entropy, or exact query-replay entropy"
     },
     "internal/proxy/intercept.go/newInterceptHandler/sseFindingReceiptConfirmer/623a116a47293fdd": {
       "fields": "`phase` and `effect_relation` from the warning before delivery of the inspected SSE event, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
@@ -1110,7 +1114,7 @@
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "Records `ActionBlock`"
     },
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/e89ee75f59329fe4": {
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/535e91014b9a9ed3": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`!allowed`. Records `ActionBlock`"
     },
@@ -1174,13 +1178,13 @@
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`cfg.RequestBodyScanning.Enabled && cfg.RequestBodyScanning.ScanHeaders` and `headerResult != nil`. Records `ActionBlock`"
     },
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/3a9ce8872616a672": {
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/eaf39ce88a702f13": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
-      "when": "`r.Body != nil && r.ContentLength != 0 && cfg.RequestBodyScanning.Enabled` and `r.ContentLength > int64(maxBytes)`. Records `ActionBlock`"
+      "when": "`r.Body != nil && (r.ContentLength != 0 || len(r.Trailer) > 0) && cfg.RequestBodyScanning.Enabled` and `r.ContentLength > int64(maxBytes)`. Records `ActionBlock`"
     },
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/4ce305787df1dec1": {
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/50ade2aec48ac0a7": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
-      "when": "`r.Body != nil && r.ContentLength != 0 && cfg.RequestBodyScanning.Enabled` and `!reserved`. Records `ActionBlock`"
+      "when": "`r.Body != nil && (r.ContentLength != 0 || len(r.Trailer) > 0) && cfg.RequestBodyScanning.Enabled` and `!reserved`. Records `ActionBlock`"
     },
     "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/recordCredentialAudienceAllows/eedd6976abf6c8b5": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
@@ -1795,6 +1799,7 @@
     "internal/proxy/forward.go/(*Proxy).handleConnect/emitRequiredReceipt/ae27039512f1ecc4": "tunnel_open",
     "internal/proxy/forward.go/(*Proxy).handleConnect/recordCredentialAudienceAllows/12f1b18b4f6ac421": "tunnel_open",
     "internal/proxy/forward.go/(*Proxy).handleConnect/recordIssuerQueryAllow/3bbb7d20b1f8cb9a": "tunnel_open",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/recordIssuerQueryAllow/a17e293745b6254e": "upstream_send",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/e9eb6cd967ee7c94": "downstream_delivery",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/e054483f17a07858": "downstream_delivery",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/50e2d1900e73db36": "downstream_delivery",
@@ -1970,7 +1975,7 @@
     "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitRequestPolicyReceipt/864f53335872e65e": "upstream_send",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitRequiredReceipt/f95a326723184e0f": "upstream_send",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/1f6ee7f9ddf63750": "none",
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/e89ee75f59329fe4": "none",
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/535e91014b9a9ed3": "none",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/e78f3053d1ecbdf1": "none",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/bbf1cb62f77b6f5d": "none",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/1990272dca66c2a5": "none",
@@ -1986,8 +1991,8 @@
     "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/045bab7837128ac7": "none",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/6d5ee9071786d756": "none",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/d0bed9c9dd058058": "none",
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/3a9ce8872616a672": "none",
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/4ce305787df1dec1": "none",
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/eaf39ce88a702f13": "none",
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/50ade2aec48ac0a7": "none",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/recordCredentialAudienceAllows/eedd6976abf6c8b5": "upstream_send",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/recordCredentialAudienceAllows/c028a44ba01e2a85": "upstream_send",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/recordCredentialAudienceAllows/8f557dfb99c30d24": "upstream_send",

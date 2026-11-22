@@ -28,6 +28,10 @@ type ClassificationOptions struct {
 	FailSafe bool
 	// HostileMCP applies the stricter read and browse rules for hostile MCP sessions.
 	HostileMCP bool
+	// RequestBody reports that the HTTP request carries (or may carry) a
+	// body. A read-shaped method with a body moves data upstream, so it is
+	// classified like the body-bearing write methods.
+	RequestBody bool
 }
 
 // ActionClassification carries an action class plus whether classification
@@ -167,6 +171,11 @@ func ClassifyHTTPActionWithOptions(method, targetPath string, protectedPatterns,
 	pathClass := ClassifyPathSensitivityWithConfidence(targetPath, protectedPatterns, elevatedPatterns, opts)
 	switch strings.ToUpper(method) {
 	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+		if opts.RequestBody {
+			// Same rule as QUERY below: a body under a read-shaped method
+			// must not reach an upstream at lower taint risk than POST.
+			return ActionClassification{Class: ActionClassPublish, Sensitivity: pathClass.Sensitivity, Confident: pathClass.Confident}
+		}
 		return ActionClassification{Class: ActionClassRead, Sensitivity: failSafeSensitivity(opts, pathClass.Confident), Confident: pathClass.Confident}
 	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, methodQuery:
 		// The HTTP QUERY method (draft-ietf-httpbis-safe-method-w-body) carries a
@@ -174,6 +183,9 @@ func ClassifyHTTPActionWithOptions(method, targetPath string, protectedPatterns,
 		// agent cannot move a body to an upstream at lower taint risk than POST.
 		return ActionClassification{Class: ActionClassPublish, Sensitivity: pathClass.Sensitivity, Confident: pathClass.Confident}
 	default:
+		if opts.RequestBody {
+			return ActionClassification{Class: ActionClassPublish, Sensitivity: pathClass.Sensitivity, Confident: false}
+		}
 		return ActionClassification{Class: ActionClassNetwork, Sensitivity: pathClass.Sensitivity, Confident: false}
 	}
 }

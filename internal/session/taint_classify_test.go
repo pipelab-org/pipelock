@@ -188,6 +188,54 @@ func TestClassifyHTTPAction_QueryIsPublish(t *testing.T) {
 	}
 }
 
+func TestClassifyHTTPActionWithOptions_BodiedReadMethodIsPublish(t *testing.T) {
+	t.Parallel()
+
+	// Same rule as QUERY: a body under a read-shaped method moves data
+	// upstream, so it must not classify below POST. Bodyless reads stay reads.
+	for _, method := range []string{"GET", "HEAD", "OPTIONS", "TRACE", "get"} {
+		bodied := session.ClassifyHTTPActionWithOptions(method, "/search", nil, nil, session.ClassificationOptions{RequestBody: true})
+		if bodied.Class != session.ActionClassPublish || !bodied.Confident {
+			t.Fatalf("%s with body = %+v, want confident publish", method, bodied)
+		}
+		bodyless := session.ClassifyHTTPActionWithOptions(method, "/search", nil, nil, session.ClassificationOptions{})
+		if bodyless.Class != session.ActionClassRead {
+			t.Fatalf("%s without body = %+v, want read", method, bodyless)
+		}
+	}
+}
+
+func TestClassifyHTTPActionWithOptions_BodiedExtensionMethodIsPublish(t *testing.T) {
+	t.Parallel()
+
+	for _, method := range []string{"SEARCH", "PROPFIND", "REPORT", "CUSTOM"} {
+		bodied := session.ClassifyHTTPActionWithOptions(method, "/search", nil, nil, session.ClassificationOptions{RequestBody: true})
+		if bodied.Class != session.ActionClassPublish || bodied.Confident {
+			t.Fatalf("%s with body = %+v, want low-confidence publish", method, bodied)
+		}
+		for _, profile := range []string{"balanced", "strict"} {
+			untrusted := (session.PolicyMatrix{Profile: profile}).EvaluateWithOptions(
+				session.TaintExternalUntrusted, bodied.Class, bodied.Sensitivity, session.AuthorityUserBroad,
+				session.PolicyEvaluateOptions{ClassificationConfident: bodied.Confident},
+			)
+			if untrusted.Decision != session.PolicyAsk {
+				t.Fatalf("%s (%s) untrusted decision = %+v, want ask", method, profile, untrusted)
+			}
+			hostile := (session.PolicyMatrix{Profile: profile}).EvaluateWithOptions(
+				session.TaintExternalHostile, bodied.Class, bodied.Sensitivity, session.AuthorityUserBroad,
+				session.PolicyEvaluateOptions{ClassificationConfident: bodied.Confident},
+			)
+			if hostile.Decision != session.PolicyBlock {
+				t.Fatalf("%s (%s) hostile decision = %+v, want block", method, profile, hostile)
+			}
+		}
+		bodyless := session.ClassifyHTTPActionWithOptions(method, "/search", nil, nil, session.ClassificationOptions{})
+		if bodyless.Class != session.ActionClassNetwork || bodyless.Confident {
+			t.Fatalf("%s without body = %+v, want low-confidence network", method, bodyless)
+		}
+	}
+}
+
 func TestClassifyMCPToolCall_QueryMethodIsMutatingNetworkIntent(t *testing.T) {
 	t.Parallel()
 

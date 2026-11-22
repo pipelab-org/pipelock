@@ -174,9 +174,10 @@ type issuerBoundCookieStore struct {
 // An enabled reload retains the store; disabling a prerequisite resets it.
 // The query store's negative ID ledger is kept across every reload.
 type issuerCookieRuntime struct {
-	cfg   *config.Config
-	store *issuerBoundCookieStore
-	query *issuerQueryStore
+	cfg    *config.Config
+	store  *issuerBoundCookieStore
+	query  *issuerQueryStore
+	replay *issuerQueryReplayStore
 	// Changed identity settings invalidate older tunnels without dropping
 	// shared evidence needed by newly admitted requests.
 	identityGeneration uint64

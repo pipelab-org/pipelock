@@ -869,7 +869,7 @@ func newInterceptHandler(
 		if interceptSess, ok := ic.Recorder.(*SessionState); ok && interceptSess != nil {
 			tier := airlockTierForScope(interceptSess, adaptiveScopeForHost(ic.TargetHost))
 			if tier != config.AirlockTierNone {
-				allowed, reason := ClassifyAction(tier, r.Method, TransportConnect, true)
+				allowed, reason := ClassifyRequestAction(tier, r, TransportConnect, true)
 				if !allowed {
 					ic.Logger.LogAirlockDeny(interceptSess.key, tier, TransportConnect, r.Method, ic.ClientIP, ic.RequestID)
 					ic.Metrics.RecordAirlockDenial(tier, TransportConnect, r.Method)
@@ -967,6 +967,10 @@ func newInterceptHandler(
 		}
 		r = r.WithContext(interceptScanCtx)
 		issuerProof := issuerDeliveryProof{}
+		replay := ic.issuerReplayScope()
+		// replayRelieved marks a URL allowed only through replay evidence; the
+		// evidence must still be current when the request is sent.
+		replayRelieved := false
 		urlResult := ic.Scanner.ScanWithReservation(interceptScanCtx, targetURL, ic.RateReservation)
 		// Count the selected scan once, as soon as the issuer rescan below has
 		// settled it. A streamed response keeps this handler open until the
@@ -1112,6 +1116,10 @@ func newInterceptHandler(
 						return true, true
 					})
 				}
+				var replayUsed bool
+				if issuerReplayAuthorityMatches(r) {
+					allowCtx = replay.scanContext(allowCtx, r.URL, &replayUsed)
+				}
 				rescanned := ic.Scanner.ScanWithReservation(allowCtx, targetURL, ic.RateReservation)
 				if resourceUsed && allowKind == issuerQueryObserved {
 					allowKind = issuerQueryResourcePath
@@ -1119,7 +1127,7 @@ func newInterceptHandler(
 				if issuedUsed {
 					allowKind = issuerQueryIssuedRedirect
 				}
-				if allowed || joinedUsed {
+				if allowed || joinedUsed || replayUsed {
 					urlResult = rescanned
 					if rescanned.Allowed {
 						var kinds []issuerQueryKind
@@ -1128,6 +1136,10 @@ func newInterceptHandler(
 						}
 						if allowed {
 							kinds = append(kinds, allowKind)
+						}
+						if replayUsed {
+							kinds = append(kinds, issuerQueryReplay)
+							replayRelieved = true
 						}
 						if err := ic.recordIssuerQueryAllows(actx, r, targetURL, kinds); err != nil {
 							if refuseReceiptCapacity(w, err) {
@@ -2307,6 +2319,7 @@ func newInterceptHandler(
 			envEmitter = ic.Proxy.currentEnvelopeEmitter()
 		}
 		if envEmitter != nil {
+			ic.taintTask.snapshotPreSendHeader(r)
 			policyHash := envelope.PolicyHashFromHex(ic.Config.CanonicalPolicyHash())
 			if envErr := envEmitter.InjectAndSign(r, interceptBodyBytes, envelope.BuildOpts{
 				ActionID:       actionID,
@@ -2412,13 +2425,18 @@ func newInterceptHandler(
 			}
 		}
 
-		if reason := recheckInterceptTaint(ic, r); reason != "" {
+		// A recheck refusal closes a written intent with a blocked outcome;
+		// with no intent, the ordinary taint denial is the action's receipt.
+		refuseInterceptRecheck := func(reason string) {
 			if requiredIntentEmitted {
 				writeInterceptTaintRefusal(ic, w, actx, reason)
 				emitBlockedPostRoundTripOutcome(http.StatusForbidden, reason)
-			} else {
-				refuseInterceptTaint(ic, w, reason, interceptTaintAdmissionOptions{request: r, logContext: actx, actionID: actionID, wrapReceipt: withInterceptRedaction})
+				return
 			}
+			refuseInterceptTaint(ic, w, reason, interceptTaintAdmissionOptions{request: r, logContext: actx, actionID: actionID, wrapReceipt: withInterceptRedaction})
+		}
+		if reason := recheckInterceptTaint(ic, r, interceptBodyBytes); reason != "" {
+			refuseInterceptRecheck(reason)
 			return
 		}
 		// Record what this request sends before it leaves, so no response
@@ -2457,12 +2475,22 @@ func newInterceptHandler(
 		}
 		defer func() { ic.Proxy.settleEffect(r.Context(), allowReceipt, upstreamEffect) }()
 		if ic.Proxy != nil && ic.Proxy.receiptEffects.enabled {
-			if reason := recheckInterceptTaint(ic, r); reason != "" {
+			if reason := recheckInterceptTaint(ic, r, interceptBodyBytes); reason != "" {
 				ic.Proxy.refuseAdmittedEffect(r.Context(), allowReceipt, upstreamEffect)
-				writeInterceptTaintRefusal(ic, w, actx, reason)
-				emitBlockedPostRoundTripOutcome(http.StatusForbidden, reason)
+				refuseInterceptRecheck(reason)
 				return
 			}
+		}
+		// A reload while the body was read or admission waited can revoke the
+		// replay evidence that relieved the URL. Refuse rather than send on it.
+		if replayRelieved && !replay.current() {
+			ic.Proxy.refuseAdmittedEffect(r.Context(), allowReceipt, upstreamEffect)
+			ic.Logger.LogBlocked(actx, issuerQueryReplayStaleLayer, "replay evidence revoked before send")
+			writeBlockedError(w,
+				blockInfoFor(blockreason.QueryEntropy, issuerQueryReplayStaleLayer).WithRequestID(ic.RequestID),
+				"blocked: query replay evidence revoked before send", http.StatusForbidden)
+			emitBlockedPostRoundTripOutcome(http.StatusForbidden, issuerQueryReplayStaleLayer)
+			return
 		}
 		resp, err := interceptUpstream.RoundTrip(r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{
 			GotConn: func(httptrace.GotConnInfo) {
@@ -2519,6 +2547,7 @@ func newInterceptHandler(
 		w, finishReceiptDelivery := ic.Proxy.startReceiptDelivery(w, r, ic.Config, allowReceipt)
 		defer finishReceiptDelivery()
 		defer resp.Body.Close() //nolint:errcheck // response body
+		replay.recordResponse(r, resp)
 
 		// Redirect evidence depends on delivered headers, not body completion.
 		// Keep a failed flush on the existing incomplete-stream outcome path.
