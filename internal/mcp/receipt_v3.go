@@ -533,7 +533,7 @@ func (x *mcpV3NetworkExchange) takeListReply() (*v3.EffectToken, bool) {
 }
 
 func (w *mcpV3NetworkStreamWriter) WriteMessage(msg []byte) error {
-	return w.messageWriter(msg, ParseMCPFrame(msg), false).WriteMessage(msg)
+	return writeMCPForwardedMessage(w.messageWriter(msg, ParseMCPFrame(msg), false), msg)
 }
 
 func (w *mcpV3NetworkStreamWriter) localReplyWriter() transport.MessageWriter {
