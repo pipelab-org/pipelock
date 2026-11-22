@@ -532,3 +532,40 @@ func TestIdleCleanupDecidesAndRemovesUnderSessionLock(t *testing.T) {
 		t.Fatal("idle session was not removed")
 	}
 }
+
+// The reverse delivery slot releases a hold immediately when there is no slot
+// or delivery already finished, and runs every armed release exactly once.
+func TestReverseDeliveryObserverLifecycle(t *testing.T) {
+	var released atomic.Int32
+	release := func() { released.Add(1) }
+
+	var none *reverseDeliveryObserver
+	none.arm(func() { t.Error("nil slot ran an observer") }, release)
+	none.arm(nil, nil)
+	none.call()
+	if released.Load() != 1 {
+		t.Fatalf("nil slot releases=%d want 1", released.Load())
+	}
+	if reverseDeliveryFrom(t.Context()) != nil {
+		t.Fatal("context without a slot returned one")
+	}
+
+	d := &reverseDeliveryObserver{}
+	var observed atomic.Int32
+	d.call() // no observer armed yet
+	d.arm(func() { observed.Add(1) }, release)
+	d.arm(nil, release) // a second release, observer kept
+	d.call()
+	if observed.Load() != 1 || released.Load() != 1 {
+		t.Fatalf("before finish observed=%d released=%d", observed.Load(), released.Load())
+	}
+	d.finish()
+	if released.Load() != 3 {
+		t.Fatalf("finish releases=%d want 3", released.Load())
+	}
+	d.finish() // idempotent
+	d.arm(func() { t.Error("finished slot armed an observer") }, release)
+	if released.Load() != 4 {
+		t.Fatalf("arm after finish releases=%d want 4", released.Load())
+	}
+}
