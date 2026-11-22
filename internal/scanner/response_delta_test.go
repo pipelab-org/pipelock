@@ -137,7 +137,10 @@ func TestResponseDeltaWalkParity(t *testing.T) {
 	for _, mode := range []string{config.ActionBlock, config.ActionWarn} {
 		cfg.PromptInjectionDetection = &config.PromptInjectionDetection{Action: mode}
 		sc, full := MustNew(cfg), MustNew(cfg)
-		disableTestResponseDelta(full)
+		// The whole-view reference: no prefilter, literal index, windows,
+		// chains or delta. disableTestResponseDelta would leave chain-level
+		// delta active on both sides, so it cannot prove delta parity.
+		responsePassReference(full)
 		t.Cleanup(sc.Close)
 		t.Cleanup(full.Close)
 		for _, tt := range corpus {
@@ -215,6 +218,9 @@ func TestResponseDeltaQueueRoundTrip(t *testing.T) {
 	}
 }
 
+// disableTestResponseDelta removes delta width plans only. Chain windows still
+// consume the delta view and its identical-text shortcut, so a scanner treated
+// this way is not a delta-free reference; parity claims need responsePassReference.
 func disableTestResponseDelta(s *Scanner) {
 	for _, target := range responseTestFilters(s) {
 		filter := **target
@@ -465,6 +471,51 @@ func TestResponseDeltaAnchoredRepeatBounds(t *testing.T) {
 			re := regexp.MustCompile(expression)
 			if local && !reflect.DeepEqual(matchResponseChainWindows(re, to, windows, nil, false), re.FindAllStringIndex(to, -1)) {
 				t.Fatal("anchored repetition bound changed match coordinates")
+			}
+		})
+	}
+}
+
+// A delta view only proves absence for patterns named by the parent's proof.
+// A proof recorded for another pattern must not let an unproven pattern skip
+// its matches in unchanged bytes, through any delta path.
+func TestResponseDeltaRequiresPatternProof(t *testing.T) {
+	proven := memoTestPattern("Proven Fixture", `proven\s+fixture`)
+	unproven := memoTestPattern("Unproven Fixture", `\bunproven\s+marker\b`)
+	patterns := []*compiledPattern{proven, unproven}
+	provenKey, _ := responseNegativePatternKey(proven)
+	known := map[responseNegativeKey]struct{}{provenKey: {}}
+	pf := newResponsePreFilter(patterns)
+	if pf.chains[unproven.re] == nil || pf.deltaWidths == nil {
+		t.Fatal("fixture must exercise chain and delta width plans")
+	}
+	program := responseMatchingProgram(pf)
+	padding := strings.Repeat("quiet;", 1000)
+	// The match sits far from the edit, in bytes the parent also had.
+	parent := "unproven marker " + padding + "pr!ven " + padding
+	for _, tc := range []struct{ name, child string }{
+		{"edited", "unproven marker " + padding + "proven " + padding},
+		{"identical", parent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			edits, _, ok := responseDeltaEdits(parent, tc.child)
+			if !ok {
+				t.Fatal("fixture did not align")
+			}
+			delta := newResponseDeltaView(known, parent, edits)
+			want := matchPatternsAgainst(patterns, tc.child)
+			if len(want) == 0 {
+				t.Fatal("fixture has no unproven match")
+			}
+			if tree, err := syntax.Parse(unproven.re.String(), syntax.Perl); err == nil {
+				width, _ := newResponseDeltaWidth(tree)
+				if got, handled := delta.matchPlanned(unproven, tc.child, width); handled {
+					t.Fatalf("unproven pattern used the delta matcher: %v", got)
+				}
+			}
+			view := &responsePreFilterView{positions: newMatchingView(tc.child, program), delta: delta}
+			if got := matchPatternsPreFilteredWithMemo(pf, patterns, tc.child, view); !reflect.DeepEqual(got, want) {
+				t.Fatalf("got %+v, want %+v", got, want)
 			}
 		})
 	}
