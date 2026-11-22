@@ -80,7 +80,7 @@ const (
 	ctxKeyAgentConfig  // per-agent resolved config for redirect scanning
 	ctxKeyAgentScanner // per-agent resolved scanner for redirect scanning
 	ctxKeyAgentContractLoader
-	ctxKeyConnectIssuerRuntime
+	ctxKeyIssuerRuntime
 	ctxKeyCorrelation // vetted emit.correlation_header tag (audit.CorrelationID)
 
 	// ctxKeyReverseEnvelopeOpts stores the envelope.BuildOpts that the
@@ -899,7 +899,10 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			logger.LogError(audit.NewMethodLogContext("ISSUER_COOKIE"), fmt.Errorf("issuer cookie state reset failed: %w", removeErr))
 		}
 	}
-	p.issuerCookieRuntime.Store(&issuerCookieRuntime{cfg: cfg, store: issuerStore, query: p.newObservedIssuerQueryStore()})
+	p.issuerCookieRuntime.Store(&issuerCookieRuntime{
+		cfg: cfg, store: issuerStore, query: p.newObservedIssuerQueryStore(),
+		replay: nextIssuerQueryReplayStore(nil, cfg, 0),
+	})
 	p.scannerPtr.Store(sc)
 	p.refreshMetricsDialTarget(cfg.MetricsListen)
 
@@ -1118,7 +1121,11 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			// redirects dispatch here and keep consuming in this callback.
 			var result scanner.Result
 			if redirectTransport == TransportForward {
-				result = currentScanner.ScanPreflight(redirectScanCtx, redirectURL)
+				// This hop is only a proposed Location. The client must
+				// submit it separately and obtain its own allow receipt.
+				var replayUsed bool
+				replay, _ := req.Context().Value(issuerQueryReplayScopeKey{}).(issuerQueryReplayScope)
+				result = currentScanner.ScanPreflight(replay.scanContext(redirectScanCtx, req.URL, &replayUsed), redirectURL)
 			} else {
 				result = currentScanner.Scan(redirectScanCtx, redirectURL)
 			}
@@ -2914,6 +2921,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	}
 	p.issuerCookieRuntime.Store(&issuerCookieRuntime{
 		cfg: cfg, store: issuerStore, query: queryStore, identityGeneration: identityGeneration,
+		replay: nextIssuerQueryReplayStore(oldIssuer, cfg, identityGeneration),
 	})
 	p.refreshMetricsDialTarget(cfg.MetricsListen)
 	p.disableCEE(&cfg.CrossRequestDetection)
@@ -3474,8 +3482,8 @@ func (p *Proxy) resolveAgentRuntimeFromRequest(r *http.Request) (*edition.Resolv
 	defer p.reloadMu.RUnlock()
 	resolved, id := p.resolveAgentFromRequest(r)
 	ctx, release := agentLicenseContext(r.Context(), resolved)
-	if r.Method == http.MethodConnect {
-		ctx = context.WithValue(ctx, ctxKeyConnectIssuerRuntime, p.issuerCookieRuntime.Load())
+	if r.Method == http.MethodConnect || (r.URL != nil && r.URL.Scheme == schemeHTTP) {
+		ctx = context.WithValue(ctx, ctxKeyIssuerRuntime, p.issuerCookieRuntime.Load())
 	}
 	return resolved, id, p.envelopeEmitterPtr.Load(), p.contractLoaderPtr.Load(), r.WithContext(ctx), release
 }

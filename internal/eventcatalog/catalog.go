@@ -37,6 +37,7 @@ const (
 	EventHeaderDLP                   = "header_dlp"
 	EventInterceptHTTP               = "intercept_http"
 	EventIssuerQueryAllow            = "entropy_issuer_query_allow"
+	EventIssuerQueryReplayAllow      = "entropy_issuer_query_replay_allow"
 	EventKillSwitchDeny              = "kill_switch_deny"
 	EventInjectionChecker            = "injection_checker"
 	EventLicenseExpiry               = "license_expiry"
@@ -109,6 +110,7 @@ func Builtins() []Descriptor {
 		{EventHeaderDLP, "warn", "warn"},
 		{EventInterceptHTTP, "info", "forward"},
 		{EventIssuerQueryAllow, "", ""},
+		{EventIssuerQueryReplayAllow, "", ""},
 		{EventKillSwitchDeny, "critical", "block"},
 		{EventInjectionChecker, "warn", ""},
 		{EventLicenseExpiry, "warn", "warn"},

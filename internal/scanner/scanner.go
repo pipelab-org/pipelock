@@ -6022,6 +6022,20 @@ func WithIssuerQueryAllowance(ctx context.Context, allows func(key, value string
 	return context.WithValue(ctx, issuerQueryAllowanceContextKey{}, allows)
 }
 
+type issuerQueryReplayAllowanceContextKey struct{}
+
+// WithIssuerQueryReplayAllowance supplies exact replay evidence for this scan.
+// Only ordinary query-value entropy consults it. The caller binds the evidence
+// to the session and origin that previously received the whole value.
+func WithIssuerQueryReplayAllowance(ctx context.Context, allows func(value string) bool) context.Context {
+	return context.WithValue(ctx, issuerQueryReplayAllowanceContextKey{}, allows)
+}
+
+func issuerQueryReplayAllowed(ctx context.Context, value string) bool {
+	allows, ok := ctx.Value(issuerQueryReplayAllowanceContextKey{}).(func(string) bool)
+	return ok && allows(value)
+}
+
 type issuerJoinedViewAllowanceContextKey struct{}
 
 // IssuerJoinedViewAllowance reports, for one request, whether every query
@@ -6236,7 +6250,8 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 			}
 			if finding, blocked := s.queryValueEntropy(v, 0); blocked {
 				if s.isQueryEntropyParamExcludedAt(parsed, key, now) || issuerQueryAllowed(ctx, key, v) ||
-					s.queryValueIsAudienceCredentialAt(parsed.String(), v, now) || s.releaseGrantSASQueryValueAllowedAt(parsed, key, now) || nativeOAuthQueryAllowed(ctx, key, v) {
+					s.queryValueIsAudienceCredentialAt(parsed.String(), v, now) || s.releaseGrantSASQueryValueAllowedAt(parsed, key, now) ||
+					nativeOAuthQueryAllowed(ctx, key, v) || issuerQueryReplayAllowed(ctx, v) {
 					relieved = true
 					continue
 				}

@@ -49,6 +49,7 @@ func TestBuiltinEventCompatibility(t *testing.T) {
 		{"header_dlp", SeverityWarn, true, "warn"},
 		{"intercept_http", SeverityInfo, true, "forward"},
 		{"entropy_issuer_query_allow", SeverityInfo, false, ""},
+		{"entropy_issuer_query_replay_allow", SeverityInfo, false, ""},
 		{"kill_switch_deny", SeverityCritical, true, "block"},
 		{"injection_checker", SeverityWarn, true, ""},
 		{"license_expiry", SeverityWarn, true, "warn"},
@@ -106,7 +107,7 @@ func TestBuiltinEventCompatibility(t *testing.T) {
 }
 
 func TestEventContractUnknownAndExplicitSeverity(t *testing.T) {
-	for _, name := range []string{"extension_event", "chain_detection", "file_sentry_dlp", "cross_request_dlp_match", "dlp_credential_audience_allow", "dlp_issuer_cookie_allow", "dlp_issuer_joined_view_allow", "entropy_issuer_query_allow"} {
+	for _, name := range []string{"extension_event", "chain_detection", "file_sentry_dlp", "cross_request_dlp_match", "dlp_credential_audience_allow", "dlp_issuer_cookie_allow", "dlp_issuer_joined_view_allow", "entropy_issuer_query_allow", "entropy_issuer_query_replay_allow"} {
 		t.Run(name, func(t *testing.T) {
 			sink := &mockSink{}
 			emitter := NewEmitter("test", sink)
