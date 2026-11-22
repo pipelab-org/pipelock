@@ -8,6 +8,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -116,6 +117,9 @@ func TestManagerResolutionConfirmationFailsClosed(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("duplicate resolution waited for receipt confirmation")
+	}
+	if err := manager.Hold(HeldAction{DeferID: "next", Resolve: func(Resolution) {}}); !errors.Is(err, ErrCapacity) {
+		t.Errorf("hold during settlement = %v, want capacity error", err)
 	}
 	close(release)
 	if err := <-done; !errors.Is(err, writeErr) {
@@ -357,5 +361,78 @@ func TestManagerLateRefusalOfConfirmedApproval(t *testing.T) {
 		if got := HoldFailureSource(tc.err); got != tc.want {
 			t.Errorf("source for %v = %q, want %q", tc.err, got, tc.want)
 		}
+	}
+}
+
+func TestManagerBulkResolutionIncludesWaitingHolds(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		resolve func(*Manager)
+	}{
+		{"kill switch", func(m *Manager) { m.ResolveAll(config.ActionBlock, SourceKillSwitch) }},
+		{"inventory", func(m *Manager) { m.ResolveToolInventory("session", config.ActionBlock) }},
+		{"policy reload", func(m *Manager) {
+			m.ResolvePolicyReload(func(HeldAction) (string, error) { return config.ActionBlock, nil })
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				manager := NewManager(Config{Enabled: true, Timeout: time.Minute, MaxPending: 2})
+				resolved := make(chan Resolution, 2)
+				first, second := make(chan struct{}), make(chan struct{})
+				hold := func(id string, release <-chan struct{}) error {
+					return manager.HoldContext(t.Context(), HeldAction{
+						DeferID:   id,
+						Authority: AuthoritySnapshot{SessionID: "session"},
+						RulePolicy: config.DeferResolutionPolicy{
+							AllowOn: config.DeferAllowOn{ToolInventoryBaseline: true},
+						},
+						ConfirmHold: func(context.Context, HeldAction) error {
+							<-release
+							return nil
+						},
+						ConfirmResolution: func(context.Context, Resolution) error { return nil },
+						Resolve:           func(result Resolution) { resolved <- result },
+					})
+				}
+				results := make(chan error, 2)
+				go func() { results <- hold("first", first) }()
+				synctest.Wait()
+				go func() { results <- hold("second", second) }()
+				synctest.Wait()
+
+				err := manager.Hold(HeldAction{DeferID: "third", Resolve: func(Resolution) {}})
+				if !errors.Is(err, ErrCapacity) {
+					t.Errorf("third hold = %v, want capacity error", err)
+				}
+
+				done := make(chan struct{})
+				go func() {
+					tc.resolve(manager)
+					close(done)
+				}()
+				synctest.Wait()
+				close(first)
+				synctest.Wait()
+				close(second)
+				for range 2 {
+					if err := <-results; err != nil {
+						t.Fatal(err)
+					}
+				}
+				<-done
+				if got := manager.HeldCount(); got != 0 {
+					t.Errorf("bulk resolution left %d holds", got)
+				}
+				if got := len(resolved); got != 2 {
+					t.Fatalf("resolved %d holds, want 2", got)
+				}
+				for range 2 {
+					if result := <-resolved; result.FinalDecision != config.ActionBlock {
+						t.Errorf("unexpected resolution: %+v", result)
+					}
+				}
+			})
+		})
 	}
 }

@@ -220,6 +220,11 @@ type Resolution struct {
 	Reason           string
 }
 
+type waitingHold struct {
+	sessionID string
+	done      chan struct{}
+}
+
 // Manager tracks per-action holds. It is safe for concurrent use.
 type Manager struct {
 	mu             sync.Mutex
@@ -234,7 +239,7 @@ type Manager struct {
 	// A confirming hold already owns capacity. A named session has at most
 	// one confirmation, so a sibling cannot sign before its pending parent.
 	confirmingSessions map[string]chan struct{}
-	waitingHolds       map[string]struct{}
+	waitingHolds       map[string]waitingHold
 	waitingBySession   map[string]int
 	confirmingCount    int
 	settlingReceipts   int // confirmed holds whose settlement callbacks are still running
@@ -308,7 +313,7 @@ func NewManager(cfg Config) *Manager {
 		sessionHolds:       make(map[string][]string),
 		pendingJournal:     make(map[string]journalEntry),
 		confirmingSessions: make(map[string]chan struct{}),
-		waitingHolds:       make(map[string]struct{}),
+		waitingHolds:       make(map[string]waitingHold),
 		waitingBySession:   make(map[string]int),
 	}
 }
@@ -394,7 +399,9 @@ func (m *Manager) HoldContext(ctx context.Context, action HeldAction) error {
 		return ErrCapacity
 	}
 	if m.confirmingSessions[sessionID] != nil {
-		if err := m.waitForHoldConfirmationLocked(ctx, action); err != nil {
+		done := make(chan struct{})
+		defer close(done)
+		if err := m.waitForHoldConfirmationLocked(ctx, action, done); err != nil {
 			m.mu.Unlock()
 			return err
 		}
@@ -473,11 +480,11 @@ func (m *Manager) HoldContext(ctx context.Context, action HeldAction) error {
 
 // The caller holds m.mu on entry and return. Keep ancestry private until the
 // previous confirmation finishes, but count this call throughout its wait.
-func (m *Manager) waitForHoldConfirmationLocked(ctx context.Context, action HeldAction) error {
+func (m *Manager) waitForHoldConfirmationLocked(ctx context.Context, action HeldAction, done chan struct{}) error {
 	ctx, cancel := context.WithDeadline(ctx, action.Deadline)
 	defer cancel()
 	sessionID := action.Authority.SessionID
-	m.waitingHolds[action.DeferID] = struct{}{}
+	m.waitingHolds[action.DeferID] = waitingHold{sessionID: sessionID, done: done}
 	m.waitingBySession[sessionID]++
 	m.totalBytes += action.SizeBytes
 	defer func() {
@@ -772,11 +779,19 @@ func (m *Manager) ResolveAll(finalDecision, source string) {
 		return
 	}
 	m.mu.Lock()
-	ids := make([]string, 0, len(m.holds))
+	ids := make([]string, 0, len(m.holds)+len(m.waitingHolds))
 	for id := range m.holds {
 		ids = append(ids, id)
 	}
+	waiting := make([]chan struct{}, 0, len(m.waitingHolds))
+	for id, hold := range m.waitingHolds {
+		ids = append(ids, id)
+		waiting = append(waiting, hold.done)
+	}
 	m.mu.Unlock()
+	for _, done := range waiting {
+		<-done
+	}
 	for _, id := range ids {
 		_ = m.Resolve(id, finalDecision, source)
 	}
@@ -932,11 +947,16 @@ func (m *Manager) ResolvePolicyReload(evaluate ReloadEvaluator) {
 	}
 }
 
-// Bulk events include holds already being confirmed when the event starts.
+// Bulk events include holds already waiting for or undergoing confirmation.
 // Only wait on the requested session for inventory events; nil means all.
 func (m *Manager) waitForConfirmations(sessionID *string) {
 	m.mu.Lock()
-	pending := make([]chan struct{}, 0, m.confirmingCount)
+	pending := make([]chan struct{}, 0, m.confirmingCount+len(m.waitingHolds))
+	for _, hold := range m.waitingHolds {
+		if sessionID == nil || hold.sessionID == *sessionID {
+			pending = append(pending, hold.done)
+		}
+	}
 	for _, held := range m.holds {
 		if held.confirming != nil && (sessionID == nil || held.Authority.SessionID == *sessionID) {
 			pending = append(pending, held.confirming)
