@@ -1433,3 +1433,82 @@ func TestV3DeliveryWriterTransportOutcomes(t *testing.T) {
 		})
 	}
 }
+
+func TestV3DeliveryAdaptiveRefusalAfterIntent(t *testing.T) {
+	for _, path := range []string{"final headers", "early hints", "hijack"} {
+		t.Run(path, func(t *testing.T) {
+			p, writer, dir, _ := newTestV3HTTPProxy(t, TransportForward, true, nil)
+			ctx, cancel := context.WithCancelCause(t.Context())
+			defer cancel(nil)
+			req := httptest.NewRequestWithContext(ctx, http.MethodGet, "http://api.vendor.example", http.NoBody)
+			opts := receipt.EmitOpts{Verdict: config.ActionAllow, Transport: TransportForward, Method: req.Method, Target: req.URL.String()}
+			cfg := adaptiveConfigBlockAll()
+			observer := httptest.NewRecorder()
+			checks := 0
+			adaptive := &adaptiveRefusalWriter{
+				ResponseWriter: observer, cfg: &cfg.AdaptiveEnforcement, transport: TransportForward,
+				level: func() int {
+					checks++
+					return checks - 1
+				},
+			}
+			w, finish := p.startReceiptDelivery(adaptive, req, cfg, opts)
+			delivery := w.(*v3DeliveryWriter)
+			delivery.cancel = cancel
+			switch path {
+			case "final headers":
+				delivery.WriteHeader(http.StatusOK)
+			case "early hints":
+				delivery.WriteHeader(http.StatusEarlyHints)
+			case "hijack":
+				if conn, _, err := delivery.Hijack(); conn != nil || !errors.Is(err, errReceiptAdaptiveRefusal) {
+					t.Fatalf("hijack returned %v, %v", conn, err)
+				}
+			}
+			if err := delivery.FlushError(); !errors.Is(err, errReceiptAdaptiveRefusal) {
+				t.Fatalf("flush returned %v", err)
+			}
+			if conn, _, err := delivery.Hijack(); conn != nil || (path == "final headers" && !errors.Is(err, http.ErrNotSupported)) ||
+				(path != "final headers" && !errors.Is(err, errReceiptAdaptiveRefusal)) {
+				t.Fatalf("second hijack returned %v, %v", conn, err)
+			}
+			finish()
+			if observer.Code != http.StatusForbidden || !errors.Is(context.Cause(ctx), errReceiptAdaptiveRefusal) {
+				t.Fatalf("status=%d cancellation=%v", observer.Code, context.Cause(ctx))
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			assertV3BoundaryPair(t, readV3TransportActions(t, dir), boundaryDownstreamDelivery, "", "not_released")
+		})
+	}
+}
+
+func TestV3FetchAdmissionClosesRequestBody(t *testing.T) {
+	p, writer, dir, keys := newTestV3HTTPProxy(t, TransportFetch, true, v3FirstAppendFault(true))
+	body := &closeTrackingReadCloser{Reader: strings.NewReader("example")}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://api.vendor.example", body)
+	opts := receipt.EmitOpts{
+		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: TransportFetch,
+		Method: req.Method, Target: req.URL.String(),
+	}
+	req, _ = p.startFetchReceiptEffects(req, p.CurrentConfig(), opts)
+	transport := fetchReceiptTransport{base: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("admission refusal called the upstream transport")
+		return nil, nil
+	})}
+	resp, err := transport.RoundTrip(req)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if resp != nil || err == nil || !body.closed {
+		t.Fatalf("admission refusal returned %v, %v, closed=%t", resp, err, body.closed)
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil || result.Verdict != "VALID PREFIX, END UNPROVEN" {
+		t.Fatalf("verification: %+v (%v)", result, err)
+	}
+}

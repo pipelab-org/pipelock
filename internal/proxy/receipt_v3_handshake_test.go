@@ -373,7 +373,28 @@ func TestV3WebSocketCredentialEffects(t *testing.T) {
 						t.Fatalf("expected two streams after writer recovery: %v (%v)", paths, err)
 					}
 					actions := append(readV3TransportFile(t, paths[0]), readV3TransportFile(t, paths[1])...)
-					assertV3BoundaryPair(t, actions, boundaryUpstreamSend, credentialAudienceReceiptExtensionKey, outcome)
+					// The failed batch is present in the unconfirmed tail. The
+					// successor retains the action ID but omits optional fields
+					// such as the credential layer from its repair outcome.
+					var supportingID string
+					for _, action := range actions {
+						if action.Phase == "intent" && action.Layer == credentialAudienceReceiptExtensionKey {
+							if supportingID != "" {
+								t.Fatal("multiple credential intents in refused frame batch")
+							}
+							supportingID = action.ActionID
+						}
+					}
+					if supportingID == "" {
+						t.Fatal("refused frame batch lacked a supporting intent")
+					}
+					var pair []v3.Action
+					for _, action := range actions {
+						if action.ActionID == supportingID {
+							pair = append(pair, action)
+						}
+					}
+					assertV3BoundaryPair(t, pair, boundaryUpstreamSend, "", outcome)
 					return
 				}
 				if err != nil || result.Verdict != "VALID" {
