@@ -232,6 +232,34 @@ func TestInterceptTaintReloadPreservesExposure(t *testing.T) {
 	}
 }
 
+// A response whose scan cannot complete is blocked, so the agent never sees it.
+// A client cancelling mid-response must not mark the session hostile and gate
+// every later POST behind task approval.
+func TestInterceptTaintScanFailureIsNotExposure(t *testing.T) {
+	p, handler, rec, target, ic := newTaintInterceptFixture(t, func(cfg *config.Config) {
+		cfg.ResponseScanning.Enabled = true
+		cfg.ResponseScanning.Action = config.ActionWarn
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	cancelling := newInterceptHandler(ic, forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
+		cancel()
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("ordinary content")), Request: r}, nil
+	}))
+	w := httptest.NewRecorder()
+	cancelling.ServeHTTP(w, httptest.NewRequestWithContext(ctx, http.MethodGet, target, nil))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("cancelled scan status=%d body=%s", w.Code, w.Body)
+	}
+	if got := rec.RiskSnapshot(); got.Level >= session.TaintExternalHostile || len(got.FindingKinds) != 0 {
+		t.Fatalf("blocked scan failure tainted session: %+v", got)
+	}
+	p.approver = nil
+	if w := interceptTaintRequest(t, handler, http.MethodPost, target); strings.Contains(w.Body.String(), "task_approval") {
+		t.Fatalf("POST after blocked scan failure hit the task gate: status=%d body=%s", w.Code, w.Body)
+	}
+}
+
 func TestInterceptTaintHostileResponseFindings(t *testing.T) {
 	p, handler, rec, target, _ := newTaintInterceptFixture(t, func(cfg *config.Config) {
 		cfg.ResponseScanning.Action = config.ActionWarn

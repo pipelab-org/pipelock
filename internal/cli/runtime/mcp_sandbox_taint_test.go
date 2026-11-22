@@ -525,3 +525,23 @@ func TestMCPOperatorAPITaintOnlyDoesNotBind(t *testing.T) {
 		})
 	}
 }
+
+// The MCP sandbox bridge clones the operator config into its own proxy, so
+// connect_ports must survive that clone, independent of the source slice.
+func TestMCPSandboxBridgeCarriesConnectPorts(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Taint.Enabled = false
+	cfg.ForwardProxy.ConnectPorts = []int{443}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	bridge, err := startMCPSandboxBridge(mcpSandboxBridgeStartOptions{Context: ctx, Config: cfg, AuditLogger: audit.NewNop()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridge.Close()
+	cfg.ForwardProxy.ConnectPorts[0] = 22
+	got := bridge.proxy.CurrentConfig().ForwardProxy
+	if !got.ConnectPortAllowed(443) || got.ConnectPortAllowed(22) {
+		t.Fatalf("bridge connect_ports=%v, want [443] independent of the source config", got.ConnectPorts)
+	}
+}

@@ -493,6 +493,7 @@ forward_proxy:
   sni_verification: true        # Verify TLS SNI matches CONNECT target
   sni_require_tls: false        # Security profiles set true
   redirect_websocket_hosts: []  # Redirect WS hosts to /ws proxy
+  connect_ports: []             # Empty admits any port; e.g. [443]
 ```
 
 | Field | Default | Restart? | Description |
@@ -502,6 +503,7 @@ forward_proxy:
 | `idle_timeout_seconds` | `120` | No | Kill established tunnels after this much inactivity |
 | `sni_verification` | `true` | **To disable while `sni_require_tls` is on** | Verify TLS ClientHello SNI matches the CONNECT target hostname. Blocks domain fronting (MITRE T1090.004). Set to `false` to disable. |
 | `sni_require_tls` | `false` | **To disable** | Require the tunnel to begin with a TLS ClientHello carrying SNI. Enabling it hot-reloads; **disabling it at runtime is rejected as a security downgrade** (restart to disable), because dropping it re-opens an unscanned opaque tunnel. Official security profiles enable it. This prevents raw/no-SNI protocol smuggling but does not decrypt or scan the tunnel body. Requires `sni_verification: true`. |
+| `connect_ports` | `[]` (any port) | **To widen in strict mode or under a required contract** | TCP ports a CONNECT tunnel may open. A tunnel to any other port is refused with HTTP 403 and `connect_port_not_allowed` before DNS, scanning or dial, so the upstream never sees the connection attempt. Applies in audit mode too, like `sni_require_tls`. Entries are 1 to 65535 with no duplicates; order doesn't matter. Removing ports hot-reloads for new tunnels; tunnels already open keep relaying until they close. Adding a port or clearing the list warns and applies in `balanced` and `audit`, and is rejected in `strict` mode or while a required contract such as `flight_recorder.require_receipts` is on (restart to apply). This limits which ports a tunnel can reach; it doesn't make the tunnel's contents visible. A TLS tunnel to an allowed port is still relayed unscanned when `tls_interception` is off or the host is a passthrough domain. |
 | `redirect_websocket_hosts` | `[]` | No | Redirect matching hosts to /ws. Same entry shape as `tls_interception.passthrough_domains`: exact hosts or `*.example.com`, no surrounding whitespace, at most one trailing DNS dot. |
 
 ## TLS Interception

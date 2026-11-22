@@ -3417,6 +3417,17 @@ func (c *Config) validateForwardProxy() error {
 	if c.ForwardProxy.SNIRequireTLSEnabled() && !c.ForwardProxy.SNIVerificationEnabled() {
 		return fmt.Errorf("forward_proxy.sni_require_tls requires forward_proxy.sni_verification")
 	}
+	// Also before the enabled gate, for the same launcher reason.
+	seenPorts := make(map[int]struct{}, len(c.ForwardProxy.ConnectPorts))
+	for _, port := range c.ForwardProxy.ConnectPorts {
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("forward_proxy.connect_ports: port %d must be between 1 and 65535", port)
+		}
+		if _, dup := seenPorts[port]; dup {
+			return fmt.Errorf("forward_proxy.connect_ports: duplicate port %d", port)
+		}
+		seenPorts[port] = struct{}{}
+	}
 	if !c.ForwardProxy.Enabled {
 		return nil
 	}

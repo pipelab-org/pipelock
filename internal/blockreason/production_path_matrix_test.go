@@ -130,6 +130,8 @@ func constNameForReason(r blockreason.Reason) string {
 		return "SchemeBlocked"
 	case blockreason.DomainBlocklist:
 		return "DomainBlocklist"
+	case blockreason.ConnectPortNotAllowed:
+		return "ConnectPortNotAllowed"
 	case blockreason.SSRFPrivateIP:
 		return "SSRFPrivateIP"
 	case blockreason.SSRFMetadata:

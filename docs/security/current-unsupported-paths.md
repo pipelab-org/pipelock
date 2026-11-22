@@ -47,6 +47,19 @@ This protection depends on that setting:
 - `sni_require_tls: true` together with `sni_verification: false` is rejected when the config loads, whether or not `forward_proxy.enabled` is set. `pipelock sandbox` and other launchers turn the forward proxy on after loading, so the check doesn't depend on that setting.
 - With `pipelock run`, turning `sni_require_tls` on takes effect on hot reload for new CONNECT requests. A tunnel opened before the reload keeps the configuration it started with and keeps relaying, so close existing tunnels (or restart) after enabling it. Turning it off with a reload is rejected as a security downgrade, and the running configuration stays active until you restart. `pipelock sandbox` reads its config once at launch and doesn't reload it, so restart a running sandbox after changing this setting.
 
+### Through the forward proxy: `forward_proxy.connect_ports`
+
+`forward_proxy.connect_ports` refuses a CONNECT tunnel by port before Pipelock resolves, scans or dials the destination. With `connect_ports: [443]`, `CONNECT host.vendor.example:22` gets HTTP 403 with the `connect_port_not_allowed` block reason, and the SSH server never sees a connection. An empty or absent list admits every port, which is the default.
+
+```yaml
+forward_proxy:
+  enabled: true
+  connect_ports: [443]
+  sni_require_tls: true    # still needed: it refuses non-TLS on port 443
+```
+
+The port list doesn't inspect what a tunnel carries. Any protocol can run on an allowed port, so keep `sni_require_tls` on to refuse non-TLS tunnels there, and remember that a TLS tunnel to an allowed port is relayed unscanned unless TLS interception decrypts it. The check applies in audit mode too. `pipelock sandbox` and the `mcp proxy --sandbox` bridge read the list once at launch, so restart them after changing it.
+
 ### Inside `pipelock sandbox`: no direct route out
 
 By default, `pipelock sandbox` starts the command in its own network namespace and refuses to launch if it cannot create one. Inside that namespace, the only route out is a loopback bridge at `127.0.0.1:8888`. It relays each connection over a Unix socket to the Pipelock proxy running outside the sandbox, and `HTTP_PROXY` and `HTTPS_PROXY` point at it.

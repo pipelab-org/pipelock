@@ -231,8 +231,9 @@ func TestWebSocketRetainedFindingKindsStayInObservedTask(t *testing.T) {
 
 func TestResponseScanErrorFindingKind(t *testing.T) {
 	result := scanner.ResponseScanResult{ScanError: "inspection failed"}
-	if got := responseScanFindingKinds(result); !slices.Equal(got, []session.HostileFindingKind{session.FindingScanError}) {
-		t.Fatalf("reverse scan error cause=%v", got)
+	// A failed scan blocks delivery, so it is not exposure evidence.
+	if got := responseScanFindingKinds(result); len(got) != 0 {
+		t.Fatalf("undelivered scan error gained hostile evidence: %v", got)
 	}
 	if got := upstreamResponseFindingKinds(result); len(got) != 0 {
 		t.Fatalf("WebSocket scan error gained hostile evidence: %v", got)
@@ -240,7 +241,7 @@ func TestResponseScanErrorFindingKind(t *testing.T) {
 	// A completed pre-shield match survives an incomplete post-shield scan.
 	original := &scanner.ResponseScanResult{Matches: []scanner.ResponseMatch{{PatternName: "retained wording"}}}
 	retained := retainShieldScan(original, result, nil)
-	want := session.MergeFindingKinds([]session.HostileFindingKind{session.FindingWording, session.FindingScanError})
+	want := []session.HostileFindingKind{session.FindingWording}
 	if got := responseScanFindingKinds(retained); !slices.Equal(got, want) {
 		t.Fatalf("retained independent cause lost: got=%v want=%v", got, want)
 	}

@@ -277,6 +277,20 @@ func (f ForwardProxy) SNIVerificationEnabled() bool {
 	return *f.SNIVerification
 }
 
+// ConnectPortAllowed reports whether a CONNECT tunnel may open to port. An
+// empty connect_ports list admits every port.
+func (f ForwardProxy) ConnectPortAllowed(port uint16) bool {
+	if len(f.ConnectPorts) == 0 {
+		return true
+	}
+	for _, allowed := range f.ConnectPorts {
+		if allowed == int(port) {
+			return true
+		}
+	}
+	return false
+}
+
 // SNIRequireTLSEnabled returns whether opaque CONNECT tunnels must present a
 // TLS ClientHello carrying an SNI extension. When true, the SNI verifier
 // fail-closes on the `not_tls` and `no_extension` categories instead of
