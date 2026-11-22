@@ -362,6 +362,10 @@
       "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Omit `checker` and `normalization`.",
       "when": "The released HTTP request has a tracked intent when its response scan fails."
     },
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/85cff3f6757f6963": {
+      "fields": "Carry the original action ID, attempt, and intended effect. Set `phase=outcome`, `effect_relation=not_attempted`, and `outcome_class=not_released`. Use `policy.source=request_snapshot` and the retained decision-time digest when available. Otherwise use `policy.source=unavailable` and omit `policy.hash`. Set `caller.authn=none`. Copy `session`, `taint`, and `contract` from the intent when present. Include `redaction` only when the intent carries an applied rewrite summary.",
+      "when": "The HTTP bridge has a legacy allow intent and receipt admission fails before sending the call."
+    },
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/dae23fb36ee7bdf5": {
       "fields": "Carry the original action ID, attempt, and intended effect. Set `phase=outcome`, `effect_relation=not_attempted`, and `outcome_class=not_released`. Use `policy.source=request_snapshot` and the retained decision-time digest when available. Otherwise use `policy.source=unavailable` and omit `policy.hash`. Set `caller.authn=none`. Copy `session`, `taint`, and `contract` from the intent when present. Include `redaction` only when the intent carries an applied rewrite summary.",
       "when": "The HTTP bridge has an intent and refuses to track the reply before sending the call."
@@ -1799,6 +1803,7 @@
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/2facc82527628101": "upstream_send",
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/a44ac7babd1ff703": "upstream_send",
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/44ed8dd47b0b52d0": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/85cff3f6757f6963": "upstream_send",
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/dae23fb36ee7bdf5": "upstream_send",
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/1a95dceaac924201": "upstream_send",
     "internal/mcp/mcp_sse_bridge.go/scanGETStream/emitMCPStandaloneStreamReceipt/ead196751c76bb5e": "downstream_delivery",
