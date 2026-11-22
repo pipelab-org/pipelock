@@ -61,7 +61,7 @@ type Probe func(ctx context.Context) error
 type SnapshotInput struct {
 	ScannerPtrAlive   bool // proxy.scannerPtr.Load() != nil
 	ConfigPtrAlive    bool // proxy.cfgPtr.Load() != nil
-	SessionEnabled    bool // session profiling configured at all
+	SessionEnabled    bool // taint or session profiling is enabled
 	SessionPtrAlive   bool // proxy.sessionMgrPtr.Load() != nil; ignored when !SessionEnabled
 	KillSwitchEnabled bool // cfg.KillSwitch.Enabled
 	KillSwitchPresent bool // proxy.ks != nil; ignored when !KillSwitchEnabled

@@ -457,6 +457,7 @@ func TestDefaultIdentityIssuerQueryStoreTrustGate(t *testing.T) {
 func TestDefaultIdentityWhoamiReportsTheSharedBucket(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.DefaultAgentIdentity = defaultBucketName
+	cfg.SessionProfiling.Enabled = true
 
 	sm := newAdaptiveOperatorTestManager(t)
 	var smPtr atomic.Pointer[SessionManager]

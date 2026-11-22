@@ -265,7 +265,10 @@ func TestBrowserForwardRedirectReplayAdmission(t *testing.T) {
 				}
 				origin.Start()
 				t.Cleanup(origin.Close)
-				client, base, _, _ := newBrowserContractProxyClient(t, origin.URL, allowBrowserRedirectOtherHost)
+				client, base, _, _ := newBrowserContractProxyClient(t, origin.URL, func(cfg *config.Config) {
+					allowBrowserRedirectOtherHost(cfg)
+					cfg.Taint.Enabled = false
+				})
 				resp, body, err := browserContractRequest(t, client, http.MethodPost, base+"/start", payload)
 				want := status
 				if crossOrigin {
@@ -310,6 +313,7 @@ func TestBrowserForwardRedirectActualRequestReadmitted(t *testing.T) {
 			t.Cleanup(origin.Close)
 			client, base, _, p := newBrowserContractProxyClient(t, origin.URL, func(cfg *config.Config) {
 				cfg.RequestBodyScanning.Action = config.ActionBlock
+				cfg.Taint.Enabled = false
 				cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{Name: "Synthetic auth marker", Regex: marker})
 				cfg.FlightRecorder.RequireReceipts = change == "receipt_unavailable"
 			})

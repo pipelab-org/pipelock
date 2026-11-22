@@ -51,12 +51,14 @@ const (
 	airlockSourceTriggers = "airlock_triggers"
 	airlockSourceAdminAPI = "admin_api"
 	airlockSourceTimers   = "airlock_timers"
+	airlockSourceConfig   = "config"
 
-	airlockTriggerOnElevated = "on_elevated"
-	airlockTriggerOnHigh     = "on_high"
-	airlockTriggerOnCritical = "on_critical"
-	airlockTriggerManual     = "manual"
-	airlockTriggerTimer      = "timer"
+	airlockTriggerOnElevated     = "on_elevated"
+	airlockTriggerOnHigh         = "on_high"
+	airlockTriggerOnCritical     = "on_critical"
+	airlockTriggerManual         = "manual"
+	airlockTriggerTimer          = "timer"
+	airlockTriggerConfigDisabled = "config_disabled"
 )
 
 // AirlockTierOrder maps tier names to numeric order for comparison.

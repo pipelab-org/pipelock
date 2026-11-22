@@ -163,7 +163,11 @@ func TestDoctorMCPTaintDiagnostics_RecorderNamesHTTPAndMCP(t *testing.T) {
 		if c.Status != doctorStatusInfo || c.Surface != doctorSurfaceConfig {
 			t.Errorf("cross-surface recorder prerequisite=%+v", c)
 		}
-		for _, want := range []string{"session_profiling.enabled=false", "MCP stdio/HTTP/WS bridges", "MCP listener", "HTTP proxy", "enable session_profiling and restart"} {
+		for _, want := range []string{
+			"Standalone MCP stdio and HTTP/WS bridges, including --sandbox, configure an invocation-scoped recorder",
+			"the pipelock run HTTP proxy and its MCP listener share a session store",
+			"Anomaly detection, adaptive enforcement, airlock, behavioral baselines, and the session admin API still require session profiling",
+		} {
 			if !strings.Contains(c.Detail, want) {
 				t.Errorf("recorder detail omitted %q: %s", want, c.Detail)
 			}
