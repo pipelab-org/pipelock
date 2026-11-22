@@ -131,6 +131,34 @@ type responseExposureHolder interface {
 
 var responseExposureIDs atomic.Uint64
 
+// responseExposureHolds ends a handler's response exposure holds after all of
+// the handler's own delivery work. The handler registers its finish as its
+// first deferred call, so it runs last: after outcome flushes, receipt
+// delivery confirmation and body closes. With receipts off, net/http still
+// writes a small buffered tail right after the handler returns; flushing it
+// here would change the response framing, so that hand-off is the end of the
+// hold. A panicking handler also releases.
+type responseExposureHolds struct {
+	mu      sync.Mutex
+	release []func()
+}
+
+func (h *responseExposureHolds) add(release func()) {
+	h.mu.Lock()
+	h.release = append(h.release, release)
+	h.mu.Unlock()
+}
+
+func (h *responseExposureHolds) finish() {
+	h.mu.Lock()
+	release := h.release
+	h.release = nil
+	h.mu.Unlock()
+	for _, fn := range release {
+		fn()
+	}
+}
+
 // A response's source exposure is recorded in the session recorder when the
 // response is received, before any response byte is delivered to the client, on
 // every path; finding kinds from a buffered scan are recorded before the scanned

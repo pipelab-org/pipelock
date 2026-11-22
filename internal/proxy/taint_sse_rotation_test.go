@@ -19,6 +19,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -568,4 +569,114 @@ func TestReverseDeliveryObserverLifecycle(t *testing.T) {
 	if released.Load() != 4 {
 		t.Fatalf("arm after finish releases=%d want 4", released.Load())
 	}
+}
+
+// holdAtFlushWriter records, for each flush that follows a body write, whether
+// the response's exposure was still held at that flush.
+type holdAtFlushWriter struct {
+	*httptest.ResponseRecorder
+	rec         *SessionState
+	unflushed   bool
+	heldAtFlush []int
+}
+
+func (w *holdAtFlushWriter) Write(p []byte) (int, error) {
+	w.unflushed = true
+	return w.ResponseRecorder.Write(p)
+}
+
+func (w *holdAtFlushWriter) Flush() {
+	if w.unflushed {
+		w.rec.mu.Lock()
+		w.heldAtFlush = append(w.heldAtFlush, len(w.rec.heldExposure))
+		w.rec.mu.Unlock()
+		w.unflushed = false
+	}
+	w.ResponseRecorder.Flush()
+}
+
+// With receipts required, a buffered response is flushed to the client by the
+// outcome path after the handler body. Its exposure must still be held at that
+// flush on forward, TLS-intercepted, /fetch and reverse paths, and released
+// once the handler returns.
+func TestResponseExposureHeldThroughOutcomeFlush(t *testing.T) {
+	check := func(t *testing.T, w *holdAtFlushWriter) {
+		t.Helper()
+		if w.Code != http.StatusOK || w.Body.Len() == 0 {
+			t.Fatalf("status=%d body=%q", w.Code, w.Body)
+		}
+		if w.unflushed || len(w.heldAtFlush) == 0 {
+			t.Fatalf("response not flushed after its last write: unflushed=%v flushes=%v", w.unflushed, w.heldAtFlush)
+		}
+		if last := w.heldAtFlush[len(w.heldAtFlush)-1]; last == 0 {
+			t.Fatalf("outcome flush ran after the exposure hold was released: %v", w.heldAtFlush)
+		}
+		w.rec.mu.Lock()
+		held := len(w.rec.heldExposure)
+		w.rec.mu.Unlock()
+		if held != 0 {
+			t.Fatalf("hold not released after the handler returned: %d", held)
+		}
+	}
+	const host = "api.vendor.example"
+	for _, surface := range []string{"forward", "intercept", "fetch"} {
+		t.Run(surface, func(t *testing.T) {
+			_, _, cfg, _, logger, m := testInterceptSetup(t)
+			cfg.Taint.Enabled = true
+			cfg.ForwardProxy.Enabled = true
+			cfg.FlightRecorder.RequireReceipts = true
+			cfg.DNS.HostOverrides = map[string][]string{host: {"93.184.216.34"}}
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			rph := newReceiptProxyHelper(t)
+			t.Cleanup(func() { _ = rph.rec.Close() })
+			p, err := New(cfg, logger, sc, m, WithReceiptEmitter(rph.emitter))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(p.Close)
+			rec := &SessionState{}
+			WithTaintRecorder(rec)(p)
+			rt := forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("reference material")), Request: r}, nil
+			})
+			var handler http.Handler
+			requestURL := "http://" + host + "/data"
+			switch surface {
+			case "intercept":
+				handler = newInterceptHandler(&InterceptContext{Config: cfg, Scanner: sc, Logger: logger, Metrics: m, TargetHost: host, TargetPort: "443", ClientIP: testLoopbackIP, Proxy: p}, rt)
+				requestURL = "https://" + host + "/data"
+			case "fetch":
+				p.client = &http.Client{Transport: rt}
+				handler = http.HandlerFunc(p.handleFetch)
+				requestURL = "/fetch?url=" + requestURL
+			default:
+				p.client = &http.Client{Transport: rt}
+				handler = http.HandlerFunc(p.handleForwardHTTP)
+			}
+			w := &holdAtFlushWriter{ResponseRecorder: httptest.NewRecorder(), rec: rec}
+			handler.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, requestURL, nil))
+			check(t, w)
+		})
+	}
+	t.Run("reverse", func(t *testing.T) {
+		cfg := reverseParityBaseConfig(t)
+		cfg.CrossRequestDetection.Enabled = false
+		cfg.SessionProfiling.Enabled = true
+		cfg.FlightRecorder.RequireReceipts = true
+		rp, p, _, _, closeRecorder, _ := newReverseParityHarnessWithReceipts(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = io.WriteString(w, "reference material")
+		})
+		t.Cleanup(closeRecorder)
+		target := "http://" + host + "/page"
+		idReq := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
+		resolved := edition.ResolveAgentIdentity(idReq, nil, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity)
+		rec := p.SessionMgrPtr().Load().GetOrCreate(responseTaintSessionKey(nil, resolved.Name, "192.0.2.1", resolved.Auth))
+		w := &holdAtFlushWriter{ResponseRecorder: httptest.NewRecorder(), rec: rec}
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
+		req.RemoteAddr = "192.0.2.1:1234"
+		rp.ServeHTTP(w, req)
+		check(t, w)
+	})
 }

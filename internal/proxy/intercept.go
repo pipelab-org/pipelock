@@ -686,6 +686,9 @@ func newInterceptHandler(
 	taintCache := &interceptTaintConfigCache{}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = ic.Proxy.withReceiptEvidence(r)
+		// Registered first so it runs last; see responseExposureHolds.
+		exposureHolds := &responseExposureHolds{}
+		defer exposureHolds.finish()
 		requestContext := *ic
 		ic := &requestContext
 		ic.taintConfigCache = taintCache
@@ -2582,10 +2585,8 @@ func newInterceptHandler(
 		responseTaintURL := r.URL.String()
 		observeResponseFindings, releaseResponseExposure := httpResponseFindingObserver(ic.taintRecorder, ic.taintConfig, responseTaintURL, responseTaintType, "forward_response")
 		observeResponseFindings(nil)
-		defer func() {
-			observeResponseFindings(responseFindingKinds)
-			releaseResponseExposure()
-		}()
+		exposureHolds.add(releaseResponseExposure)
+		defer func() { observeResponseFindings(responseFindingKinds) }()
 		stripUpstreamPipelockNamespace(resp)
 		if !applyFullResponsePolicy(nil, resp) {
 			reason := fullResponseRefusal(resp)

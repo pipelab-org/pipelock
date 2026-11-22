@@ -800,6 +800,12 @@ func (rp *ReverseProxyHandler) recordRequestWarningSignal(agent, clientIP, reque
 // then forward to upstream via the reverse proxy.
 func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r = rp.owner.withReceiptEvidence(r)
+	// Registered first so it runs last: the exposure holds armed for this
+	// response end after the outcome flush and receipt delivery confirmation.
+	// See responseExposureHolds for the receipts-off hand-off.
+	delivery := &reverseDeliveryObserver{}
+	var forwardWriter *reverseInformationalGuardWriter
+	defer delivery.finish()
 	var selectedReceiptShard receipt.EmitOpts
 	var admissionErr error
 	if rp.owner != nil {
@@ -1814,7 +1820,6 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		responseReceiptState.admissionReceiptID = reverseAllowReceipt.ActionID
 	}
 	var outcomeTracker *reverseOutcomeTracker
-	var forwardWriter *reverseInformationalGuardWriter
 	if cfg.FlightRecorder.RequireReceipts {
 		outcomeTracker = newReverseOutcomeTracker(cfg, withReceiptConfig(reverseAllowReceipt, cfg))
 		defer func() {
@@ -1896,8 +1901,6 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		r = r.WithContext(ctx)
 		defer cancel(nil)
 	}
-	delivery := &reverseDeliveryObserver{}
-	defer delivery.finish()
 	r = r.WithContext(context.WithValue(r.Context(), reverseDeliveryObserverKey{}, delivery))
 	forwardWriter = &reverseInformationalGuardWriter{
 		ResponseWriter: w,
@@ -1991,8 +1994,8 @@ func (d *reverseDeliveryObserver) call() {
 	}
 }
 
-// finish runs after httputil.ReverseProxy returns: the response has been
-// delivered or abandoned, so held exposure is released.
+// finish runs as ServeHTTP's last deferred call, after the response has been
+// delivered or abandoned, and releases held exposure.
 func (d *reverseDeliveryObserver) finish() {
 	d.mu.Lock()
 	d.finished = true
