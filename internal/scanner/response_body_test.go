@@ -1121,8 +1121,14 @@ func TestScanResponseBody_SeededRandomBinaryIsClean(t *testing.T) {
 	assertSeededRandomBinaryClean(t, 0, 12)
 }
 
+// Seeds 12-24 are two top-level tests: as one, the race detector put it within
+// noise of the CI ceiling for a single top-level test.
 func TestScanResponseBody_SeededRandomBinaryIsCleanUpperSeeds(t *testing.T) {
-	assertSeededRandomBinaryClean(t, 12, 24)
+	assertSeededRandomBinaryClean(t, 12, 18)
+}
+
+func TestScanResponseBody_SeededRandomBinaryIsCleanTopSeeds(t *testing.T) {
+	assertSeededRandomBinaryClean(t, 18, 24)
 }
 
 func assertSeededRandomBinaryClean(t *testing.T, first, last uint64) {
