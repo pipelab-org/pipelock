@@ -2137,7 +2137,7 @@ func RunHTTPListenerProxy(
 			if decision.Synthetic.notification {
 				w.WriteHeader(http.StatusAccepted)
 			} else {
-				withListenerWriteDeadline(w, listenerDownstreamWriteTimeout, func() {
+				withListenerWriteDeadline(w, func() {
 					_, _ = w.Write(decision.Synthetic.response)
 				})
 			}
@@ -2616,7 +2616,7 @@ func RunHTTPListenerProxy(
 			}
 		}()
 		writeOutput := func(output []byte) {
-			withListenerWriteDeadline(w, listenerDownstreamWriteTimeout, func() {
+			withListenerWriteDeadline(w, func() {
 				w.Header().Set("Content-Type", "application/json")
 				if len(output) == 0 {
 					writeEffectStatus(http.StatusAccepted)
@@ -2701,7 +2701,7 @@ func RunHTTPListenerProxy(
 			output := bytes.TrimSpace(buf.Bytes())
 			revocableWriter := &listenerStateMessageWriter{state: clientState, writer: w, opts: reqOpts}
 			var deliveryErr error
-			withListenerWriteDeadline(w, listenerDownstreamWriteTimeout, func() {
+			withListenerWriteDeadline(w, func() {
 				deliveryErr = effect.deliverDeniedReply(revocableWriter, output)
 			})
 			logMCPV3Error(safeLogW, deliveryErr)
@@ -2766,9 +2766,9 @@ func RunHTTPListenerProxy(
 	return nil
 }
 
-func withListenerWriteDeadline(w http.ResponseWriter, timeout time.Duration, write func()) {
+func withListenerWriteDeadline(w http.ResponseWriter, write func()) {
 	controller := http.NewResponseController(w)
-	if err := controller.SetWriteDeadline(time.Now().Add(timeout)); err == nil {
+	if err := controller.SetWriteDeadline(time.Now().Add(listenerDownstreamWriteTimeout)); err == nil {
 		defer func() { _ = controller.SetWriteDeadline(time.Time{}) }()
 	}
 	write()

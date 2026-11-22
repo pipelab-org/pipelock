@@ -104,7 +104,7 @@ func (r *mcpListenerLocalReply) finish() {
 	}
 	reply := mcpV3ReplyWriter{base: r, opts: r.opts, log: r.log, request: evidence}
 	var err error
-	withListenerWriteDeadline(r.writer, listenerDownstreamWriteTimeout, func() {
+	withListenerWriteDeadline(r.writer, func() {
 		switch {
 		case r.receiptFailure:
 			reply.sendDenied = true

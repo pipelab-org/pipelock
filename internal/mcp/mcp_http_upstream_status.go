@@ -261,7 +261,7 @@ func (e upstreamClientError) writeIfActive(w http.ResponseWriter, state *mcpList
 			reason = "listener reply already claimed"
 			return
 		}
-		withListenerWriteDeadline(w, listenerDownstreamWriteTimeout, func() {
+		withListenerWriteDeadline(w, func() {
 			framed = e.write(w, opts.receiptEffects.enabled)
 		})
 	}) {
