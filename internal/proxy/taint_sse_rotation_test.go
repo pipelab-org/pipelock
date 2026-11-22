@@ -95,6 +95,40 @@ type countingFlusher struct{ n int }
 
 func (f *countingFlusher) Flush() { f.n++ }
 
+type callbackFlusher struct {
+	http.ResponseWriter
+	onFlush func()
+}
+
+func (f callbackFlusher) Flush() { f.onFlush() }
+
+func TestSSEDeliveryBracketsFlush(t *testing.T) {
+	for _, name := range []string{"forward_and_intercept", "reverse"} {
+		t.Run(name, func(t *testing.T) {
+			calls := 0
+			observe := func() { calls++ }
+			flushed := false
+			flusher := callbackFlusher{ResponseWriter: httptest.NewRecorder(), onFlush: func() {
+				flushed = true
+				if calls != 1 {
+					t.Errorf("observations before underlying flush = %d, want 1", calls)
+				}
+			}}
+			if name == "reverse" {
+				w := &reverseInformationalGuardWriter{ResponseWriter: flusher, delivery: &reverseDeliveryObserver{observe: observe}}
+				if err := w.FlushError(); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				sseDeliveryFlusher{f: flusher, observe: observe}.Flush()
+			}
+			if !flushed || calls != 2 {
+				t.Fatalf("flushed = %t, observations = %d, want true and 2", flushed, calls)
+			}
+		})
+	}
+}
+
 // Every scanner the dispatcher can pick writes through the delivery hook, with
 // and without a flusher. The reverse path calls the dispatcher with a nil
 // flusher and a pipe writer.

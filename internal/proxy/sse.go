@@ -61,19 +61,15 @@ type SSEDispatchOptions struct {
 	A2A             *config.A2AScanning
 	GenericSSE      *config.GenericSSEScanning
 	Generic         mcp.GenericSSEScanOptions
-	// OnDelivery, when set, runs before and after every write of stream bytes
-	// to the client and after every flush, on whichever scanner runs (A2A,
-	// generic, or pass-through). Transports record the stream's exposure from
-	// it. The call before a write records the stream under the task current
-	// at that moment; the calls after the write and flush catch a task that
-	// rotated while the bytes were being delivered. It runs on the scanning
-	// goroutine and must be cheap: the response observer suppresses repeats.
+	// OnDelivery, when set, runs before and after client writes and flushes
+	// on whichever scanner runs (A2A, generic, or pass-through). Transports
+	// use it to record exposure under the task current at each check. It runs
+	// on the scanning goroutine and must be cheap: the response observer
+	// suppresses repeats.
 	OnDelivery func()
 }
 
-// sseDeliveryWriter brackets each client write with OnDelivery calls so an
-// event is recorded under every task current between the start and the end
-// of its delivery.
+// sseDeliveryWriter records the current task's exposure on both sides of a write.
 type sseDeliveryWriter struct {
 	w       io.Writer
 	observe func()
@@ -86,14 +82,15 @@ func (d sseDeliveryWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// sseDeliveryFlusher re-checks after a flush, which is when buffered bytes
-// actually leave for the client.
+// sseDeliveryFlusher checks on both sides of the flush that releases buffered
+// bytes to the client.
 type sseDeliveryFlusher struct {
 	f       http.Flusher
 	observe func()
 }
 
 func (d sseDeliveryFlusher) Flush() {
+	d.observe()
 	d.f.Flush()
 	d.observe()
 }

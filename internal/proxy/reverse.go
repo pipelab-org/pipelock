@@ -1993,9 +1993,10 @@ func (w *reverseInformationalGuardWriter) WriteHeader(code int) {
 // hijack, which the reverse proxy needs for streaming and upgrades.
 func (w *reverseInformationalGuardWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// FlushError flushes the real writer, then re-checks delivery: a flush is when
-// buffered stream bytes leave for the client.
+// FlushError checks delivery on both sides of the flush that releases buffered
+// bytes to the client.
 func (w *reverseInformationalGuardWriter) FlushError() error {
+	w.delivery.call()
 	err := http.NewResponseController(w.ResponseWriter).Flush()
 	w.delivery.call()
 	return err
