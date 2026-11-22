@@ -34,7 +34,8 @@ const (
 	FindingAgentCard HostileFindingKind = "agent_card"
 	// FindingInspectionIncomplete comes from A2A inspection bounds.
 	FindingInspectionIncomplete HostileFindingKind = "inspection_incomplete"
-	// FindingScanError comes from an already hostile ResponseScanResult.ScanError.
+	// FindingScanError is retained for recorded state. Response paths no longer
+	// produce it: a failed scan blocks delivery, so it is not exposure evidence.
 	FindingScanError HostileFindingKind = "scan_error"
 	// FindingSSEEventTooLarge comes from mcp.ErrSSEEventTooLarge.
 	FindingSSEEventTooLarge HostileFindingKind = "sse_event_too_large"

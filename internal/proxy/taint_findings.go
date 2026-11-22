@@ -13,14 +13,16 @@ func responseScanFindingKinds(result scanner.ResponseScanResult) []session.Hosti
 	if result.Clean {
 		return nil
 	}
+	// Buffered handlers refuse the response when inspection fails. Keep any
+	// wording matches from completed checks, including those retained by Shield.
 	var kinds []session.HostileFindingKind
-	if result.Failed() {
-		kinds = append(kinds, session.FindingScanError)
-	}
 	if len(result.Matches) > 0 {
 		kinds = append(kinds, session.FindingWording)
 	}
 	if len(kinds) == 0 {
+		if result.Failed() {
+			return nil
+		}
 		kinds = append(kinds, session.FindingUnattributed)
 	}
 	return session.MergeFindingKinds(kinds)
