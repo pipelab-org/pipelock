@@ -11,7 +11,6 @@ import (
 	"errors"
 	"hash"
 	"io"
-	"math/big"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -486,10 +485,12 @@ func appendJSONStrings(texts []string, body []byte) ([]string, bool) {
 	if ok {
 		return append(texts, staged...), true
 	}
-	// Text that is not JSON at all is covered by the raw token scan. Inside a
-	// JSON string only a \u escape can spell a digit the scan cannot see.
-	if bytes.Contains(body, []byte(`\u`)) {
-		return append(texts, staged...), false
+	// Keep what decoded before the failure. Text that is not JSON at all is
+	// covered by the raw token scan, except where a \u escape spells a digit
+	// or an exponent literal names a whole number the scan cannot read.
+	texts = append(texts, staged...)
+	if bytes.Contains(body, []byte(`\u`)) || hasExponentLiteral(body) {
+		return texts, false
 	}
 	return texts, true
 }
@@ -514,29 +515,63 @@ func appendJSONStringsFromDecoder(texts []string, decoder *json.Decoder) ([]stri
 	}
 }
 
-// jsonWholeNumberMaxExponent bounds the exponent a number literal may carry
-// before it is expanded; a larger one cannot name an 8-14 digit token and
-// would only cost memory to expand.
-const jsonWholeNumberMaxExponent = 64
+// jsonWholeNumberMaxDigits bounds the integer digits a number literal may
+// expand to; a longer value cannot name an 8-14 digit token.
+const jsonWholeNumberMaxDigits = 64
 
 // jsonWholeNumberDigits returns the integer digits of a JSON number literal
-// that denotes a whole number, without sign or exponent. Fractional values
-// and literals with an outsized exponent report false.
+// that denotes a whole number, without sign or exponent, using string
+// arithmetic only. Fractional values and values longer than
+// jsonWholeNumberMaxDigits report false.
 func jsonWholeNumberDigits(literal string) (string, bool) {
-	if !strings.ContainsAny(literal, ".eE") {
-		return strings.TrimPrefix(literal, "-"), true
-	}
-	if i := strings.IndexAny(literal, "eE"); i >= 0 {
-		exp, err := strconv.Atoi(strings.TrimPrefix(literal[i+1:], "+"))
-		if err != nil || exp > jsonWholeNumberMaxExponent || exp < -jsonWholeNumberMaxExponent {
+	mantissa := strings.TrimPrefix(literal, "-")
+	exp := 0
+	if i := strings.IndexAny(mantissa, "eE"); i >= 0 {
+		raw := strings.TrimPrefix(mantissa[i+1:], "+")
+		if len(raw) > 6 {
+			// |exp| of a million or more: the value has no 8-14 digit form,
+			// unless leading or trailing zeros pad it, which a body cannot
+			// carry in this many bytes anyway.
 			return "", false
 		}
+		v, err := strconv.Atoi(raw)
+		if err != nil {
+			return "", false
+		}
+		exp, mantissa = v, mantissa[:i]
 	}
-	r, ok := new(big.Rat).SetString(literal)
-	if !ok || !r.IsInt() {
+	intPart, fracPart, _ := strings.Cut(mantissa, ".")
+	digits := intPart + fracPart
+	point := len(intPart) + exp
+	trimmed := strings.TrimLeft(digits, "0")
+	point -= len(digits) - len(trimmed)
+	digits = strings.TrimRight(trimmed, "0")
+	if digits == "" {
+		return "0", true
+	}
+	if point < len(digits) || point > jsonWholeNumberMaxDigits {
 		return "", false
 	}
-	return new(big.Int).Abs(r.Num()).String(), true
+	return digits + strings.Repeat("0", point-len(digits)), true
+}
+
+// hasExponentLiteral reports whether text holds a digit, an exponent marker,
+// an optional sign, and a digit: a number literal whose whole value the raw
+// digit scan cannot read.
+func hasExponentLiteral(text []byte) bool {
+	for i := 1; i+1 < len(text); i++ {
+		if (text[i] != 'e' && text[i] != 'E') || text[i-1] < '0' || text[i-1] > '9' {
+			continue
+		}
+		next := i + 1
+		if text[next] == '+' || text[next] == '-' {
+			next++
+		}
+		if next < len(text) && text[next] >= '0' && text[next] <= '9' {
+			return true
+		}
+	}
+	return false
 }
 
 // mintServerID records value as an ID the origin in target issued, unless

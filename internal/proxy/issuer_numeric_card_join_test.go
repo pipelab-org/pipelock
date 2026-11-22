@@ -668,6 +668,8 @@ func TestIssuerNumericLedgerIsolationAndEdgeCases(t *testing.T) {
 			{"NDJSON exponent whole number", `{"a":1}` + "\n" + `{"v":` + exponent + `}`},
 			{"fraction-spelled whole number", `{"v":` + cardA1 + `.000}`},
 			{"undecodable text with escaped digits", `note=[{"v":"` + escapedNum + `"`},
+			{"NDJSON exponent before a broken record", `{"v":` + exponent + `}` + "\n" + `{"broken":]`},
+			{"undecodable text with exponent literal", `v=` + exponent},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				store := newIssuerQueryStore()
@@ -681,7 +683,7 @@ func TestIssuerNumericLedgerIsolationAndEdgeCases(t *testing.T) {
 		// Control: plain text with versions and IPs keeps history complete, and
 		// a fractional number records no digits, so an unsent pair still mints.
 		store := newIssuerQueryStore()
-		store.recordSent("sess", origin, nil, []byte(`v=1.2.3&ip=10.0.0.1&r=0.5e1&f={"x":12.5}`), true, time.Now())
+		store.recordSent("sess", origin, nil, []byte(`v=1.2.3&ip=10.0.0.1&f={"x":12.5}`), true, time.Now())
 		store.mintNumericIDs("sess", origin, []string{cardA1, cardA2})
 		if !store.numericIDsIssued("sess", origin, []string{cardA1, cardA2}) {
 			t.Fatal("unsent server-first pair failed to mint after a plain form body")
@@ -701,8 +703,14 @@ func TestIssuerNumericLedgerIsolationAndEdgeCases(t *testing.T) {
 			{"411111110e-1", "41111111", true},
 			{"4.11111115e7", "", false},
 			{"12.5", "", false},
+			{"0." + strings.Repeat("0", 60) + "41111111e68", "41111111", true},
+			{"41111111" + strings.Repeat("0", 60) + "e-60", "41111111", true},
+			{"0", "0", true},
+			{"0.0e5", "0", true},
 			{"1e400", "", false},
 			{"1e-400", "", false},
+			{"1e9999999", "", false},
+			{"1" + strings.Repeat("0", 70), "", false},
 		} {
 			got, ok := jsonWholeNumberDigits(tc.in)
 			if got != tc.want || ok != tc.ok {
