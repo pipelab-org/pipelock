@@ -40,6 +40,7 @@ func TestSeverityFor_FullVocabulary(t *testing.T) {
 		blockreason.RequestBodyInspectionLimit: blockreason.SeverityWarn,
 		// critical
 		blockreason.DomainBlocklist:        blockreason.SeverityCritical,
+		blockreason.ConnectPortNotAllowed:  blockreason.SeverityCritical,
 		blockreason.SSRFPrivateIP:          blockreason.SeverityCritical,
 		blockreason.SSRFMetadata:           blockreason.SeverityCritical,
 		blockreason.SSRFDNSRebind:          blockreason.SeverityCritical,
@@ -89,6 +90,7 @@ func TestRetryFor_FullVocabulary(t *testing.T) {
 		blockreason.OutboundEnvelopeFailed: blockreason.RetryTransient,
 		// policy
 		blockreason.DomainBlocklist:            blockreason.RetryPolicy,
+		blockreason.ConnectPortNotAllowed:      blockreason.RetryPolicy,
 		blockreason.PathEntropy:                blockreason.RetryPolicy,
 		blockreason.QueryEntropy:               blockreason.RetryPolicy,
 		blockreason.BodyEntropy:                blockreason.RetryPolicy,

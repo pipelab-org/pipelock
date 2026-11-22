@@ -287,6 +287,7 @@ func (c *Config) Clone() *Config {
 		clone.PromptInjectionDetection = &p
 	}
 	clone.lapsedScannerExceptions = slices.Clone(c.lapsedScannerExceptions)
+	clone.ForwardProxy.ConnectPorts = slices.Clone(c.ForwardProxy.ConnectPorts)
 	clone.FetchProxy.Monitoring.PathEntropyExclusions = slices.Clone(c.FetchProxy.Monitoring.PathEntropyExclusions)
 	clone.FetchProxy.Monitoring.QueryEntropyParamExclusions = slices.Clone(c.FetchProxy.Monitoring.QueryEntropyParamExclusions)
 	clone.FetchProxy.Monitoring.OAuthAuthorizationEndpoints = slices.Clone(c.FetchProxy.Monitoring.OAuthAuthorizationEndpoints)

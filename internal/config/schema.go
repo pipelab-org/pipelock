@@ -1072,6 +1072,10 @@ type ForwardProxy struct {
 	SNIVerification        *bool    `yaml:"sni_verification"`
 	SNIRequireTLS          *bool    `yaml:"sni_require_tls"`
 	RedirectWebSocketHosts []string `yaml:"redirect_websocket_hosts"`
+	// ConnectPorts, when non-empty, limits CONNECT tunnels to these TCP
+	// ports. Empty admits any port. It restricts which ports a tunnel may
+	// open; it does not make the tunnel's payload visible.
+	ConnectPorts []int `yaml:"connect_ports" json:"ConnectPorts,omitempty"`
 }
 
 // TLSInterception configures CONNECT tunnel decryption for body/header scanning.
