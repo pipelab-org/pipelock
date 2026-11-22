@@ -61,6 +61,41 @@ type SSEDispatchOptions struct {
 	A2A             *config.A2AScanning
 	GenericSSE      *config.GenericSSEScanning
 	Generic         mcp.GenericSSEScanOptions
+	// OnDelivery, when set, runs before and after every write of stream bytes
+	// to the client and after every flush, on whichever scanner runs (A2A,
+	// generic, or pass-through). Transports record the stream's exposure from
+	// it. The call before a write records the stream under the task current
+	// at that moment; the calls after the write and flush catch a task that
+	// rotated while the bytes were being delivered. It runs on the scanning
+	// goroutine and must be cheap: the response observer suppresses repeats.
+	OnDelivery func()
+}
+
+// sseDeliveryWriter brackets each client write with OnDelivery calls so an
+// event is recorded under every task current between the start and the end
+// of its delivery.
+type sseDeliveryWriter struct {
+	w       io.Writer
+	observe func()
+}
+
+func (d sseDeliveryWriter) Write(p []byte) (int, error) {
+	d.observe()
+	n, err := d.w.Write(p)
+	d.observe()
+	return n, err
+}
+
+// sseDeliveryFlusher re-checks after a flush, which is when buffered bytes
+// actually leave for the client.
+type sseDeliveryFlusher struct {
+	f       http.Flusher
+	observe func()
+}
+
+func (d sseDeliveryFlusher) Flush() {
+	d.f.Flush()
+	d.observe()
 }
 
 const nativeSSEFindingRecords = 2
@@ -108,6 +143,12 @@ func DispatchSSEScan(
 	sc *scanner.Scanner,
 	opts SSEDispatchOptions,
 ) error {
+	if opts.OnDelivery != nil {
+		w = sseDeliveryWriter{w: w, observe: opts.OnDelivery}
+		if flusher != nil {
+			flusher = sseDeliveryFlusher{f: flusher, observe: opts.OnDelivery}
+		}
+	}
 	var err error
 	if opts.IsA2A {
 		err = mcp.ScanA2AStreamWithOptions(ctx, body, w, flusher, sc, mcp.A2AStreamOptions{Config: opts.A2A, Warning: opts.Generic})

@@ -686,6 +686,8 @@ func newInterceptHandler(
 	taintCache := &interceptTaintConfigCache{}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = ic.Proxy.withReceiptEvidence(r)
+		// Settle an empty unknown-length HTTP/2 body before taint classifies it.
+		r = settleUnknownLengthBody(r, unknownLengthBodyWait)
 		requestContext := *ic
 		ic := &requestContext
 		ic.taintConfigCache = taintCache
@@ -2646,6 +2648,9 @@ func newInterceptHandler(
 				IsA2A:           isA2A,
 				A2A:             &ic.Config.A2AScanning,
 				GenericSSE:      &ic.Config.ResponseScanning.SSEStreaming,
+				// A task can rotate while the stream stays open. Re-record the
+				// stream for events delivered under the new task.
+				OnDelivery: func() { observeResponseFindings(nil) },
 				Generic: mcp.GenericSSEScanOptions{
 					Target:             targetURL,
 					Suppress:           ic.Config.Suppress,

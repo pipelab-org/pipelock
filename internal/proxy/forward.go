@@ -1158,6 +1158,8 @@ func connectPostCEEAdaptiveState(snapshot ceeEntropySnapshot, fallback session.R
 // request, and streams the raw response back to the client.
 func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	r = p.withReceiptEvidence(r)
+	// Settle an empty unknown-length HTTP/2 body before taint classifies it.
+	r = settleUnknownLengthBody(r, unknownLengthBodyWait)
 	start := time.Now()
 
 	clientIP, requestID := requestMeta(r)
@@ -3010,6 +3012,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			IsA2A:           isA2A,
 			A2A:             &cfg.A2AScanning,
 			GenericSSE:      &cfg.ResponseScanning.SSEStreaming,
+			// A task can rotate while the stream stays open. Re-record the
+			// stream for events delivered under the new task.
+			OnDelivery: func() { observeResponseFindings(nil) },
 			Generic: mcp.GenericSSEScanOptions{
 				Target:             targetURL,
 				Suppress:           cfg.Suppress,

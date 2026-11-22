@@ -6,6 +6,7 @@ package proxy
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -116,16 +118,22 @@ func observeHTTPResponseFindings(rec session.Recorder, cfg *config.Config, rawUR
 // every path; finding kinds from a buffered scan are recorded before the scanned
 // body is delivered; streaming findings are recorded before the affected event
 // is released. Exposure remains recorded if a later check blocks delivery.
+// Streams also observe around every client write and flush (OnDelivery), so a
+// task that rotates while a stream is open, including between the check before
+// a write and the write itself, records the events delivered under it.
 //
 // httpResponseFindingObserver shares duplicate suppression across these calls
 // and the final observation, so EOF and repeated findings do not fill the bounded
-// source history with duplicates.
-// Calls belong to the response's handler goroutine.
+// source history with duplicates. It is safe for concurrent use: the reverse
+// path calls it from the scanner goroutine and from the client writer.
 func httpResponseFindingObserver(rec session.Recorder, cfg *config.Config, rawURL, contentType, kind string) func([]session.HostileFindingKind) {
+	var mu sync.Mutex
 	var observed bool
 	var observedTask string
 	var previous []session.HostileFindingKind
 	return func(kinds []session.HostileFindingKind) {
+		mu.Lock()
+		defer mu.Unlock()
 		merged := session.MergeFindingKinds(previous, kinds)
 		var currentTask string
 		if state, ok := rec.(session.TaskContextProvider); ok {
@@ -155,6 +163,101 @@ func requestHasBody(r *http.Request) bool {
 	}
 	return r.ContentLength < 0 && r.Body != nil && r.Body != http.NoBody
 }
+
+// unknownLengthBodyWait bounds how long a read-shaped HTTP/2 request waits for
+// its first body byte or end of stream before taint classifies it. A client
+// that ends the stream with an empty DATA frame sends it right after HEADERS.
+const unknownLengthBodyWait = 500 * time.Millisecond
+
+// settleUnknownLengthBody resolves a read-shaped HTTP/2 request whose length
+// is unknown. A client may send HEADERS without END_STREAM and then end the
+// stream with an empty DATA frame, so the server reports an unknown length for
+// a request that carries no body, and requestHasBody counts it as one. This
+// waits up to wait for the first body byte or end of stream. A stream that
+// ends empty is returned as a bodyless request. Data, a read error, or no
+// answer within wait keeps the body, and with it the publish classification;
+// any byte already read is replayed to later readers.
+//
+// HTTP/1.1 chunked requests are left alone: they keep counting as bodied.
+// Only methods whose class depends on body presence are settled.
+func settleUnknownLengthBody(r *http.Request, wait time.Duration) *http.Request {
+	if r == nil || r.ProtoMajor < 2 || r.ContentLength >= 0 || len(r.TransferEncoding) > 0 || len(r.Trailer) > 0 ||
+		r.Body == nil || r.Body == http.NoBody {
+		return r
+	}
+	switch strings.ToUpper(r.Method) {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+	default:
+		return r
+	}
+	body := peekRequestBody(r.Body)
+	settled := *r
+	if body.await(wait) && len(body.peeked) == 0 && errors.Is(body.err, io.EOF) {
+		settled.Body = http.NoBody
+		settled.ContentLength = 0
+		return &settled
+	}
+	settled.Body = body
+	return &settled
+}
+
+type peekResult struct {
+	data []byte
+	err  error
+}
+
+// peekedRequestBody reads one byte of a request body on a separate goroutine
+// so the wait for it can be bounded, and replays that read to later readers.
+// Reads after a timed-out wait take the pending result first, so the
+// underlying body never has two readers.
+type peekedRequestBody struct {
+	body   io.ReadCloser
+	result chan peekResult
+	done   bool
+	peeked []byte
+	err    error
+}
+
+func peekRequestBody(body io.ReadCloser) *peekedRequestBody {
+	p := &peekedRequestBody{body: body, result: make(chan peekResult, 1)}
+	go func() {
+		buf := make([]byte, 1)
+		n, err := body.Read(buf)
+		p.result <- peekResult{data: buf[:n], err: err}
+	}()
+	return p
+}
+
+// await reports whether the peek finished within wait.
+func (p *peekedRequestBody) await(wait time.Duration) bool {
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case res := <-p.result:
+		p.done, p.peeked, p.err = true, res.data, res.err
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+func (p *peekedRequestBody) Read(b []byte) (int, error) {
+	if !p.done {
+		res := <-p.result
+		p.done, p.peeked, p.err = true, res.data, res.err
+	}
+	if len(p.peeked) > 0 {
+		n := copy(b, p.peeked)
+		p.peeked = p.peeked[n:]
+		return n, nil
+	}
+	if p.err != nil {
+		return 0, p.err
+	}
+	return p.body.Read(b)
+}
+
+func (p *peekedRequestBody) Close() error { return p.body.Close() }
 
 type forwardTaskAction struct {
 	subject string
