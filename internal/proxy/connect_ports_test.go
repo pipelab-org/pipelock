@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,6 +29,15 @@ func countingListener(t *testing.T) (net.Listener, *atomic.Int32) {
 	}
 	t.Cleanup(func() { _ = ln.Close() })
 	var accepted atomic.Int32
+	var mu sync.Mutex
+	var held []net.Conn
+	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, conn := range held {
+			_ = conn.Close()
+		}
+	})
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -35,10 +45,9 @@ func countingListener(t *testing.T) (net.Listener, *atomic.Int32) {
 				return
 			}
 			accepted.Add(1)
-			go func() {
-				time.Sleep(time.Second)
-				_ = conn.Close()
-			}()
+			mu.Lock()
+			held = append(held, conn)
+			mu.Unlock()
 		}
 	}()
 	return ln, &accepted
@@ -101,7 +110,8 @@ func TestConnectPortsAdmission(t *testing.T) {
 			if resp.StatusCode != http.StatusForbidden || resp.Header.Get(blockreason.HeaderReason) != string(blockreason.ConnectPortNotAllowed) {
 				t.Fatalf("CONNECT status=%d reason=%q, want 403 %s", resp.StatusCode, resp.Header.Get(blockreason.HeaderReason), blockreason.ConnectPortNotAllowed)
 			}
-			time.Sleep(50 * time.Millisecond)
+			// The refusal is written before any dial, so a dial would already
+			// be counted by the time the response arrives.
 			if got := accepted.Load() - before; got != 0 {
 				t.Fatalf("refused CONNECT still dialed the upstream %d time(s)", got)
 			}
