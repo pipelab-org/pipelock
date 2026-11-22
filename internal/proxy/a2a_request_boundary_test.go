@@ -40,6 +40,7 @@ func TestA2ARequestBodyVerdictPrecedesUpstream(t *testing.T) {
 		t.Run("generic_body_scanning="+strconv.FormatBool(generic), func(t *testing.T) {
 			p := newForwardBoundaryProxy(t, func(cfg *config.Config) {
 				disableForwardBoundaryResponseTransforms(cfg)
+				cfg.Taint.Enabled = false
 				cfg.ResponseScanning.Enabled = true
 				cfg.DLP.ScanEnv = false
 				cfg.A2AScanning.Enabled = true

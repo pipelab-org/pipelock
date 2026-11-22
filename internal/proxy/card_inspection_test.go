@@ -313,6 +313,7 @@ func TestJSONInspectionProxyFragmentAttribution(t *testing.T) {
 
 func TestJSONInspectionForwardFragmentReceipt(t *testing.T) {
 	cfg := testScannerConfig()
+	cfg.Taint.Enabled = false
 	cfg.DLP.ScanEnv = false
 	cfg.RequestBodyScanning.Enabled = false
 	cfg.CrossRequestDetection.Enabled = true

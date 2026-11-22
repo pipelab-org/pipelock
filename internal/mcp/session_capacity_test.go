@@ -6,6 +6,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -37,6 +38,63 @@ func (s *capacityTestStore) GetOrCreate(key string) session.Recorder {
 	return s.rec
 }
 func (s *capacityTestStore) Delete(key string) { s.deletedKey = key }
+
+type rotatingListenerTestStore struct {
+	session.Store
+}
+
+func (s *rotatingListenerTestStore) CurrentStore() session.Store { return s.Store }
+
+func TestListenerRecorderFollowsStoreReplacement(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		startupStore bool
+		checkOff     bool
+	}{
+		{name: "enable after startup", checkOff: true},
+		{name: "observe retirement", startupStore: true, checkOff: true},
+		{name: "resume after retirement", startupStore: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var startupRecorder session.Recorder
+			store := &rotatingListenerTestStore{}
+			if tc.startupStore {
+				startupRecorder = &mockRecorder{}
+				store.Store = &capacityTestStore{rec: startupRecorder}
+			}
+			states := newMCPListenerClientStates(store)
+			state := states.stateForLegacySession("listener-client")
+			if state == nil {
+				t.Fatal("listener client was not admitted")
+			}
+			t.Cleanup(state.revoke)
+			if rec, err := states.recorderForRequest(state); err != nil || rec != startupRecorder {
+				t.Fatalf("startup recorder = (%T, %v), want (%T, nil)", rec, err, startupRecorder)
+			}
+
+			store.Store = nil
+			if tc.checkOff {
+				if rec, err := states.recorderForRequest(state); err != nil || rec != nil {
+					t.Fatalf("inactive recorder = (%T, %v), want (nil, nil)", rec, err)
+				}
+			}
+
+			replacement := &capacityTestStore{}
+			store.Store = replacement
+			if rec, err := states.recorderForRequest(state); !errors.Is(err, session.ErrCapacity) || rec != nil {
+				t.Fatalf("at capacity = (%T, %v), want (nil, ErrCapacity)", rec, err)
+			}
+			replacement.rec = &mockRecorder{}
+			if rec, err := states.recorderForRequest(state); err != nil || rec != replacement.rec {
+				t.Fatalf("replacement recorder = (%p, %v), want (%p, nil)", rec, err, replacement.rec)
+			}
+			states.forgetLegacySession("listener-client")
+			if replacement.deletedKey != state.key {
+				t.Fatal("listener cleanup missed the replacement store")
+			}
+		})
+	}
+}
 
 func TestSessionCapacityRefusesMCPInvocationsAudit(t *testing.T) {
 	for _, transport := range []string{"stdio", "sandbox", "http", "websocket"} {
@@ -256,5 +314,34 @@ func TestSessionCapacityRefusalKeepsRemediation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// With no session store and a registry full of principal states, an
+// anonymous legacy client gets the explicit unregistered fallback, which must
+// bind without a recorder instead of being refused as an unknown state.
+func TestListenerTransientFallbackBindsWithoutStore(t *testing.T) {
+	states := newMCPListenerClientStates(nil)
+	states.mu.Lock()
+	for i := range maxMCPListenerClients {
+		key := fmt.Sprintf("principal-%d", i)
+		state := newMCPListenerClientState("", key)
+		state.principal = true
+		states.clients[key] = state
+	}
+	states.mu.Unlock()
+	state, err := states.stateForLegacySessionWithCapacity("anonymous-legacy-client")
+	if err != nil || state == nil || !state.transient {
+		t.Fatalf("fallback = (%v, %v), want an unregistered transient state", state, err)
+	}
+	t.Cleanup(state.revoke)
+	if rec, err := states.recorderForRequest(state); err != nil || rec != nil {
+		t.Fatalf("transient recorder = (%T, %v), want (nil, nil)", rec, err)
+	}
+	// A reload that activates a store after the fallback was handed out must
+	// not let the request run with taint possible and no recorder.
+	states.store = &capacityTestStore{rec: &mockRecorder{}}
+	if rec, err := states.recorderForRequest(state); !errors.Is(err, session.ErrCapacity) || rec != nil {
+		t.Fatalf("transient after store activation = (%T, %v), want (nil, ErrCapacity)", rec, err)
 	}
 }

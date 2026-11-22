@@ -7,7 +7,7 @@ package config
 const MCPTaintRecoveryGuidance = "MCP stdio uses stdin for JSON-RPC: inline terminal approval is unavailable and ask fails closed. Every MCP session (stdio, HTTP/WS bridges, and listener principal, token and legacy partitions) is invocation-scoped, so admin task boundaries and runtime trust grants are rejected for all of them. A verified invocation can receive an exact task permission on the operator task route; that permission lasts until expiry or process exit because task rotation stays rejected. An action-scoped taint.trust_overrides entry without source_match (MCP sources record no origin URL) does not satisfy the task check. pipelock run applies it on reload; standalone pipelock mcp proxy reads taint config only at startup, and the restart that applies an override also discards that invocation's in-memory history. Source trust classifies future observations, including wording-only findings. Existing hostile history remains in effect. Inline approval cannot override a hostile block."
 
 // MCPTaintDiagnostics describes configuration prerequisites, not live coverage.
-// Recorder allocation is owned by the MCP entry points; listener identity and
+// Recorder allocation is owned by the runtime entry points. Listener identity and
 // recorder admission must also succeed before history can protect later calls.
 func (c *Config) MCPTaintDiagnostics() []Warning {
 	if c == nil {
@@ -15,10 +15,7 @@ func (c *Config) MCPTaintDiagnostics() []Warning {
 	}
 	recorder := "taint is disabled; cross-request taint protection is inactive"
 	if c.Taint.Enabled {
-		recorder = "taint is enabled: standalone MCP stdio/HTTP/WS bridges, including --sandbox, provision an invocation-scoped recorder even with session_profiling.enabled=false; pipelock run's MCP listener and HTTP proxy still need profiling for session history, so enable session_profiling and restart pipelock run; live allocation and RiskState support must be verified"
-		if c.SessionProfiling.Enabled {
-			recorder = "standalone MCP stdio subprocess and stdio-to-HTTP/WS upstream: session_profiling.enabled=true provisions an invocation-scoped recorder; live allocation and RiskState support must be verified"
-		}
+		recorder = "taint is enabled. Standalone MCP stdio and HTTP/WS bridges, including --sandbox, configure an invocation-scoped recorder. At startup, the pipelock run HTTP proxy and its MCP listener share a session store. Anomaly detection, adaptive enforcement, airlock, behavioral baselines, and the session admin API still require session profiling"
 	}
 	listener := "HTTP listener: authenticated principal state and anonymous legacy Mcp-Session-Id state can retain taint only with an admitted taint recorder; legacy headers are compatibility partitions, not verified caller identity"
 	if c.MCPSessionBinding.ListenerRequireStateToken != nil && *c.MCPSessionBinding.ListenerRequireStateToken {

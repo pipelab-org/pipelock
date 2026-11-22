@@ -164,6 +164,7 @@ type SessionState struct {
 	// expire residual scores before any writer adds points. Nil for sessions
 	// built outside a manager; those rely on the recovery paths alone.
 	adaptiveCfg                *atomic.Pointer[config.AdaptiveEnforcement]
+	airlockCfg                 *atomic.Pointer[config.Airlock]
 	residualRecovery           adaptiveRecoveryContext // immutable manager-owned reporting context
 	cleanRequests              int
 	atBlockAll                 bool // true when current level has block_all=true
@@ -227,7 +228,20 @@ func (s *SessionState) AirlockTier() string {
 // EscalateAirlock raises this session's containment tier from an adaptive
 // transport signal while preserving the airlock transition provenance.
 func (s *SessionState) EscalateAirlock(tier, trigger string) (changed bool, from, to string) {
-	return s.airlock.SetTierWithProvenance(tier, trigger, airlockSourceTriggers)
+	return s.escalateAirlockForScope("", tier, trigger)
+}
+
+func (s *SessionState) escalateAirlockForScope(scope, tier, trigger string) (changed bool, from, to string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Serialize the live-config check and tier write with releaseAirlockLanes.
+	// A response may still carry the airlock config that admitted it.
+	if s.airlockCfg != nil {
+		if cfg := s.airlockCfg.Load(); cfg == nil || !cfg.Enabled {
+			return false, "", ""
+		}
+	}
+	return s.airlockForScopeLocked(scope).SetTierWithProvenance(tier, trigger, airlockSourceTriggers)
 }
 
 // ForceSetAirlockTierAllScopes force-sets the session-wide airlock tier AND
@@ -247,6 +261,13 @@ func (s *SessionState) EscalateAirlock(tier, trigger string) (changed bool, from
 func (s *SessionState) ForceSetAirlockTierAllScopes(tier, trigger, source string) (changed bool, from, to string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !s.airlockAssignmentAllowedLocked(tier) {
+		current := s.airlock.Tier()
+		if current == "" {
+			current = config.AirlockTierNone
+		}
+		return false, current, current
+	}
 	changed, from, to = s.airlock.ForceSetTierWithProvenance(tier, trigger, source)
 	for _, st := range s.scopes {
 		scopeChanged, scopeFrom, _ := st.airlock.ForceSetTierWithProvenance(tier, trigger, source)
@@ -258,6 +279,20 @@ func (s *SessionState) ForceSetAirlockTierAllScopes(tier, trigger, source string
 		}
 	}
 	return changed, from, to
+}
+
+// airlockAssignmentAllowedLocked reports whether an operator assignment may
+// write tier. A release to none stays available when airlock is off so a
+// stored quarantine can still be cleared. Any other tier needs the live
+// airlock consumer: admission enforces a stored tier without reading the
+// flag, and timer recovery does not run while that consumer is absent.
+// Caller holds s.mu. A session with no manager pointer is not gated.
+func (s *SessionState) airlockAssignmentAllowedLocked(tier string) bool {
+	if tier == config.AirlockTierNone || s.airlockCfg == nil {
+		return true
+	}
+	cfg := s.airlockCfg.Load()
+	return cfg != nil && cfg.Enabled
 }
 
 // maxAdaptiveScopes bounds the per-session destination-scope cardinality.
@@ -349,12 +384,15 @@ func adaptiveScopeForHost(host string) string {
 // AirlockForScope returns the scoped airlock state for scope, creating it when
 // needed. An empty scope falls back to the legacy session-wide airlock.
 func (s *SessionState) AirlockForScope(scope string) *AirlockState {
-	scope = normalizeAdaptiveScope(scope)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.airlockForScopeLocked(normalizeAdaptiveScope(scope))
+}
+
+func (s *SessionState) airlockForScopeLocked(scope string) *AirlockState {
 	if scope == "" {
 		return &s.airlock
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	st := s.getOrCreateScopeLocked(scope)
 	if st == nil {
 		// Reserve the shared lane without adding this destination as a member.
@@ -2091,6 +2129,7 @@ func (sm *SessionManager) GetOrCreate(key string) *SessionState {
 		airlock:          AirlockState{tier: config.AirlockTierNone},
 		task:             newTaskContext("", now),
 		adaptiveCfg:      &sm.adaptiveCfgPtr,
+		airlockCfg:       &sm.airlockCfgPtr,
 		residualRecovery: adaptiveRecoveryContext{sessionKey: key, logger: sm.logger, metrics: sm.metrics},
 	}
 	sm.sessions[key] = sess
@@ -2156,6 +2195,12 @@ func (sm *SessionManager) RecordIPDomain(clientIP, domain string, cfg *config.Se
 // capacity, threshold, and cleanup interval changes take effect on the
 // next operation. Pass nil for adaptiveCfg to clear adaptive enforcement
 // (e.g., when it is disabled via hot reload).
+//
+// A nil or disabled airlock pointer does not release stored tiers here.
+// Admission enforces the tier without reading the airlock flag, so clearing
+// tiers before the proxy publishes the config that turns airlock off would
+// allow traffic the still-published policy quarantines. Reload calls
+// releaseUnenforcedAirlock after that publication.
 func (sm *SessionManager) UpdateConfig(cfg *config.SessionProfiling, adaptiveCfg *config.AdaptiveEnforcement, airlockCfg *config.Airlock) {
 	sm.cfgPtr.Store(cfg)
 	sm.adaptiveCfgPtr.Store(adaptiveCfg)
@@ -2179,6 +2224,89 @@ func (sm *SessionManager) UpdateConfig(cfg *config.SessionProfiling, adaptiveCfg
 		}
 	}
 	sm.mu.RUnlock()
+}
+
+// releaseUnenforcedAirlock drops every stored quarantine lane when airlock
+// has no recovering consumer. Timer recovery does not run while the airlock
+// pointer is nil or disabled, and idle expiry skips a quarantined session,
+// so a tier left behind denies traffic and holds its capacity slot until
+// process restart. Adaptive scores and escalation levels stay: disabling
+// adaptive stops denial and block_all, and re-enabling resumes recovery from
+// the stored clock. Taint and task state stay as well.
+func (sm *SessionManager) releaseUnenforcedAirlock() {
+	if sm == nil {
+		return
+	}
+	airlockCfg := sm.airlockCfgPtr.Load()
+	if airlockCfg != nil && airlockCfg.Enabled {
+		return
+	}
+
+	type releasedAirlock struct {
+		sess  *SessionState
+		lanes []scopedAirlockTransition
+	}
+	var released []releasedAirlock
+	sm.mu.RLock()
+	for _, sess := range sm.sessions {
+		lanes := sess.releaseAirlockLanes(airlockTriggerConfigDisabled, airlockSourceConfig)
+		if len(lanes) > 0 {
+			released = append(released, releasedAirlock{sess: sess, lanes: lanes})
+		}
+	}
+	sm.mu.RUnlock()
+
+	for _, rel := range released {
+		for _, lane := range rel.lanes {
+			target := lane.scope
+			if target == "" {
+				target = "session"
+			}
+			rel.sess.RecordEvent(SessionEvent{
+				Kind:     "airlock_deescalate",
+				Type:     airlockTriggerConfigDisabled,
+				Target:   target,
+				Detail:   lane.from + "->" + lane.to,
+				Severity: "info",
+			})
+			if sm.metrics != nil {
+				sm.metrics.RecordAirlockTransition(lane.from, lane.to, airlockTriggerConfigDisabled)
+			}
+			if sm.logger != nil {
+				sm.logger.LogAirlockDeescalate(rel.sess.key, lane.from, lane.to, "", "")
+			}
+		}
+	}
+}
+
+// releaseAirlockLanes force-sets every live quarantine lane to none. Cancel
+// callbacks are dropped, not fired: the consumer that would recover the
+// session is already gone, and tearing down a tunnel the operator just
+// allowed is the wrong direction. Caller holds sm.mu; this takes s.mu.
+func (s *SessionState) releaseAirlockLanes(trigger, source string) []scopedAirlockTransition {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []scopedAirlockTransition
+	if changed, from, to := releaseAirlockLane(&s.airlock, trigger, source); changed {
+		out = append(out, scopedAirlockTransition{from: from, to: to})
+	}
+	for scope, st := range s.scopes {
+		if changed, from, to := releaseAirlockLane(&st.airlock, trigger, source); changed {
+			out = append(out, scopedAirlockTransition{scope: scope, from: from, to: to})
+		}
+	}
+	return out
+}
+
+func releaseAirlockLane(a *AirlockState, trigger, source string) (bool, string, string) {
+	if tier := a.Tier(); tier == "" || tier == config.AirlockTierNone {
+		return false, tier, tier
+	}
+	changed, from, to := a.ForceSetTierWithProvenance(config.AirlockTierNone, trigger, source)
+	if !changed || from == "" || from == config.AirlockTierNone {
+		return false, from, to
+	}
+	return true, from, to
 }
 
 func (s *SessionState) recomputeScopedBlockAll(adaptiveCfg *config.AdaptiveEnforcement) {
@@ -3147,38 +3275,62 @@ func trySessionRecovery(rec session.Recorder, adaptiveCfg *config.AdaptiveEnforc
 // SessionState already satisfies session.Recorder via its RecordSignal,
 // RecordClean, EscalationLevel, and ThreatScore methods.
 type storeAdapter struct {
-	sm *SessionManager
+	sm   *SessionManager
+	live *atomic.Pointer[SessionManager]
 }
 
-func (a *storeAdapter) GetOrCreate(key string) session.Recorder {
-	sess := a.sm.GetOrCreate(key)
-	if sess == nil {
-		return nil
+func (a storeAdapter) manager() *SessionManager {
+	if a.live != nil {
+		return a.live.Load()
 	}
-	return sess
+	return a.sm
 }
 
-func (a *storeAdapter) Delete(key string) {
-	a.sm.Delete(key)
+// CurrentStore returns a comparable handle for the current manager, or nil
+// when session storage is off. Long-lived listeners use it to recognize a
+// replacement and stop reusing recorders admitted by the retired manager.
+func (a storeAdapter) CurrentStore() session.Store {
+	if sm := a.manager(); sm != nil {
+		return storeAdapter{sm: sm}
+	}
+	return nil
+}
+
+func (a storeAdapter) GetOrCreate(key string) session.Recorder {
+	if sm := a.manager(); sm != nil {
+		if sess := sm.GetOrCreate(key); sess != nil {
+			return sess
+		}
+	}
+	return nil
+}
+
+func (a storeAdapter) Delete(key string) {
+	if sm := a.manager(); sm != nil {
+		sm.Delete(key)
+	}
 }
 
 // EvictIfUnprotected uses the same enforcement predicate as shared capacity
 // eviction. Listener state may retain a recorder after its clean store entry
 // was evicted, so inspect that recorder even when the map no longer holds it.
-func (a *storeAdapter) EvictIfUnprotected(key string, recorder session.Recorder) bool {
-	sess, ok := recorder.(*SessionState)
-	if !ok || sess == nil {
-		return false
+func (a storeAdapter) EvictIfUnprotected(key string, recorder session.Recorder) bool {
+	sm := a.manager()
+	if sm == nil {
+		return recorder == nil
 	}
-	sm := a.sm
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	if sess.key != key {
+	current := sm.sessions[key]
+	if recorder == nil {
+		return current == nil
+	}
+	sess, ok := recorder.(*SessionState)
+	if !ok || sess == nil || sess.key != key || sess.airlockCfg != &sm.airlockCfgPtr {
 		return false
 	}
-	current := sm.sessions[key]
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
 	if current != nil && current != sess {
 		// Never remove a replacement created by another owner of this key.
 		return false
@@ -3199,7 +3351,7 @@ func (a *storeAdapter) EvictIfUnprotected(key string, recorder session.Recorder)
 
 // AsStore returns a session.Store interface for this SessionManager.
 func (sm *SessionManager) AsStore() session.Store {
-	return &storeAdapter{sm: sm}
+	return storeAdapter{sm: sm}
 }
 
 // Delete removes one transport-owned session. Callers use unique internal

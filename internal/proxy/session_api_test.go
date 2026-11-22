@@ -59,6 +59,38 @@ func newTestSessionAPIHandler(t *testing.T, sm *SessionManager) *SessionAPIHandl
 	})
 }
 
+func TestSessionAPI_RequiresProfilingWithTaintStore(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.KillSwitch.APIToken = testSessionAPIToken
+	p := newTestProxyWithConfig(t, cfg)
+	if p.sessionMgrPtr.Load() == nil || p.sessionAPI == nil {
+		t.Fatal("test requires the taint store and a configured session API")
+	}
+	for _, phase := range []struct {
+		profiling bool
+		status    int
+	}{
+		{false, http.StatusServiceUnavailable},
+		{true, http.StatusOK},
+		{false, http.StatusServiceUnavailable},
+	} {
+		if phase.profiling != p.CurrentConfig().SessionProfiling.Enabled {
+			next := p.CurrentConfig().Clone()
+			next.SessionProfiling.Enabled = phase.profiling
+			if !p.Reload(next, scanner.MustNew(next)) {
+				t.Fatal("reload rejected")
+			}
+		}
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/sessions", nil)
+		req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
+		w := httptest.NewRecorder()
+		p.sessionAPI.HandleList(w, req)
+		if w.Code != phase.status {
+			t.Fatalf("profiling=%t: status=%d, want %d; body=%s", phase.profiling, w.Code, phase.status, w.Body.String())
+		}
+	}
+}
+
 func TestSessionAPI_HandleList(t *testing.T) {
 	t.Run("returns sessions sorted", func(t *testing.T) {
 		sm, cleanup := setupSessionAPITestManager(t)

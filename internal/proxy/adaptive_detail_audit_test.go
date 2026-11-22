@@ -125,7 +125,7 @@ func TestAdaptiveAirlockEntryDoesNotEmitBlockEvent(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Airlock.Enabled = true
 	cfg.Airlock.Triggers.OnElevated = config.AirlockTierSoft
-	sm := NewSessionManager(&cfg.SessionProfiling, &cfg.AdaptiveEnforcement, nil)
+	sm := NewSessionManager(&cfg.SessionProfiling, &cfg.AdaptiveEnforcement, nil, SessionManagerOptions{AirlockCfg: &cfg.Airlock})
 	t.Cleanup(sm.Close)
 	sess := sm.GetOrCreate("airlock-entry")
 	sess.RecordScopedSignal("dest.example", session.SignalBlock, 1)

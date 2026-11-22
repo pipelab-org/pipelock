@@ -6,8 +6,10 @@ package recorder
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 var tryAcquireEvidenceCeremonyLock = tryLockEvidenceFileForExpiry
@@ -53,7 +55,7 @@ func (l *EvidenceCeremonyLock) Close() error {
 
 func acquireEvidenceWriterCeremonyLock(dir string) (*os.File, os.FileInfo, error) {
 	if !supportsEvidenceCeremonyLock() {
-		return nil, nil, nil
+		return nil, nil, checkLegacyEvidenceFormat(dir)
 	}
 	file, info, err := openEvidenceCeremonyLock(dir)
 	if err != nil {
@@ -63,7 +65,29 @@ func acquireEvidenceWriterCeremonyLock(dir string) (*os.File, os.FileInfo, error
 		_ = file.Close()
 		return nil, nil, fmt.Errorf("locking recorder against receipt ceremonies: %w", err)
 	}
+	if err := checkLegacyEvidenceFormat(dir); err != nil {
+		return nil, nil, errors.Join(err, unlockEvidenceFile(file), file.Close())
+	}
 	return file, info, nil
+}
+
+// checkLegacyEvidenceFormat refuses a legacy write into a directory that a v3
+// writer has committed to. A directory that does not exist yet holds no v3
+// files; the caller's own open or create reports whether it can be used.
+func checkLegacyEvidenceFormat(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("checking legacy evidence directory format: %w", err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".receipt-v3.jsonl") {
+			return errors.New("legacy receipts require a new evidence directory after a v3 switch")
+		}
+	}
+	return nil
 }
 
 // WithEvidenceWriterCeremonyLock runs one non-recorder evidence write under

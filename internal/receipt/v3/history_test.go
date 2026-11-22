@@ -56,13 +56,18 @@ func (s *testStream) public() ed25519.PublicKey {
 
 func (s *testStream) add(kind string, body any) {
 	s.t.Helper()
+	s.addVersion(kind, 1, body)
+}
+
+func (s *testStream) addVersion(kind string, version int64, body any) {
+	s.t.Helper()
 	bodyJSON, err := canonicalJSON(body)
 	if err != nil {
 		s.t.Fatal(err)
 	}
 	signer := Digest(s.public())
 	payload, err := canonicalJSON(Common{
-		Kind: kind, BodyV: 1, V: 3, Body: bodyJSON, Prev: s.tip,
+		Kind: kind, BodyV: version, V: 3, Body: bodyJSON, Prev: s.tip,
 		Seq: s.seq, Signer: signer, Stream: s.id, TS: "2026-01-01T00:00:00.000Z",
 	})
 	if err != nil {
@@ -428,6 +433,9 @@ func testIncompleteLegacyGroup(t *testing.T) {
 	result, err := VerifyPaths(t.Context(), paths, opts)
 	if err != nil || !hasFinding(result, codeLegacyGroupIncomplete) {
 		t.Fatalf("expected incomplete group: %+v, %v", result, err)
+	}
+	if _, _, err := startupHead(result, 0); result.Verdict != "INCOMPLETE" || err == nil || !strings.Contains(err.Error(), codeLegacyGroupIncomplete) {
+		t.Errorf("incomplete legacy group passed startup verification: %s (%v)", result.Verdict, err)
 	}
 	mutant, err := verifyPaths(t.Context(), paths, opts, codeLegacyGroupIncomplete)
 	if err != nil {

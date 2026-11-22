@@ -125,7 +125,9 @@ func TestCheckRedirect_ResolvesAirlockSessionAfterManagerReplacement(t *testing.
 	}
 
 	replacement := NewSessionManager(&cfg.SessionProfiling, &cfg.AdaptiveEnforcement, p.metrics)
-	replacement.UpdateConfig(&cfg.SessionProfiling, &cfg.AdaptiveEnforcement, &cfg.Airlock)
+	enabledAirlock := cfg.Airlock
+	enabledAirlock.Enabled = true
+	replacement.UpdateConfig(&cfg.SessionProfiling, &cfg.AdaptiveEnforcement, &enabledAirlock)
 	p.sessionMgrPtr.Store(replacement)
 	if found, _, _, _ := replacement.ForceSetAirlockTier(key, config.AirlockTierDrain); found {
 		t.Fatal("replacement precondition: fresh session unexpectedly existed")
