@@ -3142,28 +3142,22 @@ func (sm *SessionManager) cleanup() {
 		escLevel := sess.escalationLevel
 		quarantined := sess.hasActiveAirlockLocked()
 		delivering := len(sess.heldExposure) > 0
+		// Keep the eligibility check and removal atomic with the first
+		// exposure hold, as capacity eviction does. Quarantined sessions
+		// are also exempt so idle expiry cannot discard enforcement.
+		evict := idle && !quarantined && !delivering
+		if evict {
+			delete(sm.sessions, key)
+		}
 		sess.mu.Unlock()
 
-		// Airlock sessions are exempt from idle eviction. A session in
-		// quarantine must not be evicted or it would escape enforcement.
-		// Empty string is the zero value (equivalent to "none").
-		if quarantined {
-			continue
-		}
-		// A response still being delivered holds exposure in this session;
-		// evicting it would let the next request start from clean state.
-		if delivering {
-			continue
-		}
-
-		if idle {
+		if evict {
 			if escLevel > 0 {
 				if sm.metrics != nil {
 					sm.metrics.SetAdaptiveSessionLevel(session.EscalationLabel(escLevel), -1)
 				}
 			}
 			evictedSessions = append(evictedSessions, sess)
-			delete(sm.sessions, key)
 		}
 	}
 

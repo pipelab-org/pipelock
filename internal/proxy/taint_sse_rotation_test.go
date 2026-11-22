@@ -457,6 +457,7 @@ func TestResponseExposureHeldAcrossTaskRotation(t *testing.T) {
 func TestSessionWithHeldExposureIsNotEvicted(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.SessionTTLMinutes = 1
+	cfg.MaxSessions = 1
 	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 	sess := sm.GetOrCreate(testClientIP)
@@ -464,19 +465,16 @@ func TestSessionWithHeldExposureIsNotEvicted(t *testing.T) {
 	pcfg.Taint.Enabled = true
 	pcfg.Taint.AllowlistedDomains = []string{interceptTaintHost}
 	observe, release := httpResponseFindingObserver(sess, pcfg, "https://"+interceptTaintHost+"/stream", "text/event-stream", "forward_response")
+	defer release()
 	observe(nil)
 	sess.mu.Lock()
 	sess.lastActivity = time.Now().Add(-time.Hour)
-	protected := sess.hasCapacityProtectionLocked(false)
 	sess.mu.Unlock()
-	if !protected {
-		t.Fatal("delivering session lacks capacity protection")
+	if got := sm.GetOrCreate("new-session"); got != nil {
+		t.Fatal("admitted a new session at capacity while the existing session held exposure")
 	}
 	sm.cleanup()
-	sm.mu.RLock()
-	_, kept := sm.sessions[testClientIP]
-	sm.mu.RUnlock()
-	if !kept {
+	if got := sm.SessionByKey(testClientIP); got != sess {
 		t.Fatal("idle cleanup evicted a session holding a delivering response's exposure")
 	}
 	release()
@@ -484,10 +482,10 @@ func TestSessionWithHeldExposureIsNotEvicted(t *testing.T) {
 	sess.lastActivity = time.Now().Add(-time.Hour)
 	sess.mu.Unlock()
 	sm.cleanup()
-	sm.mu.RLock()
-	_, kept = sm.sessions[testClientIP]
-	sm.mu.RUnlock()
-	if kept {
+	if got := sm.SessionByKey(testClientIP); got != nil {
 		t.Fatal("idle session not evicted after delivery ended")
+	}
+	if got := sm.GetOrCreate("new-session"); got == nil {
+		t.Fatal("new session still refused after delivery released capacity")
 	}
 }
