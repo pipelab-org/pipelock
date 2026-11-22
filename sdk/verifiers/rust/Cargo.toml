@@ -40,5 +40,5 @@ thiserror = "=2.0.21"
 # JCS canonicalizer (byte-for-byte cross-language parity on string/key values).
 # The evidence-provenance transform profile pins Unicode 15.0.0.
 unicode-normalization = "=0.1.22"
-url = "=2.5.8"
+url = "=2.5.9"
 x509-parser = { version = "=0.18.1", default-features = false }
