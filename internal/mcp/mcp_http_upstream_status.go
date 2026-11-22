@@ -225,9 +225,6 @@ func (e upstreamClientError) write(w http.ResponseWriter, confirm bool) bool {
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'")
-	if listener, ok := w.(*mcpListenerDenialWriter); ok && confirm {
-		listener.receiptManaged = true
-	}
 	if confirm {
 		w.Header().Set("Content-Length", strconv.Itoa(len(e.body)))
 	}
@@ -258,6 +255,10 @@ func (e upstreamClientError) writeIfActive(w http.ResponseWriter, state *mcpList
 		if opts.Rec != nil && decide.UpgradeAction("", opts.Rec.EscalationLevel(), opts.adaptiveCfg()) == config.ActionBlock {
 			reason = "session escalation blocks responses"
 			detail = mcpAdaptiveBlockMessage(opts.Rec, opts.adaptiveCfg(), "mcp_response_scan", nil)
+			return
+		}
+		if listener, ok := w.(*mcpListenerDenialWriter); ok && !listener.claimEffectReply() {
+			reason = "listener reply already claimed"
 			return
 		}
 		withListenerWriteDeadline(w, listenerDownstreamWriteTimeout, func() {

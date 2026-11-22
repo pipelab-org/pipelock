@@ -146,7 +146,8 @@ type MCPProxyOpts struct {
 	denialTerminal *mcpDeferredTerminal
 	// The listener carries the finalized response denial to its HTTP adapter
 	// before delivery commits headers or adds SSE framing.
-	responseDenial func(*mcpTerminalDecision)
+	responseDenial  func(*mcpTerminalDecision)
+	responseDropped func()
 	// The HTTP listener keeps the outcome handle through its response adapter.
 	listenerOwnsResponseOutcome bool
 	// A buffered listener response cannot settle on the buffer write.

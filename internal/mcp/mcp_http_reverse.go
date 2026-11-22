@@ -87,14 +87,15 @@ const (
 )
 
 type mcpListenerBlockDecision struct {
-	reason          blockreason.Reason
-	headerSeverity  blockreason.Severity
-	retry           blockreason.Retry
-	layer           string
-	pattern         string
-	target          string
-	receiptSeverity string
-	mutateReceipt   func(receipt.EmitOpts) receipt.EmitOpts
+	reason            blockreason.Reason
+	headerSeverity    blockreason.Severity
+	retry             blockreason.Retry
+	layer             string
+	pattern           string
+	target            string
+	receiptSeverity   string
+	mutateReceipt     func(receipt.EmitOpts) receipt.EmitOpts
+	skipLegacyReceipt bool
 	// intent, when it has an action ID, is the allowed intent already written
 	// for this call. The refusal is then recorded as that intent's blocked
 	// outcome under the same action ID, so the chain ties the block to the call
@@ -390,12 +391,17 @@ func RunHTTPListenerProxy(
 	mux.HandleFunc("/", func(rawWriter http.ResponseWriter, r *http.Request) {
 		var denialAudit mcpDenialAudit
 		w := &mcpListenerDenialWriter{ResponseWriter: rawWriter, opts: opts, descriptor: &denialAudit}
+		var localReplyUnderLease bool
 		if opts.receiptEffects.enabled {
 			w.localReply = &mcpListenerLocalReply{
 				ctx: r.Context(), writer: w, opts: baseOpts.snapshotScanPolicy(), log: safeLogW,
 				evidence: receipt.EmitOpts{Method: r.Method, Transport: deferred.SurfaceMCPHTTPListener},
 			}
-			defer w.localReply.finish()
+			defer func() {
+				if !localReplyUnderLease {
+					w.localReply.finish()
+				}
+			}()
 		}
 		// MCP responses are never storable by an intermediary. Protocol revision
 		// 2026-07-28 lets a server mark list and read results cacheScope "public",
@@ -606,6 +612,11 @@ func RunHTTPListenerProxy(
 		defer stopCapacity()
 		admissionCtx, finishWarnings := requestBaseOpts.nativeWarningContext(requestCtx, admission)
 		defer finishWarnings()
+		if w.localReply != nil {
+			w.localReply.ctx = admissionCtx
+			localReplyUnderLease = true
+			defer w.localReply.finish()
+		}
 		r = r.WithContext(admissionCtx)
 		requestBaseOpts.WarnContext = admissionCtx
 		reqScanner := requestBaseOpts.scanner()
@@ -824,7 +835,7 @@ func RunHTTPListenerProxy(
 				if dec.intent.handle.settled.CompareAndSwap(false, true) {
 					receiptEmitted = dec.intent.handle.emit(safeLogW, receiptOpts, true) == nil
 				}
-			} else if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil || requestBaseOpts.requireReceipts() {
+			} else if !dec.skipLegacyReceipt && (emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil || requestBaseOpts.requireReceipts()) {
 				if _, emitErr := requestBaseOpts.emitReceiptDecision(MCPDecision{
 					Receipt:        receiptOpts,
 					RequireReceipt: requestBaseOpts.requireReceipts(),
@@ -1052,7 +1063,10 @@ func RunHTTPListenerProxy(
 			logMCPV3Error(safeLogW, err)
 			clearReplySession()
 			effect.opts.WarnContext = effect.ctx
-			effect.opts.writeV3SendDenial(safeLogW, w, frame, effect.refusedSend)
+			if deliveryErr := effect.opts.writeV3SendDenial(safeLogW, w, frame, effect.refusedSend); deliveryErr != nil {
+				_ = httpstream.Abort(r.Context(), deliveryErr)
+				return
+			}
 			if frame.Method != "" && isRPCNotification(frame.ID) {
 				if w.localReply != nil {
 					w.localReply.receiptFailure = true
@@ -1069,6 +1083,9 @@ func RunHTTPListenerProxy(
 		}
 
 		writeEffectStatus := func(status int) {
+			if !w.claimEffectReply() {
+				return
+			}
 			effect.wrote = true
 			if effect.send != nil && status != http.StatusNoContent && status != http.StatusNotModified {
 				w.Header().Set("Content-Length", "0")
@@ -1517,7 +1534,9 @@ func RunHTTPListenerProxy(
 				_ = httpstream.Abort(r.Context(), scanErr)
 				return
 			}
-			if !streamWriter.Wrote() && !foundInjection && admitReply() {
+			if streamWriter.Wrote() {
+				effect.framed = effect.ctx.Err() == nil
+			} else if !foundInjection && admitReply() {
 				writeEffectStatus(http.StatusOK)
 			}
 			return
@@ -1922,6 +1941,18 @@ func RunHTTPListenerProxy(
 				if batchResp != nil {
 					_, _ = w.Write(batchResp)
 					return
+				}
+				if !frame.IsBatch {
+					emitListenerBlockDecision(mcpListenerBlockDecision{
+						reason:            blockreason.KillSwitchActive,
+						headerSeverity:    blockreason.SeverityCritical,
+						retry:             blockreason.RetryTransient,
+						layer:             "kill_switch",
+						pattern:           firstNonEmpty(d.Source, "kill_switch"),
+						target:            "mcp:kill-switch",
+						receiptSeverity:   config.SeverityCritical,
+						skipLegacyReceipt: true,
+					})
 				}
 				if d.IsNotification {
 					w.WriteHeader(http.StatusAccepted)
@@ -2545,12 +2576,16 @@ func RunHTTPListenerProxy(
 					commitMCPToolCall(baselineRec, mcpFrameBaselineIdentity(frame))
 				})
 			}
-			if !streamWriter.Wrote() {
-				w.WriteHeader(http.StatusAccepted)
+			if streamWriter.Wrote() {
+				effect.framed = effect.ctx.Err() == nil
+			} else if admitReply() {
+				writeEffectStatus(http.StatusAccepted)
 			}
 			return
 		}
 		responseBlocked := false
+		responseDropped := false
+		reqOpts.responseDropped = func() { responseDropped = true }
 		reqOpts.responseDenial = func(terminal *mcpTerminalDecision) {
 			responseBlocked = true
 			w.responseDenial(terminal)
@@ -2594,6 +2629,9 @@ func RunHTTPListenerProxy(
 				}
 				if responseStatus != "" {
 					terminalReason = "response_not_delivered"
+				}
+				if !w.claimEffectReply() {
+					return
 				}
 				effect.wrote = true
 				n, err := w.writeBuffered(output)
@@ -2639,13 +2677,35 @@ func RunHTTPListenerProxy(
 			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream response failed validation")))
 			return
 		}
+		if effect.send != nil && !responseBlocked && responseDropped && buf.Len() == 0 {
+			releaseContract()
+			clearReplySession()
+			err := effect.opts.refuseV3Reply(effect.ctx, effect.replyEvidence)
+			logMCPV3Error(safeLogW, err)
+			if err != nil && effect.opts.receiptEffects.gate.RequiresReceipts() {
+				_ = httpstream.Abort(r.Context(), err)
+				return
+			}
+			if !clientState.commitIfActive(func() {
+				if w.claimEffectReply() {
+					w.WriteHeader(http.StatusAccepted)
+				}
+			}) {
+				_ = httpstream.Abort(r.Context(), context.Canceled)
+			}
+			return
+		}
 		if responseBlocked && effect.send != nil {
+			releaseContract()
 			clearReplySession()
 			output := bytes.TrimSpace(buf.Bytes())
 			revocableWriter := &listenerStateMessageWriter{state: clientState, writer: w, opts: reqOpts}
+			var deliveryErr error
 			withListenerWriteDeadline(w, listenerDownstreamWriteTimeout, func() {
-				logMCPV3Error(safeLogW, effect.deliverDeniedReply(revocableWriter, output))
+				deliveryErr = effect.deliverDeniedReply(revocableWriter, output)
 			})
+			logMCPV3Error(safeLogW, deliveryErr)
+			_ = httpstream.Abort(r.Context(), deliveryErr)
 			return
 		}
 		if !admitReply() {

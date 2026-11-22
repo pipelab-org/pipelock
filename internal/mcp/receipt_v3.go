@@ -239,10 +239,12 @@ func mcpV3SendDenial(frame MCPFrame, send *mcpV3Exchange) BlockedRequest {
 	}
 }
 
-func (o MCPProxyOpts) writeV3SendDenial(log io.Writer, writer transport.MessageWriter, frame MCPFrame, send *mcpV3Exchange) {
+func (o MCPProxyOpts) writeV3SendDenial(log io.Writer, writer transport.MessageWriter, frame MCPFrame, send *mcpV3Exchange) error {
 	br := mcpV3SendDenial(frame, send)
 	inputMCPDenial(o, mcpReceiptMcpInputDenialAudit(), &br)
-	logMCPV3Error(log, deliverMCPInputResult(o, br, o.v3SendDenialWriter(writer, log, br)))
+	err := deliverMCPInputResult(o, br, o.v3SendDenialWriter(writer, log, br))
+	logMCPV3Error(log, err)
+	return err
 }
 
 func (o MCPProxyOpts) v3SendDenialWriter(writer transport.MessageWriter, log io.Writer, br BlockedRequest) transport.MessageWriter {

@@ -83,6 +83,9 @@ func (sw *sseMessageWriter) WriteMessage(msg []byte) error {
 	if len(msg) > transport.MaxLineSize {
 		return fmt.Errorf("message too large: %d bytes", len(msg))
 	}
+	if listener, ok := sw.w.(*mcpListenerDenialWriter); ok && !listener.claimEffectReply() {
+		return io.ErrClosedPipe
+	}
 	// The first write may commit headers even when it fails part way. Wrote
 	// must reflect that attempt so the handler aborts instead of appending a
 	// synthetic 502 response to a partially written event.

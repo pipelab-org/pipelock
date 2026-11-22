@@ -27,13 +27,29 @@ type mcpListenerDenialWriter struct {
 	direction      string
 	wroteHeader    bool
 	localReply     *mcpListenerLocalReply
-	receiptManaged bool
+	replyOwner     listenerReplyOwner
 	uniform        bool
 	uniformMessage string
 	replied        bool
 	// notification marks a parsed POST notification. A clean one is refused
 	// with 202 and no body, so block_all gives a caught one the same answer.
 	notification bool
+}
+
+type listenerReplyOwner uint8
+
+const (
+	listenerReplyUnclaimed listenerReplyOwner = iota
+	listenerReplyLocal
+	listenerReplyEffect
+)
+
+func (w *mcpListenerDenialWriter) claimEffectReply() bool {
+	if w.replyOwner == listenerReplyLocal {
+		return false
+	}
+	w.replyOwner = listenerReplyEffect
+	return true
 }
 
 // mcpListenerLocalReply stages an HTTP status and body until their delivery
@@ -70,7 +86,7 @@ func (r *mcpListenerLocalReply) WriteMessage(msg []byte) error {
 }
 
 func (r *mcpListenerLocalReply) finish() {
-	if r.status == 0 {
+	if r.writer.replyOwner != listenerReplyLocal {
 		return
 	}
 	r.opts.WarnContext = r.ctx
@@ -109,8 +125,7 @@ func (r *mcpListenerLocalReply) finish() {
 }
 
 func (w *mcpListenerDenialWriter) wireHeader(status int) {
-	if local := w.localReply; local != nil && !w.receiptManaged &&
-		(local.exchange == nil || !local.exchange.wrote) {
+	if local := w.localReply; local != nil && w.replyOwner == listenerReplyLocal {
 		local.status = status
 		return
 	}
@@ -118,7 +133,7 @@ func (w *mcpListenerDenialWriter) wireHeader(status int) {
 }
 
 func (w *mcpListenerDenialWriter) wireBody(p []byte) (int, error) {
-	if w.localReply != nil && w.localReply.status != 0 {
+	if w.replyOwner == listenerReplyLocal {
 		return w.localReply.body.Write(p)
 	}
 	return w.ResponseWriter.Write(p)
@@ -170,7 +185,9 @@ func (w *mcpListenerDenialWriter) WriteHeader(status int) {
 
 // WriteMessage delivers one local JSON-RPC reply with final HTTP framing.
 func (w *mcpListenerDenialWriter) WriteMessage(msg []byte) error {
-	w.receiptManaged = true
+	if !w.claimEffectReply() {
+		return io.ErrClosedPipe
+	}
 	w.Header().Set("Content-Type", "application/json")
 	n, err := w.writeBuffered(msg)
 	if err != nil {
@@ -198,6 +215,9 @@ func (w *mcpListenerDenialWriter) writeHeader(status int, buffered []byte) {
 	if status < http.StatusOK {
 		w.ResponseWriter.WriteHeader(status)
 		return
+	}
+	if w.localReply != nil && w.replyOwner == listenerReplyUnclaimed {
+		w.replyOwner = listenerReplyLocal
 	}
 	w.wroteHeader = true
 	d := w.decision(nil)
@@ -271,7 +291,7 @@ func (w *mcpListenerDenialWriter) Flush() {
 	if !w.wroteHeader {
 		w.WriteHeader(http.StatusOK)
 	}
-	if w.localReply != nil && w.localReply.status != 0 {
+	if w.replyOwner == listenerReplyLocal {
 		return
 	}
 	deliver := mcpDeniedDelivery(func([]byte) error { return http.NewResponseController(w.ResponseWriter).Flush() })

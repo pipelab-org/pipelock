@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
@@ -107,7 +108,21 @@ func finishMCPDenial(d *mcpDenial, adapter mcpDenialAdapter) error {
 }
 
 func dropMCPDenial(opts MCPProxyOpts, descriptor mcpDenialAudit, direction string) {
+	if direction == "response" && opts.responseDropped != nil {
+		opts.responseDropped()
+	}
 	_ = finishMCPDenial(newMCPDenial(opts, descriptor, direction, nil), mcpDeniedDelivery(func([]byte) error { return nil }))
+}
+
+func mcpInputDenialEvidence(opts MCPProxyOpts, frame MCPFrame, descriptor mcpDenialAudit, evidence receipt.EmitOpts) receipt.EmitOpts {
+	evidence.Transport = firstNonEmpty(evidence.Transport, opts.Transport)
+	evidence.RequestID = canonicalID(frame.ID)
+	evidence.Method = firstNonEmpty(evidence.Method, frame.Method)
+	evidence.Target = firstNonEmpty(evidence.Target, firstNonEmpty(frame.ToolCallName, frame.Method))
+	evidence.Layer = firstNonEmpty(evidence.Layer, mcpReceiptLayerInput)
+	evidence.Pattern = firstNonEmpty(evidence.Pattern, descriptor.pattern)
+	evidence.Severity = firstNonEmpty(evidence.Severity, config.SeverityHigh)
+	return opts.withReceiptPolicyHash(evidence)
 }
 
 func dropMCPInputNotification(opts MCPProxyOpts, logW io.Writer, descriptor mcpDenialAudit, frame MCPFrame) {
@@ -115,10 +130,7 @@ func dropMCPInputNotification(opts MCPProxyOpts, logW io.Writer, descriptor mcpD
 	if !opts.receiptEffects.enabled {
 		return
 	}
-	evidence := opts.withReceiptPolicyHash(receipt.EmitOpts{
-		Transport: opts.Transport, Method: frame.Method, Target: firstNonEmpty(frame.ToolCallName, frame.Method),
-		Pattern: descriptor.pattern,
-	})
+	evidence := mcpInputDenialEvidence(opts, frame, descriptor, receipt.EmitOpts{})
 	logMCPV3Error(logW, opts.refuseV3Reply(opts.warnContext(), mcpV3ReplyEvidence(evidence)))
 }
 
@@ -215,8 +227,11 @@ func deliverMCPInputResult(opts MCPProxyOpts, br BlockedRequest, writer transpor
 	}))
 }
 
-func writeMCPInputDenial(opts MCPProxyOpts, descriptor mcpDenialAudit, writer transport.MessageWriter, reply []byte) error {
-	return finishMCPDenial(newMCPDenial(opts, descriptor, "input", reply), mcpDeniedDelivery(func(reply []byte) error { return deliverMCPDeniedMessage(writer, reply) }))
+func writeMCPInputDenial(opts MCPProxyOpts, descriptor mcpDenialAudit, writer transport.MessageWriter, frame MCPFrame, reply []byte) error {
+	br := BlockedRequest{ID: frame.ID, SyntheticResponse: reply}
+	br.v3Evidence = mcpInputDenialEvidence(opts, frame, descriptor, receipt.EmitOpts{})
+	inputMCPDenial(opts, descriptor, &br)
+	return deliverMCPInputResult(opts, br, writer)
 }
 
 // mcpDeferredTerminal shares one decision across retries of a held call's

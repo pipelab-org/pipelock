@@ -399,10 +399,18 @@ func ForwardScannedInput(
 		// redaction step so downstream gates (DoW, taint) see the
 		// redacted args while ID / Method / ToolCallName stay stable.
 		frame := ParseMCPFrame(line)
+		var v3Evidence receipt.EmitOpts
+		sendInputDenial := func(opts MCPProxyOpts, descriptor mcpDenialAudit, br BlockedRequest, out chan<- BlockedRequest) {
+			if opts.receiptEffects.enabled {
+				br.v3Evidence = mcpInputDenialEvidence(opts, frame, descriptor, v3Evidence)
+				br.v3Evidence.ActionID, br.v3Evidence.ParentActionID = "", ""
+			}
+			sendMCPDenial(opts, descriptor, br, out)
+		}
 		var admissionErr error
 		admission, admissionErr = opts.admitNativeRequest()
 		if admissionErr != nil {
-			sendMCPDenial(opts, nativeAdmissionAudit(), nativeAdmissionDenial(frame.ID, admissionErr), blockedCh)
+			sendInputDenial(opts, nativeAdmissionAudit(), nativeAdmissionDenial(frame.ID, admissionErr), blockedCh)
 			return
 		}
 		opts.nativeAdmission = admission
@@ -417,21 +425,21 @@ func ForwardScannedInput(
 				}
 				batchResp := refuseKillSwitchRequest(opts, logW, frame, d)
 				if batchResp != nil {
-					sendMCPDenial(opts, denialAudit, BlockedRequest{
+					sendInputDenial(opts, denialAudit, BlockedRequest{
 						LogMessage:        fmt.Sprintf("pipelock: input line %d: kill switch denied batch (source=%s)", lineNum, d.Source),
 						SyntheticResponse: batchResp,
 					}, blockedCh)
 					continue
 				}
 				if d.IsNotification {
-					dropMCPDenial(opts, denialAudit, "input")
+					dropMCPInputNotification(opts, logW, denialAudit, frame)
 					// Notifications have no ID - silently drop.
 					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: kill switch dropped notification (source=%s)\n",
 						lineNum, d.Source)
 				} else {
 					// Request with ID - send JSON-RPC error response.
 					rpcID := frame.ID
-					sendMCPDenial(opts, denialAudit, BlockedRequest{
+					sendInputDenial(opts, denialAudit, BlockedRequest{
 						ID:             rpcID,
 						IsNotification: false,
 						LogMessage:     fmt.Sprintf("pipelock: input line %d: kill switch denied (source=%s)", lineNum, d.Source),
@@ -465,7 +473,7 @@ func ForwardScannedInput(
 			denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPProtocol, mcpBatchReason, audit.BlockClassProtective)
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked batch request (not supported by MCP)\n", lineNum)
 			recordAdaptiveSignal(session.SignalBlock)
-			sendMCPDenial(opts, denialAudit, BlockedRequest{
+			sendInputDenial(opts, denialAudit, BlockedRequest{
 				ID:           frame.ID,
 				ErrorCode:    -32600,
 				ErrorMessage: "pipelock: batch requests are not supported by MCP",
@@ -517,7 +525,7 @@ func ForwardScannedInput(
 						logReceiptEmitFailure(logW, emitErr, opts.requireReceipts(), config.ActionBlock)
 					}
 				}
-				sendMCPDenial(opts, denialAudit, BlockedRequest{
+				sendInputDenial(opts, denialAudit, BlockedRequest{
 					ID:             originalVerdict.ID,
 					IsNotification: isRPCNotification(originalVerdict.ID),
 					LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked", lineNum),
@@ -563,7 +571,7 @@ func ForwardScannedInput(
 					logReceiptEmitFailure(logW, emitErr, opts.requireReceipts(), config.ActionBlock)
 				}
 			}
-			sendMCPDenial(opts, denialAudit, BlockedRequest{
+			sendInputDenial(opts, denialAudit, BlockedRequest{
 				ID:             rpcID,
 				IsNotification: isRPCNotification(rpcID),
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (redaction)", lineNum),
@@ -738,7 +746,6 @@ func ForwardScannedInput(
 		receiptShard := admission
 
 		var outcome TrackedRequestOutcome
-		var v3Evidence receipt.EmitOpts
 		var forwardAdmission receipt.EmitOpts
 		emitToolReceipt := func(receiptVerdict string, contractGate ...mcpContractGateOutput) error {
 			// Delegate to the shared helper so stdio and HTTP/WS emit
@@ -837,7 +844,7 @@ func ForwardScannedInput(
 		refuseTaskRelease := func(reason string) {
 			refusalReason := taintDecision.recordTaskReleaseRefusal(reason)
 			receiptLayerOverride, receiptPatternOverride, receiptSeverityOverride = mcpReceiptLayerTaint, refusalReason, taintReceiptSeverity(taintDecision)
-			sendMCPDenial(opts, mcpTaintDenialAudit(), BlockedRequest{
+			sendInputDenial(opts, mcpTaintDenialAudit(), BlockedRequest{
 				ID: verdict.ID, IsNotification: isRPCNotification(verdict.ID),
 				ErrorCode: -32002, ErrorMessage: "pipelock: " + reason,
 			}, blockedCh)
@@ -858,7 +865,7 @@ func ForwardScannedInput(
 			effect, admitErr := opts.startV3Send(ctx, frame, v3Evidence)
 			if admitErr != nil {
 				logMCPV3Error(logW, admitErr)
-				sendMCPDenial(opts, mcpReceiptMcpInputDenialAudit(), mcpV3SendDenial(frame, effect), blockedCh)
+				sendInputDenial(opts, mcpReceiptMcpInputDenialAudit(), mcpV3SendDenial(frame, effect), blockedCh)
 				return false, nil
 			}
 			attempted := false
@@ -898,7 +905,7 @@ func ForwardScannedInput(
 			}
 			if trackingErr != nil {
 				outcome.settle(logW, opts, mcpOutcomeStatusBlocked, -1, "request_tracking_failed")
-				sendMCPDenial(opts, nativeAdmissionAudit(), nativeAdmissionDenial(verdict.ID, trackingErr), blockedCh)
+				sendInputDenial(opts, nativeAdmissionAudit(), nativeAdmissionDenial(verdict.ID, trackingErr), blockedCh)
 				return false, nil
 			}
 			if refusal != "" {
@@ -937,7 +944,7 @@ func ForwardScannedInput(
 			default:
 				recordAdaptiveFinding(session.SignalBlock, "a2a", eval.A2AResult.Reason)
 			}
-			sendMCPDenial(opts, denialAudit, BlockedRequest{
+			sendInputDenial(opts, denialAudit, BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isRPCNotification(verdict.ID),
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (a2a input scanning)", lineNum),
@@ -963,7 +970,7 @@ func ForwardScannedInput(
 			if m != nil {
 				m.RecordAirlockDenial(eval.AirlockTier, "mcp", methodToolsCall)
 			}
-			sendMCPDenial(opts, mcpAirlockDenialAudit(), BlockedRequest{
+			sendInputDenial(opts, mcpAirlockDenialAudit(), BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isRPCNotification(verdict.ID),
 				LogMessage:     airlockMsg,
@@ -977,7 +984,7 @@ func ForwardScannedInput(
 			denialAudit = mcpDoWDenialAudit(opts, enforcementTarget, eval.DoWReason)
 			recordDoWMetric(m, config.ActionBlock, opts)
 			recordAdaptiveFinding(session.SignalBlock, scanner.ScannerDenialOfWallet, eval.DoWReason)
-			sendMCPDenial(opts, denialAudit, BlockedRequest{
+			sendInputDenial(opts, denialAudit, BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isRPCNotification(verdict.ID),
 				LogMessage:     dowLogMsg,
@@ -994,7 +1001,7 @@ func ForwardScannedInput(
 				m.RecordBlocked("mcp", "frozen_tool", 0, "")
 			}
 			recordAdaptiveSignal(session.SignalBlock)
-			sendMCPDenial(opts, denialAudit, BlockedRequest{
+			sendInputDenial(opts, denialAudit, BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isRPCNotification(verdict.ID),
 				LogMessage:     frozenMsg,
@@ -1006,7 +1013,7 @@ func ForwardScannedInput(
 		case blockingGateChain:
 			denialAudit = mcpChainBlockAudit(eval.ChainPatternName)
 			recordAdaptiveFinding(session.SignalBlock, "chain", eval.ChainPatternName)
-			sendMCPDenial(opts, denialAudit, BlockedRequest{
+			sendInputDenial(opts, denialAudit, BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isRPCNotification(verdict.ID),
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: chain pattern %q blocked", lineNum, eval.ChainPatternName),
@@ -1018,7 +1025,7 @@ func ForwardScannedInput(
 		case blockingGateParseError:
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: %s\n", lineNum, verdict.Error)
 			denialAudit = mcpInputBlockAudit(verdict)
-			sendMCPDenial(opts, denialAudit, BlockedRequest{
+			sendInputDenial(opts, denialAudit, BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isRPCNotification(verdict.ID),
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (parse error)", lineNum),
@@ -1028,7 +1035,7 @@ func ForwardScannedInput(
 			continue
 		case blockingGateTaintBlock, blockingGateTaintAskDenied:
 			logTaintDecision()
-			sendMCPDenial(opts, mcpTaintDenialAudit(), BlockedRequest{
+			sendInputDenial(opts, mcpTaintDenialAudit(), BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isRPCNotification(verdict.ID),
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked by taint policy", lineNum),
@@ -1076,7 +1083,7 @@ func ForwardScannedInput(
 					if baselineDecision.Action == config.ActionAsk {
 						errMsg = "pipelock: MCP request blocked by behavioral baseline"
 					}
-					sendMCPDenial(opts, denialAudit, BlockedRequest{
+					sendInputDenial(opts, denialAudit, BlockedRequest{
 						ID:             verdict.ID,
 						IsNotification: isRPCNotification(verdict.ID),
 						LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (baseline deviation)", lineNum),
@@ -1099,7 +1106,7 @@ func ForwardScannedInput(
 				if m != nil {
 					m.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(rec.EscalationLevel()))
 				}
-				sendMCPDenial(opts, denialAudit, BlockedRequest{
+				sendInputDenial(opts, denialAudit, BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isRPCNotification(verdict.ID),
 					LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (session deny)", lineNum),
@@ -1147,7 +1154,7 @@ func ForwardScannedInput(
 					InspectionMode:  inspectionMode,
 					FallbackReason:  fallbackReason,
 				})
-				sendMCPDenial(opts, denialAudit, BlockedRequest{
+				sendInputDenial(opts, denialAudit, BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isRPCNotification(verdict.ID),
 					LogMessage:     fmt.Sprintf("pipelock: input line %d: CEE blocked", lineNum),
@@ -1178,7 +1185,7 @@ func ForwardScannedInput(
 			if contractErr != nil {
 				denialAudit = mcpInputGateBlockAudit(scanner.AuditContract, mcpContractEvalReason, audit.BlockClassInfrastructureError)
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: contract tool-call evaluation failed: %v\n", lineNum, contractErr)
-				sendMCPDenial(opts, denialAudit, BlockedRequest{
+				sendInputDenial(opts, denialAudit, BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isRPCNotification(verdict.ID),
 					LogMessage:     fmt.Sprintf("pipelock: input line %d: contract tool-call evaluation failed", lineNum),
@@ -1191,7 +1198,7 @@ func ForwardScannedInput(
 			if contractGate.Verdict == config.ActionBlock {
 				denialAudit = mcpInputGateBlockAudit(scanner.AuditContract, mcpContractDenyAuditReason, audit.BlockClassProtective)
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: contract blocked %s %q (%s)\n", lineNum, enforcementKind, enforcementTarget, contractGate.Reason)
-				sendMCPDenial(opts, denialAudit, mcpContractBlockRequest(verdict.ID, contractGate, "pipelock: request blocked by live-lock contract"), blockedCh)
+				sendInputDenial(opts, denialAudit, mcpContractBlockRequest(verdict.ID, contractGate, "pipelock: request blocked by live-lock contract"), blockedCh)
 				_ = emitToolReceipt(config.ActionBlock, contractGate)
 				continue
 			}
@@ -1204,7 +1211,7 @@ func ForwardScannedInput(
 				}
 				receiptLayerOverride, receiptPatternOverride, receiptSeverityOverride = authorityReceiptAttribution()
 				_ = emitToolReceipt(config.ActionBlock, contractGate)
-				sendMCPDenial(opts, mcpAuthorityDenialAudit(), *authorityBlockedRequest(frame), blockedCh)
+				sendInputDenial(opts, mcpAuthorityDenialAudit(), *authorityBlockedRequest(frame), blockedCh)
 				continue
 			}
 			if !checkTaskRelease(false) {
@@ -1228,7 +1235,7 @@ func ForwardScannedInput(
 				})
 				if emitErr != nil {
 					denialAudit = mcpInputGateBlockAudit(scanner.AuditMediationEnvelope, mcpEnvelopeReason, audit.BlockClassInfrastructureError)
-					sendMCPDenial(opts, denialAudit, BlockedRequest{
+					sendInputDenial(opts, denialAudit, BlockedRequest{
 						ID:             verdict.ID,
 						IsNotification: isRPCNotification(verdict.ID),
 						LogMessage:     "mediation envelope injection failed",
@@ -1246,7 +1253,7 @@ func ForwardScannedInput(
 				outcome.Receipt.Layer = "receipt_emission"
 				outcome.settle(logW, opts, mcpOutcomeStatusBlocked, -1, "receipt_emission_failed")
 				denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
-				sendMCPDenial(opts, denialAudit, BlockedRequest{
+				sendInputDenial(opts, denialAudit, BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isRPCNotification(verdict.ID),
 					LogMessage:     "receipt emission failed",
@@ -1387,7 +1394,7 @@ func ForwardScannedInput(
 					errMsg = "pipelock: " + bindingReason
 				}
 			}
-			sendMCPDenial(opts, denialAudit, BlockedRequest{
+			sendInputDenial(opts, denialAudit, BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isNotification,
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked", lineNum),
@@ -1398,7 +1405,7 @@ func ForwardScannedInput(
 		case config.ActionRedirect:
 			if opts.receiptEffects.enabled {
 				denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPRedirect, mcpV3RedirectRefusal, audit.BlockClassProtective)
-				sendMCPDenial(opts, denialAudit, BlockedRequest{
+				sendInputDenial(opts, denialAudit, BlockedRequest{
 					ID: verdict.ID, IsNotification: isNotification,
 					LogMessage: mcpV3RedirectRefusal, ErrorCode: -32002, ErrorMessage: mcpV3RedirectRefusal,
 					v3RefusalSigned: opts.refuseV3Reply(opts.warnContext(), receipt.EmitOpts{ActionID: receipt.NewActionID(), Method: method, Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(verdict.ID)}) == nil,
@@ -1415,7 +1422,7 @@ func ForwardScannedInput(
 				denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPRedirect, mcpRedirectBatchReason, audit.BlockClassProtective)
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked batch request (%s) [redirect not supported for batches]\n",
 					lineNum, reasonStr)
-				sendMCPDenial(opts, denialAudit, BlockedRequest{
+				sendInputDenial(opts, denialAudit, BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isNotification,
 					LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (batch redirect)", lineNum),
@@ -1430,7 +1437,7 @@ func ForwardScannedInput(
 				denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPRedirect, mcpRedirectProfileReason, audit.BlockClassConfigMismatch)
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [redirect profile %q not found]\n",
 					lineNum, method, reasonStr, policyVerdict.RedirectProfile)
-				sendMCPDenial(opts, denialAudit, BlockedRequest{
+				sendInputDenial(opts, denialAudit, BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isNotification,
 					LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (redirect profile missing)", lineNum),
@@ -1449,7 +1456,7 @@ func ForwardScannedInput(
 			if opts.requireReceipts() {
 				if err := emitToolReceipt(config.ActionRedirect); err != nil {
 					denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
-					sendMCPDenial(opts, denialAudit, BlockedRequest{
+					sendInputDenial(opts, denialAudit, BlockedRequest{
 						ID: verdict.ID, IsNotification: isNotification,
 						LogMessage: "receipt emission failed", ErrorCode: -32007,
 						ErrorMessage: requiredReceiptFailureMessage(err),
@@ -1506,7 +1513,7 @@ func ForwardScannedInput(
 				}
 				if finalResponseVerdict.Error != "" {
 					denialAudit = mcpResponseInspectionBlockAudit(finalResponseVerdict.Error)
-					sendMCPDenial(opts, denialAudit, BlockedRequest{
+					sendInputDenial(opts, denialAudit, BlockedRequest{
 						ID: verdict.ID, IsNotification: isNotification,
 						LogMessage: "blocked (redirect output scan failed)", ErrorCode: -32001,
 						ErrorMessage: "pipelock: redirect handler output scan failed",
@@ -1515,7 +1522,7 @@ func ForwardScannedInput(
 				} else if !scanVerdict.Clean {
 					denialAudit = mcpRedirectOutputBlockAudit(scanner.AuditMCPRedirectOutputInjection, mcpRedirectOutputInjectionReason)
 					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked redirect response (injection detected in handler output)\n", lineNum)
-					sendMCPDenial(opts, denialAudit, BlockedRequest{
+					sendInputDenial(opts, denialAudit, BlockedRequest{
 						ID:             verdict.ID,
 						IsNotification: isNotification,
 						LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (redirect output injection)", lineNum),
@@ -1529,7 +1536,7 @@ func ForwardScannedInput(
 						pattern = dlpResult.Matches[0].PatternName
 					}
 					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked redirect response (DLP match in handler output: %s)\n", lineNum, pattern)
-					sendMCPDenial(opts, denialAudit, BlockedRequest{
+					sendInputDenial(opts, denialAudit, BlockedRequest{
 						ID:             verdict.ID,
 						IsNotification: isNotification,
 						LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (redirect output DLP)", lineNum),
@@ -1554,7 +1561,7 @@ func ForwardScannedInput(
 				receiptEmitted = false
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [redirect failed: %s]\n",
 					lineNum, method, reasonStr, result.Error)
-				sendMCPDenial(opts, denialAudit, BlockedRequest{
+				sendInputDenial(opts, denialAudit, BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isNotification,
 					LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (redirect failed)", lineNum),
@@ -1579,7 +1586,7 @@ func ForwardScannedInput(
 				denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPDefer, mcpDeferUnsupportedReason, audit.BlockClassConfigMismatch)
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [%v]\n",
 					lineNum, method, reasonStr, err)
-				sendMCPDenial(opts, denialAudit, BlockedRequest{
+				sendInputDenial(opts, denialAudit, BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isNotification,
 					LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (defer unsupported)", lineNum),
@@ -1593,7 +1600,7 @@ func ForwardScannedInput(
 				denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPDefer, mcpDeferDisabledReason, audit.BlockClassConfigMismatch)
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [%v]\n",
 					lineNum, method, reasonStr, err)
-				sendMCPDenial(opts, denialAudit, BlockedRequest{
+				sendInputDenial(opts, denialAudit, BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isNotification,
 					LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (defer disabled)", lineNum),
@@ -1610,7 +1617,7 @@ func ForwardScannedInput(
 			receiptSessionIDOriginal = captureSessionIDOriginal(opts.Transport)
 			if err := emitToolReceipt(config.ActionDefer); err != nil {
 				denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
-				sendMCPDenial(opts, denialAudit, BlockedRequest{
+				sendInputDenial(opts, denialAudit, BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isNotification,
 					LogMessage:     "receipt emission failed",
@@ -1728,10 +1735,10 @@ func ForwardScannedInput(
 							denialAudit = mcpReceiptMcpInputDenialAudit()
 						}
 						if heldNotification {
-							dropMCPDenial(denialOpts, denialAudit, "input")
+							dropMCPInputNotification(denialOpts, logW, denialAudit, heldAuthorityFrame)
 						}
 						if !heldNotification {
-							sendMCPDenial(denialOpts, denialAudit, BlockedRequest{
+							sendInputDenial(denialOpts, denialAudit, BlockedRequest{
 								ID:           heldID,
 								ErrorCode:    -32007,
 								ErrorMessage: "pipelock: receipt emission failed",
@@ -1749,7 +1756,7 @@ func ForwardScannedInput(
 							res = refuse(reason)
 						}
 						if admitErr != nil {
-							sendMCPDenial(denialOpts, mcpReceiptMcpInputDenialAudit(), mcpV3SendDenial(heldAuthorityFrame, effect), blockedCh)
+							sendInputDenial(denialOpts, mcpReceiptMcpInputDenialAudit(), mcpV3SendDenial(heldAuthorityFrame, effect), blockedCh)
 							return
 						}
 					}
@@ -1775,7 +1782,7 @@ func ForwardScannedInput(
 								if finishDeniedRelease != nil {
 									finishDeniedRelease()
 								}
-								sendMCPDenial(heldOpts, nativeAdmissionAudit(), nativeAdmissionDenial(heldID, trackErr), blockedCh)
+								sendInputDenial(heldOpts, nativeAdmissionAudit(), nativeAdmissionDenial(heldID, trackErr), blockedCh)
 								return
 							}
 						}
@@ -1786,9 +1793,9 @@ func ForwardScannedInput(
 								finishDeniedRelease()
 							}
 							if heldNotification {
-								dropMCPDenial(denialOpts, mcpDeferredDenialAudit(res), "input")
+								dropMCPInputNotification(denialOpts, logW, mcpDeferredDenialAudit(res), heldAuthorityFrame)
 							} else {
-								sendMCPDenial(denialOpts, mcpDeferredDenialAudit(res), BlockedRequest{
+								sendInputDenial(denialOpts, mcpDeferredDenialAudit(res), BlockedRequest{
 									ID: heldID, ErrorCode: -32002, ErrorMessage: "pipelock: " + reason,
 								}, blockedCh)
 							}
@@ -1815,7 +1822,7 @@ func ForwardScannedInput(
 							// Settlement logs any receipt write failure.
 							_ = receiptSettle.ensure(heldOpts, logW, res)
 							if !heldNotification {
-								sendMCPDenial(denialOpts, mcpDeferredDenialAudit(res), BlockedRequest{
+								sendInputDenial(denialOpts, mcpDeferredDenialAudit(res), BlockedRequest{
 									ID: heldID, ErrorCode: -32603, ErrorMessage: "pipelock: upstream write failed",
 								}, blockedCh)
 							}
@@ -1835,15 +1842,15 @@ func ForwardScannedInput(
 							_, _ = fmt.Fprintf(logW, "pipelock: deferred call %s cancelled by kill switch\n", res.DeferID)
 						}
 						if heldNotification {
-							dropMCPDenial(denialOpts, denialAudit, "input")
+							dropMCPInputNotification(denialOpts, logW, denialAudit, heldAuthorityFrame)
 						}
 						if !heldNotification {
 							if authorityDenied {
-								sendMCPDenial(denialOpts, mcpAuthorityDenialAudit(), *authorityBlockedRequest(heldAuthorityFrame), blockedCh)
+								sendInputDenial(denialOpts, mcpAuthorityDenialAudit(), *authorityBlockedRequest(heldAuthorityFrame), blockedCh)
 								return
 							}
 							if res.ResolutionSource == deferred.SourceKillSwitch {
-								sendMCPDenial(denialOpts, denialAudit, BlockedRequest{
+								sendInputDenial(denialOpts, denialAudit, BlockedRequest{
 									ID:           heldID,
 									LogMessage:   fmt.Sprintf("pipelock: deferred call %s kill switch denied", res.DeferID),
 									ErrorCode:    -32004,
@@ -1855,7 +1862,7 @@ func ForwardScannedInput(
 							if taskRefusal != "" {
 								message = "pipelock: " + taskRefusal
 							}
-							sendMCPDenial(denialOpts, denialAudit, BlockedRequest{
+							sendInputDenial(denialOpts, denialAudit, BlockedRequest{
 								ID:           heldID,
 								ErrorCode:    -32002,
 								ErrorMessage: message,
@@ -1892,10 +1899,10 @@ func ForwardScannedInput(
 				})
 				logHoldFailureReceiptGap(logW, actionID, emitErr)
 				if isNotification {
-					dropMCPDenial(opts, mcpDeferHoldDenialAudit(), "input")
+					dropMCPInputNotification(opts, logW, mcpDeferHoldDenialAudit(), frame)
 				}
 				if !isNotification {
-					sendMCPDenial(opts, mcpDeferHoldDenialAudit(), BlockedRequest{
+					sendInputDenial(opts, mcpDeferHoldDenialAudit(), BlockedRequest{
 						ID:           verdict.ID,
 						ErrorCode:    -32002,
 						ErrorMessage: errorMessage,
@@ -1921,7 +1928,7 @@ func ForwardScannedInput(
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [ask not supported for input scanning]\n",
 				lineNum, method, reasonStr)
 			denialAudit = mcpInputDecisionBlockAudit(verdict, contentBlock || (!verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" && baselineAction == ""), policyVerdict, bindingAction, chainAction, eval.ChainPatternName, baselineAction)
-			sendMCPDenial(opts, denialAudit, BlockedRequest{
+			sendInputDenial(opts, denialAudit, BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isNotification,
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (ask fallback)", lineNum),
@@ -1970,7 +1977,7 @@ func ForwardScannedInput(
 					InspectionMode:  inspectionMode,
 					FallbackReason:  fallbackReason,
 				})
-				sendMCPDenial(opts, denialAudit, BlockedRequest{
+				sendInputDenial(opts, denialAudit, BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isRPCNotification(verdict.ID),
 					LogMessage:     fmt.Sprintf("pipelock: input line %d: CEE blocked", lineNum),
@@ -2001,7 +2008,7 @@ func ForwardScannedInput(
 			if contractErr != nil {
 				denialAudit = mcpInputGateBlockAudit(scanner.AuditContract, mcpContractEvalReason, audit.BlockClassInfrastructureError)
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: contract tool-call evaluation failed: %v\n", lineNum, contractErr)
-				sendMCPDenial(opts, denialAudit, BlockedRequest{
+				sendInputDenial(opts, denialAudit, BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isRPCNotification(verdict.ID),
 					LogMessage:     fmt.Sprintf("pipelock: input line %d: contract tool-call evaluation failed", lineNum),
@@ -2014,7 +2021,7 @@ func ForwardScannedInput(
 			if contractGate.Verdict == config.ActionBlock {
 				denialAudit = mcpInputGateBlockAudit(scanner.AuditContract, mcpContractDenyAuditReason, audit.BlockClassProtective)
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: contract blocked %s %q (%s)\n", lineNum, enforcementKind, enforcementTarget, contractGate.Reason)
-				sendMCPDenial(opts, denialAudit, mcpContractBlockRequest(verdict.ID, contractGate, "pipelock: request blocked by live-lock contract"), blockedCh)
+				sendInputDenial(opts, denialAudit, mcpContractBlockRequest(verdict.ID, contractGate, "pipelock: request blocked by live-lock contract"), blockedCh)
 				_ = emitToolReceipt(config.ActionBlock, contractGate)
 				continue
 			}
@@ -2028,7 +2035,7 @@ func ForwardScannedInput(
 				}
 				receiptLayerOverride, receiptPatternOverride, receiptSeverityOverride = authorityReceiptAttribution()
 				_ = emitToolReceipt(config.ActionBlock, contractGate)
-				sendMCPDenial(opts, mcpAuthorityDenialAudit(), *authorityBlockedRequest(frame), blockedCh)
+				sendInputDenial(opts, mcpAuthorityDenialAudit(), *authorityBlockedRequest(frame), blockedCh)
 				continue
 			}
 			// Inject envelope for warn-mode tool calls before forwarding.
@@ -2053,7 +2060,7 @@ func ForwardScannedInput(
 				})
 				if emitErr != nil {
 					denialAudit = mcpInputGateBlockAudit(scanner.AuditMediationEnvelope, mcpEnvelopeReason, audit.BlockClassInfrastructureError)
-					sendMCPDenial(opts, denialAudit, BlockedRequest{
+					sendInputDenial(opts, denialAudit, BlockedRequest{
 						ID:             verdict.ID,
 						IsNotification: isRPCNotification(verdict.ID),
 						LogMessage:     "mediation envelope injection failed",
@@ -2065,7 +2072,7 @@ func ForwardScannedInput(
 			}
 			if err := emitToolReceipt(effectiveAction, contractGate); err != nil {
 				denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
-				sendMCPDenial(opts, denialAudit, BlockedRequest{
+				sendInputDenial(opts, denialAudit, BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isRPCNotification(verdict.ID),
 					LogMessage:     "receipt emission failed",

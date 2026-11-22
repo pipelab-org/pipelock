@@ -346,7 +346,7 @@ func RunWSProxy(
 			admission, admissionErr = admission.ReserveNativeTerminal()
 		}
 		if admissionErr != nil {
-			writeNativeAdmissionDenial(wsOpts, safeLogW, localClientOut, frame.ID, admissionErr)
+			writeNativeAdmissionDenial(wsOpts, safeLogW, localClientOut, frame, admissionErr)
 			if errors.Is(admissionErr, ael.ErrCapacity) {
 				continue
 			}
@@ -362,7 +362,7 @@ func RunWSProxy(
 				denialAudit := mcpKillMcpInputDenialAudit()
 				batchResp := refuseKillSwitchRequest(inputOpts, safeLogW, frame, d)
 				if batchResp != nil {
-					if wErr := writeMCPInputDenial(wsOpts, denialAudit, localClientOut, batchResp); wErr != nil {
+					if wErr := writeMCPInputDenial(wsOpts, denialAudit, localClientOut, frame, batchResp); wErr != nil {
 						_, _ = fmt.Fprintf(safeLogW, "pipelock: stdout write error: %v\n", wErr)
 					}
 					continue
@@ -373,7 +373,7 @@ func RunWSProxy(
 					continue
 				}
 				resp := killswitch.ErrorResponse(frame.ID, d.Message)
-				if wErr := writeMCPInputDenial(wsOpts, denialAudit, localClientOut, resp); wErr != nil {
+				if wErr := writeMCPInputDenial(wsOpts, denialAudit, localClientOut, frame, resp); wErr != nil {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: stdout write error: %v\n", wErr)
 				}
 				continue
@@ -423,7 +423,7 @@ func RunWSProxy(
 			registration, refusal, trackingErr = registerWSTaskOutcome(safeLogW, inputOpts, tracker, frame, decision)
 			if trackingErr != nil {
 				decision.Outcome.settle(safeLogW, inputOpts, mcpOutcomeStatusBlocked, -1, "request_tracking_failed")
-				writeNativeAdmissionDenial(inputOpts, safeLogW, localClientOut, frame.ID, trackingErr)
+				writeNativeAdmissionDenial(inputOpts, safeLogW, localClientOut, frame, trackingErr)
 				continue
 			}
 			if refusal != "" {
@@ -437,7 +437,7 @@ func RunWSProxy(
 			tracker.removeOwnedOutcome(frame.ID, registration)
 			decision.Outcome.settle(safeLogW, inputOpts, mcpOutcomeStatusBlocked, -1, "receipt_admission_failed")
 			logMCPV3Error(safeLogW, err)
-			inputOpts.writeV3SendDenial(safeLogW, transport.NewStdioWriter(safeClientOut), frame, effect)
+			_ = inputOpts.writeV3SendDenial(safeLogW, transport.NewStdioWriter(safeClientOut), frame, effect)
 			continue
 		}
 		if innerCtx.Err() != nil {

@@ -329,7 +329,7 @@ func RunHTTPProxy(
 		var admissionErr error
 		admission, admissionErr = fwdOpts.admitNativeRequest()
 		if admissionErr != nil {
-			writeNativeAdmissionDenial(fwdOpts, safeLogW, safeClientOut, frame.ID, admissionErr)
+			writeNativeAdmissionDenial(fwdOpts, safeLogW, safeClientOut, frame, admissionErr)
 			lastScanErr = admissionErr
 			break
 		}
@@ -355,7 +355,7 @@ func RunHTTPProxy(
 				}
 				batchResp := refuseKillSwitchRequest(fwdOpts, safeLogW, frame, d)
 				if batchResp != nil {
-					if wErr := writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, batchResp); wErr != nil {
+					if wErr := writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, frame, batchResp); wErr != nil {
 						_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send kill switch response: %v\n", wErr)
 					}
 					continue
@@ -367,7 +367,7 @@ func RunHTTPProxy(
 				}
 				rpcID := frame.ID
 				resp := killswitch.ErrorResponse(rpcID, d.Message)
-				if wErr := writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, resp); wErr != nil {
+				if wErr := writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, frame, resp); wErr != nil {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send kill switch response: %v\n", wErr)
 				}
 				continue
@@ -405,7 +405,7 @@ func RunHTTPProxy(
 					ErrorMessage:   "pipelock: defer is disabled",
 				})
 				if !decision.Deferred.IsNotification {
-					_ = writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, resp)
+					_ = writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, frame, resp)
 				}
 				continue
 			}
@@ -570,7 +570,7 @@ func RunHTTPProxy(
 							dropMCPInputNotification(denialOpts, safeLogW, denialAudit, deferredReq.authorityFrame)
 						}
 						if !deferredReq.IsNotification {
-							_ = writeMCPInputDenial(denialOpts, denialAudit, safeClientOut, blockRequestResponse(BlockedRequest{
+							_ = writeMCPInputDenial(denialOpts, denialAudit, safeClientOut, deferredReq.authorityFrame, blockRequestResponse(BlockedRequest{
 								ID:           deferredReq.ID,
 								ErrorCode:    -32007,
 								ErrorMessage: "pipelock: receipt emission failed",
@@ -588,7 +588,7 @@ func RunHTTPProxy(
 							res = refuse(reason)
 						}
 						if admitErr != nil {
-							denialOpts.writeV3SendDenial(safeLogW, wireClientOut, deferredReq.authorityFrame, effect)
+							_ = denialOpts.writeV3SendDenial(safeLogW, wireClientOut, deferredReq.authorityFrame, effect)
 							return
 						}
 					}
@@ -615,7 +615,7 @@ func RunHTTPProxy(
 								if finishDeniedRelease != nil {
 									finishDeniedRelease()
 								}
-								writeNativeAdmissionDenial(heldOpts, safeLogW, safeClientOut, deferredReq.ID, trackErr)
+								writeNativeAdmissionDenial(heldOpts, safeLogW, safeClientOut, deferredReq.authorityFrame, trackErr)
 								return
 							}
 						}
@@ -639,7 +639,7 @@ func RunHTTPProxy(
 							if deferredReq.IsNotification {
 								dropMCPInputNotification(denialOpts, safeLogW, mcpTaintDenialAudit(), deferredReq.authorityFrame)
 							} else {
-								_ = writeMCPInputDenial(denialOpts, mcpTaintDenialAudit(), safeClientOut, blockRequestResponse(BlockedRequest{
+								_ = writeMCPInputDenial(denialOpts, mcpTaintDenialAudit(), safeClientOut, deferredReq.authorityFrame, blockRequestResponse(BlockedRequest{
 									ID: deferredReq.ID, ErrorCode: -32002, ErrorMessage: "pipelock: " + reason,
 								}))
 							}
@@ -745,18 +745,18 @@ func RunHTTPProxy(
 						}
 						if !deferredReq.IsNotification {
 							if authorityDenied {
-								_ = writeMCPInputDenial(denialOpts, denialAudit, safeClientOut, blockRequestResponse(*authorityBlockedRequest(deferredReq.authorityFrame)))
+								_ = writeMCPInputDenial(denialOpts, denialAudit, safeClientOut, deferredReq.authorityFrame, blockRequestResponse(*authorityBlockedRequest(deferredReq.authorityFrame)))
 								return
 							}
 							if gateBlock != nil {
-								_ = writeMCPInputDenial(denialOpts, denialAudit, safeClientOut, blockRequestResponse(*gateBlock))
+								_ = writeMCPInputDenial(denialOpts, denialAudit, safeClientOut, deferredReq.authorityFrame, blockRequestResponse(*gateBlock))
 								return
 							}
 							if res.ResolutionSource == deferred.SourceKillSwitch {
-								_ = writeMCPInputDenial(denialOpts, denialAudit, safeClientOut, killswitch.ErrorResponse(deferredReq.ID, deferredKillSwitchMessage(fwdOpts)))
+								_ = writeMCPInputDenial(denialOpts, denialAudit, safeClientOut, deferredReq.authorityFrame, killswitch.ErrorResponse(deferredReq.ID, deferredKillSwitchMessage(fwdOpts)))
 								return
 							}
-							_ = writeMCPInputDenial(denialOpts, denialAudit, safeClientOut, blockRequestResponse(BlockedRequest{
+							_ = writeMCPInputDenial(denialOpts, denialAudit, safeClientOut, deferredReq.authorityFrame, blockRequestResponse(BlockedRequest{
 								ID:           deferredReq.ID,
 								ErrorCode:    -32002,
 								ErrorMessage: "pipelock: deferred action denied",
@@ -797,7 +797,7 @@ func RunHTTPProxy(
 					dropMCPInputNotification(fwdOpts, safeLogW, denialAudit, frame)
 				}
 				if !deferredReq.IsNotification {
-					_ = writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, blockRequestResponse(BlockedRequest{
+					_ = writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, frame, blockRequestResponse(BlockedRequest{
 						ID:           deferredReq.ID,
 						ErrorCode:    -32002,
 						ErrorMessage: errorMessage,
@@ -821,7 +821,7 @@ func RunHTTPProxy(
 				continue
 			}
 			errResp := blockRequestResponse(mcpContractBlockRequest(frame.ID, mcpContractGateOutput{}, "pipelock: contract upstream evaluation failed"))
-			if wErr := writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, errResp); wErr != nil {
+			if wErr := writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, frame, errResp); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send contract response: %v\n", wErr)
 			}
 			emitContractRefusedOutcome(safeLogW, outcome, mcpContractGateOutput{}, mcpContractEvaluationFailedReason, int64(len(errResp)), fwdOpts)
@@ -840,7 +840,7 @@ func RunHTTPProxy(
 				continue
 			}
 			errResp := blockRequestResponse(mcpContractBlockRequest(frame.ID, gate, "pipelock: upstream URL blocked by live-lock contract"))
-			if wErr := writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, errResp); wErr != nil {
+			if wErr := writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, frame, errResp); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send contract response: %v\n", wErr)
 			}
 			emitContractRefusedOutcome(safeLogW, outcome, gate, mcpContractDeniedReason, int64(len(errResp)), fwdOpts)
@@ -860,7 +860,7 @@ func RunHTTPProxy(
 				continue
 			}
 			response := blockRequestResponse(BlockedRequest{ID: frame.ID, ErrorCode: -32020, ErrorMessage: message})
-			_ = writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, response)
+			_ = writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, frame, response)
 			emitBridgeHeaderContractRefusal(safeLogW, outcome, reason, fwdOpts)
 			continue
 		}
@@ -868,7 +868,7 @@ func RunHTTPProxy(
 		effect, admitErr := fwdOpts.startV3Send(ctx, frame, decision.v3Evidence)
 		if admitErr != nil {
 			logMCPV3Error(safeLogW, admitErr)
-			fwdOpts.writeV3SendDenial(safeLogW, wireClientOut, frame, effect)
+			_ = fwdOpts.writeV3SendDenial(safeLogW, wireClientOut, frame, effect)
 			continue
 		}
 		unlockInventory := func() {}
@@ -936,7 +936,7 @@ func RunHTTPProxy(
 		if trackingErr != nil {
 			unlockInventory()
 			decision.Outcome.settle(safeLogW, fwdOpts, mcpOutcomeStatusBlocked, -1, "request_tracking_failed")
-			writeNativeAdmissionDenial(fwdOpts, safeLogW, safeClientOut, frame.ID, trackingErr)
+			writeNativeAdmissionDenial(fwdOpts, safeLogW, safeClientOut, frame, trackingErr)
 			continue
 		}
 		if taskRefusal != "" {
@@ -949,7 +949,7 @@ func RunHTTPProxy(
 			} else {
 				block := BlockedRequest{ID: frame.ID, ErrorCode: -32002, ErrorMessage: "pipelock: " + taskRefusal}
 				errResp = blockRequestResponse(block)
-				if wErr := writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, errResp); wErr != nil {
+				if wErr := writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, frame, errResp); wErr != nil {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send task refusal: %v\n", wErr)
 				}
 			}
