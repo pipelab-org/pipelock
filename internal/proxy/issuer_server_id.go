@@ -528,15 +528,23 @@ func jsonWholeNumberDigits(literal string) (string, bool) {
 	exp := 0
 	if i := strings.IndexAny(mantissa, "eE"); i >= 0 {
 		raw := strings.TrimPrefix(mantissa[i+1:], "+")
-		if len(raw) > 6 {
-			// |exp| of a million or more: the value has no 8-14 digit form,
-			// unless leading or trailing zeros pad it, which a body cannot
-			// carry in this many bytes anyway.
+		neg := strings.HasPrefix(raw, "-")
+		// Leading zeros do not change the exponent, so measure it without them.
+		abs := strings.TrimLeft(strings.TrimPrefix(raw, "-"), "0")
+		if abs == "" {
+			abs = "0"
+		}
+		if len(abs) > 6 {
+			// |exp| of a million or more: no zero padding a body can carry
+			// brings the value back to an 8-14 digit form.
 			return "", false
 		}
-		v, err := strconv.Atoi(raw)
+		v, err := strconv.Atoi(abs)
 		if err != nil {
 			return "", false
+		}
+		if neg {
+			v = -v
 		}
 		exp, mantissa = v, mantissa[:i]
 	}

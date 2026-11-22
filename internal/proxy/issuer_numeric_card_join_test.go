@@ -710,6 +710,9 @@ func TestIssuerNumericLedgerIsolationAndEdgeCases(t *testing.T) {
 			{"1e400", "", false},
 			{"1e-400", "", false},
 			{"1e9999999", "", false},
+			{"4.1111111e0000007", "41111111", true},
+			{"4.1111111E+00000007", "41111111", true},
+			{"411111110e-00000001", "41111111", true},
 			{"1" + strings.Repeat("0", 70), "", false},
 		} {
 			got, ok := jsonWholeNumberDigits(tc.in)
