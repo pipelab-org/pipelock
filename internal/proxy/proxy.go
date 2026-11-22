@@ -643,6 +643,7 @@ type contextDialer interface {
 
 // Proxy is the Pipelock fetch proxy server.
 type Proxy struct {
+	receiptEffects       proxyReceiptEffects
 	cfgPtr               atomic.Pointer[config.Config]
 	issuerCookieRuntime  atomic.Pointer[issuerCookieRuntime]
 	scannerPtr           atomic.Pointer[scanner.Scanner]
@@ -664,6 +665,7 @@ type Proxy struct {
 	ksAPI                *killswitch.APIHandler
 	sessionAPI           *SessionAPIHandler
 	dialer               contextDialer
+	wsTLSConfig          *tls.Config
 	client               *http.Client
 	tlsTransport         *http.Transport // shared Transport for TLS interception upstream connections
 	server               *http.Server
@@ -1137,7 +1139,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			if issuedRelief && result.Allowed {
 				shard := receiptShardFromContext(req.Context())
 				shard.Transport = redirectTransport
-				if err := p.recordIssuerQueryAllow(currentCfg, redirectAuditCtx, redirectURL, requestID, agentName, req.Method, issuerQueryIssuedRedirect, shard); err != nil {
+				if err := p.recordIssuerQueryAllow(currentCfg, redirectAuditCtx, redirectURL, requestID, agentName, req.Method, issuerQueryIssuedRedirect, withReceiptCredentialContext(shard, req.Context())); err != nil {
 					if isNativeCapacityStop(err) {
 						return err
 					}
@@ -1146,7 +1148,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 					return blockedErr
 				}
 			}
-			if err := p.recordCredentialAudienceAllows(currentCfg, redirectAuditCtx, result.CredentialAudienceAllows, redirectTransport, req.Method, redirectURL, requestID, agentName, receiptShardFromContext(req.Context())); err != nil {
+			if err := p.recordCredentialAudienceAllows(currentCfg, redirectAuditCtx, result.CredentialAudienceAllows, redirectTransport, req.Method, redirectURL, requestID, agentName, withReceiptCredentialContext(receiptShardFromContext(req.Context()), req.Context())); err != nil {
 				if isNativeCapacityStop(err) {
 					return err
 				}
@@ -1350,11 +1352,17 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			}
 			// Fetch follows this hop internally. Record its actual destination
 			// and outgoing headers before dispatch, just like the initial send.
+			if state, ok := req.Context().Value(fetchReceiptEffectKey{}).(*fetchReceiptEffect); ok {
+				state.redirect(req, currentCfg, gate)
+			}
 			p.recordIssuerForwardSent(currentCfg, agentName, clientIP, envelope.ActorAuth(agentAuthFromContext(req.Context())), req, nil)
 			return nil
 		},
 	}
 
+	if p.receiptEffects.enabled {
+		p.client.Transport = fetchReceiptTransport{base: p.client.Transport}
+	}
 	p.tlsTransport = newTLSInterceptTransport(p.ssrfSafeDialContext, m.RecordTLSHandshake, nil)
 
 	return p, nil
@@ -1663,6 +1671,7 @@ func (p *Proxy) recordDecision(verdict, layer, pattern, transport, requestID str
 // allocated-but-unrecorded id would be false evidence, so block writers use
 // this and fail toward silence.
 func (p *Proxy) emitRecordedReceipt(opts receipt.EmitOpts) bool {
+	p.refuseEffect(receiptEffectContext(opts), p.cfgPtr.Load(), opts, boundaryForProxyDecision(opts.Transport))
 	if cfg := p.cfgPtr.Load(); cfg != nil {
 		opts = withReceiptConfig(opts, cfg)
 	}
@@ -1807,6 +1816,10 @@ func receiptOutcomePattern(status string, bytesTransferred int64, reason string)
 // flushResponseBeforeOutcome releases buffered response bytes before synchronous
 // outcome recording. The caller records any delivery failure before aborting.
 func flushResponseBeforeOutcome(w http.ResponseWriter, r *http.Request, cfg *config.Config) error {
+	return flushOutcomeResponse(w, r, cfg, false)
+}
+
+func flushOutcomeResponse(w http.ResponseWriter, r *http.Request, cfg *config.Config, requireFlush bool) error {
 	controller := http.NewResponseController(w)
 	server, _ := r.Context().Value(http.ServerContextKey).(*http.Server)
 	// A positive server WriteTimeout already bounds this write. Leave its
@@ -1826,10 +1839,10 @@ func flushResponseBeforeOutcome(w http.ResponseWriter, r *http.Request, cfg *con
 		}
 	}
 	err := controller.Flush()
-	if errors.Is(err, http.ErrNotSupported) {
+	if !requireFlush && errors.Is(err, http.ErrNotSupported) {
 		err = nil
 	}
-	if bounded && err == nil {
+	if bounded && (err == nil || errors.Is(err, http.ErrNotSupported)) {
 		// Successful callers may continue writing (or reuse the connection).
 		// These servers had no write deadline before this flush.
 		if resetErr := controller.SetWriteDeadline(time.Time{}); resetErr != nil && !errors.Is(resetErr, http.ErrNotSupported) {
@@ -4316,6 +4329,7 @@ func (p *Proxy) blockShieldPartialResponse(resp *http.Response, body []byte, hos
 }
 
 type shieldResponseContext struct {
+	requestContext                                 context.Context
 	admittedScanLimit                              int
 	scanOriginal                                   func([]byte, http.Header) *scanner.ResponseScanResult
 	retainedScan                                   *scanner.ResponseScanResult
@@ -4404,7 +4418,7 @@ func (p *Proxy) applyShieldResponse(body []byte, contentType string, respHeaders
 			return append(head, body[shieldMaxBytes:]...), summary, false, nil
 		case config.ShieldOversizeWarn:
 			reason := shieldOversizeBlockReason(hostname, len(body), shieldMaxBytes)
-			if err := p.confirmResponseDecision(cfg, withReceiptShard(receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: response.parentActionID, Verdict: config.ActionAllow, Layer: "shield_oversize", Pattern: reason, Shield: partialShieldSummary(nil, body, contentType, len(body), 0), Transport: transport, Method: actx.Method(), Target: shieldReceiptTarget(firstNonEmptyString(actx.URL(), actx.Target(), hostname)), RequestID: requestID, Agent: actx.Agent()}, response.shard)); err != nil {
+			if err := p.confirmResponseDecision(cfg, withReceiptShard(receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: response.parentActionID, Verdict: config.ActionAllow, Layer: "shield_oversize", Pattern: reason, Shield: partialShieldSummary(nil, body, contentType, len(body), 0), Transport: transport, Method: actx.Method(), Target: shieldReceiptTarget(firstNonEmptyString(actx.URL(), actx.Target(), hostname)), RequestID: requestID, Agent: actx.Agent()}, response.shard), response.requestContext); err != nil {
 				return nil, nil, false, p.shieldReceiptBlock(err, transport)
 			}
 			p.logger.LogAnomaly(actx, "shield_oversize", fmt.Sprintf("response body %d bytes exceeds shield ceiling %d", len(body), shieldMaxBytes), 0)
@@ -4736,7 +4750,7 @@ func (p *Proxy) confirmShieldIntervention(summary *receipt.ShieldSummary, cfg *c
 		Target:         target,
 		RequestID:      requestID,
 		Agent:          actx.Agent(),
-	}, response.shard))
+	}, response.shard), response.requestContext)
 	if err != nil {
 		return p.shieldReceiptBlock(err, transport)
 	}
@@ -5584,6 +5598,7 @@ func serveUntilShutdown(ctx context.Context, serve func() error, shutdown func()
 
 // handleFetch processes URL fetch requests.
 func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
+	r = p.withReceiptEvidence(r)
 	start := time.Now()
 
 	clientIP, requestID := requestMeta(r)
@@ -5622,7 +5637,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// resolved. Every audit context below derives from r.Context(), so setting
 	// it only at fetch time would report "unknown" for each event on the way.
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
+	refusalBoundary := boundaryUpstreamSend
 	emitFetchReceipt := func(opts receipt.EmitOpts) {
+		p.refuseEffect(r.Context(), cfg, opts, refusalBoundary)
 		opts = withReceiptShard(opts, selectedReceiptShard)
 		opts = withReceiptConfig(opts, cfg)
 		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
@@ -5750,7 +5767,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(scanCtx)
 	result := sc.Scan(scanCtx, targetURL)
 	p.metrics.RecordURLDecisions(TransportFetch, result.Decisions)
-	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportFetch, http.MethodGet, targetURL, requestID, agent, selectedReceiptShard); err != nil {
+	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportFetch, http.MethodGet, targetURL, requestID, agent, withReceiptCredentialContext(selectedReceiptShard, r.Context())); err != nil {
 		if refuseReceiptCapacity(w, err) {
 			return
 		}
@@ -6731,7 +6748,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	responseencoding.RequestIdentity(req.Header)
+	req, fetchReceipt := p.startFetchReceiptEffects(req, cfg, fetchAllowReceipt)
 	resp, err := p.client.Do(req) //nolint:gosec // G704: URL validated by scanner pipeline before reaching here
+	deliveredFrom := fetchAllowReceipt
+	if fetchReceipt != nil {
+		deliveredFrom = fetchReceipt.opts
+	}
 	if err != nil {
 		if refuseReceiptCapacity(w, err) {
 			outcomeStatus = strconv.Itoa(http.StatusServiceUnavailable)
@@ -6834,6 +6856,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		outcomeReason = "fetch_failed"
 		return
 	}
+	refusalBoundary = boundaryDownstreamDelivery
 	defer func() { safeClose(resp.Body, "resp.Body", p.logger) }()
 
 	// Decode supported single-layer encodings before the existing decoded-body
@@ -6975,7 +6998,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	var shieldSummary *receipt.ShieldSummary
 	svgShielded := false
 	if shieldBlocked == nil {
-		body, shieldSummary, svgShielded, shieldBlocked = p.applyShieldResponse(body, contentType, resp.Header, cfg, shieldResponseContext{scanOriginal: scanOriginal, hostname: shieldHost, actx: actx, clientIP: clientIP, requestID: requestID, transport: TransportFetch, parentActionID: actionID, shard: selectedReceiptShard})
+		body, shieldSummary, svgShielded, shieldBlocked = p.applyShieldResponse(body, contentType, resp.Header, cfg, shieldResponseContext{requestContext: r.Context(), scanOriginal: scanOriginal, hostname: shieldHost, actx: actx, clientIP: clientIP, requestID: requestID, transport: TransportFetch, parentActionID: actionID, shard: selectedReceiptShard})
 	}
 	if shieldBlocked != nil {
 		reason := shieldBlocked.reason
@@ -7042,13 +7065,16 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if mediaVerdict.Relabeled != "" || (mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed()) {
+		evidence := mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: TransportFetch, Method: http.MethodGet, Target: displayURL, RequestID: requestID, Agent: agent}, selectedReceiptShard))
 		if cfg.FlightRecorder.RequireReceipts {
-			if err := p.confirmResponseDecision(cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: TransportFetch, Method: http.MethodGet, Target: displayURL, RequestID: requestID, Agent: agent}, selectedReceiptShard))); err != nil {
+			if err := p.confirmResponseDecision(cfg, evidence, r.Context()); err != nil {
 				p.recordRequiredReceiptBlock(err, TransportFetch)
 				writeBlockedJSON(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: receiptEmissionBlockReason})
 				outcomeStatus, outcomeReason = strconv.Itoa(http.StatusForbidden), receiptEmissionFailedLayer
 				return
 			}
+		} else {
+			collectReceiptResponseEvidence(evidence, []context.Context{r.Context()})
 		}
 	}
 	applyRelabeledContentType(resp.Header, mediaVerdict)
@@ -7278,6 +7304,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	shieldRewrite := shieldRewriteHeaderValue(shieldSummary)
 	setShieldRewriteHeader(w.Header(), shieldSummary)
+	deliveredFrom.Shield = shieldSummary
+	w, finishReceiptDelivery := p.startReceiptDelivery(w, r, cfg, deliveredFrom)
+	defer finishReceiptDelivery()
 	writeErr := encodeJSON(w, http.StatusOK, FetchResponse{
 		URL:           displayURL,
 		Agent:         agent,
@@ -7396,7 +7425,8 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 
 	out = content
 	emitResponseReceipt := func(opts receipt.EmitOpts) {
-		if p.emitRecordedReceipt(opts) {
+		p.refuseEffect(reqCtx, cfg, opts, boundaryDownstreamDelivery)
+		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(withReceiptConfig(opts, cfg), e) == nil {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
 		}
 	}
@@ -7597,19 +7627,22 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 		recordResponseSignal(session.SignalWarning)
 		log.LogResponseScan(newHTTPAuditContext(reqCtx, log, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), action, len(result.Matches), patternNames, bundleRules)
 	}
+	evidence := withReceiptShard(receipt.EmitOpts{
+		ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: action,
+		Layer: responseScanLayer, Pattern: strings.Join(patternNames, ", "),
+		Transport: TransportFetch, Method: http.MethodGet, Target: displayURL,
+		RequestID: requestID, Agent: agent,
+	}, firstReceiptShard(in.shard, receiptShardFromContext(reqCtx)))
 	if cfg.FlightRecorder.RequireReceipts {
-		err := p.emitAllowPathReceipt(cfg, withReceiptShard(receipt.EmitOpts{
-			ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: action,
-			Layer: responseScanLayer, Pattern: strings.Join(patternNames, ", "),
-			Transport: TransportFetch, Method: http.MethodGet, Target: displayURL,
-			RequestID: requestID, Agent: agent,
-		}, firstReceiptShard(in.shard, receiptShardFromContext(reqCtx))))
+		err := p.confirmResponseDecision(cfg, evidence, reqCtx)
 		if err != nil {
 			p.recordRequiredReceiptBlock(err, TransportFetch)
 			writeBlockedJSON(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), http.StatusForbidden,
 				FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: receiptEmissionBlockReason})
 			return true, "", true, receiptEmissionFailedLayer
 		}
+	} else {
+		collectReceiptResponseEvidence(evidence, []context.Context{reqCtx})
 	}
 	return false, out, true, ""
 }

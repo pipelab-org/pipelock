@@ -378,7 +378,7 @@
       "fields": "Carry the original action ID, attempt, and intended effect. Set `phase=outcome`, `effect_relation=not_attempted`, and `outcome_class=not_released`. Use `policy.source=request_snapshot` and the retained decision-time digest when available. Otherwise use `policy.source=unavailable` and omit `policy.hash`. Set `caller.authn=none`. Copy `session`, `taint`, and `contract` from the intent when present. Include `redaction` only when the intent carries an applied rewrite summary.",
       "when": "The WebSocket bridge has an intent and refuses to track the reply before sending the call."
     },
-    "internal/proxy/bodyscan.go/(*Proxy).evalHeaderDLP/recordCredentialAudienceAllows/332ef9d1515f4ed6": {
+    "internal/proxy/bodyscan.go/(*Proxy).evalHeaderDLP/recordCredentialAudienceAllows/9c82ca7412ec77dc": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `evalHeaderDLP` selects this receipt call"
     },
@@ -402,44 +402,44 @@
       "fields": "`phase` and `effect_relation` from the decision that gates dialing, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`cfg.FlightRecorder.RequireReceipts`"
     },
-    "internal/proxy/forward.go/(*Proxy).handleConnect/recordCredentialAudienceAllows/203c51dce1b31a1e": {
+    "internal/proxy/forward.go/(*Proxy).handleConnect/recordCredentialAudienceAllows/12f1b18b4f6ac421": {
       "fields": "`phase` and `effect_relation` from the decision that gates dialing, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `handleConnect` selects this receipt call"
     },
-    "internal/proxy/forward.go/(*Proxy).handleConnect/recordIssuerQueryAllow/e78b0d70a1e1dac2": {
+    "internal/proxy/forward.go/(*Proxy).handleConnect/recordIssuerQueryAllow/3bbb7d20b1f8cb9a": {
       "fields": "`phase` and `effect_relation` from the decision that gates dialing, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`issuedHostRelief && result.Allowed`"
     },
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/4738b0444e6ddf09": {
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/e9eb6cd967ee7c94": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise.",
       "when": "otherwise after `artifactErr != nil` and `artifact != nil`. Records `ActionAllow`"
     },
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/f89139bbc20189b7": {
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/e054483f17a07858": {
       "fields": "`phase` and `effect_relation` come from the unscannable passthrough delivery. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`. `taint` is the forward decision's taint result. `session` is that decision's task id and label, omitted when empty. `redaction` carries the forward profile, and the report when a rewrite produced one. `contract` is included when the forward gate has a contract result, and omitted otherwise. `shield`, `checker`, and `normalization` are omitted.",
       "when": "`fwdRespSizeExempt` and `ok`"
     },
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/d6652eec7597e3e2": {
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/50e2d1900e73db36": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `shield` is included when the response summary is in scope, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
       "when": "`cfg.FlightRecorder.RequireReceipts`"
     },
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/24cfa4fdcb21a158": {
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/a78376088056b796": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `shield` is included when the response summary is in scope, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
       "when": "`isA2A && len(respBody) > 0` and `cfg.FlightRecorder.RequireReceipts`. Records `ActionAllow`"
     },
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/9ac3c92ef11e1928": {
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/0ad3e2dff79c8e1e": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `shield` is included when the response summary is in scope, and omitted otherwise, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
       "when": "`cardResult.SignatureVerified` and otherwise after `a2aResponseDecisionBlocks(cfg, a2aResult, false)`. Records `ActionAllow`"
     },
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/185621c0f16292a9": {
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/d778615028204812": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `shield` is included when the response summary is in scope, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
       "when": "`!a2aResult.Clean` and `cfg.FlightRecorder.RequireReceipts`"
     },
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/f524a40c23d43365": {
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/facaba1a6ae8d77b": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `shield` is included when the response summary is in scope, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
       "when": "`structured != nil`. Records `ActionWarn`"
     },
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitAllowPathReceipt/19e7d358614a456b": {
-      "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `shield` is included when the response summary is in scope, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/f6d57b59ce717e92": {
+      "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `shield` is included when the response summary is in scope, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
       "when": "`!scanResult.Clean` and `cfg.FlightRecorder.RequireReceipts`"
     },
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardDenial/c7eb3a73538c8d5e": {
@@ -522,11 +522,11 @@
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
       "when": "`ambiguousForwardRedirectLocation(resp)`"
     },
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/95d6a222f803383d": {
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/13740dc7031853a9": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise.",
       "when": "`artifactErr != nil` and `ok && blockedErr.layer == \"kill_switch\"`"
     },
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/497a75cdd9f65c45": {
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/81bc4e0139fca38f": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise.",
       "when": "`artifactErr != nil`. Records `ActionBlock`"
     },
@@ -622,11 +622,11 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`cfg.FlightRecorder.RequireReceipts`"
     },
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/recordCredentialAudienceAllows/2b71ccd7d6d36168": {
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/recordCredentialAudienceAllows/9fcb17b39a993c64": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`cfg.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody`"
     },
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/recordCredentialAudienceAllows/bd68e94133d1dbf8": {
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/recordCredentialAudienceAllows/779ee30dda14b30d": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `handleForwardHTTP` selects this receipt call"
     },
@@ -642,7 +642,7 @@
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
       "when": "`err != nil`"
     },
-    "internal/proxy/intercept.go/interceptEmitReceipt/recordReceiptEmitterUnavailable/2f68b1b625715da6": {
+    "internal/proxy/intercept.go/interceptEmitBoundaryReceipt/recordReceiptEmitterUnavailable/2f68b1b625715da6": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
       "when": "`ic.Proxy.receiptGroupPtr.Load() != nil` and `e == nil`"
     },
@@ -654,7 +654,7 @@
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
       "when": "`ic.Proxy.receiptGroupPtr.Load() != nil` and `e == nil`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/emitAllowPathReceipt/5e8e99889006639a": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/d7866b85df7732ca": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`ic.Config.FlightRecorder.RequireReceipts` with a non-nil proxy after a buffered response finding"
     },
@@ -662,31 +662,31 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
       "when": "`ic.Proxy != nil`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/1df9a297350567b9": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/bdce2ff68e260371": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "otherwise after `artifactErr != nil` and `artifact != nil`. Records `ActionAllow`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/d3b6f1ab96fe006e": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/6a9f423602c275dc": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`isResponseSizeExempt(ic.TargetHost, ic.Config.ResponseScanning.SizeExemptDomains)` and `ok`. Records `ActionAllow`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/b18774a4a77ef548": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/0b5544cf1842136c": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
       "when": "When `newInterceptHandler` selects this receipt call"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/85c7a915c93fd51b": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/739351668e094d76": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
       "when": "`isA2A` and `ic.Config.FlightRecorder.RequireReceipts`. Records `ActionAllow`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/49d10f50fda66a4e": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/e7768eb9d9a33ebf": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`isA2A` and `cardResult.SignatureVerified`. Records `ActionAllow`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/b27ed4fc487982e0": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/81f90afd91a4e2fe": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
       "when": "`isA2A` and `!a2aRespResult.Clean`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/0a2bd29971d1c016": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/3a6ebeba232c308d": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`structured != nil`. Records `ActionWarn`"
     },
@@ -758,27 +758,27 @@
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`err != nil` and `errors.As(err, &ssrfErr)`. Records `ActionBlock`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/9f1ac546b8961ddb": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/37bb5254fa7720d0": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`!applyFullResponsePolicy(nil, resp)`. Records `ActionBlock`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/16f7bd85e5a713c9": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/5d4842302c9740d3": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`artifactErr != nil`. Records `ActionBlock`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/b6ce8cf2f6c16629": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/1be3824935611766": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`artifact != nil` and `!ic.Config.FlightRecorder.RequireReceipts`. Records `ActionAllow`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/098a92ac719c6af5": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/2755fd23530d5ddc": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`HasSingleSSEContentType(resp.Header) && !interceptAuthenticatedArtifact` and `IsSSECompressed(resp.Header)`. Records `ActionBlock`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/392dedfdfbf96a88": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/8af9cfcdb5a7a83b": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`streamErr != nil` and `IsSSEStreamScanError(streamErr)`. Records `ActionBlock`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/0b2580fde6cc0b50": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/7758814cae25ea02": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "otherwise after `IsSSEStreamScanError(streamErr)` and otherwise after `IsSSEStreamFinding(streamErr) && sseAction == config.ActionWarn`. Records `ActionBlock`"
     },
@@ -786,43 +786,43 @@
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
       "when": "`ic.Proxy != nil` and `err != nil`. Records `ActionBlock`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/d3a0bfa40c98bd02": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/ca25226224473387": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`responseencoding.HasNonIdentityContentEncoding(resp.Header)` and `decodeErr != nil`. Records `ActionBlock`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/e88fe86793a4797f": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/e7c7db21ff2695d7": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`readErr != nil`. Records `ActionBlock`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/8e7cdbd9be3332e3": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/ad5bd69c6d3a8ec2": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`ok` and `!ic.Config.FlightRecorder.RequireReceipts`. Records `ActionAllow`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/e378636c23c108af": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/05d25558f479777c": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`isResponseSizeExempt(ic.TargetHost, ic.Config.ResponseScanning.SizeExemptDomains)` and `scanFailure != nil`. Records `ActionBlock`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/a14c8ea2c7937141": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/d965d524db82e30e": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`int64(len(respBody)) > maxResp && structured == nil` and otherwise after `isResponseSizeExempt(ic.TargetHost, ic.Config.ResponseScanning.SizeExemptDomains)`. Records `ActionBlock`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/e7ed8105451dfb67": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/338d405a8f4f278d": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `shield` is included when the response summary is in scope, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`ic.Proxy != nil` and `shieldBlocked != nil`. Records `ActionBlock`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/a50b7e4de117c897": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/9d30f38908ed4966": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`mediaVerdict.Blocked`. Records `ActionBlock`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/fead2fc230685a76": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/54c4a71043bd17b3": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`isA2A` and `cardResult.SignatureVerified`. Records `ActionAllow`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/c7391ca23dcaf5e5": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/ee19cbbdf00219d6": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`isA2A` and `a2aRespResult.ScanError != \"\"`. Records `ActionBlock`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/b13911a8bfcf9bfb": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/20af76a006ed6c0a": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`isA2A` and `!a2aRespResult.Clean`. Records `ActionBlock`"
     },
@@ -830,15 +830,15 @@
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
       "when": "Records `ActionBlock`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/35241ade8023b27d": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/ac9e894f436ea11e": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`structured != nil` and `!ic.Config.FlightRecorder.RequireReceipts`. Records `ActionWarn`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/6014e682c6ae4f6d": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/222ec08399c80638": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`scanResult.Failed()`. Records `ActionBlock`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/1afbff39dae343b1": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/8e4a6370fd464923": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`config.ActionBlock` and `config.ActionAsk`. Records `ActionBlock`"
     },
@@ -886,15 +886,15 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
       "when": "otherwise after `ic.Proxy != nil`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllows/0ca505b9f993d0a7": {
+    "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllows/b4db467d0505152e": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
       "when": "`ic.Config.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody` and `ic.Proxy != nil`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllows/2717586565533306": {
+    "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllows/797e8d1b34fd342b": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
       "when": "`ic.Config.RequestBodyScanning.Enabled && ic.Config.RequestBodyScanning.ScanHeaders` and `ic.Proxy != nil`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllows/a464d8183f9c84ea": {
+    "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllows/1284b7b23eccedcd": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
       "when": "`ic.Proxy != nil`"
     },
@@ -914,15 +914,15 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `New` selects this receipt call"
     },
-    "internal/proxy/proxy.go/New/recordCredentialAudienceAllows/85e81c2a0ae39d08": {
+    "internal/proxy/proxy.go/New/recordCredentialAudienceAllows/e017953e66d75c69": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `New` selects this receipt call"
     },
-    "internal/proxy/proxy.go/New/recordIssuerQueryAllow/2b43b36e2069e049": {
+    "internal/proxy/proxy.go/New/recordIssuerQueryAllow/94ca872f085b7afb": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`issuedRelief && result.Allowed`"
     },
-    "internal/proxy/proxy.go/(*Proxy).applyShieldResponse/confirmResponseDecision/ab6d629dabc9050c": {
+    "internal/proxy/proxy.go/(*Proxy).applyShieldResponse/confirmResponseDecision/0fa39a1ebafe7a47": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `shield` is included when the response summary is in scope, and omitted otherwise.",
       "when": "`shieldMaxBytes > 0 && len(body) > shieldMaxBytes` and `config.ShieldOversizeWarn`. Records `ActionAllow`"
     },
@@ -950,15 +950,15 @@
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `emitReceiptFailureMarkerWithLogger` selects this receipt call"
     },
-    "internal/proxy/proxy.go/(*Proxy).filterAndActOnResponseScan/emitAllowPathReceipt/b456000a854f4e96": {
+    "internal/proxy/proxy.go/(*Proxy).filterAndActOnResponseScan/confirmResponseDecision/dc70b29075724ec5": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
       "when": "`cfg.FlightRecorder.RequireReceipts`"
     },
-    "internal/proxy/proxy.go/(*Proxy).filterAndActOnResponseScan/emitRecordedReceipt/0578265fdb72ef35": {
+    "internal/proxy/proxy.go/(*Proxy).filterAndActOnResponseScan/emitReceiptWithEmitter/5da6faf4ee468b77": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `filterAndActOnResponseScan` selects this receipt call"
     },
-    "internal/proxy/proxy.go/(*Proxy).handleFetch/confirmResponseDecision/00ba6993ef305b2a": {
+    "internal/proxy/proxy.go/(*Proxy).handleFetch/confirmResponseDecision/0d174c97775af5e3": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`cfg.FlightRecorder.RequireReceipts`"
     },
@@ -1078,7 +1078,7 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`cfg.FlightRecorder.RequireReceipts`"
     },
-    "internal/proxy/proxy.go/(*Proxy).handleFetch/recordCredentialAudienceAllows/5857f28521c57fd6": {
+    "internal/proxy/proxy.go/(*Proxy).handleFetch/recordCredentialAudienceAllows/cba714afa7ad8fa4": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `handleFetch` selects this receipt call"
     },
@@ -1182,15 +1182,15 @@
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`r.Body != nil && r.ContentLength != 0 && cfg.RequestBodyScanning.Enabled` and `!reserved`. Records `ActionBlock`"
     },
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/recordCredentialAudienceAllows/d7d5c390764d49b7": {
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/recordCredentialAudienceAllows/eedd6976abf6c8b5": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`cfg.RequestBodyScanning.Enabled && cfg.RequestBodyScanning.ScanHeaders`"
     },
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/recordCredentialAudienceAllows/c0c2fedf144fd210": {
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/recordCredentialAudienceAllows/c028a44ba01e2a85": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`cfg.ReverseProxy.Profile == config.ReverseProxyProfileSubmit`"
     },
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/recordCredentialAudienceAllows/981b12bdcf5d5306": {
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/recordCredentialAudienceAllows/8f557dfb99c30d24": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`pathQuery != \"\"`"
     },
@@ -1206,29 +1206,21 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`errors.As(err, &ssrfErr)`"
     },
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/confirmResponseDecision/fc6a60030b01329f": {
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/confirmResponseDecision/df334f4d2d03f5a0": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `modifyResponse` selects this receipt call"
     },
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/confirmResponseDecision/f3735f198f0223b2": {
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/confirmResponseDecision/ebb4d2db68b0902f": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "otherwise after `isDeclaredAudioVideo` and `cfg.FlightRecorder.RequireReceipts`"
     },
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitAllowPathReceipt/932ea8a4453094ca": {
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/confirmResponseDecision/d63161dcb4047678": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
       "when": "`cfg.FlightRecorder.RequireReceipts`"
     },
     "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseReceipt/09dbc503600e0767": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`!applyFullResponsePolicy(nil, resp)`. Records `ActionBlock`"
-    },
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseReceipt/1de190003c298c87": {
-      "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
-      "when": "`HasSingleSSEContentType(resp.Header)` and `IsSSEStreamScanError(err)`. Records `ActionBlock`"
-    },
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseReceipt/dba9666f7ae54542": {
-      "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
-      "when": "`HasSingleSSEContentType(resp.Header)`. Records `ActionBlock`"
     },
     "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseReceipt/ba01c8a0d77e162b": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
@@ -1314,7 +1306,7 @@
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`action == config.ActionBlock && cfg.EnforceEnabled()`. Records `ActionBlock`"
     },
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).scanRequest/recordCredentialAudienceAllows/ce99ff1ae9927fa7": {
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).scanRequest/recordCredentialAudienceAllows/b37cee78f63b0fe9": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `scanRequest` selects this receipt call"
     },
@@ -1322,15 +1314,11 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `applyFrameRequestPolicy` selects this receipt call"
     },
-    "internal/proxy/websocket.go/(*wsRelay).blockCrossMessageRedaction/emitFrameReceipt/d493bdee484ab9cc": {
+    "internal/proxy/websocket.go/(*wsRelay).blockCrossMessageRedaction/emitFrameReceipt/c78baa12fd043961": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise.",
       "when": "Records `ActionBlock`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).blockIdentityReload/emitReceipt/0abaaa3a369e10a2": {
-      "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
-      "when": "Records `ActionBlock`"
-    },
-    "internal/proxy/websocket.go/(*wsRelay).blockOnCredentialAudienceReceiptFailure/emitFrameReceipt/ec63019ee5aec7da": {
+    "internal/proxy/websocket.go/(*wsRelay).blockOnCredentialAudienceReceiptFailure/emitFrameReceipt/b65217633bc99c78": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "Credential-audience confirmation fails for a frame and the error is outside the native capacity stop path."
     },
@@ -1338,23 +1326,23 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`isTextMessage && r.scanText` and `fieldTail.Incomplete(frame)`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/emitReceipt/57b6ac6db5a12c64": {
+    "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/emitReceipt/a1b48cf670970567": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`r.proxy.ks != nil && r.proxy.ks.IsActive()`. Records `ActionBlock`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/emitReceipt/ec8024085e7915bc": {
+    "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/emitReceipt/2d1e439f1ca64e71": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`decide.UpgradeAction(\"\", r.escalationLevel(), &r.cfg.AdaptiveEnforcement) == config.ActionBlock`. Records `ActionBlock`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/emitFrameReceipt/1dbb592d3fb69aa0": {
+    "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/emitFrameReceipt/f3d330e181d95df6": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`!r.allowBinary`. Records `ActionBlock`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/emitFrameReceipt/f9192f98028fb062": {
+    "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/emitFrameReceipt/015282117903b505": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise.",
       "when": "Records `ActionBlock`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/emitFrameReceipt/c7aa72952570a0cf": {
+    "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/emitFrameReceipt/836e2c7e89a2b79a": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`closeCode != 0`. Records `ActionBlock`"
     },
@@ -1362,63 +1350,59 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `decideClientCrossMessageTextViews` selects this receipt call"
     },
-    "internal/proxy/websocket.go/(*wsRelay).denySessionCapacity/emitReceipt/0527a9d8e6da7aaf": {
-      "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
-      "when": "Records `ActionBlock`"
-    },
-    "internal/proxy/websocket.go/(*Proxy).dlpScanWSHeaders/recordCredentialAudienceAllows/87bc5d9341b4f5c1": {
+    "internal/proxy/websocket.go/(*Proxy).dlpScanWSHeaders/recordCredentialAudienceAllows/475b0755d126ef54": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `dlpScanWSHeaders` selects this receipt call"
     },
-    "internal/proxy/websocket.go/(*wsRelay).enforceClientCEE/emitFrameReceipt/9536346343c3d4d9": {
+    "internal/proxy/websocket.go/(*wsRelay).enforceClientCEE/emitFrameReceipt/955196c24010ff0a": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`ceeRes.Blocked`. Records `ActionBlock`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).enforceClientCEE/emitFrameReceipt/201855cb66159247": {
+    "internal/proxy/websocket.go/(*wsRelay).enforceClientCEE/emitFrameReceipt/dd3c327e750797b4": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`ceeBlockAll`. Records `ActionBlock`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).enforceUpstreamTextPayload/emitAllowPathReceipt/a1ee3f3eb3b2f0db": {
-      "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
+    "internal/proxy/websocket.go/(*wsRelay).enforceUpstreamTextPayload/confirmResponseDecision/b4432c5cfb9d4710": {
+      "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
       "when": "`r.cfg.FlightRecorder.RequireReceipts`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).enforceUpstreamTextPayload/emitFrameReceipt/86e6538903795b62": {
+    "internal/proxy/websocket.go/(*wsRelay).enforceUpstreamTextPayload/emitFrameReceipt/6f7324c64d200874": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
       "when": "`scanResult.Failed()`. Records `ActionBlock`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).enforceUpstreamTextPayload/emitFrameReceipt/7e804298a24e43fe": {
+    "internal/proxy/websocket.go/(*wsRelay).enforceUpstreamTextPayload/emitFrameReceipt/3bccee9e2e4d3374": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
       "when": "`config.ActionBlock`. Records `ActionBlock`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).enforceUpstreamTextPayload/emitFrameReceipt/aba597e394460e7e": {
+    "internal/proxy/websocket.go/(*wsRelay).enforceUpstreamTextPayload/emitFrameReceipt/2054729561dd14ab": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
       "when": "`config.ActionStrip`. Records `ActionBlock`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).enforceUpstreamTextPayload/emitFrameReceipt/8c333f76cca2034f": {
+    "internal/proxy/websocket.go/(*wsRelay).enforceUpstreamTextPayload/emitFrameReceipt/3e26e5e9da7d4108": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
       "when": "`config.ActionAsk`. Records `ActionBlock`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).handleClientMessageBodyResult/emitFrameReceipt/7fa4139a9e4dd032": {
+    "internal/proxy/websocket.go/(*wsRelay).handleClientMessageBodyResult/emitFrameReceipt/ebd5d3270b1a890d": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise.",
       "when": "Records `ActionBlock`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).handleClientMessageBodyResult/emitFrameReceipt/6974c22a9838f939": {
+    "internal/proxy/websocket.go/(*wsRelay).handleClientMessageBodyResult/emitFrameReceipt/9bdfeb44b1ed7f76": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise.",
       "when": "`config.ActionBlock`. Records `ActionBlock`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).handleClientTextFindings/emitFrameReceipt/2f9107d94a905bbc": {
+    "internal/proxy/websocket.go/(*wsRelay).handleClientTextFindings/emitFrameReceipt/fa8f58702c95a51b": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`len(dlpMatches) > 0`. Records `ActionBlock`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).handleClientTextFindings/emitFrameReceipt/17e8336a39c13b2d": {
+    "internal/proxy/websocket.go/(*wsRelay).handleClientTextFindings/emitFrameReceipt/510e0013307de438": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`len(dlpMatches) > 0` and `effectiveAction == config.ActionBlock`. Records `ActionBlock`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).handleClientTextFindings/emitFrameReceipt/9c938205a1c00da6": {
+    "internal/proxy/websocket.go/(*wsRelay).handleClientTextFindings/emitFrameReceipt/76964153bd9db221": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`len(addrFindings) > 0` and `r.cfg.EnforceEnabled() && addrAction == config.ActionBlock`. Records `ActionBlock`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).handleClientTextFindings/emitFrameReceipt/0702e6b4842e2e81": {
+    "internal/proxy/websocket.go/(*wsRelay).handleClientTextFindings/emitFrameReceipt/2739f1c6180a9c84": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`len(addrFindings) > 0` and `!r.cfg.EnforceEnabled() && addrAction == config.ActionBlock && addrAction != originalAddrAction`. Records `ActionBlock`"
     },
@@ -1442,7 +1426,7 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`cfg.FlightRecorder.RequireReceipts`"
     },
-    "internal/proxy/websocket.go/(*Proxy).handleWebSocket/recordCredentialAudienceAllows/26a2117f92b72901": {
+    "internal/proxy/websocket.go/(*Proxy).handleWebSocket/recordCredentialAudienceAllows/b6c47f2687c45993": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `handleWebSocket` selects this receipt call"
     },
@@ -1450,27 +1434,27 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `scanClientMessageBodyWithSurface` selects this receipt call"
     },
-    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/confirmResponseDecision/ff234886a327adf9": {
+    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/confirmResponseDecision/1ff4bb636b3f3e7b": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed()` and `r.cfg.FlightRecorder.RequireReceipts`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/emitReceipt/57b6ac6db5a12c64": {
+    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/emitReceipt/f8bd0f32e6f2324c": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`r.proxy.ks != nil && r.proxy.ks.IsActive()`. Records `ActionBlock`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/emitReceipt/ec8024085e7915bc": {
+    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/emitReceipt/fa8df33974d66af9": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`decide.UpgradeAction(\"\", r.escalationLevel(), &r.cfg.AdaptiveEnforcement) == config.ActionBlock`. Records `ActionBlock`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/emitFrameReceipt/a41282731d6389d1": {
+    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/emitFrameReceipt/326882b648dca853": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`!r.allowBinary`. Records `ActionBlock`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/emitFrameReceipt/5b0ac2cc84fefb90": {
+    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/emitFrameReceipt/1bdfc480bc0c8644": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`closeCode != 0`. Records `ActionBlock`"
     },
-    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/emitFrameReceipt/343533c121f3dcf8": {
+    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/emitFrameReceipt/b88be76a47248651": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`opCode == ws.OpBinary` and `mediaVerdict.Blocked`. Records `ActionBlock`"
     },
@@ -1513,6 +1497,14 @@
     "internal/proxy/intercept_taint.go/refuseInterceptTaint/interceptEmitReceipt/3727ae1d7f179453": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "The intercept taint decision is not allow. Records `ActionBlock`"
+    },
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseStreamReceipt/5785e62d3d5d9515": {
+      "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
+      "when": "`HasSingleSSEContentType(resp.Header)`. Records `ActionBlock`"
+    },
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseStreamReceipt/cc259a3759fc6c36": {
+      "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
+      "when": "`HasSingleSSEContentType(resp.Header)` and `IsSSEStreamScanError(err)`. Records `ActionBlock`"
     }
   },
   "emit_exclusions": {
@@ -1541,7 +1533,7 @@
     "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllow/8d3dad8910b74a71": "Records the credential-audience observation in audit and metrics when the interception context has no receipt writer.",
     "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllow/a23a54f57f52ad94": "Records the credential-audience observation in audit and metrics when the interception context has no receipt writer.",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/87ef30aa507e6d63": "Records a capacity-stop terminal diagnostic for the intercepted HTTP download without a matching action intent.",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/48797a1ef114e0c0": "Records a capacity-stop terminal diagnostic for the intercepted HTTP SSE without a matching action intent.",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/e43239ca79d90dad": "Records a capacity-stop terminal diagnostic for the intercepted HTTP SSE without a matching action intent.",
     "internal/proxy/proxy.go/(*Proxy).Reload/EmitSessionOpen/98acd481235304fd": "Legacy stream lifecycle or transcript bookkeeping, represented by v3 control records.",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReceipt/455030b1ffc12808": "Records a capacity-stop terminal diagnostic for the reverse HTTP SSE without a matching action intent.",
     "internal/receipt/content.go/validateRetainedContent/ActionRecord/0f2bce3edd581eb4": "Unsigned sample used for content validation. It is never emitted.",
@@ -1634,19 +1626,19 @@
     "internal/proxy/intercept.go/interceptEmitOutcomeReceipt/Emit/6c6e302ac0466c19": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/proxy/intercept.go/interceptEmitOutcomeReceipt/emitGroupV2Receipt/783c8550b7cd537e": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/proxy/intercept.go/interceptEmitOutcomeReceipt/emitV2/e3088f7802d4b491": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
-    "internal/proxy/intercept.go/interceptEmitReceipt/Emit/6c6e302ac0466c19": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
-    "internal/proxy/intercept.go/interceptEmitReceipt/emitReceiptWithEmitter/bdc2b1c9bb080b6b": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
-    "internal/proxy/intercept.go/interceptEmitReceipt/emitV2/952c742f3c900b81": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
+    "internal/proxy/intercept.go/interceptEmitBoundaryReceipt/Emit/6c6e302ac0466c19": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
+    "internal/proxy/intercept.go/interceptEmitBoundaryReceipt/emitReceiptWithEmitter/bdc2b1c9bb080b6b": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
+    "internal/proxy/intercept.go/interceptEmitBoundaryReceipt/emitV2/952c742f3c900b81": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/proxy/intercept.go/interceptEmitReceiptOrBlock/interceptEmitReceipt/c3e313737a3051e2": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/proxy/intercept.go/interceptEmitReceiptOrBlock/interceptEmitRequiredReceipt/2aa797e89e98787a": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/intercept.go/interceptEmitRequiredReceipt/EmitDurable/ed5ee45ab7e33d95": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/proxy/intercept.go/interceptEmitRequiredReceipt/emitRequiredReceiptWithEmitter/5c852283c38621f0": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/proxy/intercept.go/interceptEmitRequiredReceipt/emitRequiredV2/f3d6fe961780e60d": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/proxy/intercept.go/newInterceptHandler/emitAllowPathReceipt/6439e88e4af85c46": "Carries the effect boundary and decision context selected by its caller.",
-    "internal/proxy/issuer_cookie.go/(*Proxy).recordIssuerCookieAllow/emitCredentialAudienceReceipt/e4c3b4190c55ad66": "Carries the effect boundary and decision context selected by its caller.",
-    "internal/proxy/issuer_cookie.go/(*InterceptContext).recordIssuerCookieAllows/recordIssuerCookieAllow/ef9f2932beec3654": "Carries each issuer-cookie decision within the reservation selected for the intercepted request. The caller binds the upstream send.",
-    "internal/proxy/issuer_query.go/(*Proxy).recordIssuerQueryAllow/emitCredentialAudienceReceipt/2a0c29e1e624a360": "Carries the effect boundary and decision context selected by its caller.",
-    "internal/proxy/proxy.go/(*Proxy).confirmShieldIntervention/confirmResponseDecision/ae552d6bad6f7f94": "Carries the effect boundary and decision context selected by its caller.",
+    "internal/proxy/issuer_cookie.go/(*Proxy).recordIssuerCookieAllow/emitCredentialAudienceReceipt/b246a10aee0f57fa": "Carries the effect boundary and decision context selected by its caller.",
+    "internal/proxy/issuer_cookie.go/(*InterceptContext).recordIssuerCookieAllows/recordIssuerCookieAllow/b083ee85ba934db1": "Carries each issuer-cookie decision within the reservation selected for the intercepted request. The caller binds the upstream send.",
+    "internal/proxy/issuer_query.go/(*Proxy).recordIssuerQueryAllow/emitCredentialAudienceReceipt/b246a10aee0f57fa": "Carries the effect boundary and decision context selected by its caller.",
+    "internal/proxy/proxy.go/(*Proxy).confirmShieldIntervention/confirmResponseDecision/178f18ab784f0eee": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/proxy.go/(*Proxy).emitOutcomeReceipt/emitOutcomeReceiptWithPattern/795131a348c5e7b2": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/proxy.go/(*Proxy).emitOutcomeReceiptWithPattern/Emit/66480075b4bc1aaf": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/proxy/proxy.go/(*Proxy).emitOutcomeReceiptWithPattern/Emit/847254dae475af79": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
@@ -1682,7 +1674,6 @@
     "internal/proxy/reverse.go/(*ReverseProxyHandler).emitReceiptWithEmitter/Emit/98f9f42fddcb05fd": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).emitReceiptWithEmitter/emitGroupV2Receipt/a7a25b82ff678426": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).emitReceiptWithEmitter/emitV2/02e699ee9ffc30fd": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).emitRecordedReceipt/emitReceiptWithEmitter/3abafec052492eea": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).emitRequestPolicyReceipt/recordReceiptEmitterUnavailable/508ebda4b0d177cc": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).emitRequiredReceipt/emitRequiredReceiptWithEmitter/0508ef94ed801ca7": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).emitRequiredReceipt/recordReceiptEmitterUnavailable/80c3e29318251c34": "Carries the effect boundary and decision context selected by its caller.",
@@ -1692,7 +1683,6 @@
     "internal/proxy/reverse.go/(*ReverseProxyHandler).emitRequiredReceiptWithEmitter/emitReceiptFailureMarker/8c8ce4f32ab905c2": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).emitRequiredReceiptWithEmitter/emitRequiredV2/543ff202b88c3eea": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReceipt/5ea4d5f16375f446": "Carries the effect boundary and decision context selected by its caller.",
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitRecordedReceipt/067449da803ac233": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/v2receipt.go/(*Proxy).emitGroupV2Receipt/Emit/6b69d8e6316e2e93": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/proxy/v2receipt.go/(*Proxy).emitGroupV2Receipt/EmitDurable/0a03b6273b8c14d0": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/proxy/v2receipt.go/emitRequiredV2/EmitDurable/5912d5da9c2e0a9a": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
@@ -1701,19 +1691,26 @@
     "internal/proxy/v2receipt.go/emitV2/Emit/79a0bfdf1447422f": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/proxy/v2receipt.go/(*Proxy).emitV2Receipt/emitGroupV2Receipt/282d1d150f7e5edc": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/proxy/v2receipt.go/(*Proxy).emitV2Receipt/emitV2/9d7cc83b412c02ed": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
+    "internal/proxy/websocket.go/(*wsRelay).blockIdentityReload/emitReceipt/7c93e168cc177497": "Records a frame refusal. The relay direction determines the send or delivery boundary.",
+    "internal/proxy/websocket.go/(*wsRelay).denySessionCapacity/emitReceipt/d036f3f076d4b8e8": "Records a frame refusal. The relay direction determines the send or delivery boundary.",
     "internal/proxy/websocket.go/(*wsRelay).emitReceipt/emitReceipt/d380649ace4a993f": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/websocket.go/(*Proxy).handleWebSocket/emitReceiptWithEmitter/14d873cb5b97b06b": "Copies the transport decision's evidence options. The calling decision determines the boundary.",
     "internal/proxy/websocket.go/(*wsRelay).recordCredentialAudienceAllows/recordCredentialAudienceAllow/fbdc2d28a303d963": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/websocket.go/(*wsRelay).emitFrameReceipt/emitReceipt/8454d06cc382541c": "Carries the frame decision and selected receipt reservation. The caller binds the send or delivery effect.",
-    "internal/proxy/websocket_cross_message.go/(*wsRelay).blockCrossMessageIncomplete/emitReceipt/09f8f88c122dc8fb": "Carries the effect boundary and decision context selected by its caller.",
-    "internal/proxy/websocket_cross_message.go/(*wsRelay).closeUpstreamCrossMessage/emitReceipt/7f4118f141bccd94": "Carries the effect boundary and decision context selected by its caller.",
+    "internal/proxy/websocket_cross_message.go/(*wsRelay).blockCrossMessageIncomplete/emitReceipt/5ada59890df360bc": "Carries the effect boundary and decision context selected by its caller.",
+    "internal/proxy/websocket_cross_message.go/(*wsRelay).closeUpstreamCrossMessage/emitReceipt/a406415de941f75d": "Carries the effect boundary and decision context selected by its caller.",
     "internal/receipt/content.go/(*Emitter).contentRecord/ActionRecord/edb9fc99565e7748": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/receipt/emitter.go/(*Emitter).emitWithControl/Receipt/a96a212c27a9e22c": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/receipt/group_writer.go/(*ReceiptShardSet).Emit/Emit/e183a6f89ca91377": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/receipt/group_writer.go/(*ReceiptShardSet).EmitDurable/EmitDurable/9c90bad7c8a0b3f5": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/receipt/receipt.go/Sign/Receipt/8b80fe14d064bb4d": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/receipt/warning_budget.go/EmitDLPWarning/Emit/ac0c2aed9c431ccb": "Writes the warning options supplied by the scanner hook without an admission budget. The enclosing mediation decision owns action attribution.",
-    "internal/receipt/warning_budget.go/EmitDLPWarning/Emit/975c8b9933330c14": "Writes an individual warning under the caller admission. The enclosing mediation decision owns action attribution."
+    "internal/receipt/warning_budget.go/EmitDLPWarning/Emit/975c8b9933330c14": "Writes an individual warning under the caller admission. The enclosing mediation decision owns action attribution.",
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).emitLegacyRecordedReceipt/emitReceiptWithEmitter/3abafec052492eea": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).emitRecordedReceipt/emitLegacyRecordedReceipt/56535e2e707d6638": "Forwards the caller's selected reverse-proxy receipt to the legacy writer after v3 refusal handling.",
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitLegacyRecordedReceipt/49319ccec9e21dc8": "Carries the effect boundary and decision context selected by its caller.",
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReceipt/ad0544692308fd07": "Forwards the SSE callback's selected response decision to the legacy writer after v3 refusal handling, without updating response headers.",
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseReceipt/7fb3aa66db57510f": "Forwards the SSE callback's selected response decision to the existing reverse response receipt helper when v3 receipt effects are disabled."
   },
   "emit_sites": {
     "internal/cli/runtime/mcp.go/recoverDeferredActions/EmitDeferredResolutionReceipt/1085a3de444e8017": "approval_prompt",
@@ -1790,22 +1787,22 @@
     "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPStandaloneStreamReceipt/82cc46bff8b16839": "downstream_delivery",
     "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPStreamDiagnostic/873ad7b12fb44159": "downstream_delivery",
     "internal/mcp/proxy_ws.go/RunWSProxy/settle/aba745d02595454e": "upstream_send",
-    "internal/proxy/bodyscan.go/(*Proxy).evalHeaderDLP/recordCredentialAudienceAllows/332ef9d1515f4ed6": "upstream_send",
+    "internal/proxy/bodyscan.go/(*Proxy).evalHeaderDLP/recordCredentialAudienceAllows/9c82ca7412ec77dc": "upstream_send",
     "internal/proxy/forward.go/(*Proxy).handleConnect/emitForwardDenial/2c491386d87dec0b": "none",
     "internal/proxy/forward.go/(*Proxy).handleConnect/emitOutcomeReceipt/6f92002975cb6035": "tunnel_open",
     "internal/proxy/forward.go/(*Proxy).handleConnect/emitRecordedReceipt/2ed05bb432b1ecc8": "tunnel_open",
     "internal/proxy/forward.go/(*Proxy).handleConnect/emitRequestPolicyReceipt/58c76ccbed0e20bf": "none",
     "internal/proxy/forward.go/(*Proxy).handleConnect/emitRequiredReceipt/ae27039512f1ecc4": "tunnel_open",
-    "internal/proxy/forward.go/(*Proxy).handleConnect/recordCredentialAudienceAllows/203c51dce1b31a1e": "tunnel_open",
-    "internal/proxy/forward.go/(*Proxy).handleConnect/recordIssuerQueryAllow/e78b0d70a1e1dac2": "tunnel_open",
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/4738b0444e6ddf09": "downstream_delivery",
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/f89139bbc20189b7": "downstream_delivery",
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/d6652eec7597e3e2": "downstream_delivery",
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/24cfa4fdcb21a158": "downstream_delivery",
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/9ac3c92ef11e1928": "downstream_delivery",
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/185621c0f16292a9": "downstream_delivery",
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/f524a40c23d43365": "downstream_delivery",
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitAllowPathReceipt/19e7d358614a456b": "upstream_send",
+    "internal/proxy/forward.go/(*Proxy).handleConnect/recordCredentialAudienceAllows/12f1b18b4f6ac421": "tunnel_open",
+    "internal/proxy/forward.go/(*Proxy).handleConnect/recordIssuerQueryAllow/3bbb7d20b1f8cb9a": "tunnel_open",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/e9eb6cd967ee7c94": "downstream_delivery",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/e054483f17a07858": "downstream_delivery",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/50e2d1900e73db36": "downstream_delivery",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/a78376088056b796": "downstream_delivery",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/0ad3e2dff79c8e1e": "downstream_delivery",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/d778615028204812": "downstream_delivery",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/facaba1a6ae8d77b": "downstream_delivery",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/f6d57b59ce717e92": "downstream_delivery",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardDenial/c7eb3a73538c8d5e": "none",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/853e1c12af69eda0": "none",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/f333633a45481ee9": "none",
@@ -1826,8 +1823,8 @@
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/cfdc5434c35da2d8": "none",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/b1736ca44cb15eff": "none",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/a5e69753ce224827": "none",
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/95d6a222f803383d": "none",
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/497a75cdd9f65c45": "none",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/13740dc7031853a9": "none",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/81bc4e0139fca38f": "none",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/33de89bf1a2504d4": "none",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/c742f2ec2274ddc0": "none",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/57a794b610edc044": "none",
@@ -1851,23 +1848,23 @@
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitOutcomeReceiptWithPattern/6cc623550ad8bbeb": "upstream_send",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitRequestPolicyReceipt/58c76ccbed0e20bf": "upstream_send",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitRequiredReceipt/726af1e98c66fcd9": "upstream_send",
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/recordCredentialAudienceAllows/2b71ccd7d6d36168": "upstream_send",
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/recordCredentialAudienceAllows/bd68e94133d1dbf8": "upstream_send",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/recordCredentialAudienceAllows/9fcb17b39a993c64": "upstream_send",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/recordCredentialAudienceAllows/779ee30dda14b30d": "upstream_send",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/sseFindingReceiptConfirmer/83beed215ddfd725": "downstream_delivery",
     "internal/proxy/intercept.go/interceptEmitOutcomeReceipt/emitReceiptFailureMarker/8a2f204c09932d4b": "none",
     "internal/proxy/intercept.go/interceptEmitOutcomeReceipt/emitReceiptFailureMarker/da1f63d2a6715682": "none",
-    "internal/proxy/intercept.go/interceptEmitReceipt/recordReceiptEmitterUnavailable/2f68b1b625715da6": "none",
+    "internal/proxy/intercept.go/interceptEmitBoundaryReceipt/recordReceiptEmitterUnavailable/2f68b1b625715da6": "none",
     "internal/proxy/intercept.go/interceptEmitRequiredReceipt/emitReceiptFailureMarker/a582d6acbc0509aa": "none",
     "internal/proxy/intercept.go/interceptEmitRequiredReceipt/recordReceiptEmitterUnavailable/2f68b1b625715da6": "none",
-    "internal/proxy/intercept.go/newInterceptHandler/emitAllowPathReceipt/5e8e99889006639a": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/d7866b85df7732ca": "downstream_delivery",
     "internal/proxy/intercept.go/newInterceptHandler/emitRequestPolicyReceipt/bd3ea4be89564d84": "upstream_send",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/1df9a297350567b9": "downstream_delivery",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/d3b6f1ab96fe006e": "downstream_delivery",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/b18774a4a77ef548": "downstream_delivery",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/85c7a915c93fd51b": "downstream_delivery",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/49d10f50fda66a4e": "downstream_delivery",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/b27ed4fc487982e0": "downstream_delivery",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/0a2bd29971d1c016": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/bdce2ff68e260371": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/6a9f423602c275dc": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/0b5544cf1842136c": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/739351668e094d76": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/e7768eb9d9a33ebf": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/81f90afd91a4e2fe": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/3a6ebeba232c308d": "downstream_delivery",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitOutcomeReceipt/cd9ec34fe74f06b7": "upstream_send",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/326e7b5a605e23d3": "none",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/b10c1eb582660943": "none",
@@ -1885,27 +1882,27 @@
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/dfa0eb683fd2f018": "none",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/de5896349bfd5533": "none",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/a1696c16dd080390": "none",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/9f1ac546b8961ddb": "none",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/16f7bd85e5a713c9": "none",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/b6ce8cf2f6c16629": "downstream_delivery",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/098a92ac719c6af5": "none",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/392dedfdfbf96a88": "none",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/0b2580fde6cc0b50": "none",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/37bb5254fa7720d0": "none",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/5d4842302c9740d3": "none",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/1be3824935611766": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/2755fd23530d5ddc": "none",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/8af9cfcdb5a7a83b": "none",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/7758814cae25ea02": "none",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/d253af8a2d1effac": "none",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/d3a0bfa40c98bd02": "none",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/e88fe86793a4797f": "none",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/8e7cdbd9be3332e3": "downstream_delivery",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/e378636c23c108af": "none",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/a14c8ea2c7937141": "none",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/e7ed8105451dfb67": "none",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/a50b7e4de117c897": "none",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/fead2fc230685a76": "downstream_delivery",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/c7391ca23dcaf5e5": "none",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/b13911a8bfcf9bfb": "none",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/ca25226224473387": "none",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/e7c7db21ff2695d7": "none",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/ad5bd69c6d3a8ec2": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/05d25558f479777c": "none",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/d965d524db82e30e": "none",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/338d405a8f4f278d": "none",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/9d30f38908ed4966": "none",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/54c4a71043bd17b3": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/ee19cbbdf00219d6": "none",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/20af76a006ed6c0a": "none",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/9625d77695bb13d3": "none",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/35241ade8023b27d": "downstream_delivery",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/6014e682c6ae4f6d": "none",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/1afbff39dae343b1": "none",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/ac9e894f436ea11e": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/222ec08399c80638": "none",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/8e4a6370fd464923": "none",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/e3477b473391909d": "none",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/fbe3d0da46960543": "none",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/4942688ba6f23599": "none",
@@ -1917,25 +1914,25 @@
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceiptOrBlock/fe83aa7e9eb1bdd3": "downstream_delivery",
     "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllow/d306e60743b2e1ab": "upstream_send",
     "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllow/3008284df98d9a71": "upstream_send",
-    "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllows/0ca505b9f993d0a7": "upstream_send",
-    "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllows/2717586565533306": "upstream_send",
-    "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllows/a464d8183f9c84ea": "upstream_send",
+    "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllows/b4db467d0505152e": "upstream_send",
+    "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllows/797e8d1b34fd342b": "upstream_send",
+    "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllows/1284b7b23eccedcd": "upstream_send",
     "internal/proxy/intercept.go/newInterceptHandler/recordIssuerCookieAllows/bf0273741aa75c01": "upstream_send",
     "internal/proxy/issuer_query.go/(*InterceptContext).recordIssuerQueryAllows/recordIssuerQueryAllow/b442f4dc34e00618": "upstream_send",
     "internal/proxy/intercept.go/newInterceptHandler/sseFindingReceiptConfirmer/623a116a47293fdd": "downstream_delivery",
     "internal/proxy/proxy.go/New/emitRequestPolicyReceipt/ac55326aa747e25e": "upstream_send",
-    "internal/proxy/proxy.go/New/recordCredentialAudienceAllows/85e81c2a0ae39d08": "upstream_send",
-    "internal/proxy/proxy.go/New/recordIssuerQueryAllow/2b43b36e2069e049": "upstream_send",
-    "internal/proxy/proxy.go/(*Proxy).applyShieldResponse/confirmResponseDecision/ab6d629dabc9050c": "downstream_delivery",
+    "internal/proxy/proxy.go/New/recordCredentialAudienceAllows/e017953e66d75c69": "upstream_send",
+    "internal/proxy/proxy.go/New/recordIssuerQueryAllow/94ca872f085b7afb": "upstream_send",
+    "internal/proxy/proxy.go/(*Proxy).applyShieldResponse/confirmResponseDecision/0fa39a1ebafe7a47": "downstream_delivery",
     "internal/proxy/proxy.go/(*Proxy).applyShieldResponse/confirmShieldIntervention/925dfe4dc7b3c96f": "downstream_delivery",
     "internal/proxy/proxy.go/(*Proxy).applyShieldResponse/confirmShieldIntervention/483043502a063c8a": "downstream_delivery",
     "internal/proxy/proxy.go/(*Proxy).buildHandler/emitRecordedReceipt/d1019563dc5a0f98": "upstream_send",
     "internal/proxy/proxy.go/(*Proxy).emitOutcomeReceiptWithPattern/emitReceiptFailureMarker/4a6b7eaa7b40d096": "none",
     "internal/proxy/proxy.go/(*Proxy).emitReceiptFailureMarker/EmitDurable/b0eba2e694c5618c": "none",
     "internal/proxy/proxy.go/emitReceiptFailureMarkerWithLogger/EmitDurable/a6c1bc49eec9d7d0": "none",
-    "internal/proxy/proxy.go/(*Proxy).filterAndActOnResponseScan/emitAllowPathReceipt/b456000a854f4e96": "downstream_delivery",
-    "internal/proxy/proxy.go/(*Proxy).filterAndActOnResponseScan/emitRecordedReceipt/0578265fdb72ef35": "downstream_delivery",
-    "internal/proxy/proxy.go/(*Proxy).handleFetch/confirmResponseDecision/00ba6993ef305b2a": "downstream_delivery",
+    "internal/proxy/proxy.go/(*Proxy).filterAndActOnResponseScan/confirmResponseDecision/dc70b29075724ec5": "downstream_delivery",
+    "internal/proxy/proxy.go/(*Proxy).filterAndActOnResponseScan/emitReceiptWithEmitter/5da6faf4ee468b77": "downstream_delivery",
+    "internal/proxy/proxy.go/(*Proxy).handleFetch/confirmResponseDecision/0d174c97775af5e3": "downstream_delivery",
     "internal/proxy/proxy.go/(*Proxy).handleFetch/emitFetchReceipt/128369a2b4c5f2ff": "none",
     "internal/proxy/proxy.go/(*Proxy).handleFetch/emitFetchReceipt/02f2d166e729337d": "none",
     "internal/proxy/proxy.go/(*Proxy).handleFetch/emitFetchReceipt/5af2eda61ce5bba0": "none",
@@ -1965,7 +1962,7 @@
     "internal/proxy/proxy.go/(*Proxy).handleFetch/emitOutcomeReceiptWithPattern/d18adbbc9b035e76": "upstream_send",
     "internal/proxy/proxy.go/(*Proxy).handleFetch/emitRequestPolicyReceipt/9821bdfaa9c8e8e4": "upstream_send",
     "internal/proxy/proxy.go/(*Proxy).handleFetch/emitRequiredReceipt/557d3a5a22a016f1": "upstream_send",
-    "internal/proxy/proxy.go/(*Proxy).handleFetch/recordCredentialAudienceAllows/5857f28521c57fd6": "upstream_send",
+    "internal/proxy/proxy.go/(*Proxy).handleFetch/recordCredentialAudienceAllows/cba714afa7ad8fa4": "upstream_send",
     "internal/proxy/requestpolicy.go/(*Proxy).finalizeRequestPolicyDecision/Emit/e3516408daa30543": "none",
     "internal/proxy/reverse.go/(*reverseOutcomeTracker).EmitOnce/emitObservedOutcomeReceipt/dc5cf995d10ef8c6": "upstream_send",
     "internal/proxy/reverse.go/(*reverseOutcomeTracker).EmitOnce/emitOutcomeReceipt/da14800d4ef940b9": "upstream_send",
@@ -1991,18 +1988,16 @@
     "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/d0bed9c9dd058058": "none",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/3a9ce8872616a672": "none",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/4ce305787df1dec1": "none",
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/recordCredentialAudienceAllows/d7d5c390764d49b7": "upstream_send",
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/recordCredentialAudienceAllows/c0c2fedf144fd210": "upstream_send",
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/recordCredentialAudienceAllows/981b12bdcf5d5306": "upstream_send",
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/recordCredentialAudienceAllows/eedd6976abf6c8b5": "upstream_send",
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/recordCredentialAudienceAllows/c028a44ba01e2a85": "upstream_send",
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/recordCredentialAudienceAllows/8f557dfb99c30d24": "upstream_send",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).emitOutcomeReceiptWithPattern/emitReceiptFailureMarker/6750f9f89e60e022": "none",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).emitReceiptFailureMarker/EmitDurable/cb76fa401b9478c3": "none",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).errorHandler/emitRecordedReceipt/c73afd20dea7d256": "upstream_send",
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/confirmResponseDecision/fc6a60030b01329f": "downstream_delivery",
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/confirmResponseDecision/f3735f198f0223b2": "downstream_delivery",
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitAllowPathReceipt/932ea8a4453094ca": "downstream_delivery",
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/confirmResponseDecision/df334f4d2d03f5a0": "downstream_delivery",
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/confirmResponseDecision/ebb4d2db68b0902f": "downstream_delivery",
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/confirmResponseDecision/d63161dcb4047678": "downstream_delivery",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseReceipt/09dbc503600e0767": "downstream_delivery",
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseReceipt/1de190003c298c87": "downstream_delivery",
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseReceipt/dba9666f7ae54542": "downstream_delivery",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseReceipt/ba01c8a0d77e162b": "downstream_delivery",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseReceipt/b902dfd52bbb6894": "downstream_delivery",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseReceipt/6f6f93a2df6a1d0c": "downstream_delivery",
@@ -2024,46 +2019,44 @@
     "internal/proxy/reverse.go/(*ReverseProxyHandler).scanRequest/emitRecordedReceipt/94857fb87da9ce5b": "upstream_send",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).scanRequest/emitReverseReceipt/b770261193ba05e8": "none",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).scanRequest/emitReverseReceipt/726945b5d1a22af7": "none",
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).scanRequest/recordCredentialAudienceAllows/ce99ff1ae9927fa7": "upstream_send",
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).scanRequest/recordCredentialAudienceAllows/b37cee78f63b0fe9": "upstream_send",
     "internal/proxy/websocket.go/(*wsRelay).applyFrameRequestPolicy/emitRequestPolicyReceipt/e0a35d6fe18a830a": "upstream_send",
-    "internal/proxy/websocket.go/(*wsRelay).blockCrossMessageRedaction/emitFrameReceipt/d493bdee484ab9cc": "upstream_send",
-    "internal/proxy/websocket.go/(*wsRelay).blockIdentityReload/emitReceipt/0abaaa3a369e10a2": "upstream_send",
-    "internal/proxy/websocket.go/(*wsRelay).blockOnCredentialAudienceReceiptFailure/emitFrameReceipt/ec63019ee5aec7da": "upstream_send",
+    "internal/proxy/websocket.go/(*wsRelay).blockCrossMessageRedaction/emitFrameReceipt/c78baa12fd043961": "upstream_send",
+    "internal/proxy/websocket.go/(*wsRelay).blockOnCredentialAudienceReceiptFailure/emitFrameReceipt/b65217633bc99c78": "upstream_send",
     "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/blockCrossMessageIncomplete/4ca886ad103ed8b4": "upstream_send",
-    "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/emitReceipt/57b6ac6db5a12c64": "upstream_send",
-    "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/emitReceipt/ec8024085e7915bc": "upstream_send",
-    "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/emitFrameReceipt/1dbb592d3fb69aa0": "upstream_send",
-    "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/emitFrameReceipt/f9192f98028fb062": "upstream_send",
-    "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/emitFrameReceipt/c7aa72952570a0cf": "upstream_send",
+    "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/emitReceipt/a1b48cf670970567": "upstream_send",
+    "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/emitReceipt/2d1e439f1ca64e71": "upstream_send",
+    "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/emitFrameReceipt/f3d330e181d95df6": "upstream_send",
+    "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/emitFrameReceipt/015282117903b505": "upstream_send",
+    "internal/proxy/websocket.go/(*wsRelay).clientToUpstream/emitFrameReceipt/836e2c7e89a2b79a": "upstream_send",
     "internal/proxy/websocket.go/(*wsRelay).decideClientCrossMessageTextViews/recordCredentialAudienceAllows/588e8af4cc39d80b": "upstream_send",
-    "internal/proxy/websocket.go/(*wsRelay).denySessionCapacity/emitReceipt/0527a9d8e6da7aaf": "none",
-    "internal/proxy/websocket.go/(*Proxy).dlpScanWSHeaders/recordCredentialAudienceAllows/87bc5d9341b4f5c1": "upstream_send",
-    "internal/proxy/websocket.go/(*wsRelay).enforceClientCEE/emitFrameReceipt/9536346343c3d4d9": "upstream_send",
-    "internal/proxy/websocket.go/(*wsRelay).enforceClientCEE/emitFrameReceipt/201855cb66159247": "upstream_send",
-    "internal/proxy/websocket.go/(*wsRelay).enforceUpstreamTextPayload/emitAllowPathReceipt/a1ee3f3eb3b2f0db": "upstream_send",
-    "internal/proxy/websocket.go/(*wsRelay).enforceUpstreamTextPayload/emitFrameReceipt/86e6538903795b62": "downstream_delivery",
-    "internal/proxy/websocket.go/(*wsRelay).enforceUpstreamTextPayload/emitFrameReceipt/7e804298a24e43fe": "downstream_delivery",
-    "internal/proxy/websocket.go/(*wsRelay).enforceUpstreamTextPayload/emitFrameReceipt/aba597e394460e7e": "downstream_delivery",
-    "internal/proxy/websocket.go/(*wsRelay).enforceUpstreamTextPayload/emitFrameReceipt/8c333f76cca2034f": "downstream_delivery",
-    "internal/proxy/websocket.go/(*wsRelay).handleClientMessageBodyResult/emitFrameReceipt/7fa4139a9e4dd032": "upstream_send",
-    "internal/proxy/websocket.go/(*wsRelay).handleClientMessageBodyResult/emitFrameReceipt/6974c22a9838f939": "upstream_send",
-    "internal/proxy/websocket.go/(*wsRelay).handleClientTextFindings/emitFrameReceipt/2f9107d94a905bbc": "upstream_send",
-    "internal/proxy/websocket.go/(*wsRelay).handleClientTextFindings/emitFrameReceipt/17e8336a39c13b2d": "upstream_send",
-    "internal/proxy/websocket.go/(*wsRelay).handleClientTextFindings/emitFrameReceipt/9c938205a1c00da6": "upstream_send",
-    "internal/proxy/websocket.go/(*wsRelay).handleClientTextFindings/emitFrameReceipt/0702e6b4842e2e81": "upstream_send",
+    "internal/proxy/websocket.go/(*Proxy).dlpScanWSHeaders/recordCredentialAudienceAllows/475b0755d126ef54": "upstream_send",
+    "internal/proxy/websocket.go/(*wsRelay).enforceClientCEE/emitFrameReceipt/955196c24010ff0a": "upstream_send",
+    "internal/proxy/websocket.go/(*wsRelay).enforceClientCEE/emitFrameReceipt/dd3c327e750797b4": "upstream_send",
+    "internal/proxy/websocket.go/(*wsRelay).enforceUpstreamTextPayload/confirmResponseDecision/b4432c5cfb9d4710": "downstream_delivery",
+    "internal/proxy/websocket.go/(*wsRelay).enforceUpstreamTextPayload/emitFrameReceipt/6f7324c64d200874": "downstream_delivery",
+    "internal/proxy/websocket.go/(*wsRelay).enforceUpstreamTextPayload/emitFrameReceipt/3bccee9e2e4d3374": "downstream_delivery",
+    "internal/proxy/websocket.go/(*wsRelay).enforceUpstreamTextPayload/emitFrameReceipt/2054729561dd14ab": "downstream_delivery",
+    "internal/proxy/websocket.go/(*wsRelay).enforceUpstreamTextPayload/emitFrameReceipt/3e26e5e9da7d4108": "downstream_delivery",
+    "internal/proxy/websocket.go/(*wsRelay).handleClientMessageBodyResult/emitFrameReceipt/ebd5d3270b1a890d": "upstream_send",
+    "internal/proxy/websocket.go/(*wsRelay).handleClientMessageBodyResult/emitFrameReceipt/9bdfeb44b1ed7f76": "upstream_send",
+    "internal/proxy/websocket.go/(*wsRelay).handleClientTextFindings/emitFrameReceipt/fa8f58702c95a51b": "upstream_send",
+    "internal/proxy/websocket.go/(*wsRelay).handleClientTextFindings/emitFrameReceipt/510e0013307de438": "upstream_send",
+    "internal/proxy/websocket.go/(*wsRelay).handleClientTextFindings/emitFrameReceipt/76964153bd9db221": "upstream_send",
+    "internal/proxy/websocket.go/(*wsRelay).handleClientTextFindings/emitFrameReceipt/2739f1c6180a9c84": "upstream_send",
     "internal/proxy/websocket.go/(*wsRelay).handleClientTextResult/recordCredentialAudienceAllows/588e8af4cc39d80b": "upstream_send",
     "internal/proxy/websocket.go/(*Proxy).handleWebSocket/emitOutcomeReceipt/a2c094b27e0d4653": "upstream_send",
     "internal/proxy/websocket.go/(*Proxy).handleWebSocket/emitOutcomeReceipt/c9562714aa65176b": "none",
     "internal/proxy/websocket.go/(*Proxy).handleWebSocket/emitRequestPolicyReceipt/58c76ccbed0e20bf": "upstream_send",
     "internal/proxy/websocket.go/(*Proxy).handleWebSocket/emitRequiredReceipt/34207aa30182ed5d": "upstream_send",
-    "internal/proxy/websocket.go/(*Proxy).handleWebSocket/recordCredentialAudienceAllows/26a2117f92b72901": "upstream_send",
+    "internal/proxy/websocket.go/(*Proxy).handleWebSocket/recordCredentialAudienceAllows/b6c47f2687c45993": "upstream_send",
     "internal/proxy/websocket.go/(*wsRelay).scanClientMessageBodyWithSurface/recordCredentialAudienceAllows/3f21682276eab651": "upstream_send",
-    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/confirmResponseDecision/ff234886a327adf9": "downstream_delivery",
-    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/emitReceipt/57b6ac6db5a12c64": "downstream_delivery",
-    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/emitReceipt/ec8024085e7915bc": "downstream_delivery",
-    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/emitFrameReceipt/a41282731d6389d1": "downstream_delivery",
-    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/emitFrameReceipt/5b0ac2cc84fefb90": "downstream_delivery",
-    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/emitFrameReceipt/343533c121f3dcf8": "downstream_delivery",
+    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/confirmResponseDecision/1ff4bb636b3f3e7b": "downstream_delivery",
+    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/emitReceipt/f8bd0f32e6f2324c": "downstream_delivery",
+    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/emitReceipt/fa8df33974d66af9": "downstream_delivery",
+    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/emitFrameReceipt/326882b648dca853": "downstream_delivery",
+    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/emitFrameReceipt/1bdfc480bc0c8644": "downstream_delivery",
+    "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/emitFrameReceipt/b88be76a47248651": "downstream_delivery",
     "internal/proxy/websocket_cross_message.go/(*upstreamCrossMessage).enforce/blockCrossMessageIncomplete/cc64c6738926b17f": "downstream_delivery",
     "internal/proxy/websocket_cross_message.go/(*wsRelay).enforceUpstreamCrossMessageViews/closeUpstreamCrossMessage/9a5f93d7fe956bf2": "downstream_delivery",
     "internal/proxy/websocket_cross_message.go/(*wsRelay).enforceUpstreamCrossMessageViews/closeUpstreamCrossMessage/5f3bfe7ffa4d3491": "downstream_delivery",
@@ -2073,7 +2066,9 @@
     "internal/mcp/outcome.go/(TrackedRequestOutcome).recordResponseOutcome/settle/91dfa1ed8c8c7c4c": "downstream_delivery",
     "internal/mcp/pipeline_decision.go/emitMCPDecision/EmitDurable/ffce9ae165a7527b": "upstream_send",
     "internal/mcp/proxy.go/ForwardScanned/settle/2999892428bde960": "upstream_send",
-    "internal/proxy/intercept_taint.go/refuseInterceptTaint/interceptEmitReceipt/3727ae1d7f179453": "none"
+    "internal/proxy/intercept_taint.go/refuseInterceptTaint/interceptEmitReceipt/3727ae1d7f179453": "none",
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseStreamReceipt/5785e62d3d5d9515": "downstream_delivery",
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseStreamReceipt/cc259a3759fc6c36": "downstream_delivery"
   },
   "enums": {
     "action_policy_source": [
