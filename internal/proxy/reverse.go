@@ -1999,6 +1999,7 @@ func (d *reverseDeliveryObserver) call() {
 func (d *reverseDeliveryObserver) finish() {
 	d.mu.Lock()
 	d.finished = true
+	d.observe = nil
 	release := d.release
 	d.release = nil
 	d.mu.Unlock()

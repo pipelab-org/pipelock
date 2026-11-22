@@ -566,13 +566,17 @@ func TestReverseDeliveryObserverLifecycle(t *testing.T) {
 	}
 	d.finish() // idempotent
 	d.arm(func() { t.Error("finished slot armed an observer") }, release)
+	d.call()
+	if observed.Load() != 1 {
+		t.Fatalf("observer after finish ran: observed=%d", observed.Load())
+	}
 	if released.Load() != 4 {
 		t.Fatalf("arm after finish releases=%d want 4", released.Load())
 	}
 }
 
-// holdAtFlushWriter records, for each flush that follows a body write, whether
-// the response's exposure was still held at that flush.
+// holdAtFlushWriter records, for every flush, whether the response's exposure
+// was still held at that flush, and whether a write is still unflushed.
 type holdAtFlushWriter struct {
 	*httptest.ResponseRecorder
 	rec         *SessionState
@@ -585,13 +589,13 @@ func (w *holdAtFlushWriter) Write(p []byte) (int, error) {
 	return w.ResponseRecorder.Write(p)
 }
 
+// Every flush is sampled, so the last outcome flush is checked even when an
+// earlier flush already followed the last write.
 func (w *holdAtFlushWriter) Flush() {
-	if w.unflushed {
-		w.rec.mu.Lock()
-		w.heldAtFlush = append(w.heldAtFlush, len(w.rec.heldExposure))
-		w.rec.mu.Unlock()
-		w.unflushed = false
-	}
+	w.rec.mu.Lock()
+	w.heldAtFlush = append(w.heldAtFlush, len(w.rec.heldExposure))
+	w.rec.mu.Unlock()
+	w.unflushed = false
 	w.ResponseRecorder.Flush()
 }
 
@@ -679,4 +683,27 @@ func TestResponseExposureHeldThroughOutcomeFlush(t *testing.T) {
 		rp.ServeHTTP(w, req)
 		check(t, w)
 	})
+}
+
+// Rotation replays held responses in the order the session recorded them, so
+// the most recent source stays the last external source after the rotation.
+func TestHeldExposureReplaysInRecordedOrder(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Taint.Enabled = true
+	cfg.Taint.RecentSources = 1
+	for i := range 20 {
+		rec := &SessionState{}
+		var urls []string
+		for j := range 4 {
+			u := fmt.Sprintf("https://source-%d.vendor.example/page", j)
+			urls = append(urls, u)
+			observe, _ := httpResponseFindingObserver(rec, cfg, u, "text/html", "forward_response")
+			observe(nil)
+		}
+		rec.BeginNewTask("rotated")
+		risk := rec.RiskSnapshot()
+		if risk.LastExternalURL != urls[len(urls)-1] || len(risk.Sources) != 1 || risk.Sources[0].URL != urls[len(urls)-1] {
+			t.Fatalf("iteration %d: after rotation last=%q sources=%+v, want the most recent %q", i, risk.LastExternalURL, risk.Sources, urls[len(urls)-1])
+		}
+	}
 }

@@ -4,8 +4,10 @@
 package proxy
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"regexp"
 	"slices"
@@ -200,7 +202,8 @@ type SessionState struct {
 	// delivered. BeginNewTask re-applies it under the same lock that clears
 	// risk, so no policy snapshot sees a new task without the exposure of a
 	// response that is still reaching the client.
-	heldExposure map[uint64]session.RiskObservation
+	heldExposure map[uint64]heldResponseExposure
+	heldSeq      uint64
 
 	// recentEvents is a bounded ring buffer of notable events (blocks,
 	// anomalies, airlock transitions). Read by the operator admin API to
@@ -1371,6 +1374,13 @@ func (s *SessionState) ObserveRisk(observation session.RiskObservation) {
 	s.risk.Observe(observation)
 }
 
+// heldResponseExposure is a delivering response's latest observation and the
+// order in which the session recorded it.
+type heldResponseExposure struct {
+	seq         uint64
+	observation session.RiskObservation
+}
+
 // holdResponseExposure records a response's observation and keeps it for
 // the response's delivery lifetime, until releaseResponseExposure.
 func (s *SessionState) holdResponseExposure(id uint64, observation session.RiskObservation) {
@@ -1378,9 +1388,10 @@ func (s *SessionState) holdResponseExposure(id uint64, observation session.RiskO
 	defer s.mu.Unlock()
 	s.risk.Observe(observation)
 	if s.heldExposure == nil {
-		s.heldExposure = make(map[uint64]session.RiskObservation)
+		s.heldExposure = make(map[uint64]heldResponseExposure)
 	}
-	s.heldExposure[id] = observation
+	s.heldSeq++
+	s.heldExposure[id] = heldResponseExposure{seq: s.heldSeq, observation: observation}
 	s.lastActivity = time.Now()
 }
 
@@ -1407,8 +1418,13 @@ func (s *SessionState) BeginNewTask(label string) (prev, current session.TaskCon
 	s.task = newTaskContext(label, now)
 	s.taskPermissions = nil
 	s.risk = session.SessionRisk{}
-	for _, held := range s.heldExposure {
-		s.risk.Observe(held)
+	// Replay in recording order so the most recent source and the security
+	// origin match what the session reported before the rotation.
+	held := slices.SortedFunc(maps.Values(s.heldExposure), func(a, b heldResponseExposure) int {
+		return cmp.Compare(a.seq, b.seq)
+	})
+	for _, h := range held {
+		s.risk.Observe(h.observation)
 	}
 
 	if len(s.runtimeOverrides) > 0 {
