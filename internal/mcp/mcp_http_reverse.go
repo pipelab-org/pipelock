@@ -2515,6 +2515,11 @@ func RunHTTPListenerProxy(
 			}
 			return
 		}
+		responseBlocked := false
+		reqOpts.responseDenial = func(terminal *mcpTerminalDecision) {
+			responseBlocked = true
+			w.responseDenial(terminal)
+		}
 		var responseTerminal mcpDeferredTerminal
 		var responseStatus, responseReason string
 		var responseSize int64
@@ -2600,7 +2605,7 @@ func RunHTTPListenerProxy(
 			return
 		}
 		effect.observed = true
-		if foundInjection && effect.send != nil {
+		if responseBlocked && effect.send != nil {
 			effect.refuseReply()
 			clearReplySession()
 			w.WriteHeader(http.StatusForbidden)
