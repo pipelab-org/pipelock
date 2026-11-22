@@ -594,3 +594,21 @@ func (s *issuerQueryStore) numericIDsIssued(session string, target *url.URL, val
 	}
 	return true
 }
+
+// issuerNumericCardJoinStaleLayer names the refusal of a request whose numeric
+// card-join evidence was revoked between the URL rescan and the upstream send.
+const issuerNumericCardJoinStaleLayer = "issuer_numeric_card_join_stale"
+
+// numericReliefCurrent reports whether every value set that relieved a request
+// is still issued by the live server-first numeric store.
+func numericReliefCurrent(store *issuerQueryStore, session string, target *url.URL, sets [][]string) bool {
+	if len(sets) == 0 {
+		return false
+	}
+	for _, values := range sets {
+		if !store.numericIDsIssued(session, target, values) {
+			return false
+		}
+	}
+	return true
+}

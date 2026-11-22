@@ -971,6 +971,11 @@ func newInterceptHandler(
 		// replayRelieved marks a URL allowed only through replay evidence; the
 		// evidence must still be current when the request is sent.
 		replayRelieved := false
+		// numericReliefSets holds each value set that earned numeric card-join
+		// relief; every set must still be issued when the request is sent.
+		var numericReliefSets [][]string
+		numericReliefSession := ""
+		numericRelieved := false
 		urlResult := ic.Scanner.ScanWithReservation(interceptScanCtx, targetURL, ic.RateReservation)
 		// Count the selected scan once, as soon as the issuer rescan below has
 		// settled it. A streamed response keeps this handler open until the
@@ -1123,6 +1128,8 @@ func newInterceptHandler(
 							return false
 						}
 						numericCardJoinUsed = true
+						numericReliefSets = append(numericReliefSets, append([]string(nil), values...))
+						numericReliefSession = session
 						return true
 					})
 				}
@@ -1146,6 +1153,7 @@ func newInterceptHandler(
 						}
 						if numericCardJoinUsed {
 							kinds = append(kinds, issuerQueryNumericCardJoin)
+							numericRelieved = true
 						}
 						if allowed {
 							kinds = append(kinds, allowKind)
@@ -2503,6 +2511,17 @@ func newInterceptHandler(
 				blockInfoFor(blockreason.QueryEntropy, issuerQueryReplayStaleLayer).WithRequestID(ic.RequestID),
 				"blocked: query replay evidence revoked before send", http.StatusForbidden)
 			emitBlockedPostRoundTripOutcome(http.StatusForbidden, issuerQueryReplayStaleLayer)
+			return
+		}
+		// The same holds for numeric card-join evidence: a reload or identity
+		// downgrade can retire the server-first store after the rescan.
+		if numericRelieved && !numericReliefCurrent(ic.issuerServerIDStore(), numericReliefSession, r.URL, numericReliefSets) {
+			ic.Proxy.refuseAdmittedEffect(r.Context(), allowReceipt, upstreamEffect)
+			ic.Logger.LogBlocked(actx, issuerNumericCardJoinStaleLayer, "numeric card-join evidence revoked before send")
+			writeBlockedError(w,
+				blockInfoFor(blockreason.DLPMatch, issuerNumericCardJoinStaleLayer).WithRequestID(ic.RequestID),
+				"blocked: numeric card-join evidence revoked before send", http.StatusForbidden)
+			emitBlockedPostRoundTripOutcome(http.StatusForbidden, issuerNumericCardJoinStaleLayer)
 			return
 		}
 		resp, err := interceptUpstream.RoundTrip(r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{

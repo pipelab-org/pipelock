@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -834,4 +835,62 @@ func numericJoinDoWithReason(e *delegationEnv, agent, rawURL string) (int, strin
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 	return resp.StatusCode, resp.Header.Get("X-Pipelock-Block-Reason")
+}
+
+func TestInterceptIssuerNumericCardJoinRevokedBeforeSend(t *testing.T) {
+	woID, siteID := numericJoinRealShape19()
+	e := newSameOriginEnv(t, func(c *config.Config) {
+		c.RequestBodyScanning.Enabled = true
+		c.Taint.Policy = config.ModePermissive
+	})
+	logs, _ := e.withRecordedAudit(t)
+	origin := "https://" + numericJoinOriginHost
+	e.serveBody("text/html; charset=utf-8", `<p>`+woID+`</p>`)
+	if got := e.do("agent-one", http.MethodGet, origin+"/records/list"); got != http.StatusOK {
+		t.Fatalf("HTML status = %d, want 200", got)
+	}
+	e.serveBody("application/json", `{"siteId":`+siteID+`}`)
+	if got := e.do("agent-one", http.MethodGet, origin+"/api/sites"); got != http.StatusOK {
+		t.Fatalf("JSON status = %d, want 200", got)
+	}
+	hitsBefore := e.sourceHit.Load()
+
+	bodyReader, bodyWriter := io.Pipe()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, origin+"/records/detail?wo="+woID+"&site="+siteID, bodyReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.ContentLength = -1
+	status := make(chan int, 1)
+	cfg, sc, logger, p := e.cfg, e.sc, e.logger, e.p
+	go func() {
+		resp := interceptAndRequestWithRecorder(t, interceptRequestOptions{
+			Upstream: e.upstream, TargetHost: numericJoinOriginHost, TargetPort: "443", UpstreamRT: e.rt,
+			Cache: e.cache, Pool: e.pool, Config: cfg, Scanner: sc, Logger: logger, Metrics: e.m,
+			Request: req, Proxy: p, Agent: "agent-one", ActorAuth: envelope.ActorAuthBound,
+		})
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		status <- resp.StatusCode
+	}()
+	// The relief is recorded right after the URL rescan, before the body is
+	// read, so its audit event marks the window to reload in.
+	testwait.For(t, 10*time.Second, func() bool {
+		return strings.Contains(logs.String(), `"event":"dlp_issuer_numeric_card_join_allow"`)
+	}, "numeric card-join relief was never recorded")
+	disabled := cfg.Clone()
+	disabled.RequestBodyScanning.IssuerBoundSessionCookies = false
+	e.reload(disabled)
+	_, _ = io.WriteString(bodyWriter, "note=ready")
+	_ = bodyWriter.Close()
+
+	if got := <-status; got != http.StatusForbidden {
+		t.Fatalf("revoked numeric relief status = %d, want 403; audit: %s", got, logs.String())
+	}
+	if got := e.sourceHit.Load(); got != hitsBefore {
+		t.Fatalf("revoked numeric relief reached the upstream (%d hits, want %d)", got, hitsBefore)
+	}
+	if !strings.Contains(logs.String(), issuerNumericCardJoinStaleLayer) {
+		t.Fatalf("stale numeric relief refusal not logged; audit: %s", logs.String())
+	}
 }
