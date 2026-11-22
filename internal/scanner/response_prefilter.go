@@ -306,18 +306,14 @@ func responseMatchingProgram(filters ...*responsePreFilter) *matchingLiterals {
 			collect(child)
 		}
 	}
+	// Reserve index capacity in filter order. Each filter puts its gating
+	// and window literals ahead of its full chain anchors.
 	for _, filter := range filters {
 		if filter != nil {
 			literals = append(literals, filter.windowAnchors...)
 			for _, gate := range filter.gates {
 				collect(gate)
 			}
-		}
-	}
-	// Give gates and their fallback windows first use of the bounded
-	// index. A chain can fall back when a later anchor doesn't fit.
-	for _, filter := range filters {
-		if filter != nil {
 			literals = append(literals, filter.chainLiterals...)
 		}
 	}
