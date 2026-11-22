@@ -34,16 +34,16 @@ func TestEvaluateHTTPTaintDisabledAndNil(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Taint.Enabled = false
 
-	got := evaluateHTTPTaint(cfg, &SessionState{}, http.MethodPost, parsed)
+	got := evaluateHTTPTaint(cfg, &SessionState{}, http.MethodPost, parsed, false)
 	if got.Result.Decision != session.PolicyAllow || got.Result.Reason != "taint_disabled" {
 		t.Fatalf("disabled taint = %+v, want allow/taint_disabled", got.Result)
 	}
 
 	cfg.Taint.Enabled = true
-	if got := evaluateHTTPTaint(cfg, &SessionState{}, http.MethodPost, nil); got.Result.Reason != "taint_disabled" {
+	if got := evaluateHTTPTaint(cfg, &SessionState{}, http.MethodPost, nil, false); got.Result.Reason != "taint_disabled" {
 		t.Fatalf("nil URL = %+v, want taint_disabled", got.Result)
 	}
-	if got := evaluateHTTPTaint(nil, &SessionState{}, http.MethodPost, parsed); got.Result.Reason != "taint_disabled" {
+	if got := evaluateHTTPTaint(nil, &SessionState{}, http.MethodPost, parsed, false); got.Result.Reason != "taint_disabled" {
 		t.Fatalf("nil cfg = %+v, want taint_disabled", got.Result)
 	}
 }

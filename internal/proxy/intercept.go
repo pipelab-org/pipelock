@@ -869,7 +869,7 @@ func newInterceptHandler(
 		if interceptSess, ok := ic.Recorder.(*SessionState); ok && interceptSess != nil {
 			tier := airlockTierForScope(interceptSess, adaptiveScopeForHost(ic.TargetHost))
 			if tier != config.AirlockTierNone {
-				allowed, reason := ClassifyAction(tier, r.Method, TransportConnect, true)
+				allowed, reason := ClassifyRequestAction(tier, r, TransportConnect, true)
 				if !allowed {
 					ic.Logger.LogAirlockDeny(interceptSess.key, tier, TransportConnect, r.Method, ic.ClientIP, ic.RequestID)
 					ic.Metrics.RecordAirlockDenial(tier, TransportConnect, r.Method)
@@ -2307,6 +2307,7 @@ func newInterceptHandler(
 			envEmitter = ic.Proxy.currentEnvelopeEmitter()
 		}
 		if envEmitter != nil {
+			ic.taintTask.snapshotPreSendHeader(r)
 			policyHash := envelope.PolicyHashFromHex(ic.Config.CanonicalPolicyHash())
 			if envErr := envEmitter.InjectAndSign(r, interceptBodyBytes, envelope.BuildOpts{
 				ActionID:       actionID,
@@ -2412,13 +2413,18 @@ func newInterceptHandler(
 			}
 		}
 
-		if reason := recheckInterceptTaint(ic, r); reason != "" {
+		// A recheck refusal closes a written intent with a blocked outcome;
+		// with no intent, the ordinary taint denial is the action's receipt.
+		refuseInterceptRecheck := func(reason string) {
 			if requiredIntentEmitted {
 				writeInterceptTaintRefusal(ic, w, actx, reason)
 				emitBlockedPostRoundTripOutcome(http.StatusForbidden, reason)
-			} else {
-				refuseInterceptTaint(ic, w, reason, interceptTaintAdmissionOptions{request: r, logContext: actx, actionID: actionID, wrapReceipt: withInterceptRedaction})
+				return
 			}
+			refuseInterceptTaint(ic, w, reason, interceptTaintAdmissionOptions{request: r, logContext: actx, actionID: actionID, wrapReceipt: withInterceptRedaction})
+		}
+		if reason := recheckInterceptTaint(ic, r, interceptBodyBytes); reason != "" {
+			refuseInterceptRecheck(reason)
 			return
 		}
 		// Record what this request sends before it leaves, so no response
@@ -2457,10 +2463,9 @@ func newInterceptHandler(
 		}
 		defer func() { ic.Proxy.settleEffect(r.Context(), allowReceipt, upstreamEffect) }()
 		if ic.Proxy != nil && ic.Proxy.receiptEffects.enabled {
-			if reason := recheckInterceptTaint(ic, r); reason != "" {
+			if reason := recheckInterceptTaint(ic, r, interceptBodyBytes); reason != "" {
 				ic.Proxy.refuseAdmittedEffect(r.Context(), allowReceipt, upstreamEffect)
-				writeInterceptTaintRefusal(ic, w, actx, reason)
-				emitBlockedPostRoundTripOutcome(http.StatusForbidden, reason)
+				refuseInterceptRecheck(reason)
 				return
 			}
 		}

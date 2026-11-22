@@ -63,7 +63,7 @@ func TestProxy_ReloadReleasesAirlockWithoutConsumer(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if decision := evaluateHTTPTaint(next, sess, http.MethodPost, destination); decision.Result.Reason != "external_publish_after_untrusted_external_exposure" {
+		if decision := evaluateHTTPTaint(next, sess, http.MethodPost, destination, true); decision.Result.Reason != "external_publish_after_untrusted_external_exposure" {
 			t.Fatalf("retained taint = %+v", decision.Result)
 		}
 		code, body, trips = forwardAirlockProbe(t, p)

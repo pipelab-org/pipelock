@@ -103,7 +103,7 @@ func TestEvaluateHTTPTaint_ExternalPublishAfterUntrustedExposureAsks(t *testing.
 	if err != nil {
 		t.Fatalf("url.Parse() error = %v", err)
 	}
-	decision := evaluateHTTPTaint(cfg, sess, http.MethodPost, targetURL)
+	decision := evaluateHTTPTaint(cfg, sess, http.MethodPost, targetURL, false)
 	if decision.Result.Decision != session.PolicyAsk {
 		t.Fatalf("decision = %v, want ask", decision.Result.Decision)
 	}
@@ -123,7 +123,7 @@ func TestEvaluateHTTPTaint_PermissiveObservesWithoutAsk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("url.Parse() error = %v", err)
 	}
-	decision := evaluateHTTPTaint(cfg, sess, http.MethodPost, targetURL)
+	decision := evaluateHTTPTaint(cfg, sess, http.MethodPost, targetURL, false)
 	if decision.Result.Decision != session.PolicyAllow {
 		t.Fatalf("decision = %v, want allow", decision.Result.Decision)
 	}
@@ -148,7 +148,7 @@ func TestEvaluateHTTPTaint_TrustOverrideHonorsScope(t *testing.T) {
 		SourceMatch: "https://evil.example/*",
 		ExpiresAt:   time.Now().UTC().Add(time.Hour),
 	}}
-	decision := evaluateHTTPTaint(cfg, sess, http.MethodPost, targetURL)
+	decision := evaluateHTTPTaint(cfg, sess, http.MethodPost, targetURL, false)
 	if decision.Result.Decision != session.PolicyAllow {
 		t.Fatalf("decision = %v, want allow", decision.Result.Decision)
 	}
@@ -158,7 +158,7 @@ func TestEvaluateHTTPTaint_TrustOverrideHonorsScope(t *testing.T) {
 		ActionMatch: "publish:post:https://api.example.com/auth/update",
 		ExpiresAt:   time.Now().UTC().Add(time.Hour),
 	}}
-	decision = evaluateHTTPTaint(cfg, sess, http.MethodPost, targetURL)
+	decision = evaluateHTTPTaint(cfg, sess, http.MethodPost, targetURL, false)
 	if decision.Result.Decision != session.PolicyAsk {
 		t.Fatalf("decision = %v, want ask when scope=source has no source_match", decision.Result.Decision)
 	}
@@ -181,7 +181,7 @@ func TestEvaluateHTTPTaint_TrustOverrideUsesActiveSourceOnly(t *testing.T) {
 		SourceMatch: "https://docs.github.com/*",
 		ExpiresAt:   time.Now().UTC().Add(time.Hour),
 	}}
-	decision := evaluateHTTPTaint(cfg, sess, http.MethodPost, targetURL)
+	decision := evaluateHTTPTaint(cfg, sess, http.MethodPost, targetURL, false)
 	if decision.Result.Decision != session.PolicyAsk {
 		t.Fatalf("decision = %v, want ask when only a historical source matches", decision.Result.Decision)
 	}
@@ -203,7 +203,7 @@ func TestEvaluateHTTPTaint_RuntimeTaskOverrideHonorsBoundary(t *testing.T) {
 		t.Fatalf("url.Parse() error = %v", err)
 	}
 
-	decision := evaluateHTTPTaint(cfg, sess, http.MethodPost, targetURL)
+	decision := evaluateHTTPTaint(cfg, sess, http.MethodPost, targetURL, false)
 	if decision.Result.Decision != session.PolicyAllow {
 		t.Fatalf("decision = %v, want allow", decision.Result.Decision)
 	}
@@ -213,7 +213,7 @@ func TestEvaluateHTTPTaint_RuntimeTaskOverrideHonorsBoundary(t *testing.T) {
 
 	sess.BeginNewTask("next task")
 	observeHTTPResponseTaint(sess, cfg, "https://evil.example/issue/123", "text/html", "fetch_response", false)
-	decision = evaluateHTTPTaint(cfg, sess, http.MethodPost, targetURL)
+	decision = evaluateHTTPTaint(cfg, sess, http.MethodPost, targetURL, false)
 	if decision.Result.Decision != session.PolicyAsk {
 		t.Fatalf("decision after task boundary = %v, want ask", decision.Result.Decision)
 	}

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path"
@@ -18,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -137,16 +139,81 @@ func httpResponseFindingObserver(rec session.Recorder, cfg *config.Config, rawUR
 	}
 }
 
-func evaluateHTTPTaint(cfg *config.Config, rec session.Recorder, method string, parsedURL *url.URL) taintDecision {
-	return evaluateHTTPTaskTaint(cfg, rec, method, parsedURL, nil)
+func evaluateHTTPTaint(cfg *config.Config, rec session.Recorder, method string, parsedURL *url.URL, body bool) taintDecision {
+	return evaluateHTTPTaskTaint(cfg, rec, method, parsedURL, body, nil)
+}
+
+// requestHasBody reports whether r carries, or may carry, a request body or
+// request trailers. Unknown length (chunked or unset) counts as a body so the
+// read-method exception cannot be reached by omitting Content-Length.
+func requestHasBody(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if len(r.TransferEncoding) > 0 || len(r.Trailer) > 0 || r.ContentLength > 0 {
+		return true
+	}
+	return r.ContentLength < 0 && r.Body != nil && r.Body != http.NoBody
 }
 
 type forwardTaskAction struct {
 	subject string
 	action  session.TaskAction
+	// preSendHeader snapshots the outbound headers before mediation envelope
+	// injection adds its own, so an action bound after injection hashes the
+	// same headers admission would have bound.
+	preSendHeader http.Header
 }
 
-func evaluateHTTPTaskTaint(cfg *config.Config, rec session.Recorder, method string, parsedURL *url.URL, task *forwardTaskAction) taintDecision {
+// snapshotPreSendHeader records the headers an exact action binds before
+// envelope injection changes them. It is a no-op once the action is bound.
+func (t *forwardTaskAction) snapshotPreSendHeader(req *http.Request) {
+	if t == nil || req == nil || t.action.Valid() {
+		return
+	}
+	t.preSendHeader = req.Header.Clone()
+}
+
+// lateRequestTaskAction binds the exact action for a request whose exposure
+// arrived after admission, on the same header basis admission uses. When no
+// scanner buffer exists, it reads the complete body envelope signing retained,
+// bounded by limit; an incomplete or over-limit body yields no action.
+func (t *forwardTaskAction) lateRequestTaskAction(req *http.Request, body []byte, limit int) session.TaskAction {
+	if body == nil {
+		body = retainedRequestBody(req, limit)
+	}
+	if t.preSendHeader == nil {
+		return forwardRequestTaskAction(req, body)
+	}
+	basis := *req
+	basis.Header = t.preSendHeader
+	return forwardRequestTaskAction(&basis, body)
+}
+
+// retainedRequestBody returns the complete request body a buffering stage
+// kept for replay through GetBody, such as envelope signing with request body
+// scanning off. It returns nil when no complete copy within limit exists, so
+// the action binder keeps refusing that body.
+func retainedRequestBody(req *http.Request, limit int) []byte {
+	if req == nil || req.GetBody == nil || req.Body == nil || req.Body == http.NoBody || limit <= 0 {
+		return nil
+	}
+	rc, err := req.GetBody()
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rc.Close() }()
+	data, err := io.ReadAll(io.LimitReader(rc, int64(limit)+1))
+	if err != nil || len(data) > limit {
+		return nil
+	}
+	if req.ContentLength >= 0 && int64(len(data)) != req.ContentLength {
+		return nil
+	}
+	return data
+}
+
+func evaluateHTTPTaskTaint(cfg *config.Config, rec session.Recorder, method string, parsedURL *url.URL, body bool, task *forwardTaskAction) taintDecision {
 	decision := taintDecision{
 		ActionClass: session.ActionClassRead,
 		Sensitivity: session.SensitivityNormal,
@@ -161,7 +228,8 @@ func evaluateHTTPTaskTaint(cfg *config.Config, rec session.Recorder, method stri
 		decision.Risk = rs.RiskSnapshot()
 	}
 	classified := session.ClassifyHTTPActionWithOptions(method, parsedURL.Path, cfg.Taint.ProtectedPaths, cfg.Taint.ElevatedPaths, session.ClassificationOptions{
-		FailSafe: cfg.Taint.FailSafeClassification,
+		FailSafe:    cfg.Taint.FailSafeClassification,
+		RequestBody: body,
 	})
 	decision.ActionClass = classified.Class
 	decision.Sensitivity = classified.Sensitivity
@@ -364,4 +432,89 @@ func wildcardMatch(value, pattern string) bool {
 		return false
 	}
 	return true
+}
+
+// taintAdmission is the decision a request was admitted under and whether
+// that admission relied on operator reauthorization.
+type taintAdmission struct {
+	decision     taintDecision
+	reauthorized bool
+}
+
+// forwardPreSendTaintRecheck re-evaluates taint for a forward request whose
+// admission was decided before a required receipt wait. It returns the live
+// decision and a refusal reason when that decision is stricter than the
+// admitted one: a block; a new ask on a request admitted without approval; a
+// task-permission requirement no current exact grant satisfies (a one-time
+// approval of this exact action still covers it); or a task change for an
+// admission bound to its task. Approval cannot be requested at this point.
+func forwardPreSendTaintRecheck(cfg *config.Config, rec session.Recorder, outReq *http.Request, body []byte, task *forwardTaskAction, admission taintAdmission) (taintDecision, string) {
+	after := evaluateHTTPTaskTaint(cfg, rec, outReq.Method, outReq.URL, requestHasBody(outReq), task)
+	if after.Result.Reason == session.TaskPermissionRequired && !task.action.Valid() {
+		// Exposure arrived after admission, so the exact action was never
+		// bound. Bind it now so an existing exact grant can still match; an
+		// unbuffered body yields no action and stays refused.
+		task.action = task.lateRequestTaskAction(outReq, body, taskActionBodyLimit(cfg))
+		after = evaluateHTTPTaskTaint(cfg, rec, outReq.Method, outReq.URL, requestHasBody(outReq), task)
+	}
+	return after, taskTaintRecheckReason(admission.decision, after, admission.reauthorized)
+}
+
+// taskActionBodyLimit is the largest body an exact task action binds, the
+// same bound admission uses when it buffers a body for binding.
+func taskActionBodyLimit(cfg *config.Config) int {
+	if cfg == nil {
+		return 0
+	}
+	return cfg.RequestBodyScanning.MaxBodyBytes
+}
+
+// releaseTaintDecision is the taint evidence for a request a pre-send recheck
+// let through. Exposure and task always come from the live decision. The
+// decision itself comes from the live result when that result allows the
+// send, for example an exact grant that matched after late exposure, unless
+// a one-time approval of this exact action is what authorizes the release.
+func releaseTaintDecision(admitted, after taintDecision) taintDecision {
+	released := admitted
+	released.Risk = after.Risk
+	released.Task = after.Task
+	if after.Result.Decision == session.PolicyAllow && admitted.Result.Reason != session.TaskApprovalGranted {
+		released.Result = after.Result
+		released.Authority = after.Authority
+		released.ActionRef = after.ActionRef
+		released.TaskOverrideApplied = after.TaskOverrideApplied
+	}
+	return released
+}
+
+// applyTaintEvidence copies a taint decision's session evidence into a receipt.
+func applyTaintEvidence(opts *receipt.EmitOpts, d taintDecision) {
+	opts.SessionTaintLevel = d.Risk.Level.String()
+	opts.SessionContaminated = d.Risk.Contaminated
+	opts.RecentTaintSources = d.Risk.Sources
+	opts.SessionTaskID = d.Task.CurrentTaskID
+	opts.SessionTaskLabel = d.Task.CurrentTaskLabel
+	opts.AuthorityKind = d.Authority.String()
+	opts.TaintDecision = d.Result.Decision.String()
+	opts.TaintDecisionReason = d.Result.Reason
+	opts.TaskOverrideApplied = d.TaskOverrideApplied
+}
+
+// taskTaintRecheckReason compares a live taint decision with the admitted one
+// and returns a refusal reason when the live result is stricter.
+func taskTaintRecheckReason(admitted, after taintDecision, reauthorized bool) string {
+	taskBound := reauthorized || admitted.Result.Reason == session.TaskPermissionGranted || admitted.Result.Reason == session.TaskApprovalGranted
+	switch {
+	case after.Result.Decision == session.PolicyBlock:
+		return after.Result.Reason
+	case taskBound && after.Task.CurrentTaskID != admitted.Task.CurrentTaskID:
+		return session.TaskApprovalStale
+	case after.Result.Reason == session.TaskPermissionRequired && admitted.Result.Reason != session.TaskApprovalGranted:
+		// A stored grant must still match now; an earlier broad approval or
+		// an expired grant does not cover a new permission requirement.
+		return session.TaskApprovalStale
+	case after.Result.Decision == session.PolicyAsk && admitted.Result.Decision == session.PolicyAllow && !reauthorized:
+		return after.Result.Reason
+	}
+	return ""
 }

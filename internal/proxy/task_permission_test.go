@@ -616,8 +616,10 @@ func TestForwardTaskPermissionAtReceiptConfirmation(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("required receipt did not reach confirmation")
 			}
+			var rotatedTaskID string
 			if tc.rotate {
 				rec.BeginNewTask("next task")
+				rotatedTaskID = rec.TaskSnapshot().CurrentTaskID
 			}
 			release()
 			select {
@@ -649,6 +651,10 @@ func TestForwardTaskPermissionAtReceiptConfirmation(t *testing.T) {
 					outcome.TaintDecisionReason != session.TaskApprovalStale ||
 					outcome.Pattern != receiptOutcomePattern("403", 0, session.TaskApprovalStale) {
 					t.Fatalf("expected a blocked stale-task outcome, got %+v", outcome)
+				}
+				// The refusal records the task that made the admission stale.
+				if outcome.SessionTaskID != rotatedTaskID || outcome.SessionTaskID == intent.SessionTaskID {
+					t.Fatalf("stale outcome task=%q intent task=%q, want rotated task %q", outcome.SessionTaskID, intent.SessionTaskID, rotatedTaskID)
 				}
 			} else if outcome.Verdict != config.ActionAllow || outcome.Pattern != receiptOutcomePattern("204", 0, "complete") {
 				t.Fatalf("expected a successful outcome, got %+v", outcome)

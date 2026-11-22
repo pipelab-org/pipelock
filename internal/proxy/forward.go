@@ -1430,7 +1430,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	} else if p.taintRecorder != nil {
 		forwardTask.subject = sharedTaskSubject(p.taintRecorder)
 	}
-	forwardTaint := evaluateHTTPTaskTaint(cfg, forwardRec, r.Method, r.URL, &forwardTask)
+	forwardTaint := evaluateHTTPTaskTaint(cfg, forwardRec, r.Method, r.URL, requestHasBody(r), &forwardTask)
 	forwardRequiresReauth := false
 
 	// Airlock action classification for forward proxy. Admission reads the same
@@ -1445,7 +1445,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			tier := airlockTierForScope(forwardSess, adaptiveScopeForHost(r.URL.Hostname()))
-			allowed, reason := ClassifyAction(tier, r.Method, TransportForward, false)
+			allowed, reason := ClassifyRequestAction(tier, r, TransportForward, false)
 			if !allowed {
 				p.logger.LogAirlockDeny(forwardSess.key, tier, TransportForward, r.Method, clientIP, requestID)
 				p.metrics.RecordAirlockDenial(tier, TransportForward, r.Method)
@@ -2462,10 +2462,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	applyFullResponsePolicy(outReq.Header, nil)
 	responseencoding.RequestIdentity(outReq.Header)
 
-	if forwardTaint.Result.Reason == session.TaskPermissionRequired &&
-		forwardBodyBytes == nil && outReq.Body != nil && outReq.Body != http.NoBody {
-		// Even with request-body scanning disabled, an exact permission must
-		// account for every byte. Reuse the configured request body bound.
+	// Even with request-body scanning disabled, an exact permission must
+	// account for every byte. Reuse the configured request body bound; a
+	// failed or oversized read leaves the body unbound and refused.
+	bufferBodyForTaskAction := func() {
+		if forwardBodyBytes != nil || outReq.Body == nil || outReq.Body == http.NoBody {
+			return
+		}
 		body, err := io.ReadAll(io.LimitReader(outReq.Body, int64(cfg.RequestBodyScanning.MaxBodyBytes)+1))
 		_ = outReq.Body.Close()
 		if err == nil && len(body) <= cfg.RequestBodyScanning.MaxBodyBytes {
@@ -2476,6 +2479,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				return io.NopCloser(bytes.NewReader(body)), nil
 			}
 		}
+	}
+	if forwardTaint.Result.Reason == session.TaskPermissionRequired {
+		bufferBodyForTaskAction()
 	}
 	writeTaskDenialResponse := func(reason, detail string) {
 		p.metrics.RecordBlocked(r.URL.Hostname(), "taint_policy", time.Since(start), agentLabel)
@@ -2490,14 +2496,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		})))
 		writeTaskDenialResponse(reason, detail)
 	}
-	taskTaint := evaluateHTTPTaskTaint(cfg, forwardRec, outReq.Method, outReq.URL, &forwardTask)
+	taskTaint := evaluateHTTPTaskTaint(cfg, forwardRec, outReq.Method, outReq.URL, requestHasBody(outReq), &forwardTask)
 	if forwardTaint.Result.Reason == session.TaskPermissionRequired && forwardTaint.Task.CurrentTaskID != taskTaint.Task.CurrentTaskID {
 		writeTaskDenial(session.TaskApprovalStale, "the task changed before this action could be evaluated")
 		return
 	}
 	if taskTaint.Result.Reason == session.TaskPermissionRequired {
+		// Exposure recorded after admission can make the live decision the
+		// first to require permission; bind on the full body then too.
+		bufferBodyForTaskAction()
 		forwardTask.action = forwardRequestTaskAction(outReq, forwardBodyBytes)
-		matchedTask := evaluateHTTPTaskTaint(cfg, forwardRec, outReq.Method, outReq.URL, &forwardTask)
+		matchedTask := evaluateHTTPTaskTaint(cfg, forwardRec, outReq.Method, outReq.URL, requestHasBody(outReq), &forwardTask)
 		if matchedTask.Task.CurrentTaskID != taskTaint.Task.CurrentTaskID {
 			writeTaskDenial(session.TaskApprovalStale, "the task changed before this action could be evaluated")
 			return
@@ -2533,7 +2542,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				// Exposure may change again while the operator decides. Only a
 				// result no stricter than the approved ask may proceed.
-				if after := evaluateHTTPTaskTaint(cfg, forwardRec, outReq.Method, outReq.URL, &forwardTask); after.Result.Decision == session.PolicyBlock ||
+				if after := evaluateHTTPTaskTaint(cfg, forwardRec, outReq.Method, outReq.URL, requestHasBody(outReq), &forwardTask); after.Result.Decision == session.PolicyBlock ||
 					after.Result.Reason == session.TaskPermissionRequired || after.Task.CurrentTaskID != taskTaint.Task.CurrentTaskID {
 					reason := after.Result.Reason
 					if after.Result.Decision != session.PolicyBlock {
@@ -2555,6 +2564,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// mediation_envelope.max_body_bytes, and restores it with a fresh
 	// reader + GetBody for redirect replay.
 	if envEmitter != nil {
+		forwardTask.snapshotPreSendHeader(outReq)
 		policyHash := envelope.PolicyHashFromHex(cfg.CanonicalPolicyHash())
 		if envErr := envEmitter.InjectAndSign(outReq, forwardBodyBytes, envelope.BuildOpts{
 			ActionID:       actionID,
@@ -2709,16 +2719,47 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { p.settleEffect(r.Context(), forwardAllowReceipt, upstreamEffect) }()
-	// Required receipt scanning and durability can outlast task admission.
-	// Recheck when an admission may have waited on a recorder.
-	if (cfg.FlightRecorder.RequireReceipts || p.receiptEffects.enabled) && !taskAdmissionCurrent() {
-		p.refuseAdmittedEffect(r.Context(), forwardAllowReceipt, upstreamEffect)
-		outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, session.TaskApprovalStale
-		outcomeReceipt.Verdict = config.ActionBlock
-		outcomeReceipt.TaintDecision = session.PolicyBlock.String()
-		outcomeReceipt.TaintDecisionReason = session.TaskApprovalStale
-		writeTaskDenialResponse(session.TaskApprovalStale, staleTaskDetail)
-		return
+	// Required receipt scanning and durability, effect admission, and
+	// envelope signing that buffers an unread body can outlast task
+	// admission. Look again before every send, as the intercept path does.
+	{
+		admissionCurrent := taskAdmissionCurrent()
+		// Read the live decision either way so a refusal records the current
+		// task and exposure, not the admission-time state.
+		after, reason := forwardPreSendTaintRecheck(cfg, forwardRec, outReq, forwardBodyBytes, &forwardTask, taintAdmission{decision: forwardTaint, reauthorized: forwardRequiresReauth})
+		detail := "session exposure changed after the request was admitted"
+		if !admissionCurrent {
+			reason, detail = session.TaskApprovalStale, staleTaskDetail
+		}
+		if reason != "" {
+			p.refuseAdmittedEffect(r.Context(), forwardAllowReceipt, upstreamEffect)
+		}
+		if reason != "" && !cfg.FlightRecorder.RequireReceipts {
+			// No intent receipt was recorded, so the refusal is the only
+			// receipt for this action; it carries the live state.
+			forwardTaint = after
+			writeTaskDenial(reason, detail)
+			return
+		}
+		if reason != "" {
+			outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, reason
+			outcomeReceipt.Verdict = config.ActionBlock
+			// Record the live state that caused the refusal, not the
+			// admission-time state the allow receipt carried.
+			refused := after
+			refused.Result = session.PolicyDecisionResult{Decision: session.PolicyBlock, Reason: reason}
+			applyTaintEvidence(&outcomeReceipt, refused)
+			writeTaskDenialResponse(reason, detail)
+			return
+		}
+		// The send is released. Its terminal evidence carries the live
+		// exposure and, when an exact grant matched after late exposure,
+		// that grant. A required intent receipt already written stays as is.
+		forwardTaint = releaseTaintDecision(forwardTaint, after)
+		applyTaintEvidence(&outcomeReceipt, forwardTaint)
+		if !cfg.FlightRecorder.RequireReceipts {
+			applyTaintEvidence(&forwardAllowReceipt, forwardTaint)
+		}
 	}
 	resp, err := p.client.Do(outReq)
 	p.confirmObservedEffect(r.Context(), forwardAllowReceipt, upstreamEffect, resp != nil)
