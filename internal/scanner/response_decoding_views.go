@@ -34,6 +34,11 @@ const injectionDecodeLimitReason = "injection inspection incomplete: decoding li
 // through decoders and matchers. Bound those deeper views independently.
 const outboundInjectionDecodeWorkBytes = 4 * maxDecodeTotalBytes
 
+// Sparse retention lowers memory cost, but materialization and fallback
+// matching still consume logical bytes. Limit the discounted inbound views
+// in addition to the existing retained-byte, depth and candidate limits.
+const inboundSparseInjectionDecodeBytes = 4 * maxDecodeTotalBytes
+
 // injectionHTMLTextLabel marks the one HTML extraction on a decode lineage.
 const injectionHTMLTextLabel = "html_text"
 
@@ -44,6 +49,7 @@ type injectionDecodeView struct {
 	// extracted text as markup and never reaches a fixed point.
 	applied string
 	depth   int
+	proof   responseDeltaProof
 }
 
 // scanAdditionalInjectionViews runs after the historical passes so their
@@ -53,17 +59,30 @@ type injectionDecodeView struct {
 // Deeper copies share the retained-byte budget. Nesting uses the injection
 // depth cap.
 func (s *Scanner) scanAdditionalInjectionViews(ctx context.Context, content, target string, suppress []config.SuppressEntry, result ResponseScanResult) ResponseScanResult {
-	return s.scanAdditionalInjectionViewsWithin(ctx, content, target, suppress, result, outboundInjectionDecodeWorkBytes)
+	return s.scanAdditionalInjectionViewsWithProof(ctx, content, target, suppress, result, responseDeltaProof{})
 }
 
-func (s *Scanner) scanAdditionalInjectionViewsWithin(ctx context.Context, content, target string, suppress []config.SuppressEntry, result ResponseScanResult, outboundWorkLimit int) (out ResponseScanResult) {
+func (s *Scanner) scanAdditionalInjectionViewsWithProof(ctx context.Context, content, target string, suppress []config.SuppressEntry, result ResponseScanResult, proof responseDeltaProof) ResponseScanResult {
+	return s.walkAdditionalInjectionViews(ctx, content, target, suppress, result, injectionWalkOptions{outboundWorkLimit: outboundInjectionDecodeWorkBytes, rootProof: proof})
+}
+
+type injectionWalkOptions struct {
+	outboundWorkLimit int
+	rootProof         responseDeltaProof
+}
+
+func (s *Scanner) walkAdditionalInjectionViews(ctx context.Context, content, target string, suppress []config.SuppressEntry, result ResponseScanResult, options injectionWalkOptions) (out ResponseScanResult) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	outbound, _ := ctx.Value(outboundInjectionContextKey{}).(bool)
 	queue := newInjectionDecodeQueue(content, outbound)
+	if !outbound {
+		queue.views[0].proof = options.rootProof
+	}
 	used := 0
 	expanded := 0
+	sparseExpanded := 0
 	incomplete := false
 	defer func() {
 		// A cancellation or other scan error already decides the result; a
@@ -94,7 +113,8 @@ func (s *Scanner) scanAdditionalInjectionViewsWithin(ctx context.Context, conten
 			result.ScanError = err.Error()
 			return result
 		}
-		parent := queue.views[head].decodeView()
+		parent := queue.decodeView(head)
+		var deltaParent *responseDeltaParent
 		if len(parent.text) > maxDecodeTotalBytes {
 			// The caller already scanned this text. A larger plain payload is
 			// not a decoding limit; only a transform we will not open is.
@@ -120,7 +140,7 @@ func (s *Scanner) scanAdditionalInjectionViewsWithin(ctx context.Context, conten
 			htmlOfDecoded := view.label == injectionHTMLTextLabel && parent.depth == 1 && !strings.Contains(parent.applied, injectionHTMLTextLabel)
 			charge := parent.depth > 0 && !htmlOfDecoded
 			if parent.depth >= responseDecodeMaxDepth || len(queue.views) >= maxDecodeCandidates || len(view.text) > maxDecodeTotalBytes ||
-				(outbound && charge && len(view.text) > outboundWorkLimit-expanded) {
+				(outbound && charge && len(view.text) > options.outboundWorkLimit-expanded) {
 				// A leftover shorter than an encoded segment cannot hold a phrase.
 				// The same floor is minSegmentDecodeLen.
 				if view.label == "" && len(view.text) < minSegmentDecodeLen {
@@ -134,9 +154,25 @@ func (s *Scanner) scanAdditionalInjectionViewsWithin(ctx context.Context, conten
 				remaining -= used
 			}
 			stored, cost := queue.prepare(view.text, remaining, !charge)
+			aligned := !outbound && view.label != "" && len(view.text) >= responseMemoMinBytes
+			var alignment injectionDecodeAlignment
+			if aligned {
+				alignment = queue.align(head, parent, view)
+				if charge && len(view.text) <= inboundSparseInjectionDecodeBytes-sparseExpanded {
+					if sparse, sparseCost := alignment.prepare(view.text, remaining); sparseCost != 0 {
+						stored, cost = sparse, sparseCost
+						sparseExpanded += len(view.text)
+					}
+				}
+			}
 			if cost > remaining {
 				incomplete = incomplete || view.label != "" || len(view.text) >= minSegmentDecodeLen
 				continue
+			}
+			if aligned {
+				if _, exists := queue.first[view.label]; !exists {
+					queue.first[view.label] = len(queue.views)
+				}
 			}
 			view.depth = parent.depth + 1
 			if view.label == "" {
@@ -156,7 +192,21 @@ func (s *Scanner) scanAdditionalInjectionViewsWithin(ctx context.Context, conten
 			if view.label == "" {
 				continue
 			}
-			checked := s.scanResponseMatchesWithOptions(ctx, view.text, target, suppress, responseScanOptions{skipEncodedDecode: true}, newResponseMatchMemo(len(view.text)))
+			memo := newResponseMatchMemo(len(view.text))
+			if memo != nil && aligned && parent.proof.hasNegatives() {
+				if deltaParent == nil {
+					deltaParent = newResponseDeltaParent(parent)
+				}
+				memo.deltaParent = deltaParent
+				if alignment.index != head && alignment.base.proof.hasNegatives() {
+					memo.deltaParent = newResponseDeltaParent(alignment.base)
+				}
+			}
+			checked := s.scanResponseMatchesWithOptions(ctx, view.text, target, suppress, responseScanOptions{skipEncodedDecode: true}, memo)
+			if memo != nil && !outbound && checked.Clean && !checked.Failed() &&
+				len(checked.WarnedMatches)+len(checked.SuppressedMatches)+len(checked.ObservedCoreMatches) == 0 {
+				queue.views[len(queue.views)-1].proof = memo.deltaProof
+			}
 			if BlankViewAddsNoCoverage(view.text, checked) {
 				continue
 			}

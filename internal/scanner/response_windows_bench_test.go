@@ -6,6 +6,7 @@ package scanner
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -16,6 +17,14 @@ func BenchmarkResponseWindows(b *testing.B) {
 		const size = 1_215_035
 		const statement = `function item(e){return e.enabled?{password:e.value,token:e.id,secret:e.data,memory:e.state}:null}const url="https://cdn.vendor.example/app";`
 		body := bytes.Repeat([]byte(statement), (size+len(statement)-1)/len(statement))
+		benchmarkResponseWindows(b, body[:size])
+	})
+	b.Run("encoded", func(b *testing.B) {
+		const size = 1_215_035
+		const statement = `function item(e){return e.enabled?{password:e.value,token:e.id,secret:e.data,memory:e.state}:null}const url="https://cdn.vendor.example/app";`
+		const escaped = `const escapes=["\u0061","%26amp%3B","&lt;b&gt;neutral&lt;/b&gt;","+AGE-"];`
+		chunk := strings.Repeat(statement, 50) + escaped
+		body := bytes.Repeat([]byte(chunk), (size+len(chunk)-1)/len(chunk))
 		benchmarkResponseWindows(b, body[:size])
 	})
 	b.Run("sample", func(b *testing.B) {

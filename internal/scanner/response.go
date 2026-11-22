@@ -521,7 +521,11 @@ func (s *Scanner) scanResponseWithSuppress(ctx context.Context, content, suppres
 func (s *Scanner) scanResponseWithSuppressMemo(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry, forceEncodedDecode bool, memo *responseMatchMemo) (out ResponseScanResult) {
 	result := s.scanResponseMatches(ctx, content, suppressTarget, suppress, forceEncodedDecode, memo)
 	if result.Clean && !result.Failed() && len(result.WarnedMatches) == 0 && s.PromptInjectionModeFor(ctx) != config.ActionAllow {
-		result = s.scanAdditionalInjectionViews(ctx, content, suppressTarget, suppress, result)
+		var proof responseDeltaProof
+		if memo != nil && len(result.SuppressedMatches)+len(result.ObservedCoreMatches) == 0 {
+			proof = memo.deltaProof
+		}
+		result = s.scanAdditionalInjectionViewsWithProof(ctx, content, suppressTarget, suppress, result, proof)
 		s.setInjectionAssessment(ctx, &result, result.Assessment.Status != AssessmentNotAssessed)
 	}
 	if result.Clean || result.Failed() || (s.responseAction != config.ActionStrip && s.responseAction != config.ActionAsk) {
@@ -583,9 +587,14 @@ func (s *Scanner) scanResponseWithSuppressMemo(ctx context.Context, content, sup
 	candidate := rewritten.String()
 	// Detection only: a residual finding must not start another rewrite and
 	// must never be exposed to a caller as successfully stripped content.
-	checked := s.scanResponseMatches(ctx, candidate, suppressTarget, suppress, forceEncodedDecode, newResponseMatchMemo(len(candidate)))
+	candidateMemo := newResponseMatchMemo(len(candidate))
+	checked := s.scanResponseMatches(ctx, candidate, suppressTarget, suppress, forceEncodedDecode, candidateMemo)
 	if checked.Clean && !checked.Failed() && len(checked.WarnedMatches) == 0 {
-		checked = s.scanAdditionalInjectionViews(ctx, candidate, suppressTarget, suppress, checked)
+		var proof responseDeltaProof
+		if candidateMemo != nil && len(checked.SuppressedMatches)+len(checked.ObservedCoreMatches) == 0 {
+			proof = candidateMemo.deltaProof
+		}
+		checked = s.scanAdditionalInjectionViewsWithProof(ctx, candidate, suppressTarget, suppress, checked, proof)
 	}
 	result.InspectionIncomplete = result.InspectionIncomplete || checked.InspectionIncomplete
 	s.setInjectionAssessment(ctx, &result, true)
@@ -1195,6 +1204,17 @@ func matchPatternsPreFilteredWithMemo(pf *responsePreFilter, patterns []*compile
 		match = view.outboundMatch
 	case len(content) >= regexpWindowMinText && len(pf.windows) != 0:
 		match = pf.windowMatcher(content, view, patterns, indices)
+	}
+	if delta := view.delta; delta != nil && view.outboundMatch == nil && len(pf.deltaWidths) != 0 {
+		full := match
+		match = func(p *compiledPattern, text string) []ResponseMatch {
+			if plan, ok := pf.deltaWidths[p.re]; ok && p.responseMemoRegexp == p.re && !hasExternalTransferCompanions(p) {
+				if result, handled := delta.matchPlanned(p, text, plan); handled {
+					return result
+				}
+			}
+			return full(p, text)
+		}
 	}
 	workers := min(runtime.GOMAXPROCS(0), len(indices))
 	if workers < 2 || len(content) < 4096 {

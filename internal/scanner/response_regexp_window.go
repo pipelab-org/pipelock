@@ -32,7 +32,20 @@ var responseWindowRunBytes = func() asciiByteSet {
 	return set
 }()
 
-func responseRegexpWidth(tree *syntax.Regexp) (width responseWindowWidth, ok bool) {
+func responseRegexpWidth(tree *syntax.Regexp) (responseWindowWidth, bool) {
+	return responseRegexpWidthWith(tree, func(sub *syntax.Regexp) (responseWindowWidth, bool) {
+		for sub.Op == syntax.OpCapture {
+			sub = sub.Sub[0]
+		}
+		if sub.Op == syntax.OpCharClass && len(sub.Rune) > 0 && sub.Rune[len(sub.Rune)-1] < utf8.RuneSelf &&
+			regexpClassBytes(sub).subsetOf(responseWindowRunBytes) {
+			return responseWindowWidth{runs: 1}, true
+		}
+		return responseWindowWidth{}, false
+	})
+}
+
+func responseRegexpWidthWith(tree *syntax.Regexp, repeat func(*syntax.Regexp) (responseWindowWidth, bool)) (width responseWindowWidth, ok bool) {
 	switch tree.Op {
 	case syntax.OpNoMatch, syntax.OpEmptyMatch, syntax.OpBeginLine, syntax.OpEndLine,
 		syntax.OpBeginText, syntax.OpEndText, syntax.OpWordBoundary, syntax.OpNoWordBoundary:
@@ -56,7 +69,7 @@ func responseRegexpWidth(tree *syntax.Regexp) (width responseWindowWidth, ok boo
 		width.fixed = utf8.UTFMax
 	case syntax.OpConcat, syntax.OpAlternate:
 		for _, sub := range tree.Sub {
-			w, bounded := responseRegexpWidth(sub)
+			w, bounded := responseRegexpWidthWith(sub, repeat)
 			if !bounded {
 				return responseWindowWidth{}, false
 			}
@@ -69,20 +82,13 @@ func responseRegexpWidth(tree *syntax.Regexp) (width responseWindowWidth, ok boo
 			}
 		}
 	case syntax.OpCapture, syntax.OpQuest:
-		return responseRegexpWidth(tree.Sub[0])
+		return responseRegexpWidthWith(tree.Sub[0], repeat)
 	case syntax.OpRepeat, syntax.OpStar, syntax.OpPlus:
 		sub := tree.Sub[0]
 		if tree.Op != syntax.OpRepeat || tree.Max < 0 {
-			for sub.Op == syntax.OpCapture {
-				sub = sub.Sub[0]
-			}
-			if sub.Op == syntax.OpCharClass && len(sub.Rune) > 0 && sub.Rune[len(sub.Rune)-1] < utf8.RuneSelf &&
-				regexpClassBytes(sub).subsetOf(responseWindowRunBytes) {
-				return responseWindowWidth{runs: 1}, true
-			}
-			return responseWindowWidth{}, false
+			return repeat(sub)
 		}
-		w, bounded := responseRegexpWidth(sub)
+		w, bounded := responseRegexpWidthWith(sub, repeat)
 		if !bounded || tree.Max > 0 && (w.fixed > responseWindowMaxWidth/tree.Max || w.runs > responseWindowMaxWidth/tree.Max) {
 			return responseWindowWidth{}, false
 		}

@@ -25,6 +25,10 @@ type responseMatchMemo struct {
 	bytes         int
 	entries       int
 	matchingRoot  *matchingView
+	deltaParent   *responseDeltaParent
+	deltaProof    responseDeltaProof
+	deltaViews    [matchingVowel + 1]*responseDeltaView
+	deltaReady    [matchingVowel + 1]bool
 }
 
 func (m *responseMatchMemo) outboundError() error {
@@ -89,14 +93,26 @@ func (m *responseMatchMemo) matchingView(kind matchingTransform, text string, pr
 }
 
 func (m *responseMatchMemo) matchTransformed(pf *responsePreFilter, patterns []*compiledPattern, content string, program *matchingLiterals, kind matchingTransform) []ResponseMatch {
-	return m.matchPositioned(pf, patterns, content, m.matchingView(kind, content, program))
+	var delta *responseDeltaView
+	if m != nil && m.deltaParent != nil {
+		if !m.deltaReady[kind] {
+			m.deltaViews[kind] = m.deltaParent.view(kind, content)
+			m.deltaReady[kind] = true
+		}
+		delta = m.deltaViews[kind]
+	}
+	result := m.matchPositioned(pf, patterns, content, m.matchingView(kind, content, program), delta)
+	if m != nil {
+		m.deltaProof[kind] = m.views[content]
+	}
+	return result
 }
 
 func (m *responseMatchMemo) match(pf *responsePreFilter, patterns []*compiledPattern, content string) []ResponseMatch {
-	return m.matchPositioned(pf, patterns, content, nil)
+	return m.matchPositioned(pf, patterns, content, nil, nil)
 }
 
-func (m *responseMatchMemo) matchPositioned(pf *responsePreFilter, patterns []*compiledPattern, content string, positions *matchingView) []ResponseMatch {
+func (m *responseMatchMemo) matchPositioned(pf *responsePreFilter, patterns []*compiledPattern, content string, positions *matchingView, delta *responseDeltaView) []ResponseMatch {
 	if m.outboundError() != nil {
 		return nil
 	}
@@ -110,7 +126,7 @@ func (m *responseMatchMemo) matchPositioned(pf *responsePreFilter, patterns []*c
 	if len(known) > 0 {
 		remaining = make([]*compiledPattern, 0, len(patterns))
 		if pf != nil {
-			remainingFilter = &responsePreFilter{windows: pf.windows}
+			remainingFilter = &responsePreFilter{windows: pf.windows, deltaWidths: pf.deltaWidths}
 		}
 		for i, p := range patterns {
 			key, eligible := responseNegativePatternKey(p)
@@ -152,8 +168,10 @@ func (m *responseMatchMemo) matchPositioned(pf *responsePreFilter, patterns []*c
 		view = &responsePreFilterView{literals: literals, outboundMatch: m.outboundMatch}
 	}
 	view.positions = positions
+	view.delta = delta
 	result := matchPatternsPreFilteredWithMemo(remainingFilter, remaining, content, view)
 	view.positions = nil
+	view.delta = nil
 	if m.outboundError() != nil {
 		return nil
 	}

@@ -26,6 +26,7 @@ type responsePreFilter struct {
 	companionProofs [][]*responseSuffixProof
 	windows         map[*regexp.Regexp]*regexpWindowPlan
 	windowAnchors   []string
+	deltaWidths     map[*regexp.Regexp]responseDeltaWidth
 
 	// alwaysRun holds indices of patterns with no extractable keyword gate.
 	// A separate negative proof can still exclude these patterns.
@@ -36,6 +37,7 @@ type responsePreFilter struct {
 // bytes in its memo. It shares the gate's derived text across pattern groups.
 type responsePreFilterView struct {
 	outboundMatch    func(*compiledPattern, string) []ResponseMatch
+	delta            *responseDeltaView
 	folded, distance string
 	literals         responseLiteralMemo
 	ready            bool
@@ -64,6 +66,12 @@ func newResponsePreFilter(patterns []*compiledPattern) *responsePreFilter {
 				pf.gates[i] = responseLiteralGate(tree)
 				pf.proofs[i] = newResponseSuffixProof(p.re)
 				if p.responseMemoRegexp != nil && p.responseMemoRegexp == p.re {
+					if width, ok := newResponseDeltaWidth(tree); ok {
+						if pf.deltaWidths == nil {
+							pf.deltaWidths = make(map[*regexp.Regexp]responseDeltaWidth)
+						}
+						pf.deltaWidths[p.re] = width
+					}
 					plan := newResponseRegexpWindowPlan(p.re, tree)
 					if plan == nil {
 						plan = newRegexpWindowPlan(p.re, tree)
