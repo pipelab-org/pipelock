@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCredentialAudienceEndpointAndCarrier(t *testing.T) {
@@ -369,6 +370,40 @@ func TestGoogleAPIKeyQueryJoinedViews(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := s.Scan(context.Background(), tc.url); got.Allowed != tc.allow {
 				t.Fatalf("allowed=%v want %v scanner=%s reason=%s", got.Allowed, tc.allow, got.Scanner, got.Reason)
+			}
+		})
+	}
+}
+
+func TestCandidateTokensAreGrantsAPIKeyCarrier(t *testing.T) {
+	s := MustNew(credentialAudienceEntropyConfig())
+	defer s.Close()
+	var p *compiledPattern
+	for _, cp := range s.dlpPatterns {
+		if cp.name == "Google API Key" {
+			p = cp
+		}
+	}
+	if p == nil {
+		t.Fatal("Google API Key pattern not compiled")
+	}
+	key := "AI" + "za" + "Sy9fK2qLmR7xWvT4bNcZ8pH3jD6gE1uYo0A"
+	other := "AI" + "za" + "SyQ7mZ9pL4vR2sK8hF6dA0nT5cW3xB1jG2e"
+	target := "https://maps.googleapis.com/maps/api/js?libraries=places&key=" + key
+	now := time.Now()
+	for _, tc := range []struct {
+		name, text, target string
+		want               bool
+	}{
+		{"admitted key after other text", "places" + key, target, true},
+		{"different key", "places" + other, target, false},
+		{"admitted key beside a second key", key + other, target, false},
+		{"no single key value", "places" + key, "https://maps.googleapis.com/maps/api/js?key=" + key + "&key=" + key, false},
+		{"no match", "places", target, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := candidateTokensAreGrants(p, tc.text, tc.target, now); got != tc.want {
+				t.Fatalf("got %v want %v", got, tc.want)
 			}
 		})
 	}
