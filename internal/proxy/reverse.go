@@ -800,8 +800,6 @@ func (rp *ReverseProxyHandler) recordRequestWarningSignal(agent, clientIP, reque
 // then forward to upstream via the reverse proxy.
 func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r = rp.owner.withReceiptEvidence(r)
-	// Settle an empty unknown-length HTTP/2 body before taint classifies it.
-	r = settleUnknownLengthBody(r, unknownLengthBodyWait)
 	var selectedReceiptShard receipt.EmitOpts
 	var admissionErr error
 	if rp.owner != nil {
@@ -1286,6 +1284,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// Settle an empty unknown-length HTTP/2 body before taint classifies it.
+	r = settleUnknownLengthBody(r, unknownLengthBodyWait)
 	// Scan request body for DLP patterns (secret exfiltration).
 	forwardedVerdict := config.ActionAllow
 	var reverseBodyBytes []byte

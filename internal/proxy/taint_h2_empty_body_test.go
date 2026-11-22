@@ -15,9 +15,47 @@ import (
 	"testing/iotest"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 )
+
+type countingEOFReader struct{ reads atomic.Int32 }
+
+func (r *countingEOFReader) Read([]byte) (int, error) {
+	r.reads.Add(1)
+	return 0, io.EOF
+}
+
+func TestUnknownLengthHTTP2BodyWaitsForAdmission(t *testing.T) {
+	check := func(t *testing.T, handler http.Handler, target string) {
+		t.Helper()
+		body := &countingEOFReader{}
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, body)
+		req.ProtoMajor, req.ContentLength = 2, -1
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusServiceUnavailable || w.Header().Get(blockreason.HeaderReason) != string(blockreason.KillSwitchActive) {
+			t.Fatalf("expected kill-switch refusal, got %d %v", w.Code, w.Header())
+		}
+		if n := body.reads.Load(); n != 0 {
+			t.Fatalf("body read %d times on a refused request", n)
+		}
+	}
+	t.Run("intercept", func(t *testing.T) {
+		_, _, _, target, ic := newTaintInterceptFixture(t, nil)
+		ic.KillSwitch = killswitch.New(ic.Config)
+		ic.KillSwitch.SetAPI(true)
+		check(t, newInterceptHandler(ic, nil), target)
+	})
+	t.Run("reverse", func(t *testing.T) {
+		cfg := reverseParityBaseConfig(t)
+		cfg.KillSwitch.Enabled = true
+		rp, _, _ := newReverseParityHarness(t, cfg, nil)
+		check(t, rp, "/items")
+	})
+}
 
 func TestSettleUnknownLengthBody(t *testing.T) {
 	errRead := errors.New("stream reset")

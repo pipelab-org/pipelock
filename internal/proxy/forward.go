@@ -1158,8 +1158,6 @@ func connectPostCEEAdaptiveState(snapshot ceeEntropySnapshot, fallback session.R
 // request, and streams the raw response back to the client.
 func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	r = p.withReceiptEvidence(r)
-	// Settle an empty unknown-length HTTP/2 body before taint classifies it.
-	r = settleUnknownLengthBody(r, unknownLengthBodyWait)
 	start := time.Now()
 
 	clientIP, requestID := requestMeta(r)
@@ -1451,6 +1449,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	} else if p.taintRecorder != nil {
 		forwardTask.subject = sharedTaskSubject(p.taintRecorder)
 	}
+	// Settle an empty unknown-length HTTP/2 body before taint classifies it.
+	r = settleUnknownLengthBody(r, unknownLengthBodyWait)
 	forwardTaint := evaluateHTTPTaskTaint(cfg, forwardRec, r.Method, r.URL, requestHasBody(r), &forwardTask)
 	forwardRequiresReauth := false
 
