@@ -68,6 +68,12 @@ func (w *v3DeliveryWriter) deny(err error) {
 	}
 }
 
+func (w *v3DeliveryWriter) denyAdmission(err error) {
+	if !w.adaptiveRefused() {
+		w.deny(err)
+	}
+}
+
 func (w *v3DeliveryWriter) adaptiveRefused() bool {
 	adaptive, ok := w.ResponseWriter.(*adaptiveRefusalWriter)
 	if !ok || keepsOwnRefusal(w.Header()) || !adaptive.refuse() {
@@ -86,19 +92,15 @@ func (w *v3DeliveryWriter) adaptiveRefused() bool {
 var errReceiptAdaptiveRefusal = errors.New("adaptive enforcement withheld proxy delivery")
 
 func (w *v3DeliveryWriter) WriteHeader(status int) {
-	if w.status != 0 || w.denied != nil || w.adaptiveRefused() {
+	if w.status != 0 || w.denied != nil || (status >= http.StatusBadRequest && w.adaptiveRefused()) {
 		return
 	}
 	if status < http.StatusOK && status != http.StatusSwitchingProtocols {
 		opts := w.options
 		opts.ActionID = receipt.NewActionID()
 		token, err := w.admit(opts)
-		if w.adaptiveRefused() {
-			w.proxy.refuseAdmittedEffect(w.request.Context(), opts, token)
-			return
-		}
 		if err != nil {
-			w.deny(err)
+			w.denyAdmission(err)
 			return
 		}
 		w.ResponseWriter.WriteHeader(status)
@@ -108,7 +110,7 @@ func (w *v3DeliveryWriter) WriteHeader(status int) {
 	w.status = status
 	if w.Header().Get(blockreason.HeaderReason) == "" {
 		token, err := w.admit(w.options)
-		if w.adaptiveRefused() {
+		if (err != nil || status >= http.StatusBadRequest) && w.adaptiveRefused() {
 			w.proxy.refuseAdmittedEffect(w.request.Context(), w.options, token)
 			return
 		}
@@ -176,16 +178,12 @@ func (w *v3DeliveryWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if w.status != 0 || w.hijacked {
 		return nil, nil, http.ErrNotSupported
 	}
-	if w.denied != nil || w.adaptiveRefused() {
+	if w.denied != nil {
 		return nil, nil, w.denied
 	}
 	token, err := w.admit(w.options)
 	if err != nil {
-		w.deny(err)
-		return nil, nil, err
-	}
-	if w.adaptiveRefused() {
-		w.proxy.refuseAdmittedEffect(w.request.Context(), w.options, token)
+		w.denyAdmission(err)
 		return nil, nil, w.denied
 	}
 	conn, buf, err := http.NewResponseController(w.ResponseWriter).Hijack()

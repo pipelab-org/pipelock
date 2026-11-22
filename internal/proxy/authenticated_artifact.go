@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	domrules "github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -32,6 +33,36 @@ func matchingAuthenticatedArtifact(req *http.Request, entries []config.Authentic
 		}
 	}
 	return config.AuthenticatedArtifactEntry{}, false
+}
+
+// authenticatedArtifactTransport admits the signature request as a child of
+// the original upstream action.
+func (p *Proxy) authenticatedArtifactTransport(rt http.RoundTripper, cfg *config.Config, parent receipt.EmitOpts) http.RoundTripper {
+	if p == nil || !p.receiptEffects.enabled {
+		return rt
+	}
+	gated, ok := rt.(fetchReceiptTransport)
+	if !ok {
+		gated = fetchReceiptTransport{base: rt}
+	}
+	return artifactReceiptTransport{gated, p, cfg, parent}
+}
+
+type artifactReceiptTransport struct {
+	transport fetchReceiptTransport
+	proxy     *Proxy
+	cfg       *config.Config
+	parent    receipt.EmitOpts
+}
+
+func (t artifactReceiptTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	opts := receipt.EmitOpts{
+		ActionID: receipt.NewActionID(), ParentActionID: t.parent.ActionID,
+		Verdict: config.ActionAllow, Transport: t.parent.Transport, Method: req.Method,
+		Target: req.URL.String(), RequestID: t.parent.RequestID, Agent: t.parent.Agent,
+	}
+	req, _ = t.proxy.startFetchReceiptEffects(req, t.cfg, opts)
+	return t.transport.RoundTrip(req)
 }
 
 // verifyAuthenticatedArtifact releases only exact operator-configured rule

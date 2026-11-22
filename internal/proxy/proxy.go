@@ -4745,7 +4745,7 @@ func (p *Proxy) confirmShieldIntervention(summary *receipt.ShieldSummary, cfg *c
 		Target:         target,
 		RequestID:      requestID,
 		Agent:          actx.Agent(),
-	}, response.shard))
+	}, response.shard), response.requestContext)
 	if err != nil {
 		return p.shieldReceiptBlock(err, transport)
 	}
@@ -7060,13 +7060,16 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if mediaVerdict.Relabeled != "" || (mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed()) {
+		evidence := mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: TransportFetch, Method: http.MethodGet, Target: displayURL, RequestID: requestID, Agent: agent}, selectedReceiptShard))
 		if cfg.FlightRecorder.RequireReceipts {
-			if err := p.confirmResponseDecision(cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: TransportFetch, Method: http.MethodGet, Target: displayURL, RequestID: requestID, Agent: agent}, selectedReceiptShard)), r.Context()); err != nil {
+			if err := p.confirmResponseDecision(cfg, evidence, r.Context()); err != nil {
 				p.recordRequiredReceiptBlock(err, TransportFetch)
 				writeBlockedJSON(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: receiptEmissionBlockReason})
 				outcomeStatus, outcomeReason = strconv.Itoa(http.StatusForbidden), receiptEmissionFailedLayer
 				return
 			}
+		} else {
+			collectReceiptResponseEvidence(evidence, []context.Context{r.Context()})
 		}
 	}
 	applyRelabeledContentType(resp.Header, mediaVerdict)
@@ -7417,7 +7420,8 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 
 	out = content
 	emitResponseReceipt := func(opts receipt.EmitOpts) {
-		if p.emitRecordedReceipt(opts) {
+		p.refuseEffect(reqCtx, cfg, opts, boundaryDownstreamDelivery)
+		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(withReceiptConfig(opts, cfg), e) == nil {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
 		}
 	}
@@ -7618,19 +7622,22 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 		recordResponseSignal(session.SignalWarning)
 		log.LogResponseScan(newHTTPAuditContext(reqCtx, log, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), action, len(result.Matches), patternNames, bundleRules)
 	}
+	evidence := withReceiptShard(receipt.EmitOpts{
+		ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: action,
+		Layer: responseScanLayer, Pattern: strings.Join(patternNames, ", "),
+		Transport: TransportFetch, Method: http.MethodGet, Target: displayURL,
+		RequestID: requestID, Agent: agent,
+	}, firstReceiptShard(in.shard, receiptShardFromContext(reqCtx)))
 	if cfg.FlightRecorder.RequireReceipts {
-		err := p.emitAllowPathReceipt(cfg, withReceiptShard(receipt.EmitOpts{
-			ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: action,
-			Layer: responseScanLayer, Pattern: strings.Join(patternNames, ", "),
-			Transport: TransportFetch, Method: http.MethodGet, Target: displayURL,
-			RequestID: requestID, Agent: agent,
-		}, firstReceiptShard(in.shard, receiptShardFromContext(reqCtx))))
+		err := p.confirmResponseDecision(cfg, evidence, reqCtx)
 		if err != nil {
 			p.recordRequiredReceiptBlock(err, TransportFetch)
 			writeBlockedJSON(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), http.StatusForbidden,
 				FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: receiptEmissionBlockReason})
 			return true, "", true, receiptEmissionFailedLayer
 		}
+	} else {
+		collectReceiptResponseEvidence(evidence, []context.Context{reqCtx})
 	}
 	return false, out, true, ""
 }

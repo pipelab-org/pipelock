@@ -3002,13 +3002,16 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				return nil
 			}
 			if verdict.Relabeled != "" || (verdict.StripResult != nil && verdict.StripResult.Changed()) {
+				evidence := mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: requestActionID, Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL, RequestID: requestID, Agent: agent}, receiptShardFromContext(resp.Request.Context())))
 				if cfg.FlightRecorder.RequireReceipts {
-					if err := rp.confirmResponseDecision(cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: requestActionID, Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL, RequestID: requestID, Agent: agent}, receiptShardFromContext(resp.Request.Context()))), resp.Request.Context()); err != nil {
+					if err := rp.confirmResponseDecision(cfg, evidence, resp.Request.Context()); err != nil {
 						rp.recordRequiredReceiptBlock(err, TransportReverse)
 						replaceWithBlockReason(resp, receiptEmissionBlockReason, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer))
 						recordReverseOutcome(http.StatusForbidden, 0, receiptEmissionFailedLayer)
 						return nil
 					}
+				} else {
+					collectReceiptResponseEvidence(evidence, []context.Context{resp.Request.Context()})
 				}
 			}
 			applyRelabeledContentType(resp.Header, verdict)
