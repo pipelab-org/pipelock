@@ -141,7 +141,15 @@ func mcpMatrixWriterOptions(t *testing.T, row v3MCPMatrixRow, surface string, ca
 	}
 }
 
-func readMCPMatrixActions(dir string) ([]v3.Action, error) {
+func readMCPMatrixActions(dir string, deliveries ...mcpReceiptDelivery) ([]v3.Action, error) {
+	actions, err := decodeMCPMatrixActions(dir)
+	if err != nil {
+		return nil, err
+	}
+	return actions, checkMCPReceiptHistory(actions, deliveries...)
+}
+
+func decodeMCPMatrixActions(dir string) ([]v3.Action, error) {
 	paths, err := filepath.Glob(filepath.Join(dir, "*.receipt-v3.jsonl"))
 	if err != nil {
 		return nil, err
@@ -181,6 +189,8 @@ func readMCPMatrixActions(dir string) ([]v3.Action, error) {
 
 type mcpMatrixObserver struct {
 	output            bytes.Buffer
+	httpStatus        int
+	httpBody          []byte
 	intent            bool
 	dir               string
 	checkOutcomeOrder bool
@@ -188,7 +198,7 @@ type mcpMatrixObserver struct {
 }
 
 func (o *mcpMatrixObserver) Write(p []byte) (int, error) {
-	actions, err := readMCPMatrixActions(o.dir)
+	actions, err := decodeMCPMatrixActions(o.dir)
 	if err != nil {
 		return 0, err
 	}
@@ -436,7 +446,7 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 				t.Error(err)
 				return
 			}
-			actions, err := readMCPMatrixActions(writerOpts.Dir)
+			actions, err := decodeMCPMatrixActions(writerOpts.Dir)
 			if err != nil {
 				t.Error(err)
 				return
@@ -612,6 +622,22 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 		assertLocalMCPDeliveries(t, deliveryActions, "1")
 	} else if client.output.Len() != 0 {
 		t.Fatalf("unexpected reply: %s", client.output.String())
+	}
+
+	delivery := mcpReceiptDelivery{
+		status:          client.httpStatus,
+		received:        client.httpBody,
+		denialDelivered: (localReply || row.scenario == "tool-scan block") && client.output.Len() != 0,
+		withheld:        !wantReply && !localReply,
+	}
+	if row.path != "HTTP listener" {
+		delivery.received = []byte(strings.TrimSpace(client.output.String()))
+	}
+	if wantReply && row.scenario != "response strip" {
+		delivery.sent = []byte(reply)
+	}
+	if err := checkMCPReceiptDelivery(actions, delivery); err != nil {
+		t.Fatal(err)
 	}
 
 	wantVerdict := "VALID"
@@ -845,7 +871,7 @@ func exerciseMCPV3GET(t *testing.T, row v3MCPMatrixRow) {
 	seen := make(chan bool, 1)
 	const notification = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		actions, err := readMCPMatrixActions(writerOpts.Dir)
+		actions, err := decodeMCPMatrixActions(writerOpts.Dir)
 		if err != nil {
 			t.Error(err)
 		}
@@ -941,7 +967,7 @@ func runMCPMatrixWS(t *testing.T, ctx context.Context, in io.Reader, out io.Writ
 		if err != nil || len(messages) != 1 || messages[0].OpCode != ws.OpText {
 			return
 		}
-		actions, err := readMCPMatrixActions(peer.dir)
+		actions, err := decodeMCPMatrixActions(peer.dir)
 		if err != nil {
 			t.Error(err)
 			return
@@ -1089,10 +1115,15 @@ func runMCPMatrixListener(t *testing.T, ctx context.Context, in io.Reader, out i
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusBadGateway {
-		return nil
+	body, err := io.ReadAll(resp.Body)
+	if observer, ok := out.(*mcpMatrixObserver); ok {
+		observer.httpStatus = resp.StatusCode
+		observer.httpBody = body
 	}
-	_, err = io.Copy(out, resp.Body)
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusBadGateway {
+		_, writeErr := out.Write(body)
+		err = errors.Join(err, writeErr)
+	}
 	return err
 }
 
@@ -1146,7 +1177,7 @@ func TestMCPV3HTTPListenerDiscoveryAdmitsEachPage(t *testing.T) {
 			t.Cleanup(func() { _ = writer.Close(context.Background(), nil) })
 			opts := paramContractOpts(t).WithV3ReceiptWriter(writer)
 			fixture := newDiscoveryFixture(t, opts, func(w http.ResponseWriter, _ *http.Request, frame MCPFrame, page int) {
-				actions, err := readMCPMatrixActions(writerOpts.Dir)
+				actions, err := decodeMCPMatrixActions(writerOpts.Dir)
 				if err != nil {
 					t.Error(err)
 				}
@@ -1360,12 +1391,7 @@ func TestMCPV3SSEToolsListAcknowledgment(t *testing.T) {
 			if !bytes.Contains(got, []byte(`"store_secret"`)) {
 				t.Fatalf("acknowledged inventory not delivered: %s", got)
 			}
-			downstreamOutcome := "completed"
-			if transportName == "listener" {
-				// The listener does not observe final HTTP framing for SSE.
-				downstreamOutcome = "attempt_unknown"
-			}
-			assertMCPExchangeSettled(t, verifiedMCPV3RegressionActions(t, writer, writerOpts), downstreamOutcome)
+			assertMCPExchangeSettled(t, verifiedMCPV3RegressionActions(t, writer, writerOpts), "completed")
 		})
 	}
 }
