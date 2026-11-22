@@ -354,6 +354,10 @@ func (o MCPProxyOpts) confirmV3Hold(held *deferred.HeldAction, frame MCPFrame) {
 		if res.FinalDecision == config.ActionStepUp {
 			resolution.Verdict = config.ActionAsk
 		}
+		if resolution.Verdict == config.ActionAsk &&
+			(res.ResolutionSource == deferred.SourceApproval || res.ResolutionSource == deferred.SourceOperator) {
+			resolution.Ask = &v3.Ask{Channel: "approval_api", Observed: true}
+		}
 		resolution.Hold = &v3.Hold{
 			ID: res.DeferID, ResolutionSource: res.ResolutionSource,
 			ResolutionPolicy: deferred.ReceiptPolicyStringFor(deferred.ReceiptPolicyOptions{Bounds: res.Policy}),

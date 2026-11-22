@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
@@ -271,5 +272,203 @@ func assertLocalMCPDeliveries(t *testing.T, actions []v3.Action, ids ...string) 
 		if outcomes[id] != 1 {
 			t.Fatalf("expected one completed delivery for %s, got %+v", id, actions)
 		}
+	}
+}
+
+func TestMCPV3DuplicateSendPreservesOriginalCorrelation(t *testing.T) {
+	ctx := t.Context()
+	opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, transportMCPStdio)
+	opts = opts.withV3Session()
+	frame := MCPFrame{ID: []byte("1"), Method: "tools/call", ToolCallName: "echo"}
+	first, err := opts.startV3Send(ctx, frame, "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := opts.bindV3Send(first); err != nil {
+		t.Fatal(err)
+	}
+	second, err := opts.startV3Send(ctx, frame, "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := opts.bindV3Send(second); err == nil {
+		t.Fatal("duplicate request replaced the original send")
+	}
+	opts.finishV3Send(ctx, io.Discard, second, false)
+	if got := opts.pendingV3Send(frame.ID); got != first {
+		t.Fatal("duplicate settlement discarded the original send")
+	}
+	opts.settleV3Session(ctx, io.Discard)
+	if err := opts.bindV3Send(first); !errors.Is(err, context.Canceled) {
+		t.Fatalf("closed session accepted a send: %v", err)
+	}
+	want := map[string]string{"first": "attempt_unknown", "second": "not_released"}
+	for _, action := range localMCPReceiptActions(t, writer, client.dir) {
+		if action.Phase == "outcome" && action.OutcomeClass == want[action.ActionID] {
+			delete(want, action.ActionID)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing send settlements: %v", want)
+	}
+}
+
+func TestMCPV3ServerInitiatedWebSocketDelivery(t *testing.T) {
+	const surface = "mcp_ws"
+	line := []byte(`{"jsonrpc":"2.0","id":17,"method":"ping"}`)
+	opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, surface)
+	opts = opts.withV3Session()
+	frame := MCPFrame{ID: []byte("17"), Method: "ping"}
+	base := transport.NewStdioWriter(client)
+	if err := opts.v3ResponseWriter(t.Context(), io.Discard, base, line, frame).WriteMessage(line); err != nil {
+		t.Fatal(err)
+	}
+	if !client.intent || !strings.Contains(client.output.String(), string(line)) {
+		t.Fatalf("request was not admitted and delivered: %q", client.output.String())
+	}
+	for _, action := range localMCPReceiptActions(t, writer, client.dir) {
+		if action.RequestID == "17" && action.ParentActionID == "" &&
+			action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.OutcomeClass == "completed" {
+			return
+		}
+	}
+	t.Fatal("missing unparented server request delivery receipt")
+}
+
+func TestMCPV3NetworkReplyCancellationSettlesReservation(t *testing.T) {
+	opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, "mcp_http_listener")
+	opts = opts.withV3Session()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	x := mcpV3NetworkExchange{ctx: ctx, opts: opts, log: io.Discard}
+	frame := MCPFrame{ID: []byte("1"), Method: "tools/list"}
+	if err := x.admit(frame, "send"); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.admitReply(); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	w := &mcpV3NetworkStreamWriter{exchange: &x, base: transport.NewStdioWriter(client)}
+	if err := w.WriteMessage([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled write returned %v", err)
+	}
+	if err := w.writeDeniedMessage(nil); err != nil {
+		t.Fatal(err)
+	}
+	x.finish()
+	if client.output.Len() != 0 {
+		t.Fatalf("cancelled reply reached client: %q", client.output.String())
+	}
+	want := map[string]bool{mcpDownstreamDeliveryBoundary: true, mcpUpstreamSendBoundary: true}
+	for _, action := range localMCPReceiptActions(t, writer, client.dir) {
+		if action.OutcomeClass == "not_released" {
+			delete(want, action.EffectBoundary)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing unattempted settlements: %v", want)
+	}
+}
+
+func TestMCPV3ListenerLegacyMethodReceipts(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		for _, scenario := range []string{"success", "intent write fail"} {
+			t.Run(method+"/"+scenario, func(t *testing.T) {
+				surface := "mcp_http_listener"
+				opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true, scenario: scenario}, surface)
+				calls := make(chan string, 1)
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					select {
+					case calls <- r.Method:
+					default:
+						t.Error("duplicate upstream request")
+					}
+					if r.Method == http.MethodGet {
+						w.Header().Set("Content-Type", "text/event-stream")
+						return
+					}
+					w.WriteHeader(http.StatusAccepted)
+				}))
+				defer upstream.Close()
+				baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+				req, err := http.NewRequestWithContext(t.Context(), method, baseURL, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				req.Header.Set("Accept", "text/event-stream")
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = resp.Body.Close() }()
+				if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+					t.Fatal(err)
+				}
+				actions := localMCPReceiptActions(t, writer, client.dir)
+				if scenario == "intent write fail" {
+					if resp.StatusCode != http.StatusServiceUnavailable || len(calls) != 0 {
+						t.Fatalf("failed admission: status=%d upstream calls=%d", resp.StatusCode, len(calls))
+					}
+					return
+				}
+				wantStatus, outcome := http.StatusOK, "attempt_unknown"
+				if method == http.MethodDelete {
+					wantStatus, outcome = http.StatusAccepted, "completed"
+				}
+				if resp.StatusCode != wantStatus || len(calls) != 1 || <-calls != method {
+					t.Fatalf("unexpected %s response: status=%d", method, resp.StatusCode)
+				}
+				var send, reply v3.Action
+				for _, action := range actions {
+					if action.Phase != "outcome" {
+						continue
+					}
+					switch action.EffectBoundary {
+					case mcpUpstreamSendBoundary:
+						send = action
+					case mcpDownstreamDeliveryBoundary:
+						reply = action
+					}
+				}
+				if send.ActionID == "" || send.OutcomeClass != "completed" ||
+					reply.ParentActionID != send.ActionID || reply.OutcomeClass != outcome {
+					t.Fatalf("unexpected send and reply settlements: send=%+v reply=%+v", send, reply)
+				}
+			})
+		}
+	}
+}
+
+func TestMCPV3ApprovalStepUpRetainsChannel(t *testing.T) {
+	for _, source := range []string{deferred.SourceApproval, deferred.SourceOperator} {
+		t.Run(source, func(t *testing.T) {
+			opts, writerOpts := openMCPV3RegressionWriter(t, transportMCPStdio)
+			proxy := MCPProxyOpts{Transport: transportMCPStdio}.WithV3ReceiptWriter(opts).withV3Session()
+			manager := deferred.NewManager(deferred.Config{Enabled: true})
+			var delivered deferred.Resolution
+			held := deferred.HeldAction{
+				DeferID: "hold", ActionID: "action", Method: "tools/call", Target: "echo",
+				RulePolicy: config.DeferResolutionPolicy{
+					StepUpOn: config.DeferStepUpOn{ApprovalRequestsHuman: true},
+				},
+				Resolve: func(res deferred.Resolution) { delivered = res },
+			}
+			proxy.confirmV3Hold(&held, MCPFrame{ID: []byte("1"), Method: held.Method})
+			if err := manager.HoldContext(t.Context(), held); err != nil {
+				t.Fatal(err)
+			}
+			applied, err := manager.ResolveApprovalResult(held.DeferID, config.ActionStepUp, source)
+			if err != nil || applied != config.ActionAsk || delivered.FinalDecision != config.ActionAsk {
+				t.Fatalf("step-up applied=%q delivered=%q error=%v", applied, delivered.FinalDecision, err)
+			}
+			actions := verifiedMCPV3RegressionActions(t, opts, writerOpts)
+			if len(actions) != 2 || actions[1].ActionID != held.ActionID || actions[1].Hold == nil ||
+				actions[1].Hold.ID != held.DeferID || actions[1].Hold.ResolutionSource != source ||
+				actions[1].Verdict != config.ActionAsk || actions[1].Ask == nil ||
+				actions[1].Ask.Channel != "approval_api" || !actions[1].Ask.Observed {
+				t.Fatalf("missing observed approval channel: %+v", actions)
+			}
+		})
 	}
 }
