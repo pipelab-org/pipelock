@@ -637,7 +637,9 @@ func TestIssuerNumericCardJoin_DefaultsMatrix(t *testing.T) {
 
 	loadFromYAML := func(t *testing.T, fieldYAML string) *config.Config {
 		t.Helper()
-		raw := "mode: balanced\ntls_interception:\n  enabled: true\nrequest_body_scanning:\n  enabled: true\n  scan_headers: true\n"
+		// Only the issuer field is read from this config; omit TLS interception
+		// so loading does not depend on a CA in the runner's home directory.
+		raw := "mode: balanced\nrequest_body_scanning:\n  enabled: true\n  scan_headers: true\n"
 		if fieldYAML != "" {
 			raw += "  " + fieldYAML + "\n"
 		}
