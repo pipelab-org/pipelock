@@ -33,6 +33,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
@@ -1118,7 +1119,7 @@ func TestMCPV3IntentPrecedesHTTPListenerContractLock(t *testing.T) {
 	}
 	defer exchange.finish()
 	frame := ParseMCPFrame([]byte("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}"))
-	admissionErr, lockErr := exchange.admitList(frame, &contract)
+	admissionErr, lockErr := exchange.admitList(frame, receipt.EmitOpts{}, &contract)
 	if err := errors.Join(admissionErr, lockErr); err != nil {
 		t.Fatal(err)
 	}

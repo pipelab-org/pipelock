@@ -432,7 +432,7 @@ func RunWSProxy(
 			}
 		}
 
-		effect, err := inputOpts.startV3Send(innerCtx, frame, decision.Outcome.Receipt.ActionID)
+		effect, err := inputOpts.startV3Send(innerCtx, frame, decision.v3Evidence)
 		if err != nil {
 			tracker.removeOwnedOutcome(frame.ID, registration)
 			decision.Outcome.settle(safeLogW, inputOpts, mcpOutcomeStatusBlocked, -1, "receipt_admission_failed")

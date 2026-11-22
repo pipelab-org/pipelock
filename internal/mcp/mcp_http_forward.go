@@ -865,7 +865,7 @@ func RunHTTPProxy(
 			continue
 		}
 
-		effect, admitErr := fwdOpts.startV3Send(ctx, frame, decision.Outcome.Receipt.ActionID)
+		effect, admitErr := fwdOpts.startV3Send(ctx, frame, decision.v3Evidence)
 		if admitErr != nil {
 			logMCPV3Error(safeLogW, admitErr)
 			fwdOpts.writeV3SendDenial(safeLogW, wireClientOut, frame, effect)

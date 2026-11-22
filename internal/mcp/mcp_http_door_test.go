@@ -337,6 +337,37 @@ func TestHTTPListener_DoorPrincipalIsolation(t *testing.T) {
 	}
 }
 
+func TestHTTPListener_DoorReceiptCaller(t *testing.T) {
+	fixture := newDoorFixture(t, config.MCPDoorJWT)
+	opts, writer, observer := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, "mcp_http_listener")
+	opts.ListenerDoor = fixture.verifier
+	opts.ListenerAllowedOrigins = []string{doorTestOrigin}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`)
+	}))
+	defer upstream.Close()
+	base, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+	resp := doorRPC(t, base, http.MethodPost, fixture.token("a"), principalControlToolsList(1), nil)
+	defer func() { _ = resp.Body.Close() }()
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("response status = %d, read error = %v", resp.StatusCode, err)
+	}
+	waitForMCPV3Outcome(t, observer.dir, mcpDownstreamDeliveryBoundary)
+	actions := localMCPReceiptActions(t, writer, observer.dir)
+	if len(actions) != 4 {
+		t.Fatalf("expected send and delivery receipts, got %d", len(actions))
+	}
+	for _, action := range actions {
+		caller := action.Caller
+		if caller.Authn != "mcp_door_verified" || caller.Issuer != doorTestIssuer ||
+			caller.Resource != doorTestResource || caller.Subject != "a" || caller.ClientID != "cloud" ||
+			action.Principal == "local" || action.Principal == "" {
+			t.Errorf("incorrect verified caller for %s/%s: %+v", action.EffectBoundary, action.Phase, caller)
+		}
+	}
+}
+
 func TestHTTPListener_DoorCredentialConsumptionAndDiscovery(t *testing.T) {
 	for _, mode := range []string{config.MCPDoorJWT, config.MCPDoorIntrospection} {
 		t.Run(mode, func(t *testing.T) {

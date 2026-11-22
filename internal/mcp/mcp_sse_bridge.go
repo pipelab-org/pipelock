@@ -247,7 +247,7 @@ func scanGETStream(ctx context.Context, client *transport.HTTPClient, writer tra
 		return nil, err
 	}
 	effect := mcpV3NetworkExchange{ctx: streamCtx, opts: transportReceiptOpts, log: logW}
-	if err := effect.admit(MCPFrame{Method: http.MethodGet}, transportAdmission.ActionID); err != nil {
+	if err := effect.admit(MCPFrame{Method: http.MethodGet}, transportAdmission); err != nil {
 		return nil, err
 	}
 	defer effect.finish()

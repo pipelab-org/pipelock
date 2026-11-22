@@ -212,6 +212,7 @@ func (v InputVerdict) IsEntropyOnly() bool {
 type BlockedRequest struct {
 	v3RefusalSigned   bool
 	v3RefusalErr      error
+	v3Evidence        receipt.EmitOpts
 	v3ReplyParent     *mcpV3Exchange
 	v3SendDenied      bool
 	terminal          *mcpTerminalDecision
@@ -737,6 +738,7 @@ func ForwardScannedInput(
 		receiptShard := admission
 
 		var outcome TrackedRequestOutcome
+		var v3Evidence receipt.EmitOpts
 		var forwardAdmission receipt.EmitOpts
 		emitToolReceipt := func(receiptVerdict string, contractGate ...mcpContractGateOutput) error {
 			// Delegate to the shared helper so stdio and HTTP/WS emit
@@ -798,6 +800,9 @@ func ForwardScannedInput(
 				outcome.Method = verdict.Method
 				receiptOpts.Outcome = &outcome
 			}
+			if opts.receiptEffects.enabled {
+				v3Evidence = opts.withReceiptPolicyHash(receiptOpts.receiptOptions())
+			}
 			if err := emitMCPToolReceipt(receiptOpts); err != nil {
 				return err
 			}
@@ -850,7 +855,7 @@ func ForwardScannedInput(
 		}
 		writeReleasedMessage := func(msg []byte) (bool, error) {
 			ctx := opts.warnContext()
-			effect, admitErr := opts.startV3Send(ctx, frame, actionID)
+			effect, admitErr := opts.startV3Send(ctx, frame, v3Evidence)
 			if admitErr != nil {
 				logMCPV3Error(logW, admitErr)
 				sendMCPDenial(opts, mcpReceiptMcpInputDenialAudit(), mcpV3SendDenial(frame, effect), blockedCh)

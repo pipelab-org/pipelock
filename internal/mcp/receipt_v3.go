@@ -42,7 +42,7 @@ func (o MCPProxyOpts) WithV3ReceiptWriter(writer *v3.StreamWriter) MCPProxyOpts 
 }
 
 func (o MCPProxyOpts) v3EffectAction(opts receipt.EmitOpts, boundary string) (v3.Action, v3.PolicySnapshot) {
-	actor := opts.Agent
+	actor := firstNonEmpty(opts.Agent, o.addressProtectionAgent())
 	if actor == "" {
 		actor = "pipelock"
 	}
@@ -57,6 +57,13 @@ func (o MCPProxyOpts) v3EffectAction(opts receipt.EmitOpts, boundary string) (v3
 		Layer: opts.Layer, Method: opts.Method, Pattern: opts.Pattern, RequestID: opts.RequestID,
 		Severity: opts.Severity, Target: receipt.SanitizeSignedTarget(opts.Target, nil),
 		Transport: opts.Transport, Verdict: opts.Verdict,
+	}
+	if identity := o.v3DoorIdentity; identity != nil {
+		action.Principal = o.AuthorityActor
+		action.Caller = v3.Caller{
+			Authn: "mcp_door_verified", Issuer: identity.Issuer, Resource: identity.Resource,
+			Subject: identity.Subject, ClientID: identity.ClientID,
+		}
 	}
 	action.SetAttribution(opts)
 	digest := opts.PolicyHash
@@ -86,11 +93,10 @@ func (o MCPProxyOpts) refuseV3Reply(ctx context.Context, evidence receipt.EmitOp
 }
 
 func mcpV3ReplyEvidence(request receipt.EmitOpts) receipt.EmitOpts {
-	return receipt.EmitOpts{
-		ActionID: receipt.NewActionID(), ParentActionID: request.ActionID, RequestID: request.RequestID,
-		Transport: request.Transport, Method: request.Method, PolicyHash: request.PolicyHash,
-		Agent: request.Agent, Target: "mcp://response", Verdict: config.ActionAllow,
-	}
+	request.ParentActionID, request.ActionID = request.ActionID, receipt.NewActionID()
+	request.Target = firstNonEmpty(request.Target, "mcp://response")
+	request.Verdict = config.ActionAllow
+	return request
 }
 
 func confirmMCPV3Effect(ctx context.Context, token *v3.EffectToken, observed bool) error {
@@ -115,18 +121,17 @@ func (o MCPProxyOpts) withV3Session() MCPProxyOpts {
 	return o
 }
 
-func (o MCPProxyOpts) startV3Send(ctx context.Context, frame MCPFrame, actionID string) (*mcpV3Exchange, error) {
+func (o MCPProxyOpts) startV3Send(ctx context.Context, frame MCPFrame, request receipt.EmitOpts) (*mcpV3Exchange, error) {
 	if !o.receiptEffects.enabled {
 		return nil, nil
 	}
-	if actionID == "" {
-		actionID = receipt.NewActionID()
+	if request.ActionID == "" {
+		request.ActionID = receipt.NewActionID()
 	}
-	request := receipt.EmitOpts{
-		ActionID: actionID, RequestID: canonicalID(frame.ID), Method: frame.Method,
-		Transport: o.Transport, Target: firstNonEmpty(frame.ToolCallName, frame.Method),
-		Verdict: config.ActionAllow, PolicyHash: o.receiptPolicyHash(),
-	}
+	request.RequestID, request.Method, request.Transport = canonicalID(frame.ID), frame.Method, o.Transport
+	request.Target = firstNonEmpty(request.Target, firstNonEmpty(frame.ToolCallName, frame.Method))
+	request.Verdict = config.ActionAllow
+	request = o.withReceiptPolicyHash(request)
 	token, err := o.admitV3Effect(ctx, request, mcpUpstreamSendBoundary)
 	if err != nil && !errors.Is(err, v3.ErrActionVisible) {
 		return nil, err
@@ -282,6 +287,9 @@ func (w *mcpV3LocalWriter) writeDeniedMessage(msg []byte) error {
 
 func (w *mcpV3LocalWriter) writeInputDenial(br BlockedRequest, msg []byte) error {
 	reply := w.replyWriter(br.ID)
+	if br.v3Evidence.Transport != "" && w.send == nil {
+		reply.request = br.v3Evidence
+	}
 	if br.IsNotification {
 		msg = nil
 	}
@@ -411,7 +419,9 @@ func (o MCPProxyOpts) confirmV3Hold(held *deferred.HeldAction, frame MCPFrame) {
 }
 
 func (o MCPProxyOpts) claimV3DeferredSend(ctx context.Context, log io.Writer, frame MCPFrame, res deferred.Resolution, mu sync.Locker, generation uint64) (*mcpV3Exchange, func(), string, error) {
-	effect, err := o.startV3Send(ctx, frame, res.ParentActionID)
+	effect, err := o.startV3Send(ctx, frame, receipt.EmitOpts{
+		ActionID: res.ParentActionID, Target: res.Target, SessionID: res.Authority.SessionID, SessionIDOriginal: res.Authority.SessionIDOriginal,
+	})
 	if err != nil {
 		logMCPV3Error(log, err)
 		return effect, nil, "receipt admission failed", err
@@ -441,9 +451,9 @@ type mcpV3NetworkExchange struct {
 	sent, observed, wrote, framed bool
 }
 
-func (x *mcpV3NetworkExchange) admit(frame MCPFrame, actionID string) error {
+func (x *mcpV3NetworkExchange) admit(frame MCPFrame, evidence receipt.EmitOpts) error {
 	var err error
-	x.send, err = x.opts.startV3Send(x.ctx, frame, actionID)
+	x.send, err = x.opts.startV3Send(x.ctx, frame, evidence)
 	if err != nil {
 		x.refusedSend, x.send = x.send, nil
 	}
@@ -453,8 +463,8 @@ func (x *mcpV3NetworkExchange) admit(frame MCPFrame, actionID string) error {
 	return err
 }
 
-func (x *mcpV3NetworkExchange) admitList(frame MCPFrame, lock *contractLock) (admissionErr, lockErr error) {
-	if err := x.admit(frame, ""); err != nil {
+func (x *mcpV3NetworkExchange) admitList(frame MCPFrame, evidence receipt.EmitOpts, lock *contractLock) (admissionErr, lockErr error) {
+	if err := x.admit(frame, evidence); err != nil {
 		return err, nil
 	}
 	if err := x.admitReply(); err != nil {

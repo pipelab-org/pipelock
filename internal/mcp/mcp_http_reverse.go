@@ -205,14 +205,6 @@ func RunHTTPListenerProxy(
 		if opts.ListenerBearerToken != "" || opts.ListenerBearerTokenFn != nil || opts.ListenerAllowUnauthenticated || opts.ListenerPrincipalResolver != nil {
 			return fmt.Errorf("MCP door cannot be combined with static, anonymous or alternate principal authentication")
 		}
-		opts.ListenerPrincipalResolver = func(r *http.Request) (ListenerPrincipal, error) {
-			identity, err := opts.ListenerDoor.Verify(r)
-			if err != nil {
-				return ListenerPrincipal{}, err
-			}
-			provider, subject := identity.Partition()
-			return ListenerPrincipal{Provider: provider, Subject: subject, Epoch: 1}, nil
-		}
 	}
 	opts.UpstreamHeaders = canonicalizeListenerUpstreamHeaders(opts.UpstreamHeaders)
 	if err := validateListenerBearerToken(opts.ListenerBearerToken); err != nil {
@@ -587,6 +579,10 @@ func RunHTTPListenerProxy(
 		// without restarting the long-lived listener.
 		adaptiveCfg := opts.adaptiveCfg()
 		requestBaseOpts := baseOpts.snapshotScanPolicy()
+		if listenerPrincipal.doorIdentity != nil {
+			requestBaseOpts.v3DoorIdentity = listenerPrincipal.doorIdentity
+			requestBaseOpts.AuthorityActor = listenerPrincipal.actor
+		}
 		admission, admissionErr := requestBaseOpts.admitNativeRequest()
 		if admissionErr != nil {
 			denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
@@ -1340,7 +1336,7 @@ func RunHTTPListenerProxy(
 				return
 			}
 			effect.ctx = upReq.Context()
-			if err := effect.admit(MCPFrame{Method: http.MethodGet}, admission.ActionID); err != nil {
+			if err := effect.admit(MCPFrame{Method: http.MethodGet}, admission); err != nil {
 				refuseReceipt(err)
 				return
 			}
@@ -1559,7 +1555,7 @@ func RunHTTPListenerProxy(
 				return
 			}
 			effect.ctx = upReq.Context()
-			if err := effect.admit(MCPFrame{Method: http.MethodDelete}, admission.ActionID); err != nil {
+			if err := effect.admit(MCPFrame{Method: http.MethodDelete}, admission); err != nil {
 				refuseReceipt(err)
 				return
 			}
@@ -2207,7 +2203,7 @@ func RunHTTPListenerProxy(
 		// contract that is delivered last, so lists of every version serialize.
 		if frame.Method == "tools/list" {
 			effect.ctx = r.Context()
-			admissionErr, lockErr := effect.admitList(frame, &clientState.contractMu)
+			admissionErr, lockErr := effect.admitList(frame, decision.v3Evidence, &clientState.contractMu)
 			if admissionErr != nil {
 				if effect.send == nil {
 					refuseSend(frame, admissionErr)
@@ -2225,7 +2221,7 @@ func RunHTTPListenerProxy(
 		}
 		effect.ctx = upReq.Context()
 		if effect.send == nil {
-			if err := effect.admit(frame, decision.Outcome.Receipt.ActionID); err != nil {
+			if err := effect.admit(frame, decision.v3Evidence); err != nil {
 				refuseSend(frame, err)
 				return
 			}
@@ -2960,6 +2956,19 @@ func listenerAuthenticationForRequest(r *http.Request, opts MCPProxyOpts, states
 }
 
 func listenerPrincipalForRequest(r *http.Request, opts MCPProxyOpts, states *mcpListenerClientStates) (mcpListenerPrincipal, error) {
+	if opts.ListenerDoor != nil {
+		identity, err := opts.ListenerDoor.Verify(r)
+		if err != nil {
+			return mcpListenerPrincipal{}, err
+		}
+		provider, subject := identity.Partition()
+		principal, err := states.principal("verified-principal-v1:"+provider, subject, 1)
+		if err != nil {
+			return mcpListenerPrincipal{}, err
+		}
+		principal.doorIdentity = &identity
+		return principal, nil
+	}
 	if opts.ListenerPrincipalResolver != nil {
 		principal, err := opts.ListenerPrincipalResolver(r)
 		if err != nil {

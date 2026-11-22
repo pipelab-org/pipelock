@@ -17,6 +17,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 )
 
@@ -293,7 +294,7 @@ func (d mcpContractDiscoveryRequest) page(ctx context.Context, cursor *string, r
 		req.Header.Set("Accept", "application/json, text/event-stream")
 		responseencoding.RequestIdentity(req.Header)
 		effect := mcpV3NetworkExchange{ctx: ctx, opts: d.opts, log: d.log}
-		if err := effect.admit(ParseMCPFrame(body), ""); err != nil {
+		if err := effect.admit(ParseMCPFrame(body), receipt.EmitOpts{}); err != nil {
 			return nil, fmt.Errorf("admit discovery request: %w", err)
 		}
 		defer effect.finish()

@@ -199,6 +199,31 @@ func TestMCPV3LocalPresignedRefusal(t *testing.T) {
 	assertLocalMCPDeliveries(t, actions, "1")
 }
 
+func TestMCPV3ForwardedDecisionAttribution(t *testing.T) {
+	opts, writer, observer := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPHTTPUpstream)
+	opts.AddressProtectionAgent = "client-agent"
+	opts.PolicyHash = strings.Repeat("a", 64)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, heldNativeReply)
+	}))
+	defer upstream.Close()
+	if err := RunHTTPProxy(t.Context(), strings.NewReader(jsonToolsCallEcho+"\n"), observer, io.Discard, upstream.URL, nil, opts); err != nil {
+		t.Fatal(err)
+	}
+	actions := localMCPReceiptActions(t, writer, observer.dir)
+	if len(actions) != 4 {
+		t.Fatalf("got %d actions, want send and reply", len(actions))
+	}
+	for _, action := range actions {
+		if action.Actor != opts.AddressProtectionAgent || action.Target != "echo" ||
+			action.Policy.Hash != "sha256:"+opts.PolicyHash ||
+			action.Taint == nil || action.Taint.Decision != config.ActionAllow {
+			t.Errorf("%s/%s lost decision attribution: %+v", action.EffectBoundary, action.Phase, action)
+		}
+	}
+}
+
 func TestMCPV3LocalTimeoutReplies(t *testing.T) {
 	const input = jsonToolsCallEcho + "\n" + `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{}}}` + "\n"
 	for _, surface := range []string{transportMCPStdio, "mcp_http_upstream"} {
@@ -343,14 +368,14 @@ func TestMCPV3DuplicateSendPreservesOriginalCorrelation(t *testing.T) {
 	opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, transportMCPStdio)
 	opts = opts.withV3Session()
 	frame := MCPFrame{ID: []byte("1"), Method: "tools/call", ToolCallName: "echo"}
-	first, err := opts.startV3Send(ctx, frame, "first")
+	first, err := opts.startV3Send(ctx, frame, receipt.EmitOpts{ActionID: "first"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := opts.bindV3Send(first); err != nil {
 		t.Fatal(err)
 	}
-	second, err := opts.startV3Send(ctx, frame, "second")
+	second, err := opts.startV3Send(ctx, frame, receipt.EmitOpts{ActionID: "second"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -453,7 +478,7 @@ func TestMCPV3NetworkReplyCancellationSettlesReservation(t *testing.T) {
 	defer cancel()
 	x := mcpV3NetworkExchange{ctx: ctx, opts: opts, log: io.Discard}
 	frame := MCPFrame{ID: []byte("1"), Method: "tools/list"}
-	if err := x.admit(frame, "send"); err != nil {
+	if err := x.admit(frame, receipt.EmitOpts{ActionID: "send"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := x.admitReply(); err != nil {
@@ -974,7 +999,7 @@ func TestMCPV3NetworkReplyRefusalIsSigned(t *testing.T) {
 			opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPHTTPListener)
 			x := mcpV3NetworkExchange{ctx: t.Context(), opts: opts, log: io.Discard}
 			frame := MCPFrame{ID: []byte("1"), Method: "tools/call"}
-			if err := x.admit(frame, "send"); err != nil {
+			if err := x.admit(frame, receipt.EmitOpts{ActionID: "send"}); err != nil {
 				t.Fatal(err)
 			}
 			x.sent = true
@@ -1107,7 +1132,7 @@ func TestMCPV3StdioCorrelationRefusalRemovesLegacyTracking(t *testing.T) {
 	ctx := t.Context()
 	opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPStdio)
 	opts = opts.withV3Session()
-	first, err := opts.startV3Send(ctx, ParseMCPFrame([]byte(jsonToolsCallEcho)), "first")
+	first, err := opts.startV3Send(ctx, ParseMCPFrame([]byte(jsonToolsCallEcho)), receipt.EmitOpts{ActionID: "first"})
 	if err != nil {
 		t.Fatal(err)
 	}

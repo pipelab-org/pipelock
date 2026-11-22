@@ -283,6 +283,7 @@ type MCPProxyOpts struct {
 	// resolved by the trusted transport/runtime, never from client metadata.
 	AuthorityVerifier    authority.Verifier
 	AuthorityActor       string
+	v3DoorIdentity       *door.Identity
 	AuthorityDestination string
 
 	// Redirect handler runtime config (nil-safe).
