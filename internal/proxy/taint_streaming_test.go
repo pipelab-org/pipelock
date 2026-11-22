@@ -157,7 +157,7 @@ func TestHTTPResponseFindingObserverTaskRotation(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Taint.Enabled = true
 	rec := &SessionState{}
-	observe := httpResponseFindingObserver(rec, cfg, "https://"+interceptTaintHost, "text/event-stream", "forward_response")
+	observe, _ := httpResponseFindingObserver(rec, cfg, "https://"+interceptTaintHost, "text/event-stream", "forward_response")
 	kinds := []session.HostileFindingKind{session.FindingDLP}
 	observe(nil)
 	observe(kinds)

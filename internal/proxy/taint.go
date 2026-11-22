@@ -6,6 +6,7 @@ package proxy
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -101,14 +104,59 @@ func observeHTTPResponseTaint(rec session.Recorder, cfg *config.Config, rawURL, 
 }
 
 func observeHTTPResponseFindings(rec session.Recorder, cfg *config.Config, rawURL, contentType, kind string, kinds []session.HostileFindingKind) {
-	rs, ok := rec.(session.RiskState)
-	if !ok || cfg == nil || !cfg.Taint.Enabled {
+	observation, ok := httpResponseObservation(rec, cfg, rawURL, contentType, kind, kinds)
+	if !ok {
 		return
+	}
+	rec.(session.RiskState).ObserveRisk(observation)
+}
+
+func httpResponseObservation(rec session.Recorder, cfg *config.Config, rawURL, contentType, kind string, kinds []session.HostileFindingKind) (session.RiskObservation, bool) {
+	if _, ok := rec.(session.RiskState); !ok || cfg == nil || !cfg.Taint.Enabled {
+		return session.RiskObservation{}, false
 	}
 	observation := session.ClassifyHTTPResponseFindings(rawURL, contentType, cfg.Taint.AllowlistedDomains, kinds)
 	observation.Source.Kind = kind
 	observation.MaxSources = cfg.Taint.RecentSources
-	rs.ObserveRisk(observation)
+	return observation, true
+}
+
+// responseExposureHolder is implemented by recorders whose task rotation
+// carries the exposure of responses still being delivered. Hold records the
+// observation and keeps it until release, atomically with respect to rotation.
+type responseExposureHolder interface {
+	holdResponseExposure(id uint64, observation session.RiskObservation)
+	releaseResponseExposure(id uint64)
+}
+
+var responseExposureIDs atomic.Uint64
+
+// responseExposureHolds ends a handler's response exposure holds after all of
+// the handler's own delivery work. The handler registers its finish as its
+// first deferred call, so it runs last: after outcome flushes, receipt
+// delivery confirmation and body closes. With receipts off, net/http still
+// writes a small buffered tail right after the handler returns; flushing it
+// here would change the response framing, so that hand-off is the end of the
+// hold. A panicking handler also releases.
+type responseExposureHolds struct {
+	mu      sync.Mutex
+	release []func()
+}
+
+func (h *responseExposureHolds) add(release func()) {
+	h.mu.Lock()
+	h.release = append(h.release, release)
+	h.mu.Unlock()
+}
+
+func (h *responseExposureHolds) finish() {
+	h.mu.Lock()
+	release := h.release
+	h.release = nil
+	h.mu.Unlock()
+	for _, fn := range release {
+		fn()
+	}
 }
 
 // A response's source exposure is recorded in the session recorder when the
@@ -117,26 +165,68 @@ func observeHTTPResponseFindings(rec session.Recorder, cfg *config.Config, rawUR
 // body is delivered; streaming findings are recorded before the affected event
 // is released. Exposure remains recorded if a later check blocks delivery.
 //
+// While the response is being delivered, from its first observation until
+// release, a session recorder holds its exposure: a task rotation re-applies
+// it under the same lock that clears risk, so no policy decision sees the new
+// task without the exposure of a response that is still reaching the client.
+// Streams also observe around every client write and flush (OnDelivery) so
+// findings and recorders without that hold stay current.
+//
 // httpResponseFindingObserver shares duplicate suppression across these calls
 // and the final observation, so EOF and repeated findings do not fill the bounded
-// source history with duplicates.
-// Calls belong to the response's handler goroutine.
-func httpResponseFindingObserver(rec session.Recorder, cfg *config.Config, rawURL, contentType, kind string) func([]session.HostileFindingKind) {
-	var observed bool
+// source history with duplicates. It is safe for concurrent use: the reverse
+// path calls it from the scanner goroutine and from the client writer. Call
+// release once delivery has ended; later observations record without holding.
+func httpResponseFindingObserver(rec session.Recorder, cfg *config.Config, rawURL, contentType, kind string) (observe func([]session.HostileFindingKind), release func()) {
+	var mu sync.Mutex
+	var observed, released, holding bool
 	var observedTask string
 	var previous []session.HostileFindingKind
-	return func(kinds []session.HostileFindingKind) {
+	holder, canHold := rec.(responseExposureHolder)
+	id := responseExposureIDs.Add(1)
+	observe = func(kinds []session.HostileFindingKind) {
+		mu.Lock()
+		defer mu.Unlock()
 		merged := session.MergeFindingKinds(previous, kinds)
+		hold := canHold && !released
 		var currentTask string
-		if state, ok := rec.(session.TaskContextProvider); ok {
+		if state, ok := rec.(session.TaskContextProvider); ok && !hold {
 			currentTask = state.TaskSnapshot().CurrentTaskID
 		}
+		// A held observation is carried across rotation by the recorder, so
+		// only new findings need recording again.
 		if observed && currentTask == observedTask && slices.Equal(previous, merged) {
 			return
 		}
-		observeHTTPResponseFindings(rec, cfg, rawURL, contentType, kind, merged)
+		observation, ok := httpResponseObservation(rec, cfg, rawURL, contentType, kind, merged)
+		if !ok {
+			return
+		}
+		if hold {
+			holder.holdResponseExposure(id, observation)
+			holding = true
+		} else {
+			rec.(session.RiskState).ObserveRisk(observation)
+		}
 		observed, previous, observedTask = true, merged, currentTask
 	}
+	release = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if released {
+			return
+		}
+		released = true
+		if holding {
+			holder.releaseResponseExposure(id)
+		}
+		// Recorders that cannot hold fall back to task comparison after release.
+		observedTask = ""
+		if state, ok := rec.(session.TaskContextProvider); ok && observed {
+			observedTask = state.TaskSnapshot().CurrentTaskID
+		}
+	}
+	return observe, release
 }
 
 func evaluateHTTPTaint(cfg *config.Config, rec session.Recorder, method string, parsedURL *url.URL, body bool) taintDecision {
@@ -155,6 +245,101 @@ func requestHasBody(r *http.Request) bool {
 	}
 	return r.ContentLength < 0 && r.Body != nil && r.Body != http.NoBody
 }
+
+// unknownLengthBodyWait bounds how long a read-shaped HTTP/2 request waits for
+// its first body byte or end of stream before taint classifies it. A client
+// that ends the stream with an empty DATA frame sends it right after HEADERS.
+const unknownLengthBodyWait = 500 * time.Millisecond
+
+// settleUnknownLengthBody resolves a read-shaped HTTP/2 request whose length
+// is unknown. A client may send HEADERS without END_STREAM and then end the
+// stream with an empty DATA frame, so the server reports an unknown length for
+// a request that carries no body, and requestHasBody counts it as one. This
+// waits up to wait for the first body byte or end of stream. A stream that
+// ends empty is returned as a bodyless request. Data, a read error, or no
+// answer within wait keeps the body, and with it the publish classification;
+// any byte already read is replayed to later readers.
+//
+// HTTP/1.1 chunked requests are left alone: they keep counting as bodied.
+// Only methods whose class depends on body presence are settled.
+func settleUnknownLengthBody(r *http.Request, wait time.Duration) *http.Request {
+	if r == nil || r.ProtoMajor < 2 || r.ContentLength >= 0 || len(r.TransferEncoding) > 0 || len(r.Trailer) > 0 ||
+		r.Body == nil || r.Body == http.NoBody {
+		return r
+	}
+	switch strings.ToUpper(r.Method) {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+	default:
+		return r
+	}
+	body := peekRequestBody(r.Body)
+	settled := *r
+	if body.await(wait) && len(body.peeked) == 0 && errors.Is(body.err, io.EOF) {
+		settled.Body = http.NoBody
+		settled.ContentLength = 0
+		return &settled
+	}
+	settled.Body = body
+	return &settled
+}
+
+type peekResult struct {
+	data []byte
+	err  error
+}
+
+// peekedRequestBody reads one byte of a request body on a separate goroutine
+// so the wait for it can be bounded, and replays that read to later readers.
+// Reads after a timed-out wait take the pending result first, so the
+// underlying body never has two readers.
+type peekedRequestBody struct {
+	body   io.ReadCloser
+	result chan peekResult
+	done   bool
+	peeked []byte
+	err    error
+}
+
+func peekRequestBody(body io.ReadCloser) *peekedRequestBody {
+	p := &peekedRequestBody{body: body, result: make(chan peekResult, 1)}
+	go func() {
+		buf := make([]byte, 1)
+		n, err := body.Read(buf)
+		p.result <- peekResult{data: buf[:n], err: err}
+	}()
+	return p
+}
+
+// await reports whether the peek finished within wait.
+func (p *peekedRequestBody) await(wait time.Duration) bool {
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case res := <-p.result:
+		p.done, p.peeked, p.err = true, res.data, res.err
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+func (p *peekedRequestBody) Read(b []byte) (int, error) {
+	if !p.done {
+		res := <-p.result
+		p.done, p.peeked, p.err = true, res.data, res.err
+	}
+	if len(p.peeked) > 0 {
+		n := copy(b, p.peeked)
+		p.peeked = p.peeked[n:]
+		return n, nil
+	}
+	if p.err != nil {
+		return 0, p.err
+	}
+	return p.body.Read(b)
+}
+
+func (p *peekedRequestBody) Close() error { return p.body.Close() }
 
 type forwardTaskAction struct {
 	subject string

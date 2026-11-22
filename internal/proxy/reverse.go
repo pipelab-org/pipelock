@@ -800,6 +800,12 @@ func (rp *ReverseProxyHandler) recordRequestWarningSignal(agent, clientIP, reque
 // then forward to upstream via the reverse proxy.
 func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r = rp.owner.withReceiptEvidence(r)
+	// Registered first so it runs last: the exposure holds armed for this
+	// response end after the outcome flush and receipt delivery confirmation.
+	// See responseExposureHolds for the receipts-off hand-off.
+	delivery := &reverseDeliveryObserver{}
+	var forwardWriter *reverseInformationalGuardWriter
+	defer delivery.finish()
 	var selectedReceiptShard receipt.EmitOpts
 	var admissionErr error
 	if rp.owner != nil {
@@ -1284,6 +1290,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// Settle an empty unknown-length HTTP/2 body before taint classifies it.
+	r = settleUnknownLengthBody(r, unknownLengthBodyWait)
 	// Scan request body for DLP patterns (secret exfiltration).
 	forwardedVerdict := config.ActionAllow
 	var reverseBodyBytes []byte
@@ -1812,7 +1820,6 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		responseReceiptState.admissionReceiptID = reverseAllowReceipt.ActionID
 	}
 	var outcomeTracker *reverseOutcomeTracker
-	var forwardWriter *reverseInformationalGuardWriter
 	if cfg.FlightRecorder.RequireReceipts {
 		outcomeTracker = newReverseOutcomeTracker(cfg, withReceiptConfig(reverseAllowReceipt, cfg))
 		defer func() {
@@ -1894,8 +1901,10 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		r = r.WithContext(ctx)
 		defer cancel(nil)
 	}
+	r = r.WithContext(context.WithValue(r.Context(), reverseDeliveryObserverKey{}, delivery))
 	forwardWriter = &reverseInformationalGuardWriter{
 		ResponseWriter: w,
+		delivery:       delivery,
 		onWriteError: func(status int, written int64, err error) {
 			outcomeTracker.Record(status, written, httpstream.Reason(r.Context(), err))
 		},
@@ -1916,13 +1925,92 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 // them and a forged X-Pipelock-Block-Reason would reach the client first.
 type reverseInformationalGuardWriter struct {
 	http.ResponseWriter
+	delivery     *reverseDeliveryObserver
 	onWriteError func(int, int64, error)
 	status       int
 	written      int64
 	hijacked     bool
 }
 
+// reverseDeliveryObserverKey carries the request's reverseDeliveryObserver from
+// ServeHTTP to modifyResponse through the outbound request context.
+type reverseDeliveryObserverKey struct{}
+
+// reverseDeliveryObserver lets the response path observe each write to the
+// client. The SSE path arms it so a task that rotates while a stream is open
+// records the events delivered under it. httputil.ReverseProxy copies the
+// scanner's pipe to the client after the pipe write returns, so observing only
+// at the pipe would miss a rotation during the client write itself.
+type reverseDeliveryObserver struct {
+	mu       sync.Mutex
+	observe  func()
+	release  []func()
+	finished bool
+}
+
+// reverseDeliveryFrom returns the request's delivery observer, or nil when the
+// response did not come through ServeHTTP.
+func reverseDeliveryFrom(ctx context.Context) *reverseDeliveryObserver {
+	delivery, _ := ctx.Value(reverseDeliveryObserverKey{}).(*reverseDeliveryObserver)
+	return delivery
+}
+
+// arm installs the per-write observer (when non-nil) and a release to run once
+// ServeHTTP has finished delivering the response. Without an observer, or once
+// delivery has already finished, release runs immediately.
+func (d *reverseDeliveryObserver) arm(observe, release func()) {
+	if d == nil {
+		if release != nil {
+			release()
+		}
+		return
+	}
+	d.mu.Lock()
+	if d.finished {
+		d.mu.Unlock()
+		if release != nil {
+			release()
+		}
+		return
+	}
+	if observe != nil {
+		d.observe = observe
+	}
+	if release != nil {
+		d.release = append(d.release, release)
+	}
+	d.mu.Unlock()
+}
+
+func (d *reverseDeliveryObserver) call() {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	observe := d.observe
+	d.mu.Unlock()
+	if observe != nil {
+		observe()
+	}
+}
+
+// finish runs as ServeHTTP's last deferred call, after the response has been
+// delivered or abandoned, and releases held exposure.
+func (d *reverseDeliveryObserver) finish() {
+	d.mu.Lock()
+	d.finished = true
+	d.observe = nil
+	release := d.release
+	d.release = nil
+	d.mu.Unlock()
+	for _, fn := range release {
+		fn()
+	}
+}
+
 func (w *reverseInformationalGuardWriter) Write(p []byte) (int, error) {
+	w.delivery.call()
+	defer w.delivery.call()
 	n, err := (httpstream.Writer{Writer: w.ResponseWriter}).Write(p)
 	w.written += int64(n)
 	if err != nil && w.onWriteError != nil {
@@ -1949,6 +2037,15 @@ func (w *reverseInformationalGuardWriter) WriteHeader(code int) {
 // Unwrap lets http.ResponseController reach the real writer for flush and
 // hijack, which the reverse proxy needs for streaming and upgrades.
 func (w *reverseInformationalGuardWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// FlushError checks delivery on both sides of the flush that releases buffered
+// bytes to the client.
+func (w *reverseInformationalGuardWriter) FlushError() error {
+	w.delivery.call()
+	err := http.NewResponseController(w.ResponseWriter).Flush()
+	w.delivery.call()
+	return err
+}
 
 // Hijack delegates the upgrade and records when HTTP response flushing no longer applies.
 func (w *reverseInformationalGuardWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
@@ -2598,7 +2695,11 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				if sseHandlesResponseTaint {
 					return
 				}
-				observeHTTPResponseFindings(responseTaintRec, cfg, targetURL, responseTaintType, "reverse_response", responseFindingKinds)
+				// httputil.ReverseProxy copies the body after this returns, so
+				// the session holds the exposure until ServeHTTP finishes.
+				observe, release := httpResponseFindingObserver(responseTaintRec, cfg, targetURL, responseTaintType, "reverse_response")
+				observe(responseFindingKinds)
+				reverseDeliveryFrom(resp.Request.Context()).arm(nil, release)
 			}()
 		}
 	}
@@ -3212,12 +3313,22 @@ responseScanning:
 		// the source when the stream starts, each finding before its event is
 		// released, and the final state once the scan completes. The observer
 		// suppresses duplicates. Its first call happens before the scanner
-		// goroutine starts; every later call runs in that goroutine.
+		// goroutine starts; later calls come from that goroutine and from the
+		// client writer, so the observer serializes them.
 		observeSSEFindings := func([]session.HostileFindingKind) {}
 		if responseTaintRec != nil {
 			sseHandlesResponseTaint = true
-			observeSSEFindings = httpResponseFindingObserver(responseTaintRec, cfg, targetURL, responseTaintType, "reverse_response")
+			var releaseSSEExposure func()
+			observeSSEFindings, releaseSSEExposure = httpResponseFindingObserver(responseTaintRec, cfg, targetURL, responseTaintType, "reverse_response")
 			observeSSEFindings(nil)
+			// A task can rotate while the stream stays open. The session holds
+			// the stream's exposure until ServeHTTP has finished copying it to
+			// the client, and each client write and flush is bracketed so new
+			// findings are current. The scanner's pipe write is not observed:
+			// the pipe hands bytes to httputil.ReverseProxy before they reach
+			// the client, and every client byte passes this writer.
+			observe := observeSSEFindings
+			reverseDeliveryFrom(resp.Request.Context()).arm(func() { observe(nil) }, releaseSSEExposure)
 		}
 		actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
 		sseLayer := LayerSSEStream

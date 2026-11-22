@@ -686,6 +686,9 @@ func newInterceptHandler(
 	taintCache := &interceptTaintConfigCache{}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = ic.Proxy.withReceiptEvidence(r)
+		// Registered first so it runs last; see responseExposureHolds.
+		exposureHolds := &responseExposureHolds{}
+		defer exposureHolds.finish()
 		requestContext := *ic
 		ic := &requestContext
 		ic.taintConfigCache = taintCache
@@ -858,34 +861,9 @@ func newInterceptHandler(
 			return
 		}
 
-		// Airlock classification of the inner request method. Read the
-		// DESTINATION-SCOPED tier of the adaptive session the airlock
-		// writer raised, via airlockTierForScope - the scoped read that fetch,
-		// forward, opaque CONNECT, and WebSocket already use - NOT the
-		// session-wide Airlock().Tier(). AirlockForScope returns a distinct
-		// per-destination state, so a normal scoped drain leaves the global
-		// tier at none; reading the global tier here would admit every
-		// intercepted inner request under a scoped quarantine (fail-open).
-		if interceptSess, ok := ic.Recorder.(*SessionState); ok && interceptSess != nil {
-			tier := airlockTierForScope(interceptSess, adaptiveScopeForHost(ic.TargetHost))
-			if tier != config.AirlockTierNone {
-				allowed, reason := ClassifyRequestAction(tier, r, TransportConnect, true)
-				if !allowed {
-					ic.Logger.LogAirlockDeny(interceptSess.key, tier, TransportConnect, r.Method, ic.ClientIP, ic.RequestID)
-					ic.Metrics.RecordAirlockDenial(tier, TransportConnect, r.Method)
-					ic.Metrics.RecordTLSRequestBlocked("airlock")
-					writeBlockedError(w,
-						blockInfoFor(blockreason.AirlockActive, "").WithRequestID(ic.RequestID),
-						"airlock: "+reason+"; "+airlockBlockDetail(adaptiveAudit{ic.Logger, ic.ClientIP, ic.RequestID}, interceptSess, ic.Config, interceptAdaptiveScope(ic), tier), http.StatusForbidden)
-					return
-				}
-			}
-		}
-
 		// Build shared audit context AFTER URL reconstruction so actx.URL
 		// contains the full intercepted URL, not just the origin-form path.
 		actx := newHTTPAuditContext(r.Context(), ic.Logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent})
-		initInterceptTaint(ic, r)
 
 		// Track whether any finding occurred (URL, body DLP, or response scan).
 		// RecordClean is only applied when the request was fully clean so that
@@ -934,6 +912,8 @@ func newInterceptHandler(
 		if ic.KillSwitch != nil {
 			d := ic.KillSwitch.IsActiveForIP(ic.ClientIP)
 			if d.Active {
+				// Keep the taint evidence on the denial without reading the body.
+				initInterceptTaint(ic, r)
 				// Evaluate the contract gate purely so the kill-switch
 				// receipt carries any active-contract context (policy
 				// sources, contract hash, generation). The runtime
@@ -956,6 +936,35 @@ func newInterceptHandler(
 				return
 			}
 		}
+		// Settle an empty unknown-length HTTP/2 body before taint classifies it.
+		r = settleUnknownLengthBody(r, unknownLengthBodyWait)
+
+		// Airlock classification of the inner request method. Read the
+		// DESTINATION-SCOPED tier of the adaptive session the airlock
+		// writer raised, via airlockTierForScope - the scoped read that fetch,
+		// forward, opaque CONNECT, and WebSocket already use - NOT the
+		// session-wide Airlock().Tier(). AirlockForScope returns a distinct
+		// per-destination state, so a normal scoped drain leaves the global
+		// tier at none; reading the global tier here would admit every
+		// intercepted inner request under a scoped quarantine (fail-open).
+		if interceptSess, ok := ic.Recorder.(*SessionState); ok && interceptSess != nil {
+			tier := airlockTierForScope(interceptSess, adaptiveScopeForHost(ic.TargetHost))
+			if tier != config.AirlockTierNone {
+				allowed, reason := ClassifyRequestAction(tier, r, TransportConnect, true)
+				if !allowed {
+					ic.Logger.LogAirlockDeny(interceptSess.key, tier, TransportConnect, r.Method, ic.ClientIP, ic.RequestID)
+					ic.Metrics.RecordAirlockDenial(tier, TransportConnect, r.Method)
+					ic.Metrics.RecordTLSRequestBlocked("airlock")
+					writeBlockedError(w,
+						blockInfoFor(blockreason.AirlockActive, "").WithRequestID(ic.RequestID),
+						"airlock: "+reason+"; "+airlockBlockDetail(adaptiveAudit{ic.Logger, ic.ClientIP, ic.RequestID}, interceptSess, ic.Config, interceptAdaptiveScope(ic), tier), http.StatusForbidden)
+					return
+				}
+			}
+		}
+
+		initInterceptTaint(ic, r)
+
 		interceptScanCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
 			Method: r.Method, URL: targetURL, Target: target,
 			ClientIP: ic.ClientIP, RequestID: ic.RequestID,
@@ -2574,8 +2583,9 @@ func newInterceptHandler(
 		var responseFindingKinds []session.HostileFindingKind
 		responseTaintType := responseTaintContentType(resp.Header)
 		responseTaintURL := r.URL.String()
-		observeResponseFindings := httpResponseFindingObserver(ic.taintRecorder, ic.taintConfig, responseTaintURL, responseTaintType, "forward_response")
+		observeResponseFindings, releaseResponseExposure := httpResponseFindingObserver(ic.taintRecorder, ic.taintConfig, responseTaintURL, responseTaintType, "forward_response")
 		observeResponseFindings(nil)
+		exposureHolds.add(releaseResponseExposure)
 		defer func() { observeResponseFindings(responseFindingKinds) }()
 		stripUpstreamPipelockNamespace(resp)
 		if !applyFullResponsePolicy(nil, resp) {
@@ -2646,6 +2656,9 @@ func newInterceptHandler(
 				IsA2A:           isA2A,
 				A2A:             &ic.Config.A2AScanning,
 				GenericSSE:      &ic.Config.ResponseScanning.SSEStreaming,
+				// A task can rotate while the stream stays open. Re-record the
+				// stream for events delivered under the new task.
+				OnDelivery: func() { observeResponseFindings(nil) },
 				Generic: mcp.GenericSSEScanOptions{
 					Target:             targetURL,
 					Suppress:           ic.Config.Suppress,
