@@ -8,7 +8,9 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"hash"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -233,18 +235,25 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 		return
 	}
 	var texts []string
-	texts = append(texts, target.EscapedPath(), target.Path)
-	if user := target.User; user != nil {
-		texts = appendFormLike(texts, user.Username())
-		if password, ok := user.Password(); ok {
-			texts = appendFormLike(texts, password)
+	appendForm := func(text string) {
+		var ok bool
+		texts, ok = appendFormLike(texts, text)
+		if !ok {
+			bodyKnown = false
 		}
 	}
-	texts = appendFormLike(texts, target.RawQuery)
+	texts = append(texts, target.EscapedPath(), target.Path)
+	if user := target.User; user != nil {
+		appendForm(user.Username())
+		if password, ok := user.Password(); ok {
+			appendForm(password)
+		}
+	}
+	appendForm(target.RawQuery)
 	for name, values := range header {
 		texts = append(texts, name)
 		for _, value := range values {
-			texts = appendFormLike(texts, value)
+			appendForm(value)
 		}
 	}
 	if len(body) > 0 {
@@ -263,9 +272,9 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 		if !plainKnown {
 			bodyKnown = false
 		} else if plain != nil {
-			texts = appendFormLike(texts, string(plain))
+			appendForm(string(plain))
 		} else {
-			texts = appendFormLike(texts, string(body))
+			appendForm(string(body))
 		}
 	}
 	// Feed the dedicated numeric sent-history ledger independently with its
@@ -418,8 +427,9 @@ func unhex(c byte) byte {
 // appendFormLike adds text as written, leniently percent-decoded both with
 // and without "+" as a space, and each key and value of it read as
 // "&"/";"-separated form pairs, decoded the same way. Any of those forms may
-// be the one an origin stores and returns.
-func appendFormLike(texts []string, text string) []string {
+// be the one an origin stores and returns. Returns false when JSON token
+// decoding fails before EOF so callers mark sent history incomplete.
+func appendFormLike(texts []string, text string) ([]string, bool) {
 	staged := []string{text, lenientUnescape(text, false), lenientUnescape(text, true)}
 	for _, pair := range strings.FieldsFunc(text, func(r rune) bool { return r == '&' || r == ';' }) {
 		key, value, _ := strings.Cut(pair, "=")
@@ -430,38 +440,54 @@ func appendFormLike(texts []string, text string) []string {
 	// Identical copies (a body with no escapes) are one text. Walking each
 	// copy would count the same tokens against the per-request cap.
 	seen := make(map[string]struct{}, len(staged))
+	complete := true
 	for _, form := range staged {
 		if _, ok := seen[form]; ok {
 			continue
 		}
 		seen[form] = struct{}{}
 		texts = append(texts, form)
-		texts = appendJSONStringsIfValid(texts, form)
+		var ok bool
+		texts, ok = appendJSONStringsIfValid(texts, form)
+		if !ok {
+			complete = false
+		}
 	}
-	return texts
+	return texts, complete
 }
 
 // appendJSONStringsIfValid walks text when it is a JSON value. A form field,
 // query value or header often carries a JSON object whose strings are escaped;
 // the raw token scan cannot see through those escapes.
-func appendJSONStringsIfValid(texts []string, text string) []string {
-	if text == "" || !json.Valid([]byte(text)) {
-		return texts
+func appendJSONStringsIfValid(texts []string, text string) ([]string, bool) {
+	if text == "" {
+		return texts, true
 	}
 	return appendJSONStrings(texts, []byte(text))
 }
 
 // appendJSONStrings adds every string key and value of a JSON body, decoded,
 // so an escape sequence in the body cannot hide a token from the raw scan.
-func appendJSONStrings(texts []string, body []byte) []string {
+// Numbers are preserved as json.Number so values outside float64 range (which
+// json.Valid accepts) do not abort the walk before later strings. Returns
+// false if any token decode returns a non-EOF error so callers fail closed.
+func appendJSONStrings(texts []string, body []byte) ([]string, bool) {
 	if !json.Valid(body) {
-		return texts
+		return texts, true
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	return appendJSONStringsFromDecoder(texts, decoder)
+}
+
+func appendJSONStringsFromDecoder(texts []string, decoder *json.Decoder) ([]string, bool) {
 	for {
 		token, err := decoder.Token()
 		if err != nil {
-			return texts
+			if errors.Is(err, io.EOF) {
+				return texts, true
+			}
+			return texts, false
 		}
 		if s, ok := token.(string); ok {
 			texts = append(texts, s)

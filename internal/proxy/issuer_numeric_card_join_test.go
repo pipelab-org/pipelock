@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -617,6 +618,36 @@ func TestIssuerNumericLedgerIsolationAndEdgeCases(t *testing.T) {
 		store2.mintNumericIDs("sess", origin, []string{cardA1, cardA2})
 		if store2.numericIDsIssued("sess", origin, []string{cardA1, cardA2}) {
 			t.Fatal("mint succeeded after stream freeze")
+		}
+	})
+
+	t.Run("JSON number outside float64 range before escaped string still records sent history", func(t *testing.T) {
+		store := newIssuerQueryStore()
+		escapedNum := fmt.Sprintf(`\u%04x%s`, cardA1[0], cardA1[1:])
+		escapedID := fmt.Sprintf(`\u%04x%s`, serverIDListed[0], serverIDListed[1:])
+		body := []byte(`{"big":1e400,"num":"` + escapedNum + `","id":"` + escapedID + `"}`)
+		store.recordSent("sess", origin, nil, body, true, time.Now())
+
+		// Neither the escaped numeric ID nor the escaped server ID may be
+		// minted after the client sent them following 1e400.
+		store.mintNumericIDs("sess", origin, []string{cardA1, cardA2})
+		if store.numericIDsIssued("sess", origin, []string{cardA1, cardA2}) {
+			t.Fatal("numeric value after 1e400 escaped string was minted as server-issued")
+		}
+		store.mintServerID("sess", origin, serverIDListed, time.Now())
+		if store.serverIDIssued("sess", origin, serverIDListed) {
+			t.Fatal("server ID after 1e400 escaped string was minted as server-issued")
+		}
+		// Control: an unsent pair on the same destination still mints (history
+		// remained complete because UseNumber decoded 1e400 without error).
+		cardB1, cardB2 := numericJoinCard16B()
+		store.mintNumericIDs("sess", origin, []string{cardB1, cardB2})
+		if !store.numericIDsIssued("sess", origin, []string{cardB1, cardB2}) {
+			t.Fatal("unrelated server-first numeric pair failed to mint after 1e400 request")
+		}
+		// Non-EOF token decode error fails closed (marks history incomplete).
+		if _, ok := appendJSONStringsFromDecoder(nil, json.NewDecoder(strings.NewReader(`{"broken":]`))); ok {
+			t.Fatal("expected non-EOF JSON decoder error to return ok=false")
 		}
 	})
 
