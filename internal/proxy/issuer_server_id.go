@@ -588,7 +588,15 @@ var hiddenNumberLiteral = regexp.MustCompile(`(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?
 // value from minting, so a match inside a hex ID costs nothing.
 func appendHiddenNumberLiterals(texts []string, text []byte) []string {
 	seen := make(map[string]struct{})
-	for _, match := range hiddenNumberLiteral.FindAll(text, -1) {
+	// Walk matches one at a time so a body of many short digit runs never
+	// holds every match in memory at once.
+	for rest := text; ; {
+		loc := hiddenNumberLiteral.FindIndex(rest)
+		if loc == nil {
+			break
+		}
+		match := rest[loc[0]:loc[1]]
+		rest = rest[loc[1]:]
 		if !bytes.ContainsAny(match, ".eE") {
 			// A plain digit run is already read by the raw token scan.
 			continue
