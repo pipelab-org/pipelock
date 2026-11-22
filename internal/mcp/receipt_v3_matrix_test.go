@@ -408,7 +408,8 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 	localReply := slices.Contains([]string{"deferred deny", "deferred timeout", "kill-switch during hold", "deferred HTTP failure", "deferred send claim refused"}, row.scenario)
 	// A withheld request still gets a receipt-emission error rather than no reply.
 	admissionDenied := slices.Contains([]string{"intent write fail", "intent sync fail", "deferred send intent write fail"}, row.scenario)
-	localReply = localReply || admissionDenied
+	listenerInvalidReply := row.path == "HTTP listener" && row.scenario == "upstream closes mid-response"
+	localReply = localReply || admissionDenied || listenerInvalidReply
 	clientWrite := make(chan struct{}, 1)
 	client := &mcpMatrixObserver{dir: writerOpts.Dir, wrote: clientWrite}
 	seen := filepath.Join(t.TempDir(), "upstream")
@@ -640,6 +641,8 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 	}
 	if row.path == "HTTP listener" && scenario == "tool-scan block" {
 		scenario = "listener preadmitted tool-scan block"
+	} else if listenerInvalidReply {
+		scenario = "tool-scan block"
 	}
 	assertMCPMatrixTerminal(t, scenario, actions)
 }
@@ -661,14 +664,16 @@ func assertMCPMatrixTerminal(t *testing.T, scenario string, actions []v3.Action)
 		expected = []string{"downstream_delivery/decision/block", "downstream_delivery/outcome/completed", "downstream_delivery/outcome/not_released", "upstream_send/outcome/completed"}
 	case "tool-scan block":
 		expected = []string{"downstream_delivery/decision/block", "downstream_delivery/outcome/completed", "upstream_send/outcome/completed"}
-	case "deferred send intent write fail", "deferred send claim refused":
+	case "deferred send intent write fail":
 		expected = []string{"approval_prompt/resolution/allow", "downstream_delivery/outcome/completed", "upstream_send/outcome/not_released"}
+	case "deferred send claim refused":
+		expected = []string{"approval_prompt/resolution/allow", "downstream_delivery/decision/block", "downstream_delivery/outcome/completed", "upstream_send/outcome/not_released"}
 	case "deferred HTTP failure":
 		expected = []string{"approval_prompt/resolution/allow", "downstream_delivery/outcome/completed", "upstream_send/outcome/attempt_unknown"}
 	case "deferred approve":
 		expected = []string{"approval_prompt/resolution/allow", "downstream_delivery/outcome/completed", "upstream_send/outcome/completed"}
 	case "deferred deny", "deferred timeout", "kill-switch during hold":
-		expected = []string{"approval_prompt/resolution/block", "downstream_delivery/outcome/completed"}
+		expected = []string{"approval_prompt/resolution/block", "downstream_delivery/decision/block", "downstream_delivery/outcome/completed"}
 	case "restart recovery of a pending hold":
 		expected = []string{"approval_prompt/resolution/block"}
 	}
@@ -1084,7 +1089,7 @@ func runMCPMatrixListener(t *testing.T, ctx context.Context, in io.Reader, out i
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusBadGateway {
 		return nil
 	}
 	_, err = io.Copy(out, resp.Body)

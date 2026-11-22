@@ -359,6 +359,9 @@ func (w *mcpV3ReplyWriter) deliverDenial(msg []byte, signed bool, refusalErr err
 		if w.opts.receiptEffects.gate.RequiresReceipts() {
 			return fmt.Errorf("%w: %w", errMCPV3ReplyAdmission, refusalErr)
 		}
+		if err := w.opts.warnContext().Err(); err != nil {
+			return err
+		}
 		if msg != nil {
 			return deliverMCPDeniedMessage(w.base, msg)
 		}
