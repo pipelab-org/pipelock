@@ -2413,13 +2413,18 @@ func newInterceptHandler(
 			}
 		}
 
-		if reason := recheckInterceptTaint(ic, r, interceptBodyBytes); reason != "" {
+		// A recheck refusal closes a written intent with a blocked outcome;
+		// with no intent, the ordinary taint denial is the action's receipt.
+		refuseInterceptRecheck := func(reason string) {
 			if requiredIntentEmitted {
 				writeInterceptTaintRefusal(ic, w, actx, reason)
 				emitBlockedPostRoundTripOutcome(http.StatusForbidden, reason)
-			} else {
-				refuseInterceptTaint(ic, w, reason, interceptTaintAdmissionOptions{request: r, logContext: actx, actionID: actionID, wrapReceipt: withInterceptRedaction})
+				return
 			}
+			refuseInterceptTaint(ic, w, reason, interceptTaintAdmissionOptions{request: r, logContext: actx, actionID: actionID, wrapReceipt: withInterceptRedaction})
+		}
+		if reason := recheckInterceptTaint(ic, r, interceptBodyBytes); reason != "" {
+			refuseInterceptRecheck(reason)
 			return
 		}
 		// Record what this request sends before it leaves, so no response
@@ -2460,8 +2465,7 @@ func newInterceptHandler(
 		if ic.Proxy != nil && ic.Proxy.receiptEffects.enabled {
 			if reason := recheckInterceptTaint(ic, r, interceptBodyBytes); reason != "" {
 				ic.Proxy.refuseAdmittedEffect(r.Context(), allowReceipt, upstreamEffect)
-				writeInterceptTaintRefusal(ic, w, actx, reason)
-				emitBlockedPostRoundTripOutcome(http.StatusForbidden, reason)
+				refuseInterceptRecheck(reason)
 				return
 			}
 		}

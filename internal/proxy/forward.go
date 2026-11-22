@@ -2462,10 +2462,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	applyFullResponsePolicy(outReq.Header, nil)
 	responseencoding.RequestIdentity(outReq.Header)
 
-	if forwardTaint.Result.Reason == session.TaskPermissionRequired &&
-		forwardBodyBytes == nil && outReq.Body != nil && outReq.Body != http.NoBody {
-		// Even with request-body scanning disabled, an exact permission must
-		// account for every byte. Reuse the configured request body bound.
+	// Even with request-body scanning disabled, an exact permission must
+	// account for every byte. Reuse the configured request body bound; a
+	// failed or oversized read leaves the body unbound and refused.
+	bufferBodyForTaskAction := func() {
+		if forwardBodyBytes != nil || outReq.Body == nil || outReq.Body == http.NoBody {
+			return
+		}
 		body, err := io.ReadAll(io.LimitReader(outReq.Body, int64(cfg.RequestBodyScanning.MaxBodyBytes)+1))
 		_ = outReq.Body.Close()
 		if err == nil && len(body) <= cfg.RequestBodyScanning.MaxBodyBytes {
@@ -2476,6 +2479,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				return io.NopCloser(bytes.NewReader(body)), nil
 			}
 		}
+	}
+	if forwardTaint.Result.Reason == session.TaskPermissionRequired {
+		bufferBodyForTaskAction()
 	}
 	writeTaskDenialResponse := func(reason, detail string) {
 		p.metrics.RecordBlocked(r.URL.Hostname(), "taint_policy", time.Since(start), agentLabel)
@@ -2496,6 +2502,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if taskTaint.Result.Reason == session.TaskPermissionRequired {
+		// Exposure recorded after admission can make the live decision the
+		// first to require permission; bind on the full body then too.
+		bufferBodyForTaskAction()
 		forwardTask.action = forwardRequestTaskAction(outReq, forwardBodyBytes)
 		matchedTask := evaluateHTTPTaskTaint(cfg, forwardRec, outReq.Method, outReq.URL, requestHasBody(outReq), &forwardTask)
 		if matchedTask.Task.CurrentTaskID != taskTaint.Task.CurrentTaskID {

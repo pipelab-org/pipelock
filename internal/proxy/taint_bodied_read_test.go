@@ -6,20 +6,25 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -713,8 +718,11 @@ func TestTaintLateExactGrantSurvivesEnvelopeInjection(t *testing.T) {
 				observeHTTPResponseFindings(rec, p.CurrentConfig(), "http://untrusted.example/page", "text/html", "forward_response", []session.HostileFindingKind{session.FindingDLP})
 			}))
 			var upstreamCalls atomic.Int32
+			var upstreamBody atomic.Value
 			p.client = &http.Client{Transport: forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
 				upstreamCalls.Add(1)
+				got, _ := io.ReadAll(r.Body)
+				upstreamBody.Store(string(got))
 				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("ok")), Request: r}, nil
 			})}
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, strings.NewReader(string(body)))
@@ -723,6 +731,9 @@ func TestTaintLateExactGrantSurvivesEnvelopeInjection(t *testing.T) {
 			p.handleForwardHTTP(w, req)
 			if !exposed || w.Code != http.StatusOK || upstreamCalls.Load() != 1 {
 				t.Fatalf("exposed=%v status=%d calls=%d body=%s, want the exact grant to admit the request", exposed, w.Code, upstreamCalls.Load(), w.Body)
+			}
+			if got := upstreamBody.Load(); got != string(body) {
+				t.Fatalf("upstream received body %q, want the granted body %q", got, body)
 			}
 			assertReleaseEvidence(t, receipts)
 		})
@@ -744,8 +755,13 @@ func TestTaintLateExactGrantSurvivesEnvelopeInjection(t *testing.T) {
 			})
 			ic.EnvelopeEmitterSet = true
 			var upstreamCalls int
+			var upstreamBody string
 			handler := newInterceptHandler(ic, roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 				upstreamCalls++
+				if r.Body != nil {
+					got, _ := io.ReadAll(r.Body)
+					upstreamBody = string(got)
+				}
 				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("ok")), Request: r}, nil
 			}))
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, strings.NewReader(string(body)))
@@ -754,6 +770,9 @@ func TestTaintLateExactGrantSurvivesEnvelopeInjection(t *testing.T) {
 			handler.ServeHTTP(w, req)
 			if !exposed || w.Code != http.StatusOK || upstreamCalls != 1 {
 				t.Fatalf("exposed=%v status=%d calls=%d body=%s, want the exact grant to admit the request", exposed, w.Code, upstreamCalls, w.Body)
+			}
+			if upstreamBody != string(body) {
+				t.Fatalf("upstream received body %q, want the granted body %q", upstreamBody, body)
 			}
 			assertReleaseEvidence(t, receipts)
 		})
@@ -784,6 +803,9 @@ func TestRetainedRequestBody(t *testing.T) {
 		{name: "over_limit", req: withGetBody("payload", replay("payload"), 7), limit: 4},
 		{name: "get_body_error", req: withGetBody("payload", func() (io.ReadCloser, error) { return nil, errors.New("not replayable") }, 7), limit: 16},
 		{name: "length_mismatch", req: withGetBody("payload", replay("pay"), 7), limit: 16},
+		{name: "read_error_after_full_length", req: withGetBody("payload", func() (io.ReadCloser, error) {
+			return io.NopCloser(io.MultiReader(strings.NewReader("payload"), iotest.ErrReader(errors.New("replay interrupted")))), nil
+		}, 7), limit: 16},
 		{name: "no_limit", req: withGetBody("payload", replay("payload"), 7), limit: 0},
 		{name: "no_body", req: httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://x.example/", http.NoBody), limit: 16},
 	} {
@@ -792,5 +814,154 @@ func TestRetainedRequestBody(t *testing.T) {
 				t.Fatalf("retainedRequestBody=%q want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// exposeOnRiskRead records hostile exposure just before the nth risk read,
+// so a test can land exposure between two specific taint evaluations.
+type exposeOnRiskRead struct {
+	*SessionState
+	reads  atomic.Int32
+	nth    int32
+	expose func()
+}
+
+func (e *exposeOnRiskRead) RiskSnapshot() session.SessionRisk {
+	if e.reads.Add(1) == e.nth {
+		e.expose()
+	}
+	return e.SessionState.RiskSnapshot()
+}
+
+// Exposure recorded after a clean admission but before the live task
+// decision makes that decision the first to require permission. With body
+// scanning off, the body must still be read so an existing exact grant
+// matches instead of refusing an unbound action.
+func TestForwardTaintLiveRequirementBindsFullBody(t *testing.T) {
+	body := []byte("payload=1")
+	p, _, _, target, _ := newTaintInterceptFixture(t, func(cfg *config.Config) {
+		cfg.ForwardProxy.Enabled = true
+		cfg.RequestBodyScanning.Enabled = false
+		cfg.DNS.HostOverrides = map[string][]string{interceptTaintHost: {"93.184.216.34"}}
+	})
+	target = strings.Replace(target, "https://", "http://", 1)
+	base := &SessionState{}
+	base.BindTaskSubject("invocation")
+	twin := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, strings.NewReader(string(body)))
+	twin.Header.Set("Content-Type", "text/plain")
+	stripInternalIdentity(twin)
+	removeHopByHopHeaders(twin.Header)
+	applyFullResponsePolicy(twin.Header, nil)
+	responseencoding.RequestIdentity(twin.Header)
+	if err := base.installTaskPermission(base.TaskSnapshot().CurrentTaskID, session.TaskPermission{Action: forwardRequestTaskAction(twin, body), ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	rec := &exposeOnRiskRead{SessionState: base, nth: 2}
+	rec.expose = func() {
+		observeHTTPResponseFindings(base, p.CurrentConfig(), "http://untrusted.example/page", "text/html", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+	}
+	WithTaintRecorder(rec)(p)
+	var upstreamCalls atomic.Int32
+	var upstreamBody atomic.Value
+	p.client = &http.Client{Transport: forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
+		upstreamCalls.Add(1)
+		got, _ := io.ReadAll(r.Body)
+		upstreamBody.Store(string(got))
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("ok")), Request: r}, nil
+	})}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "text/plain")
+	w := httptest.NewRecorder()
+	p.handleForwardHTTP(w, req)
+	if base.RiskSnapshot().Level != session.TaintExternalHostile {
+		t.Fatalf("exposure hook did not fire (risk reads=%d)", rec.reads.Load())
+	}
+	if w.Code != http.StatusOK || upstreamCalls.Load() != 1 || upstreamBody.Load() != string(body) {
+		t.Fatalf("status=%d calls=%d upstream body=%v body=%s, want the exact grant to admit the full body", w.Code, upstreamCalls.Load(), upstreamBody.Load(), w.Body)
+	}
+}
+
+// exposeOnWriteFile records exposure on the nth write to a v3 receipt file,
+// so exposure can land while a specific effect is being admitted.
+type exposeOnWriteFile struct {
+	*os.File
+	writes int
+	nth    int
+	expose func()
+}
+
+func (f *exposeOnWriteFile) Write(data []byte) (int, error) {
+	f.writes++
+	if f.writes == f.nth {
+		f.expose()
+	}
+	return f.File.Write(data)
+}
+
+// Exposure recorded while an intercepted request's upstream effect is
+// admitted is caught by the post-admission recheck. With receipts optional
+// and no intent written, that refusal still writes the ordinary signed taint
+// denial, as the first recheck does.
+func TestInterceptPostEffectRecheckRefusalWritesDenialReceipt(t *testing.T) {
+	p, _, _, target, ic := newTaintInterceptFixture(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = false
+	})
+	rec := &SessionState{}
+	rec.BindTaskSubject("invocation")
+	WithTaintRecorder(rec)(p)
+	receipts := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	p.receiptEmitterPtr.Store(receipts.emitter)
+	exposed := false
+	keySeed := sha256.Sum256([]byte("post effect recheck fixture"))
+	key := ed25519.NewKeyFromSeed(keySeed[:])
+	first := true
+	writer, err := v3.OpenStreamWriter(t.Context(), v3.StreamWriterOptions{
+		Dir: t.TempDir(), SigningKey: key, PolicyHash: v3.Digest(nil),
+		Identity: v3.Writer{Instance: "example", Product: "Pipelock", Version: "3"},
+		Coverage: v3.Coverage{Surfaces: []string{transportInterceptReceipt}, RedactionRuleset: v3.Ruleset{ID: "example", Version: "1", Hash: v3.Digest(nil)}},
+		// Write 1 is the opening record; write 2 is this request's effect
+		// admission, after the first recheck has already passed.
+		CreateTempFile: func(dir, pattern string) (v3.StreamFile, error) {
+			file, err := os.CreateTemp(dir, pattern)
+			if err != nil || !first {
+				return file, err
+			}
+			first = false
+			return &exposeOnWriteFile{File: file, nth: 2, expose: func() {
+				exposed = true
+				observeHTTPResponseFindings(rec, ic.Config, "https://other.example/reference", "text/plain", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+			}}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = writer.Close(ctx, nil)
+	})
+	WithV3ReceiptWriter(writer)(p)
+	var upstreamCalls int
+	handler := newInterceptHandler(ic, roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamCalls++
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("ok")), Request: r}, nil
+	}))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, strings.NewReader("payload=1"))
+	req.Header.Set("Content-Type", "text/plain")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if !exposed || w.Code != http.StatusForbidden || upstreamCalls != 0 {
+		t.Fatalf("exposed=%v status=%d calls=%d body=%s, want the post-admission recheck to refuse", exposed, w.Code, upstreamCalls, w.Body)
+	}
+	var denial *receipt.ActionRecord
+	for _, rcpt := range receipts.findReceipts(t) {
+		if rcpt.ActionRecord.Verdict == config.ActionBlock && rcpt.ActionRecord.Layer == "taint_policy" {
+			ar := rcpt.ActionRecord
+			denial = &ar
+		}
+	}
+	if denial == nil || denial.SessionTaintLevel != session.TaintExternalHostile.String() {
+		t.Fatalf("taint denial receipt missing or stale: %+v", denial)
 	}
 }
