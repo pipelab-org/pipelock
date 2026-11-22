@@ -40,6 +40,8 @@ type responsePreFilterView struct {
 	literals         responseLiteralMemo
 	ready            bool
 	positions        *matchingView
+	maxWindowRun     int
+	windowRunReady   bool
 }
 
 // newResponsePreFilter builds a pre-filter from response patterns.
@@ -62,7 +64,11 @@ func newResponsePreFilter(patterns []*compiledPattern) *responsePreFilter {
 				pf.gates[i] = responseLiteralGate(tree)
 				pf.proofs[i] = newResponseSuffixProof(p.re)
 				if p.responseMemoRegexp != nil && p.responseMemoRegexp == p.re {
-					if plan := newRegexpWindowPlan(p.re, tree); plan != nil && len(plan.anchors) != 0 {
+					plan := newResponseRegexpWindowPlan(p.re, tree)
+					if plan == nil {
+						plan = newRegexpWindowPlan(p.re, tree)
+					}
+					if plan != nil && len(plan.anchors) != 0 {
 						if pf.windows == nil {
 							pf.windows = make(map[*regexp.Regexp]*regexpWindowPlan)
 						}

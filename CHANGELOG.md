@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Scan eligible response patterns near their required literals. A local cold scan of a 1.2 MB JavaScript bundle dropped from 75 seconds to 61 seconds. The clean-verdict cache can retain up to 256 entries across repeat page loads.
 - Document how SSH and other non-HTTP egress can be declined: the forward proxy refuses SSH sent directly only when the optional `forward_proxy.sni_require_tls` check is on, and `pipelock sandbox` leaves no direct route out. Includes the sandbox caveats and an opt-in tool-policy warning rule. See [current unsupported paths](docs/security/current-unsupported-paths.md#ssh-and-other-non-http-egress).
 - Verify each admitted replay descriptor once per text DLP scan so later trims skip already-checked views. Large encoded bodies finish sooner; drain still checks the digest of every matched view. ([#2173](https://github.com/pipelab-org/pipelock/pull/2173))
 - Pin the Compose and Kubernetes recipe images to the published v3.8.0 `ghcr.io/pipelab-org` digests, and note in the 3.8 upgrade guide that tool-policy rules also match a bounded reading of shell expansions, and that request scanning reads ZIP and ZIP-based Office text within limits, with TLS interception off in defaults and all 7 presets and PDF text still only raw-byte scanned.

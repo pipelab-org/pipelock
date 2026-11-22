@@ -1179,6 +1179,9 @@ func matchPatternsPreFilteredWithMemo(pf *responsePreFilter, patterns []*compile
 	if pf == nil {
 		return matchPatternsAgainst(patterns, content)
 	}
+	if view == nil {
+		view = &responsePreFilterView{}
+	}
 	indices := pf.patternsToCheckWithMemo(content, view)
 	if len(indices) == 0 {
 		return nil
@@ -1187,24 +1190,11 @@ func matchPatternsPreFilteredWithMemo(pf *responsePreFilter, patterns []*compile
 	// Keep each pattern's result in its original slot so match order, pass
 	// precedence, and suppression behavior are identical to the serial path.
 	match := matchResponsePattern
-	if view != nil {
-		switch {
-		case view.outboundMatch != nil:
-			match = view.outboundMatch
-		case view.positions != nil && view.positions.ready && view.positions.hits != nil && len(pf.windows) != 0:
-			// The prefilter finished indexing before any worker starts.
-			// Each worker reads the same immutable literal coordinates.
-			match = func(p *compiledPattern, text string) []ResponseMatch {
-				plan := pf.windows[p.re]
-				if plan == nil || p.responseMemoRegexp != p.re || hasExternalTransferCompanions(p) {
-					return matchResponsePattern(p, text)
-				}
-				if !responsePatternCanMatch(p, text) {
-					return nil
-				}
-				return responseMatchesAt(p, text, plan.findAllWithPositions(p.re, p.re, text, text, view.positions))
-			}
-		}
+	switch {
+	case view.outboundMatch != nil:
+		match = view.outboundMatch
+	case len(content) >= regexpWindowMinText && len(pf.windows) != 0:
+		match = pf.windowMatcher(content, view, patterns, indices)
 	}
 	workers := min(runtime.GOMAXPROCS(0), len(indices))
 	if workers < 2 || len(content) < 4096 {

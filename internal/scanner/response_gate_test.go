@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"regexp/syntax"
 	"slices"
@@ -180,8 +181,17 @@ func TestResponseGateDifferentialCorpus(t *testing.T) {
 				}
 			}
 		}
-		for _, raw := range corpus {
+		for i, raw := range corpus {
 			check(raw, -1)
+			padded := normalize.ForMatching(strings.Repeat("x;", responseMemoMinBytes/2) + "\n" + raw)
+			if strings.Contains(group.name, "vowel-fold") {
+				padded = normalize.FoldVowels(padded)
+			}
+			got := matchPatternsPreFiltered(group.filter, group.patterns, padded)
+			want := matchPatternsAgainst(group.patterns, padded)
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("%s corpus case %d: got %v, want %v", group.name, i, got, want)
+			}
 		}
 		for i, pattern := range group.patterns {
 			expressions := []*regexp.Regexp{pattern.re}

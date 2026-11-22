@@ -84,7 +84,7 @@ func TestResponseVerdictCacheFindingsAndBounds(t *testing.T) {
 		t.Fatal("finding entered cache")
 	}
 	for i := range responseVerdictMaxEntries + 1 {
-		key := responseVerdictKey{body: [32]byte{byte(i)}}
+		key := responseVerdictKey{body: [32]byte{byte(i), byte(i >> 8)}}
 		s.responseVerdicts.put(key, responseVerdictMaxBytes/responseVerdictMaxEntries, ResponseScanResult{Clean: true})
 	}
 	if len(s.responseVerdicts.entries) > responseVerdictMaxEntries || s.responseVerdicts.bytes > responseVerdictMaxBytes {
@@ -92,6 +92,34 @@ func TestResponseVerdictCacheFindingsAndBounds(t *testing.T) {
 	}
 	if _, ok := s.responseVerdicts.get(responseVerdictKey{}); ok {
 		t.Fatal("oldest entry was not evicted")
+	}
+}
+
+func TestResponseVerdictCacheEmptyEvidenceStorage(t *testing.T) {
+	var cache responseVerdictCache
+	key := responseVerdictKey{}
+	result := ResponseScanResult{Clean: true, Matches: make([]ResponseMatch, 0, 32)}
+	cache.put(key, 1, result)
+	got, ok := cache.get(key)
+	if !ok || got.Matches == nil || cap(got.Matches) != 0 || got.WarnedMatches != nil {
+		t.Fatal("cache retained evidence storage or changed slice shape")
+	}
+}
+
+func TestResponseVerdictCacheBrowserPage(t *testing.T) {
+	var cache responseVerdictCache
+	const assets = 150
+	for i := range assets {
+		size := 96 << 10
+		if i%3 == 0 {
+			size = 1215035
+		}
+		cache.put(responseVerdictKey{body: [32]byte{byte(i)}}, size, ResponseScanResult{Clean: true})
+	}
+	for i := range assets {
+		if _, ok := cache.get(responseVerdictKey{body: [32]byte{byte(i)}}); !ok {
+			t.Fatalf("asset %d evicted before a repeat page load", i)
+		}
 	}
 }
 

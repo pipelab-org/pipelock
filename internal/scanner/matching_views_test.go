@@ -255,6 +255,7 @@ func TestMatchingViewResponseParity(t *testing.T) {
 	t.Cleanup(sc.Close)
 	t.Cleanup(reference.Close)
 	reference.responseMatchingLiterals = nil
+	disableTestResponseWindows(reference)
 	if sc.responseMatchingLiterals == nil {
 		t.Fatal("fixture has no compiled response literal program")
 	}
@@ -351,6 +352,7 @@ func TestMatchingViewDecodedResponseParity(t *testing.T) {
 	t.Cleanup(sc.Close)
 	t.Cleanup(reference.Close)
 	reference.responseMatchingLiterals = nil
+	disableTestResponseWindows(reference)
 	padding := strings.Repeat("~", responseMemoMinBytes)
 	for _, tc := range []struct {
 		name, text  string

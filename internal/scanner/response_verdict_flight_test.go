@@ -17,10 +17,10 @@ import (
 
 func TestResponseVerdictCacheFreshAndBounds(t *testing.T) {
 	var c responseVerdictCache
-	for i := range 4 {
-		c.put(responseVerdictKey{body: [32]byte{byte(i)}}, 4<<20, ResponseScanResult{Clean: true})
+	for i := range responseVerdictMaxBytes / responseVerdictMaxBody {
+		c.put(responseVerdictKey{body: [32]byte{byte(i)}}, responseVerdictMaxBody, ResponseScanResult{Clean: true})
 	}
-	newest := responseVerdictKey{body: [32]byte{9}}
+	newest := responseVerdictKey{body: [32]byte{1, 2}}
 	c.put(newest, 1<<20, ResponseScanResult{Clean: true})
 	if _, ok := c.get(newest); !ok {
 		t.Fatal("fresh large admission rejected")
@@ -28,8 +28,8 @@ func TestResponseVerdictCacheFreshAndBounds(t *testing.T) {
 	if _, ok := c.get(responseVerdictKey{body: [32]byte{0}}); ok {
 		t.Fatal("equal size victim was not oldest")
 	}
-	for i := range 80 {
-		c.put(responseVerdictKey{body: [32]byte{byte(i), 1}}, 10, ResponseScanResult{Clean: true})
+	for i := range responseVerdictMaxEntries + 1 {
+		c.put(responseVerdictKey{body: [32]byte{byte(i), 1, byte(i >> 8)}}, 10, ResponseScanResult{Clean: true})
 	}
 	if _, ok := c.get(newest); !ok {
 		t.Fatal("tiny churn evicted newest expensive")
@@ -54,7 +54,7 @@ func TestResponseVerdictCacheFreshAndBounds(t *testing.T) {
 			t.Fatal("invalid body size admitted")
 		}
 	}
-	for i := range responseVerdictMaxEntries {
+	for i := range responseVerdictMaxFlights {
 		if f, leader := c.beginFlight(responseVerdictKey{body: [32]byte{byte(i)}}); f == nil || !leader {
 			t.Fatal("flight admission")
 		}
@@ -229,7 +229,7 @@ func TestResponseVerdictFlightParity(t *testing.T) {
 func TestResponseVerdictFlightSaturationFallsBack(t *testing.T) {
 	sc := MustNew(testResponseConfig())
 	defer sc.Close()
-	for i := range responseVerdictMaxEntries {
+	for i := range responseVerdictMaxFlights {
 		sc.responseVerdicts.beginFlight(responseVerdictKey{body: [32]byte{byte(i)}})
 	}
 	calls := 0
