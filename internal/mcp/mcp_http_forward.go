@@ -897,6 +897,15 @@ func RunHTTPProxy(
 		attempted := false
 		var registration *requestRegistration
 		// POST to upstream.
+		awaitReply := isTrackableRequest(decision.ForwardMessage, frame.ID)
+		sendCtx := ctx
+		messageOpts := transport.HTTPMessageOptions{Headers: requestHeaders}
+		var roundTripConfirmed bool
+		var wroteOneWay func() bool
+		if effect != nil && !awaitReply {
+			sendCtx, wroteOneWay = observeMCPHTTPWrite(ctx)
+			messageOpts.ObserveRoundTrip = func(err error) { roundTripConfirmed = err == nil }
+		}
 		var taskRefusal string
 		var trackingErr error
 		respReader, err := func() (transport.MessageReader, error) {
@@ -909,7 +918,7 @@ func RunHTTPProxy(
 			if taskRefusal != "" {
 				return nil, nil
 			}
-			if isTrackableRequest(msg, frame.ID) {
+			if awaitReply {
 				decision.Outcome.Method = frame.Method
 				decision.Outcome.Receipt = decision.Outcome.Receipt.InheritAdmission(admission)
 				registration, trackingErr = trackMCPAdmittedOutcome(safeLogW, fwdOpts, tracker, frame.ID, decision.Outcome)
@@ -921,17 +930,22 @@ func RunHTTPProxy(
 					tracker.removeOwnedOutcome(frame.ID, registration)
 					return nil, nil
 				}
-			}
-			if bindErr := fwdOpts.bindV3Send(effect); bindErr != nil {
-				tracker.removeOwnedOutcome(frame.ID, registration)
-				trackingErr = bindErr
-				return nil, nil
+				if bindErr := fwdOpts.bindV3Send(effect); bindErr != nil {
+					tracker.removeOwnedOutcome(frame.ID, registration)
+					trackingErr = bindErr
+					return nil, nil
+				}
 			}
 			attempted = true
-			return httpClient.SendMessageWithOptions(ctx, decision.ForwardMessage, transport.HTTPMessageOptions{Headers: requestHeaders})
+			return httpClient.SendMessageWithOptions(sendCtx, decision.ForwardMessage, messageOpts)
 		}()
-		if err != nil || !attempted {
-			fwdOpts.finishV3Send(ctx, safeLogW, effect, attempted)
+		switch {
+		case !attempted:
+			fwdOpts.finishV3Send(ctx, safeLogW, effect, false)
+		case wroteOneWay != nil:
+			logMCPV3Error(safeLogW, confirmMCPV3Effect(ctx, effect.token, roundTripConfirmed && wroteOneWay()))
+		case err != nil:
+			fwdOpts.finishV3Send(ctx, safeLogW, effect, true)
 		}
 		if trackingErr != nil {
 			unlockInventory()
@@ -971,11 +985,9 @@ func RunHTTPProxy(
 			// upstream bytes cannot cross this logging boundary.
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)
 			warnTransportAdmission(safeLogW, fwdOpts, decision.admission, "upstream_error")
-			// A notification has no ID to answer, so a failure on one gets no
-			// client reply; an error response with a null ID is a reply the
-			// client never asked for. Notifications are never tracked, so an
-			// intent receipt is closed from the input decision directly.
-			if isRPCNotification(frame.ID) {
+			// One-way messages are never tracked and receive no JSON-RPC reply.
+			// Close any legacy intent from the input decision directly.
+			if !awaitReply {
 				if decision.Outcome.Receipt.ActionID != "" {
 					decision.Outcome.settle(safeLogW, fwdOpts, "error", -1, "upstream_error")
 				}
@@ -999,7 +1011,7 @@ func RunHTTPProxy(
 		// Scan and forward response. Apply the optional per-read response
 		// timeout (no-op when disabled) so a hung HTTP upstream fails closed.
 		acknowledged := transport.IsHTTPAcknowledgement(respReader)
-		if acknowledged && effect != nil {
+		if acknowledged && effect != nil && awaitReply {
 			fwdOpts.finishV3HTTPAcknowledgement(ctx, safeLogW, effect, tracker, frame.ID, registration)
 		}
 		if transport.IsStreamingResponse(respReader) {
@@ -1007,7 +1019,7 @@ func RunHTTPProxy(
 			fwdOpts.WarnContext = ctx
 		}
 		foundInjection, scanErr := ForwardScanned(fwdOpts.withResponseTimeout(respReader), wireClientOut, safeLogW, tracker, fwdOpts)
-		if !acknowledged || isRPCNotification(frame.ID) {
+		if awaitReply && !acknowledged {
 			fwdOpts.finishV3Send(ctx, safeLogW, effect, true)
 		}
 		if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(context.Cause(ctx), ael.ErrCapacity) {

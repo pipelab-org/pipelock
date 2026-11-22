@@ -83,8 +83,10 @@ func (sw *StdioWriter) WriteMessage(msg []byte) error {
 	buf := make([]byte, len(msg)+1)
 	copy(buf, msg)
 	buf[len(msg)] = '\n'
-	if _, err := sw.w.Write(buf); err != nil {
+	if n, err := sw.w.Write(buf); err != nil {
 		return fmt.Errorf("writing message: %w", err)
+	} else if n != len(buf) {
+		return io.ErrShortWrite
 	}
 	return nil
 }

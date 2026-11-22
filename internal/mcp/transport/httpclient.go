@@ -174,6 +174,9 @@ type HTTPMessageOptions struct {
 	// PreserveSession keeps private requests from changing the caller's
 	// session ID or listener token. Existing state still accompanies the send.
 	PreserveSession bool
+	// ObserveRoundTrip receives the transport result before HTTP status handling
+	// or error sanitization.
+	ObserveRoundTrip func(error)
 }
 
 // SendMessage POSTs msg as a JSON-RPC 2.0 request and returns a MessageReader
@@ -255,6 +258,9 @@ func (c *HTTPClient) SendMessageWithOptions(ctx context.Context, msg []byte, opt
 	}
 
 	resp, err := c.client.Do(req)
+	if opts.ObserveRoundTrip != nil {
+		opts.ObserveRoundTrip(err)
+	}
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr

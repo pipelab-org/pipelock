@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http/httptrace"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -103,6 +105,18 @@ func confirmMCPV3Effect(ctx context.Context, token *v3.EffectToken, observed boo
 	return token.ConfirmDelivery(ctx, func() (bool, error) { return observed, nil })
 }
 
+// A successful trace is necessary but HTTP/1 can still fail the connection
+// buffer flush. Combine this observation with the transport round-trip result.
+func observeMCPHTTPWrite(ctx context.Context) (context.Context, func() bool) {
+	var written atomic.Bool
+	trace := &httptrace.ClientTrace{WroteRequest: func(info httptrace.WroteRequestInfo) {
+		if info.Err == nil {
+			written.Store(true)
+		}
+	}}
+	return httptrace.WithClientTrace(ctx, trace), written.Load
+}
+
 type mcpV3Exchange struct {
 	request receipt.EmitOpts
 	token   *v3.EffectToken
@@ -130,6 +144,9 @@ func (o MCPProxyOpts) startV3Send(ctx context.Context, frame MCPFrame, request r
 	}
 	request.RequestID, request.Method, request.Transport = canonicalID(frame.ID), frame.Method, o.Transport
 	request.Target = firstNonEmpty(request.Target, firstNonEmpty(frame.ToolCallName, frame.Method))
+	if request.Target == "" && isResponse(frame.Raw) {
+		request.Target = "mcp://response"
+	}
 	request.Verdict = config.ActionAllow
 	request = o.withReceiptPolicyHash(request)
 	token, err := o.admitV3Effect(ctx, request, mcpUpstreamSendBoundary)

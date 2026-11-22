@@ -1855,12 +1855,14 @@ func RunHTTPListenerProxy(
 			return
 		}
 
-		// Validate JSON-RPC 2.0 structure for single requests: version
-		// must be "2.0", method must be present and a string. Batch
-		// requests (JSON arrays) are validated per-element by scanHTTPInput.
-		// Uses JSON-RPC 2.0 standard code -32600 (Invalid Request).
+		// Batch input retains its own validation. A v3 listener POST can
+		// also carry a reply to a server-initiated request.
 		if body[0] != '[' {
-			if reason := validateRPCStructure(body); reason != "" {
+			validate := validateRPCStructure
+			if requestBaseOpts.receiptEffects.enabled && isResponse(body) {
+				validate = validateMCPClientReply
+			}
+			if reason := validate(body); reason != "" {
 				w.Header().Set("Content-Type", "application/json")
 				denialAudit = mcpListenerProtocolDenialAudit()
 				w.WriteHeader(http.StatusBadRequest)
@@ -2298,8 +2300,17 @@ func RunHTTPListenerProxy(
 		if effect.send != nil && effect.ctx.Err() != nil {
 			return
 		}
+		var wroteReply func() bool
+		if effect.send != nil && isResponse(decision.ForwardMessage) {
+			var sendCtx context.Context
+			sendCtx, wroteReply = observeMCPHTTPWrite(upReq.Context())
+			upReq = upReq.WithContext(sendCtx)
+		}
 		effect.sent = true
 		upResp, err := upstreamClient.Do(upReq)
+		if err == nil && wroteReply != nil && wroteReply() {
+			effect.observe()
+		}
 		if err != nil {
 			terminalStatus, terminalReason = "error", "upstream_error"
 			if errors.Is(context.Cause(upReq.Context()), ael.ErrCapacity) {
@@ -2314,7 +2325,9 @@ func RunHTTPListenerProxy(
 			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
 			return
 		}
-		effect.observe()
+		if wroteReply == nil {
+			effect.observe()
+		}
 		// Upstream replies stay response-side even when a live gate reuses
 		// an admission or inspection descriptor.
 		w.direction = "response"

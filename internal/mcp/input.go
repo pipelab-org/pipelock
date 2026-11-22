@@ -872,6 +872,7 @@ func ForwardScannedInput(
 				sendInputDenial(opts, mcpReceiptMcpInputDenialAudit(), mcpV3SendDenial(frame, effect), blockedCh)
 				return false, nil
 			}
+			awaitReply := isTrackableRequest(msg, frame.ID)
 			attempted := false
 			var registration *requestRegistration
 			var trackingErr error
@@ -884,7 +885,7 @@ func ForwardScannedInput(
 				if reason := taskReleaseReason(); reason != "" {
 					return reason, nil
 				}
-				if isTrackableRequest(msg, verdict.ID) {
+				if awaitReply {
 					outcome.Method = verdict.Method
 					outcome.Receipt = outcome.Receipt.InheritAdmission(admission)
 					registration, trackingErr = trackMCPAdmittedOutcome(logW, opts, tracker, verdict.ID, outcome)
@@ -895,11 +896,11 @@ func ForwardScannedInput(
 						tracker.removeOwnedOutcome(verdict.ID, registration)
 						return reason, nil
 					}
-				}
-				if bindErr := opts.bindV3Send(effect); bindErr != nil {
-					tracker.removeOwnedOutcome(verdict.ID, registration)
-					trackingErr = bindErr
-					return "", nil
+					if bindErr := opts.bindV3Send(effect); bindErr != nil {
+						tracker.removeOwnedOutcome(verdict.ID, registration)
+						trackingErr = bindErr
+						return "", nil
+					}
 				}
 				attempted = true
 				return "", writer.WriteMessage(msg)
@@ -907,7 +908,7 @@ func ForwardScannedInput(
 			switch {
 			case err != nil || !attempted:
 				opts.finishV3Send(ctx, logW, effect, attempted)
-			case effect != nil && isRPCNotification(frame.ID):
+			case effect != nil && !awaitReply:
 				logMCPV3Error(logW, confirmMCPV3Effect(ctx, effect.token, true))
 			}
 			if trackingErr != nil {
