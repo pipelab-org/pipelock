@@ -163,24 +163,60 @@ func TestV3HTTPTransportParity(t *testing.T) {
 						}
 					}
 					var reached, intentVisible atomic.Int64
+					type intentObservation struct {
+						visible bool
+						err     error
+					}
+					priorIntent := make(chan intentObservation, 1)
+					checkIntent := func(boundary string) {
+						actions, err := loadV3TransportActions(dir)
+						visible := slices.ContainsFunc(actions, func(action v3.Action) bool {
+							return action.Phase == "intent" && action.EffectBoundary == boundary
+						})
+						select {
+						case priorIntent <- intentObservation{visible: visible, err: err}:
+						default:
+						}
+					}
+					if surface == TransportConnect && !tc.closed {
+						p.dialer = v3ObservedDialer{contextDialer: p.dialer, beforeDial: func() {
+							checkIntent(boundaryTunnelOpen)
+						}}
+					}
 					observe := func() {
 						reached.Add(1)
+						if surface == TransportWS {
+							if !tc.closed {
+								checkIntent(boundaryUpstreamSend)
+							}
+							return
+						}
 						result, err := v3.VerifyPaths(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: keys})
 						if err != nil || result.Integrity != "ok" {
 							return
 						}
-						if surface == TransportWS {
-							for _, action := range readV3TransportActions(t, dir) {
-								if action.Phase == "intent" && action.EffectBoundary == boundaryUpstreamSend {
-									intentVisible.Add(1)
-								}
-							}
-						} else if (result.Counts.EffectsUnknown != nil && *result.Counts.EffectsUnknown > 0) ||
+						if (result.Counts.EffectsUnknown != nil && *result.Counts.EffectsUnknown > 0) ||
 							(result.Counts.EffectsCompleted != nil && *result.Counts.EffectsCompleted > 0) {
 							intentVisible.Add(1)
 						}
 					}
-					status := exerciseV3Transport(t, p, surface, v3TransportExercise{policyBlock: tc.blocked}, observe)
+					status, _ := exerciseV3Transport(t, p, surface, v3TransportExercise{policyBlock: tc.blocked}, observe)
+					select {
+					case prior := <-priorIntent:
+						if prior.err != nil {
+							t.Fatalf("read receipts before %s effect: %v", surface, prior.err)
+						}
+						if !prior.visible {
+							t.Fatalf("missing intent before %s effect", surface)
+						}
+						if surface == TransportWS {
+							intentVisible.Add(1)
+						}
+					default:
+						if tc.released && !tc.closed && (surface == TransportWS || surface == TransportConnect) {
+							t.Fatal("missing pre-effect observation")
+						}
+					}
 					if tc.released {
 						want := http.StatusOK
 						if surface == TransportWS {
@@ -230,6 +266,16 @@ func TestV3HTTPTransportParity(t *testing.T) {
 	t.Run("adaptive_refusal", runV3MatrixAdaptiveRefusal)
 }
 
+type v3ObservedDialer struct {
+	contextDialer
+	beforeDial func()
+}
+
+func (d v3ObservedDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	d.beforeDial()
+	return d.contextDialer.DialContext(ctx, network, addr)
+}
+
 type v3TransportExercise struct {
 	ctx           context.Context
 	policyBlock   bool
@@ -241,14 +287,14 @@ type v3TransportExercise struct {
 	contentType   string
 }
 
-func exerciseV3Transport(t *testing.T, p *Proxy, surface string, exercise v3TransportExercise, observe func()) int {
+func exerciseV3Transport(t *testing.T, p *Proxy, surface string, exercise v3TransportExercise, observe func()) (int, string) {
 	t.Helper()
 	ctx := exercise.ctx
 	if ctx == nil {
 		ctx = t.Context()
 	}
 	if surface == TransportConnect {
-		return exerciseV3Connect(t, p, exercise, observe)
+		return exerciseV3Connect(t, p, exercise, observe), ""
 	}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		observe()
@@ -321,7 +367,7 @@ func exerciseV3Transport(t *testing.T, p *Proxy, surface string, exercise v3Tran
 		reply := requestWSHandshake(t, strings.TrimPrefix(server.URL, "http://"), strings.TrimPrefix(upstream.URL, "http://"), nil)
 		_ = reply.Body.Close()
 		waitForV3Transport(t, done)
-		return reply.StatusCode
+		return reply.StatusCode, ""
 	case transportInterceptReceipt:
 		cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 		cfg.FetchProxy.Monitoring.Blocklist = p.CurrentConfig().FetchProxy.Monitoring.Blocklist
@@ -353,7 +399,7 @@ func exerciseV3Transport(t *testing.T, p *Proxy, surface string, exercise v3Tran
 			// TLS connection and hiding the refusal from the observer.
 			req := request("https://" + testLoopbackIP + "/example")
 			newInterceptHandler(ic, rt).ServeHTTP(downstream, req)
-			return response.Code
+			return response.Code, response.Body.String()
 		}
 		clientConn, proxyConn := net.Pipe()
 		t.Cleanup(func() { _ = clientConn.Close() })
@@ -377,14 +423,15 @@ func exerciseV3Transport(t *testing.T, p *Proxy, surface string, exercise v3Tran
 		}
 		waitForInterceptReceipts(t, reply, clientConn, done)
 		defer func() { _ = reply.Body.Close() }()
-		if _, err := io.Copy(io.Discard, reply.Body); err != nil {
+		body, err := io.ReadAll(reply.Body)
+		if err != nil {
 			t.Fatal(err)
 		}
-		return reply.StatusCode
+		return reply.StatusCode, string(body)
 	default:
 		t.Fatalf("unknown surface %q", surface)
 	}
-	return response.Result().StatusCode
+	return response.Result().StatusCode, response.Body.String()
 }
 
 func exerciseV3Connect(t *testing.T, p *Proxy, exercise v3TransportExercise, observe func()) int {
@@ -499,18 +546,37 @@ func assertV3TransportEffects(t *testing.T, dir, surface string) {
 
 func readV3TransportActions(t *testing.T, dir string) []v3.Action {
 	t.Helper()
-	paths, err := filepath.Glob(filepath.Join(dir, "*.receipt-v3.jsonl"))
-	if err != nil || len(paths) != 1 {
-		t.Fatalf("expected one signed stream: %v (%v)", paths, err)
+	actions, err := loadV3TransportActions(dir)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return readV3TransportFile(t, paths[0])
+	return actions
+}
+
+func loadV3TransportActions(dir string) ([]v3.Action, error) {
+	paths, err := filepath.Glob(filepath.Join(dir, "*.receipt-v3.jsonl"))
+	if err != nil {
+		return nil, fmt.Errorf("find signed stream: %w", err)
+	}
+	if len(paths) != 1 {
+		return nil, fmt.Errorf("expected one signed stream, found %d", len(paths))
+	}
+	return loadV3TransportFile(paths[0])
 }
 
 func readV3TransportFile(t *testing.T, path string) []v3.Action {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Clean(path))
+	actions, err := loadV3TransportFile(path)
 	if err != nil {
 		t.Fatal(err)
+	}
+	return actions
+}
+
+func loadV3TransportFile(path string) ([]v3.Action, error) {
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return nil, err
 	}
 	var actions []v3.Action
 	for line := range bytes.SplitAfterSeq(data, []byte{'\n'}) {
@@ -519,24 +585,24 @@ func readV3TransportFile(t *testing.T, path string) []v3.Action {
 		}
 		envelope, code := v3.ExportDSSE(line)
 		if code != "" {
-			t.Fatal(code)
+			return nil, fmt.Errorf("export receipt: %s", code)
 		}
 		var decoded struct{ Payload []byte }
 		if err := json.Unmarshal(envelope, &decoded); err != nil {
-			t.Fatal(err)
+			return nil, err
 		}
 		var payload struct {
 			Kind string
 			Body v3.Action
 		}
 		if err := json.Unmarshal(decoded.Payload, &payload); err != nil {
-			t.Fatal(err)
+			return nil, err
 		}
 		if payload.Kind == "action" {
 			actions = append(actions, payload.Body)
 		}
 	}
-	return actions
+	return actions, nil
 }
 
 type v3DeliveryObserver struct {
@@ -1019,7 +1085,7 @@ func runV3MatrixUpstreamError(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/required=%t", surface, required), func(t *testing.T) {
 				p, writer, dir, keys := newTestV3HTTPProxy(t, surface, required, nil)
 				var reached atomic.Int64
-				status := exerciseV3Transport(t, p, surface, v3TransportExercise{upstreamError: true}, func() {
+				status, _ := exerciseV3Transport(t, p, surface, v3TransportExercise{upstreamError: true}, func() {
 					reached.Add(1)
 				})
 				wantStatus, wantHits := http.StatusBadGateway, int64(1)
@@ -1097,7 +1163,7 @@ func runV3MatrixCancellation(t *testing.T) {
 					}
 					p, writer, dir, keys := newTestV3HTTPProxy(t, surface, required, createTemp)
 					var reached atomic.Int64
-					status := exerciseV3Transport(t, p, surface, v3TransportExercise{ctx: ctx}, func() {
+					status, _ := exerciseV3Transport(t, p, surface, v3TransportExercise{ctx: ctx}, func() {
 						reached.Add(1)
 					})
 					if reached.Load() != 0 || status < http.StatusBadRequest || ctx.Err() == nil {
@@ -1139,7 +1205,7 @@ func runV3MatrixDeliveryUncertainty(t *testing.T) {
 					}
 					p, writer, dir, keys := newTestV3HTTPProxy(t, surface, required, nil)
 					var reached atomic.Int64
-					status := exerciseV3Transport(t, p, surface, tc.exercise, func() {
+					status, _ := exerciseV3Transport(t, p, surface, tc.exercise, func() {
 						reached.Add(1)
 					})
 					if reached.Load() != 1 || status != http.StatusOK {
@@ -1275,7 +1341,7 @@ func runV3MatrixRedirect(t *testing.T) {
 				}
 				p, writer, dir, keys := newTestV3HTTPProxy(t, surface, required, nil)
 				var reached atomic.Int64
-				status := exerciseV3Transport(t, p, surface, v3TransportExercise{redirect: true}, func() {
+				status, _ := exerciseV3Transport(t, p, surface, v3TransportExercise{redirect: true}, func() {
 					reached.Add(1)
 				})
 				wantStatus, wantHits := http.StatusFound, int64(1)
@@ -1322,7 +1388,7 @@ func runV3MatrixAdaptiveRefusal(t *testing.T) {
 					escalateRec(p.sessionMgrPtr.Load().GetOrCreate(key), 1)
 				}
 				var reached atomic.Int64
-				status := exerciseV3Transport(t, p, surface, v3TransportExercise{}, func() { reached.Add(1) })
+				status, _ := exerciseV3Transport(t, p, surface, v3TransportExercise{}, func() { reached.Add(1) })
 				if status != http.StatusForbidden || reached.Load() != 0 {
 					t.Fatalf("adaptive refusal status=%d upstream hits=%d", status, reached.Load())
 				}
@@ -1424,16 +1490,24 @@ type v3DeliveryFaultObserver struct {
 	*httptest.ResponseRecorder
 	conn     net.Conn
 	flushErr error
+	flushes  int
 }
 
 func (*v3DeliveryFaultObserver) Write([]byte) (int, error) { return 0, nil }
-func (w *v3DeliveryFaultObserver) FlushError() error       { return w.flushErr }
+func (w *v3DeliveryFaultObserver) FlushError() error {
+	w.flushes++
+	return w.flushErr
+}
 
 func (w *v3DeliveryFaultObserver) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return w.conn, nil, nil
 }
 
 func TestV3DeliveryWriterTransportOutcomes(t *testing.T) {
+	emptyResponse := func(_ *testing.T, w *v3DeliveryWriter) {
+		w.Header().Set("Content-Length", "0")
+		w.WriteHeader(http.StatusOK)
+	}
 	for _, tc := range []struct {
 		name, outcome string
 		method        string
@@ -1462,10 +1536,8 @@ func TestV3DeliveryWriterTransportOutcomes(t *testing.T) {
 		{"head", "attempt_unknown", http.MethodHead, func(_ *testing.T, w *v3DeliveryWriter) {
 			w.WriteHeader(http.StatusOK)
 		}},
-		{"no trailer", "completed", http.MethodGet, func(_ *testing.T, w *v3DeliveryWriter) {
-			w.Header().Set("Content-Length", "0")
-			w.WriteHeader(http.StatusOK)
-		}},
+		{"finish flush success", "completed", http.MethodGet, emptyResponse},
+		{"finish flush error", "attempt_unknown", http.MethodGet, emptyResponse},
 		{"trailer prefix", "attempt_unknown", http.MethodGet, func(_ *testing.T, w *v3DeliveryWriter) {
 			w.Header().Set("Content-Length", "0")
 			w.Header().Set(http.TrailerPrefix+"Example", "value")
@@ -1479,7 +1551,7 @@ func TestV3DeliveryWriterTransportOutcomes(t *testing.T) {
 			conn, peer := net.Pipe()
 			t.Cleanup(func() { _ = conn.Close(); _ = peer.Close() })
 			observer := &v3DeliveryFaultObserver{ResponseRecorder: httptest.NewRecorder(), conn: conn}
-			if tc.name == "flush error" || tc.name == "head" {
+			if tc.name == "flush error" || tc.name == "head" || tc.name == "finish flush error" {
 				observer.flushErr = io.ErrClosedPipe
 			}
 			w, finish := p.startReceiptDelivery(observer, req, p.CurrentConfig(), opts)
@@ -1488,7 +1560,14 @@ func TestV3DeliveryWriterTransportOutcomes(t *testing.T) {
 				t.Fatal("receipt writer did not preserve its underlying writer")
 			}
 			tc.exercise(t, delivery)
+			finishFlush := strings.HasPrefix(tc.name, "finish flush")
+			if finishFlush && observer.flushes != 0 {
+				t.Fatal("response flushed before finish")
+			}
 			finish()
+			if finishFlush && observer.flushes != 1 {
+				t.Fatalf("finish flushed %d times, want 1", observer.flushes)
+			}
 			if err := writer.Close(t.Context(), nil); err != nil {
 				t.Fatal(err)
 			}
@@ -1611,13 +1690,16 @@ func TestV3BufferedResponseEvidence(t *testing.T) {
 				cfg.ResponseScanning.Action = tc.action
 				cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: "response marker", Regex: marker}}
 			})
-			status := exerciseV3Transport(t, p, tc.surface, v3TransportExercise{ctx: t.Context(), responseBody: marker}, func() {})
+			status, body := exerciseV3Transport(t, p, tc.surface, v3TransportExercise{ctx: t.Context(), responseBody: marker}, func() {})
 			wantStatus := http.StatusOK
 			if tc.action == config.ActionBlock {
 				wantStatus = http.StatusForbidden
 			}
 			if status != wantStatus {
 				t.Fatalf("status = %d, want %d", status, wantStatus)
+			}
+			if present := strings.Contains(body, marker); present != (tc.action == config.ActionWarn) {
+				t.Fatalf("response marker present = %t for %s", present, tc.action)
 			}
 			if err := writer.Close(t.Context(), nil); err != nil {
 				t.Fatal(err)
@@ -1880,7 +1962,7 @@ func TestV3OptionalResponsePolicyEvidence(t *testing.T) {
 					exercise.responseBody = `{"url":"https://blocked.vendor.example/content","text":"example"}`
 					exercise.contentType = "application/a2a+json"
 				}
-				if status := exerciseV3Transport(t, p, tc.surface, exercise, func() {}); status != http.StatusOK {
+				if status, _ := exerciseV3Transport(t, p, tc.surface, exercise, func() {}); status != http.StatusOK {
 					t.Fatalf("status=%d", status)
 				}
 			}
@@ -1890,11 +1972,33 @@ func TestV3OptionalResponsePolicyEvidence(t *testing.T) {
 			actions := readV3TransportActions(t, dir)
 			for _, action := range actions {
 				if action.Phase == "intent" && action.Layer == tc.layer && action.EffectBoundary == boundaryDownstreamDelivery {
+					if tc.layer == "a2a_response" {
+						assertV3SupportingDeliveryOutcome(t, actions, action)
+					}
 					return
 				}
 			}
 			t.Fatalf("missing %s delivery evidence: %+v", tc.layer, actions)
 		})
+	}
+}
+
+func assertV3SupportingDeliveryOutcome(t *testing.T, actions []v3.Action, intent v3.Action) {
+	t.Helper()
+	var supporting, delivery string
+	for _, action := range actions {
+		if action.Phase != "outcome" || action.EffectBoundary != boundaryDownstreamDelivery {
+			continue
+		}
+		switch action.ActionID {
+		case intent.ActionID:
+			supporting = action.OutcomeClass
+		case intent.ParentActionID:
+			delivery = action.OutcomeClass
+		}
+	}
+	if (delivery != "completed" && delivery != "attempt_unknown") || supporting != delivery {
+		t.Fatalf("%s outcome = %q, main delivery outcome = %q", intent.Layer, supporting, delivery)
 	}
 }
 
