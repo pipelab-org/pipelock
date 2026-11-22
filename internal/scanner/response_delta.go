@@ -180,7 +180,7 @@ func newResponseDeltaWidth(tree *syntax.Regexp) (responseDeltaWidth, bool) {
 	if width, ok := responseRegexpWidth(tree); ok {
 		return responseDeltaWidth{width: width}, true
 	}
-	_, ok := responseRegexpWidthWith(tree, func(sub *syntax.Regexp) (responseWindowWidth, bool) {
+	_, ok := responseRegexpWidthWith(tree, utf8.UTFMax, func(sub *syntax.Regexp) (responseWindowWidth, bool) {
 		return responseWindowWidth{fixed: 1}, responseRepeatBarriers(sub) != (asciiByteSet{})
 	})
 	return responseDeltaWidth{tree: tree}, ok
@@ -271,7 +271,7 @@ func (v *responseDeltaView) matchPlanned(p *compiledPattern, text string, plan r
 	width := plan.width
 	if plan.tree != nil {
 		var ok bool
-		width, ok = responseRegexpWidthWith(plan.tree, func(sub *syntax.Regexp) (responseWindowWidth, bool) {
+		width, ok = responseRegexpWidthWith(plan.tree, utf8.UTFMax, func(sub *syntax.Regexp) (responseWindowWidth, bool) {
 			barriers := responseRepeatBarriers(sub)
 			if barriers == (asciiByteSet{}) {
 				return responseWindowWidth{}, false
@@ -332,20 +332,11 @@ func responseDeltaRanges(text string, edits []matchingEdit, width int) ([]regexp
 	covered := 0
 	for _, edit := range edits {
 		start, end := max(0, edit.viewStart-width), min(len(text), edit.viewEnd+width)
-		// Keep the UTF-8 interpretation at both edges. A long run of
-		// continuation bytes has no cheap boundary proof.
-		for i := 0; start > 0 && !utf8.RuneStart(text[start]); i++ {
-			if i == utf8.UTFMax {
-				return nil, false
-			}
-			start--
+		window, ok := alignResponseRegexpRange(text, regexpWindowRange{start, end})
+		if !ok {
+			return nil, false
 		}
-		for i := 0; end < len(text) && !utf8.RuneStart(text[end]); i++ {
-			if i == utf8.UTFMax {
-				return nil, false
-			}
-			end++
-		}
+		start, end = window.start, window.end
 		if last := len(ranges) - 1; last >= 0 && start <= ranges[last].end {
 			covered += max(0, end-ranges[last].end)
 			ranges[last].end = max(end, ranges[last].end)
@@ -358,4 +349,26 @@ func responseDeltaRanges(text string, edits []matchingEdit, width int) ([]regexp
 		}
 	}
 	return ranges, true
+}
+
+// Avoid splitting UTF-8 at slice edges. Very long runs of continuation
+// bytes are inconclusive and fall back to the whole matcher.
+func alignResponseRegexpRange(text string, window regexpWindowRange) (regexpWindowRange, bool) {
+	for i := 0; window.start > 0 && window.start < len(text) && !utf8.RuneStart(text[window.start]); i++ {
+		if i == utf8.UTFMax {
+			return regexpWindowRange{}, false
+		}
+		window.start--
+	}
+	for i := 0; window.end < len(text) && !utf8.RuneStart(text[window.end]); i++ {
+		if i == utf8.UTFMax {
+			return regexpWindowRange{}, false
+		}
+		window.end++
+	}
+	return window, true
+}
+
+func responseMatchTouchesWindowEdge(loc []int, window regexpWindowRange, textLen int) bool {
+	return window.start != 0 && loc[0] == window.start || window.end != textLen && loc[1] == window.end
 }

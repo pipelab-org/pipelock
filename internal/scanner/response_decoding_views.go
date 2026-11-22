@@ -77,6 +77,10 @@ func (s *Scanner) walkAdditionalInjectionViews(ctx context.Context, content, tar
 	}
 	outbound, _ := ctx.Value(outboundInjectionContextKey{}).(bool)
 	queue := newInjectionDecodeQueue(content, outbound)
+	var chainWindows *responseChainWindowMemo
+	if !outbound {
+		chainWindows = &responseChainWindowMemo{}
+	}
 	if !outbound {
 		queue.views[0].proof = options.rootProof
 	}
@@ -193,6 +197,9 @@ func (s *Scanner) walkAdditionalInjectionViews(ctx context.Context, content, tar
 				continue
 			}
 			memo := newResponseMatchMemo(len(view.text))
+			if memo != nil {
+				memo.chainWindows = chainWindows
+			}
 			if memo != nil && aligned && parent.proof.hasNegatives() {
 				if deltaParent == nil {
 					deltaParent = newResponseDeltaParent(parent)

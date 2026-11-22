@@ -6,6 +6,8 @@ package scanner
 import (
 	"strconv"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 // responseMatchMemo reuses only proven empty pattern results within one response
@@ -25,6 +27,8 @@ type responseMatchMemo struct {
 	bytes         int
 	entries       int
 	matchingRoot  *matchingView
+	chainWindows  *responseChainWindowMemo
+	normalized    [matchingVowel + 1]responseNormalizedView
 	deltaParent   *responseDeltaParent
 	deltaProof    responseDeltaProof
 	deltaViews    [matchingVowel + 1]*responseDeltaView
@@ -36,6 +40,39 @@ func (m *responseMatchMemo) outboundError() error {
 		return nil
 	}
 	return m.outboundErr()
+}
+
+type responseNormalizedView struct {
+	source, text string
+	ready        bool
+}
+
+// Core and configured passes consume the same normalization of the same
+// bytes. Keep one result per transform within their shared scan.
+func (m *responseMatchMemo) normalize(text string, kind matchingTransform) string {
+	if m == nil {
+		return normalizeResponseMatchingView(text, kind)
+	}
+	view := &m.normalized[kind]
+	if !view.ready || view.source != text {
+		*view = responseNormalizedView{text, normalizeResponseMatchingView(text, kind), true}
+	}
+	return view.text
+}
+
+func normalizeResponseMatchingView(text string, kind matchingTransform) string {
+	switch kind {
+	case matchingPrimary:
+		return normalize.ForMatching(text)
+	case matchingSpaced:
+		return normalize.ForMatchingSpaced(text)
+	case matchingLeet:
+		return normalize.Leetspeak(text)
+	case matchingVowel:
+		return normalize.FoldVowels(text)
+	default:
+		return text
+	}
 }
 
 type responseNegativeKey struct {
@@ -101,7 +138,11 @@ func (m *responseMatchMemo) matchTransformed(pf *responsePreFilter, patterns []*
 		}
 		delta = m.deltaViews[kind]
 	}
-	result := m.matchPositioned(pf, patterns, content, m.matchingView(kind, content, program), delta)
+	positions := m.matchingView(kind, content, program)
+	if positions != nil {
+		positions.responseChainWindows = m.chainWindows
+	}
+	result := m.matchPositioned(pf, patterns, content, positions, delta)
 	if m != nil {
 		m.deltaProof[kind] = m.views[content]
 	}
@@ -126,7 +167,7 @@ func (m *responseMatchMemo) matchPositioned(pf *responsePreFilter, patterns []*c
 	if len(known) > 0 {
 		remaining = make([]*compiledPattern, 0, len(patterns))
 		if pf != nil {
-			remainingFilter = &responsePreFilter{windows: pf.windows, deltaWidths: pf.deltaWidths}
+			remainingFilter = &responsePreFilter{windows: pf.windows, chains: pf.chains, deltaWidths: pf.deltaWidths}
 		}
 		for i, p := range patterns {
 			key, eligible := responseNegativePatternKey(p)

@@ -300,6 +300,13 @@ func responseSimpleFold(value string) string {
 	var out strings.Builder
 	out.Grow(len(value))
 	for _, r := range value {
+		if r < utf8.RuneSelf {
+			if r >= 'a' && r <= 'z' {
+				r -= 'a' - 'A'
+			}
+			out.WriteRune(r)
+			continue
+		}
 		canonical := r
 		for folded := unicode.SimpleFold(r); folded != r; folded = unicode.SimpleFold(folded) {
 			if folded < canonical {

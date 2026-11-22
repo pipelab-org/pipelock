@@ -5,28 +5,32 @@ package scanner
 
 import (
 	"regexp"
+	"regexp/syntax"
 	"slices"
 	"sort"
 	"sync"
 )
 
 const (
-	matchingMaxViewBytes = 16 << 20
-	matchingMaxHits      = 4096
-	matchingMaxEdits     = 64
-	matchingMaxCells     = 1 << 19
-	matchingMaxWindows   = 256
-	matchingMaxSegments  = 4096
+	matchingMaxViewBytes           = 16 << 20
+	matchingMaxHits                = 4096
+	responseMatchingMaxHits        = 262144
+	responseMatchingMaxLiteralHits = 32768
+	matchingMaxEdits               = 64
+	matchingMaxCells               = 1 << 19
+	matchingMaxWindows             = 256
+	matchingMaxSegments            = 4096
 )
 
 // matchingLiterals uses ASCII-folded byte coordinates. Unicode projections
 // must be built by the caller, using the same normalization as its matcher.
 type matchingLiterals struct {
-	machine literalAutomaton[int]
-	symbols [256]int16
-	ids     map[string]int
-	lengths []int
-	longest int
+	machine  literalAutomaton[int]
+	symbols  [256]int16
+	ids      map[string]int
+	lengths  []int
+	longest  int
+	response bool
 }
 
 func newMatchingLiterals(literals []string) *matchingLiterals {
@@ -106,6 +110,13 @@ type matchingView struct {
 	children                        map[matchingTransform]*matchingView
 	retained                        int
 	hits                            [][]int
+	truncated                       map[int]bool
+	responseChainHits               map[string]responseChainStageHits
+	responseChainFiltered           map[responseChainPositionKey][]int
+	responseChainWindows            *responseChainWindowMemo
+	responseChainSortedHits         int
+	responseChainWidths             map[*syntax.Regexp]responseChainMeasuredWidth
+	responseChainRuns               *responseDeltaView
 	ready                           bool
 	windowMu                        sync.Mutex
 	windows                         map[windowMatchKey][][2]int
@@ -164,7 +175,7 @@ func (v *matchingView) positions(literal string) ([]int, bool) {
 		return nil, false
 	}
 	v.index()
-	if v.hits == nil {
+	if v.hits == nil || v.truncated[id] {
 		return nil, false
 	}
 	return v.hits[id], true
@@ -177,21 +188,42 @@ func (v *matchingView) index() {
 	v.ready = true
 	hits := make([][]int, len(v.program.lengths))
 	remaining := matchingMaxHits
+	if v.program.response {
+		remaining = responseMatchingMaxHits
+	}
 	add := func(id, at int) bool {
-		if remaining == 0 {
-			return false
+		if v.truncated[id] {
+			return true
+		}
+		limit := responseMatchingMaxLiteralHits
+		if v.program.lengths[id] == 1 {
+			limit = matchingMaxHits
+		}
+		if remaining == 0 || v.program.response && len(hits[id]) == limit {
+			if !v.program.response {
+				return false
+			}
+			if v.truncated == nil {
+				v.truncated = make(map[int]bool)
+			}
+			v.truncated[id] = true
+			remaining += len(hits[id])
+			hits[id] = nil
+			return true
 		}
 		remaining--
 		hits[id] = append(hits[id], at)
 		return true
 	}
-	if v.parent == nil {
+	if v.parent != nil {
+		v.parent.index()
+	}
+	if v.parent == nil || v.program.response && len(v.parent.truncated) > 0 {
 		if v.program.walk(v.text, 0, len(v.text), add) {
 			v.hits = hits
 		}
 		return
 	}
-	v.parent.index()
 	if v.parent.hits == nil {
 		return
 	}
@@ -266,6 +298,9 @@ func (v *matchingView) transformed(kind matchingTransform, text string) *matchin
 		return nil
 	}
 	child := v.deriveText(text)
+	if child == nil && v.program.response {
+		child = newMatchingView(text, v.program)
+	}
 	if v.children == nil {
 		v.children = make(map[matchingTransform]*matchingView)
 	}

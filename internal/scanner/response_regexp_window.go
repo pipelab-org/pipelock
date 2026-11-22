@@ -33,7 +33,11 @@ var responseWindowRunBytes = func() asciiByteSet {
 }()
 
 func responseRegexpWidth(tree *syntax.Regexp) (responseWindowWidth, bool) {
-	return responseRegexpWidthWith(tree, func(sub *syntax.Regexp) (responseWindowWidth, bool) {
+	return responseRegexpWidthForBytes(tree, utf8.UTFMax)
+}
+
+func responseRegexpWidthForBytes(tree *syntax.Regexp, maxRuneBytes int) (responseWindowWidth, bool) {
+	return responseRegexpWidthWith(tree, maxRuneBytes, func(sub *syntax.Regexp) (responseWindowWidth, bool) {
 		for sub.Op == syntax.OpCapture {
 			sub = sub.Sub[0]
 		}
@@ -45,7 +49,7 @@ func responseRegexpWidth(tree *syntax.Regexp) (responseWindowWidth, bool) {
 	})
 }
 
-func responseRegexpWidthWith(tree *syntax.Regexp, repeat func(*syntax.Regexp) (responseWindowWidth, bool)) (width responseWindowWidth, ok bool) {
+func responseRegexpWidthWith(tree *syntax.Regexp, maxRuneBytes int, repeat func(*syntax.Regexp) (responseWindowWidth, bool)) (width responseWindowWidth, ok bool) {
 	switch tree.Op {
 	case syntax.OpNoMatch, syntax.OpEmptyMatch, syntax.OpBeginLine, syntax.OpEndLine,
 		syntax.OpBeginText, syntax.OpEndText, syntax.OpWordBoundary, syntax.OpNoWordBoundary:
@@ -53,23 +57,23 @@ func responseRegexpWidthWith(tree *syntax.Regexp, repeat func(*syntax.Regexp) (r
 		for _, r := range tree.Rune {
 			// RuneError may also represent one invalid byte. Its encoded
 			// width still bounds either representation.
-			n := utf8.RuneLen(r)
+			n := responseRegexpRuneWidth(r)
 			if tree.Flags&syntax.FoldCase != 0 {
 				for folded := unicode.SimpleFold(r); folded != r; folded = unicode.SimpleFold(folded) {
-					n = max(n, utf8.RuneLen(folded))
+					n = max(n, responseRegexpRuneWidth(folded))
 				}
 			}
-			width.fixed += n
+			width.fixed += min(n, maxRuneBytes)
 		}
 	case syntax.OpCharClass:
 		if len(tree.Rune) > 0 {
-			width.fixed = utf8.RuneLen(tree.Rune[len(tree.Rune)-1])
+			width.fixed = min(responseRegexpRuneWidth(tree.Rune[len(tree.Rune)-1]), maxRuneBytes)
 		}
 	case syntax.OpAnyChar, syntax.OpAnyCharNotNL:
-		width.fixed = utf8.UTFMax
+		width.fixed = maxRuneBytes
 	case syntax.OpConcat, syntax.OpAlternate:
 		for _, sub := range tree.Sub {
-			w, bounded := responseRegexpWidthWith(sub, repeat)
+			w, bounded := responseRegexpWidthWith(sub, maxRuneBytes, repeat)
 			if !bounded {
 				return responseWindowWidth{}, false
 			}
@@ -82,13 +86,13 @@ func responseRegexpWidthWith(tree *syntax.Regexp, repeat func(*syntax.Regexp) (r
 			}
 		}
 	case syntax.OpCapture, syntax.OpQuest:
-		return responseRegexpWidthWith(tree.Sub[0], repeat)
+		return responseRegexpWidthWith(tree.Sub[0], maxRuneBytes, repeat)
 	case syntax.OpRepeat, syntax.OpStar, syntax.OpPlus:
 		sub := tree.Sub[0]
 		if tree.Op != syntax.OpRepeat || tree.Max < 0 {
 			return repeat(sub)
 		}
-		w, bounded := responseRegexpWidthWith(sub, repeat)
+		w, bounded := responseRegexpWidthWith(sub, maxRuneBytes, repeat)
 		if !bounded || tree.Max > 0 && (w.fixed > responseWindowMaxWidth/tree.Max || w.runs > responseWindowMaxWidth/tree.Max) {
 			return responseWindowWidth{}, false
 		}
@@ -97,6 +101,15 @@ func responseRegexpWidthWith(tree *syntax.Regexp, repeat func(*syntax.Regexp) (r
 		return responseWindowWidth{}, false
 	}
 	return width, width.fixed <= responseWindowMaxWidth && width.runs <= responseWindowMaxWidth
+}
+
+// An invalid code point at the upper end of a class must not make the
+// class's width smaller than that of its valid members.
+func responseRegexpRuneWidth(r rune) int {
+	if width := utf8.RuneLen(r); width > 0 {
+		return width
+	}
+	return utf8.UTFMax
 }
 
 func responseMaxWindowRun(text string) int {
@@ -279,15 +292,24 @@ func (pf *responsePreFilter) windowMatcher(content string, view *responsePreFilt
 				continue
 			}
 			if plan := pf.windows[patterns[index].re]; plan != nil && plan.responseWidth.runs != 0 {
-				view.maxWindowRun = responseMaxWindowRun(content)
-				view.windowRunReady = true
+				view.prepareWindowRun(content)
 				break
 			}
 		}
 	}
-	folded := responseWindowFold(content, view.folded)
+	folded := ""
+	if view.ready {
+		folded = responseWindowFold(content, view.folded)
+	}
 	return func(p *compiledPattern, text string) []ResponseMatch {
 		return matchResponseWindow(p, text, folded, pf.windows[p.re], view)
+	}
+}
+
+func (view *responsePreFilterView) prepareWindowRun(content string) {
+	if !view.windowRunReady {
+		view.maxWindowRun = responseMaxWindowRun(content)
+		view.windowRunReady = true
 	}
 }
 

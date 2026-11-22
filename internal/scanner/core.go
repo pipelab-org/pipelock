@@ -382,7 +382,7 @@ func (s *Scanner) scanCoreResponseWithOptions(content string, suppress coreRespo
 	}
 
 	original := content
-	content = normalize.ForMatching(content)
+	content = memo.normalize(content, matchingPrimary)
 
 	// Each pass drops defensive anti-solicitation matches (e.g. "never send
 	// your password to us") and operator suppressions BEFORE treating the pass
@@ -400,7 +400,7 @@ func (s *Scanner) scanCoreResponseWithOptions(content string, suppress coreRespo
 	}
 
 	// Secondary: replace invisible chars with spaces.
-	spaced := normalize.ForMatchingSpaced(original)
+	spaced := memo.normalize(original, matchingSpaced)
 	if spaced != content {
 		if matches := filterCoreResponsePass(spaced, "", memo.matchTransformed(s.core.responsePreFilter, s.core.responsePatterns, spaced, s.responseMatchingLiterals, matchingSpaced), ViewInvisibleSpaced, suppress); len(matches) > 0 {
 			return responseMatchSet{matches: matches, content: spaced}
@@ -411,7 +411,7 @@ func (s *Scanner) scanCoreResponseWithOptions(content string, suppress coreRespo
 	}
 
 	// Tertiary: leetspeak normalization.
-	leeted := normalize.Leetspeak(content)
+	leeted := memo.normalize(content, matchingLeet)
 	if leeted != content {
 		if matches := filterCoreResponsePass(leeted, content, memo.matchTransformed(s.core.responsePreFilter, s.core.responsePatterns, leeted, s.responseMatchingLiterals, matchingLeet), ViewLeetspeak, suppress); len(matches) > 0 {
 			return responseMatchSet{matches: matches, content: leeted}
@@ -433,7 +433,7 @@ func (s *Scanner) scanCoreResponseWithOptions(content string, suppress coreRespo
 
 	// Quinary: vowel-folded matching.
 	if len(s.core.responseVowelFoldPatterns) > 0 {
-		folded := normalize.FoldVowels(content)
+		folded := memo.normalize(content, matchingVowel)
 		if folded != content {
 			if matches := filterCoreResponsePass(folded, content, memo.matchTransformed(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded, s.responseMatchingLiterals, matchingVowel), ViewVowelFold, suppress); len(matches) > 0 {
 				return responseMatchSet{matches: matches, content: folded}

@@ -767,7 +767,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	// content below would be a no-op (nothing left to replace) and silently
 	// disable the pass - see scanCoreResponse, which reassembles from `original`.
 	preStripContent := content
-	content = normalize.ForMatching(content)
+	content = memo.normalize(content, matchingPrimary)
 
 	// Primary: run response patterns whose keywords appear in content.
 	// Pre-filter checks are per-pass: each normalized variant gets its
@@ -788,7 +788,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	// have no other surviving defense because the opt-space pass only relaxes
 	// trailing \s+, not literal spaces inside the alternation.
 	if len(matches) == 0 && memo.outboundError() == nil {
-		spaced := normalize.ForMatchingSpaced(preStripContent)
+		spaced := memo.normalize(preStripContent, matchingSpaced)
 		if spaced != content {
 			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(spaced, memo.matchTransformed(s.responsePreFilter, s.responsePatterns, spaced, s.responseMatchingLiterals, matchingSpaced)), ViewInvisibleSpaced))
 			if len(matches) > 0 {
@@ -800,7 +800,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	// Tertiary: leetspeak normalization. Pre-filter runs on the LEETED
 	// content, catching keywords that emerge after digit-to-letter conversion.
 	if len(matches) == 0 && memo.outboundError() == nil {
-		leeted := normalize.Leetspeak(content)
+		leeted := memo.normalize(content, matchingLeet)
 		if leeted != content {
 			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(leeted, memo.matchTransformed(s.responsePreFilter, s.responsePatterns, leeted, s.responseMatchingLiterals, matchingLeet)), ViewLeetspeak))
 		}
@@ -819,7 +819,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	// near-miss words like "instroctions" that don't match "instructions".
 	// Folding all vowels to 'a' in both content and patterns makes them match.
 	if len(matches) == 0 && len(s.responseVowelFoldPatterns) > 0 && memo.outboundError() == nil {
-		folded := normalize.FoldVowels(content)
+		folded := memo.normalize(content, matchingVowel)
 		if folded != content {
 			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(folded, memo.matchTransformed(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded, s.responseMatchingLiterals, matchingVowel)), ViewVowelFold))
 		}
@@ -1191,7 +1191,8 @@ func matchPatternsPreFilteredWithMemo(pf *responsePreFilter, patterns []*compile
 	if view == nil {
 		view = &responsePreFilterView{}
 	}
-	indices := pf.patternsToCheckWithMemo(content, view)
+	chains := pf.chainRanges(content, view, patterns)
+	indices := pf.patternsToCheckWithMemo(content, view, patterns, chains)
 	if len(indices) == 0 {
 		return nil
 	}
@@ -1214,6 +1215,28 @@ func matchPatternsPreFilteredWithMemo(pf *responsePreFilter, patterns []*compile
 				}
 			}
 			return full(p, text)
+		}
+	}
+	if len(chains) > 0 {
+		fallback := match
+		match = func(p *compiledPattern, text string) []ResponseMatch {
+			if ranges, ok := chains.patternWindows(p); ok {
+				if !responsePatternCanMatch(p, text) {
+					return nil
+				}
+				return responseMatchesAt(p, text, matchResponseChainWindows(p.re, text, ranges, view.positions, false))
+			}
+			if hasExternalTransferCompanions(p) && responsePatternCanMatch(p, text) {
+				locations := responsePatternMatchLocationsWith(p, text, func(re *regexp.Regexp, captures bool) [][]int {
+					ranges, ok := chains[responseChainKey{p, re}]
+					if ok {
+						return matchResponseChainWindows(re, text, ranges, view.positions, captures)
+					}
+					return responseRegexpLocations(re, text, captures)
+				})
+				return responseMatchesAt(p, text, locations)
+			}
+			return fallback(p, text)
 		}
 	}
 	workers := min(runtime.GOMAXPROCS(0), len(indices))
