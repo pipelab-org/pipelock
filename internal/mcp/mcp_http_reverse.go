@@ -33,6 +33,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
@@ -389,6 +390,13 @@ func RunHTTPListenerProxy(
 	mux.HandleFunc("/", func(rawWriter http.ResponseWriter, r *http.Request) {
 		var denialAudit mcpDenialAudit
 		w := &mcpListenerDenialWriter{ResponseWriter: rawWriter, opts: opts, descriptor: &denialAudit}
+		if opts.receiptEffects.enabled {
+			w.localReply = &mcpListenerLocalReply{
+				ctx: r.Context(), writer: w, opts: baseOpts.snapshotScanPolicy(), log: safeLogW,
+				evidence: receipt.EmitOpts{Method: r.Method, Transport: deferred.SurfaceMCPHTTPListener},
+			}
+			defer w.localReply.finish()
+		}
 		// MCP responses are never storable by an intermediary. Protocol revision
 		// 2026-07-28 lets a server mark list and read results cacheScope "public",
 		// and a retained tools/list is the tool-poisoning surface: a poisoned or
@@ -582,6 +590,9 @@ func RunHTTPListenerProxy(
 		if listenerPrincipal.doorIdentity != nil {
 			requestBaseOpts.v3DoorIdentity = listenerPrincipal.doorIdentity
 			requestBaseOpts.AuthorityActor = listenerPrincipal.actor
+		}
+		if w.localReply != nil {
+			w.localReply.opts = requestBaseOpts
 		}
 		admission, admissionErr := requestBaseOpts.admitNativeRequest()
 		if admissionErr != nil {
@@ -800,6 +811,12 @@ func RunHTTPListenerProxy(
 			if dec.mutateReceipt != nil {
 				receiptOpts = dec.mutateReceipt(receiptOpts)
 			}
+			if local := w.localReply; local != nil {
+				evidence := receiptOpts
+				evidence.ActionID, evidence.ParentActionID = "", ""
+				evidence.Method, evidence.RequestID = local.evidence.Method, local.evidence.RequestID
+				local.evidence = evidence
+			}
 			receiptEmitted := false
 			emitter := requestBaseOpts.receiptEmitter()
 			v2Emitter := requestBaseOpts.v2ReceiptEmitter()
@@ -1015,6 +1032,9 @@ func RunHTTPListenerProxy(
 			})
 		}
 		effect := mcpV3NetworkExchange{ctx: r.Context(), opts: requestBaseOpts, log: safeLogW}
+		if w.localReply != nil {
+			w.localReply.exchange = &effect
+		}
 		defer effect.finish()
 		clearReplySession := func() {
 			w.Header().Del("Mcp-Session-Id")
@@ -1023,6 +1043,9 @@ func RunHTTPListenerProxy(
 		refuseReceipt := func(err error) {
 			logMCPV3Error(safeLogW, err)
 			clearReplySession()
+			if w.localReply != nil {
+				w.localReply.receiptFailure = true
+			}
 			http.Error(w, "pipelock: receipt admission failed", http.StatusServiceUnavailable)
 		}
 		refuseSend := func(frame MCPFrame, err error) {
@@ -1031,6 +1054,9 @@ func RunHTTPListenerProxy(
 			effect.opts.WarnContext = effect.ctx
 			effect.opts.writeV3SendDenial(safeLogW, w, frame, effect.refusedSend)
 			if frame.Method != "" && isRPCNotification(frame.ID) {
+				if w.localReply != nil {
+					w.localReply.receiptFailure = true
+				}
 				w.WriteHeader(http.StatusAccepted)
 			}
 		}
@@ -1071,7 +1097,6 @@ func RunHTTPListenerProxy(
 				intent.settle(safeLogW, requestBaseOpts, "error", -1, outcomeReason)
 			}()
 			withhold := func(reason string, callerDetail ...string) {
-				effect.refuseReply()
 				w.setResponseDenial(reason)
 				outcomeReason = reason
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d reply withheld: %s\n", upResp.StatusCode, reason)
@@ -1472,8 +1497,8 @@ func RunHTTPListenerProxy(
 			} else if admission.ActionID != "" {
 				recordTransportAdmissionResult(safeLogW, reqOpts, admission, "completed", "stream_completed")
 			}
-			if errors.Is(scanErr, errMCPV3ReplyAdmission) && !streamWriter.Wrote() {
-				return
+			if errors.Is(scanErr, errMCPV3ReplyAdmission) && w.localReply != nil {
+				w.localReply.receiptFailure = true
 			}
 			if scanErr != nil && !streamWriter.Wrote() {
 				if effect.send != nil {
@@ -1686,6 +1711,11 @@ func RunHTTPListenerProxy(
 		// and upstream-error response below reads frame.ID instead of
 		// re-parsing the body bytes.
 		frame := ParseMCPFrame(body)
+		if w.localReply != nil {
+			w.localReply.evidence.RequestID = canonicalID(frame.ID)
+			w.localReply.evidence.Method = frame.Method
+			w.localReply.evidence.Target = firstNonEmpty(frame.ToolCallName, frame.Method)
+		}
 		w.notification = frame.Method != "" && isRPCNotification(frame.ID)
 		headerVersion := r.Header.Get(listenerProtocolVersion)
 		if headerVersion > currentMCPVersion || frame.ProtocolVersion > currentMCPVersion {
@@ -2079,9 +2109,12 @@ func RunHTTPListenerProxy(
 		}
 
 		if blocked := decision.Blocked; blocked != nil {
-			if scanOpts.receiptEffects.enabled && !blocked.v3RefusalSigned {
+			if scanOpts.receiptEffects.enabled && !blocked.v3RefusalSigned && scanOpts.receiptEffects.gate.RequiresReceipts() {
 				refuseReceipt(errMCPV3ReplyAdmission)
 				return
+			}
+			if w.localReply != nil {
+				w.localReply.blocked = blocked
 			}
 			scanOpts.ListenerDoor = opts.ListenerDoor
 			writeMCPHTTPInputResult(scanOpts, *blocked, w)
@@ -2469,6 +2502,9 @@ func RunHTTPListenerProxy(
 			// because sseMessageWriter never wrote, so override the SSE
 			// content-type set above with the standard application/json
 			// upstream-error envelope.
+			if errors.Is(scanErr, errMCPV3ReplyAdmission) && w.localReply != nil {
+				w.localReply.receiptFailure = true
+			}
 			if scanErr != nil && !streamWriter.Wrote() {
 				if effect.send != nil {
 					clearReplySession()

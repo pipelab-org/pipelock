@@ -361,7 +361,7 @@ func RunHTTPProxy(
 					continue
 				}
 				if d.IsNotification {
-					dropMCPDenial(fwdOpts, denialAudit, "input")
+					dropMCPInputNotification(fwdOpts, safeLogW, denialAudit, frame)
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: kill switch dropped notification (source=%s)\n", d.Source)
 					continue
 				}
@@ -396,7 +396,7 @@ func RunHTTPProxy(
 			if manager == nil || !manager.Enabled() {
 				denialAudit = mcpDeferDisabledDenialAudit()
 				if decision.Deferred.IsNotification {
-					dropMCPDenial(fwdOpts, denialAudit, "input")
+					dropMCPInputNotification(fwdOpts, safeLogW, denialAudit, frame)
 				}
 				resp := blockRequestResponse(BlockedRequest{
 					ID:             decision.Deferred.ID,
@@ -567,7 +567,7 @@ func RunHTTPProxy(
 							denialAudit = mcpReceiptMcpInputDenialAudit()
 						}
 						if deferredReq.IsNotification {
-							dropMCPDenial(denialOpts, denialAudit, "input")
+							dropMCPInputNotification(denialOpts, safeLogW, denialAudit, deferredReq.authorityFrame)
 						}
 						if !deferredReq.IsNotification {
 							_ = writeMCPInputDenial(denialOpts, denialAudit, safeClientOut, blockRequestResponse(BlockedRequest{
@@ -637,7 +637,7 @@ func RunHTTPProxy(
 								finishDeniedRelease()
 							}
 							if deferredReq.IsNotification {
-								dropMCPDenial(denialOpts, mcpTaintDenialAudit(), "input")
+								dropMCPInputNotification(denialOpts, safeLogW, mcpTaintDenialAudit(), deferredReq.authorityFrame)
 							} else {
 								_ = writeMCPInputDenial(denialOpts, mcpTaintDenialAudit(), safeClientOut, blockRequestResponse(BlockedRequest{
 									ID: deferredReq.ID, ErrorCode: -32002, ErrorMessage: "pipelock: " + reason,
@@ -741,7 +741,7 @@ func RunHTTPProxy(
 							_, _ = fmt.Fprintf(safeLogW, "pipelock: deferred call %s cancelled by kill switch\n", res.DeferID)
 						}
 						if deferredReq.IsNotification {
-							dropMCPDenial(denialOpts, denialAudit, "input")
+							dropMCPInputNotification(denialOpts, safeLogW, denialAudit, deferredReq.authorityFrame)
 						}
 						if !deferredReq.IsNotification {
 							if authorityDenied {
@@ -794,7 +794,7 @@ func RunHTTPProxy(
 				logHoldFailureReceiptGap(safeLogW, deferredReq.DeferID, emitErr)
 				denialAudit = mcpDeferHoldDenialAudit()
 				if deferredReq.IsNotification {
-					dropMCPDenial(fwdOpts, denialAudit, "input")
+					dropMCPInputNotification(fwdOpts, safeLogW, denialAudit, frame)
 				}
 				if !deferredReq.IsNotification {
 					_ = writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, blockRequestResponse(BlockedRequest{
@@ -816,7 +816,7 @@ func RunHTTPProxy(
 			// Notifications have no id; JSON-RPC forbids responses to
 			// them. Mirror the kill-switch and input-scan paths above.
 			if isRPCNotification(frame.ID) {
-				dropMCPDenial(fwdOpts, denialAudit, "input")
+				dropMCPInputNotification(fwdOpts, safeLogW, denialAudit, frame)
 				emitContractRefusedOutcome(safeLogW, outcome, mcpContractGateOutput{}, mcpContractEvaluationFailedReason, 0, fwdOpts)
 				continue
 			}
@@ -835,7 +835,7 @@ func RunHTTPProxy(
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream denied: %s\n", gate.Reason)
 			}
 			if isRPCNotification(frame.ID) {
-				dropMCPDenial(fwdOpts, denialAudit, "input")
+				dropMCPInputNotification(fwdOpts, safeLogW, denialAudit, frame)
 				emitContractRefusedOutcome(safeLogW, outcome, gate, mcpContractDeniedReason, 0, fwdOpts)
 				continue
 			}
@@ -855,7 +855,7 @@ func RunHTTPProxy(
 			// Notifications are never tracked: close their intent from the input
 			// decision, as the upstream gate above does.
 			if isRPCNotification(frame.ID) {
-				dropMCPDenial(fwdOpts, denialAudit, "input")
+				dropMCPInputNotification(fwdOpts, safeLogW, denialAudit, frame)
 				emitBridgeHeaderContractRefusal(safeLogW, outcome, reason, fwdOpts)
 				continue
 			}
@@ -945,7 +945,7 @@ func RunHTTPProxy(
 			outcome := decision.Outcome
 			var errResp []byte
 			if isRPCNotification(frame.ID) {
-				dropMCPDenial(fwdOpts, denialAudit, "input")
+				dropMCPInputNotification(fwdOpts, safeLogW, denialAudit, frame)
 			} else {
 				block := BlockedRequest{ID: frame.ID, ErrorCode: -32002, ErrorMessage: "pipelock: " + taskRefusal}
 				errResp = blockRequestResponse(block)

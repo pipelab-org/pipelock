@@ -5,10 +5,12 @@ package mcp
 
 import (
 	"errors"
+	"io"
 	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
 type mcpDenialAudit struct {
@@ -106,6 +108,18 @@ func finishMCPDenial(d *mcpDenial, adapter mcpDenialAdapter) error {
 
 func dropMCPDenial(opts MCPProxyOpts, descriptor mcpDenialAudit, direction string) {
 	_ = finishMCPDenial(newMCPDenial(opts, descriptor, direction, nil), mcpDeniedDelivery(func([]byte) error { return nil }))
+}
+
+func dropMCPInputNotification(opts MCPProxyOpts, logW io.Writer, descriptor mcpDenialAudit, frame MCPFrame) {
+	dropMCPDenial(opts, descriptor, "input")
+	if !opts.receiptEffects.enabled {
+		return
+	}
+	evidence := opts.withReceiptPolicyHash(receipt.EmitOpts{
+		Transport: opts.Transport, Method: frame.Method, Target: firstNonEmpty(frame.ToolCallName, frame.Method),
+		Pattern: descriptor.pattern,
+	})
+	logMCPV3Error(logW, opts.refuseV3Reply(opts.warnContext(), mcpV3ReplyEvidence(evidence)))
 }
 
 func writeMCPDenial(opts MCPProxyOpts, descriptor mcpDenialAudit, writer transport.MessageWriter, reply []byte) error {

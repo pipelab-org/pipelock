@@ -1315,6 +1315,7 @@ func TestMCPV3PolicyRedirectRefusal(t *testing.T) {
 					!strings.Contains(client.String(), "policy redirect is not available while v3 receipts are enabled") {
 					t.Errorf("client refusal missing: %s", client.String())
 				}
+				waitForMCPV3Outcome(t, writerOpts.Dir, mcpDownstreamDeliveryBoundary)
 				if err := writer.Close(ctx, nil); err != nil {
 					t.Fatal(err)
 				}
@@ -1327,8 +1328,8 @@ func TestMCPV3PolicyRedirectRefusal(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if len(actions) != 1 || actions[0].EffectBoundary != mcpDownstreamDeliveryBoundary || actions[0].Verdict != config.ActionBlock {
-					t.Fatalf("expected one signed refusal, got %+v", actions)
+				if len(actions) != 3 || actions[0].EffectBoundary != mcpDownstreamDeliveryBoundary || actions[0].Verdict != config.ActionBlock {
+					t.Fatalf("expected one signed refusal and its delivery, got %+v", actions)
 				}
 			})
 		}
@@ -1393,12 +1394,13 @@ func exerciseMCPV3ListenerEarlyInputRefusal(t *testing.T, scenario string) {
 		}),
 	}.WithV3ReceiptWriter(writer)
 	got, _ := driveA2AHTTPDepth(t, upstream.URL, cleanToolsCallRequest, opts, "listener")
+	waitForMCPV3Outcome(t, writerOpts.Dir, mcpDownstreamDeliveryBoundary)
 	if scenario == "intent write fail" {
 		if !bytes.Contains(got, []byte("receipt admission failed")) {
 			t.Fatalf("expected generic receipt admission error: %s", got)
 		}
 		for _, action := range localMCPReceiptActions(t, writer, writerOpts.Dir) {
-			if action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.OutcomeClass == "completed" {
+			if action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.OutcomeClass == "completed" && action.Target != "mcp://receipt-admission" {
 				t.Fatalf("withheld denial recorded as delivered: %+v", action)
 			}
 		}
@@ -1408,10 +1410,11 @@ func exerciseMCPV3ListenerEarlyInputRefusal(t *testing.T, scenario string) {
 		t.Fatalf("client refusal missing: %s", got)
 	}
 	actions := verifiedMCPV3RegressionActions(t, writer, writerOpts)
-	if len(actions) != 1 || actions[0].EffectBoundary != mcpDownstreamDeliveryBoundary ||
+	if len(actions) != 3 || actions[0].EffectBoundary != mcpDownstreamDeliveryBoundary ||
 		actions[0].Phase != "decision" || actions[0].Verdict != config.ActionBlock {
-		t.Fatalf("expected one signed refusal and no upstream intent: %+v", actions)
+		t.Fatalf("expected a signed refusal and its delivery: %+v", actions)
 	}
+	assertLocalMCPDeliveries(t, actions, "1")
 }
 
 func openMCPV3RegressionWriter(t *testing.T, surface string) (*v3.StreamWriter, v3.StreamWriterOptions) {

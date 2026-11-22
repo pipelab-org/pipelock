@@ -277,7 +277,7 @@ func (w *mcpV3LocalWriter) replyWriter(id json.RawMessage) mcpV3ReplyWriter {
 
 func (w *mcpV3LocalWriter) WriteMessage(msg []byte) error {
 	reply := w.replyWriter(ParseMCPFrame(msg).ID)
-	return reply.WriteMessage(msg)
+	return writeMCPForwardedMessage(&reply, msg)
 }
 
 func (w *mcpV3LocalWriter) writeDeniedMessage(msg []byte) error {
@@ -297,7 +297,7 @@ func (w *mcpV3LocalWriter) writeInputDenial(br BlockedRequest, msg []byte) error
 		if msg == nil {
 			return nil
 		}
-		return reply.WriteMessage(msg)
+		return writeMCPForwardedMessage(&reply, msg)
 	}
 	return reply.deliverDenial(msg, br.v3RefusalSigned, br.v3RefusalErr)
 }
@@ -367,7 +367,7 @@ func (w *mcpV3ReplyWriter) deliverDenial(msg []byte, signed bool, refusalErr err
 		return nil
 	}
 	w.sendDenied = true
-	return w.WriteMessage(msg)
+	return writeMCPForwardedMessage(w, msg)
 }
 
 func logMCPV3Error(log io.Writer, err error) {
@@ -527,7 +527,7 @@ type mcpV3NetworkStreamWriter struct {
 func (w *mcpV3NetworkStreamWriter) WriteMessage(msg []byte) error {
 	x := w.exchange
 	if err := x.admitReply(); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", errMCPV3ReplyAdmission, err)
 	}
 	if err := x.ctx.Err(); err != nil {
 		return err

@@ -4,10 +4,16 @@
 package mcp
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 
 	"github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
 // mcpListenerDenialWriter is the listener admission adapter. The handler selects
@@ -20,12 +26,102 @@ type mcpListenerDenialWriter struct {
 	terminal       *mcpTerminalDecision
 	direction      string
 	wroteHeader    bool
+	localReply     *mcpListenerLocalReply
+	receiptManaged bool
 	uniform        bool
 	uniformMessage string
 	replied        bool
 	// notification marks a parsed POST notification. A clean one is refused
 	// with 202 and no body, so block_all gives a caught one the same answer.
 	notification bool
+}
+
+// mcpListenerLocalReply stages an HTTP status and body until their delivery
+// can be admitted outside listener state and contract locks.
+type mcpListenerLocalReply struct {
+	ctx            context.Context
+	writer         *mcpListenerDenialWriter
+	opts           MCPProxyOpts
+	log            io.Writer
+	exchange       *mcpV3NetworkExchange
+	evidence       receipt.EmitOpts
+	blocked        *BlockedRequest
+	receiptFailure bool
+	status         int
+	body           bytes.Buffer
+}
+
+func (r *mcpListenerLocalReply) WriteMessage(msg []byte) error {
+	w := r.writer.ResponseWriter
+	if r.status != http.StatusNoContent && r.status != http.StatusNotModified {
+		w.Header().Set("Content-Length", strconv.Itoa(len(msg)))
+	}
+	w.WriteHeader(r.status)
+	if len(msg) != 0 {
+		n, err := w.Write(msg)
+		if err != nil {
+			return err
+		}
+		if n != len(msg) {
+			return io.ErrShortWrite
+		}
+	}
+	return http.NewResponseController(w).Flush()
+}
+
+func (r *mcpListenerLocalReply) finish() {
+	if r.status == 0 {
+		return
+	}
+	r.opts.WarnContext = r.ctx
+	evidence := r.evidence
+	if r.receiptFailure {
+		evidence.Layer = mcpReceiptEmissionReason
+		evidence.Target = "mcp://receipt-admission"
+	} else if r.exchange != nil && r.exchange.send != nil {
+		evidence = r.exchange.send.request
+	}
+	// An empty HTTP response still has status framing to deliver.
+	body := r.body.Bytes()
+	if body == nil {
+		body = []byte{}
+	}
+	reply := mcpV3ReplyWriter{base: r, opts: r.opts, log: r.log, request: evidence}
+	var err error
+	withListenerWriteDeadline(r.writer, listenerDownstreamWriteTimeout, func() {
+		switch {
+		case r.receiptFailure:
+			reply.sendDenied = true
+			err = reply.WriteMessage(body)
+		case r.blocked != nil:
+			reply.request = r.blocked.v3Evidence
+			err = reply.deliverDenial(body, r.blocked.v3RefusalSigned, r.blocked.v3RefusalErr)
+		case r.writer.descriptor.kind != "":
+			err = reply.writeDeniedMessage(body)
+		default:
+			err = reply.WriteMessage(body)
+		}
+	})
+	logMCPV3Error(r.log, err)
+	if errors.Is(err, errMCPV3ReplyAdmission) {
+		_ = httpstream.Abort(r.ctx, err)
+	}
+}
+
+func (w *mcpListenerDenialWriter) wireHeader(status int) {
+	if local := w.localReply; local != nil && !w.receiptManaged &&
+		(local.exchange == nil || !local.exchange.wrote) {
+		local.status = status
+		return
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *mcpListenerDenialWriter) wireBody(p []byte) (int, error) {
+	if w.localReply != nil && w.localReply.status != 0 {
+		return w.localReply.body.Write(p)
+	}
+	return w.ResponseWriter.Write(p)
 }
 
 // A withheld upstream reply is a response even when revocation reuses an
@@ -74,9 +170,14 @@ func (w *mcpListenerDenialWriter) WriteHeader(status int) {
 
 // WriteMessage delivers one local JSON-RPC reply with final HTTP framing.
 func (w *mcpListenerDenialWriter) WriteMessage(msg []byte) error {
+	w.receiptManaged = true
 	w.Header().Set("Content-Type", "application/json")
-	if _, err := w.writeBuffered(msg); err != nil {
+	n, err := w.writeBuffered(msg)
+	if err != nil {
 		return err
+	}
+	if n != len(msg) {
+		return io.ErrShortWrite
 	}
 	return http.NewResponseController(w.ResponseWriter).Flush()
 }
@@ -101,7 +202,7 @@ func (w *mcpListenerDenialWriter) writeHeader(status int, buffered []byte) {
 	w.wroteHeader = true
 	d := w.decision(nil)
 	if d == nil {
-		w.ResponseWriter.WriteHeader(status)
+		w.wireHeader(status)
 		return
 	}
 	if w.opts.Rec != nil && !d.decision.audit.keepsOwnRefusal() {
@@ -138,7 +239,7 @@ func (w *mcpListenerDenialWriter) writeHeader(status int, buffered []byte) {
 			}
 		}
 	}
-	_ = finishMCPDenial(d, mcpDeniedDelivery(func([]byte) error { w.ResponseWriter.WriteHeader(status); return nil }))
+	_ = finishMCPDenial(d, mcpDeniedDelivery(func([]byte) error { w.wireHeader(status); return nil }))
 }
 
 func (w *mcpListenerDenialWriter) Write(p []byte) (int, error) {
@@ -150,17 +251,17 @@ func (w *mcpListenerDenialWriter) Write(p []byte) (int, error) {
 			return len(p), nil
 		}
 		w.replied = true
-		_, err := w.ResponseWriter.Write(blockSessionDenyResponse(ParseMCPFrame(p).ID, w.uniformMessage))
+		_, err := w.wireBody(blockSessionDenyResponse(ParseMCPFrame(p).ID, w.uniformMessage))
 		return len(p), err
 	}
 	d := w.decision(p)
 	if d == nil {
-		return w.ResponseWriter.Write(p)
+		return w.wireBody(p)
 	}
 	var n int
 	err := finishMCPDenial(d, mcpDeniedDelivery(func(reply []byte) error {
 		var err error
-		n, err = w.ResponseWriter.Write(reply)
+		n, err = w.wireBody(reply)
 		return err
 	}))
 	return n, err
@@ -169,6 +270,9 @@ func (w *mcpListenerDenialWriter) Write(p []byte) (int, error) {
 func (w *mcpListenerDenialWriter) Flush() {
 	if !w.wroteHeader {
 		w.WriteHeader(http.StatusOK)
+	}
+	if w.localReply != nil && w.localReply.status != 0 {
+		return
 	}
 	deliver := mcpDeniedDelivery(func([]byte) error { return http.NewResponseController(w.ResponseWriter).Flush() })
 	if d := w.decision(nil); d != nil {

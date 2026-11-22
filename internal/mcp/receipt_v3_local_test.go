@@ -83,6 +83,39 @@ func TestMCPV3WebSocketLocalRefusals(t *testing.T) {
 	}
 }
 
+func TestMCPV3BlockedNotificationRefusal(t *testing.T) {
+	for _, surface := range []string{deferred.SurfaceMCPHTTPUpstream, deferred.SurfaceMCPWS} {
+		t.Run(surface, func(t *testing.T) {
+			opts, writer, observer := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, surface)
+			opts.KillSwitch = deferKillTestController()
+			opts.KillSwitch.SetAPI(true)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				t.Error("blocked notification reached upstream")
+				w.WriteHeader(http.StatusBadRequest)
+			}))
+			defer upstream.Close()
+			input := strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}` + "\n")
+			var err error
+			if surface == deferred.SurfaceMCPWS {
+				err = RunWSProxy(t.Context(), input, observer, io.Discard, "ws"+strings.TrimPrefix(upstream.URL, "http"), opts)
+			} else {
+				err = RunHTTPProxy(t.Context(), input, observer, io.Discard, upstream.URL, nil, opts)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			actions := localMCPReceiptActions(t, writer, observer.dir)
+			if observer.output.Len() != 0 || len(actions) != 1 {
+				t.Fatalf("output = %q, receipts = %+v", observer.output.String(), actions)
+			}
+			action := actions[0]
+			if action.Phase != "decision" || action.Verdict != config.ActionBlock || action.Method != "notifications/initialized" {
+				t.Fatalf("missing attributed refusal: %+v", action)
+			}
+		})
+	}
+}
+
 func TestMCPV3LocalHTTPBlock(t *testing.T) {
 	for _, tc := range []struct {
 		name                      string
@@ -471,6 +504,49 @@ func TestMCPV3HTTPAcknowledgementReleasesRequestID(t *testing.T) {
 	}
 }
 
+func TestMCPV3DeferredHTTPAcknowledgementReleasesRequestID(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
+	defer cancel()
+	opts, writer, observer := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPHTTPUpstream)
+	fixture := nativeDeferredOptions(t, nil)
+	opts.Scanner, opts.InputCfg = fixture.Scanner, fixture.InputCfg
+	opts.DeferManager = deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Minute})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer upstream.Close()
+	in, send := io.Pipe()
+	defer func() { _ = in.Close() }()
+	defer func() { _ = send.Close() }()
+	done := make(chan error, 1)
+	go func() { done <- RunHTTPProxy(ctx, in, observer, io.Discard, upstream.URL, nil, opts) }()
+	for range 2 {
+		if _, err := io.WriteString(send, heldNativeCall+"\n"); err != nil {
+			t.Fatal(err)
+		}
+		testwait.For(t, time.Second, func() bool { return opts.DeferManager.HeldCount() == 1 }, "deferred request")
+		held := opts.DeferManager.Snapshot()[0]
+		if err := opts.DeferManager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceApproval); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := send.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	completed := 0
+	for _, action := range localMCPReceiptActions(t, writer, observer.dir) {
+		if action.RequestID == "1" && action.EffectBoundary == mcpUpstreamSendBoundary && action.OutcomeClass == "completed" {
+			completed++
+		}
+	}
+	if completed != 2 || observer.output.Len() != 0 {
+		t.Fatalf("completed sends = %d, client output = %q", completed, observer.output.String())
+	}
+}
+
 func TestMCPV3NetworkReplyCancellationSettlesReservation(t *testing.T) {
 	opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, "mcp_http_listener")
 	opts = opts.withV3Session()
@@ -505,6 +581,48 @@ func TestMCPV3NetworkReplyCancellationSettlesReservation(t *testing.T) {
 	if len(want) != 0 {
 		t.Fatalf("missing unattempted settlements: %v", want)
 	}
+}
+
+func TestMCPV3ListenerLocalRefusalDelivery(t *testing.T) {
+	opts, writer, observer := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPHTTPListener)
+	opts.KillSwitch = deferKillTestController()
+	opts.KillSwitch.SetAPI(true)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("blocked request reached upstream")
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer upstream.Close()
+	url, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url,
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("response = %d %q, read error = %v", resp.StatusCode, body, err)
+	}
+	assertLocalMCPErrors(t, string(body), "1")
+	testwait.For(t, time.Second, func() bool {
+		actions, err := readMCPMatrixActions(observer.dir)
+		return err == nil && len(actions) >= 3
+	}, "local reply receipts")
+	actions := localMCPReceiptActions(t, writer, observer.dir)
+	if len(actions) != 3 || actions[0].Phase != "decision" || actions[0].Verdict != config.ActionBlock {
+		t.Fatalf("expected refusal and its delivery, got %+v", actions)
+	}
+	for _, action := range actions {
+		if action.EffectBoundary != mcpDownstreamDeliveryBoundary {
+			t.Fatalf("blocked list unexpectedly admitted upstream send: %+v", action)
+		}
+	}
+	assertLocalMCPDeliveries(t, actions, "1")
 }
 
 func TestMCPV3ListenerObservesPOSTResponse(t *testing.T) {
@@ -784,7 +902,7 @@ func TestMCPV3ListenerReplyAdmissionFailure(t *testing.T) {
 		{"sse", http.StatusOK, "event: message\ndata: " + `{"jsonrpc":"2.0","id":1,"result":{"value":"withheld reply"}}` + "\n\n", "text/event-stream", http.StatusBadGateway},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			row := v3MCPMatrixRow{required: true, scenario: "preadmitted reply intent write fail"}
+			row := v3MCPMatrixRow{required: true, scenario: "reply intent write fail"}
 			opts, writer, client := localMCPReceiptFixture(t, row, deferred.SurfaceMCPHTTPListener)
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", tc.contentType)
@@ -812,8 +930,9 @@ func TestMCPV3ListenerReplyAdmissionFailure(t *testing.T) {
 				strings.Contains(string(body), "withheld reply") {
 				t.Fatalf("unrecorded reply escaped: status=%d headers=%v body=%q", resp.StatusCode, resp.Header, body)
 			}
+			waitForMCPV3Outcome(t, client.dir, mcpDownstreamDeliveryBoundary)
 			for _, action := range localMCPReceiptActions(t, writer, client.dir) {
-				if action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.OutcomeClass == "completed" {
+				if action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.OutcomeClass == "completed" && action.Target != "mcp://receipt-admission" {
 					t.Fatalf("withheld reply recorded as completed: %+v", action)
 				}
 			}
@@ -905,7 +1024,7 @@ func TestMCPV3ListenerGETWithholdsUnrecordedEvent(t *testing.T) {
 		t.Fatalf("unrecorded event escaped: status=%d headers=%v body=%q", resp.StatusCode, resp.Header, body)
 	}
 	for _, action := range localMCPReceiptActions(t, writer, client.dir) {
-		if action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.OutcomeClass == "completed" {
+		if action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.OutcomeClass == "completed" && action.Target != "mcp://receipt-admission" {
 			t.Fatalf("withheld event recorded as complete: %+v", action)
 		}
 	}
@@ -1122,7 +1241,7 @@ func TestMCPV3ListenerAdmissionFailureKeepsNotificationResponseEmpty(t *testing.
 		t.Fatalf("notification response: status=%d body=%q error=%v", resp.StatusCode, body, err)
 	}
 	for _, action := range localMCPReceiptActions(t, writer, client.dir) {
-		if action.OutcomeClass == "completed" {
+		if action.OutcomeClass == "completed" && action.Target != "mcp://receipt-admission" {
 			t.Fatalf("failed notification recorded as completed: %+v", action)
 		}
 	}

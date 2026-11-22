@@ -368,7 +368,7 @@ func RunWSProxy(
 					continue
 				}
 				if d.IsNotification {
-					dropMCPDenial(wsOpts, denialAudit, "input")
+					dropMCPInputNotification(inputOpts, safeLogW, denialAudit, frame)
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: kill switch dropped notification (source=%s)\n", d.Source)
 					continue
 				}

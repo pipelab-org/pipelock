@@ -225,6 +225,9 @@ func (e upstreamClientError) write(w http.ResponseWriter, confirm bool) bool {
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'")
+	if listener, ok := w.(*mcpListenerDenialWriter); ok && confirm {
+		listener.receiptManaged = true
+	}
 	if confirm {
 		w.Header().Set("Content-Length", strconv.Itoa(len(e.body)))
 	}
