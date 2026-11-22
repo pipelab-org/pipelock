@@ -2096,6 +2096,11 @@ func RunHTTPListenerProxy(
 			}
 			decision.Outcome.settle(safeLogW, scanOpts, terminalStatus, terminalSize, terminalReason)
 		}()
+		if err := r.Context().Err(); frame.Method == "tools/list" && err != nil {
+			terminalReason = "inventory_wait_ended"
+			refuseContractWait(err)
+			return
+		}
 		if decision.Synthetic != nil {
 			w.Header().Set("Content-Type", "application/json")
 			if decision.Synthetic.notification {

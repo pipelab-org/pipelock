@@ -625,6 +625,44 @@ func TestMCPV3ListenerLocalRefusalDelivery(t *testing.T) {
 	assertLocalMCPDeliveries(t, actions, "1")
 }
 
+func TestMCPV3ListenerWithholdsUnadmittedLocalRefusal(t *testing.T) {
+	opts, writer, observer := localMCPReceiptFixture(t, v3MCPMatrixRow{
+		required: true, scenario: "local denial intent write fail",
+	}, deferred.SurfaceMCPHTTPListener)
+	opts.KillSwitch = deferKillTestController()
+	opts.KillSwitch.SetAPI(true)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("blocked stream reached upstream")
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer upstream.Close()
+	url, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if resp != nil {
+		_ = resp.Body.Close()
+		t.Fatalf("unadmitted refusal reached client: status=%d", resp.StatusCode)
+	}
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("expected a withheld response, got %v", err)
+	}
+	actions := localMCPReceiptActions(t, writer, observer.dir)
+	refused := false
+	for _, action := range actions {
+		if action.EffectBoundary != mcpDownstreamDeliveryBoundary || action.OutcomeClass == "completed" {
+			t.Fatalf("unadmitted refusal recorded a completed effect: %+v", action)
+		}
+		refused = refused || action.Phase == "decision" && action.Verdict == config.ActionBlock && action.Layer == "kill_switch"
+	}
+	if !refused {
+		t.Fatalf("missing attributed refusal: %+v", actions)
+	}
+}
+
 func TestMCPV3ListenerObservesPOSTResponse(t *testing.T) {
 	for _, tc := range []struct {
 		name, encoding               string
@@ -632,6 +670,7 @@ func TestMCPV3ListenerObservesPOSTResponse(t *testing.T) {
 	}{
 		{"relayed client error", "", http.StatusTooManyRequests, http.StatusTooManyRequests},
 		{"compressed stream", "gzip", http.StatusOK, http.StatusForbidden},
+		{"sanitized server error", "", http.StatusServiceUnavailable, http.StatusBadGateway},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			opts, writer, observer := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPHTTPListener)
