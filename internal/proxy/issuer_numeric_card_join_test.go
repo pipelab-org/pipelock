@@ -345,6 +345,62 @@ func TestInterceptIssuerNumericCardJoin_AttackMatrix(t *testing.T) {
 		}
 	})
 
+	t.Run("server-first provenance on h:443 does not let h:8443 or trailing-dot mint client-introduced value", func(t *testing.T) {
+		store := newIssuerQueryStore()
+		origin443 := mustIssuerQueryURL(t, "https://"+numericJoinOriginHost+":443/items")
+		origin8443 := mustIssuerQueryURL(t, "https://"+numericJoinOriginHost+":8443/items")
+		originDot := mustIssuerQueryURL(t, "https://"+numericJoinOriginHost+"./items")
+
+		// 1. h:443 issues cardA1 and cardA2 server-first.
+		store.recordSent("sess", origin443, nil, nil, true, time.Now())
+		store.mintNumericIDs("sess", origin443, []string{cardA1, cardA2})
+		if !store.numericIDsIssued("sess", origin443, []string{cardA1, cardA2}) {
+			t.Fatal("h:443 should issue server-first pair")
+		}
+
+		// 2. Client sends cardA1 back to h:443 (sets server-first provenance for h:443).
+		store.recordSent("sess", mustIssuerQueryURL(t, "https://"+numericJoinOriginHost+":443/use?v="+cardA1), nil, nil, true, time.Now())
+
+		// 3. Client sends cardA1 to h:8443 and h.:443; those origins echo cardA1 alongside cardA2.
+		// Neither h:8443 nor h.:443 introduced cardA1, so neither may mint it.
+		for _, tc := range []struct {
+			name   string
+			origin *url.URL
+			send   *url.URL
+		}{
+			{"different port", origin8443, mustIssuerQueryURL(t, "https://"+numericJoinOriginHost+":8443/echo?v="+cardA1)},
+			{"trailing dot", originDot, mustIssuerQueryURL(t, "https://"+numericJoinOriginHost+"./echo?v="+cardA1)},
+		} {
+			store.recordSent("sess", tc.send, nil, nil, true, time.Now())
+			store.mintNumericIDs("sess", tc.origin, []string{cardA1, cardA2})
+			if store.numericIDsIssued("sess", tc.origin, []string{cardA1, cardA2}) {
+				t.Fatalf("%s minted proof for value introduced by client to that origin", tc.name)
+			}
+		}
+
+		// 4. Same-origin control: h:443 still retains server-first provenance for
+		// cardA1 (e.g. after positive generation rollover) and can re-mint it,
+		// while h:8443 still cannot.
+		next := store.nextGeneration()
+		next.mintNumericIDs("sess", origin443, []string{cardA1, cardA2})
+		if !next.numericIDsIssued("sess", origin443, []string{cardA1, cardA2}) {
+			t.Fatal("h:443 should still qualify to re-mint its own server-first value")
+		}
+		next.mintNumericIDs("sess", origin8443, []string{cardA1, cardA2})
+		if next.numericIDsIssued("sess", origin8443, []string{cardA1, cardA2}) {
+			t.Fatal("h:8443 must not mint value after generation rollover")
+		}
+
+		// 5. Conservative host-level send history: client sends cardB1 to h:8443
+		// first; h:443 echoing cardB1 must stay blocked.
+		store2 := newIssuerQueryStore()
+		store2.recordSent("sess", mustIssuerQueryURL(t, "https://"+numericJoinOriginHost+":8443/seed?v="+cardB1), nil, nil, true, time.Now())
+		store2.mintNumericIDs("sess", origin443, []string{cardB1, cardB2})
+		if store2.numericIDsIssued("sess", origin443, []string{cardB1, cardB2}) {
+			t.Fatal("h:443 minted value sent agent-first to h:8443 on same host")
+		}
+	})
+
 	t.Run("after >256 per-origin eviction and >256 per-response cap blocks", func(t *testing.T) {
 		e := newSameOriginEnv(t, nil)
 		// Mint cardA1 first.

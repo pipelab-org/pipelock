@@ -133,9 +133,18 @@ type issuerNumericCaller struct {
 	destinations map[[32]byte]*issuerNumericDestination
 }
 
+// issuerNumericSentRecord records host-level send history while binding
+// server-first provenance strictly to the exact browser origin that issued the
+// value. Another origin on the same host (different port, scheme, or
+// trailing-dot spelling) cannot inherit server-first provenance.
+type issuerNumericSentRecord struct {
+	serverFirst       bool
+	serverFirstOrigin [32]byte
+}
+
 type issuerNumericDestination struct {
 	block issuerIDHistoryBlock
-	sent  map[[32]byte]issuerSentProvenance
+	sent  map[[32]byte]issuerNumericSentRecord
 }
 
 func newIssuerNumericLedger(reader io.Reader) *issuerNumericLedger {
@@ -294,7 +303,7 @@ func (l *issuerNumericLedger) admitDestinationLocked(session string, target *url
 		l.admissionClosed = true
 		return nil
 	}
-	bucket := &issuerNumericDestination{sent: make(map[[32]byte]issuerSentProvenance)}
+	bucket := &issuerNumericDestination{sent: make(map[[32]byte]issuerNumericSentRecord)}
 	caller.destinations[key] = bucket
 	l.destinations++
 	return bucket
@@ -437,11 +446,14 @@ func (s *issuerQueryStore) recordNumericSent(session string, originTarget *url.U
 			l.freezeDestinationLocked(bucket, issuerHistoryTotalLimit)
 			return
 		}
-		provenance := issuerSentAgentFirst
+		var rec issuerNumericSentRecord
 		if checkProvenance && s.numericIDExistsLocked(session, originKey, tok.valDigest) {
-			provenance = issuerSentServerFirst
+			rec = issuerNumericSentRecord{
+				serverFirst:       true,
+				serverFirstOrigin: originKey,
+			}
 		}
-		bucket.sent[tok.sentDigest] = provenance
+		bucket.sent[tok.sentDigest] = rec
 		l.sentEntries++
 	}
 }
@@ -522,7 +534,7 @@ func (s *issuerQueryStore) mintNumericIDs(session string, target *url.URL, value
 	}
 	cache := s.numericIDs[session]
 	for _, cand := range candidates {
-		if prov, sent := bucket.sent[cand.sentDigest]; sent && prov != issuerSentServerFirst {
+		if rec, sent := bucket.sent[cand.sentDigest]; sent && !(rec.serverFirst && rec.serverFirstOrigin == originKey) {
 			continue
 		}
 		if cache == nil {
