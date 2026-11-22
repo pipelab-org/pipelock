@@ -207,6 +207,9 @@ func TestMCPReceiptHistoryInvariants(t *testing.T) {
 	completed := intent
 	completed.Phase = "outcome"
 	completed.OutcomeClass = "completed"
+	wrongParent, wrongRequest := completed, completed
+	wrongParent.ParentActionID = "different-parent"
+	wrongRequest.RequestID = "different-request"
 	recovery := completed
 	recovery.OutcomeClass, recovery.Verdict, recovery.EffectRelation = "not_released", "block", "not_attempted"
 	block := v3.Action{Phase: "decision", Verdict: "block", EffectBoundary: mcpDownstreamDeliveryBoundary}
@@ -222,6 +225,8 @@ func TestMCPReceiptHistoryInvariants(t *testing.T) {
 		{name: "completed blocked delivery", actions: []v3.Action{block, intent, completed}, want: "1 block decisions"},
 		{name: "missing intent", actions: []v3.Action{completed}, want: "without its intent"},
 		{name: "outcome before intent", actions: []v3.Action{completed, intent}, want: "before its intent"},
+		{name: "wrong parent", actions: []v3.Action{intent, wrongParent}, want: "inconsistent effect fields"},
+		{name: "wrong request", actions: []v3.Action{intent, wrongRequest}, want: "inconsistent effect fields"},
 		{name: "recovery without intent", actions: []v3.Action{recovery}},
 		{name: "different bytes", actions: []v3.Action{intent, completed}, delivery: mcpReceiptDelivery{sent: []byte("sent")}, want: "different from what was sent"},
 		{name: "withheld payload", actions: []v3.Action{block, intent, completed}, delivery: mcpReceiptDelivery{withheldPayload: []byte("upstream"), received: []byte("denial\nupstream"), denialDelivered: true}, want: "withheld upstream payload"},

@@ -254,6 +254,11 @@ func decodeMCPMatrixReceiptFiles(dir string, live bool) ([]v3.Action, error) {
 	return actions, nil
 }
 
+type mcpObservedAttempt struct {
+	action  string
+	attempt int64
+}
+
 type mcpMatrixObserver struct {
 	output            bytes.Buffer
 	httpStatus        int
@@ -261,7 +266,8 @@ type mcpMatrixObserver struct {
 	intent            bool
 	dir               string
 	checkOutcomeOrder bool
-	wrote             chan<- struct{}
+	usedIntents       map[mcpObservedAttempt]bool
+	writes            int
 }
 
 func (o *mcpMatrixObserver) Write(p []byte) (int, error) {
@@ -269,22 +275,34 @@ func (o *mcpMatrixObserver) Write(p []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	id := canonicalID(ParseMCPFrame(p).ID)
+	if o.usedIntents == nil {
+		o.usedIntents = make(map[mcpObservedAttempt]bool)
+	}
+	var candidates []mcpObservedAttempt
 	for _, a := range actions {
-		if a.EffectBoundary == mcpDownstreamDeliveryBoundary && a.Phase == "intent" {
-			o.intent = true
+		if a.EffectBoundary != mcpDownstreamDeliveryBoundary || a.RequestID != id || a.Attempt == nil {
+			continue
 		}
-		if o.checkOutcomeOrder && a.EffectBoundary == mcpDownstreamDeliveryBoundary && a.Phase == "outcome" {
-			return 0, errors.New("delivery outcome recorded before client write")
-		}
-	}
-	n, err := o.output.Write(p)
-	if o.wrote != nil {
-		select {
-		case o.wrote <- struct{}{}:
-		default:
+		key := mcpObservedAttempt{a.ActionID, *a.Attempt}
+		switch a.Phase {
+		case "outcome":
+			o.usedIntents[key] = true
+		case "intent":
+			candidates = append(candidates, key)
 		}
 	}
-	return n, err
+	pending := slices.DeleteFunc(candidates, func(key mcpObservedAttempt) bool { return o.usedIntents[key] })
+	matched := len(pending) == 1
+	if matched {
+		o.usedIntents[pending[0]] = true
+	}
+	o.intent = matched && (o.writes == 0 || o.intent)
+	o.writes++
+	if o.checkOutcomeOrder && !matched {
+		return 0, errors.New("delivery has no unique pending intent before client write")
+	}
+	return o.output.Write(p)
 }
 
 func TestMCPV3ReceiptParityMatrix(t *testing.T) {
@@ -427,8 +445,7 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 	listenerInvalidReply := row.path == "HTTP listener" && row.scenario == "upstream closes mid-response"
 	stdioInvalidReply := stdio && row.scenario == "upstream closes mid-response"
 	localReply := admissionDenied || listenerInvalidReply || stdioInvalidReply
-	clientWrite := make(chan struct{}, 1)
-	client := &mcpMatrixObserver{dir: writerOpts.Dir, wrote: clientWrite}
+	client := &mcpMatrixObserver{dir: writerOpts.Dir}
 	seen := filepath.Join(t.TempDir(), "upstream")
 	priorIntent := seen + ".intent"
 	run := func(in io.Reader) error {
@@ -1486,16 +1503,11 @@ func TestMCPV3WebSocketWriteFailureSettlesUnknown(t *testing.T) {
 
 func TestMCPMatrixObserverReadsCompleteLiveReceiptPrefix(t *testing.T) {
 	opts, writer, observer := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, transportMCPStdio)
-	delivery := mcpV3ReplyWriter{
-		base:    transport.NewStdioWriter(io.Discard),
-		opts:    opts,
-		log:     io.Discard,
-		request: receipt.EmitOpts{RequestID: "1", Method: "tools/call", Transport: transportMCPStdio},
-	}
-	if err := delivery.WriteMessage([]byte(heldNativeReply)); err != nil {
+	evidence := mcpV3ReplyEvidence(receipt.EmitOpts{RequestID: "1", Method: "tools/call", Transport: transportMCPStdio})
+	token, err := opts.admitV3Effect(t.Context(), evidence, mcpDownstreamDeliveryBoundary)
+	if err != nil {
 		t.Fatal(err)
 	}
-	_ = localMCPReceiptActions(t, writer, observer.dir)
 	files, err := filepath.Glob(filepath.Join(observer.dir, "*.receipt-v3.jsonl"))
 	if err != nil || len(files) != 1 {
 		t.Fatalf("receipt files = %v, %v", files, err)
@@ -1504,6 +1516,10 @@ func TestMCPMatrixObserverReadsCompleteLiveReceiptPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := confirmMCPV3Effect(t.Context(), token, true); err != nil {
+		t.Fatal(err)
+	}
+	_ = localMCPReceiptActions(t, writer, observer.dir)
 	observer.dir = t.TempDir()
 	snapshot := filepath.Join(observer.dir, filepath.Base(files[0]))
 	if err := os.WriteFile(snapshot, append(prefix, '{'), 0o600); err != nil {
@@ -1515,6 +1531,12 @@ func TestMCPMatrixObserverReadsCompleteLiveReceiptPrefix(t *testing.T) {
 	}
 	if !observer.intent || !bytes.Equal(observer.output.Bytes(), reply) {
 		t.Fatalf("wire observation = %q, delivery intent=%t", observer.output.Bytes(), observer.intent)
+	}
+	if _, err := observer.Write(reply); err != nil {
+		t.Fatalf("observe second reply: %v", err)
+	}
+	if observer.intent {
+		t.Fatal("second reply reused the first reply's intent")
 	}
 	if _, err := readMCPMatrixActions(observer.dir); err == nil {
 		t.Fatal("finalized history accepted an unfinished record")
