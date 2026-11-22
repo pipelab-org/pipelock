@@ -276,6 +276,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			RequestID: requestID,
 			Agent:     agent,
 		})
+		if cfg.ExplainBlocksEnabled() {
+			w.Header().Set("X-Pipelock-Hint", connectPortHint)
+		}
 		writeBlockedError(w,
 			blockInfoFor(blockreason.ConnectPortNotAllowed, "").WithRequestID(requestID),
 			"blocked: "+detail, http.StatusForbidden)

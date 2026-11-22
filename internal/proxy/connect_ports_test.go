@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -143,5 +144,25 @@ func TestConnectPortsRefusalIsRecorded(t *testing.T) {
 	ar := chain[0].ActionRecord
 	if ar.Verdict != config.ActionBlock || ar.Pattern != blockPatternConnectPort || ar.Layer != blockLayerConnectPort {
 		t.Fatalf("refusal receipt=%+v", ar)
+	}
+}
+
+// With explain_blocks on, the refusal names the control that decides it.
+func TestConnectPortsExplainBlocksHint(t *testing.T) {
+	for _, explain := range []bool{false, true} {
+		t.Run(map[bool]string{false: "explain_off", true: "explain_on"}[explain], func(t *testing.T) {
+			proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+				cfg.ExplainBlocks = &explain
+				cfg.ForwardProxy.ConnectPorts = []int{443}
+			})
+			t.Cleanup(cleanup)
+			hint := connectThrough(t, proxyAddr, "example.com:22").Header.Get("X-Pipelock-Hint")
+			if explain && !strings.Contains(hint, "forward_proxy.connect_ports") {
+				t.Fatalf("hint=%q, want it to name forward_proxy.connect_ports", hint)
+			}
+			if !explain && hint != "" {
+				t.Fatalf("hint=%q with explain_blocks off, want none", hint)
+			}
+		})
 	}
 }

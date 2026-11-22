@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `forward_proxy.connect_ports` limits CONNECT tunnels to the listed TCP ports. A tunnel to any other port is refused with HTTP 403 before DNS, scanning or dial, with the new `connect_port_not_allowed` block reason, an audit event and a receipt. It applies in audit mode too. An empty or absent list keeps today's behavior and admits every port. Adding a port or clearing the list on reload warns, and is rejected in `strict` mode or under a required contract. The list restricts which ports a tunnel can reach; it doesn't make tunnel contents visible.
+- `forward_proxy.connect_ports` limits CONNECT tunnels to the listed TCP ports. A tunnel to any other port is refused with HTTP 403 before DNS, scanning or dial, with the new `connect_port_not_allowed` block reason and an audit event, plus a receipt when receipts are configured. With `explain_blocks` on, `X-Pipelock-Hint` names `forward_proxy.connect_ports`. It applies in audit mode too. An empty or absent list keeps today's behavior and admits every port. Adding a port or clearing the list on reload warns, and is rejected in `strict` mode or under a required contract. The list restricts which ports a tunnel can reach; it doesn't make tunnel contents visible.
 
 ### Changed
 

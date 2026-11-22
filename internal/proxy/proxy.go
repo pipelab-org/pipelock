@@ -213,6 +213,7 @@ const (
 	// refused by forward_proxy.connect_ports in audit, metrics and receipts.
 	blockLayerConnectPort   = "connect_port"
 	blockPatternConnectPort = "connect_port_not_allowed"
+	connectPortHint         = "This port is not allowed for CONNECT tunnels. Use an allowed port, or ask the operator to add it to forward_proxy.connect_ports."
 )
 
 // blockedRequestError signals a fail-closed block in a request path that still
