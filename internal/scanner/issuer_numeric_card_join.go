@@ -184,13 +184,14 @@ func (m numericSpanMap) relieves(start, end int, allow IssuerNumericCardJoinAllo
 
 // numericCardJoinSkipSpan returns a per-span relief predicate for p on a raw
 // joined query view, or nil when p or the view is ineligible. Only the
-// built-in Luhn "Credit Card Number" rule (identified by cardPrefixRetry with
-// no custom keywords) on a raw query_concat or query_subsequence view qualifies.
+// built-in Luhn "Credit Card Number" rule (carrying loader-verified built-in
+// provenance with no custom keywords) on a raw query_concat or
+// query_subsequence view qualifies.
 func numericCardJoinSkipSpan(p *compiledPattern, rawParts []string, cleaned, hostname string, decodes *decodingMemo) func(start, end int) bool {
 	if decodes == nil || decodes.issuedNumericCardJoin == nil || len(rawParts) < 2 {
 		return nil
 	}
-	if !p.cardPrefixRetry || p.keywords != nil || p.exemptsHost(hostname) {
+	if !p.builtInCreditCard || p.keywords != nil || p.exemptsHost(hostname) {
 		return nil
 	}
 	spanMap, ok := buildNumericSpanMap(rawParts, cleaned)
@@ -211,7 +212,7 @@ func numericCardJoinPathQuerySkipSpan(p *compiledPattern, rawParts []string, raw
 	if decodes == nil || decodes.issuedNumericCardJoin == nil || len(rawParts) < 2 {
 		return nil
 	}
-	if !p.cardPrefixRetry || p.keywords != nil || p.exemptsHost(hostname) {
+	if !p.builtInCreditCard || p.keywords != nil || p.exemptsHost(hostname) {
 		return nil
 	}
 	queryConcat := orderedQueryConcat(rawQuery)

@@ -513,6 +513,7 @@ func MergeAgentProfile(base *config.Config, profile *config.AgentProfile) (*conf
 	// merge; custom same-name patterns remain ineligible.
 	merged.DLP.Patterns = config.CloneDLPPatterns(merged.DLP.Patterns)
 	config.RestoreBuiltInCredentialAudienceHosts(merged.DLP.Patterns)
+	config.RestoreBuiltInCreditCard(merged.DLP.IncludeDefaults, merged.DLP.Patterns)
 
 	return merged, nil
 }

@@ -505,6 +505,10 @@ type compiledPattern struct {
 	// cardPrefixRetry marks the canonical card rule with its luhn validator.
 	// Its failed greedy hits retry shorter candidates (jsonnumber.AcceptedCardEnd).
 	cardPrefixRetry bool
+	// builtInCreditCard carries loader-verified built-in provenance for the
+	// shipped Credit Card Number rule so operator-configured rules with
+	// identical fields never receive numeric card-join relief.
+	builtInCreditCard bool
 	// wifOverlapRetry is restricted to the canonical, fixed-width WIF grammar.
 	wifOverlapRetry bool
 	// validateAt judges a candidate in the view it was found in, with the view
@@ -800,6 +804,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 			cp.validate = fn
 			cp.genericCard = p.Validator == config.ValidatorLuhn
 			cp.cardPrefixRetry = RetriesCardPrefixes(p)
+			cp.builtInCreditCard = p.BuiltInCreditCard && cp.cardPrefixRetry
 			cp.wifOverlapRetry = RetriesWIFOverlaps(p)
 		}
 		if cp.validate == nil {
@@ -4407,7 +4412,7 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, t
 				var skipSpan func(start, end int) bool
 				if candIdx == 0 && candidate.viewLabel == dlpViewLabel("query_subsequence") &&
 					decodes != nil && decodes.issuedNumericCardJoin != nil && len(decodes.issuedNumericRawParts) >= n &&
-					p.cardPrefixRetry && p.keywords == nil && !p.exemptsHost(hostname) {
+					p.builtInCreditCard && p.keywords == nil && !p.exemptsHost(hostname) {
 					subRawParts := make([]string, len(indices))
 					for i, partIdx := range indices {
 						subRawParts[i] = decodes.issuedNumericRawParts[partIdx]

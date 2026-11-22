@@ -386,6 +386,7 @@ func (c *Config) ApplyDefaults() {
 	)
 	markBuiltInCredentialURLWhitespaceGrammar(c.DLP.Patterns)
 	markBuiltInCredentialAudienceHosts(c.DLP.Patterns)
+	markBuiltInCreditCard(c.DLP.IncludeDefaults, c.DLP.Patterns)
 	// Always default OnParseError (fail-closed) regardless of enabled state,
 	// since validation checks it unconditionally.
 	if c.MCPInputScanning.OnParseError == "" {
@@ -1056,6 +1057,45 @@ func markBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
 // constructing a scanner.
 func RestoreBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
 	markBuiltInCredentialAudienceHosts(patterns)
+}
+
+// markBuiltInCreditCard restores built-in runtime provenance for the shipped
+// Credit Card Number rule on YAML preset copies when include_defaults is not
+// false. Explicit include_defaults: false configs, rules bundles, and any
+// modified copy (changed severity, action, regex, keywords, or exempt_domains)
+// keep BuiltInCreditCard false so operator-configured rules never receive
+// built-in numeric card-join relief.
+func markBuiltInCreditCard(includeDefaults *bool, patterns []DLPPattern) {
+	for i := range patterns {
+		patterns[i].BuiltInCreditCard = false
+	}
+	if includeDefaults != nil && !*includeDefaults {
+		return
+	}
+	for _, builtIn := range defaultDLPPatternSet {
+		if !builtIn.BuiltInCreditCard {
+			continue
+		}
+		for i := range patterns {
+			candidate := &patterns[i]
+			candidate.BuiltInCreditCard = candidate.Bundle == "" &&
+				candidate.Name == builtIn.Name &&
+				candidate.Regex == builtIn.Regex &&
+				candidate.Severity == builtIn.Severity &&
+				candidate.Validator == builtIn.Validator &&
+				candidate.Action == builtIn.Action &&
+				len(candidate.Keywords) == 0 &&
+				candidate.KeywordWindow == nil &&
+				sameStrings(candidate.ExemptDomains, builtIn.ExemptDomains)
+		}
+		return
+	}
+}
+
+// RestoreBuiltInCreditCard re-derives built-in Credit Card Number provenance
+// after a trusted config transformation such as an Enterprise profile merge.
+func RestoreBuiltInCreditCard(includeDefaults *bool, patterns []DLPPattern) {
+	markBuiltInCreditCard(includeDefaults, patterns)
 }
 
 // mergeResponsePatterns merges default response scanning patterns with user-defined patterns.

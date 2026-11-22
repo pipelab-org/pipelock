@@ -47,6 +47,38 @@ func TestMarkBuiltInCredentialURLWhitespaceGrammar(t *testing.T) {
 	}
 }
 
+func TestMarkBuiltInCreditCard(t *testing.T) {
+	patterns := DefaultDLPPatterns()
+	cardIdx := -1
+	for i := range patterns {
+		if patterns[i].BuiltInCreditCard {
+			cardIdx = i
+			break
+		}
+	}
+	if cardIdx < 0 {
+		t.Fatal("defaultDLPPatternSet missing BuiltInCreditCard marker")
+	}
+	patterns[cardIdx].BuiltInCreditCard = false
+	includeTrue := true
+	markBuiltInCreditCard(&includeTrue, patterns)
+	if !patterns[cardIdx].BuiltInCreditCard {
+		t.Fatal("canonical Credit Card Number pattern lost built-in provenance under include_defaults=true")
+	}
+
+	includeFalse := false
+	markBuiltInCreditCard(&includeFalse, patterns)
+	if patterns[cardIdx].BuiltInCreditCard {
+		t.Fatal("include_defaults=false must clear BuiltInCreditCard provenance")
+	}
+
+	patterns[cardIdx].Severity = SeverityHigh
+	markBuiltInCreditCard(&includeTrue, patterns)
+	if patterns[cardIdx].BuiltInCreditCard {
+		t.Fatal("modified Credit Card Number severity must not receive BuiltInCreditCard provenance")
+	}
+}
+
 func TestDefaultDLPPatternsMatchIssuerBackedDecodedFormats(t *testing.T) {
 	t.Parallel()
 	githubJWTHeader := strings.Join([]string{"ghs_", "eyJ", "hbG", "ciOi", "JFUz", "I1Ni", "J9."}, "")
@@ -561,6 +593,7 @@ func scrubPatternRuntimeFields(patterns []DLPPattern) []DLPPattern {
 	for i := range out {
 		out[i].Compiled = false
 		out[i].CredentialURLWhitespaceGrammar = false
+		out[i].BuiltInCreditCard = false
 		out[i].Bundle = ""
 		out[i].BundleVersion = ""
 	}

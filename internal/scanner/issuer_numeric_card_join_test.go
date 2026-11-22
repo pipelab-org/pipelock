@@ -249,6 +249,57 @@ func TestScanURL_IssuerNumericCardJoinRelief(t *testing.T) {
 			t.Fatalf("custom-regex Luhn rule should block, got %+v", res)
 		}
 
+		// Operator-configured rule with IDENTICAL name, regex, severity, and validator
+		// to the built-in rule (without built-in provenance) must still block.
+		identicalFieldsScanner := newNumericJoinTestScanner(t, func(cfg *config.Config) {
+			cfg.DLP.Patterns = []config.DLPPattern{{
+				Name:      "Credit Card Number",
+				Regex:     jsonnumber.ShippedCardPattern,
+				Severity:  config.SeverityMedium,
+				Validator: config.ValidatorLuhn,
+			}}
+		})
+		if res := identicalFieldsScanner.Scan(allowAll, "https://api.vendor.example/records?a="+cardA1+"&b="+cardA2); res.Allowed {
+			t.Fatalf("operator-configured rule with identical fields should block, got %+v", res)
+		}
+
+		// YAML-loaded rule with include_defaults: false and identical fields must still block.
+		yamlNoDefaults, err := config.LoadBytes([]byte("mode: balanced\ndlp:\n  include_defaults: false\n  patterns:\n    - name: \"Credit Card Number\"\n      regex: '" + jsonnumber.ShippedCardPattern + "'\n      severity: medium\n      validator: luhn\n"))
+		if err != nil {
+			t.Fatalf("config.LoadBytes(include_defaults: false): %v", err)
+		}
+		yamlNoDefaults.Internal = nil
+		yamlNoDefaultsScanner := MustNew(yamlNoDefaults)
+		t.Cleanup(yamlNoDefaultsScanner.Close)
+		if res := yamlNoDefaultsScanner.Scan(allowAll, "https://api.vendor.example/records?a="+cardA1+"&b="+cardA2); res.Allowed {
+			t.Fatalf("YAML include_defaults:false rule with identical fields should block, got %+v", res)
+		}
+
+		// YAML-loaded rule that raises severity on Credit Card Number must still block.
+		yamlRaisedSeverity, err := config.LoadBytes([]byte("mode: balanced\ndlp:\n  include_defaults: true\n  patterns:\n    - name: \"Credit Card Number\"\n      regex: '" + jsonnumber.ShippedCardPattern + "'\n      severity: high\n      validator: luhn\n"))
+		if err != nil {
+			t.Fatalf("config.LoadBytes(raised severity): %v", err)
+		}
+		yamlRaisedSeverity.Internal = nil
+		yamlRaisedScanner := MustNew(yamlRaisedSeverity)
+		t.Cleanup(yamlRaisedScanner.Close)
+		if res := yamlRaisedScanner.Scan(allowAll, "https://api.vendor.example/records?a="+cardA1+"&b="+cardA2); res.Allowed {
+			t.Fatalf("YAML raised-severity Credit Card Number rule should block, got %+v", res)
+		}
+
+		// Shipped YAML preset copy (include_defaults: true with exact built-in fields)
+		// retains built-in provenance and still qualifies for relief.
+		yamlPresetCopy, err := config.LoadBytes([]byte("mode: balanced\ndlp:\n  include_defaults: true\n  patterns:\n    - name: \"Credit Card Number\"\n      regex: '" + jsonnumber.ShippedCardPattern + "'\n      severity: medium\n      validator: luhn\n"))
+		if err != nil {
+			t.Fatalf("config.LoadBytes(preset copy): %v", err)
+		}
+		yamlPresetCopy.Internal = nil
+		yamlPresetScanner := MustNew(yamlPresetCopy)
+		t.Cleanup(yamlPresetScanner.Close)
+		if res := yamlPresetScanner.Scan(allowAll, "https://api.vendor.example/records?a="+cardA1+"&b="+cardA2); !res.Allowed {
+			t.Fatalf("shipped YAML preset copy of Credit Card Number should retain relief, got %+v", res)
+		}
+
 		// Keyword-scoped operator Luhn rule using a custom card regex
 		keywordScanner := newNumericJoinTestScanner(t, func(cfg *config.Config) {
 			cfg.DLP.Patterns = []config.DLPPattern{{
