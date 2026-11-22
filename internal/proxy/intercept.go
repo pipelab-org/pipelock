@@ -2580,9 +2580,12 @@ func newInterceptHandler(
 		var responseFindingKinds []session.HostileFindingKind
 		responseTaintType := responseTaintContentType(resp.Header)
 		responseTaintURL := r.URL.String()
-		observeResponseFindings := httpResponseFindingObserver(ic.taintRecorder, ic.taintConfig, responseTaintURL, responseTaintType, "forward_response")
+		observeResponseFindings, releaseResponseExposure := httpResponseFindingObserver(ic.taintRecorder, ic.taintConfig, responseTaintURL, responseTaintType, "forward_response")
 		observeResponseFindings(nil)
-		defer func() { observeResponseFindings(responseFindingKinds) }()
+		defer func() {
+			observeResponseFindings(responseFindingKinds)
+			releaseResponseExposure()
+		}()
 		stripUpstreamPipelockNamespace(resp)
 		if !applyFullResponsePolicy(nil, resp) {
 			reason := fullResponseRefusal(resp)

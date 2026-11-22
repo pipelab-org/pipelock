@@ -1897,6 +1897,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		defer cancel(nil)
 	}
 	delivery := &reverseDeliveryObserver{}
+	defer delivery.finish()
 	r = r.WithContext(context.WithValue(r.Context(), reverseDeliveryObserverKey{}, delivery))
 	forwardWriter = &reverseInformationalGuardWriter{
 		ResponseWriter: w,
@@ -1938,16 +1939,43 @@ type reverseDeliveryObserverKey struct{}
 // scanner's pipe to the client after the pipe write returns, so observing only
 // at the pipe would miss a rotation during the client write itself.
 type reverseDeliveryObserver struct {
-	mu      sync.Mutex
-	observe func()
+	mu       sync.Mutex
+	observe  func()
+	release  []func()
+	finished bool
 }
 
-func (d *reverseDeliveryObserver) set(observe func()) {
+// reverseDeliveryFrom returns the request's delivery observer, or nil when the
+// response did not come through ServeHTTP.
+func reverseDeliveryFrom(ctx context.Context) *reverseDeliveryObserver {
+	delivery, _ := ctx.Value(reverseDeliveryObserverKey{}).(*reverseDeliveryObserver)
+	return delivery
+}
+
+// arm installs the per-write observer (when non-nil) and a release to run once
+// ServeHTTP has finished delivering the response. Without an observer, or once
+// delivery has already finished, release runs immediately.
+func (d *reverseDeliveryObserver) arm(observe, release func()) {
 	if d == nil {
+		if release != nil {
+			release()
+		}
 		return
 	}
 	d.mu.Lock()
-	d.observe = observe
+	if d.finished {
+		d.mu.Unlock()
+		if release != nil {
+			release()
+		}
+		return
+	}
+	if observe != nil {
+		d.observe = observe
+	}
+	if release != nil {
+		d.release = append(d.release, release)
+	}
 	d.mu.Unlock()
 }
 
@@ -1960,6 +1988,19 @@ func (d *reverseDeliveryObserver) call() {
 	d.mu.Unlock()
 	if observe != nil {
 		observe()
+	}
+}
+
+// finish runs after httputil.ReverseProxy returns: the response has been
+// delivered or abandoned, so held exposure is released.
+func (d *reverseDeliveryObserver) finish() {
+	d.mu.Lock()
+	d.finished = true
+	release := d.release
+	d.release = nil
+	d.mu.Unlock()
+	for _, fn := range release {
+		fn()
 	}
 }
 
@@ -2650,7 +2691,11 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				if sseHandlesResponseTaint {
 					return
 				}
-				observeHTTPResponseFindings(responseTaintRec, cfg, targetURL, responseTaintType, "reverse_response", responseFindingKinds)
+				// httputil.ReverseProxy copies the body after this returns, so
+				// the session holds the exposure until ServeHTTP finishes.
+				observe, release := httpResponseFindingObserver(responseTaintRec, cfg, targetURL, responseTaintType, "reverse_response")
+				observe(responseFindingKinds)
+				reverseDeliveryFrom(resp.Request.Context()).arm(nil, release)
 			}()
 		}
 	}
@@ -3269,17 +3314,17 @@ responseScanning:
 		observeSSEFindings := func([]session.HostileFindingKind) {}
 		if responseTaintRec != nil {
 			sseHandlesResponseTaint = true
-			observeSSEFindings = httpResponseFindingObserver(responseTaintRec, cfg, targetURL, responseTaintType, "reverse_response")
+			var releaseSSEExposure func()
+			observeSSEFindings, releaseSSEExposure = httpResponseFindingObserver(responseTaintRec, cfg, targetURL, responseTaintType, "reverse_response")
 			observeSSEFindings(nil)
-			// A task can rotate while the stream stays open. Bracket each
-			// client write and flush so events delivered under a new task are
-			// recorded under it. The scanner's pipe write is not observed:
+			// A task can rotate while the stream stays open. The session holds
+			// the stream's exposure until ServeHTTP has finished copying it to
+			// the client, and each client write and flush is bracketed so new
+			// findings are current. The scanner's pipe write is not observed:
 			// the pipe hands bytes to httputil.ReverseProxy before they reach
 			// the client, and every client byte passes this writer.
-			if delivery, ok := resp.Request.Context().Value(reverseDeliveryObserverKey{}).(*reverseDeliveryObserver); ok {
-				observe := observeSSEFindings
-				delivery.set(func() { observe(nil) })
-			}
+			observe := observeSSEFindings
+			reverseDeliveryFrom(resp.Request.Context()).arm(func() { observe(nil) }, releaseSSEExposure)
 		}
 		actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
 		sseLayer := LayerSSEStream

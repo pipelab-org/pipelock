@@ -2963,9 +2963,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	var responseFindingKinds []session.HostileFindingKind
 	responseTaintType := responseTaintContentType(resp.Header)
 	responseTaintURL := resp.Request.URL.String()
-	observeResponseFindings := httpResponseFindingObserver(forwardRec, cfg, responseTaintURL, responseTaintType, "forward_response")
+	observeResponseFindings, releaseResponseExposure := httpResponseFindingObserver(forwardRec, cfg, responseTaintURL, responseTaintType, "forward_response")
 	observeResponseFindings(nil)
-	defer func() { observeResponseFindings(responseFindingKinds) }()
+	defer func() {
+		observeResponseFindings(responseFindingKinds)
+		releaseResponseExposure()
+	}()
 
 	// Size limit: tighter of max_response_mb and remaining byte budget.
 	// configMaxBytes and budgetLimited are kept distinct so the buffered scan

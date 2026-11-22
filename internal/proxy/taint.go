@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -103,48 +104,101 @@ func observeHTTPResponseTaint(rec session.Recorder, cfg *config.Config, rawURL, 
 }
 
 func observeHTTPResponseFindings(rec session.Recorder, cfg *config.Config, rawURL, contentType, kind string, kinds []session.HostileFindingKind) {
-	rs, ok := rec.(session.RiskState)
-	if !ok || cfg == nil || !cfg.Taint.Enabled {
+	observation, ok := httpResponseObservation(rec, cfg, rawURL, contentType, kind, kinds)
+	if !ok {
 		return
+	}
+	rec.(session.RiskState).ObserveRisk(observation)
+}
+
+func httpResponseObservation(rec session.Recorder, cfg *config.Config, rawURL, contentType, kind string, kinds []session.HostileFindingKind) (session.RiskObservation, bool) {
+	if _, ok := rec.(session.RiskState); !ok || cfg == nil || !cfg.Taint.Enabled {
+		return session.RiskObservation{}, false
 	}
 	observation := session.ClassifyHTTPResponseFindings(rawURL, contentType, cfg.Taint.AllowlistedDomains, kinds)
 	observation.Source.Kind = kind
 	observation.MaxSources = cfg.Taint.RecentSources
-	rs.ObserveRisk(observation)
+	return observation, true
 }
+
+// responseExposureHolder is implemented by recorders whose task rotation
+// carries the exposure of responses still being delivered. Hold records the
+// observation and keeps it until release, atomically with respect to rotation.
+type responseExposureHolder interface {
+	holdResponseExposure(id uint64, observation session.RiskObservation)
+	releaseResponseExposure(id uint64)
+}
+
+var responseExposureIDs atomic.Uint64
 
 // A response's source exposure is recorded in the session recorder when the
 // response is received, before any response byte is delivered to the client, on
 // every path; finding kinds from a buffered scan are recorded before the scanned
 // body is delivered; streaming findings are recorded before the affected event
 // is released. Exposure remains recorded if a later check blocks delivery.
-// Streams also observe around every client write and flush (OnDelivery), so a
-// task that rotates while a stream is open, including between the check before
-// a write and the write itself, records the events delivered under it.
+//
+// While the response is being delivered, from its first observation until
+// release, a session recorder holds its exposure: a task rotation re-applies
+// it under the same lock that clears risk, so no policy decision sees the new
+// task without the exposure of a response that is still reaching the client.
+// Streams also observe around every client write and flush (OnDelivery) so
+// findings and recorders without that hold stay current.
 //
 // httpResponseFindingObserver shares duplicate suppression across these calls
 // and the final observation, so EOF and repeated findings do not fill the bounded
 // source history with duplicates. It is safe for concurrent use: the reverse
-// path calls it from the scanner goroutine and from the client writer.
-func httpResponseFindingObserver(rec session.Recorder, cfg *config.Config, rawURL, contentType, kind string) func([]session.HostileFindingKind) {
+// path calls it from the scanner goroutine and from the client writer. Call
+// release once delivery has ended; later observations record without holding.
+func httpResponseFindingObserver(rec session.Recorder, cfg *config.Config, rawURL, contentType, kind string) (observe func([]session.HostileFindingKind), release func()) {
 	var mu sync.Mutex
-	var observed bool
+	var observed, released, holding bool
 	var observedTask string
 	var previous []session.HostileFindingKind
-	return func(kinds []session.HostileFindingKind) {
+	holder, canHold := rec.(responseExposureHolder)
+	id := responseExposureIDs.Add(1)
+	observe = func(kinds []session.HostileFindingKind) {
 		mu.Lock()
 		defer mu.Unlock()
 		merged := session.MergeFindingKinds(previous, kinds)
+		hold := canHold && !released
 		var currentTask string
-		if state, ok := rec.(session.TaskContextProvider); ok {
+		if state, ok := rec.(session.TaskContextProvider); ok && !hold {
 			currentTask = state.TaskSnapshot().CurrentTaskID
 		}
+		// A held observation is carried across rotation by the recorder, so
+		// only new findings need recording again.
 		if observed && currentTask == observedTask && slices.Equal(previous, merged) {
 			return
 		}
-		observeHTTPResponseFindings(rec, cfg, rawURL, contentType, kind, merged)
+		observation, ok := httpResponseObservation(rec, cfg, rawURL, contentType, kind, merged)
+		if !ok {
+			return
+		}
+		if hold {
+			holder.holdResponseExposure(id, observation)
+			holding = true
+		} else {
+			rec.(session.RiskState).ObserveRisk(observation)
+		}
 		observed, previous, observedTask = true, merged, currentTask
 	}
+	release = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if released {
+			return
+		}
+		released = true
+		if holding {
+			holder.releaseResponseExposure(id)
+		}
+		// Recorders that cannot hold fall back to task comparison after release.
+		observedTask = ""
+		if state, ok := rec.(session.TaskContextProvider); ok && observed {
+			observedTask = state.TaskSnapshot().CurrentTaskID
+		}
+	}
+	return observe, release
 }
 
 func evaluateHTTPTaint(cfg *config.Config, rec session.Recorder, method string, parsedURL *url.URL, body bool) taintDecision {

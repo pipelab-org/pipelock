@@ -147,7 +147,7 @@ func TestDispatchSSEScanRecordsDeliveryAcrossTaskRotation(t *testing.T) {
 		for _, withFlusher := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/flusher=%t", tc.name, withFlusher), func(t *testing.T) {
 				rec := &SessionState{}
-				observe := httpResponseFindingObserver(rec, cfg, "https://"+interceptTaintHost+"/stream", "text/event-stream", "forward_response")
+				observe, _ := httpResponseFindingObserver(rec, cfg, "https://"+interceptTaintHost+"/stream", "text/event-stream", "forward_response")
 				observe(nil)
 				opts := tc.opts
 				opts.OnDelivery = func() { observe(nil) }
@@ -240,14 +240,25 @@ func TestHTTPSSETaskRotationMidStream(t *testing.T) {
 				if risk := rec.RiskSnapshot(); risk.Level != session.TaintExternalUntrusted {
 					t.Fatalf("first event delivered without exposure: %+v", risk)
 				}
+				var clearedAtRotation atomic.Int32
 				if duringWrite {
-					stream.arm(func() { rec.BeginNewTask("rotated during write") })
+					stream.arm(func() {
+						rec.BeginNewTask("rotated during write")
+						// No observer call runs between the rotation and this
+						// read: only the session's held exposure can supply it.
+						if rec.RiskSnapshot().Level != session.TaintExternalUntrusted {
+							clearedAtRotation.Add(1)
+						}
+					})
 				} else {
 					rec.BeginNewTask("rotated between events")
 				}
 				writeTaintStream(t, writer, "data: second\n\n")
 				waitStreamFlush(t, stream, done)
 				stream.arm(nil)
+				if n := clearedAtRotation.Load(); n != 0 {
+					t.Fatalf("%d rotations inside a client write left the new task without the open stream's exposure", n)
+				}
 				select {
 				case <-done:
 					t.Fatal("stream unexpectedly closed")
@@ -374,10 +385,13 @@ func TestReverseSSETaskRotationMidStream(t *testing.T) {
 		if countReverseResponseTaintSources(rec) == 0 {
 			t.Fatal("first event delivered without its source")
 		}
-		var rotations atomic.Int32
+		var rotations, clearedAtRotation atomic.Int32
 		stream.arm(func() {
 			rotations.Add(1)
 			rec.BeginNewTask("rotated during client write")
+			if countReverseResponseTaintSources(rec) == 0 {
+				clearedAtRotation.Add(1)
+			}
 		})
 		close(next)
 		waitStreamFlush(t, stream, done)
@@ -385,8 +399,95 @@ func TestReverseSSETaskRotationMidStream(t *testing.T) {
 		if rotations.Load() == 0 {
 			t.Fatal("no client write was observed for the second event")
 		}
+		if n := clearedAtRotation.Load(); n != 0 {
+			t.Fatalf("%d rotations inside a client write left the new task without the open stream's source", n)
+		}
 		if countReverseResponseTaintSources(rec) == 0 {
 			t.Fatal("event delivered across a rotation inside the client write without its source under the new task")
 		}
 	})
+}
+
+// A response still being delivered holds its exposure in the session: a task
+// rotation re-applies it under the lock that clears risk, so no snapshot taken
+// right after the rotation sees a new task without it. Release ends the hold.
+func TestResponseExposureHeldAcrossTaskRotation(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Taint.Enabled = true
+	rec := &SessionState{}
+	observe, release := httpResponseFindingObserver(rec, cfg, "https://"+interceptTaintHost+"/stream", "text/event-stream", "forward_response")
+	observe(nil)
+	observe([]session.HostileFindingKind{session.FindingDLP})
+
+	rec.BeginNewTask("rotated while delivering")
+	if risk := rec.RiskSnapshot(); risk.Level != session.TaintExternalHostile || len(risk.Sources) != 1 {
+		t.Fatalf("risk right after rotation=%+v, want the held hostile exposure", risk)
+	}
+	// Repeat observations of an unchanged response do not add sources.
+	observe(nil)
+	if got := len(rec.RiskSnapshot().Sources); got != 1 {
+		t.Fatalf("sources after repeat observation=%d want 1", got)
+	}
+
+	release()
+	release() // idempotent
+	rec.mu.Lock()
+	held := len(rec.heldExposure)
+	rec.mu.Unlock()
+	if held != 0 {
+		t.Fatalf("held exposures after release=%d", held)
+	}
+	rec.BeginNewTask("after delivery")
+	if risk := rec.RiskSnapshot(); risk.Level != session.TaintTrusted || len(risk.Sources) != 0 {
+		t.Fatalf("risk after rotation past delivery=%+v, want cleared", risk)
+	}
+	// A late observation after release records without holding again.
+	observe([]session.HostileFindingKind{session.FindingDLP})
+	rec.mu.Lock()
+	held = len(rec.heldExposure)
+	rec.mu.Unlock()
+	if held != 0 || rec.RiskSnapshot().Level != session.TaintExternalHostile {
+		t.Fatalf("late observation held=%d risk=%+v", held, rec.RiskSnapshot())
+	}
+}
+
+// A session that holds a delivering response's exposure is not evicted, by
+// idle cleanup or under capacity pressure; otherwise the next request would
+// start from a clean session while the stream keeps writing to the old one.
+func TestSessionWithHeldExposureIsNotEvicted(t *testing.T) {
+	cfg := testSessionConfig()
+	cfg.SessionTTLMinutes = 1
+	sm := NewSessionManager(cfg, nil, nil)
+	defer sm.Close()
+	sess := sm.GetOrCreate(testClientIP)
+	pcfg := config.Defaults()
+	pcfg.Taint.Enabled = true
+	pcfg.Taint.AllowlistedDomains = []string{interceptTaintHost}
+	observe, release := httpResponseFindingObserver(sess, pcfg, "https://"+interceptTaintHost+"/stream", "text/event-stream", "forward_response")
+	observe(nil)
+	sess.mu.Lock()
+	sess.lastActivity = time.Now().Add(-time.Hour)
+	protected := sess.hasCapacityProtectionLocked(false)
+	sess.mu.Unlock()
+	if !protected {
+		t.Fatal("delivering session lacks capacity protection")
+	}
+	sm.cleanup()
+	sm.mu.RLock()
+	_, kept := sm.sessions[testClientIP]
+	sm.mu.RUnlock()
+	if !kept {
+		t.Fatal("idle cleanup evicted a session holding a delivering response's exposure")
+	}
+	release()
+	sess.mu.Lock()
+	sess.lastActivity = time.Now().Add(-time.Hour)
+	sess.mu.Unlock()
+	sm.cleanup()
+	sm.mu.RLock()
+	_, kept = sm.sessions[testClientIP]
+	sm.mu.RUnlock()
+	if kept {
+		t.Fatal("idle session not evicted after delivery ended")
+	}
 }

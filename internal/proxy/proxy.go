@@ -6899,9 +6899,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	var responseFindingKinds []session.HostileFindingKind
 	responseTaintType := responseTaintContentType(resp.Header)
-	observeResponseFindings := httpResponseFindingObserver(fetchRec, cfg, resp.Request.URL.String(), responseTaintType, "fetch_response")
+	observeResponseFindings, releaseResponseExposure := httpResponseFindingObserver(fetchRec, cfg, resp.Request.URL.String(), responseTaintType, "fetch_response")
 	observeResponseFindings(nil)
-	defer func() { observeResponseFindings(responseFindingKinds) }()
+	defer func() {
+		observeResponseFindings(responseFindingKinds)
+		releaseResponseExposure()
+	}()
 
 	// Limit response body size: use the tighter of max_response_mb and the
 	// remaining per-agent byte budget, so oversized responses are blocked
