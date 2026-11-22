@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 
 	"golang.org/x/net/html"
@@ -78,6 +79,9 @@ func (s *Scanner) walkAdditionalInjectionViews(ctx context.Context, content, tar
 	outbound, _ := ctx.Value(outboundInjectionContextKey{}).(bool)
 	queue := newInjectionDecodeQueue(content, outbound)
 	var chainWindows *responseChainWindowMemo
+	var buffers responseMatchingBuffers
+	var alternateDeltaParent *responseDeltaParent
+	alternateDeltaIndex := -1
 	if !outbound {
 		chainWindows = &responseChainWindowMemo{}
 	}
@@ -197,16 +201,23 @@ func (s *Scanner) walkAdditionalInjectionViews(ctx context.Context, content, tar
 				continue
 			}
 			memo := newResponseMatchMemo(len(view.text))
-			if memo != nil {
+			if memo != nil && !outbound {
 				memo.chainWindows = chainWindows
+				memo.buffers = &buffers
 			}
-			if memo != nil && aligned && parent.proof.hasNegatives() {
-				if deltaParent == nil {
-					deltaParent = newResponseDeltaParent(parent)
-				}
-				memo.deltaParent = deltaParent
-				if alignment.index != head && alignment.base.proof.hasNegatives() {
-					memo.deltaParent = newResponseDeltaParent(alignment.base)
+			if memo != nil && aligned {
+				switch {
+				case alignment.index != head && alignment.base.proof.hasNegatives():
+					if alignment.index != alternateDeltaIndex {
+						alternateDeltaParent = newResponseDeltaParent(alignment.base)
+						alternateDeltaIndex = alignment.index
+					}
+					memo.deltaParent = alternateDeltaParent
+				case parent.proof.hasNegatives():
+					if deltaParent == nil {
+						deltaParent = newResponseDeltaParent(parent)
+					}
+					memo.deltaParent = deltaParent
 				}
 			}
 			checked := s.scanResponseMatchesWithOptions(ctx, view.text, target, suppress, responseScanOptions{skipEncodedDecode: true}, memo)
@@ -475,16 +486,29 @@ func injectionLegacyDecodeViews(text string) ([]injectionDecodeView, bool) {
 		used += len(text)
 		views = append(views, injectionDecodeView{text: text})
 	}
+	var scratch []byte
 	decode := func(source string, printableOnly bool) {
-		stripped, _ := stripDecodeWhitespace(source, 0)
-		stripped = canonicalMixedBase64(stripped)
-		for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.URLEncoding, base64.RawStdEncoding, base64.RawURLEncoding} {
-			if decoded, err := enc.DecodeString(stripped); err == nil && len(decoded) > 0 && (!printableOnly || isPrintableText(decoded)) {
-				add(string(decoded))
+		// A full decode rejects bytes outside both Base64 alphabets, the
+		// shared padding byte and the discarded ASCII whitespace. Hex is a
+		// subset. Avoid copying a large rejected carrier before decoding.
+		if !printableOnly {
+			for i := range len(source) {
+				b := source[i]
+				if !isBase64DataByte(b) && !strings.ContainsRune("= \t\r\n", rune(b)) {
+					return
+				}
 			}
 		}
-		if decoded, err := hex.DecodeString(stripped); err == nil && len(decoded) > 0 && (!printableOnly || isPrintableText(decoded)) {
-			add(string(decoded))
+		stripped := canonicalMixedBase64(stripResponseDecodeWhitespace(source))
+		scratch = slices.Grow(scratch[:0], base64.RawStdEncoding.DecodedLen(len(stripped)))
+		dst := scratch[:cap(scratch)]
+		for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.URLEncoding, base64.RawStdEncoding, base64.RawURLEncoding} {
+			if n, err := enc.Decode(dst, []byte(stripped)); err == nil && n > 0 && (!printableOnly || isPrintableText(dst[:n])) {
+				add(string(dst[:n]))
+			}
+		}
+		if n, err := hex.Decode(dst, []byte(stripped)); err == nil && n > 0 && (!printableOnly || isPrintableText(dst[:n])) {
+			add(string(dst[:n]))
 		}
 	}
 	decode(text, false)

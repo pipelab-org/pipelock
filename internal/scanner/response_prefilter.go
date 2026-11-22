@@ -44,6 +44,7 @@ type responsePreFilterView struct {
 	literals         responseLiteralMemo
 	ready            bool
 	positions        *matchingView
+	buffers          *responseMatchingBuffers
 	maxWindowRun     int
 	windowRunReady   bool
 }

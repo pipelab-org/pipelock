@@ -117,6 +117,7 @@ type matchingView struct {
 	responseChainSortedHits         int
 	responseChainWidths             map[*syntax.Regexp]responseChainMeasuredWidth
 	responseChainRuns               *responseDeltaView
+	responseBuffers                 *responseViewBuffers
 	ready                           bool
 	windowMu                        sync.Mutex
 	windows                         map[windowMatchKey][][2]int
@@ -187,6 +188,19 @@ func (v *matchingView) index() {
 	}
 	v.ready = true
 	hits := make([][]int, len(v.program.lengths))
+	if storage := v.responseBuffers; storage != nil {
+		if len(storage.positions) != len(hits) {
+			storage.positions = make([][]int, len(hits))
+		}
+		copy(hits, storage.positions)
+		defer func() {
+			for id, positions := range hits {
+				if positions != nil {
+					storage.retainPositions(id, positions)
+				}
+			}
+		}()
+	}
 	remaining := matchingMaxHits
 	if v.program.response {
 		remaining = responseMatchingMaxHits
@@ -208,6 +222,9 @@ func (v *matchingView) index() {
 			}
 			v.truncated[id] = true
 			remaining += len(hits[id])
+			if v.responseBuffers != nil {
+				v.responseBuffers.retainPositions(id, hits[id])
+			}
 			hits[id] = nil
 			return true
 		}

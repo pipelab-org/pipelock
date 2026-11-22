@@ -35,18 +35,57 @@ func (q *injectionDecodeQueue) decodeView(index int) injectionDecodeView {
 	if stored.edits == nil {
 		return view
 	}
-	parent := q.decodeView(stored.parent).text
 	var text strings.Builder
 	text.Grow(stored.size)
-	end := 0
-	for _, edit := range stored.edits {
-		text.WriteString(parent[end:edit.start])
-		text.WriteString(edit.replacement)
-		end = edit.end
-	}
-	text.WriteString(parent[end:])
+	q.walkViewText(index, 0, stored.size, func(part string) bool {
+		text.WriteString(part)
+		return true
+	})
 	view.text = text.String()
 	return view
+}
+
+// Visit only the requested output range of a packed view. Translate the
+// unchanged spans back to their source offsets without joining intermediate
+// ancestors or allocating a string just to compare a digest candidate.
+func (q *injectionDecodeQueue) walkViewText(index, start, end int, visit func(string) bool) bool {
+	stored := &q.views[index]
+	if stored.lines != nil {
+		at := 0
+		for _, line := range stored.lines {
+			next := at + len(line)
+			if next > start && !visit(line[max(start-at, 0):min(end-at, len(line))]) {
+				return false
+			}
+			if next >= end {
+				return true
+			}
+			at = next
+		}
+		return true
+	}
+	if stored.edits == nil {
+		return visit(stored.text[start:end])
+	}
+	at, source := 0, 0
+	for _, edit := range stored.edits {
+		unchanged := at + edit.start - source
+		if unchanged > start && unchanged > at && !q.walkViewText(stored.parent, source+max(start-at, 0), source+min(end-at, unchanged-at), visit) {
+			return false
+		}
+		if unchanged >= end {
+			return true
+		}
+		next := unchanged + len(edit.replacement)
+		if next > start && next > unchanged && !visit(edit.replacement[max(start-unchanged, 0):min(end-unchanged, len(edit.replacement))]) {
+			return false
+		}
+		if next >= end {
+			return true
+		}
+		at, source = next, edit.end
+	}
+	return q.walkViewText(stored.parent, source+max(start-at, 0), source+end-at, visit)
 }
 
 func (v storedInjectionView) decodeView() injectionDecodeView {
@@ -55,19 +94,6 @@ func (v storedInjectionView) decodeView() injectionDecodeView {
 		view.text = strings.Join(v.lines, "")
 	}
 	return view
-}
-
-func (v storedInjectionView) equalText(text string) bool {
-	if v.size != len(text) {
-		return false
-	}
-	for _, line := range v.lines {
-		if !strings.HasPrefix(text, line) {
-			return false
-		}
-		text = text[len(line):]
-	}
-	return text == ""
 }
 
 func newInjectionDecodeQueue(root string, shareLines bool) injectionDecodeQueue {
@@ -93,16 +119,21 @@ func (q *injectionDecodeQueue) lookup(text string) (digest [32]byte, duplicate b
 	}
 	digest = sum256String(text)
 	for _, index := range q.packed[digest] {
-		stored := q.views[index]
-		if stored.edits == nil {
-			if stored.equalText(text) {
-				return digest, true
-			}
-		} else if q.decodeView(index).text == text {
+		if q.equalText(index, text) {
 			return digest, true
 		}
 	}
 	return digest, false
+}
+
+func (q *injectionDecodeQueue) equalText(index int, text string) bool {
+	return q.views[index].size == len(text) && q.walkViewText(index, 0, len(text), func(part string) bool {
+		if !strings.HasPrefix(text, part) {
+			return false
+		}
+		text = text[len(part):]
+		return true
+	}) && text == ""
 }
 
 const (

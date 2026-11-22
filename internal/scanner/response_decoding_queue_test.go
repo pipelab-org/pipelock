@@ -69,7 +69,7 @@ func TestInjectionDecodeQueueTrailingNewlineAndLineBudget(t *testing.T) {
 	if got := q.views[1].decodeView().text; got != text {
 		t.Fatal("packed view lost its trailing newline")
 	}
-	if q.views[1].equalText(text + "\n") {
+	if q.equalText(1, text+"\n") {
 		t.Fatal("different-size view compared equal")
 	}
 }

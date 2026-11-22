@@ -62,9 +62,8 @@ func checkResponseDelta(t *testing.T, parent, child, expression string, mustUseD
 		t.Fatalf("edit map does not reconstruct child for %q", expression)
 	}
 	view := responseDeltaView{
-		known:  map[responseNegativeKey]struct{}{key: {}},
-		edits:  edits,
-		maxRun: responseMaxWindowRun(child),
+		known: map[responseNegativeKey]struct{}{key: {}},
+		edits: edits,
 	}
 	got, handled := view.matchPlanned(pattern, child, plan)
 	if !handled {
@@ -266,5 +265,207 @@ func TestResponseDeltaArtificialAnchor(t *testing.T) {
 	view := responseDeltaView{known: map[responseNegativeKey]struct{}{key: {}}, edits: edits}
 	if got, handled := view.match(p, child, responseWindowWidth{fixed: len("fixture")}); handled || len(got) != 0 {
 		t.Fatalf("artificial boundary failed to fall back: %v, %t", got, handled)
+	}
+}
+
+const normalizedDeltaPadding = 700
+
+func TestResponseNormalizedDeltaParity(t *testing.T) {
+	const needle = `\bfixture marker\b`
+	for _, tc := range []struct {
+		name, parent, child, expression string
+		kind                            matchingTransform
+	}{
+		{"spaced", "fix!ure\u200bmarker", "fixture\u200bmarker", needle, matchingSpaced},
+		{"spaced deletion", "fixture#\u200bmarker", "fixture\u200bmarker", needle, matchingSpaced},
+		{"leet", "f!xture marker", "f1xture marker", needle, matchingLeet},
+		{"leet insertion", "fxture marker", "f1xture marker", needle, matchingLeet},
+		{"vowel", "f!xtoro morker", "foxtoro morker", `\bfaxtara markar\b`, matchingVowel},
+		{"vowel deletion", "fo!xtoro morker", "foxtoro morker", `\bfaxtara markar\b`, matchingVowel},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pad := strings.Repeat("quiet;", normalizedDeltaPadding) + " "
+			checkResponseNormalizedDelta(t, pad+tc.parent+" "+pad, pad+tc.child+" "+pad, tc.kind, regexp.MustCompile(tc.expression), true)
+		})
+	}
+}
+
+func FuzzResponseNormalizedDeltaParity(f *testing.F) {
+	for i, pair := range [][2]string{
+		{"fixture#\u200bmarker", "fixture\u200bmarker"},
+		{"f!xture marker", "f1xture marker"},
+		{"f!xtoro morker", "foxtoro morker"},
+		{"fixture\u3164 marker", "fixture\u0301\u200bmarker"},
+		{"f\xffxture marker", "f1xture\x80marker"},
+		{"fixture\u00a0#marker", "fixture\u00a0marker"},
+		{"foxtoro!!morker", "foxtoro\tmorker"},
+		{"fixture\nmarker!", "fixture\nmarker"},
+	} {
+		f.Add(pair[0], pair[1], uint8(i))
+	}
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`\bfixture[\t ]+marker\b`),
+		regexp.MustCompile(`\bfixture(?:\s+marker)+`),
+		regexp.MustCompile(`\bfaxtara(?:\s+markar){1,3}\b`),
+		regexp.MustCompile(`fixture(?:[^#;]{0,24})marker`),
+		regexp.MustCompile(`(?m)^fixture\s+marker$`),
+		regexp.MustCompile(`\b(?:faxtara|fixture)\W+marker\b`),
+		regexp.MustCompile(`(?i)\bfixture\s+\S+@\S+`),
+	}
+	f.Fuzz(func(t *testing.T, source, replacement string, flags uint8) {
+		if len(source)+len(replacement) > 2048 {
+			t.Skip()
+		}
+		prefix := strings.Repeat("quiet;", normalizedDeltaPadding) + "\n"
+		suffix := "\n" + strings.Repeat(";quiet", normalizedDeltaPadding)
+		if flags&32 != 0 {
+			prefix = ""
+		}
+		if flags&64 != 0 {
+			suffix = ""
+		}
+		kind := matchingSpaced + matchingTransform(flags%3)
+		checkResponseNormalizedDelta(t, prefix+source+suffix, prefix+replacement+suffix, kind, patterns[int(flags)%len(patterns)], false)
+	})
+}
+
+func checkResponseNormalizedDelta(t *testing.T, source, replacement string, kind matchingTransform, re *regexp.Regexp, requireDelta bool) {
+	t.Helper()
+	pattern := &compiledPattern{name: "Fixture Marker", re: re, responseMemoRegexp: re}
+	key, _ := responseNegativePatternKey(pattern)
+	parent := &responseDeltaParent{raw: source}
+	parentText := parent.matchingText(kind)
+	if re.MatchString(parentText) || len(replacement) < responseMemoMinBytes {
+		if requireDelta {
+			t.Fatal("fixture did not establish a clean, eligible parent")
+		}
+		return
+	}
+	parent.proof[kind] = map[responseNegativeKey]struct{}{key: {}}
+	// The primary pass can prove other patterns empty independently of the
+	// negative for this pattern on the normalized variant under test.
+	parent.proof[matchingPrimary] = map[responseNegativeKey]struct{}{{regex: "unrelated fixture"}: {}}
+	memo := newResponseMatchMemo(len(replacement))
+	memo.deltaParent = parent
+	primary := memo.normalize(replacement, matchingPrimary)
+	memo.deltaViews[matchingPrimary] = parent.view(matchingPrimary, primary)
+	memo.deltaReady[matchingPrimary] = true
+	input := primary
+	if kind == matchingSpaced {
+		input = replacement
+	}
+	child := memo.normalize(input, kind)
+	wantText := normalizeResponseMatchingView(input, kind)
+	if child != wantText {
+		t.Fatalf("normalizer change map emitted different bytes for transform %d", kind)
+	}
+	if requireDelta && kind != matchingSpaced && !memo.deltaReady[kind] {
+		t.Fatal("fixture did not project the primary edit map")
+	}
+	patterns := []*compiledPattern{pattern}
+	pf := newResponsePreFilter(patterns)
+	program := responseMatchingProgram(pf)
+	memo.matchingView(matchingPrimary, primary, program)
+	got := memo.matchTransformed(pf, patterns, child, program, kind)
+	want := matchResponsePattern(pattern, wantText)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("transform %d optimized = %+v, full = %+v", kind, got, want)
+	}
+	if delta := memo.deltaViews[kind]; delta != nil {
+		var rebuilt strings.Builder
+		end := 0
+		for _, edit := range delta.edits {
+			rebuilt.WriteString(parentText[end:edit.sourceStart])
+			rebuilt.WriteString(wantText[edit.viewStart:edit.viewEnd])
+			end = edit.sourceEnd
+		}
+		rebuilt.WriteString(parentText[end:])
+		if rebuilt.String() != wantText {
+			t.Fatal("normalized edit map cannot reconstruct the whole-view reference")
+		}
+	} else if requireDelta {
+		t.Fatal("fixture fell back from the delta planner")
+	}
+	if requireDelta && len(want) == 0 {
+		t.Fatal("fixture did not produce a match")
+	}
+}
+
+func TestResponseDeltaLocalRepeatBounds(t *testing.T) {
+	const expression = `\bfixture\s+marker\b`
+	re := regexp.MustCompile(expression)
+	tree, err := syntax.Parse(expression, syntax.Perl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, ok := newResponseDeltaWidth(tree)
+	if !ok {
+		t.Fatal("fixture did not produce a width plan")
+	}
+	padding := strings.Repeat("quiet;", 1000)
+	unrelatedRun := strings.Repeat(" ", responseWindowMaxWidth+1)
+	for _, tc := range []struct {
+		name, run string
+		local     bool
+	}{
+		{"long run outside the edit", "\t ", true},
+		{"long run touching the edit", unrelatedRun, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prefix := unrelatedRun + padding + " "
+			from := prefix + "f!xture" + tc.run + "marker " + padding
+			to := prefix + "fixture" + tc.run + "marker " + padding
+			edits, _, aligned := responseDeltaEdits(from, to)
+			if !aligned {
+				t.Fatal("fixture did not align")
+			}
+			v := newResponseDeltaView(nil, from, edits)
+			windows, local := v.localRanges(to, plan)
+			if local != tc.local || !re.MatchString(to) {
+				t.Fatalf("local bound = %t, want %t with a true match", local, tc.local)
+			}
+			if local && !reflect.DeepEqual(matchResponseChainWindows(re, to, windows, nil, false), re.FindAllStringIndex(to, -1)) {
+				t.Fatal("local repetition bound changed match coordinates")
+			}
+		})
+	}
+}
+
+func TestResponseDeltaAnchoredRepeatBounds(t *testing.T) {
+	const expression = `(?i)\bfixture\s+\S+@\S+`
+	tree, err := syntax.Parse(expression, syntax.Perl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, ok := newResponseDeltaWidth(tree)
+	if !ok || len(plan.anchors) != 2 {
+		t.Fatalf("expected two repetitions sharing an anchor, got %d", len(plan.anchors))
+	}
+	prefix := strings.Repeat("q", responseWindowMaxWidth+1) + " "
+	suffix := strings.Repeat(" quiet;", 1000)
+	for _, tc := range []struct {
+		name, run string
+		local     bool
+	}{
+		{"unrelated long run", "abc@def", true},
+		{"long anchored run", "abc@" + strings.Repeat("q", responseWindowMaxWidth), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			from := prefix + "f!xture " + tc.run + suffix
+			to := prefix + "fixture " + tc.run + suffix
+			edits, _, aligned := responseDeltaEdits(from, to)
+			if !aligned {
+				t.Fatal("fixture did not align")
+			}
+			v := newResponseDeltaView(nil, from, edits)
+			windows, local := v.localRanges(to, plan)
+			if local != tc.local {
+				t.Fatalf("local bound = %t, want %t", local, tc.local)
+			}
+			re := regexp.MustCompile(expression)
+			if local && !reflect.DeepEqual(matchResponseChainWindows(re, to, windows, nil, false), re.FindAllStringIndex(to, -1)) {
+				t.Fatal("anchored repetition bound changed match coordinates")
+			}
+		})
 	}
 }

@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"bytes"
 	"regexp"
 	"regexp/syntax"
 	"slices"
@@ -435,7 +436,14 @@ func (s responseChainStage) hits(view *matchingView) responseChainStageHits {
 			count += len(list.starts)
 		}
 		if count <= responseChainSortedHitBudget-view.responseChainSortedHits {
-			result.sorted = responseChainListHits(result.lists, make([]responseChainHit, 0, count))
+			var sorted []responseChainHit
+			if view.responseBuffers != nil {
+				start := view.responseChainSortedHits
+				arena := slices.Grow(view.responseBuffers.sorted[:start], count)
+				view.responseBuffers.sorted = arena
+				sorted = arena[start : start : start+count]
+			}
+			result.sorted = responseChainListHits(result.lists, sorted)
 			view.responseChainSortedHits += len(result.sorted)
 		}
 	}
@@ -447,6 +455,23 @@ func (s responseChainStage) hits(view *matchingView) responseChainStageHits {
 }
 
 func responseChainListHits(lists []responseChainHitList, dst []responseChainHit) []responseChainHit {
+	if len(lists) == 2 {
+		left, right := lists[0], lists[1]
+		for len(left.starts) > 0 && len(right.starts) > 0 {
+			if left.starts[0] > right.starts[0] {
+				left, right = right, left
+			}
+			at := left.starts[0]
+			dst = append(dst, responseChainHit{at, at + left.width})
+			left.starts = left.starts[1:]
+		}
+		for _, list := range [...]responseChainHitList{left, right} {
+			for _, at := range list.starts {
+				dst = append(dst, responseChainHit{at, at + list.width})
+			}
+		}
+		return dst
+	}
 	for _, list := range lists {
 		for _, at := range list.starts {
 			dst = append(dst, responseChainHit{at, at + list.width})
@@ -468,6 +493,9 @@ func (v *matchingView) responseChainPositions(key responseChainPositionKey) ([]i
 		return hits, complete
 	}
 	var accepted []int
+	if buffers := v.responseBuffers; buffers != nil {
+		accepted = buffers.filtered[key][:0]
+	}
 	for _, at := range hits {
 		end := at + len(literal.text)
 		if !literal.fold && v.text[at:end] != literal.text ||
@@ -481,6 +509,9 @@ func (v *matchingView) responseChainPositions(key responseChainPositionKey) ([]i
 		v.responseChainFiltered = make(map[responseChainPositionKey][]int)
 	}
 	v.responseChainFiltered[key] = accepted
+	if buffers := v.responseBuffers; buffers != nil {
+		buffers.retainFilteredPositions(key, accepted)
+	}
 	return accepted, true
 }
 
@@ -504,6 +535,46 @@ func (s responseChainStage) mayHaveHits(view *matchingView) bool {
 
 type responseChainScratch struct {
 	current, next []responseChainHit
+	windows       []regexpWindowRange
+	folded        []byte
+}
+
+// The decode walk finishes matching a view before it admits another one.
+// Its scratch buffers may be reused by the next view of the same transform.
+type responseMatchingBuffers struct {
+	chain responseChainScratch
+	views [matchingVowel + 1]responseViewBuffers
+}
+
+type responseViewBuffers struct {
+	positions    [][]int
+	filtered     map[responseChainPositionKey][]int
+	positionsCap int
+	sorted       []responseChainHit
+}
+
+func (b *responseViewBuffers) retainPositions(id int, positions []int) {
+	if b.reservePositions(cap(positions) - cap(b.positions[id])) {
+		b.positions[id] = positions[:0]
+	}
+}
+
+func (b *responseViewBuffers) retainFilteredPositions(key responseChainPositionKey, positions []int) {
+	if b.reservePositions(cap(positions) - cap(b.filtered[key])) {
+		if b.filtered == nil {
+			b.filtered = make(map[responseChainPositionKey][]int)
+		}
+		b.filtered[key] = positions[:0]
+	}
+}
+
+func (b *responseViewBuffers) reservePositions(additional int) bool {
+	const limit = 2 * responseMatchingMaxHits
+	if additional <= 0 || additional > limit-b.positionsCap {
+		return false
+	}
+	b.positionsCap += additional
+	return true
 }
 
 type responseChainCandidates struct {
@@ -659,7 +730,12 @@ func responseChainWordBoundary(text string, at int) bool {
 }
 
 func (p *responseLiteralChain) ranges(view *matchingView, maxRun int, delta *responseDeltaView, scratch *responseChainScratch) ([]regexpWindowRange, bool) {
-	var windows []regexpWindowRange
+	windows := scratch.windows[:0]
+	defer func() {
+		if cap(windows) <= responseMatchingMaxHits {
+			scratch.windows = windows[:0]
+		}
+	}()
 	for _, branch := range p.branches {
 		candidates, complete := branch.candidates(view, maxRun, scratch)
 		if !complete {
@@ -768,6 +844,80 @@ func matchResponseChainWindows(re *regexp.Regexp, text string, windows []regexpW
 	return results
 }
 
+// An ordered chain of compulsory literals is necessary even inside a delta
+// window. Check the inexpensive condition before interpreting the regexp.
+// Gaps and boundary assertions are left to the real matcher.
+func (p *responseLiteralChain) filterDeltaWindows(text string, windows []regexpWindowRange, scratch *responseChainScratch) []regexpWindowRange {
+	if p == nil {
+		return windows
+	}
+	kept := windows[:0]
+	for _, window := range windows {
+		if p.hasDeltaLiterals(text[window.start:window.end], scratch) {
+			kept = append(kept, window)
+		}
+	}
+	return kept
+}
+
+func (p *responseLiteralChain) hasDeltaLiterals(text string, scratch *responseChainScratch) bool {
+	var folded []byte
+	for _, branch := range p.branches {
+		end := 0
+		for _, stage := range branch.stages {
+			firstEnd := len(text) + 1
+			for _, literal := range stage.literals {
+				var search []byte
+				if literal.fold {
+					if folded == nil {
+						folded = slices.Grow(scratch.folded[:0], len(text))[:len(text)]
+						for i := range len(text) {
+							folded[i] = asciiLower(text[i])
+						}
+						scratch.folded = folded
+					}
+					search = folded
+				}
+				if at := stage.firstDeltaHit(text, search, literal.text, end); at >= 0 {
+					firstEnd = min(firstEnd, at+len(literal.text))
+				}
+			}
+			end = firstEnd
+			if end > len(text) {
+				break
+			}
+		}
+		if end <= len(text) {
+			return true
+		}
+	}
+	return false
+}
+
+// Keep artificial edges eligible since their neighbouring bytes live outside
+// the window. ASCII folding preserves the regexp word-boundary classification.
+func (s responseChainStage) firstDeltaHit(text string, folded []byte, literal string, from int) int {
+	for from < len(text) {
+		var offset int
+		if folded != nil {
+			offset = bytes.Index(folded[from:], []byte(literal))
+		} else {
+			offset = strings.Index(text[from:], literal)
+		}
+		if offset < 0 {
+			break
+		}
+		at := from + offset
+		end := at + len(literal)
+		if (!s.beforeWord || at == 0 || responseChainWordBoundary(text, at)) &&
+			(!s.afterWord || end == len(text) || responseChainWordBoundary(text, end)) {
+			return at
+		}
+		from = at + 1
+	}
+	return -1
+}
+
 func (p *responseLiteralChain) literals() []string {
 	var literals []string
 	for _, branch := range p.branches {
@@ -792,7 +942,11 @@ func (pf *responsePreFilter) chainRanges(content string, view *responsePreFilter
 		return nil
 	}
 	var ranges responseChainRanges
-	var scratch responseChainScratch
+	var localScratch responseChainScratch
+	scratch := &localScratch
+	if view.buffers != nil {
+		scratch = &view.buffers.chain
+	}
 	for _, pattern := range patterns {
 		if pattern.responseMemoRegexp != pattern.re {
 			continue
@@ -816,11 +970,20 @@ func (pf *responsePreFilter) chainRanges(content string, view *responsePreFilter
 			plan := pf.chains[re]
 			var windows []regexpWindowRange
 			complete := identical
+			if !complete && delta != nil {
+				if width, ok := pf.deltaWidths[re]; ok {
+					windows, complete = delta.localRanges(content, width)
+					complete = complete && responseChainWindowBytes(windows) <= len(content)/8
+					if complete {
+						windows = plan.filterDeltaWindows(content, windows, scratch)
+					}
+				}
+			}
 			if !complete && plan != nil {
 				if plan.hasRuns {
 					view.prepareWindowRun(content)
 				}
-				windows, complete = plan.ranges(view.positions, view.maxWindowRun, delta, &scratch)
+				windows, complete = plan.ranges(view.positions, view.maxWindowRun, delta, scratch)
 			}
 			if complete {
 				if ranges == nil {

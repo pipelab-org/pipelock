@@ -1204,7 +1204,11 @@ func matchPatternsPreFilteredWithMemo(pf *responsePreFilter, patterns []*compile
 	case view.outboundMatch != nil:
 		match = view.outboundMatch
 	case len(content) >= regexpWindowMinText && len(pf.windows) != 0:
-		match = pf.windowMatcher(content, view, patterns, indices)
+		// Chain and delta windows do not need the whole-view window index.
+		// Prepare that index only when a remaining plan can use it.
+		if fallback := pf.windowFallbackIndices(patterns, indices, chains); len(fallback) != 0 {
+			match = pf.windowMatcher(content, view, patterns, fallback)
+		}
 	}
 	if delta := view.delta; delta != nil && view.outboundMatch == nil && len(pf.deltaWidths) != 0 {
 		full := match

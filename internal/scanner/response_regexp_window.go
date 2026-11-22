@@ -280,6 +280,22 @@ func (w *regexpWindowPlan) setLiteralAnchors(tree *syntax.Regexp, limit int) boo
 	return true
 }
 
+func (pf *responsePreFilter) windowFallbackIndices(patterns []*compiledPattern, indices []int, chains responseChainRanges) []int {
+	if len(chains) == 0 {
+		return indices
+	}
+	var fallback []int
+	for _, i := range indices {
+		p := patterns[i]
+		if pf.windows[p.re] != nil {
+			if _, planned := chains.patternWindows(p); !planned {
+				fallback = append(fallback, i)
+			}
+		}
+	}
+	return fallback
+}
+
 // Prepare view state on the caller goroutine. Workers may share the completed
 // position index and window cache, but never build or mutate the index.
 func (pf *responsePreFilter) windowMatcher(content string, view *responsePreFilterView, patterns []*compiledPattern, indices []int) func(*compiledPattern, string) []ResponseMatch {

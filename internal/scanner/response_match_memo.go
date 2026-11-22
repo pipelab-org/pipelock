@@ -28,6 +28,7 @@ type responseMatchMemo struct {
 	entries       int
 	matchingRoot  *matchingView
 	chainWindows  *responseChainWindowMemo
+	buffers       *responseMatchingBuffers
 	normalized    [matchingVowel + 1]responseNormalizedView
 	deltaParent   *responseDeltaParent
 	deltaProof    responseDeltaProof
@@ -54,10 +55,36 @@ func (m *responseMatchMemo) normalize(text string, kind matchingTransform) strin
 		return normalizeResponseMatchingView(text, kind)
 	}
 	view := &m.normalized[kind]
-	if !view.ready || view.source != text {
-		*view = responseNormalizedView{text, normalizeResponseMatchingView(text, kind), true}
+	if view.ready && view.source == text {
+		return view.text
 	}
+	var normalized string
+	var mapped bool
+	if kind == matchingLeet || kind == matchingVowel {
+		normalized, mapped = m.normalizeDelta(text, kind)
+	}
+	if !mapped {
+		normalized = normalizeResponseMatchingView(text, kind)
+	}
+	*view = responseNormalizedView{text, normalized, true}
+	// A no-op pass can reuse the exact-byte proof from an earlier pass.
+	// Each lookup still requires the identical pattern and literal gate.
+	m.deltaProof[kind] = m.views[normalized]
 	return view.text
+}
+
+func (m *responseMatchMemo) normalizeDelta(text string, kind matchingTransform) (string, bool) {
+	primary := m.deltaViews[matchingPrimary]
+	if primary == nil || m.normalized[matchingPrimary].text != text || len(m.deltaParent.proof[kind]) == 0 {
+		return "", false
+	}
+	parent := m.deltaParent.matchingText(kind)
+	mapped, ok := mapResponseNormalizedEdits(kind, text, parent, primary)
+	if ok {
+		m.deltaViews[kind] = newResponseDeltaView(m.deltaParent.proof[kind], parent, primary.edits)
+		m.deltaReady[kind] = true
+	}
+	return mapped, ok
 }
 
 func normalizeResponseMatchingView(text string, kind matchingTransform) string {
@@ -141,6 +168,9 @@ func (m *responseMatchMemo) matchTransformed(pf *responsePreFilter, patterns []*
 	positions := m.matchingView(kind, content, program)
 	if positions != nil {
 		positions.responseChainWindows = m.chainWindows
+		if m.buffers != nil {
+			positions.responseBuffers = &m.buffers.views[kind]
+		}
 	}
 	result := m.matchPositioned(pf, patterns, content, positions, delta)
 	if m != nil {
@@ -210,9 +240,11 @@ func (m *responseMatchMemo) matchPositioned(pf *responsePreFilter, patterns []*c
 	}
 	view.positions = positions
 	view.delta = delta
+	view.buffers = m.buffers
 	result := matchPatternsPreFilteredWithMemo(remainingFilter, remaining, content, view)
 	view.positions = nil
 	view.delta = nil
+	view.buffers = nil
 	if m.outboundError() != nil {
 		return nil
 	}
