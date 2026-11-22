@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -133,6 +134,23 @@ func (o MCPProxyOpts) finishV3HTTPAcknowledgement(ctx context.Context, logW io.W
 	o.finishV3Send(ctx, logW, effect, true)
 	if pending, ok := tracker.takeOwnedOutcome(id, registration); ok {
 		pending.settle(logW, o, "forwarded", -1, "upstream_acknowledged")
+	}
+}
+
+func interruptBridgeHeldOutput(out io.Writer, grace time.Duration) func() {
+	deadline, ok := out.(interface{ SetWriteDeadline(time.Time) error })
+	if !ok {
+		return func() {}
+	}
+	done := make(chan struct{})
+	timer := time.AfterFunc(grace, func() {
+		defer close(done)
+		_ = deadline.SetWriteDeadline(time.Now())
+	})
+	return func() {
+		if !timer.Stop() {
+			<-done
+		}
 	}
 }
 
@@ -275,7 +293,17 @@ func RunHTTPProxy(
 		watchCapacityDeferrals(killWatchCtx, fwdOpts)
 	}()
 	var heldNative sync.WaitGroup
+	var stopOutputDeadline func()
+	armOutputDeadline := func() {
+		if fwdOpts.v3Session != nil && stopOutputDeadline == nil {
+			stopOutputDeadline = interruptBridgeHeldOutput(clientOut, fwdOpts.shutdownGrace())
+		}
+	}
 	defer func() {
+		armOutputDeadline()
+		if stopOutputDeadline != nil {
+			defer stopOutputDeadline()
+		}
 		stopKillWatch()
 		resolverRuntime.Cancel()
 		if manager := fwdOpts.deferManager(); manager != nil {
@@ -284,6 +312,8 @@ func RunHTTPProxy(
 		resolverRuntime.Wait()
 		<-capacityDeferralsDone
 		if fwdOpts.v3Session != nil {
+			// Writers without deadlines must finish here. An active callback
+			// can still settle a receipt on the caller-owned stream.
 			heldNative.Wait()
 		}
 	}()
@@ -1085,6 +1115,7 @@ func RunHTTPProxy(
 		}
 	}
 
+	armOutputDeadline()
 	// Capacity stops intake immediately. Let admitted background work settle
 	// before deleting the upstream session, with I/O interrupted at the cutoff.
 	if opts.nativeCapacityStopError() != nil {
