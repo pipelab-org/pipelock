@@ -1476,6 +1476,9 @@ func RunHTTPListenerProxy(
 			} else if admission.ActionID != "" {
 				recordTransportAdmissionResult(safeLogW, reqOpts, admission, "completed", "stream_completed")
 			}
+			if errors.Is(scanErr, errMCPV3ReplyAdmission) && !streamWriter.Wrote() {
+				return
+			}
 			if scanErr != nil && !streamWriter.Wrote() {
 				if effect.send != nil {
 					clearReplySession()
@@ -2606,9 +2609,12 @@ func RunHTTPListenerProxy(
 		}
 		effect.observed = true
 		if responseBlocked && effect.send != nil {
-			effect.refuseReply()
 			clearReplySession()
-			w.WriteHeader(http.StatusForbidden)
+			output := bytes.TrimSpace(buf.Bytes())
+			revocableWriter := &listenerStateMessageWriter{state: clientState, writer: w, opts: reqOpts}
+			withListenerWriteDeadline(w, listenerDownstreamWriteTimeout, func() {
+				logMCPV3Error(safeLogW, effect.deliverDeniedReply(revocableWriter, output))
+			})
 			return
 		}
 		if !admitReply() {

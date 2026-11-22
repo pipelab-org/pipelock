@@ -561,9 +561,6 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 	if row.scenario == "media/redaction rewrite" && (!bytes.Contains(upstream, []byte(mcpPlaceholderAWS)) || bytes.Contains(upstream, []byte(mcpRedactionSecret()))) {
 		t.Fatalf("upstream request did not apply redaction: %s", upstream)
 	}
-	if row.scenario == "tool-scan block" && client.output.Len() != 0 {
-		t.Fatalf("blocked reply reached client: %s", client.output.String())
-	}
 
 	if wantSend {
 		if _, err := os.Stat(priorIntent); err != nil {
@@ -591,6 +588,11 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 			t.Fatalf("reply = %q with preceding intent %t; receipts: %+v", client.output.String(), client.intent, actions)
 		}
 		assertMCPCompletedExchange(t, actions)
+	} else if row.scenario == "tool-scan block" {
+		assertLocalMCPErrors(t, client.output.String(), "1")
+		if !client.intent {
+			t.Fatal("no delivery intent before blocked response error")
+		}
 	} else if localReply {
 		assertLocalMCPErrors(t, client.output.String(), "1")
 		if admissionDenied && strings.TrimSpace(client.output.String()) != `{"jsonrpc":"2.0","id":1,"error":{"code":-32007,"message":"pipelock: receipt emission failed","data":{"block_reason":"receipt_emission_failed"}}}` {
@@ -655,9 +657,9 @@ func assertMCPMatrixTerminal(t *testing.T, scenario string, actions []v3.Action)
 	case "upstream closes mid-response":
 		expected = []string{"upstream_send/outcome/attempt_unknown"}
 	case "listener preadmitted tool-scan block":
-		expected = []string{"downstream_delivery/outcome/not_released", "upstream_send/outcome/completed"}
+		expected = []string{"downstream_delivery/decision/block", "downstream_delivery/outcome/completed", "downstream_delivery/outcome/not_released", "upstream_send/outcome/completed"}
 	case "tool-scan block":
-		expected = []string{"downstream_delivery/decision/block", "upstream_send/outcome/completed"}
+		expected = []string{"downstream_delivery/decision/block", "downstream_delivery/outcome/completed", "upstream_send/outcome/completed"}
 	case "deferred send intent write fail", "deferred send claim refused":
 		expected = []string{"approval_prompt/resolution/allow", "downstream_delivery/outcome/completed", "upstream_send/outcome/not_released"}
 	case "deferred HTTP failure":

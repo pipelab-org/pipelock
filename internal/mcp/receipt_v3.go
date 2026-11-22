@@ -302,17 +302,29 @@ func (w *mcpV3ReplyWriter) WriteMessage(msg []byte) error {
 		logMCPV3Error(w.log, token.Refuse(ctx))
 		return err
 	}
-	err = writeMCPForwardedMessage(w.base, msg)
+	if w.sendDenied {
+		err = deliverMCPDeniedMessage(w.base, msg)
+	} else {
+		err = writeMCPForwardedMessage(w.base, msg)
+	}
 	logMCPV3Error(w.log, confirmMCPV3Effect(ctx, token, err == nil))
 	return err
 }
 
-func (w *mcpV3ReplyWriter) writeDeniedMessage([]byte) error {
+func (w *mcpV3ReplyWriter) writeDeniedMessage(msg []byte) error {
 	if w.finished {
 		return nil
 	}
-	w.finished = true
-	return w.opts.refuseV3Reply(w.opts.warnContext(), mcpV3ReplyEvidence(w.request))
+	if err := w.opts.refuseV3Reply(w.opts.warnContext(), mcpV3ReplyEvidence(w.request)); err != nil {
+		w.finished = true
+		logMCPV3Error(w.log, err)
+		if w.opts.receiptEffects.gate.RequiresReceipts() {
+			return fmt.Errorf("%w: %w", errMCPV3ReplyAdmission, err)
+		}
+		return deliverMCPDeniedMessage(w.base, msg)
+	}
+	w.sendDenied = true
+	return w.WriteMessage(msg)
 }
 
 func logMCPV3Error(log io.Writer, err error) {
@@ -479,12 +491,13 @@ func (w *mcpV3NetworkStreamWriter) WriteMessage(msg []byte) error {
 	return writeMCPForwardedMessage(w.base, msg)
 }
 
-func (w *mcpV3NetworkStreamWriter) writeDeniedMessage([]byte) error {
-	x := w.exchange
-	if x.replyAdmitted && !x.wrote {
-		return nil // The reserved delivery settles as not released.
-	}
-	evidence := x.replyEvidence
-	evidence.ActionID = receipt.NewActionID()
-	return x.opts.refuseV3Reply(x.ctx, evidence)
+func (w *mcpV3NetworkStreamWriter) writeDeniedMessage(msg []byte) error {
+	return w.exchange.deliverDeniedReply(w.base, msg)
+}
+
+func (x *mcpV3NetworkExchange) deliverDeniedReply(base transport.MessageWriter, msg []byte) error {
+	opts := x.opts
+	opts.WarnContext = x.ctx
+	reply := mcpV3ReplyWriter{base: base, opts: opts, log: x.log, request: x.send.request}
+	return reply.writeDeniedMessage(msg)
 }

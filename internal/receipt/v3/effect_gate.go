@@ -38,6 +38,9 @@ func NewEffectGate(writer *StreamWriter) EffectGate {
 	}
 }
 
+// RequiresReceipts reports whether receipt write failures withhold effects.
+func (g EffectGate) RequiresReceipts() bool { return g.required }
+
 // WithFinalizationTimeout bounds admission of a refusal or terminal outcome
 // after transport cancellation. It cannot interrupt a file sync already underway.
 func (g EffectGate) WithFinalizationTimeout(timeout time.Duration) EffectGate {

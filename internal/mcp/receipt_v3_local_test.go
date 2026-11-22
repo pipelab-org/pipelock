@@ -848,15 +848,18 @@ func TestMCPV3NetworkReplyRefusalIsSigned(t *testing.T) {
 			x.observe()
 			if stream {
 				w := mcpV3NetworkStreamWriter{exchange: &x, base: transport.NewStdioWriter(client)}
-				if err := w.writeDeniedMessage(nil); err != nil {
+				if err := w.writeDeniedMessage(blockRequestResponse(BlockedRequest{ID: frame.ID, ErrorCode: -32000, ErrorMessage: "response blocked"})); err != nil {
 					t.Fatal(err)
 				}
 			} else {
 				x.refuseReply()
 			}
 			x.finish()
-			if client.output.Len() != 0 {
-				t.Fatalf("withheld reply reached the client: %q", client.output.String())
+			if stream {
+				assertLocalMCPErrors(t, client.output.String(), "1")
+				if !client.intent {
+					t.Fatal("error was written before its delivery intent")
+				}
 			}
 			for _, action := range localMCPReceiptActions(t, writer, client.dir) {
 				if action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.ParentActionID == "send" &&
