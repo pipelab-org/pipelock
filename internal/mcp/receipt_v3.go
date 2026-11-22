@@ -356,16 +356,10 @@ func (w *mcpV3ReplyWriter) deliverDenial(msg []byte, signed bool, refusalErr err
 		refusalErr = w.opts.refuseV3Reply(w.opts.warnContext(), mcpV3ReplyEvidence(w.request))
 	}
 	if refusalErr != nil {
-		w.finished = true
 		logMCPV3Error(w.log, refusalErr)
 		if w.opts.receiptEffects.gate.RequiresReceipts() {
+			w.finished = true
 			return fmt.Errorf("%w: %w", errMCPV3ReplyAdmission, refusalErr)
-		}
-		if err := w.opts.warnContext().Err(); err != nil {
-			return err
-		}
-		if msg != nil {
-			return deliverMCPDeniedMessage(w.base, msg)
 		}
 	}
 	if msg == nil {

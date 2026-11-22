@@ -775,7 +775,7 @@ func ForwardScannedInput(
 				Decision:          taintDecision,
 				Report:            redactionReport,
 				RequireReceipts:   requireReceipts,
-				RequireReceipt:    (requireReceipts && receiptVerdict != config.ActionBlock) || (receiptVerdict == config.ActionDefer && !opts.v3OnlyHold()),
+				RequireReceipt:    (requireReceipts && receiptVerdict != config.ActionBlock) || receiptVerdict == config.ActionDefer,
 				DecisionPhase:     receiptDecisionPhase,
 				DeferID:           receiptDeferID,
 				ResolutionPolicy:  receiptResolutionPolicy,
@@ -809,6 +809,9 @@ func ForwardScannedInput(
 			}
 			if opts.receiptEffects.enabled {
 				v3Evidence = opts.withReceiptPolicyHash(receiptOpts.receiptOptions())
+			}
+			if receiptVerdict == config.ActionDefer && opts.v3OnlyHold() {
+				return nil
 			}
 			if err := emitMCPToolReceipt(receiptOpts); err != nil {
 				return err
@@ -864,6 +867,7 @@ func ForwardScannedInput(
 			ctx := opts.warnContext()
 			effect, admitErr := opts.startV3Send(ctx, frame, v3Evidence)
 			if admitErr != nil {
+				outcome.settle(logW, opts, mcpOutcomeStatusBlocked, -1, "receipt_admission_failed")
 				logMCPV3Error(logW, admitErr)
 				sendInputDenial(opts, mcpReceiptMcpInputDenialAudit(), mcpV3SendDenial(frame, effect), blockedCh)
 				return false, nil
@@ -900,8 +904,11 @@ func ForwardScannedInput(
 				attempted = true
 				return "", writer.WriteMessage(msg)
 			}()
-			if err != nil || !attempted || isRPCNotification(frame.ID) {
+			switch {
+			case err != nil || !attempted:
 				opts.finishV3Send(ctx, logW, effect, attempted)
+			case effect != nil && isRPCNotification(frame.ID):
+				logMCPV3Error(logW, confirmMCPV3Effect(ctx, effect.token, true))
 			}
 			if trackingErr != nil {
 				outcome.settle(logW, opts, mcpOutcomeStatusBlocked, -1, "request_tracking_failed")

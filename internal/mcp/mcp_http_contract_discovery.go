@@ -100,6 +100,7 @@ func (state *mcpListenerClientState) acquireToolContractWithDiscovery(ctx contex
 			state.discovery = flight
 		}
 		state.discoveryMu.Unlock()
+		var discoveryErr error
 		if leader {
 			flight.err = discover()
 			flight.leaderEnded = ctx.Err() != nil
@@ -107,18 +108,29 @@ func (state *mcpListenerClientState) acquireToolContractWithDiscovery(ctx contex
 			state.discovery = nil
 			close(flight.done)
 			state.discoveryMu.Unlock()
-			if flight.err != nil {
-				return nil, flight.err
-			}
+			discoveryErr = flight.err
 		} else {
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			case <-flight.done:
 			}
-			if flight.err != nil && flight.tool == name && !flight.leaderEnded {
-				return nil, flight.err
+			if flight.tool == name && !flight.leaderEnded {
+				discoveryErr = flight.err
 			}
+		}
+		if discoveryErr != nil {
+			if !errors.Is(discoveryErr, errDiscoveryToolAbsent) {
+				return nil, discoveryErr
+			}
+			if err := state.contractMu.RLock(ctx); err != nil {
+				return nil, err
+			}
+			if state.baseline.HeaderContract(name).State != tools.HeaderContractUnknown {
+				return state.contractMu.RUnlock, nil
+			}
+			state.contractMu.RUnlock()
+			return nil, discoveryErr
 		}
 		// Reacquire through writer preference: a queued client list must get
 		// to publish its newer contract before this call compares mirrors.
@@ -195,7 +207,7 @@ func discoverMCPToolContract(d mcpContractDiscoveryRequest) error {
 			found = found || def.Name == d.tool
 		}
 		if found {
-			if d.bridge == nil && d.opts.receiptEffects.enabled {
+			if d.opts.receiptEffects.enabled {
 				// Discovery owns the flight, but client lists can publish
 				// while a discovery page waits for its receipt or upstream.
 				if err := d.state.contractMu.Lock(ctx); err != nil {
@@ -261,14 +273,24 @@ func (d mcpContractDiscoveryRequest) page(ctx context.Context, cursor *string, r
 	var reader transport.MessageReader
 	var budget *io.LimitedReader
 	if d.bridge != nil {
+		effect := mcpV3NetworkExchange{ctx: ctx, opts: d.opts, log: d.log}
+		if err := effect.admit(ParseMCPFrame(body), receipt.EmitOpts{}); err != nil {
+			return nil, fmt.Errorf("admit discovery request: %w", err)
+		}
+		defer effect.finish()
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		headers := http.Header{}
 		headers.Set(listenerMCPMethod, "tools/list")
 		headers.Set(listenerProtocolVersion, d.request.Header.Get(listenerProtocolVersion))
 		var err error
+		effect.sent = true
 		reader, err = d.bridge.SendMessageWithOptions(ctx, body, transport.HTTPMessageOptions{Headers: headers, ResponseByteBudget: remaining, PreserveSession: true})
 		if err != nil {
 			return nil, fmt.Errorf("upstream discovery request: %w", err)
 		}
+		effect.observe()
 		if closer, ok := reader.(io.Closer); ok {
 			defer func() { _ = closer.Close() }()
 		}

@@ -118,6 +118,10 @@
       "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
       "when": "The stdio send decision loses required receipt evidence before forwarding."
     },
+    "internal/mcp/input.go/ForwardScannedInput/settle/15dc198ba27fed9b": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "The stdio send receipt gate refuses a request after its legacy allow intent was recorded."
+    },
     "internal/mcp/input.go/ForwardScannedInput/settle/414f5151797c61d1": {
       "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
       "when": "The upstream stdio write returns an error."
@@ -1734,6 +1738,7 @@
     "internal/mcp/input.go/ForwardScannedInput/emitMCPToolReceipt/256763ef8d42b2fc": "upstream_send",
     "internal/mcp/input.go/ForwardScannedInput/settle/ebcc6adb666adb88": "upstream_send",
     "internal/mcp/input.go/ForwardScannedInput/settle/f05c94d6f607fb47": "upstream_send",
+    "internal/mcp/input.go/ForwardScannedInput/settle/15dc198ba27fed9b": "upstream_send",
     "internal/mcp/input.go/ForwardScannedInput/settle/414f5151797c61d1": "upstream_send",
     "internal/mcp/input.go/ForwardScannedInput/settle/f2fadad8e5d505e3": "upstream_send",
     "internal/mcp/killswitch_deferred.go/emitKillSwitchBatchReceipts/emitKillSwitchDenialReceipt/01a6be367223b176": "none",

@@ -17,6 +17,7 @@ import (
 type mcpReceiptDelivery struct {
 	status          int
 	sent, received  []byte
+	withheldPayload []byte
 	withheld        bool
 	denialDelivered bool
 }
@@ -99,6 +100,9 @@ func checkMCPReceiptDelivery(actions []v3.Action, delivery mcpReceiptDelivery) e
 	if completed != 0 && delivery.sent != nil && !bytes.Equal(delivery.received, delivery.sent) {
 		return fmt.Errorf("downstream delivery completed with bytes different from what was sent")
 	}
+	if withheld && len(delivery.withheldPayload) > 0 && bytes.Contains(delivery.received, delivery.withheldPayload) {
+		return fmt.Errorf("withheld upstream payload reached the client")
+	}
 	if withheld && delivery.status == http.StatusOK && len(delivery.received) == 0 {
 		return fmt.Errorf("withheld downstream delivery returned an empty HTTP 200")
 	}
@@ -127,6 +131,7 @@ func TestMCPReceiptHistoryInvariants(t *testing.T) {
 		{name: "missing intent", actions: []v3.Action{completed}, want: "without its intent"},
 		{name: "recovery without intent", actions: []v3.Action{recovery}},
 		{name: "different bytes", actions: []v3.Action{intent, completed}, delivery: mcpReceiptDelivery{sent: []byte("sent")}, want: "different from what was sent"},
+		{name: "withheld payload", actions: []v3.Action{block, intent, completed}, delivery: mcpReceiptDelivery{withheldPayload: []byte("upstream"), received: []byte("denial\nupstream"), denialDelivered: true}, want: "withheld upstream payload"},
 		{name: "empty HTTP success", actions: []v3.Action{block}, delivery: mcpReceiptDelivery{status: http.StatusOK}, want: "empty HTTP 200"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

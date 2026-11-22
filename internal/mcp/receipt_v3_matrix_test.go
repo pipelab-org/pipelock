@@ -40,9 +40,10 @@ import (
 )
 
 type v3MCPMatrixRow struct {
-	path     string
-	required bool
-	scenario string
+	path              string
+	required          bool
+	scenario          string
+	requireLegacyFlag bool
 }
 
 func runV3MCPMatrix(t *testing.T, run func(*testing.T, v3MCPMatrixRow)) {
@@ -238,6 +239,10 @@ func TestMCPV3ReceiptParityMatrix(t *testing.T) {
 	runV3MCPMatrix(t, exerciseMCPV3Row)
 }
 
+func TestMCPV3RequiredStdioHoldWithoutLegacyWriter(t *testing.T) {
+	exerciseMCPV3Row(t, v3MCPMatrixRow{path: "stdio subprocess", required: true, scenario: "deferred approve", requireLegacyFlag: true})
+}
+
 func TestMCPV3ReleasedA2ARoutesWithTrackedMethod(t *testing.T) {
 	exerciseMCPV3Row(t, v3MCPMatrixRow{path: "stdio-to-HTTP upstream", required: true, scenario: "deferred A2A"})
 }
@@ -350,7 +355,7 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 	}
 	t.Cleanup(func() { _ = writer.Close(context.Background(), nil) })
 	scanner := testScannerWithAction(t, config.ActionBlock)
-	opts := MCPProxyOpts{Scanner: scanner, Transport: surface}.WithV3ReceiptWriter(writer)
+	opts := MCPProxyOpts{Scanner: scanner, Transport: surface, RequireReceipts: row.requireLegacyFlag}.WithV3ReceiptWriter(writer)
 	if beforeSync != nil {
 		opts.ListenerPrincipalResolver = func(r *http.Request) (ListenerPrincipal, error) {
 			if r.Method == http.MethodPost {
@@ -550,6 +555,7 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 			t.Fatal(err)
 		}
 	}
+	transportErr := err
 	if err := writer.Close(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
@@ -615,6 +621,9 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 		}
 		assertMCPCompletedExchange(t, actions)
 	} else if row.scenario == "tool-scan block" {
+		if client.output.Len() == 0 {
+			t.Logf("transport error=%v HTTP status=%d body=%q receipts=%+v", transportErr, client.httpStatus, client.httpBody, actions)
+		}
 		assertLocalMCPErrors(t, client.output.String(), "1")
 		if !client.intent {
 			t.Fatal("no delivery intent before blocked response error")
@@ -646,6 +655,9 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 	}
 	if row.path != "HTTP listener" {
 		delivery.received = []byte(strings.TrimSpace(client.output.String()))
+	}
+	if !wantReply && !localReply {
+		delivery.withheldPayload = []byte(reply)
 	}
 	if wantReply && row.scenario != "response strip" {
 		delivery.sent = []byte(reply)

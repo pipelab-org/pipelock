@@ -104,6 +104,17 @@ func drainStderr(stderrDone <-chan struct{}, serverErr io.Closer, grace time.Dur
 	}
 }
 
+func waitMCPInputDrain(ctx context.Context, inputDone, blockedDone <-chan struct{}) bool {
+	for _, done := range []<-chan struct{}{inputDone, blockedDone} {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return true
+}
+
 func emitPendingTimeoutResponses(writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) {
 	if tracker == nil {
 		return
@@ -454,6 +465,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		var trackedMethod string
 		if tracker != nil && tracker.Seeded() && isResponse(line) {
 			rpcID := frame.ID
+			correlationWriter := writer
+			if _, withheld := writer.(mcpV3WithheldWriter); withheld {
+				correlationWriter = opts.localV3ReplyWriter(baseWriter, logW, nil)
+			}
 			// Once a request has been tracked, every result/error envelope must
 			// carry an ID that can be consumed from the pending set. The unseeded
 			// check above retains the initialization-race exception for a server's
@@ -462,7 +477,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				_, _ = fmt.Fprintf(logW, "pipelock: line %d: confused deputy: response has no correlatable ID\n", lineNum)
 				denialAudit = mcpCorrelationResponseDenialAudit()
 				resp := blockResponseReason(nil, "response has no correlatable ID (confused deputy)")
-				if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
+				if err := writeMCPDenial(opts, denialAudit, correlationWriter, resp); err != nil {
 					return foundInjection, fmt.Errorf("writing confused deputy block: %w", err)
 				}
 				continue
@@ -485,7 +500,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					}
 					denialAudit = mcpCorrelationResponseDenialAudit()
 					resp := blockResponseReason(blockID, "unsolicited response ID (confused deputy)")
-					if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
+					if err := writeMCPDenial(opts, denialAudit, correlationWriter, resp); err != nil {
 						return foundInjection, fmt.Errorf("writing confused deputy block: %w", err)
 					}
 					continue
@@ -2412,15 +2427,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		// already failed closed wedge shutdown forever.
 		drainCtx, drainCancel := context.WithTimeout(ctx, 5*time.Second)
 		defer drainCancel()
-		done := make(chan struct{})
-		go func() {
-			<-inputDone
-			<-blockedDone
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-drainCtx.Done():
+		if !waitMCPInputDrain(drainCtx, inputDone, blockedDone) {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: timed out waiting for MCP input drain after upstream response timeout\n")
 		}
 		emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker, fwdOpts)
@@ -2428,10 +2435,10 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		// An arbitrary io.Reader cannot be interrupted by closing the client
 		// side. Once session teardown has killed the server, do not let one
 		// such reader keep the proxy alive indefinitely.
-		select {
-		case <-inputDone:
-			<-blockedDone
-		case <-time.After(sessionGrace):
+		drainCtx, drainCancel := context.WithTimeout(context.WithoutCancel(ctx), sessionGrace)
+		defer drainCancel()
+		if !waitMCPInputDrain(drainCtx, inputDone, blockedDone) {
+			interruptNativeOutput(clientOut)
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: timed out waiting for MCP input drain after session teardown\n")
 		}
 		// Name the actual cause. Reusing "upstream_closed" here would attribute

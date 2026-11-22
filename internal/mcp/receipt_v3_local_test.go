@@ -8,12 +8,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -1210,42 +1209,50 @@ type shortReplyWriter struct{}
 func (shortReplyWriter) Write(p []byte) (int, error) { return len(p) - 1, nil }
 
 func TestMCPV3ClientWriterTransportParity(t *testing.T) {
-	for _, file := range []string{"proxy.go", "proxy_sandbox.go", "proxy_ws.go", "mcp_http_forward.go"} {
-		t.Run(file, func(t *testing.T) {
-			source, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
-			if err != nil {
-				t.Fatal(err)
+	for _, surface := range []struct {
+		name, transport string
+	}{
+		{"subprocess", transportMCPStdio},
+		{"sandbox", transportMCPStdio},
+		{"WebSocket", deferred.SurfaceMCPWS},
+		{"HTTP bridge", deferred.SurfaceMCPHTTPUpstream},
+	} {
+		t.Run(surface.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
+			defer cancel()
+			opts, writer, observer := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, surface.transport)
+			in := strings.NewReader(jsonToolsCallEcho + "\n")
+			out := shortReplyWriter{}
+			cmd := []string{"sh", "-c", `IFS= read -r line && printf '%s\n' "$1"`, "fixture", heldNativeReply}
+			switch surface.name {
+			case "subprocess":
+				_ = RunProxy(ctx, in, out, io.Discard, cmd, opts)
+			case "sandbox":
+				child := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+				_ = runProxyWithSandbox(ctx, child, child.Start, in, out, io.Discard, opts)
+			case "WebSocket":
+				dir := t.TempDir()
+				_ = runMCPMatrixWS(t, ctx, in, out, opts, mcpMatrixWSPeer{
+					reply: heldNativeReply, dir: observer.dir,
+					seen: filepath.Join(dir, "request"), priorIntent: filepath.Join(dir, "intent"),
+				})
+			case "HTTP bridge":
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, heldNativeReply)
+				}))
+				defer upstream.Close()
+				_ = RunHTTPProxy(ctx, in, out, io.Discard, upstream.URL, nil, opts)
 			}
-			guarded := false
-			ast.Inspect(source, func(node ast.Node) bool {
-				switch n := node.(type) {
-				case *ast.CallExpr:
-					if name, ok := n.Fun.(*ast.Ident); ok && name.Name == "newMCPClientWriter" {
-						guarded = true
-					}
-				case *ast.CompositeLit:
-					if typ, ok := n.Type.(*ast.Ident); ok && typ.Name == "syncWriter" {
-						var client, full bool
-						for _, field := range n.Elts {
-							kv, ok := field.(*ast.KeyValueExpr)
-							if !ok {
-								continue
-							}
-							key, ok := kv.Key.(*ast.Ident)
-							if !ok {
-								continue
-							}
-							value, isIdent := kv.Value.(*ast.Ident)
-							client = client || key.Name == "w" && isIdent && value.Name == "clientOut"
-							full = full || key.Name == "requireFullMessage"
-						}
-						guarded = guarded || client && full
-					}
+			actions := localMCPReceiptActions(t, writer, observer.dir)
+			var outcomes []string
+			for _, action := range actions {
+				if action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.Phase == "outcome" {
+					outcomes = append(outcomes, action.OutcomeClass)
 				}
-				return true
-			})
-			if !guarded {
-				t.Fatal("transport omits checked client message framing")
+			}
+			if !slices.Equal(outcomes, []string{"attempt_unknown"}) {
+				t.Fatalf("short write outcomes = %v", outcomes)
 			}
 		})
 	}
@@ -1658,5 +1665,139 @@ func TestMCPV3LocalDenialAdapterRecordsDelivery(t *testing.T) {
 	})
 	if len(actions) != 3 || actions[0].Phase != "decision" || actions[0].Verdict != config.ActionBlock {
 		t.Fatalf("expected a refusal with a separately admitted reply: %+v", actions)
+	}
+}
+
+func TestMCPV3StdioNotificationCompletesOnWrite(t *testing.T) {
+	opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, transportMCPStdio)
+	opts = opts.withV3Session()
+	const message = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n"
+	var upstream bytes.Buffer
+	ForwardScannedInput(transport.NewStdioReader(strings.NewReader(message)),
+		transport.NewStdioWriter(&upstream), io.Discard, config.ActionWarn, config.ActionBlock,
+		make(chan BlockedRequest, 1), nil, NewRequestTracker(), opts)
+	if upstream.String() != message {
+		t.Fatalf("notification = %q", upstream.String())
+	}
+	actions := localMCPReceiptActions(t, writer, client.dir)
+	if len(actions) != 2 || actions[1].EffectBoundary != mcpUpstreamSendBoundary || actions[1].OutcomeClass != "completed" {
+		t.Fatalf("notification receipt history = %+v", actions)
+	}
+}
+
+func TestMCPV3OptionalDenialDeliveryAfterRefusalRecordError(t *testing.T) {
+	opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{}, transportMCPStdio)
+	var logs bytes.Buffer
+	denial := mcpV3ReplyWriter{
+		base:    transport.NewStdioWriter(client),
+		opts:    opts,
+		log:     &logs,
+		request: receipt.EmitOpts{Method: "tools/call", Target: "example", RequestID: "1", Transport: transportMCPStdio},
+	}
+	if err := denial.deliverDenial(blockResponse([]byte("1")), false, errors.New("refusal record unavailable")); err != nil {
+		t.Fatal(err)
+	}
+	assertLocalMCPErrors(t, client.output.String(), "1")
+	if !client.intent {
+		t.Fatalf("client observed denial without a delivery intent: %s", logs.String())
+	}
+	actions := localMCPReceiptActions(t, writer, client.dir)
+	if len(actions) != 2 || actions[1].EffectBoundary != mcpDownstreamDeliveryBoundary || actions[1].OutcomeClass != "completed" {
+		t.Fatalf("denial delivery receipt history = %+v", actions)
+	}
+}
+
+func TestMCPV3StdioCorrelationRefusalDeliversLocalError(t *testing.T) {
+	opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, transportMCPStdio)
+	opts = opts.withV3Session()
+	tracker := NewRequestTracker()
+	tracker.Track([]byte("1"))
+	const unsolicited = `{"jsonrpc":"2.0","id":2,"result":{"content":[]}}`
+	in := transport.NewStdioReader(strings.NewReader(unsolicited + "\n"))
+	if _, err := ForwardScanned(in, transport.NewStdioWriter(client), io.Discard, tracker, opts); err != nil {
+		t.Fatal(err)
+	}
+	assertLocalMCPErrors(t, client.output.String(), "2")
+	if !client.intent {
+		t.Fatal("correlation refusal had no delivery intent")
+	}
+	actions := localMCPReceiptActions(t, writer, client.dir)
+	if len(actions) != 3 || actions[0].Verdict != config.ActionBlock || actions[0].ParentActionID != "" {
+		t.Fatalf("correlation refusal receipts = %+v", actions)
+	}
+}
+
+func TestMCPV3StdioSendRefusalSettlesLegacyAllow(t *testing.T) {
+	opts, _, _ := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true, scenario: "intent write fail"}, transportMCPStdio)
+	emitter, _, dir, _ := newReceiptTestHarness(t)
+	opts.ReceiptEmitter = emitter
+	opts = opts.withV3Session()
+	var upstream bytes.Buffer
+	blocked := make(chan BlockedRequest, 1)
+	ForwardScannedInput(transport.NewStdioReader(strings.NewReader(jsonToolsCallEcho+"\n")),
+		transport.NewStdioWriter(&upstream), io.Discard, config.ActionWarn, config.ActionBlock,
+		blocked, nil, NewRequestTracker(), opts)
+	if upstream.Len() != 0 || len(blocked) != 1 {
+		t.Fatalf("send refusal: upstream=%q denials=%d", upstream.String(), len(blocked))
+	}
+	var intent, outcome bool
+	for _, r := range readActionReceipts(t, dir) {
+		a := r.ActionRecord
+		intent = intent || a.DecisionPhase == receipt.DecisionPhaseIntent
+		outcome = outcome || a.DecisionPhase == receipt.DecisionPhaseOutcome && strings.Contains(a.Pattern, "reason=receipt_admission_failed")
+	}
+	if !intent || !outcome {
+		t.Fatalf("legacy allow intent=%t blocked outcome=%t", intent, outcome)
+	}
+}
+
+func TestMCPV3StdioShutdownBoundsBlockedDenialDrain(t *testing.T) {
+	opts, _, _ := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, transportMCPStdio)
+	opts.PolicyCfg = policy.New(config.MCPToolPolicy{
+		Enabled: true, Action: config.ActionBlock,
+		Rules: []config.ToolPolicyRule{{Name: "deny-echo", ToolPattern: "^echo$", Action: config.ActionBlock}},
+	})
+	parentDied := make(chan struct{})
+	opts.sessionExitForTest = &sessionExitTestHooks{
+		watch: parentWatchOpts{
+			startPPID: 4242,
+			interval:  time.Millisecond,
+			getppid: func() int {
+				select {
+				case <-parentDied:
+					return orphanedPPID
+				default:
+					return 4242
+				}
+			},
+		},
+		grace: 50 * time.Millisecond,
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(2*time.Second))
+	defer cancel()
+	reader, output := io.Pipe()
+	t.Cleanup(func() { _ = reader.Close() })
+	t.Cleanup(func() { _ = output.Close() })
+	entered := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- RunProxy(ctx, strings.NewReader(jsonToolsCallEcho+"\n"), observedPipeWriter{PipeWriter: output, entered: entered},
+			io.Discard, []string{"sleep", "120"}, opts)
+	}()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("denial write never started")
+	}
+	close(parentDied)
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, ErrSubprocessExit) {
+			t.Fatalf("proxy shutdown: %v", err)
+		}
+	case <-ctx.Done():
+		_ = output.Close()
+		err := <-done
+		t.Fatalf("proxy did not finish within its output drain grace: %v", err)
 	}
 }

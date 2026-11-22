@@ -109,7 +109,11 @@ func (b *mcpBridgeHeaders) prepare(ctx context.Context, msg []byte) (http.Header
 		req := &http.Request{Header: make(http.Header)}
 		req = req.WithContext(ctx)
 		req.Header.Set(listenerProtocolVersion, version)
-		release, err := b.state.acquireToolContract(ctx, frame.RoutingName, func() error {
+		acquire := b.state.acquireToolContract
+		if b.opts.receiptEffects.enabled {
+			acquire = b.state.acquireToolContractWithDiscovery
+		}
+		release, err := acquire(ctx, frame.RoutingName, func() error {
 			return discoverMCPToolContract(mcpContractDiscoveryRequest{
 				request: req, state: b.state, bridge: b.client, opts: b.opts, log: b.log, tool: frame.RoutingName,
 			})
