@@ -1342,18 +1342,35 @@ func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, mem
 }
 
 // candidateTokensAreGrants reports whether every match of p in text is a
-// download grant for target's host. A target that does not parse, or text
+// download grant for target's host, or, for an API-key query carrier, exactly
+// the URL's single admitted `key` value. A target that does not parse, or text
 // with no match, is false.
 func candidateTokensAreGrants(p *compiledPattern, text, target string, now time.Time) bool {
 	parsed, err := url.Parse(target)
 	if err != nil {
 		return false
 	}
-	grants := validatedQueryGrants(parsed, now)
 	locs := p.re.FindAllStringIndex(text, -1)
 	if len(locs) == 0 {
 		return false
 	}
+	// An API key carried as the URL's one whole `key` value has already been
+	// admitted on the url_query surface. A joined view can place it next to
+	// another value's text; a match that is still exactly that key is the
+	// same credential, not a new token built from the join.
+	if p.credentialAudienceCarrierMask&config.CredentialAudienceCarrierAPIKeyQuery != 0 {
+		if !apiKeyQueryAllowed(p, parsed) {
+			return false
+		}
+		key := parsed.Query().Get("key")
+		for _, loc := range locs {
+			if text[loc[0]:loc[1]] != key {
+				return false
+			}
+		}
+		return true
+	}
+	grants := validatedQueryGrants(parsed, now)
 	for _, loc := range locs {
 		if !startsWithGrant(text[loc[0]:loc[1]], grants) {
 			return false
