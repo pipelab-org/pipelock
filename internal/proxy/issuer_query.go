@@ -1070,6 +1070,8 @@ func (ic *InterceptContext) recordIssuerQueryAllows(ctx audit.LogContext, r *htt
 		}
 		defer selected.ReleaseNativeAdmission()
 	}
+	// Let the request's v3 effect settle these allows with the send they support.
+	selected = withReceiptCredentialContext(selected, r.Context())
 	for _, kind := range kinds {
 		if err := ic.Proxy.recordIssuerQueryAllow(ic.Config, ctx, target, ic.RequestID, ic.Agent, r.Method, kind, selected); err != nil {
 			return err
@@ -1122,12 +1124,14 @@ func (p *Proxy) recordIssuerQueryAllow(cfg *config.Config, ctx audit.LogContext,
 	if kind == issuerQueryIssuedRedirect && shard.Transport != "" {
 		transport = shard.Transport
 	}
-	emitErr := p.emitCredentialAudienceReceipt(cfg, withReceiptShard(receipt.EmitOpts{
+	options := receipt.EmitOpts{
 		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
 		Layer: layer, Pattern: layer,
 		Transport: transport, Method: method, Target: safeTarget,
 		RequestID: requestID, Agent: agent, Extension: extension,
-	}, shard))
+	}
+	collectReceiptUpstreamEvidence(receiptEffectContext(shard), options)
+	emitErr := p.emitCredentialAudienceReceipt(cfg, withReceiptShard(options, shard))
 	if emitErr != nil {
 		return fail(emitErr)
 	}

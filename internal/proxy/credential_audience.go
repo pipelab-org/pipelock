@@ -196,6 +196,7 @@ func (p *Proxy) recordCredentialAudienceAllows(cfg *config.Config, ctx audit.Log
 	if len(selected) > 0 {
 		shard = selected[0]
 	}
+	collectReceiptCredentialEvidence(receiptEffectContext(shard), allows)
 	return confirmCredentialAudienceAllows(shard, uniqueCredentialAudienceAllows(allows), func(allow scanner.CredentialAudienceAllow, reserved receipt.EmitOpts) error {
 		return p.recordCredentialAudienceAllow(cfg, ctx, allow, transport, method, target, requestID, agent, reserved)
 	})
@@ -368,6 +369,7 @@ func (rp *ReverseProxyHandler) recordCredentialAudienceAllows(cfg *config.Config
 	if len(selected) > 0 {
 		shard = selected[0]
 	}
+	collectReceiptCredentialEvidence(receiptEffectContext(shard), allows)
 	return confirmCredentialAudienceAllows(shard, uniqueCredentialAudienceAllows(allows), func(allow scanner.CredentialAudienceAllow, reserved receipt.EmitOpts) error {
 		return rp.recordCredentialAudienceAllow(cfg, ctx, allow, method, target, requestID, agent, reserved)
 	})

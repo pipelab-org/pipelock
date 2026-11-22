@@ -3225,16 +3225,17 @@ func headerDLPMatchSource(headers map[string]struct{}) string {
 // count within convention now that a bounded metric-label agent is threaded
 // through the header DLP path.
 type headerDLPParams struct {
-	headers      http.Header
-	cfg          *config.Config
-	sc           *scanner.Scanner
-	logger       *audit.Logger
-	actx         audit.LogContext
-	hostname     string
-	target       string
-	metricAgent  string
-	start        time.Time
-	reasonPrefix string
+	headers        http.Header
+	cfg            *config.Config
+	sc             *scanner.Scanner
+	logger         *audit.Logger
+	actx           audit.LogContext
+	hostname       string
+	target         string
+	metricAgent    string
+	start          time.Time
+	reasonPrefix   string
+	forwardHeaders bool
 }
 
 // evalHeaderDLP's last return value is an incomplete inspection or a
@@ -3255,7 +3256,11 @@ func (p *Proxy) evalHeaderDLP(ctx context.Context, e headerDLPParams) (blocked b
 		}
 		p.metrics.RecordDLPDroppedMatch(match.PatternName, "header", reason)
 	}, func(allows []scanner.CredentialAudienceAllow) error {
-		return p.recordCredentialAudienceAllows(e.cfg, e.actx, allows, TransportForward, e.actx.Method(), e.target, e.actx.RequestID(), e.actx.Agent(), receiptShardFromContext(ctx))
+		selected := receiptShardFromContext(ctx)
+		if e.forwardHeaders {
+			selected = withReceiptCredentialContext(selected, ctx)
+		}
+		return p.recordCredentialAudienceAllows(e.cfg, e.actx, allows, TransportForward, e.actx.Method(), e.target, e.actx.RequestID(), e.actx.Agent(), selected)
 	})
 	if headerResult == nil {
 		return false, false, "", nil

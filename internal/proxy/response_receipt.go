@@ -4,6 +4,8 @@
 package proxy
 
 import (
+	"context"
+
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -12,7 +14,8 @@ import (
 // confirmResponseDecision confirms a later decision on an admitted response.
 // Optional mode retains best-effort recording; required mode confirms every
 // configured family before the caller changes state or delivers bytes.
-func (p *Proxy) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpts) error {
+func (p *Proxy) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpts, request ...context.Context) error {
+	collectReceiptResponseEvidence(opts, request)
 	if cfg != nil {
 		opts = withReceiptConfig(opts, cfg)
 	}
@@ -25,7 +28,8 @@ func (p *Proxy) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpt
 	return nil
 }
 
-func (rp *ReverseProxyHandler) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpts) error {
+func (rp *ReverseProxyHandler) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpts, request ...context.Context) error {
+	collectReceiptResponseEvidence(opts, request)
 	if cfg != nil {
 		opts = withReceiptConfig(opts, cfg)
 	}

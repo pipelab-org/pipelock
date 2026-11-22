@@ -90,12 +90,14 @@ func (p *Proxy) recordIssuerCookieAllow(cfg *config.Config, ctx audit.LogContext
 	if len(selected) > 0 {
 		shard = selected[0]
 	}
-	emitErr := p.emitCredentialAudienceReceipt(cfg, withReceiptShard(receipt.EmitOpts{
+	options := receipt.EmitOpts{
 		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
 		Layer: issuerCookieReceiptExtensionKey, Pattern: pattern,
 		Transport: "intercept", Method: method, Target: target,
 		RequestID: requestID, Agent: agent, Extension: extension,
-	}, shard))
+	}
+	collectReceiptUpstreamEvidence(receiptEffectContext(shard), options)
+	emitErr := p.emitCredentialAudienceReceipt(cfg, withReceiptShard(options, shard))
 	if emitErr != nil {
 		return fail(emitErr)
 	}
@@ -119,7 +121,7 @@ func (ic *InterceptContext) recordIssuerCookieAllows(ctx audit.LogContext, r *ht
 	var firstErr error
 	for _, allow := range allows {
 		for _, pattern := range allow.Patterns {
-			if err := ic.Proxy.recordIssuerCookieAllow(ic.Config, ctx, pattern, allow.Name, target, ic.RequestID, ic.Agent, r.Method, reserved); err != nil && firstErr == nil {
+			if err := ic.Proxy.recordIssuerCookieAllow(ic.Config, ctx, pattern, allow.Name, target, ic.RequestID, ic.Agent, r.Method, withReceiptCredentialContext(reserved, r.Context())); err != nil && firstErr == nil {
 				firstErr = err
 			}
 		}

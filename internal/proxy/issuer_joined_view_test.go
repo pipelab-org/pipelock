@@ -254,6 +254,23 @@ func TestInterceptJoinedViewAndDelegatedEntropyReceipts(t *testing.T) {
 	})
 	rph := newReceiptProxyHelperWithMetrics(t, e.m)
 	e.p.receiptEmitterPtr.Store(rph.emitter)
+	exerciseJoinedViewAndDelegatedEntropy(t, e, targetHost)
+	var joinedReceipt, entropyReceipt bool
+	for _, r := range rph.findReceipts(t) {
+		switch r.ActionRecord.Layer {
+		case issuerJoinedViewReceiptKey:
+			joinedReceipt = strings.Contains(string(r.Ext), `"dlp_issuer_joined_view_allow":"issued_joined_view"`)
+		case issuerQueryReceiptExtensionKey:
+			entropyReceipt = strings.Contains(string(r.Ext), `"entropy_issuer_query_allow":"issued_redirect"`)
+		}
+	}
+	if !joinedReceipt || !entropyReceipt {
+		t.Fatalf("receipts for the two allowances: joined DLP = %t, delegated entropy = %t, want both", joinedReceipt, entropyReceipt)
+	}
+}
+
+func exerciseJoinedViewAndDelegatedEntropy(t *testing.T, e *delegationEnv, targetHost string) {
+	t.Helper()
 	first, second := joinedCardHalves()
 	target := joinedDetailURL(targetHost, "wo="+first+"&site="+second+"&"+delegationTicketQuery())
 	e.issue(http.StatusFound, target)
@@ -270,18 +287,6 @@ func TestInterceptJoinedViewAndDelegatedEntropyReceipts(t *testing.T) {
 	}
 	if got := e.do("agent-one", http.MethodGet, target); got != http.StatusOK {
 		t.Fatalf("issued URL status = %d, want 200", got)
-	}
-	var joinedReceipt, entropyReceipt bool
-	for _, r := range rph.findReceipts(t) {
-		switch r.ActionRecord.Layer {
-		case issuerJoinedViewReceiptKey:
-			joinedReceipt = strings.Contains(string(r.Ext), `"dlp_issuer_joined_view_allow":"issued_joined_view"`)
-		case issuerQueryReceiptExtensionKey:
-			entropyReceipt = strings.Contains(string(r.Ext), `"entropy_issuer_query_allow":"issued_redirect"`)
-		}
-	}
-	if !joinedReceipt || !entropyReceipt {
-		t.Fatalf("receipts for the two allowances: joined DLP = %t, delegated entropy = %t, want both", joinedReceipt, entropyReceipt)
 	}
 }
 
