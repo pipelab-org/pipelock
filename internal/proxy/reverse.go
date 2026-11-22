@@ -3824,13 +3824,13 @@ responseScanning:
 		return nil
 	}
 
-	if cfg.FlightRecorder.RequireReceipts {
-		err := rp.emitAllowPathReceipt(cfg, withReceiptShard(receipt.EmitOpts{
+	{
+		err := rp.confirmResponseDecision(cfg, withReceiptShard(receipt.EmitOpts{
 			ActionID: receipt.NewActionID(), ParentActionID: requestActionID, Verdict: action,
 			Layer: responseScanLayer, Pattern: strings.Join(patternNames, ", "),
 			Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL,
 			RequestID: requestID, Agent: agent,
-		}, receiptShardFromContext(resp.Request.Context())))
+		}, receiptShardFromContext(resp.Request.Context())), resp.Request.Context())
 		if err != nil {
 			rp.recordRequiredReceiptBlock(err, TransportReverse)
 			replaceWithBlockReason(resp, receiptEmissionBlockReason, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer))

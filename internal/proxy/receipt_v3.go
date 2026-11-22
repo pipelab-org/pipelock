@@ -298,7 +298,7 @@ func (p *Proxy) refuseAdmittedEffect(ctx context.Context, opts receipt.EmitOpts,
 }
 
 func collectReceiptResponseEvidence(opts receipt.EmitOpts, request []context.Context) {
-	if len(request) == 0 {
+	if len(request) == 0 || request[0] == nil {
 		return
 	}
 	switch opts.Verdict {

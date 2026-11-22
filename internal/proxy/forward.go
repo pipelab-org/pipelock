@@ -2682,7 +2682,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() { p.settleEffect(r.Context(), forwardAllowReceipt, upstreamEffect) }()
 	// Required receipt scanning and durability can outlast task admission.
 	// Recheck when an admission may have waited on a recorder.
-	if (cfg.FlightRecorder.RequireReceipts || upstreamEffect != nil) && !taskAdmissionCurrent() {
+	if (cfg.FlightRecorder.RequireReceipts || p.receiptEffects.enabled) && !taskAdmissionCurrent() {
 		p.refuseAdmittedEffect(r.Context(), forwardAllowReceipt, upstreamEffect)
 		outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, session.TaskApprovalStale
 		outcomeReceipt.Verdict = config.ActionBlock
@@ -3415,7 +3415,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		var svgShielded bool
 		shieldBlocked = p.blockShieldPartialResponse(resp, respBody, fwdRespHost, cfg, actx)
 		if shieldBlocked == nil {
-			respBody, shieldSummary, svgShielded, shieldBlocked = p.applyShieldResponse(respBody, responseContentType(resp.Header), resp.Header, cfg, shieldResponseContext{admittedScanLimit: admittedScanLimit, scanOriginal: scanOriginal, hostname: fwdRespHost, actx: actx, clientIP: clientIP, requestID: requestID, transport: TransportForward, parentActionID: actionID, shard: selectedReceiptShard})
+			respBody, shieldSummary, svgShielded, shieldBlocked = p.applyShieldResponse(respBody, responseContentType(resp.Header), resp.Header, cfg, shieldResponseContext{requestContext: r.Context(), admittedScanLimit: admittedScanLimit, scanOriginal: scanOriginal, hostname: fwdRespHost, actx: actx, clientIP: clientIP, requestID: requestID, transport: TransportForward, parentActionID: actionID, shard: selectedReceiptShard})
 		}
 		if shieldBlocked != nil {
 			p.metrics.RecordBlocked(fwdRespHost, shieldBlocked.info.Layer, time.Since(start), agentLabel)
@@ -3784,12 +3784,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				default:
 					p.logger.LogResponseScan(actx, action, len(scanResult.Matches), patternNames, bundleRules)
 				}
-				if cfg.FlightRecorder.RequireReceipts {
-					err := p.emitAllowPathReceipt(cfg, withReceiptShard(receipt.EmitOpts{
+				{
+					err := p.confirmResponseDecision(cfg, withReceiptShard(receipt.EmitOpts{
 						ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: action,
 						Layer: responseScanLayer, Pattern: reason, Transport: TransportForward,
 						Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent,
-					}, selectedReceiptShard))
+					}, selectedReceiptShard), r.Context())
 					if err != nil {
 						p.recordRequiredReceiptBlock(err, TransportForward)
 						writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), receiptEmissionBlockReason, http.StatusForbidden)

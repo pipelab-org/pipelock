@@ -4324,6 +4324,7 @@ func (p *Proxy) blockShieldPartialResponse(resp *http.Response, body []byte, hos
 }
 
 type shieldResponseContext struct {
+	requestContext                                 context.Context
 	admittedScanLimit                              int
 	scanOriginal                                   func([]byte, http.Header) *scanner.ResponseScanResult
 	retainedScan                                   *scanner.ResponseScanResult
@@ -4412,7 +4413,7 @@ func (p *Proxy) applyShieldResponse(body []byte, contentType string, respHeaders
 			return append(head, body[shieldMaxBytes:]...), summary, false, nil
 		case config.ShieldOversizeWarn:
 			reason := shieldOversizeBlockReason(hostname, len(body), shieldMaxBytes)
-			if err := p.confirmResponseDecision(cfg, withReceiptShard(receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: response.parentActionID, Verdict: config.ActionAllow, Layer: "shield_oversize", Pattern: reason, Shield: partialShieldSummary(nil, body, contentType, len(body), 0), Transport: transport, Method: actx.Method(), Target: shieldReceiptTarget(firstNonEmptyString(actx.URL(), actx.Target(), hostname)), RequestID: requestID, Agent: actx.Agent()}, response.shard)); err != nil {
+			if err := p.confirmResponseDecision(cfg, withReceiptShard(receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: response.parentActionID, Verdict: config.ActionAllow, Layer: "shield_oversize", Pattern: reason, Shield: partialShieldSummary(nil, body, contentType, len(body), 0), Transport: transport, Method: actx.Method(), Target: shieldReceiptTarget(firstNonEmptyString(actx.URL(), actx.Target(), hostname)), RequestID: requestID, Agent: actx.Agent()}, response.shard), response.requestContext); err != nil {
 				return nil, nil, false, p.shieldReceiptBlock(err, transport)
 			}
 			p.logger.LogAnomaly(actx, "shield_oversize", fmt.Sprintf("response body %d bytes exceeds shield ceiling %d", len(body), shieldMaxBytes), 0)
@@ -6992,7 +6993,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	var shieldSummary *receipt.ShieldSummary
 	svgShielded := false
 	if shieldBlocked == nil {
-		body, shieldSummary, svgShielded, shieldBlocked = p.applyShieldResponse(body, contentType, resp.Header, cfg, shieldResponseContext{scanOriginal: scanOriginal, hostname: shieldHost, actx: actx, clientIP: clientIP, requestID: requestID, transport: TransportFetch, parentActionID: actionID, shard: selectedReceiptShard})
+		body, shieldSummary, svgShielded, shieldBlocked = p.applyShieldResponse(body, contentType, resp.Header, cfg, shieldResponseContext{requestContext: r.Context(), scanOriginal: scanOriginal, hostname: shieldHost, actx: actx, clientIP: clientIP, requestID: requestID, transport: TransportFetch, parentActionID: actionID, shard: selectedReceiptShard})
 	}
 	if shieldBlocked != nil {
 		reason := shieldBlocked.reason

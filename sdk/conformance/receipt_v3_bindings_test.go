@@ -34,7 +34,7 @@ var receiptEmissionCalls = strings.Fields(
 		"commitAllow ensure blockCrossMessageIncomplete closeUpstreamCrossMessage sseFindingReceiptConfirmer emitV1 " +
 		"emitCredentialAudienceReceipt emitCredentialAudienceReceiptWithFallback emitRequiredV2Receipt emitReceiptFailureMarkerWithLogger " +
 		"emitReceiptDecisionWithControl EmitMCPDecision EmitMCPGroupDecision emitMCPDecision emitMCPV2Decision emitMCPBlockedOutcomeReceipt " +
-		"emitReceiptWithEmitter emitRequiredReceiptWithEmitter interceptEmitReceipt " +
+		"emitReceiptWithEmitter emitRequiredReceiptWithEmitter interceptEmitReceipt interceptEmitResponseReceipt " +
 		"emitV2Receipt emitV2 emitRequiredV2 emitGroupV2Receipt emitDLPWarn EmitDLPWarning " +
 		"EmitSessionOpen EmitSessionClose EmitHeartbeat EmitTranscriptRoot prepareNativeAEL " +
 		"BuildProxyDecisionReceipt BuildProxyDecisionWithSpansReceipt BuildSecretEgressDecisionReceipt " +

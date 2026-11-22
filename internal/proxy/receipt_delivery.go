@@ -70,7 +70,7 @@ func (w *v3DeliveryWriter) deny(err error) {
 
 func (w *v3DeliveryWriter) adaptiveRefused() bool {
 	adaptive, ok := w.ResponseWriter.(*adaptiveRefusalWriter)
-	if !ok || !adaptive.refuse() {
+	if !ok || keepsOwnRefusal(w.Header()) || !adaptive.refuse() {
 		return false
 	}
 	opts := w.options
@@ -93,12 +93,12 @@ func (w *v3DeliveryWriter) WriteHeader(status int) {
 		opts := w.options
 		opts.ActionID = receipt.NewActionID()
 		token, err := w.admit(opts)
-		if err != nil {
-			w.deny(err)
-			return
-		}
 		if w.adaptiveRefused() {
 			w.proxy.refuseAdmittedEffect(w.request.Context(), opts, token)
+			return
+		}
+		if err != nil {
+			w.deny(err)
 			return
 		}
 		w.ResponseWriter.WriteHeader(status)
@@ -108,12 +108,12 @@ func (w *v3DeliveryWriter) WriteHeader(status int) {
 	w.status = status
 	if w.Header().Get(blockreason.HeaderReason) == "" {
 		token, err := w.admit(w.options)
-		if err != nil {
-			w.deny(err)
-			return
-		}
 		if w.adaptiveRefused() {
 			w.proxy.refuseAdmittedEffect(w.request.Context(), w.options, token)
+			return
+		}
+		if err != nil {
+			w.deny(err)
 			return
 		}
 		w.token = token
