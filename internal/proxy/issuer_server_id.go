@@ -11,8 +11,10 @@ import (
 	"errors"
 	"hash"
 	"io"
+	"math/big"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -469,15 +471,27 @@ func appendJSONStringsIfValid(texts []string, text string) ([]string, bool) {
 // appendJSONStrings adds every string key and value of a JSON body, decoded,
 // so an escape sequence in the body cannot hide a token from the raw scan.
 // Numbers are preserved as json.Number so values outside float64 range (which
-// json.Valid accepts) do not abort the walk before later strings. Returns
-// false if any token decode returns a non-EOF error so callers fail closed.
+// json.Valid accepts) do not abort the walk before later strings; a whole
+// number is also added as its integer digits, so 4.1111111e7 records
+// 41111111. A body that is not one JSON value is read as a stream of values
+// (NDJSON or concatenated JSON). Returns false if a token decode fails before
+// EOF on text that may hide a token, so callers fail closed.
 func appendJSONStrings(texts []string, body []byte) ([]string, bool) {
-	if !json.Valid(body) {
-		return texts, true
-	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
-	return appendJSONStringsFromDecoder(texts, decoder)
+	if json.Valid(body) {
+		return appendJSONStringsFromDecoder(texts, decoder)
+	}
+	staged, ok := appendJSONStringsFromDecoder(nil, decoder)
+	if ok {
+		return append(texts, staged...), true
+	}
+	// Text that is not JSON at all is covered by the raw token scan. Inside a
+	// JSON string only a \u escape can spell a digit the scan cannot see.
+	if bytes.Contains(body, []byte(`\u`)) {
+		return append(texts, staged...), false
+	}
+	return texts, true
 }
 
 func appendJSONStringsFromDecoder(texts []string, decoder *json.Decoder) ([]string, bool) {
@@ -489,10 +503,40 @@ func appendJSONStringsFromDecoder(texts []string, decoder *json.Decoder) ([]stri
 			}
 			return texts, false
 		}
-		if s, ok := token.(string); ok {
-			texts = append(texts, s)
+		switch v := token.(type) {
+		case string:
+			texts = append(texts, v)
+		case json.Number:
+			if digits, ok := jsonWholeNumberDigits(string(v)); ok {
+				texts = append(texts, digits)
+			}
 		}
 	}
+}
+
+// jsonWholeNumberMaxExponent bounds the exponent a number literal may carry
+// before it is expanded; a larger one cannot name an 8-14 digit token and
+// would only cost memory to expand.
+const jsonWholeNumberMaxExponent = 64
+
+// jsonWholeNumberDigits returns the integer digits of a JSON number literal
+// that denotes a whole number, without sign or exponent. Fractional values
+// and literals with an outsized exponent report false.
+func jsonWholeNumberDigits(literal string) (string, bool) {
+	if !strings.ContainsAny(literal, ".eE") {
+		return strings.TrimPrefix(literal, "-"), true
+	}
+	if i := strings.IndexAny(literal, "eE"); i >= 0 {
+		exp, err := strconv.Atoi(strings.TrimPrefix(literal[i+1:], "+"))
+		if err != nil || exp > jsonWholeNumberMaxExponent || exp < -jsonWholeNumberMaxExponent {
+			return "", false
+		}
+	}
+	r, ok := new(big.Rat).SetString(literal)
+	if !ok || !r.IsInt() {
+		return "", false
+	}
+	return new(big.Int).Abs(r.Num()).String(), true
 }
 
 // mintServerID records value as an ID the origin in target issued, unless

@@ -659,6 +659,58 @@ func TestIssuerNumericLedgerIsolationAndEdgeCases(t *testing.T) {
 		}
 	})
 
+	t.Run("client-sent NDJSON and number-literal values never mint", func(t *testing.T) {
+		escapedNum := fmt.Sprintf(`\u%04x%s`, cardA1[0], cardA1[1:])
+		exponent := cardA1[:1] + "." + cardA1[1:] + "e" + fmt.Sprint(len(cardA1)-1)
+		for _, tc := range []struct{ name, body string }{
+			{"NDJSON escaped digits", `{"a":"x"}` + "\n" + `{"v":"` + escapedNum + `"}` + "\n"},
+			{"exponent whole number", `{"v":` + exponent + `}`},
+			{"NDJSON exponent whole number", `{"a":1}` + "\n" + `{"v":` + exponent + `}`},
+			{"fraction-spelled whole number", `{"v":` + cardA1 + `.000}`},
+			{"undecodable text with escaped digits", `note=[{"v":"` + escapedNum + `"`},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				store := newIssuerQueryStore()
+				store.recordSent("sess", origin, nil, []byte(tc.body), true, time.Now())
+				store.mintNumericIDs("sess", origin, []string{cardA1, cardA2})
+				if store.numericIDsIssued("sess", origin, []string{cardA1, cardA2}) {
+					t.Fatalf("client-sent value in %q was minted as server-issued", tc.body)
+				}
+			})
+		}
+		// Control: plain text with versions and IPs keeps history complete, and
+		// a fractional number records no digits, so an unsent pair still mints.
+		store := newIssuerQueryStore()
+		store.recordSent("sess", origin, nil, []byte(`v=1.2.3&ip=10.0.0.1&r=0.5e1&f={"x":12.5}`), true, time.Now())
+		store.mintNumericIDs("sess", origin, []string{cardA1, cardA2})
+		if !store.numericIDsIssued("sess", origin, []string{cardA1, cardA2}) {
+			t.Fatal("unsent server-first pair failed to mint after a plain form body")
+		}
+	})
+
+	t.Run("JSON whole-number digits", func(t *testing.T) {
+		for _, tc := range []struct {
+			in, want string
+			ok       bool
+		}{
+			{"41111111", "41111111", true},
+			{"-41111111", "41111111", true},
+			{"4.1111111e7", "41111111", true},
+			{"4.1111111E+7", "41111111", true},
+			{"41111111.000", "41111111", true},
+			{"411111110e-1", "41111111", true},
+			{"4.11111115e7", "", false},
+			{"12.5", "", false},
+			{"1e400", "", false},
+			{"1e-400", "", false},
+		} {
+			got, ok := jsonWholeNumberDigits(tc.in)
+			if got != tc.want || ok != tc.ok {
+				t.Errorf("jsonWholeNumberDigits(%q) = %q, %v; want %q, %v", tc.in, got, ok, tc.want, tc.ok)
+			}
+		}
+	})
+
 	t.Run("separate numeric budget never freezes server_issued_id learning", func(t *testing.T) {
 		store := newIssuerQueryStore()
 		// Overflow numeric per-request token limit (>4096 8-digit numbers, each < 16 chars so server_issued_id sees 0 tokens).
