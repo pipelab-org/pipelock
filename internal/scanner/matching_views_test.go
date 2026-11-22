@@ -251,8 +251,9 @@ func TestMatchingViewResponseParity(t *testing.T) {
 		{Name: "Case-sensitive catalog marker", Regex: `CATALOG marker[0-9]{2}`},
 		{Name: "Folded catalog mark", Regex: `(?i)catalog (?:mark[0-9]{2}|entry)`},
 	}
-	sc, reference := MustNew(cfg), MustNew(cfg)
+	sc, production, reference := MustNew(cfg), MustNew(cfg), MustNew(cfg)
 	t.Cleanup(sc.Close)
+	t.Cleanup(production.Close)
 	t.Cleanup(reference.Close)
 	responsePassReference(reference)
 	// The production index gives default literal chains priority. Isolate the
@@ -280,10 +281,15 @@ func TestMatchingViewResponseParity(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			text := padding + tc.input + padding
-			got := sc.ScanResponse(t.Context(), text)
 			want := reference.ScanResponse(t.Context(), text)
-			if got.Clean != tc.clean || !reflect.DeepEqual(got, want) {
-				t.Fatalf("got clean=%t findings=%v, reference clean=%t findings=%v", got.Clean, got.Matches, want.Clean, want.Matches)
+			// The isolated index proves the indexed path for these anchors.
+			// The production index, where default chains leave configured
+			// anchors unindexed, is the shape operators actually run.
+			for name, scanner := range map[string]*Scanner{"isolated index": sc, "production index": production} {
+				got := scanner.ScanResponse(t.Context(), text)
+				if got.Clean != tc.clean || !reflect.DeepEqual(got, want) {
+					t.Fatalf("%s: got clean=%t findings=%v, reference clean=%t findings=%v", name, got.Clean, got.Matches, want.Clean, want.Matches)
+				}
 			}
 		})
 	}

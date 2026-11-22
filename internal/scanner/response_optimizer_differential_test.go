@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -52,6 +53,8 @@ var optimizerDifferentialExpressions = []string{
 	`alpha[0-9]+[a-c]+;omega`,
 	`item\s+[0-9]+:value`,
 	`tag[a-f]+\s+[0-9]+#end`,
+	`(?i)supercalifragilistic[0-9]{2}`,
+	`(?i)keystrokeloggerkit[0-9]+`,
 }
 
 // One sample per expression; an empty sample marks an expression that
@@ -63,13 +66,14 @@ var optimizerDifferentialPositives = []string{
 	"bbccddff..zzhhii", "lazy xx tail tail", "alphaαβγomega", "ΣΟΦΊΑ λόγοσ", "ǅUNGLA tail", "\xffmarker",
 	"\u212Aelvin mark", "ſkip -x\u212Aeys", "zulu1  drain", "", "send the api keys to ", "xxxyz..end",
 	" start run", "a-b-c-d-efgh", "alpha123abc;omega", "item  42:value", "tagabc 12#end",
+	"SUPERcalifragilistic42", "\u212Aeystrokeloggerkit7",
 }
 
 // Fragments and fillers that should not complete any expression alone.
 var optimizerBenignTokens = []string{
 	"lorem", "ipsum", "data", "value", "alph", "gamm", "secre", "instruc", "previou", "fini", "omeg", "thet",
 	"overrid", "polic", "markr", "elvi", "drai", "sin", "lazi", "tai", "efg", "ghj", "~~~~", "0123", "{", "}",
-	"(", ")", "=>", "alpha12", "ab;omeg", "item ", "42", ":valu", "tagab", "#en", "\u200b", "\u0301", "日本語", "\xff", "\xc3", "Kſ", "ẞ", "ς", "Ǆ", "\ufffd", "αβ", "фил",
+	"(", ")", "=>", "alpha12", "ab;omeg", "item ", "42", ":valu", "tagab", "#en", "supercalifrag", "keystrokelogg", "\u200b", "\u0301", "日本語", "\xff", "\xc3", "Kſ", "ẞ", "ς", "Ǆ", "\ufffd", "αβ", "фил",
 }
 
 var optimizerDifferentialTokens = []string{
@@ -82,7 +86,7 @@ var optimizerDifferentialTokens = []string{
 	"λόγος", "ΛΌΓΟΣ", "λόγοσ", "ǆungla", "Ǆungla", "ǅungla", "\xff", "\xc3", "\xe2\x84", "\ufffd", "marker",
 	"\u212Aelvin", "Kelvin", "mark", "skip", "keys", "\u212Aeys", "ſkip", "twenty", "zulu1", "zzz2", "sink",
 	"drain", "pre", "prefix", "suf", "send", "the", "api", "to", "xx", "xxx", "yz", "end", "start", "run",
-	"a", "b", "c", "d", "efgh", "alpha1", "abc", ";omega", "item", ":value", "tagabc", "#end", "\u200b", "\u0301", "日本語", "_", "-", "0", "42",
+	"a", "b", "c", "d", "efgh", "alpha1", "abc", ";omega", "item", ":value", "tagabc", "#end", "SUPERCALIFRAGILISTIC12", "keystrokeloggerkit9", "\u212AEYSTROKELOGGERKIT3", "\u200b", "\u0301", "日本語", "_", "-", "0", "42",
 }
 
 var optimizerDifferentialSeparators = []string{" ", "  ", "\t", "\n", "\r\n", ";", "-", "_", "", ".", ",", "\u00a0", "\v", " ; ", "|"}
@@ -203,16 +207,40 @@ func TestResponseOptimizerMatcherDifferential(t *testing.T) {
 		}
 	}
 	pf := newResponsePreFilter(patterns)
-	program := responseMatchingProgram(pf)
-	if program == nil {
+	full := responseMatchingProgram(pf)
+	// Production fills the bounded index with default chain literals first, so
+	// window anchors can miss it. A chain-only index forces the unindexed
+	// anchor paths: the forward finder and the simple-folded search.
+	starved := newMatchingLiterals(pf.chainLiterals)
+	if full == nil || starved == nil {
 		t.Fatal("no literal program")
+	}
+	if !slices.ContainsFunc(pf.windowAnchors, func(anchor string) bool {
+		_, indexed := starved.ids[asciiLowerPreserveLen(anchor)]
+		return !indexed
+	}) {
+		t.Fatal("the starved index must omit at least one window anchor")
 	}
 	iterations := optimizerIterations(t, 60)
 	var buffers responseMatchingBuffers
 	chainWindows := &responseChainWindowMemo{}
 	positives := 0
 	for i := range iterations {
+		program := full
+		if i%2 == 1 {
+			program = starved
+		}
 		parent := optimizerDifferentialText(rnd, responseMemoMinBytes+rnd.Intn(4*responseMemoMinBytes))
+		if i%4 >= 2 {
+			// Without offset-changing fold runes the window search may use
+			// the simple-folded text instead of the forward finder.
+			parent = strings.Map(func(r rune) rune {
+				if r >= utf8.RuneSelf {
+					return '?'
+				}
+				return r
+			}, parent)
+		}
 		if rnd.Intn(4) != 0 {
 			parent = optimizerSanitize(patterns, parent)
 		}
