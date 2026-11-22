@@ -2296,6 +2296,7 @@ func newInterceptHandler(
 			envEmitter = ic.Proxy.currentEnvelopeEmitter()
 		}
 		if envEmitter != nil {
+			ic.taintTask.snapshotPreSendHeader(r)
 			policyHash := envelope.PolicyHashFromHex(ic.Config.CanonicalPolicyHash())
 			if envErr := envEmitter.InjectAndSign(r, interceptBodyBytes, envelope.BuildOpts{
 				ActionID:       actionID,

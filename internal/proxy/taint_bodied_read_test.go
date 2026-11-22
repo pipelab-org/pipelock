@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"io"
 	"net/http"
@@ -574,4 +575,144 @@ func TestRecheckInterceptTaintMatchesExistingGrant(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Envelope signing runs between task admission and the send, and can block
+// while it buffers an unread body. Exposure recorded during signing is
+// enforced before the request leaves, with or without required receipts.
+func TestForwardTaintRechecksExposureDuringEnvelopeSigning(t *testing.T) {
+	for _, required := range []bool{false, true} {
+		t.Run(map[bool]string{false: "optional_receipts", true: "required_receipts"}[required], func(t *testing.T) {
+			p, _, _, target, _ := newTaintInterceptFixture(t, func(cfg *config.Config) {
+				cfg.ForwardProxy.Enabled = true
+				cfg.RequestBodyScanning.Enabled = false
+				cfg.FlightRecorder.RequireReceipts = required
+				cfg.DNS.HostOverrides = map[string][]string{interceptTaintHost: {"93.184.216.34"}}
+			})
+			rec := &SessionState{}
+			WithTaintRecorder(rec)(p)
+			receipts := newReceiptProxyHelperWithMetrics(t, p.metrics)
+			p.receiptEmitterPtr.Store(receipts.emitter)
+			// The signature nonce is read inside envelope signing, after task
+			// admission and before the send.
+			nonce := &exposingBody{r: rand.Reader, expose: func() {
+				observeHTTPResponseFindings(rec, p.CurrentConfig(), "http://untrusted.example/page", "text/html", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+			}}
+			signer, err := envelope.NewSigner(envelope.SignerConfig{PrivKey: receipts.priv, KeyID: "signing-test", SignedComponents: []string{"@method", "@target-uri"}, RandReader: nonce})
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.envelopeEmitterPtr.Store(envelope.NewEmitter(envelope.EmitterConfig{Signer: signer}))
+			var upstreamCalls atomic.Int32
+			p.client = &http.Client{Transport: forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
+				upstreamCalls.Add(1)
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("ok")), Request: r}, nil
+			})}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, strings.Replace(target, "https://", "http://", 1), strings.NewReader("payload=1"))
+			req.Header.Set("Content-Type", "text/plain")
+			w := httptest.NewRecorder()
+			p.handleForwardHTTP(w, req)
+			if rec.RiskSnapshot().Level == session.TaintTrusted {
+				t.Fatal("signing never ran, so the exposure hook did not fire")
+			}
+			if w.Code != http.StatusForbidden || upstreamCalls.Load() != 0 {
+				t.Fatalf("bodied GET exposed during signing status=%d calls=%d body=%s", w.Code, upstreamCalls.Load(), w.Body)
+			}
+			var refusal *receipt.ActionRecord
+			for _, rcpt := range receipts.findReceipts(t) {
+				if rcpt.ActionRecord.Verdict == config.ActionBlock {
+					ar := rcpt.ActionRecord
+					refusal = &ar
+				}
+			}
+			if refusal == nil || refusal.SessionTaintLevel != session.TaintExternalHostile.String() {
+				t.Fatalf("refusal receipt does not record the live hostile state: %+v", refusal)
+			}
+		})
+	}
+}
+
+// An exact grant is bound on the headers admission sees. Exposure that
+// arrives while the envelope is signed must still match that grant, not a
+// digest that includes the injected mediation headers.
+func TestTaintLateExactGrantSurvivesEnvelopeInjection(t *testing.T) {
+	grantFor := func(t *testing.T, rec *SessionState, method, target string, body []byte) {
+		t.Helper()
+		twin := httptest.NewRequestWithContext(t.Context(), method, target, strings.NewReader(string(body)))
+		twin.Header.Set("Content-Type", "text/plain")
+		stripInternalIdentity(twin)
+		removeHopByHopHeaders(twin.Header)
+		applyFullResponsePolicy(twin.Header, nil)
+		responseencoding.RequestIdentity(twin.Header)
+		if err := rec.installTaskPermission(rec.TaskSnapshot().CurrentTaskID, session.TaskPermission{Action: forwardRequestTaskAction(twin, body), ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exposingSigner := func(t *testing.T, receipts *receiptProxyHelper, expose func()) *envelope.Emitter {
+		t.Helper()
+		signer, err := envelope.NewSigner(envelope.SignerConfig{PrivKey: receipts.priv, KeyID: "signing-test", SignedComponents: []string{"@method", "@target-uri"}, RandReader: &exposingBody{r: rand.Reader, expose: expose}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return envelope.NewEmitter(envelope.EmitterConfig{Signer: signer})
+	}
+	body := []byte("payload=1")
+
+	t.Run("forward", func(t *testing.T) {
+		p, _, _, target, _ := newTaintInterceptFixture(t, func(cfg *config.Config) {
+			cfg.ForwardProxy.Enabled = true
+			cfg.RequestBodyScanning.Enabled = true
+			cfg.DNS.HostOverrides = map[string][]string{interceptTaintHost: {"93.184.216.34"}}
+		})
+		rec := &SessionState{}
+		rec.BindTaskSubject("invocation")
+		WithTaintRecorder(rec)(p)
+		receipts := newReceiptProxyHelperWithMetrics(t, p.metrics)
+		target = strings.Replace(target, "https://", "http://", 1)
+		grantFor(t, rec, http.MethodPost, target, body)
+		exposed := false
+		p.envelopeEmitterPtr.Store(exposingSigner(t, receipts, func() {
+			exposed = true
+			observeHTTPResponseFindings(rec, p.CurrentConfig(), "http://untrusted.example/page", "text/html", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+		}))
+		var upstreamCalls atomic.Int32
+		p.client = &http.Client{Transport: forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
+			upstreamCalls.Add(1)
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("ok")), Request: r}, nil
+		})}
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, strings.NewReader(string(body)))
+		req.Header.Set("Content-Type", "text/plain")
+		w := httptest.NewRecorder()
+		p.handleForwardHTTP(w, req)
+		if !exposed || w.Code != http.StatusOK || upstreamCalls.Load() != 1 {
+			t.Fatalf("exposed=%v status=%d calls=%d body=%s, want the exact grant to admit the request", exposed, w.Code, upstreamCalls.Load(), w.Body)
+		}
+	})
+
+	t.Run("intercept", func(t *testing.T) {
+		p, _, _, target, ic := newTaintInterceptFixture(t, nil)
+		rec := &SessionState{}
+		rec.BindTaskSubject("invocation")
+		WithTaintRecorder(rec)(p)
+		receipts := newReceiptProxyHelperWithMetrics(t, p.metrics)
+		grantFor(t, rec, http.MethodPost, target, body)
+		exposed := false
+		ic.EnvelopeEmitter = exposingSigner(t, receipts, func() {
+			exposed = true
+			observeHTTPResponseFindings(rec, ic.Config, "https://other.example/reference", "text/plain", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+		})
+		ic.EnvelopeEmitterSet = true
+		var upstreamCalls int
+		handler := newInterceptHandler(ic, roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			upstreamCalls++
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("ok")), Request: r}, nil
+		}))
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, strings.NewReader(string(body)))
+		req.Header.Set("Content-Type", "text/plain")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if !exposed || w.Code != http.StatusOK || upstreamCalls != 1 {
+			t.Fatalf("exposed=%v status=%d calls=%d body=%s, want the exact grant to admit the request", exposed, w.Code, upstreamCalls, w.Body)
+		}
+	})
 }

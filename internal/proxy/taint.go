@@ -157,6 +157,30 @@ func requestHasBody(r *http.Request) bool {
 type forwardTaskAction struct {
 	subject string
 	action  session.TaskAction
+	// preSendHeader snapshots the outbound headers before mediation envelope
+	// injection adds its own, so an action bound after injection hashes the
+	// same headers admission would have bound.
+	preSendHeader http.Header
+}
+
+// snapshotPreSendHeader records the headers an exact action binds before
+// envelope injection changes them. It is a no-op once the action is bound.
+func (t *forwardTaskAction) snapshotPreSendHeader(req *http.Request) {
+	if t == nil || req == nil || t.action.Valid() {
+		return
+	}
+	t.preSendHeader = req.Header.Clone()
+}
+
+// lateRequestTaskAction binds the exact action for a request whose exposure
+// arrived after admission, on the same header basis admission uses.
+func (t *forwardTaskAction) lateRequestTaskAction(req *http.Request, body []byte) session.TaskAction {
+	if t.preSendHeader == nil {
+		return forwardRequestTaskAction(req, body)
+	}
+	basis := *req
+	basis.Header = t.preSendHeader
+	return forwardRequestTaskAction(&basis, body)
 }
 
 func evaluateHTTPTaskTaint(cfg *config.Config, rec session.Recorder, method string, parsedURL *url.URL, body bool, task *forwardTaskAction) taintDecision {
@@ -393,7 +417,7 @@ func forwardPreSendTaintRecheck(cfg *config.Config, rec session.Recorder, outReq
 		// Exposure arrived after admission, so the exact action was never
 		// bound. Bind it now so an existing exact grant can still match; an
 		// unbuffered body yields no action and stays refused.
-		task.action = forwardRequestTaskAction(outReq, body)
+		task.action = task.lateRequestTaskAction(outReq, body)
 		after = evaluateHTTPTaskTaint(cfg, rec, outReq.Method, outReq.URL, requestHasBody(outReq), task)
 	}
 	return after, taskTaintRecheckReason(admitted, after, reauthorized)

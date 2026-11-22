@@ -2494,6 +2494,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// mediation_envelope.max_body_bytes, and restores it with a fresh
 	// reader + GetBody for redirect replay.
 	if envEmitter != nil {
+		forwardTask.snapshotPreSendHeader(outReq)
 		policyHash := envelope.PolicyHashFromHex(cfg.CanonicalPolicyHash())
 		if envErr := envEmitter.InjectAndSign(outReq, forwardBodyBytes, envelope.BuildOpts{
 			ActionID:       actionID,
@@ -2642,17 +2643,24 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	responseBudgetTruncated := false
 
-	// Required receipt scanning and durability can outlast task admission.
-	// Without required receipts nothing waits between the check above and
-	// the send, so only the required path needs to look again.
-	if cfg.FlightRecorder.RequireReceipts {
+	// Required receipt scanning and durability, and envelope signing that
+	// buffers an unread body, can outlast task admission. Look again before
+	// every send, as the intercept path does.
+	{
 		admissionCurrent := taskAdmissionCurrent()
 		// Read the live decision either way so a refusal records the current
 		// task and exposure, not the admission-time state.
 		after, reason := forwardPreSendTaintRecheck(cfg, forwardRec, outReq, forwardBodyBytes, &forwardTask, forwardTaint, forwardRequiresReauth)
-		detail := "session exposure changed while the required receipt was recorded"
+		detail := "session exposure changed after the request was admitted"
 		if !admissionCurrent {
 			reason, detail = session.TaskApprovalStale, staleTaskDetail
+		}
+		if reason != "" && !cfg.FlightRecorder.RequireReceipts {
+			// No intent receipt was recorded, so the refusal is the only
+			// receipt for this action; it carries the live state.
+			forwardTaint = after
+			writeTaskDenial(reason, detail)
+			return
 		}
 		if reason != "" {
 			outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, reason
