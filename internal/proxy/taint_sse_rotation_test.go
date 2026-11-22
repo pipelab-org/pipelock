@@ -23,14 +23,18 @@ import (
 )
 
 // rotatingStreamWriter rotates the session task inside every client write
-// while armed, and signals each flush that follows a body write. A rotation
+// while armed, and signals the flush that completes an event. A rotation
 // inside the last write of an event can only be recorded by the check that
-// runs after the write, because no later write of that event exists.
+// runs after the write, because no later write of that event exists. An event
+// can reach the client in several writes, each flushed, so only a flush after
+// the blank line that ends the event signals; an earlier flush would leave a
+// stale signal that a later wait takes for the next event.
 type rotatingStreamWriter struct {
 	*httptest.ResponseRecorder
 	mu      sync.Mutex
 	rotate  func()
 	pending bool
+	tail    []byte
 	flushed chan struct{}
 }
 
@@ -48,6 +52,10 @@ func (w *rotatingStreamWriter) Write(data []byte) (int, error) {
 	w.mu.Lock()
 	rotate := w.rotate
 	w.pending = true
+	w.tail = append(w.tail, data...)
+	if len(w.tail) > 2 {
+		w.tail = w.tail[len(w.tail)-2:]
+	}
 	w.mu.Unlock()
 	if rotate != nil {
 		rotate()
@@ -58,10 +66,12 @@ func (w *rotatingStreamWriter) Write(data []byte) (int, error) {
 func (w *rotatingStreamWriter) Flush() {
 	w.ResponseRecorder.Flush()
 	w.mu.Lock()
-	pending := w.pending
-	w.pending = false
+	complete := w.pending && bytes.Equal(w.tail, []byte("\n\n"))
+	if complete {
+		w.pending = false
+	}
 	w.mu.Unlock()
-	if pending {
+	if complete {
 		select {
 		case w.flushed <- struct{}{}:
 		default:
@@ -487,5 +497,38 @@ func TestSessionWithHeldExposureIsNotEvicted(t *testing.T) {
 	}
 	if got := sm.GetOrCreate("new-session"); got == nil {
 		t.Fatal("new session still refused after delivery released capacity")
+	}
+}
+
+// Idle cleanup decides eligibility and removes the session in one critical
+// section, so a response cannot take its first exposure hold in between: the
+// hold would then protect a session cleanup is about to discard.
+func TestIdleCleanupDecidesAndRemovesUnderSessionLock(t *testing.T) {
+	cfg := testSessionConfig()
+	cfg.SessionTTLMinutes = 1
+	sm := NewSessionManager(cfg, nil, nil)
+	defer sm.Close()
+	sess := sm.GetOrCreate(testClientIP)
+	sess.mu.Lock()
+	sess.lastActivity = time.Now().Add(-time.Hour)
+	sess.mu.Unlock()
+	var checked bool
+	var lockFree bool
+	sm.beforeIdleRemoval = func(candidate *SessionState) {
+		checked = true
+		if candidate.mu.TryLock() {
+			lockFree = true
+			candidate.mu.Unlock()
+		}
+	}
+	sm.cleanup()
+	if !checked {
+		t.Fatal("idle cleanup did not reach removal for an idle session")
+	}
+	if lockFree {
+		t.Fatal("idle cleanup released the session lock between its eligibility decision and removal")
+	}
+	if got := sm.SessionByKey(testClientIP); got != nil {
+		t.Fatal("idle session was not removed")
 	}
 }

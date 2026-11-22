@@ -1744,6 +1744,10 @@ type SessionManager struct {
 	// beforeEvictRecheck lets tests change a candidate between selection and
 	// the locked recheck. Nil in production.
 	beforeEvictRecheck func(*SessionState)
+
+	// beforeIdleRemoval lets tests observe idle cleanup between its
+	// eligibility decision and the removal. Nil in production.
+	beforeIdleRemoval func(*SessionState)
 }
 
 // SessionManagerOptions configures optional SessionManager behavior.
@@ -3147,6 +3151,9 @@ func (sm *SessionManager) cleanup() {
 		// are also exempt so idle expiry cannot discard enforcement.
 		evict := idle && !quarantined && !delivering
 		if evict {
+			if sm.beforeIdleRemoval != nil {
+				sm.beforeIdleRemoval(sess)
+			}
 			delete(sm.sessions, key)
 		}
 		sess.mu.Unlock()
