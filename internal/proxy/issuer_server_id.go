@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -489,7 +490,8 @@ func appendJSONStrings(texts []string, body []byte) ([]string, bool) {
 	// covered by the raw token scan, except where a \u escape spells a digit
 	// or an exponent literal names a whole number the scan cannot read.
 	texts = append(texts, staged...)
-	if bytes.Contains(body, []byte(`\u`)) || hasExponentLiteral(body) {
+	texts = appendHiddenNumberLiterals(texts, body)
+	if bytes.Contains(body, []byte(`\u`)) {
 		return texts, false
 	}
 	return texts, true
@@ -508,12 +510,23 @@ func appendJSONStringsFromDecoder(texts []string, decoder *json.Decoder) ([]stri
 		case string:
 			texts = append(texts, v)
 		case json.Number:
-			if digits, ok := jsonWholeNumberDigits(string(v)); ok {
+			// The raw token scan already reads a plain integer literal. Only a
+			// fraction or exponent spelling hides its digits, and only a value
+			// of issuer length can matter, so short numbers never spend the
+			// input-token budget.
+			if !strings.ContainsAny(string(v), ".eE") {
+				continue
+			}
+			if digits, ok := jsonWholeNumberDigits(string(v)); ok && len(digits) >= jsonWholeNumberMinDigits {
 				texts = append(texts, digits)
 			}
 		}
 	}
 }
+
+// jsonWholeNumberMinDigits is the shortest canonical value worth recording;
+// the numeric issuer range starts at 8 digits.
+const jsonWholeNumberMinDigits = 8
 
 // jsonWholeNumberMaxDigits bounds the integer digits a number literal may
 // expand to; a longer value cannot name an 8-14 digit token.
@@ -564,23 +577,27 @@ func jsonWholeNumberDigits(literal string) (string, bool) {
 	return digits + strings.Repeat("0", point-len(digits)), true
 }
 
-// hasExponentLiteral reports whether text holds a digit, an exponent marker,
-// an optional sign, and a digit: a number literal whose whole value the raw
-// digit scan cannot read.
-func hasExponentLiteral(text []byte) bool {
-	for i := 1; i+1 < len(text); i++ {
-		if (text[i] != 'e' && text[i] != 'E') || text[i-1] < '0' || text[i-1] > '9' {
+// jsonNumberLiteral matches a whole token spelled as a number with a
+// fraction or exponent, leniently allowing leading zeros.
+var jsonNumberLiteral = regexp.MustCompile(`^-?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$`)
+
+// appendHiddenNumberLiterals adds the integer digits of each token in text
+// that is a fraction or exponent spelling of a whole number of issuer length.
+// The raw digit scan cannot read such a value; hex IDs and UUIDs are not
+// whole number tokens and are left alone.
+func appendHiddenNumberLiterals(texts []string, text []byte) []string {
+	tokens := strings.FieldsFunc(string(text), func(r rune) bool {
+		return (r < '0' || r > '9') && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && r != '.' && r != '+' && r != '-'
+	})
+	for _, token := range tokens {
+		if !strings.ContainsAny(token, ".eE") || !jsonNumberLiteral.MatchString(token) {
 			continue
 		}
-		next := i + 1
-		if text[next] == '+' || text[next] == '-' {
-			next++
-		}
-		if next < len(text) && text[next] >= '0' && text[next] <= '9' {
-			return true
+		if digits, ok := jsonWholeNumberDigits(token); ok && len(digits) >= jsonWholeNumberMinDigits {
+			texts = append(texts, digits)
 		}
 	}
-	return false
+	return texts
 }
 
 // mintServerID records value as an ID the origin in target issued, unless

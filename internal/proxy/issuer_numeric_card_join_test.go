@@ -685,7 +685,7 @@ func TestIssuerNumericLedgerIsolationAndEdgeCases(t *testing.T) {
 		// Control: plain text with versions and IPs keeps history complete, and
 		// a fractional number records no digits, so an unsent pair still mints.
 		store := newIssuerQueryStore()
-		store.recordSent("sess", origin, nil, []byte(`v=1.2.3&ip=10.0.0.1&f={"x":12.5}`), true, time.Now())
+		store.recordSent("sess", origin, nil, []byte(`v=1.2.3&ip=10.0.0.1&id=2c712604-1370-44e7-a1f5-0123456789ab&h=00e1&n=1e5&f={"x":12.5}`), true, time.Now())
 		store.mintNumericIDs("sess", origin, []string{cardA1, cardA2})
 		if !store.numericIDsIssued("sess", origin, []string{cardA1, cardA2}) {
 			t.Fatal("unsent server-first pair failed to mint after a plain form body")
