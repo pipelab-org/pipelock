@@ -201,3 +201,40 @@ func numericCardJoinSkipSpan(p *compiledPattern, rawParts []string, cleaned, hos
 		return spanMap.relieves(start, end, decodes.issuedNumericCardJoin)
 	}
 }
+
+// numericCardJoinPathQuerySkipSpan returns a per-span relief predicate for
+// spans lying wholly within the query portion of a raw path_query_concat view.
+// Offsets are adjusted for the normalized path prefix after verifying no
+// cross-boundary normalization occurred; any span consuming a path byte stays
+// ineligible.
+func numericCardJoinPathQuerySkipSpan(p *compiledPattern, rawParts []string, rawQuery, rawTarget, cleaned, hostname string, decodes *decodingMemo) func(start, end int) bool {
+	if decodes == nil || decodes.issuedNumericCardJoin == nil || len(rawParts) < 2 {
+		return nil
+	}
+	if !p.cardPrefixRetry || p.keywords != nil || p.exemptsHost(hostname) {
+		return nil
+	}
+	queryConcat := orderedQueryConcat(rawQuery)
+	if queryConcat == "" {
+		return nil
+	}
+	rawPathPrefix, ok := strings.CutSuffix(rawTarget, queryConcat)
+	if !ok {
+		return nil
+	}
+	normPrefix := decodes.normalize(rawPathPrefix)
+	if !strings.HasPrefix(cleaned, normPrefix) {
+		return nil
+	}
+	prefixLen := len(normPrefix)
+	spanMap, ok := buildNumericSpanMap(rawParts, cleaned[prefixLen:])
+	if !ok {
+		return nil
+	}
+	return func(start, end int) bool {
+		if start < prefixLen {
+			return false
+		}
+		return spanMap.relieves(start-prefixLen, end-prefixLen, decodes.issuedNumericCardJoin)
+	}
+}

@@ -93,6 +93,47 @@ func TestScanURL_IssuerNumericCardJoinRelief(t *testing.T) {
 		}
 	})
 
+	t.Run("path_query_concat relieves query-only spans on delimiter-ended paths and blocks boundary-crossing spans", func(t *testing.T) {
+		for _, path := range []string{"/a/b-", "/a/b_", "/a/b="} {
+			t.Run("relieved on "+path, func(t *testing.T) {
+				raw := "https://api.vendor.example" + path + "?wo=" + id11 + "&site=" + id8
+				if res := sc.Scan(context.Background(), raw); res.Allowed {
+					t.Fatalf("baseline without allowance on %s should block, got %+v", path, res)
+				}
+				ctx := WithIssuerNumericCardJoinAllowance(context.Background(), allowSet(id11, id8))
+				if res := sc.Scan(ctx, raw); !res.Allowed {
+					t.Fatalf("expected query-only span on %s to pass with allowance, got %+v", path, res)
+				}
+				// Per-span relief on path_query_concat keeps scanning and blocks an unissued second card.
+				withUnissued := "https://api.vendor.example" + path + "?a=" + cardA1 + "&b=" + cardA2 + "&sep=,&c=" + cardB1 + "&d=" + cardB2
+				ctxA := WithIssuerNumericCardJoinAllowance(context.Background(), allowSet(cardA1, cardA2))
+				if res := sc.Scan(ctxA, withUnissued); res.Allowed || res.Scanner != ScannerDLP {
+					t.Fatalf("issued pair + unissued card on %s should block via DLP, got %+v", path, res)
+				}
+			})
+		}
+
+		// A span consuming any byte of the path (crossing the path/query boundary)
+		// must stay blocked even when every piece is vouched for by the allowance.
+		allowAll := WithIssuerNumericCardJoinAllowance(context.Background(), allowSet(cardA1, cardA2))
+		for _, tc := range []struct {
+			name string
+			url  string
+		}{
+			{"direct path to query seam with two params", "https://api.vendor.example/" + cardA1 + "?a=" + cardA2 + "&sep=,"},
+			{"hyphen-delimited path to query seam with two params", "https://api.vendor.example/a-" + cardA1 + "-?a=" + cardA2 + "&sep=,"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if base := sc.Scan(context.Background(), tc.url); base.Allowed {
+					t.Fatalf("%s baseline should block (vacuous test), got %+v", tc.name, base)
+				}
+				if res := sc.Scan(allowAll, tc.url); res.Allowed {
+					t.Fatalf("%s crossed path/query boundary and must block, got %+v", tc.name, res)
+				}
+			})
+		}
+	})
+
 	t.Run("per-span relief keeps scanning query_concat and blocks unissued second card", func(t *testing.T) {
 		raw := "https://api.vendor.example/records/detail?a=" + cardA1 + "&b=" + cardA2 + "&sep=,&c=" + cardB1 + "&d=" + cardB2
 		ctx := WithIssuerNumericCardJoinAllowance(context.Background(), allowSet(cardA1, cardA2))

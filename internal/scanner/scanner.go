@@ -3994,8 +3994,13 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 		for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 			p := s.dlpPatterns[idx]
 			var skipSpan func(start, end int) bool
-			if target.viewLabel == dlpViewLabel("query_concat") && decodes != nil && decodes.issuedNumericCardJoin != nil {
-				skipSpan = numericCardJoinSkipSpan(p, decodes.issuedNumericRawParts, cleaned, parsed.Hostname(), decodes)
+			if decodes != nil && decodes.issuedNumericCardJoin != nil {
+				switch target.viewLabel {
+				case dlpViewLabel("query_concat"):
+					skipSpan = numericCardJoinSkipSpan(p, decodes.issuedNumericRawParts, cleaned, parsed.Hostname(), decodes)
+				case dlpViewLabel("path_query_concat"):
+					skipSpan = numericCardJoinPathQuerySkipSpan(p, decodes.issuedNumericRawParts, parsed.RawQuery, target.text, cleaned, parsed.Hostname(), decodes)
+				}
 			}
 			if start, end, ok := p.matchSpanWithDecodesFiltered(cleaned, proseSource, decodes, skipSpan); ok {
 				if allow, allowed := s.credentialAudienceAllowsAt(p, parsed.String(), s.urlDLPAudienceSurface(p, parsed, &queryLessMemo), now); allowed {
