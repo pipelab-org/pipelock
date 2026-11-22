@@ -1053,7 +1053,7 @@ func RunHTTPListenerProxy(
 			}
 			w.WriteHeader(status)
 			if effect.send != nil {
-				effect.framed = http.NewResponseController(w).Flush() == nil
+				effect.framed = http.NewResponseController(w.ResponseWriter).Flush() == nil
 			}
 		}
 
@@ -1131,14 +1131,14 @@ func RunHTTPListenerProxy(
 			relayOpts.Rec = reqRec
 			relayOpts.AdaptiveCfg = adaptiveCfg
 			relayOpts.AdaptiveCfgFn = nil
-			if ok, reason, detail := reply.writeIfActive(w, clientState, relayOpts); !ok {
+			if ok, framed, reason, detail := reply.writeIfActive(w, clientState, relayOpts); !ok {
 				if detail != "" {
 					withhold(reason, detail)
 				} else {
 					withhold(reason)
 				}
 			} else {
-				effect.wrote = true
+				effect.wrote, effect.framed = true, framed
 			}
 			return true
 		}
@@ -1497,8 +1497,7 @@ func RunHTTPListenerProxy(
 				return
 			}
 			if !streamWriter.Wrote() && !foundInjection && admitReply() {
-				effect.wrote = true
-				w.WriteHeader(http.StatusOK)
+				writeEffectStatus(http.StatusOK)
 			}
 			return
 		}
@@ -1751,28 +1750,6 @@ func RunHTTPListenerProxy(
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("pipelock tool contract state busy")))
-		}
-		// Every list on this principal records header contracts into the same
-		// registry, ordered by reservation. A legacy list reserving inside a
-		// modern list's window would commit first, then discard the modern
-		// contract that is delivered last, so lists of every version serialize.
-		if frame.Method == "tools/list" {
-			effect.ctx = r.Context()
-			admissionErr, lockErr := effect.admitList(frame, &clientState.contractMu)
-			if admissionErr != nil {
-				if effect.send == nil {
-					refuseSend(frame, admissionErr)
-				} else {
-					refuseReceipt(admissionErr)
-				}
-				return
-			}
-			if lockErr != nil {
-				refuseContractWait(lockErr)
-				return
-			}
-			releaseContract = sync.OnceFunc(clientState.contractMu.Unlock)
-			defer releaseContract()
 		}
 		refuseParamMismatch := func(headerBaseline *tools.ToolBaseline) {
 			message := "pipelock: MCP parameter header does not match the request body"
@@ -2223,9 +2200,31 @@ func RunHTTPListenerProxy(
 			writeMCPHTTPInputResult(scanOpts, *blocked, w)
 			return
 		}
+		effect.opts = scanOpts
+		// Every list on this principal records header contracts into the same
+		// registry, ordered by reservation. A legacy list reserving inside a
+		// modern list's window would commit first, then discard the modern
+		// contract that is delivered last, so lists of every version serialize.
+		if frame.Method == "tools/list" {
+			effect.ctx = r.Context()
+			admissionErr, lockErr := effect.admitList(frame, &clientState.contractMu)
+			if admissionErr != nil {
+				if effect.send == nil {
+					refuseSend(frame, admissionErr)
+				} else {
+					refuseReceipt(admissionErr)
+				}
+				return
+			}
+			if lockErr != nil {
+				refuseContractWait(lockErr)
+				return
+			}
+			releaseContract = sync.OnceFunc(clientState.contractMu.Unlock)
+			defer releaseContract()
+		}
 		effect.ctx = upReq.Context()
 		if effect.send == nil {
-			effect.opts = scanOpts
 			if err := effect.admit(frame, decision.Outcome.Receipt.ActionID); err != nil {
 				refuseSend(frame, err)
 				return
@@ -2250,6 +2249,7 @@ func RunHTTPListenerProxy(
 			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
 			return
 		}
+		effect.observe()
 		// Upstream replies stay response-side even when a live gate reuses
 		// an admission or inspection descriptor.
 		w.direction = "response"
@@ -2270,7 +2270,6 @@ func RunHTTPListenerProxy(
 		// A request is owed an answer, so only the legacy 202 acknowledges
 		// one; any other empty 2xx falls through to the sanitized 502.
 		if transport.AcceptedWithoutBody(upResp) && (upResp.StatusCode == http.StatusAccepted || !transport.ExpectsReply(decision.ForwardMessage)) {
-			effect.observed = true
 			if !admitReply() {
 				return
 			}
@@ -2292,7 +2291,6 @@ func RunHTTPListenerProxy(
 		// to follow redirects; forwarding a 3xx body would let an upstream
 		// smuggle arbitrary response content around the normal status contract.
 		if upResp.StatusCode >= 300 && upResp.StatusCode < 400 {
-			effect.observed = true
 			terminalStatus, terminalReason = "error", "upstream_http_redirect"
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream POST returned HTTP %d redirect\n", upResp.StatusCode)
 			w.Header().Set("Content-Type", "application/json")
@@ -2310,7 +2308,6 @@ func RunHTTPListenerProxy(
 		// Upstream failure (5xx): sanitize before forwarding (don't leak body
 		// content that could contain injection payloads).
 		if upResp.StatusCode >= 500 && upResp.StatusCode < 600 {
-			effect.observed = true
 			terminalStatus, terminalReason = "error", "upstream_http_server_error"
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
 			w.Header().Set("Content-Type", "application/json")
@@ -2319,7 +2316,6 @@ func RunHTTPListenerProxy(
 			return
 		}
 		if upResp.StatusCode != http.StatusOK {
-			effect.observed = true
 			terminalStatus, terminalReason = "error", "upstream_http_unexpected_status"
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream POST returned unexpected HTTP %d\n", upResp.StatusCode)
 			w.Header().Set("Content-Type", "application/json")
@@ -2407,7 +2403,6 @@ func RunHTTPListenerProxy(
 		}
 		var reader transport.MessageReader
 		if upstreamIsSSE {
-			effect.observed = true
 			reader = transport.NewSSEReader(upResp.Body)
 		} else {
 			reader = &transport.SingleMessageReader{Body: upResp.Body}
@@ -2607,7 +2602,6 @@ func RunHTTPListenerProxy(
 			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream response failed validation")))
 			return
 		}
-		effect.observed = true
 		if responseBlocked && effect.send != nil {
 			clearReplySession()
 			output := bytes.TrimSpace(buf.Bytes())

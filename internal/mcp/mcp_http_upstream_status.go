@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -209,7 +210,7 @@ func relayableMediaType(contentType string) bool {
 }
 
 // write relays the reply with its status, kept headers and body.
-func (e upstreamClientError) write(w http.ResponseWriter) {
+func (e upstreamClientError) write(w http.ResponseWriter, confirm bool) bool {
 	for name, values := range e.header {
 		for _, value := range values {
 			w.Header().Add(name, value)
@@ -224,16 +225,24 @@ func (e upstreamClientError) write(w http.ResponseWriter) {
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'")
+	if confirm {
+		w.Header().Set("Content-Length", strconv.Itoa(len(e.body)))
+	}
 	w.WriteHeader(e.status)
-	_, _ = w.Write(e.body)
+	n, err := w.Write(e.body)
+	if listener, ok := w.(*mcpListenerDenialWriter); ok {
+		w = listener.ResponseWriter
+	}
+	return confirm && err == nil && n == len(e.body) && http.NewResponseController(w).Flush() == nil
 }
 
 // writeIfActive makes the final refusal write share the listener's revocation
 // boundary. Reading and scanning can take time; check live response gates after
 // both and before committing any upstream header or byte.
-func (e upstreamClientError) writeIfActive(w http.ResponseWriter, state *mcpListenerClientState, opts MCPProxyOpts) (bool, string, string) {
+func (e upstreamClientError) writeIfActive(w http.ResponseWriter, state *mcpListenerClientState, opts MCPProxyOpts) (bool, bool, string, string) {
 	reason := ""
 	detail := ""
+	framed := false
 	if !state.commitIfActive(func() {
 		if opts.checkServerIdentity() != nil {
 			reason = "upstream identity changed"
@@ -248,9 +257,11 @@ func (e upstreamClientError) writeIfActive(w http.ResponseWriter, state *mcpList
 			detail = mcpAdaptiveBlockMessage(opts.Rec, opts.adaptiveCfg(), "mcp_response_scan", nil)
 			return
 		}
-		withListenerWriteDeadline(w, listenerDownstreamWriteTimeout, func() { e.write(w) })
+		withListenerWriteDeadline(w, listenerDownstreamWriteTimeout, func() {
+			framed = e.write(w, opts.receiptEffects.enabled)
+		})
 	}) {
-		return false, "listener state revoked", ""
+		return false, false, "listener state revoked", ""
 	}
-	return reason == "", reason, detail
+	return reason == "", framed, reason, detail
 }

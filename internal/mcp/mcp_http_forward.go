@@ -1066,7 +1066,8 @@ func RunHTTPProxy(
 		// the Once and permanently prevent the GET stream.
 		if httpClient.SessionID() != "" {
 			getStreamOnce.Do(func() {
-				getOpts := fwdOpts.withV3Session()
+				getOpts := fwdOpts
+				getOpts.v3Session = nil
 				startGETStream(ctx, httpClient, wireClientOut, safeLogW, getOpts, getResponseTracker, &wg)
 			})
 		}

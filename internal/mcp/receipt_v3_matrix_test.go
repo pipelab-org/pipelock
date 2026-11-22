@@ -895,7 +895,7 @@ func exerciseMCPV3GET(t *testing.T, row v3MCPMatrixRow) {
 	var actual, expected []string
 	switch {
 	case row.scenario == "ok":
-		expected = []string{"upstream_send/completed", "downstream_delivery/attempt_unknown"}
+		expected = []string{"upstream_send/completed", "downstream_delivery/completed"}
 	case wantSend:
 		expected = []string{"upstream_send/completed"}
 	case row.scenario != "client cancel before effect":

@@ -482,6 +482,76 @@ func TestMCPV3NetworkReplyCancellationSettlesReservation(t *testing.T) {
 	}
 }
 
+func TestMCPV3ListenerObservesPOSTResponse(t *testing.T) {
+	for _, tc := range []struct {
+		name, encoding               string
+		upstreamStatus, clientStatus int
+	}{
+		{"relayed client error", "", http.StatusTooManyRequests, http.StatusTooManyRequests},
+		{"compressed stream", "gzip", http.StatusOK, http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, writer, observer := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPHTTPListener)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if tc.encoding != "" {
+					w.Header().Set("Content-Encoding", tc.encoding)
+					w.Header().Set("Content-Type", "text/event-stream")
+				} else {
+					w.Header().Set("Content-Type", "application/json")
+				}
+				w.WriteHeader(tc.upstreamStatus)
+				_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"retry later"}}`)
+			}))
+			defer upstream.Close()
+			url, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, strings.NewReader(jsonToolsCallEcho))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if _, err := io.Copy(io.Discard, resp.Body); err != nil || resp.StatusCode != tc.clientStatus {
+				t.Fatalf("response = %d, body error = %v", resp.StatusCode, err)
+			}
+			boundary := mcpDownstreamDeliveryBoundary
+			if tc.encoding != "" {
+				boundary = mcpUpstreamSendBoundary
+			}
+			waitForMCPV3Outcome(t, observer.dir, boundary)
+			actions := localMCPReceiptActions(t, writer, observer.dir)
+			completed := map[string]bool{}
+			for _, action := range actions {
+				if action.OutcomeClass == "completed" {
+					completed[action.EffectBoundary] = true
+				}
+			}
+			if !completed[mcpUpstreamSendBoundary] || (tc.encoding == "" && !completed[mcpDownstreamDeliveryBoundary]) {
+				t.Fatalf("missing completed effects: %+v", actions)
+			}
+		})
+	}
+}
+
+func waitForMCPV3Outcome(t *testing.T, dir, boundary string) {
+	t.Helper()
+	testwait.For(t, time.Second, func() bool {
+		actions, err := readMCPMatrixActions(dir)
+		if err != nil {
+			return false
+		}
+		for _, action := range actions {
+			if action.EffectBoundary == boundary && action.Phase == "outcome" {
+				return true
+			}
+		}
+		return false
+	}, "receipt outcome")
+}
+
 func TestMCPV3ListenerLegacyMethodReceipts(t *testing.T) {
 	for _, method := range []string{http.MethodGet, http.MethodDelete} {
 		for _, scenario := range []string{"success", "intent write fail"} {
@@ -516,6 +586,9 @@ func TestMCPV3ListenerLegacyMethodReceipts(t *testing.T) {
 				if _, err := io.Copy(io.Discard, resp.Body); err != nil {
 					t.Fatal(err)
 				}
+				if scenario == "success" {
+					waitForMCPV3Outcome(t, client.dir, mcpDownstreamDeliveryBoundary)
+				}
 				actions := localMCPReceiptActions(t, writer, client.dir)
 				if scenario == "intent write fail" {
 					if resp.StatusCode != http.StatusServiceUnavailable || len(calls) != 0 {
@@ -523,7 +596,7 @@ func TestMCPV3ListenerLegacyMethodReceipts(t *testing.T) {
 					}
 					return
 				}
-				wantStatus, outcome := http.StatusOK, "attempt_unknown"
+				wantStatus, outcome := http.StatusOK, "completed"
 				if method == http.MethodDelete {
 					wantStatus, outcome = http.StatusAccepted, "completed"
 				}

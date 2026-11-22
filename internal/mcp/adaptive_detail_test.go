@@ -122,7 +122,7 @@ func TestAdaptiveRefusalCommitExplainsLateEscalation(t *testing.T) {
 	state := newMCPListenerClientState("token", "key")
 	reply := upstreamClientError{status: http.StatusBadRequest, header: http.Header{"Allow": {http.MethodPost}}, body: []byte("upstream refusal")}
 	w := httptest.NewRecorder()
-	allowed, reason, detail := reply.writeIfActive(w, state, MCPProxyOpts{
+	allowed, _, reason, detail := reply.writeIfActive(w, state, MCPProxyOpts{
 		Rec:         &mockRecorder{score: 21, level: 3},
 		AdaptiveCfg: &cfg.AdaptiveEnforcement,
 	})
