@@ -84,6 +84,9 @@ const (
 	DataBudget         Reason = "data_budget"
 	ResponseSize       Reason = "response_size"
 	ResponseIncomplete Reason = "response_incomplete"
+	// ConnectPortNotAllowed: a CONNECT tunnel asked for a port outside
+	// forward_proxy.connect_ports.
+	ConnectPortNotAllowed Reason = "connect_port_not_allowed"
 
 	// Content / payload layer.
 	DLPMatch                   Reason = "dlp_match"
@@ -154,6 +157,7 @@ const (
 var validReasons = map[Reason]struct{}{
 	SchemeBlocked:              {},
 	DomainBlocklist:            {},
+	ConnectPortNotAllowed:      {},
 	SSRFPrivateIP:              {},
 	SSRFMetadata:               {},
 	SSRFDNSRebind:              {},
@@ -686,6 +690,7 @@ func RetryFor(reason Reason) Retry {
 		BlockReasonOverflow:
 		return RetryTransient
 	case DomainBlocklist,
+		ConnectPortNotAllowed,
 		PathEntropy,
 		QueryEntropy,
 		BodyEntropy,

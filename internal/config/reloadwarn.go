@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -443,6 +444,16 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 				Message: fmt.Sprintf("passthrough domains added: %s — these CONNECT tunnels now bypass body scanning", strings.Join(added, ", ")),
 			})
 		}
+	}
+
+	// CONNECT port allowlist widened: a port added, or the list cleared so
+	// every port is admitted. Set semantics, so reordering is silent and a
+	// mixed add-and-remove still warns for the port it adds.
+	if widened := connectPortsWidened(old.ForwardProxy.ConnectPorts, updated.ForwardProxy.ConnectPorts); widened != "" {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "forward_proxy.connect_ports",
+			Message: widened,
+		})
 	}
 
 	// Blocklist entries removed. The exclusion lists below reduce coverage by
@@ -2192,4 +2203,30 @@ func agentDLPReloadWarnings(old, updated *Config) []ReloadWarning {
 		}
 	}
 	return warnings
+}
+
+// connectPortsWidened describes how a connect_ports reload admits more
+// tunnels than before, or returns "" when it admits none that it refused.
+// An empty list admits every port.
+func connectPortsWidened(old, updated []int) string {
+	if len(old) == 0 {
+		return ""
+	}
+	if len(updated) == 0 {
+		return "connect_ports cleared: CONNECT tunnels to any port are now admitted"
+	}
+	before := make(map[int]struct{}, len(old))
+	for _, port := range old {
+		before[port] = struct{}{}
+	}
+	var added []string
+	for _, port := range updated {
+		if _, ok := before[port]; !ok {
+			added = append(added, strconv.Itoa(port))
+		}
+	}
+	if len(added) == 0 {
+		return ""
+	}
+	return "connect_ports added: " + strings.Join(added, ", ") + "; CONNECT tunnels to these ports are now admitted"
 }

@@ -6,6 +6,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
@@ -450,6 +451,15 @@ func (c *Config) ApplyDefaults() {
 		if b.MaxSubRequests <= 0 {
 			b.MaxSubRequests = 64
 		}
+	}
+	// Order carries no meaning, so keep one canonical order for the policy
+	// hash and reload comparison. An empty list and an absent one are the
+	// same policy (any port).
+	if len(c.ForwardProxy.ConnectPorts) == 0 {
+		c.ForwardProxy.ConnectPorts = nil
+	} else {
+		c.ForwardProxy.ConnectPorts = slices.Clone(c.ForwardProxy.ConnectPorts)
+		slices.Sort(c.ForwardProxy.ConnectPorts)
 	}
 	if c.ForwardProxy.MaxTunnelSeconds <= 0 {
 		c.ForwardProxy.MaxTunnelSeconds = 300

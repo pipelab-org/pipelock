@@ -187,6 +187,14 @@ func (c *Config) policySemanticView() canonicalPolicyView {
 	// changes where bytes go, not what gets enforced. Zero them
 	// surgically below - keeping the surrounding enforcement fields
 	// (Monitoring, SNIVerification, timeouts, etc.) intact.
+	// connect_ports is a set: absent, empty and reordered lists are the
+	// same policy, so hash one canonical form.
+	view.ForwardProxy.ConnectPorts = nil
+	if len(c.ForwardProxy.ConnectPorts) > 0 {
+		view.ForwardProxy.ConnectPorts = slices.Clone(c.ForwardProxy.ConnectPorts)
+		slices.Sort(view.ForwardProxy.ConnectPorts)
+		view.ForwardProxy.ConnectPorts = slices.Compact(view.ForwardProxy.ConnectPorts)
+	}
 	view.MetricsListen = ""
 	view.FetchProxy.Listen = ""
 	view.ReverseProxy.Listen = ""

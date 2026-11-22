@@ -57,6 +57,7 @@ Reason codes are lowercase snake_case. The v1 set is derived from existing pipel
 |---|---|---|---|
 | `scheme_blocked` | URL scheme other than http/https. | `warn` | `none` |
 | `domain_blocklist` | Hostname matched the configured blocklist. | `critical` | `policy` |
+| `connect_port_not_allowed` | A CONNECT tunnel asked for a port outside `forward_proxy.connect_ports`. Refused before DNS, scanning or dial. | `critical` | `policy` |
 | `ssrf_private_ip` | Resolved IP is in private/loopback/link-local range. Also emitted when DNS resolution fails, including when nested query-parameter destinations exceed their shared resolution budget; that case is resolver availability and a retry may succeed even though this reports `none`. | `critical` | `none` |
 | `ssrf_metadata` | Resolved IP is a cloud metadata endpoint (169.254.169.254, etc.). | `critical` | `none` |
 | `ssrf_dns_rebind` | DNS resolution flipped between scan and dial (TOCTOU). | `critical` | `transient` |

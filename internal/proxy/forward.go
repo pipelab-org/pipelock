@@ -255,6 +255,32 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	targetCtx := newConnectAuditContext(r.Context(), p.logger, target, clientIP, requestID, agent)
 	headerCtx := targetCtx
+	// connect_ports runs before scanning, DNS and dial so an unlisted port
+	// never reaches the upstream, and it reports its own reason even for a
+	// host another layer would also refuse. Like sni_require_tls it is a
+	// structural floor and applies in audit mode too.
+	if port, _ := strconv.ParseUint(targetPort, 10, 16); !cfg.ForwardProxy.ConnectPortAllowed(uint16(port)) {
+		detail := "CONNECT port " + strconv.FormatUint(port, 10) + " is not in forward_proxy.connect_ports"
+		p.logger.LogBlocked(targetCtx, blockLayerConnectPort, detail)
+		p.recordDecision(config.ActionBlock, blockLayerConnectPort, blockPatternConnectPort, TransportConnect, requestID)
+		p.metrics.RecordBlocked(host, blockLayerConnectPort, time.Since(start), agentLabel)
+		p.metrics.RecordTunnelBlocked(agentLabel)
+		emitConnectReceipt(receipt.EmitOpts{
+			ActionID:  actionID,
+			Verdict:   config.ActionBlock,
+			Layer:     blockLayerConnectPort,
+			Pattern:   blockPatternConnectPort,
+			Transport: TransportConnect,
+			Method:    http.MethodConnect,
+			Target:    connectReceiptTarget,
+			RequestID: requestID,
+			Agent:     agent,
+		})
+		writeBlockedError(w,
+			blockInfoFor(blockreason.ConnectPortNotAllowed, "").WithRequestID(requestID),
+			"blocked: "+detail, http.StatusForbidden)
+		return
+	}
 	denyConnectAs := func(kind forwardDenialKind) {
 		p.emitForwardDenial(forwardDenial{
 			Kind:        kind,

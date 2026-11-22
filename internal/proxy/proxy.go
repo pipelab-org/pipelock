@@ -209,6 +209,10 @@ const (
 	mediationEnvelopeBlockReason = "mediation envelope signing failed"
 	blockLayerReceiptEmission    = "receipt_emission"
 	receiptEmissionBlockReason   = "receipt emission failed"
+	// blockLayerConnectPort and blockPatternConnectPort label a CONNECT
+	// refused by forward_proxy.connect_ports in audit, metrics and receipts.
+	blockLayerConnectPort   = "connect_port"
+	blockPatternConnectPort = "connect_port_not_allowed"
 )
 
 // blockedRequestError signals a fail-closed block in a request path that still

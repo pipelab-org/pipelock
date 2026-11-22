@@ -532,6 +532,7 @@ var specCanonicalPairs = map[Reason]struct {
 	// Egress / network layer.
 	SchemeBlocked:              {SeverityWarn, RetryNone},
 	DomainBlocklist:            {SeverityCritical, RetryPolicy},
+	ConnectPortNotAllowed:      {SeverityCritical, RetryPolicy},
 	SSRFPrivateIP:              {SeverityCritical, RetryNone},
 	SSRFMetadata:               {SeverityCritical, RetryNone},
 	SSRFDNSRebind:              {SeverityCritical, RetryTransient},
