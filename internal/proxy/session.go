@@ -1407,6 +1407,14 @@ func (s *SessionState) releaseResponseExposure(id uint64) {
 // Exposure held by responses still being delivered carries into the new task.
 // Adaptive enforcement state remains intact.
 func (s *SessionState) BeginNewTask(label string) (prev, current session.TaskContext, clearedOverrides int) {
+	prev, current, clearedOverrides, _ = s.beginNewTask(label)
+	return prev, current, clearedOverrides
+}
+
+// beginNewTask is BeginNewTask that also reports, from the same locked step,
+// whether exposure held by responses still being delivered was carried into
+// the new task, in which case taint was not cleared.
+func (s *SessionState) beginNewTask(label string) (prev, current session.TaskContext, clearedOverrides int, retained bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1426,6 +1434,7 @@ func (s *SessionState) BeginNewTask(label string) (prev, current session.TaskCon
 	for _, h := range held {
 		s.risk.Observe(h.observation)
 	}
+	retained = len(held) > 0
 
 	if len(s.runtimeOverrides) > 0 {
 		kept := s.runtimeOverrides[:0]
@@ -1443,7 +1452,7 @@ func (s *SessionState) BeginNewTask(label string) (prev, current session.TaskCon
 	// its task boundary rotated via the admin API.
 	s.lastActivity = now
 
-	return prev, s.task, clearedOverrides
+	return prev, s.task, clearedOverrides, retained
 }
 
 // AddRuntimeTrustOverride stores a session-scoped trust override. Task-scoped
@@ -2920,10 +2929,17 @@ func (sm *SessionManager) withMutableIdentitySession(key string, mutate func(*Se
 //   - found=true, err=ErrInvocationReset: session exists but is not resettable
 //   - found=true, err=nil: rotation succeeded
 func (sm *SessionManager) BeginNewTask(key, label string) (prev, current session.TaskContext, clearedOverrides int, found bool, err error) {
-	found, err = sm.withMutableIdentitySession(key, func(sess *SessionState) {
-		prev, current, clearedOverrides = sess.BeginNewTask(label)
-	})
+	prev, current, clearedOverrides, _, found, err = sm.beginNewTask(key, label)
 	return prev, current, clearedOverrides, found, err
+}
+
+// beginNewTask is BeginNewTask that also reports whether exposure held by
+// responses still being delivered was carried into the new task.
+func (sm *SessionManager) beginNewTask(key, label string) (prev, current session.TaskContext, clearedOverrides int, retained, found bool, err error) {
+	found, err = sm.withMutableIdentitySession(key, func(sess *SessionState) {
+		prev, current, clearedOverrides, retained = sess.beginNewTask(label)
+	})
+	return prev, current, clearedOverrides, retained, found, err
 }
 
 // AddRuntimeTrustOverride binds and stores a task-scoped trust override on an

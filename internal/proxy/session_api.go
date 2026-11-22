@@ -1110,7 +1110,7 @@ func (h *SessionAPIHandler) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prev, current, cleared, found, taskErr := sm.BeginNewTask(key, req.Label)
+	prev, current, cleared, retained, found, taskErr := sm.beginNewTask(key, req.Label)
 	if !found {
 		h.logSessionAdmin("task_not_found", clientIP, key, "session not found", http.StatusNotFound)
 		http.Error(w, "session not found", http.StatusNotFound)
@@ -1139,11 +1139,12 @@ func (h *SessionAPIHandler) HandleTask(w http.ResponseWriter, r *http.Request) {
 		TaintCleared            bool   `json:"taint_cleared"`
 		RuntimeOverridesCleared int    `json:"runtime_overrides_cleared"`
 	}{
-		Key:                     key,
-		PreviousTaskID:          prev.CurrentTaskID,
-		CurrentTaskID:           current.CurrentTaskID,
-		CurrentTaskLabel:        current.CurrentTaskLabel,
-		TaintCleared:            true,
+		Key:              key,
+		PreviousTaskID:   prev.CurrentTaskID,
+		CurrentTaskID:    current.CurrentTaskID,
+		CurrentTaskLabel: current.CurrentTaskLabel,
+		// A response still being delivered keeps its exposure in the new task.
+		TaintCleared:            !retained,
 		RuntimeOverridesCleared: cleared,
 	})
 }
