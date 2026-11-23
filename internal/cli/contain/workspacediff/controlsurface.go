@@ -558,6 +558,8 @@ func (w *controlWalker) resolveWorkspacePath(source, base, value string) (string
 		case info.IsDir():
 			stack = append(stack, part)
 		case info.Mode()&fs.ModeSymlink != 0:
+			// hops counts this link too, so the 41st is the first refused (see
+			// maxConfigLinkHops).
 			hops++
 			if hops > maxConfigLinkHops {
 				w.unreadable(source, "configured path symlink chain is too long")

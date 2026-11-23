@@ -34,6 +34,8 @@ func (w *controlWalker) scanGitPointer(entry controlEntry, prefix, base, worktre
 		w.following(entry.Path, func() {
 			// Git resolves a symlink the pointer names to the directory behind
 			// it, which is the Git directory whose configuration is followed.
+			// hops counts the links already followed: a 41st link is refused,
+			// the 40th is followed (see maxConfigLinkHops).
 			targetEntry := w.recordPath(path)
 			for hops := 0; targetEntry.Kind == KindSymlink; hops++ {
 				rel, linkRes := w.resolveLinkTarget(targetEntry)
@@ -198,7 +200,11 @@ func (w *controlWalker) linkedWorktree(gitDir string) string {
 	return ""
 }
 
-// maxConfigLinkHops matches the kernel's limit on symlinks in one resolution.
+// maxConfigLinkHops matches the kernel's limit on symlinks in one resolution:
+// a lookup follows 40 and refuses the 41st. Every loop that follows links here
+// counts them the same way. It rejects a link when maxConfigLinkHops have
+// already been followed, never merely because that many were, so the target of
+// the 40th link is still inspected.
 const maxConfigLinkHops = 40
 
 // readConfig reads a Git config file. Git reads through a symlink, so a link
@@ -209,11 +215,15 @@ const maxConfigLinkHops = 40
 // it is created.
 func (w *controlWalker) readConfig(entry controlEntry) ([]byte, bool) {
 	file := entry
-	for range maxConfigLinkHops {
+	for followed := 0; ; followed++ {
 		switch file.Kind {
 		case KindFile:
 			return w.readObserved(file)
 		case KindSymlink:
+			if followed == maxConfigLinkHops {
+				w.unreadable(entry.Path, "Git config symlink chain is too long")
+				return nil, false
+			}
 			rel, res := w.resolveLinkTarget(file)
 			switch res {
 			case pathResolved:
@@ -240,8 +250,6 @@ func (w *controlWalker) readConfig(entry controlEntry) ([]byte, bool) {
 			return nil, false
 		}
 	}
-	w.unreadable(entry.Path, "Git config symlink chain is too long")
-	return nil, false
 }
 
 func (w *controlWalker) readObserved(entry controlEntry) ([]byte, bool) {
