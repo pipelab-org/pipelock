@@ -343,7 +343,8 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	// shutdown sequencing (reloader → recorder → capture writer →
 	// approver → scanner → emitter → logger → sentry) is preserved.
 	defer s.cleanup()
-	defer func() { startErr = errors.Join(startErr, s.closeReceiptV3()) }()
+	proxyDrainIncomplete := false
+	defer func() { startErr = errors.Join(startErr, s.finishReceiptV3(proxyDrainIncomplete)) }()
 
 	var reloadWG sync.WaitGroup
 	defer reloadWG.Wait()
@@ -363,7 +364,6 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	var lifecycleWG sync.WaitGroup
 	capacity := s.liveReceiptEmitter().NativeCapacity()
 	watchNativeCapacity(ctx, &lifecycleWG, capacity, cancel, s.opts.Stderr)
-	proxyDrainIncomplete := false
 	var mcpErr, reverseProxyErr, scanAPIErr chan error
 	listenerShutdownTimeout := s.opts.listenerShutdownTimeout
 	if listenerShutdownTimeout <= 0 {

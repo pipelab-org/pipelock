@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
+	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -193,6 +194,50 @@ func TestRuntimeReceiptReloadLegacyDefault(t *testing.T) {
 	}
 	if strings.Contains(stderr.String(), "flight_recorder settings changed") {
 		t.Fatalf("no-op receipt format reload emitted restart warning: %s", stderr.String())
+	}
+}
+
+func TestRuntimeReceiptV3IncompleteDrain(t *testing.T) {
+	evidence := t.TempDir()
+	keyPath := filepath.Join(t.TempDir(), "signer.key")
+	pub, key, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := signing.SavePrivateKey(key, keyPath); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf("defer:\n  enabled: false\nflight_recorder:\n  enabled: true\n  dir: %q\n  signing_key_path: %q\n  receipt_format: v3\n", evidence, keyPath)
+	s, err := NewServer(ServerOpts{ConfigFile: writeServerTestConfig(t, body), Listen: serverTestEphemeralListen, ListenChanged: true, allowEphemeralListenersForTesting: true, Stdout: &syncBuffer{}, Stderr: &syncBuffer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	result := runJoined(t, ctx, s.Start, nil)
+	select {
+	case <-s.startupNotified():
+	case err := <-result:
+		t.Fatalf("Start returned before readiness: %v", err)
+	case <-time.After(testwait.Deadline(5 * time.Second)):
+		t.Fatal("Start did not become ready")
+	}
+	s.agentDrainIncomplete.Store(true)
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, proxy.ErrShutdownIncomplete) {
+			t.Fatalf("Start returned %v, want incomplete drain", err)
+		}
+	case <-time.After(testwait.Deadline(5 * time.Second)):
+		t.Fatal("Start did not finish")
+	}
+	verified, err := v3.VerifyPaths(t.Context(), []string{evidence}, v3.Options{Directory: true, Keys: []ed25519.PublicKey{pub}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verified.Verdict != "VALID PREFIX, END UNPROVEN" {
+		t.Fatalf("incomplete drain verified as %s", verified.Verdict)
 	}
 }
 

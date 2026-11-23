@@ -40,6 +40,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/filesentry"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
@@ -1473,7 +1474,7 @@ Key-free evidence capture:
 			if receiptWriter != nil {
 				defer func() {
 					heartbeatCancel()
-					if closeErr := receiptWriter.Close(context.WithoutCancel(cmd.Context()), nil); closeErr != nil {
+					if closeErr := finishReceiptV3(context.WithoutCancel(cmd.Context()), receiptWriter, errors.Is(runErr, httpstream.ErrShutdownIncomplete)); closeErr != nil {
 						runErr = errors.Join(runErr, fmt.Errorf("close v3 receipt writer: %w", closeErr))
 					}
 				}()

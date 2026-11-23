@@ -133,3 +133,10 @@ func checkV3ReloadCoverage(oldCfg, newCfg *config.Config, hasMCPListener, revers
 		return nil
 	}
 }
+
+func finishReceiptV3(ctx context.Context, writer *v3.StreamWriter, incomplete bool) error {
+	if incomplete {
+		return writer.CloseUnsealed(ctx)
+	}
+	return writer.Close(ctx, nil)
+}

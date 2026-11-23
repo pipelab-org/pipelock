@@ -1399,10 +1399,14 @@ func preserveLicenseInputsRestartOnly(newCfg, oldCfg *config.Config) {
 }
 
 func (s *Server) closeReceiptV3() error {
+	return s.finishReceiptV3(false)
+}
+
+func (s *Server) finishReceiptV3(incomplete bool) error {
 	if s.receiptWriter == nil {
 		return nil
 	}
-	err := s.receiptWriter.Close(context.Background(), nil)
+	err := finishReceiptV3(context.Background(), s.receiptWriter, incomplete)
 	s.receiptWriter = nil
 	if err != nil {
 		return fmt.Errorf("close v3 receipt writer: %w", err)

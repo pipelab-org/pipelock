@@ -584,6 +584,15 @@ func (w *StreamWriter) writeClose(ctx context.Context, reason string, operationa
 // Close writes a shutdown record if the stream is usable and releases the
 // directory lock. The optional operational binding is a snapshot.
 func (w *StreamWriter) Close(ctx context.Context, operational *Recorder) error {
+	return w.close(ctx, operational, true)
+}
+
+// CloseUnsealed releases the writer and its lock without signing a clean end.
+func (w *StreamWriter) CloseUnsealed(ctx context.Context) error {
+	return w.close(ctx, nil, false)
+}
+
+func (w *StreamWriter) close(ctx context.Context, operational *Recorder, seal bool) error {
 	if w.stopHeartbeat != nil {
 		w.stopHeartbeat()
 	}
@@ -594,18 +603,18 @@ func (w *StreamWriter) Close(ctx context.Context, operational *Recorder) error {
 	}
 	repairCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writerRepairTimeout)
 	defer cancel()
-	if w.fatal == nil {
+	if seal && w.fatal == nil {
 		w.closeErr = w.replayRepairsOrStop(repairCtx)
 	}
 	w.closed = true
-	if w.active.file != nil && w.closeErr == nil && w.fatal == nil {
+	if seal && w.active.file != nil && w.closeErr == nil && w.fatal == nil {
 		w.closeErr = w.writeClose(ctx, closeShutdown, operational)
 	}
 	if w.active.file != nil {
 		w.closeErr = errors.Join(w.closeErr, w.active.file.Close())
 		w.active.file = nil
 	}
-	if w.previous != nil && w.previous.Ended == endedWriteError && w.fatal == nil {
+	if seal && w.previous != nil && w.previous.Ended == endedWriteError && w.fatal == nil {
 		// A failed close is part of the unconfirmed tail, even if all its
 		// bytes landed. Publish a successor that identifies that tail.
 		w.fatal = w.publishOpen(repairCtx)
