@@ -893,6 +893,9 @@ func (s *Server) failRequiredReceiptGroup(err error) {
 
 func (s *Server) requiredReceiptGroupError() error {
 	if failure := s.receiptGroupFailure.Load(); failure != nil {
+		if s.receiptWriter != nil {
+			return fmt.Errorf("flight_recorder.require_receipts is enabled but receipt heartbeat emission failed: %w", *failure)
+		}
 		return fmt.Errorf("flight_recorder.require_receipts is enabled but receipt group emission failed: %w", *failure)
 	}
 	return nil

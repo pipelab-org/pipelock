@@ -1473,6 +1473,17 @@ func TestExpireCmd_ErrorPaths(t *testing.T) {
 			},
 			wantErr: "flight recorder",
 		},
+		{
+			name: "v3_directory",
+			args: func(t *testing.T) []string {
+				dir := t.TempDir()
+				if err := os.WriteFile(filepath.Join(dir, "stream.receipt-v3.jsonl"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return []string{"expire", "--receipt-dir", dir, "--retention-days", "0"}
+			},
+			wantErr: "evidence expire does not support v3 receipt directories",
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
