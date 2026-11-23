@@ -414,3 +414,38 @@ func TestCheckerOutboundReceivesDecodedView(t *testing.T) {
 		t.Fatalf("outbound item missed the decoded view: %+v", items)
 	}
 }
+
+// An invalid-UTF-8 body is scanned as the raw text and again with separators,
+// and both clean to the same checker text. One copy is enough, and the second
+// must not spend the request limit.
+func TestCheckerBodyViewsThatCleanToTheSameTextAreSentOnce(t *testing.T) {
+	const surface = config.InjectionSurfaceHTTPResponse
+	body := []byte("violet teacups\xff\xfebelong upstairs")
+	const cleaned = "violet teacups belong upstairs"
+	views, err := extractResponseBodyViews(t.Context(), body)
+	if err != nil || len(views) != 2 {
+		t.Fatalf("fixture views = %d, %v", len(views), err)
+	}
+	cfg := testResponseConfig()
+	srv := checkertest.New(t, "benign")
+	srv.Configure(cfg, surface, config.InjectionModeBlock)
+	spec := cfg.PromptInjectionDetection.Checkers["fixture"]
+	spec.MaxRequestBytes = 1 << 12
+	cfg.PromptInjectionDetection.Checkers["fixture"] = spec
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	got := s.ScanBufferedInjection(t.Context(), BufferedInjectionScan{Surface: surface, Body: body, UseBody: true})
+	items := srv.Items()
+	if len(items) != 1 || got.Failed() || got.Assessment.Status != AssessmentBenign {
+		t.Fatalf("result %+v, %d requests", got, len(items))
+	}
+	count := 0
+	for _, part := range items[0].Parts {
+		if part.Text == cleaned {
+			count++
+		}
+	}
+	if count != 1 || items[0].SubmittedBytes != int64(len(cleaned)) {
+		t.Fatalf("cleaned text sent %d times, %d submitted bytes", count, items[0].SubmittedBytes)
+	}
+}

@@ -19,6 +19,9 @@ type checkerTextBuilder struct {
 	parts            []checker.Part
 	submitted, limit int64
 	reason           checker.Reason
+	// seen holds the part texts of the current source: views of one body that
+	// clean to the same text are one view, whichever view produced them.
+	seen map[string]struct{}
 }
 
 func (s *Scanner) newCheckerTextBuilder(ctx context.Context, surface string) checkerTextBuilder {
@@ -44,6 +47,8 @@ func InjectionTextParts(texts ...string) []checker.Part {
 
 func (b *checkerTextBuilder) addTexts(texts []string) {
 	for _, text := range texts {
+		// Each text is its own unit: only the views of one source dedupe.
+		b.seen = nil
 		if !b.add(bodyInjectionView{Kind: bodyViewText, Text: text}) {
 			break
 		}
@@ -68,19 +73,21 @@ func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
 	if text == "" {
 		return true
 	}
-	seen := make(map[string]struct{})
+	if b.seen == nil {
+		b.seen = make(map[string]struct{})
+	}
 	appendPart := func(text, representation string) bool {
 		if text == "" {
 			return true
 		}
-		if _, exists := seen[text]; exists {
+		if _, exists := b.seen[text]; exists {
 			return true
 		}
 		if int64(len(text)) > b.limit-b.submitted {
 			b.reason = checker.ReasonOverBudget
 			return false
 		}
-		seen[text] = struct{}{}
+		b.seen[text] = struct{}{}
 		role := "decoded_view"
 		if representation == "original" {
 			role = "content"
