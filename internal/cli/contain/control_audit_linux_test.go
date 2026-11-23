@@ -612,7 +612,20 @@ func TestControlAuditStoreRejectsUnsafeAncestors(t *testing.T) {
 				t.Fatal(err)
 			}
 		},
-		"foreign owner": func(_ *testing.T, env *controlAuditEnv) { env.store.uid++ },
+		// Unprivileged, the fixture's ancestors belong to the store's expected
+		// owner, so changing that owner makes them foreign. Run as root they
+		// belong to root, which every ancestor may, so hand one to another user.
+		"foreign owner": func(t *testing.T, env *controlAuditEnv) {
+			if env.store.uid != 0 {
+				env.store.uid++
+				return
+			}
+			ancestor := filepath.Dir(filepath.Dir(env.store.path))
+			if err := os.Chown(ancestor, 65534, 65534); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chown(ancestor, 0, 0) })
+		},
 	} {
 		t.Run("live "+name, func(t *testing.T) {
 			env, root := controlAuditFixture(t)
