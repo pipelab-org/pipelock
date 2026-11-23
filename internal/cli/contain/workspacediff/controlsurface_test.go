@@ -624,3 +624,38 @@ func TestControlSurfaceDiscoveryBoundsQueuedPathBytes(t *testing.T) {
 		t.Fatal("a zero discovery path budget must be rejected")
 	}
 }
+
+// Where discovery stopped before reaching a nested repository at one endpoint,
+// its Git directory is absent from that snapshot because it was never examined,
+// not because it changed. Neither an addition nor a removal may be inferred.
+func TestControlSurfaceInfersNothingFromUnexaminedNestedDirectories(t *testing.T) {
+	git := newControlGit(t)
+	root := t.TempDir()
+	git.init(t, root)
+	for _, nested := range []string{"a", "b/c"} {
+		dir := filepath.Join(root, filepath.FromSlash(nested))
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		git.init(t, dir)
+		writeControlFixture(t, dir, ".git/hooks/example", "fixture")
+	}
+	full := DefaultControlSurfaceBudget()
+	// The root holds .git, a and b: the entry budget ends exactly after its
+	// listing, so every queued directory is left unexamined.
+	stopped := full
+	stopped.MaxNestedDirs = 3
+	complete := controlSnapshot(t, root, full)
+	cutOff := controlSnapshot(t, root, stopped)
+	for name, pair := range map[string][2]ControlSurfaceSnapshot{
+		"unexamined at end":   {complete, cutOff},
+		"unexamined at start": {cutOff, complete},
+	} {
+		t.Run(name, func(t *testing.T) {
+			diff := controlDiff(t, pair[0], pair[1])
+			if !diff.NestedDiscoveryPartial || diff.Incomplete || diff.Changed {
+				t.Fatalf("an unexamined directory proves no change: %+v", diff)
+			}
+		})
+	}
+}
