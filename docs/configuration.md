@@ -112,13 +112,14 @@ explain_blocks: true
 
 Audit mode (`enforce: false`) lets you watch what Pipelock would block before you turn blocking on. Ordinary findings are logged and the traffic goes through.
 
-A few checks still block, because a log entry can't undo the damage once it happens:
+Some checks can still block, because a log entry can't undo the damage once it happens:
 
 - A recognized credential leaving in a request. Once it's sent, it's exposed.
 - A request to a private network or cloud metadata address, where cloud credentials are served.
-- Content Pipelock couldn't fully read, including bodies over the size limit. A finding it never saw can't be logged.
-- A request-policy rule whose body fails to parse, is opaque, or uses an encoding Pipelock doesn't decode. These block by default; set `on_parse_error`, `on_opaque_operation` or `on_undecodable_encoding` to `warn` or `allow` to forward them instead.
+- Content a check needed to read but couldn't, such as a request-policy body over the size limit or one that won't parse. A finding Pipelock never saw can't be logged. Some of these cases have their own settings, and some, such as an incomplete archive upload, can pass.
 - Other controls that don't read `enforce`, such as the kill switch and adaptive escalation.
+
+This is a summary. Relaxing one check never forwards a request that another check blocks.
 
 The exact lists for each transport follow. `pipelock doctor` reports when `mode: audit` is set but blocking is still on.
 
