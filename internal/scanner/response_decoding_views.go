@@ -6,10 +6,8 @@ package scanner
 import (
 	"context"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"io"
-	"slices"
 	"strings"
 
 	"golang.org/x/net/html"
@@ -131,11 +129,11 @@ func (s *Scanner) walkAdditionalInjectionViews(ctx context.Context, content, tar
 			}
 			continue
 		}
-		views, complete := additionalInjectionViews(parent.text, parent.applied)
-		legacy, legacyComplete := injectionLegacyDecodeViews(parent.text)
-		views = append(views, legacy...)
-		complete = complete && legacyComplete
-		incomplete = incomplete || !complete
+		// The walk owns cancellation checks at its existing queue boundaries.
+		views, outcome := expandResponseDecodeStep(context.Background(), parent.text, responseDecodeStepOptions{
+			applied: parent.applied, additionalInjection: true, recoverQP: true,
+		})
+		incomplete = incomplete || outcome.Truncated
 		for _, view := range views {
 			digest, duplicate := queue.lookup(view.text)
 			if duplicate {
@@ -469,62 +467,6 @@ func injectionHTMLConcealedElement(name []byte) bool {
 	default:
 		return false
 	}
-}
-
-func injectionLegacyDecodeViews(text string) ([]injectionDecodeView, bool) {
-	complete := true
-	used := 0
-	seen := map[string]bool{text: true}
-	var views []injectionDecodeView
-	add := func(text string) {
-		if text == "" || seen[text] {
-			return
-		}
-		if len(views) >= maxDecodeCandidates || len(text) > maxDecodeTotalBytes-used {
-			complete = false
-			return
-		}
-		seen[text] = true
-		used += len(text)
-		views = append(views, injectionDecodeView{text: text})
-	}
-	var scratch []byte
-	decode := func(source string, printableOnly bool) {
-		// A full decode rejects bytes outside both Base64 alphabets, the
-		// shared padding byte and the discarded ASCII whitespace. Hex is a
-		// subset. Avoid copying a large rejected carrier before decoding.
-		if !printableOnly {
-			for i := range len(source) {
-				b := source[i]
-				if !isBase64DataByte(b) && !strings.ContainsRune("= \t\r\n", rune(b)) {
-					return
-				}
-			}
-		}
-		stripped := canonicalMixedBase64(stripResponseDecodeWhitespace(source))
-		scratch = slices.Grow(scratch[:0], base64.RawStdEncoding.DecodedLen(len(stripped)))
-		dst := scratch[:cap(scratch)]
-		for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.URLEncoding, base64.RawStdEncoding, base64.RawURLEncoding} {
-			if n, err := enc.Decode(dst, []byte(stripped)); err == nil && n > 0 && (!printableOnly || isPrintableText(dst[:n])) {
-				add(string(dst[:n]))
-			}
-		}
-		if n, err := hex.Decode(dst, []byte(stripped)); err == nil && n > 0 && (!printableOnly || isPrintableText(dst[:n])) {
-			add(string(dst[:n]))
-		}
-	}
-	decode(text, false)
-	visitEncodedRunSpans(text, minSegmentDecodeLen, func(segment encodedRunSpan) bool {
-		decode(segment.text, true)
-		return complete
-	})
-	for _, view := range textEncodingViewsMode(text, true) {
-		add(view.text)
-	}
-	if decoded := normalize.DecodeTags(text); decoded != text {
-		add(decoded)
-	}
-	return views, complete
 }
 
 // injectionUTF7View reuses DLP's RFC 4648 decoder for the RFC 2152 shifted
