@@ -474,7 +474,10 @@ func (w *controlWalker) scanFixed(dir string) {
 	}
 }
 
-// A checkout inside a fixed control tree has its own control paths.
+// scanFixedChild records one entry inside a fixed control tree. A Git marker
+// adds Git metadata checks. Only an agent worktree slot exempts the checkout's
+// ordinary files: anywhere else, such as a skill or hook directory cloned into
+// .claude, those files can run as the operator and stay monitored whole.
 func (w *controlWalker) scanFixedChild(path string, info fs.FileInfo) {
 	e := w.record(path, info)
 	if e.Kind == KindDir {
@@ -482,12 +485,21 @@ func (w *controlWalker) scanFixedChild(path string, info fs.FileInfo) {
 			w.scanGitDir(path, path)
 			return
 		}
-		if w.scanGitMarker(path) {
+		if w.scanGitMarker(path) && agentWorktreeSlot(path) {
 			w.scanFixed(path)
 			return
 		}
 	}
 	w.enqueueTree(e, controlTree{fixed: true})
+}
+
+// agentWorktreeSlot reports whether path is a direct child of .claude/worktrees,
+// where Claude Code's --worktree option creates a full checkout of the project.
+// Such a checkout's own control paths are scanned by scanFixed; its source files
+// are project content, not agent configuration.
+func agentWorktreeSlot(path string) bool {
+	parent := filepath.Dir(path)
+	return filepath.Base(parent) == "worktrees" && filepath.Base(filepath.Dir(parent)) == ".claude"
 }
 
 func (w *controlWalker) scanGitMarker(dir string) bool {

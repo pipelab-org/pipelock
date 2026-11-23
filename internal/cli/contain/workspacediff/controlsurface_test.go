@@ -466,6 +466,44 @@ func TestControlSurfaceGitCheckoutInsideFixedTree(t *testing.T) {
 	expectControlPath(t, controlDiff(t, withConfig, controlSnapshot(t, root, budget)), checkout+"/.hooks/example")
 }
 
+// A checkout anywhere in a fixed control tree other than an agent worktree slot
+// keeps its working-tree files monitored: a skill or hook directory that is a
+// repository can hold scripts that run as the operator.
+func TestControlSurfaceCheckoutOutsideWorktreeSlotKeepsItsFiles(t *testing.T) {
+	cases := map[string]struct {
+		script string
+		plant  func(t *testing.T, root string)
+	}{
+		"cloned skill": {".claude/skills/example/run.sh", func(t *testing.T, root string) {
+			git := newControlGit(t)
+			dir := filepath.Join(root, ".claude", "skills", "example")
+			git.init(t, dir)
+			git.commit(t, dir, "README.md")
+		}},
+		"hooks directory with a git marker": {".claude/hooks/run.sh", func(t *testing.T, root string) {
+			if err := os.MkdirAll(filepath.Join(root, ".claude", "hooks", ".git"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		"worktrees directory with an extra level": {".claude/worktrees/group/example/run.sh", func(t *testing.T, root string) {
+			writeControlFixture(t, root, ".claude/worktrees/group/example/.git", "gitdir: ../../../../.git\n")
+		}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			git := newControlGit(t)
+			root := t.TempDir()
+			git.init(t, root)
+			writeControlFixture(t, root, tc.script, "before")
+			tc.plant(t, root)
+			budget := DefaultControlSurfaceBudget()
+			before := controlSnapshot(t, root, budget)
+			writeControlFixture(t, root, tc.script, "changed")
+			expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), tc.script)
+		})
+	}
+}
+
 // A fixed control directory is monitored as a whole even when it carries its
 // own Git marker, for example a submodule or a standalone repository for the
 // agent configuration. Only checkouts found below it are limited to their Git
