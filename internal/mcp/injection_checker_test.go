@@ -181,7 +181,7 @@ func TestExternalCheckerToolResultOutcomes(t *testing.T) {
 			if m.requests.Load() != 1 {
 				t.Fatalf("checker requests = %d", m.requests.Load())
 			}
-			if item := m.item(); item.Surface != config.InjectionSurfaceMCPToolResult || !strings.Contains(item.Parts[0].Text, "Ignore all previous instructions") {
+			if item := m.item(); item.Surface != config.InjectionSurfaceMCPToolResult || item.ExtractionVersion != "mcp-text/v2" || !strings.Contains(item.Parts[0].Text, "Ignore all previous instructions") {
 				t.Fatalf("item = %+v", item)
 			}
 		})
@@ -218,7 +218,7 @@ func TestExternalCheckerToolResultOverBudget(t *testing.T) {
 			if v.Clean != tt.clean || v.Assessment.Status != scanner.AssessmentIncomplete {
 				t.Fatalf("verdict = %+v", v)
 			}
-			if !tt.clean && (v.Action != config.ActionBlock || !strings.Contains(v.Error, string(checker.ReasonOverBudget))) {
+			if !tt.clean && (v.Action != config.ActionBlock || !strings.Contains(v.Error, "max_request_bytes")) {
 				t.Fatalf("blocked verdict = %+v", v)
 			}
 			got := events()

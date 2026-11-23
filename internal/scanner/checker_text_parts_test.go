@@ -110,7 +110,7 @@ func TestCheckerBodyViewStrings(t *testing.T) {
 			before := len(srv.Items())
 			s.ScanBufferedInjection(t.Context(), BufferedInjectionScan{Surface: surface, Body: tt.body, UseBody: true})
 			items := srv.Items()
-			if len(items) != before+1 || !hasCheckerView(items[before].Parts, tt.want) {
+			if len(items) != before+1 || items[before].ExtractionVersion != "buffered-text/v2" || !hasCheckerView(items[before].Parts, tt.want) {
 				t.Fatalf("checker did not receive body view %q", tt.want)
 			}
 		})
@@ -171,7 +171,7 @@ func TestCheckerDecodedViewBudget(t *testing.T) {
 	}
 	before := len(srv.Items())
 	got := s.ScanBufferedInjection(t.Context(), BufferedInjectionScan{Surface: surface, Content: source})
-	if !got.Failed() || got.Assessment.Status != AssessmentIncomplete || len(srv.Items()) != before {
+	if !got.Failed() || !strings.Contains(got.ScanError, "max_request_bytes") || got.Assessment.Status != AssessmentIncomplete || len(srv.Items()) != before {
 		t.Fatalf("oversize checker request: %+v", got)
 	}
 	builder := checkerTextBuilder{ctx: t.Context(), limit: 4096}

@@ -2526,9 +2526,13 @@ func scanToolsSingle(ctx context.Context, line []byte, sc *scanner.Scanner, cfg 
 		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: resourceLimit, RPCID: rpc.ID, ToolNames: names, ToolDefs: tools, Assessment: incompleteDescriptionAssessment}
 	}
 
-	matches, observations, capacityExceeded, epochChanged, assessment := scanToolDefsAssessed(ctx, tools, sc, cfg)
+	matches, observations, capacityExceeded, epochChanged, assessment, checkerDiagnostic := scanToolDefsAssessed(ctx, tools, sc, cfg)
 	if descriptionsWithheld(sc, assessment) {
-		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: ResourceLimitInjectionChecker, ResourceDetail: "injection checker " + assessment.Checker + " did not assess the tool descriptions", RPCID: rpc.ID, ToolNames: names, ToolDefs: tools, Observations: observations, Assessment: assessment}
+		detail := "injection checker " + assessment.Checker + " did not assess the tool descriptions"
+		if checkerDiagnostic != "" {
+			detail += " (" + checkerDiagnostic + ")"
+		}
+		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: ResourceLimitInjectionChecker, ResourceDetail: detail, RPCID: rpc.ID, ToolNames: names, ToolDefs: tools, Observations: observations, Assessment: assessment}
 	}
 	if epochChanged {
 		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_baseline_reset", RPCID: rpc.ID, ToolNames: names, ToolDefs: tools, Observations: observations, Assessment: incompleteDescriptionAssessment}
@@ -2813,16 +2817,16 @@ func incompleteOr(a scanner.InjectionAssessment, stopped bool) scanner.Injection
 var incompleteDescriptionAssessment = scanner.InjectionAssessment{Checker: scanner.InjectionCheckerBasic, Status: scanner.AssessmentIncomplete}
 
 func scanToolDefsContext(ctx context.Context, tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (matches, observations []ToolScanMatch, capacityExceeded, epochChanged bool) {
-	matches, observations, capacityExceeded, epochChanged, _ = scanToolDefsAssessed(ctx, tools, sc, cfg)
+	matches, observations, capacityExceeded, epochChanged, _, _ = scanToolDefsAssessed(ctx, tools, sc, cfg)
 	return matches, observations, capacityExceeded, epochChanged
 }
 
 // scanToolDefsAssessed is scanToolDefsContext plus the aggregate wording
 // assessment of every tool's description text.
-func scanToolDefsAssessed(ctx context.Context, tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (matches, observations []ToolScanMatch, capacityExceeded, epochChanged bool, assessment scanner.InjectionAssessment) {
+func scanToolDefsAssessed(ctx context.Context, tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (matches, observations []ToolScanMatch, capacityExceeded, epochChanged bool, assessment scanner.InjectionAssessment, checkerDiagnostic string) {
 	assessment = scanner.InjectionAssessment{Checker: scanner.InjectionCheckerBasic, Status: scanner.AssessmentNotAssessed}
 	if cfg.HeaderContractsOnly {
-		return nil, nil, false, false, assessment
+		return nil, nil, false, false, assessment, checkerDiagnostic
 	}
 	// Tool descriptions are their own wording surface: the description
 	// selection can lower the built-in wording mode here, never raise it.
@@ -2869,7 +2873,7 @@ func scanToolDefsAssessed(ctx context.Context, tools []ToolDef, sc *scanner.Scan
 	} else if cfg.DetectDrift {
 		resp, established, epochChanged := driftBaselineForResponse.BeginInventoryResponseAtEpoch(cfg.ExpectedDriftEpoch)
 		if epochChanged {
-			return nil, nil, false, true, incompleteOr(assessment, true)
+			return nil, nil, false, true, incompleteOr(assessment, true), checkerDiagnostic
 		}
 		establishedBeforeResponse = established
 		// Deferred so every exit, including a mid-loop epoch change or
@@ -2901,6 +2905,9 @@ func scanToolDefsAssessed(ctx context.Context, tools []ToolDef, sc *scanner.Scan
 	external, externalOK := assessToolDescriptions(ctx, sc, prescans)
 	if externalOK {
 		assessment, assessedAny = external.ext.Recovery(), true
+		if external.ext.Block() && !external.ext.Finding() {
+			checkerDiagnostic = external.ext.DiagnosticReason()
+		}
 	}
 	// A block-mode checker that found injection, or could not assess the
 	// list, refuses the whole response. Definitions the agent never receives
@@ -3175,7 +3182,7 @@ func scanToolDefsAssessed(ctx context.Context, tools []ToolDef, sc *scanner.Scan
 				},
 			})
 			if eval.EpochChanged {
-				return matches, observations, false, true, incompleteOr(assessment, true)
+				return matches, observations, false, true, incompleteOr(assessment, true), checkerDiagnostic
 			}
 			if eval.CapacityExceeded {
 				capacityExceeded = true
@@ -3229,7 +3236,7 @@ func scanToolDefsAssessed(ctx context.Context, tools []ToolDef, sc *scanner.Scan
 		}
 	}
 
-	return matches, observations, capacityExceeded, false, incompleteOr(assessment, false)
+	return matches, observations, capacityExceeded, false, incompleteOr(assessment, false), checkerDiagnostic
 }
 
 func confusableToolNameCollisions(tools []ToolDef) map[string]bool {

@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/checker"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
@@ -19,6 +20,7 @@ type checkerTextBuilder struct {
 	parts            []checker.Part
 	submitted, limit int64
 	reason           checker.Reason
+	toolDescription  bool
 	// seen holds the part texts of the current source: views of one body that
 	// clean to the same text are one view, whichever view produced them.
 	seen map[string]struct{}
@@ -36,6 +38,48 @@ func (s *Scanner) BuildInjectionTextParts(ctx context.Context, surface string, t
 	builder := s.newCheckerTextBuilder(ctx, surface)
 	builder.addTexts(texts)
 	return builder.parts, builder.completeness(nil)
+}
+
+// ToolDescriptionPartPrefix identifies a tool index in a description part ID.
+const ToolDescriptionPartPrefix = "tool:"
+
+// BuildToolDescriptionInjectionItem builds one checker item for a tools/list.
+// The index in each part ID identifies the originating tool.
+func (s *Scanner) BuildToolDescriptionInjectionItem(ctx context.Context, texts []string) checker.Item {
+	const surface = config.InjectionSurfaceMCPToolDescription
+	builder := s.newCheckerTextBuilder(ctx, surface)
+	builder.toolDescription = true
+	var original int64
+	for _, text := range texts {
+		original += int64(len(text))
+	}
+	for i, text := range texts {
+		if text == "" {
+			continue
+		}
+		builder.seen = nil
+		start := len(builder.parts)
+		ok := builder.add(bodyInjectionView{Kind: bodyViewText, Text: text})
+		id := ToolDescriptionPartPrefix + strconv.Itoa(i)
+		for j := start; j < len(builder.parts); j++ {
+			part := &builder.parts[j]
+			if part.Role == "content" {
+				part.ID = id
+				part.Role = "tool_description"
+			} else {
+				part.ID = id + ":" + strconv.Itoa(j-start)
+			}
+		}
+		if !ok {
+			break
+		}
+	}
+	return checker.Item{
+		ID: "mcp-tools-list", Kind: checker.KindText, Surface: surface, Transport: "mcp",
+		Direction: "response", ExtractionVersion: "mcp-tool-text/v2", Parts: builder.parts,
+		OriginalBytes: original, SubmittedBytes: builder.submitted,
+		Completeness: builder.completeness(nil),
+	}
 }
 
 // InjectionTextParts builds text parts without a configured checker budget.
@@ -56,6 +100,9 @@ func (b *checkerTextBuilder) addTexts(texts []string) {
 }
 
 func (b *checkerTextBuilder) completeness(existing *checker.Completeness) *checker.Completeness {
+	if b.ctx.Err() != nil {
+		return &checker.Completeness{Status: checker.Partial, Reason: checker.ReasonCanceled}
+	}
 	if b.reason != "" {
 		return &checker.Completeness{Status: checker.Partial, Reason: b.reason}
 	}
@@ -66,6 +113,10 @@ func (b *checkerTextBuilder) completeness(existing *checker.Completeness) *check
 }
 
 func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
+	if b.ctx.Err() != nil {
+		b.reason = checker.ReasonCanceled
+		return false
+	}
 	// Fragment reconstructions preserve the producer's synthetic newlines.
 	// Keep each reconstruction in its own part; a checker must not concatenate
 	// independent parts. Encoded-only sources supply decoded parts only.
@@ -115,6 +166,11 @@ func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
 		representation = "response_fragments/v1"
 	}
 	if !view.DecodeOnly && (!appendPart(text, representation) || !addMatching(text, false)) {
+		return false
+	}
+	if b.toolDescription &&
+		(!appendPart(normalize.ForToolText(text), "for_tool_text/v1") ||
+			!appendPart(normalize.ForToolTextSpaced(text), "for_tool_text_spaced/v1")) {
 		return false
 	}
 	// The scanner opens a whole-content decode without a text gate, so wording

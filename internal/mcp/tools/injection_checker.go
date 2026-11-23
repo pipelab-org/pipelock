@@ -10,7 +10,6 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/checker"
 	"github.com/luckyPipewrench/pipelock/internal/config"
-	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -21,8 +20,6 @@ const ResourceLimitInjectionChecker = "injection_checker_unavailable"
 // CheckerPatternPrefix prefixes an external checker finding's pattern name.
 const CheckerPatternPrefix = "checker:"
 
-const toolPartPrefix = "tool:"
-
 // descriptionCheck is the external checker's result for one tools/list.
 type descriptionCheck struct {
 	ext     scanner.ExternalAssessment
@@ -30,7 +27,7 @@ type descriptionCheck struct {
 }
 
 // assessToolDescriptions sends every tool's scanned text to the checker that
-// owns the description surface, as one item with one part per tool. ok is
+// owns the description surface, as one item with independently attributed views. ok is
 // false when the built-in checker decides descriptions or the mode is off.
 func assessToolDescriptions(ctx context.Context, sc *scanner.Scanner, prescans []toolPrescan) (descriptionCheck, bool) {
 	set := sc.InjectionCheckers()
@@ -38,36 +35,13 @@ func assessToolDescriptions(ctx context.Context, sc *scanner.Scanner, prescans [
 	if !set.External(surface) && !set.Watches(surface) {
 		return descriptionCheck{}, false
 	}
-	var parts []checker.Part
+	texts := make([]string, len(prescans))
 	for i, pre := range prescans {
-		if pre.text == "" {
-			continue
-		}
-		id := toolPartPrefix + strconv.Itoa(i)
-		parts = append(parts, checker.Part{ID: id, Role: "tool_description", Representation: "original", Text: pre.text})
-		tags := normalize.DecodeTags(pre.text)
-		if tags != pre.text {
-			parts = append(parts, checker.Part{ID: id + ":tags", Role: "decoded_view", Representation: "unicode_tags/v1", Text: tags})
-		}
-		if text := normalize.ForMatching(tags); text != tags && text != pre.text {
-			parts = append(parts, checker.Part{ID: id + ":normalized", Role: "decoded_view", Representation: "for_matching/v1", Text: text})
-		}
+		texts[i] = pre.text
 	}
-	if len(parts) == 0 {
+	item := sc.BuildToolDescriptionInjectionItem(ctx, texts)
+	if len(item.Parts) == 0 && item.Completeness.Status == checker.Complete {
 		return descriptionCheck{}, false
-	}
-	var submitted, original int64
-	for _, p := range parts {
-		submitted += int64(len(p.Text))
-		if p.Representation == "original" {
-			original += int64(len(p.Text))
-		}
-	}
-	item := checker.Item{
-		ID: "mcp-tools-list", Kind: checker.KindText, Surface: surface, Transport: "mcp",
-		Direction: "response", ExtractionVersion: "mcp-tool-text/v1", Parts: parts,
-		OriginalBytes: original, SubmittedBytes: submitted,
-		Completeness: &checker.Completeness{Status: checker.Complete},
 	}
 	ext, ok := sc.AssessInjection(ctx, surface, item)
 	if !ok {
@@ -77,7 +51,7 @@ func assessToolDescriptions(ctx context.Context, sc *scanner.Scanner, prescans [
 	if ext.Finding() && ext.Assessment.Response != nil {
 		for _, f := range ext.Assessment.Response.Findings {
 			for _, id := range f.PartIDs {
-				rest, found := strings.CutPrefix(id, toolPartPrefix)
+				rest, found := strings.CutPrefix(id, scanner.ToolDescriptionPartPrefix)
 				if !found {
 					continue
 				}

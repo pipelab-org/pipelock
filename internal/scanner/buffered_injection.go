@@ -114,7 +114,7 @@ func (s *Scanner) ComposeBufferedInjection(ctx context.Context, o BufferedInject
 	}
 	item := checker.Item{
 		ID: "buffered-" + o.Surface, Kind: checker.KindText, Surface: o.Surface,
-		Transport: transport, Direction: direction, ExtractionVersion: "buffered-text/v1",
+		Transport: transport, Direction: direction, ExtractionVersion: "buffered-text/v2",
 		Parts: parts, OriginalBytes: originalBytes, SubmittedBytes: builder.submitted,
 		Completeness: builder.completeness(o.Completeness),
 	}
@@ -130,7 +130,7 @@ func (s *Scanner) ComposeBufferedInjection(ctx context.Context, o BufferedInject
 		result.TransformedContent = ""
 	case ext.Block():
 		result.Clean = false
-		result.ScanError = fmt.Sprintf("injection checker %s did not assess content (%s)", ext.Checker, ext.Reason())
+		result.ScanError = fmt.Sprintf("injection checker %s did not assess content (%s)", ext.Checker, ext.DiagnosticReason())
 		result.TransformedContent = ""
 	case ext.Finding():
 		result.WarnedMatches = append(result.WarnedMatches, ResponseMatch{PatternName: CheckerPatternPrefix + ext.Checker})
