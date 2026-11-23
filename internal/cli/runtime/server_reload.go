@@ -149,6 +149,17 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 	default:
 	}
 	oldCfg := s.proxy.CurrentConfig()
+	if oldCfg != nil && oldCfg.FlightRecorder.EffectiveReceiptFormat() != newCfg.FlightRecorder.EffectiveReceiptFormat() {
+		return errors.New("flight_recorder.receipt_format changed; restart required")
+	}
+	if s.receiptWriter != nil {
+		if err := newCfg.ValidateReceiptV3(); err != nil {
+			return err
+		}
+		if err := checkV3ReloadCoverage(oldCfg, newCfg, s.hasMCPListen, s.opts.ReverseProxy); err != nil {
+			return err
+		}
+	}
 	if s.receiptShardSet != nil && oldCfg != nil && oldCfg.FlightRecorder.SigningKeyPath != "" &&
 		oldCfg.FlightRecorder.SigningKeyPath == newCfg.FlightRecorder.SigningKeyPath {
 		key, keyErr := signing.LoadPrivateKeyFile(oldCfg.FlightRecorder.SigningKeyPath)
@@ -375,7 +386,7 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 		// emitter before publishing the config. Let that recovery run: it either
 		// installs a healthy emitter and applies the enable atomically or rejects
 		// the reload while the old posture remains live.
-		if newCfg.FlightRecorder.RequireReceipts && !s.liveReceiptEmitterReady() {
+		if newCfg.FlightRecorder.RequireReceipts && s.receiptWriter == nil && !s.liveReceiptEmitterReady() {
 			if oldCfg.FlightRecorder.RequireReceipts {
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder.require_receipts is enabled but the current signed receipt emitter is unhealthy — the reload will attempt to rebuild it and will be rejected if recovery fails; the required posture remains fail-closed.\n")
 			} else if s.recorder == nil || strings.TrimSpace(newCfg.FlightRecorder.SigningKeyPath) == "" {
@@ -1380,11 +1391,24 @@ func preserveLicenseInputsRestartOnly(newCfg, oldCfg *config.Config) {
 	newCfg.LicenseCRLMaxAgeError = oldCfg.LicenseCRLMaxAgeError
 }
 
+func (s *Server) closeReceiptV3() error {
+	if s.receiptWriter == nil {
+		return nil
+	}
+	err := s.receiptWriter.Close(context.Background(), nil)
+	s.receiptWriter = nil
+	if err != nil {
+		return fmt.Errorf("close v3 receipt writer: %w", err)
+	}
+	return nil
+}
+
 // cleanup closes all owned resources. Safe to call multiple times: each
 // field is niled after its close so repeat calls are no-ops. LIFO order
 // mirrors the original RunCmd deferred closures so shutdown sequencing is
 // preserved.
 func (s *Server) cleanup() {
+	_ = s.closeReceiptV3()
 	if s.recorder != nil {
 		_ = s.recorder.Close()
 		s.recorder = nil

@@ -25,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -39,6 +40,7 @@ type mcpSandboxBridgeStartOptions struct {
 	AuditLogger      *audit.Logger
 	Metrics          *metrics.Metrics
 	MetricsBoundAddr string
+	ReceiptWriter    *v3.StreamWriter
 	ReceiptEmitter   *receipt.Emitter
 	V2ReceiptEmitter *proxydecision.Emitter
 	ReceiptGroup     *mcp.MCPReceiptGroup
@@ -57,6 +59,7 @@ type mcpSandboxBridgeSetupOptions struct {
 	AuditLogger      *audit.Logger
 	Metrics          *metrics.Metrics
 	MetricsBoundAddr string
+	ReceiptWriter    *v3.StreamWriter
 	ReceiptEmitter   *receipt.Emitter
 	V2ReceiptEmitter *proxydecision.Emitter
 	ReceiptGroup     *mcp.MCPReceiptGroup
@@ -98,6 +101,7 @@ func setupMCPSandboxBridge(opts mcpSandboxBridgeSetupOptions) (func(), error) {
 		AuditLogger:      opts.AuditLogger,
 		Metrics:          opts.Metrics,
 		MetricsBoundAddr: opts.MetricsBoundAddr,
+		ReceiptWriter:    opts.ReceiptWriter,
 		ReceiptEmitter:   opts.ReceiptEmitter,
 		V2ReceiptEmitter: opts.V2ReceiptEmitter,
 		ReceiptGroup:     opts.ReceiptGroup,
@@ -175,6 +179,7 @@ func startMCPSandboxBridge(opts mcpSandboxBridgeStartOptions) (*mcpSandboxBridge
 	proxyOptions := []proxy.Option{
 		proxy.WithTaintRecorder(opts.Rec),
 		proxy.WithKillSwitch(opts.KillSwitch),
+		proxy.WithV3ReceiptWriter(opts.ReceiptWriter),
 		proxy.WithReceiptEmitter(opts.ReceiptEmitter),
 		proxy.WithV2ReceiptEmitter(opts.V2ReceiptEmitter),
 		proxy.WithEnvelopeEmitter(opts.EnvelopeEmitter),

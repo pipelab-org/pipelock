@@ -525,7 +525,7 @@ func ForwardScannedInput(
 							ToolName:  pendingToolCallName,
 						}),
 					}); emitErr != nil {
-						logReceiptEmitFailure(logW, emitErr, opts.requireReceipts(), config.ActionBlock)
+						logReceiptEmitFailure(logW, emitErr, opts.legacyReceiptsRequired(), config.ActionBlock)
 					}
 				}
 				sendInputDenial(opts, denialAudit, BlockedRequest{
@@ -571,7 +571,7 @@ func ForwardScannedInput(
 						ToolName:         pendingToolCallName,
 					}),
 				}); emitErr != nil {
-					logReceiptEmitFailure(logW, emitErr, opts.requireReceipts(), config.ActionBlock)
+					logReceiptEmitFailure(logW, emitErr, opts.legacyReceiptsRequired(), config.ActionBlock)
 				}
 			}
 			sendInputDenial(opts, denialAudit, BlockedRequest{
@@ -717,7 +717,7 @@ func ForwardScannedInput(
 		actionID := ""
 		receiptTarget := toolCallName
 		receiptBearingMethod := verdict.Method == methodToolsCall ||
-			isPairedMCPMethod(verdict.Method) || (opts.requireReceipts() && isRequiredReceiptHandshakeNotification(verdict.Method, verdict.ID))
+			isPairedMCPMethod(verdict.Method) || (opts.legacyReceiptsRequired() && isRequiredReceiptHandshakeNotification(verdict.Method, verdict.ID))
 		if receiptTarget == "" && IsA2AMethod(verdict.Method) {
 			receiptTarget = verdict.Method
 			receiptBearingMethod = true
@@ -757,7 +757,7 @@ func ForwardScannedInput(
 			if receiptLayerOverride != "" {
 				layer, pattern, severity = receiptLayerOverride, receiptPatternOverride, receiptSeverityOverride
 			}
-			requireReceipts := opts.requireReceipts()
+			requireReceipts := opts.legacyReceiptsRequired()
 			if opts.ReceiptGroup != nil && opts.ReceiptGroup.Shards != nil && !receiptShard.ShardSelected {
 				receiptShard = opts.ReceiptGroup.Shards.Admit(receiptShard)
 			}
@@ -1464,7 +1464,7 @@ func ForwardScannedInput(
 			}
 			// A redirect handler can execute the action itself. Required receipt
 			// admission must precede the handler, not just its synthetic response.
-			if opts.requireReceipts() {
+			if opts.legacyReceiptsRequired() {
 				if err := emitToolReceipt(config.ActionRedirect); err != nil {
 					denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
 					sendInputDenial(opts, denialAudit, BlockedRequest{

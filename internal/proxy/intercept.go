@@ -285,13 +285,16 @@ func interceptConfirmResponseOrBlock(ic *InterceptContext, w http.ResponseWriter
 }
 
 func interceptEmitReceiptOrBlock(ic *InterceptContext, w http.ResponseWriter, actx audit.LogContext, opts receipt.EmitOpts) bool {
+	if ic.Proxy.v3ReceiptsEnabled() {
+		return false
+	}
 	var err error
-	if ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
+	if ic.legacyReceiptsRequired() {
 		err = interceptEmitRequiredReceipt(ic, opts)
 	} else {
 		err = interceptEmitReceipt(ic, opts)
 	}
-	if err != nil && ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
+	if err != nil && ic.legacyReceiptsRequired() {
 		if m := interceptReceiptMetrics(ic); m != nil {
 			if errors.Is(err, errReceiptEmitterUnavailable) {
 				m.RecordEmitFailure(receipt.FailReasonUnavailable)
@@ -352,7 +355,7 @@ func interceptEmitRequiredReceipt(ic *InterceptContext, opts receipt.EmitOpts) e
 }
 
 func interceptEmitOutcomeReceipt(ic *InterceptContext, opts receipt.EmitOpts, verdict string, status int, bytesTransferred int64, reason string) {
-	if ic == nil || ic.Config == nil || !ic.Config.FlightRecorder.RequireReceipts {
+	if ic == nil || !ic.legacyReceiptsRequired() {
 		return
 	}
 	opts = withInterceptTaint(ic, opts)
@@ -2417,7 +2420,7 @@ func newInterceptHandler(
 		// Release buffered bytes before synchronous required receipt storage.
 		emitOutcome := func(opts receipt.EmitOpts, verdict string, status int, transferred int64, reason string) {
 			var flushErr error
-			if ic.Config.FlightRecorder.RequireReceipts {
+			if ic.legacyReceiptsRequired() {
 				flushErr = flushResponseBeforeOutcome(w, r, ic.Config)
 				if flushErr != nil && outcomeReasonClaimsDelivery(reason, verdict) {
 					reason, transferred = flushFailureReason(reason), -1
@@ -2428,7 +2431,7 @@ func newInterceptHandler(
 		}
 		finishDownloadError := func(opts receipt.EmitOpts, status int, transferred int64, err error) {
 			if isNativeCapacityStop(context.Cause(r.Context())) {
-				if ic.Config.FlightRecorder.RequireReceipts {
+				if ic.legacyReceiptsRequired() {
 					emitOutcome(opts, config.ActionAllow, status, transferred, nativeCapacityStopReason)
 				} else {
 					_ = interceptEmitReceipt(ic, nativeStreamCloseReceipt(opts))
@@ -2443,7 +2446,7 @@ func newInterceptHandler(
 			return
 		}
 		requiredIntentEmitted := false
-		if ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
+		if ic.legacyReceiptsRequired() {
 			if interceptEmitReceiptOrBlock(ic, w, actx, allowReceipt) {
 				return
 			}
@@ -2695,12 +2698,13 @@ func newInterceptHandler(
 					Target:             targetURL,
 					Suppress:           ic.Config.Suppress,
 					ResponseScanExempt: interceptRespExempt,
-					ConfirmFinding: sseFindingReceiptConfirmer(ic.Config, withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}, ic.receiptShard), func(_ *config.Config, opts receipt.EmitOpts) error {
+					ConfirmFinding: ic.Proxy.legacySSEFindingConfirmer(ic.Config, withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}, ic.receiptShard), func(_ *config.Config, opts receipt.EmitOpts) error {
 						if ic.Proxy == nil {
 							return errReceiptEmitterUnavailable
 						}
 						return ic.Proxy.emitAllowPathReceipt(ic.Config, withInterceptTaint(ic, opts))
 					}),
+					DeliverFinding: ic.Proxy.sseFindingDelivery(r.Context(), ic.Config, withInterceptTaint(ic, withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}, ic.receiptShard))),
 					OnObservedCoreResponse: func(observed scanner.ObservedCoreMatch) {
 						recordObservedCoreResponseMatches(ic.Metrics, ic.Logger, actx, []scanner.ObservedCoreMatch{observed}, TransportConnect)
 					},
@@ -3247,6 +3251,15 @@ func newInterceptHandler(
 				cardOpts := mcp.A2AResponseOpts{Cfg: &ic.Config.A2AScanning, Baseline: baseline, CardKey: cardKey}
 				if ic.Config.FlightRecorder.RequireReceipts {
 					cardOpts.ConfirmCardAcceptance = func(candidate mcp.AgentCardScanResult) error {
+						if ic.Proxy.v3ReceiptsEnabled() {
+							err := ic.Proxy.confirmV3CardAcceptance(r.Context(), ic.Config, withInterceptTaint(ic, receipt.EmitOpts{ParentActionID: actionID, Verdict: config.ActionAllow, Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}), candidate)
+							if err != nil {
+								cardReceiptFailed = true
+								ic.Proxy.recordRequiredReceiptBlock(err, TransportConnect)
+								writeReceiptEffectRefusal(w, ic.RequestID)
+							}
+							return err
+						}
 						if !candidate.FirstSeen && !candidate.DriftAdopted {
 							return nil
 						}

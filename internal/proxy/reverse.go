@@ -375,6 +375,9 @@ func (rp *ReverseProxyHandler) emitReceipt(opts receipt.EmitOpts) error {
 // shared request-policy finalizer does not surface a receipt reference without
 // evidence; ordinary optional receipt emission remains a no-op when disabled.
 func (rp *ReverseProxyHandler) emitRequestPolicyReceipt(opts receipt.EmitOpts) error {
+	if rp.owner.v3ReceiptsEnabled() {
+		return rp.owner.recordEffectRefusal(receiptEffectContext(opts), rp.owner.cfgPtr.Load(), opts, boundaryUpstreamSend)
+	}
 	e := rp.receiptEmitter()
 	if e == nil && rp != nil && rp.cfgPtr != nil && requestPolicyReceiptsConfigured(rp.cfgPtr.Load()) {
 		return rp.recordReceiptEmitterUnavailable(opts)
@@ -472,7 +475,7 @@ func receiptObservedOutcomePattern(status string, bytesTransferred int64, reason
 }
 
 func (rp *ReverseProxyHandler) emitOutcomeReceiptWithPattern(cfg *config.Config, opts receipt.EmitOpts, pattern string) {
-	if cfg == nil || !cfg.FlightRecorder.RequireReceipts {
+	if !rp.legacyReceiptsRequired(cfg) {
 		return
 	}
 	opts = opts.NativeTerminal()
@@ -1798,7 +1801,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		RequestID: requestID,
 		Agent:     agent,
 	}), selectedReceiptShard)
-	if cfg.FlightRecorder.RequireReceipts {
+	if rp.legacyReceiptsRequired(cfg) {
 		// Pin the v2 proxy_decision policy hash to the admission snapshot
 		// (cfg == snap.cfg), not a possibly-reloaded rp.cfgPtr. The v2
 		// receipt consumes opts.PolicyHash; withReceiptPolicyHash is
@@ -1820,7 +1823,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		responseReceiptState.admissionReceiptID = reverseAllowReceipt.ActionID
 	}
 	var outcomeTracker *reverseOutcomeTracker
-	if cfg.FlightRecorder.RequireReceipts {
+	if rp.legacyReceiptsRequired(cfg) {
 		outcomeTracker = newReverseOutcomeTracker(cfg, withReceiptConfig(reverseAllowReceipt, cfg))
 		defer func() {
 			aborted := recover()
@@ -3341,7 +3344,8 @@ responseScanning:
 				Target:             resp.Request.URL.String(),
 				Suppress:           cfg.Suppress,
 				ResponseScanExempt: revRespExempt,
-				ConfirmFinding:     sseFindingReceiptConfirmer(cfg, withReceiptShard(receipt.EmitOpts{ParentActionID: requestActionID, Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL, RequestID: requestID, Agent: agent}, receiptShardFromContext(resp.Request.Context())), rp.emitAllowPathReceipt),
+				ConfirmFinding:     rp.owner.legacySSEFindingConfirmer(cfg, withReceiptShard(receipt.EmitOpts{ParentActionID: requestActionID, Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL, RequestID: requestID, Agent: agent}, receiptShardFromContext(resp.Request.Context())), rp.emitAllowPathReceipt),
+				DeliverFinding:     rp.owner.sseFindingDelivery(resp.Request.Context(), cfg, withReceiptShard(receipt.EmitOpts{ParentActionID: requestActionID, Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL, RequestID: requestID, Agent: agent}, receiptShardFromContext(resp.Request.Context()))),
 				OnObservedCoreResponse: func(observed scanner.ObservedCoreMatch) {
 					recordObservedCoreResponseMatches(rp.metrics, rp.logger, actx, []scanner.ObservedCoreMatch{observed}, TransportReverse)
 				},
@@ -3375,7 +3379,7 @@ responseScanning:
 			}
 			if isNativeCapacityStop(err) {
 				recordReverseOutcome(resp.StatusCode, -1, nativeCapacityStopReason)
-				if !cfg.FlightRecorder.RequireReceipts {
+				if !rp.legacyReceiptsRequired(cfg) {
 					_ = rp.emitReceipt(nativeStreamCloseReceipt(receipt.EmitOpts{Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL, RequestID: requestID, Agent: agent}).InheritAdmission(sseOpts.nativeAdmission).NativeTerminal())
 				}
 				return

@@ -343,6 +343,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	// shutdown sequencing (reloader → recorder → capture writer →
 	// approver → scanner → emitter → logger → sentry) is preserved.
 	defer s.cleanup()
+	defer func() { startErr = errors.Join(startErr, s.closeReceiptV3()) }()
 
 	var reloadWG sync.WaitGroup
 	defer reloadWG.Wait()
@@ -1177,7 +1178,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 				ContractLoaderPtr:        s.proxy.ContractLoaderPtr(),
 				ContractAgent:            edition.ProfileDefault,
 				DialContext:              verifiedDialContext(mcp.NewMetadataSafeDialContext(mcpScannerFn), mcpResolution, s.opts.Stderr),
-			}
+			}.WithV3ReceiptWriter(s.receiptWriter)
 			applyMCPDoWOpts(&listenerOpts, mcpDoWWiring, true)
 			if s.opts.MCPAuthTokenFile != "" {
 				listenerOpts.ListenerBearerTokenFn = func() (string, error) {

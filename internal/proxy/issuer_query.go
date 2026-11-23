@@ -1153,7 +1153,7 @@ func (ic *InterceptContext) recordIssuerQueryAllows(ctx audit.LogContext, r *htt
 }
 
 func (p *Proxy) recordIssuerQueryAllow(cfg *config.Config, ctx audit.LogContext, target, requestID, agent, method string, kind issuerQueryKind, selected ...receipt.EmitOpts) error {
-	requireReceipts := cfg != nil && cfg.FlightRecorder.RequireReceipts
+	requireReceipts := p.legacyReceiptsRequired(cfg)
 	fail := func(err error) error {
 		if requireReceipts {
 			return err

@@ -939,6 +939,10 @@ func (o MCPProxyOpts) receiptEmitter() *receipt.Emitter {
 	return o.ReceiptEmitter
 }
 
+func (o MCPProxyOpts) legacyReceiptsRequired() bool {
+	return !o.receiptEffects.enabled && o.requireReceipts()
+}
+
 func (o MCPProxyOpts) requireReceipts() bool {
 	if o.RequireReceiptsFn != nil {
 		return o.RequireReceiptsFn()
@@ -969,10 +973,10 @@ func (o MCPProxyOpts) emitMCPReceiptDecision(d MCPDecision, admit bool) ([]byte,
 		if admit && o.ReceiptGroup.Shards != nil && d.Receipt.ActionID != "" && !d.Receipt.ShardSelected {
 			d.Receipt = o.ReceiptGroup.Shards.Admit(d.Receipt)
 		}
-		if o.requireReceipts() && d.Receipt.ActionID != "" {
+		if o.legacyReceiptsRequired() && d.Receipt.ActionID != "" {
 			d.RequireReceipt = true
 		}
-		d.RequiredMode = o.requireReceipts()
+		d.RequiredMode = o.legacyReceiptsRequired()
 		return EmitMCPGroupDecision(*o.ReceiptGroup, nil, d)
 	}
 	return EmitMCPDecision(o.receiptEmitter(), o.v2ReceiptEmitter(), nil, d)

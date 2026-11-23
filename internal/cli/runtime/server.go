@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -37,6 +38,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -172,6 +174,7 @@ type Server struct {
 	ksAPI                  *killswitch.APIHandler
 	proxy                  *proxy.Proxy
 	receiptEmitter         *receipt.Emitter
+	receiptWriter          *v3.StreamWriter
 	receiptShardSet        *receipt.ReceiptShardSet
 	receiptGroupFailure    atomic.Pointer[error]
 	envelopeEmitter        *envelope.Emitter
@@ -587,6 +590,11 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	// separate code path (capture.Writer above). This path wires the
 	// YAML-config-driven recorder into the proxy so enforcement decisions
 	// are hash-chained to disk.
+	useV3, err := receiptV3Selected(cfg)
+	if err != nil {
+		s.cleanup()
+		return nil, err
+	}
 	var recPrivKey ed25519.PrivateKey
 	if cfg.FlightRecorder.Enabled && cfg.FlightRecorder.Dir != "" {
 		recCfg := recorder.Config{
@@ -612,6 +620,9 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			recPrivKey = k
 		}
 
+		if useV3 {
+			recCfg.Dir = filepath.Join(recCfg.Dir, receiptOperationalDirectory)
+		}
 		rec, recErr := recorder.NewWithScanner(recCfg, sc, recPrivKey)
 		if recErr != nil {
 			s.cleanup()
@@ -620,7 +631,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		runFlightRecorderExpiryOnce(rec, opts.Stderr, opts.expiry())
 		s.recorder = rec
 		var runSession string
-		if cfg.FlightRecorder.ReceiptChainCount() == 1 {
+		if !useV3 && cfg.FlightRecorder.ReceiptChainCount() == 1 {
 			if len(recPrivKey) != 0 {
 				if err := verifyPredecessorAEL(rec, startupVerification); err != nil {
 					s.cleanup()
@@ -646,7 +657,21 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			return nil, fmt.Errorf("loading posture binding: %w", bindErr)
 		}
 
-		if cfg.FlightRecorder.ReceiptChainCount() > 1 {
+		if useV3 {
+			openCtx := startupVerification.Context
+			if openCtx == nil {
+				openCtx = context.Background()
+			}
+			writer, openErr := openRuntimeReceiptV3(openCtx, cfg, recPrivKey, rec, postureResult,
+				runtimeReceiptStreamOptions{surfaces: serverReceiptSurfaces(cfg, hasMCPListen, opts.ReverseProxy), onHeartbeatError: s.failRequiredReceiptGroup})
+			if openErr != nil {
+				s.cleanup()
+				return nil, fmt.Errorf("open v3 receipt writer: %w", openErr)
+			}
+			s.receiptWriter = writer
+			proxyOpts = append(proxyOpts, proxy.WithV3ReceiptWriter(writer))
+			_, _ = fmt.Fprintln(opts.Stderr, "  Receipts: v3 stream opened")
+		} else if cfg.FlightRecorder.ReceiptChainCount() > 1 {
 			if len(recPrivKey) == 0 {
 				s.cleanup()
 				return nil, errors.New("multiple receipt chains require a signing key")
@@ -763,7 +788,11 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	// instead of as an all-403 outage at runtime. (Restart-only recorder
 	// fields are preserved across reload, so a live emitter built here stays
 	// live; this check intentionally lives at build time, not in Validate.)
-	if cfg.FlightRecorder.RequireReceipts && !receiptEmitterReady(s.receiptEmitter) {
+	if cfg.FlightRecorder.RequireReceipts && useV3 && s.receiptWriter == nil {
+		s.cleanup()
+		return nil, errors.New("flight_recorder.require_receipts is enabled but no v3 receipt writer is active")
+	}
+	if cfg.FlightRecorder.RequireReceipts && !useV3 && !receiptEmitterReady(s.receiptEmitter) {
 		s.cleanup()
 		return nil, fmt.Errorf("flight_recorder.require_receipts is enabled but no healthy signed receipt emitter is active: set flight_recorder.enabled, flight_recorder.dir, and flight_recorder.signing_key_path (run 'pipelock init'), fix any receipt-chain resume error, or disable require_receipts")
 	}

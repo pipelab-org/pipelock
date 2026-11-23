@@ -89,13 +89,52 @@ type sseDeliveryFlusher struct {
 	observe func()
 }
 
-func (d sseDeliveryFlusher) Flush() {
+func (d sseDeliveryFlusher) Flush() { _ = d.FlushError() }
+
+func (d sseDeliveryFlusher) FlushError() error {
 	d.observe()
+	defer d.observe()
+	if f, ok := d.f.(interface{ FlushError() error }); ok {
+		return f.FlushError()
+	}
 	d.f.Flush()
-	d.observe()
+	return nil
 }
 
 const nativeSSEFindingRecords = 2
+
+func (p *Proxy) sseFindingDelivery(ctx context.Context, cfg *config.Config, opts receipt.EmitOpts) func(error, func() (bool, error)) error {
+	if !p.v3ReceiptsEnabled() {
+		return nil
+	}
+	return func(finding error, deliver func() (bool, error)) error {
+		opts := opts
+		opts.ActionID = receipt.NewActionID()
+		opts.Verdict, opts.Layer, opts.Pattern = config.ActionWarn, LayerSSEStream, finding.Error()
+		token, err := p.admitEffect(ctx, cfg, opts, boundaryDownstreamDelivery)
+		if err != nil {
+			return fmt.Errorf("%w: admit SSE finding: %w", mcp.ErrReceiptRequired, err)
+		}
+		defer p.settleEffect(ctx, opts, token)
+		var writeErr error
+		confirmErr := token.ConfirmDelivery(ctx, func() (bool, error) {
+			var observed bool
+			observed, writeErr = deliver()
+			return observed, nil
+		})
+		if confirmErr != nil {
+			p.logReceiptEmissionFailure(opts, confirmErr)
+		}
+		return writeErr
+	}
+}
+
+func (p *Proxy) legacySSEFindingConfirmer(cfg *config.Config, opts receipt.EmitOpts, emit func(*config.Config, receipt.EmitOpts) error) func(error) error {
+	if p.v3ReceiptsEnabled() {
+		return nil
+	}
+	return sseFindingReceiptConfirmer(cfg, opts, emit)
+}
 
 // sseFindingReceiptConfirmer admits warned events before their wire write.
 // Errors are receipt failures, not content findings: a warn-mode caller must

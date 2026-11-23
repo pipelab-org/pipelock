@@ -71,9 +71,9 @@ func (o TrackedRequestOutcome) settleResult(logW io.Writer, opts MCPProxyOpts, s
 		// Callers that already supply a receipt in a fixed writer context
 		// use the established outcome path.
 		if status == mcpOutcomeStatusBlocked {
-			emitMCPBlockedOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, o.Receipt, size, reason, opts.requireReceipts())
+			emitMCPBlockedOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, o.Receipt, size, reason, opts.legacyReceiptsRequired())
 		} else {
-			emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, o.Receipt, status, size, reason, opts.requireReceipts())
+			emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, o.Receipt, status, size, reason, opts.legacyReceiptsRequired())
 		}
 		return true, nil
 	}
@@ -146,7 +146,7 @@ const mcpTransportAdmissionLayer = "mcp_transport_admission"
 // stream. Best-effort mode records nothing. Required mode returns the error
 // instead of opening when that receipt cannot be written.
 func admitDurableTransport(opts MCPProxyOpts, method, target string) (receipt.EmitOpts, error) {
-	if !opts.requireReceipts() {
+	if !opts.legacyReceiptsRequired() {
 		return receipt.EmitOpts{}, nil
 	}
 	admission := opts.withReceiptPolicyHash(receipt.EmitOpts{

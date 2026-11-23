@@ -796,7 +796,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if connectGate.HasContractContext() {
 		allowReceipt = withContractReceipt(connectGate, allowReceipt)
 	}
-	if cfg.FlightRecorder.RequireReceipts {
+	if p.legacyReceiptsRequired(cfg) {
 		if err := p.emitRequiredReceipt(withReceiptConfig(allowReceipt, cfg)); err != nil {
 			blockedErr := newReceiptEmissionBlockedRequest(err)
 			p.logger.LogBlocked(targetCtx, blockedErr.layer, blockedErr.detail)
@@ -820,7 +820,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		aborted := recover()
 		var flushErr error
-		if cfg.FlightRecorder.RequireReceipts && !clientHijacked && aborted == nil {
+		if p.legacyReceiptsRequired(cfg) && !clientHijacked && aborted == nil {
 			flushErr = flushResponseBeforeOutcome(w, r, cfg)
 			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason, config.ActionAllow) {
 				outcomeReason, outcomeBytes = flushFailureReason(outcomeReason), -1
@@ -832,7 +832,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
 			outcomeReason = "license_revoked"
 		}
-		if outcomeReason == nativeCapacityStopReason && !cfg.FlightRecorder.RequireReceipts {
+		if outcomeReason == nativeCapacityStopReason && !p.legacyReceiptsRequired(cfg) {
 			_ = p.emitReceipt(nativeStreamCloseReceipt(allowReceipt).NativeTerminal())
 		} else {
 			p.emitOutcomeReceipt(cfg, allowReceipt, outcomeStatus, outcomeBytes, outcomeReason)
@@ -1132,7 +1132,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	p.metrics.RecordTunnel(duration, totalBytes, agentLabel)
 	// Count successful tunnels in request totals so /stats reflects CONNECT traffic.
 	p.metrics.RecordAllowed(duration, agentLabel)
-	if !cfg.FlightRecorder.RequireReceipts {
+	if !p.legacyReceiptsRequired(cfg) {
 		emitConnectReceipt(allowReceipt)
 	}
 	p.logger.LogTunnelClose(targetCtx, totalBytes, duration)
@@ -2673,7 +2673,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if forwardGate.HasContractContext() {
 		forwardAllowReceipt = withContractReceipt(forwardGate, forwardAllowReceipt)
 	}
-	if cfg.FlightRecorder.RequireReceipts {
+	if p.legacyReceiptsRequired(cfg) {
 		intent := withReceiptConfig(forwardAllowReceipt, cfg)
 		intent.ContentScanContext = r.Context()
 		if err := p.emitRequiredReceipt(intent); err != nil {
@@ -2702,7 +2702,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	outcomeReceipt.Verdict = config.ActionAllow
 	finishDownloadError := func(err error) string {
 		if isNativeCapacityStop(context.Cause(r.Context())) {
-			if !cfg.FlightRecorder.RequireReceipts {
+			if !p.legacyReceiptsRequired(cfg) {
 				emitForwardReceipt(nativeStreamCloseReceipt(forwardAllowReceipt))
 			}
 			return nativeCapacityStopReason
@@ -2715,7 +2715,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		aborted := recover()
 		var flushErr error
-		if cfg.FlightRecorder.RequireReceipts && aborted == nil {
+		if p.legacyReceiptsRequired(cfg) && aborted == nil {
 			flushErr = flushResponseBeforeOutcome(w, r, cfg)
 			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason, config.ActionAllow) {
 				outcomeReason, outcomeBytes = flushFailureReason(outcomeReason), -1
@@ -2734,7 +2734,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = httpstream.Abort(r.Context(), flushErr)
 	}()
 	emitForwardAllowReceipt := func() {
-		if !cfg.FlightRecorder.RequireReceipts {
+		if !p.legacyReceiptsRequired(cfg) {
 			emitForwardReceipt(forwardAllowReceipt)
 		}
 	}
@@ -2761,7 +2761,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if reason != "" {
 			p.refuseAdmittedEffect(r.Context(), forwardAllowReceipt, upstreamEffect)
 		}
-		if reason != "" && !cfg.FlightRecorder.RequireReceipts {
+		if reason != "" && !p.legacyReceiptsRequired(cfg) && !p.receiptEffects.enabled {
 			// No intent receipt was recorded, so the refusal is the only
 			// receipt for this action; it carries the live state.
 			forwardTaint = after
@@ -2784,7 +2784,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// that grant. A required intent receipt already written stays as is.
 		forwardTaint = releaseTaintDecision(forwardTaint, after)
 		applyTaintEvidence(&outcomeReceipt, forwardTaint)
-		if !cfg.FlightRecorder.RequireReceipts {
+		if !p.legacyReceiptsRequired(cfg) {
 			applyTaintEvidence(&forwardAllowReceipt, forwardTaint)
 		}
 	}
@@ -3023,7 +3023,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				Target:             targetURL,
 				Suppress:           cfg.Suppress,
 				ResponseScanExempt: fwdRespExempt,
-				ConfirmFinding:     sseFindingReceiptConfirmer(cfg, withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: TransportForward, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}, selectedReceiptShard), p.emitAllowPathReceipt),
+				ConfirmFinding:     p.legacySSEFindingConfirmer(cfg, withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: TransportForward, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}, selectedReceiptShard), p.emitAllowPathReceipt),
+				DeliverFinding:     p.sseFindingDelivery(r.Context(), cfg, withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: TransportForward, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}, selectedReceiptShard)),
 				OnObservedCoreResponse: func(observed scanner.ObservedCoreMatch) {
 					recordObservedCoreResponseMatches(p.metrics, p.logger, actx, []scanner.ObservedCoreMatch{observed}, TransportForward)
 				},
@@ -3110,7 +3111,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			if isNativeCapacityStop(err) {
 				outcomeStatus = strconv.Itoa(resp.StatusCode)
 				outcomeReason = nativeCapacityStopReason
-				if !cfg.FlightRecorder.RequireReceipts {
+				if !p.legacyReceiptsRequired(cfg) {
 					emitForwardReceipt(nativeStreamCloseReceipt(forwardAllowReceipt))
 				}
 				_ = httpstream.Abort(r.Context(), err)
@@ -3286,7 +3287,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			EffectiveAction:   config.ActionAllow,
 			Outcome:           captureOutcome(config.ActionAllow, true),
 		})
-		if !cfg.FlightRecorder.RequireReceipts {
+		if !p.legacyReceiptsRequired(cfg) {
 			emitForwardReceipt(forwardAllowReceipt)
 		}
 		p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
@@ -3617,6 +3618,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				cardOpts := mcp.A2AResponseOpts{Cfg: &cfg.A2AScanning, Baseline: p.a2aCardBaseline, CardKey: cardKey}
 				if cfg.FlightRecorder.RequireReceipts {
 					cardOpts.ConfirmCardAcceptance = func(candidate mcp.AgentCardScanResult) error {
+						if p.v3ReceiptsEnabled() {
+							cardReceiptErr = p.confirmV3CardAcceptance(r.Context(), cfg, receipt.EmitOpts{ParentActionID: actionID, Verdict: config.ActionAllow, Transport: TransportForward, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}, candidate)
+							return cardReceiptErr
+						}
 						if !candidate.FirstSeen && !candidate.DriftAdopted {
 							return nil
 						}

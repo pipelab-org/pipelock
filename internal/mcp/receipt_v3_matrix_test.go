@@ -409,7 +409,7 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 	}
 	t.Cleanup(func() { _ = writer.Close(context.Background(), nil) })
 	scanner := testScannerWithAction(t, config.ActionBlock)
-	opts := MCPProxyOpts{Scanner: scanner, Transport: surface, RequireReceipts: row.requireLegacyFlag}.WithV3ReceiptWriter(writer)
+	opts := MCPProxyOpts{Scanner: scanner, Transport: surface, RequireReceipts: row.required || row.requireLegacyFlag}.WithV3ReceiptWriter(writer)
 	if beforeSync != nil {
 		opts.ListenerPrincipalResolver = func(r *http.Request) (ListenerPrincipal, error) {
 			if r.Method == http.MethodPost {

@@ -37,6 +37,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
@@ -153,6 +154,7 @@ func TestV3HTTPTransportParity(t *testing.T) {
 			} {
 				t.Run(fmt.Sprintf("%s/required=%t/%s", surface, required, tc.name), func(t *testing.T) {
 					p, writer, dir, keys := newTestV3HTTPProxy(t, surface, required, tc.fault, func(cfg *config.Config) {
+						cfg.FlightRecorder.RequireReceipts = required
 						if tc.blocked && surface != TransportReverse {
 							cfg.FetchProxy.Monitoring.Blocklist = []string{testLoopbackIP}
 						}
@@ -2083,5 +2085,160 @@ func TestV3ForwardBlockedRedirectDelivery(t *testing.T) {
 	if len(actions) != 3 || actions[2].Phase != "decision" || actions[2].Verdict != config.ActionBlock ||
 		actions[2].EffectBoundary != boundaryDownstreamDelivery {
 		t.Fatalf("redirect refusals: %+v", actions)
+	}
+}
+
+func TestV3SSERequiredFindingAdmission(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprintf("write_failure=%t", fail), func(t *testing.T) {
+			var fault func(string, string) (v3.StreamFile, error)
+			if fail {
+				fault = v3AppendFault(3, true)
+			}
+			p, writer, dir, _ := newTestV3HTTPProxy(t, TransportForward, true, fault, func(cfg *config.Config) {
+				cfg.FlightRecorder.RequireReceipts = true
+				cfg.ResponseScanning.Enabled = true
+				cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: "response marker", Regex: "POLICY_MARKER"}}
+				cfg.ResponseScanning.SSEStreaming.Enabled = true
+				cfg.ResponseScanning.SSEStreaming.Action = config.ActionWarn
+			})
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.vendor.example", http.NoBody)
+			cfg := p.CurrentConfig()
+			opts := receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: TransportForward, Method: req.Method, Target: req.URL.String()}
+			out := httptest.NewRecorder()
+			w, finish := p.startReceiptDelivery(out, req, cfg, opts)
+			defer finish()
+			w.WriteHeader(http.StatusOK)
+			opts.ParentActionID = opts.ActionID
+			clean := "data: {\"text\":\"hello\"}\n\n"
+			warned := "data: {\"text\":\"POLICY_MARKER\"}\n\n"
+			err := DispatchSSEScan(req.Context(), strings.NewReader(clean+warned), w, w.(http.Flusher), p.ScannerPtr().Load(), SSEDispatchOptions{
+				GenericSSE: &cfg.ResponseScanning.SSEStreaming,
+				Generic:    mcp.GenericSSEScanOptions{DeliverFinding: p.sseFindingDelivery(req.Context(), cfg, opts)},
+			})
+			if fail {
+				if !errors.Is(err, mcp.ErrReceiptRequired) || out.Body.String() != clean {
+					t.Fatalf("required receipt failure: err=%v body=%q", err, out.Body.String())
+				}
+				return
+			}
+			if err != nil || out.Body.String() != clean+warned {
+				t.Fatalf("delivery: err=%v body=%q", err, out.Body.String())
+			}
+			finish()
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			actions := readV3TransportActions(t, dir)
+			if !slices.ContainsFunc(actions, func(a v3.Action) bool {
+				return a.Layer == LayerSSEStream && a.Verdict == config.ActionWarn && a.Phase == "outcome" && a.OutcomeClass == "completed"
+			}) {
+				t.Fatalf("missing completed finding receipt: %+v", actions)
+			}
+		})
+	}
+}
+
+func TestV3RequiredAgentCardAcceptance(t *testing.T) {
+	const card = `{"name":"Document helper","description":"Reads documents","skills":[{"id":"read","name":"Read documents","description":"Read a document"}]}`
+	for _, surface := range []string{TransportForward, transportInterceptReceipt} {
+		t.Run(surface, func(t *testing.T) {
+			p, writer, dir, _ := newTestV3HTTPProxy(t, surface, true, v3AppendFault(4, true), func(cfg *config.Config) {
+				cfg.FlightRecorder.RequireReceipts = true
+				cfg.A2AScanning.Enabled = true
+				cfg.A2AScanning.DetectCardDrift = true
+			})
+			rt := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}},
+					ContentLength: int64(len(card)), Body: io.NopCloser(strings.NewReader(card)), Request: req,
+				}, nil
+			})
+			p.client = &http.Client{Transport: rt}
+			target := "https://api.vendor.example" + agentCardPath
+			var handler http.Handler = http.HandlerFunc(p.handleForwardHTTP)
+			if surface == transportInterceptReceipt {
+				target = "https://api.vendor.example:443" + agentCardPath
+				handler = newInterceptHandler(&InterceptContext{
+					TargetHost: "api.vendor.example", TargetPort: "443", Config: p.CurrentConfig(),
+					Scanner: p.ScannerPtr().Load(), Logger: p.logger, Metrics: p.metrics, Proxy: p,
+				}, rt)
+			}
+			for _, want := range []int{http.StatusForbidden, http.StatusOK} {
+				out := httptest.NewRecorder()
+				handler.ServeHTTP(out, httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, http.NoBody))
+				if out.Code != want {
+					t.Fatalf("status=%d want=%d body=%q", out.Code, want, out.Body.String())
+				}
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			paths, err := filepath.Glob(filepath.Join(dir, "*.receipt-v3.jsonl"))
+			if err != nil || len(paths) != 2 {
+				t.Fatalf("expected original and recovery stream: %v, %v", paths, err)
+			}
+			var actions []v3.Action
+			for _, path := range paths {
+				actions = append(actions, readV3TransportFile(t, path)...)
+			}
+			if !slices.ContainsFunc(actions, func(a v3.Action) bool {
+				return a.Layer == scannerLabelA2ACardDrift && a.Phase == "outcome" && a.OutcomeClass == "completed"
+			}) {
+				t.Fatal("second request did not confirm first-seen baseline adoption")
+			}
+		})
+	}
+}
+
+func TestV3RequiredBufferedResponseFraming(t *testing.T) {
+	for _, surface := range []string{TransportForward, transportInterceptReceipt, TransportReverse} {
+		t.Run(surface, func(t *testing.T) {
+			p, writer, dir, _ := newTestV3HTTPProxy(t, surface, true, nil, func(cfg *config.Config) {
+				cfg.FlightRecorder.RequireReceipts = true
+				cfg.ResponseScanning.Enabled = true
+			})
+			status, body := exerciseV3Transport(t, p, surface, v3TransportExercise{responseBody: "ordinary content"}, func() {})
+			if status != http.StatusOK || body != "ordinary content" {
+				t.Fatalf("response = %d %q", status, body)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			assertHandshakeOutcome(t, dir, boundaryDownstreamDelivery, "completed")
+		})
+	}
+}
+
+func TestV3RequestPolicyReceiptRecordsRefusal(t *testing.T) {
+	for _, surface := range []string{TransportForward, TransportReverse} {
+		t.Run(surface, func(t *testing.T) {
+			p, writer, dir, _ := newTestV3HTTPProxy(t, surface, true, nil)
+			emit := p.emitRequestPolicyReceipt
+			if surface == TransportReverse {
+				rp := &ReverseProxyHandler{owner: p, cfgPtr: p.ConfigPtr()}
+				emit = rp.emitRequestPolicyReceipt
+			}
+			opts := receipt.EmitOpts{
+				ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: blockLayerRequestPolicy,
+				Transport: surface, Method: http.MethodPost, Target: "https://api.vendor.example",
+			}
+			if err := emit(opts); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.ContainsFunc(readV3TransportActions(t, dir), func(a v3.Action) bool {
+				return a.ActionID == opts.ActionID && a.EffectBoundary == boundaryUpstreamSend &&
+					a.Phase == "decision" && a.Verdict == config.ActionBlock
+			}) {
+				t.Fatal("missing request policy refusal for the returned action ID")
+			}
+			opts.ActionID = receipt.NewActionID()
+			if err := emit(opts); err == nil || errors.Is(err, errReceiptEmitterUnavailable) {
+				t.Fatalf("closed writer returned %v, want v3 write failure", err)
+			}
+		})
 	}
 }

@@ -822,15 +822,15 @@ func RunHTTPListenerProxy(
 				if dec.intent.handle.settled.CompareAndSwap(false, true) {
 					receiptEmitted = dec.intent.handle.emit(safeLogW, receiptOpts, true) == nil
 				}
-			} else if !dec.skipLegacyReceipt && (emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil || requestBaseOpts.requireReceipts()) {
+			} else if !dec.skipLegacyReceipt && (emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil || requestBaseOpts.legacyReceiptsRequired()) {
 				if _, emitErr := requestBaseOpts.emitReceiptDecision(MCPDecision{
 					Receipt:        receiptOpts,
-					RequireReceipt: requestBaseOpts.requireReceipts(),
+					RequireReceipt: requestBaseOpts.legacyReceiptsRequired(),
 					// A blocked outcome closes an intent written durably under
 					// required recording; sync it the same way.
-					Durable: requestBaseOpts.requireReceipts() && dec.intent.Receipt.ActionID != "",
+					Durable: requestBaseOpts.legacyReceiptsRequired() && dec.intent.Receipt.ActionID != "",
 				}); emitErr != nil {
-					logReceiptEmitFailure(safeLogW, emitErr, requestBaseOpts.requireReceipts(), config.ActionBlock)
+					logReceiptEmitFailure(safeLogW, emitErr, requestBaseOpts.legacyReceiptsRequired(), config.ActionBlock)
 				} else if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil {
 					receiptEmitted = true
 				}
@@ -2046,7 +2046,7 @@ func RunHTTPListenerProxy(
 				v2Emitter := requestBaseOpts.v2ReceiptEmitter()
 				actionID := receipt.NewActionID()
 				receiptEmitted := false
-				if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil || requestBaseOpts.requireReceipts() {
+				if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil || requestBaseOpts.legacyReceiptsRequired() {
 					if _, emitErr := requestBaseOpts.emitReceiptDecision(MCPDecision{
 						Receipt: requestBaseOpts.withReceiptPolicyHash(receipt.EmitOpts{
 							ActionID:  actionID,
@@ -2061,9 +2061,9 @@ func RunHTTPListenerProxy(
 							// carry the A2A-header attribution.
 							Target: mcpReceiptA2AHeaderTarget,
 						}),
-						RequireReceipt: requestBaseOpts.requireReceipts(),
+						RequireReceipt: requestBaseOpts.legacyReceiptsRequired(),
 					}); emitErr != nil {
-						logReceiptEmitFailure(safeLogW, emitErr, requestBaseOpts.requireReceipts(), config.ActionBlock)
+						logReceiptEmitFailure(safeLogW, emitErr, requestBaseOpts.legacyReceiptsRequired(), config.ActionBlock)
 					} else if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil {
 						receiptEmitted = true
 					}

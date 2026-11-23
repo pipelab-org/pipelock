@@ -19,7 +19,7 @@ func (p *Proxy) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpt
 	if cfg != nil {
 		opts = withReceiptConfig(opts, cfg)
 	}
-	if cfg != nil && cfg.FlightRecorder.RequireReceipts {
+	if p.legacyReceiptsRequired(cfg) {
 		return p.emitAllowPathReceipt(cfg, opts)
 	}
 	if p != nil {
@@ -33,7 +33,7 @@ func (rp *ReverseProxyHandler) confirmResponseDecision(cfg *config.Config, opts 
 	if cfg != nil {
 		opts = withReceiptConfig(opts, cfg)
 	}
-	if cfg != nil && cfg.FlightRecorder.RequireReceipts {
+	if rp.legacyReceiptsRequired(cfg) {
 		return rp.emitAllowPathReceipt(cfg, opts)
 	}
 	_ = rp.emitReceipt(opts)

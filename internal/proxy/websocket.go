@@ -1206,7 +1206,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if cfg.FlightRecorder.RequireReceipts {
+	if p.legacyReceiptsRequired(cfg) {
 		if err := p.emitRequiredReceipt(withReceiptConfig(admissionReceipt, cfg)); err != nil {
 			blockedErr := newReceiptEmissionBlockedRequest(err)
 			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
@@ -1223,7 +1223,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	outcomeBytes := int64(-1)
 	outcomeReason := "incomplete"
 	outcomeEmitted := false
-	if cfg.FlightRecorder.RequireReceipts {
+	if p.legacyReceiptsRequired(cfg) {
 		defer func() {
 			aborted := recover()
 			var flushErr error
@@ -1437,7 +1437,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		closeReceipt.Pattern = "license_revoked"
 	} else if capacityStopped {
 		closeReceipt.Pattern = nativeCapacityStopReason
-		if !cfg.FlightRecorder.RequireReceipts {
+		if !p.legacyReceiptsRequired(cfg) {
 			closeReceipt = nativeStreamCloseReceipt(closeReceipt)
 			closeReceipt.ParentActionID = actionID
 		}
@@ -1445,7 +1445,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if wsGate.HasContractContext() {
 		closeReceipt = withContractReceipt(wsGate, closeReceipt)
 	}
-	if !cfg.FlightRecorder.RequireReceipts || stats.blocked || relay.redactionLog != nil {
+	if !p.legacyReceiptsRequired(cfg) || stats.blocked || relay.redactionLog != nil {
 		emitWebSocketReceipt(closeReceipt)
 	}
 
