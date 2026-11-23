@@ -504,6 +504,56 @@ func TestControlSurfaceCheckoutOutsideWorktreeSlotKeepsItsFiles(t *testing.T) {
 	}
 }
 
+// Only the project's own .claude directory holds agent worktree slots. A
+// .claude/worktrees path inside another monitored directory, such as a cloned
+// skill or hook repository, is not where Claude Code creates checkouts, so a
+// Git marker there cannot exempt its files. A nested project's own slot stays
+// exempt, which keeps its source files out of the entry budget.
+func TestControlSurfaceWorktreeSlotLookalikeInsideMonitoredDirectoryKeepsItsFiles(t *testing.T) {
+	for _, tc := range []struct{ name, slot string }{
+		{"inside a skill directory", ".claude/skills/pwn/.claude/worktrees/x"},
+		{"inside a hooks directory", ".claude/hooks/.claude/worktrees/x"},
+		{"inside a slot's own agent directory", ".claude/worktrees/real/.claude/worktrees/x"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			git := newControlGit(t)
+			root := t.TempDir()
+			git.init(t, root)
+			if err := os.MkdirAll(filepath.Join(root, filepath.FromSlash(tc.slot), ".git"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(root, ".claude", "worktrees", "real", ".git"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			script := tc.slot + "/run.sh"
+			writeControlFixture(t, root, script, "before")
+			budget := DefaultControlSurfaceBudget()
+			before := controlSnapshot(t, root, budget)
+			writeControlFixture(t, root, script, "changed")
+			expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), script)
+		})
+	}
+	t.Run("nested project keeps its own slot exempt", func(t *testing.T) {
+		git := newControlGit(t)
+		root := t.TempDir()
+		git.init(t, root)
+		nested := filepath.Join(root, "services", "api")
+		if err := os.MkdirAll(nested, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		git.init(t, nested)
+		git.commit(t, nested, "main.txt")
+		slot := filepath.Join(nested, ".claude", "worktrees", "example")
+		git.run(t, nested, "worktree", "add", "-qb", "example", slot)
+		budget := DefaultControlSurfaceBudget()
+		before := controlSnapshot(t, root, budget)
+		writeControlFixture(t, slot, "src/run.sh", "changed")
+		if diff := controlDiff(t, before, controlSnapshot(t, root, budget)); diff.Changed || diff.Incomplete {
+			t.Fatalf("a nested project's slot must stay outside the control surface: %+v", diff)
+		}
+	})
+}
+
 // A fixed control directory is monitored as a whole even when it carries its
 // own Git marker, for example a submodule or a standalone repository for the
 // agent configuration. Only checkouts found below it are limited to their Git
