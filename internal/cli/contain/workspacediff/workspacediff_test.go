@@ -805,7 +805,7 @@ func TestSnapshot_TOCTOU_IdentityMismatchRefusesToHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = root.Close() }()
-	_, _, err = hashFileSafe(root, "real", realPath, 1<<20, dev, ino, true)
+	_, _, err = hashFileSafe(snapshotFile{root: root, relPath: "real", path: realPath, dev: dev, ino: ino, haveIDs: true}, 1<<20)
 	if err == nil {
 		t.Fatalf("expected hashFileSafe to refuse a path whose identity changed since the walk observed it")
 	}
@@ -838,7 +838,7 @@ func TestSnapshot_TOCTOU_SymlinkSwapRefusesToHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = root.Close() }()
-	_, _, err = hashFileSafe(root, "real", realPath, 1<<20, dev, ino, true)
+	_, _, err = hashFileSafe(snapshotFile{root: root, relPath: "real", path: realPath, dev: dev, ino: ino, haveIDs: true}, 1<<20)
 	if err == nil {
 		t.Fatalf("expected hashFileSafe to refuse hashing through a symlink swapped in after the walk (os.Root should refuse the escaping symlink)")
 	}
@@ -983,7 +983,7 @@ func TestSnapshot_M6_IntermediateSymlinkTraversal_RefusesToHashOutside(t *testin
 	}
 	defer func() { _ = rootHandle.Close() }()
 
-	_, _, err = hashFileSafe(rootHandle, filepath.Join("sub", "file"), filePath, 1<<20, dev, ino, true)
+	_, _, err = hashFileSafe(snapshotFile{root: rootHandle, relPath: filepath.Join("sub", "file"), path: filePath, dev: dev, ino: ino, haveIDs: true}, 1<<20)
 	if err == nil {
 		t.Fatalf("expected hashFileSafe to refuse traversing an intermediate path component replaced by a symlink")
 	}
@@ -1145,7 +1145,7 @@ func TestHashFileSafeRefusesUntrustworthyReads(t *testing.T) {
 			if tt.badID {
 				wantDev++
 			}
-			digest, oversize, hashErr := hashFileSafe(handle, tt.relPath, filepath.Join(root, tt.relPath), tt.cap, wantDev, ino, haveIDs)
+			digest, oversize, hashErr := hashFileSafe(snapshotFile{root: handle, relPath: tt.relPath, path: filepath.Join(root, tt.relPath), dev: wantDev, ino: ino, haveIDs: haveIDs}, tt.cap)
 			if tt.wantErr != "" {
 				if hashErr == nil || !strings.Contains(hashErr.Error(), tt.wantErr) {
 					t.Fatalf("hashFileSafe error = %v, want %q", hashErr, tt.wantErr)
@@ -1367,5 +1367,41 @@ func TestSignedStatementWithInvalidUTF8PathVerifiesFromDisk(t *testing.T) {
 	}
 	if err := Verify(loaded, pub); err != nil {
 		t.Fatalf("verify after reading from disk: %v", err)
+	}
+}
+
+// The mount an opened file is on must be the workspace mount the walk checked.
+func TestSnapshotRefusesFileOnADifferentMountThanTheWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "file")
+	writeFile(t, path, "content")
+	workspaceMount, ok := mountID(dir)
+	if !ok {
+		t.Skip("mount IDs are unavailable")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev, ino, haveIDs := statIDs(info)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	file := snapshotFile{
+		root: root, relPath: "file", path: path, dev: dev, ino: ino, haveIDs: haveIDs,
+		workspaceMount: workspaceMount, workspaceMountKnown: true,
+	}
+	if _, _, err := hashFileSafe(file, 1<<20); err != nil {
+		t.Fatalf("a file on the workspace mount must be hashed: %v", err)
+	}
+	file.workspaceMount++
+	if _, _, err := hashFileSafe(file, 1<<20); err == nil || !strings.Contains(err.Error(), "mount changed") {
+		t.Fatalf("a file on another mount than the workspace's must be refused, got %v", err)
+	}
+	file.workspaceMountKnown = false
+	if _, _, err := hashFileSafe(file, 1<<20); err != nil {
+		t.Fatalf("without mount IDs the device check is the boundary: %v", err)
 	}
 }

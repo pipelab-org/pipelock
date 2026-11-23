@@ -59,16 +59,18 @@ func postureCmd() *cobra.Command {
 
 func postureVerifyCmd() *cobra.Command {
 	var (
-		proofFile        string
-		keyFile          string
-		policy           string
-		minScore         int
-		maxAgeStr        string
-		maxReceiptAgeStr string
-		configFile       string
-		jsonOutput       bool
-		requireDiscovery bool
-		workspaceStmt    string
+		proofFile                   string
+		keyFile                     string
+		policy                      string
+		minScore                    int
+		maxAgeStr                   string
+		maxReceiptAgeStr            string
+		configFile                  string
+		jsonOutput                  bool
+		requireDiscovery            bool
+		workspaceStmt               string
+		allowControlChanges         bool
+		allowPartialNestedDiscovery bool
 	)
 
 	cmd := &cobra.Command{
@@ -82,7 +84,9 @@ Exit codes:
   1  Verification could not complete: flag parse error, bad proof file, bad key,
      bad signature, expired capsule, or schema mismatch
   2  Verified but failed: signature is valid, but policy gates or minimum score
-     not met, or a bound workspace change statement is incomplete`,
+     not met, workspace evidence is incomplete, or control paths changed
+     without --allow-control-surface-changes, or nested discovery was partial
+     without --allow-partial-nested-discovery`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			maxAgeDays, err := parseDays(maxAgeStr)
@@ -160,10 +164,27 @@ Exit codes:
 					if !summary.Complete {
 						_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Workspace change statement: incomplete: %s\n", summary.IncompleteReason)
 					}
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  control_surface_status=%s control_surface_changed=%t control_surface_paths=%q\n",
+						summary.ControlSurface.Status, summary.ControlSurface.Changed, summary.ControlSurface.Paths)
+					if summary.ControlSurface.NestedPartial {
+						_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Workspace nested control discovery: partial: %s\n", summary.ControlSurface.NestedReason)
+					}
+					if summary.ControlSurface.Reason != "" {
+						_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Workspace control surface: %s\n", summary.ControlSurface.Reason)
+					}
 				}
 				if !summary.Complete {
 					result.Passed = false
 					result.Error = fmt.Sprintf("workspace change statement is incomplete: %s", summary.IncompleteReason)
+				} else if summary.ControlSurface.Status == "incomplete" {
+					result.Passed = false
+					result.Error = fmt.Sprintf("workspace control surface observation is incomplete: %s", summary.ControlSurface.Reason)
+				} else if summary.ControlSurface.Changed && !allowControlChanges {
+					result.Passed = false
+					result.Error = "workspace control paths changed"
+				} else if summary.ControlSurface.NestedPartial && !allowPartialNestedDiscovery {
+					result.Passed = false
+					result.Error = fmt.Sprintf("workspace nested control discovery is partial: %s", summary.ControlSurface.NestedReason)
 				}
 			}
 
@@ -196,6 +217,8 @@ Exit codes:
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON")
 	cmd.Flags().BoolVar(&requireDiscovery, "require-discovery", false, "fail if 0 servers discovered")
 	cmd.Flags().StringVar(&workspaceStmt, "workspace-statement", "", "path to a signed workspace-change-statement.json to verify against --proof (checks its signature AND that it is bound to this exact capsule's bytes)")
+	cmd.Flags().BoolVar(&allowControlChanges, "allow-control-surface-changes", false, "accept observed control path changes")
+	cmd.Flags().BoolVar(&allowPartialNestedDiscovery, "allow-partial-nested-discovery", false, "accept a workspace statement with partial nested control discovery")
 
 	_ = cmd.MarkFlagRequired("proof")
 	_ = cmd.MarkFlagRequired("key")
@@ -240,14 +263,27 @@ func verifyWorkspaceStatementBinding(stmtPath string, capsuleBytes []byte, pubKe
 	return signed, nil
 }
 
+type controlSurfaceSummary struct {
+	NestedPartial bool     `json:"control_surface_nested_discovery_partial,omitempty"`
+	NestedReason  string   `json:"control_surface_nested_discovery_reason,omitempty"`
+	Status        string   `json:"control_surface_status"`
+	Changed       bool     `json:"control_surface_changed"`
+	Paths         []string `json:"control_surface_paths"`
+	Reason        string   `json:"control_surface_incomplete_reason,omitempty"`
+}
+
 type workspaceStatementSummary struct {
 	Complete         bool
 	BoundaryCheck    string
 	IncompleteReason string
+	ControlSurface   controlSurfaceSummary
 }
 
 func summarizeWorkspaceStatement(signed workspacediff.SignedStatement) workspaceStatementSummary {
-	summary := workspaceStatementSummary{Complete: true}
+	summary := workspaceStatementSummary{
+		Complete:       true,
+		ControlSurface: summarizeControlSurface(signed.Statements),
+	}
 	boundaryChecks := make(map[string]struct{}, len(signed.Statements))
 	incompleteReasons := make([]string, 0, len(signed.Statements))
 	for _, statement := range signed.Statements {
@@ -263,6 +299,51 @@ func summarizeWorkspaceStatement(signed workspacediff.SignedStatement) workspace
 	summary.IncompleteReason = strings.Join(incompleteReasons, "; ")
 	if !summary.Complete && summary.IncompleteReason == "" {
 		summary.IncompleteReason = "signed workspace observation is incomplete"
+	}
+	return summary
+}
+
+func summarizeControlSurface(statements []workspacediff.Statement) controlSurfaceSummary {
+	summary := controlSurfaceSummary{Status: "not_recorded", Paths: []string{}}
+	var reasons, nestedReasons []string
+	for _, statement := range statements {
+		control := statement.ControlSurface
+		if control == nil {
+			continue
+		}
+		summary.Status = "clean"
+		hasNestedReason := strings.TrimSpace(control.NestedDiscoveryReason) != ""
+		if control.NestedDiscoveryPartial != hasNestedReason ||
+			(!control.NestedDiscoveryPartial && control.NestedDiscoveryReason != "") {
+			reasons = append(reasons, fmt.Sprintf("%s: inconsistent nested control discovery evidence", statement.Root))
+		}
+		if control.NestedDiscoveryPartial {
+			summary.NestedPartial = true
+			nestedReasons = append(nestedReasons, fmt.Sprintf("%s: %s", statement.Root, control.NestedDiscoveryReason))
+		}
+		for _, path := range control.Paths() {
+			summary.Paths = append(summary.Paths, filepath.Join(statement.Root, path))
+		}
+		summary.Changed = summary.Changed || control.Changed || len(summary.Paths) > 0
+		if control.Incomplete || len(control.Unreadable) > 0 || control.IncompleteReason != "" {
+			reason := control.IncompleteReason
+			if reason == "" {
+				reason = "signed control surface observation is incomplete"
+			}
+			reasons = append(reasons, fmt.Sprintf("%s: %s", statement.Root, reason))
+		}
+	}
+	sort.Strings(summary.Paths)
+	summary.NestedReason = strings.Join(nestedReasons, "; ")
+	if summary.Changed {
+		summary.Status = "changed"
+	}
+	if len(reasons) > 0 {
+		summary.Status = "incomplete"
+		summary.Reason = strings.Join(reasons, "; ")
+	}
+	if summary.Status == "clean" && summary.NestedPartial {
+		summary.Status = "partial"
 	}
 	return summary
 }
@@ -370,6 +451,7 @@ type verifyJSONOutput struct {
 }
 
 type workspaceStatementJSONResult struct {
+	*controlSurfaceSummary
 	Bound            bool   `json:"bound"`
 	Complete         *bool  `json:"complete,omitempty"`
 	BoundaryCheck    string `json:"boundary_check,omitempty"`
@@ -382,6 +464,7 @@ func writeVerifyJSON(cmd *cobra.Command, result *posturepkg.VerifyResult, worksp
 	if workspaceStmtRequested {
 		out.WorkspaceStatement = &workspaceStatementJSONResult{Bound: workspaceStmtBound, Reason: workspaceStmtReason}
 		if summary != nil {
+			out.WorkspaceStatement.controlSurfaceSummary = &summary.ControlSurface
 			out.WorkspaceStatement.Complete = &summary.Complete
 			out.WorkspaceStatement.BoundaryCheck = summary.BoundaryCheck
 			out.WorkspaceStatement.IncompleteReason = summary.IncompleteReason

@@ -1,0 +1,477 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package workspacediff
+
+import (
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+)
+
+func TestControlSurfaceGitAndToolPaths(t *testing.T) {
+	for _, tc := range []struct {
+		path   string
+		before string
+		after  string
+	}{
+		{path: ".git/commondir", after: "../../outside-metadata\n"},
+		{path: ".git/config.worktree", after: "[core]\nfsmonitor = ./monitor-file\n"},
+		{path: ".git/hooks/pre-commit", after: "inert fixture"},
+		{path: ".git/hooks/pre-commit", before: "old fixture", after: "new fixture"},
+		{path: ".git/objects/info/alternates", after: "inert fixture"},
+		{path: ".git/objects/info/http-alternates", after: "inert fixture"},
+		{path: ".git/rebase-merge/git-rebase-todo", after: "exec <planned command>\n"},
+		{path: ".claude/settings.json", after: "{}"},
+		{path: ".mcp.json", after: "{}"},
+		{path: ".vscode/tasks.json", after: "{}"},
+		{path: ".envrc", after: "inert fixture"},
+		{path: "nested/.vscode/tasks.json", after: "{}"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			root := t.TempDir()
+			if tc.before != "" {
+				writeControlFixture(t, root, tc.path, tc.before)
+			}
+			before := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+			writeControlFixture(t, root, tc.path, tc.after)
+			after := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+			expectControlPath(t, controlDiff(t, before, after), tc.path)
+		})
+	}
+}
+
+func TestControlSurfaceGitConfigTargets(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		configPath string
+		config     string
+		target     string
+		contents   string
+	}{
+		{"hook directory", ".git/config", "[CoRe]\nHooksPath = .githooks # test\n", ".githooks/pre-commit", "fixture"},
+		{"metadata-relative hook directory", ".git/config", "[core]\nhooksPath = refs/custom\n", ".git/refs/custom/pre-receive", "fixture"},
+		{"worktree fsmonitor", ".git/config.worktree", "[core]\nfsmonitor = ./monitor-file\n", "monitor-file", "fixture"},
+		{"include path", ".git/config", "[include]\npath = ../local-config\n", "local-config", "[example]\nsetting = before\n"},
+		{"conditional include", ".git/config", "[includeIf \"onbranch:future\"]\npath = \"../config with space\"\n", "config with space", "[example]\nsetting = before\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// This is an inert config fixture. Nothing invokes Git on this tree.
+			root := t.TempDir()
+			if tc.configPath == ".git/config.worktree" {
+				writeControlFixture(t, root, ".git/config", "[extensions]\nworktreeConfig = true\n")
+			}
+			writeControlFixture(t, root, tc.configPath, tc.config)
+			writeControlFixture(t, root, tc.target, tc.contents)
+			before := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+			writeControlFixture(t, root, tc.target, tc.contents+"\n# updated")
+			after := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+			expectControlPath(t, controlDiff(t, before, after), tc.target)
+		})
+	}
+}
+
+func TestControlSurfaceSubmoduleConfigTargetBeforeDiscovery(t *testing.T) {
+	root := t.TempDir()
+	writeControlFixture(t, root, ".git/modules/dependency/HEAD", "ref: refs/heads/main\n")
+	writeControlFixture(t, root, ".git/modules/dependency/config", "[core]\nworktree = ../../../dependency\nfsmonitor = ./monitor-file\n")
+	const target = "dependency/monitor-file"
+	writeControlFixture(t, root, target, "before")
+	budget := DefaultControlSurfaceBudget()
+	budget.MaxNestedDirs = 1
+	before := controlSnapshot(t, root, budget)
+	writeControlFixture(t, root, target, "after")
+	after := controlSnapshot(t, root, budget)
+	diff := controlDiff(t, before, after)
+	if !diff.Changed || diff.Incomplete || !diff.NestedDiscoveryPartial || !slices.Contains(diff.Modified, filepath.FromSlash(target)) {
+		t.Fatalf("priority Git scan did not report the submodule worktree target: %+v", diff)
+	}
+}
+
+func TestControlSurfaceNeverExcludesVolatileSymlinks(t *testing.T) {
+	for _, rel := range []string{".git/objects/pack", ".git/refs", ".git/HEAD", ".git/lfs/objects"} {
+		t.Run(rel, func(t *testing.T) {
+			root := t.TempDir()
+			name := filepath.FromSlash(rel)
+			path := filepath.Join(root, name)
+			if rel == ".git/HEAD" {
+				writeControlFixture(t, root, rel, "ref: refs/heads/main\n")
+			} else if err := os.MkdirAll(path, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			before := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(t.TempDir(), "unobserved")
+			if err := os.Symlink(target, path); err != nil {
+				t.Fatal(err)
+			}
+			after := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+			expectControlPath(t, controlDiff(t, before, after), rel)
+			if entry := after.priority.entries[name]; entry.Kind != KindSymlink || entry.Target != target {
+				t.Fatalf("symlink not retained by its own kind: %+v", entry)
+			}
+		})
+	}
+}
+
+func TestControlSurfaceKeepsObservedChangesWhenTruncated(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		budget    func(*ControlSurfaceBudget)
+		reason    string
+		wantAdded bool
+	}{
+		{"priority", func(b *ControlSurfaceBudget) { b.MaxControlEntries = 3 }, "control entry limit", false},
+		{"nested", func(b *ControlSurfaceBudget) { b.MaxNestedDirs = 1 }, "nested directory", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			const configPath = ".git/config"
+			writeControlFixture(t, root, configPath, "[core]\nfilemode = true\n")
+			writeControlFixture(t, root, ".git/hooks/fixture", "initial fixture")
+			writeControlFixture(t, root, ".git/unknown", "another fixture")
+			writeControlFixture(t, root, "nested/file", "ordinary file")
+			budget := DefaultControlSurfaceBudget()
+			tc.budget(&budget)
+			before := controlSnapshot(t, root, budget)
+			writeControlFixture(t, root, configPath, "[core]\nfilemode = false\n")
+			writeControlFixture(t, root, ".envrc", "inert fixture")
+			after := controlSnapshot(t, root, budget)
+			diff := controlDiff(t, before, after)
+			reason := diff.IncompleteReason + diff.NestedDiscoveryReason
+			if !diff.Changed || diff.Incomplete == tc.wantAdded || diff.NestedDiscoveryPartial != tc.wantAdded || !strings.Contains(reason, tc.reason) ||
+				!slices.Contains(diff.Modified, filepath.FromSlash(configPath)) {
+				t.Fatalf("want incomplete observation with config modification: %+v", diff)
+			}
+			if slices.Contains(diff.Added, ".envrc") != tc.wantAdded {
+				t.Fatalf("want root control addition reported=%t: %+v", tc.wantAdded, diff)
+			}
+		})
+	}
+}
+
+func TestControlSurfaceFailsClosedOnUnreadableAndRootReplacement(t *testing.T) {
+	t.Run("digest cap", func(t *testing.T) {
+		root := t.TempDir()
+		writeControlFixture(t, root, ".mcp.json", strings.Repeat("x", testControlCap+1))
+		snap := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+		diff := controlDiff(t, snap, snap)
+		if !diff.Incomplete || len(diff.Unreadable) != 1 || diff.Unreadable[0].Path != ".mcp.json" {
+			t.Fatalf("digest cap must fail closed: %+v", diff)
+		}
+	})
+	t.Run("root inode", func(t *testing.T) {
+		dir := t.TempDir()
+		root := filepath.Join(dir, "workspace")
+		writeControlFixture(t, root, ".envrc", "first workspace")
+		before := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+		if err := os.Rename(root, filepath.Join(dir, "old")); err != nil {
+			t.Fatal(err)
+		}
+		writeControlFixture(t, root, ".envrc", "second workspace")
+		after := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+		diff := controlDiff(t, before, after)
+		if !diff.Incomplete || !strings.Contains(diff.IncompleteReason, "identity") {
+			t.Fatalf("root replacement must fail closed: %+v", diff)
+		}
+	})
+}
+
+func TestControlSurfaceFollowsInWorkspaceSymlinkTargets(t *testing.T) {
+	link := func(t *testing.T, root, target, name string) {
+		t.Helper()
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		prepare func(t *testing.T, root string)
+		edit    string
+	}{
+		{"hook file link", func(t *testing.T, root string) {
+			writeControlFixture(t, root, "scripts/hook.sh", "before")
+			link(t, root, "../../scripts/hook.sh", ".git/hooks/pre-commit")
+		}, "scripts/hook.sh"},
+		{"hooks directory link", func(t *testing.T, root string) {
+			writeControlFixture(t, root, "githooks/pre-commit", "before")
+			link(t, root, "../githooks", ".git/hooks")
+		}, "githooks/pre-commit"},
+		{"config file link", func(t *testing.T, root string) {
+			writeControlFixture(t, root, "shared.cfg", "[core]\nfilemode = true\n")
+			link(t, root, "../shared.cfg", ".git/config")
+		}, "shared.cfg"},
+		{"agent directory link", func(t *testing.T, root string) {
+			writeControlFixture(t, root, "dot/claude/settings.json", "before")
+			link(t, root, "dot/claude", ".claude")
+		}, "dot/claude/settings.json"},
+		{"absolute link", func(t *testing.T, root string) {
+			writeControlFixture(t, root, "dot/cursor/rules", "before")
+			link(t, filepath.Join(root), filepath.Join(root, "dot", "cursor"), ".cursor")
+		}, "dot/cursor/rules"},
+		{"link chain", func(t *testing.T, root string) {
+			writeControlFixture(t, root, "real/settings.json", "before")
+			link(t, root, "real", "hop")
+			link(t, root, "hop", ".claude")
+		}, "real/settings.json"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			tc.prepare(t, root)
+			before := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+			content := "after, now longer"
+			if tc.name == "config file link" {
+				// Git reads the link's target as configuration, so the edit stays valid.
+				content = "[core]\n\tfilemode = false\n"
+			}
+			writeControlFixture(t, root, tc.edit, content)
+			after := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+			expectControlPath(t, controlDiff(t, before, after), tc.edit)
+		})
+	}
+	t.Run("cycles and out-of-grant targets stay bounded and complete", func(t *testing.T) {
+		root := t.TempDir()
+		outside := t.TempDir()
+		writeControlFixture(t, outside, "file", "before")
+		link(t, root, ".cursor", ".claude")
+		link(t, root, ".claude", ".cursor")
+		link(t, root, outside, ".codex")
+		link(t, root, ".", ".vscode")
+		link(t, root, "..", ".idea")
+		before := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+		writeControlFixture(t, outside, "file", "after, now longer")
+		writeControlFixture(t, root, "ordinary.txt", "outside the control surface")
+		after := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+		if diff := controlDiff(t, before, after); diff.Changed || diff.Incomplete {
+			t.Fatalf("expected a complete, clean observation: %+v", diff)
+		}
+	})
+}
+
+// A link target is resolved the way the kernel does: ".." leaves the directory
+// the path has reached. Replacing a plain prefix directory with a symlink moves
+// where the target lands, and the observation follows it there.
+func TestControlSurfaceResolvesDotDotLinkTargetsThroughSymlinks(t *testing.T) {
+	root := t.TempDir()
+	writeControlFixture(t, root, "sub/keep", "keep")
+	writeControlFixture(t, root, "shared/cmds/run", "before")
+	writeControlFixture(t, root, "deep/inner/keep", "keep")
+	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../sub/../shared/cmds", filepath.Join(root, ".claude", "cmds")); err != nil {
+		t.Fatal(err)
+	}
+	before := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+	if diff := controlDiff(t, before, before); diff.Incomplete {
+		t.Fatalf("a plain directory prefix resolves the same way lexically: %+v", diff)
+	}
+	// The prefix is now a link to deep/inner, so the kernel resolves the target
+	// to deep/shared/cmds, where a lexical walk would keep observing shared/.
+	if err := os.RemoveAll(filepath.Join(root, "sub")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("deep/inner", filepath.Join(root, "sub")); err != nil {
+		t.Fatal(err)
+	}
+	writeControlFixture(t, root, "deep/shared/cmds/run", "planted")
+	after := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+	diff := controlDiff(t, before, after)
+	if diff.Incomplete || !slices.Contains(diff.Added, filepath.FromSlash("deep/shared/cmds/run")) {
+		t.Fatalf("want the file the kernel resolves the link to reported added: %+v", diff)
+	}
+	writeControlFixture(t, root, "deep/shared/cmds/run", "edited, now longer")
+	expectControlPath(t, controlDiff(t, after, controlSnapshot(t, root, DefaultControlSurfaceBudget())), "deep/shared/cmds/run")
+}
+
+// Git resolves a path named in its metadata one component at a time, so ".."
+// after a symlinked component leaves that component's target. The observation
+// resolves it the same way, not by cleaning the path lexically, which would
+// watch a different directory than Git uses.
+func TestControlSurfaceResolvesDotDotConfigPathsThroughSymlinks(t *testing.T) {
+	symlink := func(t *testing.T, root, target, name string) {
+		t.Helper()
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		prepare func(t *testing.T, git testGit, root string)
+		edit    string
+	}{
+		{"hooks path", func(t *testing.T, git testGit, root string) {
+			git.init(t, root)
+			git.run(t, root, "config", "--local", "core.hooksPath", "jump/../hooks")
+			symlink(t, root, "deep/sub", "jump")
+			writeControlFixture(t, root, "deep/sub/keep", "keep")
+			writeControlFixture(t, root, "deep/hooks/pre-commit", "before")
+		}, "deep/hooks/pre-commit"},
+		{"hooks path that leaves the workspace lexically", func(t *testing.T, git testGit, root string) {
+			git.init(t, root)
+			git.run(t, root, "config", "--local", "core.hooksPath", "jump/../../hooks")
+			symlink(t, root, "deep/sub/sub2", "jump")
+			writeControlFixture(t, root, "deep/sub/sub2/keep", "keep")
+			writeControlFixture(t, root, "deep/hooks/pre-commit", "before")
+		}, "deep/hooks/pre-commit"},
+		{"include path", func(t *testing.T, git testGit, root string) {
+			git.init(t, root)
+			git.run(t, root, "config", "--local", "include.path", "jump/../shared.cfg")
+			symlink(t, root, "../deep/sub", ".git/jump")
+			writeControlFixture(t, root, "deep/sub/keep", "keep")
+			writeControlFixture(t, root, "deep/shared.cfg", "[example]\nkey = before\n")
+		}, "deep/shared.cfg"},
+		{"gitdir pointer", func(t *testing.T, _ testGit, root string) {
+			writeControlFixture(t, root, "proj/.git", "gitdir: jump/../gitdata\n")
+			symlink(t, root, "../deep/sub", "proj/jump")
+			writeControlFixture(t, root, "deep/sub/keep", "keep")
+			writeControlFixture(t, root, "deep/gitdata/hooks/pre-commit", "before")
+			writeControlFixture(t, root, "proj/gitdata/hooks/pre-commit", "lexical decoy")
+		}, "deep/gitdata/hooks/pre-commit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			git := newControlGit(t)
+			root := t.TempDir()
+			tc.prepare(t, git, root)
+			budget := DefaultControlSurfaceBudget()
+			before := controlSnapshot(t, root, budget)
+			// Git reads an included file as configuration, so the edit stays valid.
+			writeControlFixture(t, root, tc.edit, "[example]\n\tkey = changed\n")
+			expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), tc.edit)
+		})
+	}
+	t.Run("a path that leaves the workspace through plain directories is not ambiguous", func(t *testing.T) {
+		git := newControlGit(t)
+		root := t.TempDir()
+		git.init(t, root)
+		git.run(t, root, "config", "--local", "core.hooksPath", "../shared-hooks")
+		git.run(t, root, "config", "--local", "include.path", "sub/../../shared.cfg")
+		writeControlFixture(t, root, "sub/keep", "keep")
+		budget := DefaultControlSurfaceBudget()
+		before := controlSnapshot(t, root, budget)
+		if diff := controlDiff(t, before, controlSnapshot(t, root, budget)); diff.Incomplete || diff.Changed {
+			t.Fatalf("a path outside the workspace is out of scope, not ambiguous: %+v", diff)
+		}
+	})
+	t.Run("plain directory components resolve the same way", func(t *testing.T) {
+		git := newControlGit(t)
+		root := t.TempDir()
+		git.init(t, root)
+		git.run(t, root, "config", "--local", "core.hooksPath", "sub/../hooks")
+		writeControlFixture(t, root, "sub/keep", "keep")
+		writeControlFixture(t, root, "hooks/pre-commit", "before")
+		budget := DefaultControlSurfaceBudget()
+		before := controlSnapshot(t, root, budget)
+		writeControlFixture(t, root, "hooks/pre-commit", "changed")
+		expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), "hooks/pre-commit")
+	})
+}
+
+// A repository's local config can be a symlink to a file in the workspace. Git
+// reads the target, so the hook directory and includes it names must be
+// followed, and relative includes still resolve against the config's own path.
+func TestControlSurfaceFollowsReferencesInASymlinkedGitConfig(t *testing.T) {
+	linkConfig := func(t *testing.T, root, target string) {
+		t.Helper()
+		config := filepath.Join(root, ".git", "config")
+		if err := os.Remove(config); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, config); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		prepare func(t *testing.T, root string)
+		edit    string
+	}{
+		{"hooks path", func(t *testing.T, root string) {
+			writeControlFixture(t, root, "shared/gitconfig", "[core]\n\thooksPath = hooks-target\n")
+			writeControlFixture(t, root, "hooks-target/pre-commit", "before")
+			linkConfig(t, root, "../shared/gitconfig")
+		}, "hooks-target/pre-commit"},
+		{"include relative to the link", func(t *testing.T, root string) {
+			writeControlFixture(t, root, "deep/shared/gitconfig", "[include]\n\tpath = ../inc.cfg\n")
+			writeControlFixture(t, root, "inc.cfg", "[example]\n\tkey = before\n")
+			writeControlFixture(t, root, "deep/inc.cfg", "[example]\n\tkey = decoy\n")
+			linkConfig(t, root, "../deep/shared/gitconfig")
+		}, "inc.cfg"},
+		{"link chain", func(t *testing.T, root string) {
+			writeControlFixture(t, root, "shared/gitconfig", "[core]\n\thooksPath = hooks-target\n")
+			writeControlFixture(t, root, "hooks-target/pre-commit", "before")
+			if err := os.Symlink("shared/gitconfig", filepath.Join(root, "hop")); err != nil {
+				t.Fatal(err)
+			}
+			linkConfig(t, root, "../hop")
+		}, "hooks-target/pre-commit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			git := newControlGit(t)
+			root := t.TempDir()
+			git.init(t, root)
+			tc.prepare(t, root)
+			budget := DefaultControlSurfaceBudget()
+			before := controlSnapshot(t, root, budget)
+			// Git reads an included file as configuration, so the edit stays valid.
+			writeControlFixture(t, root, tc.edit, "[example]\n\tkey = changed\n")
+			expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), tc.edit)
+		})
+	}
+	t.Run("a target outside the workspace cannot be observed", func(t *testing.T) {
+		git := newControlGit(t)
+		root := t.TempDir()
+		git.init(t, root)
+		outside := t.TempDir()
+		writeControlFixture(t, outside, "gitconfig", "[core]\n\thooksPath = hooks-target\n")
+		linkConfig(t, root, filepath.Join(outside, "gitconfig"))
+		budget := DefaultControlSurfaceBudget()
+		diff := controlDiff(t, controlSnapshot(t, root, budget), controlSnapshot(t, root, budget))
+		if !diff.Incomplete || len(diff.Unreadable) != 1 || diff.Unreadable[0].Path != filepath.FromSlash(".git/config") {
+			t.Fatalf("an unreadable config target must make the observation incomplete: %+v", diff)
+		}
+	})
+	t.Run("a missing target is not an observation problem", func(t *testing.T) {
+		git := newControlGit(t)
+		root := t.TempDir()
+		git.init(t, root)
+		linkConfig(t, root, "../missing/gitconfig")
+		budget := DefaultControlSurfaceBudget()
+		before := controlSnapshot(t, root, budget)
+		if diff := controlDiff(t, before, controlSnapshot(t, root, budget)); diff.Incomplete || diff.Changed {
+			t.Fatalf("a dangling config link names nothing to read: %+v", diff)
+		}
+		writeControlFixture(t, root, "missing/gitconfig", "[core]\n\thooksPath = hooks-target\n")
+		expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), "missing/gitconfig")
+	})
+}
+
+// A path that leaves the workspace and names it again returns to a place the
+// lexical result and Git can disagree about: ".." from the workspace root goes to
+// the root's real parent, not to the parent of the path the workspace was
+// opened by.
+func TestControlSurfaceReportsAmbiguousPathThatReentersTheWorkspace(t *testing.T) {
+	git := newControlGit(t)
+	root := t.TempDir()
+	git.init(t, root)
+	git.run(t, root, "config", "--local", "core.hooksPath", "../"+filepath.Base(root)+"/hooks")
+	writeControlFixture(t, root, "hooks/pre-commit", "before")
+	budget := DefaultControlSurfaceBudget()
+	diff := controlDiff(t, controlSnapshot(t, root, budget), controlSnapshot(t, root, budget))
+	if !diff.Incomplete || len(diff.Unreadable) != 1 || diff.Unreadable[0].Path != filepath.FromSlash(".git/config") ||
+		!strings.Contains(diff.Unreadable[0].Reason, "ambiguous") {
+		t.Fatalf("a path that re-enters the workspace by name must be reported ambiguous: %+v", diff)
+	}
+}
