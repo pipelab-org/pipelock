@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"testing"
 )
@@ -36,10 +37,15 @@ func linkChain(t *testing.T, root, first, final string, total int) {
 	}
 }
 
-// expectKernelHops checks the fixture against the kernel, which resolves 40
-// symlinks in one lookup and refuses the 41st.
+// expectKernelHops checks the fixture against the Linux kernel, which resolves
+// 40 symlinks in one lookup and refuses the 41st. Other kernels use different
+// limits (macOS allows 32), so the cross-check runs only on Linux; the walker's
+// own limit is asserted everywhere.
 func expectKernelHops(t *testing.T, path string, resolves bool) {
 	t.Helper()
+	if runtime.GOOS != "linux" {
+		return
+	}
 	_, err := os.Stat(path)
 	if resolves != (err == nil) || (!resolves && !errors.Is(err, syscall.ELOOP)) {
 		t.Fatalf("the kernel resolving %s: err = %v, want resolves = %t", path, err, resolves)
