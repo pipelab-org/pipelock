@@ -308,3 +308,38 @@ func TestMCPReceiptWireObservationRequiresNotificationEnvelope(t *testing.T) {
 		t.Fatal("accepted an empty notification envelope")
 	}
 }
+
+func TestMCPReceiptWireObservationEnvelopeShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name, requestID, message string
+		valid                    bool
+	}{
+		{"notification", "", `{"jsonrpc":"2.0","method":"notifications/progress"}`, true},
+		{"request", "1", `{"jsonrpc":"2.0","id":1,"method":"sampling/createMessage"}`, true},
+		{"result response", "1", `{"jsonrpc":"2.0","id":1,"result":{}}`, true},
+		{"error response", "1", `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"denied"}}`, true},
+		{"method with result", "1", `{"jsonrpc":"2.0","id":1,"method":"tools/list","result":{}}`, false},
+		{"method with error", "1", `{"jsonrpc":"2.0","id":1,"method":"tools/list","error":{"code":-32000,"message":"denied"}}`, false},
+		{"response without id", "", `{"jsonrpc":"2.0","result":{}}`, false},
+		{"response with result and error", "1", `{"jsonrpc":"2.0","id":1,"result":{},"error":{"code":-32000,"message":"denied"}}`, false},
+		{"response with neither", "1", `{"jsonrpc":"2.0","id":1}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			attempt := int64(1)
+			intent := v3.Action{Phase: "intent", RequestID: tc.requestID, ActionID: "shape", EffectBoundary: mcpDownstreamDeliveryBoundary, Attempt: &attempt}
+			outcome := intent
+			outcome.Phase, outcome.OutcomeClass = "outcome", "completed"
+			observed := mcpWireObservation{
+				message: []byte(tc.message), boundary: mcpDownstreamDeliveryBoundary,
+				requestID: tc.requestID, outcome: "completed", before: []v3.Action{intent},
+			}
+			err := checkMCPWireObservations([]v3.Action{intent, outcome}, mcpDownstreamDeliveryBoundary, []mcpWireObservation{observed})
+			if tc.valid && err != nil {
+				t.Fatalf("rejected a valid envelope: %v", err)
+			}
+			if !tc.valid && (err == nil || !strings.Contains(err.Error(), "wrong RPC envelope")) {
+				t.Fatalf("checker returned %v, want a wrong RPC envelope rejection", err)
+			}
+		})
+	}
+}

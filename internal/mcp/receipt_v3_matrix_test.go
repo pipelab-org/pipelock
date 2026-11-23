@@ -355,9 +355,9 @@ func checkMCPV3StdioReplyAdmissionFailure(t *testing.T, scenario string, sandbox
 		if err != nil {
 			t.Fatal(err)
 		}
-	case err := <-done:
-		t.Fatalf("proxy exited before reading input: %v", err)
 	case <-ctx.Done():
+		// Proxy completion is not proof the input went unread, so only the
+		// feed result or the deadline ends this wait; done is checked below.
 		t.Fatal("proxy did not read input")
 	}
 	select {
