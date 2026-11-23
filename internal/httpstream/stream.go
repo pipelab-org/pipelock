@@ -72,11 +72,19 @@ func CanObserveFlush(w any) bool {
 		switch writer := w.(type) {
 		case interface{ CanObserveFlush() bool }:
 			return writer.CanObserveFlush()
+		case interface {
+			FlushError() error
+			Unwrap() http.ResponseWriter
+		}:
+			w = writer.Unwrap()
+		case interface{ FlushError() error }:
+			return true
+		case http.Flusher:
+			return false
 		case interface{ Unwrap() http.ResponseWriter }:
 			w = writer.Unwrap()
 		default:
-			_, ok := w.(interface{ FlushError() error })
-			return ok
+			return false
 		}
 	}
 }

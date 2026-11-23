@@ -769,3 +769,18 @@ func testMCPListenerSetupDenials(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPListenerSSEReportsDownstreamFlushFailure(t *testing.T) {
+	out := &listenerFailedFlushWriter{ResponseRecorder: httptest.NewRecorder()}
+	adapted := &mcpListenerDenialWriter{ResponseWriter: out, descriptor: &mcpDenialAudit{}}
+	stream := &sseMessageWriter{w: adapted, responseWriter: adapted, flusher: out}
+	if err := stream.WriteMessage([]byte(`{"jsonrpc":"2.0","method":"notifications/resources/list_changed"}`)); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("SSE flush error = %v, want closed pipe", err)
+	}
+}
+
+type listenerFailedFlushWriter struct {
+	*httptest.ResponseRecorder
+}
+
+func (*listenerFailedFlushWriter) FlushError() error { return io.ErrClosedPipe }
