@@ -250,14 +250,16 @@ func TestCheckerBudgetNeverDropsViewsSilently(t *testing.T) {
 		tags.WriteRune(r + 0xe0000)
 	}
 	inputs := map[string]string{
-		"tags and quoted-printable": tags.String() + " " + strings.ReplaceAll(checkerFixturePhrase, " ", "=20"),
-		"nested base64":             base64.StdEncoding.EncodeToString([]byte(base64.StdEncoding.EncodeToString([]byte(checkerFixturePhrase)))),
-		"base64 of tags":            base64.StdEncoding.EncodeToString([]byte(tags.String())),
-		"tags around invisibles":    tags.String() + "\u200b" + tags.String() + " " + strings.ReplaceAll(checkerFixturePhrase, " ", "=20"),
-		"quoted-printable in tags":  tags.String() + " " + strings.ReplaceAll(strings.ReplaceAll(checkerFixturePhrase, " ", "=\u200b20"), "e", "=65"),
-		"percent and entities":      strings.ReplaceAll(checkerFixturePhrase, " ", "%20") + " &amp; " + strings.ReplaceAll(checkerFixturePhrase, " ", "&#32;"),
-		"dense invisibles":          strings.ReplaceAll(checkerFixturePhrase, " ", "\u200b\u200b"),
-		"hex of base64":             hex.EncodeToString([]byte(base64.StdEncoding.EncodeToString([]byte(checkerFixturePhrase)))),
+		"tags and quoted-printable":               tags.String() + " " + strings.ReplaceAll(checkerFixturePhrase, " ", "=20"),
+		"nested base64":                           base64.StdEncoding.EncodeToString([]byte(base64.StdEncoding.EncodeToString([]byte(checkerFixturePhrase)))),
+		"base64 of tags":                          base64.StdEncoding.EncodeToString([]byte(tags.String())),
+		"tags around invisibles":                  tags.String() + "\u200b" + tags.String() + " " + strings.ReplaceAll(checkerFixturePhrase, " ", "=20"),
+		"quoted-printable in tags":                tags.String() + " " + strings.ReplaceAll(strings.ReplaceAll(checkerFixturePhrase, " ", "=\u200b20"), "e", "=65"),
+		"percent and entities":                    strings.ReplaceAll(checkerFixturePhrase, " ", "%20") + " &amp; " + strings.ReplaceAll(checkerFixturePhrase, " ", "&#32;"),
+		"dense invisibles":                        strings.ReplaceAll(checkerFixturePhrase, " ", "\u200b\u200b"),
+		"hex of base64":                           hex.EncodeToString([]byte(base64.StdEncoding.EncodeToString([]byte(checkerFixturePhrase)))),
+		"base64 inside quoted-printable text":     checkerQuotedPrintableWrappedBase64(),
+		"quoted-printable and a fullwidth letter": checkerFullwidthQuotedPrintable,
 	}
 	for name, source := range inputs {
 		t.Run(name, func(t *testing.T) {
@@ -483,5 +485,57 @@ func TestCheckerBodyViewsThatCleanToTheSameTextAreSentOnce(t *testing.T) {
 	}
 	if count != 1 || items[0].SubmittedBytes != int64(len(cleaned)) {
 		t.Fatalf("cleaned text sent %d times, %d submitted bytes", count, items[0].SubmittedBytes)
+	}
+}
+
+// checkerFullwidthQuotedPrintable normalizes to different text than it spells,
+// so the scanner opens its quoted-printable escapes twice: once from the
+// normalized text and once from the original characters.
+const checkerFullwidthQuotedPrintable = "\uff36iolet=20teacups=20belong=20upstairs"
+
+// checkerQuotedPrintableWrappedBase64 is quoted-printable text that holds a
+// base64 run, so the nested decode happens one transform below a text encoding.
+func checkerQuotedPrintableWrappedBase64() string {
+	return "note=20" + base64.StdEncoding.EncodeToString([]byte(checkerFixturePhrase))
+}
+
+// The quoted-printable decode of the original characters is its own view: it
+// keeps what normalization folds away, next to the decode of the normalized
+// text, and a checker is shown both.
+func TestCheckerQuotedPrintableKeepsOriginalCharacters(t *testing.T) {
+	parts := InjectionTextParts(checkerFullwidthQuotedPrintable)
+	for _, want := range []string{"Violet teacups belong upstairs", "\uff36iolet teacups belong upstairs"} {
+		if !slices.ContainsFunc(parts, func(part checker.Part) bool {
+			return part.Representation == "response_decoded/v1" && part.Text == want
+		}) {
+			t.Fatalf("missing decoded view %q in %v", want, checkerPartTexts(parts))
+		}
+	}
+}
+
+// A nested decode that no longer fits stops the build below a text encoding:
+// the view that fit stays, the wording inside the nested layer is not sent, and
+// the item says it is over budget.
+func TestCheckerNestedDecodeBelowTextEncodingStopsAtBudget(t *testing.T) {
+	source := checkerQuotedPrintableWrappedBase64()
+	full := checkerTextBuilder{ctx: t.Context(), limit: math.MaxInt64}
+	full.addTexts([]string{source})
+	nestedAt := slices.IndexFunc(full.parts, func(part checker.Part) bool { return part.Text == checkerFixturePhrase })
+	if full.reason != "" || nestedAt < 3 || full.parts[1].Text != "note "+strings.TrimPrefix(source, "note=20") {
+		t.Fatalf("unlimited build: reason %q, nested view at %d of %v", full.reason, nestedAt, checkerPartTexts(full.parts))
+	}
+	// Room for the original and its quoted-printable decode, not for the base64
+	// decode inside it.
+	limit := int64(len(full.parts[0].Text) + len(full.parts[1].Text))
+	b := checkerTextBuilder{ctx: t.Context(), limit: limit}
+	b.addTexts([]string{source})
+	if b.reason != checker.ReasonOverBudget || len(b.parts) != 2 || b.submitted != limit {
+		t.Fatalf("reason %q with %d parts, %d submitted", b.reason, len(b.parts), b.submitted)
+	}
+	if hasCheckerView(b.parts, checkerFixturePhrase) {
+		t.Fatal("the nested wording was sent past the limit")
+	}
+	if got := b.completeness(nil); got.Status != checker.Partial || got.Reason != checker.ReasonOverBudget {
+		t.Fatalf("completeness = %+v", got)
 	}
 }
