@@ -14,6 +14,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
@@ -582,7 +583,7 @@ func flushSSEEvent(flusher http.Flusher, observe bool) (bool, error) {
 	}
 	if f, ok := flusher.(interface{ FlushError() error }); observe && ok {
 		err := f.FlushError()
-		return err == nil, err
+		return err == nil && httpstream.CanObserveFlush(flusher), err
 	}
 	flusher.Flush()
 	return false, nil

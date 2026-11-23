@@ -64,3 +64,19 @@ func Abort(ctx context.Context, err error) error {
 	}
 	return err
 }
+
+// CanObserveFlush reports whether a flush can report a downstream write
+// error. ResponseController also supports plain Flush, which cannot do so.
+func CanObserveFlush(w any) bool {
+	for {
+		switch writer := w.(type) {
+		case interface{ CanObserveFlush() bool }:
+			return writer.CanObserveFlush()
+		case interface{ Unwrap() http.ResponseWriter }:
+			w = writer.Unwrap()
+		default:
+			_, ok := w.(interface{ FlushError() error })
+			return ok
+		}
+	}
+}

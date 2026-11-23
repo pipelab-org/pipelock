@@ -937,7 +937,7 @@ func TestMCPV3DisabledAdapterLeavesExistingWritersInPlace(t *testing.T) {
 	}
 	base := transport.NewStdioWriter(io.Discard)
 	exchange := mcpV3NetworkExchange{ctx: ctx, opts: opts, log: io.Discard}
-	if exchange.streamWriter(base) != base {
+	if exchange.streamWriter(base, true) != base {
 		t.Fatal("disabled exchange replaced the stream writer")
 	}
 }
@@ -2373,7 +2373,7 @@ func TestMCPV3LocalAndNetworkStreamWritersSettleDeliveries(t *testing.T) {
 	if err := exchange.admitReply(); err != nil {
 		t.Fatal(err)
 	}
-	if err := exchange.streamWriter(out).WriteMessage([]byte(event)); err != nil {
+	if err := exchange.streamWriter(out, true).WriteMessage([]byte(event)); err != nil {
 		t.Fatal(err)
 	}
 	if err := opts.localV3ReplyWriter(out, io.Discard, exchange.send).WriteMessage([]byte(heldNativeReply)); err != nil {
@@ -2625,7 +2625,7 @@ func checkMCPV3IdentityGuardListReply(t *testing.T, revoke bool) {
 	tracker := NewRequestTracker()
 	tracker.TrackRequest(request.ID, request.Method)
 	reader := transport.NewStdioReader(strings.NewReader(result + "\n"))
-	out := exchange.streamWriter(transport.NewStdioWriter(client))
+	out := exchange.streamWriter(transport.NewStdioWriter(client), true)
 	_, err := ForwardScanned(reader, out, io.Discard, tracker, opts)
 	reservationConsumed := exchange.listReply == nil
 	exchange.finish()

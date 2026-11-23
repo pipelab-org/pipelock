@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -2106,7 +2107,7 @@ func TestV3SSERequiredFindingAdmission(t *testing.T) {
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.vendor.example", http.NoBody)
 			cfg := p.CurrentConfig()
 			opts := receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: TransportForward, Method: req.Method, Target: req.URL.String()}
-			out := httptest.NewRecorder()
+			out := &v3SSEFlushFaultRecorder{ResponseRecorder: httptest.NewRecorder()}
 			w, finish := p.startReceiptDelivery(out, req, cfg, opts)
 			defer finish()
 			w.WriteHeader(http.StatusOK)
@@ -2331,5 +2332,49 @@ func TestV3ConfirmedAgentCardSignatureReceipt(t *testing.T) {
 				t.Fatalf("expected only the signature receipt pair, got %+v", actions)
 			}
 		})
+	}
+}
+
+func TestV3SSEPlainFlusherLeavesDeliveryUnknown(t *testing.T) {
+	p, writer, dir, _ := newTestV3HTTPProxy(t, TransportForward, true, nil, func(cfg *config.Config) {
+		cfg.ResponseScanning.Enabled = true
+		cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: "response marker", Regex: "POLICY_MARKER"}}
+		cfg.ResponseScanning.SSEStreaming.Enabled = true
+		cfg.ResponseScanning.SSEStreaming.Action = config.ActionWarn
+	})
+	cfg := p.CurrentConfig()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.vendor.example", http.NoBody)
+	opts := receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: TransportForward, Method: req.Method, Target: req.URL.String()}
+	out := httptest.NewRecorder()
+	const body = "data: {\"text\":\"POLICY_MARKER\"}\n\n"
+	out.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	out.Header().Set("Content-Type", "text/event-stream")
+	w, finish := p.startReceiptDelivery(out, req, cfg, opts)
+	err := DispatchSSEScan(req.Context(), strings.NewReader(body), w, w.(http.Flusher), p.ScannerPtr().Load(), SSEDispatchOptions{
+		GenericSSE: &cfg.ResponseScanning.SSEStreaming,
+		Generic:    mcp.GenericSSEScanOptions{DeliverFinding: p.sseFindingDelivery(req.Context(), cfg, opts)},
+		OnDelivery: func() {},
+	})
+	if err != nil || !out.Flushed {
+		t.Fatalf("SSE delivery: flushed=%v err=%v", out.Flushed, err)
+	}
+	finish()
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	warnings := 0
+	for _, action := range readV3TransportActions(t, dir) {
+		if action.Phase != "outcome" || action.EffectBoundary != boundaryDownstreamDelivery {
+			continue
+		}
+		if action.Layer == LayerSSEStream {
+			warnings++
+		}
+		if action.OutcomeClass != "attempt_unknown" {
+			t.Errorf("unobservable delivery recorded as %q at %q", action.OutcomeClass, action.Layer)
+		}
+	}
+	if warnings != 1 {
+		t.Fatalf("warning delivery outcomes = %d, want 1", warnings)
 	}
 }

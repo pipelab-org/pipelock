@@ -732,7 +732,6 @@ func newInterceptHandler(
 		// operator can split Pipelock's own time from the destination's wait.
 		// The wrapper adds no optional interfaces; code that needs one asks
 		// the server's own writer, so no capability is advertised falsely.
-		serverWriter := w
 		timing := &interceptTimingWriter{ResponseWriter: w}
 		w = timing
 		var upstreamWait time.Duration
@@ -2779,7 +2778,7 @@ func newInterceptHandler(
 				return
 			}
 
-			flusher, _ := serverWriter.(http.Flusher)
+			flusher, _ := w.(http.Flusher)
 			streamErr := DispatchSSEScan(r.Context(), resp.Body, httpstream.Writer{Writer: w}, flusher, ic.Scanner, sseOpts)
 			responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, sseTaintFindingKinds(streamErr))
 			observeResponseFindings(responseFindingKinds)
@@ -3753,6 +3752,12 @@ func (t *interceptTimingWriter) Write(b []byte) (int, error) {
 }
 
 // Unwrap lets http.ResponseController reach the underlying writer.
+func (t *interceptTimingWriter) Flush() { _ = t.FlushError() }
+
+func (t *interceptTimingWriter) FlushError() error {
+	return http.NewResponseController(t.ResponseWriter).Flush()
+}
+
 func (t *interceptTimingWriter) Unwrap() http.ResponseWriter {
 	return t.ResponseWriter
 }

@@ -344,14 +344,14 @@ func (w *mcpV3LocalWriter) reportDenialFailure(msg []byte, err error) error {
 }
 
 type mcpV3ReplyWriter struct {
-	base         transport.MessageWriter
-	opts         MCPProxyOpts
-	log          io.Writer
-	request      receipt.EmitOpts
-	finished     bool
-	sendDenied   bool
-	onStream     bool
-	takeAdmitted func() (*v3.EffectToken, bool)
+	base                transport.MessageWriter
+	opts                MCPProxyOpts
+	log                 io.Writer
+	request             receipt.EmitOpts
+	finished            bool
+	sendDenied          bool
+	streamFlushObserved *bool
+	takeAdmitted        func() (*v3.EffectToken, bool)
 }
 
 var errMCPV3ReplyAdmission = errors.New("MCP reply receipt admission")
@@ -376,7 +376,7 @@ func (w *mcpV3ReplyWriter) WriteMessage(msg []byte) error {
 	} else {
 		err = writeMCPForwardedMessage(w.base, msg)
 	}
-	logMCPV3Error(w.log, confirmMCPV3Effect(ctx, token, err == nil && (!w.onStream || ctx.Err() == nil)))
+	logMCPV3Error(w.log, confirmMCPV3Effect(ctx, token, err == nil && (w.streamFlushObserved == nil || (*w.streamFlushObserved && ctx.Err() == nil))))
 	return err
 }
 
@@ -511,16 +511,17 @@ func (x *mcpV3NetworkExchange) finish() {
 	}
 }
 
-func (x *mcpV3NetworkExchange) streamWriter(base transport.MessageWriter) transport.MessageWriter {
+func (x *mcpV3NetworkExchange) streamWriter(base transport.MessageWriter, observed bool) transport.MessageWriter {
 	if x.send == nil {
 		return base
 	}
-	return &mcpV3NetworkStreamWriter{exchange: x, base: base}
+	return &mcpV3NetworkStreamWriter{exchange: x, base: base, flushObserved: observed}
 }
 
 type mcpV3NetworkStreamWriter struct {
-	exchange *mcpV3NetworkExchange
-	base     transport.MessageWriter
+	exchange      *mcpV3NetworkExchange
+	base          transport.MessageWriter
+	flushObserved bool
 }
 
 func (w *mcpV3NetworkStreamWriter) messageWriter(msg []byte, frame MCPFrame, correlated bool) *mcpV3ReplyWriter {
@@ -529,7 +530,7 @@ func (w *mcpV3NetworkStreamWriter) messageWriter(msg []byte, frame MCPFrame, cor
 	opts := x.opts
 	opts.WarnContext = x.ctx
 	reply := &mcpV3ReplyWriter{
-		base: w.base, opts: opts, log: x.log, onStream: true,
+		base: w.base, opts: opts, log: x.log, streamFlushObserved: &w.flushObserved,
 		request: receipt.EmitOpts{RequestID: id, Method: frame.Method, Target: firstNonEmpty(frame.Method, "mcp://event"), Transport: opts.Transport},
 	}
 	if correlated && isResponse(msg) && id != "" && id == x.send.request.RequestID {

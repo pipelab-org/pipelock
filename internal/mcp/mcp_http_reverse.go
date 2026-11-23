@@ -1485,7 +1485,7 @@ func RunHTTPListenerProxy(
 			}
 			stateWriter := &listenerStateMessageWriter{state: clientState, writer: streamWriter, opts: reqOpts}
 			reqOpts.nativeSSE = true
-			foundInjection, scanErr := ForwardScanned(transport.NewSSEReader(upResp.Body), effect.streamWriter(stateWriter), safeLogW, NewStrictRequestTracker(), reqOpts)
+			foundInjection, scanErr := ForwardScanned(transport.NewSSEReader(upResp.Body), effect.streamWriter(stateWriter, streamWriter.flusher != nil && httpstream.CanObserveFlush(streamWriter.responseWriter)), safeLogW, NewStrictRequestTracker(), reqOpts)
 			if errors.Is(scanErr, ael.ErrCapacity) {
 				if admission.ActionID != "" {
 					recordTransportAdmissionResult(safeLogW, reqOpts, admission, "cancelled", nativeCapacityReason)
@@ -2526,7 +2526,7 @@ func RunHTTPListenerProxy(
 			revocableWriter := &listenerStateMessageWriter{state: clientState, writer: streamWriter, opts: reqOpts}
 			streamReader := &requestDoneReader{MessageReader: reader, tracker: responseTracker, release: releaseContract}
 			reqOpts.nativeSSE = true
-			foundInjection, scanErr := ForwardScanned(streamReader, effect.streamWriter(revocableWriter), safeLogW, responseTracker, reqOpts)
+			foundInjection, scanErr := ForwardScanned(streamReader, effect.streamWriter(revocableWriter, streamWriter.flusher != nil && httpstream.CanObserveFlush(streamWriter.responseWriter)), safeLogW, responseTracker, reqOpts)
 			if errors.Is(scanErr, ael.ErrCapacity) {
 				streamOutcome := decision.Outcome
 				standalone := streamOutcome.Receipt.ActionID == "" || streamOutcome.handle != nil && streamOutcome.handle.settled.Load()

@@ -89,16 +89,24 @@ type sseDeliveryFlusher struct {
 	observe func()
 }
 
-func (d sseDeliveryFlusher) Flush() { _ = d.FlushError() }
-
-func (d sseDeliveryFlusher) FlushError() error {
+func (d sseDeliveryFlusher) Flush() {
 	d.observe()
 	defer d.observe()
-	if f, ok := d.f.(interface{ FlushError() error }); ok {
-		return f.FlushError()
-	}
 	d.f.Flush()
-	return nil
+}
+
+type sseDeliveryErrorFlusher struct {
+	sseDeliveryFlusher
+}
+
+func (d sseDeliveryErrorFlusher) FlushError() error {
+	d.observe()
+	defer d.observe()
+	return d.f.(interface{ FlushError() error }).FlushError()
+}
+
+func (d sseDeliveryErrorFlusher) CanObserveFlush() bool {
+	return httpstream.CanObserveFlush(d.f)
 }
 
 const nativeSSEFindingRecords = 2
@@ -182,7 +190,12 @@ func DispatchSSEScan(
 	if opts.OnDelivery != nil {
 		w = sseDeliveryWriter{w: w, observe: opts.OnDelivery}
 		if flusher != nil {
-			flusher = sseDeliveryFlusher{f: flusher, observe: opts.OnDelivery}
+			wrapped := sseDeliveryFlusher{f: flusher, observe: opts.OnDelivery}
+			if _, ok := flusher.(interface{ FlushError() error }); ok {
+				flusher = sseDeliveryErrorFlusher{wrapped}
+			} else {
+				flusher = wrapped
+			}
 		}
 	}
 	var err error

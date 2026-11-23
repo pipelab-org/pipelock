@@ -15,6 +15,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
@@ -208,7 +209,8 @@ func (w *v3DeliveryWriter) finish() {
 		}
 		_, framed := responseFrameLength(w.request, w.status, w.Header())
 		err := flushOutcomeResponse(w.ResponseWriter, w.request, w.cfg, true)
-		return framed && w.framed && (w.request.Method == http.MethodHead || w.written == w.length), err
+		observed := !IsSSEContentType(w.Header().Get("Content-Type")) || httpstream.CanObserveFlush(w.ResponseWriter)
+		return observed && framed && w.framed && (w.request.Method == http.MethodHead || w.written == w.length), err
 	})
 	if err != nil {
 		w.proxy.logReceiptEmissionFailure(w.options, err)
