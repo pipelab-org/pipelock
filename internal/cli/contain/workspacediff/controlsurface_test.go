@@ -1,0 +1,355 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package workspacediff
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+)
+
+const testControlCap = 1 << 20
+
+func TestDefaultControlSurfaceBudgetMatchesContainCLIDoc(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "docs", "contain-cli.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := DefaultControlSurfaceBudget()
+	for _, expected := range []string{
+		fmt.Sprintf("**%d control entries**", b.MaxControlEntries),
+		fmt.Sprintf("**%d MiB of control paths**", b.MaxControlPathBytes>>20),
+		fmt.Sprintf("**%d control path components**", b.MaxControlDepth),
+		fmt.Sprintf("**%d discovery directories**", b.MaxNestedDirs),
+		fmt.Sprintf("**%d discovery levels**", b.MaxNestedDepth),
+	} {
+		if !strings.Contains(string(doc), expected) {
+			t.Errorf("contain-cli.md lacks %q", expected)
+		}
+	}
+}
+
+type testGit struct {
+	bin  string
+	home string
+}
+
+func newControlGit(t *testing.T) testGit {
+	t.Helper()
+	bin, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("Git is required to produce real repository metadata")
+	}
+	return testGit{bin: bin, home: t.TempDir()}
+}
+
+func (g testGit) command(t *testing.T, dir string, args ...string) (string, error) {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), g.bin, args...) //nolint:gosec // G204: Git and its arguments are chosen by the test.
+	cmd.Dir = dir
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + g.home, "XDG_CONFIG_HOME=" + g.home,
+		"GIT_ALLOW_PROTOCOL=file", "GIT_TERMINAL_PROMPT=0",
+		"GIT_AUTHOR_NAME=Example Developer", "GIT_AUTHOR_EMAIL=dev@example.test",
+		"GIT_COMMITTER_NAME=Example Developer", "GIT_COMMITTER_EMAIL=dev@example.test",
+	}
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
+func (g testGit) run(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	if output, err := g.command(t, dir, args...); err != nil {
+		t.Fatalf("git %q: %v\n%s", args, err, output)
+	}
+}
+
+func (g testGit) init(t *testing.T, root string) {
+	t.Helper()
+	g.run(t, root, "init", "-q", "-b", "main")
+	g.run(t, root, "config", "--local", "rerere.enabled", "true")
+}
+
+func (g testGit) commit(t *testing.T, root, name string) {
+	t.Helper()
+	writeControlFixture(t, root, name, "tracked file "+name)
+	g.run(t, root, "add", "--", name)
+	g.run(t, root, "commit", "-qm", name)
+}
+
+func writeControlFixture(t *testing.T, root, path, content string) {
+	t.Helper()
+	abs := filepath.Join(root, filepath.FromSlash(path))
+	if err := os.MkdirAll(filepath.Dir(abs), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(abs, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func controlSnapshot(t *testing.T, root string, budget ControlSurfaceBudget) ControlSurfaceSnapshot {
+	t.Helper()
+	if _, ok := mountID(root); !ok {
+		t.Skip("mount IDs are required for a complete control-surface observation")
+	}
+	snap, err := SnapshotControlSurface(root, testControlCap, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snap
+}
+
+func controlDiff(t *testing.T, before, after ControlSurfaceSnapshot) ControlSurfaceStatement {
+	t.Helper()
+	diff, err := DiffControlSurface(before, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return diff
+}
+
+func expectControlPath(t *testing.T, result ControlSurfaceStatement, path string) {
+	t.Helper()
+	if !result.Changed || result.Incomplete || !slices.Contains(result.Paths(), filepath.FromSlash(path)) {
+		t.Fatalf("want complete diff naming %s, got %+v", path, result)
+	}
+}
+
+func TestControlSurfaceRealGitBenignOperations(t *testing.T) {
+	g := newControlGit(t)
+	root := t.TempDir()
+	g.init(t, root)
+	budget := DefaultControlSurfaceBudget()
+	unchanged := func(t *testing.T, op func()) {
+		t.Helper()
+		before := controlSnapshot(t, root, budget)
+		op()
+		after := controlSnapshot(t, root, budget)
+		if change := controlDiff(t, before, after); change.Changed || change.Incomplete {
+			t.Fatalf("expected complete, clean observation: %+v", change)
+		}
+	}
+	t.Run("reinitialize repository", func(t *testing.T) {
+		unchanged(t, func() { g.run(t, root, "init", "-q") })
+	})
+	t.Run("add and commit with rerere enabled", func(t *testing.T) {
+		unchanged(t, func() { g.commit(t, root, "main.txt") })
+	})
+	remote := t.TempDir()
+	g.init(t, remote)
+	g.commit(t, remote, "remote.txt")
+	g.run(t, root, "remote", "add", "local", remote)
+	t.Run("local fetch", func(t *testing.T) {
+		unchanged(t, func() { g.run(t, root, "fetch", "-q", "local") })
+	})
+	t.Run("gc", func(t *testing.T) {
+		unchanged(t, func() { g.run(t, root, "gc", "--prune=now") })
+	})
+	t.Run("stash and pop", func(t *testing.T) {
+		writeControlFixture(t, root, "main.txt", "work in progress")
+		unchanged(t, func() { g.run(t, root, "stash", "push", "-m", "work") })
+		unchanged(t, func() { g.run(t, root, "stash", "pop") })
+		g.run(t, root, "restore", "main.txt")
+	})
+	t.Run("branch and completed rebase", func(t *testing.T) {
+		unchanged(t, func() { g.run(t, root, "checkout", "-qb", "topic") })
+		g.commit(t, root, "topic.txt")
+		g.run(t, root, "checkout", "-q", "main")
+		g.commit(t, root, "another.txt")
+		g.run(t, root, "checkout", "-q", "topic")
+		unchanged(t, func() { g.run(t, root, "rebase", "main") })
+	})
+}
+
+func TestControlSurfaceRealGitReftable(t *testing.T) {
+	g := newControlGit(t)
+	root := t.TempDir()
+	out, err := g.command(t, root, "init", "-q", "-b", "main", "--ref-format=reftable")
+	if err != nil {
+		if strings.Contains(out, "unknown option") || strings.Contains(out, "unsupported") {
+			t.Skipf("local Git lacks reftable support: %s", strings.SplitN(out, "\n", 2)[0])
+		}
+		t.Fatalf("git init reftable: %v: %s", err, out)
+	}
+	before := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+	g.commit(t, root, "tracked.txt")
+	after := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+	if diff := controlDiff(t, before, after); diff.Changed || diff.Incomplete {
+		t.Fatalf("reftable commit: %+v", diff)
+	}
+}
+
+func TestControlSurfaceGitConflictMetadata(t *testing.T) {
+	g := newControlGit(t)
+	for _, op := range []string{"merge", "rebase"} {
+		t.Run(op, func(t *testing.T) {
+			root := t.TempDir()
+			g.init(t, root)
+			g.commit(t, root, "conflict.txt")
+			g.run(t, root, "checkout", "-qb", "topic")
+			writeControlFixture(t, root, "conflict.txt", "topic edit")
+			g.run(t, root, "commit", "-qam", "topic edit")
+			g.run(t, root, "checkout", "-q", "main")
+			writeControlFixture(t, root, "conflict.txt", "main edit")
+			g.run(t, root, "commit", "-qam", "main edit")
+			g.run(t, root, "checkout", "-q", "topic")
+
+			budget := DefaultControlSurfaceBudget()
+			before := controlSnapshot(t, root, budget)
+			out, err := g.command(t, root, op, "main")
+			if err == nil || !strings.Contains(out, "CONFLICT") {
+				t.Fatalf("expected Git to stop for a conflict: %v\n%s", err, out)
+			}
+			paused := controlSnapshot(t, root, budget)
+			diff := controlDiff(t, before, paused)
+			if diff.Incomplete {
+				t.Fatalf("conflict state must be readable: %+v", diff)
+			}
+			if op == "merge" {
+				if diff.Changed {
+					t.Fatalf("ordinary rerere and merge bookkeeping should remain volatile: %+v", diff)
+				}
+				return
+			}
+			const todo = ".git/rebase-merge/git-rebase-todo"
+			expectControlPath(t, diff, todo)
+			// Observe an inert instruction fixture. Git is never resumed.
+			writeControlFixture(t, root, todo, "exec <planned command>\n")
+			next := controlSnapshot(t, root, budget)
+			expectControlPath(t, controlDiff(t, paused, next), todo)
+		})
+	}
+}
+
+func TestControlSurfaceRealGitMetadataChanges(t *testing.T) {
+	g := newControlGit(t)
+	tests := []struct {
+		name string
+		path string
+		run  func(*testing.T, string)
+	}{
+		{"worktree", ".git/worktrees/linked/commondir", func(t *testing.T, root string) {
+			g.run(t, root, "worktree", "add", "-qb", "topic", filepath.Join(t.TempDir(), "linked"))
+		}},
+		{"submodule", ".git/modules/dependency/config", func(t *testing.T, root string) {
+			source := t.TempDir()
+			g.init(t, source)
+			g.commit(t, source, "dependency.txt")
+			g.run(t, root, "submodule", "add", "-q", source, "dependency")
+		}},
+		{"config local", ".git/config", func(t *testing.T, root string) {
+			g.run(t, root, "config", "--local", "branch.main.merge", "refs/heads/topic")
+		}},
+		{"push with upstream", ".git/config", func(t *testing.T, root string) {
+			remote := t.TempDir()
+			g.run(t, remote, "init", "-q", "--bare")
+			g.run(t, root, "remote", "add", "local", remote)
+			g.run(t, root, "push", "-qu", "local", "main")
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			g.init(t, root)
+			g.commit(t, root, "tracked.txt")
+			before := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+			tc.run(t, root)
+			after := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+			expectControlPath(t, controlDiff(t, before, after), tc.path)
+		})
+	}
+}
+
+func TestControlSurfaceNestedRepositories(t *testing.T) {
+	g := newControlGit(t)
+	for _, tc := range []struct {
+		name     string
+		want     string
+		producer func(*testing.T, string, string)
+	}{
+		{"regular", "nested/.git/config", func(t *testing.T, _, dir string) {
+			g.init(t, dir)
+		}},
+		{"separate Git directory", "nested/.git", func(t *testing.T, root, dir string) {
+			g.run(t, dir, "init", "-q", "--separate-git-dir", filepath.Join(root, "metadata"))
+		}},
+		{"bare", "nested/config", func(t *testing.T, _, dir string) {
+			g.run(t, dir, "init", "-q", "--bare")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := filepath.Join(root, "nested")
+			if err := os.Mkdir(dir, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			before := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+			tc.producer(t, root, dir)
+			after := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+			expectControlPath(t, controlDiff(t, before, after), tc.want)
+		})
+	}
+}
+
+func TestControlSurfaceLinkedWorktreeConfigTarget(t *testing.T) {
+	g := newControlGit(t)
+	root := t.TempDir()
+	g.init(t, root)
+	g.run(t, root, "config", "--local", "extensions.worktreeConfig", "true")
+	g.commit(t, root, "tracked.txt")
+	g.run(t, root, "worktree", "add", "-qb", "topic", filepath.Join(root, "linked"))
+
+	// The remaining operations observe inert data without invoking Git.
+	writeControlFixture(t, root, ".git/worktrees/linked/config.worktree", "[core]\nfsmonitor = ./monitor-file\n")
+	before := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+	writeControlFixture(t, root, "linked/monitor-file", "inert fixture")
+	after := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+	expectControlPath(t, controlDiff(t, before, after), "linked/monitor-file")
+}
+
+func TestControlSurfaceExternalGitfile(t *testing.T) {
+	g := newControlGit(t)
+	root := t.TempDir()
+	before := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+	g.run(t, root, "init", "-q", "--separate-git-dir", filepath.Join(t.TempDir(), "metadata"))
+	after := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+	diff := controlDiff(t, before, after)
+	if !diff.Changed || diff.Incomplete || !slices.Equal(diff.Paths(), []string{".git"}) {
+		t.Fatalf("external gitfile should be recorded alone: %+v", diff)
+	}
+}
+
+func TestControlSurfaceIndependentWorkspaceBudget(t *testing.T) {
+	root := t.TempDir()
+	g := newControlGit(t)
+	g.init(t, root)
+	fullBudget := Budget{MaxEntries: 1}
+	beforeFull, err := Snapshot(root, testControlCap, fullBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+	const hook = ".git/hooks/pre-commit"
+	writeControlFixture(t, root, hook, "inert fixture")
+	after := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+	afterFull, err := Snapshot(root, testControlCap, fullBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := Diff(beforeFull, afterFull, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !full.Incomplete || len(full.Added)+len(full.Removed)+len(full.Modified) != 0 {
+		t.Fatalf("whole tree should suppress paths on budget exhaustion: %+v", full)
+	}
+	expectControlPath(t, controlDiff(t, before, after), hook)
+}

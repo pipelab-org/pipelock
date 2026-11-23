@@ -152,6 +152,9 @@ func TestRunContainRun_EmitsSignedWorkspaceStatement_SessionBound(t *testing.T) 
 	}
 
 	st := signed.Statements[0]
+	if signed.SchemaVersion != workspacediff.SchemaVersionV2 || st.ControlSurface == nil || st.ControlSurface.Changed {
+		t.Fatalf("expected signed v2 statement with unchanged control paths: %+v", signed)
+	}
 	switch st.BoundaryCheck {
 	case workspacediff.BoundaryCheckMountID:
 		if !strings.Contains(stdout.String(), "signed workspace change statement") {
@@ -347,6 +350,65 @@ func TestRunContainRun_MissingSigningKey_WarnsUpFrontAndPostureEmissionRefusesLa
 	// reported up front, not discovered only after the agent already ran.
 	if !strings.Contains(stdout.String(), "workspace change statement will be unavailable") {
 		t.Fatalf("expected the key warning before posture emission, got:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "workspace_control_surface=unavailable reason=launch_not_started") {
+		t.Fatalf("expected no observation for the refused launch:\n%s", stdout.String())
+	}
+}
+
+func TestRunContainRun_ControlWarningWithoutWorkspaceSigningKey(t *testing.T) {
+	env := allPassEnv(t)
+	workspace := t.TempDir()
+	invBody := workspaceInvBody(t, workspace)
+	baseReadFile := env.readFile
+	env.readFile = func(path string) ([]byte, error) {
+		if path == env.workspaceInvPath {
+			return invBody, nil
+		}
+		return baseReadFile(path)
+	}
+	keyPath := filepath.Join(t.TempDir(), "signing.key")
+	cfg := config.Defaults()
+	cfg.FlightRecorder.SigningKeyPath = keyPath
+	_, lateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentExit := errors.New("example tool exited with status 7")
+	runEnv := containRunEnv{
+		probe:      env,
+		loadConfig: func(string) (*config.Config, error) { return cfg, nil },
+		emitPosture: func(cfg *config.Config, key ed25519.PrivateKey, output string, env *probeEnv, args []string) (postureEmission, error) {
+			if len(key) != 0 {
+				t.Fatal("expected the initial signing key load to fail")
+			}
+			// The key becomes available to posture emission after the
+			// workspace statement's initial key load already failed.
+			if err := signing.SavePrivateKey(lateKey, keyPath); err != nil {
+				return postureEmission{}, err
+			}
+			return emitContainRunPosture(cfg, key, output, env, args)
+		},
+		launch: func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error {
+			if err := os.WriteFile(filepath.Join(workspace, ".envrc"), []byte("fixture"), 0o600); err != nil {
+				return err
+			}
+			return agentExit
+		},
+	}
+	opts := containRunOptions{postureOutput: t.TempDir(), workspaceDiffCapBytes: 1 << 20}
+	var stdout bytes.Buffer
+	err = runContainRun(t.Context(), strings.NewReader(""), &stdout, io.Discard, runEnv, opts, []string{"claude"})
+	if !errors.Is(err, agentExit) {
+		t.Fatalf("launch exit = %v, want %v", err, agentExit)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, workspaceStatementUnavailableLine) ||
+		!strings.Contains(out, "[WARN] workspace control paths CHANGED") ||
+		!strings.Contains(out, filepath.Join(workspace, ".envrc")) ||
+		!strings.Contains(out, "workspace_control_surface=") ||
+		strings.Contains(out, "[PASS] signed workspace change statement") {
+		t.Fatalf("expected warning and unsigned control-path evidence:\n%s", out)
 	}
 }
 
@@ -685,7 +747,9 @@ func TestEmitContainRunWorkspaceStatementRejectsIncompleteInputs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, _, _, emitErr := emitContainRunWorkspaceStatement(tt.opts, env, tt.before, tt.grants, posturePath, testCapsuleSHA256(t, posturePath), tt.key)
+			_, _, _, _, emitErr := emitContainRunWorkspaceStatement(tt.opts, env, tt.grants, workspaceStatementInputs{
+				before: tt.before, key: tt.key, posture: postureEmission{path: posturePath, capsuleSHA256: testCapsuleSHA256(t, posturePath)},
+			})
 			if emitErr == nil || !strings.Contains(emitErr.Error(), tt.wantErr) {
 				t.Fatalf("emit error = %v, want %q", emitErr, tt.wantErr)
 			}
@@ -719,7 +783,10 @@ func TestWorkspaceStatementHelpersKeepOneObservationPerWorkspace(t *testing.T) {
 	snapshot := snapshots[workspace]
 	snapshot.BoundaryCheck = workspacediff.BoundaryCheckDeviceOnly
 	path, incomplete, reason, boundary, err := emitContainRunWorkspaceStatement(
-		containRunOptions{workspaceDiffCapBytes: 1 << 20}, allPassEnv(t), map[string]workspacediff.Manifest{workspace: snapshot}, []workspaceGrant{grant, grant}, posturePath, testCapsuleSHA256(t, posturePath), priv)
+		containRunOptions{workspaceDiffCapBytes: 1 << 20}, allPassEnv(t), []workspaceGrant{grant, grant}, workspaceStatementInputs{
+			before: map[string]workspacediff.Manifest{workspace: snapshot}, key: priv,
+			posture: postureEmission{path: posturePath, capsuleSHA256: testCapsuleSHA256(t, posturePath)},
+		})
 	if err != nil {
 		t.Fatalf("emit statement: %v", err)
 	}
@@ -754,7 +821,10 @@ func TestEmitContainRunWorkspaceStatementRefusesUnwritableOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, _, _, _, err := emitContainRunWorkspaceStatement(
-		containRunOptions{workspaceDiffCapBytes: 1 << 20}, allPassEnv(t), map[string]workspacediff.Manifest{workspace: before}, []workspaceGrant{{Path: workspace}}, posturePath, testCapsuleSHA256(t, posturePath), priv); err == nil {
+		containRunOptions{workspaceDiffCapBytes: 1 << 20}, allPassEnv(t), []workspaceGrant{{Path: workspace}}, workspaceStatementInputs{
+			before: map[string]workspacediff.Manifest{workspace: before}, key: priv,
+			posture: postureEmission{path: posturePath, capsuleSHA256: testCapsuleSHA256(t, posturePath)},
+		}); err == nil {
 		t.Fatal("expected statement emission to fail when its output directory cannot create the atomic file")
 	}
 }
