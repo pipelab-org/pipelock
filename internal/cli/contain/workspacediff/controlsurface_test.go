@@ -659,3 +659,19 @@ func TestControlSurfaceInfersNothingFromUnexaminedNestedDirectories(t *testing.T
 		})
 	}
 }
+
+func TestControlSurfaceDiscoveryDirectoryCountLimit(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"a", "b", "c"} {
+		if err := os.Mkdir(filepath.Join(root, name), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	budget := DefaultControlSurfaceBudget()
+	budget.MaxNestedDirs = 3 // the root and two of the three directories
+	snap := controlSnapshot(t, root, budget)
+	diff := controlDiff(t, snap, snap)
+	if diff.Incomplete || !diff.NestedDiscoveryPartial || !strings.Contains(diff.NestedDiscoveryReason, "directory count limit exceeded at") {
+		t.Fatalf("want partial discovery from the directory count limit: %+v", diff)
+	}
+}
