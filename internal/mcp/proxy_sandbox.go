@@ -229,7 +229,9 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	sessionGrace := defaultParentExitGrace
 	if h := opts.sessionExitForTest; h != nil {
 		sessionOpts = h.watch
-		sessionGrace = h.grace
+		if h.grace > 0 {
+			sessionGrace = h.grace
+		}
 	}
 	if sessionOpts.startPPID > orphanedPPID {
 		go runSessionBoundExit(sessionCtx, sessionOpts, sessionExitActions{
@@ -305,10 +307,9 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	inputOpts.onLocalV3ReplyFailure = reportReplyFailure
 	inputOpts.stdioInputScanDisabled = inputCfg == nil || !inputCfg.Enabled
 
-	var wg sync.WaitGroup
-	wg.Add(1)
+	inputDone := make(chan struct{})
 	go func() {
-		defer wg.Done()
+		defer close(inputDone)
 		defer inputOpts.closeStdioInput()
 		clientReader := transport.NewStdioReader(clientIn)
 		serverWriter := transport.NewStdioWriter(serverIn)
@@ -317,10 +318,9 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 			bindingCfg, tracker, inputOpts)
 	}()
 
-	var wgBlocked sync.WaitGroup
-	wgBlocked.Add(1)
+	blockedDone := make(chan struct{})
 	go func() {
-		defer wgBlocked.Done()
+		defer close(blockedDone)
 		for blocked := range blockedCh {
 			if wErr := deliverMCPInputResult(inputOpts, blocked, inputOpts.v3SendDenialWriter(safeClientOut, safeLogW, blocked)); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send block response: %v\n", wErr)
@@ -395,22 +395,29 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 		killAdoptedDescendants()
 	}
 
-	// Drain with timeout - detached descendants can hold pipes open.
-	// Use ctx for cancellation so the caller can control shutdown.
-	drainCtx, drainCancel := context.WithTimeout(ctx, 5*time.Second)
+	// A cancelled transport can still have signed refusals to finish.
+	drainParent, drainGrace := ctx, 5*time.Second
+	if opts.receiptEffects.enabled {
+		drainParent, drainGrace = context.WithoutCancel(ctx), sessionGrace
+		if ctx.Err() != nil {
+			if closer, ok := clientIn.(io.Closer); ok {
+				_ = closer.Close()
+			}
+		}
+	}
+	drainCtx, drainCancel := context.WithTimeout(drainParent, drainGrace)
 	defer drainCancel()
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		wgBlocked.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-drainCtx.Done():
+	drained := waitMCPInputDrain(drainCtx, inputDone, blockedDone)
+	if !drained && opts.receiptEffects.enabled {
+		interruptNativeOutput(clientOut)
+		logAsync(safeLogW, "pipelock: timed out waiting for sandboxed MCP input drain\n")
 	}
 	if timedOut {
-		emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker, fwdOpts)
+		if drained || !opts.receiptEffects.enabled {
+			emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker, fwdOpts)
+		} else {
+			emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "response_timeout")
+		}
 	} else if replyAdmissionFailed {
 		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "receipt_admission_failed")
 	} else if downstreamWriteFailed && opts.receiptEffects.enabled {

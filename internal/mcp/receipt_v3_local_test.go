@@ -2437,3 +2437,111 @@ func TestMCPV3WebSocketDuplicatePendingIDRefusesSecondSend(t *testing.T) {
 	default:
 	}
 }
+
+func TestMCPV3SandboxDrainsNotificationAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	deadline, stop := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
+	defer stop()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	writerOpts := mcpMatrixWriterOptions(t, v3MCPMatrixRow{required: true}, transportMCPStdio, nil, func(count int) {
+		if count == 2 {
+			close(entered)
+			cancel()
+			<-release
+		}
+	})
+	writer, err := v3.OpenStreamWriter(t.Context(), writerOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		// Release any in-progress sync before closing the receipt stream.
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+		_ = writer.Close(t.Context(), nil)
+	}()
+	opts := MCPProxyOpts{
+		Scanner: testScannerWithAction(t, config.ActionBlock), Transport: transportMCPStdio,
+		PolicyCfg: policy.New(config.MCPToolPolicy{
+			Enabled: true, Action: config.ActionBlock,
+			Rules: []config.ToolPolicyRule{{Name: "deny-echo", ToolPattern: "^echo$", Action: config.ActionBlock}},
+		}),
+	}.WithV3ReceiptWriter(writer)
+	notification := strings.Replace(heldNativeCall, `"id":1,`, "", 1)
+	done := make(chan error, 1)
+	go func() {
+		child := exec.CommandContext(deadline, "cat")
+		done <- runProxyWithSandbox(ctx, child, child.Start, strings.NewReader(notification+"\n"), io.Discard, io.Discard, opts)
+	}()
+	select {
+	case <-entered:
+	case <-deadline.Done():
+		t.Fatal("notification refusal never reached the drainer")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("sandbox returned before the notification refusal settled: %v", err)
+	case <-time.After(testwait.Deadline(2 * time.Second)):
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, ErrSubprocessExit) && !errors.Is(err, os.ErrClosed) {
+			t.Fatalf("sandbox shutdown: %v", err)
+		}
+	case <-deadline.Done():
+		t.Fatal("sandbox did not join the released denial drainer")
+	}
+	actions := localMCPReceiptActions(t, writer, writerOpts.Dir)
+	if len(actions) != 1 || actions[0].Phase != "decision" || actions[0].Verdict != config.ActionBlock || actions[0].RequestID != "" {
+		t.Fatalf("expected one signed notification refusal, got %+v", actions)
+	}
+}
+
+func TestMCPV3SandboxDrainInterruptsBlockedOutput(t *testing.T) {
+	deadline, stop := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
+	defer stop()
+	ctx, cancel := context.WithCancel(deadline)
+	defer cancel()
+	opts, writer, observer := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, transportMCPStdio)
+	opts.sessionExitForTest = &sessionExitTestHooks{grace: 50 * time.Millisecond}
+	opts.PolicyCfg = policy.New(config.MCPToolPolicy{
+		Enabled: true, Action: config.ActionBlock,
+		Rules: []config.ToolPolicyRule{{Name: "deny-echo", ToolPattern: "^echo$", Action: config.ActionBlock}},
+	})
+	reader, output := io.Pipe()
+	defer func() { _ = reader.Close(); _ = output.Close() }()
+	entered := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		child := exec.CommandContext(deadline, "cat")
+		done <- runProxyWithSandbox(ctx, child, child.Start, strings.NewReader(jsonToolsCallEcho+"\n"),
+			observedPipeWriter{PipeWriter: output, entered: entered}, io.Discard, opts)
+	}()
+	select {
+	case <-entered:
+	case <-deadline.Done():
+		t.Fatal("denial write never started")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, ErrSubprocessExit) && !errors.Is(err, os.ErrClosed) {
+			t.Fatalf("sandbox shutdown: %v", err)
+		}
+	case <-deadline.Done():
+		t.Fatal("blocked denial write prevented sandbox shutdown")
+	}
+	testwait.ForContext(t, deadline, func() bool {
+		actions, err := decodeMCPMatrixReceiptFiles(observer.dir, true)
+		return err == nil && slices.ContainsFunc(actions, func(action v3.Action) bool {
+			return action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.OutcomeClass == "attempt_unknown"
+		})
+	}, "interrupted denial write did not settle")
+	localMCPReceiptActions(t, writer, observer.dir)
+}
