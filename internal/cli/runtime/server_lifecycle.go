@@ -1551,7 +1551,7 @@ func (s *Server) consumeReloads(ctx context.Context, events <-chan config.Reload
 // recorder and emitter exist so that adding an anchor point on hot reload
 // takes effect without rebuilding recorder state.
 func (s *Server) evidenceMonitors(cfg *config.Config) (*evidenceHealthMonitor, *autoAnchorMonitor) {
-	if s.recorder == nil || s.metrics == nil {
+	if s.recorder == nil || s.metrics == nil || s.receiptWriter != nil {
 		return nil, nil
 	}
 	var health *evidenceHealthMonitor

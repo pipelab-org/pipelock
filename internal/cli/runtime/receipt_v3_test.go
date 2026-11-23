@@ -92,6 +92,28 @@ func TestRuntimeReceiptV3Reload(t *testing.T) {
 			t.Fatal("rejected reload replaced the live writer")
 		}
 	})
+	for _, feature := range []struct {
+		name   string
+		enable func(*config.Config)
+	}{
+		{"dashboard_snapshot", func(c *config.Config) { c.DashboardSnapshot.Enabled = new(true) }},
+		{"flight_recorder.evidence_health", func(c *config.Config) { c.FlightRecorder.EvidenceHealth.Enabled = new(true) }},
+		{"flight_recorder.anchor", func(c *config.Config) { c.FlightRecorder.Anchor.LocalLog = "evidence.log" }},
+	} {
+		t.Run("refuse reload/"+feature.name, func(t *testing.T) {
+			cfg, err := config.LoadBytes([]byte(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A directory-selected candidate only learns its effective format at runtime.
+			cfg.FlightRecorder.ReceiptFormat = ""
+			feature.enable(cfg)
+			want := feature.name + " requires receipt_format: legacy"
+			if err := s.Reload(cfg); err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("reload error = %v, want %q", err, want)
+			}
+		})
+	}
 	if err := s.closeReceiptV3(); err != nil {
 		t.Fatal(err)
 	}

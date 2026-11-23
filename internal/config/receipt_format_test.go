@@ -25,6 +25,9 @@ func TestLoadReceiptFormat(t *testing.T) {
 		{name: "policy action", fields: "  receipt_format: v3\n", other: "mcp_tool_policy:\n  action: defer\n", wantErr: "does not yet support deferred holds"},
 		{name: "policy rule", fields: "  receipt_format: v3\n", other: "mcp_tool_policy:\n  rules:\n    - action: defer\n", wantErr: "does not yet support deferred holds"},
 		{name: "redirect action", fields: "  receipt_format: v3\n", other: "mcp_tool_policy:\n  action: redirect\n", wantErr: "does not yet support redirect rules"},
+		{name: "dashboard snapshot", fields: "  receipt_format: v3\n", other: "dashboard_snapshot:\n  enabled: true\n", wantErr: "dashboard_snapshot requires receipt_format: legacy"},
+		{name: "evidence health", fields: "  receipt_format: v3\n  evidence_health:\n    enabled: true\n", wantErr: "flight_recorder.evidence_health requires receipt_format: legacy"},
+		{name: "anchor", fields: "  receipt_format: v3\n  anchor:\n    local_log: evidence.log\n", wantErr: "flight_recorder.anchor requires receipt_format: legacy"},
 		{name: "redirect rule", fields: "  receipt_format: v3\n", other: "mcp_tool_policy:\n  rules:\n    - action: redirect\n", wantErr: "does not yet support redirect rules"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

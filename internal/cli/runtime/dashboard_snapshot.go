@@ -26,7 +26,7 @@ type dashboardRuntimeSnapshotOptions struct {
 var startDashboardRuntimeSnapshotHook func(dashboardRuntimeSnapshotOptions)
 
 func (s *Server) startDashboardRuntimeSnapshot(ctx context.Context, wg *sync.WaitGroup, cfg *config.Config) {
-	if startDashboardRuntimeSnapshotHook == nil {
+	if startDashboardRuntimeSnapshotHook == nil || s.receiptWriter != nil {
 		return
 	}
 	startDashboardRuntimeSnapshotHook(dashboardRuntimeSnapshotOptions{

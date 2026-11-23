@@ -637,7 +637,6 @@ func Defaults() *Config {
 				HeartbeatInterval: "60s",
 			},
 			EvidenceHealth: FlightRecorderEvidenceHealth{
-				Enabled:           ptrBool(true),
 				SelfAuditInterval: "30s",
 				MaxAnchorLag:      "24h",
 			},

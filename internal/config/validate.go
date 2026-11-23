@@ -5465,6 +5465,15 @@ func (c *Config) ValidateReceiptV3() error {
 	switch {
 	case !fr.Enabled || fr.Dir == "" || fr.SigningKeyPath == "":
 		return errors.New("flight_recorder.receipt_format v3 requires flight_recorder.enabled, dir, and signing_key_path")
+	case fr.Anchor.RekorURL != "" || fr.Anchor.LocalLog != "" || c.flightRecorderAnchorHasExplicitSettings():
+		return errors.New("flight_recorder.anchor requires receipt_format: legacy")
+	case (fr.EvidenceHealth.Enabled != nil && *fr.EvidenceHealth.Enabled) ||
+		(fr.EvidenceHealth.Enabled == nil && (fr.EvidenceSelfAuditIntervalDuration() != DefaultEvidenceHealthSelfAuditInterval ||
+			fr.EvidenceMaxAnchorLagDuration() != DefaultEvidenceHealthMaxAnchorLag)):
+		return errors.New("flight_recorder.evidence_health requires receipt_format: legacy")
+	case (c.DashboardSnapshot.Enabled != nil && *c.DashboardSnapshot.Enabled) ||
+		(c.DashboardSnapshot.Enabled == nil && (c.DashboardSnapshot.Path != "" || c.DashboardSnapshot.IntervalDuration() != DefaultDashboardSnapshotInterval)):
+		return errors.New("dashboard_snapshot requires receipt_format: legacy")
 	case fr.ReceiptChainCount() > 1:
 		return errors.New("flight_recorder.receipt_format v3 requires at most one flight_recorder.receipt_chains chain")
 	default:
