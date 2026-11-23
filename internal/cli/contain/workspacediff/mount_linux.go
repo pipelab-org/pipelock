@@ -7,6 +7,7 @@ package workspacediff
 
 import (
 	"os"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -46,4 +47,12 @@ func crossedMount(rootMnt, entryMnt uint64, rootOK, entryOK bool) bool {
 		return false
 	}
 	return rootMnt != entryMnt
+}
+
+func workspaceBootID() string {
+	data, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }

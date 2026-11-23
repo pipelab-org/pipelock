@@ -71,27 +71,42 @@ func printWorkspaceControls(w io.Writer, results map[string]workspacediff.Contro
 	slices.Sort(paths)
 	slices.Sort(reasons)
 	paths = slices.Compact(paths)
-	status := "clean"
+	status := workspaceControlStatus(len(paths) > 0, len(reasons) > 0, len(nestedReasons) > 0)
 	if len(paths) > 0 {
-		status = "changed"
 		_, _ = fmt.Fprintf(w, "  [WARN] workspace control paths CHANGED: %q\n", paths)
 	}
 	if len(reasons) > 0 {
-		status = "incomplete"
 		_, _ = fmt.Fprintf(w, "  [WARN] workspace control surface observation is INCOMPLETE: %q\n", reasons)
 	}
 	nested := "complete"
 	if len(nestedReasons) > 0 {
-		nested = "partial"
+		nested = workspaceControlPartial
 		slices.Sort(nestedReasons)
 		_, _ = fmt.Fprintf(w, "  [WARN] workspace nested control discovery is PARTIAL: %q\n", nestedReasons)
-	}
-	// A partial nested result is never reported as clean: a consumer keyed on
-	// the status token alone must not read missing coverage as a pass.
-	if status == "clean" && nested == "partial" {
-		status = "partial"
 	}
 	_, _ = fmt.Fprintf(w, "workspace_control_surface=%s changed=%t paths=%q reason=%q nested=%s nested_reason=%q\n",
 		status, len(paths) > 0, paths, strings.Join(reasons, "; "), nested, strings.Join(nestedReasons, "; "))
 	return status
+}
+
+const (
+	workspaceControlPartial     = "partial"
+	workspaceControlUnavailable = "unavailable"
+)
+
+func workspaceControlStatus(changed, incomplete, partial bool) string {
+	switch {
+	case incomplete:
+		return "incomplete"
+	case changed:
+		return "changed"
+	case partial:
+		return workspaceControlPartial
+	default:
+		return "clean"
+	}
+}
+
+func printWorkspaceControlUnavailable(w io.Writer, reason string) {
+	_, _ = fmt.Fprintf(w, "workspace_control_surface=%s reason=%s\n", workspaceControlUnavailable, reason)
 }

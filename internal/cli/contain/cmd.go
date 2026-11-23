@@ -23,6 +23,8 @@ Subcommands:
   install     Create users, systemd unit, nft rules, wrappers, sudoers.
   upgrade     Download, verify, replace, re-pin, restart, verify (one command).
   run         Verify containment, then launch a registered agent tool.
+  audit-workspace
+              Compare workspace control paths against a local baseline.
   verify      Run containment probes; report pass/fail/skip.
   doctor      Live self-test of the runtime contract; report remediation.
   view        Connect a VNC client to the contained display.
@@ -36,7 +38,7 @@ Subcommands:
               List recorded workspace grants (path, mode, owner, expiry, status).
   ca-refresh  Rebuild the combined CA bundle after a CA rotation.
 
-All mutating subcommands except 'upgrade' accept --dry-run to print the
+All mutating subcommands except 'upgrade' and 'audit-workspace' accept --dry-run to print the
 planned actions without touching state.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -46,6 +48,7 @@ planned actions without touching state.`,
 		verifyCmd(),
 		doctorCmd(),
 		runCmd(),
+		auditWorkspaceCmd(),
 		servicePostureCmd(),
 		installCmd(),
 		rollbackCmd(),

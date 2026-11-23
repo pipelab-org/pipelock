@@ -23,3 +23,7 @@ func mountID(_ string) (id uint64, ok bool) {
 func crossedMount(_, _ uint64, _, _ bool) bool {
 	return false
 }
+
+func workspaceBootID() string {
+	return ""
+}
