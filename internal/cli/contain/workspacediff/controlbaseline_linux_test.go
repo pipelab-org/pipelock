@@ -252,3 +252,86 @@ func TestControlBaselineCodecCoversEveryObservedField(t *testing.T) {
 		})
 	}
 }
+
+// A symlink passed while resolving a configured path is recorded as evidence
+// attributed to the file that named it. The loaded baseline must read each
+// change to those links, and to what they lead to, exactly as the snapshot it
+// was written from does. Retargeting or removing the link, or editing the file
+// it reaches, are the changes an agent can make without touching the config.
+func TestControlBaselineKeepsPathsResolvedThroughSymlinks(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(t *testing.T, root string)
+		path string
+	}{
+		{name: "retarget the link", path: "alias", edit: func(t *testing.T, root string) {
+			if err := os.Remove(filepath.Join(root, "alias")); err != nil {
+				t.Fatal(err)
+			}
+			symlinkFixture(t, root, "other", "alias")
+		}},
+		{name: "remove the link", path: "alias", edit: func(t *testing.T, root string) {
+			if err := os.Remove(filepath.Join(root, "alias")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "edit what the link reaches", path: "real/hooks/pre-commit", edit: func(t *testing.T, root string) {
+			writeControlHook(t, root, "real/hooks/pre-commit", "edited")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			git := newControlGit(t)
+			root := t.TempDir()
+			git.init(t, root)
+			symlinkFixture(t, root, "real", "alias")
+			writeControlHook(t, root, "real/hooks/pre-commit", "original")
+			writeControlHook(t, root, "other/hooks/pre-commit", "original")
+			git.run(t, root, "config", "--local", "core.hooksPath", "alias/hooks")
+			budget := DefaultControlSurfaceBudget()
+			before := controlSnapshot(t, root, budget)
+			if len(before.priority.sources["alias"]) == 0 && len(before.nested.sources["alias"]) == 0 {
+				t.Fatalf("fixture must record the link as a referenced path: %+v", before.priority.sources)
+			}
+			loaded := reloadControlBaseline(t, before)
+			tc.edit(t, root)
+			after := controlSnapshot(t, root, budget)
+			live := controlDiff(t, before, after)
+			fromDisk, err := CompareControlBaseline(loaded, after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(live, fromDisk) {
+				t.Fatalf("loaded baseline disagrees with the observation it came from:\nlive   %+v\nloaded %+v", live, fromDisk)
+			}
+			expectControlPath(t, fromDisk, tc.path)
+		})
+	}
+}
+
+// The audit command checks the root's path and then the snapshot opens it
+// again, so a swap between the two reaches the snapshot unchecked. The swapped
+// tree here holds byte-identical control files; only the root identity tells
+// it apart, and that must keep the comparison from reading clean.
+func TestControlBaselineRootSwappedForALinkIsNotClean(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "project", "ws")
+	decoy := filepath.Join(base, "decoy", "ws")
+	for _, dir := range []string{root, decoy} {
+		writeControlFixture(t, dir, ".envrc", "same")
+	}
+	budget := DefaultControlSurfaceBudget()
+	loaded := reloadControlBaseline(t, controlSnapshot(t, root, budget))
+	if err := os.Rename(filepath.Join(base, "project"), filepath.Join(base, "project-moved")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(base, "decoy"), filepath.Join(base, "project")); err != nil {
+		t.Fatal(err)
+	}
+	diff, err := CompareControlBaseline(loaded, controlSnapshot(t, root, budget))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !diff.Incomplete || !strings.Contains(diff.IncompleteReason, "root identity") {
+		t.Fatalf("a swapped root must never read clean: %+v", diff)
+	}
+}
