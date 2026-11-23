@@ -4,9 +4,12 @@
 package scanner
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -228,4 +231,186 @@ func testBuriedWording(t *testing.T, surface, wording string, legacy *Scanner, n
 			t.Fatalf("checker was not shown the buried wording in a body: %+v", got)
 		}
 	})
+}
+
+func checkerPartTexts(parts []checker.Part) []string {
+	texts := make([]string, len(parts))
+	for i, part := range parts {
+		texts[i] = part.Text
+	}
+	return texts
+}
+
+// A smaller request limit may omit views, but never without saying so: for
+// every limit, the builder either reports over_budget or returns exactly the
+// views it returns without a limit, and never exceeds the limit.
+func TestCheckerBudgetNeverDropsViewsSilently(t *testing.T) {
+	var tags strings.Builder
+	for _, r := range checkerFixturePhrase {
+		tags.WriteRune(r + 0xe0000)
+	}
+	inputs := map[string]string{
+		"tags and quoted-printable": tags.String() + " " + strings.ReplaceAll(checkerFixturePhrase, " ", "=20"),
+		"nested base64":             base64.StdEncoding.EncodeToString([]byte(base64.StdEncoding.EncodeToString([]byte(checkerFixturePhrase)))),
+		"base64 of tags":            base64.StdEncoding.EncodeToString([]byte(tags.String())),
+		"tags around invisibles":    tags.String() + "\u200b" + tags.String() + " " + strings.ReplaceAll(checkerFixturePhrase, " ", "=20"),
+		"quoted-printable in tags":  tags.String() + " " + strings.ReplaceAll(strings.ReplaceAll(checkerFixturePhrase, " ", "=\u200b20"), "e", "=65"),
+		"percent and entities":      strings.ReplaceAll(checkerFixturePhrase, " ", "%20") + " &amp; " + strings.ReplaceAll(checkerFixturePhrase, " ", "&#32;"),
+		"dense invisibles":          strings.ReplaceAll(checkerFixturePhrase, " ", "​​"),
+		"hex of base64":             hex.EncodeToString([]byte(base64.StdEncoding.EncodeToString([]byte(checkerFixturePhrase)))),
+	}
+	for name, source := range inputs {
+		t.Run(name, func(t *testing.T) {
+			full := checkerTextBuilder{ctx: t.Context(), limit: math.MaxInt64}
+			full.addTexts([]string{source})
+			if full.reason != "" || len(full.parts) < 3 {
+				t.Fatalf("unlimited build: reason %q, %d parts", full.reason, len(full.parts))
+			}
+			want := checkerPartTexts(full.parts)
+			for limit := int64(1); limit <= full.submitted+1; limit++ {
+				b := checkerTextBuilder{ctx: t.Context(), limit: limit}
+				b.addTexts([]string{source})
+				if b.submitted > limit {
+					t.Fatalf("limit %d: submitted %d bytes", limit, b.submitted)
+				}
+				switch b.reason {
+				case "":
+					if got := checkerPartTexts(b.parts); !slices.Equal(got, want) {
+						t.Fatalf("limit %d: no reason, but %d of %d views", limit, len(got), len(want))
+					}
+				case checker.ReasonOverBudget:
+				default:
+					t.Fatalf("limit %d: reason %q", limit, b.reason)
+				}
+			}
+		})
+	}
+}
+
+// Reaching a decode limit must read as incomplete: the scanner stopped
+// opening transforms, so a checker cannot be told the item is whole.
+func TestCheckerDecodeLimitsAreIncomplete(t *testing.T) {
+	t.Run("candidate limit", func(t *testing.T) {
+		var source strings.Builder
+		for i := range maxDecodeCandidates + 100 {
+			source.WriteString(base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("benign filler number %05d here", i))))
+			source.WriteByte(' ')
+		}
+		b := checkerTextBuilder{ctx: t.Context(), limit: math.MaxInt64}
+		b.addTexts([]string{source.String()})
+		if b.reason != checker.ReasonTruncated || len(b.parts) < 2 {
+			t.Fatalf("reason %q with %d parts", b.reason, len(b.parts))
+		}
+	})
+	t.Run("oversized input with an encoded run", func(t *testing.T) {
+		source := strings.Repeat("a", maxDecodeTotalBytes+1) + " " + base64.StdEncoding.EncodeToString([]byte(checkerFixturePhrase))
+		b := checkerTextBuilder{ctx: t.Context(), limit: math.MaxInt64}
+		b.addTexts([]string{source})
+		if b.reason != checker.ReasonTruncated {
+			t.Fatalf("reason %q", b.reason)
+		}
+	})
+	t.Run("transform depth", func(t *testing.T) {
+		// Alternating percent and entity layers cannot be opened in one step,
+		// so each costs a level of the transform walk.
+		source := strings.ReplaceAll(checkerFixturePhrase, "t", "%74")
+		for i := range responseDecodeMaxDepth + 2 {
+			if i%2 == 0 {
+				source = strings.ReplaceAll(source, "%", "&#37;")
+			} else {
+				source = strings.ReplaceAll(source, "&", "%26")
+			}
+		}
+		b := checkerTextBuilder{ctx: t.Context(), limit: math.MaxInt64}
+		b.addTexts([]string{source})
+		if b.reason != checker.ReasonTruncated {
+			t.Fatalf("reason %q", b.reason)
+		}
+	})
+	t.Run("plain oversized input", func(t *testing.T) {
+		b := checkerTextBuilder{ctx: t.Context(), limit: math.MaxInt64}
+		b.addTexts([]string{strings.Repeat("a b ", maxDecodeTotalBytes/4+1)})
+		if b.reason != "" {
+			t.Fatalf("plain text reported %q", b.reason)
+		}
+	})
+}
+
+// cancelAfter reports cancellation from its n-th Err call on.
+type cancelAfter struct {
+	context.Context
+	left     int
+	observed bool
+}
+
+func (c *cancelAfter) Err() error {
+	if c.left > 0 {
+		c.left--
+		return nil
+	}
+	c.observed = true
+	return context.Canceled
+}
+
+// A cancellation seen at any point of the build leaves the item partial.
+func TestCheckerCancellationIsNeverComplete(t *testing.T) {
+	encoded := base64.StdEncoding.EncodeToString([]byte("violet teacups\xff\xfe\xfd\xfc belong " + strings.Repeat("\x01", 40)))
+	sources := []string{
+		encoded,
+		encoded + "%20" + strings.ReplaceAll(checkerFixturePhrase, " ", "&#32;"),
+		strings.ReplaceAll(checkerFixturePhrase, " ", "%20"),
+		base64.StdEncoding.EncodeToString([]byte(strings.Repeat("\xff\xfe\x80\x81", 40) + checkerFixturePhrase)),
+		checkerFixturePhrase,
+	}
+	for i, source := range sources {
+		for left := range 12 {
+			ctx := &cancelAfter{Context: t.Context(), left: left}
+			b := checkerTextBuilder{ctx: ctx, limit: math.MaxInt64}
+			b.addTexts([]string{source})
+			if ctx.observed && b.reason == "" {
+				t.Fatalf("source %d, cancellation after %d checks reported a complete item", i, left)
+			}
+		}
+	}
+}
+
+// A body whose later view no longer fits is incomplete and the checker is not
+// called with the views that did fit.
+func TestCheckerBodyBudgetStopsAtOmittedView(t *testing.T) {
+	const surface = config.InjectionSurfaceHTTPResponse
+	const left, right = "violet teacups belong", "upstairs until tomorrow"
+	body := opaqueBodyViewFixture(left, right)
+	views, err := extractResponseBodyViews(t.Context(), body)
+	if err != nil || len(views) < 2 {
+		t.Fatalf("fixture views = %d, %v", len(views), err)
+	}
+	cfg := testResponseConfig()
+	srv := checkertest.New(t, "benign")
+	srv.Configure(cfg, surface, config.InjectionModeBlock)
+	spec := cfg.PromptInjectionDetection.Checkers["fixture"]
+	spec.MaxRequestBytes = int64(len(views[0].Text)) + 8
+	cfg.PromptInjectionDetection.Checkers["fixture"] = spec
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	got := s.ScanBufferedInjection(t.Context(), BufferedInjectionScan{Surface: surface, Body: body, UseBody: true})
+	if !got.Failed() || got.Assessment.Status != AssessmentIncomplete || len(srv.Items()) != 0 {
+		t.Fatalf("over-budget body: %+v, %d requests", got, len(srv.Items()))
+	}
+}
+
+// Outbound traffic keeps its smaller decode work limit but still reaches the
+// checker with the decoded view.
+func TestCheckerOutboundReceivesDecodedView(t *testing.T) {
+	const surface = config.InjectionSurfaceHTTPResponse
+	cfg := testResponseConfig()
+	srv := checkertest.New(t, "benign")
+	srv.Configure(cfg, surface, config.InjectionModeBlock)
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	source := base64.StdEncoding.EncodeToString([]byte(checkerFixturePhrase))
+	s.ComposeBufferedInjection(t.Context(), BufferedInjectionScan{Surface: surface, Content: source, Outbound: true}, ResponseScanResult{Clean: true})
+	items := srv.Items()
+	if len(items) != 1 || !hasCheckerView(items[0].Parts, checkerFixturePhrase) {
+		t.Fatalf("outbound item missed the decoded view: %+v", items)
+	}
 }
