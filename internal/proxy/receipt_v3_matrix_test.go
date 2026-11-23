@@ -374,6 +374,7 @@ func exerciseV3Transport(t *testing.T, p *Proxy, surface string, exercise v3Tran
 		cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 		cfg.FetchProxy.Monitoring.Blocklist = p.CurrentConfig().FetchProxy.Monitoring.Blocklist
 		cfg.ResponseScanning = p.CurrentConfig().ResponseScanning
+		cfg.FlightRecorder.RequireReceipts = p.CurrentConfig().FlightRecorder.RequireReceipts
 		sc := scanner.MustNew(cfg)
 		t.Cleanup(sc.Close)
 		rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
