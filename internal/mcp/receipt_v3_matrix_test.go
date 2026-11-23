@@ -386,7 +386,13 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 			if count != 2 {
 				return
 			}
-			serverCtx := <-listenerRequest
+			var serverCtx context.Context
+			select {
+			case serverCtx = <-listenerRequest:
+			case <-ctx.Done():
+				t.Error("listener never observed a request")
+				return
+			}
 			cancel()
 			select {
 			case <-serverCtx.Done():
@@ -407,7 +413,11 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 	if beforeSync != nil {
 		opts.ListenerPrincipalResolver = func(r *http.Request) (ListenerPrincipal, error) {
 			if r.Method == http.MethodPost {
-				listenerRequest <- r.Context()
+				select {
+				case listenerRequest <- r.Context():
+				default:
+					t.Error("listener observed an extra request")
+				}
 			}
 			return ListenerPrincipal{}, nil
 		}
@@ -685,6 +695,7 @@ func assertMCPExchangeSettled(t *testing.T, actions []v3.Action, downstreamOutco
 	intents := map[string]v3.Action{}
 	terminals := map[string]int{}
 	var upstreamID string
+	intentCounts := map[string]int{}
 	for _, a := range actions {
 		if a.EffectBoundary != mcpUpstreamSendBoundary && a.EffectBoundary != mcpDownstreamDeliveryBoundary {
 			continue
@@ -695,6 +706,7 @@ func assertMCPExchangeSettled(t *testing.T, actions []v3.Action, downstreamOutco
 				t.Fatalf("duplicate intent: %+v", a)
 			}
 			intents[a.ActionID] = a
+			intentCounts[a.EffectBoundary]++
 			if a.EffectBoundary == mcpUpstreamSendBoundary {
 				upstreamID = a.ActionID
 			}
@@ -712,7 +724,7 @@ func assertMCPExchangeSettled(t *testing.T, actions []v3.Action, downstreamOutco
 			terminals[a.ActionID]++
 		}
 	}
-	if len(intents) != 2 || len(terminals) != 2 || upstreamID == "" {
+	if intentCounts[mcpUpstreamSendBoundary] != 1 || intentCounts[mcpDownstreamDeliveryBoundary] != 1 || len(terminals) != 2 {
 		t.Fatalf("expected two settled effects: %+v", actions)
 	}
 	for id, n := range terminals {

@@ -272,8 +272,16 @@ func TestMCPV3CurrentProtocolDiscoveryAndClientReply(t *testing.T) {
 				if err != nil {
 					t.Error(err)
 				}
-				wire <- mcpWireObservation{message: body, before: before, requestID: canonicalID(frame.ID), boundary: mcpUpstreamSendBoundary, outcome: "completed"}
-				seen <- frame.Method
+				select {
+				case wire <- mcpWireObservation{message: body, before: before, requestID: canonicalID(frame.ID), boundary: mcpUpstreamSendBoundary, outcome: "completed"}:
+				default:
+					t.Error("unexpected extra upstream observation")
+				}
+				select {
+				case seen <- frame.Method:
+				default:
+					t.Error("unexpected extra upstream request")
+				}
 				switch frame.Method {
 				case "initialize":
 					w.Header().Set("Content-Type", "application/json")

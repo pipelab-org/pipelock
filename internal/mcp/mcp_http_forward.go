@@ -44,11 +44,7 @@ func emitRequestScopedTimeout(
 	if len(id) != 0 {
 		outcome, ok := consumeTrackedRequestOutcome(tracker, id)
 		if ok {
-			resp := timeoutErrorResponse(id)
-			if wErr := writer.WriteMessage(resp); wErr != nil {
-				_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", wErr)
-			}
-			outcome.settle(logW, opts, "error", int64(len(resp)), "response_timeout")
+			emitMCPTimeoutReply(writer, logW, id, outcome, opts)
 		}
 	}
 	_, _ = fmt.Fprintln(logW, logMessage)
@@ -162,6 +158,12 @@ func RunHTTPProxy(
 	defer opts.closeNativeInputOnStop(clientIn)()
 	ctx, cancelCapacity := context.WithCancelCause(ctx)
 	defer cancelCapacity(nil)
+	opts.onLocalV3ReplyFailure = func(err error) {
+		cancelCapacity(err)
+		if closer, ok := clientIn.(io.Closer); ok {
+			_ = closer.Close()
+		}
+	}
 	defer opts.nativeCapacity().OnStopAfter(opts.shutdownGrace(), func() {
 		cancelCapacity(ael.ErrCapacity)
 		interruptNativeOutput(clientOut)
@@ -1053,6 +1055,9 @@ func RunHTTPProxy(
 	emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "upstream_closed")
 
 	if err := opts.nativeCapacityStopError(); err != nil {
+		return err
+	}
+	if err := context.Cause(ctx); errors.Is(err, errMCPV3ReplyAdmission) {
 		return err
 	}
 	return lastScanErr

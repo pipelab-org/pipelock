@@ -391,18 +391,6 @@ func RunHTTPListenerProxy(
 	mux.HandleFunc("/", func(rawWriter http.ResponseWriter, r *http.Request) {
 		var denialAudit mcpDenialAudit
 		w := &mcpListenerDenialWriter{ResponseWriter: rawWriter, opts: opts, descriptor: &denialAudit}
-		var localReplyUnderLease bool
-		if opts.receiptEffects.enabled {
-			w.localReply = &mcpListenerLocalReply{
-				ctx: r.Context(), writer: w, opts: baseOpts.snapshotScanPolicy(), log: safeLogW,
-				evidence: receipt.EmitOpts{Method: r.Method, Transport: deferred.SurfaceMCPHTTPListener},
-			}
-			defer func() {
-				if !localReplyUnderLease {
-					w.localReply.finish()
-				}
-			}()
-		}
 		// MCP responses are never storable by an intermediary. Protocol revision
 		// 2026-07-28 lets a server mark list and read results cacheScope "public",
 		// and a retained tools/list is the tool-poisoning surface: a poisoned or
@@ -597,9 +585,6 @@ func RunHTTPListenerProxy(
 			requestBaseOpts.v3DoorIdentity = listenerPrincipal.doorIdentity
 			requestBaseOpts.AuthorityActor = listenerPrincipal.actor
 		}
-		if w.localReply != nil {
-			w.localReply.opts = requestBaseOpts
-		}
 		admission, admissionErr := requestBaseOpts.admitNativeRequest()
 		if admissionErr != nil {
 			denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
@@ -612,9 +597,11 @@ func RunHTTPListenerProxy(
 		defer stopCapacity()
 		admissionCtx, finishWarnings := requestBaseOpts.nativeWarningContext(requestCtx, admission)
 		defer finishWarnings()
-		if w.localReply != nil {
-			w.localReply.ctx = admissionCtx
-			localReplyUnderLease = true
+		if requestBaseOpts.receiptEffects.enabled {
+			w.localReply = &mcpListenerLocalReply{
+				ctx: admissionCtx, writer: w, opts: requestBaseOpts, log: safeLogW,
+				evidence: receipt.EmitOpts{Method: r.Method, Transport: deferred.SurfaceMCPHTTPListener},
+			}
 			defer w.localReply.finish()
 		}
 		r = r.WithContext(admissionCtx)

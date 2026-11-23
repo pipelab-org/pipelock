@@ -45,6 +45,8 @@ import (
 // should log it but not report it to error tracking services.
 var ErrSubprocessExit = errors.New("subprocess exited")
 
+var errMCPDownstreamFrameWrite = errors.New("MCP downstream frame write failed")
+
 func newMCPClientWriter(out io.Writer, opts MCPProxyOpts) *syncWriter {
 	return &syncWriter{w: out, requireFullMessage: opts.receiptEffects.enabled}
 }
@@ -79,9 +81,12 @@ func (sw *syncWriter) WriteMessage(msg []byte) error {
 	copy(buf, msg)
 	buf[len(msg)] = '\n'
 	if n, err := sw.w.Write(buf); err != nil {
+		if sw.requireFullMessage {
+			return fmt.Errorf("%w: %w", errMCPDownstreamFrameWrite, err)
+		}
 		return fmt.Errorf("writing message: %w", err)
 	} else if sw.requireFullMessage && n != len(buf) {
-		return io.ErrShortWrite
+		return fmt.Errorf("%w: %w", errMCPDownstreamFrameWrite, io.ErrShortWrite)
 	}
 	return nil
 }
@@ -104,6 +109,25 @@ func drainStderr(stderrDone <-chan struct{}, serverErr io.Closer, grace time.Dur
 	}
 }
 
+// stdioLocalReplyFailure reports a withheld reply and wakes both sides of
+// forwarding so the session owner can tear down the subprocess before Wait.
+func stdioLocalReplyFailure(clientIn io.Reader, serverIn, serverOut io.Closer, sessionExit *sessionExitState, killChild func() bool) (func(error), <-chan error) {
+	failed := make(chan error, 1)
+	var once sync.Once
+	return func(err error) {
+		once.Do(func() {
+			failed <- err
+			sessionExit.begin()
+			_ = serverOut.Close()
+			killChild()
+			_ = serverIn.Close()
+			if closer, ok := clientIn.(io.Closer); ok {
+				_ = closer.Close()
+			}
+		})
+	}, failed
+}
+
 func waitMCPInputDrain(ctx context.Context, inputDone, blockedDone <-chan struct{}) bool {
 	for _, done := range []<-chan struct{}{inputDone, blockedDone} {
 		select {
@@ -120,12 +144,27 @@ func emitPendingTimeoutResponses(writer transport.MessageWriter, logW io.Writer,
 		return
 	}
 	for _, pending := range tracker.DrainPendingOutcomes() {
-		resp := timeoutErrorResponse(pending.ID)
-		if wErr := opts.localV3ReplyWriter(writer, logW, opts.pendingV3Send(pending.ID)).WriteMessage(resp); wErr != nil {
-			_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", wErr)
-		}
-		pending.Outcome.settle(logW, opts, "error", int64(len(resp)), "response_timeout")
+		reply := opts.localV3ReplyWriter(writer, logW, opts.pendingV3Send(pending.ID))
+		emitMCPTimeoutReply(reply, logW, pending.ID, pending.Outcome, opts)
 	}
+}
+
+func emitMCPTimeoutReply(writer transport.MessageWriter, logW io.Writer, id json.RawMessage, outcome TrackedRequestOutcome, opts MCPProxyOpts) {
+	resp := timeoutErrorResponse(id)
+	size := int64(len(resp))
+	var writeErr error
+	if opts.receiptEffects.enabled {
+		writeErr = writeMCPDenial(opts, mcpResponseInspectionBlockAudit("response_timeout"), writer, resp)
+		if writeErr != nil {
+			size = -1
+		}
+	} else {
+		writeErr = deliverMCPDeniedMessage(writer, resp)
+	}
+	if writeErr != nil {
+		_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", writeErr)
+	}
+	outcome.settle(logW, opts, "error", size, "response_timeout")
 }
 
 func emitPendingIncompleteOutcomes(logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts, reason string) {
@@ -278,7 +317,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			denialWriter = earlyMCPV3ResponseWriter(opts, baseWriter, frame, logW, correlated)
 		}
 		if err := writeMCPDenial(opts, descriptor, denialWriter, outbound); err != nil {
-			outcome.releaseNativeLease()
+			if correlated {
+				outcome.settle(logW, opts, "incomplete", -1, "response_not_delivered")
+			}
 			return err
 		}
 		if !recordV3 && !isRPCNotification(id) {
@@ -2326,6 +2367,8 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	inputOpts.WarnContext = ctx
 	inputOpts.closeStdioInput = sync.OnceFunc(func() { _ = serverIn.Close() })
 	inputOpts.sessionExit = sessionExit
+	reportReplyFailure, replyFailed := stdioLocalReplyFailure(clientIn, serverIn, serverOut, sessionExit, killDirectChild)
+	inputOpts.onLocalV3ReplyFailure = reportReplyFailure
 
 	// Forward client input to server stdin (with optional input scanning).
 	inputDone := make(chan struct{})
@@ -2399,19 +2442,24 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		opts.outputForwardStartedForTest()
 	}
 	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, tracker, fwdOpts)
+	select {
+	case err := <-replyFailed:
+		scanErr = err
+	default:
+	}
 	timedOut := errors.Is(scanErr, transport.ErrResponseTimeout)
 	replyAdmissionFailed := errors.Is(scanErr, errMCPV3ReplyAdmission)
-	shortReplyWrite := errors.Is(scanErr, io.ErrShortWrite)
+	downstreamWriteFailed := errors.Is(scanErr, errMCPDownstreamFrameWrite) || errors.Is(scanErr, io.ErrShortWrite)
 
 	// The child may still be waiting for input when forwarding stops after a
 	// response timeout, a reply receipt failure, or a short frame write. Close input and terminate
 	// the child before waiting. The post-Wait teardown reaps descendants.
-	if (timedOut || replyAdmissionFailed || shortReplyWrite) && cmd.Process != nil {
+	if (timedOut || replyAdmissionFailed || downstreamWriteFailed) && cmd.Process != nil {
 		reason := "upstream response timeout"
 		if replyAdmissionFailed {
 			reason = "reply receipt admission failure"
-		} else if shortReplyWrite {
-			reason = "short downstream frame write"
+		} else if downstreamWriteFailed {
+			reason = "downstream frame write failure"
 		}
 		_, _ = fmt.Fprintf(safeLogW, "pipelock: terminating MCP subprocess after %s\n", reason)
 		if c, ok := clientIn.(io.Closer); ok {
@@ -2483,7 +2531,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: timed out waiting for MCP input drain after upstream response timeout\n")
 		}
 		emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker, fwdOpts)
-	} else if sessionExit.inProgress() || replyAdmissionFailed || shortReplyWrite {
+	} else if sessionExit.inProgress() || replyAdmissionFailed || downstreamWriteFailed {
 		// An arbitrary io.Reader cannot be interrupted by closing the client
 		// side. Once session teardown has killed the server, do not let one
 		// such reader keep the proxy alive indefinitely.
@@ -2499,7 +2547,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		reason := "session_exit"
 		if replyAdmissionFailed {
 			reason = "receipt_admission_failed"
-		} else if shortReplyWrite {
+		} else if downstreamWriteFailed {
 			reason = "downstream_write_failed"
 		}
 		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, reason)

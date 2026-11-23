@@ -377,6 +377,9 @@ func ForwardScannedInput(
 			}
 			return
 		}
+		if opts.receiptEffects.enabled && opts.sessionExit.inProgress() {
+			return
+		}
 		lineNum++
 		var denialAudit mcpDenialAudit
 		hadAdaptiveFinding = false
@@ -844,6 +847,7 @@ func ForwardScannedInput(
 		refuseTaskRelease := func(reason string) {
 			refusalReason := taintDecision.recordTaskReleaseRefusal(reason)
 			receiptLayerOverride, receiptPatternOverride, receiptSeverityOverride = mcpReceiptLayerTaint, refusalReason, taintReceiptSeverity(taintDecision)
+			v3Evidence.Layer, v3Evidence.Pattern, v3Evidence.Severity = receiptLayerOverride, receiptPatternOverride, receiptSeverityOverride
 			sendInputDenial(opts, mcpTaintDenialAudit(), BlockedRequest{
 				ID: verdict.ID, IsNotification: isRPCNotification(verdict.ID),
 				ErrorCode: -32002, ErrorMessage: "pipelock: " + reason,

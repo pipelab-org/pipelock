@@ -134,11 +134,12 @@ func (o MCPProxyOpts) minSubjectTrust() config.DoWSubjectTrust {
 // Required: Scanner (dereferenced unconditionally in all scan paths).
 // Optional (nil-safe): all other fields - functions check before use.
 type MCPProxyOpts struct {
-	receiptEffects  mcpReceiptEffects
-	v3Session       *mcpV3Session
-	nativeAdmission receipt.EmitOpts
-	nativeSSE       bool
-	nativeStdio     bool
+	receiptEffects        mcpReceiptEffects
+	v3Session             *mcpV3Session
+	onLocalV3ReplyFailure func(error)
+	nativeAdmission       receipt.EmitOpts
+	nativeSSE             bool
+	nativeStdio           bool
 	// ListenerShutdownTimeout bounds graceful HTTP listener shutdown. Zero uses
 	// the existing five-second grace period.
 	ListenerShutdownTimeout time.Duration
@@ -541,6 +542,9 @@ type MCPProxyOpts struct {
 	// Tests use it to release a child held after closing stdout; production
 	// wiring leaves it nil.
 	outputForwardDoneForTest func()
+
+	// afterWSBindForTest controls cancellation at the pre-write boundary.
+	afterWSBindForTest func()
 	// sessionExit marks Pipelock-initiated descriptor closes during a
 	// session-bound teardown. It is wired only by proxy entry points.
 	sessionExit *sessionExitState

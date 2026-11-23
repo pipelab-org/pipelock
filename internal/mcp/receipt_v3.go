@@ -234,11 +234,14 @@ type mcpV3WithheldWriter struct{}
 func (mcpV3WithheldWriter) WriteMessage([]byte) error { return nil }
 
 func (o MCPProxyOpts) takeV3Send(id json.RawMessage) *mcpV3Exchange {
+	return o.takeV3SendKey(canonicalID(id))
+}
+
+func (o MCPProxyOpts) takeV3SendKey(key string) *mcpV3Exchange {
 	if o.v3Session == nil {
 		return nil
 	}
 	s := o.v3Session
-	key := canonicalID(id)
 	s.mu.Lock()
 	x := s.pending[key]
 	delete(s.pending, key)
@@ -309,7 +312,7 @@ func (w *mcpV3LocalWriter) WriteMessage(msg []byte) error {
 
 func (w *mcpV3LocalWriter) writeDeniedMessage(msg []byte) error {
 	reply := w.replyWriter(ParseMCPFrame(msg).ID)
-	return reply.writeDeniedMessage(msg)
+	return w.reportDenialFailure(msg, reply.writeDeniedMessage(msg))
 }
 
 func (w *mcpV3LocalWriter) writeInputDenial(br BlockedRequest, msg []byte) error {
@@ -324,9 +327,17 @@ func (w *mcpV3LocalWriter) writeInputDenial(br BlockedRequest, msg []byte) error
 		if msg == nil {
 			return nil
 		}
-		return writeMCPForwardedMessage(&reply, msg)
+		return w.reportDenialFailure(msg, writeMCPForwardedMessage(&reply, msg))
 	}
-	return reply.deliverDenial(msg, br.v3RefusalSigned, br.v3RefusalErr)
+	return w.reportDenialFailure(msg, reply.deliverDenial(msg, br.v3RefusalSigned, br.v3RefusalErr))
+}
+
+func (w *mcpV3LocalWriter) reportDenialFailure(msg []byte, err error) error {
+	if len(msg) != 0 && errors.Is(err, errMCPV3ReplyAdmission) &&
+		w.opts.receiptEffects.gate.RequiresReceipts() && w.opts.onLocalV3ReplyFailure != nil {
+		w.opts.onLocalV3ReplyFailure(err)
+	}
+	return err
 }
 
 type mcpV3ReplyWriter struct {

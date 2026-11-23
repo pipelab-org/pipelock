@@ -16,12 +16,12 @@ import (
 
 // mcpReceiptDelivery describes the client-side observation for one exchange.
 type mcpReceiptDelivery struct {
-	status          int
-	sent, received  []byte
-	withheldPayload []byte
-	withheld        bool
-	denialDelivered bool
-	messageCount    int
+	status              int
+	sent, received      []byte
+	withheldPayload     []byte
+	withheld            bool
+	denialDelivered     bool
+	expectedCompletions int
 }
 
 func checkMCPReceiptHistory(actions []v3.Action, deliveries ...mcpReceiptDelivery) error {
@@ -106,14 +106,15 @@ func checkMCPReceiptDelivery(actions []v3.Action, delivery mcpReceiptDelivery) e
 			withheld = true
 		}
 	}
-	maxCompleted := max(1, delivery.messageCount)
+	maxCompleted := max(1, delivery.expectedCompletions)
 	if withheld && !delivery.denialDelivered {
 		maxCompleted = 0
 	}
-	if blocks > 1 || completed > maxCompleted {
+	if blocks > 1 || completed > maxCompleted ||
+		(delivery.expectedCompletions > 0 && completed != delivery.expectedCompletions) {
 		return fmt.Errorf("downstream delivery has %d block decisions and %d completions", blocks, completed)
 	}
-	if completed != 0 && delivery.sent != nil && !bytes.Equal(delivery.received, delivery.sent) {
+	if (delivery.expectedCompletions > 0 || completed != 0) && delivery.sent != nil && !bytes.Equal(delivery.received, delivery.sent) {
 		return fmt.Errorf("downstream delivery completed with bytes different from what was sent")
 	}
 	if withheld && len(delivery.withheldPayload) > 0 && bytes.Contains(delivery.received, delivery.withheldPayload) {
@@ -228,6 +229,7 @@ func TestMCPReceiptHistoryInvariants(t *testing.T) {
 		{name: "wrong parent", actions: []v3.Action{intent, wrongParent}, want: "inconsistent effect fields"},
 		{name: "wrong request", actions: []v3.Action{intent, wrongRequest}, want: "inconsistent effect fields"},
 		{name: "recovery without intent", actions: []v3.Action{recovery}},
+		{name: "missing completed stream delivery", actions: []v3.Action{intent, completed}, delivery: mcpReceiptDelivery{expectedCompletions: 2}, want: "1 completions"},
 		{name: "different bytes", actions: []v3.Action{intent, completed}, delivery: mcpReceiptDelivery{sent: []byte("sent")}, want: "different from what was sent"},
 		{name: "withheld payload", actions: []v3.Action{block, intent, completed}, delivery: mcpReceiptDelivery{withheldPayload: []byte("upstream"), received: []byte("denial\nupstream"), denialDelivered: true}, want: "withheld upstream payload"},
 		{name: "empty HTTP success", actions: []v3.Action{block}, delivery: mcpReceiptDelivery{status: http.StatusOK}, want: "empty HTTP 200"},

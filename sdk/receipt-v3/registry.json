@@ -142,10 +142,6 @@
       "fields": "`phase` is resolution. `hold` carries the original defer id as `hold.id` and records `hold.resolution_policy` and `hold.resolution_source`. The original hold carries `hold.policy` and any `hold.parent`. Set `hold.correction:true` when a later block replaces an allow. `session` is the authority session id and original id, omitted when empty. `taint` records authority user-broad, decision allow, and reason `defer_resolution`. An `ask` resolution requires the retained `approval_api` channel and `observed:true`. Omit `ask` for other resolution verdicts. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
       "when": "`decision.Deferred != nil` and `holdErr != nil`"
     },
-    "internal/mcp/mcp_http_forward.go/emitRequestScopedTimeout/settle/ed81253e86e038df": {
-      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
-      "when": "An HTTP bridge request times out with a tracked intent."
-    },
     "internal/mcp/mcp_http_forward.go/emitContractRefusedOutcome/settle/af4210660451f1b8": {
       "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `contract` when the decision sets the contract gate result. Omit `checker` and `normalization`.",
       "when": "The upstream contract refuses a request with a tracked intent."
@@ -274,9 +270,13 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
       "when": "`emitErr != nil` and `opts.requireReceipts()`"
     },
-    "internal/mcp/proxy.go/emitPendingTimeoutResponses/settle/925ea4e043fccf20": {
+    "internal/mcp/proxy.go/emitMCPTimeoutReply/settle/697b96eab7e8d819": {
       "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
-      "when": "An expired MCP request has a tracked outcome when its timeout is reported."
+      "when": "A tracked MCP request times out and the proxy attempts a local timeout reply."
+    },
+    "internal/mcp/proxy.go/ForwardScanned/settle/5086740b7d6288bf": {
+      "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
+      "when": "An early response denial consumes a correlated request but its reply delivery fails."
     },
     "internal/mcp/proxy.go/emitPendingIncompleteOutcomes/settle/2be7d15c848dc9b1": {
       "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
@@ -394,9 +394,13 @@
       "fields": "Carry the original action ID, attempt, and intended effect. Set `phase=outcome`, `effect_relation=not_attempted`, and `outcome_class=not_released`. Use `policy.source=request_snapshot` and the retained decision-time digest when available. Otherwise use `policy.source=unavailable` and omit `policy.hash`. Set `caller.authn=none`. Copy `session`, `taint`, and `contract` from the intent when present. Include `redaction` only when the intent carries an applied rewrite summary.",
       "when": "The WebSocket bridge has an intent and refuses to track the reply before sending the call."
     },
-    "internal/mcp/proxy_ws.go/RunWSProxy/settle/c87f4026310cb80d": {
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/33c9ea7f0e5b406b": {
       "fields": "Carry the original action ID, attempt, and intended effect. Set `phase=outcome`, `effect_relation=not_attempted`, and `outcome_class=not_released`. Use `policy.source=request_snapshot` and the retained decision-time digest when available. Otherwise use `policy.source=unavailable` and omit `policy.hash`. Set `caller.authn=none`. Copy `session`, `taint`, and `contract` from the intent when present. Include `redaction` only when the intent carries an applied rewrite summary.",
       "when": "The WebSocket bridge has an intent and cannot bind the send to a tracked reply before sending the call."
+    },
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/d4520d61e7fe7b9a": {
+      "fields": "Carry the original action ID, attempt, and intended effect. Set `phase=outcome`, `effect_relation=not_attempted`, and `outcome_class=not_released`. Use `policy.source=request_snapshot` and the retained decision-time digest when available. Otherwise use `policy.source=unavailable` and omit `policy.hash`. Set `caller.authn=none`. Copy `session`, `taint`, and `contract` from the intent when present. Include `redaction` only when the intent carries an applied rewrite summary.",
+      "when": "The WebSocket session is canceled after binding the send and before attempting the frame write."
     },
     "internal/proxy/bodyscan.go/(*Proxy).evalHeaderDLP/recordCredentialAudienceAllows/9c82ca7412ec77dc": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
@@ -1752,7 +1756,6 @@
     "internal/mcp/killswitch_deferred.go/emitKillSwitchBatchReceipts/emitKillSwitchDenialReceipt/01a6be367223b176": "none",
     "internal/mcp/killswitch_deferred.go/refuseKillSwitchRequest/emitKillSwitchDenialReceipt/dc5db2692450fad5": "none",
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/emitHoldFailureResolution/77407362a6f72b1b": "approval_prompt",
-    "internal/mcp/mcp_http_forward.go/emitRequestScopedTimeout/settle/ed81253e86e038df": "upstream_send",
     "internal/mcp/mcp_http_forward.go/emitContractRefusedOutcome/settle/af4210660451f1b8": "upstream_send",
     "internal/mcp/mcp_http_forward.go/emitTrackedIncompleteOutcome/settle/0116ba1dd28e2162": "upstream_send",
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/settle/6b1d024fc6436016": "upstream_send",
@@ -1785,7 +1788,8 @@
     "internal/mcp/proxy.go/ForwardScanned/emitReceiptDecision/d682a6909d8e4643": "none",
     "internal/mcp/proxy.go/ForwardScanned/emitReceiptDecision/7de616e0dcc5f6d1": "upstream_send",
     "internal/mcp/proxy.go/ForwardScanned/emitReceiptDecision/4eab870c16b495b4": "upstream_send",
-    "internal/mcp/proxy.go/emitPendingTimeoutResponses/settle/925ea4e043fccf20": "upstream_send",
+    "internal/mcp/proxy.go/emitMCPTimeoutReply/settle/697b96eab7e8d819": "upstream_send",
+    "internal/mcp/proxy.go/ForwardScanned/settle/5086740b7d6288bf": "downstream_delivery",
     "internal/mcp/proxy.go/emitPendingIncompleteOutcomes/settle/2be7d15c848dc9b1": "upstream_send",
     "internal/mcp/proxy_ws.go/RunWSProxy/settle/1072ca5eb0af9429": "downstream_delivery",
     "internal/mcp/proxy_ws.go/RunWSProxy/settle/20526ab239090f0b": "upstream_send",
@@ -1815,7 +1819,8 @@
     "internal/mcp/proxy_ws.go/RunWSProxy/emitMCPStreamDiagnostic/873ad7b12fb44159": "downstream_delivery",
     "internal/mcp/proxy_ws.go/RunWSProxy/settle/fae9be32812c5069": "upstream_send",
     "internal/mcp/proxy_ws.go/RunWSProxy/settle/55fc70ad52a3d8c3": "upstream_send",
-    "internal/mcp/proxy_ws.go/RunWSProxy/settle/c87f4026310cb80d": "upstream_send",
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/33c9ea7f0e5b406b": "upstream_send",
+    "internal/mcp/proxy_ws.go/RunWSProxy/settle/d4520d61e7fe7b9a": "upstream_send",
     "internal/proxy/bodyscan.go/(*Proxy).evalHeaderDLP/recordCredentialAudienceAllows/9c82ca7412ec77dc": "upstream_send",
     "internal/proxy/forward.go/(*Proxy).handleConnect/emitForwardDenial/2c491386d87dec0b": "none",
     "internal/proxy/forward.go/(*Proxy).handleConnect/emitOutcomeReceipt/6f92002975cb6035": "tunnel_open",

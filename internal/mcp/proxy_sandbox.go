@@ -301,6 +301,8 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	inputOpts.WarnContext = sessionCtx
 	inputOpts.closeStdioInput = sync.OnceFunc(func() { _ = serverIn.Close() })
 	inputOpts.sessionExit = sessionExit
+	reportReplyFailure, replyFailed := stdioLocalReplyFailure(clientIn, serverIn, serverOut, sessionExit, killDirectChild)
+	inputOpts.onLocalV3ReplyFailure = reportReplyFailure
 	inputOpts.stdioInputScanDisabled = inputCfg == nil || !inputCfg.Enabled
 
 	var wg sync.WaitGroup
@@ -334,22 +336,27 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	// hung sandboxed upstream fails closed instead of hanging the agent.
 	serverReader := fwdOpts.withResponseTimeout(transport.NewStdioReader(serverOut))
 	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, tracker, fwdOpts)
+	select {
+	case err := <-replyFailed:
+		scanErr = err
+	default:
+	}
 	if opts.outputForwardDoneForTest != nil {
 		opts.outputForwardDoneForTest()
 	}
 	timedOut := errors.Is(scanErr, transport.ErrResponseTimeout)
 
 	replyAdmissionFailed := errors.Is(scanErr, errMCPV3ReplyAdmission)
-	shortReplyWrite := errors.Is(scanErr, io.ErrShortWrite)
+	downstreamWriteFailed := errors.Is(scanErr, errMCPDownstreamFrameWrite) || errors.Is(scanErr, io.ErrShortWrite)
 
 	// Forwarding can fail while the sandboxed child is waiting for input.
 	// Terminate the owned child before waiting for its exit.
-	if (timedOut || replyAdmissionFailed || shortReplyWrite) && sandboxCmd.Process != nil {
+	if (timedOut || replyAdmissionFailed || downstreamWriteFailed) && sandboxCmd.Process != nil {
 		reason := "upstream response timeout"
 		if replyAdmissionFailed {
 			reason = "reply receipt admission failure"
-		} else if shortReplyWrite {
-			reason = "short downstream frame write"
+		} else if downstreamWriteFailed {
+			reason = "downstream frame write failure"
 		}
 		_, _ = fmt.Fprintf(safeLogW, "pipelock: terminating sandboxed MCP subprocess after %s\n", reason)
 		if c, ok := clientIn.(io.Closer); ok {
@@ -406,6 +413,8 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 		emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker, fwdOpts)
 	} else if replyAdmissionFailed {
 		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "receipt_admission_failed")
+	} else if downstreamWriteFailed && opts.receiptEffects.enabled {
+		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "downstream_write_failed")
 	} else {
 		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "upstream_closed")
 	}

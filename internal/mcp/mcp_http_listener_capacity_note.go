@@ -17,7 +17,7 @@ const listenerCapacityNote = "pipelock: unauthenticated legacy MCP listener sess
 // allow unauthenticated persistent partitions. It changes no admission policy.
 func logListenerCapacityNote(logW io.Writer, opts MCPProxyOpts) {
 	if listenerStoreSnapshot(opts.Store) == nil || (!listenerHasStatefulControls(opts) && !listenerRequiresStateToken(opts)) ||
-		opts.ListenerBearerToken != "" || opts.ListenerBearerTokenFn != nil || opts.ListenerPrincipalResolver != nil {
+		opts.ListenerBearerToken != "" || opts.ListenerBearerTokenFn != nil || opts.ListenerPrincipalResolver != nil || opts.ListenerDoor != nil {
 		return
 	}
 	_, _ = fmt.Fprintln(logW, listenerCapacityNote)

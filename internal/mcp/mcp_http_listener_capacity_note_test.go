@@ -40,6 +40,7 @@ func TestListenerCapacityNote(t *testing.T) {
 		{"bearer", true, true, false, "bearer", false},
 		{"token-bearer", true, false, true, "bearer", false},
 		{"bearer-live", true, true, false, "bearer-live", false},
+		{"door", true, true, false, "door", false},
 		{"principal", true, true, false, "principal", false},
 		{"token-principal", true, false, true, "principal", false},
 	} {
@@ -57,6 +58,8 @@ func TestListenerCapacityNote(t *testing.T) {
 				opts.ListenerBearerToken = principalStateTestBearer
 			case "bearer-live":
 				opts.ListenerBearerTokenFn = func() (string, error) { return principalStateTestBearer, nil }
+			case "door":
+				opts.ListenerDoor = newDoorFixture(t, config.MCPDoorJWT).verifier
 			case "principal":
 				opts.ListenerPrincipalResolver = func(*http.Request) (ListenerPrincipal, error) { return ListenerPrincipal{}, nil }
 			}

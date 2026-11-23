@@ -106,10 +106,9 @@ func RunWSProxy(
 	var wsClient *transport.WSClient
 
 	// Force-close a connection on external cancellation (SIGINT, SIGTERM,
-	// parent timeout). The connection is established lazily when authority
-	// verification is enabled so a rejected first request cannot cause even an
-	// upstream handshake. With no verifier, startUpstream is called immediately
-	// below and preserves the previous eager-connect behavior.
+	// parent timeout). Dial eagerly when neither authority verification nor v3
+	// receipts gate the upstream connection. Otherwise wait for the first
+	// admitted send before opening the connection.
 	done := make(chan struct{})
 	defer close(done)
 
@@ -147,6 +146,12 @@ func RunWSProxy(
 	wsOpts.ToolCfgFn = nil
 	wsOpts.Transport = "mcp_ws"
 	wsOpts.TaintExternalSource = true
+	replyCtx, stopReply := context.WithCancelCause(innerCtx)
+	defer stopReply(nil)
+	wsOpts.onLocalV3ReplyFailure = func(err error) {
+		stopReply(err)
+		cancel()
+	}
 	wsOpts.WarnContext = innerCtx
 	localClientOut := wsOpts.localV3ReplyWriter(safeClientOut, safeLogW, nil)
 	wsOpts.sessionExit = sessionExit
@@ -467,13 +472,24 @@ func RunWSProxy(
 		var bindErr error
 		if awaitReply {
 			bindErr = inputOpts.bindV3Send(effect)
+			if bindErr == nil && inputOpts.afterWSBindForTest != nil {
+				inputOpts.afterWSBindForTest()
+			}
 		}
 		if bindErr != nil || innerCtx.Err() != nil {
 			inputOpts.finishV3Send(innerCtx, safeLogW, effect, false)
-			tracker.removeOwnedOutcome(frame.ID, registration)
+			outcome, tracked := tracker.takeOwnedOutcome(frame.ID, registration)
 			if bindErr != nil {
-				decision.Outcome.settle(safeLogW, inputOpts, mcpOutcomeStatusBlocked, -1, "request_tracking_failed")
+				if !tracked {
+					outcome = decision.Outcome
+				}
+				outcome.settle(safeLogW, inputOpts, mcpOutcomeStatusBlocked, -1, "request_tracking_failed")
 				writeNativeAdmissionDenial(inputOpts, safeLogW, localClientOut, frame, bindErr)
+			} else {
+				if tracked {
+					outcome.settle(safeLogW, inputOpts, "cancelled", -1, httpstream.Cancelled)
+				}
+				break
 			}
 			continue
 		}
@@ -516,6 +532,9 @@ func RunWSProxy(
 
 	if streamAdmission.NativeLease.Stopping() {
 		return ael.ErrCapacity
+	}
+	if err := context.Cause(replyCtx); errors.Is(err, errMCPV3ReplyAdmission) {
+		return err
 	}
 	if stdinErr != nil {
 		return stdinErr
