@@ -12,6 +12,27 @@ import (
 	"testing"
 )
 
+// A directory a configured path passes through that sits on another mount ends
+// the resolution, and the file that named the path is reported with it.
+func TestControlWalkerReportsAConfiguredPathThatCrossesAMount(t *testing.T) {
+	root := t.TempDir()
+	writeControlFixture(t, root, "plain/keep", "x")
+	w := newTestWalker(t, root)
+	if !w.mountKnown {
+		t.Skip("mount IDs are unavailable")
+	}
+	w.rootMount++
+	if _, res := w.resolveWorkspacePath("source", ".", "plain/x"); res != pathUnobservable {
+		t.Fatalf("resolution = %v", res)
+	}
+	if reason := w.pass.unreadable["plain"]; reason != "crossed a mount boundary" {
+		t.Fatalf("the crossed directory = %q", reason)
+	}
+	if reason := w.pass.unreadable["source"]; !strings.Contains(reason, "could not be inspected") {
+		t.Fatalf("the file that named the path = %q", reason)
+	}
+}
+
 func TestControlWalkerRefusesAMountOrDeviceBoundary(t *testing.T) {
 	t.Run("a file read from another mount", func(t *testing.T) {
 		root := t.TempDir()
