@@ -741,3 +741,35 @@ func TestControlAuditRefusesDotDotInWorkspaceSelector(t *testing.T) {
 		}
 	}
 }
+
+// An audit whose report never reached the operator has not shown a passing
+// result, so a failed write is an I/O error even when the observation is clean.
+func TestControlAuditFailedReportWriteIsNotAPass(t *testing.T) {
+	env, root := controlAuditFixture(t)
+	writeAuditFixture(t, root, ".envrc", "same")
+	_, _ = runAuditFixture(t, env, controlAuditOptions{workspace: root, record: true}, 0)
+	for _, json := range []bool{false, true} {
+		err := env.run(rejectedAuditOutput{}, controlAuditOptions{workspace: root, json: json})
+		if err == nil || cliutil.ExitCodeOf(err) != 1 || !errors.Is(err, io.ErrClosedPipe) {
+			t.Fatalf("json=%t: a clean audit whose report failed to write must exit 1 with the write error, got %v", json, err)
+		}
+	}
+}
+
+func TestAuditShellArgEscapesControlCharacters(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"/srv/project", "'/srv/project'"},
+		{"/srv/it's", `'/srv/it'\''s'`},
+		{"/srv/café", "'/srv/café'"},
+		{"/srv/\x1b[2Jx", `$'/srv/\x1b[2Jx'`},
+		{"/srv/a\nb", `$'/srv/a\x0ab'`},
+		{"/srv/\xff'\\", `$'/srv/\xff\'\\'`},
+	} {
+		if got := auditShellArg(tc.in); got != tc.want {
+			t.Errorf("auditShellArg(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+		if strings.ContainsAny(auditShellArg(tc.in), "\x1b\n") {
+			t.Errorf("auditShellArg(%q) kept a raw control character", tc.in)
+		}
+	}
+}

@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
 
@@ -46,7 +48,38 @@ func runControlAudit(w io.Writer, opts controlAuditOptions) error {
 	return env.run(w, opts)
 }
 
+// run reports the outcome through w. A report that could not be written is an
+// I/O failure, exit 1, whatever the observation found: an operator who never saw
+// the findings has not been shown a passing audit.
 func (env controlAuditEnv) run(w io.Writer, opts controlAuditOptions) error {
+	out := &auditReportWriter{w: w}
+	err := env.runTo(out, opts)
+	if out.err != nil {
+		return fmt.Errorf("write audit report: %w; retry sudo pipelock contain audit-workspace %s", out.err, auditRetryArgs(opts))
+	}
+	return err
+}
+
+// auditReportWriter keeps the first error from writing the report, which the
+// formatters otherwise discard.
+type auditReportWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (a *auditReportWriter) Write(p []byte) (int, error) {
+	if a.err != nil {
+		return 0, a.err
+	}
+	n, err := a.w.Write(p)
+	if err == nil && n < len(p) {
+		err = io.ErrShortWrite
+	}
+	a.err = err
+	return n, err
+}
+
+func (env controlAuditEnv) runTo(w io.Writer, opts controlAuditOptions) error {
 	if env.euid() != 0 {
 		return fmt.Errorf("audit-workspace requires root; rerun with sudo pipelock contain audit-workspace %s", auditRetryArgs(opts))
 	}
@@ -56,7 +89,7 @@ func (env controlAuditEnv) run(w io.Writer, opts controlAuditOptions) error {
 	}
 	dir, err := env.store.open(opts.record)
 	if err != nil && (opts.record || !errors.Is(err, os.ErrNotExist)) {
-		return fmt.Errorf("open control baseline store: %w; inspect the directory chain with sudo namei -l %s", err, shellQuote(env.store.path))
+		return fmt.Errorf("open control baseline store: %w; inspect the directory chain with sudo namei -l %s", err, auditShellArg(env.store.path))
 	}
 	if dir != nil {
 		defer func() { _ = dir.Close() }()
@@ -83,9 +116,9 @@ func auditRetryArgs(opts controlAuditOptions) string {
 
 func auditSelector(opts controlAuditOptions) string {
 	if opts.workspace != "" {
-		return "--workspace " + shellQuote(opts.workspace)
+		return "--workspace " + auditShellArg(opts.workspace)
 	}
-	return "--agent-user " + shellQuote(opts.agentUser)
+	return "--agent-user " + auditShellArg(opts.agentUser)
 }
 
 func (env controlAuditEnv) roots(opts controlAuditOptions) ([]string, error) {
@@ -291,7 +324,7 @@ func (env controlAuditEnv) auditOne(dir *os.File, root string, opts controlAudit
 	}
 	current, err := workspacediff.SnapshotControlSurface(root, before.CapBytes(), env.budget)
 	if err != nil {
-		return controlAuditResult{}, fmt.Errorf("snapshot %q: %w; retry sudo pipelock contain audit-workspace --workspace %s", root, err, shellQuote(root))
+		return controlAuditResult{}, fmt.Errorf("snapshot %q: %w; retry sudo pipelock contain audit-workspace --workspace %s", root, err, auditShellArg(root))
 	}
 	diff, err := workspacediff.CompareControlBaseline(before, current)
 	if err != nil {
@@ -308,7 +341,7 @@ func (env controlAuditEnv) auditOne(dir *os.File, root string, opts controlAudit
 			if diff.NestedDiscoveryPartial || opts.allowPartial {
 				flags = append(flags, "--allow-partial-nested-discovery")
 			}
-			result.Remedy += " or rerun with sudo pipelock contain audit-workspace --workspace " + shellQuote(root) + " " + strings.Join(flags, " ")
+			result.Remedy += " or rerun with sudo pipelock contain audit-workspace --workspace " + auditShellArg(root) + " " + strings.Join(flags, " ")
 		}
 	}
 	return result, nil
@@ -328,10 +361,40 @@ func recordRemedy(root string, replace bool) string {
 	if replace {
 		command += " --replace"
 	}
-	return command + " --workspace " + shellQuote(root)
+	return command + " --workspace " + auditShellArg(root)
 }
 
 func (env controlAuditEnv) baselineError(root string, err error) error {
 	file := filepath.Join(env.store.path, controlBaselineFilename(root))
-	return fmt.Errorf("read baseline for %q: %w; inspect with sudo namei -l %s, move an invalid baseline aside after review, then run %s", root, err, shellQuote(file), recordRemedy(root, false))
+	return fmt.Errorf("read baseline for %q: %w; inspect with sudo namei -l %s, move an invalid baseline aside after review, then run %s", root, err, auditShellArg(file), recordRemedy(root, false))
+}
+
+// auditShellArg quotes s for a remedy the operator may paste into a shell. A
+// path can come from link targets or names an agent chose, so control
+// characters and invalid UTF-8 are written as escapes in bash's $'...' form
+// rather than printed raw, where they could rewrite the operator's terminal.
+func auditShellArg(s string) string {
+	printable := utf8.ValidString(s) && strings.IndexFunc(s, func(r rune) bool { return !unicode.IsPrint(r) }) == -1
+	if printable {
+		return shellQuote(s)
+	}
+	var b strings.Builder
+	b.WriteString("$'")
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == utf8.RuneError && size <= 1, !unicode.IsPrint(r):
+			for _, c := range []byte(s[i : i+size]) {
+				_, _ = fmt.Fprintf(&b, "\\x%02x", c)
+			}
+		case r == '\'' || r == '\\':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		default:
+			b.WriteRune(r)
+		}
+		i += size
+	}
+	b.WriteByte('\'')
+	return b.String()
 }
