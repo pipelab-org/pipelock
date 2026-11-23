@@ -183,6 +183,7 @@ type controlWalker struct {
 	// trees. Their root control paths are scanned with the fixed tree; nested
 	// discovery continues below them so their deeper control paths are seen.
 	worktreeSlots []string
+	discovery     *nestedDiscovery
 	seenConfig    map[gitConfigSource]struct{}
 	seenGitDirs   map[gitConfigSource]struct{}
 }
@@ -191,23 +192,33 @@ func (w *controlWalker) walkPass(seed func()) controlPass {
 	w.pass = controlPass{entries: make(map[string]controlEntry), unreadable: make(map[string]string)}
 	w.trees = w.trees[:0]
 	w.treeEntries = 0
+	w.discovery = nil
 	seed()
 	sort.SliceStable(w.trees, func(i, j int) bool {
 		return w.trees[i].path != w.trees[i].gitDir && w.trees[j].path == w.trees[j].gitDir
 	})
 	// Seed critical paths and config targets before enumerating subtrees.
 	// Appending trees from within the loop also keeps discovery breadth-first.
-	for i := 0; i < len(w.trees) && w.pass.truncated == ""; i++ {
-		tree := w.trees[i]
-		w.list(tree.path, func(child string, d fs.DirEntry) bool {
-			w.treeEntries++
-			if w.treeEntries > w.budget.MaxControlEntries {
-				w.truncate(child, "control directory entry limit exceeded")
-				return false
-			}
-			w.scanTreeChild(tree, child, d)
-			return w.pass.truncated == ""
-		})
+	// Walking a tree can find an agent worktree checkout, so discovery resumes
+	// until neither it nor the trees have work left.
+	next := 0
+	for w.pass.truncated == "" {
+		for ; next < len(w.trees) && w.pass.truncated == ""; next++ {
+			tree := w.trees[next]
+			w.list(tree.path, func(child string, d fs.DirEntry) bool {
+				w.treeEntries++
+				if w.treeEntries > w.budget.MaxControlEntries {
+					w.truncate(child, "control directory entry limit exceeded")
+					return false
+				}
+				w.scanTreeChild(tree, child, d)
+				return w.pass.truncated == ""
+			})
+		}
+		if w.pass.truncated != "" || w.discovery == nil || !w.discovery.pending() {
+			break
+		}
+		w.discovery.run()
 	}
 	return w.pass
 }
@@ -624,28 +635,72 @@ func (w *controlWalker) bareRepository(path string) bool {
 	return (config != nil && config.Mode().IsRegular()) || (refs != nil && refs.IsDir())
 }
 
+// nestedDirectory is one directory awaiting nested discovery.
+type nestedDirectory struct {
+	path  string
+	depth int
+	// slot marks an agent worktree checkout whose Git marker and root
+	// control paths a fixed tree walk already scanned.
+	slot bool
+}
+
+// nestedDiscovery is the breadth-first search for nested repositories and
+// fixed control paths. It can resume: a checkout found while the discovered
+// trees are walked, such as a slot inside a nested project's .claude, is seeded
+// the next time it runs.
+type nestedDiscovery struct {
+	w           *controlWalker
+	queue       []nestedDirectory
+	next        int
+	seeded      int
+	queuedBytes int64
+	listed      int
+	exhausted   bool
+}
+
 func (w *controlWalker) discoverNested() {
-	type directory struct {
-		path  string
-		depth int
-		// slot marks an agent worktree checkout whose Git marker and root
-		// control paths the fixed tree walk already scanned.
-		slot bool
-	}
-	queue := []directory{{path: "."}}
-	// The fixed tree walk does not descend into an agent worktree checkout's
-	// ordinary directories, so nested discovery starts there too.
-	for _, slot := range w.worktreeSlots {
-		queue = append(queue, directory{path: slot, depth: 1 + strings.Count(filepath.ToSlash(slot), "/"), slot: true})
-	}
 	w.pass.undiscovered = make(map[string]struct{})
 	w.pass.partlyListed = make(map[string]struct{})
-	// Bound queue storage (count and path bytes) and the cost of listing wide
-	// directories. A directory that cannot queue a child is partly listed.
-	var queuedBytes int64
-	listed := 0
-	for i := 0; i < len(queue) && w.pass.truncated == ""; i++ {
-		dir := queue[i]
+	w.discovery = &nestedDiscovery{w: w, queue: []nestedDirectory{{path: "."}}}
+	w.discovery.run()
+}
+
+func (d *nestedDiscovery) pending() bool {
+	return d.next < len(d.queue) || d.seeded < len(d.w.worktreeSlots)
+}
+
+// seedSlots queues agent worktree checkouts found since the last run. The fixed
+// tree walk does not descend into a checkout's ordinary directories, so nested
+// discovery starts there. A checkout that cannot be queued is partly listed:
+// its Git marker and fixed paths were still examined by the fixed walk.
+func (d *nestedDiscovery) seedSlots() {
+	w := d.w
+	for ; d.seeded < len(w.worktreeSlots); d.seeded++ {
+		slot := w.worktreeSlots[d.seeded]
+		switch {
+		case d.exhausted:
+			w.limitListing(slot, "nested directory entry limit exceeded")
+		case len(d.queue) >= w.budget.MaxNestedDirs:
+			w.limitListing(slot, "nested directory count limit exceeded")
+		case d.queuedBytes+int64(len(slot)) > w.budget.MaxNestedPathBytes:
+			w.limitListing(slot, "nested directory path-bytes limit exceeded")
+		default:
+			d.queuedBytes += int64(len(slot))
+			d.queue = append(d.queue, nestedDirectory{
+				path: slot, depth: 1 + strings.Count(filepath.ToSlash(slot), "/"), slot: true,
+			})
+		}
+	}
+}
+
+// run drains the queue. Queue storage (count and path bytes) and the cost of
+// listing wide directories are bounded. A directory that cannot queue a child
+// is partly listed.
+func (d *nestedDiscovery) run() {
+	w := d.w
+	d.seedSlots()
+	for ; d.next < len(d.queue) && w.pass.truncated == ""; d.next++ {
+		dir := d.queue[d.next]
 		if _, covered := w.coveredTrees[dir.path]; covered {
 			continue
 		}
@@ -657,13 +712,13 @@ func (w *controlWalker) discoverNested() {
 			w.scanGitMarker(dir.path)
 			w.scanFixed(dir.path)
 		}
-		w.list(dir.path, func(child string, d fs.DirEntry) bool {
-			if listed == w.budget.MaxNestedDirs {
+		w.list(dir.path, func(child string, e fs.DirEntry) bool {
+			if d.listed == w.budget.MaxNestedDirs {
 				w.limitListing(dir.path, "nested directory entry limit exceeded")
 				return false
 			}
-			listed++
-			if !d.IsDir() {
+			d.listed++
+			if !e.IsDir() {
 				return true
 			}
 			if _, covered := w.coveredTrees[child]; covered {
@@ -672,21 +727,26 @@ func (w *controlWalker) discoverNested() {
 			switch {
 			case dir.depth >= w.budget.MaxNestedDepth:
 				w.limitListing(dir.path, "nested directory depth limit exceeded")
-			case len(queue) >= w.budget.MaxNestedDirs:
+			case len(d.queue) >= w.budget.MaxNestedDirs:
 				w.limitListing(dir.path, "nested directory count limit exceeded")
-			case queuedBytes+int64(len(child)) > w.budget.MaxNestedPathBytes:
+			case d.queuedBytes+int64(len(child)) > w.budget.MaxNestedPathBytes:
 				w.limitListing(dir.path, "nested directory path-bytes limit exceeded")
 			default:
-				queuedBytes += int64(len(child))
-				queue = append(queue, directory{path: child, depth: dir.depth + 1})
+				d.queuedBytes += int64(len(child))
+				d.queue = append(d.queue, nestedDirectory{path: child, depth: dir.depth + 1})
 			}
 			return true
 		})
-		if listed == w.budget.MaxNestedDirs {
-			for _, pending := range queue[i+1:] {
-				w.skipDiscovery(pending.path, "nested directory entry limit exceeded")
+		if d.listed == w.budget.MaxNestedDirs {
+			for _, pending := range d.queue[d.next+1:] {
+				if pending.slot {
+					w.limitListing(pending.path, "nested directory entry limit exceeded")
+				} else {
+					w.skipDiscovery(pending.path, "nested directory entry limit exceeded")
+				}
 			}
-			break
+			d.next, d.exhausted = len(d.queue), true
+			return
 		}
 	}
 }

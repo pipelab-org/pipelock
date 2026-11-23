@@ -493,6 +493,102 @@ func TestControlSurfaceWorktreeSlotNestedControlPaths(t *testing.T) {
 	}
 }
 
+// A workspace can hold several projects, each with its own .claude/worktrees.
+// Such a checkout is found while the nested pass walks the project's .claude, so
+// discovery must resume to reach the control paths below its root.
+func TestControlSurfaceNestedProjectWorktreeSlotNestedControlPaths(t *testing.T) {
+	git := newControlGit(t)
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	git.init(t, project)
+	git.commit(t, project, "source.txt")
+	const checkout = "project/.claude/worktrees/example"
+	dir := filepath.Join(root, filepath.FromSlash(checkout))
+	git.run(t, project, "worktree", "add", "-qb", "example", dir)
+	writeControlFixture(t, dir, "src/.mcp.json", "before")
+	writeControlFixture(t, dir, "src/.claude/skills/example/SKILL.md", "before")
+	writeControlFixture(t, dir, "src/main.go", "before")
+	budget := DefaultControlSurfaceBudget()
+	before := controlSnapshot(t, root, budget)
+	writeControlFixture(t, dir, "src/main.go", "changed")
+	if diff := controlDiff(t, before, controlSnapshot(t, root, budget)); diff.Changed || diff.Incomplete || diff.NestedDiscoveryPartial {
+		t.Fatalf("ordinary checkout source must stay outside the control surface: %+v", diff)
+	}
+	for _, path := range []string{"src/.mcp.json", "src/.claude/skills/example/SKILL.md"} {
+		writeControlFixture(t, dir, path, "changed "+path)
+		expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), checkout+"/"+path)
+	}
+}
+
+// A checkout found after the discovery budget is spent cannot be listed, which
+// the statement says, but its root control paths were still examined, so
+// removing one is reported.
+func TestControlSurfaceLateWorktreeSlotWithSpentDiscoveryBudgetIsPartlyListed(t *testing.T) {
+	git := newControlGit(t)
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	git.init(t, project)
+	git.commit(t, project, "source.txt")
+	const checkout = "project/.claude/worktrees/example"
+	dir := filepath.Join(root, filepath.FromSlash(checkout))
+	git.run(t, project, "worktree", "add", "-qb", "example", dir)
+	writeControlFixture(t, dir, ".mcp.json", "before")
+	writeControlFixture(t, dir, "src/.mcp.json", "before")
+	// The root and the project's three entries use the whole budget before the
+	// walk of the project's .claude reaches the checkout.
+	budget := DefaultControlSurfaceBudget()
+	budget.MaxNestedDirs = 4
+	before := controlSnapshot(t, root, budget)
+	if err := os.Remove(filepath.Join(dir, ".mcp.json")); err != nil {
+		t.Fatal(err)
+	}
+	writeControlFixture(t, dir, "src/.mcp.json", "changed")
+	diff := controlDiff(t, before, controlSnapshot(t, root, budget))
+	if !diff.NestedDiscoveryPartial {
+		t.Fatalf("a checkout that could not be listed must make discovery partial: %+v", diff)
+	}
+	if !slices.Contains(diff.Removed, filepath.FromSlash(checkout+"/.mcp.json")) {
+		t.Fatalf("root control path of an unlisted checkout must still report its removal: %+v", diff)
+	}
+}
+
+// A checkout still queued when the discovery budget runs out is partly listed
+// too: skipping it as never examined would hide the removal of a control path
+// at its root that the walk already observed.
+func TestControlSurfaceQueuedWorktreeSlotWithSpentDiscoveryBudgetIsPartlyListed(t *testing.T) {
+	git := newControlGit(t)
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	git.init(t, project)
+	git.commit(t, project, "source.txt")
+	for _, name := range []string{"first", "second"} {
+		dir := filepath.Join(project, ".claude", "worktrees", name)
+		git.run(t, project, "worktree", "add", "-qb", name, dir)
+		writeControlFixture(t, dir, ".mcp.json", "before")
+	}
+	// The first checkout's listing spends the budget while the second waits.
+	budget := DefaultControlSurfaceBudget()
+	budget.MaxNestedDirs = 5
+	before := controlSnapshot(t, root, budget)
+	const removed = "project/.claude/worktrees/second/.mcp.json"
+	if err := os.Remove(filepath.Join(root, filepath.FromSlash(removed))); err != nil {
+		t.Fatal(err)
+	}
+	diff := controlDiff(t, before, controlSnapshot(t, root, budget))
+	if !diff.NestedDiscoveryPartial || !slices.Contains(diff.Removed, filepath.FromSlash(removed)) {
+		t.Fatalf("a queued checkout must be partly listed and still report a removed root control path: %+v", diff)
+	}
+}
+
 // A checkout anywhere in a fixed control tree other than an agent worktree slot
 // keeps its working-tree files monitored: a skill or hook directory that is a
 // repository can hold scripts that run as the operator.
