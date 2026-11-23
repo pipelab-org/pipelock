@@ -332,7 +332,31 @@ func (w *controlWalker) record(path string, info fs.FileInfo) controlEntry {
 	}
 	w.recheck(path, info)
 	w.pass.entries[path] = e
+	if e.Kind == KindSymlink {
+		w.followSymlink(e)
+	}
 	return e
+}
+
+// followSymlink observes the in-workspace target of a recorded control
+// symlink. A symlinked hook, config or agent directory otherwise lets later
+// edits to its target pass unobserved while the link itself stays unchanged.
+// The target is resolved lexically and every prefix is inspected, so a link
+// leaving the grant, or the grant root itself, is never followed. The entry is
+// stored before following, which ends link cycles.
+func (w *controlWalker) followSymlink(link controlEntry) {
+	target := link.Target
+	if target == "" || strings.ContainsRune(target, 0) {
+		return
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(w.rootPath, filepath.Dir(link.Path), target)
+	}
+	rel, err := filepath.Rel(w.rootPath, filepath.Clean(target))
+	if err != nil || rel == "." || !filepath.IsLocal(rel) {
+		return
+	}
+	w.queueTree(w.recordPath(rel), "", "")
 }
 
 func (w *controlWalker) recheck(path string, info fs.FileInfo) {

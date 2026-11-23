@@ -179,3 +179,73 @@ func TestControlSurfaceFailsClosedOnUnreadableAndRootReplacement(t *testing.T) {
 		}
 	})
 }
+
+func TestControlSurfaceFollowsInWorkspaceSymlinkTargets(t *testing.T) {
+	link := func(t *testing.T, root, target, name string) {
+		t.Helper()
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		prepare func(t *testing.T, root string)
+		edit    string
+	}{
+		{"hook file link", func(t *testing.T, root string) {
+			writeControlFixture(t, root, "scripts/hook.sh", "before")
+			link(t, root, "../../scripts/hook.sh", ".git/hooks/pre-commit")
+		}, "scripts/hook.sh"},
+		{"hooks directory link", func(t *testing.T, root string) {
+			writeControlFixture(t, root, "githooks/pre-commit", "before")
+			link(t, root, "../githooks", ".git/hooks")
+		}, "githooks/pre-commit"},
+		{"config file link", func(t *testing.T, root string) {
+			writeControlFixture(t, root, "shared.cfg", "[core]\nfilemode = true\n")
+			link(t, root, "../shared.cfg", ".git/config")
+		}, "shared.cfg"},
+		{"agent directory link", func(t *testing.T, root string) {
+			writeControlFixture(t, root, "dot/claude/settings.json", "before")
+			link(t, root, "dot/claude", ".claude")
+		}, "dot/claude/settings.json"},
+		{"absolute link", func(t *testing.T, root string) {
+			writeControlFixture(t, root, "dot/cursor/rules", "before")
+			link(t, filepath.Join(root), filepath.Join(root, "dot", "cursor"), ".cursor")
+		}, "dot/cursor/rules"},
+		{"link chain", func(t *testing.T, root string) {
+			writeControlFixture(t, root, "real/settings.json", "before")
+			link(t, root, "real", "hop")
+			link(t, root, "hop", ".claude")
+		}, "real/settings.json"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			tc.prepare(t, root)
+			before := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+			writeControlFixture(t, root, tc.edit, "after, now longer")
+			after := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+			expectControlPath(t, controlDiff(t, before, after), tc.edit)
+		})
+	}
+	t.Run("cycles and out-of-grant targets stay bounded and complete", func(t *testing.T) {
+		root := t.TempDir()
+		outside := t.TempDir()
+		writeControlFixture(t, outside, "file", "before")
+		link(t, root, ".cursor", ".claude")
+		link(t, root, ".claude", ".cursor")
+		link(t, root, outside, ".codex")
+		link(t, root, ".", ".vscode")
+		link(t, root, "..", ".idea")
+		before := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+		writeControlFixture(t, outside, "file", "after, now longer")
+		writeControlFixture(t, root, "ordinary.txt", "outside the control surface")
+		after := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+		if diff := controlDiff(t, before, after); diff.Changed || diff.Incomplete {
+			t.Fatalf("expected a complete, clean observation: %+v", diff)
+		}
+	})
+}
