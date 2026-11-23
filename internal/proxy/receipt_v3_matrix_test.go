@@ -45,6 +45,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 type v3AppendFaultFile struct {
@@ -2311,7 +2312,7 @@ func TestV3ConfirmedAgentCardSignatureReceipt(t *testing.T) {
 				Method: http.MethodGet, Target: "https://api.vendor.example" + agentCardPath,
 			}
 			const signerID = "example-signer"
-			err := p.confirmV3CardAcceptance(t.Context(), cfg, opts, mcp.AgentCardScanResult{
+			token, err := p.admitV3CardAcceptance(t.Context(), cfg, opts, mcp.AgentCardScanResult{
 				SignatureVerified: true, SignatureKeyID: signerID,
 			})
 			if tc.fault != nil {
@@ -2323,12 +2324,15 @@ func TestV3ConfirmedAgentCardSignatureReceipt(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if err := token.Refuse(t.Context()); err != nil {
+				t.Fatal(err)
+			}
 			if err := writer.Close(t.Context(), nil); err != nil {
 				t.Fatal(err)
 			}
 			actions := readV3TransportActions(t, dir)
 			if len(actions) != 2 || actions[1].Layer != scannerLabelA2ACardSignature ||
-				actions[1].Phase != "outcome" || actions[1].OutcomeClass != "completed" {
+				actions[1].Phase != "outcome" || actions[1].OutcomeClass != "not_released" {
 				t.Fatalf("expected only the signature receipt pair, got %+v", actions)
 			}
 		})
@@ -2376,5 +2380,70 @@ func TestV3SSEPlainFlusherLeavesDeliveryUnknown(t *testing.T) {
 	}
 	if warnings != 1 {
 		t.Fatalf("warning delivery outcomes = %d, want 1", warnings)
+	}
+}
+
+func TestV3SignedCardReceiptsFollowDelivery(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	card := e2eSignedCard(t, priv, false)
+	for _, surface := range []string{TransportForward, transportInterceptReceipt} {
+		for _, tc := range []struct {
+			name            string
+			required, block bool
+		}{
+			{"required", true, false},
+			{"optional", false, false},
+			{"post-card block", true, true},
+		} {
+			t.Run(surface+"/"+tc.name, func(t *testing.T) {
+				p, writer, dir, _ := newTestV3HTTPProxy(t, surface, tc.required, nil, func(cfg *config.Config) {
+					cfg.FlightRecorder.RequireReceipts = tc.required
+					cfg.A2AScanning.Enabled = true
+					cfg.A2AScanning.DetectCardDrift = true
+					cfg.A2AScanning.ScanAgentCards = false
+					cfg.A2AScanning.TrustedAgentCardKeys = []config.A2ATrustedCardKey{{KeyID: "k1", PublicKey: signing.EncodePublicKey(pub), AllowedOrigins: []string{"https://api.vendor.example"}}}
+					if tc.block {
+						cfg.ResponseScanning.Enabled = true
+						cfg.ResponseScanning.Action = config.ActionBlock
+						cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: "card marker", Regex: "Vendor Agent"}}
+					}
+				})
+				rt := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}, "Content-Length": {strconv.Itoa(len(card))}}, ContentLength: int64(len(card)), Body: io.NopCloser(bytes.NewReader(card)), Request: req}, nil
+				})
+				p.client = &http.Client{Transport: rt}
+				handler := http.Handler(http.HandlerFunc(p.handleForwardHTTP))
+				if surface == transportInterceptReceipt {
+					handler = newInterceptHandler(&InterceptContext{TargetHost: "api.vendor.example", TargetPort: "443", Config: p.CurrentConfig(), Scanner: p.ScannerPtr().Load(), Logger: p.logger, Metrics: p.metrics, Proxy: p}, rt)
+				}
+				out := &v3SSEFlushFaultRecorder{ResponseRecorder: httptest.NewRecorder()}
+				handler.ServeHTTP(out, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.vendor.example"+agentCardPath, http.NoBody))
+				wantStatus, wantOutcome := http.StatusOK, "completed"
+				if tc.block {
+					wantStatus, wantOutcome = http.StatusForbidden, "not_released"
+				}
+				if out.Code != wantStatus {
+					t.Fatalf("status = %d, want %d (%s)", out.Code, wantStatus, out.Body.String())
+				}
+				if err := writer.Close(t.Context(), nil); err != nil {
+					t.Fatal(err)
+				}
+				counts := make(map[string]int)
+				for _, action := range readV3TransportActions(t, dir) {
+					if action.Phase == "outcome" && (action.Layer == scannerLabelA2ACardSignature || action.Layer == scannerLabelA2ACardDrift) {
+						counts[action.Layer]++
+						if action.OutcomeClass != wantOutcome {
+							t.Errorf("%s outcome = %q, want %q", action.Layer, action.OutcomeClass, wantOutcome)
+						}
+					}
+				}
+				if counts[scannerLabelA2ACardSignature] != 1 || counts[scannerLabelA2ACardDrift] != 1 {
+					t.Fatalf("card outcomes = %v, want one for each check", counts)
+				}
+			})
+		}
 	}
 }

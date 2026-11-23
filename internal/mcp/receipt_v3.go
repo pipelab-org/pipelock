@@ -233,6 +233,11 @@ type mcpV3WithheldWriter struct{}
 
 func (mcpV3WithheldWriter) WriteMessage([]byte) error { return nil }
 
+func isWithheldV3Reply(writer transport.MessageWriter) bool {
+	_, withheld := writer.(mcpV3WithheldWriter)
+	return withheld
+}
+
 func (o MCPProxyOpts) takeV3Send(id json.RawMessage) *mcpV3Exchange {
 	return o.takeV3SendKey(canonicalID(id))
 }
@@ -349,6 +354,7 @@ type mcpV3ReplyWriter struct {
 	log                 io.Writer
 	request             receipt.EmitOpts
 	finished            bool
+	card                *v3.EffectToken
 	sendDenied          bool
 	streamFlushObserved *bool
 	takeAdmitted        func() (*v3.EffectToken, bool)
@@ -365,10 +371,12 @@ func (w *mcpV3ReplyWriter) WriteMessage(msg []byte) error {
 	evidence := mcpV3ReplyEvidence(w.request)
 	token, err := w.admit(ctx, evidence)
 	if err != nil {
+		logMCPV3Error(w.log, w.card.Refuse(ctx))
 		return fmt.Errorf("%w: %w", errMCPV3ReplyAdmission, err)
 	}
 	if err := ctx.Err(); err != nil {
 		logMCPV3Error(w.log, token.Refuse(ctx))
+		logMCPV3Error(w.log, w.card.Refuse(ctx))
 		return err
 	}
 	if w.sendDenied {
@@ -376,7 +384,9 @@ func (w *mcpV3ReplyWriter) WriteMessage(msg []byte) error {
 	} else {
 		err = writeMCPForwardedMessage(w.base, msg)
 	}
-	logMCPV3Error(w.log, confirmMCPV3Effect(ctx, token, err == nil && (w.streamFlushObserved == nil || (*w.streamFlushObserved && ctx.Err() == nil))))
+	observed := err == nil && (w.streamFlushObserved == nil || (*w.streamFlushObserved && ctx.Err() == nil))
+	logMCPV3Error(w.log, confirmMCPV3Effect(ctx, token, observed))
+	logMCPV3Error(w.log, confirmMCPV3Effect(ctx, w.card, observed))
 	return err
 }
 

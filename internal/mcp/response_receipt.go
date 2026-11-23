@@ -8,6 +8,7 @@ import (
 	"io"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 )
 
 // confirmMCPResponseEffect retains a tracked request's selected shard. A
@@ -24,16 +25,34 @@ func confirmMCPResponseEffect(logW io.Writer, opts MCPProxyOpts, selected receip
 	return err
 }
 
-func confirmMCPCardAcceptance(ctx context.Context, logW io.Writer, opts MCPProxyOpts, selected receipt.EmitOpts, decision receipt.EmitOpts) error {
+func confirmMCPCardAcceptance(ctx context.Context, logW io.Writer, opts MCPProxyOpts, selected, evidence receipt.EmitOpts, candidate AgentCardScanResult) (*v3.EffectToken, error) {
+	var checks []receipt.EmitOpts
+	if candidate.SignatureVerified {
+		check := evidence
+		check.ActionID = receipt.NewActionID()
+		check.Layer, check.Pattern = "a2a_card_signature", "verified key_id="+candidate.SignatureKeyID
+		checks = append(checks, check)
+	}
+	if candidate.FirstSeen || candidate.DriftAdopted {
+		evidence.ActionID = receipt.NewActionID()
+		evidence.Layer, evidence.Pattern = "a2a_card_drift", "Agent Card baseline accepted"
+		checks = append(checks, evidence)
+	}
 	if !opts.receiptEffects.enabled {
-		return confirmMCPResponseEffect(logW, opts, selected, decision)
+		for _, check := range checks {
+			if err := confirmMCPResponseEffect(logW, opts, selected, check); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
 	}
-	decision = opts.withReceiptPolicyHash(withMCPResponseShard(selected, decision))
-	token, err := opts.admitV3Effect(ctx, decision, mcpDownstreamDeliveryBoundary)
-	if err != nil {
-		return err
+	actions := make([]v3.Action, 0, len(checks))
+	for _, check := range checks {
+		action, _ := opts.v3EffectAction(withMCPResponseShard(selected, check), mcpDownstreamDeliveryBoundary)
+		actions = append(actions, action)
 	}
-	return confirmMCPV3Effect(ctx, token, true)
+	_, policy := opts.v3EffectAction(evidence, mcpDownstreamDeliveryBoundary)
+	return opts.receiptEffects.gate.AdmitBatch(ctx, actions, policy)
 }
 
 func withMCPResponseShard(selected, decision receipt.EmitOpts) receipt.EmitOpts {

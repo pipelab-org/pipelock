@@ -3616,10 +3616,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				cardKey := mcp.CardCacheKeyFromRequest(targetURL, r.Header.Get("Authorization"))
 				var cardReceiptErr error
 				cardOpts := mcp.A2AResponseOpts{Cfg: &cfg.A2AScanning, Baseline: p.a2aCardBaseline, CardKey: cardKey}
-				if cfg.FlightRecorder.RequireReceipts {
+				if cfg.FlightRecorder.RequireReceipts || p.v3ReceiptsEnabled() {
 					cardOpts.ConfirmCardAcceptance = func(candidate mcp.AgentCardScanResult) error {
 						if p.v3ReceiptsEnabled() {
-							cardReceiptErr = p.confirmV3CardAcceptance(r.Context(), cfg, receipt.EmitOpts{ParentActionID: actionID, Verdict: config.ActionAllow, Transport: TransportForward, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}, candidate)
+							w.(*v3DeliveryWriter).card, cardReceiptErr = p.admitV3CardAcceptance(r.Context(), cfg, receipt.EmitOpts{ParentActionID: actionID, Verdict: config.ActionAllow, Transport: TransportForward, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}, candidate)
 							return cardReceiptErr
 						}
 						if !candidate.FirstSeen && !candidate.DriftAdopted {
@@ -3655,25 +3655,27 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				if cardResult.SignatureVerified {
 					pattern := "verified key_id=" + cardResult.SignatureKeyID
 					p.logger.LogAnomaly(actx, scannerLabelA2ACardSignature, pattern, 0)
-					signatureReceipt := withReceiptShard(withForwardRedaction(receipt.EmitOpts{
-						ActionID:       receipt.NewActionID(),
-						ParentActionID: actionID,
-						Verdict:        config.ActionAllow,
-						Layer:          scannerLabelA2ACardSignature,
-						Pattern:        pattern,
-						Transport:      "forward",
-						Method:         r.Method,
-						Target:         targetURL,
-						RequestID:      requestID,
-						Agent:          agent,
-					}), selectedReceiptShard)
-					if a2aResponseDecisionBlocks(cfg, a2aResult, false) {
-						emitForwardReceipt(signatureReceipt)
-					} else if err := p.confirmResponseDecision(cfg, signatureReceipt, r.Context()); err != nil {
-						p.recordRequiredReceiptBlock(err, TransportForward)
-						writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), receiptEmissionBlockReason, http.StatusForbidden)
-						outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, receiptEmissionFailedLayer
-						return
+					if !p.v3ReceiptsEnabled() {
+						signatureReceipt := withReceiptShard(withForwardRedaction(receipt.EmitOpts{
+							ActionID:       receipt.NewActionID(),
+							ParentActionID: actionID,
+							Verdict:        config.ActionAllow,
+							Layer:          scannerLabelA2ACardSignature,
+							Pattern:        pattern,
+							Transport:      "forward",
+							Method:         r.Method,
+							Target:         targetURL,
+							RequestID:      requestID,
+							Agent:          agent,
+						}), selectedReceiptShard)
+						if a2aResponseDecisionBlocks(cfg, a2aResult, false) {
+							emitForwardReceipt(signatureReceipt)
+						} else if err := p.confirmResponseDecision(cfg, signatureReceipt, r.Context()); err != nil {
+							p.recordRequiredReceiptBlock(err, TransportForward)
+							writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), receiptEmissionBlockReason, http.StatusForbidden)
+							outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, receiptEmissionFailedLayer
+							return
+						}
 					}
 				}
 			} else {
@@ -3937,7 +3939,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// stripping or redaction). Explicit framing lets the client finish the
 		// body before the deferred outcome write. Preserve framing for no-body
 		// responses, upstream trailers, and budget-truncated delivery.
-		if cfg.FlightRecorder.RequireReceipts && r.Method != http.MethodHead && resp.StatusCode >= http.StatusOK &&
+		if (cfg.FlightRecorder.RequireReceipts || p.v3ReceiptsEnabled()) && r.Method != http.MethodHead && resp.StatusCode >= http.StatusOK &&
 			resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotModified &&
 			!responseHasTrailers(resp) &&
 			!bufferedBudgetTruncated && (budgetRemaining < 0 || int64(len(respBody)) <= budgetRemaining) {

@@ -3248,10 +3248,11 @@ func newInterceptHandler(
 				}
 				var cardReceiptFailed bool
 				cardOpts := mcp.A2AResponseOpts{Cfg: &ic.Config.A2AScanning, Baseline: baseline, CardKey: cardKey}
-				if ic.Config.FlightRecorder.RequireReceipts {
+				if ic.Config.FlightRecorder.RequireReceipts || ic.Proxy.v3ReceiptsEnabled() {
 					cardOpts.ConfirmCardAcceptance = func(candidate mcp.AgentCardScanResult) error {
 						if ic.Proxy.v3ReceiptsEnabled() {
-							err := ic.Proxy.confirmV3CardAcceptance(r.Context(), ic.Config, withInterceptTaint(ic, receipt.EmitOpts{ParentActionID: actionID, Verdict: config.ActionAllow, Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}), candidate)
+							token, err := ic.Proxy.admitV3CardAcceptance(r.Context(), ic.Config, withInterceptTaint(ic, receipt.EmitOpts{ParentActionID: actionID, Verdict: config.ActionAllow, Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}), candidate)
+							w.(*v3DeliveryWriter).card = token
 							if err != nil {
 								cardReceiptFailed = true
 								ic.Proxy.recordRequiredReceiptBlock(err, TransportConnect)
@@ -3293,24 +3294,26 @@ func newInterceptHandler(
 				if cardResult.SignatureVerified {
 					pattern := "verified key_id=" + cardResult.SignatureKeyID
 					ic.Logger.LogAnomaly(actx, scannerLabelA2ACardSignature, pattern, 0)
-					signatureReceipt := withInterceptRedaction(receipt.EmitOpts{
-						ActionID:       receipt.NewActionID(),
-						ParentActionID: actionID,
-						Verdict:        config.ActionAllow,
-						Layer:          scannerLabelA2ACardSignature,
-						Pattern:        pattern,
-						Transport:      "intercept",
-						Method:         r.Method,
-						Target:         targetURL,
-						RequestID:      ic.RequestID,
-						Agent:          ic.Agent,
-					})
-					if !a2aResponseDecisionBlocks(ic.Config, a2aRespResult, true) && interceptConfirmResponseOrBlock(ic, w, signatureReceipt, r.Context()) {
-						emitBlockedPostRoundTripOutcome(http.StatusForbidden, receiptEmissionFailedLayer)
-						return
-					}
-					if !ic.Config.FlightRecorder.RequireReceipts || a2aResponseDecisionBlocks(ic.Config, a2aRespResult, true) {
-						_ = interceptEmitResponseReceipt(ic, signatureReceipt)
+					if !ic.Proxy.v3ReceiptsEnabled() {
+						signatureReceipt := withInterceptRedaction(receipt.EmitOpts{
+							ActionID:       receipt.NewActionID(),
+							ParentActionID: actionID,
+							Verdict:        config.ActionAllow,
+							Layer:          scannerLabelA2ACardSignature,
+							Pattern:        pattern,
+							Transport:      "intercept",
+							Method:         r.Method,
+							Target:         targetURL,
+							RequestID:      ic.RequestID,
+							Agent:          ic.Agent,
+						})
+						if !a2aResponseDecisionBlocks(ic.Config, a2aRespResult, true) && interceptConfirmResponseOrBlock(ic, w, signatureReceipt, r.Context()) {
+							emitBlockedPostRoundTripOutcome(http.StatusForbidden, receiptEmissionFailedLayer)
+							return
+						}
+						if !ic.Config.FlightRecorder.RequireReceipts || a2aResponseDecisionBlocks(ic.Config, a2aRespResult, true) {
+							_ = interceptEmitResponseReceipt(ic, signatureReceipt)
+						}
 					}
 				}
 			} else {
@@ -3596,7 +3599,7 @@ func newInterceptHandler(
 		// framing lets the client finish before outcome storage completes.
 		// Preserve upstream trailer framing. Intercept does not truncate
 		// buffered bodies to a byte budget.
-		if ic.Config.FlightRecorder.RequireReceipts && r.Method != http.MethodHead && resp.StatusCode >= http.StatusOK &&
+		if (ic.Config.FlightRecorder.RequireReceipts || ic.Proxy.v3ReceiptsEnabled()) && r.Method != http.MethodHead && resp.StatusCode >= http.StatusOK &&
 			resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotModified &&
 			!responseHasTrailers(resp) {
 			w.Header().Del("Transfer-Encoding")

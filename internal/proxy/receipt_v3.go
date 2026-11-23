@@ -56,17 +56,6 @@ func (ic *InterceptContext) legacyReceiptsRequired() bool {
 
 type proxyEffectToken = v3.EffectToken
 
-// confirmV3ResponseDecision durably confirms a decision made before a response
-// write, without consuming evidence queued for delivery of the response itself.
-func (p *Proxy) confirmV3ResponseDecision(ctx context.Context, cfg *config.Config, opts receipt.EmitOpts) error {
-	action, policy := prepareV3TransportReceipt(cfg, opts, boundaryDownstreamDelivery)
-	token, err := p.receiptEffects.gate.Admit(ctx, action, policy)
-	if err != nil {
-		return err
-	}
-	return token.ConfirmDelivery(ctx, func() (bool, error) { return true, nil })
-}
-
 func (p *Proxy) admitEffect(ctx context.Context, cfg *config.Config, opts receipt.EmitOpts, boundary string) (*proxyEffectToken, error) {
 	if p == nil || !p.receiptEffects.enabled {
 		return nil, nil
@@ -151,23 +140,23 @@ func (p *Proxy) settleEffect(ctx context.Context, opts receipt.EmitOpts, token *
 	}
 }
 
-func (p *Proxy) confirmV3CardAcceptance(ctx context.Context, cfg *config.Config, opts receipt.EmitOpts, candidate mcp.AgentCardScanResult) error {
+func (p *Proxy) admitV3CardAcceptance(ctx context.Context, cfg *config.Config, opts receipt.EmitOpts, candidate mcp.AgentCardScanResult) (*proxyEffectToken, error) {
+	var checks []receipt.EmitOpts
 	if candidate.SignatureVerified {
 		signature := opts
-		signature.ActionID = receipt.NewActionID()
 		signature.Layer = scannerLabelA2ACardSignature
 		signature.Pattern = "verified key_id=" + candidate.SignatureKeyID
-		if err := p.confirmV3ResponseDecision(ctx, cfg, signature); err != nil {
-			return err
-		}
+		checks = append(checks, signature)
 	}
 	if candidate.FirstSeen || candidate.DriftAdopted {
-		opts.ActionID = receipt.NewActionID()
 		opts.Layer = scannerLabelA2ACardDrift
 		opts.Pattern = "Agent Card baseline accepted"
-		return p.confirmV3ResponseDecision(ctx, cfg, opts)
+		checks = append(checks, opts)
 	}
-	return nil
+	_, policy := prepareV3TransportReceipt(cfg, opts, boundaryDownstreamDelivery)
+	parent := opts
+	parent.ActionID = opts.ParentActionID
+	return p.receiptEffects.gate.AdmitBatch(ctx, receiptSupportingActions(cfg, parent, boundaryDownstreamDelivery, checks), policy)
 }
 
 type reverseReceiptEffectKey struct{}

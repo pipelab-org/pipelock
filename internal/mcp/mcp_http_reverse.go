@@ -40,6 +40,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
@@ -2590,6 +2591,20 @@ func RunHTTPListenerProxy(
 			}
 			return
 		}
+		var cardDeliveries []*v3.EffectToken
+		var cardAttempted, cardFramed bool
+		reqOpts.bufferedCardDelivery = func(token *v3.EffectToken) {
+			cardDeliveries = append(cardDeliveries, token)
+		}
+		defer func() {
+			for _, token := range cardDeliveries {
+				if cardAttempted {
+					logMCPV3Error(safeLogW, confirmMCPV3Effect(effect.ctx, token, cardFramed))
+				} else {
+					logMCPV3Error(safeLogW, token.Refuse(effect.ctx))
+				}
+			}
+		}()
 		responseBlocked := false
 		responseDropped := false
 		reqOpts.responseDropped = func() { responseDropped = true }
@@ -2641,11 +2656,12 @@ func RunHTTPListenerProxy(
 					return
 				}
 				effect.wrote = true
+				cardAttempted = len(cardDeliveries) != 0 && !responseBlocked
 				n, err := w.writeBuffered(output)
 				if err != nil || n != len(output) {
 					return
 				}
-				if responseStatus != "" || !commitBeforeWrite || effect.send != nil {
+				if responseStatus != "" || !commitBeforeWrite || effect.send != nil || cardAttempted {
 					// The known-length body needs no terminal chunk after
 					// this checked flush.
 					if err := http.NewResponseController(w.ResponseWriter).Flush(); err != nil {
@@ -2653,6 +2669,7 @@ func RunHTTPListenerProxy(
 					}
 				}
 				effect.framed = true
+				cardFramed = cardAttempted && httpstream.CanObserveFlush(w.ResponseWriter)
 				if responseStatus != "" {
 					terminalStatus, terminalReason, terminalSize = responseStatus, responseReason, responseSize
 				}

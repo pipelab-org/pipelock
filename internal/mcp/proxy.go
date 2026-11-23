@@ -33,6 +33,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -307,12 +308,15 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	responsePending := false
 	var outcomeStatus, outcomeReason string
 	var outcomeSize int64
+	var cardDelivery *v3.EffectToken
 	finishWarnings := func() {}
 	baseWarnContext := opts.warnContext()
 	finishMessage := func() {
 		// A warning summary still needs the response's reservation.
 		finishWarnings()
 		finishWarnings = func() {}
+		logMCPV3Error(logW, cardDelivery.Refuse(opts.warnContext()))
+		cardDelivery = nil
 		if reply, ok := writer.(*mcpV3ReplyWriter); ok {
 			logMCPV3Error(logW, reply.writeDeniedMessage(nil))
 		}
@@ -1052,7 +1056,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		} else {
 			a2aOpts := opts.a2aResponseOpts(respScanOpts)
 			a2aOpts.Method = trackedMethod
-			if opts.requireReceipts() {
+			if opts.requireReceipts() || opts.receiptEffects.enabled {
 				a2aOpts.ConfirmCardAcceptance = func(candidate AgentCardScanResult) error {
 					selected := trackedOutcome.Receipt
 					if eventAdmission.NativeLease != nil {
@@ -1061,16 +1065,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					if !selected.ShardSelected && opts.ReceiptGroup != nil && opts.ReceiptGroup.Shards != nil {
 						selected = opts.ReceiptGroup.Shards.Admit(selected)
 					}
-					if candidate.SignatureVerified {
-						baselineReceiptErr = confirmMCPCardAcceptance(opts.warnContext(), logW, opts, selected, receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Layer: "a2a_card_signature", Pattern: "verified key_id=" + candidate.SignatureKeyID, Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(frame.ID)})
-						if baselineReceiptErr != nil {
-							return baselineReceiptErr
-						}
-					}
-					if !candidate.FirstSeen && !candidate.DriftAdopted {
-						return nil
-					}
-					baselineReceiptErr = confirmMCPCardAcceptance(opts.warnContext(), logW, opts, selected, receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Layer: "a2a_card_drift", Pattern: "Agent Card baseline accepted", Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(frame.ID)})
+					cardDelivery, baselineReceiptErr = confirmMCPCardAcceptance(opts.warnContext(), logW, opts, selected, receipt.EmitOpts{
+						Verdict: config.ActionAllow, Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(frame.ID),
+					}, candidate)
 					return baselineReceiptErr
 				}
 			}
@@ -1142,9 +1139,27 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 				continue
 			}
-			if err := writer.WriteMessage(line); err != nil {
+			if reply, ok := writer.(*mcpV3ReplyWriter); ok && cardDelivery != nil {
+				reply.card, cardDelivery = cardDelivery, nil
+			}
+			writeErr := writer.WriteMessage(line)
+			if cardDelivery != nil {
+				ctx := opts.warnContext()
+				switch {
+				case writeErr == nil && opts.bufferedCardDelivery != nil:
+					opts.bufferedCardDelivery(cardDelivery)
+				case opts.listenerOwnsResponseOutcome:
+					logMCPV3Error(logW, cardDelivery.SettleOnExit(ctx))
+				case isWithheldV3Reply(writer):
+					logMCPV3Error(logW, cardDelivery.Refuse(ctx))
+				default:
+					logMCPV3Error(logW, confirmMCPV3Effect(ctx, cardDelivery, writeErr == nil))
+				}
+				cardDelivery = nil
+			}
+			if writeErr != nil {
 				releaseToolInventory()
-				return foundInjection, fmt.Errorf("writing line: %w", err)
+				return foundInjection, fmt.Errorf("writing line: %w", writeErr)
 			}
 			commitToolInventory()
 			emitTrackedOutcome(mcpResponseStatus(line), "complete", line)

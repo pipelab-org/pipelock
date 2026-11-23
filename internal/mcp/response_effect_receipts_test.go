@@ -408,8 +408,14 @@ func TestAgentCardReevaluationConfirmsCurrentAdoption(t *testing.T) {
 	}
 }
 
-func TestMCPV3RequiredAgentCardAcceptance(t *testing.T) {
-	row := v3MCPMatrixRow{required: true, scenario: "intent write fail"}
+func TestMCPV3AgentCardAcceptance(t *testing.T) {
+	t.Run("required", func(t *testing.T) { testMCPV3AgentCardAcceptance(t, true) })
+	t.Run("optional", func(t *testing.T) { testMCPV3AgentCardAcceptance(t, false) })
+}
+
+func testMCPV3AgentCardAcceptance(t *testing.T, required bool) {
+	t.Helper()
+	row := v3MCPMatrixRow{required: required, scenario: "intent write fail"}
 	writerOpts := mcpMatrixWriterOptions(t, row, transportMCPStdio, func() {}, nil)
 	writer, err := v3.OpenStreamWriter(t.Context(), writerOpts)
 	if err != nil {
@@ -420,7 +426,7 @@ func TestMCPV3RequiredAgentCardAcceptance(t *testing.T) {
 	cfg.A2AScanning.Enabled = true
 	cfg.A2AScanning.DetectCardDrift = true
 	opts := MCPProxyOpts{
-		RequireReceipts: true, Scanner: sc, Transport: transportMCPStdio,
+		RequireReceipts: required, Scanner: sc, Transport: transportMCPStdio,
 		A2ACfg: &cfg.A2AScanning, CardBaseline: NewCardBaseline(8),
 		A2ACardURL: "https://api.vendor.example/.well-known/agent-card.json",
 	}.WithV3ReceiptWriter(writer)
