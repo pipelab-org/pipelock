@@ -261,6 +261,10 @@ func runVerifyInstall(cmd *cobra.Command, configFile string, jsonOut, noColor bo
 	if pErr != nil {
 		return cliutil.ExitCodeError(2, fmt.Errorf("creating proxy: %w", pErr))
 	}
+	defer p.Close()
+	if err := p.LoadCertCache(cfg); err != nil {
+		return cliutil.ExitCodeError(2, err)
+	}
 
 	proxyLn, err := lc.Listen(cmd.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {

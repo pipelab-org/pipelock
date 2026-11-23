@@ -51,6 +51,23 @@ func readTestManifest(t *testing.T, runDir string) AssessManifest {
 	return m
 }
 
+func TestPrimitiveVerifyInstallRejectsMissingTLSCA(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Defaults()
+	cfg.ForwardProxy.Enabled = true
+	cfg.TLSInterception.Enabled = true
+	cfg.TLSInterception.CACertPath = filepath.Join(dir, "ca.pem")
+	cfg.TLSInterception.CAKeyPath = filepath.Join(dir, "ca-key.pem")
+	err := runPrimitiveVerifyInstall(cfg, dir, "pipelock.yaml")
+	want := "load TLS CA: read CA cert: open " + cfg.TLSInterception.CACertPath
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("startup error = %v, want %q", err, want)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "verify-install.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("evidence written before CA validation: %v", err)
+	}
+}
+
 func TestAssessRun_CompletesSuccessfully(t *testing.T) {
 	runDir, _ := initTestRun(t)
 

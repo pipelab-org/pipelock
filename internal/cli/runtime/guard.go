@@ -203,6 +203,9 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 		return fmt.Errorf("create guard proxy: %w", err)
 	}
 	defer p.Close()
+	if err := p.LoadCertCache(runtimeCfg); err != nil {
+		return err
+	}
 	handler := p.Handler()
 	proxyHandler := func(conn net.Conn) {
 		select {
