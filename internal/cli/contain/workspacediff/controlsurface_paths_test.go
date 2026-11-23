@@ -227,7 +227,12 @@ func TestControlSurfaceFollowsInWorkspaceSymlinkTargets(t *testing.T) {
 			root := t.TempDir()
 			tc.prepare(t, root)
 			before := controlSnapshot(t, root, DefaultControlSurfaceBudget())
-			writeControlFixture(t, root, tc.edit, "after, now longer")
+			content := "after, now longer"
+			if tc.name == "config file link" {
+				// Git reads the link's target as configuration, so the edit stays valid.
+				content = "[core]\n\tfilemode = false\n"
+			}
+			writeControlFixture(t, root, tc.edit, content)
 			after := controlSnapshot(t, root, DefaultControlSurfaceBudget())
 			expectControlPath(t, controlDiff(t, before, after), tc.edit)
 		})
@@ -281,5 +286,196 @@ func TestControlSurfaceReportsAmbiguousDotDotLinkTargets(t *testing.T) {
 		len(diff.Unreadable) != 1 || diff.Unreadable[0].Path != filepath.FromSlash(".claude/cmds") ||
 		!strings.Contains(diff.Unreadable[0].Reason, "ambiguous") {
 		t.Fatalf("want an incomplete observation naming the ambiguous link: %+v", diff)
+	}
+}
+
+// Git resolves a path named in its metadata one component at a time, so ".."
+// after a symlinked component leaves that component's target. Cleaning the
+// path lexically instead would observe a different directory than Git uses.
+func TestControlSurfaceReportsAmbiguousDotDotConfigPaths(t *testing.T) {
+	symlink := func(t *testing.T, root, target, name string) {
+		t.Helper()
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		prepare func(t *testing.T, git testGit, root string)
+		edit    string
+		source  string
+	}{
+		{"hooks path", func(t *testing.T, git testGit, root string) {
+			git.init(t, root)
+			git.run(t, root, "config", "--local", "core.hooksPath", "jump/../hooks")
+			symlink(t, root, "deep/sub", "jump")
+			writeControlFixture(t, root, "deep/sub/keep", "keep")
+			writeControlFixture(t, root, "deep/hooks/pre-commit", "before")
+		}, "deep/hooks/pre-commit", ".git/config"},
+		{"hooks path that leaves the workspace lexically", func(t *testing.T, git testGit, root string) {
+			git.init(t, root)
+			git.run(t, root, "config", "--local", "core.hooksPath", "jump/../../hooks")
+			symlink(t, root, "deep/sub/sub2", "jump")
+			writeControlFixture(t, root, "deep/sub/sub2/keep", "keep")
+			writeControlFixture(t, root, "deep/hooks/pre-commit", "before")
+		}, "deep/hooks/pre-commit", ".git/config"},
+		{"include path", func(t *testing.T, git testGit, root string) {
+			git.init(t, root)
+			git.run(t, root, "config", "--local", "include.path", "jump/../shared.cfg")
+			symlink(t, root, "../deep/sub", ".git/jump")
+			writeControlFixture(t, root, "deep/sub/keep", "keep")
+			writeControlFixture(t, root, "deep/shared.cfg", "[example]\nkey = before\n")
+		}, "deep/shared.cfg", ".git/config"},
+		{"gitdir pointer", func(t *testing.T, _ testGit, root string) {
+			writeControlFixture(t, root, "proj/.git", "gitdir: jump/../gitdata\n")
+			symlink(t, root, "../deep/sub", "proj/jump")
+			writeControlFixture(t, root, "deep/sub/keep", "keep")
+			writeControlFixture(t, root, "deep/gitdata/hooks/pre-commit", "before")
+			writeControlFixture(t, root, "proj/gitdata/hooks/pre-commit", "lexical decoy")
+		}, "deep/gitdata/hooks/pre-commit", "proj/.git"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			git := newControlGit(t)
+			root := t.TempDir()
+			tc.prepare(t, git, root)
+			budget := DefaultControlSurfaceBudget()
+			before := controlSnapshot(t, root, budget)
+			writeControlFixture(t, root, tc.edit, "changed")
+			diff := controlDiff(t, before, controlSnapshot(t, root, budget))
+			reported := diff.Changed && slices.Contains(diff.Paths(), filepath.FromSlash(tc.edit))
+			var named bool
+			for _, entry := range diff.Unreadable {
+				named = named || (entry.Path == filepath.FromSlash(tc.source) && strings.Contains(entry.Reason, "ambiguous"))
+			}
+			if !reported && (!diff.Incomplete || !named) {
+				t.Fatalf("a path Git resolves through a symlink must be observed or reported ambiguous: %+v", diff)
+			}
+		})
+	}
+	t.Run("a path that leaves the workspace through plain directories is not ambiguous", func(t *testing.T) {
+		git := newControlGit(t)
+		root := t.TempDir()
+		git.init(t, root)
+		git.run(t, root, "config", "--local", "core.hooksPath", "../shared-hooks")
+		git.run(t, root, "config", "--local", "include.path", "sub/../../shared.cfg")
+		writeControlFixture(t, root, "sub/keep", "keep")
+		budget := DefaultControlSurfaceBudget()
+		before := controlSnapshot(t, root, budget)
+		if diff := controlDiff(t, before, controlSnapshot(t, root, budget)); diff.Incomplete || diff.Changed {
+			t.Fatalf("a path outside the workspace is out of scope, not ambiguous: %+v", diff)
+		}
+	})
+	t.Run("plain directory components resolve the same way", func(t *testing.T) {
+		git := newControlGit(t)
+		root := t.TempDir()
+		git.init(t, root)
+		git.run(t, root, "config", "--local", "core.hooksPath", "sub/../hooks")
+		writeControlFixture(t, root, "sub/keep", "keep")
+		writeControlFixture(t, root, "hooks/pre-commit", "before")
+		budget := DefaultControlSurfaceBudget()
+		before := controlSnapshot(t, root, budget)
+		writeControlFixture(t, root, "hooks/pre-commit", "changed")
+		expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), "hooks/pre-commit")
+	})
+}
+
+// A repository's local config can be a symlink to a file in the workspace. Git
+// reads the target, so the hook directory and includes it names must be
+// followed, and relative includes still resolve against the config's own path.
+func TestControlSurfaceFollowsReferencesInASymlinkedGitConfig(t *testing.T) {
+	linkConfig := func(t *testing.T, root, target string) {
+		t.Helper()
+		config := filepath.Join(root, ".git", "config")
+		if err := os.Remove(config); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, config); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		prepare func(t *testing.T, root string)
+		edit    string
+	}{
+		{"hooks path", func(t *testing.T, root string) {
+			writeControlFixture(t, root, "shared/gitconfig", "[core]\n\thooksPath = hooks-target\n")
+			writeControlFixture(t, root, "hooks-target/pre-commit", "before")
+			linkConfig(t, root, "../shared/gitconfig")
+		}, "hooks-target/pre-commit"},
+		{"include relative to the link", func(t *testing.T, root string) {
+			writeControlFixture(t, root, "deep/shared/gitconfig", "[include]\n\tpath = ../inc.cfg\n")
+			writeControlFixture(t, root, "inc.cfg", "[example]\n\tkey = before\n")
+			writeControlFixture(t, root, "deep/inc.cfg", "[example]\n\tkey = decoy\n")
+			linkConfig(t, root, "../deep/shared/gitconfig")
+		}, "inc.cfg"},
+		{"link chain", func(t *testing.T, root string) {
+			writeControlFixture(t, root, "shared/gitconfig", "[core]\n\thooksPath = hooks-target\n")
+			writeControlFixture(t, root, "hooks-target/pre-commit", "before")
+			if err := os.Symlink("shared/gitconfig", filepath.Join(root, "hop")); err != nil {
+				t.Fatal(err)
+			}
+			linkConfig(t, root, "../hop")
+		}, "hooks-target/pre-commit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			git := newControlGit(t)
+			root := t.TempDir()
+			git.init(t, root)
+			tc.prepare(t, root)
+			budget := DefaultControlSurfaceBudget()
+			before := controlSnapshot(t, root, budget)
+			// Git reads an included file as configuration, so the edit stays valid.
+			writeControlFixture(t, root, tc.edit, "[example]\n\tkey = changed\n")
+			expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), tc.edit)
+		})
+	}
+	t.Run("a target outside the workspace cannot be observed", func(t *testing.T) {
+		git := newControlGit(t)
+		root := t.TempDir()
+		git.init(t, root)
+		outside := t.TempDir()
+		writeControlFixture(t, outside, "gitconfig", "[core]\n\thooksPath = hooks-target\n")
+		linkConfig(t, root, filepath.Join(outside, "gitconfig"))
+		budget := DefaultControlSurfaceBudget()
+		diff := controlDiff(t, controlSnapshot(t, root, budget), controlSnapshot(t, root, budget))
+		if !diff.Incomplete || len(diff.Unreadable) != 1 || diff.Unreadable[0].Path != filepath.FromSlash(".git/config") {
+			t.Fatalf("an unreadable config target must make the observation incomplete: %+v", diff)
+		}
+	})
+	t.Run("a missing target is not an observation problem", func(t *testing.T) {
+		git := newControlGit(t)
+		root := t.TempDir()
+		git.init(t, root)
+		linkConfig(t, root, "../missing/gitconfig")
+		budget := DefaultControlSurfaceBudget()
+		before := controlSnapshot(t, root, budget)
+		if diff := controlDiff(t, before, controlSnapshot(t, root, budget)); diff.Incomplete || diff.Changed {
+			t.Fatalf("a dangling config link names nothing to read: %+v", diff)
+		}
+		writeControlFixture(t, root, "missing/gitconfig", "[core]\n\thooksPath = hooks-target\n")
+		expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), "missing/gitconfig")
+	})
+}
+
+// A path that leaves the workspace and names it again returns to a place the
+// lexical result and Git can disagree about: ".." from the workspace root goes to
+// the root's real parent, not to the parent of the path the workspace was
+// opened by.
+func TestControlSurfaceReportsAmbiguousPathThatReentersTheWorkspace(t *testing.T) {
+	git := newControlGit(t)
+	root := t.TempDir()
+	git.init(t, root)
+	git.run(t, root, "config", "--local", "core.hooksPath", "../"+filepath.Base(root)+"/hooks")
+	writeControlFixture(t, root, "hooks/pre-commit", "before")
+	budget := DefaultControlSurfaceBudget()
+	diff := controlDiff(t, controlSnapshot(t, root, budget), controlSnapshot(t, root, budget))
+	if !diff.Incomplete || len(diff.Unreadable) != 1 || diff.Unreadable[0].Path != filepath.FromSlash(".git/config") ||
+		!strings.Contains(diff.Unreadable[0].Reason, "ambiguous") {
+		t.Fatalf("a path that re-enters the workspace by name must be reported ambiguous: %+v", diff)
 	}
 }

@@ -978,3 +978,246 @@ func TestControlSurfaceWorktreeSlotMatchesPlainNestedProject(t *testing.T) {
 		}
 	}
 }
+
+func TestControlSurfaceClassifiesPathsAcrossPasses(t *testing.T) {
+	root := t.TempDir()
+	info, err := os.Stat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const name = "settings"
+	old := controlEntry{mode: 0o600}
+	updated := controlEntry{mode: 0o644}
+	before := ControlSurfaceSnapshot{
+		root: root, rootInfo: info,
+		priority: controlPass{entries: map[string]controlEntry{name: old}},
+		nested:   controlPass{entries: map[string]controlEntry{name: old}},
+	}
+	after := ControlSurfaceSnapshot{
+		root: root, rootInfo: info,
+		nested: controlPass{entries: map[string]controlEntry{name: updated}},
+	}
+	for _, diff := range []ControlSurfaceStatement{controlDiff(t, before, after), controlDiff(t, after, before)} {
+		if len(diff.Added) != 0 || len(diff.Removed) != 0 || !slices.Equal(diff.Modified, []string{name}) {
+			t.Errorf("expected one modification, got %+v", diff)
+		}
+	}
+}
+
+// A path found only through a nested repository's configuration, such as an
+// included file or a hook directory, is examined only when discovery reaches
+// that repository. A snapshot whose discovery missed it proves neither that the
+// path was added nor that it was removed.
+func TestControlSurfaceInfersNothingFromReferencesOfUnexaminedRepositories(t *testing.T) {
+	git := newControlGit(t)
+	root := t.TempDir()
+	git.init(t, root)
+	nested := filepath.Join(root, "x", "y", "a")
+	if err := os.MkdirAll(nested, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	git.init(t, nested)
+	git.run(t, nested, "config", "--local", "include.path", "../../../../shared.cfg")
+	git.run(t, nested, "config", "--local", "core.hooksPath", "../../../hk")
+	writeControlFixture(t, root, "shared.cfg", "[example]\n\tkey = value\n")
+	writeControlFixture(t, root, "hk/pre-commit", "before")
+	full := DefaultControlSurfaceBudget()
+	// Depth 2 lists x and y, but y's child a is never queued, so a's Git
+	// directory is not examined while the root's own directories are.
+	shallow := full
+	shallow.MaxNestedDepth = 2
+	complete := controlSnapshot(t, root, full)
+	writeControlFixture(t, root, "shared.cfg", "[example]\n\tkey = changed\n")
+	writeControlFixture(t, root, "hk/pre-commit", "changed")
+	changed := controlSnapshot(t, root, full)
+	diff := controlDiff(t, complete, changed)
+	expectControlPath(t, diff, "shared.cfg")
+	expectControlPath(t, diff, "hk/pre-commit")
+	cutOff := controlSnapshot(t, root, shallow)
+	for name, pair := range map[string][2]ControlSurfaceSnapshot{
+		"unexamined at end":   {complete, cutOff},
+		"unexamined at start": {cutOff, complete},
+	} {
+		t.Run(name, func(t *testing.T) {
+			diff := controlDiff(t, pair[0], pair[1])
+			if !diff.NestedDiscoveryPartial || diff.Incomplete || diff.Changed {
+				t.Fatalf("a repository that was not examined proves no change to what it references: %+v", diff)
+			}
+		})
+	}
+}
+
+// A path can be recorded by the root pass at one endpoint and by the nested
+// pass at the other. Neither pass compared it, so each would report it as
+// added or removed, and dropping both would hide a modification.
+func TestControlSurfaceComparesAPathObservedByDifferentPassesAtEachEndpoint(t *testing.T) {
+	root := t.TempDir()
+	info, err := os.Stat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const name = "settings"
+	entry := func(digest string) controlEntry {
+		return controlEntry{Entry: Entry{Path: name, Kind: KindFile, Digest: digest}, mode: 0o600}
+	}
+	for _, tc := range []struct {
+		name     string
+		before   controlEntry
+		after    controlEntry
+		modified bool
+	}{
+		{"content changed", entry("old"), entry("new"), true},
+		{"content unchanged", entry("same"), entry("same"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := ControlSurfaceSnapshot{
+				root: root, rootInfo: info,
+				priority: controlPass{entries: map[string]controlEntry{name: tc.before}},
+			}
+			after := ControlSurfaceSnapshot{
+				root: root, rootInfo: info,
+				nested: controlPass{entries: map[string]controlEntry{name: tc.after}},
+			}
+			for _, diff := range []ControlSurfaceStatement{controlDiff(t, before, after), controlDiff(t, after, before)} {
+				if len(diff.Added) != 0 || len(diff.Removed) != 0 {
+					t.Errorf("a path observed at both endpoints is never added or removed: %+v", diff)
+				}
+				if got := slices.Equal(diff.Modified, []string{name}); got != tc.modified {
+					t.Errorf("modified = %t, want %t: %+v", got, tc.modified, diff)
+				}
+			}
+		})
+	}
+}
+
+// A fixed control path that discovery reaches on its own stays covered even when
+// a repository also references it. Discovery visits the referencing repository
+// first here, so the reference is how the path was first recorded. A snapshot
+// that never examined that repository still examined the path's directory, so
+// deleting the file is reported.
+func TestControlSurfaceReportsRemovalOfADirectlyMonitoredPathAlsoReferenced(t *testing.T) {
+	git := newControlGit(t)
+	root := t.TempDir()
+	git.init(t, root)
+	// The repository's long name cannot be queued under the cut-off snapshot's
+	// path budget, while the directories leading to the target can.
+	nested := filepath.Join(root, "x", strings.Repeat("r", 40))
+	if err := os.MkdirAll(nested, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	git.init(t, nested)
+	git.run(t, nested, "config", "--local", "include.path", "../../../m/n/o/.mcp.json")
+	const target = "m/n/o/.mcp.json"
+	writeControlFixture(t, root, target, "[example]\n\tkey = before\n")
+	full := DefaultControlSurfaceBudget()
+	narrow := full
+	narrow.MaxNestedPathBytes = 16
+	complete := controlSnapshot(t, root, full)
+	if err := os.Remove(filepath.Join(root, filepath.FromSlash(target))); err != nil {
+		t.Fatal(err)
+	}
+	cutOff := controlSnapshot(t, root, narrow)
+	diff := controlDiff(t, complete, cutOff)
+	if !diff.NestedDiscoveryPartial || !slices.Contains(diff.Removed, filepath.FromSlash(target)) {
+		t.Fatalf("a deleted control file in an examined directory must be reported: %+v", diff)
+	}
+}
+
+// A fixed control directory is monitored whole, including a bare repository
+// inside it. Git's volatile-file filter applies to a repository's own metadata
+// elsewhere, but here refs and the other files Git rewrites are part of a
+// directory the agent configuration lives in.
+func TestControlSurfaceBareRepositoryInsideFixedDirectoryIsMonitoredWhole(t *testing.T) {
+	for _, tc := range []struct{ name, bare, edit string }{
+		{"refs", ".claude/cache", "refs/heads/planted"},
+		{"info refs", ".claude/cache", "info/refs"},
+		{"head", ".claude/cache", "HEAD"},
+		{"at the fixed directory", ".claude", "refs/heads/planted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			git := newControlGit(t)
+			root := t.TempDir()
+			git.init(t, root)
+			dir := filepath.Join(root, filepath.FromSlash(tc.bare))
+			if err := os.MkdirAll(dir, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			git.run(t, dir, "init", "-q", "--bare", ".")
+			writeControlFixture(t, dir, tc.edit, "ref: refs/heads/before\n")
+			budget := DefaultControlSurfaceBudget()
+			before := controlSnapshot(t, root, budget)
+			writeControlFixture(t, dir, tc.edit, "ref: refs/heads/changed\n")
+			expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), tc.bare+"/"+tc.edit)
+		})
+	}
+}
+
+// Only a linked worktree of this checkout, created by `git worktree add`, is an
+// agent worktree slot whose source files are project content. The directory
+// name is not enough: a standalone repository, a worktree of another
+// repository, or a Git file naming metadata that does not point back are places
+// an agent can put scripts the operator later runs.
+func TestControlSurfaceWorktreeSlotRequiresALinkedWorktreeOfThisCheckout(t *testing.T) {
+	const slot = ".claude/worktrees/example"
+	cases := map[string]func(t *testing.T, git testGit, root string){
+		"standalone repository": func(t *testing.T, git testGit, root string) {
+			dir := filepath.Join(root, filepath.FromSlash(slot))
+			if err := os.MkdirAll(dir, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			git.init(t, dir)
+			git.commit(t, dir, "README.md")
+		},
+		"worktree of another repository": func(t *testing.T, git testGit, root string) {
+			other := filepath.Join(root, "other")
+			if err := os.MkdirAll(other, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			git.init(t, other)
+			git.commit(t, other, "README.md")
+			git.run(t, other, "worktree", "add", "-qb", "example", filepath.Join(root, filepath.FromSlash(slot)))
+		},
+		"metadata that does not point back": func(t *testing.T, _ testGit, root string) {
+			writeControlFixture(t, root, ".git/worktrees/ghost/gitdir", filepath.Join(root, "elsewhere", ".git")+"\n")
+			writeControlFixture(t, root, slot+"/.git", "gitdir: "+filepath.Join(root, ".git", "worktrees", "ghost")+"\n")
+		},
+		"metadata without a back pointer": func(t *testing.T, _ testGit, root string) {
+			writeControlFixture(t, root, ".git/worktrees/ghost/HEAD", "ref: refs/heads/main\n")
+			writeControlFixture(t, root, slot+"/.git", "gitdir: "+filepath.Join(root, ".git", "worktrees", "ghost")+"\n")
+		},
+		"metadata outside the worktrees directory": func(t *testing.T, _ testGit, root string) {
+			writeControlFixture(t, root, ".git/ghost/gitdir", filepath.Join(root, slot, ".git")+"\n")
+			writeControlFixture(t, root, slot+"/.git", "gitdir: "+filepath.Join(root, ".git", "ghost")+"\n")
+		},
+	}
+	for name, plant := range cases {
+		t.Run(name, func(t *testing.T) {
+			git := newControlGit(t)
+			root := t.TempDir()
+			git.init(t, root)
+			git.commit(t, root, "source.txt")
+			plant(t, git, root)
+			const script = slot + "/run.sh"
+			writeControlFixture(t, root, script, "before")
+			budget := DefaultControlSurfaceBudget()
+			before := controlSnapshot(t, root, budget)
+			writeControlFixture(t, root, script, "changed")
+			expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), script)
+		})
+	}
+	t.Run("a worktree created by Git stays exempt", func(t *testing.T) {
+		git := newControlGit(t)
+		root := t.TempDir()
+		git.init(t, root)
+		git.commit(t, root, "source.txt")
+		dir := filepath.Join(root, filepath.FromSlash(slot))
+		git.run(t, root, "worktree", "add", "-qb", "example", dir)
+		writeControlFixture(t, dir, "run.sh", "before")
+		budget := DefaultControlSurfaceBudget()
+		before := controlSnapshot(t, root, budget)
+		writeControlFixture(t, dir, "run.sh", "changed")
+		if diff := controlDiff(t, before, controlSnapshot(t, root, budget)); diff.Changed || diff.Incomplete {
+			t.Fatalf("a linked worktree's source files are project content: %+v", diff)
+		}
+	})
+}

@@ -56,6 +56,10 @@ type controlPass struct {
 	undiscovered   map[string]struct{}
 	partlyListed   map[string]struct{}
 	discoveryLimit string
+	// sources names, for a path found through a reference such as a Git
+	// configuration's include or hooks path, the paths whose contents led to it.
+	// Discovery finds a path only if it also examines those paths.
+	sources map[string][]string
 }
 
 // ControlSurfaceSnapshot is an in-memory observation of the monitored paths
@@ -139,7 +143,7 @@ func SnapshotControlSurface(root string, capBytes int64, budget ControlSurfaceBu
 	snap.priority = w.walkPass(func() {
 		w.scanGitMarker(".")
 		if w.bareRepository(".") {
-			w.scanGitDir(".", ".")
+			w.scanGitDir(".", ".", false)
 		}
 		w.scanFixed(".")
 	})
@@ -160,6 +164,8 @@ type controlTree struct {
 	gitDir   string
 	worktree string
 	fixed    bool
+	// source is the path whose contents referenced this tree, if any.
+	source string
 }
 
 type controlWalker struct {
@@ -184,10 +190,21 @@ type controlWalker struct {
 	discovery     *nestedDiscovery
 	seenConfig    map[gitConfigSource]struct{}
 	seenGitDirs   map[gitConfigSource]struct{}
+	// source is the path whose contents the walker is following, so what it
+	// records or queues can be traced back to it.
+	source string
+	// direct holds the paths, and the trees whose whole content, that discovery
+	// reached on its own rather than through a reference.
+	direct map[string]struct{}
 }
 
 func (w *controlWalker) walkPass(seed func()) controlPass {
-	w.pass = controlPass{entries: make(map[string]controlEntry), unreadable: make(map[string]string)}
+	w.pass = controlPass{
+		entries: make(map[string]controlEntry), unreadable: make(map[string]string),
+		sources: make(map[string][]string),
+	}
+	w.source = ""
+	w.direct = make(map[string]struct{})
 	w.trees = w.trees[:0]
 	w.treeEntries = 0
 	w.discovery = nil
@@ -203,6 +220,7 @@ func (w *controlWalker) walkPass(seed func()) controlPass {
 	for w.pass.truncated == "" {
 		for ; next < len(w.trees) && w.pass.truncated == ""; next++ {
 			tree := w.trees[next]
+			w.source = tree.source
 			w.list(tree.path, func(child string, d fs.DirEntry) bool {
 				w.treeEntries++
 				if w.treeEntries > w.budget.MaxControlEntries {
@@ -212,13 +230,33 @@ func (w *controlWalker) walkPass(seed func()) controlPass {
 				w.scanTreeChild(tree, child, d)
 				return w.pass.truncated == ""
 			})
+			w.source = ""
 		}
 		if w.pass.truncated != "" || w.discovery == nil || !w.discovery.pending() {
 			break
 		}
 		w.discovery.run()
 	}
+	w.dropSourcesOfDirectPaths()
 	return w.pass
+}
+
+// dropSourcesOfDirectPaths forgets the references behind a path that discovery
+// also reached on its own, in whatever order the two happened. A reference may
+// be the first way a path was recorded, but it is not what makes the path
+// observable, so a snapshot that never followed the reference still covers it.
+func (w *controlWalker) dropSourcesOfDirectPaths() {
+	for path := range w.pass.sources {
+		for p := path; ; p = filepath.Dir(p) {
+			if _, direct := w.direct[p]; direct {
+				delete(w.pass.sources, path)
+				break
+			}
+			if p == "." {
+				break
+			}
+		}
+	}
 }
 
 func (w *controlWalker) truncate(path, reason string) {
@@ -293,6 +331,7 @@ func (w *controlWalker) recordPath(path string) controlEntry {
 }
 
 func (w *controlWalker) record(path string, info fs.FileInfo) controlEntry {
+	w.noteSource(path)
 	if existing, ok := w.pass.entries[path]; ok {
 		if !os.SameFile(existing.info, info) {
 			w.unreadable(path, "identity changed during observation")
@@ -337,7 +376,7 @@ func (w *controlWalker) record(path string, info fs.FileInfo) controlEntry {
 			e.Oversize = true
 		} else {
 			dev, ino, ok := statIDsWithInode(info)
-			digest, oversize, err := hashFileSafe(w.root, path, filepath.Join(w.rootPath, path), w.capBytes, dev, ino, ok)
+			digest, oversize, err := hashFileSafe(w.snapshotFile(path, dev, ino, ok), w.capBytes)
 			if err != nil {
 				w.unreadable(path, fmt.Sprintf("hash file: %v", err))
 				return controlEntry{}
@@ -359,6 +398,37 @@ func (w *controlWalker) record(path string, info fs.FileInfo) controlEntry {
 	return e
 }
 
+// noteSource remembers the reference being followed as the reason path was
+// observed, unless the path is that reference. Observing a path with no
+// reference to follow means discovery reached it on its own.
+func (w *controlWalker) noteSource(path string) {
+	if w.source == "" {
+		w.direct[path] = struct{}{}
+		return
+	}
+	if w.source != path && !slices.Contains(w.pass.sources[path], w.source) {
+		w.pass.sources[path] = append(w.pass.sources[path], w.source)
+	}
+}
+
+// following runs fn with source as the reference whose contents it follows.
+func (w *controlWalker) following(source string, fn func()) {
+	previous := w.source
+	w.source = source
+	defer func() { w.source = previous }()
+	fn()
+}
+
+// snapshotFile describes a file the walk observed, to be opened against the
+// workspace mount it checked.
+func (w *controlWalker) snapshotFile(path string, dev, ino uint64, haveIDs bool) snapshotFile {
+	return snapshotFile{
+		root: w.root, relPath: path, path: filepath.Join(w.rootPath, path),
+		dev: dev, ino: ino, haveIDs: haveIDs,
+		workspaceMount: w.rootMount, workspaceMountKnown: w.mountKnown,
+	}
+}
+
 // followSymlink observes the in-workspace target of a recorded control
 // symlink. A symlinked hook, config or agent directory otherwise lets later
 // edits to its target pass unobserved while the link itself stays unchanged.
@@ -366,22 +436,32 @@ func (w *controlWalker) record(path string, info fs.FileInfo) controlEntry {
 // leaving the grant, or the grant root itself, is never followed. The entry is
 // stored before following, which ends link cycles.
 func (w *controlWalker) followSymlink(link controlEntry) {
+	if rel, ok := w.linkTarget(link); ok {
+		w.following(link.Path, func() { w.queueTree(w.recordPath(rel), "", "") })
+	}
+}
+
+// linkTarget names the in-workspace path a recorded symlink points to, without
+// following it. A link that leaves the workspace or has no usable target has no
+// such path. One whose target the kernel would resolve elsewhere than cleaning
+// does is reported unreadable.
+func (w *controlWalker) linkTarget(link controlEntry) (string, bool) {
 	target := link.Target
 	if target == "" || strings.ContainsRune(target, 0) {
-		return
+		return "", false
 	}
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(w.rootPath, filepath.Dir(link.Path), target)
 	}
 	rel, err := filepath.Rel(w.rootPath, filepath.Clean(target))
 	if err != nil || rel == "." || !filepath.IsLocal(rel) {
-		return
+		return "", false
 	}
 	if !w.lexicalLinkTargetMatches(link, rel) {
 		w.unreadable(link.Path, "symlink target resolution is ambiguous")
-		return
+		return "", false
 	}
-	w.queueTree(w.recordPath(rel), "", "")
+	return rel, true
 }
 
 // lexicalLinkTargetMatches reports whether cleaning ".." elements from a link
@@ -458,11 +538,17 @@ func (w *controlWalker) enqueueTree(e controlEntry, tree controlTree) {
 	if e.Kind != KindDir {
 		return
 	}
+	if w.source == "" && tree.source == "" {
+		w.direct[e.Path] = struct{}{}
+	}
 	if _, ok := w.coveredTrees[e.Path]; ok {
 		return
 	}
 	w.coveredTrees[e.Path] = struct{}{}
 	tree.path = e.Path
+	if tree.source == "" {
+		tree.source = w.source
+	}
 	w.trees = append(w.trees, tree)
 }
 
@@ -477,7 +563,7 @@ func (w *controlWalker) scanFixed(dir string) {
 			e := w.record(path, info)
 			if e.Kind == KindDir {
 				if w.bareRepository(path) {
-					w.scanGitDir(path, path)
+					w.scanGitDir(path, path, true)
 				} else {
 					w.scanGitMarker(path)
 				}
@@ -495,10 +581,10 @@ func (w *controlWalker) scanFixedChild(path string, info fs.FileInfo) {
 	e := w.record(path, info)
 	if e.Kind == KindDir {
 		if w.bareRepository(path) {
-			w.scanGitDir(path, path)
+			w.scanGitDir(path, path, true)
 			return
 		}
-		if w.scanGitMarker(path) && agentWorktreeSlot(path) {
+		if w.scanGitMarker(path) && agentWorktreePath(path) && w.linkedWorktreeOfProject(path) {
 			w.scanFixed(path)
 			w.worktreeSlots = append(w.worktreeSlots, path)
 			return
@@ -507,13 +593,15 @@ func (w *controlWalker) scanFixedChild(path string, info fs.FileInfo) {
 	w.enqueueTree(e, controlTree{fixed: true})
 }
 
-// agentWorktreeSlot reports whether path is a direct child of .claude/worktrees,
+// agentWorktreePath reports whether path is a direct child of .claude/worktrees,
 // where Claude Code's --worktree option creates a full checkout of the project.
 // Such a checkout's own control paths are scanned by scanFixed; its source files
-// are project content, not agent configuration. The .claude directory must be a
-// project's own: one inside another monitored directory, such as a cloned skill,
-// is no place Claude Code creates checkouts, so it cannot exempt files there.
-func agentWorktreeSlot(path string) bool {
+// are project content, not agent configuration, once linkedWorktreeOfProject
+// confirms it is a linked worktree of that project. The .claude directory must
+// be a project's own: one inside another monitored directory, such as a cloned
+// skill, is no place Claude Code creates checkouts, so it cannot exempt files
+// there.
+func agentWorktreePath(path string) bool {
 	parent := filepath.Dir(path)
 	claude := filepath.Dir(parent)
 	if filepath.Base(parent) != "worktrees" || filepath.Base(claude) != ".claude" {
@@ -534,7 +622,7 @@ func (w *controlWalker) scanGitMarker(dir string) bool {
 		return false
 	}
 	if info.IsDir() {
-		w.scanGitDir(path, dir)
+		w.scanGitDir(path, dir, false)
 		return true
 	}
 	e := w.record(path, info)
@@ -544,7 +632,11 @@ func (w *controlWalker) scanGitMarker(dir string) bool {
 	return e.Kind == KindFile
 }
 
-func (w *controlWalker) scanGitDir(dir, worktree string) {
+// scanGitDir observes a Git directory and what its configuration names. fixed
+// says the directory is inside a fixed control tree, which is monitored whole:
+// Git's volatile-file filter is for repository metadata elsewhere and must not
+// hide files from a tree the filter's list does not describe.
+func (w *controlWalker) scanGitDir(dir, worktree string, fixed bool) {
 	source := gitConfigSource{path: dir, worktree: worktree}
 	if _, seen := w.seenGitDirs[source]; seen {
 		return
@@ -561,10 +653,10 @@ func (w *controlWalker) scanGitDir(dir, worktree string) {
 	for _, config := range configs {
 		if value, set := w.configuredWorktree(config); set {
 			// An outside working tree has no relative paths to inspect.
-			worktree, _ = w.workspaceTarget(dir, value)
+			worktree, _ = w.workspaceTarget(config.Path, dir, value)
 		}
 	}
-	w.queueTree(e, dir, worktree)
+	w.enqueueTree(e, controlTree{gitDir: dir, worktree: worktree, fixed: fixed})
 	for _, config := range configs {
 		w.scanGitConfig(config, dir, worktree)
 	}
@@ -573,7 +665,7 @@ func (w *controlWalker) scanGitDir(dir, worktree string) {
 	}
 	for _, name := range []string{"hooks", "info", "objects/info", "modules", "worktrees"} {
 		child := w.recordPath(filepath.Join(dir, filepath.FromSlash(name)))
-		w.queueTree(child, dir, worktree)
+		w.enqueueTree(child, controlTree{gitDir: dir, worktree: worktree, fixed: fixed})
 	}
 }
 
@@ -591,7 +683,7 @@ func (w *controlWalker) scanTreeChild(tree controlTree, path string, listed fs.D
 	if tree.gitDir != "" {
 		rel, _ := filepath.Rel(tree.gitDir, path)
 		rel = filepath.ToSlash(rel)
-		if volatileGitEntry(rel, info.Mode()) {
+		if !tree.fixed && volatileGitEntry(rel, info.Mode()) {
 			return
 		}
 		if info.IsDir() && w.gitMetadataChild(path, rel) {
@@ -599,7 +691,7 @@ func (w *controlWalker) scanTreeChild(tree controlTree, path string, listed fs.D
 			if strings.HasPrefix(rel, "worktrees/") {
 				worktree = w.linkedWorktree(path)
 			}
-			w.scanGitDir(path, worktree)
+			w.scanGitDir(path, worktree, tree.fixed)
 			return
 		}
 	}
@@ -704,7 +796,7 @@ func (d *nestedDiscovery) run() {
 		}
 		if dir.depth > 0 && !dir.slot {
 			if w.bareRepository(dir.path) {
-				w.scanGitDir(dir.path, dir.path)
+				w.scanGitDir(dir.path, dir.path, false)
 				continue
 			}
 			w.scanGitMarker(dir.path)
@@ -836,9 +928,19 @@ func DiffControlSurface(before, after ControlSurfaceSnapshot) (ControlSurfaceSta
 		priorityDiff = compareControlPass(before.priority, after.priority)
 		nestedDiff = compareControlPass(before.nested, after.nested)
 	}
-	s.Added = mergeControlPaths(s.Added, priorityDiff.added, nestedDiff.added)
-	s.Removed = mergeControlPaths(s.Removed, priorityDiff.removed, nestedDiff.removed)
+	// The passes classify independently, and a path can be recorded by both. It
+	// is added or removed only when no pass observed it at the other endpoint.
+	observedBefore := observedControlPaths(before.priority, before.nested)
+	observedAfter := observedControlPaths(after.priority, after.nested)
+	s.Added = mergeControlPaths(s.Added, unobservedControlPaths(priorityDiff.added, observedBefore),
+		unobservedControlPaths(nestedDiff.added, observedBefore))
+	s.Removed = mergeControlPaths(s.Removed, unobservedControlPaths(priorityDiff.removed, observedAfter),
+		unobservedControlPaths(nestedDiff.removed, observedAfter))
 	s.Modified = mergeControlPaths(s.Modified, priorityDiff.modified, nestedDiff.modified)
+	if before.rootInfo != nil && after.rootInfo != nil && identityReason == "" {
+		s.Modified = mergeControlPaths(s.Modified, nil, modifiedAcrossPasses(
+			[]controlPass{before.priority, before.nested}, []controlPass{after.priority, after.nested}))
+	}
 	s.Unreadable = mergeUnreadable(
 		collectControlUnreadable(before.priority, before.nested),
 		collectControlUnreadable(after.priority, after.nested),
@@ -871,16 +973,38 @@ func compareControlPass(before, after controlPass) controlPassDiff {
 		if seen && (b.mode != a.mode || entryChanged(b.Entry, a.Entry)) {
 			diff.modified = append(diff.modified, path)
 		}
-		if !seen && complete && after.discovered(path) && !withinExcluded(path, excluded) {
+		if !seen && complete && after.covers(before, path) && !withinExcluded(path, excluded) {
 			diff.removed = append(diff.removed, path)
 		}
 	}
 	for path := range after.entries {
-		if _, seen := before.entries[path]; !seen && complete && before.discovered(path) && !withinExcluded(path, excluded) {
+		if _, seen := before.entries[path]; !seen && complete && before.covers(after, path) && !withinExcluded(path, excluded) {
 			diff.added = append(diff.added, path)
 		}
 	}
 	return diff
+}
+
+// covers reports whether this pass examined everything that would have made it
+// observe path, had the path been recorded as it was in the other pass: the
+// place the path names and, for one found through a reference, the contents of
+// the paths that referenced it. A pass that never examined a referencing
+// repository cannot show the reference, or what it names, to be gone.
+func (p controlPass) covers(recorded controlPass, path string) bool {
+	return p.coversPath(recorded, path, make(map[string]struct{}))
+}
+
+func (p controlPass) coversPath(recorded controlPass, path string, visited map[string]struct{}) bool {
+	if !p.discovered(path) {
+		return false
+	}
+	visited[path] = struct{}{}
+	for _, source := range recorded.sources[path] {
+		if _, done := visited[source]; !done && !p.coversPath(recorded, source, visited) {
+			return false
+		}
+	}
+	return true
 }
 
 func collectControlUnreadable(passes ...controlPass) []UnreadableEntry {
@@ -891,6 +1015,39 @@ func collectControlUnreadable(passes ...controlPass) []UnreadableEntry {
 		}
 	}
 	return entries
+}
+
+// modifiedAcrossPasses compares a path that different passes recorded at the two
+// endpoints, which neither pass could compare on its own.
+func modifiedAcrossPasses(before, after []controlPass) []string {
+	var modified []string
+	for _, b := range before {
+		for path, be := range b.entries {
+			for _, a := range after {
+				if ae, seen := a.entries[path]; seen && (be.mode != ae.mode || entryChanged(be.Entry, ae.Entry)) {
+					modified = append(modified, path)
+				}
+			}
+		}
+	}
+	return modified
+}
+
+func observedControlPaths(passes ...controlPass) map[string]struct{} {
+	observed := make(map[string]struct{})
+	for _, pass := range passes {
+		for path := range pass.entries {
+			observed[path] = struct{}{}
+		}
+	}
+	return observed
+}
+
+func unobservedControlPaths(paths []string, observed map[string]struct{}) []string {
+	return slices.DeleteFunc(slices.Clone(paths), func(path string) bool {
+		_, seen := observed[path]
+		return seen
+	})
 }
 
 func mergeControlPaths(out, a, b []string) []string {

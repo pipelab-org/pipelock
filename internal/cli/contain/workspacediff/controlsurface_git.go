@@ -6,9 +6,12 @@ package workspacediff
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -20,27 +23,67 @@ type gitConfigSource struct {
 }
 
 func (w *controlWalker) scanGitPointer(entry controlEntry, prefix, base, worktree string) {
+	if path, inside := w.pointerTarget(entry, prefix, base); inside {
+		w.following(entry.Path, func() {
+			targetEntry := w.recordPath(path)
+			if targetEntry.Kind == KindDir {
+				w.scanGitDir(path, worktree, false)
+			} else if targetEntry.Kind != KindSymlink {
+				w.unreadable(entry.Path, "Git directory target could not be observed")
+			}
+		})
+	}
+}
+
+// pointerTarget reads the Git directory a pointer file names, relative to base,
+// and reports it when it lies inside the workspace.
+func (w *controlWalker) pointerTarget(entry controlEntry, prefix, base string) (string, bool) {
 	data, ok := w.readObserved(entry)
 	if !ok {
-		return
+		return "", false
 	}
 	target, valid := strings.CutPrefix(strings.TrimRight(string(data), "\r\n"), prefix)
 	if !valid || target == "" || strings.ContainsRune(target, 0) {
 		w.unreadable(entry.Path, "invalid Git directory pointer")
-		return
+		return "", false
 	}
-	if path, inside := w.workspaceTarget(base, target); inside {
-		targetEntry := w.recordPath(path)
-		if targetEntry.Kind == KindDir {
-			w.scanGitDir(path, worktree)
-		} else if targetEntry.Kind != KindSymlink {
-			w.unreadable(entry.Path, "Git directory target could not be observed")
-		}
+	return w.workspaceTarget(entry.Path, base, target)
+}
+
+// linkedWorktreeOfProject reports whether slot is a linked worktree of the
+// checkout in the project directory that owns it, as `git worktree add` makes:
+// its .git file names a directory under that project's own .git/worktrees, and
+// that directory's gitdir file names the slot's .git file in return. A
+// standalone repository, a worktree of another repository, or a Git file whose
+// metadata does not point back is not one, whatever its directory is called.
+// Metadata the workspace does not contain cannot be checked, so it is not one.
+func (w *controlWalker) linkedWorktreeOfProject(slot string) bool {
+	gitFile := w.pass.entries[filepath.Join(slot, ".git")]
+	if gitFile.Kind != KindFile {
+		return false
 	}
+	ownGit := filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(slot))), ".git")
+	if info := w.lookup(ownGit); info == nil || !info.IsDir() {
+		return false
+	}
+	metadata, inside := w.pointerTarget(gitFile, "gitdir: ", slot)
+	if !inside || filepath.Base(filepath.Dir(metadata)) != "worktrees" || filepath.Dir(filepath.Dir(metadata)) != ownGit {
+		return false
+	}
+	back := w.recordPath(filepath.Join(metadata, "gitdir"))
+	if back.Kind != KindFile {
+		return false
+	}
+	data, ok := w.readObserved(back)
+	if !ok {
+		return false
+	}
+	target, inside := w.workspaceTarget(back.Path, metadata, strings.TrimRight(string(data), "\r\n"))
+	return inside && target == gitFile.Path
 }
 
 func (w *controlWalker) scanGitConfig(entry controlEntry, gitDir, worktree string) {
-	if entry.Kind != KindFile {
+	if entry.Kind != KindFile && entry.Kind != KindSymlink {
 		return
 	}
 	source := gitConfigSource{path: entry.Path, gitDir: gitDir, worktree: worktree}
@@ -52,28 +95,31 @@ func (w *controlWalker) scanGitConfig(entry controlEntry, gitDir, worktree strin
 		return
 	}
 	w.seenConfig[source] = struct{}{}
-	data, ok := w.readObserved(entry)
+	data, ok := w.readConfig(entry)
 	if !ok {
 		return
 	}
+	previous := w.source
+	w.source = entry.Path
+	defer func() { w.source = previous }()
 	if !scanGitConfig(string(data), func(section, key, value string) {
 		switch {
 		case section == "core" && key == "hookspath":
 			// Push hooks run in the Git directory, while other hooks run
 			// in the working tree (or the Git directory for a bare repo).
 			for _, base := range []string{worktree, gitDir} {
-				if path, inside := w.workspaceTarget(base, value); inside {
+				if path, inside := w.workspaceTarget(entry.Path, base, value); inside {
 					w.queueTree(w.recordPath(path), "", "")
 				}
 			}
 		case section == "core" && key == "fsmonitor":
 			if !gitBoolean(value) {
-				if path, inside := w.workspaceTarget(worktree, value); inside {
+				if path, inside := w.workspaceTarget(entry.Path, worktree, value); inside {
 					w.recordPath(path)
 				}
 			}
 		case (section == "include" || strings.HasPrefix(section, "includeif.")) && key == "path":
-			if path, inside := w.workspaceTarget(filepath.Dir(entry.Path), value); inside {
+			if path, inside := w.workspaceTarget(entry.Path, filepath.Dir(entry.Path), value); inside {
 				w.scanGitConfig(w.recordPath(path), gitDir, worktree)
 			}
 		}
@@ -83,10 +129,10 @@ func (w *controlWalker) scanGitConfig(entry controlEntry, gitDir, worktree strin
 }
 
 func (w *controlWalker) configuredWorktree(entry controlEntry) (value string, set bool) {
-	if entry.Kind != KindFile {
+	if entry.Kind != KindFile && entry.Kind != KindSymlink {
 		return "", false
 	}
-	data, ok := w.readObserved(entry)
+	data, ok := w.readConfig(entry)
 	if !ok {
 		return "", false
 	}
@@ -100,20 +146,73 @@ func (w *controlWalker) configuredWorktree(entry controlEntry) (value string, se
 
 // Config paths are relative to Git's working directory for hooks and
 // fsmonitor, or to the including file for includes. Resolve literal paths
-// lexically first so no external repository or config is opened.
-func (w *controlWalker) workspaceTarget(base, value string) (string, bool) {
+// without opening any external repository or config. Git resolves a path one
+// component at a time, so a ".." after a symlinked component leaves that
+// component's target; when cleaning the path lexically would name a different
+// place, inside the workspace or not, the path cannot be observed and source,
+// the file that named it, is reported unreadable.
+func (w *controlWalker) workspaceTarget(source, base, value string) (string, bool) {
 	if value == "" || strings.ContainsRune(value, 0) ||
 		strings.HasPrefix(value, "~") || strings.HasPrefix(value, "%(prefix)/") {
 		return "", false
 	}
+	joined := value
 	if !filepath.IsAbs(value) {
 		if base == "" {
 			return "", false
 		}
-		value = filepath.Join(w.rootPath, base, value)
+		joined = filepath.Join(w.rootPath, base, value)
 	}
-	rel, err := filepath.Rel(w.rootPath, filepath.Clean(value))
-	return rel, err == nil && filepath.IsLocal(rel)
+	rel, err := filepath.Rel(w.rootPath, filepath.Clean(joined))
+	inside := err == nil && filepath.IsLocal(rel)
+	if slices.Contains(strings.Split(filepath.ToSlash(value), "/"), "..") && w.dotDotAmbiguous(base, value, inside) {
+		w.unreadable(source, "configured path resolution is ambiguous")
+		return "", false
+	}
+	return rel, inside
+}
+
+// dotDotAmbiguous reports whether a ".." in value follows anything but a plain
+// directory, whose parent is then the lexical parent. A ".." after a symlink, or
+// after a component that cannot be inspected, leaves somewhere cleaning does not
+// find, possibly inside the workspace. A ".." that leaves the workspace through
+// plain directories ends what can be observed, unless the path then names a
+// place inside the workspace again. inside is the lexical result, which an
+// absolute path outside the workspace cannot confirm.
+func (w *controlWalker) dotDotAmbiguous(base, value string, inside bool) bool {
+	var stack []string
+	rest := value
+	if filepath.IsAbs(value) {
+		var rooted bool
+		if rest, rooted = strings.CutPrefix(value, w.rootPath+string(filepath.Separator)); !rooted {
+			return inside
+		}
+	} else {
+		stack = slices.DeleteFunc(strings.Split(filepath.ToSlash(base), "/"), func(part string) bool {
+			return part == "" || part == "."
+		})
+	}
+	for part := range strings.SplitSeq(filepath.ToSlash(rest), "/") {
+		switch part {
+		case "", ".":
+		case "..":
+			// Past the workspace root nothing can be observed. Naming the
+			// workspace again from there is a place only the real parent knows.
+			if len(stack) == 0 {
+				return inside
+			}
+			// A component that does not exist now has no target to leave. If it
+			// becomes a symlink, the next snapshot finds that and is ambiguous.
+			info, err := w.root.Lstat(strings.Join(stack, "/"))
+			if err != nil && !errors.Is(err, fs.ErrNotExist) || err == nil && !info.IsDir() {
+				return true
+			}
+			stack = stack[:len(stack)-1]
+		default:
+			stack = append(stack, part)
+		}
+	}
+	return false
 }
 
 // A linked worktree records the path to its .git file in its metadata.
@@ -121,7 +220,7 @@ func (w *controlWalker) linkedWorktree(gitDir string) string {
 	entry := w.recordPath(filepath.Join(gitDir, "gitdir"))
 	if entry.Kind == KindFile {
 		if data, ok := w.readObserved(entry); ok {
-			if target, inside := w.workspaceTarget(gitDir, strings.TrimRight(string(data), "\r\n")); inside {
+			if target, inside := w.workspaceTarget(entry.Path, gitDir, strings.TrimRight(string(data), "\r\n")); inside {
 				return filepath.Dir(target)
 			}
 		}
@@ -129,12 +228,50 @@ func (w *controlWalker) linkedWorktree(gitDir string) string {
 	return ""
 }
 
+// maxConfigLinkHops matches the kernel's limit on symlinks in one resolution.
+const maxConfigLinkHops = 40
+
+// readConfig reads a Git config file. Git reads through a symlink, so a link
+// is followed to the regular file the walk recorded for its target, while the
+// config keeps its own path for resolving relative includes. A target outside
+// the workspace, or one that cannot be resolved safely, is unreadable; a target
+// that does not exist reads as no configuration, and appears as an addition if
+// it is created.
+func (w *controlWalker) readConfig(entry controlEntry) ([]byte, bool) {
+	file := entry
+	for range maxConfigLinkHops {
+		switch file.Kind {
+		case KindFile:
+			return w.readObserved(file)
+		case KindSymlink:
+			rel, ok := w.linkTarget(file)
+			if !ok {
+				w.unreadable(entry.Path, "Git config symlink target could not be observed")
+				return nil, false
+			}
+			next := w.recordPath(rel)
+			if next.Kind == "" {
+				if _, err := w.root.Lstat(rel); !errors.Is(err, fs.ErrNotExist) {
+					w.unreadable(entry.Path, "Git config symlink target could not be observed")
+				}
+				return nil, false
+			}
+			file = next
+		default:
+			w.unreadable(entry.Path, "Git config symlink target is not a regular file")
+			return nil, false
+		}
+	}
+	w.unreadable(entry.Path, "Git config symlink chain is too long")
+	return nil, false
+}
+
 func (w *controlWalker) readObserved(entry controlEntry) ([]byte, bool) {
 	if entry.Oversize {
 		return nil, false
 	}
 	dev, ino, ok := statIDsWithInode(entry.info)
-	file, err := openSnapshotRegular(w.root, entry.Path, filepath.Join(w.rootPath, entry.Path), dev, ino, ok)
+	file, err := openSnapshotRegular(w.snapshotFile(entry.Path, dev, ino, ok))
 	if err != nil {
 		w.unreadable(entry.Path, fmt.Sprintf("open Git metadata: %v", err))
 		return nil, false
